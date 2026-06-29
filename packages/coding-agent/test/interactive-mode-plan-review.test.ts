@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Agent, AgentBusyError, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
+import * as ai from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -59,6 +60,17 @@ function assistantWithUsage(overrides: Partial<AssistantMessage> = {}): Assistan
 
 function compactNumber(value: number): string {
 	return formatNumber(value).toLowerCase();
+}
+
+function waitForSessionName(manager: SessionManager, expected: string): Promise<void> {
+	if (manager.getSessionName() === expected) return Promise.resolve();
+	const { promise, resolve } = Promise.withResolvers<void>();
+	const unsubscribe = manager.onSessionNameChanged(() => {
+		if (manager.getSessionName() !== expected) return;
+		unsubscribe();
+		resolve();
+	});
+	return promise;
 }
 
 describe("InteractiveMode plan review rendering", () => {
@@ -258,12 +270,15 @@ describe("InteractiveMode plan review rendering", () => {
 	});
 
 	it("opens the annotation external editor from the real plan review overlay", async () => {
-		const editorPath = path.join(tempDir.path(), "annotation-editor.sh");
+		const editorPath = path.join(tempDir.path(), "annotation-editor.js");
 		await Bun.write(
 			editorPath,
-			"#!/bin/sh\nprintf '%s\\n%s\\n' '- add rollback command' '- include smoke test' > \"$1\"\n",
+			[
+				"const target = process.argv.at(-1);",
+				"if (!target) process.exit(1);",
+				'await Bun.write(target, "- add rollback command\\n- include smoke test\\n");',
+			].join("\n"),
 		);
-		await fs.chmod(editorPath, 0o755);
 		const previousEditor = Bun.env.EDITOR;
 		const previousVisual = Bun.env.VISUAL;
 		const keybindings = KeybindingsManager.inMemory({
@@ -283,7 +298,7 @@ describe("InteractiveMode plan review rendering", () => {
 		const { promise: editorApplied, resolve: markEditorApplied } = Promise.withResolvers<void>();
 
 		try {
-			Bun.env.EDITOR = editorPath;
+			Bun.env.EDITOR = `bun ${editorPath}`;
 			delete Bun.env.VISUAL;
 			const choice = mode.showPlanReview(
 				"# Plan\n\nIntro\n\n## Rollout\n\nSteps\n\n## Verify\n\nChecks\n",
@@ -682,6 +697,85 @@ describe("InteractiveMode plan review rendering", () => {
 		expect(prompt).toHaveBeenCalledWith(expect.any(String), {
 			synthetic: true,
 		});
+	});
+
+	it("refreshes approved plan display title from the title generator", async () => {
+		const planFilePath = "local://fix-lsp-status-caching-plan.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		const planContent = "# Fix LSP status caching\n\nImplement the cache routing fix.";
+		await Bun.write(resolvedPlanPath, planContent);
+
+		mode.planModeEnabled = true;
+		mode.planModePlanFilePath = planFilePath;
+		mode.titleSystemPrompt = "请生成中文标题";
+		vi.spyOn(mode, "showPlanReview").mockResolvedValue("Approve and execute");
+		vi.spyOn(mode, "handleClearCommand").mockResolvedValue();
+		const promptSpy = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [
+				{
+					type: "toolCall",
+					id: "call-title",
+					name: "set_title",
+					arguments: { title: "修复状态缓存标题" },
+				},
+			],
+		} as never);
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "fix-lsp-status-caching",
+		});
+
+		await waitForSessionName(session.sessionManager, "修复状态缓存标题");
+		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+		const titleRequest = completeSimpleMock.mock.calls[0]?.[1] as { systemPrompt?: string[] } | undefined;
+		expect(titleRequest?.systemPrompt).toEqual(["请生成中文标题"]);
+		expect(session.sessionManager.getSessionName()).toBe("修复状态缓存标题");
+
+		const call = promptSpy.mock.calls.find(isPlanApprovedCall);
+		expect(call).toBeDefined();
+		const promptText = call?.[0] as string;
+		expect(promptText).toContain("Implement the cache routing fix.");
+		expect(promptText).toContain(`path="${planFilePath}"`);
+	});
+
+	it("keeps the humanized slug when approved plan title generation returns null", async () => {
+		const planFilePath = "local://fix-lsp-status-caching-plan.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Fix LSP status caching\n\nImplement the cache routing fix.");
+
+		mode.planModeEnabled = true;
+		mode.planModePlanFilePath = planFilePath;
+		vi.spyOn(mode, "showPlanReview").mockResolvedValue("Approve and execute");
+		vi.spyOn(mode, "handleClearCommand").mockResolvedValue();
+		const promptSpy = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+		const { promise: titleAttempted, resolve: resolveTitleAttempted } = Promise.withResolvers<void>();
+		vi.spyOn(ai, "completeSimple").mockImplementation(async () => {
+			resolveTitleAttempted();
+			return {
+				stopReason: "stop",
+				content: [],
+			} as never;
+		});
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "fix-lsp-status-caching",
+		});
+
+		await titleAttempted;
+		expect(session.sessionManager.getSessionName()).toBe("Fix lsp status caching");
+		expect(promptSpy.mock.calls.some(isPlanApprovedCall)).toBe(true);
 	});
 
 	it("executes on the slider-selected tier, surviving #exitPlanMode's model restore", async () => {

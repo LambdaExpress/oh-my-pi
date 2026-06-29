@@ -370,12 +370,14 @@ struct SizeFilter {
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(unix), allow(dead_code, reason = "owner id matching is only implemented on Unix"))]
 enum OwnerSide {
 	Include(u32),
 	Exclude(u32),
 }
 
 #[derive(Clone, Copy)]
+#[cfg_attr(not(unix), allow(dead_code, reason = "owner id matching is only implemented on Unix"))]
 struct OwnerMatcher {
 	user:  Option<OwnerSide>,
 	group: Option<OwnerSide>,
@@ -772,7 +774,7 @@ fn matches_unix_file_type(filter: &TypeFilter, file_type: fs::FileType) -> bool 
 }
 
 #[cfg(not(unix))]
-fn matches_unix_file_type(_filter: &TypeFilter, _file_type: fs::FileType) -> bool {
+const fn matches_unix_file_type(_filter: &TypeFilter, _file_type: fs::FileType) -> bool {
 	false
 }
 
@@ -855,10 +857,11 @@ fn matches_owner_filters(filters: &[OwnerMatcher], metadata: Option<&Metadata>) 
 }
 
 #[cfg(not(unix))]
-fn matches_owner_filters(filters: &[OwnerMatcher], _metadata: Option<&Metadata>) -> bool {
+const fn matches_owner_filters(filters: &[OwnerMatcher], _metadata: Option<&Metadata>) -> bool {
 	filters.is_empty()
 }
 
+#[cfg(unix)]
 const fn owner_side_matches(side: OwnerSide, actual: u32) -> bool {
 	match side {
 		OwnerSide::Include(expected) => actual == expected,

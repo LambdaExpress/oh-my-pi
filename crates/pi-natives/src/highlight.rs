@@ -540,8 +540,8 @@ mod tests {
 		assert!(supports_language("ps1".to_string()));
 
 		let out = highlight_code(
-			"$identity = [Security.Principal.WindowsIdentity]::GetCurrent()\n\
-			 [pscustomobject]@{ User = $identity.Name } | Format-List\n"
+			"$identity = [Security.Principal.WindowsIdentity]::GetCurrent()\n[pscustomobject]@{ User \
+			 = $identity.Name } | Format-List\n"
 				.to_string(),
 			Some("powershell".to_string()),
 			test_colors(),

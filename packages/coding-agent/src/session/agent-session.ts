@@ -500,6 +500,8 @@ export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
 	settings: Settings;
+	/** Already-loaded title-generation system prompt override from TITLE_SYSTEM.md. */
+	titleSystemPrompt?: string;
 	/** Whether the caller explicitly requested yolo/auto-approve behavior for this session. */
 	autoApprove?: boolean;
 	/** Models to cycle through with Ctrl+P (from --models flag) */
@@ -1459,6 +1461,7 @@ export class AgentSession {
 
 	// Model registry for API key resolution
 	#modelRegistry: ModelRegistry;
+	#titleSystemPrompt: string | undefined;
 
 	// Tool registry and prompt builder for extensions
 	#toolRegistry: Map<string, AgentTool>;
@@ -1756,6 +1759,7 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settings = config.settings;
+		this.setTitleSystemPrompt(config.titleSystemPrompt);
 		this.#autoApprove = config.autoApprove === true;
 		// Power assertions are taken per turn (see #beginInFlight); nothing acquired here.
 		this.#evalKernelOwnerId = config.evalKernelOwnerId ?? `agent-session:${Snowflake.next()}`;
@@ -2509,6 +2513,10 @@ export class AgentSession {
 
 		agent.replaceMessages([summaryMessage, ...preparation.recentMessages]);
 		return false;
+	}
+
+	setTitleSystemPrompt(prompt: string | undefined): void {
+		this.#titleSystemPrompt = prompt?.trim() || undefined;
 	}
 
 	/** Model registry for API key resolution and model discovery */
@@ -7719,6 +7727,7 @@ export class AgentSession {
 			sessionId,
 			this.model,
 			provider => this.agent.metadataForProvider(provider),
+			this.#titleSystemPrompt,
 		);
 		if (!title) return;
 		if (this.sessionManager.getSessionId() !== sessionId) return;

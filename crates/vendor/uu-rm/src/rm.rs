@@ -721,16 +721,16 @@ fn remove_dir_recursive(
 	// Fallback for non-Unix, Redox, or use fs::remove_dir_all for very long paths
 	#[cfg(any(not(unix), target_os = "redox"))]
 	{
-		if let Some(s) = path.to_str() {
-			if s.len() > 1000 {
-				match fs::remove_dir_all(pi_uutils_ctx::resolve(path)) {
-					Ok(_) => return false,
-					Err(e) => {
-						let e = e.map_err_context(|| format!("cannot remove {}", path.quote()));
-						show_error!("{e}");
-						return true;
-					},
-				}
+		if let Some(s) = path.to_str()
+			&& s.len() > 1000
+		{
+			match fs::remove_dir_all(pi_uutils_ctx::resolve(path)) {
+				Ok(_) => return false,
+				Err(e) => {
+					let e = e.map_err_context(|| format!("cannot remove {}", path.quote()));
+					show_error!("{e}");
+					return true;
+				},
 			}
 		}
 

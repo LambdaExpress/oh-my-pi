@@ -379,7 +379,7 @@ fn format_directive<'entry>(
 			let blocks = meta()?.blocks();
 			#[cfg(not(unix))]
 			// Estimate using a ceiling division by the block size.
-			let blocks = (meta()?.len() + STANDARD_BLOCK_SIZE - 1) / STANDARD_BLOCK_SIZE;
+			let blocks = meta()?.len().div_ceil(STANDARD_BLOCK_SIZE);
 
 			// GNU find says it returns the number of 512-byte blocks for %b,
 			// but in reality it just returns the number of blocks, *regardless

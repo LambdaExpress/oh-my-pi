@@ -12,6 +12,10 @@ use nix::unistd::Group;
 use super::{ComparableValue, Matcher, MatcherIO, WalkEntry};
 
 pub struct GroupMatcher {
+	#[cfg_attr(
+		windows,
+		allow(dead_code, reason = "group id matching is not implemented on Windows")
+	)]
 	gid: ComparableValue,
 }
 

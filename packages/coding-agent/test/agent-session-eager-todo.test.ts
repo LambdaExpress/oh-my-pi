@@ -327,6 +327,39 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(titleInput).toContain("replan parser diagnostics");
 	});
 
+	it("passes the resolved title system prompt to todo-init title refresh", async () => {
+		await recreateSession({ "title.refreshOnReplan": true });
+		await session.setSessionName("Old auto title", "auto");
+		session.setTitleSystemPrompt("请生成中文标题");
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [
+				{
+					type: "toolCall",
+					id: "call-title",
+					name: "set_title",
+					arguments: { title: "计划模式中文标题" },
+				},
+			],
+		} as never);
+		scriptedResponses = [
+			createToolCallAssistantMessage("todo", {
+				op: "init",
+				list: [{ phase: "Parser", items: ["Replan parser diagnostics"] }],
+			}),
+			createAssistantMessage("todo initialized"),
+		];
+
+		const titleApplied = waitForSessionName("计划模式中文标题");
+		await session.prompt("replan parser diagnostics");
+		await titleApplied;
+
+		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+		const request = completeSimpleMock.mock.calls[0]?.[1] as { systemPrompt?: string[] } | undefined;
+		expect(request?.systemPrompt).toEqual(["请生成中文标题"]);
+		expect(session.sessionManager.getSessionName()).toBe("计划模式中文标题");
+	});
+
 	it("does not refresh todo-init titles when the current title is user-authored", async () => {
 		await recreateSession({ "title.refreshOnReplan": true });
 		await session.setSessionName("Manual parser title", "user");

@@ -361,10 +361,13 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 		const nextSettings = await args.settings.cloneForCwd(cwd);
 		const nextSessionManager = SessionManager.create(cwd, args.sessionDir);
 		const agentId = `acp:${nextSessionManager.getSessionId()}`;
+		const titleSystemPromptSource = discoverTitleSystemPromptFile(cwd);
+		const nextTitleSystemPrompt = await resolvePromptInput(titleSystemPromptSource, "title system prompt");
 		const { session: nextSession } = await args.createSession({
 			...args.baseOptions,
 			cwd,
 			sessionManager: nextSessionManager,
+			titleSystemPrompt: nextTitleSystemPrompt,
 			settings: nextSettings,
 			authStorage: args.authStorage,
 			modelRegistry: args.modelRegistry,
@@ -801,6 +804,9 @@ async function buildSessionOptions(
 	const resolvedAppendPrompt = await resolvePromptInput(appendPromptSource, "append system prompt");
 	const titleSystemPromptSource = discoverTitleSystemPromptFile();
 	const titleSystemPrompt = await resolvePromptInput(titleSystemPromptSource, "title system prompt");
+	if (titleSystemPrompt) {
+		options.titleSystemPrompt = titleSystemPrompt;
+	}
 
 	if (sessionManager) {
 		options.sessionManager = sessionManager;

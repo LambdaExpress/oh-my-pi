@@ -113,7 +113,12 @@ import type { EventBus } from "../utils/event-bus";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-color";
 import { messageHasDisplayableThinking } from "../utils/thinking-display";
-import { popTerminalTitle, pushTerminalTitle, setSessionTerminalTitle } from "../utils/title-generator";
+import {
+	generateSessionTitle,
+	popTerminalTitle,
+	pushTerminalTitle,
+	setSessionTerminalTitle,
+} from "../utils/title-generator";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "./components/chat-block";
@@ -598,6 +603,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.mcpManager = mcpManager;
 		this.#eventBus = eventBus;
 		this.titleSystemPrompt = titleSystemPrompt;
+		this.session.setTitleSystemPrompt(titleSystemPrompt);
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
 				eventBus.on(LSP_STARTUP_EVENT_CHANNEL, data => {
@@ -993,6 +999,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const basePath = cwd ?? this.sessionManager.getCwd();
 		const titleSystemPromptSource = discoverTitleSystemPromptFile(basePath);
 		this.titleSystemPrompt = await resolvePromptInput(titleSystemPromptSource, "title system prompt");
+		this.session.setTitleSystemPrompt(this.titleSystemPrompt);
 	}
 
 	/** Reload slash commands and autocomplete for the provided working directory. */
@@ -2514,6 +2521,34 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
+	#scheduleApprovedPlanTitleRefresh(planContent: string, sessionId: string): void {
+		const refresh = generateSessionTitle(
+			planContent,
+			this.session.modelRegistry,
+			this.settings,
+			sessionId,
+			this.session.model,
+			provider => this.session.agent.metadataForProvider(provider),
+			this.titleSystemPrompt,
+		)
+			.then(async title => {
+				if (!title) return;
+				if (this.sessionManager.getSessionId() !== sessionId) return;
+				if (this.sessionManager.titleSource === "user") return;
+				const applied = await this.sessionManager.setSessionName(title, "auto");
+				if (!applied) return;
+				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+				this.updateEditorBorderColor();
+			})
+			.catch(err => {
+				logger.warn("title-generator: approved plan title refresh failed", {
+					sessionId,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+		void refresh;
+	}
+
 	async #approvePlan(
 		planContent: string,
 		options: {
@@ -2629,6 +2664,8 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.updateEditorBorderColor();
 			}
 		}
+		const titleSessionId = this.sessionManager.getSessionId();
+		this.#scheduleApprovedPlanTitleRefresh(planContent, titleSessionId);
 
 		// markPlanReferenceSent fires only on the dispatch path so the synthetic
 		// plan-approved prompt is the source of the reference injection.

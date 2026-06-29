@@ -235,9 +235,9 @@ impl Ls {
 		};
 		let path = file_info.display_path().to_string_lossy();
 
-		match write!(
+		match writeln!(
 			out,
-			" {:<4} {:>6} {:<10} {:>3} {:<8} {:<8} {:>8} {} {}\n",
+			" {:<4} {:>6} {:<10} {:>3} {:<8} {:<8} {:>8} {} {}",
 			inode_number,
 			number_of_blocks,
 			permission,

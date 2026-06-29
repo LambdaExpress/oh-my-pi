@@ -202,7 +202,6 @@ describe("lsp regressions", () => {
 		expect(clampTimeout("lsp", 1000)).toBe(60);
 	});
 
-
 	it("starts separate clients when shared wrapper commands use different args", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-cache-key-");
 		try {
