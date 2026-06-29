@@ -7,7 +7,7 @@ import type { SSHHost } from "../capability/ssh";
 import { sshCapability } from "../capability/ssh";
 import { loadCapability } from "../discovery";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
-import type { Theme } from "../modes/theme/theme";
+import { highlightCode, type Theme } from "../modes/theme/theme";
 import sshDescriptionBase from "../prompts/tools/ssh.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import type { SSHHostInfo } from "../ssh/connection-manager";
@@ -231,9 +231,10 @@ export async function loadSshTool(session: ToolSession): Promise<SshTool | null>
 // TUI Renderer
 // =============================================================================
 
-interface SshRenderArgs {
+export interface SshRenderArgs {
 	host?: string;
 	command?: string;
+	cwd?: string;
 	timeout?: number;
 }
 
@@ -246,19 +247,28 @@ interface SshRenderContext {
 	totalVisualLines?: number;
 }
 
-function formatSshCommandLines(command: string, uiTheme: Theme): string[] {
-	const sanitized = replaceTabs(command);
-	const rawLines = sanitized.length > 0 ? sanitized.split("\n") : ["…"];
+export function formatSshCommandLines(args: SshRenderArgs | undefined, uiTheme: Theme): string[] {
+	const hostName = args?.host?.trim();
+	const info = hostName && hostName !== "…" ? getCachedHostInfoSync({ name: hostName, host: hostName }) : undefined;
+	let displayCommand = args?.command || "…";
+	if (args?.cwd) {
+		displayCommand = info
+			? buildRemoteCommand(displayCommand, args.cwd, info)
+			: `cd -- ${quoteRemotePath(args.cwd)} && ${displayCommand}`;
+	}
+	const language =
+		info?.os === "windows" && !info.compatEnabled ? (info.shell === "powershell" ? "powershell" : undefined) : "bash";
+	const highlightedLines = highlightCode(replaceTabs(displayCommand), language);
 	const prefix = uiTheme.fg("dim", "$ ");
-	return rawLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
+	if (highlightedLines.length === 0) return [prefix.trimEnd()];
+	return highlightedLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
 }
 
 export const sshToolRenderer = {
 	renderCall(args: SshRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const host = args.host || "…";
-		const command = args.command ?? "";
 		const header = renderStatusLine({ icon: "pending", title: "SSH", description: `[${host}]` }, uiTheme);
-		const cmdLines = formatSshCommandLines(command, uiTheme);
+		const cmdLines = formatSshCommandLines(args, uiTheme);
 		const outputBlock = new CachedOutputBlock();
 		return markFramedBlockComponent({
 			render: (width: number): readonly string[] =>
@@ -289,7 +299,6 @@ export const sshToolRenderer = {
 	): Component {
 		const details = result.details;
 		const host = args?.host || "…";
-		const command = args?.command ?? "";
 		const isError = result.isError === true;
 		const isPartial = options.isPartial === true;
 		const header = renderStatusLine(
@@ -300,7 +309,7 @@ export const sshToolRenderer = {
 					: { iconOverride: uiTheme.styledSymbol("tool.ssh", "accent"), title: "SSH", description: `[${host}]` },
 			uiTheme,
 		);
-		const cmdLines = formatSshCommandLines(command, uiTheme);
+		const cmdLines = formatSshCommandLines(args, uiTheme);
 		const textContent = result.content?.find(c => c.type === "text")?.text ?? "";
 		const outputBlock = new CachedOutputBlock();
 

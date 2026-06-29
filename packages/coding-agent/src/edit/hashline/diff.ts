@@ -29,7 +29,8 @@ import {
 	type SnapshotStore,
 	stripBom,
 } from "@oh-my-pi/hashline";
-import { resolveToCwd } from "../../tools/path-utils";
+import { canonicalSshResourceKey, parseInternalUrl } from "../../internal-urls";
+import { peelWholeFileUrlSelector, resolveToCwd } from "../../tools/path-utils";
 import { generateDiffString } from "../diff";
 import { canonicalSnapshotKey } from "../file-snapshot-store";
 import { readEditFileText } from "../read-file";
@@ -118,6 +119,24 @@ function recoverSectionPathFromTag(
 	return candidates.length === 1 ? candidates[0] : undefined;
 }
 
+function readSshSectionForPreview(
+	section: PatchSection,
+	snapshots: SnapshotStore,
+): { absolutePath: string; rawContent: string } {
+	const wholeFilePath = peelWholeFileUrlSelector(section.path, "edit");
+	const canonicalPath = canonicalSshResourceKey(parseInternalUrl(wholeFilePath));
+	if (section.fileHash === undefined) {
+		throw new Error(missingSnapshotTagMessage(canonicalPath));
+	}
+	const snapshot = snapshots.byHash(canonicalPath, section.fileHash);
+	if (!snapshot) {
+		throw new Error(
+			`Cannot preview ${canonicalPath}: snapshot tag not found. Re-read ${canonicalPath} before editing.`,
+		);
+	}
+	return { absolutePath: canonicalPath, rawContent: snapshot.text };
+}
+
 /**
  * Read the section's target file for a preview, recovering a bare/mis-typed
  * `[basename#tag]` path onto the file its tag uniquely names. Recovery fires
@@ -132,6 +151,7 @@ async function readSectionForPreview(
 	snapshots: SnapshotStore,
 	streaming: boolean | undefined,
 ): Promise<{ absolutePath: string; rawContent: string }> {
+	if (/^ssh:\/\//i.test(section.path.trim())) return readSshSectionForPreview(section, snapshots);
 	const read = streaming ? readSectionTextCached : readSectionText;
 	const recovered = (await Bun.file(authoredAbsolutePath).exists())
 		? undefined

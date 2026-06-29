@@ -4,7 +4,7 @@ import type { SSHHost } from "../../capability/ssh";
 import type { CapabilityResult, SourceMeta } from "../../capability/types";
 import * as fileTransfer from "../../ssh/file-transfer";
 import { parseInternalUrl } from "../parse";
-import { SshProtocolHandler } from "../ssh-protocol";
+import { canonicalSshResourceKey, SshProtocolHandler } from "../ssh-protocol";
 
 const SOURCE: SourceMeta = {
 	provider: "ssh-json",
@@ -135,6 +135,44 @@ describe("SshProtocolHandler", () => {
 		await handler.write(parseInternalUrl("ssh://icaro/tmp/x"), "hi\n\t!\n");
 		expect(spy).toHaveBeenCalledTimes(1);
 		expect(spy.mock.calls[0]?.[2]).toEqual(new TextEncoder().encode("hi\n\t!\n"));
+	});
+
+	it("canonicalizes ssh resource keys by preserving authority and re-encoding path segments", () => {
+		const parsed = parseInternalUrl("ssh://icaro/tmp/%61%23b%3Fc:with%3Acolon");
+		expect(canonicalSshResourceKey(parsed)).toBe("ssh://icaro/tmp/a%23b%3Fc%3Awith%3Acolon");
+		expect(handler.canonicalKey(parsed)).toBe("ssh://icaro/tmp/a%23b%3Fc%3Awith%3Acolon");
+	});
+
+	it("deletes through deleteRemoteFile", async () => {
+		mockHosts();
+		const spy = vi.spyOn(fileTransfer, "deleteRemoteFile").mockResolvedValue(undefined);
+		await handler.delete(parseInternalUrl("ssh://icaro/tmp/x"));
+		expect(spy).toHaveBeenCalledTimes(1);
+		expect(spy.mock.calls[0]?.[1]).toBe("/tmp/x");
+	});
+
+	it("rejects cross-authority remote moves before dispatching a transfer", async () => {
+		const moveSpy = vi.spyOn(fileTransfer, "moveRemoteFile").mockResolvedValue(undefined);
+		await expect(
+			handler.move(parseInternalUrl("ssh://icaro/tmp/x"), parseInternalUrl("ssh://other/tmp/x"), undefined),
+		).rejects.toThrow(/ssh:\/\/ move destination must use the same SSH authority as the source/);
+		expect(moveSpy).not.toHaveBeenCalled();
+	});
+
+	it("moves with provided content by writing the destination then deleting the source", async () => {
+		mockHosts();
+		const writeSpy = vi.spyOn(fileTransfer, "writeRemoteFile").mockResolvedValue(undefined);
+		const deleteSpy = vi.spyOn(fileTransfer, "deleteRemoteFile").mockResolvedValue(undefined);
+		const moveSpy = vi.spyOn(fileTransfer, "moveRemoteFile").mockResolvedValue(undefined);
+		await handler.move(
+			parseInternalUrl("ssh://icaro/tmp/old.ts"),
+			parseInternalUrl("ssh://icaro/tmp/new.ts"),
+			"new\n",
+		);
+		expect(writeSpy.mock.calls[0]?.[1]).toBe("/tmp/new.ts");
+		expect(writeSpy.mock.calls[0]?.[2]).toEqual(new TextEncoder().encode("new\n"));
+		expect(deleteSpy.mock.calls[0]?.[1]).toBe("/tmp/old.ts");
+		expect(moveSpy).not.toHaveBeenCalled();
 	});
 
 	it("lists a remote directory when the path is not a readable file", async () => {

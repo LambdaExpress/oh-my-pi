@@ -7699,6 +7699,7 @@ export class AgentSession {
 
 	#scheduleReplanTitleRefresh(): void {
 		if (this.#replanTitleRefreshInFlight) return;
+		if (this.#planReferenceSent) return;
 		if (!this.settings.get("title.refreshOnReplan")) return;
 		if (this.sessionManager.titleSource === "user") return;
 		const context = this.#buildReplanTitleContext();

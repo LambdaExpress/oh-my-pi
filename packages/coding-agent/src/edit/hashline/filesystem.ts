@@ -20,17 +20,39 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { Filesystem, NotFoundError, type PreflightWriteOptions, type WriteResult } from "@oh-my-pi/hashline";
 import { isEnoent } from "@oh-my-pi/pi-utils";
+import { type InternalUrl, InternalUrlRouter, type ProtocolHandler, parseInternalUrl } from "../../internal-urls";
 import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
-import { isInternalUrlPath } from "../../tools/path-utils";
-import { enforcePlanModeWrite, resolvePlanPath, targetsLocalSandbox } from "../../tools/plan-mode-guard";
+import { isInternalUrlPath, peelWholeFileUrlSelector } from "../../tools/path-utils";
+import {
+	enforcePlanModeWrite,
+	resolvePlanPath,
+	targetsLocalSandbox,
+	unwrapHashlineHeaderPath,
+} from "../../tools/plan-mode-guard";
 import { canonicalSnapshotKey } from "../file-snapshot-store";
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { LspBatchRequest } from "../renderer";
 
+type SshEditProtocolHandler = ProtocolHandler &
+	Required<Pick<ProtocolHandler, "write" | "delete" | "move" | "stat" | "canonicalKey">>;
+
+type ResolvedEditTarget =
+	| { kind: "local"; authoredPath: string; absolutePath: string; canonicalPath: string }
+	| {
+			kind: "ssh";
+			authoredPath: string;
+			parsed: InternalUrl;
+			canonicalPath: string;
+			handler: SshEditProtocolHandler;
+	  };
+
+function hasSshEditCapabilities(handler: ProtocolHandler | undefined): handler is SshEditProtocolHandler {
+	return Boolean(handler?.write && handler.delete && handler.move && handler.stat && handler.canonicalKey);
+}
 export interface HashlineFilesystemOptions {
 	session: ToolSession;
 	writethrough: WritethroughCallback;
@@ -81,18 +103,69 @@ export class HashlineFilesystem extends Filesystem {
 		return value;
 	}
 
+	#resolveEditTarget(authoredPath: string): ResolvedEditTarget {
+		const unwrappedPath = unwrapHashlineHeaderPath(authoredPath);
+		if (!/^ssh:\/\//i.test(unwrappedPath.trim())) {
+			const absolutePath = resolvePlanPath(this.session, authoredPath);
+			return {
+				kind: "local",
+				authoredPath,
+				absolutePath,
+				canonicalPath: canonicalSnapshotKey(absolutePath),
+			};
+		}
+
+		const wholeFilePath = peelWholeFileUrlSelector(unwrappedPath, "edit");
+		const parsed = parseInternalUrl(wholeFilePath);
+		const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
+		if (scheme !== "ssh") {
+			throw new Error(`Cannot edit non-SSH internal URL through SSH path resolver: ${authoredPath}`);
+		}
+		const handler = InternalUrlRouter.instance().getHandler("ssh");
+		if (!hasSshEditCapabilities(handler)) {
+			throw new Error(
+				"ssh:// edit requires a protocol handler with resolve, write, delete, move, stat, and canonicalKey",
+			);
+		}
+		return {
+			kind: "ssh",
+			authoredPath: wholeFilePath,
+			parsed,
+			canonicalPath: handler.canonicalKey(parsed),
+			handler,
+		};
+	}
+
 	resolveAbsolute(relativePath: string): string {
-		return resolvePlanPath(this.session, relativePath);
+		const target = this.#resolveEditTarget(relativePath);
+		return target.kind === "ssh" ? target.canonicalPath : target.absolutePath;
 	}
 
 	canonicalPath(relativePath: string): string {
-		return canonicalSnapshotKey(this.resolveAbsolute(relativePath));
+		return this.#resolveEditTarget(relativePath).canonicalPath;
 	}
 
 	allowTagPathRecovery(authoredPath: string, resolvedPath: string): boolean {
+		const unwrappedAuthoredPath = unwrapHashlineHeaderPath(authoredPath);
+		const authoredTargetsSsh = /^ssh:\/\//i.test(unwrappedAuthoredPath.trim());
+		const resolvedTargetsSsh = /^ssh:\/\//i.test(resolvedPath.trim());
+		if (authoredTargetsSsh || resolvedTargetsSsh) {
+			if (!authoredTargetsSsh || !resolvedTargetsSsh) return false;
+			try {
+				const authoredTarget = this.#resolveEditTarget(authoredPath);
+				const resolvedTarget = this.#resolveEditTarget(resolvedPath);
+				if (authoredTarget.kind !== "ssh" || resolvedTarget.kind !== "ssh") return false;
+				const authoredAuthority = /^ssh:\/\/([^/?#]*)/i.exec(authoredTarget.canonicalPath)?.[1];
+				const resolvedAuthority = /^ssh:\/\/([^/?#]*)/i.exec(resolvedTarget.canonicalPath)?.[1];
+				return authoredAuthority !== undefined && authoredAuthority === resolvedAuthority;
+			} catch {
+				return false;
+			}
+		}
+
 		// Internal-URL authored targets (`local://`, `vault://`, …) are approved
 		// at the lower "read" privilege; never let one redirect onto a "write".
-		if (isInternalUrlPath(authoredPath)) return false;
+		if (isInternalUrlPath(unwrappedAuthoredPath)) return false;
 		// Recovery rebinds a bare/mis-typed authored path onto the file its
 		// snapshot tag uniquely names. Confine the redirect to locations a plain
 		// "write" may legitimately target:
@@ -107,10 +180,22 @@ export class HashlineFilesystem extends Filesystem {
 	}
 
 	async readText(relativePath: string): Promise<string> {
-		const absolutePath = this.resolveAbsolute(relativePath);
+		const target = this.#resolveEditTarget(relativePath);
+		if (target.kind === "ssh") {
+			const kind = await target.handler.stat(target.parsed, { cwd: this.session.cwd, signal: this.#signal });
+			if (kind === "missing") throw new NotFoundError(relativePath);
+			if (kind === "directory") throw new Error(`Cannot edit remote directory: ${relativePath}`);
+			if (kind === "other") throw new Error(`Cannot edit remote special file: ${relativePath}`);
+			const resource = await target.handler.resolve(target.parsed, { cwd: this.session.cwd, signal: this.#signal });
+			if (resource.isDirectory) throw new Error(`Cannot edit remote directory: ${relativePath}`);
+			if (resource.immutable) throw new Error(`Cannot edit immutable remote resource: ${relativePath}`);
+			assertEditableFileContent(resource.content, relativePath);
+			return resource.content;
+		}
+
 		let content: string;
 		try {
-			content = await readEditFileText(absolutePath, relativePath);
+			content = await readEditFileText(target.absolutePath, relativePath);
 		} catch (error) {
 			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
 			if (error instanceof Error && error.message === `File not found: ${relativePath}`) {
@@ -137,57 +222,87 @@ export class HashlineFilesystem extends Filesystem {
 	}
 
 	async delete(relativePath: string): Promise<void> {
+		const target = this.#resolveEditTarget(relativePath);
+		if (target.kind === "ssh") {
+			enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
+			await target.handler.delete(target.parsed, { cwd: this.session.cwd, signal: this.#signal });
+			return;
+		}
+
 		enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
-		const absolutePath = this.resolveAbsolute(relativePath);
 		try {
-			await fs.rm(absolutePath);
+			await fs.rm(target.absolutePath);
 		} catch (error) {
 			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
 			throw error;
 		}
-		invalidateFsScanAfterWrite(absolutePath);
+		invalidateFsScanAfterWrite(target.absolutePath);
 	}
 
 	async move(fromRelative: string, toRelative: string, content?: string): Promise<void> {
-		enforcePlanModeWrite(this.session, fromRelative, { op: "update", move: toRelative });
-		const fromAbsolute = this.resolveAbsolute(fromRelative);
-		const toAbsolute = this.resolveAbsolute(toRelative);
-		if (content !== undefined) {
-			await Bun.write(toAbsolute, content);
-			await fs.rm(fromAbsolute);
-		} else {
-			await fs.rename(fromAbsolute, toAbsolute);
+		const fromTarget = this.#resolveEditTarget(fromRelative);
+		const toTarget = this.#resolveEditTarget(toRelative);
+		if (fromTarget.kind === "ssh" || toTarget.kind === "ssh") {
+			if (fromTarget.kind !== "ssh" || toTarget.kind !== "ssh") {
+				throw new Error("Remote MV destination must be a full ssh://same-authority/<absolute-path> URL");
+			}
+			enforcePlanModeWrite(this.session, fromRelative, { op: "update", move: toRelative });
+			await fromTarget.handler.move(fromTarget.parsed, toTarget.parsed, content, {
+				cwd: this.session.cwd,
+				signal: this.#signal,
+			});
+			this.#diagnosticsByPath.set(fromRelative, undefined);
+			return;
 		}
-		invalidateFsScanAfterWrite(fromAbsolute);
-		invalidateFsScanAfterWrite(toAbsolute);
+
+		enforcePlanModeWrite(this.session, fromRelative, { op: "update", move: toRelative });
+		if (content !== undefined) {
+			await Bun.write(toTarget.absolutePath, content);
+			await fs.rm(fromTarget.absolutePath);
+		} else {
+			await fs.rename(fromTarget.absolutePath, toTarget.absolutePath);
+		}
+		invalidateFsScanAfterWrite(fromTarget.absolutePath);
+		invalidateFsScanAfterWrite(toTarget.absolutePath);
 	}
 
 	async writeText(relativePath: string, content: string): Promise<WriteResult> {
+		const target = this.#resolveEditTarget(relativePath);
+		if (target.kind === "ssh") {
+			enforcePlanModeWrite(this.session, relativePath, { op: "update" });
+			await target.handler.write(target.parsed, content, { cwd: this.session.cwd, signal: this.#signal });
+			this.#diagnosticsByPath.set(relativePath, undefined);
+			return { text: content };
+		}
+
 		await this.preflightWrite(relativePath);
-		const absolutePath = this.resolveAbsolute(relativePath);
-		const finalContent = await serializeEditFileText(absolutePath, relativePath, content);
+		const finalContent = await serializeEditFileText(target.absolutePath, relativePath, content);
 
 		// Route through ACP bridge when available; skips internal artifacts.
-		if (await routeWriteThroughBridge(this.session, relativePath, absolutePath, finalContent)) {
+		if (await routeWriteThroughBridge(this.session, relativePath, target.absolutePath, finalContent)) {
 			this.#diagnosticsByPath.set(relativePath, undefined);
 			return { text: finalContent };
 		}
 
 		const diagnostics = await this.#writethrough(
-			absolutePath,
+			target.absolutePath,
 			finalContent,
 			this.#signal,
-			Bun.file(absolutePath),
+			Bun.file(target.absolutePath),
 			this.#batchRequest,
-			dst => (dst === absolutePath ? this.#beginDeferredDiagnosticsForPath(absolutePath) : undefined),
+			dst => (dst === target.absolutePath ? this.#beginDeferredDiagnosticsForPath(target.absolutePath) : undefined),
 		);
-		invalidateFsScanAfterWrite(absolutePath);
+		invalidateFsScanAfterWrite(target.absolutePath);
 		this.#diagnosticsByPath.set(relativePath, diagnostics);
 		return { text: finalContent };
 	}
 
 	async exists(relativePath: string): Promise<boolean> {
-		const absolutePath = this.resolveAbsolute(relativePath);
-		return Bun.file(absolutePath).exists();
+		const target = this.#resolveEditTarget(relativePath);
+		if (target.kind === "ssh") {
+			const kind = await target.handler.stat(target.parsed, { cwd: this.session.cwd, signal: this.#signal });
+			return kind !== "missing";
+		}
+		return Bun.file(target.absolutePath).exists();
 	}
 }

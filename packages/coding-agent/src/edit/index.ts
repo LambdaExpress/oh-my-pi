@@ -4,6 +4,7 @@ import hashlineDescription from "@oh-my-pi/hashline/prompt.md" with { type: "tex
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
+import { InternalUrlRouter, parseInternalUrl } from "../internal-urls";
 import {
 	createLspWritethrough,
 	type FileDiagnosticsResult,
@@ -17,7 +18,8 @@ import patchDescription from "../prompts/tools/patch.md" with { type: "text" };
 import replaceDescription from "../prompts/tools/replace.md" with { type: "text" };
 import type { DeferredDiagnosticsEntry, ToolSession } from "../tools";
 import { truncateForPrompt } from "../tools/approval";
-import { isInternalUrlPath } from "../tools/path-utils";
+import { isInternalUrlPath, pathTargetsSsh } from "../tools/path-utils";
+import { unwrapHashlineHeaderPath } from "../tools/plan-mode-guard";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
 import { executeHashlineSingle, hashlineEditParamsSchema } from "./hashline";
 import { type ApplyPatchParams, applyPatchSchema, expandApplyPatchToEntries } from "./modes/apply-patch";
@@ -291,29 +293,74 @@ async function executeSinglePathEntries(
 	};
 }
 
-function extractApprovalPath(args: unknown): string {
+function normalizeApprovalPaths(paths: readonly string[]): string[] {
+	const normalized: string[] = [];
+	for (const entry of paths) {
+		const path = unwrapHashlineHeaderPath(entry).trim();
+		if (path.length > 0 && !normalized.includes(path)) normalized.push(path);
+	}
+	return normalized;
+}
+
+function extractApprovalPaths(args: unknown, mode: EditMode): string[] {
+	const strategyPaths = EDIT_MODE_STRATEGIES[mode].matcherPaths(args);
+	if (strategyPaths && strategyPaths.length > 0) return normalizeApprovalPaths(strategyPaths);
+
 	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
 	const input = typeof record.input === "string" ? record.input : undefined;
+	const paths: string[] = [];
 	if (input) {
-		const hashlineMatch = /^\[([^#\r\n]+)(?:#[0-9a-fA-F]{4})?\]/m.exec(input);
-		if (hashlineMatch?.[1]) return hashlineMatch[1];
-
-		const applyPatchMatch = /^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/m.exec(input);
-		if (applyPatchMatch?.[1]) return applyPatchMatch[1].trim();
+		for (const match of input.matchAll(/^\[([^#\r\n]+)(?:#[0-9a-fA-F]{4})?\]/gm)) {
+			if (match[1]) paths.push(match[1]);
+		}
+		for (const match of input.matchAll(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/gm)) {
+			if (match[1]) paths.push(match[1].trim());
+		}
 	}
 
 	const targetPath = record.path;
-	return typeof targetPath === "string" && targetPath.length > 0 ? targetPath : "(unknown)";
+	if (typeof targetPath === "string" && targetPath.length > 0) paths.push(targetPath);
+	const normalized = normalizeApprovalPaths(paths);
+	return normalized.length > 0 ? normalized : ["(unknown)"];
+}
+
+function approvalPayloadTargetsSsh(args: unknown): boolean {
+	if (typeof args === "string" && pathTargetsSsh(args)) return true;
+	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+	return (
+		(typeof record.input === "string" && pathTargetsSsh(record.input)) ||
+		(typeof record.path === "string" && pathTargetsSsh(record.path))
+	);
+}
+
+function internalHandlerCanMutate(path: string): boolean {
+	try {
+		const parsed = parseInternalUrl(path);
+		const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
+		const handler = InternalUrlRouter.instance().getHandler(scheme);
+		return Boolean(handler?.write || handler?.delete || handler?.move);
+	} catch {
+		return true;
+	}
 }
 
 export class EditTool implements AgentTool<TInput> {
 	readonly approval = (args: unknown) => {
-		const targetPath = extractApprovalPath(args);
-		return targetPath !== "(unknown)" && isInternalUrlPath(targetPath) ? "read" : "write";
+		const targetPaths = extractApprovalPaths(args, this.mode);
+		if (approvalPayloadTargetsSsh(args) || targetPaths.some(pathTargetsSsh)) return "exec";
+		for (const targetPath of targetPaths) {
+			const unwrappedPath = unwrapHashlineHeaderPath(targetPath);
+			if (!isInternalUrlPath(unwrappedPath)) return "write";
+			if (internalHandlerCanMutate(unwrappedPath)) return "write";
+		}
+		return "read";
 	};
-	readonly formatApprovalDetails = (args: unknown): string[] => [
-		`File: ${truncateForPrompt(extractApprovalPath(args))}`,
-	];
+	readonly formatApprovalDetails = (args: unknown): string[] => {
+		const targetPaths = extractApprovalPaths(args, this.mode);
+		if (targetPaths.length === 1) return [`File: ${truncateForPrompt(targetPaths[0])}`];
+		const renderedPaths = targetPaths.slice(0, 4).map(targetPath => truncateForPrompt(targetPath));
+		return [`Files: ${renderedPaths.join(", ")}${targetPaths.length > renderedPaths.length ? ", ..." : ""}`];
+	};
 	readonly name = "edit";
 	readonly label = "Edit";
 	readonly loadMode = "essential";

@@ -60,6 +60,11 @@ export interface RemoteFileWriteOptions {
 	timeoutMs?: number;
 }
 
+export interface RemoteFileDeleteOptions {
+	signal?: AbortSignal;
+	timeoutMs?: number;
+}
+
 /**
  * Read a remote file's raw bytes. Fetches `maxBytes + 1` so the caller can
  * distinguish an exactly-`maxBytes` file from a larger (truncated) one.
@@ -143,6 +148,57 @@ export async function writeRemoteFile(
 	const args = await buildRemoteCommand(target, wrapInPosixShell(shell, command), { allowStdin: true });
 	using child = ptree.spawn(["ssh", ...args], {
 		stdin: content,
+		signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+	});
+	await child.exitedCleanly;
+}
+
+/**
+ * Delete a remote file path. Directories (including symlinks to directories) are
+ * refused; regular files, non-directory symlinks, special files, and dangling
+ * symlinks are removed. Missing paths fail closed so a stale hashline REM never
+ * reports success for a file that was already gone.
+ */
+export async function deleteRemoteFile(
+	target: SSHConnectionTarget,
+	remotePath: string,
+	opts: RemoteFileDeleteOptions,
+): Promise<void> {
+	const shell = await ensurePosixRemote(target);
+	const p = quotePosixPath(remotePath);
+	const command =
+		`if [ -d ${p} ]; then echo 'ssh://: cannot delete directory' >&2; exit 1; ` +
+		`elif [ -e ${p} ] || [ -L ${p} ]; then rm -f -- ${p}; ` +
+		`else echo 'ssh://: file does not exist' >&2; exit 1; fi`;
+	const args = await buildRemoteCommand(target, wrapInPosixShell(shell, command));
+	using child = ptree.spawn(["ssh", ...args], {
+		signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+	});
+	await child.exitedCleanly;
+}
+
+/**
+ * Rename/move a remote file path. Source directories, missing sources, and
+ * destination directories are refused; an existing non-directory destination is
+ * replaced with POSIX `mv` semantics, matching local `fs.rename` behavior.
+ */
+export async function moveRemoteFile(
+	target: SSHConnectionTarget,
+	fromRemotePath: string,
+	toRemotePath: string,
+	opts: RemoteFileDeleteOptions,
+): Promise<void> {
+	const shell = await ensurePosixRemote(target);
+	const from = quotePosixPath(fromRemotePath);
+	const to = quotePosixPath(toRemotePath);
+	const command =
+		`if [ -d ${from} ]; then echo 'ssh://: source is a directory' >&2; exit 1; ` +
+		`elif [ -e ${from} ] || [ -L ${from} ]; then ` +
+		`if [ -d ${to} ]; then echo 'ssh://: destination is a directory' >&2; exit 1; fi; ` +
+		`mv -- ${from} ${to}; ` +
+		`else echo 'ssh://: source does not exist' >&2; exit 1; fi`;
+	const args = await buildRemoteCommand(target, wrapInPosixShell(shell, command));
+	using child = ptree.spawn(["ssh", ...args], {
 		signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 	});
 	await child.exitedCleanly;

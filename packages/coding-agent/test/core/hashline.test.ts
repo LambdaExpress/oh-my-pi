@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,6 +7,8 @@ import {
 	formatHashlineHeader,
 	MismatchError as HashlineMismatchError,
 } from "@oh-my-pi/hashline";
+import * as capability from "@oh-my-pi/pi-coding-agent/capability";
+import type { CapabilityResult } from "@oh-my-pi/pi-coding-agent/capability/types";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	canonicalSnapshotKey,
@@ -16,7 +18,12 @@ import {
 	HashlineFilesystem,
 	hashlineEditParamsSchema,
 } from "@oh-my-pi/pi-coding-agent/edit";
-import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
+import {
+	canonicalSshResourceKey,
+	parseInternalUrl,
+	resolveLocalUrlToPath,
+} from "@oh-my-pi/pi-coding-agent/internal-urls";
+import * as fileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { type Type, type } from "arktype";
@@ -24,6 +31,10 @@ import { type Type, type } from "arktype";
 beforeAll(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true, cwd: process.cwd() });
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 const repl = (text: string): string => `+${text}`;
@@ -83,6 +94,54 @@ function hashlineExecuteOptions(
 			finalize: () => {},
 		}),
 	};
+}
+
+function recordSshSnapshot(session: ToolSession, url: string, fullText: string): string {
+	return getFileReadCache(session).record(canonicalSshResourceKey(parseInternalUrl(url)), fullText);
+}
+
+function sshHashlineExecuteOptions(tempDir: string, input: string, session: ToolSession): ExecuteHashlineSingleOptions {
+	return {
+		...hashlineExecuteOptions(tempDir, input, undefined, session),
+		writethrough: async () => {
+			throw new Error("local writethrough must not run for ssh:// edits");
+		},
+	};
+}
+
+function setupSshRemote(remoteFiles: Map<string, string>) {
+	vi.spyOn(capability, "loadCapability").mockResolvedValue({
+		items: [],
+		all: [],
+		warnings: [],
+		providers: [],
+	} as CapabilityResult<unknown>);
+	vi.spyOn(fileTransfer, "statRemotePath").mockImplementation(async (_target, remotePath) =>
+		remoteFiles.has(remotePath) ? "file" : "missing",
+	);
+	vi.spyOn(fileTransfer, "readRemoteFile").mockImplementation(async (_target, remotePath, options) => {
+		const text = remoteFiles.get(remotePath);
+		if (text === undefined) throw new Error(`No such file: ${remotePath}`);
+		const bytes = new TextEncoder().encode(text);
+		return { bytes: bytes.subarray(0, options.maxBytes), truncated: bytes.length > options.maxBytes };
+	});
+	const writeSpy = vi
+		.spyOn(fileTransfer, "writeRemoteFile")
+		.mockImplementation(async (_target, remotePath, content) => {
+			remoteFiles.set(remotePath, new TextDecoder().decode(content));
+		});
+	const deleteSpy = vi.spyOn(fileTransfer, "deleteRemoteFile").mockImplementation(async (_target, remotePath) => {
+		if (!remoteFiles.delete(remotePath)) throw new Error(`No such file: ${remotePath}`);
+	});
+	const moveSpy = vi
+		.spyOn(fileTransfer, "moveRemoteFile")
+		.mockImplementation(async (_target, fromRemotePath, toRemotePath) => {
+			const text = remoteFiles.get(fromRemotePath);
+			if (text === undefined) throw new Error(`No such file: ${fromRemotePath}`);
+			remoteFiles.set(toRemotePath, text);
+			remoteFiles.delete(fromRemotePath);
+		});
+	return { writeSpy, deleteSpy, moveSpy };
 }
 
 describe("hashline executor", () => {
@@ -236,6 +295,115 @@ describe("hashline executor", () => {
 					"",
 				].join("\n"),
 			);
+		});
+	});
+});
+
+describe("hashline ssh remote files", () => {
+	it("updates a remote file through writeRemoteFile without local writethrough diagnostics", async () => {
+		await withTempDir(async tempDir => {
+			const url = "ssh://icaro/tmp/app.ts";
+			const remoteFiles = new Map([["/tmp/app.ts", "one\ntwo\nthree\n"]]);
+			const { writeSpy, deleteSpy, moveSpy } = setupSshRemote(remoteFiles);
+			const session = makeHashlineSession(tempDir);
+			const sourceTag = recordSshSnapshot(session, url, "one\ntwo\nthree\n");
+			const input = `${header(url, sourceTag)}\nSWAP 2.=2:\n${repl("TWO")}\n`;
+
+			const result = await executeHashlineSingle(sshHashlineExecuteOptions(tempDir, input, session));
+
+			expect(remoteFiles.get("/tmp/app.ts")).toBe("one\nTWO\nthree\n");
+			expect(writeSpy.mock.calls[0]?.[1]).toBe("/tmp/app.ts");
+			expect(writeSpy.mock.calls[0]?.[2]).toEqual(new TextEncoder().encode("one\nTWO\nthree\n"));
+			expect(deleteSpy).not.toHaveBeenCalled();
+			expect(moveSpy).not.toHaveBeenCalled();
+			expect(result.details?.diagnostics).toBeUndefined();
+			expect(result.details?.meta?.diagnostics).toBeUndefined();
+		});
+	});
+
+	it("recovers stale remote anchors from the SSH snapshot", async () => {
+		await withTempDir(async tempDir => {
+			const url = "ssh://icaro/tmp/app.ts";
+			const v0 = "one\ntwo\nthree\n";
+			const remoteFiles = new Map([["/tmp/app.ts", `header\n${v0}`]]);
+			setupSshRemote(remoteFiles);
+			const session = makeHashlineSession(tempDir);
+			const sourceTag = recordSshSnapshot(session, url, v0);
+			const input = `${header(url, sourceTag)}\nSWAP 2.=2:\n${repl("TWO")}\n`;
+
+			const result = await executeHashlineSingle(sshHashlineExecuteOptions(tempDir, input, session));
+			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+
+			expect(remoteFiles.get("/tmp/app.ts")).toBe("header\none\nTWO\nthree\n");
+			expect(text).toMatch(/Recovered from a stale file hash using a previous read snapshot/);
+		});
+	});
+
+	it("deletes a remote file through deleteRemoteFile and invalidates its snapshot", async () => {
+		await withTempDir(async tempDir => {
+			const url = "ssh://icaro/tmp/app.ts";
+			const source = "one\ntwo\n";
+			const remoteFiles = new Map([["/tmp/app.ts", source]]);
+			const { deleteSpy } = setupSshRemote(remoteFiles);
+			const session = makeHashlineSession(tempDir);
+			const sourceTag = recordSshSnapshot(session, url, source);
+			const canonicalKey = canonicalSshResourceKey(parseInternalUrl(url));
+			const input = `${header(url, sourceTag)}\nREM`;
+
+			await executeHashlineSingle(sshHashlineExecuteOptions(tempDir, input, session));
+
+			expect(deleteSpy.mock.calls[0]?.[1]).toBe("/tmp/app.ts");
+			expect(remoteFiles.has("/tmp/app.ts")).toBe(false);
+			expect(getFileReadCache(session).byHash(canonicalKey, sourceTag)).toBeNull();
+		});
+	});
+
+	it("moves edited remote content by writing the destination and deleting the source", async () => {
+		await withTempDir(async tempDir => {
+			const fromUrl = "ssh://icaro/tmp/app.ts";
+			const toUrl = "ssh://icaro/tmp/new.ts";
+			const source = "one\ntwo\nthree\n";
+			const remoteFiles = new Map([["/tmp/app.ts", source]]);
+			const { writeSpy, deleteSpy, moveSpy } = setupSshRemote(remoteFiles);
+			const session = makeHashlineSession(tempDir);
+			const sourceTag = recordSshSnapshot(session, fromUrl, source);
+			const fromKey = canonicalSshResourceKey(parseInternalUrl(fromUrl));
+			const toKey = canonicalSshResourceKey(parseInternalUrl(toUrl));
+			const input = `${header(fromUrl, sourceTag)}\nSWAP 2.=2:\n${repl("TWO")}\nMV ${toUrl}`;
+
+			const result = await executeHashlineSingle(sshHashlineExecuteOptions(tempDir, input, session));
+
+			expect(remoteFiles.has("/tmp/app.ts")).toBe(false);
+			expect(remoteFiles.get("/tmp/new.ts")).toBe("one\nTWO\nthree\n");
+			expect(writeSpy.mock.calls[0]?.[1]).toBe("/tmp/new.ts");
+			expect(deleteSpy.mock.calls[0]?.[1]).toBe("/tmp/app.ts");
+			expect(moveSpy).not.toHaveBeenCalled();
+			expect(getFileReadCache(session).byHash(fromKey, sourceTag)).toBeNull();
+			expect(getFileReadCache(session).head(toKey)?.text).toBe("one\nTWO\nthree\n");
+			expect(result.details?.diagnostics).toBeUndefined();
+		});
+	});
+
+	it("rejects invalid remote move destinations before remote mutation", async () => {
+		await withTempDir(async tempDir => {
+			for (const dest of ["/tmp/new.ts", "new.ts", "local://new.ts", "ssh://other/tmp/new.ts"]) {
+				vi.restoreAllMocks();
+				const url = "ssh://icaro/tmp/app.ts";
+				const source = "one\ntwo\n";
+				const remoteFiles = new Map([["/tmp/app.ts", source]]);
+				const { writeSpy, deleteSpy, moveSpy } = setupSshRemote(remoteFiles);
+				const session = makeHashlineSession(tempDir);
+				const sourceTag = recordSshSnapshot(session, url, source);
+				const input = `${header(url, sourceTag)}\nMV ${dest}`;
+
+				await expect(executeHashlineSingle(sshHashlineExecuteOptions(tempDir, input, session))).rejects.toThrow(
+					/full ssh:\/\/same-authority|same SSH authority/,
+				);
+				expect(remoteFiles.get("/tmp/app.ts")).toBe(source);
+				expect(writeSpy).not.toHaveBeenCalled();
+				expect(deleteSpy).not.toHaveBeenCalled();
+				expect(moveSpy).not.toHaveBeenCalled();
+			}
 		});
 	});
 });

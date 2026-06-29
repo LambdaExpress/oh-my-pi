@@ -29,8 +29,9 @@ import {
 	canonicalSnapshotKey,
 	getFileSnapshotStore,
 	recordFileSnapshot,
-	recordSeenLines,
+	recordSeenLinesForSnapshotKey,
 	recordSeenLinesFromBody,
+	recordTextSnapshotForKey,
 	SNAPSHOT_MAX_BYTES,
 } from "../edit/file-snapshot-store";
 import { normalizeToLF } from "../edit/normalize";
@@ -197,6 +198,12 @@ interface HashlineHeaderContext {
 	header: string;
 	tag: string;
 	fullText?: string;
+	snapshotKey?: string;
+}
+
+interface HashlineSnapshotTarget {
+	key: string;
+	displayPath: string;
 }
 
 function formatReadHashlineHeader(displayPath: string, tag: string): string {
@@ -218,14 +225,18 @@ function recordFullHashlineContext(
 	absolutePath: string | undefined,
 	displayPath: string,
 	fullText: string,
+	snapshot?: HashlineSnapshotTarget,
 ): HashlineHeaderContext | undefined {
-	if (!absolutePath || !path.isAbsolute(absolutePath)) return undefined;
-	const normalized = normalizeToLF(fullText);
-	const tag = getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalized);
+	const snapshotKey =
+		snapshot?.key ?? (absolutePath && path.isAbsolute(absolutePath) ? canonicalSnapshotKey(absolutePath) : undefined);
+	if (!snapshotKey) return undefined;
+	const tag = recordTextSnapshotForKey(session, snapshotKey, fullText);
+	if (!tag) return undefined;
 	return {
-		header: formatReadHashlineHeader(displayPath, tag),
+		header: snapshot ? formatHashlineHeader(snapshot.displayPath, tag) : formatReadHashlineHeader(displayPath, tag),
 		tag,
-		fullText: normalized,
+		fullText: normalizeToLF(fullText),
+		snapshotKey,
 	};
 }
 
@@ -1374,6 +1385,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			ignoreResultLimits?: boolean;
 			raw?: boolean;
 			immutable?: boolean;
+			snapshot?: HashlineSnapshotTarget;
 		},
 	): AgentToolResult<ReadToolDetails> {
 		const displayMode = resolveFileDisplayMode(this.session, { raw: options.raw, immutable: options.immutable });
@@ -1429,12 +1441,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const shouldAddHashLines = displayMode.hashLines;
 		const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
 		const hashContext =
-			shouldAddHashLines && options.sourcePath
+			shouldAddHashLines && (options.snapshot || options.sourcePath)
 				? recordFullHashlineContext(
 						this.session,
 						options.sourcePath,
-						formatPathRelativeToCwd(options.sourcePath, this.session.cwd),
+						options.sourcePath ? formatPathRelativeToCwd(options.sourcePath, this.session.cwd) : "",
 						text,
+						options.snapshot,
 					)
 				: undefined;
 		let emittedHashlineHeader = false;
@@ -1465,9 +1478,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			emittedHashlineHeader = true;
 			return prependHashlineHeader(formatted, hashContext);
 		};
+		const blockContextPath = options.sourcePath ?? options.snapshot?.displayPath;
 		const buildLineEntries = (endLineDisplay: number): LineEntry[] =>
 			buildLineEntriesWithBlockContext(allLines, [{ startLine: startLineDisplay, endLine: endLineDisplay }], {
-				path: options.sourcePath,
+				path: blockContextPath,
 			});
 
 		let outputText: string;
@@ -1527,8 +1541,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					: formatLineEntries(buildLineEntries(endLine), startLineDisplay);
 		}
 
-		if (hashContext?.tag && options.sourcePath && seenLines) {
-			recordSeenLines(this.session, options.sourcePath, hashContext.tag, seenLines);
+		if (hashContext?.tag && hashContext.snapshotKey && seenLines) {
+			recordSeenLinesForSnapshotKey(this.session, hashContext.snapshotKey, hashContext.tag, seenLines);
 		}
 		resultBuilder.text(outputText);
 		if (truncationInfo) {
@@ -1555,6 +1569,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			entityLabel: string;
 			raw?: boolean;
 			immutable?: boolean;
+			snapshot?: HashlineSnapshotTarget;
 		},
 	): AgentToolResult<ReadToolDetails> {
 		const displayMode = resolveFileDisplayMode(this.session, { raw: options.raw, immutable: options.immutable });
@@ -1564,12 +1579,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const shouldAddHashLines = displayMode.hashLines;
 		const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
 		const hashContext =
-			shouldAddHashLines && options.sourcePath
+			shouldAddHashLines && (options.snapshot || options.sourcePath)
 				? recordFullHashlineContext(
 						this.session,
 						options.sourcePath,
-						formatPathRelativeToCwd(options.sourcePath, this.session.cwd),
+						options.sourcePath ? formatPathRelativeToCwd(options.sourcePath, this.session.cwd) : "",
 						text,
+						options.snapshot,
 					)
 				: undefined;
 		let emittedHashlineHeader = false;
@@ -1599,7 +1615,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (options.raw === true) {
 			outputText = rawParts.length > 0 ? rawParts.join("\n\n…\n\n") : "";
 		} else if (visibleSpans.length > 0) {
-			const entries = buildLineEntriesWithBlockContext(allLines, visibleSpans, { path: options.sourcePath });
+			const entries = buildLineEntriesWithBlockContext(allLines, visibleSpans, {
+				path: options.sourcePath ?? options.snapshot?.displayPath,
+			});
 			if (shouldAddHashLines) seenLines = lineNumbersFromEntries(entries);
 			const firstLine = entries.find(entry => entry.kind === "line");
 			if (firstLine?.kind === "line") {
@@ -1620,8 +1638,8 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 		const finalText =
 			notices.length > 0 ? (outputText ? `${outputText}\n${notices.join("\n")}` : notices.join("\n")) : outputText;
-		if (hashContext?.tag && options.sourcePath && seenLines) {
-			recordSeenLines(this.session, options.sourcePath, hashContext.tag, seenLines);
+		if (hashContext?.tag && hashContext.snapshotKey && seenLines) {
+			recordSeenLinesForSnapshotKey(this.session, hashContext.snapshotKey, hashContext.tag, seenLines);
 		}
 		resultBuilder.text(finalText);
 		return resultBuilder.done();
@@ -3117,6 +3135,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			skills: this.session.skills,
 		});
 		const details: ReadToolDetails = { resolvedPath: resource.sourcePath, contentType: resource.contentType };
+		const handler = internalRouter.getHandler(scheme);
+		const snapshotKey =
+			scheme === "ssh" && resource.immutable !== true && resource.isDirectory !== true && handler?.canonicalKey
+				? handler.canonicalKey(urlMeta)
+				: undefined;
+		const snapshot = snapshotKey ? { key: snapshotKey, displayPath: snapshotKey } : undefined;
 
 		// If extraction was used, return directly (no pagination)
 		if (hasExtraction) {
@@ -3132,6 +3156,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				entityLabel: "resource",
 				immutable: resource.immutable,
 				raw,
+				snapshot,
 			});
 		}
 
@@ -3144,6 +3169,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			ignoreResultLimits: scheme === "skill",
 			immutable: resource.immutable,
 			raw,
+			snapshot,
 		});
 	}
 

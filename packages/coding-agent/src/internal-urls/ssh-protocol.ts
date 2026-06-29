@@ -23,7 +23,9 @@ import * as capability from "../capability";
 import { type SSHHost, sshCapability } from "../capability/ssh";
 import type { SSHConnectionTarget } from "../ssh/connection-manager";
 import {
+	deleteRemoteFile,
 	listRemoteDir,
+	moveRemoteFile,
 	type RemoteDirEntry,
 	type RemotePathKind,
 	readRemoteFile,
@@ -97,6 +99,16 @@ function remotePathFromUrl(url: InternalUrl): string {
 		);
 	}
 	return decoded;
+}
+
+export function canonicalSshResourceKey(url: InternalUrl): string {
+	const authority = /^ssh:\/\/([^/?#]*)/i.exec(url.href)?.[1] ?? "";
+	const remotePath = remotePathFromUrl(url);
+	const encodedPath = remotePath
+		.split("/")
+		.map(segment => encodeURIComponent(segment))
+		.join("/");
+	return `ssh://${authority}${encodedPath}`;
 }
 
 /** Load the configured SSH hosts from the `ssh` capability (managed/project `ssh.json`). */
@@ -359,9 +371,47 @@ export class SshProtocolHandler implements ProtocolHandler {
 		}));
 	}
 
+	async stat(url: InternalUrl, context?: ResolveContext): Promise<RemotePathKind> {
+		const target = await resolveTarget(url, context?.cwd);
+		const remotePath = remotePathFromUrl(url);
+		return statRemotePath(target, remotePath, { signal: context?.signal });
+	}
+
+	canonicalKey(url: InternalUrl): string {
+		return canonicalSshResourceKey(url);
+	}
+
 	async write(url: InternalUrl, content: string, context?: WriteContext): Promise<void> {
 		const target = await resolveTarget(url, context?.cwd);
 		const remotePath = remotePathFromUrl(url);
 		await writeRemoteFile(target, remotePath, new TextEncoder().encode(content), { signal: context?.signal });
+	}
+
+	async delete(url: InternalUrl, context?: WriteContext): Promise<void> {
+		const target = await resolveTarget(url, context?.cwd);
+		const remotePath = remotePathFromUrl(url);
+		await deleteRemoteFile(target, remotePath, { signal: context?.signal });
+	}
+
+	async move(
+		fromUrl: InternalUrl,
+		toUrl: InternalUrl,
+		content: string | undefined,
+		context?: WriteContext,
+	): Promise<void> {
+		const fromAuthority = /^ssh:\/\/([^/?#]*)/i.exec(fromUrl.href)?.[1] ?? "";
+		const toAuthority = /^ssh:\/\/([^/?#]*)/i.exec(toUrl.href)?.[1] ?? "";
+		if (fromAuthority !== toAuthority) {
+			throw new Error("ssh:// move destination must use the same SSH authority as the source");
+		}
+		const target = await resolveTarget(fromUrl, context?.cwd);
+		const fromRemotePath = remotePathFromUrl(fromUrl);
+		const toRemotePath = remotePathFromUrl(toUrl);
+		if (content !== undefined) {
+			await writeRemoteFile(target, toRemotePath, new TextEncoder().encode(content), { signal: context?.signal });
+			await deleteRemoteFile(target, fromRemotePath, { signal: context?.signal });
+			return;
+		}
+		await moveRemoteFile(target, fromRemotePath, toRemotePath, { signal: context?.signal });
 	}
 }

@@ -360,6 +360,36 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(session.sessionManager.getSessionName()).toBe("计划模式中文标题");
 	});
 
+	it("does not retitle approved plan execution when todos initialize", async () => {
+		await recreateSession({ "title.refreshOnReplan": true });
+		await session.setSessionName("修复远端 hashline 标题", "auto");
+		session.setPlanReferencePath("local://ssh-hashline-plan.md");
+		session.markPlanReferenceSent();
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+			stopReason: "stop",
+			content: [
+				{
+					type: "toolCall",
+					id: "call-title",
+					name: "set_title",
+					arguments: { title: "普通闲聊交流会话" },
+				},
+			],
+		} as never);
+		scriptedResponses = [
+			createToolCallAssistantMessage("todo", {
+				op: "init",
+				list: [{ phase: "Implementation", items: ["Execute approved plan"] }],
+			}),
+			createAssistantMessage("todo initialized"),
+		];
+
+		await session.prompt("execute approved plan");
+
+		expect(completeSimpleMock).not.toHaveBeenCalled();
+		expect(session.sessionManager.getSessionName()).toBe("修复远端 hashline 标题");
+	});
+
 	it("does not refresh todo-init titles when the current title is user-authored", async () => {
 		await recreateSession({ "title.refreshOnReplan": true });
 		await session.setSessionName("Manual parser title", "user");

@@ -65,6 +65,16 @@ export function canonicalSnapshotKey(absolutePath: string): string {
 	}
 }
 
+export function recordTextSnapshotForKey(
+	session: FileSnapshotStoreOwner,
+	snapshotKey: string,
+	fullText: string,
+): string | undefined {
+	if (Buffer.byteLength(fullText, "utf-8") > SNAPSHOT_MAX_BYTES) return undefined;
+	const normalized = normalizeToLF(fullText);
+	return getFileSnapshotStore(session).record(snapshotKey, normalized);
+}
+
 /**
  * Read the full text of `absolutePath` (within {@link SNAPSHOT_MAX_BYTES}),
  * record it as a version snapshot, and return its content-hash tag. Returns
@@ -83,8 +93,7 @@ export async function recordFileSnapshot(
 	try {
 		const file = Bun.file(absolutePath);
 		if (file.size > SNAPSHOT_MAX_BYTES) return undefined;
-		const normalized = normalizeToLF(await file.text());
-		return getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalized);
+		return recordTextSnapshotForKey(session, canonicalSnapshotKey(absolutePath), await file.text());
 	} catch {
 		return undefined;
 	}
@@ -123,8 +132,17 @@ export function recordSeenLines(
 	tag: string,
 	lines: readonly number[],
 ): void {
+	recordSeenLinesForSnapshotKey(session, canonicalSnapshotKey(absolutePath), tag, lines);
+}
+
+export function recordSeenLinesForSnapshotKey(
+	session: FileSnapshotStoreOwner,
+	snapshotKey: string,
+	tag: string,
+	lines: readonly number[],
+): void {
 	if (lines.length === 0) return;
-	getFileSnapshotStore(session).recordSeenLines(canonicalSnapshotKey(absolutePath), tag, lines);
+	getFileSnapshotStore(session).recordSeenLines(snapshotKey, tag, lines);
 }
 
 /**
@@ -140,4 +158,13 @@ export function recordSeenLinesFromBody(
 	body: string,
 ): void {
 	recordSeenLines(session, absolutePath, tag, parseSeenLinesFromHashlineBody(body));
+}
+
+export function recordSeenLinesFromBodyForSnapshotKey(
+	session: FileSnapshotStoreOwner,
+	snapshotKey: string,
+	tag: string,
+	body: string,
+): void {
+	recordSeenLinesForSnapshotKey(session, snapshotKey, tag, parseSeenLinesFromHashlineBody(body));
 }

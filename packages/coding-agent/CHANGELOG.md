@@ -11,6 +11,9 @@
 
 - Fixed LSP client reuse when multiple servers in one workspace share a wrapper command but use different arguments.
 - Fixed plan-mode automatic session titles honoring `TITLE_SYSTEM.md`, with plan slugs kept as file-safe fallbacks instead of deciding execution-session display titles.
+- Fixed approved plan execution sessions being retitled to the generic title fallback after the executor initializes todos.
+- Fixed hashline edit support for ssh:// remote files.
+- Fixed SSH tool command previews to syntax-highlight cached POSIX/PowerShell remote shells and render `cwd` as the command sent to the remote host.
 
 - Fixed the bash interceptor blocking `echo` / `printf` redirects to `/dev/null`, `/dev/tty`, `/dev/stdout`, and `/dev/stderr` device sinks while still directing real file writes to the write tool. ([#3763](https://github.com/can1357/oh-my-pi/issues/3763))
 - Fixed auto-snapcompact reporting failed maintenance when local rendering throws; rendering failures now downgrade to context-full auto-compaction like other snapcompact local blockers.

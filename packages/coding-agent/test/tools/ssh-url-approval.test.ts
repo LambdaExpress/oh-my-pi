@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { GrepTool } from "@oh-my-pi/pi-coding-agent/tools/grep";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
@@ -56,6 +57,29 @@ describe("ssh:// tools require exec-tier approval", () => {
 		// A pasted `[path#TAG]` wrapper must not let an ssh write dodge the exec tier.
 		expect(callApproval(tool, { path: "[ssh://icaro/tmp/x#ABCD]" })).toBe("exec");
 		expect(callApproval(tool, { path: "/tmp/local-file.txt" })).toBe("write");
+	});
+
+	it("edit: ssh:// hashline and apply_patch payloads are exec", () => {
+		const tool = new EditTool(createTestToolSession(os.tmpdir()));
+		expect(callApproval(tool, { input: "[ssh://icaro/tmp/x#ABCD]\nREM" })).toBe("exec");
+		expect(
+			callApproval(tool, {
+				input: [
+					"[src/local.ts#ABCD]",
+					"SWAP 1.=1:",
+					"+local",
+					"[ssh://icaro/tmp/x#BCDE]",
+					"SWAP 1.=1:",
+					"+remote",
+				].join("\n"),
+			}),
+		).toBe("exec");
+		expect(
+			callApproval(tool, {
+				input: "*** Begin Patch\n*** Update File: ssh://icaro/tmp/x\n@@\n-old\n+new\n*** End Patch\n",
+			}),
+		).toBe("exec");
+		expect(callApproval(tool, { input: "[local.ts#ABCD]\nSWAP 1.=1:\n+local" })).toBe("write");
 	});
 });
 

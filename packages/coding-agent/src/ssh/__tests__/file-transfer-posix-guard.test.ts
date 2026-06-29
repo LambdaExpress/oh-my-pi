@@ -1,7 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { SSHConnectionTarget } from "../connection-manager";
 import * as connectionManager from "../connection-manager";
-import { listRemoteDir, readRemoteFile, statRemotePath, writeRemoteFile } from "../file-transfer";
+import {
+	deleteRemoteFile,
+	listRemoteDir,
+	moveRemoteFile,
+	readRemoteFile,
+	statRemotePath,
+	writeRemoteFile,
+} from "../file-transfer";
 
 describe("ssh file-transfer POSIX guard", () => {
 	afterEach(() => {
@@ -21,6 +28,8 @@ describe("ssh file-transfer POSIX guard", () => {
 		const target: SSHConnectionTarget = { name: "winbox", host: "winbox" };
 		await expect(readRemoteFile(target, "C:/x.txt", { maxBytes: 1024 })).rejects.toThrow(/Windows host/);
 		await expect(writeRemoteFile(target, "C:/x.txt", new Uint8Array([1]), {})).rejects.toThrow(/Windows host/);
+		await expect(deleteRemoteFile(target, "C:/x.txt", {})).rejects.toThrow(/Windows host/);
+		await expect(moveRemoteFile(target, "C:/x.txt", "C:/y.txt", {})).rejects.toThrow(/Windows host/);
 		// Prove the guard ran through the stubbed transport rather than failing early
 		// for an unrelated reason (e.g. a future import refactor bypassing the mocks).
 		expect(ensureConnectionSpy).toHaveBeenCalled();
@@ -44,6 +53,8 @@ describe("ssh file-transfer POSIX guard", () => {
 		await expect(writeRemoteFile(target, "/tmp/x", new Uint8Array([1]), {})).rejects.toThrow(
 			/no verified POSIX shell/,
 		);
+		await expect(deleteRemoteFile(target, "/tmp/x", {})).rejects.toThrow(/no verified POSIX shell/);
+		await expect(moveRemoteFile(target, "/tmp/x", "/tmp/y", {})).rejects.toThrow(/no verified POSIX shell/);
 	});
 
 	it("dispatches transfer commands through the verified transferShell, not the login shell", async () => {
@@ -71,6 +82,8 @@ describe("ssh file-transfer POSIX guard", () => {
 		await expect(writeRemoteFile(target, "/tmp/x", new Uint8Array([1]), {})).rejects.toThrow(/stop-before-spawn/);
 		await expect(statRemotePath(target, "/etc/hosts")).rejects.toThrow(/stop-before-spawn/);
 		await expect(listRemoteDir(target, "/etc")).rejects.toThrow(/stop-before-spawn/);
+		await expect(deleteRemoteFile(target, "/tmp/x", {})).rejects.toThrow(/stop-before-spawn/);
+		await expect(moveRemoteFile(target, "/tmp/x", "/tmp/y", {})).rejects.toThrow(/stop-before-spawn/);
 
 		// Each dispatch must start with `bash -c '…'` and embed the original
 		// POSIX snippet inside the quoted command. Read also drops `-n`
@@ -81,6 +94,8 @@ describe("ssh file-transfer POSIX guard", () => {
 		expect(buildSpy.mock.calls[1]?.[2]).toMatchObject({ allowStdin: true });
 		expect(dispatches[2]).toMatch(/^bash -c '.*if \[ -d /);
 		expect(dispatches[3]).toMatch(/^bash -c '.*LC_ALL=C ls -1Ap /);
+		expect(dispatches[4]).toMatch(/^bash -c '.*rm -f -- /);
+		expect(dispatches[5]).toMatch(/^bash -c '.*mv -- /);
 	});
 
 	it("uses sh -c when transferShell is sh (the most universal POSIX fallback)", async () => {

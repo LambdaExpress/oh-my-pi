@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -8,9 +8,10 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import * as fileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
 import { Snowflake } from "@oh-my-pi/pi-utils";
 
-// Exercises the real per-tool approval gate (ExtensionToolWrapper) for read/grep/write,
+// Exercises the real per-tool approval gate (ExtensionToolWrapper) for read/grep/write/edit,
 // proving an `ssh://` target is exec-tier (prompts / is denied without a UI) while the
 // equivalent local-path call runs. ssh:// calls are rejected at the approval gate before any
 // connection, so this suite needs no live ssh.
@@ -46,7 +47,7 @@ describe("ssh:// tools are exec-gated through the production approval wrapper", 
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
-			toolNames: ["read", "grep", "write"],
+			toolNames: ["read", "grep", "write", "edit"],
 		});
 		session = created.session;
 	});
@@ -60,7 +61,11 @@ describe("ssh:// tools are exec-gated through the production approval wrapper", 
 		}
 	});
 
-	function tool(name: "read" | "grep" | "write") {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	function tool(name: "read" | "grep" | "write" | "edit") {
 		const found = session.getToolByName(name);
 		if (!found) throw new Error(`Expected ${name} tool`);
 		return found;
@@ -125,5 +130,35 @@ describe("ssh:// tools are exec-gated through the production approval wrapper", 
 			ctx("write"),
 		);
 		expect(JSON.stringify(ok.content)).toContain("out.txt");
+	});
+
+	it("edit: ssh:// requires approval before transfer, local edit reaches write-tier execution", async () => {
+		const writeSpy = vi.spyOn(fileTransfer, "writeRemoteFile").mockResolvedValue(undefined);
+		const deleteSpy = vi.spyOn(fileTransfer, "deleteRemoteFile").mockResolvedValue(undefined);
+		await expect(
+			tool("edit").execute(
+				"e-ssh",
+				{ input: "[ssh://localhost/tmp/x#ABCD]\nREM" },
+				undefined,
+				undefined,
+				ctx("write"),
+			),
+		).rejects.toThrow(APPROVAL_RE);
+		expect(writeSpy).not.toHaveBeenCalled();
+		expect(deleteSpy).not.toHaveBeenCalled();
+
+		let localError: unknown;
+		try {
+			await tool("edit").execute(
+				"e-local",
+				{ input: "[local.txt]\nSWAP 1.=1:\n+HELLO" },
+				undefined,
+				undefined,
+				ctx("write"),
+			);
+		} catch (error) {
+			localError = error;
+		}
+		expect(String(localError)).not.toMatch(APPROVAL_RE);
 	});
 });

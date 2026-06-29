@@ -156,6 +156,27 @@ export interface ProtocolHandler {
 	 */
 	write?(url: InternalUrl, content: string, context?: WriteContext): Promise<void>;
 	/**
+	 * Optional path classifier for mutable virtual resources. Hashline edit uses
+	 * this to fail before reading directories or special files through a handler.
+	 */
+	stat?(url: InternalUrl, context?: ResolveContext): Promise<"file" | "directory" | "other" | "missing">;
+	/**
+	 * Optional stable identity for resources that do not have a local backing
+	 * filesystem path. Snapshot-aware tools use this key instead of
+	 * {@link InternalResource.sourcePath}; `sourcePath` remains local-only.
+	 */
+	canonicalKey?(url: InternalUrl): string;
+	/**
+	 * Optional delete hook for writable virtual resources.
+	 */
+	delete?(url: InternalUrl, context?: WriteContext): Promise<void>;
+	/**
+	 * Optional move hook for writable virtual resources. When `content` is
+	 * provided, the handler must persist that final text at `toUrl` and remove
+	 * `fromUrl`; otherwise it may perform a native rename/move.
+	 */
+	move?(fromUrl: InternalUrl, toUrl: InternalUrl, content: string | undefined, context?: WriteContext): Promise<void>;
+	/**
 	 * Optional autocomplete hook. Returns candidate completions for the
 	 * host/path portion of a `scheme://` URL while the user composes a prompt.
 	 *
