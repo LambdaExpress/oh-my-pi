@@ -5,6 +5,7 @@ const reset = process.argv.includes("--reset");
 const outputPath = path.join(import.meta.dir, "../native/embedded-addon.js");
 const packageJsonPath = path.join(import.meta.dir, "../package.json");
 const nativeDir = path.join(import.meta.dir, "../native");
+const nativeSourceDir = Bun.env.PI_NATIVE_SOURCE_DIR ? path.resolve(Bun.env.PI_NATIVE_SOURCE_DIR) : nativeDir;
 const archivePrefix = "embedded-addons.";
 const archiveSuffix = ".tar.gz";
 
@@ -80,7 +81,7 @@ const candidates: CandidateAddon[] =
 
 const available: AvailableAddon[] = [];
 for (const candidate of candidates) {
-	const candidatePath = path.join(nativeDir, candidate.filename);
+	const candidatePath = path.join(nativeSourceDir, candidate.filename);
 	try {
 		const stat = await fs.stat(candidatePath);
 		available.push({ ...candidate, path: candidatePath, size: stat.size });
@@ -91,15 +92,48 @@ for (const candidate of candidates) {
 
 if (available.length === 0) {
 	const expected = candidates.map(candidate => `  - ${candidate.filename}`).join("\n");
-	throw new Error(`No native addons found for ${platformTag}. Expected one of:\n${expected}`);
+	throw new Error(`No native addons found for ${platformTag} in ${nativeSourceDir}. Expected one of:\n${expected}`);
 }
 const packageJson = (await Bun.file(packageJsonPath).json()) as { version: string };
+
+const versionSentinelExport = `__piNativesV${packageJson.version.replace(/[^A-Za-z0-9]/g, "_")}`;
+const versionSentinelBytes = Buffer.from(versionSentinelExport, "utf8");
+
+function includesBytes(buffer: Uint8Array, needle: Uint8Array): boolean {
+	if (needle.length === 0) return true;
+	if (buffer.length < needle.length) return false;
+
+	outer: for (let index = 0; index <= buffer.length - needle.length; index++) {
+		for (let offset = 0; offset < needle.length; offset++) {
+			if (buffer[index + offset] !== needle[offset]) continue outer;
+		}
+		return true;
+	}
+	return false;
+}
+
+function rebuildHint(addon: AvailableAddon): string {
+	if (targetArch === "x64" && (addon.variant === "modern" || addon.variant === "baseline")) {
+		return `TARGET_VARIANT=${addon.variant} bun --cwd=packages/natives run build`;
+	}
+	return "bun --cwd=packages/natives run build";
+}
+
+function assertAddonMatchesPackageVersion(addon: AvailableAddon, bytes: Uint8Array): void {
+	if (includesBytes(bytes, versionSentinelBytes)) return;
+	throw new Error(
+		`Native addon ${addon.filename} is stale for @oh-my-pi/pi-natives@${packageJson.version}: ` +
+			`missing version sentinel ${versionSentinelExport}. Rebuild it before gen:native: ${rebuildHint(addon)}`,
+	);
+}
 
 const archiveFilename = `${archivePrefix}${platformTag}${archiveSuffix}`;
 const archivePath = path.join(nativeDir, archiveFilename);
 const archiveEntries: Record<string, Uint8Array> = {};
 for (const addon of available) {
-	archiveEntries[addon.filename] = await fs.readFile(addon.path);
+	const bytes = await fs.readFile(addon.path);
+	assertAddonMatchesPackageVersion(addon, bytes);
+	archiveEntries[addon.filename] = bytes;
 }
 await Bun.write(archivePath, await new Bun.Archive(archiveEntries, { compress: "gzip", level: 9 }).bytes());
 
