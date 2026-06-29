@@ -14,7 +14,15 @@ import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { glob, type SummaryResult, summarizeCode } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
-import { getRemoteDir, type ImageMetadata, logger, prompt, readImageMetadata, untilAborted } from "@oh-my-pi/pi-utils";
+import {
+	getRemoteDir,
+	type ImageMetadata,
+	logger,
+	parseImageMetadata,
+	prompt,
+	readImageMetadata,
+	untilAborted,
+} from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { LRUCache } from "lru-cache/raw";
 import {
@@ -49,12 +57,19 @@ import { buildLineEntriesWithBlockContext, type LineEntry, lineEntriesToPlainTex
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import {
 	ImageInputTooLargeError,
+	loadImageBytesInput,
 	loadImageInput,
 	MAX_IMAGE_INPUT_BYTES,
 	webpExclusionForModel,
 } from "../utils/image-loading";
-import { convertFileWithMarkit } from "../utils/markit";
-import { type ArchiveReader, formatArchiveEntryLines, openArchive, parseArchivePathCandidates } from "../utils/zip";
+import { convertBufferWithMarkit, convertFileWithMarkit } from "../utils/markit";
+import {
+	type ArchiveReader,
+	type ExtractedArchiveFile,
+	formatArchiveEntryLines,
+	openArchive,
+	parseArchivePathCandidates,
+} from "../utils/zip";
 import { buildDirectoryTree, type DirectoryTree } from "../workspace-tree";
 import {
 	type ConflictEntry,
@@ -140,6 +155,13 @@ function getSummaryParseCache(session: object): LRUCache<string, SummaryResult |
 
 // Document types converted to markdown via markit.
 const CONVERTIBLE_EXTENSIONS = new Set([".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".rtf", ".epub"]);
+const ARCHIVE_CONVERTIBLE_EXTENSIONS: Record<string, true> = {
+	".pdf": true,
+	".docx": true,
+	".pptx": true,
+	".xlsx": true,
+	".epub": true,
+};
 
 const MAX_SUMMARY_BYTES = 2 * 1024 * 1024;
 const MAX_SUMMARY_LINES = 20_000;
@@ -686,9 +708,12 @@ const PDF_IMAGE_PLACEHOLDER_RE = /<!--\s*image:\s*([^\s<>]+)(.*?)-->/g;
 const PDF_IMAGE_MEMBER_RE = /^(.*\.pdf):(.*)$/i;
 const PDF_IMAGE_MEMBER_EXTENSION_RE = /\.png$/i;
 
+function pdfImageMemberName(imageId: string): string {
+	return PDF_IMAGE_MEMBER_EXTENSION_RE.test(imageId) ? imageId : `${imageId}.png`;
+}
+
 function pdfImageMemberPath(pdfPath: string, imageId: string): string {
-	const member = PDF_IMAGE_MEMBER_EXTENSION_RE.test(imageId) ? imageId : `${imageId}.png`;
-	return `${pdfPath}:${member}`;
+	return `${pdfPath}:${pdfImageMemberName(imageId)}`;
 }
 
 function rewritePdfImagePlaceholders(markdown: string, pdfPath: string): string {
@@ -1057,6 +1082,20 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		return path.join(root, "read-pdf-images", `${basename}-${Bun.hash(absolutePdfPath).toString(36)}`);
 	}
 
+	#archivePdfImageCacheDir(absoluteArchivePath: string, pdfMemberPath: string): string {
+		const artifactsDir = this.session.getArtifactsDir?.();
+		let root = artifactsDir ?? undefined;
+		if (root === undefined) {
+			const sessionFile = this.session.getSessionFile();
+			root = sessionFile?.endsWith(".jsonl")
+				? sessionFile.slice(0, -6)
+				: path.join(os.tmpdir(), "omp-read-pdf-images");
+		}
+		const basename = path.basename(absoluteArchivePath).replace(/[^A-Za-z0-9._-]/g, "_");
+		const key = Bun.hash(`${absoluteArchivePath}\0${pdfMemberPath}`).toString(36);
+		return path.join(root, "read-archive-pdf-images", `${basename}-${key}`);
+	}
+
 	async #listPdfImageMembers(imageDir: string): Promise<string[]> {
 		try {
 			const entries = await fs.readdir(imageDir, { withFileTypes: true });
@@ -1087,6 +1126,34 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (!result.ok) {
 			await fs.rm(imageDir, { recursive: true, force: true });
 			throw new ToolError(`Cannot extract images from PDF: ${result.error ?? "conversion failed"}`);
+		}
+		await Bun.write(markerPath, "ok");
+		return imageDir;
+	}
+
+	async #ensureArchivePdfImageCache(
+		absoluteArchivePath: string,
+		pdfMemberPath: string,
+		pdfBytes: Uint8Array,
+		signal?: AbortSignal,
+	): Promise<string> {
+		const imageDir = this.#archivePdfImageCacheDir(absoluteArchivePath, pdfMemberPath);
+		const markerPath = path.join(imageDir, ".extracted");
+		try {
+			await fs.stat(markerPath);
+			return imageDir;
+		} catch (error) {
+			if (!isNotFoundError(error)) throw error;
+		}
+
+		await fs.rm(imageDir, { recursive: true, force: true });
+		await fs.mkdir(imageDir, { recursive: true });
+		const result = await convertBufferWithMarkit(pdfBytes, ".pdf", signal, { imageDir, useCache: false });
+		if (!result.ok) {
+			await fs.rm(imageDir, { recursive: true, force: true });
+			throw new ToolError(
+				`Cannot extract images from PDF archive member '${pdfMemberPath}': ${result.error ?? "conversion failed"}`,
+			);
 		}
 		await Bun.write(markerPath, "ok");
 		return imageDir;
@@ -1149,6 +1216,76 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			])
 			.sourcePath(imageInput.resolvedPath)
 			.done();
+	}
+
+	async #readArchivePdfImageMember(
+		absoluteArchivePath: string,
+		archiveDisplayPath: string,
+		pdfMemberPath: string,
+		pdfEntry: ExtractedArchiveFile,
+		member: string,
+		details: ReadToolDetails,
+		signal?: AbortSignal,
+	): Promise<AgentToolResult<ReadToolDetails>> {
+		const imageDir = await this.#ensureArchivePdfImageCache(
+			absoluteArchivePath,
+			pdfMemberPath,
+			pdfEntry.bytes,
+			signal,
+		);
+		const members = await this.#listPdfImageMembers(imageDir);
+		if (member.length === 0) {
+			const text =
+				members.length === 0
+					? "No extractable PDF image members found."
+					: `Extractable PDF image members:\n${members
+							.map(imageMember => `- read \`${archiveDisplayPath}:${pdfMemberPath}:${imageMember}\``)
+							.join("\n")}`;
+			return toolResult<ReadToolDetails>(details).text(text).sourcePath(absoluteArchivePath).done();
+		}
+
+		if (!members.includes(member)) {
+			const available = members.length === 0 ? "(none)" : members.join(", ");
+			throw new ToolError(`PDF image member '${member}' not found. Available members: ${available}`);
+		}
+
+		const imagePath = path.join(imageDir, member);
+		const imageStat = await Bun.file(imagePath).stat();
+		if (imageStat.size > MAX_IMAGE_SIZE) {
+			const sizeStr = formatBytes(imageStat.size);
+			const maxStr = formatBytes(MAX_IMAGE_SIZE);
+			throw new ToolError(`Image file too large: ${sizeStr} exceeds ${maxStr} limit.`);
+		}
+		const metadata = await readImageMetadata(imagePath);
+		const mimeType = metadata?.mimeType;
+		if (!mimeType) throw new ToolError(`PDF image member '${member}' is not a supported image.`);
+		const imageInput = await loadImageInput({
+			path: `${archiveDisplayPath}:${pdfMemberPath}:${member}`,
+			cwd: this.session.cwd,
+			autoResize: this.#autoResizeImages,
+			maxBytes: MAX_IMAGE_SIZE,
+			resolvedPath: imagePath,
+			detectedMimeType: mimeType,
+			excludeWebP: webpExclusionForModel(this.session.getActiveModel?.()),
+		});
+		if (!imageInput) {
+			throw new ToolError(`Read image file [${mimeType}] failed: unsupported image format.`);
+		}
+		return toolResult<ReadToolDetails>(details)
+			.content([
+				{ type: "text", text: imageInput.textNote },
+				{ type: "image", data: imageInput.data, mimeType: imageInput.mimeType },
+			])
+			.sourcePath(imageInput.resolvedPath)
+			.done();
+	}
+
+	#rewriteArchivePdfImagePlaceholders(markdown: string, archiveDisplayPath: string, pdfMemberPath: string): string {
+		return markdown.replace(PDF_IMAGE_PLACEHOLDER_RE, (_match: string, imageId: string, metadataText: string) => {
+			const metadata = metadataText.trim();
+			const suffix = metadata.length > 0 ? ` ${metadata}` : "";
+			return `Image ${imageId}${suffix}: read \`${archiveDisplayPath}:${pdfMemberPath}:${pdfImageMemberName(imageId)}\``;
+		});
 	}
 
 	/**
@@ -1684,6 +1821,121 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		return resultBuilder.done();
 	}
 
+	#splitArchivePdfImageMemberPath(
+		archive: ArchiveReader,
+		archiveSubPath: string,
+	): { pdfMemberPath: string; member: string } | null {
+		const match = PDF_IMAGE_MEMBER_RE.exec(archiveSubPath);
+		if (!match) return null;
+		const pdfMemberPath = match[1];
+		const member = match[2];
+		if (pdfMemberPath === undefined || member === undefined) return null;
+		if (member.length !== 0 && !PDF_IMAGE_MEMBER_EXTENSION_RE.test(member)) return null;
+		const node = archive.getNode(pdfMemberPath);
+		if (!node || node.isDirectory) return null;
+		return { pdfMemberPath, member };
+	}
+
+	async #readArchiveBinaryMember(
+		entry: ExtractedArchiveFile,
+		archivePath: string,
+		archiveDisplayPath: string,
+		sel: ParsedSelector,
+		details: ReadToolDetails,
+		signal?: AbortSignal,
+	): Promise<AgentToolResult<ReadToolDetails> | null> {
+		const imageMetadata = parseImageMetadata(entry.bytes.subarray(0, Math.min(entry.bytes.byteLength, 256 * 1024)));
+		if (imageMetadata?.mimeType) {
+			const memberLabel = `${archiveDisplayPath}:${entry.path}`;
+			if (this.#inspectImageEnabled) {
+				const metadataLines = [
+					"Image metadata:",
+					`- MIME: ${imageMetadata.mimeType}`,
+					`- Bytes: ${entry.size} (${formatBytes(entry.size)})`,
+					imageMetadata.width !== undefined && imageMetadata.height !== undefined
+						? `- Dimensions: ${imageMetadata.width}x${imageMetadata.height}`
+						: "- Dimensions: unknown",
+					imageMetadata.channels !== undefined ? `- Channels: ${imageMetadata.channels}` : "- Channels: unknown",
+					imageMetadata.hasAlpha === true
+						? "- Alpha: yes"
+						: imageMetadata.hasAlpha === false
+							? "- Alpha: no"
+							: "- Alpha: unknown",
+					"",
+					"Archive image members cannot be passed to inspect_image directly. Extract the member to a filesystem path first, then call inspect_image with that path and a question.",
+				];
+				return toolResult<ReadToolDetails>(details)
+					.content([{ type: "text", text: metadataLines.join("\n") }])
+					.sourcePath(archivePath)
+					.done();
+			}
+
+			try {
+				const imageInput = await loadImageBytesInput({
+					label: entry.path,
+					uri: memberLabel,
+					bytes: entry.bytes,
+					mimeType: imageMetadata.mimeType,
+					autoResize: this.#autoResizeImages,
+					maxBytes: MAX_IMAGE_SIZE,
+					excludeWebP: webpExclusionForModel(this.session.getActiveModel?.()),
+					textNotePrefix: "Read image archive entry",
+				});
+				if (!imageInput) return null;
+				return toolResult<ReadToolDetails>(details)
+					.content([
+						{ type: "text", text: imageInput.textNote },
+						{ type: "image", data: imageInput.data, mimeType: imageInput.mimeType },
+					])
+					.sourcePath(archivePath)
+					.done();
+			} catch (error) {
+				if (error instanceof ImageInputTooLargeError) {
+					throw new ToolError(error.message);
+				}
+				throw error;
+			}
+		}
+
+		const ext = path.extname(entry.path).toLowerCase();
+		if (ARCHIVE_CONVERTIBLE_EXTENSIONS[ext] === true) {
+			const result = await convertBufferWithMarkit(entry.bytes, ext, signal);
+			if (result.ok) {
+				const renderedContent =
+					ext === ".pdf"
+						? this.#rewriteArchivePdfImagePlaceholders(result.content, archiveDisplayPath, entry.path)
+						: result.content;
+				const raw = isRawSelector(sel);
+				return isMultiRange(sel) && sel.kind === "lines"
+					? this.#buildInMemoryMultiRangeResult(renderedContent, sel.ranges, {
+							details,
+							sourcePath: archivePath,
+							entityLabel: "archive document",
+							raw,
+							immutable: true,
+						})
+					: this.#buildInMemoryTextResult(
+							renderedContent,
+							selToOffsetLimit(sel).offset,
+							selToOffsetLimit(sel).limit,
+							{
+								details,
+								sourcePath: archivePath,
+								entityLabel: "archive document",
+								raw,
+								immutable: true,
+							},
+						);
+			}
+			return toolResult<ReadToolDetails>(details)
+				.text(`[Cannot read archive document '${entry.path}': ${result.error || "conversion failed"}]`)
+				.sourcePath(archivePath)
+				.done();
+		}
+
+		return null;
+	}
+
 	async #readArchive(
 		readPath: string,
 		parsedSel: ParsedSelector,
@@ -1693,6 +1945,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		throwIfAborted(signal);
 		const archive = await openArchive(resolvedArchivePath.absolutePath);
 		throwIfAborted(signal);
+		const archiveDisplayPath =
+			resolvedArchivePath.suffixResolution?.to ??
+			formatPathRelativeToCwd(resolvedArchivePath.absolutePath, this.session.cwd);
 
 		const details: ReadToolDetails = {
 			resolvedPath: resolvedArchivePath.absolutePath,
@@ -1703,6 +1958,21 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		let sel = parsedSel;
 		let node = archive.getNode(archiveSubPath);
 		if (!node && archiveSubPath) {
+			const pdfImageMemberPath = this.#splitArchivePdfImageMemberPath(archive, archiveSubPath);
+			if (pdfImageMemberPath) {
+				const { pdfMemberPath, member } = pdfImageMemberPath;
+				const pdfEntry = await archive.readFile(pdfMemberPath);
+				return this.#readArchivePdfImageMember(
+					resolvedArchivePath.absolutePath,
+					archiveDisplayPath,
+					pdfMemberPath,
+					pdfEntry,
+					member,
+					details,
+					signal,
+				);
+			}
+
 			// `archive.zip:500` / `archive.zip:raw`: the whole subPath is a
 			// selector on the archive root, not a member name. Member names take
 			// precedence (getNode above); fall back to root + selector.
@@ -1734,6 +2004,15 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 
 		const entry = await archive.readFile(archiveSubPath);
+		const binaryResult = await this.#readArchiveBinaryMember(
+			entry,
+			resolvedArchivePath.absolutePath,
+			archiveDisplayPath,
+			sel,
+			details,
+			signal,
+		);
+		if (binaryResult) return binaryResult;
 		const text = decodeUtf8Text(entry.bytes);
 		if (text === null) {
 			return toolResult<ReadToolDetails>(details)

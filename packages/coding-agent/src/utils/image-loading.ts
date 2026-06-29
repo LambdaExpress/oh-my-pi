@@ -59,6 +59,18 @@ export interface LoadImageAttachmentInputOptions {
 	excludeWebP?: boolean;
 }
 
+export interface LoadImageBytesInputOptions {
+	label: string;
+	uri: string;
+	bytes: Uint8Array;
+	mimeType: string;
+	autoResize: boolean;
+	maxBytes?: number;
+	/** Force non-WebP output (e.g. for Ollama). Leave unset to honor `OMP_NO_WEBP`. */
+	excludeWebP?: boolean;
+	textNotePrefix?: string;
+}
+
 export interface LoadedImageInput {
 	resolvedPath: string;
 	mimeType: string;
@@ -183,29 +195,29 @@ export async function loadImageInput(options: LoadImageInputOptions): Promise<Lo
 	};
 }
 
-/** Loads a chat attachment image through the same size and encoder policy as file-backed image inputs. */
-export async function loadImageAttachmentInput(
-	options: LoadImageAttachmentInputOptions,
-): Promise<LoadedImageInput | null> {
+export async function loadImageBytesInput(options: LoadImageBytesInputOptions): Promise<LoadedImageInput | null> {
 	const maxBytes = options.maxBytes ?? MAX_IMAGE_INPUT_BYTES;
-	if (!SUPPORTED_INPUT_IMAGE_MIME_TYPES.has(options.image.mimeType)) {
+	if (!SUPPORTED_INPUT_IMAGE_MIME_TYPES.has(options.mimeType)) {
 		return null;
 	}
 
-	const inputBytes = Buffer.byteLength(options.image.data, "base64");
+	const inputBytes = options.bytes.byteLength;
 	if (inputBytes > maxBytes) {
 		throw new ImageInputTooLargeError(inputBytes, maxBytes);
 	}
 
-	let outputData = options.image.data;
-	let outputMimeType = options.image.mimeType;
+	let outputData = Buffer.from(options.bytes).toBase64();
+	let outputMimeType = options.mimeType;
 	let outputBytes = inputBytes;
 	let dimensionNote: string | undefined;
 
-	const shouldReencodeWebP = options.excludeWebP === true && options.image.mimeType === "image/webp";
+	const shouldReencodeWebP = options.excludeWebP === true && options.mimeType === "image/webp";
 	if (options.autoResize || shouldReencodeWebP) {
 		try {
-			const resized = await resizeImage(options.image, { excludeWebP: options.excludeWebP });
+			const resized = await resizeImage(
+				{ type: "image", data: outputData, mimeType: options.mimeType },
+				{ excludeWebP: options.excludeWebP },
+			);
 			outputData = resized.data;
 			outputMimeType = resized.mimeType;
 			outputBytes = resized.buffer.byteLength;
@@ -215,7 +227,7 @@ export async function loadImageAttachmentInput(
 		}
 	}
 
-	let textNote = `Read image attachment ${options.label} [${outputMimeType}]`;
+	let textNote = `${options.textNotePrefix ?? "Read image file"} [${outputMimeType}]`;
 	if (dimensionNote) {
 		textNote += `\n${dimensionNote}`;
 	}
@@ -228,4 +240,21 @@ export async function loadImageAttachmentInput(
 		dimensionNote,
 		bytes: outputBytes,
 	};
+}
+
+/** Loads a chat attachment image through the same size and encoder policy as file-backed image inputs. */
+export async function loadImageAttachmentInput(
+	options: LoadImageAttachmentInputOptions,
+): Promise<LoadedImageInput | null> {
+	const bytes = Buffer.from(options.image.data, "base64");
+	return loadImageBytesInput({
+		label: options.label,
+		uri: options.uri,
+		bytes,
+		mimeType: options.image.mimeType,
+		autoResize: options.autoResize,
+		maxBytes: options.maxBytes,
+		excludeWebP: options.excludeWebP,
+		textNotePrefix: `Read image attachment ${options.label}`,
+	});
 }

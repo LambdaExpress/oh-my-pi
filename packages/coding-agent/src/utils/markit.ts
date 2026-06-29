@@ -27,6 +27,11 @@ export interface MarkitFileConversionOptions {
 	imageDir?: string;
 }
 
+export interface MarkitBufferConversionOptions {
+	useCache?: boolean;
+	imageDir?: string;
+}
+
 interface MuPdfWasmModuleConfig {
 	print?: (...values: unknown[]) => void;
 	printErr?: (...values: unknown[]) => void;
@@ -200,12 +205,31 @@ export async function convertBufferWithMarkit(
 	buffer: Uint8Array,
 	extension: string,
 	signal?: AbortSignal,
-	options?: { useCache?: boolean },
+	options?: MarkitBufferConversionOptions,
 ): Promise<MarkitConversionResult> {
 	const normalizedExtension = normalizeExtension(extension);
 	const streamInfo: StreamInfo = {
 		extension: normalizedExtension,
 		filename: `input${normalizedExtension}`,
 	};
+	if (options?.imageDir) {
+		try {
+			const result = await runMarkitConversion(
+				markit =>
+					markit.convert(toBuffer(buffer), {
+						extension: normalizedExtension,
+						filename: `input${normalizedExtension}`,
+						imageDir: options.imageDir,
+					}),
+				signal,
+			);
+			return { ...finalizeConversion(result.markdown), cache: "skipped" };
+		} catch (error) {
+			if (error instanceof ToolAbortError) {
+				throw error;
+			}
+			return { content: "", ok: false, error: normalizeError(error), cache: "skipped" };
+		}
+	}
 	return runCachedBufferConversion(buffer, streamInfo, signal, options?.useCache ?? true);
 }
