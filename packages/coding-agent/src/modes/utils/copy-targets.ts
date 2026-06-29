@@ -20,9 +20,9 @@ export type MessageBlock = ({ kind: "code" } & CodeBlock) | ({ kind: "quote" } &
 
 /** A runnable command found in the transcript. */
 export interface LastCommand {
-	kind: "bash" | "eval";
+	kind: "bash" | "pwsh" | "eval";
 	code: string;
-	/** Highlight language: "bash" for bash, or the resolved eval language ("python"/"javascript"/"ruby"/"julia"). */
+	/** Highlight language for shell/eval code. */
 	language: string;
 }
 
@@ -157,6 +157,9 @@ function commandFromToolCall(tc: ToolCall): LastCommand | undefined {
 	if (tc.name === "bash" && typeof tc.arguments.command === "string") {
 		return { kind: "bash", code: tc.arguments.command, language: "bash" };
 	}
+	if (tc.name === "pwsh" && typeof tc.arguments.script === "string") {
+		return { kind: "pwsh", code: tc.arguments.script, language: "powershell" };
+	}
 	if (tc.name === "eval") {
 		const evalResult = extractEvalCode(tc.arguments);
 		if (evalResult) return { kind: "eval", code: evalResult.code, language: evalResult.language };
@@ -164,7 +167,7 @@ function commandFromToolCall(tc: ToolCall): LastCommand | undefined {
 	return undefined;
 }
 
-/** Walk the transcript backwards for the most recent bash command or eval code. */
+/** Walk the transcript backwards for the most recent shell command or eval code. */
 export function extractLastCommand(messages: readonly AgentMessage[]): LastCommand | undefined {
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const msg = messages[i];
@@ -288,7 +291,9 @@ function messageTarget(text: string, rank: number): CopyTarget {
 }
 
 function commandTitle(command: LastCommand): string {
-	return command.kind === "bash" ? "Bash command" : "Eval code";
+	if (command.kind === "bash") return "Bash command";
+	if (command.kind === "pwsh") return "PowerShell script";
+	return "Eval code";
 }
 
 function commandTarget(command: LastCommand, rank: number): CopyTarget {
@@ -300,7 +305,7 @@ function commandTarget(command: LastCommand, rank: number): CopyTarget {
 		preview: command.code,
 		language: command.language,
 		content: command.code,
-		copyMessage: `Copied ${command.kind === "bash" ? "bash command" : "eval code"} to clipboard`,
+		copyMessage: `Copied ${commandTitle(command).toLowerCase()} to clipboard`,
 	};
 }
 

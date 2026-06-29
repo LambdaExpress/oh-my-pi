@@ -733,6 +733,37 @@ describe("ACP event mapper", () => {
 		expect(update.content).toEqual([{ type: "content", content: { type: "text", text: "$ npm run check" } }]);
 	});
 
+	it("shows PowerShell scripts in visible tool call content", () => {
+		const updates = mapAgentSessionEventToAcpSessionUpdates(
+			{
+				type: "tool_execution_start",
+				toolCallId: "toolu_pwsh_1",
+				toolName: "pwsh",
+				args: { script: "Get-ChildItem Env:" },
+			} as AgentSessionEvent,
+			"session-1",
+		);
+
+		expect(updates).toHaveLength(1);
+		expectAcpNotifications(updates);
+		const update = updates[0]!.update as {
+			sessionUpdate: string;
+			toolCallId?: string;
+			title?: string;
+			kind?: string;
+			status?: string;
+			rawInput?: unknown;
+			content?: unknown;
+		};
+		expect(update.sessionUpdate).toBe("tool_call");
+		expect(update.toolCallId).toBe("toolu_pwsh_1");
+		expect(update.title).toBe("PS> Get-ChildItem Env:");
+		expect(update.kind).toBe("execute");
+		expect(update.status).toBe("pending");
+		expect(update.rawInput).toEqual({ script: "Get-ChildItem Env:" });
+		expect(update.content).toEqual([{ type: "content", content: { type: "text", text: "PS> Get-ChildItem Env:" } }]);
+	});
+
 	it("maps shell and exec tool starts as execute", () => {
 		for (const toolName of ["shell", "exec"] as const) {
 			const updates = mapAgentSessionEventToAcpSessionUpdates(

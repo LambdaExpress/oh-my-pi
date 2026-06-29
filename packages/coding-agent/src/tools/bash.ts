@@ -14,7 +14,7 @@ import { type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
-import { highlightCode, type Theme } from "../modes/theme/theme";
+import { highlightCode, type SymbolKey, type Theme } from "../modes/theme/theme";
 import bashDescription from "../prompts/tools/bash.md" with { type: "text" };
 import type { ClientBridgeTerminalExitStatus, ClientBridgeTerminalOutput } from "../session/client-bridge";
 import { DEFAULT_MAX_BYTES, enforceInlineByteCap, streamTailUpdates, TailBuffer } from "../session/streaming-output";
@@ -1122,6 +1122,8 @@ export interface ShellRendererConfig<TArgs> {
 	resolveCommand?: (args: TArgs | undefined) => string | undefined;
 	resolveCwd?: (args: TArgs | undefined) => string | undefined;
 	resolveEnv?: (args: TArgs | undefined) => Record<string, string> | undefined;
+	formatCommandLines?: (args: TArgs | undefined, uiTheme: Theme) => string[];
+	successIcon?: SymbolKey;
 	showHeader?: boolean;
 }
 
@@ -1174,7 +1176,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 	return {
 		renderCall(args: TArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 			const renderArgs = toBashRenderArgs(args, config);
-			const cmdLines = formatBashCommandLines(renderArgs, uiTheme);
+			const cmdLines = config.formatCommandLines?.(args, uiTheme) ?? formatBashCommandLines(renderArgs, uiTheme);
 			const header =
 				config.showHeader === false
 					? undefined
@@ -1208,7 +1210,9 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			args?: TArgs,
 		): Component {
 			const renderArgs = toBashRenderArgs(args, config);
-			const cmdLines = args ? formatBashCommandLines(renderArgs, uiTheme) : undefined;
+			const cmdLines = args
+				? (config.formatCommandLines?.(args, uiTheme) ?? formatBashCommandLines(renderArgs, uiTheme))
+				: undefined;
 			const isError = result.isError === true;
 			const isPartial = options.isPartial === true;
 			const success = !isPartial && !isError;
@@ -1218,7 +1222,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					: renderStatusLine(
 							success
 								? {
-										iconOverride: uiTheme.styledSymbol("tool.bash", "accent"),
+										iconOverride: uiTheme.styledSymbol(config.successIcon ?? "tool.bash", "accent"),
 										title: config.resolveTitle(args, options),
 									}
 								: {

@@ -1,4 +1,4 @@
-/** Gallery fixtures for the shell tools (bash, eval). */
+/** Gallery fixtures for shell and eval tools. */
 import type { GalleryFixture } from "./types";
 
 export const shellFixtures: Record<string, GalleryFixture> = {
@@ -53,6 +53,43 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 				wallTimeMs: 5120,
 				timeoutSeconds: 30,
 			},
+		},
+	},
+
+	pwsh: {
+		label: "PowerShell",
+		streamingArgs: {
+			script: "Get-ChildItem packages/coding-agent | Select-Object -First 3",
+		},
+		args: {
+			script: "Get-ChildItem packages/coding-agent | Select-Object -First 3",
+			cwd: ".",
+			timeout: 30,
+		},
+		result: {
+			content: [
+				{
+					type: "text",
+					text: ["Name", "----", "src", "test", "package.json", "", "Wall time: 0.42 seconds"].join("\n"),
+				},
+			],
+			details: { timeoutSeconds: 30, wallTimeMs: 420 },
+		},
+		errorResult: {
+			content: [
+				{
+					type: "text",
+					text: [
+						"Get-Item: Cannot find path 'missing.txt' because it does not exist.",
+						"",
+						"Wall time: 0.18 seconds",
+						"",
+						"Command exited with code 1",
+					].join("\n"),
+				},
+			],
+			isError: true,
+			details: { timeoutSeconds: 30, wallTimeMs: 180, exitCode: 1 },
 		},
 	},
 

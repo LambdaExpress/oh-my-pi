@@ -216,6 +216,7 @@ describe("createTools", () => {
 				"astGrep.enabled": false,
 				"astEdit.enabled": false,
 				"bash.enabled": false,
+				"pwsh.enabled": false,
 				"web_search.enabled": false,
 				"browser.enabled": false,
 				"inspect_image.enabled": false,
@@ -225,6 +226,7 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		expect(names).not.toContain("bash");
+		expect(names).not.toContain("pwsh");
 		expect(names).not.toContain("glob");
 		expect(names).not.toContain("grep");
 		expect(names).not.toContain("ast_grep");
@@ -233,7 +235,7 @@ describe("createTools", () => {
 		expect(names).not.toContain("browser");
 		expect(names).not.toContain("inspect_image");
 
-		const requestedTools = await createTools(session, ["bash", "read"]);
+		const requestedTools = await createTools(session, ["bash", "pwsh", "read"]);
 		expect(requestedTools.map(t => t.name)).toEqual(["read", "resolve"]);
 	});
 

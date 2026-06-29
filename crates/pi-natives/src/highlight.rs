@@ -27,6 +27,7 @@ const EXTRA_SYNTAXES: &[&str] = &[
 	include_str!("syntaxes/Julia.sublime-syntax"),
 	include_str!("syntaxes/Nix.sublime-syntax"),
 	include_str!("syntaxes/Mermaid.sublime-syntax"),
+	include_str!("syntaxes/PowerShell.sublime-syntax"),
 ];
 
 fn get_syntax_set() -> &'static SyntaxSet {
@@ -530,6 +531,25 @@ mod tests {
 		assert!(out.contains("<k>let"));
 		assert!(out.contains("<s>hello"));
 		assert!(out.contains("<c># greeting"));
+	}
+
+	#[test]
+	fn highlights_powershell_vendored_syntax() {
+		assert!(get_supported_languages().contains(&"PowerShell".to_string()));
+		assert!(supports_language("powershell".to_string()));
+		assert!(supports_language("ps1".to_string()));
+
+		let out = highlight_code(
+			"$identity = [Security.Principal.WindowsIdentity]::GetCurrent()\n\
+			 [pscustomobject]@{ User = $identity.Name } | Format-List\n"
+				.to_string(),
+			Some("powershell".to_string()),
+			test_colors(),
+		);
+		assert!(out.contains("<p>$"));
+		assert!(out.contains("<v>identity"));
+		assert!(out.contains("<t>WindowsIdentity"));
+		assert!(out.contains("<f>Format-List"));
 	}
 
 	#[test]

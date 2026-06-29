@@ -257,6 +257,21 @@ function getVariantOverride() {
 	return null;
 }
 
+const WINDOWS_AVX2_PROBE_ARGS = [
+	"-NoProfile",
+	"-NonInteractive",
+	"-Command",
+	"[System.Runtime.Intrinsics.X86.Avx2]::IsSupported",
+];
+
+export function detectWindowsAvx2Support(run = runCommand) {
+	for (const command of ["pwsh.exe", "pwsh", "powershell.exe"]) {
+		const output = run(command, WINDOWS_AVX2_PROBE_ARGS);
+		if (output) return output.toLowerCase() === "true";
+	}
+	return false;
+}
+
 function detectAvx2Support() {
 	if (process.arch !== "x64") {
 		return false;
@@ -284,13 +299,7 @@ function detectAvx2Support() {
 	}
 
 	if (process.platform === "win32") {
-		const output = runCommand("powershell.exe", [
-			"-NoProfile",
-			"-NonInteractive",
-			"-Command",
-			"[System.Runtime.Intrinsics.X86.Avx2]::IsSupported",
-		]);
-		return output && output.toLowerCase() === "true";
+		return detectWindowsAvx2Support();
 	}
 
 	return false;

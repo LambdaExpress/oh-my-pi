@@ -25,6 +25,7 @@ import { inspectImageToolRenderer } from "./inspect-image-renderer";
 import { ircToolRenderer } from "./irc";
 import { jobToolRenderer } from "./job";
 import { recallToolRenderer, reflectToolRenderer, retainToolRenderer } from "./memory-render";
+import { pwshToolRenderer } from "./pwsh";
 import { readToolRenderer } from "./read";
 import { resolveToolRenderer } from "./resolve";
 import { searchToolBm25Renderer } from "./search-tool-bm25";
@@ -70,6 +71,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	ast_grep: astGrepToolRenderer as ToolRenderer,
 	ast_edit: astEditToolRenderer as ToolRenderer,
 	bash: bashToolRenderer as ToolRenderer,
+	pwsh: pwshToolRenderer as ToolRenderer,
 	browser: browserToolRenderer as ToolRenderer,
 	debug: debugToolRenderer as ToolRenderer,
 	eval: evalToolRenderer as ToolRenderer,

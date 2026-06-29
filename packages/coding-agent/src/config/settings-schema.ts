@@ -3072,6 +3072,17 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"pwsh.enabled": {
+		type: "boolean",
+		default: true,
+		ui: {
+			tab: "shell",
+			group: "PowerShell",
+			label: "PowerShell",
+			description: "Enable the pwsh tool for direct PowerShell script execution",
+		},
+	},
+
 	"bash.autoBackground.enabled": {
 		type: "boolean",
 		default: false,
@@ -3730,7 +3741,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Discovery & MCP",
 			label: "Essential Tools Override",
 			description:
-				"Override the always-loaded built-in tools (default: read, bash, edit, write, glob, eval). Leave empty to use defaults.",
+				"Override the always-loaded built-in tools (default: read, bash, pwsh, edit, write, glob, eval). Leave empty to use defaults.",
 		},
 	},
 

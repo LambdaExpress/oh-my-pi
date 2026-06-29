@@ -70,6 +70,10 @@ export interface ExtractEmbeddedAddonArchiveInput {
 
 export function extractEmbeddedAddonArchive(input: ExtractEmbeddedAddonArchiveInput): string[];
 
+export type WindowsAvx2ProbeRunner = (command: string, args: string[]) => string | null;
+
+export function detectWindowsAvx2Support(run?: WindowsAvx2ProbeRunner): boolean;
+
 export interface SelectCpuVariantInput {
 	arch: string;
 	override: "modern" | "baseline" | null | undefined;

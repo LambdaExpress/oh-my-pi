@@ -35,9 +35,24 @@
  *      verdict.
  */
 import { describe, expect, it } from "bun:test";
-import { getAddonFilenames, selectCpuVariant } from "../native/loader-state.js";
+import { detectWindowsAvx2Support, getAddonFilenames, selectCpuVariant } from "../native/loader-state.js";
 
 const VARIANT_CACHE_ENV_KEY = "__PI_NATIVE_VARIANT_CACHE";
+
+describe("Windows AVX2 probing", () => {
+	it("prefers pwsh before falling back to Windows PowerShell", () => {
+		const commands: string[] = [];
+		const result = detectWindowsAvx2Support((command, args) => {
+			commands.push(command);
+			expect(args).toContain("[System.Runtime.Intrinsics.X86.Avx2]::IsSupported");
+			if (command === "pwsh") return "True";
+			return null;
+		});
+
+		expect(result).toBe(true);
+		expect(commands).toEqual(["pwsh.exe", "pwsh"]);
+	});
+});
 
 describe("issue 3238: variant resolution across worker contexts", () => {
 	it("returns the cached variant from env without re-detecting", () => {

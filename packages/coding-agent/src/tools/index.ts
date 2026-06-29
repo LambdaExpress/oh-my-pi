@@ -57,6 +57,7 @@ import { MemoryRecallTool } from "./memory-recall";
 import { MemoryReflectTool } from "./memory-reflect";
 import { MemoryRetainTool } from "./memory-retain";
 import { wrapToolWithMetaNotice } from "./output-meta";
+import { PwshTool } from "./pwsh";
 import { ReadTool } from "./read";
 import { createReportToolIssueTool, isAutoQaEnabled } from "./report-tool-issue";
 import { ResolveTool } from "./resolve";
@@ -95,6 +96,7 @@ export * from "./memory-edit";
 export * from "./memory-recall";
 export * from "./memory-reflect";
 export * from "./memory-retain";
+export * from "./pwsh";
 export * from "./read";
 export * from "./report-tool-issue";
 export * from "./resolve";
@@ -382,6 +384,7 @@ export type BuiltinToolLoadMode = "essential" | "discoverable";
 export const DEFAULT_ESSENTIAL_TOOL_NAMES: readonly string[] = [
 	"read",
 	"bash",
+	"pwsh",
 	"edit",
 	"write",
 	"glob",
@@ -441,6 +444,7 @@ export function filterInitialToolsForDiscoveryAll(
 export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	read: s => new ReadTool(s),
 	bash: s => new BashTool(s),
+	pwsh: PwshTool.createIf,
 	edit: s => new EditTool(s),
 	ast_grep: s => new AstGrepTool(s),
 	ast_edit: s => new AstEditTool(s),
@@ -598,6 +602,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "goal") return goalEnabled && goalModeActive;
 		if (name === "lsp") return enableLsp && session.settings.get("lsp.enabled");
 		if (name === "bash") return session.settings.get("bash.enabled");
+		if (name === "pwsh") return session.settings.get("pwsh.enabled");
 		if (name === "eval") return allowEval;
 		if (name === "debug") return session.settings.get("debug.enabled");
 		if (name === "todo") return !includeYield && session.settings.get("todo.enabled");

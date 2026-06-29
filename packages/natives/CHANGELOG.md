@@ -2,9 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added vendored PowerShell syntax highlighting so `highlightCode` and shell renderers can colorize `.ps1`, `.psm1`, `.psd1`, `powershell`, and `pwsh` snippets instead of returning plain text.
+
 ### Fixed
 
 - Fixed compiled-binary native embedding accepting stale `pi_natives.*.node` artifacts whose version sentinel does not match the current `@oh-my-pi/pi-natives` package version. `gen:native` now validates the sentinel before archiving and can read native artifacts from an explicit `PI_NATIVE_SOURCE_DIR`, preventing local Windows builds from producing an `omp` binary that only starts while another install keeps a correct cached addon locked.
+- Fixed Windows AVX2 detection preferring Windows PowerShell 5.1, whose .NET runtime lacks `System.Runtime.Intrinsics.X86.Avx2`; the loader now tries `pwsh` first so AVX2-capable Windows hosts select the `modern` native addon by default.
 
 ## [16.2.5] - 2026-06-28
 

@@ -28,6 +28,7 @@ export interface InternalUrlExpansionOptions {
 	internalRouter?: InternalUrlResolver;
 	localOptions?: LocalProtocolOptions;
 	ensureLocalParentDirs?: boolean;
+	escapePath?: (path: string) => string;
 }
 
 /**
@@ -240,7 +241,9 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 			options.localOptions,
 			options.ensureLocalParentDirs,
 		);
-		const replacement = options.noEscape ? resolvedPath : shellEscape(resolvedPath);
+		const replacement = options.noEscape
+			? resolvedPath
+			: (options.escapePath?.(resolvedPath) ?? shellEscape(resolvedPath));
 		expanded = `${expanded.slice(0, index)}${replacement}${expanded.slice(index + token.length)}`;
 	}
 

@@ -838,6 +838,7 @@ import * as bundledPiCodingAgentToolsOutputMeta from "@oh-my-pi/pi-coding-agent/
 import * as bundledPiCodingAgentToolsOutputSchemaValidator from "@oh-my-pi/pi-coding-agent/tools/output-schema-validator";
 import * as bundledPiCodingAgentToolsPathUtils from "@oh-my-pi/pi-coding-agent/tools/path-utils";
 import * as bundledPiCodingAgentToolsPlanModeGuard from "@oh-my-pi/pi-coding-agent/tools/plan-mode-guard";
+import * as bundledPiCodingAgentToolsPwsh from "@oh-my-pi/pi-coding-agent/tools/pwsh";
 import * as bundledPiCodingAgentToolsRead from "@oh-my-pi/pi-coding-agent/tools/read";
 import * as bundledPiCodingAgentToolsRenderUtils from "@oh-my-pi/pi-coding-agent/tools/render-utils";
 import * as bundledPiCodingAgentToolsRenderers from "@oh-my-pi/pi-coding-agent/tools/renderers";
@@ -2996,6 +2997,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/plan-mode-guard": bundledPiCodingAgentToolsPlanModeGuard as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/tools/pwsh": bundledPiCodingAgentToolsPwsh as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/read": bundledPiCodingAgentToolsRead as unknown as Readonly<

@@ -76,6 +76,17 @@ describe("extractLastCommand", () => {
 		expect(extractLastCommand(messages)).toEqual({ kind: "bash", code: "echo b", language: "bash" });
 	});
 
+	it("returns PowerShell scripts as copied command candidates", () => {
+		const messages = [
+			assistantCalls([{ name: "pwsh", arguments: { script: "Get-ChildItem Env:" } }]),
+		] as unknown as AgentMessage[];
+		expect(extractLastCommand(messages)).toEqual({
+			kind: "pwsh",
+			code: "Get-ChildItem Env:",
+			language: "powershell",
+		});
+	});
+
 	it("extracts eval code from flat args and reports the language", () => {
 		const py = [
 			assistantCalls([{ name: "eval", arguments: { language: "py", code: "print(1)" } }]),

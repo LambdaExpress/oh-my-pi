@@ -1072,9 +1072,10 @@ function getPermissionIntent(
 	args: unknown,
 ): { toolName: string; title: string; paths?: string[]; cacheKey: string } | undefined {
 	const a = args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
-	if (toolName === "bash") {
-		const cmd = getStringProperty(a, "command")?.slice(0, 80);
-		return { toolName, title: cmd || toolName, cacheKey: toolName };
+	if (toolName === "bash" || toolName === "pwsh") {
+		const subjectKey = toolName === "pwsh" ? "script" : "command";
+		const text = getStringProperty(a, subjectKey)?.slice(0, 80);
+		return { toolName, title: text || toolName, cacheKey: toolName };
 	}
 	if (toolName === "delete") {
 		const p = getStringProperty(a, "path");
@@ -5553,12 +5554,23 @@ export class AgentSession {
 					if (!permissionIntent) {
 						return await target.execute(toolCallId, args as never, signal, onUpdate, ctx);
 					}
-					const command =
-						target.name === "bash" && args && typeof args === "object" && !Array.isArray(args)
-							? getStringProperty(args as Record<string, unknown>, "command")
+					const executeText =
+						(target.name === "bash" || target.name === "pwsh") &&
+						args &&
+						typeof args === "object" &&
+						!Array.isArray(args)
+							? getStringProperty(args as Record<string, unknown>, target.name === "pwsh" ? "script" : "command")
 							: undefined;
-					const commandContent = command
-						? [{ type: "content" as const, content: { type: "text" as const, text: `$ ${command}` } }]
+					const commandContent = executeText
+						? [
+								{
+									type: "content" as const,
+									content: {
+										type: "text" as const,
+										text: `${target.name === "pwsh" ? "PS>" : "$"} ${executeText}`,
+									},
+								},
+							]
 						: undefined;
 					// Short-circuit on persisted decisions.
 					const persisted = this.#acpPermissionDecisions.get(permissionIntent.cacheKey);
@@ -5584,7 +5596,7 @@ export class AgentSession {
 								toolCallId,
 								toolName: target.name,
 								title: permissionIntent.title,
-								...(target.name === "bash" ? { kind: "execute" } : {}),
+								...(target.name === "bash" || target.name === "pwsh" ? { kind: "execute" } : {}),
 								status: "pending",
 								rawInput: args,
 								...(commandContent ? { content: commandContent } : {}),
@@ -11292,10 +11304,13 @@ export class AgentSession {
 								throw error;
 							}
 							const message = error instanceof Error ? error.message : String(error);
-							logger.warn("Snapcompact failed during auto-compaction; falling back to context-full maintenance", {
-								model: this.model?.id,
-								error: message,
-							});
+							logger.warn(
+								"Snapcompact failed during auto-compaction; falling back to context-full maintenance",
+								{
+									model: this.model?.id,
+									error: message,
+								},
+							);
 							snapcompactBlocker = "snapcompact failed locally; using context-full auto-compaction instead.";
 						}
 						if (snapcompactResult) {

@@ -71,6 +71,10 @@ interface CommandContainer {
 	command?: unknown;
 }
 
+interface ScriptContainer {
+	script?: unknown;
+}
+
 interface EvalCellContainer {
 	cells?: unknown;
 }
@@ -141,6 +145,7 @@ export function mapToolKind(toolName: string): ToolKind {
 			return "move";
 		case "bash":
 		case "shell":
+		case "pwsh":
 		case "exec":
 		case "eval":
 			return "execute";
@@ -462,6 +467,10 @@ function buildToolStartText(toolName: string, args: unknown): string | undefined
 		const command = extractStringProperty<CommandContainer>(args, "command");
 		return command ? limitText(`$ ${command}`) : undefined;
 	}
+	if (toolName === "pwsh") {
+		const script = extractStringProperty<ScriptContainer>(args, "script");
+		return script ? limitText(`PS> ${script}`) : undefined;
+	}
 	if (toolName === "eval") {
 		return buildEvalStartText(args);
 	}
@@ -524,6 +533,10 @@ function buildToolTitle(toolName: string, args: unknown, intent: string | undefi
 		const commandText = buildToolStartText(toolName, args);
 		if (commandText) return commandText;
 	}
+	if (toolName === "pwsh") {
+		const pwshText = buildToolStartText(toolName, args);
+		if (pwshText) return pwshText;
+	}
 	if (toolName === "eval") {
 		const evalText = buildEvalStartText(args);
 		if (evalText) return evalText;
@@ -536,6 +549,7 @@ function buildToolTitle(toolName: string, args: unknown, intent: string | undefi
 	const subject =
 		extractStringProperty<PathContainer>(args, "path") ??
 		extractStringProperty<CommandContainer>(args, "command") ??
+		extractStringProperty<ScriptContainer>(args, "script") ??
 		extractStringProperty<PatternContainer>(args, "pattern") ??
 		extractStringProperty<QueryContainer>(args, "query");
 	if (subject) {

@@ -226,6 +226,33 @@ describe("pi-natives", () => {
 			expect(out).toContain("<n>1");
 			expect(out).toContain("<c> add");
 		});
+
+		it("highlights PowerShell via the vendored syntax", () => {
+			expect(getSupportedLanguages()).toContain("PowerShell");
+			expect(supportsLanguage("powershell")).toBe(true);
+			expect(supportsLanguage("ps1")).toBe(true);
+
+			const colors = {
+				comment: "<c>",
+				keyword: "<k>",
+				function: "<f>",
+				variable: "<v>",
+				string: "<s>",
+				number: "<n>",
+				type: "<t>",
+				operator: "<o>",
+				punctuation: "<p>",
+			};
+			const out = highlightCode(
+				"$identity = [Security.Principal.WindowsIdentity]::GetCurrent()\n[pscustomobject]@{ User = $identity.Name } | Format-List\n",
+				"powershell",
+				colors,
+			);
+			expect(out).toContain("<p>$");
+			expect(out).toContain("<v>identity");
+			expect(out).toContain("<t>WindowsIdentity");
+			expect(out).toContain("<f>Format-List");
+		});
 	});
 
 	describe("keys", () => {

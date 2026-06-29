@@ -191,9 +191,7 @@ describe("AgentSession auto-snapcompact local-blocker fallback", () => {
 		expect(result).toEqual({ action: "context-full", errorMessage: undefined });
 		expect(snapcompact.compact).toHaveBeenCalled();
 		expect(compactionModule.compact).toHaveBeenCalled();
-		expect(harness.notices).toContain(
-			"snapcompact failed locally; using context-full auto-compaction instead.",
-		);
+		expect(harness.notices).toContain("snapcompact failed locally; using context-full auto-compaction instead.");
 		expect(harness.sessionManager.getBranch().find(entry => entry.type === "compaction")).toMatchObject({
 			type: "compaction",
 			summary: "compacted",

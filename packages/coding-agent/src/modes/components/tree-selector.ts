@@ -740,6 +740,14 @@ class TreeList implements Component {
 					.slice(0, 50);
 				return `[bash: ${cmd}${rawCmd.length > 50 ? "..." : ""}]`;
 			}
+			case "pwsh": {
+				const rawScript = String(args.script || "");
+				const script = rawScript
+					.replace(/[\n\t]/g, " ")
+					.trim()
+					.slice(0, 50);
+				return `[pwsh: ${script}${rawScript.length > 50 ? "..." : ""}]`;
+			}
 			case "grep": {
 				const pattern = String(args.pattern || "");
 				const searchPathsInput =

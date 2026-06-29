@@ -1,6 +1,7 @@
 export const BUILTIN_TOOL_NAMES = [
 	"read",
 	"bash",
+	"pwsh",
 	"edit",
 	"ast_grep",
 	"ast_edit",
@@ -35,6 +36,7 @@ export type BuiltinToolName = (typeof BUILTIN_TOOL_NAMES)[number];
 
 const LEGACY_BUILTIN_TOOL_NAME_ALIASES: ReadonlyMap<string, BuiltinToolName> = new Map([
 	["search", "grep"],
+	["powershell", "pwsh"],
 	["find", "glob"],
 ]);
 

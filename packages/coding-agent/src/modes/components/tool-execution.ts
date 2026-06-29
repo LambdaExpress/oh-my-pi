@@ -1092,9 +1092,9 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			return Math.max(1, Math.min(maxSeconds, value));
 		};
 
-		if (this.#toolName === "bash") {
-			// Bash needs render context even before a result exists. The renderer uses the pending-call args
-			// plus this context to keep the inline command preview visible while tool-call JSON is still streaming.
+		if (this.#toolName === "bash" || this.#toolName === "pwsh") {
+			// Shell renderers need context before a result exists. They combine pending-call args
+			// with this context to keep the inline command preview visible while JSON streams.
 			if (this.#result) {
 				// Pass raw output and expanded state - renderer handles width-aware truncation
 				const output = this.#getTextOutput().trimEnd();
