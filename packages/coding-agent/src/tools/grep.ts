@@ -68,14 +68,14 @@ import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
 const searchPathEntry = type("string").describe(
-	'file, directory, glob, internal URL, or "<file>:<lines>" selector (e.g. "src/foo.ts:50-100", "src/foo.ts:50+10", "src/foo.ts:50-100,200-300")',
+	'local file/directory/glob, internal URL file, or "<file>:<lines>" selector (e.g. "src/foo.ts:50-100"). Internal URL directories are not recursive.',
 );
 const searchSchema = type({
 	pattern: type("string").describe("regex pattern"),
 	"paths?": searchPathEntry
 		.or(searchPathEntry.array())
 		.describe(
-			'file, directory, glob, internal URL, or array of those to search; append `:<lines>` to scope a file to specific line ranges. Omitted or empty -> searches the workspace root (".")',
+			"local file/directory/glob, internal URL file, or array of those to search; append `:<lines>` to scope a file to specific line ranges. Internal URL directories are not recursive.",
 		),
 	"case?": type("boolean").describe("case-sensitive search"),
 	"gitignore?": type("boolean").describe("respect gitignore"),

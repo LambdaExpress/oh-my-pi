@@ -8,6 +8,10 @@
 - Added read support for image and supported document files stored inside archives, including images embedded in archived PDFs.
 - Added `ssh://` remote file support for verified Windows PowerShell hosts, including drive-path URLs, directory listings, writes, deletes, and moves.
 
+### Changed
+
+- Clarified that `grep` does not recursively search internal URL directories.
+
 ### Fixed
 
 - Fixed LSP client reuse when multiple servers in one workspace share a wrapper command but use different arguments.

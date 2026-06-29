@@ -4,6 +4,7 @@ Greps files using regex.
 - Rust regex (RE2-style) — no lookaround/backreferences; use line anchors or post-filters instead of (?!…)/(?<!…).
 - `paths`: SHOULD scope to known paths (e.g. `["src","tests"]`).
 - Cross-line patterns detected from literal `\n` or `\\n` in `pattern`.
+- Internal URL directories are not recursive; read the listing, then grep specific files.
 </instruction>
 
 <output>
