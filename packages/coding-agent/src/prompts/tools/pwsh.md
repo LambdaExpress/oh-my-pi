@@ -2,6 +2,7 @@ Runs PowerShell 7 scripts directly via `pwsh`; use only when PowerShell itself i
 
 <instruction>
 - Default shell work → `bash`; reach for `pwsh` only for PowerShell-specific syntax, cmdlets, providers/drives, `$env:`/`$PS*` state, or Windows shell semantics.
+- Windows host alone is NOT a PowerShell-specific requirement.
 - Use `script` for PowerShell code; no outer `pwsh -Command` wrapper.
 - `cwd` sets the working directory; avoid `Set-Location` prefixes.
 - `env: { NAME: "…" }` sets child-process environment variables.
@@ -20,6 +21,7 @@ Runs PowerShell 7 scripts directly via `pwsh`; use only when PowerShell itself i
 
 <critical>
 - Default to `bash`; use `pwsh` only when PowerShell-specific behavior is required.
+- Windows host alone is NOT a reason to choose `pwsh`.
 - NEVER wrap PowerShell in `bash` or nested `pwsh -Command`; use this tool directly.
 - Use `script`, not `command`.
 - Long-running commands need an explicit `timeout`.
@@ -33,6 +35,6 @@ Runs PowerShell 7 scripts directly via `pwsh`; use only when PowerShell itself i
 ```
 
 ```json
-{"script":"$env:TARGET_VARIANT = 'baseline'\nbun --cwd=packages/natives run build\nRemove-Item Env:\\TARGET_VARIANT","timeout":900,"cwd":"D:/project/oh-my-pi"}
+{"script":"$matches = Get-ChildItem Env: | Where-Object Name -like 'PI_*'\n$matches | Select-Object Name, Value","timeout":30,"cwd":"D:/project/oh-my-pi"}
 ```
 </examples>
