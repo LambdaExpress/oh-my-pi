@@ -35,6 +35,7 @@ import {
 	type RenderCache,
 	renderStatusLine,
 	truncateToWidth,
+	uriHyperlink,
 	WidthAwareText,
 } from "../tui";
 import type { EditMode } from "../utils/edit-mode";
@@ -254,6 +255,21 @@ function formatEditTitlePath(pathValue: string, maxWidth?: number): string {
 	return truncateEditTitlePath(replaceTabs(shortenPath(pathValue)), maxWidth);
 }
 
+function isRemoteEditPath(rawPath: string): boolean {
+	return /^ssh:\/\//i.test(rawPath.trim());
+}
+
+function editPathHyperlink(
+	rawPath: string,
+	linkTarget: string,
+	displayText: string,
+	lineLink?: { line: number },
+): string {
+	return isRemoteEditPath(rawPath) || isRemoteEditPath(linkTarget)
+		? uriHyperlink(linkTarget, displayText)
+		: fileHyperlink(linkTarget, displayText, lineLink);
+}
+
 function formatEditPathDisplay(
 	rawPath: string,
 	uiTheme: Theme,
@@ -266,14 +282,14 @@ function formatEditPathDisplay(
 	const lineLink = options?.firstChangedLine ? { line: options.firstChangedLine } : undefined;
 	const primaryDisplay = rawPath ? formatEditTitlePath(rawPath, options?.maxPathWidth) : "…";
 	let pathDisplay = rawPath
-		? fileHyperlink(linkTarget, uiTheme.fg("accent", primaryDisplay), lineLink)
+		? editPathHyperlink(rawPath, linkTarget, uiTheme.fg("accent", primaryDisplay), lineLink)
 		: uiTheme.fg("toolOutput", primaryDisplay);
 	let pathWidth = visibleWidth(primaryDisplay);
 
 	if (options?.rename) {
 		const renameTarget = options.renameLinkPath || options.rename;
 		const renameDisplay = formatEditTitlePath(options.rename, options.maxPathWidth);
-		pathDisplay += ` ${uiTheme.fg("dim", "→")} ${fileHyperlink(renameTarget, uiTheme.fg("accent", renameDisplay))}`;
+		pathDisplay += ` ${uiTheme.fg("dim", "→")} ${editPathHyperlink(options.rename, renameTarget, uiTheme.fg("accent", renameDisplay))}`;
 		pathWidth += visibleWidth(renameDisplay);
 	}
 
@@ -513,6 +529,22 @@ function getCallPreview(
 		return formatMultiFileStreamingDiff(multi, width, uiTheme, expanded, spinnerFrame, caches);
 	}
 	const cache = previewCacheAt(caches, 0);
+	const singlePreview = renderContext?.editDiffPreview;
+	if (singlePreview) {
+		if ("error" in singlePreview) return uiTheme.fg("error", replaceTabs(singlePreview.error));
+		if (singlePreview.diff) {
+			return formatStreamingDiff(
+				singlePreview.diff,
+				rawPath,
+				width,
+				uiTheme,
+				expanded,
+				"preview",
+				spinnerFrame,
+				cache,
+			);
+		}
+	}
 	if (args.previewDiff) {
 		return formatStreamingDiff(args.previewDiff, rawPath, width, uiTheme, expanded, "preview", spinnerFrame, cache);
 	}

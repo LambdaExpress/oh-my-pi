@@ -137,13 +137,16 @@ async function executeApplyPatchPerFile(
 	}
 
 	const perFileResults: EditToolPerFileResult[] = [];
+	const lastLocalBatchIndex = outerBatchRequest
+		? fileEntries.findLastIndex(entry => !pathTargetsSsh(unwrapHashlineHeaderPath(entry.path).trim()))
+		: -1;
 	const contentTexts: string[] = [];
 
 	for (let i = 0; i < fileEntries.length; i++) {
 		const { path, run } = fileEntries[i];
 		const isLast = i === fileEntries.length - 1;
 		const batchRequest: LspBatchRequest | undefined = outerBatchRequest
-			? { id: outerBatchRequest.id, flush: isLast && outerBatchRequest.flush }
+			? { id: outerBatchRequest.id, flush: i === lastLocalBatchIndex && outerBatchRequest.flush }
 			: undefined;
 
 		try {

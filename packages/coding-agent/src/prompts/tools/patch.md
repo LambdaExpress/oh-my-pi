@@ -19,6 +19,7 @@ When editing structured blocks (nested braces, tags, indented regions), include 
 <parameters>
 ```ts
 // Input is { path: string, edits: Entry[] }. `path` is required and applies to every entry.
+// `path` may also be `ssh://host/absolute/path` for a whole remote UTF-8 text file. Directories are not editable.
 type Entry =
    // Diff is one or more hunks for the top-level path.
    // - Each hunk begins with "@@" (anchor optional).

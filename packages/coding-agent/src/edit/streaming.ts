@@ -27,7 +27,7 @@ import { type EditMode, resolveEditMode } from "../utils/edit-mode";
 import { computeEditDiff, type DiffError, type DiffResult } from "./diff";
 import { computeHashlineDiff, computeHashlineSectionDiff } from "./hashline/diff";
 import { type ApplyPatchEntry, expandApplyPatchToEntries, expandApplyPatchToPreviewEntries } from "./modes/apply-patch";
-import { computePatchDiff, type PatchEditEntry } from "./modes/patch";
+import { computePatchDiff, computePatchSequenceDiff, type PatchEditEntry } from "./modes/patch";
 import type { ReplaceEditEntry } from "./modes/replace";
 
 export interface PerFileDiffPreview {
@@ -347,6 +347,7 @@ const replaceStrategy: EditStreamingStrategy<ReplaceArgs> = {
 			ctx.allowFuzzy ?? true,
 			first.all,
 			ctx.fuzzyThreshold,
+			{ signal: ctx.signal },
 		);
 		ctx.signal.throwIfAborted();
 		return [toPerFilePreview(args.path, result)];
@@ -394,7 +395,7 @@ const patchStrategy: EditStreamingStrategy<PatchArgs> = {
 		const result = await computePatchDiff(
 			{ path: args.path, op: first.op ?? "update", rename: first.rename, diff: first.diff },
 			ctx.cwd,
-			{ fuzzyThreshold: ctx.fuzzyThreshold, allowFuzzy: ctx.allowFuzzy },
+			{ fuzzyThreshold: ctx.fuzzyThreshold, allowFuzzy: ctx.allowFuzzy, signal: ctx.signal },
 		);
 		ctx.signal.throwIfAborted();
 		return [toPerFilePreview(args.path, result)];
@@ -634,10 +635,15 @@ const applyPatchStrategy: EditStreamingStrategy<ApplyPatchArgs> = {
 			const first = fileEntries[0];
 			if (!first) continue;
 			ctx.signal.throwIfAborted();
-			const result = await computePatchDiff(
-				{ path, op: first.op ?? "update", rename: first.rename, diff: first.diff },
+			const result = await computePatchSequenceDiff(
+				fileEntries.map(entry => ({
+					path,
+					op: entry.op ?? "update",
+					rename: entry.rename,
+					diff: entry.diff,
+				})),
 				ctx.cwd,
-				{ fuzzyThreshold: ctx.fuzzyThreshold, allowFuzzy: ctx.allowFuzzy },
+				{ fuzzyThreshold: ctx.fuzzyThreshold, allowFuzzy: ctx.allowFuzzy, signal: ctx.signal },
 			);
 			ctx.signal.throwIfAborted();
 			previews.push(toPerFilePreview(path, result));

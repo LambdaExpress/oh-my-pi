@@ -11,7 +11,6 @@ import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { outputMeta } from "../../tools/output-meta";
-import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
 import { generateDiffString, replaceText } from "../diff";
 import {
 	countLeadingWhitespace,
@@ -22,8 +21,9 @@ import {
 	restoreLineEndings,
 	stripBom,
 } from "../normalize";
-import { readEditFileText, serializeEditFileText } from "../read-file";
+import { serializeEditFileText } from "../read-file";
 import type { EditToolDetails, LspBatchRequest } from "../renderer";
+import { readEditTargetText, resolveEditTarget } from "../target";
 
 export interface FuzzyMatch {
 	actualText: string;
@@ -1053,14 +1053,19 @@ export async function executeReplaceSingle(
 	} = options;
 	const { old_text, new_text, all } = params;
 
-	enforcePlanModeWrite(session, path);
-
 	if (old_text.length === 0) {
 		throw new Error("old_text must not be empty.");
 	}
 
-	const absolutePath = resolvePlanPath(session, path);
-	const rawContent = await readEditFileText(absolutePath, path);
+	const target = await resolveEditTarget(session, path, {
+		op: "update",
+		signal,
+	});
+	const rawContent = await readEditTargetText(target, {
+		cwd: session.cwd,
+		signal,
+		localProtocolOptions: session.localProtocolOptions,
+	});
 	const { bom, text: content } = stripBom(rawContent);
 	const originalEnding = detectLineEnding(content);
 	const normalizedContent = normalizeToLF(content);
@@ -1094,24 +1099,40 @@ export async function executeReplaceSingle(
 		throw new Error(`Edits to ${path} resulted in no changes being made.`);
 	}
 
-	const finalContent = await serializeEditFileText(
-		absolutePath,
-		path,
-		bom + restoreLineEndings(result.content, originalEnding),
-	);
-
-	// Route through ACP bridge when available; skips internal artifacts.
+	const restoredContent = bom + restoreLineEndings(result.content, originalEnding);
+	let finalContent: string;
 	let diagnostics: FileDiagnosticsResult | undefined;
-	if (await routeWriteThroughBridge(session, path, absolutePath, finalContent)) {
-		// bridge handled the write; diagnostics not available via writethrough
+	let detailsPath: string;
+	const diffPath = target.kind === "internal" ? target.displayPath : path;
+	if (target.kind === "local") {
+		finalContent = await serializeEditFileText(target.absolutePath, path, restoredContent);
+		detailsPath = target.absolutePath;
+		// Route through ACP bridge when available; skips internal artifacts.
+		if (await routeWriteThroughBridge(session, path, target.absolutePath, finalContent)) {
+			// bridge handled the write; diagnostics not available via writethrough
+		} else {
+			diagnostics = await writethrough(
+				target.absolutePath,
+				finalContent,
+				signal,
+				Bun.file(target.absolutePath),
+				batchRequest,
+				dst => (dst === target.absolutePath ? beginDeferredDiagnosticsForPath(target.absolutePath) : undefined),
+			);
+			invalidateFsScanAfterWrite(target.absolutePath);
+		}
 	} else {
-		diagnostics = await writethrough(absolutePath, finalContent, signal, Bun.file(absolutePath), batchRequest, dst =>
-			dst === absolutePath ? beginDeferredDiagnosticsForPath(absolutePath) : undefined,
-		);
-		invalidateFsScanAfterWrite(absolutePath);
+		finalContent = restoredContent;
+		detailsPath = target.displayPath;
+		if (!target.handler.write) throw new Error(`Cannot write internal URL: ${target.displayPath}`);
+		await target.handler.write(target.url, finalContent, {
+			cwd: session.cwd,
+			signal,
+			localProtocolOptions: session.localProtocolOptions,
+		});
 	}
 
-	const diffResult = generateDiffString(normalizedContent, result.content, undefined, { path });
+	const diffResult = generateDiffString(normalizedContent, result.content, undefined, { path: diffPath });
 	const resultText =
 		result.count > 1
 			? `Successfully replaced ${result.count} occurrences in ${path}.`
@@ -1125,7 +1146,7 @@ export async function executeReplaceSingle(
 		content: [{ type: "text", text: resultText }],
 		details: {
 			diff: diffResult.diff,
-			path: absolutePath,
+			path: detailsPath,
 			firstChangedLine: diffResult.firstChangedLine,
 			diagnostics,
 			meta,

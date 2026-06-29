@@ -55,6 +55,26 @@ describe("editToolRenderer", () => {
 		expect(rendered).toContain("packages/coding-agent/src/edit/renderer.ts");
 	});
 
+	it("shows a single-file preview error in pending edit calls", async () => {
+		const uiTheme = await getUiTheme();
+		const component = editToolRenderer.renderCall(
+			{ path: "ssh://icaro/tmp/a.ts", op: "update", diff: "@@\n-old\n+new" },
+			{
+				expanded: false,
+				isPartial: true,
+				spinnerFrame: 0,
+				renderContext: {
+					editMode: "patch",
+					editDiffPreview: { error: "Cannot edit remote directory: ssh://icaro/tmp/a.ts" },
+				},
+			},
+			uiTheme,
+		);
+
+		const rendered = Bun.stripANSI(component.render(160).join("\n"));
+		expect(rendered).toContain("Cannot edit remote directory: ssh://icaro/tmp/a.ts");
+	});
+
 	it("lifts the streaming diff tail window when expanded", async () => {
 		const uiTheme = await getUiTheme();
 		const diff = Array.from({ length: 20 }, (_, index) =>

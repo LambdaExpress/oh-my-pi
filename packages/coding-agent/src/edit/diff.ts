@@ -5,11 +5,10 @@
  * used when not in patch mode.
  */
 import * as Diff from "diff";
-import { resolveToCwd } from "../tools/path-utils";
 import { type BlockContextSource, findBlockContextLines } from "../utils/block-context";
 import { DEFAULT_FUZZY_THRESHOLD, EditMatchError, findMatch } from "./modes/replace";
 import { adjustIndentation, normalizeToLF, stripBom } from "./normalize";
-import { readEditFileText } from "./read-file";
+import { readEditPreviewFileText } from "./target";
 
 export interface DiffResult {
 	diff: string;
@@ -938,16 +937,16 @@ export async function computeEditDiff(
 	fuzzy = true,
 	all = false,
 	threshold?: number,
+	options?: { signal?: AbortSignal },
 ): Promise<DiffResult | DiffError> {
 	if (oldText.length === 0) {
 		return { error: "oldText must not be empty." };
 	}
 
 	try {
-		const absolutePath = resolveToCwd(path, cwd);
 		let rawContent: string;
 		try {
-			rawContent = await readEditFileText(absolutePath, path);
+			rawContent = await readEditPreviewFileText(path, cwd, options?.signal);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			return { error: message || `Unable to read ${path}` };

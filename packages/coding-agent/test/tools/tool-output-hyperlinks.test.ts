@@ -194,4 +194,25 @@ describe("tool output OSC 8 file:// hyperlinks", () => {
 		// A relative arg path must not leak into a root-anchored file URI.
 		expect(uris).not.toContain(rootAnchoredArgUri);
 	});
+
+	it("links ssh edit result headers as URI targets, not file URIs", async () => {
+		settings.override("tui.hyperlinks", "always");
+		const theme = (await getThemeByName("dark"))!;
+		const remotePath = "ssh://icaro/tmp/a.ts";
+		const rendered = editToolRenderer
+			.renderResult(
+				{
+					content: [{ type: "text", text: "Updated ssh://icaro/tmp/a.ts" }],
+					details: { diff: "+1|// x", op: "update", path: remotePath },
+				},
+				{ expanded: false, isPartial: false, renderContext: { editMode: "patch" } },
+				theme,
+				{ path: remotePath },
+			)
+			.render(200)
+			.join("\n");
+		const uris = extractLinkUris(rendered);
+		expect(uris).toContain(remotePath);
+		expect(uris.some(uri => uri.startsWith("file://") && uri.includes("ssh"))).toBe(false);
+	});
 });

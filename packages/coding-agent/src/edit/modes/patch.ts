@@ -18,7 +18,6 @@ import {
 } from "../../lsp";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
-import { assertEditableFile } from "../../tools/auto-generated-guard";
 import {
 	invalidateFsScanAfterDelete,
 	invalidateFsScanAfterRename,
@@ -26,7 +25,6 @@ import {
 } from "../../tools/fs-cache-invalidation";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd } from "../../tools/path-utils";
-import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
 import { ToolError } from "../../tools/tool-errors";
 import {
 	ApplyPatchError,
@@ -49,6 +47,13 @@ import {
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { EditToolDetails, LspBatchRequest } from "../renderer";
 import {
+	createInternalUrlEditFileSystem,
+	type EditTarget,
+	type EditTargetFileSystem,
+	resolveEditTarget,
+	resolveEditTargetForPreview,
+} from "../target";
+import {
 	type ContextLineResult,
 	DEFAULT_FUZZY_THRESHOLD,
 	findClosestSequenceMatch,
@@ -67,14 +72,7 @@ export interface PatchInput {
 	diff?: string;
 }
 
-export interface FileSystem {
-	exists(path: string): Promise<boolean>;
-	read(path: string): Promise<string>;
-	readBinary?: (path: string) => Promise<Uint8Array>;
-	write(path: string, content: string): Promise<void>;
-	delete(path: string): Promise<void>;
-	mkdir(path: string): Promise<void>;
-}
+export interface FileSystem extends EditTargetFileSystem {}
 
 interface FileChange {
 	type: Operation;
@@ -95,6 +93,7 @@ export interface ApplyPatchOptions {
 	fuzzyThreshold?: number;
 	allowFuzzy?: boolean;
 	fs?: FileSystem;
+	resolvePath?: (path: string) => string;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -122,6 +121,54 @@ export const defaultFileSystem: FileSystem = {
 		await fs.promises.mkdir(path, { recursive: true });
 	},
 };
+
+class PreviewMemoryFileSystem implements FileSystem {
+	readonly #base: FileSystem;
+	readonly #files = new Map<string, string | undefined>();
+	readonly #encoder = new TextEncoder();
+
+	constructor(base: FileSystem) {
+		this.#base = base;
+	}
+
+	async exists(path: string): Promise<boolean> {
+		if (this.#files.has(path)) return this.#files.get(path) !== undefined;
+		return this.#base.exists(path);
+	}
+
+	async read(path: string): Promise<string> {
+		if (this.#files.has(path)) {
+			const content = this.#files.get(path);
+			if (content === undefined) throw new Error(`File not found: ${path}`);
+			return content;
+		}
+		return this.#base.read(path);
+	}
+
+	async readBinary(path: string): Promise<Uint8Array> {
+		if (this.#files.has(path)) return this.#encoder.encode(await this.read(path));
+		if (this.#base.readBinary) return this.#base.readBinary(path);
+		return this.#encoder.encode(await this.#base.read(path));
+	}
+
+	async write(path: string, content: string): Promise<void> {
+		this.#files.set(path, content);
+	}
+
+	async delete(path: string): Promise<void> {
+		this.#files.set(path, undefined);
+	}
+
+	async mkdir(_path: string): Promise<void> {
+		// Preview-only filesystem: parent creation has no side effects.
+	}
+
+	async move(fromPath: string, toPath: string, content: string | undefined): Promise<void> {
+		const finalContent = content ?? (await this.read(fromPath));
+		this.#files.set(toPath, finalContent);
+		this.#files.set(fromPath, undefined);
+	}
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Internal Types
@@ -1478,9 +1525,9 @@ async function applyNormalizedPatch(input: PatchInput, options: ApplyPatchOption
 		fs = defaultFileSystem,
 		fuzzyThreshold = DEFAULT_FUZZY_THRESHOLD,
 		allowFuzzy = true,
+		resolvePath = (p: string): string => resolveToCwd(p, cwd),
 	} = options;
 
-	const resolvePath = (p: string): string => resolveToCwd(p, cwd);
 	const absolutePath = resolvePath(input.path);
 	const op = input.op ?? "update";
 
@@ -1572,8 +1619,12 @@ async function applyNormalizedPatch(input: PatchInput, options: ApplyPatchOption
 			if (parentDir && parentDir !== ".") {
 				await fs.mkdir(parentDir);
 			}
-			await fs.write(destPath, finalContent);
-			await fs.delete(absolutePath);
+			if (fs.move) {
+				await fs.move(absolutePath, destPath, finalContent);
+			} else {
+				await fs.write(destPath, finalContent);
+				await fs.delete(absolutePath);
+			}
 		} else {
 			await fs.write(absolutePath, finalContent);
 		}
@@ -1598,10 +1649,99 @@ export async function previewPatch(input: PatchInput, options: ApplyPatchOptions
 	return applyPatch(input, { ...options, dryRun: true });
 }
 
+export interface ComputePatchDiffOptions {
+	fuzzyThreshold?: number;
+	allowFuzzy?: boolean;
+	fs?: FileSystem;
+	resolvePath?: (path: string) => string;
+	signal?: AbortSignal;
+}
+
+type InternalEditTarget = Extract<EditTarget, { kind: "internal" }>;
+
+function isInternalEditTarget(target: EditTarget | undefined): target is InternalEditTarget {
+	return target?.kind === "internal";
+}
+
+function targetPatchPath(target: EditTarget): string {
+	return target.kind === "internal" ? target.canonicalPath : target.absolutePath;
+}
+
+function targetResultPath(target: EditTarget): string {
+	return target.kind === "internal" ? target.displayPath : target.absolutePath;
+}
+
+function validateRenameTarget(source: EditTarget, destination: EditTarget, rename: string): void {
+	if (source.kind !== destination.kind) {
+		throw new Error(
+			source.kind === "internal"
+				? `Remote rename destination must be a full ${source.scheme}:// URL: ${rename}`
+				: `Cannot move a local file to an internal URL target: ${rename}`,
+		);
+	}
+	if (source.kind === "internal" && destination.kind === "internal") {
+		if (source.scheme !== destination.scheme || source.handler !== destination.handler) {
+			throw new Error("Remote move destination must use the same protocol handler as the source");
+		}
+	}
+}
+
+interface ResolvedPreviewPatchExecution {
+	input: PatchInput;
+	fs?: FileSystem;
+	resolvePath?: (path: string) => string;
+	internalTargets?: InternalEditTarget[];
+}
+
+function uniqueInternalTargets(targets: readonly InternalEditTarget[]): InternalEditTarget[] {
+	const byPath = new Map<string, InternalEditTarget>();
+	for (const target of targets) byPath.set(target.canonicalPath, target);
+	return [...byPath.values()];
+}
+
+async function resolvePreviewPatchExecution(
+	input: PatchInput,
+	cwd: string,
+	options: ComputePatchDiffOptions | undefined,
+): Promise<ResolvedPreviewPatchExecution> {
+	if (options?.fs) {
+		return { input, fs: options.fs, resolvePath: options.resolvePath };
+	}
+
+	const op = input.op ?? "update";
+	const target = await resolveEditTargetForPreview(cwd, input.path, {
+		op,
+		move: Boolean(input.rename),
+		signal: options?.signal,
+	});
+	if (target.kind === "local") return { input };
+
+	let renameTarget: EditTarget | undefined;
+	if (input.rename) {
+		renameTarget = await resolveEditTargetForPreview(cwd, input.rename, {
+			op: "create",
+			signal: options?.signal,
+		});
+		validateRenameTarget(target, renameTarget, input.rename);
+	}
+
+	const internalTargets = [target, renameTarget].filter(isInternalEditTarget);
+	return {
+		input: {
+			...input,
+			path: target.canonicalPath,
+			rename: renameTarget ? targetPatchPath(renameTarget) : undefined,
+		},
+		fs: createInternalUrlEditFileSystem(internalTargets, { cwd, signal: options?.signal }),
+		resolvePath: (path: string): string => path,
+		internalTargets,
+	};
+}
+
 export async function computePatchDiff(
 	input: PatchInput,
 	cwd: string,
-	options?: { fuzzyThreshold?: number; allowFuzzy?: boolean },
+	options?: ComputePatchDiffOptions,
 ): Promise<
 	| {
 			diff: string;
@@ -1612,10 +1752,13 @@ export async function computePatchDiff(
 	  }
 > {
 	try {
-		const result = await previewPatch(input, {
+		const preview = await resolvePreviewPatchExecution(input, cwd, options);
+		const result = await previewPatch(preview.input, {
 			cwd,
 			fuzzyThreshold: options?.fuzzyThreshold,
 			allowFuzzy: options?.allowFuzzy,
+			fs: preview.fs,
+			resolvePath: preview.resolvePath,
 		});
 		const oldContent = result.change.oldContent ?? "";
 		const newContent = result.change.newContent ?? "";
@@ -1627,6 +1770,63 @@ export async function computePatchDiff(
 		return generateUnifiedDiffString(normalizedOld, normalizedNew, undefined, {
 			path: result.change.newPath ?? result.change.path,
 		});
+	} catch (err) {
+		return { error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+export async function computePatchSequenceDiff(
+	inputs: readonly PatchInput[],
+	cwd: string,
+	options?: ComputePatchDiffOptions,
+): Promise<
+	| {
+			diff: string;
+			firstChangedLine: number | undefined;
+	  }
+	| {
+			error: string;
+	  }
+> {
+	if (inputs.length === 0) return { diff: "", firstChangedLine: undefined };
+	if (inputs.length === 1) return computePatchDiff(inputs[0]!, cwd, options);
+
+	try {
+		const resolvedEntries = await Promise.all(inputs.map(input => resolvePreviewPatchExecution(input, cwd, options)));
+		const internalTargets = uniqueInternalTargets(resolvedEntries.flatMap(entry => entry.internalTargets ?? []));
+		const baseFileSystem =
+			internalTargets.length > 0
+				? createInternalUrlEditFileSystem(internalTargets, { cwd, signal: options?.signal })
+				: (options?.fs ?? defaultFileSystem);
+		const memoryFileSystem = new PreviewMemoryFileSystem(baseFileSystem);
+
+		let firstOldContent = "";
+		let capturedOldContent = false;
+		let lastNewContent = "";
+		let resultPath = resolvedEntries[0]?.input.path ?? "";
+
+		for (const entry of resolvedEntries) {
+			const result = await applyPatch(entry.input, {
+				cwd,
+				fs: memoryFileSystem,
+				resolvePath: entry.resolvePath ?? options?.resolvePath,
+				fuzzyThreshold: options?.fuzzyThreshold,
+				allowFuzzy: options?.allowFuzzy,
+			});
+			if (!capturedOldContent) {
+				firstOldContent = result.change.oldContent ?? "";
+				capturedOldContent = true;
+			}
+			lastNewContent = result.change.newContent ?? "";
+			resultPath = result.change.newPath ?? result.change.path;
+		}
+
+		const normalizedOld = normalizeToLF(stripBom(firstOldContent).text);
+		const normalizedNew = normalizeToLF(stripBom(lastNewContent).text);
+		if (!normalizedOld && !normalizedNew) {
+			return { diff: "", firstChangedLine: undefined };
+		}
+		return generateUnifiedDiffString(normalizedOld, normalizedNew, undefined, { path: resultPath });
 	} catch (err) {
 		return { error: err instanceof Error ? err.message : String(err) };
 	}
@@ -1659,7 +1859,7 @@ export interface ExecutePatchSingleOptions {
 	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
 }
 
-class LspFileSystem implements FileSystem {
+class LocalEditFileSystem implements FileSystem {
 	#lastDiagnostics: FileDiagnosticsResult | undefined;
 	#fileCache: Record<string, Bun.BunFile> = {};
 
@@ -1768,24 +1968,31 @@ export async function executePatchSingle(
 	const { op: rawOp, rename, diff } = params;
 
 	const op: Operation = rawOp === "create" || rawOp === "delete" ? rawOp : "update";
+	const target = await resolveEditTarget(session, path, {
+		op,
+		move: rename,
+		signal,
+		assertLocalEditable: true,
+	});
+	const renameTarget = rename
+		? await resolveEditTarget(session, rename, {
+				op: "create",
+				signal,
+				enforcePlanMode: false,
+			})
+		: undefined;
+	if (renameTarget && rename) {
+		validateRenameTarget(target, renameTarget, rename);
+	}
 
-	enforcePlanModeWrite(session, path, { op, move: rename });
-	const resolvedPath = resolvePlanPath(session, path);
-	const resolvedRename = rename ? resolvePlanPath(session, rename) : undefined;
+	const resolvedPath = targetPatchPath(target);
+	const resolvedRename = renameTarget ? targetPatchPath(renameTarget) : undefined;
 
-	await assertEditableFile(resolvedPath, path);
-
-	// Capture pre-edit content so we can verify the write actually hit disk.
-	// `LspFileSystem.writeFile` delegates to a writethrough callback that, in
-	// some host integrations, has been observed to report success without
-	// persisting bytes — leaving the tool to claim "Updated <path>" while the
-	// file on disk is byte-identical to before. After the write we re-read
-	// the file and assert the bytes match the expected newContent; relying
-	// on stat (mtime/size) is unreliable because filesystems with coarse
-	// timestamp resolution can record an unchanged mtime even when the
-	// content was rewritten, and same-length rewrites leave size unchanged.
+	// Capture pre-edit content so local post-write verification can prove the
+	// write actually hit disk. Remote protocol handlers own their persistence
+	// checks and must not be re-read through local fs APIs.
 	let preEditContent: Uint8Array | undefined;
-	if (op === "update") {
+	if (target.kind === "local" && op === "update") {
 		try {
 			preEditContent = await fs.promises.readFile(resolvedPath);
 		} catch (err) {
@@ -1794,24 +2001,29 @@ export async function executePatchSingle(
 	}
 
 	const input: PatchInput = { path: resolvedPath, op, rename: resolvedRename, diff };
-	const patchFileSystem = new LspFileSystem(
-		session,
-		path, // original user-provided path for bridge guard (may be local://, vault://, etc.)
-		writethrough,
-		signal,
-		batchRequest,
-		beginDeferredDiagnosticsForPath,
-	);
+	const localFileSystem =
+		target.kind === "local"
+			? new LocalEditFileSystem(session, path, writethrough, signal, batchRequest, beginDeferredDiagnosticsForPath)
+			: undefined;
+	const patchFileSystem =
+		localFileSystem ??
+		createInternalUrlEditFileSystem([target, renameTarget].filter(isInternalEditTarget), {
+			cwd: session.cwd,
+			signal,
+			localProtocolOptions: session.localProtocolOptions,
+		});
 	const result = await applyPatch(input, {
 		cwd: session.cwd,
 		fs: patchFileSystem,
+		resolvePath: target.kind === "internal" ? (path: string): string => path : undefined,
 		fuzzyThreshold,
 		allowFuzzy,
 	});
 
-	// Post-write verification: only meaningful for in-place updates where the
-	// patch actually changes content and the file is not being renamed away.
+	// Post-write verification: only meaningful for in-place local updates where
+	// the patch changes content and the file is not being renamed away.
 	if (
+		target.kind === "local" &&
 		result.change.type === "update" &&
 		!result.change.newPath &&
 		preEditContent !== undefined &&
@@ -1836,14 +2048,23 @@ export async function executePatchSingle(
 		}
 	}
 
-	if (resolvedRename) {
-		invalidateFsScanAfterRename(resolvedPath, resolvedRename);
-	} else if (result.change.type === "delete") {
-		invalidateFsScanAfterDelete(resolvedPath);
-	} else {
-		invalidateFsScanAfterWrite(resolvedPath);
+	if (target.kind === "local") {
+		if (resolvedRename) {
+			invalidateFsScanAfterRename(resolvedPath, resolvedRename);
+		} else if (result.change.type === "delete") {
+			invalidateFsScanAfterDelete(resolvedPath);
+		} else {
+			invalidateFsScanAfterWrite(resolvedPath);
+		}
 	}
-	const effectiveRename = result.change.newPath ? rename : undefined;
+	const effectiveRename = result.change.newPath
+		? renameTarget?.kind === "internal"
+			? renameTarget.displayPath
+			: rename
+		: undefined;
+	const detailsPath =
+		result.change.newPath && renameTarget ? targetResultPath(renameTarget) : targetResultPath(target);
+	const sourcePath = result.change.newPath ? targetResultPath(target) : undefined;
 
 	let diffResult: { diff: string; firstChangedLine: number | undefined } = {
 		diff: "",
@@ -1857,13 +2078,13 @@ export async function executePatchSingle(
 		const normalizedOld = normalizeToLF(stripBom(result.change.oldContent).text);
 		const normalizedNew = normalizeToLF(stripBom(result.change.newContent).text);
 		diffResult = generateUnifiedDiffString(normalizedOld, normalizedNew, undefined, {
-			path: result.change.newPath ?? result.change.path,
+			path: detailsPath,
 		});
 	} else if (result.change.type === "create" && result.change.newContent !== undefined) {
 		// The result is authoritative for rendering, so emit the added-content
 		// diff here rather than relying on the call-phase streaming preview.
 		const normalizedNew = normalizeToLF(stripBom(result.change.newContent).text);
-		diffResult = generateUnifiedDiffString("", normalizedNew, undefined, { path: result.change.path });
+		diffResult = generateUnifiedDiffString("", normalizedNew, undefined, { path: detailsPath });
 	}
 
 	let resultText: string;
@@ -1879,8 +2100,8 @@ export async function executePatchSingle(
 			break;
 	}
 
-	let diagnostics = patchFileSystem.getDiagnostics();
-	if (op === "delete" && batchRequest?.flush) {
+	let diagnostics = localFileSystem?.getDiagnostics();
+	if (target.kind === "local" && op === "delete" && batchRequest?.flush) {
 		const flushedDiagnostics = await flushLspWritethroughBatch(batchRequest.id, session.cwd, signal);
 		diagnostics ??= flushedDiagnostics;
 	}
@@ -1896,16 +2117,12 @@ export async function executePatchSingle(
 		content: [{ type: "text", text: resultText }],
 		details: {
 			diff: diffResult.diff,
-			// When the patch moves the file, anchor the diff to the destination
-			// path. ACP `ToolCallContent.diff.path` comes from this field, and
-			// clients use it to open or focus the file post-change; pointing at
-			// the (now-deleted) source navigates to nothing.
-			path: result.change.newPath ?? resolvedPath,
+			path: detailsPath,
 			firstChangedLine: diffResult.firstChangedLine,
 			diagnostics: mergedDiagnostics,
 			op,
 			move: effectiveRename,
-			sourcePath: result.change.newPath ? resolvedPath : undefined,
+			sourcePath,
 			meta,
 			oldText,
 			newText,

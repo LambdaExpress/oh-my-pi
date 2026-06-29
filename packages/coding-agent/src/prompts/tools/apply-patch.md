@@ -62,4 +62,4 @@ A full patch can combine several operations:
 It is important to remember:
 - You must include a header with your intended action (Add/Delete/Update)
 - You must prefix new lines with `+` even when creating a new file
-- File references can only be relative, NEVER ABSOLUTE.
+- File references are workspace-relative paths, except `ssh://host/absolute/path` targets whole remote UTF-8 text files. Directories are not editable; local absolute paths are not allowed.
