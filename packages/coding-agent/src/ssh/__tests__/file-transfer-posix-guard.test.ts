@@ -10,30 +10,107 @@ import {
 	writeRemoteFile,
 } from "../file-transfer";
 
-describe("ssh file-transfer POSIX guard", () => {
+const POWERSHELL_PREFIX = "pwsh -NoProfile -NonInteractive -EncodedCommand ";
+
+function decodePowerShellCommand(command: string): string {
+	expect(command.startsWith(POWERSHELL_PREFIX)).toBe(true);
+	return Buffer.from(command.slice(POWERSHELL_PREFIX.length), "base64").toString("utf16le");
+}
+
+describe("ssh file-transfer backend guard", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
 	});
 
-	it("rejects a confirmed Windows remote before running any POSIX command", async () => {
+	it("rejects a Windows remote without a verified PowerShell transfer backend", async () => {
 		// Stub BOTH the connection and the host-info probe so the guard is reached
 		// without opening a real SSH connection and before any command is spawned.
 		const ensureConnectionSpy = vi.spyOn(connectionManager, "ensureConnection").mockResolvedValue(undefined);
 		const ensureHostInfoSpy = vi.spyOn(connectionManager, "ensureHostInfo").mockResolvedValue({
-			version: 4,
+			version: 5,
 			os: "windows",
-			shell: "powershell",
+			shell: "cmd",
 			compatEnabled: false,
 		});
+		const buildSpy = vi
+			.spyOn(connectionManager, "buildRemoteCommand")
+			.mockRejectedValue(new Error("should-not-build-command"));
 		const target: SSHConnectionTarget = { name: "winbox", host: "winbox" };
-		await expect(readRemoteFile(target, "C:/x.txt", { maxBytes: 1024 })).rejects.toThrow(/Windows host/);
-		await expect(writeRemoteFile(target, "C:/x.txt", new Uint8Array([1]), {})).rejects.toThrow(/Windows host/);
-		await expect(deleteRemoteFile(target, "C:/x.txt", {})).rejects.toThrow(/Windows host/);
-		await expect(moveRemoteFile(target, "C:/x.txt", "C:/y.txt", {})).rejects.toThrow(/Windows host/);
+		await expect(readRemoteFile(target, "C:/x.txt", { maxBytes: 1024 })).rejects.toThrow(
+			/without a verified PowerShell transfer backend/,
+		);
+		await expect(writeRemoteFile(target, "C:/x.txt", new Uint8Array([1]), {})).rejects.toThrow(
+			/without a verified PowerShell transfer backend/,
+		);
+		await expect(deleteRemoteFile(target, "C:/x.txt", {})).rejects.toThrow(
+			/without a verified PowerShell transfer backend/,
+		);
+		await expect(moveRemoteFile(target, "C:/x.txt", "C:/y.txt", {})).rejects.toThrow(
+			/without a verified PowerShell transfer backend/,
+		);
+		await expect(statRemotePath(target, "C:/x.txt")).rejects.toThrow(
+			/without a verified PowerShell transfer backend/,
+		);
+		await expect(listRemoteDir(target, "C:/")).rejects.toThrow(/without a verified PowerShell transfer backend/);
 		// Prove the guard ran through the stubbed transport rather than failing early
 		// for an unrelated reason (e.g. a future import refactor bypassing the mocks).
 		expect(ensureConnectionSpy).toHaveBeenCalled();
 		expect(ensureHostInfoSpy).toHaveBeenCalled();
+		expect(buildSpy).not.toHaveBeenCalled();
+	});
+
+	it("dispatches Windows transfers through the verified PowerShell backend", async () => {
+		vi.spyOn(connectionManager, "ensureConnection").mockResolvedValue(undefined);
+		vi.spyOn(connectionManager, "ensureHostInfo").mockResolvedValue({
+			version: 5,
+			os: "windows",
+			shell: "powershell",
+			powerShellCommand: "pwsh",
+			compatEnabled: false,
+		});
+		const buildSpy = vi
+			.spyOn(connectionManager, "buildRemoteCommand")
+			.mockRejectedValue(new Error("stop-before-spawn"));
+		const target: SSHConnectionTarget = { name: "winps", host: "winps" };
+
+		await expect(readRemoteFile(target, "C:/x.txt", { maxBytes: 1024 })).rejects.toThrow(/stop-before-spawn/);
+		await expect(writeRemoteFile(target, "C:/x.txt", new Uint8Array([1]), {})).rejects.toThrow(/stop-before-spawn/);
+		await expect(statRemotePath(target, "C:/x.txt")).rejects.toThrow(/stop-before-spawn/);
+		await expect(listRemoteDir(target, "C:/")).rejects.toThrow(/stop-before-spawn/);
+		await expect(deleteRemoteFile(target, "C:/x.txt", {})).rejects.toThrow(/stop-before-spawn/);
+		await expect(moveRemoteFile(target, "C:/x.txt", "C:/y.txt", {})).rejects.toThrow(/stop-before-spawn/);
+
+		const dispatches = buildSpy.mock.calls.map(call => call[1] as string);
+		expect(dispatches).toHaveLength(6);
+		for (const command of dispatches) {
+			expect(command.startsWith(POWERSHELL_PREFIX)).toBe(true);
+		}
+		expect(buildSpy.mock.calls[1]?.[2]).toMatchObject({ allowStdin: true });
+	});
+
+	it("normalizes ssh URL drive paths only inside PowerShell transfer scripts", async () => {
+		vi.spyOn(connectionManager, "ensureConnection").mockResolvedValue(undefined);
+		vi.spyOn(connectionManager, "ensureHostInfo").mockResolvedValue({
+			version: 5,
+			os: "windows",
+			shell: "powershell",
+			powerShellCommand: "pwsh",
+			compatEnabled: false,
+		});
+		const buildSpy = vi
+			.spyOn(connectionManager, "buildRemoteCommand")
+			.mockRejectedValue(new Error("stop-before-spawn"));
+		const target: SSHConnectionTarget = { name: "winps", host: "winps" };
+
+		await expect(readRemoteFile(target, "/C:/Users/me/a.txt", { maxBytes: 1024 })).rejects.toThrow(
+			/stop-before-spawn/,
+		);
+		const driveScript = decodePowerShellCommand(buildSpy.mock.calls[0]?.[1] as string);
+		expect(driveScript).toContain("$p = 'C:/Users/me/a.txt'");
+
+		await expect(readRemoteFile(target, "/", { maxBytes: 1024 })).rejects.toThrow(/stop-before-spawn/);
+		const rootScript = decodePowerShellCommand(buildSpy.mock.calls[1]?.[1] as string);
+		expect(rootScript).toContain("$p = '/'");
 	});
 
 	it("rejects a non-Windows remote with no verified transferShell", async () => {
@@ -43,7 +120,7 @@ describe("ssh file-transfer POSIX guard", () => {
 		// "what name did the login shell self-report" (#3719).
 		vi.spyOn(connectionManager, "ensureConnection").mockResolvedValue(undefined);
 		vi.spyOn(connectionManager, "ensureHostInfo").mockResolvedValue({
-			version: 4,
+			version: 5,
 			os: "linux",
 			shell: "unknown",
 			compatEnabled: false,
@@ -66,7 +143,7 @@ describe("ssh file-transfer POSIX guard", () => {
 		// under the shell we verified can run it (#3719).
 		vi.spyOn(connectionManager, "ensureConnection").mockResolvedValue(undefined);
 		vi.spyOn(connectionManager, "ensureHostInfo").mockResolvedValue({
-			version: 4,
+			version: 5,
 			os: "linux",
 			// Login shell is fish; only `transferShell` indicates a working POSIX shell.
 			shell: "unknown",
@@ -103,7 +180,7 @@ describe("ssh file-transfer POSIX guard", () => {
 		// shell still routes through `sh -c` to keep one dispatch shape.
 		vi.spyOn(connectionManager, "ensureConnection").mockResolvedValue(undefined);
 		vi.spyOn(connectionManager, "ensureHostInfo").mockResolvedValue({
-			version: 4,
+			version: 5,
 			os: "linux",
 			shell: "sh",
 			transferShell: "sh",

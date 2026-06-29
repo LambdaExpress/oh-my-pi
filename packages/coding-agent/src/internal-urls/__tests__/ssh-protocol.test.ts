@@ -143,6 +143,18 @@ describe("SshProtocolHandler", () => {
 		expect(handler.canonicalKey(parsed)).toBe("ssh://icaro/tmp/a%23b%3Fc%3Awith%3Acolon");
 	});
 
+	it("passes Windows drive paths to the transfer layer without PowerShell normalization", async () => {
+		mockHosts();
+		const spy = mockReadBytes("ok\n");
+		await handler.resolve(parseInternalUrl("ssh://win/C%3A/Users/a.txt"));
+		expect(spy.mock.calls[0]?.[1]).toBe("/C:/Users/a.txt");
+	});
+
+	it("canonicalizes Windows drive paths by re-encoding reserved filename bytes only", () => {
+		const parsed = parseInternalUrl("ssh://win/C%3A/Users/a%23b%3F.txt");
+		expect(canonicalSshResourceKey(parsed)).toBe("ssh://win/C%3A/Users/a%23b%3F.txt");
+	});
+
 	it("deletes through deleteRemoteFile", async () => {
 		mockHosts();
 		const spy = vi.spyOn(fileTransfer, "deleteRemoteFile").mockResolvedValue(undefined);

@@ -13,6 +13,7 @@ import { DEFAULT_MAX_BYTES, streamTailUpdates, TailBuffer } from "../session/str
 import type { SSHHostInfo } from "../ssh/connection-manager";
 import { ensureHostInfo, getCachedHostInfoSync } from "../ssh/connection-manager";
 import { executeSSH } from "../ssh/ssh-executor";
+import { quotePowerShellString } from "../ssh/utils";
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import type { ToolSession } from ".";
@@ -77,14 +78,6 @@ function quoteRemotePath(value: string): string {
 	return `'${escaped}'`;
 }
 
-function quotePowerShellPath(value: string): string {
-	if (value.length === 0) {
-		return "''";
-	}
-	const escaped = value.replace(/'/g, "''");
-	return `'${escaped}'`;
-}
-
 function quoteCmdPath(value: string): string {
 	const escaped = value.replace(/"/g, '""');
 	return `"${escaped}"`;
@@ -95,7 +88,7 @@ function buildRemoteCommand(command: string, cwd: string | undefined, info: SSHH
 
 	if (info.os === "windows" && !info.compatEnabled) {
 		if (info.shell === "powershell") {
-			return `Set-Location -Path ${quotePowerShellPath(cwd)}; ${command}`;
+			return `Set-Location -Path ${quotePowerShellString(cwd)}; ${command}`;
 		}
 		return `cd /d ${quoteCmdPath(cwd)} && ${command}`;
 	}

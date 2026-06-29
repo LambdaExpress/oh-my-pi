@@ -15,6 +15,7 @@ export interface SSHConnectionTarget {
 
 export type SSHHostOs = "windows" | "linux" | "macos" | "unknown";
 export type SSHHostShell = "cmd" | "powershell" | "bash" | "zsh" | "sh" | "unknown";
+export type SSHPowerShellCommand = "pwsh" | "powershell";
 export type SshPlatform = typeof process.platform;
 
 export function supportsSshControlMaster(platform: SshPlatform = process.platform): boolean {
@@ -31,9 +32,15 @@ export interface SSHHostInfo {
 	 * `sh -lc` / `bash -lc` / `zsh -lc` against the remote and keeping the
 	 * first one that round-trips a known marker. Independent of `shell`
 	 * (the self-reported login shell), which may be noisy, exotic, or simply
-	 * mis-classified — only `transferShell` gates ssh:// transfers.
+	 * mis-classified — only `transferShell` gates POSIX ssh:// transfers.
 	 */
 	transferShell?: "sh" | "bash" | "zsh";
+	/**
+	 * Windows PowerShell executable OMP verified can run encoded transfer
+	 * scripts with `-NoProfile -NonInteractive -EncodedCommand` on a Windows
+	 * remote. Independent of `shell`, which still represents the login shell.
+	 */
+	powerShellCommand?: SSHPowerShellCommand;
 	compatShell?: "bash" | "sh";
 	compatEnabled: boolean;
 }
@@ -41,7 +48,7 @@ export interface SSHHostInfo {
 const CONTROL_DIR = getSshControlDir();
 const CONTROL_PATH = path.join(CONTROL_DIR, "%C.sock");
 const HOST_INFO_DIR = getRemoteHostDir();
-const HOST_INFO_VERSION = 4;
+const HOST_INFO_VERSION = 5;
 
 const activeHosts = new Map<string, SSHConnectionTarget>();
 const pendingConnections = new Map<string, Promise<void>>();
@@ -180,6 +187,11 @@ function parseTransferShell(value: unknown): SSHHostInfo["transferShell"] {
 	return undefined;
 }
 
+function parsePowerShellCommand(value: unknown): SSHPowerShellCommand | undefined {
+	if (value === "pwsh" || value === "powershell") return value;
+	return undefined;
+}
+
 function applyCompatOverride(host: SSHConnectionTarget, info: SSHHostInfo): SSHHostInfo {
 	const compatShell =
 		info.compatShell ??
@@ -201,8 +213,8 @@ function applyCompatOverride(host: SSHConnectionTarget, info: SSHHostInfo): SSHH
 /**
  * Parse a raw cache-file value (or any unknown) into a normalized
  * {@link SSHHostInfo}, dropping fields that don't pass the per-field guards.
- * Exported so cache-layer round-tripping (incl. the new `transferShell`
- * field, #3719) is testable without touching disk.
+ * Exported so cache-layer round-tripping (incl. transfer backends like
+ * `transferShell` and `powerShellCommand`) is testable without touching disk.
  */
 export function parseHostInfo(value: unknown): SSHHostInfo | null {
 	if (!value || typeof value !== "object") return null;
@@ -211,6 +223,7 @@ export function parseHostInfo(value: unknown): SSHHostInfo | null {
 	const shell = parseShell(record.shell) ?? "unknown";
 	const compatShell = parseCompatShell(record.compatShell);
 	const transferShell = parseTransferShell(record.transferShell);
+	const powerShellCommand = parsePowerShellCommand(record.powerShellCommand);
 	const compatEnabled = typeof record.compatEnabled === "boolean" ? record.compatEnabled : false;
 	const version = typeof record.version === "number" ? record.version : 0;
 	return {
@@ -218,6 +231,7 @@ export function parseHostInfo(value: unknown): SSHHostInfo | null {
 		os,
 		shell,
 		transferShell,
+		powerShellCommand,
 		compatShell,
 		compatEnabled,
 	};
@@ -290,8 +304,22 @@ export const HOST_PROBE_MARKER = "PI_HOST_PROBE=";
 /** Marker for the transfer-shell capability probe. */
 export const TRANSFER_PROBE_MARKER = "PI_TRANSFER_OK|";
 
+/** Marker for the Windows PowerShell capability probe. */
+export const POWERSHELL_PROBE_MARKER = "PI_POWERSHELL_OK|";
+
 /** sh / bash / zsh, in the order we'll try as `transferShell` candidates. */
 const TRANSFER_SHELL_CANDIDATES = ["sh", "bash", "zsh"] as const;
+
+/** PowerShell executables, in the order we'll try as Windows transfer candidates. */
+const POWERSHELL_CANDIDATES = ["pwsh", "powershell"] as const;
+
+export function encodePowerShellScript(script: string): string {
+	return Buffer.from(script, "utf16le").toString("base64");
+}
+
+export function buildPowerShellCommand(executable: SSHPowerShellCommand, script: string): string {
+	return `${executable} -NoProfile -NonInteractive -EncodedCommand ${encodePowerShellScript(script)}`;
+}
 
 /**
  * Find the first line of `stdout`/`stderr` that begins with `marker` and
@@ -360,6 +388,20 @@ async function probeTransferShell(
 	return { shell: undefined, uname: "" };
 }
 
+async function probeWindowsPowerShell(host: SSHConnectionTarget): Promise<SSHPowerShellCommand | undefined> {
+	const script = `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::Out.Write("${POWERSHELL_PROBE_MARKER}")
+[Console]::Out.Write([System.Environment]::OSVersion.Platform.ToString())
+`;
+	for (const candidate of POWERSHELL_CANDIDATES) {
+		const probe = await runSshCaptureSync(await buildRemoteCommand(host, buildPowerShellCommand(candidate, script)));
+		if (probe.exitCode !== 0) continue;
+		const tail = findProbeMarker(probe.stdout, probe.stderr, POWERSHELL_PROBE_MARKER);
+		if (tail !== null && /Win32|Windows/i.test(tail)) return candidate;
+	}
+	return undefined;
+}
+
 async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 	const command = `echo "${HOST_PROBE_MARKER}$OSTYPE|$SHELL|$BASH_VERSION" 2>/dev/null || echo "${HOST_PROBE_MARKER}%OS%|%COMSPEC%|"`;
 	const result = await runSshCaptureSync(await buildRemoteCommand(host, command));
@@ -367,11 +409,17 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 	if (payload === null) {
 		logger.debug("SSH host probe failed", { host: host.name, error: result.stderr });
 		const transferProbe = await probeTransferShell(host);
+		const powerShellCommand = transferProbe.shell ? undefined : await probeWindowsPowerShell(host);
 		const fallback: SSHHostInfo = {
 			version: HOST_INFO_VERSION,
-			os: transferProbe.shell ? (osFromUname(transferProbe.uname) ?? "unknown") : "unknown",
+			os: powerShellCommand
+				? "windows"
+				: transferProbe.shell
+					? (osFromUname(transferProbe.uname) ?? "unknown")
+					: "unknown",
 			shell: "unknown",
 			transferShell: transferProbe.shell,
+			powerShellCommand,
 			compatShell: undefined,
 			compatEnabled: false,
 		};
@@ -421,13 +469,22 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 	// printf round-trips becomes `transferShell`; ssh:// gates on this rather
 	// than the self-reported login-shell name (#3719).
 	let transferShell: SSHHostInfo["transferShell"];
-	if (os !== "windows") {
+	let powerShellCommand: SSHHostInfo["powerShellCommand"];
+	if (os === "windows") {
+		powerShellCommand = await probeWindowsPowerShell(host);
+	} else {
 		const probe = await probeTransferShell(host);
 		transferShell = probe.shell;
 		// `uname -s` from the same probe lets us recover the OS when the first
 		// probe couldn't classify it (e.g. the remote silently nuked `$OSTYPE`).
 		if (transferShell && os === "unknown") {
 			os = osFromUname(probe.uname) ?? os;
+		}
+		if (!transferShell) {
+			powerShellCommand = await probeWindowsPowerShell(host);
+			if (powerShellCommand && os === "unknown") {
+				os = "windows";
+			}
 		}
 	}
 
@@ -455,6 +512,7 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 		os,
 		shell,
 		transferShell,
+		powerShellCommand,
 		compatShell,
 		compatEnabled,
 	});

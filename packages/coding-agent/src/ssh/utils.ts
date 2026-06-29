@@ -32,6 +32,14 @@ export function quotePosixPath(value: string): string {
 }
 
 /**
+ * Single-quote a string for PowerShell, escaping embedded single quotes.
+ */
+export function quotePowerShellString(value: string): string {
+	if (value.length === 0) return "''";
+	return `'${value.replace(/'/g, "''")}'`;
+}
+
+/**
  * Wrap a POSIX command in `<shell> -c '<command>'` so it runs under the
  * named shell rather than whatever `$SHELL` happens to be on the remote.
  *

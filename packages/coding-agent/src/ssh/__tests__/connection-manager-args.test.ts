@@ -3,7 +3,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { getRemoteHostDir } from "@oh-my-pi/pi-utils";
 import {
+	buildPowerShellCommand,
 	buildRemoteCommand,
+	encodePowerShellScript,
 	extractProbePayload,
 	findProbeMarker,
 	getHostInfo,
@@ -160,7 +162,7 @@ describe("parseHostInfo transferShell handling", () => {
 		// Cache writers persist `transferShell` so callers don't re-probe
 		// every session; parseHostInfo must thread it back through (#3719).
 		const parsed = parseHostInfo({
-			version: 4,
+			version: 5,
 			os: "linux",
 			shell: "unknown",
 			transferShell: "bash",
@@ -173,7 +175,7 @@ describe("parseHostInfo transferShell handling", () => {
 		// Anything we couldn't have probed (fish, csh, garbage) must not slip
 		// into the cache and bypass the ssh:// transfer guard.
 		const parsed = parseHostInfo({
-			version: 4,
+			version: 5,
 			os: "linux",
 			shell: "sh",
 			transferShell: "fish",
@@ -187,5 +189,50 @@ describe("parseHostInfo transferShell handling", () => {
 		// must be undefined so shouldRefreshHostInfo treats it as stale.
 		const parsed = parseHostInfo({ version: 3, os: "linux", shell: "sh", compatEnabled: false });
 		expect(parsed?.transferShell).toBeUndefined();
+	});
+});
+
+describe("parseHostInfo powerShellCommand handling", () => {
+	it("round-trips verified Windows PowerShell transfer commands", () => {
+		for (const powerShellCommand of ["pwsh", "powershell"] as const) {
+			const parsed = parseHostInfo({
+				version: 5,
+				os: "windows",
+				shell: "cmd",
+				powerShellCommand,
+				compatEnabled: false,
+			});
+			expect(parsed?.powerShellCommand).toBe(powerShellCommand);
+		}
+	});
+
+	it("drops PowerShell command values outside the verified executable allowlist", () => {
+		for (const powerShellCommand of ["pwsh.exe", "fish", ""]) {
+			const parsed = parseHostInfo({
+				version: 5,
+				os: "windows",
+				shell: "cmd",
+				powerShellCommand,
+				compatEnabled: false,
+			});
+			expect(parsed?.powerShellCommand).toBeUndefined();
+		}
+	});
+});
+
+describe("PowerShell encoded command helpers", () => {
+	it("encodes scripts as UTF-16LE for PowerShell -EncodedCommand", () => {
+		const script = "Write-Output 'hello'";
+		const encoded = encodePowerShellScript(script);
+		expect(Buffer.from(encoded, "base64").toString("utf16le")).toBe(script);
+	});
+
+	it("builds a non-interactive encoded PowerShell command", () => {
+		const script = "$PSVersionTable.PSVersion";
+		const command = buildPowerShellCommand("pwsh", script);
+		const prefix = "pwsh -NoProfile -NonInteractive -EncodedCommand ";
+		expect(command.startsWith(prefix)).toBe(true);
+		const encoded = command.slice(prefix.length);
+		expect(Buffer.from(encoded, "base64").toString("utf16le")).toBe(script);
 	});
 });
