@@ -3,10 +3,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { PwshTool, resolvePwshExecutable } from "@oh-my-pi/pi-coding-agent/tools/pwsh";
+import { PwshTool, resolvePwshExecutable, shouldHidePwshWindow } from "@oh-my-pi/pi-coding-agent/tools/pwsh";
 
 const pwshPath = resolvePwshExecutable();
 const describeIfPwsh = pwshPath ? describe : describe.skip;
+const itIfWindowsPwsh = process.platform === "win32" && pwshPath ? it : it.skip;
 
 function textOutput(result: { content: Array<{ type: string; text?: string }> }): string {
 	return result.content
@@ -28,6 +29,20 @@ function makeSession(cwd: string): ToolSession {
 	} as unknown as ToolSession;
 }
 
+describe("shouldHidePwshWindow", () => {
+	it("hides PowerShell on Windows when the host has no inheritable console", () => {
+		expect(shouldHidePwshWindow({ platform: "win32", hostHasInheritableConsole: false })).toBe(true);
+	});
+
+	it("inherits an attached Windows console so native grandchildren do not allocate their own", () => {
+		expect(shouldHidePwshWindow({ platform: "win32", hostHasInheritableConsole: true })).toBe(false);
+	});
+
+	it("never sets the Win32-only hide flag off Windows", () => {
+		expect(shouldHidePwshWindow({ platform: "linux", hostHasInheritableConsole: false })).toBe(false);
+		expect(shouldHidePwshWindow({ platform: "darwin", hostHasInheritableConsole: false })).toBe(false);
+	});
+});
 describeIfPwsh("PwshTool", () => {
 	let tempDir: string;
 
@@ -63,5 +78,20 @@ describeIfPwsh("PwshTool", () => {
 		const text = textOutput(result);
 		expect(text).toContain("before failure");
 		expect(text).toContain("Command exited with code 7");
+	});
+
+	itIfWindowsPwsh("captures native executable output from PowerShell scripts", async () => {
+		const tool = new PwshTool(makeSession(process.cwd()), pwshPath ?? "pwsh");
+		const result = await tool.execute("call-pwsh-native", {
+			script:
+				'Write-Output "ps-before"; cmd.exe /c echo native-out; Write-Output "last=$LASTEXITCODE"; Write-Output "ps-after"',
+		});
+
+		expect(result.isError).toBeUndefined();
+		const text = textOutput(result);
+		expect(text).toContain("ps-before");
+		expect(text).toContain("native-out");
+		expect(text).toContain("last=0");
+		expect(text).toContain("ps-after");
 	});
 });

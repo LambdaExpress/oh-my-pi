@@ -1,13 +1,14 @@
-Runs PowerShell 7 scripts directly via `pwsh` — Windows-first shell work without bash wrapping.
+Runs PowerShell 7 scripts directly via `pwsh`; use only when PowerShell itself is required.
 
 <instruction>
+- Default shell work → `bash`; reach for `pwsh` only for PowerShell-specific syntax, cmdlets, providers/drives, `$env:`/`$PS*` state, or Windows shell semantics.
 - Use `script` for PowerShell code; no outer `pwsh -Command` wrapper.
 - `cwd` sets the working directory; avoid `Set-Location` prefixes.
 - `env: { NAME: "…" }` sets child-process environment variables.
 - Use multiline `script` for PowerShell control flow, pipelines, and `$env:` references.
 - Internal URIs (`skill://`, `agent://`, `artifact://`, `local://`, …) auto-resolve to quoted filesystem paths.
 - Runs with the current `omp` process privileges; it does not elevate to administrator.
-- Prefer `bash` for POSIX shell commands and simple Unix pipelines.
+- Prefer `bash` for POSIX commands, Git/Bun/Cargo/Node CLIs, and simple pipelines unless PowerShell behavior is the subject.
 - Prefer `eval` for JavaScript/Python/Ruby/Julia code with persistent runtime state.
 </instruction>
 
@@ -18,6 +19,7 @@ Runs PowerShell 7 scripts directly via `pwsh` — Windows-first shell work witho
 </output>
 
 <critical>
+- Default to `bash`; use `pwsh` only when PowerShell-specific behavior is required.
 - NEVER wrap PowerShell in `bash` or nested `pwsh -Command`; use this tool directly.
 - Use `script`, not `command`.
 - Long-running commands need an explicit `timeout`.

@@ -7,6 +7,7 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import { getProjectDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import { buildNonInteractiveEnv } from "../exec/non-interactive-env";
 import { InternalUrlRouter } from "../internal-urls";
 import { highlightCode, type Theme } from "../modes/theme/theme";
@@ -68,6 +69,11 @@ export function resolvePwshExecutable(): string | null {
 	return Bun.which("pwsh") ?? (process.platform === "win32" ? Bun.which("pwsh.exe") : null);
 }
 
+export function shouldHidePwshWindow(opts: { platform: NodeJS.Platform; hostHasInheritableConsole: boolean }): boolean {
+	if (opts.platform !== "win32") return false;
+	return !opts.hostHasInheritableConsole;
+}
+
 function quotePwshString(value: string): string {
 	return `'${value.replace(/'/g, "''")}'`;
 }
@@ -78,6 +84,17 @@ function formatPwshEnvAssignments(env: Record<string, string> | undefined): stri
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([name, value]) => `$env:${name}=${quotePwshString(value)}`)
 		.join("; ");
+}
+
+function buildPwshEnvPrologue(env: Record<string, string>): string {
+	if (Object.keys(env).length === 0) return "";
+	return Object.entries(env)
+		.sort(([a], [b]) => a.localeCompare(b))
+		.map(
+			([name, value]) =>
+				`[System.Environment]::SetEnvironmentVariable(${quotePwshString(name)}, ${quotePwshString(value)}, 'Process')`,
+		)
+		.join("\n");
 }
 
 function formatPwshScriptLines(args: PwshRenderArgs | undefined, uiTheme: Theme): string[] {
@@ -243,12 +260,18 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 		const abortListener = abortDeferred ? () => abortDeferred.resolve("aborted") : undefined;
 		if (signal && abortListener) signal.addEventListener("abort", abortListener, { once: true });
 		const wallTimeStart = performance.now();
-		const proc = Bun.spawn([this.#pwshPath, ...buildPwshArgs(script)], {
+		const commandEnv = buildNonInteractiveEnv(resolvedEnv);
+		const commandScript = process.platform === "win32" ? `${buildPwshEnvPrologue(commandEnv)}\n${script}` : script;
+		const proc = Bun.spawn([this.#pwshPath, ...buildPwshArgs(commandScript)], {
 			cwd: commandCwd,
-			env: buildNonInteractiveEnv(resolvedEnv),
+			...(process.platform === "win32" ? {} : { env: commandEnv }),
 			stdin: "ignore",
 			stdout: "pipe",
 			stderr: "pipe",
+			windowsHide: shouldHidePwshWindow({
+				platform: process.platform,
+				hostHasInheritableConsole: hostHasInheritableConsole(),
+			}),
 		});
 		const stdoutPump = pumpStream(proc.stdout, sink);
 		const stderrPump = pumpStream(proc.stderr, sink);
