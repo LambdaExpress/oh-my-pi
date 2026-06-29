@@ -19,6 +19,7 @@ import { clampTimeout } from "../tools/tool-timeouts";
 import {
 	ensureFileOpen,
 	getActiveClients,
+	getLspClientKey,
 	getOrCreateClient,
 	type LspServerStatus,
 	notifySaved,
@@ -1353,11 +1354,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			// presence-on-PATH for a working server.
 			const startedClients = getActiveClients();
 			const startedByConfigName = new Map<string, LspServerStatus>();
-			// getActiveClients() reports `name = client.config.command` (the
-			// unresolved binary name from defaults.json), so match against
-			// `serverConfig.command`, not the resolved path.
 			for (const [name, serverConfig] of Object.entries(config.servers)) {
-				const matched = startedClients.find(c => c.name === serverConfig.command);
+				const expectedKey = getLspClientKey(serverConfig, this.session.cwd);
+				const matched = startedClients.find(c => c.clientKey === expectedKey);
 				if (matched) startedByConfigName.set(name, matched);
 			}
 

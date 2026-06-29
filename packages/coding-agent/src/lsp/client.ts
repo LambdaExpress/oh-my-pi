@@ -28,6 +28,17 @@ const fileOperationLocks = new Map<string, Promise<void>>();
 const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
 const initFailures = new Map<string, { at: number; message: string }>();
 
+export function getLspClientKey(config: ServerConfig, cwd: string): string {
+	return JSON.stringify({
+		cwd,
+		command: config.command,
+		resolvedCommand: config.resolvedCommand ?? null,
+		args: config.args ?? [],
+		initOptions: config.initOptions ?? null,
+		settings: config.settings ?? null,
+	});
+}
+
 // Idle timeout configuration (disabled by default)
 let idleTimeoutMs: number | null = null;
 let idleCheckInterval: NodeJS.Timeout | null = null;
@@ -533,7 +544,7 @@ const EXIT_TIMEOUT_MS = 1_000;
  * @param initTimeoutMs - Optional timeout for the initialize request (defaults to 30s)
  */
 export async function getOrCreateClient(config: ServerConfig, cwd: string, initTimeoutMs?: number): Promise<LspClient> {
-	const key = `${config.command}:${cwd}`;
+	const key = getLspClientKey(config, cwd);
 
 	// Check if client already exists
 	const existingClient = clients.get(key);
@@ -1095,6 +1106,7 @@ export async function shutdownAll(): Promise<void> {
 /** Status of an LSP server */
 export interface LspServerStatus {
 	name: string;
+	clientKey?: string;
 	status: "connecting" | "ready" | "error";
 	fileTypes: string[];
 	error?: string;
@@ -1107,6 +1119,7 @@ export function getActiveClients(): LspServerStatus[] {
 	return Array.from(clients.values()).map(client => ({
 		name: client.config.command,
 		status: client.status,
+		clientKey: getLspClientKey(client.config, client.cwd),
 		fileTypes: client.config.fileTypes,
 	}));
 }

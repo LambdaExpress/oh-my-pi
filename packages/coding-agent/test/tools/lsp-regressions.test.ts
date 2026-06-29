@@ -202,6 +202,48 @@ describe("lsp regressions", () => {
 		expect(clampTimeout("lsp", 1000)).toBe(60);
 	});
 
+
+	it("starts separate clients when shared wrapper commands use different args", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-cache-key-");
+		try {
+			const handler: FakeLspHandler = (message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			};
+
+			const jsonConfig: ServerConfig = {
+				command: "shared-wrapper",
+				args: ["json-ls", "--stdio"],
+				fileTypes: [".json"],
+				rootMarkers: [],
+			};
+
+			const jsonServer = installFakeLsp(handler);
+			const jsonClient = await lspClient.getOrCreateClient(jsonConfig, tempDir.path(), 1_000);
+
+			const csharpConfig: ServerConfig = {
+				command: "shared-wrapper",
+				args: ["csharp-ls", "--stdio"],
+				fileTypes: [".cs"],
+				rootMarkers: [],
+			};
+
+			const csharpServer = installFakeLsp(handler);
+			const csharpClient = await lspClient.getOrCreateClient(csharpConfig, tempDir.path(), 1_000);
+
+			expect(csharpClient).not.toBe(jsonClient);
+			expect(jsonServer.received.some(message => message.method === "initialize")).toBe(true);
+			expect(csharpServer.received.some(message => message.method === "initialize")).toBe(true);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
 	it("sends the LSP exit notification after shutdown completes", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-shutdown-");
 		try {
@@ -2073,19 +2115,25 @@ describe("lsp regressions", () => {
 		// tsls has actually been spawned. Status must reflect that — claiming
 		// rust-analyzer is 'active' when the process never started was the
 		// original bug.
+		const typescriptServer: ServerConfig = {
+			command: "typescript-language-server",
+			fileTypes: [".ts"],
+			rootMarkers: ["tsconfig.json"],
+		};
 		vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
 			servers: {
 				"rust-analyzer": { command: "rust-analyzer", fileTypes: [".rs"], rootMarkers: ["Cargo.toml"] },
-				"typescript-language-server": {
-					command: "typescript-language-server",
-					fileTypes: [".ts"],
-					rootMarkers: ["tsconfig.json"],
-				},
+				"typescript-language-server": typescriptServer,
 			},
 			idleTimeoutMs: undefined,
 		});
 		vi.spyOn(lspClient, "getActiveClients").mockReturnValue([
-			{ name: "typescript-language-server", status: "ready", fileTypes: [".ts"] },
+			{
+				name: "typescript-language-server",
+				clientKey: lspClient.getLspClientKey(typescriptServer, process.cwd()),
+				status: "ready",
+				fileTypes: [".ts"],
+			},
 		]);
 
 		const tool = new LspTool({ cwd: process.cwd() } as ToolSession);
@@ -2097,6 +2145,53 @@ describe("lsp regressions", () => {
 
 		expect(output).toContain("rust-analyzer (configured, not started)");
 		expect(output).toContain("typescript-language-server (ready)");
+	});
+
+	it("status does not mark an unstarted same-command server as ready", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-status-cache-key-");
+		try {
+			const jsonServer: ServerConfig = {
+				command: "shared-wrapper",
+				args: ["json-ls", "--stdio"],
+				fileTypes: [".json"],
+				rootMarkers: ["."],
+			};
+			const csharpServer: ServerConfig = {
+				command: "shared-wrapper",
+				args: ["csharp-ls", "--stdio"],
+				fileTypes: [".cs"],
+				rootMarkers: ["."],
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: {
+					"vscode-json-language-server": jsonServer,
+					"csharp-ls": csharpServer,
+				},
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspClient, "getActiveClients").mockReturnValue([
+				{
+					name: "shared-wrapper",
+					clientKey: lspClient.getLspClientKey(jsonServer, tempDir.path()),
+					status: "ready",
+					fileTypes: [".json"],
+				},
+			]);
+
+			const result = await new LspTool({ cwd: tempDir.path() } as ToolSession).execute("status-cache-key", {
+				action: "status",
+			});
+			const output = result.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+
+			expect(output).toContain("vscode-json-language-server (ready)");
+			expect(output).toContain("csharp-ls (configured, not started)");
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
 	});
 
 	it("reload * invalidates the per-cwd config cache so newly written .omp/lsp.json is observed", async () => {
