@@ -11252,11 +11252,11 @@ export class AgentSession {
 			// per frame; #computeSnapcompactMaxFrames sizes the frame cap from the
 			// live window so we don't run snapcompact just to overflow every threshold
 			// tick. Any local blocker (non-ASCII transcript, kept-history too large,
-			// post-render overflow) downgrades auto maintenance to a context-full LLM
-			// summary instead of wedging the session (#3659) — auto runs the default
-			// strategy on the user's behalf, so a fallback that lets the session keep
-			// running is the right behavior. Manual `/compact snapcompact` keeps the
-			// local-only contract (#3599): the user explicitly picked it.
+			// render failure, post-render overflow) downgrades auto maintenance to a
+			// context-full LLM summary instead of wedging the session (#3659) — auto
+			// runs the default strategy on the user's behalf, so a fallback that lets
+			// the session keep running is the right behavior. Manual `/compact
+			// snapcompact` keeps the local-only contract (#3599): the user explicitly picked it.
 			let snapcompactResult: snapcompact.CompactionResult | undefined;
 			let snapcompactBlocker: string | undefined;
 			if (action === "snapcompact" && compactionPrep.kind !== "fromHook") {
@@ -11280,12 +11280,24 @@ export class AgentSession {
 						snapcompactBlocker =
 							"snapcompact: kept history alone exceeds the context budget; using context-full auto-compaction instead.";
 					} else {
-						snapcompactResult = await snapcompact.compact(preparation, {
-							convertToLlm,
-							model: this.model,
-							shape: snapcompact.resolveShape(this.model, this.settings.get("snapcompact.shape")),
-							maxFrames,
-						});
+						try {
+							snapcompactResult = await snapcompact.compact(preparation, {
+								convertToLlm,
+								model: this.model,
+								shape: snapcompact.resolveShape(this.model, this.settings.get("snapcompact.shape")),
+								maxFrames,
+							});
+						} catch (error) {
+							if (autoCompactionSignal.aborted) {
+								throw error;
+							}
+							const message = error instanceof Error ? error.message : String(error);
+							logger.warn("Snapcompact failed during auto-compaction; falling back to context-full maintenance", {
+								model: this.model?.id,
+								error: message,
+							});
+							snapcompactBlocker = "snapcompact failed locally; using context-full auto-compaction instead.";
+						}
 						if (snapcompactResult) {
 							const ctxWindow = this.model?.contextWindow ?? 0;
 							const budget =

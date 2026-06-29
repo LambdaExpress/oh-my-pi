@@ -10,6 +10,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import * as snapcompact from "@oh-my-pi/snapcompact";
 
 interface Harness {
 	session: AgentSession;
@@ -170,6 +171,29 @@ describe("AgentSession auto-snapcompact local-blocker fallback", () => {
 		);
 		expect(cjkNotice).toBeDefined();
 		expect(cjkNotice).toContain("using context-full auto-compaction instead.");
+		expect(harness.sessionManager.getBranch().find(entry => entry.type === "compaction")).toMatchObject({
+			type: "compaction",
+			summary: "compacted",
+		});
+	});
+
+	it("downgrades to context-full when snapcompact rendering fails", async () => {
+		tempDir = TempDir.createSync("@pi-snapcompact-render-failure-");
+		authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
+		const harness = await createHarness(tempDir, authStorage, {
+			activeModel: { provider: "aimlapi", id: "claude-sonnet-4-5-20250929" },
+		});
+		session = harness.session;
+		vi.spyOn(snapcompact, "compact").mockRejectedValue(new Error("rasterizer exploded"));
+		harness.triggerThreshold();
+
+		const result = await harness.awaitCompactionEnd();
+		expect(result).toEqual({ action: "context-full", errorMessage: undefined });
+		expect(snapcompact.compact).toHaveBeenCalled();
+		expect(compactionModule.compact).toHaveBeenCalled();
+		expect(harness.notices).toContain(
+			"snapcompact failed locally; using context-full auto-compaction instead.",
+		);
 		expect(harness.sessionManager.getBranch().find(entry => entry.type === "compaction")).toMatchObject({
 			type: "compaction",
 			summary: "compacted",
