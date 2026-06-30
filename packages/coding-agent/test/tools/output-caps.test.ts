@@ -136,4 +136,21 @@ describe("enforceInlineByteCap", () => {
 		expect(result).toBe(text);
 		expect(called).toBe(false);
 	});
+
+	it("reuses an existing artifact id instead of saving a duplicate footer artifact", async () => {
+		const longText = makeLines(500);
+		let saved = false;
+		const result = await enforceInlineByteCap(longText, {
+			maxBytes: 1024,
+			artifactId: "1",
+			saveArtifact: async () => {
+				saved = true;
+				return "2";
+			},
+		});
+
+		expect(result).toContain("[raw output: artifact://1]");
+		expect(result).not.toContain("artifact://2");
+		expect(saved).toBe(false);
+	});
 });

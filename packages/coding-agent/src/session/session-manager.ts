@@ -924,7 +924,10 @@ export class SessionManager {
 
 		const timestamp = nowIso();
 		this.#sessionId = mintSessionId();
-		this.#sessionFile = joinSessionStoragePath(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
+		this.#sessionFile = joinSessionStoragePath(
+			this.#sessionDir,
+			`${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`,
+		);
 		this.#header = {
 			type: "session",
 			version: CURRENT_SESSION_VERSION,
@@ -1599,7 +1602,10 @@ export class SessionManager {
 
 		const timestamp = nowIso();
 		const newSessionId = mintSessionId();
-		const newSessionFile = joinSessionStoragePath(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${newSessionId}.jsonl`);
+		const newSessionFile = joinSessionStoragePath(
+			this.#sessionDir,
+			`${fileSafeTimestamp(timestamp)}_${newSessionId}.jsonl`,
+		);
 		const header: SessionHeader = {
 			type: "session",
 			version: CURRENT_SESSION_VERSION,

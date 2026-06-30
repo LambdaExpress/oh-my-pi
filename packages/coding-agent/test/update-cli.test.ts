@@ -46,21 +46,24 @@ describe("update-cli install target detection", () => {
 		expect(method).toBe("binary");
 	});
 
-	it.skipIf(process.platform === "win32")("uses Homebrew update when prioritized omp resolves into the Homebrew formula", async () => {
-		const dir = await makeTempDir();
-		const prefix = path.join(dir, "opt", "omp");
-		const linkedBin = path.join(dir, "bin");
-		await fs.mkdir(path.join(prefix, "bin"), { recursive: true });
-		await fs.mkdir(linkedBin, { recursive: true });
-		await Bun.write(path.join(prefix, "bin", "omp"), "binary");
-		await fs.symlink(path.join(prefix, "bin", "omp"), path.join(linkedBin, "omp"));
+	it.skipIf(process.platform === "win32")(
+		"uses Homebrew update when prioritized omp resolves into the Homebrew formula",
+		async () => {
+			const dir = await makeTempDir();
+			const prefix = path.join(dir, "opt", "omp");
+			const linkedBin = path.join(dir, "bin");
+			await fs.mkdir(path.join(prefix, "bin"), { recursive: true });
+			await fs.mkdir(linkedBin, { recursive: true });
+			await Bun.write(path.join(prefix, "bin", "omp"), "binary");
+			await fs.symlink(path.join(prefix, "bin", "omp"), path.join(linkedBin, "omp"));
 
-		const method = resolveUpdateMethodForTest(path.join(linkedBin, "omp"), "/Users/test/.bun/bin", {
-			homebrewPrefix: prefix,
-		});
+			const method = resolveUpdateMethodForTest(path.join(linkedBin, "omp"), "/Users/test/.bun/bin", {
+				homebrewPrefix: prefix,
+			});
 
-		expect(method).toBe("brew");
-	});
+			expect(method).toBe("brew");
+		},
+	);
 
 	it("uses mise update when prioritized omp is in an active mise bin path", () => {
 		const method = resolveUpdateMethodForTest(

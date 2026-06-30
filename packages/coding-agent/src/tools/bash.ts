@@ -485,6 +485,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 		// head-retention spill, minimizer miss) may emit more than
 		// ~DEFAULT_MAX_BYTES inline. No-op for already-bounded output.
 		const cappedOutputText = await enforceInlineByteCap(outputText, {
+			artifactId: result.artifactId,
 			saveArtifact: full => saveBashOriginalArtifact(this.session, full),
 		});
 

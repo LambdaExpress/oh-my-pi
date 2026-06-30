@@ -2,8 +2,8 @@ import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { gzipSync } from "node:zlib";
-import { resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { runGcCommand } from "@oh-my-pi/pi-coding-agent/cli/gc-cli";
+import { resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
 	mergeSessionRanking,
 	rankSessionSearchMatches,

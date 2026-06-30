@@ -10,9 +10,6 @@ import type { Shell } from "@oh-my-pi/pi-natives";
 import * as piNatives from "@oh-my-pi/pi-natives";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 
-// Matches the schema default for `tools.artifactHeadBytes` (20 KB) used by
-// OutputSink when bash-executor pulls settings via resolveOutputSinkHeadBytes.
-const ARTIFACT_HEAD_BYTES_DEFAULT = 20 * 1024;
 const BACKGROUND_COMPLETION_RACE_MS = 750;
 // Killed-vs-orphaned proof: the command's marker write is gated on a `release`
 // file the test creates only AFTER the cancel has landed. A truly killed process
@@ -684,7 +681,7 @@ exit 64
 		// path is volume-independent, so a few hundred KB exercises the same
 		// no-freeze / no-OOM contract the original 40MB did without paying several
 		// seconds to generate it. 100k lines of `seq` is ~690KB — an order of
-		// magnitude past the ~71KB head+tail cap asserted below.
+		// magnitude past the default ~40KB head+tail cap asserted below.
 		const lineCount = 100_000;
 		let chunkCount = 0;
 		const start = Date.now();
@@ -704,10 +701,9 @@ exit 64
 		// Output summary reflects every line even though the visible text is capped.
 		expect(result.totalLines).toBeGreaterThanOrEqual(lineCount);
 
-		// Truncated output stays bounded by head + tail + marker overhead
-		// (middle-elision keeps the head budget plus the tail spill window) — proof
-		// the full ~690KB stream was never accumulated in the visible buffer.
-		expect(result.outputBytes).toBeLessThanOrEqual(DEFAULT_MAX_BYTES + ARTIFACT_HEAD_BYTES_DEFAULT + 1024);
+		// Truncated output stays bounded by the final inline cap — proof the full
+		// ~690KB stream was never accumulated in the visible buffer.
+		expect(result.outputBytes).toBeLessThanOrEqual(DEFAULT_MAX_BYTES);
 
 		// The tail should still contain numeric values near the end of the range.
 		// BSD `seq` on macOS formats large numbers in scientific notation, so parse

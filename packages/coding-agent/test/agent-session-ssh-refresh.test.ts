@@ -42,7 +42,6 @@ describe("AgentSession SSH tool refresh", () => {
 		setAgentDir(agentDir.path());
 	});
 
-
 	afterEach(async () => {
 		for (const session of sessions.splice(0)) {
 			await session.dispose();

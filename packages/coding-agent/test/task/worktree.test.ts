@@ -257,16 +257,7 @@ describe("worktree isolation helpers", () => {
 				const isoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worktree-iso-"));
 				tempDirs.push(isoRoot);
 				const iso = path.join(isoRoot, "repo");
-				await runGit(isoRoot, [
-					"-c",
-					"core.autocrlf=false",
-					"-c",
-					"core.eol=lf",
-					"clone",
-					"-q",
-					repo,
-					iso,
-				]);
+				await runGit(isoRoot, ["-c", "core.autocrlf=false", "-c", "core.eol=lf", "clone", "-q", repo, iso]);
 				await configureGitTestLineEndings(iso);
 				await runGit(iso, ["config", "user.email", "test@example.com"]);
 				await runGit(iso, ["config", "user.name", "Test User"]);

@@ -24,7 +24,13 @@ import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { createShellRenderer } from "./bash";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
-import { type OutputMeta, resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-meta";
+import {
+	type OutputMeta,
+	resolveOutputMaxColumns,
+	resolveOutputSinkHeadBytes,
+	resolveOutputSinkSpillThreshold,
+	resolveOutputSinkTailBytes,
+} from "./output-meta";
 import { resolveToCwd } from "./path-utils";
 import { formatToolWorkingDirectory, replaceTabs } from "./render-utils";
 import { ToolAbortError, ToolError } from "./tool-errors";
@@ -189,6 +195,7 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 		if (failedExit) details.exitCode = exitCode;
 
 		const cappedOutputText = await enforceInlineByteCap(outputText, {
+			artifactId: result.artifactId,
 			saveArtifact: full => savePwshOriginalArtifact(this.#session, full),
 		});
 		const builder = toolResult(details).text(cappedOutputText).truncationFromSummary(result, { direction: "tail" });
@@ -251,6 +258,8 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 			onChunk: streamTailUpdates(tailBuffer, onUpdate),
 			artifactPath,
 			artifactId,
+			spillThreshold: resolveOutputSinkSpillThreshold(this.#session.settings),
+			tailBytes: resolveOutputSinkTailBytes(this.#session.settings),
 			headBytes: resolveOutputSinkHeadBytes(this.#session.settings),
 			maxColumns: resolveOutputMaxColumns(this.#session.settings),
 			chunkThrottleMs: onUpdate ? 50 : 0,

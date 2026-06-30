@@ -11,7 +11,6 @@ import { removeWithRetries } from "@oh-my-pi/pi-utils/temp";
 const fixturesDir = path.resolve(import.meta.dirname, "fixtures/skills");
 const collisionFixturesDir = path.resolve(import.meta.dirname, "fixtures/skills-collision");
 
-
 let isolatedAgentDir = "";
 let originalAgentDir = "";
 let originalAgentDirEnv: string | undefined;

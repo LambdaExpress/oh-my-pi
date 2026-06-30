@@ -3,6 +3,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	DEFAULT_MAX_BYTES,
+	enforceInlineByteCap,
 	formatHeadTruncationNotice,
 	formatMiddleElisionMarker,
 	formatTailTruncationNotice,
@@ -259,6 +261,52 @@ describe("OutputSink", () => {
 		expect(dumped.output).toBe("bcdef");
 		expect(dumped.totalBytes).toBe(6);
 		expect(dumped.outputBytes).toBe(5);
+	});
+
+	test("keeps head plus configured tail below the final inline cap after spill", async () => {
+		const makeOutput = (lineCount: number): string =>
+			Array.from({ length: lineCount }, (_, i) => `line-${String(i).padStart(5, "0")} ${"x".repeat(80)}`).join("\n");
+
+		const smallDir = await createTempDir();
+		const smallInput = makeOutput(500);
+		const smallSink = new OutputSink({
+			artifactPath: path.join(smallDir, "small.log"),
+			artifactId: "artifact-1",
+			headBytes: 20 * 1024,
+			spillThreshold: 50 * 1024,
+			tailBytes: 20 * 1024,
+		});
+		await smallSink.push(smallInput);
+
+		const smallSummary = await smallSink.dump();
+		expect(smallSummary.truncated).toBe(false);
+		expect(smallSummary.output).toBe(smallInput);
+
+		const largeDir = await createTempDir();
+		const largeInput = makeOutput(1600);
+		const largeSink = new OutputSink({
+			artifactPath: path.join(largeDir, "large.log"),
+			artifactId: "artifact-1",
+			headBytes: 20 * 1024,
+			spillThreshold: 50 * 1024,
+			tailBytes: 20 * 1024,
+		});
+		await largeSink.push(largeInput);
+
+		const largeSummary = await largeSink.dump();
+		expect(largeSummary.truncated).toBe(true);
+		expect(largeSummary.artifactId).toBe("artifact-1");
+		expect(byteLength(largeSummary.output)).toBeLessThan(DEFAULT_MAX_BYTES);
+
+		let saved = false;
+		const capped = await enforceInlineByteCap(largeSummary.output, {
+			saveArtifact: async () => {
+				saved = true;
+				return "artifact-2";
+			},
+		});
+		expect(capped).toBe(largeSummary.output);
+		expect(saved).toBe(false);
 	});
 
 	test("spills full output to artifact file when artifact path is provided", async () => {
