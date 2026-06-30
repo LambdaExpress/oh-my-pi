@@ -1330,6 +1330,21 @@ function b() {
 			}
 		});
 
+		it("keeps artifact recovery ids consistent after streaming truncation", async () => {
+			const result = await bashTool.execute("test-call-8-artifact-consistency", {
+				command: "printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n%.0s' {1..2200}",
+			});
+
+			const output = getTextOutput(result);
+			const outputArtifactIds = [...output.matchAll(/artifact:\/\/([A-Za-z0-9_-]+)/g)].map(match => match[1]);
+			const metadataArtifactId = result.details?.meta?.truncation?.artifactId;
+
+			if (metadataArtifactId === undefined) throw new Error("Expected truncation artifact id");
+			const uniqueOutputArtifactIds = outputArtifactIds.filter((id, index, ids) => ids.indexOf(id) === index);
+			expect(uniqueOutputArtifactIds).toEqual([metadataArtifactId]);
+			expect(output).not.toContain("[raw output: artifact://");
+		});
+
 		it("should surface non-zero exits as an error result", async () => {
 			// A completed-but-failed command resolves as a non-throwing error
 			// result carrying the exit code, so the renderer keeps its footer.

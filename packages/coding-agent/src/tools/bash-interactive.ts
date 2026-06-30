@@ -17,7 +17,12 @@ import { Settings } from "../config/settings";
 import type { Theme } from "../modes/theme/theme";
 import { OutputSink, type OutputSummary } from "../session/streaming-output";
 import { sanitizeWithOptionalSixelPassthrough } from "../utils/sixel";
-import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-meta";
+import {
+	resolveOutputMaxColumns,
+	resolveOutputSinkHeadBytes,
+	resolveOutputSinkSpillThreshold,
+	resolveOutputSinkTailBytes,
+} from "./output-meta";
 import { formatStatusIcon, replaceTabs } from "./render-utils";
 
 export interface BashInteractiveResult extends OutputSummary {
@@ -314,7 +319,9 @@ export async function runInteractiveBashPty(
 	const sink = new OutputSink({
 		artifactPath: options.artifactPath,
 		artifactId: options.artifactId,
+		spillThreshold: resolveOutputSinkSpillThreshold(settings),
 		headBytes: resolveOutputSinkHeadBytes(settings),
+		tailBytes: resolveOutputSinkTailBytes(settings),
 		maxColumns: resolveOutputMaxColumns(settings),
 	});
 	const result = await ui.custom<BashInteractiveResult>(

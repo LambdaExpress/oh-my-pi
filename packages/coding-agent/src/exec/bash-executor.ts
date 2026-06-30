@@ -9,7 +9,12 @@ import { executeShell, type MinimizerOptions, Shell, type ShellRunResult } from 
 import { isExecutable, type ShellConfig } from "@oh-my-pi/pi-utils/procmgr";
 import { Settings, type ShellMinimizerSettings } from "../config/settings";
 import { OutputSink } from "../session/streaming-output";
-import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../tools/output-meta";
+import {
+	resolveOutputMaxColumns,
+	resolveOutputSinkHeadBytes,
+	resolveOutputSinkSpillThreshold,
+	resolveOutputSinkTailBytes,
+} from "../tools/output-meta";
 import { getOrCreateSnapshot } from "../utils/shell-snapshot";
 import { buildNonInteractiveEnv } from "./non-interactive-env";
 
@@ -234,7 +239,9 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		onChunk: options?.onChunk,
 		artifactPath: options?.artifactPath,
 		artifactId: options?.artifactId,
+		spillThreshold: resolveOutputSinkSpillThreshold(settings),
 		headBytes: resolveOutputSinkHeadBytes(settings),
+		tailBytes: resolveOutputSinkTailBytes(settings),
 		maxColumns: resolveOutputMaxColumns(settings),
 		chunkThrottleMs: options?.onChunk ? (options.chunkThrottleMs ?? 50) : 0,
 	});

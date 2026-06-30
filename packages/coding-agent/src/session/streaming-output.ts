@@ -50,8 +50,10 @@ export interface OutputSummary {
 export interface OutputSinkOptions {
 	artifactPath?: string;
 	artifactId?: string;
-	/** Tail buffer budget (bytes). Default DEFAULT_MAX_BYTES. */
+	/** Inline output byte threshold before eliding and writing an artifact. Default DEFAULT_MAX_BYTES. */
 	spillThreshold?: number;
+	/** Tail buffer budget after inline spill begins. Defaults to spillThreshold. */
+	tailBytes?: number;
 	/**
 	 * When > 0, the sink keeps the first `headBytes` of output in addition to
 	 * the rolling tail window. Output between the two windows is elided
@@ -580,6 +582,8 @@ export function truncateMiddle(content: string, options: TruncationOptions = {})
 export interface InlineByteCapOptions {
 	/** Inline byte budget. Defaults to {@link DEFAULT_MAX_BYTES}. */
 	maxBytes?: number;
+	/** Existing full-output artifact id to reference instead of saving a duplicate. */
+	artifactId?: string;
 	/**
 	 * Persist the full text as a session artifact. When an artifact id is
 	 * returned, a `[raw output: artifact://<id>]` footer is appended so the
@@ -622,7 +626,7 @@ export async function enforceInlineByteCap(text: string, options: InlineByteCapO
 	const marker = `[…${elidedBytes}B elided…]`;
 	let composed = `${head}\n${marker}\n${tail}`;
 
-	const artifactId = await options.saveArtifact?.(text);
+	const artifactId = options.artifactId ?? (await options.saveArtifact?.(text));
 	if (artifactId) {
 		const sep = composed.endsWith(NL) ? "" : NL;
 		composed += `${sep}[raw output: artifact://${artifactId}]`;
@@ -755,6 +759,7 @@ export class OutputSink {
 	readonly #artifactPath?: string;
 	readonly #artifactId?: string;
 	readonly #spillThreshold: number;
+	readonly #tailLimit: number;
 	readonly #headLimit: number;
 	readonly #onChunk?: (chunk: string) => void;
 	readonly #chunkThrottleMs: number;
@@ -780,6 +785,7 @@ export class OutputSink {
 			artifactPath,
 			artifactId,
 			spillThreshold = DEFAULT_MAX_BYTES,
+			tailBytes,
 			headBytes = 0,
 			maxColumns = 0,
 			onChunk,
@@ -789,7 +795,8 @@ export class OutputSink {
 		} = options ?? {};
 		this.#artifactPath = artifactPath;
 		this.#artifactId = artifactId;
-		this.#spillThreshold = spillThreshold;
+		this.#spillThreshold = Math.max(0, spillThreshold);
+		this.#tailLimit = Math.max(0, tailBytes ?? this.#spillThreshold);
 		this.#headLimit = Math.max(0, headBytes);
 		this.#maxColumns = Math.max(0, maxColumns);
 		this.#onChunk = onChunk;
@@ -930,40 +937,45 @@ export class OutputSink {
 	}
 
 	#willOverflow(dataBytes: number): boolean {
-		// Triggers file mirroring as soon as the next chunk would push us over
-		// the tail budget (head retention does not change spill-to-artifact).
-		return this.#bufferBytes + dataBytes > this.#spillThreshold;
+		// Trigger file mirroring when the next chunk would push the visible
+		// inline output (head + rolling tail) over the spill threshold.
+		return this.#headBytes + this.#bufferBytes + dataBytes > this.#spillThreshold;
 	}
 
 	#pushTail(chunk: string, dataBytes: number): void {
 		if (dataBytes === 0) return;
 
-		const threshold = this.#spillThreshold;
-		const willOverflow = this.#bufferBytes + dataBytes > threshold;
+		const willOverflow = this.#headBytes + this.#bufferBytes + dataBytes > this.#spillThreshold;
 
-		if (!willOverflow) {
-			this.#buffer += chunk;
-			this.#bufferBytes += dataBytes;
+		if (willOverflow || this.#truncated) {
+			this.#truncated = true;
+			const tailLimit = this.#tailLimit;
+
+			if (tailLimit === 0) {
+				this.#buffer = "";
+				this.#bufferBytes = 0;
+				return;
+			}
+
+			// Avoid creating a giant intermediate string when chunk alone dominates.
+			if (dataBytes >= tailLimit) {
+				const { text, bytes } = truncateTailBytes(chunk, tailLimit);
+				this.#buffer = text;
+				this.#bufferBytes = bytes;
+			} else {
+				// Intermediate size is bounded (<= tailLimit + dataBytes), safe to concat.
+				this.#buffer += chunk;
+				this.#bufferBytes += dataBytes;
+
+				const { text, bytes } = truncateTailBytes(this.#buffer, tailLimit);
+				this.#buffer = text;
+				this.#bufferBytes = bytes;
+			}
 			return;
 		}
 
-		// Overflow: keep only a tail window in memory.
-		this.#truncated = true;
-
-		// Avoid creating a giant intermediate string when chunk alone dominates.
-		if (dataBytes >= threshold) {
-			const { text, bytes } = truncateTailBytes(chunk, threshold);
-			this.#buffer = text;
-			this.#bufferBytes = bytes;
-		} else {
-			// Intermediate size is bounded (<= threshold + dataBytes), safe to concat.
-			this.#buffer += chunk;
-			this.#bufferBytes += dataBytes;
-
-			const { text, bytes } = truncateTailBytes(this.#buffer, threshold);
-			this.#buffer = text;
-			this.#bufferBytes = bytes;
-		}
+		this.#buffer += chunk;
+		this.#bufferBytes += dataBytes;
 	}
 
 	/**

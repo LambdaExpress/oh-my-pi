@@ -16,7 +16,12 @@ import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { type EvalBackendsAllowance, resolveEvalBackends } from "./eval-backends";
 import { upsertStatusEvent } from "./eval-render";
-import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-meta";
+import {
+	resolveOutputMaxColumns,
+	resolveOutputSinkHeadBytes,
+	resolveOutputSinkSpillThreshold,
+	resolveOutputSinkTailBytes,
+} from "./output-meta";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
@@ -510,7 +515,9 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 				outputSink = new OutputSink({
 					artifactPath,
 					artifactId,
+					spillThreshold: resolveOutputSinkSpillThreshold(session.settings),
 					headBytes: resolveOutputSinkHeadBytes(session.settings),
+					tailBytes: resolveOutputSinkTailBytes(session.settings),
 					maxColumns: resolveOutputMaxColumns(session.settings),
 					onChunk: chunk => {
 						appendTail(chunk);

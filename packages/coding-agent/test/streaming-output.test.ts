@@ -3,6 +3,8 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+	DEFAULT_MAX_BYTES,
+	enforceInlineByteCap,
 	formatHeadTruncationNotice,
 	formatMiddleElisionMarker,
 	formatTailTruncationNotice,
@@ -301,6 +303,48 @@ describe("OutputSink", () => {
 
 		expect(dumped.truncated).toBe(true);
 		expect(artifactText).toBe("headabcdefgh");
+	});
+
+	test("keeps head plus configured tail below the final inline cap after spill", async () => {
+		const dir = await createTempDir();
+		const smallText = Array.from({ length: 720 }, () => "a".repeat(63)).join("\n");
+		const smallSink = new OutputSink({
+			artifactPath: path.join(dir, "small.log"),
+			artifactId: "artifact-1",
+			headBytes: 20 * 1024,
+			spillThreshold: 50 * 1024,
+			tailBytes: 20 * 1024,
+		});
+
+		smallSink.push(smallText);
+		const smallSummary = await smallSink.dump();
+		expect(smallSummary.truncated).toBe(false);
+		expect(smallSummary.output).toBe(smallText);
+
+		const largeText = Array.from({ length: 2200 }, () => "b".repeat(63)).join("\n");
+		const largeSink = new OutputSink({
+			artifactPath: path.join(dir, "large.log"),
+			artifactId: "artifact-1",
+			headBytes: 20 * 1024,
+			spillThreshold: 50 * 1024,
+			tailBytes: 20 * 1024,
+		});
+
+		largeSink.push(largeText);
+		const largeSummary = await largeSink.dump();
+		expect(largeSummary.truncated).toBe(true);
+		expect(largeSummary.artifactId).toBe("artifact-1");
+		expect(byteLength(largeSummary.output)).toBeLessThan(DEFAULT_MAX_BYTES);
+
+		let saved = false;
+		const capped = await enforceInlineByteCap(largeSummary.output, {
+			saveArtifact: async () => {
+				saved = true;
+				return "artifact-2";
+			},
+		});
+		expect(capped).toBe(largeSummary.output);
+		expect(saved).toBe(false);
 	});
 
 	test("throttled onChunk coalesces held-back chunks instead of dropping them", async () => {

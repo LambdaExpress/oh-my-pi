@@ -574,6 +574,14 @@ export function resolveOutputSinkHeadBytes(s: Settings | undefined): number {
 	return getSpillConfig(s).headBytes;
 }
 
+export function resolveOutputSinkSpillThreshold(s: Settings | undefined): number {
+	return getSpillConfig(s).threshold;
+}
+
+export function resolveOutputSinkTailBytes(s: Settings | undefined): number {
+	return getSpillConfig(s).tailBytes;
+}
+
 /**
  * Resolve the per-line column cap from session settings. Shared by streaming
  * executors (bash/python/ssh/eval via OutputSink) and the `read` tool's

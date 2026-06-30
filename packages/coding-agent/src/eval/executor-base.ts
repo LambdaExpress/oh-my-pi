@@ -2,7 +2,12 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
 import { OutputSink } from "../session/streaming-output";
 import type { ToolSession } from "../tools";
-import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "../tools/output-meta";
+import {
+	resolveOutputMaxColumns,
+	resolveOutputSinkHeadBytes,
+	resolveOutputSinkSpillThreshold,
+	resolveOutputSinkTailBytes,
+} from "../tools/output-meta";
 import { isEvalTimeoutControlEvent } from "./bridge-timeout";
 import type { JsStatusEvent } from "./js/shared/types";
 import type { KernelDisplayOutput } from "./py/display";
@@ -297,7 +302,9 @@ export async function executeWithKernelBase<
 		onChunk: options?.onChunk,
 		artifactPath: options?.artifactPath,
 		artifactId: options?.artifactId,
+		spillThreshold: resolveOutputSinkSpillThreshold(settings),
 		headBytes: resolveOutputSinkHeadBytes(settings),
+		tailBytes: resolveOutputSinkTailBytes(settings),
 		maxColumns: resolveOutputMaxColumns(settings),
 	});
 
