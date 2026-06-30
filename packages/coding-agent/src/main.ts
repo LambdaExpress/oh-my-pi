@@ -96,12 +96,25 @@ export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string)
 	(parsedArgs.mode === "json" ? process.stderr : process.stdout).write(text);
 }
 
-async function checkForNewVersion(currentVersion: string): Promise<string | undefined> {
-	if (!settings.get("startup.checkUpdate")) {
-		return;
+type UpdateCheckSettings = Pick<Settings, "get">;
+
+export interface CheckForNewVersionOptions {
+	settings?: UpdateCheckSettings;
+	latestUrl?: string;
+}
+
+const NPM_LATEST_VERSION_URL = "https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/latest";
+
+export async function checkForNewVersion(
+	currentVersion: string,
+	options: CheckForNewVersionOptions = {},
+): Promise<string | undefined> {
+	const activeSettings = options.settings ?? settings;
+	if (!activeSettings.get("startup.checkUpdate")) {
+		return undefined;
 	}
 	try {
-		const response = await fetch("https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/latest");
+		const response = await fetch(options.latestUrl ?? NPM_LATEST_VERSION_URL);
 		if (!response.ok) return undefined;
 
 		const data = (await response.json()) as { version?: string };
@@ -1378,7 +1391,7 @@ export async function runRootCommand(
 			stopStartupWatchdog();
 			await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, eventBus);
 		} else if (isInteractive) {
-			const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
+			const versionCheckPromise = checkForNewVersion(VERSION, { settings: settingsInstance }).catch(() => undefined);
 			const changelogMarkdown = await logger.time("main:getChangelogForDisplay", getChangelogForDisplay, parsedArgs);
 
 			const modelScopeNotification = buildModelScopeNotification(

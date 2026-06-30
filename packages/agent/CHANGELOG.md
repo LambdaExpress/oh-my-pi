@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed tool-call argument streaming snapshots so live renderers receive symbol-backed partial JSON during `message_update` events.
+
 ## [16.2.4] - 2026-06-28
 
 ### Changed

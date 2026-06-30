@@ -85,6 +85,7 @@ import * as bundledPiAiProvidersGitlabDuoWorkflow from "@oh-my-pi/pi-ai/provider
 import * as bundledPiAiProvidersGoogle from "@oh-my-pi/pi-ai/providers/google";
 import * as bundledPiAiProvidersGoogleAuth from "@oh-my-pi/pi-ai/providers/google-auth";
 import * as bundledPiAiProvidersGoogleGeminiCli from "@oh-my-pi/pi-ai/providers/google-gemini-cli";
+import * as bundledPiAiProvidersGoogleInteractions from "@oh-my-pi/pi-ai/providers/google-interactions";
 import * as bundledPiAiProvidersGoogleShared from "@oh-my-pi/pi-ai/providers/google-shared";
 import * as bundledPiAiProvidersGoogleTypes from "@oh-my-pi/pi-ai/providers/google-types";
 import * as bundledPiAiProvidersGoogleVertex from "@oh-my-pi/pi-ai/providers/google-vertex";
@@ -138,6 +139,7 @@ import * as bundledPiAiUtilsGoogleValidation from "@oh-my-pi/pi-ai/utils/google-
 import * as bundledPiAiUtilsHarmonyLeak from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import * as bundledPiAiUtilsHttpInspector from "@oh-my-pi/pi-ai/utils/http-inspector";
 import * as bundledPiAiUtilsIdleIterator from "@oh-my-pi/pi-ai/utils/idle-iterator";
+import * as bundledPiAiUtilsLeakedThinkingStream from "@oh-my-pi/pi-ai/utils/leaked-thinking-stream";
 import * as bundledPiAiUtilsOpenaiHttp from "@oh-my-pi/pi-ai/utils/openai-http";
 import * as bundledPiAiUtilsOpenrouterHeaders from "@oh-my-pi/pi-ai/utils/openrouter-headers";
 import * as bundledPiAiUtilsParseBind from "@oh-my-pi/pi-ai/utils/parse-bind";
@@ -1145,6 +1147,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-ai/providers/google-gemini-cli": bundledPiAiProvidersGoogleGeminiCli as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-ai/providers/google-interactions": bundledPiAiProvidersGoogleInteractions as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-ai/providers/google-shared": bundledPiAiProvidersGoogleShared as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -1252,6 +1257,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-ai/utils/idle-iterator": bundledPiAiUtilsIdleIterator as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-ai/utils/leaked-thinking-stream": bundledPiAiUtilsLeakedThinkingStream as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-ai/utils/openai-http": bundledPiAiUtilsOpenaiHttp as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-ai/utils/openrouter-headers": bundledPiAiUtilsOpenrouterHeaders as unknown as Readonly<
 		Record<string, unknown>

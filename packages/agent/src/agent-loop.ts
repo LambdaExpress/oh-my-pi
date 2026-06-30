@@ -26,6 +26,7 @@ import {
 	wrapInbandToolStream,
 } from "@oh-my-pi/pi-ai/dialect";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { getStreamingPartialJson, setStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import {
 	createHarmonyAuditEvent,
 	detectHarmonyLeakInAssistantMessage,
@@ -156,8 +157,12 @@ function snapshotAssistantContentBlock(block: AssistantContentBlock): AssistantC
 			return { ...block };
 		case "redactedThinking":
 			return { ...block };
-		case "toolCall":
-			return { ...block, arguments: structuredCloneJSON(block.arguments) };
+		case "toolCall": {
+			const snapshot = { ...block, arguments: structuredCloneJSON(block.arguments) };
+			const partialJson = getStreamingPartialJson(block);
+			if (partialJson !== undefined) setStreamingPartialJson(snapshot, partialJson);
+			return snapshot;
+		}
 	}
 }
 

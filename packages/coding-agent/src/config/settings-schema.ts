@@ -1533,8 +1533,8 @@ export const SETTINGS_SCHEMA = {
 		ui: {
 			tab: "interaction",
 			group: "Startup & Updates",
-			label: "Check for Updates",
-			description: "Check for omp updates on startup",
+			label: "Update Notifications",
+			description: "Show the startup update prompt when a newer omp version is available",
 		},
 	},
 

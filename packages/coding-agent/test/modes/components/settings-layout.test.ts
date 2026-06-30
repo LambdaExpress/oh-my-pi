@@ -70,6 +70,16 @@ describe("settings layout", () => {
 		});
 	});
 
+	it("exposes startup update notifications as an interaction setting", () => {
+		const def = getSettingsForTab("interaction").find(def => def.path === "startup.checkUpdate");
+
+		expect(def).toMatchObject({
+			type: "boolean",
+			label: "Update Notifications",
+			group: "Startup & Updates",
+		});
+	});
+
 	it("hides advisor dependent settings when advisor is disabled", () => {
 		const advisorDependentPaths: SettingPath[] = ["advisor.subagents", "advisor.syncBacklog", "advisor.immuneTurns"];
 		const advisorDependentPathSet = new Set(advisorDependentPaths);

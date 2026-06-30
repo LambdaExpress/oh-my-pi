@@ -11,6 +11,7 @@
 ### Changed
 
 - Clarified that `grep` does not recursively search internal URL directories.
+- Clarified the startup update setting as an Update Notifications toggle and covered the opt-out path for startup update prompts.
 
 ### Fixed
 
