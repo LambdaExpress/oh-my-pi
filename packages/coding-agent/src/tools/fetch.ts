@@ -6,7 +6,7 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { FetchImpl, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { htmlToMarkdown } from "@oh-my-pi/pi-natives";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
-import { $which, ptree, truncate } from "@oh-my-pi/pi-utils";
+import { $which, ptree, removeWithRetries, truncate } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "lru-cache/raw";
 import type { Settings } from "../config/settings";
 import { readEditableNotebookText } from "../edit/notebook";
@@ -590,6 +590,35 @@ export type FetchProvider = "native" | "trafilatura" | "lynx" | "parallel" | "ji
 
 const FETCH_PROVIDER_ORDER: readonly FetchProvider[] = ["native", "trafilatura", "lynx", "parallel", "jina"];
 
+interface ScopedAbortSignal {
+	signal: AbortSignal | undefined;
+	dispose(): void;
+}
+
+function createScopedTimeoutSignal(userSignal: AbortSignal | undefined, timeoutMs: number): ScopedAbortSignal {
+	if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+		return { signal: userSignal, dispose: () => {} };
+	}
+	if (userSignal?.aborted) {
+		return { signal: userSignal, dispose: () => {} };
+	}
+	const controller = new AbortController();
+	const timer = setTimeout(() => {
+		controller.abort(new DOMException(`Timed out after ${Math.round(timeoutMs)}ms`, "TimeoutError"));
+	}, timeoutMs);
+	const onUserAbort = () => {
+		controller.abort(userSignal?.reason ?? new DOMException("Aborted", "AbortError"));
+	};
+	userSignal?.addEventListener("abort", onUserAbort, { once: true });
+	return {
+		signal: controller.signal,
+		dispose: () => {
+			clearTimeout(timer);
+			userSignal?.removeEventListener("abort", onUserAbort);
+		},
+	};
+}
+
 /**
  * Render HTML to markdown by trying reader backends in priority order: native
  * (in-process), trafilatura, lynx, Parallel, then Jina. The `providers.fetch`
@@ -614,7 +643,8 @@ export async function renderHtmlToText(
 	storage: AgentStorage | null,
 	fetchOverride?: FetchImpl,
 ): Promise<{ content: string; ok: boolean; method: string }> {
-	const overallSignal = ptree.combineSignals(userSignal, timeout * 1000);
+	const overall = createScopedTimeoutSignal(userSignal, timeout * 1000);
+	const overallSignal = overall.signal;
 	const execOptions = {
 		mode: "group" as const,
 		allowNonZero: true,
@@ -623,9 +653,14 @@ export async function renderHtmlToText(
 		signal: overallSignal,
 	};
 	const remoteBudgetMs = Math.min(timeout * 1000, REMOTE_READER_MAX_MS);
-	// Per-attempt budget for remote endpoints so one stall cannot consume the
-	// whole reader-mode budget and starve the local fallbacks.
-	const remoteSignal = () => ptree.combineSignals(userSignal, remoteBudgetMs);
+	const withRemoteSignal = async <T>(operation: (signal: AbortSignal | undefined) => Promise<T>): Promise<T> => {
+		const remote = createScopedTimeoutSignal(userSignal, remoteBudgetMs);
+		try {
+			return await operation(remote.signal);
+		} finally {
+			remote.dispose();
+		}
+	};
 	const fetchImpl = fetchOverride ?? fetch;
 
 	const runners: Record<FetchProvider, () => Promise<string | null>> = {
@@ -645,27 +680,30 @@ export async function renderHtmlToText(
 		},
 		parallel: async () => {
 			if (!findParallelApiKey(storage)) return null;
-			const parallelResult = await extractWithParallel(
-				[url],
-				{
-					objective: "Extract the main content",
-					excerpts: true,
-					fullContent: false,
-					signal: remoteSignal(),
-					fetch: fetchImpl,
-				},
-				storage,
-			);
-			const firstDocument = parallelResult.results[0];
-			return firstDocument ? getParallelExtractContent(firstDocument) : null;
-		},
-		jina: async () => {
-			const response = await fetchImpl(`https://r.jina.ai/${url}`, {
-				headers: { Accept: "text/markdown" },
-				signal: remoteSignal(),
+			return await withRemoteSignal(async remoteSignal => {
+				const parallelResult = await extractWithParallel(
+					[url],
+					{
+						objective: "Extract the main content",
+						excerpts: true,
+						fullContent: false,
+						signal: remoteSignal,
+						fetch: fetchImpl,
+					},
+					storage,
+				);
+				const firstDocument = parallelResult.results[0];
+				return firstDocument ? getParallelExtractContent(firstDocument) : null;
 			});
-			return response.ok ? await response.text() : null;
 		},
+		jina: async () =>
+			await withRemoteSignal(async remoteSignal => {
+				const response = await fetchImpl(`https://r.jina.ai/${url}`, {
+					headers: { Accept: "text/markdown" },
+					signal: remoteSignal,
+				});
+				return response.ok ? await response.text() : null;
+			}),
 	};
 
 	const preference = settings.get("providers.fetch");
@@ -680,26 +718,30 @@ export async function renderHtmlToText(
 	// returning the unrendered raw HTML.
 	let lowQuality: { content: string; method: FetchProvider } | null = null;
 
-	for (const method of order) {
-		// Honour real user cancellation between attempts; remote per-attempt and
-		// overall-budget timeouts still fall through to later (local) renderers.
-		userSignal?.throwIfAborted();
-		try {
-			const content = await runners[method]();
-			if (!content || content.trim().length <= 100) continue;
-			if (!isLowQualityOutput(content)) {
-				return { content, ok: true, method };
-			}
-			lowQuality ??= { content, method };
-		} catch {
+	try {
+		for (const method of order) {
+			// Honour real user cancellation between attempts; remote per-attempt and
+			// overall-budget timeouts still fall through to later (local) renderers.
 			userSignal?.throwIfAborted();
+			try {
+				const content = await runners[method]();
+				if (!content || content.trim().length <= 100) continue;
+				if (!isLowQualityOutput(content)) {
+					return { content, ok: true, method };
+				}
+				lowQuality ??= { content, method };
+			} catch {
+				userSignal?.throwIfAborted();
+			}
 		}
-	}
 
-	if (lowQuality) {
-		return { content: lowQuality.content, ok: true, method: lowQuality.method };
+		if (lowQuality) {
+			return { content: lowQuality.content, ok: true, method: lowQuality.method };
+		}
+		return { content: "", ok: false, method: "none" };
+	} finally {
+		overall.dispose();
 	}
-	return { content: "", ok: false, method: "none" };
 }
 
 /**
@@ -861,7 +903,7 @@ async function withTempBinaryFile<T>(
 		await Bun.write(tempPath, bytes);
 		return await readTempFile(tempPath);
 	} finally {
-		await fs.rm(tempDir, { recursive: true, force: true });
+		await removeWithRetries(tempDir);
 	}
 }
 

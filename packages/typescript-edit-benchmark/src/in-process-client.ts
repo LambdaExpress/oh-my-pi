@@ -7,15 +7,12 @@
  */
 import type { AgentEvent, AgentMessage, ResolvedThinkingLevel, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model, ToolExample } from "@oh-my-pi/pi-ai";
-import type { AgentSession, AgentSessionEvent, AuthStorage, SessionStats } from "@oh-my-pi/pi-coding-agent";
-import {
-	type CreateAgentSessionResult,
-	createAgentSession,
-	discoverAuthStorage,
-	ModelRegistry,
-	SessionManager,
-	Settings,
-} from "@oh-my-pi/pi-coding-agent";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { type CreateAgentSessionResult, createAgentSession, discoverAuthStorage } from "@oh-my-pi/pi-coding-agent/sdk";
+import type { AgentSession, AgentSessionEvent, SessionStats } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 
 export type InProcessEventListener = (event: AgentEvent) => void;
 

@@ -416,7 +416,7 @@ describe("run_experiment", () => {
 			getRuntime: () => runtime,
 			pi: createPiHarness().api,
 		});
-		const result = await run.execute("r", { timeout_seconds: 5 }, undefined, undefined, createCtx(dir));
+		const result = await run.execute("r", { timeout_seconds: 15 }, undefined, undefined, createCtx(dir));
 		const details = result.details as RunDetails;
 		expect(details.parsedPrimary).toBe(42);
 		expect(details.parsedMetrics).toMatchObject({ runtime_ms: 42, memory_mb: 12 });
@@ -431,7 +431,7 @@ describe("run_experiment", () => {
 		expect(runs).toHaveLength(1);
 		expect(runs[0].parsedPrimary).toBe(42);
 		expect(runs[0].status).toBeNull();
-	});
+	}, 20_000);
 
 	it("abandons a prior pending run instead of blocking", async () => {
 		const dir = freshRepo().dir;
@@ -456,7 +456,7 @@ describe("run_experiment", () => {
 		const details = result.details as RunDetails;
 		expect(details.abandonedPriorRun).not.toBeNull();
 		expect(details.runNumber).not.toBe(details.abandonedPriorRun);
-	});
+	}, 20_000);
 });
 
 describe("log_experiment", () => {

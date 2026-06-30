@@ -1,6 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ImageContent, Message, MessageAttribution, ServiceTier, TextContent, Usage } from "@oh-my-pi/pi-ai";
+import type {
+	ImageContent,
+	Message,
+	MessageAttribution,
+	ServiceTierByFamily,
+	TextContent,
+	Usage,
+} from "@oh-my-pi/pi-ai";
 import {
 	directoryExists,
 	getBlobsDir,
@@ -1314,7 +1321,7 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	appendServiceTierChange(serviceTier: ServiceTier | null): string {
+	appendServiceTierChange(serviceTier: ServiceTierByFamily | null): string {
 		const entry: ServiceTierChangeEntry = { type: "service_tier_change", ...this.#freshEntryFields(), serviceTier };
 		this.#recordEntry(entry);
 		return entry.id;
@@ -1668,10 +1675,17 @@ export class SessionManager {
 	 * Create a new session.
 	 * @param cwd Working directory (stored in the session header)
 	 * @param sessionDir Optional session directory; defaults to the cwd-derived dir.
+	 * @param options Optional creation behavior.
 	 */
-	static create(cwd: string, sessionDir?: string, storage: SessionStorage = new FileSessionStorage()): SessionManager {
+	static create(
+		cwd: string,
+		sessionDir?: string,
+		storage: SessionStorage = new FileSessionStorage(),
+		options?: { suppressBreadcrumb?: boolean },
+	): SessionManager {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		const manager = new SessionManager(cwd, dir, true, storage);
+		manager.#suppressBreadcrumb = options?.suppressBreadcrumb === true;
 		manager.#resetToNewSession();
 		return manager;
 	}

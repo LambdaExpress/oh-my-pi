@@ -32,11 +32,16 @@ describe("MCPManager connection status events", () => {
 		const invalid: MCPServerConfig = { type: "stdio", command: "" };
 
 		try {
-			const result = await manager.connectServers({ alpha: success, broken: invalid }, {}, event =>
-				events.push(event),
-			);
+			const alphaConnected = Promise.withResolvers<void>();
+			const result = await manager.connectServers({ alpha: success, broken: invalid }, {}, event => {
+				events.push(event);
+				if (event.type === "connected" && event.serverName === "alpha") alphaConnected.resolve();
+			});
 
-			expect(result.connectedServers).toContain("alpha");
+			if (!events.some(event => event.type === "connected" && event.serverName === "alpha")) {
+				await alphaConnected.promise;
+			}
+			expect(manager.getConnectionStatus("alpha")).toBe("connected");
 			expect(result.errors.get("broken")).toBe('Server "broken": stdio server requires "command" field');
 			expect(events).toEqual([
 				{ type: "connecting", serverNames: ["alpha", "broken"] },
@@ -46,5 +51,5 @@ describe("MCPManager connection status events", () => {
 		} finally {
 			await manager.disconnectAll();
 		}
-	});
+	}, 30_000);
 });

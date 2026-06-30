@@ -42,6 +42,7 @@ import {
 	resolveModelRoleValue,
 } from "./config/model-resolver";
 import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate } from "./config/prompt-templates";
+import { buildServiceTierByFamily } from "./config/service-tier";
 import { Settings, type SkillsSettings } from "./config/settings";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
@@ -1539,7 +1540,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getModelString: () => (hasExplicitModel && model ? formatModelString(model) : undefined),
 			getActiveModelString,
 			getActiveModel: () => agent?.state.model ?? model,
-			getServiceTier: () => session?.serviceTier,
+			getServiceTierByFamily: () => session?.serviceTierByFamily,
 			getImageAttachments: () => session?.getImageAttachments() ?? [],
 			getPlanModeState: () => session?.getPlanModeState(),
 			getPlanReferencePath: () => session?.getPlanReferencePath() ?? "local://PLAN.md",
@@ -2527,13 +2528,13 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const openaiWebsocketSetting = settings.get("providers.openaiWebsockets") ?? "off";
 		const preferOpenAICodexWebsockets =
 			openaiWebsocketSetting === "on" ? true : openaiWebsocketSetting === "off" ? false : undefined;
-		const serviceTierSetting = settings.get("serviceTier");
-
-		const initialServiceTier = hasServiceTierEntry
-			? existingSession.serviceTier
-			: serviceTierSetting === "none"
-				? undefined
-				: serviceTierSetting;
+		const initialServiceTierByFamily = hasServiceTierEntry
+			? (existingSession.serviceTier ?? {})
+			: buildServiceTierByFamily(
+					settings.get("tier.openai"),
+					settings.get("tier.anthropic"),
+					settings.get("tier.google"),
+				);
 
 		// One-shot launch-latency marker: fired the first time the loop dispatches
 		// a chat request to the provider transport. See onFirstChatDispatch.
@@ -2581,7 +2582,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			minP: settings.get("minP") >= 0 ? settings.get("minP") : undefined,
 			presencePenalty: settings.get("presencePenalty") >= 0 ? settings.get("presencePenalty") : undefined,
 			repetitionPenalty: settings.get("repetitionPenalty") >= 0 ? settings.get("repetitionPenalty") : undefined,
-			serviceTier: initialServiceTier,
 			hideThinkingSummary: settings.get("omitThinking"),
 			kimiApiFormat: settings.get("providers.kimiApiFormat") ?? "anthropic",
 			preferWebsockets: preferOpenAICodexWebsockets,
@@ -2641,8 +2641,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				// classification persists its concrete effort once a real user turn runs.
 				sessionManager.appendThinkingLevelChange(effectiveThinkingLevel);
 			}
-			if (initialServiceTier) {
-				sessionManager.appendServiceTierChange(initialServiceTier);
+			if (Object.keys(initialServiceTierByFamily).length > 0) {
+				sessionManager.appendServiceTierChange(initialServiceTierByFamily);
 			}
 		}
 
@@ -2693,6 +2693,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			agent,
 			pruneToolDescriptions: inlineToolDescriptors,
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
+			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
 			settings,
 			autoApprove: options.autoApprove,

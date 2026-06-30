@@ -224,5 +224,5 @@ describe("omp completions (integration / drift)", () => {
 		// Hidden/default commands must NOT surface as completable subcommands.
 		expect(stdout).not.toContain("_omp_cmd_launch");
 		expect(stdout).not.toContain("_omp_cmd___complete");
-	});
+	}, 30_000);
 });

@@ -8,15 +8,19 @@ import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-sto
 import * as deepseekModule from "@oh-my-pi/pi-ai/registry/deepseek";
 import * as kagiModule from "@oh-my-pi/pi-ai/registry/kagi";
 import * as ollamaCloudModule from "@oh-my-pi/pi-ai/registry/ollama-cloud";
+import * as aiStream from "@oh-my-pi/pi-ai/stream";
 import { removeWithRetries } from "../../utils/src/temp";
 
 function countCredentialRows(dbPath: string, provider: string): number {
 	const db = new Database(dbPath, { readonly: true });
 	try {
-		const row = db.prepare("SELECT COUNT(*) AS count FROM auth_credentials WHERE provider = ?").get(provider) as
-			| { count?: number }
-			| undefined;
-		return row?.count ?? 0;
+		const stmt = db.prepare("SELECT COUNT(*) AS count FROM auth_credentials WHERE provider = ?");
+		try {
+			const row = stmt.get(provider) as { count?: number } | undefined;
+			return row?.count ?? 0;
+		} finally {
+			stmt.finalize();
+		}
 	} finally {
 		db.close();
 	}
@@ -26,18 +30,24 @@ function countCredentialRowsByDisabledState(dbPath: string, provider: string, di
 	const disabledClause = disabled ? "IS NOT NULL" : "IS NULL";
 	const db = new Database(dbPath, { readonly: true });
 	try {
-		const row = db
-			.prepare(
-				`SELECT COUNT(*) AS count FROM auth_credentials WHERE provider = ? AND disabled_cause ${disabledClause}`,
-			)
-			.get(provider) as { count?: number } | undefined;
-		return row?.count ?? 0;
+		const stmt = db.prepare(
+			`SELECT COUNT(*) AS count FROM auth_credentials WHERE provider = ? AND disabled_cause ${disabledClause}`,
+		);
+		try {
+			const row = stmt.get(provider) as { count?: number } | undefined;
+			return row?.count ?? 0;
+		} finally {
+			stmt.finalize();
+		}
 	} finally {
 		db.close();
 	}
 }
 
 describe("AuthStorage api-key login upsert", () => {
+	// A live env var now (correctly) overrides a stored static api_key. These tests verify that a
+	// freshly stored api_key resolves through AuthStorage.getApiKey, so neutralize the env leg
+	// entirely — this ignores every provider's ambient env key, not just the few set locally.
 	let tempDir = "";
 	let dbPath = "";
 	let store: SqliteAuthCredentialStore | null = null;
@@ -47,6 +57,7 @@ describe("AuthStorage api-key login upsert", () => {
 	let loginOllamaCloudSpy: Mock<typeof ollamaCloudModule.loginOllamaCloud>;
 
 	beforeEach(async () => {
+		vi.spyOn(aiStream, "getEnvApiKey").mockReturnValue(undefined);
 		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "pi-ai-auth-api-key-login-"));
 		dbPath = path.join(tempDir, "agent.db");
 		store = await SqliteAuthCredentialStore.open(dbPath);

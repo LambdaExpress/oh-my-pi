@@ -141,13 +141,11 @@ describe("enumeratePythonRuntimes", () => {
 	it("resolves a relative explicit interpreter against cwd", () => {
 		vi.spyOn(fs, "existsSync").mockReturnValue(false);
 
-		const runtime = resolveExplicitPythonRuntime(
-			path.join(".venv", "bin", "python"),
-			path.join(path.sep, "work"),
-			{},
-		);
+		const relativeInterpreter = path.join(".venv", "bin", "python");
+		const cwd = path.join(path.sep, "work");
+		const runtime = resolveExplicitPythonRuntime(relativeInterpreter, cwd, {});
 
-		expect(runtime.pythonPath).toBe(path.join(path.sep, "work", ".venv", "bin", "python"));
+		expect(runtime.pythonPath).toBe(path.resolve(cwd, relativeInterpreter));
 	});
 
 	it("throws from resolvePythonRuntime when no interpreter can be found", () => {

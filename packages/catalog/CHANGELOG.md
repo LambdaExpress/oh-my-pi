@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [16.2.7] - 2026-06-30
+
+### Fixed
+
+- Fixed compatibility with Kimi K2.7 Code on native endpoints to ensure thinking mode is preserved and tool choice is not forced.
+- Fixed Cerebras gemma-4-31b dynamic discovery to correctly identify the model as image-capable, enabling proper serialization of attached images.
+
 ## [16.2.6] - 2026-06-29
 
 ### Fixed

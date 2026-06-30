@@ -19,7 +19,6 @@ function getHeader(entries: unknown[]): SessionHeader | undefined {
 }
 
 async function writeBreadcrumb(cwd: string, sessionFile: string): Promise<string> {
-	await Bun.sleep(0);
 	const terminalId = getTerminalId();
 	if (!terminalId) throw new Error("Expected a terminal id for breadcrumb test");
 	const dir = getTerminalSessionsDir();
@@ -27,6 +26,10 @@ async function writeBreadcrumb(cwd: string, sessionFile: string): Promise<string
 	const file = path.join(dir, terminalId);
 	fs.writeFileSync(file, `${cwd}\n${sessionFile}\n`);
 	return file;
+}
+
+function createSessionWithoutBreadcrumb(cwd: string, sessionDir?: string): SessionManager {
+	return SessionManager.create(cwd, sessionDir, undefined, { suppressBreadcrumb: true });
 }
 
 function stripHeaderCwd(file: string): void {
@@ -87,7 +90,7 @@ describe.serial("SessionManager.continueRecent relocation", () => {
 	});
 
 	it.serial("re-roots the terminal's session when its directory was moved/renamed", async () => {
-		const session = SessionManager.create(cwdA);
+		const session = createSessionWithoutBreadcrumb(cwdA);
 		session.appendMessage({ role: "user", content: "before move", timestamp: 1 });
 		session.appendMessage(makeAssistantMessage());
 		await session.flush();
@@ -119,7 +122,7 @@ describe.serial("SessionManager.continueRecent relocation", () => {
 	});
 
 	it.serial("does not hijack the session when the recorded directory still exists (plain cd)", async () => {
-		const session = SessionManager.create(cwdA);
+		const session = createSessionWithoutBreadcrumb(cwdA);
 		session.appendMessage({ role: "user", content: "other project", timestamp: 1 });
 		session.appendMessage(makeAssistantMessage());
 		await session.flush();
@@ -142,7 +145,7 @@ describe.serial("SessionManager.continueRecent relocation", () => {
 	});
 
 	it.serial("does not re-root when the new directory already has its own sessions", async () => {
-		const moved = SessionManager.create(cwdA);
+		const moved = createSessionWithoutBreadcrumb(cwdA);
 		moved.appendMessage({ role: "user", content: "moved", timestamp: 1 });
 		moved.appendMessage(makeAssistantMessage());
 		await moved.flush();
@@ -151,7 +154,7 @@ describe.serial("SessionManager.continueRecent relocation", () => {
 		await moved.close();
 
 		// cwdB already owns a local session.
-		const local = SessionManager.create(cwdB);
+		const local = createSessionWithoutBreadcrumb(cwdB);
 		local.appendMessage({ role: "user", content: "local", timestamp: 2 });
 		local.appendMessage(makeAssistantMessage());
 		await local.flush();
@@ -173,7 +176,7 @@ describe.serial("SessionManager.continueRecent relocation", () => {
 	});
 
 	it.serial("moves a relocated breadcrumb session into an explicit sessionDir", async () => {
-		const session = SessionManager.create(cwdA);
+		const session = createSessionWithoutBreadcrumb(cwdA);
 		session.appendMessage({ role: "user", content: "explicit dir", timestamp: 1 });
 		session.appendMessage(makeAssistantMessage());
 		await session.flush();
@@ -199,7 +202,7 @@ describe.serial("SessionManager.continueRecent relocation", () => {
 
 	it.serial("re-roots when the stale breadcrumb file is already in the explicit sessionDir", async () => {
 		const explicitSessionDir = path.join(testAgentDir, "shared-custom-sessions");
-		const session = SessionManager.create(cwdA, explicitSessionDir);
+		const session = createSessionWithoutBreadcrumb(cwdA, explicitSessionDir);
 		session.appendMessage({ role: "user", content: "same explicit dir", timestamp: 1 });
 		session.appendMessage(makeAssistantMessage());
 		await session.flush();
@@ -225,7 +228,7 @@ describe.serial("SessionManager.continueRecent relocation", () => {
 
 	it.serial("prefers an existing current-cwd session in a shared explicit sessionDir", async () => {
 		const explicitSessionDir = path.join(testAgentDir, "shared-current-sessions");
-		const local = SessionManager.create(cwdB, explicitSessionDir);
+		const local = createSessionWithoutBreadcrumb(cwdB, explicitSessionDir);
 		local.appendMessage({ role: "user", content: "local current cwd", timestamp: 1 });
 		local.appendMessage(makeAssistantMessage());
 		await local.flush();
@@ -235,7 +238,7 @@ describe.serial("SessionManager.continueRecent relocation", () => {
 
 		// Ensure the stale moved session is newer than the local current-cwd session.
 		await new Promise(resolve => setTimeout(resolve, 20));
-		const moved = SessionManager.create(cwdA, explicitSessionDir);
+		const moved = createSessionWithoutBreadcrumb(cwdA, explicitSessionDir);
 		moved.appendMessage({ role: "user", content: "newer stale moved cwd", timestamp: 2 });
 		moved.appendMessage(makeAssistantMessage());
 		await moved.flush();
@@ -258,7 +261,7 @@ describe.serial("SessionManager.continueRecent relocation", () => {
 
 	it.serial("re-roots past a cwd-less legacy session in a shared explicit sessionDir", async () => {
 		const explicitSessionDir = path.join(testAgentDir, "shared-legacy-sessions");
-		const legacy = SessionManager.create(cwdB, explicitSessionDir);
+		const legacy = createSessionWithoutBreadcrumb(cwdB, explicitSessionDir);
 		legacy.appendMessage({ role: "user", content: "legacy without cwd", timestamp: 1 });
 		legacy.appendMessage(makeAssistantMessage());
 		await legacy.flush();
@@ -269,7 +272,7 @@ describe.serial("SessionManager.continueRecent relocation", () => {
 
 		// Ensure the stale moved session is newer than the cwd-less legacy session.
 		await new Promise(resolve => setTimeout(resolve, 20));
-		const moved = SessionManager.create(cwdA, explicitSessionDir);
+		const moved = createSessionWithoutBreadcrumb(cwdA, explicitSessionDir);
 		moved.appendMessage({ role: "user", content: "newer stale moved cwd", timestamp: 2 });
 		moved.appendMessage(makeAssistantMessage());
 		await moved.flush();

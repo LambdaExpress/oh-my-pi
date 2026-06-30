@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -8,6 +8,9 @@ import * as git from "../src/utils/git";
 
 const gitInitHelp = await $`git init -h`.quiet().nothrow().text();
 const supportsReftable = gitInitHelp.includes("--ref-format");
+
+const GIT_PROCESS_TEST_TIMEOUT_MS = 30_000;
+setDefaultTimeout(GIT_PROCESS_TEST_TIMEOUT_MS);
 
 describe.skipIf(!supportsReftable)("git reftable support", () => {
 	// All git plumbing (init, commits, branch, worktree) is real I/O that exercises
@@ -52,14 +55,14 @@ describe.skipIf(!supportsReftable)("git reftable support", () => {
 		configRepoDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-reftable-cfg-"));
 		const cfgInit = await $`git init --ref-format=reftable --initial-branch=main`.cwd(configRepoDir).quiet();
 		if (cfgInit.exitCode !== 0) throw new Error(`reftable git init (config) failed (exit ${cfgInit.exitCode})`);
-	});
+	}, GIT_PROCESS_TEST_TIMEOUT_MS);
 
 	afterAll(async () => {
 		await $`git worktree remove ${worktreeDir} -f`.cwd(sharedRepoDir).quiet().nothrow();
 		await removeWithRetries(worktreeDir).catch(() => {});
 		await removeWithRetries(sharedRepoDir).catch(() => {});
 		await removeWithRetries(configRepoDir).catch(() => {});
-	});
+	}, GIT_PROCESS_TEST_TIMEOUT_MS);
 
 	test("resolves references in a reftable repository", async () => {
 		const repository = await git.repo.resolve(sharedRepoDir);

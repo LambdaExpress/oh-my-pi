@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, setDefaultTimeout, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -17,6 +17,9 @@ import {
 import * as jj from "@oh-my-pi/pi-coding-agent/utils/jj";
 import * as natives from "@oh-my-pi/pi-natives";
 import { removeWithRetries, setWorktreesDir } from "@oh-my-pi/pi-utils";
+
+const GIT_PROCESS_TEST_TIMEOUT_MS = 30_000;
+setDefaultTimeout(GIT_PROCESS_TEST_TIMEOUT_MS);
 
 const tempDirs: string[] = [];
 
@@ -64,7 +67,7 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 	jj.repo.clearRootCache();
 	await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
-});
+}, GIT_PROCESS_TEST_TIMEOUT_MS);
 describe("worktree isolation helpers", () => {
 	it("returns platform-specific null path for git --no-index diffs", () => {
 		const expected = process.platform === "win32" ? "NUL" : "/dev/null";
@@ -120,15 +123,15 @@ describe("worktree isolation helpers", () => {
 			await fs.writeFile(path.join(repo, "merged.txt"), "task branch change\n");
 			await runGit(repo, ["commit", "-q", "-am", "task-change"]);
 			await runGit(repo, ["checkout", "-q", BASE_BRANCH]);
-		});
+		}, GIT_PROCESS_TEST_TIMEOUT_MS);
 
 		afterAll(async () => {
 			await removeWithRetries(repo);
-		});
+		}, GIT_PROCESS_TEST_TIMEOUT_MS);
 
 		afterEach(() => {
 			vi.restoreAllMocks();
-		});
+		}, GIT_PROCESS_TEST_TIMEOUT_MS);
 
 		it("retries isoResolve candidates when a backend is path-unavailable", async () => {
 			const unavailable = new Error("ISO_UNAVAILABLE: btrfs source is not a subvolume");
@@ -221,7 +224,7 @@ describe("worktree isolation helpers", () => {
 		describe("after rewinding the shared fixture", () => {
 			beforeEach(async () => {
 				await Promise.all([runGit(repo, ["reset", "-q", "--hard", initialSha]), runGit(repo, ["stash", "clear"])]);
-			});
+			}, GIT_PROCESS_TEST_TIMEOUT_MS);
 
 			it("restores staged changes with index preservation after merging task branches", async () => {
 				await fs.writeFile(path.join(repo, "staged.txt"), "local staged change\n");
@@ -388,11 +391,11 @@ describe("applyNestedPatches", () => {
 		await fs.writeFile(path.join(nestedDir, "file.txt"), "v1\n");
 		await runGit(nestedDir, ["add", "."]);
 		await runGit(nestedDir, ["commit", "-q", "-m", "nested-init"]);
-	});
+	}, GIT_PROCESS_TEST_TIMEOUT_MS);
 
 	afterEach(async () => {
 		await removeWithRetries(parentRepo);
-	});
+	}, GIT_PROCESS_TEST_TIMEOUT_MS);
 
 	it("does not fold pre-existing dirty nested-repo state into the agent commit", async () => {
 		// User has unrelated work-in-progress in the nested repo before the agent runs.
@@ -518,11 +521,11 @@ describe("commitToBranch preserves agent commits", () => {
 		await configureGitTestLineEndings(isolation);
 		await gitr(isolation, ["config", "user.email", "agent@example.com"]);
 		await gitr(isolation, ["config", "user.name", "Agent User"]);
-	});
+	}, GIT_PROCESS_TEST_TIMEOUT_MS);
 
 	afterEach(async () => {
 		await Promise.all([removeWithRetries(parent), removeWithRetries(isolation)]);
-	});
+	}, GIT_PROCESS_TEST_TIMEOUT_MS);
 
 	// Reproduces issue #3842: agent commits with a specific message inside
 	// isolation; the merged commit on the parent branch must keep that exact

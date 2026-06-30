@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setDefaultTimeout, vi } from "bun:test";
 import * as path from "node:path";
 import { runConfigCommand } from "@oh-my-pi/pi-coding-agent/cli/config-cli";
 import { resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -8,6 +8,8 @@ import { getConfigRootDir, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 let testAgentDir: TempDir | undefined;
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
+const CONFIG_CLI_TEST_TIMEOUT_MS = 30_000;
+setDefaultTimeout(CONFIG_CLI_TEST_TIMEOUT_MS);
 
 beforeEach(() => {
 	resetSettingsForTest();

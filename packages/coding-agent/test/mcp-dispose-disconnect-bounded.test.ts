@@ -46,10 +46,18 @@ describe("owned-manager dispose disconnect is bounded (PR #2839)", () => {
 		const config: MCPStdioServerConfig = { type: "stdio", command: BUN_EXEC, args: [FIXTURE_PATH] };
 		const result = await manager.connectServers({ instr: config }, {});
 		expect(result.errors.has("instr")).toBe(false);
-		expect(manager.getConnectedServers()).toContain("instr");
 
-		const connection = manager.getConnection("instr");
-		if (!connection) throw new Error("expected a live connection to the fixture server");
+		// `connectServers()` is intentionally startup-bounded (250 ms) and can
+		// return while a real stdio fixture is still spawning under full-suite
+		// load. The dispose regression needs a live connection, so wait for the
+		// manager's retained pending connection to finish instead of assuming it
+		// beat the startup bound.
+		const connection = await withTimeout(
+			manager.waitForConnection("instr"),
+			10_000,
+			"instruction MCP fixture did not connect before dispose test setup",
+		);
+		expect(manager.getConnectedServers()).toContain("instr");
 
 		// Stand in for an HTTP/SSE transport whose termination DELETE never
 		// returns. A controllable gate keeps cleanup deterministic — no

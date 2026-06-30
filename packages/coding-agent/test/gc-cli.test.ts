@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings, type Statement } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -25,6 +25,23 @@ let stdoutSpy: { mockRestore(): void } | undefined;
 let stderrSpy: { mockRestore(): void } | undefined;
 let settingsState: SettingsTestState | undefined;
 const originalExitCode = process.exitCode;
+
+type PreparedStatementParams<Params extends SQLQueryBindings | SQLQueryBindings[]> = Params extends SQLQueryBindings[]
+	? Params
+	: [Params];
+
+function withStatement<Row, Params extends SQLQueryBindings | SQLQueryBindings[], Result>(
+	db: Database,
+	sql: string,
+	fn: (statement: Statement<Row, PreparedStatementParams<Params>>) => Result,
+): Result {
+	const statement = db.prepare<Row, Params>(sql) as unknown as Statement<Row, PreparedStatementParams<Params>>;
+	try {
+		return fn(statement);
+	} finally {
+		statement.finalize();
+	}
+}
 
 beforeEach(async () => {
 	settingsState = beginSettingsTest();
@@ -420,7 +437,9 @@ describe("runGcCommand history checkpoint", () => {
 
 		expect(result.wal?.checkpointed).toBe(true);
 		expect(result.wal?.walBytes).toBe(0);
-		expect((await fs.stat(`${dbPath}-wal`)).size).toBe(0);
+		const walPath = `${dbPath}-wal`;
+		const walSize = (await Bun.file(walPath).exists()) ? (await fs.stat(walPath)).size : 0;
+		expect(walSize).toBe(0);
 	});
 
 	test("--apply propagates WAL checkpoint failures and releases the gc lock", async () => {
@@ -445,7 +464,9 @@ describe("runGcCommand history checkpoint", () => {
 			writer.run("INSERT INTO history (prompt) VALUES ('before-reader')");
 			reader.run("PRAGMA journal_mode=WAL");
 			reader.run("BEGIN");
-			reader.prepare("SELECT * FROM history").all();
+			withStatement<Record<string, unknown>, [], void>(reader, "SELECT * FROM history", statement => {
+				statement.all();
+			});
 			writer.run("INSERT INTO history (prompt) VALUES ('after-reader')");
 
 			await expect(runGcCommand({ flags: { agentDir: root, wal: true, apply: true } })).rejects.toThrow(
@@ -555,10 +576,16 @@ describe("runGcCommand cold-session archive", () => {
 		});
 
 		const check = new Database(dbPath);
-		const rows = check.prepare("SELECT session_id FROM history ORDER BY id").all() as Array<{ session_id: string }>;
-		const ftsRows = check
-			.prepare("SELECT h.session_id FROM history_fts f JOIN history h ON h.id = f.rowid ORDER BY h.id")
-			.all() as Array<{ session_id: string }>;
+		const rows = withStatement<{ session_id: string }, [], Array<{ session_id: string }>>(
+			check,
+			"SELECT session_id FROM history ORDER BY id",
+			statement => statement.all(),
+		);
+		const ftsRows = withStatement<{ session_id: string }, [], Array<{ session_id: string }>>(
+			check,
+			"SELECT h.session_id FROM history_fts f JOIN history h ON h.id = f.rowid ORDER BY h.id",
+			statement => statement.all(),
+		);
 		check.close();
 
 		expect(result.archive?.historyRowsDeleted).toBe(1);
@@ -610,7 +637,11 @@ describe("runGcCommand cold-session archive", () => {
 		});
 
 		const check = new Database(dbPath);
-		const rows = check.prepare("SELECT session_id FROM history ORDER BY id").all();
+		const rows = withStatement<Record<string, unknown>, [], Array<Record<string, unknown>>>(
+			check,
+			"SELECT session_id FROM history ORDER BY id",
+			statement => statement.all(),
+		);
 		check.close();
 
 		expect(second.archive?.archived).toBe(0);

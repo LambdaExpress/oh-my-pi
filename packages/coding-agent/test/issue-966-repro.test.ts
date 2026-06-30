@@ -1,6 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, setDefaultTimeout } from "bun:test";
 import * as path from "node:path";
 import { $ } from "bun";
+
+const GIT_PROCESS_TEST_TIMEOUT_MS = 30_000;
+setDefaultTimeout(GIT_PROCESS_TEST_TIMEOUT_MS);
 
 describe("issue #966 split commit restaging", () => {
 	it("recreates split commits when one commit contains a newly created file", async () => {

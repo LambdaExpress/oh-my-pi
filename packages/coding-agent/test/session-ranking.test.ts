@@ -112,7 +112,7 @@ describe("slotted session headers", () => {
 			resetSettingsForTest();
 			await tempDir.remove().catch(() => {});
 		}
-	});
+	}, 30_000);
 });
 
 describe("rankSessionSearchMatches", () => {

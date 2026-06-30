@@ -525,15 +525,23 @@ function sqliteNumber(value: number | bigint | null | undefined): number {
 }
 
 function tableExists(db: Database, table: string): boolean {
-	const row = db
-		.prepare("SELECT 1 AS present FROM sqlite_master WHERE type IN ('table','view') AND name = ?")
-		.get(table) as { present?: number } | null;
-	return row?.present === 1;
+	const stmt = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type IN ('table','view') AND name = ?");
+	try {
+		const row = stmt.get(table) as { present?: number } | null;
+		return row?.present === 1;
+	} finally {
+		stmt.finalize();
+	}
 }
 
 function historyHasSessionId(db: Database): boolean {
-	const rows = db.prepare("PRAGMA table_info(history)").all() as Array<{ name?: string | null }>;
-	return rows.some(row => row.name === "session_id");
+	const stmt = db.prepare("PRAGMA table_info(history)");
+	try {
+		const rows = stmt.all() as Array<{ name?: string | null }>;
+		return rows.some(row => row.name === "session_id");
+	} finally {
+		stmt.finalize();
+	}
 }
 
 function deleteHistoryRowsForSessions(dbPath: string, sessionIds: string[]): { deleted: number; ftsRebuilt: boolean } {
@@ -545,16 +553,20 @@ function deleteHistoryRowsForSessions(dbPath: string, sessionIds: string[]): { d
 		if (!historyHasSessionId(db)) return { deleted: 0, ftsRebuilt: false };
 		const hasFts = tableExists(db, "history_fts");
 		const deleteStmt = db.prepare("DELETE FROM history WHERE session_id = ?");
-		let deleted = 0;
-		const tx = db.transaction((ids: string[]) => {
-			for (const id of ids) {
-				const result = deleteStmt.run(id) as SqliteRunResult;
-				deleted += sqliteNumber(result.changes);
-			}
-			if (deleted > 0 && hasFts) db.run("INSERT INTO history_fts(history_fts) VALUES('rebuild')");
-		});
-		tx(sessionIds);
-		return { deleted, ftsRebuilt: deleted > 0 && hasFts };
+		try {
+			let deleted = 0;
+			const tx = db.transaction((ids: string[]) => {
+				for (const id of ids) {
+					const result = deleteStmt.run(id) as SqliteRunResult;
+					deleted += sqliteNumber(result.changes);
+				}
+				if (deleted > 0 && hasFts) db.run("INSERT INTO history_fts(history_fts) VALUES('rebuild')");
+			});
+			tx(sessionIds);
+			return { deleted, ftsRebuilt: deleted > 0 && hasFts };
+		} finally {
+			deleteStmt.finalize();
+		}
 	} finally {
 		db.close();
 	}
@@ -688,11 +700,16 @@ async function checkpointWal(dbPath: string, apply: boolean): Promise<WalCheckpo
 	let checkpointAttempted = false;
 	try {
 		db.run("PRAGMA busy_timeout = 5000");
-		const row = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get() as WalCheckpointRow | null;
-		checkpointAttempted = true;
-		result.busy = sqliteNumber(row?.busy);
-		result.log = sqliteNumber(row?.log);
-		result.checkpointedFrames = sqliteNumber(row?.checkpointed);
+		const stmt = db.prepare("PRAGMA wal_checkpoint(TRUNCATE)");
+		try {
+			const row = stmt.get() as WalCheckpointRow | null;
+			checkpointAttempted = true;
+			result.busy = sqliteNumber(row?.busy);
+			result.log = sqliteNumber(row?.log);
+			result.checkpointedFrames = sqliteNumber(row?.checkpointed);
+		} finally {
+			stmt.finalize();
+		}
 	} finally {
 		db.close();
 	}

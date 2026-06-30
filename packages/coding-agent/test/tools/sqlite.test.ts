@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings, type Statement } from "bun:sqlite";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -21,6 +21,23 @@ type ToolTextResult = {
 };
 
 type SessionLike = ConstructorParameters<typeof ReadTool>[0];
+
+type PreparedStatementParams<Params extends SQLQueryBindings | SQLQueryBindings[]> = Params extends SQLQueryBindings[]
+	? Params
+	: [Params];
+
+function withStatement<Row, Params extends SQLQueryBindings | SQLQueryBindings[], Result>(
+	db: Database,
+	sql: string,
+	fn: (statement: Statement<Row, PreparedStatementParams<Params>>) => Result,
+): Result {
+	const statement = db.prepare<Row, Params>(sql) as unknown as Statement<Row, PreparedStatementParams<Params>>;
+	try {
+		return fn(statement);
+	} finally {
+		statement.finalize();
+	}
+}
 
 function getText(result: ToolTextResult): string {
 	return result.content
@@ -77,30 +94,44 @@ function buildFixtureBytes(): Uint8Array {
 			);
 		`);
 
-		const insertUser = db.prepare("INSERT INTO users (name, email, status, created) VALUES (?, ?, ?, ?)");
-		const insertSlug = db.prepare("INSERT INTO slugs (slug, title) VALUES (?, ?)");
-		const insertNote = db.prepare("INSERT INTO notes (body) VALUES (?)");
-		const seed = db.transaction(() => {
-			insertUser.run("Alice", "alice@example.com", "active", 1);
-			insertUser.run("Bob", "bob@example.com", "inactive", 2);
-			insertUser.run("Carol", "carol@example.com", "active", 3);
-			insertUser.run("Dave", "dave@example.com", "inactive", 4);
-			insertUser.run("Eve", "eve@example.com", "active", 5);
-			insertUser.run("Frank", "frank@example.com", "active", 6);
+		const insertUser = db.prepare<unknown, [string, string, string, number]>(
+			"INSERT INTO users (name, email, status, created) VALUES (?, ?, ?, ?)",
+		);
+		const insertSlug = db.prepare<unknown, [string, string]>("INSERT INTO slugs (slug, title) VALUES (?, ?)");
+		const insertNote = db.prepare<unknown, [string]>("INSERT INTO notes (body) VALUES (?)");
+		const insertComposite = db.prepare<unknown, [number, number, string]>(
+			"INSERT INTO composite (team_id, user_id, value) VALUES (?, ?, ?)",
+		);
+		const insertWide = db.prepare<unknown, [number, string]>("INSERT INTO wide_rows (id, payload) VALUES (?, ?)");
+		try {
+			const seed = db.transaction(() => {
+				insertUser.run("Alice", "alice@example.com", "active", 1);
+				insertUser.run("Bob", "bob@example.com", "inactive", 2);
+				insertUser.run("Carol", "carol@example.com", "active", 3);
+				insertUser.run("Dave", "dave@example.com", "inactive", 4);
+				insertUser.run("Eve", "eve@example.com", "active", 5);
+				insertUser.run("Frank", "frank@example.com", "active", 6);
 
-			insertSlug.run("welcome", "Welcome");
-			insertSlug.run("about", "About");
+				insertSlug.run("welcome", "Welcome");
+				insertSlug.run("about", "About");
 
-			insertNote.run("First note");
-			insertNote.run("Second note");
-			insertNote.run("Third; note");
+				insertNote.run("First note");
+				insertNote.run("Second note");
+				insertNote.run("Third; note");
 
-			db.prepare("INSERT INTO composite (team_id, user_id, value) VALUES (?, ?, ?)").run(1, 2, "pair");
-			db.prepare("INSERT INTO wide_rows (id, payload) VALUES (?, ?)").run(1, "x".repeat(320));
-		});
-		seed();
+				insertComposite.run(1, 2, "pair");
+				insertWide.run(1, "x".repeat(320));
+			});
+			seed();
 
-		return db.serialize();
+			return db.serialize();
+		} finally {
+			insertUser.finalize();
+			insertSlug.finalize();
+			insertNote.finalize();
+			insertComposite.finalize();
+			insertWide.finalize();
+		}
 	} finally {
 		db.close();
 	}
@@ -109,8 +140,13 @@ function buildFixtureBytes(): Uint8Array {
 function readUserEmail(dbPath: string, id: number): string | null {
 	const db = new Database(dbPath, { readonly: true });
 	try {
-		const row = db.prepare<{ email: string }, [number]>("SELECT email FROM users WHERE id = ?").get(id);
-		return row?.email ?? null;
+		return (
+			withStatement<{ email: string }, [number], { email: string } | null>(
+				db,
+				"SELECT email FROM users WHERE id = ?",
+				statement => statement.get(id) ?? null,
+			)?.email ?? null
+		);
 	} finally {
 		db.close();
 	}
@@ -119,7 +155,13 @@ function readUserEmail(dbPath: string, id: number): string | null {
 function readUserCount(dbPath: string): number {
 	const db = new Database(dbPath, { readonly: true });
 	try {
-		return db.prepare<{ count: number }, []>("SELECT COUNT(*) AS count FROM users").get()?.count ?? 0;
+		return (
+			withStatement<{ count: number }, [], { count: number } | null>(
+				db,
+				"SELECT COUNT(*) AS count FROM users",
+				statement => statement.get() ?? null,
+			)?.count ?? 0
+		);
 	} finally {
 		db.close();
 	}
@@ -128,9 +170,11 @@ function readUserCount(dbPath: string): number {
 function readUserByEmail(dbPath: string, email: string): { name: string; email: string } | null {
 	const db = new Database(dbPath, { readonly: true });
 	try {
-		return db
-			.prepare<{ name: string; email: string }, [string]>("SELECT name, email FROM users WHERE email = ?")
-			.get(email);
+		return withStatement<{ name: string; email: string }, [string], { name: string; email: string } | null>(
+			db,
+			"SELECT name, email FROM users WHERE email = ?",
+			statement => statement.get(email) ?? null,
+		);
 	} finally {
 		db.close();
 	}
@@ -332,13 +376,17 @@ describe("SQLite tool support", () => {
 		const db = new Database(capDbPath);
 		try {
 			db.run("CREATE TABLE big (id INTEGER PRIMARY KEY, value TEXT NOT NULL)");
-			const insert = db.prepare("INSERT INTO big (value) VALUES (?)");
-			const fill = db.transaction(() => {
-				for (let i = 1; i <= 1200; i++) {
-					insert.run(`val_${i}_end`);
-				}
-			});
-			fill();
+			const insert = db.prepare<unknown, [string]>("INSERT INTO big (value) VALUES (?)");
+			try {
+				const fill = db.transaction(() => {
+					for (let i = 1; i <= 1200; i++) {
+						insert.run(`val_${i}_end`);
+					}
+				});
+				fill();
+			} finally {
+				insert.finalize();
+			}
 		} finally {
 			db.close();
 		}
@@ -492,11 +540,16 @@ describe("SQLite table listing row counts", () => {
 		const db = new Database(":memory:");
 		db.run("CREATE TABLE big (id INTEGER PRIMARY KEY, v TEXT NOT NULL)");
 		db.run("CREATE TABLE small (id INTEGER PRIMARY KEY)");
-		const bigStmt = db.prepare("INSERT INTO big (v) VALUES (?)");
-		for (let i = 0; i < 10; i++) bigStmt.run("x");
+		const bigStmt = db.prepare<unknown, [string]>("INSERT INTO big (v) VALUES (?)");
 		const smallStmt = db.prepare("INSERT INTO small DEFAULT VALUES");
-		for (let i = 0; i < 2; i++) smallStmt.run();
-		if (analyze) db.run("ANALYZE");
+		try {
+			for (let i = 0; i < 10; i++) bigStmt.run("x");
+			for (let i = 0; i < 2; i++) smallStmt.run();
+			if (analyze) db.run("ANALYZE");
+		} finally {
+			bigStmt.finalize();
+			smallStmt.finalize();
+		}
 		return db;
 	}
 

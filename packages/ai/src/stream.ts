@@ -71,6 +71,7 @@ import type {
 	ToolChoice,
 } from "./types";
 import { AssistantMessageEventStream } from "./utils/event-stream";
+import { wrapLeakedThinkingStream } from "./utils/leaked-thinking-stream";
 import { wrapFetchForProxy } from "./utils/proxy";
 import { withRequestDebugFetch } from "./utils/request-debug";
 import { withGeminiThinkingLoopGuard } from "./utils/thinking-loop";
@@ -499,8 +500,11 @@ function withProviderInFlightLimit<TOptions extends Pick<StreamOptions, "signal"
 	options: TOptions | undefined,
 	dispatch: () => AssistantMessageEventStream,
 ): AssistantMessageEventStream {
+	// Leaked-thinking healing folds in here — the one shared provider-dispatch
+	// chokepoint — so the loop guard (which wraps this) sees healed events and all
+	// six provider exits are covered by one wrap. Healing is idempotent.
 	const limit = resolveProviderInFlightLimit(model.provider, options);
-	if (limit === undefined) return dispatch();
+	if (limit === undefined) return wrapLeakedThinkingStream(dispatch());
 
 	const outer = new AssistantMessageEventStream();
 	void (async () => {
@@ -520,7 +524,7 @@ function withProviderInFlightLimit<TOptions extends Pick<StreamOptions, "signal"
 			if (options?.signal?.aborted) {
 				throw options.signal.reason ?? new AIError.AbortError("Provider request aborted before dispatch");
 			}
-			const inner = dispatch();
+			const inner = wrapLeakedThinkingStream(dispatch());
 			try {
 				for await (const event of inner) {
 					outer.push(event);
@@ -1105,10 +1109,13 @@ export function streamSimple<TApi extends Api>(
 
 	// GitLab Duo Workflow - IDE workflow protocol + WebSocket action bridge
 	if (model.api === "gitlab-duo-agent") {
-		return streamGitLabDuoWorkflow(model as Model<"gitlab-duo-agent">, context, {
-			...requestOptions,
-			apiKey,
-		});
+		// Does not route through withProviderInFlightLimit, so heal explicitly.
+		return wrapLeakedThinkingStream(
+			streamGitLabDuoWorkflow(model as Model<"gitlab-duo-agent">, context, {
+				...requestOptions,
+				apiKey,
+			}),
+		);
 	}
 
 	// Kimi Code - route to dedicated handler that wraps OpenAI or Anthropic API
@@ -1355,6 +1362,9 @@ function mapOptionsForApi<TApi extends Api>(
 		streamFirstEventTimeoutMs: options?.streamFirstEventTimeoutMs,
 		streamIdleTimeoutMs: options?.streamIdleTimeoutMs,
 		providerSessionState: options?.providerSessionState,
+		useInteractionsApi: options?.useInteractionsApi,
+		storeInteraction: options?.storeInteraction,
+		previousInteractionId: options?.previousInteractionId,
 		maxInFlightRequests: options?.maxInFlightRequests,
 		onPayload: options?.onPayload,
 		onResponse: options?.onResponse,
@@ -1565,6 +1575,7 @@ function mapOptionsForApi<TApi extends Api>(
 			if (!reasoning || !model.reasoning) {
 				return castApi<"google-generative-ai">({
 					...base,
+					serviceTier: options?.serviceTier,
 					thinking: { enabled: false },
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
 				});
@@ -1578,6 +1589,7 @@ function mapOptionsForApi<TApi extends Api>(
 			if (googleModel.thinking?.mode === "google-level") {
 				return castApi<"google-generative-ai">({
 					...base,
+					serviceTier: options?.serviceTier,
 					thinking: {
 						enabled: true,
 						level: mapEffortToGoogleThinkingLevel(effort),
@@ -1661,6 +1673,7 @@ function mapOptionsForApi<TApi extends Api>(
 			if (!reasoning || !model.reasoning) {
 				return castApi<"google-vertex">({
 					...base,
+					serviceTier: options?.serviceTier,
 					thinking: { enabled: false },
 					toolChoice: mapGoogleToolChoice(options?.toolChoice),
 				});
@@ -1673,6 +1686,7 @@ function mapOptionsForApi<TApi extends Api>(
 			if (geminiModel.thinking?.mode === "google-level") {
 				return castApi<"google-vertex">({
 					...base,
+					serviceTier: options?.serviceTier,
 					thinking: {
 						enabled: true,
 						level: mapEffortToGoogleThinkingLevel(effort),
@@ -1683,6 +1697,7 @@ function mapOptionsForApi<TApi extends Api>(
 
 			return castApi<"google-vertex">({
 				...base,
+				serviceTier: options?.serviceTier,
 				thinking: {
 					enabled: true,
 					budgetTokens: getGoogleBudget(geminiModel, effort, options?.thinkingBudgets),

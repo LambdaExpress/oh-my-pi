@@ -196,18 +196,15 @@ describe("python executor owner cleanup", () => {
 		const kernel = new FakeKernel();
 		kernel.alive = false;
 		let shutdownCallCount = 0;
+		const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000);
 		kernel.shutdown = vi.fn(async (options?: FakeKernelShutdownOptions): Promise<KernelShutdownResult> => {
 			shutdownCallCount += 1;
 			if (shutdownCallCount > 1) {
 				return { confirmed: true };
 			}
-			const { promise, reject } = Promise.withResolvers<KernelShutdownResult>();
-			const timer = setTimeout(
-				() => reject(new DOMException("Python kernel shutdown timed out", "TimeoutError")),
-				options?.timeoutMs ?? 0,
-			);
-			timer.unref?.();
-			return await promise;
+			expect(options?.timeoutMs).toEqual(expect.any(Number));
+			nowSpy.mockReturnValue(1_200);
+			throw new DOMException("Python kernel shutdown timed out", "TimeoutError");
 		});
 		vi.spyOn(pythonKernel, "checkPythonKernelAvailability").mockResolvedValue({ ok: true });
 		const startSpy = vi.spyOn(PythonKernel, "start").mockResolvedValueOnce(kernel as unknown as PythonKernelInstance);

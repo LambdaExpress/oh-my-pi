@@ -12,6 +12,18 @@ import { makeAssistantMessage } from "./helpers";
 
 const JSONL_SUFFIX = ".jsonl";
 
+const TERMINAL_ENV_KEYS = [
+	"ZELLIJ_PANE_ID",
+	"ZELLIJ_SESSION_NAME",
+	"TMUX_PANE",
+	"CMUX_SURFACE_ID",
+	"KITTY_WINDOW_ID",
+	"WEZTERM_PANE",
+	"TERM_SESSION_ID",
+	"WT_SESSION",
+] as const;
+type TerminalEnvKey = (typeof TERMINAL_ENV_KEYS)[number];
+
 /** Synchronously seed the per-terminal breadcrumb (write is otherwise fire-and-forget). */
 function writeBreadcrumb(cwd: string, sessionFile: string): void {
 	const terminalId = getTerminalId();
@@ -42,12 +54,26 @@ describe("SessionManager subagent breadcrumb isolation", () => {
 	let testAgentDir: string;
 	let cwd: string;
 	const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
-	const originalTmuxPane = process.env.TMUX_PANE;
+	let terminalEnvBefore: Partial<Record<TerminalEnvKey, string | undefined>> = {};
+	let stdinIsTTYBefore: PropertyDescriptor | undefined;
+	let stdinIsTTYOverridden = false;
 	const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
 	beforeEach(async () => {
-		// Deterministic, non-TTY terminal id so breadcrumb read/write is stable.
+		// Deterministic terminal id so breadcrumb read/write is stable even when
+		// the aggregate suite runs under a real TTY or inherited terminal env.
+		terminalEnvBefore = {};
+		for (const key of TERMINAL_ENV_KEYS) {
+			terminalEnvBefore[key] = process.env[key];
+			delete process.env[key];
+		}
 		process.env.TMUX_PANE = "%subagent-breadcrumb-test";
+		stdinIsTTYBefore = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+		stdinIsTTYOverridden = false;
+		try {
+			Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: false });
+			stdinIsTTYOverridden = true;
+		} catch {}
 		testAgentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-subagent-crumb-"));
 		setAgentDir(testAgentDir);
 		cwd = path.join(testAgentDir, "project");
@@ -55,8 +81,18 @@ describe("SessionManager subagent breadcrumb isolation", () => {
 	});
 
 	afterEach(async () => {
-		if (originalTmuxPane === undefined) delete process.env.TMUX_PANE;
-		else process.env.TMUX_PANE = originalTmuxPane;
+		for (const key of TERMINAL_ENV_KEYS) {
+			const previous = terminalEnvBefore[key];
+			if (previous === undefined) delete process.env[key];
+			else process.env[key] = previous;
+		}
+		if (stdinIsTTYOverridden) {
+			if (stdinIsTTYBefore) {
+				Object.defineProperty(process.stdin, "isTTY", stdinIsTTYBefore);
+			} else {
+				Reflect.deleteProperty(process.stdin, "isTTY");
+			}
+		}
 		if (originalAgentDir) {
 			setAgentDir(originalAgentDir);
 		} else {
@@ -67,12 +103,11 @@ describe("SessionManager subagent breadcrumb isolation", () => {
 	});
 
 	async function createParentSession(): Promise<string> {
-		const main = SessionManager.create(cwd);
+		const mainFile = SessionManager.createEmptySessionFile(cwd);
+		const main = await SessionManager.open(mainFile, undefined, undefined, { suppressBreadcrumb: true });
 		main.appendMessage({ role: "user", content: "main work", timestamp: 1 });
 		main.appendMessage(makeAssistantMessage());
 		await main.flush();
-		const mainFile = main.getSessionFile();
-		if (!mainFile) throw new Error("Expected persisted parent session file");
 		await main.close();
 		return mainFile;
 	}

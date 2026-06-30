@@ -321,7 +321,16 @@ async function executeProcess(opts: {
 			throw new Error("aborted");
 		}
 
-		const output = await fs.promises.readFile(opts.logPath, "utf8");
+		let output: string;
+		try {
+			output = await Bun.file(opts.logPath).text();
+		} catch (error) {
+			if (typeof error !== "object" || error === null || !("code" in error) || error.code !== "ENOENT") {
+				throw error;
+			}
+			output = result.output;
+			await Bun.write(opts.logPath, output);
+		}
 
 		return {
 			exitCode: result.exitCode ?? null,

@@ -34,11 +34,12 @@ import {
 	unwrapHashlineHeaderPath,
 } from "../../tools/plan-mode-guard";
 import { canonicalSnapshotKey } from "../file-snapshot-store";
+import { isNotebookPath } from "../notebook";
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { LspBatchRequest } from "../renderer";
 
 type SshEditProtocolHandler = ProtocolHandler &
-	Required<Pick<ProtocolHandler, "write" | "delete" | "move" | "stat" | "canonicalKey">>;
+	Required<Pick<ProtocolHandler, "write" | "delete" | "move" | "stat" | "canonicalKey" | "readBinary">>;
 
 type ResolvedEditTarget =
 	| { kind: "local"; authoredPath: string; absolutePath: string; canonicalPath: string }
@@ -51,8 +52,11 @@ type ResolvedEditTarget =
 	  };
 
 function hasSshEditCapabilities(handler: ProtocolHandler | undefined): handler is SshEditProtocolHandler {
-	return Boolean(handler?.write && handler.delete && handler.move && handler.stat && handler.canonicalKey);
+	return Boolean(
+		handler?.write && handler.delete && handler.move && handler.stat && handler.canonicalKey && handler.readBinary,
+	);
 }
+
 export interface HashlineFilesystemOptions {
 	session: ToolSession;
 	writethrough: WritethroughCallback;
@@ -124,7 +128,7 @@ export class HashlineFilesystem extends Filesystem {
 		const handler = InternalUrlRouter.instance().getHandler("ssh");
 		if (!hasSshEditCapabilities(handler)) {
 			throw new Error(
-				"ssh:// edit requires a protocol handler with resolve, write, delete, move, stat, and canonicalKey",
+				"ssh:// edit requires a protocol handler with resolve, readBinary, write, delete, move, stat, and canonicalKey",
 			);
 		}
 		return {
@@ -134,6 +138,25 @@ export class HashlineFilesystem extends Filesystem {
 			canonicalPath: handler.canonicalKey(parsed),
 			handler,
 		};
+	}
+
+	#resolveMoveTargets(
+		fromRelative: string,
+		toRelative: string,
+	): { fromTarget: ResolvedEditTarget; toTarget: ResolvedEditTarget } {
+		const fromTarget = this.#resolveEditTarget(fromRelative);
+		const toTarget = this.#resolveEditTarget(toRelative);
+		if (fromTarget.kind === "ssh" || toTarget.kind === "ssh") {
+			if (fromTarget.kind !== "ssh" || toTarget.kind !== "ssh") {
+				throw new Error("Remote MV destination must be a full ssh://same-authority/<absolute-path> URL");
+			}
+			const fromAuthority = /^ssh:\/\/([^/?#]*)/i.exec(fromTarget.canonicalPath)?.[1];
+			const toAuthority = /^ssh:\/\/([^/?#]*)/i.exec(toTarget.canonicalPath)?.[1];
+			if (fromAuthority === undefined || fromAuthority !== toAuthority) {
+				throw new Error("ssh:// move destination must use the same SSH authority as the source");
+			}
+		}
+		return { fromTarget, toTarget };
 	}
 
 	resolveAbsolute(relativePath: string): string {
@@ -208,6 +231,20 @@ export class HashlineFilesystem extends Filesystem {
 		return content;
 	}
 
+	async readBinary(relativePath: string): Promise<Uint8Array | undefined> {
+		const target = this.#resolveEditTarget(relativePath);
+		if (target.kind === "ssh") {
+			return target.handler.readBinary(target.parsed, { cwd: this.session.cwd, signal: this.#signal });
+		}
+		if (isNotebookPath(target.absolutePath)) return undefined;
+		try {
+			return await fs.readFile(target.absolutePath);
+		} catch (error) {
+			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
+			throw error;
+		}
+	}
+
 	async preflightWrite(relativePath: string, options?: PreflightWriteOptions): Promise<void> {
 		const fileOp = options?.fileOp;
 		if (fileOp?.kind === "rem") {
@@ -215,6 +252,7 @@ export class HashlineFilesystem extends Filesystem {
 			return;
 		}
 		if (fileOp?.kind === "move") {
+			this.#resolveMoveTargets(relativePath, fileOp.dest);
 			enforcePlanModeWrite(this.session, relativePath, { op: "update", move: fileOp.dest });
 			return;
 		}
@@ -240,12 +278,8 @@ export class HashlineFilesystem extends Filesystem {
 	}
 
 	async move(fromRelative: string, toRelative: string, content?: string): Promise<void> {
-		const fromTarget = this.#resolveEditTarget(fromRelative);
-		const toTarget = this.#resolveEditTarget(toRelative);
-		if (fromTarget.kind === "ssh" || toTarget.kind === "ssh") {
-			if (fromTarget.kind !== "ssh" || toTarget.kind !== "ssh") {
-				throw new Error("Remote MV destination must be a full ssh://same-authority/<absolute-path> URL");
-			}
+		const { fromTarget, toTarget } = this.#resolveMoveTargets(fromRelative, toRelative);
+		if (fromTarget.kind === "ssh" && toTarget.kind === "ssh") {
 			enforcePlanModeWrite(this.session, fromRelative, { op: "update", move: toRelative });
 			await fromTarget.handler.move(fromTarget.parsed, toTarget.parsed, content, {
 				cwd: this.session.cwd,
@@ -253,6 +287,9 @@ export class HashlineFilesystem extends Filesystem {
 			});
 			this.#diagnosticsByPath.set(fromRelative, undefined);
 			return;
+		}
+		if (fromTarget.kind !== "local" || toTarget.kind !== "local") {
+			throw new Error("Remote MV destination must be a full ssh://same-authority/<absolute-path> URL");
 		}
 
 		enforcePlanModeWrite(this.session, fromRelative, { op: "update", move: toRelative });

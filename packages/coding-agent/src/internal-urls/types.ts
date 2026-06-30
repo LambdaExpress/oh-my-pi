@@ -167,6 +167,12 @@ export interface ProtocolHandler {
 	 */
 	canonicalKey?(url: InternalUrl): string;
 	/**
+	 * Optional raw-byte read hook for mutable virtual resources whose text
+	 * content is a direct UTF-8 decode of remote bytes. Hashline uses this for
+	 * BOM preservation without treating the resource identity as a local path.
+	 */
+	readBinary?(url: InternalUrl, context?: ResolveContext): Promise<Uint8Array | undefined>;
+	/**
 	 * Optional delete hook for writable virtual resources.
 	 */
 	delete?(url: InternalUrl, context?: WriteContext): Promise<void>;

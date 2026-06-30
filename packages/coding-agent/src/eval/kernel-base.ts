@@ -331,9 +331,8 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			/* ignore */
 		}
 
-		const exited = this.#waitForExitWithTimeout(timeoutMs);
-		let result = await exited;
-		if (!result) {
+		let result = await this.#waitForExitWithTimeout(timeoutMs);
+		if (result === null) {
 			try {
 				proc.kill("SIGTERM");
 			} catch {
@@ -341,7 +340,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			}
 			result = await this.#waitForExitWithTimeout(timeoutMs);
 		}
-		if (!result) {
+		if (result === null) {
 			try {
 				proc.kill("SIGKILL");
 			} catch {
@@ -350,7 +349,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			result = await this.#waitForExitWithTimeout(timeoutMs);
 		}
 
-		const confirmed = !!result;
+		const confirmed = result !== null;
 		this.#shutdownConfirmed = confirmed;
 		this.#disposed = true;
 		return { confirmed };

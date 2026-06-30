@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { formatSessionDumpText, SessionManager } from "@oh-my-pi/pi-coding-agent";
+import { formatSessionDumpText } from "@oh-my-pi/pi-coding-agent/session/session-dump-format";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { generateReport } from "@oh-my-pi/typescript-edit-benchmark/report";
 import {

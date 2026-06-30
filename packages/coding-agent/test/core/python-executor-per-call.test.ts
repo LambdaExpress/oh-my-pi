@@ -14,6 +14,7 @@ type KernelStartOptions = Parameters<typeof PythonKernel.start>[0];
 const originalDateNow = Date.now;
 
 const originalStart = PythonKernel.start;
+const originalPythonSkipCheck = Bun.env.PI_PYTHON_SKIP_CHECK;
 
 function createCancellationError(name: "AbortError" | "TimeoutError", message: string): Error {
 	const error = new Error(message);
@@ -24,11 +25,9 @@ function createCancellationError(name: "AbortError" | "TimeoutError", message: s
 function rejectOnStartupCancellation(options: KernelStartOptions): Promise<never> {
 	const { promise, reject } = Promise.withResolvers<never>();
 	let settled = false;
-	let timeout: NodeJS.Timeout | undefined;
 	const finish = (error: unknown) => {
 		if (settled) return;
 		settled = true;
-		if (timeout) clearTimeout(timeout);
 		options.signal?.removeEventListener("abort", onAbort);
 		reject(error);
 	};
@@ -38,11 +37,9 @@ function rejectOnStartupCancellation(options: KernelStartOptions): Promise<never
 
 	options.signal?.addEventListener("abort", onAbort, { once: true });
 	if (options.deadlineMs !== undefined) {
-		const remainingMs = Math.max(0, options.deadlineMs - Date.now());
-		timeout = setTimeout(() => {
+		queueMicrotask(() => {
 			finish(createCancellationError("TimeoutError", "Python kernel startup timed out"));
-		}, remainingMs);
-		timeout.unref();
+		});
 	}
 
 	return promise;
@@ -52,6 +49,11 @@ describe("executePython (per-call)", () => {
 	afterEach(() => {
 		PythonKernel.start = originalStart;
 		Date.now = originalDateNow;
+		if (originalPythonSkipCheck === undefined) {
+			delete Bun.env.PI_PYTHON_SKIP_CHECK;
+		} else {
+			Bun.env.PI_PYTHON_SKIP_CHECK = originalPythonSkipCheck;
+		}
 	});
 
 	it("returns a cancelled timeout result when kernel startup exceeds the deadline", async () => {

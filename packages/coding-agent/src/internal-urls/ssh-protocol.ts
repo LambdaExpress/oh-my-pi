@@ -381,6 +381,21 @@ export class SshProtocolHandler implements ProtocolHandler {
 		return canonicalSshResourceKey(url);
 	}
 
+	async readBinary(url: InternalUrl, context?: ResolveContext): Promise<Uint8Array> {
+		const target = await resolveTarget(url, context?.cwd);
+		const remotePath = remotePathFromUrl(url);
+		const fileResult = await readRemoteFile(target, remotePath, {
+			maxBytes: SSH_TEXT_MAX_BYTES,
+			signal: context?.signal,
+		});
+		if (fileResult.truncated) {
+			throw new Error(
+				`ssh://: ${remotePath} exceeds the 1 MiB limit; ssh:// supports text files up to 1 MiB — use an sshfs mount for larger files`,
+			);
+		}
+		return fileResult.bytes;
+	}
+
 	async write(url: InternalUrl, content: string, context?: WriteContext): Promise<void> {
 		const target = await resolveTarget(url, context?.cwd);
 		const remotePath = remotePathFromUrl(url);

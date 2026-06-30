@@ -6,6 +6,7 @@ import { initializeWithSettings } from "@oh-my-pi/pi-coding-agent/discovery";
 import { discoverAndLoadExtensions, loadExtensions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { filterUserScoped } from "./utils/filter-user-extensions";
+import { canCreateFileSymlinkForTest, createDirectorySymlinkForTest, createFileSymlinkForTest } from "./utils/symlink";
 
 describe("extensions discovery", () => {
 	let tempDir: TempDir;
@@ -147,7 +148,7 @@ describe("extensions discovery", () => {
 				},
 			}),
 		);
-		fs.symlinkSync(packageDir, path.join(extensionsDir, "linked-package"), "dir");
+		expect(createDirectorySymlinkForTest(packageDir, path.join(extensionsDir, "linked-package"))).toBe(true);
 
 		const result = await discoverForTest();
 
@@ -160,7 +161,7 @@ describe("extensions discovery", () => {
 		const packageDir = path.join(tempDir.path(), "linked-index-ts");
 		fs.mkdirSync(packageDir);
 		fs.writeFileSync(path.join(packageDir, "index.ts"), extensionCode);
-		fs.symlinkSync(packageDir, path.join(extensionsDir, "linked-index-ts"), "dir");
+		expect(createDirectorySymlinkForTest(packageDir, path.join(extensionsDir, "linked-index-ts"))).toBe(true);
 
 		const result = await discoverForTest();
 
@@ -173,7 +174,7 @@ describe("extensions discovery", () => {
 		const packageDir = path.join(tempDir.path(), "linked-index-js");
 		fs.mkdirSync(packageDir);
 		fs.writeFileSync(path.join(packageDir, "index.js"), extensionCode);
-		fs.symlinkSync(packageDir, path.join(extensionsDir, "linked-index-js"), "dir");
+		expect(createDirectorySymlinkForTest(packageDir, path.join(extensionsDir, "linked-index-js"))).toBe(true);
 
 		const result = await discoverForTest();
 
@@ -301,7 +302,7 @@ describe("extensions discovery", () => {
 		const realDir = path.join(tempDir.path(), "external", "shared-ext");
 		fs.mkdirSync(realDir, { recursive: true });
 		fs.writeFileSync(path.join(realDir, "index.ts"), extensionCode);
-		fs.symlinkSync(realDir, path.join(extensionsDir, "linked-ext"), "dir");
+		expect(createDirectorySymlinkForTest(realDir, path.join(extensionsDir, "linked-ext"))).toBe(true);
 
 		const result = await discoverForTest();
 
@@ -321,7 +322,7 @@ describe("extensions discovery", () => {
 			path.join(realDir, "package.json"),
 			JSON.stringify({ name: "ctk", omp: { extensions: ["./index.ts"] } }),
 		);
-		fs.symlinkSync(realDir, path.join(extensionsDir, "ctk"), "dir");
+		expect(createDirectorySymlinkForTest(realDir, path.join(extensionsDir, "ctk"))).toBe(true);
 
 		const result = await discoverForTest();
 
@@ -333,13 +334,13 @@ describe("extensions discovery", () => {
 		expect(result.extensions[0].tools.has("ctk-tool")).toBe(true);
 	});
 
-	it("discovers a symlinked extension file", async () => {
+	it.skipIf(!canCreateFileSymlinkForTest())("discovers a symlinked extension file", async () => {
 		// Symlinked *files* resolve through the native file-type filter; guards that
 		// the directory fallback does not regress the file case.
 		const realFile = path.join(tempDir.path(), "external", "shared.ts");
 		fs.mkdirSync(path.dirname(realFile), { recursive: true });
 		fs.writeFileSync(realFile, extensionCode);
-		fs.symlinkSync(realFile, path.join(extensionsDir, "linked.ts"), "file");
+		expect(createFileSymlinkForTest(realFile, path.join(extensionsDir, "linked.ts"))).toBe(true);
 
 		const result = await discoverForTest();
 
@@ -352,7 +353,12 @@ describe("extensions discovery", () => {
 		// A profile symlink pointing at a since-deleted shared extension. The fallback
 		// reads the (missing) target, gets [], and must yield no extension and no
 		// error rather than throwing.
-		fs.symlinkSync(path.join(tempDir.path(), "external", "gone"), path.join(extensionsDir, "broken"), "dir");
+		expect(
+			createDirectorySymlinkForTest(
+				path.join(tempDir.path(), "external", "gone"),
+				path.join(extensionsDir, "broken"),
+			),
+		).toBe(true);
 
 		const result = await discoverForTest();
 
@@ -368,7 +374,7 @@ describe("extensions discovery", () => {
 		const realDir = path.join(tempDir.path(), "external", "weird");
 		fs.mkdirSync(realDir, { recursive: true });
 		fs.writeFileSync(path.join(realDir, "index.ts"), extensionCode);
-		fs.symlinkSync(realDir, path.join(extensionsDir, "weird.ts"), "dir");
+		expect(createDirectorySymlinkForTest(realDir, path.join(extensionsDir, "weird.ts"))).toBe(true);
 
 		const result = await discoverForTest();
 

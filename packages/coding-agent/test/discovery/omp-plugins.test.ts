@@ -33,6 +33,7 @@ import {
 	injectOmpExtensionCliRoots,
 } from "@oh-my-pi/pi-coding-agent/discovery/omp-extension-roots";
 import { getConfigRootDir, removeSyncWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import { createDirectorySymlinkForTest } from "../utils/symlink";
 
 const PROVIDER_ID = "omp-plugins";
 
@@ -259,7 +260,7 @@ test("linked plugins (only in lockfile, not in package.json#dependencies) are su
 	const nodeModules = path.join(pluginsDir, "node_modules");
 	fs.mkdirSync(nodeModules, { recursive: true });
 	const linkTarget = path.join(nodeModules, "my-linked-ext");
-	fs.symlinkSync(ext, linkTarget);
+	expect(createDirectorySymlinkForTest(ext, linkTarget)).toBe(true);
 	// Intentionally NO `<plugins>/package.json` — matches a fresh `plugin link`
 	// against a setup that has never run `plugin install`.
 	writeFile(
