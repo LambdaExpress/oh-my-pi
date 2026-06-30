@@ -389,7 +389,9 @@ import * as bundledPiCodingAgentEditNormalize from "@oh-my-pi/pi-coding-agent/ed
 import * as bundledPiCodingAgentEditNotebook from "@oh-my-pi/pi-coding-agent/edit/notebook";
 import * as bundledPiCodingAgentEditReadFile from "@oh-my-pi/pi-coding-agent/edit/read-file";
 import * as bundledPiCodingAgentEditRenderer from "@oh-my-pi/pi-coding-agent/edit/renderer";
+import * as bundledPiCodingAgentEditSnapshotDetails from "@oh-my-pi/pi-coding-agent/edit/snapshot-details";
 import * as bundledPiCodingAgentEditStreaming from "@oh-my-pi/pi-coding-agent/edit/streaming";
+import * as bundledPiCodingAgentEditTarget from "@oh-my-pi/pi-coding-agent/edit/target";
 import * as bundledPiCodingAgentEval from "@oh-my-pi/pi-coding-agent/eval";
 import * as bundledPiCodingAgentEvalJsContextManager from "@oh-my-pi/pi-coding-agent/eval/js/context-manager";
 import * as bundledPiCodingAgentEvalJsExecutor from "@oh-my-pi/pi-coding-agent/eval/js/executor";
@@ -1982,7 +1984,13 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	"@oh-my-pi/pi-coding-agent/edit/renderer": bundledPiCodingAgentEditRenderer as unknown as Readonly<
 		Record<string, unknown>
 	>,
+	"@oh-my-pi/pi-coding-agent/edit/snapshot-details": bundledPiCodingAgentEditSnapshotDetails as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/edit/streaming": bundledPiCodingAgentEditStreaming as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/edit/target": bundledPiCodingAgentEditTarget as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/edit/modes/apply-patch": bundledPiCodingAgentEditModesApplyPatch as unknown as Readonly<

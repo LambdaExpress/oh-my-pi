@@ -1134,6 +1134,12 @@ export class TUI extends Container {
 		hidden: boolean;
 	}[] = [];
 
+	// Normal-screen overlays are composited into the active grid only. If the
+	// terminal resizes while one is visible, the host may reflow those transient
+	// pixels into native scrollback before the overlay closes; the close must then
+	// run one destructive replay so overlay bytes do not become durable history.
+	#overlayResizeMayHaveLeakedScrollback = false;
+
 	constructor(terminal: Terminal, showHardwareCursor?: boolean, options?: TUIOptions) {
 		super();
 		this.terminal = terminal;
@@ -1442,7 +1448,7 @@ export class TUI extends Container {
 						this.terminal.hideCursor();
 						this.#recordHardwareCursorHidden();
 					}
-					this.requestRender();
+					this.#requestOverlayVisibilityRender();
 				}
 			},
 			setHidden: (hidden: boolean) => {
@@ -1461,7 +1467,7 @@ export class TUI extends Container {
 						this.setFocus(component);
 					}
 				}
-				this.requestRender();
+				this.#requestOverlayVisibilityRender();
 			},
 			isHidden: () => entry.hidden,
 		};
@@ -1478,7 +1484,7 @@ export class TUI extends Container {
 			this.terminal.hideCursor();
 			this.#recordHardwareCursorHidden();
 		}
-		this.requestRender();
+		this.#requestOverlayVisibilityRender();
 	}
 
 	/** Check if there are any visible overlays */
@@ -1503,6 +1509,22 @@ export class TUI extends Container {
 			}
 		}
 		return undefined;
+	}
+
+	#requestOverlayVisibilityRender(): void {
+		for (const overlay of this.overlayStack) {
+			if (this.#isOverlayVisible(overlay)) {
+				this.requestRender();
+				return;
+			}
+		}
+		const clearScrollback = this.#overlayResizeMayHaveLeakedScrollback && !isMultiplexerSession();
+		this.#overlayResizeMayHaveLeakedScrollback = false;
+		if (clearScrollback) {
+			this.requestRender(true, { clearScrollback: true });
+		} else {
+			this.requestRender();
+		}
 	}
 
 	override invalidate(): void {
@@ -2681,6 +2703,7 @@ export class TUI extends Container {
 				break;
 			}
 		}
+		if (resizeEventOccurred && hasVisibleOverlay) this.#overlayResizeMayHaveLeakedScrollback = true;
 
 		// 4. Classify. A resize is an explicit user gesture: normally the engine
 		// erases and replays so history rewraps at the new geometry (the reader

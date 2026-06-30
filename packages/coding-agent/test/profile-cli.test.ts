@@ -243,6 +243,9 @@ describe("global --profile flag", () => {
 			const childEnv: Record<string, string | undefined> = {
 				...process.env,
 				HOME: home,
+				USERPROFILE: home,
+				APPDATA: path.join(home, "AppData", "Roaming"),
+				LOCALAPPDATA: path.join(home, "AppData", "Local"),
 				PI_CONFIG_DIR: configDir,
 				PI_NO_TITLE: "1",
 				NO_COLOR: "1",

@@ -33,7 +33,7 @@ describe("autocompleteMaxVisible setting", () => {
 			} catch {}
 			tempDir = undefined as unknown as TempDir;
 		}
-	});
+	}, 15_000);
 
 	it("should persist and read back a configured value", async () => {
 		const settings = await Settings.init({ cwd: projectDir, agentDir });

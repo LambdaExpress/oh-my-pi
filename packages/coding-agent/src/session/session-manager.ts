@@ -81,6 +81,24 @@ function fileSafeTimestamp(iso: string): string {
 	return iso.replace(/[:.]/g, "-");
 }
 
+function joinSessionStoragePath(dir: string, name: string): string {
+	if (dir.endsWith("/") || dir.endsWith("\\")) return `${dir}${name}`;
+	const separator = dir.includes("/") && !dir.includes("\\") ? "/" : path.sep;
+	return `${dir}${separator}${name}`;
+}
+
+function resolveSessionStoragePath(filePath: string, storage: SessionStorage): string {
+	return storage instanceof FileSessionStorage ? path.resolve(filePath) : filePath;
+}
+
+function dirnameSessionStoragePath(filePath: string, storage: SessionStorage): string {
+	if (storage instanceof FileSessionStorage) return path.dirname(path.resolve(filePath));
+	const slashIdx = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"));
+	if (slashIdx < 0) return ".";
+	if (slashIdx === 0) return filePath.slice(0, 1);
+	return filePath.slice(0, slashIdx);
+}
+
 function artifactsDirectoryFor(sessionFile: string | undefined): string | null {
 	return sessionFile ? sessionFile.slice(0, -JSONL_SUFFIX_LENGTH) : null;
 }
@@ -693,7 +711,7 @@ export class SessionManager {
 		if (this.#persist) {
 			this.#sessionFile =
 				forcedSessionFile ??
-				path.join(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
+				joinSessionStoragePath(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
 			this.#rememberBreadcrumb(this.#cwd, this.#sessionFile);
 		} else {
 			this.#sessionFile = undefined;
@@ -823,7 +841,7 @@ export class SessionManager {
 		await this.#drainAndCloseWriter();
 		this.#clearDiskError();
 
-		const resolvedSessionFile = path.resolve(sessionFile);
+		const resolvedSessionFile = resolveSessionStoragePath(sessionFile, this.#storage);
 		this.#sessionFile = resolvedSessionFile;
 		this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
 
@@ -851,17 +869,24 @@ export class SessionManager {
 		// chdir interactive mode then performs) would fail with ENOENT. Keep the
 		// current cwd so the resumed session stays where the user already is.
 		const headerCwd = header.cwd ? path.resolve(header.cwd) : undefined;
-		if (headerCwd && headerCwd !== path.resolve(this.#cwd) && (await directoryExists(headerCwd))) {
-			this.#cwd = headerCwd;
-			this.#sessionDir = path.dirname(resolvedSessionFile);
-			this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
+		const currentCwd = path.resolve(this.#cwd);
+		let headerCwdRewritten = false;
+		if (headerCwd && headerCwd !== currentCwd) {
+			if (await directoryExists(headerCwd)) {
+				this.#cwd = headerCwd;
+				this.#sessionDir = dirnameSessionStoragePath(resolvedSessionFile, this.#storage);
+				this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
+			} else {
+				header.cwd = currentCwd;
+				headerCwdRewritten = true;
+			}
 		}
 
 		this.#applyEntries(header, fileEntries.slice(1) as SessionEntry[]);
 		this.#titleUpdatedAt = titleSlot?.updatedAt ?? header.timestamp;
 		this.#hasTitleSlot = titleSlot !== undefined;
 		this.#fileIsCurrent = true;
-		this.#rewriteRequired = migrated;
+		this.#rewriteRequired = migrated || headerCwdRewritten;
 		this.#forceFileCreation = true;
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
@@ -899,7 +924,7 @@ export class SessionManager {
 
 		const timestamp = nowIso();
 		this.#sessionId = mintSessionId();
-		this.#sessionFile = path.join(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
+		this.#sessionFile = joinSessionStoragePath(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${this.#sessionId}.jsonl`);
 		this.#header = {
 			type: "session",
 			version: CURRENT_SESSION_VERSION,
@@ -1574,7 +1599,7 @@ export class SessionManager {
 
 		const timestamp = nowIso();
 		const newSessionId = mintSessionId();
-		const newSessionFile = path.join(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${newSessionId}.jsonl`);
+		const newSessionFile = joinSessionStoragePath(this.#sessionDir, `${fileSafeTimestamp(timestamp)}_${newSessionId}.jsonl`);
 		const header: SessionHeader = {
 			type: "session",
 			version: CURRENT_SESSION_VERSION,
@@ -1662,7 +1687,7 @@ export class SessionManager {
 			timestamp,
 			cwd: path.resolve(cwd),
 		};
-		const file = path.join(sessionDir, `${fileSafeTimestamp(timestamp)}_${id}.jsonl`);
+		const file = joinSessionStoragePath(sessionDir, `${fileSafeTimestamp(timestamp)}_${id}.jsonl`);
 		storage.writeTextSync(file, `${serializeTitleSlot({ updatedAt: timestamp })}${JSON.stringify(header)}\n`);
 		return file;
 	}
@@ -1733,7 +1758,7 @@ export class SessionManager {
 			sessionDir ??
 			(recordedCwd && !recordedCwdUsable
 				? SessionManager.getDefaultSessionDir(cwd, undefined, storage)
-				: path.dirname(path.resolve(filePath)));
+				: dirnameSessionStoragePath(filePath, storage));
 		const manager = new SessionManager(cwd, dir, true, storage);
 		manager.#suppressBreadcrumb = options?.suppressBreadcrumb === true;
 		await manager.setSessionFile(filePath);

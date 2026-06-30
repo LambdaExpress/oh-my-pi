@@ -32,6 +32,21 @@ describe("managed-skills primitives", () => {
 
 	const skillFile = (name: string) => path.join(getManagedSkillsDir(), name, "SKILL.md");
 
+	function isSymlinkCapabilityError(error: unknown): boolean {
+		const code = (error as NodeJS.ErrnoException).code;
+		return code === "EPERM" || code === "EACCES" || code === "ENOTSUP";
+	}
+
+	async function createSecuritySymlink(target: string, destination: string, type: "dir" | "file"): Promise<boolean> {
+		try {
+			await fs.symlink(target, destination, process.platform === "win32" ? "junction" : type);
+			return true;
+		} catch (error) {
+			if (isSymlinkCapabilityError(error)) return false;
+			throw error;
+		}
+	}
+
 	describe("sanitizeSkillName", () => {
 		it("rejects traversal, slashes, and empty names", () => {
 			expect(() => sanitizeSkillName("../escape")).toThrow();
@@ -135,7 +150,7 @@ describe("managed-skills primitives", () => {
 			// isolated managed root; Bun.write would otherwise follow it.
 			const outside = await fs.mkdtemp(path.join(os.tmpdir(), "omp-escape-"));
 			try {
-				await fs.symlink(outside, path.join(managedRoot, "evil"));
+				if (!(await createSecuritySymlink(outside, path.join(managedRoot, "evil"), "dir"))) return;
 				await expect(
 					writeManagedSkill({ action: "create", name: "evil", description: "d", body: "b" }),
 				).rejects.toThrow(/symlink/);
@@ -164,7 +179,7 @@ describe("managed-skills primitives", () => {
 			const realRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-realroot-"));
 			try {
 				await fs.mkdir(path.dirname(getManagedSkillsDir()), { recursive: true });
-				await fs.symlink(realRoot, getManagedSkillsDir());
+				if (!(await createSecuritySymlink(realRoot, getManagedSkillsDir(), "dir"))) return;
 				await expect(
 					writeManagedSkill({ action: "create", name: "demo", description: "d", body: "b" }),
 				).rejects.toThrow(/managed-skills root is a symlink/);
@@ -202,9 +217,11 @@ describe("managed-skills primitives", () => {
 			const outside = await fs.mkdtemp(path.join(os.tmpdir(), "omp-link-"));
 			const target = path.join(outside, "target.md");
 			await Bun.write(target, "outside content");
+			const linkTarget = process.platform === "win32" ? outside : target;
+			const linkType = process.platform === "win32" ? "dir" : "file";
 			try {
 				await removeWithRetries(skillFile("linky"));
-				await fs.symlink(target, skillFile("linky"));
+				if (!(await createSecuritySymlink(linkTarget, skillFile("linky"), linkType))) return;
 				await expect(
 					writeManagedSkill({ action: "update", name: "linky", description: "d", body: "hacked" }),
 				).rejects.toThrow(/symlink/);
@@ -243,7 +260,7 @@ describe("managed-skills primitives", () => {
 			const outside = await fs.mkdtemp(path.join(os.tmpdir(), "omp-deltarget-"));
 			await Bun.write(path.join(outside, "keep.txt"), "keep");
 			try {
-				await fs.symlink(outside, path.join(managedRoot, "linked"));
+				if (!(await createSecuritySymlink(outside, path.join(managedRoot, "linked"), "dir"))) return;
 				await expect(deleteManagedSkill("linked")).rejects.toThrow(/symlink/);
 				// The symlink target's contents are untouched.
 				expect(await Bun.file(path.join(outside, "keep.txt")).exists()).toBe(true);

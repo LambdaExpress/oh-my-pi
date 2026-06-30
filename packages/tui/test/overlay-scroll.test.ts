@@ -77,6 +77,27 @@ function viewportRowNumbers(term: VirtualTerminal): number[] {
 	return rows;
 }
 
+function maxVisiblePrefixedIndex(term: VirtualTerminal, prefix: string): number {
+	let max = -1;
+	for (const line of term.getViewport()) {
+		const match = line.trim().match(new RegExp(`^${prefix}(\\d+)$`));
+		if (!match) continue;
+		max = Math.max(max, Number.parseInt(match[1]!, 10));
+	}
+	return max;
+}
+
+async function waitForVisiblePrefixedIndex(term: VirtualTerminal, prefix: string): Promise<number> {
+	const deadline = performance.now() + 500;
+	let max = maxVisiblePrefixedIndex(term, prefix);
+	while (performance.now() < deadline) {
+		if (max >= 0) return max;
+		await flushRender(term);
+		max = maxVisiblePrefixedIndex(term, prefix);
+	}
+	return max;
+}
+
 function longestBlankRun(lines: string[]): number {
 	let longest = 0;
 	let current = 0;
@@ -177,27 +198,19 @@ describe("TUI overlays", () => {
 		tui.showOverlay(new LineComponent("ov-", 40), { anchor: "top-center", margin: { bottom: marginBottom } });
 		await flushRender(term);
 
-		const maxVisibleOverlayIndex = (): number => {
-			let max = -1;
-			for (const line of term.getViewport()) {
-				const match = line.trim().match(/^ov-(\d+)$/);
-				if (!match) continue;
-				max = Math.max(max, Number.parseInt(match[1], 10));
-			}
-			return max;
-		};
-
 		// availHeight = 24 - 6 = 18 → overlay sliced to ov-0..ov-17, nothing in the
 		// reserved bottom 6 rows. The old unclamped behavior surfaced ov-18..ov-23.
-		expect(maxVisibleOverlayIndex()).toBeGreaterThanOrEqual(0);
-		expect(maxVisibleOverlayIndex()).toBeLessThan(24 - marginBottom);
+		const visibleAfterShow = await waitForVisiblePrefixedIndex(term, "ov-");
+		expect(visibleAfterShow).toBeGreaterThanOrEqual(0);
+		expect(visibleAfterShow).toBeLessThan(24 - marginBottom);
 
 		term.resize(80, 10);
 		await settleResize(term);
 
 		// availHeight = 10 - 6 = 4 → overlay re-clamped to ov-0..ov-3.
-		expect(maxVisibleOverlayIndex()).toBeGreaterThanOrEqual(0);
-		expect(maxVisibleOverlayIndex()).toBeLessThan(10 - marginBottom);
+		const visibleAfterResize = await waitForVisiblePrefixedIndex(term, "ov-");
+		expect(visibleAfterResize).toBeGreaterThanOrEqual(0);
+		expect(visibleAfterResize).toBeLessThan(10 - marginBottom);
 
 		tui.stop();
 	});

@@ -64,8 +64,13 @@ async function isLockStale(lockPath: string, staleMs: number): Promise<boolean> 
 		return Date.now() - stat.mtimeMs > staleMs;
 	} catch (err) {
 		if (isEnoent(err)) return false;
+		if (isWindowsTransientLockFsError(err)) return false;
 		throw err;
 	}
+}
+
+function isWindowsTransientLockFsError(error: unknown): boolean {
+	return process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM";
 }
 
 async function tryAcquireLock(lockPath: string): Promise<string | null> {
@@ -75,7 +80,7 @@ async function tryAcquireLock(lockPath: string): Promise<string | null> {
 		await writeLockInfo(lockPath, token);
 		return token;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+		if ((error as NodeJS.ErrnoException).code === "EEXIST" || isWindowsTransientLockFsError(error)) {
 			return null;
 		}
 		throw error;
@@ -110,6 +115,7 @@ async function lockExists(lockPath: string): Promise<boolean> {
 		return true;
 	} catch (err) {
 		if (isEnoent(err)) return false;
+		if (isWindowsTransientLockFsError(err)) return true;
 		throw err;
 	}
 }

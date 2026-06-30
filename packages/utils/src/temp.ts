@@ -78,12 +78,12 @@ function normalizePrefix(prefix?: string): string {
 }
 
 const kRemoveOptions = { recursive: true, force: true } as const;
-const kRemoveRetries = 40;
-// 50ms × 40 retries = 2s total retry window. Windows holds file locks on
-// SQLite DBs for up to ~1.5s after close(); the previous 25ms (1s total)
-// was too short for some test cleanup scenarios.
+const kRemoveRetries = 200;
+// 50ms × 200 retries = 10s total retry window. Windows can keep SQLite DBs,
+// child-process cwd handles, or junction metadata busy for several seconds
+// after close/exit under full-suite load.
 const kRemoveRetryDelayMs = 50;
-const kRetryableRemoveErrorCodes = new Set(["EBUSY", "EPERM", "ENOTEMPTY"]);
+const kRetryableRemoveErrorCodes: Record<string, true> = { EBUSY: true, EFAULT: true, EPERM: true, ENOTEMPTY: true };
 const kSleepBuffer = new Int32Array(new SharedArrayBuffer(4));
 
 /** Removes a path recursively, retrying transient Windows deletion failures. */
@@ -116,13 +116,9 @@ function shouldRetryRemove(err: unknown, attempt: number): boolean {
 }
 
 function isRetryableRemoveError(err: unknown): boolean {
-	return (
-		typeof err === "object" &&
-		err !== null &&
-		"code" in err &&
-		typeof err.code === "string" &&
-		kRetryableRemoveErrorCodes.has(err.code)
-	);
+	if (typeof err !== "object" || err === null || !("code" in err)) return false;
+	const code = err.code;
+	return typeof code === "string" && code in kRetryableRemoveErrorCodes;
 }
 
 function sleepSync(ms: number): void {

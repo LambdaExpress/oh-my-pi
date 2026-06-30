@@ -46,6 +46,17 @@ async function settle(term: VirtualTerminal): Promise<void> {
 	await term.flush();
 }
 
+async function waitForViewport(term: VirtualTerminal, matches: (lines: string[]) => boolean): Promise<string[]> {
+	const deadline = performance.now() + 500;
+	let lines = term.getViewport().map(line => line.trimEnd());
+	while (performance.now() < deadline) {
+		if (matches(lines)) return lines;
+		await settle(term);
+		lines = term.getViewport().map(line => line.trimEnd());
+	}
+	return lines;
+}
+
 function captureWrites(term: VirtualTerminal): string[] {
 	const writes: string[] = [];
 	const realWrite = term.write.bind(term);
@@ -83,19 +94,11 @@ describe("issue #1962: arrow navigation after dirty scrollback", () => {
 
 			const writes = captureWrites(term);
 			term.sendInput("\x1b[B");
-			await settle(term);
-
+			const viewport = await waitForViewport(term, lines => lines[4] === "  first" && lines[5] === "> second");
 			const output = writes.join("");
 			expect(output.match(ERASE_SCROLLBACK) ?? []).toHaveLength(0);
 			expect(output).not.toContain("history-0 updated");
-			expect(term.getViewport().map(line => line.trimEnd())).toEqual([
-				"history-8",
-				"history-9",
-				"history-10",
-				"history-11",
-				"  first",
-				"> second",
-			]);
+			expect(viewport).toEqual(["history-8", "history-9", "history-10", "history-11", "  first", "> second"]);
 		} finally {
 			tui.stop();
 		}
@@ -122,12 +125,11 @@ describe("issue #1962: arrow navigation after dirty scrollback", () => {
 
 			const writes = captureWrites(term);
 			term.sendInput("\x1b[B");
-			await settle(term);
-
+			const viewport = await waitForViewport(term, lines => lines.includes("> second"));
 			const output = writes.join("");
 			expect(output.match(ERASE_SCROLLBACK) ?? []).toHaveLength(0);
 			expect(output).not.toContain("history-0 updated");
-			expect(term.getViewport().map(line => line.trimEnd())).toContain("> second");
+			expect(viewport).toContain("> second");
 		} finally {
 			tui.stop();
 		}

@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings, type Statement } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { dbPath } from "./config";
@@ -21,6 +21,75 @@ const TX_STATE = Symbol("mnemopi.txState");
 
 type TxDatabase = Database & { [TX_STATE]?: TxState };
 type ExtensionDatabase = Database & { loadExtension(path: string): void };
+
+interface FinalizableStatement {
+	finalize(): void;
+}
+
+// Bun leaves SQLite files locked on Windows when prepared/query statements
+// survive their owning Database. Finalize tracked statements before close so
+// temp database cleanup is deterministic across direct and helper-opened DBs.
+const trackedStatements = new WeakMap<Database, Set<FinalizableStatement>>();
+let statementFinalizerInstalled = false;
+
+installStatementFinalizer();
+
+function trackStatement<T extends FinalizableStatement>(db: Database, statement: T): T {
+	let statements = trackedStatements.get(db);
+	if (statements === undefined) {
+		statements = new Set();
+		trackedStatements.set(db, statements);
+	}
+	statements.add(statement);
+	return statement;
+}
+
+function finalizeTrackedStatements(db: Database): void {
+	const statements = trackedStatements.get(db);
+	if (statements === undefined) return;
+	for (const statement of statements) {
+		try {
+			statement.finalize();
+		} catch {
+			// Finalize is best-effort; close should preserve its original behavior.
+		}
+	}
+	statements.clear();
+}
+
+function installStatementFinalizer(): void {
+	if (statementFinalizerInstalled) return;
+	statementFinalizerInstalled = true;
+
+	const originalPrepare = Database.prototype.prepare;
+	const originalQuery = Database.prototype.query;
+	const originalClose = Database.prototype.close;
+
+	Database.prototype.prepare = function trackedPrepare<Result, Params extends SQLQueryBindings | SQLQueryBindings[]>(
+		this: Database,
+		sql: string,
+		params?: Params,
+	): Statement<Result, Params extends any[] ? Params : [Params]> {
+		const statement =
+			params === undefined ? originalPrepare.call(this, sql) : originalPrepare.call(this, sql, params);
+		return trackStatement(this, statement) as Statement<Result, Params extends any[] ? Params : [Params]>;
+	};
+
+	Database.prototype.query = function trackedQuery<Result, Params extends SQLQueryBindings | SQLQueryBindings[]>(
+		this: Database,
+		sql: string,
+	): Statement<Result, Params extends any[] ? Params : [Params]> {
+		return trackStatement(this, originalQuery.call(this, sql)) as Statement<
+			Result,
+			Params extends any[] ? Params : [Params]
+		>;
+	};
+
+	Database.prototype.close = function trackedClose(this: Database, throwOnError?: boolean): void {
+		finalizeTrackedStatements(this);
+		originalClose.call(this, throwOnError);
+	};
+}
 
 export function openDatabase(path: DatabasePath = dbPath(), options: OpenDatabaseOptions = {}): Database {
 	if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });

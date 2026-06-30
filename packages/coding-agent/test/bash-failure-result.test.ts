@@ -1,10 +1,11 @@
 import { describe, expect, it } from "bun:test";
+import * as os from "node:os";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 
 function makeSession(): ToolSession {
 	return {
-		cwd: "/tmp",
+		cwd: os.tmpdir(),
 		hasUI: false,
 		skills: [],
 		getSessionFile: () => null,

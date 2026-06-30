@@ -91,6 +91,7 @@ describe("SearXNG web search provider", () => {
 				`Basic ${Buffer.from("alice:s3cret", "utf-8").toString("base64")}`,
 			);
 		} finally {
+			resetSettingsForTest();
 			await removeWithRetries(agentDir);
 		}
 	});

@@ -975,12 +975,12 @@ describe("ModelRegistry runtime discovery", () => {
 			throw new Error(`Unexpected URL: ${url}`);
 		};
 		const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
-		const commandOutputBeforeRefresh = fs.readFileSync(commandLogPath, "utf8");
+		expect(fs.existsSync(commandLogPath)).toBe(false);
 		const model = registry.find("llama.cpp", "protected-model");
 		if (!model) throw new Error("custom llama.cpp model missing");
 		const refreshed = await registry.refreshSelectedModelMetadata(model);
 		expect(refreshed.contextWindow).toBe(239104);
-		expect(fs.readFileSync(commandLogPath, "utf8")).toBe(commandOutputBeforeRefresh);
+		expect(fs.existsSync(commandLogPath)).toBe(false);
 	});
 
 	test("llama.cpp selected model refresh preserves same-id custom limits", async () => {

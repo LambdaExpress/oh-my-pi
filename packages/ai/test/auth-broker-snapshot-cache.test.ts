@@ -51,7 +51,7 @@ describe("auth-broker snapshot cache", () => {
 			await writeAuthBrokerSnapshotCache({ path: cachePath, token: TOKEN, url: URL, snapshot });
 
 			const stat = await fs.stat(cachePath);
-			expect(stat.mode & 0o777).toBe(0o600);
+			if (process.platform !== "win32") expect(stat.mode & 0o777).toBe(0o600);
 			const payload = await fs.readFile(cachePath);
 			expect(new TextDecoder().decode(payload)).not.toContain("secret-api-key");
 

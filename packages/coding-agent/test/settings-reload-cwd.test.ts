@@ -146,7 +146,7 @@ describe("Settings.reloadForCwd", () => {
 		});
 
 		it("loads and drops project settings as the working directory changes", async () => {
-			const settings = await Settings.init({ cwd: startDir, agentDir });
+			const settings = await Settings.init({ cwd: startDir, agentDir, inMemory: true });
 			// No project file under startDir → schema default.
 			expect(settings.get("compaction.enabled")).toBe(true);
 

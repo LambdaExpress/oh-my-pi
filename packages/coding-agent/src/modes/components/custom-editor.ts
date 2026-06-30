@@ -109,6 +109,27 @@ function isPastedPathSeparator(char: string | undefined): boolean {
 	return char === undefined || char === " " || char === "\t" || char === "\r" || char === "\n";
 }
 
+function normalizeFileUriPath(fileUri: string): string | undefined {
+	try {
+		return fileURLToPath(fileUri);
+	} catch {
+		// Windows rejects POSIX-style Finder URLs such as `file:///Users/...`
+		// because they are not valid Windows drive paths. Clipboard payloads
+		// still need URL decoding before image loading decides whether the path
+		// exists, so fall back to URL pathname semantics for local file URLs.
+	}
+
+	try {
+		const parsed = new URL(fileUri);
+		if (parsed.protocol !== "file:" || (parsed.hostname && parsed.hostname !== "localhost")) {
+			return undefined;
+		}
+		return decodeURIComponent(parsed.pathname);
+	} catch {
+		return undefined;
+	}
+}
+
 function normalizePastedPath(path: string): string {
 	const trimmed = path.trim();
 	const first = trimmed[0];
@@ -122,12 +143,8 @@ function normalizePastedPath(path: string): string {
 	// `public.file-url` representation — loads as the file itself rather
 	// than failing in `loadImageInput` with a literal-`file://` path.
 	if (FILE_URI_REGEX.test(unquoted)) {
-		try {
-			return fileURLToPath(unquoted);
-		} catch {
-			// Malformed file URL: drop through to the shell-unescape branch
-			// so the caller can still reject it as a non-explicit path.
-		}
+		const filePath = normalizeFileUriPath(unquoted);
+		if (filePath !== undefined) return filePath;
 	}
 	return unquoted.replace(SHELL_ESCAPED_PATH_CHAR_REGEX, "$1");
 }

@@ -106,17 +106,24 @@ describe("CombinedAutocompleteProvider", () => {
 		});
 
 		it("falls back to path suggestions for an unmatched mid-prompt slash token", async () => {
-			const provider = new CombinedAutocompleteProvider(
-				[{ name: "skill:security-scan", description: "Security scan" }],
-				"/tmp",
-			);
-			const line = "see /tmp";
+			const root = path.parse(process.cwd()).root;
+			const baseDir = fs.mkdtempSync(path.join(root, "autocomplete-slash-test-"));
+			try {
+				const leaf = path.basename(baseDir);
+				const provider = new CombinedAutocompleteProvider(
+					[{ name: "skill:security-scan", description: "Security scan" }],
+					process.cwd(),
+				);
+				const line = `see /${leaf}`;
 
-			const result = await provider.getSuggestions([line], 0, line.length);
+				const result = await provider.getSuggestions([line], 0, line.length);
 
-			expect(result).not.toBeNull();
-			expect(result?.prefix).toBe("/tmp");
-			expect(result?.items.map(item => item.value)).toContain("/tmp/");
+				expect(result).not.toBeNull();
+				expect(result?.prefix).toBe(`/${leaf}`);
+				expect(result?.items.map(item => item.value)).toContain(`/${leaf}/`);
+			} finally {
+				fs.rmSync(baseDir, { recursive: true, force: true });
+			}
 		});
 	});
 	describe("applyCompletion", () => {

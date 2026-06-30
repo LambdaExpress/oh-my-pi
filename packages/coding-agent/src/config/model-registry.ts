@@ -777,11 +777,13 @@ export class ModelRegistry {
 
 	#installProviderApiKey(provider: string, keyConfig: string): void {
 		this.#customProviderApiKeys.set(provider, keyConfig);
+		if (isCommandConfigValue(keyConfig)) {
+			this.authStorage.removeConfigApiKey(provider);
+			return;
+		}
 		const resolved = resolveConfigValue(keyConfig);
 		if (resolved) {
 			this.authStorage.setConfigApiKey(provider, resolved);
-		} else if (isCommandConfigValue(keyConfig)) {
-			this.authStorage.removeConfigApiKey(provider);
 		}
 	}
 
@@ -2144,8 +2146,8 @@ export class ModelRegistry {
 	}
 
 	async #peekApiKeyForProvider(provider: string): Promise<string | undefined> {
-		const commandKey = this.#resolveCommandBackedApiKey(provider);
-		if (commandKey.configured) return commandKey.value;
+		const keyConfig = this.#customProviderApiKeys.get(provider);
+		if (isCommandConfigValue(keyConfig)) return undefined;
 		if (this.#keylessProviders.has(provider) && !this.authStorage.hasAuth(provider)) {
 			return kNoAuth;
 		}

@@ -8,6 +8,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession, type ExtensionFactory } from "@oh-my-pi/pi-coding-agent/sdk";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
@@ -20,10 +21,12 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		fs.mkdirSync(tempDir, { recursive: true });
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		for (const authStorage of authStoragesToClose) {
 			authStorage.close();
 		}
+		AgentStorage.resetInstance();
+		await Bun.sleep(0);
 		authStoragesToClose.length = 0;
 		if (tempDir && fs.existsSync(tempDir)) {
 			removeSyncWithRetries(tempDir);
@@ -73,6 +76,7 @@ describe("createAgentSession deferred model pattern resolution", () => {
 			authStorage,
 			modelRegistry,
 			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated(),
 			disableExtensionDiscovery: true,
 			extensions: [providerExtension],
 			skills: [],
@@ -89,20 +93,26 @@ describe("createAgentSession deferred model pattern resolution", () => {
 		const { session, modelFallbackMessage } = await createAgentSession(
 			await buildSessionOptions("runtime-provider/runtime-model"),
 		);
-
-		expect(session.model).toBeDefined();
-		expect(session.model?.provider).toBe("runtime-provider");
-		expect(session.model?.id).toBe("runtime-model");
-		expect(modelFallbackMessage).toBeUndefined();
+		try {
+			expect(session.model).toBeDefined();
+			expect(session.model?.provider).toBe("runtime-provider");
+			expect(session.model?.id).toBe("runtime-model");
+			expect(modelFallbackMessage).toBeUndefined();
+		} finally {
+			await session.dispose();
+		}
 	});
 
 	test("does not silently fallback when explicit modelPattern is unresolved", async () => {
 		const { session, modelFallbackMessage } = await createAgentSession(
 			await buildSessionOptions("missing-provider/missing-model"),
 		);
-
-		expect(session.model).toBeUndefined();
-		expect(modelFallbackMessage).toBe('Model "missing-provider/missing-model" not found');
+		try {
+			expect(session.model).toBeUndefined();
+			expect(modelFallbackMessage).toBe('Model "missing-provider/missing-model" not found');
+		} finally {
+			await session.dispose();
+		}
 	});
 
 	test("does not apply default role thinking override when modelPattern is explicit", async () => {
@@ -114,10 +124,13 @@ describe("createAgentSession deferred model pattern resolution", () => {
 			...(await buildSessionOptions("runtime-provider/runtime-reasoning-model")),
 			settings,
 		});
-
-		expect(session.model?.provider).toBe("runtime-provider");
-		expect(session.model?.id).toBe("runtime-reasoning-model");
-		expect(session.thinkingLevel).toBe("off");
+		try {
+			expect(session.model?.provider).toBe("runtime-provider");
+			expect(session.model?.id).toBe("runtime-reasoning-model");
+			expect(session.thinkingLevel).toBe("off");
+		} finally {
+			await session.dispose();
+		}
 	});
 
 	test("normalizes max default thinking level from settings", async () => {
@@ -127,10 +140,13 @@ describe("createAgentSession deferred model pattern resolution", () => {
 			...(await buildSessionOptions("runtime-provider/runtime-reasoning-model")),
 			settings,
 		});
-
-		expect(session.model?.provider).toBe("runtime-provider");
-		expect(session.model?.id).toBe("runtime-reasoning-model");
-		expect(session.thinkingLevel).toBe(Effort.XHigh);
+		try {
+			expect(session.model?.provider).toBe("runtime-provider");
+			expect(session.model?.id).toBe("runtime-reasoning-model");
+			expect(session.thinkingLevel).toBe(Effort.XHigh);
+		} finally {
+			await session.dispose();
+		}
 	});
 
 	test("selects the settings default model without synchronously validating auth", async () => {

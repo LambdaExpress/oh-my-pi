@@ -61,7 +61,9 @@ export interface BaseKernelOptions<TExecuteOptions extends KernelExecuteOptions 
 	traceIpc: boolean;
 	/** Wire payload asking the runner to exit cleanly. */
 	exitPayload: string;
-	/** How long to wait after SIGINT before escalating to subprocess termination. */
+	/** Wire payload asking the runner to interrupt one in-flight request. */
+	buildInterruptPayload?: (msgId: string) => string;
+	/** How long to wait after an interrupt request before escalating to subprocess termination. */
 	interruptEscalationMs: number;
 	/** Default grace period applied by {@link BaseKernel.shutdown}. */
 	shutdownGraceMs: number;
@@ -212,7 +214,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 				finalize();
 				return;
 			}
-			void this.interrupt();
+			void this.interrupt(msgId);
 			const escalation = setTimeout(() => {
 				if (pending.settled) return;
 				logger.warn(`${this.#options.languageName} runner did not respond to SIGINT; terminating subprocess`, {
@@ -282,8 +284,18 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 		return promise;
 	}
 
-	async interrupt(): Promise<void> {
+	async interrupt(msgId?: string): Promise<void> {
 		if (!this.#proc || this.#disposed) return;
+		if (msgId && this.#options.buildInterruptPayload) {
+			try {
+				await this.#writeLine(this.#options.buildInterruptPayload(msgId));
+				return;
+			} catch (err) {
+				logger.warn(`Failed to send interrupt request to ${this.#options.languageName.toLowerCase()} runner`, {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
 		try {
 			this.#proc.kill("SIGINT");
 		} catch (err) {

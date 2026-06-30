@@ -481,9 +481,7 @@ export class Settings {
 		const normalized = path.normalize(cwd);
 		if (normalized === this.#cwd) return;
 		this.#cwd = normalized;
-		if (this.#persist) {
-			this.#project = await this.#loadProjectSettings();
-		}
+		this.#project = await this.#loadProjectSettings();
 		this.#rebuildMerged();
 		this.#fireAllHooks();
 	}
@@ -1421,6 +1419,7 @@ export function isSettingsInitialized(): boolean {
  * @internal
  */
 export function resetSettingsForTest(): void {
+	AgentStorage.resetInstance();
 	globalInstance = null;
 	globalInstancePromise = null;
 	clearBoundSettingsMethods();

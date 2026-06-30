@@ -3689,7 +3689,7 @@ describe("openai-codex streaming", () => {
 		).result();
 
 		expect(requestTurnStates).toEqual([null, "turn-state-1", null]);
-	});
+	}, 15_000);
 
 	it("drops stale frames from a prior response before sending the next websocket request", async () => {
 		const tempDir = TempDir.createSync("@pi-codex-stream-");

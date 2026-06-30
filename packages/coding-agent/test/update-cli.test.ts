@@ -46,7 +46,7 @@ describe("update-cli install target detection", () => {
 		expect(method).toBe("binary");
 	});
 
-	it("uses Homebrew update when prioritized omp resolves into the Homebrew formula", async () => {
+	it.skipIf(process.platform === "win32")("uses Homebrew update when prioritized omp resolves into the Homebrew formula", async () => {
 		const dir = await makeTempDir();
 		const prefix = path.join(dir, "opt", "omp");
 		const linkedBin = path.join(dir, "bin");

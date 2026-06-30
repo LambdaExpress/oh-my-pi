@@ -14,8 +14,8 @@ import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 // as "binary" and tried to swap omp.exe in place – which fails on Windows
 // because Bun has the file open (EPERM on unlink of .bak).
 //
-// We reproduce the realpath-resolution bug with a symlink (works on macOS /
-// Linux; the bug is realpath, not junction-specific).
+// We reproduce the realpath-resolution bug with a directory link (symlink on
+// POSIX, junction on Windows; the bug is realpath, not link-type-specific).
 
 describe("issue-845: resolveUpdateMethod follows symlinks/junctions", () => {
 	let tmpRoot: string;
@@ -30,7 +30,7 @@ describe("issue-845: resolveUpdateMethod follows symlinks/junctions", () => {
 		fs.writeFileSync(path.join(realBinDir, "omp"), "#!/bin/sh\n", { mode: 0o755 });
 
 		linkedBinDir = path.join(tmpRoot, "link-bin");
-		fs.symlinkSync(realBinDir, linkedBinDir, "dir");
+		fs.symlinkSync(realBinDir, linkedBinDir, process.platform === "win32" ? "junction" : "dir");
 		ompPathViaLink = path.join(linkedBinDir, "omp");
 	});
 

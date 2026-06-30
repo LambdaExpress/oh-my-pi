@@ -8,7 +8,6 @@ import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
-import { YAML } from "bun";
 
 /**
  * Issue #1022: when path-scoped `enabledModels`/`disabledProviders` are
@@ -43,21 +42,21 @@ describe("issue #1022 — path-scoped enabledModels respected by default fallbac
 
 	test("does not pick a disallowed provider when enabledModels excludes it", async () => {
 		const privatePath = path.join(testDir, "private");
-		await Bun.write(
-			path.join(agentDir, "config.yml"),
-			YAML.stringify({
+		const settings = await Settings.init({
+			cwd,
+			agentDir,
+			inMemory: true,
+			overrides: {
 				enabledModels: [{ path: privatePath, models: ["openai-codex"] }],
 				disabledProviders: [{ path: privatePath, providers: ["github-copilot"] }],
 				modelRoles: { default: "github-copilot/gpt-5.5" },
-			}),
-		);
-
-		const settings = await Settings.init({ cwd, agentDir });
+			},
+		});
 		// Sanity-check the path-scoped values resolved correctly for this cwd.
 		expect(settings.get("enabledModels")).toEqual(["openai-codex"]);
 		expect(settings.get("disabledProviders")).toEqual(["github-copilot"]);
 
-		const authStorage = await AuthStorage.create(path.join(testDir, "auth.db"));
+		const authStorage = await AuthStorage.create(":memory:");
 		// Only anthropic has credentials. Per `enabledModels` the path allows
 		// only openai-codex, so no anthropic model should be selected.
 		authStorage.setRuntimeApiKey("anthropic", "test-anthropic-key");

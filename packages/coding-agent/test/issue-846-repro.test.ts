@@ -103,6 +103,7 @@ describe("issue #846: phase1 stage1 failures must be logged", () => {
 		});
 		const model = createModel();
 		const modelRegistry = createModelRegistry(model);
+		const startupDone = Promise.withResolvers<void>();
 		const session: SessionLike = {
 			sessionManager: {
 				getSessionFile: () => sessionFile,
@@ -113,7 +114,10 @@ describe("issue #846: phase1 stage1 failures must be logged", () => {
 			settings,
 			model,
 			modelRegistry,
-			refreshBaseSystemPrompt: vi.fn(async () => undefined),
+			refreshBaseSystemPrompt: vi.fn(async () => {
+				startupDone.resolve();
+				return undefined;
+			}),
 		};
 
 		// Seed a thread whose rolloutPath does not exist on disk -> Bun.file().text()
@@ -133,7 +137,17 @@ describe("issue #846: phase1 stage1 failures must be logged", () => {
 		memoryStorage.closeMemoryDb(db);
 
 		const completeSpy = vi.spyOn(ai, "completeSimple");
-		const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+		const errorLogged = Promise.withResolvers<Record<string, unknown>>();
+		let errorLoggedResolved = false;
+		vi.spyOn(logger, "error").mockImplementation((_message, ctx) => {
+			if (errorLoggedResolved || !ctx || typeof ctx !== "object") return;
+			const record = ctx as Record<string, unknown>;
+			const threadId = record.threadId;
+			const reason = record.reason;
+			if (threadId !== "thread-missing" || typeof reason !== "string" || reason.length === 0) return;
+			errorLoggedResolved = true;
+			errorLogged.resolve(record);
+		});
 
 		// Use a sessionish object that matches the AgentSession surface used by
 		// startMemoryStartupTask. The function only touches sessionManager.* and
@@ -146,36 +160,25 @@ describe("issue #846: phase1 stage1 failures must be logged", () => {
 			taskDepth: 0,
 		});
 
-		// Wait until the failure is recorded in the DB so we know phase1 finished.
-		const start = Date.now();
+		const loggedRecord = await errorLogged.promise;
+		await startupDone.promise;
+
+		const probe = memoryStorage.openMemoryDb(getAgentDbPath(agentDir));
+		const statement = probe.prepare(
+			"SELECT last_error, status FROM jobs WHERE kind = 'memory_stage1' AND job_key = ?",
+		);
 		let lastError: string | null = null;
-		while (Date.now() - start < 3000) {
-			const probe = memoryStorage.openMemoryDb(getAgentDbPath(agentDir));
-			const row = probe
-				.prepare("SELECT last_error, status FROM jobs WHERE kind = 'memory_stage1' AND job_key = ?")
-				.get("thread-missing") as { last_error?: string; status?: string } | undefined;
+		try {
+			const row = statement.get("thread-missing") as { last_error?: string; status?: string } | undefined;
+			if (row?.status === "error" && row.last_error) lastError = row.last_error;
+		} finally {
+			statement.finalize();
 			memoryStorage.closeMemoryDb(probe);
-			if (row?.status === "error" && row.last_error) {
-				lastError = row.last_error;
-				break;
-			}
-			await Bun.sleep(20);
 		}
 
 		expect(lastError).not.toBeNull();
+		expect(loggedRecord.reason).toBe(lastError);
 		// The model was never invoked: this is a setup-time failure.
 		expect(completeSpy).not.toHaveBeenCalled();
-
-		// Contract: a logger.error call MUST surface the reason for this failed claim.
-		const errorCalls = errorSpy.mock.calls;
-		const matching = errorCalls.find(call => {
-			const ctx = call[1];
-			if (!ctx || typeof ctx !== "object") return false;
-			const record = ctx as Record<string, unknown>;
-			const threadId = record.threadId;
-			const reason = record.reason;
-			return threadId === "thread-missing" && typeof reason === "string" && reason.length > 0;
-		});
-		expect(matching).toBeDefined();
 	});
 });

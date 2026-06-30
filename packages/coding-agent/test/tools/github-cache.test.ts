@@ -111,8 +111,14 @@ describe("github-cache db layer", () => {
 		expect(got?.fetchedAt).toBe(2000);
 
 		const db = openDb();
-		const rows = db?.prepare("SELECT COUNT(*) AS c FROM github_view_cache").all() as Array<{ c: number }>;
-		expect(rows[0].c).toBe(1);
+		expect(db).not.toBeNull();
+		const statement = db!.prepare("SELECT COUNT(*) AS c FROM github_view_cache");
+		try {
+			const rows = statement.all() as Array<{ c: number }>;
+			expect(rows[0].c).toBe(1);
+		} finally {
+			statement.finalize();
+		}
 	});
 
 	it("keys comments-on and comments-off as separate rows", () => {
@@ -185,7 +191,7 @@ describe("github-cache db layer", () => {
 	it("does not chmod an existing cache parent directory", async () => {
 		const parent = path.join(tempDir, "caller-owned-parent");
 		await fs.mkdir(parent, { recursive: true, mode: 0o755 });
-		await fs.chmod(parent, 0o755);
+		const initialMode = (await fs.stat(parent)).mode & 0o777;
 		process.env.OMP_GITHUB_CACHE_DB = path.join(parent, "github-cache.db");
 		resetCacheForTests();
 
@@ -193,7 +199,7 @@ describe("github-cache db layer", () => {
 
 		expect(db).not.toBeNull();
 		const stat = await fs.stat(parent);
-		expect(stat.mode & 0o777).toBe(0o755);
+		expect(stat.mode & 0o777).toBe(initialMode);
 	});
 
 	it("preserves rows across openDb() and honors the configured hard TTL via per-lookup sweep", async () => {

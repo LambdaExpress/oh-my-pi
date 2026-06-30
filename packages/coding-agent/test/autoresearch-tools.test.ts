@@ -19,8 +19,25 @@ import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 
+let autoresearchIsolationTail: Promise<void> = Promise.resolve();
+let releaseAutoresearchIsolation: (() => void) | undefined;
+
+beforeEach(async () => {
+	const previousIsolation = autoresearchIsolationTail;
+	const isolationGate = Promise.withResolvers<void>();
+	autoresearchIsolationTail = previousIsolation.then(() => isolationGate.promise);
+	await previousIsolation;
+	releaseAutoresearchIsolation = isolationGate.resolve;
+});
+
 afterEach(() => {
-	vi.restoreAllMocks();
+	try {
+		vi.restoreAllMocks();
+	} finally {
+		const release = releaseAutoresearchIsolation;
+		releaseAutoresearchIsolation = undefined;
+		release?.();
+	}
 });
 
 function firstTextBlockText(content: Array<TextContent | ImageContent>): string {
@@ -31,6 +48,14 @@ function firstTextBlockText(content: Array<TextContent | ImageContent>): string 
 
 function makeTempDir(prefix = "@pi-autoresearch-tools-"): TempDir {
 	return TempDir.createSync(prefix);
+}
+
+async function removeAutoresearchDbTempDir(tempDir: TempDir): Promise<void> {
+	if (process.platform === "win32") {
+		await fs.promises.rm(tempDir.path(), { recursive: true, force: true }).catch(() => {});
+		return;
+	}
+	await tempDir.remove();
 }
 
 function dashboardStub() {
@@ -102,7 +127,7 @@ afterAll(async () => {
 	await Bun.sleep(0);
 	await templateRepo.remove();
 	await templateBranchRepo.remove();
-});
+}, 15_000);
 
 // Independent working copy of the template repo: baseline commit on `main`,
 // committer identity configured, ready for per-test branch/commit scenarios.
@@ -175,8 +200,8 @@ describe("init_experiment", () => {
 		delete process.env.OMP_AUTORESEARCH_DB_DIR;
 		closeAllAutoresearchStorages();
 		await Bun.sleep(0);
-		await dbOverride.remove();
-	});
+		await removeAutoresearchDbTempDir(dbOverride);
+	}, 15_000);
 
 	it("opens a new session and persists scope and metric metadata", async () => {
 		const dir = freshRepo().dir;
@@ -355,8 +380,8 @@ describe("run_experiment", () => {
 		delete process.env.OMP_AUTORESEARCH_DB_DIR;
 		closeAllAutoresearchStorages();
 		await Bun.sleep(0);
-		await dbOverride.remove();
-	});
+		await removeAutoresearchDbTempDir(dbOverride);
+	}, 15_000);
 
 	it("rejects when no session is active", async () => {
 		const dir = freshRepo().dir;
@@ -446,8 +471,8 @@ describe("log_experiment", () => {
 		delete process.env.OMP_AUTORESEARCH_DB_DIR;
 		closeAllAutoresearchStorages();
 		await Bun.sleep(0);
-		await dbOverride.remove();
-	});
+		await removeAutoresearchDbTempDir(dbOverride);
+	}, 15_000);
 
 	async function setupRun(dir: string, runtime = createSessionRuntime()) {
 		await writeHarnessStub(dir, "echo METRIC runtime_ms=10");
@@ -850,8 +875,8 @@ describe("update_notes", () => {
 		delete process.env.OMP_AUTORESEARCH_DB_DIR;
 		closeAllAutoresearchStorages();
 		await Bun.sleep(0);
-		await dbOverride.remove().catch(() => {});
-	});
+		await removeAutoresearchDbTempDir(dbOverride);
+	}, 15_000);
 
 	it("replaces session notes and refreshes runtime state", async () => {
 		const dir = freshRepo().dir;

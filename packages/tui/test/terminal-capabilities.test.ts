@@ -141,8 +141,8 @@ describe("Warp terminal capabilities", () => {
 			cmd: [
 				process.execPath,
 				"--eval",
-				`import { ImageProtocol, TERMINAL, TERMINAL_ID } from "@oh-my-pi/pi-tui/terminal-capabilities";
-console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProtocol, expected: ImageProtocol.Kitty }));`,
+				`import { resolveWarpImageProtocol, TERMINAL, TERMINAL_ID } from "@oh-my-pi/pi-tui/terminal-capabilities";
+console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProtocol, expected: resolveWarpImageProtocol(process.platform, Bun.env) }));`,
 			],
 			env,
 			stdout: "pipe",
@@ -161,8 +161,8 @@ console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProto
 		expect(resolved.imageProtocol).toBe(resolved.expected);
 	});
 
-	it("is Kitty-capable with true color but no OSC 8 hyperlinks", () => {
-		const warp = getTerminalInfo("warp");
+	it("is Kitty-capable with true color but no OSC 8 hyperlinks on macOS/Linux", () => {
+		const warp = getTerminalInfo("warp", "linux", {});
 		expect(warp.imageProtocol).toBe(ImageProtocol.Kitty);
 		expect(warp.trueColor).toBe(true);
 		expect(warp.hyperlinks).toBe(false);

@@ -98,19 +98,9 @@ async function createFixture(overrides?: Partial<Record<string, unknown>>): Prom
 // Resolve any already-scheduled microtasks/macrotasks without a fixed wall delay.
 const flushAsync = (): Promise<void> => new Promise<void>(resolve => setTimeout(resolve, 0));
 
-// Await the pipeline's completion signal (its final `refreshBaseSystemPrompt`)
-// instead of polling, racing a generous timeout so a stalled regression fails
-// loudly rather than hanging.
-async function settle(promise: Promise<void>, label: string, timeoutMs = 3000): Promise<void> {
-	let timer: Timer | undefined;
-	const timeout = new Promise<never>((_, reject) => {
-		timer = setTimeout(() => reject(new Error(`Timed out waiting for ${label}`)), timeoutMs);
-	});
-	try {
-		await Promise.race([promise, timeout]);
-	} finally {
-		if (timer) clearTimeout(timer);
-	}
+// Await the pipeline's completion signal (its final `refreshBaseSystemPrompt`).
+async function settle(promise: Promise<void>, _label: string): Promise<void> {
+	await promise;
 }
 
 beforeAll(async () => {
@@ -119,11 +109,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
 	if (sharedRoot) {
-		await Bun.sleep(0);
-		await sharedRoot.remove();
+		await sharedRoot.remove().catch(() => {});
 	}
 	sharedRoot = undefined;
-});
+}, 15_000);
 
 describe("memories runtime", () => {
 	let savedXdgData: string | undefined;

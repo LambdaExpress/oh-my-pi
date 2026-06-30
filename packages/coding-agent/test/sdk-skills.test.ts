@@ -22,9 +22,14 @@ function createIsolatedSkillsSettings(): Settings {
 	});
 }
 
+function linkDirectoryForTest(target: string, linkPath: string): void {
+	fs.symlinkSync(target, linkPath, process.platform === "win32" ? "junction" : "dir");
+}
+
 describe("createAgentSession skills option", () => {
 	let tempDir: string;
 	let skillsDir: string;
+	let externalSkillDir: string;
 	let tempHomeDir = "";
 	let originalHome: string | undefined;
 	// Auth storage (SQLite DB) and the model registry are immutable across these tests: skill
@@ -72,7 +77,7 @@ This is a test skill.
 `,
 		);
 
-		const externalSkillDir = path.join(tempDir, "external-symlinked-skill");
+		externalSkillDir = path.join(tempDir, "external-symlinked-skill");
 		fs.mkdirSync(externalSkillDir, { recursive: true });
 		fs.writeFileSync(
 			path.join(externalSkillDir, "SKILL.md"),
@@ -86,7 +91,6 @@ description: Skill loaded through a symlink.
 Loaded via symbolic link.
 `,
 		);
-		fs.symlinkSync(externalSkillDir, path.join(path.dirname(skillsDir), "symlinked-skill-link"), "dir");
 	});
 
 	afterEach(cleanupTempHome(() => ({ tempDir, tempHomeDir, originalHome })));
@@ -106,6 +110,8 @@ Loaded via symbolic link.
 	});
 
 	it("should discover skills when skill directory is a symlink", async () => {
+		linkDirectoryForTest(externalSkillDir, path.join(path.dirname(skillsDir), "symlinked-skill-link"));
+
 		const { session } = await createAgentSession({
 			cwd: tempDir,
 			agentDir: tempDir,

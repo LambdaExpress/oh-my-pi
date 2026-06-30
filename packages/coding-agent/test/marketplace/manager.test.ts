@@ -103,6 +103,21 @@ function mockPluginManagerPaths(root: string) {
 	];
 }
 
+function isSymlinkCapabilityError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code === "EPERM" || code === "EACCES" || code === "ENOTSUP";
+}
+
+function createLocalRuntimeLink(target: string, destination: string): boolean {
+	try {
+		fs.symlinkSync(target, destination, process.platform === "win32" ? "junction" : "dir");
+		return true;
+	} catch (error) {
+		if (isSymlinkCapabilityError(error)) return false;
+		throw error;
+	}
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe("MarketplaceManager", () => {
@@ -329,7 +344,7 @@ describe("MarketplaceManager", () => {
 		fs.mkdirSync(path.join(localPlugin, "tools"), { recursive: true });
 		const linkPath = path.join(ctx.tmpDir, "node_modules", "hello-plugin");
 		fs.rmSync(linkPath, { recursive: true, force: true });
-		fs.symlinkSync(localPlugin, linkPath, "dir");
+		if (!createLocalRuntimeLink(localPlugin, linkPath)) return;
 
 		const spies = mockPluginManagerPaths(ctx.tmpDir);
 		try {

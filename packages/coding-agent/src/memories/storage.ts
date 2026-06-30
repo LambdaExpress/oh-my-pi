@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings, type Statement } from "bun:sqlite";
 
 export interface MemoryThread {
 	id: string;
@@ -35,6 +35,17 @@ export interface GlobalClaim {
 const STAGE1_KIND = "memory_stage1";
 const GLOBAL_KIND = "memory_consolidate_global";
 const DEFAULT_RETRY_REMAINING = 3;
+
+type MemoryStatement = Statement<unknown, SQLQueryBindings[]>;
+
+function withStatement<T>(db: Database, sql: string, fn: (statement: MemoryStatement) => T): T {
+	const statement = db.prepare<unknown, SQLQueryBindings[]>(sql);
+	try {
+		return fn(statement);
+	} finally {
+		statement.finalize();
+	}
+}
 
 /**
  * Per-project job key so Phase 2 consolidation is isolated to a single cwd.
@@ -112,19 +123,27 @@ ON CONFLICT(id) DO UPDATE SET
 	cwd = excluded.cwd,
 	source_kind = excluded.source_kind
 `);
-	const tx = db.transaction((rows: MemoryThread[]) => {
-		for (const row of rows) {
-			stmt.run(row.id, row.updatedAt, row.rolloutPath, row.cwd, row.sourceKind);
-		}
-	});
-	tx(threads);
+	try {
+		const tx = db.transaction((rows: MemoryThread[]) => {
+			for (const row of rows) {
+				stmt.run(row.id, row.updatedAt, row.rolloutPath, row.cwd, row.sourceKind);
+			}
+		});
+		tx(threads);
+	} finally {
+		stmt.finalize();
+	}
 }
 
 function ensureStage1Job(db: Database, threadId: string): void {
-	db.prepare(`
+	withStatement(
+		db,
+		`
 INSERT OR IGNORE INTO jobs (kind, job_key, status, retry_remaining, input_watermark, last_success_watermark)
 VALUES (?, ?, 'pending', ?, 0, 0)
-`).run(STAGE1_KIND, threadId, DEFAULT_RETRY_REMAINING);
+`,
+		statement => statement.run(STAGE1_KIND, threadId, DEFAULT_RETRY_REMAINING),
+	);
 }
 
 function ensureGlobalJob(db: Database, cwd: string): void {
@@ -161,16 +180,18 @@ export function claimStage1Jobs(
 	} = params;
 	const maxAgeSec = maxRolloutAgeDays * 24 * 60 * 60;
 	const minIdleSec = minRolloutIdleHours * 60 * 60;
-	const runningCountRow = db
-		.prepare(
-			"SELECT COUNT(*) AS count FROM jobs WHERE kind = ? AND status = 'running' AND lease_until IS NOT NULL AND lease_until > ?",
-		)
-		.get(STAGE1_KIND, nowSec) as { count?: number } | undefined;
+	const runningCountRow = withStatement(
+		db,
+		"SELECT COUNT(*) AS count FROM jobs WHERE kind = ? AND status = 'running' AND lease_until IS NOT NULL AND lease_until > ?",
+		statement => statement.get(STAGE1_KIND, nowSec),
+	) as { count?: number } | undefined;
 	let runningCount = runningCountRow?.count ?? 0;
 	if (runningCount >= runningConcurrencyCap) return [];
-	const candidateRows = db
-		.prepare("SELECT id, updated_at, rollout_path, cwd, source_kind FROM threads ORDER BY updated_at DESC LIMIT ?")
-		.all(threadScanLimit) as Array<{
+	const candidateRows = withStatement(
+		db,
+		"SELECT id, updated_at, rollout_path, cwd, source_kind FROM threads ORDER BY updated_at DESC LIMIT ?",
+		statement => statement.all(threadScanLimit),
+	) as Array<{
 		id: string;
 		updated_at: number;
 		rollout_path: string;
@@ -186,15 +207,16 @@ export function claimStage1Jobs(
 		if (nowSec - row.updated_at > maxAgeSec) continue;
 		if (nowSec - row.updated_at < minIdleSec) continue;
 		if (runningCount >= runningConcurrencyCap) break;
-		const stage1 = db.prepare("SELECT source_updated_at FROM stage1_outputs WHERE thread_id = ?").get(row.id) as
-			| { source_updated_at?: number }
-			| undefined;
+		const stage1 = withStatement(db, "SELECT source_updated_at FROM stage1_outputs WHERE thread_id = ?", statement =>
+			statement.get(row.id),
+		) as { source_updated_at?: number } | undefined;
 		if ((stage1?.source_updated_at ?? 0) >= row.updated_at) continue;
 		ensureStage1Job(db, row.id);
 		const ownershipToken = crypto.randomUUID();
 		const leaseUntil = nowSec + leaseSeconds;
-		const claimed = db
-			.prepare(`
+		const claimed = withStatement(
+			db,
+			`
 UPDATE jobs
 SET status = 'running', worker_id = ?, ownership_token = ?, started_at = ?, finished_at = NULL,
 	lease_until = ?, retry_at = NULL, last_error = NULL, input_watermark = ?,
@@ -214,23 +236,25 @@ WHERE kind = ? AND job_key = ?
 			AND (retry_at IS NULL OR retry_at <= ?)
 		)
 	)
-`)
-			.run(
-				workerId,
-				ownershipToken,
-				nowSec,
-				leaseUntil,
-				row.updated_at,
-				DEFAULT_RETRY_REMAINING,
-				row.updated_at,
-				DEFAULT_RETRY_REMAINING,
-				STAGE1_KIND,
-				row.id,
-				row.updated_at,
-				nowSec,
-				row.updated_at,
-				nowSec,
-			);
+`,
+			statement =>
+				statement.run(
+					workerId,
+					ownershipToken,
+					nowSec,
+					leaseUntil,
+					row.updated_at,
+					DEFAULT_RETRY_REMAINING,
+					row.updated_at,
+					DEFAULT_RETRY_REMAINING,
+					STAGE1_KIND,
+					row.id,
+					row.updated_at,
+					nowSec,
+					row.updated_at,
+					nowSec,
+				),
+		);
 		if (Number(claimed.changes ?? 0) <= 0) continue;
 		claims.push({
 			threadId: row.id,
@@ -375,15 +399,17 @@ export function markStage1Failed(
 	params: { threadId: string; ownershipToken: string; retryDelaySeconds: number; reason: string; nowSec: number },
 ): boolean {
 	const { threadId, ownershipToken, retryDelaySeconds, reason, nowSec } = params;
-	const result = db
-		.prepare(`
+	const result = withStatement(
+		db,
+		`
 UPDATE jobs
 SET status = 'error', finished_at = ?, lease_until = NULL, retry_at = ?,
 	retry_remaining = CASE WHEN retry_remaining > 0 THEN retry_remaining - 1 ELSE 0 END,
 	last_error = ?
 WHERE kind = ? AND job_key = ? AND status = 'running' AND ownership_token = ?
-`)
-		.run(nowSec, nowSec + retryDelaySeconds, reason, STAGE1_KIND, threadId, ownershipToken);
+`,
+		statement => statement.run(nowSec, nowSec + retryDelaySeconds, reason, STAGE1_KIND, threadId, ownershipToken),
+	);
 	return Number(result.changes ?? 0) > 0;
 }
 

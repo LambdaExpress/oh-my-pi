@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -11,7 +11,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { addSSHHost, removeSSHHost, updateSSHHost } from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
 import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
 import { loadSshTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { getSSHConfigPath, TempDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, getSSHConfigPath, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
 function createModel(): Model<"openai-responses"> {
 	return buildModel({
@@ -31,10 +31,27 @@ function createModel(): Model<"openai-responses"> {
 describe("AgentSession SSH tool refresh", () => {
 	const tempDirs: TempDir[] = [];
 	const sessions: AgentSession[] = [];
+	let originalAgentDir: string;
+	let originalAgentDirEnv: string | undefined;
+
+	beforeEach(() => {
+		originalAgentDir = getAgentDir();
+		originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
+		const agentDir = TempDir.createSync("@pi-ssh-refresh-agent-");
+		tempDirs.push(agentDir);
+		setAgentDir(agentDir.path());
+	});
+
 
 	afterEach(async () => {
 		for (const session of sessions.splice(0)) {
 			await session.dispose();
+		}
+		setAgentDir(originalAgentDir);
+		if (originalAgentDirEnv === undefined) {
+			delete process.env.PI_CODING_AGENT_DIR;
+		} else {
+			process.env.PI_CODING_AGENT_DIR = originalAgentDirEnv;
 		}
 		for (const tempDir of tempDirs.splice(0)) {
 			tempDir.removeSync();

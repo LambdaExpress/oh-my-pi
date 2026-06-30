@@ -18,7 +18,8 @@ function getHeader(entries: unknown[]): SessionHeader | undefined {
 	);
 }
 
-function writeBreadcrumb(cwd: string, sessionFile: string): string {
+async function writeBreadcrumb(cwd: string, sessionFile: string): Promise<string> {
+	await Bun.sleep(0);
 	const terminalId = getTerminalId();
 	if (!terminalId) throw new Error("Expected a terminal id for breadcrumb test");
 	const dir = getTerminalSessionsDir();
@@ -39,7 +40,7 @@ function stripHeaderCwd(file: string): void {
 	fs.writeFileSync(file, rewritten.join("\n"));
 }
 
-describe("SessionManager.continueRecent relocation", () => {
+describe.serial("SessionManager.continueRecent relocation", () => {
 	let testAgentDir: string;
 	let cwdA: string;
 	let cwdB: string;
@@ -47,7 +48,16 @@ describe("SessionManager.continueRecent relocation", () => {
 	const originalTmuxPane = process.env.TMUX_PANE;
 	const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
+	let isolationTail: Promise<void> = Promise.resolve();
+	let releaseIsolation: (() => void) | undefined;
+
 	beforeEach(async () => {
+		const previousIsolation = isolationTail;
+		const isolationGate = Promise.withResolvers<void>();
+		isolationTail = previousIsolation.then(() => isolationGate.promise);
+		await previousIsolation;
+		releaseIsolation = isolationGate.resolve;
+
 		// Force a deterministic, non-TTY terminal id so breadcrumb read/write is stable.
 		process.env.TMUX_PANE = "%relocation-test";
 		testAgentDir = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-reloc-test-"));
@@ -59,18 +69,24 @@ describe("SessionManager.continueRecent relocation", () => {
 	});
 
 	afterEach(async () => {
-		if (originalTmuxPane === undefined) delete process.env.TMUX_PANE;
-		else process.env.TMUX_PANE = originalTmuxPane;
-		if (originalAgentDir) {
-			setAgentDir(originalAgentDir);
-		} else {
-			setAgentDir(fallbackAgentDir);
-			delete process.env.PI_CODING_AGENT_DIR;
+		try {
+			if (originalTmuxPane === undefined) delete process.env.TMUX_PANE;
+			else process.env.TMUX_PANE = originalTmuxPane;
+			if (originalAgentDir) {
+				setAgentDir(originalAgentDir);
+			} else {
+				setAgentDir(fallbackAgentDir);
+				delete process.env.PI_CODING_AGENT_DIR;
+			}
+			await fsp.rm(testAgentDir, { recursive: true, force: true });
+		} finally {
+			const release = releaseIsolation;
+			releaseIsolation = undefined;
+			release?.();
 		}
-		await fsp.rm(testAgentDir, { recursive: true, force: true });
 	});
 
-	it("re-roots the terminal's session when its directory was moved/renamed", async () => {
+	it.serial("re-roots the terminal's session when its directory was moved/renamed", async () => {
 		const session = SessionManager.create(cwdA);
 		session.appendMessage({ role: "user", content: "before move", timestamp: 1 });
 		session.appendMessage(makeAssistantMessage());
@@ -80,7 +96,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		await session.close();
 
 		// Breadcrumb points at the old session, recorded under the old cwd.
-		writeBreadcrumb(cwdA, oldFile);
+		await writeBreadcrumb(cwdA, oldFile);
 		// Simulate `git worktree move`: the old directory no longer exists.
 		await fsp.rm(cwdA, { recursive: true, force: true });
 
@@ -102,7 +118,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		}
 	});
 
-	it("does not hijack the session when the recorded directory still exists (plain cd)", async () => {
+	it.serial("does not hijack the session when the recorded directory still exists (plain cd)", async () => {
 		const session = SessionManager.create(cwdA);
 		session.appendMessage({ role: "user", content: "other project", timestamp: 1 });
 		session.appendMessage(makeAssistantMessage());
@@ -112,7 +128,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		await session.close();
 
 		// Breadcrumb from a still-existing different project; user just cd'd elsewhere.
-		writeBreadcrumb(cwdA, oldFile);
+		await writeBreadcrumb(cwdA, oldFile);
 
 		const resumed = await SessionManager.continueRecent(cwdB);
 		try {
@@ -125,7 +141,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		}
 	});
 
-	it("does not re-root when the new directory already has its own sessions", async () => {
+	it.serial("does not re-root when the new directory already has its own sessions", async () => {
 		const moved = SessionManager.create(cwdA);
 		moved.appendMessage({ role: "user", content: "moved", timestamp: 1 });
 		moved.appendMessage(makeAssistantMessage());
@@ -143,7 +159,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		if (!localFile) throw new Error("Expected persisted local session file");
 		await local.close();
 
-		writeBreadcrumb(cwdA, movedFile);
+		await writeBreadcrumb(cwdA, movedFile);
 		await fsp.rm(cwdA, { recursive: true, force: true });
 
 		const resumed = await SessionManager.continueRecent(cwdB);
@@ -156,7 +172,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		}
 	});
 
-	it("moves a relocated breadcrumb session into an explicit sessionDir", async () => {
+	it.serial("moves a relocated breadcrumb session into an explicit sessionDir", async () => {
 		const session = SessionManager.create(cwdA);
 		session.appendMessage({ role: "user", content: "explicit dir", timestamp: 1 });
 		session.appendMessage(makeAssistantMessage());
@@ -166,7 +182,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		await session.close();
 
 		const explicitSessionDir = path.join(testAgentDir, "custom-sessions");
-		writeBreadcrumb(cwdA, oldFile);
+		await writeBreadcrumb(cwdA, oldFile);
 		await fsp.rm(cwdA, { recursive: true, force: true });
 
 		const resumed = await SessionManager.continueRecent(cwdB, explicitSessionDir);
@@ -181,7 +197,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		}
 	});
 
-	it("re-roots when the stale breadcrumb file is already in the explicit sessionDir", async () => {
+	it.serial("re-roots when the stale breadcrumb file is already in the explicit sessionDir", async () => {
 		const explicitSessionDir = path.join(testAgentDir, "shared-custom-sessions");
 		const session = SessionManager.create(cwdA, explicitSessionDir);
 		session.appendMessage({ role: "user", content: "same explicit dir", timestamp: 1 });
@@ -192,7 +208,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		expect(path.dirname(oldFile)).toBe(path.resolve(explicitSessionDir));
 		await session.close();
 
-		writeBreadcrumb(cwdA, oldFile);
+		await writeBreadcrumb(cwdA, oldFile);
 		await fsp.rm(cwdA, { recursive: true, force: true });
 
 		const resumed = await SessionManager.continueRecent(cwdB, explicitSessionDir);
@@ -207,7 +223,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		}
 	});
 
-	it("prefers an existing current-cwd session in a shared explicit sessionDir", async () => {
+	it.serial("prefers an existing current-cwd session in a shared explicit sessionDir", async () => {
 		const explicitSessionDir = path.join(testAgentDir, "shared-current-sessions");
 		const local = SessionManager.create(cwdB, explicitSessionDir);
 		local.appendMessage({ role: "user", content: "local current cwd", timestamp: 1 });
@@ -227,7 +243,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		if (!movedFile) throw new Error("Expected persisted moved session file");
 		await moved.close();
 
-		writeBreadcrumb(cwdA, movedFile);
+		await writeBreadcrumb(cwdA, movedFile);
 		await fsp.rm(cwdA, { recursive: true, force: true });
 
 		const resumed = await SessionManager.continueRecent(cwdB, explicitSessionDir);
@@ -240,7 +256,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		}
 	});
 
-	it("re-roots past a cwd-less legacy session in a shared explicit sessionDir", async () => {
+	it.serial("re-roots past a cwd-less legacy session in a shared explicit sessionDir", async () => {
 		const explicitSessionDir = path.join(testAgentDir, "shared-legacy-sessions");
 		const legacy = SessionManager.create(cwdB, explicitSessionDir);
 		legacy.appendMessage({ role: "user", content: "legacy without cwd", timestamp: 1 });
@@ -261,7 +277,7 @@ describe("SessionManager.continueRecent relocation", () => {
 		if (!movedFile) throw new Error("Expected persisted moved session file");
 		await moved.close();
 
-		writeBreadcrumb(cwdA, movedFile);
+		await writeBreadcrumb(cwdA, movedFile);
 		await fsp.rm(cwdA, { recursive: true, force: true });
 
 		const resumed = await SessionManager.continueRecent(cwdB, explicitSessionDir);

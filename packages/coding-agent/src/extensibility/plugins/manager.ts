@@ -714,7 +714,7 @@ export class PluginManager {
 			if (!isEnoent(err)) throw err;
 		}
 
-		await fs.promises.symlink(absolutePath, linkPath);
+		await fs.promises.symlink(absolutePath, linkPath, process.platform === "win32" ? "junction" : "dir");
 
 		const manifest: PluginManifest = pkg.omp || pkg.pi || { version: pkg.version };
 		manifest.version = pkg.version;

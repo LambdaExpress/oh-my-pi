@@ -11,6 +11,7 @@ import {
 	getBlobsDir,
 	getHistoryDbPath,
 	getSessionsDir,
+	removeWithRetries,
 	setAgentDir,
 	setProjectDir,
 } from "@oh-my-pi/pi-utils";
@@ -49,7 +50,7 @@ afterEach(async () => {
 	process.exitCode = originalExitCode;
 	restoreSettingsTestState(settingsState);
 	settingsState = undefined;
-	await fs.rm(root, { recursive: true, force: true });
+	await removeWithRetries(root);
 });
 
 function hashFor(label: string): string {

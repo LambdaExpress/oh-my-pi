@@ -560,7 +560,7 @@ fn search(
 	let separator = cli
 		.path_separator
 		.clone()
-		.unwrap_or_else(|| std::path::MAIN_SEPARATOR.to_string());
+		.unwrap_or_else(|| "/".to_string());
 	let config = SearchConfig {
 		base_dir,
 		absolute_roots,

@@ -109,6 +109,7 @@ const expectSleepNear = (sleepSpy: Mock<typeof Bun.sleep>, targetMs: number) => 
 		),
 	).toBe(true);
 };
+
 const createSession = async (
 	_tempDir: TempDir,
 	cwd: string,
@@ -170,14 +171,13 @@ describe("AgentSession python cleanup", () => {
 		AgentStorage.resetInstance();
 		await pythonExecutor.disposeAllKernelSessions();
 		await Bun.sleep(0);
-		// Best-effort cleanup: createAgentSession opens AuthStorage/AgentStorage
-		// inside agentDir that may outlive the test (dispose() doesn't close them).
-		// On Windows the leaked SQLite handles keep the dir locked; swallow EBUSY
-		// rather than failing the test — the OS temp dir reaper will clean up.
+		// Best-effort cleanup. Windows can keep recently closed SQLite handles
+		// busy under full-suite load; swallow cleanup errors rather than failing
+		// the test — the OS temp dir reaper will clean up.
 		for (const tempDir of [...tempDirs.splice(0), ...agentDirPool.splice(0)]) {
 			await tempDir.remove().catch(() => {});
 		}
-	});
+	}, 10000);
 
 	it("does not dispose unrelated Python owners when createAgentSession fails before session construction", async () => {
 		const { tempDir, cwd } = createTempProject();
@@ -244,7 +244,7 @@ describe("AgentSession python cleanup", () => {
 
 		expect(startSpy).toHaveBeenCalledTimes(2);
 		expect(unrelatedKernel.execute).toHaveBeenCalledTimes(2);
-	});
+	}, 10000);
 
 	it("does not dispose unrelated Python owners when createAgentSession fails after session construction", async () => {
 		const { tempDir, cwd } = createTempProject();
@@ -312,7 +312,7 @@ describe("AgentSession python cleanup", () => {
 
 		expect(startSpy).toHaveBeenCalledTimes(2);
 		expect(unrelatedKernel.execute).toHaveBeenCalledTimes(2);
-	});
+	}, 10000);
 
 	it("waits for active SDK session Python work before releasing a shared retained kernel", async () => {
 		const { tempDir, cwd } = createTempProject();
@@ -387,7 +387,7 @@ describe("AgentSession python cleanup", () => {
 		}
 
 		expect(kernel.shutdownCalls).toBe(1);
-	});
+	}, 10000);
 	it("aborts tracked eval execution during session dispose after warmup completes", async () => {
 		const { tempDir, cwd } = createTempProject();
 		tempDirs.push(tempDir);

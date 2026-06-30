@@ -28,7 +28,6 @@ describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () =
 
 	it("enables kitty when the kitty reply arrives before the DA1 sentinel", async () => {
 		harness = createProcessTerminalRenderHarness(100, 30);
-		await harness.settle();
 		expect(harness.writes.join("")).toContain("\x1b[?u\x1b[c");
 		harness.writes.length = 0;
 
@@ -42,27 +41,29 @@ describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () =
 
 	it("enables kitty when the DA1 sentinel arrives before the kitty reply (#2042)", async () => {
 		harness = createProcessTerminalRenderHarness(100, 30);
-		await harness.settle();
+		expect(harness.writes.join("")).toContain("\x1b[?u\x1b[c");
 		harness.writes.length = 0;
 
-		// Superset/Electron-xterm answers DA1 before `CSI ? u`. The kitty reply
-		// must override the premature modifyOtherKeys fallback.
-		await harness.feed("\x1b[?1;2c", "\x1b[?0u");
+		// Superset/Electron-xterm answers DA1 before `CSI ? u`. Wait for the
+		// fallback to become observable, then ensure the later kitty reply disables
+		// modifyOtherKeys before enabling kitty keyboard mode.
+		await harness.feed("\x1b[?1;2c");
+		expect(harness.writes.join("")).toContain("\x1b[>4;2m");
+		harness.writes.length = 0;
+
+		await harness.feed("\x1b[?0u");
 
 		const out = harness.writes.join("");
 		expect(harness.terminal.kittyProtocolActive).toBe(true);
-		expect(out).toContain("\x1b[>1u");
-		const enableIdx = out.indexOf("\x1b[>4;2m");
 		const disableIdx = out.indexOf("\x1b[>4;0m");
 		const kittyIdx = out.indexOf("\x1b[>1u");
-		expect(enableIdx).toBeGreaterThanOrEqual(0);
-		expect(disableIdx).toBeGreaterThan(enableIdx);
-		expect(kittyIdx).toBeGreaterThan(enableIdx);
+		expect(disableIdx).toBeGreaterThanOrEqual(0);
+		expect(kittyIdx).toBeGreaterThan(disableIdx);
 	});
 
 	it("keeps the modifyOtherKeys fallback when only DA1 ever replies", async () => {
 		harness = createProcessTerminalRenderHarness(100, 30);
-		await harness.settle();
+		expect(harness.writes.join("")).toContain("\x1b[?u\x1b[c");
 		harness.writes.length = 0;
 
 		// Terminals that ignore `CSI ? u` answer DA1 only — modifyOtherKeys is
@@ -77,7 +78,7 @@ describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () =
 
 	it("reasserts modifyOtherKeys fallback when fullscreen overlays enter the alternate screen", async () => {
 		harness = createProcessTerminalRenderHarness(100, 30);
-		await harness.settle();
+		expect(harness.writes.join("")).toContain("\x1b[?u\x1b[c");
 		harness.writes.length = 0;
 
 		await harness.feed("\x1b[?1;2c");
@@ -110,7 +111,7 @@ describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () =
 
 	it("pops the kitty keyboard frame on fullscreen overlay exit", async () => {
 		harness = createProcessTerminalRenderHarness(100, 30);
-		await harness.settle();
+		expect(harness.writes.join("")).toContain("\x1b[?u\x1b[c");
 		await harness.feed("\x1b[?0u", "\x1b[?1;2c");
 		expect(harness.terminal.kittyProtocolActive).toBe(true);
 		harness.writes.length = 0;

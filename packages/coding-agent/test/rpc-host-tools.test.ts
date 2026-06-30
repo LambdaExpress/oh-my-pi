@@ -129,6 +129,7 @@ function write(frame) {
 }
 
 write({ type: "ready" });
+process.stdin.resume();
 
 process.stdin.on("data", chunk => {
 	buffer += chunk.toString("utf8");

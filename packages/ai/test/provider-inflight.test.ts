@@ -10,6 +10,7 @@ import {
 	streamSimple,
 } from "@oh-my-pi/pi-ai/stream";
 import type { Context } from "@oh-my-pi/pi-ai/types";
+import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 function context(): Context {
 	return {
@@ -25,7 +26,7 @@ afterEach(async () => {
 	configureProviderMaxInFlightRequests(undefined);
 	__providerInFlightForTesting.setRoot(undefined);
 	if (limiterRoot !== undefined) {
-		await fs.rm(limiterRoot, { recursive: true, force: true });
+		await removeWithRetries(limiterRoot);
 		limiterRoot = undefined;
 	}
 });

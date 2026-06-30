@@ -26,6 +26,7 @@ when installed.
 
 from __future__ import annotations
 
+import _thread
 import asyncio
 import ast
 import contextvars
@@ -187,6 +188,7 @@ class _RunnerState:
         # processes inheriting stdout). With overlapping requests the most
         # recently started one wins — strictly better than dropping the bytes.
         self.capture_rid: str | None = None
+        self.pending_interrupt_ids: set[str] = set()
 
 
 _CURRENT_RID: contextvars.ContextVar[str | None] = contextvars.ContextVar("omp_current_rid", default=None)
@@ -1020,6 +1022,22 @@ async def _handle_request_async(req: dict) -> None:
     _STATE.cancel_requested = False
     _STATE.execution_count += 1
     execution_count = _STATE.execution_count
+    if rid in _STATE.pending_interrupt_ids:
+        _STATE.pending_interrupt_ids.discard(rid)
+        _emit({"type": "started", "id": rid})
+        _emit_error(rid, KeyboardInterrupt("Execution interrupted"))
+        _emit({
+            "type": "done",
+            "id": rid,
+            "status": "error",
+            "executionCount": execution_count,
+            "cancelled": True,
+        })
+        if _STATE.capture_rid == rid:
+            _STATE.capture_rid = None
+        _CURRENT_RID.reset(token)
+        _CURRENT_DISPLAYED_MATPLOTLIB_FIGURE_IDS.reset(displayed_matplotlib_token)
+        return
     _emit({"type": "started", "id": rid})
 
     status: str = "ok"
@@ -1117,6 +1135,14 @@ def _read_stdin(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, stdin) ->
                 "evalue": f"Invalid JSON request: {exc}",
                 "traceback": [],
             })
+            continue
+        if req.get("type") == "interrupt":
+            rid = req.get("id")
+            if isinstance(rid, str):
+                if _STATE.capture_rid == rid:
+                    _thread.interrupt_main()
+                else:
+                    _STATE.pending_interrupt_ids.add(rid)
             continue
         loop.call_soon_threadsafe(queue.put_nowait, req)
     loop.call_soon_threadsafe(queue.put_nowait, {"type": "exit"})

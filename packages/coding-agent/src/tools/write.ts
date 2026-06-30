@@ -181,7 +181,8 @@ async function maybeMarkExecutableForShebang(absolutePath: string, content: stri
 		const newMode = currentMode | 0o111;
 		if (newMode === currentMode) return false;
 		await fs.chmod(absolutePath, newMode);
-		return true;
+		const updatedMode = (await fs.stat(absolutePath)).mode & 0o7777;
+		return (updatedMode & 0o111) === 0o111 && updatedMode !== currentMode;
 	} catch {
 		return false;
 	}

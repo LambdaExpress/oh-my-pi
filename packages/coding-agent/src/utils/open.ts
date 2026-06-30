@@ -19,7 +19,7 @@ function getExistingWslLocalPath(urlOrPath: string): string | undefined {
 			? url.fileURLToPath(urlOrPath)
 			: URL_SCHEME_PATTERN.test(urlOrPath)
 				? undefined
-				: path.resolve(urlOrPath);
+				: path.posix.resolve(urlOrPath);
 		if (!localPath || !fs.existsSync(localPath)) return undefined;
 
 		const result = Bun.spawnSync(["wslpath", "-w", localPath], { stdout: "pipe", stderr: "ignore" });

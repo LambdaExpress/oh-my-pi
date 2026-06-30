@@ -849,6 +849,26 @@ fn display_path(operand: &OsStr, root: &Path, path: &Path) -> PathBuf {
 	}
 }
 
+#[cfg(windows)]
+fn display_bytes(path: &Path) -> Vec<u8> {
+	path.to_string_lossy().replace('\\', "/").into_bytes()
+}
+
+#[cfg(not(windows))]
+fn display_bytes(path: &Path) -> Vec<u8> {
+	path.as_os_str().as_encoded_bytes().to_vec()
+}
+
+#[cfg(windows)]
+fn operand_bytes(operand: &OsStr) -> Vec<u8> {
+	operand.to_string_lossy().replace('\\', "/").into_bytes()
+}
+
+#[cfg(not(windows))]
+fn operand_bytes(operand: &OsStr) -> Vec<u8> {
+	operand.as_encoded_bytes().to_vec()
+}
+
 fn process_reader<R: Read, W: Write>(
 	matcher: &RegexMatcher,
 	searcher: &mut Searcher,
@@ -943,7 +963,7 @@ fn search_dir<W: Write>(
 			continue;
 		}
 		let display_path = display_path(operand, root, entry.path());
-		let display_bytes = display_path.as_os_str().as_encoded_bytes().to_vec();
+		let display_bytes = display_bytes(&display_path);
 		let display = show_names.then_some(display_bytes.as_slice());
 		let outcome = process_file(matcher, searcher, entry.path(), display, opts, out);
 		any_match |= outcome.any_match;
@@ -980,13 +1000,13 @@ fn list_files<W: Write>(cli: &RgCli, paths: &[OsString], out: &mut W) -> SearchO
 						continue;
 					}
 					let display = display_path(operand.as_os_str(), &resolved, entry.path());
-					let _ = out.write_all(display.as_os_str().as_encoded_bytes());
+					let _ = out.write_all(&display_bytes(&display));
 					let _ = out.write_all(if cli.null { b"\0" } else { b"\n" });
 					any = true;
 				}
 			},
 			Ok(meta) if meta.is_file() => {
-				let _ = out.write_all(operand.as_encoded_bytes());
+				let _ = out.write_all(&operand_bytes(operand));
 				let _ = out.write_all(if cli.null { b"\0" } else { b"\n" });
 				any = true;
 			},
@@ -1131,7 +1151,8 @@ pub fn run(argv: Vec<OsString>) -> i32 {
 				had_error |= outcome.had_error;
 			},
 			Ok(meta) if meta.is_file() => {
-				let display = show_names.then_some(operand.as_encoded_bytes());
+				let display_bytes = operand_bytes(operand.as_os_str());
+				let display = show_names.then_some(display_bytes.as_slice());
 				let outcome =
 					process_file(&matcher, &mut explicit_searcher, &resolved, display, &opts, &mut out);
 				any_match |= outcome.any_match;

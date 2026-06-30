@@ -165,7 +165,7 @@ describe("expandInternalUrls", () => {
 		const expectedSkillPath = path.join(skills[0].baseDir, "scripts/init.py");
 
 		await expect(expandInternalUrls(command, { skills, internalRouter: router })).resolves.toBe(
-			`cat ${shellEscape("/tmp/session/reviewer_0.md")} ${shellEscape("/tmp/artifacts/12.bash.log")} ${shellEscape("/tmp/memories/memory_summary.md")} ${shellEscape("/tmp/rules/rs-no-unwrap.md")} ${shellEscape(expectedSkillPath)}`,
+			`cat ${shellEscape(path.resolve("/tmp/session/reviewer_0.md"))} ${shellEscape(path.resolve("/tmp/artifacts/12.bash.log"))} ${shellEscape(path.resolve("/tmp/memories/memory_summary.md"))} ${shellEscape(path.resolve("/tmp/rules/rs-no-unwrap.md"))} ${shellEscape(expectedSkillPath)}`,
 		);
 	});
 
@@ -174,7 +174,7 @@ describe("expandInternalUrls", () => {
 			"artifact://7": { sourcePath: "/tmp/artifacts/with'quote.log" },
 		});
 		await expect(expandInternalUrls('cat "artifact://7"', { skills: [], internalRouter: router })).resolves.toBe(
-			`cat ${shellEscape("/tmp/artifacts/with'quote.log")}`,
+			`cat ${shellEscape(path.resolve("/tmp/artifacts/with'quote.log"))}`,
 		);
 	});
 
@@ -183,7 +183,7 @@ describe("expandInternalUrls", () => {
 			"agent://abc": { sourcePath: "/tmp/session/abc.md" },
 		});
 		await expect(expandInternalUrls("echo agent://abc", { skills: [], internalRouter: router })).resolves.toBe(
-			`echo ${shellEscape("/tmp/session/abc.md")}`,
+			`echo ${shellEscape(path.resolve("/tmp/session/abc.md"))}`,
 		);
 	});
 

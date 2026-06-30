@@ -3,7 +3,8 @@ import type * as fsNode from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { type ApiKey, completeSimple, Effort, type Model } from "@oh-my-pi/pi-ai";
+import * as ai from "@oh-my-pi/pi-ai";
+import { type ApiKey, Effort, type Model } from "@oh-my-pi/pi-ai";
 import { clampThinkingLevelForModel } from "@oh-my-pi/pi-catalog/model-thinking";
 import { getAgentDbPath, getMemoriesDir, isEnoent, logger, parseJsonlLenient, prompt } from "@oh-my-pi/pi-utils";
 
@@ -736,7 +737,7 @@ async function runStage1Job(options: {
 			response_items_json: truncatedItems,
 		});
 
-		const response = await completeSimple(
+		const response = await ai.completeSimple(
 			model,
 			{
 				systemPrompt: [stageOneSystemTemplate],
@@ -799,7 +800,7 @@ async function syncPhase2Artifacts(memoryRoot: string, outputs: Stage1OutputRow[
 		const body = [`thread_id: ${row.threadId}`, `updated_at: ${row.sourceUpdatedAt}`, "", row.rolloutSummary].join(
 			"\n",
 		);
-		await Bun.write(path.join(summariesDir, filename), `${body.trim()}\n`);
+		await fs.writeFile(path.join(summariesDir, filename), `${body.trim()}\n`);
 	}
 
 	const currentFiles = await fs.readdir(summariesDir).catch(() => [] as string[]);
@@ -810,7 +811,7 @@ async function syncPhase2Artifacts(memoryRoot: string, outputs: Stage1OutputRow[
 	}
 
 	const rawBody = buildRawMemoriesMarkdown(outputs);
-	await Bun.write(path.join(memoryRoot, "raw_memories.md"), rawBody);
+	await fs.writeFile(path.join(memoryRoot, "raw_memories.md"), rawBody);
 }
 
 async function cleanupConsolidatedArtifacts(memoryRoot: string): Promise<void> {
@@ -873,7 +874,7 @@ async function runConsolidationModel(options: {
 		rollout_summaries: truncateByApproxTokens(rolloutSummaries, 12_000),
 	});
 
-	const response = await completeSimple(
+	const response = await ai.completeSimple(
 		model,
 		{
 			systemPrompt: [consolidationSystemTemplate],
@@ -944,8 +945,8 @@ async function applyConsolidation(
 		}>;
 	},
 ): Promise<void> {
-	await Bun.write(path.join(memoryRoot, "MEMORY.md"), `${consolidated.memoryMd.trim()}\n`);
-	await Bun.write(path.join(memoryRoot, "memory_summary.md"), `${consolidated.memorySummary.trim()}\n`);
+	await fs.writeFile(path.join(memoryRoot, "MEMORY.md"), `${consolidated.memoryMd.trim()}\n`);
+	await fs.writeFile(path.join(memoryRoot, "memory_summary.md"), `${consolidated.memorySummary.trim()}\n`);
 	const skillsDir = path.join(memoryRoot, "skills");
 	await fs.mkdir(skillsDir, { recursive: true });
 	const keep = new Set<string>();
@@ -966,7 +967,9 @@ async function applyConsolidation(
 		}
 
 		for (const [relativePath, content] of [...files.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-			await Bun.write(path.join(dir, ...relativePath.split("/")), content);
+			const outputPath = path.join(dir, ...relativePath.split("/"));
+			await fs.mkdir(path.dirname(outputPath), { recursive: true });
+			await fs.writeFile(outputPath, content);
 		}
 
 		const keepFiles = new Set(files.keys());
@@ -1353,7 +1356,8 @@ async function appendLearnedLine(filePath: string, line: string): Promise<void> 
 		.map(l => l.trim())
 		.filter(l => l.startsWith("- ") && l !== line);
 	const lessons = [line, ...prior].slice(0, MAX_LEARNED_LESSONS);
-	await Bun.write(filePath, `${lessons.join("\n")}\n`);
+	await fs.mkdir(path.dirname(filePath), { recursive: true });
+	await fs.writeFile(filePath, `${lessons.join("\n")}\n`);
 }
 
 /**

@@ -384,6 +384,7 @@ const progress = {
 	durationMs: 0
 };
 write({ type: "ready" });
+process.stdin.resume();
 process.stdin.on("data", chunk => {
 	buffer += chunk.toString("utf8");
 	let index = buffer.indexOf("\\n");
@@ -430,7 +431,7 @@ function handle(frame) {
 		client.onSessionEvent(event => sessionEventTypes.push(event.type));
 
 		await client.start();
-		await expect(client.setSubagentSubscription("events")).resolves.toBe("events");
+		expect(await client.setSubagentSubscription("events")).toBe("events");
 		await client.promptAndWait("Trigger subagent frames");
 		expect(await client.getSubagents()).toHaveLength(1);
 		expect(await client.getSubagentMessages({ sessionFile: "/tmp/subagent.jsonl" })).toMatchObject({

@@ -291,11 +291,32 @@ impl WalkEntry {
 	/// the override is left unset and display falls back to the real path.
 	pub fn set_display_root(&mut self, operand: &Path, resolved_root: &Path) {
 		let display = match self.path().strip_prefix(resolved_root) {
-			Ok(rel) if rel.as_os_str().is_empty() => operand.to_path_buf(),
-			Ok(rel) => operand.join(rel),
+			Ok(rel) => Self::operand_relative_display_path(operand, rel),
 			Err(_) => return,
 		};
 		self.display = Some(display);
+	}
+
+	#[cfg(windows)]
+	fn operand_relative_display_path(operand: &Path, rel: &Path) -> PathBuf {
+		let mut text = operand.to_string_lossy().replace('\\', "/");
+		if rel.as_os_str().is_empty() {
+			return PathBuf::from(text);
+		}
+		if !text.ends_with('/') {
+			text.push('/');
+		}
+		text.push_str(&rel.to_string_lossy().replace('\\', "/"));
+		PathBuf::from(text)
+	}
+
+	#[cfg(not(windows))]
+	fn operand_relative_display_path(operand: &Path, rel: &Path) -> PathBuf {
+		if rel.as_os_str().is_empty() {
+			operand.to_path_buf()
+		} else {
+			operand.join(rel)
+		}
 	}
 
 	/// Get the name of this entry.

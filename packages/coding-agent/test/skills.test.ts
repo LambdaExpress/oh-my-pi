@@ -1,15 +1,22 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type Skill as CapabilitySkill, skillCapability } from "@oh-my-pi/pi-coding-agent/capability/skill";
 import { getCapability } from "@oh-my-pi/pi-coding-agent/discovery";
 import { loadSkills, loadSkillsFromDir, type Skill } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { __resetProfileSnapshotForTests, getAgentDir, setAgentDir } from "@oh-my-pi/pi-utils/dirs";
+import { removeWithRetries } from "@oh-my-pi/pi-utils/temp";
 
 const fixturesDir = path.resolve(import.meta.dirname, "fixtures/skills");
 const collisionFixturesDir = path.resolve(import.meta.dirname, "fixtures/skills-collision");
 
+
+let isolatedAgentDir = "";
+let originalAgentDir = "";
+let originalAgentDirEnv: string | undefined;
+let originalOmpProfileEnv: string | undefined;
+let originalPiProfileEnv: string | undefined;
 const longSkillName = "this-is-a-very-long-skill-name-that-exceeds-the-sixty-four-character-limit-set-by-the-standard";
 const expectedFixtureSkillOrder: string[] = [
 	"bad--name",
@@ -39,6 +46,37 @@ const DISABLE_ALL_BUILTIN_SKILLS = {
 } as const;
 
 describe("skills", () => {
+	beforeEach(async () => {
+		originalAgentDir = getAgentDir();
+		originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
+		originalOmpProfileEnv = process.env.OMP_PROFILE;
+		originalPiProfileEnv = process.env.PI_PROFILE;
+		isolatedAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-skills-agent-"));
+		setAgentDir(isolatedAgentDir);
+	});
+
+	afterEach(async () => {
+		setAgentDir(originalAgentDir);
+		if (originalAgentDirEnv === undefined) {
+			delete process.env.PI_CODING_AGENT_DIR;
+		} else {
+			process.env.PI_CODING_AGENT_DIR = originalAgentDirEnv;
+		}
+		if (originalOmpProfileEnv === undefined) {
+			delete process.env.OMP_PROFILE;
+		} else {
+			process.env.OMP_PROFILE = originalOmpProfileEnv;
+		}
+		if (originalPiProfileEnv === undefined) {
+			delete process.env.PI_PROFILE;
+		} else {
+			process.env.PI_PROFILE = originalPiProfileEnv;
+		}
+		__resetProfileSnapshotForTests();
+		await removeWithRetries(isolatedAgentDir);
+		isolatedAgentDir = "";
+	});
+
 	describe("loadSkillsFromDir", () => {
 		const loadFixtureRoot = () => loadSkillsFromDir({ dir: fixturesDir, source: "test" });
 

@@ -38,10 +38,16 @@ async function runGit(repo: string, args: string[]): Promise<string> {
 	return stdout.trim();
 }
 
+async function configureGitTestLineEndings(repo: string): Promise<void> {
+	await runGit(repo, ["config", "core.autocrlf", "false"]);
+	await runGit(repo, ["config", "core.eol", "lf"]);
+}
+
 async function createGitRepo(): Promise<{ baseBranch: string; repo: string }> {
 	const repo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worktree-"));
 	tempDirs.push(repo);
 	await runGit(repo, ["init"]);
+	await configureGitTestLineEndings(repo);
 	await runGit(repo, ["config", "user.email", "test@example.com"]);
 	await runGit(repo, ["config", "user.name", "Test User"]);
 	await fs.writeFile(path.join(repo, "merged.txt"), "base version\n");
@@ -96,6 +102,7 @@ describe("worktree isolation helpers", () => {
 		beforeAll(async () => {
 			repo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worktree-"));
 			await runGit(repo, ["init", "-q", "-b", BASE_BRANCH]);
+			await configureGitTestLineEndings(repo);
 			await runGit(repo, ["config", "user.email", "test@example.com"]);
 			await runGit(repo, ["config", "user.name", "Test User"]);
 			await Promise.all([
@@ -250,7 +257,17 @@ describe("worktree isolation helpers", () => {
 				const isoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worktree-iso-"));
 				tempDirs.push(isoRoot);
 				const iso = path.join(isoRoot, "repo");
-				await runGit(isoRoot, ["clone", "-q", repo, iso]);
+				await runGit(isoRoot, [
+					"-c",
+					"core.autocrlf=false",
+					"-c",
+					"core.eol=lf",
+					"clone",
+					"-q",
+					repo,
+					iso,
+				]);
+				await configureGitTestLineEndings(iso);
 				await runGit(iso, ["config", "user.email", "test@example.com"]);
 				await runGit(iso, ["config", "user.name", "Test User"]);
 				const isolatedLines = parentDirtyLines.map((line, index) => (index === 4 ? "LINE5-AGENT-EDIT" : line));
@@ -363,6 +380,7 @@ describe("applyNestedPatches", () => {
 	beforeEach(async () => {
 		parentRepo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-nested-apply-"));
 		await runGit(parentRepo, ["init", "-q", "-b", "main"]);
+		await configureGitTestLineEndings(parentRepo);
 		await runGit(parentRepo, ["config", "user.email", "test@example.com"]);
 		await runGit(parentRepo, ["config", "user.name", "Test User"]);
 		await fs.writeFile(path.join(parentRepo, ".gitignore"), "sub/\n");
@@ -373,6 +391,7 @@ describe("applyNestedPatches", () => {
 		nestedDir = path.join(parentRepo, nestedRel);
 		await fs.mkdir(nestedDir, { recursive: true });
 		await runGit(nestedDir, ["init", "-q", "-b", "main"]);
+		await configureGitTestLineEndings(nestedDir);
 		await runGit(nestedDir, ["config", "user.email", "test@example.com"]);
 		await runGit(nestedDir, ["config", "user.name", "Test User"]);
 		await fs.writeFile(path.join(nestedDir, "file.txt"), "v1\n");
@@ -479,6 +498,7 @@ describe("commitToBranch preserves agent commits", () => {
 		parent = await fs.mkdtemp(path.join(os.tmpdir(), "omp-commit-parent-"));
 		isolation = await fs.mkdtemp(path.join(os.tmpdir(), "omp-commit-iso-"));
 		await gitr(parent, ["init", "-q", "-b", "main"]);
+		await configureGitTestLineEndings(parent);
 		await gitr(parent, ["config", "user.email", "user@example.com"]);
 		await gitr(parent, ["config", "user.name", "Parent User"]);
 		await fs.writeFile(
@@ -492,7 +512,19 @@ describe("commitToBranch preserves agent commits", () => {
 		// commit objects live in `isolation/.git`, just like the overlay/rcopy
 		// isolation backends would arrange them at runtime.
 		await fs.rm(isolation, { recursive: true, force: true });
-		await gitr(parent, ["clone", "-q", "--no-hardlinks", "--local", parent, isolation]);
+		await gitr(parent, [
+			"-c",
+			"core.autocrlf=false",
+			"-c",
+			"core.eol=lf",
+			"clone",
+			"-q",
+			"--no-hardlinks",
+			"--local",
+			parent,
+			isolation,
+		]);
+		await configureGitTestLineEndings(isolation);
 		await gitr(isolation, ["config", "user.email", "agent@example.com"]);
 		await gitr(isolation, ["config", "user.name", "Agent User"]);
 	});

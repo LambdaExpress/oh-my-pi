@@ -2792,6 +2792,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				} finally {
 					unregisterUnlessParked();
 					unsubscribeCredentialDisabled?.();
+					if (ownsAuthStorage) authStorage.close();
 				}
 			};
 		}

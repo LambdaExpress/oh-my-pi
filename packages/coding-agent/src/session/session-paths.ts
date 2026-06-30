@@ -50,12 +50,20 @@ function getDefaultSessionDirName(cwd: string): { encodedDirName: string; resolv
 	const homeRelative = path.relative(canonicalHome, canonicalCwd);
 	const tempRelative = path.relative(canonicalTempRoot, canonicalCwd);
 	const encodedDirName =
-		homeRelative === "" || (!homeRelative.startsWith("..") && !path.isAbsolute(homeRelative))
-			? encodeRelativeSessionDirName("-", homeRelative)
-			: tempRelative === "" || (!tempRelative.startsWith("..") && !path.isAbsolute(tempRelative))
-				? encodeRelativeSessionDirName("-tmp", tempRelative)
+		tempRelative === "" || (!tempRelative.startsWith("..") && !path.isAbsolute(tempRelative))
+			? encodeRelativeSessionDirName("-tmp", tempRelative)
+			: homeRelative === "" || (!homeRelative.startsWith("..") && !path.isAbsolute(homeRelative))
+				? encodeRelativeSessionDirName("-", homeRelative)
 				: encodeLegacyAbsoluteSessionDirName(canonicalCwd);
 	return { encodedDirName, resolvedCwd };
+}
+
+function encodeHomeRelativeSessionDirName(cwd: string): string | undefined {
+	const canonicalCwd = resolveEquivalentPath(path.resolve(cwd));
+	const canonicalHome = resolveEquivalentPath(os.homedir());
+	const homeRelative = path.relative(canonicalHome, canonicalCwd);
+	if (homeRelative !== "" && (homeRelative.startsWith("..") || path.isAbsolute(homeRelative))) return undefined;
+	return encodeRelativeSessionDirName("-", homeRelative);
 }
 
 /**
@@ -111,6 +119,19 @@ function migrateLegacyAbsoluteSessionDir(cwd: string, sessionDir: string, sessio
 	}
 }
 
+function migrateLegacyHomeRelativeSessionDir(cwd: string, sessionDir: string, sessionsRoot: string): void {
+	const legacyName = encodeHomeRelativeSessionDirName(cwd);
+	if (!legacyName) return;
+	const legacyDir = path.join(sessionsRoot, legacyName);
+	if (legacyDir === sessionDir || !fs.existsSync(legacyDir)) return;
+
+	try {
+		migrateSessionDirPath(legacyDir, sessionDir);
+	} catch {
+		// Best effort
+	}
+}
+
 export function resolveManagedSessionRoot(sessionDir: string, cwd: string): string | undefined {
 	const currentDirName = path.basename(sessionDir);
 	const { encodedDirName } = getDefaultSessionDirName(cwd);
@@ -134,6 +155,7 @@ export function computeDefaultSessionDir(
 	migrateHomeSessionDirs(sessionsRoot);
 	const sessionDir = path.join(sessionsRoot, encodedDirName);
 	migrateLegacyAbsoluteSessionDir(resolvedCwd, sessionDir, sessionsRoot);
+	migrateLegacyHomeRelativeSessionDir(resolvedCwd, sessionDir, sessionsRoot);
 	storage.ensureDirSync(sessionDir);
 	return sessionDir;
 }

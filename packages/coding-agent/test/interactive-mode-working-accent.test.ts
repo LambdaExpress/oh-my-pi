@@ -43,6 +43,7 @@ async function createHarness(sessionName: string): Promise<Harness> {
 		model: undefined,
 		thinkingLevel: undefined,
 	} as unknown as AgentSession;
+	session.setTitleSystemPrompt = vi.fn();
 	const mode = new InteractiveMode(session, "test");
 	const harness = { mode, sessionManager, tempDir };
 	harnesses.push(harness);
