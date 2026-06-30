@@ -268,4 +268,10 @@ describe("buildAutoLearnInstructions", () => {
 		expect(text).toContain("manage_skill");
 		expect(text).not.toContain("long-term memory");
 	});
+
+	it("includes explicit managed skill scope choices", () => {
+		const text = buildAutoLearnInstructions({ manageSkill: true, learn: false });
+		expect(text).toContain('scope: "project"');
+		expect(text).toContain('scope: "user"');
+	});
 });

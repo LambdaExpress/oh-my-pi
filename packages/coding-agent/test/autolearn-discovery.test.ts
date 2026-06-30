@@ -49,6 +49,25 @@ describe("managed-skills discovery", () => {
 		expect(foo?.source).toBe("omp-managed:user");
 	});
 
+	it("surfaces a project managed skill tagged with the omp-managed project source", async () => {
+		const projectManagedDir = path.join(tempCwd, ".omp", "managed-skills");
+		await writeSkill(projectManagedDir, "repo-flow", "A project managed skill.");
+		const { skills } = await loadSkills({ cwd: tempCwd });
+		const repoFlow = skills.find(s => s.name === "repo-flow");
+		expect(repoFlow).toBeDefined();
+		expect(repoFlow?.source).toBe("omp-managed:project");
+	});
+
+	it("lets a project managed skill win over a same-named user managed skill in that project", async () => {
+		const projectManagedDir = path.join(tempCwd, ".omp", "managed-skills");
+		await writeSkill(projectManagedDir, "same", "Project managed same.");
+		await writeSkill(managedDir, "same", "User managed same.");
+		const { skills } = await loadSkills({ cwd: tempCwd });
+		const matches = skills.filter(s => s.name === "same");
+		expect(matches).toHaveLength(1);
+		expect(matches[0]?.source).toBe("omp-managed:project");
+	});
+
 	it("lets an authored skill win a name collision and drops the managed one", async () => {
 		await writeSkill(authoredDir, "bar", "Authored bar.");
 		await writeSkill(managedDir, "bar", "Managed bar.");

@@ -9,15 +9,25 @@
  */
 import { constants as fsConstants, type Stats } from "node:fs";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
-import { getAgentDir, isEnoent } from "@oh-my-pi/pi-utils";
+import { CONFIG_DIR_NAME, getAgentDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
+import { findRepoRoot, getAncestorDirs } from "../capability/fs";
 
 /** Provider id stamped on discovered managed skills (distinguishes them from authored). */
 export const MANAGED_SKILLS_PROVIDER_ID = "omp-managed";
 
 /** Hard cap on a managed SKILL.md body to keep generated skills bounded. */
 export const MAX_MANAGED_SKILL_BYTES = 64_000;
+
+export type ManagedSkillScope = "user" | "project";
+
+export interface ManagedSkillTarget {
+	scope: ManagedSkillScope;
+	dir: string;
+	displayRoot: string;
+}
 
 const SKILL_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
@@ -26,9 +36,52 @@ export function getManagedSkillsDir(agentDir: string = getAgentDir()): string {
 	return path.join(agentDir, "managed-skills");
 }
 
+export function getProjectManagedSkillsDir(projectRoot: string): string {
+	return path.join(projectRoot, CONFIG_DIR_NAME, "managed-skills");
+}
+
+export interface ResolveManagedSkillTargetInput {
+	scope: ManagedSkillScope;
+	cwd: string;
+	agentDir?: string;
+}
+
+async function hasProjectConfigDir(candidate: string): Promise<boolean> {
+	const configStat = await fs.lstat(path.join(candidate, CONFIG_DIR_NAME)).catch(err => {
+		if (isEnoent(err)) return null;
+		throw err;
+	});
+	return configStat !== null && (configStat.isDirectory() || configStat.isSymbolicLink());
+}
+
+export async function resolveManagedSkillTarget(input: ResolveManagedSkillTargetInput): Promise<ManagedSkillTarget> {
+	if (input.scope === "user") {
+		return {
+			scope: "user",
+			dir: getManagedSkillsDir(input.agentDir),
+			displayRoot: "managed-skills",
+		};
+	}
+
+	const cwd = path.resolve(input.cwd);
+	const repoRoot = await findRepoRoot(cwd);
+	let projectBase = repoRoot ?? cwd;
+	for (const ancestor of getAncestorDirs(cwd, repoRoot ?? os.homedir())) {
+		if (await hasProjectConfigDir(ancestor.dir)) {
+			projectBase = ancestor.dir;
+			break;
+		}
+	}
+	return {
+		scope: "project",
+		dir: getProjectManagedSkillsDir(projectBase),
+		displayRoot: `${CONFIG_DIR_NAME}/managed-skills`,
+	};
+}
+
 /**
  * Validate + normalize a managed-skill name. Throws on anything outside the
- * strict allowlist so a bad name can never escape `getManagedSkillsDir()`
+ * strict allowlist so a bad name can never escape the selected managed root
  * (blocks `..`, slashes, empty, and uppercase).
  */
 export function sanitizeSkillName(raw: string): string {
@@ -86,6 +139,11 @@ export interface WriteManagedSkillInput {
 	name: string;
 	description: string;
 	body: string;
+	targetDir?: string;
+}
+
+export interface ManagedSkillMutationOptions {
+	targetDir?: string;
 }
 
 /**
@@ -114,8 +172,8 @@ function serializeSkillMutation<T>(name: string, op: () => Promise<T>): Promise<
  * valid name write/delete outside the isolated directory (e.g. onto authored
  * skills). Checked before composing any child path.
  */
-async function assertManagedRootSafe(): Promise<void> {
-	const rootStat = await fs.lstat(getManagedSkillsDir()).catch(err => {
+async function assertManagedRootSafe(root: string): Promise<void> {
+	const rootStat = await fs.lstat(root).catch(err => {
 		if (isEnoent(err)) return null;
 		throw err;
 	});
@@ -171,9 +229,10 @@ export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<
 			`Managed skill is ${bytes} bytes; the limit is ${MAX_MANAGED_SKILL_BYTES}. Trim the body or description.`,
 		);
 	}
+	const root = input.targetDir ?? getManagedSkillsDir();
 	return serializeSkillMutation(name, async () => {
-		await assertManagedRootSafe();
-		const dir = path.join(getManagedSkillsDir(), name);
+		await assertManagedRootSafe(root);
+		const dir = path.join(root, name);
 		const file = path.join(dir, "SKILL.md");
 		// Reject a symlinked skill directory: an intermediate symlink would let the
 		// write escape the isolated managed root. lstat does not follow the final
@@ -230,11 +289,12 @@ export async function writeManagedSkill(input: WriteManagedSkillInput): Promise<
 }
 
 /** Delete a managed skill directory. Throws when it does not exist. */
-export async function deleteManagedSkill(name: string): Promise<void> {
+export async function deleteManagedSkill(name: string, options: ManagedSkillMutationOptions = {}): Promise<void> {
 	const safe = sanitizeSkillName(name);
+	const root = options.targetDir ?? getManagedSkillsDir();
 	await serializeSkillMutation(safe, async () => {
-		await assertManagedRootSafe();
-		const dir = path.join(getManagedSkillsDir(), safe);
+		await assertManagedRootSafe(root);
+		const dir = path.join(root, safe);
 		// Refuse to follow a symlinked skill directory (rm would delete the target).
 		const dirStat = await fs.lstat(dir).catch(err => {
 			if (isEnoent(err)) return null;

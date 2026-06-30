@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getManagedSkillsDir } from "@oh-my-pi/pi-coding-agent/autolearn/managed-skills";
+import { getManagedSkillsDir, getProjectManagedSkillsDir } from "@oh-my-pi/pi-coding-agent/autolearn/managed-skills";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resetActiveSkillsForTests, type Skill, setActiveSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import type { HindsightSessionState } from "@oh-my-pi/pi-coding-agent/hindsight/state";
@@ -127,26 +127,57 @@ describe("manage_skill execute", () => {
 
 	it("create writes the managed SKILL.md; delete removes it", async () => {
 		const file = path.join(getManagedSkillsDir(), "demo", "SKILL.md");
-		await tool().execute("1", { action: "create", name: "demo", description: "When to demo.", body: "# Demo" });
+		await tool().execute("1", {
+			action: "create",
+			scope: "user",
+			name: "demo",
+			description: "When to demo.",
+			body: "# Demo",
+		});
 		expect(await Bun.file(file).exists()).toBe(true);
 
-		await tool().execute("2", { action: "delete", name: "demo" });
+		await tool().execute("2", { action: "delete", scope: "user", name: "demo" });
 		expect(await Bun.file(file).exists()).toBe(false);
 	});
 
+	it("create with project scope writes under the repository .omp directory", async () => {
+		const repoRoot = path.join(tempHome, "repo");
+		const nestedCwd = path.join(repoRoot, "packages", "coding-agent");
+		await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+		await fs.mkdir(nestedCwd, { recursive: true });
+		const projectTool = ManageSkillTool.createIf(makeSession({ "autolearn.enabled": true }, { cwd: nestedCwd }))!;
+		await projectTool.execute("project", {
+			action: "create",
+			scope: "project",
+			name: "repo-skill",
+			description: "Repo skill.",
+			body: "# Repo skill",
+		});
+
+		const projectFile = path.join(getProjectManagedSkillsDir(repoRoot), "repo-skill", "SKILL.md");
+		expect(await Bun.file(projectFile).exists()).toBe(true);
+		expect(await Bun.file(path.join(getManagedSkillsDir(), "repo-skill", "SKILL.md")).exists()).toBe(false);
+	});
+
 	it("rejects create without a body and delete of a missing skill", async () => {
-		await expect(tool().execute("3", { action: "create", name: "nobody", description: "d" })).rejects.toThrow(
-			/requires/,
+		await expect(
+			tool().execute("3", { action: "create", scope: "user", name: "nobody", description: "d" }),
+		).rejects.toThrow(/requires/);
+		await expect(tool().execute("4", { action: "delete", scope: "user", name: "absent" })).rejects.toThrow(
+			/does not exist/,
 		);
-		await expect(tool().execute("4", { action: "delete", name: "absent" })).rejects.toThrow(/does not exist/);
 	});
 
 	it("schema rejects create/update without description+body but allows delete", () => {
 		const schema = tool().parameters;
-		expect(schema({ action: "create", name: "x" }) instanceof type.errors).toBe(true);
-		expect(schema({ action: "update", name: "x", description: "d" }) instanceof type.errors).toBe(true);
-		expect(schema({ action: "create", name: "x", description: "d", body: "b" }) instanceof type.errors).toBe(false);
-		expect(schema({ action: "delete", name: "x" }) instanceof type.errors).toBe(false);
+		expect(schema({ action: "create", scope: "user", name: "x" }) instanceof type.errors).toBe(true);
+		expect(schema({ action: "update", scope: "user", name: "x", description: "d" }) instanceof type.errors).toBe(
+			true,
+		);
+		expect(
+			schema({ action: "create", scope: "user", name: "x", description: "d", body: "b" }) instanceof type.errors,
+		).toBe(false);
+		expect(schema({ action: "delete", scope: "user", name: "x" }) instanceof type.errors).toBe(false);
 	});
 
 	it("refuses to create a managed skill an authored skill of the same name would shadow", async () => {
@@ -167,6 +198,7 @@ describe("manage_skill execute", () => {
 
 		const result = await tool().execute("c", {
 			action: "create",
+			scope: "user",
 			name: "demo",
 			description: "When to demo.",
 			body: "# Demo",
@@ -187,7 +219,7 @@ describe("learn execute", () => {
 	let remembered: string[];
 	let originalAgentDir: string;
 
-	function learnSession(): ToolSession {
+	function learnSession(extra: Partial<ToolSession> = {}): ToolSession {
 		const fakeState = {
 			sessionId: "sess-1",
 			session: { sessionManager: { getCwd: () => "/tmp/work" } },
@@ -198,7 +230,7 @@ describe("learn execute", () => {
 		};
 		return makeSession(
 			{ "autolearn.enabled": true, "memory.backend": "mnemopi" },
-			{ getMnemopiSessionState: () => fakeState as unknown as MnemopiSessionState },
+			{ getMnemopiSessionState: () => fakeState as unknown as MnemopiSessionState, ...extra },
 		);
 	}
 
@@ -226,17 +258,51 @@ describe("learn execute", () => {
 	it("stores a lesson AND mints a managed skill when a skill payload is given", async () => {
 		await new LearnTool(learnSession()).execute("2", {
 			memory: "Use the worker host entry pattern.",
-			skill: { action: "create", name: "worker-host", description: "Spawn workers.", body: "# Worker host" },
+			skill: {
+				action: "create",
+				scope: "user",
+				name: "worker-host",
+				description: "Spawn workers.",
+				body: "# Worker host",
+			},
 		});
 		expect(remembered).toHaveLength(1);
 		expect(await Bun.file(path.join(getManagedSkillsDir(), "worker-host", "SKILL.md")).exists()).toBe(true);
+	});
+
+	it("stores a lesson and writes a project managed skill under the repository .omp directory", async () => {
+		const repoRoot = path.join(tempHome, "repo");
+		const nestedCwd = path.join(repoRoot, "packages", "coding-agent");
+		await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+		await fs.mkdir(nestedCwd, { recursive: true });
+
+		const result = await new LearnTool(learnSession({ cwd: nestedCwd })).execute("project-skill", {
+			memory: "Use the repo release smoke probe.",
+			skill: {
+				action: "create",
+				scope: "project",
+				name: "repo-release",
+				description: "Repo release workflow.",
+				body: "# Repo release",
+			},
+		});
+
+		expect(remembered).toEqual(["Use the repo release smoke probe."]);
+		expect(result.content[0]).toEqual({
+			type: "text",
+			text: 'Lesson stored. Created project managed skill "repo-release".',
+		});
+		expect(await Bun.file(path.join(getProjectManagedSkillsDir(repoRoot), "repo-release", "SKILL.md")).exists()).toBe(
+			true,
+		);
+		expect(await Bun.file(path.join(getManagedSkillsDir(), "repo-release", "SKILL.md")).exists()).toBe(false);
 	});
 
 	it("surfaces a partial-outcome error when the skill name is invalid", async () => {
 		await expect(
 			new LearnTool(learnSession()).execute("3", {
 				memory: "lesson",
-				skill: { action: "create", name: "../evil", description: "d", body: "b" },
+				skill: { action: "create", scope: "user", name: "../evil", description: "d", body: "b" },
 			}),
 		).rejects.toThrow(/Lesson stored, but the managed skill could not be written/);
 		// The memory half still ran.
@@ -283,7 +349,7 @@ describe("learn execute", () => {
 		await expect(
 			new LearnTool(session).execute("hindsight-2", {
 				memory: "queued lesson",
-				skill: { action: "create", name: "../evil", description: "d", body: "b" },
+				skill: { action: "create", scope: "user", name: "../evil", description: "d", body: "b" },
 			}),
 		).rejects.toThrow(/Lesson queued for retention, but the managed skill could not be written/);
 		expect(queued).toEqual(["queued lesson"]);
@@ -302,7 +368,7 @@ describe("learn execute", () => {
 		await expect(
 			new LearnTool(session).execute("5", {
 				memory: "lesson",
-				skill: { action: "create", name: "should-not-exist", description: "d", body: "b" },
+				skill: { action: "create", scope: "user", name: "should-not-exist", description: "d", body: "b" },
 			}),
 		).rejects.toThrow(/did not store/i);
 		// A failed lesson must not leave a minted skill behind.

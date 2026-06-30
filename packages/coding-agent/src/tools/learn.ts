@@ -1,6 +1,6 @@
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { type } from "arktype";
-import { sanitizeSkillName, writeManagedSkill } from "../autolearn/managed-skills";
+import { resolveManagedSkillTarget, sanitizeSkillName, writeManagedSkill } from "../autolearn/managed-skills";
 import { isNameClaimedByAuthoredSkill } from "../extensibility/skills";
 import { localBackend } from "../memory-backend/local-backend";
 import learnDescription from "../prompts/tools/learn.md" with { type: "text" };
@@ -12,6 +12,9 @@ const learnSchema = type({
 	"skill?": type({
 		action: "'create' | 'update'",
 		name: type("string").describe("kebab-case skill name"),
+		scope: type("'user' | 'project'").describe(
+			'where to store the managed skill: "user" for reusable procedures across projects, "project" for the current repository only',
+		),
 		description: type("string").describe("one-line description of when to use the skill"),
 		body: type("string").describe("the SKILL.md body in markdown (no frontmatter)"),
 	}).describe("also create or enhance a managed skill in the same call"),
@@ -98,6 +101,11 @@ export class LearnTool implements AgentTool<typeof learnSchema> {
 		// 2) Optionally mint/enhance a managed skill. A failure here is surfaced
 		// as a partial outcome — the lesson is already stored or queued.
 		if (params.skill) {
+			const target = await resolveManagedSkillTarget({
+				scope: params.skill.scope,
+				cwd: this.session.cwd,
+				agentDir: this.session.settings.getAgentDir(),
+			});
 			// A managed skill resolves below any authored skill of the same name, so
 			// minting one under a claimed name writes a file that never surfaces. The
 			// lesson is already stored/queued; refuse the skill rather than report a
@@ -117,19 +125,30 @@ export class LearnTool implements AgentTool<typeof learnSchema> {
 						},
 					],
 					isError: true,
-					details: { skill: null, shadowed: true },
+					details: { skill: null, scope: params.skill.scope, shadowed: true },
 				};
 			}
 			try {
-				await writeManagedSkill(params.skill);
+				await writeManagedSkill({
+					action: params.skill.action,
+					name: params.skill.name,
+					description: params.skill.description,
+					body: params.skill.body,
+					targetDir: target.dir,
+				});
 			} catch (err) {
 				const reason = err instanceof Error ? err.message : String(err);
 				throw new Error(`${memoryMessage}, but the managed skill could not be written: ${reason}`);
 			}
 			const verb = params.skill.action === "create" ? "Created" : "Updated";
 			return {
-				content: [{ type: "text", text: `${memoryMessage}. ${verb} managed skill "${params.skill.name}".` }],
-				details: { skill: params.skill.name },
+				content: [
+					{
+						type: "text",
+						text: `${memoryMessage}. ${verb} ${params.skill.scope} managed skill "${params.skill.name}".`,
+					},
+				],
+				details: { skill: params.skill.name, scope: params.skill.scope },
 			};
 		}
 

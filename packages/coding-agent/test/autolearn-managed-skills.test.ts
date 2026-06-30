@@ -5,7 +5,9 @@ import * as path from "node:path";
 import {
 	deleteManagedSkill,
 	getManagedSkillsDir,
+	getProjectManagedSkillsDir,
 	MAX_MANAGED_SKILL_BYTES,
+	resolveManagedSkillTarget,
 	sanitizeSkillName,
 	toSkillFrontmatter,
 	writeManagedSkill,
@@ -31,6 +33,23 @@ describe("managed-skills primitives", () => {
 	});
 
 	const skillFile = (name: string) => path.join(getManagedSkillsDir(), name, "SKILL.md");
+	const linkDirectoryType = process.platform === "win32" ? "junction" : "dir";
+
+	async function tryCreateSymlink(
+		target: string,
+		linkPath: string,
+		type: "dir" | "file" | "junction",
+	): Promise<boolean> {
+		try {
+			await fs.symlink(target, linkPath, type);
+			return true;
+		} catch (err) {
+			if (process.platform === "win32" && err && typeof err === "object" && "code" in err && err.code === "EPERM") {
+				return false;
+			}
+			throw err;
+		}
+	}
 
 	describe("sanitizeSkillName", () => {
 		it("rejects traversal, slashes, and empty names", () => {
@@ -51,6 +70,26 @@ describe("managed-skills primitives", () => {
 			const { frontmatter } = parseFrontmatter(content, { source: "test" });
 			expect(frontmatter.name).toBe("demo");
 			expect(frontmatter.description).toBe('has a "quote" and newline');
+		});
+	});
+
+	describe("managed skill targets", () => {
+		it("resolves project managed skills under the project .omp directory", () => {
+			const projectRoot = path.join(tempHome, "repo");
+			expect(getProjectManagedSkillsDir(projectRoot)).toBe(path.join(projectRoot, ".omp", "managed-skills"));
+		});
+
+		it("uses the git root for project scope when cwd is nested", async () => {
+			const projectRoot = path.join(tempHome, "repo");
+			const nestedCwd = path.join(projectRoot, "packages", "coding-agent");
+			await fs.mkdir(path.join(projectRoot, ".git"), { recursive: true });
+			await fs.mkdir(nestedCwd, { recursive: true });
+
+			const target = await resolveManagedSkillTarget({ scope: "project", cwd: nestedCwd });
+
+			expect(target.scope).toBe("project");
+			expect(target.dir).toBe(getProjectManagedSkillsDir(projectRoot));
+			expect(target.displayRoot).toBe(".omp/managed-skills");
 		});
 	});
 
@@ -119,6 +158,21 @@ describe("managed-skills primitives", () => {
 			expect(desc).not.toContain("\n");
 		});
 
+		it("writes to an explicit project target without writing to the user target", async () => {
+			const projectRoot = path.join(tempHome, "repo");
+			const targetDir = getProjectManagedSkillsDir(projectRoot);
+			await writeManagedSkill({
+				action: "create",
+				name: "repo-flow",
+				description: "Repo workflow.",
+				body: "# Repo workflow",
+				targetDir,
+			});
+
+			expect(await Bun.file(path.join(targetDir, "repo-flow", "SKILL.md")).exists()).toBe(true);
+			expect(await Bun.file(skillFile("repo-flow")).exists()).toBe(false);
+		});
+
 		it("refuses a traversal name without writing outside the managed dir", async () => {
 			await expect(
 				writeManagedSkill({ action: "create", name: "../skills/evil", description: "d", body: "b" }),
@@ -135,7 +189,7 @@ describe("managed-skills primitives", () => {
 			// isolated managed root; Bun.write would otherwise follow it.
 			const outside = await fs.mkdtemp(path.join(os.tmpdir(), "omp-escape-"));
 			try {
-				await fs.symlink(outside, path.join(managedRoot, "evil"));
+				if (!(await tryCreateSymlink(outside, path.join(managedRoot, "evil"), linkDirectoryType))) return;
 				await expect(
 					writeManagedSkill({ action: "create", name: "evil", description: "d", body: "b" }),
 				).rejects.toThrow(/symlink/);
@@ -164,7 +218,7 @@ describe("managed-skills primitives", () => {
 			const realRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-realroot-"));
 			try {
 				await fs.mkdir(path.dirname(getManagedSkillsDir()), { recursive: true });
-				await fs.symlink(realRoot, getManagedSkillsDir());
+				if (!(await tryCreateSymlink(realRoot, getManagedSkillsDir(), linkDirectoryType))) return;
 				await expect(
 					writeManagedSkill({ action: "create", name: "demo", description: "d", body: "b" }),
 				).rejects.toThrow(/managed-skills root is a symlink/);
@@ -204,7 +258,7 @@ describe("managed-skills primitives", () => {
 			await Bun.write(target, "outside content");
 			try {
 				await removeWithRetries(skillFile("linky"));
-				await fs.symlink(target, skillFile("linky"));
+				if (!(await tryCreateSymlink(target, skillFile("linky"), "file"))) return;
 				await expect(
 					writeManagedSkill({ action: "update", name: "linky", description: "d", body: "hacked" }),
 				).rejects.toThrow(/symlink/);
@@ -243,7 +297,7 @@ describe("managed-skills primitives", () => {
 			const outside = await fs.mkdtemp(path.join(os.tmpdir(), "omp-deltarget-"));
 			await Bun.write(path.join(outside, "keep.txt"), "keep");
 			try {
-				await fs.symlink(outside, path.join(managedRoot, "linked"));
+				if (!(await tryCreateSymlink(outside, path.join(managedRoot, "linked"), linkDirectoryType))) return;
 				await expect(deleteManagedSkill("linked")).rejects.toThrow(/symlink/);
 				// The symlink target's contents are untouched.
 				expect(await Bun.file(path.join(outside, "keep.txt")).exists()).toBe(true);

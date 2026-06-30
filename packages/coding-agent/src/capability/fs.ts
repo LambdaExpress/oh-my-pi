@@ -94,6 +94,21 @@ export async function findRepoRoot(startDir: string): Promise<string | null> {
 	}
 }
 
+export function getAncestorDirs(cwd: string, stopAt?: string | null): Array<{ dir: string; depth: number }> {
+	const ancestors: Array<{ dir: string; depth: number }> = [];
+	let current = cwd;
+	let depth = 0;
+	while (true) {
+		ancestors.push({ dir: current, depth });
+		if (stopAt && current === stopAt) break;
+		const parent = path.dirname(current);
+		if (parent === current) break;
+		current = parent;
+		depth++;
+	}
+	return ancestors;
+}
+
 export function cacheStats(): { content: number; dir: number } {
 	return {
 		content: contentCache.size,

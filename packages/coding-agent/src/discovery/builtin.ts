@@ -11,7 +11,7 @@ import { registerProvider } from "../capability";
 import { type ContextFile, contextFileCapability } from "../capability/context-file";
 import { type Extension, type ExtensionManifest, extensionCapability } from "../capability/extension";
 import { type ExtensionModule, extensionModuleCapability } from "../capability/extension-module";
-import { readDirEntries, readFile } from "../capability/fs";
+import { getAncestorDirs, readDirEntries, readFile } from "../capability/fs";
 import { type Hook, hookCapability } from "../capability/hook";
 import { type Instruction, instructionCapability } from "../capability/instruction";
 import { type MCPServer, mcpCapability } from "../capability/mcp";
@@ -69,21 +69,6 @@ async function getConfigDirs(ctx: LoadContext): Promise<Array<{ dir: string; lev
 	}
 
 	return result;
-}
-
-function getAncestorDirs(cwd: string, stopAt?: string | null): Array<{ dir: string; depth: number }> {
-	const ancestors: Array<{ dir: string; depth: number }> = [];
-	let current = cwd;
-	let depth = 0;
-	while (true) {
-		ancestors.push({ dir: current, depth });
-		if (stopAt && current === stopAt) break;
-		const parent = path.dirname(current);
-		if (parent === current) break;
-		current = parent;
-		depth++;
-	}
-	return ancestors;
 }
 
 async function findNearestProjectConfigDir(
@@ -302,12 +287,25 @@ async function loadSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
 // managed dir is a no-op); only writing/nudging is gated by `autolearn.enabled`.
 const MANAGED_SKILLS_PRIORITY = 5;
 async function loadManagedSkills(ctx: LoadContext): Promise<LoadResult<Skill>> {
-	return scanSkillsFromDir(ctx, {
+	const projectScans = getAncestorDirs(ctx.cwd, ctx.repoRoot ?? ctx.home).map(({ dir }) =>
+		scanSkillsFromDir(ctx, {
+			dir: path.join(dir, PATHS.projectDir, "managed-skills"),
+			providerId: MANAGED_SKILLS_PROVIDER_ID,
+			level: "project",
+			requireDescription: true,
+		}),
+	);
+	const userScan = scanSkillsFromDir(ctx, {
 		dir: getManagedSkillsDir(),
 		providerId: MANAGED_SKILLS_PROVIDER_ID,
 		level: "user",
 		requireDescription: true,
 	});
+	const results = await Promise.all([...projectScans, userScan]);
+	return {
+		items: results.flatMap(r => r.items),
+		warnings: results.flatMap(r => r.warnings ?? []),
+	};
 }
 
 registerProvider<Skill>(skillCapability.id, {
@@ -321,7 +319,7 @@ registerProvider<Skill>(skillCapability.id, {
 registerProvider<Skill>(skillCapability.id, {
 	id: MANAGED_SKILLS_PROVIDER_ID,
 	displayName: "Managed Skills (auto-learn)",
-	description: "Auto-generated managed skills from ~/.omp/agent/managed-skills",
+	description: "Auto-generated managed skills from .omp/managed-skills and ~/.omp/agent/managed-skills",
 	priority: MANAGED_SKILLS_PRIORITY,
 	load: loadManagedSkills,
 });
