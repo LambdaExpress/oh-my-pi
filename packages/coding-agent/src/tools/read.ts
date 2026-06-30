@@ -31,6 +31,7 @@ import {
 	recordFileSnapshot,
 	recordSeenLinesForSnapshotKey,
 	recordSeenLinesFromBody,
+	recordSeenLinesFromBodyForSnapshotKey,
 	recordTextSnapshotForKey,
 	SNAPSHOT_MAX_BYTES,
 } from "../edit/file-snapshot-store";
@@ -173,6 +174,19 @@ const MAX_SUMMARY_LINES = 20_000;
  * covers `bash`/`ssh`/`python`/`js eval` and `read` uniformly.
  */
 const PROSE_SUMMARY_EXTENSIONS = new Set([".md", ".txt"]);
+const INTERNAL_SUMMARY_SELECTOR_SCHEMES: Record<string, true> = {
+	agent: true,
+	artifact: true,
+	issue: true,
+	local: true,
+	memory: true,
+	omp: true,
+	pr: true,
+	rule: true,
+	skill: true,
+	ssh: true,
+	vault: true,
+};
 // Remote mount path prefix (sshfs mounts) - skip fuzzy matching to avoid hangs
 const REMOTE_MOUNT_PREFIX = getRemoteDir() + path.sep;
 
@@ -2215,6 +2229,19 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				bridgePromise !== undefined
 					? await bridgePromise.catch(() => Bun.file(absolutePath).text())
 					: await Bun.file(absolutePath).text();
+			return this.#trySummarizeText(code, absolutePath, absolutePath, signal);
+		} catch {
+			return null;
+		}
+	}
+
+	async #trySummarizeText(
+		code: string,
+		parserPath: string,
+		cacheIdentity: string,
+		signal?: AbortSignal,
+	): Promise<SummaryResult | null> {
+		try {
 			throwIfAborted(signal);
 			const lineCount = countTextLines(code);
 			if (lineCount > MAX_SUMMARY_LINES) return null;
@@ -2225,12 +2252,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			const unfoldUntilLines = this.session.settings.get("read.summarize.unfoldUntil");
 			const unfoldLimitLines = this.session.settings.get("read.summarize.unfoldLimit");
 			const cache = getSummaryParseCache(this.session);
-			const cacheKey = `${absolutePath}\0${Bun.hash(code)}\0${minBodyLines},${minCommentLines},${unfoldUntilLines},${unfoldLimitLines}`;
+			const cacheKey = `${cacheIdentity}\0${Bun.hash(code)}\0${minBodyLines},${minCommentLines},${unfoldUntilLines},${unfoldLimitLines}`;
 			const memoized = cache.get(cacheKey);
 			if (memoized !== undefined) return memoized || null;
 			const result = summarizeCode({
 				code,
-				path: absolutePath,
+				path: parserPath,
 				minBodyLines,
 				minCommentLines,
 				unfoldUntilLines,
@@ -2244,13 +2271,15 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 	}
 
-	#renderSummary(summary: SummaryResult): {
+	#renderSummary(
+		summary: SummaryResult,
+		displayMode = resolveFileDisplayMode(this.session),
+	): {
 		text: string;
 		displayText: string;
 		elidedRanges: ElidedRange[];
 		elidedLines: number;
 	} {
-		const displayMode = resolveFileDisplayMode(this.session);
 		const shouldAddHashLines = displayMode.hashLines;
 		const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
 
@@ -3145,6 +3174,64 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		// If extraction was used, return directly (no pagination)
 		if (hasExtraction) {
 			return toolResult(details).text(resource.content).sourceInternal(url).done();
+		}
+
+		const parserPath = resource.sourcePath ?? url;
+		const ext = path.extname(parserPath).toLowerCase();
+		const resourceSize = resource.size ?? Buffer.byteLength(resource.content, "utf-8");
+		const canRecoverElisions = INTERNAL_SUMMARY_SELECTOR_SCHEMES[scheme] === true;
+		const shouldSummarizeInternalResource =
+			parsedSel.kind === "none" &&
+			canRecoverElisions &&
+			resource.isDirectory !== true &&
+			resource.contentType !== "application/json" &&
+			resourceSize <= MAX_SUMMARY_BYTES &&
+			this.session.settings.get("read.summarize.enabled") &&
+			(this.session.settings.get("read.summarize.prose") || !PROSE_SUMMARY_EXTENSIONS.has(ext));
+		if (shouldSummarizeInternalResource) {
+			const summary = await this.#trySummarizeText(
+				resource.content,
+				parserPath,
+				resource.sourcePath ?? snapshot?.key ?? url,
+				signal,
+			);
+			if (summary) {
+				const summaryDisplayMode = resolveFileDisplayMode(this.session, { immutable: resource.immutable });
+				const renderedSummary = this.#renderSummary(summary, summaryDisplayMode);
+				const footer = formatSummaryElisionFooter(url, renderedSummary.elidedRanges, renderedSummary.elidedLines);
+				const hashContext =
+					summaryDisplayMode.hashLines && (snapshot || resource.sourcePath)
+						? recordFullHashlineContext(
+								this.session,
+								resource.sourcePath,
+								resource.sourcePath ? formatPathRelativeToCwd(resource.sourcePath, this.session.cwd) : "",
+								resource.content,
+								snapshot,
+							)
+						: undefined;
+				const bodyText = footer ? `${renderedSummary.text}\n\n${footer}` : renderedSummary.text;
+				const modelText = prependHashlineHeader(bodyText, hashContext);
+
+				details.displayContent = { text: renderedSummary.displayText, startLine: 1 };
+				details.summary = {
+					lines: countTextLines(renderedSummary.text),
+					elidedSpans: renderedSummary.elidedRanges.length,
+					elidedLines: renderedSummary.elidedLines,
+				};
+				if (hashContext?.tag && hashContext.snapshotKey) {
+					recordSeenLinesFromBodyForSnapshotKey(
+						this.session,
+						hashContext.snapshotKey,
+						hashContext.tag,
+						renderedSummary.text,
+					);
+				}
+
+				const resultBuilder = toolResult(details).text(modelText);
+				if (resource.sourcePath) resultBuilder.sourcePath(resource.sourcePath);
+				resultBuilder.sourceInternal(url);
+				return resultBuilder.done();
+			}
 		}
 
 		const raw = isRawSelector(parsedSel);
