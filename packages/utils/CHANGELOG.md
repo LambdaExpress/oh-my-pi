@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a utility to detect binary files based on content sniffing.
+
+## [16.2.6] - 2026-06-29
+
+### Added
+
+- Added `stripWindowsExtendedLengthPathPrefix()` utility to normalize `\\?\` and native Win32 path prefixes before Bun import or spawn calls.
+
 ## [16.2.3] - 2026-06-28
 
 ### Added

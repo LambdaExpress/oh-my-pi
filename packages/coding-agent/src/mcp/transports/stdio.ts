@@ -147,21 +147,6 @@ function resolveWindowsShimPath(value: string, shimDir: string): string | null {
 	return path.join(shimDir, ...suffix.split(/[\\/]+/).filter(Boolean));
 }
 
-function extractWindowsNpmShimTarget(content: string): string | null {
-	const match = /"%_prog%"\s+"([^"]+)"\s+%\*/i.exec(content);
-	return match?.[1] ?? null;
-}
-
-/**
- * Extract the shim's PATH-fallback interpreter (`SET "_prog=node"`). The
- * `IF EXIST` branch assigns a `%dp0%`-prefixed value, so requiring a
- * non-`%`-leading value picks the bare program name.
- */
-function extractWindowsNpmShimProg(content: string): string | null {
-	const match = /SET\s+"_prog=([^%"][^"]*)"/i.exec(content);
-	return match?.[1] ?? null;
-}
-
 async function resolveWindowsNpmShimCommand(
 	command: string,
 	args: readonly string[],
@@ -171,6 +156,11 @@ async function resolveWindowsNpmShimCommand(
 	if (!isWindowsBatchCommand(command)) return null;
 	if (!hasPathSegment(command)) return null;
 	const commandPath = path.resolve(cwd, command);
+	const commandName = path
+		.basename(commandPath)
+		.replace(/\.cmd$/i, "")
+		.toLowerCase();
+	if (commandName === "npx") return null;
 
 	let content: string;
 	try {
@@ -181,7 +171,9 @@ async function resolveWindowsNpmShimCommand(
 
 	// cmd-shim emits the same invocation line for every interpreter; only
 	// bypass cmd.exe when the shim's fallback interpreter is actually node.
-	const prog = extractWindowsNpmShimProg(content);
+	// The IF EXIST branch assigns a %dp0%-prefixed value, so requiring a
+	// non-%-leading SET value picks the bare PATH-fallback program name.
+	const prog = /SET\s+"_prog=([^%"][^"]*)"/i.exec(content)?.[1];
 	if (
 		!prog ||
 		path
@@ -191,7 +183,7 @@ async function resolveWindowsNpmShimCommand(
 	)
 		return null;
 
-	const rawTarget = extractWindowsNpmShimTarget(content);
+	const rawTarget = /"%_prog%"\s+"([^"]+)"\s+%\*/i.exec(content)?.[1];
 	if (!rawTarget) return null;
 
 	const target = resolveWindowsShimPath(rawTarget, path.dirname(commandPath));

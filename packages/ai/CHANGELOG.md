@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [16.2.6] - 2026-06-29
+
+### Fixed
+
+- Fixed Antigravity usage reporting to correctly infer daily and weekly quota windows from unlabeled reset-only rows, preventing Cloud Code Assist payloads from collapsing these counters into the default category.
+
 ## [16.2.5] - 2026-06-28
 
 ### Fixed
