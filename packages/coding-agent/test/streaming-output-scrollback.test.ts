@@ -142,6 +142,55 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		}
 	}, 30_000);
 
+	test("bash: pending placeholder does not survive final result in native scrollback", async () => {
+		const rows = 10;
+		stubStdoutRows(rows);
+		const term = new VirtualTerminal(80, rows);
+		const scheduler = makeDrainableScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new StaticBlock(["user: run it"]));
+		const bash = new ToolExecutionComponent("bash", {}, {}, undefined, tui, process.cwd());
+		bash.setExpanded(true);
+		bash.setArgsComplete();
+		transcript.addChild(bash);
+		tui.addChild(transcript);
+		tui.addChild(new Footer(5));
+
+		try {
+			tui.start();
+			for (let frame = 0; frame < 40; frame++) {
+				term.scrollLines(1_000);
+				tui.requestRender();
+				scheduler.flush();
+				await term.flush();
+			}
+
+			bash.updateArgs({ command: "echo final" }, "bash-placeholder");
+			bash.updateResult(
+				{ content: [{ type: "text", text: "FINAL_OUTPUT" }], isError: false },
+				false,
+				"bash-placeholder",
+			);
+			term.scrollLines(1_000);
+			tui.requestRender();
+			scheduler.flush();
+			await term.flush();
+
+			const bufferText = term
+				.getScrollBuffer()
+				.map(row => Bun.stripANSI(row).trimEnd())
+				.join("\n");
+			expect(bufferText).toContain("echo final");
+			expect(bufferText).toContain("FINAL_OUTPUT");
+			expect(bufferText).not.toContain("$ …");
+		} finally {
+			bash.stopAnimation();
+			tui.stop();
+			await term.flush();
+		}
+	}, 30_000);
+
 	test("eval: collapsed cell output stays within the viewport budget", () => {
 		const rows = 18;
 		stubStdoutRows(rows);
