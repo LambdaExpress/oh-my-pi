@@ -416,6 +416,7 @@ export const BUNDLED_PI_REGISTRY_KEYS: ReadonlySet<string> = new Set([
 	"@oh-my-pi/pi-coding-agent/edit/read-file",
 	"@oh-my-pi/pi-coding-agent/edit/renderer",
 	"@oh-my-pi/pi-coding-agent/edit/streaming",
+	"@oh-my-pi/pi-coding-agent/edit/target",
 	"@oh-my-pi/pi-coding-agent/edit/modes/apply-patch",
 	"@oh-my-pi/pi-coding-agent/edit/modes/patch",
 	"@oh-my-pi/pi-coding-agent/edit/modes/replace",
