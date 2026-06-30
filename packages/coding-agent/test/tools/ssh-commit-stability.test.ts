@@ -27,6 +27,13 @@ function partialResult(text: string) {
 	return { content: [{ type: "text" as const, text }] };
 }
 
+function editResult(diff = "@@\n-old\n+new") {
+	return {
+		content: [{ type: "text" as const, text: "Updated src/example.ts" }],
+		details: { path: "src/example.ts", diff, firstChangedLine: 1 },
+	};
+}
+
 describe("ssh tool block commit stability", () => {
 	beforeAll(async () => {
 		resetSettingsForTest();
@@ -83,6 +90,23 @@ describe("ssh tool block commit stability", () => {
 		expect(component.isTranscriptBlockFinalized()).toBe(true);
 		expect(component.isTranscriptBlockCommitStable()).toBe(true);
 	});
+	it("keeps edit partial results commit-unstable until the settled result arrives", () => {
+		const component = new ToolExecutionComponent(
+			"edit",
+			{ path: "src/example.ts", edits: [{ old_text: "old", new_text: "new" }] },
+			{},
+			undefined,
+			uiStub,
+		);
+
+		component.updateResult(editResult(), true);
+		expect(component.isTranscriptBlockFinalized()).toBe(false);
+		expect(component.isTranscriptBlockCommitStable()).toBe(false);
+
+		component.updateResult(editResult(), false);
+		expect(component.isTranscriptBlockFinalized()).toBe(true);
+		expect(component.isTranscriptBlockCommitStable()).toBe(true);
+	});
 
 	it("does not opt other foreground tools out of partial-result stream commits", () => {
 		// Sanity: bash and friends still get the existing `isPartial`
@@ -94,13 +118,30 @@ describe("ssh tool block commit stability", () => {
 		expect(component.isTranscriptBlockCommitStable()).toBe(true);
 	});
 
-	it("does not opt other foreground tools out of expanded pending-preview commits", () => {
-		// Sanity: bash/eval still use `provisionalPendingPreview: "collapsed"`,
-		// so once expanded their pending preview is commit-stable. The SSH
-		// `true` opt-in MUST remain renderer-scoped — flipping the default
-		// here would block long top-anchored streams (e.g. a task call's
-		// context/assignment markdown) from reaching native scrollback.
+	it("keeps expanded shell pending previews commit-unstable until a result arrives", () => {
+		// Shell renderers merge the pending call and final result into one visual
+		// block. Expanded pending previews are not durable either: if `$ …` or an
+		// incomplete script preview commits to native scrollback, the final result
+		// can only append below it and the placeholder remains visible forever.
 		const component = new ToolExecutionComponent("bash", { command: "ls" }, {}, undefined, uiStub);
+		component.setExpanded(true);
+		component.setArgsComplete();
+
+		expect(component.isTranscriptBlockFinalized()).toBe(false);
+		expect(component.isTranscriptBlockCommitStable()).toBe(false);
+	});
+
+	it("treats merged call/result pending previews as provisional by default", () => {
+		const component = new ToolExecutionComponent("read", { path: "src/example.ts" }, {}, undefined, uiStub);
+		component.setExpanded(true);
+		component.setArgsComplete();
+
+		expect(component.isTranscriptBlockFinalized()).toBe(false);
+		expect(component.isTranscriptBlockCommitStable()).toBe(false);
+	});
+
+	it("keeps non-merged pending previews commit-stable by default", () => {
+		const component = new ToolExecutionComponent("custom_tool", { value: "stable" }, {}, undefined, uiStub);
 		component.setExpanded(true);
 		component.setArgsComplete();
 

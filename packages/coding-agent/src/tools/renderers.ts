@@ -48,9 +48,9 @@ export type ToolRenderer = {
 	 * Whether pending-call rows are provisional: useful on screen while a tool is
 	 * streaming, but not durable transcript history. `true` means every pending
 	 * shape is provisional. `"collapsed"` means only the collapsed pending shape
-	 * is provisional; expanded rendering is top-anchored/append-shaped enough to
-	 * let the transcript commit its settled prefix. Absent = the pending preview
-	 * streams rows the result render preserves.
+	 * is provisional. Absent = use the renderer default: merged call/result
+	 * renderers are provisional because `renderCall` disappears once a result
+	 * exists; non-merged renderers stream rows the result render preserves.
 	 */
 	provisionalPendingPreview?: boolean | "collapsed";
 	/**

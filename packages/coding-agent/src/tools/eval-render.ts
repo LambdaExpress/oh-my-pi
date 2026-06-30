@@ -770,9 +770,8 @@ export const evalToolRenderer = {
 
 	mergeCallAndResult: true,
 	inline: true,
-	// Collapsed pending preview shows tail-window code cells; the result render
-	// interleaves each cell's output under its code, re-laying-out every row
-	// below the first cell. Expanded output is top-anchored enough for the
-	// transcript to commit its settled prefix.
-	provisionalPendingPreview: "collapsed",
+	// Pending eval previews are replaced by the result render, which interleaves
+	// each cell's output under its code. No pending cell placeholder is durable:
+	// once it reaches native scrollback, the final result can only append below it.
+	provisionalPendingPreview: true,
 };

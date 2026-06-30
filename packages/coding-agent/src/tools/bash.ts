@@ -1401,10 +1401,11 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 		},
 		mergeCallAndResult: true,
 		inline: true,
-		// Collapsed pending preview caps the command to a viewport-sized tail
-		// window that shifts while args stream. Expanded output is top-anchored
-		// enough for the transcript to commit its settled prefix.
-		provisionalPendingPreview: "collapsed",
+		// Pending shell previews are re-anchored once a result arrives. If any
+		// pending row reaches immutable native scrollback, the final result cannot
+		// erase it and a stale `$ …`/script placeholder remains above the real
+		// command forever, even when tool output is expanded.
+		provisionalPendingPreview: true,
 	};
 }
 

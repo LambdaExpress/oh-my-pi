@@ -692,15 +692,16 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		if (this.isTranscriptBlockFinalized()) return true;
 		// `provisionalPendingPreview` describes only the PENDING call preview
 		// (`renderCall`, before any result): the result render may re-anchor it
-		// wholesale, so its rows must never commit. Once a (streaming partial)
-		// result exists the result renderer is usually the live shape — its body
-		// is top-anchored and grows append-only, and `deriveLiveCommitState`
-		// gates per-row durability — so the block is commit-stable like any
-		// settled stream. Gating the flag on the pending phase is what keeps a
-		// collapsed streaming eval/bash/ssh whose box outgrows the viewport from
-		// stranding its head: while commit-unstable its scrolled-off top
-		// committed nowhere and repainted nowhere, so it read as truncated until
-		// ctrl+o (expanded) flipped it stable.
+		// wholesale, so committing any of its rows would strand stale preview
+		// bytes in immutable scrollback. Non-provisional views stream rows whose
+		// committed prefix survives the remaining transitions.
+		//
+		// Renderers that merge call+result suppress `renderCall` as soon as a
+		// result exists. That makes the pending preview provisional by default:
+		// a first-frame `…`, pending header, or tail-window preview cannot be
+		// assumed durable unless the renderer explicitly opts into a stable
+		// pending shape. This is intentionally conservative; a stale committed
+		// row cannot be erased after it reaches native scrollback.
 		//
 		// Renderers whose partial-result chrome (header glyph, frame state)
 		// differs from the final result render set `provisionalPartialResult`
@@ -718,10 +719,19 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 			}
 			return true;
 		}
-		const tool = this.#tool as { provisionalPendingPreview?: boolean | "collapsed" } | undefined;
-		const provisionalPendingPreview =
-			tool?.provisionalPendingPreview ?? toolRenderers[this.#toolName]?.provisionalPendingPreview;
-		return provisionalPendingPreview !== true && (provisionalPendingPreview !== "collapsed" || this.#expanded);
+		const tool = this.#tool as
+			| {
+					mergeCallAndResult?: boolean;
+					provisionalPendingPreview?: boolean | "collapsed";
+			  }
+			| undefined;
+		const renderer = toolRenderers[this.#toolName];
+		const provisionalPendingPreview = tool?.provisionalPendingPreview ?? renderer?.provisionalPendingPreview;
+		if (provisionalPendingPreview !== undefined) {
+			return provisionalPendingPreview !== true && (provisionalPendingPreview !== "collapsed" || this.#expanded);
+		}
+		const mergeCallAndResult = tool?.mergeCallAndResult ?? renderer?.mergeCallAndResult;
+		return !mergeCallAndResult;
 	}
 
 	/**

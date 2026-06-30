@@ -731,6 +731,11 @@ export const editToolRenderer = {
 	// committing the preview's settled head would strand a stale call-box
 	// fragment in native scrollback.
 	provisionalPendingPreview: true,
+	// Partial edit results still use pending chrome and may be replaced by a
+	// final success/error frame. Keep them out of immutable native scrollback
+	// until the settled result arrives, or stale `… pending` frames can remain
+	// above the final edit card.
+	provisionalPartialResult: true,
 
 	renderCall(
 		args: EditRenderArgs,
