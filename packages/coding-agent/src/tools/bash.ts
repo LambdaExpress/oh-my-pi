@@ -31,7 +31,13 @@ import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-ski
 import { invalidateGithubCacheForBashCommand } from "./gh-cache-invalidation";
 import { formatStyledTruncationWarning, type OutputMeta, stripOutputNotice } from "./output-meta";
 import { resolveToCwd } from "./path-utils";
-import { capPreviewLines, formatToolWorkingDirectory, previewWindowRows, replaceTabs } from "./render-utils";
+import {
+	capPreviewLines,
+	extractPartialJsonString,
+	formatToolWorkingDirectory,
+	previewWindowRows,
+	replaceTabs,
+} from "./render-utils";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout, TOOL_TIMEOUTS } from "./tool-timeouts";
@@ -1151,7 +1157,7 @@ export function getBashEnvForDisplay(args: BashRenderArgs): Record<string, strin
  * `theme.fg("dim", ...)` form render only the first line as dim.
  */
 export function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme): string[] {
-	const command = replaceTabs(args.command || "…");
+	const command = replaceTabs(extractPartialJsonString(args.__partialJson, "command") ?? args.command ?? "…");
 	const cwd = getProjectDir();
 	const displayWorkdir = formatToolWorkingDirectory(args.cwd, cwd);
 	const envAssignments = formatBashEnvAssignments(getBashEnvForDisplay(args));

@@ -83,6 +83,29 @@ describe("write streaming preview honors Ctrl+O expansion", () => {
 		expect(highlightSpy).toHaveBeenCalledTimes(1);
 	});
 
+	it("renders streamed raw partial content instead of stale parsed content", async () => {
+		if (!initialized) {
+			await themeModule.initTheme();
+			initialized = true;
+		}
+		const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
+		if (!uiTheme) {
+			throw new Error("expected an initialized theme");
+		}
+		const component = writeToolRenderer.renderCall(
+			{
+				path: "/tmp/raw-preview.ts",
+				content: "const first = 1;",
+				__partialJson: '{"path":"/tmp/raw-preview.ts","content":"const first = 1;\\nconst second = 2',
+			},
+			{ expanded: false, isPartial: true },
+			uiTheme,
+		);
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("const second = 2");
+	});
+
 	it("renders execution progress as a partial result without diagnostics", async () => {
 		if (!initialized) {
 			await themeModule.initTheme();

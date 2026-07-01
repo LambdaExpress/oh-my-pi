@@ -12,7 +12,7 @@ import type { Theme } from "../../modes/theme/theme";
 import { Hasher, isFramedBlockComponent, markFramedBlockComponent, renderCodeCell, renderStatusLine } from "../../tui";
 import type { BrowserToolDetails } from "../browser";
 import { formatStyledTruncationWarning, stripOutputNotice } from "../output-meta";
-import { replaceTabs, shortenPath } from "../render-utils";
+import { extractPartialJsonString, replaceTabs, shortenPath } from "../render-utils";
 
 const BROWSER_DEFAULT_PREVIEW_LINES = 10;
 
@@ -21,6 +21,7 @@ interface BrowserRenderArgs {
 	name?: string;
 	url?: string;
 	code?: string;
+	__partialJson?: string;
 	all?: boolean;
 	kill?: boolean;
 	app?: { path?: string; cdp_url?: string; target?: string; cmux?: boolean; surface?: string };
@@ -88,7 +89,7 @@ function renderRunCell(
 	isError: boolean,
 	theme: Theme,
 ): Component {
-	const code = dropTrailingBlankLines(args.code ?? "");
+	const code = dropTrailingBlankLines(extractPartialJsonString(args.__partialJson, "code") ?? args.code ?? "");
 	const status = cellStatus(options.isPartial, isError);
 
 	const titleParts: string[] = [tabLabel(args, details)];
@@ -188,7 +189,7 @@ function extractTextOutput(content: Array<{ type: string; text?: string }> | und
 
 export const browserToolRenderer = {
 	renderCall(args: BrowserRenderArgs, options: RenderResultOptions, theme: Theme): Component {
-		const action = args.action;
+		const action = extractPartialJsonString(args.__partialJson, "action") ?? args.action;
 		if (action === "run") {
 			return renderRunCell(args, undefined, options, "", false, theme);
 		}

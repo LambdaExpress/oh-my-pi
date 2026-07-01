@@ -112,6 +112,35 @@ export function previewLine(text: string, maxWidth: number, ellipsis?: Ellipsis)
 	return truncateToWidth(text.replace(/\s+/g, " ").trim(), maxWidth, ellipsis);
 }
 
+/**
+ * Decode the already-received fragment of a JSON string field without parsing
+ * the full, still-growing arguments object.
+ */
+export function decodePartialJsonStringFragment(fragment: string): string {
+	let text = fragment.replace(/\\u[0-9a-fA-F]{0,3}$/, "");
+	const trailingBackslashes = text.match(/\\+$/)?.[0].length ?? 0;
+	if (trailingBackslashes % 2 === 1) text = text.slice(0, -1);
+	try {
+		return JSON.parse(`"${text}"`) as string;
+	} catch {
+		return text;
+	}
+}
+
+/**
+ * Extract a top-level JSON string field from a partial argument prefix.
+ *
+ * This intentionally avoids parsing the whole JSON object so code previews can
+ * advance every frame while the global streaming parser remains throttled.
+ */
+export function extractPartialJsonString(partialJson: string | undefined, key: string): string | undefined {
+	if (!partialJson) return undefined;
+	const pattern = new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)`, "u");
+	const match = pattern.exec(partialJson);
+	if (!match) return undefined;
+	return decodePartialJsonStringFragment(match[1]);
+}
+
 // =============================================================================
 // URL Utilities
 // =============================================================================
@@ -687,7 +716,10 @@ export function formatToolWorkingDirectory(workdir: string | undefined, projectD
 	}
 	const relativePath = path.relative(resolvedProjectDir, resolvedWorkdir);
 	const isWithinProject =
-		relativePath.length > 0 && !relativePath.startsWith("..") && !relativePath.startsWith(`..${path.sep}`);
+		relativePath.length > 0 &&
+		!path.isAbsolute(relativePath) &&
+		!relativePath.startsWith("..") &&
+		!relativePath.startsWith(`..${path.sep}`);
 	const displayWorkdir = isWithinProject ? relativePath : shortenPath(resolvedWorkdir);
 	return replaceTabs(displayWorkdir);
 }

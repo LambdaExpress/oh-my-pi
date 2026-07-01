@@ -53,6 +53,7 @@ import {
 	cachedRenderedString,
 	createRenderedStringCache,
 	Ellipsis,
+	extractPartialJsonString,
 	formatDiagnostics,
 	formatErrorDetail,
 	formatExpandHint,
@@ -975,6 +976,7 @@ interface WriteRenderArgs {
 	path?: string;
 	file_path?: string;
 	content?: string;
+	__partialJson?: string;
 }
 
 const WRITE_PREVIEW_LINES = 6;
@@ -1082,7 +1084,11 @@ function renderContentPreview(
 
 export const writeToolRenderer = {
 	renderCall(args: WriteRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
-		const rawPath = args.file_path || args.path || "";
+		const partialPath =
+			extractPartialJsonString(args.__partialJson, "file_path") ??
+			extractPartialJsonString(args.__partialJson, "path");
+		const rawPath = partialPath || args.file_path || args.path || "";
+		const content = extractPartialJsonString(args.__partialJson, "content") ?? args.content ?? "";
 		const filePath = shortenPath(rawPath);
 		const lang = getLanguageFromPath(rawPath) ?? "text";
 		const langIcon = uiTheme.fg("muted", uiTheme.getLangIcon(lang));
@@ -1100,9 +1106,9 @@ export const writeToolRenderer = {
 		);
 		const streamingCache = createRenderedStringCache();
 		return framedBlock(uiTheme, width => {
-			const body = args.content
+			const body = content
 				? formatStreamingContent(
-						args.content,
+						content,
 						Boolean(options?.expanded),
 						lang,
 						uiTheme,

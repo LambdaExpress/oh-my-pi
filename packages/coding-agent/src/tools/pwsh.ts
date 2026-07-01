@@ -32,7 +32,7 @@ import {
 	resolveOutputSinkTailBytes,
 } from "./output-meta";
 import { resolveToCwd } from "./path-utils";
-import { formatToolWorkingDirectory, replaceTabs } from "./render-utils";
+import { extractPartialJsonString, formatToolWorkingDirectory, replaceTabs } from "./render-utils";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
@@ -61,6 +61,7 @@ export interface PwshToolDetails {
 
 export interface PwshRenderArgs {
 	script?: string;
+	__partialJson?: string;
 	env?: Record<string, string>;
 	timeout?: number;
 	cwd?: string;
@@ -104,7 +105,7 @@ function buildPwshEnvPrologue(env: Record<string, string>): string {
 }
 
 function formatPwshScriptLines(args: PwshRenderArgs | undefined, uiTheme: Theme): string[] {
-	const script = replaceTabs(args?.script || "…");
+	const script = replaceTabs(extractPartialJsonString(args?.__partialJson, "script") ?? args?.script ?? "…");
 	const displayWorkdir = formatToolWorkingDirectory(args?.cwd, getProjectDir());
 	const envAssignments = formatPwshEnvAssignments(args?.env);
 	const prefixParts = [uiTheme.symbol("tool.pwsh")];

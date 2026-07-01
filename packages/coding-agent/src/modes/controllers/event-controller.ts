@@ -50,7 +50,15 @@ const MAX_LIVE_IRC_CARDS = 4;
 const IDLE_RECAP_MIN_SECONDS = 1;
 const IDLE_RECAP_MAX_SECONDS = 3600;
 
-const RAW_PARTIAL_JSON_RENDERERS: Record<string, true> = { bash: true, edit: true, apply_patch: true };
+const RAW_PARTIAL_JSON_RENDERERS: Record<string, true> = {
+	bash: true,
+	browser: true,
+	edit: true,
+	apply_patch: true,
+	eval: true,
+	pwsh: true,
+	write: true,
+};
 
 function exposesRawPartialJson(toolName: string, rawInput: boolean, tool: unknown): boolean {
 	if (rawInput) return true;

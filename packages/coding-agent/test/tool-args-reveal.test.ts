@@ -100,6 +100,28 @@ describe("tool args reveal", () => {
 		}
 	});
 
+	it("keeps raw partial JSON advancing after throttled JSON parsing would skip", () => {
+		vi.useFakeTimers();
+		const requestRender = vi.fn();
+		const { component, controller } = makeController({ requestRender });
+		const target = `{"path":"a.ts","content":"${"x".repeat(1200)}"}`;
+		const seed = target.slice(0, 10);
+
+		controller.setTarget("call-1", seed, jsonTarget({ exposeRawPartialJson: true }));
+		controller.bind("call-1", component);
+		controller.setTarget("call-1", target, jsonTarget({ exposeRawPartialJson: true }));
+
+		drain(1);
+		expect(component.frames).toHaveLength(1);
+		const firstPartial = partialOf(component.frames[0]);
+
+		drain(1);
+		expect(component.frames).toHaveLength(2);
+		const secondPartial = partialOf(component.frames[1]);
+		expect(secondPartial.length).toBeGreaterThan(firstPartial.length);
+		expect(requestRender).toHaveBeenCalledTimes(2);
+	});
+
 	it("throttles JSON re-parses for renderers that do not read raw partial JSON", () => {
 		vi.useFakeTimers();
 		const requestRender = vi.fn();

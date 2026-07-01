@@ -30,6 +30,7 @@ import {
 } from "./json-tree";
 import { formatStyledTruncationWarning, stripOutputNotice } from "./output-meta";
 import {
+	extractPartialJsonString,
 	formatBadge,
 	formatDuration,
 	formatStatusIcon,
@@ -85,7 +86,12 @@ function normalizeRenderLanguage(value: string | undefined): EvalLanguage {
 
 function getRenderCells(args: EvalRenderArgs | undefined): EvalRenderCell[] {
 	if (!args) return [];
-	const raw = Array.isArray(args.cells) ? args.cells : typeof args.code === "string" ? [args] : [];
+	const streamedCode = extractPartialJsonString(args.__partialJson, "code");
+	const raw = Array.isArray(args.cells)
+		? args.cells
+		: typeof streamedCode === "string" || typeof args.code === "string"
+			? [{ ...args, code: streamedCode ?? args.code }]
+			: [];
 	const out: EvalRenderCell[] = [];
 	for (const cell of raw) {
 		if (!cell || typeof cell !== "object") continue;

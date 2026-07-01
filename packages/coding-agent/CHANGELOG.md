@@ -15,6 +15,8 @@
 
 ### Fixed
 
+- Fixed streaming code/content tool-call previews for `bash`, `browser`, `eval`, `pwsh`, and `write` so pending TUI blocks keep advancing between throttled JSON parses.
+- Fixed shell tool working-directory previews treating Windows absolute paths on other drives as project-relative paths, which could leak the home directory instead of shortening it to `~`.
 - Fixed `read` structural summaries being skipped for `ssh://` and other selector-capable in-memory internal URL resources.
 - Fixed LSP client reuse when multiple servers in one workspace share a wrapper command but use different arguments.
 - Fixed streaming tool truncation notices showing inconsistent `artifact://...` recovery ids after final inline output capping.

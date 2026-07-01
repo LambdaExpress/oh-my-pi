@@ -42,7 +42,7 @@ describe("bashToolRenderer", () => {
 		const component = bashToolRenderer.renderCall(
 			{
 				command: "printf '%s' \"$MERMAID\"",
-				__partialJson: '{"command":"printf \'%s\' "$MERMAID"","env":{"MERMAID":"line 1\\nline 2',
+				__partialJson: '{"command":"printf \'%s\' \\"$MERMAID\\"","env":{"MERMAID":"line 1\\nline 2',
 			},
 			{ expanded: false, isPartial: true },
 			uiTheme,
@@ -50,6 +50,20 @@ describe("bashToolRenderer", () => {
 		const rendered = sanitizeText(component.render(120).join("\n"));
 		expect(rendered).toContain('MERMAID="line 1\\nline 2"');
 		expect(rendered).toContain("printf '%s' \"$MERMAID\"");
+	});
+
+	it("renders streamed raw commands instead of stale parsed commands", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const component = bashToolRenderer.renderCall(
+			{ command: "echo stale", __partialJson: '{"command":"echo streamed' },
+			{ expanded: false, isPartial: true },
+			uiTheme,
+		);
+		const rendered = Bun.stripANSI(component.render(120).join("\n"));
+		expect(rendered).toContain("echo streamed");
+		expect(rendered).not.toContain("echo stale");
 	});
 
 	it("sanitizes command tabs and shortens home cwd in previews", async () => {

@@ -15,6 +15,7 @@ import { STREAMING_REVEAL_FRAME_MS } from "@oh-my-pi/pi-coding-agent/modes/contr
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { STREAMING_JSON_PARSE_MIN_GROWTH } from "@oh-my-pi/pi-utils";
 
 beforeAll(async () => {
 	await initTheme();
@@ -151,6 +152,43 @@ describe("EventController paces streamed tool args", () => {
 		const calls = updateArgsSpy.mock.calls.length;
 		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS * 5);
 		expect(updateArgsSpy.mock.calls.length).toBe(calls);
+	});
+
+	it("classifies built-in write as a raw-prefix renderer without tool registry metadata", async () => {
+		await Settings.init({ inMemory: true, cwd: process.cwd() });
+		vi.useFakeTimers();
+		const updateArgsSpy = vi.spyOn(ToolExecutionComponent.prototype, "updateArgs");
+		const target = `{"path":"a.ts","content":"${"x".repeat(STREAMING_JSON_PARSE_MIN_GROWTH + 1000)}"}`;
+		const seed = target.slice(0, 10);
+		const seedStreaming = makeStreamingMessage([
+			{ type: "toolCall", id: "tc-1", name: "write", arguments: {}, [kStreamingPartialJson]: seed },
+		]);
+		const { controller, pendingTools } = createFixture(seedStreaming);
+
+		await dispatch(controller, seedStreaming);
+		expect(pendingTools.size).toBe(1);
+
+		await dispatch(
+			controller,
+			makeStreamingMessage([
+				{ type: "toolCall", id: "tc-1", name: "write", arguments: {}, [kStreamingPartialJson]: target },
+			]),
+		);
+		updateArgsSpy.mockClear();
+
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS);
+		vi.advanceTimersByTime(STREAMING_REVEAL_FRAME_MS);
+
+		const frames = updateArgsSpy.mock.calls.map(call => call[0] as Record<string, unknown>);
+		expect(frames).toHaveLength(2);
+		const firstPartial = frames[0]?.__partialJson;
+		const secondPartial = frames[1]?.__partialJson;
+		if (typeof firstPartial !== "string" || typeof secondPartial !== "string") {
+			throw new Error("Expected write reveal frames to carry __partialJson strings");
+		}
+		expect(target.startsWith(firstPartial)).toBe(true);
+		expect(target.startsWith(secondPartial)).toBe(true);
+		expect(secondPartial.length).toBeGreaterThan(firstPartial.length);
 	});
 
 	it("streams the full target through unpaced when smoothing is disabled", async () => {
