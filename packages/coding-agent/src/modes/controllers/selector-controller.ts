@@ -832,123 +832,136 @@ export class SelectorController {
 			return;
 		}
 
-		this.showSelector(done => {
-			const selector = new TreeSelectorComponent(
-				tree,
-				realLeafId,
-				this.ctx.ui.terminal.rows,
-				async entryId => {
-					// Selecting the current leaf is a no-op (already there)
-					if (entryId === realLeafId) {
-						done();
-						this.ctx.showStatus("Already at this point");
+		let overlayHandle: OverlayHandle | undefined;
+		const done = () => {
+			overlayHandle?.hide();
+			this.focusActiveEditorArea();
+			this.ctx.ui.requestRender();
+		};
+
+		const selector = new TreeSelectorComponent(
+			tree,
+			realLeafId,
+			this.ctx.ui.terminal.rows,
+			async entryId => {
+				// Selecting the current leaf is a no-op (already there)
+				if (entryId === realLeafId) {
+					done();
+					this.ctx.showStatus("Already at this point");
+					return;
+				}
+
+				// Ask about summarization
+				done(); // Close selector first
+
+				// Loop until user makes a complete choice or cancels to tree
+				let wantsSummary = false;
+				let customInstructions: string | undefined;
+
+				const branchSummariesEnabled = settings.get("branchSummary.enabled");
+
+				while (branchSummariesEnabled) {
+					const summaryChoice = await this.ctx.showHookSelector("Summarize branch?", [
+						"No summary",
+						"Summarize",
+						"Summarize with custom prompt",
+					]);
+
+					if (summaryChoice === undefined) {
+						// User pressed escape - re-show tree selector
+						this.showTreeSelector();
 						return;
 					}
 
-					// Ask about summarization
-					done(); // Close selector first
+					wantsSummary = summaryChoice !== "No summary";
 
-					// Loop until user makes a complete choice or cancels to tree
-					let wantsSummary = false;
-					let customInstructions: string | undefined;
-
-					const branchSummariesEnabled = settings.get("branchSummary.enabled");
-
-					while (branchSummariesEnabled) {
-						const summaryChoice = await this.ctx.showHookSelector("Summarize branch?", [
-							"No summary",
-							"Summarize",
-							"Summarize with custom prompt",
-						]);
-
-						if (summaryChoice === undefined) {
-							// User pressed escape - re-show tree selector
-							this.showTreeSelector();
-							return;
+					if (summaryChoice === "Summarize with custom prompt") {
+						customInstructions = await this.ctx.showHookEditor("Custom summarization instructions");
+						if (customInstructions === undefined) {
+							// User cancelled - loop back to summary selector
+							continue;
 						}
-
-						wantsSummary = summaryChoice !== "No summary";
-
-						if (summaryChoice === "Summarize with custom prompt") {
-							customInstructions = await this.ctx.showHookEditor("Custom summarization instructions");
-							if (customInstructions === undefined) {
-								// User cancelled - loop back to summary selector
-								continue;
-							}
-						}
-
-						// User made a complete choice
-						break;
 					}
 
-					// Set up escape handler and loader if summarizing
-					let summaryLoader: Loader | undefined;
-					const originalOnEscape = this.ctx.editor.onEscape;
+					// User made a complete choice
+					break;
+				}
 
-					if (wantsSummary) {
-						this.ctx.editor.onEscape = () => {
-							this.ctx.session.abortBranchSummary();
-						};
-						this.ctx.chatContainer.addChild(new Spacer(1));
-						summaryLoader = new Loader(
-							this.ctx.ui,
-							spinner => theme.fg("accent", spinner),
-							text => theme.fg("muted", text),
-							"Summarizing branch... (esc to cancel)",
-							getSymbolTheme().spinnerFrames,
-						);
-						this.ctx.statusContainer.addChild(summaryLoader);
-						this.ctx.ui.requestRender();
-					}
+				// Set up escape handler and loader if summarizing
+				let summaryLoader: Loader | undefined;
+				const originalOnEscape = this.ctx.editor.onEscape;
 
-					try {
-						const result = await this.ctx.session.navigateTree(entryId, {
-							summarize: wantsSummary,
-							customInstructions,
-						});
-
-						if (result.aborted) {
-							// Summarization aborted - re-show tree selector
-							this.ctx.showStatus("Branch summarization cancelled");
-							this.showTreeSelector();
-							return;
-						}
-						if (result.cancelled) {
-							this.ctx.showStatus("Navigation cancelled");
-							return;
-						}
-
-						// Update UI — rebuild the display transcript for the new leaf (the
-						// context from navigateTree is the LLM context, not the transcript).
-						this.ctx.chatContainer.clear();
-						this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-						await this.ctx.reloadTodos();
-						if (result.editorText && !this.ctx.editor.getText().trim()) {
-							this.ctx.editor.setText(result.editorText);
-						}
-						this.ctx.showStatus("Navigated to selected point");
-					} catch (error) {
-						this.ctx.showError(error instanceof Error ? error.message : String(error));
-					} finally {
-						if (summaryLoader) {
-							summaryLoader.stop();
-							this.ctx.statusContainer.clear();
-						}
-						this.ctx.editor.onEscape = originalOnEscape;
-					}
-				},
-				() => {
-					done();
+				if (wantsSummary) {
+					this.ctx.editor.onEscape = () => {
+						this.ctx.session.abortBranchSummary();
+					};
+					this.ctx.chatContainer.addChild(new Spacer(1));
+					summaryLoader = new Loader(
+						this.ctx.ui,
+						spinner => theme.fg("accent", spinner),
+						text => theme.fg("muted", text),
+						"Summarizing branch... (esc to cancel)",
+						getSymbolTheme().spinnerFrames,
+					);
+					this.ctx.statusContainer.addChild(summaryLoader);
 					this.ctx.ui.requestRender();
-				},
-				(entryId, label) => {
-					this.ctx.sessionManager.appendLabelChange(entryId, label);
-					this.ctx.ui.requestRender();
-				},
-				settings.get("treeFilterMode"),
-			);
-			return { component: selector, focus: selector };
+				}
+
+				try {
+					const result = await this.ctx.session.navigateTree(entryId, {
+						summarize: wantsSummary,
+						customInstructions,
+					});
+
+					if (result.aborted) {
+						// Summarization aborted - re-show tree selector
+						this.ctx.showStatus("Branch summarization cancelled");
+						this.showTreeSelector();
+						return;
+					}
+					if (result.cancelled) {
+						this.ctx.showStatus("Navigation cancelled");
+						return;
+					}
+
+					// Update UI — rebuild the display transcript for the new leaf (the
+					// context from navigateTree is the LLM context, not the transcript).
+					this.ctx.chatContainer.clear();
+					this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+					await this.ctx.reloadTodos();
+					if (result.editorText && !this.ctx.editor.getText().trim()) {
+						this.ctx.editor.setText(result.editorText);
+					}
+					this.ctx.showStatus("Navigated to selected point");
+				} catch (error) {
+					this.ctx.showError(error instanceof Error ? error.message : String(error));
+				} finally {
+					if (summaryLoader) {
+						summaryLoader.stop();
+						this.ctx.statusContainer.clear();
+					}
+					this.ctx.editor.onEscape = originalOnEscape;
+				}
+			},
+			() => {
+				done();
+			},
+			(entryId, label) => {
+				this.ctx.sessionManager.appendLabelChange(entryId, label);
+				this.ctx.ui.requestRender();
+			},
+			settings.get("treeFilterMode"),
+		);
+		selector.setOnRequestRender(() => this.ctx.ui.requestRender());
+		overlayHandle = this.ctx.ui.showOverlay(selector, {
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
 		});
+		this.ctx.ui.setFocus(selector);
+		this.ctx.ui.requestRender();
 	}
 
 	async showSessionSelector(): Promise<void> {

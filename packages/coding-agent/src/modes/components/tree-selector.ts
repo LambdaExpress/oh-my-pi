@@ -6,6 +6,7 @@ import {
 	fuzzyMatch,
 	Input,
 	matchesKey,
+	routeSgrMouseInput,
 	Spacer,
 	Text,
 	TruncatedText,
@@ -64,6 +65,7 @@ class TreeList implements Component {
 	#multipleRoots = false;
 	#activePathIds: Set<string> = new Set();
 	#lastSelectedId: string | null = null;
+	#hitRows: (number | undefined)[] = [];
 
 	onSelect?: (entryId: string) => void;
 	onCancel?: () => void;
@@ -424,6 +426,22 @@ class TreeList implements Component {
 		}
 	}
 
+	handleWheel(delta: -1 | 1): void {
+		if (this.#filteredNodes.length === 0) return;
+		this.#selectedIndex = Math.max(0, Math.min(this.#filteredNodes.length - 1, this.#selectedIndex + delta));
+	}
+
+	hitTestNode(line: number): number | undefined {
+		return this.#hitRows[line];
+	}
+
+	selectAndConfirm(index: number): void {
+		const selected = this.#filteredNodes[index];
+		if (!selected) return;
+		this.#selectedIndex = index;
+		this.onSelect?.(selected.node.entry.id);
+	}
+
 	#getFilterLabel(): string {
 		switch (this.#filterMode) {
 			case "no-tools":
@@ -441,6 +459,7 @@ class TreeList implements Component {
 
 	render(width: number): readonly string[] {
 		const lines: string[] = [];
+		this.#hitRows = [];
 
 		if (this.#filteredNodes.length === 0) {
 			// Three empty-state shapes:
@@ -577,7 +596,9 @@ class TreeList implements Component {
 			if (isSelected) {
 				line = theme.bg("selectedBg", line);
 			}
-			rows.push(truncateToWidth(line, rowWidth));
+			const renderedLine = truncateToWidth(line, rowWidth);
+			this.#hitRows[rows.length] = i;
+			rows.push(renderedLine);
 		}
 
 		lines.push(
@@ -913,6 +934,9 @@ export class TreeSelectorComponent extends Container {
 	#labelInput: LabelInput | null = null;
 	#labelInputContainer: Container;
 	#treeContainer: Container;
+	#treeListLineOffset = 0;
+	#onRequestRender?: () => void;
+	readonly #terminalHeight: number;
 
 	constructor(
 		tree: SessionTreeNode[],
@@ -924,8 +948,10 @@ export class TreeSelectorComponent extends Container {
 		initialFilterMode: FilterMode = "default",
 	) {
 		super();
-		const maxVisibleLines = Math.max(5, Math.floor(terminalHeight / 2));
-
+		this.#terminalHeight = terminalHeight;
+		// Top chrome is seven rows; bottom footer is two rows. Reserve one more
+		// row for the optional filter label so the fullscreen frame does not trim it.
+		const maxVisibleLines = Math.max(5, terminalHeight - 10);
 		this.#treeList = new TreeList(tree, currentLeafId, maxVisibleLines, initialFilterMode);
 		this.#treeList.onSelect = onSelect;
 		this.#treeList.onCancel = onCancel;
@@ -943,7 +969,7 @@ export class TreeSelectorComponent extends Container {
 			new TruncatedText(
 				theme.fg(
 					"muted",
-					"Up/Down: move. Left/Right: page. Shift+L: label. Ctrl+O/Shift+Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search",
+					"Up/Down/Wheel: move. Click/Enter: select. Left/Right: page. Shift+L: label. Ctrl+O/Shift+Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search",
 				),
 				0,
 				0,
@@ -983,7 +1009,55 @@ export class TreeSelectorComponent extends Container {
 		this.#treeContainer.addChild(this.#treeList);
 	}
 
+	setOnRequestRender(callback: () => void): void {
+		this.#onRequestRender = callback;
+	}
+
+	render(width: number): readonly string[] {
+		const lines: string[] = [];
+		for (const child of this.children) {
+			const childLines = child.render(width);
+			if (child === this.#treeContainer) this.#treeListLineOffset = lines.length;
+			for (const line of childLines) lines.push(line);
+		}
+
+		const footerLineCount = 2;
+		const footerStart = Math.max(0, lines.length - footerLineCount);
+		const body = lines.slice(0, footerStart);
+		const footer = lines.slice(footerStart);
+		const targetBodyHeight = Math.max(0, this.#terminalHeight - footer.length);
+		if (body.length > targetBodyHeight) {
+			body.length = targetBodyHeight;
+		} else {
+			for (let i = body.length; i < targetBodyHeight; i++) body.push("");
+		}
+		return [...body, ...footer];
+	}
+
+	#handleMouse(data: string): void {
+		if (this.#labelInput) return;
+		routeSgrMouseInput(data, event => {
+			if (event.wheel !== null) {
+				this.#treeList.handleWheel(event.wheel);
+				this.#onRequestRender?.();
+				return true;
+			}
+			if (event.leftClick) {
+				const listLine = event.row - this.#treeListLineOffset;
+				const index = this.#treeList.hitTestNode(listLine);
+				if (index !== undefined) this.#treeList.selectAndConfirm(index);
+				this.#onRequestRender?.();
+				return true;
+			}
+			return true;
+		});
+	}
+
 	handleInput(keyData: string): void {
+		if (keyData.startsWith("\x1b[<")) {
+			this.#handleMouse(keyData);
+			return;
+		}
 		if (this.#labelInput) {
 			this.#labelInput.handleInput(keyData);
 		} else {

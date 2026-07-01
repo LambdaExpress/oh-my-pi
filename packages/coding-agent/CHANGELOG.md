@@ -12,6 +12,7 @@
 ### Changed
 
 - Clarified that `grep` does not recursively search internal URL directories.
+- Changed the in-session `/tree` session tree picker to open as a viewport-filling fullscreen overlay with mouse wheel navigation and click-to-select support, matching `/resume`.
 
 ### Fixed
 
