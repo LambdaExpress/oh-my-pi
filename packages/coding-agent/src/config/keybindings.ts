@@ -86,7 +86,7 @@ export const KEYBINDINGS = {
 		description: "Exit application",
 	},
 	"app.suspend": {
-		defaultKeys: "ctrl+z",
+		defaultKeys: [],
 		description: "Suspend application",
 	},
 	"app.display.reset": {

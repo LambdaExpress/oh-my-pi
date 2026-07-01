@@ -16,6 +16,13 @@ describe("KeybindingsManager.getDisplayString", () => {
 		expect(keybindings.getDisplayString("app.retry")).toBe("Alt+R");
 	});
 
+	it("defaults suspend to disabled while showing Ctrl+Z for editor undo", () => {
+		const keybindings = KeybindingsManager.inMemory();
+
+		expect(keybindings.getDisplayString("app.suspend")).toBe("");
+		expect(keybindings.getDisplayString("tui.editor.undo")).toBe("Ctrl+Z/Ctrl+-/Ctrl+_");
+	});
+
 	it("formats multiple bindings with the existing separator", () => {
 		const keybindings = KeybindingsManager.inMemory({
 			"app.clipboard.copyPrompt": ["alt+shift+c", "ctrl+shift+c"],

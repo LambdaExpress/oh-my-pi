@@ -12,7 +12,7 @@ describe("buildHotkeysMarkdown", () => {
 			"app.interrupt": "Esc",
 			"app.clear": "Ctrl+C",
 			"app.exit": "Ctrl+D",
-			"app.suspend": "Ctrl+Z",
+			"app.suspend": "",
 			"app.thinking.cycle": "Shift+Tab",
 			"app.model.cycleForward": "Ctrl+P",
 			"app.model.cycleBackward": "Shift+Ctrl+P",
@@ -41,6 +41,7 @@ describe("buildHotkeysMarkdown", () => {
 		expect(markdown).toContain("| `Ctrl+L` | Reset terminal display |");
 		expect(markdown).toContain("| `Alt+R` | Retry last failed assistant turn |");
 		expect(markdown).toContain("| `Alt+Shift+P` | Toggle plan mode |");
+		expect(markdown).toContain("| `Disabled` | Suspend to background |");
 		expect(markdown).toContain("| `#` | Open prompt actions |");
 		for (const line of lines) {
 			if (line.length === 0) continue;

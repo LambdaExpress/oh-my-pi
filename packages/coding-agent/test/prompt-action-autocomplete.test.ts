@@ -58,6 +58,26 @@ describe("prompt action autocomplete", () => {
 		expect(suggestions?.items.find(item => item.label === "Undo")?.description).toBe("F8");
 	});
 
+	it("shows Ctrl+Z in the default undo action shortcut hint", async () => {
+		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
+		const provider = createPromptActionAutocompleteProvider({
+			commands: [],
+			basePath: "/tmp",
+			keybindings: AppKeybindingsManager.inMemory(),
+			copyCurrentLine: () => {},
+			copyPrompt: () => {},
+			undo: () => {},
+			moveCursorToMessageEnd: () => {},
+			moveCursorToMessageStart: () => {},
+			moveCursorToLineStart: () => {},
+			moveCursorToLineEnd: () => {},
+		});
+
+		const suggestions = await provider.getSuggestions(["#"], 0, 1);
+
+		expect(suggestions?.items.find(item => item.label === "Undo")?.description).toBe("Ctrl+Z/Ctrl+-/Ctrl+_");
+	});
+
 	it("passes the typed trigger to undo and leaves text removal to the editor", async () => {
 		let undoCalls = 0;
 		let undoPrefix = "";

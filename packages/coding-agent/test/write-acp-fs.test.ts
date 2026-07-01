@@ -134,6 +134,49 @@ describe("write tool ACP fs routing", () => {
 		).toBe(planContent);
 	});
 
+	it("writes long Chinese Markdown local plans without truncating content", async () => {
+		const planPath = "local://LONG_PLAN.md";
+		const sentinel = "结尾哨兵：WRITE_LONG_CHINESE_PLAN_SENTINEL_完";
+		const sections = Array.from(
+			{ length: 80 },
+			(_, i) =>
+				`## 阶段 ${i + 1}\n\n- 目标：保持完整的中文 Markdown 内容，不允许预览或桥接逻辑截断。\n- 验收：第 ${i + 1} 段在本地文件中逐字保留。`,
+		);
+		const planContent = [
+			"# 长中文执行计划",
+			"",
+			"这份计划故意超过预览窗口，验证写入路径保存完整内容。",
+			"",
+			...sections,
+			"## 最终核对",
+			"",
+			`- ${sentinel}`,
+			"",
+		].join("\n");
+		const bridge: ClientBridge = {
+			capabilities: { writeTextFile: true },
+			writeTextFile: async () => {
+				throw new Error("local plans must not use the ACP bridge");
+			},
+		};
+		const bridgeSpy = spyOn(bridge, "writeTextFile");
+		const session = createSession(tmpDir, {
+			bridge,
+			planMode: { enabled: true, planFilePath: planPath, workflow: "parallel", reentry: false },
+		});
+
+		await new WriteTool(session).execute("call-long-plan", { path: planPath, content: planContent });
+
+		expect(bridgeSpy).not.toHaveBeenCalled();
+		const resolvedPath = resolveLocalUrlToPath(planPath, {
+			getArtifactsDir: session.getArtifactsDir,
+			getSessionId: session.getSessionId,
+		});
+		const written = await Bun.file(resolvedPath).text();
+		expect(written).toBe(planContent);
+		expect(written.endsWith(`- ${sentinel}\n`)).toBe(true);
+	});
+
 	it("treats bracketed `[local://...#TAG]` headers as local artifacts, not bridge writes", async () => {
 		const planPath = "local://PLAN.md";
 		const scratchPath = "local://scratch.md";
@@ -163,5 +206,37 @@ describe("write tool ACP fs routing", () => {
 				}),
 			).text(),
 		).toBe(scratchContent);
+	});
+
+	it("appends later local artifact chunks without truncating earlier content", async () => {
+		const artifactPath = "local://generated/chunked-output.txt";
+		const chunks = ["alpha\n", "beta\n", "gamma\n"];
+		const session = createSession(tmpDir);
+		const tool = new WriteTool(session);
+		const resolvedPath = resolveLocalUrlToPath(artifactPath, {
+			getArtifactsDir: session.getArtifactsDir,
+			getSessionId: session.getSessionId,
+		});
+
+		await tool.execute("call-chunk-1", { path: artifactPath, content: chunks[0]! });
+		await tool.execute("call-chunk-2", { path: artifactPath, content: chunks[1]!, mode: "append" });
+		await tool.execute("call-chunk-3", { path: artifactPath, content: chunks[2]!, mode: "append" });
+
+		expect(await Bun.file(resolvedPath).text()).toBe(chunks.join(""));
+	});
+
+	it("rejects append mode for a missing local artifact", async () => {
+		const artifactPath = "local://missing/chunked-output.txt";
+		const session = createSession(tmpDir);
+		const tool = new WriteTool(session);
+		const resolvedPath = resolveLocalUrlToPath(artifactPath, {
+			getArtifactsDir: session.getArtifactsDir,
+			getSessionId: session.getSessionId,
+		});
+
+		await expect(
+			tool.execute("call-missing-append", { path: artifactPath, content: "orphan chunk\n", mode: "append" }),
+		).rejects.toThrow(/Cannot append to missing file .*local:\/\/missing\/chunked-output\.txt.*write without mode/i);
+		await expect(Bun.file(resolvedPath).exists()).resolves.toBe(false);
 	});
 });

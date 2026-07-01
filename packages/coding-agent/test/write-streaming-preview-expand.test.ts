@@ -106,6 +106,47 @@ describe("write streaming preview honors Ctrl+O expansion", () => {
 		expect(rendered).toContain("const second = 2");
 	});
 
+	it("marks hidden lines in a collapsed final write preview and shows the last line when expanded", async () => {
+		if (!initialized) {
+			await themeModule.initTheme();
+			initialized = true;
+		}
+		const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
+		if (!uiTheme) {
+			throw new Error("expected an initialized theme");
+		}
+		const sentinel = "最终哨兵：WRITE_FINAL_PREVIEW_SENTINEL";
+		const content = [
+			"# 长计划",
+			"",
+			...Array.from({ length: 12 }, (_, i) => `- 第 ${i + 1} 步：保留 Markdown 预览边界。`),
+			sentinel,
+		].join("\n");
+		const result = {
+			content: [{ type: "text", text: `Successfully wrote ${content.length} bytes to /tmp/plan.md` }],
+			details: { resolvedPath: "/tmp/plan.md" },
+		};
+		const args = { path: "/tmp/plan.md", content };
+
+		const collapsed = stripAnsi(
+			writeToolRenderer
+				.renderResult(result, { expanded: false, isPartial: false }, uiTheme, args)
+				.render(120)
+				.join("\n"),
+		);
+		expect(collapsed).toContain("… 9 more lines");
+		expect(collapsed).not.toContain(sentinel);
+
+		const expanded = stripAnsi(
+			writeToolRenderer
+				.renderResult(result, { expanded: true, isPartial: false }, uiTheme, args)
+				.render(120)
+				.join("\n"),
+		);
+		expect(expanded).toContain(sentinel);
+		expect(expanded).not.toContain("more lines");
+	});
+
 	it("renders execution progress as a partial result without diagnostics", async () => {
 		if (!initialized) {
 			await themeModule.initTheme();

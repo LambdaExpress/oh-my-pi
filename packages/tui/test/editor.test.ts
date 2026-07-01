@@ -1820,6 +1820,18 @@ describe("Editor component", () => {
 			expect(editor.getCursor()).toEqual({ line: 0, col: 0 });
 		});
 
+		it("uses Ctrl+Z as a default undo binding", () => {
+			const editor = new Editor(defaultEditorTheme);
+
+			editor.handleInput("a");
+			editor.handleInput("b");
+			expect(editor.getText()).toBe("ab");
+
+			editor.handleInput("\x1a"); // Ctrl+Z
+			expect(editor.getText()).toBe("");
+			expect(editor.getCursor()).toEqual({ line: 0, col: 0 });
+		});
+
 		it("does not swallow keys rebound to copy", () => {
 			setKeybindings(
 				new KeybindingsManager(TUI_KEYBINDINGS, {

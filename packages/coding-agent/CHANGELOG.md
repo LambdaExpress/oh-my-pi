@@ -8,11 +8,13 @@
 - Added a first-class `pwsh` tool for direct PowerShell script execution, including registration, dedicated Nerd Font rendering, ACP summaries, copy targets, and focused tests.
 - Added read support for image and supported document files stored inside archives, including images embedded in archived PDFs.
 - Added `ssh://` remote file support for verified Windows PowerShell hosts, including drive-path URLs, directory listings, writes, deletes, and moves.
+- Added `write` tool append mode for existing `local://` artifacts so chunked local outputs can be extended without rewriting earlier content.
 
 ### Changed
 
 - Clarified that `grep` does not recursively search internal URL directories.
 - Changed the in-session `/tree` session tree picker to open as a viewport-filling fullscreen overlay with mouse wheel navigation and click-to-select support, matching `/resume`.
+- Changed the default `Ctrl+Z` composer shortcut to undo text edits instead of suspending the application; `app.suspend` now has no default key but remains available for explicit remapping.
 
 ### Fixed
 
