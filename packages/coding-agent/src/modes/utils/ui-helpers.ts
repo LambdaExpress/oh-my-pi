@@ -559,22 +559,20 @@ export class UiHelpers {
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
 
-		// Live display uses the compacted transcript tail; export/resume callers
-		// can still request the full inline compaction history.
-		const context = this.ctx.viewSession.buildTranscriptSessionContext({ collapseCompactedHistory: true });
+		// Live display keeps the full transcript history. Compaction only resets
+		// provider context; it must not make pre-compaction rows unscrollable.
+		const context = this.ctx.viewSession.buildTranscriptSessionContext();
 		this.ctx.renderSessionContext(context, {
 			updateFooter: true,
 			populateHistory: !this.ctx.focusedAgentId,
 		});
 
-		// Show compaction info if session was compacted
-		const allEntries = this.ctx.viewSession.sessionManager.getEntries();
-		let compactionCount = 0;
-		for (const entry of allEntries) {
-			if (entry.type === "compaction") {
-				compactionCount++;
-			}
-		}
+		// Show compaction info for the active visible branch only. Counting all
+		// session-file entries reports compacted state from unrelated branches.
+		const compactionCount = context.messages.reduce(
+			(count, message) => (message.role === "compactionSummary" ? count + 1 : count),
+			0,
+		);
 		if (compactionCount > 0) {
 			const times = compactionCount === 1 ? "1 time" : `${compactionCount} times`;
 			this.ctx.showStatus(`Session compacted ${times}`);

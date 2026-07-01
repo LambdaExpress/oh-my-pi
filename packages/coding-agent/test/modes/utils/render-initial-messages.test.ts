@@ -1,9 +1,9 @@
 /**
- * Contract: renderInitialMessages renders the collapsed live DISPLAY TRANSCRIPT,
+ * Contract: renderInitialMessages renders the full live DISPLAY TRANSCRIPT,
  * not the LLM context. The transcript comes from
- * `session.buildTranscriptSessionContext({ collapseCompactedHistory: true })`;
- * `sessionManager.buildSessionContext()` — the LLM-context builder — must not be
- * consulted for display.
+ * `viewSession.buildTranscriptSessionContext()` without asking to collapse
+ * compacted history. `sessionManager.buildSessionContext()` — the LLM-context
+ * builder — must not be consulted for display.
  *
  * Also guards the cold-launch terminal cleanup: `omp` / `omp -c` leave the
  * previous run's transcript in native scrollback because the TUI's initial
@@ -13,6 +13,7 @@
 
 import { afterEach, beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { createCompactionSummaryMessage } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -56,6 +57,7 @@ function makeCtx(): {
 	renderSessionContextSpy: Mock<(...args: unknown[]) => void>;
 } {
 	const transcriptSpy = vi.fn(() => makeEmptyContext());
+	const unusedPrimarySessionTranscriptSpy = vi.fn(() => makeEmptyContext());
 	const llmContextSpy = vi.fn(() => makeEmptyContext());
 	const renderSessionContextSpy = vi.fn();
 
@@ -64,7 +66,7 @@ function makeCtx(): {
 		pendingMessagesContainer: { clear: vi.fn() },
 		pendingBashComponents: [],
 		pendingPythonComponents: [],
-		session: { buildTranscriptSessionContext: transcriptSpy },
+		session: { buildTranscriptSessionContext: unusedPrimarySessionTranscriptSpy },
 		viewSession: {
 			buildTranscriptSessionContext: transcriptSpy,
 			sessionManager: {
@@ -130,8 +132,17 @@ function hasImageComponent(component: Component): boolean {
 	return countImageComponents(component) > 0;
 }
 
-function makeRenderCtx(transcript: SessionContext): { ctx: InteractiveModeContext; chatContainer: Container } {
+function makeRenderCtx(
+	transcript: SessionContext | ((options?: { collapseCompactedHistory?: boolean }) => SessionContext),
+): { ctx: InteractiveModeContext; chatContainer: Container } {
 	const chatContainer = new Container();
+	const buildTranscriptSessionContext = typeof transcript === "function" ? transcript : () => transcript;
+	const putBlobSync = vi.fn(() => ({
+		hash: "hash",
+		path: "/tmp/hash",
+		displayPath: "/tmp/hash.png",
+		ref: "blob:sha256:hash",
+	}));
 	let helpers: UiHelpers;
 	const ctx = {
 		chatContainer,
@@ -150,23 +161,28 @@ function makeRenderCtx(transcript: SessionContext): { ctx: InteractiveModeContex
 		focusedAgentId: undefined,
 		editor: { addToHistory: vi.fn() },
 		viewSession: {
-			buildTranscriptSessionContext: () => transcript,
+			buildTranscriptSessionContext,
 			getToolByName: () => undefined,
 			extensionRunner: undefined,
 			sessionManager: {
 				getEntries: vi.fn(() => []),
 				getCwd: vi.fn(() => "/tmp"),
+				putBlobSync,
 			},
 		},
 		sessionManager: {
 			getEntries: vi.fn(() => []),
 			getCwd: vi.fn(() => "/tmp"),
-			putBlobSync: vi.fn(() => ({
-				hash: "hash",
-				path: "/tmp/hash",
-				displayPath: "/tmp/hash.png",
-				ref: "blob:sha256:hash",
-			})),
+			putBlobSync,
+		},
+		getUserMessageText: (message: AgentMessage) => {
+			if (message.role !== "user" && message.role !== "developer") return "";
+			const content = message.content;
+			if (typeof content === "string") return content;
+			return content
+				.filter((block): block is { type: "text"; text: string } => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
 		},
 		addMessageToChat: (message: AgentMessage, options?: { populateHistory?: boolean }) =>
 			helpers.addMessageToChat(message, options),
@@ -181,19 +197,49 @@ function makeRenderCtx(transcript: SessionContext): { ctx: InteractiveModeContex
 }
 
 describe("UiHelpers.renderInitialMessages — transcript source", () => {
-	it("renders the collapsed live display transcript, never the LLM context", () => {
+	it("renders the full live display transcript, never the LLM context", () => {
 		const { ctx, transcriptSpy, llmContextSpy, renderSessionContextSpy } = makeCtx();
 		const transcript = makeEmptyContext();
 		transcriptSpy.mockReturnValue(transcript);
 
 		new UiHelpers(ctx).renderInitialMessages();
 
-		expect(transcriptSpy).toHaveBeenCalledWith({ collapseCompactedHistory: true });
+		expect(transcriptSpy).toHaveBeenCalledTimes(1);
+		const [transcriptOptions] = transcriptSpy.mock.calls[0] ?? [];
+		expect(transcriptOptions?.collapseCompactedHistory).not.toBe(true);
 		expect(llmContextSpy).not.toHaveBeenCalled();
 		expect(renderSessionContextSpy).toHaveBeenCalledWith(transcript, {
 			updateFooter: true,
 			populateHistory: true,
 		});
+	});
+
+	it("keeps pre-compaction display history visible when rebuilding the chat", () => {
+		const compactionSummary = createCompactionSummaryMessage(
+			"Earlier work was summarized for the provider.",
+			12345,
+			new Date(0).toISOString(),
+		);
+		const fullDisplayTranscript = transcriptWith([
+			{ role: "user", content: "pre-compaction user request must remain scrollable", timestamp: 1 },
+			compactionSummary,
+			{ role: "user", content: "post-compaction follow-up remains visible", timestamp: 2 },
+		]);
+		const collapsedTranscript = transcriptWith([
+			compactionSummary,
+			{ role: "user", content: "post-compaction follow-up remains visible", timestamp: 2 },
+		]);
+		const buildTranscriptSessionContext = vi.fn((options?: { collapseCompactedHistory?: boolean }) =>
+			options?.collapseCompactedHistory ? collapsedTranscript : fullDisplayTranscript,
+		);
+		const { ctx, chatContainer } = makeRenderCtx(buildTranscriptSessionContext);
+
+		new UiHelpers(ctx).renderInitialMessages();
+
+		const rendered = Bun.stripANSI(chatContainer.render(100).join("\n"));
+		expect(rendered).toContain("pre-compaction user request must remain scrollable");
+		expect(rendered).toContain("compacted");
+		expect(rendered).toContain("post-compaction follow-up remains visible");
 	});
 });
 
