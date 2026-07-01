@@ -23,6 +23,7 @@ import {
 } from "../normalize";
 import { serializeEditFileText } from "../read-file";
 import type { EditToolDetails, LspBatchRequest } from "../renderer";
+import { pruneOversizedEditSnapshots } from "../snapshot-details";
 import { readEditTargetText, resolveEditTarget } from "../target";
 
 export interface FuzzyMatch {
@@ -1144,7 +1145,7 @@ export async function executeReplaceSingle(
 
 	return {
 		content: [{ type: "text", text: resultText }],
-		details: {
+		details: pruneOversizedEditSnapshots({
 			diff: diffResult.diff,
 			path: detailsPath,
 			firstChangedLine: diffResult.firstChangedLine,
@@ -1152,6 +1153,6 @@ export async function executeReplaceSingle(
 			meta,
 			oldText: rawContent,
 			newText: finalContent,
-		},
+		}),
 	};
 }

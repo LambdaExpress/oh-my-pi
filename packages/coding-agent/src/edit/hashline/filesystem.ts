@@ -34,6 +34,7 @@ import {
 	unwrapHashlineHeaderPath,
 } from "../../tools/plan-mode-guard";
 import { canonicalSnapshotKey } from "../file-snapshot-store";
+import { isNotebookPath } from "../notebook";
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { LspBatchRequest } from "../renderer";
 
@@ -206,6 +207,18 @@ export class HashlineFilesystem extends Filesystem {
 		// Refuse edits against generated files (lockfiles, models.json, …).
 		assertEditableFileContent(content, relativePath);
 		return content;
+	}
+
+	async readBinary(relativePath: string): Promise<Uint8Array | undefined> {
+		const target = this.#resolveEditTarget(relativePath);
+		if (target.kind === "ssh") return undefined;
+		if (isNotebookPath(target.absolutePath)) return undefined;
+		try {
+			return await fs.readFile(target.absolutePath);
+		} catch (error) {
+			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
+			throw error;
+		}
 	}
 
 	async preflightWrite(relativePath: string, options?: PreflightWriteOptions): Promise<void> {

@@ -140,7 +140,7 @@ const HOST_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"advisor.subagents",
 	"advisor.syncBacklog",
 	"advisor.immuneTurns",
-	"serviceTierAdvisor",
+	"tier.advisor",
 ];
 
 const RPC_BACKGROUND_DEFAULTED_SETTING_PATHS: SettingPath[] = [
@@ -856,7 +856,6 @@ async function buildSessionOptions(
 				{
 					settings: activeSettings,
 					matchPreferences: modelMatchPreferences,
-					modelRegistry,
 				},
 			);
 			const rememberedResolvedModel = rememberedSpec.model;

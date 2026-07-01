@@ -46,6 +46,7 @@ import {
 } from "../normalize";
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { EditToolDetails, LspBatchRequest } from "../renderer";
+import { pruneOversizedEditSnapshots } from "../snapshot-details";
 import {
 	createInternalUrlEditFileSystem,
 	type EditTarget,
@@ -2115,7 +2116,7 @@ export async function executePatchSingle(
 
 	return {
 		content: [{ type: "text", text: resultText }],
-		details: {
+		details: pruneOversizedEditSnapshots({
 			diff: diffResult.diff,
 			path: detailsPath,
 			firstChangedLine: diffResult.firstChangedLine,
@@ -2126,6 +2127,6 @@ export async function executePatchSingle(
 			meta,
 			oldText,
 			newText,
-		},
+		}),
 	};
 }
