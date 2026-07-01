@@ -6,7 +6,7 @@ import { stripVTControlCharacters } from "node:util";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { StatusLineComponent, type StatusLineSettings } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
 import { STATUS_LINE_PRESETS } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/presets";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 import { removeSyncWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
@@ -94,6 +94,17 @@ describe("StatusLineComponent effective settings cache", () => {
 				expect(second).toEqual(first);
 			}
 		}
+	});
+
+	it("omits the Pi glyph from Nerd Font presets by default", () => {
+		expect(STATUS_LINE_PRESETS.default.leftSegments).not.toContain("pi");
+		expect(STATUS_LINE_PRESETS.full.leftSegments).not.toContain("pi");
+		expect(STATUS_LINE_PRESETS.nerd.leftSegments).not.toContain("pi");
+
+		const component = makeComponent({ preset: "default", sessionAccent: false });
+		const content = stripVTControlCharacters(component.getTopBorder(120).content);
+
+		expect(content).not.toContain(theme.icon.pi);
 	});
 
 	it("invalidates on updateSettings and reflects hook visibility changes", () => {

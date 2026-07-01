@@ -18,23 +18,37 @@ afterAll(() => {
 
 function makeComponent(
 	reports: unknown,
-	options: { provider?: string; activeIdentity?: { accountId?: string; email?: string; projectId?: string } } = {},
+	options: {
+		provider?: string;
+		activeIdentity?: { accountId?: string; email?: string; projectId?: string };
+		usingOAuth?: boolean;
+		usageStats?: {
+			input: number;
+			output: number;
+			cacheRead: number;
+			cacheWrite: number;
+			premiumRequests: number;
+			cost: number;
+		};
+	} = {},
 ): StatusLineComponent {
 	const component = new StatusLineComponent({
 		state: { messages: [], model: { contextWindow: 1000, provider: options.provider } },
 		model: { contextWindow: 1000, provider: options.provider },
 		sessionManager: {
-			getUsageStatistics: () => ({
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				premiumRequests: 0,
-				cost: 0,
-			}),
+			getUsageStatistics: () =>
+				options.usageStats ?? {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					premiumRequests: 0,
+					cost: 0,
+				},
 		},
 		fetchUsageReports: async () => reports,
 		modelRegistry: {
+			isUsingOAuth: () => options.usingOAuth ?? false,
 			authStorage: {
 				getOAuthAccountIdentity: (provider: string) =>
 					provider === options.provider ? options.activeIdentity : undefined,
@@ -167,6 +181,65 @@ describe("usage status-line segment", () => {
 		expect(content).not.toContain("98%");
 		expect(content).not.toContain("66%");
 		expect(content).not.toContain("other");
+	});
+
+	it("renders subscription cost as compact usage limits without billing markers", async () => {
+		const now = Date.now();
+		const component = makeComponent(
+			[
+				{
+					provider: "openai-codex",
+					metadata: { accountId: "active-account" },
+					limits: [
+						{
+							scope: { windowId: "5h", tier: "prolite" },
+							window: { resetsAt: now + 30 * 60_000 },
+							amount: { usedFraction: 0.24 },
+						},
+						{
+							scope: { windowId: "7d", tier: "prolite" },
+							window: { resetsAt: now + 141 * 3_600_000 },
+							amount: { usedFraction: 0.08 },
+						},
+					],
+				},
+			],
+			{
+				provider: "openai-codex",
+				activeIdentity: { accountId: "active-account" },
+				usingOAuth: true,
+				usageStats: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					cost: 12.34,
+					premiumRequests: 2,
+				},
+			},
+		);
+		component.updateSettings({
+			preset: "custom",
+			leftSegments: [],
+			rightSegments: ["cost"],
+			sessionAccent: false,
+		});
+
+		component.refreshUsageInBackground();
+		await flushUsageRefresh();
+		const content = stripVTControlCharacters(component.getTopBorder(200).content);
+
+		expect(content).toContain("5h");
+		expect(content).toContain("76%");
+		expect(content).toContain("7d");
+		expect(content).toContain("92%");
+		expect(content).not.toContain("24%");
+		expect(content).not.toContain("8%");
+		expect(content).not.toContain("prolite");
+		expect(content).not.toContain("(");
+		expect(content).not.toContain("(sub)");
+		expect(content).not.toContain("$12.34");
+		expect(content).not.toContain("★ 2");
 	});
 
 	it("invalidates cached usage when the active provider changes", async () => {
@@ -329,5 +402,29 @@ describe("usage status-line segment", () => {
 		expect(low.visible).toBe(true);
 		expect(stripVTControlCharacters(highWithoutValue)).toBe(stripVTControlCharacters(lowWithoutValue));
 		expect(highWithoutValue).not.toBe(lowWithoutValue);
+	});
+});
+
+describe("cost status-line segment", () => {
+	it("keeps non-OAuth cost and premium request billing visible", () => {
+		const result = renderSegment("cost", {
+			usageStats: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: 12.34,
+				premiumRequests: 2,
+			},
+			session: {
+				state: { model: { provider: "openai-codex" } },
+				modelRegistry: { isUsingOAuth: () => false },
+			},
+		} as unknown as SegmentContext);
+		const content = stripVTControlCharacters(result.content);
+
+		expect(result.visible).toBe(true);
+		expect(content).toContain("$12.34");
+		expect(content).toContain("★ 2");
 	});
 });
