@@ -92,7 +92,7 @@ import type { AgentSession, AgentSessionEvent, ResolvedRoleModel } from "../sess
 import type { CompactMode } from "../session/compact-modes";
 import { HistoryStorage } from "../session/history-storage";
 import type { SessionContext } from "../session/session-context";
-import { getRecentSessions } from "../session/session-listing";
+import { getRecentSessions, type RecentSessionInfo } from "../session/session-listing";
 import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
 import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } from "../slash-commands/builtin-registry";
@@ -134,7 +134,11 @@ import { PlanReviewOverlay } from "./components/plan-review-overlay";
 import { StatusLineComponent } from "./components/status-line";
 import type { ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
-import { WelcomeComponent, type LspServerInfo as WelcomeLspServerInfo } from "./components/welcome";
+import {
+	WelcomeComponent,
+	type LspServerInfo as WelcomeLspServerInfo,
+	type RecentSession as WelcomeRecentSession,
+} from "./components/welcome";
 import { BtwController } from "./controllers/btw-controller";
 import { CommandController } from "./controllers/command-controller";
 import { EventController } from "./controllers/event-controller";
@@ -797,12 +801,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Get recent sessions
 		const recentSessions = await logger.time("InteractiveMode.init:recentSessions", () =>
-			getRecentSessions(this.sessionManager.getSessionDir()).then(sessions =>
-				sessions.map(s => ({
-					name: s.name,
-					timeAgo: s.timeAgo,
-				})),
-			),
+			this.#loadWelcomeRecentSessions(),
 		);
 
 		const startupQuiet = settings.get("startup.quiet");
@@ -956,6 +955,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 			this.sessionManager.onSessionNameChanged(() => {
 				this.#handleSessionAccentInputsChanged();
+				void this.#refreshWelcomeRecentSessions();
 			}),
 			onStatusLineSessionAccentChanged(() => {
 				this.#syncStatusLineSettings();
@@ -3489,6 +3489,28 @@ export class InteractiveMode implements InteractiveModeContext {
 				fileTypes: server.fileTypes,
 			})) ?? []
 		);
+	}
+
+	async #loadWelcomeRecentSessions(): Promise<WelcomeRecentSession[]> {
+		const sessions: RecentSessionInfo[] = await getRecentSessions(this.sessionManager.getSessionDir());
+		return sessions.map(session => ({
+			name: session.name,
+			timeAgo: session.timeAgo,
+		}));
+	}
+
+	async #refreshWelcomeRecentSessions(): Promise<void> {
+		if (!this.#welcomeComponent) {
+			return;
+		}
+		try {
+			this.#welcomeComponent.setRecentSessions(await this.#loadWelcomeRecentSessions());
+			this.ui.requestRender();
+		} catch (err) {
+			logger.warn("Failed to refresh welcome recent sessions", {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
 	}
 
 	#updateWelcomeLspServers(): void {

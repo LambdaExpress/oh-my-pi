@@ -17,6 +17,7 @@
 
 ### Fixed
 
+- Fixed the welcome screen Recent sessions list staying on its startup `Untitled` snapshot after the active session receives an auto-generated title.
 - Fixed TUI transcript rebuilds hiding pre-compaction display history behind a `compacted` divider and reporting compaction from unrelated session branches.
 - Fixed streaming code/content tool-call previews for `bash`, `browser`, `eval`, `pwsh`, and `write` so pending TUI blocks keep advancing between throttled JSON parses.
 - Fixed shell tool working-directory previews treating Windows absolute paths on other drives as project-relative paths, which could leak the home directory instead of shortening it to `~`.

@@ -120,6 +120,37 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 		expect(findServerLine()).not.toContain(theme.status.pending);
 	});
 
+	it("refreshes Recent sessions when the active session receives a generated title", async () => {
+		await session.sessionManager.ensureOnDisk();
+		await mode.init({ suppressWelcomeIntro: true });
+
+		const renderUi = () => Bun.stripANSI(mode.ui.render(120).join("\n"));
+		const initial = renderUi();
+		expect(initial).toContain("Recent sessions");
+		expect(initial).toContain("Untitled");
+		expect(initial).not.toContain("Generated Recent Session Title");
+
+		let resolveRefresh!: () => void;
+		const refreshed = new Promise<void>(resolve => {
+			resolveRefresh = resolve;
+		});
+		const originalRequestRender = mode.ui.requestRender.bind(mode.ui);
+		vi.spyOn(mode.ui, "requestRender").mockImplementation((force?: boolean) => {
+			const result = originalRequestRender(force);
+			if (renderUi().includes("Generated Recent Session Title")) {
+				resolveRefresh();
+			}
+			return result;
+		});
+
+		await expect(session.sessionManager.setSessionName("Generated Recent Session Title", "auto")).resolves.toBe(true);
+		await refreshed;
+		const refreshedOutput = renderUi();
+
+		expect(refreshedOutput).toContain("Generated Recent Session Title");
+		expect(refreshedOutput).not.toContain("Untitled");
+	});
+
 	it("does not render LSP startup warnings when startup.quiet is enabled", () => {
 		session.settings.set("startup.quiet", true);
 		const showWarningSpy = vi.spyOn(mode, "showWarning").mockImplementation(() => {});
