@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
-import { $env, isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
@@ -19,10 +19,10 @@ import manualContinuePrompt from "../../prompts/system/manual-continue.md" with 
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
 import { isTinyTitleLocalModelKey } from "../../tiny/models";
-import { isLowSignalTitleInput } from "../../tiny/text";
 import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
+import { startAutoSessionTitleGeneration } from "../../utils/auto-session-title";
 import {
 	copyToClipboard,
 	readImageFromClipboard,
@@ -33,7 +33,6 @@ import { EnhancedPasteController } from "../../utils/enhanced-paste";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
-import { generateSessionTitle, setSessionTerminalTitle } from "../../utils/title-generator";
 
 /**
  * Slash commands that may carry secrets in their arguments should never be
@@ -826,40 +825,15 @@ export class InputController {
 			// skipped deterministically (no model invoked, no download-progress UI)
 			// and the session stays unnamed — the next user message gets a fresh
 			// chance, so titling defers past "hi" instead of latching onto it.
-			if (!this.ctx.sessionManager.getSessionName() && !$env.PI_NO_TITLE && !isLowSignalTitleInput(text)) {
-				this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel"));
-				const registry = this.ctx.session.modelRegistry;
-				generateSessionTitle(
-					text,
-					registry,
-					this.ctx.settings,
-					this.ctx.session.sessionId,
-					this.ctx.session.model,
-					provider => this.ctx.session.agent.metadataForProvider(provider),
-					this.ctx.titleSystemPrompt,
-				)
-					.then(async title => {
-						// Re-check: a concurrent attempt for an earlier message may have
-						// already named the session. Don't clobber it.
-						if (title && !this.ctx.sessionManager.getSessionName()) {
-							const applied = await this.ctx.sessionManager.setSessionName(title, "auto");
-							if (applied) {
-								setSessionTerminalTitle(
-									this.ctx.sessionManager.getSessionName()!,
-									this.ctx.sessionManager.getCwd(),
-								);
-								this.ctx.updateEditorBorderColor();
-							}
-						}
-					})
-					.catch(err => {
-						logger.warn("title-generator: uncaught auto-title error", {
-							sessionId: this.ctx.session.sessionId,
-							reason: "uncaught-auto-title-error",
-							error: err instanceof Error ? err.message : String(err),
-						});
-					});
-			}
+			startAutoSessionTitleGeneration({
+				text,
+				session: this.ctx.session,
+				sessionManager: this.ctx.sessionManager,
+				settings: this.ctx.settings,
+				titleSystemPrompt: this.ctx.titleSystemPrompt,
+				onBeforeGenerate: () => this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel")),
+				onTitleApplied: () => this.ctx.updateEditorBorderColor(),
+			});
 
 			if (this.ctx.onInputCallback) {
 				// Include any pending images from clipboard paste

@@ -873,6 +873,7 @@ import * as bundledPiCodingAgentTuiTypes from "@oh-my-pi/pi-coding-agent/tui/typ
 import * as bundledPiCodingAgentTuiUtils from "@oh-my-pi/pi-coding-agent/tui/utils";
 import * as bundledPiCodingAgentTuiWidthAwareText from "@oh-my-pi/pi-coding-agent/tui/width-aware-text";
 import * as bundledPiCodingAgentUtilsActiveRepoContext from "@oh-my-pi/pi-coding-agent/utils/active-repo-context";
+import * as bundledPiCodingAgentUtilsAutoSessionTitle from "@oh-my-pi/pi-coding-agent/utils/auto-session-title";
 import * as bundledPiCodingAgentUtilsBlockContext from "@oh-my-pi/pi-coding-agent/utils/block-context";
 import * as bundledPiCodingAgentUtilsChangelog from "@oh-my-pi/pi-coding-agent/utils/changelog";
 import * as bundledPiCodingAgentUtilsClipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
@@ -3099,6 +3100,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	>,
 	"@oh-my-pi/pi-coding-agent/utils/active-repo-context":
 		bundledPiCodingAgentUtilsActiveRepoContext as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/utils/auto-session-title":
+		bundledPiCodingAgentUtilsAutoSessionTitle as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/utils/block-context": bundledPiCodingAgentUtilsBlockContext as unknown as Readonly<
 		Record<string, unknown>
 	>,

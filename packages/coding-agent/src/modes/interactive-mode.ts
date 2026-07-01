@@ -110,6 +110,7 @@ import { formatPhaseDisplayName, todoMatchesAnyDescription } from "../tools/todo
 import { ToolError } from "../tools/tool-errors";
 import { vocalizer } from "../tts/vocalizer";
 import { renderTreeList } from "../tui/tree-list";
+import { startAutoSessionTitleGeneration } from "../utils/auto-session-title";
 import type { EventBus } from "../utils/event-bus";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-color";
@@ -2518,6 +2519,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
+	#startAutoTitleForPrompt(text: string): void {
+		startAutoSessionTitleGeneration({
+			text,
+			session: this.session,
+			sessionManager: this.sessionManager,
+			settings: this.settings,
+			titleSystemPrompt: this.titleSystemPrompt,
+			onTitleApplied: () => this.updateEditorBorderColor(),
+		});
+	}
+
 	#scheduleApprovedPlanTitleRefresh(planContent: string, sessionId: string): void {
 		const refresh = generateSessionTitle(
 			planContent,
@@ -2728,6 +2740,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		await this.#enterPlanMode();
 		if (initialPrompt && this.onInputCallback) {
+			this.#startAutoTitleForPrompt(initialPrompt);
 			this.onInputCallback(this.startPendingSubmission({ text: initialPrompt }));
 		}
 	}

@@ -870,6 +870,7 @@ export const BUNDLED_PI_REGISTRY_KEYS: ReadonlySet<string> = new Set([
 	"@oh-my-pi/pi-coding-agent/tui/utils",
 	"@oh-my-pi/pi-coding-agent/tui/width-aware-text",
 	"@oh-my-pi/pi-coding-agent/utils/active-repo-context",
+	"@oh-my-pi/pi-coding-agent/utils/auto-session-title",
 	"@oh-my-pi/pi-coding-agent/utils/block-context",
 	"@oh-my-pi/pi-coding-agent/utils/changelog",
 	"@oh-my-pi/pi-coding-agent/utils/clipboard",

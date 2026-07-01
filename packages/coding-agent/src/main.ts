@@ -75,6 +75,7 @@ import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { AUTO_THINKING, parseConfiguredThinkingLevel } from "./thinking";
 import type { LspStartupServerInfo } from "./tools";
+import { startAutoSessionTitleGeneration } from "./utils/auto-session-title";
 import {
 	getChangelogPath,
 	getNewEntries,
@@ -483,8 +484,20 @@ async function runInteractiveMode(
 		await executeBuiltinSlashCommand(`/join ${joinLink}`, { ctx: mode });
 	}
 
+	const startAutoTitleForInitialPrompt = (text: string): void => {
+		startAutoSessionTitleGeneration({
+			text,
+			session,
+			sessionManager: session.sessionManager,
+			settings: session.settings,
+			titleSystemPrompt,
+			onTitleApplied: () => mode.updateEditorBorderColor(),
+		});
+	};
+
 	if (initialMessage !== undefined) {
 		try {
+			startAutoTitleForInitialPrompt(initialMessage);
 			using _keepalive = new EventLoopKeepalive();
 			await session.prompt(initialMessage, { images: initialImages });
 		} catch (error: unknown) {
@@ -495,6 +508,7 @@ async function runInteractiveMode(
 
 	for (const message of initialMessages) {
 		try {
+			startAutoTitleForInitialPrompt(message);
 			using _keepalive = new EventLoopKeepalive();
 			await session.prompt(message);
 		} catch (error: unknown) {
