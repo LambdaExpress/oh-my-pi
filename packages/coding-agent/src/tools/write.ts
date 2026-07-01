@@ -48,12 +48,7 @@ import {
 import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { type OutputMeta, outputMeta } from "./output-meta";
 import { formatPathRelativeToCwd, isInternalUrlPath, pathTargetsSsh, peelWriteUrlSelector } from "./path-utils";
-import {
-	enforcePlanModeWrite,
-	resolvePlanPath,
-	targetsLocalSandbox,
-	unwrapHashlineHeaderPath,
-} from "./plan-mode-guard";
+import { enforcePlanModeWrite, resolvePlanPath, unwrapHashlineHeaderPath } from "./plan-mode-guard";
 import {
 	cachedRenderedString,
 	createRenderedStringCache,
@@ -90,7 +85,6 @@ const EXECUTABLE_NOTICE = "[Notice: Made executable via chmod +x]";
 const writeSchema = type({
 	path: type("string").describe("file path"),
 	content: type("string").describe("file content"),
-	"mode?": type('"append"').describe("append content to an existing local:// artifact instead of replacing it"),
 });
 
 export type WriteToolInput = typeof writeSchema.infer;
@@ -801,7 +795,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 	async execute(
 		_toolCallId: string,
-		{ path: rawPath, content, mode }: WriteParams,
+		{ path: rawPath, content }: WriteParams,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<WriteToolDetails>,
 		context?: AgentToolContext,
@@ -907,48 +901,17 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				return sqliteResult;
 			}
 
-			const appendMode = mode === "append";
-			if (appendMode && !targetsLocalSandbox(this.session, path)) {
-				throw new ToolError("Append mode is only supported for local:// artifacts.");
-			}
-
+			enforcePlanModeWrite(this.session, path, { op: "create" });
 			const absolutePath = resolvePlanPath(this.session, path);
 			const batchRequest = getLspBatchRequest(context?.toolCall);
-			const targetExists = await fs.exists(absolutePath);
-			enforcePlanModeWrite(this.session, path, { op: targetExists ? "update" : "create" });
 
-			if (appendMode && !targetExists) {
-				throw new ToolError(`Cannot append to missing file ${path}; write without mode to create it first.`);
-			}
-
-			// Check if file exists and is auto-generated before overwriting. Append mode is
-			// limited to local:// artifacts, so it does not mutate generated working-tree files.
-			if (!appendMode && targetExists) {
+			// Check if file exists and is auto-generated before overwriting
+			if (await fs.exists(absolutePath)) {
 				await assertEditableFile(absolutePath, path);
 			}
 
 			const displayPath = formatPathRelativeToCwd(absolutePath, this.session.cwd);
 			emitWriteProgress(onUpdate, cleanContent, displayPath, absolutePath);
-
-			if (appendMode) {
-				await fs.appendFile(absolutePath, cleanContent);
-				invalidateFsScanAfterWrite(absolutePath);
-				this.session.bumpFileMutationVersion?.(absolutePath);
-
-				const snapshotContent = resolveFileDisplayMode(this.session).hashLines
-					? await Bun.file(absolutePath).text()
-					: cleanContent;
-				const header = maybeWriteSnapshotHeader(this.session, absolutePath, snapshotContent);
-				const writeLine = `Successfully appended ${cleanContent.length} bytes to ${displayPath}`;
-				let resultText = header ? `${header}\n${writeLine}` : writeLine;
-				if (stripped) {
-					resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
-				}
-				return {
-					content: [{ type: "text", text: resultText }],
-					details: { resolvedPath: absolutePath },
-				};
-			}
 
 			// Try ACP bridge first for editor-visible filesystem paths. Internal
 			// artifacts such as local:// plans are owned by OMP, not the editor.

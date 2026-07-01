@@ -8,7 +8,6 @@
 - Added a first-class `pwsh` tool for direct PowerShell script execution, including registration, dedicated Nerd Font rendering, ACP summaries, copy targets, and focused tests.
 - Added read support for image and supported document files stored inside archives, including images embedded in archived PDFs.
 - Added `ssh://` remote file support for verified Windows PowerShell hosts, including drive-path URLs, directory listings, writes, deletes, and moves.
-- Added `write` tool append mode for existing `local://` artifacts so chunked local outputs can be extended without rewriting earlier content.
 
 ### Changed
 

@@ -207,36 +207,4 @@ describe("write tool ACP fs routing", () => {
 			).text(),
 		).toBe(scratchContent);
 	});
-
-	it("appends later local artifact chunks without truncating earlier content", async () => {
-		const artifactPath = "local://generated/chunked-output.txt";
-		const chunks = ["alpha\n", "beta\n", "gamma\n"];
-		const session = createSession(tmpDir);
-		const tool = new WriteTool(session);
-		const resolvedPath = resolveLocalUrlToPath(artifactPath, {
-			getArtifactsDir: session.getArtifactsDir,
-			getSessionId: session.getSessionId,
-		});
-
-		await tool.execute("call-chunk-1", { path: artifactPath, content: chunks[0]! });
-		await tool.execute("call-chunk-2", { path: artifactPath, content: chunks[1]!, mode: "append" });
-		await tool.execute("call-chunk-3", { path: artifactPath, content: chunks[2]!, mode: "append" });
-
-		expect(await Bun.file(resolvedPath).text()).toBe(chunks.join(""));
-	});
-
-	it("rejects append mode for a missing local artifact", async () => {
-		const artifactPath = "local://missing/chunked-output.txt";
-		const session = createSession(tmpDir);
-		const tool = new WriteTool(session);
-		const resolvedPath = resolveLocalUrlToPath(artifactPath, {
-			getArtifactsDir: session.getArtifactsDir,
-			getSessionId: session.getSessionId,
-		});
-
-		await expect(
-			tool.execute("call-missing-append", { path: artifactPath, content: "orphan chunk\n", mode: "append" }),
-		).rejects.toThrow(/Cannot append to missing file .*local:\/\/missing\/chunked-output\.txt.*write without mode/i);
-		await expect(Bun.file(resolvedPath).exists()).resolves.toBe(false);
-	});
 });
