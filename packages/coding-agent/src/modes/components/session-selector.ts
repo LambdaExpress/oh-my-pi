@@ -6,6 +6,7 @@ import {
 	matchesKey,
 	padding,
 	replaceTabs,
+	routeSelectListMouse,
 	routeSgrMouseInput,
 	ScrollView,
 	Spacer,
@@ -168,6 +169,7 @@ class SessionList implements Component {
 	// scroll window. Only consulted while the picker holds the alternate screen
 	// (where the overlay enables mouse tracking and paints from screen row 0).
 	#hitRows: (number | undefined)[] = [];
+	#hoveredIndex: number | null = null;
 	readonly #searchInput: Input;
 	onSelect?: (session: SessionInfo) => void;
 	onCancel?: () => void;
@@ -236,6 +238,7 @@ class SessionList implements Component {
 		const fuzzy = rankSessionSearchMatches(this.#allSessions, query);
 		this.#filteredSessions = this.#mergeHistoryMatches(query, fuzzy);
 		this.#selectedIndex = Math.min(this.#selectedIndex, Math.max(0, this.#filteredSessions.length - 1));
+		this.setHoverIndex(null);
 	}
 
 	/**
@@ -262,11 +265,20 @@ class SessionList implements Component {
 		if (this.#selectedIndex >= this.#filteredSessions.length) {
 			this.#selectedIndex = Math.max(0, this.#filteredSessions.length - 1);
 		}
+		this.setHoverIndex(null);
 	}
 
 	/** Resolve a list-local rendered-line index to a filtered-session index. */
-	hitTestSession(line: number): number | undefined {
+	hitTest(line: number): number | undefined {
 		return this.#hitRows[line];
+	}
+
+	setHoverIndex(index: number | null): void {
+		if (index === null || index < 0 || index >= this.#filteredSessions.length) {
+			this.#hoveredIndex = null;
+			return;
+		}
+		this.#hoveredIndex = index;
 	}
 
 	/** Wheel notch: move the selection one step (clamped, no wrap). */
@@ -276,7 +288,7 @@ class SessionList implements Component {
 	}
 
 	/** Mouse click: select the session under the pointer and resume it. */
-	selectAndConfirm(index: number): void {
+	clickItem(index: number): void {
 		const session = this.#filteredSessions[index];
 		if (!session) return;
 		this.#selectedIndex = index;
@@ -345,6 +357,7 @@ class SessionList implements Component {
 			const blockStart = sessionLines.length;
 			const session = this.#filteredSessions[i];
 			const isSelected = i === this.#selectedIndex;
+			const isHovered = i === this.#hoveredIndex && !isSelected;
 
 			// Normalize first message to single line
 			const normalizedMessage = session.firstMessage.replace(/\n/g, " ").trim();
@@ -392,7 +405,10 @@ class SessionList implements Component {
 
 			sessionLines.push(metadataLine);
 			sessionLines.push(""); // Blank line between sessions
-			for (let k = blockStart; k < sessionLines.length; k++) sessionRowIndex[k] = i;
+			for (let k = blockStart; k < sessionLines.length; k++) {
+				sessionRowIndex[k] = i;
+				if (isHovered) sessionLines[k] = theme.bg("selectedBg", sessionLines[k] ?? "");
+			}
 		}
 
 		// Wrap the rendered window in a ScrollView for a proportional right-edge bar.
@@ -727,13 +743,9 @@ export class SessionSelectorComponent extends Container {
 	#handleMouse(data: string): void {
 		if (this.#confirmationDialog) return;
 		routeSgrMouseInput(data, event => {
-			if (event.wheel !== null) {
-				this.#sessionList.handleWheel(event.wheel);
-				return true;
-			}
-			if (!event.leftClick || event.row >= this.#footerStart) return true;
-			const index = this.#sessionList.hitTestSession(event.row - this.#listLineOffset);
-			if (index !== undefined) this.#sessionList.selectAndConfirm(index);
+			const listLine = event.row - this.#listLineOffset;
+			const handled = routeSelectListMouse(this.#sessionList, event, listLine);
+			if (handled) this.#onRequestRender?.();
 			return true;
 		});
 	}

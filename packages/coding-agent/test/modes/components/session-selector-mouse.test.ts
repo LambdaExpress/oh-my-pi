@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
 
 beforeAll(async () => {
@@ -25,6 +25,10 @@ function makeSession(id: string, title: string | undefined): SessionInfo {
 /** SGR left-button press at a 1-based screen row (column is irrelevant for row hit-testing). */
 function leftClick(row1Based: number, col1Based = 4): string {
 	return `\x1b[<0;${col1Based};${row1Based}M`;
+}
+
+function hover(row1Based: number, col1Based = 6): string {
+	return `\x1b[<35;${col1Based};${row1Based}M`;
 }
 
 /** SGR wheel notch: button 64 = up, 65 = down. */
@@ -69,6 +73,41 @@ describe("SessionSelectorComponent mouse", () => {
 		// Mouse rows are 1-based; the fullscreen overlay paints from screen row 0.
 		selector.handleInput(leftClick(betaRow + 1));
 		expect(picked?.id).toBe("bbbb");
+	});
+
+	it("highlights a hovered non-selected session block without changing Enter selection", () => {
+		const sessions = [
+			makeSession("aaaa", "Alpha session"),
+			makeSession("bbbb", "Beta session"),
+			makeSession("cccc", "Gamma session"),
+		];
+		let picked: SessionInfo | undefined;
+		let renderRequests = 0;
+		const selector = makeSelector(sessions, s => {
+			picked = s;
+		});
+		selector.setOnRequestRender(() => renderRequests++);
+
+		const beforeHover = selector.render(80);
+		const betaRow = beforeHover.findIndex(line => Bun.stripANSI(line).includes("Beta session"));
+		expect(betaRow).toBeGreaterThanOrEqual(0);
+		expect(beforeHover[betaRow]).not.toContain(theme.getBgAnsi("selectedBg"));
+
+		selector.handleInput(hover(betaRow + 1));
+		expect(renderRequests).toBe(1);
+
+		const afterHover = selector.render(80);
+		expect(afterHover[betaRow]).toContain(theme.getBgAnsi("selectedBg"));
+
+		selector.handleInput("\n");
+		expect(picked?.id).toBe("aaaa");
+
+		const footerRow = afterHover.findIndex(line => Bun.stripANSI(line).includes("Esc cancel"));
+		expect(footerRow).toBeGreaterThanOrEqual(0);
+		selector.handleInput(hover(footerRow + 1));
+
+		const afterFooterHover = selector.render(80);
+		expect(afterFooterHover[betaRow]).not.toContain(theme.getBgAnsi("selectedBg"));
 	});
 
 	it("scrolls the selection with the wheel, then resumes it on Enter", () => {

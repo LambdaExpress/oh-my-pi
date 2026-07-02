@@ -6,6 +6,7 @@ import {
 	fuzzyMatch,
 	Input,
 	matchesKey,
+	routeSelectListMouse,
 	routeSgrMouseInput,
 	Spacer,
 	Text,
@@ -66,6 +67,7 @@ class TreeList implements Component {
 	#activePathIds: Set<string> = new Set();
 	#lastSelectedId: string | null = null;
 	#hitRows: (number | undefined)[] = [];
+	#hoveredIndex: number | null = null;
 
 	onSelect?: (entryId: string) => void;
 	onCancel?: () => void;
@@ -351,6 +353,8 @@ class TreeList implements Component {
 		if (this.#filteredNodes.length > 0) {
 			this.#lastSelectedId = this.#filteredNodes[this.#selectedIndex]?.node.entry.id ?? this.#lastSelectedId;
 		}
+
+		this.setHoverIndex(null);
 	}
 
 	/** Get searchable text content from a node */
@@ -431,11 +435,19 @@ class TreeList implements Component {
 		this.#selectedIndex = Math.max(0, Math.min(this.#filteredNodes.length - 1, this.#selectedIndex + delta));
 	}
 
-	hitTestNode(line: number): number | undefined {
+	hitTest(line: number): number | undefined {
 		return this.#hitRows[line];
 	}
 
-	selectAndConfirm(index: number): void {
+	setHoverIndex(index: number | null): void {
+		if (index === null || index < 0 || index >= this.#filteredNodes.length) {
+			this.#hoveredIndex = null;
+			return;
+		}
+		this.#hoveredIndex = index;
+	}
+
+	clickItem(index: number): void {
 		const selected = this.#filteredNodes[index];
 		if (!selected) return;
 		this.#selectedIndex = index;
@@ -517,6 +529,7 @@ class TreeList implements Component {
 			const flatNode = this.#filteredNodes[i];
 			const entry = flatNode.node.entry;
 			const isSelected = i === this.#selectedIndex;
+			const isHovered = i === this.#hoveredIndex && !isSelected;
 
 			// Build line: cursor + prefix + path marker + label + content
 			const cursor = isSelected ? theme.fg("accent", "› ") : "  ";
@@ -594,6 +607,8 @@ class TreeList implements Component {
 
 			let line = cursor + theme.fg("dim", prefix) + pathMarker + label + content;
 			if (isSelected) {
+				line = theme.bg("selectedBg", line);
+			} else if (isHovered) {
 				line = theme.bg("selectedBg", line);
 			}
 			const renderedLine = truncateToWidth(line, rowWidth);
@@ -1037,18 +1052,9 @@ export class TreeSelectorComponent extends Container {
 	#handleMouse(data: string): void {
 		if (this.#labelInput) return;
 		routeSgrMouseInput(data, event => {
-			if (event.wheel !== null) {
-				this.#treeList.handleWheel(event.wheel);
-				this.#onRequestRender?.();
-				return true;
-			}
-			if (event.leftClick) {
-				const listLine = event.row - this.#treeListLineOffset;
-				const index = this.#treeList.hitTestNode(listLine);
-				if (index !== undefined) this.#treeList.selectAndConfirm(index);
-				this.#onRequestRender?.();
-				return true;
-			}
+			const listLine = event.row - this.#treeListLineOffset;
+			const handled = routeSelectListMouse(this.#treeList, event, listLine);
+			if (handled) this.#onRequestRender?.();
 			return true;
 		});
 	}

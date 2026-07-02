@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { TreeSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tree-selector";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { SessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { type RenderScheduler, TUI } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../../../tui/test/virtual-terminal";
@@ -46,6 +46,11 @@ async function settle(term: VirtualTerminal): Promise<void> {
 /** SGR left-button press at a 1-based screen row. */
 function leftClick(row1Based: number, col1Based = 1): string {
 	return `\x1b[<0;${col1Based};${row1Based}M`;
+}
+
+/** SGR no-button motion at a 1-based screen row. */
+function hover(row1Based: number, col1Based = 6): string {
+	return `\x1b[<35;${col1Based};${row1Based}M`;
 }
 
 /** SGR wheel notch: button 64 = up, 65 = down. */
@@ -142,6 +147,33 @@ describe("TreeSelectorComponent mouse", () => {
 		selector.handleInput(leftClick(childRow + 1));
 
 		expect(selected).toEqual(["child-one"]);
+	});
+
+	it("highlights a hovered tree node without changing keyboard selection", () => {
+		const selected: string[] = [];
+		const selector = makeSelector(entryId => selected.push(entryId));
+		let renderRequests = 0;
+		selector.setOnRequestRender(() => renderRequests++);
+		const selectedBg = theme.getBgAnsi("selectedBg");
+
+		const initialLines = selector.render(120);
+		const childRow = initialLines.findIndex(line => Bun.stripANSI(line).includes("First child prompt"));
+		expect(childRow).toBeGreaterThanOrEqual(0);
+		expect(initialLines[childRow]!).not.toContain(selectedBg);
+
+		selector.handleInput(hover(childRow + 1));
+
+		expect(renderRequests).toBeGreaterThan(0);
+		const hoveredLines = selector.render(120);
+		expect(hoveredLines[childRow]!).toContain(selectedBg);
+
+		selector.handleInput(hover(1));
+		const clearedLines = selector.render(120);
+		expect(clearedLines[childRow]!).not.toContain(selectedBg);
+
+		selector.handleInput("\n");
+
+		expect(selected).toEqual(["root"]);
 	});
 
 	it("ignores a left click on selector chrome", () => {
