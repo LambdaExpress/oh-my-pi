@@ -29,6 +29,7 @@
 - Fixed LSP client reuse when multiple servers in one workspace share a wrapper command but use different arguments.
 - Fixed streaming tool truncation notices showing inconsistent `artifact://...` recovery ids after final inline output capping.
 - Fixed plan-mode automatic session titles honoring `TITLE_SYSTEM.md`, with plan slugs kept as file-safe fallbacks instead of deciding execution-session display titles.
+- Fixed ordinary interactive session titles using the default title prompt before later replan refreshes honored user `TITLE_SYSTEM.md` overrides.
 - Fixed approved plan execution sessions being retitled to the generic title fallback after the executor initializes todos.
 - Fixed hashline edit support for ssh:// remote files.
 - Fixed SSH tool command previews to syntax-highlight cached POSIX/PowerShell remote shells and render `cwd` as the command sent to the remote host.

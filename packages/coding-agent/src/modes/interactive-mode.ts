@@ -611,6 +611,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
 		this.settings = session.settings;
+		this.titleSystemPrompt = session.titleSystemPrompt;
 		this.keybindings = KeybindingsManager.inMemory();
 		this.agent = session.agent;
 		this.#version = version;
@@ -2702,9 +2703,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Approved plans land in a fresh (or compacted) session whose first user-visible
 		// turn is the synthetic plan-approved prompt — that path bypasses the
 		// input-controller's title generation. Seed an auto-name from the plan title
-		// so the session is not left unnamed. `setSessionName("auto")` is a no-op
-		// when the user has already chosen a name (preserveContext paths).
-		const seededName = humanizePlanTitle(options.title);
+		// only when no custom title prompt is active; otherwise the seed can visibly
+		// violate `TITLE_SYSTEM.md` until the async refresh replaces it.
+		const shouldSeedPlanSlugTitle = !this.titleSystemPrompt?.trim();
+		const seededName = shouldSeedPlanSlugTitle ? humanizePlanTitle(options.title) : "";
 		if (seededName && !this.sessionManager.getSessionName()) {
 			const applied = await this.sessionManager.setSessionName(seededName, "auto");
 			if (applied) {

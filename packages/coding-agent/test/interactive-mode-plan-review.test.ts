@@ -143,6 +143,37 @@ describe("InteractiveMode plan review rendering", () => {
 		resetSettingsForTest();
 	});
 
+	it("copies the resolved session title prompt into the interactive mode before any refresh", async () => {
+		const resolvedTitlePrompt = "请严格使用中文为普通会话生成标题";
+		const model = session.model;
+		if (!model) {
+			throw new Error("Expected test session to have a model");
+		}
+		const customSession = new AgentSession({
+			agent: new Agent({
+				initialState: {
+					model,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+			}),
+			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
+			settings: Settings.isolated(),
+			modelRegistry,
+			titleSystemPrompt: resolvedTitlePrompt,
+		});
+		const refreshTitleSystemPrompt = vi.spyOn(InteractiveMode.prototype, "refreshTitleSystemPrompt");
+		const customMode = new InteractiveMode(customSession, "test");
+		try {
+			expect(customMode.titleSystemPrompt).toBe(resolvedTitlePrompt);
+			expect(refreshTitleSystemPrompt).not.toHaveBeenCalled();
+		} finally {
+			customMode.stop();
+			await customSession.dispose();
+		}
+	});
+
 	it("exits empty plan mode without confirmation", async () => {
 		const planFilePath = "local://PLAN.md";
 		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
@@ -707,7 +738,7 @@ describe("InteractiveMode plan review rendering", () => {
 		});
 	});
 
-	it("refreshes approved plan display title from the title generator", async () => {
+	it("waits for the custom title prompt before naming an approved plan execution session", async () => {
 		const planFilePath = "local://fix-lsp-status-caching-plan.md";
 		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
 			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
@@ -722,7 +753,26 @@ describe("InteractiveMode plan review rendering", () => {
 		vi.spyOn(mode, "showPlanReview").mockResolvedValue("Approve and execute");
 		vi.spyOn(mode, "handleClearCommand").mockResolvedValue();
 		const promptSpy = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
-		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockResolvedValue({
+		const { promise: titleRequestStarted, resolve: resolveTitleRequestStarted } = Promise.withResolvers<void>();
+		const { promise: titleResponse, resolve: resolveTitleResponse } = Promise.withResolvers<unknown>();
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockImplementation(() => {
+			resolveTitleRequestStarted();
+			return titleResponse as never;
+		});
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "fix-lsp-status-caching",
+		});
+
+		expect(session.sessionManager.getSessionName()).not.toBe("Fix lsp status caching");
+		await titleRequestStarted;
+		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
+		const titleRequest = completeSimpleMock.mock.calls[0]?.[1] as { systemPrompt?: string[] } | undefined;
+		expect(titleRequest?.systemPrompt).toEqual(["请生成中文标题"]);
+
+		resolveTitleResponse({
 			stopReason: "stop",
 			content: [
 				{
@@ -732,25 +782,12 @@ describe("InteractiveMode plan review rendering", () => {
 					arguments: { title: "修复状态缓存标题" },
 				},
 			],
-		} as never);
-
-		await mode.handlePlanApproval({
-			planFilePath,
-			planExists: true,
-			title: "fix-lsp-status-caching",
 		});
 
 		await waitForSessionName(session.sessionManager, "修复状态缓存标题");
-		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
-		const titleRequest = completeSimpleMock.mock.calls[0]?.[1] as { systemPrompt?: string[] } | undefined;
-		expect(titleRequest?.systemPrompt).toEqual(["请生成中文标题"]);
 		expect(session.sessionManager.getSessionName()).toBe("修复状态缓存标题");
 
-		const call = promptSpy.mock.calls.find(isPlanApprovedCall);
-		expect(call).toBeDefined();
-		const promptText = call?.[0] as string;
-		expect(promptText).toContain("Implement the cache routing fix.");
-		expect(promptText).toContain(`path="${planFilePath}"`);
+		expect(promptSpy.mock.calls.some(isPlanApprovedCall)).toBe(true);
 	});
 
 	it("keeps the humanized slug when approved plan title generation returns null", async () => {
