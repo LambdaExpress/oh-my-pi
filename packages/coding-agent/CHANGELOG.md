@@ -17,6 +17,8 @@
 - Changed the in-session `/tree` session tree picker to open as a viewport-filling fullscreen overlay with mouse wheel navigation and click-to-select support, matching `/resume`.
 - Changed the `/tree` and `/resume` fullscreen selectors to highlight mouse-hovered rows and session blocks before click selection.
 - Changed the default `Ctrl+Z` composer shortcut to undo text edits instead of suspending the application; `app.suspend` now has no default key but remains available for explicit remapping.
+- Changed the `/copy` picker to support mouse wheel navigation, click-to-copy row selection, and hover/drag row highlighting, matching `/resume` and `/tree`.
+- Changed the /copy picker preview to follow the hovered row while keeping Enter bound to the keyboard-selected target.
 
 ### Fixed
 

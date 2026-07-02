@@ -11,6 +11,18 @@ const DOWN = "\x1b[B";
 const ENTER = "\n";
 const CANCEL = "\x07"; // ctrl+g, remapped to tui.select.cancel below
 
+function leftClick(row1Based: number, col1Based = 4): string {
+	return `\x1b[<0;${col1Based};${row1Based}M`;
+}
+
+function hover(row1Based: number, col1Based = 6): string {
+	return `\x1b[<35;${col1Based};${row1Based}M`;
+}
+
+function wheel(direction: "up" | "down", row1Based = 2): string {
+	return `\x1b[<${direction === "down" ? 65 : 64};1;${row1Based}M`;
+}
+
 let darkTheme = await getThemeByName("dark");
 
 // Flatten order (always expanded): msg:1, Block 1, Block 2, msg:2.
@@ -122,6 +134,93 @@ describe("CopySelectorComponent", () => {
 
 		component.handleInput(UP); // back onto Block 2
 		expect(render(component)).toContain("beta()");
+	});
+
+	it("moves the copy cursor with the wheel and copies the new target on Enter", () => {
+		const onPick = vi.fn();
+		const component = new CopySelectorComponent(makeRoots(), { onPick, onCancel: vi.fn() });
+
+		component.render(80);
+		component.handleInput(wheel("down"));
+		expect(render(component)).toContain("alpha()");
+
+		component.handleInput(ENTER);
+
+		expect(onPick).toHaveBeenCalledTimes(1);
+		expect(onPick.mock.calls[0]![0].content).toBe("BLOCK0");
+	});
+
+	it("copies the target under a left click", () => {
+		const onPick = vi.fn();
+		const component = new CopySelectorComponent(makeRoots(), { onPick, onCancel: vi.fn() });
+
+		const lines = component.render(80);
+		const block2Row = lines.findIndex(line => stripVTControlCharacters(line).includes("Block 2"));
+		expect(block2Row).toBeGreaterThanOrEqual(0);
+
+		component.handleInput(leftClick(block2Row + 1));
+
+		expect(onPick).toHaveBeenCalledTimes(1);
+		expect(onPick.mock.calls[0]![0].content).toBe("BLOCK1");
+	});
+
+	it("highlights a hovered target without changing Enter selection", () => {
+		const onPick = vi.fn();
+		const component = new CopySelectorComponent(makeRoots(), { onPick, onCancel: vi.fn() });
+		const selectedBg = theme.getBgAnsi("selectedBg");
+
+		const initialOutput = render(component);
+		expect(initialOutput).toContain("newest-preview-text");
+		expect(initialOutput).not.toContain("alpha()");
+
+		const initialLines = component.render(80);
+		const block1Row = initialLines.findIndex(line => stripVTControlCharacters(line).includes("Block 1"));
+		expect(block1Row).toBeGreaterThanOrEqual(0);
+		expect(initialLines[block1Row]!).not.toContain(selectedBg);
+
+		component.handleInput(hover(block1Row + 1));
+
+		const hoveredLines = component.render(80);
+		expect(hoveredLines[block1Row]!).toContain(selectedBg);
+		expect(stripVTControlCharacters(hoveredLines.join("\n"))).toContain("alpha()");
+		expect(onPick).not.toHaveBeenCalled();
+
+		component.handleInput(ENTER);
+
+		expect(onPick).toHaveBeenCalledTimes(1);
+		expect(onPick.mock.calls[0]![0].content).toBe("FULL_MESSAGE");
+	});
+
+	it("clears hover preview when the pointer leaves the tree", () => {
+		const component = new CopySelectorComponent(makeRoots(), { onPick: vi.fn(), onCancel: vi.fn() });
+
+		const lines = component.render(80);
+		const block1Row = lines.findIndex(line => stripVTControlCharacters(line).includes("Block 1"));
+		const previewRow = lines.findIndex(line => stripVTControlCharacters(line).includes("Preview"));
+		expect(block1Row).toBeGreaterThanOrEqual(0);
+		expect(previewRow).toBeGreaterThanOrEqual(0);
+
+		component.handleInput(hover(block1Row + 1));
+		expect(render(component)).toContain("alpha()");
+
+		component.handleInput(hover(previewRow + 1));
+
+		const afterPointerLeave = render(component);
+		expect(afterPointerLeave).toContain("newest-preview-text");
+		expect(afterPointerLeave).not.toContain("alpha()");
+	});
+
+	it("ignores clicks outside the copy tree", () => {
+		const onPick = vi.fn();
+		const component = new CopySelectorComponent(makeRoots(), { onPick, onCancel: vi.fn() });
+
+		const lines = component.render(80);
+		const previewRow = lines.findIndex(line => stripVTControlCharacters(line).includes("Preview"));
+		expect(previewRow).toBeGreaterThanOrEqual(0);
+
+		component.handleInput(leftClick(previewRow + 1));
+
+		expect(onPick).not.toHaveBeenCalled();
 	});
 
 	it("quits on the cancel key", () => {

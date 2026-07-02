@@ -1,4 +1,13 @@
-import { type Component, matchesKey, padding, Text, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import {
+	type Component,
+	matchesKey,
+	padding,
+	routeSelectListMouse,
+	routeSgrMouseInput,
+	Text,
+	truncateToWidth,
+	visibleWidth,
+} from "@oh-my-pi/pi-tui";
 import { replaceTabs } from "../../tools/render-utils";
 import { highlightCode, theme } from "../theme/theme";
 import type { CopyTarget } from "../utils/copy-targets";
@@ -10,7 +19,7 @@ import {
 	matchesSelectUp,
 } from "../utils/keybinding-matchers";
 import { keyHint, rawKeyHint } from "./keybinding-hints";
-import { bottomBorder, divider, row, topBorder } from "./overlay-box";
+import { bottomBorder, divider, fit, row, topBorder } from "./overlay-box";
 
 /** Minimum rows reserved for the tree even on short terminals. */
 const MIN_TREE_ROWS = 3;
@@ -47,13 +56,17 @@ function gutterCells(hasNext: boolean): string {
 /**
  * Fullscreen `/copy` picker rendered as a `/tree`-style tree inside one
  * outlined box: a title, the tree of copy targets (recent assistant messages
- * with their code blocks nested beneath), a live preview of the highlighted
- * node, and a keybinding footer. Every node copies its `content` on Enter.
+ * with their code blocks nested beneath), a live preview of the hovered node
+ * when present, otherwise the keyboard cursor node, and a keybinding footer.
+ * Every node copies its `content` on Enter.
  */
 export class CopySelectorComponent implements Component {
 	#roots: CopyTarget[];
 	#cursorId: string;
 	#treeRows = MIN_TREE_ROWS;
+	#hitRows: (number | undefined)[] = [];
+	#hoveredIndex: number | null = null;
+	#treeLineOffset = 1;
 	// Reused across renders to wrap preview content to the pane width.
 	#previewText = new Text("", 0, 0);
 
@@ -80,7 +93,14 @@ export class CopySelectorComponent implements Component {
 		return out;
 	}
 
+	#cursorIndex(flat: readonly FlatNode[]): number {
+		const idx = flat.findIndex(n => n.target.id === this.#cursorId);
+		return idx >= 0 ? idx : 0;
+	}
+
 	handleInput(keyData: string): void {
+		if (keyData.startsWith("\x1b[<") && this.#handleMouse(keyData)) return;
+
 		if (matchesSelectCancel(keyData)) {
 			this.callbacks.onCancel();
 			return;
@@ -88,38 +108,79 @@ export class CopySelectorComponent implements Component {
 
 		const flat = this.#flatten();
 		if (flat.length === 0) return;
-		const idx = Math.max(
-			0,
-			flat.findIndex(n => n.target.id === this.#cursorId),
-		);
-
+		const idx = this.#cursorIndex(flat);
 		if (matchesSelectUp(keyData)) {
 			this.#cursorId = flat[idx === 0 ? flat.length - 1 : idx - 1]!.target.id;
+			this.#hoveredIndex = null;
 		} else if (matchesSelectDown(keyData)) {
 			this.#cursorId = flat[idx === flat.length - 1 ? 0 : idx + 1]!.target.id;
+			this.#hoveredIndex = null;
 		} else if (matchesSelectPageUp(keyData)) {
 			this.#cursorId = flat[Math.max(0, idx - this.#treeRows)]!.target.id;
+			this.#hoveredIndex = null;
 		} else if (matchesSelectPageDown(keyData)) {
 			this.#cursorId = flat[Math.min(flat.length - 1, idx + this.#treeRows)]!.target.id;
+			this.#hoveredIndex = null;
 		} else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
 			const target = flat[idx]!.target;
 			if (target.content !== undefined) this.callbacks.onPick(target);
 		}
 	}
 
+	handleWheel(delta: -1 | 1): void {
+		const flat = this.#flatten();
+		if (flat.length === 0) return;
+		const idx = this.#cursorIndex(flat);
+		const nextIdx = Math.max(0, Math.min(flat.length - 1, idx + delta));
+		this.#cursorId = flat[nextIdx]!.target.id;
+		this.#hoveredIndex = null;
+	}
+
+	hitTest(line: number): number | undefined {
+		return this.#hitRows[line];
+	}
+
+	setHoverIndex(index: number | null): void {
+		const flat = this.#flatten();
+		if (index === null || index < 0 || index >= flat.length) {
+			this.#hoveredIndex = null;
+			return;
+		}
+		this.#hoveredIndex = index;
+	}
+
+	clickItem(index: number): void {
+		const target = this.#flatten()[index]?.target;
+		if (!target) return;
+		this.#cursorId = target.id;
+		if (target.content !== undefined) this.callbacks.onPick(target);
+	}
+
+	#handleMouse(data: string): boolean {
+		return routeSgrMouseInput(data, event => {
+			routeSelectListMouse(this, event, event.row - this.#treeLineOffset);
+			return true;
+		});
+	}
+
 	#renderTree(width: number, flat: FlatNode[], cursorIdx: number, rows: number): string[] {
 		const inner = Math.max(0, width - 4);
 		const start = Math.max(0, Math.min(cursorIdx - Math.floor(rows / 2), Math.max(0, flat.length - rows)));
 		const out: string[] = [];
+		this.#hitRows = [];
+
 		for (let r = 0; r < rows; r++) {
 			const i = start + r;
 			const node = flat[i];
+			this.#hitRows[r] = node ? i : undefined;
 			if (!node) {
 				out.push(row("", width));
 				continue;
 			}
+
 			const target = node.target;
 			const isSelected = i === cursorIdx;
+			const isHovered = i === this.#hoveredIndex && !isSelected;
 
 			let prefix = "";
 			for (let l = 0; l < node.depth - 1; l++) prefix += gutterCells(node.ancestorHasNext[l]!);
@@ -134,7 +195,8 @@ export class CopySelectorComponent implements Component {
 				? theme.fg("accent", cursor) + theme.fg("dim", prefix) + theme.bold(theme.fg("accent", labelPlain))
 				: cursor + theme.fg("dim", prefix) + labelPlain;
 			const gap = Math.max(1, inner - used - visibleWidth(labelPlain) - visibleWidth(hint));
-			out.push(row(left + padding(gap) + (hint ? theme.fg("dim", hint) : ""), width));
+			const content = left + padding(gap) + (hint ? theme.fg("dim", hint) : "");
+			out.push(row(isHovered ? theme.bg("selectedBg", fit(content, inner)) : content, width));
 		}
 		return out;
 	}
@@ -176,12 +238,10 @@ export class CopySelectorComponent implements Component {
 	render(width: number): readonly string[] {
 		const height = process.stdout.rows || 40;
 		const flat = this.#flatten();
-		const cursorIdx = Math.max(
-			0,
-			flat.findIndex(n => n.target.id === this.#cursorId),
-		);
+		const cursorIdx = this.#cursorIndex(flat);
 		const selected = flat[cursorIdx]?.target;
-
+		const previewTarget =
+			this.#hoveredIndex !== null && flat[this.#hoveredIndex] ? flat[this.#hoveredIndex]!.target : selected;
 		const available = Math.max(MIN_TREE_ROWS + 1, height - CHROME_ROWS);
 		const treeRows = Math.max(1, Math.min(flat.length, Math.floor(available / 2)));
 		this.#treeRows = treeRows;
@@ -193,14 +253,15 @@ export class CopySelectorComponent implements Component {
 			keyHint("tui.select.cancel", "quit"),
 		].join(theme.fg("dim", " · "));
 
-		return [
-			topBorder(width, "Copy to clipboard"),
-			...this.#renderTree(width, flat, cursorIdx, treeRows),
-			divider(width),
-			...this.#renderPreview(width, selected, previewRows),
-			divider(width),
-			row(footer, width),
-			bottomBorder(width),
-		];
+		const lines: string[] = [];
+		lines.push(topBorder(width, "Copy to clipboard"));
+		this.#treeLineOffset = lines.length;
+		lines.push(...this.#renderTree(width, flat, cursorIdx, treeRows));
+		lines.push(divider(width));
+		lines.push(...this.#renderPreview(width, previewTarget, previewRows));
+		lines.push(divider(width));
+		lines.push(row(footer, width));
+		lines.push(bottomBorder(width));
+		return lines;
 	}
 }
