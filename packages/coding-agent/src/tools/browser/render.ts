@@ -188,6 +188,8 @@ function extractTextOutput(content: Array<{ type: string; text?: string }> | und
 }
 
 export const browserToolRenderer = {
+	animatedPendingPreview: (args: unknown) => (args as BrowserRenderArgs).action === "run",
+	animatedPartialResult: (args: unknown) => (args as BrowserRenderArgs).action === "run",
 	renderCall(args: BrowserRenderArgs, options: RenderResultOptions, theme: Theme): Component {
 		const action = extractPartialJsonString(args.__partialJson, "action") ?? args.action;
 		if (action === "run") {

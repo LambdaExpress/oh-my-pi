@@ -265,22 +265,32 @@ export function formatSshCommandLines(args: SshRenderArgs | undefined, uiTheme: 
 }
 
 export const sshToolRenderer = {
-	renderCall(args: SshRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
+	animatedPendingPreview: true,
+	renderCall(args: SshRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		const host = args.host || "…";
-		const header = renderStatusLine({ icon: "pending", title: "SSH", description: `[${host}]` }, uiTheme);
 		const cmdLines = formatSshCommandLines(args, uiTheme);
 		const outputBlock = new CachedOutputBlock();
 		return markFramedBlockComponent({
-			render: (width: number): readonly string[] =>
-				outputBlock.render(
+			render: (width: number): readonly string[] => {
+				const header = renderStatusLine(
+					{
+						icon: options.spinnerFrame !== undefined ? "running" : "pending",
+						spinnerFrame: options.spinnerFrame,
+						title: "SSH",
+						description: `[${host}]`,
+					},
+					uiTheme,
+				);
+				return outputBlock.render(
 					{
 						header,
-						state: "pending",
-						sections: [{ lines: capPreviewLines(cmdLines, uiTheme, { expanded: _options.expanded }) }],
+						state: options.spinnerFrame !== undefined ? "running" : "pending",
+						sections: [{ lines: capPreviewLines(cmdLines, uiTheme, { expanded: options.expanded }) }],
 						width,
 					},
 					uiTheme,
-				),
+				);
+			},
 			invalidate: () => {
 				outputBlock.invalidate();
 			},
