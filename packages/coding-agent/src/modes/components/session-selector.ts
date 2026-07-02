@@ -743,6 +743,11 @@ export class SessionSelectorComponent extends Container {
 	#handleMouse(data: string): void {
 		if (this.#confirmationDialog) return;
 		routeSgrMouseInput(data, event => {
+			if (event.row >= this.#footerStart) {
+				this.#sessionList.setHoverIndex(null);
+				this.#onRequestRender?.();
+				return true;
+			}
 			const listLine = event.row - this.#listLineOffset;
 			const handled = routeSelectListMouse(this.#sessionList, event, listLine);
 			if (handled) this.#onRequestRender?.();

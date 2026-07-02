@@ -14,6 +14,7 @@ import type {
 	ExtensionWidgetOptions,
 } from "../extensibility/extensions";
 import type { CompactOptions } from "../extensibility/extensions/types";
+import type { Skill } from "../extensibility/skills";
 import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
 import type { AgentSession } from "../session/agent-session";
@@ -111,6 +112,7 @@ export interface InteractiveModeContext {
 	// Session access
 	session: AgentSession;
 	sessionManager: SessionManager;
+	titleSystemPrompt?: string;
 	/** Session the transcript/editor/status are attached to: the focused agent's, else `session`. */
 	readonly viewSession: AgentSession;
 	/** Id of the focused agent, undefined when the main session is attached. */
@@ -129,7 +131,6 @@ export interface InteractiveModeContext {
 	historyStorage?: HistoryStorage;
 	mcpManager?: MCPManager;
 	lspServers?: LspStartupServerInfo[];
-	titleSystemPrompt?: string;
 	collabHost?: CollabHost;
 	collabGuest?: CollabGuestLink;
 	eventController: EventController;
@@ -205,7 +206,7 @@ export interface InteractiveModeContext {
 	lastStatusSpacer: Spacer | undefined;
 	lastStatusText: Text | undefined;
 	fileSlashCommands: Set<string>;
-	skillCommands: Map<string, string>;
+	skillCommands: Map<string, Skill>;
 	oauthManualInput: OAuthManualInputManager;
 	todoPhases: TodoPhase[];
 
@@ -297,7 +298,6 @@ export interface InteractiveModeContext {
 	getUserMessageText(message: Message): string;
 	findLastAssistantMessage(): AssistantMessage | undefined;
 	extractAssistantText(message: AssistantMessage): string;
-	updateEditorTopBorder(): void;
 	/** Refresh the running-subagents status badge from the active local or collab registry. */
 	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;

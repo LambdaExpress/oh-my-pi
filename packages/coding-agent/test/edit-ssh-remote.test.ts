@@ -292,7 +292,7 @@ describe("ssh:// edit targets", () => {
 		expect(failed.details?.perFileResults).toHaveLength(2);
 		expect(failed.details?.perFileResults?.[0]?.isError).toBeUndefined();
 		expect(failed.details?.perFileResults?.[1]?.isError).toBe(true);
-		expect(failed.isError).toBeUndefined();
+		expect(failed.isError).toBe(true);
 	});
 
 	it("final previews read remote content while streaming previews stay syntax-only", async () => {

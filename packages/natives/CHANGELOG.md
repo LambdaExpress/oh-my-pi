@@ -10,6 +10,17 @@
 
 - Fixed compiled-binary native embedding accepting stale `pi_natives.*.node` artifacts whose version sentinel does not match the current `@oh-my-pi/pi-natives` package version. `gen:native` now validates the sentinel before archiving and can read native artifacts from an explicit `PI_NATIVE_SOURCE_DIR`, preventing local Windows builds from producing an `omp` binary that only starts while another install keeps a correct cached addon locked.
 - Fixed Windows AVX2 detection preferring Windows PowerShell 5.1, whose .NET runtime lacks `System.Runtime.Intrinsics.X86.Avx2`; the loader now tries `pwsh` first so AVX2-capable Windows hosts select the `modern` native addon by default.
+## [16.3.0] - 2026-07-02
+
+### Added
+
+- Added `workingDir` to `ShellRunResult` to allow hosts to synchronize the session's current working directory without executing a hidden probe command.
+
+### Fixed
+
+- Fixed an issue where panics in native worker tasks (such as grep, AST parsing, globbing, workspace listing, HTML-to-markdown conversion, fuzzy finding, and clipboard image reading) would abort the host process instead of properly rejecting the returned JavaScript Promise.
+- Fixed a crash on Windows under low memory or commit charge conditions when spawning worker threads for token counting or sorting operations.
+
 ## [16.2.11] - 2026-07-01
 
 ### Fixed

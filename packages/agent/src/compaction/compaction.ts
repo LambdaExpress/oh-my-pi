@@ -161,7 +161,15 @@ export interface CompactionSettings {
 	thresholdPercent?: number;
 	thresholdTokens?: number;
 	midTurnEnabled?: boolean;
-	reserveTokens: number;
+	/**
+	 * Tokens reserved below the context window for the next prompt + response.
+	 *
+	 * Leave unset to use {@link DEFAULT_RESERVE_TOKENS}; the unset state is the
+	 * provenance signal that lets small-window recovery replace the default with
+	 * a proportional reserve (see {@link resolveBudgetReserveTokens}). An
+	 * explicit value — even one equal to the default — is always honored.
+	 */
+	reserveTokens?: number;
 	keepRecentTokens: number;
 	autoContinue?: boolean;
 	remoteEnabled?: boolean;
@@ -170,13 +178,18 @@ export interface CompactionSettings {
 	v2RetainedMessageBudget?: number;
 }
 
+/** Reserve applied when {@link CompactionSettings.reserveTokens} is unset. */
+export const DEFAULT_RESERVE_TOKENS = 16384;
+
+// reserveTokens is deliberately absent: an unset reserve is what marks it as
+// defaulted, which resolveBudgetReserveTokens needs to distinguish "user never
+// chose a reserve" from "user explicitly configured the default value".
 export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 	enabled: true,
 	strategy: "context-full",
 	thresholdPercent: -1,
 	thresholdTokens: -1,
 	midTurnEnabled: true,
-	reserveTokens: 16384,
 	keepRecentTokens: 20000,
 	autoContinue: true,
 	remoteEnabled: true,
@@ -233,10 +246,34 @@ export function getLastAssistantUsage(entries: SessionEntry[]): Usage | undefine
 }
 
 /**
- * Effective reserve: at least 15% of context window or the configured floor, whichever is larger.
+ * Effective reserve: at least 15% of context window or the configured floor
+ * (defaulting to {@link DEFAULT_RESERVE_TOKENS} when unset), whichever is larger.
  */
 export function effectiveReserveTokens(contextWindow: number, settings: CompactionSettings): number {
-	return Math.max(Math.floor(contextWindow * 0.15), settings.reserveTokens);
+	return Math.max(Math.floor(contextWindow * 0.15), settings.reserveTokens ?? DEFAULT_RESERVE_TOKENS);
+}
+
+/**
+ * Reserve used when deciding whether a prompt still fits inside the model window.
+ *
+ * The default absolute reserve predates small bundled windows and can leave no
+ * practical budget there; recover a DEFAULTED reserve that is impossible for
+ * the window with the 15% proportional reserve (clamped to >= 1 so the derived
+ * threshold stays strictly below the window even for tiny test windows).
+ * Explicit valid reserves — including one that happens to equal the default —
+ * still win, because they intentionally shrink the usable prompt budget;
+ * provenance is carried by `settings.reserveTokens` being unset, never by
+ * comparing values against the default.
+ */
+export function resolveBudgetReserveTokens(contextWindow: number, settings: CompactionSettings): number {
+	const reserveTokens = effectiveReserveTokens(contextWindow, settings);
+	const proportionalReserveTokens = Math.max(1, Math.floor(contextWindow * 0.15));
+	const reserveWasDefaulted = settings.reserveTokens === undefined;
+	const defaultReserveIsEffectivelyImpossible =
+		reserveWasDefaulted && reserveTokens >= contextWindow - proportionalReserveTokens;
+	const reserveExceedsWindow = reserveTokens >= contextWindow;
+
+	return defaultReserveIsEffectivelyImpossible || reserveExceedsWindow ? proportionalReserveTokens : reserveTokens;
 }
 
 /**
@@ -275,10 +312,19 @@ export function resolveThresholdTokens(contextWindow: number, settings: Compacti
 		return Math.min(contextWindow - 1, Math.max(1, thresholdTokens));
 	}
 
-	// Percentage-based threshold
+	// Percentage-based threshold. The default absolute reserve can exceed bundled
+	// small-context windows, or nearly consume a 16k-class window; in those
+	// known-impossible default configurations, fall back to the proportional
+	// reserve so threshold/recovery-band checks stay usable. Explicit valid
+	// configured reserves still define the usable prompt budget. Cap at
+	// contextWindow - 1 (matching the fixed-token clamp above) so the threshold
+	// never reaches the whole window even when the reserve resolves to 0.
 	const thresholdPercent = settings.thresholdPercent;
 	if (typeof thresholdPercent !== "number" || !Number.isFinite(thresholdPercent) || thresholdPercent <= 0) {
-		return contextWindow - effectiveReserveTokens(contextWindow, settings);
+		return Math.max(
+			0,
+			Math.min(contextWindow - 1, contextWindow - resolveBudgetReserveTokens(contextWindow, settings)),
+		);
 	}
 	const clampedThresholdPercent = Math.min(99, Math.max(1, thresholdPercent));
 	return Math.floor(contextWindow * (clampedThresholdPercent / 100));
@@ -1223,6 +1269,8 @@ export async function compact(
 		settings,
 	} = preparation;
 
+	const reserveTokens = settings.reserveTokens ?? DEFAULT_RESERVE_TOKENS;
+
 	const summaryOptions: SummaryOptions = {
 		promptOverride: options?.promptOverride,
 		extraContext: options?.extraContext,
@@ -1383,7 +1431,7 @@ export async function compact(
 				? generateSummary(
 						messagesToSummarize,
 						model,
-						settings.reserveTokens,
+						reserveTokens,
 						apiKey,
 						signal,
 						customInstructions,
@@ -1391,7 +1439,7 @@ export async function compact(
 						summaryOptions,
 					)
 				: Promise.resolve("No prior history."),
-			generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, apiKey, signal, summaryOptions),
+			generateTurnPrefixSummary(turnPrefixMessages, model, reserveTokens, apiKey, signal, summaryOptions),
 		]);
 		// Merge into single summary
 		summary = `${historyResult}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult}`;
@@ -1400,7 +1448,7 @@ export async function compact(
 		summary = await generateSummary(
 			messagesToSummarize,
 			model,
-			settings.reserveTokens,
+			reserveTokens,
 			apiKey,
 			signal,
 			customInstructions,
@@ -1417,7 +1465,7 @@ export async function compact(
 
 	const shortSummary = usedRemoteCompaction
 		? "Remote compaction"
-		: await generateShortSummary(recentMessages, summary, model, settings.reserveTokens, apiKey, signal, {
+		: await generateShortSummary(recentMessages, summary, model, reserveTokens, apiKey, signal, {
 				extraContext: options?.extraContext,
 				remoteEndpoint: summaryOptions.remoteEndpoint,
 				initiatorOverride: summaryOptions.initiatorOverride,
