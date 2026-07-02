@@ -88,6 +88,33 @@ describe("StatusLineComponent usage refresh", () => {
 		expect(calls).toBe(1);
 	});
 
+	it("requests a repaint when background usage reports populate the cached segment", async () => {
+		let repaints = 0;
+		const component = new StatusLineComponent(
+			makeSession(async () => usageReport(42)),
+			{
+				onUsageRefresh: () => {
+					repaints++;
+				},
+			},
+		);
+		component.updateSettings({
+			preset: "custom",
+			leftSegments: ["usage"],
+			rightSegments: [],
+			separator: "powerline-thin",
+		});
+
+		expect(plain(component.getTopBorder(80).content)).not.toContain("5h");
+		expect(repaints).toBe(0);
+
+		vi.advanceTimersByTime(0);
+		await flushMicrotasks();
+
+		expect(repaints).toBe(1);
+		expect(plain(component.getTopBorder(80).content)).toContain("5h 42%");
+	});
+
 	it("passes a startup timeout signal to the background usage fetch", async () => {
 		let signal: AbortSignal | undefined;
 		const component = new StatusLineComponent(
@@ -132,8 +159,16 @@ describe("StatusLineComponent usage refresh", () => {
 	});
 
 	it("applies late usage reports that resolve after the startup timeout", async () => {
+		let repaints = 0;
 		const late = Promise.withResolvers<unknown>();
-		const component = new StatusLineComponent(makeSession(() => late.promise));
+		const component = new StatusLineComponent(
+			makeSession(() => late.promise),
+			{
+				onUsageRefresh: () => {
+					repaints++;
+				},
+			},
+		);
 		component.updateSettings({
 			preset: "custom",
 			leftSegments: ["usage"],
@@ -148,9 +183,12 @@ describe("StatusLineComponent usage refresh", () => {
 		await flushMicrotasks();
 
 		expect(plain(component.getTopBorder(80).content)).not.toContain("5h");
+		expect(repaints).toBe(0);
 
 		late.resolve(usageReport(42));
 		await flushMicrotasks();
+
+		expect(repaints).toBe(1);
 
 		expect(plain(component.getTopBorder(80).content)).toContain("5h 42%");
 	});

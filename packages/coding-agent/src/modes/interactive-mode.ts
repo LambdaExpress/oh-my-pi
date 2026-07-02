@@ -684,7 +684,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.hookWidgetContainerBelow = new Container();
 		this.editorContainer = new Container();
 		this.editorContainer.addChild(this.editor);
-		this.statusLine = new StatusLineComponent(session);
+		this.statusLine = new StatusLineComponent(session, {
+			onUsageRefresh: () => this.ui.requestRender(),
+		});
 		this.statusLine.setAutoCompactEnabled(session.autoCompactionEnabled);
 		// Lazy provider — the top border rebuild coalesces to at most one
 		// invocation per painted frame instead of firing on every session event

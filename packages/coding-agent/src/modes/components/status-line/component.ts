@@ -242,6 +242,11 @@ function hasGitBackedSegment(segments: readonly StatusLineSegmentId[]): boolean 
 // StatusLineComponent
 // ═══════════════════════════════════════════════════════════════════════════
 
+export interface StatusLineComponentDeps {
+	/** Called after provider usage reports update the cached usage segment. */
+	onUsageRefresh?: () => void;
+}
+
 export class StatusLineComponent implements Component {
 	#settings: StatusLineSettings = {};
 	#effectiveSettings: EffectiveStatusLineSettings | undefined;
@@ -305,6 +310,7 @@ export class StatusLineComponent implements Component {
 	#usageFetchedAt = 0;
 	#usageInFlight = false;
 	#usageStartTimer: Timer | null = null;
+	#onUsageRefresh: (() => void) | undefined;
 	// Context-usage memo. The status line redraws on every agent event, so the
 	// hot path must not recompute context tokens unless an input changed.
 	// `getContextUsage()` anchors on the last assistant's real prompt-token
@@ -312,7 +318,11 @@ export class StatusLineComponent implements Component {
 	// message list + model window yields a stable result we can return verbatim.
 	#contextUsageCache: ContextUsageMemo | undefined;
 
-	constructor(private session: AgentSession) {
+	constructor(
+		private session: AgentSession,
+		deps: StatusLineComponentDeps = {},
+	) {
+		this.#onUsageRefresh = deps.onUsageRefresh;
 		this.#settings = {
 			preset: settings.get("statusLine.preset"),
 			leftSegments: settings.get("statusLine.leftSegments"),
@@ -825,6 +835,7 @@ export class StatusLineComponent implements Component {
 				: undefined;
 		this.#cachedUsage = this.#normalizeUsageReports(reports, activeProvider, activeIdentity);
 		this.#usageFetchedAt = Date.now();
+		this.#onUsageRefresh?.();
 	}
 
 	#observeLateUsageRefresh(session: AgentSession, reportsPromise: Promise<unknown>): void {

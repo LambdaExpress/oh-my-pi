@@ -23,6 +23,7 @@
 
 ### Fixed
 
+- Fixed status-line subscription usage limits appearing only after unrelated UI updates.
 - Fixed plan-mode initial prompts and `/plan <prompt>` submissions skipping automatic session title generation.
 - Fixed the welcome screen Recent sessions list staying on its startup `Untitled` snapshot after the active session receives an auto-generated title.
 - Fixed TUI transcript rebuilds hiding pre-compaction display history behind a `compacted` divider and reporting compaction from unrelated session branches.
