@@ -3,10 +3,11 @@ import { stripVTControlCharacters } from "node:util";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
-import { type Component, Text } from "@oh-my-pi/pi-tui";
+import { type Component, Text, type TUI } from "@oh-my-pi/pi-tui";
 
 // Models a transcript block that re-lays-out (tool preview collapsing, assistant
 // message finalizing, late async result) after newer blocks were appended below
@@ -112,6 +113,15 @@ class VersionedFinalizedBlock implements Component {
 	render(_width: number): string[] {
 		this.renderCount++;
 		return [...this.#lines];
+	}
+}
+
+class CountingToolExecutionComponent extends ToolExecutionComponent {
+	renderCount = 0;
+
+	override render(width: number): readonly string[] {
+		this.renderCount++;
+		return super.render(width);
 	}
 }
 
@@ -427,6 +437,53 @@ describe("TranscriptContainer", () => {
 		container.setNativeScrollbackCommittedRows(2);
 		expect(container.render(40)).toEqual(["original", "Error: boom"]);
 		expect(block.renderCount).toBe(2);
+	});
+	it("re-renders a committed finalized tool block when its display version changes", () => {
+		const container = new TranscriptContainer();
+		const ui = { requestRender() {} } as unknown as TUI;
+		const component = new CountingToolExecutionComponent(
+			"generic_fallback",
+			undefined,
+			{},
+			undefined,
+			ui,
+			process.cwd(),
+		);
+		const output = [
+			"tool-output-1",
+			"tool-output-2",
+			"tool-output-3",
+			"tool-output-4",
+			"tool-output-5",
+			"tool-output-6",
+			"tool-output-7",
+			"tool-output-8",
+			"tool-output-9",
+			"tool-output-10",
+		].join("\n");
+		container.addChild(component);
+		component.updateResult({ content: [{ type: "text", text: output }] }, false);
+
+		const collapsedRows = container.render(80);
+		const collapsed = plain(collapsedRows);
+		expect(component.isTranscriptBlockFinalized()).toBe(true);
+		expect(collapsed).toContain("tool-output-4");
+		expect(collapsed).toContain("more lines");
+		expect(collapsed).not.toContain("tool-output-8");
+		expect(component.renderCount).toBe(1);
+
+		container.setNativeScrollbackCommittedRows(collapsedRows.length);
+		const afterCommit = component.renderCount;
+		expect(plain(container.render(80))).toContain("more lines");
+		expect(component.renderCount).toBe(afterCommit);
+
+		component.setExpanded(true);
+		const beforeExpandedRender = component.renderCount;
+		const expanded = plain(container.render(80));
+		expect(component.renderCount).toBe(beforeExpandedRender + 1);
+		expect(expanded).toContain("tool-output-8");
+		expect(expanded).toContain("tool-output-10");
+		expect(expanded).not.toContain("more lines");
 	});
 	it("renders once after a block finalizes with rows already inside committed scrollback", () => {
 		const container = new TranscriptContainer();

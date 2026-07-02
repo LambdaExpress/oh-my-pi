@@ -221,6 +221,8 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	#isPartial = true;
 	#resultVersion = 0;
 	#lastDisplayKey: string | undefined;
+	#transcriptBlockVersion = 0;
+	#transcriptBlockVersionKey: string | undefined;
 	// Bumped whenever a render input that #rebuildDisplay consumes but the memo
 	// key cannot cheaply hash changes: streamed call args, the async edit-diff
 	// preview, and Kitty PNG conversions. Folded into the dirty key so those
@@ -678,6 +680,12 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		return (this.#result.details as { async?: { state?: string } } | undefined)?.async?.state === "running";
 	}
 
+	getTranscriptBlockVersion(): number {
+		const key = this.#displayKey();
+		this.#syncTranscriptBlockVersion(key);
+		return this.#transcriptBlockVersion;
+	}
+
 	/**
 	 * Whether this still-live block's settled rows may enter native scrollback
 	 * (see `FinalizableBlock.isTranscriptBlockCommitStable`). Renderers classify
@@ -791,16 +799,33 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 	}
 
 	#updateDisplay(): void {
+		const key = this.#displayKey();
+		if (key === this.#lastDisplayKey && this.#displayBuilt) return;
+		this.#lastDisplayKey = key;
+		this.#syncTranscriptBlockVersion(key);
+
+		this.#rebuildDisplay();
+		this.#displayBuilt = true;
+	}
+
+	// Keep the transcript-block version and display memo key on the same set of
+	// visible inputs. The transcript container asks for this before render(), so
+	// this method must be independent of #lastDisplayKey.
+	#displayKey(): string {
 		// `TERMINAL.imageProtocol` is resolved by an async capability probe during
 		// TUI startup, so a result rendered before it lands must re-shape once it
 		// does (it gates Image children vs text fallback in #rebuildDisplay); keyed
 		// here for the same reason markdown.ts keys its render cache on it.
-		const key = `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${this.#spinnerFrame ?? "-"}|${this.#showImages}|${getThemeEpoch()}|${this.#displayInputVersion}|${this.#backgroundTaskFrozen}|${TERMINAL.imageProtocol ?? "-"}|${this.#imageSizeKey()}`;
-		if (key === this.#lastDisplayKey && this.#displayBuilt) return;
-		this.#lastDisplayKey = key;
+		const spinnerFrame = this.#spinnerFrame ?? "-";
+		const imageProtocol = TERMINAL.imageProtocol ?? "-";
+		const imageSize = this.#imageSizeKey();
+		return `${this.#resultVersion}|${this.#expanded}|${this.#isPartial}|${spinnerFrame}|${this.#showImages}|${getThemeEpoch()}|${this.#displayInputVersion}|${this.#backgroundTaskFrozen}|${imageProtocol}|${imageSize}`;
+	}
 
-		this.#rebuildDisplay();
-		this.#displayBuilt = true;
+	#syncTranscriptBlockVersion(key: string): void {
+		if (key === this.#transcriptBlockVersionKey) return;
+		this.#transcriptBlockVersionKey = key;
+		this.#transcriptBlockVersion++;
 	}
 
 	// Viewport-/settings-dependent image sizing folded into the memo key only when
