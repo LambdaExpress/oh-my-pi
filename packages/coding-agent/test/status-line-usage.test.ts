@@ -183,7 +183,7 @@ describe("usage status-line segment", () => {
 		expect(content).not.toContain("other");
 	});
 
-	it("renders subscription cost as compact usage limits without billing markers", async () => {
+	it("renders subscription cost compact usage labels from remaining reset time", async () => {
 		const now = Date.now();
 		const component = makeComponent(
 			[
@@ -193,12 +193,144 @@ describe("usage status-line segment", () => {
 					limits: [
 						{
 							scope: { windowId: "5h", tier: "prolite" },
-							window: { resetsAt: now + 30 * 60_000 },
+							window: { resetsAt: now + 191 * 60_000 },
 							amount: { usedFraction: 0.24 },
 						},
 						{
 							scope: { windowId: "7d", tier: "prolite" },
-							window: { resetsAt: now + 141 * 3_600_000 },
+							window: { resetsAt: now + 121 * 3_600_000 },
+							amount: { usedFraction: 0.08 },
+						},
+					],
+				},
+			],
+			{
+				provider: "openai-codex",
+				activeIdentity: { accountId: "active-account" },
+				usingOAuth: true,
+				usageStats: {
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					cost: 12.34,
+					premiumRequests: 2,
+				},
+			},
+		);
+		component.updateSettings({
+			preset: "custom",
+			leftSegments: [],
+			rightSegments: ["cost"],
+			sessionAccent: false,
+		});
+
+		component.refreshUsageInBackground();
+		await flushUsageRefresh();
+		const content = stripVTControlCharacters(component.getTopBorder(200).content);
+
+		expect(content).toContain("3h");
+		expect(content).toContain("76%");
+		expect(content).toContain("5d");
+		expect(content).toContain("92%");
+		expect(content).not.toContain("5h");
+		expect(content).not.toContain("7d");
+		expect(content).not.toContain("24%");
+		expect(content).not.toContain("8%");
+		expect(content).not.toContain("prolite");
+		expect(content).not.toContain("(");
+		expect(content).not.toContain("(sub)");
+		expect(content).not.toContain("$12.34");
+		expect(content).not.toContain("★ 2");
+	});
+
+	it("renders subscription cost compact rounded labels with lower units only below thresholds", async () => {
+		const cases = [
+			{
+				resetMs: 60 * 60_000,
+				sevenDayResetMs: 24 * 3_600_000,
+				expectedFiveHour: "1h 76%",
+				expectedSevenDay: "1d 92%",
+			},
+			{
+				resetMs: 59 * 60_000,
+				sevenDayResetMs: 23 * 3_600_000,
+				expectedFiveHour: "59m 76%",
+				expectedSevenDay: "23h 92%",
+			},
+		] as const;
+
+		for (const testCase of cases) {
+			const now = Date.now();
+			const component = makeComponent(
+				[
+					{
+						provider: "openai-codex",
+						metadata: { accountId: "active-account" },
+						limits: [
+							{
+								scope: { windowId: "5h", tier: "prolite" },
+								window: { resetsAt: now + testCase.resetMs },
+								amount: { usedFraction: 0.24 },
+							},
+							{
+								scope: { windowId: "7d", tier: "prolite" },
+								window: { resetsAt: now + testCase.sevenDayResetMs },
+								amount: { usedFraction: 0.08 },
+							},
+						],
+					},
+				],
+				{
+					provider: "openai-codex",
+					activeIdentity: { accountId: "active-account" },
+					usingOAuth: true,
+					usageStats: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						cost: 12.34,
+						premiumRequests: 2,
+					},
+				},
+			);
+			component.updateSettings({
+				preset: "custom",
+				leftSegments: [],
+				rightSegments: ["cost"],
+				sessionAccent: false,
+			});
+
+			component.refreshUsageInBackground();
+			await flushUsageRefresh();
+			const content = stripVTControlCharacters(component.getTopBorder(200).content);
+
+			expect(content).toContain(testCase.expectedFiveHour);
+			expect(content).toContain(testCase.expectedSevenDay);
+			expect(content).toContain("76%");
+			expect(content).toContain("92%");
+			expect(content).not.toContain("24%");
+			expect(content).not.toContain("8%");
+			expect(content).not.toContain("prolite");
+			expect(content).not.toContain("$12.34");
+			expect(content).not.toContain("★ 2");
+		}
+	});
+
+	it("falls back to fixed subscription cost compact labels when reset times are absent", async () => {
+		const component = makeComponent(
+			[
+				{
+					provider: "openai-codex",
+					metadata: { accountId: "active-account" },
+					limits: [
+						{
+							scope: { windowId: "5h", tier: "prolite" },
+							amount: { usedFraction: 0.24 },
+						},
+						{
+							scope: { windowId: "7d", tier: "prolite" },
 							amount: { usedFraction: 0.08 },
 						},
 					],
@@ -236,8 +368,6 @@ describe("usage status-line segment", () => {
 		expect(content).not.toContain("24%");
 		expect(content).not.toContain("8%");
 		expect(content).not.toContain("prolite");
-		expect(content).not.toContain("(");
-		expect(content).not.toContain("(sub)");
 		expect(content).not.toContain("$12.34");
 		expect(content).not.toContain("★ 2");
 	});

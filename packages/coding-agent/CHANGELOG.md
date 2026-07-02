@@ -12,6 +12,7 @@
 ### Changed
 
 - Changed the status line to drop the default Pi glyph and show subscription usage limits instead of subscription cost markers.
+- Changed subscription usage status-line labels to show rounded remaining reset time, using minutes below one hour and hours below one day.
 
 - Clarified that `grep` does not recursively search internal URL directories.
 - Changed the in-session `/tree` session tree picker to open as a viewport-filling fullscreen overlay with mouse wheel navigation and click-to-select support, matching `/resume`.

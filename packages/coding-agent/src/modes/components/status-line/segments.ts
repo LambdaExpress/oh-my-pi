@@ -411,6 +411,15 @@ function formatUsageReset(value: number, unit: "m" | "h"): string {
 	return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
 }
 
+function formatCompactUsageWindowLabel(fallback: string, value: number | undefined, unit: "m" | "h"): string {
+	if (value === undefined) return fallback;
+	const remaining = Math.max(0, Math.round(value));
+	if (unit === "m") {
+		return remaining < 60 ? `${remaining}m` : `${Math.round(remaining / 60)}h`;
+	}
+	return remaining < 24 ? `${remaining}h` : `${Math.round(remaining / 24)}d`;
+}
+
 function renderUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
 	const u = ctx.usage;
 	if (!u || (!u.fiveHour && !u.sevenDay)) {
@@ -451,12 +460,14 @@ function renderCompactUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
 
 	const parts: string[] = [];
 	if (u.fiveHour) {
+		const label = formatCompactUsageWindowLabel("5h", u.fiveHour.resetMinutes, "m");
 		const remaining = Math.max(0, Math.min(100, 100 - u.fiveHour.percent));
-		parts.push(`5h ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
+		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
 	}
 	if (u.sevenDay) {
+		const label = formatCompactUsageWindowLabel("7d", u.sevenDay.resetHours, "h");
 		const remaining = Math.max(0, Math.min(100, 100 - u.sevenDay.percent));
-		parts.push(`7d ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
+		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
 	}
 
 	return { content: withIcon(theme.icon.time, parts.join(theme.sep.dot)), visible: true };
