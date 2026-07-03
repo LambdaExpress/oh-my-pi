@@ -1721,6 +1721,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const displayLineByNumber = new Map<number, string>();
 		const fullLines = rawSelector ? undefined : await readBracketContextFullLines(absolutePath, fileSize);
 		let columnTruncated = 0;
+		const clippedLines = new Set<number>();
 		let displayContent: { text: string; startLine: number; lineNumbers?: Array<number | null> } | undefined;
 
 		for (const range of ranges) {
@@ -1768,6 +1769,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						if (!cloned) cloned = collectedLines.slice();
 						cloned[i] = text;
 						columnTruncated = maxColumns;
+						clippedLines.add(range.startLine + i);
 					}
 				}
 				if (cloned) displayLines = cloned;
@@ -1795,7 +1797,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						if (visibleText !== undefined) return visibleText;
 						if (maxColumns <= 0) return sourceText;
 						const truncated = truncateLine(sourceText, maxColumns);
-						if (truncated.wasTruncated) columnTruncated = maxColumns;
+						if (truncated.wasTruncated) {
+							columnTruncated = maxColumns;
+							clippedLines.add(lineNumber);
+						}
 						return truncated.text;
 					},
 				},
@@ -1813,7 +1818,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (shouldAddHashLines && outputText) {
 			const tag = await recordFileSnapshot(this.session, absolutePath);
 			if (tag) {
-				recordSeenLinesFromBody(this.session, absolutePath, tag, outputText);
+				recordSeenLinesFromBody(this.session, absolutePath, tag, outputText, clippedLines);
 				outputText = `${formatReadHashlineHeader(formatPathRelativeToCwd(absolutePath, this.session.cwd), tag)}\n${outputText}`;
 			}
 		}
@@ -2809,6 +2814,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					// ellipsis-truncated text made every long-line file uneditable on
 					// the next edit attempt.
 					let displayLines: string[] = collectedLines;
+					const clippedLines = new Set<number>();
 					if (!rawSelector && maxColumns > 0) {
 						let cloned: string[] | undefined;
 						for (let i = 0; i < collectedLines.length; i++) {
@@ -2817,6 +2823,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 								if (!cloned) cloned = collectedLines.slice();
 								cloned[i] = text;
 								columnTruncated = maxColumns;
+								clippedLines.add(startLineDisplay + i);
 							}
 						}
 						if (cloned) displayLines = cloned;
@@ -2899,7 +2906,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 									if (visibleText !== undefined) return visibleText;
 									if (maxColumns <= 0) return sourceText;
 									const truncated = truncateLine(sourceText, maxColumns);
-									if (truncated.wasTruncated) columnTruncated = maxColumns;
+									if (truncated.wasTruncated) {
+										columnTruncated = maxColumns;
+										clippedLines.add(lineNumber);
+									}
 									return truncated.text;
 								},
 							},
@@ -2973,7 +2983,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					}
 
 					if (hashContext?.tag) {
-						recordSeenLinesFromBody(this.session, absolutePath, hashContext.tag, outputText);
+						recordSeenLinesFromBody(this.session, absolutePath, hashContext.tag, outputText, clippedLines);
 					}
 
 					if (capturedDisplayContent) {

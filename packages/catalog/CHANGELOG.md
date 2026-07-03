@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [16.3.3] - 2026-07-02
+
+### Fixed
+
+- Extended Anthropic-compatible signing-endpoint recognition to Cloudflare AI Gateway, Google Vertex, AWS Bedrock, and Azure AI Inference / Foundry to ensure consistent reasoning-replay and signature-stripping behavior, and exposed ResolvedAnthropicCompat.signingEndpoint in the public API.
+- Fixed Zhipu Coding Plan runtime discovery to prioritize account-scoped model lists over bundled fallback models, preventing routing errors for valid non-z.ai keys.
+
 ## [16.3.2] - 2026-07-02
 
 ### Fixed
