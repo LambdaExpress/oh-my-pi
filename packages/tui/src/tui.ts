@@ -1480,7 +1480,7 @@ export class TUI extends Container {
 						this.terminal.hideCursor();
 						this.#recordHardwareCursorHidden();
 					}
-					this.requestRender();
+					this.#requestRenderAfterOverlayVisibilityChange();
 				}
 			},
 			setHidden: (hidden: boolean) => {
@@ -1499,7 +1499,7 @@ export class TUI extends Container {
 						this.setFocus(component);
 					}
 				}
-				this.requestRender();
+				this.#requestRenderAfterOverlayVisibilityChange();
 			},
 			isHidden: () => entry.hidden,
 		};
@@ -1516,7 +1516,7 @@ export class TUI extends Container {
 			this.terminal.hideCursor();
 			this.#recordHardwareCursorHidden();
 		}
-		this.requestRender();
+		this.#requestRenderAfterOverlayVisibilityChange();
 	}
 
 	/** Check if there are any visible overlays */
@@ -1541,6 +1541,18 @@ export class TUI extends Container {
 			}
 		}
 		return undefined;
+	}
+
+	#requestRenderAfterOverlayVisibilityChange(): void {
+		if (!this.#resizeViewportActive) {
+			this.requestRender();
+			return;
+		}
+		this.#resizeViewportSettleTimer?.cancel();
+		this.#resizeViewportSettleTimer = undefined;
+		this.#resizeViewportActive = false;
+		this.#resizeEventPending = true;
+		this.requestRender(true, { clearScrollback: !isMultiplexerSession() });
 	}
 
 	override invalidate(): void {

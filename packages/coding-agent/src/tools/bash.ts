@@ -37,7 +37,7 @@ import {
 } from "./output-meta";
 import { resolveToCwd } from "./path-utils";
 import {
-	capPreviewLines,
+	createEarlierLinesTailWindow,
 	extractPartialJsonString,
 	formatToolWorkingDirectory,
 	previewWindowRows,
@@ -1207,7 +1207,12 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 						{
 							header,
 							state: options.spinnerFrame !== undefined ? "running" : "pending",
-							sections: [{ lines: capPreviewLines(cmdLines, uiTheme, { expanded: options.expanded }) }],
+							sections: [
+								{
+									lines: cmdLines,
+									tailWindow: options.expanded ? undefined : createEarlierLinesTailWindow(uiTheme),
+								},
+							],
 							width,
 						},
 						uiTheme,
@@ -1388,7 +1393,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								{
 									// Viewport-sized tail window in every state — streaming and final
 									// render identically; only ctrl+o uncaps.
-									lines: capPreviewLines(cmdLines ?? [], uiTheme, { expanded }),
+									lines: cmdLines ?? [],
+									tailWindow: expanded ? undefined : createEarlierLinesTailWindow(uiTheme),
 								},
 								{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines },
 							],

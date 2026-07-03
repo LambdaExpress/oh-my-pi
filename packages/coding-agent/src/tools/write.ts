@@ -24,7 +24,7 @@ import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
 import { getLanguageFromPath, highlightCode, type Theme } from "../modes/theme/theme";
 import writeDescription from "../prompts/tools/write.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
-import { fileHyperlink, framedBlock, renderStatusLine } from "../tui";
+import { fileHyperlink, framedBlock, type OutputBlockSection, renderStatusLine } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import {
 	type ArchiveMemberContent,
@@ -51,6 +51,7 @@ import { formatPathRelativeToCwd, isInternalUrlPath, pathTargetsSsh, peelWriteUr
 import { enforcePlanModeWrite, resolvePlanPath, unwrapHashlineHeaderPath } from "./plan-mode-guard";
 import {
 	cachedRenderedString,
+	createEarlierLinesTailWindow,
 	createRenderedStringCache,
 	Ellipsis,
 	extractPartialJsonString,
@@ -1007,6 +1008,11 @@ function normalizeDisplayText(text: string): string {
  */
 const WRITE_GUTTER_MIN_WIDTH = 3;
 
+interface StreamingContentPreview {
+	bodySection?: OutputBlockSection;
+	footerLine: string;
+}
+
 function formatStreamingContent(
 	content: string,
 	expanded: boolean,
@@ -1014,39 +1020,46 @@ function formatStreamingContent(
 	uiTheme: Theme,
 	spinnerFrame?: number,
 	cache?: RenderedStringCache,
-): string {
-	if (!content) return "";
+): StreamingContentPreview | undefined {
+	if (!content) return undefined;
+	const lines = normalizeDisplayText(content).split("\n");
+	const totalLines = lines.length;
+	const startIndex = expanded ? 0 : Math.max(0, totalLines - WRITE_STREAMING_PREVIEW_LINES);
+	const hiddenLogicalRows = startIndex;
 	const bodyText = cachedRenderedString(cache, uiTheme, expanded, language ?? "", content, () => {
-		const lines = normalizeDisplayText(content).split("\n");
-		const totalLines = lines.length;
-		// Collapsed: follow the streaming edge with a bounded tail window so the box
-		// stays short enough not to strand its scrolled-off head above the viewport
-		// while the block is volatile. `Ctrl+O` (expanded) lifts the cap for a
-		// deliberate full view — matching the eval streaming preview.
-		const startIndex = expanded ? 0 : Math.max(0, totalLines - WRITE_STREAMING_PREVIEW_LINES);
 		const visibleLines = lines.slice(startIndex);
-		const hidden = startIndex;
 		const highlighted = highlightCode(visibleLines.join("\n"), language);
 		const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
-
-		let text = "\n\n";
-		if (hidden > 0) {
-			text += `${uiTheme.fg("dim", `… (${hidden} earlier line${hidden === 1 ? "" : "s"})`)}\n`;
-		}
+		const logicalRows: string[] = [];
 		for (let i = 0; i < highlighted.length; i++) {
 			const lineNum = startIndex + i + 1;
 			const gutter = uiTheme.fg("dim", `${String(lineNum).padStart(lineNumberWidth, " ")} `);
 			const body = replaceTabs(highlighted[i] ?? "");
-			text += `${gutter}${body}\n`;
+			logicalRows.push(`${gutter}${body}`);
 		}
-		return text;
+		return logicalRows.join("\n");
 	});
+	const bodyLines = bodyText ? bodyText.split("\n") : [];
+	const bodySection: OutputBlockSection | undefined =
+		bodyLines.length > 0
+			? {
+					lines: bodyLines,
+					tailWindow: expanded
+						? undefined
+						: createEarlierLinesTailWindow(uiTheme, {
+								max: WRITE_STREAMING_PREVIEW_LINES,
+								hiddenRows: hiddenLogicalRows,
+								expandHint: false,
+								markerKey: "write-streaming-content",
+							}),
+				}
+			: undefined;
 	// The animated glyph lives on this trailing line — inside the transcript's
 	// volatile-tail holdback — never in the header: an animating head row pins
 	// the native-scrollback commit boundary at the top of the block, so a long
 	// expanded preview could never scroll-append mid-stream.
 	const spinner = spinnerFrame !== undefined ? `${formatStatusIcon("running", uiTheme, spinnerFrame)} ` : "";
-	return `${bodyText}${spinner}${uiTheme.fg("dim", `… (streaming)`)}`;
+	return { bodySection, footerLine: `${spinner}${uiTheme.fg("dim", `… (streaming)`)}` };
 }
 
 function renderContentPreview(
@@ -1106,7 +1119,7 @@ export const writeToolRenderer = {
 		);
 		const streamingCache = createRenderedStringCache();
 		return framedBlock(uiTheme, width => {
-			const body = content
+			const preview = content
 				? formatStreamingContent(
 						content,
 						Boolean(options?.expanded),
@@ -1115,12 +1128,13 @@ export const writeToolRenderer = {
 						options?.spinnerFrame,
 						streamingCache,
 					)
-				: "";
-			const bodyLines = body ? body.split("\n") : [];
-			while (bodyLines.length > 0 && bodyLines[0].trim() === "") bodyLines.shift();
+				: undefined;
+			const sections: OutputBlockSection[] = [];
+			if (preview?.bodySection) sections.push(preview.bodySection);
+			if (preview) sections.push({ lines: [preview.footerLine] });
 			return {
 				header,
-				sections: bodyLines.length > 0 ? [{ lines: bodyLines }] : [],
+				sections,
 				state: "pending",
 				borderColor: "borderMuted",
 				width,

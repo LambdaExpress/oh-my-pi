@@ -15,6 +15,7 @@ import { pluralize } from "@oh-my-pi/pi-utils";
 import { formatKeyHints, type KeyId } from "../config/keybindings";
 import { settings } from "../config/settings";
 import type { Theme } from "../modes/theme/theme";
+import type { OutputBlockVisualTailWindow } from "../tui/output-block";
 import { Hasher } from "../tui/utils";
 import { formatDimensionNote, type ResizedImage } from "../utils/image-resize";
 
@@ -241,6 +242,26 @@ const PREVIEW_WINDOW_FALLBACK_ROWS = 30;
 export function previewWindowRows(): number {
 	const rows = process.stdout.rows || PREVIEW_WINDOW_FALLBACK_ROWS;
 	return Math.max(PREVIEW_WINDOW_MIN_LINES, rows - PREVIEW_WINDOW_RESERVED_ROWS);
+}
+
+export function createEarlierLinesTailWindow(
+	theme: Theme,
+	options: { max?: number; hiddenRows?: number; expandHint?: boolean; markerPrefix?: string; markerKey?: string } = {},
+): OutputBlockVisualTailWindow {
+	const maxRows = options.max ?? previewWindowRows();
+	const hiddenRows = options.hiddenRows ?? 0;
+	const expandHint = options.expandHint !== false;
+	const markerPrefix = options.markerPrefix ?? "";
+	return {
+		maxRows,
+		hiddenRows,
+		markerKey: `earlier-lines:${maxRows}:${hiddenRows}:${expandHint}:${markerPrefix}:${options.markerKey ?? ""}`,
+		renderMarker: hidden => {
+			const hint = expandHint ? formatExpandHint(theme, false, true) : "";
+			const marker = `… ${hidden} earlier ${pluralize("line", hidden)}${hint ? ` ${hint}` : ""}`;
+			return `${markerPrefix}${theme.fg("dim", marker)}`;
+		},
+	};
 }
 
 /**

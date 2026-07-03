@@ -9,11 +9,25 @@ import type { State } from "./types";
 import type { RenderCache } from "./utils";
 import { getStateBgColor, Hasher, padToWidth, truncateToWidth } from "./utils";
 
+export interface OutputBlockVisualTailWindow {
+	maxRows: number;
+	hiddenRows?: number;
+	markerKey: string;
+	renderMarker(hiddenRows: number): string;
+}
+
+export interface OutputBlockSection {
+	label?: string;
+	lines: readonly string[];
+	separator?: boolean;
+	tailWindow?: OutputBlockVisualTailWindow;
+}
+
 export interface OutputBlockOptions {
 	header?: string;
 	headerMeta?: string;
 	state?: State;
-	sections?: Array<{ label?: string; lines: readonly string[]; separator?: boolean }>;
+	sections?: OutputBlockSection[];
 	width: number;
 	applyBg?: boolean;
 	contentPaddingLeft?: number;
@@ -121,20 +135,47 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 				rightChar: theme.boxRound.teeLeft,
 			});
 		}
+		const sectionRows: BlockRow[] = [];
+		const appendContentRows = (line: string): void => {
+			const wrappedLines = wrapTextWithAnsi(line.trimEnd(), contentWidth);
+			for (const wrappedLine of wrappedLines) {
+				const innerPadding = padding(Math.max(0, contentWidth - visibleWidth(wrappedLine)));
+				sectionRows.push({ kind: "content", inner: `${wrappedLine}${innerPadding}` });
+			}
+		};
 		const allLines = section.lines.flatMap(l => l.split("\n"));
 		const sixelLineMask = TERMINAL.imageProtocol === ImageProtocol.Sixel ? getSixelLineMask(allLines) : undefined;
 		for (let lineIndex = 0; lineIndex < allLines.length; lineIndex++) {
 			const line = allLines[lineIndex]!;
 			if (sixelLineMask?.[lineIndex]) {
-				rows.push({ kind: "sixel", raw: line });
+				sectionRows.push({ kind: "sixel", raw: line });
 				continue;
 			}
-			const wrappedLines = wrapTextWithAnsi(line.trimEnd(), contentWidth);
-			for (const wrappedLine of wrappedLines) {
-				const innerPadding = padding(Math.max(0, contentWidth - visibleWidth(wrappedLine)));
-				rows.push({ kind: "content", inner: `${wrappedLine}${innerPadding}` });
-			}
+			appendContentRows(line);
 		}
+		const tailWindow = section.tailWindow;
+		if (!tailWindow) {
+			rows.push(...sectionRows);
+			continue;
+		}
+		const maxRows = Math.max(0, Math.floor(tailWindow.maxRows));
+		const hiddenBase = Math.max(0, Math.floor(tailWindow.hiddenRows ?? 0));
+		const needsMarker = hiddenBase > 0 || sectionRows.length > maxRows;
+		if (!needsMarker) {
+			rows.push(...sectionRows);
+			continue;
+		}
+		const visibleBudget = Math.max(0, maxRows - 1);
+		const visibleRows = visibleBudget > 0 ? sectionRows.slice(-visibleBudget) : [];
+		const hiddenRows = hiddenBase + sectionRows.length - visibleRows.length;
+		const markerText = truncateToWidth(tailWindow.renderMarker(hiddenRows), contentWidth);
+		const markerRows: BlockRow[] = [];
+		const wrappedMarkerLines = wrapTextWithAnsi(markerText.trimEnd(), contentWidth);
+		for (const markerLine of wrappedMarkerLines.slice(0, 1)) {
+			const innerPadding = padding(Math.max(0, contentWidth - visibleWidth(markerLine)));
+			markerRows.push({ kind: "content", inner: `${markerLine}${innerPadding}` });
+		}
+		rows.push(...markerRows, ...visibleRows);
 	}
 
 	rows.push({ kind: "bottom", leftChar: theme.boxRound.bottomLeft, rightChar: theme.boxRound.bottomRight });
@@ -224,6 +265,13 @@ export class CachedOutputBlock {
 			for (const s of options.sections) {
 				h.optional(s.label);
 				h.bool(s.separator ?? false);
+				const tailWindow = s.tailWindow;
+				h.bool(tailWindow !== undefined);
+				if (tailWindow) {
+					h.u32(Math.max(0, Math.floor(tailWindow.maxRows)));
+					h.u32(Math.max(0, Math.floor(tailWindow.hiddenRows ?? 0)));
+					h.str(tailWindow.markerKey);
+				}
 				for (const line of s.lines) {
 					h.str(line);
 				}

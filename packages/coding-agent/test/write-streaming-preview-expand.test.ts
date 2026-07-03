@@ -54,6 +54,43 @@ describe("write streaming preview honors Ctrl+O expansion", () => {
 		expect(expanded.length).toBeGreaterThan(collapsed.length);
 	});
 
+	it("budgets collapsed streaming write previews by wrapped visual rows", async () => {
+		if (!initialized) {
+			await themeModule.initTheme();
+			initialized = true;
+		}
+		const uiStub = { requestRender() {} } as unknown as TUI;
+		const headSentinel = "HEAD-不应显示";
+		const tailSentinel = "TAIL-保持可见";
+		const wrappedPayload = "数据片段".repeat(24);
+		const content = Array.from({ length: 20 }, (_, i) => {
+			const headAttribute = i === 0 ? ` data-head="${headSentinel}"` : "";
+			const tailComment = i === 19 ? ` <!-- ${tailSentinel} -->` : "";
+			return `<section data-row="${i}"${headAttribute}><p>${wrappedPayload}</p></section>${tailComment}`;
+		}).join("\n");
+		// No updateResult() -> pending write renderCall path. The long CJK/HTML-like
+		// rows wrap inside the frame; the collapsed budget must count those visual
+		// rows rather than merely the final logical lines.
+		const comp = new ToolExecutionComponent("write", { path: "/tmp/wrapped.html", content }, {}, undefined, uiStub);
+
+		const collapsed = comp.render(80);
+		const collapsedText = stripAnsi(collapsed.join("\n"));
+		// WRITE_STREAMING_PREVIEW_LINES is 12 body rows. The framed component adds
+		// top/bottom chrome, a small amount of wrapped chrome, and the streaming
+		// status row; keep a small fixed allowance so this fails when each long
+		// logical row is allowed to wrap.
+		expect(collapsed.length, "write preview should cap wrapped visual rows").toBeLessThanOrEqual(18);
+		expect(collapsedText).toContain(tailSentinel);
+		expect(collapsedText).not.toContain(headSentinel);
+		expect(collapsedText).toContain("earlier line");
+
+		comp.setExpanded(true);
+		const expandedText = stripAnsi(comp.render(80).join("\n"));
+		expect(expandedText).toContain(headSentinel);
+		expect(expandedText).toContain(tailSentinel);
+		expect(expandedText).not.toContain("earlier line");
+	});
+
 	it("does not cap a short streaming write that already fits the window", async () => {
 		const comp = await makePendingWrite(4);
 		const collapsed = comp.render(80);

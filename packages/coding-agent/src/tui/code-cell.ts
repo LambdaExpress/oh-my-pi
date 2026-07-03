@@ -4,13 +4,14 @@
 import { Markdown } from "@oh-my-pi/pi-tui";
 import { getMarkdownTheme, highlightCode, type Theme } from "../modes/theme/theme";
 import {
+	createEarlierLinesTailWindow,
 	formatDuration,
 	formatExpandHint,
 	formatMoreItems,
 	formatStatusIcon,
 	replaceTabs,
 } from "../tools/render-utils";
-import { renderOutputBlock } from "./output-block";
+import { type OutputBlockSection, renderOutputBlock } from "./output-block";
 import type { State } from "./types";
 
 export interface CodeCellOptions {
@@ -130,7 +131,7 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 	const rawCodeLines = sanitizeTerminalLines(normalizedCode);
 	const maxCodeLines = expanded ? rawCodeLines.length : Math.min(rawCodeLines.length, codeMaxLines);
 	const hiddenCodeLines = rawCodeLines.length - maxCodeLines;
-	const tail = options.codeTail === true && !expanded && hiddenCodeLines > 0;
+	const tail = options.codeTail === true && !expanded && rawCodeLines.length > 0;
 	const startIndex = tail ? rawCodeLines.length - maxCodeLines : 0;
 	const visibleCode = rawCodeLines.slice(startIndex, startIndex + maxCodeLines).join("\n");
 	const codeLines = highlightCode(visibleCode, language);
@@ -162,18 +163,11 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 		}
 	}
 
-	if (hiddenCodeLines > 0) {
+	if (!tail && hiddenCodeLines > 0) {
 		const hint = formatExpandHint(theme, expanded, hiddenCodeLines > 0);
 		const gutterPad = lineNumberWidth > 0 ? " ".repeat(lineNumberWidth + 1) : "";
-		if (tail) {
-			// Earlier rows scrolled above the live tail window — mark them on top so
-			// the newest streamed line stays pinned to the bottom of the box.
-			const earlier = `… ${hiddenCodeLines} earlier line${hiddenCodeLines === 1 ? "" : "s"}${hint ? ` ${hint}` : ""}`;
-			codeLines.unshift(theme.fg("dim", gutterPad + earlier));
-		} else {
-			const moreLine = `${formatMoreItems(hiddenCodeLines, "line")}${hint ? ` ${hint}` : ""}`;
-			codeLines.push(theme.fg("dim", gutterPad + moreLine));
-		}
+		const moreLine = `${formatMoreItems(hiddenCodeLines, "line")}${hint ? ` ${hint}` : ""}`;
+		codeLines.push(theme.fg("dim", gutterPad + moreLine));
 	}
 
 	const outputLines: string[] = [];
@@ -192,7 +186,17 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 		}
 	}
 
-	const sections: Array<{ label?: string; lines: string[] }> = [{ lines: codeLines }];
+	const codeSection: OutputBlockSection = { lines: codeLines };
+	if (tail) {
+		const gutterPad = lineNumberWidth > 0 ? " ".repeat(lineNumberWidth + 1) : "";
+		codeSection.tailWindow = createEarlierLinesTailWindow(theme, {
+			max: maxCodeLines,
+			hiddenRows: hiddenCodeLines,
+			markerPrefix: gutterPad,
+			markerKey: `code-cell:${lineNumberWidth}`,
+		});
+	}
+	const sections: OutputBlockSection[] = [codeSection];
 	if (outputLines.length > 0) {
 		sections.push({ label: theme.fg("toolTitle", "Output"), lines: outputLines });
 	}

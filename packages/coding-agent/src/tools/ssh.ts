@@ -19,7 +19,7 @@ import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { formatStyledTruncationWarning, type OutputMeta, stripOutputNotice } from "./output-meta";
-import { capPreviewLines, replaceTabs } from "./render-utils";
+import { createEarlierLinesTailWindow, replaceTabs } from "./render-utils";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
@@ -285,7 +285,12 @@ export const sshToolRenderer = {
 					{
 						header,
 						state: options.spinnerFrame !== undefined ? "running" : "pending",
-						sections: [{ lines: capPreviewLines(cmdLines, uiTheme, { expanded: options.expanded }) }],
+						sections: [
+							{
+								lines: cmdLines,
+								tailWindow: options.expanded ? undefined : createEarlierLinesTailWindow(uiTheme),
+							},
+						],
 						width,
 					},
 					uiTheme,
@@ -373,7 +378,8 @@ export const sshToolRenderer = {
 							{
 								// Viewport-sized tail window in every state — streaming and final
 								// render identically; only ctrl+o uncaps.
-								lines: capPreviewLines(cmdLines, uiTheme, { expanded }),
+								lines: cmdLines,
+								tailWindow: expanded ? undefined : createEarlierLinesTailWindow(uiTheme),
 							},
 							{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines },
 						],

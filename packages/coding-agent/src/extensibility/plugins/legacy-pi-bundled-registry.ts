@@ -885,6 +885,7 @@ import * as bundledPiCodingAgentUtilsEditMode from "@oh-my-pi/pi-coding-agent/ut
 import * as bundledPiCodingAgentUtilsEnhancedPaste from "@oh-my-pi/pi-coding-agent/utils/enhanced-paste";
 import * as bundledPiCodingAgentUtilsEventBus from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import * as bundledPiCodingAgentUtilsExternalEditor from "@oh-my-pi/pi-coding-agent/utils/external-editor";
+import * as bundledPiCodingAgentUtilsFetchTimeout from "@oh-my-pi/pi-coding-agent/utils/fetch-timeout";
 import * as bundledPiCodingAgentUtilsFileDisplayMode from "@oh-my-pi/pi-coding-agent/utils/file-display-mode";
 import * as bundledPiCodingAgentUtilsFileMentions from "@oh-my-pi/pi-coding-agent/utils/file-mentions";
 import * as bundledPiCodingAgentUtilsGit from "@oh-my-pi/pi-coding-agent/utils/git";
@@ -3133,6 +3134,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/utils/external-editor": bundledPiCodingAgentUtilsExternalEditor as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/utils/fetch-timeout": bundledPiCodingAgentUtilsFetchTimeout as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/utils/file-display-mode": bundledPiCodingAgentUtilsFileDisplayMode as unknown as Readonly<

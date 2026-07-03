@@ -455,8 +455,8 @@ describe("streaming tool call preview height (bounded across renderers)", () => 
 	test("eval pending preview windows the code to the viewport tail", () => {
 		// Eval cell code is capped to the same viewport-sized TAIL window as
 		// bash/ssh: the live edge stays visible behind an "… N earlier lines"
-		// marker on top; ctrl+o uncaps. Unlike bash, the marker row sits above
-		// the window, so previewWindowRows() code lines stay visible.
+		// marker on top; ctrl+o uncaps. The marker itself spends one row from the
+		// collapsed budget, so the oldest otherwise-visible code row is elided too.
 		const window = previewWindowRows();
 		const total = window + 5;
 		const hidden = total - window;
@@ -470,9 +470,49 @@ describe("streaming tool call preview height (bounded across renderers)", () => 
 		expect(lines.length, "eval code preview should stay bounded").toBeLessThan(window + 10);
 		const renderedLines = getRenderedLines(lines);
 		expect(renderedLines).toContain(`const line-${total - 1} = 1;`);
-		expect(renderedLines).toContain(`const line-${hidden} = 1;`);
+		expect(renderedLines).toContain(`const line-${hidden + 1} = 1;`);
 		expect(renderedLines).not.toContain("const line-0 = 1;");
-		expect(renderedLines).not.toContain(`const line-${hidden - 1} = 1;`);
-		expect(text).toContain(`… ${hidden} earlier lines`);
+		expect(renderedLines).not.toContain(`const line-${hidden} = 1;`);
+		expect(text).toContain(`… ${hidden + 1} earlier lines`);
+	}, 30_000);
+
+	test("eval pending preview budgets wrapped visual rows, not just logical code lines", () => {
+		const originalRowsDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "rows");
+		Object.defineProperty(process.stdout, "rows", { value: 30, configurable: true });
+
+		try {
+			const window = previewWindowRows();
+			const total = window + 8;
+			const hiddenHead = "HEAD-不应显示";
+			const visibleTail = "TAIL-保持可见";
+			const wrappedPayload = "数据片段".repeat(24);
+			const code = Array.from({ length: total }, (_, i) => {
+				const tailComment = i === total - 1 ? ` // ${visibleTail}` : "";
+				const headAttribute = i === 0 ? ` data-head="${hiddenHead}"` : "";
+				return `const html${i} = "<section data-row='${i}'${headAttribute}><p>${wrappedPayload}</p></section>";${tailComment}`;
+			}).join("\n");
+
+			const { lines, text } = renderPending("eval", {
+				language: "js",
+				title: "wrapped",
+				code,
+			});
+
+			// ToolExecutionComponent adds a little framing around the code window;
+			// the fixed allowance keeps this assertion about growth, not exact chrome.
+			const chromeAllowance = 4;
+			expect(lines.length, "eval preview should cap visual rows after CJK/HTML-like wrapping").toBeLessThanOrEqual(
+				window + chromeAllowance,
+			);
+			expect(text).toContain(visibleTail);
+			expect(text).not.toContain(hiddenHead);
+			expect(text).toContain("earlier lines");
+		} finally {
+			if (originalRowsDescriptor) {
+				Object.defineProperty(process.stdout, "rows", originalRowsDescriptor);
+			} else {
+				Reflect.deleteProperty(process.stdout, "rows");
+			}
+		}
 	}, 30_000);
 });

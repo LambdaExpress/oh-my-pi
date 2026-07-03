@@ -882,6 +882,7 @@ export const BUNDLED_PI_REGISTRY_KEYS: ReadonlySet<string> = new Set([
 	"@oh-my-pi/pi-coding-agent/utils/enhanced-paste",
 	"@oh-my-pi/pi-coding-agent/utils/event-bus",
 	"@oh-my-pi/pi-coding-agent/utils/external-editor",
+	"@oh-my-pi/pi-coding-agent/utils/fetch-timeout",
 	"@oh-my-pi/pi-coding-agent/utils/file-display-mode",
 	"@oh-my-pi/pi-coding-agent/utils/file-mentions",
 	"@oh-my-pi/pi-coding-agent/utils/git",
