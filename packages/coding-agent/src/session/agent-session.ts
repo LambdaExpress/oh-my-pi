@@ -36,6 +36,7 @@ import {
 	type CompactionSummaryMessage,
 	countTokens,
 	resolveTelemetry,
+	type SideRequestToolCatalogMode,
 	type StreamFn,
 	ThinkingLevel,
 	type ToolChoiceDirective,
@@ -14074,6 +14075,7 @@ export class AgentSession {
 		onTextDelta?: (delta: string) => void;
 		signal?: AbortSignal;
 		dedupeReply?: boolean;
+		toolCatalogMode?: SideRequestToolCatalogMode;
 	}): Promise<{ replyText: string; assistantMessage: AssistantMessage }> {
 		const model = this.model;
 		if (!model) {
@@ -14082,7 +14084,9 @@ export class AgentSession {
 		const cacheSessionId = this.sessionId;
 		const snapshot = this.#buildEphemeralSnapshot(args.promptText);
 		const llmMessages = await this.convertMessagesToLlm(snapshot, args.signal);
-		const context = await this.agent.buildSideRequestContext(llmMessages);
+		const context = await this.agent.buildSideRequestContext(llmMessages, undefined, {
+			toolCatalogMode: args.toolCatalogMode ?? "cache-only",
+		});
 		const options = this.prepareSimpleStreamOptions(
 			{
 				apiKey: this.#modelRegistry.resolver(model, cacheSessionId),
@@ -14571,6 +14575,7 @@ export class AgentSession {
 	async branchFromBtw(
 		question: string,
 		assistantMessage: AssistantMessage,
+		preludeMessages?: CustomMessage[],
 	): Promise<{ cancelled: boolean; sessionFile: string | undefined }> {
 		const previousSessionFile = this.sessionFile;
 		if (!this.sessionManager.getSessionFile()) {
@@ -14626,6 +14631,9 @@ export class AgentSession {
 
 		this.sessionManager.createBranchedSession(leafId);
 		this.#rehydrateCheckpointRewindState();
+		for (const message of preludeMessages ?? []) {
+			this.sessionManager.appendMessage(message);
+		}
 		this.sessionManager.appendMessage({
 			role: "user",
 			content: [{ type: "text", text: question }],

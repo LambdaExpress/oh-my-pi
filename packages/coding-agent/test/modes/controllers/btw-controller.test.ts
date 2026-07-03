@@ -1,11 +1,17 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
+import type { Skill } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
 import { BtwPanelComponent } from "@oh-my-pi/pi-coding-agent/modes/components/btw-panel";
 import { BtwController } from "@oh-my-pi/pi-coding-agent/modes/controllers/btw-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/messages";
 import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import { Container, replaceTabs, type TUI } from "@oh-my-pi/pi-tui";
+import { removeWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
 const usage: Usage = {
 	input: 0,
@@ -29,10 +35,27 @@ function createAssistantMessage(text: string): AssistantMessage {
 	};
 }
 
+async function createReviewerSkill(body: string): Promise<{ dir: string; skill: Skill }> {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), `omp-btw-skill-${Snowflake.next()}-`));
+	const filePath = path.join(dir, "SKILL.md");
+	await Bun.write(filePath, `---\nname: reviewer\ndescription: Review code\n---\n\n${body}\n`);
+	return {
+		dir,
+		skill: {
+			name: "reviewer",
+			description: "Review code",
+			filePath,
+			baseDir: dir,
+			source: "test",
+		},
+	};
+}
+
 interface RunEphemeralTurnArgs {
 	promptText: string;
 	onTextDelta?: (delta: string) => void;
 	signal?: AbortSignal;
+	toolCatalogMode?: "cache-only" | "none";
 }
 
 interface RunEphemeralTurnResult {
@@ -49,11 +72,16 @@ function makeFakeSession(
 	} as unknown as InteractiveModeContext["session"];
 }
 
-function makeCtx(session: InteractiveModeContext["session"], btwContainer = new Container()): InteractiveModeContext {
+function makeCtx(
+	session: InteractiveModeContext["session"],
+	btwContainer = new Container(),
+	skillCommands = new Map<string, Skill>(),
+): InteractiveModeContext {
 	let leafId: string | null = "leaf-1";
 	return {
 		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
 		btwContainer,
+		skillCommands,
 		session,
 		sessionManager: { getLeafId: () => leafId } as unknown as InteractiveModeContext["sessionManager"],
 		showStatus: vi.fn(),
@@ -204,6 +232,50 @@ describe("BtwController", () => {
 		expect(controller.hasActiveRequest()).toBe(false);
 	});
 
+	it("inlines explicitly selected skills into /btw prompt without tools", async () => {
+		const { dir, skill } = await createReviewerSkill("Use the loaded reviewer skill.");
+		try {
+			const runEphemeralTurn = vi.fn<(args: RunEphemeralTurnArgs) => Promise<RunEphemeralTurnResult>>(async () => ({
+				replyText: "Answer",
+				assistantMessage: createAssistantMessage("Answer"),
+			}));
+			const btwContainer = new Container();
+			const ctx = makeCtx(makeFakeSession(runEphemeralTurn), btwContainer, new Map([["skill:reviewer", skill]]));
+			const controller = new BtwController(ctx);
+
+			await controller.start("why did this fail? /skill:reviewer focus on auth");
+			await drainBtwRequest();
+
+			expect(runEphemeralTurn).toHaveBeenCalledTimes(1);
+			const callArg = runEphemeralTurn.mock.calls[0]?.[0];
+			expect(callArg?.toolCatalogMode).toBe("none");
+			expect(callArg?.promptText).toContain("<btw>");
+			expect(callArg?.promptText).toContain("Skill: reviewer");
+			expect(callArg?.promptText).toContain(skill.filePath);
+			expect(callArg?.promptText).toContain("Use the loaded reviewer skill.");
+			expect(callArg?.promptText).toContain("why did this fail? focus on auth");
+			expect(callArg?.promptText).not.toContain("/skill:reviewer");
+		} finally {
+			await removeWithRetries(dir);
+		}
+	});
+
+	it("rejects unknown /btw skills before side request", async () => {
+		const runEphemeralTurn = vi.fn(async () => ({
+			replyText: "n/a",
+			assistantMessage: createAssistantMessage("n/a"),
+		}));
+		const btwContainer = new Container();
+		const ctx = makeCtx(makeFakeSession(runEphemeralTurn), btwContainer);
+		const controller = new BtwController(ctx);
+
+		await controller.start("/skill:missing question");
+
+		expect(ctx.showError).toHaveBeenCalledWith("Unknown skill for /btw: missing");
+		expect(runEphemeralTurn).not.toHaveBeenCalled();
+		expect(btwContainer.children).toHaveLength(0);
+	});
+
 	it("shows an error message when no model is configured", async () => {
 		const runEphemeralTurn = vi.fn(async () => ({
 			replyText: "n/a",
@@ -308,6 +380,37 @@ describe("BtwController", () => {
 
 		expect(await controller.handleBranch()).toBe(true);
 		expect(ctx.handleBtwBranch).toHaveBeenCalledWith("Question?", assistantMessage);
+	});
+
+	it("passes explicit skill prompts to branch promotion", async () => {
+		const { dir, skill } = await createReviewerSkill("Use the loaded reviewer skill.");
+		try {
+			const assistantMessage = createAssistantMessage("Answer");
+			const runEphemeralTurn = vi.fn(async () => ({ replyText: "Answer", assistantMessage }));
+			const ctx = makeCtx(makeFakeSession(runEphemeralTurn), new Container(), new Map([["skill:reviewer", skill]]));
+			const handleBtwBranch = vi.fn<InteractiveModeContext["handleBtwBranch"]>(async () => {});
+			ctx.handleBtwBranch = handleBtwBranch;
+			const controller = new BtwController(ctx);
+
+			await controller.start("why did this fail? /skill:reviewer focus on auth");
+			await drainBtwRequest();
+
+			expect(await controller.handleBranch()).toBe(true);
+			expect(handleBtwBranch).toHaveBeenCalledTimes(1);
+			const [question, promotedAssistant, preludeMessages] = handleBtwBranch.mock.calls[0] ?? [];
+			expect(question).toBe("why did this fail? focus on auth");
+			expect(promotedAssistant).toEqual(assistantMessage);
+			expect(preludeMessages).toHaveLength(1);
+			const prelude = preludeMessages?.[0];
+			expect(prelude?.customType).toBe(SKILL_PROMPT_MESSAGE_TYPE);
+			if (typeof prelude?.content !== "string") {
+				throw new Error("Expected skill prelude content to be a string");
+			}
+			expect(prelude.content).toContain('The user has invoked the "reviewer" skill');
+			expect(prelude.content).toContain("User: why did this fail? focus on auth");
+		} finally {
+			await removeWithRetries(dir);
+		}
 	});
 
 	it("branches the sanitized reply text while preserving non-text assistant content", async () => {

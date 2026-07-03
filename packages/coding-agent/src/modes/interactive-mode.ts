@@ -98,6 +98,7 @@ import {
 } from "../session/agent-session";
 import type { CompactMode } from "../session/compact-modes";
 import { HistoryStorage } from "../session/history-storage";
+import type { CustomMessage } from "../session/messages";
 import type { SessionContext } from "../session/session-context";
 import { getRecentSessions, type RecentSessionInfo } from "../session/session-listing";
 import type { SessionManager } from "../session/session-manager";
@@ -4125,9 +4126,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#btwController.handleCopy();
 	}
 
-	async handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void> {
+	async handleBtwBranch(
+		question: string,
+		assistantMessage: AssistantMessage,
+		preludeMessages?: CustomMessage[],
+	): Promise<void> {
 		try {
-			const result = await this.session.branchFromBtw(question, assistantMessage);
+			const result = await this.session.branchFromBtw(question, assistantMessage, preludeMessages);
 			if (result.cancelled) {
 				this.showStatus("/btw branch cancelled", { dim: true });
 				return;

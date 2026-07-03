@@ -1195,6 +1195,68 @@ describe("AgentSession message pipeline", () => {
 		});
 	});
 
+	it("ephemeral side-channel omits native tools when tool catalog mode is none", async () => {
+		await withNativeDialectEnv(async () => {
+			const api = "test-ephemeral-tools-none";
+			let capturedContext: Context | undefined;
+			let capturedOptions: SimpleStreamOptions | undefined;
+			registerCustomApi(api, (_model, context, options) => {
+				capturedContext = context;
+				capturedOptions = options;
+				const stream = new AssistantMessageEventStream();
+				queueMicrotask(() => {
+					const message = createAssistantMessage("Not using tools");
+					stream.push({ type: "text_delta", contentIndex: 0, delta: "Not using tools", partial: message });
+					stream.push({ type: "done", reason: "stop", message });
+				});
+				return stream;
+			});
+
+			const model = buildModel({
+				id: "side-model-without-tools",
+				name: "Side Model without Tools",
+				api,
+				provider: "test-provider",
+				baseUrl: "",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 4096,
+				maxTokens: 1024,
+			} as ModelSpec<Api>) as Model<Api>;
+
+			const tool: AgentTool = {
+				name: "side_tool",
+				label: "Side Tool",
+				description: "A tool in side channel",
+				parameters: { type: "object", properties: {} },
+				execute: async () => ({ content: [], details: {} }),
+			};
+
+			const session = new AgentSession({
+				agent: new Agent({
+					initialState: {
+						model,
+						systemPrompt: ["system prompt"],
+						messages: [],
+						tools: [tool],
+					},
+				}),
+				sessionManager: SessionManager.inMemory(),
+				settings: Settings.isolated({ "compaction.enabled": false }),
+				modelRegistry: createModelRegistryStub() as never,
+			});
+			sessions.push(session);
+
+			const result = await session.runEphemeralTurn({ promptText: "Side Question?", toolCatalogMode: "none" });
+
+			expect(result.replyText).toBe("Not using tools");
+			expect(capturedContext).toBeDefined();
+			expect(capturedContext!.tools).toEqual([]);
+			expect(capturedOptions?.toolChoice).toBeUndefined();
+		});
+	});
+
 	it("ephemeral side-channel discards any emitted tool calls", async () => {
 		const api = "test-ephemeral-tools-discard";
 		registerCustomApi(api, (_model, _context, _options) => {

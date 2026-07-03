@@ -70,6 +70,27 @@ describe("Agent — buildSideRequestContext", () => {
 		});
 	});
 
+	it("returns empty tools when tool catalog mode is none", async () => {
+		await withNativeDialectEnv(async () => {
+			const agent = new Agent({
+				initialState: {
+					model,
+					systemPrompt: ["system"],
+					tools: [tool],
+				},
+			});
+
+			const context = await agent.buildSideRequestContext(
+				[{ role: "user", content: [{ type: "text", text: "Q?" }], timestamp: Date.now() }],
+				undefined,
+				{ toolCatalogMode: "none" },
+			);
+
+			expect(context.tools).toEqual([]);
+			expect(context.systemPrompt).toEqual(["system"]);
+		});
+	});
+
 	it("matches the main loop's native stable prefix", async () => {
 		await withNativeDialectEnv(async () => {
 			let mainContext: Context | undefined;

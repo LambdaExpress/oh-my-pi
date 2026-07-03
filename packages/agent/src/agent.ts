@@ -320,6 +320,8 @@ export interface AgentPromptOptions {
 	toolChoice?: ToolChoice;
 }
 
+export type SideRequestToolCatalogMode = "cache-only" | "none";
+
 /** Buffered Cursor exec-channel tool result waiting to be emitted after the assistant message. */
 interface CursorToolResultEntry {
 	toolResult: ToolResultMessage;
@@ -710,19 +712,21 @@ export class Agent {
 	async buildSideRequestContext(
 		llmMessages: Message[],
 		systemPrompt: string[] = this.#state.systemPrompt,
+		options: { toolCatalogMode?: SideRequestToolCatalogMode } = {},
 	): Promise<Context> {
 		const model = this.#state.model;
 		if (!model) throw new Error("No active model on agent");
 		const ownedDialect = this.#dialect ?? resolveOwnedDialectFromEnv(Bun.env.PI_DIALECT);
 		const messages = normalizeMessagesForProvider(llmMessages, model);
-		const tools = ownedDialect
-			? []
-			: (normalizeTools(
-					this.#state.tools,
-					this.#intentTracing,
-					preferredDialect(model.id),
-					this.#pruneToolDescriptions,
-				) ?? []);
+		const tools =
+			ownedDialect || options.toolCatalogMode === "none"
+				? []
+				: (normalizeTools(
+						this.#state.tools,
+						this.#intentTracing,
+						preferredDialect(model.id),
+						this.#pruneToolDescriptions,
+					) ?? []);
 		let context: Context = { systemPrompt, messages, tools };
 		if (this.#transformProviderContext) context = await this.#transformProviderContext(context, model);
 		return context;

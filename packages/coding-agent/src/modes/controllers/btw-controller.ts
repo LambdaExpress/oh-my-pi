@@ -1,6 +1,13 @@
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
+import {
+	buildSkillPromptMessage,
+	getSkillSlashCommandName,
+	loadSkillBody,
+	parseSkillInvocation,
+} from "../../extensibility/skills";
 import btwUserPrompt from "../../prompts/system/btw-user.md" with { type: "text" };
+import { type CustomMessage, SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails } from "../../session/messages";
 import { copyToClipboard } from "../../utils/clipboard";
 import { BtwPanelComponent } from "../components/btw-panel";
 import type { InteractiveModeContext } from "../types";
@@ -10,6 +17,12 @@ interface BtwRequest {
 	abortController: AbortController;
 	question: string;
 	leafId: string | null;
+	skill?: {
+		name: string;
+		filePath: string;
+		body: string;
+		preludeMessage: CustomMessage<SkillPromptDetails>;
+	};
 }
 
 function assistantMessageWithReplyText(assistantMessage: AssistantMessage, replyText: string): AssistantMessage {
@@ -42,6 +55,7 @@ export class BtwController {
 	#branchInFlight = false;
 	#lastCopyText: string | undefined;
 	#copyInFlight = false;
+	#lastSkillPreludeMessage: CustomMessage<SkillPromptDetails> | undefined;
 
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
@@ -86,7 +100,13 @@ export class BtwController {
 		if (!this.canBranch() || !this.#lastQuestion || !this.#lastAssistantMessage) return false;
 		this.#branchInFlight = true;
 		try {
-			await this.ctx.handleBtwBranch(this.#lastQuestion, this.#lastAssistantMessage);
+			if (this.#lastSkillPreludeMessage) {
+				await this.ctx.handleBtwBranch(this.#lastQuestion, this.#lastAssistantMessage, [
+					this.#lastSkillPreludeMessage,
+				]);
+			} else {
+				await this.ctx.handleBtwBranch(this.#lastQuestion, this.#lastAssistantMessage);
+			}
 			return true;
 		} finally {
 			this.#branchInFlight = false;
@@ -110,6 +130,38 @@ export class BtwController {
 			return;
 		}
 
+		let requestQuestion = trimmedQuestion;
+		let requestSkill: BtwRequest["skill"] | undefined;
+		const parsedSkill = parseSkillInvocation(trimmedQuestion);
+		if (parsedSkill) {
+			const skill = this.ctx.skillCommands.get(getSkillSlashCommandName({ name: parsedSkill.name }));
+			if (!skill) {
+				this.ctx.showError(`Unknown skill for /btw: ${parsedSkill.name}`);
+				return;
+			}
+			if (!parsedSkill.args) {
+				this.ctx.showStatus(`Usage: /btw /skill:${parsedSkill.name} <question>`);
+				return;
+			}
+			const body = await loadSkillBody(skill);
+			const built = await buildSkillPromptMessage(skill, parsedSkill.args, "user", { body });
+			requestQuestion = parsedSkill.args;
+			requestSkill = {
+				name: skill.name,
+				filePath: skill.filePath,
+				body,
+				preludeMessage: {
+					role: "custom",
+					customType: SKILL_PROMPT_MESSAGE_TYPE,
+					content: built.message,
+					display: true,
+					details: built.details,
+					attribution: "user",
+					timestamp: Date.now(),
+				},
+			};
+		}
+
 		const model = this.ctx.session.model;
 		if (!model) {
 			this.ctx.showError("No active model available for /btw.");
@@ -119,10 +171,11 @@ export class BtwController {
 		this.#closeActiveRequest({ abort: true });
 
 		const request: BtwRequest = {
-			component: new BtwPanelComponent({ question: trimmedQuestion, tui: this.ctx.ui }),
+			component: new BtwPanelComponent({ question: requestQuestion, tui: this.ctx.ui }),
 			abortController: new AbortController(),
-			question: trimmedQuestion,
+			question: requestQuestion,
 			leafId: this.ctx.sessionManager.getLeafId(),
+			skill: requestSkill,
 		};
 		this.ctx.btwContainer.clear();
 		this.ctx.btwContainer.addChild(request.component);
@@ -133,7 +186,12 @@ export class BtwController {
 
 	async #runRequest(request: BtwRequest): Promise<void> {
 		try {
-			const promptText = prompt.render(btwUserPrompt, { question: request.question });
+			const promptText = prompt.render(btwUserPrompt, {
+				question: request.question,
+				skill: request.skill
+					? { name: request.skill.name, filePath: request.skill.filePath, body: request.skill.body }
+					: undefined,
+			});
 			const { replyText, assistantMessage } = await this.ctx.session.runEphemeralTurn({
 				promptText,
 				onTextDelta: delta => {
@@ -142,6 +200,7 @@ export class BtwController {
 					}
 				},
 				signal: request.abortController.signal,
+				...(request.skill ? { toolCatalogMode: "none" as const } : {}),
 			});
 
 			if (!this.#isActiveRequest(request)) {
@@ -155,6 +214,7 @@ export class BtwController {
 				this.#lastReplyText = replyText;
 				this.#lastCopyText = copyText;
 				this.#lastAssistantMessage = assistantMessageWithReplyText(assistantMessage, replyText);
+				this.#lastSkillPreludeMessage = request.skill?.preludeMessage;
 				this.#lastLeafId = request.leafId;
 			} else {
 				this.#clearCompletedState();
@@ -190,6 +250,7 @@ export class BtwController {
 		this.#lastAssistantMessage = undefined;
 		this.#lastCopyText = undefined;
 		this.#lastLeafId = undefined;
+		this.#lastSkillPreludeMessage = undefined;
 	}
 
 	#isActiveRequest(request: BtwRequest): boolean {

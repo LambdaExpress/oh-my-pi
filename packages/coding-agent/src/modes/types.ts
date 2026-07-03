@@ -20,6 +20,7 @@ import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
 import type { AgentSession } from "../session/agent-session";
 import type { CompactMode } from "../session/compact-modes";
 import type { HistoryStorage } from "../session/history-storage";
+import type { CustomMessage } from "../session/messages";
 import type { SessionContext } from "../session/session-context";
 import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
@@ -380,7 +381,11 @@ export interface InteractiveModeContext {
 	canBranchBtw(): boolean;
 	canCopyBtw(): boolean;
 	handleBtwCopyKey(): Promise<boolean>;
-	handleBtwBranch(question: string, assistantMessage: AssistantMessage): Promise<void>;
+	handleBtwBranch(
+		question: string,
+		assistantMessage: AssistantMessage,
+		preludeMessages?: CustomMessage[],
+	): Promise<void>;
 	handleOmfgCommand(complaint: string): Promise<void>;
 	hasActiveOmfg(): boolean;
 	handleOmfgEscape(): boolean;

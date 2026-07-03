@@ -11,6 +11,11 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import {
+	type CustomMessage,
+	SKILL_PROMPT_MESSAGE_TYPE,
+	type SkillPromptDetails,
+} from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Snowflake } from "@oh-my-pi/pi-utils";
 
@@ -129,6 +134,43 @@ describe("AgentSession.branchFromBtw", () => {
 		expect(result.sessionFile).not.toBe(originalFile);
 		expect(fs.readFileSync(originalFile!, "utf8")).toBe(originalRaw);
 		const messages = activeSession.messages;
+		expect(messages.at(-2)).toMatchObject({ role: "user", content: [{ type: "text", text: "why did this fail?" }] });
+		const promoted = messages.at(-1);
+		expect(promoted?.role).toBe("assistant");
+		if (promoted?.role !== "assistant") throw new Error("Expected promoted assistant message");
+		expectSanitizedBtwAssistant(promoted);
+	});
+
+	it("persists /btw skill prelude before promoted question", async () => {
+		const activeSession = await createSession();
+		activeSession.sessionManager.appendMessage({ role: "user", content: "seed", timestamp: Date.now() });
+		await activeSession.sessionManager.flush();
+		const assistantMessage = createBtwAssistant();
+		const skillPromptMessage: CustomMessage<SkillPromptDetails> = {
+			role: "custom",
+			customType: SKILL_PROMPT_MESSAGE_TYPE,
+			content: 'The user has invoked the "reviewer" skill.\n\nUser: why did this fail?',
+			display: true,
+			attribution: "user",
+			details: {
+				name: "reviewer",
+				path: "/skills/reviewer/SKILL.md",
+				args: "why did this fail?",
+				lineCount: 1,
+			},
+			timestamp: Date.now(),
+		};
+
+		const result = await activeSession.branchFromBtw("why did this fail?", assistantMessage, [skillPromptMessage]);
+
+		expect(result.cancelled).toBe(false);
+		const messages = activeSession.messages;
+		const prelude = messages.at(-3);
+		expect(prelude).toMatchObject({
+			role: "custom",
+			customType: SKILL_PROMPT_MESSAGE_TYPE,
+			content: skillPromptMessage.content,
+		});
 		expect(messages.at(-2)).toMatchObject({ role: "user", content: [{ type: "text", text: "why did this fail?" }] });
 		const promoted = messages.at(-1);
 		expect(promoted?.role).toBe("assistant");

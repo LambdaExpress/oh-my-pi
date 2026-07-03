@@ -465,13 +465,18 @@ function startsWithLocalExecutionPrefix(trimmedStart: string): boolean {
 
 export type SkillInvocationKind = "user" | "autoload";
 
+export async function loadSkillBody(skill: Pick<Skill, "filePath">): Promise<string> {
+	const content = await Bun.file(skill.filePath).text();
+	return content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+}
+
 export async function buildSkillPromptMessage(
 	skill: Pick<Skill, "name" | "filePath" | "baseDir">,
 	args: string,
 	invocation: SkillInvocationKind = "user",
+	options?: { body?: string },
 ): Promise<BuiltSkillPromptMessage> {
-	const content = await Bun.file(skill.filePath).text();
-	const body = content.replace(/^---\n[\s\S]*?\n---\n/, "").trim();
+	const body = options?.body ?? (await loadSkillBody(skill));
 	const trimmedArgs = args.trim();
 	let message: string;
 	if (invocation === "user") {
