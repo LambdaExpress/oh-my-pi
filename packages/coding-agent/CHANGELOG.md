@@ -24,6 +24,8 @@
 
 ### Fixed
 
+- Fixed `memory_edit` returning `Memory ... was not found` for recalled Mnemopi facts by allowing `op: "forget"` to delete the recalled fact id.
+
 - Fixed collapsed pending framed-output sections counting only logical lines before the shared block renderer wrapped CJK/HTML-like strings, so long previews could outgrow the live viewport and leave stale `earlier lines` snapshots in native scrollback.
 - Fixed status-line subscription usage limits appearing only after unrelated UI updates.
 - Fixed plan-mode initial prompts and `/plan <prompt>` submissions skipping automatic session title generation.

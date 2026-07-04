@@ -108,7 +108,7 @@ export interface MnemopiMemoryEditOptions {
 export interface MnemopiMemoryEditResult {
 	status: "updated" | "deleted" | "invalidated" | "not_found";
 	bank?: string;
-	store?: "working" | "episodic";
+	store?: "working" | "episodic" | "fact";
 }
 
 interface MnemopiStoredMemoryRow {
@@ -219,6 +219,13 @@ export class MnemopiSessionState {
 				return { status: "invalidated", ...resultContext };
 			}
 			ineligible ??= { status: "not_found", ...resultContext };
+		}
+		if (op === "forget") {
+			for (const target of targets) {
+				if (target.memory.forgetFact(id)) {
+					return { status: "deleted", bank: target.bank, store: "fact" };
+				}
+			}
 		}
 		return ineligible ?? { status: "not_found" };
 	}

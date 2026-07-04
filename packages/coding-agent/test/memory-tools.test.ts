@@ -1136,6 +1136,39 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 		expect(recalled.map(memory => memory.content)).not.toContain("temporary deployment note can be deleted");
 	});
 
+	it("forgets a recalled fact by recall id", async () => {
+		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
+		registerMnemopiState();
+		await MemoryRetainTool.createIf(makeSession(settings))!.execute("call-memory-edit-fact-store", {
+			items: [{ content: "I use postgres database for memory edit fact deletion." }],
+		});
+		await registeredMnemopiState!.getScopedRetainTarget().memory.flushExtractions();
+
+		const recalled = await registeredMnemopiState!.recallResultsScoped("postgres database");
+		const fact = recalled.find(
+			result => result.source === "facts" || result.tier === "fact" || result.tier_label === "fact",
+		);
+		const factId = fact?.id;
+		expect(factId).toBeString();
+		if (typeof factId !== "string") {
+			throw new Error("expected recall to return a fact id");
+		}
+
+		const result = await MemoryEditTool.createIf(makeSession(settings))!.execute("call-memory-edit-fact-forget", {
+			op: "forget",
+			id: factId,
+		});
+
+		const firstContent = result.content[0];
+		if (firstContent?.type !== "text") {
+			throw new Error("expected memory_edit to return text content");
+		}
+		expect(firstContent.text).toContain("deleted");
+		expect(firstContent.text).toContain("(fact)");
+		const recalledAfterDelete = await registeredMnemopiState!.recallResultsScoped("postgres database");
+		expect(recalledAfterDelete.map(result => result.id)).not.toContain(factId);
+	});
+
 	it("invalidates a working memory by recall id", async () => {
 		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
 		registerMnemopiState();
