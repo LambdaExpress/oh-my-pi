@@ -172,7 +172,7 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 
 	const outputLines: string[] = [];
 	if (output?.trim()) {
-		const rawLines = sanitizeTerminalLines(output);
+		const rawLines = sanitizeTerminalLines(output.trimEnd());
 		const maxLines = expanded ? rawLines.length : Math.min(rawLines.length, outputMaxLines);
 		const displayLines = rawLines
 			.slice(0, maxLines)
@@ -249,7 +249,7 @@ export function renderMarkdownCell(options: MarkdownCellOptions, theme: Theme): 
 
 	const outputLines: string[] = [];
 	if (output?.trim()) {
-		const rawLines = sanitizeTerminalLines(output);
+		const rawLines = sanitizeTerminalLines(output.trimEnd());
 		const maxLines = expanded ? rawLines.length : Math.min(rawLines.length, outputMaxLines);
 		const displayLines = rawLines
 			.slice(0, maxLines)

@@ -461,7 +461,8 @@ function formatCellOutputLines(
 	theme: Theme,
 	width: number,
 ): { lines: readonly string[]; hiddenCount: number } {
-	if (!cell.output) {
+	const output = cell.output.trimEnd();
+	if (!output) {
 		return { lines: [], hiddenCount: 0 };
 	}
 
@@ -473,14 +474,14 @@ function formatCellOutputLines(
 	const innerWidth = outputBlockContentWidth(width);
 
 	if (cell.hasMarkdown && cell.status !== "error") {
-		const md = new Markdown(cell.output, 0, 0, getMarkdownTheme());
+		const md = new Markdown(output, 0, 0, getMarkdownTheme());
 		const allLines = md.render(innerWidth);
 		const displayLines = expanded ? allLines : allLines.slice(-previewLines);
 		const hiddenCount = allLines.length - displayLines.length;
 		return { lines: displayLines, hiddenCount };
 	}
 
-	const styledOutput = cell.output
+	const styledOutput = output
 		.split("\n")
 		.map(line => {
 			const cleaned = replaceTabs(line);
