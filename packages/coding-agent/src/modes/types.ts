@@ -41,6 +41,18 @@ import type { LoopLimitRuntime } from "./loop-limit";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { Theme } from "./theme/theme";
 
+export type PendingCustomSubmissionMessage<T = unknown> = Pick<
+	CustomMessage<T>,
+	"customType" | "content" | "display" | "details" | "attribution" | "timestamp"
+>;
+
+export function userSubmissionSignature(text: string, imageCount: number): string {
+	return `${text}\u0000${imageCount}`;
+}
+
+export function customSubmissionSignature(message: Pick<CustomMessage, "customType" | "timestamp">): string {
+	return `${message.customType}\u0000${message.timestamp}`;
+}
 export type CompactionQueuedMessage = {
 	text: string;
 	mode: "steer" | "followUp";
@@ -49,9 +61,11 @@ export type CompactionQueuedMessage = {
 
 export type SubmittedUserInput = {
 	text: string;
+	displayText?: string;
 	images?: ImageContent[];
 	imageLinks?: (string | undefined)[];
 	customType?: string;
+	customMessage?: PendingCustomSubmissionMessage;
 	/** Route through `session.prompt(text, { synthetic: true })` so the text lands
 	 *  as a hidden agent-authored `developer` message rather than a visible user
 	 *  turn. Used by the `c`/`.` continue shortcut. */
@@ -193,6 +207,7 @@ export interface InteractiveModeContext {
 	unsubscribe?: () => void;
 	onInputCallback?: (input: SubmittedUserInput) => void;
 	optimisticUserMessageSignature: string | undefined;
+	optimisticCustomMessageSignature: string | undefined;
 	locallySubmittedUserSignatures: Set<string>;
 	lastSigintTime: number;
 	lastEscapeTime: number;
@@ -257,9 +272,11 @@ export interface InteractiveModeContext {
 	ensureLoadingAnimation(): void;
 	startPendingSubmission(input: {
 		text: string;
+		displayText?: string;
 		images?: ImageContent[];
 		imageLinks?: (string | undefined)[];
 		customType?: string;
+		customMessage?: PendingCustomSubmissionMessage;
 		display?: boolean;
 		streamingBehavior?: "steer" | "followUp";
 	}): SubmittedUserInput;
@@ -281,6 +298,8 @@ export interface InteractiveModeContext {
 	withLocalSubmission<T>(text: string, fn: () => Promise<T>, options?: { imageCount?: number }): Promise<T>;
 	/** Clears bookkeeping for an optimistic local user message once the matching session event arrives. */
 	clearOptimisticUserMessage(): void;
+	/** Clears bookkeeping for an optimistic local custom message once the matching session event arrives. */
+	clearOptimisticCustomMessage(): void;
 	/** Replaces the raw optimistic user render with the canonical message emitted by the session. */
 	replaceOptimisticUserMessage(
 		message: AgentMessage,

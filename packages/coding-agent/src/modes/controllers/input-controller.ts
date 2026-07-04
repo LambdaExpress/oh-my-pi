@@ -13,8 +13,8 @@ import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
 import { materializeImageReferenceLinks, shiftImageMarkers } from "../../modes/image-references";
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
-import { invokeSkillCommandFromText, isKnownSkillCommand } from "../../modes/skill-command";
-import type { InteractiveModeContext } from "../../modes/types";
+import { buildSkillCommandPrompt, isKnownSkillCommand } from "../../modes/skill-command";
+import type { InteractiveModeContext, SubmittedUserInput } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
@@ -828,8 +828,10 @@ export class InputController {
 			// skipped deterministically (no model invoked, no download-progress UI)
 			// and the session stays unnamed — the next user message gets a fresh
 			// chance, so titling defers past "hi" instead of latching onto it.
+			const displayText = this.ctx.session.previewPromptExpansion(text);
+
 			startAutoSessionTitleGeneration({
-				text,
+				text: displayText,
 				session: this.ctx.session,
 				sessionManager: this.ctx.sessionManager,
 				settings: this.ctx.settings,
@@ -853,6 +855,7 @@ export class InputController {
 				// AgentBusyError on that race.
 				const submission = this.ctx.startPendingSubmission({
 					text,
+					displayText,
 					images,
 					imageLinks: inputImageLinks,
 					streamingBehavior: "steer",
@@ -873,7 +876,7 @@ export class InputController {
 				this.ctx.editor.pendingImageLinks = [];
 				try {
 					await this.ctx.withLocalSubmission(
-						text,
+						displayText,
 						() => this.ctx.session.prompt(text, { streamingBehavior: "steer", images }),
 						{
 							imageCount: images?.length ?? 0,
@@ -1084,22 +1087,45 @@ export class InputController {
 			}
 		};
 
-		this.ctx.editor.clearDraft(text);
+		const built = await buildSkillCommandPrompt(this.ctx, text, streamingBehavior, draftImages);
+		if (!built) return false;
+
+		const customMessage = { ...built.message, timestamp: Date.now() };
+		const shouldRenderPending = !this.ctx.session.isStreaming && !this.ctx.session.isCompacting;
+		let submission: SubmittedUserInput | undefined;
 		try {
-			const handled = await invokeSkillCommandFromText(this.ctx, text, streamingBehavior, {
-				images: draftImages,
-				propagateErrors: true,
-			});
-			if (!handled) {
-				restoreDraft();
-				return false;
+			if (shouldRenderPending) {
+				this.ctx.editor.clearDraft(text);
+				submission = this.ctx.startPendingSubmission({
+					text,
+					images: draftImages,
+					imageLinks: draftImageLinks,
+					customType: customMessage.customType,
+					customMessage,
+					display: customMessage.display,
+					streamingBehavior,
+				});
+				if (!this.ctx.markPendingSubmissionStarted(submission)) {
+					return true;
+				}
+			} else {
+				this.ctx.editor.clearDraft(text);
 			}
+			await this.ctx.session.promptCustomMessage(customMessage, built.options);
 			return true;
 		} catch (error) {
+			if (submission) {
+				this.ctx.finishPendingSubmission(submission);
+				this.ctx.rebuildChatFromMessages();
+				submission = undefined;
+			}
 			restoreDraft();
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
 			return true;
 		} finally {
+			if (submission) {
+				this.ctx.finishPendingSubmission(submission);
+			}
 			if (this.ctx.session.isStreaming) {
 				this.ctx.updatePendingMessagesDisplay();
 				this.ctx.ui.requestRender();

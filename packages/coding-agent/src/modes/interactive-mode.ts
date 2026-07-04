@@ -197,6 +197,7 @@ import type {
 	TodoItem,
 	TodoPhase,
 } from "./types";
+import { customSubmissionSignature, userSubmissionSignature } from "./types";
 import { UiHelpers } from "./utils/ui-helpers";
 
 const HINT_SHIMMER_PALETTE: ShimmerPalette = {
@@ -480,10 +481,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	unsubscribe?: () => void;
 	onInputCallback?: (input: SubmittedUserInput) => void;
 	optimisticUserMessageSignature: string | undefined = undefined;
+	optimisticCustomMessageSignature: string | undefined = undefined;
 	locallySubmittedUserSignatures: Set<string> = new Set();
 	#pendingSubmittedInput: SubmittedUserInput | undefined;
 	#pendingSubmissionDispose: (() => void) | undefined;
-	#optimisticUserMessageComponents: Component[] = [];
+	#optimisticSubmissionComponents: Component[] = [];
 	lastSigintTime = 0;
 	lastEscapeTime = 0;
 	lastLeftTapTime = 0;
@@ -1340,7 +1342,19 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.optimisticUserMessageSignature = undefined;
 		this.#pendingSubmissionDispose?.();
 		this.#pendingSubmissionDispose = undefined;
-		this.#optimisticUserMessageComponents = [];
+		this.#optimisticSubmissionComponents = [];
+	}
+
+	clearOptimisticCustomMessage(): void {
+		this.optimisticCustomMessageSignature = undefined;
+		this.#optimisticSubmissionComponents = [];
+	}
+
+	#removeOptimisticSubmissionComponents(): void {
+		for (const component of this.#optimisticSubmissionComponents) {
+			this.chatContainer.removeChild(component);
+		}
+		this.#optimisticSubmissionComponents = [];
 	}
 
 	replaceOptimisticUserMessage(
@@ -1350,42 +1364,60 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.optimisticUserMessageSignature = undefined;
 		this.#pendingSubmissionDispose?.();
 		this.#pendingSubmissionDispose = undefined;
-		for (const component of this.#optimisticUserMessageComponents) {
-			this.chatContainer.removeChild(component);
-		}
-		this.#optimisticUserMessageComponents = [];
+		this.#removeOptimisticSubmissionComponents();
 		this.addMessageToChat(message, options);
 	}
 
 	startPendingSubmission(input: {
 		text: string;
+		displayText?: string;
 		images?: ImageContent[];
 		imageLinks?: (string | undefined)[];
 		customType?: string;
+		customMessage?: SubmittedUserInput["customMessage"];
 		display?: boolean;
 		streamingBehavior?: "steer" | "followUp";
 	}): SubmittedUserInput {
 		const submission: SubmittedUserInput = {
 			text: input.text,
+			displayText: input.displayText,
 			images: input.images,
 			imageLinks: input.imageLinks,
 			customType: input.customType,
+			customMessage: input.customMessage,
 			display: input.display,
 			streamingBehavior: input.streamingBehavior,
 			cancelled: false,
 			started: false,
 		};
 		this.#pendingSubmittedInput = submission;
-		if (!submission.customType) {
+		this.optimisticCustomMessageSignature = undefined;
+		const customMessage = submission.customMessage;
+		if (customMessage) {
+			this.clearOptimisticUserMessage();
+			this.optimisticCustomMessageSignature = customSubmissionSignature(customMessage);
+			this.#optimisticSubmissionComponents = this.#captureAddedChatComponents(() => {
+				this.addMessageToChat({
+					role: "custom",
+					customType: customMessage.customType,
+					content: customMessage.content,
+					display: customMessage.display,
+					details: customMessage.details,
+					attribution: customMessage.attribution,
+					timestamp: customMessage.timestamp,
+				});
+			});
+		} else if (!submission.customType) {
 			this.#resetGoalContinuationSuppression();
 			const imageCount = submission.images?.length ?? 0;
-			this.optimisticUserMessageSignature = `${submission.text}\u0000${imageCount}`;
-			this.#pendingSubmissionDispose = this.recordLocalSubmission(submission.text, imageCount);
-			this.#optimisticUserMessageComponents = this.#captureAddedChatComponents(() => {
+			const displayText = submission.displayText ?? submission.text;
+			this.optimisticUserMessageSignature = userSubmissionSignature(displayText, imageCount);
+			this.#pendingSubmissionDispose = this.recordLocalSubmission(displayText, imageCount);
+			this.#optimisticSubmissionComponents = this.#captureAddedChatComponents(() => {
 				this.addMessageToChat(
 					{
 						role: "user",
-						content: [{ type: "text", text: submission.text }, ...(submission.images ?? [])],
+						content: [{ type: "text", text: displayText }, ...(submission.images ?? [])],
 						attribution: "user",
 						timestamp: Date.now(),
 					},
@@ -1411,6 +1443,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		submission.cancelled = true;
 		this.#pendingSubmittedInput = undefined;
 		this.clearOptimisticUserMessage();
+		this.clearOptimisticCustomMessage();
+		this.#removeOptimisticSubmissionComponents();
 		this.#pendingWorkingMessage = undefined;
 		if (submission.customType === "goal-continuation") {
 			this.#goalContinuationTurnInFlight = false;
@@ -1422,6 +1456,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.editor.pendingImages = submission.images ? [...submission.images] : [];
 			this.editor.pendingImageLinks = submission.imageLinks ? [...submission.imageLinks] : [];
 			this.editor.imageLinks = this.editor.pendingImageLinks;
+			this.rebuildChatFromMessages();
+			this.editor.setText(submission.text);
+		} else if (submission.customMessage) {
 			this.rebuildChatFromMessages();
 			this.editor.setText(submission.text);
 		}
@@ -1451,8 +1488,9 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		if (wasPendingSubmission && !this.session.isStreaming && !this.streamingComponent) {
 			this.optimisticUserMessageSignature = undefined;
+			this.optimisticCustomMessageSignature = undefined;
 			pendingSubmissionDispose?.();
-			this.#optimisticUserMessageComponents = [];
+			this.#optimisticSubmissionComponents = [];
 			this.#pendingWorkingMessage = undefined;
 			if (this.loadingAnimation) {
 				this.#stopLoadingAnimation(true);
@@ -1589,11 +1627,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.optimisticUserMessageSignature) return;
 		const submission = this.#pendingSubmittedInput;
 		if (!submission || submission.cancelled || submission.customType) return;
-		this.#optimisticUserMessageComponents = this.#captureAddedChatComponents(() => {
+		this.#optimisticSubmissionComponents = this.#captureAddedChatComponents(() => {
+			const displayText = submission.displayText ?? submission.text;
 			this.addMessageToChat(
 				{
 					role: "user",
-					content: [{ type: "text", text: submission.text }, ...(submission.images ?? [])],
+					content: [{ type: "text", text: displayText }, ...(submission.images ?? [])],
 					attribution: "user",
 					timestamp: Date.now(),
 				},

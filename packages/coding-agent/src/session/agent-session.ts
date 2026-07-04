@@ -7297,6 +7297,16 @@ export class AgentSession {
 	 * steer/follow-up. Callers that render a UI or manage turn lifecycle (e.g.
 	 * the ACP agent) use this to know whether to expect an `agent_end` event.
 	 */
+	previewPromptExpansion(text: string, options?: { expandPromptTemplates?: boolean }): string {
+		if (!(options?.expandPromptTemplates ?? true)) return text;
+
+		let expandedText = text;
+		if (expandedText.startsWith("/")) {
+			expandedText = expandSlashCommand(expandedText, this.#slashCommands);
+		}
+		return expandPromptTemplate(expandedText, [...this.#promptTemplates]);
+	}
+
 	async prompt(text: string, options?: PromptOptions): Promise<boolean> {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 
@@ -7415,7 +7425,8 @@ export class AgentSession {
 	}
 
 	async promptCustomMessage<T = unknown>(
-		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution"> &
+			Partial<Pick<CustomMessage<T>, "timestamp">>,
 		options?: Pick<PromptOptions, "streamingBehavior" | "toolChoice"> & {
 			queueChipText?: string;
 			queueOnly?: boolean;
@@ -7470,7 +7481,7 @@ export class AgentSession {
 			display: message.display,
 			details: message.details,
 			attribution: message.attribution ?? "agent",
-			timestamp: Date.now(),
+			timestamp: message.timestamp ?? Date.now(),
 		};
 
 		await this.#promptWithMessage(customMessage, textContent, {

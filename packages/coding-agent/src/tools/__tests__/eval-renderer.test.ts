@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { Settings } from "../../config/settings";
 import type { EvalToolDetails } from "../../eval/types";
 import { getThemeByName, setThemeInstance, type Theme } from "../../modes/theme/theme";
+import { renderCodeCell } from "../../tui";
 import { evalToolRenderer } from "../eval-render";
 
 function renderCellOutputRows(output: string, uiTheme: Theme): string[] {
@@ -43,6 +44,29 @@ function renderCellOutputRows(output: string, uiTheme: Theme): string[] {
 	return rows;
 }
 
+function renderStrippedCodeCellRows(code: string, uiTheme: Theme): string[] {
+	const lines = renderCodeCell(
+		{
+			code,
+			language: "javascript",
+			width: 48,
+			codeTail: true,
+			codeMaxLines: 3,
+			expanded: false,
+		},
+		uiTheme,
+	).map(line => Bun.stripANSI(line));
+
+	return lines
+		.filter(line => line.startsWith(uiTheme.boxRound.vertical))
+		.map(line => {
+			const leftBorder = line.indexOf(uiTheme.boxRound.vertical);
+			const rightBorder = line.lastIndexOf(uiTheme.boxRound.vertical);
+			expect(rightBorder).toBeGreaterThan(leftBorder);
+			return line.slice(leftBorder + uiTheme.boxRound.vertical.length, rightBorder).trim();
+		});
+}
+
 describe("eval cell result rendering", () => {
 	let uiTheme: Theme;
 
@@ -60,5 +84,16 @@ describe("eval cell result rendering", () => {
 
 	it("preserves interior blank output rows while omitting the terminal trailing newline", () => {
 		expect(renderCellOutputRows("a\n\nb\n", uiTheme)).toEqual(["a", "", "b"]);
+	});
+
+	it("renders a two-row wrapped code tail without an earlier-lines marker when it fits the preview budget", () => {
+		const code = 'const previewValue = "abcdefghijklmnopqrstuvwxyz0123456789";';
+		const rows = renderStrippedCodeCellRows(code, uiTheme);
+		const stripped = rows.join("\n");
+
+		expect(rows).toHaveLength(2);
+		expect(stripped).toContain("const previewValue");
+		expect(stripped).toContain("abcdefghijklmnopqrstuvwxyz0123456789");
+		expect(stripped).not.toContain("earlier lines");
 	});
 });

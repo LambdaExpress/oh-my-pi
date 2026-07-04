@@ -42,6 +42,7 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 	let editorText = "";
 	const steer = vi.fn(async (_text: string, _images?: unknown) => {});
 	const prompt = vi.fn(async () => {});
+	const previewPromptExpansion = vi.fn((text: string) => text);
 	const updatePendingMessagesDisplay = vi.fn();
 	const requestRender = vi.fn();
 	const showError = vi.fn();
@@ -73,10 +74,25 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 			extensionRunner: undefined,
 			steer,
 			prompt,
+			previewPromptExpansion,
 			queuedMessageCount: 0,
 			getQueuedMessages: () => ({ steering: [], followUp: [] }),
 		} as unknown as InteractiveModeContext["session"]);
 
+	const withLocalSubmission = vi.fn(async function <T>(
+		this: InteractiveModeContext,
+		text: string,
+		fn: () => Promise<T>,
+		options?: { imageCount?: number },
+	): Promise<T> {
+		const dispose = this.recordLocalSubmission(text, options?.imageCount ?? 0);
+		try {
+			return await fn();
+		} catch (err) {
+			dispose();
+			throw err;
+		}
+	});
 	const ctx = {
 		editor: editor as unknown as InteractiveModeContext["editor"],
 		ui: { requestRender } as unknown as InteractiveModeContext["ui"],
@@ -93,20 +109,7 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 				this.locallySubmittedUserSignatures.delete(sig);
 			};
 		},
-		async withLocalSubmission<T>(
-			this: InteractiveModeContext,
-			text: string,
-			fn: () => Promise<T>,
-			options?: { imageCount?: number },
-		): Promise<T> {
-			const dispose = this.recordLocalSubmission(text, options?.imageCount ?? 0);
-			try {
-				return await fn();
-			} catch (err) {
-				dispose();
-				throw err;
-			}
-		},
+		withLocalSubmission,
 		// No input waiter: the state under test.
 		onInputCallback: undefined,
 		updatePendingMessagesDisplay,
@@ -119,7 +122,16 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 	return {
 		ctx,
 		editor,
-		spies: { steer, prompt, updatePendingMessagesDisplay, requestRender, showError, addToHistory },
+		spies: {
+			steer,
+			prompt,
+			previewPromptExpansion,
+			withLocalSubmission,
+			updatePendingMessagesDisplay,
+			requestRender,
+			showError,
+			addToHistory,
+		},
 	};
 }
 
@@ -141,6 +153,25 @@ describe("InputController orphaned submit", () => {
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalled();
 		expect(spies.requestRender).toHaveBeenCalled();
 		expect(spies.addToHistory).toHaveBeenCalledWith("do not lose me");
+	});
+
+	it("records expanded prompt preview for orphaned local submission while prompting raw slash text", async () => {
+		const { ctx, editor, spies } = createContext();
+		spies.previewPromptExpansion.mockReturnValue("Expanded orphan prompt");
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+
+		await editor.onSubmit?.("/template-task");
+
+		expect(spies.withLocalSubmission).toHaveBeenCalledWith("Expanded orphan prompt", expect.any(Function), {
+			imageCount: 0,
+		});
+		expect(spies.prompt).toHaveBeenCalledWith("/template-task", {
+			streamingBehavior: "steer",
+			images: undefined,
+		});
+		expect(ctx.locallySubmittedUserSignatures.has("Expanded orphan prompt\u00000")).toBe(true);
+		expect(ctx.locallySubmittedUserSignatures.has("/template-task\u00000")).toBe(false);
 	});
 
 	it("starts a real idle session even when steer drain would be non-resumable", async () => {

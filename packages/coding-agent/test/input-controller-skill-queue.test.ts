@@ -17,6 +17,7 @@ import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/eve
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { CompactionQueuedMessage, InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { customSubmissionSignature } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
@@ -37,15 +38,18 @@ type StubEditor = {
 	imageLinks?: (string | undefined)[];
 };
 
+type SkillPromptCustomMessage = {
+	customType?: string;
+	content?: string | (TextContent | ImageContent)[];
+	display?: boolean;
+	attribution?: string;
+	details: SkillPromptDetails & { __queueChipText?: unknown };
+	timestamp?: number;
+};
+
 type PromptCustomMessage = Mock<
 	(
-		message: {
-			customType?: string;
-			content?: string | (TextContent | ImageContent)[];
-			display?: boolean;
-			attribution?: string;
-			details: SkillPromptDetails;
-		},
+		message: SkillPromptCustomMessage,
 		options?: { streamingBehavior?: "steer" | "followUp"; queueChipText?: string; queueOnly?: boolean },
 	) => Promise<void>
 >;
@@ -85,6 +89,26 @@ function createStubInputControllerContext(opts: {
 	};
 	const promptCustomMessage: PromptCustomMessage = vi.fn(async () => {});
 	const prompt = vi.fn(async (_text: string, _options?: unknown) => {});
+	const startPendingSubmission: Mock<InteractiveModeContext["startPendingSubmission"]> = vi.fn(input => {
+		editor.setText("");
+		editor.imageLinks = undefined;
+		editor.pendingImages = [];
+		editor.pendingImageLinks = [];
+		return {
+			text: input.text,
+			displayText: input.displayText,
+			images: input.images,
+			imageLinks: input.imageLinks,
+			customType: input.customType,
+			customMessage: input.customMessage,
+			display: input.display,
+			streamingBehavior: input.streamingBehavior,
+			cancelled: false,
+			started: false,
+		};
+	});
+	const markPendingSubmissionStarted = vi.fn(() => true);
+	const finishPendingSubmission = vi.fn();
 	const handleGoalModeCommand = vi.fn(async (_rest?: string) => {});
 	const updatePendingMessagesDisplay = vi.fn();
 	const requestRender = vi.fn();
@@ -117,6 +141,10 @@ function createStubInputControllerContext(opts: {
 		locallySubmittedUserSignatures: new Set<string>(),
 		withLocalSubmission: async (_text: string, fn: () => unknown) => fn(),
 		queueCompactionMessage,
+		startPendingSubmission,
+		markPendingSubmissionStarted,
+		finishPendingSubmission,
+		rebuildChatFromMessages: vi.fn(),
 	} as unknown as InteractiveModeContext;
 
 	return {
@@ -128,6 +156,9 @@ function createStubInputControllerContext(opts: {
 		updatePendingMessagesDisplay,
 		requestRender,
 		queueCompactionMessage,
+		startPendingSubmission,
+		markPendingSubmissionStarted,
+		finishPendingSubmission,
 	};
 }
 
@@ -212,22 +243,51 @@ describe("InputController skill queue chip metadata", () => {
 		expect(editor.getText()).toBe("");
 	});
 
-	it("idle skill prompt still leaves queueChipText out of persisted details", async () => {
-		const { ctx, editor, promptCustomMessage } = createStubInputControllerContext({
-			skillCommands,
-			isStreaming: false,
-		});
+	it("renders an idle skill submit as a pending user-attributed custom card", async () => {
+		const timestamp = 1_717_171_717_000;
+		vi.spyOn(Date, "now").mockReturnValue(timestamp);
+		const { ctx, editor, promptCustomMessage, startPendingSubmission, markPendingSubmissionStarted } =
+			createStubInputControllerContext({
+				skillCommands,
+				isStreaming: false,
+			});
 		const controller = new InputController(ctx);
 
 		controller.setupEditorSubmitHandler();
 		editor.setText("/skill:test-skill arg1 arg2");
 		await editor.onSubmit?.("/skill:test-skill arg1 arg2");
 
+		expect(startPendingSubmission).toHaveBeenCalledTimes(1);
+		const pendingInput = startPendingSubmission.mock.calls[0]?.[0];
+		if (!pendingInput?.customMessage) {
+			throw new Error("expected idle skill submit to create a pending custom message");
+		}
+		const pendingCustomMessage = pendingInput.customMessage as SkillPromptCustomMessage;
+		if (typeof pendingCustomMessage.content !== "string") {
+			throw new Error("expected idle skill pending custom message to contain rendered prompt text");
+		}
+		expect(pendingCustomMessage).toMatchObject({
+			customType: SKILL_PROMPT_MESSAGE_TYPE,
+			attribution: "user",
+			display: true,
+			timestamp,
+		});
+		expect(pendingInput.customType).toBe(SKILL_PROMPT_MESSAGE_TYPE);
+		expect(pendingInput.display).toBe(true);
+		expect(pendingInput.text).toBe("/skill:test-skill arg1 arg2");
+		expect(pendingInput.streamingBehavior).toBe("steer");
+		expect(pendingCustomMessage.details.__queueChipText).toBeUndefined();
+		expect(pendingCustomMessage.content).toContain("Do the thing.");
+		expect(pendingCustomMessage.content).toContain("User: arg1 arg2");
+		expect(markPendingSubmissionStarted).toHaveBeenCalledTimes(1);
+
+		expect(promptCustomMessage).toHaveBeenCalledTimes(1);
+		expect(promptCustomMessage.mock.calls[0]?.[0]).toBe(pendingCustomMessage);
+		expect(promptCustomMessage.mock.calls[0]?.[0].content).toBe(pendingCustomMessage.content);
 		expect(promptCustomMessage.mock.calls[0]?.[1]).toEqual({
 			streamingBehavior: "steer",
 			queueChipText: "/skill:test-skill arg1 arg2",
 		});
-		expect(promptCustomMessage.mock.calls[0]?.[0].details.__queueChipText).toBeUndefined();
 	});
 
 	it("routes pending images through immediate skill submit and clears the draft", async () => {
@@ -721,7 +781,11 @@ function createEventControllerFixture() {
 	const updatePendingMessagesDisplay = vi.fn();
 	const addMessageToChat = vi.fn();
 	const requestRender = vi.fn();
-	const ctx = {
+	let ctx!: InteractiveModeContext & { optimisticCustomMessageSignature: string | undefined };
+	const clearOptimisticCustomMessage = vi.fn(() => {
+		ctx.optimisticCustomMessageSignature = undefined;
+	});
+	ctx = {
 		isInitialized: true,
 		init: vi.fn(async () => {}),
 		ui: { requestRender },
@@ -729,15 +793,24 @@ function createEventControllerFixture() {
 		updateEditorTopBorder: vi.fn(),
 		addMessageToChat,
 		updatePendingMessagesDisplay,
+		clearOptimisticCustomMessage,
+		optimisticCustomMessageSignature: undefined,
 		pendingTools: new Map(),
 		session: {},
 		get viewSession() {
 			return (this as typeof ctx).session;
 		},
-	} as unknown as InteractiveModeContext;
+	} as unknown as InteractiveModeContext & { optimisticCustomMessageSignature: string | undefined };
 
 	const controller = new EventController(ctx);
-	return { controller, updatePendingMessagesDisplay, addMessageToChat };
+	return {
+		controller,
+		ctx,
+		updatePendingMessagesDisplay,
+		addMessageToChat,
+		clearOptimisticCustomMessage,
+		requestRender,
+	};
 }
 
 describe("EventController custom queued-message refresh", () => {
@@ -783,5 +856,38 @@ describe("EventController custom queued-message refresh", () => {
 
 		expect(updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 		expect(addMessageToChat).toHaveBeenCalledTimes(2);
+	});
+
+	it("drops a real skill custom message that matches the optimistic pending card", async () => {
+		const { controller, ctx, addMessageToChat, clearOptimisticCustomMessage, requestRender } =
+			createEventControllerFixture();
+		const event: Extract<AgentSessionEvent, { type: "message_start" }> = {
+			type: "message_start",
+			message: {
+				role: "custom",
+				customType: SKILL_PROMPT_MESSAGE_TYPE,
+				content: "rendered skill body",
+				display: true,
+				attribution: "user",
+				details: {
+					name: "foo",
+					path: "/s.md",
+					args: "bar",
+					lineCount: 1,
+				} satisfies SkillPromptDetails,
+				timestamp: 1_717_171_717_000,
+			},
+		};
+		if (event.message.role !== "custom") {
+			throw new Error("expected custom message event");
+		}
+		ctx.optimisticCustomMessageSignature = customSubmissionSignature(event.message);
+
+		await controller.handleEvent(event);
+
+		expect(addMessageToChat).not.toHaveBeenCalled();
+		expect(clearOptimisticCustomMessage).toHaveBeenCalledTimes(1);
+		expect(ctx.optimisticCustomMessageSignature).toBeUndefined();
+		expect(requestRender).not.toHaveBeenCalled();
 	});
 });

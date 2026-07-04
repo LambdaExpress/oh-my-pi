@@ -190,7 +190,9 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 	if (tail) {
 		const gutterPad = lineNumberWidth > 0 ? " ".repeat(lineNumberWidth + 1) : "";
 		codeSection.tailWindow = createEarlierLinesTailWindow(theme, {
-			max: maxCodeLines,
+			// The tail window is measured in wrapped visual rows; keep the full preview
+			// budget even when the code contains only one long logical line.
+			max: codeMaxLines,
 			hiddenRows: hiddenCodeLines,
 			markerPrefix: gutterPad,
 			markerKey: `code-cell:${lineNumberWidth}`,

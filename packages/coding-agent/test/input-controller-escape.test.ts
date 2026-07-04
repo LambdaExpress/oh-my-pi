@@ -40,11 +40,13 @@ type FakeEditor = {
 
 function createSubmission(input: {
 	text: string;
+	displayText?: string;
 	images?: ImageContent[];
 	imageLinks?: (string | undefined)[];
 }): SubmittedUserInput {
 	return {
 		text: input.text,
+		displayText: input.displayText,
 		images: input.images,
 		imageLinks: input.imageLinks,
 		cancelled: false,
@@ -73,6 +75,7 @@ function createContext(): {
 		hasActiveBtw: Spy;
 		hasActiveOmfg: Spy;
 		onInputCallback: Spy;
+		previewPromptExpansion: Mock<(text: string) => string>;
 		prompt: Spy;
 		requestRender: Spy;
 		resetDisplay: Spy;
@@ -106,8 +109,9 @@ function createContext(): {
 	const hasActiveOmfg = vi.fn(() => false);
 	const updatePendingMessagesDisplay = vi.fn();
 	const prompt = vi.fn();
+	const previewPromptExpansion = vi.fn((text: string) => text);
 	const startPendingSubmission = vi.fn(
-		(input: { text: string; images?: ImageContent[]; imageLinks?: (string | undefined)[] }) => {
+		(input: { text: string; displayText?: string; images?: ImageContent[]; imageLinks?: (string | undefined)[] }) => {
 			ensureLoadingAnimation();
 			return createSubmission(input);
 		},
@@ -163,6 +167,7 @@ function createContext(): {
 			clearQueue,
 			getQueuedMessages,
 			prompt,
+			previewPromptExpansion,
 			subscribe: vi.fn((listener: (event: { type: string }) => void) => {
 				sessionListeners.push(listener);
 				return () => {
@@ -242,6 +247,7 @@ function createContext(): {
 			hasActiveOmfg,
 			onInputCallback,
 			prompt,
+			previewPromptExpansion,
 			requestRender,
 			resetDisplay,
 			showStatus,
@@ -292,6 +298,7 @@ describe("InputController escape behavior", () => {
 
 		expect(spies.startPendingSubmission).toHaveBeenCalledWith({
 			text: "hello",
+			displayText: "hello",
 			images: undefined,
 			imageLinks: undefined,
 			streamingBehavior: "steer",
@@ -302,6 +309,31 @@ describe("InputController escape behavior", () => {
 		expect(spies.cancelPendingSubmission).toHaveBeenCalledTimes(1);
 		expect(spies.clearQueue).not.toHaveBeenCalled();
 		expect(spies.abort).not.toHaveBeenCalled();
+	});
+
+	it("renders expanded prompt preview optimistically while submitting raw slash text", async () => {
+		const { ctx, editor, spies } = createContext();
+		spies.previewPromptExpansion.mockReturnValue("Expanded prompt template");
+		const controller = new InputController(ctx);
+
+		controller.setupEditorSubmitHandler();
+		await editor.onSubmit?.("/template-task");
+
+		expect(spies.startPendingSubmission).toHaveBeenCalledWith({
+			text: "/template-task",
+			displayText: "Expanded prompt template",
+			images: undefined,
+			imageLinks: undefined,
+			streamingBehavior: "steer",
+		});
+		expect(spies.onInputCallback).toHaveBeenCalledWith({
+			text: "/template-task",
+			displayText: "Expanded prompt template",
+			images: undefined,
+			imageLinks: undefined,
+			cancelled: false,
+			started: false,
+		});
 	});
 
 	it("empty-submit with a queued message aborts the active stream and refreshes pending display", async () => {
