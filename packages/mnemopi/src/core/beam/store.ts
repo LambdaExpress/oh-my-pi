@@ -37,6 +37,7 @@ type StoreRememberOptions = RememberOptions & {
 	extractEntities?: boolean;
 	extract_entities?: boolean;
 	extract_text?: string;
+	embed_text?: string;
 	channelId?: string | null;
 	channel_id?: string | null;
 };
@@ -87,6 +88,14 @@ function isSqlBinding(value: unknown): value is SQLQueryBindings {
 
 function sqlBinding(value: unknown, fallback: SQLQueryBindings): SQLQueryBindings {
 	return isSqlBinding(value) ? value : fallback;
+}
+
+function embeddingText(content: string, options: { embedText?: string; embed_text?: string }): string {
+	return options.embedText ?? options.embed_text ?? content;
+}
+
+function storedEmbeddingText(content: string, embedText: string): string | null {
+	return embedText === content ? null : embedText;
 }
 
 function clampVeracity(value: unknown): Veracity {
@@ -309,7 +318,7 @@ export function reconcileEmbeddingModel(beam: BeamMemoryState): void {
 			.all(active) as { model: string | null }[];
 		const live = beam.db
 			.query(`
-				SELECT id AS memoryId, content FROM working_memory WHERE superseded_by IS NULL
+				SELECT id AS memoryId, COALESCE(embed_text, content) AS content FROM working_memory WHERE superseded_by IS NULL
 				UNION ALL
 				SELECT id AS memoryId, content FROM episodic_memory WHERE superseded_by IS NULL
 			`)
@@ -342,7 +351,7 @@ export function reconcileEmbeddingModel(beam: BeamMemoryState): void {
 	// row still missing an active-model embedding.
 	const missing = beam.db
 		.query(`
-			SELECT id AS memoryId, content FROM working_memory
+			SELECT id AS memoryId, COALESCE(embed_text, content) AS content FROM working_memory
 			WHERE superseded_by IS NULL AND id NOT IN (SELECT memory_id FROM memory_embeddings WHERE model = ?)
 			UNION ALL
 			SELECT id AS memoryId, content FROM episodic_memory
@@ -367,6 +376,7 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 	const authorType = options.authorType ?? options.author_type ?? beam.authorType;
 	const channelId = options.channelId ?? options.channel_id ?? beam.channelId;
 	const metadata = options.metadata ?? null;
+	const embedText = embeddingText(content, options);
 
 	const existingId = findDuplicate(beam, content);
 	if (existingId !== null) {
@@ -382,6 +392,7 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 					memory_type = COALESCE(?, memory_type),
 					veracity = CASE WHEN ? != 'unknown' THEN ? ELSE veracity END,
 					trust_tier = COALESCE(?, trust_tier),
+					embed_text = COALESCE(?, embed_text),
 					consolidated_at = NULL
 				WHERE id = ? AND session_id = ?
 			`)
@@ -398,6 +409,7 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 				veracity,
 				veracity,
 				trustTier,
+				storedEmbeddingText(content, embedText),
 				existingId,
 				beam.sessionId,
 			);
@@ -408,6 +420,7 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 			importance,
 			metadata: metadata ?? undefined,
 		});
+		if (embedText !== content) scheduleEmbedding(beam, [{ memoryId: existingId, content: embedText }]);
 		invalidateCaches(beam);
 		return existingId;
 	}
@@ -416,13 +429,14 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 	beam.db
 		.prepare(`
 			INSERT INTO working_memory
-			(id, content, source, timestamp, session_id, importance, metadata_json, valid_until, scope,
+			(id, content, embed_text, source, timestamp, session_id, importance, metadata_json, valid_until, scope,
 			 author_id, author_type, channel_id, veracity, memory_type, trust_tier)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`)
 		.run(
 			memoryId,
 			content,
+			storedEmbeddingText(content, embedText),
 			source,
 			timestamp,
 			beam.sessionId,
@@ -456,7 +470,7 @@ export function remember(beam: BeamMemoryState, content: string, options: StoreR
 		importance,
 		metadata: metadata ?? undefined,
 	});
-	scheduleEmbedding(beam, [{ memoryId, content }]);
+	scheduleEmbedding(beam, [{ memoryId, content: embedText }]);
 	if (options.extract === true) scheduleFactExtraction(beam, memoryId, extractionSource);
 	invalidateCaches(beam);
 	return memoryId;
@@ -477,9 +491,9 @@ export function rememberBatch(
 	transaction(beam.db, () => {
 		const statement = beam.db.prepare(`
 			INSERT INTO working_memory
-			(id, content, source, timestamp, session_id, importance, metadata_json,
+			(id, content, embed_text, source, timestamp, session_id, importance, metadata_json,
 			 author_id, author_type, channel_id, memory_type, veracity, trust_tier, scope)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		`);
 		for (const item of items) {
 			const itemTimestamp = item.timestamp ?? timestamp;
@@ -487,6 +501,7 @@ export function rememberBatch(
 			ids.push(memoryId);
 			const source = item.source ?? "conversation";
 			const storeItem = item as StoreRememberOptions;
+			const embedText = embeddingText(item.content, storeItem);
 			const itemVeracity = forceVeracity
 				? defaultVeracity
 				: item.veracity !== undefined
@@ -495,6 +510,7 @@ export function rememberBatch(
 			statement.run(
 				memoryId,
 				item.content,
+				storedEmbeddingText(item.content, embedText),
 				source,
 				itemTimestamp,
 				beam.sessionId,
@@ -524,7 +540,7 @@ export function rememberBatch(
 	items.forEach((item, index) => {
 		const id = ids[index];
 		if (id === undefined) return;
-		embeddingItems.push({ memoryId: id, content: item.content });
+		embeddingItems.push({ memoryId: id, content: embeddingText(item.content, item as StoreRememberOptions) });
 	});
 	scheduleEmbedding(beam, embeddingItems);
 	items.forEach((item, index) => {
@@ -619,7 +635,7 @@ export function updateWorking(
 	const assignments: string[] = [];
 	const params: SQLQueryBindings[] = [];
 	if (content !== null) {
-		assignments.push("content = ?");
+		assignments.push("content = ?", "embed_text = NULL");
 		params.push(content);
 	}
 	if (importance !== null) {
@@ -734,6 +750,7 @@ export function exportToDict(beam: BeamMemoryState): Record<string, unknown> {
 		working_memory: db
 			.prepare(`
 				SELECT id, content, source, timestamp, session_id, importance,
+					   embed_text,
 					   metadata_json, valid_until, superseded_by, scope,
 					   recall_count, last_recalled, created_at, veracity, consolidated_at,
 					   memory_type, author_id, author_type, channel_id, trust_tier,
@@ -801,9 +818,9 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 				INSERT INTO working_memory
 				(id, content, source, timestamp, session_id, importance, metadata_json,
 				 valid_until, superseded_by, scope, recall_count, last_recalled, created_at,
-				 veracity, consolidated_at, memory_type, author_id, author_type, channel_id,
+				 veracity, consolidated_at, memory_type, embed_text, author_id, author_type, channel_id,
 				 trust_tier, event_date, event_date_precision, temporal_tags)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			`).run(
 				id,
 				sqlBinding(item.content, ""),
@@ -821,6 +838,7 @@ export function importFromDict(beam: BeamMemoryState, data: Record<string, unkno
 				clampVeracity(item.veracity),
 				sqlBinding(item.consolidated_at, null),
 				sqlBinding(item.memory_type, "unknown"),
+				sqlBinding(item.embed_text, null),
 				sqlBinding(item.author_id, null),
 				sqlBinding(item.author_type, null),
 				sqlBinding(item.channel_id, null),

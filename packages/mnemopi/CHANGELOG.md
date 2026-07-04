@@ -5,6 +5,11 @@
 ### Fixed
 
 - Fixed facts returned by recall being impossible to delete by their visible fact id; `forgetFact()` now deletes visible `facts` rows and invalidates recall caches.
+## [16.3.5] - 2026-07-04
+
+### Fixed
+
+- Fixed `remember(..., { embedText })` so hosts can store full transcripts while embedding, FTS-indexing, and rebuild-reembedding a marker-free projection. ([#4395](https://github.com/can1357/oh-my-pi/issues/4395))
 
 ## [16.2.2] - 2026-06-27
 

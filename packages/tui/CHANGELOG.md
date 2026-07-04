@@ -5,6 +5,12 @@
 ### Changed
 
 - Changed the default editor undo shortcut to include `Ctrl+Z` while preserving the existing `Ctrl+-` and `Ctrl+_` bindings.
+## [16.3.5] - 2026-07-04
+
+### Fixed
+
+- Fixed the modifyOtherKeys keyboard fallback enabling on unknown SSH terminals, avoiding broken Shift input in iOS SSH clients such as Redock ([#4325](https://github.com/can1357/oh-my-pi/issues/4325)).
+
 ## [16.3.3] - 2026-07-02
 
 ### Fixed

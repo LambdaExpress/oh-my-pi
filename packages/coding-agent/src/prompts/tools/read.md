@@ -67,7 +67,7 @@ For `.sqlite`, `.sqlite3`, `.db`, `.db3`:
 
 # Internal URIs
 
-All URI schemes take the same line selectors. `artifact://<id>` recovers full output a bash/eval/tool result spilled or truncated.
+All URI schemes take the same line selectors. `artifact://<id>` recovers spilled output; large artifacts block unbounded `:raw`, so page with `artifact://<id>:N-M` / `artifact://<id>:raw:N-M` and use the reported artifact file path for search/copy workflows.
 
 `ssh://host/<absolute-path>` reads a remote text file (UTF-8, ≤1 MiB) or lists a directory one level deep, on a pre-configured SSH host or `~/.ssh/config` alias; `ssh://host/` lists the remote root and bare `ssh://` lists the configured hosts. Files are writable via `write`, editable via hashline `edit`, and searchable via `search`; a directory only lists (`search` refuses a directory, `write` refuses to overwrite one). A literal `:`, `?`, or `#` in the remote path must be percent-encoded (`%3A`/`%3F`/`%23`) — a trailing `:sel` is read as a line selector, and `?`/`#` start a URL query/fragment. Requires either a verified POSIX transfer shell (`sh`/`bash`/`zsh`) or a verified Windows PowerShell transfer backend (`pwsh`/`powershell`). Windows drive paths use URL form `ssh://host/C%3A/Users/name/file.txt`; the colon must be percent-encoded because trailing `:sel` is the read selector syntax. Cmd-only Windows hosts and non-POSIX remotes without a usable transfer backend are rejected; use the `ssh` tool there.
 
