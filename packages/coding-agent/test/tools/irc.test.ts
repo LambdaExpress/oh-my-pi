@@ -62,11 +62,16 @@ function makeFakeSession(): FakeSession {
 	};
 }
 
-function makeToolSession(registry: AgentRegistry, agentId: string): ToolSession {
+function makeToolSession(
+	registry: AgentRegistry,
+	agentId: string,
+	options: { sessionFile?: string | null; ircPeerIds?: ReadonlySet<string> | null } = {},
+): ToolSession {
 	return {
 		cwd: "/tmp",
 		hasUI: false,
-		getSessionFile: () => null,
+		getSessionFile: () => options.sessionFile ?? null,
+		getIrcPeerIds: () => options.ircPeerIds ?? null,
 		getSessionSpawns: () => "*",
 		settings: Settings.isolated(),
 		agentRegistry: registry,
@@ -452,6 +457,147 @@ describe("IRC", () => {
 			const peerIds = result.details?.peers?.map(peer => peer.id) ?? [];
 			expect(peerIds).toContain("0-Worker");
 			expect(peerIds).not.toContain("0-Main/advisor");
+		});
+
+		it("op=list scopes parked peers to the current session artifact directory", async () => {
+			const currentSessionFile = "/tmp/omp-active/main.jsonl";
+			const main = makeFakeSession();
+			registry.register({
+				id: "Main",
+				displayName: "main",
+				kind: "main",
+				session: main.session,
+				sessionFile: currentSessionFile,
+			});
+			registry.register({
+				id: "CurrentPeer",
+				displayName: "current",
+				kind: "sub",
+				parentId: "Main",
+				session: null,
+				sessionFile: "/tmp/omp-active/main/CurrentPeer.jsonl",
+				status: "parked",
+			});
+			registry.register({
+				id: "OldPeer",
+				displayName: "old branch",
+				kind: "sub",
+				parentId: "Main",
+				session: null,
+				sessionFile: "/tmp/omp-stale/main/OldPeer.jsonl",
+				status: "parked",
+			});
+
+			const tool = new IrcTool(makeToolSession(registry, "Main", { sessionFile: currentSessionFile }));
+			const result = await tool.execute("call-1", { op: "list" });
+
+			expect(result.details?.peers?.map(peer => peer.id)).toEqual(["CurrentPeer"]);
+		});
+
+		it("op=send refuses to cold-revive a parked peer outside the current session artifact directory", async () => {
+			const currentSessionFile = "/tmp/omp-active/main.jsonl";
+			const currentPeer = makeFakeSession();
+			const oldPeer = makeFakeSession();
+			const reviveCurrentPeer = vi.fn(async () => currentPeer.session);
+			const reviveOldPeer = vi.fn(async () => oldPeer.session);
+			const main = makeFakeSession();
+			registry.register({
+				id: "Main",
+				displayName: "main",
+				kind: "main",
+				session: main.session,
+				sessionFile: currentSessionFile,
+			});
+			registry.register({
+				id: "CurrentPeer",
+				displayName: "current",
+				kind: "sub",
+				parentId: "Main",
+				session: null,
+				sessionFile: "/tmp/omp-active/main/CurrentPeer.jsonl",
+				status: "parked",
+			});
+			registry.register({
+				id: "OldPeer",
+				displayName: "old branch",
+				kind: "sub",
+				parentId: "Main",
+				session: null,
+				sessionFile: "/tmp/omp-stale/main/OldPeer.jsonl",
+				status: "parked",
+			});
+			AgentLifecycleManager.global().adopt("CurrentPeer", { idleTtlMs: 0, revive: reviveCurrentPeer });
+			AgentLifecycleManager.global().adopt("OldPeer", { idleTtlMs: 0, revive: reviveOldPeer });
+
+			const tool = new IrcTool(makeToolSession(registry, "Main", { sessionFile: currentSessionFile }));
+			const currentResult = await tool.execute("call-1", { op: "send", to: "CurrentPeer", message: "ping" });
+			const oldResult = await tool.execute("call-2", { op: "send", to: "OldPeer", message: "wake up" });
+
+			expect(currentResult.isError).toBeFalsy();
+			expect(currentResult.details?.receipts).toEqual([{ to: "CurrentPeer", outcome: "revived" }]);
+			expect(reviveCurrentPeer).toHaveBeenCalledTimes(1);
+			expect(currentPeer.delivered.map(msg => msg.body)).toEqual(["ping"]);
+			expect(oldResult.isError).toBe(true);
+			expect(oldResult.details?.receipts).toEqual([
+				{ to: "OldPeer", outcome: "failed", error: expect.any(String) },
+			]);
+			expect(reviveOldPeer).not.toHaveBeenCalled();
+			expect(oldPeer.delivered).toEqual([]);
+		});
+
+		it("op=send respects explicit branch peer ids over shared artifact-directory membership", async () => {
+			const currentSessionFile = "/tmp/omp-active/main.jsonl";
+			const currentPeer = makeFakeSession();
+			const oldPeer = makeFakeSession();
+			const reviveCurrentPeer = vi.fn(async () => currentPeer.session);
+			const reviveOldPeer = vi.fn(async () => oldPeer.session);
+			const main = makeFakeSession();
+			registry.register({
+				id: "Main",
+				displayName: "main",
+				kind: "main",
+				session: main.session,
+				sessionFile: currentSessionFile,
+			});
+			registry.register({
+				id: "CurrentPeer",
+				displayName: "current",
+				kind: "sub",
+				parentId: "Main",
+				session: null,
+				sessionFile: "/tmp/omp-active/main/CurrentPeer.jsonl",
+				status: "parked",
+			});
+			registry.register({
+				id: "OldPeer",
+				displayName: "old branch",
+				kind: "sub",
+				parentId: "Main",
+				session: null,
+				sessionFile: "/tmp/omp-active/main/OldPeer.jsonl",
+				status: "parked",
+			});
+			AgentLifecycleManager.global().adopt("CurrentPeer", { idleTtlMs: 0, revive: reviveCurrentPeer });
+			AgentLifecycleManager.global().adopt("OldPeer", { idleTtlMs: 0, revive: reviveOldPeer });
+
+			const tool = new IrcTool(
+				makeToolSession(registry, "Main", {
+					sessionFile: currentSessionFile,
+					ircPeerIds: new Set(["CurrentPeer"]),
+				}),
+			);
+			const listResult = await tool.execute("call-1", { op: "list" });
+			const oldResult = await tool.execute("call-2", { op: "send", to: "OldPeer", message: "wake up" });
+
+			expect(listResult.details?.peers?.map(peer => peer.id)).toEqual(["CurrentPeer"]);
+			expect(oldResult.isError).toBe(true);
+			expect(oldResult.details?.receipts).toEqual([
+				{ to: "OldPeer", outcome: "failed", error: expect.any(String) },
+			]);
+			expect(reviveCurrentPeer).not.toHaveBeenCalled();
+			expect(reviveOldPeer).not.toHaveBeenCalled();
+			expect(currentPeer.delivered).toEqual([]);
+			expect(oldPeer.delivered).toEqual([]);
 		});
 
 		it("op=send returns receipts immediately without waiting for a reply", async () => {

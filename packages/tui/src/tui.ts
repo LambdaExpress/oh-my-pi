@@ -2624,7 +2624,7 @@ export class TUI extends Container {
 		// are frozen snapshots whose source JUST became final and must be
 		// verified once (a pending header settling, a barrier clearing above a
 		// shifted tail); rows past the boundary are still-live frozen snapshots,
-		// exempt so a collapsing preview can never spray re-anchors mid-run. A
+		// exempt so a collapsing preview never sprays re-anchors mid-run. A
 		// divergence re-anchors and recommits — duplication, never loss —
 		// instead of silently skipping rows (committed nowhere, painted
 		// nowhere). Skipped on geometry frames (a rewrap legitimately reflows
@@ -2705,7 +2705,7 @@ export class TUI extends Container {
 		if (fullPaint) {
 			committedPrefixResliced = true;
 			windowTop = Math.max(0, frameLength - height);
-			chunkTo = windowTop;
+			chunkTo = Math.min(windowTop, finalBoundary);
 		} else if (
 			frameLength <= this.#committedRows ||
 			(committedRowsResynced &&
@@ -2724,7 +2724,7 @@ export class TUI extends Container {
 			// "duplication, never loss" resync contract.
 			committedPrefixResliced = true;
 			windowTop = Math.max(0, frameLength - height);
-			chunkTo = windowTop;
+			chunkTo = Math.min(windowTop, finalBoundary);
 			this.#committedRows = chunkTo;
 			this.#committedPrefix = rawFrame.slice(0, chunkTo);
 		} else {
@@ -2735,15 +2735,12 @@ export class TUI extends Container {
 			// multiplexer resize the pane reflowed its own history; committed
 			// rows keep their old wrap there, same as any shell output.
 			windowTop = Math.max(this.#committedRows, frameLength - height, 0);
-			// Whatever scrolls above the window commits — the tape is the visual
-			// record; nothing that was painted may vanish. Overlays freeze
-			// commits: composited rows must never enter history, and the hidden
-			// gap backfills via the chunk once the overlay closes. A multiplexer
-			// resize also commits nothing — the pane keeps its own (old-wrap)
-			// history — and re-bases the audit prefix at the new width so the
-			// accepted wrap drift does not read as a violation on the next
-			// ordinary frame.
-			chunkTo = hasVisibleOverlay || geometryChanged ? this.#committedRows : windowTop;
+			// Whatever final rows scroll above the window commit exactly once.
+			// Rows at or past the live-region boundary are still mutable; painting
+			// them into native scrollback would strand pending tool borders and
+			// later force duplicate repairs when the block finalizes.
+			const commitTarget = Math.max(this.#committedRows, Math.min(windowTop, finalBoundary));
+			chunkTo = hasVisibleOverlay || geometryChanged ? this.#committedRows : commitTarget;
 			if (geometryChanged) {
 				committedPrefixResliced = true;
 				this.#committedPrefix = rawFrame.slice(0, this.#committedRows);

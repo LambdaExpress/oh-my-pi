@@ -1108,6 +1108,29 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 		return id!;
 	}
 
+	async function retainAndRecallFactId(
+		settings: Settings,
+		content: string,
+		query: string,
+		callId: string,
+	): Promise<string> {
+		await MemoryRetainTool.createIf(makeSession(settings))!.execute(callId, {
+			items: [{ content }],
+		});
+		await registeredMnemopiState!.getScopedRetainTarget().memory.flushExtractions();
+
+		const recalled = await registeredMnemopiState!.recallResultsScoped(query);
+		const fact = recalled.find(
+			result => result.source === "facts" || result.tier === "fact" || result.tier_label === "fact",
+		);
+		const factId = fact?.id;
+		expect(factId).toBeString();
+		if (typeof factId !== "string") {
+			throw new Error("expected recall to return a fact id");
+		}
+		return factId;
+	}
+
 	it("updates a working memory by recall id", async () => {
 		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
 		registerMnemopiState();
@@ -1143,20 +1166,12 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 	it("forgets a recalled fact by recall id", async () => {
 		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
 		registerMnemopiState();
-		await MemoryRetainTool.createIf(makeSession(settings))!.execute("call-memory-edit-fact-store", {
-			items: [{ content: "I use postgres database for memory edit fact deletion." }],
-		});
-		await registeredMnemopiState!.getScopedRetainTarget().memory.flushExtractions();
-
-		const recalled = await registeredMnemopiState!.recallResultsScoped("postgres database");
-		const fact = recalled.find(
-			result => result.source === "facts" || result.tier === "fact" || result.tier_label === "fact",
+		const factId = await retainAndRecallFactId(
+			settings,
+			"I use postgres database for memory edit fact deletion.",
+			"postgres database",
+			"call-memory-edit-fact-store",
 		);
-		const factId = fact?.id;
-		expect(factId).toBeString();
-		if (typeof factId !== "string") {
-			throw new Error("expected recall to return a fact id");
-		}
 
 		const result = await MemoryEditTool.createIf(makeSession(settings))!.execute("call-memory-edit-fact-forget", {
 			op: "forget",
@@ -1171,6 +1186,63 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 		expect(firstContent.text).toContain("(fact)");
 		const recalledAfterDelete = await registeredMnemopiState!.recallResultsScoped("postgres database");
 		expect(recalledAfterDelete.map(result => result.id)).not.toContain(factId);
+	});
+
+	it("reports unsupported when updating a recalled fact id", async () => {
+		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
+		registerMnemopiState();
+		const factId = await retainAndRecallFactId(
+			settings,
+			"I use mysql database for memory edit fact update.",
+			"mysql database",
+			"call-memory-edit-fact-update-store",
+		);
+
+		const result = await MemoryEditTool.createIf(makeSession(settings))!.execute("call-memory-edit-fact-update", {
+			op: "update",
+			id: factId,
+			content: "I use mariadb database for memory edit fact update.",
+		});
+
+		const firstContent = result.content[0];
+		if (firstContent?.type !== "text") {
+			throw new Error("expected memory_edit to return text content");
+		}
+		expect(result.details).toEqual(expect.objectContaining({ status: "unsupported", store: "fact" }));
+		expect(firstContent.text).toMatch(/unsupported/i);
+		expect(firstContent.text).toMatch(/fact/i);
+		expect(firstContent.text).toMatch(/update/i);
+		expect(firstContent.text).not.toMatch(/not found/i);
+		const recalledAfterUpdate = await registeredMnemopiState!.recallResultsScoped("mysql database");
+		expect(recalledAfterUpdate.map(result => result.id)).toContain(factId);
+	});
+
+	it("reports unsupported when invalidating a recalled fact id", async () => {
+		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
+		registerMnemopiState();
+		const factId = await retainAndRecallFactId(
+			settings,
+			"I use redis cache for memory edit fact invalidation.",
+			"redis cache",
+			"call-memory-edit-fact-invalidate-store",
+		);
+
+		const result = await MemoryEditTool.createIf(makeSession(settings))!.execute("call-memory-edit-fact-invalidate", {
+			op: "invalidate",
+			id: factId,
+		});
+
+		const firstContent = result.content[0];
+		if (firstContent?.type !== "text") {
+			throw new Error("expected memory_edit to return text content");
+		}
+		expect(result.details).toEqual(expect.objectContaining({ status: "unsupported", store: "fact" }));
+		expect(firstContent.text).toMatch(/unsupported/i);
+		expect(firstContent.text).toMatch(/fact/i);
+		expect(firstContent.text).toMatch(/invalidate/i);
+		expect(firstContent.text).not.toMatch(/not found/i);
+		const recalledAfterInvalidate = await registeredMnemopiState!.recallResultsScoped("redis cache");
+		expect(recalledAfterInvalidate.map(result => result.id)).toContain(factId);
 	});
 
 	it("invalidates a working memory by recall id", async () => {

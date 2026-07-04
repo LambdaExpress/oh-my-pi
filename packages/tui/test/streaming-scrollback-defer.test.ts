@@ -1015,3 +1015,123 @@ describe("scrollback commit gap — live barriers", () => {
 		}
 	});
 });
+
+async function withPlatform<T>(platform: NodeJS.Platform, run: () => T | Promise<T>): Promise<T> {
+	const saved = process.platform;
+	Object.defineProperty(process, "platform", { value: platform, configurable: true });
+	try {
+		return await run();
+	} finally {
+		Object.defineProperty(process, "platform", { value: saved, configurable: true });
+	}
+}
+
+describe("win32 native scrollback — mutable block finalization artifacts", () => {
+	let savedTerminalEnv: Record<string, string | undefined> = {};
+	beforeEach(() => {
+		savedTerminalEnv = saveTerminalEnv();
+	});
+	afterEach(() => {
+		restoreTerminalEnv(savedTerminalEnv);
+		savedTerminalEnv = {};
+	});
+
+	it("does not duplicate unchanged rows when an offscreen mutable block finalizes", async () => {
+		await withPlatform("win32", async () => {
+			const term = new VirtualTerminal(28, 4);
+			overrideProbe(term, undefined);
+			const tui = new TUI(term);
+			const root = new SeamLineList([]);
+
+			try {
+				tui.addChild(root);
+				tui.start();
+				await settle(term);
+				const writes = capture(term);
+
+				const unchangedTail = rows("unchanged-", 9);
+				root.setLines(["phase: pending", ...unchangedTail]);
+				root.seam = 0;
+				tui.requestRender();
+				await settle(term);
+
+				root.setLines(["phase: done", ...unchangedTail]);
+				root.seam = undefined;
+				tui.requestRender();
+				await settle(term);
+
+				const finalFrame = ["phase: done", ...unchangedTail];
+				const buffer = tape(term);
+				expect(buffer).toEqual(finalFrame);
+				for (const line of unchangedTail) {
+					expect(
+						buffer.filter(row => row === line),
+						`${line} should appear once after finalize`,
+					).toHaveLength(1);
+				}
+				// The ordinary finalize path must keep the native tape clean by
+				// policy; a destructive ED3/full replay is reserved for explicit
+				// history rebuilds such as resize/reset.
+				expect(eraseScrollbackCount(writes)).toBe(0);
+			} finally {
+				tui.stop();
+			}
+		});
+	});
+
+	it("does not leave a pending tool header above a completed tool body", async () => {
+		await withPlatform("win32", async () => {
+			const term = new VirtualTerminal(36, 5);
+			overrideProbe(term, undefined);
+			const tui = new TUI(term);
+			const root = new SeamLineList([]);
+
+			try {
+				tui.addChild(root);
+				tui.start();
+				await settle(term);
+				const writes = capture(term);
+
+				const pendingFrame = [
+					"tool shell: pending",
+					"cmd: echo ok",
+					"status: running",
+					"output:",
+					"out-0",
+					"out-1",
+					"out-2",
+					"tool end: pending",
+				];
+				root.setLines(pendingFrame);
+				root.seam = 0;
+				tui.requestRender();
+				await settle(term);
+
+				const finalFrame = [
+					"tool shell: done",
+					"cmd: echo ok",
+					"status: exit 0",
+					"output:",
+					"out-0",
+					"out-1",
+					"out-2",
+					"tool end: done",
+				];
+				root.setLines(finalFrame);
+				root.seam = undefined;
+				tui.requestRender();
+				await settle(term);
+
+				const buffer = tape(term);
+				expect(buffer).toEqual(finalFrame);
+				expect(buffer.filter(line => line.includes("pending") || line.includes("running"))).toEqual([]);
+				expect(contiguousAt(buffer, finalFrame)).toEqual([0]);
+				// The ordinary finalize path must not rely on a destructive history
+				// rebuild to hide the split frame; resize/reset may still replay.
+				expect(eraseScrollbackCount(writes)).toBe(0);
+			} finally {
+				tui.stop();
+			}
+		});
+	});
+});

@@ -219,7 +219,6 @@ export class IrcBus {
 				cleanup();
 				resolve(null);
 			}, timeoutMs);
-			timer.unref?.();
 		}
 
 		let waiters = this.#waiters.get(agentId);

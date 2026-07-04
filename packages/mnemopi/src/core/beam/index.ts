@@ -29,6 +29,7 @@ import {
 	getContext,
 	getGlobalWorkingStats,
 	getWorkingStats,
+	hasFact,
 	importFromDict,
 	invalidate,
 	remember,
@@ -248,6 +249,10 @@ export class BeamMemory implements BeamMemoryState {
 
 	forgetFact(factId: string): boolean {
 		return forgetFact(this, factId);
+	}
+
+	hasFact(factId: string): boolean {
+		return hasFact(this, factId);
 	}
 
 	consolidateToEpisodic(

@@ -29,7 +29,7 @@
 - Fixed collapsed eval code previews folding a single long logical line into only an `earlier lines` marker when terminal wrapping produced a short two-row visual preview.
 - Fixed `/skill:<name>` and prompt-action submissions appearing delayed by allowing finalized transcript cards below the active block to enter native scrollback while still being audited for repair.
 - Fixed `/skill:<name>` and prompt-template submissions showing raw slash text or a blank pending gap during first-turn startup by rendering side-effect-free prompt previews and de-duplicating pending skill cards.
-- Fixed `memory_edit` returning `Memory ... was not found` for recalled Mnemopi facts by allowing `op: "forget"` to delete the recalled fact id.
+- Fixed `memory_edit` returning `Memory ... was not found` for recalled Mnemopi facts by allowing `op: "forget"` to delete the recalled fact id and reporting `update`/`invalidate` as fact-specific unsupported operations.
 
 - Fixed eval cell output rendering so live stdout that ends with a newline no longer leaves an extra blank row at the bottom of the output box.
 - Fixed collapsed pending framed-output sections counting only logical lines before the shared block renderer wrapped CJK/HTML-like strings, so long previews could outgrow the live viewport and leave stale `earlier lines` snapshots in native scrollback.

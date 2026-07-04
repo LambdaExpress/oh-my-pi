@@ -17,6 +17,7 @@ import { type } from "arktype";
 import type { Settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../irc/bus";
+import { isIrcPeerInScope, type IrcPeerScope } from "../irc/peers";
 import type { Theme } from "../modes/theme/theme";
 import ircDescription from "../prompts/tools/irc.md" with { type: "text" };
 import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
@@ -179,11 +180,23 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		}
 	}
 
+	#peerScope(): IrcPeerScope {
+		const agentIds = this.session.getIrcPeerIds?.() ?? undefined;
+		return { agentIds: agentIds ?? undefined, sessionFile: this.session.getSessionFile() };
+	}
+
 	#executeList(registry: AgentRegistry, senderId: string): AgentToolResult<IrcDetails> {
 		const bus = IrcBus.global();
+		const scope = this.#peerScope();
 		const peers = registry
 			.list()
-			.filter(ref => ref.id !== senderId && ref.status !== "aborted" && ref.kind !== "advisor")
+			.filter(
+				ref =>
+					ref.id !== senderId &&
+					ref.status !== "aborted" &&
+					ref.kind !== "advisor" &&
+					isIrcPeerInScope(ref, scope),
+			)
 			.map(ref => ({
 				id: ref.id,
 				displayName: ref.displayName,
@@ -277,24 +290,39 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		}
 
 		try {
-			// Broadcasts fan out to live peers only (running | idle); reviving every
-			// parked agent on a broadcast would be a stampede. Direct sends go
-			// through the bus unfiltered so parked recipients are revived.
-			const targets = isBroadcast ? registry.listVisibleTo(senderId).map(ref => ref.id) : [to];
+			const scope = this.#peerScope();
+			// Broadcasts fan out to scoped live peers only (running | idle); reviving
+			// every parked agent on a broadcast would be a stampede. Direct sends may
+			// revive parked recipients, but only when the target is visible from the
+			// sender's current conversation branch.
+			const targets = isBroadcast
+				? registry
+						.listVisibleTo(senderId)
+						.filter(ref => isIrcPeerInScope(ref, scope))
+						.map(ref => ref.id)
+				: [to];
 			// A broadcast that also reaches the main agent delivers the body to it
 			// directly (its own incoming card); relaying the sibling legs to the
 			// main UI would then show the same body once per other recipient.
 			const suppressRelay = isBroadcast && targets.includes(MAIN_AGENT_ID);
 			const receipts = await Promise.all(
-				targets.map(target =>
-					bus.send(
+				targets.map(target => {
+					const ref = registry.get(target);
+					if (ref && !isIrcPeerInScope(ref, scope)) {
+						return {
+							to: target,
+							outcome: "failed",
+							error: `Agent "${target}" is not visible in the current conversation branch.`,
+						} satisfies IrcDeliveryReceipt;
+					}
+					return bus.send(
 						{ from: senderId, to: target, body: message, replyTo: params.replyTo },
 						// Awaited sends mark the sender as blocked on an answer so a
 						// busy recipient that cannot reach a step boundary (async
 						// disabled) auto-replies instead of stranding the sender.
 						{ expectsReply: params.await || undefined, suppressRelay: suppressRelay || undefined },
-					),
-				),
+					);
+				}),
 			);
 
 			const lines: string[] = [];

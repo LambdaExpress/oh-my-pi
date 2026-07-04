@@ -81,6 +81,7 @@ import {
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import type { HindsightSessionState } from "./hindsight/state";
 import { LocalProtocolHandler, type LocalProtocolOptions } from "./internal-urls";
+import { collectIrcPeerIdsFromSessionEntries } from "./irc/peers";
 import { LSP_STARTUP_EVENT_CHANNEL, type LspStartupEvent } from "./lsp/startup-events";
 import {
 	discoverAndLoadMCPTools,
@@ -521,6 +522,8 @@ export interface CreateAgentSessionOptions {
 	 * top-level "Main" session, which has no parent.
 	 */
 	parentAgentId?: string;
+	/** Extra IRC peers inherited from the spawning context before this session has task results in its own branch. */
+	ircPeerIds?: readonly string[];
 	/** Inherited eval executor session id for subagents sharing parent eval state. */
 	parentEvalSessionId?: string;
 
@@ -1553,6 +1556,15 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			getHindsightSessionState: () => session?.getHindsightSessionState(),
 			getMnemopiSessionState: () => session?.getMnemopiSessionState(),
 			getAgentId: () => resolvedAgentId,
+			getIrcPeerIds: () => {
+				const ids = collectIrcPeerIdsFromSessionEntries(sessionManager.getBranch());
+				for (const id of options.ircPeerIds ?? []) ids.add(id);
+				const parentId = agentRegistry.get(resolvedAgentId)?.parentId ?? options.parentAgentId;
+				if (parentId) ids.add(parentId);
+				if (resolvedAgentId !== MAIN_AGENT_ID) ids.add(MAIN_AGENT_ID);
+				ids.delete(resolvedAgentId);
+				return ids;
+			},
 			getToolByName: name => session?.getToolByName(name),
 			agentRegistry,
 			getSessionSpawns: () => options.spawns ?? "*",

@@ -108,9 +108,10 @@ export interface MnemopiMemoryEditOptions {
 }
 
 export interface MnemopiMemoryEditResult {
-	status: "updated" | "deleted" | "invalidated" | "not_found";
+	status: "updated" | "deleted" | "invalidated" | "not_found" | "unsupported";
 	bank?: string;
 	store?: "working" | "episodic" | "fact";
+	reason?: string;
 }
 
 interface MnemopiStoredMemoryRow {
@@ -245,6 +246,20 @@ export class MnemopiSessionState {
 				}
 			}
 		}
+		if (op === "update" || op === "invalidate") {
+			for (const target of targets) {
+				if (target.memory.beam.hasFact(id)) {
+					const operation = op === "update" ? "updated" : "invalidated";
+					return {
+						status: "unsupported",
+						bank: target.bank,
+						store: "fact",
+						reason: `fact memories cannot be ${operation}; forget the fact and retain a corrected memory instead`,
+					};
+				}
+			}
+		}
+
 		return ineligible ?? { status: "not_found" };
 	}
 

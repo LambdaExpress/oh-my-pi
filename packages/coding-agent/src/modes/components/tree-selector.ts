@@ -766,8 +766,11 @@ class TreeList implements Component {
 			case "label":
 				result = theme.fg("dim", `[label: ${entry.label ?? "(cleared)"}]`);
 				break;
-			default:
-				result = theme.fg("dim", `[${entry.type}]`);
+			default: {
+				const unknownEntry = entry as unknown as { type?: string };
+				result = theme.fg("dim", `[${unknownEntry.type ?? "unknown"}]`);
+				break;
+			}
 		}
 
 		return isSelected ? theme.bold(result) : result;

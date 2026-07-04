@@ -691,6 +691,23 @@ export function forgetWorking(beam: BeamMemoryState, memoryId: string): boolean 
 	return deleted > 0;
 }
 
+export function hasFact(beam: BeamMemoryState, factId: string): boolean {
+	const statement = factsHaveScopeColumn(beam)
+		? beam.db.prepare(`
+			SELECT 1
+			FROM facts
+			WHERE fact_id = ? AND (session_id = ? OR scope = 'global')
+			LIMIT 1
+		`)
+		: beam.db.prepare(`
+			SELECT 1
+			FROM facts
+			WHERE fact_id = ? AND session_id = ?
+			LIMIT 1
+		`);
+	return statement.get(factId, beam.sessionId) != null;
+}
+
 export function forgetFact(beam: BeamMemoryState, factId: string): boolean {
 	let deleted = 0;
 	transaction(beam.db, () => {

@@ -670,6 +670,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				},
 			});
 		}
+		const batchIrcPeerIds = spawns.map(spawn => spawn.agentId);
 
 		// Aggregate async state for the one tool call: every spawn's job reports
 		// into the shared progress snapshot; the call stays "running" until all
@@ -702,6 +703,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					agentId: spawn.agentId,
 					progress: spawn.progress,
 					ircEnabled,
+					ircPeerIds: batchIrcPeerIds,
 					buildDetails: buildAsyncDetails,
 					onUpdate,
 					onSettled: failed => {
@@ -794,6 +796,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		agentId: string;
 		progress: AgentProgress;
 		ircEnabled: boolean;
+		ircPeerIds?: readonly string[];
 		buildDetails: (state: "running" | "completed" | "failed", jobId: string) => TaskToolDetails;
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>;
 		onSettled?: (failed: boolean) => void;
@@ -857,6 +860,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						progress.index,
 						true,
 						{ invokedAt: startedAt, acquiredAt },
+						options.ircPeerIds,
 					);
 					const finalText = result.content.find(part => part.type === "text")?.text ?? "(no output)";
 					const singleResult = result.details?.results[0];
@@ -1059,8 +1063,19 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		spawnIndex = 0,
 		detached = false,
 		launchTiming?: { invokedAt: number; acquiredAt: number },
+		ircPeerIds?: readonly string[],
 	): Promise<AgentToolResult<TaskToolDetails>> {
-		return this.#runSpawn(toolCallId, params, signal, onUpdate, preAllocatedId, spawnIndex, detached, launchTiming);
+		return this.#runSpawn(
+			toolCallId,
+			params,
+			signal,
+			onUpdate,
+			preAllocatedId,
+			spawnIndex,
+			detached,
+			launchTiming,
+			ircPeerIds,
+		);
 	}
 
 	/** Spawn a fresh subagent and run it to completion. */
@@ -1073,6 +1088,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		spawnIndex = 0,
 		detached = false,
 		launchTiming?: { invokedAt: number; acquiredAt: number },
+		ircPeerIds?: readonly string[],
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
 		const { agents, projectAgentsDir } = await discoverAgents(this.session.cwd);
@@ -1234,6 +1250,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					this.session.agentOutputManager ?? new AgentOutputManager(this.session.getArtifactsDir ?? (() => null));
 				agentId = await outputManager.allocate(params.id?.trim() || generateTaskName());
 			}
+			const ircPeerIdsForChild = new Set(this.session.getIrcPeerIds?.() ?? []);
+			for (const id of ircPeerIds ?? []) ircPeerIdsForChild.add(id);
+			ircPeerIdsForChild.add(agentId);
 
 			const availableSkills = [...(this.session.skills ?? [])];
 			// Resolve autoload skills from agent definition against available skills
@@ -1336,6 +1355,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				parentTelemetry: this.session.getTelemetry?.(),
 				parentEvalSessionId,
 				parentAgentId: this.session.getAgentId?.() ?? MAIN_AGENT_ID,
+				ircPeerIds: [...ircPeerIdsForChild],
 				// Live source of truth for `tier.subagent: inherit`. When the session
 				// exposes a tier accessor, pass the per-family map or null (null =
 				// explicit none, e.g. /fast off); otherwise leave undefined so inherit

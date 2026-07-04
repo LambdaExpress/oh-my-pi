@@ -5,6 +5,11 @@
 ### Changed
 
 - Changed the default editor undo shortcut to include `Ctrl+Z` while preserving the existing `Ctrl+-` and `Ctrl+_` bindings.
+
+### Fixed
+
+- Fixed mutable live rows entering native scrollback before finalization, which could leave pending tool-frame rows mixed with completed rows or duplicate unchanged output until a resize rebuilt history.
+
 ## [16.3.6] - 2026-07-04
 
 ### Added

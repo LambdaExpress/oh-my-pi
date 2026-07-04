@@ -47,10 +47,15 @@ export class MemoryEditTool implements AgentTool<typeof memoryEditSchema> {
 			replacementId: params.replacement_id,
 		});
 		const location = result.bank ? ` in bank ${result.bank}${result.store ? ` (${result.store})` : ""}` : "";
-		const text =
-			result.status === "not_found"
-				? `Memory ${params.id} was not found${location}.`
-				: `Memory ${params.id} ${result.status}${location}.`;
+		let text: string;
+		if (result.status === "not_found") {
+			text = `Memory ${params.id} was not found${location}.`;
+		} else if (result.status === "unsupported") {
+			const reason = result.reason ? `: ${result.reason}` : "";
+			text = `Memory ${params.id} ${params.op} unsupported${location}${reason}.`;
+		} else {
+			text = `Memory ${params.id} ${result.status}${location}.`;
+		}
 		return {
 			content: [{ type: "text", text }],
 			details: result,
