@@ -24,6 +24,7 @@
 
 ### Fixed
 
+- Fixed `/tree` rendering blank rows for automatic session title updates by hiding `title_change` bookkeeping entries in the default view and rendering their title text in the all filter.
 - Fixed interactive MCP startup status so deferred MCP discovery starts only after the TUI subscribes to startup events, allowing the initial `Connecting to MCP servers: …` banner to render before completion updates.
 - Fixed collapsed eval code previews folding a single long logical line into only an `earlier lines` marker when terminal wrapping produced a short two-row visual preview.
 - Fixed `/skill:<name>` and prompt-action submissions appearing delayed by allowing finalized transcript cards below the active block to enter native scrollback while still being audited for repair.

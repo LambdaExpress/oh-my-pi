@@ -16,7 +16,7 @@ import {
 import type { TreeFilterMode } from "../../config/settings-schema";
 import { theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
-import type { SessionTreeNode } from "../../session/session-entries";
+import type { SessionEntry, SessionTreeNode } from "../../session/session-entries";
 import { toPathList } from "../../tools/path-utils";
 import { shortenPath } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
@@ -54,6 +54,24 @@ type FilterMode = TreeFilterMode;
 interface ToolCallInfo {
 	name: string;
 	arguments: Record<string, unknown>;
+}
+
+function isBookkeepingEntry(entry: SessionEntry): boolean {
+	switch (entry.type) {
+		case "label":
+		case "custom":
+		case "model_change":
+		case "thinking_level_change":
+		case "service_tier_change":
+		case "title_change":
+		case "ttsr_injection":
+		case "mcp_tool_selection":
+		case "session_init":
+		case "mode_change":
+			return true;
+		default:
+			return false;
+	}
 }
 
 class TreeList implements Component {
@@ -301,11 +319,7 @@ class TreeList implements Component {
 			// Apply filter mode
 			let passesFilter = true;
 			// Entry types hidden in default view (settings/bookkeeping)
-			const isSettingsEntry =
-				entry.type === "label" ||
-				entry.type === "custom" ||
-				entry.type === "model_change" ||
-				entry.type === "thinking_level_change";
+			const isSettingsEntry = isBookkeepingEntry(entry);
 
 			switch (this.#filterMode) {
 				case "user-only":
@@ -399,6 +413,24 @@ class TreeList implements Component {
 				break;
 			case "thinking_level_change":
 				parts.push("thinking", entry.thinkingLevel ?? ThinkingLevel.Off);
+				break;
+			case "service_tier_change":
+				parts.push("service tier", JSON.stringify(entry.serviceTier ?? null));
+				break;
+			case "title_change":
+				parts.push("title", entry.title, entry.source);
+				break;
+			case "ttsr_injection":
+				parts.push("ttsr", ...entry.injectedRules);
+				break;
+			case "mcp_tool_selection":
+				parts.push("mcp tools", ...entry.selectedToolNames);
+				break;
+			case "session_init":
+				parts.push("session init", entry.task);
+				break;
+			case "mode_change":
+				parts.push("mode", entry.mode);
 				break;
 			case "custom":
 				parts.push("custom", entry.customType);
@@ -704,6 +736,24 @@ class TreeList implements Component {
 			case "thinking_level_change":
 				result = theme.fg("dim", `[thinking: ${entry.thinkingLevel ?? ThinkingLevel.Off}]`);
 				break;
+			case "service_tier_change":
+				result = theme.fg("dim", `[service tier: ${JSON.stringify(entry.serviceTier ?? null)}]`);
+				break;
+			case "title_change":
+				result = theme.fg("dim", `[title: ${normalize(entry.title)}]`);
+				break;
+			case "ttsr_injection":
+				result = theme.fg("dim", `[ttsr: ${entry.injectedRules.join(", ")}]`);
+				break;
+			case "mcp_tool_selection":
+				result = theme.fg("dim", `[mcp tools: ${entry.selectedToolNames.join(", ")}]`);
+				break;
+			case "session_init":
+				result = theme.fg("dim", `[session init]: ${normalize(entry.task)}`);
+				break;
+			case "mode_change":
+				result = theme.fg("dim", `[mode: ${entry.mode}]`);
+				break;
 			case "custom":
 				result = theme.fg("dim", `[custom: ${entry.customType}]`);
 				break;
@@ -711,7 +761,7 @@ class TreeList implements Component {
 				result = theme.fg("dim", `[label: ${entry.label ?? "(cleared)"}]`);
 				break;
 			default:
-				result = "";
+				result = theme.fg("dim", `[${entry.type}]`);
 		}
 
 		return isSelected ? theme.bold(result) : result;
