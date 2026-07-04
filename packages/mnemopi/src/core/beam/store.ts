@@ -147,6 +147,14 @@ function invalidateCaches(beam: BeamMemoryState): void {
 	cache._queryCache?.invalidate?.();
 }
 
+function factsHaveScopeColumn(beam: BeamMemoryState): boolean {
+	const rows = beam.db.query("PRAGMA table_info(facts)").all() as Row[];
+	for (const row of rows) {
+		if (row.name === "scope") return true;
+	}
+	return false;
+}
+
 function findDuplicate(beam: BeamMemoryState, content: string): string | null {
 	const row = beam.db
 		.prepare("SELECT id FROM working_memory WHERE content = ? AND session_id = ? LIMIT 1")
@@ -662,6 +670,22 @@ export function forgetWorking(beam: BeamMemoryState, memoryId: string): boolean 
 		if (deleted > 0) {
 			beam.db.prepare("DELETE FROM annotations WHERE memory_id = ?").run(memoryId);
 		}
+	});
+	if (deleted > 0) invalidateCaches(beam);
+	return deleted > 0;
+}
+
+export function forgetFact(beam: BeamMemoryState, factId: string): boolean {
+	let deleted = 0;
+	transaction(beam.db, () => {
+		const statement = factsHaveScopeColumn(beam)
+			? beam.db.prepare(`
+				DELETE FROM facts
+				WHERE fact_id = ? AND (session_id = ? OR scope = 'global')
+			`)
+			: beam.db.prepare("DELETE FROM facts WHERE fact_id = ? AND session_id = ?");
+		const result = statement.run(factId, beam.sessionId);
+		deleted = result.changes;
 	});
 	if (deleted > 0) invalidateCaches(beam);
 	return deleted > 0;

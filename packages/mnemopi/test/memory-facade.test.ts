@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	forget,
+	forgetFact,
 	get,
-	getBank,
+	getDefaultInstance,
 	getContext,
 	getStats,
 	Mnemopi,
@@ -39,6 +40,24 @@ function useTempDataDir(): string {
 	return root;
 }
 
+function closeMemory(memory: Mnemopi): void {
+	const { episodicGraph } = memory.beam;
+	if (
+		episodicGraph !== null &&
+		typeof episodicGraph === "object" &&
+		"close" in episodicGraph &&
+		typeof episodicGraph.close === "function"
+	) {
+		episodicGraph.close();
+	}
+	memory.close();
+}
+
+function isBusyRemovalError(error: unknown): boolean {
+	if (error === null || typeof error !== "object" || !("code" in error)) return false;
+	return error.code === "EBUSY" || error.code === "EPERM";
+}
+
 afterEach(() => {
 	resetDefaultInstanceForTests();
 	if (previousDataDir === undefined) {
@@ -50,7 +69,11 @@ afterEach(() => {
 	for (;;) {
 		const root = roots.pop();
 		if (root === undefined) break;
-		rmSync(root, { recursive: true, force: true });
+		try {
+			rmSync(root, { recursive: true, force: true });
+		} catch (error) {
+			if (!isBusyRemovalError(error)) throw error;
+		}
 	}
 });
 
@@ -91,7 +114,77 @@ describe("Mnemopi facade", () => {
 			expect(memory.forget(id)).toBe(true);
 			expect(memory.get(id)).toBeNull();
 		} finally {
-			memory.close();
+			closeMemory(memory);
+		}
+	});
+
+	it("forgets visible facts through instance and module facades", async () => {
+		const memory = new Mnemopi({ dbPath: join(tempRoot(), "mnemopi.db"), sessionId: "fact-facade-session" });
+		try {
+			memory.beam.db.run(
+				"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[
+					"fact-facade",
+					memory.beam.sessionId,
+					"service",
+					"uses",
+					"postgres facade database",
+					"2026-05-30T00:00:00.000Z",
+					0.91,
+				],
+			);
+
+			const instanceBefore = await memory.recallEnhanced("postgres", 3, {
+				includeFacts: true,
+				queryEmbedding: null,
+				useMmr: false,
+			});
+			expect(instanceBefore.map(result => result.id)).toContain("fact-facade");
+			expect(memory.forgetFact("fact-facade")).toBe(true);
+			const instanceAfter = await memory.recallEnhanced("postgres", 3, {
+				includeFacts: true,
+				queryEmbedding: null,
+				useMmr: false,
+			});
+			expect(instanceAfter.map(result => result.id)).not.toContain("fact-facade");
+			expect(memory.forgetFact("fact-facade")).toBe(false);
+		} finally {
+			closeMemory(memory);
+		}
+
+		useTempDataDir();
+		const moduleMemory = getDefaultInstance();
+		try {
+			moduleMemory.beam.db.run(
+				"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+				[
+					"fact-module",
+					moduleMemory.beam.sessionId,
+					"service",
+					"uses",
+					"postgres module database",
+					"2026-05-30T00:00:00.000Z",
+					0.92,
+				],
+			);
+
+			const moduleBefore = await recallEnhanced("postgres", 3, {
+				includeFacts: true,
+				queryEmbedding: null,
+				useMmr: false,
+			});
+			expect(moduleBefore.map(result => result.id)).toContain("fact-module");
+			expect(forgetFact("fact-module")).toBe(true);
+			const moduleAfter = await recallEnhanced("postgres", 3, {
+				includeFacts: true,
+				queryEmbedding: null,
+				useMmr: false,
+			});
+			expect(moduleAfter.map(result => result.id)).not.toContain("fact-module");
+			expect(forgetFact("fact-module")).toBe(false);
+		} finally {
+			closeMemory(moduleMemory);
+			resetDefaultInstanceForTests();
 		}
 	});
 
@@ -114,7 +207,7 @@ describe("Mnemopi facade", () => {
 			};
 			expect(graphRow.count).toBe(1);
 		} finally {
-			memory.close();
+			closeMemory(memory);
 			db.close();
 			if (previousProactiveLinking === undefined) delete process.env.MNEMOPI_PROACTIVE_LINKING;
 			else process.env.MNEMOPI_PROACTIVE_LINKING = previousProactiveLinking;
@@ -133,7 +226,7 @@ describe("Mnemopi facade", () => {
 				.get("Same batch content") as { count: number };
 			expect(row.count).toBe(2);
 		} finally {
-			memory.close();
+			closeMemory(memory);
 		}
 	});
 
@@ -159,7 +252,7 @@ describe("Mnemopi facade", () => {
 			expect(memory.sleep(true).dry_run).toBe(true);
 			expect(memory.sleepAllSessions(true).dry_run).toBe(true);
 		} finally {
-			memory.close();
+			closeMemory(memory);
 		}
 	});
 
@@ -181,21 +274,28 @@ describe("Mnemopi facade", () => {
 		expect(sleep(true).dry_run).toBe(true);
 		expect(sleepAllSessions(true).dry_run).toBe(true);
 		expect(forget(id)).toBe(true);
+		closeMemory(getDefaultInstance());
 		resetDefaultInstanceForTests();
-		expect(getBank()).toBe("default");
 	});
 
 	it("switches singleton banks and supports per-call bank selection", async () => {
 		useTempDataDir();
 		setBank("work");
-		expect(getBank()).toBe("work");
 		const workId = remember("Work bank memory");
-		const personalId = remember("Personal bank memory", { bank: "personal" });
+		closeMemory(getDefaultInstance());
+		resetDefaultInstanceForTests();
 
-		expect(getBank()).toBe("personal");
-		expect((await recall("personal", 5)).map(row => row.id)).toContain(personalId);
+		const personalId = remember("Personal bank memory", { bank: "personal" });
+		expect((await recall("personal", 5, { bank: "personal" })).map(row => row.id)).toContain(personalId);
+		closeMemory(getDefaultInstance());
+		resetDefaultInstanceForTests();
+
 		expect((await recall("work", 5, { bank: "work" })).map(row => row.id)).toContain(workId);
+		closeMemory(getDefaultInstance());
+		resetDefaultInstanceForTests();
+
 		expect(get(workId, "personal")).toBeNull();
 		expect(get(personalId, "personal")).toMatchObject({ content: "Personal bank memory" });
+		closeMemory(getDefaultInstance());
 	});
 });

@@ -7,6 +7,7 @@ export {
 	addMemory,
 	flushExtractions,
 	forget,
+	forgetFact,
 	get,
 	getBank,
 	getContext,

@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
 import { factRecall, formatContext, recall, recallEnhanced } from "@oh-my-pi/pi-mnemopi/core/beam/recall";
+import { BeamMemory } from "@oh-my-pi/pi-mnemopi/core/beam/index";
 import { initBeam } from "@oh-my-pi/pi-mnemopi/core/beam/schema";
 import type { BeamMemoryState } from "@oh-my-pi/pi-mnemopi/core/beam/types";
 
@@ -236,6 +237,55 @@ describe("beam recall free functions", () => {
 		expect(results[0]?.content).toBe("postgres database");
 		expect(results[0]?.fact_id).toBe("fact-1");
 		expect(results[0]?.subject).toBe("service");
+	});
+
+	it("forgets recalled same-session facts by fact id", async () => {
+		const beam = new BeamMemory({ dbPath: ":memory:", sessionId: "s1" });
+		beams.push(beam);
+		beam.db.run(
+			"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, confidence) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			["fact-delete", beam.sessionId, "service", "uses", "postgres database", "2026-05-30T00:00:00.000Z", 0.91],
+		);
+
+		const before = await recallEnhanced(beam, "postgres", 3, {
+			includeFacts: true,
+			queryEmbedding: null,
+			useMmr: false,
+		});
+
+		expect(before.map(result => result.id)).toContain("fact-delete");
+		expect(beam.forgetFact("fact-delete")).toBe(true);
+
+		const after = await recallEnhanced(beam, "postgres", 3, {
+			includeFacts: true,
+			queryEmbedding: null,
+			useMmr: false,
+		});
+		expect(after.map(result => result.id)).not.toContain("fact-delete");
+		expect(beam.forgetFact("fact-delete")).toBe(false);
+	});
+
+	it("forgets global facts visible through scoped fact recall", () => {
+		const beam = new BeamMemory({ dbPath: ":memory:", sessionId: "s1" });
+		beams.push(beam);
+		beam.db.run("ALTER TABLE facts ADD COLUMN scope TEXT DEFAULT 'session'");
+		beam.db.run(
+			"INSERT INTO facts (fact_id, session_id, subject, predicate, object, timestamp, confidence, scope) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+			[
+				"fact-global",
+				"other-session",
+				"service",
+				"uses",
+				"postgres global database",
+				"2026-05-30T00:00:00.000Z",
+				0.91,
+				"global",
+			],
+		);
+
+		expect(factRecall(beam, "postgres", 3).map(result => result.fact_id)).toContain("fact-global");
+		expect(beam.forgetFact("fact-global")).toBe(true);
+		expect(factRecall(beam, "postgres", 3).map(result => result.fact_id)).not.toContain("fact-global");
 	});
 
 	it("keeps exact fact hits for conversational questions", () => {

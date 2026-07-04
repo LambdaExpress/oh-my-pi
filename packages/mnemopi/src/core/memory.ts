@@ -499,6 +499,10 @@ export class Mnemopi {
 		return this.#withRuntimeOptions(() => this.beam.forgetWorking(memoryId));
 	}
 
+	forgetFact(factId: string): boolean {
+		return this.#withRuntimeOptions(() => this.beam.forgetFact(factId));
+	}
+
 	update(memoryId: string, content: string | null = null, importance: number | null = null): boolean {
 		return this.#withRuntimeOptions(() => this.beam.updateWorking(memoryId, content, importance));
 	}
@@ -595,6 +599,10 @@ export function get(memoryId: string, bank: string | null = null): unknown | nul
 
 export function forget(memoryId: string, bank: string | null = null): boolean {
 	return defaultFor(bank).forget(memoryId);
+}
+
+export function forgetFact(factId: string, bank: string | null = null): boolean {
+	return defaultFor(bank).forgetFact(factId);
 }
 
 export function update(

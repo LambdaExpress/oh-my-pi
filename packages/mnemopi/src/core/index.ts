@@ -12,6 +12,7 @@ export * from "./memory";
 export {
 	addMemory,
 	forget,
+	forgetFact,
 	get,
 	getBank,
 	getContext,

@@ -23,6 +23,7 @@ import { factRecall, formatContext, recall, recallEnhanced } from "./recall";
 import { initBeam } from "./schema";
 import {
 	exportToDict,
+	forgetFact,
 	forgetWorking,
 	get,
 	getContext,
@@ -243,6 +244,10 @@ export class BeamMemory implements BeamMemoryState {
 
 	forgetWorking(memoryId: string): boolean {
 		return forgetWorking(this, memoryId);
+	}
+
+	forgetFact(factId: string): boolean {
+		return forgetFact(this, factId);
 	}
 
 	consolidateToEpisodic(
