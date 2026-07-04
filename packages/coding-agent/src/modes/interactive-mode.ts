@@ -943,6 +943,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		pushTerminalTitle();
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		this.updateEditorBorderColor();
+		// Single side-effect point for title changes: every setSessionName caller
+		// (first-input titling, /rename, extension renames, plan seeding, replan
+		// refresh) gets the terminal title + accent updates from here. Registered
+		// before initHooksAndCustomTools/#reconcileModeFromSession/#enterPlanMode —
+		// all of which can reach setSessionName during init.
+		this.#eventBusUnsubscribers.push(
+			this.sessionManager.onSessionNameChanged(() => {
+				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
+				this.#handleSessionAccentInputsChanged();
+			}),
+		);
 		this.#syncEditorMaxHeight();
 		this.isInitialized = true;
 		this.ui.requestRender(true);
@@ -2750,11 +2761,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const shouldSeedPlanSlugTitle = !this.titleSystemPrompt?.trim();
 		const seededName = shouldSeedPlanSlugTitle ? humanizePlanTitle(options.title) : "";
 		if (seededName && !this.sessionManager.getSessionName()) {
-			const applied = await this.sessionManager.setSessionName(seededName, "auto");
-			if (applied) {
-				setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
-				this.updateEditorBorderColor();
-			}
+			await this.sessionManager.setSessionName(seededName, "auto");
 		}
 		const titleSessionId = this.sessionManager.getSessionId();
 		this.#scheduleApprovedPlanTitleRefresh(planContent, titleSessionId);
