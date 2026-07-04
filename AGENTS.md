@@ -143,6 +143,8 @@ bun scripts/ci-test-ts.ts coding-agent-heavy
 - In `packages/coding-agent`, do not use `console.log`, `console.warn`, or `console.error`; use `logger` from `@oh-my-pi/pi-utils`.
 - TUI-facing text must be sanitized: replace tabs, truncate long lines, shorten home paths, and use existing `TRUNCATE_LENGTHS` / `PREVIEW_LIMITS` constants.
 - Update every live and rebuilt transcript render path when changing streamed tool-call previews.
+- For streamed tool-call previews, treat partially streamed arguments as first-class input: parsed args can lag raw provider chunks, so live rendering, transcript rebuilds, and merged call/result rendering must share the same decode path.
+- Preserve preview-only fields through event controllers, transcript rebuilds, and final render contexts; when preview formatting changes, verify both pending and completed tool-call states.
 - Preserve append-only scrollback invariants in `packages/tui`; components should return immutable row arrays and rely on reference equality for unchanged content.
 
 ### Prompts and generated text
@@ -168,7 +170,7 @@ bun scripts/ci-test-ts.ts coding-agent-heavy
 ### Workers and subprocesses
 
 - Workers re-enter `packages/coding-agent/src/cli.ts` through hidden `__omp_worker_*` argv selectors.
-- New worker kinds must add a selector in `cli.ts`, keep the direct-module fallback for non-CLI hosts, and be validated by `omp --smoke-test` or a sibling smoke probe.
+- New worker kinds must add a selector in `cli.ts`, keep the direct-module fallback for non-CLI hosts such as tests, SDK embedding, and standalone tools, and be validated by `omp --smoke-test` or a sibling smoke probe that exercises the affected module graph.
 - Do not add separate worker bundle entrypoints for compiled binaries.
 
 ### Git, GitHub, changelog
@@ -227,6 +229,8 @@ Preferred test practices:
 
 - Use `bun:test` imports: `describe`, `it`/`test`, `expect`, `beforeEach`, `afterEach`, `vi`, `mock`.
 - Prefer `vi.spyOn()` and dependency injection. Do not use `mock.module()`.
+- Do not add placeholder, tautological, or source-grep tests. Tests must assert observable behavior, emitted events, persisted files, rendered output, request bodies, public state transitions, or typed/linted structural constraints.
+- Keep tests full-suite safe: avoid long-lived mutations of `Bun.*`, `process.platform`, `process.env`, `Bun.env`, module registries, timers, settings, and other globals unless each test restores them explicitly.
 - Use `Settings.isolated(...)`, temp dirs, fake models/transports, and explicit cleanup for session/tool tests.
 - Restore timers, mocks, env, settings, and global state in `afterEach`.
 - Gate real-provider tests with env checks such as `describe.skipIf(!e2eApiKey("ANTHROPIC_API_KEY"))`.
