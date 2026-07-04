@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,8 +6,14 @@ import { AuthStorage } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { type MCPLoadResult, MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
+import {
+	MCP_CONNECTION_STATUS_EVENT_CHANNEL,
+	type McpConnectionStatusEvent,
+} from "@oh-my-pi/pi-coding-agent/mcp/startup-events";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
 // Contract for B1 (interactive MCP deferral): when `hasUI` is true, MCP
@@ -91,6 +97,63 @@ describe("createAgentSession MCP deferral (B1)", () => {
 			expect(session.getActiveToolNames()).toContain("read");
 		} finally {
 			await session.dispose();
+		}
+	});
+
+	it("holds MCP startup status until the returned deferred starter runs", async () => {
+		fs.writeFileSync(
+			path.join(tempDir, ".mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					delayed: { type: "stdio", command: process.execPath },
+				},
+			}),
+		);
+
+		const eventBus = new EventBus();
+		const eventsBeforeManualStart: McpConnectionStatusEvent[] = [];
+		const unsubscribeEarly = eventBus.on(MCP_CONNECTION_STATUS_EVENT_CHANNEL, event => {
+			eventsBeforeManualStart.push(event as McpConnectionStatusEvent);
+		});
+		const discoverSpy = spyOn(MCPManager.prototype, "discoverAndConnect").mockImplementation(async options => {
+			options?.onStatus?.({ type: "connecting", serverNames: ["delayed"] });
+			return {
+				tools: [],
+				errors: new Map<string, string>(),
+				connectedServers: [],
+				exaApiKeys: [],
+			} satisfies MCPLoadResult;
+		});
+
+		const result = await createAgentSession({
+			...baseOptions(),
+			hasUI: true,
+			deferMCPDiscoveryStart: true,
+			eventBus,
+			toolNames: ["read"],
+		});
+
+		try {
+			expect(eventsBeforeManualStart).toEqual([]);
+			expect(discoverSpy).not.toHaveBeenCalled();
+			expect(typeof result.startDeferredMCPDiscovery).toBe("function");
+
+			const eventsAfterListenerRegistration: McpConnectionStatusEvent[] = [];
+			const unsubscribeLate = eventBus.on(MCP_CONNECTION_STATUS_EVENT_CHANNEL, event => {
+				eventsAfterListenerRegistration.push(event as McpConnectionStatusEvent);
+			});
+			try {
+				result.startDeferredMCPDiscovery?.();
+
+				expect(eventsAfterListenerRegistration).toEqual([{ type: "connecting", serverNames: ["delayed"] }]);
+				expect(discoverSpy).toHaveBeenCalledTimes(1);
+			} finally {
+				unsubscribeLate();
+			}
+		} finally {
+			unsubscribeEarly();
+			discoverSpy.mockRestore();
+			await result.session.dispose();
 		}
 	});
 });

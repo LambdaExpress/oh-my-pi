@@ -407,6 +407,7 @@ async function runInteractiveMode(
 	forceSetupWizard: boolean,
 	showStartupSplash: boolean,
 	eventBus?: EventBus,
+	startDeferredMCPDiscovery?: () => void,
 	initialMessage?: string,
 	initialImages?: ImageContent[],
 	joinLink?: string,
@@ -445,6 +446,8 @@ async function runInteractiveMode(
 		suppressWelcomeIntro: resuming || setupScenes.length > 0 || playStartupSplash,
 		clearInitialTerminalHistory: true,
 	});
+
+	startDeferredMCPDiscovery?.();
 
 	if (setupWizard && playStartupSplash) {
 		await setupWizard.runStartupSplash(mode);
@@ -1264,6 +1267,7 @@ export async function runRootCommand(
 	sessionOptions.authStorage = authStorage;
 	sessionOptions.modelRegistry = modelRegistry;
 	sessionOptions.hasUI = isInteractive || mode === "rpc-ui";
+	sessionOptions.deferMCPDiscoveryStart = isInteractive;
 	sessionOptions.settings = settingsInstance;
 
 	// OTEL: register the global OTLP trace exporter when an OTLP endpoint is
@@ -1366,11 +1370,12 @@ export async function runRootCommand(
 			stdoutIsTTY: process.stdout.isTTY,
 		});
 
-		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager } = await createSession({
-			...sessionOptions,
-			eventBus,
-			preloadedExtensions: extensionsResult,
-		});
+		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager, startDeferredMCPDiscovery } =
+			await createSession({
+				...sessionOptions,
+				eventBus,
+				preloadedExtensions: extensionsResult,
+			});
 
 		// Cold-revive support: a `parked` subagent ref restored from disk (Agent Hub
 		// scan, collab mirror, resumed process) has a sessionFile but no in-memory
@@ -1460,6 +1465,7 @@ export async function runRootCommand(
 				deps.forceSetupWizard === true,
 				showStartupSplash,
 				eventBus,
+				startDeferredMCPDiscovery,
 				initialMessage,
 				initialImages,
 				parsedArgs.join,

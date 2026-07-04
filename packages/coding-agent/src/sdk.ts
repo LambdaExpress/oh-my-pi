@@ -542,6 +542,14 @@ export interface CreateAgentSessionOptions {
 	hasUI?: boolean;
 
 	/**
+	 * When UI MCP discovery is deferred, return an idempotent starter instead of
+	 * launching discovery before createAgentSession resolves. Interactive hosts
+	 * use this to register startup-status listeners before MCP emits its initial
+	 * "connecting" event. Default preserves the SDK's existing auto-start behavior.
+	 */
+	deferMCPDiscoveryStart?: boolean;
+
+	/**
 	 * Opt-in OpenTelemetry instrumentation forwarded to the underlying Agent.
 	 * Passing `{}` enables the loop's GenAI-semantic-convention spans. See
 	 * {@link AgentTelemetryConfig} for the full surface (hooks, content capture,
@@ -582,6 +590,8 @@ export interface CreateAgentSessionResult {
 	lspServers?: LspStartupServerInfo[];
 	/** Shared event bus for tool/extension communication */
 	eventBus: EventBus;
+	/** Starts deferred UI MCP discovery, when discovery was held for a host listener. */
+	startDeferredMCPDiscovery?: () => void;
 }
 
 export type DialectFormat = "auto" | "native" | Dialect;
@@ -1659,9 +1669,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		const enableMCP = options.enableMCP ?? true;
 		const deferMCPDiscoveryForUI = enableMCP && !mcpManager && options.hasUI === true;
 		const customTools: CustomTool[] = [];
-		let startDeferredMCPDiscovery:
-			| ((liveSession: AgentSession, activation: DeferredMCPActivation) => void)
-			| undefined;
+		let runDeferredMCPDiscovery: ((liveSession: AgentSession, activation: DeferredMCPActivation) => void) | undefined;
 		const startupQuiet = settings.get("startup.quiet");
 		const onMCPStatus = (event: McpConnectionStatusEvent) => {
 			if (!options.hasUI || startupQuiet) return;
@@ -1688,7 +1696,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				}
 
 				const deferredMCPManager = mcpManager;
-				startDeferredMCPDiscovery = (liveSession, activation) => {
+				runDeferredMCPDiscovery = (liveSession, activation) => {
 					void (async () => {
 						try {
 							const mcpResult = await logger.time("discoverAndLoadMCPTools", () =>
@@ -2973,11 +2981,23 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			});
 		}
 
-		startDeferredMCPDiscovery?.(session, {
-			mcpDiscoveryEnabled,
-			explicitlyRequestedMCPToolNames,
-			activateAllMCPTools: !mcpDiscoveryEnabled && options.toolNames === undefined,
-		});
+		const launchDeferredMCPDiscovery = runDeferredMCPDiscovery
+			? (() => {
+					let started = false;
+					return () => {
+						if (started) return;
+						started = true;
+						runDeferredMCPDiscovery(session, {
+							mcpDiscoveryEnabled,
+							explicitlyRequestedMCPToolNames,
+							activateAllMCPTools: !mcpDiscoveryEnabled && options.toolNames === undefined,
+						});
+					};
+				})()
+			: undefined;
+		if (launchDeferredMCPDiscovery && !options.deferMCPDiscoveryStart) {
+			launchDeferredMCPDiscovery();
+		}
 
 		return {
 			session,
@@ -2987,6 +3007,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			modelFallbackMessage,
 			lspServers,
 			eventBus,
+			startDeferredMCPDiscovery: launchDeferredMCPDiscovery,
 		};
 	} catch (error) {
 		// Release the subscription if the throw happened after install but before the

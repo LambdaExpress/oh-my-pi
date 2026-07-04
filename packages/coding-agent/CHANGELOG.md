@@ -24,6 +24,8 @@
 
 ### Fixed
 
+- Fixed interactive MCP startup status so deferred MCP discovery starts only after the TUI subscribes to startup events, allowing the initial `Connecting to MCP servers: …` banner to render before completion updates.
+- Fixed `/skill:<name>` and prompt-action submissions appearing delayed by allowing finalized transcript cards below the active block to enter native scrollback while still being audited for repair.
 - Fixed `memory_edit` returning `Memory ... was not found` for recalled Mnemopi facts by allowing `op: "forget"` to delete the recalled fact id.
 
 - Fixed eval cell output rendering so live stdout that ends with a newline no longer leaves an extra blank row at the bottom of the output box.
