@@ -356,6 +356,7 @@ export class StatusLineComponent implements Component {
 	#usageFetchedAt = 0;
 	#usageInFlight = false;
 	#usageStartTimer: Timer | null = null;
+	#usageRefreshGeneration = 0;
 	#onUsageRefresh: (() => void) | undefined;
 	// Context-usage memo. The status line redraws on every agent event, so the
 	// hot path must not recompute context tokens unless an input changed.
@@ -628,14 +629,29 @@ export class StatusLineComponent implements Component {
 	invalidate(): void {
 		this.#invalidateGitCaches();
 	}
+
+	/**
+	 * Drop provider usage cache and schedule a fresh background fetch.
+	 * Used when an action changes remote quota state (for example `/usage reset`).
+	 */
+	refreshUsage(): void {
+		this.#invalidateUsageCache();
+		this.refreshUsageInBackground();
+	}
+
 	#invalidateSessionCaches(): void {
+		this.#invalidateUsageCache();
+		this.#contextUsageCache = undefined;
+		this.#lastTokensPerSecond = null;
+		this.#lastTokensPerSecondTimestamp = null;
+	}
+
+	#invalidateUsageCache(): void {
+		this.#usageRefreshGeneration++;
 		this.#clearUsageStartTimer();
 		this.#cachedUsage = null;
 		this.#usageFetchedAt = 0;
 		this.#usageInFlight = false;
-		this.#contextUsageCache = undefined;
-		this.#lastTokensPerSecond = null;
-		this.#lastTokensPerSecondTimestamp = null;
 	}
 
 	#invalidateGitCaches(): void {
@@ -853,35 +869,43 @@ export class StatusLineComponent implements Component {
 		const fetcher = (session as { fetchUsageReports?: (signal?: AbortSignal) => Promise<unknown> }).fetchUsageReports;
 		if (typeof fetcher !== "function") return;
 		this.#usageInFlight = true;
+		const usageRefreshGeneration = this.#usageRefreshGeneration;
 		this.#usageStartTimer = setTimeout(() => {
 			this.#usageStartTimer = null;
-			void this.#runUsageRefresh(session, fetcher);
+			void this.#runUsageRefresh(session, fetcher, usageRefreshGeneration);
 		}, STATUS_USAGE_START_DELAY_MS);
 	}
 
-	async #runUsageRefresh(session: AgentSession, fetcher: (signal?: AbortSignal) => Promise<unknown>): Promise<void> {
-		if (this.#disposed || this.session !== session) {
-			this.#usageInFlight = false;
+	async #runUsageRefresh(
+		session: AgentSession,
+		fetcher: (signal?: AbortSignal) => Promise<unknown>,
+		usageRefreshGeneration: number,
+	): Promise<void> {
+		if (this.#disposed || this.session !== session || this.#usageRefreshGeneration !== usageRefreshGeneration) {
 			return;
 		}
 		const signal = AbortSignal.timeout(STATUS_USAGE_REFRESH_TIMEOUT_MS);
 		let reportsPromise: Promise<unknown> | undefined;
 		try {
 			reportsPromise = fetcher.call(session, signal);
-			this.#applyUsageRefreshReports(session, await this.#raceUsageRefreshWithSignal(reportsPromise, signal));
+			this.#applyUsageRefreshReports(
+				session,
+				await this.#raceUsageRefreshWithSignal(reportsPromise, signal),
+				usageRefreshGeneration,
+			);
 		} catch {
-			if (this.session !== session) return;
+			if (this.session !== session || this.#usageRefreshGeneration !== usageRefreshGeneration) return;
 			this.#usageFetchedAt = Date.now();
 			if (signal.aborted && reportsPromise) {
-				this.#observeLateUsageRefresh(session, reportsPromise);
+				this.#observeLateUsageRefresh(session, reportsPromise, usageRefreshGeneration);
 			}
 		} finally {
-			if (this.session === session) this.#usageInFlight = false;
+			if (this.session === session && this.#usageRefreshGeneration === usageRefreshGeneration) this.#usageInFlight = false;
 		}
 	}
 
-	#applyUsageRefreshReports(session: AgentSession, reports: unknown): void {
-		if (this.#disposed || this.session !== session) return;
+	#applyUsageRefreshReports(session: AgentSession, reports: unknown, usageRefreshGeneration: number): void {
+		if (this.#disposed || this.session !== session || this.#usageRefreshGeneration !== usageRefreshGeneration) return;
 		const activeProvider = session.state.model?.provider ?? session.model?.provider;
 		const activeIdentity =
 			activeProvider && session.modelRegistry?.authStorage
@@ -892,13 +916,17 @@ export class StatusLineComponent implements Component {
 		this.#onUsageRefresh?.();
 	}
 
-	#observeLateUsageRefresh(session: AgentSession, reportsPromise: Promise<unknown>): void {
+	#observeLateUsageRefresh(
+		session: AgentSession,
+		reportsPromise: Promise<unknown>,
+		usageRefreshGeneration: number,
+	): void {
 		void reportsPromise
 			.then(reports => {
-				this.#applyUsageRefreshReports(session, reports);
+				this.#applyUsageRefreshReports(session, reports, usageRefreshGeneration);
 			})
 			.catch(() => {
-				if (this.#disposed || this.session !== session) return;
+				if (this.#disposed || this.session !== session || this.#usageRefreshGeneration !== usageRefreshGeneration) return;
 				this.#usageFetchedAt = Date.now();
 			});
 	}

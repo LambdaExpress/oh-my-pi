@@ -1383,7 +1383,7 @@ export class SelectorController {
 		if (outcome.ok) {
 			this.ctx.showStatus(message);
 			// Refresh the status-line usage so the freshly-reset window shows.
-			this.ctx.statusLine.invalidate();
+			this.ctx.statusLine.refreshUsage();
 			this.ctx.ui.requestRender();
 		} else {
 			this.ctx.showWarning(message);

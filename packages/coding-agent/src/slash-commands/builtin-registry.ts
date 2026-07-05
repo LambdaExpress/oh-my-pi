@@ -154,17 +154,17 @@ async function handleUsageResetCommand(
 	arg: string,
 	session: AgentSession,
 	output: SlashCommandRuntime["output"],
-): Promise<void> {
+): Promise<boolean> {
 	let accounts: ResetUsageAccount[];
 	try {
 		accounts = toResetUsageAccounts(await session.listResetCredits());
 	} catch (error) {
 		await output(`Could not load saved resets: ${errorMessage(error)}`);
-		return;
+		return false;
 	}
 	if (accounts.length === 0) {
 		await output("No Codex accounts found. Use /login to add one.");
-		return;
+		return false;
 	}
 	const targetArg = arg.trim();
 	if (!targetArg) {
@@ -175,7 +175,7 @@ async function handleUsageResetCommand(
 		}
 		lines.push("", "Spend one with `/usage reset <account email>` or `/usage reset active`.");
 		await output(lines.join("\n"));
-		return;
+		return false;
 	}
 	const wanted = targetArg.toLowerCase();
 	const target =
@@ -189,14 +189,15 @@ async function handleUsageResetCommand(
 				);
 	if (!target) {
 		await output(`No Codex account matches "${targetArg}".`);
-		return;
+		return false;
 	}
 	if (target.availableCount <= 0) {
 		await output(`${target.label}: no saved resets to spend.`);
-		return;
+		return false;
 	}
 	const outcome = await session.redeemResetCredit(target.target);
 	await output(describeRedeemOutcome(outcome, target.label));
+	return outcome.ok;
 }
 
 /** Parse the `/shake` subcommand into a {@link ShakeMode}; empty defaults to elide. */
@@ -1292,7 +1293,13 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			}
 			if (verb === "reset") {
 				if (rest) {
-					await handleUsageResetCommand(rest, runtime.ctx.session, text => runtime.ctx.showStatus(text));
+					const usageChanged = await handleUsageResetCommand(rest, runtime.ctx.session, text =>
+						runtime.ctx.showStatus(text),
+					);
+					if (usageChanged) {
+						runtime.ctx.statusLine.refreshUsage();
+						runtime.ctx.ui.requestRender();
+					}
 				} else {
 					await runtime.ctx.showResetUsageSelector();
 				}
