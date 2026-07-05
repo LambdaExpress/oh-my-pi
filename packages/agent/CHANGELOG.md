@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.
+
 ## [16.3.3] - 2026-07-02
 
 ### Changed

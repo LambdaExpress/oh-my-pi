@@ -113,6 +113,9 @@ function hardToolChoiceBlocks(choice: ToolChoice | undefined, requiredTool: stri
  * at one tick.
  */
 const STEERING_INTERRUPT_POLL_MS = 250;
+const TOOL_ABORT_SETTLE_GRACE_MS = 250;
+// After user abort, give cooperative tools one short window to return their own
+// cancellation result/error before the loop emits a synthetic abort result.
 
 class HarmonyLeakInterruption extends Error {
 	constructor(
@@ -1029,6 +1032,9 @@ async function runLoopBody(
 					);
 
 					toolResults.push(...executionResult.toolResults);
+					if (signal?.aborted) {
+						hasMoreToolCalls = false;
+					}
 
 					for (const result of toolResults) {
 						currentContext.messages.push(result);
@@ -1700,6 +1706,23 @@ async function executeToolCalls(
 		afterToolCall,
 	} = config;
 	type ToolCallContent = Extract<AssistantMessage["content"][number], { type: "toolCall" }>;
+	type ToolExecutionRaceOutcome =
+		| { kind: "result"; rawResult: AgentToolResult<any> }
+		| { kind: "error"; error: unknown }
+		| { kind: "abort" };
+	const waitForAbortSettle = async (
+		toolExecution: Promise<ToolExecutionRaceOutcome>,
+	): Promise<ToolExecutionRaceOutcome> => {
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<ToolExecutionRaceOutcome>(resolve => {
+			timer = setTimeout(() => resolve({ kind: "abort" }), TOOL_ABORT_SETTLE_GRACE_MS);
+		});
+		try {
+			return await Promise.race([toolExecution, timeout]);
+		} finally {
+			clearTimeout(timer);
+		}
+	};
 	// Defensive: the outer loop already filters exec-resolved blocks before
 	// deciding to invoke `executeToolCalls`, but skip them here too so the
 	// guarantee lives with the code that would re-run the tool.
@@ -1965,23 +1988,64 @@ async function executeToolCalls(
 							toolCalls: toolCallInfos,
 						})
 					: undefined;
-				const rawResult = await tool.execute(
-					toolCall.id,
-					executionArgs,
-					record.signal,
-					partialResult => {
-						stream.push({
-							type: "tool_execution_update",
-							toolCallId: toolCall.id,
-							toolName: toolCall.name,
-							args: executionArgs,
-							partialResult: coerceToolResult(partialResult).result,
-						});
-					},
-					toolContext,
-				);
+				const { promise: abortPromise, resolve: resolveAbort } = Promise.withResolvers<{ kind: "abort" }>();
+				const onAbort = () => resolveAbort({ kind: "abort" });
+				record.signal.addEventListener("abort", onAbort, { once: true });
+				let outcome: ToolExecutionRaceOutcome;
+				try {
+					if (record.signal.aborted) {
+						outcome = { kind: "abort" };
+					} else {
+						const toolExecution: Promise<ToolExecutionRaceOutcome> = tool
+							.execute(
+								toolCall.id,
+								executionArgs,
+								record.signal,
+								partialResult => {
+									if (record.resultEmitted || record.signal.aborted) return;
+									stream.push({
+										type: "tool_execution_update",
+										toolCallId: toolCall.id,
+										toolName: toolCall.name,
+										args: executionArgs,
+										partialResult: coerceToolResult(partialResult).result,
+									});
+								},
+								toolContext,
+							)
+							.then(
+								(rawResult): ToolExecutionRaceOutcome => ({ kind: "result", rawResult }),
+								(error): ToolExecutionRaceOutcome => ({ kind: "error", error }),
+							);
+						// A tool may synchronously finish and abort the run in the same call stack
+						// (for example to stop after committing a result). Give that completed
+						// result one microtask to settle so it keeps the existing afterToolCall
+						// contract instead of being misclassified as an abandoned execution.
+						await Promise.resolve();
+						const abortOutcome = abortPromise.then(() => waitForAbortSettle(toolExecution));
+						outcome = await Promise.race([toolExecution, abortOutcome]);
+					}
+				} finally {
+					record.signal.removeEventListener("abort", onAbort);
+				}
+				if (outcome.kind === "abort") {
+					let abortedResult: AgentToolResult<any> | undefined;
+					try {
+						abortedResult = tool.createAbortedResult?.(toolCall.id, executionArgs, record.signal, toolContext);
+					} catch {
+						// A malformed abort-result hook cannot keep the run blocked; fall back
+						// to the generic synthetic result below.
+					}
+					const coerced = coerceToolResult(abortedResult ?? createToolSignalAbortedResult(record.signal));
+					result = coerced.result;
+					isError = true;
+					return;
+				}
+				if (outcome.kind === "error") {
+					throw outcome.error;
+				}
 				completedToolExecution = true;
-				const coerced = coerceToolResult(rawResult);
+				const coerced = coerceToolResult(outcome.rawResult);
 				result = coerced.result;
 				if (coerced.malformed || result.isError) isError = true;
 			} catch (e) {
@@ -2241,10 +2305,9 @@ function createAbortedToolResult(
 	return toolResultMessage;
 }
 
-function createToolSignalAbortedResult(signal: AbortSignal): AgentToolResult<unknown> {
-	const reason = abortReasonText(signal);
+function createToolSignalAbortedResult(_signal: AbortSignal): AgentToolResult<unknown> {
 	return {
-		content: [{ type: "text", text: `Tool was not executed because the run was aborted: ${reason}.` }],
+		content: [{ type: "text", text: "aborted" }],
 		details: {},
 	};
 }

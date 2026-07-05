@@ -67,6 +67,20 @@ function renderStrippedCodeCellRows(code: string, uiTheme: Theme): string[] {
 		});
 }
 
+function hasOutputRow(lines: string[], uiTheme: Theme, expected: string): boolean {
+	const outputHeaderIndex = lines.findIndex(line => line.includes(" Output "));
+	expect(outputHeaderIndex).toBeGreaterThanOrEqual(0);
+	for (const line of lines.slice(outputHeaderIndex + 1)) {
+		if (line.startsWith(uiTheme.boxRound.bottomLeft) || line.startsWith(uiTheme.boxRound.teeRight)) {
+			return false;
+		}
+		if (line.includes(expected)) {
+			return true;
+		}
+	}
+	return false;
+}
+
 describe("eval cell result rendering", () => {
 	let uiTheme: Theme;
 
@@ -95,5 +109,34 @@ describe("eval cell result rendering", () => {
 		expect(stripped).toContain("const previewValue");
 		expect(stripped).toContain("abcdefghijklmnopqrstuvwxyz0123456789");
 		expect(stripped).not.toContain("earlier lines");
+	});
+
+	it("renders aborted eval details as an errored cell with aborted output", () => {
+		const details: EvalToolDetails = {
+			language: "js",
+			isError: true,
+			cells: [
+				{
+					index: 0,
+					title: "abort case",
+					code: "await forever()",
+					language: "js",
+					output: "aborted",
+					status: "error",
+				},
+			],
+		};
+		const component = evalToolRenderer.renderResult(
+			{ content: [{ type: "text", text: "aborted" }], details },
+			{ expanded: true, isPartial: false, spinnerFrame: 0 },
+			uiTheme,
+		);
+		const lines = component.render(80).map(line => Bun.stripANSI(line));
+		const rendered = lines.join("\n");
+		const errorIcon = Bun.stripANSI(uiTheme.styledSymbol("status.error", "error"));
+
+		expect(rendered).toContain("await forever()");
+		expect(lines.some(line => line.includes(errorIcon))).toBe(true);
+		expect(hasOutputRow(lines, uiTheme, "aborted")).toBe(true);
 	});
 });

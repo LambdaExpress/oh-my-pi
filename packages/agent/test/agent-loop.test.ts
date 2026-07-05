@@ -7,6 +7,8 @@ import type {
 	AgentMessage,
 	AgentTool,
 	AgentToolContext,
+	AgentToolResult,
+	AgentToolUpdateCallback,
 	ToolCallContext,
 } from "@oh-my-pi/pi-agent-core/types";
 import type { AssistantMessage, AssistantMessageEvent, Message, ToolResultMessage } from "@oh-my-pi/pi-ai";
@@ -1657,6 +1659,248 @@ describe("agentLoop with AgentMessage", () => {
 		expect(steerInjected).toBe(false);
 		const steerInContext = context.messages.some(m => m.role === "user" && m.content === "interrupt");
 		expect(steerInContext).toBe(false);
+	});
+
+	it("preserves a cooperative tool's own abort result when it settles promptly", async () => {
+		const toolSchema = type({});
+		type ToolDetails = { phase: string };
+		const abortController = new AbortController();
+		const executeStarted = Promise.withResolvers<void>();
+		let sawAbortSignal = false;
+
+		const tool: AgentTool<typeof toolSchema, ToolDetails> = {
+			name: "cooperative",
+			label: "Cooperative",
+			description: "Cooperative tool that returns its own cancelled result after abort",
+			parameters: toolSchema,
+			async execute(_toolCallId, _params, signal) {
+				return new Promise<AgentToolResult<ToolDetails>>(resolve => {
+					signal?.addEventListener(
+						"abort",
+						() => {
+							sawAbortSignal = true;
+							resolve({
+								content: [{ type: "text", text: "cooperative cancelled" }],
+								details: { phase: "cancelled" },
+								isError: true,
+							});
+						},
+						{ once: true },
+					);
+					executeStarted.resolve();
+				});
+			},
+		};
+
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "cooperative", arguments: {} }] },
+				{ content: ["should not be requested after abort"] },
+			],
+		});
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+
+		const stream = agentLoop([createUserMessage("start")], context, config, abortController.signal, mock.stream);
+		const drain = (async () => {
+			for await (const _event of stream) {
+				// drain
+			}
+			return stream.result();
+		})();
+
+		await executeStarted.promise;
+		abortController.abort("Interrupted by user");
+		const messages = await drain;
+
+		expect(sawAbortSignal).toBe(true);
+		expect(mock.calls).toHaveLength(1);
+		const toolResult = messages[2] as ToolResultMessage<ToolDetails>;
+		expect(toolResult.isError).toBe(true);
+		expect(toolResult.content).toEqual([{ type: "text", text: "cooperative cancelled" }]);
+		expect(toolResult.details).toEqual({ phase: "cancelled" });
+	});
+
+	it("aborts an in-flight tool without waiting for execute to settle and ignores late output", async () => {
+		const toolSchema = type({});
+		type ToolDetails = { phase: string };
+		const abortController = new AbortController();
+		const executeStarted = Promise.withResolvers<void>();
+		const releaseTool = Promise.withResolvers<void>();
+		const executeReturned = Promise.withResolvers<void>();
+		let executeSettled = false;
+		let lateUpdate: AgentToolUpdateCallback<ToolDetails, typeof toolSchema> | undefined;
+
+		const tool: AgentTool<typeof toolSchema, ToolDetails> = {
+			name: "wait",
+			label: "Wait",
+			description: "Non-cooperative tool that ignores abort until an external gate opens",
+			parameters: toolSchema,
+			async execute(_toolCallId, _params, _signal, onUpdate) {
+				lateUpdate = onUpdate;
+				executeStarted.resolve();
+				await releaseTool.promise;
+				executeSettled = true;
+				executeReturned.resolve();
+				return { content: [{ type: "text", text: "late success" }], details: { phase: "late" } };
+			},
+		};
+
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "wait", arguments: {} }] },
+				{ content: ["should not be requested after abort"] },
+			],
+		});
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("start")], context, config, abortController.signal, mock.stream);
+		const drain = (async () => {
+			for await (const event of stream) {
+				events.push(event);
+			}
+			return stream.result();
+		})();
+
+		await executeStarted.promise;
+		abortController.abort("Interrupted by user");
+
+		try {
+			const messages = await drain;
+
+			expect(executeSettled).toBe(false);
+			expect(mock.calls).toHaveLength(1);
+			expect(messages.map(message => message.role)).toEqual(["user", "assistant", "toolResult"]);
+
+			const toolResult = messages[2] as ToolResultMessage;
+			expect(toolResult.toolCallId).toBe("tool-1");
+			expect(toolResult.isError).toBe(true);
+			const resultText = toolResult.content
+				.filter((block): block is { type: "text"; text: string } => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+			expect(resultText.toLowerCase()).toContain("abort");
+			expect(resultText).not.toContain("late success");
+			const contentAtAbort = structuredClone(toolResult.content);
+
+			expect(lateUpdate).toBeDefined();
+			lateUpdate?.({ content: [{ type: "text", text: "late update" }], details: { phase: "late" } });
+			releaseTool.resolve();
+			await executeReturned.promise;
+			await Promise.resolve();
+			await Promise.resolve();
+
+			const toolResultEnds = events.filter(
+				(e): e is Extract<AgentEvent, { type: "message_end" }> =>
+					e.type === "message_end" && e.message.role === "toolResult",
+			);
+			expect(toolResultEnds).toHaveLength(1);
+			if (toolResultEnds[0]?.message.role !== "toolResult") throw new Error("expected toolResult message");
+			expect(toolResultEnds[0].message.content).toEqual(contentAtAbort);
+			expect(JSON.stringify(context.messages)).not.toContain("late success");
+			expect(JSON.stringify(context.messages)).not.toContain("late update");
+			expect(JSON.stringify(events)).not.toContain("late success");
+			expect(JSON.stringify(events)).not.toContain("late update");
+		} finally {
+			releaseTool.resolve();
+		}
+	});
+
+	it("uses a tool's aborted result hook when abandoning in-flight execution and ignores late output", async () => {
+		const toolSchema = type({ code: "string" });
+		type ToolDetails = { phase: string; code?: string; aborted?: boolean };
+		const abortController = new AbortController();
+		const executeStarted = Promise.withResolvers<void>();
+		const releaseTool = Promise.withResolvers<void>();
+		const executeReturned = Promise.withResolvers<void>();
+		let executeSettled = false;
+		let lateUpdate: AgentToolUpdateCallback<ToolDetails, typeof toolSchema> | undefined;
+		const hookCalls: Array<{ toolCallId: string; code: string; aborted: boolean }> = [];
+
+		const tool: AgentTool<typeof toolSchema, ToolDetails> = {
+			name: "hooked",
+			label: "Hooked",
+			description: "Non-cooperative tool that supplies a renderer-specific abort result",
+			parameters: toolSchema,
+			createAbortedResult(toolCallId, params, signal) {
+				hookCalls.push({ toolCallId, code: params.code, aborted: signal.aborted });
+				return {
+					content: [{ type: "text", text: `hook aborted ${params.code}` }],
+					details: { phase: "hook", code: params.code, aborted: signal.aborted },
+					isError: true,
+				};
+			},
+			async execute(_toolCallId, _params, _signal, onUpdate) {
+				lateUpdate = onUpdate;
+				executeStarted.resolve();
+				await releaseTool.promise;
+				executeSettled = true;
+				executeReturned.resolve();
+				return { content: [{ type: "text", text: "late success" }], details: { phase: "late" } };
+			},
+		};
+
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "hooked", arguments: { code: "await forever()" } }] },
+				{ content: ["should not be requested after abort"] },
+			],
+		});
+		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+
+		const events: AgentEvent[] = [];
+		const stream = agentLoop([createUserMessage("start")], context, config, abortController.signal, mock.stream);
+		const drain = (async () => {
+			for await (const event of stream) {
+				events.push(event);
+			}
+			return stream.result();
+		})();
+
+		await executeStarted.promise;
+		abortController.abort("Interrupted by user");
+
+		try {
+			const messages = await drain;
+
+			expect(executeSettled).toBe(false);
+			expect(mock.calls).toHaveLength(1);
+			expect(hookCalls).toEqual([{ toolCallId: "tool-1", code: "await forever()", aborted: true }]);
+			expect(messages.map(message => message.role)).toEqual(["user", "assistant", "toolResult"]);
+
+			const toolResult = messages[2] as ToolResultMessage<ToolDetails>;
+			expect(toolResult.toolCallId).toBe("tool-1");
+			expect(toolResult.isError).toBe(true);
+			expect(toolResult.content).toEqual([{ type: "text", text: "hook aborted await forever()" }]);
+			expect(toolResult.details).toEqual({ phase: "hook", code: "await forever()", aborted: true });
+			const contentAtAbort = structuredClone(toolResult.content);
+			const detailsAtAbort = structuredClone(toolResult.details);
+
+			expect(lateUpdate).toBeDefined();
+			lateUpdate?.({ content: [{ type: "text", text: "late update" }], details: { phase: "late-update" } });
+			releaseTool.resolve();
+			await executeReturned.promise;
+			await Promise.resolve();
+			await Promise.resolve();
+
+			const toolResultEnds = events.filter(
+				(e): e is Extract<AgentEvent, { type: "message_end" }> =>
+					e.type === "message_end" && e.message.role === "toolResult",
+			);
+			expect(toolResultEnds).toHaveLength(1);
+			if (toolResultEnds[0]?.message.role !== "toolResult") throw new Error("expected toolResult message");
+			expect(toolResultEnds[0].message.content).toEqual(contentAtAbort);
+			expect(toolResultEnds[0].message.details).toEqual(detailsAtAbort);
+			expect(JSON.stringify(context.messages)).not.toContain("late success");
+			expect(JSON.stringify(context.messages)).not.toContain("late update");
+			expect(JSON.stringify(events)).not.toContain("late success");
+			expect(JSON.stringify(events)).not.toContain("late update");
+		} finally {
+			releaseTool.resolve();
+		}
 	});
 
 	it("injects nothing when steering is retracted between the interrupt and the boundary", async () => {

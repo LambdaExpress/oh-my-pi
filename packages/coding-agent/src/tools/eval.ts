@@ -226,6 +226,13 @@ function timeoutSecondsFromMs(timeoutMs: number): number {
 	return clampTimeout("eval", timeoutMs / 1000);
 }
 
+function evalLanguageFromToken(language: EvalLanguageToken): EvalLanguage {
+	if (language === "py") return "python";
+	if (language === "rb") return "ruby";
+	if (language === "jl") return "julia";
+	return "js";
+}
+
 async function resolveBackend(session: ToolSession, language: EvalLanguage): Promise<ResolvedBackend> {
 	const backends = resolveEvalBackends(session);
 	const allowPy = backends.python;
@@ -378,6 +385,34 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		return title || `running ${language}`;
 	};
 
+	createAbortedResult(
+		_toolCallId: string,
+		params: typeof evalSchema.infer,
+		_signal: AbortSignal,
+	): AgentToolResult<EvalToolDetails | undefined> {
+		const language = evalLanguageFromToken(params.language);
+		const details: EvalToolDetails = {
+			language,
+			languages: [language],
+			cells: [
+				{
+					index: 0,
+					title: params.title,
+					code: params.code,
+					language,
+					output: "aborted",
+					status: "error",
+				},
+			],
+			isError: true,
+		};
+		return {
+			content: [{ type: "text", text: "aborted" }],
+			details,
+			isError: true,
+		};
+	}
+
 	readonly #proxyExecutor?: EvalProxyExecutor;
 
 	#paramsKey?: string;
@@ -415,14 +450,7 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 		const session = this.session;
 		const excludeWebP = webpExclusionForModel(session.getActiveModel?.());
 
-		const cellLanguage: EvalLanguage =
-			params.language === "py"
-				? "python"
-				: params.language === "rb"
-					? "ruby"
-					: params.language === "jl"
-						? "julia"
-						: "js";
+		const cellLanguage = evalLanguageFromToken(params.language);
 		const resolved = await resolveBackend(session, cellLanguage);
 		const cells: ResolvedEvalCell[] = [
 			{

@@ -601,6 +601,14 @@ export type AgentToolExecFn<TParameters extends TSchema = TSchema, TDetails = an
 	context?: AgentToolContext,
 ) => Promise<AgentToolResult<TDetails, TParameters>>;
 
+export type AgentToolAbortedResultFn<TParameters extends TSchema = TSchema, TDetails = any, TTheme = unknown> = (
+	this: AgentTool<TParameters, TDetails, TTheme>,
+	toolCallId: string,
+	params: Static<TParameters>,
+	signal: AbortSignal,
+	context?: AgentToolContext,
+) => AgentToolResult<TDetails, TParameters> | undefined;
+
 // AgentTool extends Tool but adds the execute function
 export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any, TTheme = unknown>
 	extends Tool<TParameters> {
@@ -632,6 +640,14 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 * `interruptMode` is "immediate".
 	 */
 	interruptible?: boolean;
+	/**
+	 * Optional synthetic result used when the agent loop abandons an in-flight
+	 * `execute()` promise because the tool signal was aborted before the promise
+	 * settled. Tools with rich renderers can return a shape-preserving aborted
+	 * result so the UI stays in that renderer instead of falling back to generic
+	 * text. Throwing or returning undefined falls back to the generic abort result.
+	 */
+	createAbortedResult?: AgentToolAbortedResultFn<TParameters, TDetails, TTheme>;
 	/**
 	 * Controls how the INTENT_FIELD (`i`) is handled for this tool.
 	 * - `"require"` (default): `i` is injected and required in the parameter schema.
