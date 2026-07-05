@@ -166,7 +166,7 @@ export interface Component {
 	/**
 	 * Optional hook to set whether this component ignores tight layout mode.
 	 */
-	setIgnoreTight?(ignore: boolean): any;
+	setIgnoreTight?(ignore: boolean): void;
 
 	/**
 	 * Optional teardown. Called when the component is permanently removed from
@@ -778,9 +778,10 @@ const RESYNC_TAIL_SAMPLES = 8;
  *       source just became declared-final (the block finalized / a barrier
  *       cleared). Hard-scanned in FULL with no tolerance: any content change
  *       (a pending header settling, a preview replaced by its result, a tail
- *       shifting up after a barrier removal) re-anchors so the final content
- *       recommits below the frozen snapshot — duplication, never loss —
- *       instead of being committed nowhere and painted nowhere.
+ *       shifting up after a barrier removal) re-anchors at the newly-final
+ *       boundary so the final block recommits as a whole below the frozen
+ *       snapshot — duplication, never loss — instead of splicing old chrome
+ *       above a final suffix.
  *   [finalTo, prefix.length) FROZEN visual snapshots of still-live rows —
  *       exempt: their drift is expected (a collapsing preview, a ticking
  *       progress tree) and must never spray re-anchors mid-run.
@@ -811,38 +812,38 @@ export function findCommittedPrefixResync(
 	if (frame.length >= hardEnd) {
 		// 1. Hard scan: frozen snapshots whose source just became final. Full
 		// scan, no tolerance — a finalized row that changed must re-anchor.
-		let hardMismatch = false;
 		for (let i = verified; i < hardEnd; i++) {
 			if (!rowsEquivalent(frame[i]!, prefix[i]!)) {
-				hardMismatch = true;
-				break;
+				// Re-anchor at the newly-final boundary, not at the first changed
+				// row. Multi-row blocks often keep stable chrome above mutable
+				// status/output rows; preserving that old prefix while appending the
+				// final suffix visually splices "running" and "done" states.
+				return verified;
 			}
 		}
-		if (!hardMismatch) {
-			// 2. Tail sample over the verified zone (only when the hard scan is
-			// clean): walk up from its end until LOOKBACK rows or SAMPLES
-			// non-blank comparisons.
-			let samples = 0;
-			let mismatches = 0;
-			for (let j = 1; j <= verified && j <= RESYNC_TAIL_LOOKBACK && samples < RESYNC_TAIL_SAMPLES; j++) {
-				const idx = verified - j;
-				const row = frame[idx]!;
-				const old = prefix[idx]!;
-				if (row === old) {
-					if (!isBlankRow(row)) samples++;
-					continue;
-				}
-				if (isBlankRow(row) && isBlankRow(old)) continue;
-				samples++;
-				if (!rowsEquivalent(row, old)) mismatches++;
+
+		// 2. Tail sample over the verified zone (only when the hard scan is
+		// clean): walk up from its end until LOOKBACK rows or SAMPLES
+		// non-blank comparisons.
+		let samples = 0;
+		let mismatches = 0;
+		for (let j = 1; j <= verified && j <= RESYNC_TAIL_LOOKBACK && samples < RESYNC_TAIL_SAMPLES; j++) {
+			const idx = verified - j;
+			const row = frame[idx]!;
+			const old = prefix[idx]!;
+			if (row === old) {
+				if (!isBlankRow(row)) samples++;
+				continue;
 			}
-			// No signal (all-blank tail) or at most one edited row: aligned.
-			if (samples === 0 || mismatches <= 1) return -1;
+			if (isBlankRow(row) && isBlankRow(old)) continue;
+			samples++;
+			if (!rowsEquivalent(row, old)) mismatches++;
 		}
+		// No signal (all-blank tail) or at most one edited row: aligned.
+		if (samples === 0 || mismatches <= 1) return -1;
 	}
-	// Misaligned (hard mismatch, tail-sample shift, or the frame no longer
-	// covers the checked zones): re-anchor at the first row whose content
-	// changed.
+	// Misaligned tail-sample shift, or the frame no longer covers the checked
+	// zones: re-anchor at the first row whose content changed.
 	const limit = Math.min(hardEnd, frame.length);
 	for (let i = 0; i < limit; i++) {
 		if (!rowsEquivalent(frame[i]!, prefix[i]!)) return i;
@@ -2836,9 +2837,9 @@ export class TUI extends Container {
 
 	/**
 	 * Detect committed-prefix violations (see {@link findCommittedPrefixResync}
-	 * for the zone semantics) and re-anchor the commit index at the first moved
-	 * row, so subsequent rows recommit instead of being skipped: the stale copy
-	 * stays in history — duplication, never loss. Pure in-place restyles keep
+	 * for the zone semantics) and re-anchor the commit index at the affected
+	 * boundary, so subsequent rows recommit instead of being skipped: the stale
+	 * copy stays in history — duplication, never loss. Pure in-place restyles keep
 	 * their alignment and are left alone (stale styling in history was always
 	 * the accepted artifact).
 	 */

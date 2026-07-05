@@ -1148,6 +1148,153 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 		});
 	});
 
+	it("repairs finalized live rows under a persistent top seam without unbounded stale snapshots", async () => {
+		await withPlatform("win32", async () => {
+			const stableTop = ["answer intro", "table follows"];
+			const term = new VirtualTerminal(34, 5);
+			overrideProbe(term, undefined);
+			const tui = new TUI(term);
+			const root = new SeamLineList(stableTop);
+
+			try {
+				tui.addChild(root);
+				tui.start();
+				await settle(term);
+				const writes = capture(term);
+
+				const pendingFrame = [
+					...stableTop,
+					"| item | state |",
+					"| --- | --- |",
+					"| alpha | streaming |",
+					"| beta | streaming |",
+					"| gamma | streaming |",
+					"| delta | streaming |",
+					"| epsilon | streaming |",
+				];
+				for (let count = stableTop.length + 1; count <= pendingFrame.length; count++) {
+					root.setLines(pendingFrame.slice(0, count));
+					root.seam = stableTop.length;
+					tui.requestRender();
+					await settle(term);
+				}
+
+				const historyRows = term.getBufferPosition().baseY;
+				const pendingHistory = term
+					.getScrollBuffer()
+					.map(line => line.trimEnd())
+					.slice(0, historyRows);
+				expect(pendingHistory.length).toBeGreaterThan(stableTop.length);
+				expect(pendingHistory).toEqual(pendingFrame.slice(0, historyRows));
+
+				const finalFrame = [
+					...stableTop,
+					"| item | final state |",
+					"| --- | --- |",
+					"| alpha | done |",
+					"| beta | done |",
+					"| gamma | done |",
+					"| delta | done |",
+					"| epsilon | done |",
+				];
+				root.setLines(finalFrame);
+				root.seam = undefined;
+				tui.requestRender();
+				await settle(term);
+
+				const finalLiveBlock = finalFrame.slice(stableTop.length);
+				const afterFinalize = tape(term);
+				expect(afterFinalize.slice(0, stableTop.length)).toEqual(stableTop);
+				expect(afterFinalize.slice(-finalLiveBlock.length)).toEqual(finalLiveBlock);
+				expect(contiguousAt(afterFinalize, finalLiveBlock)).toHaveLength(1);
+				for (const line of stableTop) {
+					expect(afterFinalize.filter(row => row === line)).toHaveLength(1);
+				}
+				for (const line of pendingFrame.slice(stableTop.length)) {
+					expect(
+						afterFinalize.filter(row => row === line).length,
+						`${line} should appear at most as one frozen snapshot plus one matching final row`,
+					).toBeLessThanOrEqual(finalLiveBlock.includes(line) ? 2 : 1);
+				}
+				for (const line of finalLiveBlock) {
+					expect(afterFinalize.filter(row => row === line).length).toBeLessThanOrEqual(2);
+				}
+
+				const stableTape = [...afterFinalize];
+				for (let i = 0; i < 3; i++) {
+					tui.requestRender();
+					await settle(term);
+					expect(tape(term)).toEqual(stableTape);
+				}
+				expect(eraseScrollbackCount(writes)).toBe(0);
+			} finally {
+				tui.stop();
+			}
+		});
+	});
+
+	it("keeps a finalized tool block contiguous after a ConPTY hidden-lines marker", async () => {
+		await withPlatform("win32", async () => {
+			const term = new VirtualTerminal(80, 12, 20_000);
+			overrideProbe(term, undefined);
+			const tui = new TUI(term);
+			const root = new SeamLineList([]);
+
+			const stablePrefix = Array.from(
+				{ length: 7000 },
+				(_unused, index) => `history-${index.toString().padStart(5, "0")}: ${"界".repeat(32)}`,
+			);
+			const liveStart = stablePrefix.length;
+			const toolHeader = "╭─ Read tool ─╮";
+			const toolFooter = "╰─ Read tool ─╯";
+			const pendingBlock = [
+				toolHeader,
+				"status: running",
+				"path: packages/tui/src/tui.ts",
+				"output:",
+				...Array.from({ length: 24 }, (_unused, index) => `preview-${index}: pending`),
+				"spinner: active",
+				toolFooter,
+			];
+			const finalBlock = [
+				toolHeader,
+				"status: done",
+				"path: packages/tui/src/tui.ts",
+				"output:",
+				...Array.from({ length: 24 }, (_unused, index) => `preview-${index}: final`),
+				"output: completed",
+				toolFooter,
+			];
+
+			try {
+				root.setLines([...stablePrefix, ...pendingBlock]);
+				root.seam = liveStart;
+				tui.addChild(root);
+				tui.start({ clearScrollback: true });
+				await settle(term);
+
+				const beforeFinalize = tape(term);
+				expect(beforeFinalize.some(row => row.includes("older lines hidden"))).toBe(true);
+
+				root.setLines([...stablePrefix, ...finalBlock]);
+				root.seam = undefined;
+				tui.requestRender();
+				await settle(term);
+
+				const afterFinalize = tape(term);
+				const finalBlockHits = contiguousAt(afterFinalize, finalBlock);
+				expect(finalBlockHits).toHaveLength(1);
+
+				const statusDoneIndex = afterFinalize.indexOf("status: done");
+				expect(statusDoneIndex).toBeGreaterThan(0);
+				expect(afterFinalize[statusDoneIndex - 1]).toBe(toolHeader);
+				expect(afterFinalize[statusDoneIndex - 1]).not.toMatch(/^preview-\d+: pending$/);
+			} finally {
+				tui.stop();
+			}
+		});
+	});
+
 	it("appends the completed tool body after at most one frozen pending snapshot", async () => {
 		await withPlatform("win32", async () => {
 			const term = new VirtualTerminal(36, 5);
