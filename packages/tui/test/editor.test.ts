@@ -2182,6 +2182,71 @@ describe("Editor component", () => {
 			expect(editor.getText()).toBe("[Paste #1, +12 lines");
 		});
 
+		it("jumps left over an image placeholder when atomicTokenPattern is set", () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.atomicTokenPattern = /\[(?:Image|Paste) #\d+(?:,[^\]\n]*)?\]/g;
+			editor.setText("a [Image #1, 1568x838] b");
+
+			editor.handleInput("\x1b[D"); // left over 'b'
+			editor.handleInput("\x1b[D"); // left over trailing space
+			expect(editor.getCursor()).toEqual({ line: 0, col: 22 });
+
+			editor.handleInput("\x1b[D");
+			expect(editor.getCursor()).toEqual({ line: 0, col: 2 });
+		});
+
+		it("jumps right over an image placeholder when atomicTokenPattern is set", () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.atomicTokenPattern = /\[(?:Image|Paste) #\d+(?:,[^\]\n]*)?\]/g;
+			editor.setText("a [Image #1, 1568x838] b");
+
+			editor.handleInput("\x01"); // Ctrl+A
+			editor.handleInput("\x1b[C"); // right over 'a'
+			editor.handleInput("\x1b[C"); // right over following space
+			expect(editor.getCursor()).toEqual({ line: 0, col: 2 });
+
+			editor.handleInput("\x1b[C");
+			expect(editor.getCursor()).toEqual({ line: 0, col: 22 });
+
+			editor.handleInput("X");
+			expect(editor.getText()).toBe("a [Image #1, 1568x838]X b");
+		});
+
+		it("keeps word navigation outside an image placeholder when atomicTokenPattern is set", () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.atomicTokenPattern = /\[(?:Image|Paste) #\d+(?:,[^\]\n]*)?\]/g;
+			editor.setText("a [Image #1, 1568x838] b");
+			const observedCols: number[] = [];
+
+			editor.handleInput("\x1b[1;5D"); // Ctrl+Left
+			observedCols.push(editor.getCursor().col);
+			expect(editor.getCursor()).toEqual({ line: 0, col: 23 });
+			editor.handleInput("\x1b[1;5D"); // Ctrl+Left
+			observedCols.push(editor.getCursor().col);
+			expect(editor.getCursor()).toEqual({ line: 0, col: 2 });
+
+			editor.handleInput("\x01"); // Ctrl+A
+			editor.handleInput("\x1b[1;5C"); // Ctrl+Right
+			observedCols.push(editor.getCursor().col);
+			expect(editor.getCursor()).toEqual({ line: 0, col: 1 });
+			editor.handleInput("\x1b[1;5C"); // Ctrl+Right
+			observedCols.push(editor.getCursor().col);
+			expect(editor.getCursor()).toEqual({ line: 0, col: 22 });
+
+			expect(observedCols.some(col => col > 2 && col < 22)).toBe(false);
+		});
+
+		it("snaps vertical movement out of a wrapped image placeholder when atomicTokenPattern is set", () => {
+			const editor = new Editor(defaultEditorTheme);
+			editor.atomicTokenPattern = /\[(?:Image|Paste) #\d+(?:,[^\]\n]*)?\]/g;
+			editor.setText("abcdef\na [Image #1, 1568x838] b");
+
+			editor.render(18);
+			editor.handleInput("\x1b[A"); // Up
+
+			expect(editor.getCursor()).toEqual({ line: 1, col: 2 });
+		});
+
 		it("lets onLargePaste intercept a marker-sized paste, suppressing the default marker", () => {
 			const editor = new Editor(defaultEditorTheme);
 			const seen: Array<{ text: string; lineCount: number }> = [];
@@ -2355,10 +2420,9 @@ describe("Editor component", () => {
 		it("extends kill-to-end-of-line over an atomic token the cursor sits inside", () => {
 			const editor = new Editor(defaultEditorTheme);
 			editor.atomicTokenPattern = /\[(?:Image|Paste) #\d+(?:,[^\]\n]*)?\]/g;
-			editor.setText("a [Paste #1, +12 lines] b");
-
+			editor.setText(" +12 lines] b");
 			editor.handleInput("\x01"); // Ctrl+A
-			for (let i = 0; i < 4; i++) editor.handleInput("\x1b[C"); // into the marker
+			editor.insertText("a [Paste #1,"); // leaves cursor inside the completed marker
 			editor.handleInput("\x0b"); // Ctrl+K
 			expect(editor.getText()).toBe("a ");
 			expect(editor.getCursor()).toEqual({ line: 0, col: 2 });

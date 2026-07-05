@@ -223,6 +223,65 @@ describe("streaming scrollback — visual record", () => {
 		}
 	});
 
+	it("commits rows below a persistent top seam while the user is scrolled up", async () => {
+		await withPlatform("linux", async () => {
+			const height = 5;
+			const top = rows("top-", 3);
+			const live = rows("live-", 9);
+			const term = new VirtualTerminal(20, height);
+			overrideProbe(term, undefined);
+			const tui = new TUI(term);
+			const root = new SeamLineList(top);
+
+			try {
+				tui.addChild(root);
+				tui.start();
+				await settle(term);
+
+				const writes = capture(term);
+
+				for (let count = 1; count <= live.length; count++) {
+					root.setLines([...top, ...live.slice(0, count)]);
+					root.seam = top.length;
+					tui.requestRender();
+					await settle(term);
+				}
+
+				const historyRows = term.getBufferPosition().baseY;
+				const history = term
+					.getScrollBuffer()
+					.map(line => line.trimEnd())
+					.slice(0, historyRows);
+				const scrolledLiveSnapshots = live.slice(0, historyRows - top.length);
+				expect(history).toEqual([...top, ...scrolledLiveSnapshots]);
+				expect(scrolledLiveSnapshots).toEqual(["live-0", "live-1", "live-2", "live-3"]);
+				expect(eraseScrollbackCount(writes)).toBe(0);
+
+				// Scroll into native history while the live region is still active.
+				// Rows below the seam that already crossed the viewport top must be
+				// frozen scrollback snapshots, not live grid rows that keep updating
+				// until the seam is cleared/finalized.
+				term.scrollLines(-term.getBufferPosition().baseY);
+				expect(term.getViewport().map(line => line.trimEnd())).toEqual([...top, "live-0", "live-1"]);
+
+				root.setLines([...top, ...rows("changed-", live.length)]);
+				root.seam = top.length;
+				tui.requestRender();
+				await settle(term);
+
+				expect(term.getViewport().map(line => line.trimEnd())).toEqual([...top, "live-0", "live-1"]);
+				expect(
+					term
+						.getScrollBuffer()
+						.map(line => line.trimEnd())
+						.slice(0, top.length + scrolledLiveSnapshots.length),
+				).toEqual([...top, ...scrolledLiveSnapshots]);
+			} finally {
+				tui.stop();
+			}
+		});
+	});
+
 	it("records a tall all-live block's scrolled head", async () => {
 		if (process.platform === "win32") return;
 		const term = new VirtualTerminal(20, 4);
@@ -1036,7 +1095,7 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 		savedTerminalEnv = {};
 	});
 
-	it("does not duplicate unchanged rows when an offscreen mutable block finalizes", async () => {
+	it("bounds frozen snapshots when an offscreen mutable block finalizes", async () => {
 		await withPlatform("win32", async () => {
 			const term = new VirtualTerminal(28, 4);
 			overrideProbe(term, undefined);
@@ -1061,17 +1120,27 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 				await settle(term);
 
 				const finalFrame = ["phase: done", ...unchangedTail];
-				const buffer = tape(term);
-				expect(buffer).toEqual(finalFrame);
+				const afterFinalize = tape(term);
+				expect(afterFinalize.slice(-finalFrame.length)).toEqual(finalFrame);
+				expect(contiguousAt(afterFinalize, finalFrame)).toHaveLength(1);
+				expect(afterFinalize.filter(row => row === "phase: pending").length).toBeLessThanOrEqual(1);
+				expect(afterFinalize.filter(row => row === "phase: done")).toHaveLength(1);
 				for (const line of unchangedTail) {
 					expect(
-						buffer.filter(row => row === line),
-						`${line} should appear once after finalize`,
-					).toHaveLength(1);
+						afterFinalize.filter(row => row === line).length,
+						`${line} should appear at most as one frozen snapshot plus the final row`,
+					).toBeLessThanOrEqual(2);
 				}
-				// The ordinary finalize path must keep the native tape clean by
-				// policy; a destructive ED3/full replay is reserved for explicit
-				// history rebuilds such as resize/reset.
+
+				// Visual-record semantics allow the pending live rows that already
+				// reached native history to remain as one frozen snapshot before the
+				// final form. Identical settled renders must not grow that tape.
+				const stableTape = [...afterFinalize];
+				for (let i = 0; i < 3; i++) {
+					tui.requestRender();
+					await settle(term);
+					expect(tape(term)).toEqual(stableTape);
+				}
 				expect(eraseScrollbackCount(writes)).toBe(0);
 			} finally {
 				tui.stop();
@@ -1079,7 +1148,7 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 		});
 	});
 
-	it("does not leave a pending tool header above a completed tool body", async () => {
+	it("appends the completed tool body after at most one frozen pending snapshot", async () => {
 		await withPlatform("win32", async () => {
 			const term = new VirtualTerminal(36, 5);
 			overrideProbe(term, undefined);
@@ -1122,10 +1191,25 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 				tui.requestRender();
 				await settle(term);
 
-				const buffer = tape(term);
-				expect(buffer).toEqual(finalFrame);
-				expect(buffer.filter(line => line.includes("pending") || line.includes("running"))).toEqual([]);
-				expect(contiguousAt(buffer, finalFrame)).toEqual([0]);
+				const afterFinalize = tape(term);
+				expect(afterFinalize.slice(-finalFrame.length)).toEqual(finalFrame);
+				expect(contiguousAt(afterFinalize, finalFrame)).toHaveLength(1);
+				expect(
+					afterFinalize.filter(line => line.includes("pending") || line.includes("running")).length,
+				).toBeLessThanOrEqual(2);
+				for (const line of new Set([...pendingFrame, ...finalFrame])) {
+					expect(
+						afterFinalize.filter(row => row === line).length,
+						`${line} should not repeat beyond one frozen snapshot plus the final row`,
+					).toBeLessThanOrEqual(2);
+				}
+
+				const stableTape = [...afterFinalize];
+				for (let i = 0; i < 3; i++) {
+					tui.requestRender();
+					await settle(term);
+					expect(tape(term)).toEqual(stableTape);
+				}
 				// The ordinary finalize path must not rely on a destructive history
 				// rebuild to hide the split frame; resize/reset may still replay.
 				expect(eraseScrollbackCount(writes)).toBe(0);

@@ -2705,7 +2705,7 @@ export class TUI extends Container {
 		if (fullPaint) {
 			committedPrefixResliced = true;
 			windowTop = Math.max(0, frameLength - height);
-			chunkTo = Math.min(windowTop, finalBoundary);
+			chunkTo = windowTop;
 		} else if (
 			frameLength <= this.#committedRows ||
 			(committedRowsResynced &&
@@ -2724,7 +2724,7 @@ export class TUI extends Container {
 			// "duplication, never loss" resync contract.
 			committedPrefixResliced = true;
 			windowTop = Math.max(0, frameLength - height);
-			chunkTo = Math.min(windowTop, finalBoundary);
+			chunkTo = windowTop;
 			this.#committedRows = chunkTo;
 			this.#committedPrefix = rawFrame.slice(0, chunkTo);
 		} else {
@@ -2735,11 +2735,11 @@ export class TUI extends Container {
 			// multiplexer resize the pane reflowed its own history; committed
 			// rows keep their old wrap there, same as any shell output.
 			windowTop = Math.max(this.#committedRows, frameLength - height, 0);
-			// Whatever final rows scroll above the window commit exactly once.
-			// Rows at or past the live-region boundary are still mutable; painting
-			// them into native scrollback would strand pending tool borders and
-			// later force duplicate repairs when the block finalizes.
-			const commitTarget = Math.max(this.#committedRows, Math.min(windowTop, finalBoundary));
+			// Whatever scrolls above the viewport enters the terminal tape.
+			// `finalBoundary` classifies committed rows for auditing; it must not
+			// cap commits, or rows below a live seam vanish from scrollback until
+			// the block finalizes.
+			const commitTarget = Math.max(this.#committedRows, windowTop);
 			chunkTo = hasVisibleOverlay || geometryChanged ? this.#committedRows : commitTarget;
 			if (geometryChanged) {
 				committedPrefixResliced = true;

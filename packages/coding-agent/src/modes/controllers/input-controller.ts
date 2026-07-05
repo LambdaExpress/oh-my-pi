@@ -11,7 +11,11 @@ import { extractImagePathFromText } from "../../modes/components/custom-editor";
 import { renderSegmentTrack } from "../../modes/components/segment-track";
 import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-title-download-progress";
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
-import { materializeImageReferenceLinks, shiftImageMarkers } from "../../modes/image-references";
+import {
+	materializeImageReferenceLinks,
+	materializeImageReferenceLinksSync,
+	shiftImageMarkers,
+} from "../../modes/image-references";
 import { createPromptActionAutocompleteProvider } from "../../modes/prompt-action-autocomplete";
 import { buildSkillCommandPrompt, isKnownSkillCommand } from "../../modes/skill-command";
 import type { InteractiveModeContext, SubmittedUserInput } from "../../modes/types";
@@ -1285,12 +1289,16 @@ export class InputController {
 		const currentText = options?.currentText ?? this.ctx.editor.getText();
 		const combinedText = [queuedText, currentText].filter(t => t.trim()).join("\n\n");
 		this.ctx.editor.setText(combinedText);
-		// Hand queued images back to the pending-image buffer (links are
-		// re-materialized lazily; the restored text already carries the
-		// renumbered `[Image #N, WxH]` markers).
+		// Hand queued images back to the pending-image buffer and keep their
+		// restored markers clickable by materializing the same blob links used by
+		// normal pasted images.
 		if (queuedImages.length > 0) {
+			const queuedImageLinks = materializeImageReferenceLinksSync(
+				queuedImages,
+				this.ctx.sessionManager.putBlobSync.bind(this.ctx.sessionManager),
+			);
 			this.ctx.editor.pendingImages.push(...queuedImages);
-			this.ctx.editor.pendingImageLinks.push(...queuedImages.map(() => undefined));
+			this.ctx.editor.pendingImageLinks.push(...(queuedImageLinks ?? queuedImages.map(() => undefined)));
 			this.ctx.editor.imageLinks = this.ctx.editor.pendingImageLinks;
 		}
 		this.ctx.updatePendingMessagesDisplay();

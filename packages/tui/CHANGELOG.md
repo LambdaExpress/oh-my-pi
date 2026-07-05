@@ -8,7 +8,9 @@
 
 ### Fixed
 
-- Fixed mutable live rows entering native scrollback before finalization, which could leave pending tool-frame rows mixed with completed rows or duplicate unchanged output until a resize rebuilt history.
+- Fixed editor caret movement entering image or paste placeholders; keyboard left/right, word, and vertical movement now treat matched placeholders as atomic tokens.
+- Fixed live rows below a native-scrollback seam vanishing while streaming; scrolled-off live rows now enter history as frozen snapshots, with finalize-time repairs bounded so unchanged output does not repeat indefinitely.
+- Fixed OSC 8 hyperlinks staying disabled in Windows Terminal when `tui.hyperlinks=auto`.
 
 ## [16.3.6] - 2026-07-04
 

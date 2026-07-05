@@ -16,6 +16,14 @@ describe("detectTerminalId", () => {
 		expect(detectTerminalId({ TERM_PROGRAM: "WarpTerminal", COLORTERM: "truecolor" })).toBe("warp");
 	});
 
+	it("recognizes Windows Terminal from WT_SESSION and TERM_PROGRAM", () => {
+		expect(detectTerminalId({ WT_SESSION: "abc", TERM_PROGRAM: "Windows_Terminal" })).toBe("windowsTerminal");
+	});
+
+	it("keeps explicit terminal markers ahead of the Windows Terminal shell", () => {
+		expect(detectTerminalId({ WT_SESSION: "abc", TERM_PROGRAM: "WezTerm", WEZTERM_PANE: "1" })).toBe("wezterm");
+	});
+
 	it("falls back to trueColor on VTE/Ptyxis environments — VTE OSC 9 is ConEmu progress, not a notification protocol", () => {
 		const env = { TERM: "xterm-256color", TERM_PROGRAM: "", COLORTERM: "truecolor", VTE_VERSION: "8400" };
 
@@ -143,7 +151,8 @@ describe("Warp terminal capabilities", () => {
 				process.execPath,
 				"--eval",
 				`import { ImageProtocol, TERMINAL, TERMINAL_ID } from "@oh-my-pi/pi-tui/terminal-capabilities";
-console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProtocol, expected: ImageProtocol.Kitty }));`,
+const expected = process.platform === "win32" ? null : ImageProtocol.Kitty;
+console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProtocol, expected }));`,
 			],
 			env,
 			stdout: "pipe",
@@ -157,13 +166,13 @@ console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProto
 
 		expect(stderr).toBe("");
 		expect(exitCode).toBe(0);
-		const resolved = JSON.parse(stdout) as { id: string; imageProtocol: string | null; expected: string };
+		const resolved = JSON.parse(stdout) as { id: string; imageProtocol: string | null; expected: string | null };
 		expect(resolved.id).toBe("warp");
 		expect(resolved.imageProtocol).toBe(resolved.expected);
 	});
 
-	it("is Kitty-capable with true color but no OSC 8 hyperlinks", () => {
-		const warp = getTerminalInfo("warp");
+	it("is Kitty-capable with true color but no OSC 8 hyperlinks on supported hosts", () => {
+		const warp = getTerminalInfo("warp", "darwin", {});
 		expect(warp.imageProtocol).toBe(ImageProtocol.Kitty);
 		expect(warp.trueColor).toBe(true);
 		expect(warp.hyperlinks).toBe(false);
@@ -236,7 +245,7 @@ describe("hyperlinksUserOverride", () => {
 
 describe("shouldEnableHyperlinksByDefault", () => {
 	it("enables hyperlinks on every known direct terminal", () => {
-		for (const id of ["kitty", "ghostty", "wezterm", "iterm2", "alacritty", "vscode"] as const) {
+		for (const id of ["kitty", "ghostty", "wezterm", "iterm2", "alacritty", "vscode", "windowsTerminal"] as const) {
 			expect(shouldEnableHyperlinksByDefault({}, id)).toBe(true);
 		}
 	});
@@ -357,6 +366,7 @@ describe("shouldEnableHyperlinksByDefault", () => {
 
 	it("lets PI_NO_HYPERLINKS beat every positive heuristic", () => {
 		expect(shouldEnableHyperlinksByDefault({ PI_NO_HYPERLINKS: "1" }, "kitty")).toBe(false);
+		expect(shouldEnableHyperlinksByDefault({ PI_NO_HYPERLINKS: "1" }, "windowsTerminal")).toBe(false);
 		expect(
 			shouldEnableHyperlinksByDefault(
 				{ PI_NO_HYPERLINKS: "1", TERM_PROGRAM: "tmux", TERM_PROGRAM_VERSION: "3.5a", TMUX: "1" },

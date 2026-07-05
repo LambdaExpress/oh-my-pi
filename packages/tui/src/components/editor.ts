@@ -2047,6 +2047,54 @@ export class Editor implements Component, Focusable {
 		return undefined;
 	}
 
+	#atomicTokenEndingAt(line: string, col: number): { start: number; end: number } | undefined {
+		const re = this.#getAtomicTokenRe();
+		if (re === undefined) return undefined;
+		re.lastIndex = 0;
+		for (;;) {
+			const match = re.exec(line);
+			if (match === null) break;
+			if (match[0].length === 0) {
+				re.lastIndex = match.index + 1;
+				continue;
+			}
+			const start = match.index;
+			const end = start + match[0].length;
+			if (end === col) return { start, end };
+			if (col < end) break;
+		}
+		return undefined;
+	}
+
+	#atomicTokenStartingAt(line: string, col: number): { start: number; end: number } | undefined {
+		const re = this.#getAtomicTokenRe();
+		if (re === undefined) return undefined;
+		re.lastIndex = 0;
+		for (;;) {
+			const match = re.exec(line);
+			if (match === null) break;
+			if (match[0].length === 0) {
+				re.lastIndex = match.index + 1;
+				continue;
+			}
+			const start = match.index;
+			if (start === col) return { start, end: start + match[0].length };
+			if (col < start) break;
+		}
+		return undefined;
+	}
+
+	#snapCursorColOutsideAtomicToken(line: string, col: number, direction: "left" | "right" | "nearest"): number {
+		const clampedCol = Math.max(0, Math.min(col, line.length));
+		const token = this.#atomicTokenAt(line, clampedCol);
+		if (token === undefined || token.start === clampedCol) return clampedCol;
+		if (direction === "left") return token.start;
+		if (direction === "right") return token.end;
+		const leftDistance = clampedCol - token.start;
+		const rightDistance = token.end - clampedCol;
+		return leftDistance <= rightDistance ? token.start : token.end;
+	}
+
 	/** Expand the half-open range [start, end) so it never cuts through an atomic
 	 *  placeholder token: a boundary landing inside a token pulls the whole token in. */
 	#expandRangeOverAtomicTokens(line: string, start: number, end: number): { start: number; end: number } {
@@ -2183,7 +2231,11 @@ export class Editor implements Component, Focusable {
 			// Set cursor position, snapping to a grapheme boundary in the target text
 			this.#state.cursorLine = targetVL.logicalLine;
 			const targetCol = targetVL.startCol + offsetAtVisualCol(targetText, moveToVisualCol);
-			this.#state.cursorCol = Math.min(targetCol, targetLine.length);
+			this.#state.cursorCol = this.#snapCursorColOutsideAtomicToken(
+				targetLine,
+				Math.min(targetCol, targetLine.length),
+				"nearest",
+			);
 		}
 	}
 
@@ -2720,10 +2772,16 @@ export class Editor implements Component, Focusable {
 			if (deltaCol > 0) {
 				// Moving right - move by one grapheme (handles emojis, combining characters, etc.)
 				if (this.#state.cursorCol < currentLine.length) {
-					const afterCursor = currentLine.slice(this.#state.cursorCol);
-					const graphemes = [...segmenter.segment(afterCursor)];
-					const firstGrapheme = graphemes[0];
-					this.#setCursorCol(this.#state.cursorCol + (firstGrapheme ? firstGrapheme.segment.length : 1));
+					const token = this.#atomicTokenStartingAt(currentLine, this.#state.cursorCol);
+					if (token !== undefined) {
+						this.#setCursorCol(token.end);
+					} else {
+						const afterCursor = currentLine.slice(this.#state.cursorCol);
+						const graphemes = [...segmenter.segment(afterCursor)];
+						const firstGrapheme = graphemes[0];
+						const targetCol = this.#state.cursorCol + (firstGrapheme ? firstGrapheme.segment.length : 1);
+						this.#setCursorCol(this.#snapCursorColOutsideAtomicToken(currentLine, targetCol, "right"));
+					}
 				} else if (this.#state.cursorLine < this.#state.lines.length - 1) {
 					// Wrap to start of next logical line
 					this.#state.cursorLine++;
@@ -2739,10 +2797,16 @@ export class Editor implements Component, Focusable {
 			} else {
 				// Moving left - move by one grapheme (handles emojis, combining characters, etc.)
 				if (this.#state.cursorCol > 0) {
-					const beforeCursor = currentLine.slice(0, this.#state.cursorCol);
-					const graphemes = [...segmenter.segment(beforeCursor)];
-					const lastGrapheme = graphemes[graphemes.length - 1];
-					this.#setCursorCol(this.#state.cursorCol - (lastGrapheme ? lastGrapheme.segment.length : 1));
+					const token = this.#atomicTokenEndingAt(currentLine, this.#state.cursorCol);
+					if (token !== undefined) {
+						this.#setCursorCol(token.start);
+					} else {
+						const beforeCursor = currentLine.slice(0, this.#state.cursorCol);
+						const graphemes = [...segmenter.segment(beforeCursor)];
+						const lastGrapheme = graphemes[graphemes.length - 1];
+						const targetCol = this.#state.cursorCol - (lastGrapheme ? lastGrapheme.segment.length : 1);
+						this.#setCursorCol(this.#snapCursorColOutsideAtomicToken(currentLine, targetCol, "left"));
+					}
 				} else if (this.#state.cursorLine > 0) {
 					// Wrap to end of previous logical line
 					this.#state.cursorLine--;
@@ -2776,7 +2840,8 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
-		this.#setCursorCol(moveWordLeft(currentLine, this.#state.cursorCol));
+		const targetCol = moveWordLeft(currentLine, this.#state.cursorCol);
+		this.#setCursorCol(this.#snapCursorColOutsideAtomicToken(currentLine, targetCol, "left"));
 	}
 
 	/**
@@ -2825,7 +2890,8 @@ export class Editor implements Component, Focusable {
 			return;
 		}
 
-		this.#setCursorCol(moveWordRight(currentLine, this.#state.cursorCol));
+		const targetCol = moveWordRight(currentLine, this.#state.cursorCol);
+		this.#setCursorCol(this.#snapCursorColOutsideAtomicToken(currentLine, targetCol, "right"));
 	}
 
 	#hasOnlyWhitespaceBeforeCursorLine(): boolean {

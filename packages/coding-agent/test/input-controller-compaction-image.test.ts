@@ -61,6 +61,16 @@ function makeCtx(initialQueue: CompactionQueuedMessage[] = []) {
 
 	const ctx = {
 		session,
+		sessionManager: {
+			putBlobSync: (_data: Buffer, options?: { extension?: string }) => ({
+				hash: "queued-image",
+				path: "/tmp/queued-image",
+				displayPath: `/tmp/queued-image.${options?.extension ?? "png"}`,
+				get ref() {
+					return "blob:sha256:queued-image";
+				},
+			}),
+		},
 		compactionQueuedMessages: [...initialQueue],
 		pendingMessagesContainer: { clear: () => {}, addChild: () => {}, removeChild: () => {} },
 		editor: {
@@ -160,6 +170,8 @@ describe("compaction queue Alt+Up restore", () => {
 		const restored = new InputController(ctx).restoreQueuedMessagesToEditor();
 		expect(restored).toBe(1);
 		expect(ctx.editor.pendingImages).toEqual([image]);
+		expect(ctx.editor.pendingImageLinks[0]).toMatch(/queued-image\.(png|jpg|jpeg|gif|webp)$/);
+		expect(ctx.editor.imageLinks).toBe(ctx.editor.pendingImageLinks);
 	});
 
 	test("session and compaction queues restore in pending-bar order", () => {
@@ -214,6 +226,16 @@ describe("restoreQueuedMessagesToEditor image marker alignment", () => {
 		};
 		const ctx = {
 			session,
+			sessionManager: {
+				putBlobSync: (_data: Buffer, options?: { extension?: string }) => ({
+					hash: "queued-image",
+					path: "/tmp/queued-image",
+					displayPath: `/tmp/queued-image.${options?.extension ?? "png"}`,
+					get ref() {
+						return "blob:sha256:queued-image";
+					},
+				}),
+			},
 			editor,
 			compactionQueuedMessages: [],
 			locallySubmittedUserSignatures: new Set<string>(),
@@ -230,6 +252,8 @@ describe("restoreQueuedMessagesToEditor image marker alignment", () => {
 			draftImages: [draftImg],
 			queued: [{ text: "[Image #1] queued text", images: [queuedImg] }],
 		});
+		ctx.editor.pendingImageLinks = ["/tmp/draft.png"];
+		ctx.editor.imageLinks = ctx.editor.pendingImageLinks;
 
 		const restored = new InputController(ctx).restoreQueuedMessagesToEditor();
 
@@ -241,6 +265,9 @@ describe("restoreQueuedMessagesToEditor image marker alignment", () => {
 		// Marker → image positional mapping after restore.
 		expect(ctx.editor.pendingImages[0]).toBe(draftImg); // matches [Image #1]
 		expect(ctx.editor.pendingImages[1]).toBe(queuedImg); // matches [Image #2]
+		expect(ctx.editor.pendingImageLinks[0]).toBe("/tmp/draft.png");
+		expect(ctx.editor.pendingImageLinks[1]).toMatch(/queued-image\.(png|jpg|jpeg|gif|webp)$/);
+		expect(ctx.editor.imageLinks).toBe(ctx.editor.pendingImageLinks);
 	});
 
 	test("preserves the WxH metadata tail when renumbering", () => {
