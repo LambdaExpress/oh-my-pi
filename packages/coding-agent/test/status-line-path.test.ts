@@ -237,7 +237,7 @@ describe("status line path segment", () => {
 
 describe("status line path segment in a linked worktree", () => {
 	function worktreeContext(
-		worktree: { projectName: string; worktreeName: string } | null,
+		worktree: { projectName: string; worktreeName: string; duplicateNames?: readonly string[] } | null,
 		branch: string | null,
 	): SegmentContext {
 		const ctx = createPathContext();
@@ -255,6 +255,20 @@ describe("status line path segment in a linked worktree", () => {
 		expect(content).not.toContain(".tree");
 		expect(content).not.toContain("/xx");
 		expect(content).not.toContain(theme.icon.folder);
+	});
+
+	it("prefers the managed worktree name supplied by linked-worktree detection", () => {
+		const rendered = renderSegment(
+			"path",
+			worktreeContext(
+				{ projectName: "pi", worktreeName: "Fix Parser", duplicateNames: ["Fix Parser", "raw-dir"] },
+				"feature",
+			),
+		);
+		const content = Bun.stripANSI(rendered.content);
+		expect(rendered.visible).toBe(true);
+		expect(content).toBe(`${theme.icon.worktree} pi/Fix Parser`);
+		expect(content).not.toContain("raw-dir");
 	});
 
 	it("keeps the worktree dir when it diverges from the branch", () => {

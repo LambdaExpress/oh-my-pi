@@ -642,6 +642,7 @@ import * as bundledPiCodingAgentModesComponentsUserMessage from "@oh-my-pi/pi-co
 import * as bundledPiCodingAgentModesComponentsUserMessageSelector from "@oh-my-pi/pi-coding-agent/modes/components/user-message-selector";
 import * as bundledPiCodingAgentModesComponentsVisualTruncate from "@oh-my-pi/pi-coding-agent/modes/components/visual-truncate";
 import * as bundledPiCodingAgentModesComponentsWelcome from "@oh-my-pi/pi-coding-agent/modes/components/welcome";
+import * as bundledPiCodingAgentModesComponentsWorktreeSelector from "@oh-my-pi/pi-coding-agent/modes/components/worktree-selector";
 import * as bundledPiCodingAgentModesControllersBtwController from "@oh-my-pi/pi-coding-agent/modes/controllers/btw-controller";
 import * as bundledPiCodingAgentModesControllersCommandController from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import * as bundledPiCodingAgentModesControllersCommandControllerShared from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller-shared";
@@ -862,6 +863,7 @@ import * as bundledPiCodingAgentToolsToolErrors from "@oh-my-pi/pi-coding-agent/
 import * as bundledPiCodingAgentToolsToolResult from "@oh-my-pi/pi-coding-agent/tools/tool-result";
 import * as bundledPiCodingAgentToolsToolTimeouts from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 import * as bundledPiCodingAgentToolsTts from "@oh-my-pi/pi-coding-agent/tools/tts";
+import * as bundledPiCodingAgentToolsWorktree from "@oh-my-pi/pi-coding-agent/tools/worktree";
 import * as bundledPiCodingAgentToolsWrite from "@oh-my-pi/pi-coding-agent/tools/write";
 import * as bundledPiCodingAgentToolsYield from "@oh-my-pi/pi-coding-agent/tools/yield";
 import * as bundledPiCodingAgentTui from "@oh-my-pi/pi-coding-agent/tui";
@@ -1016,6 +1018,14 @@ import * as bundledPiCodingAgentWebSearchProvidersZai from "@oh-my-pi/pi-coding-
 import * as bundledPiCodingAgentWebSearchRender from "@oh-my-pi/pi-coding-agent/web/search/render";
 import * as bundledPiCodingAgentWebSearchTypes from "@oh-my-pi/pi-coding-agent/web/search/types";
 import * as bundledPiCodingAgentWebSearchUtils from "@oh-my-pi/pi-coding-agent/web/search/utils";
+import * as bundledPiCodingAgentWorktreeDirtyTransfer from "@oh-my-pi/pi-coding-agent/worktree/dirty-transfer";
+import * as bundledPiCodingAgentWorktreeInclude from "@oh-my-pi/pi-coding-agent/worktree/include";
+import * as bundledPiCodingAgentWorktreeManager from "@oh-my-pi/pi-coding-agent/worktree/manager";
+import * as bundledPiCodingAgentWorktreeMetadata from "@oh-my-pi/pi-coding-agent/worktree/metadata";
+import * as bundledPiCodingAgentWorktreeSelector from "@oh-my-pi/pi-coding-agent/worktree/selector";
+import * as bundledPiCodingAgentWorktreeSession from "@oh-my-pi/pi-coding-agent/worktree/session";
+import * as bundledPiCodingAgentWorktreeSnapshot from "@oh-my-pi/pi-coding-agent/worktree/snapshot";
+import * as bundledPiCodingAgentWorktreeTypes from "@oh-my-pi/pi-coding-agent/worktree/types";
 import * as bundledPiNatives from "@oh-my-pi/pi-natives";
 import * as bundledPiTui from "@oh-my-pi/pi-tui";
 import * as bundledPiTuiComponentsBox from "@oh-my-pi/pi-tui/components/box";
@@ -2562,6 +2572,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		bundledPiCodingAgentModesComponentsVisualTruncate as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/components/welcome":
 		bundledPiCodingAgentModesComponentsWelcome as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/modes/components/worktree-selector":
+		bundledPiCodingAgentModesComponentsWorktreeSelector as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/components/extensions/extension-dashboard":
 		bundledPiCodingAgentModesComponentsExtensionsExtensionDashboard as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/modes/components/extensions/extension-list":
@@ -3077,6 +3089,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/tts": bundledPiCodingAgentToolsTts as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/tools/worktree": bundledPiCodingAgentToolsWorktree as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/tools/write": bundledPiCodingAgentToolsWrite as unknown as Readonly<
 		Record<string, unknown>
 	>,
@@ -3202,6 +3217,29 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/utils/zip": bundledPiCodingAgentUtilsZip as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/worktree/dirty-transfer":
+		bundledPiCodingAgentWorktreeDirtyTransfer as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/worktree/include": bundledPiCodingAgentWorktreeInclude as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/worktree/manager": bundledPiCodingAgentWorktreeManager as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/worktree/metadata": bundledPiCodingAgentWorktreeMetadata as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/worktree/selector": bundledPiCodingAgentWorktreeSelector as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/worktree/session": bundledPiCodingAgentWorktreeSession as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/worktree/snapshot": bundledPiCodingAgentWorktreeSnapshot as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/worktree/types": bundledPiCodingAgentWorktreeTypes as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/web/kagi": bundledPiCodingAgentWebKagi as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/web/parallel": bundledPiCodingAgentWebParallel as unknown as Readonly<
 		Record<string, unknown>

@@ -563,6 +563,10 @@
       "types": "./src/utils/*.ts",
       "import": "./src/utils/*.ts"
     },
+    "./worktree/*": {
+      "types": "./src/worktree/*.ts",
+      "import": "./src/worktree/*.ts"
+    },
     "./web/*": {
       "types": "./src/web/*.ts",
       "import": "./src/web/*.ts"

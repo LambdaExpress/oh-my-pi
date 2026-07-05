@@ -3,9 +3,9 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { TreeSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tree-selector";
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import {
-	TITLE_CHANGE_ENTRY_TYPE,
 	type SessionEntry,
 	type SessionTreeNode,
+	TITLE_CHANGE_ENTRY_TYPE,
 } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 
 const TIMESTAMP = "2026-01-02T03:04:05.000Z";
@@ -40,16 +40,12 @@ function titleChangeNode(id: string, parentId: string | null, title: string): Se
 function titleChangeConversation(): { tree: SessionTreeNode[]; leafId: string } {
 	const user = messageNode("user-1", null, { role: "user", content: "Name this session", timestamp: 1 });
 	const titleChange = titleChangeNode("title-1", user.entry.id, TITLE_TEXT);
-	const assistant = messageNode(
-		"assistant-1",
-		titleChange.entry.id,
-		{
-			role: "assistant",
-			content: [{ type: "text", text: "Done." }],
-			stopReason: "stop",
-			timestamp: 2,
-		} as AgentMessage,
-	);
+	const assistant = messageNode("assistant-1", titleChange.entry.id, {
+		role: "assistant",
+		content: [{ type: "text", text: "Done." }],
+		stopReason: "stop",
+		timestamp: 2,
+	} as AgentMessage);
 
 	user.children.push(titleChange);
 	titleChange.children.push(assistant);

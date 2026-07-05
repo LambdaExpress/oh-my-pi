@@ -2656,8 +2656,7 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	const needsFineGrainedToolStreamingBeta = hasTools && !compat.supportsEagerToolInputStreaming;
 	const oauthToken = isOAuth ?? isAnthropicOAuthToken(apiKey);
 	const needsContext1mBeta =
-		claudeCodeLongContextSelector.test(model.id) ||
-		claudeCodeLongContextSelector.test(model.requestModelId ?? "");
+		claudeCodeLongContextSelector.test(model.id) || claudeCodeLongContextSelector.test(model.requestModelId ?? "");
 	const baseUrl = resolveAnthropicBaseUrl(model, apiKey);
 	const foundryCustomHeaders = resolveAnthropicCustomHeaders(model);
 	const tlsFetchOptions = buildClaudeCodeTlsFetchOptions(model, baseUrl);

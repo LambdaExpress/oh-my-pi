@@ -538,9 +538,7 @@ describe("IRC", () => {
 			expect(reviveCurrentPeer).toHaveBeenCalledTimes(1);
 			expect(currentPeer.delivered.map(msg => msg.body)).toEqual(["ping"]);
 			expect(oldResult.isError).toBe(true);
-			expect(oldResult.details?.receipts).toEqual([
-				{ to: "OldPeer", outcome: "failed", error: expect.any(String) },
-			]);
+			expect(oldResult.details?.receipts).toEqual([{ to: "OldPeer", outcome: "failed", error: expect.any(String) }]);
 			expect(reviveOldPeer).not.toHaveBeenCalled();
 			expect(oldPeer.delivered).toEqual([]);
 		});
@@ -591,9 +589,7 @@ describe("IRC", () => {
 
 			expect(listResult.details?.peers?.map(peer => peer.id)).toEqual(["CurrentPeer"]);
 			expect(oldResult.isError).toBe(true);
-			expect(oldResult.details?.receipts).toEqual([
-				{ to: "OldPeer", outcome: "failed", error: expect.any(String) },
-			]);
+			expect(oldResult.details?.receipts).toEqual([{ to: "OldPeer", outcome: "failed", error: expect.any(String) }]);
 			expect(reviveCurrentPeer).not.toHaveBeenCalled();
 			expect(reviveOldPeer).not.toHaveBeenCalled();
 			expect(currentPeer.delivered).toEqual([]);

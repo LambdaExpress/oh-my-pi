@@ -230,12 +230,14 @@ const pathSegment: StatusLineSegment = {
 		const stripPrefix = opts.stripWorkPrefix !== false;
 
 		// Linked git worktree: the on-disk path nests the worktree base, the
-		// project, and a worktree dir that usually duplicates the branch (already
-		// shown by the git segment). Collapse to the project name, appending the
-		// worktree dir only when it diverges from the branch.
+		// project, and a worktree label. Managed worktrees prefer their metadata
+		// name; otherwise the label is the worktree dir, which usually duplicates
+		// the branch (already shown by the git segment).
 		if (stripPrefix && ctx.worktree) {
-			const { projectName, worktreeName } = ctx.worktree;
-			const label = ctx.git.branch === worktreeName ? projectName : `${projectName}/${worktreeName}`;
+			const { duplicateNames, projectName, worktreeName } = ctx.worktree;
+			const branchDuplicateNames = duplicateNames ?? [worktreeName];
+			const duplicatesBranch = ctx.git.branch !== null && branchDuplicateNames.includes(ctx.git.branch);
+			const label = duplicatesBranch ? projectName : `${projectName}/${worktreeName}`;
 			const content = withIcon(theme.icon.worktree, clampPathLength(label, opts.maxLength ?? 40));
 			return { content: theme.fg("statusLinePath", content), visible: true };
 		}

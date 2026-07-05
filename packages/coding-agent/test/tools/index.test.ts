@@ -82,6 +82,7 @@ describe("createTools", () => {
 		expect(names).toContain("todo");
 		expect(names).toContain("web_search");
 		expect(names).toContain("resolve");
+		expect(names).toContain("worktree");
 		expect(names).not.toContain("fetch");
 		expect(names).not.toContain("vim");
 	});
@@ -166,6 +167,14 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		expect(names).toEqual(["read", "write", "resolve"]);
+	});
+
+	it("includes explicit worktree requests with resolve", async () => {
+		const session = createTestSession();
+		const tools = await createTools(session, ["worktree"]);
+		const names = tools.map(t => t.name);
+
+		expect(names).toEqual(["worktree", "resolve"]);
 	});
 
 	it("lowercases requested tool subset", async () => {

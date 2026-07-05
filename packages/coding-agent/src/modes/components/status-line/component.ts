@@ -3,7 +3,7 @@ import * as path from "node:path";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import { type Component, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import { getProjectDir } from "@oh-my-pi/pi-utils";
+import { getProjectDir, getWorktreesDir, normalizePathForComparison } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
@@ -167,21 +167,64 @@ interface ActiveRepoCache {
 	projectDir: string;
 	activeRepo: ActiveRepoContext | null;
 	effectiveGitCwd: string;
-	/** Project + worktree dir name when `projectDir` is a linked worktree, else null. */
+	/** Project + worktree label when `projectDir` is a linked worktree, else null. */
 	worktree: WorktreeContext | null;
 }
 
 interface WorktreeContext {
 	/** Primary-checkout (project) name shown by the path segment. */
 	projectName: string;
-	/** Worktree directory name — suppressed from the path when it equals the branch. */
+	/** Worktree display name — managed metadata name when available, otherwise directory name. */
 	worktreeName: string;
+	/** Names that duplicate the git branch and should be suppressed from the path label. */
+	duplicateNames: readonly string[];
+}
+
+interface ManagedWorktreeDisplayRecord {
+	name: string;
+	worktreeRoot: string;
+}
+
+function parseManagedWorktreeDisplayRecord(raw: unknown): ManagedWorktreeDisplayRecord | null {
+	if (!raw || typeof raw !== "object") return null;
+	const record = raw as Record<string, unknown>;
+	if (record.owner !== "omp") return null;
+	if (record.state === "snapshotted") return null;
+
+	const name = typeof record.name === "string" ? sanitizeStatusText(record.name).trim() : "";
+	const worktreeRoot = typeof record.worktreeRoot === "string" ? record.worktreeRoot : "";
+	if (!name || !worktreeRoot) return null;
+	return { name, worktreeRoot };
+}
+
+function resolveManagedWorktreeNameSync(worktreeRoot: string): string | null {
+	const metadataDir = path.join(getWorktreesDir(), "metadata");
+	let entries: fs.Dirent[];
+	try {
+		entries = fs.readdirSync(metadataDir, { withFileTypes: true });
+	} catch {
+		return null;
+	}
+
+	const normalizedRoot = normalizePathForComparison(worktreeRoot);
+	for (const entry of entries) {
+		if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+		const metadataPath = path.join(metadataDir, entry.name);
+		try {
+			const record = parseManagedWorktreeDisplayRecord(JSON.parse(fs.readFileSync(metadataPath, "utf8")));
+			if (!record) continue;
+			if (normalizePathForComparison(record.worktreeRoot) === normalizedRoot) return record.name;
+		} catch {}
+	}
+	return null;
 }
 
 /**
- * Project + worktree-dir names when `cwd` is a linked git worktree, else null.
+ * Project + worktree label when `cwd` is a linked git worktree, else null.
  * The project name comes from the shared primary checkout; bare-repo worktrees
- * resolve to the shared `foo.git` dir, so a trailing `.git` is stripped.
+ * resolve to the shared `foo.git` dir, so a trailing `.git` is stripped. Oh My
+ * Pi managed worktrees prefer their sidecar metadata name over the raw worktree
+ * directory name.
  */
 function resolveWorktreeContext(cwd: string): WorktreeContext | null {
 	const worktree = git.repo.linkedWorktreeSync(cwd);
@@ -189,7 +232,11 @@ function resolveWorktreeContext(cwd: string): WorktreeContext | null {
 	const base = path.basename(worktree.primaryRoot);
 	const projectName = base.endsWith(".git") ? base.slice(0, -4) : base;
 	if (!projectName) return null;
-	return { projectName, worktreeName: path.basename(worktree.root) };
+	const rootName = path.basename(worktree.root);
+	const managedName = resolveManagedWorktreeNameSync(worktree.root);
+	const worktreeName = managedName ?? rootName;
+	const duplicateNames = managedName ? [managedName, rootName] : [rootName];
+	return { projectName, worktreeName, duplicateNames };
 }
 
 /**

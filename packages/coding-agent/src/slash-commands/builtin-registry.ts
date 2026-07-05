@@ -36,6 +36,17 @@ import { expandTilde, resolveToCwd } from "../tools/path-utils";
 import { urlHyperlinkAlways } from "../tui";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
 import { copyToClipboard } from "../utils/clipboard";
+import {
+	addManagedWorktree,
+	branchManagedWorktree,
+	listManagedWorktrees,
+	mergeManagedWorktree,
+	removeManagedWorktree,
+	restoreManagedWorktree,
+	targetCwdForRecord,
+} from "../worktree/manager";
+import { findManagedWorktreeRecord, writeManagedWorktreeRecord } from "../worktree/metadata";
+import type { ManagedWorktreeRecord } from "../worktree/types";
 import { CollabQrCodeComponent } from "./helpers/collab-qrcode";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatDuration } from "./helpers/format";
@@ -193,6 +204,245 @@ function parseShakeMode(args: string): ShakeMode | { error: string } {
 	if (verb === "" || verb === "elide") return "elide";
 	if (verb === "images") return "images";
 	return { error: `Unknown /shake mode "${verb}". Use elide or images.` };
+}
+
+const WORKTREE_USAGE = "Usage: /worktree <list|add|switch|merge|remove|prune|branch|path|restore>";
+
+const WORKTREE_SUBCOMMANDS: SubcommandDef[] = [
+	{ name: "list", description: "List managed worktrees" },
+	{ name: "add", description: "Create a managed worktree", usage: "[name]" },
+	{ name: "switch", description: "Switch to a managed worktree", usage: "<id|name>" },
+	{ name: "merge", description: "Apply a managed worktree to the local checkout", usage: "<id|name>" },
+	{ name: "remove", description: "Remove a managed worktree", usage: "<id|name>" },
+	{ name: "prune", description: "Prune managed worktrees" },
+	{ name: "branch", description: "Create a branch in a managed worktree", usage: "<id|name> <branch>" },
+	{ name: "path", description: "Print a managed worktree path", usage: "<id|name>" },
+	{ name: "restore", description: "Restore a snapshotted managed worktree", usage: "<id|name>" },
+];
+
+type ManagedWorktreeListItemLike = ManagedWorktreeRecord | { record?: unknown };
+
+function isManagedWorktreeRecord(value: unknown): value is ManagedWorktreeRecord {
+	if (typeof value !== "object" || value === null) return false;
+	const candidate = value as {
+		id?: unknown;
+		name?: unknown;
+		worktreeRoot?: unknown;
+		primaryRoot?: unknown;
+		state?: unknown;
+	};
+	return (
+		typeof candidate.id === "string" &&
+		typeof candidate.name === "string" &&
+		typeof candidate.worktreeRoot === "string" &&
+		typeof candidate.primaryRoot === "string" &&
+		typeof candidate.state === "string"
+	);
+}
+
+function managedRecordFromListItem(item: ManagedWorktreeListItemLike): ManagedWorktreeRecord | null {
+	if (isManagedWorktreeRecord(item)) return item;
+	return isManagedWorktreeRecord(item.record) ? item.record : null;
+}
+
+async function existingWorktreeSessionFile(filePath: string | null | undefined): Promise<string | null> {
+	if (!filePath) return null;
+	try {
+		const stat = await fs.stat(filePath);
+		return stat.isFile() ? filePath : null;
+	} catch {
+		return null;
+	}
+}
+
+async function worktreeDirectoryExists(dir: string): Promise<boolean> {
+	try {
+		return (await fs.stat(dir)).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+async function reloadRuntimeForCwd(runtime: SlashCommandRuntime, cwd: string): Promise<void> {
+	const previousProcessCwd = process.cwd();
+	setProjectDir(cwd);
+	try {
+		await runtime.settings.reloadForCwd(cwd);
+		applyProviderGlobalsFromSettings(runtime.settings);
+		await runtime.reloadPlugins();
+		await runtime.notifyConfigChanged?.();
+		await runtime.notifyTitleChanged?.();
+	} finally {
+		try {
+			process.chdir(previousProcessCwd);
+		} catch {
+			// Best effort: embedders may manage process cwd separately from project cwd.
+		}
+	}
+}
+
+async function writeCurrentRuntimeSessionToWorktree(
+	runtime: SlashCommandRuntime,
+	record: ManagedWorktreeRecord,
+): Promise<void> {
+	const now = new Date().toISOString();
+	await writeManagedWorktreeRecord({
+		...record,
+		sessionFile: runtime.sessionManager.getSessionFile() ?? null,
+		sessionId: runtime.sessionManager.getSessionId(),
+		title: runtime.sessionManager.getSessionName() ?? record.title,
+		updatedAt: now,
+		lastUsedAt: now,
+	});
+}
+
+async function listWorktreesForSlash(runtime: SlashCommandRuntime): Promise<ManagedWorktreeRecord[]> {
+	const items = await listManagedWorktrees(runtime.cwd);
+	const records: ManagedWorktreeRecord[] = [];
+	for (const item of items) {
+		const record = managedRecordFromListItem(item);
+		if (record) records.push(record);
+	}
+	return records;
+}
+
+async function requireManagedWorktree(
+	idOrName: string,
+	runtime: SlashCommandRuntime,
+): Promise<ManagedWorktreeRecord | null> {
+	const key = idOrName.trim();
+	if (!key) {
+		await usage(WORKTREE_USAGE, runtime);
+		return null;
+	}
+	const record = await findManagedWorktreeRecord(key);
+	if (!record) await usage(`Unknown worktree: ${key}`, runtime);
+	return record;
+}
+
+async function switchWorktreeForSlash(idOrName: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
+	if (runtime.session.isStreaming) return usage("Cannot move while streaming.", runtime);
+	const record = await requireManagedWorktree(idOrName, runtime);
+	if (!record) return commandConsumed();
+	if (!(await worktreeDirectoryExists(record.worktreeRoot))) {
+		return usage("Managed worktree directory is missing; remove metadata or restore from snapshot.", runtime);
+	}
+	const sessionFile = await existingWorktreeSessionFile(record.sessionFile);
+	if (sessionFile) {
+		const switched = await runtime.session.switchSession(sessionFile);
+		if (!switched) {
+			await runtime.output("Switch cancelled.");
+			return commandConsumed();
+		}
+	} else {
+		const created = await runtime.session.newSession();
+		if (!created) {
+			await runtime.output("Switch cancelled.");
+			return commandConsumed();
+		}
+		await runtime.sessionManager.moveTo(targetCwdForRecord(record));
+	}
+	const cwd = runtime.sessionManager.getCwd();
+	await reloadRuntimeForCwd(runtime, cwd);
+	await writeCurrentRuntimeSessionToWorktree(runtime, record);
+	await runtime.output(`Switched to managed worktree ${record.name}: ${cwd}`);
+	return commandConsumed();
+}
+
+async function handleWorktreeSlash(
+	command: ParsedSlashCommand,
+	runtime: SlashCommandRuntime,
+): Promise<SlashCommandResult> {
+	const { verb, rest } = parseSubcommand(command.args);
+	const action = verb || "list";
+	try {
+		switch (action) {
+			case "list": {
+				const records = await listWorktreesForSlash(runtime);
+				if (records.length === 0) {
+					await runtime.output("No managed worktrees.");
+					return commandConsumed();
+				}
+				const lines = ["Managed worktrees:"];
+				for (const record of records) {
+					const location =
+						record.state === "snapshotted" && record.snapshotPath
+							? record.snapshotPath
+							: targetCwdForRecord(record);
+					lines.push(`- ${record.name} (${record.state}, ${record.branch ?? record.baseRef}) ${location}`);
+				}
+				await runtime.output(lines.join("\n"));
+				return commandConsumed();
+			}
+			case "add": {
+				const result = await addManagedWorktree({
+					cwd: runtime.cwd,
+					name: rest || undefined,
+					dirtyPolicy: "ignore",
+				});
+				await runtime.output(`Created managed worktree ${result.record.name}: ${result.targetCwd}`);
+				return commandConsumed();
+			}
+			case "switch":
+				return switchWorktreeForSlash(rest, runtime);
+			case "path": {
+				const record = await requireManagedWorktree(rest, runtime);
+				if (record) await runtime.output(targetCwdForRecord(record));
+				return commandConsumed();
+			}
+			case "merge": {
+				const record = await requireManagedWorktree(rest, runtime);
+				if (record) {
+					const updated = await mergeManagedWorktree({ cwd: runtime.cwd, idOrName: record.id });
+					await runtime.output(`Applied managed worktree ${updated.name} to local checkout.`);
+				}
+				return commandConsumed();
+			}
+			case "remove": {
+				const record = await requireManagedWorktree(rest, runtime);
+				if (record) {
+					const removed = await removeManagedWorktree({ cwd: runtime.cwd, idOrName: record.id });
+					await runtime.output(
+						removed
+							? `Removed managed worktree ${removed.name}.`
+							: `Managed worktree ${record.name} is already gone.`,
+					);
+				}
+				return commandConsumed();
+			}
+			case "branch": {
+				const parsed = parseSubcommand(rest);
+				if (!parsed.verb || !parsed.rest) return usage("Usage: /worktree branch <id|name> <branch>", runtime);
+				const record = await requireManagedWorktree(parsed.verb, runtime);
+				if (record) {
+					const updated = await branchManagedWorktree({
+						cwd: runtime.cwd,
+						idOrName: record.id,
+						branch: parsed.rest,
+					});
+					await runtime.output(
+						`Managed worktree ${updated.name} created branch ${updated.branch ?? parsed.rest}.`,
+					);
+				}
+				return commandConsumed();
+			}
+			case "restore": {
+				const record = await requireManagedWorktree(rest, runtime);
+				if (record) {
+					const result = await restoreManagedWorktree({ cwd: runtime.cwd, idOrName: record.id });
+					await runtime.output(`Restored managed worktree ${result.record.name}: ${result.targetCwd}`);
+				}
+				return commandConsumed();
+			}
+			case "prune":
+				await runtime.output("Use `omp worktree prune` to clean up managed worktrees.");
+				return commandConsumed();
+			default:
+				return usage(WORKTREE_USAGE, runtime);
+		}
+	} catch (err) {
+		return usage(`worktree ${action} failed: ${errorMessage(err)}`, runtime);
+	}
 }
 
 const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
@@ -1626,6 +1876,20 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			}
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleRenameCommand(title);
+		},
+	},
+	{
+		name: "worktree",
+		description: "Manage worktrees",
+		acpDescription: "Manage worktrees",
+		acpInputHint: "<subcommand>",
+		allowArgs: true,
+		subcommands: WORKTREE_SUBCOMMANDS,
+		handle: handleWorktreeSlash,
+		handleTui: async (command, runtime) => {
+			runtime.ctx.editor.addToHistory(command.text);
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.handleWorktreeCommand(command.args || undefined);
 		},
 	},
 	{

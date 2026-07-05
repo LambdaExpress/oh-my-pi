@@ -101,9 +101,10 @@ export interface SegmentContext {
 	 * Set when the path cwd is a *linked* git worktree, naming the shared
 	 * primary checkout (the project). Lets the path segment collapse the
 	 * base-prefixed `<base>/<project>/<worktree>` path to the project name —
-	 * the worktree/branch is already shown by the git segment.
+	 * managed metadata names are preferred over raw worktree directory names,
+	 * and duplicate branch/worktree labels are suppressed.
 	 */
-	worktree: { projectName: string; worktreeName: string } | null;
+	worktree: { projectName: string; worktreeName: string; duplicateNames?: readonly string[] } | null;
 	usage: {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };

@@ -45,6 +45,7 @@ import { DebugTool } from "./debug";
 import { EvalTool } from "./eval";
 import { resolveEvalBackends } from "./eval-backends";
 import { GithubTool } from "./gh";
+import { WorktreeTool } from "./worktree";
 import { GlobTool } from "./glob";
 import { GrepTool } from "./grep";
 import { InspectImageTool } from "./inspect-image";
@@ -84,6 +85,7 @@ export * from "./debug";
 export * from "./eval";
 export * from "./eval-backends";
 export * from "./gh";
+export * from "./worktree";
 export * from "./glob";
 export * from "./grep";
 export * from "./image-gen";
@@ -210,6 +212,8 @@ export interface ToolSession {
 	getEvalSessionId?: () => string | null;
 	/** Get session file */
 	getSessionFile: () => string | null;
+	/** Get session title/name */
+	getSessionName?: () => string | undefined;
 	/** Get eval kernel owner ID for session-scoped retained-kernel cleanup. */
 	getEvalKernelOwnerId?: () => string | null;
 	/** Reject new eval work once session disposal has started. */
@@ -218,6 +222,8 @@ export interface ToolSession {
 	trackEvalExecution?<T>(execution: Promise<T>, abortController: AbortController): Promise<T>;
 	/** Get session ID */
 	getSessionId?: () => string | null;
+	/** Move the current session to a new working directory and refresh cwd-scoped state. */
+	moveSessionToCwd?: (cwd: string) => Promise<void>;
 	/** Get Hindsight runtime state for this agent session. */
 	getHindsightSessionState?: () => HindsightSessionState | undefined;
 	/** Get Mnemopi runtime state for this agent session. */
@@ -477,6 +483,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	reflect: MemoryReflectTool.createIf,
 	learn: LearnTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
+	worktree: s => new WorktreeTool(s),
 };
 
 export const HIDDEN_TOOLS: Record<string, ToolFactory> = {
