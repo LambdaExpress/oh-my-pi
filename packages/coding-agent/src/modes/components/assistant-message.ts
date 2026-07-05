@@ -70,6 +70,66 @@ function containsMermaidFence(text: string): boolean {
 	return false;
 }
 
+const TABLE_SEPARATOR_CELL = /^:?-{3,}:?$/;
+
+function splitMarkdownTableRow(line: string): string[] | undefined {
+	const trimmed = line.trim();
+	if (!trimmed.includes("|")) return undefined;
+	const withoutLeadingPipe = trimmed.startsWith("|") ? trimmed.slice(1) : trimmed;
+	const body = withoutLeadingPipe.endsWith("|") ? withoutLeadingPipe.slice(0, -1) : withoutLeadingPipe;
+	const cells = body.split("|").map(cell => cell.trim());
+	return cells.length >= 2 ? cells : undefined;
+}
+
+function isMarkdownTableSeparator(line: string): string[] | undefined {
+	const cells = splitMarkdownTableRow(line);
+	if (!cells?.every(cell => TABLE_SEPARATOR_CELL.test(cell))) return undefined;
+	return cells;
+}
+
+function containsGfmTable(text: string): boolean {
+	let fence: string | null = null;
+	let previousCells: string[] | undefined;
+	for (const line of text.split("\n")) {
+		const fenceMatch = CODE_FENCE_LINE.exec(line);
+		if (fence !== null) {
+			if (
+				fenceMatch &&
+				fenceMatch[2]!.trim() === "" &&
+				fenceMatch[1]![0] === fence[0] &&
+				fenceMatch[1]!.length >= fence.length
+			) {
+				fence = null;
+			}
+			previousCells = undefined;
+			continue;
+		}
+		if (fenceMatch) {
+			fence = fenceMatch[1]!;
+			previousCells = undefined;
+			continue;
+		}
+		const separatorCells = isMarkdownTableSeparator(line);
+		if (separatorCells && previousCells && previousCells.length === separatorCells.length) return true;
+		previousCells = splitMarkdownTableRow(line);
+	}
+	return false;
+}
+
+function contentContainsGfmTable(
+	message: AssistantMessage,
+	options: { hideThinkingBlock: boolean; proseOnlyThinking: boolean },
+): boolean {
+	return message.content.some(content => {
+		if (content.type === "text") return containsGfmTable(content.text);
+		if (content.type === "thinking" && !options.hideThinkingBlock) {
+			const display = resolveThinkingDisplay(content, options.proseOnlyThinking);
+			return display.visible && containsGfmTable(display.text);
+		}
+		return false;
+	});
+}
+
 /**
  * Frames for the streaming "thinking" pulse rendered in place of a hidden
  * thinking block while the model is still producing it. A single fixed-width
@@ -181,11 +241,16 @@ export class AssistantMessageComponent extends Container {
 	 * looked settled, so settling defers until the message finalizes. See
 	 * {@link getTranscriptBlockSettledRows}. Recomputed in
 	 * {@link updateContent} ahead of the fast-path return, so it tracks every
-	 * stream tick. Streaming GFM tables need no gate: they live in markdown's
-	 * unfrozen tail while re-aligning and render deterministically once their
-	 * block completes.
+	 * stream tick.
 	 */
 	#containsMermaidSource = false;
+	/**
+	 * True once this block streamed a GFM table. Table column widths and wrapped
+	 * row counts can change when later rows arrive; if early live table rows have
+	 * already entered native scrollback as frozen visual snapshots, the finalized
+	 * table needs an explicit display reset to replay authoritative history.
+	 */
+	#needsFinalScrollbackReset = false;
 	/**
 	 * When true, the turn-ending `Error: …` line for `stopReason === "error"` is
 	 * suppressed because the same error is currently shown in the pinned banner
@@ -445,6 +510,10 @@ export class AssistantMessageComponent extends Container {
 			return settled;
 		}
 		return settled;
+	}
+
+	needsFinalScrollbackReset(): boolean {
+		return this.#needsFinalScrollbackReset;
 	}
 
 	getTranscriptBlockVersion(): number {
@@ -752,6 +821,15 @@ export class AssistantMessageComponent extends Container {
 			}
 			return false;
 		});
+		if (
+			this.#lastUpdateTransient &&
+			contentContainsGfmTable(this.#lastMessage, {
+				hideThinkingBlock: this.hideThinkingBlock,
+				proseOnlyThinking: this.proseOnlyThinking,
+			})
+		) {
+			this.#needsFinalScrollbackReset = true;
+		}
 
 		// Fast path: reuse Markdown children when shape is stable during streaming
 		if (this.#tryFastPathUpdate(message, opts)) return;

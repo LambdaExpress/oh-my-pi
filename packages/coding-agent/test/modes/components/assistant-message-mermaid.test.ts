@@ -135,6 +135,26 @@ describe("AssistantMessageComponent settled-row commit boundary", () => {
 		expect(Bun.stripANSI(renderedRows.slice(settledRows).join("\n"))).toContain("Name");
 	});
 
+	it("flags a streamed GFM table for a final scrollback reset", () => {
+		const component = renderStreamingMarkdown(
+			"Results:\n\n| Name | Score |\n| --- | --- |\n| Ada | 100 |\n| Bob | 7 |",
+		);
+
+		component.markTranscriptBlockFinalized();
+
+		expect(component.needsFinalScrollbackReset()).toBe(true);
+	});
+
+	it("does not flag streamed prose for a final scrollback reset", () => {
+		const component = renderStreamingMarkdown(
+			"Plain paragraphs can stream without re-aligning previously committed rows.\n\nStill just prose.",
+		);
+
+		component.markTranscriptBlockFinalized();
+
+		expect(component.needsFinalScrollbackReset()).toBe(false);
+	});
+
 	it("exposes zero settled rows after a reflowing block finalizes", () => {
 		for (const markdown of [
 			"```mermaid\nflowchart TD\n  A-->B\n```",

@@ -864,6 +864,9 @@ export class EventController {
 				this.ctx.lastAssistantUsage = usage;
 			}
 			this.#lastAssistantComponent = this.ctx.streamingComponent;
+			const needsFinalScrollbackReset =
+				typeof this.#lastAssistantComponent.needsFinalScrollbackReset === "function" &&
+				this.#lastAssistantComponent.needsFinalScrollbackReset();
 			this.#lastAssistantComponent.markTranscriptBlockFinalized();
 			if (settings.get("display.showTokenUsage")) {
 				this.ctx.chatContainer.addChild(
@@ -882,6 +885,10 @@ export class EventController {
 				this.ctx.showPinnedError(event.message.errorMessage);
 			}
 			this.ctx.statusLine.invalidate();
+			if (needsFinalScrollbackReset) {
+				this.ctx.ui.resetDisplay();
+				return;
+			}
 			this.ctx.ui.requestRender();
 		}
 		this.ctx.ui.requestRender();
