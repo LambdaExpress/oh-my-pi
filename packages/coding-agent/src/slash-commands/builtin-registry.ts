@@ -36,6 +36,7 @@ import { expandTilde, resolveToCwd } from "../tools/path-utils";
 import { urlHyperlinkAlways } from "../tui";
 import { getChangelogPath, parseChangelog } from "../utils/changelog";
 import { copyToClipboard } from "../utils/clipboard";
+import { parseWorktreeAddArgs } from "../worktree/args";
 import {
 	addManagedWorktree,
 	branchManagedWorktree,
@@ -210,7 +211,7 @@ const WORKTREE_USAGE = "Usage: /worktree <list|add|switch|merge|remove|prune|bra
 
 const WORKTREE_SUBCOMMANDS: SubcommandDef[] = [
 	{ name: "list", description: "List managed worktrees" },
-	{ name: "add", description: "Create a managed worktree", usage: "[name]" },
+	{ name: "add", description: "Create a managed worktree", usage: "[--recurse-submodules] [name]" },
 	{ name: "switch", description: "Switch to a managed worktree", usage: "<id|name>" },
 	{ name: "merge", description: "Apply a managed worktree to the local checkout", usage: "<id|name>" },
 	{ name: "remove", description: "Remove a managed worktree", usage: "<id|name>" },
@@ -375,10 +376,12 @@ async function handleWorktreeSlash(
 				return commandConsumed();
 			}
 			case "add": {
+				const addArgs = parseWorktreeAddArgs(rest);
 				const result = await addManagedWorktree({
 					cwd: runtime.cwd,
-					name: rest || undefined,
+					name: addArgs.name,
 					dirtyPolicy: "ignore",
+					recurseSubmodules: addArgs.recurseSubmodules,
 				});
 				await runtime.output(`Created managed worktree ${result.record.name}: ${result.targetCwd}`);
 				return commandConsumed();

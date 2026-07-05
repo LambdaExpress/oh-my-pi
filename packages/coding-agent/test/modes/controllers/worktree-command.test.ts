@@ -3,10 +3,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
+import * as worktreeManager from "@oh-my-pi/pi-coding-agent/worktree/manager";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { readManagedWorktreeRecord, writeManagedWorktreeRecord } from "@oh-my-pi/pi-coding-agent/worktree/metadata";
 import type { ManagedWorktreeRecord } from "@oh-my-pi/pi-coding-agent/worktree/types";
+import type { ManagedWorktreeResult } from "@oh-my-pi/pi-coding-agent/worktree/manager";
 import { removeWithRetries, setWorktreesDir } from "@oh-my-pi/pi-utils";
 
 interface WorktreeCommandController {
@@ -55,7 +57,7 @@ async function createRecord(
 		id,
 		name,
 		owner: "omp",
-		version: 1,
+		version: 2,
 		primaryRoot,
 		sourceRepoRoot: primaryRoot,
 		worktreeRoot,
@@ -75,6 +77,8 @@ async function createRecord(
 		lastUsedAt: now,
 		dirtyPolicy: "ignore",
 		includeCopied: [],
+		recurseSubmodules: false,
+		submodules: [],
 		snapshotPath: null,
 		appliedAt: null,
 		...rest,
@@ -152,6 +156,38 @@ function createWorktreeContext(sourceDir: string) {
 }
 
 describe("CommandController /worktree", () => {
+	it("parses recurse flag for add commands", async () => {
+		const base = await setupManagedBase();
+		const primaryRoot = path.join(base, "primary");
+		const record = await createRecord(base, {
+			id: "recursive-add",
+			name: "Recursive Add",
+			primaryRoot,
+			sourceRepoRoot: primaryRoot,
+			recurseSubmodules: true,
+		});
+		const result: ManagedWorktreeResult = {
+			record,
+			worktreeRoot: record.worktreeRoot,
+			targetCwd: path.join(record.worktreeRoot, record.relativeCwd),
+			warnings: [],
+		};
+		vi.spyOn(worktreeManager, "addManagedWorktree").mockResolvedValue(result);
+		const { ctx } = createWorktreeContext(primaryRoot);
+
+		await (new CommandController(ctx) as unknown as WorktreeCommandController).handleWorktreeCommand(
+			"add Recursive Add --recurse-submodules",
+		);
+
+		expect(worktreeManager.addManagedWorktree).toHaveBeenCalledWith({
+			cwd: primaryRoot,
+			name: "Recursive Add",
+			dirtyPolicy: "ignore",
+			recurseSubmodules: true,
+		});
+		expect(ctx.showStatus).toHaveBeenCalledWith(expect.stringContaining("Created managed worktree Recursive Add"));
+	});
+
 	it("switch adopts the resumed session cwd before re-scoping TUI state", async () => {
 		const base = await setupManagedBase();
 		const record = await createRecord(base, { id: "alpha", name: "Alpha" });

@@ -259,7 +259,7 @@ async function createManagedWorktreeFixture(id: string, name: string): Promise<M
 		id,
 		name,
 		owner: "omp",
-		version: 1,
+		version: 2,
 		primaryRoot,
 		sourceRepoRoot: primaryRoot,
 		worktreeRoot,
@@ -279,6 +279,8 @@ async function createManagedWorktreeFixture(id: string, name: string): Promise<M
 		lastUsedAt: now,
 		dirtyPolicy: "ignore",
 		includeCopied: [],
+		recurseSubmodules: false,
+		submodules: [],
 		snapshotPath: null,
 		appliedAt: null,
 	};

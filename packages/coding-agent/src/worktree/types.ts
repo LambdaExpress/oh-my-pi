@@ -3,11 +3,21 @@ export type ManagedWorktreeState = "creating" | "ready" | "removing" | "orphaned
 export type ManagedWorktreeDirtyPolicy = "ignore" | "copy" | "move";
 export type ManagedWorktreeSessionStrategy = "none" | "new" | "fork";
 
+export interface ManagedWorktreeSubmoduleRecord {
+	path: string;
+	parentPath: string | null;
+	sourceRepoRoot: string;
+	worktreeRoot: string;
+	baseSha: string;
+	headSha: string;
+	includeCopied: string[];
+}
+
 export interface ManagedWorktreeRecord {
 	id: string;
 	name: string;
 	owner: "omp";
-	version: 1;
+	version: 2;
 	primaryRoot: string;
 	sourceRepoRoot: string;
 	worktreeRoot: string;
@@ -27,6 +37,8 @@ export interface ManagedWorktreeRecord {
 	lastUsedAt: string;
 	dirtyPolicy: ManagedWorktreeDirtyPolicy;
 	includeCopied: string[];
+	recurseSubmodules: boolean;
+	submodules: ManagedWorktreeSubmoduleRecord[];
 	snapshotPath: string | null;
 	appliedAt: string | null;
 }

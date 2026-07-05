@@ -187,6 +187,23 @@ describe("WorktreeTool", () => {
 		expect(textContent(result)).toContain(`Target cwd: ${targetCwdForRecord(record)}`);
 	});
 
+	it("creates recursive managed worktrees when requested", async () => {
+		const { repoRoot } = await createGitRepo("add-recursive");
+		const result = await executeWorktree(createToolSession(repoRoot), {
+			op: "add",
+			name: "Recursive Task",
+			dirtyPolicy: "ignore",
+			recurseSubmodules: true,
+		});
+		const details = detailsOf(result);
+		const record = details.record as ManagedWorktreeRecord;
+
+		expect(record.recurseSubmodules).toBe(true);
+		expect(record.submodules).toEqual([]);
+		expect(details.warnings).toEqual([]);
+		expect(textContent(result)).toContain("Recursive submodules: enabled");
+	});
+
 	it("resolves a managed worktree target cwd by id or by name", async () => {
 		const { repoRoot } = await createGitRepo("path-resolution");
 		const session = createToolSession(repoRoot);

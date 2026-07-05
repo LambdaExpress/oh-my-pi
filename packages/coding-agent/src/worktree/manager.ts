@@ -11,8 +11,20 @@ import {
 	listManagedWorktreeRecords,
 	writeManagedWorktreeRecord,
 } from "./metadata";
-import { captureManagedWorktreeChanges, restoreManagedWorktreeSnapshot, saveManagedWorktreeSnapshot } from "./snapshot";
-import type { ManagedWorktreeDirtyPolicy, ManagedWorktreeListItem, ManagedWorktreeRecord } from "./types";
+import {
+	captureManagedWorktreeChanges,
+	restoreManagedWorktreeSnapshot,
+	saveManagedWorktreeSnapshot,
+	type ManagedWorktreeChanges,
+	type ManagedWorktreeSubmoduleChanges,
+} from "./snapshot";
+import { initializeManagedSubmodules, refreshManagedSubmoduleHeads, submoduleRecordsByPath } from "./submodules";
+import type {
+	ManagedWorktreeDirtyPolicy,
+	ManagedWorktreeListItem,
+	ManagedWorktreeRecord,
+	ManagedWorktreeSubmoduleRecord,
+} from "./types";
 
 export type { ManagedWorktreeListItem, ManagedWorktreeRecord } from "./types";
 export { findManagedWorktreeRecord } from "./metadata";
@@ -22,6 +34,7 @@ export interface AddManagedWorktreeOptions {
 	name?: string;
 	baseRef?: string;
 	dirtyPolicy: ManagedWorktreeDirtyPolicy;
+	recurseSubmodules?: boolean;
 }
 
 export interface ManagedWorktreeResult {
@@ -151,22 +164,87 @@ async function rollbackCreatedWorktree(primaryRoot: string, worktreeRoot: string
 	await Promise.all([deleteManagedWorktreeRecord(id), removeEmptyParents(worktreeRoot)]);
 }
 
-async function localCheckoutIsDirty(repoRoot: string): Promise<boolean> {
-	const summary = await git.status.summary(repoRoot);
+async function localCheckoutIsDirty(repoRoot: string, options: { ignoreSubmodules?: boolean } = {}): Promise<boolean> {
+	const summary = await git.status.summary(repoRoot, {
+		ignoreSubmodules: options.ignoreSubmodules ? "all" : undefined,
+	});
 	if (!summary) throw new Error("Could not read the local checkout status.");
 	return summary.staged > 0 || summary.unstaged > 0 || summary.untracked > 0;
 }
 
-function hasChanges(changes: {
-	rootPatch: string;
-	untrackedPaths: readonly string[];
-	includedIgnoredPaths: readonly string[];
-}): boolean {
+function submoduleChangesHaveContent(changes: ManagedWorktreeSubmoduleChanges): boolean {
 	return (
 		changes.rootPatch.trim().length > 0 ||
 		changes.untrackedPaths.length > 0 ||
 		changes.includedIgnoredPaths.length > 0
 	);
+}
+
+function hasChanges(changes: ManagedWorktreeChanges): boolean {
+	if (
+		changes.rootPatch.trim().length > 0 ||
+		changes.untrackedPaths.length > 0 ||
+		changes.includedIgnoredPaths.length > 0
+	) {
+		return true;
+	}
+	return changes.submodules.some(submoduleChangesHaveContent);
+}
+
+function recordWithCapturedHeads(record: ManagedWorktreeRecord, changes: ManagedWorktreeChanges): ManagedWorktreeRecord {
+	const changesByPath = new Map(changes.submodules.map(submodule => [submodule.path, submodule.headSha]));
+	return {
+		...record,
+		headSha: changes.headSha,
+		submodules: record.submodules.map(submodule => ({
+			...submodule,
+			headSha: changesByPath.get(submodule.path) ?? submodule.headSha,
+		})),
+	};
+}
+
+function changedFilePaths(changes: { untrackedPaths: readonly string[]; includedIgnoredPaths: readonly string[] }): string[] {
+	return [...changes.untrackedPaths, ...changes.includedIgnoredPaths];
+}
+
+async function copyChangedFiles(sourceRoot: string, targetRoot: string, relativePaths: readonly string[]): Promise<void> {
+	for (const relativePath of relativePaths) {
+		await fs.mkdir(path.dirname(path.join(targetRoot, relativePath)), { recursive: true });
+		await fs.cp(path.join(sourceRoot, relativePath), path.join(targetRoot, relativePath), {
+			errorOnExist: true,
+			force: false,
+			preserveTimestamps: true,
+			recursive: true,
+			verbatimSymlinks: true,
+		});
+	}
+}
+
+async function requireSubmoduleRepoRoot(repoRoot: string, submodulePath: string): Promise<void> {
+	const resolvedRoot = await git.repo.root(repoRoot);
+	if (resolvedRoot === null || path.resolve(resolvedRoot) !== path.resolve(repoRoot)) {
+		throw new Error(`Managed submodule directory is missing: ${submodulePath}`);
+	}
+}
+
+async function managedSourceIsDirty(record: ManagedWorktreeRecord): Promise<boolean> {
+	if (await localCheckoutIsDirty(record.sourceRepoRoot, { ignoreSubmodules: record.recurseSubmodules })) return true;
+	if (!record.recurseSubmodules) return false;
+	for (const submodule of record.submodules) {
+		const sourceRoot = await git.repo.root(submodule.sourceRepoRoot);
+		if (sourceRoot === null || path.resolve(sourceRoot) !== path.resolve(submodule.sourceRepoRoot)) continue;
+		if (await localCheckoutIsDirty(submodule.sourceRepoRoot, { ignoreSubmodules: true })) return true;
+	}
+	return false;
+}
+
+async function managedWorktreeIsDirty(record: ManagedWorktreeRecord): Promise<boolean> {
+	if (await localCheckoutIsDirty(record.worktreeRoot, { ignoreSubmodules: record.recurseSubmodules })) return true;
+	if (!record.recurseSubmodules) return false;
+	for (const submodule of record.submodules) {
+		if (await localCheckoutIsDirty(submodule.worktreeRoot, { ignoreSubmodules: true })) return true;
+	}
+	return false;
 }
 
 async function requireManagedRecord(idOrName: string): Promise<ManagedWorktreeRecord> {
@@ -184,18 +262,30 @@ async function ensureRecordPrimary(record: ManagedWorktreeRecord, primaryRoot: s
 async function transferDirtyState(
 	record: ManagedWorktreeRecord,
 	policy: ManagedWorktreeDirtyPolicy,
-): Promise<{ includeCopied: string[]; warnings: string[] }> {
+): Promise<{ includeCopied: string[]; submodules: ManagedWorktreeSubmoduleRecord[]; warnings: string[] }> {
 	if (policy === "ignore") {
-		const warnings = (await localCheckoutIsDirty(record.sourceRepoRoot))
+		const warnings = (await managedSourceIsDirty(record))
 			? ["Current uncommitted changes were not copied into the managed worktree."]
 			: [];
-		return { includeCopied: [], warnings };
+		return { includeCopied: [], submodules: record.submodules, warnings };
 	}
+	const dirtyTransferOptions = {
+		ignoreSubmodules: record.recurseSubmodules,
+		submodules: record.recurseSubmodules ? record.submodules : [],
+	};
 	const result =
 		policy === "copy"
-			? await copyDirtyStateToWorktree(record.sourceRepoRoot, record.worktreeRoot, record.baseSha)
-			: await moveDirtyStateToWorktree(record.sourceRepoRoot, record.worktreeRoot, record.baseSha);
-	return { includeCopied: result.includedIgnoredPaths, warnings: result.warnings };
+			? await copyDirtyStateToWorktree(record.sourceRepoRoot, record.worktreeRoot, record.baseSha, dirtyTransferOptions)
+			: await moveDirtyStateToWorktree(record.sourceRepoRoot, record.worktreeRoot, record.baseSha, dirtyTransferOptions);
+	const includedByPath = new Map(result.submodules.map(submodule => [submodule.path, submodule.includedIgnoredPaths]));
+	const submodules = await refreshManagedSubmoduleHeads({
+		...record,
+		submodules: record.submodules.map(submodule => ({
+			...submodule,
+			includeCopied: includedByPath.get(submodule.path) ?? submodule.includeCopied,
+		})),
+	});
+	return { includeCopied: result.includedIgnoredPaths, submodules, warnings: result.warnings };
 }
 
 export async function addManagedWorktree(options: AddManagedWorktreeOptions): Promise<ManagedWorktreeResult> {
@@ -216,7 +306,7 @@ export async function addManagedWorktree(options: AddManagedWorktreeOptions): Pr
 		id,
 		name: displayName,
 		owner: "omp",
-		version: 1,
+		version: 2,
 		primaryRoot,
 		sourceRepoRoot: repoRoot,
 		worktreeRoot,
@@ -236,6 +326,8 @@ export async function addManagedWorktree(options: AddManagedWorktreeOptions): Pr
 		lastUsedAt: timestamp,
 		dirtyPolicy: options.dirtyPolicy,
 		includeCopied: [],
+		recurseSubmodules: options.recurseSubmodules ?? false,
+		submodules: [],
 		snapshotPath: null,
 		appliedAt: null,
 	};
@@ -247,12 +339,17 @@ export async function addManagedWorktree(options: AddManagedWorktreeOptions): Pr
 		throw err;
 	}
 	try {
+		if (record.recurseSubmodules) {
+			record = { ...record, submodules: await initializeManagedSubmodules(record), updatedAt: nowIso() };
+			await writeManagedWorktreeRecord(record);
+		}
 		const transfer = await transferDirtyState(record, options.dirtyPolicy);
 		record = {
 			...record,
 			headSha: (await git.head.sha(worktreeRoot)) ?? baseSha,
 			state: "ready",
 			includeCopied: transfer.includeCopied,
+			submodules: transfer.submodules,
 			updatedAt: nowIso(),
 			lastUsedAt: nowIso(),
 		};
@@ -292,12 +389,12 @@ export async function listManagedWorktrees(cwd: string): Promise<ManagedWorktree
 				}
 				const changes = await captureManagedWorktreeChanges(record);
 				return {
-					record: { ...record, headSha: changes.headSha },
+					record: recordWithCapturedHeads(record, changes),
 					worktreeRoot: record.worktreeRoot,
 					targetCwd,
 					exists,
 					current,
-					dirty: await localCheckoutIsDirty(record.worktreeRoot),
+					dirty: await managedWorktreeIsDirty(record),
 					unapplied: record.appliedAt === null && hasChanges(changes),
 					error: null,
 				};
@@ -338,10 +435,10 @@ export async function removeManagedWorktree(
 	return git.withRepoLock(record.primaryRoot, async () => {
 		const changes = await captureManagedWorktreeChanges(record);
 		if (record.appliedAt === null && hasChanges(changes)) {
-			const snapshot = await saveManagedWorktreeSnapshot({ ...record, headSha: changes.headSha });
+			const captured = recordWithCapturedHeads(record, changes);
+			const snapshot = await saveManagedWorktreeSnapshot(captured);
 			const snapshotted: ManagedWorktreeRecord = {
-				...record,
-				headSha: changes.headSha,
+				...captured,
 				state: "snapshotted",
 				snapshotPath: snapshot.snapshotPath,
 				updatedAt: nowIso(),
@@ -366,36 +463,63 @@ export async function mergeManagedWorktree(options: MergeManagedWorktreeOptions)
 	if (pathWithin(record.worktreeRoot, repoRoot)) {
 		throw new Error("Switch back to the local checkout before applying a managed worktree.");
 	}
-	if (await localCheckoutIsDirty(repoRoot)) {
+	if (await localCheckoutIsDirty(repoRoot, { ignoreSubmodules: record.recurseSubmodules })) {
 		throw new Error("The local checkout has uncommitted changes. Handle them before applying the managed worktree.");
 	}
 	if (!(await pathExists(record.worktreeRoot)))
 		throw new Error("Managed worktree directory is missing; cannot apply it to the local checkout.");
 	const changes = await captureManagedWorktreeChanges(record);
 	if (!hasChanges(changes)) throw new Error("No changes to apply.");
+	const changedSubmodules = changes.submodules.filter(submoduleChangesHaveContent);
+	const submodulesByPath = submoduleRecordsByPath(record.submodules);
+	for (const submoduleChanges of changedSubmodules) {
+		const localSubmoduleRoot = path.join(repoRoot, submoduleChanges.path);
+		await requireSubmoduleRepoRoot(localSubmoduleRoot, submoduleChanges.path);
+		if (await localCheckoutIsDirty(localSubmoduleRoot, { ignoreSubmodules: true })) {
+			throw new Error(
+				`The local submodule has uncommitted changes. Handle them before applying the managed worktree: ${submoduleChanges.path}`,
+			);
+		}
+	}
 	if (changes.rootPatch.trim() && !(await git.patch.canApplyText(repoRoot, changes.rootPatch))) {
 		throw new Error(
 			"Managed worktree changes cannot be applied cleanly. Keep the managed worktree and resolve the conflict manually.",
 		);
 	}
-	for (const relativePath of changes.untrackedPaths) {
+	for (const submoduleChanges of changedSubmodules) {
+		if (
+			submoduleChanges.rootPatch.trim() &&
+			!(await git.patch.canApplyText(path.join(repoRoot, submoduleChanges.path), submoduleChanges.rootPatch))
+		) {
+			throw new Error(
+				"Managed worktree changes cannot be applied cleanly. Keep the managed worktree and resolve the conflict manually.",
+			);
+		}
+	}
+	for (const relativePath of changedFilePaths(changes)) {
 		if (await pathExists(path.join(repoRoot, relativePath)))
 			throw new Error(`Local path already exists; cannot apply untracked file: ${relativePath}`);
 	}
-	if (changes.rootPatch.trim()) await git.patch.applyText(repoRoot, changes.rootPatch);
-	for (const relativePath of changes.untrackedPaths) {
-		await fs.mkdir(path.dirname(path.join(repoRoot, relativePath)), { recursive: true });
-		await fs.cp(path.join(record.worktreeRoot, relativePath), path.join(repoRoot, relativePath), {
-			errorOnExist: true,
-			force: false,
-			preserveTimestamps: true,
-			recursive: true,
-			verbatimSymlinks: true,
-		});
+	for (const submoduleChanges of changedSubmodules) {
+		for (const relativePath of changedFilePaths(submoduleChanges)) {
+			const displayPath = path.posix.join(submoduleChanges.path, relativePath.replace(/\\/g, "/"));
+			if (await pathExists(path.join(repoRoot, submoduleChanges.path, relativePath)))
+				throw new Error(`Local path already exists; cannot apply untracked file: ${displayPath}`);
+		}
 	}
+	if (changes.rootPatch.trim()) await git.patch.applyText(repoRoot, changes.rootPatch);
+	await copyChangedFiles(record.worktreeRoot, repoRoot, changedFilePaths(changes));
+	for (const submoduleChanges of changedSubmodules) {
+		const localSubmoduleRoot = path.join(repoRoot, submoduleChanges.path);
+		if (submoduleChanges.rootPatch.trim()) await git.patch.applyText(localSubmoduleRoot, submoduleChanges.rootPatch);
+		const managedSubmodule = submodulesByPath.get(submoduleChanges.path);
+		if (!managedSubmodule) throw new Error(`Managed submodule directory is missing: ${submoduleChanges.path}`);
+		await copyChangedFiles(managedSubmodule.worktreeRoot, localSubmoduleRoot, changedFilePaths(submoduleChanges));
+	}
+	const captured = recordWithCapturedHeads(record, changes);
 	const updated: ManagedWorktreeRecord = {
-		...record,
-		headSha: changes.headSha,
+		...captured,
+		submodules: record.recurseSubmodules ? await refreshManagedSubmoduleHeads(captured) : captured.submodules,
 		appliedAt: nowIso(),
 		updatedAt: nowIso(),
 		lastUsedAt: nowIso(),
@@ -412,11 +536,13 @@ export async function branchManagedWorktree(options: BranchManagedWorktreeOption
 		throw new Error("Managed worktree directory is missing; cannot create a branch.");
 	return git.withRepoLock(record.primaryRoot, async () => {
 		await git.branch.checkoutNew(record.worktreeRoot, options.branch);
+		const submodules = record.recurseSubmodules ? await refreshManagedSubmoduleHeads(record) : record.submodules;
 		const updated: ManagedWorktreeRecord = {
 			...record,
 			branch: options.branch,
 			detached: false,
 			headSha: (await git.head.sha(record.worktreeRoot)) ?? record.headSha,
+			submodules,
 			updatedAt: nowIso(),
 			lastUsedAt: nowIso(),
 		};
@@ -436,12 +562,22 @@ export async function restoreManagedWorktree(options: RestoreManagedWorktreeOpti
 	await git.withRepoLock(record.primaryRoot, () =>
 		git.worktree.add(record.primaryRoot, worktreeRoot, record.baseSha, { detach: true }),
 	);
+	let submodules = record.submodules;
 	try {
+		if (record.recurseSubmodules) {
+			const initialized = await initializeManagedSubmodules({ ...record, worktreeRoot });
+			const previousByPath = submoduleRecordsByPath(record.submodules);
+			submodules = initialized.map(submodule => {
+				const previous = previousByPath.get(submodule.path);
+				return previous ? { ...submodule, baseSha: previous.baseSha, includeCopied: previous.includeCopied } : submodule;
+			});
+		}
 		await restoreManagedWorktreeSnapshot(record, worktreeRoot);
 	} catch (err) {
 		const orphaned: ManagedWorktreeRecord = {
 			...record,
 			worktreeRoot,
+			submodules,
 			state: "orphaned",
 			updatedAt: nowIso(),
 			lastUsedAt: nowIso(),
@@ -456,6 +592,9 @@ export async function restoreManagedWorktree(options: RestoreManagedWorktreeOpti
 		detached: true,
 		branch: null,
 		headSha: (await git.head.sha(worktreeRoot)) ?? record.baseSha,
+		submodules: record.recurseSubmodules
+			? await refreshManagedSubmoduleHeads({ ...record, worktreeRoot, submodules })
+			: submodules,
 		updatedAt: nowIso(),
 		lastUsedAt: nowIso(),
 	};

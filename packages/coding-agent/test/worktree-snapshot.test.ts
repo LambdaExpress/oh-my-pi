@@ -19,6 +19,7 @@ const GIT_ENV_KEYS = [
 	"GIT_ASKPASS",
 	"XDG_CONFIG_HOME",
 	"OMP_WORKTREE_DIR",
+	"GIT_ALLOW_PROTOCOL",
 ] as const;
 
 type GitEnvKey = (typeof GIT_ENV_KEYS)[number];
@@ -122,6 +123,78 @@ async function createDirtyManagedWorktree(name: string): Promise<DirtyManagedWor
 	return { repoRoot, worktree };
 }
 
+async function createRecursiveRepo(name: string): Promise<string> {
+	const leafRepoRoot = path.join(tempRoot, `${name}-leaf-submodule-repo`);
+	await fs.mkdir(leafRepoRoot, { recursive: true });
+	await runGit(leafRepoRoot, ["init", "-q", "-b", "main"]);
+	await runGit(leafRepoRoot, ["config", "user.email", "test@example.com"]);
+	await runGit(leafRepoRoot, ["config", "user.name", "Test User"]);
+	await Bun.write(path.join(leafRepoRoot, "leaf.txt"), "leaf base\n");
+	await runGit(leafRepoRoot, ["add", "."]);
+	await runGit(leafRepoRoot, ["commit", "-q", "-m", "leaf base"]);
+
+	const childRepoRoot = path.join(tempRoot, `${name}-child-submodule-repo`);
+	await fs.mkdir(childRepoRoot, { recursive: true });
+	await runGit(childRepoRoot, ["init", "-q", "-b", "main"]);
+	await runGit(childRepoRoot, ["config", "user.email", "test@example.com"]);
+	await runGit(childRepoRoot, ["config", "user.name", "Test User"]);
+	await Bun.write(path.join(childRepoRoot, "child.txt"), "child base\n");
+	await runGit(childRepoRoot, ["add", "."]);
+	await runGit(childRepoRoot, ["commit", "-q", "-m", "child base"]);
+	await runGit(childRepoRoot, ["submodule", "add", leafRepoRoot, "nested/leaf"]);
+	await runGit(childRepoRoot, ["commit", "-q", "-m", "add leaf submodule"]);
+
+	const repoRoot = path.join(tempRoot, `${name}-super-repo`);
+	await fs.mkdir(repoRoot, { recursive: true });
+	await runGit(repoRoot, ["init", "-q", "-b", "main"]);
+	await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
+	await runGit(repoRoot, ["config", "user.name", "Test User"]);
+	await Bun.write(path.join(repoRoot, "root.txt"), "root base\n");
+	await runGit(repoRoot, ["add", "."]);
+	await runGit(repoRoot, ["commit", "-q", "-m", "root base"]);
+	await runGit(repoRoot, ["submodule", "add", childRepoRoot, "modules/child"]);
+	await runGit(repoRoot, ["commit", "-q", "-m", "add child submodule"]);
+	await runGit(repoRoot, ["submodule", "update", "--init", "--recursive"]);
+	return repoRoot;
+}
+
+async function makeRecursiveManagedChanges(worktreeRoot: string): Promise<void> {
+	await Promise.all([
+		Bun.write(path.join(worktreeRoot, "root.txt"), "snapshot root\n"),
+		Bun.write(path.join(worktreeRoot, "root-created.txt"), "snapshot root untracked\n"),
+		Bun.write(path.join(worktreeRoot, "modules", "child", "child.txt"), "snapshot child\n"),
+		Bun.write(path.join(worktreeRoot, "modules", "child", "child-created.txt"), "snapshot child untracked\n"),
+		Bun.write(path.join(worktreeRoot, "modules", "child", "nested", "leaf", "leaf.txt"), "snapshot leaf\n"),
+		Bun.write(
+			path.join(worktreeRoot, "modules", "child", "nested", "leaf", "leaf-created.txt"),
+			"snapshot leaf untracked\n",
+		),
+	]);
+}
+
+async function removeDirtyRecursiveWorktree(fixtureName: string): Promise<{
+	repoRoot: string;
+	oldWorktreeRoot: string;
+	recordId: string;
+	snapshotPath: string;
+}> {
+	const repoRoot = await createRecursiveRepo(fixtureName);
+	const worktree = await addManagedWorktree({
+		cwd: repoRoot,
+		dirtyPolicy: "ignore",
+		name: fixtureName,
+		recurseSubmodules: true,
+	});
+	await makeRecursiveManagedChanges(worktree.worktreeRoot);
+	const oldWorktreeRoot = worktree.worktreeRoot;
+	const removed = await removeManagedWorktree({ cwd: repoRoot, idOrName: worktree.record.id });
+	const metadata = await readManagedWorktreeRecord(worktree.record.id);
+	const snapshotPath = removed?.snapshotPath ?? metadata?.snapshotPath;
+	if (!snapshotPath) throw new Error("dirty recursive worktree removal did not record a snapshot path");
+	return { repoRoot, oldWorktreeRoot, recordId: worktree.record.id, snapshotPath };
+}
+
+
 async function removeDirtyWorktree(fixtureName: string): Promise<{
 	repoRoot: string;
 	oldWorktreeRoot: string;
@@ -151,6 +224,7 @@ beforeEach(async () => {
 	process.env.GIT_CONFIG_NOSYSTEM = "1";
 	process.env.GIT_TERMINAL_PROMPT = "0";
 	process.env.GIT_ASKPASS = "true";
+	process.env.GIT_ALLOW_PROTOCOL = "file";
 	delete process.env.XDG_CONFIG_HOME;
 	tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worktree-snapshot-"));
 	const worktreeBase = path.join(tempRoot, "managed-worktrees");
@@ -239,4 +313,65 @@ describe("managed worktree snapshots", () => {
 		await expect(exists(metadata.worktreeRoot)).resolves.toBe(true);
 		await expect(exists(path.join(metadata.worktreeRoot, ".git"))).resolves.toBe(true);
 	});
+
+	it("snapshots dirty recursive submodule changes on remove", async () => {
+		const { oldWorktreeRoot, recordId, snapshotPath } = await removeDirtyRecursiveWorktree("recursive-remove-dirty");
+		const metadata = await readManagedWorktreeRecord(recordId);
+		const restoreManifest = JSON.parse(await Bun.file(path.join(snapshotPath, "restore.json")).text()) as {
+			version?: number;
+			submodules?: Array<{ path?: string }>;
+		};
+
+		expect(metadata?.state).toBe("snapshotted");
+		expect(metadata?.snapshotPath).toBe(snapshotPath);
+		await expect(exists(oldWorktreeRoot)).resolves.toBe(false);
+		expect(restoreManifest.version).toBe(2);
+		expect(restoreManifest.submodules?.map(submodule => submodule.path).sort()).toEqual([
+			"modules/child",
+			"modules/child/nested/leaf",
+		]);
+		await expect(exists(path.join(snapshotPath, "submodules", "modules", "child", "root.patch"))).resolves.toBe(true);
+		await expect(
+			exists(path.join(snapshotPath, "submodules", "modules", "child", "nested", "leaf", "root.patch")),
+		).resolves.toBe(true);
+	}, 30_000);
+
+	it("restores dirty recursive submodule snapshot", async () => {
+		const { repoRoot, oldWorktreeRoot, recordId, snapshotPath } =
+			await removeDirtyRecursiveWorktree("recursive-restore-success");
+
+		const restored = await restoreManagedWorktree({ cwd: repoRoot, idOrName: recordId });
+
+		expect(restored.record.id).toBe(recordId);
+		expect(restored.record.state).toBe("ready");
+		expect(restored.record.recurseSubmodules).toBe(true);
+		expect(restored.worktreeRoot).not.toBe(oldWorktreeRoot);
+		await expect(exists(oldWorktreeRoot)).resolves.toBe(false);
+		await expect(exists(restored.worktreeRoot)).resolves.toBe(true);
+		await expect(Bun.file(path.join(restored.worktreeRoot, "root.txt")).text()).resolves.toBe("snapshot root\n");
+		await expect(Bun.file(path.join(restored.worktreeRoot, "root-created.txt")).text()).resolves.toBe(
+			"snapshot root untracked\n",
+		);
+		await expect(Bun.file(path.join(restored.worktreeRoot, "modules", "child", "child.txt")).text()).resolves.toBe(
+			"snapshot child\n",
+		);
+		await expect(
+			Bun.file(path.join(restored.worktreeRoot, "modules", "child", "child-created.txt")).text(),
+		).resolves.toBe("snapshot child untracked\n");
+		await expect(
+			Bun.file(path.join(restored.worktreeRoot, "modules", "child", "nested", "leaf", "leaf.txt")).text(),
+		).resolves.toBe("snapshot leaf\n");
+		await expect(
+			Bun.file(path.join(restored.worktreeRoot, "modules", "child", "nested", "leaf", "leaf-created.txt")).text(),
+		).resolves.toBe("snapshot leaf untracked\n");
+		expect(await statusLines(restored.worktreeRoot)).toContain(" M root.txt");
+		expect(await statusLines(path.join(restored.worktreeRoot, "modules", "child"))).toContain(" M child.txt");
+		expect(await statusLines(path.join(restored.worktreeRoot, "modules", "child", "nested", "leaf"))).toEqual([
+			" M leaf.txt",
+			"?? leaf-created.txt",
+		]);
+		const metadata = await readManagedWorktreeRecord(recordId);
+		expect(metadata?.worktreeRoot).toBe(restored.worktreeRoot);
+		expect(metadata?.snapshotPath).toBe(snapshotPath);
+	}, 30_000);
 });

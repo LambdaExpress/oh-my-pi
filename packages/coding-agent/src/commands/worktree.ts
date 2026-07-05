@@ -98,6 +98,10 @@ export default class Worktree extends Command {
 		name: Flags.string({
 			description: "Name for a new background worktree (add)",
 		}),
+		"recurse-submodules": Flags.boolean({
+			description: "Initialize and manage submodules recursively when adding a background worktree",
+			default: false,
+		}),
 		session: Flags.string({
 			description: "Session strategy accepted for parity with interactive worktree actions",
 			options: SESSION_STRATEGIES,
@@ -109,6 +113,7 @@ export default class Worktree extends Command {
 		"omp worktree",
 		"omp worktree list --json",
 		"omp worktree add fix-auth --base main --dirty-policy copy",
+		"omp worktree add fix-auth --recurse-submodules",
 		"omp worktree switch fix-auth",
 		"omp worktree path fix-auth --json",
 		"omp worktree merge fix-auth",
@@ -157,6 +162,7 @@ export default class Worktree extends Command {
 					dirtyPolicy: parseDirtyPolicy(flags["dirty-policy"]),
 					sessionStrategy: parseSessionStrategy(flags.session),
 					json,
+					recurseSubmodules: flags["recurse-submodules"] ?? false,
 				});
 				return;
 			case "switch":

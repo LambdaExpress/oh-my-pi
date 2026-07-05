@@ -242,7 +242,7 @@ function managedRecordJson(options: {
 		id: options.id,
 		name: options.name,
 		owner: "omp",
-		version: 1,
+		version: 2,
 		primaryRoot: options.primaryRoot,
 		sourceRepoRoot: options.sourceRepoRoot,
 		worktreeRoot: options.worktreeRoot,
@@ -262,6 +262,8 @@ function managedRecordJson(options: {
 		lastUsedAt: timestamp,
 		dirtyPolicy: "ignore",
 		includeCopied: [],
+		recurseSubmodules: false,
+		submodules: [],
 		snapshotPath: options.snapshotPath,
 		appliedAt: null,
 	};

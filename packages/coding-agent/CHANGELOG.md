@@ -6,6 +6,7 @@
 
 - Added managed `omp worktree` background workspaces with add/list/switch/apply/remove/branch/snapshot restore flows, plus `/worktree` TUI and ACP quick actions.
 - Added a discoverable `worktree` tool so agents can list, create, enter, apply, remove, branch, and restore managed worktrees from tool calls.
+- Managed worktrees can now opt into recursive submodule initialization, dirty transfer, merge, snapshot, and restore.
 - Added project-scoped managed skills under `.omp/managed-skills`, with auto-learn choosing `user` or `project` scope so repository-specific procedures no longer have to become global skills.
 - Added a first-class `pwsh` tool for direct PowerShell script execution, including registration, dedicated Nerd Font rendering, ACP summaries, copy targets, and focused tests.
 - Added read support for image and supported document files stored inside archives, including images embedded in archived PDFs.

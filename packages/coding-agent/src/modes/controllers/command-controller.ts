@@ -52,6 +52,7 @@ import { getChangelogPath, parseChangelog } from "../../utils/changelog";
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
+import { parseWorktreeAddArgs } from "../../worktree/args";
 import {
 	addManagedWorktree,
 	branchManagedWorktree,
@@ -1113,10 +1114,12 @@ export class CommandController {
 					await this.#showWorktreeList();
 					return;
 				case "add": {
+					const addArgs = parseWorktreeAddArgs(rest);
 					const result = await addManagedWorktree({
 						cwd: this.ctx.sessionManager.getCwd(),
-						name: rest || undefined,
+						name: addArgs.name,
 						dirtyPolicy: "ignore",
+						recurseSubmodules: addArgs.recurseSubmodules,
 					});
 					this.ctx.showStatus(`Created managed worktree ${result.record.name}: ${shortenPath(result.targetCwd)}`);
 					return;

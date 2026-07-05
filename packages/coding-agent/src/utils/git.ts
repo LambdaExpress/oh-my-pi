@@ -52,6 +52,15 @@ export interface HunkSelectionValidationError {
 	readonly message: string;
 }
 
+export type GitSubmoduleStatusMarker = " " | "-" | "+" | "U";
+
+export interface GitSubmoduleStatusEntry {
+	readonly marker: GitSubmoduleStatusMarker;
+	readonly sha: string;
+	readonly path: string;
+	readonly detail: string | null;
+}
+
 export interface DiffOptions {
 	readonly allowFailure?: boolean;
 	readonly base?: string;
@@ -60,6 +69,7 @@ export interface DiffOptions {
 	readonly env?: Record<string, string | undefined>;
 	readonly files?: readonly string[];
 	readonly head?: string;
+	readonly ignoreSubmodules?: "all" | "dirty" | "none";
 	readonly nameOnly?: boolean;
 	readonly noIndex?: { left: string; right: string };
 	readonly numstat?: boolean;
@@ -68,6 +78,7 @@ export interface DiffOptions {
 }
 
 export interface StatusOptions {
+	readonly ignoreSubmodules?: "all" | "dirty" | "none";
 	readonly pathspecs?: readonly string[];
 	readonly porcelainV1?: boolean;
 	readonly signal?: AbortSignal;
@@ -539,6 +550,7 @@ function buildDiffArgs(options: DiffOptions): string[] {
 	if (options.nameOnly) args.push("--name-only");
 	if (options.stat) args.push("--stat");
 	if (options.numstat) args.push("--numstat");
+	if (options.ignoreSubmodules) args.push(`--ignore-submodules=${options.ignoreSubmodules}`);
 	if (options.noIndex) {
 		args.push("--no-index", options.noIndex.left, options.noIndex.right);
 		return args;
@@ -1185,7 +1197,7 @@ export const diff = Object.assign(
 		/** List changed file paths. */
 		async changedFiles(
 			cwd: string,
-			options: Pick<DiffOptions, "cached" | "files" | "signal"> = {},
+			options: Pick<DiffOptions, "cached" | "files" | "ignoreSubmodules" | "signal"> = {},
 		): Promise<string[]> {
 			return splitLines(await diff(cwd, { ...options, nameOnly: true }));
 		},
@@ -1219,10 +1231,11 @@ export const diff = Object.assign(
 			cwd: string,
 			base: string,
 			headRef: string,
-			options: { binary?: boolean; signal?: AbortSignal; allowFailure?: boolean } = {},
+			options: { binary?: boolean; signal?: AbortSignal; allowFailure?: boolean; ignoreSubmodules?: "all" | "dirty" | "none" } = {},
 		): Promise<string> {
 			const args = ["diff-tree", "-r", "-p"];
 			if (options.binary) args.push("--binary");
+			if (options.ignoreSubmodules) args.push(`--ignore-submodules=${options.ignoreSubmodules}`);
 			args.push(base, headRef);
 			if (options.allowFailure) {
 				return (await git(cwd, args, { readOnly: true, signal: options.signal })).stdout;
@@ -1249,6 +1262,7 @@ export const status = Object.assign(
 	async function status(cwd: string, options: StatusOptions = {}): Promise<string> {
 		const args = ["status"];
 		args.push(options.porcelainV1 ? "--porcelain=v1" : "--porcelain");
+		if (options.ignoreSubmodules) args.push(`--ignore-submodules=${options.ignoreSubmodules}`);
 		if (options.z) args.push("-z");
 		if (options.untrackedFiles) args.push(`--untracked-files=${options.untrackedFiles}`);
 		if (options.pathspecs?.length) args.push("--", ...options.pathspecs);
@@ -1256,8 +1270,13 @@ export const status = Object.assign(
 	},
 	{
 		/** Parsed status counts (staged, unstaged, untracked). */
-		async summary(cwd: string, signal?: AbortSignal): Promise<GitStatusSummary | null> {
-			const result = await git(cwd, ["status", "--porcelain"], { readOnly: true, signal });
+		async summary(
+			cwd: string,
+			options: { signal?: AbortSignal; ignoreSubmodules?: "all" | "dirty" | "none" } = {},
+		): Promise<GitStatusSummary | null> {
+			const args = ["status", "--porcelain"];
+			if (options.ignoreSubmodules) args.push(`--ignore-submodules=${options.ignoreSubmodules}`);
+			const result = await git(cwd, args, { readOnly: true, signal: options.signal });
 			if (result.exitCode !== 0) return null;
 			return parseStatusPorcelain(result.stdout);
 		},
@@ -1954,6 +1973,35 @@ export const ls = {
 			signal,
 		});
 		return splitLines(output.stdout);
+	},
+};
+
+export const submodule = {
+	async status(
+		cwd: string,
+		options: { recursive?: boolean; signal?: AbortSignal } = {},
+	): Promise<GitSubmoduleStatusEntry[]> {
+		const args = ["submodule", "status"];
+		if (options.recursive) args.push("--recursive");
+		const output = await runText(cwd, args, { readOnly: true, signal: options.signal });
+		return output
+			.split("\n")
+			.map(line => line.replace(/\r$/, ""))
+			.filter(line => line.length > 0)
+			.map(line => {
+				const match = /^([ +-U])([0-9a-fA-F]{40})\s+(.+?)(?:\s+(\([^)]*\).*))?$/.exec(line);
+				if (!match) throw new Error(`Could not parse git submodule status line: ${line}`);
+				return {
+					marker: match[1] as GitSubmoduleStatusMarker,
+					sha: match[2],
+					path: match[3].replace(/\\/g, "/"),
+					detail: match[4] ?? null,
+				};
+			});
+	},
+
+	async updateInitRecursive(cwd: string, signal?: AbortSignal): Promise<void> {
+		await runEffect(cwd, ["submodule", "update", "--init", "--recursive"], { signal });
 	},
 };
 

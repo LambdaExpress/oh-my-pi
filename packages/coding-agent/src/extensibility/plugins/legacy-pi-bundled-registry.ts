@@ -1018,6 +1018,7 @@ import * as bundledPiCodingAgentWebSearchProvidersZai from "@oh-my-pi/pi-coding-
 import * as bundledPiCodingAgentWebSearchRender from "@oh-my-pi/pi-coding-agent/web/search/render";
 import * as bundledPiCodingAgentWebSearchTypes from "@oh-my-pi/pi-coding-agent/web/search/types";
 import * as bundledPiCodingAgentWebSearchUtils from "@oh-my-pi/pi-coding-agent/web/search/utils";
+import * as bundledPiCodingAgentWorktreeArgs from "@oh-my-pi/pi-coding-agent/worktree/args";
 import * as bundledPiCodingAgentWorktreeDirtyTransfer from "@oh-my-pi/pi-coding-agent/worktree/dirty-transfer";
 import * as bundledPiCodingAgentWorktreeInclude from "@oh-my-pi/pi-coding-agent/worktree/include";
 import * as bundledPiCodingAgentWorktreeManager from "@oh-my-pi/pi-coding-agent/worktree/manager";
@@ -1025,6 +1026,7 @@ import * as bundledPiCodingAgentWorktreeMetadata from "@oh-my-pi/pi-coding-agent
 import * as bundledPiCodingAgentWorktreeSelector from "@oh-my-pi/pi-coding-agent/worktree/selector";
 import * as bundledPiCodingAgentWorktreeSession from "@oh-my-pi/pi-coding-agent/worktree/session";
 import * as bundledPiCodingAgentWorktreeSnapshot from "@oh-my-pi/pi-coding-agent/worktree/snapshot";
+import * as bundledPiCodingAgentWorktreeSubmodules from "@oh-my-pi/pi-coding-agent/worktree/submodules";
 import * as bundledPiCodingAgentWorktreeTypes from "@oh-my-pi/pi-coding-agent/worktree/types";
 import * as bundledPiNatives from "@oh-my-pi/pi-natives";
 import * as bundledPiTui from "@oh-my-pi/pi-tui";
@@ -3217,6 +3219,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/utils/zip": bundledPiCodingAgentUtilsZip as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/worktree/args": bundledPiCodingAgentWorktreeArgs as unknown as Readonly<
+		Record<string, unknown>
+	>,
 	"@oh-my-pi/pi-coding-agent/worktree/dirty-transfer":
 		bundledPiCodingAgentWorktreeDirtyTransfer as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/worktree/include": bundledPiCodingAgentWorktreeInclude as unknown as Readonly<
@@ -3235,6 +3240,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/worktree/snapshot": bundledPiCodingAgentWorktreeSnapshot as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/worktree/submodules": bundledPiCodingAgentWorktreeSubmodules as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/worktree/types": bundledPiCodingAgentWorktreeTypes as unknown as Readonly<

@@ -93,6 +93,7 @@ export interface AddWorktreeCliOptions {
 	name?: string;
 	baseRef?: string;
 	dirtyPolicy: ManagedWorktreeDirtyPolicy;
+	recurseSubmodules: boolean;
 	sessionStrategy?: ManagedWorktreeSessionStrategy;
 	json: boolean;
 }
@@ -245,6 +246,7 @@ export async function addWorktree(options: AddWorktreeCliOptions): Promise<void>
 		name: options.name,
 		baseRef: options.baseRef,
 		dirtyPolicy: options.dirtyPolicy,
+		recurseSubmodules: options.recurseSubmodules,
 	});
 	if (options.json) {
 		console.log(JSON.stringify({ ...result, sessionStrategy: options.sessionStrategy ?? "none" }, null, 2));
@@ -252,6 +254,9 @@ export async function addWorktree(options: AddWorktreeCliOptions): Promise<void>
 	}
 	console.log(`${chalk.green("created")}  managed worktree ${result.record.name}`);
 	console.log(`          ${result.targetCwd}`);
+	if (result.record.recurseSubmodules) {
+		console.log(chalk.dim("          Recursive submodules enabled."));
+	}
 	if (options.dirtyPolicy === "ignore") {
 		console.log(chalk.dim("          Current uncommitted changes were not copied."));
 	}

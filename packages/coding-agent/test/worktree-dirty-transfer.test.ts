@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { copyDirtyStateToWorktree, moveDirtyStateToWorktree } from "@oh-my-pi/pi-coding-agent/worktree/dirty-transfer";
+import type { ManagedWorktreeSubmoduleRecord } from "@oh-my-pi/pi-coding-agent/worktree/types";
 import { removeWithRetries, setWorktreesDir } from "@oh-my-pi/pi-utils";
 
 const GIT_ENV_KEYS = [
@@ -13,6 +14,7 @@ const GIT_ENV_KEYS = [
 	"GIT_ASKPASS",
 	"XDG_CONFIG_HOME",
 	"OMP_WORKTREE_DIR",
+	"GIT_ALLOW_PROTOCOL",
 ] as const;
 
 type GitEnvKey = (typeof GIT_ENV_KEYS)[number];
@@ -22,6 +24,13 @@ interface DirtyFixture {
 	baseSha: string;
 	targetRoot: string;
 	symlinkCreated: boolean;
+}
+
+interface RecursiveDirtyFixture {
+	repoRoot: string;
+	baseSha: string;
+	targetRoot: string;
+	submodules: ManagedWorktreeSubmoduleRecord[];
 }
 
 let tempRoot = "";
@@ -119,6 +128,106 @@ async function createDirtyFixture(name: string): Promise<DirtyFixture> {
 	return { repoRoot, baseSha, targetRoot, symlinkCreated };
 }
 
+async function createRecursiveSubmoduleFixture(name: string): Promise<RecursiveDirtyFixture> {
+	const leafRepoRoot = path.join(tempRoot, `${name}-leaf-submodule-repo`);
+	await fs.mkdir(leafRepoRoot, { recursive: true });
+	await runGit(leafRepoRoot, ["init", "-q", "-b", "main"]);
+	await runGit(leafRepoRoot, ["config", "user.email", "test@example.com"]);
+	await runGit(leafRepoRoot, ["config", "user.name", "Test User"]);
+	await Bun.write(path.join(leafRepoRoot, "leaf.txt"), "leaf base\n");
+	await runGit(leafRepoRoot, ["add", "."]);
+	await runGit(leafRepoRoot, ["commit", "-q", "-m", "leaf base"]);
+
+	const childRepoRoot = path.join(tempRoot, `${name}-child-submodule-repo`);
+	await fs.mkdir(childRepoRoot, { recursive: true });
+	await runGit(childRepoRoot, ["init", "-q", "-b", "main"]);
+	await runGit(childRepoRoot, ["config", "user.email", "test@example.com"]);
+	await runGit(childRepoRoot, ["config", "user.name", "Test User"]);
+	await Bun.write(path.join(childRepoRoot, "child.txt"), "child base\n");
+	await runGit(childRepoRoot, ["add", "."]);
+	await runGit(childRepoRoot, ["commit", "-q", "-m", "child base"]);
+	await runGit(childRepoRoot, ["submodule", "add", leafRepoRoot, "nested/leaf"]);
+	await runGit(childRepoRoot, ["commit", "-q", "-m", "add leaf submodule"]);
+
+	const repoRoot = path.join(tempRoot, `${name}-super-repo`);
+	const targetRoot = path.join(tempRoot, `${name}-target`);
+	await fs.mkdir(repoRoot, { recursive: true });
+	await runGit(repoRoot, ["init", "-q", "-b", "main"]);
+	await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
+	await runGit(repoRoot, ["config", "user.name", "Test User"]);
+	await Bun.write(path.join(repoRoot, "root.txt"), "root base\n");
+	await runGit(repoRoot, ["add", "."]);
+	await runGit(repoRoot, ["commit", "-q", "-m", "root base"]);
+	await runGit(repoRoot, ["submodule", "add", childRepoRoot, "modules/child"]);
+	await runGit(repoRoot, ["commit", "-q", "-m", "add child submodule"]);
+	await runGit(repoRoot, ["submodule", "update", "--init", "--recursive"]);
+	const baseSha = await runGit(repoRoot, ["rev-parse", "HEAD"]);
+	await runGit(repoRoot, ["worktree", "add", "--detach", targetRoot, baseSha]);
+	await runGit(targetRoot, ["submodule", "update", "--init", "--recursive"]);
+	const childPath = "modules/child";
+	const leafPath = "modules/child/nested/leaf";
+	const childSha = await runGit(path.join(targetRoot, "modules", "child"), ["rev-parse", "HEAD"]);
+	const leafSha = await runGit(path.join(targetRoot, "modules", "child", "nested", "leaf"), ["rev-parse", "HEAD"]);
+	const submodules: ManagedWorktreeSubmoduleRecord[] = [
+		{
+			path: childPath,
+			parentPath: null,
+			sourceRepoRoot: path.join(repoRoot, "modules", "child"),
+			worktreeRoot: path.join(targetRoot, "modules", "child"),
+			baseSha: childSha,
+			headSha: childSha,
+			includeCopied: [],
+		},
+		{
+			path: leafPath,
+			parentPath: childPath,
+			sourceRepoRoot: path.join(repoRoot, "modules", "child", "nested", "leaf"),
+			worktreeRoot: path.join(targetRoot, "modules", "child", "nested", "leaf"),
+			baseSha: leafSha,
+			headSha: leafSha,
+			includeCopied: [],
+		},
+	];
+	await Promise.all([
+		Bun.write(path.join(repoRoot, "root.txt"), "root dirty\n"),
+		Bun.write(path.join(repoRoot, "root-untracked.txt"), "root untracked\n"),
+		Bun.write(path.join(repoRoot, "modules", "child", "child.txt"), "child dirty\n"),
+		Bun.write(path.join(repoRoot, "modules", "child", "child-untracked.txt"), "child untracked\n"),
+		Bun.write(path.join(repoRoot, "modules", "child", "nested", "leaf", "leaf.txt"), "leaf dirty\n"),
+		Bun.write(path.join(repoRoot, "modules", "child", "nested", "leaf", "leaf-untracked.txt"), "leaf untracked\n"),
+	]);
+	return { repoRoot, baseSha, targetRoot, submodules };
+}
+
+async function expectRecursiveDirtyFiles(root: string): Promise<void> {
+	await expect(Bun.file(path.join(root, "root.txt")).text()).resolves.toBe("root dirty\n");
+	await expect(Bun.file(path.join(root, "root-untracked.txt")).text()).resolves.toBe("root untracked\n");
+	await expect(Bun.file(path.join(root, "modules", "child", "child.txt")).text()).resolves.toBe("child dirty\n");
+	await expect(Bun.file(path.join(root, "modules", "child", "child-untracked.txt")).text()).resolves.toBe(
+		"child untracked\n",
+	);
+	await expect(Bun.file(path.join(root, "modules", "child", "nested", "leaf", "leaf.txt")).text()).resolves.toBe(
+		"leaf dirty\n",
+	);
+	await expect(Bun.file(path.join(root, "modules", "child", "nested", "leaf", "leaf-untracked.txt")).text()).resolves.toBe(
+		"leaf untracked\n",
+	);
+}
+
+async function expectRecursiveSourceClean(root: string): Promise<void> {
+	await expect(Bun.file(path.join(root, "root.txt")).text()).resolves.toBe("root base\n");
+	await expect(exists(path.join(root, "root-untracked.txt"))).resolves.toBe(false);
+	await expect(Bun.file(path.join(root, "modules", "child", "child.txt")).text()).resolves.toBe("child base\n");
+	await expect(exists(path.join(root, "modules", "child", "child-untracked.txt"))).resolves.toBe(false);
+	await expect(Bun.file(path.join(root, "modules", "child", "nested", "leaf", "leaf.txt")).text()).resolves.toBe(
+		"leaf base\n",
+	);
+	await expect(exists(path.join(root, "modules", "child", "nested", "leaf", "leaf-untracked.txt"))).resolves.toBe(false);
+	await expect(exists(path.join(root, "modules", "child", ".git"))).resolves.toBe(true);
+	await expect(exists(path.join(root, "modules", "child", "nested", "leaf", ".git"))).resolves.toBe(true);
+}
+
+
 async function expectTransferredFiles(targetRoot: string, symlinkCreated: boolean): Promise<void> {
 	await expect(Bun.file(path.join(targetRoot, "staged.txt")).text()).resolves.toBe("source staged\n");
 	await expect(Bun.file(path.join(targetRoot, "unstaged.txt")).text()).resolves.toBe("source unstaged\n");
@@ -138,6 +247,7 @@ beforeEach(async () => {
 	process.env.GIT_CONFIG_NOSYSTEM = "1";
 	process.env.GIT_TERMINAL_PROMPT = "0";
 	process.env.GIT_ASKPASS = "true";
+	process.env.GIT_ALLOW_PROTOCOL = "file";
 	delete process.env.XDG_CONFIG_HOME;
 	tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worktree-dirty-transfer-"));
 	const worktreeBase = path.join(tempRoot, "managed-worktrees");
@@ -203,4 +313,47 @@ describe("managed worktree dirty transfer", () => {
 			await expect(exists(path.join(fixture.repoRoot, "ignored-link"))).resolves.toBe(true);
 		}
 	});
+
+	it("copies recursive submodule dirty tracked and untracked state without changing the source checkout", async () => {
+		const fixture = await createRecursiveSubmoduleFixture("recursive-copy");
+
+		const result = await copyDirtyStateToWorktree(fixture.repoRoot, fixture.targetRoot, fixture.baseSha, {
+			ignoreSubmodules: true,
+			submodules: fixture.submodules,
+		});
+
+		expect(result.trackedPaths).toEqual(["root.txt"]);
+		expect(result.untrackedPaths).toEqual(["root-untracked.txt"]);
+		expect(result.submodules.map(submodule => submodule.path)).toEqual([
+			"modules/child",
+			"modules/child/nested/leaf",
+		]);
+		expect(result.submodules[0]?.trackedPaths).toEqual(["child.txt"]);
+		expect(result.submodules[0]?.untrackedPaths).toEqual(["child-untracked.txt"]);
+		expect(result.submodules[1]?.trackedPaths).toEqual(["leaf.txt"]);
+		expect(result.submodules[1]?.untrackedPaths).toEqual(["leaf-untracked.txt"]);
+		await expectRecursiveDirtyFiles(fixture.repoRoot);
+		await expectRecursiveDirtyFiles(fixture.targetRoot);
+	}, 30_000);
+
+	it("moves recursive submodule dirty state and cleans source submodules without deleting them", async () => {
+		const fixture = await createRecursiveSubmoduleFixture("recursive-move");
+
+		const result = await moveDirtyStateToWorktree(fixture.repoRoot, fixture.targetRoot, fixture.baseSha, {
+			ignoreSubmodules: true,
+			submodules: fixture.submodules,
+		});
+
+		expect(result.trackedPaths).toEqual(["root.txt"]);
+		expect(result.untrackedPaths).toEqual(["root-untracked.txt"]);
+		expect(result.submodules[0]?.trackedPaths).toEqual(["child.txt"]);
+		expect(result.submodules[0]?.untrackedPaths).toEqual(["child-untracked.txt"]);
+		expect(result.submodules[1]?.trackedPaths).toEqual(["leaf.txt"]);
+		expect(result.submodules[1]?.untrackedPaths).toEqual(["leaf-untracked.txt"]);
+		await expectRecursiveDirtyFiles(fixture.targetRoot);
+		await expectRecursiveSourceClean(fixture.repoRoot);
+		expect(await statusLines(fixture.repoRoot)).toEqual([]);
+		expect(await statusLines(path.join(fixture.repoRoot, "modules", "child"))).toEqual([]);
+		expect(await statusLines(path.join(fixture.repoRoot, "modules", "child", "nested", "leaf"))).toEqual([]);
+	}, 30_000);
 });

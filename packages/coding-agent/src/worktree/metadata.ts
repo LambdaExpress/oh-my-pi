@@ -5,10 +5,11 @@ import type {
 	ManagedWorktreeDirtyPolicy,
 	ManagedWorktreeMode,
 	ManagedWorktreeRecord,
+	ManagedWorktreeSubmoduleRecord,
 	ManagedWorktreeState,
 } from "./types";
 
-const RECORD_VERSION = 1;
+const RECORD_VERSION = 2;
 const OWNER = "omp";
 
 export function managedMetadataDir(): string {
@@ -53,10 +54,25 @@ function isManagedWorktreeDirtyPolicy(value: unknown): value is ManagedWorktreeD
 	return value === "ignore" || value === "copy" || value === "move";
 }
 
+function isManagedWorktreeSubmoduleRecord(value: unknown): value is ManagedWorktreeSubmoduleRecord {
+	if (value === null || typeof value !== "object") return false;
+	const record = value as Record<string, unknown>;
+	return (
+		isString(record.path) &&
+		isNullableString(record.parentPath) &&
+		isString(record.sourceRepoRoot) &&
+		isString(record.worktreeRoot) &&
+		isString(record.baseSha) &&
+		isString(record.headSha) &&
+		isStringArray(record.includeCopied)
+	);
+}
+
+
 function parseManagedWorktreeRecord(value: unknown): ManagedWorktreeRecord | null {
 	if (value === null || typeof value !== "object") return null;
 	const record = value as Record<string, unknown>;
-	if (record.owner !== OWNER || record.version !== RECORD_VERSION) return null;
+	if (record.owner !== OWNER || (record.version !== 1 && record.version !== RECORD_VERSION)) return null;
 	if (
 		!isString(record.id) ||
 		!isString(record.name) ||
@@ -84,7 +100,22 @@ function parseManagedWorktreeRecord(value: unknown): ManagedWorktreeRecord | nul
 	) {
 		return null;
 	}
-	return record as unknown as ManagedWorktreeRecord;
+	if (record.version === RECORD_VERSION) {
+		if (
+			typeof record.recurseSubmodules !== "boolean" ||
+			!Array.isArray(record.submodules) ||
+			!record.submodules.every(isManagedWorktreeSubmoduleRecord)
+		) {
+			return null;
+		}
+		return record as unknown as ManagedWorktreeRecord;
+	}
+	return {
+		...(record as unknown as Omit<ManagedWorktreeRecord, "version" | "recurseSubmodules" | "submodules">),
+		version: RECORD_VERSION,
+		recurseSubmodules: false,
+		submodules: [],
+	};
 }
 
 async function readRecordFile(filePath: string): Promise<ManagedWorktreeRecord | null> {

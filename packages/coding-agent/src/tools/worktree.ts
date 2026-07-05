@@ -37,6 +37,7 @@ const worktreeSchema = type({
 	"name?": type("string").describe("new worktree name for add"),
 	"base?": type("string").describe("base ref for add; defaults to HEAD"),
 	"dirtyPolicy?": type("'ignore' | 'copy' | 'move'").describe("uncommitted-change handling for add"),
+	"recurseSubmodules?": type("boolean").describe("initialize and manage submodules recursively for add; defaults false"),
 	"idOrName?": type("string").describe("managed worktree id or name"),
 	"branch?": type("string").describe("branch name for branch"),
 	"force?": type("boolean").describe("allow removing permanent managed worktrees"),
@@ -146,8 +147,10 @@ export class WorktreeTool implements AgentTool<typeof worktreeSchema, WorktreeTo
 						name: optionalText(params.name),
 						baseRef: optionalText(params.base),
 						dirtyPolicy: (params.dirtyPolicy ?? "ignore") as ManagedWorktreeDirtyPolicy,
+						recurseSubmodules: params.recurseSubmodules ?? false,
 					});
 					const lines = [`Created managed worktree ${result.record.name}.`, `Target cwd: ${result.targetCwd}`];
+					if (result.record.recurseSubmodules) lines.push("Recursive submodules: enabled");
 					for (const warning of result.warnings) lines.push(`Warning: ${warning}`);
 					return toolResult<WorktreeToolDetails>({
 						op: params.op,
