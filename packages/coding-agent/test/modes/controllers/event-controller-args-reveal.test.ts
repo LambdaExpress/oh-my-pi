@@ -46,7 +46,7 @@ function createFixture(streamingMessage: AssistantMessage) {
 	const ctx = {
 		isInitialized: true,
 		init: vi.fn(async () => {}),
-		ui: { requestRender: vi.fn() },
+		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 		settings,
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),

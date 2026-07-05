@@ -6,6 +6,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
 	type Agent,
+	AgentBusyError,
 	type AgentMessage,
 	type AgentToolResult,
 	EventLoopKeepalive,
@@ -217,29 +218,37 @@ interface WorkingMessageAccentCacheKey {
 	sessionAccentEnabled: boolean;
 }
 
+/**
+ * Intern the shimmer palettes for each `WorkingMessageAccent` so `compile()`
+ * inside `shimmerSegments` sees a stable palette object between animation
+ * ticks. Allocating fresh palette literals every frame guaranteed a cache miss
+ * on the Symbol-keyed compiled-ANSI slot and forced `resolveTierAnsi` to walk
+ * every tier open/close for the ~30fps loader redraw (issue #4377).
+ */
+const workingMessagePaletteCache = new WeakMap<WorkingMessageAccent, { main: ShimmerPalette; hint: ShimmerPalette }>();
+
+function workingMessagePalettes(accent: WorkingMessageAccent): { main: ShimmerPalette; hint: ShimmerPalette } {
+	let entry = workingMessagePaletteCache.get(accent);
+	if (!entry) {
+		entry = {
+			main: { low: "dim", mid: { ansi: accent.main }, high: { ansi: accent.main }, bold: true },
+			hint: { low: "dim", mid: { ansi: accent.dim }, high: { ansi: accent.dim } },
+		};
+		workingMessagePaletteCache.set(accent, entry);
+	}
+	return entry;
+}
+
 function renderWorkingMessage(message: string, accent?: WorkingMessageAccent): string {
-	const palette = accent
-		? ({
-				low: "dim",
-				mid: { ansi: accent.main },
-				high: { ansi: accent.main },
-				bold: true,
-			} satisfies ShimmerPalette)
-		: undefined;
+	const palettes = accent ? workingMessagePalettes(accent) : undefined;
+	const palette = palettes?.main;
 	const hint = interruptHint();
 	if (!message.endsWith(hint)) return shimmerText(message, theme, palette);
 	const header = message.slice(0, -hint.length);
-	const hintPalette = accent
-		? ({
-				low: "dim",
-				mid: { ansi: accent.dim },
-				high: { ansi: accent.dim },
-			} satisfies ShimmerPalette)
-		: HINT_SHIMMER_PALETTE;
 	return shimmerSegments(
 		[
 			{ text: header, palette },
-			{ text: hint, palette: hintPalette },
+			{ text: hint, palette: palettes?.hint ?? HINT_SHIMMER_PALETTE },
 		],
 		theme,
 	);
@@ -651,7 +660,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// unless the user opts in, and never emits raw escapes on other terminals.
 		setTerminalTextSizing(settings.get("tui.textSizing") && TERMINAL.textSizing);
 		this.chatContainer = new TranscriptContainer();
-		this.pendingMessagesContainer = new Container();
+		this.pendingMessagesContainer = new AnchoredLiveContainer();
 		this.statusContainer = new AnchoredLiveContainer();
 		this.todoContainer = new AnchoredLiveContainer();
 		this.subagentContainer = new AnchoredLiveContainer();
@@ -2708,8 +2717,16 @@ export class InteractiveMode implements InteractiveModeContext {
 				// the try/finally is idempotent and kept for the !compactBeforeExecute
 				// branch.
 				this.session.setPlanReferencePath(options.planFilePath);
-				compactOutcome = await this.handleCompactCommand(compactionPrompt, undefined, outcome =>
-					this.#applyDeferredPlanModelTransition(outcome, options.executionModel),
+				// Ride the plan-mode distillation prompt through as `internalGuidance`
+				// so it reaches native summarization without leaking into the public
+				// `customInstructions` channel on `session_before_compact` — extensions
+				// there treat that field as user focus and would query-bias the
+				// summary toward the plan boilerplate (issue #4359).
+				compactOutcome = await this.handleCompactCommand(
+					undefined,
+					undefined,
+					outcome => this.#applyDeferredPlanModelTransition(outcome, options.executionModel),
+					compactionPrompt,
 				);
 			}
 		} finally {
@@ -2773,16 +2790,24 @@ export class InteractiveMode implements InteractiveModeContext {
 			planFilePath: options.planFilePath,
 			contextPreserved: options.preserveContext === true,
 		});
-		// The executor's first turn must start on an idle session. The agent may still
-		// be streaming the post-`resolve` continuation (Agent.#emit is fire-and-forget)
-		// or a turn kicked off by the compaction/clear above; prompt() would then throw
-		// AgentBusyError ("Failed to finalize approved plan"). Abort the now-irrelevant
-		// in-flight turn first — abort() bumps the prompt generation and cancels pending
-		// continuations, so nothing re-streams in the synchronous gap before prompt().
+		// A user turn queued during compaction was already fired by
+		// `flushCompactionQueue` before we returned from `handleCompactCommand`; the
+		// old abort-then-prompt path would have discarded that operator turn AND
+		// still surfaced `AgentBusyError` when the queued turn kicked off in the
+		// synchronous gap. Preserve the in-flight work and queue the hidden
+		// execution directive behind it as a synthetic follow-up. If `isStreaming`
+		// flips true between the check and dispatch (the same fire-and-forget race
+		// noted below), catch `AgentBusyError` and fall back to the same queue.
 		if (this.session.isStreaming) {
-			await this.#abortPlanApprovalTurnSilently();
+			await this.session.followUp(planModePrompt, undefined, { synthetic: true });
+			return;
 		}
-		await this.session.prompt(planModePrompt, { synthetic: true });
+		try {
+			await this.session.prompt(planModePrompt, { synthetic: true });
+		} catch (error) {
+			if (!(error instanceof AgentBusyError)) throw error;
+			await this.session.followUp(planModePrompt, undefined, { synthetic: true });
+		}
 	}
 	async #abortPlanApprovalTurnSilently(): Promise<void> {
 		this.session.markPlanInternalAbortPending();
@@ -4030,8 +4055,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		customInstructions?: string,
 		mode?: CompactMode,
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
+		internalGuidance?: string,
 	): Promise<CompactionOutcome> {
-		return this.#commandController.handleCompactCommand(customInstructions, mode, beforeFlush);
+		return this.#commandController.handleCompactCommand(customInstructions, mode, beforeFlush, internalGuidance);
 	}
 
 	handleHandoffCommand(customInstructions?: string): Promise<void> {

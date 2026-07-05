@@ -22,6 +22,7 @@ import { Filesystem, NotFoundError, type PreflightWriteOptions, type WriteResult
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import { type InternalUrl, InternalUrlRouter, type ProtocolHandler, parseInternalUrl } from "../../internal-urls";
 import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredHandle } from "../../lsp";
+import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { assertEditableFileContent } from "../../tools/auto-generated-guard";
@@ -249,6 +250,13 @@ export class HashlineFilesystem extends Filesystem {
 			if (isEnoent(error)) throw new NotFoundError(relativePath, error);
 			throw error;
 		}
+		if (this.session.enableLsp ?? true) {
+			await notifyWorkspaceWatchedFiles(
+				this.session.cwd,
+				[{ filePath: target.absolutePath, type: FileChangeType.Deleted }],
+				this.#signal,
+			);
+		}
 		invalidateFsScanAfterWrite(target.absolutePath);
 	}
 
@@ -275,6 +283,16 @@ export class HashlineFilesystem extends Filesystem {
 		} else {
 			await fs.rename(fromTarget.absolutePath, toTarget.absolutePath);
 		}
+		if (this.session.enableLsp ?? true) {
+			await notifyWorkspaceWatchedFiles(
+				this.session.cwd,
+				[
+					{ filePath: fromTarget.absolutePath, type: FileChangeType.Deleted },
+					{ filePath: toTarget.absolutePath, type: FileChangeType.Created },
+				],
+				this.#signal,
+			);
+		}
 		invalidateFsScanAfterWrite(fromTarget.absolutePath);
 		invalidateFsScanAfterWrite(toTarget.absolutePath);
 	}
@@ -292,7 +310,7 @@ export class HashlineFilesystem extends Filesystem {
 		const finalContent = await serializeEditFileText(target.absolutePath, relativePath, content);
 
 		// Route through ACP bridge when available; skips internal artifacts.
-		if (await routeWriteThroughBridge(this.session, relativePath, target.absolutePath, finalContent)) {
+		if (await routeWriteThroughBridge(this.session, relativePath, target.absolutePath, finalContent, this.#signal)) {
 			this.#diagnosticsByPath.set(relativePath, undefined);
 			return { text: finalContent };
 		}

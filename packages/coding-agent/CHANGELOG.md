@@ -56,6 +56,66 @@
 - Fixed auto-snapcompact reporting failed maintenance when local rendering throws; rendering failures now downgrade to context-full auto-compaction like other snapcompact local blockers.
 - Fixed the `pwsh` tool spawning a visible console window for native executables on Windows by applying the existing no-console `windowsHide` policy to the PowerShell host process.
 - Fixed the `pwsh` tool prompt over-selecting PowerShell on Windows by making `bash` the default unless PowerShell-specific syntax or providers are required.
+## [16.3.7] - 2026-07-05
+
+### Added
+
+- Added support for reading full memory rows (working or episodic) via `read memory://<id>` under the mnemopi backend, returning a YAML-frontmatter header with metadata to prevent blind overwrites during edits.
+- Updated the URI grammar to support `memory://root[/…]` for file-backed summaries and `memory://<memory-id>` for specific mnemopi IDs.
+
+### Changed
+
+- Updated `recall` and `memory_edit` tool prompts to document truncation markers and require reading a memory ID before updating a truncated preview.
+- Parallelized resolution of system files (`SYSTEM.md`, `APPEND_SYSTEM.md`, and `TITLE_SYSTEM.md`) at startup to improve performance.
+- Optimized TUI performance and reduced CPU usage during streaming and live tool calls by scoping renders to changed subtrees, interning the working-message shimmer palette, and memoizing copy-selector preview highlights.
+- Loaded persisted Agent Hub subagents asynchronously to prevent blocking the TUI on directory walks.
+- Cached persisted message keys in `AgentSession` to avoid repeated branch walks on message completion.
+- Skipped TTSR delta buffering for text/thinking sources when no registered rules match.
+
+### Fixed
+
+- Fixed macOS Backspace behavior in the `/resume` picker for terminals delivering `\x7f` instead of `\e[3~`.
+- Fixed queued follow-up message rows leaking into native terminal scrollback during live repaints by anchoring the pending-messages container.
+- Fixed `/rename` title arguments treating `#` prompt-action tokens as autocomplete triggers instead of literal text.
+- Fixed empty session `.jsonl` files accumulating in the sessions directory after a draft-then-clear exit cycle.
+- Fixed advisor being disabled for the entire session when resolving to a reasoning model with no controllable effort surface (e.g., `devin/glm-5-2*`).
+- Fixed legacy extension plugin validation failures by re-exporting relocated catalog symbols (such as `calculateCost`, `modelsAreEqual`, and `getBundledProviders`) through the legacy `pi-ai` root shim.
+- Fixed legacy Pi extension imports of `DefaultResourceLoader` by adding a compatibility loader shim that translates `resourceLoader` into native session discovery options.
+- Fixed legacy Pi extension reloads on POSIX to ensure same-process re-imports pick up edits across the entire dependency graph.
+- Fixed bash tool pipeline execution preserving stale upstream output when the final stage was a stripped `head` or `tail` limiter.
+- Fixed the status-line token-rate segment rendering as a clickable hyperlink in Ghostty.
+- Fixed xAI `web_search` to prioritize `xai-oauth` credentials before falling back to `xai` API keys, and enforced result counts locally to avoid sending unsupported parameters.
+- Fixed token-usage badges disappearing on session resume for empty automated assistant turns.
+- Fixed `/model` search escaping the active provider tab and silently persisting a same-named model from a different provider as the default role.
+- Fixed Esc key behavior to immediately silence active TTS audio playback (such as Kokoro) once an assistant reply finishes streaming.
+- Fixed grep and bash tool guidance to instruct agents to use Rust-style patterns or `grep -E` instead of GNU BRE assumptions.
+- Fixed tool-call renderers crashing the TUI when providers send array/object `path` arguments before schema validation.
+- Fixed `glob` tool rejecting slash-only root searches (e.g., `path:"/"`) with a documented error instead of returning empty results.
+- Fixed `omp read` hanging on PDFs whose inline-image binary payloads contain delimiter-looking bytes.
+- Fixed `pi/<role>` model resolution crashing on YAML list-valued `modelRoles` entries.
+- Fixed the snapcompact settings UI to expose `silver16-bw` and improved renderability warnings to report unsupported glyphs.
+- Fixed session and status usage totals to preserve provider-reported orchestration tokens separately from input and cache-hit buckets.
+- Fixed published `.d.ts` declaration files to be consumable under `moduleResolution: "node16" | "nodenext"` by rewriting relative specifiers to explicit `.js` extensions.
+- Fixed `omitThinking` settings propagation so settings-aware streams request hidden thinking summaries when explicitly enabled.
+- Preserved isolated branch-mode task output as a patch artifact when `commitToBranch` fails, surfacing the captured patch path through the evaluation failure message.
+- Fixed task-class subagents dropping unresolved explicit model-role selectors before startup.
+- Fixed large legacy snapcompact archives causing crashes on resume due to oversized archived frame payloads.
+- Fixed LSP diagnostics staleness by sending watched-file change notifications to running language servers before reading edit-time diagnostics.
+- Documented the bash tool timeout clamp (capped at 3600 seconds for async jobs) in the model-facing schema and prompt.
+- Fixed `/fast on` for custom OpenAI-compatible providers serving OpenAI models, and reported unsupported models as unavailable.
+- Fixed extension `pasteToEditor` and `setEditorText` prompt mutations leaving the editor visually stale by scheduling a repaint after mutations.
+- Fixed session title generation, commit-message generation, speech-enhancer rewrites, and classifiers silently truncating on non-reasoning-flagged models that still emit thinking output.
+- Fixed plan-mode "Approve and compact context" discarding queued operator turns and leaking internal plan-distillation prompts to extension hooks.
+- Fixed malformed `pi.sendMessage` custom-message payloads persisting bare session entries that crashed subsequent resumes.
+- Hid internal `display: false` session-update reminders from compact history and advisor transcripts.
+- Fixed idle recap crashes caused by side-channel stream malformations.
+- Applied WebSocket send backpressure with ordered drain retries to prevent unbounded buffer growth.
+- Capped docs.rs gunzip decompressed size at 256 MB to prevent zip-bomb out-of-memory crashes.
+- Deleted pre-created shell snapshot files when snapshot creation fails.
+- Aborted underlying MCP calls when proxy tool timeouts fire.
+- Surfaced unexpected JS eval worker exits via close listeners to prevent silent hangs.
+- Cached failed `!command` config resolutions and timed out extension dynamic model fetches after 15 seconds.
+
 ## [16.3.6] - 2026-07-04
 
 ### Changed

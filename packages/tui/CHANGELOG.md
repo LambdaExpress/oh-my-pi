@@ -11,6 +11,12 @@
 - Fixed editor caret movement entering image or paste placeholders; keyboard left/right, word, and vertical movement now treat matched placeholders as atomic tokens.
 - Fixed live rows below a native-scrollback seam vanishing while streaming; scrolled-off live rows now enter history as frozen snapshots, with finalize-time repairs bounded so unchanged output does not repeat indefinitely.
 - Fixed OSC 8 hyperlinks staying disabled in Windows Terminal when `tui.hyperlinks=auto`.
+## [16.3.7] - 2026-07-05
+
+### Fixed
+
+- Fixed an issue where `@` file-reference tokens in slash-command arguments incorrectly triggered prompt-composer autocompletion when the command did not define argument completions.
+- Fixed a memory leak caused by unbounded map growth in the image budget cache.
 
 ## [16.3.6] - 2026-07-04
 

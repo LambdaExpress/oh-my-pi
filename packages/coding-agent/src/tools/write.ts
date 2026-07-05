@@ -916,7 +916,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 
 			// Try ACP bridge first for editor-visible filesystem paths. Internal
 			// artifacts such as local:// plans are owned by OMP, not the editor.
-			if (await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent)) {
+			if (await routeWriteThroughBridge(this.session, path, absolutePath, cleanContent, signal)) {
 				const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
 				const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
 				const writeLine = `Successfully wrote ${cleanContent.length} bytes to ${displayPath}`;
@@ -974,8 +974,8 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 // =============================================================================
 
 interface WriteRenderArgs {
-	path?: string;
-	file_path?: string;
+	path?: unknown;
+	file_path?: unknown;
 	content?: unknown;
 	__partialJson?: string;
 }
@@ -1106,11 +1106,13 @@ export const writeToolRenderer = {
 		const partialPath =
 			extractPartialJsonString(args.__partialJson, "file_path") ??
 			extractPartialJsonString(args.__partialJson, "path");
-		const rawPath = partialPath || args.file_path || args.path || "";
+		const rawPath =
+			partialPath ||
+			(typeof args.file_path === "string" ? args.file_path : typeof args.path === "string" ? args.path : "");
 		const rawContent = extractPartialJsonString(args.__partialJson, "content") ?? args.content;
 		const content = normalizeDisplayText(rawContent);
 		const filePath = shortenPath(rawPath);
-		const lang = getLanguageFromPath(rawPath) ?? "text";
+		const lang = rawPath ? (getLanguageFromPath(rawPath) ?? "text") : "text";
 		const langIcon = uiTheme.fg("muted", uiTheme.getLangIcon(lang));
 		const pathDisplay = filePath ? uiTheme.fg("accent", filePath) : uiTheme.fg("toolOutput", "…");
 		// No status icon on the head row: it's the head of the framed block, and
@@ -1155,10 +1157,11 @@ export const writeToolRenderer = {
 		uiTheme: Theme,
 		args?: WriteRenderArgs,
 	): Component {
-		const rawPath = args?.file_path || args?.path || "";
+		const rawPath =
+			typeof args?.file_path === "string" ? args.file_path : typeof args?.path === "string" ? args.path : "";
 		const filePath = shortenPath(rawPath);
 		const fileContent = normalizeDisplayText(args?.content);
-		const lang = getLanguageFromPath(rawPath);
+		const lang = rawPath ? getLanguageFromPath(rawPath) : undefined;
 		const langIcon = uiTheme.fg("muted", uiTheme.getLangIcon(lang));
 		// The header shows the cwd-relative path but links to the absolute path the
 		// write resolved to (args.path may be relative, which would yield a broken

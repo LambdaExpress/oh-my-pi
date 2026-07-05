@@ -122,7 +122,7 @@ describe("editToolRenderer", () => {
 
 	it("shows hashline envelope target path while preview diff is not computable yet", async () => {
 		await getUiTheme();
-		const uiStub = { requestRender() {} } as unknown as TUI;
+		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
 		const hashlineTool = { name: "edit", label: "Edit", mode: "hashline" } as unknown as AgentTool;
 		const component = new ToolExecutionComponent(
 			"edit",
@@ -285,7 +285,7 @@ describe("editToolRenderer", () => {
 
 	it("computes the hashline preview diff once a single-line edit finishes streaming", async () => {
 		await getUiTheme();
-		const uiStub = { requestRender() {} } as unknown as TUI;
+		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
 		const hashlineTool = { name: "edit", label: "Edit", mode: "hashline" } as unknown as AgentTool;
 		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "hashline-stream-preview-"));
 		try {
@@ -316,7 +316,7 @@ describe("editToolRenderer", () => {
 
 	it("renders raw custom hashline input carried only in partialJson", async () => {
 		await getUiTheme();
-		const uiStub = { requestRender() {} } as unknown as TUI;
+		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
 		const hashlineTool = { name: "edit", label: "Edit", mode: "hashline" } as unknown as AgentTool;
 		const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "hashline-custom-stream-preview-"));
 		try {
@@ -347,7 +347,7 @@ describe("editToolRenderer", () => {
 
 	it("renders raw custom apply_patch input carried only in partialJson", async () => {
 		await getUiTheme();
-		const uiStub = { requestRender() {} } as unknown as TUI;
+		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
 		const input = [
 			"*** Begin Patch",
 			"*** Update File: src/demo.ts",
@@ -367,7 +367,7 @@ describe("editToolRenderer", () => {
 
 	it("normalizes raw streamed text input for any renderer", async () => {
 		await getUiTheme();
-		const uiStub = { requestRender() {} } as unknown as TUI;
+		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
 		const customTextTool = {
 			name: "custom_text",
 			label: "Custom Text",

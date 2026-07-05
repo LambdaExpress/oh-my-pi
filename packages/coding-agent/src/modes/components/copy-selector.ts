@@ -63,6 +63,8 @@ function gutterCells(hasNext: boolean): string {
 export class CopySelectorComponent implements Component {
 	#roots: CopyTarget[];
 	#cursorId: string;
+	#lastSourceTarget?: CopyTarget;
+	#lastSource?: string;
 	#treeRows = MIN_TREE_ROWS;
 	#hitRows: (number | undefined)[] = [];
 	#hoveredIndex: number | null = null;
@@ -78,7 +80,10 @@ export class CopySelectorComponent implements Component {
 		this.#cursorId = roots[0]?.id ?? "";
 	}
 
-	invalidate(): void {}
+	invalidate(): void {
+		this.#lastSourceTarget = undefined;
+		this.#lastSource = undefined;
+	}
 
 	#flatten(): FlatNode[] {
 		const out: FlatNode[] = [];
@@ -215,9 +220,16 @@ export class CopySelectorComponent implements Component {
 		// Code/command previews are syntax-highlighted; everything else is shown
 		// as plain text. Both are wrapped (not hard-truncated) to the pane width.
 		const isCode = target.language !== undefined;
-		const source = isCode
-			? highlightCode(replaceTabs(target.preview), target.language).join("\n")
-			: replaceTabs(target.preview);
+		let source: string;
+		if (target === this.#lastSourceTarget && this.#lastSource !== undefined) {
+			source = this.#lastSource;
+		} else {
+			source = isCode
+				? highlightCode(replaceTabs(target.preview), target.language).join("\n")
+				: replaceTabs(target.preview);
+			this.#lastSourceTarget = target;
+			this.#lastSource = source;
+		}
 		this.#previewText.setText(source);
 		const wrapped = this.#previewText.render(Math.max(1, width - 4));
 

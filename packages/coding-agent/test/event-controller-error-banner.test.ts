@@ -61,6 +61,7 @@ function createFixture(streamingMessage?: AssistantMessage) {
 		setErrorPinned: vi.fn(),
 		setHideThinkingBlock: vi.fn((hide: boolean) => componentCalls.push(`hide:${hide}`)),
 		messagePersistenceKey: vi.fn(() => "assistant:test-key"),
+		applyRetryRecovery: vi.fn(),
 	};
 	const showPinnedError = vi.fn();
 	const clearPinnedError = vi.fn();

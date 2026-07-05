@@ -33,6 +33,7 @@ import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { interruptHint } from "../shared";
 import { createAssistantMessageComponent } from "../utils/interactive-context-helpers";
+import { assistantUsageIsBilled } from "../utils/transcript-render-helpers";
 import { StreamingRevealController } from "./streaming-reveal";
 import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
 
@@ -142,11 +143,11 @@ export class EventController {
 			getSmoothStreaming: () => this.ctx.settings.get("display.smoothStreaming"),
 			getHideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,
 			getProseOnlyThinking: () => this.ctx.proseOnlyThinking,
-			requestRender: () => this.ctx.ui.requestRender(),
+			requestRender: component => this.ctx.ui.requestComponentRender(component),
 		});
 		this.#toolArgsReveal = new ToolArgsRevealController({
 			getSmoothStreaming: () => this.ctx.settings.get("display.smoothStreaming"),
-			requestRender: () => this.ctx.ui.requestRender(),
+			requestRender: component => this.ctx.ui.requestComponentRender(component),
 		});
 		this.#handlers = {
 			agent_start: e => this.#handleAgentStart(e),
@@ -868,7 +869,7 @@ export class EventController {
 				typeof this.#lastAssistantComponent.needsFinalScrollbackReset === "function" &&
 				this.#lastAssistantComponent.needsFinalScrollbackReset();
 			this.#lastAssistantComponent.markTranscriptBlockFinalized();
-			if (settings.get("display.showTokenUsage")) {
+			if (settings.get("display.showTokenUsage") && assistantUsageIsBilled(event.message.usage)) {
 				this.ctx.chatContainer.addChild(
 					createUsageRowBlock(event.message.usage, event.message.duration, event.message.ttft),
 				);

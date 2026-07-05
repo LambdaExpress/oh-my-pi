@@ -1109,7 +1109,7 @@ export async function executeReplaceSingle(
 		finalContent = await serializeEditFileText(target.absolutePath, path, restoredContent);
 		detailsPath = target.absolutePath;
 		// Route through ACP bridge when available; skips internal artifacts.
-		if (await routeWriteThroughBridge(session, path, target.absolutePath, finalContent)) {
+		if (await routeWriteThroughBridge(session, path, target.absolutePath, finalContent, signal)) {
 			// bridge handled the write; diagnostics not available via writethrough
 		} else {
 			diagnostics = await writethrough(

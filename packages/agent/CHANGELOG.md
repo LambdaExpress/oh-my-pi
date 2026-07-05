@@ -5,6 +5,11 @@
 ### Fixed
 
 - Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.
+## [16.3.7] - 2026-07-05
+
+### Fixed
+
+- Fixed an issue where provider orchestration tokens were incorrectly included in context token calculations, which could trigger premature context auto-compaction and promotion.
 
 ## [16.3.3] - 2026-07-02
 

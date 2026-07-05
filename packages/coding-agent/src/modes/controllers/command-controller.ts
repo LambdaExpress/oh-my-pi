@@ -1491,6 +1491,7 @@ export class CommandController {
 		customInstructions?: string,
 		mode?: CompactMode,
 		beforeFlush?: (outcome: CompactionOutcome) => void | Promise<void>,
+		internalGuidance?: string,
 	): Promise<CompactionOutcome> {
 		const entries = this.ctx.sessionManager.getEntries();
 		const messageCount = entries.filter(e => e.type === "message").length;
@@ -1500,6 +1501,15 @@ export class CommandController {
 			return "ok";
 		}
 
+		// `internalGuidance` is a private summarizer directive (plan-mode
+		// "Approve and compact context") that MUST stay off the public
+		// `customInstructions` channel of the `session_before_compact` extension
+		// hook — extensions treat that field as user focus and would otherwise
+		// bias the summary toward the plan boilerplate (issue #4359). Ride it
+		// through as a CompactOptions field instead.
+		if (internalGuidance) {
+			return this.executeCompaction({ internalGuidance, ...(mode ? { mode } : {}) }, false, beforeFlush, mode);
+		}
 		return this.executeCompaction(customInstructions, false, beforeFlush, mode);
 	}
 
