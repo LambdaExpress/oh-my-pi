@@ -154,6 +154,8 @@ const fastModeBeta = "fast-mode-2026-02-01";
 const taskBudgetBeta = "task-budgets-2026-03-13";
 const effortBeta = "effort-2025-11-24";
 const serverSideFallbackBeta = "server-side-fallback-2026-06-01";
+const context1mBeta = "context-1m-2025-08-07";
+const claudeCodeLongContextSelector = /\[1m\]$/i;
 
 function buildClaudeCodeBetas(
 	agentRequest: boolean,
@@ -2653,6 +2655,9 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	const needsInterleavedBeta = interleavedThinking && !model.thinking?.supportsDisplay;
 	const needsFineGrainedToolStreamingBeta = hasTools && !compat.supportsEagerToolInputStreaming;
 	const oauthToken = isOAuth ?? isAnthropicOAuthToken(apiKey);
+	const needsContext1mBeta =
+		claudeCodeLongContextSelector.test(model.id) ||
+		claudeCodeLongContextSelector.test(model.requestModelId ?? "");
 	const baseUrl = resolveAnthropicBaseUrl(model, apiKey);
 	const foundryCustomHeaders = resolveAnthropicCustomHeaders(model);
 	const tlsFetchOptions = buildClaudeCodeTlsFetchOptions(model, baseUrl);
@@ -2704,6 +2709,9 @@ export function buildAnthropicClientOptions(args: AnthropicClientOptionsArgs): A
 	}
 	if (needsInterleavedBeta) {
 		betaFeatures.push(interleavedThinkingBeta);
+	}
+	if (oauthToken && needsContext1mBeta) {
+		betaFeatures.push(context1mBeta);
 	}
 
 	const defaultHeaders = buildAnthropicHeaders({

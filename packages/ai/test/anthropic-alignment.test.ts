@@ -223,6 +223,62 @@ describe("Anthropic request fingerprint alignment", () => {
 		expect(hiddenUtility.defaultHeaders["anthropic-beta"]).toContain("redact-thinking-2026-02-12");
 	});
 
+	it("adds the Claude Code 1M context beta for explicit bracketed 1M model selectors", () => {
+		const cases = [
+			{
+				name: "model id",
+				model: buildModel({
+					...ANTHROPIC_MODEL_SPEC,
+					id: "claude-fable-5[1M]",
+					name: "Claude Fable 5 1M",
+				}),
+			},
+			{
+				name: "requestModelId",
+				model: buildModel({
+					...ANTHROPIC_MODEL_SPEC,
+					id: "claude-opus-4-8-1m",
+					requestModelId: "claude-opus-4-8[1m]",
+					name: "Claude Opus 4.8 1M",
+				}),
+			},
+		] as const;
+
+		for (const { name, model } of cases) {
+			const options = buildAnthropicClientOptions({
+				model,
+				apiKey: "sk-ant-oat-test",
+				isOAuth: true,
+				extraBetas: [],
+				stream: true,
+				interleavedThinking: false,
+				hasTools: false,
+				thinkingEnabled: false,
+			});
+
+			expect(options.defaultHeaders["anthropic-beta"], name).toContain("context-1m-2025-08-07");
+		}
+	});
+
+	it("does not add the Claude Code 1M context beta for ordinary OAuth models", () => {
+		const options = buildAnthropicClientOptions({
+			model: buildModel({
+				...ANTHROPIC_MODEL_SPEC,
+				id: "claude-opus-4-8",
+				name: "Claude Opus 4.8",
+			}),
+			apiKey: "sk-ant-oat-test",
+			isOAuth: true,
+			extraBetas: [],
+			stream: true,
+			interleavedThinking: false,
+			hasTools: false,
+			thinkingEnabled: false,
+		});
+
+		expect(options.defaultHeaders["anthropic-beta"] ?? "").not.toContain("context-1m-2025-08-07");
+	});
+
 	it("matches CC system-block layout: billing and instruction uncached, single breakpoint on the last context block", () => {
 		// We mimic Claude Code's billing+instruction system layout but do NOT emit
 		// the `scope: "global"` field that CC attaches to its middle breakpoint —
