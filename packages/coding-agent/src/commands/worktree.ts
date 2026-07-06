@@ -13,6 +13,7 @@ import {
 	pruneWorktrees,
 	removeWorktree,
 	restoreWorktree,
+	switchLocalWorktree,
 	switchWorktree,
 } from "../cli/worktree-cli";
 import { Settings } from "../config/settings";
@@ -22,6 +23,7 @@ type WorktreeAction =
 	| "list"
 	| "add"
 	| "switch"
+	| "switch-local"
 	| "merge"
 	| "remove"
 	| "prune"
@@ -34,6 +36,7 @@ const WORKTREE_ACTIONS: WorktreeAction[] = [
 	"list",
 	"add",
 	"switch",
+	"switch-local",
 	"merge",
 	"remove",
 	"prune",
@@ -115,6 +118,7 @@ export default class Worktree extends Command {
 		"omp worktree add fix-auth --base main --dirty-policy copy",
 		"omp worktree add fix-auth --recurse-submodules",
 		"omp worktree switch fix-auth",
+		"omp worktree switch-local fix-auth",
 		"omp worktree path fix-auth --json",
 		"omp worktree merge fix-auth",
 		"omp worktree branch fix-auth feature/fix-auth",
@@ -167,6 +171,9 @@ export default class Worktree extends Command {
 				return;
 			case "switch":
 				await switchWorktree({ cwd, idOrName: requireTarget(action, targets), json });
+				return;
+			case "switch-local":
+				await switchLocalWorktree({ cwd, idOrName: requireTarget(action, targets), json });
 				return;
 			case "path":
 				await pathWorktree({ cwd, idOrName: requireTarget(action, targets), json });

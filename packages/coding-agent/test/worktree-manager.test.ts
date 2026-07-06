@@ -5,6 +5,7 @@ import * as path from "node:path";
 import {
 	addManagedWorktree,
 	branchManagedWorktree,
+	localCwdForRecord,
 	removeManagedWorktree,
 	targetCwdForRecord,
 } from "@oh-my-pi/pi-coding-agent/worktree/manager";
@@ -40,7 +41,6 @@ interface RecursiveSubmoduleFixture {
 	childRepoRoot: string;
 	superRepoRoot: string;
 }
-
 
 let tempRoot: string;
 let worktreeBase: string;
@@ -169,7 +169,6 @@ async function createRecursiveSubmoduleFixture(name: string): Promise<RecursiveS
 	return { leafRepoRoot, childRepoRoot, superRepoRoot };
 }
 
-
 async function readSidecarRecord(id: string): Promise<ManagedWorktreeRecord> {
 	const content = await fs.readFile(path.join(managedMetadataDir(), `${id}.json`), "utf8");
 	return JSON.parse(content) as ManagedWorktreeRecord;
@@ -263,6 +262,7 @@ describe("managed worktree manager", () => {
 		expect(result.record.relativeCwd).toBe(path.join("packages", "agent"));
 		expect(result.targetCwd).toBe(path.join(result.worktreeRoot, "packages", "agent"));
 		expect(targetCwdForRecord(result.record)).toBe(result.targetCwd);
+		expect(localCwdForRecord(result.record)).toBe(cwd);
 		expect(await fs.readFile(path.join(result.targetCwd, "index.ts"), "utf8")).toBe("export const value = 1;\n");
 
 		const sidecar = await readSidecarRecord(result.record.id);
@@ -357,13 +357,17 @@ describe("managed worktree manager", () => {
 			"modules/child/nested/leaf",
 		]);
 		expect(result.record.submodules.find(submodule => submodule.path === "modules/child")?.parentPath).toBeNull();
-		expect(result.record.submodules.find(submodule => submodule.path === "modules/child/nested/leaf")?.parentPath).toBe(
-			"modules/child",
-		);
+		expect(
+			result.record.submodules.find(submodule => submodule.path === "modules/child/nested/leaf")?.parentPath,
+		).toBe("modules/child");
 		const status = await runGit(result.worktreeRoot, ["submodule", "status", "--recursive"]);
-		expect(status.split(/\r?\n/).filter(Boolean).some(line => line.startsWith("-"))).toBe(false);
+		expect(
+			status
+				.split(/\r?\n/)
+				.filter(Boolean)
+				.some(line => line.startsWith("-")),
+		).toBe(false);
 	}, 30_000);
-
 
 	it("removes a clean managed worktree and prunes its empty project directory", async () => {
 		const { repoRoot } = await createGitRepo("repo-clean-remove");
@@ -452,17 +456,17 @@ describe("managed worktree manager", () => {
 		});
 
 		await expect(pathExists(path.join(superRepoRoot, "modules", "child", "child.txt"))).resolves.toBe(true);
-		await expect(pathExists(path.join(superRepoRoot, "modules", "child", "nested", "leaf", "leaf.txt"))).resolves.toBe(
-			true,
-		);
+		await expect(
+			pathExists(path.join(superRepoRoot, "modules", "child", "nested", "leaf", "leaf.txt")),
+		).resolves.toBe(true);
 		await expect(removeManagedWorktree({ cwd: superRepoRoot, idOrName: created.record.id })).resolves.toBeNull();
 
 		await expect(pathExists(created.worktreeRoot)).resolves.toBe(false);
 		expect(findGitWorktree(await listGitWorktrees(superRepoRoot), created.worktreeRoot)).toBeUndefined();
 		expect(await readManagedWorktreeRecord(created.record.id)).toBeNull();
 		await expect(pathExists(path.join(superRepoRoot, "modules", "child", "child.txt"))).resolves.toBe(true);
-		await expect(pathExists(path.join(superRepoRoot, "modules", "child", "nested", "leaf", "leaf.txt"))).resolves.toBe(
-			true,
-		);
+		await expect(
+			pathExists(path.join(superRepoRoot, "modules", "child", "nested", "leaf", "leaf.txt")),
+		).resolves.toBe(true);
 	}, 30_000);
 });

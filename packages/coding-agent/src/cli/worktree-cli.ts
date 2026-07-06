@@ -25,6 +25,7 @@ import * as git from "../utils/git";
 import {
 	addManagedWorktree,
 	branchManagedWorktree,
+	localCwdForRecord,
 	mergeManagedWorktree,
 	removeManagedWorktree,
 	restoreManagedWorktree,
@@ -280,6 +281,16 @@ export async function switchWorktree(options: TargetWorktreeCliOptions): Promise
 		return;
 	}
 	console.log(targetPath);
+}
+
+export async function switchLocalWorktree(options: TargetWorktreeCliOptions): Promise<void> {
+	const record = await requireManagedRecord(options.idOrName);
+	const localPath = localCwdForRecord(record);
+	if (options.json) {
+		console.log(JSON.stringify({ path: localPath, id: record.id, name: record.name }, null, 2));
+		return;
+	}
+	console.log(localPath);
 }
 
 export async function pathWorktree(options: TargetWorktreeCliOptions): Promise<void> {

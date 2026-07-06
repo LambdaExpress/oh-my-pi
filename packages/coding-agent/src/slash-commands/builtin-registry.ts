@@ -41,6 +41,7 @@ import {
 	addManagedWorktree,
 	branchManagedWorktree,
 	listManagedWorktrees,
+	localCwdForRecord,
 	mergeManagedWorktree,
 	removeManagedWorktree,
 	restoreManagedWorktree,
@@ -208,12 +209,17 @@ function parseShakeMode(args: string): ShakeMode | { error: string } {
 	return { error: `Unknown /shake mode "${verb}". Use elide or images.` };
 }
 
-const WORKTREE_USAGE = "Usage: /worktree <list|add|switch|merge|remove|prune|branch|path|restore>";
+const WORKTREE_USAGE = "Usage: /worktree <list|add|switch|switch-local|merge|remove|prune|branch|path|restore>";
 
 const WORKTREE_SUBCOMMANDS: SubcommandDef[] = [
 	{ name: "list", description: "List managed worktrees" },
 	{ name: "add", description: "Create a managed worktree", usage: "[--recurse-submodules] [name]" },
 	{ name: "switch", description: "Switch to a managed worktree", usage: "<id|name>" },
+	{
+		name: "switch-local",
+		description: "Switch back to the local checkout for a managed worktree",
+		usage: "<id|name>",
+	},
 	{ name: "merge", description: "Apply a managed worktree to the local checkout", usage: "<id|name>" },
 	{ name: "remove", description: "Remove a managed worktree", usage: "<id|name>" },
 	{ name: "prune", description: "Prune managed worktrees" },
@@ -351,6 +357,40 @@ async function switchWorktreeForSlash(idOrName: string, runtime: SlashCommandRun
 	return commandConsumed();
 }
 
+async function switchLocalWorktreeForSlash(
+	idOrName: string,
+	runtime: SlashCommandRuntime,
+): Promise<SlashCommandResult> {
+	if (runtime.session.isStreaming) return usage("Cannot move while streaming.", runtime);
+	const record = await requireManagedWorktree(idOrName, runtime);
+	if (!record) return commandConsumed();
+	const localCwd = localCwdForRecord(record);
+	if (!(await worktreeDirectoryExists(localCwd))) {
+		return usage("Local checkout directory is missing for this managed worktree.", runtime);
+	}
+	await runtime.sessionManager.moveTo(localCwd);
+	runtime.cwd = localCwd;
+	await reloadRuntimeForCwd(runtime, localCwd);
+	const currentSessionFile = runtime.sessionManager.getSessionFile() ?? null;
+	const currentSessionId = runtime.sessionManager.getSessionId() ?? null;
+	const shouldClearSessionBinding =
+		(currentSessionFile !== null && record.sessionFile === currentSessionFile) ||
+		(currentSessionId !== null && record.sessionId === currentSessionId);
+	if (shouldClearSessionBinding) {
+		const now = new Date().toISOString();
+		await writeManagedWorktreeRecord({
+			...record,
+			sessionFile: null,
+			sessionId: null,
+			title: null,
+			updatedAt: now,
+			lastUsedAt: now,
+		});
+	}
+	await runtime.output(`Switched to local checkout for managed worktree ${record.name}: ${localCwd}`);
+	return commandConsumed();
+}
+
 async function handleWorktreeSlash(
 	command: ParsedSlashCommand,
 	runtime: SlashCommandRuntime,
@@ -389,6 +429,8 @@ async function handleWorktreeSlash(
 			}
 			case "switch":
 				return switchWorktreeForSlash(rest, runtime);
+			case "switch-local":
+				return switchLocalWorktreeForSlash(rest, runtime);
 			case "path": {
 				const record = await requireManagedWorktree(rest, runtime);
 				if (record) await runtime.output(targetCwdForRecord(record));

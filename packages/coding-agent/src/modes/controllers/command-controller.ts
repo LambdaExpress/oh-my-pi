@@ -57,6 +57,7 @@ import {
 	addManagedWorktree,
 	branchManagedWorktree,
 	listManagedWorktrees,
+	localCwdForRecord,
 	mergeManagedWorktree,
 	removeManagedWorktree,
 	restoreManagedWorktree,
@@ -80,7 +81,7 @@ function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown:
 	ctx.present(block);
 }
 
-const WORKTREE_USAGE = "Usage: /worktree <list|add|switch|merge|remove|prune|branch|path|restore>";
+const WORKTREE_USAGE = "Usage: /worktree <list|add|switch|switch-local|merge|remove|prune|branch|path|restore>";
 
 type ManagedWorktreeListItemLike = ManagedWorktreeRecord | { record?: unknown };
 
@@ -1127,6 +1128,9 @@ export class CommandController {
 				case "switch":
 					await this.#switchWorktree(rest);
 					return;
+				case "switch-local":
+					await this.#switchLocalWorktree(rest);
+					return;
 				case "merge":
 					await this.#mergeWorktree(rest);
 					return;
@@ -1281,6 +1285,41 @@ export class CommandController {
 		await this.#writeCurrentSessionToRecord(record);
 		await this.#refreshAfterWorktreeSessionChange(
 			`Switched to managed worktree ${record.name}: ${shortenPath(targetCwd)}`,
+		);
+	}
+
+	async #switchLocalWorktree(idOrName: string): Promise<void> {
+		if (this.ctx.session.isStreaming) {
+			this.ctx.showWarning("Wait for the current response to finish or abort it before moving.");
+			return;
+		}
+		const record = await this.#managedRecord(idOrName);
+		if (!record) return;
+		const localCwd = localCwdForRecord(record);
+		if (!(await ensureDirectory(localCwd))) {
+			this.ctx.showError("Local checkout directory is missing for this managed worktree.");
+			return;
+		}
+		await this.ctx.sessionManager.moveTo(localCwd);
+		await this.ctx.applyCwdChange(localCwd);
+		const currentSessionFile = this.ctx.sessionManager.getSessionFile() ?? null;
+		const currentSessionId = this.ctx.sessionManager.getSessionId() ?? null;
+		const shouldClearSessionBinding =
+			(currentSessionFile !== null && record.sessionFile === currentSessionFile) ||
+			(currentSessionId !== null && record.sessionId === currentSessionId);
+		if (shouldClearSessionBinding) {
+			const now = new Date().toISOString();
+			await writeManagedWorktreeRecord({
+				...record,
+				sessionFile: null,
+				sessionId: null,
+				title: null,
+				updatedAt: now,
+				lastUsedAt: now,
+			});
+		}
+		await this.#refreshAfterWorktreeSessionChange(
+			`Switched to local checkout for managed worktree ${record.name}: ${shortenPath(localCwd)}`,
 		);
 	}
 

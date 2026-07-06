@@ -4,9 +4,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { type ToolSession, WorktreeTool } from "@oh-my-pi/pi-coding-agent/tools";
+import type { WorktreeToolDetails } from "@oh-my-pi/pi-coding-agent/tools/worktree";
 import { targetCwdForRecord } from "@oh-my-pi/pi-coding-agent/worktree/manager";
 import { readManagedWorktreeRecord } from "@oh-my-pi/pi-coding-agent/worktree/metadata";
-import type { WorktreeToolDetails } from "@oh-my-pi/pi-coding-agent/tools/worktree";
 import type { ManagedWorktreeRecord } from "@oh-my-pi/pi-coding-agent/worktree/types";
 import { removeWithRetries, setWorktreesDir } from "@oh-my-pi/pi-utils";
 
@@ -36,13 +36,25 @@ function restoreEnv(): void {
 }
 
 function createToolSession(cwd: string, overrides: Partial<ToolSession> = {}): ToolSession {
+	let currentCwd = cwd;
+	const { moveSessionToCwd, ...rest } = overrides;
 	return {
-		cwd,
 		hasUI: false,
 		getSessionFile: () => null,
 		getSessionSpawns: () => null,
 		settings: Settings.isolated(),
-		...overrides,
+		...rest,
+		get cwd() {
+			return currentCwd;
+		},
+		...(moveSessionToCwd
+			? {
+					moveSessionToCwd: async (nextCwd: string) => {
+						await moveSessionToCwd(nextCwd);
+						currentCwd = nextCwd;
+					},
+				}
+			: {}),
 	};
 }
 
@@ -272,12 +284,80 @@ describe("WorktreeTool", () => {
 		);
 	});
 
+	it("switch-local returns to the matching local checkout directory before merge and remove", async () => {
+		const { repoRoot } = await createGitRepo("switch-local-flow");
+		const localAgentCwd = path.join(repoRoot, "packages", "agent");
+		const movedCwds: string[] = [];
+		const sessionFile = path.join(tempRoot, "sessions", "switch-local.json");
+		const session = createToolSession(localAgentCwd, {
+			getSessionFile: () => sessionFile,
+			getSessionId: () => "switch-local-session",
+			getSessionName: () => "Switch Local Session",
+			moveSessionToCwd: async cwd => {
+				movedCwds.push(cwd);
+			},
+		});
+
+		const addResult = await executeWorktree(session, {
+			op: "add",
+			name: "Local Return",
+			dirtyPolicy: "ignore",
+		});
+		const record = detailsOf(addResult).record as ManagedWorktreeRecord;
+		const managedAgentCwd = path.join(record.worktreeRoot, "packages", "agent");
+
+		await executeWorktree(session, { op: "switch", idOrName: record.id });
+
+		expect(session.cwd).toBe(managedAgentCwd);
+		await fs.writeFile(path.join(managedAgentCwd, "index.ts"), "export const value = 2;\n", "utf8");
+		await expect(executeWorktree(session, { op: "merge", idOrName: record.id })).rejects.toThrow(
+			"Switch back to the local checkout",
+		);
+
+		const switchLocalResult = await executeWorktree(session, { op: "switch-local", idOrName: record.id });
+		const switchLocalDetails = detailsOf(switchLocalResult);
+		const persistedAfterSwitchLocal = await readManagedWorktreeRecord(record.id);
+
+		expect(session.cwd).toBe(localAgentCwd);
+		expect(movedCwds).toEqual([managedAgentCwd, localAgentCwd]);
+		expect(switchLocalDetails.switchedCwd).toBe(localAgentCwd);
+		expect(switchLocalDetails.localCwd).toBe(localAgentCwd);
+		expect(switchLocalDetails.record).toMatchObject({
+			id: record.id,
+			sessionFile: null,
+			sessionId: null,
+			title: null,
+		});
+		expect(persistedAfterSwitchLocal).toMatchObject({
+			id: record.id,
+			sessionFile: null,
+			sessionId: null,
+			title: null,
+		});
+
+		await executeWorktree(session, { op: "merge", idOrName: record.id });
+		expect(await fs.readFile(path.join(localAgentCwd, "index.ts"), "utf8")).toBe("export const value = 2;\n");
+
+		await executeWorktree(session, { op: "remove", idOrName: record.id });
+		expect(await pathExists(record.worktreeRoot)).toBe(false);
+	});
+
 	it("rejects switch when the session cannot move cwd", async () => {
 		const { repoRoot } = await createGitRepo("switch-missing-hook");
 		const session = createToolSession(repoRoot);
 		const record = await addWorktree(session, "No Hook Target");
 
 		await expect(executeWorktree(session, { op: "switch", idOrName: record.id })).rejects.toThrow(
+			"Current mode does not support moving the session cwd from the worktree tool.",
+		);
+	});
+
+	it("rejects switch-local when the session cannot move cwd", async () => {
+		const { repoRoot } = await createGitRepo("switch-local-missing-hook");
+		const session = createToolSession(repoRoot);
+		const record = await addWorktree(session, "No Hook Target");
+
+		await expect(executeWorktree(session, { op: "switch-local", idOrName: record.id })).rejects.toThrow(
 			"Current mode does not support moving the session cwd from the worktree tool.",
 		);
 	});

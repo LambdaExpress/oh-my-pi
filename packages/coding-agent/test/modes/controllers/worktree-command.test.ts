@@ -3,12 +3,12 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
-import * as worktreeManager from "@oh-my-pi/pi-coding-agent/worktree/manager";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import type { ManagedWorktreeResult } from "@oh-my-pi/pi-coding-agent/worktree/manager";
+import * as worktreeManager from "@oh-my-pi/pi-coding-agent/worktree/manager";
 import { readManagedWorktreeRecord, writeManagedWorktreeRecord } from "@oh-my-pi/pi-coding-agent/worktree/metadata";
 import type { ManagedWorktreeRecord } from "@oh-my-pi/pi-coding-agent/worktree/types";
-import type { ManagedWorktreeResult } from "@oh-my-pi/pi-coding-agent/worktree/manager";
 import { removeWithRetries, setWorktreesDir } from "@oh-my-pi/pi-utils";
 
 interface WorktreeCommandController {
@@ -223,6 +223,32 @@ describe("CommandController /worktree", () => {
 		expect(ctx.sessionManager.moveTo).not.toHaveBeenCalled();
 		expect(ctx.applyCwdChange).not.toHaveBeenCalled();
 		expect(ctx.showWarning).toHaveBeenCalledWith(expect.stringContaining("current response"));
+	});
+
+	it("switch-local moves the current session back to the local checkout without opening a session", async () => {
+		const base = await setupManagedBase();
+		const record = await createRecord(base, {
+			id: "alpha-local",
+			name: "Alpha Local",
+			sessionId: "current-session-id",
+			title: "Current Session",
+		});
+		const targetCwd = path.join(record.worktreeRoot, record.relativeCwd);
+		const localCwd = path.join(record.sourceRepoRoot, record.relativeCwd);
+		await fs.mkdir(localCwd, { recursive: true });
+		const { ctx, order, session } = createWorktreeContext(targetCwd);
+
+		await (new CommandController(ctx) as unknown as WorktreeCommandController).handleWorktreeCommand(
+			"switch-local alpha-local",
+		);
+
+		expect(ctx.sessionManager.moveTo).toHaveBeenCalledWith(localCwd);
+		expect(ctx.applyCwdChange).toHaveBeenCalledWith(localCwd);
+		expect(order.indexOf("moveTo")).toBeLessThan(order.indexOf("applyCwdChange"));
+		expect(session.switchSession).not.toHaveBeenCalled();
+		expect(session.newSession).not.toHaveBeenCalled();
+		expect(ctx.showError).not.toHaveBeenCalled();
+		expect(ctx.showWarning).not.toHaveBeenCalled();
 	});
 
 	it("creates a session for an unassociated worktree and persists the metadata binding", async () => {

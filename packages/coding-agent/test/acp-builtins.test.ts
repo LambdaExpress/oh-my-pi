@@ -691,6 +691,47 @@ describe("session lifecycle commands", () => {
 			await fixture.cleanup();
 		}
 	});
+
+	it("/worktree switch-local: moves back to the local checkout and refreshes headless cwd-derived state", async () => {
+		const fixture = await createManagedWorktreeFixture("alpha", "Alpha");
+		const { output, session, fakeSessionManager, runtime } = createRuntime();
+		const localCwd = path.join(fixture.record.sourceRepoRoot, fixture.record.relativeCwd);
+		const reloadForCwd = spyOn(runtime.settings, "reloadForCwd");
+		const newSession = spyOn(session, "newSession");
+		const switchSession = spyOn(session, "switchSession");
+		let pluginsReloaded = false;
+		let configNotified = 0;
+		let titleNotified = 0;
+		fakeSessionManager._cwd = fixture.targetCwd;
+		runtime.cwd = fixture.targetCwd;
+		runtime.reloadPlugins = async () => {
+			pluginsReloaded = true;
+		};
+		runtime.notifyConfigChanged = () => {
+			configNotified++;
+		};
+		runtime.notifyTitleChanged = () => {
+			titleNotified++;
+		};
+
+		try {
+			await fs.mkdir(localCwd, { recursive: true });
+
+			const result = await executeAcpBuiltinSlashCommand("/worktree switch-local alpha", runtime);
+
+			expect(result).toEqual({ consumed: true });
+			expect(fakeSessionManager.getCwd()).toBe(localCwd);
+			expect(reloadForCwd).toHaveBeenCalledWith(localCwd);
+			expect(pluginsReloaded).toBe(true);
+			expect(configNotified).toBe(1);
+			expect(titleNotified).toBe(1);
+			expect(output[0]).toContain(localCwd);
+			expect(newSession).not.toHaveBeenCalled();
+			expect(switchSession).not.toHaveBeenCalled();
+		} finally {
+			await fixture.cleanup();
+		}
+	});
 });
 
 describe("wave 3 commands", () => {

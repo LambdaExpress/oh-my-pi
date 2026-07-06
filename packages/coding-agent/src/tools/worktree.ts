@@ -14,12 +14,13 @@ import {
 	branchManagedWorktree,
 	findManagedWorktreeRecord,
 	listManagedWorktrees,
+	localCwdForRecord,
+	type ManagedWorktreeListItem,
+	type ManagedWorktreeRecord,
 	mergeManagedWorktree,
 	removeManagedWorktree,
 	restoreManagedWorktree,
 	targetCwdForRecord,
-	type ManagedWorktreeListItem,
-	type ManagedWorktreeRecord,
 } from "../worktree/manager";
 import { writeManagedWorktreeSession } from "../worktree/session";
 import type { ManagedWorktreeDirtyPolicy } from "../worktree/types";
@@ -31,13 +32,15 @@ import { toolResult } from "./tool-result";
 const WORKTREE_READONLY_OPS: Record<string, true> = { list: true, path: true };
 
 const worktreeSchema = type({
-	op: type("'list' | 'add' | 'path' | 'switch' | 'merge' | 'remove' | 'branch' | 'restore'").describe(
+	op: type("'list' | 'add' | 'path' | 'switch' | 'switch-local' | 'merge' | 'remove' | 'branch' | 'restore'").describe(
 		"worktree operation",
 	),
 	"name?": type("string").describe("new worktree name for add"),
 	"base?": type("string").describe("base ref for add; defaults to HEAD"),
 	"dirtyPolicy?": type("'ignore' | 'copy' | 'move'").describe("uncommitted-change handling for add"),
-	"recurseSubmodules?": type("boolean").describe("initialize and manage submodules recursively for add; defaults false"),
+	"recurseSubmodules?": type("boolean").describe(
+		"initialize and manage submodules recursively for add; defaults false",
+	),
 	"idOrName?": type("string").describe("managed worktree id or name"),
 	"branch?": type("string").describe("branch name for branch"),
 	"force?": type("boolean").describe("allow removing permanent managed worktrees"),
@@ -52,6 +55,7 @@ export interface WorktreeToolDetails {
 	record?: ManagedWorktreeRecord;
 	worktreeRoot?: string;
 	targetCwd?: string;
+	localCwd?: string;
 	warnings?: string[];
 	switchedCwd?: string;
 	removed?: boolean;
@@ -75,14 +79,17 @@ async function requireManagedRecord(idOrName: string): Promise<ManagedWorktreeRe
 	return record;
 }
 
-async function requireDirectory(dir: string): Promise<void> {
+async function requireDirectory(
+	dir: string,
+	missingMessage = "Managed worktree directory is missing; remove metadata or restore from snapshot.",
+): Promise<void> {
 	try {
 		const stat = await fs.stat(dir);
 		if (stat.isDirectory()) return;
 	} catch {
 		// Fall through to the canonical tool error below.
 	}
-	throw new ToolError("Managed worktree directory is missing; remove metadata or restore from snapshot.");
+	throw new ToolError(missingMessage);
 }
 
 function statusLabel(item: ManagedWorktreeListItem): string {
@@ -109,6 +116,7 @@ function withTarget(details: WorktreeToolDetails, record: ManagedWorktreeRecord)
 		record,
 		worktreeRoot: record.worktreeRoot,
 		targetCwd: targetCwdForRecord(record),
+		localCwd: localCwdForRecord(record),
 	};
 }
 
@@ -193,6 +201,34 @@ export class WorktreeTool implements AgentTool<typeof worktreeSchema, WorktreeTo
 						switchedCwd: targetCwd,
 					})
 						.text(`Switched current session to managed worktree ${updated.name}: ${targetCwd}`)
+						.done();
+				}
+				case "switch-local": {
+					if (!this.session.moveSessionToCwd) {
+						throw new ToolError("Current mode does not support moving the session cwd from the worktree tool.");
+					}
+					const record = await requireManagedRecord(requireText(params.idOrName, "idOrName"));
+					const targetCwd = targetCwdForRecord(record);
+					const localCwd = localCwdForRecord(record);
+					await requireDirectory(localCwd, "Local checkout directory is missing for this managed worktree.");
+					await this.session.moveSessionToCwd(localCwd);
+					const currentSessionFile = this.session.getSessionFile() ?? null;
+					const currentSessionId = this.session.getSessionId?.() ?? null;
+					const shouldClearSessionBinding =
+						(currentSessionFile !== null && record.sessionFile === currentSessionFile) ||
+						(currentSessionId !== null && record.sessionId === currentSessionId);
+					const updated = shouldClearSessionBinding
+						? await writeManagedWorktreeSession(record, { sessionFile: null, sessionId: null, title: null })
+						: record;
+					return toolResult<WorktreeToolDetails>({
+						op: params.op,
+						record: updated,
+						worktreeRoot: record.worktreeRoot,
+						targetCwd,
+						localCwd,
+						switchedCwd: localCwd,
+					})
+						.text(`Switched current session to local checkout for managed worktree ${record.name}: ${localCwd}`)
 						.done();
 				}
 				case "merge": {

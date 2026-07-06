@@ -13,10 +13,10 @@ import {
 } from "./metadata";
 import {
 	captureManagedWorktreeChanges,
-	restoreManagedWorktreeSnapshot,
-	saveManagedWorktreeSnapshot,
 	type ManagedWorktreeChanges,
 	type ManagedWorktreeSubmoduleChanges,
+	restoreManagedWorktreeSnapshot,
+	saveManagedWorktreeSnapshot,
 } from "./snapshot";
 import { initializeManagedSubmodules, refreshManagedSubmoduleHeads, submoduleRecordsByPath } from "./submodules";
 import type {
@@ -26,8 +26,8 @@ import type {
 	ManagedWorktreeSubmoduleRecord,
 } from "./types";
 
-export type { ManagedWorktreeListItem, ManagedWorktreeRecord } from "./types";
 export { findManagedWorktreeRecord } from "./metadata";
+export type { ManagedWorktreeListItem, ManagedWorktreeRecord } from "./types";
 
 export interface AddManagedWorktreeOptions {
 	cwd: string;
@@ -121,6 +121,11 @@ export function targetCwdForRecord(record: ManagedWorktreeRecord): string {
 	return relativeCwd === "" ? record.worktreeRoot : path.join(record.worktreeRoot, relativeCwd);
 }
 
+export function localCwdForRecord(record: ManagedWorktreeRecord): string {
+	const relativeCwd = cleanRelativeCwd(record.relativeCwd);
+	return relativeCwd === "" ? record.sourceRepoRoot : path.join(record.sourceRepoRoot, relativeCwd);
+}
+
 async function resolveRepositoryRoots(cwd: string): Promise<{ repoRoot: string; primaryRoot: string }> {
 	const repoRoot = await git.repo.root(cwd);
 	if (!repoRoot)
@@ -191,7 +196,10 @@ function hasChanges(changes: ManagedWorktreeChanges): boolean {
 	return changes.submodules.some(submoduleChangesHaveContent);
 }
 
-function recordWithCapturedHeads(record: ManagedWorktreeRecord, changes: ManagedWorktreeChanges): ManagedWorktreeRecord {
+function recordWithCapturedHeads(
+	record: ManagedWorktreeRecord,
+	changes: ManagedWorktreeChanges,
+): ManagedWorktreeRecord {
 	const changesByPath = new Map(changes.submodules.map(submodule => [submodule.path, submodule.headSha]));
 	return {
 		...record,
@@ -203,11 +211,18 @@ function recordWithCapturedHeads(record: ManagedWorktreeRecord, changes: Managed
 	};
 }
 
-function changedFilePaths(changes: { untrackedPaths: readonly string[]; includedIgnoredPaths: readonly string[] }): string[] {
+function changedFilePaths(changes: {
+	untrackedPaths: readonly string[];
+	includedIgnoredPaths: readonly string[];
+}): string[] {
 	return [...changes.untrackedPaths, ...changes.includedIgnoredPaths];
 }
 
-async function copyChangedFiles(sourceRoot: string, targetRoot: string, relativePaths: readonly string[]): Promise<void> {
+async function copyChangedFiles(
+	sourceRoot: string,
+	targetRoot: string,
+	relativePaths: readonly string[],
+): Promise<void> {
 	for (const relativePath of relativePaths) {
 		await fs.mkdir(path.dirname(path.join(targetRoot, relativePath)), { recursive: true });
 		await fs.cp(path.join(sourceRoot, relativePath), path.join(targetRoot, relativePath), {
@@ -275,8 +290,18 @@ async function transferDirtyState(
 	};
 	const result =
 		policy === "copy"
-			? await copyDirtyStateToWorktree(record.sourceRepoRoot, record.worktreeRoot, record.baseSha, dirtyTransferOptions)
-			: await moveDirtyStateToWorktree(record.sourceRepoRoot, record.worktreeRoot, record.baseSha, dirtyTransferOptions);
+			? await copyDirtyStateToWorktree(
+					record.sourceRepoRoot,
+					record.worktreeRoot,
+					record.baseSha,
+					dirtyTransferOptions,
+				)
+			: await moveDirtyStateToWorktree(
+					record.sourceRepoRoot,
+					record.worktreeRoot,
+					record.baseSha,
+					dirtyTransferOptions,
+				);
 	const includedByPath = new Map(result.submodules.map(submodule => [submodule.path, submodule.includedIgnoredPaths]));
 	const submodules = await refreshManagedSubmoduleHeads({
 		...record,
@@ -569,7 +594,9 @@ export async function restoreManagedWorktree(options: RestoreManagedWorktreeOpti
 			const previousByPath = submoduleRecordsByPath(record.submodules);
 			submodules = initialized.map(submodule => {
 				const previous = previousByPath.get(submodule.path);
-				return previous ? { ...submodule, baseSha: previous.baseSha, includeCopied: previous.includeCopied } : submodule;
+				return previous
+					? { ...submodule, baseSha: previous.baseSha, includeCopied: previous.includeCopied }
+					: submodule;
 			});
 		}
 		await restoreManagedWorktreeSnapshot(record, worktreeRoot);
