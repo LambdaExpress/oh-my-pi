@@ -333,6 +333,7 @@ export const BUNDLED_PI_REGISTRY_KEYS: ReadonlySet<string> = new Set([
 	"@oh-my-pi/pi-coding-agent/commit/utils",
 	"@oh-my-pi/pi-coding-agent/commit/agentic/agent",
 	"@oh-my-pi/pi-coding-agent/commit/agentic/fallback",
+	"@oh-my-pi/pi-coding-agent/commit/agentic/lock-files",
 	"@oh-my-pi/pi-coding-agent/commit/agentic/state",
 	"@oh-my-pi/pi-coding-agent/commit/agentic/topo-sort",
 	"@oh-my-pi/pi-coding-agent/commit/agentic/trivial",

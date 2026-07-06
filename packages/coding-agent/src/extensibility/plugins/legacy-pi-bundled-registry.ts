@@ -289,6 +289,7 @@ import * as bundledPiCodingAgentCommit from "@oh-my-pi/pi-coding-agent/commit";
 import * as bundledPiCodingAgentCommitAgentic from "@oh-my-pi/pi-coding-agent/commit/agentic";
 import * as bundledPiCodingAgentCommitAgenticAgent from "@oh-my-pi/pi-coding-agent/commit/agentic/agent";
 import * as bundledPiCodingAgentCommitAgenticFallback from "@oh-my-pi/pi-coding-agent/commit/agentic/fallback";
+import * as bundledPiCodingAgentCommitAgenticLockFiles from "@oh-my-pi/pi-coding-agent/commit/agentic/lock-files";
 import * as bundledPiCodingAgentCommitAgenticState from "@oh-my-pi/pi-coding-agent/commit/agentic/state";
 import * as bundledPiCodingAgentCommitAgenticTools from "@oh-my-pi/pi-coding-agent/commit/agentic/tools";
 import * as bundledPiCodingAgentCommitAgenticToolsAnalyzeFile from "@oh-my-pi/pi-coding-agent/commit/agentic/tools/analyze-file";
@@ -1794,6 +1795,8 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	>,
 	"@oh-my-pi/pi-coding-agent/commit/agentic/fallback":
 		bundledPiCodingAgentCommitAgenticFallback as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/commit/agentic/lock-files":
+		bundledPiCodingAgentCommitAgenticLockFiles as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/commit/agentic/state": bundledPiCodingAgentCommitAgenticState as unknown as Readonly<
 		Record<string, unknown>
 	>,
