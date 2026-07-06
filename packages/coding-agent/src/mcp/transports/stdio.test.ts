@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import { resolveStdioSpawnCommand, StdioTransport } from "./stdio";
 
@@ -27,6 +30,87 @@ describe("resolveStdioSpawnCommand", () => {
 		).resolves.toEqual({
 			cmd: ["server.exe", "--stdio"],
 			windowsHide: false,
+			detached: false,
+		});
+	});
+
+	it("launches a cwd-resolved Windows .cmd through cmd.exe with argv preserved", async () => {
+		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-stdio-cwd-cmd-"));
+		try {
+			const commandPath = path.join(cwd, "local-server.cmd");
+			await Bun.write(commandPath, "@echo off\r\n");
+
+			await expect(
+				resolveStdioSpawnCommand(
+					{ command: "local-server", args: ["--stdio", "two words", ""] },
+					{
+						cwd,
+						env: { PATHEXT: ".cmd;.exe" },
+						platform: "win32",
+						hostHasInheritableConsole: false,
+					},
+				),
+			).resolves.toEqual({
+				cmd: ["cmd.exe", "/d", "/s", "/c", commandPath, "--stdio", "two words", ""],
+				windowsHide: true,
+				detached: false,
+			});
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	it("launches a PATH-resolved Windows .cmd through cmd.exe with argv preserved", async () => {
+		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-stdio-path-cwd-"));
+		const pathDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-stdio-path-bin-"));
+		try {
+			const commandPath = path.join(pathDir, "path-server.cmd");
+			await Bun.write(commandPath, "@echo off\r\n");
+
+			await expect(
+				resolveStdioSpawnCommand(
+					{ command: "path-server", args: ["--stdio", "two words"] },
+					{
+						cwd,
+						env: { PATH: pathDir, PATHEXT: ".cmd;.exe" },
+						platform: "win32",
+						hostHasInheritableConsole: false,
+					},
+				),
+			).resolves.toEqual({
+				cmd: ["cmd.exe", "/d", "/s", "/c", commandPath, "--stdio", "two words"],
+				windowsHide: true,
+				detached: false,
+			});
+		} finally {
+			await fs.rm(cwd, { recursive: true, force: true });
+			await fs.rm(pathDir, { recursive: true, force: true });
+		}
+	});
+
+	it("lets cmd.exe do PATHEXT lookup for unresolved bare Windows commands while preserving argv", async () => {
+		await expect(
+			resolveStdioSpawnCommand(
+				{ command: "npx", args: ["--yes", "@modelcontextprotocol/server", "two words"] },
+				{
+					cwd: process.cwd(),
+					env: {},
+					platform: "win32",
+					hostHasInheritableConsole: false,
+				},
+			),
+		).resolves.toEqual({
+			cmd: [
+				"cmd.exe",
+				"/d",
+				"/s",
+				"/c",
+				"npx",
+				"--yes",
+				"@modelcontextprotocol/server",
+				"two words",
+			],
+			windowsHide: true,
 			detached: false,
 		});
 	});

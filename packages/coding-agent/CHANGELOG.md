@@ -27,6 +27,7 @@
 
 ### Fixed
 
+- Fixed Windows stdio MCP server launches for `.cmd`/`.bat` shims by preserving the command and arguments as separate `cmd.exe /c` argv entries instead of pre-quoting them into one nested command string.
 - Fixed `/tree` rendering blank rows for automatic session title updates by hiding `title_change` bookkeeping entries in the default view and rendering their title text in the all filter.
 - Fixed interactive MCP startup status so deferred MCP discovery starts only after the TUI subscribes to startup events, allowing the initial `Connecting to MCP servers: …` banner to render before completion updates.
 - Fixed collapsed eval code previews folding a single long logical line into only an `earlier lines` marker when terminal wrapping produced a short two-row visual preview.

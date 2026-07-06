@@ -153,7 +153,7 @@ async function resolveWindowsNpmShimCommand(
 	cwd: string,
 	windowsHide: boolean,
 ): Promise<StdioSpawnCommand | null> {
-	if (!isWindowsBatchCommand(command)) return null;
+	if (!WINDOWS_BATCH_EXTENSIONS.has(path.extname(command).toLowerCase())) return null;
 	if (!hasPathSegment(command)) return null;
 	const commandPath = path.resolve(cwd, command);
 	const commandName = path
@@ -197,37 +197,9 @@ async function resolveWindowsNpmShimCommand(
 		detached: false,
 	};
 }
-
-function quoteCmdArg(value: string): string {
-	if (value.length === 0) return '""';
-	let result = '"';
-	for (const char of value) {
-		if (char === '"') {
-			result += '^"';
-		} else if (char === "^") {
-			result += "^^";
-		} else if (char === "%") {
-			result += "^%";
-		} else {
-			result += char;
-		}
-	}
-	return `${result}"`;
-}
-
-function isWindowsBatchCommand(command: string): boolean {
-	return WINDOWS_BATCH_EXTENSIONS.has(path.extname(command).toLowerCase());
-}
-
 function resolveComSpec(env: Record<string, string | undefined>): string {
 	const comspec = getCaseInsensitiveEnv(env, "COMSPEC");
 	return comspec && comspec.length > 0 ? comspec : "cmd.exe";
-}
-
-/** `cmd /s /c` strips one outer quote pair; keep inner argv quotes intact. */
-function buildCmdExeCommand(command: string, args: readonly string[]): string {
-	const quotedCommand = [command, ...args].map(quoteCmdArg).join(" ");
-	return `"${quotedCommand}"`;
 }
 
 /**
@@ -262,11 +234,15 @@ export async function resolveStdioSpawnCommand(
 	// same console session. Only hide the child when OMP itself has no console
 	// to share; CREATE_NO_WINDOW breaks console inheritance for nested wrappers.
 	const detached = false;
-	const needsCmdExe = resolved === null || isWindowsBatchCommand(resolvedCommand);
+	const needsCmdExe =
+		resolved === null || WINDOWS_BATCH_EXTENSIONS.has(path.extname(resolvedCommand).toLowerCase());
 	if (!needsCmdExe) return { cmd: [resolvedCommand, ...args], windowsHide, detached };
 
 	return {
-		cmd: [resolveComSpec(options.env), "/d", "/s", "/c", buildCmdExeCommand(resolvedCommand, args)],
+		// Keep the batch command and its arguments as argv after `/c`.
+		// Pre-quoting a nested command string here is re-escaped by Windows
+		// process creation and can make cmd.exe see literal quote characters.
+		cmd: [resolveComSpec(options.env), "/d", "/s", "/c", resolvedCommand, ...args],
 		windowsHide,
 		detached,
 	};
