@@ -56,6 +56,30 @@
 - Fixed auto-snapcompact reporting failed maintenance when local rendering throws; rendering failures now downgrade to context-full auto-compaction like other snapcompact local blockers.
 - Fixed the `pwsh` tool spawning a visible console window for native executables on Windows by applying the existing no-console `windowsHide` policy to the PowerShell host process.
 - Fixed the `pwsh` tool prompt over-selecting PowerShell on Windows by making `bash` the default unless PowerShell-specific syntax or providers are required.
+## [16.3.9] - 2026-07-06
+
+### Added
+
+- Added a `--file` flag to the `say` command to read input text directly from files.
+- Enabled streaming text synthesis in the `say` command for gapless, long-form audio generation.
+- Added voice selection validation to the `say` command.
+
+### Changed
+
+- Improved the `say` command to display the segment count and total duration upon completion.
+
+### Fixed
+
+- Fixed an issue where local llama.cpp vision models remained text-only after a model refresh, ensuring they are correctly recognized as image-capable when configured as the default or vision role.
+- Fixed `omp commit` split plans aborting when lock files (such as `bun.lockb`) were staged alongside their manifests by correctly pairing lock files with their corresponding commit groups and properly handling binary files during split execution.
+- Fixed skill loading to ensure that disabling a higher-priority provider does not drop same-named skills from enabled lower-priority providers.
+
+## [16.3.8] - 2026-07-05
+
+### Fixed
+
+- Fixed the browser tool silently launching without its Puppeteer stealth patch: the patch was keyed to `puppeteer-core@25.1.0` while the resolved dependency had drifted to `25.3.0`, so Bun skipped it and Chrome ran with the `Runtime.enable` automation tell re-enabled. Regenerated the stealth patch against 25.3.0 and pinned `puppeteer-core` so the exact-version patch cannot silently deactivate on future drift.
+
 ## [16.3.7] - 2026-07-05
 
 ### Added

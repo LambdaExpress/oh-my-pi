@@ -11,6 +11,13 @@
 - Fixed editor caret movement entering image or paste placeholders; keyboard left/right, word, and vertical movement now treat matched placeholders as atomic tokens.
 - Fixed live rows below a native-scrollback seam vanishing while streaming; scrolled-off live rows now enter history as frozen snapshots, with finalize-time repairs bounded so unchanged output does not repeat indefinitely.
 - Fixed OSC 8 hyperlinks staying disabled in Windows Terminal when `tui.hyperlinks=auto`.
+## [16.3.9] - 2026-07-06
+
+### Fixed
+
+- Fixed autocompletion for absolute paths (such as `/tmp/...` or `/Users/...`) at the start of a prompt, ensuring they fall back to file-path completion instead of being incorrectly treated as slash commands.
+- Updated absolute path autocompletion behavior so that accepting a suggestion inserts the path without submitting the prompt.
+
 ## [16.3.7] - 2026-07-05
 
 ### Fixed

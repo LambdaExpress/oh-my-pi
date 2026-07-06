@@ -6,6 +6,12 @@
 
 - Fixed facts returned by recall being impossible to delete by their visible fact id; `forgetFact()` now deletes visible `facts` rows and invalidates recall caches.
 - Added a non-destructive fact-id visibility check so hosts can distinguish unsupported fact edits from genuinely missing memory ids.
+## [16.3.9] - 2026-07-06
+
+### Fixed
+
+- Fixed extractor JSON parsing to correctly unwrap object-shaped facts, instructions, preferences, and timeline items from known text fields instead of persisting literal `[object Object]` rows.
+
 ## [16.3.7] - 2026-07-05
 
 ### Added
