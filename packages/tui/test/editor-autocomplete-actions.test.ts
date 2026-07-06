@@ -98,6 +98,7 @@ describe("Editor slash autocomplete acceptance", () => {
 		const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "editor-absolute-tab-"));
 		try {
 			fs.writeFileSync(path.join(baseDir, "alpha.ts"), "export {};\n");
+			fs.writeFileSync(path.join(baseDir, "alpine.ts"), "export {};\n");
 			const normalizedBaseDir = baseDir.replace(/\\/g, "/");
 			const prefix = `${normalizedBaseDir}/al`;
 			const completedPath = `${normalizedBaseDir}/alpha.ts`;
@@ -124,6 +125,7 @@ describe("Editor slash autocomplete acceptance", () => {
 		const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "editor-absolute-enter-"));
 		try {
 			fs.writeFileSync(path.join(baseDir, "alpha.ts"), "export {};\n");
+			fs.writeFileSync(path.join(baseDir, "alpine.ts"), "export {};\n");
 			const normalizedBaseDir = baseDir.replace(/\\/g, "/");
 			const prefix = `${normalizedBaseDir}/al`;
 			const completedPath = `${normalizedBaseDir}/alpha.ts`;
@@ -230,6 +232,35 @@ describe("Editor Enter handler sync slash completion", () => {
 		// survive a mid-prompt skill acceptance — only the partial `/sec` slash
 		// token at the cursor is replaced with `/skill:security-scan `.
 		expect(editor.getText()).toBe("explain this\n/skill:security-scan ");
+	});
+
+	it("accepts skill autocomplete with Tab inside /btw arguments", async () => {
+		function makeEditor(): Editor {
+			const editor = new Editor(defaultEditorTheme);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider(
+					[
+						{ name: "btw", description: "Ask a side question", allowArgs: true },
+						{ name: "skill:security-scan", description: "Security scan" },
+						{ name: "model", description: "Switch model" },
+					],
+					"/tmp",
+				),
+			);
+			return editor;
+		}
+
+		for (const input of ["/btw /sec", "/btw /skill:"]) {
+			const editor = makeEditor();
+			editor.handleInput(input);
+			// This exercises the editor's real debounce path before accepting the visible completion.
+			await Bun.sleep(120);
+			expect(editor.isShowingAutocomplete()).toBe(true);
+
+			editor.handleInput("\t");
+
+			expect(editor.getText()).toBe("/btw /skill:security-scan ");
+		}
 	});
 
 	it("preserves Tab file completion for an absolute path token after prose", async () => {

@@ -2941,6 +2941,9 @@ export class Editor implements Component, Focusable {
 	 * - Exact match → always safe.
 	 * - Path branch is safe when the prefix is still a live suffix of the text; the
 	 *   provider's default slice at `cursorCol - prefix.length` then hits the right span.
+	 * - Skill slash branch re-anchors against the current trailing slash token when
+	 *   a mid-prompt skill candidate is selected, matching `CombinedAutocompleteProvider`'s
+	 *   replacement span for `/btw /sec`-style input.
 	 * - Slash branch re-anchors when both the prefix and the current text carry a
 	 *   leading slash command and the current slash token is clean (no whitespace or
 	 *   inner slash), matching `applyCompletion`'s slash-branch guard. It only
@@ -2953,6 +2956,19 @@ export class Editor implements Component, Focusable {
 	 */
 	#autocompletePrefixMatchesCursorText(currentTextBeforeCursor: string): boolean {
 		if (currentTextBeforeCursor === this.#autocompletePrefix) return true;
+
+		if (
+			this.#selectedCompletionIsSkillCommand() &&
+			findTrailingSlashCommandStart(this.#autocompletePrefix) !== null
+		) {
+			const currentTrailingStart = findTrailingSlashCommandStart(currentTextBeforeCursor);
+			if (
+				currentTrailingStart !== null &&
+				currentTextBeforeCursor.slice(currentTrailingStart) === this.#autocompletePrefix
+			) {
+				return true;
+			}
+		}
 
 		if (findLeadingSlashCommandStart(this.#autocompletePrefix) !== null && !this.#selectedCompletionIsPath()) {
 			const currentLeadingStart = findLeadingSlashCommandStart(currentTextBeforeCursor);
@@ -2968,6 +2984,16 @@ export class Editor implements Component, Focusable {
 		}
 
 		return currentTextBeforeCursor.endsWith(this.#autocompletePrefix);
+	}
+
+	/**
+	 * Whether the current popup selection inserts a `/skill:<name>` command.
+	 * Only this exact value shape uses the mid-prompt skill slash replacement.
+	 */
+	#selectedCompletionIsSkillCommand(): boolean {
+		const selected = this.#autocompleteList?.getSelectedItem();
+		if (!selected) return false;
+		return selected.value.startsWith("skill:");
 	}
 
 	/**
