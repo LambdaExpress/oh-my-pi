@@ -24,7 +24,10 @@ export async function initializeManagedSubmodules(
 	const paths = entries.map(entry => entry.path);
 	return entries
 		.slice()
-		.sort((left, right) => submodulePathDepth(left.path) - submodulePathDepth(right.path) || left.path.localeCompare(right.path))
+		.sort(
+			(left, right) =>
+				submodulePathDepth(left.path) - submodulePathDepth(right.path) || left.path.localeCompare(right.path),
+		)
 		.map(entry => {
 			if (entry.marker === "-") throw new Error(`Submodule was not initialized: ${entry.path}`);
 			if (!isSafeRelativePath(entry.path)) throw new Error(`Refusing to handle unsafe path: ${entry.path}`);

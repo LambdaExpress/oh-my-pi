@@ -152,8 +152,14 @@ async function writeRepoSnapshot(
 	await fs.mkdir(snapshotPath, { recursive: true });
 	await Promise.all([
 		Bun.write(path.join(snapshotPath, "root.patch"), changes.rootPatch),
-		Bun.write(path.join(snapshotPath, "untracked-manifest.json"), `${JSON.stringify(changes.untrackedPaths, null, "\t")}\n`),
-		Bun.write(path.join(snapshotPath, "included-manifest.json"), `${JSON.stringify(changes.includedIgnoredPaths, null, "\t")}\n`),
+		Bun.write(
+			path.join(snapshotPath, "untracked-manifest.json"),
+			`${JSON.stringify(changes.untrackedPaths, null, "\t")}\n`,
+		),
+		Bun.write(
+			path.join(snapshotPath, "included-manifest.json"),
+			`${JSON.stringify(changes.includedIgnoredPaths, null, "\t")}\n`,
+		),
 	]);
 	await copySnapshotFiles(worktreeRoot, snapshotPath, changes.untrackedPaths, "untracked");
 	await copySnapshotFiles(worktreeRoot, snapshotPath, changes.includedIgnoredPaths, "included");

@@ -84,7 +84,6 @@ async function startScheduledUsageFetch() {
 	await Promise.resolve();
 }
 
-
 beforeAll(async () => {
 	await Settings.init({ inMemory: true });
 	const loaded = await getThemeByName("dark");

@@ -1231,7 +1231,12 @@ export const diff = Object.assign(
 			cwd: string,
 			base: string,
 			headRef: string,
-			options: { binary?: boolean; signal?: AbortSignal; allowFailure?: boolean; ignoreSubmodules?: "all" | "dirty" | "none" } = {},
+			options: {
+				binary?: boolean;
+				signal?: AbortSignal;
+				allowFailure?: boolean;
+				ignoreSubmodules?: "all" | "dirty" | "none";
+			} = {},
 		): Promise<string> {
 			const args = ["diff-tree", "-r", "-p"];
 			if (options.binary) args.push("--binary");

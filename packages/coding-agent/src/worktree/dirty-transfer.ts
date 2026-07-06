@@ -110,7 +110,9 @@ async function prepareTargetSubmoduleHead(submodule: ManagedWorktreeSubmoduleRec
 	try {
 		await git.checkout(submodule.worktreeRoot, sourceHead);
 	} catch {
-		throw new Error(`Could not check out source submodule HEAD ${sourceHead} in managed submodule ${submodule.path}.`);
+		throw new Error(
+			`Could not check out source submodule HEAD ${sourceHead} in managed submodule ${submodule.path}.`,
+		);
 	}
 }
 
@@ -131,7 +133,9 @@ async function copySubmoduleDirtyStates(
 			continue;
 		}
 		await prepareTargetSubmoduleHead(submodule);
-		results.push(await copyRepoDirtyState(sourceRoot, submodule.worktreeRoot, submodule.path, { ignoreSubmodules: true }));
+		results.push(
+			await copyRepoDirtyState(sourceRoot, submodule.worktreeRoot, submodule.path, { ignoreSubmodules: true }),
+		);
 	}
 	return results;
 }
@@ -206,7 +210,9 @@ export async function moveDirtyStateToWorktree(
 		}
 		const submodule = options.submodules?.find(candidate => candidate.path === submoduleResult.path);
 		if (!submodule) continue;
-		submoduleWarnings.push(...(await cleanRepoDirtyState(submodule.sourceRepoRoot, submodule.baseSha, submoduleResult)));
+		submoduleWarnings.push(
+			...(await cleanRepoDirtyState(submodule.sourceRepoRoot, submodule.baseSha, submoduleResult)),
+		);
 	}
 	return {
 		trackedPaths: rootResult.trackedPaths,

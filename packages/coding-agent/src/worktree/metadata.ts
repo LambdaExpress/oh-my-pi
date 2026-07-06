@@ -5,8 +5,8 @@ import type {
 	ManagedWorktreeDirtyPolicy,
 	ManagedWorktreeMode,
 	ManagedWorktreeRecord,
-	ManagedWorktreeSubmoduleRecord,
 	ManagedWorktreeState,
+	ManagedWorktreeSubmoduleRecord,
 } from "./types";
 
 const RECORD_VERSION = 2;
@@ -67,7 +67,6 @@ function isManagedWorktreeSubmoduleRecord(value: unknown): value is ManagedWorkt
 		isStringArray(record.includeCopied)
 	);
 }
-
 
 function parseManagedWorktreeRecord(value: unknown): ManagedWorktreeRecord | null {
 	if (value === null || typeof value !== "object") return null;

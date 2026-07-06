@@ -24,8 +24,8 @@ import {
 	logger,
 	postmortem,
 	prompt,
-	setProjectDir,
 	Snowflake,
+	setProjectDir,
 } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import {
@@ -55,9 +55,9 @@ import {
 	resolveModelRoleValue,
 } from "./config/model-resolver";
 import { loadPromptTemplates as loadPromptTemplatesInternal, type PromptTemplate } from "./config/prompt-templates";
+import { applyProviderGlobalsFromSettings } from "./config/provider-globals";
 import { buildServiceTierByFamily } from "./config/service-tier";
 import { Settings, type SkillsSettings } from "./config/settings";
-import { applyProviderGlobalsFromSettings } from "./config/provider-globals";
 import { CursorExecHandlers } from "./cursor";
 import "./discovery";
 import { initializeWithSettings } from "./discovery";

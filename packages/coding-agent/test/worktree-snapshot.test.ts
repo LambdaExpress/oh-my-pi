@@ -194,7 +194,6 @@ async function removeDirtyRecursiveWorktree(fixtureName: string): Promise<{
 	return { repoRoot, oldWorktreeRoot, recordId: worktree.record.id, snapshotPath };
 }
 
-
 async function removeDirtyWorktree(fixtureName: string): Promise<{
 	repoRoot: string;
 	oldWorktreeRoot: string;

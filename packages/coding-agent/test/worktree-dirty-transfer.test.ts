@@ -209,9 +209,9 @@ async function expectRecursiveDirtyFiles(root: string): Promise<void> {
 	await expect(Bun.file(path.join(root, "modules", "child", "nested", "leaf", "leaf.txt")).text()).resolves.toBe(
 		"leaf dirty\n",
 	);
-	await expect(Bun.file(path.join(root, "modules", "child", "nested", "leaf", "leaf-untracked.txt")).text()).resolves.toBe(
-		"leaf untracked\n",
-	);
+	await expect(
+		Bun.file(path.join(root, "modules", "child", "nested", "leaf", "leaf-untracked.txt")).text(),
+	).resolves.toBe("leaf untracked\n");
 }
 
 async function expectRecursiveSourceClean(root: string): Promise<void> {
@@ -222,11 +222,12 @@ async function expectRecursiveSourceClean(root: string): Promise<void> {
 	await expect(Bun.file(path.join(root, "modules", "child", "nested", "leaf", "leaf.txt")).text()).resolves.toBe(
 		"leaf base\n",
 	);
-	await expect(exists(path.join(root, "modules", "child", "nested", "leaf", "leaf-untracked.txt"))).resolves.toBe(false);
+	await expect(exists(path.join(root, "modules", "child", "nested", "leaf", "leaf-untracked.txt"))).resolves.toBe(
+		false,
+	);
 	await expect(exists(path.join(root, "modules", "child", ".git"))).resolves.toBe(true);
 	await expect(exists(path.join(root, "modules", "child", "nested", "leaf", ".git"))).resolves.toBe(true);
 }
-
 
 async function expectTransferredFiles(targetRoot: string, symlinkCreated: boolean): Promise<void> {
 	await expect(Bun.file(path.join(targetRoot, "staged.txt")).text()).resolves.toBe("source staged\n");

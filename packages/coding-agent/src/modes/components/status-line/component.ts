@@ -900,7 +900,8 @@ export class StatusLineComponent implements Component {
 				this.#observeLateUsageRefresh(session, reportsPromise, usageRefreshGeneration);
 			}
 		} finally {
-			if (this.session === session && this.#usageRefreshGeneration === usageRefreshGeneration) this.#usageInFlight = false;
+			if (this.session === session && this.#usageRefreshGeneration === usageRefreshGeneration)
+				this.#usageInFlight = false;
 		}
 	}
 
@@ -926,7 +927,8 @@ export class StatusLineComponent implements Component {
 				this.#applyUsageRefreshReports(session, reports, usageRefreshGeneration);
 			})
 			.catch(() => {
-				if (this.#disposed || this.session !== session || this.#usageRefreshGeneration !== usageRefreshGeneration) return;
+				if (this.#disposed || this.session !== session || this.#usageRefreshGeneration !== usageRefreshGeneration)
+					return;
 				this.#usageFetchedAt = Date.now();
 			});
 	}

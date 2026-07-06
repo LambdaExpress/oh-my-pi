@@ -126,7 +126,6 @@ async function makeRecursiveManagedChanges(worktreeRoot: string): Promise<void> 
 	]);
 }
 
-
 beforeEach(async () => {
 	previousEnv = {};
 	for (const key of GIT_ENV_KEYS) previousEnv[key] = process.env[key];
@@ -223,16 +222,18 @@ describe("managed worktree merge", () => {
 
 		expect(merged.appliedAt).toEqual(expect.any(String));
 		await expect(Bun.file(path.join(repoRoot, "root.txt")).text()).resolves.toBe("background root\n");
-		await expect(Bun.file(path.join(repoRoot, "root-created.txt")).text()).resolves.toBe("background root untracked\n");
+		await expect(Bun.file(path.join(repoRoot, "root-created.txt")).text()).resolves.toBe(
+			"background root untracked\n",
+		);
 		await expect(Bun.file(path.join(repoRoot, "modules", "child", "child.txt")).text()).resolves.toBe(
 			"background child\n",
 		);
 		await expect(Bun.file(path.join(repoRoot, "modules", "child", "child-created.txt")).text()).resolves.toBe(
 			"background child untracked\n",
 		);
-		await expect(Bun.file(path.join(repoRoot, "modules", "child", "nested", "leaf", "leaf.txt")).text()).resolves.toBe(
-			"background leaf\n",
-		);
+		await expect(
+			Bun.file(path.join(repoRoot, "modules", "child", "nested", "leaf", "leaf.txt")).text(),
+		).resolves.toBe("background leaf\n");
 		await expect(
 			Bun.file(path.join(repoRoot, "modules", "child", "nested", "leaf", "leaf-created.txt")).text(),
 		).resolves.toBe("background leaf untracked\n");
