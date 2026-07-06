@@ -934,6 +934,7 @@ export interface SessionStats {
 	};
 	premiumRequests: number;
 	cost: number;
+	contextUsage?: ContextUsage;
 }
 
 /** Advisor statistics for /advisor status command. */
@@ -1826,12 +1827,18 @@ export class AgentSession {
 	 * Sticky across an in-flight prompt run: a successful `yield` makes the run
 	 * terminal for execution purposes, so any trailing empty/aborted assistant
 	 * stop must NOT trigger empty-stop/unexpected-stop/compaction continuations.
-	 * Cleared in `#promptWithMessage` so the next prompt evaluates cleanly.
+	 * Cleared before every new prompt turn so the next turn evaluates cleanly.
 	 */
 	#yieldTerminationPending = false;
 	#providerSessionState = new Map<string, ProviderSessionState>();
 	#hindsightSessionState: HindsightSessionState | undefined = undefined;
 	readonly rawSseDebugBuffer: RawSseDebugBuffer;
+
+	#resetPromptMaintenanceState(): void {
+		this.#emptyStopRetryCount = 0;
+		this.#unexpectedStopRetryCount = 0;
+		this.#yieldTerminationPending = false;
+	}
 
 	#acquirePowerAssertion(): void {
 		if (process.platform !== "darwin") return;
@@ -1951,6 +1958,7 @@ export class AgentSession {
 		if (parkedFollowUps.length > 0) {
 			this.agent.replaceQueues([...this.agent.peekSteeringQueue()], []);
 		}
+		this.#resetPromptMaintenanceState();
 		this.#beginInFlight();
 		void this.agent
 			.prompt(records)
@@ -7602,12 +7610,7 @@ export class AgentSession {
 			this.#todoReminderAwaitingProgress = false;
 			this.#mutationsSinceLastTodoTouch = 0;
 			this.#midRunNudgeCount = 0;
-			this.#emptyStopRetryCount = 0;
-			this.#unexpectedStopRetryCount = 0;
-			// A new prompt cycle starts: drop any sticky yield-termination from the
-			// previous run so empty-stop / unexpected-stop / compaction maintenance
-			// can evaluate this turn normally.
-			this.#yieldTerminationPending = false;
+			this.#resetPromptMaintenanceState();
 
 			await this.#maybeRestoreRetryFallbackPrimary();
 
@@ -14155,15 +14158,15 @@ export class AgentSession {
 	// =========================================================================
 
 	/**
-	 * Surfaces (and consumes) pending IRC incoming records before the next model
+	 * Surfaces and consumes pending IRC incoming records before the next model
 	 * step can inject them automatically.
 	 *
-	 * The inbox tool injects the formatted body into the tool result, so the
-	 * model sees it once via the result. Leaving the record in either pending
-	 * IRC queue would deliver it a second time at the next step boundary —
-	 * including on `peek`, which is why peek also drains here.
+	 * Tool results already expose the formatted body to the model. Leaving the
+	 * same record in either pending IRC queue would deliver it a second time at
+	 * the next step boundary — including on `peek`, which is why inbox peeks
+	 * also drain here.
 	 */
-	drainPendingIrcInboxMessages(agentId: string): IrcMessage[] {
+	drainPendingIrcInboxMessages(agentId: string, opts?: { from?: string; limit?: number }): IrcMessage[] {
 		const messages: IrcMessage[] = [];
 		const remainingInterrupts: CustomMessage[] = [];
 		const remainingAsides: CustomMessage[] = [];
@@ -14187,6 +14190,14 @@ export class AgentSession {
 				const body = Reflect.get(details, "message");
 				const replyTo = Reflect.get(details, "replyTo");
 				if (typeof id !== "string" || typeof from !== "string" || typeof body !== "string") {
+					queue.remaining.push(record);
+					continue;
+				}
+				if (opts?.from !== undefined && from !== opts.from) {
+					queue.remaining.push(record);
+					continue;
+				}
+				if (opts?.limit !== undefined && messages.length >= opts.limit) {
 					queue.remaining.push(record);
 					continue;
 				}
@@ -15254,6 +15265,7 @@ export class AgentSession {
 			},
 			cost: totalCost,
 			premiumRequests: totalPremiumRequests,
+			contextUsage: this.getContextUsage(),
 		};
 	}
 

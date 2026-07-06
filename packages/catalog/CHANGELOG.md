@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [16.3.10] - 2026-07-06
+
+### Fixed
+
+- Fixed LiteLLM rich discovery to ignore unusable sentinel placeholders and continue to `/v2/model/info` for real models. ([#4655](https://github.com/can1357/oh-my-pi/issues/4655))
+
 ## [16.3.9] - 2026-07-06
 
 ### Fixed
