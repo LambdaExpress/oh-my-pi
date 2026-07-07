@@ -100,16 +100,7 @@ describe("resolveStdioSpawnCommand", () => {
 				},
 			),
 		).resolves.toEqual({
-			cmd: [
-				"cmd.exe",
-				"/d",
-				"/s",
-				"/c",
-				"npx",
-				"--yes",
-				"@modelcontextprotocol/server",
-				"two words",
-			],
+			cmd: ["cmd.exe", "/d", "/s", "/c", "npx", "--yes", "@modelcontextprotocol/server", "two words"],
 			windowsHide: true,
 			detached: false,
 		});

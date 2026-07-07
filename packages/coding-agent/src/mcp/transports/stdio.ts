@@ -234,8 +234,7 @@ export async function resolveStdioSpawnCommand(
 	// same console session. Only hide the child when OMP itself has no console
 	// to share; CREATE_NO_WINDOW breaks console inheritance for nested wrappers.
 	const detached = false;
-	const needsCmdExe =
-		resolved === null || WINDOWS_BATCH_EXTENSIONS.has(path.extname(resolvedCommand).toLowerCase());
+	const needsCmdExe = resolved === null || WINDOWS_BATCH_EXTENSIONS.has(path.extname(resolvedCommand).toLowerCase());
 	if (!needsCmdExe) return { cmd: [resolvedCommand, ...args], windowsHide, detached };
 
 	return {
