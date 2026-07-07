@@ -20,6 +20,8 @@ export interface SSHHost {
 	port?: number;
 	/** Optional identity key path */
 	keyPath?: string;
+	/** Optional literal password for configured host authentication */
+	password?: string;
 	/** Optional host description */
 	description?: string;
 	/** Optional compatibility mode flag */

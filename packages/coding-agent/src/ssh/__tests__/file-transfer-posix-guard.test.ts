@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import { type ChildProcess, ptree } from "@oh-my-pi/pi-utils";
 import type { SSHConnectionTarget } from "../connection-manager";
 import * as connectionManager from "../connection-manager";
 import {
@@ -11,6 +12,16 @@ import {
 } from "../file-transfer";
 
 const POWERSHELL_PREFIX = "pwsh -NoProfile -NonInteractive -EncodedCommand ";
+
+type TestStdin = "pipe" | "ignore" | Buffer | Uint8Array | null;
+
+function createChild<In extends TestStdin>(stdout: Uint8Array): ChildProcess<In> {
+	return {
+		bytes: async () => stdout,
+		exitedCleanly: Promise.resolve(0),
+		[Symbol.dispose]() {},
+	} as unknown as ChildProcess<In>;
+}
 
 function decodePowerShellCommand(command: string): string {
 	expect(command.startsWith(POWERSHELL_PREFIX)).toBe(true);
@@ -33,7 +44,7 @@ describe("ssh file-transfer backend guard", () => {
 			compatEnabled: false,
 		});
 		const buildSpy = vi
-			.spyOn(connectionManager, "buildRemoteCommand")
+			.spyOn(connectionManager, "buildRemoteCommandInvocation")
 			.mockRejectedValue(new Error("should-not-build-command"));
 		const target: SSHConnectionTarget = { name: "winbox", host: "winbox" };
 		await expect(readRemoteFile(target, "C:/x.txt", { maxBytes: 1024 })).rejects.toThrow(
@@ -69,7 +80,7 @@ describe("ssh file-transfer backend guard", () => {
 			compatEnabled: false,
 		});
 		const buildSpy = vi
-			.spyOn(connectionManager, "buildRemoteCommand")
+			.spyOn(connectionManager, "buildRemoteCommandInvocation")
 			.mockRejectedValue(new Error("stop-before-spawn"));
 		const target: SSHConnectionTarget = { name: "winps", host: "winps" };
 
@@ -98,7 +109,7 @@ describe("ssh file-transfer backend guard", () => {
 			compatEnabled: false,
 		});
 		const buildSpy = vi
-			.spyOn(connectionManager, "buildRemoteCommand")
+			.spyOn(connectionManager, "buildRemoteCommandInvocation")
 			.mockRejectedValue(new Error("stop-before-spawn"));
 		const target: SSHConnectionTarget = { name: "winps", host: "winps" };
 
@@ -151,7 +162,7 @@ describe("ssh file-transfer backend guard", () => {
 			compatEnabled: false,
 		});
 		const buildSpy = vi
-			.spyOn(connectionManager, "buildRemoteCommand")
+			.spyOn(connectionManager, "buildRemoteCommandInvocation")
 			.mockRejectedValue(new Error("stop-before-spawn"));
 		const target: SSHConnectionTarget = { name: "fishbox", host: "fishbox" };
 
@@ -175,6 +186,69 @@ describe("ssh file-transfer backend guard", () => {
 		expect(dispatches[5]).toMatch(/^bash -c '.*mv -- /);
 	});
 
+	it("passes configured password targets through POSIX transfers without leaking the password", async () => {
+		vi.spyOn(connectionManager, "ensureConnection").mockResolvedValue(undefined);
+		vi.spyOn(connectionManager, "ensureHostInfo").mockResolvedValue({
+			version: 5,
+			os: "linux",
+			shell: "unknown",
+			transferShell: "bash",
+			compatEnabled: false,
+		});
+		const password = "s3cr3t-value";
+		const target: SSHConnectionTarget = { name: "pwbox", host: "192.0.2.10", username: "root", password };
+		const askpassEnv = { OMP_SSH_PASSWORD: password, SSH_ASKPASS_REQUIRE: "force" };
+		const cleanupSpy = vi.fn(async () => {});
+		let invocationIndex = 0;
+		const buildSpy = vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockImplementation(async () => ({
+			args: [`remote-${invocationIndex++}`],
+			env: askpassEnv,
+			cleanup: cleanupSpy,
+		}));
+		const stdoutBySpawn = [
+			new TextEncoder().encode("read-bytes"),
+			new Uint8Array(),
+			new TextEncoder().encode("file\n"),
+			new TextEncoder().encode("dir/\nfile.txt\n"),
+			new Uint8Array(),
+			new Uint8Array(),
+		];
+		let spawnIndex = 0;
+		const spawnSpy = vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
+			const stdout = stdoutBySpawn[spawnIndex++] ?? new Uint8Array();
+			return createChild<In>(stdout);
+		});
+		const content = new Uint8Array([0, 1, 2, 255]);
+
+		await expect(readRemoteFile(target, "/etc/hosts", { maxBytes: 1024 })).resolves.toMatchObject({
+			bytes: new TextEncoder().encode("read-bytes"),
+			truncated: false,
+		});
+		await expect(writeRemoteFile(target, "/tmp/secret.txt", content, {})).resolves.toBeUndefined();
+		await expect(statRemotePath(target, "/tmp/secret.txt")).resolves.toBe("file");
+		await expect(listRemoteDir(target, "/tmp")).resolves.toEqual([
+			{ name: "dir", isDirectory: true },
+			{ name: "file.txt", isDirectory: false },
+		]);
+		await expect(deleteRemoteFile(target, "/tmp/secret.txt", {})).resolves.toBeUndefined();
+		await expect(moveRemoteFile(target, "/tmp/secret.txt", "/tmp/secret-renamed.txt", {})).resolves.toBeUndefined();
+
+		expect(buildSpy).toHaveBeenCalledTimes(6);
+		for (const [seenTarget, command] of buildSpy.mock.calls) {
+			expect(seenTarget).toMatchObject({ name: "pwbox", host: "192.0.2.10", username: "root", password });
+			expect(command).not.toContain(password);
+		}
+		expect(buildSpy.mock.calls[1]?.[2]).toMatchObject({ allowStdin: true });
+		expect(spawnSpy).toHaveBeenCalledTimes(6);
+		for (const [, options] of spawnSpy.mock.calls) {
+			expect(options?.env).toBe(askpassEnv);
+		}
+		const writeSpawnOptions = spawnSpy.mock.calls[1]?.[1] as { stdin?: Uint8Array; env?: Record<string, string> };
+		expect(writeSpawnOptions.stdin).toBe(content);
+		expect(writeSpawnOptions.env).toBe(askpassEnv);
+		expect(cleanupSpy).toHaveBeenCalledTimes(6);
+	});
+
 	it("uses sh -c when transferShell is sh (the most universal POSIX fallback)", async () => {
 		// Belt-and-suspenders: the common happy path with a sh-family login
 		// shell still routes through `sh -c` to keep one dispatch shape.
@@ -187,7 +261,7 @@ describe("ssh file-transfer backend guard", () => {
 			compatEnabled: false,
 		});
 		const buildSpy = vi
-			.spyOn(connectionManager, "buildRemoteCommand")
+			.spyOn(connectionManager, "buildRemoteCommandInvocation")
 			.mockRejectedValue(new Error("stop-before-spawn"));
 		const target: SSHConnectionTarget = { name: "shbox", host: "shbox" };
 

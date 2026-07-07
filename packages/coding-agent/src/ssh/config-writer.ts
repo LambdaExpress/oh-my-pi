@@ -12,6 +12,7 @@ export interface SSHHostConfig {
 	username?: string;
 	port?: number;
 	keyPath?: string;
+	password?: string;
 	description?: string;
 	compat?: boolean;
 }

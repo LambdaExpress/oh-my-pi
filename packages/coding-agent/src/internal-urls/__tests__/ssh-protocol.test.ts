@@ -78,6 +78,26 @@ describe("SshProtocolHandler", () => {
 		expect(spy.mock.calls[0]?.[0]).toMatchObject({ name: "alice@prod", host: "10.0.0.9", username: "alice" });
 	});
 
+	it("passes a configured alias password to the transfer layer", async () => {
+		mockHosts([
+			{
+				_source: SOURCE,
+				name: "prod",
+				host: "10.0.0.5",
+				username: "root",
+				password: "s3cr3t-value",
+			},
+		]);
+		const spy = mockReadBytes("ok\n");
+		await handler.resolve(parseInternalUrl("ssh://prod/etc/hosts"));
+		expect(spy.mock.calls[0]?.[0]).toMatchObject({
+			name: "prod",
+			host: "10.0.0.5",
+			username: "root",
+			password: "s3cr3t-value",
+		});
+	});
+
 	it("treats a literal user@host as opaque, not the encoded alias", async () => {
 		mockHosts([{ _source: SOURCE, name: "alice@prod", host: "10.0.0.9", username: "alice" }]);
 		const spy = mockReadBytes("ok\n");
@@ -310,10 +330,24 @@ describe("SshProtocolHandler", () => {
 		await expect(handler.resolve(parseInternalUrl("ssh://u%2Dname@prod:/etc/hosts"))).rejects.toThrow(/empty port/);
 	});
 
-	it("rejects ssh:// password and empty-username userinfo before matching a host", async () => {
+	it("rejects inline ssh:// passwords before matching a host without leaking credentials", async () => {
 		mockHosts([{ name: "prod", host: "10.0.0.5", _source: SOURCE }]);
-		await expect(handler.resolve(parseInternalUrl("ssh://user:pass@prod/etc/hosts"))).rejects.toThrow(/password/);
-		await expect(handler.resolve(parseInternalUrl("ssh://:pw@prod/etc/hosts"))).rejects.toThrow(/password/);
+		for (const url of ["ssh://user:pass@prod/etc/hosts", "ssh://:pw@prod/etc/hosts"]) {
+			try {
+				await handler.resolve(parseInternalUrl(url));
+				throw new Error("expected inline password URL to be rejected");
+			} catch (error) {
+				expect(error).toBeInstanceOf(Error);
+				const message = (error as Error).message;
+				expect(message).toContain("inline password authentication is not supported");
+				expect(message).toContain(
+					"configure the password on an SSH host alias with `omp ssh add <name> --host <host> --user <user> --password <password>`",
+				);
+				expect(message).not.toContain("user:pass");
+				expect(message).not.toContain(":pw");
+				expect(message).not.toContain("pw@");
+			}
+		}
 		await expect(handler.resolve(parseInternalUrl("ssh://@prod/etc/hosts"))).rejects.toThrow(/empty username/);
 		await expect(handler.resolve(parseInternalUrl("ssh://@prod:22/etc/hosts"))).rejects.toThrow(/empty username/);
 		await expect(handler.resolve(parseInternalUrl("ssh://user:@prod/etc/hosts"))).rejects.toThrow(

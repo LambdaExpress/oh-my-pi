@@ -14,6 +14,17 @@ function createNeverClosingStream(): ReadableStream<Uint8Array> {
 	});
 }
 
+function createClosedStream(text = ""): ReadableStream<Uint8Array> {
+	return new ReadableStream<Uint8Array>({
+		start(controller) {
+			if (text.length > 0) {
+				controller.enqueue(new TextEncoder().encode(text));
+			}
+			controller.close();
+		},
+	});
+}
+
 function createBlockedChild<In extends TestStdin>(exited?: Promise<number>): ChildProcess<In> {
 	const { promise } = Promise.withResolvers<number>();
 
@@ -21,6 +32,19 @@ function createBlockedChild<In extends TestStdin>(exited?: Promise<number>): Chi
 		stdout: createNeverClosingStream(),
 		stderr: undefined,
 		exited: exited ?? promise,
+		[Symbol.dispose]() {},
+	} as unknown as ChildProcess<In>;
+}
+
+function createExitedChild<In extends TestStdin>(
+	exited: Promise<number> = Promise.resolve(0),
+	stdout = "",
+	stderr?: string,
+): ChildProcess<In> {
+	return {
+		stdout: createClosedStream(stdout),
+		stderr: stderr === undefined ? undefined : createClosedStream(stderr),
+		exited,
 		[Symbol.dispose]() {},
 	} as unknown as ChildProcess<In>;
 }
@@ -37,10 +61,15 @@ describe("executeSSH", () => {
 	});
 
 	function mockOpenStreamChild(exited?: Promise<number>) {
+		const cleanup = vi.fn(async () => {});
 		vi.spyOn(connectionManager, "ensureConnection").mockResolvedValue();
-		vi.spyOn(connectionManager, "buildRemoteCommand").mockResolvedValue(["remote", "sleep 60"]);
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockResolvedValue({
+			args: ["remote", "sleep 60"],
+			cleanup,
+		});
 		vi.spyOn(sshfsMount, "hasSshfs").mockReturnValue(false);
 		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => createBlockedChild<In>(exited));
+		return { cleanup };
 	}
 
 	function startOpenStreamCommand(controller: AbortController) {
@@ -53,7 +82,7 @@ describe("executeSSH", () => {
 	}
 
 	it("returns promptly when an abort races a ControlMaster stream that stays open", async () => {
-		mockOpenStreamChild();
+		const { cleanup } = mockOpenStreamChild();
 
 		const controller = new AbortController();
 		const { resultPromise, chunked } = startOpenStreamCommand(controller);
@@ -70,10 +99,11 @@ describe("executeSSH", () => {
 		expect(result.cancelled).toBe(true);
 		expect(result.exitCode).toBeUndefined();
 		expect(result.output).toContain("Command aborted");
+		expect(cleanup).toHaveBeenCalledTimes(1);
 	});
 
 	it("reports cancellation when abort unblocks streams after the ssh process exits", async () => {
-		mockOpenStreamChild(Promise.resolve(0));
+		const { cleanup } = mockOpenStreamChild(Promise.resolve(0));
 
 		const controller = new AbortController();
 		const { resultPromise, chunked } = startOpenStreamCommand(controller);
@@ -91,5 +121,84 @@ describe("executeSSH", () => {
 		expect(result.cancelled).toBe(true);
 		expect(result.exitCode).toBeUndefined();
 		expect(result.output).toContain("Command aborted");
+		expect(cleanup).toHaveBeenCalledTimes(1);
+	});
+
+	it("passes invocation env to ssh spawn, cleans up on success, and keeps password out of argv", async () => {
+		const env = { OMP_SSH_PASSWORD: "s3cr3t-value", SSH_ASKPASS_REQUIRE: "force" };
+		const cleanup = vi.fn(async () => {});
+		vi.spyOn(connectionManager, "ensureConnection").mockResolvedValue();
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockResolvedValue({
+			args: ["remote", "true"],
+			env,
+			cleanup,
+		});
+		vi.spyOn(sshfsMount, "hasSshfs").mockReturnValue(false);
+		const spawn = vi
+			.spyOn(ptree, "spawn")
+			.mockImplementation(<In extends TestStdin>() => createExitedChild<In>(Promise.resolve(0), "ok\n"));
+
+		const result = await executeSSH({ name: "pw", host: "remote", password: "s3cr3t-value" }, "true");
+
+		expect(result.exitCode).toBe(0);
+		expect(result.cancelled).toBe(false);
+		expect(result.output).toBe("ok\n");
+		expect(spawn).toHaveBeenCalledTimes(1);
+		const call = spawn.mock.calls[0];
+		expect(call).toBeDefined();
+		if (!call) return;
+		const [argv, options] = call;
+		expect(argv).toEqual(["ssh", "remote", "true"]);
+		expect(argv.join("\0")).not.toContain("s3cr3t-value");
+		if (options === undefined) throw new Error("spawn options missing");
+		expect(options.env).toBe(env);
+		expect(cleanup).toHaveBeenCalledTimes(1);
+	});
+
+	it("cleans up invocation askpass state when ssh times out", async () => {
+		const cleanup = vi.fn(async () => {});
+		vi.spyOn(connectionManager, "ensureConnection").mockResolvedValue();
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockResolvedValue({
+			args: ["remote", "slow"],
+			env: { OMP_SSH_PASSWORD: "s3cr3t-value" },
+			cleanup,
+		});
+		vi.spyOn(sshfsMount, "hasSshfs").mockReturnValue(false);
+		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() =>
+			createExitedChild<In>(Promise.reject(new ptree.TimeoutError(10_000, "timed out")), "partial\n"),
+		);
+
+		const result = await executeSSH({ name: "pw", host: "remote", password: "s3cr3t-value" }, "slow", {
+			timeout: 10_000,
+		});
+
+		expect(result.cancelled).toBe(true);
+		expect(result.exitCode).toBeUndefined();
+		expect(result.output).toContain("partial\n");
+		expect(result.output).toContain("SSH: Operation cancelled: Timed out after 10s");
+		expect(cleanup).toHaveBeenCalledTimes(1);
+	});
+
+	it("skips sshfs mounting for password hosts even when sshfs is available", async () => {
+		const cleanup = vi.fn(async () => {});
+		vi.spyOn(connectionManager, "ensureConnection").mockResolvedValue();
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockResolvedValue({
+			args: ["remote", "true"],
+			env: { OMP_SSH_PASSWORD: "s3cr3t-value" },
+			cleanup,
+		});
+		vi.spyOn(sshfsMount, "hasSshfs").mockReturnValue(true);
+		const mountRemote = vi.spyOn(sshfsMount, "mountRemote").mockResolvedValue("/mnt/remote");
+		const spawn = vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => createExitedChild<In>());
+
+		await executeSSH({ name: "pw", host: "remote", password: "s3cr3t-value" }, "true", { remotePath: "/srv" });
+
+		expect(mountRemote).not.toHaveBeenCalled();
+		expect(spawn).toHaveBeenCalledTimes(1);
+		const call = spawn.mock.calls[0];
+		expect(call).toBeDefined();
+		if (!call) return;
+		expect(call[0].join("\0")).not.toContain("s3cr3t-value");
+		expect(cleanup).toHaveBeenCalledTimes(1);
 	});
 });

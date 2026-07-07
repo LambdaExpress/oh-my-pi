@@ -39,6 +39,7 @@ import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/con
 import { loadCapability, reset as resetCapabilities } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
 import { bucketRules } from "./capability/rule-buckets";
+import { type SSHHost, sshCapability } from "./capability/ssh";
 import { shouldEnableAppendOnlyContext } from "./config/append-only-context-mode";
 import { shouldInlineToolDescriptors } from "./config/inline-tool-descriptors-mode";
 import { isAuthenticated, kNoAuth, ModelRegistry } from "./config/model-registry";
@@ -120,6 +121,7 @@ import {
 	loadSecrets,
 	obfuscateMessages,
 	obfuscateProviderContext,
+	type SecretEntry,
 	SecretObfuscator,
 } from "./secrets";
 import { AgentSession } from "./session/agent-session";
@@ -234,6 +236,14 @@ type McpNotificationEntry = {
 	serverName: string;
 	uri: string;
 };
+
+async function collectSshPasswordSecrets(cwd: string): Promise<SecretEntry[]> {
+	const result = await loadCapability<SSHHost>(sshCapability.id, { cwd });
+	return result.items
+		.map(host => host.password)
+		.filter((password): password is string => typeof password === "string" && password.length > 0)
+		.map(password => ({ type: "plain" as const, content: password, mode: "obfuscate" as const }));
+}
 
 function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): CustomMessage<AsyncResultDetails> | null {
 	if (entries.length === 0) return null;
@@ -1262,7 +1272,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	if (settings.get("secrets.enabled")) {
 		const fileEntries = await logger.time("loadSecrets", loadSecrets, cwd, agentDir);
 		const envEntries = collectEnvSecrets();
-		const allEntries = [...envEntries, ...fileEntries];
+		const sshPasswordEntries = await logger.time("loadSshPasswordSecrets", collectSshPasswordSecrets, cwd);
+		const allEntries = [...envEntries, ...fileEntries, ...sshPasswordEntries];
 		if (allEntries.length > 0) {
 			obfuscator = new SecretObfuscator(allEntries);
 		}

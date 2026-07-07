@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { $which, getRemoteHostDir, getSshControlDir, isEnoent, logger, postmortem, ptree } from "@oh-my-pi/pi-utils";
+import { prepareSshPasswordAuthEnv } from "./password-auth";
 import { buildSshTarget, sanitizeHostName } from "./utils";
 
 export interface SSHConnectionTarget {
@@ -9,6 +10,7 @@ export interface SSHConnectionTarget {
 	username?: string;
 	port?: number;
 	keyPath?: string;
+	password?: string;
 	compat?: boolean;
 }
 
@@ -110,7 +112,12 @@ function buildCommonArgs(host: SSHConnectionTarget, options?: SSHArgsOptions): s
 		args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${CONTROL_PATH}`, "-o", "ControlPersist=3600");
 	}
 
-	args.push("-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=accept-new");
+	if (host.password) {
+		args.push("-o", "BatchMode=no", "-o", "NumberOfPasswordPrompts=1");
+	} else {
+		args.push("-o", "BatchMode=yes");
+	}
+	args.push("-o", "StrictHostKeyChecking=accept-new");
 
 	if (host.port) {
 		args.push("-p", String(host.port));
@@ -135,31 +142,45 @@ const SSH_HELPER_TIMEOUT_MS = 30_000;
 async function runSshSync(
 	args: string[],
 	timeoutMs = SSH_HELPER_TIMEOUT_MS,
+	host?: SSHConnectionTarget,
 ): Promise<{ exitCode: number | null; stderr: string }> {
-	const result = await ptree.exec(["ssh", ...args], {
-		timeout: timeoutMs,
-		allowNonZero: true,
-		allowAbort: true,
-		stderr: "full",
-	});
-	return { exitCode: result.exitCode, stderr: result.stderr.trim() };
+	const auth = await prepareSshPasswordAuthEnv(host?.password);
+	try {
+		const result = await ptree.exec(["ssh", ...args], {
+			timeout: timeoutMs,
+			allowNonZero: true,
+			allowAbort: true,
+			stderr: "full",
+			env: auth.env,
+		});
+		return { exitCode: result.exitCode, stderr: result.stderr.trim() };
+	} finally {
+		await auth.cleanup?.();
+	}
 }
 
 async function runSshCaptureSync(
 	args: string[],
 	timeoutMs = SSH_HELPER_TIMEOUT_MS,
+	host?: SSHConnectionTarget,
 ): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
-	const result = await ptree.exec(["ssh", ...args], {
-		timeout: timeoutMs,
-		allowNonZero: true,
-		allowAbort: true,
-		stderr: "full",
-	});
-	return {
-		exitCode: result.exitCode,
-		stdout: result.stdout.trim(),
-		stderr: result.stderr.trim(),
-	};
+	const auth = await prepareSshPasswordAuthEnv(host?.password);
+	try {
+		const result = await ptree.exec(["ssh", ...args], {
+			timeout: timeoutMs,
+			allowNonZero: true,
+			allowAbort: true,
+			stderr: "full",
+			env: auth.env,
+		});
+		return {
+			exitCode: result.exitCode,
+			stdout: result.stdout.trim(),
+			stderr: result.stderr.trim(),
+		};
+	} finally {
+		await auth.cleanup?.();
+	}
 }
 
 /**
@@ -412,7 +433,7 @@ async function probeTransferShell(
 		// `printf` is POSIX and emits no trailing newline, so we can pin the
 		// marker right against the uname output and split on it cleanly.
 		const remote = `${candidate} -lc 'printf "${TRANSFER_PROBE_MARKER}"; uname -s 2>/dev/null || true'`;
-		const probe = await runSshCaptureSync(await buildRemoteCommand(host, remote));
+		const probe = await runSshCaptureSync(await buildRemoteCommand(host, remote), SSH_HELPER_TIMEOUT_MS, host);
 		if (probe.exitCode !== 0) continue;
 		const tail = findProbeMarker(probe.stdout, probe.stderr, TRANSFER_PROBE_MARKER);
 		if (tail === null) continue;
@@ -427,7 +448,11 @@ async function probeWindowsPowerShell(host: SSHConnectionTarget): Promise<SSHPow
 [Console]::Out.Write([System.Environment]::OSVersion.Platform.ToString())
 `;
 	for (const candidate of POWERSHELL_CANDIDATES) {
-		const probe = await runSshCaptureSync(await buildRemoteCommand(host, buildPowerShellCommand(candidate, script)));
+		const probe = await runSshCaptureSync(
+			await buildRemoteCommand(host, buildPowerShellCommand(candidate, script)),
+			SSH_HELPER_TIMEOUT_MS,
+			host,
+		);
 		if (probe.exitCode !== 0) continue;
 		const tail = findProbeMarker(probe.stdout, probe.stderr, POWERSHELL_PROBE_MARKER);
 		if (tail !== null && /Win32|Windows/i.test(tail)) return candidate;
@@ -437,7 +462,7 @@ async function probeWindowsPowerShell(host: SSHConnectionTarget): Promise<SSHPow
 
 async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 	const command = `echo "${HOST_PROBE_MARKER}$OSTYPE|$SHELL|$BASH_VERSION" 2>/dev/null || echo "${HOST_PROBE_MARKER}%OS%|%COMSPEC%|"`;
-	const result = await runSshCaptureSync(await buildRemoteCommand(host, command));
+	const result = await runSshCaptureSync(await buildRemoteCommand(host, command), SSH_HELPER_TIMEOUT_MS, host);
 	const payload = extractProbePayload(result.stdout, result.stderr);
 	if (payload === null) {
 		logger.debug("SSH host probe failed", { host: host.name, error: result.stderr });
@@ -524,11 +549,19 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 	const hasBash = !unexpandedPosixVars && (Boolean(bashVersion) || shell === "bash");
 	let compatShell: SSHHostInfo["compatShell"];
 	if (os === "windows" && host.compat !== false) {
-		const bashProbe = await runSshCaptureSync(await buildRemoteCommand(host, 'bash -lc "echo PI_BASH_OK"'));
+		const bashProbe = await runSshCaptureSync(
+			await buildRemoteCommand(host, 'bash -lc "echo PI_BASH_OK"'),
+			SSH_HELPER_TIMEOUT_MS,
+			host,
+		);
 		if (bashProbe.exitCode === 0 && bashProbe.stdout.includes("PI_BASH_OK")) {
 			compatShell = "bash";
 		} else {
-			const shProbe = await runSshCaptureSync(await buildRemoteCommand(host, 'sh -lc "echo PI_SH_OK"'));
+			const shProbe = await runSshCaptureSync(
+				await buildRemoteCommand(host, 'sh -lc "echo PI_SH_OK"'),
+				SSH_HELPER_TIMEOUT_MS,
+				host,
+			);
 			if (shProbe.exitCode === 0 && shProbe.stdout.includes("PI_SH_OK")) {
 				compatShell = "sh";
 			}
@@ -622,6 +655,26 @@ export async function buildRemoteCommand(
 	return [...buildCommonArgs(host, options), buildSshTarget(host.username, host.host), command];
 }
 
+export interface SSHCommandInvocation {
+	args: string[];
+	env?: Record<string, string>;
+	cleanup?: () => Promise<void>;
+}
+
+export async function buildRemoteCommandInvocation(
+	host: SSHConnectionTarget,
+	command: string,
+	options?: SSHArgsOptions,
+): Promise<SSHCommandInvocation> {
+	const args = await buildRemoteCommand(host, command, options);
+	const auth = await prepareSshPasswordAuthEnv(host.password, options?.platform);
+	return {
+		args,
+		env: auth.env,
+		cleanup: auth.cleanup,
+	};
+}
+
 let registered = false;
 
 export async function ensureConnection(host: SSHConnectionTarget): Promise<void> {
@@ -653,7 +706,7 @@ export async function ensureConnection(host: SSHConnectionTarget): Promise<void>
 			return;
 		}
 
-		const check = await runSshSync(["-O", "check", ...buildCommonArgs(host), target]);
+		const check = await runSshSync(["-O", "check", ...buildCommonArgs(host), target], SSH_HELPER_TIMEOUT_MS, host);
 		if (check.exitCode === 0) {
 			activeHosts.set(key, host);
 			if (!hostInfoCache.has(key) && !(await loadHostInfoFromDisk(host))) {
@@ -662,7 +715,7 @@ export async function ensureConnection(host: SSHConnectionTarget): Promise<void>
 			return;
 		}
 
-		const start = await runSshSync(["-M", "-N", "-f", ...buildCommonArgs(host), target]);
+		const start = await runSshSync(["-M", "-N", "-f", ...buildCommonArgs(host), target], SSH_HELPER_TIMEOUT_MS, host);
 		if (start.exitCode !== 0) {
 			const detail = start.stderr ? `: ${start.stderr}` : "";
 			throw new Error(`Failed to start SSH master for ${target}${detail}`);
@@ -702,7 +755,7 @@ export async function invalidateHostMetadata(hostNames: Iterable<string>): Promi
 async function closeConnectionInternal(host: SSHConnectionTarget): Promise<void> {
 	if (!supportsSshControlMaster()) return;
 	const target = buildSshTarget(host.username, host.host);
-	await runSshSync(["-O", "exit", ...buildCommonArgs(host), target]);
+	await runSshSync(["-O", "exit", ...buildCommonArgs(host), target], SSH_HELPER_TIMEOUT_MS, host);
 }
 
 export async function closeConnection(hostName: string): Promise<void> {

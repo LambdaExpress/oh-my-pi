@@ -7,7 +7,12 @@ import {
 	resolveOutputSinkSpillThreshold,
 	resolveOutputSinkTailBytes,
 } from "../tools/output-meta";
-import { buildRemoteCommand, ensureConnection, ensureHostInfo, type SSHConnectionTarget } from "./connection-manager";
+import {
+	buildRemoteCommandInvocation,
+	ensureConnection,
+	ensureHostInfo,
+	type SSHConnectionTarget,
+} from "./connection-manager";
 import { hasSshfs, mountRemote } from "./sshfs-mount";
 import { wrapInPosixShell } from "./utils";
 
@@ -90,7 +95,7 @@ export async function executeSSH(
 	options?: SSHExecutorOptions,
 ): Promise<SSHResult> {
 	await ensureConnection(host);
-	if (hasSshfs()) {
+	if (hasSshfs() && !host.password) {
 		try {
 			await mountRemote(host, options?.remotePath ?? "/");
 		} catch (err) {
@@ -108,11 +113,14 @@ export async function executeSSH(
 		}
 	}
 
-	using child = ptree.spawn(["ssh", ...(await buildRemoteCommand(host, resolvedCommand))], {
+	const invocation = await buildRemoteCommandInvocation(host, resolvedCommand);
+
+	using child = ptree.spawn(["ssh", ...invocation.args], {
 		signal: options?.signal,
 		timeout: options?.timeout,
 		stdin: "pipe",
 		stderr: "full",
+		env: invocation.env,
 	});
 
 	const settings = await Settings.init();
@@ -181,5 +189,6 @@ export async function executeSSH(
 		throw err;
 	} finally {
 		abortWaiter.cleanup();
+		await invocation.cleanup?.();
 	}
 }

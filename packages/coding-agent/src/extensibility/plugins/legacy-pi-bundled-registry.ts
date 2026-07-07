@@ -757,6 +757,7 @@ import * as bundledPiCodingAgentSlashCommandsTypes from "@oh-my-pi/pi-coding-age
 import * as bundledPiCodingAgentSshConfigWriter from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
 import * as bundledPiCodingAgentSshConnectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
 import * as bundledPiCodingAgentSshFileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
+import * as bundledPiCodingAgentSshPasswordAuth from "@oh-my-pi/pi-coding-agent/ssh/password-auth";
 import * as bundledPiCodingAgentSshSshExecutor from "@oh-my-pi/pi-coding-agent/ssh/ssh-executor";
 import * as bundledPiCodingAgentSshSshfsMount from "@oh-my-pi/pi-coding-agent/ssh/sshfs-mount";
 import * as bundledPiCodingAgentSshUtils from "@oh-my-pi/pi-coding-agent/ssh/utils";
@@ -2808,6 +2809,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/ssh/file-transfer": bundledPiCodingAgentSshFileTransfer as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/ssh/password-auth": bundledPiCodingAgentSshPasswordAuth as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/ssh/ssh-executor": bundledPiCodingAgentSshSshExecutor as unknown as Readonly<

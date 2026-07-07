@@ -176,8 +176,11 @@ async function resolveTarget(url: InternalUrl, cwd?: string): Promise<SSHConnect
 		}
 	}
 	if (url.password) {
+		// Inline credentials would flow into canonicalSshResourceKey(), which is
+		// reused in hashline snapshot keys and visible error paths. Keep passwords
+		// on configured aliases so tool paths and session-visible resource keys stay clean.
 		throw new Error(
-			"ssh://: password authentication is not supported; ssh:// uses key/agent auth — drop the ':<password>' from the URL",
+			"ssh://: inline password authentication is not supported; configure the password on an SSH host alias with `omp ssh add <name> --host <host> --user <user> --password <password>` and use ssh://<name>/<path>",
 		);
 	}
 	const isIpv6Literal = bareHost.startsWith("[") && bareHost.endsWith("]");
@@ -252,6 +255,7 @@ async function resolveTarget(url: InternalUrl, cwd?: string): Promise<SSHConnect
 			username: match.username,
 			port: match.port,
 			keyPath: match.keyPath,
+			password: match.password,
 			compat: match.compat,
 		};
 	}

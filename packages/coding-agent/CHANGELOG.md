@@ -11,6 +11,7 @@
 - Added a first-class `pwsh` tool for direct PowerShell script execution, including registration, dedicated Nerd Font rendering, ACP summaries, copy targets, and focused tests.
 - Added read support for image and supported document files stored inside archives, including images embedded in archived PDFs.
 - Added `ssh://` remote file support for verified Windows PowerShell hosts, including drive-path URLs, directory listings, writes, deletes, and moves.
+- Added password authentication for configured SSH hosts, allowing the built-in ssh tool and ssh:// host aliases to connect through OpenSSH askpass without exposing passwords in tool arguments or argv.
 - Added `/btw /skill:<name>` support that inlines the selected skill content, hides the side-request tool catalog, and preserves the skill prompt when branching the answer.
 
 ### Changed

@@ -60,7 +60,7 @@ export class SSHCommandController {
 			"Manage SSH host configurations for remote command execution.",
 			"",
 			theme.fg("accent", "Commands:"),
-			"  /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--desc <description>] [--compat] [--scope project|user]",
+			"  /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
 			"  /ssh list             List all configured SSH hosts",
 			"  /ssh remove <name> [--scope project|user]    Remove an SSH host (default: project)",
 			"  /ssh help             Show this help message",
@@ -78,7 +78,7 @@ export class SSHCommandController {
 		const rest = prefixMatch?.[1]?.trim() ?? "";
 		if (!rest) {
 			this.ctx.showError(
-				"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--desc <description>] [--compat] [--scope project|user]",
+				"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
 			);
 			return;
 		}
@@ -86,17 +86,19 @@ export class SSHCommandController {
 		const tokens = parseCommandArgs(rest);
 		if (tokens.length === 0) {
 			this.ctx.showError(
-				"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--desc <description>] [--compat] [--scope project|user]",
+				"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
 			);
 			return;
 		}
 
 		let name: string | undefined;
 		let scope: ScopeValue = "project";
+		let scopeWasExplicit = false;
 		let host: string | undefined;
 		let username: string | undefined;
 		let port: number | undefined;
 		let keyPath: string | undefined;
+		let password: string | undefined;
 		let description: string | undefined;
 		let compat = false;
 
@@ -153,6 +155,16 @@ export class SSHCommandController {
 				i += 2;
 				continue;
 			}
+			if (argToken === "--password") {
+				const value = tokens[i + 1];
+				if (!value) {
+					this.ctx.showError("Missing value for --password.");
+					return;
+				}
+				password = value;
+				i += 2;
+				continue;
+			}
 			if (argToken === "--desc") {
 				const value = tokens[i + 1];
 				if (!value) {
@@ -175,6 +187,7 @@ export class SSHCommandController {
 					return;
 				}
 				scope = r.scope;
+				scopeWasExplicit = true;
 				i += 2;
 				continue;
 			}
@@ -192,6 +205,10 @@ export class SSHCommandController {
 			return;
 		}
 
+		if (password && !scopeWasExplicit) {
+			scope = "user";
+		}
+
 		try {
 			const cwd = getProjectDir();
 			const filePath = getSSHConfigPath(scope, cwd);
@@ -200,6 +217,7 @@ export class SSHCommandController {
 			if (username) hostConfig.username = username;
 			if (port) hostConfig.port = port;
 			if (keyPath) hostConfig.keyPath = keyPath;
+			if (password) hostConfig.password = password;
 			if (description) hostConfig.description = description;
 			if (compat) hostConfig.compat = true;
 
@@ -216,6 +234,7 @@ export class SSHCommandController {
 			if (username) lines.push(`  User: ${username}`);
 			if (port) lines.push(`  Port: ${port}`);
 			if (keyPath) lines.push(`  Key:  ${keyPath}`);
+			if (password) lines.push(`  Password: ********`);
 			if (description) lines.push(`  Desc: ${description}`);
 			if (compat) lines.push(`  Compat: true`);
 			lines.push("");
@@ -314,6 +333,7 @@ export class SSHCommandController {
 							host: host.host,
 							username: host.username,
 							port: host.port,
+							password: host.password,
 						});
 						lines.push(`  ${theme.fg("accent", host.name)} ${details}`);
 					}
@@ -330,11 +350,12 @@ export class SSHCommandController {
 	/**
 	 * Format host details (host, user, port) for display
 	 */
-	#formatHostDetails(config: { host?: string; username?: string; port?: number }): string {
+	#formatHostDetails(config: { host?: string; username?: string; port?: number; password?: string }): string {
 		const parts: string[] = [];
 		if (config.host) parts.push(config.host);
 		if (config.username) parts.push(`user=${config.username}`);
 		if (config.port && config.port !== 22) parts.push(`port=${config.port}`);
+		if (config.password) parts.push("password=********");
 		return theme.fg("dim", parts.length > 0 ? `[${parts.join(", ")}]` : "");
 	}
 

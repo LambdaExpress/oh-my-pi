@@ -9,7 +9,7 @@
 import { ptree } from "@oh-my-pi/pi-utils";
 import {
 	buildPowerShellCommand,
-	buildRemoteCommand,
+	buildRemoteCommandInvocation,
 	ensureConnection,
 	ensureHostInfo,
 	type SSHConnectionTarget,
@@ -65,17 +65,23 @@ async function runRemotePowerShellBytes(
 	script: string,
 	opts: { signal?: AbortSignal; timeoutMs?: number; stdin?: Uint8Array; allowStdin?: boolean } = {},
 ): Promise<Uint8Array> {
-	const args = await buildRemoteCommand(
+	const invocation = await buildRemoteCommandInvocation(
 		target,
 		buildPowerShellCommand(executable, script),
 		opts.allowStdin ? { allowStdin: true } : undefined,
 	);
 	const signal = ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-	const spawnOptions = opts.stdin ? { stdin: opts.stdin, signal } : { signal };
-	using child = ptree.spawn(["ssh", ...args], spawnOptions);
-	const raw = await child.bytes();
-	await child.exitedCleanly;
-	return raw;
+	const spawnOptions = opts.stdin
+		? { stdin: opts.stdin, signal, env: invocation.env }
+		: { signal, env: invocation.env };
+	try {
+		using child = ptree.spawn(["ssh", ...invocation.args], spawnOptions);
+		const raw = await child.bytes();
+		await child.exitedCleanly;
+		return raw;
+	} finally {
+		await invocation.cleanup?.();
+	}
 }
 
 async function runRemotePowerShellText(
@@ -139,13 +145,18 @@ export async function readRemoteFile(
 	let raw: Uint8Array;
 	if (mode.kind === "posix") {
 		const command = `head -c ${opts.maxBytes + 1} ${quotePosixPath(remotePath)}`;
-		const args = await buildRemoteCommand(target, wrapInPosixShell(mode.shell, command));
-		using child = ptree.spawn(["ssh", ...args], {
-			signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-		});
-		// Drain stdout before awaiting exit so a full pipe can't deadlock the child.
-		raw = await child.bytes();
-		await child.exitedCleanly;
+		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
+		try {
+			using child = ptree.spawn(["ssh", ...invocation.args], {
+				signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+				env: invocation.env,
+			});
+			// Drain stdout before awaiting exit so a full pipe can't deadlock the child.
+			raw = await child.bytes();
+			await child.exitedCleanly;
+		} finally {
+			await invocation.cleanup?.();
+		}
 	} else {
 		const script = wrapPowerShellTransferScript(`
 $p = ${quotePowerShellString(normalizePowerShellSshPath(remotePath))}
@@ -223,12 +234,19 @@ export async function writeRemoteFile(
 			`elif [ -e ${dest} ] && [ ! -L ${dest} ]; then echo 'ssh://: destination is a special file (not a regular file)' >&2; exit 1; ` +
 			`else mv "$t" ${dest}; fi; ` +
 			`}`;
-		const args = await buildRemoteCommand(target, wrapInPosixShell(mode.shell, command), { allowStdin: true });
-		using child = ptree.spawn(["ssh", ...args], {
-			stdin: content,
-			signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command), {
+			allowStdin: true,
 		});
-		await child.exitedCleanly;
+		try {
+			using child = ptree.spawn(["ssh", ...invocation.args], {
+				stdin: content,
+				signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+				env: invocation.env,
+			});
+			await child.exitedCleanly;
+		} finally {
+			await invocation.cleanup?.();
+		}
 		return;
 	}
 
@@ -303,11 +321,16 @@ export async function deleteRemoteFile(
 			`if [ -d ${p} ]; then echo 'ssh://: cannot delete directory' >&2; exit 1; ` +
 			`elif [ -e ${p} ] || [ -L ${p} ]; then rm -f -- ${p}; ` +
 			`else echo 'ssh://: file does not exist' >&2; exit 1; fi`;
-		const args = await buildRemoteCommand(target, wrapInPosixShell(mode.shell, command));
-		using child = ptree.spawn(["ssh", ...args], {
-			signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-		});
-		await child.exitedCleanly;
+		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
+		try {
+			using child = ptree.spawn(["ssh", ...invocation.args], {
+				signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+				env: invocation.env,
+			});
+			await child.exitedCleanly;
+		} finally {
+			await invocation.cleanup?.();
+		}
 		return;
 	}
 	const script = wrapPowerShellTransferScript(`
@@ -348,11 +371,16 @@ export async function moveRemoteFile(
 			`if [ -d ${to} ]; then echo 'ssh://: destination is a directory' >&2; exit 1; fi; ` +
 			`mv -- ${from} ${to}; ` +
 			`else echo 'ssh://: source does not exist' >&2; exit 1; fi`;
-		const args = await buildRemoteCommand(target, wrapInPosixShell(mode.shell, command));
-		using child = ptree.spawn(["ssh", ...args], {
-			signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-		});
-		await child.exitedCleanly;
+		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
+		try {
+			using child = ptree.spawn(["ssh", ...invocation.args], {
+				signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+				env: invocation.env,
+			});
+			await child.exitedCleanly;
+		} finally {
+			await invocation.cleanup?.();
+		}
 		return;
 	}
 	const script = wrapPowerShellTransferScript(`
@@ -393,13 +421,18 @@ export async function statRemotePath(
 	if (mode.kind === "posix") {
 		const p = quotePosixPath(remotePath);
 		const command = `if [ -d ${p} ]; then echo directory; elif [ -f ${p} ]; then echo file; elif [ -e ${p} ]; then echo other; else echo missing; fi`;
-		const args = await buildRemoteCommand(target, wrapInPosixShell(mode.shell, command));
-		using child = ptree.spawn(["ssh", ...args], {
-			signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-		});
-		const out = new TextDecoder().decode(await child.bytes()).trim();
-		await child.exitedCleanly;
-		return out === "directory" || out === "file" || out === "other" ? out : "missing";
+		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
+		try {
+			using child = ptree.spawn(["ssh", ...invocation.args], {
+				signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+				env: invocation.env,
+			});
+			const out = new TextDecoder().decode(await child.bytes()).trim();
+			await child.exitedCleanly;
+			return out === "directory" || out === "file" || out === "other" ? out : "missing";
+		} finally {
+			await invocation.cleanup?.();
+		}
 	}
 	const script = wrapPowerShellTransferScript(`
 $p = ${quotePowerShellString(normalizePowerShellSshPath(remotePath))}
@@ -443,12 +476,17 @@ export async function listRemoteDir(
 	let text: string;
 	if (mode.kind === "posix") {
 		const command = `LC_ALL=C ls -1Ap -- ${quotePosixPath(remotePath)}`;
-		const args = await buildRemoteCommand(target, wrapInPosixShell(mode.shell, command));
-		using child = ptree.spawn(["ssh", ...args], {
-			signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
-		});
-		text = new TextDecoder().decode(await child.bytes());
-		await child.exitedCleanly;
+		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
+		try {
+			using child = ptree.spawn(["ssh", ...invocation.args], {
+				signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+				env: invocation.env,
+			});
+			text = new TextDecoder().decode(await child.bytes());
+			await child.exitedCleanly;
+		} finally {
+			await invocation.cleanup?.();
+		}
 	} else {
 		const script = wrapPowerShellTransferScript(`
 $p = ${quotePowerShellString(normalizePowerShellSshPath(remotePath))}

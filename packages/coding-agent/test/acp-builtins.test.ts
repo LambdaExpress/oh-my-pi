@@ -12,6 +12,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
+import * as sshConfigWriter from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
 import { writeManagedWorktreeRecord } from "@oh-my-pi/pi-coding-agent/worktree/metadata";
 import type { ManagedWorktreeRecord } from "@oh-my-pi/pi-coding-agent/worktree/types";
 import { removeWithRetries, setProjectDir, setWorktreesDir } from "@oh-my-pi/pi-utils";
@@ -1191,21 +1192,37 @@ describe("wave 5 — adapters and polish", () => {
 	});
 
 	// /ssh add — spy on addSSHHost
-	it("/ssh add foo --host x --user y --scope user: calls addSSHHost", async () => {
-		const sshModule = await import("@oh-my-pi/pi-coding-agent/ssh/config-writer");
-		const spy = spyOn(sshModule, "addSSHHost").mockResolvedValue(undefined);
+	it("/ssh add foo --host x --user y --password secret123 --scope user: writes password without echoing it", async () => {
+		const spy = spyOn(sshConfigWriter, "addSSHHost").mockResolvedValue(undefined);
 		try {
 			const { output, runtime } = createRuntime();
-			const result = await executeAcpBuiltinSlashCommand("/ssh add foo --host x --user y --scope user", runtime);
+			const result = await executeAcpBuiltinSlashCommand(
+				"/ssh add foo --host x --user y --password secret123 --scope user",
+				runtime,
+			);
 			expect(result).toEqual({ consumed: true });
 			expect(output[0]).toContain('Added SSH host "foo" (user).');
+			expect(output.join("\n")).not.toContain("secret123");
 			// Without this assertion, the command could succeed via a side-effect-free
 			// path that prints the success message without writing the host config.
 			expect(spy).toHaveBeenCalledTimes(1);
 			const [configPath, name, hostConfig] = spy.mock.calls[0]!;
 			expect(typeof configPath).toBe("string");
 			expect(name).toBe("foo");
-			expect(hostConfig).toMatchObject({ host: "x", username: "y" });
+			expect(hostConfig).toEqual({ host: "x", username: "y", password: "secret123" });
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("/ssh add foo --host x --password: rejects the missing password without writing", async () => {
+		const spy = spyOn(sshConfigWriter, "addSSHHost").mockResolvedValue(undefined);
+		try {
+			const { output, runtime } = createRuntime();
+			const result = await executeAcpBuiltinSlashCommand("/ssh add foo --host x --password", runtime);
+			expect(result).toEqual({ consumed: true });
+			expect(output[0]).toContain("Missing value for --password.");
+			expect(spy).not.toHaveBeenCalled();
 		} finally {
 			spy.mockRestore();
 		}

@@ -26,6 +26,7 @@ interface SSHConfigFile {
 			compat?: boolean | string;
 			key?: string;
 			keyPath?: string;
+			password?: string;
 			description?: string;
 		}
 	>;
@@ -72,12 +73,18 @@ function normalizeHost(
 	const keyValue = raw.keyPath ?? raw.key;
 	const keyPath = keyValue ? expandTilde(keyValue, home) : undefined;
 
+	const password = typeof raw.password === "string" && raw.password.length > 0 ? raw.password : undefined;
+	if (raw.password !== undefined && password === undefined) {
+		warnings.push(`Invalid password for SSH entry ${name}: expected non-empty string`);
+	}
+
 	return {
 		name,
 		host: raw.host,
 		username: raw.username,
 		port,
 		keyPath,
+		password,
 		description: raw.description,
 		compat,
 		_source: source,

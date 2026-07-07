@@ -11,13 +11,15 @@ interface ParsedSshAddArgs {
 	username?: string;
 	port?: number;
 	keyPath?: string;
+	password?: string;
+	scopeWasExplicit?: boolean;
 	error?: string;
 }
 
 type SshAddOptionParser = (parsed: ParsedSshAddArgs, value: string | undefined) => string | undefined;
 
 const SSH_ADD_USAGE =
-	"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--scope project|user]";
+	"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--scope project|user]";
 
 const SSH_ADD_OPTION_PARSERS = new Map<string, SshAddOptionParser>([
 	[
@@ -63,10 +65,19 @@ const SSH_ADD_OPTION_PARSERS = new Map<string, SshAddOptionParser>([
 		},
 	],
 	[
+		"--password",
+		(parsed, value) => {
+			if (!value) return "Missing value for --password.";
+			parsed.password = value;
+			return undefined;
+		},
+	],
+	[
 		"--scope",
 		(parsed, value) => {
 			if (!value || (value !== "project" && value !== "user")) return "Invalid --scope value. Use project or user.";
 			parsed.scope = value;
+			parsed.scopeWasExplicit = true;
 			return undefined;
 		},
 	],
@@ -93,7 +104,7 @@ function parseSshAddArgs(rest: string): ParsedSshAddArgs {
 
 const SSH_HELP_TEXT = [
 	"SSH host management (ACP mode)",
-	"  /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--scope project|user]",
+	"  /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--scope project|user]",
 	"  /ssh list                                       List configured SSH hosts",
 	"  /ssh remove <name> [--scope project|user]       Remove an SSH host",
 	"  /ssh help                                        Show this help",
@@ -160,11 +171,13 @@ async function handleAddCommand(rest: string, runtime: SlashCommandRuntime): Pro
 	if (parsed.username) hostConfig.username = parsed.username;
 	if (parsed.port) hostConfig.port = parsed.port;
 	if (parsed.keyPath) hostConfig.keyPath = parsed.keyPath;
+	if (parsed.password) hostConfig.password = parsed.password;
+	const scope = parsed.scopeWasExplicit ? parsed.scope : parsed.password ? "user" : parsed.scope;
 	try {
-		const filePath = getSSHConfigPath(parsed.scope, runtime.cwd);
+		const filePath = getSSHConfigPath(scope, runtime.cwd);
 		await addSSHHost(filePath, parsed.name, hostConfig);
 		await runtime.session.refreshSshTool({ activateIfAvailable: true });
-		await runtime.output(`Added SSH host "${parsed.name}" (${parsed.scope}).`);
+		await runtime.output(`Added SSH host "${parsed.name}" (${scope}).`);
 		return commandConsumed();
 	} catch (err) {
 		return usage(`Failed to add SSH host: ${errorMessage(err)}`, runtime);

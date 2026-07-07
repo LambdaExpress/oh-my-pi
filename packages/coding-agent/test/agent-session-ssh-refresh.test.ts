@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -11,7 +11,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { addSSHHost, removeSSHHost, updateSSHHost } from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
 import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
 import { loadSshTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { getSSHConfigPath, TempDir } from "@oh-my-pi/pi-utils";
+import { getAgentDir, getSSHConfigPath, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
 function createModel(): Model<"openai-responses"> {
 	return buildModel({
@@ -31,11 +31,19 @@ function createModel(): Model<"openai-responses"> {
 describe("AgentSession SSH tool refresh", () => {
 	const tempDirs: TempDir[] = [];
 	const sessions: AgentSession[] = [];
+	const originalAgentDir = getAgentDir();
+
+	beforeEach(() => {
+		const agentDir = TempDir.createSync("@pi-ssh-refresh-agent-");
+		tempDirs.push(agentDir);
+		setAgentDir(agentDir.path());
+	});
 
 	afterEach(async () => {
 		for (const session of sessions.splice(0)) {
 			await session.dispose();
 		}
+		setAgentDir(originalAgentDir);
 		for (const tempDir of tempDirs.splice(0)) {
 			tempDir.removeSync();
 		}
@@ -197,6 +205,36 @@ describe("AgentSession SSH tool refresh", () => {
 
 		expect(invalidateSpy).toHaveBeenNthCalledWith(1, new Set(["prod"]));
 		expect(session.getToolByName("ssh")?.description).toContain("prod (203.0.113.10)");
+	});
+
+	it("invalidates cached host metadata when a host password changes", async () => {
+		const tempDir = TempDir.createSync("@pi-ssh-refresh-");
+		tempDirs.push(tempDir);
+		const cwd = tempDir.path();
+		const configPath = getSSHConfigPath("project", cwd);
+
+		await addSSHHost(configPath, "prod", { host: "203.0.113.9", password: "old-secret" });
+		const initialTool = await loadSshTool({
+			cwd,
+			hasUI: false,
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			getSessionSpawns: () => "*",
+			getSessionFile: () => null,
+		});
+		expect(initialTool).not.toBeNull();
+		const session = createSession(cwd, [initialTool as unknown as AgentTool]);
+
+		const invalidateSpy = spyOn(connectionManager, "invalidateHostMetadata").mockResolvedValue(undefined);
+		try {
+			await updateSSHHost(configPath, "prod", { host: "203.0.113.9", password: "new-secret" });
+			await session.refreshSshTool({ activateIfAvailable: true });
+
+			expect(invalidateSpy).toHaveBeenNthCalledWith(1, new Set(["prod"]));
+			expect(session.getToolByName("ssh")?.description).toContain("prod (203.0.113.9)");
+			expect(session.getToolByName("ssh")?.description).not.toContain("new-secret");
+		} finally {
+			invalidateSpy.mockRestore();
+		}
 	});
 
 	it("invalidates newly added host names before rebuilding the ssh tool", async () => {

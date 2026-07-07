@@ -19,6 +19,14 @@ const SOURCE: SourceMeta = {
 const RUN_ID = `${Date.now()}-${process.pid}`;
 const HOST_A: SSHHost = { name: `a-omp-test-${RUN_ID}`, host: "alpha.example.com", _source: SOURCE };
 const HOST_B: SSHHost = { name: `b-omp-test-${RUN_ID}`, host: "beta.example.com", _source: SOURCE };
+const PASSWORD = "s3cr3t-value";
+const PASSWORD_HOST: SSHHost = {
+	name: `pw-omp-test-${RUN_ID}`,
+	host: "password.example.com",
+	username: "root",
+	password: PASSWORD,
+	_source: SOURCE,
+};
 const LINUX_BASH_INFO: SSHHostInfo = { version: 4, os: "linux", shell: "bash", compatEnabled: false };
 const WINDOWS_CMD_INFO: SSHHostInfo = { version: 4, os: "windows", shell: "cmd", compatEnabled: false };
 
@@ -84,6 +92,13 @@ describe("loadSshTool description", () => {
 			),
 		).toBe(true);
 	});
+
+	it("omits configured host passwords from the model-visible description", async () => {
+		const tool = await loadTestTool([PASSWORD_HOST]);
+
+		expect(tool.description).toContain(`${PASSWORD_HOST.name} (${PASSWORD_HOST.host})`);
+		expect(tool.description).not.toContain(PASSWORD);
+	});
 });
 
 describe("SshTool cwd handling", () => {
@@ -105,6 +120,26 @@ describe("SshTool cwd handling", () => {
 
 		expect(ensureSpy).not.toHaveBeenCalled();
 		expect(executeSpy).not.toHaveBeenCalled();
+	});
+
+	it("passes configured passwords internally without exposing them in commands or visible details", async () => {
+		const executeSpy = stubSshRun(LINUX_BASH_INFO);
+		const tool = await loadTestTool([PASSWORD_HOST]);
+
+		const approvalText = tool.formatApprovalDetails({ host: PASSWORD_HOST.name, command: "whoami" }).join("\n");
+		expect(approvalText).toContain(PASSWORD_HOST.name);
+		expect(approvalText).toContain("whoami");
+		expect(approvalText).not.toContain(PASSWORD);
+
+		const result = await tool.execute("call-password", { host: PASSWORD_HOST.name, command: "whoami" });
+
+		expect(executeSpy).toHaveBeenCalledTimes(1);
+		const [hostConfig, remoteCommand, executeOptions] = executeSpy.mock.calls[0]!;
+		expect(hostConfig).toEqual(expect.objectContaining({ password: PASSWORD }));
+		expect(remoteCommand).toBe("whoami");
+		expect(remoteCommand).not.toContain(PASSWORD);
+		expect(JSON.stringify(executeOptions)).not.toContain(PASSWORD);
+		expect(JSON.stringify(result)).not.toContain(PASSWORD);
 	});
 
 	it("quotes valid POSIX absolute cwd values in the remote command", async () => {

@@ -17,8 +17,21 @@ async function withLooseKey<T>(run: (keyPath: string) => Promise<T>): Promise<T>
 	}
 }
 
+async function pathExists(target: string): Promise<boolean> {
+	try {
+		await fs.access(target);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function expectArgsNotToContain(args: string[], secret: string) {
+	expect(args.join("\u0000")).not.toContain(secret);
+}
+
 describe("buildRemoteCommand", () => {
-	it("includes -n and OpenSSH ControlMaster options on Unix-like platforms", async () => {
+	it("includes -n, BatchMode=yes, and OpenSSH ControlMaster options on Unix-like platforms without a password", async () => {
 		const args = await connectionManager.buildRemoteCommand(
 			{
 				name: "host",
@@ -30,8 +43,32 @@ describe("buildRemoteCommand", () => {
 
 		expect(args[0]).toBe("-n");
 		expect(args).toContain("ControlMaster=auto");
+		expect(args).toContain("BatchMode=yes");
+		expect(args).not.toContain("BatchMode=no");
+		expect(args).not.toContain("NumberOfPasswordPrompts=1");
 		expect(args.at(-2)).toBe("192.168.3.146");
 		expect(args.at(-1)).toBe("ls -la");
+	});
+
+	it("uses one password prompt without putting the configured password in ssh argv", async () => {
+		const password = "s3cr3t-value";
+		const args = await connectionManager.buildRemoteCommand(
+			{
+				name: "pw",
+				host: "192.0.2.1",
+				username: "root",
+				password,
+			},
+			"true",
+			{ platform: "linux" },
+		);
+
+		expect(args).toContain("BatchMode=no");
+		expect(args).toContain("NumberOfPasswordPrompts=1");
+		expect(args).not.toContain("BatchMode=yes");
+		expect(args.at(-2)).toBe("root@192.0.2.1");
+		expect(args.at(-1)).toBe("true");
+		expectArgsNotToContain(args, password);
 	});
 
 	it("omits OpenSSH ControlMaster options on Windows", async () => {
@@ -70,6 +107,67 @@ describe("buildRemoteCommand", () => {
 			expect(args.at(-2)).toBe("192.168.3.146");
 			expect(args.at(-1)).toBe("ls -la");
 		});
+	});
+
+	it("keeps identity file argv for password hosts without leaking the configured password", async () => {
+		await withLooseKey(async keyPath => {
+			const password = "s3cr3t-value";
+			const args = await connectionManager.buildRemoteCommand(
+				{
+					name: "pw-key",
+					host: "192.0.2.1",
+					username: "root",
+					keyPath,
+					password,
+				},
+				"true",
+				{ platform: "win32" },
+			);
+
+			expect(args).toContain("-i");
+			expect(args).toContain(keyPath);
+			expect(args).toContain("BatchMode=no");
+			expect(args).toContain("NumberOfPasswordPrompts=1");
+			expect(args.at(-2)).toBe("root@192.0.2.1");
+			expect(args.at(-1)).toBe("true");
+			expectArgsNotToContain(args, password);
+		});
+	});
+
+	it("builds an askpass invocation without leaking the configured password to argv or script contents", async () => {
+		const password = "s3cr3t-value";
+		const invocation = await connectionManager.buildRemoteCommandInvocation(
+			{
+				name: "pw",
+				host: "192.0.2.1",
+				username: "root",
+				password,
+			},
+			"true",
+			{ platform: "linux" },
+		);
+		const askpassPath = invocation.env?.SSH_ASKPASS;
+		if (!askpassPath) {
+			throw new Error("buildRemoteCommandInvocation did not provide SSH_ASKPASS");
+		}
+		const askpassDir = path.dirname(askpassPath);
+
+		try {
+			expect(invocation.env?.OMP_SSH_PASSWORD).toBe(password);
+			expect(invocation.env?.SSH_ASKPASS_REQUIRE).toBe("force");
+			expect(await pathExists(askpassPath)).toBe(true);
+			expect(invocation.args.at(-2)).toBe("root@192.0.2.1");
+			expect(invocation.args.at(-1)).toBe("true");
+			expectArgsNotToContain(invocation.args, password);
+
+			const scriptContents = await fs.readFile(askpassPath, "utf8");
+			expect(scriptContents).toContain("OMP_SSH_PASSWORD");
+			expect(scriptContents).not.toContain(password);
+		} finally {
+			await invocation.cleanup?.();
+		}
+
+		expect(await pathExists(askpassDir)).toBe(false);
 	});
 
 	it("still rejects missing identity files on Windows args", async () => {

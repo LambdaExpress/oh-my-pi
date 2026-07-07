@@ -6,7 +6,13 @@
 
 import { getSSHConfigPath } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
-import { addSSHHost, readSSHConfigFile, removeSSHHost, type SSHHostConfig } from "../ssh/config-writer";
+import {
+	addSSHHost,
+	readSSHConfigFile,
+	removeSSHHost,
+	type SSHConfigFile,
+	type SSHHostConfig,
+} from "../ssh/config-writer";
 
 // =============================================================================
 // Types
@@ -23,6 +29,7 @@ export interface SSHCommandArgs {
 		user?: string;
 		port?: string;
 		key?: string;
+		password?: string;
 		desc?: string;
 		compat?: boolean;
 		scope?: "project" | "user";
@@ -60,8 +67,17 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 	if (!name) {
 		process.stdout.write(chalk.red("Error: Host name required\n"));
 		process.stdout.write(
-			chalk.dim("Usage: omp ssh add <name> --host <address> [--user <user>] [--port <port>] [--key <path>]\n"),
+			chalk.dim(
+				"Usage: omp ssh add <name> --host <address> [--user <user>] [--port <port>] [--key <path>] [--password <password>]\n",
+			),
 		);
+		process.exitCode = 1;
+		return;
+	}
+
+	const password = cmd.flags.password;
+	if (password === "") {
+		process.stdout.write(chalk.red("Error: --password requires a non-empty value\n"));
 		process.exitCode = 1;
 		return;
 	}
@@ -69,7 +85,11 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 	const host = cmd.flags.host;
 	if (!host) {
 		process.stdout.write(chalk.red("Error: --host is required\n"));
-		process.stdout.write(chalk.dim("Usage: omp ssh add <name> --host <address>\n"));
+		process.stdout.write(
+			chalk.dim(
+				"Usage: omp ssh add <name> --host <address> [--user <user>] [--port <port>] [--key <path>] [--password <password>]\n",
+			),
+		);
 		process.exitCode = 1;
 		return;
 	}
@@ -88,10 +108,11 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 	if (cmd.flags.user) hostConfig.username = cmd.flags.user;
 	if (cmd.flags.port) hostConfig.port = Number.parseInt(cmd.flags.port, 10);
 	if (cmd.flags.key) hostConfig.keyPath = cmd.flags.key;
+	if (password) hostConfig.password = password;
 	if (cmd.flags.desc) hostConfig.description = cmd.flags.desc;
 	if (cmd.flags.compat) hostConfig.compat = true;
 
-	const scope = cmd.flags.scope ?? "project";
+	const scope = cmd.flags.scope ?? (password ? "user" : "project");
 	const filePath = getSSHConfigPath(scope);
 
 	try {
@@ -134,7 +155,13 @@ async function handleList(cmd: SSHCommandArgs): Promise<void> {
 	const userHosts = userConfig.hosts ?? {};
 
 	if (cmd.flags.json) {
-		process.stdout.write(JSON.stringify({ project: projectHosts, user: userHosts }, null, 2));
+		process.stdout.write(
+			JSON.stringify(
+				{ project: redactSSHConfigForDisplay(projectConfig), user: redactSSHConfigForDisplay(userConfig) },
+				null,
+				2,
+			),
+		);
 		process.stdout.write("\n");
 		return;
 	}
@@ -173,7 +200,16 @@ function printHosts(hosts: Record<string, SSHHostConfig>): void {
 		if (config.username) parts.push(chalk.dim(config.username));
 		if (config.port && config.port !== 22) parts.push(chalk.dim(`port:${config.port}`));
 		if (config.keyPath) parts.push(chalk.dim(config.keyPath));
+		if (config.password) parts.push(chalk.dim("password:********"));
 		if (config.description) parts.push(chalk.dim(`- ${config.description}`));
 		process.stdout.write(`  ${parts.join("  ")}\n`);
 	}
+}
+
+function redactSSHConfigForDisplay(config: SSHConfigFile): Record<string, unknown> {
+	const hosts: Record<string, unknown> = {};
+	for (const [name, host] of Object.entries(config.hosts ?? {})) {
+		hosts[name] = host.password ? { ...host, password: "********" } : { ...host };
+	}
+	return hosts;
 }
