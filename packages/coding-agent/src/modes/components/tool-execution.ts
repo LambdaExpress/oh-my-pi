@@ -863,7 +863,7 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 		const provisionalResultSettled =
 			partialResultPaintedBeforeSettle && !isPartial && this.#rendererFlag("forceResultViewportRepaintOnSettle");
 		if (firstResultReplacesStreamedPlaceholder || provisionalResultSettled) {
-			this.#ui.resetDisplay();
+			this.#ui.refreshDisplay("tool-result-topology-change");
 		}
 	}
 

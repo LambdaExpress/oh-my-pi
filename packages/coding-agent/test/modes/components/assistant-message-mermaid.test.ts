@@ -99,11 +99,21 @@ describe("AssistantMessageComponent mermaid markdown", () => {
 });
 
 describe("AssistantMessageComponent settled-row commit boundary", () => {
-	function renderStreamingMarkdown(markdown: string): AssistantMessageComponent {
-		const component = new AssistantMessageComponent();
-		component.updateContent(createAssistantMessage(markdown), { transient: true });
+	function renderStreamingContent(
+		content: AssistantMessage["content"],
+		options: { hideThinkingBlock?: boolean; proseOnlyThinking?: boolean } = {},
+	): AssistantMessageComponent {
+		const component = new AssistantMessageComponent(undefined, options.hideThinkingBlock ?? false);
+		if (options.proseOnlyThinking !== undefined) {
+			component.setProseOnlyThinking(options.proseOnlyThinking);
+		}
+		component.updateContent({ ...createAssistantMessage(""), content }, { transient: true });
 		component.render(80);
 		return component;
+	}
+
+	function renderStreamingMarkdown(markdown: string): AssistantMessageComponent {
+		return renderStreamingContent([{ type: "text", text: markdown }]);
 	}
 
 	it("exposes frozen paragraph rows for streaming prose", () => {
@@ -135,7 +145,7 @@ describe("AssistantMessageComponent settled-row commit boundary", () => {
 		expect(Bun.stripANSI(renderedRows.slice(settledRows).join("\n"))).toContain("Name");
 	});
 
-	it("flags a streamed GFM table for a final scrollback reset", () => {
+	it("marks a streamed GFM table for a final non-destructive refresh", () => {
 		const component = renderStreamingMarkdown(
 			"Results:\n\n| Name | Score |\n| --- | --- |\n| Ada | 100 |\n| Bob | 7 |",
 		);
@@ -145,9 +155,57 @@ describe("AssistantMessageComponent settled-row commit boundary", () => {
 		expect(component.needsFinalScrollbackReset()).toBe(true);
 	});
 
-	it("does not flag streamed prose for a final scrollback reset", () => {
+	it("does not mark streamed prose for a final non-destructive refresh", () => {
 		const component = renderStreamingMarkdown(
 			"Plain paragraphs can stream without re-aligning previously committed rows.\n\nStill just prose.",
+		);
+
+		component.markTranscriptBlockFinalized();
+
+		expect(component.needsFinalScrollbackReset()).toBe(false);
+	});
+
+	it("marks a visible streamed thinking GFM table for a final non-destructive refresh", () => {
+		const component = renderStreamingContent(
+			[
+				{
+					type: "thinking",
+					thinking: "I should compare rows.\n\n| Name | Score |\n| --- | --- |\n| Ada | 100 |",
+				},
+			],
+			{ hideThinkingBlock: false },
+		);
+
+		component.markTranscriptBlockFinalized();
+
+		expect(component.needsFinalScrollbackReset()).toBe(true);
+	});
+
+	it("does not mark a hidden streamed thinking GFM table for a final non-destructive refresh", () => {
+		const component = renderStreamingContent(
+			[
+				{
+					type: "thinking",
+					thinking: "I should compare rows.\n\n| Name | Score |\n| --- | --- |\n| Ada | 100 |",
+				},
+			],
+			{ hideThinkingBlock: true },
+		);
+
+		component.markTranscriptBlockFinalized();
+
+		expect(component.needsFinalScrollbackReset()).toBe(false);
+	});
+
+	it("does not mark prose-only streamed thinking without a table for a final non-destructive refresh", () => {
+		const component = renderStreamingContent(
+			[
+				{
+					type: "thinking",
+					thinking: "I should inspect the inputs and compare the outcomes before answering.",
+				},
+			],
+			{ hideThinkingBlock: false, proseOnlyThinking: true },
 		);
 
 		component.markTranscriptBlockFinalized();

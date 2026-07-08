@@ -25,6 +25,7 @@ import type { PlanApprovalDetails } from "../../plan-mode/approved-plan";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { isSilentAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
+import { AUTO_THINKING } from "../../thinking";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import type { ResolveToolDetails } from "../../tools/resolve";
 import { nextActionableTask } from "../../tools/todo";
@@ -171,14 +172,13 @@ export class EventController {
 			todo_auto_clear: e => this.#handleTodoAutoClear(e),
 			irc_message: e => this.#handleIrcMessage(e),
 			notice: e => this.#handleNotice(e),
-			thinking_level_changed: async () => {
+			thinking_level_changed: async event => {
 				this.ctx.statusLine.invalidate();
 				this.ctx.updateEditorBorderColor();
 				const hideThinking = this.ctx.effectiveHideThinkingBlock;
-				// Only do the expensive full resetDisplay when the effective
-				// visibility actually changed. Auto-classification (e.g. high→medium)
-				// emits thinking_level_changed without changing visibility — a full
-				// terminal replay for those would be disruptive.
+				// Only redraw the transcript when the effective visibility actually
+				// changed. Auto-classification (e.g. high→medium) often updates the
+				// level without changing visibility, so a full render would be noise.
 				if (hideThinking === this.#prevHideThinking) {
 					this.ctx.ui.requestRender();
 					return;
@@ -193,6 +193,10 @@ export class EventController {
 				if (this.ctx.streamingComponent && this.ctx.streamingMessage) {
 					this.ctx.streamingComponent.setHideThinkingBlock(hideThinking);
 					this.#streamingReveal.resyncVisibility();
+				}
+				if (event.configured === AUTO_THINKING) {
+					this.ctx.ui.refreshDisplay("auto-thinking-visibility-change");
+					return;
 				}
 				this.ctx.ui.resetDisplay();
 			},
@@ -887,7 +891,7 @@ export class EventController {
 			}
 			this.ctx.statusLine.invalidate();
 			if (needsFinalScrollbackReset) {
-				this.ctx.ui.resetDisplay();
+				this.ctx.ui.refreshDisplay("assistant-final-scrollback-reset");
 				return;
 			}
 			this.ctx.ui.requestRender();

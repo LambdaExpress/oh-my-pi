@@ -996,6 +996,8 @@ export class TUI extends Container {
 	#ghosttyImageReadyAtMs = 0;
 	#clearScrollbackOnNextRender = false;
 	#forceViewportRepaintOnNextRender = false;
+	#pendingDestructiveReplay = false;
+	#pendingDestructiveReplayReason: string | undefined;
 	#hasEverRendered = false;
 	// Set by the terminal resize callback; consumed by the next render. A resize
 	// event invalidates the committed screen even when the dimensions net out
@@ -1773,6 +1775,21 @@ export class TUI extends Container {
 		this.#resizeEventPending = true;
 		this.#renderRequested = false;
 		this.#executeRender();
+	}
+
+	/**
+	 * Refresh the current display without clearing native scrollback.
+	 *
+	 * Automatic finalization paths use this when component snapshots or cached
+	 * rows must be recomputed, but the user may be reading historical scrollback.
+	 * The next explicit destructive replay will repair any stale frozen history.
+	 */
+	refreshDisplay(reason?: string): void {
+		if (this.#stopped) return;
+		this.invalidate();
+		this.#pendingDestructiveReplay = true;
+		this.#pendingDestructiveReplayReason = reason;
+		this.requestRender(true);
 	}
 
 	requestRender(force = false, options?: RenderRequestOptions): void {
@@ -2804,6 +2821,10 @@ export class TUI extends Container {
 			});
 			this.#committedPrefix = rawFrame.slice(0, chunkTo);
 			this.#committedPrefixAuditRows = Math.min(chunkTo, finalBoundary);
+			if (intent.clearScrollback) {
+				this.#pendingDestructiveReplay = false;
+				this.#pendingDestructiveReplayReason = undefined;
+			}
 			this.#clearScrollbackOnNextRender = false;
 			this.#hasEverRendered = true;
 			if (!firstPaint && frameLength > height) this.#armPostFullPaintSettle();
@@ -3718,9 +3739,10 @@ export class TUI extends Container {
 			intent.kind === "update"
 				? `update(chunk=${this.#committedRows}..${intent.chunkTo}, windowTop=${intent.windowTop})`
 				: `fullPaint(clearScrollback=${intent.clearScrollback})`;
+		const pendingReplay = this.#pendingDestructiveReplay ? (this.#pendingDestructiveReplayReason ?? "unknown") : "none";
 		const state =
 			`committed=${this.#committedRows}, windowTop=${this.#windowTopRow}, ` +
-			`lrStart=${this.#nativeScrollbackLiveRegionStart}`;
+			`lrStart=${this.#nativeScrollbackLiveRegionStart}, pendingReplay=${pendingReplay}`;
 		const msg = `[${new Date().toISOString()}] render: ${detail} (prev=${this.#previousFrameLength}, new=${newLength}, height=${height}, ${state})\n`;
 		fs.appendFileSync(getDebugLogPath(), msg);
 	}

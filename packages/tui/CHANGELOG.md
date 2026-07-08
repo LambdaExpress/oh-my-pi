@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `TUI.refreshDisplay()` to invalidate cached components without clearing native scrollback.
+
 ### Changed
 
 - Changed the default editor undo shortcut to include `Ctrl+Z` while preserving the existing `Ctrl+-` and `Ctrl+_` bindings.

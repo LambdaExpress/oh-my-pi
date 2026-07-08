@@ -30,7 +30,7 @@ class MutableLinesComponent implements Component {
 // Models a component that caches its rendered output and only refreshes it when
 // `invalidate()` fires — like a transcript block that freezes a snapshot. A
 // state change behind the cache is invisible until something invalidates it,
-// which is exactly what `resetDisplay()` must do to surface a Ctrl+O expansion.
+// which is exactly what display refresh/reset paths must do to surface it.
 class CachedComponent implements Component {
 	#current: string[];
 	#cache: string[] | undefined;
@@ -461,6 +461,63 @@ describe("TUI terminal-state regressions", () => {
 
 				expect(term.getScrollBuffer().map(line => line.trimEnd())).toEqual(rows("M", 8));
 				expect(visible(term)).toEqual(["M5", "M6", "M7"]);
+			} finally {
+				tui.stop();
+			}
+		});
+
+		it("refreshDisplay surfaces cached changes without clearing native scrollback", async () => {
+			const term = new VirtualTerminal(20, 3);
+			const tui = new TUI(term);
+			const component = new CachedComponent(rows("L", 8));
+			tui.addChild(component);
+
+			try {
+				tui.start();
+				await settle(term);
+				expect(visible(term)).toEqual(["L5", "L6", "L7"]);
+				const writes = captureWrites(term);
+
+				component.setLines(rows("M", 8));
+				tui.refreshDisplay("test");
+				await settle(term);
+
+				const paint = writes.join("");
+				expect(paint).not.toContain("\x1b[3J");
+				expect(paint).not.toContain("\x1b[2J\x1b[H");
+				expect(visible(term)).toEqual(["M5", "M6", "M7"]);
+			} finally {
+				tui.stop();
+			}
+		});
+
+		it("refreshDisplay preserves a scrolled native viewport while refreshing cached content", async () => {
+			const term = new VirtualTerminal(20, 3, 100);
+			const tui = new TUI(term);
+			const component = new CachedComponent(rows("L", 12));
+			tui.addChild(component);
+
+			try {
+				tui.start();
+				await settle(term);
+				expect(visible(term)).toEqual(["L9", "L10", "L11"]);
+
+				term.scrollLines(-4);
+				const before = term.getBufferPosition();
+				const anchored = visible(term);
+				expect(before.viewportY).toBeLessThan(before.baseY);
+				const writes = captureWrites(term);
+
+				component.setLines(rows("M", 12));
+				tui.refreshDisplay("test");
+				await settle(term);
+
+				const after = term.getBufferPosition();
+				expect(writes.join("")).not.toContain("\x1b[3J");
+				expect(writes.join("")).not.toContain("\x1b[2J\x1b[H");
+				expect(after.viewportY).toBe(before.viewportY);
+				expect(after.viewportY).toBeLessThan(after.baseY);
+				expect(visible(term)).toEqual(anchored);
 			} finally {
 				tui.stop();
 			}
