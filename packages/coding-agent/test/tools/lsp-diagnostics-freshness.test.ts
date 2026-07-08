@@ -198,6 +198,154 @@ describe("LSP diagnostics freshness", () => {
 		expect(output).toContain("target.ts");
 	});
 
+	it("uses TypeScript tsserver diagnostics when no fresh publish arrives", async () => {
+		const filePath = path.join(tempDir.path(), "probe.ts");
+		await Bun.write(filePath, "export const probe = missingLocalForLspProbe;\n");
+		const server: ServerConfig = { command: "typescript-language-server", fileTypes: ["ts"], rootMarkers: [] };
+		const client = createClient(tempDir.path(), server);
+		const clock = new VirtualClock(Date.now());
+		installVirtualTime(clock);
+		const tsserverCommands: string[] = [];
+
+		vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+			servers: { "typescript-language-server": server },
+			idleTimeoutMs: undefined,
+		});
+		vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["typescript-language-server", server]]);
+		vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+		vi.spyOn(lspClient, "refreshFile").mockImplementation(async (mockClient, refreshedFilePath) => {
+			const refreshedUri = fileToUri(refreshedFilePath);
+			mockClient.diagnostics.delete(refreshedUri);
+			mockClient.openFiles.set(refreshedUri, { version: 1, languageId: "typescript" });
+		});
+		const sendRequest = vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_mockClient, method, params) => {
+			expect(method).toBe("workspace/executeCommand");
+			const request = params as {
+				command: string;
+				arguments: [string, { file: string; includeLinePosition: boolean }];
+			};
+			expect(request.command).toBe("typescript.tsserverRequest");
+			expect(request.arguments[1]).toEqual({ file: filePath, includeLinePosition: true });
+			const tsserverCommand = request.arguments[0];
+			tsserverCommands.push(tsserverCommand);
+
+			if (tsserverCommand === "semanticDiagnosticsSync") {
+				return {
+					type: "response",
+					success: true,
+					body: [
+						{
+							message: "Cannot find name 'missingLocalForLspProbe'.",
+							category: "error",
+							code: 2304,
+							startLocation: { line: 1, offset: 22 },
+							endLocation: { line: 1, offset: 45 },
+						},
+					],
+				};
+			}
+			if (tsserverCommand === "syntacticDiagnosticsSync" || tsserverCommand === "suggestionDiagnosticsSync") {
+				return { type: "response", success: true, body: [] };
+			}
+			throw new Error(`Unexpected tsserver diagnostics command: ${tsserverCommand}`);
+		});
+
+		const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+		const result = await tool.execute("diag-ts-active", {
+			action: "diagnostics",
+			file: filePath,
+			timeout: 5,
+		});
+		const output = collectTextContent(result);
+
+		expect(output).toContain("1 error(s)");
+		expect(output).toContain("Cannot find name 'missingLocalForLspProbe'.");
+		expect(output).toContain("(2304)");
+		expect(output).not.toContain("Diagnostics unavailable");
+		expect(output).not.toBe("OK");
+		expect(sendRequest).toHaveBeenCalledTimes(3);
+		expect(tsserverCommands).toEqual([
+			"syntacticDiagnosticsSync",
+			"semanticDiagnosticsSync",
+			"suggestionDiagnosticsSync",
+		]);
+	});
+
+	it("returns OK for empty TypeScript tsserver diagnostics without a fresh publish", async () => {
+		const filePath = path.join(tempDir.path(), "probe.ts");
+		await Bun.write(filePath, "export const probe = 1;\n");
+		const server: ServerConfig = { command: "typescript-language-server", fileTypes: ["ts"], rootMarkers: [] };
+		const client = createClient(tempDir.path(), server);
+		const clock = new VirtualClock(Date.now());
+		installVirtualTime(clock);
+
+		vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+			servers: { "typescript-language-server": server },
+			idleTimeoutMs: undefined,
+		});
+		vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["typescript-language-server", server]]);
+		vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+		vi.spyOn(lspClient, "refreshFile").mockImplementation(async (mockClient, refreshedFilePath) => {
+			const refreshedUri = fileToUri(refreshedFilePath);
+			mockClient.diagnostics.delete(refreshedUri);
+			mockClient.openFiles.set(refreshedUri, { version: 1, languageId: "typescript" });
+		});
+		vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_mockClient, method, params) => {
+			expect(method).toBe("workspace/executeCommand");
+			const request = params as {
+				command: string;
+				arguments: [string, { file: string; includeLinePosition: boolean }];
+			};
+			expect(request.command).toBe("typescript.tsserverRequest");
+			expect(request.arguments[1]).toEqual({ file: filePath, includeLinePosition: true });
+			return { type: "response", success: true, body: [] };
+		});
+
+		const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+		const result = await tool.execute("diag-ts-active-clean", {
+			action: "diagnostics",
+			file: filePath,
+			timeout: 5,
+		});
+
+		expect(collectTextContent(result)).toBe("OK");
+	});
+
+	it("uses textDocument diagnostic pull results when a server advertises diagnosticProvider", async () => {
+		const filePath = path.join(tempDir.path(), "probe.ts");
+		await Bun.write(filePath, "export const probe = missingLocalForPullProbe;\n");
+		const server: ServerConfig = { command: "pull-lsp", fileTypes: ["ts"], rootMarkers: [] };
+		const client = createClient(tempDir.path(), server);
+		client.serverCapabilities = { diagnosticProvider: { interFileDependencies: false, workspaceDiagnostics: false } };
+		const clock = new VirtualClock(Date.now());
+		installVirtualTime(clock);
+
+		vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { "pull-lsp": server }, idleTimeoutMs: undefined });
+		vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["pull-lsp", server]]);
+		vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+		vi.spyOn(lspClient, "refreshFile").mockImplementation(async (mockClient, refreshedFilePath) => {
+			const refreshedUri = fileToUri(refreshedFilePath);
+			mockClient.diagnostics.delete(refreshedUri);
+			mockClient.openFiles.set(refreshedUri, { version: 1, languageId: "typescript" });
+		});
+		vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_mockClient, method, params) => {
+			expect(method).toBe("textDocument/diagnostic");
+			expect(params).toEqual({ textDocument: { uri: fileToUri(filePath) } });
+			return { kind: "full", items: [createDiagnostic("pull diagnostic error")] };
+		});
+
+		const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+		const result = await tool.execute("diag-pull-active", {
+			action: "diagnostics",
+			file: filePath,
+			timeout: 5,
+		});
+		const output = collectTextContent(result);
+
+		expect(output).toContain("pull diagnostic error");
+		expect(output).not.toContain("Diagnostics unavailable");
+	});
+
 	it("keeps returning OK after a fresh empty target publish", async () => {
 		const filePath = path.join(tempDir.path(), "target.ts");
 		await Bun.write(filePath, "export const target = 1;\n");

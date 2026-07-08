@@ -366,6 +366,204 @@ function formatDiagnosticsUnavailableMessage(relPath: string, serverNames: strin
 	return `[warning] [lsp] Diagnostics unavailable for ${relPath}: ${servers} did not publish fresh diagnostics for this file. The file may still contain issues.`;
 }
 
+interface ManualDiagnosticsResult {
+	diagnostics: Diagnostic[];
+	available: boolean;
+}
+
+interface TypeScriptServerDiagnostic {
+	message?: unknown;
+	text?: unknown;
+	start?: number;
+	length?: number;
+	category?: string;
+	code?: string | number;
+	startLocation?: { line?: number; offset?: number };
+	endLocation?: { line?: number; offset?: number };
+	relatedInformation?: unknown[];
+}
+
+interface TsServerResponse<T> {
+	type?: string;
+	success?: boolean;
+	body?: T;
+}
+
+function isTypeScriptLanguageServer(serverName: string, serverConfig: ServerConfig): boolean {
+	if (serverName === "typescript-language-server") return true;
+	const commandName = path.basename(serverConfig.resolvedCommand ?? serverConfig.command);
+	return (
+		commandName === "typescript-language-server" ||
+		commandName === "typescript-language-server.cmd" ||
+		commandName === "typescript-language-server.exe" ||
+		commandName === "typescript-language-server.bat"
+	);
+}
+
+function diagnosticMessageText(message: unknown): string {
+	if (typeof message === "string") return message;
+	if (message && typeof message === "object") {
+		const record = message as { messageText?: unknown; next?: unknown };
+		const parts: string[] = [];
+		const text = diagnosticMessageText(record.messageText);
+		if (text !== "TypeScript diagnostic") {
+			parts.push(text);
+		}
+		if (Array.isArray(record.next)) {
+			for (const next of record.next) {
+				const nextText = diagnosticMessageText(next);
+				if (nextText !== "TypeScript diagnostic") {
+					parts.push(nextText);
+				}
+			}
+		}
+		if (parts.length > 0) {
+			return parts.join("\n");
+		}
+	}
+	if (message !== undefined && message !== null) {
+		const text = String(message);
+		if (text.length > 0) return text;
+	}
+	return "TypeScript diagnostic";
+}
+
+function typeScriptDiagnosticToLsp(diagnostic: TypeScriptServerDiagnostic): Diagnostic {
+	const message = diagnosticMessageText(diagnostic.message ?? diagnostic.text);
+	const hasStartLocation =
+		diagnostic.startLocation?.line !== undefined || diagnostic.startLocation?.offset !== undefined;
+	const hasEndLocation = diagnostic.endLocation?.line !== undefined || diagnostic.endLocation?.offset !== undefined;
+	const startLine = hasStartLocation ? Math.max((diagnostic.startLocation?.line ?? 1) - 1, 0) : 0;
+	const startCharacter = hasStartLocation ? Math.max((diagnostic.startLocation?.offset ?? 1) - 1, 0) : 0;
+	const endLine = hasEndLocation ? Math.max((diagnostic.endLocation?.line ?? 1) - 1, 0) : startLine;
+	const fallbackEndCharacter = hasStartLocation ? startCharacter + Math.max(diagnostic.length ?? 1, 1) : 1;
+	const endCharacter = hasEndLocation
+		? Math.max((diagnostic.endLocation?.offset ?? diagnostic.startLocation?.offset ?? 1) - 1, 0)
+		: fallbackEndCharacter;
+	const severity = (() => {
+		switch (diagnostic.category) {
+			case "error":
+				return 1;
+			case "warning":
+				return 2;
+			case "message":
+				return 3;
+			case "suggestion":
+				return 4;
+			default:
+				return 1;
+		}
+	})();
+	const lspDiagnostic: Diagnostic = {
+		range: {
+			start: { line: startLine, character: startCharacter },
+			end: { line: endLine, character: endCharacter },
+		},
+		severity,
+		source: "typescript",
+		message,
+	};
+	if (diagnostic.code !== undefined) {
+		lspDiagnostic.code = diagnostic.code;
+	}
+	return lspDiagnostic;
+}
+
+async function requestDocumentDiagnostics(
+	client: LspClient,
+	uri: string,
+	signal?: AbortSignal,
+): Promise<Diagnostic[] | null> {
+	if (!client.serverCapabilities?.diagnosticProvider) {
+		return null;
+	}
+	try {
+		const response = await sendRequest(client, "textDocument/diagnostic", { textDocument: { uri } }, signal);
+		if (!response || typeof response !== "object") {
+			return null;
+		}
+		const report = response as { kind?: unknown; items?: unknown };
+		if (report.kind === "full" && Array.isArray(report.items)) {
+			return report.items as Diagnostic[];
+		}
+		if (report.kind === "unchanged") {
+			return [];
+		}
+		return null;
+	} catch (err) {
+		if (err instanceof ToolAbortError || signal?.aborted) {
+			throw err;
+		}
+		if (isMethodNotFoundError(err)) {
+			return null;
+		}
+		return null;
+	}
+}
+
+async function requestTypeScriptDiagnostics(
+	client: LspClient,
+	absolutePath: string,
+	signal?: AbortSignal,
+): Promise<Diagnostic[] | null> {
+	const commands = ["syntacticDiagnosticsSync", "semanticDiagnosticsSync", "suggestionDiagnosticsSync"] as const;
+	const diagnostics: Diagnostic[] = [];
+	let hasUsableResponse = false;
+	for (const command of commands) {
+		try {
+			const response = (await sendRequest(
+				client,
+				"workspace/executeCommand",
+				{
+					command: "typescript.tsserverRequest",
+					arguments: [command, { file: absolutePath, includeLinePosition: true }],
+				},
+				signal,
+			)) as TsServerResponse<TypeScriptServerDiagnostic[] | { diagnostics?: TypeScriptServerDiagnostic[] }>;
+			if (!response || typeof response !== "object" || response.success === false) {
+				continue;
+			}
+			const body = response.body;
+			const responseDiagnostics = Array.isArray(body)
+				? body
+				: body && typeof body === "object" && Array.isArray(body.diagnostics)
+					? body.diagnostics
+					: null;
+			if (!responseDiagnostics) {
+				continue;
+			}
+			hasUsableResponse = true;
+			diagnostics.push(...responseDiagnostics.map(typeScriptDiagnosticToLsp));
+		} catch (err) {
+			if (err instanceof ToolAbortError || signal?.aborted) {
+				throw err;
+			}
+		}
+	}
+	return hasUsableResponse ? diagnostics : null;
+}
+
+async function requestActiveDiagnosticsForServer(args: {
+	serverName: string;
+	serverConfig: ServerConfig;
+	client: LspClient;
+	absolutePath: string;
+	uri: string;
+	signal?: AbortSignal;
+}): Promise<ManualDiagnosticsResult | null> {
+	const documentDiagnostics = await requestDocumentDiagnostics(args.client, args.uri, args.signal);
+	if (documentDiagnostics) {
+		return { diagnostics: documentDiagnostics, available: true };
+	}
+	if (isTypeScriptLanguageServer(args.serverName, args.serverConfig)) {
+		const typeScriptDiagnostics = await requestTypeScriptDiagnostics(args.client, args.absolutePath, args.signal);
+		if (typeScriptDiagnostics) {
+			return { diagnostics: typeScriptDiagnostics, available: true };
+		}
+	}
+	return null;
+}
+
 const ORPHAN_TYPESCRIPT_PROJECT_DIAGNOSTIC_CODES: Record<number, true> = {
 	1375: true,
 	1378: true,
@@ -1607,6 +1805,18 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						const minVersion = client.diagnosticsVersion;
 						await refreshFile(client, resolved, signal);
 						const expectedDocumentVersion = client.openFiles.get(uri)?.version;
+						const activeDiagnostics = await requestActiveDiagnosticsForServer({
+							serverName,
+							serverConfig,
+							client,
+							absolutePath: resolved,
+							uri,
+							signal,
+						});
+						if (activeDiagnostics?.available) {
+							allDiagnostics.push(...activeDiagnostics.diagnostics);
+							continue;
+						}
 						const waitResult = await waitForDiagnostics(client, uri, {
 							timeoutMs: diagnosticsWaitTimeoutMs,
 							signal,
