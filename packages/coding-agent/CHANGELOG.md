@@ -37,6 +37,8 @@
 - Fixed `memory_edit` returning `Memory ... was not found` for recalled Mnemopi facts by allowing `op: "forget"` to delete the recalled fact id and reporting `update`/`invalidate` as fact-specific unsupported operations.
 - Fixed restored queued image messages losing their blob-backed `[Image #N]` marker hyperlinks in the draft editor.
 
+- Fixed automatic assistant, tool, and thinking finalization refreshes clearing native scrollback and yanking scrolled-up terminal readers.
+- Fixed single-file `lsp diagnostics` reporting `OK` when an LSP server did not publish fresh diagnostics for the target file.
 - Fixed eval cell output rendering so live stdout that ends with a newline no longer leaves an extra blank row at the bottom of the output box.
 - Fixed collapsed pending framed-output sections counting only logical lines before the shared block renderer wrapped CJK/HTML-like strings, so long previews could outgrow the live viewport and leave stale `earlier lines` snapshots in native scrollback.
 - Fixed status-line subscription usage limits appearing only after unrelated UI updates.

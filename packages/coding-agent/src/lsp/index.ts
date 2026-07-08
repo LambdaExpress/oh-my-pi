@@ -324,6 +324,7 @@ const INLINE_DIAGNOSTICS_WAIT_TIMEOUT_MS = 500;
  * delivers late instead of giving up before it ever publishes.
  */
 const DEFERRED_DIAGNOSTICS_WAIT_TIMEOUT_MS = 12_000;
+const DIAGNOSTICS_UNAVAILABLE_SUMMARY = "Diagnostics unavailable";
 const MAX_GLOB_DIAGNOSTIC_TARGETS = 20;
 const WORKSPACE_SYMBOL_LIMIT = 200;
 const PROJECT_INDEXED_ACTIONS: ReadonlySet<string> = new Set([
@@ -358,6 +359,11 @@ function limitDiagnosticMessages(messages: string[]): string[] {
 		return messages;
 	}
 	return messages.slice(0, DIAGNOSTIC_MESSAGE_LIMIT);
+}
+
+function formatDiagnosticsUnavailableMessage(relPath: string, serverNames: string[]): string {
+	const servers = serverNames.length === 1 ? serverNames[0] : serverNames.join(", ");
+	return `[warning] [lsp] Diagnostics unavailable for ${relPath}: ${servers} did not publish fresh diagnostics for this file. The file may still contain issues.`;
 }
 
 const ORPHAN_TYPESCRIPT_PROJECT_DIAGNOSTIC_CODES: Record<number, true> = {
@@ -531,11 +537,16 @@ interface WaitForDiagnosticsOptions {
 	settleMs?: number;
 }
 
+interface WaitForDiagnosticsResult {
+	diagnostics: Diagnostic[];
+	available: boolean;
+}
+
 async function waitForDiagnostics(
 	client: LspClient,
 	uri: string,
 	options: WaitForDiagnosticsOptions = {},
-): Promise<Diagnostic[]> {
+): Promise<WaitForDiagnosticsResult> {
 	const { timeoutMs = 3000, signal, minVersion, expectedDocumentVersion, settleMs = DIAGNOSTICS_SETTLE_MS } = options;
 	const start = Date.now();
 	let settledRef: PublishedDiagnostics | undefined;
@@ -547,7 +558,7 @@ async function waitForDiagnostics(
 		if (published && versionOk) {
 			// Server honored our exact document version → authoritative, accept now.
 			if (expectedDocumentVersion !== undefined && published.version === expectedDocumentVersion) {
-				return published.diagnostics;
+				return { diagnostics: published.diagnostics, available: true };
 			}
 			// Unversioned/mismatched publish: wait for the stream to go quiet so an
 			// in-flight publish for the pre-edit content is superseded by the fresh one.
@@ -555,16 +566,17 @@ async function waitForDiagnostics(
 				settledRef = published;
 				settledAt = Date.now();
 			} else if (Date.now() - settledAt >= settleMs) {
-				return published.diagnostics;
+				return { diagnostics: published.diagnostics, available: true };
 			}
 		}
 		await Bun.sleep(DIAGNOSTICS_POLL_MS);
 	}
 	const versionOk = minVersion === undefined || client.diagnosticsVersion > minVersion;
-	if (!versionOk) {
-		return [];
+	const published = client.diagnostics.get(uri);
+	if (published && versionOk) {
+		return { diagnostics: published.diagnostics, available: true };
 	}
-	return client.diagnostics.get(uri)?.diagnostics ?? [];
+	return { diagnostics: [], available: false };
 }
 
 /** Project type detection result */
@@ -659,6 +671,8 @@ export interface FileDiagnosticsResult {
 	summary: string;
 	/** Whether there are any errors (severity 1) */
 	errored: boolean;
+	/** Whether diagnostics were unavailable because no fresh server publish arrived */
+	diagnosticsUnavailable?: boolean;
 	/** Whether the file was formatted */
 	formatter?: FileFormatResult;
 }
@@ -738,6 +752,7 @@ async function getDiagnosticsForFile(
 	const relPath = formatPathRelativeToCwd(absolutePath, cwd);
 	const allDiagnostics: Diagnostic[] = [];
 	const serverNames: string[] = [];
+	const unavailableServerNames: string[] = [];
 
 	// Wait for diagnostics from all servers in parallel
 	const results = await Promise.allSettled(
@@ -747,7 +762,7 @@ async function getDiagnosticsForFile(
 			if (serverConfig.createClient) {
 				const linterClient = getLinterClient(serverName, serverConfig, cwd);
 				const diagnostics = await linterClient.lint(absolutePath);
-				return { serverName, serverConfig, diagnostics };
+				return { serverName, serverConfig, diagnostics, available: true };
 			}
 
 			// Default: use LSP
@@ -760,26 +775,26 @@ async function getDiagnosticsForFile(
 			// Content already synced + didSave sent, wait for fresh diagnostics
 			const minVersion = minVersions?.get(serverName);
 			const expectedDocumentVersion = expectedDocumentVersions?.get(serverName);
-			const diagnostics = await waitForDiagnostics(client, uri, {
+			const waitResult = await waitForDiagnostics(client, uri, {
 				timeoutMs: timeoutMs ?? SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS,
 				signal,
 				minVersion,
 				expectedDocumentVersion,
 			});
-			return { serverName, serverConfig, diagnostics };
+			return { serverName, serverConfig, diagnostics: waitResult.diagnostics, available: waitResult.available };
 		}),
 	);
 
 	for (const result of results) {
 		if (result.status === "fulfilled") {
-			serverNames.push(result.value.serverName);
+			const value = result.value;
+			serverNames.push(value.serverName);
+			if (!value.available) {
+				unavailableServerNames.push(value.serverName);
+				continue;
+			}
 			allDiagnostics.push(
-				...filterOrphanProjectDiagnostics(
-					absolutePath,
-					result.value.serverName,
-					result.value.serverConfig,
-					result.value.diagnostics,
-				),
+				...filterOrphanProjectDiagnostics(absolutePath, value.serverName, value.serverConfig, value.diagnostics),
 			);
 		}
 	}
@@ -788,7 +803,18 @@ async function getDiagnosticsForFile(
 		return undefined;
 	}
 
+	const unavailableMessages =
+		unavailableServerNames.length > 0 ? [formatDiagnosticsUnavailableMessage(relPath, unavailableServerNames)] : [];
 	if (allDiagnostics.length === 0) {
+		if (unavailableMessages.length > 0) {
+			return {
+				server: serverNames.join(", "),
+				messages: unavailableMessages,
+				summary: DIAGNOSTICS_UNAVAILABLE_SUMMARY,
+				errored: false,
+				diagnosticsUnavailable: true,
+			};
+		}
 		return {
 			server: serverNames.join(", "),
 			messages: [],
@@ -809,9 +835,13 @@ async function getDiagnosticsForFile(
 	}
 
 	sortDiagnostics(uniqueDiagnostics);
-	const formatted = uniqueDiagnostics.map(d => formatDiagnostic(d, relPath));
+	const formattedDiagnostics = uniqueDiagnostics.map(d => formatDiagnostic(d, relPath));
+	const formatted = [...formattedDiagnostics, ...unavailableMessages];
 	const limited = limitDiagnosticMessages(formatted);
-	const summary = formatDiagnosticsSummary(uniqueDiagnostics);
+	const summary =
+		unavailableMessages.length > 0
+			? summarizeDiagnosticMessages(formatted).summary
+			: formatDiagnosticsSummary(uniqueDiagnostics);
 	const hasErrors = uniqueDiagnostics.some(d => d.severity === 1);
 
 	return {
@@ -819,6 +849,7 @@ async function getDiagnosticsForFile(
 		messages: limited,
 		summary,
 		errored: hasErrors,
+		diagnosticsUnavailable: unavailableMessages.length > 0 ? true : undefined,
 	};
 }
 
@@ -1002,6 +1033,7 @@ function mergeDiagnostics(
 	let hasResults = false;
 	let hasFormatter = false;
 	let formatted = false;
+	let diagnosticsUnavailable = false;
 
 	for (const result of results) {
 		if (!result) continue;
@@ -1016,6 +1048,9 @@ function mergeDiagnostics(
 		}
 		if (result.messages.length > 0) {
 			messages.push(...result.messages);
+		}
+		if (result.diagnosticsUnavailable) {
+			diagnosticsUnavailable = true;
 		}
 		if (result.formatter !== undefined) {
 			hasFormatter = true;
@@ -1033,10 +1068,15 @@ function mergeDiagnostics(
 	let errored = false;
 	let limitedMessages = messages;
 	if (messages.length > 0) {
-		const summaryInfo = summarizeDiagnosticMessages(messages);
-		summary = summaryInfo.summary;
-		errored = summaryInfo.errored;
-		limitedMessages = limitDiagnosticMessages(messages);
+		if (diagnosticsUnavailable && messages.every(message => message.includes("Diagnostics unavailable"))) {
+			summary = DIAGNOSTICS_UNAVAILABLE_SUMMARY;
+			limitedMessages = limitDiagnosticMessages(messages);
+		} else {
+			const summaryInfo = summarizeDiagnosticMessages(messages);
+			summary = summaryInfo.summary;
+			errored = summaryInfo.errored;
+			limitedMessages = limitDiagnosticMessages(messages);
+		}
 	}
 	const formatter = hasFormatter ? (formatted ? FileFormatResult.FORMATTED : FileFormatResult.UNCHANGED) : undefined;
 
@@ -1046,6 +1086,7 @@ function mergeDiagnostics(
 		summary,
 		errored,
 		formatter,
+		diagnosticsUnavailable: diagnosticsUnavailable ? true : undefined,
 	};
 }
 
@@ -1526,6 +1567,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				: Math.min(SINGLE_DIAGNOSTICS_WAIT_TIMEOUT_MS, timeoutSec * 1000);
 			const results: string[] = [];
 			const allServerNames = new Set<string>();
+			let diagnosticsUnavailable = false;
 			if (truncatedGlobTargets) {
 				results.push(
 					`${theme.status.warning} Pattern matched more than ${MAX_GLOB_DIAGNOSTIC_TARGETS} files; showing first ${MAX_GLOB_DIAGNOSTIC_TARGETS}. Narrow the glob or use workspace diagnostics.`,
@@ -1544,6 +1586,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				const uri = fileToUri(resolved);
 				const relPath = formatPathRelativeToCwd(resolved, this.session.cwd);
 				const allDiagnostics: Diagnostic[] = [];
+				const unavailableServerNames: string[] = [];
 
 				// Query all applicable servers for this file
 				for (const [serverName, serverConfig] of servers) {
@@ -1564,13 +1607,18 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						const minVersion = client.diagnosticsVersion;
 						await refreshFile(client, resolved, signal);
 						const expectedDocumentVersion = client.openFiles.get(uri)?.version;
-						const diagnostics = await waitForDiagnostics(client, uri, {
+						const waitResult = await waitForDiagnostics(client, uri, {
 							timeoutMs: diagnosticsWaitTimeoutMs,
 							signal,
 							minVersion,
 							expectedDocumentVersion,
 						});
-						allDiagnostics.push(...diagnostics);
+						if (!waitResult.available) {
+							unavailableServerNames.push(serverName);
+							diagnosticsUnavailable = true;
+							continue;
+						}
+						allDiagnostics.push(...waitResult.diagnostics);
 					} catch (err) {
 						if (err instanceof ToolAbortError || signal?.aborted) {
 							throw err;
@@ -1591,37 +1639,65 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 
 				sortDiagnostics(uniqueDiagnostics);
+				const unavailableMessages =
+					unavailableServerNames.length > 0
+						? [formatDiagnosticsUnavailableMessage(relPath, unavailableServerNames)]
+						: [];
 
 				if (!detailed && targets.length === 1) {
 					if (uniqueDiagnostics.length === 0) {
+						if (unavailableMessages.length > 0) {
+							const output = `${DIAGNOSTICS_UNAVAILABLE_SUMMARY}:\n${formatGroupedDiagnosticMessages(unavailableMessages)}`;
+							return {
+								content: [{ type: "text", text: output }],
+								details: { action, serverName: Array.from(allServerNames).join(", "), success: false },
+							};
+						}
 						return {
 							content: [{ type: "text", text: "OK" }],
 							details: { action, serverName: Array.from(allServerNames).join(", "), success: true },
 						};
 					}
 
-					const summary = formatDiagnosticsSummary(uniqueDiagnostics);
-					const formatted = uniqueDiagnostics.map(d => formatDiagnostic(d, relPath));
+					const formattedDiagnostics = uniqueDiagnostics.map(d => formatDiagnostic(d, relPath));
+					const formatted = [...formattedDiagnostics, ...unavailableMessages];
+					const summary =
+						unavailableMessages.length > 0
+							? summarizeDiagnosticMessages(formatted).summary
+							: formatDiagnosticsSummary(uniqueDiagnostics);
 					const output = `${summary}:\n${formatGroupedDiagnosticMessages(formatted)}`;
 					return {
 						content: [{ type: "text", text: output }],
-						details: { action, serverName: Array.from(allServerNames).join(", "), success: true },
+						details: {
+							action,
+							serverName: Array.from(allServerNames).join(", "),
+							success: unavailableMessages.length === 0,
+						},
 					};
 				}
 
 				if (uniqueDiagnostics.length === 0) {
-					results.push(`${theme.status.success} ${relPath}: no issues`);
+					if (unavailableMessages.length > 0) {
+						results.push(`${theme.status.warning} ${relPath}: ${DIAGNOSTICS_UNAVAILABLE_SUMMARY}`);
+						results.push(formatGroupedDiagnosticMessages(unavailableMessages));
+					} else {
+						results.push(`${theme.status.success} ${relPath}: no issues`);
+					}
 				} else {
-					const summary = formatDiagnosticsSummary(uniqueDiagnostics);
+					const formattedDiagnostics = uniqueDiagnostics.map(d => formatDiagnostic(d, relPath));
+					const formatted = [...formattedDiagnostics, ...unavailableMessages];
+					const summary =
+						unavailableMessages.length > 0
+							? summarizeDiagnosticMessages(formatted).summary
+							: formatDiagnosticsSummary(uniqueDiagnostics);
 					results.push(`${theme.status.error} ${relPath}: ${summary}`);
-					const formatted = uniqueDiagnostics.map(d => formatDiagnostic(d, relPath));
 					results.push(formatGroupedDiagnosticMessages(formatted));
 				}
 			}
 
 			return {
 				content: [{ type: "text", text: results.join("\n") }],
-				details: { action, serverName: Array.from(allServerNames).join(", "), success: true },
+				details: { action, serverName: Array.from(allServerNames).join(", "), success: !diagnosticsUnavailable },
 			};
 		}
 

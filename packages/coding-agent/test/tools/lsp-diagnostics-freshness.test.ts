@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
-import { createLspWritethrough, type FileDiagnosticsResult } from "@oh-my-pi/pi-coding-agent/lsp";
+import { createLspWritethrough, type FileDiagnosticsResult, LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
 import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
 import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
 import type { Diagnostic, LspClient, ServerConfig } from "@oh-my-pi/pi-coding-agent/lsp/types";
 import { fileToUri } from "@oh-my-pi/pi-coding-agent/lsp/utils";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { type ptree, TempDir } from "@oh-my-pi/pi-utils";
 
 const TEST_SERVER: ServerConfig = {
@@ -100,6 +101,13 @@ function installVirtualTime(clock: VirtualClock): void {
 	}) as typeof Bun.sleep);
 }
 
+function collectTextContent(result: { content: Array<{ type: string; text?: string }> }): string {
+	return result.content
+		.filter(block => block.type === "text")
+		.map(block => block.text ?? "")
+		.join("\n");
+}
+
 describe("LSP diagnostics freshness", () => {
 	let tempDir: TempDir;
 
@@ -158,6 +166,66 @@ describe("LSP diagnostics freshness", () => {
 		expect(loadConfig).not.toHaveBeenCalled();
 		expect(getServers).not.toHaveBeenCalled();
 		expect(getOrCreate).not.toHaveBeenCalled();
+	});
+
+	it("reports unavailable diagnostics instead of OK when no fresh target publish arrives", async () => {
+		const filePath = path.join(tempDir.path(), "target.ts");
+		await Bun.write(filePath, "export const target = 1;\n");
+		const server = TEST_SERVER;
+		const client = createClient(tempDir.path(), server);
+		const clock = new VirtualClock(Date.now());
+		installVirtualTime(clock);
+
+		vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { "test-lsp": server }, idleTimeoutMs: undefined });
+		vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["test-lsp", server]]);
+		vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+		vi.spyOn(lspClient, "refreshFile").mockImplementation(async (mockClient, refreshedFilePath) => {
+			const refreshedUri = fileToUri(refreshedFilePath);
+			mockClient.diagnostics.delete(refreshedUri);
+			mockClient.openFiles.set(refreshedUri, { version: 1, languageId: "typescript" });
+		});
+
+		const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+		const result = await tool.execute("diag-missing-publish", {
+			action: "diagnostics",
+			file: filePath,
+			timeout: 5,
+		});
+		const output = collectTextContent(result);
+
+		expect(output).not.toBe("OK");
+		expect(output).toMatch(/diagnostics (?:unavailable|stale)|no fresh diagnostics/i);
+		expect(output).toContain("target.ts");
+	});
+
+	it("keeps returning OK after a fresh empty target publish", async () => {
+		const filePath = path.join(tempDir.path(), "target.ts");
+		await Bun.write(filePath, "export const target = 1;\n");
+		const server = TEST_SERVER;
+		const client = createClient(tempDir.path(), server);
+		const clock = new VirtualClock(Date.now());
+		installVirtualTime(clock);
+
+		vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { "test-lsp": server }, idleTimeoutMs: undefined });
+		vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["test-lsp", server]]);
+		vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+		vi.spyOn(lspClient, "refreshFile").mockImplementation(async (mockClient, refreshedFilePath) => {
+			const refreshedUri = fileToUri(refreshedFilePath);
+			mockClient.diagnostics.delete(refreshedUri);
+			mockClient.openFiles.set(refreshedUri, { version: 1, languageId: "typescript" });
+			clock.in(100, () => {
+				publishDiagnostics(mockClient, refreshedUri, [], mockClient.openFiles.get(refreshedUri)?.version ?? null);
+			});
+		});
+
+		const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+		const result = await tool.execute("diag-fresh-empty-publish", {
+			action: "diagnostics",
+			file: filePath,
+			timeout: 5,
+		});
+
+		expect(collectTextContent(result)).toBe("OK");
 	});
 
 	it("announces batched sibling writes before syncing the diagnostic target", async () => {
