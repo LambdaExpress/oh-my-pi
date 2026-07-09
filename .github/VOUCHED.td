@@ -23,6 +23,7 @@
 0ttik
 a-glapinski
 ak4153
+any-victor
 apoc
 arg3t
 asafmah
@@ -65,6 +66,8 @@ infernix
 inprealpha
 insodimension
 itertea
+itzrnvr
+jaaneek
 jagravnaik
 jasonw22
 jchristman

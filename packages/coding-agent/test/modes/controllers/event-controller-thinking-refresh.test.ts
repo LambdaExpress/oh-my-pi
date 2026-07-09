@@ -1,5 +1,5 @@
-import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";

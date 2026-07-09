@@ -235,5 +235,4 @@ describe("ToolExecutionComponent SSH repaint seams", () => {
 			await term.flush();
 		}
 	});
-
 });

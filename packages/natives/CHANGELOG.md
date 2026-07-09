@@ -10,6 +10,13 @@
 
 - Fixed compiled-binary native embedding accepting stale `pi_natives.*.node` artifacts whose version sentinel does not match the current `@oh-my-pi/pi-natives` package version. `gen:native` now validates the sentinel before archiving and can read native artifacts from an explicit `PI_NATIVE_SOURCE_DIR`, preventing local Windows builds from producing an `omp` binary that only starts while another install keeps a correct cached addon locked.
 - Fixed Windows AVX2 detection preferring Windows PowerShell 5.1, whose .NET runtime lacks `System.Runtime.Intrinsics.X86.Avx2`; the loader now tries `pwsh` first so AVX2-capable Windows hosts select the `modern` native addon by default.
+## [16.3.12] - 2026-07-08
+
+### Fixed
+
+- Fixed the native build script failing to locate the `@napi-rs/cli` `napi` binary on Windows because the `PATH` lookup joined entries with a Unix `:` separator instead of the platform delimiter (`path.delimiter`).
+- Fixed a Windows regression where an abnormal `omp` exit or bash cancellation could `TerminateProcess` unrelated `pwsh.exe` / `powershell.exe` sessions (including other Cursor terminal tabs). `SpawnRegistry` stored only the raw pid of each brush-spawned child and re-opened it via `Process::from_pid` at cancellation time; between those two moments Windows could recycle a freed pid onto an unrelated PowerShell, and `signal_tree` then walked the wrong subtree via Toolhelp. The observer now pins a stable `Process` handle at spawn time — on Windows the open handle keeps the pid slot reserved, on Linux the pidfd carries identity, on macOS the `(pid, start_time)` triple detects impersonation — so cancellation can only reach children this run actually launched. The registry sweeps exited entries once the recorded set crosses a small threshold so a long bash loop of short external commands cannot pin one owned OS handle per historical spawn. ([#4605](https://github.com/can1357/oh-my-pi/issues/4605))
+
 ## [16.3.6] - 2026-07-04
 
 ### Changed

@@ -87,10 +87,7 @@ function createFixture(opts: {
 	};
 }
 
-async function dispatchMessageEnd(
-	controller: EventController,
-	message: AssistantMessage,
-): Promise<void> {
+async function dispatchMessageEnd(controller: EventController, message: AssistantMessage): Promise<void> {
 	await controller.handleEvent({ type: "message_end", message } as Extract<
 		AgentSessionEvent,
 		{ type: "message_end" }

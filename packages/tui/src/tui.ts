@@ -503,6 +503,12 @@ export class Container implements Component {
 		this.#memoLines = undefined;
 	}
 
+	/** Dispose every child, then detach it from this container. */
+	disposeChildren(): void {
+		this.dispose();
+		this.clear();
+	}
+
 	invalidate(): void {
 		this.#memoLines = undefined;
 		for (const child of this.children) {
@@ -3739,7 +3745,9 @@ export class TUI extends Container {
 			intent.kind === "update"
 				? `update(chunk=${this.#committedRows}..${intent.chunkTo}, windowTop=${intent.windowTop})`
 				: `fullPaint(clearScrollback=${intent.clearScrollback})`;
-		const pendingReplay = this.#pendingDestructiveReplay ? (this.#pendingDestructiveReplayReason ?? "unknown") : "none";
+		const pendingReplay = this.#pendingDestructiveReplay
+			? (this.#pendingDestructiveReplayReason ?? "unknown")
+			: "none";
 		const state =
 			`committed=${this.#committedRows}, windowTop=${this.#windowTopRow}, ` +
 			`lrStart=${this.#nativeScrollbackLiveRegionStart}, pendingReplay=${pendingReplay}`;

@@ -141,6 +141,30 @@ function unquoteToken(token: string): string {
 	return token;
 }
 
+function isInsideShellQuote(command: string, index: number): boolean {
+	let quote: "'" | '"' | undefined;
+	for (let i = 0; i < index; i++) {
+		const char = command[i];
+		if (char === "\\" && quote !== "'") {
+			i++;
+			continue;
+		}
+		if (char === "'" && quote !== '"') {
+			quote = quote === "'" ? undefined : "'";
+			continue;
+		}
+		if (char === '"' && quote !== "'") {
+			quote = quote === '"' ? undefined : '"';
+		}
+	}
+	return quote !== undefined;
+}
+
+function isEmbeddedInQuotedText(command: string, token: string, index: number): boolean {
+	if (token.startsWith("'") || token.startsWith('"')) return false;
+	return isInsideShellQuote(command, index);
+}
+
 /** Shell-escape a path using single quotes. */
 function shellEscape(p: string): string {
 	return `'${p.replace(/'/g, "'\\''")}'`;
@@ -217,6 +241,7 @@ export function expandSkillUrls(command: string, skills: readonly Skill[]): stri
 
 /**
  * Expand supported internal URLs in a bash command string to shell-escaped absolute paths.
+ * Unresolvable URLs and literal mentions inside larger quoted text are left unchanged.
  * Supported schemes: skill://, agent://, artifact://, memory://, rule://, local://
  */
 export async function expandInternalUrls(command: string, options: InternalUrlExpansionOptions): Promise<string> {
@@ -232,15 +257,22 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 		const index = match.index;
 		if (index === undefined) continue;
 
+		if (isEmbeddedInQuotedText(command, token, index)) continue;
+
 		const rawUrl = unquoteToken(token);
 		const url = normalizeLocalScheme(rawUrl);
-		const resolvedPath = await resolveInternalUrlToPath(
-			url,
-			options.skills,
-			options.internalRouter,
-			options.localOptions,
-			options.ensureLocalParentDirs,
-		);
+		let resolvedPath: string;
+		try {
+			resolvedPath = await resolveInternalUrlToPath(
+				url,
+				options.skills,
+				options.internalRouter,
+				options.localOptions,
+				options.ensureLocalParentDirs,
+			);
+		} catch {
+			continue;
+		}
 		const replacement = options.noEscape
 			? resolvedPath
 			: (options.escapePath?.(resolvedPath) ?? shellEscape(resolvedPath));

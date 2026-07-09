@@ -5,6 +5,17 @@
 ### Fixed
 
 - Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.
+## [16.3.12] - 2026-07-08
+
+### Added
+
+- Added per-tool abort metadata so stream-wide aborts can label matching tool-call placeholders separately from unaffected sibling calls ([#2783](https://github.com/can1357/oh-my-pi/issues/2783)).
+
+### Fixed
+
+- Fixed handoff generation retrying with `toolChoice: "auto"` when custom OpenAI-compatible providers reject `toolChoice: "none"` with an auto-only 400. ([#4715](https://github.com/can1357/oh-my-pi/issues/4715))
+- Fixed generic remote compaction against OpenAI-compatible `/chat/completions` endpoints (for example llama.cpp `openai-completions`) by sending chat messages instead of the custom `{ systemPrompt, prompt }` summarizer payload. ([#4630](https://github.com/can1357/oh-my-pi/issues/4630))
+
 ## [16.3.7] - 2026-07-05
 
 ### Fixed
