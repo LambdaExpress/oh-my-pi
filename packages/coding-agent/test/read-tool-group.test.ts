@@ -168,26 +168,6 @@ describe("ReadToolGroupComponent", () => {
 		expect(plain).toContain(`${themeModule.theme.tree.last} ${twoPath}`);
 	});
 
-	it("renders warning previews with warning styling instead of success styling", () => {
-		const component = new ReadToolGroupComponent({ showContentPreview: true });
-		const examplePath = path.resolve("/tmp/example.ts");
-		component.updateArgs({ path: examplePath }, "read-1");
-		component.updateResult(
-			{
-				content: [{ type: "text", text: "const a = 1;\nconst b = 2;\nconst c = 3;" }],
-				details: { suffixResolution: { from: path.resolve("/tmp/exampl.ts"), to: examplePath } },
-			},
-			false,
-			"read-1",
-		);
-
-		const rendered = Bun.stripANSI(component.render(120).join("\n"));
-
-		expect(rendered).toContain(themeModule.theme.status.warning);
-		expect(rendered).not.toContain(themeModule.theme.status.success);
-		expect(rendered).toContain("corrected from");
-	});
-
 	it("highlights only the collapsed preview lines", () => {
 		const highlightSpy = vi.spyOn(themeModule, "highlightCode");
 		const component = new ReadToolGroupComponent({ showContentPreview: true });

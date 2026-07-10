@@ -44,6 +44,7 @@
 
 - Fixed automatic assistant, tool, and thinking finalization refreshes clearing native scrollback and yanking scrolled-up terminal readers.
 - Fixed single-file `lsp diagnostics` to actively request diagnostics from pull-diagnostics servers and `typescript-language-server`, while still reporting unavailable results when a server cannot provide fresh diagnostics.
+- Fixed `read` treating a unique workspace suffix match as the requested missing path; missing local, archive, SQLite, and PDF paths now remain errors and show the candidate only as a `Did you mean ...?` suggestion.
 - Fixed eval cell output rendering so live stdout that ends with a newline no longer leaves an extra blank row at the bottom of the output box.
 - Fixed collapsed pending framed-output sections counting only logical lines before the shared block renderer wrapped CJK/HTML-like strings, so long previews could outgrow the live viewport and leave stale `earlier lines` snapshots in native scrollback.
 - Fixed status-line subscription usage limits appearing only after unrelated UI updates.

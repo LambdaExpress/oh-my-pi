@@ -118,6 +118,64 @@ describe("literal colon filename resolution (issue #4618)", () => {
 	});
 
 	describe("read tool", () => {
+		it("reports a unique suffix candidate as a suggestion without reading it", async () => {
+			const candidateDir = path.join(tmpDir, "fixtures");
+			await fs.mkdir(candidateDir, { recursive: true });
+			await Bun.write(path.join(candidateDir, ".lsp.json"), "fixture-only content\n");
+
+			const tool = new ReadTool(createSession());
+			await expect(tool.execute("read-missing-with-suggestion", { path: ".lsp.json" })).rejects.toThrow(
+				"Path '.lsp.json' not found.\nDid you mean 'fixtures/.lsp.json'?",
+			);
+		});
+
+		it("omits suffix suggestions when multiple candidates are ambiguous", async () => {
+			await fs.mkdir(path.join(tmpDir, "one"), { recursive: true });
+			await fs.mkdir(path.join(tmpDir, "two"), { recursive: true });
+			await Bun.write(path.join(tmpDir, "one", ".lsp.json"), "first candidate\n");
+			await Bun.write(path.join(tmpDir, "two", ".lsp.json"), "second candidate\n");
+
+			const tool = new ReadTool(createSession());
+			await expect(tool.execute("read-missing-ambiguous", { path: ".lsp.json" })).rejects.toThrow(
+				/^Path '\.lsp\.json' not found$/,
+			);
+		});
+
+		it("prefers an exact path when a nested suffix candidate also exists", async () => {
+			await fs.mkdir(path.join(tmpDir, "fixtures"), { recursive: true });
+			await Bun.write(path.join(tmpDir, ".lsp.json"), "exact content\n");
+			await Bun.write(path.join(tmpDir, "fixtures", ".lsp.json"), "nested content\n");
+
+			const tool = new ReadTool(createSession());
+			const output = getText(await tool.execute("read-exact-over-suffix", { path: ".lsp.json" }));
+
+			expect(output).toContain("exact content");
+			expect(output).not.toContain("nested content");
+		});
+		it("suggests a nested archive without opening it", async () => {
+			const candidateDir = path.join(tmpDir, "fixtures");
+			await fs.mkdir(candidateDir, { recursive: true });
+			await Bun.write(path.join(candidateDir, "bundle.zip"), EMPTY_ZIP_EOCD);
+
+			const tool = new ReadTool(createSession());
+			await expect(tool.execute("read-missing-archive", { path: "bundle.zip" })).rejects.toThrow(
+				"Path 'bundle.zip' not found.\nDid you mean 'fixtures/bundle.zip'?",
+			);
+		});
+
+		it("suggests a nested SQLite database without opening it", async () => {
+			const candidateDir = path.join(tmpDir, "fixtures");
+			await fs.mkdir(candidateDir, { recursive: true });
+			const header = new Uint8Array(4096);
+			header.set(Buffer.from("SQLite format 3\0", "utf-8"), 0);
+			await Bun.write(path.join(candidateDir, "data.db"), header);
+
+			const tool = new ReadTool(createSession());
+			await expect(tool.execute("read-missing-sqlite", { path: "data.db" })).rejects.toThrow(
+				"Path 'data.db' not found.\nDid you mean 'fixtures/data.db'?",
+			);
+		});
+
 		it("reads a literal file whose name ends in a selector-shaped suffix", async () => {
 			const literal = "test:1-2";
 			const absolute = path.join(tmpDir, literal);

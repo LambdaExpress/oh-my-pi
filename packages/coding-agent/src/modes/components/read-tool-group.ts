@@ -42,17 +42,8 @@ type ReadRenderArgs = {
 	sel?: string;
 };
 
-type ReadToolSuffixResolution = {
-	from: string;
-	to: string;
-};
-
 type ReadToolResultDetails = {
 	resolvedPath?: string;
-	suffixResolution?: {
-		from?: string;
-		to?: string;
-	};
 	conflictCount?: number;
 	displayReadTargets?: unknown;
 	displayContent?: {
@@ -72,20 +63,12 @@ type ReadToolGroupOptions = {
 	showContentPreview?: boolean;
 };
 
-function getSuffixResolution(details: ReadToolResultDetails | undefined): ReadToolSuffixResolution | undefined {
-	if (typeof details?.suffixResolution?.from !== "string" || typeof details.suffixResolution.to !== "string") {
-		return undefined;
-	}
-	return { from: details.suffixResolution.from, to: details.suffixResolution.to };
-}
-
 type ReadEntry = {
 	toolCallId: string;
 	path: string;
 	displayPaths?: string[];
 	linkPath?: string;
-	status: "pending" | "success" | "warning" | "error";
-	correctedFrom?: string;
+	status: "pending" | "success" | "error";
 	contentText?: string;
 	conflictCount?: number;
 	codeStartLine?: number;
@@ -112,8 +95,7 @@ type ReadSummaryRow = {
 const READ_STATUS_RANK: Record<ReadEntry["status"], number> = {
 	success: 0,
 	pending: 1,
-	warning: 2,
-	error: 3,
+	error: 2,
 };
 
 const URL_LIKE_RE = /^[a-z][a-z0-9+.-]*:\/\//i;
@@ -125,12 +107,6 @@ function getDisplayReadTargets(details: ReadToolResultDetails | undefined): stri
 		.map(target => target.trim())
 		.filter(target => target.length > 0);
 	return targets.length > 0 ? targets : undefined;
-}
-
-function displayPathWithSuffixResolution(currentPath: string, suffixResolution: ReadToolSuffixResolution): string {
-	const currentSelector = splitPathAndSel(currentPath).sel;
-	if (!currentSelector || splitPathAndSel(suffixResolution.to).sel) return suffixResolution.to;
-	return `${suffixResolution.to}:${currentSelector}`;
 }
 
 function readSourceFsPath(details: ReadToolResultDetails | undefined): string | undefined {
@@ -369,21 +345,12 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		if (!entry) return;
 		if (isPartial) return;
 		const details = result.details as ReadToolResultDetails | undefined;
-		const suffixResolution = getSuffixResolution(details);
-		const displayPaths = getDisplayReadTargets(details);
 		entry.linkPath = readResultLinkPath(details);
-		if (suffixResolution) {
-			entry.path = displayPathWithSuffixResolution(entry.path, suffixResolution);
-			entry.correctedFrom = suffixResolution.from;
-			entry.displayPaths = undefined;
-		} else {
-			entry.correctedFrom = undefined;
-			entry.displayPaths = displayPaths;
-		}
+		entry.displayPaths = getDisplayReadTargets(details);
 		const conflictCount =
 			typeof details?.conflictCount === "number" && details.conflictCount > 0 ? details.conflictCount : undefined;
 		entry.conflictCount = conflictCount;
-		entry.status = result.isError ? "error" : suffixResolution ? "warning" : "success";
+		entry.status = result.isError ? "error" : "success";
 		// Store clean display content for preview/expanded display when the read
 		// tool provides it; fall back to model-facing text for legacy results.
 		const displayContent = details?.displayContent;
@@ -534,7 +501,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	#formatRowPath(row: ReadSummaryRow): string {
 		return this.#formatPathValue(row.targetPath, {
-			correctedFrom: this.#correctedFromForTargets(row.targets),
 			conflictCount: this.#conflictCountForTargets(row.targets),
 			line: firstSelectorLineForTargets(row.targets),
 			linkPath: linkPathForTargets(row.targets),
@@ -549,13 +515,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			}
 		}
 		return status;
-	}
-
-	#correctedFromForTargets(targets: ReadDisplayTarget[]): string | undefined {
-		for (const target of targets) {
-			if (target.entry.correctedFrom) return target.entry.correctedFrom;
-		}
-		return undefined;
 	}
 
 	#conflictCountForTargets(targets: ReadDisplayTarget[]): number | undefined {
@@ -583,10 +542,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		return this.#previewEntriesForRow(row).length > 0;
 	}
 
-	#formatPathValue(
-		value: string,
-		options: { correctedFrom?: string; conflictCount?: number; line?: number; linkPath?: string } = {},
-	): string {
+	#formatPathValue(value: string, options: { conflictCount?: number; line?: number; linkPath?: string } = {}): string {
 		const split = splitPathAndSel(value);
 		const selectorSuffix = split.sel ? `:${split.sel}` : "";
 		const baseValue = split.sel ? split.path : value;
@@ -598,9 +554,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		}
 		if (selectorSuffix) {
 			pathDisplay += theme.fg("accent", selectorSuffix);
-		}
-		if (options.correctedFrom) {
-			pathDisplay += theme.fg("dim", ` (corrected from ${shortenPath(options.correctedFrom)})`);
 		}
 		pathDisplay += this.#formatConflictBadge(options.conflictCount);
 		return pathDisplay;
@@ -623,7 +576,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const pathValue = shortenPath(entry.path);
 		const pathDisplay = pathValue
 			? this.#formatPathValue(entry.path, {
-					correctedFrom: entry.correctedFrom,
 					conflictCount: entry.conflictCount,
 					line: firstSelectorLine(split.sel),
 					linkPath: readTargetLinkPath(split.path, entry.linkPath),
@@ -668,9 +620,6 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#formatStatus(status: ReadEntry["status"]): string {
 		if (status === "success") {
 			return theme.fg("text", theme.status.enabled);
-		}
-		if (status === "warning") {
-			return theme.fg("warning", theme.status.warning);
 		}
 		if (status === "error") {
 			return theme.fg("error", theme.status.error);

@@ -53,7 +53,6 @@ URL selectors are parsed separately in `packages/coding-agent/src/tools/fetch.ts
   - `kind: "file" | "url"` (URL path uses `kind: "url"`; file reads usually omit `kind`)
   - `isDirectory`
   - `resolvedPath`
-  - `suffixResolution`
   - URL fields: `url`, `finalUrl`, `contentType`, `method`, `notes`
   - `truncation`
   - `displayContent` (unprefixed text + starting line for TUI rendering)
@@ -80,7 +79,7 @@ URL selectors are parsed separately in `packages/coding-agent/src/tools/fetch.ts
    - `#readSqlite()` dispatches on `parseSqliteSelector()`.
 6. Otherwise it treats the input as a local filesystem path.
    - `resolveReadPath()` expands `~`, resolves relative to session cwd, treats bare `/` as session cwd, and retries macOS screenshot/NFD/curly-quote variants.
-   - If the path does not exist, `findUniqueSuffixMatch()` does a workspace glob-based unique suffix lookup (skipped for remote mounts).
+   - If the path does not exist, `findUniqueSuffixSuggestion()` performs a workspace glob-based unique suffix lookup (skipped for remote mounts) and includes the candidate in the error without reading it.
 7. Directories go through `#readDirectory()`.
 8. Non-directories branch by content type:
    - image metadata / inline image
@@ -90,7 +89,7 @@ URL selectors are parsed separately in `packages/coding-agent/src/tools/fetch.ts
    - streamed text/line-range read
 9. Local text reads are streamed by `streamLinesFromFile()` rather than loading the whole file. The tool adds `1` leading and `3` trailing context lines around explicit bounded ranges (constrained sides only).
 10. Hashline-eligible local reads record a whole-file snapshot into the session snapshot store (`getFileSnapshotStore()` on `session.fileSnapshotStore`, `packages/coding-agent/src/edit/file-snapshot-store.ts`) for later hashline edit verification/recovery.
-11. If suffix resolution happened, the first text block is prefixed with `[Path '...' not found; resolved to '...' via suffix match]`.
+11. A missing path always errors. When exactly one suffix candidate exists, the error adds `Did you mean '<candidate>'?`; zero or multiple candidates add no suggestion.
 
 ## Modes / Variants
 
@@ -275,7 +274,7 @@ Notes: ...
 - Inline fetched URL images:
   - source bytes cap `20 MiB`
   - post-resize inline output cap `300 KiB`
-- Unique suffix auto-resolution glob timeout: `5000` ms.
+- Unique suffix suggestion glob timeout: `5000` ms.
 - File snapshot store holds `30` paths with up to `4` versions each (`DEFAULT_MAX_PATHS` / `DEFAULT_MAX_VERSIONS_PER_PATH` in `packages/hashline/src/snapshots.ts`); files over `4 MiB` (`SNAPSHOT_MAX_BYTES`) are not snapshotted.
 
 ## Errors
@@ -284,7 +283,7 @@ Notes: ...
   - `Line selector 0 is invalid; lines are 1-indexed. Use :1.`
   - invalid `A+B` / `A-B` shapes
   - `Cannot combine query extraction with line selectors` for `agent://.../path:50`
-- Missing local/archive/sqlite paths first attempt unique suffix resolution; if no unique match exists they error.
+- Missing local, archive, SQLite, and PDF paths error without reading another path; a unique workspace suffix candidate is included as a `Did you mean ...?` suggestion.
 - Out-of-bounds line reads do not throw. They return explanatory text with a suggestion such as `Use :1 ...` or `Use :<last line> ...`.
 - Binary archive entries do not throw; they return a text notice.
 - Document conversion failure returns a text notice.
