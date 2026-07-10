@@ -41,6 +41,7 @@ import type { EventController } from "./controllers/event-controller";
 import type { LoopLimitRuntime } from "./loop-limit";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
 import type { Theme } from "./theme/theme";
+import type { CompletedRunCollapse } from "./utils/transcript-render-helpers";
 
 export type PendingCustomSubmissionMessage<T = unknown> = Pick<
 	CustomMessage<T>,
@@ -325,6 +326,8 @@ export interface InteractiveModeContext {
 	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;
 	rebuildChatFromMessages(): void;
+	/** Record a display-only projection for one naturally completed agent run. */
+	recordCompletedRunCollapse(collapse: CompletedRunCollapse): void;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(): Promise<void>;
 	toggleTodoExpansion(): void;

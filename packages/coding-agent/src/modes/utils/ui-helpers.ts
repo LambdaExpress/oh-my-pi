@@ -273,7 +273,11 @@ export class UiHelpers {
 	 */
 	renderSessionContext(
 		sessionContext: SessionContext,
-		options: { updateFooter?: boolean; populateHistory?: boolean } = {},
+		options: {
+			updateFooter?: boolean;
+			populateHistory?: boolean;
+			insertAfterMessage?: (message: AgentMessage) => Component | undefined;
+		} = {},
 	): void {
 		// Preserved: message_start handler owns this lifecycle (see #783)
 		this.ctx.pendingTools.clear();
@@ -542,6 +546,8 @@ export class UiHelpers {
 				// All other messages use standard rendering
 				this.ctx.addMessageToChat(message, options);
 			}
+			const inserted = options.insertAfterMessage?.(message);
+			if (inserted) this.ctx.chatContainer.addChild(inserted);
 		}
 		flushPendingUsage();
 

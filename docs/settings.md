@@ -544,6 +544,9 @@ theme:
 symbolPreset: unicode        # unicode, nerd, ascii
 colorBlindMode: false
 
+display:
+  collapseCompletedRuns: false
+
 statusLine:
   preset: default            # default, minimal, compact, full, nerd, ascii, custom
   separator: powerline-thin
@@ -575,8 +578,11 @@ tui:
 | `images.autoResize` | boolean | `true` | Resize large images for model compatibility. |
 | `images.blockImages` | boolean | `false` | Never send images to providers. |
 | `tui.hyperlinks` | enum | `auto` | `off`, `auto`, `always`. |
+| `display.collapseCompletedRuns` | boolean | `false` | For runs that start while enabled, keep intermediate loops live, then show only the initial user request and final text answer after a normal completion. |
 
 For a custom status line, set `statusLine.preset: custom` and configure `statusLine.leftSegments`, `statusLine.rightSegments`, and `statusLine.segmentOptions`.
+
+`display.collapseCompletedRuns` changes only the live TUI projection. The session journal, provider context, exports, tool results, and user steering/follow-up messages remain intact. Runs that end with an abort, error, length limit, or another non-normal stop keep their full visible history. Existing or reloaded history is not retroactively collapsed.
 
 ### Interaction
 

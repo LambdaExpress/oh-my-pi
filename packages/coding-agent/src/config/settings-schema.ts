@@ -918,6 +918,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.collapseCompletedRuns": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Collapse Completed Runs",
+			description:
+				"After a request completes normally, show only its initial user request and final assistant answer",
+		},
+	},
+
 	showHardwareCursor: {
 		type: "boolean",
 		default: true, // will be computed based on platform if undefined

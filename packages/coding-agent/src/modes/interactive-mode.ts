@@ -204,6 +204,11 @@ import type {
 	TodoPhase,
 } from "./types";
 import { customSubmissionSignature, userSubmissionSignature } from "./types";
+import {
+	type CompletedRunCollapse,
+	collapseCompletedRuns,
+	isSameTranscriptMessage,
+} from "./utils/transcript-render-helpers";
 import { UiHelpers } from "./utils/ui-helpers";
 
 const HINT_SHIMMER_PALETTE: ShimmerPalette = {
@@ -561,6 +566,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #commandController: CommandController;
 	readonly #todoCommandController: TodoCommandController;
 	readonly #eventController: EventController;
+	#completedRunCollapses = new WeakMap<AgentSession, CompletedRunCollapse[]>();
 	get eventController(): EventController {
 		return this.#eventController;
 	}
@@ -585,6 +591,20 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 	unfocusSession(): Promise<void> {
 		return this.#focusController.unfocus();
+	}
+
+	recordCompletedRunCollapse(collapse: CompletedRunCollapse): void {
+		const session = this.viewSession;
+		const existing = this.#completedRunCollapses.get(session);
+		if (existing) {
+			if (
+				!existing.some(item => isSameTranscriptMessage(item.finalAssistantMessage, collapse.finalAssistantMessage))
+			) {
+				existing.push(collapse);
+			}
+			return;
+		}
+		this.#completedRunCollapses.set(session, [collapse]);
 	}
 	clearTransientSessionUi(): void {
 		if (this.loadingAnimation) {
@@ -3938,10 +3958,19 @@ export class InteractiveMode implements InteractiveModeContext {
 		sessionContext: SessionContext,
 		options?: { updateFooter?: boolean; populateHistory?: boolean },
 	): void {
-		for (const message of sessionContext.messages) {
+		const projectedContext = this.settings.get("display.collapseCompletedRuns")
+			? collapseCompletedRuns(sessionContext, this.#completedRunCollapses.get(this.viewSession) ?? [])
+			: sessionContext;
+		for (const message of projectedContext.messages) {
 			this.noteDisplayableThinkingContent(message);
 		}
-		this.#uiHelpers.renderSessionContext(sessionContext, options);
+		const activeGate = this.#eventController.activeCompletedRunGate;
+		this.#uiHelpers.renderSessionContext(projectedContext, {
+			...options,
+			insertAfterMessage: activeGate
+				? message => (isSameTranscriptMessage(message, activeGate.afterMessage) ? activeGate.component : undefined)
+				: undefined,
+		});
 	}
 
 	renderInitialMessages(options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean }): void {

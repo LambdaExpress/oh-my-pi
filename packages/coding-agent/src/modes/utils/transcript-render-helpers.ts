@@ -13,6 +13,7 @@ import {
 	resolveAbortLabel,
 	shouldRenderAbortReason,
 } from "../../session/messages";
+import type { SessionContext } from "../../session/session-context";
 import { createIrcMessageCard } from "../../tools/irc";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { canonicalizeMessage } from "../../utils/thinking-display";
@@ -21,6 +22,106 @@ import { theme } from "../theme/theme";
 
 type CustomOrHookMessage = Extract<AgentMessage, { role: "custom" | "hookMessage" }>;
 type AssistantAgentMessage = Extract<AgentMessage, { role: "assistant" }>;
+
+export interface CompletedRunCollapse {
+	/** First message emitted by the run, including any hidden/user-attributed prelude. */
+	firstMessage: AgentMessage;
+	/** Initial user request that remains visible after collapse. */
+	initialUserMessage: Extract<AgentMessage, { role: "user" }>;
+	/** Naturally completed assistant answer that remains visible after collapse. */
+	finalAssistantMessage: AssistantAgentMessage;
+}
+
+/**
+ * Match the same persisted transcript message across live events and rebuilds.
+ * Rebuilds can clone messages while deobfuscating secrets, so object identity is
+ * the fast path and role/timestamp plus the role-specific stable id is fallback.
+ */
+export function isSameTranscriptMessage(candidate: AgentMessage, expected: AgentMessage): boolean {
+	if (candidate === expected) return true;
+	if (candidate.role !== expected.role || candidate.timestamp !== expected.timestamp) return false;
+	if (
+		(candidate.role === "custom" || candidate.role === "hookMessage") &&
+		(expected.role === "custom" || expected.role === "hookMessage")
+	) {
+		return candidate.customType === expected.customType;
+	}
+	if (candidate.role === "toolResult" && expected.role === "toolResult") {
+		return candidate.toolCallId === expected.toolCallId;
+	}
+	if (candidate.role === "assistant" && expected.role === "assistant") {
+		return candidate.provider === expected.provider && candidate.model === expected.model;
+	}
+	return true;
+}
+
+function findMessageIndex(messages: AgentMessage[], target: AgentMessage, from: number): number {
+	for (let index = from; index < messages.length; index++) {
+		if (isSameTranscriptMessage(messages[index]!, target)) return index;
+	}
+	return -1;
+}
+
+/**
+ * Display-only projection for naturally completed agent runs. Session history,
+ * exports, provider context, and persisted JSONL retain every original message.
+ */
+export function collapseCompletedRuns(
+	sessionContext: SessionContext,
+	collapses: readonly CompletedRunCollapse[],
+): SessionContext {
+	if (collapses.length === 0) return sessionContext;
+
+	const source = sessionContext.messages;
+	const spans: Array<{ start: number; request: number; answer: number }> = [];
+	let searchFrom = 0;
+	for (const collapse of collapses) {
+		const start = findMessageIndex(source, collapse.firstMessage, searchFrom);
+		if (start < 0) continue;
+		const request = findMessageIndex(source, collapse.initialUserMessage, start);
+		if (request < 0) continue;
+		const answer = findMessageIndex(source, collapse.finalAssistantMessage, request);
+		if (answer < 0) continue;
+		spans.push({ start, request, answer });
+		searchFrom = answer + 1;
+	}
+	if (spans.length === 0) return sessionContext;
+
+	const messages: AgentMessage[] = [];
+	const cacheMissExplainedAt: boolean[] | undefined = sessionContext.cacheMissExplainedAt ? [] : undefined;
+	const push = (message: AgentMessage, sourceIndex: number): void => {
+		messages.push(message);
+		cacheMissExplainedAt?.push(sessionContext.cacheMissExplainedAt?.[sourceIndex] ?? false);
+	};
+
+	let sourceIndex = 0;
+	for (const span of spans) {
+		while (sourceIndex < span.start) {
+			push(source[sourceIndex]!, sourceIndex);
+			sourceIndex++;
+		}
+		push(source[span.request]!, span.request);
+		const finalMessage = source[span.answer]!;
+		if (finalMessage.role !== "assistant") {
+			sourceIndex = span.answer + 1;
+			continue;
+		}
+		const textContent = finalMessage.content.filter(
+			content => content.type === "text" && canonicalizeMessage(content.text),
+		);
+		push(
+			textContent.length === finalMessage.content.length ? finalMessage : { ...finalMessage, content: textContent },
+			span.answer,
+		);
+		sourceIndex = span.answer + 1;
+	}
+	while (sourceIndex < source.length) {
+		push(source[sourceIndex]!, sourceIndex);
+		sourceIndex++;
+	}
+
+	return { ...sessionContext, messages, cacheMissExplainedAt };
+}
 
 /**
  * Render an `async-result` custom message (a completed background bash/task job,

@@ -1,7 +1,8 @@
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
-import { type Component, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
+import { type Component, Container, Loader, TERMINAL } from "@oh-my-pi/pi-tui";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { extractTextContent } from "../../commit/utils";
@@ -34,7 +35,11 @@ import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { interruptHint } from "../shared";
 import { createAssistantMessageComponent } from "../utils/interactive-context-helpers";
-import { assistantUsageIsBilled } from "../utils/transcript-render-helpers";
+import {
+	assistantUsageIsBilled,
+	type CompletedRunCollapse,
+	isSameTranscriptMessage,
+} from "../utils/transcript-render-helpers";
 import { StreamingRevealController } from "./streaming-reveal";
 import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
 
@@ -74,6 +79,30 @@ function exposesRawPartialJson(toolName: string, rawInput: boolean, tool: unknow
 type AgentSessionEventHandlers = {
 	[E in AgentSessionEventKind]: (event: Extract<AgentSessionEvent, { type: E }>) => Promise<void>;
 };
+
+class CompletedRunGate extends Container {
+	#finalized = false;
+
+	isTranscriptBlockFinalized(): boolean {
+		return this.#finalized;
+	}
+
+	getTranscriptBlockSettledRows(): number {
+		return 0;
+	}
+
+	finalize(): void {
+		if (this.#finalized) return;
+		this.#finalized = true;
+		this.invalidate();
+	}
+}
+
+interface ActiveCompletedRun {
+	messages: AgentMessage[];
+	initialUserMessage?: Extract<AgentMessage, { role: "user" }>;
+	gate?: CompletedRunGate;
+}
 
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
@@ -123,6 +152,13 @@ export class EventController {
 	#prevHideThinking = false;
 	#handlers: AgentSessionEventHandlers;
 	#terminalProgressActive = false;
+	#activeCompletedRun: ActiveCompletedRun | undefined;
+
+	get activeCompletedRunGate(): { component: Component; afterMessage: AgentMessage } | undefined {
+		const active = this.#activeCompletedRun;
+		if (!active?.gate || !active.initialUserMessage) return undefined;
+		return { component: active.gate, afterMessage: active.initialUserMessage };
+	}
 
 	constructor(private ctx: InteractiveModeContext) {
 		// Enhanced speech (`speech.enhanced`) rewrites blocks through the
@@ -205,6 +241,8 @@ export class EventController {
 	}
 
 	dispose(): void {
+		this.#activeCompletedRun?.gate?.finalize();
+		this.#activeCompletedRun = undefined;
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
 		this.#cancelIdleCompaction();
@@ -290,6 +328,8 @@ export class EventController {
 	 * session's transcript and must not bleed into the new one.
 	 */
 	resetTranscriptAnchors(): void {
+		this.#activeCompletedRun?.gate?.finalize();
+		this.#activeCompletedRun = undefined;
 		this.#resetReadGroup();
 		this.#lastVisibleBlockCount = 0;
 		this.#renderedCustomMessages.clear();
@@ -378,6 +418,9 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
+		if (!this.#activeCompletedRun && this.ctx.settings.get("display.collapseCompletedRuns")) {
+			this.#activeCompletedRun = { messages: [] };
+		}
 		this.#lastIntent = undefined;
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
@@ -460,6 +503,14 @@ export class EventController {
 				// live-region block boundaries. addMessageToChat materializes clickable image
 				// links via the synchronous putBlobSync fallback, so no await is needed here.
 				this.ctx.addMessageToChat(event.message);
+			}
+			if (!event.message.synthetic && this.#activeCompletedRun && !this.#activeCompletedRun.initialUserMessage) {
+				const gate = new CompletedRunGate();
+				this.#activeCompletedRun.initialUserMessage = event.message;
+				this.#activeCompletedRun.gate = gate;
+				// The zero-row live gate keeps every intermediate loop below the
+				// native-scrollback seam until this run either collapses or fails.
+				this.ctx.chatContainer.addChild(gate);
 			}
 
 			// Clear the editor only when the submission did not originate from a
@@ -793,6 +844,7 @@ export class EventController {
 	}
 
 	async #handleMessageEnd(event: Extract<AgentSessionEvent, { type: "message_end" }>): Promise<void> {
+		this.#activeCompletedRun?.messages.push(event.message);
 		if (event.message.role === "user") return;
 		const unlockedThinkingVisibility =
 			event.message.role === "assistant" && this.ctx.noteDisplayableThinkingContent(event.message);
@@ -1087,7 +1139,7 @@ export class EventController {
 			}
 		}
 	}
-	async #handleAgentEnd(_event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
+	async #handleAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
 		// A superseded agent_end: the agent is already streaming a fresh turn, so
 		// this event belongs to a turn that has already been replaced. The session
 		// dispatches to listeners fire-and-forget across an async extension-emit hop
@@ -1099,7 +1151,49 @@ export class EventController {
 		// then). Mirrors the collab guest's !isStreaming loader reconciler.
 		if (this.ctx.session.isStreaming) return;
 
+		const collapse = this.#takeCompletedRunCollapse(event);
 		await this.#finishAgentEnd();
+		if (!collapse) return;
+		this.ctx.recordCompletedRunCollapse(collapse);
+		this.ctx.rebuildChatFromMessages();
+		// The run gate kept its intermediate rows out of native scrollback. Reset
+		// still forces one authoritative clear/replay on terminals that support it.
+		this.ctx.ui.resetDisplay();
+	}
+
+	#takeCompletedRunCollapse(
+		event: Extract<AgentSessionEvent, { type: "agent_end" }>,
+	): CompletedRunCollapse | undefined {
+		const active = this.#activeCompletedRun;
+		this.#activeCompletedRun = undefined;
+		active?.gate?.finalize();
+		if (!active?.gate || !active.initialUserMessage || !this.ctx.settings.get("display.collapseCompletedRuns")) {
+			return undefined;
+		}
+		const initialUserMessage = active.initialUserMessage;
+		const finalAssistant = event.messages.findLast(
+			(message): message is Extract<AgentMessage, { role: "assistant" }> => message.role === "assistant",
+		);
+		if (
+			finalAssistant?.stopReason !== "stop" ||
+			finalAssistant.stopDetails?.type === "pause_turn" ||
+			finalAssistant.errorMessage ||
+			finalAssistant.content.some(content => content.type === "toolCall") ||
+			!finalAssistant.content.some(
+				content => content.type === "text" && Boolean(canonicalizeMessage(content.text)),
+			) ||
+			!active.messages.some(message => isSameTranscriptMessage(message, initialUserMessage)) ||
+			!active.messages.some(message => isSameTranscriptMessage(message, finalAssistant))
+		) {
+			return undefined;
+		}
+		const firstMessage = active.messages[0];
+		if (!firstMessage) return undefined;
+		return {
+			firstMessage,
+			initialUserMessage,
+			finalAssistantMessage: finalAssistant,
+		};
 	}
 
 	async #finishAgentEnd(): Promise<void> {
