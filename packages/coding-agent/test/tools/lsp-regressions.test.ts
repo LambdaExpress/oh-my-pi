@@ -2177,6 +2177,71 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("restarts TypeScript instead of preserving stale project state on reload", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-restart-");
+		try {
+			const cwd = tempDir.path();
+			const targetFile = path.join(cwd, "target.ts");
+			await Bun.write(targetFile, "export const target = 1;\n");
+			const server: ServerConfig = {
+				command: "typescript-language-server",
+				fileTypes: [".ts"],
+				rootMarkers: [],
+			};
+			const staleClient: LspClient = {
+				name: lspClient.getLspClientKey(server, cwd),
+				cwd,
+				config: server,
+				proc: {} as LspClient["proc"],
+				requestId: 0,
+				diagnostics: new Map(),
+				diagnosticsVersion: 0,
+				openFiles: new Map([[fileToUri(targetFile), { version: 1, languageId: "typescript" }]]),
+				pendingRequests: new Map(),
+				messageBuffer: new Uint8Array(),
+				isReading: false,
+				status: "ready",
+				lastActivity: Date.now(),
+				writeQueue: Promise.resolve(),
+				activeProgressTokens: new Set(),
+				projectLoaded: Promise.resolve(),
+				resolveProjectLoaded: () => {},
+			};
+			const restartedClient = {
+				...staleClient,
+				openFiles: new Map(),
+			};
+
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "typescript-language-server": server },
+				idleTimeoutMs: undefined,
+			});
+			const getClient = vi
+				.spyOn(lspClient, "getOrCreateClient")
+				.mockResolvedValueOnce(staleClient)
+				.mockResolvedValueOnce(restartedClient);
+			const shutdownClient = vi.spyOn(lspClient, "shutdownClient").mockResolvedValue();
+			vi.spyOn(lspClient, "sendRequest").mockRejectedValue(new Error("method not found"));
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue();
+
+			const result = await new LspTool({ cwd } as ToolSession).execute("reload-typescript", {
+				action: "reload",
+				file: targetFile,
+			});
+			const output = result.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+
+			expect(output).toContain("Restarted typescript-language-server");
+			expect(shutdownClient).toHaveBeenCalledWith(staleClient.name);
+			expect(getClient).toHaveBeenCalledTimes(2);
+			expect(getClient).toHaveBeenLastCalledWith(server, cwd, undefined, expect.anything());
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
 	it("workspace reload rediscovers LSP servers after an empty config was cached", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-reload-redetect-");
 		try {

@@ -29,6 +29,7 @@ import {
 	sendNotification,
 	sendRequest,
 	setIdleTimeout,
+	shutdownClient,
 	syncContent,
 	WARMUP_TIMEOUT_MS,
 	waitForProjectLoaded,
@@ -700,23 +701,22 @@ function isMethodNotFoundError(err: unknown): boolean {
 }
 
 async function reloadServer(client: LspClient, serverName: string, signal?: AbortSignal): Promise<string> {
-	// rust-analyzer exposes a real reload request.
+	// rust-analyzer exposes a real workspace reload. Other servers need a
+	// process restart: didChangeConfiguration does not invalidate open document
+	// buffers or project graphs, so it cannot recover a desynchronized client.
 	try {
 		await sendRequest(client, "rust-analyzer/reloadWorkspace", null, signal);
 		return `Reloaded ${serverName}`;
-	} catch {
-		// Method not supported — fall through.
+	} catch (err) {
+		if (err instanceof ToolAbortError || signal?.aborted) {
+			throw err;
+		}
 	}
-	// workspace/didChangeConfiguration is a notification per spec; sending it
-	// as a request hangs until the tool deadline on servers that route it to
-	// the notification handler and never respond.
-	try {
-		await sendNotification(client, "workspace/didChangeConfiguration", { settings: {} }, signal);
-		return `Reloaded ${serverName}`;
-	} catch {
-		client.proc.kill();
-		return `Restarted ${serverName}`;
-	}
+
+	await shutdownClient(client.name);
+	throwIfAborted(signal);
+	await getOrCreateClient(client.config, client.cwd, undefined, signal);
+	return `Restarted ${serverName}`;
 }
 
 interface WaitForDiagnosticsOptions {
