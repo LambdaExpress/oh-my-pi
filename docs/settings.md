@@ -282,7 +282,7 @@ Every key below is defined in the settings schema; `omp config list` shows the f
 
 ### Models
 
-`modelRoles`, `modelTags`, and `cycleOrder` work together to define the models you can switch between. Role values may carry a thinking suffix (`:minimal`, `:low`, `:medium`, `:high`, `:xhigh`).
+`modelRoles`, `modelTags`, and `cycleOrder` work together to define the models you can switch between. Role values may carry a thinking suffix (`:minimal`, `:low`, `:medium`, `:high`, `:xhigh`, `:max`).
 
 ```yaml
 modelRoles:
@@ -346,7 +346,7 @@ thinkingBudgets:
 
 | Key | Type | Default | Values |
 |---|---|---|---|
-| `defaultThinkingLevel` | enum | `high` | `minimal`, `low`, `medium`, `high`, `xhigh`, `auto`. Override per run with `--thinking`. |
+| `defaultThinkingLevel` | enum | `high` | `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `auto`. Override per run with `--thinking`; unsupported levels clamp to the selected model's highest available effort. |
 | `hideThinkingBlock` | boolean | `false` | Hide thinking blocks in output. `--hide-thinking` sets it for the run (display only). |
 | `thinkingBudgets.minimal` | number | `1024` | Token budget for the `minimal` level. |
 | `thinkingBudgets.low` | number | `2048` | Token budget for `low`. |

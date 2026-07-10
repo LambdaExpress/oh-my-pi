@@ -56,6 +56,10 @@ const DEFAULT_REASONING_EFFORTS_WITH_XHIGH: readonly Effort[] = [
 	Effort.High,
 	Effort.XHigh,
 ];
+const GPT_5_6_PLUS_EFFORTS: readonly Effort[] = [...DEFAULT_REASONING_EFFORTS_WITH_XHIGH, Effort.Max];
+const GPT_5_6_MINIMAL_EFFORT_MAP: Readonly<EffortMap> = {
+	[Effort.Minimal]: "low",
+};
 const GEMINI_3_PRO_EFFORTS: readonly Effort[] = [Effort.Low, Effort.High];
 const GEMINI_3_FLASH_EFFORTS: readonly Effort[] = [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High];
 const GPT_5_2_PLUS_EFFORTS: readonly Effort[] = [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh];
@@ -299,12 +303,11 @@ function isOpenAICompatReasoningApi(api: Api): boolean {
 }
 
 /**
- * GPT-5.6+ addressed through a wire `reasoning.effort`/`reasoning_effort`
- * field, where the shifted five-tier map applies. Devin (`devin-agent`)
- * selects effort by routing to per-tier sibling model ids instead and must
- * stay unmapped.
+ * GPT-5.6 addressed through a discrete wire `reasoning.effort` /
+ * `reasoning_effort` field. Devin selects effort through sibling model ids and
+ * is handled by variant collapse instead.
  */
-function isGpt56PlusWireEffortModel<TApi extends Api>(spec: ModelSpec<TApi>): boolean {
+function isGpt56WireEffortModel<TApi extends Api>(spec: ModelSpec<TApi>, compat: CompatOf<TApi>): boolean {
 	switch (spec.api) {
 		case "openai-responses":
 		case "openai-codex-responses":
@@ -315,8 +318,11 @@ function isGpt56PlusWireEffortModel<TApi extends Api>(spec: ModelSpec<TApi>): bo
 		default:
 			return false;
 	}
+	if (compat === undefined || !("supportsReasoningEffort" in compat) || !compat.supportsReasoningEffort) {
+		return false;
+	}
 	const parsed = parseOpenAIModel(bareModelId(spec.id));
-	return parsed !== null && semverGte(parsed.version, "5.6");
+	return parsed !== null && semverEqual(parsed.version, "5.6");
 }
 
 function getModelDefinedEfforts<TApi extends Api>(
@@ -337,11 +343,11 @@ function getModelDefinedEfforts<TApi extends Api>(
 	if (isSakanaFuguReasoningModel(spec)) {
 		return FUGU_REASONING_EFFORTS;
 	}
-	if (isGpt56PlusWireEffortModel(spec)) {
-		// Normalize stale baked/discovered `low..xhigh` surfaces to the full
-		// five-tier ladder so the shifted map keeps the native `low` tier
-		// reachable (user `minimal`).
-		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
+	if (isGpt56WireEffortModel(spec, compat)) {
+		// Normalize stale baked/discovered capability surfaces to expose the
+		// genuine max tier while keeping the user-facing minimal compatibility
+		// selector (which aliases the native low tier).
+		return GPT_5_6_PLUS_EFFORTS;
 	}
 	return isOpenAICompatReasoningApi(spec.api) &&
 		(isMinimaxM2FamilyModelId(spec.id) ||
@@ -427,8 +433,8 @@ function inferDetectedEffortMap<TApi extends Api>(
 	if (isSakanaFuguReasoningModel(spec)) {
 		return FUGU_REASONING_EFFORT_MAP;
 	}
-	if (isGpt56PlusWireEffortModel(spec)) {
-		return SHIFTED_FIVE_TIER_EFFORT_MAP;
+	if (isGpt56WireEffortModel(spec, compat)) {
+		return GPT_5_6_MINIMAL_EFFORT_MAP;
 	}
 	if (!isOpenAICompatReasoningApi(spec.api)) {
 		return undefined;
@@ -507,9 +513,9 @@ function inferOpenAISupportedEfforts(model: OpenAIModel): readonly Effort[] {
 	if (model.variant === "codex-mini" && semverEqual(model.version, "5.1")) {
 		return GPT_5_1_CODEX_MINI_EFFORTS;
 	}
-	// 5.6+ exposes the full five-tier ladder: the shifted wire map spans
-	// low..max, with user `minimal` reaching the native `low` tier.
-	if (semverGte(model.version, "5.6")) {
+	// Non-wire GPT-5.6 transports retain their previous capability surface;
+	// only discrete wire-effort APIs expose the additional max tier.
+	if (semverEqual(model.version, "5.6")) {
 		return DEFAULT_REASONING_EFFORTS_WITH_XHIGH;
 	}
 	if (semverGte(model.version, "5.2")) {
@@ -752,6 +758,7 @@ export function mapEffortToGoogleThinkingLevel(effort: Effort): "MINIMAL" | "LOW
 			return "MEDIUM";
 		case Effort.High:
 		case Effort.XHigh:
+		case Effort.Max:
 			return "HIGH";
 	}
 }

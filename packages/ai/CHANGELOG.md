@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added end-to-end `max` reasoning support to OpenAI Chat Completions, Responses, Azure Responses, Codex Responses, and their inbound gateway adapters. GPT-5.6 now sends `xhigh` and `max` as distinct wire efforts.
+
 ## [16.3.15] - 2026-07-09
 
 ### Breaking Changes

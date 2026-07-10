@@ -232,6 +232,29 @@ describe("OpenRouter pseudo API dual-surface request parity", () => {
 		expect(responsesBody).not.toHaveProperty("max_output_tokens");
 	});
 
+	it("preserves distinct GPT-5.6 efforts across Chat and Responses encoders", async () => {
+		const model = buildOpenRouterModel({
+			id: "openai/gpt-5.6-sol",
+			name: "GPT-5.6 Sol",
+			reasoning: true,
+		});
+		const expected = [
+			[Effort.Minimal, "low"],
+			[Effort.Low, "low"],
+			[Effort.Medium, "medium"],
+			[Effort.High, "high"],
+			[Effort.XHigh, "xhigh"],
+			[Effort.Max, "max"],
+		] as const;
+
+		for (const [requested, wire] of expected) {
+			const chatBody = await capturePseudoChatRequest(model, { reasoning: requested });
+			const responsesBody = await capturePseudoResponsesRequest(model, { reasoning: requested });
+			expect((chatBody.reasoning as { effort?: string } | undefined)?.effort).toBe(wire);
+			expect((responsesBody.reasoning as { effort?: string } | undefined)?.effort).toBe(wire);
+		}
+	});
+
 	it("builds equivalent non-Anthropic reasoning payloads for chat and Responses", async () => {
 		const routing = { order: ["deepseek", "openai"] };
 		const model = buildOpenRouterModel(

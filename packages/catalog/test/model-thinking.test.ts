@@ -9,6 +9,7 @@ import {
 	minimumSupportedEffort,
 	requireSupportedEffort,
 } from "@oh-my-pi/pi-catalog/model-thinking";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import type { Api, Model, ModelSpec, Provider } from "@oh-my-pi/pi-catalog/types";
 
 function createModel<TApi extends Api>(overrides: {
@@ -568,7 +569,7 @@ describe("model thinking derivation", () => {
 		expect(clampThinkingLevelForModel(model, Effort.High)).toBeUndefined();
 	});
 
-	it("bakes the GPT-5.6 shifted five-tier effort map on wire-effort APIs", () => {
+	it("exposes a distinct GPT-5.6 max tier on wire-effort APIs", () => {
 		const codex = createModel({
 			id: "gpt-5.6-sol",
 			api: "openai-codex-responses",
@@ -577,19 +578,15 @@ describe("model thinking derivation", () => {
 
 		expect(codex.thinking).toEqual({
 			mode: "effort",
-			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
 			effortMap: {
 				minimal: "low",
-				low: "medium",
-				medium: "high",
-				high: "xhigh",
-				xhigh: "max",
 			},
 		});
+		expect(requireSupportedEffort(codex, Effort.Max)).toBe(Effort.Max);
 
-		// Stale baked four-tier metadata (caches/discovery) normalizes back to
-		// the five-tier ladder with the map attached — the wire-defaults
-		// backfill path — and namespaced OpenRouter ids parse.
+		// Stale baked metadata normalizes to the six-tier ladder with only the
+		// minimal compatibility alias attached, and namespaced ids still parse.
 		const staleOpenRouter = createModel({
 			id: "openai/gpt-5.6-terra",
 			api: "openrouter",
@@ -603,18 +600,26 @@ describe("model thinking derivation", () => {
 
 		expect(staleOpenRouter.thinking).toEqual({
 			mode: "effort",
-			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
 			effortMap: {
 				minimal: "low",
-				low: "medium",
-				medium: "high",
-				high: "xhigh",
-				xhigh: "max",
 			},
 		});
 	});
 
-	it("keeps pre-5.6 and Devin-routed GPT models off the shifted effort map", () => {
+	it("ships distinct max metadata for bundled GPT-5.6 and routed Devin models", () => {
+		const codex = getBundledModel("openai-codex", "gpt-5.6-sol");
+		const devin = getBundledModel("devin", "gpt-5-6-sol");
+		const devinFast = getBundledModel("devin", "gpt-5-6-sol-fast");
+
+		expect(codex?.thinking?.efforts.at(-1)).toBe(Effort.Max);
+		expect(codex?.thinking?.effortMap).toEqual({ minimal: "low" });
+		expect(devin?.thinking?.efforts.at(-1)).toBe(Effort.Max);
+		expect(devin?.thinking?.effortRouting?.[Effort.Max]).toBe("gpt-5-6-sol-max");
+		expect(devinFast?.thinking?.efforts).not.toContain(Effort.Max);
+	});
+
+	it("keeps other GPT transports and Devin routing off the GPT-5.6 wire map", () => {
 		const gpt55 = createModel({
 			id: "gpt-5.5",
 			api: "openai-responses",
@@ -626,9 +631,25 @@ describe("model thinking derivation", () => {
 			efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
 		});
 		expect(gpt55.thinking?.effortMap).toBeUndefined();
+		expect(clampThinkingLevelForModel(gpt55, Effort.Max)).toBe(Effort.XHigh);
+		expect(() => requireSupportedEffort(gpt55, Effort.Max)).toThrow(/Supported efforts: low, medium, high, xhigh/);
+
+		const futureGpt = createModel({
+			id: "gpt-5.7",
+			api: "openai-responses",
+			provider: "openai",
+		});
+		expect(futureGpt.thinking?.efforts).not.toContain(Effort.Max);
+
+		const nonWireGpt56 = createModel({
+			id: "gpt-5.6-sol",
+			api: "anthropic-messages",
+			provider: "vercel",
+		});
+		expect(nonWireGpt56.thinking?.efforts).not.toContain(Effort.Max);
 
 		// Devin selects effort by routing to per-tier sibling model ids, never
-		// via a wire reasoning.effort field — the shifted map must not attach.
+		// through a wire reasoning.effort field.
 		const devin = createModel({
 			id: "gpt-5-6-sol",
 			api: "devin-agent",
@@ -636,20 +657,28 @@ describe("model thinking derivation", () => {
 			baseUrl: "https://server.codeium.com",
 			thinking: {
 				mode: "effort",
-				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
 				effortRouting: {
 					off: "gpt-5-6-sol-none",
 					minimal: "gpt-5-6-sol-low",
-					low: "gpt-5-6-sol-medium",
-					medium: "gpt-5-6-sol-high",
-					high: "gpt-5-6-sol-xhigh",
-					xhigh: "gpt-5-6-sol-max",
+					low: "gpt-5-6-sol-low",
+					medium: "gpt-5-6-sol-medium",
+					high: "gpt-5-6-sol-high",
+					xhigh: "gpt-5-6-sol-xhigh",
+					max: "gpt-5-6-sol-max",
 				},
 			},
 		});
 
 		expect(devin.thinking?.effortMap).toBeUndefined();
-		expect(devin.thinking?.efforts).toEqual([Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh]);
+		expect(devin.thinking?.efforts).toEqual([
+			Effort.Minimal,
+			Effort.Low,
+			Effort.Medium,
+			Effort.High,
+			Effort.XHigh,
+			Effort.Max,
+		]);
 	});
 });
 

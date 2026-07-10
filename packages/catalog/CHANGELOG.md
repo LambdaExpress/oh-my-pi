@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a distinct user-facing `max` effort for GPT-5.6 wire-effort models. Their native `low` through `max` tiers now pass through by name, while `minimal` remains a compatibility alias for native `low`. Standard Devin GPT-5.6 families route `max` to the real `-max` sibling; Fast families remain capped at `xhigh` because no `-max-priority` sibling exists.
+
 ## [16.3.15] - 2026-07-09
 
 ### Added

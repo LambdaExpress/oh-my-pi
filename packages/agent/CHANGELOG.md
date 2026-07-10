@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `ThinkingLevel.Max` so agent state can preserve a model's distinct `max` reasoning effort.
+
 ### Fixed
 
 - Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.

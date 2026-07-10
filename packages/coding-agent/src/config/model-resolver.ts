@@ -86,26 +86,26 @@ interface ThinkingSuffixOptions {
 interface ModelStringParseOptions extends ThinkingSuffixOptions {
 	isLiteralModelId?: (provider: string, id: string) => boolean;
 }
-// Alias-suffix recognition for the model-pattern parser: `:max` maps to xhigh
-// and `:auto` maps to the auto sentinel. Both are gated behind the alias flags
-// (and the literal-id / exact-match guards on the callers) so a real model id
-// ending in `:max` / `:auto` isn't silently reinterpreted as a thinking suffix.
+// Context-gated suffix recognition keeps `:max` available as a canonical
+// thinking selector without stealing real model ids that end in `:max`.
+// `:auto` uses the same literal-id / exact-match guards.
 const MAX_THINKING_SUFFIX_OPTIONS: ThinkingSuffixOptions = { allowMaxAlias: true, allowAutoAlias: true };
 
 function parseThinkingSuffix(value: string, options?: ThinkingSuffixOptions): ConfiguredThinkingLevel | undefined {
+	if (value === ThinkingLevel.Max) {
+		return options?.allowMaxAlias === true ? ThinkingLevel.Max : undefined;
+	}
 	const level = parseThinkingLevel(value);
 	if (level !== undefined) return level;
-	if (options?.allowMaxAlias === true && value === "max") return ThinkingLevel.XHigh;
 	if (options?.allowAutoAlias === true && value === AUTO_THINKING) return AUTO_THINKING;
 	return undefined;
 }
 
 /**
- * Split a trailing `:<level>` thinking selector off a model pattern.
- *
  * `level` is set when the suffix parses as a concrete thinking level (or, when
- * the caller opts in via `allowMaxAlias`/`allowAutoAlias`, the `:max` / `:auto`
- * aliases); `base` then has the suffix stripped. Otherwise `base` is the input.
+ * the caller opts in via `allowMaxAlias`/`allowAutoAlias`, the context-gated
+ * `:max` / `:auto` selectors); `base` then has the suffix stripped. Otherwise
+ * `base` is the input.
  * `minColonIndex` requires the colon to appear strictly after that index —
  * role-alias callers pass `PREFIX_MODEL_ROLE.length` so the base is at least
  * as long as the `pi/` prefix.
@@ -183,7 +183,7 @@ export function parseModelString(
 	// Strip strict thinking level suffixes first (e.g. "claude-sonnet-4-6:high" -> id "claude-sonnet-4-6", thinkingLevel "high").
 	const strict = splitThinkingSuffix(id);
 	if (strict.level) return { provider, id: strict.base, thinkingLevel: strict.level };
-	// `max` is a provider-facing alias for xhigh, but real model IDs can end in
+	// `max` is canonical but context-gated because real model IDs can end in
 	// `:max`. Context-aware callers pass a literal lookup so those models win.
 	const maxAlias = splitThinkingSuffix(id, -1, options);
 	if (maxAlias.level) {
@@ -239,9 +239,9 @@ function getOpenRouterRouteSuffix(modelId: string): { baseId: string; suffix: st
 	}
 
 	const suffix = modelId.slice(colonIdx + 1).trim();
-	// `max` is a thinking-level alias (xhigh), never an OpenRouter route suffix, so
-	// `openrouter/<id>:max` falls through to the max-aware selector split instead of
-	// being cloned into a literal `<id>:max` model id with the reasoning level lost.
+	// `max` is a thinking selector, never an OpenRouter route suffix, so
+	// `openrouter/<id>:max` falls through to the context-aware selector split
+	// instead of being cloned into a literal `<id>:max` model id.
 	if (!suffix || parseThinkingSuffix(suffix, MAX_THINKING_SUFFIX_OPTIONS)) {
 		return undefined;
 	}

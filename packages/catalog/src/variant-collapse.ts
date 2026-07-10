@@ -111,7 +111,7 @@ function thinkingPair(baseId: string, name: string): EffortVariantFamily {
 	};
 }
 
-type DevinTierRoutes = Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh", string>>;
+type DevinTierRoutes = Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string>>;
 
 const DEVIN_FIVE_TIER_EFFORTS: readonly Effort[] = [
 	Effort.Minimal,
@@ -120,6 +120,7 @@ const DEVIN_FIVE_TIER_EFFORTS: readonly Effort[] = [
 	Effort.High,
 	Effort.XHigh,
 ];
+const DEVIN_GPT_5_6_EFFORTS: readonly Effort[] = [...DEVIN_FIVE_TIER_EFFORTS, Effort.Max];
 
 function devinTierFamily(
 	id: string,
@@ -150,11 +151,20 @@ function devinTierFamily(
 			case Effort.XHigh:
 				if (routes.xhigh) routing[effort] = routes.xhigh;
 				break;
+			case Effort.Max:
+				if (routes.max) routing[effort] = routes.max;
+				break;
 		}
 	}
-	const members = [routes.off, routes.minimal, routes.low, routes.medium, routes.high, routes.xhigh].filter(
-		(member, index, items): member is string => typeof member === "string" && items.indexOf(member) === index,
-	);
+	const members = [
+		routes.off,
+		routes.minimal,
+		routes.low,
+		routes.medium,
+		routes.high,
+		routes.xhigh,
+		routes.max,
+	].filter((member, index, items): member is string => typeof member === "string" && items.indexOf(member) === index);
 	return {
 		id,
 		name,
@@ -169,11 +179,10 @@ function devinTierFamily(
 }
 
 /**
- * GPT-5.6 (Luna/Sol/Terra) adds a genuine `max` tier above `xhigh`, so the
- * standard family shifts every user effort up one notch (`minimal` → `-low`
- * … `xhigh` → `-max`), mirroring the Opus 4.7+ five-tier mapping. Devin
- * serves no `-max-priority` sibling, so the fast family keeps the direct
- * `low..xhigh` `-priority` scale.
+ * GPT-5.6 (Luna/Sol/Terra) adds a genuine `max` tier above `xhigh`.
+ * Standard models expose that tier directly; fast models have no
+ * `-max-priority` sibling and therefore keep the existing ladder through
+ * `xhigh`.
  */
 function devinGpt56Families(variant: "luna" | "sol" | "terra", name: string): readonly EffortVariantFamily[] {
 	const base = `gpt-5-6-${variant}`;
@@ -184,12 +193,13 @@ function devinGpt56Families(variant: "luna" | "sol" | "terra", name: string): re
 			{
 				off: `${base}-none`,
 				minimal: `${base}-low`,
-				low: `${base}-medium`,
-				medium: `${base}-high`,
-				high: `${base}-xhigh`,
-				xhigh: `${base}-max`,
+				low: `${base}-low`,
+				medium: `${base}-medium`,
+				high: `${base}-high`,
+				xhigh: `${base}-xhigh`,
+				max: `${base}-max`,
 			},
-			DEVIN_FIVE_TIER_EFFORTS,
+			DEVIN_GPT_5_6_EFFORTS,
 		),
 		devinTierFamily(
 			`${base}-fast`,
@@ -777,12 +787,12 @@ function refreshCollapsedThinking<TSpec extends VariantSpecLike>(
 	family: EffortVariantFamily,
 	retired: ReadonlySet<string> | undefined,
 ): TSpec {
-	// Scope snapshot self-heal to families carrying a curated per-effort budget
-	// contract (Antigravity gemini-3.x). Their routing targets are all verified
-	// live, so rebuilding routing here is safe; families without `effortBudgets`
-	// (derived `X`/`X-thinking` pairs, claude pairs) keep their presence-filtered
-	// snapshot routing untouched.
-	if (!spec.reasoning || family.thinking.effortBudgets === undefined) return spec;
+	// Curated budget families and Devin sibling-routing families own complete,
+	// provider-verified route tables, so stale snapshots can be rebuilt safely.
+	// Derived pairs and Claude presence-filtered families retain their observed
+	// routing instead.
+	const ownsCompleteRouting = family.thinking.effortBudgets !== undefined || spec.api === "devin-agent";
+	if (!spec.reasoning || !ownsCompleteRouting) return spec;
 	const routing: Partial<Record<Effort | "off", string>> = {};
 	let hasRouting = false;
 	for (const effortKey in family.routing) {
@@ -857,9 +867,9 @@ export function collapseEffortVariants<TSpec extends VariantSpecLike>(
 		if (existing) familyIdBySpecId.set(family.id, family.id);
 
 		if (existingCollapsed) {
-			// Mixed input: the collapsed entry (live truth) wins; stale raw
-			// members are deduped away. Retired targets are re-pointed first.
-			replacement.set(family.id, reconciled as TSpec);
+			// Mixed input: the collapsed entry wins over duplicate raw members,
+			// but curated families still refresh stale capability/routing metadata.
+			replacement.set(family.id, refreshCollapsedThinking(reconciled as TSpec, family, retired));
 			continue;
 		}
 

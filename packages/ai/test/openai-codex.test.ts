@@ -315,17 +315,18 @@ describe("openai-codex reasoning effort validation", () => {
 });
 
 describe("openai-codex reasoning effort wire mapping", () => {
-	it("shifts gpt-5.6 user efforts one wire tier up via the baked effort map", async () => {
+	it("passes GPT-5.6 efforts through with a distinct max tier", async () => {
 		const model = createCodexModel("gpt-5.6-sol");
-		const shifted = [
+		const expected = [
 			["minimal", "low"],
-			["low", "medium"],
-			["medium", "high"],
-			["high", "xhigh"],
-			["xhigh", "max"],
+			["low", "low"],
+			["medium", "medium"],
+			["high", "high"],
+			["xhigh", "xhigh"],
+			["max", "max"],
 		] as const;
 
-		for (const [requested, wire] of shifted) {
+		for (const [requested, wire] of expected) {
 			const transformed = await transformRequestBody({ model: model.id }, model, {
 				reasoningEffort: requested,
 			});

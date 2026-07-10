@@ -13,6 +13,7 @@
 - Added `ssh://` remote file support for verified Windows PowerShell hosts, including drive-path URLs, directory listings, writes, deletes, and moves.
 - Added password authentication for configured SSH hosts, allowing the built-in ssh tool and ssh:// host aliases to connect through OpenSSH askpass without exposing passwords in tool arguments or argv.
 - Added `/btw /skill:<name>` support that inlines the selected skill content, hides the side-request tool catalog, and preserves the skill prompt when branching the answer.
+- Added a distinct `max` thinking level for GPT-5.6 models that advertise it; model menus, role suffixes, CLI parsing, session state, cycling, and status rendering preserve the tier end to end.
 
 ### Changed
 

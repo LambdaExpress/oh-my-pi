@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { encodeResponse, encodeStream, parseRequest } from "@oh-my-pi/pi-ai/providers/openai-chat-server";
 import type { AssistantMessage, AssistantMessageEvent, AssistantMessageEventStream } from "@oh-my-pi/pi-ai/types";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 
 function makeEventStream(events: AssistantMessageEvent[], final: AssistantMessage): AssistantMessageEventStream {
 	async function* iter() {
@@ -140,6 +141,15 @@ describe("auth-gateway openai-chat: parseRequest", () => {
 		expect(parsed.options.toolChoice).toEqual({ name: "lookup" });
 		expect(parsed.options.responseFormat).toEqual({ type: "json_object" });
 		expect(parsed.options.extra).toEqual({ includeStreamingUsage: true });
+	});
+
+	it("accepts max reasoning effort", () => {
+		const parsed = parseRequest({
+			model: "gpt-5.6-sol",
+			messages: [{ role: "user", content: "hi" }],
+			reasoning_effort: "max",
+		});
+		expect(parsed.options.reasoning).toBe(Effort.Max);
 	});
 
 	it("rejects missing required fields", () => {

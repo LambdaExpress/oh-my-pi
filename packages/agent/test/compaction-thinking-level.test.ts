@@ -117,6 +117,22 @@ describe("compaction thinking-level resolution (regression)", () => {
 		expect(call[2]?.reasoning).toBe(ai.Effort.Low);
 	});
 
+	test("ThinkingLevel.Max on GPT-5.6 → reasoning=max", async () => {
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected built-in openai-codex/gpt-5.6-sol to exist");
+		const spy = vi
+			.spyOn(ai, "completeSimple")
+			.mockResolvedValue(createAssistantMessage([{ type: "text", text: "handoff" }]));
+		await generateHandoff(messages, model, "test-key", {
+			systemPrompt: ["sp"],
+			tools: [],
+			thinkingLevel: ThinkingLevel.Max,
+		});
+		const call = spy.mock.calls[0];
+		if (!call) throw new Error("expected completeSimple call");
+		expect(call[2]?.reasoning).toBe(ai.Effort.Max);
+	});
+
 	test("ThinkingLevel.High on xai-oauth/grok-build → reasoning=undefined (clamp)", async () => {
 		const spy = vi
 			.spyOn(ai, "completeSimple")

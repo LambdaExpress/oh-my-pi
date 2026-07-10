@@ -17241,15 +17241,17 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortRouting": {
 					"off": "gpt-5-6-luna-none",
 					"minimal": "gpt-5-6-luna-low",
-					"low": "gpt-5-6-luna-medium",
-					"medium": "gpt-5-6-luna-high",
-					"high": "gpt-5-6-luna-xhigh",
-					"xhigh": "gpt-5-6-luna-max"
+					"low": "gpt-5-6-luna-low",
+					"medium": "gpt-5-6-luna-medium",
+					"high": "gpt-5-6-luna-high",
+					"xhigh": "gpt-5-6-luna-xhigh",
+					"max": "gpt-5-6-luna-max"
 				}
 			},
 			"requestModelId": "gpt-5-6-luna-none"
@@ -17321,15 +17323,17 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortRouting": {
 					"off": "gpt-5-6-sol-none",
 					"minimal": "gpt-5-6-sol-low",
-					"low": "gpt-5-6-sol-medium",
-					"medium": "gpt-5-6-sol-high",
-					"high": "gpt-5-6-sol-xhigh",
-					"xhigh": "gpt-5-6-sol-max"
+					"low": "gpt-5-6-sol-low",
+					"medium": "gpt-5-6-sol-medium",
+					"high": "gpt-5-6-sol-high",
+					"xhigh": "gpt-5-6-sol-xhigh",
+					"max": "gpt-5-6-sol-max"
 				}
 			},
 			"requestModelId": "gpt-5-6-sol-none"
@@ -17401,15 +17405,17 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortRouting": {
 					"off": "gpt-5-6-terra-none",
 					"minimal": "gpt-5-6-terra-low",
-					"low": "gpt-5-6-terra-medium",
-					"medium": "gpt-5-6-terra-high",
-					"high": "gpt-5-6-terra-xhigh",
-					"xhigh": "gpt-5-6-terra-max"
+					"low": "gpt-5-6-terra-low",
+					"medium": "gpt-5-6-terra-medium",
+					"high": "gpt-5-6-terra-high",
+					"xhigh": "gpt-5-6-terra-xhigh",
+					"max": "gpt-5-6-terra-max"
 				}
 			},
 			"requestModelId": "gpt-5-6-terra-none"
@@ -48562,14 +48568,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -48618,14 +48621,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -48674,14 +48674,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -60350,14 +60347,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -60388,14 +60382,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -60428,14 +60419,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -60466,14 +60454,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -60506,14 +60491,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -60544,14 +60526,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -60584,14 +60563,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -61408,14 +61384,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -61455,14 +61428,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -61500,14 +61470,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -61547,14 +61514,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -61592,14 +61556,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -61639,14 +61600,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		}
@@ -70084,14 +70042,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -70121,14 +70076,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -70158,14 +70110,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -70195,14 +70144,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -70232,14 +70178,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},
@@ -70269,14 +70212,11 @@
 					"low",
 					"medium",
 					"high",
-					"xhigh"
+					"xhigh",
+					"max"
 				],
 				"effortMap": {
-					"minimal": "low",
-					"low": "medium",
-					"medium": "high",
-					"high": "xhigh",
-					"xhigh": "max"
+					"minimal": "low"
 				}
 			}
 		},

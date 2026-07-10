@@ -47,7 +47,7 @@ describe("model cache migrations", () => {
 		}
 	});
 
-	it("invalidates legacy cached models and lets the next discovery write fresh ones", () => {
+	it("invalidates v8 cached models and lets the next discovery write fresh ones", () => {
 		const legacyModel = createModel("legacy-cloud-model", "Legacy Cloud Model");
 		const legacyDb = new Database(dbPath, { create: true });
 		legacyDb.run(`
@@ -56,12 +56,13 @@ describe("model cache migrations", () => {
 				version INTEGER NOT NULL,
 				updated_at INTEGER NOT NULL,
 				authoritative INTEGER NOT NULL DEFAULT 0,
+				static_fingerprint TEXT NOT NULL DEFAULT '',
 				models TEXT NOT NULL
 			)
 		`);
 		legacyDb.run(
-			"INSERT INTO model_cache (provider_id, version, updated_at, authoritative, models) VALUES (?, ?, ?, ?, ?)",
-			["ollama-cloud", 2, Date.now(), 1, JSON.stringify([legacyModel])],
+			"INSERT INTO model_cache (provider_id, version, updated_at, authoritative, static_fingerprint, models) VALUES (?, ?, ?, ?, ?, ?)",
+			["ollama-cloud", 8, Date.now(), 1, "stale-v8", JSON.stringify([legacyModel])],
 		);
 		legacyDb.close();
 

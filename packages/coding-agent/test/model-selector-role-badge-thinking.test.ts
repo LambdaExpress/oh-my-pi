@@ -189,6 +189,21 @@ describe("ModelSelector role badge thinking display", () => {
 		expect(rendered).not.toContain("low medium high max");
 	});
 
+	test("renders a distinct max effort for GPT-5.6 thinking options", () => {
+		installTestTheme();
+		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!model) throw new Error("Expected bundled model openai-codex/gpt-5.6-sol");
+
+		const selector = createSelector(model, Settings.isolated({}));
+
+		selector.handleInput("\n");
+		selector.handleInput("\n");
+
+		const rendered = normalizeRenderedText(selector.render(220).join("\n"));
+		expect(rendered).toContain("Thinking for: Default (gpt-5.6-sol)");
+		expect(rendered).toContain("low medium high xhigh max");
+	});
+
 	test("reloads DEFAULT(auto) from defaultThinkingLevel", async () => {
 		installTestTheme();
 		const model = getBundledModel("openai", "gpt-5.5");
