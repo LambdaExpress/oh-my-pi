@@ -306,4 +306,207 @@ describe("AgentLifecycleManager", () => {
 		expect(stub.disposeCalls()).toBe(0);
 		expect(lifecycle.has("8-Sub")).toBe(true);
 	});
+
+	it("releaseScope fences and releases every non-main ref in the scope without affecting another scope", async () => {
+		vi.useFakeTimers();
+		const oldScope = "scope-old";
+		const nextScope = "scope-next";
+		const main = makeSessionStub();
+		const idle = makeSessionStub();
+		const running = makeSessionStub();
+		const advisor = makeSessionStub();
+		const nested = makeSessionStub();
+		const other = makeSessionStub();
+		registry.register({
+			id: MAIN_AGENT_ID,
+			displayName: "main",
+			kind: "main",
+			scopeId: oldScope,
+			session: main.session,
+			status: "idle",
+		});
+		registry.register({
+			id: "scope-idle",
+			displayName: "idle",
+			kind: "sub",
+			scopeId: oldScope,
+			session: idle.session,
+			status: "idle",
+		});
+		registry.register({
+			id: "scope-parked",
+			displayName: "parked",
+			kind: "sub",
+			scopeId: oldScope,
+			session: null,
+			sessionFile: "/tmp/scope-parked.jsonl",
+			status: "parked",
+		});
+		registry.register({
+			id: "scope-running",
+			displayName: "running",
+			kind: "sub",
+			scopeId: oldScope,
+			session: running.session,
+			status: "running",
+		});
+		registry.register({
+			id: "scope-advisor",
+			displayName: "advisor",
+			kind: "advisor",
+			scopeId: oldScope,
+			session: advisor.session,
+			status: "idle",
+		});
+		registry.register({
+			id: "scope-nested",
+			displayName: "nested",
+			kind: "sub",
+			parentId: "scope-running",
+			scopeId: oldScope,
+			session: nested.session,
+			status: "idle",
+		});
+		registry.register({
+			id: "other-idle",
+			displayName: "other",
+			kind: "sub",
+			scopeId: nextScope,
+			session: other.session,
+			status: "idle",
+		});
+		lifecycle.adopt("scope-idle", { idleTtlMs: TTL }, oldScope);
+		lifecycle.adopt("scope-parked", { idleTtlMs: 0 }, oldScope);
+		lifecycle.adopt("scope-nested", { idleTtlMs: TTL }, oldScope);
+		lifecycle.adopt("other-idle", { idleTtlMs: TTL }, nextScope);
+
+		const firstRelease = lifecycle.releaseScope(oldScope);
+		expect(registry.isScopeRetired(oldScope)).toBe(true);
+		expect(lifecycle.releaseScope(oldScope)).toBe(firstRelease);
+		await firstRelease;
+
+		for (const id of ["scope-idle", "scope-parked", "scope-running", "scope-advisor", "scope-nested"]) {
+			expect(registry.get(id)).toBeUndefined();
+			expect(lifecycle.has(id)).toBe(false);
+		}
+		expect(idle.disposeCalls()).toBe(1);
+		expect(running.disposeCalls()).toBe(1);
+		expect(advisor.disposeCalls()).toBe(1);
+		expect(nested.disposeCalls()).toBe(1);
+		expect(registry.get(MAIN_AGENT_ID)?.scopeId).toBe(oldScope);
+		expect(main.disposeCalls()).toBe(0);
+		expect(registry.get("other-idle")?.session).toBe(other.session);
+		expect(lifecycle.has("other-idle")).toBe(true);
+		expect(other.disposeCalls()).toBe(0);
+		expect(() =>
+			registry.register({
+				id: "late-old-agent",
+				displayName: "late",
+				kind: "sub",
+				scopeId: oldScope,
+				session: null,
+			}),
+		).toThrow(/retired scope/);
+
+		registry.updateScope(MAIN_AGENT_ID, nextScope, oldScope);
+		expect(registry.get(MAIN_AGENT_ID)?.scopeId).toBe(nextScope);
+	});
+
+	it("releaseScope wins an in-flight revive and disposes the late session without an orphan ref", async () => {
+		const scopeId = "scope-revive";
+		const gate = deferred();
+		const revived = makeSessionStub();
+		registry.register({
+			id: "reviving-agent",
+			displayName: "reviving",
+			kind: "sub",
+			scopeId,
+			session: null,
+			sessionFile: "/tmp/reviving-agent.jsonl",
+			status: "parked",
+		});
+		lifecycle.adopt(
+			"reviving-agent",
+			{
+				idleTtlMs: 0,
+				revive: async () => {
+					await gate.promise;
+					return revived.session;
+				},
+			},
+			scopeId,
+		);
+
+		const ensuring = lifecycle.ensureLive("reviving-agent");
+		await Promise.resolve();
+		const release = lifecycle.releaseScope(scopeId);
+		gate.resolve();
+
+		await expect(ensuring).rejects.toThrow(/released while it was being revived/);
+		await release;
+		expect(revived.disposeCalls()).toBe(1);
+		expect(registry.get("reviving-agent")).toBeUndefined();
+		expect(lifecycle.has("reviving-agent")).toBe(false);
+	});
+
+	it("releaseScope coalesces with an in-flight park and disposes the session once", async () => {
+		const scopeId = "scope-park";
+		const gate = deferred();
+		const stub = makeSessionStub(() => gate.promise);
+		registry.register({
+			id: "parking-agent",
+			displayName: "parking",
+			kind: "sub",
+			scopeId,
+			session: stub.session,
+			status: "idle",
+		});
+		lifecycle.adopt("parking-agent", { idleTtlMs: 0 }, scopeId);
+
+		const parking = lifecycle.park("parking-agent");
+		const release = lifecycle.releaseScope(scopeId);
+		expect(lifecycle.isParking("parking-agent")).toBe(true);
+		gate.resolve();
+		await Promise.all([parking, release]);
+
+		expect(stub.disposeCalls()).toBe(1);
+		expect(registry.get("parking-agent")).toBeUndefined();
+		expect(lifecycle.isParking("parking-agent")).toBe(false);
+	});
+
+	it("expected-scope callbacks cannot mutate or remove a same-id replacement ref", () => {
+		const oldScope = "scope-callback-old";
+		const nextScope = "scope-callback-next";
+		const oldSession = makeSessionStub();
+		const nextSession = makeSessionStub();
+		registry.register({
+			id: "reused-id",
+			displayName: "old",
+			kind: "sub",
+			scopeId: oldScope,
+			session: oldSession.session,
+			status: "running",
+		});
+		registry.register({
+			id: "reused-id",
+			displayName: "new",
+			kind: "sub",
+			scopeId: nextScope,
+			session: nextSession.session,
+			status: "running",
+		});
+
+		registry.setStatus("reused-id", "idle", oldScope);
+		registry.setActivity("reused-id", "stale activity", oldScope);
+		registry.detachSession("reused-id", oldScope);
+		registry.unregister("reused-id", oldScope);
+		lifecycle.adopt("reused-id", { idleTtlMs: TTL }, oldScope);
+
+		const ref = registry.get("reused-id");
+		expect(ref?.scopeId).toBe(nextScope);
+		expect(ref?.status).toBe("running");
+		expect(ref?.activity).toBeUndefined();
+		expect(ref?.session).toBe(nextSession.session);
+		expect(lifecycle.has("reused-id")).toBe(false);
+	});
 });

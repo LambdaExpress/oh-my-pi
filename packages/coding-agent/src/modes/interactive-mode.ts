@@ -943,11 +943,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#inputController.setupKeyHandlers();
 		this.#inputController.setupEditorSubmitHandler();
 
-		// Wire observer registry to EventBus
+		// Fence observer rows whenever AgentSession advances its root-session scope,
+		// including extension-driven and resumed session changes.
+		this.#eventBusUnsubscribers.push(this.session.onSessionScopeChange(() => this.resetObserverRegistry()));
+		this.resetObserverRegistry();
 		if (this.#eventBus) {
 			this.#observerRegistry.subscribeToEventBus(this.#eventBus);
 		}
-		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
 		this.syncRunningSubagentBadge();
 		this.#observerRegistry.onChange(kind => {
 			this.#scheduleObserverUiSync(kind);
@@ -4151,7 +4153,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	resetObserverRegistry(): void {
-		this.#observerRegistry.resetSessions();
+		this.#observerRegistry.resetSessions(this.sessionManager.getSessionId());
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
 	}
 

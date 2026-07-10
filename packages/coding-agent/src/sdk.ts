@@ -541,6 +541,11 @@ export interface CreateAgentSessionOptions {
 	agentDisplayName?: string;
 	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
 	agentRegistry?: AgentRegistry;
+	/**
+	 * Immutable top-level session scope inherited by subagents. Top-level callers
+	 * omit this so the current SessionManager ID becomes the scope.
+	 */
+	agentScopeId?: string;
 	/** Parent task ID prefix for nested artifact naming (e.g., "Extensions") */
 	parentTaskPrefix?: string;
 	/**
@@ -1479,6 +1484,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	let session!: AgentSession;
 	let hasSession = false;
 	let hasRegistered = false;
+	const initialAgentScopeId = options.agentScopeId ?? sessionManager.getSessionId();
+	const currentAgentScopeId = (): string => (hasSession ? session.getAgentScopeId() : initialAgentScopeId);
 	const enableLsp = options.enableLsp ?? true;
 	const asyncMaxJobs = Math.min(100, Math.max(1, settings.get("async.maxJobs") ?? 100));
 	const ASYNC_INLINE_RESULT_MAX_CHARS = 12_000;
@@ -1516,9 +1523,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			? new AsyncJobManager({
 					maxRunningJobs: asyncMaxJobs,
 					onJobComplete: async (jobId, result, job) => {
-						if (!session || asyncJobManager!.isDeliverySuppressed(jobId)) return;
+						if (
+							!session ||
+							asyncJobManager!.isDeliverySuppressed(jobId) ||
+							(job?.scopeId !== undefined && job.scopeId !== currentAgentScopeId())
+						) {
+							return;
+						}
 						const formattedResult = await formatAsyncResultForFollowUp(result);
-						if (asyncJobManager!.isDeliverySuppressed(jobId)) return;
+						if (
+							asyncJobManager!.isDeliverySuppressed(jobId) ||
+							(job?.scopeId !== undefined && job.scopeId !== currentAgentScopeId())
+						) {
+							return;
+						}
 
 						const durationMs = job ? Math.max(0, Date.now() - job.startTime) : undefined;
 						session.yieldQueue.enqueue<AsyncResultEntry>("async-result", {
@@ -1544,9 +1562,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	 * (history://, revive); only process teardown / explicit kill unregisters.
 	 */
 	const unregisterUnlessParked = (): void => {
+		const scopeId = hasSession ? session.getAgentScopeId() : initialAgentScopeId;
 		if (agentRegistry.get(resolvedAgentId)?.status === "parked") return;
 		if (AgentLifecycleManager.global().isParking(resolvedAgentId)) return;
-		agentRegistry.unregister(resolvedAgentId);
+		agentRegistry.unregister(resolvedAgentId, scopeId);
 	};
 	const evalKernelOwnerId = `agent-session:${Snowflake.next()}`;
 
@@ -1598,6 +1617,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			trackEvalExecution: (execution, abortController) =>
 				session ? session.trackEvalExecution(execution, abortController) : execution,
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
+			getAgentScopeId: () => currentAgentScopeId(),
 			moveSessionToCwd: async nextCwd => {
 				if (!session) throw new Error("Session is not ready; cannot move cwd.");
 				await sessionManager.moveTo(nextCwd);
@@ -2622,6 +2642,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			session: null,
 			sessionFile: sessionManager.getSessionFile() ?? null,
 			status: "running",
+			scopeId: initialAgentScopeId,
 		});
 		hasRegistered = true;
 
@@ -2946,6 +2967,14 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			obfuscator,
 			agentId: resolvedAgentId,
 			agentKind,
+			agentScopeId: initialAgentScopeId,
+			fenceAgentScope: scopeId => {
+				agentRegistry.retireScope(scopeId);
+			},
+			releaseAgentScope: scopeId => AgentLifecycleManager.global().releaseScope(scopeId),
+			activateAgentScope: (scopeId, previousScopeId) => {
+				agentRegistry.updateScope(resolvedAgentId, scopeId, previousScopeId);
+			},
 			providerSessionId: options.providerSessionId,
 			parentEvalSessionId: options.parentEvalSessionId,
 			advisorTools,
@@ -2968,7 +2997,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// Attach the live session to the pre-registered ref so peers can route IRC
 		// messages here. Refresh sessionFile in case it was unavailable at pre-register
 		// time. The dispose wrapper below unregisters on teardown (unless parked).
-		agentRegistry.attachSession(resolvedAgentId, session, sessionManager.getSessionFile() ?? null);
+		agentRegistry.attachSession(
+			resolvedAgentId,
+			session,
+			sessionManager.getSessionFile() ?? null,
+			initialAgentScopeId,
+		);
 		{
 			const originalDispose = session.dispose.bind(session);
 			session.dispose = async () => {

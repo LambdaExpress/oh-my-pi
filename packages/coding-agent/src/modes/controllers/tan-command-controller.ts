@@ -71,6 +71,7 @@ export class TanCommandController {
 		const toolNames = session.getActiveToolNames();
 		const modelRegistry = session.modelRegistry;
 		const ownerId = session.getAgentId() ?? MAIN_AGENT_ID;
+		const scopeId = session.getAgentScopeId();
 		const mcpManager = this.ctx.mcpManager;
 		const cwd = this.ctx.sessionManager.getCwd();
 		// Nest the clone inside the parent's artifact directory (like a subagent
@@ -105,6 +106,7 @@ export class TanCommandController {
 					try {
 						const created = await sdk.createAgentSession({
 							cwd,
+							agentScopeId: scopeId,
 							sessionManager: cloneManager,
 							model,
 							thinkingLevel,
@@ -150,17 +152,17 @@ export class TanCommandController {
 						// terminal — let dispose unregister it.
 						if (clone) {
 							if (signal.aborted) {
-								agentRegistry.setStatus(cloneId, "aborted");
+								agentRegistry.setStatus(cloneId, "aborted", scopeId);
 								await clone.dispose();
 							} else {
-								agentRegistry.setStatus(cloneId, "parked");
+								agentRegistry.setStatus(cloneId, "parked", scopeId);
 								await clone.dispose();
-								agentRegistry.detachSession(cloneId);
+								agentRegistry.detachSession(cloneId, scopeId);
 							}
 						}
 					}
 				},
-				{ ownerId },
+				{ ownerId, scopeId },
 			);
 		} catch (error) {
 			if (cloneFile) await removeCloneSession(cloneFile);

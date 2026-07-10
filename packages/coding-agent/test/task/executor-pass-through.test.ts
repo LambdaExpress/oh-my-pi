@@ -16,7 +16,13 @@ import type { CreateAgentSessionResult } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent, PromptOptions } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
+import {
+	type AgentDefinition,
+	type SubagentLifecyclePayload,
+	type SubagentProgressPayload,
+	TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+	TASK_SUBAGENT_PROGRESS_CHANNEL,
+} from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 
 function createMockSession(onPrompt: (params: { emit: (event: AgentSessionEvent) => void }) => void): AgentSession {
@@ -163,6 +169,34 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(forwarded?.parentAgentId).toBe("SpawnerAgent");
 		expect(forwarded?.agentId).toBe("ChildAgent");
 		expect(forwarded?.parentTaskPrefix).toBe("ChildAgent");
+	});
+
+	it("keeps one root scope in nested session options and every lifecycle event", async () => {
+		const session = yieldEmittingSession();
+		const createSpy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+		const eventBus = new EventBus();
+		const lifecycle: SubagentLifecyclePayload[] = [];
+		const progress: SubagentProgressPayload[] = [];
+		eventBus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, payload => {
+			lifecycle.push(payload as SubagentLifecyclePayload);
+		});
+		eventBus.on(TASK_SUBAGENT_PROGRESS_CHANNEL, payload => {
+			progress.push(payload as SubagentProgressPayload);
+		});
+
+		const result = await runSubprocess({
+			...baseOptions,
+			id: "ScopedChild",
+			scopeId: "root-session-scope",
+			eventBus,
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(createSpy.mock.calls[0]?.[0]?.agentScopeId).toBe("root-session-scope");
+		expect(lifecycle.map(payload => payload.status)).toEqual(["started", "completed"]);
+		expect(lifecycle.every(payload => payload.scopeId === "root-session-scope")).toBe(true);
+		expect(progress.length).toBeGreaterThan(0);
+		expect(progress.every(payload => payload.scopeId === "root-session-scope")).toBe(true);
 	});
 
 	it("lets agent frontmatter thinkingLevel override a task role suffix", async () => {

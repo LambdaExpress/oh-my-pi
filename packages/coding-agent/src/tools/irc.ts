@@ -259,6 +259,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 		}
 
 		const bus = IrcBus.global();
+		const scopeId = this.session.getAgentScopeId?.() ?? undefined;
 		let waited: IrcMessage | null | undefined;
 		const timeoutMs = params.await ? this.#resolveTimeoutMs(params) : undefined;
 		const awaitAbort = params.await ? new AbortController() : undefined;
@@ -268,6 +269,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 			? bus
 					.wait(senderId, { from: to }, timeoutMs ?? DEFAULT_IRC_TIMEOUT_MS, awaitAbort?.signal, {
 						drainPending: false,
+						scopeId,
 					})
 					.then(
 						message => ({ message, error: null as Error | null }),
@@ -316,7 +318,7 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 						} satisfies IrcDeliveryReceipt;
 					}
 					return bus.send(
-						{ from: senderId, to: target, body: message, replyTo: params.replyTo },
+						{ from: senderId, to: target, body: message, replyTo: params.replyTo, scopeId },
 						// Awaited sends mark the sender as blocked on an answer so a
 						// busy recipient that cannot reach a step boundary (async
 						// disabled) auto-replies instead of stranding the sender.
@@ -414,7 +416,9 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 			};
 		}
 		const timeoutMs = this.#resolveTimeoutMs(params);
-		const waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal);
+		const waited = await IrcBus.global().wait(senderId, { from }, timeoutMs, signal, {
+			scopeId: this.session.getAgentScopeId?.() ?? undefined,
+		});
 		if (!waited) {
 			const filterNote = from ? ` from ${from}` : "";
 			return {
@@ -431,7 +435,10 @@ export class IrcTool implements AgentTool<typeof ircSchema, IrcDetails> {
 	}
 
 	#executeInbox(registry: AgentRegistry, senderId: string, params: IrcParams): AgentToolResult<IrcDetails> {
-		const busMessages = IrcBus.global().inbox(senderId, { peek: params.peek });
+		const busMessages = IrcBus.global().inbox(senderId, {
+			peek: params.peek,
+			scopeId: this.session.getAgentScopeId?.() ?? undefined,
+		});
 		const session = registry.get(senderId)?.session;
 		const pendingMessages =
 			typeof session?.drainPendingIrcInboxMessages === "function"

@@ -1444,6 +1444,7 @@ function b() {
 						}),
 						{
 							getSessionId: () => "test-session",
+							getAgentScopeId: () => "test-session",
 							asyncJobManager,
 						},
 					),
@@ -1465,6 +1466,7 @@ function b() {
 			}
 			const runningJob = asyncJobManager.getJob(jobId);
 			expect(runningJob?.status).toBe("running");
+			expect(runningJob?.scopeId).toBe("test-session");
 			await runningJob?.promise;
 			await asyncJobManager.drainDeliveries({ timeoutMs: 1 });
 			expect(deliveries).toHaveLength(1);

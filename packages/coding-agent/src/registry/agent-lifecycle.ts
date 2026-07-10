@@ -35,7 +35,18 @@ export interface AdoptOptions {
 interface AdoptedAgent {
 	idleTtlMs: number;
 	revive?: AgentReviver;
+	scopeId?: string;
 	timer?: NodeJS.Timeout;
+}
+
+interface ParkingAgent {
+	scopeId?: string;
+	promise: Promise<void>;
+}
+
+interface RevivingAgent {
+	scopeId?: string;
+	promise: Promise<AgentSession>;
 }
 
 export class AgentLifecycleManager {
@@ -60,6 +71,7 @@ export class AgentLifecycleManager {
 			current.#adopted.clear();
 			current.#revivals.clear();
 			current.#parking.clear();
+			current.#scopeReleases.clear();
 			current.#persistedReviverFactory = undefined;
 		}
 		AgentLifecycleManager.#global = undefined;
@@ -67,10 +79,12 @@ export class AgentLifecycleManager {
 
 	readonly #registry: AgentRegistry;
 	readonly #adopted = new Map<string, AdoptedAgent>();
-	/** Ids whose session is being disposed by {@link park} right now. */
-	readonly #parking = new Set<string>();
+	/** Agents whose sessions are being disposed by {@link park} right now. */
+	readonly #parking = new Map<string, ParkingAgent>();
 	/** In-flight revives, so concurrent {@link ensureLive} calls coalesce. */
-	readonly #revivals = new Map<string, Promise<AgentSession>>();
+	readonly #revivals = new Map<string, RevivingAgent>();
+	/** Completed promises remain cached: releasing a scope is permanently idempotent. */
+	readonly #scopeReleases = new Map<string, Promise<void>>();
 	#unsubscribe: (() => void) | undefined;
 	#persistedReviverFactory: PersistedSubagentReviverFactory | undefined;
 	/** TTL applied when a cold-revived ref is adopted on demand. */
@@ -95,16 +109,24 @@ export class AgentLifecycleManager {
 	/**
 	 * Take ownership of a finished subagent. Caller has already set registry
 	 * status to "idle". Arms the TTL timer (idleTtlMs <= 0 adopts without one).
+	 * expectedScopeId guards a delayed finalize callback from adopting a
+	 * replacement ref with the same id in a newer scope.
 	 */
-	adopt(id: string, opts: AdoptOptions): void {
+	adopt(id: string, opts: AdoptOptions, expectedScopeId?: string): void {
 		if (id === MAIN_AGENT_ID) return;
-		if (!this.#registry.get(id)) {
+		const ref = this.#registry.get(id);
+		if (!ref) {
 			logger.warn("AgentLifecycleManager.adopt: unknown agent id", { id });
+			return;
+		}
+		if (expectedScopeId !== undefined && ref.scopeId !== expectedScopeId) return;
+		if (this.#registry.isScopeRetired(ref.scopeId)) {
+			void this.#releaseRef(ref);
 			return;
 		}
 		const existing = this.#adopted.get(id);
 		clearTimeout(existing?.timer);
-		const adopted: AdoptedAgent = { idleTtlMs: opts.idleTtlMs, revive: opts.revive };
+		const adopted: AdoptedAgent = { idleTtlMs: opts.idleTtlMs, revive: opts.revive, scopeId: ref.scopeId };
 		this.#adopted.set(id, adopted);
 		this.#armTimer(id, adopted);
 	}
@@ -123,33 +145,36 @@ export class AgentLifecycleManager {
 	 * Dispose the live session, detach it from the registry, and mark the
 	 * agent `parked`. No-op unless the id is adopted and live.
 	 */
-	async park(id: string): Promise<void> {
+	park(id: string): Promise<void> {
 		const adopted = this.#adopted.get(id);
-		if (!adopted) return;
 		const ref = this.#registry.get(id);
-		if (!ref?.session) return;
+		if (!adopted || !ref?.session) return Promise.resolve();
+		if (adopted.scopeId !== ref.scopeId) {
+			if (this.#adopted.get(id) === adopted) this.#adopted.delete(id);
+			return Promise.resolve();
+		}
+		const existing = this.#parking.get(id);
+		if (existing && existing.scopeId === ref.scopeId) return existing.promise;
+		if (this.#registry.isScopeRetired(ref.scopeId)) return this.#releaseRef(ref);
 		if (adopted.timer) {
 			clearTimeout(adopted.timer);
 			adopted.timer = undefined;
 		}
-		this.#parking.add(id);
-		try {
-			try {
-				await ref.session.dispose();
-			} catch (error) {
-				logger.warn("AgentLifecycleManager.park: session dispose failed", { id, error: String(error) });
-			}
-			this.#registry.detachSession(id);
-			this.#registry.setStatus(id, "parked");
-		} finally {
-			this.#parking.delete(id);
-		}
+		const parking: ParkingAgent = {
+			scopeId: ref.scopeId,
+			promise: this.#parkSession(id, ref, adopted),
+		};
+		this.#parking.set(id, parking);
+		void parking.promise.finally(() => {
+			if (this.#parking.get(id) === parking) this.#parking.delete(id);
+		});
+		return parking.promise;
 	}
 
 	/**
 	 * Return the live session, reviving from the sessionFile if parked.
 	 * Throws a plain Error if the id is unknown or parked without a reviver.
-	 * Concurrent calls share one in-flight revive.
+	 * Concurrent calls in the same scope share one in-flight revive.
 	 */
 	async ensureLive(id: string): Promise<AgentSession> {
 		const ref = this.#registry.get(id);
@@ -158,15 +183,22 @@ export class AgentLifecycleManager {
 				`Unknown agent "${id}" — it was never registered or has been released. If a transcript exists, read history://${id}.`,
 			);
 		}
+		if (this.#registry.isScopeRetired(ref.scopeId)) {
+			void this.#releaseRef(ref);
+			throw new Error(`Agent "${id}" belongs to retired scope "${ref.scopeId}" and cannot be revived.`);
+		}
 		if (ref.session) return ref.session;
 		const inflight = this.#revivals.get(id);
-		if (inflight) return inflight;
-		const revival = this.#resolveAndRevive(id, ref);
+		if (inflight && inflight.scopeId === ref.scopeId) return inflight.promise;
+		const revival: RevivingAgent = {
+			scopeId: ref.scopeId,
+			promise: this.#resolveAndRevive(id, ref),
+		};
 		this.#revivals.set(id, revival);
 		try {
-			return await revival;
+			return await revival.promise;
 		} finally {
-			this.#revivals.delete(id);
+			if (this.#revivals.get(id) === revival) this.#revivals.delete(id);
 		}
 	}
 
@@ -174,17 +206,21 @@ export class AgentLifecycleManager {
 	 * Resolve a reviver and bring the agent back to a live session. A ref
 	 * restored from disk is `parked` with a sessionFile but no in-memory
 	 * adoption; build a reviver via the injected persisted-subagent factory and
-	 * adopt it so the agent rejoins the normal idle↔parked lifecycle. Throws
-	 * when the agent is not revivable or no reviver can be produced.
+	 * adopt it so the agent rejoins the normal idle↔parked lifecycle.
 	 */
 	async #resolveAndRevive(id: string, ref: AgentRef): Promise<AgentSession> {
-		let revive = this.#adopted.get(id)?.revive;
-		let coldAdopted = false;
+		let adopted = this.#adopted.get(id);
+		if (adopted?.scopeId !== ref.scopeId) adopted = undefined;
+		let revive = adopted?.revive;
+		let coldAdopted: AdoptedAgent | undefined;
 		if (!revive && ref.status === "parked" && ref.sessionFile && this.#persistedReviverFactory) {
 			revive = await this.#persistedReviverFactory(ref);
+			if (this.#registry.get(id) !== ref || this.#registry.isScopeRetired(ref.scopeId)) {
+				throw new Error(`Agent "${id}" was released while its reviver was being prepared.`);
+			}
 			if (revive) {
-				this.#adopted.set(id, { idleTtlMs: this.#persistedReviveTtlMs, revive });
-				coldAdopted = true;
+				coldAdopted = { idleTtlMs: this.#persistedReviveTtlMs, revive, scopeId: ref.scopeId };
+				this.#adopted.set(id, coldAdopted);
 			}
 		}
 		if (ref.status !== "parked" || !revive) {
@@ -193,30 +229,46 @@ export class AgentLifecycleManager {
 			);
 		}
 		try {
-			return await this.#revive(id, revive, ref.sessionFile);
+			return await this.#revive(id, ref, revive);
 		} catch (error) {
-			// A failed cold revive (stale ctx, missing cwd, bad MCP) must not leave a
-			// poisoned reviver stuck in #adopted — drop it so a later ensureLive
-			// rebuilds via the factory (which may have fresher context by then).
-			if (coldAdopted) this.#adopted.delete(id);
+			// A failed cold revive must rebuild from fresh persisted context next time.
+			if (coldAdopted && this.#adopted.get(id) === coldAdopted) this.#adopted.delete(id);
 			throw error;
 		}
 	}
 
 	/** Hard removal: dispose if live, unregister from registry, drop timers. */
 	async release(id: string): Promise<void> {
-		const adopted = this.#adopted.get(id);
-		clearTimeout(adopted?.timer);
-		this.#adopted.delete(id);
 		const ref = this.#registry.get(id);
-		if (ref?.session) {
-			try {
-				await ref.session.dispose();
-			} catch (error) {
-				logger.warn("AgentLifecycleManager.release: session dispose failed", { id, error: String(error) });
-			}
+		if (!ref) return;
+		await this.#releaseRef(ref);
+	}
+
+	/**
+	 * Permanently fence and release every non-main agent in a top-level scope.
+	 * Fencing is synchronous; cleanup is idempotent and waits for in-flight
+	 * park/revive work so no session can attach after the promise resolves.
+	 */
+	releaseScope(scopeId: string): Promise<void> {
+		this.#registry.retireScope(scopeId);
+		const existing = this.#scopeReleases.get(scopeId);
+		if (existing) return existing;
+
+		const revivals = new Map<string, RevivingAgent>();
+		for (const [id, revival] of this.#revivals) {
+			if (revival.scopeId !== scopeId) continue;
+			revivals.set(id, revival);
+			this.#revivals.delete(id);
 		}
-		this.#registry.unregister(id);
+		for (const [id, adopted] of this.#adopted) {
+			if (adopted.scopeId !== scopeId) continue;
+			clearTimeout(adopted.timer);
+			this.#adopted.delete(id);
+		}
+		const refs = this.#registry.list().filter(ref => ref.kind !== "main" && ref.scopeId === scopeId);
+		const release = Promise.all(refs.map(ref => this.#releaseRef(ref, revivals.get(ref.id)))).then(() => undefined);
+		this.#scopeReleases.set(scopeId, release);
+		return release;
 	}
 
 	/** Teardown everything (process exit / main session dispose). */
@@ -227,23 +279,81 @@ export class AgentLifecycleManager {
 		await Promise.all(ids.map(id => this.release(id)));
 		this.#revivals.clear();
 		this.#parking.clear();
+		this.#scopeReleases.clear();
 		this.#persistedReviverFactory = undefined;
 	}
 
-	async #revive(id: string, revive: AgentReviver, sessionFile: string | null): Promise<AgentSession> {
+	async #parkSession(id: string, ref: AgentRef, adopted: AdoptedAgent): Promise<void> {
+		try {
+			await ref.session?.dispose();
+		} catch (error) {
+			logger.warn("AgentLifecycleManager.park: session dispose failed", { id, error: String(error) });
+		}
+		if (
+			this.#registry.get(id) !== ref ||
+			this.#registry.isScopeRetired(ref.scopeId) ||
+			this.#adopted.get(id) !== adopted
+		) {
+			if (this.#registry.get(id) === ref) this.#registry.unregister(id, ref.scopeId);
+			return;
+		}
+		this.#registry.detachSession(id, ref.scopeId);
+		this.#registry.setStatus(id, "parked", ref.scopeId);
+	}
+
+	async #revive(id: string, ref: AgentRef, revive: AgentReviver): Promise<AgentSession> {
 		const session = await revive();
-		this.#registry.attachSession(id, session, sessionFile);
+		if (this.#registry.get(id) !== ref || this.#registry.isScopeRetired(ref.scopeId)) {
+			try {
+				await session.dispose();
+			} catch (error) {
+				logger.warn("AgentLifecycleManager.revive: stale session dispose failed", { id, error: String(error) });
+			}
+			throw new Error(`Agent "${id}" was released while it was being revived.`);
+		}
+		this.#registry.attachSession(id, session, ref.sessionFile, ref.scopeId);
 		// Emits status_changed → "idle", which re-arms the TTL timer below.
-		this.#registry.setStatus(id, "idle");
+		this.#registry.setStatus(id, "idle", ref.scopeId);
 		return session;
 	}
 
+	async #releaseRef(ref: AgentRef, inFlightRevival?: RevivingAgent): Promise<void> {
+		const adopted = this.#adopted.get(ref.id);
+		if (adopted && adopted.scopeId === ref.scopeId) {
+			clearTimeout(adopted.timer);
+			this.#adopted.delete(ref.id);
+		}
+
+		const parking = this.#parking.get(ref.id);
+		if (parking && parking.scopeId === ref.scopeId) await parking.promise;
+
+		const revival = inFlightRevival ?? this.#revivals.get(ref.id);
+		if (revival && revival.scopeId === ref.scopeId) {
+			if (this.#revivals.get(ref.id) === revival) this.#revivals.delete(ref.id);
+			try {
+				await revival.promise;
+			} catch {
+				// The revive path disposes any session created after release.
+			}
+		}
+
+		if (this.#registry.get(ref.id) !== ref) return;
+		if (ref.session) {
+			try {
+				await ref.session.dispose();
+			} catch (error) {
+				logger.warn("AgentLifecycleManager.release: session dispose failed", { id: ref.id, error: String(error) });
+			}
+		}
+		if (this.#registry.get(ref.id) === ref) this.#registry.unregister(ref.id, ref.scopeId);
+	}
+
 	#armTimer(id: string, adopted: AdoptedAgent): void {
-		if (adopted.idleTtlMs <= 0) return;
+		if (adopted.idleTtlMs <= 0 || this.#registry.isScopeRetired(adopted.scopeId)) return;
 		clearTimeout(adopted.timer);
 		const timer = setTimeout(() => {
 			adopted.timer = undefined;
-			void this.park(id);
+			if (this.#adopted.get(id) === adopted) void this.park(id);
 		}, adopted.idleTtlMs);
 		timer.unref?.();
 		adopted.timer = timer;
@@ -251,7 +361,7 @@ export class AgentLifecycleManager {
 
 	#onRegistryEvent(event: RegistryEvent): void {
 		const adopted = this.#adopted.get(event.ref.id);
-		if (!adopted) return;
+		if (!adopted || adopted.scopeId !== event.ref.scopeId) return;
 		if (event.type === "removed") {
 			clearTimeout(adopted.timer);
 			this.#adopted.delete(event.ref.id);

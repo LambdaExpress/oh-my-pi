@@ -639,6 +639,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 			},
 			{
 				ownerId: this.session.getAgentId?.() ?? undefined,
+				scopeId: this.session.getAgentScopeId?.() ?? undefined,
 				onProgress: async (text, details) => {
 					latestText = text;
 					await options.onUpdate?.({

@@ -35,6 +35,8 @@ export interface AgentRef {
 	displayName: string;
 	kind: AgentKind;
 	parentId?: string;
+	/** Top-level Main session UUID shared by this agent tree. */
+	scopeId?: string;
 	status: AgentStatus;
 	/** Null exactly when parked/aborted. */
 	session: AgentSession | null;
@@ -57,6 +59,7 @@ export interface RegisterInput {
 	displayName: string;
 	kind: AgentKind;
 	parentId?: string;
+	scopeId?: string;
 	session: AgentSession | null;
 	sessionFile?: string | null;
 	status?: AgentStatus;
@@ -79,14 +82,19 @@ export class AgentRegistry {
 
 	readonly #refs = new Map<string, AgentRef>();
 	readonly #listeners = new Set<RegistryListener>();
+	readonly #retiredScopes = new Set<string>();
 
 	register(input: RegisterInput): AgentRef {
+		if (this.isScopeRetired(input.scopeId)) {
+			throw new Error(`Cannot register agent "${input.id}" in retired scope "${input.scopeId}".`);
+		}
 		const now = Date.now();
 		const ref: AgentRef = {
 			id: input.id,
 			displayName: input.displayName,
 			kind: input.kind,
 			parentId: input.parentId,
+			scopeId: input.scopeId,
 			status: input.status ?? "running",
 			session: input.session,
 			sessionFile: input.sessionFile ?? null,
@@ -98,9 +106,9 @@ export class AgentRegistry {
 		return ref;
 	}
 
-	setStatus(id: string, status: AgentStatus): void {
+	setStatus(id: string, status: AgentStatus, expectedScopeId?: string): void {
 		const ref = this.#refs.get(id);
-		if (!ref || ref.status === status) return;
+		if (!ref || !this.#matchesExpectedScope(ref, expectedScopeId) || ref.status === status) return;
 		ref.status = status;
 		// Activity describes current work; it is meaningless once the agent
 		// leaves `running`, so drop it to avoid showing stale work in rosters.
@@ -123,9 +131,9 @@ export class AgentRegistry {
 	 * intent text can neither break the roster nor smuggle terminal escapes —
 	 * every caller is safe without sanitizing at its own call site.
 	 */
-	setActivity(id: string, activity: string): void {
+	setActivity(id: string, activity: string, expectedScopeId?: string): void {
 		const ref = this.#refs.get(id);
-		if (!ref) return;
+		if (!ref || !this.#matchesExpectedScope(ref, expectedScopeId)) return;
 		if (ref.status !== "running") return;
 		const gist = oneLineLabel(activity);
 		ref.lastActivity = Date.now();
@@ -133,23 +141,23 @@ export class AgentRegistry {
 		ref.activity = gist;
 	}
 
-	attachSession(id: string, session: AgentSession, sessionFile?: string | null): void {
+	attachSession(id: string, session: AgentSession, sessionFile?: string | null, expectedScopeId?: string): void {
 		const ref = this.#refs.get(id);
-		if (!ref) return;
+		if (!ref || !this.#matchesExpectedScope(ref, expectedScopeId)) return;
 		ref.session = session;
 		if (sessionFile !== undefined) ref.sessionFile = sessionFile;
 		ref.lastActivity = Date.now();
 	}
 
-	detachSession(id: string): void {
+	detachSession(id: string, expectedScopeId?: string): void {
 		const ref = this.#refs.get(id);
-		if (!ref) return;
+		if (!ref || !this.#matchesExpectedScope(ref, expectedScopeId)) return;
 		ref.session = null;
 	}
 
-	unregister(id: string): void {
+	unregister(id: string, expectedScopeId?: string): void {
 		const ref = this.#refs.get(id);
-		if (!ref) return;
+		if (!ref || !this.#matchesExpectedScope(ref, expectedScopeId)) return;
 		this.#refs.delete(id);
 		this.#emit({ type: "removed", ref });
 	}
@@ -173,9 +181,37 @@ export class AgentRegistry {
 		);
 	}
 
+	/** Fence a scope before teardown so late work cannot register into it. */
+	retireScope(scopeId: string): void {
+		this.#retiredScopes.add(scopeId);
+	}
+
+	isScopeRetired(scopeId: string | undefined): boolean {
+		return scopeId !== undefined && this.#retiredScopes.has(scopeId);
+	}
+
+	/**
+	 * Move an existing ref to a new scope without replacing its identity.
+	 * The optional expected scope turns delayed updates into compare-and-no-op
+	 * operations, and a retired scope can never become active again.
+	 */
+	updateScope(id: string, nextScopeId: string | undefined, expectedScopeId?: string): void {
+		const ref = this.#refs.get(id);
+		if (!ref || !this.#matchesExpectedScope(ref, expectedScopeId) || ref.scopeId === nextScopeId) return;
+		if (this.isScopeRetired(nextScopeId)) {
+			throw new Error(`Cannot move agent "${id}" into retired scope "${nextScopeId}".`);
+		}
+		ref.scopeId = nextScopeId;
+		ref.lastActivity = Date.now();
+	}
+
 	onChange(listener: RegistryListener): () => void {
 		this.#listeners.add(listener);
 		return () => this.#listeners.delete(listener);
+	}
+
+	#matchesExpectedScope(ref: AgentRef, expectedScopeId: string | undefined): boolean {
+		return expectedScopeId === undefined || ref.scopeId === expectedScopeId;
 	}
 
 	#emit(event: RegistryEvent): void {

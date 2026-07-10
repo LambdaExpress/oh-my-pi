@@ -5,7 +5,10 @@ import * as path from "node:path";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
+import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
@@ -151,6 +154,94 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			// The secondary's failed async attempt must not have leaked a job into
 			// the primary's manager.
 			expect(primaryManager!.getAllJobs().length).toBe(primaryJobCountBefore);
+		} finally {
+			await primary.dispose();
+		}
+	}, 60000);
+
+	it("retires the previous session's agents and async state before starting a new session", async () => {
+		const primary = await spawnTopLevelSession();
+		const manager = AsyncJobManager.instance();
+		if (!manager) throw new Error("Expected primary session to own the async job manager");
+
+		const registry = AgentRegistry.global();
+		const lifecycle = AgentLifecycleManager.global();
+		const previousScopeId = primary.getAgentScopeId();
+		let idleDisposeCalls = 0;
+		let parkedReviveCalls = 0;
+		const idleSession = {
+			dispose: async () => {
+				idleDisposeCalls++;
+			},
+		} as AgentSession;
+
+		registry.register({
+			id: "PreviousIdle",
+			displayName: "Previous idle agent",
+			kind: "sub",
+			parentId: "Main",
+			scopeId: previousScopeId,
+			session: idleSession,
+			sessionFile: path.join(primary.sessionFile!.slice(0, -6), "PreviousIdle.jsonl"),
+			status: "idle",
+		});
+		lifecycle.adopt("PreviousIdle", { idleTtlMs: 0 }, previousScopeId);
+		registry.register({
+			id: "PreviousParked",
+			displayName: "Previous parked agent",
+			kind: "sub",
+			parentId: "Main",
+			scopeId: previousScopeId,
+			session: null,
+			sessionFile: path.join(primary.sessionFile!.slice(0, -6), "PreviousParked.jsonl"),
+			status: "parked",
+		});
+		lifecycle.adopt(
+			"PreviousParked",
+			{
+				idleTtlMs: 0,
+				revive: async () => {
+					parkedReviveCalls++;
+					return idleSession;
+				},
+			},
+			previousScopeId,
+		);
+
+		const descendantAborted = Promise.withResolvers<void>();
+		const descendantJobId = manager.register(
+			"task",
+			"previous descendant work",
+			async ({ signal }) => {
+				if (!signal.aborted) {
+					await new Promise<void>(resolve => signal.addEventListener("abort", () => resolve(), { once: true }));
+				}
+				descendantAborted.resolve();
+				return "old result";
+			},
+			{ id: "PreviousIdle-job", ownerId: "PreviousIdle", scopeId: previousScopeId },
+		);
+		primary.yieldQueue.enqueue("async-result", {
+			jobId: "previous-completed-job",
+			result: "must not reach the new session",
+			job: undefined,
+			durationMs: 0,
+		});
+
+		try {
+			const previousSessionId = primary.sessionId;
+			expect(await primary.newSession()).toBe(true);
+
+			expect(primary.sessionId).not.toBe(previousSessionId);
+			expect(registry.get("PreviousIdle")).toBeUndefined();
+			expect(registry.get("PreviousParked")).toBeUndefined();
+			expect(lifecycle.has("PreviousIdle")).toBe(false);
+			expect(lifecycle.has("PreviousParked")).toBe(false);
+			expect(idleDisposeCalls).toBe(1);
+			expect(parkedReviveCalls).toBe(0);
+			expect(manager.getJob(descendantJobId)).toBeUndefined();
+			expect(primary.yieldQueue.has()).toBe(false);
+			await descendantAborted.promise;
 		} finally {
 			await primary.dispose();
 		}

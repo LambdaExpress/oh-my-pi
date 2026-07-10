@@ -41,6 +41,7 @@ export class SessionObserverRegistry {
 	#sortOrderById = new Map<string, number>();
 	#parentSortOrderById = new Map<string, number>();
 	#nextSortOrder = 0;
+	#activeScopeId?: string;
 
 	/** Add a change listener. Returns unsubscribe function. */
 	onChange(cb: (kind: SessionObserverChangeKind) => void): () => void {
@@ -118,8 +119,9 @@ export class SessionObserverRegistry {
 		return count;
 	}
 
-	/** Clear all tracked sessions (e.g. on session switch). Keeps EventBus subscriptions and listeners. */
-	resetSessions(): void {
+	/** Clear all tracked sessions and advance the active root-session scope. Keeps subscriptions and listeners. */
+	resetSessions(scopeId?: string): void {
+		this.#activeScopeId = scopeId;
 		this.#sessions.clear();
 		this.#sortOrderById.clear();
 		this.#parentSortOrderById.clear();
@@ -134,6 +136,7 @@ export class SessionObserverRegistry {
 		this.#sortOrderById.clear();
 		this.#parentSortOrderById.clear();
 		this.#nextSortOrder = 0;
+		this.#activeScopeId = undefined;
 		this.#listeners.clear();
 	}
 
@@ -145,6 +148,7 @@ export class SessionObserverRegistry {
 		this.#eventBusUnsubscribers.push(
 			eventBus.on(TASK_SUBAGENT_LIFECYCLE_CHANNEL, data => {
 				const payload = data as SubagentLifecyclePayload;
+				if (this.#activeScopeId !== undefined && payload.scopeId !== this.#activeScopeId) return;
 				const status = STATUS_MAP[payload.status];
 				if (!status) return;
 
@@ -181,6 +185,7 @@ export class SessionObserverRegistry {
 		this.#eventBusUnsubscribers.push(
 			eventBus.on(TASK_SUBAGENT_PROGRESS_CHANNEL, data => {
 				const payload = data as SubagentProgressPayload;
+				if (this.#activeScopeId !== undefined && payload.scopeId !== this.#activeScopeId) return;
 				const progress = payload.progress;
 				const id = progress.id;
 				const existing = this.#sessions.get(id);

@@ -67,6 +67,7 @@ function createContext(overrides?: {
 		model: overrides?.model ?? model,
 		asyncJobManager: { register },
 		sessionId: "parent-session",
+		getAgentScopeId: vi.fn(() => "parent-scope"),
 		configuredThinkingLevel: vi.fn(() => undefined),
 		systemPrompt: ["system prompt"],
 		getActiveToolNames: vi.fn(() => ["read", "bash"]),
@@ -163,6 +164,7 @@ describe("TanCommandController", () => {
 		);
 		expect(harness.register).toHaveBeenCalledWith("task", "/tan write the release note", expect.any(Function), {
 			ownerId: MAIN_AGENT_ID,
+			scopeId: "parent-scope",
 		});
 		expect(harness.capturedOptions?.ownerId).toBe(MAIN_AGENT_ID);
 		expect(harness.sequence).toEqual(["register", "sendCustomMessage"]);
@@ -223,6 +225,7 @@ describe("TanCommandController", () => {
 		expect(createAgentSessionSpy.mock.calls[0]?.[0]).toEqual(
 			expect.objectContaining({
 				providerPromptCacheKey: "parent-session",
+				agentScopeId: "parent-scope",
 				parentTaskPrefix: expect.stringMatching(/^Tan-/) as unknown as string,
 				agentDisplayName: "tan",
 			}),
@@ -288,8 +291,8 @@ describe("TanCommandController", () => {
 		expect(result).toBe("done");
 		// Parked (not unregistered) before dispose, then the disposed session is nulled
 		// out — the hub keeps the ref and reads its transcript from the session file.
-		expect(setStatus).toHaveBeenCalledWith(expect.stringMatching(/^Tan-/), "parked");
-		expect(detachSession).toHaveBeenCalledWith(expect.stringMatching(/^Tan-/));
+		expect(setStatus).toHaveBeenCalledWith(expect.stringMatching(/^Tan-/), "parked", "parent-scope");
+		expect(detachSession).toHaveBeenCalledWith(expect.stringMatching(/^Tan-/), "parent-scope");
 		expect(clone.dispose).toHaveBeenCalled();
 		expect(unregister).not.toHaveBeenCalled();
 	});

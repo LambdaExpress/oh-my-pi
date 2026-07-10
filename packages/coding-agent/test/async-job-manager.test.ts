@@ -437,6 +437,217 @@ describe("AsyncJobManager", () => {
 		await manager.waitForAll();
 		expect(manager.getJob(parentJobId)?.status).toBe("cancelled");
 	});
+	test("applies every provided owner and scope filter conjunctively", async () => {
+		const manager = new AsyncJobManager({
+			onJobComplete: async () => {},
+		});
+		const registerHeld = (label: string, ownerId?: string, scopeId?: string) =>
+			manager.register(
+				"task",
+				label,
+				async ({ signal }) => {
+					await new Promise<void>(resolve => {
+						signal.addEventListener("abort", () => resolve(), { once: true });
+					});
+					return `${label} cancelled`;
+				},
+				{ ownerId, scopeId },
+			);
+
+		const matchingId = registerHeld("matching", "shared-owner", "scope-old");
+		const otherScopeId = registerHeld("other scope", "shared-owner", "scope-current");
+		const otherOwnerId = registerHeld("other owner", "other-owner", "scope-old");
+		const legacyId = registerHeld("legacy", "shared-owner");
+
+		expect(manager.getAllJobs({ ownerId: "shared-owner", scopeId: "scope-old" }).map(job => job.id)).toEqual([
+			matchingId,
+		]);
+		expect(manager.getAllJobs({ ownerId: "shared-owner" }).map(job => job.id)).toEqual([
+			matchingId,
+			otherScopeId,
+			legacyId,
+		]);
+		expect(manager.getAllJobs({ scopeId: "scope-old" }).map(job => job.id)).toEqual([matchingId, otherOwnerId]);
+		expect(manager.getJob(matchingId)?.scopeId).toBe("scope-old");
+		expect(manager.cancel(matchingId, { ownerId: "shared-owner", scopeId: "scope-current" })).toBe(false);
+		expect(manager.cancel(matchingId, { ownerId: "other-owner", scopeId: "scope-old" })).toBe(false);
+		expect(manager.cancel(matchingId, { ownerId: "shared-owner", scopeId: "scope-old" })).toBe(true);
+
+		manager.cancelAll();
+		await manager.waitForAll();
+	});
+
+	test("retireScope fences synchronously, cancels and awaits only matching jobs", async () => {
+		const completions: string[] = [];
+		const manager = new AsyncJobManager({
+			onJobComplete: async jobId => {
+				completions.push(jobId);
+			},
+		});
+		const retiredJobsReleased = Promise.withResolvers<void>();
+		const retiredJobsAborted = Promise.withResolvers<void>();
+		let abortedCount = 0;
+		const runRetired = async (signal: AbortSignal): Promise<string> => {
+			await new Promise<void>(resolve => {
+				signal.addEventListener("abort", () => resolve(), { once: true });
+			});
+			abortedCount += 1;
+			if (abortedCount === 2) retiredJobsAborted.resolve();
+			await retiredJobsReleased.promise;
+			return "retired job stopped";
+		};
+		const runUntilCancelled = async (signal: AbortSignal): Promise<string> => {
+			await new Promise<void>(resolve => {
+				signal.addEventListener("abort", () => resolve(), { once: true });
+			});
+			return "survivor stopped";
+		};
+
+		const runningId = manager.register("bash", "running old job", async ({ signal }) => runRetired(signal), {
+			ownerId: "shared-owner",
+			scopeId: "scope-old",
+		});
+		const queuedId = manager.register("task", "queued old job", async ({ signal }) => runRetired(signal), {
+			ownerId: "shared-owner",
+			scopeId: "scope-old",
+			queued: true,
+		});
+		const currentId = manager.register("task", "current job", async ({ signal }) => runUntilCancelled(signal), {
+			ownerId: "shared-owner",
+			scopeId: "scope-current",
+		});
+		const legacyId = manager.register("task", "legacy job", async ({ signal }) => runUntilCancelled(signal), {
+			ownerId: "shared-owner",
+		});
+		expect(manager.nextPollWaitMs("shared-owner", 1_000, "scope-old")).toBe(5_000);
+		manager.recordPollWaitEnd("shared-owner", 1_000, "scope-old");
+		expect(manager.nextPollWaitMs("shared-owner", 1_001, "scope-old")).toBe(10_000);
+
+		const retirement = manager.retireScope("scope-old");
+		const concurrentRetirement = manager.retireScope("scope-old");
+		expect(concurrentRetirement).toBe(retirement);
+		expect(manager.getJob(runningId)?.status).toBe("cancelled");
+		expect(manager.getJob(queuedId)?.status).toBe("cancelled");
+		expect(manager.getJob(currentId)?.status).toBe("running");
+		expect(manager.getJob(legacyId)?.status).toBe("running");
+
+		let rejectedJobStarted = false;
+		expect(() =>
+			manager.register(
+				"task",
+				"late old job",
+				async () => {
+					rejectedJobStarted = true;
+					return "too late";
+				},
+				{ ownerId: "shared-owner", scopeId: "scope-old" },
+			),
+		).toThrow(/scope.*retired/i);
+		expect(rejectedJobStarted).toBe(false);
+
+		let retirementSettled = false;
+		void retirement.then(() => {
+			retirementSettled = true;
+		});
+		await retiredJobsAborted.promise;
+		await Promise.resolve();
+		expect(retirementSettled).toBe(false);
+
+		retiredJobsReleased.resolve();
+		await retirement;
+
+		expect(manager.retireScope("scope-old")).toBe(retirement);
+		expect(manager.getAllJobs({ scopeId: "scope-old" })).toEqual([]);
+		expect(manager.getJob(currentId)?.status).toBe("running");
+		expect(manager.getJob(legacyId)?.status).toBe("running");
+		expect(manager.nextPollWaitMs("shared-owner", 2_000, "scope-old")).toBe(5_000);
+		expect(completions).toEqual([]);
+
+		manager.cancel(currentId);
+		manager.cancel(legacyId);
+		await manager.waitForAll();
+	});
+
+	test("retireScope drops queued and suppressed completions without touching another scope", async () => {
+		const blockerStarted = Promise.withResolvers<void>();
+		const blockerReleased = Promise.withResolvers<void>();
+		const completions: string[] = [];
+		let blockerId = "";
+		const manager = new AsyncJobManager({
+			onJobComplete: async jobId => {
+				if (jobId === blockerId) {
+					blockerStarted.resolve();
+					await blockerReleased.promise;
+				}
+				completions.push(jobId);
+			},
+		});
+
+		blockerId = manager.register("task", "current completion", async () => "current result", {
+			ownerId: "shared-owner",
+			scopeId: "scope-current",
+		});
+		await blockerStarted.promise;
+
+		const queuedDeliveryId = manager.register("task", "old completion", async () => "old result", {
+			ownerId: "shared-owner",
+			scopeId: "scope-old",
+		});
+		const suppressedCompletionId = manager.register("task", "suppressed old completion", async () => "suppressed", {
+			id: "suppressed-old",
+			ownerId: "shared-owner",
+			scopeId: "scope-old",
+		});
+		manager.acknowledgeDeliveries([suppressedCompletionId]);
+		manager.watchJobs([suppressedCompletionId]);
+		await Promise.all([manager.getJob(queuedDeliveryId)?.promise, manager.getJob(suppressedCompletionId)?.promise]);
+		expect(manager.hasPendingDeliveries({ scopeId: "scope-old" })).toBe(true);
+
+		await manager.retireScope("scope-old");
+
+		expect(manager.hasPendingDeliveries({ scopeId: "scope-old" })).toBe(false);
+		expect(manager.getAllJobs({ scopeId: "scope-old" })).toEqual([]);
+		expect(manager.isDeliverySuppressed(suppressedCompletionId)).toBe(false);
+		expect(manager.unwatchJobs([suppressedCompletionId])).toBe(0);
+		expect(manager.getJob(blockerId)?.scopeId).toBe("scope-current");
+
+		blockerReleased.resolve();
+		expect(await manager.drainDeliveries({ timeoutMs: 2_000 })).toBe(true);
+		expect(completions).toEqual([blockerId]);
+	});
+
+	test("retireScope waits for matching in-flight delivery and prevents retries", async () => {
+		const deliveryStarted = Promise.withResolvers<void>();
+		const deliveryReleased = Promise.withResolvers<void>();
+		let attempts = 0;
+		const manager = new AsyncJobManager({
+			onJobComplete: async () => {
+				attempts += 1;
+				deliveryStarted.resolve();
+				await deliveryReleased.promise;
+				throw new Error("late delivery failure");
+			},
+		});
+		const jobId = manager.register("task", "in-flight old completion", async () => "old result", {
+			scopeId: "scope-old",
+		});
+		await deliveryStarted.promise;
+
+		const retirement = manager.retireScope("scope-old");
+		let retirementSettled = false;
+		void retirement.then(() => {
+			retirementSettled = true;
+		});
+		await Promise.resolve();
+		expect(retirementSettled).toBe(false);
+
+		deliveryReleased.resolve();
+		await retirement;
+
+		expect(manager.getJob(jobId)).toBeUndefined();
+		expect(manager.hasPendingDeliveries({ scopeId: "scope-old" })).toBe(false);
+		expect(attempts).toBe(1);
+	});
 });
 
 describe("AsyncJobManager smart poll-wait escalation", () => {

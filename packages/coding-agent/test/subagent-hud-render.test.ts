@@ -58,7 +58,13 @@ function makeProgress(overrides: Partial<AgentProgress> & { id: string }): Agent
 	};
 }
 
-function makeLifecycle(id: string, index: number, description: string, detached?: boolean): SubagentLifecyclePayload {
+function makeLifecycle(
+	id: string,
+	index: number,
+	description: string,
+	detached?: boolean,
+	scopeId?: string,
+): SubagentLifecyclePayload {
 	return {
 		id,
 		index,
@@ -68,6 +74,7 @@ function makeLifecycle(id: string, index: number, description: string, detached?
 		status: "started",
 		parentToolCallId: "tool-call",
 		detached,
+		...(scopeId === undefined ? {} : { scopeId }),
 	};
 }
 
@@ -76,6 +83,7 @@ function makeProgressPayload(
 	index: number,
 	description: string,
 	detached?: boolean,
+	scopeId?: string,
 ): SubagentProgressPayload {
 	return {
 		index,
@@ -85,6 +93,7 @@ function makeProgressPayload(
 		parentToolCallId: "tool-call",
 		detached,
 		progress: makeProgress({ id, index, description, task: description }),
+		...(scopeId === undefined ? {} : { scopeId }),
 	};
 }
 
@@ -229,6 +238,91 @@ describe("subagent HUD lines", () => {
 	});
 });
 
+describe("SessionObserverRegistry root-session scope", () => {
+	it("fences late lifecycle and progress from the previous scope without polluting a reused id", () => {
+		const eventBus = new EventBus();
+		const registry = new SessionObserverRegistry();
+		const changes: string[] = [];
+		registry.onChange(kind => changes.push(kind));
+		registry.subscribeToEventBus(eventBus);
+
+		registry.resetSessions("scope-a");
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("SharedAgent", 0, "scope A work", true, "scope-a"));
+		expect(registry.getSessions().map(session => session.id)).toEqual(["SharedAgent"]);
+
+		registry.resetSessions("scope-b");
+		const changesAfterReset = changes.length;
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("SharedAgent", 7, "late A start", true, "scope-a"));
+		expect(registry.getSessions()).toEqual([]);
+		eventBus.emit(
+			TASK_SUBAGENT_PROGRESS_CHANNEL,
+			makeProgressPayload("SharedAgent", 8, "late A progress", true, "scope-a"),
+		);
+		expect(registry.getSessions()).toEqual([]);
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			...makeLifecycle("SharedAgent", 9, "late A end", true, "scope-a"),
+			status: "completed",
+		});
+		expect(registry.getSessions()).toEqual([]);
+		expect(changes).toHaveLength(changesAfterReset);
+
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("SharedAgent", 1, "scope B work", true, "scope-b"));
+		const changesAfterBStart = changes.length;
+		eventBus.emit(
+			TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+			makeLifecycle("SharedAgent", 10, "late A restart", false, "scope-a"),
+		);
+		eventBus.emit(
+			TASK_SUBAGENT_PROGRESS_CHANNEL,
+			makeProgressPayload("SharedAgent", 11, "late A overwrite", false, "scope-a"),
+		);
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			...makeLifecycle("SharedAgent", 12, "late A completion", false, "scope-a"),
+			status: "completed",
+		});
+
+		expect(registry.getSessions()).toMatchObject([
+			{
+				id: "SharedAgent",
+				description: "scope B work",
+				status: "active",
+				index: 1,
+				detached: true,
+			},
+		]);
+		expect(registry.getSessions()[0]?.progress).toBeUndefined();
+		expect(changes).toHaveLength(changesAfterBStart);
+	});
+
+	it("fails closed for lifecycle and progress payloads missing a scope in scoped mode", () => {
+		const eventBus = new EventBus();
+		const registry = new SessionObserverRegistry();
+		const changes: string[] = [];
+		registry.onChange(kind => changes.push(kind));
+		registry.subscribeToEventBus(eventBus);
+		registry.resetSessions("scope-b");
+		const changesAfterReset = changes.length;
+
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("MissingLifecycle", 0, "missing", true));
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("MissingProgress", 1, "missing", true));
+
+		expect(registry.getSessions()).toEqual([]);
+		expect(changes).toHaveLength(changesAfterReset);
+	});
+
+	it("retains legacy acceptance of missing scopes when no active scope is set", () => {
+		const eventBus = new EventBus();
+		const registry = new SessionObserverRegistry();
+		registry.subscribeToEventBus(eventBus);
+		registry.resetSessions();
+
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, makeLifecycle("LegacyLifecycle", 0, "legacy", true));
+		eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, makeProgressPayload("LegacyProgress", 1, "legacy", true));
+
+		expect(registry.getSessions().map(session => session.id)).toEqual(["LegacyLifecycle", "LegacyProgress"]);
+	});
+});
+
 describe("InteractiveMode subagent observer UI sync", () => {
 	let tempDir: TempDir;
 	let authStorage: AuthStorage;
@@ -289,7 +383,13 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		for (let index = 0; index < 6; index++) {
 			eventBus.emit(
 				TASK_SUBAGENT_PROGRESS_CHANNEL,
-				makeProgressPayload(`BurstAgent${index}`, index, `Burst job ${index}`, true),
+				makeProgressPayload(
+					`BurstAgent${index}`,
+					index,
+					`Burst job ${index}`,
+					true,
+					session.sessionManager.getSessionId(),
+				),
 			);
 		}
 
@@ -302,5 +402,32 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		expect(hud).toContain("BurstAgent5: Burst job 5");
 		expect(rebuildHud).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("advances the observer scope when AgentSession switches root sessions", async () => {
+		await mode.init({ suppressWelcomeIntro: true });
+		const previousScopeId = session.sessionManager.getSessionId();
+		vi.useFakeTimers();
+
+		expect(await session.newSession()).toBe(true);
+		const currentScopeId = session.sessionManager.getSessionId();
+		expect(currentScopeId).not.toBe(previousScopeId);
+
+		eventBus.emit(
+			TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+			makeLifecycle("LatePreviousAgent", 0, "old session work", true, previousScopeId),
+		);
+		eventBus.emit(
+			TASK_SUBAGENT_LIFECYCLE_CHANNEL,
+			makeLifecycle("CurrentAgent", 1, "new session work", true, currentScopeId),
+		);
+
+		await Promise.resolve();
+		vi.runAllTimers();
+		await Promise.resolve();
+
+		const hud = Bun.stripANSI(mode.subagentContainer.render(120).join("\n"));
+		expect(hud).toContain("CurrentAgent: new session work");
+		expect(hud).not.toContain("LatePreviousAgent");
 	});
 });

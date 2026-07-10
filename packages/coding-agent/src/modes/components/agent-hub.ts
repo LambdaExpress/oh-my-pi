@@ -72,16 +72,18 @@ function statusBadge(status: AgentStatus): string {
 async function registerPersistedSubagents(
 	registry: AgentRegistry,
 	sessionFile: string | null | undefined,
+	scopeId: string | undefined,
 ): Promise<void> {
 	if (!sessionFile?.endsWith(".jsonl")) return;
 	const root = sessionFile.slice(0, -6);
-	await registerPersistedSubagentsFromDir(registry, root, undefined);
+	await registerPersistedSubagentsFromDir(registry, root, undefined, scopeId);
 }
 
 async function registerPersistedSubagentsFromDir(
 	registry: AgentRegistry,
 	dir: string,
 	parentId: string | undefined,
+	scopeId: string | undefined,
 ): Promise<void> {
 	let entries: fs.Dirent[];
 	try {
@@ -109,7 +111,7 @@ async function registerPersistedSubagentsFromDir(
 			if (existing && existing.kind !== "advisor") continue;
 			if (existing?.sessionFile !== sessionFile) {
 				// The id is reused across `/new`; refresh it to the current session's file.
-				if (existing) registry.unregister(advisorId);
+				if (existing) registry.unregister(advisorId, existing.scopeId);
 				registry.register({
 					id: advisorId,
 					displayName,
@@ -118,6 +120,7 @@ async function registerPersistedSubagentsFromDir(
 					session: null,
 					sessionFile,
 					status: "parked",
+					scopeId,
 				});
 			}
 			continue;
@@ -132,9 +135,10 @@ async function registerPersistedSubagentsFromDir(
 				session: null,
 				sessionFile,
 				status: "parked",
+				scopeId,
 			});
 		}
-		await registerPersistedSubagentsFromDir(registry, path.join(dir, id), id);
+		await registerPersistedSubagentsFromDir(registry, path.join(dir, id), id, scopeId);
 	}
 }
 
@@ -185,6 +189,8 @@ export interface AgentHubDeps {
 	focusAgent?: (id: string) => Promise<void>;
 	/** Current main session file; used to seed parked historical subagents after restart. */
 	sessionFile?: string | null;
+	/** Top-level session scope assigned to parked refs discovered from session artifacts. */
+	scopeId?: string;
 	/** Collab guest: route actions/transcripts to the host instead of local sessions. */
 	remote?: AgentHubRemote;
 }
@@ -260,7 +266,7 @@ export class AgentHubOverlayComponent extends Container {
 
 		this.persistedSubagentsReady = this.#remote
 			? Promise.resolve()
-			: registerPersistedSubagents(this.#registry, deps.sessionFile)
+			: registerPersistedSubagents(this.#registry, deps.sessionFile, deps.scopeId)
 					.catch((error: unknown) => {
 						logger.warn("Failed to register persisted subagents", { error });
 					})

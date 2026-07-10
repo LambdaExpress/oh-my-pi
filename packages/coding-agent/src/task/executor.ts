@@ -295,6 +295,8 @@ export interface ExecutorOptions {
 	role?: string;
 	index: number;
 	id: string;
+	/** Top-level Main session UUID captured at the parent task invocation boundary. */
+	scopeId?: string;
 	parentToolCallId?: string;
 	/**
 	 * Spawn runs as a detached background job (parent turn not blocked on it).
@@ -811,6 +813,7 @@ type AbortReason = "signal" | "terminate" | "timeout" | "budget";
 interface RunMonitorArgs {
 	index: number;
 	id: string;
+	scopeId?: string;
 	agent: AgentDefinition;
 	task: string;
 	assignment?: string;
@@ -1027,13 +1030,14 @@ function createSubagentRunMonitor(args: RunMonitorArgs): SubagentRunMonitor {
 		onProgress?.({ ...progress });
 		const activityGist =
 			progress.lastIntent ?? (progress.currentTool ? `running ${progress.currentTool}` : undefined);
-		if (activityGist) AgentRegistry.global().setActivity(id, activityGist);
+		if (activityGist) AgentRegistry.global().setActivity(id, activityGist, args.scopeId);
 		if (args.eventBus) {
 			args.eventBus.emit(TASK_SUBAGENT_PROGRESS_CHANNEL, {
 				index,
 				agent: agent.name,
 				agentSource: agent.source,
 				task,
+				scopeId: args.scopeId,
 				parentToolCallId: args.parentToolCallId,
 				detached: args.detached,
 				assignment,
@@ -1641,6 +1645,7 @@ interface FinalizeRunArgs {
 	done: { exitCode: number; error?: string; aborted?: boolean; abortReason?: string; durationMs: number };
 	index: number;
 	id: string;
+	scopeId?: string;
 	agent: AgentDefinition;
 	task: string;
 	assignment?: string;
@@ -1758,6 +1763,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		args.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
 			id,
 			agent: agent.name,
+			scopeId: args.scopeId,
 			parentToolCallId: args.parentToolCallId,
 			detached: args.detached,
 			agentSource: agent.source,
@@ -1801,6 +1807,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 
 export async function finalizeSubagentLifecycle(args: {
 	id: string;
+	scopeId?: string;
 	session: AgentSession;
 	aborted: boolean;
 	keepAlive: boolean;
@@ -1819,7 +1826,7 @@ export async function finalizeSubagentLifecycle(args: {
 
 	if (args.aborted) {
 		// Hard abort (caller signal / wall-clock / budget): terminal teardown.
-		registry.setStatus(args.id, "aborted");
+		registry.setStatus(args.id, "aborted", args.scopeId);
 		await disposeSession();
 		return;
 	}
@@ -1827,7 +1834,7 @@ export async function finalizeSubagentLifecycle(args: {
 	if (!args.keepAlive) {
 		// One-shot helper: dispose and unregister. No IRC, no revival.
 		await disposeSession();
-		registry.unregister(args.id);
+		registry.unregister(args.id, args.scopeId);
 		return;
 	}
 
@@ -1837,19 +1844,23 @@ export async function finalizeSubagentLifecycle(args: {
 		// transcript stays reachable (history://), but ensureLive will throw.
 		// Status must flip to "parked" before dispose so the sdk dispose
 		// wrapper skips unregister.
-		registry.setStatus(args.id, "parked");
+		registry.setStatus(args.id, "parked", args.scopeId);
 		await disposeSession();
-		registry.detachSession(args.id);
+		registry.detachSession(args.id, args.scopeId);
 		return;
 	}
 
 	// Keep-alive: finished and failed subagents both stay interrogable.
 	// The lifecycle manager owns idle-TTL parking + revival from here on.
-	registry.setStatus(args.id, "idle");
-	AgentLifecycleManager.global().adopt(args.id, {
-		idleTtlMs: args.agentIdleTtlMs,
-		revive: args.reviveSession ?? undefined,
-	});
+	registry.setStatus(args.id, "idle", args.scopeId);
+	AgentLifecycleManager.global().adopt(
+		args.id,
+		{
+			idleTtlMs: args.agentIdleTtlMs,
+			revive: args.reviveSession ?? undefined,
+		},
+		args.scopeId,
+	);
 }
 
 /**
@@ -1863,6 +1874,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		assignment,
 		index,
 		id,
+		scopeId,
 		worktree,
 		modelOverride,
 		thinkingLevel,
@@ -1989,6 +2001,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		task,
 		assignment,
 		description: options.description,
+		scopeId,
 		modelOverride,
 		signal,
 		onProgress,
@@ -2010,9 +2023,9 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 	const installRegistryStatusSync = (target: AgentSession): void => {
 		target.subscribe(event => {
 			if (event.type === "agent_start") {
-				AgentRegistry.global().setStatus(id, "running");
+				AgentRegistry.global().setStatus(id, "running", scopeId);
 			} else if (event.type === "agent_end") {
-				AgentRegistry.global().setStatus(id, "idle");
+				AgentRegistry.global().setStatus(id, "idle", scopeId);
 			}
 		});
 	};
@@ -2185,6 +2198,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			// of the original run (same agent id, tools, model, system prompt,
 			// artifacts dir) — only the SessionManager differs.
 			const buildSubagentSessionOptions = (sessionManagerForRun: SessionManager): CreateAgentSessionOptions => ({
+				agentScopeId: scopeId,
 				cwd: worktree ?? cwd,
 				authStorage,
 				modelRegistry,
@@ -2284,6 +2298,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			if (options.eventBus) {
 				options.eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
 					id,
+					scopeId,
 					agent: agent.name,
 					parentToolCallId: options.parentToolCallId,
 					detached: options.detached,
@@ -2442,6 +2457,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 				monitor.captureSalvage(session);
 				await finalizeSubagentLifecycle({
 					id,
+					scopeId,
 					session,
 					aborted,
 					keepAlive: options.keepAlive !== false,
@@ -2499,6 +2515,7 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 		done,
 		index,
 		id,
+		scopeId,
 		agent,
 		task,
 		assignment,

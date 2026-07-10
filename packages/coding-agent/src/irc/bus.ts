@@ -30,6 +30,8 @@ export interface IrcMessage {
 	ts: number;
 	/** Message id being answered. */
 	replyTo?: string;
+	/** Immutable top-level session scope that produced this message. */
+	scopeId?: string;
 }
 
 export interface IrcDeliveryReceipt {
@@ -41,6 +43,7 @@ export interface IrcDeliveryReceipt {
 interface IrcWaiter {
 	from?: string;
 	resolve: (msg: IrcMessage) => void;
+	scopeId?: string;
 	cancel: () => void;
 }
 
@@ -66,12 +69,31 @@ export class IrcBus {
 	readonly #lifecycle: () => AgentLifecycleManager;
 	readonly #mailboxes = new Map<string, IrcMessage[]>();
 	readonly #waiters = new Map<string, IrcWaiter[]>();
+	readonly #retiredScopes = new Set<string>();
 
 	constructor(registry: AgentRegistry = AgentRegistry.global(), lifecycle?: AgentLifecycleManager) {
 		this.#registry = registry;
 		// Lazy: the lifecycle global self-constructs against the global registry,
 		// so only touch it when a parked recipient actually needs reviving.
 		this.#lifecycle = () => lifecycle ?? AgentLifecycleManager.global();
+	}
+
+	/**
+	 * Fence a completed top-level session. Pending mail and waits from that
+	 * scope are discarded, and every later send carrying the scope is rejected.
+	 */
+	retireScope(scopeId: string): void {
+		this.#retiredScopes.add(scopeId);
+		for (const [agentId, mailbox] of this.#mailboxes) {
+			const kept = mailbox.filter(message => message.scopeId !== scopeId);
+			if (kept.length > 0) this.#mailboxes.set(agentId, kept);
+			else this.#mailboxes.delete(agentId);
+		}
+		for (const waiters of this.#waiters.values()) {
+			for (const waiter of [...waiters]) {
+				if (waiter.scopeId === scopeId) waiter.cancel();
+			}
+		}
 	}
 
 	/**
@@ -103,9 +125,19 @@ export class IrcBus {
 		opts?: { expectsReply?: boolean; suppressRelay?: boolean },
 	): Promise<IrcDeliveryReceipt> {
 		const message: IrcMessage = { ...msg, id: Snowflake.next(), ts: Date.now() };
+		if (message.scopeId && this.#retiredScopes.has(message.scopeId)) {
+			return { to: message.to, outcome: "failed", error: "The sender session has ended." };
+		}
+		const senderRef = this.#registry.get(message.from);
+		if (message.scopeId && senderRef?.scopeId !== message.scopeId) {
+			return { to: message.to, outcome: "failed", error: `Agent "${message.from}" is outside the active session.` };
+		}
 		const ref = this.#registry.get(message.to);
 		if (!ref || ref.status === "aborted") {
 			return { to: message.to, outcome: "failed", error: `Unknown or terminated agent "${message.to}".` };
+		}
+		if (message.scopeId && ref.scopeId !== message.scopeId) {
+			return { to: message.to, outcome: "failed", error: `Agent "${message.to}" is outside the active session.` };
 		}
 		// Advisor refs are observability-only transcripts, never messageable peers.
 		if (ref.kind === "advisor") {
@@ -133,7 +165,7 @@ export class IrcBus {
 		// A pending `wait` from the recipient consumes the message directly —
 		// it is returned from their irc tool call and never hits the inbox or
 		// the session injection path.
-		const waiter = this.#takeMatchingWaiter(message.to, message.from);
+		const waiter = this.#takeMatchingWaiter(message.to, message.from, message.scopeId);
 		if (waiter) {
 			waiter.resolve(message);
 			if (!opts?.suppressRelay) this.#relayToMainUi(message);
@@ -175,15 +207,16 @@ export class IrcBus {
 		filter: { from?: string },
 		timeoutMs: number,
 		signal?: AbortSignal,
-		options?: { drainPending?: boolean },
+		options?: { drainPending?: boolean; scopeId?: string },
 	): Promise<IrcMessage | null> {
+		if (options?.scopeId && this.#retiredScopes.has(options.scopeId)) return null;
 		if (signal?.aborted) {
 			throw signal.reason instanceof Error ? signal.reason : new Error("IRC wait aborted");
 		}
 
 		if (options?.drainPending !== false) {
 			// Already-pending mail satisfies the wait without parking a waiter.
-			const pending = this.#takeFromMailbox(agentId, filter.from);
+			const pending = this.#takeFromMailbox(agentId, filter.from, options?.scopeId);
 			if (pending) return pending;
 		}
 
@@ -193,12 +226,14 @@ export class IrcBus {
 
 		const waiter: IrcWaiter = {
 			from: filter.from,
+			scopeId: options?.scopeId,
 			resolve: msg => {
 				cleanup();
 				resolve(msg);
 			},
 			cancel: () => {
 				cleanup();
+				resolve(null);
 			},
 		};
 		const cleanup = (): void => {
@@ -231,12 +266,19 @@ export class IrcBus {
 	}
 
 	/** Drain (or peek) pending messages for `agentId`. */
-	inbox(agentId: string, opts?: { peek?: boolean }): IrcMessage[] {
+	inbox(agentId: string, opts?: { peek?: boolean; scopeId?: string }): IrcMessage[] {
 		const mailbox = this.#mailboxes.get(agentId);
 		if (!mailbox || mailbox.length === 0) return [];
-		if (opts?.peek) return [...mailbox];
-		this.#mailboxes.delete(agentId);
-		return mailbox;
+		const matching = opts?.scopeId ? mailbox.filter(message => message.scopeId === opts.scopeId) : mailbox;
+		if (opts?.peek) return [...matching];
+		if (!opts?.scopeId) {
+			this.#mailboxes.delete(agentId);
+			return mailbox;
+		}
+		const kept = mailbox.filter(message => message.scopeId !== opts.scopeId);
+		if (kept.length > 0) this.#mailboxes.set(agentId, kept);
+		else this.#mailboxes.delete(agentId);
+		return matching;
 	}
 
 	unreadCount(agentId: string): number {
@@ -244,6 +286,7 @@ export class IrcBus {
 	}
 
 	#enqueue(message: IrcMessage): void {
+		if (message.scopeId && this.#retiredScopes.has(message.scopeId)) return;
 		let mailbox = this.#mailboxes.get(message.to);
 		if (!mailbox) {
 			mailbox = [];
@@ -261,10 +304,12 @@ export class IrcBus {
 	}
 
 	/** Resolve the OLDEST waiter for `agentId` whose from-filter accepts `from`. */
-	#takeMatchingWaiter(agentId: string, from: string): IrcWaiter | undefined {
+	#takeMatchingWaiter(agentId: string, from: string, scopeId?: string): IrcWaiter | undefined {
 		const waiters = this.#waiters.get(agentId);
 		if (!waiters) return undefined;
-		const index = waiters.findIndex(waiter => !waiter.from || waiter.from === from);
+		const index = waiters.findIndex(
+			waiter => (!waiter.from || waiter.from === from) && (!waiter.scopeId || waiter.scopeId === scopeId),
+		);
 		if (index === -1) return undefined;
 		const [waiter] = waiters.splice(index, 1);
 		if (waiters.length === 0) this.#waiters.delete(agentId);
@@ -279,10 +324,13 @@ export class IrcBus {
 		if (waiters.length === 0) this.#waiters.delete(agentId);
 	}
 
-	#takeFromMailbox(agentId: string, from?: string): IrcMessage | undefined {
+	#takeFromMailbox(agentId: string, from?: string, scopeId?: string): IrcMessage | undefined {
 		const mailbox = this.#mailboxes.get(agentId);
 		if (!mailbox) return undefined;
-		const index = from ? mailbox.findIndex(msg => msg.from === from) : 0;
+		const index = mailbox.findIndex(
+			message =>
+				(from === undefined || message.from === from) && (scopeId === undefined || message.scopeId === scopeId),
+		);
 		if (index === -1 || mailbox.length === 0) return undefined;
 		const [message] = mailbox.splice(index, 1);
 		if (mailbox.length === 0) this.#mailboxes.delete(agentId);
@@ -298,6 +346,7 @@ export class IrcBus {
 	 */
 	#relayToMainUi(message: IrcMessage): void {
 		if (message.to === MAIN_AGENT_ID || message.from === MAIN_AGENT_ID) return;
+		if (message.scopeId && this.#registry.get(MAIN_AGENT_ID)?.scopeId !== message.scopeId) return;
 		const mainSession = this.#registry.get(MAIN_AGENT_ID)?.session;
 		if (!mainSession) return;
 		const record: CustomMessage = {

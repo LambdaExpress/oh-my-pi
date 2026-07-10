@@ -29,13 +29,18 @@ const taskAgent: AgentDefinition = {
 	source: "bundled",
 };
 
-function createSession(options: { manager?: AsyncJobManager; settings?: Record<string, unknown> }): ToolSession {
+function createSession(options: {
+	manager?: AsyncJobManager;
+	settings?: Record<string, unknown>;
+	getAgentScopeId?: () => string | null;
+}): ToolSession {
 	return {
 		cwd: "/tmp",
 		hasUI: false,
 		settings: Settings.isolated(options.settings ?? {}),
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
+		getAgentScopeId: options.getAgentScopeId,
 		asyncJobManager: options.manager,
 	} as unknown as ToolSession;
 }
@@ -144,6 +149,33 @@ describe("task spawn routing", () => {
 		expect(job!.resultText).toContain("message it via `irc` to follow up");
 		expect(job!.resultText).toContain("history://Spawnling");
 		expect(runSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("captures one root scope for the async job and executor", async () => {
+		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
+			agents: [taskAgent],
+			projectAgentsDir: null,
+		});
+		let scopeReads = 0;
+		const getAgentScopeId = () => (++scopeReads === 1 ? "root-scope-a" : "root-scope-b");
+		const runSpy = vi
+			.spyOn(executorModule, "runSubprocess")
+			.mockImplementation(async options => makeResult(options.id ?? "?"));
+
+		const manager = createManager();
+		const tool = await TaskTool.create(createSession({ manager, getAgentScopeId }));
+		const result = await tool.execute("tc-scoped", {
+			agent: "task",
+			id: "ScopedSpawn",
+			assignment: "Preserve the root scope.",
+		} as TaskParams);
+		const job = manager.getJob(result.details!.async!.jobId)!;
+		await job.promise;
+
+		expect(scopeReads).toBe(1);
+		expect(job.scopeId).toBe("root-scope-a");
+		expect(runSpy).toHaveBeenCalledTimes(1);
+		expect(runSpy.mock.calls[0]?.[0].scopeId).toBe("root-scope-a");
 	});
 
 	it("bounds concurrent job bodies with the session spawn semaphore", async () => {

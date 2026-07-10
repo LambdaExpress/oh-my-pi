@@ -574,6 +574,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 	): Promise<AgentToolResult<TaskToolDetails>> {
+		const scopeId = this.session.getAgentScopeId?.() ?? undefined;
 		const repaired = repairTaskParams(rawParams as TaskParams);
 		// Schema defaults run for model calls, but internal callers and stale
 		// transcripts can bypass arktype. Normalize once so every downstream path
@@ -635,7 +636,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			if (asyncEnabled && !manager) {
 				logger.warn("task: no AsyncJobManager registered; falling back to sync execution");
 			}
-			return withAdvisory(await this.#executeSyncFanout(toolCallId, params, spawnItems, signal, onUpdate));
+			return withAdvisory(await this.#executeSyncFanout(toolCallId, params, spawnItems, scopeId, signal, onUpdate));
 		}
 
 		// Resolve agent ids up front so the immediate result can name them.
@@ -702,6 +703,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					spawnParams: spawnParamsFor(params, spawn.item),
 					agentId: spawn.agentId,
 					progress: spawn.progress,
+					scopeId,
 					ircEnabled,
 					ircPeerIds: batchIrcPeerIds,
 					buildDetails: buildAsyncDetails,
@@ -794,6 +796,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		toolCallId: string;
 		spawnParams: TaskParams;
 		agentId: string;
+		scopeId?: string;
 		progress: AgentProgress;
 		ircEnabled: boolean;
 		ircPeerIds?: readonly string[];
@@ -801,8 +804,18 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>;
 		onSettled?: (failed: boolean) => void;
 	}): string {
-		const { manager, toolCallId, spawnParams, agentId, progress, ircEnabled, buildDetails, onUpdate, onSettled } =
-			options;
+		const {
+			manager,
+			toolCallId,
+			spawnParams,
+			agentId,
+			scopeId,
+			progress,
+			ircEnabled,
+			buildDetails,
+			onUpdate,
+			onSettled,
+		} = options;
 		const buildFollowUpHint = (aborted: boolean): string => {
 			if (aborted) {
 				return `\n\n${agentId} was aborted — transcript at history://${agentId}`;
@@ -861,6 +874,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						true,
 						{ invokedAt: startedAt, acquiredAt },
 						options.ircPeerIds,
+						scopeId,
 					);
 					const finalText = result.content.find(part => part.type === "text")?.text ?? "(no output)";
 					const singleResult = result.details?.results[0];
@@ -919,6 +933,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				id: agentId,
 				queued: true,
 				ownerId: this.session.getAgentId?.() ?? undefined,
+				scopeId,
 				onProgress: (text, details) => {
 					const progressDetails = (details as TaskToolDetails | undefined) ?? buildDetails("running", agentId);
 					onUpdate?.({ content: [{ type: "text", text }], details: progressDetails });
@@ -937,6 +952,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		toolCallId: string,
 		params: TaskParams,
 		spawnItems: TaskItem[],
+		scopeId?: string,
 		signal?: AbortSignal,
 		onUpdate?: AgentToolUpdateCallback<TaskToolDetails>,
 	): Promise<AgentToolResult<TaskToolDetails>> {
@@ -955,6 +971,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					0,
 					false,
 					{ invokedAt, acquiredAt },
+					undefined,
+					scopeId,
 				);
 			} finally {
 				this.#releaseSpawnSemaphore();
@@ -1003,6 +1021,8 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 						index,
 						false,
 						{ invokedAt, acquiredAt },
+						undefined,
+						scopeId,
 					);
 				} finally {
 					this.#releaseSpawnSemaphore();
@@ -1064,6 +1084,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		detached = false,
 		launchTiming?: { invokedAt: number; acquiredAt: number },
 		ircPeerIds?: readonly string[],
+		scopeId?: string,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		return this.#runSpawn(
 			toolCallId,
@@ -1075,6 +1096,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			detached,
 			launchTiming,
 			ircPeerIds,
+			scopeId,
 		);
 	}
 
@@ -1089,6 +1111,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		detached = false,
 		launchTiming?: { invokedAt: number; acquiredAt: number },
 		ircPeerIds?: readonly string[],
+		scopeId?: string,
 	): Promise<AgentToolResult<TaskToolDetails>> {
 		const startTime = Date.now();
 		const { agents, projectAgentsDir } = await discoverAgents(this.session.cwd);
@@ -1316,6 +1339,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				parentToolCallId: toolCallId,
 				detached,
 				id: agentId,
+				scopeId,
 				taskDepth,
 				invokedAt: launchTiming?.invokedAt,
 				acquiredAt: launchTiming?.acquiredAt,

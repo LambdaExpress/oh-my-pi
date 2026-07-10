@@ -787,6 +787,14 @@ export interface AgentSessionConfig {
 	 *  prelude gating so a top-level session created with a custom `agentId` still
 	 *  receives the always-mode reminder. Defaults to "main". */
 	agentKind?: "main" | "sub";
+	/** Immutable top-level session scope inherited by subagents. Defaults to this session's current ID. */
+	agentScopeId?: string;
+	/** Synchronously fence a retiring scope before any asynchronous cleanup begins. */
+	fenceAgentScope?: (scopeId: string) => void;
+	/** Dispose and unregister every child agent belonging to a retired scope. */
+	releaseAgentScope?: (scopeId: string) => Promise<void>;
+	/** Rebind the long-lived main AgentRef after this session mints or loads a new scope. */
+	activateAgentScope?: (scopeId: string, previousScopeId: string) => void;
 	/**
 	 * Override the provider-facing session ID for all API requests from this session.
 	 * When absent, `sessionManager.getSessionId()` is used. Needed when benchmark or
@@ -1697,6 +1705,11 @@ export class AgentSession {
 	// Agent identity (registry id) used for IRC routing and job ownership.
 	#agentId: string | undefined;
 	#agentKind: "main" | "sub" = "main";
+	#agentScopeId: string;
+	#fenceAgentScope: ((scopeId: string) => void) | undefined;
+	#releaseAgentScope: ((scopeId: string) => Promise<void>) | undefined;
+	#activateAgentScope: ((scopeId: string, previousScopeId: string) => void) | undefined;
+	#sessionScopeListeners = new Set<(scopeId: string) => void>();
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
 	#isDisposed = false;
@@ -2214,6 +2227,10 @@ export class AgentSession {
 		this.#obfuscator = config.obfuscator;
 		this.#agentId = config.agentId;
 		this.#agentKind = config.agentKind ?? "main";
+		this.#agentScopeId = config.agentScopeId ?? this.sessionManager.getSessionId();
+		this.#fenceAgentScope = config.fenceAgentScope;
+		this.#releaseAgentScope = config.releaseAgentScope;
+		this.#activateAgentScope = config.activateAgentScope;
 		this.#providerSessionId = config.providerSessionId;
 		this.agent.setAssistantMessageEventInterceptor((message, assistantMessageEvent) => {
 			const event: AgentEvent = {
@@ -6964,6 +6981,31 @@ export class AgentSession {
 	get sessionId(): string {
 		return this.#activeProviderSessionId();
 	}
+
+	/** Top-level session scope shared by this session and every descendant agent. */
+	getAgentScopeId(): string {
+		return this.#agentScopeId;
+	}
+
+	/** Observe successful main-session scope changes (`/new` and session switches). */
+	onSessionScopeChange(listener: (scopeId: string) => void): () => void {
+		this.#sessionScopeListeners.add(listener);
+		return () => this.#sessionScopeListeners.delete(listener);
+	}
+
+	#activateCurrentAgentScope(previousScopeId: string): void {
+		if (this.#agentKind !== "main") return;
+		const scopeId = this.sessionManager.getSessionId();
+		this.#agentScopeId = scopeId;
+		this.#activateAgentScope?.(scopeId, previousScopeId);
+		for (const listener of this.#sessionScopeListeners) {
+			try {
+				listener(scopeId);
+			} catch (error) {
+				logger.warn("Session scope listener failed", { scopeId, error: String(error) });
+			}
+		}
+	}
 	getEvalSessionId(): string | null {
 		if (this.#parentEvalSessionId !== undefined) return this.#parentEvalSessionId;
 		return defaultEvalSessionId({
@@ -8697,9 +8739,20 @@ export class AgentSession {
 			}
 		}
 
+		const previousScopeId = this.#agentScopeId;
 		this.#disconnectFromAgent();
 		await this.abort();
-		this.#cancelOwnAsyncJobs();
+		if (this.#agentKind === "main") {
+			IrcBus.global().retireScope(previousScopeId);
+			this.#fenceAgentScope?.(previousScopeId);
+			await this.#asyncJobManager?.retireScope(previousScopeId);
+			await this.#releaseAgentScope?.(previousScopeId);
+			this.yieldQueue.clear();
+			this.#pendingIrcInterrupts = [];
+			this.#pendingIrcAsides = [];
+		} else {
+			this.#cancelOwnAsyncJobs();
+		}
 		this.#closeAllProviderSessions("new session");
 		this.agent.reset();
 		if (options?.drop && previousSessionFile) {
@@ -8722,6 +8775,7 @@ export class AgentSession {
 			await this.sessionManager.flush();
 		}
 		await this.sessionManager.newSession(options);
+		this.#activateCurrentAgentScope(previousScopeId);
 
 		this.#clearCheckpointRuntimeState();
 		this.setTodoPhases([]);
@@ -14357,6 +14411,9 @@ export class AgentSession {
 	 * agent's behalf.
 	 */
 	async deliverIrcMessage(msg: IrcMessage, opts?: { expectsReply?: boolean }): Promise<"injected" | "woken"> {
+		if (msg.scopeId && msg.scopeId !== this.#agentScopeId) {
+			throw new Error("IRC message belongs to a different session.");
+		}
 		if (this.#isDisposed) {
 			throw new Error("Recipient session is disposed.");
 		}
@@ -14451,8 +14508,13 @@ export class AgentSession {
 			// flushed at the start of the next prompt (#flushPendingIrcAsides).
 			this.#pendingIrcAsides.push(record);
 			// `from` must be the id the sender addressed (msg.to) so their
-			// from-filtered waiter matches.
-			const receipt = await IrcBus.global().send({ from: msg.to, to: msg.from, body, replyTo: msg.id });
+			const receipt = await IrcBus.global().send({
+				from: msg.to,
+				to: msg.from,
+				body,
+				replyTo: msg.id,
+				scopeId: msg.scopeId,
+			});
 			if (receipt.outcome === "failed") {
 				logger.warn("IRC auto-reply delivery failed", { to: msg.from, error: receipt.error });
 			}
@@ -14846,6 +14908,7 @@ export class AgentSession {
 			if (switchingToDifferentSession) {
 				await this.#resetMemoryContextForNewTranscript();
 			}
+			this.#activateCurrentAgentScope(previousSessionState.sessionId);
 			this.#reconnectToAgent();
 			try {
 				await this.#sessionSwitchReconciler?.();

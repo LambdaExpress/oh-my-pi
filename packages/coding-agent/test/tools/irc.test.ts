@@ -173,6 +173,70 @@ describe("IRC", () => {
 			expect(bus.unreadCount("0-Sub")).toBe(1);
 		});
 
+		it("retiring a scope clears pending state and blocks late messages from reused agent ids", async () => {
+			const previousScopeId = "previous-session";
+			const currentScopeId = "current-session";
+			const main = makeFakeSession();
+			const sub = makeFakeSession();
+			registry.register({
+				id: "Main",
+				displayName: "main",
+				kind: "main",
+				scopeId: previousScopeId,
+				session: main.session,
+			});
+			registry.register({
+				id: "Sub",
+				displayName: "task",
+				kind: "sub",
+				parentId: "Main",
+				scopeId: previousScopeId,
+				session: sub.session,
+			});
+
+			main.setError(new Error("temporarily unavailable"));
+			const buffered = await bus.send({
+				from: "Sub",
+				to: "Main",
+				body: "old buffered message",
+				scopeId: previousScopeId,
+			});
+			expect(buffered.outcome).toBe("failed");
+			expect(bus.unreadCount("Main")).toBe(1);
+
+			const waiting = bus.wait("Main", { from: "Sub" }, 0, undefined, {
+				drainPending: false,
+				scopeId: previousScopeId,
+			});
+			bus.retireScope(previousScopeId);
+			expect(await waiting).toBeNull();
+			expect(bus.inbox("Main", { scopeId: previousScopeId })).toEqual([]);
+			expect(bus.unreadCount("Main")).toBe(0);
+
+			registry.updateScope("Main", currentScopeId, previousScopeId);
+			registry.updateScope("Sub", currentScopeId, previousScopeId);
+			const late = await bus.send({
+				from: "Sub",
+				to: "Main",
+				body: "late old message",
+				scopeId: previousScopeId,
+			});
+			expect(late).toEqual({
+				to: "Main",
+				outcome: "failed",
+				error: "The sender session has ended.",
+			});
+
+			const current = await bus.send({
+				from: "Sub",
+				to: "Main",
+				body: "current message",
+				scopeId: currentScopeId,
+			});
+			expect(current.outcome).toBe("injected");
+			expect(main.delivered.map(message => message.body)).toEqual(["current message"]);
+		});
+
 		it("send revives a parked recipient through the lifecycle manager", async () => {
 			const sub = makeFakeSession();
 			sub.setOutcome("woken");
