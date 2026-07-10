@@ -1188,7 +1188,7 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 		expect(recalledAfterDelete.map(result => result.id)).not.toContain(factId);
 	});
 
-	it("reports unsupported when updating a recalled fact id", async () => {
+	it("reports not_editable when updating a recalled fact id", async () => {
 		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
 		registerMnemopiState();
 		const factId = await retainAndRecallFactId(
@@ -1208,8 +1208,7 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 		if (firstContent?.type !== "text") {
 			throw new Error("expected memory_edit to return text content");
 		}
-		expect(result.details).toEqual(expect.objectContaining({ status: "unsupported", store: "fact" }));
-		expect(firstContent.text).toMatch(/unsupported/i);
+		expect(result.details).toEqual(expect.objectContaining({ status: "not_editable", store: "fact" }));
 		expect(firstContent.text).toMatch(/fact/i);
 		expect(firstContent.text).toMatch(/update/i);
 		expect(firstContent.text).not.toMatch(/not found/i);
@@ -1217,7 +1216,7 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 		expect(recalledAfterUpdate.map(result => result.id)).toContain(factId);
 	});
 
-	it("reports unsupported when invalidating a recalled fact id", async () => {
+	it("reports not_editable when invalidating a recalled fact id", async () => {
 		const settings = Settings.isolated({ "memory.backend": "mnemopi" });
 		registerMnemopiState();
 		const factId = await retainAndRecallFactId(
@@ -1236,8 +1235,7 @@ describe("memory_edit.execute (Mnemopi backend)", () => {
 		if (firstContent?.type !== "text") {
 			throw new Error("expected memory_edit to return text content");
 		}
-		expect(result.details).toEqual(expect.objectContaining({ status: "unsupported", store: "fact" }));
-		expect(firstContent.text).toMatch(/unsupported/i);
+		expect(result.details).toEqual(expect.objectContaining({ status: "not_editable", store: "fact" }));
 		expect(firstContent.text).toMatch(/fact/i);
 		expect(firstContent.text).toMatch(/invalidate/i);
 		expect(firstContent.text).not.toMatch(/not found/i);

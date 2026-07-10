@@ -5,7 +5,7 @@ Use only with ids returned by the `recall` tool. Operations:
 - `forget`: permanently delete a working memory or recalled fact.
 - `invalidate`: softly supersede a working or episodic memory, optionally pointing at `replacement_id`.
 
-Recalled `[facts]` ids cannot be updated or invalidated; use `forget` and then `retain` the corrected fact.
+Fact ids (recall results marked `[facts]`) cannot be updated or invalidated: inspect them with `read memory://<id>`; those operations return `not_editable`. To correct a fact, forget it and retain the corrected fact.
 Prefer `invalidate` when a memory became stale but its history may still be useful. Use `forget` only for content that should be hard-deleted.
 
 **Always read the full memory before `update`.** Recall results are clipped previews (the trailing `…` marks a truncation and `full_length` reports the original size); `update` replaces content wholesale, so overwriting the preview would delete the unseen tail. Fetch the row first with `read memory://<id>`, then pass the merged content in `content`.

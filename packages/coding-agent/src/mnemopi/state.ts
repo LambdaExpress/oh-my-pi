@@ -108,11 +108,15 @@ export interface MnemopiMemoryEditOptions {
 }
 
 export interface MnemopiMemoryEditResult {
-	status: "updated" | "deleted" | "invalidated" | "not_found" | "unsupported";
+	status: "updated" | "deleted" | "invalidated" | "not_found" | "not_editable";
 	bank?: string;
-	store?: "working" | "episodic" | "fact";
-	reason?: string;
+	store?: MnemopiMemoryStore;
 }
+
+/** Which mnemopi table a resolved memory id lives in. `fact` rows are
+ * read-only projections of fact extraction (issue #4725): resolvable for
+ * reads, never editable. */
+export type MnemopiMemoryStore = "working" | "episodic" | "fact";
 
 interface MnemopiStoredMemoryRow {
 	id?: unknown;
@@ -137,7 +141,7 @@ interface MnemopiStoredMemoryRow {
  */
 export interface MnemopiScopedMemoryHit {
 	bank: string;
-	store: "working" | "episodic";
+	store: MnemopiMemoryStore;
 	row: {
 		id: string;
 		content: string;
@@ -257,7 +261,8 @@ export class MnemopiSessionState {
 		for (const target of targets) {
 			const raw = target.memory.get(id) as MnemopiStoredMemoryRow | null;
 			if (!raw) continue;
-			const store: MnemopiScopedMemoryHit["store"] = raw.memory_store === "episodic" ? "episodic" : "working";
+			const store: MnemopiMemoryStore =
+				raw.memory_store === "episodic" || raw.memory_store === "fact" ? raw.memory_store : "working";
 			return {
 				bank: target.bank,
 				store,
@@ -292,8 +297,18 @@ export class MnemopiSessionState {
 		for (const target of targets) {
 			const row = target.memory.get(id) as MnemopiStoredMemoryRow | null;
 			if (!row) continue;
-			const store: MnemopiMemoryEditResult["store"] = row.memory_store === "episodic" ? "episodic" : "working";
+			const store: MnemopiMemoryStore =
+				row.memory_store === "episodic" || row.memory_store === "fact" ? row.memory_store : "working";
 			const resultContext: Pick<MnemopiMemoryEditResult, "bank" | "store"> = { bank: target.bank, store };
+			if (store === "fact") {
+				if (op === "forget" && target.memory.forgetFact(id)) {
+					return { status: "deleted", ...resultContext };
+				}
+				// Fact content is an extracted projection: it may be deleted, but
+				// update/invalidate must target the source memory instead.
+				ineligible ??= { status: "not_editable", ...resultContext };
+				continue;
+			}
 			if ((op === "update" || op === "forget") && store !== "working") {
 				ineligible ??= { status: "not_found", ...resultContext };
 				continue;
@@ -314,26 +329,6 @@ export class MnemopiSessionState {
 				return { status: "invalidated", ...resultContext };
 			}
 			ineligible ??= { status: "not_found", ...resultContext };
-		}
-		if (op === "forget") {
-			for (const target of targets) {
-				if (target.memory.forgetFact(id)) {
-					return { status: "deleted", bank: target.bank, store: "fact" };
-				}
-			}
-		}
-		if (op === "update" || op === "invalidate") {
-			for (const target of targets) {
-				if (target.memory.beam.hasFact(id)) {
-					const operation = op === "update" ? "updated" : "invalidated";
-					return {
-						status: "unsupported",
-						bank: target.bank,
-						store: "fact",
-						reason: `fact memories cannot be ${operation}; forget the fact and retain a corrected memory instead`,
-					};
-				}
-			}
 		}
 
 		return ineligible ?? { status: "not_found" };

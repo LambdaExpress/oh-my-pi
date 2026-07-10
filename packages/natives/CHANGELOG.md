@@ -10,6 +10,14 @@
 
 - Fixed compiled-binary native embedding accepting stale `pi_natives.*.node` artifacts whose version sentinel does not match the current `@oh-my-pi/pi-natives` package version. `gen:native` now validates the sentinel before archiving and can read native artifacts from an explicit `PI_NATIVE_SOURCE_DIR`, preventing local Windows builds from producing an `omp` binary that only starts while another install keeps a correct cached addon locked.
 - Fixed Windows AVX2 detection preferring Windows PowerShell 5.1, whose .NET runtime lacks `System.Runtime.Intrinsics.X86.Avx2`; the loader now tries `pwsh` first so AVX2-capable Windows hosts select the `modern` native addon by default.
+## [16.3.13] - 2026-07-09
+
+### Fixed
+
+- Fixed unbounded memory growth in the native bash output bridge when a command produces output faster than the JS event loop consumes it: the shell streaming path now uses a bounded chunk queue with real backpressure (pipe readers park until the JS callback catches up, parking the child on its pipe) instead of buffering the entire surplus in memory. No output is dropped — the rolling tail view, `[raw output: artifact://…]` lossless capture, and byte accounting are unaffected ([#4078](https://github.com/can1357/oh-my-pi/issues/4078)).
+- Fixed `readImageFromClipboard` on Windows failing with "could not be converted to the appropriate format" for screenshots taken by Qt-based tools such as PixPin and Snipaste. arboard hands their `CF_DIBV5` payload (`BI_RGB` plus an alpha mask, rewritten to `BI_BITFIELDS`) to a header-less BMP decode that mis-places the pixel offset for V4/V5 bitfield headers; the native reader now falls back to decoding the raw `CF_DIB` clipboard bytes directly, so image paste no longer depends on the PowerShell bridge. ([#3426](https://github.com/can1357/oh-my-pi/issues/3426))
+- Fixed OMP being killed outright (OOM on memory-capped hosts such as WSL) when an output-heavy bash command hit its timeout: the unbounded output-bridge backlog could grow by gigabytes before cancellation and starve the JS event loop far past the deadline; with the bounded backpressured bridge the run resolves at its deadline with flat memory ([#4866](https://github.com/can1357/oh-my-pi/issues/4866)).
+
 ## [16.3.12] - 2026-07-08
 
 ### Fixed

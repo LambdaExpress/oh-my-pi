@@ -34,7 +34,7 @@
 - Fixed collapsed eval code previews folding a single long logical line into only an `earlier lines` marker when terminal wrapping produced a short two-row visual preview.
 - Fixed `/skill:<name>` and prompt-action submissions appearing delayed by allowing finalized transcript cards below the active block to enter native scrollback while still being audited for repair.
 - Fixed `/skill:<name>` and prompt-template submissions showing raw slash text or a blank pending gap during first-turn startup by rendering side-effect-free prompt previews and de-duplicating pending skill cards.
-- Fixed `memory_edit` returning `Memory ... was not found` for recalled Mnemopi facts by allowing `op: "forget"` to delete the recalled fact id and reporting `update`/`invalidate` as fact-specific unsupported operations.
+- Fixed `memory_edit` returning `Memory ... was not found` for recalled Mnemopi facts by allowing `op: "forget"` to delete the recalled fact id and returning `not_editable` for `update`/`invalidate`.
 - Fixed restored queued image messages losing their blob-backed `[Image #N]` marker hyperlinks in the draft editor.
 
 - Fixed automatic assistant, tool, and thinking finalization refreshes clearing native scrollback and yanking scrolled-up terminal readers.
@@ -60,6 +60,38 @@
 - Fixed auto-snapcompact reporting failed maintenance when local rendering throws; rendering failures now downgrade to context-full auto-compaction like other snapcompact local blockers.
 - Fixed the `pwsh` tool spawning a visible console window for native executables on Windows by applying the existing no-console `windowsHide` policy to the PowerShell host process.
 - Fixed the `pwsh` tool prompt over-selecting PowerShell on Windows by making `bash` the default unless PowerShell-specific syntax or providers are required.
+## [16.3.15] - 2026-07-09
+
+### Changed
+
+- Integrated testing guidance directly into the main system prompt for improved workflow cohesion
+- Moved testing guidance into the main system prompt and removed the bundled Tester subagent.
+
+## [16.3.14] - 2026-07-09
+
+### Fixed
+
+- Fixed issue where unfinalized tool blocks could incorrectly pin the live-region scroll seam
+- Improved rendering of raw thinking blocks by stripping empty HTML comment noise
+- Fixed display of thinking blocks consisting entirely of hidden comment noise
+- Fixed gpt-5.6 reasoning summaries rendering literal `<!-- -->` sentinel lines in thinking blocks; empty HTML comments (and the unterminated `<!--` tail while streaming) are now dropped from the thinking display, and blocks reduced to pure comment noise are hidden entirely.
+
+## [16.3.13] - 2026-07-09
+
+### Fixed
+
+- Fixed `read` and `grep` treating empty optional `selector` fields emitted by models as invalid selectors instead of behaving like omitted selectors. ([#4879](https://github.com/can1357/oh-my-pi/issues/4879))
+- Fixed `grep` explicit line selectors on directory searches so they filter each matched file by line number instead of aborting with a single-file-only error ([#4898](https://github.com/can1357/oh-my-pi/issues/4898)).
+- Fixed Read tool previews dropping explicit `selector` arguments, so line ranges and `raw` modifiers render in terminal read call titles again ([#4899](https://github.com/can1357/oh-my-pi/issues/4899)).
+- Fixed named profiles dropping default user keybindings from `~/.omp/agent/keybindings.*`; profile keybindings now inherit those defaults and override only the keys they define ([#4867](https://github.com/can1357/oh-my-pi/issues/4867)).
+- Fixed pi extensions calling `ctx.ui.addAutocompleteProvider(...)` crashing at load with `TypeError: ... is not a function` — a failure that, for extensions guarding init in one `try/catch` (e.g. `@ff-labs/pi-fff`), aborted the extension's entire initialization. `ExtensionUIContext` now implements pi's autocomplete-provider API: interactive mode stacks each registered factory on top of the built-in editor provider (re-applied on every slash-command refresh, with throwing or malformed factories skipped), while RPC/ACP/headless contexts accept the factory as a no-op. ([#4919](https://github.com/can1357/oh-my-pi/issues/4919))
+- Fixed bundled reviewer and plan subagents to inherit their model roles' explicit thinking effort suffixes instead of pinning `high` ([#4761](https://github.com/can1357/oh-my-pi/issues/4761)).
+- Built-in provider model discovery now refreshes an expired stored OAuth credential before an online refresh needs it, instead of silently skipping the provider. The refresh is scoped to the providers actually being discovered (`refreshProvider` cannot rotate unrelated credentials), fires under `online-if-uncached` only when the model manager will actually fetch, and offline discovery stays peek-only ([#4893](https://github.com/can1357/oh-my-pi/issues/4893)).
+- Fixed Escape during an active TUI prompt requiring a second press before canceling; the first Escape now aborts the streaming turn immediately. ([#4921](https://github.com/can1357/oh-my-pi/issues/4921))
+- Fixed the streamed `write` tool's collapsed pending tail preview leaving stale rows above the first partial-result frame in the TUI; the first result now replays the viewport like the SSH placeholder seam already did ([#4477](https://github.com/can1357/oh-my-pi/issues/4477))
+- Fixed first-run setup ignoring a pre-seeded `config.yaml`: the settings loader now treats `config.yml` and `config.yaml` as equivalent existing main config files, writes back to the existing extension, and only creates canonical `config.yml` for fresh installs. ([#4914](https://github.com/can1357/oh-my-pi/issues/4914))
+- Fixed extension `sendUserMessage()` without `deliverAs` surfacing `AgentBusyError` during active streams; omitted `deliverAs` now queues a steer through the normal prompt flow, and ACP/RPC skill-command prompts queue while streaming (RPC honors the prompt command's `streamingBehavior`, defaulting to steer) ([#4923](https://github.com/can1357/oh-my-pi/issues/4923)).
+
 ## [16.3.12] - 2026-07-08
 
 ### Added
