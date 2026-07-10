@@ -33,6 +33,7 @@
 - Fixed `/tree` rendering blank rows for automatic session title updates by hiding `title_change` bookkeeping entries in the default view and rendering their title text in the all filter.
 - Fixed interactive MCP startup status so deferred MCP discovery starts only after the TUI subscribes to startup events, allowing the initial `Connecting to MCP servers: …` banner to render before completion updates.
 - Fixed collapsed eval code previews folding a single long logical line into only an `earlier lines` marker when terminal wrapping produced a short two-row visual preview.
+- Fixed collapsed Read previews for long single-line text to use terminal-wrapped visual rows and reevaluate folding after terminal resizes.
 - Fixed `/skill:<name>` and prompt-action submissions appearing delayed by allowing finalized transcript cards below the active block to enter native scrollback while still being audited for repair.
 - Fixed `/skill:<name>` and prompt-template submissions showing raw slash text or a blank pending gap during first-turn startup by rendering side-effect-free prompt previews and de-duplicating pending skill cards.
 - Fixed `memory_edit` returning `Memory ... was not found` for recalled Mnemopi facts by allowing `op: "forget"` to delete the recalled fact id and returning `not_editable` for `update`/`invalidate`.

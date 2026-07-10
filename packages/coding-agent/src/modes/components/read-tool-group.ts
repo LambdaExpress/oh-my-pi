@@ -92,7 +92,7 @@ type ReadEntry = {
 	codeLineNumbers?: Array<number | null>;
 };
 
-/** Number of code lines to show in collapsed preview mode */
+/** Number of visual code rows to show in collapsed preview mode */
 const COLLAPSED_PREVIEW_LINES = PREVIEW_LIMITS.OUTPUT_COLLAPSED;
 
 type ReadDisplayTarget = {
@@ -614,7 +614,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	/**
 	 * Add a code-cell content preview below the entry summary.
-	 * When collapsed: shows first COLLAPSED_PREVIEW_LINES lines with a "… N more lines ⟨<key>: Expand⟩" hint.
+	 * When collapsed: shows the first COLLAPSED_PREVIEW_LINES visual rows with an accurate hidden-row hint.
 	 * When expanded: shows full content.
 	 */
 	#addContentPreview(entry: ReadEntry): void {
@@ -643,7 +643,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 						title,
 						status: entry.status === "success" ? "complete" : entry.status,
 						expanded,
-						codeMaxLines: expanded ? undefined : COLLAPSED_PREVIEW_LINES,
+						codeMaxVisualRows: COLLAPSED_PREVIEW_LINES,
 						codeStartLine: entry.codeStartLine,
 						codeLineNumbers: entry.codeLineNumbers,
 						width,

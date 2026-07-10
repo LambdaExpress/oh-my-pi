@@ -9,8 +9,9 @@ import type { State } from "./types";
 import type { RenderCache } from "./utils";
 import { getStateBgColor, Hasher, padToWidth, truncateToWidth } from "./utils";
 
-export interface OutputBlockVisualTailWindow {
-	maxRows: number;
+export interface OutputBlockVisualWindow {
+	edge: "head" | "tail";
+	maxContentRows: number;
 	hiddenRows?: number;
 	markerKey: string;
 	renderMarker(hiddenRows: number): string;
@@ -20,7 +21,7 @@ export interface OutputBlockSection {
 	label?: string;
 	lines: readonly string[];
 	separator?: boolean;
-	tailWindow?: OutputBlockVisualTailWindow;
+	visualWindow?: OutputBlockVisualWindow;
 }
 
 export interface OutputBlockOptions {
@@ -63,9 +64,9 @@ function normalizeContentPaddingLeft(value: number | undefined): number {
 /**
  * Inner content width that {@link renderOutputBlock} wraps its body to, for a
  * given outer `width`: both vertical borders (1 cell each) plus the left
- * content padding. Renderers that size a tail window MUST budget visual rows
- * against this, not the outer width — otherwise the block re-wraps their lines
- * into more rows than they counted and the box overflows its intended height.
+ * content padding. Renderers that size a visual window MUST budget rows against
+ * this, not the outer width — otherwise the block re-wraps their lines into
+ * more rows than they counted and the box overflows its intended height.
  */
 export function outputBlockContentWidth(width: number, contentPaddingLeft?: number): number {
 	return Math.max(1, width - 2 - normalizeContentPaddingLeft(contentPaddingLeft));
@@ -153,29 +154,37 @@ export function renderOutputBlock(options: OutputBlockOptions, theme: Theme): st
 			}
 			appendContentRows(line);
 		}
-		const tailWindow = section.tailWindow;
-		if (!tailWindow) {
+		const visualWindow = section.visualWindow;
+		if (!visualWindow) {
 			rows.push(...sectionRows);
 			continue;
 		}
-		const maxRows = Math.max(0, Math.floor(tailWindow.maxRows));
-		const hiddenBase = Math.max(0, Math.floor(tailWindow.hiddenRows ?? 0));
-		const needsMarker = hiddenBase > 0 || sectionRows.length > maxRows;
+		const maxContentRows = Math.max(0, Math.floor(visualWindow.maxContentRows));
+		const hiddenBase = Math.max(0, Math.floor(visualWindow.hiddenRows ?? 0));
+		const needsMarker = hiddenBase > 0 || sectionRows.length > maxContentRows;
 		if (!needsMarker) {
 			rows.push(...sectionRows);
 			continue;
 		}
-		const visibleBudget = Math.max(0, maxRows - 1);
-		const visibleRows = visibleBudget > 0 ? sectionRows.slice(-visibleBudget) : [];
+		const visibleRows =
+			visualWindow.edge === "head"
+				? sectionRows.slice(0, maxContentRows)
+				: maxContentRows > 0
+					? sectionRows.slice(-maxContentRows)
+					: [];
 		const hiddenRows = hiddenBase + sectionRows.length - visibleRows.length;
-		const markerText = truncateToWidth(tailWindow.renderMarker(hiddenRows), contentWidth);
+		const markerText = truncateToWidth(visualWindow.renderMarker(hiddenRows), contentWidth);
 		const markerRows: BlockRow[] = [];
 		const wrappedMarkerLines = wrapTextWithAnsi(markerText.trimEnd(), contentWidth);
 		for (const markerLine of wrappedMarkerLines.slice(0, 1)) {
 			const innerPadding = padding(Math.max(0, contentWidth - visibleWidth(markerLine)));
 			markerRows.push({ kind: "content", inner: `${markerLine}${innerPadding}` });
 		}
-		rows.push(...markerRows, ...visibleRows);
+		if (visualWindow.edge === "head") {
+			rows.push(...visibleRows, ...markerRows);
+		} else {
+			rows.push(...markerRows, ...visibleRows);
+		}
 	}
 
 	rows.push({ kind: "bottom", leftChar: theme.boxRound.bottomLeft, rightChar: theme.boxRound.bottomRight });
@@ -265,12 +274,13 @@ export class CachedOutputBlock {
 			for (const s of options.sections) {
 				h.optional(s.label);
 				h.bool(s.separator ?? false);
-				const tailWindow = s.tailWindow;
-				h.bool(tailWindow !== undefined);
-				if (tailWindow) {
-					h.u32(Math.max(0, Math.floor(tailWindow.maxRows)));
-					h.u32(Math.max(0, Math.floor(tailWindow.hiddenRows ?? 0)));
-					h.str(tailWindow.markerKey);
+				const visualWindow = s.visualWindow;
+				h.bool(visualWindow !== undefined);
+				if (visualWindow) {
+					h.str(visualWindow.edge);
+					h.u32(Math.max(0, Math.floor(visualWindow.maxContentRows)));
+					h.u32(Math.max(0, Math.floor(visualWindow.hiddenRows ?? 0)));
+					h.str(visualWindow.markerKey);
 				}
 				for (const line of s.lines) {
 					h.str(line);

@@ -5,13 +5,15 @@ import { Markdown } from "@oh-my-pi/pi-tui";
 import { getMarkdownTheme, highlightCode, type Theme } from "../modes/theme/theme";
 import {
 	createEarlierLinesTailWindow,
+	createMoreLinesHeadWindow,
 	formatDuration,
 	formatExpandHint,
 	formatMoreItems,
 	formatStatusIcon,
 	replaceTabs,
+	wrapTextWithAnsi,
 } from "../tools/render-utils";
-import { type OutputBlockSection, renderOutputBlock } from "./output-block";
+import { type OutputBlockSection, outputBlockContentWidth, renderOutputBlock } from "./output-block";
 import type { State } from "./types";
 
 export interface CodeCellOptions {
@@ -26,6 +28,11 @@ export interface CodeCellOptions {
 	output?: string;
 	outputMaxLines?: number;
 	codeMaxLines?: number;
+	/**
+	 * Limit collapsed head previews by wrapped terminal rows instead of logical
+	 * lines. Opt-in so existing code-cell callers retain logical-line limits.
+	 */
+	codeMaxVisualRows?: number;
 	/**
 	 * Show the LAST `codeMaxLines` rows (the live streaming edge) instead of the
 	 * first, with a "… N earlier lines" marker on top. Lets a pending preview
@@ -129,28 +136,68 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 
 	const normalizedCode = replaceTabs(code ?? "");
 	const rawCodeLines = sanitizeTerminalLines(normalizedCode);
-	const maxCodeLines = expanded ? rawCodeLines.length : Math.min(rawCodeLines.length, codeMaxLines);
-	const hiddenCodeLines = rawCodeLines.length - maxCodeLines;
 	const tail = options.codeTail === true && !expanded && rawCodeLines.length > 0;
-	const startIndex = tail ? rawCodeLines.length - maxCodeLines : 0;
-	const visibleCode = rawCodeLines.slice(startIndex, startIndex + maxCodeLines).join("\n");
-	const codeLines = highlightCode(visibleCode, language);
+	const visualHead =
+		!expanded && !tail && options.codeMaxVisualRows !== undefined && Number.isFinite(options.codeMaxVisualRows);
+	const maxVisualRows = Math.max(0, Math.floor(options.codeMaxVisualRows ?? 0));
 
-	let visibleLineNumbers: Array<number | null> | undefined;
-	let lineNumberWidth = 0;
-	if (codeLineNumbers) {
-		visibleLineNumbers = codeLineNumbers.slice(startIndex, startIndex + maxCodeLines);
-	} else if (codeStartLine !== undefined) {
-		visibleLineNumbers = Array.from({ length: maxCodeLines }, (_, i) => codeStartLine + startIndex + i);
-	}
-
-	if (visibleLineNumbers) {
-		const validLineNums = visibleLineNumbers.filter((n): n is number => n !== null && n !== undefined);
-		const maxVal = validLineNums.length > 0 ? Math.max(...validLineNums) : 0;
-		if (maxVal > 0) {
-			lineNumberWidth = Math.max(2, String(maxVal).length);
+	const hasLineNumbers = codeLineNumbers !== undefined || codeStartLine !== undefined;
+	const lineNumberAt = (lineIndex: number): number | null =>
+		codeLineNumbers !== undefined ? (codeLineNumbers[lineIndex] ?? null) : (codeStartLine ?? 0) + lineIndex;
+	let maxCodeLines = expanded ? rawCodeLines.length : Math.min(rawCodeLines.length, codeMaxLines);
+	let startIndex = tail ? rawCodeLines.length - maxCodeLines : 0;
+	let endIndex = startIndex + maxCodeLines;
+	const lineNumbersForRange = (from: number, to: number): Array<number | null> | undefined =>
+		hasLineNumbers ? Array.from({ length: to - from }, (_, i) => lineNumberAt(from + i)) : undefined;
+	let visibleLineNumbers = lineNumbersForRange(startIndex, endIndex);
+	const resolveLineNumberWidth = (from: number, to: number): number => {
+		let maxVal = 0;
+		for (let i = from; i < to; i++) {
+			const lineNum = lineNumberAt(i);
+			if (lineNum !== null) maxVal = Math.max(maxVal, lineNum);
 		}
+		return maxVal > 0 ? Math.max(2, String(maxVal).length) : 0;
+	};
+	const lineNumberWidth = hasLineNumbers
+		? resolveLineNumberWidth(visualHead ? 0 : startIndex, visualHead ? rawCodeLines.length : endIndex)
+		: 0;
+
+	const rawLineWithGutter = (lineIndex: number): string => {
+		if (lineNumberWidth === 0) return rawCodeLines[lineIndex] ?? "";
+		const lineNum = lineNumberAt(lineIndex);
+		const gutter =
+			lineNum !== null && lineNum !== undefined
+				? String(lineNum).padStart(lineNumberWidth, " ")
+				: " ".repeat(lineNumberWidth);
+		return `${gutter} ${rawCodeLines[lineIndex] ?? ""}`;
+	};
+	const contentWidth = outputBlockContentWidth(width);
+	const measureVisualRows = (from: number, to: number): number => {
+		let rows = 0;
+		for (let i = from; i < to; i++) {
+			rows += wrapTextWithAnsi(rawLineWithGutter(i).trimEnd(), contentWidth).length;
+		}
+		return rows;
+	};
+
+	let hiddenCodeRows = rawCodeLines.length - maxCodeLines;
+	if (visualHead) {
+		startIndex = 0;
+		endIndex = 0;
+		let measuredRows = 0;
+		while (endIndex < rawCodeLines.length && measuredRows < maxVisualRows) {
+			measuredRows += measureVisualRows(endIndex, endIndex + 1);
+			endIndex++;
+		}
+		maxCodeLines = endIndex;
+		visibleLineNumbers = lineNumbersForRange(0, endIndex);
+		hiddenCodeRows = measureVisualRows(endIndex, rawCodeLines.length);
+	} else if (tail) {
+		hiddenCodeRows = measureVisualRows(0, startIndex);
 	}
+
+	const visibleCode = rawCodeLines.slice(startIndex, endIndex).join("\n");
+	const codeLines = endIndex > startIndex ? highlightCode(visibleCode, language) : [];
 
 	if (lineNumberWidth > 0 && visibleLineNumbers) {
 		for (let i = 0; i < codeLines.length; i++) {
@@ -163,10 +210,10 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 		}
 	}
 
-	if (!tail && hiddenCodeLines > 0) {
-		const hint = formatExpandHint(theme, expanded, hiddenCodeLines > 0);
+	if (!tail && !visualHead && hiddenCodeRows > 0) {
+		const hint = formatExpandHint(theme, expanded, hiddenCodeRows > 0);
 		const gutterPad = lineNumberWidth > 0 ? " ".repeat(lineNumberWidth + 1) : "";
-		const moreLine = `${formatMoreItems(hiddenCodeLines, "line")}${hint ? ` ${hint}` : ""}`;
+		const moreLine = `${formatMoreItems(hiddenCodeRows, "line")}${hint ? ` ${hint}` : ""}`;
 		codeLines.push(theme.fg("dim", gutterPad + moreLine));
 	}
 
@@ -187,13 +234,20 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 	}
 
 	const codeSection: OutputBlockSection = { lines: codeLines };
+	const gutterPad = lineNumberWidth > 0 ? " ".repeat(lineNumberWidth + 1) : "";
 	if (tail) {
-		const gutterPad = lineNumberWidth > 0 ? " ".repeat(lineNumberWidth + 1) : "";
-		codeSection.tailWindow = createEarlierLinesTailWindow(theme, {
+		codeSection.visualWindow = createEarlierLinesTailWindow(theme, {
 			// The tail window is measured in wrapped visual rows; keep the full preview
 			// budget even when the code contains only one long logical line.
 			max: codeMaxLines,
-			hiddenRows: hiddenCodeLines,
+			hiddenRows: hiddenCodeRows,
+			markerPrefix: gutterPad,
+			markerKey: `code-cell:${lineNumberWidth}`,
+		});
+	} else if (visualHead) {
+		codeSection.visualWindow = createMoreLinesHeadWindow(theme, {
+			maxContentRows: maxVisualRows,
+			hiddenRows: hiddenCodeRows,
 			markerPrefix: gutterPad,
 			markerKey: `code-cell:${lineNumberWidth}`,
 		});

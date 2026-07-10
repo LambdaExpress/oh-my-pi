@@ -28,7 +28,7 @@ import { convertWithMarkit, fetchBinary } from "../web/scrapers/utils";
 import { applyListLimit } from "./list-limit";
 import { formatStyledArtifactReference, type OutputMeta } from "./output-meta";
 import { isReadableUrlPath, type LineRange, parseLineRanges } from "./path-utils";
-import { formatBytes, formatExpandHint, getDomain, replaceTabs } from "./render-utils";
+import { createMoreLinesHeadWindow, formatBytes, getDomain, replaceTabs } from "./render-utils";
 import { listTables, looksLikeSqlite, renderTableList } from "./sqlite-reader";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -1918,30 +1918,20 @@ export function renderReadUrlResult(
 		metadataLines.push(`${uiTheme.fg("muted", "Notes:")} ${details.notes.join("; ")}`);
 	}
 
+	const contentPreviewLines =
+		contentLines.length > 0
+			? contentLines.map(line => uiTheme.fg("dim", line.trimEnd()))
+			: [uiTheme.fg("dim", "(no content)")];
 	const outputBlock = new CachedOutputBlock();
-	let lastExpanded: boolean | undefined;
-	let contentPreviewLines: string[] | undefined;
-
 	return markFramedBlockComponent({
 		render: (width: number) => {
 			const { expanded } = options;
-
-			if (contentPreviewLines === undefined || lastExpanded !== expanded) {
-				const previewLimit = expanded ? 12 : 3;
-				const previewList = applyListLimit(contentLines, { headLimit: previewLimit });
-				const previewLines = previewList.items.map(line => line.trimEnd());
-				const remaining = Math.max(0, contentLines.length - previewList.items.length);
-				contentPreviewLines =
-					previewLines.length > 0
-						? previewLines.map(line => uiTheme.fg("dim", line))
-						: [uiTheme.fg("dim", "(no content)")];
-				if (remaining > 0) {
-					const hint = formatExpandHint(uiTheme, expanded, true);
-					contentPreviewLines.push(uiTheme.fg("muted", `… ${remaining} more lines${hint ? ` ${hint}` : ""}`));
-				}
-				lastExpanded = expanded;
-				outputBlock.invalidate();
-			}
+			const previewLimit = expanded ? 12 : 3;
+			const contentVisualWindow = createMoreLinesHeadWindow(uiTheme, {
+				maxContentRows: previewLimit,
+				expandHint: !expanded,
+				markerKey: "read-url-content-preview",
+			});
 
 			return outputBlock.render(
 				{
@@ -1949,7 +1939,11 @@ export function renderReadUrlResult(
 					state: truncated ? "warning" : "success",
 					sections: [
 						{ label: uiTheme.fg("toolTitle", "Metadata"), lines: metadataLines },
-						{ label: uiTheme.fg("toolTitle", "Content Preview"), lines: contentPreviewLines },
+						{
+							label: uiTheme.fg("toolTitle", "Content Preview"),
+							lines: contentPreviewLines,
+							visualWindow: contentVisualWindow,
+						},
 					],
 					width,
 					applyBg: false,
@@ -1957,10 +1951,6 @@ export function renderReadUrlResult(
 				uiTheme,
 			);
 		},
-		invalidate: () => {
-			outputBlock.invalidate();
-			contentPreviewLines = undefined;
-			lastExpanded = undefined;
-		},
+		invalidate: () => outputBlock.invalidate(),
 	});
 }

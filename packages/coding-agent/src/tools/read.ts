@@ -3969,6 +3969,7 @@ export const readToolRenderer = {
 								status: "complete",
 								output: warningLines.length > 0 ? warningLines.join("\n") : undefined,
 								expanded,
+								codeMaxVisualRows: 12,
 								codeStartLine: details?.displayContent?.startLine,
 								codeLineNumbers: details?.displayContent?.lineNumbers,
 								width,

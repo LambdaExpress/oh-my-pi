@@ -19,6 +19,13 @@ function extractLinkTexts(text: string): string[] {
 	);
 }
 
+function framedContentRows(lines: readonly string[]): string[] {
+	return lines
+		.map(line => Bun.stripANSI(line).trimStart())
+		.filter(line => line.startsWith("│") && line.endsWith("│"))
+		.map(line => line.slice(1, -1).trimEnd());
+}
+
 describe("ReadToolGroupComponent", () => {
 	beforeAll(async () => {
 		resetSettingsForTest();
@@ -206,6 +213,38 @@ describe("ReadToolGroupComponent", () => {
 		expect(rendered).toContain("line 1");
 		expect(rendered).not.toContain("line 4");
 		expect(rendered.toLowerCase()).toContain("ctrl+o");
+	});
+
+	it("collapses one long logical line by visual rows and reveals its tail when expanded", () => {
+		const component = new ReadToolGroupComponent({ showContentPreview: true });
+		const examplePath = path.resolve("/tmp/long.json");
+		const headSentinel = "HEAD-组内";
+		const tailSentinel = "TAIL-组内";
+		const content = `{"head":"${headSentinel}","payload":"${"数据".repeat(100)}","tail":"${tailSentinel}"}`;
+		component.updateArgs({ path: examplePath }, "read-long-visual-line");
+		component.updateResult(
+			{
+				content: [{ type: "text", text: content }],
+				details: { displayContent: { text: content, startLine: 41 } },
+			},
+			false,
+			"read-long-visual-line",
+		);
+
+		const collapsed = component.render(64);
+		const collapsedText = Bun.stripANSI(collapsed.join("\n"));
+		const collapsedBody = framedContentRows(collapsed);
+		expect(collapsedBody.filter(line => !line.includes("more line"))).toHaveLength(3);
+		expect(collapsedText).toContain(headSentinel);
+		expect(collapsedText).not.toContain(tailSentinel);
+		expect(collapsedText).toContain("more line");
+		expect(collapsedText.toLowerCase()).toContain("ctrl+o");
+
+		component.setExpanded(true);
+		const expandedText = Bun.stripANSI(component.render(64).join("\n"));
+		expect(expandedText).toContain(headSentinel);
+		expect(expandedText).toContain(tailSentinel);
+		expect(expandedText).not.toContain("more line");
 	});
 
 	it("does not render a duplicate summary row when inline previews are enabled", () => {

@@ -24,7 +24,7 @@ import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
 import { getLanguageFromPath, highlightCode, type Theme } from "../modes/theme/theme";
 import writeDescription from "../prompts/tools/write.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
-import { fileHyperlink, framedBlock, type OutputBlockSection, renderStatusLine } from "../tui";
+import { fileHyperlink, framedBlock, type OutputBlockSection, outputBlockContentWidth, renderStatusLine } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import {
 	type ArchiveMemberContent,
@@ -66,6 +66,7 @@ import {
 	shortenPath,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
+	wrapTextWithAnsi,
 } from "./render-utils";
 import {
 	deleteRowByKey,
@@ -1042,6 +1043,7 @@ function formatStreamingContent(
 	expanded: boolean,
 	language: string | undefined,
 	uiTheme: Theme,
+	width: number,
 	spinnerFrame?: number,
 	cache?: RenderedStringCache,
 ): StreamingContentPreview | undefined {
@@ -1049,11 +1051,10 @@ function formatStreamingContent(
 	const lines = normalizeDisplayText(content).split("\n");
 	const totalLines = lines.length;
 	const startIndex = expanded ? 0 : Math.max(0, totalLines - WRITE_STREAMING_PREVIEW_LINES);
-	const hiddenLogicalRows = startIndex;
+	const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
 	const bodyText = cachedRenderedString(cache, uiTheme, expanded, language ?? "", content, () => {
 		const visibleLines = lines.slice(startIndex);
 		const highlighted = highlightCode(visibleLines.join("\n"), language);
-		const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
 		const logicalRows: string[] = [];
 		for (let i = 0; i < highlighted.length; i++) {
 			const lineNum = startIndex + i + 1;
@@ -1064,15 +1065,24 @@ function formatStreamingContent(
 		return logicalRows.join("\n");
 	});
 	const bodyLines = bodyText ? bodyText.split("\n") : [];
+	const hiddenVisualRows = (() => {
+		const contentWidth = outputBlockContentWidth(width);
+		let rows = 0;
+		for (let i = 0; i < startIndex; i++) {
+			const gutter = `${String(i + 1).padStart(lineNumberWidth, " ")} `;
+			rows += wrapTextWithAnsi(`${gutter}${replaceTabs(lines[i] ?? "")}`.trimEnd(), contentWidth).length;
+		}
+		return rows;
+	})();
 	const bodySection: OutputBlockSection | undefined =
 		bodyLines.length > 0
 			? {
 					lines: bodyLines,
-					tailWindow: expanded
+					visualWindow: expanded
 						? undefined
 						: createEarlierLinesTailWindow(uiTheme, {
 								max: WRITE_STREAMING_PREVIEW_LINES,
-								hiddenRows: hiddenLogicalRows,
+								hiddenRows: hiddenVisualRows,
 								expandHint: false,
 								markerKey: "write-streaming-content",
 							}),
@@ -1152,6 +1162,7 @@ export const writeToolRenderer = {
 						Boolean(options?.expanded),
 						lang,
 						uiTheme,
+						width,
 						options?.spinnerFrame,
 						streamingCache,
 					)

@@ -1227,7 +1227,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							sections: [
 								{
 									lines: cmdLines,
-									tailWindow: options.expanded ? undefined : createEarlierLinesTailWindow(uiTheme),
+									visualWindow: options.expanded ? undefined : createEarlierLinesTailWindow(uiTheme),
 								},
 							],
 							width,
@@ -1415,7 +1415,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 									// Viewport-sized tail window in every state — streaming and final
 									// render identically; only ctrl+o uncaps.
 									lines: cmdLines ?? [],
-									tailWindow: expanded ? undefined : createEarlierLinesTailWindow(uiTheme),
+									visualWindow: expanded ? undefined : createEarlierLinesTailWindow(uiTheme),
 								},
 								{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines },
 							],

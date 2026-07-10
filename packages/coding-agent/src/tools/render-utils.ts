@@ -15,7 +15,7 @@ import { pluralize } from "@oh-my-pi/pi-utils";
 import { formatKeyHints, type KeyId } from "../config/keybindings";
 import { settings } from "../config/settings";
 import type { Theme } from "../modes/theme/theme";
-import type { OutputBlockVisualTailWindow } from "../tui/output-block";
+import type { OutputBlockVisualWindow } from "../tui/output-block";
 import { Hasher } from "../tui/utils";
 import { formatDimensionNote, type ResizedImage } from "../utils/image-resize";
 
@@ -247,18 +247,47 @@ export function previewWindowRows(): number {
 export function createEarlierLinesTailWindow(
 	theme: Theme,
 	options: { max?: number; hiddenRows?: number; expandHint?: boolean; markerPrefix?: string; markerKey?: string } = {},
-): OutputBlockVisualTailWindow {
+): OutputBlockVisualWindow {
 	const maxRows = options.max ?? previewWindowRows();
+	const maxContentRows = Math.max(0, Math.floor(maxRows) - 1);
 	const hiddenRows = options.hiddenRows ?? 0;
 	const expandHint = options.expandHint !== false;
 	const markerPrefix = options.markerPrefix ?? "";
 	return {
-		maxRows,
+		edge: "tail",
+		maxContentRows,
 		hiddenRows,
-		markerKey: `earlier-lines:${maxRows}:${hiddenRows}:${expandHint}:${markerPrefix}:${options.markerKey ?? ""}`,
+		markerKey: `earlier-lines:${maxContentRows}:${hiddenRows}:${expandHint}:${markerPrefix}:${options.markerKey ?? ""}`,
 		renderMarker: hidden => {
 			const hint = expandHint ? formatExpandHint(theme, false, true) : "";
 			const marker = `… ${hidden} earlier ${pluralize("line", hidden)}${hint ? ` ${hint}` : ""}`;
+			return `${markerPrefix}${theme.fg("dim", marker)}`;
+		},
+	};
+}
+
+export function createMoreLinesHeadWindow(
+	theme: Theme,
+	options: {
+		maxContentRows: number;
+		hiddenRows?: number;
+		expandHint?: boolean;
+		markerPrefix?: string;
+		markerKey?: string;
+	},
+): OutputBlockVisualWindow {
+	const maxContentRows = Math.max(0, Math.floor(options.maxContentRows));
+	const hiddenRows = options.hiddenRows ?? 0;
+	const expandHint = options.expandHint !== false;
+	const markerPrefix = options.markerPrefix ?? "";
+	return {
+		edge: "head",
+		maxContentRows,
+		hiddenRows,
+		markerKey: `more-lines:${maxContentRows}:${hiddenRows}:${expandHint}:${markerPrefix}:${options.markerKey ?? ""}`,
+		renderMarker: hidden => {
+			const hint = expandHint ? formatExpandHint(theme, false, true) : "";
+			const marker = `… ${hidden} more ${pluralize("line", hidden)}${hint ? ` ${hint}` : ""}`;
 			return `${markerPrefix}${theme.fg("dim", marker)}`;
 		},
 	};
