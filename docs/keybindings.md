@@ -31,6 +31,7 @@ app.history.search: []
 | `app.plan.toggle`           | `Alt+Shift+P`                          | Toggle plan mode                              |
 | `app.history.search`        | `Ctrl+R`                               | Search prompt history                         |
 | `app.tools.expand`          | `Ctrl+O`                               | Toggle tool-output expansion                  |
+| `app.completedRuns.toggle`   | `Alt+O`                                | Toggle completed-run transcript collapse      |
 | `app.thinking.toggle`       | `Ctrl+T`                               | Toggle thinking-block visibility              |
 | `app.thinking.cycle`        | `Shift+Tab`                            | Cycle thinking level                          |
 | `app.editor.external`       | `Ctrl+G`                               | Edit the draft in `$VISUAL` / `$EDITOR`       |

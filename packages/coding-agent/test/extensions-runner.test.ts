@@ -164,6 +164,35 @@ describe("ExtensionRunner", () => {
 			warnSpy.mockRestore();
 		});
 
+		it("rejects Alt+O so it cannot shadow the app.completedRuns.toggle default", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.registerShortcut("alt+o", {
+						description: "Tries to bind completed-run visibility",
+						handler: async () => {},
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "conflict-completed-runs.ts"), extCode);
+
+			const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const shortcuts = runner.getShortcuts();
+
+			expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("conflicts with built-in"), expect.any(Object));
+			expect(shortcuts.has("alt+o")).toBe(false);
+
+			warnSpy.mockRestore();
+		});
+
 		it("warns when two extensions register same shortcut", async () => {
 			// Use a non-reserved shortcut
 			const extCode1 = `

@@ -207,9 +207,15 @@ import { customSubmissionSignature, userSubmissionSignature } from "./types";
 import {
 	type CompletedRunCollapse,
 	collapseCompletedRuns,
+	createCompletedRunSummary,
 	isSameTranscriptMessage,
 } from "./utils/transcript-render-helpers";
 import { UiHelpers } from "./utils/ui-helpers";
+
+interface CompletedRunView {
+	collapse: CompletedRunCollapse;
+	expanded: boolean;
+}
 
 const HINT_SHIMMER_PALETTE: ShimmerPalette = {
 	low: "dim",
@@ -566,7 +572,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #commandController: CommandController;
 	readonly #todoCommandController: TodoCommandController;
 	readonly #eventController: EventController;
-	#completedRunCollapses = new WeakMap<AgentSession, CompletedRunCollapse[]>();
+	#completedRunCollapses = new WeakMap<AgentSession, CompletedRunView[]>();
 	get eventController(): EventController {
 		return this.#eventController;
 	}
@@ -598,13 +604,28 @@ export class InteractiveMode implements InteractiveModeContext {
 		const existing = this.#completedRunCollapses.get(session);
 		if (existing) {
 			if (
-				!existing.some(item => isSameTranscriptMessage(item.finalAssistantMessage, collapse.finalAssistantMessage))
+				!existing.some(item =>
+					isSameTranscriptMessage(item.collapse.finalAssistantMessage, collapse.finalAssistantMessage),
+				)
 			) {
-				existing.push(collapse);
+				existing.push({ collapse, expanded: false });
 			}
 			return;
 		}
-		this.#completedRunCollapses.set(session, [collapse]);
+		this.#completedRunCollapses.set(session, [{ collapse, expanded: false }]);
+	}
+
+	toggleCompletedRunCollapse(): void {
+		if (!this.settings.get("display.collapseCompletedRuns")) return;
+		const completedRuns = this.#completedRunCollapses.get(this.viewSession);
+		if (!completedRuns?.length) return;
+
+		const expanded = completedRuns.some(run => !run.expanded);
+		for (const run of completedRuns) {
+			run.expanded = expanded;
+		}
+		this.rebuildChatFromMessages();
+		this.ui.resetDisplay();
 	}
 	clearTransientSessionUi(): void {
 		if (this.loadingAnimation) {
@@ -3958,18 +3979,30 @@ export class InteractiveMode implements InteractiveModeContext {
 		sessionContext: SessionContext,
 		options?: { updateFooter?: boolean; populateHistory?: boolean },
 	): void {
-		const projectedContext = this.settings.get("display.collapseCompletedRuns")
-			? collapseCompletedRuns(sessionContext, this.#completedRunCollapses.get(this.viewSession) ?? [])
-			: sessionContext;
-		for (const message of projectedContext.messages) {
+		const completedRuns = this.settings.get("display.collapseCompletedRuns")
+			? (this.#completedRunCollapses.get(this.viewSession) ?? []).filter(run => !run.expanded)
+			: [];
+		const projection = collapseCompletedRuns(
+			sessionContext,
+			completedRuns.map(run => run.collapse),
+		);
+		for (const message of projection.context.messages) {
 			this.noteDisplayableThinkingContent(message);
 		}
 		const activeGate = this.#eventController.activeCompletedRunGate;
-		this.#uiHelpers.renderSessionContext(projectedContext, {
+		const toggleKey = this.keybindings.getDisplayString("app.completedRuns.toggle") || undefined;
+		let summaryIndex = 0;
+		this.#uiHelpers.renderSessionContext(projection.context, {
 			...options,
-			insertAfterMessage: activeGate
-				? message => (isSameTranscriptMessage(message, activeGate.afterMessage) ? activeGate.component : undefined)
-				: undefined,
+			insertAfterMessage: message => {
+				if (activeGate && isSameTranscriptMessage(message, activeGate.afterMessage)) {
+					return activeGate.component;
+				}
+				const summary = projection.summaries[summaryIndex];
+				if (!summary || !isSameTranscriptMessage(message, summary.afterMessage)) return undefined;
+				summaryIndex++;
+				return createCompletedRunSummary(summary, toggleKey);
+			},
 		});
 	}
 

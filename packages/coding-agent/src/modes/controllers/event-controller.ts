@@ -99,6 +99,7 @@ class CompletedRunGate extends Container {
 }
 
 interface ActiveCompletedRun {
+	startedAtMs: number;
 	messages: AgentMessage[];
 	initialUserMessage?: Extract<AgentMessage, { role: "user" }>;
 	gate?: CompletedRunGate;
@@ -419,7 +420,7 @@ export class EventController {
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
 		if (!this.#activeCompletedRun && this.ctx.settings.get("display.collapseCompletedRuns")) {
-			this.#activeCompletedRun = { messages: [] };
+			this.#activeCompletedRun = { messages: [], startedAtMs: Date.now() };
 		}
 		this.#lastIntent = undefined;
 		this.#readToolCallArgs.clear();
@@ -1151,7 +1152,13 @@ export class EventController {
 		// then). Mirrors the collab guest's !isStreaming loader reconciler.
 		if (this.ctx.session.isStreaming) return;
 
-		const collapse = this.#takeCompletedRunCollapse(event);
+		const finalAssistant = event.messages.findLast(
+			(message): message is Extract<AgentMessage, { role: "assistant" }> => message.role === "assistant",
+		);
+		if (this.#activeCompletedRun?.gate && finalAssistant) {
+			await this.ctx.viewSession.waitForMessagePersistence(finalAssistant);
+		}
+		const collapse = this.#takeCompletedRunCollapse(finalAssistant);
 		await this.#finishAgentEnd();
 		if (!collapse) return;
 		this.ctx.recordCompletedRunCollapse(collapse);
@@ -1162,7 +1169,7 @@ export class EventController {
 	}
 
 	#takeCompletedRunCollapse(
-		event: Extract<AgentSessionEvent, { type: "agent_end" }>,
+		finalAssistant: Extract<AgentMessage, { role: "assistant" }> | undefined,
 	): CompletedRunCollapse | undefined {
 		const active = this.#activeCompletedRun;
 		this.#activeCompletedRun = undefined;
@@ -1171,9 +1178,6 @@ export class EventController {
 			return undefined;
 		}
 		const initialUserMessage = active.initialUserMessage;
-		const finalAssistant = event.messages.findLast(
-			(message): message is Extract<AgentMessage, { role: "assistant" }> => message.role === "assistant",
-		);
 		if (
 			finalAssistant?.stopReason !== "stop" ||
 			finalAssistant.stopDetails?.type === "pause_turn" ||
@@ -1193,6 +1197,7 @@ export class EventController {
 			firstMessage,
 			initialUserMessage,
 			finalAssistantMessage: finalAssistant,
+			durationMs: Math.max(0, Date.now() - active.startedAtMs),
 		};
 	}
 

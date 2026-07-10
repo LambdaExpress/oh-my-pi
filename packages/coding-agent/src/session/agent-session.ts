@@ -3373,7 +3373,8 @@ export class AgentSession {
 		};
 	}
 
-	async #waitForSessionMessagePersistence(message: AgentMessage): Promise<void> {
+	/** Wait until a fire-and-forget `message_end` reaches the session journal. */
+	async waitForMessagePersistence(message: AgentMessage): Promise<void> {
 		const key = sessionMessagePersistenceKey(message);
 		if (!key) return;
 		await this.#pendingMessageEndPersistence.get(key);
@@ -3537,7 +3538,7 @@ export class AgentSession {
 		if (!context) return true;
 		const turnMessages = [context.message, ...context.toolResults];
 		for (const message of turnMessages) {
-			await this.#waitForSessionMessagePersistence(message);
+			await this.waitForMessagePersistence(message);
 		}
 		// One branch snapshot + one persistence-key index drives the entire
 		// planning pass. Pre-#3629 this re-walked the branch and structurally
@@ -10694,7 +10695,7 @@ export class AgentSession {
 	}
 
 	async #persistRetryLifecycleErrorMessage(message: AssistantMessage): Promise<void> {
-		await this.#waitForSessionMessagePersistence(message);
+		await this.waitForMessagePersistence(message);
 		if (!isEmptyErrorTurn(message)) return;
 		if (this.#sessionMessageAlreadyPersisted(message)) return;
 		this.#appendSessionMessage(message);
@@ -10987,7 +10988,7 @@ export class AgentSession {
 	 * (and the user-visible transcript line) in place.
 	 */
 	async #dropPersistedAssistantTurn(assistantMessage: AssistantMessage): Promise<void> {
-		await this.#waitForSessionMessagePersistence(assistantMessage);
+		await this.waitForMessagePersistence(assistantMessage);
 		this.#discardAssistantTurn(assistantMessage);
 	}
 

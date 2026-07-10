@@ -29,6 +29,7 @@ interface AppKeybindings {
 	"app.model.select": true;
 	"app.model.selectTemporary": true;
 	"app.tools.expand": true;
+	"app.completedRuns.toggle": true;
 	"app.editor.external": true;
 	"app.message.followUp": true;
 	"app.retry": true;
@@ -122,6 +123,10 @@ export const KEYBINDINGS = {
 	"app.tools.expand": {
 		defaultKeys: "ctrl+o",
 		description: "Expand tools",
+	},
+	"app.completedRuns.toggle": {
+		defaultKeys: "alt+o",
+		description: "Toggle completed run collapse",
 	},
 	"app.editor.external": {
 		defaultKeys: "ctrl+g",

@@ -22,6 +22,7 @@ type FakeEditor = {
 	onToggleThinking?: () => void;
 	onExternalEditor?: () => void;
 	onRetry?: () => void;
+	onToggleCompletedRuns?: () => void;
 	onChange?: (text: string) => void;
 	onSubmit?: (text: string) => Promise<void>;
 	setText(text: string): void;
@@ -60,6 +61,7 @@ async function createContext() {
 		"app.model.selectTemporary": ["ctrl+y"],
 		"app.model.select": ["alt+m"],
 		"app.retry": ["alt+r"],
+		"app.completedRuns.toggle": ["alt+o"],
 	};
 	const customHandlers = new Map<string, () => void>();
 	const setActionKeys = vi.fn();
@@ -70,6 +72,7 @@ async function createContext() {
 		customHandlers.clear();
 	});
 	const resetDisplay = vi.fn();
+	const toggleCompletedRunCollapse = vi.fn();
 	const showModelSelector = vi.fn();
 	const requestRender = vi.fn();
 	const showError = vi.fn();
@@ -189,6 +192,7 @@ async function createContext() {
 		showDebugSelector: vi.fn(),
 		showHistorySearch: vi.fn(),
 		toggleThinkingBlockVisibility: vi.fn(),
+		toggleCompletedRunCollapse,
 		showModelSelector,
 		updateEditorBorderColor: vi.fn(),
 		hasActiveBtw: vi.fn(() => false),
@@ -217,6 +221,7 @@ async function createContext() {
 			retry,
 			abort,
 			resetDisplay,
+			toggleCompletedRunCollapse,
 			handleBtwBranchKey,
 			addInputListener,
 			canBranchBtw,
@@ -249,6 +254,20 @@ describe("InputController keybinding setup", () => {
 		expect(spies.showModelSelector).toHaveBeenNthCalledWith(1, { temporaryOnly: true });
 		expect(spies.showModelSelector).toHaveBeenNthCalledWith(2);
 		expect(spies.resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	it("registers and handles the completed-runs toggle action", async () => {
+		const { InputController, ctx, editor, spies } = await createContext();
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+
+		expect(spies.setActionKeys).toHaveBeenCalledWith("app.completedRuns.toggle", ["alt+o"]);
+		expect(editor.onToggleCompletedRuns).toBeDefined();
+
+		editor.onToggleCompletedRuns?.();
+
+		expect(spies.toggleCompletedRunCollapse).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not mark pasted shell prompts as Python mode while editing", async () => {

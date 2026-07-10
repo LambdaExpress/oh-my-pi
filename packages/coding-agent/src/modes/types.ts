@@ -418,6 +418,7 @@ export interface InteractiveModeContext {
 	cycleThinkingLevel(): void;
 	cycleRoleModel(direction?: "forward" | "backward"): Promise<void>;
 	toggleToolOutputExpansion(): void;
+	toggleCompletedRunCollapse(): void;
 	setToolsExpanded(expanded: boolean): void;
 	toggleThinkingBlockVisibility(): void;
 	openExternalEditor(): void;

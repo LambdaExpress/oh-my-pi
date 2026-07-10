@@ -578,11 +578,11 @@ tui:
 | `images.autoResize` | boolean | `true` | Resize large images for model compatibility. |
 | `images.blockImages` | boolean | `false` | Never send images to providers. |
 | `tui.hyperlinks` | enum | `auto` | `off`, `auto`, `always`. |
-| `display.collapseCompletedRuns` | boolean | `false` | For runs that start while enabled, keep intermediate loops live, then show only the initial user request and final text answer after a normal completion. |
+| `display.collapseCompletedRuns` | boolean | `false` | For runs that start while enabled, keep intermediate loops live, then replace them after a normal completion with an English summary of hidden agent text segments and tool calls between the initial request and final text answer. |
 
 For a custom status line, set `statusLine.preset: custom` and configure `statusLine.leftSegments`, `statusLine.rightSegments`, and `statusLine.segmentOptions`.
 
-`display.collapseCompletedRuns` changes only the live TUI projection. The session journal, provider context, exports, tool results, and user steering/follow-up messages remain intact. Runs that end with an abort, error, length limit, or another non-normal stop keep their full visible history. Existing or reloaded history is not retroactively collapsed.
+`display.collapseCompletedRuns` changes only the live TUI projection. The session journal, provider context, exports, tool results, and user steering/follow-up messages remain intact. Press `app.completedRuns.toggle` (`Alt+O` by default) to expand every recorded run in the current session, then press it again to restore the collapsed summaries. Newly completed runs start collapsed even if older runs are expanded. Runs that end with an abort, error, length limit, or another non-normal stop keep their full visible history. Existing or reloaded history is not retroactively collapsed.
 
 ### Interaction
 

@@ -8,6 +8,7 @@ describe("buildHotkeysMarkdown", () => {
 			"app.clipboard.copyPrompt": "Ctrl+Shift+P",
 			"app.plan.toggle": "Alt+Shift+P",
 			"app.tools.expand": "Ctrl+O",
+			"app.completedRuns.toggle": "Alt+O",
 			"app.display.reset": "Ctrl+L",
 			"app.interrupt": "Esc",
 			"app.clear": "Ctrl+C",
@@ -39,6 +40,7 @@ describe("buildHotkeysMarkdown", () => {
 		expect(markdown).toContain("| `Ctrl+Shift+L` | Select model (temporary) |");
 		expect(markdown).toContain("| `Alt+M` | Select model (set roles) |");
 		expect(markdown).toContain("| `Ctrl+L` | Reset terminal display |");
+		expect(markdown).toContain("| `Alt+O` | Toggle completed run collapse |");
 		expect(markdown).toContain("| `Alt+R` | Retry last failed assistant turn |");
 		expect(markdown).toContain("| `Alt+Shift+P` | Toggle plan mode |");
 		expect(markdown).toContain("| `Disabled` | Suspend to background |");

@@ -27,6 +27,19 @@ describe("CustomEditor keybindings", () => {
 		expect(onRetry).toHaveBeenCalledTimes(1);
 	});
 
+	it("routes raw Alt+O to completed-run collapse without editing text", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const onToggleCompletedRuns = vi.fn();
+
+		editor.setText("draft");
+		editor.setActionKeys("app.completedRuns.toggle", ["alt+o"]);
+		editor.onToggleCompletedRuns = onToggleCompletedRuns;
+		editor.handleInput("\x1bo");
+
+		expect(onToggleCompletedRuns).toHaveBeenCalledTimes(1);
+		expect(editor.getText()).toBe("draft");
+	});
+
 	it("lets custom handlers keep precedence over the default retry chord", () => {
 		const editor = new CustomEditor(getEditorTheme());
 		const onRetry = vi.fn();

@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -29,7 +29,7 @@ function assistant(text: string, stopReason: AssistantMessage["stopReason"], tim
 	};
 }
 
-function fixture(collapseCompletedRuns = true) {
+function fixture(collapseCompletedRuns = true, waitForMessagePersistence = vi.fn(async () => {})) {
 	const settings = Settings.isolated({
 		"display.collapseCompletedRuns": collapseCompletedRuns,
 		"completion.notify": "off",
@@ -39,7 +39,7 @@ function fixture(collapseCompletedRuns = true) {
 	const resetDisplay = vi.fn();
 	const requestRender = vi.fn();
 	const chatContainer = new TranscriptContainer();
-	const session = { isStreaming: false };
+	const session = { isStreaming: false, waitForMessagePersistence };
 	const ctx = {
 		isInitialized: true,
 		settings,
@@ -82,12 +82,15 @@ function fixture(collapseCompletedRuns = true) {
 		recordCompletedRunCollapse,
 		rebuildChatFromMessages,
 		resetDisplay,
+		waitForMessagePersistence,
 	};
 }
 
 beforeAll(async () => {
 	await Settings.init({ inMemory: true, cwd: process.cwd() });
 });
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("completed run collapse", () => {
 	it("is disabled by default", () => {
@@ -126,12 +129,15 @@ describe("completed run collapse", () => {
 			hasPersistedMCPToolSelection: false,
 			mode: "none",
 		};
-		const projected = collapseCompletedRuns(context, [
-			{ firstMessage: initial, initialUserMessage: initial, finalAssistantMessage: final },
+		const projection = collapseCompletedRuns(context, [
+			{ firstMessage: initial, initialUserMessage: initial, finalAssistantMessage: final, durationMs: 65_000 },
 		]);
-		expect(projected.messages.map(message => message.role)).toEqual(["user", "assistant"]);
-		expect(projected.messages[0]).toBe(initial);
-		expect((projected.messages[1] as AssistantMessage).content).toEqual([{ type: "text", text: "done" }]);
+		expect(projection.context.messages.map(message => message.role)).toEqual(["user", "assistant"]);
+		expect(projection.context.messages[0]).toBe(initial);
+		expect((projection.context.messages[1] as AssistantMessage).content).toEqual([{ type: "text", text: "done" }]);
+		expect(projection.summaries).toEqual([
+			{ afterMessage: initial, agentTextSegments: 1, toolCalls: 1, durationMs: 65_000 },
+		]);
 		expect(source).toHaveLength(6);
 		expect(final.content).toHaveLength(2);
 	});
@@ -139,6 +145,7 @@ describe("completed run collapse", () => {
 	it("triggers collapse only after a normal final stop", async () => {
 		const { controller, chatContainer, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } =
 			fixture();
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
 		const initial = { role: "user", content: "build it", timestamp: 10 } as AgentMessage;
 		const adjustment = { role: "user", content: "adjust it", steering: true, timestamp: 11 } as AgentMessage;
 		const followUp = { role: "user", content: "one more adjustment", timestamp: 12 } as AgentMessage;
@@ -153,7 +160,36 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "message_end", message: adjustment });
 		await controller.handleEvent({ type: "message_end", message: followUp });
 		await controller.handleEvent({ type: "message_end", message: final });
+		now.mockReturnValue(66_000);
 		await controller.handleEvent({ type: "agent_end", messages: [initial, adjustment, followUp, final] });
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(expect.objectContaining({ durationMs: 65_000 }));
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	it("waits for a late final message_end before collapsing the completed run", async () => {
+		const persisted = Promise.withResolvers<void>();
+		const waitForMessagePersistence = vi.fn(() => persisted.promise);
+		const { controller, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture(
+			true,
+			waitForMessagePersistence,
+		);
+		const initial = { role: "user", content: "build it", timestamp: 14 } as AgentMessage;
+		const final = assistant("done", "stop", 15);
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: initial });
+		await controller.handleEvent({ type: "message_end", message: initial });
+
+		const ending = controller.handleEvent({ type: "agent_end", messages: [initial, final] });
+		await Promise.resolve();
+		expect(waitForMessagePersistence).toHaveBeenCalledWith(final);
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+
+		await controller.handleEvent({ type: "message_end", message: final });
+		persisted.resolve();
+		await ending;
+
 		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
 		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
 		expect(resetDisplay).toHaveBeenCalledTimes(1);

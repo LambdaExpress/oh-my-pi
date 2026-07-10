@@ -5,7 +5,7 @@
  * here keeps the two byte-for-byte identical.
  */
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import { type Component, Text } from "@oh-my-pi/pi-tui";
+import { type Component, Text, TruncatedText } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
 import {
 	type CustomMessage,
@@ -30,6 +30,24 @@ export interface CompletedRunCollapse {
 	initialUserMessage: Extract<AgentMessage, { role: "user" }>;
 	/** Naturally completed assistant answer that remains visible after collapse. */
 	finalAssistantMessage: AssistantAgentMessage;
+	/** Wall-clock time from the first agent_start through the settled agent_end. */
+	durationMs: number;
+}
+
+export interface CompletedRunSummary {
+	/** Preserved request after which the summary row is inserted. */
+	afterMessage: Extract<AgentMessage, { role: "user" }>;
+	/** Non-empty assistant text blocks hidden by the projection. */
+	agentTextSegments: number;
+	/** Assistant tool-call blocks hidden by the projection. */
+	toolCalls: number;
+	/** Wall-clock duration of the completed run. */
+	durationMs: number;
+}
+
+export interface CompletedRunProjection {
+	context: SessionContext;
+	summaries: CompletedRunSummary[];
 }
 
 /**
@@ -69,11 +87,11 @@ function findMessageIndex(messages: AgentMessage[], target: AgentMessage, from: 
 export function collapseCompletedRuns(
 	sessionContext: SessionContext,
 	collapses: readonly CompletedRunCollapse[],
-): SessionContext {
-	if (collapses.length === 0) return sessionContext;
+): CompletedRunProjection {
+	if (collapses.length === 0) return { context: sessionContext, summaries: [] };
 
 	const source = sessionContext.messages;
-	const spans: Array<{ start: number; request: number; answer: number }> = [];
+	const spans: Array<{ start: number; request: number; answer: number; durationMs: number }> = [];
 	let searchFrom = 0;
 	for (const collapse of collapses) {
 		const start = findMessageIndex(source, collapse.firstMessage, searchFrom);
@@ -82,12 +100,13 @@ export function collapseCompletedRuns(
 		if (request < 0) continue;
 		const answer = findMessageIndex(source, collapse.finalAssistantMessage, request);
 		if (answer < 0) continue;
-		spans.push({ start, request, answer });
+		spans.push({ start, request, answer, durationMs: collapse.durationMs });
 		searchFrom = answer + 1;
 	}
-	if (spans.length === 0) return sessionContext;
+	if (spans.length === 0) return { context: sessionContext, summaries: [] };
 
 	const messages: AgentMessage[] = [];
+	const summaries: CompletedRunSummary[] = [];
 	const cacheMissExplainedAt: boolean[] | undefined = sessionContext.cacheMissExplainedAt ? [] : undefined;
 	const push = (message: AgentMessage, sourceIndex: number): void => {
 		messages.push(message);
@@ -100,12 +119,25 @@ export function collapseCompletedRuns(
 			push(source[sourceIndex]!, sourceIndex);
 			sourceIndex++;
 		}
-		push(source[span.request]!, span.request);
-		const finalMessage = source[span.answer]!;
-		if (finalMessage.role !== "assistant") {
+		const requestMessage = source[span.request];
+		const finalMessage = source[span.answer];
+		if (requestMessage?.role !== "user" || finalMessage?.role !== "assistant") {
 			sourceIndex = span.answer + 1;
 			continue;
 		}
+
+		let agentTextSegments = 0;
+		let toolCalls = 0;
+		for (let index = span.start; index < span.answer; index++) {
+			const message = source[index];
+			if (message?.role !== "assistant") continue;
+			for (const content of message.content) {
+				if (content.type === "text" && canonicalizeMessage(content.text)) agentTextSegments++;
+				else if (content.type === "toolCall") toolCalls++;
+			}
+		}
+
+		push(requestMessage, span.request);
 		const textContent = finalMessage.content.filter(
 			content => content.type === "text" && canonicalizeMessage(content.text),
 		);
@@ -113,6 +145,7 @@ export function collapseCompletedRuns(
 			textContent.length === finalMessage.content.length ? finalMessage : { ...finalMessage, content: textContent },
 			span.answer,
 		);
+		summaries.push({ afterMessage: requestMessage, agentTextSegments, toolCalls, durationMs: span.durationMs });
 		sourceIndex = span.answer + 1;
 	}
 	while (sourceIndex < source.length) {
@@ -120,7 +153,21 @@ export function collapseCompletedRuns(
 		sourceIndex++;
 	}
 
-	return { ...sessionContext, messages, cacheMissExplainedAt };
+	return {
+		context: { ...sessionContext, messages, cacheMissExplainedAt },
+		summaries,
+	};
+}
+
+/** Render one static row describing the completed-run content hidden above it. */
+export function createCompletedRunSummary(summary: CompletedRunSummary, toggleKey: string | undefined): Component {
+	const textSegments = `${summary.agentTextSegments} agent text segment${summary.agentTextSegments === 1 ? "" : "s"}`;
+	const toolCalls = `${summary.toolCalls} tool call${summary.toolCalls === 1 ? "" : "s"}`;
+	const duration = `${formatDuration(summary.durationMs)} elapsed`;
+	const separator = ` ${theme.sep.dot.trim()} `;
+	const keyHint = toggleKey ? `${separator}${toggleKey} to expand` : "";
+	const text = `※ collapsed: ${textSegments}${separator}${toolCalls}${separator}${duration}${keyHint}`;
+	return new TruncatedText(theme.fg("dim", theme.italic(text)), 1, 0);
 }
 
 /**
