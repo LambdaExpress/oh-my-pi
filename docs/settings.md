@@ -342,6 +342,7 @@ thinkingBudgets:
   medium: 8192
   high: 16384
   xhigh: 32768
+  max: 32768
 ```
 
 | Key | Type | Default | Values |
@@ -353,6 +354,7 @@ thinkingBudgets:
 | `thinkingBudgets.medium` | number | `8192` | Token budget for `medium`. |
 | `thinkingBudgets.high` | number | `16384` | Token budget for `high`. |
 | `thinkingBudgets.xhigh` | number | `32768` | Token budget for `xhigh`. |
+| `thinkingBudgets.max` | number | `32768` | Token budget for `max`. |
 
 ### Sampling
 

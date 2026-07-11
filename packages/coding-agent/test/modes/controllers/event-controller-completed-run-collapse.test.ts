@@ -78,6 +78,7 @@ function fixture(collapseCompletedRuns = true, waitForMessagePersistence = vi.fn
 	};
 	return {
 		controller: new EventController(ctx as never),
+		session,
 		chatContainer,
 		recordCompletedRunCollapse,
 		rebuildChatFromMessages,
@@ -193,6 +194,39 @@ describe("completed run collapse", () => {
 		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
 		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps the collapse span when a queued follow-up starts before the prior agent_end settles", async () => {
+		const persisted = Promise.withResolvers<void>();
+		const waitForMessagePersistence = vi.fn(() => persisted.promise);
+		const { controller, session, recordCompletedRunCollapse } = fixture(true, waitForMessagePersistence);
+		const initial = { role: "user", content: "build it", timestamp: 20 } as AgentMessage;
+		const firstFinal = assistant("first answer", "stop", 21);
+		const followUp = { role: "user", content: "also update the tests", timestamp: 22 } as AgentMessage;
+		const final = assistant("updated answer", "stop", 23);
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: initial });
+		await controller.handleEvent({ type: "message_end", message: initial });
+		await controller.handleEvent({ type: "message_end", message: firstFinal });
+		const firstEnding = controller.handleEvent({ type: "agent_end", messages: [initial, firstFinal] });
+		await Promise.resolve();
+
+		session.isStreaming = true;
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: followUp });
+		await controller.handleEvent({ type: "message_end", message: followUp });
+		persisted.resolve();
+		await firstEnding;
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+
+		await controller.handleEvent({ type: "message_end", message: final });
+		session.isStreaming = false;
+		await controller.handleEvent({ type: "agent_end", messages: [followUp, final] });
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(
+			expect.objectContaining({ initialUserMessage: initial, finalAssistantMessage: final }),
+		);
 	});
 
 	it("retains the full run after an abort", async () => {

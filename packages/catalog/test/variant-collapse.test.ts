@@ -10,7 +10,7 @@ import {
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { stripThinkingVariantToken } from "@oh-my-pi/pi-catalog/identity/family";
 import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
-import { requireSupportedEffort, resolveWireModelId } from "@oh-my-pi/pi-catalog/model-thinking";
+import { resolveWireModelId } from "@oh-my-pi/pi-catalog/model-thinking";
 import { googleGeminiCliModelManagerOptions } from "@oh-my-pi/pi-catalog/provider-models/google";
 import type { ModelSpec } from "@oh-my-pi/pi-catalog/types";
 import {
@@ -527,102 +527,42 @@ describe("collapseEffortVariantsAcrossProviders", () => {
 	});
 });
 
-describe("Devin GPT-5.6 effort routing", () => {
-	it("exposes max only when a real sibling route exists", () => {
-		const ids = [
-			"gpt-5-6-sol-none",
-			"gpt-5-6-sol-low",
-			"gpt-5-6-sol-medium",
-			"gpt-5-6-sol-high",
-			"gpt-5-6-sol-xhigh",
-			"gpt-5-6-sol-max",
-			"gpt-5-6-sol-none-priority",
-			"gpt-5-6-sol-low-priority",
-			"gpt-5-6-sol-medium-priority",
-			"gpt-5-6-sol-high-priority",
-			"gpt-5-6-sol-xhigh-priority",
-		];
-		const collapsed = collapseEffortVariants(
-			ids.map(
-				id =>
-					({
-						id,
-						name: id,
-						api: "devin-agent",
-						provider: "devin",
-						baseUrl: "https://server.codeium.com",
-						reasoning: true,
-						input: ["text"],
-						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-						contextWindow: 1_000_000,
-						maxTokens: 128_000,
-					}) satisfies ModelSpec<"devin-agent">,
-			),
-			DEVIN_VARIANT_COLLAPSE_TABLE,
-		);
+describe("Devin tier routing", () => {
+	const family = (id: string) => {
+		const found = DEVIN_VARIANT_COLLAPSE_TABLE.families.find(f => f.id === id);
+		if (!found) throw new Error(`Devin family ${id} missing`);
+		return found;
+	};
 
-		const standardSpec = collapsed.find(model => model.id === "gpt-5-6-sol");
-		if (!standardSpec) throw new Error("Expected collapsed GPT-5.6 Sol");
-		const standard = buildModel(standardSpec);
-		expect(standard.thinking?.efforts).toEqual([
-			Effort.Minimal,
-			Effort.Low,
-			Effort.Medium,
-			Effort.High,
-			Effort.XHigh,
-			Effort.Max,
-		]);
-		expect(resolveWireModelId(standard, Effort.Minimal)).toBe("gpt-5-6-sol-low");
-		expect(resolveWireModelId(standard, Effort.Low)).toBe("gpt-5-6-sol-low");
-		expect(resolveWireModelId(standard, Effort.Medium)).toBe("gpt-5-6-sol-medium");
-		expect(resolveWireModelId(standard, Effort.High)).toBe("gpt-5-6-sol-high");
-		expect(resolveWireModelId(standard, Effort.XHigh)).toBe("gpt-5-6-sol-xhigh");
-		expect(resolveWireModelId(standard, Effort.Max)).toBe("gpt-5-6-sol-max");
+	it("routes user efforts 1:1 onto per-tier siblings including max", () => {
+		const opus = family("claude-opus-4-8");
+		expect(opus.routing).toEqual({
+			[Effort.Low]: "claude-opus-4-8-low",
+			[Effort.Medium]: "claude-opus-4-8-medium",
+			[Effort.High]: "claude-opus-4-8-high",
+			[Effort.XHigh]: "claude-opus-4-8-xhigh",
+			[Effort.Max]: "claude-opus-4-8-max",
+		});
+		expect(opus.thinking.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max]);
+		expect(opus.thinking.requiresEffort).toBe(true);
 
-		const fastSpec = collapsed.find(model => model.id === "gpt-5-6-sol-fast");
-		if (!fastSpec) throw new Error("Expected collapsed GPT-5.6 Sol Fast");
-		const fast = buildModel(fastSpec);
-		expect(fast.thinking?.efforts).toEqual([Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh]);
-		expect(resolveWireModelId(fast, Effort.XHigh)).toBe("gpt-5-6-sol-xhigh-priority");
-		expect(() => requireSupportedEffort(fast, Effort.Max)).toThrow(
-			/Supported efforts: minimal, low, medium, high, xhigh/,
-		);
+		const sol = family("gpt-5-6-sol");
+		expect(sol.routing[Effort.Max]).toBe("gpt-5-6-sol-max");
+		expect(sol.routing[Effort.Low]).toBe("gpt-5-6-sol-low");
+		expect(sol.routing.off).toBe("gpt-5-6-sol-none");
+		expect(sol.routing[Effort.Minimal]).toBeUndefined();
 	});
 
-	it("refreshes stale collapsed GPT-5.6 routes without raw siblings", () => {
-		const stale: ModelSpec<"devin-agent"> = {
-			id: "gpt-5-6-sol",
-			name: "GPT-5.6 Sol",
-			api: "devin-agent",
-			provider: "devin",
-			baseUrl: "https://server.codeium.com",
-			reasoning: true,
-			input: ["text"],
-			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-			contextWindow: 1_000_000,
-			maxTokens: 128_000,
-			requestModelId: "gpt-5-6-sol-none",
-			thinking: {
-				mode: "effort",
-				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
-				effortRouting: {
-					off: "gpt-5-6-sol-none",
-					minimal: "gpt-5-6-sol-low",
-					low: "gpt-5-6-sol-medium",
-					medium: "gpt-5-6-sol-high",
-					high: "gpt-5-6-sol-xhigh",
-					xhigh: "gpt-5-6-sol-max",
-				},
-			},
-		};
+	it("keeps families without a -max sibling on the xhigh ceiling", () => {
+		const solFast = family("gpt-5-6-sol-fast");
+		expect(solFast.thinking.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh]);
+		expect(solFast.routing[Effort.Max]).toBeUndefined();
+		expect(solFast.routing[Effort.XHigh]).toBe("gpt-5-6-sol-xhigh-priority");
 
-		const refreshed = collapseEffortVariants([stale], DEVIN_VARIANT_COLLAPSE_TABLE)[0];
-		if (!refreshed) throw new Error("Expected refreshed GPT-5.6 Sol");
-		const model = buildModel(refreshed);
-		expect(model.thinking?.efforts.at(-1)).toBe(Effort.Max);
-		expect(resolveWireModelId(model, Effort.Low)).toBe("gpt-5-6-sol-low");
-		expect(resolveWireModelId(model, Effort.XHigh)).toBe("gpt-5-6-sol-xhigh");
-		expect(resolveWireModelId(model, Effort.Max)).toBe("gpt-5-6-sol-max");
+		const gpt55 = family("gpt-5-5");
+		expect(gpt55.thinking.efforts).toEqual([Effort.Low, Effort.Medium, Effort.High, Effort.XHigh]);
+		expect(gpt55.routing[Effort.Minimal]).toBeUndefined();
+		expect(gpt55.routing[Effort.Max]).toBeUndefined();
 	});
 });
 

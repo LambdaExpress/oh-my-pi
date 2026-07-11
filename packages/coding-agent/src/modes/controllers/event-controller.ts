@@ -100,6 +100,7 @@ class CompletedRunGate extends Container {
 
 interface ActiveCompletedRun {
 	startedAtMs: number;
+	lifecycleVersion: number;
 	messages: AgentMessage[];
 	initialUserMessage?: Extract<AgentMessage, { role: "user" }>;
 	gate?: CompletedRunGate;
@@ -420,7 +421,9 @@ export class EventController {
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
 		if (!this.#activeCompletedRun && this.ctx.settings.get("display.collapseCompletedRuns")) {
-			this.#activeCompletedRun = { messages: [], startedAtMs: Date.now() };
+			this.#activeCompletedRun = { lifecycleVersion: 1, messages: [], startedAtMs: Date.now() };
+		} else if (this.#activeCompletedRun) {
+			this.#activeCompletedRun.lifecycleVersion++;
 		}
 		this.#lastIntent = undefined;
 		this.#readToolCallArgs.clear();
@@ -1152,11 +1155,18 @@ export class EventController {
 		// then). Mirrors the collab guest's !isStreaming loader reconciler.
 		if (this.ctx.session.isStreaming) return;
 
+		const activeRun = this.#activeCompletedRun;
+		const lifecycleVersion = activeRun?.lifecycleVersion;
 		const finalAssistant = event.messages.findLast(
 			(message): message is Extract<AgentMessage, { role: "assistant" }> => message.role === "assistant",
 		);
-		if (this.#activeCompletedRun?.gate && finalAssistant) {
+		if (activeRun?.gate && finalAssistant) {
 			await this.ctx.viewSession.waitForMessagePersistence(finalAssistant);
+		}
+		// A queued follow-up can start a fresh lifecycle while the prior end waits
+		// for persistence. Only the newest lifecycle may consume the shared span.
+		if (activeRun && (this.#activeCompletedRun !== activeRun || activeRun.lifecycleVersion !== lifecycleVersion)) {
+			return;
 		}
 		const collapse = this.#takeCompletedRunCollapse(finalAssistant);
 		await this.#finishAgentEnd();

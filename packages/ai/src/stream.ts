@@ -1253,7 +1253,7 @@ const GOOGLE_THINKING: Record<Effort, number> = {
 	medium: 8192,
 	high: 16384,
 	xhigh: 24575,
-	max: 24575,
+	max: 32768,
 };
 
 const BEDROCK_CLAUDE_THINKING: Record<Effort, number> = {
@@ -1262,7 +1262,7 @@ const BEDROCK_CLAUDE_THINKING: Record<Effort, number> = {
 	medium: 8192,
 	high: 16384,
 	xhigh: 16384,
-	max: 16384,
+	max: 32768,
 };
 
 function resolveBedrockThinkingBudget(
@@ -1635,6 +1635,7 @@ function mapOptionsForApi<TApi extends Api>(
 				toolChoice: mapOpenAiToolChoice(options?.toolChoice),
 				serviceTier: options?.serviceTier,
 				preferWebsockets: options?.preferWebsockets,
+				codexCompaction: options?.codexCompaction,
 				reasoningSummary: options?.hideThinkingSummary ? null : "detailed",
 				textVerbosity: options?.textVerbosity,
 			});
@@ -1844,7 +1845,9 @@ function getGoogleBudget(
 				return 2048;
 			case "medium":
 				return 8192;
-			default:
+			case "high":
+			case "xhigh":
+			case "max":
 				return model.id.includes("2.5-flash") ? 24576 : 32768;
 		}
 	}

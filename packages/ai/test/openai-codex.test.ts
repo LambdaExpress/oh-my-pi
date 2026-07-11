@@ -312,29 +312,29 @@ describe("openai-codex reasoning effort validation", () => {
 			transformRequestBody({ ...body }, createCodexModel(body.model), { reasoningEffort: "xhigh" }),
 		).rejects.toThrow(/Supported efforts: medium, high/);
 	});
+
+	it("rejects gpt-5.6 minimal now that the wire floor is low", async () => {
+		const body: RequestBody = { model: "gpt-5.6-sol", input: [] };
+		await expect(
+			transformRequestBody(body, createCodexModel(body.model), { reasoningEffort: "minimal" }),
+		).rejects.toThrow(/Supported efforts: low, medium, high, xhigh, max/);
+	});
 });
 
 describe("openai-codex reasoning effort wire mapping", () => {
-	it("passes GPT-5.6 efforts through with a distinct max tier", async () => {
+	it("maps gpt-5.6 user efforts 1:1 onto wire tiers", async () => {
 		const model = createCodexModel("gpt-5.6-sol");
-		const expected = [
-			["minimal", "low"],
-			["low", "low"],
-			["medium", "medium"],
-			["high", "high"],
-			["xhigh", "xhigh"],
-			["max", "max"],
-		] as const;
+		const efforts = ["low", "medium", "high", "xhigh", "max"] as const;
 
-		for (const [requested, wire] of expected) {
+		for (const effort of efforts) {
 			const transformed = await transformRequestBody({ model: model.id }, model, {
-				reasoningEffort: requested,
+				reasoningEffort: effort,
 			});
-			expect(transformed.reasoning?.effort).toBe(wire);
+			expect(transformed.reasoning?.effort).toBe(effort);
 		}
 	});
 
-	it("keeps pre-5.6 efforts unshifted and passes none through unmapped", async () => {
+	it("keeps pre-5.6 efforts 1:1 and passes none through unmapped", async () => {
 		const gpt55 = createCodexModel("gpt-5.5");
 		const unshifted = await transformRequestBody({ model: gpt55.id }, gpt55, { reasoningEffort: "xhigh" });
 		expect(unshifted.reasoning?.effort).toBe("xhigh");

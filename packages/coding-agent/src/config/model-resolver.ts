@@ -79,23 +79,23 @@ export interface ScopedModel {
 }
 
 interface ThinkingSuffixOptions {
-	allowMaxAlias?: boolean;
+	allowMaxSuffix?: boolean;
 	allowAutoAlias?: boolean;
 }
 
 interface ModelStringParseOptions extends ThinkingSuffixOptions {
 	isLiteralModelId?: (provider: string, id: string) => boolean;
 }
-// Context-gated suffix recognition keeps `:max` available as a canonical
-// thinking selector without stealing real model ids that end in `:max`.
-// `:auto` uses the same literal-id / exact-match guards.
-const MAX_THINKING_SUFFIX_OPTIONS: ThinkingSuffixOptions = { allowMaxAlias: true, allowAutoAlias: true };
+// Suffix recognition for the model-pattern parser: `:max` is a real thinking
+// level and `:auto` maps to the auto sentinel. Both are gated behind flags
+// (and the literal-id / exact-match guards on the callers) because real model
+// ids end in `:max` (e.g. `glm-4.7:max`) — an ungated split would silently
+// reinterpret them as a thinking suffix.
+const MAX_THINKING_SUFFIX_OPTIONS: ThinkingSuffixOptions = { allowMaxSuffix: true, allowAutoAlias: true };
 
 function parseThinkingSuffix(value: string, options?: ThinkingSuffixOptions): ConfiguredThinkingLevel | undefined {
-	if (value === ThinkingLevel.Max) {
-		return options?.allowMaxAlias === true ? ThinkingLevel.Max : undefined;
-	}
 	const level = parseThinkingLevel(value);
+	if (level === ThinkingLevel.Max) return options?.allowMaxSuffix === true ? level : undefined;
 	if (level !== undefined) return level;
 	if (options?.allowAutoAlias === true && value === AUTO_THINKING) return AUTO_THINKING;
 	return undefined;
@@ -103,8 +103,8 @@ function parseThinkingSuffix(value: string, options?: ThinkingSuffixOptions): Co
 
 /**
  * `level` is set when the suffix parses as a concrete thinking level (or, when
- * the caller opts in via `allowMaxAlias`/`allowAutoAlias`, the context-gated
- * `:max` / `:auto` selectors); `base` then has the suffix stripped. Otherwise
+ * the caller opts in via `allowMaxSuffix`/`allowAutoAlias`, the guarded `:max`
+ * level / `:auto` sentinel); `base` then has the suffix stripped. Otherwise
  * `base` is the input.
  * `minColonIndex` requires the colon to appear strictly after that index —
  * role-alias callers pass `PREFIX_MODEL_ROLE.length` so the base is at least
@@ -183,7 +183,7 @@ export function parseModelString(
 	// Strip strict thinking level suffixes first (e.g. "claude-sonnet-4-6:high" -> id "claude-sonnet-4-6", thinkingLevel "high").
 	const strict = splitThinkingSuffix(id);
 	if (strict.level) return { provider, id: strict.base, thinkingLevel: strict.level };
-	// `max` is canonical but context-gated because real model IDs can end in
+	// `max` is a real thinking level, but real model IDs can also end in
 	// `:max`. Context-aware callers pass a literal lookup so those models win.
 	const maxAlias = splitThinkingSuffix(id, -1, options);
 	if (maxAlias.level) {
@@ -239,9 +239,9 @@ function getOpenRouterRouteSuffix(modelId: string): { baseId: string; suffix: st
 	}
 
 	const suffix = modelId.slice(colonIdx + 1).trim();
-	// `max` is a thinking selector, never an OpenRouter route suffix, so
-	// `openrouter/<id>:max` falls through to the context-aware selector split
-	// instead of being cloned into a literal `<id>:max` model id.
+	// `max` is a thinking-level suffix, never an OpenRouter route suffix, so
+	// `openrouter/<id>:max` falls through to the max-aware selector split instead of
+	// being cloned into a literal `<id>:max` model id with the reasoning level lost.
 	if (!suffix || parseThinkingSuffix(suffix, MAX_THINKING_SUFFIX_OPTIONS)) {
 		return undefined;
 	}
@@ -766,7 +766,7 @@ function parseModelPatternWithContext(
 
 	// No match - try stripping a valid thinking suffix and recursing.
 	// `max` is accepted only after the full pattern failed, so literal model IDs
-	// ending in `:max` keep winning over the alias.
+	// ending in `:max` keep winning over the thinking suffix.
 	const { base, level } = splitThinkingSuffix(pattern, -1, MAX_THINKING_SUFFIX_OPTIONS);
 	if (level) {
 		const result = parseModelPatternWithContext(base, availableModels, context, options);

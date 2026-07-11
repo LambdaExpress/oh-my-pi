@@ -30,6 +30,7 @@ const codexModelEntrySchema = type({
 	"supported_in_api?": "unknown",
 	"priority?": "unknown",
 	"prefer_websockets?": "unknown",
+	"use_responses_lite?": "unknown",
 });
 
 const codexModelsResponseSchema = type({
@@ -85,12 +86,12 @@ export async function fetchCodexModels(options: CodexModelDiscoveryOptions): Pro
 	const fetchFn = discoveryFetch(options.fetchFn);
 	const baseUrl = normalizeBaseUrl(options.baseUrl);
 	const paths = normalizePaths(options.paths);
-	const headers = buildCodexHeaders(options);
 	const clientVersion = await resolveCodexClientVersion(
 		options.clientVersion,
 		options.registryFetchFn ?? fetchFn,
 		options.signal,
 	);
+	const headers = buildCodexHeaders(options, clientVersion);
 
 	let sawSuccessfulResponse = false;
 	for (const path of paths) {
@@ -155,7 +156,7 @@ function buildModelsUrl(baseUrl: string, path: string, clientVersion: string | u
 	return url.toString();
 }
 
-function buildCodexHeaders(options: CodexModelDiscoveryOptions): Headers {
+function buildCodexHeaders(options: CodexModelDiscoveryOptions, clientVersion: string): Headers {
 	const headers = new Headers(options.headers);
 	headers.set("Authorization", `Bearer ${options.accessToken}`);
 	if (options.accountId && options.accountId.trim().length > 0) {
@@ -163,11 +164,12 @@ function buildCodexHeaders(options: CodexModelDiscoveryOptions): Headers {
 	}
 	headers.set(OPENAI_HEADERS.BETA, OPENAI_HEADER_VALUES.BETA_RESPONSES);
 	headers.set(OPENAI_HEADERS.ORIGINATOR, OPENAI_HEADER_VALUES.ORIGINATOR_CODEX);
+	headers.set(OPENAI_HEADERS.VERSION, clientVersion);
 	headers.set("accept", "application/json");
 	return headers;
 }
 
-async function resolveCodexClientVersion(
+export async function resolveCodexClientVersion(
 	clientVersion: string | undefined,
 	fetchFn: FetchImpl,
 	signal: AbortSignal | undefined,
@@ -262,6 +264,7 @@ function normalizeCodexModelEntry(entry: unknown, baseUrl: string): NormalizedCo
 	const reasoning = supportsReasoning(payload.default_reasoning_level, payload.supported_reasoning_levels);
 	const input = normalizeInputModalities(payload.input_modalities);
 	const preferWebsockets = toBoolean(payload.prefer_websockets) === true;
+	const useResponsesLite = toBoolean(payload.use_responses_lite) === true;
 	const priority = toFiniteNumber(payload.priority) ?? Number.MAX_SAFE_INTEGER;
 
 	return {
@@ -279,6 +282,7 @@ function normalizeCodexModelEntry(entry: unknown, baseUrl: string): NormalizedCo
 			contextWindow,
 			maxTokens,
 			...(preferWebsockets ? { preferWebsockets: true } : {}),
+			...(useResponsesLite ? { useResponsesLite: true } : {}),
 			...(priority !== Number.MAX_SAFE_INTEGER ? { priority } : {}),
 		},
 	};

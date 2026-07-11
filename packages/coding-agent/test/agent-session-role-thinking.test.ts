@@ -147,14 +147,16 @@ describe("AgentSession role model thinking behavior", () => {
 		expect(toSlow?.thinkingLevel).toBe(Effort.High);
 		expect(session.thinkingLevel).toBe(Effort.High);
 
-		session.setThinkingLevel(Effort.Minimal);
-		expect(session.thinkingLevel).toBe(Effort.Minimal);
+		// `medium` is supported on both ladders (4-6 dropped `minimal`), so the
+		// selection survives the role switch unclamped.
+		session.setThinkingLevel(Effort.Medium);
+		expect(session.thinkingLevel).toBe(Effort.Medium);
 
 		const toDefault = await session.cycleRoleModels(["default", "slow"]);
 		expect(toDefault?.role).toBe("default");
 		expect(toDefault?.model.id).toBe(defaultModel.id);
-		expect(toDefault?.thinkingLevel).toBe(Effort.Minimal);
-		expect(session.thinkingLevel).toBe(Effort.Minimal);
+		expect(toDefault?.thinkingLevel).toBe(Effort.Medium);
+		expect(session.thinkingLevel).toBe(Effort.Medium);
 	});
 
 	it("applies slow role thinking even when plan shares the same model", async () => {
@@ -231,22 +233,22 @@ describe("AgentSession role model thinking behavior", () => {
 		expect(session.getAvailableThinkingLevels()).not.toContain("xhigh");
 	});
 
-	it("keeps GPT-5.6 max distinct in session state and cycling", async () => {
-		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
-		if (!model) throw new Error("Expected openai-codex/gpt-5.6-sol to exist");
+	it("clamps max selections down to the ladder ceiling on models without a max tier", async () => {
+		// Budget-mode sonnet-4-5 tops out at xhigh; a max request must clamp down.
+		const model = getAnthropicModelOrThrow("claude-sonnet-4-5");
 		const agent = new Agent({
 			initialState: {
 				model,
 				systemPrompt: ["Test"],
 				tools: [],
 				messages: [],
-				thinkingLevel: Effort.XHigh,
+				thinkingLevel: undefined,
 			},
 		});
-		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth-gpt56-max.db"));
+		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth-max-clamp.db"));
 		authStorages.push(authStorage);
-		authStorage.setRuntimeApiKey("openai-codex", "test-key");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models-gpt56-max.yml"));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models-max-clamp.yml"));
 
 		sessionSettings = Settings.isolated();
 		session = new AgentSession({
@@ -256,11 +258,9 @@ describe("AgentSession role model thinking behavior", () => {
 			modelRegistry,
 		});
 
-		expect(session.getAvailableThinkingLevels()).toContain(Effort.Max);
 		session.setThinkingLevel(Effort.Max);
-		expect(session.thinkingLevel).toBe(Effort.Max);
-		expect(agent.state.thinkingLevel).toBe(Effort.Max);
-		expect(session.cycleThinkingLevel()).toBe("off");
+		expect(session.thinkingLevel).toBe(Effort.XHigh);
+		expect(session.getAvailableThinkingLevels()).not.toContain("max");
 	});
 
 	it("cycles through off and auto before returning to effort levels", async () => {
@@ -297,6 +297,40 @@ describe("AgentSession role model thinking behavior", () => {
 		expect(agent.state.disableReasoning).toBe(false);
 		expect(session.cycleThinkingLevel()).toBe(Effort.Minimal);
 		expect(session.thinkingLevel).toBe(Effort.Minimal);
+	});
+
+	it("cycles through max as the final tier on a max-capable model", async () => {
+		const model = getAnthropicModelOrThrow("claude-opus-4-7");
+		const agent = new Agent({
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+				thinkingLevel: Effort.XHigh,
+			},
+		});
+		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth-cycle-max.db"));
+		authStorages.push(authStorage);
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models-cycle-max.yml"));
+
+		sessionSettings = Settings.isolated();
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: sessionSettings,
+			modelRegistry,
+		});
+
+		const available = session.getAvailableThinkingLevels();
+		expect(available.at(-1)).toBe(Effort.Max);
+
+		session.setThinkingLevel(Effort.XHigh);
+		expect(session.cycleThinkingLevel()).toBe(Effort.Max);
+		expect(session.thinkingLevel).toBe(Effort.Max);
+		// max is the last tier: the wheel wraps back to off.
+		expect(session.cycleThinkingLevel()).toBe("off");
 	});
 
 	it("keeps auto configured while applying the classifier result as the effective level", async () => {
@@ -504,7 +538,7 @@ describe("AgentSession role model thinking behavior", () => {
 		expect(session.autoResolvedThinkingLevel()).toBeUndefined();
 	});
 
-	it("maps ultrathink prompts directly to the highest auto-supported level", async () => {
+	it("maps ultrathink prompts to the model's highest supported level, clamped below max", async () => {
 		const model = getAnthropicModelOrThrow("claude-sonnet-4-5");
 		await createSession({
 			initialModelId: model.id,
@@ -515,7 +549,9 @@ describe("AgentSession role model thinking behavior", () => {
 		const classifierSpy = vi.spyOn(autoThinkingClassifier, "classifyDifficulty").mockResolvedValue(Effort.Low);
 
 		session.setThinkingLevel(AUTO_THINKING);
-		const expected = clampAutoThinkingEffort(model, Effort.XHigh);
+		// sonnet-4-5 has no max tier, so the ultrathink jump clamps to xhigh.
+		const expected = clampAutoThinkingEffort(model, Effort.Max);
+		expect(expected).toBe(Effort.XHigh);
 		await session.prompt("ultrathink through the unsafe refactor");
 
 		expect(classifierSpy).not.toHaveBeenCalled();
@@ -523,29 +559,12 @@ describe("AgentSession role model thinking behavior", () => {
 		expect(session.autoResolvedThinkingLevel()).toBe(expected);
 	});
 
-	it("maps ultrathink prompts to max on GPT-5.6", async () => {
-		const model = getBundledModel("openai-codex", "gpt-5.6-sol");
-		if (!model) throw new Error("Expected openai-codex/gpt-5.6-sol to exist");
-		const agent = new Agent({
-			initialState: {
-				model,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-				thinkingLevel: Effort.High,
-			},
-		});
-		const authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth-gpt56-ultrathink.db"));
-		authStorages.push(authStorage);
-		authStorage.setRuntimeApiKey("openai-codex", "test-key");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models-gpt56-ultrathink.yml"));
-
-		sessionSettings = Settings.isolated();
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings: sessionSettings,
-			modelRegistry,
+	it("resolves ultrathink to max on max-capable models", async () => {
+		const model = getAnthropicModelOrThrow("claude-opus-4-7");
+		await createSession({
+			initialModelId: model.id,
+			initialThinkingLevel: Effort.High,
+			modelRoles: { default: `${model.provider}/${model.id}` },
 		});
 		vi.spyOn(session.agent, "prompt").mockResolvedValue(undefined);
 		const classifierSpy = vi.spyOn(autoThinkingClassifier, "classifyDifficulty").mockResolvedValue(Effort.Low);
