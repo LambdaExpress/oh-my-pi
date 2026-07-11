@@ -255,16 +255,16 @@ function workingMessagePalettes(accent: WorkingMessageAccent): { main: ShimmerPa
 	return entry;
 }
 
-function renderWorkingMessage(message: string, accent?: WorkingMessageAccent): string {
+function renderWorkingMessage(message: string, elapsedMs: number, accent?: WorkingMessageAccent): string {
 	const palettes = accent ? workingMessagePalettes(accent) : undefined;
 	const palette = palettes?.main;
-	const hint = interruptHint();
-	if (!message.endsWith(hint)) return shimmerText(message, theme, palette);
-	const header = message.slice(0, -hint.length);
+	const hintMarker = interruptHint();
+	if (!message.endsWith(hintMarker)) return shimmerText(message, theme, palette);
+	const header = message.slice(0, -hintMarker.length);
 	return shimmerSegments(
 		[
 			{ text: header, palette },
-			{ text: hint, palette: palettes?.hint ?? HINT_SHIMMER_PALETTE },
+			{ text: interruptHint(elapsedMs), palette: palettes?.hint ?? HINT_SHIMMER_PALETTE },
 		],
 		theme,
 	);
@@ -3877,7 +3877,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#clearWorkingMessageAccentCache();
 			this.statusContainer.disposeChildren();
 			const messageColorFn = ((message: string) =>
-				renderWorkingMessage(message, this.#getWorkingMessageAccent())) as LoaderMessageColorFn & {
+				renderWorkingMessage(
+					message,
+					this.statusLine.getCurrentActivityMs(),
+					this.#getWorkingMessageAccent(),
+				)) as LoaderMessageColorFn & {
 				animated?: true;
 			};
 			// Shimmer drives the 30fps redraw; when it is disabled the working

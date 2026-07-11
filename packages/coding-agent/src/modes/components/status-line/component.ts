@@ -315,9 +315,8 @@ export class StatusLineComponent implements Component {
 	 * of every completed `agent_start`→`agent_end` window since
 	 * {@link resetActiveTime} last reset it; `activeStartedAt` is the start
 	 * timestamp of the currently-running window (or `null` when idle).
-	 * `getActiveMs()` returns `activeMs + (now - activeStartedAt)` for the
-	 * currently-attached session, so the counter ticks live during a turn
-	 * and freezes the instant the agent yields.
+	 * `getCurrentActivityMs()` returns only that open window, while
+	 * `getActiveMs()` includes both completed windows and the current one.
 	 *
 	 * WeakMap so meters die with their session (e.g. a parked subagent
 	 * dropped from the registry); the main session's meter survives focus
@@ -518,6 +517,16 @@ export class StatusLineComponent implements Component {
 		const meter = this.#meter();
 		if (meter.activeStartedAt === null) return meter.activeMs;
 		return meter.activeMs + Math.max(0, Date.now() - meter.activeStartedAt);
+	}
+
+	/**
+	 * Snapshot of the currently-open active-processing window. Returns zero
+	 * while idle and excludes every completed window in the accumulator.
+	 */
+	getCurrentActivityMs(): number {
+		const startedAt = this.#meter().activeStartedAt;
+		if (startedAt === null) return 0;
+		return Math.max(0, Date.now() - startedAt);
 	}
 
 	/**

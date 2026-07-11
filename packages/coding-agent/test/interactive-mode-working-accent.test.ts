@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
+import { interruptHint } from "@oh-my-pi/pi-coding-agent/modes/shared";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -58,6 +59,10 @@ function renderLoader(mode: InteractiveMode): string {
 	return mode.statusContainer.render(120).join("\n");
 }
 
+function renderPlainLoader(mode: InteractiveMode): string {
+	return Bun.stripANSI(renderLoader(mode));
+}
+
 function shadowAccentSurfaceLuminance(value: number | undefined): () => void {
 	Object.defineProperty(theme, "accentSurfaceLuminance", {
 		configurable: true,
@@ -74,6 +79,7 @@ afterEach(() => {
 		harness.tempDir.removeSync();
 	}
 	harnesses = [];
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 	resetSettingsForTest();
 });
@@ -191,5 +197,34 @@ describe("InteractiveMode working-message session accent cache", () => {
 		mode.loadingAnimation?.setMessage("Accent enabled");
 		expect(getHex).toHaveBeenCalledTimes(2);
 		expect(renderLoader(mode)).toContain(accentAnsi);
+	});
+});
+
+describe("InteractiveMode working-message elapsed time", () => {
+	it("updates elapsed time while preserving dynamic working prefixes", async () => {
+		vi.useFakeTimers();
+		const { mode } = await createHarness("Elapsed time");
+		let now = 1_000_000;
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		mode.statusLine.markActivityStart();
+		mode.ensureLoadingAnimation();
+		expect(renderPlainLoader(mode)).toContain("Working… (0s · esc to interrupt)");
+
+		now += 1_000;
+		vi.advanceTimersByTime(100);
+		expect(renderPlainLoader(mode)).toContain("Working… (1s · esc to interrupt)");
+
+		now = 1_000_000 + 65_000;
+		mode.loadingAnimation?.setMessage(`Planning…${interruptHint()}`);
+		expect(renderPlainLoader(mode)).toContain("Planning… (1m·5s · esc to interrupt)");
+
+		now = 1_000_000 + 3_661_000;
+		mode.loadingAnimation?.setMessage(`Thinking…${interruptHint()}`);
+		expect(renderPlainLoader(mode)).toContain("Thinking… (1h·1m·1s · esc to interrupt)");
+
+		now = 1_000_000 + 100 * 3_600_000;
+		mode.loadingAnimation?.setMessage(`Reviewing…${interruptHint()}`);
+		expect(renderPlainLoader(mode)).toContain("Reviewing… (100h·0m·0s · esc to interrupt)");
 	});
 });

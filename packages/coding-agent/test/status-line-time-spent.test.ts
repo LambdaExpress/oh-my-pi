@@ -160,6 +160,36 @@ describe("StatusLineComponent active-time accounting", () => {
 		expect(c.getActiveMs()).toBe(5_000);
 	});
 
+	it("reports only the current open window separately from accumulated activity", () => {
+		const c = new StatusLineComponent(makeSession());
+		let now = 1_500_000_000;
+		vi.spyOn(Date, "now").mockImplementation(() => now);
+
+		expect(c.getCurrentActivityMs()).toBe(0);
+
+		// A completed window contributes only to the cumulative counter.
+		c.markActivityStart();
+		now += 2_500;
+		expect(c.getCurrentActivityMs()).toBe(2_500);
+		c.markActivityEnd();
+		expect(c.getCurrentActivityMs()).toBe(0);
+		expect(c.getActiveMs()).toBe(2_500);
+
+		// A later open window excludes the completed accumulator.
+		now += 10_000;
+		c.markActivityStart();
+		now += 1_250;
+		expect(c.getCurrentActivityMs()).toBe(1_250);
+		expect(c.getActiveMs()).toBe(3_750);
+
+		// A backward wall-clock adjustment cannot produce negative elapsed time.
+		now -= 2_000;
+		expect(c.getCurrentActivityMs()).toBe(0);
+		c.markActivityEnd();
+		expect(c.getCurrentActivityMs()).toBe(0);
+		expect(c.getActiveMs()).toBe(2_500);
+	});
+
 	it("ticks live during an open window so the segment animates while the agent runs", () => {
 		const c = new StatusLineComponent(makeSession());
 		let now = 2_000_000_000;
