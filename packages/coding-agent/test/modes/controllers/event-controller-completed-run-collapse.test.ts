@@ -39,7 +39,7 @@ function fixture(collapseCompletedRuns = true, waitForMessagePersistence = vi.fn
 	const resetDisplay = vi.fn();
 	const requestRender = vi.fn();
 	const chatContainer = new TranscriptContainer();
-	const session = { isStreaming: false, waitForMessagePersistence };
+	const session = { isStreaming: false, queuedUserMessageCount: 0, waitForMessagePersistence };
 	const ctx = {
 		isInitialized: true,
 		settings,
@@ -223,6 +223,42 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "message_end", message: final });
 		session.isStreaming = false;
 		await controller.handleEvent({ type: "agent_end", messages: [followUp, final] });
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(
+			expect.objectContaining({ initialUserMessage: initial, finalAssistantMessage: final }),
+		);
+	});
+
+	it("keeps the original collapse span when a queued correction resumes a user interrupt", async () => {
+		const { controller, session, recordCompletedRunCollapse } = fixture();
+		const initial = { role: "user", content: "build it", timestamp: 24 } as AgentMessage;
+		const interrupted = assistant("", "aborted", 25);
+		interrupted.errorMessage = "Interrupted by user";
+		const correction = {
+			role: "user",
+			content: "correct it",
+			steering: true,
+			timestamp: 26,
+		} as AgentMessage;
+		const final = assistant("done", "stop", 27);
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: initial });
+		await controller.handleEvent({ type: "message_end", message: initial });
+		await controller.handleEvent({ type: "message_end", message: interrupted });
+		session.queuedUserMessageCount = 1;
+		await controller.handleEvent({ type: "agent_end", messages: [initial, interrupted] });
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+
+		session.isStreaming = true;
+		await controller.handleEvent({ type: "agent_start" });
+		session.queuedUserMessageCount = 0;
+		await controller.handleEvent({ type: "message_start", message: correction });
+		await controller.handleEvent({ type: "message_end", message: correction });
+		await controller.handleEvent({ type: "message_end", message: final });
+		session.isStreaming = false;
+		await controller.handleEvent({ type: "agent_end", messages: [correction, final] });
+
 		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
 		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(
 			expect.objectContaining({ initialUserMessage: initial, finalAssistantMessage: final }),

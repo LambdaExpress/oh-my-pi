@@ -25,7 +25,7 @@ import { customSubmissionSignature, userSubmissionSignature } from "../../modes/
 import type { PlanApprovalDetails } from "../../plan-mode/approved-plan";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
-import { isSilentAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
+import { isSilentAbort, isUserInterruptAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
 import { AUTO_THINKING } from "../../thinking";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import type { ResolveToolDetails } from "../../tools/resolve";
@@ -1168,7 +1168,14 @@ export class EventController {
 		if (activeRun && (this.#activeCompletedRun !== activeRun || activeRun.lifecycleVersion !== lifecycleVersion)) {
 			return;
 		}
-		const collapse = this.#takeCompletedRunCollapse(finalAssistant);
+		// A user interrupt can settle before its queued correction emits the next
+		// agent_start. Keep the original span/gate so that continuation still collapses
+		// from the initial request; an interrupt with no queued user work finalizes below.
+		const continuesInterruptedRun =
+			finalAssistant?.stopReason === "aborted" &&
+			isUserInterruptAbort(finalAssistant) &&
+			this.ctx.session.queuedUserMessageCount > 0;
+		const collapse = continuesInterruptedRun ? undefined : this.#takeCompletedRunCollapse(finalAssistant);
 		await this.#finishAgentEnd();
 		if (!collapse) return;
 		this.ctx.recordCompletedRunCollapse(collapse);

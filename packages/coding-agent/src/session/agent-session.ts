@@ -8547,6 +8547,18 @@ export class AgentSession {
 		return { steering, followUp };
 	}
 
+	/** Number of queued user-authored steering and follow-up messages. */
+	get queuedUserMessageCount(): number {
+		let count = 0;
+		for (const message of this.agent.peekSteeringQueue()) {
+			if (isUserQueuedMessage(message)) count++;
+		}
+		for (const message of this.agent.peekFollowUpQueue()) {
+			if (isUserQueuedMessage(message)) count++;
+		}
+		return count;
+	}
+
 	/** Number of pending displayable messages (includes steering, follow-up, and next-turn messages).
 	 *  Reflects actual queued work (advisor cards included) — feeds hasPendingMessages()/RPC and the
 	 *  empty-submit abort gate. The user-restorable subset is surfaced by getQueuedMessages()/clearQueue(). */
