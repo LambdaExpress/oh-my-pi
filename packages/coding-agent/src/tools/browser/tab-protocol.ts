@@ -47,6 +47,8 @@ export type WorkerInitPayload =
 			mode: "headless";
 			browserWSEndpoint: string;
 			safeDir: string;
+			/** Restore an OMP-owned visible page before each run; false for headless and external attachments. */
+			activatePageBeforeRun?: boolean;
 			viewport?: { width: number; height: number; deviceScaleFactor?: number };
 			dialogs?: "accept" | "dismiss";
 			url?: string;
@@ -57,6 +59,8 @@ export type WorkerInitPayload =
 			mode: "attach";
 			browserWSEndpoint: string;
 			safeDir: string;
+			/** Preserve visible-page activation when a timed-out worker reattaches to its OMP-owned target. */
+			activatePageBeforeRun?: boolean;
 			targetId: string;
 			dialogs?: "accept" | "dismiss";
 	  };

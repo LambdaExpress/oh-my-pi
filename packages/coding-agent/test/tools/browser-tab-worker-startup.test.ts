@@ -1,6 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import type { ReadyInfo, WorkerInbound, WorkerOutbound } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-protocol";
+import type {
+	ReadyInfo,
+	Transport,
+	WorkerInbound,
+	WorkerOutbound,
+} from "@oh-my-pi/pi-coding-agent/tools/browser/tab-protocol";
 import { initializeTabWorkerForTest } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
+import { WorkerCore } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-worker";
 
 class FakeStartupWorker {
 	#errorHandlers = new Set<(error: Error) => void>();
@@ -33,6 +39,32 @@ class FakeStartupWorker {
 	}
 }
 
+class FakeWorkerTransport implements Transport {
+	#handler?: (message: WorkerInbound | WorkerOutbound) => void;
+	readonly messages: WorkerOutbound[] = [];
+	readonly ready = Promise.withResolvers<void>();
+	readonly result = Promise.withResolvers<Extract<WorkerOutbound, { type: "result" }>>();
+
+	send(message: WorkerInbound | WorkerOutbound): void {
+		if (message.type === "ready") this.ready.resolve();
+		if (message.type === "result") this.result.resolve(message);
+		this.messages.push(message as WorkerOutbound);
+	}
+
+	onMessage(handler: (message: WorkerInbound | WorkerOutbound) => void): () => void {
+		this.#handler = handler;
+		return () => {
+			if (this.#handler === handler) this.#handler = undefined;
+		};
+	}
+
+	close(): void {}
+
+	deliver(message: WorkerInbound): void {
+		this.#handler?.(message);
+	}
+}
+
 const initPayload = {
 	mode: "headless" as const,
 	browserWSEndpoint: "ws://127.0.0.1/devtools/browser/test",
@@ -49,5 +81,65 @@ describe("browser tab worker startup", () => {
 
 		await expect(pending).rejects.toThrow("Tab worker failed during startup: Cannot find tab-worker-entry.ts");
 		expect(worker.sent).toEqual([{ type: "init", payload: initPayload }]);
+	});
+});
+
+describe("browser tab worker page activation", () => {
+	it("activates a managed visible page before running user code", async () => {
+		const calls: string[] = [];
+		const target = {
+			_targetId: "target-visible",
+			page: async () => page,
+		};
+		const page = {
+			target: () => target,
+			url: () => "data:text/html,visible",
+			title: async () => {
+				calls.push("title");
+				return "Visible fixture";
+			},
+			viewport: () => ({ width: 390, height: 844, deviceScaleFactor: 1 }),
+			bringToFront: async () => {
+				calls.push("bringToFront");
+			},
+			isClosed: () => false,
+			off: () => {},
+		};
+		const browser = {
+			targets: () => [target],
+			connected: true,
+			disconnect: () => {},
+		};
+		const loadPuppeteer = async () => ({
+			connect: async () => browser,
+		});
+		const transport = new FakeWorkerTransport();
+		new WorkerCore(transport, loadPuppeteer as never);
+		transport.deliver({
+			type: "init",
+			payload: {
+				mode: "attach",
+				browserWSEndpoint: "ws://127.0.0.1/devtools/browser/test",
+				safeDir: "/tmp/omp-puppeteer",
+				targetId: "target-visible",
+				activatePageBeforeRun: true,
+			},
+		});
+		await transport.ready.promise;
+		calls.length = 0;
+
+		transport.deliver({
+			type: "run",
+			id: "run-visible",
+			name: "visible",
+			code: "return await page.title();",
+			timeoutMs: 1_000,
+			session: { cwd: process.cwd() },
+		});
+		const result = await transport.result.promise;
+
+		expect(result.ok).toBe(true);
+		expect(calls[0]).toBe("bringToFront");
+		if (result.ok) expect(result.payload.returnValue).toBe("Visible fixture");
 	});
 });

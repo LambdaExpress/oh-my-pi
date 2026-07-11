@@ -785,6 +785,7 @@ export const BUNDLED_PI_REGISTRY_KEYS: ReadonlySet<string> = new Set([
 	"@oh-my-pi/pi-coding-agent/task/output-manager",
 	"@oh-my-pi/pi-coding-agent/task/parallel",
 	"@oh-my-pi/pi-coding-agent/task/persisted-revive",
+	"@oh-my-pi/pi-coding-agent/task/prompt-policy",
 	"@oh-my-pi/pi-coding-agent/task/provider-concurrency",
 	"@oh-my-pi/pi-coding-agent/task/render",
 	"@oh-my-pi/pi-coding-agent/task/renderer",

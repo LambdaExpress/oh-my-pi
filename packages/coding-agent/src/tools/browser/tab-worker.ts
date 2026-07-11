@@ -13,6 +13,7 @@ import type {
 	ImageFormat,
 	KeyInput,
 	Page,
+	default as Puppeteer,
 	SerializedAXNode,
 	Target,
 } from "puppeteer-core";
@@ -50,6 +51,8 @@ import type {
 	WorkerInbound,
 	WorkerInitPayload,
 } from "./tab-protocol";
+
+type PuppeteerLoader = (safeDir: string) => Promise<typeof Puppeteer>;
 
 declare global {
 	interface Element extends HTMLElement {}
@@ -556,6 +559,8 @@ export function describeInflight(inflight: Map<number, InflightOp>): string {
 
 export class WorkerCore {
 	#transport: Transport;
+	#loadPuppeteer: PuppeteerLoader;
+	#activatePageBeforeRun = false;
 	#browser?: Browser;
 	#page?: Page;
 	#targetId?: string;
@@ -568,8 +573,9 @@ export class WorkerCore {
 	#dialogPolicy?: DialogPolicy;
 	#dialogHandler?: (dialog: Dialog) => void;
 
-	constructor(transport: Transport) {
+	constructor(transport: Transport, loadPuppeteer: PuppeteerLoader = loadPuppeteerInWorker) {
 		this.#transport = transport;
+		this.#loadPuppeteer = loadPuppeteer;
 		this.#unsub = this.#transport.onMessage(msg => {
 			void this.#handleMessage(msg as WorkerInbound);
 		});
@@ -612,7 +618,8 @@ export class WorkerCore {
 	async #init(payload: WorkerInitPayload): Promise<void> {
 		try {
 			this.#mode = payload.mode;
-			const puppeteer = await loadPuppeteerInWorker(payload.safeDir);
+			this.#activatePageBeforeRun = payload.activatePageBeforeRun ?? false;
+			const puppeteer = await this.#loadPuppeteer(payload.safeDir);
 			this.#browser = await puppeteer.connect({
 				browserWSEndpoint: payload.browserWSEndpoint,
 				defaultViewport: null,
@@ -722,6 +729,7 @@ export class WorkerCore {
 		try {
 			throwIfAborted(signal);
 			const page = this.#requirePage();
+			if (this.#activatePageBeforeRun) await untilAborted(signal, () => page.bringToFront());
 			const browser = this.#requireBrowser();
 			const tabApi = this.#createTabApi(msg.name, msg.timeoutMs, signal, msg.session, displays, screenshots, active);
 			const runtime = this.#ensureRuntime(msg.session);

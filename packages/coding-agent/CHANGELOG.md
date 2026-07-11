@@ -33,6 +33,7 @@
 - Fixed `/new` retaining prior-session subagents, background jobs, IRC messages, and late HUD updates by fully retiring the previous root-session scope before activating the new session.
 - Fixed completed-run transcript collapse treating a queued correction after a user interrupt as a new request, so the original request and pre-interrupt loop now collapse with the eventual final answer.
 
+- Fixed managed visible Chromium tabs repeatedly timing out on screenshots and clicks after their window was minimized by restoring the page before each run, including after timed-out worker recovery.
 - Fixed Windows stdio MCP server launches for `.cmd`/`.bat` shims by preserving the command and arguments as separate `cmd.exe /c` argv entries instead of pre-quoting them into one nested command string.
 - Fixed `/tree` rendering blank rows for automatic session title updates by hiding `title_change` bookkeeping entries in the default view and rendering their title text in the all filter.
 - Fixed interactive MCP startup status so deferred MCP discovery starts only after the TUI subscribes to startup events, allowing the initial `Connecting to MCP servers: …` banner to render before completion updates.

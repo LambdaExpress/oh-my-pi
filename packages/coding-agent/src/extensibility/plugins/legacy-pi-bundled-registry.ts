@@ -786,6 +786,7 @@ import * as bundledPiCodingAgentTaskOmpCommand from "@oh-my-pi/pi-coding-agent/t
 import * as bundledPiCodingAgentTaskOutputManager from "@oh-my-pi/pi-coding-agent/task/output-manager";
 import * as bundledPiCodingAgentTaskParallel from "@oh-my-pi/pi-coding-agent/task/parallel";
 import * as bundledPiCodingAgentTaskPersistedRevive from "@oh-my-pi/pi-coding-agent/task/persisted-revive";
+import * as bundledPiCodingAgentTaskPromptPolicy from "@oh-my-pi/pi-coding-agent/task/prompt-policy";
 import * as bundledPiCodingAgentTaskProviderConcurrency from "@oh-my-pi/pi-coding-agent/task/provider-concurrency";
 import * as bundledPiCodingAgentTaskRender from "@oh-my-pi/pi-coding-agent/task/render";
 import * as bundledPiCodingAgentTaskRenderer from "@oh-my-pi/pi-coding-agent/task/renderer";
@@ -2886,6 +2887,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/task/persisted-revive": bundledPiCodingAgentTaskPersistedRevive as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/task/prompt-policy": bundledPiCodingAgentTaskPromptPolicy as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/task/provider-concurrency":

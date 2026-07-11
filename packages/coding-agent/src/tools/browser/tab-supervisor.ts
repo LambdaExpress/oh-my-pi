@@ -599,6 +599,7 @@ async function buildInitPayload(browser: PuppeteerBrowserHandle, opts: AcquireTa
 			mode: "headless",
 			browserWSEndpoint,
 			safeDir,
+			activatePageBeforeRun: !browser.kind.headless,
 			viewport: opts.viewport,
 			dialogs: opts.dialogs,
 			url: opts.url,
@@ -710,6 +711,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 		mode: "attach",
 		browserWSEndpoint,
 		safeDir: getPuppeteerDir(),
+		activatePageBeforeRun: tab.browser.kind.kind === "headless" && !tab.browser.kind.headless,
 		targetId: tab.targetId,
 		dialogs: tab.dialogPolicy,
 	};
