@@ -15,6 +15,29 @@
 - Fixed editor caret movement entering image or paste placeholders; keyboard left/right, word, and vertical movement now treat matched placeholders as atomic tokens.
 - Fixed live rows below a native-scrollback seam vanishing while streaming; scrolled-off live rows now enter history as frozen snapshots, with finalize-time repairs bounded so unchanged output does not repeat indefinitely.
 - Fixed OSC 8 hyperlinks staying disabled in Windows Terminal when `tui.hyperlinks=auto`.
+## [16.4.7] - 2026-07-12
+
+### Fixed
+
+- Fixed keyboard navigation paying an extra frame of input latency after idle; the queue-drain grace now applies only to Ctrl+C and Escape double-press gestures.
+
+## [16.4.6] - 2026-07-12
+
+### Added
+
+- Added support for width-changing editor text decorators on standalone presentation lines, with decorated output safely truncated to the available content width.
+
+## [16.4.5] - 2026-07-11
+
+### Added
+
+- Added `FuzzyText`, a prepared fuzzy-match handle that builds the search index once and matches many queries against it, optimizing performance for large corpora like session or transcript searches.
+
+### Fixed
+
+- Fixed an issue where the mid-prompt `/` autocomplete popup lingered indefinitely on non-path and non-skill tokens. Autocomplete matching is now properly gated to explicit skill namespaces, queries, and prefixes, preventing stale popups from incorrectly rewriting input on Tab or Enter.
+- Fixed idle Loader animation driving the full TUI render pipeline on every spinner tick by directly rewriting the Loader's visible rows when geometry is unchanged, reducing idle render work while preserving fallback repaint paths ([#5192](https://github.com/can1357/oh-my-pi/issues/5192)).
+
 ## [16.4.1] - 2026-07-10
 
 ### Added

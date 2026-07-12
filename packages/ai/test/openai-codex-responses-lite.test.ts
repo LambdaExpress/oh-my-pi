@@ -100,9 +100,6 @@ function createCodexFetchMock(sse: string, onRequest: (captured: CapturedCodexRe
 		if (url === "https://api.github.com/repos/openai/codex/releases/latest") {
 			return new Response(JSON.stringify({ tag_name: "rust-v0.0.0" }), { status: 200 });
 		}
-		if (url === "https://registry.npmjs.org/@openai%2Fcodex/latest") {
-			return new Response(JSON.stringify({ version: "0.144.1" }), { status: 200 });
-		}
 		if (url.startsWith("https://raw.githubusercontent.com/openai/codex/")) {
 			return new Response("PROMPT", { status: 200, headers: { etag: '"etag"' } });
 		}
@@ -668,12 +665,14 @@ describe("openai-codex Responses Lite and client metadata wire format", () => {
 		}).result();
 
 		expect(result.stopReason).toBe("stop");
-		expect(captured?.headers.get("x-openai-internal-codex-responses-lite")).toBe("true");
-		expect(captured?.headers.get("version")).toBe("0.144.1");
-		expect(captured?.body.reasoning).toEqual({ context: "all_turns" });
-		expect(captured?.body.instructions).toBeUndefined();
-		expect(captured?.body.tools).toBeUndefined();
-		expect((captured?.body.input as Array<Record<string, unknown>>)[0]?.type).toBe("additional_tools");
+		expect(captured).toBeDefined();
+		expect(captured!.headers.get("x-openai-internal-codex-responses-lite")).toBe("true");
+		expect(captured!.headers.get("version")).toBe("0.144.1");
+		const body = captured!.body;
+		expect(body.reasoning).toEqual({ context: "all_turns" });
+		expect(body.instructions).toBeUndefined();
+		expect(body.tools).toBeUndefined();
+		expect((body.input as Array<Record<string, unknown>>)[0]?.type).toBe("additional_tools");
 	});
 
 	it("omits the lite marker while retaining canonical client_metadata", async () => {

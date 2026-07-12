@@ -162,7 +162,7 @@ export class TanCommandController {
 						}
 					}
 				},
-				{ ownerId, scopeId },
+				{ ownerId, scopeId, agentId: cloneId },
 			);
 		} catch (error) {
 			if (cloneFile) await removeCloneSession(cloneFile);

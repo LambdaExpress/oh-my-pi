@@ -5,6 +5,13 @@
 ### Added
 
 - Added a distinct user-facing `max` effort for GPT-5.6 wire-effort models. Their native `low` through `max` tiers now pass through by name, while `minimal` remains a compatibility alias for native `low`. Standard Devin GPT-5.6 families route `max` to the real `-max` sibling; Fast families remain capped at `xhigh` because no `-max-priority` sibling exists.
+## [16.4.3] - 2026-07-11
+
+### Fixed
+
+- Fixed parsing of SAP AI Core Claude model IDs in version-first format (e.g., anthropic--claude-4.8-opus), restoring adaptive thinking metadata and capability gates.
+- Fixed GitHub Copilot Business and Enterprise model discovery to correctly preserve vision capabilities instead of downgrading models to text-only.
+
 ## [16.4.2] - 2026-07-10
 
 ### Fixed

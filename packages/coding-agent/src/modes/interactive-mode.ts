@@ -92,7 +92,7 @@ import planModeApprovedPrompt from "../prompts/system/plan-mode-approved.md" wit
 import planModeCompactInstructionsPrompt from "../prompts/system/plan-mode-compact-instructions.md" with {
 	type: "text",
 };
-import type { AgentRegistry } from "../registry/agent-registry";
+import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
@@ -122,6 +122,7 @@ import { ToolError } from "../tools/tool-errors";
 import { vocalizer } from "../tts/vocalizer";
 import { renderTreeList } from "../tui/tree-list";
 import { startAutoSessionTitleGeneration } from "../utils/auto-session-title";
+import { copyToClipboard } from "../utils/clipboard";
 import type { EventBus } from "../utils/event-bus";
 import { getEditorCommand, openInEditor } from "../utils/external-editor";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-color";
@@ -132,6 +133,7 @@ import {
 	pushTerminalTitle,
 	setSessionTerminalTitle,
 } from "../utils/title-generator";
+import { VibeSessionRegistry } from "../vibe/runtime";
 import type { AssistantMessageComponent } from "./components/assistant-message";
 import type { BashExecutionComponent } from "./components/bash-execution";
 import { ChatBlock, type ChatBlockHost } from "./components/chat-block";
@@ -457,6 +459,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	planModePaused = false;
 	goalModeEnabled = false;
 	goalModePaused = false;
+	vibeModeEnabled = false;
 	planModePlanFilePath: string | undefined = undefined;
 	loopModeEnabled = false;
 	loopPrompt: string | undefined = undefined;
@@ -552,6 +555,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #changelogMarkdown: string | undefined;
 	#planModePreviousTools: string[] | undefined;
 	#goalModePreviousTools: string[] | undefined;
+	#vibeModePreviousTools: string[] | undefined;
 	#goalContinuationTimer: NodeJS.Timeout | undefined;
 	#goalTurnHadToolCalls = false;
 	#goalContinuationTurnInFlight = false;
@@ -588,6 +592,9 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 	get focusedAgentId(): string | undefined {
 		return this.#focusController.focusedAgentId;
+	}
+	get sessionName(): string | undefined {
+		return this.session.sessionName;
 	}
 	focusAgentSession(id: string): Promise<void> {
 		return this.#focusController.focusAgent(id);
@@ -2041,6 +2048,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
+	#updateVibeModeStatus(): void {
+		this.statusLine.setVibeModeStatus(this.vibeModeEnabled ? { enabled: true } : undefined);
+		this.ui.requestRender();
+	}
+
 	#updateGoalModeStatus(): void {
 		const status =
 			this.goalModeEnabled || this.goalModePaused
@@ -2209,6 +2221,18 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#cancelGoalContinuation();
 			this.#updateGoalModeStatus();
 		}
+
+		if (this.vibeModeEnabled) {
+			await this.session.deactivateVibeTools(this.#vibeModePreviousTools ?? []);
+			this.session.setVibeModeState(undefined);
+			this.vibeModeEnabled = false;
+			this.#vibeModePreviousTools = undefined;
+			await VibeSessionRegistry.global().killAll(
+				this.session.getAgentId() ?? MAIN_AGENT_ID,
+				this.session.asyncJobManager,
+			);
+			this.#updateVibeModeStatus();
+		}
 	}
 
 	/** Reconcile mode state from session entries on resume/switch. */
@@ -2248,6 +2272,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		this.session.goalRuntime.clearAccounting();
+		if (sessionContext.mode === "vibe") {
+			await this.#enterVibeMode();
+			return;
+		}
 		if (!this.session.settings.get("plan.enabled")) {
 			// Clear stale plan/plan_paused mode so re-enabling the setting
 			// later doesn't unexpectedly restore an old plan session.
@@ -2272,6 +2300,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (this.goalModeEnabled || this.goalModePaused) {
 			this.showWarning("Exit goal mode first.");
+			return;
+		}
+		if (this.vibeModeEnabled) {
+			this.showWarning("Exit vibe mode first.");
 			return;
 		}
 
@@ -2441,6 +2473,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Exit plan mode first.");
 			return;
 		}
+		if (this.vibeModeEnabled) {
+			this.showWarning("Exit vibe mode first.");
+			return;
+		}
 		const previousTools = this.session.getActiveToolNames().filter(name => name !== "goal");
 		const goalTools = [...new Set([...previousTools, "goal"])];
 		this.#goalModePreviousTools = previousTools;
@@ -2580,6 +2616,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			{
 				onPick: choice => finish(choice),
 				onCancel: () => finish(undefined),
+				onCopyPlan: content => void this.#copyPlanToClipboard(content),
 				onExternalEditor: dialogOptions?.onExternalEditor,
 				onAnnotationExternalEditor: (draft, commit) => void this.#openPlanAnnotationInExternalEditor(draft, commit),
 				onPlanEdited: dialogOptions?.onPlanEdited,
@@ -2644,6 +2681,17 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	#isKeepContextDisabled(contextUsage: ContextUsage | undefined): boolean {
 		return contextUsage !== undefined && contextUsage.percent > PLAN_KEEP_CONTEXT_DISABLE_THRESHOLD_PERCENT;
+	}
+
+	async #copyPlanToClipboard(content: string): Promise<void> {
+		try {
+			await copyToClipboard(content);
+			this.showStatus("Copied plan to clipboard");
+		} catch (error) {
+			this.showWarning(
+				`Failed to copy plan to clipboard: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 
 	async #openPlanInExternalEditor(planFilePath: string): Promise<void> {
@@ -2987,6 +3035,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.showWarning("Exit goal mode first.");
 			return;
 		}
+		if (this.vibeModeEnabled) {
+			this.showWarning("Exit vibe mode first.");
+			return;
+		}
 		if (this.planModeEnabled) {
 			const planFilePath = this.planModePlanFilePath ?? (await this.#getPlanFilePath());
 			if (await this.#hasPlanModeDraftContent(planFilePath)) {
@@ -3023,6 +3075,82 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
+	/**
+	 * `/vibe` toggle. Entering installs the ephemeral vibe tools, strips the
+	 * active toolset down to `read` plus those tools, and injects the director
+	 * context. Exiting unregisters them, restores the previous toolset, and kills
+	 * every worker session so workers cannot outlive the mode that directs them.
+	 */
+	async handleVibeModeCommand(initialPrompt?: string): Promise<void> {
+		if (this.vibeModeEnabled) {
+			await this.#exitVibeMode();
+			return;
+		}
+		if (this.planModeEnabled || this.planModePaused) {
+			this.showWarning("Exit plan mode first.");
+			return;
+		}
+		if (this.goalModeEnabled || this.goalModePaused) {
+			this.showWarning("Exit goal mode first.");
+			return;
+		}
+		await this.#enterVibeMode();
+		if (initialPrompt && this.onInputCallback) {
+			this.onInputCallback(this.startPendingSubmission({ text: initialPrompt }));
+		}
+	}
+
+	async #enterVibeMode(): Promise<void> {
+		if (this.vibeModeEnabled) {
+			return;
+		}
+		if (this.planModeEnabled || this.planModePaused) {
+			this.showWarning("Exit plan mode first.");
+			return;
+		}
+		if (this.goalModeEnabled || this.goalModePaused) {
+			this.showWarning("Exit goal mode first.");
+			return;
+		}
+
+		const previousTools = this.session.getActiveToolNames();
+		await this.session.activateVibeTools(["read"]);
+		this.#vibeModePreviousTools = previousTools;
+		this.vibeModeEnabled = true;
+		// Suppress cache-miss marker on the next turn: vibe mode changes the
+		// injected context, which predictably invalidates the cache.
+		this.lastAssistantUsage = undefined;
+		this.session.setVibeModeState({ enabled: true });
+		if (this.session.isStreaming) {
+			await this.session.sendVibeModeContext({ deliverAs: "steer" });
+		}
+		this.#updateVibeModeStatus();
+		this.sessionManager.appendModeChange("vibe");
+		this.showStatus("Vibe mode enabled. You direct fast/good worker sessions; toolset is read + vibe tools.");
+	}
+
+	async #exitVibeMode(): Promise<void> {
+		if (!this.vibeModeEnabled) {
+			return;
+		}
+		await this.session.deactivateVibeTools(this.#vibeModePreviousTools ?? []);
+		this.session.setVibeModeState(undefined);
+		this.vibeModeEnabled = false;
+		this.#vibeModePreviousTools = undefined;
+		this.lastAssistantUsage = undefined;
+		const killed = await VibeSessionRegistry.global().killAll(
+			this.session.getAgentId() ?? MAIN_AGENT_ID,
+			this.session.asyncJobManager,
+		);
+		this.#updateVibeModeStatus();
+		this.sessionManager.appendModeChange("none");
+		this.showStatus(
+			killed > 0
+				? `Vibe mode disabled. Killed ${killed} worker session${killed === 1 ? "" : "s"}.`
+				: "Vibe mode disabled.",
+		);
+	}
+
 	async #handleGoalBudgetCommand(rawBudget: string): Promise<void> {
 		const state = this.session.getGoalModeState();
 		if (!this.goalModeEnabled || !state?.enabled) {
@@ -3053,6 +3181,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		try {
 			if (this.planModeEnabled || this.planModePaused) {
 				this.showWarning("Exit plan mode first.");
+				return;
+			}
+			if (this.vibeModeEnabled) {
+				this.showWarning("Exit vibe mode first.");
 				return;
 			}
 			if (!this.session.settings.get("goal.enabled")) {
@@ -4360,6 +4492,11 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleImagePaste(): Promise<boolean> {
 		return this.#inputController.handleImagePaste();
+	}
+
+	/** Queue slash-command input behind the active turn. */
+	handleQueueCommand(message: string): Promise<void> {
+		return this.#inputController.handleQueueCommand(message);
 	}
 
 	handleBtwCommand(question: string): Promise<void> {

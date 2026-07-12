@@ -199,7 +199,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 		expect(progress.every(payload => payload.scopeId === "root-session-scope")).toBe(true);
 	});
 
-	it("lets agent frontmatter thinkingLevel override a task role suffix", async () => {
+	it("resolves an explicit task-role effort suffix over the agent-definition default", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
 		const settings = Settings.isolated();
@@ -211,6 +211,30 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 			...baseOptions,
 			agent: { ...baseAgent, model: ["pi/task"] },
 			id: "subagent-thinking-precedence",
+			settings,
+			modelRegistry: createModelRegistry(model),
+			thinkingLevel: ThinkingLevel.Low,
+		});
+
+		expect(result.exitCode).toBe(0);
+		const forwarded = spy.mock.calls[0]?.[0];
+		// The user's explicit `:high` suffix on the resolved role pattern wins over
+		// the agent definition's default level (e.g. task's `auto`).
+		expect(forwarded?.thinkingLevel).toBe(ThinkingLevel.High);
+	});
+
+	it("falls back to the agent-definition thinking level without an explicit suffix", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+		const settings = Settings.isolated();
+		settings.setModelRole("task", `${model.provider}/${model.id}`);
+		const session = yieldEmittingSession();
+		const spy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue(createSessionResult(session));
+
+		const result = await runSubprocess({
+			...baseOptions,
+			agent: { ...baseAgent, model: ["pi/task"] },
+			id: "subagent-thinking-default",
 			settings,
 			modelRegistry: createModelRegistry(model),
 			thinkingLevel: ThinkingLevel.Low,
