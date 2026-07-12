@@ -948,6 +948,101 @@ describe("lsp regressions", () => {
 		expect(unique[0]?.name).toBe("logger");
 	});
 
+	it("reuses the listed code action kind when applying by title", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-code-action-context-");
+		try {
+			const sourcePath = path.join(tempDir.path(), "main.ts");
+			await Bun.write(sourcePath, 'import { b, a } from "./values";\n');
+
+			const requestedKinds: Array<string[] | undefined> = [];
+			const executedCommands: string[] = [];
+			installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: {
+							capabilities: {
+								codeActionProvider: true,
+								executeCommandProvider: { commands: ["_typescript.organizeImports"] },
+							},
+						},
+					});
+				} else if (message.method === "textDocument/codeAction") {
+					const params = message.params as { context: { only?: string[] } };
+					requestedKinds.push(params.context.only);
+					const isOrganizeImports = params.context.only?.includes("source.organizeImports") === true;
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: isOrganizeImports
+							? [
+									{
+										title: "Organize Imports",
+										kind: "source.organizeImports.ts",
+										command: {
+											title: "Organize Imports",
+											command: "_typescript.organizeImports",
+											arguments: [sourcePath],
+										},
+									},
+								]
+							: [{ title: "Move to a new file", kind: "refactor.move.newFile" }],
+					});
+				} else if (message.method === "codeAction/resolve") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: message.params });
+				} else if (message.method === "workspace/executeCommand") {
+					const params = message.params as { command: string };
+					executedCommands.push(params.command);
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+
+			const server: ServerConfig = {
+				command: "fake-lsp",
+				resolvedCommand: process.execPath,
+				fileTypes: ["ts"],
+				rootMarkers: [],
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-lsp": server },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["fake-lsp", server]]);
+
+			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			const listed = await tool.execute("list-organize-imports", {
+				action: "code_actions",
+				file: sourcePath,
+				line: 1,
+				symbol: "import",
+				query: "source.organizeImports",
+				apply: false,
+			});
+			expect(textResult(listed)).toContain("[source.organizeImports.ts] Organize Imports");
+
+			const applied = await tool.execute("apply-organize-imports", {
+				action: "code_actions",
+				file: sourcePath,
+				line: 1,
+				symbol: "import",
+				query: "Organize Imports",
+				apply: true,
+			});
+
+			expect(textResult(applied)).toContain('Applied "Organize Imports"');
+			expect(requestedKinds).toEqual([["source.organizeImports"], ["source.organizeImports"]]);
+			expect(executedCommands).toEqual(["_typescript.organizeImports"]);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("applies command-only code actions by executing workspace commands", async () => {
 		const executedCommands: string[] = [];
 		const result = await applyCodeAction(

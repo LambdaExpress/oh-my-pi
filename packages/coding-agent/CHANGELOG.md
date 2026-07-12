@@ -33,6 +33,7 @@
 
 - Fixed `/new` retaining prior-session subagents, background jobs, IRC messages, and late HUD updates by fully retiring the previous root-session scope before activating the new session.
 - Fixed completed-run transcript collapse treating a queued correction after a user interrupt as a new request, so the original request and pre-interrupt loop now collapse with the eventual final answer.
+- Fixed returning from a focused subagent transcript dropping an in-flight Task panel by restoring the main session's latest tool progress snapshot and reconnecting subsequent updates.
 
 - Fixed managed visible Chromium tabs repeatedly timing out on screenshots and clicks after their window was minimized by restoring the page before each run, including after timed-out worker recovery.
 - Fixed Windows stdio MCP server launches for `.cmd`/`.bat` shims by preserving the command and arguments as separate `cmd.exe /c` argv entries instead of pre-quoting them into one nested command string.
@@ -47,6 +48,7 @@
 
 - Fixed automatic assistant, tool, and thinking finalization refreshes clearing native scrollback and yanking scrolled-up terminal readers.
 - Fixed single-file `lsp diagnostics` to actively request diagnostics from pull-diagnostics servers and `typescript-language-server`, while still reporting unavailable results when a server cannot provide fresh diagnostics.
+- Fixed `lsp code_actions` dropping the listed action-kind filter during apply, so source actions such as Organize Imports remain selectable by their displayed title.
 - Fixed `read` treating a unique workspace suffix match as the requested missing path; missing local, archive, SQLite, and PDF paths now remain errors and show the candidate only as a `Did you mean ...?` suggestion.
 - Fixed `lsp reload` preserving stale TypeScript interface and project state by restarting servers without a dedicated workspace-reload request instead of treating `workspace/didChangeConfiguration` as a reload.
 - Fixed eval cell output rendering so live stdout that ends with a newline no longer leaves an extra blank row at the bottom of the output box.

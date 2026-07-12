@@ -1,9 +1,17 @@
+import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
+import { Agent } from "@oh-my-pi/pi-agent-core";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SessionFocusController } from "@oh-my-pi/pi-coding-agent/modes/controllers/session-focus-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
-import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 
 interface SessionStub {
 	session: AgentSession;
@@ -205,5 +213,86 @@ describe("SessionFocusController", () => {
 			[worker.session, "Worker"],
 			[h.main.session, undefined],
 		]);
+	});
+});
+describe("AgentSession tool display snapshots", () => {
+	it("retains live Task progress until its authoritative tool result arrives", async () => {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: createMockModel({ responses: [{ content: ["Done"] }] }).stream,
+		});
+		const authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")));
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const modelRegistry = new ModelRegistry(authStorage);
+		const session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({ "compaction.enabled": false }),
+			modelRegistry,
+		});
+		const toolCallId = "task-focus-return";
+		const args = { tasks: [{ assignment: "Trace the running Task." }], agent: "scout" };
+		const partialResult = {
+			content: [{ type: "text" as const, text: "running" }],
+			details: { progress: [{ id: "FocusResearch", requests: 7 }] },
+		};
+
+		try {
+			agent.emitExternalEvent({
+				type: "tool_execution_start",
+				toolCallId,
+				toolName: "task",
+				args,
+			});
+			agent.emitExternalEvent({
+				type: "tool_execution_update",
+				toolCallId,
+				toolName: "task",
+				args,
+				partialResult,
+			});
+
+			const running = session.getToolExecutionDisplaySnapshots().get(toolCallId);
+			expect(running?.result).toEqual(partialResult);
+			expect(running?.isPartial).toBe(true);
+
+			const finalResult = {
+				content: [{ type: "text" as const, text: "finished" }],
+				details: { results: [{ id: "FocusResearch", output: "done" }] },
+			};
+			agent.emitExternalEvent({
+				type: "tool_execution_end",
+				toolCallId,
+				toolName: "task",
+				result: finalResult,
+				isError: false,
+			});
+			expect(session.getToolExecutionDisplaySnapshots().get(toolCallId)?.isPartial).toBe(false);
+
+			agent.emitExternalEvent({
+				type: "message_end",
+				message: {
+					role: "toolResult",
+					toolCallId,
+					toolName: "task",
+					content: finalResult.content,
+					details: finalResult.details,
+					isError: false,
+					timestamp: Date.now(),
+				},
+			});
+			expect(session.getToolExecutionDisplaySnapshots().has(toolCallId)).toBe(false);
+		} finally {
+			await session.dispose();
+			authStorage.close();
+		}
 	});
 });

@@ -69,6 +69,16 @@ type QueuedMessages = {
 	followUp: string[];
 };
 
+function toolAsyncState(value: unknown): "running" | "completed" | "failed" | undefined {
+	if (!value || typeof value !== "object" || !("details" in value)) return undefined;
+	const details = value.details;
+	if (!details || typeof details !== "object" || !("async" in details)) return undefined;
+	const asyncDetails = details.async;
+	if (!asyncDetails || typeof asyncDetails !== "object" || !("state" in asyncDetails)) return undefined;
+	const state = asyncDetails.state;
+	return state === "running" || state === "completed" || state === "failed" ? state : undefined;
+}
+
 function imageLinksForMessage(
 	message: Extract<AgentMessage, { role: "developer" | "user" }>,
 	putBlobSync: InteractiveModeContext["sessionManager"]["putBlobSync"],
@@ -355,6 +365,7 @@ export class UiHelpers {
 		};
 		const messages = sessionContext.messages;
 		const count = messages.length;
+		const backgroundRunningToolCalls = new Set<string>();
 		for (let i = 0; i < count; i++) {
 			const message = messages[i]!;
 			if (message.role !== "toolResult") flushPendingUsage();
@@ -509,8 +520,13 @@ export class UiHelpers {
 						component = readGroup;
 						this.ctx.pendingTools.set(message.toolCallId, readGroup);
 					}
-					component.updateResult(message, false, message.toolCallId);
-					this.ctx.pendingTools.delete(message.toolCallId);
+					const isBackgroundRunning = toolAsyncState(message) === "running";
+					component.updateResult(message, isBackgroundRunning, message.toolCallId);
+					if (isBackgroundRunning) {
+						backgroundRunningToolCalls.add(message.toolCallId);
+					} else {
+						this.ctx.pendingTools.delete(message.toolCallId);
+					}
 					readToolCallArgs.delete(message.toolCallId);
 					readToolCallAssistantComponents.delete(message.toolCallId);
 					continue;
@@ -519,8 +535,13 @@ export class UiHelpers {
 				// Match tool results to pending tool components
 				const component = this.ctx.pendingTools.get(message.toolCallId);
 				if (component) {
-					component.updateResult(message, false, message.toolCallId);
-					this.ctx.pendingTools.delete(message.toolCallId);
+					const isBackgroundRunning = toolAsyncState(message) === "running";
+					component.updateResult(message, isBackgroundRunning, message.toolCallId);
+					if (isBackgroundRunning) {
+						backgroundRunningToolCalls.add(message.toolCallId);
+					} else {
+						this.ctx.pendingTools.delete(message.toolCallId);
+					}
 					if (
 						message.toolName === "job" &&
 						component instanceof ToolExecutionComponent &&
@@ -570,7 +591,19 @@ export class UiHelpers {
 			resolveTodoSnapshot();
 		}
 
-		this.ctx.pendingTools.clear();
+		const displaySnapshots = this.ctx.viewSession.getToolExecutionDisplaySnapshots?.();
+		for (const [toolCallId, component] of this.ctx.pendingTools) {
+			const snapshot = displaySnapshots?.get(toolCallId);
+			if (!snapshot) {
+				if (!backgroundRunningToolCalls.has(toolCallId)) this.ctx.pendingTools.delete(toolCallId);
+				continue;
+			}
+			component.updateArgs(snapshot.args, toolCallId);
+			if (snapshot.result) {
+				component.updateResult(snapshot.result, snapshot.isPartial, toolCallId);
+			}
+			if (!snapshot.isPartial) this.ctx.pendingTools.delete(toolCallId);
+		}
 		this.ctx.ui.requestRender();
 	}
 

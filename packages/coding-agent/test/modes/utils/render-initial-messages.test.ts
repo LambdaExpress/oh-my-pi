@@ -25,6 +25,17 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { type Component, Container, Image, ImageProtocol, setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
+interface DisplaySnapshotFixture {
+	toolCallId: string;
+	toolName: string;
+	args: unknown;
+	result?: {
+		content: Array<{ type: string; text?: string }>;
+		details?: unknown;
+	};
+	isPartial: boolean;
+}
+
 beforeAll(() => {
 	initTheme();
 });
@@ -135,6 +146,7 @@ function hasImageComponent(component: Component): boolean {
 
 function makeRenderCtx(
 	transcript: SessionContext | ((options?: { collapseCompactedHistory?: boolean }) => SessionContext),
+	toolExecutionDisplaySnapshots: ReadonlyMap<string, DisplaySnapshotFixture> = new Map(),
 ): { ctx: InteractiveModeContext; chatContainer: Container } {
 	const chatContainer = new Container();
 	const buildTranscriptSessionContext = typeof transcript === "function" ? transcript : () => transcript;
@@ -164,6 +176,7 @@ function makeRenderCtx(
 		viewSession: {
 			buildTranscriptSessionContext,
 			getToolByName: () => undefined,
+			getToolExecutionDisplaySnapshots: () => toolExecutionDisplaySnapshots,
 			extensionRunner: undefined,
 			sessionManager: {
 				getEntries: vi.fn(() => []),
@@ -432,5 +445,105 @@ describe("UiHelpers.renderSessionContext — mid-stream tool call rebuild", () =
 
 		const rendered = Bun.stripANSI(chatContainer.render(120).join("\n"));
 		expect(rendered).toContain("GROWN_TAIL_SENTINEL");
+	});
+});
+describe("UiHelpers.renderSessionContext — active tool restoration", () => {
+	it("restores a running Task snapshot and keeps it attached for later progress", async () => {
+		await Settings.init({ inMemory: true });
+		const toolCallId = "task-focus-return";
+		const taskArgs = {
+			context: "# Goal\nInvestigate the focused-session rebuild.",
+			tasks: [
+				{
+					id: "FocusResearch",
+					role: "Researcher",
+					assignment: "# Target\nTrace the running Task.",
+				},
+			],
+			agent: "scout",
+		};
+		const progress = {
+			index: 0,
+			id: "FocusResearch",
+			agent: "scout",
+			agentSource: "bundled" as const,
+			status: "running" as const,
+			task: "Trace the running Task.",
+			assignment: "# Target\nTrace the running Task.",
+			recentTools: [],
+			recentOutput: [],
+			toolCount: 4,
+			requests: 7,
+			tokens: 0,
+			contextTokens: 39_060,
+			contextWindow: 372_000,
+			cost: 0.44,
+			durationMs: 1_000,
+		};
+		const details = {
+			projectAgentsDir: null,
+			results: [],
+			totalDurationMs: 0,
+			progress: [progress],
+		};
+		const snapshots = new Map<string, DisplaySnapshotFixture>([
+			[
+				toolCallId,
+				{
+					toolCallId,
+					toolName: "task",
+					args: taskArgs,
+					result: { content: [{ type: "text", text: "running" }], details },
+					isPartial: true,
+				},
+			],
+		]);
+		const transcript = transcriptWith([assistantToolCall(toolCallId, "task", taskArgs)]);
+		const { ctx, chatContainer } = makeRenderCtx(transcript, snapshots);
+
+		new UiHelpers(ctx).renderInitialMessages({ clearTerminalHistory: true });
+
+		const restored = ctx.pendingTools.get(toolCallId);
+		expect(restored).toBeDefined();
+		expect(Bun.stripANSI(chatContainer.render(120).join("\n"))).toContain("7 req");
+
+		restored?.updateResult(
+			{
+				content: [{ type: "text", text: "still running" }],
+				details: { ...details, progress: [{ ...progress, requests: 8 }] },
+			},
+			true,
+			toolCallId,
+		);
+		expect(Bun.stripANSI(chatContainer.render(120).join("\n"))).toContain("8 req");
+
+		restored?.updateResult(
+			{
+				content: [{ type: "text", text: "finished" }],
+				details: {
+					projectAgentsDir: null,
+					results: [
+						{
+							index: 0,
+							id: "FocusResearch",
+							agent: "scout",
+							agentSource: "bundled",
+							task: "Trace the running Task.",
+							exitCode: 0,
+							output: "focus restoration complete",
+							stderr: "",
+							truncated: false,
+							durationMs: 2_000,
+							tokens: 0,
+							requests: 8,
+						},
+					],
+					totalDurationMs: 2_000,
+				},
+			},
+			false,
+			toolCallId,
+		);
+		expect(Bun.stripANSI(chatContainer.render(120).join("\n"))).toContain("1 succeeded");
 	});
 });

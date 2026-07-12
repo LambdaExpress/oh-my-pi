@@ -1732,6 +1732,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 	readonly description: string;
 	readonly parameters = lspSchema;
 	readonly strict = true;
+	readonly #codeActionOnlyByTarget = new Map<string, CodeActionContext["only"]>();
 
 	constructor(private readonly session: ToolSession) {
 		this.description = prompt.render(lspDescription);
@@ -2773,9 +2774,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 				case "code_actions": {
 					const diagnostics = client.diagnostics.get(uri)?.diagnostics ?? [];
+					const contextKey = `${serverName}\0${uri}\0${position.line}:${position.character}`;
+					const only = apply === true ? this.#codeActionOnlyByTarget.get(contextKey) : query ? [query] : undefined;
 					const context: CodeActionContext = {
 						diagnostics,
-						only: !apply && query ? [query] : undefined,
+						only,
 						triggerKind: 1,
 					};
 
@@ -2789,6 +2792,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						},
 						signal,
 					)) as (CodeAction | Command)[] | null;
+					if (apply !== true) {
+						this.#codeActionOnlyByTarget.set(contextKey, only);
+					}
 
 					if (!result || result.length === 0) {
 						output = "No code actions available";

@@ -30,6 +30,7 @@ import {
 	type AgentMessage,
 	type AgentState,
 	type AgentTool,
+	type AgentToolResult,
 	type AgentTurnEndContext,
 	AppendOnlyContextManager,
 	type AsideMessage,
@@ -545,6 +546,31 @@ export type AgentSessionEvent =
 	| { type: "goal_updated"; goal: Goal | null; state?: GoalModeState };
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
+
+/**
+ * Latest non-persisted display state for a tool call. Transcript rebuilds use
+ * this to reconnect a running tool component after temporarily focusing a
+ * subagent session.
+ */
+export interface ToolExecutionDisplaySnapshot {
+	toolCallId: string;
+	toolName: string;
+	args: unknown;
+	intent?: string;
+	result?: AgentToolResult<unknown> & { isError?: boolean };
+	isPartial: boolean;
+}
+
+function toolResultAsyncState(
+	result: AgentToolResult<unknown> | undefined,
+): "running" | "completed" | "failed" | undefined {
+	const details = result?.details;
+	if (!details || typeof details !== "object" || !("async" in details)) return undefined;
+	const asyncDetails = details.async;
+	if (!asyncDetails || typeof asyncDetails !== "object" || !("state" in asyncDetails)) return undefined;
+	const state = asyncDetails.state;
+	return state === "running" || state === "completed" || state === "failed" ? state : undefined;
+}
 
 const UNEXPECTED_STOP_MAX_RETRIES = 3;
 const UNEXPECTED_STOP_TIMEOUT_MS = 4000;
@@ -1845,6 +1871,12 @@ export class AgentSession {
 	#toolCallLoopGuard: ToolCallLoopGuard | undefined;
 	#toolCallLoopGuardSettingsKey: string | undefined;
 	#promptInFlightCount = 0;
+	/**
+	 * Runtime-only tool display snapshots. Tool progress updates are not session
+	 * messages, so a focused-session round trip needs this session-owned copy to
+	 * rebuild and rebind the main transcript's live tool components.
+	 */
+	#toolExecutionDisplaySnapshots = new Map<string, ToolExecutionDisplaySnapshot>();
 	#abortInProgress = false;
 	// Wire-level agent_end emission deferred until #promptInFlightCount drops to 0.
 	// Internal extension hooks and post-emit work (auto-retry, auto-compaction, todo
@@ -3618,7 +3650,54 @@ export class AgentSession {
 		return true;
 	}
 
+	#trackToolExecutionDisplay(event: AgentEvent): void {
+		if (event.type === "tool_execution_start") {
+			this.#toolExecutionDisplaySnapshots.set(event.toolCallId, {
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				args: event.args,
+				intent: event.intent,
+				isPartial: true,
+			});
+			return;
+		}
+		if (event.type === "tool_execution_update") {
+			const previous = this.#toolExecutionDisplaySnapshots.get(event.toolCallId);
+			const asyncState = toolResultAsyncState(event.partialResult);
+			this.#toolExecutionDisplaySnapshots.set(event.toolCallId, {
+				toolCallId: event.toolCallId,
+				toolName: event.toolName,
+				args: event.args,
+				intent: previous?.intent,
+				result: {
+					...event.partialResult,
+					isError: asyncState === "failed" || event.partialResult.isError,
+				},
+				isPartial: asyncState !== "completed" && asyncState !== "failed",
+			});
+			return;
+		}
+		if (event.type === "tool_execution_end") {
+			const previous = this.#toolExecutionDisplaySnapshots.get(event.toolCallId);
+			if (!previous) return;
+			const asyncState = toolResultAsyncState(event.result);
+			this.#toolExecutionDisplaySnapshots.set(event.toolCallId, {
+				...previous,
+				result: { ...event.result, isError: event.isError },
+				isPartial: asyncState === "running",
+			});
+			return;
+		}
+		if (event.type === "message_end" && event.message.role === "toolResult") {
+			const snapshot = this.#toolExecutionDisplaySnapshots.get(event.message.toolCallId);
+			if (toolResultAsyncState(snapshot?.result) !== "running") {
+				this.#toolExecutionDisplaySnapshots.delete(event.message.toolCallId);
+			}
+		}
+	}
+
 	#processAgentEvent = async (event: AgentEvent): Promise<void> => {
+		this.#trackToolExecutionDisplay(event);
 		// Step the mid-run todo counter synchronously, BEFORE any await in this
 		// handler. The agent loop's next-turn `getAsideMessages` poll can run
 		// before queued microtasks drain, so `#takeMidRunTodoNudge` MUST see the
@@ -6002,6 +6081,11 @@ export class AgentSession {
 	/** Whether agent is currently streaming a response */
 	get isStreaming(): boolean {
 		return this.agent.state.isStreaming || this.#promptInFlightCount > 0;
+	}
+
+	/** Runtime tool display state used to reconnect live components after a transcript rebuild. */
+	getToolExecutionDisplaySnapshots(): ReadonlyMap<string, ToolExecutionDisplaySnapshot> {
+		return this.#toolExecutionDisplaySnapshots;
 	}
 
 	get isAborting(): boolean {
@@ -8855,6 +8939,7 @@ export class AgentSession {
 		}
 		this.#closeAllProviderSessions("new session");
 		this.agent.reset();
+		this.#toolExecutionDisplaySnapshots.clear();
 		if (options?.drop && previousSessionFile) {
 			// Detach the advisor recorder feed and drain its writer BEFORE deleting the
 			// old artifacts dir: `await this.abort()` only stops the primary, so a still-
