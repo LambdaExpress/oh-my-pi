@@ -74,4 +74,62 @@ describe("raw SSE report bundle", () => {
 		const files = await archive.files();
 		expect(await files.get("raw-sse.txt")?.text()).toBe(rawSseText);
 	});
+
+	it("exact-replaces session SSH passwords across main, subagent, raw SSE, and config payloads", async () => {
+		cleanupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ssh-report-"));
+		const xdgStateHome = path.join(cleanupRoot, "state");
+		await fs.mkdir(path.join(xdgStateHome, "omp"), { recursive: true });
+		process.env.XDG_STATE_HOME = xdgStateHome;
+		setAgentDir(path.join(cleanupRoot, "agent"));
+		const password = "report-session-ssh-password-sentinel";
+		const timestamp = "2026-07-12T00:00:00.000Z";
+		const sessionFile = path.join(cleanupRoot, "main.jsonl");
+		const sessionLines = [
+			JSON.stringify({ type: "session", version: 3, id: "main", timestamp, cwd: cleanupRoot }),
+			JSON.stringify({
+				type: "ssh_config_change",
+				operation: "upsert",
+				name: "prod",
+				config: { host: "example.com", password },
+				id: "ssh-main",
+				parentId: null,
+				timestamp,
+			}),
+			JSON.stringify({
+				type: "message",
+				id: "message-main",
+				parentId: "ssh-main",
+				timestamp,
+				message: { role: "user", content: [{ type: "text", text: `ordinary main ${password}` }] },
+			}),
+		];
+		await Bun.write(sessionFile, `${sessionLines.join("\n")}\n`);
+		await Bun.write(
+			path.join(cleanupRoot, "subagent.jsonl"),
+			`${JSON.stringify({ type: "session", version: 3, id: "sub", timestamp, cwd: cleanupRoot })}\n${JSON.stringify({
+				type: "message",
+				id: "message-sub",
+				parentId: null,
+				timestamp,
+				message: { role: "user", content: [{ type: "text", text: `ordinary sub ${password}` }] },
+			})}\n`,
+		);
+
+		const result = await createReportBundle({
+			sessionFile,
+			rawSseText: `data: {"password":"${password}"}`,
+			settings: { diagnostic: `settings ${password}` },
+		});
+		const archive = new Bun.Archive(await Bun.file(result.path).bytes());
+		const files = await archive.files();
+		for (const [name, file] of files) {
+			const text = await file.text();
+			expect(text, name).not.toContain(password);
+		}
+		expect(await files.get("session.jsonl")?.text()).toContain("ssh_config_change");
+		expect(await files.get("session.jsonl")?.text()).toContain("[REDACTED]");
+		expect(await files.get("session.jsonl")?.text()).toContain("ordinary main");
+		expect(await files.get("subagents/subagent.jsonl")?.text()).toContain("ordinary sub");
+		expect(await Bun.file(sessionFile).text()).toContain(password);
+	});
 });

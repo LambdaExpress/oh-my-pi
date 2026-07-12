@@ -226,6 +226,152 @@ describe("buildRemoteCommand", () => {
 	});
 });
 
+describe("SSH connection identities", () => {
+	it("separates same-name targets by session revision and ControlMaster path", () => {
+		const first = {
+			name: "shared",
+			connectionId: "session-a/revision-1",
+			host: "192.0.2.100",
+			username: "deploy",
+			port: 2222,
+		};
+		const second = { ...first, connectionId: "session-b/revision-1" };
+		expect(connectionManager.getSshConnectionKey(first)).not.toBe(connectionManager.getSshConnectionKey(second));
+		expect(connectionManager.getControlPath(first)).not.toBe(connectionManager.getControlPath(second));
+	});
+
+	it("shares host-info only for the same non-secret remote identity", () => {
+		const first = {
+			name: "one",
+			connectionId: "session-a/revision-1",
+			host: "EXAMPLE.com",
+			username: "deploy",
+			port: 22,
+			keyPath: "/keys/one",
+			password: "first-secret",
+			compat: false,
+		};
+		const sameRemote = {
+			...first,
+			name: "two",
+			connectionId: "session-b/revision-9",
+			host: "example.COM",
+			keyPath: "/keys/two",
+			password: "second-secret",
+		};
+		expect(connectionManager.getSshHostInfoKey(first)).toBe(connectionManager.getSshHostInfoKey(sameRemote));
+		expect(connectionManager.getSshHostInfoKey(first)).not.toBe(
+			connectionManager.getSshHostInfoKey({ ...sameRemote, port: 2222 }),
+		);
+		expect(connectionManager.getSshHostInfoKey(first)).not.toBe(
+			connectionManager.getSshHostInfoKey({ ...sameRemote, username: "other" }),
+		);
+	});
+
+	it("keeps passwords out of identity keys, ControlMaster paths, and argv", async () => {
+		const password = "connection-identity-password-sentinel";
+		const target = {
+			name: "secret",
+			connectionId: "session-a/revision-1",
+			host: "192.0.2.101",
+			username: "deploy",
+			password,
+		};
+		const connectionKey = connectionManager.getSshConnectionKey(target);
+		const hostInfoKey = connectionManager.getSshHostInfoKey(target);
+		const controlPath = connectionManager.getControlPath(target);
+		const args = await connectionManager.buildRemoteCommand(target, "true", { platform: "linux" });
+		for (const value of [connectionKey, hostInfoKey, controlPath, ...args]) expect(value).not.toContain(password);
+		expect(args).toContain(`ControlPath=${controlPath}`);
+	});
+
+	it("does not use password changes as cache identity while revision changes still isolate connections", () => {
+		const original = {
+			name: "shared",
+			connectionId: "session-a/revision-1",
+			host: "192.0.2.102",
+			password: "old-password",
+		};
+		expect(connectionManager.getSshConnectionKey(original)).toBe(
+			connectionManager.getSshConnectionKey({ ...original, password: "new-password" }),
+		);
+		expect(connectionManager.getSshConnectionKey(original)).not.toBe(
+			connectionManager.getSshConnectionKey({
+				...original,
+				connectionId: "session-a/revision-2",
+				password: "new-password",
+			}),
+		);
+	});
+
+	it("settles an invalidated pending target without reviving it or deleting a replacement pending entry", async () => {
+		const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ssh-identity-race-"));
+		const fakeSsh = path.join(binDir, "ssh");
+		const releasePath = path.join(binDir, "release-old");
+		const logPath = path.join(binDir, "calls.log");
+		const originalPath = process.env.PATH;
+		const originalRelease = process.env.OMP_TEST_SSH_RELEASE;
+		const originalLog = process.env.OMP_TEST_SSH_LOG;
+		await Bun.write(
+			fakeSsh,
+			[
+				"#!/usr/bin/env bash",
+				'printf \'%s\\n\' "$*" >> "$OMP_TEST_SSH_LOG"',
+				'if [[ "$*" == *"old.example"* ]]; then',
+				'  while [[ ! -f "$OMP_TEST_SSH_RELEASE" ]]; do sleep 0.02; done',
+				"fi",
+				`printf '%s\\n' '${connectionManager.HOST_PROBE_MARKER}linux-gnu|/bin/bash|5.2'`,
+				`printf '%s\\n' '${connectionManager.TRANSFER_PROBE_MARKER}Linux'`,
+			].join("\n"),
+		);
+		await fs.chmod(fakeSsh, 0o755);
+		process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+		process.env.OMP_TEST_SSH_RELEASE = releasePath;
+		process.env.OMP_TEST_SSH_LOG = logPath;
+		const oldTarget = {
+			name: "shared",
+			connectionId: `race-old-${crypto.randomUUID()}`,
+			host: "old.example",
+		};
+		const newTarget = {
+			name: "shared",
+			connectionId: `race-new-${crypto.randomUUID()}`,
+			host: "new.example",
+		};
+		const oldKey = connectionManager.getSshConnectionKey(oldTarget);
+		const newKey = connectionManager.getSshConnectionKey(newTarget);
+
+		try {
+			const oldConnection = connectionManager.ensureConnection(oldTarget);
+			expect(connectionManager._sshConnectionStateForTests.snapshot().pendingKeys).toContain(oldKey);
+			const invalidation = connectionManager.invalidateSshTarget(oldTarget);
+			const newConnection = connectionManager.ensureConnection(newTarget);
+			await newConnection;
+			expect(connectionManager._sshConnectionStateForTests.snapshot().activeKeys).toContain(newKey);
+
+			await Bun.write(releasePath, "release");
+			await oldConnection;
+			await invalidation;
+			const settled = connectionManager._sshConnectionStateForTests.snapshot();
+			expect(settled.pendingKeys).not.toContain(oldKey);
+			expect(settled.pendingKeys).not.toContain(newKey);
+			expect(settled.activeKeys).not.toContain(oldKey);
+			expect(settled.activeKeys).toContain(newKey);
+		} finally {
+			await Bun.write(releasePath, "release");
+			await connectionManager.invalidateSshTarget(oldTarget);
+			await connectionManager.invalidateSshTarget(newTarget);
+			if (originalPath === undefined) delete process.env.PATH;
+			else process.env.PATH = originalPath;
+			if (originalRelease === undefined) delete process.env.OMP_TEST_SSH_RELEASE;
+			else process.env.OMP_TEST_SSH_RELEASE = originalRelease;
+			if (originalLog === undefined) delete process.env.OMP_TEST_SSH_LOG;
+			else process.env.OMP_TEST_SSH_LOG = originalLog;
+			await removeWithRetries(binDir);
+		}
+	});
+});
+
 describe("supportsSshControlMaster", () => {
 	it("disables OpenSSH connection multiplexing on native Windows", () => {
 		expect(connectionManager.supportsSshControlMaster("win32")).toBe(false);

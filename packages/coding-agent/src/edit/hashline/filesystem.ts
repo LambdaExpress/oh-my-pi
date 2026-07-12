@@ -85,6 +85,14 @@ export class HashlineFilesystem extends Filesystem {
 		this.#batchRequest = options.batchRequest;
 	}
 
+	async #sshContext() {
+		return {
+			cwd: this.session.cwd,
+			signal: this.#signal,
+			sshHosts: await this.session.getSessionSshHosts?.(),
+		};
+	}
+
 	/**
 	 * Set the LSP batch request used for the next {@link writeText} call.
 	 * Multi-section orchestrators flip the `flush` flag to true before the
@@ -184,11 +192,12 @@ export class HashlineFilesystem extends Filesystem {
 	async readText(relativePath: string): Promise<string> {
 		const target = this.#resolveEditTarget(relativePath);
 		if (target.kind === "ssh") {
-			const kind = await target.handler.stat(target.parsed, { cwd: this.session.cwd, signal: this.#signal });
+			const context = await this.#sshContext();
+			const kind = await target.handler.stat(target.parsed, context);
 			if (kind === "missing") throw new NotFoundError(relativePath);
 			if (kind === "directory") throw new Error(`Cannot edit remote directory: ${relativePath}`);
 			if (kind === "other") throw new Error(`Cannot edit remote special file: ${relativePath}`);
-			const resource = await target.handler.resolve(target.parsed, { cwd: this.session.cwd, signal: this.#signal });
+			const resource = await target.handler.resolve(target.parsed, context);
 			if (resource.isDirectory) throw new Error(`Cannot edit remote directory: ${relativePath}`);
 			if (resource.immutable) throw new Error(`Cannot edit immutable remote resource: ${relativePath}`);
 			assertEditableFileContent(resource.content, relativePath);
@@ -239,7 +248,7 @@ export class HashlineFilesystem extends Filesystem {
 		const target = this.#resolveEditTarget(relativePath);
 		if (target.kind === "ssh") {
 			enforcePlanModeWrite(this.session, relativePath, { op: "delete" });
-			await target.handler.delete(target.parsed, { cwd: this.session.cwd, signal: this.#signal });
+			await target.handler.delete(target.parsed, await this.#sshContext());
 			return;
 		}
 
@@ -268,10 +277,7 @@ export class HashlineFilesystem extends Filesystem {
 				throw new Error("Remote MV destination must be a full ssh://same-authority/<absolute-path> URL");
 			}
 			enforcePlanModeWrite(this.session, fromRelative, { op: "update", move: toRelative });
-			await fromTarget.handler.move(fromTarget.parsed, toTarget.parsed, content, {
-				cwd: this.session.cwd,
-				signal: this.#signal,
-			});
+			await fromTarget.handler.move(fromTarget.parsed, toTarget.parsed, content, await this.#sshContext());
 			this.#diagnosticsByPath.set(fromRelative, undefined);
 			return;
 		}
@@ -301,7 +307,7 @@ export class HashlineFilesystem extends Filesystem {
 		const target = this.#resolveEditTarget(relativePath);
 		if (target.kind === "ssh") {
 			enforcePlanModeWrite(this.session, relativePath, { op: "update" });
-			await target.handler.write(target.parsed, content, { cwd: this.session.cwd, signal: this.#signal });
+			await target.handler.write(target.parsed, content, await this.#sshContext());
 			this.#diagnosticsByPath.set(relativePath, undefined);
 			return { text: content };
 		}
@@ -331,7 +337,7 @@ export class HashlineFilesystem extends Filesystem {
 	async exists(relativePath: string): Promise<boolean> {
 		const target = this.#resolveEditTarget(relativePath);
 		if (target.kind === "ssh") {
-			const kind = await target.handler.stat(target.parsed, { cwd: this.session.cwd, signal: this.#signal });
+			const kind = await target.handler.stat(target.parsed, await this.#sshContext());
 			return kind !== "missing";
 		}
 		return Bun.file(target.absolutePath).exists();

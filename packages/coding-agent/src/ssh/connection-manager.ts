@@ -2,10 +2,11 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { $which, getRemoteHostDir, getSshControlDir, isEnoent, logger, postmortem, ptree } from "@oh-my-pi/pi-utils";
 import { prepareSshPasswordAuthEnv } from "./password-auth";
-import { buildSshTarget, sanitizeHostName } from "./utils";
+import { buildSshTarget } from "./utils";
 
 export interface SSHConnectionTarget {
 	name: string;
+	connectionId?: string;
 	host: string;
 	username?: string;
 	port?: number;
@@ -47,13 +48,39 @@ export interface SSHHostInfo {
 }
 
 const CONTROL_DIR = getSshControlDir();
-const CONTROL_PATH = path.join(CONTROL_DIR, "%C.sock");
 const HOST_INFO_DIR = getRemoteHostDir();
 const HOST_INFO_VERSION = 5;
 
 const activeHosts = new Map<string, SSHConnectionTarget>();
 const pendingConnections = new Map<string, Promise<void>>();
 const hostInfoCache = new Map<string, SSHHostInfo>();
+
+function identityDigest(parts: readonly (string | number | boolean)[]): string {
+	return new Bun.CryptoHasher("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 24);
+}
+
+export function getSshConnectionKey(host: SSHConnectionTarget): string {
+	return identityDigest([
+		"connection-v1",
+		host.connectionId ?? "",
+		host.name,
+		host.host.trim().toLowerCase(),
+		host.username ?? "",
+		host.port ?? 22,
+		host.keyPath ?? "",
+		host.compat ?? false,
+	]);
+}
+
+export function getSshHostInfoKey(host: SSHConnectionTarget): string {
+	return identityDigest([
+		"host-info-v1",
+		host.host.trim().toLowerCase(),
+		host.username ?? "",
+		host.port ?? 22,
+		host.compat ?? false,
+	]);
+}
 
 interface SSHArgsOptions {
 	platform?: SshPlatform;
@@ -70,17 +97,21 @@ function ensureControlDir() {
 	}
 }
 
-function getHostInfoPath(name: string): string {
-	return path.join(HOST_INFO_DIR, `${sanitizeHostName(name)}.json`);
+export function getControlPath(host: SSHConnectionTarget): string {
+	return path.join(CONTROL_DIR, `${getSshConnectionKey(host)}.sock`);
 }
 
-async function deleteHostInfoFromDisk(hostName: string): Promise<void> {
-	const path = getHostInfoPath(hostName);
+function getHostInfoPath(host: SSHConnectionTarget): string {
+	return path.join(HOST_INFO_DIR, `${getSshHostInfoKey(host)}.json`);
+}
+
+async function deleteHostInfoFromDisk(host: SSHConnectionTarget): Promise<void> {
+	const infoPath = getHostInfoPath(host);
 	try {
-		await fs.promises.unlink(path);
+		await fs.promises.unlink(infoPath);
 	} catch (err) {
 		if (isEnoent(err)) return;
-		logger.warn("Failed to delete SSH host info", { host: hostName, error: String(err) });
+		logger.warn("Failed to delete SSH host info", { host: host.name, error: String(err) });
 	}
 }
 
@@ -109,7 +140,7 @@ function buildCommonArgs(host: SSHConnectionTarget, options?: SSHArgsOptions): s
 	const args = options?.allowStdin ? [] : ["-n"];
 
 	if (supportsSshControlMaster(options?.platform)) {
-		args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${CONTROL_PATH}`, "-o", "ControlPersist=3600");
+		args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${getControlPath(host)}`, "-o", "ControlPersist=3600");
 	}
 
 	if (host.password) {
@@ -307,13 +338,14 @@ function shouldRefreshHostInfo(host: SSHConnectionTarget, info: SSHHostInfo): bo
 }
 
 async function loadHostInfoFromDisk(host: SSHConnectionTarget): Promise<SSHHostInfo | undefined> {
-	const path = getHostInfoPath(host.name);
+	const key = getSshHostInfoKey(host);
+	const infoPath = getHostInfoPath(host);
 	try {
-		const raw = await fs.promises.readFile(path, "utf-8");
+		const raw = await fs.promises.readFile(infoPath, "utf-8");
 		const parsed = parseHostInfo(JSON.parse(raw));
 		if (!parsed) return undefined;
 		const resolved = applyCompatOverride(host, parsed);
-		hostInfoCache.set(host.name, resolved);
+		hostInfoCache.set(key, resolved);
 		return resolved;
 	} catch (err) {
 		if (isEnoent(err)) return undefined;
@@ -322,26 +354,12 @@ async function loadHostInfoFromDisk(host: SSHConnectionTarget): Promise<SSHHostI
 	}
 }
 
-async function loadHostInfoFromDiskByName(hostName: string): Promise<SSHHostInfo | undefined> {
-	const path = getHostInfoPath(hostName);
-	try {
-		const raw = await fs.promises.readFile(path, "utf-8");
-		const parsed = parseHostInfo(JSON.parse(raw));
-		if (!parsed) return undefined;
-		return parsed;
-	} catch (err) {
-		if (isEnoent(err)) return undefined;
-		logger.warn("Failed to load SSH host info", { host: hostName, error: String(err) });
-		return undefined;
-	}
-}
-
 async function persistHostInfo(host: SSHConnectionTarget, info: SSHHostInfo): Promise<void> {
 	try {
-		const path = getHostInfoPath(host.name);
+		const infoPath = getHostInfoPath(host);
 		const payload = { ...info, version: HOST_INFO_VERSION };
-		hostInfoCache.set(host.name, payload);
-		await Bun.write(path, JSON.stringify(payload, null, 2), { createPath: true });
+		hostInfoCache.set(getSshHostInfoKey(host), payload);
+		await Bun.write(infoPath, JSON.stringify(payload, null, 2), { createPath: true });
 	} catch (err) {
 		logger.warn("Failed to persist SSH host info", { host: host.name, error: String(err) });
 	}
@@ -481,7 +499,7 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 			compatShell: undefined,
 			compatEnabled: false,
 		};
-		hostInfoCache.set(host.name, fallback);
+		hostInfoCache.set(getSshHostInfoKey(host), fallback);
 		return fallback;
 	}
 
@@ -583,22 +601,17 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 		compatEnabled,
 	});
 
-	hostInfoCache.set(host.name, info);
+	hostInfoCache.set(getSshHostInfoKey(host), info);
 	await persistHostInfo(host, info);
 	return info;
 }
 
-export async function getHostInfo(hostName: string): Promise<SSHHostInfo | undefined> {
-	const cached = hostInfoCache.get(hostName);
-	if (cached) return cached;
-	return loadHostInfoFromDiskByName(hostName);
-}
-
-export async function getHostInfoForHost(host: SSHConnectionTarget): Promise<SSHHostInfo | undefined> {
-	const cached = hostInfoCache.get(host.name);
+export async function getHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo | undefined> {
+	const key = getSshHostInfoKey(host);
+	const cached = hostInfoCache.get(key);
 	if (cached) {
 		const resolved = applyCompatOverride(host, cached);
-		if (resolved !== cached) hostInfoCache.set(host.name, resolved);
+		if (resolved !== cached) hostInfoCache.set(key, resolved);
 		return resolved;
 	}
 	return await loadHostInfoFromDisk(host);
@@ -612,17 +625,18 @@ export async function getHostInfoForHost(host: SSHConnectionTarget): Promise<SSH
  * remote host — callers get `undefined` when nothing is cached yet.
  */
 export function getCachedHostInfoSync(host: SSHConnectionTarget): SSHHostInfo | undefined {
-	const cached = hostInfoCache.get(host.name);
+	const key = getSshHostInfoKey(host);
+	const cached = hostInfoCache.get(key);
 	if (cached) {
 		const resolved = applyCompatOverride(host, cached);
-		if (resolved !== cached) hostInfoCache.set(host.name, resolved);
+		if (resolved !== cached) hostInfoCache.set(key, resolved);
 		return resolved;
 	}
 	try {
-		const parsed = parseHostInfo(JSON.parse(fs.readFileSync(getHostInfoPath(host.name), "utf-8")));
+		const parsed = parseHostInfo(JSON.parse(fs.readFileSync(getHostInfoPath(host), "utf-8")));
 		if (!parsed) return undefined;
 		const resolved = applyCompatOverride(host, parsed);
-		hostInfoCache.set(host.name, resolved);
+		hostInfoCache.set(key, resolved);
 		return resolved;
 	} catch (err) {
 		if (isEnoent(err)) return undefined;
@@ -632,16 +646,17 @@ export function getCachedHostInfoSync(host: SSHConnectionTarget): SSHHostInfo | 
 }
 
 export async function ensureHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
-	const cached = hostInfoCache.get(host.name);
+	const key = getSshHostInfoKey(host);
+	const cached = hostInfoCache.get(key);
 	if (cached) {
 		const resolved = applyCompatOverride(host, cached);
-		hostInfoCache.set(host.name, resolved);
+		hostInfoCache.set(key, resolved);
 		if (!shouldRefreshHostInfo(host, resolved)) return resolved;
 	}
 	const fromDisk = await loadHostInfoFromDisk(host);
 	if (fromDisk && !shouldRefreshHostInfo(host, fromDisk)) return fromDisk;
 	await ensureConnection(host);
-	const current = hostInfoCache.get(host.name);
+	const current = hostInfoCache.get(key);
 	if (current && !shouldRefreshHostInfo(host, current)) return current;
 	return probeHostInfo(host);
 }
@@ -678,8 +693,9 @@ export async function buildRemoteCommandInvocation(
 let registered = false;
 
 export async function ensureConnection(host: SSHConnectionTarget): Promise<void> {
-	const key = host.name;
-	const pending = pendingConnections.get(key);
+	const connectionKey = getSshConnectionKey(host);
+	const infoKey = getSshHostInfoKey(host);
+	const pending = pendingConnections.get(connectionKey);
 	if (pending) {
 		await pending;
 		return;
@@ -699,8 +715,8 @@ export async function ensureConnection(host: SSHConnectionTarget): Promise<void>
 
 		const target = buildSshTarget(host.username, host.host);
 		if (!supportsSshControlMaster()) {
-			activeHosts.set(key, host);
-			if (!hostInfoCache.has(key) && !(await loadHostInfoFromDisk(host))) {
+			activeHosts.set(connectionKey, host);
+			if (!hostInfoCache.has(infoKey) && !(await loadHostInfoFromDisk(host))) {
 				await probeHostInfo(host);
 			}
 			return;
@@ -708,8 +724,8 @@ export async function ensureConnection(host: SSHConnectionTarget): Promise<void>
 
 		const check = await runSshSync(["-O", "check", ...buildCommonArgs(host), target], SSH_HELPER_TIMEOUT_MS, host);
 		if (check.exitCode === 0) {
-			activeHosts.set(key, host);
-			if (!hostInfoCache.has(key) && !(await loadHostInfoFromDisk(host))) {
+			activeHosts.set(connectionKey, host);
+			if (!hostInfoCache.has(infoKey) && !(await loadHostInfoFromDisk(host))) {
 				await probeHostInfo(host);
 			}
 			return;
@@ -721,34 +737,49 @@ export async function ensureConnection(host: SSHConnectionTarget): Promise<void>
 			throw new Error(`Failed to start SSH master for ${target}${detail}`);
 		}
 
-		activeHosts.set(key, host);
-		if (!hostInfoCache.has(key) && !(await loadHostInfoFromDisk(host))) {
+		activeHosts.set(connectionKey, host);
+		if (!hostInfoCache.has(infoKey) && !(await loadHostInfoFromDisk(host))) {
 			await probeHostInfo(host);
 		}
 	})();
 
-	pendingConnections.set(key, promise);
+	pendingConnections.set(connectionKey, promise);
 	try {
 		await promise;
 	} finally {
-		pendingConnections.delete(key);
+		if (pendingConnections.get(connectionKey) === promise) {
+			pendingConnections.delete(connectionKey);
+		}
 	}
 }
 
-export async function invalidateHostMetadata(hostNames: Iterable<string>): Promise<void> {
-	const names = [...hostNames];
-	for (const hostName of names) {
-		hostInfoCache.delete(hostName);
-		await deleteHostInfoFromDisk(hostName);
-	}
-	for (const hostName of names) {
-		const activeHost = activeHosts.get(hostName);
-		if (activeHost) {
-			await closeConnectionInternal(activeHost);
-			activeHosts.delete(hostName);
-			continue;
+export interface InvalidateSshTargetOptions {
+	invalidateHostInfo?: boolean;
+}
+
+export async function invalidateSshTarget(
+	host: SSHConnectionTarget,
+	options: InvalidateSshTargetOptions = {},
+): Promise<void> {
+	const connectionKey = getSshConnectionKey(host);
+	const pending = pendingConnections.get(connectionKey);
+	if (pending) {
+		try {
+			await pending;
+		} catch {
+			// Connection failure does not prevent exact cleanup.
 		}
-		await closeConnectionInternal({ name: hostName, host: hostName });
+	}
+
+	const activeHost = activeHosts.get(connectionKey);
+	await closeConnectionInternal(activeHost ?? host);
+	if (!activeHost || activeHosts.get(connectionKey) === activeHost) {
+		activeHosts.delete(connectionKey);
+	}
+
+	if (options.invalidateHostInfo) {
+		hostInfoCache.delete(getSshHostInfoKey(host));
+		await deleteHostInfoFromDisk(host);
 	}
 }
 
@@ -758,20 +789,25 @@ async function closeConnectionInternal(host: SSHConnectionTarget): Promise<void>
 	await runSshSync(["-O", "exit", ...buildCommonArgs(host), target], SSH_HELPER_TIMEOUT_MS, host);
 }
 
-export async function closeConnection(hostName: string): Promise<void> {
-	await invalidateHostMetadata([hostName]);
+export async function closeConnection(host: SSHConnectionTarget): Promise<void> {
+	await invalidateSshTarget(host);
 }
 
 export async function closeAllConnections(): Promise<void> {
-	for (const [name, host] of Array.from(activeHosts.entries())) {
+	for (const [key, host] of Array.from(activeHosts.entries())) {
 		await closeConnectionInternal(host);
-		activeHosts.delete(name);
+		activeHosts.delete(key);
 	}
 }
 
-export function getControlPathTemplate(): string {
-	return CONTROL_PATH;
-}
+export const _sshConnectionStateForTests = {
+	snapshot(): { activeKeys: string[]; pendingKeys: string[] } {
+		return {
+			activeKeys: [...activeHosts.keys()],
+			pendingKeys: [...pendingConnections.keys()],
+		};
+	},
+};
 
 export function getControlDir(): string {
 	return CONTROL_DIR;

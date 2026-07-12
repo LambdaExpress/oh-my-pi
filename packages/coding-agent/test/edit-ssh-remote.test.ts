@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as capability from "@oh-my-pi/pi-coding-agent/capability";
+import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
 import type { CapabilityResult, SourceMeta } from "@oh-my-pi/pi-coding-agent/capability/types";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import {
@@ -32,7 +33,7 @@ const noopBeginDeferred = (_path: string) => ({
 	finalize: () => {},
 });
 
-function createSession(cwd: string, bridge?: ClientBridge): ToolSession {
+function createSession(cwd: string, bridge?: ClientBridge, sshHosts?: readonly SSHHost[]): ToolSession {
 	const getArtifactsDir = () => path.join(cwd, "artifacts");
 	const getSessionId = () => "session-a";
 	return {
@@ -47,6 +48,7 @@ function createSession(cwd: string, bridge?: ClientBridge): ToolSession {
 		allocateOutputArtifact: async () => ({ id: "artifact-1", path: path.join(cwd, "artifact-1.log") }),
 		settings: Settings.isolated(),
 		getClientBridge: bridge ? () => bridge : undefined,
+		getSessionSshHosts: sshHosts ? async () => sshHosts : undefined,
 	};
 }
 
@@ -152,6 +154,39 @@ describe("ssh:// edit targets", () => {
 		expect(calledWith).toEqual([]);
 	});
 
+	it("uses a session alias for remote reads and writes without exposing its password", async () => {
+		const password = "edit-session-password-sentinel";
+		const host: SSHHost = {
+			name: "ephemeral",
+			connectionId: "session-revision",
+			host: "192.0.2.70",
+			username: "deploy",
+			password,
+			_source: {
+				provider: "ssh-session",
+				providerName: "Session SSH",
+				level: "session",
+				path: "session://session-a/revision-a",
+			},
+		};
+		const files = new Map([["/tmp/a.ts", "old\n"]]);
+		const { statSpy, readSpy, writeSpy } = installRemoteStore(files);
+		const { writethrough } = makeWritethroughMock();
+		const result = await executePatchSingle({
+			session: createSession(tmpDir, undefined, [host]),
+			path: "ssh://ephemeral/tmp/a.ts",
+			params: { op: "update", diff: "@@\n-old\n+new" },
+			allowFuzzy: false,
+			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
+			writethrough,
+			beginDeferredDiagnosticsForPath: noopBeginDeferred,
+		});
+		for (const spy of [statSpy, readSpy, writeSpy]) {
+			expect(spy.mock.calls[0]?.[0]).toMatchObject({ password, connectionId: "session-revision" });
+		}
+		expect(files.get("/tmp/a.ts")).toBe("new\n");
+		expect(JSON.stringify(result)).not.toContain(password);
+	});
 	it("patch deletes a remote file through the protocol handler", async () => {
 		const files = new Map([["/tmp/a.ts", "delete me\n"]]);
 		const { deleteSpy } = installRemoteStore(files);

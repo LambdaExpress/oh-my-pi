@@ -1,5 +1,6 @@
 import { getSSHConfigPath } from "@oh-my-pi/pi-utils";
-import { addSSHHost, readSSHConfigFile, removeSSHHost, type SSHHostConfig } from "../../ssh/config-writer";
+import type { SSHHostConfig } from "../../capability/ssh";
+import { addSSHHost, readSSHConfigFile, removeSSHHost } from "../../ssh/config-writer";
 import { parseCommandArgs } from "../../utils/command-args";
 import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime } from "../types";
 import { commandConsumed, errorMessage, parseNamedScopeArgs, parseSubcommand, usage } from "./parse";

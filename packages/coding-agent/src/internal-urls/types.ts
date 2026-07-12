@@ -5,6 +5,7 @@
  * providing access to agent outputs and server resources without exposing filesystem paths.
  */
 
+import type { SSHHost } from "../capability/ssh";
 import type { Skill } from "../extensibility/skills";
 import type { LocalProtocolOptions } from "./local-protocol";
 
@@ -100,6 +101,8 @@ export interface ResolveContext {
 	localProtocolOptions?: LocalProtocolOptions;
 	/** Calling session's loaded skills. Prefer this over process-global skill state. */
 	skills?: readonly Skill[];
+	/** Effective SSH hosts for the calling session. */
+	sshHosts?: readonly SSHHost[];
 	/**
 	 * When set, handlers that would otherwise materialize an expensive directory
 	 * listing (e.g. the ssh:// handler draining a full remote `ls`) instead return
@@ -131,6 +134,8 @@ export interface WriteContext {
 	signal?: AbortSignal;
 	/** Calling session's `local://` root mapping — see {@link ResolveContext.localProtocolOptions}. */
 	localProtocolOptions?: LocalProtocolOptions;
+	/** Effective SSH hosts for the calling session. */
+	sshHosts?: readonly SSHHost[];
 }
 
 /**

@@ -1066,6 +1066,7 @@ export async function executeReplaceSingle(
 		cwd: session.cwd,
 		signal,
 		localProtocolOptions: session.localProtocolOptions,
+		sshHosts: await session.getSessionSshHosts?.(),
 	});
 	const { bom, text: content } = stripBom(rawContent);
 	const originalEnding = detectLineEnding(content);

@@ -1,5 +1,7 @@
 Runs commands on remote hosts.
 
+Hosts may come from persistent SSH configuration or session aliases created with `ssh_session`. Session aliases are also available to Read-like tools as `ssh://<alias>/<absolute-path>`.
+
 <commands>
 **linux/bash, linux/zsh, macos/bash, macos/zsh** — Unix-like:
 - Files: `ls`, `cat`, `head`, `tail`, `grep`, `find`

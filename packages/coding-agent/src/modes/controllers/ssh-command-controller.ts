@@ -4,9 +4,9 @@
  * Handles /ssh subcommands for managing SSH host configurations.
  */
 import { getProjectDir, getSSHConfigPath } from "@oh-my-pi/pi-utils";
-import { type SSHHost, sshCapability } from "../../capability/ssh";
+import { type SSHHost, type SSHHostConfig, sshCapability } from "../../capability/ssh";
 import { loadCapability } from "../../discovery";
-import { addSSHHost, readSSHConfigFile, removeSSHHost, type SSHHostConfig } from "../../ssh/config-writer";
+import { addSSHHost, readSSHConfigFile, removeSSHHost } from "../../ssh/config-writer";
 import { parseCommandArgs } from "../shared";
 import { theme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";

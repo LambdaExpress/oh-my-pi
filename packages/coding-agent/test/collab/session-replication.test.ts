@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
+import { isWireSessionEntry } from "@oh-my-pi/pi-coding-agent/collab/host";
 import { isBlobRef } from "@oh-my-pi/pi-coding-agent/session/blob-store";
 import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -107,5 +108,19 @@ describe("SessionManager collab replication", () => {
 		const live = manager.getEntry(entry.id);
 		if (live?.type !== "message" || live.message.role !== "user") throw new Error("unexpected live entry");
 		expect(live.message.content).toBe("snapshot me");
+	});
+
+	it("excludes session SSH configuration entries from collaboration snapshots", () => {
+		const { manager } = makeManager();
+		const password = "collab-session-ssh-password-sentinel";
+		manager.appendSshConfigUpsert("prod", { host: "example.com", password });
+		manager.appendMessage({ role: "user", content: "ordinary message", timestamp: Date.now() });
+		const source = manager.snapshotForReplication();
+		expect(JSON.stringify(source.entries)).toContain(password);
+
+		const wireEntries = source.entries.filter(isWireSessionEntry);
+		expect(wireEntries.map(entry => entry.type)).toEqual(["message"]);
+		expect(JSON.stringify(wireEntries)).not.toContain(password);
+		expect(JSON.stringify(wireEntries)).toContain("ordinary message");
 	});
 });

@@ -82,10 +82,10 @@ export interface SourceMeta {
 	provider: string;
 	/** Provider display name (for UI) */
 	providerName: string;
-	/** Absolute path to the source file */
+	/** Absolute path or source URI. */
 	path: string;
-	/** Whether this came from user-level, project-level, or native config */
-	level: "user" | "project" | "native";
+	/** Whether this came from session, user, project, or native config. */
+	level: "session" | "user" | "project" | "native";
 }
 
 /**

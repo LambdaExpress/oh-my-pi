@@ -6,16 +6,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
-
-export interface SSHHostConfig {
-	host: string;
-	username?: string;
-	port?: number;
-	keyPath?: string;
-	password?: string;
-	description?: string;
-	compat?: boolean;
-}
+import type { SSHHostConfig } from "../capability/ssh";
 
 export interface SSHConfigFile {
 	hosts?: Record<string, SSHHostConfig>;

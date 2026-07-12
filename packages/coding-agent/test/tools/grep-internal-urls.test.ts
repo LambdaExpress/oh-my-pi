@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as capability from "@oh-my-pi/pi-coding-agent/capability";
+import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
 import type { CapabilityResult } from "@oh-my-pi/pi-coding-agent/capability/types";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resetActiveSkillsForTests, setActiveSkills } from "@oh-my-pi/pi-coding-agent/extensibility/skills";
@@ -605,6 +606,36 @@ describe("GrepTool internal URL resolution", () => {
 			/directory listing|cannot recurse/,
 		);
 		expect(listSpy).not.toHaveBeenCalled();
+	});
+
+	it("searches a session SSH alias with the same credential-bearing target", async () => {
+		const password = "grep-session-password-sentinel";
+		const host: SSHHost = {
+			name: "ephemeral",
+			connectionId: "session-revision",
+			host: "192.0.2.80",
+			username: "deploy",
+			password,
+			_source: {
+				provider: "ssh-session",
+				providerName: "Session SSH",
+				level: "session",
+				path: "session://session-a/revision-a",
+			},
+		};
+		vi.spyOn(sshFileTransfer, "statRemotePath").mockResolvedValue("file");
+		const readSpy = vi.spyOn(sshFileTransfer, "readRemoteFile").mockResolvedValue({
+			bytes: new TextEncoder().encode("line one\nneedle from session alias\n"),
+			truncated: false,
+		});
+		const tool = new GrepTool(createSession({ getSessionSshHosts: async () => [host] }));
+		const result = await tool.execute("ssh-session-search", {
+			pattern: "needle",
+			path: "ssh://ephemeral/etc/hosts",
+		});
+		expect(getResultText(result)).toContain("needle from session alias");
+		expect(getResultText(result)).not.toContain(password);
+		expect(readSpy.mock.calls[0]?.[0]).toMatchObject({ password, connectionId: "session-revision" });
 	});
 
 	it("searches an IPv6 ssh:// file instead of rejecting the brackets as a glob", async () => {

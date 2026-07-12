@@ -8,6 +8,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { formatKeyHints, type KeybindingsManager } from "../config/keybindings";
 import { isSettingsInitialized, settings } from "../config/settings";
+import type { ResolveContext } from "../internal-urls";
 import { applyEmojiCompletion, getEmojiSuggestions, isEmojiPrefix, tryEmojiInlineReplace } from "./emoji-autocomplete";
 import { getGithubRefContext, getGithubRefSuggestions } from "./github-ref-autocomplete";
 import {
@@ -33,6 +34,7 @@ interface PromptActionAutocompleteOptions {
 	commands: SlashCommand[];
 	basePath: string;
 	keybindings: KeybindingsManager;
+	getSshHosts?: () => Promise<ResolveContext["sshHosts"]>;
 	copyCurrentLine: () => void;
 	copyPrompt: () => void;
 	undo: (prefix: string) => void;
@@ -130,12 +132,19 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 	#baseProvider: CombinedAutocompleteProvider;
 	#actions: PromptActionDefinition[];
 	#basePath: string;
+	#getSshHosts?: () => Promise<ResolveContext["sshHosts"]>;
 
-	constructor(commands: SlashCommand[], basePath: string, actions: PromptActionDefinition[]) {
+	constructor(
+		commands: SlashCommand[],
+		basePath: string,
+		actions: PromptActionDefinition[],
+		getSshHosts?: () => Promise<ResolveContext["sshHosts"]>,
+	) {
 		this.#commands = commands;
 		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath);
 		this.#basePath = basePath;
 		this.#actions = actions;
+		this.#getSshHosts = getSshHosts;
 	}
 
 	async getSuggestions(
@@ -186,7 +195,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			}
 		}
 
-		const urlSuggestions = await getInternalUrlSuggestions(textBeforeCursor, this.#basePath);
+		const urlSuggestions = await getInternalUrlSuggestions(textBeforeCursor, this.#basePath, this.#getSshHosts);
 		if (urlSuggestions) return urlSuggestions;
 
 		if (!isSettingsInitialized() || settings.get("emojiAutocomplete")) {
@@ -311,5 +320,5 @@ export function createPromptActionAutocompleteProvider(
 		},
 	];
 
-	return new PromptActionAutocompleteProvider(options.commands, options.basePath, actions);
+	return new PromptActionAutocompleteProvider(options.commands, options.basePath, actions, options.getSshHosts);
 }

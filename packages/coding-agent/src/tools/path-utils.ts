@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as url from "node:url";
 import { isEnoent, isEnotdir, stripWindowsExtendedLengthPathPrefix } from "@oh-my-pi/pi-utils";
+import type { SSHHost } from "../capability/ssh";
 import type { Skill } from "../extensibility/skills";
 import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
 import { ToolError } from "./tool-errors";
@@ -1162,6 +1163,8 @@ export interface ToolScopeOptions {
 	localProtocolOptions?: LocalProtocolOptions;
 	/** Calling session's loaded skills — lets skill:// resolve without process-global state. */
 	skills?: readonly Skill[];
+	/** Effective SSH hosts for caller-scoped internal URL resolution. */
+	sshHosts?: readonly SSHHost[];
 	/** Materialize readable external URLs to local text files before scope derivation. */
 	resolveExternalUrl?: (rawPath: string) => Promise<ResolvedExternalSearchUrl | undefined>;
 }
@@ -1251,6 +1254,7 @@ export async function resolveToolSearchScope(opts: ToolScopeOptions): Promise<To
 			signal: opts.signal,
 			localProtocolOptions: opts.localProtocolOptions,
 			skills: opts.skills,
+			sshHosts: opts.sshHosts,
 			// Tool-scope resolution only needs `sourcePath`; skip content
 			// materialization so large artifacts (or any handler that separates
 			// path from content) stay searchable without OOM risk.

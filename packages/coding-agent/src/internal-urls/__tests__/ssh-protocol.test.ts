@@ -98,6 +98,41 @@ describe("SshProtocolHandler", () => {
 		});
 	});
 
+	it("uses session-provided aliases for transfers and host completion without exposing credentials in keys", async () => {
+		const sessionHost: SSHHost = {
+			_source: {
+				provider: "ssh-session",
+				providerName: "Session SSH",
+				path: "session://session-1/revision-1",
+				level: "session",
+			},
+			name: "ephemeral",
+			connectionId: "session-connection",
+			host: "192.0.2.40",
+			username: "deploy",
+			port: 2222,
+			keyPath: "C:/keys/ephemeral",
+			password: "session-password-sentinel",
+		};
+		const spy = mockReadBytes("ok\n");
+		const url = parseInternalUrl("ssh://ephemeral/etc/hosts");
+		await handler.resolve(url, { sshHosts: [sessionHost] });
+		expect(spy.mock.calls[0]?.[0]).toMatchObject({
+			name: "ephemeral",
+			connectionId: "session-connection",
+			host: "192.0.2.40",
+			username: "deploy",
+			port: 2222,
+			keyPath: "C:/keys/ephemeral",
+			password: "session-password-sentinel",
+		});
+		expect(handler.canonicalKey(url)).toBe("ssh://ephemeral/etc/hosts");
+		expect(handler.canonicalKey(url)).not.toContain("session-password-sentinel");
+		expect(await handler.complete(undefined, { sshHosts: [sessionHost] })).toEqual([
+			expect.objectContaining({ value: "ephemeral" }),
+		]);
+	});
+
 	it("treats a literal user@host as opaque, not the encoded alias", async () => {
 		mockHosts([{ _source: SOURCE, name: "alice@prod", host: "10.0.0.9", username: "alice" }]);
 		const spy = mockReadBytes("ok\n");
@@ -340,9 +375,8 @@ describe("SshProtocolHandler", () => {
 				expect(error).toBeInstanceOf(Error);
 				const message = (error as Error).message;
 				expect(message).toContain("inline password authentication is not supported");
-				expect(message).toContain(
-					"configure the password on an SSH host alias with `omp ssh add <name> --host <host> --user <user> --password <password>`",
-				);
+				expect(message).toContain("configure the password on an SSH host alias");
+				expect(message).toContain("`ssh_session`");
 				expect(message).not.toContain("user:pass");
 				expect(message).not.toContain(":pw");
 				expect(message).not.toContain("pw@");

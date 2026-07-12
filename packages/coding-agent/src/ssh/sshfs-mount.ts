@@ -4,7 +4,8 @@ import { $which, getRemoteDir, postmortem } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import {
 	getControlDir,
-	getControlPathTemplate,
+	getControlPath,
+	getSshConnectionKey,
 	type SSHConnectionTarget,
 	supportsSshControlMaster,
 } from "./connection-manager";
@@ -12,7 +13,6 @@ import { buildSshTarget, sanitizeHostName } from "./utils";
 
 const REMOTE_DIR = getRemoteDir();
 const CONTROL_DIR = getControlDir();
-const CONTROL_PATH = getControlPathTemplate();
 
 const mountedPaths = new Set<string>();
 
@@ -36,7 +36,7 @@ async function ensureDir(path: string, mode = 0o700): Promise<void> {
 
 function getMountName(host: SSHConnectionTarget): string {
 	const raw = (host.name ?? host.host).trim();
-	return sanitizeHostName(raw);
+	return `${sanitizeHostName(raw)}-${getSshConnectionKey(host)}`;
 }
 
 function getMountPath(host: SSHConnectionTarget): string {
@@ -58,7 +58,7 @@ function buildSshfsArgs(host: SSHConnectionTarget): string[] {
 	];
 
 	if (supportsSshControlMaster()) {
-		args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${CONTROL_PATH}`, "-o", "ControlPersist=3600");
+		args.push("-o", "ControlMaster=auto", "-o", `ControlPath=${getControlPath(host)}`, "-o", "ControlPersist=3600");
 	}
 
 	if (host.port) {

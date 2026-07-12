@@ -7,6 +7,9 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { WorkProfile } from "@oh-my-pi/pi-natives";
 import { APP_NAME, getLogPath, getLogsDir, getReportsDir, isEnoent } from "@oh-my-pi/pi-utils";
+import type { SessionEntry } from "../session/session-entries";
+import { parseSessionContent } from "../session/session-loader";
+import { createSessionSshExternalRedactor } from "../session/session-ssh-export";
 import { writeArchive } from "../utils/zip";
 import type { CpuProfile, HeapSnapshot } from "./profiler";
 import { collectSystemInfo, sanitizeEnv } from "./system-info";
@@ -162,6 +165,21 @@ export async function createReportBundle(options: ReportBundleOptions): Promise<
 		if (options.workProfile.svg) {
 			data["work.svg"] = options.workProfile.svg;
 			files.push("work.svg");
+		}
+	}
+
+	const sessionEntryGroups: SessionEntry[][] = [];
+	for (const [archivePath, content] of Object.entries(data)) {
+		if (!archivePath.endsWith(".jsonl")) continue;
+		const entries = parseSessionContent(content).entries.filter(
+			(entry): entry is SessionEntry => entry.type !== "session",
+		);
+		sessionEntryGroups.push(entries);
+	}
+	const sshRedactor = createSessionSshExternalRedactor(sessionEntryGroups);
+	if (sshRedactor.hasSecrets()) {
+		for (const archivePath of Object.keys(data)) {
+			data[archivePath] = sshRedactor.redact(data[archivePath]);
 		}
 	}
 

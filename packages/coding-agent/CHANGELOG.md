@@ -12,6 +12,7 @@
 - Added read support for image and supported document files stored inside archives, including images embedded in archived PDFs.
 - Added `ssh://` remote file support for verified Windows PowerShell hosts, including drive-path URLs, directory listings, writes, deletes, and moves.
 - Added password authentication for configured SSH hosts, allowing the built-in ssh tool and ssh:// host aliases to connect through OpenSSH askpass without exposing passwords in tool arguments or argv.
+- Added session-persisted SSH aliases shared by the `ssh` tool and all `ssh://` file operations, with branch-aware CRUD and credential-safe exports.
 - Added `/btw /skill:<name>` support that inlines the selected skill content, hides the side-request tool catalog, and preserves the skill prompt when branching the answer.
 - Added a distinct `max` thinking level for GPT-5.6 models that advertise it; model menus, role suffixes, CLI parsing, session state, cycling, and status rendering preserve the tier end to end.
 - Added an opt-in `display.collapseCompletedRuns` TUI setting that keeps model loops and user adjustments live while running, then replaces them after normal completion with an English elapsed-time/text/tool-call summary that `Alt+O` toggles between collapsed and fully expanded views.
@@ -67,6 +68,8 @@
 - Fixed approved plan execution sessions being retitled to the generic title fallback after the executor initializes todos.
 - Fixed hashline edit support for ssh:// remote files.
 - Fixed SSH tool command previews to syntax-highlight cached POSIX/PowerShell remote shells and render `cwd` as the command sent to the remote host.
+- Fixed completed `ssh_session` tool calls replacing their pending operation row instead of rendering the operation and result on separate rows.
+- Fixed `ssh_session` tool guidance exposing session-storage mechanics instead of limiting its description to actionable alias behavior and password safety.
 
 - Fixed the bash interceptor blocking `echo` / `printf` redirects to `/dev/null`, `/dev/tty`, `/dev/stdout`, and `/dev/stderr` device sinks while still directing real file writes to the write tool. ([#3763](https://github.com/can1357/oh-my-pi/issues/3763))
 - Fixed auto-snapcompact reporting failed maintenance when local rendering throws; rendering failures now downgrade to context-full auto-compaction like other snapcompact local blockers.

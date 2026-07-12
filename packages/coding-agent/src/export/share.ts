@@ -27,6 +27,7 @@ import { $ } from "bun";
 import { obfuscateToolArguments, type SecretObfuscator } from "../secrets/obfuscator";
 import type { SessionEntry, SessionHeader } from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
+import { createSessionSshExternalRedactor, omitSessionSshConfigEntries } from "../session/session-ssh-export";
 import type { OutputMeta } from "../tools/output-meta";
 import { buildSessionData, type SessionData, type SubSession } from "./html";
 
@@ -88,10 +89,28 @@ export interface ShareSessionResult {
 	sealedBytes: number;
 }
 
-/** Build the snapshot that gets sealed and uploaded, redacted when an obfuscator is provided. */
+/** Build the snapshot that gets sealed and uploaded with unconditional session-SSH secret removal. */
 export function buildShareSnapshot(sm: SessionManager, options?: ShareSessionOptions): SessionData {
-	const data = buildSessionData(sm, options?.state);
-	return options?.obfuscator?.hasSecrets() ? redactSessionDataForShare(options.obfuscator, data) : data;
+	const source = buildSessionData(sm, options?.state);
+	const entryGroups = [
+		source.entries,
+		...Object.values(source.subSessions ?? {}).map(subSession => subSession.entries),
+	];
+	const sshRedactor = createSessionSshExternalRedactor(entryGroups);
+	const withoutSshConfig: SessionData = {
+		...source,
+		entries: omitSessionSshConfigEntries(source.entries),
+		subSessions: source.subSessions
+			? Object.fromEntries(
+					Object.entries(source.subSessions).map(([key, subSession]) => [
+						key,
+						{ ...subSession, entries: omitSessionSshConfigEntries(subSession.entries) },
+					]),
+				)
+			: source.subSessions,
+	};
+	const sshSafe = sshRedactor.redactJson(withoutSshConfig);
+	return options?.obfuscator?.hasSecrets() ? redactSessionDataForShare(options.obfuscator, sshSafe) : sshSafe;
 }
 
 /**

@@ -826,7 +826,8 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					// data outside the local sandbox — plan mode must reject them.
 					enforcePlanModeWrite(this.session, path, { op: "update" });
 					emitWriteProgress(onUpdate, cleanContent, path);
-					await handler.write(parsed, cleanContent, { cwd: this.session.cwd, signal });
+					const sshHosts = scheme === "ssh" ? await this.session.getSessionSshHosts?.() : undefined;
+					await handler.write(parsed, cleanContent, { cwd: this.session.cwd, signal, sshHosts });
 					let resultText = `Successfully wrote ${cleanContent.length} bytes to ${path}`;
 					if (stripped) {
 						resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;

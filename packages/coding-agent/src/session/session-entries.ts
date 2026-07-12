@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, MessageAttribution, ServiceTierByFamily, TextContent } from "@oh-my-pi/pi-ai";
+import type { SSHHostConfig } from "../capability/ssh";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -139,6 +140,7 @@ export interface TitleChangeEntry extends SessionEntryBase {
 declare module "@oh-my-pi/pi-agent-core/compaction/entries" {
 	interface CustomCompactionSessionEntries {
 		titleChange: TitleChangeEntry;
+		sshConfigChange: SshConfigChangeEntry;
 	}
 }
 
@@ -154,6 +156,21 @@ export interface MCPToolSelectionEntry extends SessionEntryBase {
 	type: "mcp_tool_selection";
 	/** MCP tool names selected for visibility in discovery mode. */
 	selectedToolNames: string[];
+}
+/** Session-branch SSH configuration state change. */
+export type SshConfigChangeEntry = SshConfigUpsertEntry | SshConfigDeleteEntry;
+
+export interface SshConfigUpsertEntry extends SessionEntryBase {
+	type: "ssh_config_change";
+	operation: "upsert";
+	name: string;
+	config: SSHHostConfig;
+}
+
+export interface SshConfigDeleteEntry extends SessionEntryBase {
+	type: "ssh_config_change";
+	operation: "delete";
+	name: string;
 }
 
 /** Session init entry - captures initial context for subagent sessions (debugging/replay). */
@@ -218,6 +235,7 @@ export type SessionEntry =
 	| TitleChangeEntry
 	| TtsrInjectionEntry
 	| MCPToolSelectionEntry
+	| SshConfigChangeEntry
 	| SessionInitEntry
 	| ModeChangeEntry;
 

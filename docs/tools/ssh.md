@@ -11,6 +11,8 @@
   - `packages/coding-agent/src/ssh/sshfs-mount.ts` — optional `sshfs` mount side effect
   - `packages/coding-agent/src/discovery/ssh.ts` — discovers host configs
   - `packages/coding-agent/src/capability/ssh.ts` — canonical host shape
+  - `packages/coding-agent/src/ssh/host-registry.ts` — merges session and persistent aliases
+  - `packages/coding-agent/src/session/session-ssh-config.ts` — reconstructs branch-local aliases
   - `packages/coding-agent/src/session/streaming-output.ts` — tail streaming, truncation, artifacts
   - `packages/coding-agent/src/tools/tool-timeouts.ts` — timeout clamp rules
   - `packages/utils/src/dirs.ts` — user/project ssh config paths
@@ -19,7 +21,7 @@
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `host` | `string` | Yes | Host name key from discovered SSH config entries, not an arbitrary hostname/IP. |
+| `host` | `string` | Yes | Alias from the effective session and persistent SSH host registry, not an arbitrary hostname/IP. |
 | `command` | `string` | Yes | Remote command string passed to `ssh` as the remote command. |
 | `cwd` | `string` | No | Remote working directory. The tool prepends a shell-specific `cd`/`Set-Location` wrapper. |
 | `timeout` | `number` | No | Timeout in seconds. Default `60`; clamped to `1..3600`. |
@@ -46,14 +48,14 @@ Failure behavior:
 - Non-zero remote exit includes captured output plus `Command exited with code N`.
 
 ## Flow
-1. `loadSshTool()` in `packages/coding-agent/src/tools/ssh.ts` calls `loadCapability(sshCapability.id, { cwd: session.cwd })` to discover hosts.
-2. `packages/coding-agent/src/discovery/ssh.ts` loads host entries from, in this order: project managed ssh config, user managed ssh config, `ssh.json` in the repo root, `.ssh.json` in the repo root.
-3. `getSSHConfigPath("project")` and `getSSHConfigPath("user")` in `packages/utils/src/dirs.ts` resolve those managed files to `.omp/ssh.json` in the project and `~/.omp/agent/ssh.json` in the user config dir. This tool does not read `~/.ssh/config`.
-4. Capability loading deduplicates by host name with first item winning; provider order is priority-sorted and the SSH JSON provider registers at priority `5`.
-5. `loadHosts()` in `packages/coding-agent/src/tools/ssh.ts` builds `hostsByName` and drops later duplicates again with `if (!hostsByName.has(host.name))`.
+1. `loadSshTool()` in `packages/coding-agent/src/tools/ssh.ts` requests the active session's effective SSH host snapshot.
+2. `packages/coding-agent/src/ssh/host-registry.ts` merges whole aliases with first-wins precedence: current session branch, project managed config, user managed config, repository `ssh.json`, then repository `.ssh.json`.
+3. Session aliases are reconstructed from append-only `ssh_config_change` entries. They can override a persistent alias without modifying its file; deleting the session alias reveals the persistent entry again.
+4. Persistent discovery resolves managed files to `.omp/ssh.json` in the project and `~/.omp/agent/ssh.json` in the user config directory. This tool does not read `~/.ssh/config`.
+5. `SshTool` builds `hostsByName` and a host-name set from the merged snapshot.
 6. Tool description text is built from `packages/coding-agent/src/prompts/tools/ssh.md` plus an `Available hosts:` list. Each host entry calls `getCachedHostInfoSync()` to show detected shell/OS when cached; otherwise it renders `detecting...`.
-7. On execute, `SshTool.execute()` rejects any `host` not in the discovered host-name set.
-8. `ensureHostInfo()` in `packages/coding-agent/src/ssh/connection-manager.ts` ensures an SSH master connection exists, loads cached host info from disk if present, and probes remote OS/shell when cache is missing or stale.
+7. On execute, `SshTool.execute()` rejects any `host` not in the effective host-name set.
+8. `ensureHostInfo()` in `packages/coding-agent/src/ssh/connection-manager.ts` ensures a connection exists, loads cached host info by non-secret remote identity, and probes remote OS/shell when the cache is missing or stale.
 9. `buildRemoteCommand()` in `packages/coding-agent/src/tools/ssh.ts` prepends a cwd change when `cwd` is provided:
    - Unix-like or Windows compat shells: `cd -- '<cwd>' && <command>`
    - Windows PowerShell: `Set-Location -Path '<cwd>'; <command>`
@@ -65,7 +67,7 @@ Failure behavior:
 14. `SshTool.execute()` converts `cancelled: true` into `ToolError`, converts non-zero exit codes into `ToolError`, otherwise returns the text result with truncation metadata.
 
 ## Modes / Variants
-- **Tool unavailable**: `loadSshTool()` returns `null` when discovery finds no hosts, so the tool is not registered for that session.
+- **Tool unavailable**: `loadSshTool()` returns `null` when the merged session and persistent registry has no hosts, so the tool is not registered for that session.
 - **Unix-like target**: remote command is passed through directly, with optional `cd -- ... &&` prefix.
 - **Windows native shell**: cwd wrapper uses PowerShell `Set-Location` or cmd `cd /d`; command otherwise runs in the remote default Windows shell.
 - **Windows compat shell**: if host probing finds `bash` or `sh` on Windows, `executeSSH()` wraps the remote command as `bash -c '...'` or `sh -c '...'`. Host config can force compat on/off with `compat`.
@@ -75,6 +77,7 @@ Failure behavior:
 ## Side Effects
 - Filesystem
   - Reads managed SSH config JSON plus legacy `ssh.json` / `.ssh.json`.
+  - Reads branch-local aliases from session state; `ssh_session` owns their JSONL mutations.
   - Validates private-key path existence and permissions before connecting.
   - Persists probed host info as JSON under the remote-host cache dir via `persistHostInfo()`.
   - May create the SSH control socket dir and, when `sshfs` exists, remote mount dirs.
@@ -99,7 +102,7 @@ Failure behavior:
 - Output tail window: `DEFAULT_MAX_BYTES = 50 * 1024` in `packages/coding-agent/src/session/streaming-output.ts`.
 - Output sink spill threshold defaults to the same `50 KiB`; once exceeded, only the tail remains in memory.
 - SSH master reuse persistence: `ControlPersist=3600` in `packages/coding-agent/src/ssh/connection-manager.ts` and `packages/coding-agent/src/ssh/sshfs-mount.ts`.
-- SSH host info schema version: `HOST_INFO_VERSION = 2` in `packages/coding-agent/src/ssh/connection-manager.ts`; stale cache entries are reprobed.
+- SSH host info schema version: `HOST_INFO_VERSION = 5` in `packages/coding-agent/src/ssh/connection-manager.ts`; stale cache entries are reprobed.
 - Streaming tail buffer compacts after more than `10` pending chunks (`MAX_PENDING`) before trimming.
 
 ## Errors
@@ -115,13 +118,13 @@ Failure behavior:
 - Discovery parse problems do not fail tool loading; they become capability warnings. If all sources are empty/invalid, the tool simply does not load.
 
 ## Notes
-- Host discovery is JSON-based only. The tool does not parse OpenSSH config files.
-- Discovery expands environment variables recursively in the parsed JSON and expands `~` in `key`/`keyPath`.
-- Host names are capability keys; the model must pass the config key, not the raw hostname.
+- Persistent host discovery is JSON-based only. The tool does not parse OpenSSH config files.
+- Persistent discovery expands environment variables recursively in parsed JSON and expands `~` in `key`/`keyPath`.
+- Host names are effective registry keys; the model must pass the alias, not the raw hostname.
 - Commands run without a PTY. `executeSSH()` uses `ptree.spawn(..., { stdin: "pipe", stderr: "full" })` and does not request an interactive terminal.
 - The tool exposes `cwd` but no `env`, `pty`, upload, download, or explicit file-transfer fields.
 - Lower layers support an `artifactId` for full output and a `remotePath` mount target, but `SshTool.execute()` does not expose those knobs.
 - Both stdout and stderr are merged into one output stream; ordering is whatever arrives through the two streams.
-- `StrictHostKeyChecking=accept-new` and `BatchMode=yes` are always set for connection checks, master startup, and command runs.
-- Connection reuse is keyed by discovered host name, not by raw target tuple alone.
+- `StrictHostKeyChecking=accept-new` is always set. Passwordless targets use `BatchMode=yes`; password targets use one askpass prompt with `BatchMode=no`.
+- Connection reuse and ControlMaster paths use a non-secret digest of the full configuration source/revision and target fields. Host-info caching separately uses `host + username + port + compat`.
 - `closeAllConnections()` and sshfs unmount cleanup run through postmortem hooks, not per-call teardown.

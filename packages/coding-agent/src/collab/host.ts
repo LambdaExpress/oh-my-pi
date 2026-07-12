@@ -96,7 +96,7 @@ function isWireAgentEvent(event: AgentSessionEvent): event is AgentSessionEvent 
 	return event.type in WIRE_AGENT_EVENT_TYPES;
 }
 
-function isWireSessionEntry(entry: StoredSessionEntry): entry is StoredSessionEntry & WireSessionEntry {
+export function isWireSessionEntry(entry: StoredSessionEntry): entry is StoredSessionEntry & WireSessionEntry {
 	return entry.type in WIRE_SESSION_ENTRY_TYPES;
 }
 const CONNECT_TIMEOUT_MS = 15_000;

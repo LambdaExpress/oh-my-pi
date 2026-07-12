@@ -806,6 +806,7 @@ async function resolveInternalSearchInputs(opts: {
 	archiveDisplayMap: ReadonlyMap<string, string>;
 	localProtocolOptions?: LocalProtocolOptions;
 	skills?: ResolveContext["skills"];
+	sshHosts?: ResolveContext["sshHosts"];
 }): Promise<InternalSearchInputResolution> {
 	const internalRouter = InternalUrlRouter.instance();
 	const paths = opts.resolvedPaths.slice();
@@ -820,6 +821,7 @@ async function resolveInternalSearchInputs(opts: {
 		signal: opts.signal,
 		localProtocolOptions: opts.localProtocolOptions,
 		skills: opts.skills,
+		sshHosts: opts.sshHosts,
 		skipDirectoryListing: true,
 		// Try path-only first so large artifacts (and any other handler that
 		// separates path from content) resolve without materializing bytes.
@@ -989,6 +991,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 				cleanup: cleanupArchiveScratch,
 			} = await resolveArchiveSearchPaths(pathSpecs, this.session.cwd);
 			try {
+				const sshHosts = resolvedPaths.some(pathTargetsSsh) ? await this.session.getSessionSshHosts?.() : undefined;
 				const internalResolution = await resolveInternalSearchInputs({
 					pathSpecs,
 					resolvedPaths,
@@ -998,6 +1001,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					archiveDisplayMap,
 					localProtocolOptions: this.session.localProtocolOptions,
 					skills: this.session.skills,
+					sshHosts,
 				});
 				const searchablePaths = internalResolution.paths;
 				const { virtualResources, virtualPathSet, virtualInputIndexes } = internalResolution;
@@ -1045,6 +1049,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 						signal,
 						localProtocolOptions: this.session.localProtocolOptions,
 						skills: this.session.skills,
+						sshHosts,
 						resolveExternalUrl: materializeExternalUrlForSearch,
 					});
 					searchPath = scope.searchPath;

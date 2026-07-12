@@ -30,6 +30,7 @@ import { readToolRenderer } from "./read";
 import { resolveToolRenderer } from "./resolve";
 import { searchToolBm25Renderer } from "./search-tool-bm25";
 import { sshToolRenderer } from "./ssh";
+import { sshSessionToolRenderer } from "./ssh-session";
 import { todoToolRenderer } from "./todo";
 import { writeToolRenderer } from "./write";
 
@@ -107,6 +108,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	reflect: reflectToolRenderer as ToolRenderer,
 	search_tool_bm25: searchToolBm25Renderer as ToolRenderer,
 	ssh: sshToolRenderer as ToolRenderer,
+	ssh_session: sshSessionToolRenderer as ToolRenderer,
 	// Lazy getter: `taskToolRenderer` lives in a module that closes an import
 	// cycle back here (task/renderer → task/render → … → tools/renderers), so
 	// reading it at init order-dependently hits its temporal dead zone. Deferring

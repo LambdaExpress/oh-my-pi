@@ -169,6 +169,7 @@ import { type AsyncJob, type AsyncJobDeliveryState, AsyncJobManager } from "../a
 import { classifyDifficulty } from "../auto-thinking/classifier";
 import { reset as resetCapabilities } from "../capability";
 import type { Rule } from "../capability/rule";
+import type { SSHHost } from "../capability/ssh";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
 import type { ModelRegistry } from "../config/model-registry";
 import {
@@ -195,7 +196,6 @@ import {
 	validateProviderMaxInFlightRequests,
 } from "../config/settings";
 import { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
-import { loadCapability } from "../discovery";
 import { expandApplyPatchToEntries, normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
 import { getFileSnapshotStore } from "../edit/file-snapshot-store";
 import { disposeJuliaKernelSessionsByOwner } from "../eval/jl/executor";
@@ -287,7 +287,8 @@ import {
 	obfuscateProviderContext,
 	type SecretObfuscator,
 } from "../secrets/obfuscator";
-import { invalidateHostMetadata } from "../ssh/connection-manager";
+import { invalidateSshTarget } from "../ssh/connection-manager";
+import { loadEffectiveSshHosts } from "../ssh/host-registry";
 import { usesCodexTaskPrompt } from "../task/prompt-policy";
 import {
 	AUTO_THINKING,
@@ -377,6 +378,12 @@ import type { BranchSummaryEntry, CompactionEntry, NewSessionOptions, SessionEnt
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
 import { formatSessionHistoryMarkdown } from "./session-history-format";
 import { cleanupEmptyMoveSession, type SessionManager } from "./session-manager";
+import {
+	reconstructSessionSshConfigs,
+	type SessionSshConfig,
+	type SessionSshConfigMutation,
+} from "./session-ssh-config";
+import { redactSshSessionAgentEvent, redactSshSessionAssistantMessage } from "./session-ssh-redaction";
 import type { ShakeMode, ShakeResult } from "./shake-types";
 import { ToolChoiceQueue } from "./tool-choice-queue";
 import { planTurnPersistence, sameMessageContent, sessionMessagePersistenceKey } from "./turn-persistence";
@@ -1600,6 +1607,27 @@ function titleConversationTurnFromMessage(message: AgentMessage): TitleConversat
 	return { role: message.role, ...(text ? { text } : {}), ...(thinking ? { thinking } : {}) };
 }
 
+function sameSshConnectionTarget(left: SSHHost, right: SSHHost): boolean {
+	return (
+		left.connectionId === right.connectionId &&
+		left.host === right.host &&
+		left.username === right.username &&
+		left.port === right.port &&
+		left.keyPath === right.keyPath &&
+		left.password === right.password &&
+		left.compat === right.compat
+	);
+}
+
+function sameSshRemoteIdentity(left: SSHHost, right: SSHHost): boolean {
+	return (
+		left.host.trim().toLowerCase() === right.host.trim().toLowerCase() &&
+		left.username === right.username &&
+		(left.port ?? 22) === (right.port ?? 22) &&
+		left.compat === right.compat
+	);
+}
+
 export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
@@ -1607,6 +1635,8 @@ export class AgentSession {
 	readonly yieldQueue: YieldQueue;
 	fileSnapshotStore?: InMemorySnapshotStore;
 	#autoApprove: boolean;
+	#sessionSshConfigs = new Map<string, SessionSshConfig>();
+	#effectiveSshHosts: readonly SSHHost[] = [];
 
 	#powerAssertion: MacOSPowerAssertion | undefined;
 
@@ -2114,6 +2144,7 @@ export class AgentSession {
 	constructor(config: AgentSessionConfig) {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
+		this.#restoreSessionSshConfigs();
 		this.settings = config.settings;
 		this.setTitleSystemPrompt(config.titleSystemPrompt);
 		this.#autoApprove = config.autoApprove === true;
@@ -2363,6 +2394,36 @@ export class AgentSession {
 			if (this.#advisors.length > 0 && !this.#advisorRuntimeMatchesCurrentConfig()) this.#stopAdvisorRuntime();
 			this.#buildAdvisorRuntime(true);
 		});
+	}
+
+	getSessionSshConfigs(): ReadonlyMap<string, SessionSshConfig> {
+		return new Map(
+			[...this.#sessionSshConfigs].map(([name, host]) => [
+				name,
+				{ config: structuredClone(host.config), revisionEntryId: host.revisionEntryId },
+			]),
+		);
+	}
+
+	getSessionSshHosts(): Promise<readonly SSHHost[]> {
+		return loadEffectiveSshHosts(this.sessionManager.getCwd(), {
+			sessionId: this.sessionManager.getSessionId(),
+			hosts: this.#sessionSshConfigs,
+		});
+	}
+
+	async mutateSessionSshConfig(mutation: SessionSshConfigMutation): Promise<void> {
+		if (mutation.operation === "upsert") {
+			this.sessionManager.appendSshConfigUpsert(mutation.name, mutation.config);
+		} else {
+			this.sessionManager.appendSshConfigDelete(mutation.name);
+		}
+		this.#restoreSessionSshConfigs();
+		await this.refreshSshTool({ activateIfAvailable: true });
+	}
+
+	#restoreSessionSshConfigs(): void {
+		this.#sessionSshConfigs = reconstructSessionSshConfigs(this.sessionManager.getBranch());
 	}
 	// -------------------------------------------------------------------------
 	// Advisor runtime lifecycle
@@ -3696,7 +3757,26 @@ export class AgentSession {
 		}
 	}
 
-	#processAgentEvent = async (event: AgentEvent): Promise<void> => {
+	#redactCompletedSshSessionToolCall(toolCallId: string): void {
+		const messages = this.agent.state.messages;
+		let changed = false;
+		const redactedMessages = messages.map(message => {
+			if (message.role !== "assistant") return message;
+			const redacted = redactSshSessionAssistantMessage(message, toolCallId);
+			if (redacted !== message) changed = true;
+			return redacted;
+		});
+		if (changed) this.agent.replaceMessages(redactedMessages);
+		if (this.#lastAssistantMessage) {
+			this.#lastAssistantMessage = redactSshSessionAssistantMessage(this.#lastAssistantMessage, toolCallId);
+		}
+	}
+
+	#processAgentEvent = async (rawEvent: AgentEvent): Promise<void> => {
+		if (rawEvent.type === "tool_execution_end" && rawEvent.toolName === "ssh_session") {
+			this.#redactCompletedSshSessionToolCall(rawEvent.toolCallId);
+		}
+		const event = redactSshSessionAgentEvent(rawEvent);
 		this.#trackToolExecutionDisplay(event);
 		// Step the mid-run todo counter synchronously, BEFORE any await in this
 		// handler. The agent loop's next-turn `getAsideMessages` poll can run
@@ -5166,7 +5246,7 @@ export class AgentSession {
 			const aborted = this.agent.state.messages.findLast(
 				(m): m is AssistantMessage => m.role === "assistant" && m.timestamp === targetTimestamp,
 			);
-			if (aborted) this.#discardAssistantTurn(aborted);
+			if (aborted) await this.#discardAssistantTurn(aborted);
 			const content = prompt.render(geminiToolReminderTemplate, { count: headerCount });
 			const details = { headers: headerCount };
 			this.agent.appendMessage({
@@ -6601,23 +6681,23 @@ export class AgentSession {
 	 */
 	async refreshSshTool(options?: { activateIfAvailable?: boolean }): Promise<void> {
 		resetCapabilities();
+		const previousHosts = this.#effectiveSshHosts;
+		const nextHosts = await this.getSessionSshHosts();
+		const nextByName = new Map(nextHosts.map(host => [host.name, host]));
+		for (const previousHost of previousHosts) {
+			const nextHost = nextByName.get(previousHost.name);
+			if (nextHost && sameSshConnectionTarget(previousHost, nextHost)) continue;
+			await invalidateSshTarget(previousHost, {
+				invalidateHostInfo: nextHost !== undefined && !sameSshRemoteIdentity(previousHost, nextHost),
+			});
+		}
+		this.#effectiveSshHosts = nextHosts;
+
 		if (!this.#reloadSshTool) return;
 		const previousSshTool = this.#toolRegistry.get("ssh");
 		const previousActiveToolNames = this.getActiveToolNames();
 		const hadSshTool = previousSshTool !== undefined;
 		const wasActive = previousActiveToolNames.includes("ssh");
-		const previousHostNames =
-			previousSshTool && "hostNames" in previousSshTool && Array.isArray(previousSshTool.hostNames)
-				? [...previousSshTool.hostNames]
-				: [];
-		const candidateHostNames = new Set(previousHostNames);
-		const capability = await loadCapability<{ name: string }>("ssh", { cwd: this.sessionManager.getCwd() });
-		for (const host of capability.items) {
-			if (typeof host?.name === "string") {
-				candidateHostNames.add(host.name);
-			}
-		}
-		await invalidateHostMetadata(candidateHostNames);
 		const sshAllowed = this.#requestedToolNames === undefined || this.#requestedToolNames.has("ssh");
 		const refreshedTool = await this.#reloadSshTool();
 		if (refreshedTool) {
@@ -8960,6 +9040,8 @@ export class AgentSession {
 			await this.sessionManager.flush();
 		}
 		await this.sessionManager.newSession(options);
+		this.#restoreSessionSshConfigs();
+		await this.refreshSshTool({ activateIfAvailable: true });
 		this.#activateCurrentAgentScope(previousScopeId);
 
 		this.#clearCheckpointRuntimeState();
@@ -9044,6 +9126,8 @@ export class AgentSession {
 		if (!forkResult) {
 			return false;
 		}
+		this.#restoreSessionSshConfigs();
+		await this.refreshSshTool({ activateIfAvailable: true });
 
 		// Copy artifacts directory if it exists
 		const oldArtifactDir = forkResult.oldSessionFile.slice(0, -6);
@@ -10402,6 +10486,8 @@ export class AgentSession {
 			await this.sessionManager.flush();
 			this.#cancelOwnAsyncJobs();
 			await this.sessionManager.newSession(previousSessionFile ? { parentSession: previousSessionFile } : undefined);
+			this.#restoreSessionSshConfigs();
+			await this.refreshSshTool({ activateIfAvailable: true });
 
 			this.#clearCheckpointRuntimeState();
 			// agent.reset() clears the core steering/follow-up queues. Preserve any queued
@@ -11067,11 +11153,11 @@ export class AgentSession {
 			// Tool-use orphans corrupt Anthropic message history (tool_result without
 			// matching tool_use). Always remove them even when the retry cap is hit.
 			if (assistantMessage.stopReason === "toolUse") {
-				this.#discardAssistantTurn(assistantMessage);
+				await this.#discardAssistantTurn(assistantMessage);
 			}
 			return false;
 		}
-		this.#discardAssistantTurn(assistantMessage);
+		await this.#discardAssistantTurn(assistantMessage);
 		this.agent.appendMessage({
 			role: "developer",
 			content: [{ type: "text", text: this.#emptyStopRetryReminder() }],
@@ -11212,7 +11298,7 @@ export class AgentSession {
 	 */
 	async #dropPersistedAssistantTurn(assistantMessage: AssistantMessage): Promise<void> {
 		await this.waitForMessagePersistence(assistantMessage);
-		this.#discardAssistantTurn(assistantMessage);
+		await this.#discardAssistantTurn(assistantMessage);
 	}
 
 	/**
@@ -11270,7 +11356,7 @@ export class AgentSession {
 	 * the Gemini header-runaway interrupt, which must not replay a partial,
 	 * loop-fueling thinking block.
 	 */
-	#discardAssistantTurn(assistantMessage: AssistantMessage): void {
+	async #discardAssistantTurn(assistantMessage: AssistantMessage): Promise<void> {
 		this.#removeAssistantMessageFromActiveContext(assistantMessage);
 
 		const branchEntry = this.sessionManager
@@ -11291,6 +11377,8 @@ export class AgentSession {
 		} else {
 			this.sessionManager.branch(branchEntry.parentId);
 		}
+		this.#restoreSessionSshConfigs();
+		await this.refreshSshTool({ activateIfAvailable: true });
 	}
 
 	#isSameAssistantMessage(left: AssistantMessage, right: AssistantMessage): boolean {
@@ -11355,6 +11443,8 @@ export class AgentSession {
 			});
 			this.sessionManager.branchWithSummary(null, report, { startedAt: checkpointState.startedAt });
 		}
+		this.#restoreSessionSshConfigs();
+		await this.refreshSshTool({ activateIfAvailable: true });
 
 		const rewoundAt = new Date().toISOString();
 		const details = { report, startedAt: checkpointState.startedAt, rewoundAt };
@@ -15042,6 +15132,8 @@ export class AgentSession {
 
 		try {
 			await this.sessionManager.setSessionFile(sessionPath);
+			this.#restoreSessionSshConfigs();
+			await this.refreshSshTool({ activateIfAvailable: true });
 			if (switchingToDifferentSession) {
 				this.#freshProviderSessionId = undefined;
 				this.#clearInheritedProviderPromptCacheKey();
@@ -15167,6 +15259,15 @@ export class AgentSession {
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
+			this.#restoreSessionSshConfigs();
+			try {
+				await this.refreshSshTool({ activateIfAvailable: true });
+			} catch (refreshError) {
+				logger.warn("Failed to restore SSH tools after switch error", {
+					previousSessionFile,
+					error: String(refreshError),
+				});
+			}
 			this.#freshProviderSessionId = previousFreshProviderSessionId;
 			this.#syncAgentSessionId(previousSessionState.sessionId);
 			this.#rekeyHindsightMemoryForCurrentSessionId();
@@ -15273,6 +15374,8 @@ export class AgentSession {
 		} else {
 			this.sessionManager.createBranchedSession(selectedEntry.parentId);
 		}
+		this.#restoreSessionSshConfigs();
+		await this.refreshSshTool({ activateIfAvailable: true });
 		this.#rehydrateCheckpointRewindState();
 		this.#syncTodoPhasesFromBranch();
 		this.#freshProviderSessionId = undefined;
@@ -15362,6 +15465,8 @@ export class AgentSession {
 		this.#cancelOwnAsyncJobs();
 
 		this.sessionManager.createBranchedSession(leafId);
+		this.#restoreSessionSshConfigs();
+		await this.refreshSshTool({ activateIfAvailable: true });
 
 		this.#rehydrateCheckpointRewindState();
 		for (const message of preludeMessages ?? []) {
@@ -15558,6 +15663,8 @@ export class AgentSession {
 			// No summary, navigating to non-root
 			this.sessionManager.branch(newLeafId);
 		}
+		this.#restoreSessionSshConfigs();
+		await this.refreshSshTool({ activateIfAvailable: true });
 
 		// Update agent state — build display context to populate agent messages.
 		const stateContext = this.sessionManager.buildSessionContext();

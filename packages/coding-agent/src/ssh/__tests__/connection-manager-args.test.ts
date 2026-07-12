@@ -9,6 +9,7 @@ import {
 	extractProbePayload,
 	findProbeMarker,
 	getHostInfo,
+	getSshHostInfoKey,
 	HOST_PROBE_MARKER,
 	osFromUname,
 	parseHostInfo,
@@ -16,7 +17,7 @@ import {
 	type SSHHostShell,
 	TRANSFER_PROBE_MARKER,
 } from "../connection-manager";
-import { buildSshTarget, sanitizeHostName } from "../utils";
+import { buildSshTarget } from "../utils";
 
 const TARGET: SSHConnectionTarget = { name: "h", host: "h" };
 
@@ -68,11 +69,14 @@ describe("ssh host shell classification", () => {
 			["/usr/bin/zsh", "zsh"],
 		];
 		for (const [shellValue, expected] of cases) {
-			const name = `omp-shellclf-${crypto.randomUUID()}`;
-			const file = path.join(getRemoteHostDir(), `${sanitizeHostName(name)}.json`);
+			const target: SSHConnectionTarget = {
+				name: `alias-${crypto.randomUUID()}`,
+				host: `omp-shellclf-${crypto.randomUUID()}`,
+			};
+			const file = path.join(getRemoteHostDir(), `${getSshHostInfoKey(target)}.json`);
 			await Bun.write(file, JSON.stringify({ version: 3, os: "linux", shell: shellValue, compatEnabled: false }));
 			try {
-				const info = await getHostInfo(name);
+				const info = await getHostInfo(target);
 				expect(info?.shell).toBe(expected);
 			} finally {
 				await fs.promises.rm(file, { force: true });

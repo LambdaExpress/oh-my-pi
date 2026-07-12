@@ -739,6 +739,9 @@ import * as bundledPiCodingAgentSessionSessionManager from "@oh-my-pi/pi-coding-
 import * as bundledPiCodingAgentSessionSessionMigrations from "@oh-my-pi/pi-coding-agent/session/session-migrations";
 import * as bundledPiCodingAgentSessionSessionPaths from "@oh-my-pi/pi-coding-agent/session/session-paths";
 import * as bundledPiCodingAgentSessionSessionPersistence from "@oh-my-pi/pi-coding-agent/session/session-persistence";
+import * as bundledPiCodingAgentSessionSessionSshConfig from "@oh-my-pi/pi-coding-agent/session/session-ssh-config";
+import * as bundledPiCodingAgentSessionSessionSshExport from "@oh-my-pi/pi-coding-agent/session/session-ssh-export";
+import * as bundledPiCodingAgentSessionSessionSshRedaction from "@oh-my-pi/pi-coding-agent/session/session-ssh-redaction";
 import * as bundledPiCodingAgentSessionSessionStorage from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import * as bundledPiCodingAgentSessionSessionTitleSlot from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
 import * as bundledPiCodingAgentSessionSettingsStreamFn from "@oh-my-pi/pi-coding-agent/session/settings-stream-fn";
@@ -759,6 +762,7 @@ import * as bundledPiCodingAgentSlashCommandsTypes from "@oh-my-pi/pi-coding-age
 import * as bundledPiCodingAgentSshConfigWriter from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
 import * as bundledPiCodingAgentSshConnectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
 import * as bundledPiCodingAgentSshFileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
+import * as bundledPiCodingAgentSshHostRegistry from "@oh-my-pi/pi-coding-agent/ssh/host-registry";
 import * as bundledPiCodingAgentSshPasswordAuth from "@oh-my-pi/pi-coding-agent/ssh/password-auth";
 import * as bundledPiCodingAgentSshSshExecutor from "@oh-my-pi/pi-coding-agent/ssh/ssh-executor";
 import * as bundledPiCodingAgentSshSshfsMount from "@oh-my-pi/pi-coding-agent/ssh/sshfs-mount";
@@ -863,6 +867,7 @@ import * as bundledPiCodingAgentToolsReview from "@oh-my-pi/pi-coding-agent/tool
 import * as bundledPiCodingAgentToolsSearchToolBm25 from "@oh-my-pi/pi-coding-agent/tools/search-tool-bm25";
 import * as bundledPiCodingAgentToolsSqliteReader from "@oh-my-pi/pi-coding-agent/tools/sqlite-reader";
 import * as bundledPiCodingAgentToolsSsh from "@oh-my-pi/pi-coding-agent/tools/ssh";
+import * as bundledPiCodingAgentToolsSshSession from "@oh-my-pi/pi-coding-agent/tools/ssh-session";
 import * as bundledPiCodingAgentToolsTodo from "@oh-my-pi/pi-coding-agent/tools/todo";
 import * as bundledPiCodingAgentToolsToolErrors from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import * as bundledPiCodingAgentToolsToolResult from "@oh-my-pi/pi-coding-agent/tools/tool-result";
@@ -2772,6 +2777,12 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 	>,
 	"@oh-my-pi/pi-coding-agent/session/session-persistence":
 		bundledPiCodingAgentSessionSessionPersistence as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/session/session-ssh-config":
+		bundledPiCodingAgentSessionSessionSshConfig as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/session/session-ssh-export":
+		bundledPiCodingAgentSessionSessionSshExport as unknown as Readonly<Record<string, unknown>>,
+	"@oh-my-pi/pi-coding-agent/session/session-ssh-redaction":
+		bundledPiCodingAgentSessionSessionSshRedaction as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/session-storage":
 		bundledPiCodingAgentSessionSessionStorage as unknown as Readonly<Record<string, unknown>>,
 	"@oh-my-pi/pi-coding-agent/session/session-title-slot":
@@ -2816,6 +2827,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/ssh/file-transfer": bundledPiCodingAgentSshFileTransfer as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/ssh/host-registry": bundledPiCodingAgentSshHostRegistry as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/ssh/password-auth": bundledPiCodingAgentSshPasswordAuth as unknown as Readonly<
@@ -3092,6 +3106,9 @@ export const BUNDLED_PI_REGISTRY: Readonly<Record<string, Readonly<Record<string
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/sqlite-reader": bundledPiCodingAgentToolsSqliteReader as unknown as Readonly<
+		Record<string, unknown>
+	>,
+	"@oh-my-pi/pi-coding-agent/tools/ssh-session": bundledPiCodingAgentToolsSshSession as unknown as Readonly<
 		Record<string, unknown>
 	>,
 	"@oh-my-pi/pi-coding-agent/tools/ssh": bundledPiCodingAgentToolsSsh as unknown as Readonly<Record<string, unknown>>,

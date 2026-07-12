@@ -1617,6 +1617,7 @@ export class InputController {
 			commands,
 			basePath,
 			keybindings: this.ctx.keybindings,
+			getSshHosts: () => this.ctx.session.getSessionSshHosts(),
 			copyCurrentLine: () => this.handleCopyCurrentLine(),
 			copyPrompt: () => this.handleCopyPrompt(),
 			undo: prefix => this.ctx.editor.undoPastTransientText(prefix),

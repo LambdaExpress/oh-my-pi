@@ -194,6 +194,7 @@ import {
 	ResolveTool,
 	renderSearchToolBm25Description,
 	SearchToolBm25Tool,
+	SshSessionTool,
 	setExcludedSearchProviders,
 	setPreferredImageProvider,
 	setPreferredSearchProvider,
@@ -677,6 +678,7 @@ export {
 	loadSshTool,
 	ReadTool,
 	ResolveTool,
+	SshSessionTool,
 	type ToolSession,
 	WebSearchTool,
 	WriteTool,
@@ -1639,6 +1641,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			trackEvalExecution: (execution, abortController) =>
 				session ? session.trackEvalExecution(execution, abortController) : execution,
 			getSessionId: () => sessionManager.getSessionId?.() ?? null,
+			getSessionSshConfigs: () => (hasSession ? session.getSessionSshConfigs() : new Map()),
+			mutateSessionSshConfig: async mutation => {
+				if (!hasSession) throw new Error("Session is not ready; cannot modify SSH configuration.");
+				await session.mutateSessionSshConfig(mutation);
+			},
 			getAgentScopeId: () => currentAgentScopeId(),
 			moveSessionToCwd: async nextCwd => {
 				if (!session) throw new Error("Session is not ready; cannot move cwd.");
@@ -2405,7 +2412,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 
 		const reloadSshTool = async (): Promise<AgentTool | null> => {
-			if (!requestedToolNameSet.has("ssh")) return null;
+			if (explicitlyRequestedToolNames && !explicitlyRequestedToolNames.includes("ssh")) return null;
 			const sshTool = (await loadSshTool({
 				...toolSession,
 				cwd: sessionManager.getCwd(),
@@ -2578,7 +2585,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		}
 		const requestedToolNames = explicitlyRequestedToolNames ?? toolNamesFromRegistry;
 		const normalizedRequested = requestedToolNames.filter(name => toolRegistry.has(name));
-		const requestedToolNameSet = new Set(normalizedRequested);
 		// Effective discovery mode is resolved after the full registry exists so auto mode can count MCP/extension tools.
 		const defaultInactiveToolNames = new Set(
 			registeredTools.filter(tool => tool.definition.defaultInactive).map(tool => tool.definition.name),
@@ -2974,7 +2980,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			convertToLlm: convertToLlmFinal,
 			rebuildSystemPrompt,
 			reloadSshTool,
-			requestedToolNames: requestedToolNameSet,
+			requestedToolNames: explicitlyRequestedToolNames ? new Set(explicitlyRequestedToolNames) : undefined,
 			setActiveToolNames,
 			getMcpServerInstructions: mcpManager
 				? () => {
@@ -3014,6 +3020,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			advisorTools,
 		});
 		hasSession = true;
+		toolSession.getSessionSshHosts = () => session.getSessionSshHosts();
+		await session.refreshSshTool({ activateIfAvailable: true });
 		if (asyncJobManager) {
 			session.yieldQueue.register<AsyncResultEntry>("async-result", {
 				isStale: entry => asyncJobManager.isDeliverySuppressed(entry.jobId),

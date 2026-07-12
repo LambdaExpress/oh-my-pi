@@ -3349,12 +3349,14 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 
 		// Resolve the internal URL
+		const sshHosts = scheme === "ssh" ? await this.session.getSessionSshHosts?.() : undefined;
 		const resource = await internalRouter.resolve(url, {
 			cwd: this.session.cwd,
 			settings: this.session.settings,
 			signal,
 			localProtocolOptions: this.session.localProtocolOptions,
 			skills: this.session.skills,
+			sshHosts,
 		});
 		const details: ReadToolDetails = { resolvedPath: resource.sourcePath, contentType: resource.contentType };
 		const handler = internalRouter.getHandler(scheme);

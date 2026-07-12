@@ -40,6 +40,7 @@ export interface EditTargetContext {
 	cwd: string;
 	signal?: AbortSignal;
 	localProtocolOptions?: LocalProtocolOptions;
+	sshHosts?: ResolveContext["sshHosts"];
 }
 
 export interface ResolveEditTargetOptions {
@@ -76,11 +77,12 @@ export type MutableEditProtocolHandler = ProtocolHandler &
 const LOCAL_BACKED_INTERNAL_SCHEMES = new Set(["local", "vault"]);
 const encoder = new TextEncoder();
 
-function contextFromSession(session: ToolSession, signal?: AbortSignal): EditTargetContext {
+async function contextFromSession(session: ToolSession, signal?: AbortSignal): Promise<EditTargetContext> {
 	return {
 		cwd: session.cwd,
 		signal,
 		localProtocolOptions: session.localProtocolOptions,
+		sshHosts: await session.getSessionSshHosts?.(),
 	};
 }
 
@@ -89,6 +91,7 @@ function resolveContext(context: EditTargetContext): ResolveContext {
 		cwd: context.cwd,
 		signal: context.signal,
 		localProtocolOptions: context.localProtocolOptions,
+		sshHosts: context.sshHosts,
 	};
 }
 
@@ -97,6 +100,7 @@ function writeContext(context: EditTargetContext): WriteContext {
 		cwd: context.cwd,
 		signal: context.signal,
 		localProtocolOptions: context.localProtocolOptions,
+		sshHosts: context.sshHosts,
 	};
 }
 
@@ -205,7 +209,7 @@ export async function resolveEditTarget(
 
 	const internalTarget = tryParseInternalEditTarget(path, op, Boolean(options.move));
 	if (internalTarget) {
-		await preflightInternalTarget(internalTarget, contextFromSession(session, options.signal), op);
+		await preflightInternalTarget(internalTarget, await contextFromSession(session, options.signal), op);
 		return internalTarget;
 	}
 

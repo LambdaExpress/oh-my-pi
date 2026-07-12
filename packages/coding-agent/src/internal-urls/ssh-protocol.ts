@@ -12,15 +12,10 @@
  * directory listings carry `isDirectory` so `search` refuses to grep the
  * listing text instead of the directory's real contents.
  *
- * `loadCapability` is imported from `../capability` (not the `../discovery`
- * barrel) on purpose — pulling the barrel here would route
- * `path-utils -> internal-urls -> ssh-protocol -> discovery -> path-utils` and
- * eager-load every provider on any `path-utils` import. Runtime bootstraps the
- * SSH provider via `import "./discovery"` (sdk.ts) / `initializeWithSettings`
- * (main.ts) before any tool resolves.
+ * Host resolution flows through the shared registry so command and ssh:// tools
+ * observe the same session and persistent aliases.
  */
-import * as capability from "../capability";
-import { type SSHHost, sshCapability } from "../capability/ssh";
+import type { SSHHost } from "../capability/ssh";
 import type { SSHConnectionTarget } from "../ssh/connection-manager";
 import {
 	deleteRemoteFile,
@@ -32,6 +27,7 @@ import {
 	statRemotePath,
 	writeRemoteFile,
 } from "../ssh/file-transfer";
+import { loadEffectiveSshHosts } from "../ssh/host-registry";
 import type {
 	InternalResource,
 	InternalUrl,
@@ -111,10 +107,11 @@ export function canonicalSshResourceKey(url: InternalUrl): string {
 	return `ssh://${authority}${encodedPath}`;
 }
 
-/** Load the configured SSH hosts from the `ssh` capability (managed/project `ssh.json`). */
-async function loadConfiguredHosts(cwd?: string): Promise<SSHHost[]> {
-	const { items } = await capability.loadCapability<SSHHost>(sshCapability.id, cwd ? { cwd } : {});
-	return items;
+/** Load caller-scoped effective SSH hosts, with a persistent-only fallback for direct consumers. */
+async function loadConfiguredHosts(
+	context?: Pick<ResolveContext, "cwd" | "sshHosts"> | Pick<WriteContext, "cwd" | "sshHosts">,
+): Promise<readonly SSHHost[]> {
+	return context?.sshHosts ?? loadEffectiveSshHosts(context?.cwd);
 }
 
 /** One-line address for a host, e.g. `deploy@10.0.0.1:2222`. */
@@ -145,7 +142,10 @@ function formatHostIndex(hosts: readonly SSHHost[]): string {
  * ControlMaster/host-info caches key on `name` alone) and otherwise treated as
  * an opaque OpenSSH destination so plain `~/.ssh/config` aliases work.
  */
-async function resolveTarget(url: InternalUrl, cwd?: string): Promise<SSHConnectionTarget> {
+async function resolveTarget(
+	url: InternalUrl,
+	context?: Pick<ResolveContext, "cwd" | "sshHosts"> | Pick<WriteContext, "cwd" | "sshHosts">,
+): Promise<SSHConnectionTarget> {
 	// `parseInternalUrl` falls back to a lenient regex parse when WHATWG `new URL`
 	// rejects the input. For ssh:// that only happens on a malformed authority — an
 	// invalid or out-of-range port (`prod:abc`, `host:65536`) or a bad IPv6 literal —
@@ -180,7 +180,7 @@ async function resolveTarget(url: InternalUrl, cwd?: string): Promise<SSHConnect
 		// reused in hashline snapshot keys and visible error paths. Keep passwords
 		// on configured aliases so tool paths and session-visible resource keys stay clean.
 		throw new Error(
-			"ssh://: inline password authentication is not supported; configure the password on an SSH host alias with `omp ssh add <name> --host <host> --user <user> --password <password>` and use ssh://<name>/<path>",
+			"ssh://: inline password authentication is not supported; configure the password on an SSH host alias (use `ssh_session` for the current session) and use ssh://<name>/<path>",
 		);
 	}
 	const isIpv6Literal = bareHost.startsWith("[") && bareHost.endsWith("]");
@@ -227,7 +227,7 @@ async function resolveTarget(url: InternalUrl, cwd?: string): Promise<SSHConnect
 			`ssh://: unsupported or malformed authority in "${url.href}"; use ssh://[user@]host[:1-65535]/<absolute-path>`,
 		);
 	}
-	const items = await loadConfiguredHosts(cwd);
+	const items = await loadConfiguredHosts(context);
 
 	// A literal user/port in the URL is an authority override. A configured alias
 	// is addressed only by its (percent-encoded) name, never with a separate
@@ -257,6 +257,7 @@ async function resolveTarget(url: InternalUrl, cwd?: string): Promise<SSHConnect
 			keyPath: match.keyPath,
 			password: match.password,
 			compat: match.compat,
+			connectionId: match.connectionId,
 		};
 	}
 	// Opaque OpenSSH destination (plain ~/.ssh/config alias, or any resolvable host).
@@ -284,9 +285,9 @@ export class SshProtocolHandler implements ProtocolHandler {
 					`ssh:// requires a host before the path: ssh://<host>${rawPath} (host-less ssh://${rawPath} is not valid)`,
 				);
 			}
-			return this.#resolveHostIndex(url, context?.cwd);
+			return this.#resolveHostIndex(url, context);
 		}
-		const target = await resolveTarget(url, context?.cwd);
+		const target = await resolveTarget(url, context);
 		const remotePath = remotePathFromUrl(url);
 		// Classify before reading. A FIFO with no writer would block `head` until the
 		// timeout, and a device (e.g. /dev/zero) would stream the whole probe, so a
@@ -354,8 +355,8 @@ export class SshProtocolHandler implements ProtocolHandler {
 	}
 
 	/** Resolve a bare `ssh://` to a listing of configured hosts (immutable; plain virtual text, so `search` can still grep host names). */
-	async #resolveHostIndex(url: InternalUrl, cwd?: string): Promise<InternalResource> {
-		const content = formatHostIndex(await loadConfiguredHosts(cwd));
+	async #resolveHostIndex(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
+		const content = formatHostIndex(await loadConfiguredHosts(context));
 		return {
 			url: url.href,
 			content,
@@ -367,7 +368,7 @@ export class SshProtocolHandler implements ProtocolHandler {
 
 	/** Autocomplete the host segment of `ssh://` with the configured SSH hosts. */
 	async complete(_query?: string, context?: ResolveContext): Promise<UrlCompletion[]> {
-		const hosts = await loadConfiguredHosts(context?.cwd);
+		const hosts = await loadConfiguredHosts(context);
 		return hosts.map(host => ({
 			value: encodeURIComponent(host.name),
 			label: host.name,
@@ -376,7 +377,7 @@ export class SshProtocolHandler implements ProtocolHandler {
 	}
 
 	async stat(url: InternalUrl, context?: ResolveContext): Promise<RemotePathKind> {
-		const target = await resolveTarget(url, context?.cwd);
+		const target = await resolveTarget(url, context);
 		const remotePath = remotePathFromUrl(url);
 		return statRemotePath(target, remotePath, { signal: context?.signal });
 	}
@@ -386,13 +387,13 @@ export class SshProtocolHandler implements ProtocolHandler {
 	}
 
 	async write(url: InternalUrl, content: string, context?: WriteContext): Promise<void> {
-		const target = await resolveTarget(url, context?.cwd);
+		const target = await resolveTarget(url, context);
 		const remotePath = remotePathFromUrl(url);
 		await writeRemoteFile(target, remotePath, new TextEncoder().encode(content), { signal: context?.signal });
 	}
 
 	async delete(url: InternalUrl, context?: WriteContext): Promise<void> {
-		const target = await resolveTarget(url, context?.cwd);
+		const target = await resolveTarget(url, context);
 		const remotePath = remotePathFromUrl(url);
 		await deleteRemoteFile(target, remotePath, { signal: context?.signal });
 	}
@@ -408,7 +409,7 @@ export class SshProtocolHandler implements ProtocolHandler {
 		if (fromAuthority !== toAuthority) {
 			throw new Error("ssh:// move destination must use the same SSH authority as the source");
 		}
-		const target = await resolveTarget(fromUrl, context?.cwd);
+		const target = await resolveTarget(fromUrl, context);
 		const fromRemotePath = remotePathFromUrl(fromUrl);
 		const toRemotePath = remotePathFromUrl(toUrl);
 		if (content !== undefined) {

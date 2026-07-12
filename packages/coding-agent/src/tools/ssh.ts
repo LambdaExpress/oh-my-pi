@@ -4,14 +4,13 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import type { SSHHost } from "../capability/ssh";
-import { sshCapability } from "../capability/ssh";
-import { loadCapability } from "../discovery";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { highlightCode, type Theme } from "../modes/theme/theme";
 import sshDescriptionBase from "../prompts/tools/ssh.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import type { SSHHostInfo } from "../ssh/connection-manager";
 import { ensureHostInfo, getCachedHostInfoSync } from "../ssh/connection-manager";
+import { loadEffectiveSshHosts } from "../ssh/host-registry";
 import { executeSSH } from "../ssh/ssh-executor";
 import { quotePowerShellString } from "../ssh/utils";
 import { renderStatusLine } from "../tui";
@@ -106,13 +105,11 @@ async function loadHosts(session: ToolSession): Promise<{
 	hostNames: string[];
 	hostsByName: Map<string, SSHHost>;
 }> {
-	const result = await loadCapability<SSHHost>(sshCapability.id, { cwd: session.cwd });
+	const hosts = session.getSessionSshHosts
+		? await session.getSessionSshHosts()
+		: await loadEffectiveSshHosts(session.cwd);
 	const hostsByName = new Map<string, SSHHost>();
-	for (const host of result.items) {
-		if (!hostsByName.has(host.name)) {
-			hostsByName.set(host.name, host);
-		}
-	}
+	for (const host of hosts) hostsByName.set(host.name, host);
 	const hostNames = Array.from(hostsByName.keys()).sort();
 	return { hostNames, hostsByName };
 }
@@ -151,14 +148,19 @@ export class SshTool implements AgentTool<typeof sshSchema, SSHToolDetails> {
 	];
 
 	readonly #allowedHosts: Set<string>;
+	readonly hosts: readonly SSHHost[];
 
 	constructor(
 		private readonly session: ToolSession,
-		private readonly hostNames: string[],
-		private readonly hostsByName: Map<string, SSHHost>,
+		readonly hostNames: string[],
+		readonly hostsByName: Map<string, SSHHost>,
 		readonly description: string,
 	) {
 		this.#allowedHosts = new Set(this.hostNames);
+		this.hosts = this.hostNames.flatMap(name => {
+			const host = this.hostsByName.get(name);
+			return host ? [host] : [];
+		});
 	}
 
 	async execute(

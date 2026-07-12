@@ -2055,6 +2055,7 @@ export async function executePatchSingle(
 			cwd: session.cwd,
 			signal,
 			localProtocolOptions: session.localProtocolOptions,
+			sshHosts: await session.getSessionSshHosts?.(),
 		});
 	const result = await applyPatch(input, {
 		cwd: session.cwd,

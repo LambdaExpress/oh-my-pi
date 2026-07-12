@@ -4,6 +4,7 @@ import type { FetchImpl, ImageContent, Model, ServiceTierByFamily, ToolChoice } 
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AsyncJobManager } from "../async/job-manager";
 import type { Rule } from "../capability/rule";
+import type { SSHHost } from "../capability/ssh";
 import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings } from "../config/settings";
 import { EditTool } from "../edit";
@@ -25,6 +26,7 @@ import type { ArtifactManager } from "../session/artifacts";
 import type { ClientBridge } from "../session/client-bridge";
 import type { CustomMessage } from "../session/messages";
 import type { UsageStatistics } from "../session/session-entries";
+import type { SessionSshConfig, SessionSshConfigMutation } from "../session/session-ssh-config";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
 import { TaskTool } from "../task";
 import type { AgentOutputManager } from "../task/output-manager";
@@ -64,6 +66,7 @@ import { ResolveTool } from "./resolve";
 import { reportFindingTool } from "./review";
 import { SearchToolBm25Tool } from "./search-tool-bm25";
 import { loadSshTool } from "./ssh";
+import { SshSessionTool } from "./ssh-session";
 import { type TodoPhase, TodoTool } from "./todo";
 import { WorktreeTool } from "./worktree";
 import { WriteTool } from "./write";
@@ -104,6 +107,7 @@ export * from "./resolve";
 export * from "./review";
 export * from "./search-tool-bm25";
 export * from "./ssh";
+export * from "./ssh-session";
 export * from "./todo";
 export * from "./tts";
 export * from "./worktree";
@@ -222,6 +226,12 @@ export interface ToolSession {
 	trackEvalExecution?<T>(execution: Promise<T>, abortController: AbortController): Promise<T>;
 	/** Get session ID */
 	getSessionId?: () => string | null;
+	/** Get the SSH configurations reconstructed from the active session branch. */
+	getSessionSshConfigs?: () => ReadonlyMap<string, SessionSshConfig>;
+	/** Load the effective SSH hosts for the active session and persistent scopes. */
+	getSessionSshHosts?: () => Promise<readonly SSHHost[]>;
+	/** Append and apply one SSH configuration mutation to the active session branch. */
+	mutateSessionSshConfig?: (mutation: SessionSshConfigMutation) => Promise<void>;
 	/** Move the current session to a new working directory and refresh cwd-scoped state. */
 	moveSessionToCwd?: (cwd: string) => Promise<void>;
 	/** Get Hindsight runtime state for this agent session. */
@@ -468,6 +478,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	debug: DebugTool.createIf,
 	eval: s => new EvalTool(s),
 	ssh: loadSshTool,
+	ssh_session: s => new SshSessionTool(s),
 	github: GithubTool.createIf,
 	glob: s => new GlobTool(s, { rootPathAlias: true }),
 	grep: s => new GrepTool(s),

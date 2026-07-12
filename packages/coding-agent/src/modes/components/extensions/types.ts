@@ -51,7 +51,7 @@ export interface Extension {
 	source: {
 		provider: string;
 		providerName: string;
-		level: "user" | "project" | "native";
+		level: "user" | "project" | "session" | "native";
 	};
 	/** Current state */
 	state: ExtensionState;

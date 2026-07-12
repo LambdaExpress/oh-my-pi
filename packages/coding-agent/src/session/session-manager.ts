@@ -18,6 +18,7 @@ import {
 	stringifyJson,
 	toError,
 } from "@oh-my-pi/pi-utils";
+import type { SSHHostConfig } from "../capability/ssh";
 import { ArtifactManager } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore } from "./blob-store";
 import {
@@ -50,6 +51,7 @@ import {
 	type SessionMessageEntry,
 	type SessionTitleSource,
 	type SessionTreeNode,
+	type SshConfigChangeEntry,
 	type ThinkingLevelChangeEntry,
 	TITLE_CHANGE_ENTRY_TYPE,
 	type TitleChangeEntry,
@@ -1600,6 +1602,28 @@ export class SessionManager {
 			type: "mcp_tool_selection",
 			...this.#freshEntryFields(),
 			selectedToolNames: [...selectedToolNames],
+		};
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+	appendSshConfigUpsert(name: string, config: SSHHostConfig): string {
+		const entry: SshConfigChangeEntry = {
+			type: "ssh_config_change",
+			operation: "upsert",
+			name,
+			config: structuredClone(config),
+			...this.#freshEntryFields(),
+		};
+		this.#recordEntry(entry);
+		return entry.id;
+	}
+
+	appendSshConfigDelete(name: string): string {
+		const entry: SshConfigChangeEntry = {
+			type: "ssh_config_change",
+			operation: "delete",
+			name,
+			...this.#freshEntryFields(),
 		};
 		this.#recordEntry(entry);
 		return entry.id;

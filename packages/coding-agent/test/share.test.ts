@@ -128,6 +128,35 @@ describe("buildShareSnapshot", () => {
 		expect(JSON.stringify(plain)).toContain("hunter2-XYZZY");
 	});
 
+	test("always removes session SSH state and exact-replaces its passwords without a general obfuscator", () => {
+		const password = "share-session-ssh-password-sentinel";
+		const entries: SessionEntry[] = [
+			{
+				type: "ssh_config_change",
+				operation: "upsert",
+				name: "prod",
+				config: { host: "example.com", password },
+				id: "ssh-1",
+				parentId: null,
+				timestamp: "2026-07-12T00:00:00.000Z",
+			},
+			messageEntry("m1", "ssh-1", `ordinary entry remains; leaked copy ${password}`),
+		];
+		const sm = {
+			getHeader: () => ({ ...sessionData([], "x").header!, title: `title ${password}` }),
+			getEntries: () => entries,
+			getLeafId: () => "m1",
+		} as unknown as SessionManager;
+
+		const snapshot = buildShareSnapshot(sm, {});
+		const flat = JSON.stringify(snapshot);
+		expect(flat).not.toContain(password);
+		expect(flat).not.toContain("ssh_config_change");
+		expect(flat).toContain("ordinary entry remains");
+		expect(flat).toContain("[REDACTED]");
+		expect(JSON.stringify(entries)).toContain(password);
+	});
+
 	test("redacts header cwd, bookmark labels, and file-mention paths", () => {
 		const secret = "shareleak-ABCDE";
 		const ts = "2026-06-12T00:00:00.000Z";

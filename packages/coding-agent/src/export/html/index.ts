@@ -6,6 +6,7 @@ import { getResolvedThemeColors, getThemeExportColors } from "../../modes/theme/
 import type { SessionEntry, SessionHeader } from "../../session/session-entries";
 import { loadEntriesFromFile } from "../../session/session-loader";
 import { SessionManager } from "../../session/session-manager";
+import { createSessionSshExternalRedactor, omitSessionSshConfigEntries } from "../../session/session-ssh-export";
 import templateCss from "./template.css" with { type: "text" };
 import templateHtml from "./template.html" with { type: "text" };
 import templateJs from "./template.js" with { type: "text" };
@@ -239,6 +240,24 @@ async function collectSubSessionsFromDir(
 	}
 }
 
+function sanitizeSessionDataForSshExport(data: SessionData): SessionData {
+	const entryGroups = [data.entries, ...Object.values(data.subSessions ?? {}).map(subSession => subSession.entries)];
+	const redactor = createSessionSshExternalRedactor(entryGroups);
+	const withoutSshConfig: SessionData = {
+		...data,
+		entries: omitSessionSshConfigEntries(data.entries),
+		subSessions: data.subSessions
+			? Object.fromEntries(
+					Object.entries(data.subSessions).map(([key, subSession]) => [
+						key,
+						{ ...subSession, entries: omitSessionSshConfigEntries(subSession.entries) },
+					]),
+				)
+			: data.subSessions,
+	};
+	return redactor.redactJson(withoutSshConfig);
+}
+
 /** Generate HTML from bundled template with runtime substitutions. */
 async function generateHtml(sessionData: SessionData, palette: "web" | "theme", themeName?: string): Promise<string> {
 	const themeVars = await generateThemeVars(palette, themeName);
@@ -269,8 +288,9 @@ export async function exportSessionToHtml(
 		if (Object.keys(subSessions).length > 0) sessionData.subSessions = subSessions;
 	}
 
+	const safeSessionData = sanitizeSessionDataForSshExport(sessionData);
 	const palette = opts.palette ?? (opts.themeName ? "theme" : "web");
-	const html = await generateHtml(sessionData, palette, opts.themeName);
+	const html = await generateHtml(safeSessionData, palette, opts.themeName);
 	const outputPath = opts.outputPath || `${APP_NAME}-session-${path.basename(sessionFile, ".jsonl")}.html`;
 
 	await Bun.write(outputPath, html);
@@ -299,8 +319,9 @@ export async function exportFromFile(inputPath: string, options?: ExportOptions 
 		if (Object.keys(subSessions).length > 0) sessionData.subSessions = subSessions;
 	}
 
+	const safeSessionData = sanitizeSessionDataForSshExport(sessionData);
 	const palette = opts.palette ?? (opts.themeName ? "theme" : "web");
-	const html = await generateHtml(sessionData, palette, opts.themeName);
+	const html = await generateHtml(safeSessionData, palette, opts.themeName);
 	const outputPath = opts.outputPath || `${APP_NAME}-session-${path.basename(inputPath, ".jsonl")}.html`;
 
 	await Bun.write(outputPath, html);

@@ -7,25 +7,26 @@ import { defineCapability } from ".";
 import type { SourceMeta } from "./types";
 
 /**
- * Canonical SSH host entry.
+ * Canonical SSH host configuration, regardless of source format.
  */
-export interface SSHHost {
+export interface SSHHostConfig {
+	host: string;
+	username?: string;
+	port?: number;
+	keyPath?: string;
+	password?: string;
+	description?: string;
+	compat?: boolean;
+}
+
+/**
+ * Resolved SSH host entry.
+ */
+export interface SSHHost extends SSHHostConfig {
 	/** Host name (config key) */
 	name: string;
-	/** Host address or DNS name */
-	host: string;
-	/** Optional username override */
-	username?: string;
-	/** Optional port override */
-	port?: number;
-	/** Optional identity key path */
-	keyPath?: string;
-	/** Optional literal password for configured host authentication */
-	password?: string;
-	/** Optional host description */
-	description?: string;
-	/** Optional compatibility mode flag */
-	compat?: boolean;
+	/** Non-secret identity for connection reuse and invalidation. */
+	connectionId?: string;
 	/** Source metadata (added by loader) */
 	_source: SourceMeta;
 }
