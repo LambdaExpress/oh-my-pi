@@ -3740,6 +3740,14 @@ async function openCodexSseEventStream(
 			fetch: fetchOverride,
 			timeout: false,
 		});
+	} catch (error) {
+		const abortReason = watchdog.signal?.reason;
+		if (!signal?.aborted && abortReason instanceof Error && abortReason.name === "TimeoutError") {
+			throw new AIError.StreamTimeoutError("OpenAI Codex SSE stream timed out while waiting for the first event", {
+				cause: error,
+			});
+		}
+		throw error;
 	} finally {
 		watchdog.clear();
 	}

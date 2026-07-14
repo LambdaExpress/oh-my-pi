@@ -5,6 +5,11 @@
 ### Added
 
 - Added end-to-end `max` reasoning support to OpenAI Chat Completions, Responses, Azure Responses, Codex Responses, and their inbound gateway adapters. GPT-5.6 now sends `xhigh` and `max` as distinct wire efforts.
+
+### Fixed
+
+- Fixed stalled OpenAI Codex SSE requests being reported as generic aborts after the first-event timeout, which prevented the coding agent from automatically retrying the transient failure.
+
 ## [16.4.6] - 2026-07-12
 
 ### Added

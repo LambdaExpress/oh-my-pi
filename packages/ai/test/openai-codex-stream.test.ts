@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { streamSimple } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import {
 	getOpenAICodexTransportDetails,
 	getOpenAICodexWebSocketDebugStats,
@@ -17,6 +18,7 @@ import type {
 } from "@oh-my-pi/pi-ai/types";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import * as piUtils from "@oh-my-pi/pi-utils";
+import { waitForDelayOrAbort } from "./helpers";
 
 const { getAgentDir, setAgentDir, TempDir } = piUtils;
 
@@ -321,6 +323,34 @@ describe("openai-codex streaming", () => {
 			"https://chatgpt.com/backend-api/codex/responses",
 			"https://chatgpt.com/backend-api/codex/responses",
 		]);
+	});
+
+	it("preserves a pre-response SSE timeout instead of reporting a generic abort", async () => {
+		const tempDir = TempDir.createSync("@pi-codex-stream-");
+		setAgentDir(tempDir.path());
+		const token = createCodexTestToken();
+		const context = createCodexTestContext();
+		const model = { ...createCodexTestModel("https://chatgpt.com/backend-api"), preferWebsockets: false };
+		const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+			await waitForDelayOrAbort(30, getRequestSignal(input, init));
+			return new Response(createCompletedCodexSse("late response"), {
+				status: 200,
+				headers: { "content-type": "text/event-stream" },
+			});
+		});
+
+		const result = await streamOpenAICodexResponses(model, context, {
+			apiKey: token,
+			fetch: fetchMock as FetchImpl,
+			streamFirstEventTimeoutMs: 20,
+		}).result();
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("OpenAI Codex SSE stream timed out while waiting for the first event");
+		expect(AIError.is(result.errorId, AIError.Flag.Timeout)).toBe(true);
+		expect(AIError.is(result.errorId, AIError.Flag.Transient)).toBe(true);
+		expect(AIError.retriable(result.errorId)).toBe(true);
 	});
 
 	it("omits chatgpt account headers for opaque custom provider API keys", async () => {
