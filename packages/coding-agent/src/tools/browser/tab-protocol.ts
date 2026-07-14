@@ -63,6 +63,12 @@ export type WorkerInitPayload =
 			activatePageBeforeRun?: boolean;
 			targetId: string;
 			dialogs?: "accept" | "dismiss";
+			/**
+			 * Post-timeout recycle: before adopting the page, dismiss any open JS dialog and
+			 * stop a pending navigation so a blocked target cannot stall worker init (which
+			 * previously force-killed the tab). Never set for first-time Electron attach.
+			 */
+			recover?: boolean;
 	  };
 
 export type ToolReply = { ok: true; value: unknown } | { ok: false; error: RunErrorPayload };

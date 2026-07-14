@@ -727,6 +727,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		setMarkdownMermaidRendering(settings.get("tui.renderMermaid"));
 		this.ui = new TUI(new ProcessTerminal(), settings.get("showHardwareCursor"));
 		this.ui.setMaxInlineImages(settings.get("tui.maxInlineImages"));
+		this.ui.setScrollbackRebuild(settings.get("tui.scrollbackRebuild"));
 		// OSC 66 text-sizing is Kitty-only; resolve the setting against the terminal's
 		// capability (`TERMINAL.textSizing` defaults on for Kitty) so it stays off
 		// unless the user opts in, and never emits raw escapes on other terminals.
@@ -1720,9 +1721,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		}
 		this.chatContainer.clear();
-		// Live display keeps the full transcript history. Compaction only resets
-		// provider context; it must not make pre-compaction rows unscrollable.
-		const context = this.viewSession.buildTranscriptSessionContext();
+		// Live display collapses to the compacted transcript tail unless the
+		// user opted into the full inline history; export/resume callers choose
+		// their own mode.
+		const context = this.viewSession.buildTranscriptSessionContext({
+			collapseCompactedHistory: settings.get("display.collapseCompacted"),
+		});
 		this.renderSessionContext(context);
 		for (const child of liveComponents) {
 			this.chatContainer.addChild(child);

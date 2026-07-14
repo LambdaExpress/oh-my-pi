@@ -11,7 +11,7 @@
  * scrollback-clearing repaint (`clearTerminalHistory`).
  */
 
-import { afterEach, beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { createCompactionSummaryMessage } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
@@ -38,6 +38,13 @@ interface DisplaySnapshotFixture {
 
 beforeAll(() => {
 	initTheme();
+});
+
+beforeEach(async () => {
+	// afterEach resets Settings, but renderInitialMessages reads the global
+	// Settings (display.collapseCompacted) — re-init before every test.
+	resetSettingsForTest();
+	await Settings.init({ inMemory: true });
 });
 
 const originalImageProtocol = TERMINAL.imageProtocol;

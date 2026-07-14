@@ -92,6 +92,7 @@ export type SymbolKey =
 	// Icons
 	| "icon.model"
 	| "icon.plan"
+	| "icon.prewalk"
 	| "icon.goal"
 	| "icon.pause"
 	| "icon.loop"
@@ -226,6 +227,7 @@ export type SymbolKey =
 	| "tool.debug"
 	| "tool.mcp"
 	| "tool.job"
+	| "tool.launch"
 	| "tool.task"
 	| "tool.todo"
 	| "tool.memory"
@@ -301,6 +303,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	// Icons
 	"icon.model": "⬢",
 	"icon.plan": "🗺",
+	"icon.prewalk": "🏃",
 	"icon.goal": "🎯",
 	"icon.pause": "⏸",
 	"icon.loop": "↻",
@@ -435,6 +438,7 @@ const UNICODE_SYMBOLS: SymbolMap = {
 	"tool.debug": "🐞",
 	"tool.mcp": "🔌",
 	"tool.job": "⚙",
+	"tool.launch": "🚀",
 	"tool.task": "⇶",
 	"tool.todo": "☑",
 	"tool.memory": "🧠",
@@ -562,6 +566,7 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.model": "\uec19",
 	// pick:  | alt:  
 	"icon.plan": "\uf2d2",
+	"icon.prewalk": "\uf29d",
 	// pick:  (nf-fa-bullseye) | alt:  (nf-md-target) ◎ ⌖
 	"icon.goal": "\uf140",
 	// pick:  (nf-fa-pause) | alt: ⏸ ||
@@ -745,6 +750,7 @@ const NERD_SYMBOLS: SymbolMap = {
 	"tool.debug": "\uEAD8",
 	"tool.mcp": "\uEB2D",
 	"tool.job": "\uEBA2",
+	"tool.launch": "\uF135",
 	"tool.task": "\uf4a0",
 	"tool.todo": "\uEAB3",
 	"tool.memory": "\uEACE",
@@ -819,6 +825,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	// Icons
 	"icon.model": "[M]",
 	"icon.plan": "plan",
+	"icon.prewalk": "prewalk",
 	"icon.goal": "goal",
 	"icon.pause": "||",
 	"icon.loop": "loop",
@@ -950,6 +957,7 @@ const ASCII_SYMBOLS: SymbolMap = {
 	"tool.debug": "dbg",
 	"tool.mcp": "<>",
 	"tool.job": "job",
+	"tool.launch": "run",
 	"tool.task": ">>>",
 	"tool.todo": "[x]",
 	"tool.memory": "mem",
@@ -1819,6 +1827,7 @@ export class Theme {
 		return {
 			model: this.#symbols["icon.model"],
 			plan: this.#symbols["icon.plan"],
+			prewalk: this.#symbols["icon.prewalk"],
 			goal: this.#symbols["icon.goal"],
 			pause: this.#symbols["icon.pause"],
 			loop: this.#symbols["icon.loop"],
