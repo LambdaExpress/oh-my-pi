@@ -543,6 +543,7 @@ export type AgentSessionEvent =
 	| { type: "todo_reminder"; todos: TodoItem[]; attempt: number; maxAttempts: number }
 	| { type: "todo_auto_clear" }
 	| { type: "irc_message"; message: CustomMessage }
+	| { type: "async_job_update"; job: AsyncJobSnapshotItem }
 	| { type: "notice"; level: "info" | "warning" | "error"; message: string; source?: string }
 	| {
 			type: "thinking_level_changed";
@@ -674,7 +675,23 @@ const PRUNE_CACHE_WARM_SUFFIX_TOKENS = 8_000;
  */
 const PRUNE_IDLE_FLUSH_MS = 90 * 60_000;
 export type CommandMetadataChangedListener = () => void | Promise<void>;
-export type AsyncJobSnapshotItem = Pick<AsyncJob, "id" | "type" | "status" | "label" | "startTime">;
+export type AsyncJobSnapshotItem = Pick<
+	AsyncJob,
+	"id" | "type" | "status" | "label" | "startTime" | "toolCallId" | "progress" | "settledAt"
+>;
+
+function snapshotAsyncJob(job: Readonly<AsyncJob>): AsyncJobSnapshotItem {
+	return {
+		id: job.id,
+		type: job.type,
+		status: job.status,
+		label: job.label,
+		startTime: job.startTime,
+		...(job.toolCallId ? { toolCallId: job.toolCallId } : {}),
+		...(job.progress ? { progress: job.progress } : {}),
+		...(job.settledAt !== undefined ? { settledAt: job.settledAt } : {}),
+	};
+}
 
 const RETRY_BACKOFF_JITTER_RATIO = 0.25;
 /**
@@ -794,8 +811,8 @@ export interface AgentSessionConfig {
 	rebuildSystemPrompt?: (toolNames: string[], tools: Map<string, AgentTool>) => Promise<{ systemPrompt: string[] }>;
 	/** Local calendar date provider used by prompt-cache invalidation. Defaults to the host local date. */
 	getLocalCalendarDate?: () => string;
-	/** Rebuild the SSH tool from current capability discovery results. */
-	reloadSshTool?: () => Promise<AgentTool | null>;
+	/** Rebuild the SSH command and file-transfer tools from current capability discovery results. */
+	reloadSshTools?: () => Promise<AgentTool[]>;
 	requestedToolNames?: ReadonlySet<string>;
 	/**
 	 * Optional accessor for live MCP server instructions. Read by the session's
@@ -1814,6 +1831,10 @@ export class AgentSession {
 	#releaseAgentScope: ((scopeId: string) => Promise<void>) | undefined;
 	#activateAgentScope: ((scopeId: string, previousScopeId: string) => void) | undefined;
 	#sessionScopeListeners = new Set<(scopeId: string) => void>();
+	#asyncJobChangeUnsubscribe: (() => void) | undefined;
+	#bufferedAsyncJobUpdates = new Map<string, AsyncJobSnapshotItem>();
+	#publishedAsyncJobToolCallIds = new Set<string>();
+	#lastAsyncJobUpdates = new Map<string, AsyncJobSnapshotItem>();
 	#providerSessionId: string | undefined;
 	#freshProviderSessionId: string | undefined;
 	#inheritedProviderPromptCacheKey: string | undefined;
@@ -1856,7 +1877,7 @@ export class AgentSession {
 		| undefined;
 	#getLocalCalendarDate: () => string;
 	#getMcpServerInstructions: (() => Map<string, string> | undefined) | undefined;
-	#reloadSshTool: (() => Promise<AgentTool | null>) | undefined;
+	reloadSshTools: (() => Promise<AgentTool[]>) | undefined;
 	#setActiveToolNames: ((names: Iterable<string>) => void) | undefined;
 	#disconnectOwnedMcpManager: (() => Promise<void>) | undefined;
 	#requestedToolNames: ReadonlySet<string> | undefined;
@@ -2313,7 +2334,7 @@ export class AgentSession {
 		this.#rebuildSystemPrompt = config.rebuildSystemPrompt;
 		this.#getLocalCalendarDate = config.getLocalCalendarDate ?? formatLocalCalendarDate;
 		this.#getMcpServerInstructions = config.getMcpServerInstructions;
-		this.#reloadSshTool = config.reloadSshTool;
+		this.reloadSshTools = config.reloadSshTools;
 		this.#setActiveToolNames = config.setActiveToolNames;
 		this.#disconnectOwnedMcpManager = config.disconnectOwnedMcpManager;
 		this.#baseSystemPrompt = this.agent.state.systemPrompt;
@@ -2412,6 +2433,7 @@ export class AgentSession {
 
 		this.#rehydrateCheckpointRewindState();
 
+		this.#bindAsyncJobChangesForCurrentScope();
 		// Always subscribe to agent events for internal handling
 		// (session persistence, hooks, auto-compaction, retry logic)
 		this.#unsubscribeAgent = this.agent.subscribe(this.#handleAgentEvent);
@@ -2447,7 +2469,7 @@ export class AgentSession {
 			this.sessionManager.appendSshConfigDelete(mutation.name);
 		}
 		this.#restoreSessionSshConfigs();
-		await this.refreshSshTool({ activateIfAvailable: true });
+		await this.refreshSshTools({ activateIfAvailable: true });
 	}
 
 	#restoreSessionSshConfigs(): void {
@@ -3284,43 +3306,67 @@ export class AgentSession {
 	getAsyncJobSnapshot(options?: { recentLimit?: number }): AsyncJobSnapshot | null {
 		const manager = this.#asyncJobManager;
 		if (!manager) return null;
-		const ownerFilter = this.#agentId ? { ownerId: this.#agentId } : undefined;
-		const running = manager.getRunningJobs(ownerFilter).map(job => ({
-			id: job.id,
-			type: job.type,
-			status: job.status,
-			label: job.label,
-			startTime: job.startTime,
-		}));
-		const recent = manager.getRecentJobs(options?.recentLimit ?? 5, ownerFilter).map(job => ({
-			id: job.id,
-			type: job.type,
-			status: job.status,
-			label: job.label,
-			startTime: job.startTime,
-		}));
-		const delivery = manager.getDeliveryState(ownerFilter);
+		const filter = {
+			...(this.#agentId ? { ownerId: this.#agentId } : {}),
+			scopeId: this.#agentScopeId,
+		};
+		const running = manager
+			.getAllJobs(filter)
+			.filter(job => job.status === "running" || (job.status === "cancelled" && job.settledAt === undefined))
+			.map(snapshotAsyncJob);
+		const recent = manager.getRecentJobs(options?.recentLimit ?? 5, filter).map(snapshotAsyncJob);
+		const delivery = manager.getDeliveryState(filter);
 		return { running, recent, delivery };
 	}
 
-	/**
-	 * Cancel async jobs registered by *this* agent only. Used by lifecycle
-	 * transitions (newSession, switchSession, handoff, dispose) so a subagent
-	 * cleans up its own background work without touching its parent's jobs.
-	 *
-	 * Cancellation runs against this session's scoped manager. Subagents have
-	 * unique agent ids and inherit the parent's manager to clean up their own
-	 * jobs. A secondary in-process top-level session gets no scoped manager,
-	 * because it defaults to `MAIN_AGENT_ID`; reaching through the global
-	 * singleton would tear down the owning primary session's bash/task jobs at
-	 * dispose time (issue #1923).
-	 *
-	 * No-op when no manager is reachable or this session has no agent id.
-	 */
-	#cancelOwnAsyncJobs(): void {
-		if (!this.#agentId) return;
+	#bindAsyncJobChangesForCurrentScope(): void {
+		this.#asyncJobChangeUnsubscribe?.();
+		this.#asyncJobChangeUnsubscribe = undefined;
+		this.#bufferedAsyncJobUpdates.clear();
+		this.#publishedAsyncJobToolCallIds.clear();
+		this.#lastAsyncJobUpdates.clear();
 		const manager = this.#asyncJobManager;
-		manager?.cancelAll({ ownerId: this.#agentId });
+		if (!manager) return;
+		const ownerId = this.#agentId;
+		const scopeId = this.#agentScopeId;
+		this.#asyncJobChangeUnsubscribe = manager.onJobChange(job => {
+			if (job.type !== "ssh_transfer" || job.scopeId !== scopeId) return;
+			if (ownerId !== undefined && job.ownerId !== ownerId) return;
+			const snapshot = snapshotAsyncJob(job);
+			const previous = this.#lastAsyncJobUpdates.get(job.id);
+			if (previous?.settledAt !== undefined) return;
+			if (previous?.status === "cancelled" && previous.settledAt === undefined && snapshot.status === "running")
+				return;
+			this.#lastAsyncJobUpdates.set(job.id, snapshot);
+			if (snapshot.toolCallId && !this.#publishedAsyncJobToolCallIds.has(snapshot.toolCallId)) {
+				this.#bufferedAsyncJobUpdates.set(snapshot.toolCallId, snapshot);
+				return;
+			}
+			this.#emit({ type: "async_job_update", job: snapshot });
+		});
+	}
+
+	async #cancelOwnAsyncJobs(): Promise<void> {
+		const manager = this.#asyncJobManager;
+		if (!manager) return;
+		const filter =
+			this.#agentKind === "main"
+				? { scopeId: this.#agentScopeId }
+				: this.#agentId
+					? { ownerId: this.#agentId, scopeId: this.#agentScopeId }
+					: undefined;
+		if (!filter) return;
+		const sshFilter = { ...filter, type: "ssh_transfer" as const };
+		const sshJobIds = manager
+			.getAllJobs(sshFilter)
+			.filter(job => job.status === "running" || (job.status === "cancelled" && job.settledAt === undefined))
+			.map(job => job.id);
+		manager.watchJobs(sshJobIds);
+		manager.acknowledgeDeliveries(sshJobIds);
+		await manager.cancelAndWait(sshFilter);
+		manager.acknowledgeDeliveries(sshJobIds);
+		manager.unwatchJobs(sshJobIds);
+		manager.cancelAll(filter);
 	}
 
 	/**
@@ -3773,13 +3819,13 @@ export class AgentSession {
 			this.#toolExecutionDisplaySnapshots.set(event.toolCallId, {
 				...previous,
 				result: { ...event.result, isError: event.isError },
-				isPartial: asyncState === "running",
+				isPartial: asyncState === "running" && event.toolName !== "ssh_transfer",
 			});
 			return;
 		}
 		if (event.type === "message_end" && event.message.role === "toolResult") {
 			const snapshot = this.#toolExecutionDisplaySnapshots.get(event.message.toolCallId);
-			if (toolResultAsyncState(snapshot?.result) !== "running") {
+			if (snapshot?.toolName === "ssh_transfer" || toolResultAsyncState(snapshot?.result) !== "running") {
 				this.#toolExecutionDisplaySnapshots.delete(event.message.toolCallId);
 			}
 		}
@@ -3899,6 +3945,34 @@ export class AgentSession {
 		} catch (error) {
 			messageEndPersistence?.release();
 			throw error;
+		}
+		if (event.type === "tool_execution_end" && event.toolName === "ssh_transfer") {
+			if (toolResultAsyncState(event.result) === "running") {
+				this.#publishedAsyncJobToolCallIds.add(event.toolCallId);
+				const buffered = this.#bufferedAsyncJobUpdates.get(event.toolCallId);
+				if (buffered) {
+					this.#bufferedAsyncJobUpdates.delete(event.toolCallId);
+					this.#emit({ type: "async_job_update", job: buffered });
+				}
+			} else {
+				this.#bufferedAsyncJobUpdates.delete(event.toolCallId);
+				this.#publishedAsyncJobToolCallIds.delete(event.toolCallId);
+				const manager = this.#asyncJobManager;
+				const filter = {
+					...(this.#agentId ? { ownerId: this.#agentId } : {}),
+					scopeId: this.#agentScopeId,
+					type: "ssh_transfer" as const,
+				};
+				const job = manager
+					?.getAllJobs(filter)
+					.find(
+						candidate =>
+							candidate.toolCallId === event.toolCallId &&
+							(candidate.status === "running" ||
+								(candidate.status === "cancelled" && candidate.settledAt === undefined)),
+					);
+				if (job) manager?.cancel(job.id, filter);
+			}
 		}
 
 		if (event.type === "turn_start") {
@@ -6020,7 +6094,7 @@ export class AgentSession {
 		// leak its background bash/task work into the parent's manager. Only
 		// the session that owns the manager goes on to dispose it (which itself
 		// nukes any leftover jobs and pending deliveries).
-		this.#cancelOwnAsyncJobs();
+		await this.#cancelOwnAsyncJobs();
 		const ownedAsyncManager = this.#ownedAsyncJobManager;
 		if (ownedAsyncManager) {
 			const drained = await ownedAsyncManager.dispose({ timeoutMs: 3_000 });
@@ -6119,6 +6193,8 @@ export class AgentSession {
 			this.#unsubscribeModelRoles();
 			this.#unsubscribeModelRoles = undefined;
 		}
+		this.#asyncJobChangeUnsubscribe?.();
+		this.#asyncJobChangeUnsubscribe = undefined;
 		this.#eventListeners = [];
 	}
 
@@ -6757,10 +6833,10 @@ export class AgentSession {
 	}
 
 	/**
-	 * Reload the SSH tool from disk-backed capability discovery and make the
-	 * refreshed definition visible to the next model call without restarting.
+	 * Reload the SSH command and file-transfer tools from capability discovery
+	 * and make their refreshed definitions visible to the next model call.
 	 */
-	async refreshSshTool(options?: { activateIfAvailable?: boolean }): Promise<void> {
+	async refreshSshTools(options?: { activateIfAvailable?: boolean }): Promise<void> {
 		resetCapabilities();
 		const previousHosts = this.#effectiveSshHosts;
 		const nextHosts = await this.getSessionSshHosts();
@@ -6774,23 +6850,36 @@ export class AgentSession {
 		}
 		this.#effectiveSshHosts = nextHosts;
 
-		if (!this.#reloadSshTool) return;
-		const previousSshTool = this.#toolRegistry.get("ssh");
+		if (!this.reloadSshTools) return;
+		const managedToolNames = ["ssh", "ssh_transfer"] as const;
+		const managedToolNameSet = new Set<string>(managedToolNames);
 		const previousActiveToolNames = this.getActiveToolNames();
-		const hadSshTool = previousSshTool !== undefined;
-		const wasActive = previousActiveToolNames.includes("ssh");
-		const sshAllowed = this.#requestedToolNames === undefined || this.#requestedToolNames.has("ssh");
-		const refreshedTool = await this.#reloadSshTool();
-		if (refreshedTool) {
-			this.#toolRegistry.set(refreshedTool.name, refreshedTool);
-		} else {
-			this.#toolRegistry.delete("ssh");
-			this.#selectedDiscoveredToolNames.delete("ssh");
+		const previousActiveSet = new Set(previousActiveToolNames);
+		const previouslyAvailable = new Set(managedToolNames.filter(name => this.#toolRegistry.has(name)));
+		const refreshedTools = await this.reloadSshTools();
+		const refreshedByName = new Map(refreshedTools.map(tool => [tool.name, tool]));
+		for (const name of managedToolNames) {
+			const refreshedTool = refreshedByName.get(name);
+			if (refreshedTool) {
+				this.#toolRegistry.set(name, refreshedTool);
+			} else {
+				this.#toolRegistry.delete(name);
+				this.#selectedDiscoveredToolNames.delete(name);
+			}
 		}
 
-		const nextActive = previousActiveToolNames.filter(name => name !== "ssh" && this.#toolRegistry.has(name));
-		if (refreshedTool && sshAllowed && (wasActive || (options?.activateIfAvailable && !hadSshTool))) {
-			nextActive.push(refreshedTool.name);
+		const nextActive = previousActiveToolNames.filter(
+			name => !managedToolNameSet.has(name) && this.#toolRegistry.has(name),
+		);
+		for (const name of managedToolNames) {
+			const allowed = this.#requestedToolNames === undefined || this.#requestedToolNames.has(name);
+			if (
+				refreshedByName.has(name) &&
+				allowed &&
+				(previousActiveSet.has(name) || (options?.activateIfAvailable && !previouslyAvailable.has(name)))
+			) {
+				nextActive.push(name);
+			}
 		}
 		await this.#applyActiveToolsByName(nextActive);
 	}
@@ -7331,6 +7420,7 @@ export class AgentSession {
 		if (this.#agentKind !== "main") return;
 		const scopeId = this.sessionManager.getSessionId();
 		this.#agentScopeId = scopeId;
+		this.#bindAsyncJobChangesForCurrentScope();
 		this.#activateAgentScope?.(scopeId, previousScopeId);
 		for (const listener of this.#sessionScopeListeners) {
 			try {
@@ -9131,7 +9221,7 @@ export class AgentSession {
 			this.#pendingIrcInterrupts = [];
 			this.#pendingIrcAsides = [];
 		} else {
-			this.#cancelOwnAsyncJobs();
+			await this.#cancelOwnAsyncJobs();
 		}
 		this.#closeAllProviderSessions("new session");
 		this.agent.reset();
@@ -9157,7 +9247,7 @@ export class AgentSession {
 		}
 		await this.sessionManager.newSession(options);
 		this.#restoreSessionSshConfigs();
-		await this.refreshSshTool({ activateIfAvailable: true });
+		await this.refreshSshTools({ activateIfAvailable: true });
 		this.#activateCurrentAgentScope(previousScopeId);
 
 		this.#clearCheckpointRuntimeState();
@@ -9243,7 +9333,7 @@ export class AgentSession {
 			return false;
 		}
 		this.#restoreSessionSshConfigs();
-		await this.refreshSshTool({ activateIfAvailable: true });
+		await this.refreshSshTools({ activateIfAvailable: true });
 
 		// Copy artifacts directory if it exists
 		const oldArtifactDir = forkResult.oldSessionFile.slice(0, -6);
@@ -10588,6 +10678,7 @@ export class AgentSession {
 
 			// Start a new session
 			const previousSessionFile = this.sessionFile;
+			const previousScopeId = this.#agentScopeId;
 			if (this.#extensionRunner?.hasHandlers("session_before_switch")) {
 				const result = (await this.#extensionRunner.emit({
 					type: "session_before_switch",
@@ -10600,10 +10691,11 @@ export class AgentSession {
 				}
 			}
 			await this.sessionManager.flush();
-			this.#cancelOwnAsyncJobs();
+			await this.#cancelOwnAsyncJobs();
 			await this.sessionManager.newSession(previousSessionFile ? { parentSession: previousSessionFile } : undefined);
 			this.#restoreSessionSshConfigs();
-			await this.refreshSshTool({ activateIfAvailable: true });
+			await this.refreshSshTools({ activateIfAvailable: true });
+			this.#activateCurrentAgentScope(previousScopeId);
 
 			this.#clearCheckpointRuntimeState();
 			// agent.reset() clears the core steering/follow-up queues. Preserve any queued
@@ -11494,7 +11586,7 @@ export class AgentSession {
 			this.sessionManager.branch(branchEntry.parentId);
 		}
 		this.#restoreSessionSshConfigs();
-		await this.refreshSshTool({ activateIfAvailable: true });
+		await this.refreshSshTools({ activateIfAvailable: true });
 	}
 
 	#isSameAssistantMessage(left: AssistantMessage, right: AssistantMessage): boolean {
@@ -11549,6 +11641,8 @@ export class AgentSession {
 		if (!checkpointState) {
 			return;
 		}
+		const previousScopeId = this.#agentScopeId;
+		await this.#cancelOwnAsyncJobs();
 		try {
 			this.sessionManager.branchWithSummary(checkpointState.checkpointEntryId, report, {
 				startedAt: checkpointState.startedAt,
@@ -11560,7 +11654,8 @@ export class AgentSession {
 			this.sessionManager.branchWithSummary(null, report, { startedAt: checkpointState.startedAt });
 		}
 		this.#restoreSessionSshConfigs();
-		await this.refreshSshTool({ activateIfAvailable: true });
+		await this.refreshSshTools({ activateIfAvailable: true });
+		this.#activateCurrentAgentScope(previousScopeId);
 
 		const rewoundAt = new Date().toISOString();
 		const details = { report, startedAt: checkpointState.startedAt, rewoundAt };
@@ -15357,10 +15452,11 @@ export class AgentSession {
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 
+		await this.#cancelOwnAsyncJobs();
 		try {
 			await this.sessionManager.setSessionFile(sessionPath);
 			this.#restoreSessionSshConfigs();
-			await this.refreshSshTool({ activateIfAvailable: true });
+			await this.refreshSshTools({ activateIfAvailable: true });
 			if (switchingToDifferentSession) {
 				this.#freshProviderSessionId = undefined;
 				this.#clearInheritedProviderPromptCacheKey();
@@ -15488,7 +15584,7 @@ export class AgentSession {
 			this.sessionManager.restoreState(previousSessionState);
 			this.#restoreSessionSshConfigs();
 			try {
-				await this.refreshSshTool({ activateIfAvailable: true });
+				await this.refreshSshTools({ activateIfAvailable: true });
 			} catch (refreshError) {
 				logger.warn("Failed to restore SSH tools after switch error", {
 					previousSessionFile,
@@ -15565,6 +15661,7 @@ export class AgentSession {
 		cancelled: boolean;
 	}> {
 		const previousSessionFile = this.sessionFile;
+		const previousScopeId = this.#agentScopeId;
 		const selectedEntry = this.sessionManager.getEntry(entryId);
 
 		if (selectedEntry?.type !== "message" || selectedEntry.message.role !== "user") {
@@ -15594,7 +15691,7 @@ export class AgentSession {
 
 		// Flush pending writes before branching
 		await this.sessionManager.flush();
-		this.#cancelOwnAsyncJobs();
+		await this.#cancelOwnAsyncJobs();
 
 		if (!selectedEntry.parentId) {
 			await this.sessionManager.newSession({ parentSession: previousSessionFile });
@@ -15602,7 +15699,8 @@ export class AgentSession {
 			this.sessionManager.createBranchedSession(selectedEntry.parentId);
 		}
 		this.#restoreSessionSshConfigs();
-		await this.refreshSshTool({ activateIfAvailable: true });
+		await this.refreshSshTools({ activateIfAvailable: true });
+		this.#activateCurrentAgentScope(previousScopeId);
 		this.#rehydrateCheckpointRewindState();
 		this.#syncTodoPhasesFromBranch();
 		this.#freshProviderSessionId = undefined;
@@ -15640,6 +15738,7 @@ export class AgentSession {
 		preludeMessages?: CustomMessage[],
 	): Promise<{ cancelled: boolean; sessionFile: string | undefined }> {
 		const previousSessionFile = this.sessionFile;
+		const previousScopeId = this.#agentScopeId;
 		if (!this.sessionManager.getSessionFile()) {
 			throw new Error("Cannot branch /btw: session is not persisted");
 		}
@@ -15689,11 +15788,12 @@ export class AgentSession {
 			this.agent.replaceQueues([], []);
 		}
 		await this.sessionManager.flush();
-		this.#cancelOwnAsyncJobs();
+		await this.#cancelOwnAsyncJobs();
 
 		this.sessionManager.createBranchedSession(leafId);
 		this.#restoreSessionSshConfigs();
-		await this.refreshSshTool({ activateIfAvailable: true });
+		await this.refreshSshTools({ activateIfAvailable: true });
+		this.#activateCurrentAgentScope(previousScopeId);
 
 		this.#rehydrateCheckpointRewindState();
 		for (const message of preludeMessages ?? []) {
@@ -15891,7 +15991,7 @@ export class AgentSession {
 			this.sessionManager.branch(newLeafId);
 		}
 		this.#restoreSessionSshConfigs();
-		await this.refreshSshTool({ activateIfAvailable: true });
+		await this.refreshSshTools({ activateIfAvailable: true });
 
 		// Update agent state — build display context to populate agent messages.
 		const stateContext = this.sessionManager.buildSessionContext();

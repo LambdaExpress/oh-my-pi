@@ -182,6 +182,7 @@ function handle(frame) {
 			result: frame.result,
 			isError: frame.isError === true,
 		});
+		write({ type: "async_job_update", job: { id: "job-1", type: "ssh_transfer", status: "running", label: "upload", startTime: 1, toolCallId: "tool-1" } });
 		write({ type: "agent_end", messages: [] });
 	}
 }
@@ -209,6 +210,8 @@ function handle(frame) {
 				}),
 			],
 		});
+		const sessionEventTypes: string[] = [];
+		client.onSessionEvent(event => sessionEventTypes.push(event.type));
 
 		try {
 			await client.start();
@@ -229,6 +232,7 @@ function handle(frame) {
 			expect(toolUpdate?.partialResult).toEqual({
 				content: [{ type: "text", text: "working:hello" }],
 			});
+			expect(sessionEventTypes).toContain("async_job_update");
 		} finally {
 			client.stop();
 		}

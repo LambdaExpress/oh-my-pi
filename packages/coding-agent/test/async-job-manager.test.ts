@@ -648,6 +648,109 @@ describe("AsyncJobManager", () => {
 		expect(manager.hasPendingDeliveries({ scopeId: "scope-old" })).toBe(false);
 		expect(attempts).toBe(1);
 	});
+
+	test("persists progress and emits register, progress, cancel, and settled snapshots", async () => {
+		const changes: Array<{
+			status: string;
+			progressText?: string;
+			settledAt?: number;
+			toolCallId?: string;
+		}> = [];
+		const release = Promise.withResolvers<void>();
+		const progressReported = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+		const unsubscribe = manager.onJobChange(job => {
+			changes.push({
+				status: job.status,
+				progressText: job.progress?.text,
+				settledAt: job.settledAt,
+				toolCallId: job.toolCallId,
+			});
+		});
+
+		const jobId = manager.register(
+			"ssh_transfer",
+			"upload file",
+			async ({ reportProgress }) => {
+				await reportProgress("Upload 50%");
+				progressReported.resolve();
+				await release.promise;
+				return "Upload complete";
+			},
+			{ toolCallId: "tool-transfer-1" },
+		);
+		await progressReported.promise;
+
+		expect(manager.getJob(jobId)?.progress?.text).toBe("Upload 50%");
+		expect(changes).toEqual([
+			{ status: "running", progressText: undefined, settledAt: undefined, toolCallId: "tool-transfer-1" },
+			{ status: "running", progressText: "Upload 50%", settledAt: undefined, toolCallId: "tool-transfer-1" },
+		]);
+
+		release.resolve();
+		await manager.getJob(jobId)?.promise;
+		expect(changes.at(-1)?.status).toBe("completed");
+		expect(changes.at(-1)?.settledAt).toBeNumber();
+		unsubscribe();
+	});
+
+	test("keeps cancelled SSH transfers active until cleanup settles and then delivers the result", async () => {
+		const completions: Array<{ jobId: string; text: string }> = [];
+		const cleanupStarted = Promise.withResolvers<void>();
+		const releaseCleanup = Promise.withResolvers<void>();
+		const manager = new AsyncJobManager({
+			maxRunningJobs: 1,
+			onJobComplete: async (jobId, text) => {
+				completions.push({ jobId, text });
+			},
+		});
+		const jobId = manager.register(
+			"ssh_transfer",
+			"download file",
+			async ({ signal, reportProgress }) => {
+				const aborted = Promise.withResolvers<void>();
+				signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+				await aborted.promise;
+				cleanupStarted.resolve();
+				await releaseCleanup.promise;
+				await reportProgress("Download cancelled · cleanup complete", { status: "cancelled" });
+				return "Download cancelled · cleanup complete";
+			},
+			{ ownerId: "Main", scopeId: "scope-1", toolCallId: "tool-transfer-2" },
+		);
+
+		expect(manager.cancel(jobId, { ownerId: "Main", scopeId: "scope-1", type: "ssh_transfer" })).toBe(true);
+		await cleanupStarted.promise;
+		expect(manager.getJob(jobId)?.status).toBe("cancelled");
+		expect(manager.getJob(jobId)?.settledAt).toBeUndefined();
+		expect(manager.atCapacity).toBe(true);
+		expect(manager.acknowledgeDeliveries([jobId])).toBe(0);
+		expect(() => manager.register("bash", "blocked by cleanup", async () => "unreachable")).toThrow(
+			/Background job limit reached/,
+		);
+
+		let cancellationSettled = false;
+		const cancellation = manager
+			.cancelAndWait({ ownerId: "Main", scopeId: "scope-1", type: "ssh_transfer" })
+			.then(() => {
+				cancellationSettled = true;
+			});
+		await Promise.resolve();
+		expect(cancellationSettled).toBe(false);
+
+		releaseCleanup.resolve();
+		await cancellation;
+		expect(manager.getJob(jobId)?.settledAt).toBeNumber();
+		expect(manager.getJob(jobId)?.progress?.text).toContain("cleanup complete");
+		expect(manager.atCapacity).toBe(false);
+		expect(
+			await manager.drainDeliveries({
+				timeoutMs: 2_000,
+				filter: { ownerId: "Main", scopeId: "scope-1", type: "ssh_transfer" },
+			}),
+		).toBe(true);
+		expect(completions).toEqual([{ jobId, text: "Download cancelled · cleanup complete" }]);
+	});
 });
 
 describe("AsyncJobManager smart poll-wait escalation", () => {

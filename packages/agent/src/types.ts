@@ -656,6 +656,12 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 	 */
 	interruptible?: boolean;
 	/**
+	 * Maximum time to wait for this interruptible tool to settle after its
+	 * abort signal fires. Finite values are clamped to 0..30 seconds; invalid
+	 * values use the default 250 ms grace period.
+	 */
+	abortSettleTimeoutMs?: number;
+	/**
 	 * Optional synthetic result used when the agent loop abandons an in-flight
 	 * `execute()` promise because the tool signal was aborted before the promise
 	 * settled. Tools with rich renderers can return a shape-preserving aborted

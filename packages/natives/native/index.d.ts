@@ -443,6 +443,16 @@ export interface ClipboardImage {
   mimeType: string
 }
 
+/**
+ * Atomically commit a same-directory staged regular file to its destination.
+ *
+ * No-replace mode never clobbers an existing directory entry. Overwrite mode
+ * uses the platform's exact exchange/replace primitive and rolls back if the
+ * displaced entry is a directory or special file. Unsupported primitives
+ * leave both the destination and staged file untouched.
+ */
+export declare function commitStagedFileAtomic(stagePath: string, destinationPath: string, overwrite: boolean): void
+
 /** A context line (before or after a match). */
 export interface ContextLine {
   /** 1-indexed line number in the source file. */

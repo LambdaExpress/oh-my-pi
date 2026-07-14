@@ -154,7 +154,7 @@ async function handleRemoveCommand(rest: string, runtime: SlashCommandRuntime): 
 	try {
 		const filePath = getSSHConfigPath(parsed.scope, runtime.cwd);
 		await removeSSHHost(filePath, parsed.name);
-		await runtime.session.refreshSshTool();
+		await runtime.session.refreshSshTools();
 		await runtime.output(`Removed SSH host "${parsed.name}" from ${parsed.scope} config.`);
 		return commandConsumed();
 	} catch (err) {
@@ -177,7 +177,7 @@ async function handleAddCommand(rest: string, runtime: SlashCommandRuntime): Pro
 	try {
 		const filePath = getSSHConfigPath(scope, runtime.cwd);
 		await addSSHHost(filePath, parsed.name, hostConfig);
-		await runtime.session.refreshSshTool({ activateIfAvailable: true });
+		await runtime.session.refreshSshTools({ activateIfAvailable: true });
 		await runtime.output(`Added SSH host "${parsed.name}" (${scope}).`);
 		return commandConsumed();
 	} catch (err) {

@@ -8,6 +8,7 @@ import type {
 } from "@agentclientprotocol/sdk";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { resolveToCwd } from "../../tools/path-utils";
+import { formatSshTransferSummary, isSshTransferToolDetails } from "../../tools/ssh-transfer";
 import type { TodoStatus } from "../../tools/todo";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 
@@ -211,10 +212,20 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 				buildToolStartContent(event.toolName, getToolExecutionEndArgs(event, options)),
 				resultContent,
 			);
+			const details = event.result.details;
+			const asyncState =
+				details !== null &&
+				typeof details === "object" &&
+				"async" in details &&
+				details.async !== null &&
+				typeof details.async === "object" &&
+				"state" in details.async
+					? details.async.state
+					: undefined;
 			const update: SessionUpdate = {
 				sessionUpdate: "tool_call_update",
 				toolCallId: event.toolCallId,
-				status: event.isError ? "failed" : "completed",
+				status: asyncState === "running" ? "in_progress" : event.isError ? "failed" : "completed",
 				rawOutput: event.result,
 			};
 			if (content.length > 0) {
@@ -231,6 +242,8 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 			}
 			return notifications;
 		}
+		case "async_job_update":
+			return mapAsyncJobUpdateToAcpSessionUpdates(event, sessionId);
 		case "todo_reminder": {
 			const entries = event.todos.map(todo => ({
 				content: todo.content,
@@ -244,6 +257,44 @@ export function mapAgentSessionEventToAcpSessionUpdates(
 		default:
 			return [];
 	}
+}
+
+export function mapAsyncJobUpdateToAcpSessionUpdates(
+	event: Extract<AgentSessionEvent, { type: "async_job_update" }>,
+	sessionId: string,
+): SessionNotification[] {
+	if (!event.job.toolCallId) return [];
+	const progressDetails = event.job.progress?.details;
+	if (!isSshTransferToolDetails(progressDetails)) return [];
+	const cancellationPending = event.job.status === "cancelled" && event.job.settledAt === undefined;
+	const asyncState: "running" | "completed" | "failed" =
+		event.job.status === "completed"
+			? "completed"
+			: event.job.status === "running" || cancellationPending
+				? "running"
+				: "failed";
+	const details = {
+		...progressDetails,
+		status: event.job.status,
+		async: {
+			state: asyncState,
+			jobId: event.job.id,
+			type: "ssh_transfer" as const,
+		},
+	};
+	const update: SessionUpdate = {
+		sessionUpdate: "tool_call_update",
+		toolCallId: event.job.toolCallId,
+		status:
+			event.job.status === "running" || cancellationPending
+				? "in_progress"
+				: event.job.status === "completed"
+					? "completed"
+					: "failed",
+		rawOutput: event.job,
+		content: [textToolCallContent(formatSshTransferSummary(details))],
+	};
+	return [toSessionNotification(sessionId, update)];
 }
 
 function mapAssistantMessageUpdate(

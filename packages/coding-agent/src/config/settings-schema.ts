@@ -3762,7 +3762,7 @@ export const SETTINGS_SCHEMA = {
 			tab: "tools",
 			group: "Execution",
 			label: "Async Execution",
-			description: "Enable async bash commands and background task execution",
+			description: "Enable async bash commands, background tasks, and SSH file transfers",
 		},
 	},
 

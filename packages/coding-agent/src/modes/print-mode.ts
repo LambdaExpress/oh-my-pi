@@ -27,6 +27,38 @@ export interface PrintModeOptions {
 	/** If true, include thinking blocks in text output */
 	printThoughts?: boolean;
 }
+export interface PrintSshTransferSession {
+	readonly asyncJobManager: AgentSession["asyncJobManager"];
+	readonly isStreaming: boolean;
+	getAgentId(): string | undefined;
+	getAgentScopeId(): string;
+	waitForIdle(): Promise<void>;
+}
+
+export async function waitForPrintSshTransfers(session: PrintSshTransferSession): Promise<void> {
+	const manager = session.asyncJobManager;
+	if (!manager) return;
+	const agentId = session.getAgentId();
+	const filter = {
+		...(agentId ? { ownerId: agentId } : {}),
+		scopeId: session.getAgentScopeId(),
+		type: "ssh_transfer" as const,
+	};
+	for (;;) {
+		const activeJobs = manager
+			.getAllJobs(filter)
+			.filter(job => job.status === "running" || (job.status === "cancelled" && job.settledAt === undefined));
+		await Promise.allSettled(activeJobs.map(job => job.promise));
+		await manager.drainDeliveries({ filter });
+		await session.waitForIdle();
+
+		const stillActive = manager
+			.getAllJobs(filter)
+			.some(job => job.status === "running" || (job.status === "cancelled" && job.settledAt === undefined));
+		const delivery = manager.getDeliveryState(filter);
+		if (!stillActive && delivery.queued === 0 && !session.isStreaming) return;
+	}
+}
 
 /**
  * Run in print (single-shot) mode.
@@ -71,6 +103,8 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	for (const message of messages) {
 		await logger.time("print:prompt:next", () => session.prompt(message));
 	}
+
+	await waitForPrintSshTransfers(session);
 
 	// In text mode, output final response
 	if (mode === "text") {

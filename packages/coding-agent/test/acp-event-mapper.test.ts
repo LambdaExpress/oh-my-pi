@@ -320,6 +320,81 @@ describe("ACP event mapper", () => {
 		expect(update.title.endsWith("…")).toBe(true);
 		expect(update.content).toEqual([{ type: "content", content: { type: "text", text: update.title } }]);
 	});
+	it("keeps an asynchronous SSH transfer tool call in progress after launch", () => {
+		const event: AgentSessionEvent = {
+			type: "tool_execution_end",
+			toolCallId: "ssh-tool-1",
+			toolName: "ssh_transfer",
+			isError: false,
+			result: {
+				content: [{ type: "text", text: "started" }],
+				details: {
+					operation: "upload",
+					host: "fixture",
+					localPath: "/tmp/blob.bin",
+					remotePath: "/srv/blob.bin",
+					status: "running",
+					totalBytes: 1024,
+					transferredBytes: 0,
+					percent: 0,
+					bytesPerSecond: 0,
+					averageBytesPerSecond: 0,
+					elapsedMs: 0,
+					async: { state: "running", jobId: "job-1", type: "ssh_transfer" },
+				},
+			},
+		};
+		const updates = mapAgentSessionEventToAcpSessionUpdates(event, "session-1");
+		const update = updates[0]?.update;
+		if (update?.sessionUpdate !== "tool_call_update") throw new Error("missing tool call update");
+		expect(update.toolCallId).toBe("ssh-tool-1");
+		expect(update.status).toBe("in_progress");
+	});
+
+	it("maps permanent SSH job updates onto the original tool call with structured raw output", () => {
+		const event: AgentSessionEvent = {
+			type: "async_job_update",
+			job: {
+				id: "job-1",
+				type: "ssh_transfer",
+				status: "cancelled",
+				label: "upload blob",
+				startTime: 100,
+				toolCallId: "ssh-tool-1",
+				progress: {
+					text: "cancelled",
+					updatedAt: 200,
+					details: {
+						operation: "upload",
+						host: "fixture",
+						localPath: "/tmp/blob.bin",
+						remotePath: "/srv/blob.bin",
+						status: "cancelled",
+						totalBytes: 1024,
+						transferredBytes: 512,
+						percent: 50,
+						bytesPerSecond: 0,
+						averageBytesPerSecond: 256,
+						elapsedMs: 2_000,
+						error: "cleanup completed",
+						async: { state: "failed", jobId: "job-1", type: "ssh_transfer" },
+					},
+				},
+				settledAt: 300,
+			},
+		};
+		const updates = mapAgentSessionEventToAcpSessionUpdates(event, "session-1");
+		const update = updates[0]?.update;
+		if (update?.sessionUpdate !== "tool_call_update") throw new Error("missing tool call update");
+		expect(update.toolCallId).toBe("ssh-tool-1");
+		expect(update.status).toBe("failed");
+		expect(update.rawOutput).toEqual(event.job);
+		const text = update.content?.find(item => item.type === "content" && item.content.type === "text");
+		expect(text?.type === "content" && text.content.type === "text" ? text.content.text : "").toContain(
+			"Error: cleanup completed",
+		);
+	});
+
 	it("emits a diff ToolCallContent for each per-file edit result", () => {
 		const updates = mapAgentSessionEventToAcpSessionUpdates(
 			{

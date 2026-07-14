@@ -60,13 +60,14 @@ function formatHostEntry(host: SSHHost): string {
 	return `- ${host.name} (${host.host}) | ${shell}`;
 }
 
-function formatDescription(hosts: SSHHost[]): string {
-	const baseDescription = prompt.render(sshDescriptionBase);
-	if (hosts.length === 0) {
-		return baseDescription;
-	}
+export function formatSshHostsDescription(baseDescription: string, hosts: readonly SSHHost[]): string {
+	if (hosts.length === 0) return baseDescription;
 	const hostList = hosts.map(formatHostEntry).join("\n");
 	return `${baseDescription}\n\nAvailable hosts:\n${hostList}`;
+}
+
+function formatSshToolDescription(hosts: readonly SSHHost[]): string {
+	return formatSshHostsDescription(prompt.render(sshDescriptionBase), hosts);
 }
 
 function quoteRemotePath(value: string): string {
@@ -101,10 +102,12 @@ function buildRemoteCommand(command: string, cwd: string | undefined, info: SSHH
 	return `cd -- ${quoteRemotePath(cwd)} && ${command}`;
 }
 
-async function loadHosts(session: ToolSession): Promise<{
+export interface LoadedSshHosts {
 	hostNames: string[];
 	hostsByName: Map<string, SSHHost>;
-}> {
+}
+
+export async function loadSshHosts(session: ToolSession): Promise<LoadedSshHosts> {
 	const hosts = session.getSessionSshHosts
 		? await session.getSessionSshHosts()
 		: await loadEffectiveSshHosts(session.cwd);
@@ -216,7 +219,7 @@ export class SshTool implements AgentTool<typeof sshSchema, SSHToolDetails> {
 }
 
 export async function loadSshTool(session: ToolSession): Promise<SshTool | null> {
-	const { hostNames, hostsByName } = await loadHosts(session);
+	const { hostNames, hostsByName } = await loadSshHosts(session);
 	if (hostNames.length === 0) {
 		return null;
 	}
@@ -224,7 +227,7 @@ export async function loadSshTool(session: ToolSession): Promise<SshTool | null>
 	const descriptionHosts = hostNames
 		.map(name => hostsByName.get(name))
 		.filter((host): host is SSHHost => host !== undefined);
-	const description = formatDescription(descriptionHosts);
+	const description = formatSshToolDescription(descriptionHosts);
 
 	return new SshTool(session, hostNames, hostsByName, description);
 }

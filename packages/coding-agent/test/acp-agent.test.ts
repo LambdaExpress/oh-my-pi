@@ -183,7 +183,7 @@ class FakeAgentSession {
 		// no-op for tests
 	}
 
-	async refreshSshTool(_options?: { activateIfAvailable?: boolean }): Promise<void> {}
+	async refreshSshTools(_options?: { activateIfAvailable?: boolean }): Promise<void> {}
 
 	async setModel(model: Model): Promise<void> {
 		this.model = model;
@@ -786,6 +786,7 @@ describe("ACP agent", () => {
 
 		const updatesBefore = harness.updates.length;
 		session.setThinkingLevel("high");
+		await Promise.resolve();
 
 		const pushedAfter = harness.updates.slice(updatesBefore);
 		const configUpdates = pushedAfter.filter(
@@ -844,6 +845,7 @@ describe("ACP agent", () => {
 		await waitForBootstrapGuard();
 		const baseline = harness.updates.length;
 		session.setThinkingLevel("medium");
+		await Promise.resolve();
 		const afterBootstrap = harness.updates
 			.slice(baseline)
 			.filter(
@@ -855,6 +857,67 @@ describe("ACP agent", () => {
 
 		harness.abortController.abort();
 		await Bun.sleep(0);
+	});
+
+	it("installs the permanent lifetime subscription before an immediate prompt and keeps terminal updates", async () => {
+		const harness = await createHarness();
+		try {
+			const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+			const session = harness.findSession(created.sessionId);
+			if (!session) throw new Error("session not registered");
+
+			const baseline = harness.updates.length;
+			const prompt = harness.agent.prompt({
+				sessionId: created.sessionId,
+				prompt: [{ type: "text", text: "ping" }],
+			});
+			const terminalEvent: AgentSessionEvent = {
+				type: "async_job_update",
+				job: {
+					id: "job-1",
+					type: "ssh_transfer",
+					status: "completed",
+					label: "upload blob",
+					startTime: 100,
+					toolCallId: "ssh-tool-1",
+					progress: {
+						text: "complete",
+						updatedAt: 200,
+						details: {
+							operation: "upload",
+							host: "fixture",
+							localPath: "/tmp/blob.bin",
+							remotePath: "/srv/blob.bin",
+							status: "completed",
+							totalBytes: 1024,
+							transferredBytes: 1024,
+							percent: 100,
+							bytesPerSecond: 512,
+							averageBytesPerSecond: 512,
+							elapsedMs: 2_000,
+							async: { state: "completed", jobId: "job-1", type: "ssh_transfer" },
+						},
+					},
+					settledAt: 300,
+				},
+			};
+			for (const listener of session.listeners()) listener(terminalEvent);
+
+			await expect(prompt).resolves.toMatchObject({ stopReason: "end_turn" });
+			expect(session.promptCalls).toEqual(["ping"]);
+			await Promise.resolve();
+			await Promise.resolve();
+			const terminalUpdates = harness.updates.slice(baseline).filter(notification => {
+				const update = notification.update;
+				return update.sessionUpdate === "tool_call_update" && update.toolCallId === "ssh-tool-1";
+			});
+			expect(terminalUpdates).toHaveLength(1);
+			const update = terminalUpdates[0]?.update;
+			expect(update?.sessionUpdate === "tool_call_update" ? update.status : undefined).toBe("completed");
+		} finally {
+			harness.abortController.abort();
+			await Promise.resolve();
+		}
 	});
 
 	it("emits a single config_option_update per setSessionConfigOption(thinking) call", async () => {

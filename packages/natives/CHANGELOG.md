@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added a cross-platform exact staged-file commit helper for no-clobber creation and atomic replacement without weakening directory or special-file safety.
+
 - Added vendored PowerShell syntax highlighting so `highlightCode` and shell renderers can colorize `.ps1`, `.psm1`, `.psd1`, `powershell`, and `pwsh` snippets instead of returning plain text.
 
 ### Fixed

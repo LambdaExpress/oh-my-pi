@@ -16,6 +16,7 @@ import {
 import type { SessionContext } from "../../session/session-context";
 import { createIrcMessageCard } from "../../tools/irc";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
+import { formatSshTransferSummary, isSshTransferToolDetails } from "../../tools/ssh-transfer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { TranscriptBlock } from "../components/transcript-container";
 import { theme } from "../theme/theme";
@@ -170,35 +171,59 @@ export function createCompletedRunSummary(summary: CompletedRunSummary, toggleKe
 	return new TruncatedText(theme.fg("dim", theme.italic(text)), 1, 0);
 }
 
+interface AsyncResultTranscriptJob {
+	jobId?: string;
+	type?: string;
+	label?: string;
+	status?: string;
+	durationMs?: number;
+	progressDetails?: unknown;
+}
+
+function normalizeAsyncResultJob(value: unknown): AsyncResultTranscriptJob {
+	if (value === null || typeof value !== "object") return {};
+	const progress =
+		"progress" in value && value.progress !== null && typeof value.progress === "object" ? value.progress : undefined;
+	return {
+		...("jobId" in value && typeof value.jobId === "string" ? { jobId: value.jobId } : {}),
+		...("type" in value && typeof value.type === "string" ? { type: value.type } : {}),
+		...("label" in value && typeof value.label === "string" ? { label: value.label } : {}),
+		...("status" in value && typeof value.status === "string" ? { status: value.status } : {}),
+		...("durationMs" in value && typeof value.durationMs === "number" ? { durationMs: value.durationMs } : {}),
+		...(progress && "details" in progress ? { progressDetails: progress.details } : {}),
+	};
+}
+
 /**
  * Render an `async-result` custom message (a completed background bash/task job,
  * or a batch of them) as a transcript block of one "Background job completed"
  * row per job.
  */
 export function buildAsyncResultBlock(message: CustomOrHookMessage): TranscriptBlock {
-	const details = (
-		message as CustomMessage<{
-			jobId?: string;
-			type?: "bash" | "task";
-			label?: string;
-			durationMs?: number;
-			jobs?: Array<{ jobId?: string; type?: "bash" | "task"; label?: string; durationMs?: number }>;
-		}>
-	).details;
-	const jobs =
-		details?.jobs && details.jobs.length > 0
+	const details = message.details;
+	const rawJobs =
+		details !== null &&
+		typeof details === "object" &&
+		"jobs" in details &&
+		Array.isArray(details.jobs) &&
+		details.jobs.length > 0
 			? details.jobs
-			: [
-					{
-						jobId: details?.jobId,
-						type: details?.type,
-						label: details?.label,
-						durationMs: details?.durationMs,
-					},
-				];
+			: [details];
+	const jobs = rawJobs.map(normalizeAsyncResultJob);
 	const block = new TranscriptBlock();
 	for (const job of jobs) {
 		const jobId = job.jobId ?? "unknown";
+		if (job.type === "ssh_transfer" && isSshTransferToolDetails(job.progressDetails)) {
+			const statusLine =
+				job.progressDetails.status === "completed"
+					? theme.fg("success", `${theme.status.success} Background SSH transfer completed`)
+					: job.progressDetails.status === "cancelled"
+						? theme.fg("muted", `${theme.status.aborted} Background SSH transfer cancelled`)
+						: theme.fg("error", `${theme.status.error} Background SSH transfer failed`);
+			const header = `${statusLine} ${theme.fg("dim", "[ssh_transfer]")} ${theme.fg("accent", jobId)}`;
+			block.addChild(new Text(`${header}\n${formatSshTransferSummary(job.progressDetails)}`, 1, 0));
+			continue;
+		}
 		const typeLabel = job.type ? `[${job.type}]` : "[job]";
 		const duration = typeof job.durationMs === "number" ? formatDuration(job.durationMs) : undefined;
 		const line = [

@@ -9,6 +9,7 @@
 ### Fixed
 
 - Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.
+- Fixed tool abort settlement so each tool can declare a bounded cleanup window before the agent synthesizes an interrupted result.
 ## [16.4.5] - 2026-07-11
 
 ### Added

@@ -34,7 +34,7 @@ import {
 	formatActiveRepoWatchdogPrompt,
 	formatAdvisorContextPrompt,
 } from "./advisor";
-import { type AsyncJob, AsyncJobManager } from "./async";
+import { type AsyncJob, AsyncJobManager, type AsyncJobProgress, type AsyncJobType } from "./async";
 import { AutoLearnController, buildAutoLearnInstructions } from "./autolearn/controller";
 import { loadCapability, reset as resetCapabilities } from "./capability";
 import { type Rule, ruleCapability, setActiveRules } from "./capability/rule";
@@ -191,6 +191,7 @@ import {
 	isSearchProviderPreference,
 	type LspStartupServerInfo,
 	loadSshTool,
+	loadSshTransferTool,
 	ReadTool,
 	ResolveTool,
 	renderSearchToolBm25Description,
@@ -226,9 +227,12 @@ type AsyncResultEntry = {
 
 type AsyncResultJobDetails = {
 	jobId: string;
-	type?: "bash" | "task";
+	type?: AsyncJobType;
 	label?: string;
+	status?: AsyncJob["status"];
 	durationMs?: number;
+	progress?: AsyncJobProgress;
+	settledAt?: number;
 };
 
 type AsyncResultDetails = {
@@ -255,14 +259,20 @@ function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): CustomMessag
 		result: entry.result,
 		type: entry.job?.type,
 		label: entry.job?.label,
+		status: entry.job?.status,
 		durationMs: entry.durationMs,
+		progress: entry.job?.progress,
+		settledAt: entry.job?.settledAt,
 	}));
 	const details: AsyncResultDetails = {
 		jobs: jobs.map(job => ({
 			jobId: job.jobId,
 			type: job.type,
 			label: job.label,
+			status: job.status,
 			durationMs: job.durationMs,
+			progress: job.progress,
+			settledAt: job.settledAt,
 		})),
 	};
 	return {
@@ -677,6 +687,7 @@ export {
 	GrepTool,
 	HIDDEN_TOOLS,
 	loadSshTool,
+	loadSshTransferTool,
 	ReadTool,
 	ResolveTool,
 	SshSessionTool,
@@ -1563,7 +1574,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 							return;
 						}
 
-						const durationMs = job ? Math.max(0, Date.now() - job.startTime) : undefined;
+						const durationMs = job ? Math.max(0, (job.settledAt ?? Date.now()) - job.startTime) : undefined;
 						session.yieldQueue.enqueue<AsyncResultEntry>("async-result", {
 							jobId,
 							result: formattedResult,
@@ -1660,7 +1671,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 				resetCapabilities();
 				session.setSlashCommands(await discoverSlashCommands(nextCwd));
 				await session.refreshBaseSystemPrompt();
-				await session.refreshSshTool({ activateIfAvailable: true });
+				await session.refreshSshTools({ activateIfAvailable: true });
 			},
 			getHindsightSessionState: () => session?.getHindsightSessionState(),
 			getMnemopiSessionState: () => session?.getMnemopiSessionState(),
@@ -2412,15 +2423,24 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			return true;
 		}
 
-		const reloadSshTool = async (): Promise<AgentTool | null> => {
-			if (explicitlyRequestedToolNames && !explicitlyRequestedToolNames.includes("ssh")) return null;
-			const sshTool = (await loadSshTool({
+		const reloadSshTools = async (): Promise<Tool[]> => {
+			const sshAllowed = !explicitlyRequestedToolNames || explicitlyRequestedToolNames.includes("ssh");
+			const transferAllowed = !explicitlyRequestedToolNames || explicitlyRequestedToolNames.includes("ssh_transfer");
+			const currentToolSession: ToolSession = {
 				...toolSession,
 				cwd: sessionManager.getCwd(),
-			})) as unknown as AgentTool | null;
-			if (!sshTool) return null;
-			const wrapped = wrapToolWithMetaNotice(sshTool);
-			return new ExtensionToolWrapper(wrapped, extensionRunner) as AgentTool;
+			};
+			const [sshTool, transferTool] = await Promise.all([
+				sshAllowed ? loadSshTool(currentToolSession) : Promise.resolve(null),
+				transferAllowed ? loadSshTransferTool(currentToolSession) : Promise.resolve(null),
+			]);
+			const loadedTools: Tool[] = [];
+			if (sshTool) loadedTools.push(sshTool);
+			if (transferTool) loadedTools.push(transferTool);
+			return loadedTools.map(tool => {
+				const wrapped = wrapToolWithMetaNotice(tool);
+				return new ExtensionToolWrapper(wrapped, extensionRunner) as Tool;
+			});
 		};
 
 		let cursorEventEmitter: ((event: AgentEvent) => void) | undefined;
@@ -2984,7 +3004,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			preferWebsockets: preferOpenAICodexWebsockets,
 			convertToLlm: convertToLlmFinal,
 			rebuildSystemPrompt,
-			reloadSshTool,
+			reloadSshTools: reloadSshTools,
 			requestedToolNames: explicitlyRequestedToolNames ? new Set(explicitlyRequestedToolNames) : undefined,
 			setActiveToolNames,
 			getMcpServerInstructions: mcpManager
@@ -3026,7 +3046,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		});
 		hasSession = true;
 		toolSession.getSessionSshHosts = () => session.getSessionSshHosts();
-		await session.refreshSshTool({ activateIfAvailable: true });
+		await session.refreshSshTools({ activateIfAvailable: true });
 		if (asyncJobManager) {
 			session.yieldQueue.register<AsyncResultEntry>("async-result", {
 				isStale: entry => asyncJobManager.isDeliverySuppressed(entry.jobId),

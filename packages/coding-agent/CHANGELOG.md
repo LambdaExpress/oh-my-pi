@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added streaming SSH file uploads and downloads with foreground/background progress, cancellation, and temporary-session host support.
+
 - Added managed `omp worktree` background workspaces with add/list/switch/apply/remove/branch/snapshot restore flows, plus `/worktree` TUI and ACP quick actions.
 - Added a discoverable `worktree` tool so agents can list, create, enter, apply, remove, branch, and restore managed worktrees from tool calls.
 - Managed worktrees can now opt into recursive submodule initialization, dirty transfer, merge, snapshot, and restore.

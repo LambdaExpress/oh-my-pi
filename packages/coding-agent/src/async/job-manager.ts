@@ -29,9 +29,17 @@ interface PollEscalationState {
 	scopeId?: string;
 }
 
+export type AsyncJobType = "bash" | "task" | "ssh_transfer";
+
+export interface AsyncJobProgress {
+	text: string;
+	details?: Record<string, unknown>;
+	updatedAt: number;
+}
+
 export interface AsyncJob {
 	id: string;
-	type: "bash" | "task";
+	type: AsyncJobType;
 	status: "running" | "completed" | "failed" | "cancelled";
 	startTime: number;
 	label: string;
@@ -39,6 +47,9 @@ export interface AsyncJob {
 	promise: Promise<void>;
 	resultText?: string;
 	errorText?: string;
+	toolCallId?: string;
+	progress?: AsyncJobProgress;
+	settledAt?: number;
 	/**
 	 * Registry id of the agent that registered the job (e.g. "Main",
 	 * "AuthLoader"). Used by scoped cancel/list APIs so a subagent's teardown
@@ -71,6 +82,7 @@ export interface AsyncJobManagerOptions {
 interface AsyncJobDelivery {
 	jobId: string;
 	text: string;
+	type: AsyncJobType;
 	attempt: number;
 	nextAttemptAt: number;
 	lastError?: string;
@@ -88,6 +100,7 @@ export interface AsyncJobDeliveryState {
 
 export interface AsyncJobRegisterOptions {
 	id?: string;
+	toolCallId?: string;
 	/** Registry id of the agent that owns this job; used to scope cancelAll. */
 	ownerId?: string;
 	/** Top-level Main session UUID inherited unchanged by child agents. */
@@ -106,6 +119,7 @@ export interface AsyncJobRegisterOptions {
 export interface AsyncJobFilter {
 	ownerId?: string;
 	scopeId?: string;
+	type?: AsyncJobType;
 }
 
 export class AsyncJobManager {
@@ -135,6 +149,7 @@ export class AsyncJobManager {
 	readonly #pollEscalation = new Map<string, PollEscalationState>();
 	readonly #retiredScopes = new Set<string>();
 	readonly #scopeRetirements = new Map<string, Promise<void>>();
+	readonly #jobChangeListeners = new Set<(job: Readonly<AsyncJob>) => void>();
 	readonly #onJobComplete: AsyncJobManagerOptions["onJobComplete"];
 	readonly #maxRunningJobs: number;
 	readonly #retentionMs: number;
@@ -142,9 +157,13 @@ export class AsyncJobManager {
 	readonly #deliveryWaitResolves = new Set<() => void>();
 	#disposed = false;
 
-	#matchesFilter(value: { ownerId?: string; scopeId?: string }, filter?: AsyncJobFilter): boolean {
+	#matchesFilter(
+		value: { ownerId?: string; scopeId?: string; type?: AsyncJobType },
+		filter?: AsyncJobFilter,
+	): boolean {
 		if (filter?.ownerId !== undefined && value.ownerId !== filter.ownerId) return false;
 		if (filter?.scopeId !== undefined && value.scopeId !== filter.scopeId) return false;
+		if (filter?.type !== undefined && value.type !== filter.type) return false;
 		return true;
 	}
 
@@ -162,19 +181,41 @@ export class AsyncJobManager {
 		this.#retentionMs = Math.max(0, Math.floor(options.retentionMs ?? DEFAULT_RETENTION_MS));
 	}
 
+	onJobChange(listener: (job: Readonly<AsyncJob>) => void): () => void {
+		this.#jobChangeListeners.add(listener);
+		return () => {
+			this.#jobChangeListeners.delete(listener);
+		};
+	}
+
+	#notifyJobChange(job: AsyncJob): void {
+		for (const listener of this.#jobChangeListeners) {
+			try {
+				listener(job);
+			} catch (error) {
+				logger.warn("Async job change listener failed", {
+					jobId: job.id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+	}
+
 	/** True when the running-job count has reached the configured cap. */
 	get atCapacity(): boolean {
 		if (this.#disposed) return true;
 		// Mirror register(): queued jobs hold no execution slot.
 		let activeCount = 0;
 		for (const job of this.#jobs.values()) {
-			if (job.status === "running" && !job.queued) activeCount++;
+			if ((job.status === "running" || (job.status === "cancelled" && job.settledAt === undefined)) && !job.queued) {
+				activeCount++;
+			}
 		}
 		return activeCount >= this.#maxRunningJobs;
 	}
 
 	register(
-		type: "bash" | "task",
+		type: AsyncJobType,
 		label: string,
 		run: (ctx: {
 			jobId: string;
@@ -191,11 +232,14 @@ export class AsyncJobManager {
 		if (options?.scopeId !== undefined && this.#retiredScopes.has(options.scopeId)) {
 			throw new Error(`Async job scope is retired: ${options.scopeId}`);
 		}
-		// Queued jobs hold no execution slot yet — only count jobs that are
-		// actually running so a large parked batch cannot starve registration.
 		let activeCount = 0;
 		for (const existing of this.#jobs.values()) {
-			if (existing.status === "running" && !existing.queued) activeCount++;
+			if (
+				(existing.status === "running" || (existing.status === "cancelled" && existing.settledAt === undefined)) &&
+				!existing.queued
+			) {
+				activeCount++;
+			}
 		}
 		if (activeCount >= this.#maxRunningJobs) {
 			throw new Error(
@@ -206,24 +250,27 @@ export class AsyncJobManager {
 		const id = this.#resolveJobId(options?.id);
 		this.#suppressedDeliveries.delete(id);
 		const abortController = new AbortController();
-		const startTime = Date.now();
-
 		const job: AsyncJob = {
 			id,
 			type,
 			status: "running",
-			startTime,
+			startTime: Date.now(),
 			label,
 			abortController,
 			promise: Promise.resolve(),
+			toolCallId: options?.toolCallId,
 			ownerId: options?.ownerId,
 			scopeId: options?.scopeId,
 			agentId: options?.agentId,
 			queued: options?.queued === true,
 		};
+		this.#jobs.set(id, job);
+		this.#notifyJobChange(job);
 
 		const reportProgress = async (text: string, details?: Record<string, unknown>): Promise<void> => {
 			if (job.scopeId !== undefined && this.#retiredScopes.has(job.scopeId)) return;
+			job.progress = { text, details, updatedAt: Date.now() };
+			this.#notifyJobChange(job);
 			if (!options?.onProgress) return;
 			try {
 				await options.onProgress(text, details);
@@ -243,33 +290,27 @@ export class AsyncJobManager {
 					markRunning: () => {
 						if (job.status === "running") {
 							job.queued = false;
+							this.#notifyJobChange(job);
 						}
 					},
 				});
-				if (job.status === "cancelled") {
-					job.resultText = text;
-					this.#scheduleEviction(id);
-					return;
-				}
-				job.status = "completed";
 				job.resultText = text;
-				this.#enqueueDelivery(id, text);
+				if (job.status !== "cancelled") job.status = "completed";
+				job.settledAt = Date.now();
+				this.#notifyJobChange(job);
+				if (job.status !== "cancelled" || job.type === "ssh_transfer") this.#enqueueDelivery(id, text);
 				this.#scheduleEviction(id);
 			} catch (error) {
-				if (job.status === "cancelled") {
-					job.errorText = error instanceof Error ? error.message : String(error);
-					this.#scheduleEviction(id);
-					return;
-				}
 				const errorText = error instanceof Error ? error.message : String(error);
-				job.status = "failed";
 				job.errorText = errorText;
-				this.#enqueueDelivery(id, errorText);
+				if (job.status !== "cancelled") job.status = "failed";
+				job.settledAt = Date.now();
+				this.#notifyJobChange(job);
+				if (job.status !== "cancelled" || job.type === "ssh_transfer") this.#enqueueDelivery(id, errorText);
 				this.#scheduleEviction(id);
 			}
 		})();
 
-		this.#jobs.set(id, job);
 		return id;
 	}
 
@@ -285,7 +326,7 @@ export class AsyncJobManager {
 		if (job.status !== "running") return false;
 		job.status = "cancelled";
 		job.abortController.abort();
-		this.#scheduleEviction(id);
+		this.#notifyJobChange(job);
 		return true;
 	}
 
@@ -299,7 +340,7 @@ export class AsyncJobManager {
 
 	getRecentJobs(limit = 10, filter?: AsyncJobFilter): AsyncJob[] {
 		return this.#filterJobs(this.#jobs.values(), filter)
-			.filter(job => job.status !== "running")
+			.filter(job => job.status !== "running" && !(job.status === "cancelled" && job.settledAt === undefined))
 			.sort((a, b) => b.startTime - a.startTime)
 			.slice(0, limit);
 	}
@@ -376,7 +417,13 @@ export class AsyncJobManager {
 	}
 
 	acknowledgeDeliveries(jobIds: string[]): number {
-		const uniqueJobIds = Array.from(new Set(jobIds.map(id => id.trim()).filter(id => id.length > 0)));
+		const uniqueJobIds = Array.from(new Set(jobIds.map(id => id.trim()).filter(id => id.length > 0))).filter(
+			jobId => {
+				const job = this.#jobs.get(jobId);
+				if (!job) return true;
+				return job.status !== "cancelled" || job.settledAt !== undefined;
+			},
+		);
 		if (uniqueJobIds.length === 0) return 0;
 
 		for (const jobId of uniqueJobIds) {
@@ -411,12 +458,12 @@ export class AsyncJobManager {
 			if (!jobId) continue;
 			if (!this.#suppressedDeliveries.delete(jobId)) continue;
 			const job = this.#jobs.get(jobId);
-			if (!job || (job.status !== "completed" && job.status !== "failed")) continue;
+			if (!job || job.settledAt === undefined) continue;
 			const queued =
 				this.#deliveries.some(delivery => delivery.jobId === jobId) ||
 				this.#inFlightDeliveries.some(delivery => delivery.jobId === jobId);
 			if (queued) continue;
-			this.#enqueueDelivery(jobId, job.status === "completed" ? (job.resultText ?? "") : (job.errorText ?? ""));
+			this.#enqueueDelivery(jobId, job.resultText ?? job.errorText ?? job.progress?.text ?? "");
 		}
 	}
 
@@ -426,10 +473,24 @@ export class AsyncJobManager {
 	 */
 	cancelAll(filter?: AsyncJobFilter): void {
 		for (const job of this.getRunningJobs(filter)) {
+			if (job.status !== "running") continue;
 			job.status = "cancelled";
 			job.abortController.abort();
-			this.#scheduleEviction(job.id);
+			this.#notifyJobChange(job);
 		}
+	}
+
+	async cancelAndWait(filter: AsyncJobFilter & { type: AsyncJobType }): Promise<void> {
+		const jobs = this.#filterJobs(this.#jobs.values(), filter).filter(
+			job => job.status === "running" || (job.status === "cancelled" && job.settledAt === undefined),
+		);
+		for (const job of jobs) {
+			if (job.status !== "running") continue;
+			job.status = "cancelled";
+			job.abortController.abort();
+			this.#notifyJobChange(job);
+		}
+		await Promise.allSettled(jobs.map(job => job.promise));
 	}
 
 	/**
@@ -469,6 +530,7 @@ export class AsyncJobManager {
 			if (job.status !== "running") continue;
 			job.status = "cancelled";
 			job.abortController.abort();
+			this.#notifyJobChange(job);
 		}
 
 		const deliveryPromises = inFlightDeliveries
@@ -612,6 +674,7 @@ export class AsyncJobManager {
 		this.#suppressedDeliveries.clear();
 		this.#watchedJobs.clear();
 		this.#pollEscalation.clear();
+		this.#jobChangeListeners.clear();
 		return jobsSettled && drained;
 	}
 
@@ -643,7 +706,8 @@ export class AsyncJobManager {
 	#scheduleEviction(jobId: string): void {
 		if (this.#disposed) return;
 		const job = this.#jobs.get(jobId);
-		if (job?.scopeId !== undefined && this.#retiredScopes.has(job.scopeId)) return;
+		if (!job || job.settledAt === undefined) return;
+		if (job.scopeId !== undefined && this.#retiredScopes.has(job.scopeId)) return;
 		if (this.#retentionMs <= 0) {
 			this.#jobs.delete(jobId);
 			this.#suppressedDeliveries.delete(jobId);
@@ -738,17 +802,20 @@ export class AsyncJobManager {
 	}
 
 	#enqueueDelivery(jobId: string, text: string): void {
-		// Skip delivery if already acknowledged
+		// Skip delivery if already acknowledged.
 		if (this.isDeliverySuppressed(jobId)) {
 			return;
 		}
+		const job = this.#jobs.get(jobId);
+		if (!job) return;
 		this.#deliveries.push({
 			jobId,
 			text,
+			type: job.type,
 			attempt: 0,
 			nextAttemptAt: Date.now(),
-			ownerId: this.#jobs.get(jobId)?.ownerId,
-			scopeId: this.#jobs.get(jobId)?.scopeId,
+			ownerId: job.ownerId,
+			scopeId: job.scopeId,
 		});
 		this.#settleDeliveryWaiters();
 		this.#ensureDeliveryLoop();

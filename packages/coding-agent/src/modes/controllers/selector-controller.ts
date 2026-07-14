@@ -186,7 +186,7 @@ export class SelectorController {
 						const projectPath = await resolveActiveProjectRegistryPath(this.ctx.sessionManager.getCwd());
 						clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
 						await this.ctx.refreshSlashCommandState();
-						await this.ctx.session.refreshSshTool({ activateIfAvailable: true });
+						await this.ctx.session.refreshSshTools({ activateIfAvailable: true });
 						this.ctx.ui.requestRender();
 					},
 					onCancel: () => {

@@ -146,6 +146,10 @@ const STEERING_INTERRUPT_POLL_MS = 250;
 const TOOL_ABORT_SETTLE_GRACE_MS = 250;
 // After user abort, give cooperative tools one short window to return their own
 // cancellation result/error before the loop emits a synthetic abort result.
+export function normalizeToolAbortSettleTimeoutMs(value: number | undefined): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) return TOOL_ABORT_SETTLE_GRACE_MS;
+	return Math.min(30_000, Math.max(0, value));
+}
 
 class HarmonyLeakInterruption extends Error {
 	constructor(
@@ -1796,10 +1800,12 @@ async function executeToolCalls(
 		| { kind: "abort" };
 	const waitForAbortSettle = async (
 		toolExecution: Promise<ToolExecutionRaceOutcome>,
+		abortSettleTimeoutMs: number | undefined,
 	): Promise<ToolExecutionRaceOutcome> => {
-		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeoutMs = normalizeToolAbortSettleTimeoutMs(abortSettleTimeoutMs);
+		let timer: NodeJS.Timeout | undefined;
 		const timeout = new Promise<ToolExecutionRaceOutcome>(resolve => {
-			timer = setTimeout(() => resolve({ kind: "abort" }), TOOL_ABORT_SETTLE_GRACE_MS);
+			timer = setTimeout(() => resolve({ kind: "abort" }), timeoutMs);
 		});
 		try {
 			return await Promise.race([toolExecution, timeout]);
@@ -2121,7 +2127,9 @@ async function executeToolCalls(
 						// result one microtask to settle so it keeps the existing afterToolCall
 						// contract instead of being misclassified as an abandoned execution.
 						await Promise.resolve();
-						const abortOutcome = abortPromise.then(() => waitForAbortSettle(toolExecution));
+						const abortOutcome = abortPromise.then(() =>
+							waitForAbortSettle(toolExecution, tool.abortSettleTimeoutMs),
+						);
 						outcome = await Promise.race([toolExecution, abortOutcome]);
 					}
 				} finally {

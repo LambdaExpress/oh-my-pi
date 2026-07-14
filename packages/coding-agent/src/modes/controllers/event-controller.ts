@@ -75,6 +75,18 @@ function exposesRawPartialJson(toolName: string, rawInput: boolean, tool: unknow
 	if (tool === null || typeof tool !== "object" || !("renderCall" in tool)) return false;
 	return typeof tool.renderCall === "function";
 }
+function readPersistedJobIds(details: unknown): string[] {
+	if (details === null || typeof details !== "object" || !("jobs" in details) || !Array.isArray(details.jobs)) {
+		return [];
+	}
+	const jobIds: string[] = [];
+	for (const job of details.jobs) {
+		if (job !== null && typeof job === "object" && "jobId" in job && typeof job.jobId === "string") {
+			jobIds.push(job.jobId);
+		}
+	}
+	return jobIds;
+}
 
 type AgentSessionEventHandlers = {
 	[E in AgentSessionEventKind]: (event: Extract<AgentSessionEvent, { type: E }>) => Promise<void>;
@@ -199,6 +211,7 @@ export class EventController {
 			tool_execution_start: e => this.#handleToolExecutionStart(e),
 			tool_execution_update: e => this.#handleToolExecutionUpdate(e),
 			tool_execution_end: e => this.#handleToolExecutionEnd(e),
+			async_job_update: e => this.#handleAsyncJobUpdate(e),
 			auto_compaction_start: e => this.#handleAutoCompactionStart(e),
 			auto_compaction_end: e => this.#handleAutoCompactionEnd(e),
 			auto_retry_start: e => this.#handleAutoRetryStart(e),
@@ -255,6 +268,25 @@ export class EventController {
 		}
 		this.#ircExpiryTimers.clear();
 		this.#liveIrcCards.clear();
+	}
+
+	restoreAsyncJobHud(): void {
+		this.ctx.sshTransferHud.restore(this.ctx.viewSession.getAsyncJobSnapshot());
+		this.#syncSshTransferHud();
+	}
+
+	#syncSshTransferHud(): void {
+		this.ctx.sshTransferContainer.clear();
+		if (this.ctx.sshTransferHud.size > 0) {
+			this.ctx.sshTransferContainer.addChild(this.ctx.sshTransferHud);
+		}
+		this.ctx.ui.requestRender();
+	}
+
+	async #handleAsyncJobUpdate(event: Extract<AgentSessionEvent, { type: "async_job_update" }>): Promise<void> {
+		if (event.job.type !== "ssh_transfer") return;
+		this.ctx.sshTransferHud.update(event.job);
+		this.#syncSshTransferHud();
 	}
 
 	#resetReadGroup(): void {
@@ -466,6 +498,10 @@ export class EventController {
 			this.#renderedCustomMessages.add(signature);
 			this.#resetReadGroup();
 			this.ctx.addMessageToChat(event.message);
+			if (event.message.role === "custom" && event.message.customType === "async-result") {
+				this.ctx.sshTransferHud.markPersisted(readPersistedJobIds(event.message.details));
+				this.#syncSshTransferHud();
+			}
 			// Queued custom-message chips are derived from the agent queue; refresh the
 			// pending bar when the queued custom is consumed so the chip disappears
 			// immediately.
@@ -1096,12 +1132,18 @@ export class EventController {
 			if (component) {
 				const asyncState = (event.result.details as { async?: { state?: string } } | undefined)?.async?.state;
 				const isBackgroundRunning = asyncState === "running";
-				component.updateResult({ ...event.result, isError: event.isError }, isBackgroundRunning, event.toolCallId);
-				if (isBackgroundRunning) {
+				const detachToTransferHud = event.toolName === "ssh_transfer" && isBackgroundRunning;
+				component.updateResult(
+					{ ...event.result, isError: event.isError },
+					isBackgroundRunning && !detachToTransferHud,
+					event.toolCallId,
+				);
+				if (isBackgroundRunning && !detachToTransferHud) {
 					this.#backgroundToolCallIds.add(event.toolCallId);
 				} else {
 					this.ctx.pendingTools.delete(event.toolCallId);
 					this.#backgroundToolCallIds.delete(event.toolCallId);
+					if (detachToTransferHud && component instanceof ToolExecutionComponent) component.seal();
 				}
 				if (component instanceof ToolExecutionComponent && component.isDisplaceableBlock()) {
 					if (event.toolName === "job" && component.canBeDisplacedBy("job")) {
@@ -1124,6 +1166,10 @@ export class EventController {
 				}
 				this.ctx.ui.requestRender();
 			}
+		}
+		if (event.toolName === "job") {
+			this.ctx.sshTransferHud.markPersisted(readPersistedJobIds(event.result.details));
+			this.#syncSshTransferHud();
 		}
 		// Update todo display when todo tool completes
 		if (event.toolName === "todo" && !event.isError) {

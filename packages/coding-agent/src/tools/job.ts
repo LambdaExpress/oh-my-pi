@@ -3,7 +3,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
-import type { AsyncJob, AsyncJobManager } from "../async";
+import type { AsyncJob, AsyncJobManager, AsyncJobProgress, AsyncJobType } from "../async";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { shimmerEnabled, shimmerText } from "../modes/theme/shimmer";
 import type { Theme } from "../modes/theme/theme";
@@ -43,14 +43,17 @@ function parseWaitDurationMs(value: string | undefined): number {
 	return (value ? WAIT_DURATION_MS[value] : undefined) ?? WAIT_DURATION_MS["30s"];
 }
 
-interface JobSnapshot {
+export interface JobSnapshot {
 	id: string;
-	type: "bash" | "task";
-	status: "running" | "completed" | "failed" | "cancelled";
+	type: AsyncJobType;
+	status: AsyncJob["status"];
 	label: string;
 	durationMs: number;
 	resultText?: string;
 	errorText?: string;
+	toolCallId?: string;
+	progress?: AsyncJobProgress;
+	settledAt?: number;
 }
 
 type CancelStatus = "cancelled" | "not_found" | "already_completed";
@@ -89,11 +92,20 @@ export interface JobToolDetails {
  * keeps such a block un-finalized (displaceable) so a follow-up `job` call
  * replaces it instead of stacking another waiting frame in the transcript.
  */
+function isActiveJobSnapshot(job: unknown): boolean {
+	if (typeof job !== "object" || job === null || !("status" in job)) return false;
+	if (job.status === "running") return true;
+	if (job.status !== "cancelled") return false;
+	return !("settledAt" in job) || job.settledAt === undefined;
+}
+
 export function isWaitingPollDetails(details: unknown): boolean {
-	const d = details as JobToolDetails | undefined;
-	if (!d || !Array.isArray(d.jobs) || d.jobs.length === 0) return false;
-	if (d.cancelled?.length) return false;
-	return d.jobs.every(job => job?.status === "running");
+	if (typeof details !== "object" || details === null || !("jobs" in details) || !Array.isArray(details.jobs)) {
+		return false;
+	}
+	if (details.jobs.length === 0) return false;
+	if ("cancelled" in details && Array.isArray(details.cancelled) && details.cancelled.length > 0) return false;
+	return details.jobs.every(isActiveJobSnapshot);
 }
 
 export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
@@ -148,6 +160,14 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 				cancelOutcomes.push({ id, status: "not_found", message: `Background job not found: ${id}` });
 				continue;
 			}
+			if (existing.status === "cancelled" && existing.settledAt === undefined) {
+				cancelOutcomes.push({
+					id,
+					status: "cancelled",
+					message: `Background job ${id}: cancellation requested · cleanup in progress.`,
+				});
+				continue;
+			}
 			if (existing.status !== "running") {
 				cancelOutcomes.push({
 					id,
@@ -159,7 +179,11 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 			const cancelled = manager.cancel(id, ownerFilter);
 			cancelOutcomes.push(
 				cancelled
-					? { id, status: "cancelled", message: `Cancelled background job ${id}.` }
+					? {
+							id,
+							status: "cancelled",
+							message: `Background job ${id}: cancellation requested · cleanup in progress.`,
+						}
 					: { id, status: "already_completed", message: `Background job ${id} is already completed.` },
 			);
 		}
@@ -178,7 +202,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		// - If `poll` was omitted (and so was `cancel`), default to all running jobs.
 		const jobsToWatch = requestedPollIds
 			? this.#visibleJobs(manager, requestedPollIds, ownerId)
-			: manager.getRunningJobs(ownerFilter);
+			: manager.getAllJobs(ownerFilter).filter(isActiveJobSnapshot);
 
 		if (jobsToWatch.length === 0) {
 			if (cancelOutcomes.length > 0) {
@@ -219,10 +243,10 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 			};
 		}
 
-		// If all watched jobs are already done, build immediate result.
-		const runningJobs = jobsToWatch.filter(j => j.status === "running");
+		// If all watched jobs are already settled, build the immediate result.
+		const runningJobs = jobsToWatch.filter(isActiveJobSnapshot);
 		if (runningJobs.length === 0) {
-			const cancelledJobs = cancelIds.map(id => manager.getJob(id)).filter(j => j != null);
+			const cancelledJobs = cancelIds.map(id => manager.getJob(id)).filter(job => job !== undefined);
 			return this.#buildResult(manager, [...cancelledJobs, ...jobsToWatch], cancelOutcomes);
 		}
 
@@ -326,7 +350,7 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		const covered = new Set<string>();
 		const manager = this.session.asyncJobManager;
 		if (manager) {
-			for (const job of manager.getRunningJobs(selfId ? { ownerId: selfId } : undefined)) {
+			for (const job of manager.getAllJobs(selfId ? { ownerId: selfId } : undefined).filter(isActiveJobSnapshot)) {
 				covered.add(job.id);
 				if (job.agentId) covered.add(job.agentId);
 			}
@@ -358,44 +382,28 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		return lines;
 	}
 
-	#snapshotJobs(
-		jobs: {
-			id: string;
-			type: "bash" | "task";
-			status: string;
-			label: string;
-			startTime: number;
-			resultText?: string;
-			errorText?: string;
-		}[],
-	): JobSnapshot[] {
+	#snapshotJobs(jobs: ReadonlyArray<AsyncJob>): JobSnapshot[] {
 		const now = Date.now();
-		return jobs.map(j => {
-			const current = this.session.asyncJobManager?.getJob(j.id);
-			const latest = current ?? j;
+		return jobs.map(job => {
+			const latest = this.session.asyncJobManager?.getJob(job.id) ?? job;
 			return {
 				id: latest.id,
 				type: latest.type,
-				status: latest.status as JobSnapshot["status"],
+				status: latest.status,
 				label: latest.label,
-				durationMs: Math.max(0, now - latest.startTime),
+				durationMs: Math.max(0, (latest.settledAt ?? now) - latest.startTime),
 				...(latest.resultText ? { resultText: latest.resultText } : {}),
 				...(latest.errorText ? { errorText: latest.errorText } : {}),
+				...(latest.toolCallId ? { toolCallId: latest.toolCallId } : {}),
+				...(latest.progress ? { progress: latest.progress } : {}),
+				...(latest.settledAt !== undefined ? { settledAt: latest.settledAt } : {}),
 			};
 		});
 	}
 
 	#buildResult(
 		manager: AsyncJobManager,
-		jobs: {
-			id: string;
-			type: "bash" | "task";
-			status: string;
-			label: string;
-			startTime: number;
-			resultText?: string;
-			errorText?: string;
-		}[],
+		jobs: ReadonlyArray<AsyncJob>,
 		cancelOutcomes: CancelOutcome[],
 		agents: AgentActivitySnapshot[] = [],
 	): AgentToolResult<JobToolDetails> {
@@ -408,29 +416,30 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 		});
 		const jobResults = this.#snapshotJobs(uniqueJobs);
 
-		manager.acknowledgeDeliveries(jobResults.filter(j => j.status !== "running").map(j => j.id));
+		const settled = jobResults.filter(job => job.settledAt !== undefined);
+		manager.acknowledgeDeliveries(settled.map(job => job.id));
 
-		const completed = jobResults.filter(j => j.status !== "running");
-		const running = jobResults.filter(j => j.status === "running");
+		const completed = settled;
+		const running = jobResults.filter(isActiveJobSnapshot);
 
 		const lines: string[] = [];
 
 		if (cancelOutcomes.length > 0) {
-			lines.push(`## Cancelled (${cancelOutcomes.length})\n`);
-			for (const o of cancelOutcomes) lines.push(`- ${o.message}`);
+			lines.push(`## Cancellation Requests (${cancelOutcomes.length})\n`);
+			for (const outcome of cancelOutcomes) lines.push(`- ${outcome.message}`);
 			lines.push("");
 		}
 
 		if (completed.length > 0) {
 			lines.push(`## Completed (${completed.length})\n`);
-			for (const j of completed) {
-				lines.push(`### ${j.id} [${j.type}] — ${j.status}`);
-				lines.push(`Label: ${j.label}`);
-				if (j.resultText) {
-					lines.push("```", j.resultText, "```");
+			for (const job of completed) {
+				lines.push(`### ${job.id} [${job.type}] — ${job.status}`);
+				lines.push(`Label: ${job.label}`);
+				if (job.resultText) {
+					lines.push("```", job.resultText, "```");
 				}
-				if (j.errorText) {
-					lines.push(`Error: ${j.errorText}`);
+				if (job.errorText) {
+					lines.push(`Error: ${job.errorText}`);
 				}
 				lines.push("");
 			}
@@ -438,8 +447,10 @@ export class JobTool implements AgentTool<typeof jobSchema, JobToolDetails> {
 
 		if (running.length > 0) {
 			lines.push(`## Still Running (${running.length})\n`);
-			for (const j of running) {
-				lines.push(`- \`${j.id}\` [${j.type}] — ${j.label}`);
+			for (const job of running) {
+				const state = job.status === "cancelled" ? "cancellation requested · cleanup in progress" : job.label;
+				lines.push(`- \`${job.id}\` [${job.type}] — ${state}`);
+				if (job.progress?.text) lines.push(job.progress.text);
 			}
 		}
 
@@ -499,6 +510,9 @@ function statusToIcon(status: JobSnapshot["status"]): ToolUIStatus {
 		case "running":
 			return "running";
 	}
+}
+function isCancellingJob(job: JobSnapshot): boolean {
+	return job.status === "cancelled" && job.settledAt === undefined;
 }
 
 function statusToColor(status: JobSnapshot["status"]): ToolUIColor {
@@ -584,14 +598,17 @@ export const jobToolRenderer = {
 		// not displaceable waiting frames — only agentless polls collapse their
 		// still-running rows once sealed.
 		if (!options.isPartial && isPollCall && agents.length === 0) {
-			jobs = jobs.filter(job => job.status !== "running");
+			jobs = jobs.filter(job => !isActiveJobSnapshot(job));
 			if (jobs.length === 0) {
 				return new Text("", 0, 0);
 			}
 		}
 
-		const counts = { completed: 0, failed: 0, cancelled: 0, running: 0 };
-		for (const job of jobs) counts[job.status]++;
+		const counts = { completed: 0, failed: 0, cancelled: 0, running: 0, cancelling: 0 };
+		for (const job of jobs) {
+			if (isCancellingJob(job)) counts.cancelling++;
+			else counts[job.status]++;
+		}
 
 		// The title already carries the running count, so meta lists only the
 		// settled categories — "waiting on 19 of 19 · 19 running" read awkward.
@@ -599,41 +616,45 @@ export const jobToolRenderer = {
 		if (counts.completed > 0) meta.push(uiTheme.fg("success", `${counts.completed} done`));
 		if (counts.failed > 0) meta.push(uiTheme.fg("error", `${counts.failed} failed`));
 		if (counts.cancelled > 0) meta.push(uiTheme.fg("warning", `${counts.cancelled} cancelled`));
+		if (counts.cancelling > 0) meta.push(uiTheme.fg("warning", `${counts.cancelling} cleaning up`));
 		if (agents.length > 0 && jobs.length > 0) {
 			meta.push(uiTheme.fg("accent", `${agents.length} agent${agents.length === 1 ? "" : "s"}`));
 		}
 
+		const activeCount = counts.running + counts.cancelling;
 		const headerIcon: ToolUIStatus =
-			counts.failed > 0 ? "warning" : counts.running > 0 || agents.length > 0 ? "info" : "success";
+			counts.failed > 0 ? "warning" : activeCount > 0 || agents.length > 0 ? "info" : "success";
 		const jobsNoun = jobs.length === 1 ? "job" : "jobs";
 		const description =
 			jobs.length === 0
 				? `${agents.length} running agent${agents.length === 1 ? "" : "s"} — no jobs`
-				: counts.running > 0
-					? counts.running === jobs.length
+				: activeCount > 0
+					? activeCount === jobs.length
 						? `waiting on ${jobs.length} ${jobsNoun}`
-						: `waiting on ${counts.running} of ${jobs.length} ${jobsNoun}`
+						: `waiting on ${activeCount} of ${jobs.length} ${jobsNoun}`
 					: `${jobs.length} ${jobsNoun} settled`;
 
 		const header = renderStatusLine(
 			{
 				icon: headerIcon,
-				spinnerFrame: counts.running > 0 || agents.length > 0 ? options.spinnerFrame : undefined,
+				spinnerFrame: activeCount > 0 || agents.length > 0 ? options.spinnerFrame : undefined,
 				title: description,
 				meta,
 			},
 			uiTheme,
 		);
 
-		// Sort: running first (so user sees what's still pending), then failed, then completed/cancelled.
-		const statusOrder: Record<JobSnapshot["status"], number> = {
+		// Sort: active first (so cleanup remains visible), then failed, then completed/cancelled.
+		const settledStatusOrder: Record<JobSnapshot["status"], number> = {
 			running: 0,
 			failed: 1,
 			cancelled: 2,
 			completed: 3,
 		};
 		const sortedJobs = [...jobs].sort((a, b) => {
-			const diff = statusOrder[a.status] - statusOrder[b.status];
+			const aOrder = isActiveJobSnapshot(a) ? 0 : settledStatusOrder[a.status];
+			const bOrder = isActiveJobSnapshot(b) ? 0 : settledStatusOrder[b.status];
+			const diff = aOrder - bOrder;
 			if (diff !== 0) return diff;
 			return b.durationMs - a.durationMs;
 		});
@@ -649,7 +670,7 @@ export const jobToolRenderer = {
 				// 30fps redraw. Bypass the cache while any row animates, and key on
 				// the animation state so a sealed block never hits stale shimmered
 				// bytes (spinnerFrame falls back to 0 on both sides of the seal).
-				const shimmerActive = counts.running > 0 && options.spinnerFrame !== undefined && shimmerEnabled();
+				const shimmerActive = activeCount > 0 && options.spinnerFrame !== undefined && shimmerEnabled();
 				const key = new Hasher().bool(expanded).u32(width).u32(spinnerFrame).bool(shimmerActive).digest();
 				if (!shimmerActive && cached?.key === key) return cached.lines;
 
@@ -661,12 +682,14 @@ export const jobToolRenderer = {
 						itemType: "job",
 						renderItem: job => {
 							const lines: string[] = [];
+							const cancelling = isCancellingJob(job);
+							const active = job.status === "running" || cancelling;
 							const icon = formatStatusIcon(
-								statusToIcon(job.status),
+								active ? "running" : statusToIcon(job.status),
 								uiTheme,
-								job.status === "running" ? options.spinnerFrame : undefined,
+								active ? options.spinnerFrame : undefined,
 							);
-							const typeBadge = formatBadge(job.type, statusToColor(job.status), uiTheme);
+							const typeBadge = formatBadge(job.type, active ? "accent" : statusToColor(job.status), uiTheme);
 							// Task jobs label themselves with their agent id, which is also
 							// the job id — drop the id column instead of stuttering it twice.
 							const idPart = job.label.trim() === job.id ? "" : ` ${uiTheme.fg("muted", job.id)}`;
@@ -684,20 +707,23 @@ export const jobToolRenderer = {
 							// stops animating (sealed, or a settled snapshot — spinnerFrame
 							// cleared) they render static so scrollback never keeps a mid-sweep
 							// shimmer band.
-							const live = job.status === "running" && options.spinnerFrame !== undefined;
+							const live = active && options.spinnerFrame !== undefined;
 							const headRaw = visibleLabelLines[0] ?? "";
+							const displayLabel = cancelling ? `${headRaw} · cleanup in progress` : headRaw;
 							const headLabel = live
 								? shimmerEnabled()
-									? shimmerText(headRaw, uiTheme)
-									: uiTheme.fg("accent", headRaw)
-								: uiTheme.fg("toolOutput", headRaw);
+									? shimmerText(displayLabel, uiTheme)
+									: uiTheme.fg("accent", displayLabel)
+								: uiTheme.fg("toolOutput", displayLabel);
 							lines.push(`${icon}${idPart} ${typeBadge} ${headLabel} ${durationText}`);
 							for (let i = 1; i < visibleLabelLines.length; i++) {
 								lines.push(`  ${uiTheme.fg("toolOutput", visibleLabelLines[i]!)}`);
 							}
 
 							const preview = flattenStructuredPreview(
-								stripTaskResultEnvelope(job.errorText?.trim() || job.resultText?.trim() || ""),
+								stripTaskResultEnvelope(
+									job.errorText?.trim() || job.progress?.text.trim() || job.resultText?.trim() || "",
+								),
 							);
 							if (preview) {
 								const maxLines = expanded ? PREVIEW_LINES_EXPANDED : PREVIEW_LINES_COLLAPSED;

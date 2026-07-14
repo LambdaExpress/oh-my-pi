@@ -2,6 +2,8 @@ Runs commands on remote hosts.
 
 Hosts may come from persistent SSH configuration or session aliases created with `ssh_session`. Session aliases are also available to Read-like tools as `ssh://<alias>/<absolute-path>`.
 
+Local ↔ remote file content MUST use `ssh_transfer`; NEVER embed file bytes or base64 in commands.
+
 <commands>
 **linux/bash, linux/zsh, macos/bash, macos/zsh** — Unix-like:
 - Files: `ls`, `cat`, `head`, `tail`, `grep`, `find`
@@ -22,4 +24,5 @@ Hosts may come from persistent SSH configuration or session aliases created with
 <critical>
 You MUST verify the shell type from "Available hosts" and use matching commands.
 You SHOULD omit `cwd` unless required. `cwd` MUST be an explicit remote path; NEVER use `~` or `~/…`.
+You MUST use `ssh_transfer` for local ↔ remote files.
 </critical>

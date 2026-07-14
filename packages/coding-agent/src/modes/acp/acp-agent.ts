@@ -86,6 +86,7 @@ import {
 	buildToolCallStartUpdate,
 	extractAssistantMessageText,
 	mapAgentSessionEventToAcpSessionUpdates,
+	mapAsyncJobUpdateToAcpSessionUpdates,
 	normalizeReplayToolArguments,
 } from "./acp-event-mapper";
 import { ACP_TERMINAL_AUTH_FLAG } from "./terminal-auth";
@@ -171,9 +172,14 @@ type ManagedSessionRecord = {
 	liveMessageProgress: { textEmitted: boolean; thoughtEmitted: boolean } | undefined;
 	toolArgsById: Map<string, unknown>;
 	extensionsConfigured: boolean;
-	// Installed inside `#scheduleBootstrapUpdates` (post-race-guard); released
-	// in `#disposeSessionRecord`. Lives independent of any prompt turn.
+	// Installed before the session-creation response returns; released in
+	// `#disposeSessionRecord`. Lives independent of any prompt turn.
 	lifetimeUnsubscribe: (() => void) | undefined;
+	lifetimeReady: Promise<void>;
+	resolveLifetimeReady: () => void;
+	rejectLifetimeReady: (reason?: unknown) => void;
+	lifetimeEvents: Promise<void>;
+	bootstrapComplete: boolean;
 	closedError: PromptLifecycleError | undefined;
 	promptEventHandlers: Set<Promise<void>>;
 	extensionUserMessageTasks: Set<Promise<void>>;
@@ -642,11 +648,10 @@ export class AcpAgent implements Agent {
 			});
 		}
 
-		// For `thinking` the lifetime subscription pushes post-bootstrap; only
-		// push here when it's not yet installed so pre-bootstrap callers still
-		// see the change without a post-bootstrap duplicate.
-		const thinkingHandledBySubscription =
-			params.configId === THINKING_CONFIG_ID && record.lifetimeUnsubscribe !== undefined;
+		// For `thinking` the lifetime subscription pushes post-bootstrap. Before
+		// bootstrap, the generic config-option API must push its own response-safe
+		// notification because internal thinking events are intentionally suppressed.
+		const thinkingHandledBySubscription = params.configId === THINKING_CONFIG_ID && record.bootstrapComplete;
 		if (!thinkingHandledBySubscription) {
 			await this.#pushConfigOptionUpdate(record);
 		}
@@ -686,6 +691,8 @@ export class AcpAgent implements Agent {
 				await previousTurn.promise.catch(() => undefined);
 				await previousTurn.cleanup;
 			}
+			this.#throwIfRecordClosed(record);
+			await record.lifetimeReady;
 			this.#throwIfRecordClosed(record);
 
 			const converted = this.#convertPromptBlocks(params.prompt);
@@ -1123,6 +1130,8 @@ export class AcpAgent implements Agent {
 	}
 
 	#createManagedSessionRecord(session: AgentSession): ManagedSessionRecord {
+		const lifetimeReady = Promise.withResolvers<void>();
+		void lifetimeReady.promise.catch(() => undefined);
 		return {
 			session,
 			mcpManager: undefined,
@@ -1132,17 +1141,34 @@ export class AcpAgent implements Agent {
 			liveMessageProgress: undefined,
 			toolArgsById: new Map(),
 			extensionsConfigured: false,
+			bootstrapComplete: false,
 			closedError: undefined,
 			promptEventHandlers: new Set(),
 			extensionUserMessageTasks: new Set(),
 			lifetimeUnsubscribe: undefined,
+			lifetimeReady: lifetimeReady.promise,
+			resolveLifetimeReady: lifetimeReady.resolve,
+			rejectLifetimeReady: lifetimeReady.reject,
+			lifetimeEvents: Promise.resolve(),
 		};
 	}
 
 	async #handleLifetimeEvent(record: ManagedSessionRecord, event: AgentSessionEvent): Promise<void> {
-		if (event.type !== "thinking_level_changed") {
+		if (event.type === "async_job_update") {
+			try {
+				for (const notification of mapAsyncJobUpdateToAcpSessionUpdates(event, record.session.sessionId)) {
+					await this.#connection.sessionUpdate(notification);
+				}
+			} catch (error) {
+				logger.warn("Failed to push ACP SSH transfer lifecycle update", {
+					sessionId: record.session.sessionId,
+					error,
+				});
+			}
 			return;
 		}
+		if (!record.bootstrapComplete) return;
+		if (event.type !== "thinking_level_changed") return;
 		try {
 			await this.#pushConfigOptionUpdate(record);
 		} catch (error) {
@@ -1191,6 +1217,7 @@ export class AcpAgent implements Agent {
 	}
 
 	async #handlePromptEvent(record: ManagedSessionRecord, event: AgentSessionEvent): Promise<void> {
+		if (event.type === "async_job_update") return;
 		const promptTurn = record.promptTurn;
 		if (!promptTurn || promptTurn.settled || promptTurn.cancelRequested) {
 			return;
@@ -1830,38 +1857,34 @@ export class AcpAgent implements Agent {
 	}
 
 	#scheduleBootstrapUpdates(sessionId: string): void {
-		// Defer first notifications until the response has reached the client.
-		// Zed's agent-client-protocol reader dispatches responses and
-		// notifications to different async tasks; sending the first
-		// `available_commands_update` from `setTimeout(0)` reliably loses the
-		// race against the response handler and Zed logs `Received session
-		// notification for unknown session` then drops the update — leaving
-		// the slash-command palette empty (#1015 follow-up; see
-		// zed-industries/zed#55965 for the same race biting other ACP agents).
-		// `ACP_BOOTSTRAP_RACE_GUARD_MS` is invisible to the operator and large
-		// enough that the response future has scheduled before our timer fires
-		// on stdio-only transports.
-		//
-		// The session-lifetime subscription is installed inside the same timer
-		// so it shares this guard — without it, an extension's `session_start`
-		// handler (or any async work it schedules) calling `setThinkingLevel`
-		// would push a `config_option_update` for a session id the client
-		// hasn't been told about yet. The pre-bootstrap thinking level is
-		// reported in the response's `configOptions`, so deferring the
-		// notification loses no state.
-		setTimeout(() => {
-			if (this.#connection.signal.aborted) {
-				return;
-			}
-			const record = this.#sessions.get(sessionId);
-			if (!record) {
-				return;
-			}
+		const record = this.#sessions.get(sessionId);
+		if (!record) return;
+		try {
 			if (!record.lifetimeUnsubscribe) {
 				record.lifetimeUnsubscribe = record.session.subscribe(event => {
-					void this.#handleLifetimeEvent(record, event);
+					record.lifetimeEvents = record.lifetimeEvents.then(() => this.#handleLifetimeEvent(record, event));
 				});
 			}
+			record.resolveLifetimeReady();
+		} catch (error) {
+			record.rejectLifetimeReady(error);
+			void this.#closeManagedSession(sessionId, record);
+			return;
+		}
+
+		// Defer client-facing bootstrap notifications until the response has
+		// reached the client. Zed's agent-client-protocol reader dispatches
+		// responses and notifications to different async tasks; sending the first
+		// `available_commands_update` immediately can reach an unknown session.
+		// Internal thinking-level changes stay suppressed through this guard
+		// because the response's `configOptions` already contains their state.
+		setTimeout(() => {
+			if (this.#sessions.get(sessionId) !== record) return;
+			if (this.#connection.signal.aborted) {
+				void this.#closeManagedSession(sessionId, record);
+				return;
+			}
+			record.bootstrapComplete = true;
 			void this.#emitBootstrapUpdates(sessionId, record);
 		}, ACP_BOOTSTRAP_RACE_GUARD_MS);
 	}
@@ -1911,7 +1934,7 @@ export class AcpAgent implements Agent {
 		resetCapabilities();
 		const fileCommands = await loadSlashCommands({ cwd });
 		record.session.setSlashCommands(fileCommands);
-		await record.session.refreshSshTool({ activateIfAvailable: true });
+		await record.session.refreshSshTools({ activateIfAvailable: true });
 		await this.#emitAvailableCommandsUpdate(record);
 	}
 
@@ -2442,7 +2465,11 @@ export class AcpAgent implements Agent {
 	}
 
 	async #disposeSessionRecord(record: ManagedSessionRecord): Promise<void> {
+		record.rejectLifetimeReady(
+			record.closedError ?? this.#createPromptLifecycleError("ACP session disposed before bootstrap completed"),
+		);
 		record.lifetimeUnsubscribe?.();
+		await record.lifetimeEvents;
 		if (record.mcpManager) {
 			try {
 				await record.mcpManager.disconnectAll();

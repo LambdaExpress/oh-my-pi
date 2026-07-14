@@ -111,6 +111,56 @@ describe("job renderer task-result preview", () => {
 		expect(header!.match(/SpawnProbe/g)).toHaveLength(1);
 	});
 
+	it("shows the shared SSH transfer progress summary", () => {
+		const result = {
+			content: [{ type: "text" as const, text: "" }],
+			details: {
+				jobs: [
+					{
+						id: "job-ssh",
+						type: "ssh_transfer" as const,
+						status: "running" as const,
+						label: "upload blob",
+						durationMs: 2_000,
+						toolCallId: "tool-ssh",
+						progress: {
+							text: "Upload [fixture]  /tmp/blob.bin → /srv/blob.bin\n█████░░░░░  50.0% · 512.0KB / 1.0MB · 256.0KB/s · 2.0s",
+							updatedAt: 200,
+						},
+					},
+				],
+			},
+		};
+		const options: Parameters<typeof jobToolRenderer.renderResult>[1] = { expanded: true, isPartial: true };
+		const component = jobToolRenderer.renderResult(result, options, theme, { list: true });
+		const output = Bun.stripANSI(component.render(120).join("\n"));
+		expect(output).toContain("█████░░░░░  50.0%");
+		expect(output).toContain("256.0KB/s");
+	});
+
+	it("renders unsettled cancellation as cleanup in progress", () => {
+		const result = {
+			content: [{ type: "text" as const, text: "" }],
+			details: {
+				jobs: [
+					{
+						id: "job-ssh",
+						type: "ssh_transfer" as const,
+						status: "cancelled" as const,
+						label: "upload blob",
+						durationMs: 2_000,
+						progress: { text: "25.0% · 256.0KB / 1.0MB", updatedAt: 200 },
+					},
+				],
+			},
+		};
+		const options: Parameters<typeof jobToolRenderer.renderResult>[1] = { expanded: true, isPartial: true };
+		const component = jobToolRenderer.renderResult(result, options, theme, { cancel: ["job-ssh"] });
+		const output = Bun.stripANSI(component.render(120).join("\n"));
+		expect(output).toContain("cleanup in progress");
+		expect(output).toContain("25.0%");
+	});
+
 	describe("collapse and filter when turned into a result", () => {
 		const jobsData = [
 			{

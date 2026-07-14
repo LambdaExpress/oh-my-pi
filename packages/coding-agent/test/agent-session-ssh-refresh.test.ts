@@ -10,7 +10,7 @@ import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { addSSHHost, removeSSHHost, updateSSHHost } from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
 import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
-import { loadSshTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { loadSshTool, loadSshTransferTool, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { getAgentDir, getSSHConfigPath, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
 function createModel(): Model<"openai-responses"> {
@@ -94,7 +94,7 @@ describe("AgentSession SSH tool refresh", () => {
 		cwd: string,
 		initialTools: AgentTool[] = [],
 		registryTools = initialTools,
-		options?: { reloadSshTool?: () => Promise<AgentTool | null>; requestedToolNames?: ReadonlySet<string> },
+		options?: { reloadSshTools?: () => Promise<Tool[]>; requestedToolNames?: ReadonlySet<string> },
 	): AgentSession {
 		const settings = Settings.isolated({ "compaction.enabled": false });
 		const sessionManager = SessionManager.inMemory(cwd);
@@ -120,8 +120,18 @@ describe("AgentSession SSH tool refresh", () => {
 			settings,
 			modelRegistry: {} as never,
 			toolRegistry,
-			reloadSshTool:
-				options?.reloadSshTool ?? (async () => (await loadSshTool(toolSession)) as unknown as AgentTool | null),
+			reloadSshTools:
+				options?.reloadSshTools ??
+				(async () => {
+					const [sshTool, transferTool] = await Promise.all([
+						loadSshTool(toolSession),
+						loadSshTransferTool(toolSession),
+					]);
+					const tools: Tool[] = [];
+					if (sshTool) tools.push(sshTool);
+					if (transferTool) tools.push(transferTool);
+					return tools;
+				}),
 			requestedToolNames: options?.requestedToolNames,
 			rebuildSystemPrompt: async (toolNames, tools) => ({
 				systemPrompt: toolNames.map(name => `${name}:${tools.get(name)?.description ?? ""}`),
@@ -144,10 +154,13 @@ describe("AgentSession SSH tool refresh", () => {
 
 		const session = createSession(cwd);
 		await addSSHHost(getSSHConfigPath("project", cwd), "staging", { host: "192.0.2.10" });
-		await session.refreshSshTool({ activateIfAvailable: true });
+		await session.refreshSshTools({ activateIfAvailable: true });
 
 		expect(session.getAllToolNames()).toContain("ssh");
 		expect(session.getActiveToolNames()).toContain("ssh");
+		expect(session.getAllToolNames()).toContain("ssh_transfer");
+		expect(session.getActiveToolNames()).toContain("ssh_transfer");
+		expect(session.getToolByName("ssh_transfer")?.description).toContain("staging (192.0.2.10)");
 		expect(session.getToolByName("ssh")?.description).toContain("staging (192.0.2.10)");
 		expect(session.agent.state.systemPrompt.join("\n")).toContain("staging (192.0.2.10)");
 	});
@@ -170,10 +183,12 @@ describe("AgentSession SSH tool refresh", () => {
 
 		const session = createSession(cwd, [sshTool as unknown as AgentTool]);
 		await removeSSHHost(configPath, "prod");
-		await session.refreshSshTool();
+		await session.refreshSshTools();
 
 		expect(session.getAllToolNames()).not.toContain("ssh");
 		expect(session.getActiveToolNames()).not.toContain("ssh");
+		expect(session.getAllToolNames()).not.toContain("ssh_transfer");
+		expect(session.getActiveToolNames()).not.toContain("ssh_transfer");
 	});
 
 	it("does not activate an existing inactive ssh tool during reload refresh", async () => {
@@ -194,7 +209,7 @@ describe("AgentSession SSH tool refresh", () => {
 
 		await addSSHHost(configPath, "dev2", { host: "192.0.2.21" });
 		const session = createSession(cwd, [], [sshTool as unknown as AgentTool]);
-		await session.refreshSshTool({ activateIfAvailable: true });
+		await session.refreshSshTools({ activateIfAvailable: true });
 
 		expect(session.getAllToolNames()).toContain("ssh");
 		expect(session.getActiveToolNames()).not.toContain("ssh");
@@ -217,9 +232,9 @@ describe("AgentSession SSH tool refresh", () => {
 		expect(movedTool).not.toBeNull();
 
 		const refreshedSession = createSession(oldProject.path(), [], [], {
-			reloadSshTool: async () => movedTool as unknown as AgentTool,
+			reloadSshTools: async () => (movedTool ? [movedTool] : []),
 		});
-		await refreshedSession.refreshSshTool({ activateIfAvailable: true });
+		await refreshedSession.refreshSshTools({ activateIfAvailable: true });
 
 		expect(refreshedSession.getAllToolNames()).toContain("ssh");
 		expect(refreshedSession.getToolByName("ssh")?.description).toContain("moved (198.51.100.8)");
@@ -241,12 +256,12 @@ describe("AgentSession SSH tool refresh", () => {
 		});
 		expect(initialTool).not.toBeNull();
 		const session = createSession(cwd, [initialTool as unknown as AgentTool]);
-		await session.refreshSshTool({ activateIfAvailable: true });
+		await session.refreshSshTools({ activateIfAvailable: true });
 
 		const invalidateSpy = spyOn(connectionManager, "invalidateSshTarget").mockResolvedValue(undefined);
 		try {
 			await updateSSHHost(configPath, "prod", { host: "203.0.113.10" });
-			await session.refreshSshTool({ activateIfAvailable: true });
+			await session.refreshSshTools({ activateIfAvailable: true });
 
 			expect(invalidateSpy).toHaveBeenNthCalledWith(
 				1,
@@ -275,12 +290,12 @@ describe("AgentSession SSH tool refresh", () => {
 		});
 		expect(initialTool).not.toBeNull();
 		const session = createSession(cwd, [initialTool as unknown as AgentTool]);
-		await session.refreshSshTool({ activateIfAvailable: true });
+		await session.refreshSshTools({ activateIfAvailable: true });
 
 		const invalidateSpy = spyOn(connectionManager, "invalidateSshTarget").mockResolvedValue(undefined);
 		try {
 			await updateSSHHost(configPath, "prod", { host: "203.0.113.9", password: "new-secret" });
-			await session.refreshSshTool({ activateIfAvailable: true });
+			await session.refreshSshTools({ activateIfAvailable: true });
 
 			expect(invalidateSpy).toHaveBeenNthCalledWith(
 				1,
@@ -302,7 +317,7 @@ describe("AgentSession SSH tool refresh", () => {
 
 		await addSSHHost(configPath, "fresh", { host: "203.0.113.11" });
 		const session = createSession(cwd);
-		await session.refreshSshTool({ activateIfAvailable: true });
+		await session.refreshSshTools({ activateIfAvailable: true });
 
 		expect(session.getToolByName("ssh")?.description).toContain("fresh (203.0.113.11)");
 		expect(session.getToolByName("ssh")?.description).toContain("fresh (203.0.113.11)");
@@ -335,7 +350,7 @@ describe("AgentSession SSH tool refresh", () => {
 		const cwd = tempDir.path();
 		await addSSHHost(getSSHConfigPath("project", cwd), "shared", { host: "persistent.example", username: "disk" });
 		const session = createSession(cwd);
-		await session.refreshSshTool({ activateIfAvailable: true });
+		await session.refreshSshTools({ activateIfAvailable: true });
 
 		await session.mutateSessionSshConfig({
 			operation: "upsert",
@@ -468,12 +483,44 @@ describe("AgentSession SSH tool refresh", () => {
 
 		await addSSHHost(configPath, "hidden", { host: "203.0.113.12" });
 		const session = createSession(cwd, [], [blockedTool], {
-			reloadSshTool: async () => blockedTool,
+			reloadSshTools: async () => [blockedTool],
 			requestedToolNames: new Set(["read"]),
 		});
-		await session.refreshSshTool({ activateIfAvailable: true });
+		await session.refreshSshTools({ activateIfAvailable: true });
 
 		expect(session.getAllToolNames()).toContain("ssh");
 		expect(session.getActiveToolNames()).not.toContain("ssh");
+	});
+
+	it("applies explicit allowlists independently to both SSH tools", async () => {
+		const tempDir = TempDir.createSync("@pi-ssh-refresh-");
+		tempDirs.push(tempDir);
+		const cwd = tempDir.path();
+		const sshTool: AgentTool = {
+			name: "ssh",
+			label: "SSH",
+			description: "ssh",
+			parameters: { type: "object", properties: {} },
+			strict: true,
+			execute: async () => ({ content: [{ type: "text", text: "" }] }),
+		};
+		const transferTool: AgentTool = {
+			name: "ssh_transfer",
+			label: "SSH Transfer",
+			description: "ssh_transfer",
+			parameters: { type: "object", properties: {} },
+			strict: true,
+			execute: async () => ({ content: [{ type: "text", text: "" }] }),
+		};
+		const session = createSession(cwd, [], [], {
+			reloadSshTools: async () => [sshTool, transferTool],
+			requestedToolNames: new Set(["ssh_transfer"]),
+		});
+
+		await session.refreshSshTools({ activateIfAvailable: true });
+
+		expect(session.getAllToolNames()).toEqual(expect.arrayContaining(["ssh", "ssh_transfer"]));
+		expect(session.getActiveToolNames()).not.toContain("ssh");
+		expect(session.getActiveToolNames()).toContain("ssh_transfer");
 	});
 });

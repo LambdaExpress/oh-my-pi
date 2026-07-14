@@ -1,8 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import {
 	agentLoop,
 	agentLoopContinue,
 	agentLoopDetailed,
+	normalizeToolAbortSettleTimeoutMs,
 	TERMINAL_TOOL_RESULT_ABORT_REASON,
 } from "@oh-my-pi/pi-agent-core/agent-loop";
 import type {
@@ -1830,6 +1831,106 @@ describe("agentLoop with AgentMessage", () => {
 		expect(toolResult.isError).toBe(true);
 		expect(toolResult.content).toEqual([{ type: "text", text: "cooperative cancelled" }]);
 		expect(toolResult.details).toEqual({ phase: "cancelled" });
+	});
+
+	it("honors a tool-specific abort settlement window", async () => {
+		const toolSchema = type({});
+		type ToolDetails = { phase: string };
+		const abortController = new AbortController();
+		const executeStarted = Promise.withResolvers<void>();
+		const settledResult = Promise.withResolvers<AgentToolResult<ToolDetails>>();
+		let syntheticAbortUsed = false;
+		let sawAbort = false;
+		let drainSettled = false;
+
+		const tool: AgentTool<typeof toolSchema, ToolDetails> = {
+			name: "slow-cleanup",
+			label: "Slow cleanup",
+			description: "Returns its cleanup result after the default abort grace period",
+			parameters: toolSchema,
+			interruptible: true,
+			abortSettleTimeoutMs: 1_000,
+			createAbortedResult() {
+				syntheticAbortUsed = true;
+				return {
+					content: [{ type: "text", text: "synthetic abort" }],
+					details: { phase: "synthetic" },
+					isError: true,
+				};
+			},
+			execute(_toolCallId, _params, signal) {
+				signal?.addEventListener(
+					"abort",
+					() => {
+						sawAbort = true;
+					},
+					{ once: true },
+				);
+				executeStarted.resolve();
+				return settledResult.promise;
+			},
+		};
+
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "slow-cleanup", arguments: {} }] },
+				{ content: ["should not be requested after abort"] },
+			],
+		});
+		const stream = agentLoop(
+			[createUserMessage("start")],
+			context,
+			{ model: mock.model, convertToLlm: identityConverter },
+			abortController.signal,
+			mock.stream,
+		);
+		const drain = (async () => {
+			for await (const _event of stream) {
+				// drain
+			}
+			return stream.result();
+		})();
+		void drain.then(() => {
+			drainSettled = true;
+		});
+
+		await executeStarted.promise;
+		vi.useFakeTimers();
+		const timeoutSpy = vi.spyOn(globalThis, "setTimeout");
+		try {
+			abortController.abort("Interrupted by user");
+			await Promise.resolve();
+			await Promise.resolve();
+			expect(timeoutSpy).toHaveBeenCalledWith(expect.any(Function), 1_000);
+			expect(sawAbort).toBe(true);
+			expect(drainSettled).toBe(false);
+			expect(syntheticAbortUsed).toBe(false);
+		} finally {
+			timeoutSpy.mockRestore();
+			vi.useRealTimers();
+		}
+
+		settledResult.resolve({
+			content: [{ type: "text", text: "cleanup complete" }],
+			details: { phase: "cancelled" },
+			isError: true,
+		});
+		await Promise.resolve();
+		const messages = await drain;
+
+		expect(syntheticAbortUsed).toBe(false);
+		const toolResult = messages[2] as ToolResultMessage<ToolDetails>;
+		expect(toolResult.content).toEqual([{ type: "text", text: "cleanup complete" }]);
+		expect(toolResult.details).toEqual({ phase: "cancelled" });
+	});
+
+	it("defaults, validates, and clamps tool abort settlement windows", () => {
+		expect(normalizeToolAbortSettleTimeoutMs(undefined)).toBe(250);
+		expect(normalizeToolAbortSettleTimeoutMs(Number.NaN)).toBe(250);
+		expect(normalizeToolAbortSettleTimeoutMs(Number.POSITIVE_INFINITY)).toBe(250);
+		expect(normalizeToolAbortSettleTimeoutMs(-1)).toBe(0);
+		expect(normalizeToolAbortSettleTimeoutMs(30_001)).toBe(30_000);
 	});
 
 	it("aborts an in-flight tool without waiting for execute to settle and ignores late output", async () => {
