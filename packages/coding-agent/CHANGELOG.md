@@ -54,6 +54,7 @@
 - Fixed `lsp code_actions` dropping the listed action-kind filter during apply, so source actions such as Organize Imports remain selectable by their displayed title.
 - Fixed `read` treating a unique workspace suffix match as the requested missing path; missing local, archive, SQLite, and PDF paths now remain errors and show the candidate only as a `Did you mean ...?` suggestion.
 - Fixed `lsp reload` preserving stale TypeScript interface and project state by restarting servers without a dedicated workspace-reload request instead of treating `workspace/didChangeConfiguration` as a reload.
+- Fixed `lsp rename_file` sending unsupported file-operation notifications that could wedge `csharp-ls`; unsupported servers now receive watched-file events, and LSP request timeouts honor values up to 300 seconds with accurate limit guidance.
 - Fixed eval cell output rendering so live stdout that ends with a newline no longer leaves an extra blank row at the bottom of the output box.
 - Fixed collapsed pending framed-output sections counting only logical lines before the shared block renderer wrapped CJK/HTML-like strings, so long previews could outgrow the live viewport and leave stale `earlier lines` snapshots in native scrollback.
 - Fixed status-line subscription usage limits appearing only after unrelated UI updates.

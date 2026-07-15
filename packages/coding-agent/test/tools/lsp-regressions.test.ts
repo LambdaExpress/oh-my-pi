@@ -256,7 +256,8 @@ describe("lsp regressions", () => {
 	it("clamps LSP timeout to configured bounds", () => {
 		expect(clampTimeout("lsp")).toBe(20);
 		expect(clampTimeout("lsp", 1)).toBe(5);
-		expect(clampTimeout("lsp", 1000)).toBe(60);
+		expect(clampTimeout("lsp", 180)).toBe(180);
+		expect(clampTimeout("lsp", 1000)).toBe(300);
 	});
 
 	it("starts separate clients when shared wrapper commands use different args", async () => {
@@ -1646,6 +1647,14 @@ describe("lsp regressions", () => {
 				isReading: false,
 				status: "ready",
 				lastActivity: Date.now(),
+				serverCapabilities: {
+					workspace: {
+						fileOperations: {
+							willRename: { filters: [] },
+							didRename: { filters: [] },
+						},
+					},
+				},
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
 				projectLoaded: Promise.resolve(),
@@ -1724,6 +1733,80 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("rename_file uses watched-file events when the server does not advertise file operations", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rename-file-watched-");
+		try {
+			const sourceFile = path.join(tempDir.path(), "old.ts");
+			const destFile = path.join(tempDir.path(), "new.ts");
+			await Bun.write(sourceFile, "export const value = 42;\n");
+
+			const sourceUri = fileToUri(sourceFile);
+			const destUri = fileToUri(destFile);
+			const writes: string[] = [];
+			const server: ServerConfig = { command: "test-lsp", fileTypes: ["ts"], rootMarkers: [] };
+			const client: LspClient = {
+				name: "test-lsp",
+				cwd: tempDir.path(),
+				config: server,
+				proc: {
+					stdin: {
+						write(value: string) {
+							writes.push(value);
+						},
+						flush: async () => {},
+					},
+				} as unknown as LspClient["proc"],
+				requestId: 0,
+				diagnostics: new Map(),
+				diagnosticsVersion: 0,
+				openFiles: new Map([[sourceUri, { version: 1, languageId: "typescript" }]]),
+				pendingRequests: new Map(),
+				messageBuffer: new Uint8Array(),
+				isReading: false,
+				status: "ready",
+				serverCapabilities: {},
+				lastActivity: Date.now(),
+				writeQueue: Promise.resolve(),
+				activeProgressTokens: new Set(),
+				projectLoaded: Promise.resolve(),
+				resolveProjectLoaded: () => {},
+			};
+
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "test-lsp": server },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+			const requestSpy = vi.spyOn(lspClient, "sendRequest").mockResolvedValue(null);
+
+			const tool = new LspTool({ cwd: tempDir.path() } as ToolSession);
+			await tool.execute("rename-file-watched-test", {
+				action: "rename_file",
+				file: sourceFile,
+				new_name: destFile,
+				timeout: 5,
+			});
+
+			expect(requestSpy).not.toHaveBeenCalledWith(
+				client,
+				"workspace/willRenameFiles",
+				expect.anything(),
+				expect.anything(),
+			);
+			const wire = writes.join("\n");
+			expect(wire).toContain("textDocument/didClose");
+			expect(wire).toContain("workspace/didChangeWatchedFiles");
+			expect(wire).not.toContain("workspace/didRenameFiles");
+			expect(wire).toContain(sourceUri);
+			expect(wire).toContain(destUri);
+			expect(fs.existsSync(sourceFile)).toBe(false);
+			expect(fs.existsSync(destFile)).toBe(true);
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
 	it("rename_file with apply:false previews edits without filesystem changes", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-rename-file-preview-");
 		try {
@@ -1748,6 +1831,14 @@ describe("lsp regressions", () => {
 				isReading: false,
 				status: "ready",
 				lastActivity: Date.now(),
+				serverCapabilities: {
+					workspace: {
+						fileOperations: {
+							willRename: { filters: [] },
+							didRename: { filters: [] },
+						},
+					},
+				},
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
 				projectLoaded: Promise.resolve(),
@@ -1809,6 +1900,14 @@ describe("lsp regressions", () => {
 				isReading: false,
 				status: "ready",
 				lastActivity: Date.now(),
+				serverCapabilities: {
+					workspace: {
+						fileOperations: {
+							willRename: { filters: [] },
+							didRename: { filters: [] },
+						},
+					},
+				},
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
 				projectLoaded: Promise.resolve(),

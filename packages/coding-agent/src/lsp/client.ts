@@ -985,6 +985,35 @@ function isPathInsideWorkspace(filePath: string, workspace: string): boolean {
 const WATCHED_FILES_NOTIFY_TIMEOUT_MS = 2_000;
 
 /**
+ * Announce harness-authored filesystem changes to one LSP client.
+ *
+ * The notification is bounded independently so an unresponsive server cannot
+ * hold the filesystem operation that triggered it.
+ */
+export async function notifyClientWatchedFiles(
+	client: LspClient,
+	changes: readonly WatchedFileChange[],
+	signal?: AbortSignal,
+): Promise<void> {
+	throwIfAborted(signal);
+	if (changes.length === 0) return;
+
+	const workspace = path.resolve(client.cwd);
+	const clientChanges = changes
+		.filter(change => isPathInsideWorkspace(change.filePath, workspace))
+		.map(change => {
+			const uri = fileToUri(change.filePath);
+			client.diagnostics.delete(uri);
+			return { uri, type: change.type };
+		});
+	if (clientChanges.length === 0) return;
+
+	const timeoutSignal = AbortSignal.timeout(WATCHED_FILES_NOTIFY_TIMEOUT_MS);
+	const sendSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+	await sendNotification(client, "workspace/didChangeWatchedFiles", { changes: clientChanges }, sendSignal);
+}
+
+/**
  * Announce harness-authored filesystem changes to active LSP clients for `cwd`.
  *
  * This covers sibling files that are not open text documents, such as generated
@@ -1008,20 +1037,8 @@ export async function notifyWorkspaceWatchedFiles(
 	);
 	if (activeClients.length === 0) return;
 
-	const timeoutSignal = AbortSignal.timeout(WATCHED_FILES_NOTIFY_TIMEOUT_MS);
-	const sendSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 	const results = await Promise.allSettled(
-		activeClients.map(async client => {
-			const clientChanges = changes
-				.filter(change => isPathInsideWorkspace(change.filePath, workspace))
-				.map(change => {
-					const uri = fileToUri(change.filePath);
-					client.diagnostics.delete(uri);
-					return { uri, type: change.type };
-				});
-			if (clientChanges.length === 0) return;
-			await sendNotification(client, "workspace/didChangeWatchedFiles", { changes: clientChanges }, sendSignal);
-		}),
+		activeClients.map(client => notifyClientWatchedFiles(client, changes, signal)),
 	);
 	throwIfAborted(signal);
 	for (const result of results) {

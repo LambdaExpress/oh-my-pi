@@ -387,6 +387,12 @@ export interface LspServerCapabilities {
 	referencesProvider?: boolean;
 	documentSymbolProvider?: boolean;
 	workspaceSymbolProvider?: boolean;
+	workspace?: {
+		fileOperations?: {
+			willRename?: unknown;
+			didRename?: unknown;
+		};
+	};
 	[key: string]: unknown;
 }
 

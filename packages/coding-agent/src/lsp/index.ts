@@ -15,7 +15,7 @@ import type { ToolSession } from "../tools";
 import { truncateForPrompt } from "../tools/approval";
 import { formatPathRelativeToCwd, resolveToCwd } from "../tools/path-utils";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
-import { clampTimeout } from "../tools/tool-timeouts";
+import { clampTimeout, TOOL_TIMEOUTS } from "../tools/tool-timeouts";
 import {
 	ensureFileOpen,
 	FileChangeType,
@@ -23,6 +23,7 @@ import {
 	getLspClientKey,
 	getOrCreateClient,
 	type LspServerStatus,
+	notifyClientWatchedFiles,
 	notifySaved,
 	notifyWorkspaceWatchedFiles,
 	refreshFile,
@@ -2103,6 +2104,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				throwIfAborted(signal);
 				try {
 					const client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal);
+					if (!client.serverCapabilities?.workspace?.fileOperations?.willRename) continue;
 					if (isProjectAwareLspServer(serverConfig)) {
 						await waitForProjectLoaded(client, signal);
 					}
@@ -2120,10 +2122,8 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					if (err instanceof ToolAbortError || signal?.aborted) {
 						throw err;
 					}
-					if (!isMethodNotFoundError(err)) {
-						const msg = err instanceof Error ? err.message : String(err);
-						serverNotes.push(`  ${serverName}: ${msg}`);
-					}
+					const msg = err instanceof Error ? err.message : String(err);
+					serverNotes.push(`  ${serverName}: ${msg}`);
 				}
 			}
 
@@ -2246,6 +2246,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			await fs.promises.mkdir(path.dirname(dest), { recursive: true });
 			await fs.promises.rename(source, dest);
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
+			const watchedRenameChanges = pairs.flatMap(({ oldUri, newUri }) => [
+				{ filePath: uriToFile(oldUri), type: FileChangeType.Deleted },
+				{ filePath: uriToFile(newUri), type: FileChangeType.Created },
+			]);
 
 			for (const [serverName, serverConfig] of servers) {
 				try {
@@ -2256,7 +2260,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							client.openFiles.delete(oldUri);
 						}
 					}
-					await sendNotification(client, "workspace/didRenameFiles", lspParams, signal);
+					if (client.serverCapabilities?.workspace?.fileOperations?.didRename) {
+						await sendNotification(client, "workspace/didRenameFiles", lspParams, signal);
+					} else {
+						await notifyClientWatchedFiles(client, watchedRenameChanges, signal);
+					}
 				} catch (err) {
 					if (err instanceof ToolAbortError || signal?.aborted) {
 						throw err;
@@ -2952,8 +2960,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				// timeoutSignal aborting without callerSignal → emit a ToolError naming the
 				// elapsed budget and server, instead of opaque "Operation aborted".
 				if (timeoutSignal.aborted && !callerSignal?.aborted) {
+					const retryHint =
+						timeoutSec < TOOL_TIMEOUTS.lsp.max
+							? `Try again or pass timeout=<up to ${TOOL_TIMEOUTS.lsp.max}>.`
+							: `The request reached the ${TOOL_TIMEOUTS.lsp.max}s LSP limit; reload the server before retrying.`;
 					throw new ToolError(
-						`LSP ${action} timed out after ${timeoutSec}s on ${serverName}. The server may still be indexing; try again or pass timeout=<larger>.`,
+						`LSP ${action} timed out after ${timeoutSec}s on ${serverName}. The server may still be indexing or unresponsive. ${retryHint}`,
 					);
 				}
 				throw new ToolAbortError();
