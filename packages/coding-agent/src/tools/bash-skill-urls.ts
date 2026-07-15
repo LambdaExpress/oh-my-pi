@@ -27,6 +27,7 @@ export interface InternalUrlExpansionOptions {
 	noEscape?: boolean;
 	internalRouter?: InternalUrlResolver;
 	localOptions?: LocalProtocolOptions;
+	cwd?: string;
 	ensureLocalParentDirs?: boolean;
 	escapePath?: (path: string) => string;
 }
@@ -176,6 +177,7 @@ async function resolveInternalUrlToPath(
 	internalRouter?: InternalUrlResolver,
 	localOptions?: LocalProtocolOptions,
 	ensureLocalParentDirs?: boolean,
+	cwd?: string,
 ): Promise<string> {
 	const url = normalizeLocalScheme(rawUrl);
 	const scheme = extractScheme(url);
@@ -209,7 +211,7 @@ async function resolveInternalUrlToPath(
 
 	let resource: InternalResource;
 	try {
-		resource = await internalRouter.resolve(url, { pathOnly: true });
+		resource = await internalRouter.resolve(url, { cwd, pathOnly: true });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new ToolError(`Failed to resolve ${scheme}:// URL in bash command: ${url}\n${message}`);
@@ -269,6 +271,7 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 				options.internalRouter,
 				options.localOptions,
 				options.ensureLocalParentDirs,
+				options.cwd,
 			);
 		} catch {
 			continue;

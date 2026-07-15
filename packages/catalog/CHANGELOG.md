@@ -5,6 +5,20 @@
 ### Added
 
 - Added a distinct user-facing `max` effort for GPT-5.6 wire-effort models. Their native `low` through `max` tiers now pass through by name, while `minimal` remains a compatibility alias for native `low`. Standard Devin GPT-5.6 families route `max` to the real `-max` sibling; Fast families remain capped at `xhigh` because no `-max-priority` sibling exists.
+## [16.5.2] - 2026-07-14
+
+### Fixed
+
+- Fixed OpenCode Zen and Go discovery to replace stale bundled models with each provider's live model catalog.
+
+## [16.5.1] - 2026-07-14
+
+### Fixed
+
+- Fixed reasoning effort mapping for Z.ai GLM-5.2 on the Anthropic messages endpoint to correctly use the two-tier scale (high, max) and emit output_config.effort.
+- Fixed an issue where stale cached model limits would override updated static catalog limits after a catalog fingerprint mismatch.
+- Fixed Cursor discovery to correctly preserve GetUsableModels max-mode metadata for premium models and invalidate stale cache entries.
+
 ## [16.4.3] - 2026-07-11
 
 ### Fixed

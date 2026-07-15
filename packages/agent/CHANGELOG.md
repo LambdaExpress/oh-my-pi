@@ -10,6 +10,19 @@
 
 - Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.
 - Fixed tool abort settlement so each tool can declare a bounded cleanup window before the agent synthesizes an interrupted result.
+## [16.5.2] - 2026-07-14
+
+### Fixed
+
+- Improved session deadline abort signals to carry structured cancellation reasons, enabling timeout-aware tools to correctly classify deadline cancellations.
+- Fixed an issue where completed tool executions were incorrectly marked as skipped (clobbering their actual results) if a user message was queued while the tool was in flight.
+
+## [16.5.1] - 2026-07-14
+
+### Fixed
+
+- Fixed compatibility with Copilot gpt-5.6 models by correcting token escaping in compaction summaries.
+
 ## [16.5.0] - 2026-07-13
 
 ### Added
