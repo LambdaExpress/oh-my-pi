@@ -83,7 +83,7 @@ function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown:
 	block.addChild(new Spacer(1));
 	block.addChild(new Markdown(markdown.trim(), 1, 1, getMarkdownTheme()));
 	block.addChild(new DynamicBorder());
-	ctx.present(block);
+	ctx.presentCommandOutput(block);
 }
 
 const WORKTREE_USAGE = "Usage: /worktree <list|add|switch|switch-local|merge|remove|prune|branch|path|restore>";
@@ -596,7 +596,10 @@ export class CommandController {
 	}
 
 	handleToolsCommand(): void {
-		const tools = buildToolsMarkdown({ tools: this.ctx.session.agent.state.tools });
+		const tools = buildToolsMarkdown({
+			tools: this.ctx.session.agent.state.tools,
+			xdevTools: this.ctx.session.getXdevToolEntries(),
+		});
 		showMarkdownPanel(this.ctx, "Available Tools", tools);
 	}
 

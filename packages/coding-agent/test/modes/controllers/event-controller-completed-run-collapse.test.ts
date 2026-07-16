@@ -53,6 +53,7 @@ function fixture(collapseCompletedRuns = true, waitForMessagePersistence = vi.fn
 		clearPinnedError: vi.fn(),
 		ensureLoadingAnimation: vi.fn(),
 		flushPendingModelSwitch: vi.fn(async () => {}),
+		flushPendingCommandOutput: vi.fn(),
 		recordCompletedRunCollapse,
 		rebuildChatFromMessages,
 		getUserMessageText: (message: AgentMessage) =>
@@ -126,8 +127,6 @@ describe("completed run collapse", () => {
 			messages: source,
 			models: {},
 			injectedTtsrRules: [],
-			selectedMCPToolNames: [],
-			hasPersistedMCPToolSelection: false,
 			mode: "none",
 		};
 		const projection = collapseCompletedRuns(context, [

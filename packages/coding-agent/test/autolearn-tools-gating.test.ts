@@ -50,7 +50,7 @@ describe("autolearn tool gating", () => {
 		const manage = tools.find(t => t.name === "manage_skill");
 		expect(learn).toBeDefined();
 		expect(manage).toBeDefined();
-		// loadMode "essential" is what keeps them active under tools.discoveryMode "all".
+		// loadMode "essential" keeps them top-level instead of mounting them under xd://.
 		expect(learn?.loadMode).toBe("essential");
 		expect(manage?.loadMode).toBe("essential");
 	});

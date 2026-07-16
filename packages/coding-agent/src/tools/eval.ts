@@ -803,5 +803,8 @@ async function summarizeFinal(
 		outputLines,
 		outputBytes,
 		artifactId: rawSummary.artifactId,
+		columnDroppedBytes: rawSummary.columnDroppedBytes,
+		columnTruncatedLines: rawSummary.columnTruncatedLines,
+		columnMax: rawSummary.columnMax,
 	};
 }

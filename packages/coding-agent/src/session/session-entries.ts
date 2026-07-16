@@ -157,12 +157,6 @@ export interface TtsrInjectionEntry extends SessionEntryBase {
 	injectedRules: string[];
 }
 
-/** Persisted MCP discovery selection state for a session branch. */
-export interface MCPToolSelectionEntry extends SessionEntryBase {
-	type: "mcp_tool_selection";
-	/** MCP tool names selected for visibility in discovery mode. */
-	selectedToolNames: string[];
-}
 /** Session-branch SSH configuration state change. */
 export type SshConfigChangeEntry = SshConfigUpsertEntry | SshConfigDeleteEntry;
 
@@ -240,7 +234,6 @@ export type SessionEntry =
 	| LabelEntry
 	| TitleChangeEntry
 	| TtsrInjectionEntry
-	| MCPToolSelectionEntry
 	| SshConfigChangeEntry
 	| SessionInitEntry
 	| ModeChangeEntry;

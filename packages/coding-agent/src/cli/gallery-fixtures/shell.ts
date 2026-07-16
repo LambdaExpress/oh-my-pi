@@ -1,4 +1,4 @@
-/** Gallery fixtures for shell tools (bash, eval, launch, and pwsh). */
+/** Gallery fixtures for shell tools (bash, eval, hub, and pwsh). */
 import type { GalleryFixture } from "./types";
 
 export const shellFixtures: Record<string, GalleryFixture> = {
@@ -93,8 +93,9 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
-	launch: {
-		label: "Launch",
+	hub_start: {
+		label: "Hub start",
+		renderer: "hub",
 		streamingArgs: { op: "start", name: "web" },
 		args: {
 			op: "start",
@@ -136,9 +137,9 @@ export const shellFixtures: Record<string, GalleryFixture> = {
 		},
 	},
 
-	launch_logs: {
-		label: "Launch",
-		renderer: "launch",
+	hub_logs: {
+		label: "Hub logs",
+		renderer: "hub",
 		args: { op: "logs", name: "comp-debug", lines: 100, follow: true, cursor: 233_512, timeout: 30 },
 		result: {
 			content: [

@@ -40,7 +40,6 @@ import {
 	type CustomMessageEntry,
 	type FileEntry,
 	type LabelEntry,
-	type MCPToolSelectionEntry,
 	type ModeChangeEntry,
 	type ModelChangeEntry,
 	type NewSessionOptions,
@@ -1594,18 +1593,6 @@ export class SessionManager {
 		return entry.id;
 	}
 
-	/**
-	 * Append an MCP tool selection entry recording the discovery-selected MCP tools.
-	 */
-	appendMCPToolSelection(selectedToolNames: string[]): string {
-		const entry: MCPToolSelectionEntry = {
-			type: "mcp_tool_selection",
-			...this.#freshEntryFields(),
-			selectedToolNames: [...selectedToolNames],
-		};
-		this.#recordEntry(entry);
-		return entry.id;
-	}
 	appendSshConfigUpsert(name: string, config: SSHHostConfig): string {
 		const entry: SshConfigChangeEntry = {
 			type: "ssh_config_change",

@@ -1,16 +1,23 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { SessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { Component, OverlayOptions } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	await initTheme();
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 afterAll(() => {
@@ -149,5 +156,72 @@ describe("SelectorController.showTreeSelector", () => {
 		expect(setFocus).toHaveBeenCalledWith(selector);
 		expect(requestRender).toHaveBeenCalled();
 		expect(slot.children).toEqual([editor]);
+	});
+});
+
+describe("SelectorController session replacement overlay", () => {
+	it("keeps the fullscreen selector visible until the resumed transcript is ready", async () => {
+		const session: SessionInfo = {
+			path: "/tmp/resume.jsonl",
+			id: "resume",
+			cwd: "/tmp",
+			title: "Resume target",
+			created: new Date("2026-01-01T00:00:00Z"),
+			modified: new Date("2026-01-02T00:00:00Z"),
+			messageCount: 2,
+			size: 1,
+			firstMessage: "first",
+			allMessagesText: "first second",
+		};
+		vi.spyOn(SessionManager, "list").mockResolvedValue([session]);
+
+		const overlayHidden = Promise.withResolvers<void>();
+		const hide = vi.fn(() => overlayHidden.resolve());
+		let selector: SessionSelectorComponent | undefined;
+		const editor = { id: "editor" };
+		const editorContainer = createEditorSlot(editor);
+		const ctx = {
+			editor,
+			editorContainer,
+			sessionManager: {
+				getCwd: () => "/tmp",
+				getSessionDir: () => "/tmp",
+			},
+			ui: {
+				showOverlay: vi.fn(component => {
+					selector = component as SessionSelectorComponent;
+					return { hide, setHidden: vi.fn(), isHidden: () => false };
+				}),
+				setFocus: vi.fn(),
+				requestRender: vi.fn(),
+				terminal: { rows: 24 },
+			},
+		} as unknown as InteractiveModeContext;
+		const controller = new SelectorController(ctx);
+		const resumeStarted = Promise.withResolvers<void>();
+		const resumed = Promise.withResolvers<void>();
+		const handleResume = vi.spyOn(controller, "handleResumeSession").mockImplementation(() => {
+			resumeStarted.resolve();
+			return resumed.promise;
+		});
+
+		await controller.showSessionSelector();
+		expect(selector).toBeDefined();
+		selector!.handleInput("\n");
+		await resumeStarted.promise;
+
+		expect(handleResume).toHaveBeenCalledWith(session.path);
+		expect(hide).not.toHaveBeenCalled();
+
+		// The selector remains mounted until resume finishes, but it must not accept
+		// a second selection or cancel the overlay during that interval.
+		selector!.handleInput("\n");
+		selector!.handleInput("\x1b");
+		expect(handleResume).toHaveBeenCalledTimes(1);
+		expect(hide).not.toHaveBeenCalled();
+
+		resumed.resolve();
+		await overlayHidden.promise;
+		expect(hide).toHaveBeenCalledTimes(1);
 	});
 });

@@ -8,33 +8,32 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import type { SessionSshConfig } from "@oh-my-pi/pi-coding-agent/session/session-ssh-config";
 import { reconstructSessionSshConfigs } from "@oh-my-pi/pi-coding-agent/session/session-ssh-config";
 import { addSSHHost } from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
-import { HOST_PROBE_MARKER, TRANSFER_PROBE_MARKER } from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
+import {
+	HOST_PROBE_MARKER,
+	invalidateSshTarget,
+	TRANSFER_PROBE_MARKER,
+} from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
 import { loadEffectiveSshHosts } from "@oh-my-pi/pi-coding-agent/ssh/host-registry";
-import { loadSshTool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { SshSessionTool } from "@oh-my-pi/pi-coding-agent/tools/ssh-session";
 import { getSSHConfigPath, TempDir } from "@oh-my-pi/pi-utils";
 
 const OLD_PASSWORD = "e2e-old-session-password-sentinel";
 const NEW_PASSWORD = "e2e-new-session-password-sentinel";
-
-function resultText(result: { content: Array<{ type: string; text?: string }> }): string {
-	return result.content.map(block => (block.type === "text" ? (block.text ?? "") : "")).join("\n");
-}
+const FALLBACK_PASSWORD = "e2e-persistent-fallback-password-sentinel";
 
 describe("session SSH fake-binary smoke", () => {
-	it("shares branch aliases across ssh and ssh://, rotates password auth, and falls back after delete", async () => {
+	it("shares branch aliases with ssh://, rotates password auth, and falls back after delete", async () => {
 		const tempDir = TempDir.createSync("@pi-ssh-session-e2e-");
 		const cwd = tempDir.path();
 		const binDir = path.join(cwd, "bin");
 		const argvLog = path.join(cwd, "ssh-argv.log");
 		const passwordLog = path.join(cwd, "ssh-password.log");
-		const countFile = path.join(cwd, "ssh-count.txt");
 		const fakeSource = path.join(binDir, "fake-ssh.ts");
 		const fakeSsh = path.join(binDir, process.platform === "win32" ? "ssh.exe" : "ssh");
 		const originalPath = process.env.PATH;
 		const originalArgvLog = process.env.OMP_TEST_SSH_ARGV_LOG;
 		const originalPasswordLog = process.env.OMP_TEST_SSH_PASSWORD_LOG;
-		const originalCountFile = process.env.OMP_TEST_SSH_COUNT_FILE;
 		const sessionHostname = `session-${crypto.randomUUID()}.example`;
 		let manager: SessionManager | undefined;
 		try {
@@ -43,19 +42,17 @@ describe("session SSH fake-binary smoke", () => {
 				fakeSource,
 				[
 					'import * as fs from "node:fs";',
-					"const countFile = Bun.env.OMP_TEST_SSH_COUNT_FILE!;",
 					"const argvLog = Bun.env.OMP_TEST_SSH_ARGV_LOG!;",
 					"const passwordLog = Bun.env.OMP_TEST_SSH_PASSWORD_LOG!;",
-					"const count = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, 'utf8')) + 1 : 1;",
-					"fs.writeFileSync(countFile, String(count));",
-					"fs.appendFileSync(argvLog, JSON.stringify(process.argv.slice(2)) + '\\n');",
+					"const args = process.argv.slice(2);",
+					"fs.appendFileSync(argvLog, JSON.stringify(args) + '\\n');",
 					"if (Bun.env.OMP_SSH_PASSWORD) fs.appendFileSync(passwordLog, Bun.env.OMP_SSH_PASSWORD + '\\n');",
-					`if (count === 1) process.stdout.write('${HOST_PROBE_MARKER}linux-gnu|/bin/bash|5.2\\n');`,
-					`else if (count === 2) process.stdout.write('${TRANSFER_PROBE_MARKER}Linux\\n');`,
-					"else if (count === 3 || count === 6) process.stdout.write('ssh-command-through-session-alias\\n');",
-					"else if (count === 4) process.stdout.write('file\\n');",
-					"else if (count === 5) process.stdout.write('remote-file-through-session-alias\\n');",
-					"else process.stdout.write('unexpected-fake-ssh-call-' + count + '\\n');",
+					"const command = args.join(' ');",
+					`process.stdout.write('${HOST_PROBE_MARKER}linux-gnu|/bin/bash|5.2\\n');`,
+					`process.stdout.write('${TRANSFER_PROBE_MARKER}Linux\\n');`,
+					`if (command.includes(${JSON.stringify(sessionHostname)})) process.stdout.write('remote-file-through-session-alias\\n');`,
+					"else if (command.includes('persistent.example')) process.stdout.write('remote-file-through-persistent-fallback\\n');",
+					"else process.stdout.write('unexpected-fake-ssh-command\\n');",
 				].join("\n"),
 			);
 			const build = Bun.spawn([process.execPath, "build", "--compile", fakeSource, "--outfile", fakeSsh], {
@@ -70,11 +67,11 @@ describe("session SSH fake-binary smoke", () => {
 			process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
 			process.env.OMP_TEST_SSH_ARGV_LOG = argvLog;
 			process.env.OMP_TEST_SSH_PASSWORD_LOG = passwordLog;
-			process.env.OMP_TEST_SSH_COUNT_FILE = countFile;
 
 			await addSSHHost(getSSHConfigPath("project", cwd), "shared", {
 				host: "persistent.example",
 				username: "persistent-user",
+				password: FALLBACK_PASSWORD,
 			});
 			resetCapabilities();
 			manager = SessionManager.create(cwd, path.join(cwd, "sessions"));
@@ -94,10 +91,30 @@ describe("session SSH fake-binary smoke", () => {
 					}),
 				mutateSessionSshConfig: async mutation => {
 					if (!manager) throw new Error("session manager unavailable");
+					const previousHosts = await loadEffectiveSshHosts(cwd, {
+						sessionId: manager.getSessionId(),
+						hosts: configs,
+					});
 					if (mutation.operation === "upsert") manager.appendSshConfigUpsert(mutation.name, mutation.config);
 					else manager.appendSshConfigDelete(mutation.name);
 					configs = reconstructSessionSshConfigs(manager.getBranch());
 					resetCapabilities();
+					const nextHosts = await loadEffectiveSshHosts(cwd, {
+						sessionId: manager.getSessionId(),
+						hosts: configs,
+					});
+					const previous = previousHosts.find(host => host.name === mutation.name);
+					const next = nextHosts.find(host => host.name === mutation.name);
+					if (previous) {
+						const remoteChanged =
+							next !== undefined &&
+							(previous.host !== next.host ||
+								previous.username !== next.username ||
+								previous.port !== next.port ||
+								previous.compat !== next.compat);
+						await invalidateSshTarget(previous, { invalidateHostInfo: remoteChanged });
+						if (remoteChanged && next) await invalidateSshTarget(next, { invalidateHostInfo: true });
+					}
 				},
 			};
 			manager.appendMessage({
@@ -127,27 +144,22 @@ describe("session SSH fake-binary smoke", () => {
 				password: OLD_PASSWORD,
 			});
 
-			let sshTool = await loadSshTool(toolSession);
-			if (!sshTool) throw new Error("ssh tool did not load for session alias");
-			const commandResult = await sshTool.execute("ssh-command", {
-				host: "shared",
-				command: "echo smoke",
-				timeout: 10,
-			});
-			expect(resultText(commandResult)).toContain("ssh-command-through-session-alias");
-			const effective = await toolSession.getSessionSshHosts?.();
 			const handler = new SshProtocolHandler();
-			const resource = await handler.resolve(parseInternalUrl("ssh://shared/tmp/value.txt"), {
+			const resourceUrl = parseInternalUrl("ssh://shared/tmp/value.txt");
+			const oldPasswordResource = await handler.resolve(resourceUrl, {
 				cwd,
-				sshHosts: effective,
+				sshHosts: await toolSession.getSessionSshHosts?.(),
 			});
-			expect(resource.content).toBe("remote-file-through-session-alias\n");
-			expect(resource.url).not.toContain(OLD_PASSWORD);
+			expect(oldPasswordResource.content).toContain("remote-file-through-session-alias");
+			expect(oldPasswordResource.url).not.toContain(OLD_PASSWORD);
 
 			await sessionTool.execute("update", { op: "update", name: "shared", password: NEW_PASSWORD });
-			sshTool = await loadSshTool(toolSession);
-			if (!sshTool) throw new Error("ssh tool disappeared after password update");
-			await sshTool.execute("ssh-command-updated", { host: "shared", command: "echo updated", timeout: 10 });
+			const newPasswordResource = await handler.resolve(resourceUrl, {
+				cwd,
+				sshHosts: await toolSession.getSessionSshHosts?.(),
+			});
+			expect(newPasswordResource.content).toContain("remote-file-through-session-alias");
+			expect(newPasswordResource.url).not.toContain(NEW_PASSWORD);
 			const passwordInvocations = (await Bun.file(passwordLog).text()).split("\n").filter(Boolean);
 			expect(passwordInvocations).toContain(OLD_PASSWORD);
 			expect(passwordInvocations.at(-1)).toBe(NEW_PASSWORD);
@@ -158,6 +170,8 @@ describe("session SSH fake-binary smoke", () => {
 				host: "persistent.example",
 				username: "persistent-user",
 			});
+			const fallbackResource = await handler.resolve(resourceUrl, { cwd, sshHosts: fallbackHosts });
+			expect(fallbackResource.content).toContain("remote-file-through-persistent-fallback");
 			expect(configs.has("shared")).toBe(false);
 
 			await manager.flush();
@@ -168,10 +182,12 @@ describe("session SSH fake-binary smoke", () => {
 			expect(rawSession).toContain(NEW_PASSWORD);
 			expect(rawSession).toContain('"operation":"delete"');
 			const argv = await Bun.file(argvLog).text();
-			for (const password of [OLD_PASSWORD, NEW_PASSWORD]) {
+			for (const password of [OLD_PASSWORD, NEW_PASSWORD, FALLBACK_PASSWORD]) {
 				expect(argv).not.toContain(password);
-				expect(resultText(commandResult)).not.toContain(password);
-				expect(handler.canonicalKey(parseInternalUrl("ssh://shared/tmp/value.txt"))).not.toContain(password);
+				expect(oldPasswordResource.content).not.toContain(password);
+				expect(newPasswordResource.content).not.toContain(password);
+				expect(fallbackResource.content).not.toContain(password);
+				expect(handler.canonicalKey(resourceUrl)).not.toContain(password);
 			}
 		} finally {
 			await manager?.close();
@@ -182,8 +198,6 @@ describe("session SSH fake-binary smoke", () => {
 			else process.env.OMP_TEST_SSH_ARGV_LOG = originalArgvLog;
 			if (originalPasswordLog === undefined) delete process.env.OMP_TEST_SSH_PASSWORD_LOG;
 			else process.env.OMP_TEST_SSH_PASSWORD_LOG = originalPasswordLog;
-			if (originalCountFile === undefined) delete process.env.OMP_TEST_SSH_COUNT_FILE;
-			else process.env.OMP_TEST_SSH_COUNT_FILE = originalCountFile;
 			tempDir.removeSync();
 		}
 	}, 30_000);

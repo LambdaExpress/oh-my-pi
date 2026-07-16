@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [17.0.1] - 2026-07-16
+
+### Fixed
+
+- Added scoped graceful handling for stdio-write EPIPE rejections so protocol servers can await postmortem cleanup when their peer disconnects ([#4788](https://github.com/can1357/oh-my-pi/issues/4788)).
+
+## [17.0.0] - 2026-07-15
+
+### Fixed
+
+- Improved SSE streaming performance by batching complete lines into a single UTF-8 decode per chunk, reducing decoder overhead.
+- Fixed an issue in `parseFrontmatter` where a single malformed YAML line would corrupt sibling values by parsing each line independently.
+
 ## [16.5.2] - 2026-07-14
 
 ### Fixed

@@ -11,7 +11,7 @@ import type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
 } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { ImageContent, TextContent, TSchema } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import { getDefault, type Settings } from "../config/settings";
 import { formatGroupedDiagnosticMessages } from "../lsp/utils";
@@ -191,6 +191,13 @@ export class OutputMetaBuilder {
 
 	/** Add truncation info from OutputSummary. No-op if not truncated. */
 	truncationFromSummary(summary: OutputSummary, options: TruncationSummaryOptions): this {
+		// A per-line column cap only trims individual lines (with a `…` marker);
+		// it is not a window/byte truncation, so surface it as its own limit
+		// notice rather than a "Showing lines X-Y … limit" range. This runs even
+		// when the output is otherwise complete (`truncated === false`).
+		if (summary.columnMax != null && summary.columnMax > 0 && (summary.columnTruncatedLines ?? 0) > 0) {
+			this.columnTruncated(summary.columnMax);
+		}
 		if (!summary.truncated) return this;
 
 		const { direction, startLine = 1, totalFileLines } = options;
@@ -803,7 +810,12 @@ async function wrappedExecute(
  * 1. Automatically append output notices based on details.meta
  * 2. Handle ToolError rendering
  */
-export function wrapToolWithMetaNotice<T extends AgentTool<any, any, any>>(tool: T): T {
+export function wrapToolWithMetaNotice<
+	TParameters extends TSchema,
+	TDetails,
+	TTheme,
+	TTool extends AgentTool<TParameters, TDetails, TTheme>,
+>(tool: TTool & { readonly parameters: TParameters }): TTool & AgentTool<TParameters, TDetails, TTheme> {
 	if (kUnwrappedExecute in tool) {
 		return tool;
 	}

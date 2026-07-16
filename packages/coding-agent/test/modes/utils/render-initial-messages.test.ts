@@ -62,8 +62,6 @@ function makeEmptyContext(): SessionContext {
 		serviceTier: undefined,
 		models: {},
 		injectedTtsrRules: [],
-		selectedMCPToolNames: [],
-		hasPersistedMCPToolSelection: false,
 		mode: "none",
 	};
 }
@@ -175,7 +173,9 @@ function makeRenderCtx(
 		updateEditorTopBorder: vi.fn(),
 		ui: { requestRender: vi.fn(), imageBudget: undefined },
 		resetTranscript: () => chatContainer.clear(),
-		settings: { get: () => false },
+		// Rebuild paths honor terminal.showImages since the native-image work;
+		// keep it on so the image-replay contracts below stay meaningful.
+		settings: { get: (key: string) => key === "terminal.showImages" },
 		toolOutputExpanded: false,
 		hideThinkingBlock: false,
 		focusedAgentId: undefined,

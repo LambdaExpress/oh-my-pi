@@ -69,6 +69,7 @@ export class ManageSkillTool implements AgentTool<typeof manageSkillSchema> {
 		});
 		if (params.action === "delete") {
 			await deleteManagedSkill(params.name, { targetDir: target.dir });
+			await this.session.refreshSkills?.();
 			return {
 				content: [{ type: "text", text: `Deleted ${params.scope} managed skill "${params.name}".` }],
 				details: { action: "delete", name: params.name, scope: params.scope },
@@ -105,6 +106,7 @@ export class ManageSkillTool implements AgentTool<typeof manageSkillSchema> {
 			body: params.body,
 			targetDir: target.dir,
 		});
+		await this.session.refreshSkills?.();
 		const displayPath = formatManagedSkillPath(target, skillPath);
 		const verb = params.action === "create" ? "Created" : "Updated";
 		return {

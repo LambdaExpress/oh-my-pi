@@ -9,7 +9,7 @@ import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { IrcTool } from "@oh-my-pi/pi-coding-agent/tools/irc";
+import { type CoordinationDetails, HubTool, isIrcEnabled } from "@oh-my-pi/pi-coding-agent/tools/hub";
 
 interface FakeSession {
 	session: AgentSession;
@@ -62,16 +62,11 @@ function makeFakeSession(): FakeSession {
 	};
 }
 
-function makeToolSession(
-	registry: AgentRegistry,
-	agentId: string,
-	options: { sessionFile?: string | null; ircPeerIds?: ReadonlySet<string> | null } = {},
-): ToolSession {
+function makeToolSession(registry: AgentRegistry, agentId: string): ToolSession {
 	return {
 		cwd: "/tmp",
 		hasUI: false,
-		getSessionFile: () => options.sessionFile ?? null,
-		getIrcPeerIds: () => options.ircPeerIds ?? null,
+		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
 		settings: Settings.isolated(),
 		agentRegistry: registry,
@@ -441,40 +436,44 @@ describe("IRC", () => {
 		});
 	});
 
-	describe("IrcTool", () => {
-		it("createIf returns null for a top-level session that cannot spawn tasks", () => {
-			const session: ToolSession = {
-				cwd: "/tmp",
-				hasUI: false,
-				getSessionFile: () => null,
-				getSessionSpawns: () => "*",
-				settings: Settings.isolated(),
-				agentRegistry: registry,
-				getAgentId: () => "0-Main",
-			};
+	describe("HubTool", () => {
+		it("isIrcEnabled returns false for a top-level session that cannot spawn tasks", () => {
+			const settings = Settings.isolated();
 			// Depth 0 with spawning gated off: no peers exist or can be created.
-			session.settings.set("task.maxRecursionDepth", 0);
-			expect(IrcTool.createIf(session)).toBeNull();
+			settings.set("task.maxRecursionDepth", 0);
+			expect(isIrcEnabled(settings, 0)).toBe(false);
 		});
 
-		it("createIf enables interruptible irc while the task tool is available", () => {
-			const session: ToolSession = {
-				cwd: "/tmp",
-				hasUI: false,
-				getSessionFile: () => null,
-				getSessionSpawns: () => "*",
-				settings: Settings.isolated(),
-				agentRegistry: registry,
-				getAgentId: () => "0-Main",
-			};
+		it("isIrcEnabled returns true while the task tool is available", () => {
+			const settings = Settings.isolated();
 			// Default task.maxRecursionDepth (2) at depth 0: task can spawn, and a
 			// finished subagent must stay reachable.
-			const tool = IrcTool.createIf(session);
-			expect(tool).toBeInstanceOf(IrcTool);
-			expect(tool?.interruptible).toBe(true);
+			expect(isIrcEnabled(settings, 0)).toBe(true);
 		});
 
-		it("createIf enables irc for a subagent even at the recursion-depth cap", () => {
+		it("isIrcEnabled returns true for a subagent even at the recursion-depth cap", () => {
+			const settings = Settings.isolated();
+			// A leaf subagent cannot spawn, but its parent (and siblings) exist.
+			settings.set("task.maxRecursionDepth", 2);
+			expect(isIrcEnabled(settings, 2)).toBe(true);
+		});
+
+		it("returns an error result for messaging ops on a session without registry/agentId", async () => {
+			const session: ToolSession = {
+				cwd: "/tmp",
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated(),
+			};
+			const tool = new HubTool(session);
+			const result = await tool.execute("call", { op: "list" });
+			expect(result.isError).toBe(true);
+			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+			expect(text).toContain("Peer messaging is unavailable");
+		});
+
+		it("the tool is marked interruptible", () => {
 			const session: ToolSession = {
 				cwd: "/tmp",
 				hasUI: false,
@@ -482,23 +481,10 @@ describe("IRC", () => {
 				getSessionSpawns: () => "*",
 				settings: Settings.isolated(),
 				agentRegistry: registry,
-				getAgentId: () => "0-Leaf",
-				taskDepth: 2,
+				getAgentId: () => "0-Main",
 			};
-			// A leaf subagent cannot spawn, but its parent (and siblings) exist.
-			session.settings.set("task.maxRecursionDepth", 2);
-			expect(IrcTool.createIf(session)).toBeInstanceOf(IrcTool);
-		});
-
-		it("createIf returns null without registry/agentId", () => {
-			const session: ToolSession = {
-				cwd: "/tmp",
-				hasUI: false,
-				getSessionFile: () => null,
-				getSessionSpawns: () => "*",
-				settings: Settings.isolated(),
-			};
-			expect(IrcTool.createIf(session)).toBeNull();
+			const tool = new HubTool(session);
+			expect(tool.interruptible).toBe(true);
 		});
 
 		it("op=list includes parked peers, unread counts, and parent ids", async () => {
@@ -516,10 +502,11 @@ describe("IRC", () => {
 			sub.setError(new Error("temporarily unavailable"));
 			await bus.send({ from: "0-Main", to: "0-AuthLoader", body: "unread one" });
 
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const result = await tool.execute("call-1", { op: "list" });
-			expect(result.details?.op).toBe("list");
-			expect(result.details?.peers).toMatchObject([
+			const details = result.details as CoordinationDetails | undefined;
+			expect(details?.op).toBe("list");
+			expect(details?.peers).toMatchObject([
 				{ id: "0-AuthLoader", status: "running", parentId: "0-Main", unread: 1 },
 				{ id: "0-Parked", status: "parked", unread: 0 },
 			]);
@@ -538,159 +525,24 @@ describe("IRC", () => {
 				status: "parked",
 			});
 
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const result = await tool.execute("call-1", { op: "list" });
-			const peerIds = result.details?.peers?.map(peer => peer.id) ?? [];
+			const details = result.details as CoordinationDetails | undefined;
+			const peerIds = details?.peers?.map(peer => peer.id) ?? [];
 			expect(peerIds).toContain("0-Worker");
 			expect(peerIds).not.toContain("0-Main/advisor");
-		});
-
-		it("op=list scopes parked peers to the current session artifact directory", async () => {
-			const currentSessionFile = "/tmp/omp-active/main.jsonl";
-			const main = makeFakeSession();
-			registry.register({
-				id: "Main",
-				displayName: "main",
-				kind: "main",
-				session: main.session,
-				sessionFile: currentSessionFile,
-			});
-			registry.register({
-				id: "CurrentPeer",
-				displayName: "current",
-				kind: "sub",
-				parentId: "Main",
-				session: null,
-				sessionFile: "/tmp/omp-active/main/CurrentPeer.jsonl",
-				status: "parked",
-			});
-			registry.register({
-				id: "OldPeer",
-				displayName: "old branch",
-				kind: "sub",
-				parentId: "Main",
-				session: null,
-				sessionFile: "/tmp/omp-stale/main/OldPeer.jsonl",
-				status: "parked",
-			});
-
-			const tool = new IrcTool(makeToolSession(registry, "Main", { sessionFile: currentSessionFile }));
-			const result = await tool.execute("call-1", { op: "list" });
-
-			expect(result.details?.peers?.map(peer => peer.id)).toEqual(["CurrentPeer"]);
-		});
-
-		it("op=send refuses to cold-revive a parked peer outside the current session artifact directory", async () => {
-			const currentSessionFile = "/tmp/omp-active/main.jsonl";
-			const currentPeer = makeFakeSession();
-			const oldPeer = makeFakeSession();
-			const reviveCurrentPeer = vi.fn(async () => currentPeer.session);
-			const reviveOldPeer = vi.fn(async () => oldPeer.session);
-			const main = makeFakeSession();
-			registry.register({
-				id: "Main",
-				displayName: "main",
-				kind: "main",
-				session: main.session,
-				sessionFile: currentSessionFile,
-			});
-			registry.register({
-				id: "CurrentPeer",
-				displayName: "current",
-				kind: "sub",
-				parentId: "Main",
-				session: null,
-				sessionFile: "/tmp/omp-active/main/CurrentPeer.jsonl",
-				status: "parked",
-			});
-			registry.register({
-				id: "OldPeer",
-				displayName: "old branch",
-				kind: "sub",
-				parentId: "Main",
-				session: null,
-				sessionFile: "/tmp/omp-stale/main/OldPeer.jsonl",
-				status: "parked",
-			});
-			AgentLifecycleManager.global().adopt("CurrentPeer", { idleTtlMs: 0, revive: reviveCurrentPeer });
-			AgentLifecycleManager.global().adopt("OldPeer", { idleTtlMs: 0, revive: reviveOldPeer });
-
-			const tool = new IrcTool(makeToolSession(registry, "Main", { sessionFile: currentSessionFile }));
-			const currentResult = await tool.execute("call-1", { op: "send", to: "CurrentPeer", message: "ping" });
-			const oldResult = await tool.execute("call-2", { op: "send", to: "OldPeer", message: "wake up" });
-
-			expect(currentResult.isError).toBeFalsy();
-			expect(currentResult.details?.receipts).toEqual([{ to: "CurrentPeer", outcome: "revived" }]);
-			expect(reviveCurrentPeer).toHaveBeenCalledTimes(1);
-			expect(currentPeer.delivered.map(msg => msg.body)).toEqual(["ping"]);
-			expect(oldResult.isError).toBe(true);
-			expect(oldResult.details?.receipts).toEqual([{ to: "OldPeer", outcome: "failed", error: expect.any(String) }]);
-			expect(reviveOldPeer).not.toHaveBeenCalled();
-			expect(oldPeer.delivered).toEqual([]);
-		});
-
-		it("op=send respects explicit branch peer ids over shared artifact-directory membership", async () => {
-			const currentSessionFile = "/tmp/omp-active/main.jsonl";
-			const currentPeer = makeFakeSession();
-			const oldPeer = makeFakeSession();
-			const reviveCurrentPeer = vi.fn(async () => currentPeer.session);
-			const reviveOldPeer = vi.fn(async () => oldPeer.session);
-			const main = makeFakeSession();
-			registry.register({
-				id: "Main",
-				displayName: "main",
-				kind: "main",
-				session: main.session,
-				sessionFile: currentSessionFile,
-			});
-			registry.register({
-				id: "CurrentPeer",
-				displayName: "current",
-				kind: "sub",
-				parentId: "Main",
-				session: null,
-				sessionFile: "/tmp/omp-active/main/CurrentPeer.jsonl",
-				status: "parked",
-			});
-			registry.register({
-				id: "OldPeer",
-				displayName: "old branch",
-				kind: "sub",
-				parentId: "Main",
-				session: null,
-				sessionFile: "/tmp/omp-active/main/OldPeer.jsonl",
-				status: "parked",
-			});
-			AgentLifecycleManager.global().adopt("CurrentPeer", { idleTtlMs: 0, revive: reviveCurrentPeer });
-			AgentLifecycleManager.global().adopt("OldPeer", { idleTtlMs: 0, revive: reviveOldPeer });
-
-			const tool = new IrcTool(
-				makeToolSession(registry, "Main", {
-					sessionFile: currentSessionFile,
-					ircPeerIds: new Set(["CurrentPeer"]),
-				}),
-			);
-			const listResult = await tool.execute("call-1", { op: "list" });
-			const oldResult = await tool.execute("call-2", { op: "send", to: "OldPeer", message: "wake up" });
-
-			expect(listResult.details?.peers?.map(peer => peer.id)).toEqual(["CurrentPeer"]);
-			expect(oldResult.isError).toBe(true);
-			expect(oldResult.details?.receipts).toEqual([{ to: "OldPeer", outcome: "failed", error: expect.any(String) }]);
-			expect(reviveCurrentPeer).not.toHaveBeenCalled();
-			expect(reviveOldPeer).not.toHaveBeenCalled();
-			expect(currentPeer.delivered).toEqual([]);
-			expect(oldPeer.delivered).toEqual([]);
 		});
 
 		it("op=send returns receipts immediately without waiting for a reply", async () => {
 			const sub = makeFakeSession();
 			registry.register({ id: "0-Sub", displayName: "task", kind: "sub", session: sub.session });
 
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const result = await tool.execute("call-1", { op: "send", to: "0-Sub", message: "ping" });
+			const details = result.details as CoordinationDetails | undefined;
 			expect(result.isError).toBeFalsy();
-			expect(result.details?.receipts).toEqual([{ to: "0-Sub", outcome: "injected" }]);
-			expect(result.details?.waited).toBeUndefined();
+			expect(details?.receipts).toEqual([{ to: "0-Sub", outcome: "injected" }]);
+			expect(details?.waited).toBeUndefined();
 			expect(sub.delivered.map(msg => msg.body)).toEqual(["ping"]);
 		});
 
@@ -702,10 +554,11 @@ describe("IRC", () => {
 			registry.register({ id: "0-B", displayName: "task", kind: "sub", session: b.session });
 			registry.register({ id: "0-Parked", displayName: "task", kind: "sub", session: null, status: "parked" });
 
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const result = await tool.execute("call-1", { op: "send", to: "all", message: "anyone there?" });
+			const details = result.details as CoordinationDetails | undefined;
 			// Broadcast skips parked agents; one failure does not block the other delivery.
-			expect(result.details?.receipts).toEqual([
+			expect(details?.receipts).toEqual([
 				{ to: "0-A", outcome: "injected" },
 				{ to: "0-B", outcome: "failed", error: "kaput" },
 			]);
@@ -719,7 +572,7 @@ describe("IRC", () => {
 			registry.register({ id: "0-B", displayName: "task", kind: "sub", session: b.session });
 			registry.register({ id: "0-A", displayName: "task", kind: "sub", session: makeFakeSession().session });
 
-			const tool = new IrcTool(makeToolSession(registry, "0-A"));
+			const tool = new HubTool(makeToolSession(registry, "0-A"));
 			await tool.execute("call-1", { op: "send", to: "all", message: "anyone there?" });
 
 			// Main receives the broadcast directly (its own incoming card) ...
@@ -745,9 +598,10 @@ describe("IRC", () => {
 				void bus.send({ from: "0-Sub", to: msg.from, body: "pong", replyTo: msg.id });
 			});
 
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const result = await tool.execute("call-1", { op: "send", to: "0-Sub", message: "ping", await: true });
-			expect(result.details?.waited?.body).toBe("pong");
+			const details = result.details as CoordinationDetails | undefined;
+			expect(details?.waited?.body).toBe("pong");
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 			expect(text).toContain("pong");
 		});
@@ -763,10 +617,10 @@ describe("IRC", () => {
 				void bus.send({ from: "0-Sub", to: msg.from, body: "fresh reply", replyTo: msg.id });
 			});
 
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const result = await tool.execute("call-1", { op: "send", to: "0-Sub", message: "ping", await: true });
-
-			expect(result.details?.waited?.body).toBe("fresh reply");
+			const details = result.details as CoordinationDetails | undefined;
+			expect(details?.waited?.body).toBe("fresh reply");
 			expect(bus.inbox("0-Main").map(msg => msg.body)).toEqual(["old buffered reply"]);
 		});
 
@@ -774,7 +628,7 @@ describe("IRC", () => {
 			const sub = makeFakeSession();
 			registry.register({ id: "0-Sub", displayName: "task", kind: "sub", session: sub.session });
 
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const result = await tool.execute("call-1", {
 				op: "send",
 				to: "0-Sub",
@@ -784,7 +638,8 @@ describe("IRC", () => {
 				timeoutMs: 5,
 			});
 			expect(result.isError).toBeFalsy();
-			expect(result.details?.waited).toBeNull();
+			const details = result.details as CoordinationDetails | undefined;
+			expect(details?.waited).toBeNull();
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 			expect(text).toContain("No reply from 0-Sub");
 		});
@@ -798,7 +653,7 @@ describe("IRC", () => {
 			const sub = makeFakeSession();
 			registry.register({ id: "0-Sub", displayName: "task", kind: "sub", session: sub.session });
 
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const controller = new AbortController();
 			// Abort once delivery reaches the peer, mimicking a steering / IRC interrupt
 			// landing between the send resolving and the reply arriving.
@@ -812,49 +667,54 @@ describe("IRC", () => {
 
 			expect(result.isError).toBeFalsy();
 			expect(sub.delivered.map(msg => msg.body)).toEqual(["ping"]);
-			expect(result.details?.receipts?.[0]?.outcome).toBe("injected");
+			const details = result.details as CoordinationDetails | undefined;
+			expect(details?.receipts?.[0]?.outcome).toBe("injected");
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 			expect(text).toContain("Send delivered");
 			expect(text).toContain("interrupted");
 		});
 
 		it("op=send rejects await with to=all and self-sends", async () => {
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const broadcast = await tool.execute("call-1", { op: "send", to: "all", message: "x", await: true });
 			expect(broadcast.isError).toBe(true);
 			const self = await tool.execute("call-2", { op: "send", to: "0-Main", message: "x" });
 			expect(self.isError).toBe(true);
+			const selfText = self.content[0]?.type === "text" ? self.content[0].text : "";
+			expect(selfText).toContain("Cannot send a message to yourself.");
 		});
 
 		it("op=send returns a failed receipt for unknown targets", async () => {
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const result = await tool.execute("call-1", { op: "send", to: "0-Ghost", message: "ping" });
 			expect(result.isError).toBe(true);
-			expect(result.details?.receipts?.[0]?.outcome).toBe("failed");
+			const details = result.details as CoordinationDetails | undefined;
+			expect(details?.receipts?.[0]?.outcome).toBe("failed");
 		});
 
 		it("op=wait returns a clean non-error timeout result", async () => {
 			const fake = makeFakeSession();
 			registry.register({ id: "0-Sub", displayName: "sub", kind: "sub", session: fake.session, status: "running" });
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const result = await tool.execute("call-1", { op: "wait", timeoutMs: 5 });
 			expect(result.isError).toBeFalsy();
-			expect(result.details?.waited).toBeNull();
+			const details = result.details as CoordinationDetails | undefined;
+			expect(details?.waited).toBeNull();
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 			expect(text).toContain("No message");
 		});
 
-		it("op=wait returns an error if no active agents exist", async () => {
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+		it("op=wait returns a clean result if no active agents exist", async () => {
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const result = await tool.execute("call-1", { op: "wait", timeoutMs: 5 });
-			expect(result.isError).toBe(true);
+			expect(result.isError).toBeFalsy();
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
-			expect(text).toContain("no running peers remain");
+			expect(text).toContain("No running background jobs to wait for.");
 		});
 
 		it("op=wait returns an error if the requested specific 'from' agent is not active", async () => {
 			registry.register({ id: "0-Sub", displayName: "sub", kind: "sub", session: null, status: "parked" });
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const result = await tool.execute("call-1", { op: "wait", from: "0-Sub", timeoutMs: 5 });
 			expect(result.isError).toBe(true);
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
@@ -876,14 +736,14 @@ describe("IRC", () => {
 			});
 			expect(delivery).toBe("injected");
 
-			const tool = new IrcTool(makeToolSession(registry, "0-Running"));
+			const tool = new HubTool(makeToolSession(registry, "0-Running"));
 			const controller = new AbortController();
 			controller.abort(new Error("queued IRC interrupt"));
-
 			const result = await tool.execute("call-1", { op: "wait", timeoutMs: 30_000 }, controller.signal);
 
 			expect(result.isError).toBeFalsy();
-			expect(result.details?.waited).toMatchObject({
+			const details = result.details as CoordinationDetails | undefined;
+			expect(details?.waited).toMatchObject({
 				id: "msg-wait-pending",
 				from: "0-Main",
 				to: "0-Running",
@@ -893,7 +753,8 @@ describe("IRC", () => {
 			expect(text).toContain("queued interrupt note");
 
 			const empty = await tool.execute("call-2", { op: "inbox" });
-			expect(empty.details?.inbox).toEqual([]);
+			const emptyDetails = empty.details as CoordinationDetails | undefined;
+			expect(emptyDetails?.inbox).toEqual([]);
 		});
 
 		it("op=inbox drains IRC asides that arrived while the caller was running", async () => {
@@ -911,10 +772,10 @@ describe("IRC", () => {
 			});
 			expect(delivery).toBe("injected");
 
-			const tool = new IrcTool(makeToolSession(registry, "0-Running"));
+			const tool = new HubTool(makeToolSession(registry, "0-Running"));
 			const result = await tool.execute("call-1", { op: "inbox" });
-
-			expect(result.details?.inbox?.map(msg => msg.body)).toEqual(["parallel note"]);
+			const details = result.details as CoordinationDetails | undefined;
+			expect(details?.inbox?.map((msg: IrcMessage) => msg.body)).toEqual(["parallel note"]);
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 			expect(text).toContain("parallel note");
 		});
@@ -933,16 +794,17 @@ describe("IRC", () => {
 				ts: Date.now(),
 			});
 
-			const tool = new IrcTool(makeToolSession(registry, "0-Running"));
+			const tool = new HubTool(makeToolSession(registry, "0-Running"));
 			const peeked = await tool.execute("call-1", { op: "inbox", peek: true });
-			expect(peeked.details?.inbox?.map(msg => msg.body)).toEqual(["peeked note"]);
+			const peekedDetails = peeked.details as CoordinationDetails | undefined;
+			expect(peekedDetails?.inbox?.map((msg: IrcMessage) => msg.body)).toEqual(["peeked note"]);
 
 			// The peek surfaced the body via the tool result, so the aside-channel
 			// copy must NOT also be auto-injected at the next step: a second drain
 			// returns nothing (the pending aside was consumed out of the
-			// auto-inject queue when peek surfaced it).
 			const second = await tool.execute("call-2", { op: "inbox" });
-			expect(second.details?.inbox).toEqual([]);
+			const secondDetails = second.details as CoordinationDetails | undefined;
+			expect(secondDetails?.inbox).toEqual([]);
 		});
 
 		it("op=inbox drains the caller's mailbox", async () => {
@@ -953,13 +815,16 @@ describe("IRC", () => {
 			main.setError(new Error("temporarily unavailable"));
 			await bus.send({ from: "0-Sub", to: "0-Main", body: "fyi" });
 
-			const tool = new IrcTool(makeToolSession(registry, "0-Main"));
+			const tool = new HubTool(makeToolSession(registry, "0-Main"));
 			const peeked = await tool.execute("call-1", { op: "inbox", peek: true });
-			expect(peeked.details?.inbox?.map(msg => msg.body)).toEqual(["fyi"]);
+			const peekedDetails = peeked.details as CoordinationDetails | undefined;
+			expect(peekedDetails?.inbox?.map((msg: IrcMessage) => msg.body)).toEqual(["fyi"]);
 			const drained = await tool.execute("call-2", { op: "inbox" });
-			expect(drained.details?.inbox?.map(msg => msg.body)).toEqual(["fyi"]);
+			const drainedDetails = drained.details as CoordinationDetails | undefined;
+			expect(drainedDetails?.inbox?.map((msg: IrcMessage) => msg.body)).toEqual(["fyi"]);
 			const empty = await tool.execute("call-3", { op: "inbox" });
-			expect(empty.details?.inbox).toEqual([]);
+			const emptyDetails = empty.details as CoordinationDetails | undefined;
+			expect(emptyDetails?.inbox).toEqual([]);
 		});
 	});
 

@@ -68,21 +68,18 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 	}
 
 	/** Build an InteractiveMode over a brand-new (never-persisted) session.
-	 *  `extraRegistryTools` registers additional tools that are NOT initially
-	 *  active — modeling tools hidden by `tools.discoveryMode === "all"` that
-	 *  modes may force-activate on entry. `builtInToolNames` marks which registry
-	 *  entries still have built-in provenance after extension shadowing. */
+	 *  `extraRegistryTools` registers additional tools without initially
+	 *  activating them, modeling tools mounted under xd:// that a mode may
+	 *  force-activate on entry. `builtInToolNames` marks which registry entries
+	 *  retain built-in provenance after extension shadowing. */
 	function createHarness(settings: Settings, options: HarnessOptions = {}): InteractiveMode {
 		const registry = new ModelRegistry(authStorage, path.join(tempDir.path(), `models-${Bun.nanoseconds()}.yml`));
 		const initialModel = modelOrThrow(registry, "claude-sonnet-4-5");
 		const readTool = makeTool("read");
-		const resolveTool = makeTool("resolve");
-		// AgentSession requires a Map-typed tool registry; the harness needs both
-		// `read` (the initial active tool) and `resolve` (added on plan-mode entry).
-		const toolRegistry = new Map<string, AgentTool>([
-			[readTool.name, readTool],
-			[resolveTool.name, resolveTool],
-		]);
+		// AgentSession requires a Map-typed tool registry; `read` is the initial
+		// active tool. Plan approval is a `write` to xd://propose, so plan-mode
+		// entry only augments the built-in `write` tool when present.
+		const toolRegistry = new Map<string, AgentTool>([[readTool.name, readTool]]);
 		for (const tool of options.extraRegistryTools ?? []) {
 			toolRegistry.set(tool.name, tool);
 		}
@@ -101,7 +98,7 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 			settings,
 			modelRegistry: registry,
 			toolRegistry,
-			builtInToolNames: options.builtInToolNames ?? ["read", "resolve"],
+			builtInToolNames: options.builtInToolNames ?? ["read"],
 		});
 		session = createdSession;
 		mode = new InteractiveMode(createdSession, "test");
@@ -115,19 +112,17 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 
 		expect(created.planModeEnabled).toBe(true);
 		expect(session?.getPlanModeState()).toMatchObject({ enabled: true, planFilePath: "local://PLAN.md" });
-		expect(session?.getActiveToolNames()).toContain("resolve");
+		expect(session?.getActiveToolNames()).toContain("read");
 	});
 
-	it("activates write when entering plan mode even if it was hidden by discoveryMode (issue #3165)", async () => {
-		// `plan-mode-active.md` instructs the agent to draft the plan file with
-		// `write` and refine it with `edit`. Under `tools.discoveryMode === "all"`
-		// `write` is hidden behind `search_tool_bm25` so it's in the registry but
-		// not the initial active set. Plan-mode entry must force-activate it or
-		// the agent only has `edit`, which fails on a non-existent file.
+	it("activates a registered but inactive write tool for xd://propose in plan mode (issue #3165)", async () => {
+		// Plan approval writes to xd://propose. A registered built-in `write` may
+		// not be in the initial active set, so plan-mode entry must force-activate
+		// it; otherwise the agent cannot submit a plan for approval.
 		const writeTool = makeTool("write");
 		const created = createHarness(Settings.isolated({ "plan.defaultOnStartup": true, "compaction.enabled": false }), {
 			extraRegistryTools: [writeTool],
-			builtInToolNames: ["read", "resolve", "write"],
+			builtInToolNames: ["read", "write"],
 		});
 
 		expect(session?.getActiveToolNames()).not.toContain("write");
@@ -136,7 +131,6 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 
 		expect(created.planModeEnabled).toBe(true);
 		expect(session?.getActiveToolNames()).toContain("write");
-		expect(session?.getActiveToolNames()).toContain("resolve");
 	});
 
 	it("does not activate an extension-shadowed write tool in plan mode", async () => {
@@ -148,7 +142,6 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 		await created.init({ suppressWelcomeIntro: true });
 
 		expect(created.planModeEnabled).toBe(true);
-		expect(session?.getActiveToolNames()).toContain("resolve");
 		expect(session?.getActiveToolNames()).not.toContain("write");
 	});
 

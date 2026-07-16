@@ -22,9 +22,8 @@ export function buildSshTarget(username: string | undefined, host: string): stri
 }
 
 /**
- * Single-quote a path for a POSIX remote shell, escaping embedded single quotes.
- * Mirrors the private `quoteRemotePath` in `tools/ssh.ts`; shared here for the
- * `ssh://` file-transfer helpers.
+ * Single-quote a path for the POSIX remote shell used by `ssh://`
+ * file-transfer helpers, escaping embedded single quotes.
  */
 export function quotePosixPath(value: string): string {
 	if (value.length === 0) return "''";

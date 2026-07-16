@@ -97,8 +97,6 @@ describe("InteractiveMode completed-run collapse", () => {
 			messages,
 			models: {},
 			injectedTtsrRules: [],
-			selectedMCPToolNames: [],
-			hasPersistedMCPToolSelection: false,
 			mode: "none",
 		};
 		mode.recordCompletedRunCollapse({

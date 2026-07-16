@@ -95,8 +95,6 @@ describe("completed-run collapse projection", () => {
 			messages: source,
 			models: {},
 			injectedTtsrRules: [],
-			selectedMCPToolNames: [],
-			hasPersistedMCPToolSelection: false,
 			mode: "none",
 		};
 

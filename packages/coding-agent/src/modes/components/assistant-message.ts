@@ -233,6 +233,7 @@ export class AssistantMessageComponent extends Container {
 	#lastMessage?: AssistantMessage;
 	#toolImagesByCallId = new Map<string, ImageContent[]>();
 	#convertedKittyImages = new Map<string, ImageContent>();
+	#showImages = true;
 	#kittyConversionsInFlight = new Set<string>();
 	#transcriptBlockFinalized: boolean;
 	/**
@@ -566,6 +567,15 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
+	/** Toggle rendering for assistant-native and tool-result images. */
+	setImagesVisible(visible: boolean): void {
+		if (this.#showImages === visible) return;
+		this.#showImages = visible;
+		if (this.#lastMessage) {
+			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
+		}
+	}
+
 	setToolResultImages(toolCallId: string, images: ImageContent[]): void {
 		if (!toolCallId) return;
 		const validImages = images.filter(img => img.type === "image" && img.data && img.mimeType);
@@ -583,19 +593,17 @@ export class AssistantMessageComponent extends Container {
 			this.#toolImagesByCallId.delete(toolCallId);
 		} else {
 			this.#toolImagesByCallId.set(toolCallId, validImages);
-			this.#convertToolImagesForKitty(toolCallId, validImages);
+			this.#convertImagesForKitty(validImages.map((image, index) => ({ image, key: `${toolCallId}:${index}` })));
 		}
 		if (this.#lastMessage) {
 			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
 	}
 
-	#convertToolImagesForKitty(toolCallId: string, images: ImageContent[]): void {
+	#convertImagesForKitty(entries: Array<{ image: ImageContent; key: string }>): void {
 		if (TERMINAL.imageProtocol !== ImageProtocol.Kitty) return;
-		for (let index = 0; index < images.length; index++) {
-			const image = images[index];
-			if (!image || image.mimeType === "image/png") continue;
-			const key = `${toolCallId}:${index}`;
+		for (const { image, key } of entries) {
+			if (image.mimeType === "image/png") continue;
 			if (this.#convertedKittyImages.has(key) || this.#kittyConversionsInFlight.has(key)) continue;
 			this.#kittyConversionsInFlight.add(key);
 			new Bun.Image(Buffer.from(image.data, "base64"))
@@ -619,14 +627,12 @@ export class AssistantMessageComponent extends Container {
 		}
 	}
 
-	#renderToolImages(): void {
-		const imageEntries = Array.from(this.#toolImagesByCallId.entries()).flatMap(([toolCallId, images]) =>
-			images.map((image, index) => ({ image, key: `${toolCallId}:${index}` })),
-		);
-		if (imageEntries.length === 0) return;
+	#renderImageEntries(entries: Array<{ image: ImageContent; key: string }>, withLeadingSpacer: boolean): void {
+		if (!this.#showImages || entries.length === 0) return;
+		this.#convertImagesForKitty(entries);
 
-		this.#contentContainer.addChild(new Spacer(1));
-		for (const { image, key } of imageEntries) {
+		if (withLeadingSpacer) this.#contentContainer.addChild(new Spacer(1));
+		for (const { image, key } of entries) {
 			const displayImage =
 				TERMINAL.imageProtocol === ImageProtocol.Kitty && image.mimeType !== "image/png"
 					? this.#convertedKittyImages.get(key)
@@ -644,6 +650,13 @@ export class AssistantMessageComponent extends Container {
 			}
 			this.#contentContainer.addChild(new Text(theme.fg("toolOutput", `[Image: ${image.mimeType}]`), 1, 0));
 		}
+	}
+
+	#renderToolImages(): void {
+		const entries = Array.from(this.#toolImagesByCallId.entries()).flatMap(([toolCallId, images]) =>
+			images.map((image, index) => ({ image, key: `${toolCallId}:${index}` })),
+		);
+		this.#renderImageEntries(entries, true);
 	}
 
 	#appendThinkingExtensions(contentIndex: number, thinkingIndex: number, text: string): void {
@@ -689,7 +702,7 @@ export class AssistantMessageComponent extends Container {
 
 	#canFastPath(message: AssistantMessage): boolean {
 		for (const content of message.content) {
-			if (content.type === "toolCall") return false;
+			if (content.type === "toolCall" || content.type === "image") return false;
 		}
 		if (this.#toolImagesByCallId.size > 0) return false;
 		const errorPresentation = resolveAssistantErrorPresentation(message);
@@ -847,6 +860,7 @@ export class AssistantMessageComponent extends Container {
 		const hasVisibleContent = message.content.some(
 			c =>
 				(c.type === "text" && canonicalizeMessage(c.text)) ||
+				(c.type === "image" && c.data && c.mimeType) ||
 				(!this.hideThinkingBlock &&
 					c.type === "thinking" &&
 					resolveThinkingDisplay(c, this.proseOnlyThinking).visible),
@@ -854,6 +868,7 @@ export class AssistantMessageComponent extends Container {
 
 		// Render content in order
 		let thinkingIndex = 0;
+		let hasRenderedContent = false;
 		for (let i = 0; i < message.content.length; i++) {
 			const content = message.content[i];
 			if (content.type === "text" && canonicalizeMessage(content.text)) {
@@ -863,6 +878,7 @@ export class AssistantMessageComponent extends Container {
 				md.transientRenderCache = this.#lastUpdateTransient;
 				this.#contentContainer.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "text", lastText: trimmed });
+				hasRenderedContent = true;
 			} else if (content.type === "thinking" && resolveThinkingDisplay(content, this.proseOnlyThinking).visible) {
 				const thinkingText = resolveThinkingDisplay(content, this.proseOnlyThinking).text;
 				if (this.hideThinkingBlock) {
@@ -876,6 +892,7 @@ export class AssistantMessageComponent extends Container {
 					.some(
 						c =>
 							(c.type === "text" && canonicalizeMessage(c.text)) ||
+							(c.type === "image" && c.data && c.mimeType) ||
 							(c.type === "thinking" && resolveThinkingDisplay(c, this.proseOnlyThinking).visible),
 					);
 
@@ -888,10 +905,14 @@ export class AssistantMessageComponent extends Container {
 				this.#contentContainer.addChild(md);
 				captureItems?.push({ md, contentIndex: i, blockType: "thinking", lastText: thinkingText });
 				this.#appendThinkingExtensions(i, thinkingIndex, thinkingText);
+				hasRenderedContent = true;
 				thinkingIndex += 1;
 				if (hasVisibleContentAfter) {
 					this.#contentContainer.addChild(new Spacer(1));
 				}
+			} else if (content.type === "image" && content.data && content.mimeType) {
+				this.#renderImageEntries([{ image: content, key: `native:${i}` }], hasRenderedContent);
+				hasRenderedContent ||= this.#showImages;
 			}
 		}
 

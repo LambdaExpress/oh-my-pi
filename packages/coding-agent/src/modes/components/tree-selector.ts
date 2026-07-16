@@ -66,7 +66,6 @@ function isBookkeepingEntry(entry: SessionEntry): boolean {
 		case "service_tier_change":
 		case "title_change":
 		case "ttsr_injection":
-		case "mcp_tool_selection":
 		case "session_init":
 		case "mode_change":
 			return true;
@@ -424,9 +423,6 @@ class TreeList implements Component {
 			case "ttsr_injection":
 				parts.push("ttsr", ...entry.injectedRules);
 				break;
-			case "mcp_tool_selection":
-				parts.push("mcp tools", ...entry.selectedToolNames);
-				break;
 			case "session_init":
 				parts.push("session init", entry.task);
 				break;
@@ -750,9 +746,6 @@ class TreeList implements Component {
 				break;
 			case "ttsr_injection":
 				result = theme.fg("dim", `[ttsr: ${entry.injectedRules.join(", ")}]`);
-				break;
-			case "mcp_tool_selection":
-				result = theme.fg("dim", `[mcp tools: ${entry.selectedToolNames.join(", ")}]`);
 				break;
 			case "session_init":
 				result = theme.fg("dim", `[session init]: ${normalize(entry.task)}`);
