@@ -497,6 +497,35 @@ const PREWALK_CHECKLIST_MESSAGE_TYPE = "prewalk-checklist";
 /** Hidden steered notice announcing a mid-session `xd://` mount/unmount delta
  *  (see {@link AgentSession.#notifyXdevMountDelta}). */
 const XDEV_MOUNT_NOTICE_MESSAGE_TYPE = "xdev-mount-notice";
+
+type XdevMountAction = "mounted" | "unmounted";
+
+function formatXdevMountSummary(
+	action: XdevMountAction,
+	names: readonly string[],
+	mcpServerByTool: ReadonlyMap<string, string>,
+): string {
+	const serverCounts = new Map<string, number>();
+	const otherNames: string[] = [];
+	for (const name of names) {
+		const serverName = mcpServerByTool.get(name);
+		if (serverName) {
+			serverCounts.set(serverName, (serverCounts.get(serverName) ?? 0) + 1);
+		} else {
+			otherNames.push(name);
+		}
+	}
+
+	const details = [...serverCounts].map(
+		([serverName, count]) => `${count} ${count === 1 ? "tool" : "tools"} from ${serverName}`,
+	);
+	if (otherNames.length === 1) {
+		details.push(otherNames[0]);
+	} else if (otherNames.length > 1) {
+		details.push(`${otherNames.length} other tools`);
+	}
+	return `${action} ${details.join(", ")}`;
+}
 /** Tools whose first successful call triggers the switch — once the todo
  *  gate is open (see {@link AgentSession.#prewalkTodoSeen}). Bash is
  *  deliberately excluded: it doubles as exploration (ls/cat) and fired
@@ -7062,9 +7091,10 @@ export class AgentSession {
 		// mounted, deactivated ones dropped (built-in devices are preserved). A
 		// removed or disconnected tool must not stay callable through a stale device.
 		const previousMounted = this.#mountedXdevToolNames;
+		const previousMcpServers = this.#getXdevMcpServers(previousMounted);
 		this.#mountedXdevToolNames = new Set(mountedTools.map(tool => tool.name));
 		this.#xdevRegistry?.reconcile(mountedTools);
-		this.#notifyXdevMountDelta(previousMounted);
+		this.#notifyXdevMountDelta(previousMounted, this.#mountedXdevToolNames, previousMcpServers);
 		this.#setActiveToolNames?.(validToolNames);
 		this.agent.setTools(tools);
 
@@ -7113,11 +7143,12 @@ export class AgentSession {
 		if (this.#xdevRegistry) {
 			const previousMounted = new Set(this.#mountedXdevToolNames);
 			if (this.#xdevRegistry.get(name)) previousMounted.add(name);
+			const previousMcpServers = this.#getXdevMcpServers(previousMounted);
 			this.#xdevRegistry.setBuiltin(name, refreshedTool);
 			this.#toolRegistry.delete(name);
 			const currentMounted = new Set(this.#mountedXdevToolNames);
 			if (refreshedTool) currentMounted.add(name);
-			this.#notifyXdevMountDelta(previousMounted, currentMounted);
+			this.#notifyXdevMountDelta(previousMounted, currentMounted, previousMcpServers);
 			return;
 		}
 
@@ -7137,6 +7168,19 @@ export class AgentSession {
 		await this.#applyActiveToolsByName(nextActiveToolNames);
 	}
 
+	#getXdevMcpServers(names: Iterable<string>): Map<string, string> {
+		const registry = this.#xdevRegistry;
+		const servers = new Map<string, string>();
+		if (!registry) return servers;
+		for (const name of names) {
+			const tool = registry.get(name) as (AgentTool & { mcpServerName?: unknown }) | undefined;
+			if (typeof tool?.mcpServerName === "string" && tool.mcpServerName.length > 0) {
+				servers.set(name, tool.mcpServerName);
+			}
+		}
+		return servers;
+	}
+
 	/**
 	 * Announce a mid-session `xd://` mount delta to the model as a steered
 	 * system notice instead of rewriting the system prompt: the prompt (and
@@ -7147,15 +7191,17 @@ export class AgentSession {
 	 */
 	#notifyXdevMountDelta(
 		previousMounted: ReadonlySet<string>,
-		currentMounted: ReadonlySet<string> = this.#mountedXdevToolNames,
+		currentMounted: ReadonlySet<string>,
+		previousMcpServers: ReadonlyMap<string, string>,
 	): void {
 		const registry = this.#xdevRegistry;
 		if (!registry) return;
 		const addedNames = [...currentMounted].filter(name => !previousMounted.has(name));
-		const removed = [...previousMounted].filter(name => !currentMounted.has(name)).map(name => ({ name }));
-		if (addedNames.length === 0 && removed.length === 0) return;
+		const removedNames = [...previousMounted].filter(name => !currentMounted.has(name));
+		if (addedNames.length === 0 && removedNames.length === 0) return;
 		const summaries = new Map(registry.entries().map(entry => [entry.name, entry.summary]));
 		const added = addedNames.map(name => ({ name, summary: summaries.get(name) ?? "" }));
+		const removed = removedNames.map(name => ({ name }));
 		this.agent.steer({
 			role: "custom",
 			customType: XDEV_MOUNT_NOTICE_MESSAGE_TYPE,
@@ -7164,10 +7210,13 @@ export class AgentSession {
 			display: false,
 			timestamp: Date.now(),
 		});
+		const currentMcpServers = this.#getXdevMcpServers(currentMounted);
 		const parts: string[] = [];
-		if (added.length > 0) parts.push(`mounted ${added.map(entry => entry.name).join(", ")}`);
-		if (removed.length > 0) parts.push(`unmounted ${removed.map(entry => entry.name).join(", ")}`);
-		this.emitNotice("info", `xd://: ${parts.join("; ")}`, "xdev");
+		if (addedNames.length > 0) parts.push(formatXdevMountSummary("mounted", addedNames, currentMcpServers));
+		if (removedNames.length > 0) {
+			parts.push(formatXdevMountSummary("unmounted", removedNames, previousMcpServers));
+		}
+		this.emitNotice("info", parts.join("; "), "xdev");
 	}
 
 	/**

@@ -34,6 +34,7 @@
 
 ### Fixed
 
+- Fixed `xd://` MCP mount and unmount status notices flooding the transcript with every device name by grouping dynamic devices per MCP server (for example, `mounted 38 tools from atlassian`) while retaining the full hidden device delta for the model.
 - Fixed `/new` retaining prior-session subagents, background jobs, IRC messages, and late HUD updates by fully retiring the previous root-session scope before activating the new session.
 - Fixed completed-run transcript collapse treating a queued correction after a user interrupt as a new request, so the original request and pre-interrupt loop now collapse with the eventual final answer.
 - Fixed returning from a focused subagent transcript dropping an in-flight Task panel by restoring the main session's latest tool progress snapshot and reconnecting subsequent updates.

@@ -549,4 +549,30 @@ describe("AgentSession refreshMCPTools rebuild skipping", () => {
 		expect(rebuildCount).toBe(1);
 		expect(noticeTexts().length).toBe(noticeCount);
 	});
+
+	it("summarizes user-visible xd:// MCP mount notices by server", async () => {
+		const { session } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
+			xdevRegistry: new XdevRegistry([]),
+		});
+		const notices: string[] = [];
+		session.subscribe(event => {
+			if (event.type === "notice" && event.source === "xdev") notices.push(event.message);
+		});
+		const tools = Array.from({ length: 38 }, (_, index) =>
+			createMcpCustomTool(
+				`mcp__atlassian_tool_${index + 1}`,
+				"atlassian",
+				`tool_${index + 1}`,
+				`Atlassian tool ${index + 1}`,
+			),
+		);
+
+		await session.refreshMCPTools(tools);
+		expect(notices.at(-1)).toBe("mounted 38 tools from atlassian");
+		expect(session.getMountedXdevToolNames()).toHaveLength(38);
+
+		await session.refreshMCPTools([]);
+		expect(notices.at(-1)).toBe("unmounted 38 tools from atlassian");
+		expect(session.getMountedXdevToolNames()).toHaveLength(0);
+	});
 });
