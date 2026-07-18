@@ -895,6 +895,10 @@ export function parseModelPattern(
 const DEFAULT_MODEL_ROLE = "default";
 const MODEL_ROLE_ALIAS_PREFIXES = [MODEL_ROLE_ALIAS_PREFIX, LEGACY_MODEL_ROLE_ALIAS_PREFIX];
 
+export interface ModelRoleLookup {
+	getModelRole(role: ModelRole | string): string | undefined;
+}
+
 function isModelRole(role: string): role is ModelRole {
 	return (MODEL_ROLE_IDS as string[]).includes(role);
 }
@@ -911,7 +915,7 @@ function modelRoleAliasPrefixLength(value: string): number | undefined {
 	return MODEL_ROLE_ALIAS_PREFIXES.find(prefix => value.startsWith(prefix))?.length;
 }
 
-function getModelRoleAlias(value: string, settings?: Settings): string | undefined {
+function getModelRoleAlias(value: string, settings?: ModelRoleLookup): string | undefined {
 	const normalized = value.trim();
 	const prefixLength = modelRoleAliasPrefixLength(normalized);
 	if (prefixLength === undefined) return undefined;
@@ -967,7 +971,7 @@ function resolveDefaultInheritedPatterns(
 	role: ModelRole,
 	configuredDefault: string | undefined,
 	roleDefaults: string[],
-	settings: Settings | undefined,
+	settings: ModelRoleLookup | undefined,
 	visited: Set<string>,
 ): string[] {
 	if (!shouldInheritDefaultBeforePriority(role) || !configuredDefault) return [];
@@ -1005,7 +1009,7 @@ function resolveDefaultInheritedPatterns(
 
 function resolveConfiguredRolePattern(
 	value: string,
-	settings?: Settings,
+	settings?: ModelRoleLookup,
 	visited: Set<string> = new Set(),
 ): string[] | undefined {
 	const normalized = value.trim();
@@ -1042,7 +1046,7 @@ function resolveConfiguredRolePattern(
 /**
  * Expand a role alias like "@smol" to the configured model string.
  */
-export function expandRoleAlias(value: string, settings?: Settings): string {
+export function expandRoleAlias(value: string, settings?: ModelRoleLookup): string {
 	const normalized = value.trim();
 	if (normalized === DEFAULT_MODEL_ROLE) {
 		return settings?.getModelRole("default") ?? value;
@@ -1052,7 +1056,10 @@ export function expandRoleAlias(value: string, settings?: Settings): string {
 	return resolved ?? value;
 }
 
-export function resolveConfiguredModelPatterns(value: string | string[] | undefined, settings?: Settings): string[] {
+export function resolveConfiguredModelPatterns(
+	value: string | string[] | undefined,
+	settings?: ModelRoleLookup,
+): string[] {
 	const patterns = normalizeModelPatternList(value);
 	return patterns.flatMap(pattern => {
 		const resolved = resolveConfiguredRolePattern(pattern, settings);
@@ -1136,7 +1143,7 @@ export interface ResolvedModelRoleValue {
 export function resolveModelRoleValue(
 	roleValue: string | undefined,
 	availableModels: Model<Api>[],
-	options?: { settings?: Settings; matchPreferences?: ModelMatchPreferences },
+	options?: { settings?: Settings; roleLookup?: ModelRoleLookup; matchPreferences?: ModelMatchPreferences },
 ): ResolvedModelRoleValue {
 	if (!roleValue) {
 		return { model: undefined, thinkingLevel: undefined, explicitThinkingLevel: false, warning: undefined };
@@ -1147,7 +1154,7 @@ export function resolveModelRoleValue(
 		return { model: undefined, thinkingLevel: undefined, explicitThinkingLevel: false, warning: undefined };
 	}
 
-	const effectivePatterns = resolveConfiguredModelPatterns(normalized, options?.settings);
+	const effectivePatterns = resolveConfiguredModelPatterns(normalized, options?.roleLookup ?? options?.settings);
 	if (!effectivePatterns || effectivePatterns.length === 0) {
 		return { model: undefined, thinkingLevel: undefined, explicitThinkingLevel: false, warning: undefined };
 	}

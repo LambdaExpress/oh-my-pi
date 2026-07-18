@@ -23,7 +23,7 @@ Read files, directories, archives, SQLite, images, documents, internal resources
 
 # Documents & Notebooks
 
-PDF, Word, PowerPoint, Excel, RTF, EPUB → extracted text. Notebooks (`.ipynb`) → editable `# %% [type] cell:N` text. `:raw` returns converted document text without line anchors.
+PDF, DOCX, PPTX, XLSX, EPUB → extracted text. Notebooks (`.ipynb`) → editable `# %% [type] cell:N` text. `:raw` returns converted document text without line anchors.
 
 # Images
 
@@ -35,7 +35,7 @@ Image → decoded inline (PNG, JPEG, GIF, WEBP) for direct visual analysis.
 
 # Archives
 
-`.tar`, `.tar.gz`, `.tgz`, `.zip`. `archive.ext:path/inside/archive` reads UTF-8 text members, inline images (PNG, JPEG, GIF, WEBP), and supported document members (`.pdf`, `.docx`, `.pptx`, `.xlsx`, `.epub`). Inner paths take normal selectors: `archive.zip:dir/file.ts:50-60`; archived PDF images use member handles: `archive.zip:report.pdf:image.png`.
+`.tar`, `.tar.gz`, `.tgz`, `.zip`, plus ZIP-based `.jar`, `.war`, `.ear`, `.apk`. `archive.ext:path/inside/archive` reads UTF-8 text members, inline images (PNG, JPEG, GIF, WEBP), and supported document members (`.pdf`, `.docx`, `.pptx`, `.xlsx`, `.epub`). Inner paths take normal selectors: `archive.zip:dir/file.ts:50-60`; archived PDF images use member handles: `archive.zip:report.pdf:image.png`.
 
 # SQLite
 

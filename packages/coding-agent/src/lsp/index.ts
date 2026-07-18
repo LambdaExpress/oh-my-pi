@@ -31,6 +31,7 @@ import {
 	sendRequest,
 	setIdleTimeout,
 	shutdownClient,
+	supportsDocumentDiagnostics,
 	syncContent,
 	WARMUP_TIMEOUT_MS,
 	waitForProjectLoaded,
@@ -475,31 +476,28 @@ async function requestDocumentDiagnostics(
 	client: LspClient,
 	uri: string,
 	signal?: AbortSignal,
-): Promise<Diagnostic[] | null> {
-	if (!client.serverCapabilities?.diagnosticProvider) {
-		return null;
-	}
+	timeoutMs?: number,
+): Promise<Diagnostic[] | undefined> {
+	if (!supportsDocumentDiagnostics(client)) return undefined;
 	try {
-		const response = await sendRequest(client, "textDocument/diagnostic", { textDocument: { uri } }, signal);
-		if (!response || typeof response !== "object") {
-			return null;
-		}
+		const response = await sendRequest(
+			client,
+			"textDocument/diagnostic",
+			{ textDocument: { uri } },
+			signal,
+			timeoutMs,
+		);
+		if (!response || typeof response !== "object") return undefined;
 		const report = response as { kind?: unknown; items?: unknown };
-		if (report.kind === "full" && Array.isArray(report.items)) {
-			return report.items as Diagnostic[];
-		}
-		if (report.kind === "unchanged") {
-			return [];
-		}
-		return null;
+		if (report.kind === "full" && Array.isArray(report.items)) return report.items as Diagnostic[];
+		if (report.kind === "unchanged") return [];
+		return undefined;
 	} catch (err) {
-		if (err instanceof ToolAbortError || signal?.aborted) {
-			throw err;
+		if (err instanceof ToolAbortError || signal?.aborted) throw err;
+		if (!isMethodNotFoundError(err)) {
+			logger.debug("LSP document diagnostic pull failed", { server: client.name, uri, error: String(err) });
 		}
-		if (isMethodNotFoundError(err)) {
-			return null;
-		}
-		return null;
+		return undefined;
 	}
 }
 
@@ -747,11 +745,21 @@ async function waitForDiagnostics(
 	options: WaitForDiagnosticsOptions = {},
 ): Promise<WaitForDiagnosticsResult> {
 	const { timeoutMs = 3000, signal, minVersion, expectedDocumentVersion, settleMs = DIAGNOSTICS_SETTLE_MS } = options;
-	const start = Date.now();
+	const deadline = Date.now() + timeoutMs;
+	let pullAttempted = false;
+	let pullResultPromise: Promise<{ diagnostics: Diagnostic[] | undefined }> | undefined;
+	let pulled: Diagnostic[] | undefined;
 	let settledRef: PublishedDiagnostics | undefined;
 	let settledAt = 0;
-	while (Date.now() - start < timeoutMs) {
+	while (Date.now() < deadline) {
 		throwIfAborted(signal);
+		if (!pullAttempted && supportsDocumentDiagnostics(client)) {
+			pullAttempted = true;
+			pullResultPromise = requestDocumentDiagnostics(client, uri, signal, Math.max(1, deadline - Date.now())).then(
+				diagnostics => ({ diagnostics }),
+			);
+		}
+
 		const versionOk = minVersion === undefined || client.diagnosticsVersion > minVersion;
 		const published = client.diagnostics.get(uri);
 		if (published && versionOk) {
@@ -768,14 +776,36 @@ async function waitForDiagnostics(
 				return { diagnostics: published.diagnostics, available: true };
 			}
 		}
-		await Bun.sleep(DIAGNOSTICS_POLL_MS);
+
+		const pollMs = Math.min(DIAGNOSTICS_POLL_MS, Math.max(0, deadline - Date.now()));
+		if (!pullResultPromise) {
+			await Bun.sleep(pollMs);
+			continue;
+		}
+		const pullResult = await Promise.race([pullResultPromise, Bun.sleep(pollMs).then(() => undefined)]);
+		if (pullResult) {
+			pullResultPromise = undefined;
+			pulled = pullResult.diagnostics;
+			if (pulled !== undefined) break;
+		}
 	}
+
 	const versionOk = minVersion === undefined || client.diagnosticsVersion > minVersion;
 	const published = client.diagnostics.get(uri);
 	if (published && versionOk) {
 		return { diagnostics: published.diagnostics, available: true };
 	}
-	return { diagnostics: [], available: false };
+	if (pullResultPromise) {
+		pulled = (await pullResultPromise).diagnostics;
+	}
+	throwIfAborted(signal);
+	if (pulled === undefined) return { diagnostics: [], available: false };
+	client.diagnostics.set(uri, {
+		diagnostics: pulled,
+		version: expectedDocumentVersion ?? client.openFiles.get(uri)?.version ?? null,
+	});
+	client.diagnosticsVersion += 1;
+	return { diagnostics: pulled, available: true };
 }
 
 /** Project type detection result */

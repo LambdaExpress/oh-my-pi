@@ -156,6 +156,15 @@ describe("createTools", () => {
 		expect(tools.map(t => t.name)).toEqual(["worktree"]);
 	});
 
+	it("creates an xd:// registry without remounting explicitly requested built-ins", async () => {
+		const session = createTestSession();
+		const tools = await createTools(session, ["read", "lsp"]);
+
+		expect(session.xdevRegistry).toBeDefined();
+		expect(session.xdevRegistry?.entries()).toEqual([]);
+		expect(tools.map(tool => tool.name)).toEqual(["read", "lsp"]);
+	});
+
 	it("lowercases requested tool subset", async () => {
 		const session = createTestSession();
 		const tools = await createTools(session, ["Read", "Write"]);
@@ -214,8 +223,14 @@ describe("createTools", () => {
 		const tools = await createTools(session);
 		expect(tools.map(t => t.name)).not.toContain("ask");
 
-		const requested = await createTools(session, ["ask", "read"]);
-		expect(requested.map(t => t.name)).toEqual(["read", "write"]);
+		const requested = await createTools(
+			createTestSession({
+				hasUI: true,
+				settings: createSettingsWithOverrides({ "ask.enabled": false }),
+			}),
+			["ask", "read"],
+		);
+		expect(requested.map(t => t.name)).toEqual(["read"]);
 	});
 
 	it("includes ask tool when ask.enabled is true and hasUI is true", async () => {
@@ -254,8 +269,8 @@ describe("createTools", () => {
 		expect(names).not.toContain("browser");
 		expect(names).not.toContain("inspect_image");
 
-		const requestedTools = await createTools(session, ["bash", "pwsh", "read"]);
-		expect(requestedTools.map(t => t.name)).toEqual(["read", "write"]);
+		const requestedTools = await createTools(createTestSession({ settings: session.settings }), ["bash", "read"]);
+		expect(requestedTools.map(t => t.name)).toEqual(["read"]);
 	});
 
 	it("mounts discoverable SSH session configuration under xd:// by default", async () => {
@@ -297,6 +312,20 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		expect(names).toEqual(["read", "goal"]);
+	});
+
+	it("does not widen a restricted explicit tool list for an active goal", async () => {
+		const session = createTestSession({
+			restrictToolNames: true,
+			settings: createSettingsWithOverrides({
+				"goal.enabled": true,
+			}),
+			getGoalModeState: () => createActiveGoalState(),
+		});
+
+		const tools = await createTools(session, ["read", "write"]);
+
+		expect(tools.map(tool => tool.name)).toEqual(["read", "write"]);
 	});
 
 	it("records active tools on the original session object", async () => {

@@ -12,6 +12,20 @@
 
 - Fixed compiled-binary native embedding accepting stale `pi_natives.*.node` artifacts whose version sentinel does not match the current `@oh-my-pi/pi-natives` package version. `gen:native` now validates the sentinel before archiving and can read native artifacts from an explicit `PI_NATIVE_SOURCE_DIR`, preventing local Windows builds from producing an `omp` binary that only starts while another install keeps a correct cached addon locked.
 - Fixed Windows AVX2 detection preferring Windows PowerShell 5.1, whose .NET runtime lacks `System.Runtime.Intrinsics.X86.Avx2`; the loader now tries `pwsh` first so AVX2-capable Windows hosts select the `modern` native addon by default.
+## [17.0.3] - 2026-07-17
+
+### Fixed
+
+- Fixed `~` (tilde) not expanding for every element of a brace expansion in the bash tool, so `mkdir -p ~/project/{a,b}` now creates both `a` and `b` under `$HOME/project` instead of leaving a literal `~/project/b` in the working directory ([#5819](https://github.com/can1357/oh-my-pi/issues/5819)).
+- Fixed ANSI text wrapping to close and restore OSC 8 hyperlinks at physical line boundaries, preventing link targets from leaking into appended content ([#5885](https://github.com/can1357/oh-my-pi/issues/5885)).
+
+## [17.0.2] - 2026-07-17
+
+### Fixed
+
+- Fixed an issue where running `uv run --extra <package> pytest` bypassed native pytest minimization due to a wrapper parsing error.
+- Fixed a bug where timed-out shell pipelines dropped captured output and could cause Windows hosts to terminate during teardown. (#5316)
+
 ## [17.0.1] - 2026-07-16
 
 ### Fixed

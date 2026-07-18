@@ -6,6 +6,12 @@
 
 - Fixed facts returned by recall being impossible to delete by their visible fact id; `forgetFact()` now deletes visible `facts` rows and invalidates recall caches.
 - Added a non-destructive fact-id visibility check so hosts can distinguish non-editable fact operations from genuinely missing memory ids.
+## [17.0.4] - 2026-07-18
+
+### Fixed
+
+- Fixed a corrupt cached embedding model (truncated `model_optimized.onnx`, `Protobuf parsing failed` on load) permanently disabling local embeddings: init now quarantines the broken cache file (rename to `*.corrupt-<ts>`, only when the path resolves inside the fastembed cache directory) and retries once so the model re-downloads.
+
 ## [17.0.1] - 2026-07-16
 
 ### Fixed

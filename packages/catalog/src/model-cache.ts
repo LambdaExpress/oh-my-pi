@@ -8,8 +8,9 @@ import type { Api, Model, ModelSpec } from "./types";
 
 // Rows persist ModelSpec JSON (sparse `compat`, never the resolved record);
 // the model manager rebuilds via `buildModel` on load. v9 invalidates collapsed
-// Devin GPT-5.6 rows predating the distinct max effort route; v8 invalidated
-// Codex discovery rows predating provider-native V2 compaction metadata; v7
+// Devin GPT-5.6 rows predating the distinct max effort route and Kimi Code rows
+// predating live effort and protocol metadata; v8 invalidated Codex discovery
+// rows predating provider-native V2 compaction metadata; v7
 // invalidated rows predating the Antigravity Gemini budget-mode migration
 // (cached specs still carrying `thinking.mode: "google-level"` and the old
 // 3.5-flash effort routing); v6 invalidated rows that may contain the retired

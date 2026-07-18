@@ -127,7 +127,6 @@ describe("AgentSession SSH transfer refresh", () => {
 			modelRegistry: {} as never,
 			toolRegistry,
 			reloadSshTransferTool,
-			requestedToolNames: options.requestedToolNames,
 			getXdevToolEntries: () => options.xdevRegistry?.entries() ?? [],
 			xdevRegistry: options.xdevRegistry,
 			rebuildSystemPrompt: async (toolNames, tools) => ({
