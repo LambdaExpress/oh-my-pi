@@ -5,6 +5,7 @@
 ### Added
 
 - Added `TUI.refreshDisplay()` to invalidate cached components without clearing native scrollback.
+- Added structured terminal Escape diagnostics with keyboard-protocol, pending-probe, and late control-sequence continuation context.
 
 ### Changed
 

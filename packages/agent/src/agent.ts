@@ -327,6 +327,22 @@ interface CursorToolResultEntry {
 	toolResult: ToolResultMessage;
 }
 
+function describeAgentAbortReason(reason: unknown): { reason: string; reasonType: string } {
+	if (typeof reason === "string") return { reason: reason || "(empty string)", reasonType: "string" };
+	if (reason instanceof Error) return { reason: reason.message || reason.name, reasonType: reason.name };
+	if (reason === undefined) return { reason: "(default AbortError)", reasonType: "undefined" };
+	if (reason === null) return { reason: "null", reasonType: "null" };
+	if (typeof reason === "object") {
+		const kind = Reflect.get(reason, "kind");
+		const message = Reflect.get(reason, "message");
+		return {
+			reason: typeof message === "string" && message.length > 0 ? message : Object.prototype.toString.call(reason),
+			reasonType: typeof kind === "string" && kind.length > 0 ? kind : "object",
+		};
+	}
+	return { reason: String(reason), reasonType: typeof reason };
+}
+
 export class Agent {
 	#state: AgentState = {
 		systemPrompt: [],
@@ -960,7 +976,18 @@ export class Agent {
 	}
 
 	abort(reason?: unknown) {
-		this.#abortController?.abort(reason);
+		const controller = this.#abortController;
+		const diagnostic = {
+			...describeAgentAbortReason(reason),
+			activeRun: controller !== undefined,
+			alreadyAborted: controller?.signal.aborted ?? false,
+			isStreaming: this.#state.isStreaming,
+			pendingToolCalls: this.#state.pendingToolCalls.size,
+			callStack: new Error("Agent.abort call stack").stack,
+		};
+		if (controller) logger.warn("agent.abort.requested", diagnostic);
+		else logger.debug("agent.abort.requested-without-active-run", diagnostic);
+		controller?.abort(reason);
 	}
 
 	waitForIdle(): Promise<void> {

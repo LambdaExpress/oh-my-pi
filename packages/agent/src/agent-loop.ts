@@ -38,7 +38,7 @@ import {
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
-import { sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import { logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { agentPauseGate } from "./pause";
 import { type AgentRunCoverage, type AgentRunSummary, ToolCallBlockedError } from "./run-collector";
@@ -145,6 +145,7 @@ export const TERMINAL_TOOL_RESULT_ABORT_REASON = Symbol.for("pi-agent-core.termi
 
 const STEERING_INTERRUPT_POLL_MS = 250;
 const TOOL_ABORT_SETTLE_GRACE_MS = 250;
+const NO_COMPLETED_TOOL_CALL_IDS: ReadonlySet<string> = new Set();
 // After user abort, give cooperative tools one short window to return their own
 // cancellation result/error before the loop emits a synthetic abort result.
 export function normalizeToolAbortSettleTimeoutMs(value: number | undefined): number {
@@ -1041,6 +1042,7 @@ async function runLoopBody(
 					softRequiredTool !== undefined && !hardToolChoiceBlocks(config.toolChoice, softRequiredTool);
 				const softNonCompliant = softGateActive && !calledOnlyRequiredTool;
 
+				let completedToolExecution = false;
 				const toolResults: ToolResultMessage[] = [];
 				if (softNonCompliant && softRequiredTool !== undefined) {
 					if (softEscalations >= MAX_SOFT_TOOL_ESCALATIONS) {
@@ -1084,6 +1086,7 @@ async function runLoopBody(
 						invokeAgentSpan,
 					);
 
+					completedToolExecution = executionResult.completedToolExecution;
 					toolResults.push(...executionResult.toolResults);
 					if (signal?.aborted) {
 						hasMoreToolCalls = false;
@@ -1142,6 +1145,20 @@ async function runLoopBody(
 				});
 
 				if (isDeadlineExceeded(config.deadline)) {
+					endAgentStream(stream, newMessages, telemetry, stepCounter.count);
+					return;
+				}
+				if (signal?.aborted && completedToolExecution && signal.reason !== TERMINAL_TOOL_RESULT_ABORT_REASON) {
+					const aborted = emitAbortedAssistantMessage(
+						null,
+						false,
+						NO_COMPLETED_TOOL_CALL_IDS,
+						currentContext,
+						config,
+						stream,
+						signal,
+					);
+					newMessages.push(aborted);
 					endAgentStream(stream, newMessages, telemetry, stepCounter.count);
 					return;
 				}
@@ -1788,7 +1805,7 @@ async function executeToolCalls(
 	config: AgentLoopConfig,
 	telemetry: AgentTelemetry | undefined,
 	invokeAgentSpan: Span | undefined,
-): Promise<{ toolResults: ToolResultMessage[] }> {
+): Promise<{ toolResults: ToolResultMessage[]; completedToolExecution: boolean }> {
 	const tools = currentContext.tools;
 	const {
 		hasSteeringMessages,
@@ -1859,6 +1876,7 @@ async function executeToolCalls(
 			args: toolCall.arguments as Record<string, unknown>,
 			signal: tool?.interruptible ? interruptibleSignal : nonInterruptibleSignal,
 			started: false,
+			completedExecution: false,
 			result: undefined as AgentToolResult<any> | undefined,
 			isError: false,
 			skipped: false,
@@ -2101,11 +2119,23 @@ async function executeToolCalls(
 						})
 					: undefined;
 				const { promise: abortPromise, resolve: resolveAbort } = Promise.withResolvers<{ kind: "abort" }>();
+				const logToolAbortSignal = (): void => {
+					const reason = record.signal.reason;
+					logger.warn("tool.execution.abort-signal", {
+						toolName: toolCall.name,
+						toolCallId: toolCall.id,
+						reason: abortReasonText(record.signal),
+						reasonType: reason instanceof Error ? reason.name : typeof reason,
+						interruptible: tool.interruptible === true,
+						abortSettleTimeoutMs: tool.abortSettleTimeoutMs ?? 0,
+					});
+				};
 				const onAbort = () => resolveAbort({ kind: "abort" });
 				record.signal.addEventListener("abort", onAbort, { once: true });
 				let outcome: ToolExecutionRaceOutcome;
 				try {
 					if (record.signal.aborted) {
+						logToolAbortSignal();
 						outcome = { kind: "abort" };
 					} else {
 						const toolExecution: Promise<ToolExecutionRaceOutcome> = tool
@@ -2134,9 +2164,10 @@ async function executeToolCalls(
 						// result one microtask to settle so it keeps the existing afterToolCall
 						// contract instead of being misclassified as an abandoned execution.
 						await Promise.resolve();
-						const abortOutcome = abortPromise.then(() =>
-							waitForAbortSettle(toolExecution, tool.abortSettleTimeoutMs),
-						);
+						const abortOutcome = abortPromise.then(() => {
+							logToolAbortSignal();
+							return waitForAbortSettle(toolExecution, tool.abortSettleTimeoutMs);
+						});
 						outcome = await Promise.race([toolExecution, abortOutcome]);
 					}
 				} finally {
@@ -2159,6 +2190,7 @@ async function executeToolCalls(
 					throw outcome.error;
 				}
 				completedToolExecution = true;
+				record.completedExecution = true;
 				const coerced = coerceToolResult(outcome.rawResult);
 				result = coerced.result;
 				if (coerced.malformed || result.isError) isError = true;
@@ -2316,7 +2348,10 @@ async function executeToolCalls(
 		}
 	}
 
-	return { toolResults: emittedToolResults };
+	return {
+		toolResults: emittedToolResults,
+		completedToolExecution: records.some(record => record.completedExecution),
+	};
 }
 
 /**

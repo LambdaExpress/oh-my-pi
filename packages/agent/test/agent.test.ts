@@ -1,8 +1,9 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import { Agent, type AgentEvent, type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { type SimpleStreamOptions, z } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 import { createAssistantMessage } from "./helpers";
 
 describe("Agent", () => {
@@ -14,6 +15,25 @@ describe("Agent", () => {
 
 		// The message is queued but not yet in state.messages
 		expect(agent.state.messages).not.toContainEqual(message);
+	});
+
+	it("logs every abort request with its reason and call stack", () => {
+		const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
+		const agent = new Agent();
+
+		agent.abort("diagnostic interrupt");
+
+		expect(debugSpy).toHaveBeenCalledWith(
+			"agent.abort.requested-without-active-run",
+			expect.objectContaining({
+				reason: "diagnostic interrupt",
+				reasonType: "string",
+				activeRun: false,
+				alreadyAborted: false,
+				callStack: expect.stringContaining("Agent.abort call stack"),
+			}),
+		);
+		debugSpy.mockRestore();
 	});
 
 	it("continue() should process queued follow-up messages after an assistant turn", async () => {

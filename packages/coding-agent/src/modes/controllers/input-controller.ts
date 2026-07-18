@@ -142,6 +142,14 @@ function safeAbort(label: string, fn: () => void): void {
 	}
 }
 
+function describeInterruptInput(data: string | undefined): string {
+	if (data === undefined) return "programmatic";
+	if (data === "\x1b") return "ESC";
+	if (data === "\x1b[27u") return "CSI-u ESC";
+	const codeUnits = Array.from(data, char => char.charCodeAt(0).toString(16).padStart(2, "0"));
+	return `code-units:${codeUnits.join(" ")}`;
+}
+
 const TINY_TITLE_PROGRESS_DONE_TTL_MS = 3_000;
 // A cached model fires its file-load events in a short burst and then goes silent
 // while onnxruntime builds the session; a genuine download keeps streaming progress
@@ -231,7 +239,17 @@ export class InputController {
 		const unsubscribe = tinyTitleClient.onProgress(update);
 	}
 
-	#abortStreamingTurn(): void {
+	#abortStreamingTurn(source: "editor" | "loop-mode", input: string | undefined): void {
+		logger.warn("ui.interrupt.streaming-turn", {
+			source,
+			input: describeInterruptInput(input),
+			isStreaming: this.ctx.session.isStreaming,
+			isBashRunning: this.ctx.session.isBashRunning,
+			isEvalRunning: this.ctx.session.isEvalRunning,
+			loopModeEnabled: this.ctx.loopModeEnabled === true,
+			focusedAgentId: this.ctx.focusedAgentId ?? null,
+			hasLoadingAnimation: this.ctx.loadingAnimation !== undefined,
+		});
 		void this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
 	}
 
@@ -269,7 +287,7 @@ export class InputController {
 				return { consume: true };
 			});
 		}
-		this.ctx.editor.onEscape = () => {
+		this.ctx.editor.onEscape = input => {
 			// Side-channel panels are the topmost view. Esc dismisses them before
 			// touching loop mode, maintenance, or the underlying main turn.
 			// Active context maintenance owns Esc: auto/manual compaction,
@@ -315,7 +333,7 @@ export class InputController {
 			if (this.ctx.loopModeEnabled) {
 				this.ctx.pauseLoop();
 				if (this.ctx.session.isStreaming) {
-					this.#abortStreamingTurn();
+					this.#abortStreamingTurn("loop-mode", input);
 				} else {
 					this.ctx.cancelPendingSubmission();
 				}
@@ -360,7 +378,7 @@ export class InputController {
 				this.ctx.isPythonMode = false;
 				this.ctx.updateEditorBorderColor();
 			} else if (this.ctx.session.isStreaming) {
-				this.#abortStreamingTurn();
+				this.#abortStreamingTurn("editor", input);
 			} else if (this.ctx.editor.getText().trim()) {
 				// Esc must not destroy an in-progress draft.
 				this.ctx.lastEscapeTime = 0;

@@ -10,7 +10,7 @@ import * as logger from "@oh-my-pi/pi-utils/logger";
 type Spy = Mock<(...args: unknown[]) => unknown>;
 type StartPendingSubmissionSpy = Mock<InteractiveModeContext["startPendingSubmission"]>;
 type FakeEditor = {
-	onEscape?: () => void;
+	onEscape?: (data?: string) => void;
 	onSubmit?: (text: string) => Promise<void>;
 	onClear?: () => void;
 	onExit?: () => void;
@@ -520,6 +520,27 @@ describe("InputController escape behavior", () => {
 		expect(spies.abort).toHaveBeenCalledTimes(1);
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 		expect(spies.showStatus).not.toHaveBeenCalledWith("Press Esc again within 2s to cancel streaming.");
+	});
+
+	it("logs the terminal sequence and UI state before aborting a streaming turn", () => {
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const { ctx, editor } = createContext();
+		mutableSessionState(ctx).isStreaming = true;
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		editor.onEscape?.("\x1b");
+
+		expect(warnSpy).toHaveBeenCalledWith("ui.interrupt.streaming-turn", {
+			source: "editor",
+			input: "ESC",
+			isStreaming: true,
+			isBashRunning: false,
+			isEvalRunning: false,
+			loopModeEnabled: false,
+			focusedAgentId: null,
+			hasLoadingAnimation: false,
+		});
 	});
 
 	it("aborts the submitted turn on the first Esc once the main session starts streaming", async () => {

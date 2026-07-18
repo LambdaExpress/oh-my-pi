@@ -46,6 +46,16 @@ describe("buffered double-Esc reaches CustomEditor.onEscape", () => {
 		buf.destroy();
 	});
 
+	it("passes the exact terminal sequence to onEscape for diagnostics", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const onEscape = vi.fn();
+		editor.onEscape = onEscape;
+
+		editor.handleInput("\x1b[27u");
+
+		expect(onEscape).toHaveBeenCalledWith("\x1b[27u");
+	});
+
 	it("preserves a legacy Alt chord batched after a bare ESC", () => {
 		const editor = new CustomEditor(getEditorTheme());
 		const onEscape = vi.fn();

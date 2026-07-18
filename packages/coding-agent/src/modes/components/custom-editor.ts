@@ -474,7 +474,7 @@ export class CustomEditor extends Editor {
 		}, CustomEditor.SHIMMER_FRAME_MS);
 		this.#shimmerTimer.unref?.();
 	}
-	onEscape?: () => void;
+	onEscape?: (data?: string) => void;
 	onClear?: () => void;
 	onExit?: () => void;
 	onDisplayReset?: () => void;
@@ -869,7 +869,7 @@ export class CustomEditor extends Editor {
 			// single ESC from both closing an @ completion and aborting an active
 			// agent run (#1655).
 			if (this.#matchesAction(canonical, "app.interrupt") && this.onEscape && !this.isShowingAutocomplete()) {
-				this.onEscape();
+				this.onEscape(data);
 				return;
 			}
 

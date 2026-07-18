@@ -5,11 +5,13 @@
 ### Added
 
 - Added `ThinkingLevel.Max` so agent state can preserve a model's distinct `max` reasoning effort.
+- Added structured agent and tool-execution abort diagnostics, including cancellation reasons, run state, and abort call stacks.
 
 ### Fixed
 
 - Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.
 - Fixed tool abort settlement so each tool can declare a bounded cleanup window before the agent synthesizes an interrupted result.
+- Fixed external cancellation after a completed tool execution to append an explicit aborted assistant boundary without issuing another provider request.
 ## [17.0.0] - 2026-07-15
 
 ### Breaking Changes

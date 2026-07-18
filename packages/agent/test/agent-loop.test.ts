@@ -20,6 +20,7 @@ import type {
 import type { AssistantMessage, AssistantMessageEvent, Message, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { type } from "arktype";
 import { createAssistantMessage, createUserMessage } from "./helpers";
@@ -1850,6 +1851,7 @@ describe("agentLoop with AgentMessage", () => {
 	});
 
 	it("preserves a cooperative tool's own abort result when it settles promptly", async () => {
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
 		const toolSchema = type({});
 		type ToolDetails = { phase: string };
 		const abortController = new AbortController();
@@ -1907,6 +1909,15 @@ describe("agentLoop with AgentMessage", () => {
 		expect(toolResult.isError).toBe(true);
 		expect(toolResult.content).toEqual([{ type: "text", text: "cooperative cancelled" }]);
 		expect(toolResult.details).toEqual({ phase: "cancelled" });
+		expect(warnSpy).toHaveBeenCalledWith("tool.execution.abort-signal", {
+			toolName: "cooperative",
+			toolCallId: "tool-1",
+			reason: "Interrupted by user",
+			reasonType: "string",
+			interruptible: false,
+			abortSettleTimeoutMs: 0,
+		});
+		warnSpy.mockRestore();
 	});
 
 	it("honors a tool-specific abort settlement window", async () => {
@@ -2952,10 +2963,7 @@ describe("agentLoopContinue with AgentMessage", () => {
 		};
 		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
 		const mock = createMockModel({
-			responses: [
-				{ content: [{ type: "toolCall", id: "tool-abort", name: "echo", arguments: { value: "done" } }] },
-				{ content: ["must not be observed"] },
-			],
+			responses: [{ content: [{ type: "toolCall", id: "tool-abort", name: "echo", arguments: { value: "done" } }] }],
 		});
 		const config: AgentLoopConfig = {
 			model: mock.model,
@@ -2972,7 +2980,7 @@ describe("agentLoopContinue with AgentMessage", () => {
 		release.resolve();
 		await consuming;
 
-		expect(mock.calls).toHaveLength(2);
+		expect(mock.calls).toHaveLength(1);
 		const aborted = events.find(
 			event =>
 				event.type === "message_end" &&

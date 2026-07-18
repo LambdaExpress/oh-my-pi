@@ -434,6 +434,14 @@ type Da1SentinelOwner =
 	| { kind: "privateMode"; mode: number }
 	| { kind: "osc99Probe"; id: string };
 
+interface EscapeProbeDiagnostic {
+	osc11Pending: boolean;
+	osc99Pending: boolean;
+	privateCsiResponseBuffered: boolean;
+	inBandResizeBuffered: boolean;
+	da1SentinelOwners: string[];
+}
+
 let nextOsc99ProbeId = 1;
 
 function parseOsc99KeyValues(section: string): Map<string, string> {
@@ -508,6 +516,7 @@ export class ProcessTerminal implements Terminal {
 	#mode2031DebounceTimer?: Timer;
 	#windowsTerminalAppearancePollTimer?: Timer;
 	#progressTimer?: Timer;
+	#lastForwardedBareEscape?: EscapeProbeDiagnostic & { at: number };
 
 	get kittyProtocolActive(): boolean {
 		return this.#kittyProtocolActive;
@@ -712,6 +721,57 @@ export class ProcessTerminal implements Terminal {
 	 * This is done here (after stdinBuffer parsing) rather than on raw stdin
 	 * to handle the case where the response arrives split across multiple events.
 	 */
+	#escapeProbeDiagnostic(): EscapeProbeDiagnostic {
+		return {
+			osc11Pending: this.#osc11Pending,
+			osc99Pending: this.#osc99PendingId !== undefined,
+			privateCsiResponseBuffered: this.#privateCsiResponseBuffer.length > 0,
+			inBandResizeBuffered: this.#inBandResizeBuffer.length > 0,
+			da1SentinelOwners: this.#da1SentinelOwners.map(owner =>
+				owner.kind === "privateMode" ? `${owner.kind}:${owner.mode}` : owner.kind,
+			),
+		};
+	}
+
+	#logForwardedEscape(sequence: string): void {
+		if (sequence !== "\x1b" && sequence !== "\x1b[27u") return;
+		const probe = this.#escapeProbeDiagnostic();
+		logger.warn("terminal.input.escape-forwarded", {
+			sequence: sequence === "\x1b" ? "ESC" : "CSI-u ESC",
+			kittyProtocolActive: this.#kittyProtocolActive,
+			modifyOtherKeysActive: this.#modifyOtherKeysActive,
+			...probe,
+		});
+		if (sequence === "\x1b") {
+			this.#lastForwardedBareEscape = { at: Date.now(), ...probe };
+		}
+	}
+
+	#logPostEscapeInput(data: string): void {
+		const escapeSnapshot = this.#lastForwardedBareEscape;
+		if (!escapeSnapshot) return;
+		const gapMs = Date.now() - escapeSnapshot.at;
+		if (gapMs > 1_000 || data.startsWith("\x1b")) {
+			this.#lastForwardedBareEscape = undefined;
+			return;
+		}
+		if (data.length === 0) return;
+		let continuation = "other";
+		if (data.startsWith("]11;")) continuation = "OSC 11";
+		else if (data.startsWith("]99;")) continuation = "OSC 99";
+		else if (data.startsWith("]")) continuation = "OSC prefix";
+		else if (data.startsWith("[?")) continuation = "private CSI";
+		else if (data.startsWith("[")) continuation = "CSI prefix";
+		const { at: _, ...probe } = escapeSnapshot;
+		logger.warn("terminal.input.after-forwarded-escape", {
+			gapMs,
+			continuation,
+			chunkLength: data.length,
+			...probe,
+		});
+		this.#lastForwardedBareEscape = undefined;
+	}
+
 	#setupStdinBuffer(): void {
 		// 50ms balances two failure modes: a bare ESC keypress on legacy
 		// terminals waits this long before it is delivered, while a CSI key
@@ -748,6 +808,7 @@ export class ProcessTerminal implements Terminal {
 		const inBandResizePattern = /^\x1b\[48;(\d+)(?::[\d:]*)?;(\d+)(?::[\d:]*)?;(\d+)(?::[\d:]*)?;(\d+)(?::[\d:]*)?t$/;
 
 		this.#stdinBuffer.on("data", (sequence: string) => {
+			this.#logForwardedEscape(sequence);
 			// Fast path for plain-text bytes: every escape-probe regex below
 			// anchors on `^\x1b…`, so a byte that is not ESC can never match. A
 			// non-bracketed paste of N printable chars arrives as N per-scalar
@@ -1012,6 +1073,7 @@ export class ProcessTerminal implements Terminal {
 
 		// Handler that pipes stdin data through the buffer
 		this.#stdinDataHandler = (data: string) => {
+			this.#logPostEscapeInput(data);
 			this.#stdinBuffer!.process(data);
 		};
 	}

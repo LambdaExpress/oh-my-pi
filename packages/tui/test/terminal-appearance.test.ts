@@ -7,7 +7,7 @@ import {
 	getTerminalInfo,
 	setCellDimensions,
 } from "@oh-my-pi/pi-tui/terminal-capabilities";
-import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
+import { logger, setTerminalHeadless } from "@oh-my-pi/pi-utils";
 
 const stdinIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
@@ -292,6 +292,29 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 
 		// The up arrow must be forwarded to the input handler
 		expect(received).toContain("\x1b[A");
+
+		terminal.stop();
+	});
+
+	it("logs when a split OSC 11 response forwards its leading ESC as input", () => {
+		vi.useFakeTimers();
+		const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+		const { terminal, received } = setupTerminal();
+
+		process.stdin.emit("data", "\x1b");
+		vi.advanceTimersByTime(50);
+		vi.advanceTimersByTime(1);
+		process.stdin.emit("data", "]11;rgb:0000/0000/0000\x07");
+
+		expect(received).toContain("\x1b");
+		expect(warnSpy).toHaveBeenCalledWith(
+			"terminal.input.escape-forwarded",
+			expect.objectContaining({ sequence: "ESC", osc11Pending: true }),
+		);
+		expect(warnSpy).toHaveBeenCalledWith(
+			"terminal.input.after-forwarded-escape",
+			expect.objectContaining({ continuation: "OSC 11", osc11Pending: true }),
+		);
 
 		terminal.stop();
 	});
