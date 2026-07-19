@@ -1060,18 +1060,13 @@ describe("InteractiveMode plan review rendering", () => {
 		await titleRequestStarted;
 		expect(completeSimpleMock).toHaveBeenCalledTimes(1);
 		const titleRequest = completeSimpleMock.mock.calls[0]?.[1] as { systemPrompt?: string[] } | undefined;
-		expect(titleRequest?.systemPrompt).toEqual(["请生成中文标题"]);
+		expect(titleRequest?.systemPrompt).toHaveLength(2);
+		expect(titleRequest?.systemPrompt?.[0]).toBe("请生成中文标题");
+		expect(titleRequest?.systemPrompt?.[1]).toContain("<title>");
 
 		resolveTitleResponse({
 			stopReason: "stop",
-			content: [
-				{
-					type: "toolCall",
-					id: "call-title",
-					name: "set_title",
-					arguments: { title: "修复状态缓存标题" },
-				},
-			],
+			content: [{ type: "text", text: "<title>修复状态缓存标题</title>" }],
 		});
 
 		await waitForSessionName(session.sessionManager, "修复状态缓存标题");
