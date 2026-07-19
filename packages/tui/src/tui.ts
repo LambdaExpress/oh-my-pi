@@ -212,6 +212,17 @@ export interface NativeScrollbackCommittedRows {
 }
 
 /**
+ * A component that removes finalized rows after they enter native scrollback
+ * exposes an accumulated, two-phase compaction report. The engine acknowledges
+ * rows only after its commit/window ledger is rebased, so an abandoned compose
+ * cannot make the component compact the same terminal-owned prefix twice.
+ */
+export interface NativeScrollbackCompaction {
+	getNativeScrollbackCompactedRows(): number;
+	acknowledgeNativeScrollbackCompactedRows(rows: number): void;
+}
+
+/**
  * A component that discards rows after they enter native scrollback implements
  * this hook so a destructive full replay can rehydrate its complete frame.
  */
@@ -225,6 +236,11 @@ function prepareNativeScrollbackReplay(component: Component): void {
 
 function setNativeScrollbackCommittedRows(component: Component, rows: number): void {
 	(component as Component & Partial<NativeScrollbackCommittedRows>).setNativeScrollbackCommittedRows?.(rows);
+}
+
+function getNativeScrollbackCompactedRows(component: Component): number {
+	const value = (component as Component & Partial<NativeScrollbackCompaction>).getNativeScrollbackCompactedRows?.();
+	return value !== undefined && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
 }
 
 function isOverlayFocusTarget(owner: Component, component: Component | null): boolean {
@@ -988,8 +1004,10 @@ export class TUI extends Container {
 	// ConPTY hosts (`isConPTYHosted()`); other terminals do not exhibit the
 	// drift and would just see an unnecessary post-paint latency. See #2095.
 	static readonly #CONPTY_POST_FULL_PAINT_SETTLE_MS = 150;
-	static readonly #CONPTY_FRAME_TRUNCATE_THRESHOLD_BYTES = 512 * 1024;
-	static readonly #CONPTY_FRAME_RETAIN_BYTES = 64 * 1024;
+	// Above this payload size, disable synchronized output for the full replay.
+	// ProcessTerminal still writes in bounded ConPTY chunks; omitting one giant
+	// DEC 2026 transaction lets legacy hosts process those chunks incrementally.
+	static readonly #CONPTY_SYNC_THRESHOLD_BYTES = 512 * 1024;
 	#postFullPaintSettleUntilMs = 0;
 	#postFullPaintSettleTimer: RenderTimer | undefined;
 	#hardwareCursorRow = 0; // Actual terminal cursor row (may differ due to IME positioning)
@@ -1115,6 +1133,10 @@ export class TUI extends Container {
 	#composedFrame: string[] = [];
 	// Per-root-child segment ledger backing the stable-prefix computation.
 	#frameSegments: FrameSegment[] = [];
+	// Old-frame ranges explicitly removed by roots after those rows entered
+	// native scrollback. Applied after compose to rebase the commit/window
+	// ledger before the ordinary divergence audit runs.
+	#nativeScrollbackCompactions: Array<{ component: Component; start: number; rows: number }> = [];
 	#composeWidth = -1;
 	// Cursor markers stripped at ingestion, ascending by frame row.
 	#frameCursorMarkers: { row: number; col: number }[] = [];
@@ -1202,8 +1224,35 @@ export class TUI extends Container {
 				// own future rows being pre-committed.
 				const prevRows = previous !== undefined && previous.component === child ? previous.rowCount : 0;
 				const prevStart = previous !== undefined && previous.component === child ? previous.start : offset;
-				setNativeScrollbackCommittedRows(child, Math.min(prevRows, Math.max(0, this.#committedRows - prevStart)));
+				// A compaction report remains unacknowledged across an abandoned
+				// compose. The previous segment already has the shorter post-
+				// compaction row count, while #committedRows still uses the old
+				// coordinates. Restore the omitted rows before clamping; the
+				// component setter subtracts the same pending report locally.
+				const pendingCompactedRows = getNativeScrollbackCompactedRows(child);
+				setNativeScrollbackCommittedRows(
+					child,
+					Math.min(prevRows + pendingCompactedRows, Math.max(0, this.#committedRows - prevStart)),
+				);
 				childLines = child.render(width);
+				const compactedRows = getNativeScrollbackCompactedRows(child);
+				if (
+					compactedRows > 0 &&
+					previous !== undefined &&
+					previous.component === child &&
+					previous.start + compactedRows <= this.#committedRows
+				) {
+					const pending = this.#nativeScrollbackCompactions.find(range => range.component === child);
+					if (pending === undefined) {
+						this.#nativeScrollbackCompactions.push({
+							component: child,
+							start: previous.start,
+							rows: compactedRows,
+						});
+					} else {
+						pending.rows = Math.max(pending.rows, compactedRows);
+					}
+				}
 				const liveRegionStart = getNativeScrollbackLiveRegionStart(child);
 				if (liveRegionStart !== undefined) {
 					liveLocalStart = Number.isFinite(liveRegionStart)
@@ -2676,54 +2725,18 @@ export class TUI extends Container {
 		return markers;
 	}
 
-	#truncateLargeConptyFrame(
-		lines: string[],
-		width: number,
-		height: number,
-		cursorPos: { row: number; col: number } | null,
-	): { lines: string[]; cursorPos: { row: number; col: number } | null } {
-		if (!isConPTYHosted()) return { lines, cursorPos };
-
+	#isLargeConptyReplay(frame: readonly string[], window: readonly string[], chunkTo: number): boolean {
+		if (!isConPTYHosted()) return false;
 		let totalBytes = 0;
-		let exceedsThreshold = false;
-		for (const line of lines) {
+		for (let i = 0; i < chunkTo; i++) {
+			totalBytes += Buffer.byteLength(frame[i] ?? "", "utf8") + 8;
+			if (totalBytes > TUI.#CONPTY_SYNC_THRESHOLD_BYTES) return true;
+		}
+		for (const line of window) {
 			totalBytes += Buffer.byteLength(line, "utf8") + 8;
-			if (totalBytes > TUI.#CONPTY_FRAME_TRUNCATE_THRESHOLD_BYTES) {
-				exceedsThreshold = true;
-				break;
-			}
+			if (totalBytes > TUI.#CONPTY_SYNC_THRESHOLD_BYTES) return true;
 		}
-		if (!exceedsThreshold) return { lines, cursorPos };
-
-		let retainedBytes = 0;
-		let retainedStart = lines.length;
-		while (
-			retainedStart > 0 &&
-			(retainedBytes < TUI.#CONPTY_FRAME_RETAIN_BYTES || lines.length - retainedStart < height)
-		) {
-			retainedStart -= 1;
-			retainedBytes += Buffer.byteLength(lines[retainedStart] ?? "", "utf8") + 8;
-		}
-		if (retainedStart <= 0) return { lines, cursorPos };
-
-		const marker = truncateToWidth(
-			`[${retainedStart} older lines hidden to keep Windows console resume responsive]`,
-			width,
-			Ellipsis.Omit,
-		);
-		const truncated = new Array<string>(lines.length - retainedStart + 1);
-		truncated[0] = marker;
-		for (let i = retainedStart; i < lines.length; i++) {
-			truncated[i - retainedStart + 1] = lines[i] ?? "";
-		}
-
-		if (cursorPos === null || cursorPos.row < retainedStart) {
-			return { lines: truncated, cursorPos: null };
-		}
-		return {
-			lines: truncated,
-			cursorPos: { row: cursorPos.row - retainedStart + 1, col: cursorPos.col },
-		};
+		return false;
 	}
 
 	#terminalLine(line: string): string {
@@ -2884,6 +2897,7 @@ export class TUI extends Container {
 		// render recomposes from scratch, so consuming state here would
 		// misclassify a pending resize as an ordinary diff and corrupt the paint.
 		if (this.#maybeDeferGhosttyInitialImagePaint()) return;
+		this.#applyNativeScrollbackCompactions();
 		// Cursor markers were stripped at compose time (they are internal
 		// sentinels and must never reach the terminal, the committed prefix, or
 		// the audit); the visible marker is chosen after the window top is
@@ -3176,6 +3190,43 @@ export class TUI extends Container {
 		if ($flag("PI_DEBUG_REDRAW")) {
 			const msg = `[${new Date().toISOString()}] commit resync: committed prefix diverged at row ${resyncTo}; recommitting\n`;
 			fs.appendFileSync(getDebugLogPath(), msg);
+		}
+	}
+
+	/**
+	 * Remove component-declared compacted ranges from the old commit ledger.
+	 * The terminal already owns these rows; the new component frame omits them.
+	 * Rebasing the exact old segment range keeps siblings on both sides aligned,
+	 * then the normal audit remains free to detect unrelated content changes.
+	 */
+	#applyNativeScrollbackCompactions(): void {
+		const ranges = this.#nativeScrollbackCompactions;
+		if (ranges.length === 0) return;
+		ranges.sort((a, b) => b.start - a.start);
+		let removed = 0;
+		for (const range of ranges) {
+			const rows = Math.min(range.rows, Math.max(0, this.#committedRows - range.start));
+			if (rows === 0) continue;
+			this.#committedPrefix.splice(range.start, rows);
+			if (this.#committedPrefixAuditRows > range.start) {
+				this.#committedPrefixAuditRows -= Math.min(rows, this.#committedPrefixAuditRows - range.start);
+			}
+			this.#committedRows -= rows;
+			removed += rows;
+			(
+				range.component as Component & Partial<NativeScrollbackCompaction>
+			).acknowledgeNativeScrollbackCompactedRows?.(rows);
+		}
+		ranges.length = 0;
+		if (removed === 0) return;
+		this.#previousFrameLength = Math.max(0, this.#previousFrameLength - removed);
+		this.#windowTopRow = Math.max(0, this.#windowTopRow - removed);
+		this.#hardwareCursorRow = Math.max(0, this.#hardwareCursorRow - removed);
+		if (this.#hardwareCursorState !== null) {
+			this.#hardwareCursorState = {
+				...this.#hardwareCursorState,
+				row: Math.max(0, this.#hardwareCursorState.row - removed),
+			};
 		}
 	}
 
@@ -3516,29 +3567,15 @@ export class TUI extends Container {
 				paintCursorPos = { row: chunkTo + cursorPos.row - windowTop, col: cursorPos.col };
 			}
 		}
-		// ConPTY hosts bound the replay: merge prefix + window into one array
-		// so #truncateLargeConptyFrame can measure the payload and retain only
-		// the tail. Gated on the host check — everywhere else the merge would
-		// copy a pointer per committed row (a 50k-row session = 50k-entry
-		// array per resize step / theme change / session replace) just to be
-		// returned unchanged. `paintLines` stays null unless truncation
-		// actually rewrote the replay.
-		let paintLines: string[] | null = null;
-		let paintLineCount = chunkTo + height;
-		if (isConPTYHosted()) {
-			const merged = new Array<string>(chunkTo + height);
-			for (let i = 0; i < chunkTo; i++) merged[i] = frame[i] ?? "";
-			for (let screenRow = 0; screenRow < height; screenRow++) {
-				merged[chunkTo + screenRow] = window[screenRow] ?? "";
-			}
-			const paint = this.#truncateLargeConptyFrame(merged, width, height, paintCursorPos);
-			if (paint.lines !== merged) {
-				paintLines = paint.lines;
-				paintLineCount = paint.lines.length;
-				paintCursorPos = paint.cursorPos;
-			}
-		}
-		let buffer = this.#paintBeginSequence + this.#leaveResizeAltSequence() + options.leadingSequence + purgeSequence;
+		// ConPTY already chunks terminal writes at newline/UTF-8 boundaries. A
+		// replay above the threshold keeps every logical row but disables DEC
+		// 2026 for this paint, so legacy hosts can process those bounded chunks
+		// incrementally instead of buffering one giant synchronized transaction.
+		const paintLineCount = chunkTo + height;
+		const largeConptyReplay = this.#isLargeConptyReplay(frame, window, chunkTo);
+		const paintBeginSequence = largeConptyReplay ? PAINT_BEGIN_NO_SYNC : this.#paintBeginSequence;
+		const paintEndSequence = largeConptyReplay ? PAINT_END_NO_SYNC : this.#paintEndSequence;
+		let buffer = paintBeginSequence + this.#leaveResizeAltSequence() + options.leadingSequence + purgeSequence;
 		if (options.clearScrollback) {
 			// Clear native history without blanking the live viewport first. The
 			// replay below rewrites every visible row from home, including blanks,
@@ -3557,44 +3594,26 @@ export class TUI extends Container {
 		// DECCARA fills optimize only the rows that stay visible; history-bound
 		// rows are written as full styled strings (their background must
 		// survive in scrollback, which DECCARA cannot reach).
-		const visibleStart = Math.max(0, paintLineCount - height);
 		let fillSequence = "";
 		let visibleTexts: string[] | null = null;
-		if (this.#deccaraFillsEnabled() && visibleStart < paintLineCount) {
-			// Untruncated, the visible slice is exactly the caller's window
-			// (visibleStart === chunkTo) — reuse it rather than copying;
-			// planDeccaraFills fills its own `texts` and never mutates input.
-			let visible = window;
-			if (paintLines !== null) {
-				visible = new Array<string>(paintLineCount - visibleStart);
-				for (let k = 0; k < visible.length; k++) visible[k] = paintLines[visibleStart + k] ?? "";
-			}
-			const plan = planDeccaraFills(visible, width);
+		if (this.#deccaraFillsEnabled()) {
+			const plan = planDeccaraFills(window, width);
 			visibleTexts = plan.texts;
 			fillSequence = plan.sequence;
 		}
-		if (paintLines === null) {
-			// Common path: emit straight from the source arrays (the
-			// pre-merge two-loop form); byte-identical to replaying the
-			// merged array. Destructive history clears deliberately avoid ED2, so
-			// each row must self-clear stale cells left by the previous viewport.
-			for (let i = 0; i < chunkTo; i++) {
-				if (i > 0) buffer += "\r\n";
-				buffer += options.clearScrollback
-					? this.#lineRewriteSequence(frame[i] ?? "", width)
-					: this.#terminalLine(frame[i] ?? "");
-			}
-			for (let screenRow = 0; screenRow < height; screenRow++) {
-				if (chunkTo + screenRow > 0) buffer += "\r\n";
-				const line = visibleTexts ? (visibleTexts[screenRow] ?? "") : (window[screenRow] ?? "");
-				buffer += options.clearScrollback ? this.#lineRewriteSequence(line, width) : this.#terminalLine(line);
-			}
-		} else {
-			for (let i = 0; i < paintLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
-				const line = visibleTexts && i >= visibleStart ? visibleTexts[i - visibleStart] : (paintLines[i] ?? "");
-				buffer += options.clearScrollback ? this.#lineRewriteSequence(line, width) : this.#terminalLine(line);
-			}
+		// Emit straight from the source arrays. Destructive history clears
+		// deliberately avoid ED2, so each row must self-clear stale cells left by
+		// the previous viewport.
+		for (let i = 0; i < chunkTo; i++) {
+			if (i > 0) buffer += "\r\n";
+			buffer += options.clearScrollback
+				? this.#lineRewriteSequence(frame[i] ?? "", width)
+				: this.#terminalLine(frame[i] ?? "");
+		}
+		for (let screenRow = 0; screenRow < height; screenRow++) {
+			if (chunkTo + screenRow > 0) buffer += "\r\n";
+			const line = visibleTexts ? (visibleTexts[screenRow] ?? "") : (window[screenRow] ?? "");
+			buffer += options.clearScrollback ? this.#lineRewriteSequence(line, width) : this.#terminalLine(line);
 		}
 		buffer += fillSequence;
 		// Park the hardware cursor at real content bottom, not the padded
@@ -3607,7 +3626,7 @@ export class TUI extends Container {
 		const paintContentBottomRow = Math.max(0, paintLineCount - 1 - parkUp);
 		const cursorControl = this.#cursorControlSequence(paintCursorPos, paintLineCount, paintContentBottomRow);
 		buffer += cursorControl.seq;
-		buffer += this.#paintEndSequence;
+		buffer += paintEndSequence;
 		this.terminal.write(buffer);
 
 		const committedCursorState = paintCursorPos

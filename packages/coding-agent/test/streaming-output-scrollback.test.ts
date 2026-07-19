@@ -226,6 +226,179 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		expect(lines.map(line => Bun.stripANSI(line)).join("\n")).toContain("ctrl+o");
 	});
 
+	test("resize growth paints compacted transcript history in the borrowed viewport", async () => {
+		const term = new VirtualTerminal(40, 4);
+		const writes: string[] = [];
+		const realWrite = term.write.bind(term);
+		term.write = (data: string) => {
+			writes.push(data);
+			realWrite(data);
+		};
+		const scheduler = makeDrainableScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		tui.setScrollbackRebuild(true);
+		const transcript = new TranscriptContainer();
+		const labels = ["A1", "A2", "A3", "B1", "B2", "B3"];
+		for (const label of labels) transcript.addChild(new StaticBlock([label]));
+		tui.addChild(new StaticBlock(["WELCOME"]));
+		tui.addChild(transcript);
+		tui.addChild(new StaticBlock(["TODO"]));
+		tui.addChild(new Footer(2));
+
+		try {
+			tui.start();
+			scheduler.flush();
+			await term.flush();
+
+			// Model the renderer handing the overflowing finalized prefix to native
+			// scrollback, then the transcript compacting that terminal-owned prefix.
+			transcript.setNativeScrollbackCommittedRows(10);
+			expect(transcript.render(40)).not.toContain("A1");
+
+			// Each drag frame should re-expose all six logical transcript blocks,
+			// including the prefix compacted before the resize. Repeating the check
+			// across one burst covers the event-order-dependent production failure.
+			for (const [width, height] of [
+				[60, 20],
+				[55, 18],
+				[70, 6],
+			] as const) {
+				term.resize(width, height);
+				await term.flush();
+				const viewport = term.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+				if (height >= 18) {
+					for (const label of labels) expect(viewport).toContain(label);
+					expect(viewport).toContain("WELCOME");
+				} else {
+					expect(viewport).toContain("B2");
+					expect(viewport).toContain("B3");
+				}
+				expect(viewport).toContain("TODO");
+			}
+
+			scheduler.flush();
+			await term.flush();
+			expect(writes.join("").match(/\x1b\[3J/g)).toHaveLength(1);
+
+			// The short final viewport commits a transcript prefix during the
+			// destructive settle. The next local render must genuinely compact
+			// that terminal-owned prefix, or the ordinary-frame assertion below
+			// would not exercise the post-settle virtualization transition.
+			expect(transcript.render(70)).not.toContain("A1");
+			expect(transcript.render(70)).toContain("B3");
+
+			// The first ordinary frame after the destructive settle lets the
+			// transcript compact its terminal-owned prefix again. That virtual
+			// shrink must not be mistaken for semantic content deletion.
+			tui.requestRender();
+			scheduler.flush();
+			await term.flush();
+			expect(writes.join("").match(/\x1b\[3J/g)).toHaveLength(1);
+			for (const label of labels) expect(plainScrollBuffer(term)).toContain(label);
+
+			transcript.addChild(new StaticBlock(["C1"]));
+			tui.requestRender();
+			scheduler.flush();
+			await term.flush();
+			expect(writes.join("").match(/\x1b\[3J/g)).toHaveLength(1);
+			const appendedBuffer = plainScrollBuffer(term);
+			for (const label of [...labels, "C1"]) expect(appendedBuffer).toContain(label);
+		} finally {
+			tui.stop();
+			await term.flush();
+		}
+	});
+	test("resize growth restores a transcript whose entire local frame was compacted", async () => {
+		const term = new VirtualTerminal(40, 7);
+		const scheduler = makeDrainableScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		const transcript = new TranscriptContainer();
+		const labels = ["A1", "A2", "A3"];
+		for (const label of labels) transcript.addChild(new StaticBlock([label]));
+
+		// Mirror the real root order: startup chrome above chat, then the anchored
+		// todo/status/editor roots below it. At the short starting height every
+		// transcript row scrolls above the viewport and becomes compactable.
+		tui.addChild(new StaticBlock([""]));
+		tui.addChild(new StaticBlock(["WELCOME"]));
+		tui.addChild(new StaticBlock([""]));
+		tui.addChild(transcript);
+		for (let i = 0; i < 7; i++) tui.addChild(new StaticBlock([]));
+		tui.addChild(new StaticBlock(["TODO-0", "TODO-1", "TODO-2", "TODO-3"]));
+		tui.addChild(new StaticBlock([""]));
+		tui.addChild(new Footer(2));
+
+		try {
+			tui.start();
+			scheduler.flush();
+			await term.flush();
+			expect(transcript.render(40)).toEqual([]);
+
+			term.resize(100, 30);
+			await term.flush();
+			const dragViewport = term.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+			for (const label of labels) expect(dragViewport).toContain(label);
+			expect(dragViewport).toContain("WELCOME");
+
+			scheduler.flush();
+			await term.flush();
+			const settledBuffer = plainScrollBuffer(term);
+			for (const label of labels) expect(settledBuffer).toContain(label);
+		} finally {
+			tui.stop();
+			await term.flush();
+		}
+	});
+
+	test("preserves partially committed rows when compacting a finalized multiline block", async () => {
+		const term = new VirtualTerminal(70, 4);
+		const writes: string[] = [];
+		const realWrite = term.write.bind(term);
+		term.write = (data: string) => {
+			writes.push(data);
+			realWrite(data);
+		};
+		const scheduler = makeDrainableScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		tui.setScrollbackRebuild(false);
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new StaticBlock(["H1"]));
+		transcript.addChild(new StaticBlock(["R1", "R2", "R3"]));
+		tui.addChild(new StaticBlock(["WELCOME"]));
+		tui.addChild(transcript);
+		tui.addChild(new StaticBlock(["TODO"]));
+		tui.addChild(new Footer(2));
+
+		try {
+			tui.start();
+			scheduler.flush();
+			await term.flush();
+
+			// Four local transcript rows committed: H1, the separator, R1, R2.
+			// Compaction removes only H1 + separator, so R1/R2 remain both in the
+			// local frame and in native history. The TUI must keep that boundary.
+			expect(transcript.render(70)).toEqual(["R1", "R2", "R3"]);
+			tui.requestRender();
+			scheduler.flush();
+			await term.flush();
+			expect(writes.join("")).not.toContain("\x1b[3J");
+			for (const marker of ["H1", "R1", "R2", "R3"]) {
+				expect(plainScrollBuffer(term).filter(row => row === marker)).toHaveLength(1);
+			}
+
+			transcript.addChild(new StaticBlock(["N1"]));
+			tui.requestRender();
+			scheduler.flush();
+			await term.flush();
+			for (const marker of ["H1", "R1", "R2", "R3", "N1"]) {
+				expect(plainScrollBuffer(term).filter(row => row === marker)).toHaveLength(1);
+			}
+		} finally {
+			tui.stop();
+			await term.flush();
+		}
+	});
+
 	test("streams live assistant thinking and answer rows into native scrollback before finalize", async () => {
 		const rows = 8;
 		stubStdoutRows(rows);

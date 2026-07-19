@@ -2,6 +2,7 @@ import {
 	type Component,
 	Container,
 	type NativeScrollbackCommittedRows,
+	type NativeScrollbackCompaction,
 	type NativeScrollbackLiveRegion,
 	type NativeScrollbackReplay,
 	type RenderStablePrefix,
@@ -170,6 +171,7 @@ export class TranscriptContainer
 	implements
 		NativeScrollbackLiveRegion,
 		NativeScrollbackCommittedRows,
+		NativeScrollbackCompaction,
 		NativeScrollbackReplay,
 		RenderStablePrefix,
 		ViewportTailProvider
@@ -198,6 +200,9 @@ export class TranscriptContainer
 	// committed-row count immediately before render, so resetting that count
 	// alone cannot distinguish a replay from an ordinary update.
 	#replayPending = false;
+	// Rows removed since the TUI last consumed the report. Accumulation keeps
+	// compaction observable when an exporter or test renders between TUI frames.
+	#pendingCompactedRows = 0;
 	// Stable-prefix floor accumulated across renders since the last
 	// getRenderStablePrefixRows() read (see RenderStablePrefix: reading
 	// consumes the report and re-bases the baseline). Out-of-band renders
@@ -216,10 +221,16 @@ export class TranscriptContainer
 		this.#compactedChildStart = 0;
 		this.#committedRows = 0;
 		this.#replayPending = false;
+		this.#pendingCompactedRows = 0;
 	}
 
 	override setNativeScrollbackCommittedRows(rows: number): void {
-		this.#committedRows = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
+		const reported = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
+		// Until the TUI consumes #pendingCompactedRows it still reports this
+		// boundary in the pre-compaction coordinates. Rebase locally so the same
+		// committed prefix cannot be removed twice by an out-of-band render
+		// followed by the engine compose.
+		this.#committedRows = Math.max(0, reported - this.#pendingCompactedRows);
 		for (let i = this.#compactedChildStart; i < this.children.length; i++) {
 			const child = this.children[i]!;
 			const segment = this.#segments[i];
@@ -243,13 +254,23 @@ export class TranscriptContainer
 		}
 	}
 
+	getNativeScrollbackCompactedRows(): number {
+		return this.#pendingCompactedRows;
+	}
+
+	acknowledgeNativeScrollbackCompactedRows(rows: number): void {
+		const acknowledged = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
+		this.#pendingCompactedRows = Math.max(0, this.#pendingCompactedRows - acknowledged);
+	}
+
 	override prepareNativeScrollbackReplay(): void {
 		// Replay retires the old terminal tape, so descendants may discard layout
 		// locks whose only purpose was keeping that immutable history byte-stable.
 		super.prepareNativeScrollbackReplay();
+		this.#pendingCompactedRows = 0;
+		this.#replayPending = true;
 		if (this.#compactedChildStart === 0) return;
 		this.#compactedChildStart = 0;
-		this.#replayPending = true;
 		this.#generation++;
 		this.#lines.length = 0;
 		this.#stableRowsFloor = 0;
@@ -323,8 +344,11 @@ export class TranscriptContainer
 	 * State-isolated by contract: touches none of the persistent full-compose
 	 * fields (#lines, #segments, the per-block diff snapshots, the commit/stable
 	 * bookkeeping), so the authoritative full render on settle reconciles exactly
-	 * as if this never ran. Calling each block's render() still warms its own
-	 * per-width cache, which that settle render then reuses for free.
+	 * as if this never ran. It deliberately walks past #compactedChildStart:
+	 * compacted blocks live only in the normal screen's native scrollback, while
+	 * the resize fast path paints a fresh alternate screen that must reconstruct
+	 * its logical viewport. Calling only the blocks needed to fill `maxRows` keeps
+	 * the work bounded and warms their per-width caches for the settle render.
 	 *
 	 * Consecutive visible blocks are joined by exactly one blank separator, the
 	 * same rule render() applies, so the result equals the bottom of a full
@@ -336,7 +360,7 @@ export class TranscriptContainer
 		if (maxRows <= 0) return EMPTY_TAIL;
 		const collected: (readonly string[])[] = [];
 		let total = 0;
-		for (let i = this.children.length - 1; i >= this.#compactedChildStart && total < maxRows; i--) {
+		for (let i = this.children.length - 1; i >= 0 && total < maxRows; i--) {
 			const contribution = stripPlainBlankEdges(this.children[i]!.render(width));
 			if (contribution.length === 0) continue;
 			// One blank separator sits between this block and the (already
@@ -607,6 +631,7 @@ export class TranscriptContainer
 		}
 		this.#compactedChildStart = dropUntil;
 		this.#committedRows = Math.max(0, this.#committedRows - dropRows);
+		this.#pendingCompactedRows += dropRows;
 		this.#stableRowsFloor = 0;
 		if (this.#nativeScrollbackLiveRegionStart !== undefined) {
 			this.#nativeScrollbackLiveRegionStart = Math.max(0, this.#nativeScrollbackLiveRegionStart - dropRows);

@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import { TUI } from "@oh-my-pi/pi-tui";
+import {
+	type Component,
+	type NativeScrollbackCommittedRows,
+	type NativeScrollbackCompaction,
+	TUI,
+} from "@oh-my-pi/pi-tui";
 import { Image, ImageBudget } from "@oh-my-pi/pi-tui/components/image";
 import { Text } from "@oh-my-pi/pi-tui/components/text";
 import {
@@ -756,6 +761,85 @@ describe("TUI inline-image budget", () => {
 			const output = writes.join("");
 			expect(output).toContain("\x1b_Ga=t");
 			expect(output).toContain(BASE64_ONE_PIXEL_PNG);
+		} finally {
+			tui.stop();
+			terminal.id = originalId;
+			setKittyGraphics(originalGraphics);
+		}
+	});
+
+	it("preserves pre-compaction committed coordinates across a deferred Ghostty image compose", () => {
+		class DeferredCompactingBlock implements Component, NativeScrollbackCommittedRows, NativeScrollbackCompaction {
+			#lines = ["H1", "", "R1", "R2", "R3"];
+			#pendingCompactedRows = 0;
+			readonly reports: number[] = [];
+			committedRows = 0;
+
+			compact(): void {
+				this.#lines = this.#lines.slice(2);
+				this.#pendingCompactedRows = 2;
+			}
+
+			render(): readonly string[] {
+				return this.#lines;
+			}
+
+			setNativeScrollbackCommittedRows(rows: number): void {
+				this.reports.push(rows);
+				this.committedRows = Math.max(0, rows - this.#pendingCompactedRows);
+			}
+
+			getNativeScrollbackCompactedRows(): number {
+				return this.#pendingCompactedRows;
+			}
+
+			acknowledgeNativeScrollbackCompactedRows(rows: number): void {
+				this.#pendingCompactedRows = Math.max(0, this.#pendingCompactedRows - rows);
+			}
+		}
+
+		const originalId = terminal.id;
+		const originalGraphics = { ...getKittyGraphics() };
+		const term = new VirtualTerminal(40, 1);
+		let now = 0;
+		const scheduled: Array<{ delayMs: number; callback: () => void; canceled: boolean }> = [];
+		const renderScheduler = {
+			now: () => now,
+			scheduleImmediate: (callback: () => void) => callback(),
+			scheduleRender: (callback: () => void, delayMs: number) => {
+				const entry = { delayMs, callback, canceled: false };
+				scheduled.push(entry);
+				return {
+					cancel: () => {
+						entry.canceled = true;
+					},
+				};
+			},
+		};
+
+		terminal.id = "ghostty";
+		terminal.imageProtocol = ImageProtocol.Kitty;
+		setKittyGraphics({ unicodePlaceholders: true });
+		const tui = new TUI(term, undefined, { renderScheduler });
+		const block = new DeferredCompactingBlock();
+		tui.addChild(block);
+
+		try {
+			tui.start();
+			block.compact();
+			tui.addChild(makeImage(tui.imageBudget, "deferred-compaction"));
+			tui.requestRender(true);
+
+			const delayed = scheduled.find(entry => !entry.canceled && entry.delayMs === 100);
+			expect(delayed).toBeDefined();
+			now = 100;
+			delayed?.callback();
+
+			// The initial compose/publish report 0 then 4. Both image composes
+			// must subsequently receive the old-coordinate boundary (4): the
+			// first is abandoned for Ghostty's image delay, and only the second
+			// acknowledges the two-row compaction before its full paint.
+			expect(block.reports.slice(2, 4)).toEqual([4, 4]);
 		} finally {
 			tui.stop();
 			terminal.id = originalId;

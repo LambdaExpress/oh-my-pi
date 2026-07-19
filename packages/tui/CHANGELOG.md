@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Fixed destructive Windows/ConPTY resize replays permanently dropping history above 512 KiB; large paints now retain every row and disable synchronized output so existing bounded writes remain responsive.
+- Fixed virtualized roots being mistaken for semantic frame shrink after native-scrollback compaction; the commit, viewport, and cursor ledgers now rebase the exact removed ranges before divergence auditing.
 - Fixed editor caret movement entering image or paste placeholders; keyboard left/right, word, and vertical movement now treat matched placeholders as atomic tokens.
 - Fixed live rows below a native-scrollback seam vanishing while streaming; scrolled-off live rows now enter history as frozen snapshots, with finalize-time repairs bounded so unchanged output does not repeat indefinitely.
 - Fixed OSC 8 hyperlinks staying disabled in Windows Terminal when `tui.hyperlinks=auto`.

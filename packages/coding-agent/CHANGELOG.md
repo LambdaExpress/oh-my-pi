@@ -35,6 +35,7 @@
 
 ### Fixed
 
+- Fixed terminal resize replays dropping committed conversation history—sometimes leaving only the latest output—by rebuilding from the full logical transcript and suppressing local prefix compaction during every destructive replay.
 - Fixed `xd://` MCP mount and unmount status notices flooding the transcript with every device name by grouping dynamic devices per MCP server (for example, `mounted 38 tools from atlassian`) while retaining the full hidden device delta for the model.
 - Fixed `/new` retaining prior-session subagents, background jobs, IRC messages, and late HUD updates by fully retiring the previous root-session scope before activating the new session.
 - Fixed completed-run transcript collapse treating a queued correction after a user interrupt as a new request, so the original request and pre-interrupt loop now collapse with the eventual final answer.

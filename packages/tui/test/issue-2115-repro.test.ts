@@ -13,6 +13,7 @@ import { VirtualTerminal } from "./virtual-terminal";
 // replay crossed ~1-2 MiB.
 
 const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
+const ORIGINAL_WT_SESSION = Bun.env.WT_SESSION;
 
 class LargeCjkContent implements Component {
 	#lines: string[];
@@ -88,11 +89,14 @@ class ManualRenderScheduler implements RenderScheduler {
 describe("issue #2115: ConPTY large-session resume truncates at logical lines", () => {
 	afterEach(() => {
 		if (PLATFORM_DESCRIPTOR) Object.defineProperty(process, "platform", PLATFORM_DESCRIPTOR);
+		if (ORIGINAL_WT_SESSION === undefined) delete Bun.env.WT_SESSION;
+		else Bun.env.WT_SESSION = ORIGINAL_WT_SESSION;
 		vi.restoreAllMocks();
 	});
 
-	it("bounds a Windows CJK resume paint while preserving the visible tail", async () => {
+	it("replays complete Windows CJK history after resize without one giant synchronized frame", async () => {
 		Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+		Bun.env.WT_SESSION = "wt-test";
 		const term = new VirtualTerminal(80, 24, 12_000);
 		const writes: string[] = [];
 		const realWrite = term.write.bind(term);
@@ -100,23 +104,29 @@ describe("issue #2115: ConPTY large-session resume truncates at logical lines", 
 			writes.push(data);
 			realWrite(data);
 		});
-		const tui = new TUI(term);
+		const scheduler = new ManualRenderScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
 		tui.addChild(new LargeCjkContent(9000));
 
 		try {
 			tui.start({ clearScrollback: true });
-			await term.waitForRender();
+			await scheduler.advanceBy(40, term);
+			writes.length = 0;
+
+			term.resize(100, 30);
+			await scheduler.advanceBy(120, term);
 
 			const fullPaint = writes.find(write => write.includes("\x1b[3J"));
 			expect(fullPaint).toBeDefined();
-			expect(fullPaint).not.toContain("\x1b[2J");
-			expect(Buffer.byteLength(fullPaint ?? "", "utf8")).toBeLessThan(128 * 1024);
-			expect(fullPaint).toContain("older lines hidden");
-			expect(fullPaint).not.toContain("第00000行");
+			expect(Buffer.byteLength(fullPaint ?? "", "utf8")).toBeGreaterThan(512 * 1024);
+			expect(fullPaint).not.toContain("\x1b[?2026h");
+			expect(fullPaint).not.toContain("older lines hidden");
+			expect(fullPaint).toContain("第00000行");
+			expect(fullPaint).toContain("第08999行");
 
-			const viewport = term.getViewport().map(line => line.trimEnd());
-			expect(viewport[viewport.length - 1]).toContain("第08999行");
-			expect(term.getScrollBuffer().some(line => line.includes("older lines hidden"))).toBe(true);
+			const buffer = term.getScrollBuffer();
+			expect(buffer.some(line => line.includes("第00000行"))).toBe(true);
+			expect(buffer.some(line => line.includes("第08999行"))).toBe(true);
 		} finally {
 			tui.stop();
 		}

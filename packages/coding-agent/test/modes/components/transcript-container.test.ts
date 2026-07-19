@@ -358,6 +358,22 @@ describe("TranscriptContainer", () => {
 		expect(container.render(40)).toEqual(["history", "", "live", "", "finalized-below-0", "finalized-below-1"]);
 		expect(container.getNativeScrollbackLiveRegionStart()).toBe(2);
 	});
+	it("keeps the complete frame when destructive replays occur before local compaction", () => {
+		const container = new TranscriptContainer();
+		container.addChild(new CountingFinalizedBlock(["committed-history"]));
+		container.addChild(new CountingFinalizedBlock(["retained-tail"]));
+
+		const completeFrame = ["committed-history", "", "retained-tail"];
+		expect(container.render(40)).toEqual(completeFrame);
+
+		// The first full paint publishes its committed boundary, but no ordinary
+		// render has run yet, so #compactedChildStart is still zero. A second
+		// destructive replay must suppress compaction for its compose as well.
+		container.setNativeScrollbackCommittedRows(2);
+		container.prepareNativeScrollbackReplay();
+		container.setNativeScrollbackCommittedRows(2);
+		expect(container.render(40)).toEqual(completeFrame);
+	});
 	it("drops committed finalized head rows and rehydrates them for a full replay", () => {
 		const container = new TranscriptContainer();
 		const history = new CountingFinalizedBlock(["committed-history"]);
@@ -428,7 +444,7 @@ describe("TranscriptContainer", () => {
 		expect(container.render(40)).toEqual(["original", "Error: boom", "", "tail"]);
 		expect(block.renderCount).toBe(2);
 	});
-	it("re-renders a committed finalized tool block when its display version changes", () => {
+	it("rehydrates a committed finalized tool display change on replay", () => {
 		const container = new TranscriptContainer();
 		const ui = { requestRender() {} } as unknown as TUI;
 		const component = new CountingToolExecutionComponent(
@@ -464,13 +480,17 @@ describe("TranscriptContainer", () => {
 
 		container.setNativeScrollbackCommittedRows(collapsedRows.length);
 		const afterCommit = component.renderCount;
-		expect(plain(container.render(80))).toContain("more lines");
+		expect(container.render(80)).toEqual([]);
 		expect(component.renderCount).toBe(afterCommit);
 
 		component.setExpanded(true);
-		const beforeExpandedRender = component.renderCount;
+		expect(container.render(80)).toEqual([]);
+		expect(component.renderCount).toBe(afterCommit);
+
+		container.prepareNativeScrollbackReplay();
+		container.setNativeScrollbackCommittedRows(collapsedRows.length);
 		const expanded = plain(container.render(80));
-		expect(component.renderCount).toBe(beforeExpandedRender + 1);
+		expect(component.renderCount).toBe(afterCommit + 1);
 		expect(expanded).toContain("tool-output-8");
 		expect(expanded).toContain("tool-output-10");
 		expect(expanded).not.toContain("more lines");
