@@ -87,7 +87,7 @@ class TreeList implements Component {
 	#hitRows: (number | undefined)[] = [];
 	#hoveredIndex: number | null = null;
 
-	onSelect?: (entryId: string) => void;
+	onSelect?: (entryId: string, options: { summarize: boolean }) => void;
 	onCancel?: () => void;
 	onLabelEdit?: (entryId: string, currentLabel: string | undefined) => void;
 
@@ -480,7 +480,7 @@ class TreeList implements Component {
 		const selected = this.#filteredNodes[index];
 		if (!selected) return;
 		this.#selectedIndex = index;
-		this.onSelect?.(selected.node.entry.id);
+		this.onSelect?.(selected.node.entry.id, { summarize: false });
 	}
 
 	#getFilterLabel(): string {
@@ -882,10 +882,16 @@ class TreeList implements Component {
 		} else if (matchesKey(keyData, "right")) {
 			// Page down
 			this.#selectedIndex = Math.min(this.#filteredNodes.length - 1, this.#selectedIndex + this.maxVisibleLines);
+		} else if (matchesKey(keyData, "shift+enter") || matchesKey(keyData, "shift+return")) {
+			// Summarize-and-switch: fork with a branch summary without the extra prompt.
+			const selected = this.#filteredNodes[this.#selectedIndex];
+			if (selected && this.onSelect) {
+				this.onSelect(selected.node.entry.id, { summarize: true });
+			}
 		} else if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
 			const selected = this.#filteredNodes[this.#selectedIndex];
 			if (selected && this.onSelect) {
-				this.onSelect(selected.node.entry.id);
+				this.onSelect(selected.node.entry.id, { summarize: false });
 			}
 		} else if (matchesAppInterrupt(keyData)) {
 			if (this.#searchQuery) {
@@ -1016,7 +1022,7 @@ export class TreeSelectorComponent extends Container {
 		tree: SessionTreeNode[],
 		currentLeafId: string | null,
 		terminalHeight: number,
-		onSelect: (entryId: string) => void,
+		onSelect: (entryId: string, options: { summarize: boolean }) => void,
 		onCancel: () => void,
 		private readonly onLabelChangeCallback?: (entryId: string, label: string | undefined) => void,
 		initialFilterMode: FilterMode = "default",
@@ -1043,7 +1049,7 @@ export class TreeSelectorComponent extends Container {
 			new TruncatedText(
 				theme.fg(
 					"muted",
-					"Up/Down/Wheel: move. Click/Enter: select. Left/Right: page. Shift+L: label. Ctrl+O/Shift+Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search",
+					"Up/Down/Wheel: move. Click/Enter: switch. Shift+Enter: summarize & switch. Left/Right: page. Shift+L: label. Ctrl+O/Shift+Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search",
 				),
 				0,
 				0,

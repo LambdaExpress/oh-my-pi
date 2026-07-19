@@ -358,41 +358,6 @@ describe("TranscriptContainer", () => {
 		expect(container.render(40)).toEqual(["history", "", "live", "", "finalized-below-0", "finalized-below-1"]);
 		expect(container.getNativeScrollbackLiveRegionStart()).toBe(2);
 	});
-	it("keeps the complete frame when destructive replays occur before local compaction", () => {
-		const container = new TranscriptContainer();
-		container.addChild(new CountingFinalizedBlock(["committed-history"]));
-		container.addChild(new CountingFinalizedBlock(["retained-tail"]));
-
-		const completeFrame = ["committed-history", "", "retained-tail"];
-		expect(container.render(40)).toEqual(completeFrame);
-
-		// The first full paint publishes its committed boundary, but no ordinary
-		// render has run yet, so #compactedChildStart is still zero. A second
-		// destructive replay must suppress compaction for its compose as well.
-		container.setNativeScrollbackCommittedRows(2);
-		container.prepareNativeScrollbackReplay();
-		container.setNativeScrollbackCommittedRows(2);
-		expect(container.render(40)).toEqual(completeFrame);
-	});
-	it("drops committed finalized head rows and rehydrates them for a full replay", () => {
-		const container = new TranscriptContainer();
-		const history = new CountingFinalizedBlock(["committed-history"]);
-		const tail = new CountingFinalizedBlock(["retained-tail"]);
-		container.addChild(history);
-		container.addChild(tail);
-
-		expect(container.render(40)).toEqual(["committed-history", "", "retained-tail"]);
-		container.setNativeScrollbackCommittedRows(2);
-		expect(container.render(40)).toEqual(["retained-tail"]);
-		expect(history.renderCount).toBe(1);
-
-		container.prepareNativeScrollbackReplay();
-		// The TUI supplies its previous committed count immediately before the
-		// replay render; the complete frame must still survive this one compose.
-		container.setNativeScrollbackCommittedRows(2);
-		expect(container.render(40)).toEqual(["committed-history", "", "retained-tail"]);
-		expect(history.renderCount).toBe(2);
-	});
 
 	it("does not re-render finalized rows already committed to native scrollback", () => {
 		const container = new TranscriptContainer();
@@ -414,37 +379,29 @@ describe("TranscriptContainer", () => {
 		expect(container.render(40)).toEqual(["committed", "", "tail"]);
 		expect(committed.renderCount).toBe(2);
 	});
-	it("compacts a committed version-tracked block and rehydrates its post-commit mutation on replay", () => {
+	it("re-renders a committed finalized block when its version changes", () => {
 		const container = new TranscriptContainer();
 		const block = new VersionedFinalizedBlock(["original"]);
-		const tail = new CountingFinalizedBlock(["tail"]);
 		container.addChild(block);
-		container.addChild(tail);
 
-		expect(container.render(40)).toEqual(["original", "", "tail"]);
-		// Commit the block plus its trailing separator: those rows are now
-		// immutable native scrollback the terminal owns, so the container drops
-		// them from the live frame instead of re-walking them every tick.
-		container.setNativeScrollbackCommittedRows(2);
-		expect(container.render(40)).toEqual(["tail"]);
+		expect(container.render(40)).toEqual(["original"]);
+		container.setNativeScrollbackCommittedRows(1);
+		expect(container.render(40)).toEqual(["original"]);
 		expect(block.renderCount).toBe(1);
 
-		// A post-commit mutation (setErrorPinned(false) restoring the inline
-		// error) on a compacted, scrolled-off block must NOT recommit on an
-		// ordinary frame — recommitting immutable history would duplicate it.
+		// Post-finalize mutation (e.g. setErrorPinned(false) restoring the inline
+		// error) must surface even though the rows sit in committed scrollback —
+		// the render is what lets the TUI's committed-prefix audit re-anchor.
 		block.mutate(["original", "Error: boom"]);
-		expect(container.render(40)).toEqual(["tail"]);
-		expect(block.renderCount).toBe(1);
+		expect(container.render(40)).toEqual(["original", "Error: boom"]);
+		expect(block.renderCount).toBe(2);
 
-		// A destructive full replay (ED3) retires the tape and rehydrates the
-		// complete frame from each block's current render — the mutation surfaces
-		// exactly once, no loss.
-		container.prepareNativeScrollbackReplay();
+		// Once observed, the bypass re-engages at the new version.
 		container.setNativeScrollbackCommittedRows(2);
-		expect(container.render(40)).toEqual(["original", "Error: boom", "", "tail"]);
+		expect(container.render(40)).toEqual(["original", "Error: boom"]);
 		expect(block.renderCount).toBe(2);
 	});
-	it("rehydrates a committed finalized tool display change on replay", () => {
+	it("renders a committed finalized tool display change without replay", () => {
 		const container = new TranscriptContainer();
 		const ui = { requestRender() {} } as unknown as TUI;
 		const component = new CountingToolExecutionComponent(
@@ -479,16 +436,10 @@ describe("TranscriptContainer", () => {
 		expect(component.renderCount).toBe(1);
 
 		container.setNativeScrollbackCommittedRows(collapsedRows.length);
+		expect(plain(container.render(80))).toEqual(collapsed);
 		const afterCommit = component.renderCount;
-		expect(container.render(80)).toEqual([]);
-		expect(component.renderCount).toBe(afterCommit);
 
 		component.setExpanded(true);
-		expect(container.render(80)).toEqual([]);
-		expect(component.renderCount).toBe(afterCommit);
-
-		container.prepareNativeScrollbackReplay();
-		container.setNativeScrollbackCommittedRows(collapsedRows.length);
 		const expanded = plain(container.render(80));
 		expect(component.renderCount).toBe(afterCommit + 1);
 		expect(expanded).toContain("tool-output-8");
@@ -760,19 +711,6 @@ describe("TranscriptContainer isBlockUncommitted", () => {
 		expect(container.isBlockUncommitted(block)).toBe(false);
 	});
 
-	it("keeps compacted committed blocks marked committed", () => {
-		const container = new TranscriptContainer();
-		const committed = new StreamingBlock(["committed"], true);
-		container.addChild(committed);
-		container.addChild(new StreamingBlock(["tail"], true));
-
-		expect(container.render(40)).toEqual(["committed", "", "tail"]);
-		container.setNativeScrollbackCommittedRows(2);
-		expect(container.render(40)).toEqual(["tail"]);
-
-		expect(container.isBlockUncommitted(committed)).toBe(false);
-	});
-
 	it("keeps empty-render blocks uncommitted after committed rows advance", () => {
 		const container = new TranscriptContainer();
 		container.addChild(new MutableBlock(["history"]));
@@ -784,26 +722,6 @@ describe("TranscriptContainer isBlockUncommitted", () => {
 		expect(container.isBlockUncommitted(empty)).toBe(true);
 		container.setNativeScrollbackCommittedRows(100);
 		expect(container.isBlockUncommitted(empty)).toBe(true);
-	});
-
-	it("survives sparse compacted segment holes when checking uncommitted status", () => {
-		const container = new TranscriptContainer();
-		const committed = new StreamingBlock(["committed"], true);
-		const live = new StreamingBlock(["live"], true);
-		container.addChild(committed);
-		container.addChild(live);
-
-		expect(container.render(40)).toEqual(["committed", "", "live"]);
-		container.setNativeScrollbackCommittedRows(2);
-		// Compaction first rewrites the compacted prefix into zero-row placeholders.
-		expect(container.render(40)).toEqual(["live"]);
-		// The next render only repopulates from #compactedChildStart, leaving a
-		// sparse hole at the compacted index. Retiring IRC/ephemeral cards walks
-		// every segment and must not crash on those undefined entries.
-		expect(container.render(40)).toEqual(["live"]);
-		expect(() => container.isBlockUncommitted(live)).not.toThrow();
-		expect(() => container.isBlockUncommitted(committed)).not.toThrow();
-		expect(container.isBlockUncommitted(committed)).toBe(false);
 	});
 });
 

@@ -98,10 +98,10 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			const primaryManager = AsyncJobManager.instance();
 			expect(primaryManager).toBeDefined();
 
-			// Register a long-running job on the primary's manager under the
-			// MAIN_AGENT_ID owner — the same owner the secondary would inherit by
-			// default. The secondary's dispose-time `cancelOwnAsyncJobs` must NOT
-			// cancel this job (issue #1923).
+			// Register a long-running job under the primary top-level session's
+			// owner and scope. The secondary inherits the same MAIN_AGENT_ID owner,
+			// so the scope boundary is what prevents its dispose path from
+			// cancelling the primary's job (issue #1923).
 			const release = Promise.withResolvers<string>();
 			const jobId = primaryManager!.register(
 				"bash",
@@ -112,7 +112,7 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 					await Promise.race([release.promise, aborted.promise]);
 					return signal.aborted ? "aborted" : "completed";
 				},
-				{ ownerId: "Main" },
+				{ ownerId: "Main", scopeId: primary.getAgentScopeId() },
 			);
 			expect(primary.getAsyncJobSnapshot()?.running.some(job => job.id === jobId)).toBe(true);
 

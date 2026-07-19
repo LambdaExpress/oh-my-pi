@@ -798,7 +798,7 @@ export class InputController {
 			// While loop mode is on, every user-typed prompt becomes the new loop
 			// prompt that auto-resubmits after each yield.
 			if (this.ctx.loopModeEnabled) {
-				this.ctx.loopPrompt = text;
+				this.ctx.setLoopPrompt(text);
 			}
 
 			// Queue input during compaction

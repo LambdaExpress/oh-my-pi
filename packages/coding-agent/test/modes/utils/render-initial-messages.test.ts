@@ -1,9 +1,8 @@
 /**
- * Contract: renderInitialMessages renders the full live DISPLAY TRANSCRIPT,
- * not the LLM context. The transcript comes from
- * `viewSession.buildTranscriptSessionContext()` without asking to collapse
- * compacted history. `sessionManager.buildSessionContext()` — the LLM-context
- * builder — must not be consulted for display.
+ * Contract: renderInitialMessages renders the live DISPLAY TRANSCRIPT according
+ * to the configured compaction display policy. The transcript comes from
+ * `viewSession.buildTranscriptSessionContext()`; `sessionManager.buildSessionContext()`
+ * — the LLM-context builder — must not be consulted for display.
  *
  * Also guards the cold-launch terminal cleanup: `omp` / `omp -c` leave the
  * previous run's transcript in native scrollback because the TUI's initial
@@ -17,6 +16,7 @@ import { createCompactionSummaryMessage } from "@oh-my-pi/pi-agent-core/compacti
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
@@ -140,9 +140,8 @@ function transcriptWith(messages: AgentMessage[]): SessionContext {
 
 function countImageComponents(component: Component): number {
 	const own = component instanceof Image ? 1 : 0;
-	const children = (component as { children?: unknown }).children;
-	if (!Array.isArray(children)) return own;
-	return own + children.reduce((count, child) => count + countImageComponents(child as Component), 0);
+	if (!("children" in component) || !Array.isArray(component.children)) return own;
+	return own + component.children.reduce((count, child) => count + countImageComponents(child), 0);
 }
 
 function hasImageComponent(component: Component): boolean {
@@ -151,6 +150,7 @@ function hasImageComponent(component: Component): boolean {
 
 function makeRenderCtx(
 	transcript: SessionContext | ((options?: { collapseCompactedHistory?: boolean }) => SessionContext),
+	showImages = true,
 	toolExecutionDisplaySnapshots: ReadonlyMap<string, DisplaySnapshotFixture> = new Map(),
 ): { ctx: InteractiveModeContext; chatContainer: Container } {
 	const chatContainer = new Container();
@@ -175,7 +175,7 @@ function makeRenderCtx(
 		resetTranscript: () => chatContainer.clear(),
 		// Rebuild paths honor terminal.showImages since the native-image work;
 		// keep it on so the image-replay contracts below stay meaningful.
-		settings: { get: (key: string) => key === "terminal.showImages" },
+		settings: { get: (key: string) => key === "terminal.showImages" && showImages },
 		toolOutputExpanded: false,
 		hideThinkingBlock: false,
 		focusedAgentId: undefined,
@@ -218,7 +218,7 @@ function makeRenderCtx(
 }
 
 describe("UiHelpers.renderInitialMessages — transcript source", () => {
-	it("renders the full live display transcript, never the LLM context", () => {
+	it("renders the configured display transcript, never the LLM context", () => {
 		const { ctx, transcriptSpy, llmContextSpy, renderSessionContextSpy } = makeCtx();
 		const transcript = makeEmptyContext();
 		transcriptSpy.mockReturnValue(transcript);
@@ -227,7 +227,7 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 
 		expect(transcriptSpy).toHaveBeenCalledTimes(1);
 		const [transcriptOptions] = transcriptSpy.mock.calls[0] ?? [];
-		expect(transcriptOptions?.collapseCompactedHistory).not.toBe(true);
+		expect(transcriptOptions?.collapseCompactedHistory).toBe(true);
 		expect(llmContextSpy).not.toHaveBeenCalled();
 		expect(renderSessionContextSpy).toHaveBeenCalledWith(transcript, {
 			updateFooter: true,
@@ -235,7 +235,8 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 		});
 	});
 
-	it("keeps pre-compaction display history visible when rebuilding the chat", () => {
+	it("keeps pre-compaction display history visible when collapsing is disabled", () => {
+		Settings.instance.set("display.collapseCompacted", false);
 		const compactionSummary = createCompactionSummaryMessage(
 			"Earlier work was summarized for the provider.",
 			12345,
@@ -329,6 +330,33 @@ describe("UiHelpers.renderInitialMessages — image replay", () => {
 
 		expect(hasImageComponent(chatContainer)).toBe(true);
 		expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("display image 1: 1x1");
+	});
+
+	it("preserves hidden read images so enabling them later can replay the image", async () => {
+		await Settings.init({ inMemory: true, overrides: { "terminal.showImages": false } });
+		setTerminalImageProtocol(ImageProtocol.Sixel);
+		const transcript = transcriptWith([
+			assistantToolCall("read-hidden", "read", { path: "hidden.png" }),
+			{
+				role: "toolResult",
+				toolCallId: "read-hidden",
+				toolName: "read",
+				content: [{ type: "text", text: "Read image: hidden.png" }, pngImage],
+				isError: false,
+				timestamp: 2,
+			},
+		]);
+		const { ctx, chatContainer } = makeRenderCtx(transcript, false);
+
+		new UiHelpers(ctx).renderInitialMessages();
+
+		expect(hasImageComponent(chatContainer)).toBe(false);
+		const assistant = chatContainer.children.find(
+			(child): child is AssistantMessageComponent => child instanceof AssistantMessageComponent,
+		);
+		expect(assistant).toBeDefined();
+		assistant?.setImagesVisible(true);
+		expect(hasImageComponent(chatContainer)).toBe(true);
 	});
 
 	it("replays reopened session image blocks through the cold-start rebuild path", async () => {
@@ -506,7 +534,7 @@ describe("UiHelpers.renderSessionContext — active tool restoration", () => {
 			],
 		]);
 		const transcript = transcriptWith([assistantToolCall(toolCallId, "task", taskArgs)]);
-		const { ctx, chatContainer } = makeRenderCtx(transcript, snapshots);
+		const { ctx, chatContainer } = makeRenderCtx(transcript, true, snapshots);
 
 		new UiHelpers(ctx).renderInitialMessages({ clearTerminalHistory: true });
 

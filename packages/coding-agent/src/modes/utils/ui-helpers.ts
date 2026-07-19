@@ -534,10 +534,10 @@ export class UiHelpers {
 					const images: ImageContent[] = message.content.filter(
 						(content): content is ImageContent => content.type === "image",
 					);
-					if (images.length > 0 && assistantComponent && settings.get("terminal.showImages")) {
+					if (images.length > 0 && assistantComponent) {
 						assistantComponent.setToolResultImages(message.toolCallId, images);
 						const hasText = message.content.some(c => c.type === "text");
-						if (!hasText) {
+						if (!hasText && settings.get("terminal.showImages")) {
 							readToolCallArgs.delete(message.toolCallId);
 							readToolCallAssistantComponents.delete(message.toolCallId);
 							continue;
@@ -633,17 +633,18 @@ export class UiHelpers {
 		const displaySnapshots = this.ctx.viewSession.getToolExecutionDisplaySnapshots?.();
 		for (const [toolCallId, component] of this.ctx.pendingTools) {
 			const snapshot = displaySnapshots?.get(toolCallId);
+			const isBackgroundRunning = backgroundRunningToolCalls.has(toolCallId);
 			if (snapshot) {
 				component.updateArgs(snapshot.args, toolCallId);
 				if (snapshot.result) {
 					component.updateResult(snapshot.result, snapshot.isPartial, toolCallId);
 				}
-				if (!snapshot.isPartial && !backgroundRunningToolCalls.has(toolCallId)) {
+				if (!snapshot.isPartial && !isBackgroundRunning) {
 					this.ctx.pendingTools.delete(toolCallId);
 					continue;
 				}
 			}
-			if (this.ctx.viewSession.isStreaming) {
+			if (snapshot?.isPartial || isBackgroundRunning || this.ctx.viewSession.isStreaming) {
 				component.setArgsComplete(toolCallId);
 				continue;
 			}
@@ -769,6 +770,7 @@ export class UiHelpers {
 			const hintText = theme.fg("dim", `  ${theme.tree.hook} ${dequeueKey} to edit`);
 			this.ctx.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
+		this.ctx.ui.requestComponentRender(this.ctx.pendingMessagesContainer);
 	}
 
 	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void {

@@ -59,6 +59,12 @@ class SeamLineList extends LineList implements NativeScrollbackLiveRegion {
 	}
 }
 
+class PinnedSeamLineList extends SeamLineList {
+	isNativeScrollbackLiveRegionPinned(): boolean {
+		return true;
+	}
+}
+
 /**
  * Records the engine's committed-row claim visible at each render() call.
  * Pins the propagation contract: the claim must be fed *before* render so the
@@ -330,6 +336,43 @@ describe("streaming scrollback — visual record", () => {
 			tui.requestRender();
 			await settle(term);
 			expect(tape(term)).toEqual(rows("tool-", 10));
+		} finally {
+			tui.stop();
+		}
+	});
+
+	it("keeps a tall viewport-pinned wall out of scrollback until it finalizes", async () => {
+		if (process.platform === "win32") return;
+		const term = new VirtualTerminal(60, 8, 1_000);
+		overrideProbe(term, undefined);
+		const tui = new TUI(term);
+		const wall = new PinnedSeamLineList([]);
+
+		try {
+			tui.addChild(wall);
+			tui.start();
+			await settle(term);
+
+			const writes = capture(term);
+			let frame: string[] = [];
+			for (let tick = 0; tick < 6; tick++) {
+				frame = Array.from(
+					{ length: 14 },
+					(_unused, row) => `frame-${tick} worker-${Math.floor(row / 7)} row-${row % 7}`,
+				);
+				wall.setLines(frame);
+				tui.requestRender();
+				await settle(term);
+			}
+
+			expect(eraseScrollbackCount(writes)).toBe(0);
+			expect(term.getBufferPosition().baseY).toBe(0);
+			expect(tape(term)).toEqual(frame.slice(-8));
+
+			wall.seam = undefined;
+			tui.requestRender();
+			await settle(term);
+			expect(tape(term)).toEqual(frame);
 		} finally {
 			tui.stop();
 		}
@@ -1337,16 +1380,15 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 					).toBeLessThanOrEqual(2);
 				}
 
-				// Visual-record semantics allow the pending live rows that already
-				// reached native history to remain as one frozen snapshot before the
-				// final form. Identical settled renders must not grow that tape.
+				// Direct terminals repair divergent native history with one exact
+				// replay. Identical settled renders must not replay again.
 				const stableTape = [...afterFinalize];
 				for (let i = 0; i < 3; i++) {
 					tui.requestRender();
 					await settle(term);
 					expect(tape(term)).toEqual(stableTape);
 				}
-				expect(eraseScrollbackCount(writes)).toBe(0);
+				expect(eraseScrollbackCount(writes)).toBe(1);
 			} finally {
 				tui.stop();
 			}
@@ -1431,14 +1473,14 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 					await settle(term);
 					expect(tape(term)).toEqual(stableTape);
 				}
-				expect(eraseScrollbackCount(writes)).toBe(0);
+				expect(eraseScrollbackCount(writes)).toBe(1);
 			} finally {
 				tui.stop();
 			}
 		});
 	});
 
-	it("keeps a finalized tool block contiguous after a ConPTY hidden-lines marker", async () => {
+	it("keeps complete ConPTY history and a finalized tool block contiguous", async () => {
 		await withPlatform("win32", async () => {
 			const term = new VirtualTerminal(80, 12, 20_000);
 			overrideProbe(term, undefined);
@@ -1479,7 +1521,9 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 				await settle(term);
 
 				const beforeFinalize = tape(term);
-				expect(beforeFinalize.some(row => row.includes("older lines hidden"))).toBe(true);
+				expect(beforeFinalize.some(row => row.includes("older lines hidden"))).toBe(false);
+				expect(beforeFinalize.some(row => row.startsWith("history-00000:"))).toBe(true);
+				expect(beforeFinalize.some(row => row.startsWith("history-06999:"))).toBe(true);
 
 				root.setLines([...stablePrefix, ...finalBlock]);
 				root.seam = undefined;
@@ -1562,9 +1606,9 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 					await settle(term);
 					expect(tape(term)).toEqual(stableTape);
 				}
-				// The ordinary finalize path must not rely on a destructive history
-				// rebuild to hide the split frame; resize/reset may still replay.
-				expect(eraseScrollbackCount(writes)).toBe(0);
+				// Direct-terminal finalization repairs split native history with one
+				// exact replay; stable renders above must not trigger another.
+				expect(eraseScrollbackCount(writes)).toBe(1);
 			} finally {
 				tui.stop();
 			}

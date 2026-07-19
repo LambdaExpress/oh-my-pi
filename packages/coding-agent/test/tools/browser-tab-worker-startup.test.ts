@@ -103,7 +103,12 @@ describe("browser tab worker page activation", () => {
 				calls.push("bringToFront");
 			},
 			isClosed: () => false,
+			on: () => {},
+			once: () => {},
 			off: () => {},
+			removeAllListeners: () => {},
+			mainFrame: () => undefined,
+			setRequestInterception: async () => {},
 		};
 		const browser = {
 			targets: () => [target],

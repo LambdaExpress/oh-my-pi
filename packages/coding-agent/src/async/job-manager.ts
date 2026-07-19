@@ -50,6 +50,8 @@ export interface AsyncJob {
 	toolCallId?: string;
 	progress?: AsyncJobProgress;
 	settledAt?: number;
+	/** Latest tool-render details reported by the running job. */
+	latestDetails?: Record<string, unknown>;
 	/**
 	 * Registry id of the agent that registered the job (e.g. "Main",
 	 * "AuthLoader"). Used by scoped cancel/list APIs so a subagent's teardown
@@ -270,6 +272,7 @@ export class AsyncJobManager {
 		const reportProgress = async (text: string, details?: Record<string, unknown>): Promise<void> => {
 			if (job.scopeId !== undefined && this.#retiredScopes.has(job.scopeId)) return;
 			job.progress = { text, details, updatedAt: Date.now() };
+			if (details) job.latestDetails = details;
 			this.#notifyJobChange(job);
 			if (!options?.onProgress) return;
 			try {

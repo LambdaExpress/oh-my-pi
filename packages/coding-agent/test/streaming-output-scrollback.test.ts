@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, describe, expect, test, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
@@ -166,6 +166,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 	afterEach(() => {
 		if (ORIGINAL_ROWS) Object.defineProperty(process.stdout, "rows", ORIGINAL_ROWS);
 		else Reflect.deleteProperty(process.stdout, "rows");
+		vi.restoreAllMocks();
 	});
 
 	test("bash: growing partial output under a live predecessor does not duplicate banners", async () => {
@@ -226,7 +227,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		expect(lines.map(line => Bun.stripANSI(line)).join("\n")).toContain("ctrl+o");
 	});
 
-	test("resize growth paints compacted transcript history in the borrowed viewport", async () => {
+	test("resize growth preserves retained transcript history in the borrowed viewport", async () => {
 		const term = new VirtualTerminal(40, 4);
 		const writes: string[] = [];
 		const realWrite = term.write.bind(term);
@@ -250,14 +251,8 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			scheduler.flush();
 			await term.flush();
 
-			// Model the renderer handing the overflowing finalized prefix to native
-			// scrollback, then the transcript compacting that terminal-owned prefix.
-			transcript.setNativeScrollbackCommittedRows(10);
-			expect(transcript.render(40)).not.toContain("A1");
-
-			// Each drag frame should re-expose all six logical transcript blocks,
-			// including the prefix compacted before the resize. Repeating the check
-			// across one burst covers the event-order-dependent production failure.
+			// Each drag frame must expose the logical transcript blocks that fit
+			// after reflow. Repeating the check covers resize-burst event ordering.
 			for (const [width, height] of [
 				[60, 20],
 				[55, 18],
@@ -280,16 +275,10 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			await term.flush();
 			expect(writes.join("").match(/\x1b\[3J/g)).toHaveLength(1);
 
-			// The short final viewport commits a transcript prefix during the
-			// destructive settle. The next local render must genuinely compact
-			// that terminal-owned prefix, or the ordinary-frame assertion below
-			// would not exercise the post-settle virtualization transition.
-			expect(transcript.render(70)).not.toContain("A1");
-			expect(transcript.render(70)).toContain("B3");
-
-			// The first ordinary frame after the destructive settle lets the
-			// transcript compact its terminal-owned prefix again. That virtual
-			// shrink must not be mistaken for semantic content deletion.
+			// The settled logical frame retains every transcript block; the next
+			// ordinary frame must not duplicate or discard native history.
+			const retainedFrame = transcript.render(70);
+			for (const label of labels) expect(retainedFrame).toContain(label);
 			tui.requestRender();
 			scheduler.flush();
 			await term.flush();
@@ -308,7 +297,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			await term.flush();
 		}
 	});
-	test("resize growth restores a transcript whose entire local frame was compacted", async () => {
+	test("resize growth paints a complete retained transcript", async () => {
 		const term = new VirtualTerminal(40, 7);
 		const scheduler = makeDrainableScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -317,8 +306,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		for (const label of labels) transcript.addChild(new StaticBlock([label]));
 
 		// Mirror the real root order: startup chrome above chat, then the anchored
-		// todo/status/editor roots below it. At the short starting height every
-		// transcript row scrolls above the viewport and becomes compactable.
+		// todo/status/editor roots below it.
 		tui.addChild(new StaticBlock([""]));
 		tui.addChild(new StaticBlock(["WELCOME"]));
 		tui.addChild(new StaticBlock([""]));
@@ -332,7 +320,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			tui.start();
 			scheduler.flush();
 			await term.flush();
-			expect(transcript.render(40)).toEqual([]);
+			for (const label of labels) expect(transcript.render(40)).toContain(label);
 
 			term.resize(100, 30);
 			await term.flush();
@@ -350,7 +338,7 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 		}
 	});
 
-	test("preserves partially committed rows when compacting a finalized multiline block", async () => {
+	test("preserves finalized multiline rows across append-only updates", async () => {
 		const term = new VirtualTerminal(70, 4);
 		const writes: string[] = [];
 		const realWrite = term.write.bind(term);
@@ -374,10 +362,9 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			scheduler.flush();
 			await term.flush();
 
-			// Four local transcript rows committed: H1, the separator, R1, R2.
-			// Compaction removes only H1 + separator, so R1/R2 remain both in the
-			// local frame and in native history. The TUI must keep that boundary.
-			expect(transcript.render(70)).toEqual(["R1", "R2", "R3"]);
+			// The logical frame retains finalized rows after the leading portion
+			// enters native history.
+			expect(transcript.render(70)).toEqual(["H1", "", "R1", "R2", "R3"]);
 			tui.requestRender();
 			scheduler.flush();
 			await term.flush();
@@ -613,4 +600,50 @@ describe("streaming tool output never sprays duplicate scrollback banners", () =
 			await term.flush();
 		}
 	}, 30_000);
+	test("tmux height growth preserves finalized history above a live response", async () => {
+		const previousTmux = Bun.env.TMUX;
+		Bun.env.TMUX = "issue-6011";
+		const term = new VirtualTerminal(40, 10, 1_000);
+		const scheduler = makeDrainableScheduler();
+		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new StaticBlock(Array.from({ length: 30 }, (_, index) => `history-${index}`)));
+		transcript.addChild(new LiveBarrier(Array.from({ length: 20 }, (_, index) => `live-${index}`)));
+		tui.addChild(transcript);
+		tui.addChild(new Footer(2));
+
+		try {
+			tui.start();
+			scheduler.flush();
+			await term.flush();
+			expect(term.getViewport().some(row => Bun.stripANSI(row).includes("history-"))).toBe(false);
+
+			const writes: string[] = [];
+			const write = term.write.bind(term);
+			vi.spyOn(term, "write").mockImplementation(data => {
+				writes.push(data);
+				write(data);
+			});
+
+			term.resize(80, 60);
+			scheduler.flush();
+			await term.flush();
+
+			let viewport = term.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+			expect(viewport.some(row => row === "history-0")).toBe(true);
+			expect(viewport.some(row => row === "live-19")).toBe(true);
+
+			tui.requestRender();
+			scheduler.flush();
+			await term.flush();
+			viewport = term.getViewport().map(row => Bun.stripANSI(row).trimEnd());
+			expect(viewport.some(row => row === "history-0")).toBe(true);
+			expect(writes.join("")).not.toContain("\x1b[3J");
+		} finally {
+			tui.stop();
+			await term.flush();
+			if (previousTmux === undefined) delete Bun.env.TMUX;
+			else Bun.env.TMUX = previousTmux;
+		}
+	});
 });

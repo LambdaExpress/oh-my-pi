@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [17.0.5] - 2026-07-18
+
+### Fixed
+
+- Fixed an EADDRINUSE error by properly reusing the live stats dashboard on the requested port and reclaiming stale listeners (#5970).
+
 ## [17.0.2] - 2026-07-17
 
 ### Fixed
