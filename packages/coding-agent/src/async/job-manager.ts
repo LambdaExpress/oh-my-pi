@@ -42,6 +42,8 @@ export interface AsyncJob {
 	type: AsyncJobType;
 	status: "running" | "completed" | "failed" | "cancelled";
 	startTime: number;
+	/** Absolute command deadline; absent when the job has no deadline. */
+	deadlineAt?: number;
 	label: string;
 	abortController: AbortController;
 	promise: Promise<void>;
@@ -103,6 +105,8 @@ export interface AsyncJobDeliveryState {
 export interface AsyncJobRegisterOptions {
 	id?: string;
 	toolCallId?: string;
+	/** Job deadline relative to registration; zero or undefined means no deadline. */
+	timeoutMs?: number;
 	/** Registry id of the agent that owns this job; used to scope cancelAll. */
 	ownerId?: string;
 	/** Top-level Main session UUID inherited unchanged by child agents. */
@@ -252,11 +256,14 @@ export class AsyncJobManager {
 		const id = this.#resolveJobId(options?.id);
 		this.#suppressedDeliveries.delete(id);
 		const abortController = new AbortController();
+		const startTime = Date.now();
+		const timeoutMs = options?.timeoutMs;
 		const job: AsyncJob = {
 			id,
 			type,
 			status: "running",
-			startTime: Date.now(),
+			startTime,
+			...(timeoutMs !== undefined && timeoutMs > 0 ? { deadlineAt: startTime + timeoutMs } : {}),
 			label,
 			abortController,
 			promise: Promise.resolve(),

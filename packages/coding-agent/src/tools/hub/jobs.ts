@@ -145,6 +145,7 @@ interface TrackedJobLike {
 	status: JobSnapshot["status"];
 	label: string;
 	startTime: number;
+	deadlineAt?: number;
 	latestDetails?: Record<string, unknown>;
 	resultText?: string;
 	errorText?: string;
@@ -185,6 +186,7 @@ export function snapshotJobs(session: ToolSession, jobs: TrackedJobLike[]): JobS
 			status: latest.status,
 			label: latest.label,
 			durationMs: Math.max(0, (latest.settledAt ?? now) - latest.startTime),
+			...(latest.deadlineAt !== undefined ? { deadlineAt: latest.deadlineAt } : {}),
 			...(resolvedModel ? { resolvedModel } : {}),
 			...(latest.resultText ? { resultText: latest.resultText } : {}),
 			...(latest.errorText ? { errorText: latest.errorText } : {}),

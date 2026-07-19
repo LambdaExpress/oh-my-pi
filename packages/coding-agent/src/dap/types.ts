@@ -414,6 +414,11 @@ export interface DapOutputEventBody {
 	data?: unknown;
 }
 
+export interface DapOutputSegment {
+	category: string;
+	output: string;
+}
+
 export interface DapStoppedEventBody {
 	reason: string;
 	description?: string;
@@ -584,10 +589,80 @@ export interface DapSessionSummary {
 	childSessionIds?: string[];
 }
 
-export interface DapContinueOutcome {
+export interface DapExecutionStart {
+	executionId: string;
 	snapshot: DapSessionSummary;
 	state: "running" | "stopped" | "terminated";
+	startedAt: number;
+}
+
+export type DapExecutionOutcomeReason = "stopped" | "exited" | "terminated" | "adapter_exit" | "session_disposed";
+
+export type DapStopCaptureStage = "threads" | "stack_trace" | "scopes" | "variables" | "state";
+
+export interface DapStopCaptureError {
+	stage: DapStopCaptureStage;
+	message: string;
+	scopeName?: string;
+	variablesReference?: number;
+}
+
+export interface DapStopScopeSnapshot {
+	scope: DapScope;
+	variables: DapVariable[];
+	variablesTruncated: boolean;
+	truncatedValueCount: number;
+}
+
+export interface DapStopSnapshot {
+	complete: boolean;
+	sessionId: string;
+	stopGeneration: number;
+	stoppedEvent: DapStoppedEventBody;
+	capturedAt: number;
+	summary: DapSessionSummary;
+	threads: DapThread[];
+	threadsTruncated: boolean;
+	stackFrames: DapStackFrame[];
+	stackFramesTruncated: boolean;
+	totalFrames?: number;
+	scopes: DapStopScopeSnapshot[];
+	scopesTruncated: boolean;
+	output: string;
+	outputSegments: DapOutputSegment[];
+	outputTruncated: boolean;
+	outputBytesAtStop: number;
+	errors: DapStopCaptureError[];
+}
+
+export interface DapExecutionOutcome {
+	executionId: string;
+	reason: DapExecutionOutcomeReason;
+	state: "stopped" | "terminated";
+	timedOut: false;
+	snapshot: DapSessionSummary;
+	sourceSessionId: string;
+	targetSessionId: string;
+	startedAt: number;
+	settledAt: number;
+	stoppedEvent?: DapStoppedEventBody;
+	exitCode?: number;
+	stopSnapshot?: DapStopSnapshot;
+}
+
+export interface DapWaitForExecutionOutcome {
+	executionId: string;
+	reason: DapExecutionOutcomeReason | "timeout";
+	state: "running" | "stopped" | "terminated";
 	timedOut: boolean;
+	snapshot: DapSessionSummary;
+	targetSessionId: string;
+	startedAt: number;
+	sourceSessionId?: string;
+	settledAt?: number;
+	stoppedEvent?: DapStoppedEventBody;
+	exitCode?: number;
+	stopSnapshot?: DapStopSnapshot;
 }
 
 export interface DapLaunchSessionOptions {

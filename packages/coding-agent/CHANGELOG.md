@@ -4,6 +4,9 @@
 
 ### Added
 
+- Added autonomous request-triggered debugging with non-blocking execution ids, late `wait_for_stop`, bounded stop snapshots, and race-safe async Bash trigger coordination.
+- Added DAP adapter preflight and regex-based output readiness waits for launched debug services.
+
 - Added streaming SSH file uploads and downloads with foreground/background progress, cancellation, and temporary-session host support.
 
 - Added managed `omp worktree` background workspaces with add/list/switch/apply/remove/branch/snapshot restore flows, plus `/worktree` TUI and ACP quick actions.
@@ -35,6 +38,10 @@
 
 ### Fixed
 
+- Fixed autonomous debugging ergonomics by exposing trigger deadlines, returning executable next-call guidance, scoping categorized output to the current execution, and reporting the final terminated state.
+- Fixed Windows DAP launches opening a separate Windows Terminal window by keeping adapter and `runInTerminal` child processes attached while preserving piped I/O and process-tree cleanup.
+- Fixed Debug tool result blocks rendering with the terminal's default foreground color by applying the same semantic theme hierarchy as LSP results to metadata, output categories, statuses, paths, identifiers, and next actions.
+- Fixed expanded Debug result blocks still hiding output after 12 lines, so the tool-output expansion toggle now reveals every returned line while collapsed previews remain bounded.
 - Fixed terminal resize replays dropping committed conversation history—sometimes leaving only the latest output—by rebuilding from the full logical transcript and suppressing local prefix compaction during every destructive replay.
 - Fixed `xd://` MCP mount and unmount status notices flooding the transcript with every device name by grouping dynamic devices per MCP server (for example, `mounted 38 tools from atlassian`) while retaining the full hidden device delta for the model.
 - Fixed `/new` retaining prior-session subagents, background jobs, IRC messages, and late HUD updates by fully retiring the previous root-session scope before activating the new session.

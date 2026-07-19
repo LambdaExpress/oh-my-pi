@@ -33,6 +33,20 @@ describe("AsyncJobManager", () => {
 		expect(manager.getJob(jobId)?.status).toBe("completed");
 	});
 
+	test("records finite job deadlines and leaves disabled deadlines open", async () => {
+		const manager = new AsyncJobManager({ onJobComplete: () => {} });
+		const before = Date.now();
+		const finiteId = manager.register("bash", "finite", async () => "done", { timeoutMs: 60_000 });
+		const unlimitedId = manager.register("bash", "unlimited", async () => "done", { timeoutMs: 0 });
+		const after = Date.now();
+
+		expect(manager.getJob(finiteId)?.deadlineAt).toBeGreaterThanOrEqual(before + 60_000);
+		expect(manager.getJob(finiteId)?.deadlineAt).toBeLessThanOrEqual(after + 60_000);
+		expect(manager.getJob(unlimitedId)?.deadlineAt).toBeUndefined();
+		await manager.waitForAll();
+		await manager.drainDeliveries({ timeoutMs: 2_000 });
+	});
+
 	test("swallows progress callback errors without failing the job", async () => {
 		const completions: Array<{ jobId: string; text: string }> = [];
 		const manager = new AsyncJobManager({

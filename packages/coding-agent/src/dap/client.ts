@@ -45,10 +45,27 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const WRITE_MESSAGE_TIMEOUT_MS = 30_000;
 /** Default wait for socket-mode adapters to become reachable. */
 const SOCKET_READY_TIMEOUT_MS = 10_000;
+/**
+ * POSIX adapters need a new session to avoid controlling-terminal job-control
+ * signals. Windows UV_PROCESS_DETACHED can surface a new terminal window even
+ * with windowsHide, while native tree termination does not require detachment.
+ */
+const DETACH_DAP_SUBPROCESS = process.platform !== "win32";
 
 function toErrorMessage(value: unknown): string {
 	if (value instanceof Error) return value.message;
 	return String(value);
+}
+
+/** Explicit negative DAP response. Transport and timeout failures remain ordinary errors. */
+export class DapRequestRejectedError extends Error {
+	readonly command: string;
+
+	constructor(command: string, message: string) {
+		super(message);
+		this.name = "DapRequestRejectedError";
+		this.command = command;
+	}
 }
 
 export class DapClient {
@@ -107,10 +124,8 @@ export class DapClient {
 		if (adapter.connectMode === "tcp") {
 			return DapClient.#spawnTcp({ adapter, cwd, socketReadyTimeoutMs });
 		}
-		// Merge non-interactive env and start in a new session (detached → setsid)
-		// so the adapter process tree has no controlling terminal. Without this,
-		// debuggee children can reach /dev/tty and trigger SIGTTIN, suspending
-		// the parent harness under shell job control.
+		// Merge non-interactive env. POSIX adapters run in a new session so
+		// debuggee children cannot reach /dev/tty and suspend the harness.
 		const env = {
 			...Bun.env,
 			...NON_INTERACTIVE_ENV,
@@ -119,7 +134,7 @@ export class DapClient {
 			cwd,
 			stdin: "pipe",
 			env,
-			detached: true,
+			detached: DETACH_DAP_SUBPROCESS,
 		});
 		const client = new DapClient(adapter, cwd, proc);
 		proc.exited.then(() => {
@@ -184,7 +199,7 @@ export class DapClient {
 				...Bun.env,
 				...NON_INTERACTIVE_ENV,
 			},
-			detached: true,
+			detached: DETACH_DAP_SUBPROCESS,
 		});
 
 		try {
@@ -244,7 +259,7 @@ export class DapClient {
 			cwd,
 			stdin: "pipe",
 			env,
-			detached: true,
+			detached: DETACH_DAP_SUBPROCESS,
 		});
 
 		// If waitForCondition throws (timeout, or adapter exited early) or the
@@ -299,7 +314,7 @@ export class DapClient {
 			cwd,
 			stdin: "pipe",
 			env,
-			detached: true,
+			detached: DETACH_DAP_SUBPROCESS,
 		});
 
 		// Wait for the adapter to dial back. On timeout (or any other failure
@@ -639,7 +654,7 @@ export class DapClient {
 			return;
 		}
 		const errorMessage = message.message ?? `DAP request ${pending.command} failed`;
-		pending.reject(new Error(errorMessage));
+		pending.reject(new DapRequestRejectedError(pending.command, errorMessage));
 	}
 
 	async #dispatchEvent(message: DapEventMessage): Promise<void> {

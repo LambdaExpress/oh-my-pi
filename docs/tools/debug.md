@@ -26,7 +26,10 @@
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `action` | `"launch" \| "attach" \| "set_breakpoint" \| "remove_breakpoint" \| "set_instruction_breakpoint" \| "remove_instruction_breakpoint" \| "data_breakpoint_info" \| "set_data_breakpoint" \| "remove_data_breakpoint" \| "continue" \| "step_over" \| "step_in" \| "step_out" \| "pause" \| "evaluate" \| "stack_trace" \| "threads" \| "scopes" \| "variables" \| "disassemble" \| "read_memory" \| "write_memory" \| "modules" \| "loaded_sources" \| "custom_request" \| "output" \| "terminate" \| "sessions"` | Yes | Dispatch key for the tool switch in `packages/coding-agent/src/tools/debug.ts`. |
+| `action` | `"launch" \| "attach" \| "set_breakpoint" \| "remove_breakpoint" \| "set_instruction_breakpoint" \| "remove_instruction_breakpoint" \| "data_breakpoint_info" \| "set_data_breakpoint" \| "remove_data_breakpoint" \| "continue" \| "wait_for_stop" \| "step_over" \| "step_in" \| "step_out" \| "pause" \| "evaluate" \| "stack_trace" \| "threads" \| "scopes" \| "variables" \| "disassemble" \| "read_memory" \| "write_memory" \| "modules" \| "loaded_sources" \| "custom_request" \| "output" \| "terminate" \| "sessions"` | Yes | Dispatch key for the tool switch in `packages/coding-agent/src/tools/debug.ts`. |
+| `wait_for_stop` | `boolean` | No | `continue` only. Defaults to `true`; `false` returns after the DAP control request with an execution id. |
+| `execution_id` | `string` | No | Execution record returned by non-blocking `continue`. Required for the `wait_for_stop` action. |
+| `trigger_job_id` | `string` | No | Optional same-owner, same-scope async Bash job raced by `wait_for_stop`. |
 | `program` | `string` | No | Launch target path. Required for `launch`. Resolved relative to `cwd` if provided, otherwise session cwd. |
 | `args` | `string[]` | No | Program argv for `launch`. |
 | `adapter` | `string` | No | Explicit adapter name. Otherwise `selectLaunchAdapter()` / `selectAttachAdapter()` auto-pick from `packages/coding-agent/src/dap/config.ts`. |
@@ -70,6 +73,7 @@
 - `set_instruction_breakpoint` / `remove_instruction_breakpoint`: `instruction_reference`
 - `data_breakpoint_info`: `name`
 - `set_data_breakpoint` / `remove_data_breakpoint`: `data_id`
+- `wait_for_stop`: `execution_id`; optional `trigger_job_id` must identify an async Bash job visible to the current agent and top-level session scope
 - `evaluate`: `expression`
 - `variables`: `variable_ref` or `scope_id`
 - `disassemble`: capability `supportsDisassembleRequest`, plus `instruction_count`, and either `memory_reference` or a current stopped location with `instructionPointerReference`
@@ -89,10 +93,10 @@ The agent tool returns a standard `toolResult()` payload from `packages/coding-a
 - `details.success`: always initialized `true`; failures surface by throwing before a result is returned.
 - `details.snapshot`: present for actions that operate on or create a session, using `DapSessionSummary` from `packages/coding-agent/src/dap/types.ts`.
 - Action-specific `details` fields:
-  - `launch` / `attach`: `adapter`
+  - `launch` / `attach`: `adapter`; `stopSnapshot` when startup returns stopped
   - breakpoint actions: `breakpoints`, `functionBreakpoints`, `instructionBreakpoints`, `dataBreakpoints`
   - `data_breakpoint_info`: `dataBreakpointInfo`
-  - `continue` / `step_*`: `state`, `timedOut`
+  - `continue` / `wait_for_stop` / `step_*` / `pause`: `state`, `timedOut`, `executionId`, `waitReason`, and a bounded `stopSnapshot` when stopped; coordinated waits also expose `triggerJob`
   - `threads`: `threads`
   - `stack_trace`: `stackFrames`
   - `scopes`: `scopes`
@@ -110,7 +114,7 @@ The agent tool returns a standard `toolResult()` payload from `packages/coding-a
 Streaming/UI behavior:
 - The tool renderer merges call and result (`mergeCallAndResult: true`) and renders inline.
 - `debug.ts` itself does not emit progress updates through `_onUpdate`; result delivery is single-shot.
-- Approval is action-sensitive: read-only actions (`output`, `threads`, `stack_trace`, `scopes`, `variables`, `disassemble`, `read_memory`, `loaded_sources`, `modules`, `sessions`) request read approval; all other actions request exec approval.
+- Approval is action-sensitive: read-only actions (`output`, `wait_for_stop`, `threads`, `stack_trace`, `scopes`, `variables`, `disassemble`, `read_memory`, `loaded_sources`, `modules`, `sessions`) request read approval; all other actions request exec approval.
 - The interactive selector is UI-driven instead of model-driven. It swaps TUI components, appends status lines to the chat pane, opens files in external viewers, or writes archives/temp files.
 
 Side-channel artifacts outside the model tool result:
@@ -120,7 +124,7 @@ Side-channel artifacts outside the model tool result:
 
 ## Flow
 1. Tool registration is conditional: `DebugTool.createIf()` in `packages/coding-agent/src/tools/debug.ts` returns `null` unless `session.settings.get("debug.enabled")` is true. `packages/coding-agent/src/tools/index.ts` wires the factory and rechecks the same setting in tool filtering.
-2. `DebugTool.execute()` clamps `params.timeout` through `clampTimeout("debug", params.timeout)` and composes the caller `AbortSignal` with `AbortSignal.timeout(...)`.
+2. `DebugTool.execute()` clamps `params.timeout` through `clampTimeout("debug", params.timeout)`. DAP requests receive the caller signal and an explicit timeout; execution waits use a separate observation deadline that does not stop the debuggee.
 3. `launch` and `attach` resolve cwd/program paths, select an adapter in `packages/coding-agent/src/dap/config.ts`, then delegate to `dapSessionManager.launch()` / `.attach()`.
 4. `DapSessionManager.launch()` / `.attach()` enforce one root session, spawn the adapter through `DapClient.spawn()`, register listeners, send `initialize`, cache capabilities, subscribe for tree-wide stop events, send `launch`/`attach`, then complete the `initialized` → `configurationDone` handshake.
 5. `DapClient.spawn()` starts adapters detached with `NON_INTERACTIVE_ENV`. Most adapters use stdio; socket-mode adapters (`dlv`) use an adapter-specific Unix/TCP transport, while TCP server adapters start with `${port}` substituted in their args. Child sessions reuse the root TCP server through `DapClient.connect()`.
@@ -130,12 +134,15 @@ Side-channel artifacts outside the model tool result:
    - events: `output`, `initialized`, `stopped`, `continued`, `exited`, and `terminated` update cached session state; stopped children become the active target
 7. Operational actions (`set_breakpoint`, `evaluate`, `threads`, `read_memory`, `custom_request`, and similar) call `dapSessionManager` methods. Most flow through `#sendRequestWithConfig()`, which first sends `configurationDone` when required, then sends the DAP request and refreshes the active session plus its ancestors.
 8. Breakpoint actions synchronize desired breakpoint sets across the live root/child tree. New children receive those sets before their `configurationDone` request.
-9. `continue` and the three step actions clear cached stop state, subscribe for a stop/termination event anywhere in the session tree before sending the DAP request, then `#awaitStopOutcome()` returns the active child’s stopped location or reports that the target remains running after timeout.
-10. `pause` sends DAP `pause`, waits for a stopped event if needed, and reuses cached stop state if the program was already stopped.
-11. `stack_trace`, `scopes`, `variables`, and `evaluate` default to the current stopped child/thread/frame when the caller omits ids and cached state is available.
-12. `output` reads the in-memory output ring from the active `DapSession`. `terminate` walks from the root through every child, sends best-effort `terminate`/`disconnect`, and disposes the complete tree even when an adapter times out.
-13. `sessions` reads the manager’s current map and formats root and child summaries. Only one root tree can exist; recursive adapter-requested children are tracked with `parentSessionId` / `childSessionIds`.
-14. The interactive selector in `packages/coding-agent/src/debug/index.ts` builds a `SelectList` of fixed values and dispatches each to a handler:
+9. Before `continue`, `step_*`, or `pause` sends its DAP control request, the manager creates a monotonic `exec_N` tree-level execution record. Each root tree has at most one unsettled record. `continue(wait_for_stop:false)` returns after the adapter accepts the request; default `continue` and step actions wait on the same record.
+10. `stopped`, target/root termination, adapter exit, and session disposal synchronously settle the record with event source and timestamp. Event handlers never issue inspection requests. Stops from any child become active; unrelated sibling termination does not settle the target execution.
+11. A stopped outcome is materialized into a generation-bound snapshot using fresh threads, stack, scopes, direct variables, and the output tail frozen at the event. Partial adapter failures remain structured capture errors and do not downgrade a real stop to a running timeout.
+12. `wait_for_stop` can race an execution against a visible async Bash trigger. It suppresses duplicate async delivery while observing, chooses the earliest `settledAt` (`stopped` → target terminal → trigger on ties), consumes a settled trigger included in the result, and restores normal delivery for an unconsumed job.
+13. `pause` uses the same coordinator and reuses the current stopped generation when the program is already stopped.
+14. `stack_trace`, `scopes`, `variables`, and `evaluate` default to the current stopped child/thread/frame when the caller omits ids and cached state is available.
+15. `output` reads the in-memory output ring from the active `DapSession`. `terminate` walks from the root through every child, sends best-effort `terminate`/`disconnect`, and disposes the complete tree even when an adapter times out.
+16. `sessions` reads the manager’s current map and formats root and child summaries. Only one root tree can exist; recursive adapter-requested children are tracked with `parentSessionId` / `childSessionIds`.
+17. The interactive selector in `packages/coding-agent/src/debug/index.ts` builds a `SelectList` of fixed values and dispatches each to a handler:
    - `performance`: `startCpuProfile()`, wait for Enter/Escape, stop profiling, read a 30-second work profile with `getWorkProfile(30)`, then bundle via `createReportBundle()`
    - `work`: read `getWorkProfile(30)`, write a temp SVG, open it externally
    - `dump`: create a report bundle immediately
@@ -148,6 +155,14 @@ Side-channel artifacts outside the model tool result:
    - `open-artifacts`: open the current session artifact directory if it exists
    - `transcript`: delegates to `ctx.handleDebugTranscriptCommand()`
    - `clear-cache`: show confirmation, then remove artifact directories older than 30 days with `clearArtifactCache()`
+
+### Request-triggered breakpoint flow
+1. Launch or attach, then set the breakpoint.
+2. Call `continue` with `wait_for_stop:false` and retain its execution id.
+3. Start the reproducing request with `bash(async:true, pty:false)` and retain its job id. A foreground request can deadlock while the debuggee is paused.
+4. Call `wait_for_stop` with both ids. A stop winner includes the bounded snapshot; a trigger winner usually means the path missed the breakpoint or the request failed.
+5. After inspecting or fixing the stop, resume with another non-blocking `continue`, then collect the still-running trigger with `hub wait`.
+6. Reproduce the fixed path by replaying the prior Bash call with identical `command`, `cwd`, `env`, `timeout`, `pty`, and `async` values.
 
 ## Modes / Variants
 - **Availability gate**
@@ -204,8 +219,9 @@ Example `.omp/dap.json`:
   - `set_instruction_breakpoint` / `remove_instruction_breakpoint` — require `supportsInstructionBreakpoints`; return current instruction breakpoint list.
   - `data_breakpoint_info` — require `supportsDataBreakpoints`; asks the adapter for a `dataId`, access types, and description for `name`.
   - `set_data_breakpoint` / `remove_data_breakpoint` — require `supportsDataBreakpoints`; return the cached data-breakpoint list.
-  - `continue` / `step_over` / `step_in` / `step_out` — return text describing whether execution stopped, terminated, or kept running, plus `details.state` and `details.timedOut`.
-  - `pause` — interrupts a running target and returns a stopped snapshot.
+  - `continue` — blocks by default; `wait_for_stop:false` returns the current state and `executionId` after the DAP request is accepted.
+  - `wait_for_stop` — observes an existing execution, optionally races an async Bash trigger, and reports `winner`, trigger status, terminal state, or a bounded stop snapshot.
+  - `step_over` / `step_in` / `step_out` / `pause` — wait through the execution coordinator and attach a bounded snapshot when stopped.
   - `evaluate` — adapter expression evaluation; defaults context to `repl`.
   - `stack_trace` — fetches frames for the resolved thread.
   - `threads` — fetches current threads.
@@ -251,7 +267,7 @@ Example `.omp/dap.json`:
   - `openPath()` launches the OS default file/browser handler for artifact dirs and SVGs.
   - Log/raw-SSE viewers can call `copyToClipboard()`.
 - Session state (transcript, memory, jobs, checkpoints, registries)
-  - `DapSessionManager` keeps session summaries, breakpoints, threads, stack frames, stop location, output capture, capabilities, and last-used timestamps in memory.
+  - `DapSessionManager` keeps session summaries, breakpoints, stop generations, monotonic execution records, frozen stop output tails, bounded snapshots, capabilities, and last-used timestamps in memory.
   - Active-session id is global to the singleton `dapSessionManager`.
   - `RawSseDebugBuffer` stores recent SSE events per owner/session.
   - The tool is `exclusive`; concurrent debug tool calls are blocked by the scheduler.
@@ -260,7 +276,8 @@ Example `.omp/dap.json`:
   - Performance profiling temporarily hijacks editor Enter/Escape handlers until profiling stops.
   - Log/raw-SSE viewers replace the editor pane with custom components.
 - Background work / cancellation
-  - Every DAP request accepts an `AbortSignal`; timeouts and caller cancellation abort the active request, not the whole session lifetime.
+  - DAP requests and execution observations accept an `AbortSignal`; cancelling or timing out an observation leaves the execution record and debuggee alive for a later wait.
+  - A coordinated trigger wait temporarily watches and suppresses the selected async Bash job. Settled results returned by `debug` stay acknowledged; unconsumed jobs resume normal async delivery.
   - `DapSessionManager` runs a background cleanup loop every 30 seconds.
   - Raw SSE viewers subscribe to buffer updates until closed.
 
@@ -272,6 +289,9 @@ Example `.omp/dap.json`:
 - Adapter liveness heartbeat: `HEARTBEAT_INTERVAL_MS = 5 * 1000`.
 - Output capture cap: `MAX_OUTPUT_BYTES = 128 * 1024`; whole chunks are dropped from the front (then the front chunk is byte-sliced so exactly the cap remains) and `outputTruncated` is recorded.
 - Initial stop capture timeout after launch/attach: `STOP_CAPTURE_TIMEOUT_MS = 5_000`.
+- Automatic stop snapshots cap fresh data at 50 threads, 20 frames, 4 non-expensive scopes (arguments/locals first), and 50 direct variables per scope.
+- Variable values are capped at 2,000 characters; stopped output is a frozen 16 KiB tail. Snapshot collection is bounded to 5 seconds and does not recurse into child variables.
+- `variables` paging arguments are sent only when the adapter advertises `supportsVariablePaging`; otherwise the client requests direct variables and applies the 50-item cap locally.
 - Socket-mode adapter readiness timeout: `10_000` ms in `waitForCondition()` and TCP connect timeout logic in `packages/coding-agent/src/dap/client.ts`.
 - Raw SSE buffer caps in `packages/coding-agent/src/debug/raw-sse-buffer.ts`:
   - `MAX_RAW_SSE_EVENTS = 1_000`
@@ -300,6 +320,10 @@ Example `.omp/dap.json`:
   - `count is required for read_memory`
   - `data is required for write_memory`
   - `command is required for custom_request`
+  - `execution_id is required for wait_for_stop`
+  - `Unknown debug execution "<id>".`
+  - `Background job manager unavailable for this session.`
+  - trigger visibility/type errors for jobs outside the exact owner/scope or jobs whose type is not `bash`
 - Adapter selection failure throws `No debugger adapter available. Installed adapters: ...`.
 - Capability-gated actions throw from `requireCapability(...)`, e.g. `Current adapter does not support memory reads`.
 - No-session and state errors come from `DapSessionManager`, e.g. `No active debug session. Launch or attach first.`, `No active stack frame. Run stack_trace first or supply frame_id.`, `Debugger reported no threads.`
@@ -310,7 +334,8 @@ Example `.omp/dap.json`:
   - `DAP adapter <name> is not running`
   - `DAP adapter exited (code N): <stderr>` or `DAP adapter exited unexpectedly (code N)`
   - adapter response `message` when a DAP request fails
-- `continue` / `step_*` are intentionally non-fatal when the target stays running past the timeout: they return `details.timedOut = true` and `state: "running"` instead of throwing.
+- Blocking execution waits are non-fatal when neither the target nor trigger settles before the deadline: they return `details.timedOut = true`. Timeout and caller abort cancel only the observation, preserving the execution for a same-id retry.
+- An explicitly rejected DAP control request rolls back and deletes its new record. A request timeout or transport interruption keeps the record because the adapter may have executed it; the error includes the execution id for `wait_for_stop`.
 - `terminate` suppresses adapter errors while sending `terminate`/`disconnect`; it still disposes the client and returns the last summary when possible.
 - Interactive selector handlers report UI errors instead of throwing:
   - profiler start/stop, report bundling, log reading, system-info collection, cache clearing, and artifact opening use `ctx.showError(...)` / `ctx.showWarning(...)`
@@ -320,7 +345,7 @@ Example `.omp/dap.json`:
 - `collectSystemInfo()` is best-effort for CPU probing; failure there falls back to `Unknown CPU`.
 
 ## Notes
-- `packages/coding-agent/src/prompts/tools/debug.md` tells the model only one active root session is supported. Adapter-requested child sessions belong to that root tree.
+- `packages/coding-agent/src/prompts/tools/debug.md` documents one active root session and the non-blocking continue → async Bash trigger → coordinated wait → resume → hub wait recipe.
 - The default JavaScript/TypeScript adapter runs vscode-js-debug’s `dapDebugServer.js` over TCP. Install it with Mason or set `JS_DEBUG_DAP_SERVER` to a release-tarball server path.
 - `configurationDone` is sent automatically during root and child launch/attach handshakes and lazily before later requests if the initial handshake did not complete.
 - `startDebugging` reverse requests create recursive child sessions on the same TCP server; a stopped child becomes the target for thread-level actions.
@@ -334,4 +359,4 @@ Example `.omp/dap.json`:
 - `createDebugLogSource()` walks daily log files newest-first, but `loadOlderLogs()` reverses each requested slice before concatenation so older chunks prepend in chronological order.
 - `clearArtifactCache()` deletes directories by directory mtime, not per-file age.
 - `addDirectoryToArchive()` reads artifact files as text with `Bun.file(...).text()`. Binary artifact contents are not preserved byte-for-byte in the report bundle.
-- The tool renderer truncates displayed output for the TUI preview, but the underlying text result still contains the full returned string.
+- The tool renderer limits collapsed/expanded preview lines and truncates each displayed line. Automatic snapshots and trigger text are also bounded before entering the model-facing result.

@@ -11,10 +11,10 @@ import type { ToolExample } from "@oh-my-pi/pi-ai";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { isEnoent, prompt } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
+import type { AsyncJob, AsyncJobManager } from "../async";
 import {
 	type DapBreakpointRecord,
 	type DapCapabilities,
-	type DapContinueOutcome,
 	type DapDataBreakpointInfoResponse,
 	type DapDataBreakpointRecord,
 	type DapDisassembledInstruction,
@@ -23,13 +23,16 @@ import {
 	type DapFunctionBreakpointRecord,
 	type DapInstructionBreakpointRecord,
 	type DapModule,
+	type DapOutputSegment,
 	type DapResolvedAdapter,
 	type DapScope,
 	type DapSessionSummary,
 	type DapSource,
 	type DapStackFrame,
+	type DapStopSnapshot,
 	type DapThread,
 	type DapVariable,
+	type DapWaitForExecutionOutcome,
 	dapSessionManager,
 	getAdapterConfigs,
 	getAvailableAdapters,
@@ -38,12 +41,14 @@ import {
 	selectAttachAdapter,
 	selectLaunchAdapter,
 } from "../dap";
-import type { Theme } from "../modes/theme/theme";
+import type { Theme, ThemeColor } from "../modes/theme/theme";
 import debugDescription from "../prompts/tools/debug.md" with { type: "text" };
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
+import { snapshotJobs } from "./hub/jobs";
+import type { JobSnapshot } from "./hub/types";
 import type { OutputMeta } from "./output-meta";
 import { formatPathRelativeToCwd, resolveToCwd } from "./path-utils";
 import {
@@ -55,7 +60,7 @@ import {
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "./render-utils";
-import { ToolError } from "./tool-errors";
+import { ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
 
@@ -66,6 +71,8 @@ import { clampTimeout } from "./tool-timeouts";
  */
 export const DEBUG_READONLY_ACTIONS: ReadonlySet<string> = new Set([
 	"output",
+	"adapters",
+	"wait_for_stop",
 	"threads",
 	"stack_trace",
 	"scopes",
@@ -77,6 +84,7 @@ export const DEBUG_READONLY_ACTIONS: ReadonlySet<string> = new Set([
 	"sessions",
 ]);
 const debugActionSchema = type.enumerated(
+	"adapters",
 	"launch",
 	"attach",
 	"set_breakpoint",
@@ -87,6 +95,7 @@ const debugActionSchema = type.enumerated(
 	"set_data_breakpoint",
 	"remove_data_breakpoint",
 	"continue",
+	"wait_for_stop",
 	"step_over",
 	"step_in",
 	"step_out",
@@ -108,6 +117,11 @@ const debugActionSchema = type.enumerated(
 );
 const debugSchema = type({
 	action: debugActionSchema,
+	"wait_for_stop?": type("boolean").describe("continue only; defaults to true"),
+	"execution_id?": type("string").describe("execution id returned by non-blocking continue"),
+	"trigger_job_id?": type("string").describe("optional async Bash job raced with wait_for_stop"),
+	"wait_for?": type("string").describe("output only; regex to await in the current execution output"),
+	"all_output?": type("boolean").describe("output only; include the full buffered history"),
 	"program?": type("string").describe("debug target path; Delve accepts Go package directories"),
 	"args?": type("string[]").describe("program arguments"),
 	"adapter?": type("string").describe("configured adapter id (gdb, lldb-dap, debugpy, dlv, rdbg, or dap.json entry)"),
@@ -150,11 +164,12 @@ const debugSchema = type({
 export type DebugParams = typeof debugSchema.infer;
 export type DebugAction = DebugParams["action"];
 
-interface DebugToolDetails {
+export interface DebugToolDetails {
 	action: DebugAction;
 	success: boolean;
 	snapshot?: DapSessionSummary;
 	sessions?: DapSessionSummary[];
+	adapters?: DebugAdapterStatus[];
 	stackFrames?: DapStackFrame[];
 	threads?: DapThread[];
 	scopes?: DapScope[];
@@ -174,10 +189,142 @@ interface DebugToolDetails {
 	bytesWritten?: number;
 	customBody?: unknown;
 	output?: string;
+	outputSegments?: DapOutputSegment[];
+	outputMatched?: boolean;
 	adapter?: string;
-	state?: DapContinueOutcome["state"];
+	state?: DapWaitForExecutionOutcome["state"];
 	timedOut?: boolean;
+	executionId?: string;
+	waitReason?: "stopped" | "target_terminal" | "trigger" | "timeout";
+	stopSnapshot?: DapStopSnapshot;
+	triggerJob?: JobSnapshot;
+	nextActions?: DebugNextAction[];
 	meta?: OutputMeta;
+}
+
+export interface DebugAdapterStatus {
+	name: string;
+	command: string;
+	available: boolean;
+	resolvedCommand?: string;
+	languages: string[];
+	fileTypes: string[];
+	hint?: string;
+}
+
+export interface DebugNextAction {
+	tool: "debug" | "hub";
+	input: Record<string, unknown>;
+	when: string;
+}
+
+type DebugWaitReason = NonNullable<DebugToolDetails["waitReason"]>;
+
+interface TriggerJobContext {
+	manager: AsyncJobManager;
+	job: AsyncJob;
+}
+
+interface CoordinatedWaitResult {
+	outcome: DapWaitForExecutionOutcome;
+	waitReason: DebugWaitReason;
+	triggerJob?: JobSnapshot;
+}
+
+type WaitObservation =
+	| { kind: "dap"; outcome: DapWaitForExecutionOutcome }
+	| { kind: "dap_error"; error: unknown }
+	| { kind: "trigger" }
+	| { kind: "timeout" };
+
+function waitReasonForOutcome(outcome: DapWaitForExecutionOutcome): DebugWaitReason {
+	return outcome.reason === "stopped" ? "stopped" : outcome.reason === "timeout" ? "timeout" : "target_terminal";
+}
+
+function snapshotTriggerJob(session: ToolSession, job: AsyncJob): JobSnapshot {
+	const snapshot = snapshotJobs(session, [job])[0];
+	if (!snapshot) throw new Error(`Failed to snapshot background job "${job.id}".`);
+	const boundText = (text: string): string => truncateForPrompt(replaceTabs(text));
+	return {
+		...snapshot,
+		label: truncateToWidth(replaceTabs(snapshot.label), TRUNCATE_LENGTHS.LINE),
+		...(snapshot.resultText !== undefined ? { resultText: boundText(snapshot.resultText) } : {}),
+		...(snapshot.errorText !== undefined ? { errorText: boundText(snapshot.errorText) } : {}),
+		...(snapshot.progress
+			? {
+					progress: {
+						text: boundText(snapshot.progress.text),
+						updatedAt: snapshot.progress.updatedAt,
+					},
+				}
+			: {}),
+	};
+}
+
+function formatTriggerJob(job: JobSnapshot): string {
+	const lines = [`Trigger job ${job.id}: ${job.status} (${formatElapsedMs(job.durationMs)} elapsed)`];
+	if (job.deadlineAt !== undefined) {
+		const remainingMs = job.deadlineAt - (job.settledAt ?? Date.now());
+		lines.push(
+			`Trigger deadline: ${
+				remainingMs > 0 ? `${formatElapsedMs(remainingMs)} remaining` : `${formatElapsedMs(-remainingMs)} overdue`
+			}.`,
+		);
+	} else {
+		lines.push("Trigger deadline: none.");
+	}
+	if (job.resultText !== undefined) lines.push(`Trigger result: ${job.resultText}`);
+	if (job.errorText !== undefined) lines.push(`Trigger error: ${job.errorText}`);
+	if (job.progress && job.settledAt === undefined) lines.push(`Trigger progress: ${job.progress.text}`);
+	return lines.join("\n");
+}
+
+function formatElapsedMs(durationMs: number): string {
+	if (durationMs < 1_000) return `${Math.max(0, Math.round(durationMs))}ms`;
+	const seconds = durationMs / 1_000;
+	return `${seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)}s`;
+}
+
+function nextActionsForOutcome(
+	outcome: DapWaitForExecutionOutcome,
+	waitReason: DebugWaitReason,
+	triggerJob?: JobSnapshot,
+): DebugNextAction[] {
+	if (outcome.state === "stopped") {
+		const actions: DebugNextAction[] = [
+			{ tool: "debug", input: { action: "continue", wait_for_stop: false }, when: "Resume after inspection" },
+		];
+		if (triggerJob?.status === "running") {
+			actions.push({
+				tool: "hub",
+				input: { op: "wait", ids: [triggerJob.id] },
+				when: "After resume, collect trigger",
+			});
+		}
+		return actions;
+	}
+	if (outcome.state !== "running" || (waitReason !== "timeout" && waitReason !== "trigger")) return [];
+	const waitInput: Record<string, unknown> = {
+		action: "wait_for_stop",
+		execution_id: outcome.executionId,
+	};
+	if (triggerJob?.status === "running") waitInput.trigger_job_id = triggerJob.id;
+	return [{ tool: "debug", input: waitInput, when: "Continue observing the same execution" }];
+}
+
+function formatNextActions(actions: readonly DebugNextAction[]): string[] {
+	if (actions.length === 0) return [];
+	return ["Next:", ...actions.map(action => `${action.when}: ${JSON.stringify(action.input)}`)];
+}
+
+function applyExecutionOutcomeDetails(details: DebugToolDetails, outcome: DapWaitForExecutionOutcome): void {
+	details.snapshot = outcome.snapshot;
+	details.state = outcome.state;
+	details.timedOut = outcome.timedOut;
+	details.executionId = outcome.executionId;
+	details.stopSnapshot = outcome.stopSnapshot;
+	details.waitReason = waitReasonForOutcome(outcome);
+	details.nextActions = nextActionsForOutcome(outcome, details.waitReason);
 }
 
 function formatLocation(snapshot: DapSessionSummary | undefined): string | null {
@@ -474,23 +621,111 @@ function formatEvaluation(evaluation: DapEvaluateResponse): string {
 	return lines.join("\n");
 }
 
-function buildOutcomeText(outcome: DapContinueOutcome, timeoutSec: number, verb: string): string {
-	const lines = formatSessionSnapshot(outcome.snapshot);
-	if (outcome.timedOut) {
-		lines.push(`Program is still running after ${timeoutSec}s. Use pause to interrupt and inspect state.`);
-		return lines.join("\n");
+function formatOutputSegments(segments: readonly DapOutputSegment[]): string {
+	const blocks: string[] = [];
+	for (const segment of segments) {
+		const category = replaceTabs(segment.category).replaceAll("\r", " ").replaceAll("\n", " ");
+		const output = segment.output.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+		const outputLines = output.split("\n");
+		while (outputLines.at(-1) === "") outputLines.pop();
+		if (outputLines.length === 0) {
+			blocks.push(`[${category}]`);
+			continue;
+		}
+		blocks.push(outputLines.map((line, index) => `${index === 0 ? `[${category}] ` : "  "}${line}`).join("\n"));
 	}
-	if (outcome.state === "stopped") {
+	return blocks.join("\n");
+}
+
+function formatStopSnapshot(snapshot: DapStopSnapshot): string {
+	const lines = [
+		`Stop snapshot: ${snapshot.complete ? "complete" : "partial"}`,
+		`Stopped: session=${snapshot.sessionId}, generation=${snapshot.stopGeneration}, reason=${snapshot.stoppedEvent.reason}` +
+			`${snapshot.stoppedEvent.threadId !== undefined ? `, thread=${snapshot.stoppedEvent.threadId}` : ""}`,
+		`Threads (${snapshot.threads.length}${snapshot.threadsTruncated ? "+" : ""}):`,
+	];
+	const append = (text: string): void => {
+		lines.push(truncateToWidth(replaceTabs(text), TRUNCATE_LENGTHS.LINE));
+	};
+	for (const thread of snapshot.threads) append(`- ${thread.id}: ${thread.name}`);
+	append(`Stack (${snapshot.stackFrames.length}${snapshot.stackFramesTruncated ? "+" : ""}):`);
+	for (const frame of snapshot.stackFrames) {
+		const location = frame.source?.path
+			? `${shortenPath(frame.source.path)}:${frame.line}:${frame.column}`
+			: `<unknown>:${frame.line}:${frame.column}`;
+		append(`- #${frame.id} ${frame.name} @ ${location}`);
+	}
+	append(`Scopes (${snapshot.scopes.length}${snapshot.scopesTruncated ? "+" : ""}):`);
+	for (const scopeSnapshot of snapshot.scopes) {
+		const { scope, variables } = scopeSnapshot;
+		append(
+			`- ${scope.name} [ref=${scope.variablesReference}] (${variables.length}${scopeSnapshot.variablesTruncated ? "+" : ""} variables):`,
+		);
+		for (const variable of variables) {
+			append(
+				`  ${variable.name} = ${variable.value}` +
+					`${variable.type ? ` (${variable.type})` : ""}` +
+					`${variable.variablesReference > 0 ? ` [ref=${variable.variablesReference}]` : ""}`,
+			);
+		}
+		if (scopeSnapshot.truncatedValueCount > 0) {
+			append(`  ${scopeSnapshot.truncatedValueCount} variable value(s) truncated.`);
+		}
+	}
+	if (snapshot.output.length > 0) {
+		append(`Output at stop (generation ${snapshot.stopGeneration})${snapshot.outputTruncated ? " (tail)" : ""}:`);
+		const categorizedOutput = formatOutputSegments(snapshot.outputSegments);
+		const outputLines = categorizedOutput.split("\n");
+		const visibleOutputLines = outputLines.slice(0, PREVIEW_LIMITS.OUTPUT_EXPANDED);
+		for (const outputLine of visibleOutputLines) append(outputLine);
+		if (outputLines.length > visibleOutputLines.length) {
+			append(`… ${outputLines.length - visibleOutputLines.length} more output lines`);
+		}
+	}
+	if (snapshot.errors.length > 0) {
+		append("Capture errors:");
+		for (const error of snapshot.errors) {
+			append(`- ${error.stage}${error.scopeName ? ` (${error.scopeName})` : ""}: ${error.message}`);
+		}
+	}
+	return lines.join("\n");
+}
+
+function buildOutcomeText(
+	outcome: DapWaitForExecutionOutcome,
+	timeoutSec: number,
+	verb: string,
+	waitReason: DebugWaitReason = waitReasonForOutcome(outcome),
+	triggerJob?: JobSnapshot,
+): string {
+	const lines = [
+		`Execution: ${outcome.executionId}`,
+		`Winner: ${waitReason}`,
+		`Trigger: ${triggerJob ? `${triggerJob.id} (${triggerJob.status})` : "none"}`,
+		"",
+		...formatSessionSnapshot(outcome.snapshot),
+	];
+	if (waitReason === "timeout") {
+		lines.push(
+			`Observation timed out after ${timeoutSec}s. Debug execution and any running trigger remain active. Do not replay the request.`,
+		);
+	} else if (waitReason === "trigger" && outcome.state === "running") {
+		lines.push(
+			"Trigger finished before a debugger stop. The debug execution remains active. Inspect the trigger result. Do not replay the request.",
+		);
+	} else if (outcome.state === "stopped") {
 		lines.push(`${verb} stopped at ${formatLocation(outcome.snapshot) ?? "unknown location"}.`);
-		return lines.join("\n");
-	}
-	if (outcome.state === "terminated") {
+	} else if (outcome.state === "terminated") {
 		lines.push(
 			`Program terminated${outcome.snapshot.exitCode !== undefined ? ` with exit code ${outcome.snapshot.exitCode}` : ""}.`,
 		);
-		return lines.join("\n");
+	} else {
+		lines.push("Program is running.");
 	}
-	lines.push("Program is running.");
+	if (outcome.stopSnapshot) lines.push("", formatStopSnapshot(outcome.stopSnapshot));
+	if (triggerJob) lines.push("", formatTriggerJob(triggerJob));
+	const nextActions = nextActionsForOutcome(outcome, waitReason, triggerJob);
+	if (nextActions.length > 0) lines.push("", ...formatNextActions(nextActions));
 	return lines.join("\n");
 }
 
@@ -515,7 +750,12 @@ const ADAPTER_CANONICAL_COMMANDS: Readonly<Record<string, string>> = {
 	"js-debug-adapter": "js-debug-adapter",
 };
 
-function formatAdapterUnavailable(adapterName: string, command: string, cwd: string): string {
+function formatAdapterUnavailable(
+	adapterName: string,
+	command: string,
+	cwd: string,
+	availableAdapters?: string,
+): string {
 	const displayName = truncateToWidth(replaceTabs(adapterName), TRUNCATE_LENGTHS.SHORT);
 	const canonicalCommand = ADAPTER_CANONICAL_COMMANDS[adapterName] ?? adapterName;
 	if (command !== canonicalCommand) {
@@ -524,8 +764,57 @@ function formatAdapterUnavailable(adapterName: string, command: string, cwd: str
 	}
 	return (
 		ADAPTER_UNAVAILABLE_MESSAGES[adapterName] ??
-		`adapter '${displayName}' is not available. Installed adapters: ${getConfiguredAdapters(cwd)}`
+		`adapter '${displayName}' is not available. Installed adapters: ${availableAdapters ?? getConfiguredAdapters(cwd)}`
 	);
+}
+
+function getAdapterStatuses(cwd: string): DebugAdapterStatus[] {
+	const configs = getAdapterConfigs(cwd);
+	const availableAdapters = getAvailableAdapters(cwd);
+	const availableByName = new Map(availableAdapters.map(adapter => [adapter.name, adapter]));
+	const availableNames =
+		availableAdapters.length > 0 ? availableAdapters.map(adapter => adapter.name).join(", ") : "none";
+	return Object.entries(configs)
+		.map(([name, config]): DebugAdapterStatus => {
+			const adapter = availableByName.get(name);
+			if (adapter) {
+				return {
+					name,
+					command: config.command,
+					available: true,
+					resolvedCommand: adapter.resolvedCommand,
+					languages: adapter.languages,
+					fileTypes: adapter.fileTypes,
+				};
+			}
+			return {
+				name,
+				command: config.command,
+				available: false,
+				languages: config.languages ?? [],
+				fileTypes: config.fileTypes ?? [],
+				hint: formatAdapterUnavailable(name, config.command, cwd, availableNames),
+			};
+		})
+		.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function formatAdapterStatuses(cwd: string, adapters: readonly DebugAdapterStatus[]): string {
+	const lines = [`Adapters for ${shortenPath(cwd)}:`];
+	for (const adapter of adapters) {
+		const name = truncateToWidth(replaceTabs(adapter.name), TRUNCATE_LENGTHS.SHORT);
+		if (adapter.available) {
+			const command = truncateToWidth(
+				replaceTabs(shortenPath(adapter.resolvedCommand ?? adapter.command)),
+				TRUNCATE_LENGTHS.CONTENT,
+			);
+			lines.push(`- ${name}: available (${command})`);
+			continue;
+		}
+		lines.push(`- ${name}: missing`);
+		if (adapter.hint) lines.push(`  ${adapter.hint}`);
+	}
+	return lines.join("\n");
 }
 
 async function classifyLaunchProgram(program: string): Promise<LaunchProgramKind> {
@@ -613,6 +902,168 @@ function summarizeDebugCall(args: DebugRenderArgs): string {
 	return action;
 }
 
+const DEBUG_ACCENT_FIELDS: Record<string, true> = {
+	CWD: true,
+	"Data ID": true,
+	Execution: true,
+	Frame: true,
+	Function: true,
+	"Instruction pointer": true,
+	Location: true,
+	Program: true,
+	"Session ID": true,
+	Variable: true,
+	"Variables ref": true,
+};
+
+const DEBUG_MUTED_FIELDS: Record<string, true> = {
+	"Access types": true,
+	"Bytes written": true,
+	Configuration: true,
+	"Exit code": true,
+	Offset: true,
+	Persistent: true,
+	"Stop reason": true,
+	"Stop snapshot": true,
+	"Trigger deadline": true,
+	Type: true,
+	"Unreadable bytes": true,
+};
+
+function debugStatusColor(status: string): ThemeColor {
+	switch (status.trim().toLowerCase()) {
+		case "running":
+			return "accent";
+		case "stopped":
+			return "warning";
+		case "terminated":
+			return "success";
+		case "error":
+		case "failed":
+		case "missing":
+			return "error";
+		default:
+			return "toolOutput";
+	}
+}
+
+function styleDebugLines(lines: readonly string[], theme: Theme, isError = false): string[] {
+	const styled: string[] = [];
+	let outputContinuationColor: ThemeColor | undefined;
+	let inNextActions = false;
+
+	for (const line of lines) {
+		if (line.length === 0) {
+			styled.push(line);
+			outputContinuationColor = undefined;
+			continue;
+		}
+		if (isError) {
+			styled.push(theme.fg("error", line));
+			continue;
+		}
+
+		const categoryLine = /^\[([^\]]+)\](?: (.*))?$/.exec(line);
+		if (categoryLine) {
+			const category = categoryLine[1].toLowerCase();
+			let labelColor: ThemeColor = "dim";
+			outputContinuationColor = "toolOutput";
+			if (category === "stderr") {
+				labelColor = "error";
+				outputContinuationColor = "error";
+			} else if (category === "telemetry") {
+				labelColor = "muted";
+				outputContinuationColor = "muted";
+			} else if (category === "important") {
+				labelColor = "warning";
+				outputContinuationColor = "warning";
+			}
+			const label = `[${categoryLine[1]}]`;
+			styled.push(
+				categoryLine[2] === undefined
+					? theme.fg(labelColor, label)
+					: `${theme.fg(labelColor, label)} ${theme.fg(outputContinuationColor, categoryLine[2])}`,
+			);
+			inNextActions = false;
+			continue;
+		}
+		if (outputContinuationColor && line.startsWith("  ")) {
+			const indentColor = outputContinuationColor === "toolOutput" ? "dim" : outputContinuationColor;
+			styled.push(`${theme.fg(indentColor, line.slice(0, 2))}${theme.fg(outputContinuationColor, line.slice(2))}`);
+			continue;
+		}
+		outputContinuationColor = undefined;
+
+		if (line === "Next:") {
+			styled.push(theme.fg("dim", line));
+			inNextActions = true;
+			continue;
+		}
+		if (inNextActions) {
+			const nextAction = /^(.+?: )(\{.*)$/.exec(line);
+			if (nextAction) {
+				styled.push(`${theme.fg("dim", nextAction[1])}${theme.fg("toolOutput", nextAction[2])}`);
+				continue;
+			}
+			inNextActions = false;
+		}
+
+		const session = /^(Session )(.+)$/.exec(line);
+		if (session) {
+			styled.push(`${theme.fg("dim", session[1])}${theme.fg("accent", session[2])}`);
+			continue;
+		}
+
+		const field = /^([A-Za-z][A-Za-z ]*): (.*)$/.exec(line);
+		if (field) {
+			const label = field[1];
+			const value = field[2];
+			const prefix = theme.fg("dim", `${label}: `);
+			if (label === "Trigger") {
+				const trigger = /^(.*?)( \()([^()]*)\)$/.exec(value);
+				styled.push(
+					value === "none"
+						? `${prefix}${theme.fg("muted", value)}`
+						: trigger
+							? `${prefix}${theme.fg("accent", trigger[1])}${theme.fg("dim", trigger[2])}${theme.fg(
+									debugStatusColor(trigger[3]),
+									trigger[3],
+								)}${theme.fg("dim", ")")}`
+							: `${prefix}${theme.fg("accent", value)}`,
+				);
+				continue;
+			}
+
+			let valueColor: ThemeColor = "toolOutput";
+			if (DEBUG_ACCENT_FIELDS[label] === true) {
+				valueColor = "accent";
+			} else if (label === "Status" || label === "Winner") {
+				valueColor = debugStatusColor(value);
+			} else if (/error/i.test(label)) {
+				valueColor = "error";
+			} else if (DEBUG_MUTED_FIELDS[label] === true) {
+				valueColor = "muted";
+			}
+			styled.push(`${prefix}${theme.fg(valueColor, value)}`);
+			continue;
+		}
+
+		if (/^[^\s].*:$/.test(line)) {
+			styled.push(theme.fg("dim", line));
+			continue;
+		}
+		const treeLine = /^(\s*(?:[-*] |[│├└─]+\s*))(.*)$/u.exec(line);
+		if (treeLine) {
+			styled.push(`${theme.fg("dim", treeLine[1])}${theme.fg("toolOutput", treeLine[2])}`);
+			continue;
+		}
+
+		styled.push(theme.fg("toolOutput", line));
+	}
+
+	return styled;
+}
+
 export const debugToolRenderer = {
 	animatedPartialResult: true,
 	renderCall(args: DebugRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
@@ -636,14 +1087,19 @@ export const debugToolRenderer = {
 					: formatStatusIcon(options.isPartial ? "running" : "error", theme, options.spinnerFrame);
 				const header = `${statusIcon} Debug ${action}`;
 				const summaryLines = result.details?.snapshot
-					? formatSessionSnapshot(result.details.snapshot).map(line => replaceTabs(line))
+					? styleDebugLines(
+							formatSessionSnapshot(result.details.snapshot).map(line => replaceTabs(line)),
+							theme,
+						)
 					: [];
 				const text = result.content.find(block => block.type === "text")?.text ?? "No output";
 				const rawLines = replaceTabs(text).split("\n");
-				const previewLimit = options.expanded ? PREVIEW_LIMITS.EXPANDED_LINES : PREVIEW_LIMITS.COLLAPSED_LINES;
-				const displayedLines = rawLines
-					.slice(0, previewLimit)
-					.map(line => truncateToWidth(line, TRUNCATE_LENGTHS.LINE));
+				const previewLimit = options.expanded ? rawLines.length : PREVIEW_LIMITS.COLLAPSED_LINES;
+				const displayedLines = styleDebugLines(
+					rawLines.slice(0, previewLimit).map(line => truncateToWidth(line, TRUNCATE_LENGTHS.LINE)),
+					theme,
+					result.isError,
+				);
 				const remaining = rawLines.length - displayedLines.length;
 				if (remaining > 0) {
 					displayedLines.push(
@@ -695,6 +1151,12 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 	readonly description: string;
 	readonly parameters = debugSchema;
 	readonly strict = true;
+	readonly interruptible = (params: Partial<DebugParams>): boolean => {
+		if (params.action === "wait_for_stop") return true;
+		if (params.action === "output" && params.wait_for !== undefined) return true;
+		if (params.action === "continue") return params.wait_for_stop !== false;
+		return params.action === "step_over" || params.action === "step_in" || params.action === "step_out";
+	};
 
 	readonly examples: readonly ToolExample<typeof debugSchema.infer>[] = [
 		{
@@ -722,6 +1184,109 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 		return session.settings.get("debug.enabled") ? new DebugTool(session) : null;
 	}
 
+	#resolveTriggerJob(triggerJobId: string | undefined): TriggerJobContext | undefined {
+		if (triggerJobId === undefined) return undefined;
+		const id = triggerJobId.trim();
+		if (!id) throw new ToolError("trigger_job_id must be a non-empty background Bash job id");
+		const manager = this.session.asyncJobManager;
+		if (!manager) throw new ToolError("Background job manager unavailable for this session.");
+		const job = manager.getJob(id);
+		const ownerId = this.session.getAgentId?.() ?? undefined;
+		const scopeId = this.session.getAgentScopeId?.() ?? undefined;
+		if (!job || job.ownerId !== ownerId || job.scopeId !== scopeId) {
+			throw new ToolError(`Background job "${id}" is not visible to this session.`);
+		}
+		if (job.type !== "bash") {
+			throw new ToolError(`Background job "${id}" has type "${job.type}"; trigger_job_id requires a Bash job.`);
+		}
+		return { manager, job };
+	}
+
+	async #waitForStop(
+		executionId: string,
+		triggerJobId: string | undefined,
+		signal: AbortSignal | undefined,
+		timeoutMs: number,
+	): Promise<CoordinatedWaitResult> {
+		const trigger = this.#resolveTriggerJob(triggerJobId);
+		const observationAbort = new AbortController();
+		const observationSignal = signal ? AbortSignal.any([signal, observationAbort.signal]) : observationAbort.signal;
+		const waitStartedAt = Date.now();
+		const deadline = waitStartedAt + timeoutMs;
+		const timeout = Promise.withResolvers<WaitObservation>();
+		const timeoutId = setTimeout(() => timeout.resolve({ kind: "timeout" }), timeoutMs);
+		let triggerConsumed = false;
+
+		if (trigger) {
+			trigger.manager.watchJobs([trigger.job.id]);
+			trigger.manager.acknowledgeDeliveries([trigger.job.id]);
+		}
+		try {
+			throwIfAborted(signal);
+			const dapObservation = dapSessionManager
+				.waitForExecution(executionId, observationSignal, Number.POSITIVE_INFINITY)
+				.then(
+					outcome => ({ kind: "dap" as const, outcome }),
+					error => ({ kind: "dap_error" as const, error }),
+				);
+			const racers: Promise<WaitObservation>[] = [dapObservation, timeout.promise];
+			if (trigger) racers.push(trigger.job.promise.then(() => ({ kind: "trigger" as const })));
+			const observed = await Promise.race(racers);
+			throwIfAborted(signal);
+			if (observed.kind === "dap_error") throw observed.error;
+
+			let outcome = observed.kind === "dap" ? observed.outcome : undefined;
+			let rawOutcome = dapSessionManager.getExecutionOutcome(executionId);
+			if (!outcome && rawOutcome) {
+				const materialized = await dapObservation;
+				throwIfAborted(signal);
+				if (materialized.kind === "dap_error") throw materialized.error;
+				outcome = materialized.outcome;
+			}
+			outcome ??= await dapSessionManager.waitForExecution(executionId, signal, 0);
+			rawOutcome = dapSessionManager.getExecutionOutcome(executionId);
+			if (rawOutcome && outcome.settledAt !== rawOutcome.settledAt) {
+				outcome = await dapSessionManager.waitForExecution(executionId, signal, timeoutMs);
+			}
+
+			const triggerJob = trigger ? snapshotTriggerJob(this.session, trigger.job) : undefined;
+			const candidates: Array<{ reason: DebugWaitReason; settledAt: number; priority: number }> = [];
+			rawOutcome = dapSessionManager.getExecutionOutcome(executionId);
+			if (rawOutcome) {
+				candidates.push({
+					reason: rawOutcome.reason === "stopped" ? "stopped" : "target_terminal",
+					settledAt: rawOutcome.settledAt,
+					priority: rawOutcome.reason === "stopped" ? 0 : 1,
+				});
+			}
+			if (triggerJob?.settledAt !== undefined) {
+				candidates.push({ reason: "trigger", settledAt: triggerJob.settledAt, priority: 2 });
+			}
+			candidates.push({ reason: "timeout", settledAt: deadline, priority: 3 });
+			candidates.sort((left, right) => left.settledAt - right.settledAt || left.priority - right.priority);
+			const waitReason = candidates[0]?.reason ?? "timeout";
+
+			if (waitReason === "timeout") {
+				outcome = { ...outcome, reason: "timeout", timedOut: true };
+			} else if (outcome.reason === "timeout") {
+				outcome = { ...outcome, timedOut: false };
+			}
+			triggerConsumed = triggerJob?.settledAt !== undefined;
+			return { outcome, waitReason, ...(triggerJob ? { triggerJob } : {}) };
+		} finally {
+			clearTimeout(timeoutId);
+			observationAbort.abort();
+			if (trigger) {
+				trigger.manager.unwatchJobs([trigger.job.id]);
+				if (triggerConsumed) {
+					trigger.manager.acknowledgeDeliveries([trigger.job.id]);
+				} else {
+					trigger.manager.resumeDeliveries([trigger.job.id]);
+				}
+			}
+		}
+	}
+
 	async execute(
 		_toolCallId: string,
 		params: DebugParams,
@@ -730,11 +1295,30 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<DebugToolDetails>> {
 		const timeoutSec = clampTimeout("debug", params.timeout);
-		const timeoutSignal = AbortSignal.timeout(timeoutSec * 1000);
-		const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 		const details: DebugToolDetails = { action: params.action, success: true };
 		const result = toolResult(details);
+		if (params.wait_for_stop !== undefined && params.action !== "continue") {
+			throw new ToolError("wait_for_stop is only valid for continue");
+		}
+		if (params.execution_id !== undefined && params.action !== "wait_for_stop") {
+			throw new ToolError("execution_id is only valid for wait_for_stop");
+		}
+		if (params.trigger_job_id !== undefined && params.action !== "wait_for_stop") {
+			throw new ToolError("trigger_job_id is only valid for wait_for_stop");
+		}
+		if (params.wait_for !== undefined && params.action !== "output") {
+			throw new ToolError("wait_for is only valid for output");
+		}
+		if (params.all_output !== undefined && params.action !== "output") {
+			throw new ToolError("all_output is only valid for output");
+		}
 		switch (params.action) {
+			case "adapters": {
+				const commandCwd = params.cwd ? resolveToCwd(params.cwd, this.session.cwd) : this.session.cwd;
+				const adapters = getAdapterStatuses(commandCwd);
+				details.adapters = adapters;
+				return result.text(formatAdapterStatuses(commandCwd, adapters)).done();
+			}
 			case "launch": {
 				if (!params.program) {
 					throw new ToolError("program is required for launch");
@@ -754,14 +1338,29 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				const { adapter } = selection;
 				validateLaunchProgram(program, commandCwd, programKind, adapter);
 				const extraLaunchArguments = resolveLaunchOverrides(adapter, program, programKind);
-				const snapshot = await dapSessionManager.launch(
+				let snapshot = await dapSessionManager.launch(
 					{ adapter, program, args: params.args, cwd: commandCwd, extraLaunchArguments },
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
+				if (snapshot.status === "stopped") {
+					details.stopSnapshot = await dapSessionManager.captureStopSnapshot(
+						snapshot.id,
+						signal,
+						timeoutSec * 1000,
+					);
+					snapshot = details.stopSnapshot.summary;
+				}
 				details.snapshot = snapshot;
 				details.adapter = adapter.name;
-				return result.text(formatSessionSnapshot(snapshot).join("\n")).done();
+				return result
+					.text(
+						[
+							...formatSessionSnapshot(snapshot),
+							...(details.stopSnapshot ? ["", formatStopSnapshot(details.stopSnapshot)] : []),
+						].join("\n"),
+					)
+					.done();
 			}
 			case "attach": {
 				if (params.pid === undefined && params.port === undefined) {
@@ -778,21 +1377,36 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 						`No debugger adapter available. Installed adapters: ${getConfiguredAdapters(commandCwd)}`,
 					);
 				}
-				const snapshot = await dapSessionManager.attach(
+				let snapshot = await dapSessionManager.attach(
 					{ adapter, cwd: commandCwd, pid: params.pid, port: params.port, host: params.host },
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
+				if (snapshot.status === "stopped") {
+					details.stopSnapshot = await dapSessionManager.captureStopSnapshot(
+						snapshot.id,
+						signal,
+						timeoutSec * 1000,
+					);
+					snapshot = details.stopSnapshot.summary;
+				}
 				details.snapshot = snapshot;
 				details.adapter = adapter.name;
-				return result.text(formatSessionSnapshot(snapshot).join("\n")).done();
+				return result
+					.text(
+						[
+							...formatSessionSnapshot(snapshot),
+							...(details.stopSnapshot ? ["", formatStopSnapshot(details.stopSnapshot)] : []),
+						].join("\n"),
+					)
+					.done();
 			}
 			case "set_breakpoint": {
 				if (params.function) {
 					const response = await dapSessionManager.setFunctionBreakpoint(
 						params.function,
 						params.condition,
-						combinedSignal,
+						signal,
 						timeoutSec * 1000,
 					);
 					details.snapshot = response.snapshot;
@@ -807,7 +1421,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					file,
 					params.line,
 					params.condition,
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
 				details.snapshot = response.snapshot;
@@ -818,7 +1432,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				if (params.function) {
 					const response = await dapSessionManager.removeFunctionBreakpoint(
 						params.function,
-						combinedSignal,
+						signal,
 						timeoutSec * 1000,
 					);
 					details.snapshot = response.snapshot;
@@ -829,12 +1443,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					throw new ToolError("remove_breakpoint requires file+line or function");
 				}
 				const file = resolveToCwd(params.file, this.session.cwd);
-				const response = await dapSessionManager.removeBreakpoint(
-					file,
-					params.line,
-					combinedSignal,
-					timeoutSec * 1000,
-				);
+				const response = await dapSessionManager.removeBreakpoint(file, params.line, signal, timeoutSec * 1000);
 				details.snapshot = response.snapshot;
 				details.breakpoints = response.breakpoints;
 				return result.text(formatBreakpoints(response.sourcePath, response.breakpoints)).done();
@@ -849,7 +1458,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.offset,
 					params.condition,
 					params.hit_condition,
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
 				details.snapshot = response.snapshot;
@@ -864,7 +1473,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				const response = await dapSessionManager.removeInstructionBreakpoint(
 					params.instruction_reference,
 					params.offset,
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
 				details.snapshot = response.snapshot;
@@ -880,7 +1489,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.name,
 					params.variable_ref ?? params.scope_id,
 					params.frame_id,
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
 				details.snapshot = response.snapshot;
@@ -897,7 +1506,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.access_type,
 					params.condition,
 					params.hit_condition,
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
 				details.snapshot = response.snapshot;
@@ -909,47 +1518,99 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				if (!params.data_id) {
 					throw new ToolError("data_id is required for remove_data_breakpoint");
 				}
-				const response = await dapSessionManager.removeDataBreakpoint(
-					params.data_id,
-					combinedSignal,
-					timeoutSec * 1000,
-				);
+				const response = await dapSessionManager.removeDataBreakpoint(params.data_id, signal, timeoutSec * 1000);
 				details.snapshot = response.snapshot;
 				details.dataBreakpoints = response.breakpoints;
 				return result.text(formatDataBreakpoints(response.breakpoints)).done();
 			}
 			case "continue": {
-				const outcome = await dapSessionManager.continue(combinedSignal, timeoutSec * 1000);
-				details.snapshot = outcome.snapshot;
-				details.state = outcome.state;
-				details.timedOut = outcome.timedOut;
+				if (params.wait_for_stop === false) {
+					const started = await dapSessionManager.startContinue(signal, timeoutSec * 1000);
+					const settled = dapSessionManager.getExecutionOutcome(started.executionId);
+					details.snapshot = started.snapshot;
+					details.state = started.state;
+					details.executionId = started.executionId;
+					if (settled) {
+						details.waitReason = settled.reason === "stopped" ? "stopped" : "target_terminal";
+					}
+					const nextActions: DebugNextAction[] = [
+						{
+							tool: "debug",
+							input: {
+								action: "wait_for_stop",
+								execution_id: started.executionId,
+								trigger_job_id: "<background-bash-job-id>",
+							},
+							when: "After starting async Bash",
+						},
+					];
+					details.nextActions = nextActions;
+					return result
+						.text(
+							[
+								`Execution: ${started.executionId}`,
+								`Winner: ${details.waitReason ?? "pending"}`,
+								"Trigger: none",
+								"",
+								...formatSessionSnapshot(started.snapshot),
+								...formatNextActions(nextActions),
+							].join("\n"),
+						)
+						.done();
+				}
+				const outcome = await dapSessionManager.continue(signal, timeoutSec * 1000);
+				applyExecutionOutcomeDetails(details, outcome);
 				return result.text(buildOutcomeText(outcome, timeoutSec, "Continue")).done();
 			}
+			case "wait_for_stop": {
+				const executionId = params.execution_id?.trim();
+				if (!executionId) throw new ToolError("execution_id is required for wait_for_stop");
+				if (!dapSessionManager.getActiveSession()) {
+					throw new ToolError("No active debug session. Launch or attach first.");
+				}
+				if (!dapSessionManager.hasExecution(executionId)) {
+					throw new ToolError(`Unknown debug execution "${executionId}".`);
+				}
+				const coordinated = await this.#waitForStop(executionId, params.trigger_job_id, signal, timeoutSec * 1000);
+				applyExecutionOutcomeDetails(details, coordinated.outcome);
+				details.waitReason = coordinated.waitReason;
+				details.triggerJob = coordinated.triggerJob;
+				details.nextActions = nextActionsForOutcome(
+					coordinated.outcome,
+					coordinated.waitReason,
+					coordinated.triggerJob,
+				);
+				return result
+					.text(
+						buildOutcomeText(
+							coordinated.outcome,
+							timeoutSec,
+							"Execution",
+							coordinated.waitReason,
+							coordinated.triggerJob,
+						),
+					)
+					.done();
+			}
 			case "step_over": {
-				const outcome = await dapSessionManager.stepOver(combinedSignal, timeoutSec * 1000);
-				details.snapshot = outcome.snapshot;
-				details.state = outcome.state;
-				details.timedOut = outcome.timedOut;
+				const outcome = await dapSessionManager.stepOver(signal, timeoutSec * 1000);
+				applyExecutionOutcomeDetails(details, outcome);
 				return result.text(buildOutcomeText(outcome, timeoutSec, "Step over")).done();
 			}
 			case "step_in": {
-				const outcome = await dapSessionManager.stepIn(combinedSignal, timeoutSec * 1000);
-				details.snapshot = outcome.snapshot;
-				details.state = outcome.state;
-				details.timedOut = outcome.timedOut;
+				const outcome = await dapSessionManager.stepIn(signal, timeoutSec * 1000);
+				applyExecutionOutcomeDetails(details, outcome);
 				return result.text(buildOutcomeText(outcome, timeoutSec, "Step in")).done();
 			}
 			case "step_out": {
-				const outcome = await dapSessionManager.stepOut(combinedSignal, timeoutSec * 1000);
-				details.snapshot = outcome.snapshot;
-				details.state = outcome.state;
-				details.timedOut = outcome.timedOut;
+				const outcome = await dapSessionManager.stepOut(signal, timeoutSec * 1000);
+				applyExecutionOutcomeDetails(details, outcome);
 				return result.text(buildOutcomeText(outcome, timeoutSec, "Step out")).done();
 			}
 			case "pause": {
-				const snapshot = await dapSessionManager.pause(combinedSignal, timeoutSec * 1000);
-				details.snapshot = snapshot;
-				return result.text(formatSessionSnapshot(snapshot).concat("Program paused.").join("\n")).done();
+				const outcome = await dapSessionManager.pause(signal, timeoutSec * 1000);
+				applyExecutionOutcomeDetails(details, outcome);
+				return result.text(buildOutcomeText(outcome, timeoutSec, "Pause")).done();
 			}
 			case "evaluate": {
 				if (!params.expression) {
@@ -960,7 +1621,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.expression,
 					evaluationContext,
 					params.frame_id,
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
 				details.snapshot = response.snapshot;
@@ -968,19 +1629,19 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				return result.text(formatEvaluation(response.evaluation)).done();
 			}
 			case "stack_trace": {
-				const response = await dapSessionManager.stackTrace(params.levels, combinedSignal, timeoutSec * 1000);
+				const response = await dapSessionManager.stackTrace(params.levels, signal, timeoutSec * 1000);
 				details.snapshot = response.snapshot;
 				details.stackFrames = response.stackFrames;
 				return result.text(formatStackFrames(response.stackFrames)).done();
 			}
 			case "threads": {
-				const response = await dapSessionManager.threads(combinedSignal, timeoutSec * 1000);
+				const response = await dapSessionManager.threads(signal, timeoutSec * 1000);
 				details.snapshot = response.snapshot;
 				details.threads = response.threads;
 				return result.text(formatThreads(response.threads)).done();
 			}
 			case "scopes": {
-				const response = await dapSessionManager.scopes(params.frame_id, combinedSignal, timeoutSec * 1000);
+				const response = await dapSessionManager.scopes(params.frame_id, signal, timeoutSec * 1000);
 				details.snapshot = response.snapshot;
 				details.scopes = response.scopes;
 				return result.text(formatScopes(response.scopes)).done();
@@ -990,7 +1651,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				if (variableReference === undefined) {
 					throw new ToolError("variables requires variable_ref or scope_id");
 				}
-				const response = await dapSessionManager.variables(variableReference, combinedSignal, timeoutSec * 1000);
+				const response = await dapSessionManager.variables(variableReference, signal, timeoutSec * 1000);
 				details.snapshot = response.snapshot;
 				details.variables = response.variables;
 				return result.text(formatVariables(response.variables)).done();
@@ -1006,7 +1667,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.offset,
 					params.instruction_offset,
 					params.resolve_symbols,
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
 				details.snapshot = response.snapshot;
@@ -1025,7 +1686,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.memory_reference,
 					params.count,
 					params.offset,
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
 				details.snapshot = response.snapshot;
@@ -1047,7 +1708,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					params.data,
 					params.offset,
 					params.allow_partial,
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
 				details.snapshot = response.snapshot;
@@ -1067,7 +1728,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				const response = await dapSessionManager.modules(
 					params.start_module,
 					params.module_count,
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
 				details.snapshot = response.snapshot;
@@ -1076,7 +1737,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 			}
 			case "loaded_sources": {
 				requireCapability("supportsLoadedSourcesRequest", "loaded sources");
-				const response = await dapSessionManager.loadedSources(combinedSignal, timeoutSec * 1000);
+				const response = await dapSessionManager.loadedSources(signal, timeoutSec * 1000);
 				details.snapshot = response.snapshot;
 				details.sources = response.sources;
 				return result.text(formatLoadedSources(response.sources)).done();
@@ -1088,7 +1749,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				const response = await dapSessionManager.customRequest(
 					params.command,
 					params.arguments,
-					combinedSignal,
+					signal,
 					timeoutSec * 1000,
 				);
 				details.snapshot = response.snapshot;
@@ -1096,13 +1757,55 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				return result.text(formatCustomResponse(params.command, response.body)).done();
 			}
 			case "output": {
-				const response = dapSessionManager.getOutput();
+				let pattern: RegExp | undefined;
+				if (params.wait_for !== undefined) {
+					if (params.wait_for.length === 0) throw new ToolError("wait_for must be a non-empty regular expression");
+					try {
+						pattern = new RegExp(params.wait_for);
+					} catch (error) {
+						throw new ToolError(
+							`Invalid output wait_for regex: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					}
+				}
+				if (pattern) {
+					const response = await dapSessionManager.waitForOutput(pattern, {
+						all: params.all_output,
+						signal,
+						timeoutMs: timeoutSec * 1000,
+					});
+					details.snapshot = response.snapshot;
+					details.output = response.output;
+					details.outputSegments = response.outputSegments;
+					details.outputMatched = response.matched;
+					details.timedOut = response.timedOut;
+					return result
+						.text(
+							[
+								response.matched
+									? `Output matched /${params.wait_for}/.`
+									: `Output wait timed out after ${timeoutSec}s. Debug target remains ${response.snapshot.status}.`,
+								response.outputSegments.length > 0
+									? formatOutputSegments(response.outputSegments)
+									: "(no output captured)",
+							].join("\n"),
+						)
+						.done();
+				}
+				const response = dapSessionManager.getOutput({ all: params.all_output });
 				details.snapshot = response.snapshot;
 				details.output = response.output;
-				return result.text(response.output.length > 0 ? response.output : "(no output captured)").done();
+				details.outputSegments = response.outputSegments;
+				return result
+					.text(
+						response.outputSegments.length > 0
+							? formatOutputSegments(response.outputSegments)
+							: "(no output captured)",
+					)
+					.done();
 			}
 			case "terminate": {
-				const snapshot = await dapSessionManager.terminate(combinedSignal, timeoutSec * 1000);
+				const snapshot = await dapSessionManager.terminate(signal, timeoutSec * 1000);
 				if (!snapshot) {
 					return result.text("No debug session to terminate.").done();
 				}

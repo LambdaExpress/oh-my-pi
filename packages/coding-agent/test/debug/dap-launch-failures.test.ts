@@ -14,6 +14,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/dap/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { DebugTool } from "@oh-my-pi/pi-coding-agent/tools/debug";
+import * as piUtils from "@oh-my-pi/pi-utils";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const TEST_ADAPTER: DapResolvedAdapter = {
@@ -57,11 +58,13 @@ server.stop();
 `;
 
 type DapEventHandler = (body: unknown, event: DapEventMessage) => void | Promise<void>;
+type DapReverseRequestHandler = (args: unknown) => unknown | Promise<unknown>;
 
 class FakeDapClient {
 	readonly proc: DapClientState["proc"];
 	readonly #exited = Promise.withResolvers<void>();
 	readonly #handlers = new Map<string, Set<DapEventHandler>>();
+	readonly #reverseRequestHandlers = new Map<string, DapReverseRequestHandler>();
 	#alive = true;
 	requests: Array<{ command: string; args: unknown }> = [];
 
@@ -139,8 +142,19 @@ class FakeDapClient {
 		return () => handlers?.delete(handler);
 	}
 
-	onReverseRequest(): () => void {
-		return () => {};
+	onReverseRequest(command: string, handler: DapReverseRequestHandler): () => void {
+		this.#reverseRequestHandlers.set(command, handler);
+		return () => {
+			if (this.#reverseRequestHandlers.get(command) === handler) {
+				this.#reverseRequestHandlers.delete(command);
+			}
+		};
+	}
+
+	async requestReverse(command: string, args: unknown): Promise<unknown> {
+		const handler = this.#reverseRequestHandlers.get(command);
+		if (!handler) throw new Error(`No reverse request handler for ${command}`);
+		return await handler(args);
 	}
 
 	isAlive(): boolean {
@@ -160,11 +174,78 @@ class FakeDapClient {
 	}
 }
 
+function createFakeManagedProcess(pid = 12_345): DapClientState["proc"] {
+	const { promise: exited, resolve: resolveExited } = Promise.withResolvers<number>();
+	let exitCode: number | null = null;
+	let stdoutController: ReadableStreamDefaultController<Uint8Array> | undefined;
+	const stdout = new ReadableStream<Uint8Array>({
+		start(controller) {
+			stdoutController = controller;
+		},
+	});
+	const stderr = new ReadableStream<Uint8Array>({
+		start(controller) {
+			controller.close();
+		},
+	});
+	return {
+		pid,
+		exited,
+		get exitCode() {
+			return exitCode;
+		},
+		stdin: { write: () => 0, flush: () => 0 },
+		stdout,
+		stderr,
+		peekStderr: () => "",
+		kill: () => {
+			if (exitCode === null) {
+				exitCode = 0;
+				stdoutController?.close();
+				resolveExited(0);
+			}
+			return true;
+		},
+	} as unknown as DapClientState["proc"];
+}
+
 afterEach(() => {
 	vi.restoreAllMocks();
 });
 
 describe("DAP launch failure handling", () => {
+	it("detaches stdio adapters only on POSIX", async () => {
+		const proc = createFakeManagedProcess();
+		const spawn = spyOn(piUtils.ptree, "spawn").mockReturnValue(proc);
+		const client = await DapClient.spawn({ adapter: TEST_ADAPTER, cwd: process.cwd() });
+		try {
+			expect(spawn).toHaveBeenCalledTimes(1);
+			expect(spawn.mock.calls[0]?.[1]?.detached).toBe(process.platform !== "win32");
+		} finally {
+			await client.dispose();
+		}
+	});
+
+	it("detaches runInTerminal debuggees only on POSIX", async () => {
+		const manager = new DapSessionManager();
+		const fake = new FakeDapClient(TEST_ADAPTER, process.cwd(), { stopAfterLaunch: true });
+		spyOn(DapClient, "spawn").mockResolvedValue(fake as unknown as DapClient);
+		const child = createFakeManagedProcess(23_456);
+		const spawn = spyOn(piUtils.ptree, "spawn").mockReturnValue(child);
+		try {
+			await manager.launch({ adapter: TEST_ADAPTER, program: "/bin/echo", cwd: process.cwd() }, undefined, 10);
+			const response = await fake.requestReverse("runInTerminal", {
+				args: [process.execPath, "probe.ts"],
+				cwd: process.cwd(),
+			});
+			expect(response).toEqual({ processId: 23_456 });
+			expect(spawn).toHaveBeenCalledTimes(1);
+			expect(spawn.mock.calls[0]?.[1]?.detached).toBe(process.platform !== "win32");
+		} finally {
+			await manager.terminate();
+			child.kill();
+		}
+	});
 	it("preserves adapter launchDefaults args when launch omits args", async () => {
 		const adapter: DapResolvedAdapter = {
 			...TEST_ADAPTER,

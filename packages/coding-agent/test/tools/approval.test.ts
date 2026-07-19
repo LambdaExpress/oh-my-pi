@@ -182,6 +182,9 @@ describe("tool-owned dynamic approval declarations", () => {
 		expect(LSP_READONLY_ACTIONS.has("diagnostics")).toBe(true);
 		expect(LSP_READONLY_ACTIONS.has("rename")).toBe(false);
 		expect(DEBUG_READONLY_ACTIONS.has("variables")).toBe(true);
+		expect(DEBUG_READONLY_ACTIONS.has("adapters")).toBe(true);
+		expect(DEBUG_READONLY_ACTIONS.has("output")).toBe(true);
+		expect(DEBUG_READONLY_ACTIONS.has("wait_for_stop")).toBe(true);
 		expect(DEBUG_READONLY_ACTIONS.has("continue")).toBe(false);
 	});
 });
