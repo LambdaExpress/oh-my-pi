@@ -379,7 +379,7 @@ describe("InteractiveMode plan review rendering", () => {
 		}
 	});
 
-	it("leaves terminal mouse tracking disabled while Plan Review is open", async () => {
+	it("enables terminal mouse tracking while Plan Review is open", async () => {
 		let capturedOverlay: PlanReviewOverlay | undefined;
 		let capturedOptions: OverlayOptions | undefined;
 		const overlayHandle: OverlayHandle = {
@@ -396,7 +396,7 @@ describe("InteractiveMode plan review rendering", () => {
 
 		const choice = mode.showPlanReview("# Plan\n\nSelectable body", "Plan mode - next step", ["Approve"]);
 
-		expect(capturedOptions).toMatchObject({ fullscreen: true, mouseTracking: false });
+		expect(capturedOptions).toMatchObject({ fullscreen: true, mouseTracking: true });
 		capturedOverlay?.handleInput("\x1b");
 		await expect(choice).resolves.toBeUndefined();
 	});

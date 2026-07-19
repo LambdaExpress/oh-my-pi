@@ -2768,7 +2768,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			maxHeight: "100%",
 			margin: 0,
 			fullscreen: true,
-			mouseTracking: false,
+			mouseTracking: true,
 		});
 		this.ui.setFocus(overlay);
 		this.ui.requestRender();

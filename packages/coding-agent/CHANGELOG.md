@@ -38,6 +38,7 @@
 
 ### Fixed
 
+- Fixed Plan Review opening with terminal mouse tracking disabled, restoring option and contents clicks, hover feedback, and wheel scrolling confined to the plan body.
 - Fixed autonomous debugging ergonomics by exposing trigger deadlines, returning executable next-call guidance, scoping categorized output to the current execution, and reporting the final terminated state.
 - Fixed Windows DAP launches opening a separate Windows Terminal window by keeping adapter and `runInTerminal` child processes attached while preserving piped I/O and process-tree cleanup.
 - Fixed Debug tool result blocks rendering with the terminal's default foreground color by applying the same semantic theme hierarchy as LSP results to metadata, output categories, statuses, paths, identifiers, and next actions.
