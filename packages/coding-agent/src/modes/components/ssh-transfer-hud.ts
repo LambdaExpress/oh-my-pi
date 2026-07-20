@@ -48,9 +48,11 @@ export class SshTransferHud implements Component {
 		this.#jobs.clear();
 		if (snapshot) {
 			const pendingDeliveryIds = new Set(snapshot.delivery.pendingJobIds);
-			for (const job of snapshot.running) this.#jobs.set(job.id, job);
+			for (const job of snapshot.running) {
+				if (job.type === "ssh_transfer") this.#jobs.set(job.id, job);
+			}
 			for (const job of snapshot.recent) {
-				if (pendingDeliveryIds.has(job.id)) this.#jobs.set(job.id, job);
+				if (job.type === "ssh_transfer" && pendingDeliveryIds.has(job.id)) this.#jobs.set(job.id, job);
 			}
 		}
 		this.invalidate();

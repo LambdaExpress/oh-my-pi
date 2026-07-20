@@ -105,6 +105,31 @@ describe("SshTransferHud", () => {
 		const rendered = render(hud);
 		expect(rendered).toContain("2 SSH transfers");
 	});
+	it("ignores non-SSH jobs when restoring a mixed async-job snapshot", () => {
+		const hud = new SshTransferHud();
+		const task: AsyncJobSnapshotItem = {
+			id: "task-1",
+			type: "task",
+			status: "running",
+			label: "Running agent Worker...",
+			startTime: 50,
+			toolCallId: "task-tool-1",
+		};
+		const snapshot: AsyncJobSnapshot = {
+			running: [task, job("running")],
+			recent: [{ ...task, id: "task-2", status: "completed", settledAt: 300 }],
+			delivery: {
+				queued: 1,
+				delivering: false,
+				pendingJobIds: ["task-2"],
+			},
+		};
+		hud.restore(snapshot);
+		expect(hud.size).toBe(1);
+		const rendered = render(hud);
+		expect(rendered).toContain("1 SSH transfer");
+		expect(rendered).not.toContain("Running agent");
+	});
 	it("rebuilds a persistent cancelled transfer block from async-result details", () => {
 		const transfer = details("cancelled");
 		const message: CustomMessage = {
