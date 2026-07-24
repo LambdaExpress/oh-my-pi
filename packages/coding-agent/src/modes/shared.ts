@@ -39,8 +39,8 @@ function formatWorkingElapsed(elapsedMs: number): string {
 	const hours = Math.floor(totalSeconds / 3_600);
 	const minutes = Math.floor((totalSeconds % 3_600) / 60);
 	const seconds = totalSeconds % 60;
-	if (hours > 0) return `${hours}h·${minutes}m·${seconds}s`;
-	if (minutes > 0) return `${minutes}m·${seconds}s`;
+	if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+	if (minutes > 0) return `${minutes}m ${seconds}s`;
 	return `${seconds}s`;
 }
 

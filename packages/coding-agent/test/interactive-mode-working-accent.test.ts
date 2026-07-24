@@ -35,6 +35,7 @@ async function createHarness(sessionName: string): Promise<Harness> {
 			state: { tools: [] },
 			metadataForProvider: () => undefined,
 		},
+		getAsyncJobSnapshot: () => null,
 		customCommands: [],
 		skills: [],
 		autoCompactionEnabled: true,
@@ -223,14 +224,14 @@ describe("InteractiveMode working-message elapsed time", () => {
 
 		now = 1_000_000 + 65_000;
 		mode.loadingAnimation?.setMessage(`Planning…${interruptHint()}`);
-		expect(renderPlainLoader(mode)).toContain("Planning… (1m·5s · esc to interrupt)");
+		expect(renderPlainLoader(mode)).toContain("Planning… (1m 5s · esc to interrupt)");
 
 		now = 1_000_000 + 3_661_000;
 		mode.loadingAnimation?.setMessage(`Thinking…${interruptHint()}`);
-		expect(renderPlainLoader(mode)).toContain("Thinking… (1h·1m·1s · esc to interrupt)");
+		expect(renderPlainLoader(mode)).toContain("Thinking… (1h 1m 1s · esc to interrupt)");
 
 		now = 1_000_000 + 100 * 3_600_000;
 		mode.loadingAnimation?.setMessage(`Reviewing…${interruptHint()}`);
-		expect(renderPlainLoader(mode)).toContain("Reviewing… (100h·0m·0s · esc to interrupt)");
+		expect(renderPlainLoader(mode)).toContain("Reviewing… (100h 0m 0s · esc to interrupt)");
 	});
 });
