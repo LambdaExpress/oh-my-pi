@@ -36,6 +36,23 @@ describe("WelcomeComponent tips", () => {
 		expect(welcomeRegular.tip).toBeDefined();
 	});
 
+	it("keeps the right column and truncates a long model name with three dots", () => {
+		const modelName = "GPT-5.6 Sol via Grimoire Router";
+		const welcome = new WelcomeComponent(
+			"1.0.0",
+			modelName,
+			"grimoire",
+			[{ name: "Recent work", timeAgo: "1m" }],
+			[{ name: "typescript-language-server", status: "ready", fileTypes: ["ts"] }],
+		);
+
+		const output = Bun.stripANSI(welcome.render(100).join("\n"));
+		expect(output).toContain("LSP Servers");
+		expect(output).toContain("Recent sessions");
+		expect(output).toContain("GPT-5.6 Sol via Grimoir...");
+		expect(output).not.toContain(modelName);
+	});
+
 	it("weights [NEW] tips above ordinary tips in selection", () => {
 		// Data-independent: tips.txt may legitimately carry zero "[NEW]" tips, so
 		// exercise the weighting contract on a synthetic list.

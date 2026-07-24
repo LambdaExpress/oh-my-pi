@@ -38,6 +38,7 @@
 
 ### Fixed
 
+- Fixed long model and provider names collapsing the welcome screen to one column by preserving the LSP and recent-session panel while truncating oversized labels with three dots.
 - Fixed transcript rebuilds and session restoration misclassifying active subagents and background Bash jobs as SSH file transfers.
 - Fixed startup falsely reporting `xdev: xd://: unmounted ssh_transfer` after tool repartitioning by tracking the registry's complete mounted-device set, including built-in devices.
 - Fixed Plan Review opening with terminal mouse tracking disabled, restoring option and contents clicks, hover feedback, and wheel scrolling confined to the plan body.

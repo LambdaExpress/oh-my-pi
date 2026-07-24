@@ -1,5 +1,6 @@
 import {
 	type Component,
+	Ellipsis,
 	padding,
 	replaceTabs,
 	TERMINAL,
@@ -242,12 +243,7 @@ export class WelcomeComponent implements Component {
 		const preferredLeftCol = 26;
 		const minLeftCol = 12; // logo width
 		const minRightCol = 20;
-		const leftMinContentWidth = Math.max(
-			minLeftCol,
-			visibleWidth("Welcome back!"),
-			visibleWidth(this.modelName),
-			visibleWidth(this.providerName),
-		);
+		const leftMinContentWidth = Math.max(minLeftCol, visibleWidth("Welcome back!"));
 		const desiredLeftCol = Math.min(preferredLeftCol, Math.max(minLeftCol, Math.floor(dualContentWidth * 0.35)));
 		const dualLeftCol =
 			dualContentWidth >= minRightCol + 1
@@ -268,8 +264,8 @@ export class WelcomeComponent implements Component {
 			"",
 			...logoColored.map(l => this.#centerText(l, leftCol)),
 			"",
-			this.#centerText(theme.fg("muted", this.modelName), leftCol),
-			this.#centerText(theme.fg("borderMuted", this.providerName), leftCol),
+			this.#centerText(theme.fg("muted", this.modelName), leftCol, Ellipsis.Ascii),
+			this.#centerText(theme.fg("borderMuted", this.providerName), leftCol, Ellipsis.Ascii),
 		];
 
 		// Right column separator
@@ -406,10 +402,10 @@ export class WelcomeComponent implements Component {
 	}
 
 	/** Center text within a given width */
-	#centerText(text: string, width: number): string {
+	#centerText(text: string, width: number, ellipsis = Ellipsis.Unicode): string {
 		const visLen = visibleWidth(text);
 		if (visLen >= width) {
-			return truncateToWidth(text, width);
+			return truncateToWidth(text, width, ellipsis);
 		}
 		const leftPad = Math.floor((width - visLen) / 2);
 		const rightPad = width - visLen - leftPad;
