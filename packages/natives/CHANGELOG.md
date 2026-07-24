@@ -8,6 +8,10 @@
 
 - Added vendored PowerShell syntax highlighting so `highlightCode` and shell renderers can colorize `.ps1`, `.psm1`, `.psd1`, `powershell`, and `pwsh` snippets instead of returning plain text.
 
+### Changed
+
+- Changed the local Windows OMP build helper to select the host's baseline or modern x64 addon, reuse it while its Cargo dependency closure remains current, and embed only the selected variant.
+
 ### Fixed
 
 - Fixed compiled-binary native embedding accepting stale `pi_natives.*.node` artifacts whose version sentinel does not match the current `@oh-my-pi/pi-natives` package version. `gen:native` now validates the sentinel before archiving and can read native artifacts from an explicit `PI_NATIVE_SOURCE_DIR`, preventing local Windows builds from producing an `omp` binary that only starts while another install keeps a correct cached addon locked.
