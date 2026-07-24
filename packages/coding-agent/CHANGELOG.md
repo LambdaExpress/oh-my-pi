@@ -39,6 +39,7 @@
 ### Fixed
 
 - Fixed transcript rebuilds and session restoration misclassifying active subagents and background Bash jobs as SSH file transfers.
+- Fixed startup falsely reporting `xdev: xd://: unmounted ssh_transfer` after tool repartitioning by tracking the registry's complete mounted-device set, including built-in devices.
 - Fixed Plan Review opening with terminal mouse tracking disabled, restoring option and contents clicks, hover feedback, and wheel scrolling confined to the plan body.
 - Fixed autonomous debugging ergonomics by exposing trigger deadlines, returning executable next-call guidance, scoping categorized output to the current execution, and reporting the final terminated state.
 - Fixed Windows DAP launches opening a separate Windows Terminal window by keeping adapter and `runInTerminal` child processes attached while preserving piped I/O and process-tree cleanup.

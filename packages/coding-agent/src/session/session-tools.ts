@@ -119,7 +119,11 @@ export class SessionTools {
 		this.#getLocalCalendarDate = options.getLocalCalendarDate ?? formatLocalCalendarDate;
 		this.#getMcpServerInstructions = options.getMcpServerInstructions;
 		this.#xdevRegistry = options.xdevRegistry;
-		this.#mountedXdevToolNames = new Set(options.initialMountedXdevToolNames ?? []);
+		this.#mountedXdevToolNames = new Set(
+			options.xdevRegistry
+				? options.xdevRegistry.list().map(tool => tool.name)
+				: (options.initialMountedXdevToolNames ?? []),
+		);
 		this.#setActiveToolNames = options.setActiveToolNames;
 		this.#baseSystemPrompt = options.baseSystemPrompt;
 		this.#skills = options.skills ?? [];
@@ -194,7 +198,7 @@ export class SessionTools {
 		return [...this.getActiveToolNames(), ...this.#mountedXdevToolNames];
 	}
 
-	/** Names of dynamic tools mounted under `xd://`. */
+	/** Names of tools currently mounted under `xd://`. */
 	getMountedXdevToolNames(): string[] {
 		return [...this.#mountedXdevToolNames];
 	}
@@ -542,8 +546,8 @@ export class SessionTools {
 			return tool ? [tool] : [];
 		});
 		const previousActiveToolNames = this.getActiveToolNames();
-		this.#mountedXdevToolNames = new Set(mountedTools.map(tool => tool.name));
 		this.#xdevRegistry?.reconcile(mountedTools);
+		this.#mountedXdevToolNames = new Set(this.#xdevRegistry?.list().map(tool => tool.name) ?? []);
 		this.#setActiveToolNames?.(validToolNames);
 
 		let rebuiltSystemPrompt: string[] | undefined;
@@ -551,6 +555,7 @@ export class SessionTools {
 		try {
 			if (this.#rebuildSystemPrompt) {
 				const signature = this.#computeAppliedToolSignature(validToolNames, tools);
+
 				if (signature !== this.#lastAppliedToolSignature) {
 					const built = await this.#rebuildSystemPrompt(validToolNames, this.#toolRegistry);
 					rebuiltSystemPrompt = built.systemPrompt;

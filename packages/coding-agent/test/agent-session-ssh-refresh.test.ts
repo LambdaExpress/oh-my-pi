@@ -162,6 +162,30 @@ describe("AgentSession SSH transfer refresh", () => {
 		expect(xdevRegistry.get("ssh")).toBeUndefined();
 	});
 
+	it("keeps the mounted transfer device tracked across tool repartitioning", async () => {
+		const tempDir = TempDir.createSync("@pi-ssh-xdev-repartition-");
+		tempDirs.push(tempDir);
+		const xdevRegistry = new XdevRegistry([]);
+		const session = createSession(tempDir.path(), { xdevRegistry });
+
+		await session.mutateSessionSshConfig({
+			operation: "upsert",
+			name: "ephemeral",
+			config: { host: "192.0.2.51" },
+		});
+		expect(session.getMountedXdevToolNames()).toContain("ssh_transfer");
+
+		const notices: string[] = [];
+		session.subscribe(event => {
+			if (event.type === "notice" && event.source === "xdev") notices.push(event.message);
+		});
+		await session.setActiveToolsByName(session.getEnabledToolNames());
+
+		expect(xdevRegistry.get("ssh_transfer")).toBeDefined();
+		expect(session.getMountedXdevToolNames()).toContain("ssh_transfer");
+		expect(notices).not.toContain("xd://: unmounted ssh_transfer");
+	});
+
 	it("refreshes the top-level transfer tool when xd:// is disabled", async () => {
 		const tempDir = TempDir.createSync("@pi-ssh-top-level-refresh-");
 		tempDirs.push(tempDir);
