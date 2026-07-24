@@ -1656,13 +1656,26 @@ function recoverTransientErrorToolTurn(
 	if (message.stopReason !== "error") return message;
 	const toolCalls = message.content.filter(block => block.type === "toolCall");
 	if (toolCalls.length === 0) return message;
+	const stopDetailType = message.stopDetails?.type;
+	const stopDetailCategory = message.stopDetails?.category;
+	if (
+		stopDetailType === "refusal" ||
+		stopDetailType === "sensitive" ||
+		stopDetailCategory === "refusal" ||
+		stopDetailCategory === "sensitive"
+	)
+		return message;
 	const availableToolNames = new Set<string>();
 	for (const tool of availableTools) {
 		availableToolNames.add(tool.name);
 		if (tool.customWireName !== undefined) availableToolNames.add(tool.customWireName);
 	}
 	if (!toolCalls.every(toolCall => availableToolNames.has(toolCall.name))) return message;
-	if (!AIError.isStreamReadErrorText(`${message.errorMessage ?? ""}\n${message.stopDetails?.explanation ?? ""}`))
+	if (
+		!AIError.isStreamReadErrorText(`${message.errorMessage ?? ""}\n${message.stopDetails?.explanation ?? ""}`) &&
+		!AIError.isTransientStreamParseError(message.errorMessage) &&
+		!AIError.isTransientStreamParseError(message.stopDetails?.explanation)
+	)
 		return message;
 	return {
 		...message,
@@ -2390,6 +2403,23 @@ export interface SyntheticToolResultDetails {
 	source: "assistant_stop_aborted" | "assistant_stop_error" | "assistant_stop_skipped" | "assistant_stop_length";
 	executed: false;
 	upstreamError?: string;
+}
+
+/**
+ * Narrow an {@link AgentMessage} to a synthetic {@link ToolResultMessage} —
+ * a tool_result emitted for a tool call the assistant never invoked (see
+ * {@link SyntheticToolResultDetails}). Consumers use this to look past the
+ * placeholder pairing back to the assistant turn that produced it, e.g.
+ * `AgentSession.retry()` walking back over the synthetic results a
+ * stalled/aborted mid-tool-call turn leaves behind.
+ */
+export function isSyntheticToolResultMessage(
+	message: AgentMessage | undefined,
+): message is ToolResultMessage<SyntheticToolResultDetails> {
+	return (
+		message?.role === "toolResult" &&
+		(message.details as SyntheticToolResultDetails | undefined)?.__synthetic === true
+	);
 }
 
 function syntheticDetailsFor(

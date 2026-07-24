@@ -47,7 +47,7 @@ import {
 	searchSmitheryRegistry,
 	toConfigName,
 } from "../../mcp/smithery-registry";
-import type { MCPAuthConfig, MCPServerConfig, MCPServerConnection } from "../../mcp/types";
+import type { MCPAuthChallenge, MCPAuthConfig, MCPServerConfig, MCPServerConnection } from "../../mcp/types";
 import { shortenPath } from "../../tools/render-utils";
 import { urlHyperlinkAlways } from "../../tui";
 import { copyToClipboard } from "../../utils/clipboard";
@@ -1042,7 +1042,10 @@ export class MCPCommandController {
 		return next;
 	}
 
-	async #resolveOAuthEndpointsFromServer(config: MCPServerConfig): Promise<OAuthEndpoints> {
+	async #resolveOAuthEndpointsFromServer(
+		config: MCPServerConfig,
+		authChallenge?: MCPAuthChallenge,
+	): Promise<OAuthEndpoints> {
 		// Stdio servers manage credentials inside the child process; OMP's OAuth
 		// flow only applies to http/sse transports. Without this guard the
 		// unauthenticated preflight below spawns the child, which happily reuses
@@ -1068,13 +1071,20 @@ export class MCPCommandController {
 			connectionError = error as Error;
 		}
 
-		// Server connected fine without auth — reauth is not needed
-		if (connectionSucceeded) {
+		// Server connected fine without auth — reauth is not needed. A tool-level
+		// challenge overrides this: servers may allow the anonymous handshake yet
+		// protect individual tool calls with `_meta["mcp/www_authenticate"]`.
+		if (connectionSucceeded && !authChallenge) {
 			throw new Error("Server connection succeeded without OAuth; reauthorization is not required.");
 		}
 
-		// Analyze the connection error to extract OAuth endpoints
-		const authResult = analyzeAuthError(connectionError!, "url" in config ? config.url : undefined);
+		// Tool calls can carry richer RFC 6750/RFC 9728 hints than the original
+		// connection error. Feed those hints through the same analyzer so
+		// resource_metadata and scope reach protected-resource discovery.
+		const authError = authChallenge
+			? new Error(`${connectionError?.message ?? "HTTP 401"}\n${authChallenge.wwwAuthenticate.join("\n")}`)
+			: connectionError!;
+		const authResult = analyzeAuthError(authError, "url" in config ? config.url : undefined);
 		let oauth = authResult.authType === "oauth" ? (authResult.oauth ?? null) : null;
 
 		if (!oauth && (config.type === "http" || config.type === "sse") && config.url) {
@@ -1678,21 +1688,29 @@ export class MCPCommandController {
 		}
 	}
 
-	async #handleReauth(name: string | undefined): Promise<void> {
+	/** Reauthorize a server after a tool-level OAuth challenge. */
+	async handleMCPAuthChallenge(name: string, challenge: MCPAuthChallenge): Promise<MCPServerConfig | undefined> {
+		return this.#handleReauth(name, { silent: true, reload: false, authChallenge: challenge });
+	}
+
+	async #handleReauth(
+		name: string | undefined,
+		options: { silent?: boolean; reload?: boolean; authChallenge?: MCPAuthChallenge } = {},
+	): Promise<MCPServerConfig | undefined> {
 		if (!name) {
-			this.ctx.showError("Server name required. Usage: /mcp reauth <name>");
+			if (!options.silent) this.ctx.showError("Server name required. Usage: /mcp reauth <name>");
 			return;
 		}
 
 		try {
 			const found = await this.#resolveServerForAuth(name);
 			if (!found) {
-				this.ctx.showError(`Server "${name}" not found.`);
+				if (!options.silent) this.ctx.showError(`Server "${name}" not found.`);
 				return;
 			}
 
 			if (found.config.enabled === false) {
-				this.ctx.showError(`Server "${name}" is disabled. Run /mcp enable ${name} first.`);
+				if (!options.silent) this.ctx.showError(`Server "${name}" is disabled. Run /mcp enable ${name} first.`);
 				return;
 			}
 
@@ -1705,7 +1723,7 @@ export class MCPCommandController {
 			// happened yet if the server turns out not to need (or support) OAuth.
 			// Use the same env-expanded config shape runtime discovery passes to
 			// MCPManager; the raw file value may contain `${...}` placeholders.
-			const oauth = await this.#resolveOAuthEndpointsFromServer(runtimeBaseConfig);
+			const oauth = await this.#resolveOAuthEndpointsFromServer(runtimeBaseConfig, options.authChallenge);
 			const serverUrl =
 				runtimeBaseConfig.type === "http" || runtimeBaseConfig.type === "sse" ? runtimeBaseConfig.url : undefined;
 			// A user-supplied client secret may live in either block (the wizard
@@ -1719,7 +1737,9 @@ export class MCPCommandController {
 			const userClientSecret = found.config.oauth?.clientSecret ?? currentAuth?.clientSecret;
 			const flowClientSecret = userClientSecret ?? storedClientSecret ?? "";
 
-			this.#showMessage(["", theme.fg("muted", `Reauthorizing "${name}"...`), ""].join("\n"));
+			if (!options.silent) {
+				this.#showMessage(["", theme.fg("muted", `Reauthorizing "${name}"...`), ""].join("\n"));
+			}
 
 			const currentAuthResource = currentAuth?.resource ? expandEnvVarsDeep(currentAuth.resource) : undefined;
 			const oauthResource =
@@ -1755,39 +1775,49 @@ export class MCPCommandController {
 			// Definition-only entries resolve through the url-keyed binding alone;
 			// skip the write-back so a committed project mcp.json stays clean.
 			const urlKeyedId = serverUrl ? mcpOAuthCredentialId(serverUrl) : undefined;
-			if (currentAuth || oauthResult.credentialId !== urlKeyedId) {
-				const updated = this.#persistOAuthResult(baseConfig, oauthResult, {
-					tokenUrl: oauth.tokenUrl,
-					clientId: oauth.clientId,
-					userClientSecret,
-					resource: oauthResource,
-					stripSameOriginResource: oauthResourceIsFallback,
-				});
-				await updateMCPServer(found.filePath, name, updated);
+			const shouldPersist = currentAuth || oauthResult.credentialId !== urlKeyedId;
+			const updatedConfig = shouldPersist
+				? this.#persistOAuthResult(baseConfig, oauthResult, {
+						tokenUrl: oauth.tokenUrl,
+						clientId: oauth.clientId,
+						userClientSecret,
+						resource: oauthResource,
+						stripSameOriginResource: oauthResourceIsFallback,
+					})
+				: baseConfig;
+			if (shouldPersist) {
+				await updateMCPServer(found.filePath, name, updatedConfig);
 			}
-			await this.#reloadMCP();
-			const state = await this.#waitForServerConnectionWithAnimation(name);
+			if (options.reload !== false) {
+				await this.#reloadMCP();
+				const state = await this.#waitForServerConnectionWithAnimation(name);
 
-			const lines = [
-				"",
-				theme.fg("success", `✓ Reauthorized "${name}" (${found.scope} config)`),
-				"",
-				`  Status: ${
-					state === "connected"
-						? theme.fg("success", "connected")
-						: state === "connecting"
-							? theme.fg("muted", "connecting")
-							: theme.fg("warning", "not connected")
-				}`,
-				"",
-			];
-			this.#showMessage(lines.join("\n"));
+				const lines = [
+					"",
+					theme.fg("success", `✓ Reauthorized "${name}" (${found.scope} config)`),
+					"",
+					`  Status: ${
+						state === "connected"
+							? theme.fg("success", "connected")
+							: state === "connecting"
+								? theme.fg("muted", "connecting")
+								: theme.fg("warning", "not connected")
+					}`,
+					"",
+				];
+				this.#showMessage(lines.join("\n"));
+			}
+			return updatedConfig;
 		} catch (error) {
 			if (error instanceof MCPOAuthCancelledError) {
-				this.ctx.showStatus(`Reauthorization cancelled for "${name}"`);
+				if (!options.silent) this.ctx.showStatus(`Reauthorization cancelled for "${name}"`);
 				return;
 			}
-			this.ctx.showError(`Failed to reauthorize server: ${error instanceof Error ? error.message : String(error)}`);
+			if (!options.silent) {
+				this.ctx.showError(
+					`Failed to reauthorize server: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 		}
 	}
 

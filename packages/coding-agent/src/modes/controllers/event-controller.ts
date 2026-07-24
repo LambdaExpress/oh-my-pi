@@ -1025,8 +1025,16 @@ export class EventController {
 			this.#lastAssistantComponent = lastPostToolAssistantComponent ?? this.ctx.streamingComponent;
 			if (settings.get("display.showTokenUsage") && assistantUsageIsBilled(event.message.usage)) {
 				this.ctx.chatContainer.addChild(
-					createUsageRowBlock(event.message.usage, event.message.duration, event.message.ttft),
+					createUsageRowBlock(
+						event.message.usage,
+						event.message.duration,
+						event.message.ttft,
+						event.message.timestamp,
+					),
 				);
+			}
+			if (displayMessage === event.message) {
+				this.ctx.transcriptMessageComponents.set(event.message, this.ctx.streamingComponent);
 			}
 			this.ctx.streamingComponent = undefined;
 			this.ctx.streamingMessage = undefined;
@@ -1495,7 +1503,7 @@ export class EventController {
 			}
 		} else if (event.result) {
 			this.ctx.lastAssistantUsage = undefined;
-			this.ctx.rebuildChatFromMessages();
+			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
 			this.ctx.statusLine.invalidate();
 			// When history collapses behind the summary divider, the frame
 			// shrinks far below the committed row count; without clearing, the

@@ -841,6 +841,7 @@ function createEventControllerFixture() {
 		updatePendingMessagesDisplay,
 		clearOptimisticCustomMessage,
 		optimisticCustomMessageSignature: undefined,
+		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),
 		session: {},
 		get viewSession() {

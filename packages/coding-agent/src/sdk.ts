@@ -134,7 +134,7 @@ import {
 	type SecretEntry,
 	SecretObfuscator,
 } from "./secrets";
-import { AgentSession, type PlanYolo, type Prewalk } from "./session/agent-session";
+import { AgentSession, type InitialRetryFallbackState, type PlanYolo, type Prewalk } from "./session/agent-session";
 import { discoverAuthStorage as discoverAuthStorageFromConfig } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
 import { createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
@@ -960,7 +960,7 @@ function registerEvalCleanup(): void {
 	postmortem.register("julia-cleanup", disposeAllJuliaKernelSessions);
 }
 
-function customToolToDefinition(tool: CustomTool): ToolDefinition {
+export function customToolToDefinition(tool: CustomTool): ToolDefinition {
 	const definition: ToolDefinition & { [TOOL_DEFINITION_MARKER]: true } = {
 		name: tool.name,
 		label: tool.label,
@@ -970,6 +970,9 @@ function customToolToDefinition(tool: CustomTool): ToolDefinition {
 		loadMode: defaultLoadModeForToolName(tool.name, tool.loadMode),
 		deferrable: tool.deferrable,
 		approval: typeof tool.approval === "function" ? tool.approval.bind(tool) : tool.approval,
+		// Preserved through RegisteredToolAdapter so MCP-backed tools' explicit
+		// `strict: false` (#4336/#4340) survives the custom-tool → definition bridge.
+		strict: tool.strict,
 		mcpServerName: tool.mcpServerName,
 		mcpToolName: tool.mcpToolName,
 		execute: (toolCallId, params, signal, onUpdate, ctx) =>
@@ -1441,6 +1444,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	);
 	let model = options.model;
 	let modelFallbackMessage: string | undefined;
+	let initialRetryFallback: InitialRetryFallbackState | undefined;
 	// Identify session model strings to restore in fallback order. We do an
 	// initial pass here so model-dependent setup (thinking-level resolution,
 	// host preconnect) can use the restored model; extension-registered
@@ -1790,6 +1794,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			},
 			getToolByName: name => session?.getToolByName(name),
 			agentRegistry,
+			// The global lifecycle releases through AgentRegistry.global(); wiring it
+			// onto a caller-supplied registry would report a cancel while releasing an
+			// unrelated global ref. With no lifecycle, hub cancel falls back to
+			// dispose + unregister on the session's own registry.
+			agentLifecycle: options.agentRegistry ? undefined : () => AgentLifecycleManager.global(),
 			getSessionSpawns: () => options.spawns ?? "*",
 			getModelString: () => (hasExplicitModel && model ? formatModelString(model) : undefined),
 			getActiveModelString,
@@ -2120,8 +2129,11 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// the background.
 		await modelRegistry.refreshRuntimeProviders("offline");
 		// Continue runtime discovery in the background (cache-aware) so startup is
-		// only blocked on local cache reads, not provider network fetches.
-		void modelRegistry.refreshRuntimeProviders().catch(error => {
+		// only blocked on local cache reads, not provider network fetches. Stash
+		// the promise so the deferred `--model` retry below can await it instead
+		// of starting a second concurrent discovery pass (the unfiltered
+		// `refresh()` also covers runtime model managers).
+		const runtimeDiscoveryPromise = modelRegistry.refreshRuntimeProviders().catch(error => {
 			logger.warn("runtime provider discovery failed", {
 				error: error instanceof Error ? error.message : String(error),
 			});
@@ -2170,8 +2182,42 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// registered. Use the same CLI resolver as the immediate path so bare role
 		// names, exact model names, and provider selectors keep one precedence rule.
 		if (!model && deferredModelPatterns.length > 0) {
-			const availableModels = modelRegistry.getAll();
+			// Deferred `--model` patterns almost always failed at the immediate
+			// path (main.ts:881) precisely because discovery-backed providers
+			// hadn't populated yet. Await the in-flight runtime discovery
+			// already kicked off above (stash + reuse avoids a second concurrent
+			// `#refreshRuntimeDiscoveries` pass for the same runtime model
+			// managers; it resolves instantly when no runtime managers are
+			// registered). `refreshRuntimeProviders()` only covers runtime model
+			// managers, not config-discovery providers (e.g. user-configured
+			// ollama); fall back to a full cache-aware refresh only when the
+			// runtime pass didn't surface a match AND config-discovery providers
+			// exist to fetch from. By then runtime managers short-circuit on the
+			// fresh cache written by the awaited pass, closing the double-fetch
+			// window.
+			await logger.time("resolveModelDiscoveryDeferredRetry", () => runtimeDiscoveryPromise);
 			const matchPreferences = getModelMatchPreferences(settings);
+			const runtimeResolved = deferredModelPatterns.some(pattern =>
+				pattern.split(",").some(selector => {
+					const trimmedSelector = selector.trim();
+					if (!trimmedSelector) return false;
+					const resolved = resolveCliModel({
+						cliModel: trimmedSelector,
+						modelRegistry,
+						settings,
+						preferences: matchPreferences,
+					});
+					return Boolean(
+						resolved.model || (resolved.configuredPatterns && resolved.configuredPatterns.length > 0),
+					);
+				}),
+			);
+			if (!runtimeResolved && modelRegistry.getDiscoverableProviders().length > 0) {
+				await logger.time("resolveModelDiscoveryFallbackNonRuntime", () =>
+					modelRegistry.refresh("online-if-uncached"),
+				);
+			}
+			const availableModels = modelRegistry.getAll();
 			const expandedModelPatterns = deferredModelPatterns.flatMap(pattern =>
 				pattern.split(",").flatMap(selector => {
 					const trimmedSelector = selector.trim();
@@ -2183,26 +2229,70 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						preferences: matchPreferences,
 					});
 					if (resolved.configuredPatterns && resolved.configuredPatterns.length > 0) {
-						return resolved.configuredPatterns;
+						const primaryPatterns: Array<{
+							pattern: string;
+							retryFallback: InitialRetryFallbackState | undefined;
+						}> = resolved.configuredPatterns.map(pattern => ({
+							pattern,
+							retryFallback: undefined,
+						}));
+						if (!resolved.configuredRole || !settings.get("retry.modelFallback")) {
+							return primaryPatterns;
+						}
+						const fallbackChains = settings.get("retry.fallbackChains");
+						const roleFallbacks =
+							fallbackChains[resolved.configuredRole] ??
+							(resolved.configuredRole === "default" ? undefined : fallbackChains.default);
+						if (!Array.isArray(roleFallbacks)) return primaryPatterns;
+						const originalSelector = resolved.configuredPatterns[0];
+						const parsedOriginal = parseModelString(originalSelector, {
+							allowMaxSuffix: true,
+							allowAutoAlias: true,
+							isLiteralModelId: (provider, id) => modelRegistry.find(provider, id) !== undefined,
+						});
+						const retryFallback: InitialRetryFallbackState = {
+							role: resolved.configuredRole,
+							originalSelector,
+							originalThinkingLevel: parsedOriginal?.thinkingLevel,
+						};
+						return [
+							...primaryPatterns,
+							...roleFallbacks
+								.filter((pattern): pattern is string => typeof pattern === "string")
+								.map(pattern => ({ pattern, retryFallback })),
+						];
 					}
 					if (resolved.model) {
 						return [
-							formatModelSelectorValue(
-								resolved.selector ?? formatModelStringWithRouting(resolved.model),
-								resolved.thinkingLevel,
-							),
+							{
+								pattern: formatModelSelectorValue(
+									resolved.selector ?? formatModelStringWithRouting(resolved.model),
+									resolved.thinkingLevel,
+								),
+								retryFallback: undefined,
+							},
 						];
 					}
-					return resolveConfiguredModelPatterns([trimmedSelector], settings);
+					return resolveConfiguredModelPatterns([trimmedSelector], settings).map(pattern => ({
+						pattern,
+						retryFallback: undefined,
+					}));
 				}),
 			);
 			for (let patternIndex = 0; patternIndex < expandedModelPatterns.length; patternIndex += 1) {
-				const pattern = expandedModelPatterns[patternIndex];
+				const { pattern, retryFallback } = expandedModelPatterns[patternIndex];
 				const primary = parseModelPattern(pattern, availableModels, matchPreferences);
-				if (!primary.model) continue;
+				if (!primary.model || (retryFallback && !hasModelAuth(primary.model))) continue;
 				let selectedModel = primary.model;
 				let selectedThinkingLevel = primary.thinkingLevel;
 				let selectedExplicitThinkingLevel = primary.explicitThinkingLevel;
+				// A chain entry without its own `:level` suffix inherits the
+				// unavailable primary's configured thinking level, matching
+				// runtime fallback-chain semantics.
+				if (retryFallback && !selectedExplicitThinkingLevel && retryFallback.originalThinkingLevel !== undefined) {
+					selectedThinkingLevel = retryFallback.originalThinkingLevel;
+					selectedExplicitThinkingLevel = true;
+				}
 				let authFallbackUsed = false;
 				if (options.modelPatternAuthFallback) {
 					const primaryKey = await modelRegistry.getApiKey(primary.model);
@@ -2230,8 +2320,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					);
 					const seenSelectors = new Set<string>([primarySelector]);
 					const fallbackSelectors: string[] = [];
-					for (const fallbackPattern of expandedModelPatterns.slice(patternIndex + 1)) {
-						const fallback = parseModelPattern(fallbackPattern, availableModels, matchPreferences);
+					for (const fallbackEntry of expandedModelPatterns.slice(patternIndex + 1)) {
+						const fallback = parseModelPattern(fallbackEntry.pattern, availableModels, matchPreferences);
 						if (!fallback.model) continue;
 						const fallbackSelector = formatModelSelectorValue(
 							formatModelStringWithRouting(fallback.model),
@@ -2272,6 +2362,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 					}
 				}
 				model = selectedModel;
+				initialRetryFallback = retryFallback;
 				modelFallbackMessage = undefined;
 				if (selectedExplicitThinkingLevel) {
 					restoredSessionThinkingLevel = selectedThinkingLevel;
@@ -2300,48 +2391,84 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		// path-scoped `enabledModels` allow-list when configured. Skip when the
 		// user explicitly requested a model via --model that wasn't found.
 		if (!model && deferredModelPatterns.length === 0) {
-			// Re-resolve the allowed set: extension factories above may have
-			// registered providers/models that weren't visible at startup.
-			const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
-
-			// Retry the default-role lookup against the post-extension allowed
-			// set. Extension factories register providers AFTER the early
-			// `defaultRoleSpec` resolution, so a role pointing at an extension
-			// model (e.g. an openai-compat plugin's `posthog/claude-opus-4-8`)
-			// returned `undefined` there. Without this retry the next step's
-			// `pickDefaultAvailableModel` happily replaces the user's configured
-			// default with a bundled provider's default whenever a stray
-			// `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` is in the environment.
-			// (issue #3569)
-			if (!hasExplicitModel && !defaultRoleSpec.model) {
+			// Retry the configured default role against the current catalog,
+			// setting `model` (+ thinking level) when it resolves. Extension
+			// factories register providers AFTER the early `defaultRoleSpec`
+			// resolution, and configured discovery providers may still be
+			// mid-discovery, so a role pointing at such a model (an openai-compat
+			// plugin's `posthog/claude-opus-4-8`, a models.yml `openai-models-list`
+			// endpoint) returned `undefined` there. Without this retry the
+			// `pickDefaultAvailableModel` fallback below happily replaces the
+			// user's configured default with a bundled provider's default whenever
+			// a stray `OPENAI_API_KEY`/`ANTHROPIC_API_KEY` is in the environment.
+			// (issues #3569, #6162)
+			const tryResolveDefaultRole = async (): Promise<boolean> => {
+				if (hasExplicitModel) return false;
+				// Re-resolve the allowed set: extension factories and discovery
+				// refreshes above may have registered models not visible earlier.
+				const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
 				const reResolvedRoleSpec = resolveModelRoleValue(settings.getModelRole("default"), fallbackCandidates, {
 					settings,
 					matchPreferences: modelMatchPreferences,
 				});
-				if (reResolvedRoleSpec.model) {
-					defaultRoleSpec = reResolvedRoleSpec;
-					const resolvedDefaultModel = reResolvedRoleSpec.model;
-					model = resolvedDefaultModel;
-					modelFallbackMessage = undefined;
-					// Recompute the thinking level against the now-real model.
-					// `pickInitialThinkingLevel` closes over `defaultRoleSpec`,
-					// so the role's explicit selector (e.g. `:max`) now applies.
-					thinkingLevel = pickInitialThinkingLevel(resolvedDefaultModel);
-					autoThinking = thinkingLevel === AUTO_THINKING;
-					effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
-					effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
-						autoThinking
-							? resolveProvisionalAutoLevel(resolvedDefaultModel)
-							: resolveThinkingLevelForModel(resolvedDefaultModel, effectiveThinkingLevel),
-					);
-					preconnectModelHost(resolvedDefaultModel.baseUrl);
-				}
-			}
+				if (!reResolvedRoleSpec.model) return false;
+				defaultRoleSpec = reResolvedRoleSpec;
+				const resolvedDefaultModel = reResolvedRoleSpec.model;
+				model = resolvedDefaultModel;
+				modelFallbackMessage = undefined;
+				// Recompute the thinking level against the now-real model.
+				// `pickInitialThinkingLevel` closes over `defaultRoleSpec`,
+				// so the role's explicit selector (e.g. `:max`) now applies.
+				thinkingLevel = pickInitialThinkingLevel(resolvedDefaultModel);
+				autoThinking = thinkingLevel === AUTO_THINKING;
+				effectiveThinkingLevel = concreteThinkingLevel(thinkingLevel);
+				effectiveThinkingLevel = logger.time("resolveThinkingLevelForModel", () =>
+					autoThinking
+						? resolveProvisionalAutoLevel(resolvedDefaultModel)
+						: resolveThinkingLevelForModel(resolvedDefaultModel, effectiveThinkingLevel),
+				);
+				preconnectModelHost(resolvedDefaultModel.baseUrl);
+				return true;
+			};
+
+			await tryResolveDefaultRole();
 
 			if (!model) {
-				const defaultModel = pickDefaultAvailableModel(fallbackCandidates.filter(hasModelAuth));
-				if (defaultModel) {
-					model = defaultModel;
+				const fallbackCandidates = await resolveAllowedModels(modelRegistry, settings, modelMatchPreferences);
+				let pick = pickDefaultAvailableModel(fallbackCandidates.filter(hasModelAuth));
+
+				// Cold-cache discovery race (issues #6114, #6162): a discovery
+				// provider (models.yml `openai-models-list`, LM Studio/Ollama/
+				// llama.cpp, or an openai-compat proxy) ships no static models, so
+				// the static+cached catalog resolved nothing above. Background
+				// discovery in main.ts fires only AFTER createAgentSession returns,
+				// so on a cache-cold boot the configured default stays unresolved
+				// and `pick` silently degrades to an unrelated authed provider's
+				// default (#6162) or "No models available" (#6114) — even though
+				// `omp models` (which awaits discovery) lists the model. Await one
+				// cache-aware discovery pass and retry when a default role is
+				// configured (must win over `pick`) or nothing resolved at all.
+				// The common path — role already resolved, or a `pick` with no
+				// configured default — never pays for it.
+				const defaultRoleConfigured = Boolean(settings.getModelRole("default"));
+				if (
+					!hasExplicitModel &&
+					(defaultRoleConfigured || !pick) &&
+					modelRegistry.getDiscoverableProviders().length > 0
+				) {
+					await logger.time("resolveModelDiscoveryFallback", () => modelRegistry.refresh("online-if-uncached"));
+					if (!(await tryResolveDefaultRole()) && !model) {
+						const refreshedCandidates = await resolveAllowedModels(
+							modelRegistry,
+							settings,
+							modelMatchPreferences,
+						);
+						pick = pickDefaultAvailableModel(refreshedCandidates.filter(hasModelAuth));
+					}
+				}
+
+				if (!model && pick) {
+					model = pick;
 				}
 			}
 			if (model) {
@@ -3028,6 +3155,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			agent,
 			pruneToolDescriptions: inlineToolDescriptors,
 			thinkingLevel: autoThinking ? AUTO_THINKING : effectiveThinkingLevel,
+			initialRetryFallback,
 			prewalk: options.prewalk,
 			planYolo: options.planYolo,
 			serviceTierByFamily: initialServiceTierByFamily,

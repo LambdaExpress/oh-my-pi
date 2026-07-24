@@ -1290,11 +1290,13 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 	async execute(
 		_toolCallId: string,
 		params: DebugParams,
-		signal?: AbortSignal,
+		inputSignal?: AbortSignal,
 		_onUpdate?: AgentToolUpdateCallback<DebugToolDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<DebugToolDetails>> {
-		const timeoutSec = clampTimeout("debug", params.timeout);
+		const timeoutSec = clampTimeout("debug", params.timeout, this.session.settings.get("tools.maxTimeout"));
+		const timeoutSignal = AbortSignal.timeout(timeoutSec * 1000);
+		const signal = inputSignal ? AbortSignal.any([inputSignal, timeoutSignal]) : timeoutSignal;
 		const details: DebugToolDetails = { action: params.action, success: true };
 		const result = toolResult(details);
 		if (params.wait_for_stop !== undefined && params.action !== "continue") {

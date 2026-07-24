@@ -76,9 +76,14 @@ export class WebSearchTab implements SetupTab {
 		this.#disposed = true;
 	}
 
-	render(width: number): readonly string[] {
+	render(width: number, maxLines?: number): readonly string[] {
 		const lines = [theme.fg("muted", "Choose the provider the web_search tool should prefer."), ""];
 		this.#listRowStart = lines.length;
+		if (maxLines !== undefined) {
+			// Above: hint + blank. Below: the list's own search-status row plus
+			// blank + readiness line. Shrinking keeps the selection centered.
+			this.#list.setMaxVisible(Math.max(1, Math.min(MAX_VISIBLE, maxLines - 5)));
+		}
 		lines.push(...this.#list.render(width));
 		const selected = this.#list.getSelectedItem();
 		if (selected) {

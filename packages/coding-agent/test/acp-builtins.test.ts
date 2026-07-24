@@ -349,6 +349,40 @@ describe("ACP builtin slash commands", () => {
 		expect(output[0]).toContain("user@example.com: 0.24 unknown used (76.0% left)");
 		expect(output[0]).toContain("resets in");
 	});
+
+	it("suppresses redundant usage window suffixes while retaining legitimate ones", async () => {
+		const { output, runtime } = createRuntime();
+		runtime.session.fetchUsageReports = async () => [
+			{
+				provider: "anthropic",
+				fetchedAt: Date.now(),
+				limits: [
+					{
+						id: "anthropic:extra",
+						label: "Claude Extra Usage",
+						scope: { provider: "anthropic", windowId: "extra" },
+						amount: { used: 123.45, unit: "usd" },
+					},
+					{
+						id: "anthropic:daily",
+						label: "Daily quota",
+						scope: { provider: "anthropic", windowId: "24h" },
+						window: { id: "24h", label: "24 hours" },
+						amount: { used: 20, unit: "requests" },
+					},
+				],
+				metadata: { email: "user@example.com" },
+			},
+		];
+
+		const result = await executeAcpBuiltinSlashCommand("/usage", runtime);
+
+		expect(result).toEqual({ consumed: true });
+		expect(output[0]).toContain("Claude Extra Usage");
+		expect(output[0]).not.toContain("Claude Extra Usage — extra");
+		expect(output[0]).toContain("123.45 usd used");
+		expect(output[0]).toContain("Daily quota — 24 hours");
+	});
 	it("/usage show renders the same report as plain /usage", async () => {
 		const now = 1_700_000_000_000;
 		const nowSpy = spyOn(Date, "now").mockReturnValue(now);

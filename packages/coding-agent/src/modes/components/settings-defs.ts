@@ -66,6 +66,7 @@ export interface SubmenuSettingDef extends BaseSettingDef {
 
 export interface TextInputSettingDef extends BaseSettingDef {
 	type: "text";
+	secret: boolean;
 }
 
 export interface ProviderLimitsSettingDef extends BaseSettingDef {
@@ -176,11 +177,13 @@ function pathToSettingDef(path: SettingPath): SettingDef | null {
 		if (options) {
 			return { ...base, type: "submenu", options };
 		}
-		return { ...base, type: "text" };
+		return { ...base, type: "text", secret: ui.secret === true };
 	}
 
 	if (schemaType === "record") {
-		return path === "providers.maxInFlightRequests" ? { ...base, type: "providerLimits" } : { ...base, type: "text" };
+		return path === "providers.maxInFlightRequests"
+			? { ...base, type: "providerLimits" }
+			: { ...base, type: "text", secret: false };
 	}
 
 	return null;

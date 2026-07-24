@@ -316,7 +316,25 @@ function hasPlausibleCredentialEntropy(token: string): boolean {
 	return [/[a-z]/, /[A-Z]/, /\d/, /[_-]/].filter(pattern => pattern.test(secret)).length >= 2;
 }
 
+/**
+ * Whether outbound credential-pattern redaction is active. Off by default;
+ * hosts opt in explicitly (the coding agent wires this to the
+ * `secrets.enabled` setting).
+ */
+let credentialRedactionEnabled = false;
+
+/**
+ * Toggle outbound credential-pattern redaction. When disabled (the default),
+ * {@link redactSensitiveCredentials} and {@link redactSensitiveInObject} are
+ * pass-throughs and outbound messages/system prompts leave the process
+ * unmodified.
+ */
+export function configureCredentialRedaction(enabled: boolean): void {
+	credentialRedactionEnabled = enabled;
+}
+
 export function redactSensitiveCredentials(text: string): string {
+	if (!credentialRedactionEnabled) return text;
 	return text.replace(SENSITIVE_TOKEN_RE, match => {
 		if (!hasPlausibleCredentialEntropy(match)) return match;
 		const lower = match.toLowerCase();
@@ -337,6 +355,7 @@ export function redactSensitiveCredentials(text: string): string {
 }
 
 export function redactSensitiveInObject(val: unknown): { result: unknown; changed: boolean } {
+	if (!credentialRedactionEnabled) return { result: val, changed: false };
 	if (typeof val === "string") {
 		const redacted = redactSensitiveCredentials(val);
 		return { result: redacted, changed: redacted !== val };
@@ -364,6 +383,7 @@ export function redactSensitiveInObject(val: unknown): { result: unknown; change
 }
 
 function redactSensitiveCredentialsInMessages(messages: Message[]): Message[] {
+	if (!credentialRedactionEnabled) return messages;
 	return messages.map((msg): Message => {
 		if (msg.role === "user" || msg.role === "developer") {
 			const userMsg = msg as UserMessage | DeveloperMessage;
@@ -453,8 +473,9 @@ export function transformMessages<TApi extends Api>(
 	duplicateToolCallIdSuffixPrefix = "_dup",
 	targetCompat: Model<TApi>["compat"] = model.compat,
 ): Message[] {
-	// Redact sensitive credential-like patterns from all outbound messages
-	// to prevent security block errors from LLM providers (e.g. invalid_prompt).
+	// Redact sensitive credential-like patterns from all outbound messages when
+	// the host opted in via `configureCredentialRedaction` — prevents security
+	// block errors from LLM providers (e.g. invalid_prompt).
 	messages = redactSensitiveCredentialsInMessages(messages);
 
 	// Drop assistant `toolCall` blocks with empty/whitespace `id` or `name`

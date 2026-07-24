@@ -11,7 +11,7 @@ import { Database, type Statement } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
+import { $env, getAgentDbPath, logger } from "@oh-my-pi/pi-utils";
 import type { ApiKeyResolver } from "./auth-retry";
 import * as AIError from "./error";
 import { isUsageLimitOutcome } from "./error/rate-limit";
@@ -57,6 +57,8 @@ import {
 	listCodexResetCredits,
 } from "./usage/openai-codex-reset";
 import { opencodeGoUsageProvider } from "./usage/opencode-go";
+import { syntheticUsageProvider } from "./usage/synthetic";
+import { xaiOauthUsageProvider } from "./usage/xai-oauth";
 import { zaiRankingStrategy, zaiUsageProvider } from "./usage/zai";
 
 const USAGE_RANKING_METRIC_EPSILON = 1e-9;
@@ -186,7 +188,7 @@ export interface CredentialHealthResult {
 	email?: string;
 	/** OAuth account id if known. */
 	accountId?: string;
-	/** Organization/workspace the credential is scoped to (Anthropic multi-subscription). */
+	/** Organization/workspace the credential is scoped to (Anthropic/ChatGPT multi-subscription). */
 	orgId?: string;
 	orgName?: string;
 	/** `true` when the refresh token lives on a remote broker (sentinel was present). */
@@ -596,6 +598,8 @@ const DEFAULT_USAGE_PROVIDERS: UsageProvider[] = [
 	opencodeGoUsageProvider,
 	githubCopilotUsageProvider,
 	cursorUsageProvider,
+	syntheticUsageProvider,
+	xaiOauthUsageProvider,
 ];
 
 const DEFAULT_USAGE_PROVIDER_MAP = new Map<Provider, UsageProvider>(
@@ -631,10 +635,10 @@ const USAGE_REPORT_CACHE_KEY_VERSION_OVERRIDES: Partial<Record<Provider, number>
 	"google-antigravity": 2,
 	zai: 2,
 	// v2: cache identity gained an `org:` component so two subscriptions on one
-	// account email stop sharing a slot. The bump also retires pre-org entries —
-	// otherwise an org-less credential could replay another org's cached pool
-	// (incl. the 24h last-good fallback) via the old bare email/account key.
-	anthropic: 2,
+	// account email stop sharing a slot. v3 retires parsed reports created before
+	// Anthropic extra-usage rows existed; header ingestion can otherwise keep
+	// renewing those incomplete reports throughout the 24h last-good retention.
+	anthropic: 3,
 };
 const DEFAULT_OAUTH_REFRESH_TIMEOUT_MS = 10_000;
 /**
@@ -735,7 +739,7 @@ export interface OAuthAccess {
 	projectId?: string;
 	enterpriseUrl?: string;
 	apiEndpoint?: string;
-	/** Organization/workspace the credential is scoped to (Anthropic multi-subscription). */
+	/** Organization/workspace the credential is scoped to (Anthropic/ChatGPT multi-subscription). */
 	orgId?: string;
 	orgName?: string;
 }
@@ -760,7 +764,7 @@ export interface OAuthAccessFailure {
 	projectId?: string;
 	enterpriseUrl?: string;
 	apiEndpoint?: string;
-	/** Organization/workspace the credential is scoped to (Anthropic multi-subscription). */
+	/** Organization/workspace the credential is scoped to (Anthropic/ChatGPT multi-subscription). */
 	orgId?: string;
 	orgName?: string;
 	error: string;
@@ -776,7 +780,7 @@ export interface OAuthAccountIdentity {
 	accountId?: string;
 	email?: string;
 	projectId?: string;
-	/** Organization/workspace the credential is scoped to (Anthropic multi-subscription). */
+	/** Organization/workspace the credential is scoped to (Anthropic/ChatGPT multi-subscription). */
 	orgId?: string;
 	orgName?: string;
 }
@@ -795,7 +799,7 @@ export interface OAuthAccountSummary {
 	email?: string;
 	projectId?: string;
 	enterpriseUrl?: string;
-	/** Organization/workspace the credential is scoped to (Anthropic multi-subscription). */
+	/** Organization/workspace the credential is scoped to (Anthropic/ChatGPT multi-subscription). */
 	orgId?: string;
 	orgName?: string;
 }
@@ -3146,8 +3150,9 @@ export class AuthStorage {
 		const parsedReport = parseHeaders(headers, now);
 		if (!parsedReport) return false;
 		// Throttled to one ingest per interval — except when a window reads
-		// exhausted: that snapshot must land immediately so the next getApiKey
-		// blocks the credential instead of burning a wire 429 on the wall.
+		// exhausted: persist that snapshot immediately. A full-backed cache can
+		// then block the next getApiKey; a cold header-only snapshot first probes
+		// the usage endpoint.
 		const exhausted = parsedReport.limits.some(limit => this.#isUsageLimitExhausted(limit));
 		const last = this.#usageHeaderIngestAt.get(cacheKey);
 		if (!exhausted && last !== undefined && now - last < USAGE_HEADER_INGEST_INTERVAL_MS) return false;
@@ -3167,7 +3172,8 @@ export class AuthStorage {
 		}
 
 		if (this.#fetchUsageReportsOverride || this.#store.fetchUsageReports) return false;
-		const prior = this.#usageCache.getStale<UsageReport | null>(cacheKey)?.value;
+		const priorEntry = this.#usageCache.getStale<UsageReport | null>(cacheKey);
+		const prior = priorEntry?.value;
 		let merged = report;
 		if (prior && Array.isArray(prior.limits)) {
 			const headerLimitsById = new Map(report.limits.map(limit => [limit.id, limit]));
@@ -3191,12 +3197,19 @@ export class AuthStorage {
 				metadata: {
 					...(report.metadata ?? {}),
 					...(prior.metadata ?? {}),
+					source: prior.metadata?.source,
 					headersUpdatedAt: now,
 				},
 			};
 		}
 
-		this.#usageCache.set(cacheKey, { value: merged, expiresAt: now + USAGE_REPORT_TTL_MS });
+		// Header ingestion merges values but never extends a cache entry's lifetime.
+		// Preserve the existing expiry (including active failure cooldowns) so full
+		// reports refetch on their original 5-minute schedule and full-payload-only
+		// rows such as extra usage stay current; headers only refresh window rows
+		// between fetches. A newly minted header-only report is durable but stale.
+		const expiresAt = Math.max(priorEntry?.expiresAt ?? now - 1, now - 1);
+		this.#usageCache.set(cacheKey, { value: merged, expiresAt });
 		this.#usageHeaderIngestAt.set(cacheKey, now);
 		return true;
 	}
@@ -3225,6 +3238,29 @@ export class AuthStorage {
 					this.#setStoredCredentials(providerId, dedupedEntries);
 				}
 				entries = dedupedEntries;
+			}
+
+			// SuperGrok billing only accepts OAuth bearers. Catalog envVars for
+			// xai-oauth are [XAI_OAUTH_TOKEN, XAI_API_KEY], so the generic path
+			// would (a) build api_key usage requests from stored keys / the paid
+			// API env var and (b) never fall through to XAI_OAUTH_TOKEN when a
+			// non-OAuth row is the only stored credential. Skip api_key material
+			// and only env-fallback to the dedicated OAuth bearer.
+			if (providerId === "xai-oauth") {
+				let hasUsableStoredOAuthCredential = false;
+				for (const entry of entries) {
+					if (entry.credential.type !== "oauth") continue;
+					const request = this.#buildUsageRequestForOauth(provider, entry.credential, baseUrl);
+					if (providerImpl.supports && !providerImpl.supports(request)) continue;
+					requests.push(request);
+					hasUsableStoredOAuthCredential = true;
+				}
+				const oauthToken = $env.XAI_OAUTH_TOKEN?.trim();
+				if (!hasUsableStoredOAuthCredential && oauthToken) {
+					const request = this.#buildUsageRequest(provider, { type: "oauth", accessToken: oauthToken }, baseUrl);
+					if (!providerImpl.supports || providerImpl.supports(request)) requests.push(request);
+				}
+				continue;
 			}
 
 			if (entries.length === 0) {
@@ -3283,15 +3319,14 @@ export class AuthStorage {
 		const identifiers: string[] = [];
 		const email = this.#getUsageReportMetadataValue(report, "email");
 		if (email) identifiers.push(`email:${email.toLowerCase()}`);
-		if (report.provider === "anthropic") {
-			// Anthropic: one account email can hold several organizations
-			// (Team seat + personal Max). Reports from different orgs must not
-			// merge — scope every identifier by org when the report carries one.
-			// When the email could not be recovered, fall back to the account
-			// (identical across orgs, hence the org qualifier is what keeps two
-			// subscriptions apart) so no-email reports still merge per org.
-			// Org-less reports (pre-upgrade caches) keep their bare identifiers
-			// and only merge among themselves.
+		if (report.provider === "anthropic" || report.provider === "openai-codex") {
+			// One account email can hold several org-scoped subscriptions
+			// (Anthropic organizations, ChatGPT workspaces). Reports from
+			// different orgs must not merge — scope every identifier by org
+			// when the report carries one; fall back to the account when the
+			// email could not be recovered so no-email reports still merge
+			// per org. Org-less reports (pre-upgrade caches) keep their bare
+			// identifiers and only merge among themselves.
 			if (identifiers.length === 0) {
 				const accountId =
 					this.#getUsageReportMetadataValue(report, "accountId") ?? this.#getUsageReportScopeAccountId(report);
@@ -3299,12 +3334,11 @@ export class AuthStorage {
 			}
 			const orgId = this.#getUsageReportMetadataValue(report, "orgId");
 			if (orgId) {
-				if (identifiers.length === 0) return [`anthropic:org:${orgId.toLowerCase()}`];
-				return identifiers.map(identifier => `anthropic:org:${orgId.toLowerCase()}|${identifier.toLowerCase()}`);
+				if (identifiers.length === 0) return [`${report.provider}:org:${orgId.toLowerCase()}`];
+				return identifiers.map(
+					identifier => `${report.provider}:org:${orgId.toLowerCase()}|${identifier.toLowerCase()}`,
+				);
 			}
-			return identifiers.map(identifier => `anthropic:${identifier.toLowerCase()}`);
-		}
-		if (report.provider === "openai-codex") {
 			return identifiers.map(identifier => `${report.provider}:${identifier.toLowerCase()}`);
 		}
 		const projectId =
@@ -5294,9 +5328,15 @@ export class AuthStorage {
 			if (credential.type !== "oauth") continue;
 			const credentialEmail = credential.email?.trim().toLowerCase();
 			const credentialAccountId = credential.accountId?.trim().toLowerCase();
-			if ((email && credentialEmail === email) || (accountId && credentialAccountId === accountId)) {
-				matches.push(entry.id);
-			}
+			// Every identity dimension present on BOTH sides must agree — the
+			// account id is shared workspace-wide and one email can span
+			// workspaces, so a single-dimension match can cross-link siblings.
+			const emailComparable = Boolean(email && credentialEmail);
+			const accountComparable = Boolean(accountId && credentialAccountId);
+			if (!emailComparable && !accountComparable) continue;
+			if (emailComparable && credentialEmail !== email) continue;
+			if (accountComparable && credentialAccountId !== accountId) continue;
+			matches.push(entry.id);
 		}
 		return matches;
 	}
@@ -5906,16 +5946,15 @@ function toStoredAuthCredential(row: AuthRow, credential: AuthCredential): Store
 
 function resolveProviderCredentialIdentityKey(provider: string, identifiers: string[]): string | null {
 	const emailIdentifier = identifiers.find(identifier => identifier.startsWith("email:"));
-	if (provider === "anthropic") {
-		// One Anthropic account email can hold several organizations (e.g. a
-		// Team seat plus a personal Max plan), each with its own org-scoped
-		// token and limit pools. Scope identity by org so both subscriptions
-		// can be stored side by side. The qualifier rides on whichever base
-		// identity is available — the account UUID is IDENTICAL across the
-		// orgs of one login account, so an unqualified account/project
-		// fallback would still collapse two subscriptions whenever the email
-		// could not be recovered. Org-less credentials (rows written before
-		// org capture existed) keep their bare key.
+	if (provider === "anthropic" || provider === "openai-codex") {
+		// One account email can hold several organizations/workspaces (e.g. a
+		// Team seat plus a personal plan), each with its own org-scoped token
+		// and limit pools. Scope identity by org so both subscriptions can be
+		// stored side by side. The qualifier rides on whichever base identity
+		// is available, so an unqualified account/project fallback would
+		// still collapse two subscriptions whenever the email could not be
+		// recovered. Org-less credentials (rows written before org capture
+		// existed) keep their bare key.
 		const base =
 			emailIdentifier ??
 			identifiers.find(identifier => identifier.startsWith("account:")) ??
@@ -5925,7 +5964,6 @@ function resolveProviderCredentialIdentityKey(provider: string, identifiers: str
 		// No base identity at all: the org alone still distinguishes the row.
 		return orgIdentifier ?? null;
 	}
-	if (provider === "openai-codex" && emailIdentifier) return emailIdentifier;
 	const accountIdentifier = identifiers.find(identifier => identifier.startsWith("account:"));
 	if (accountIdentifier) return accountIdentifier;
 	if (emailIdentifier) return emailIdentifier;
@@ -5962,9 +6000,9 @@ function matchesReplacementCredential(
 	if (incomingIdentityKey === existingIdentityKey) return true;
 	if (existingIdentityKey === null) return false;
 	// One-way upgrade, applied only when the INCOMING identity key carries the
-	// org qualifier (only anthropic keys do, so other providers never reach the
-	// checks below). An org-scoped login `org:<o>` claims (and re-keys) any
-	// existing row that denotes the same subscription:
+	// org qualifier (only anthropic and openai-codex keys do, so other
+	// providers never reach the checks below). An org-scoped login `org:<o>`
+	// claims (and re-keys) any existing row that denotes the same subscription:
 	//   - `org:<o>` — org-only row stored when identity recovery failed, claimed
 	//     once a later same-org login recovers a base identity;
 	//   - `<b>` for any base identity `<b>` (email/account/project) the incoming
@@ -5988,10 +6026,16 @@ function matchesReplacementCredential(
 		existing.type === "oauth" && existingIdentityKey.endsWith(`|${orgIdentifier}`)
 			? extractOAuthCredentialIdentifiers(existing)
 			: null;
+	// A base identifier that merely repeats the org qualifier's id carries no
+	// per-user identity (openai-codex stores the ChatGPT workspace id as both
+	// accountId and orgId, shared by every member) — letting it act as a
+	// claimable base would re-key another member's same-org row.
+	const orgQualifierId = orgIdentifier.slice("org:".length);
 	for (const identifier of incomingIdentifiers) {
 		const isBase =
 			identifier.startsWith("email:") || identifier.startsWith("account:") || identifier.startsWith("project:");
 		if (!isBase) continue;
+		if (identifier.slice(identifier.indexOf(":") + 1) === orgQualifierId) continue;
 		if (existingIdentityKey === identifier) return true;
 		if (existingIdentityKey === `${identifier}|${orgIdentifier}`) return true;
 		if (existingIdentifiers?.includes(identifier)) return true;

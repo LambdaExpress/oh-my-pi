@@ -20,6 +20,7 @@ import {
 	ensureFileOpen,
 	FileChangeType,
 	getActiveClients,
+	getActiveOrPendingClient,
 	getLspClientKey,
 	getOrCreateClient,
 	type LspServerStatus,
@@ -214,6 +215,7 @@ async function syncFileContent(
 	cwd: string,
 	servers: Array<[string, ServerConfig]>,
 	signal?: AbortSignal,
+	createMissing = true,
 ): Promise<void> {
 	throwIfAborted(signal);
 	await Promise.allSettled(
@@ -222,11 +224,15 @@ async function syncFileContent(
 			if (serverConfig.createClient) {
 				return;
 			}
-			const client = await getOrCreateClient(serverConfig, cwd, undefined, signal);
+			const client = createMissing
+				? await getOrCreateClient(serverConfig, cwd, undefined, signal)
+				: await getActiveOrPendingClient(serverConfig, cwd, signal);
+			if (!client) return;
 			throwIfAborted(signal);
 			await syncContent(client, absolutePath, content, signal);
 		}),
 	);
+	throwIfAborted(signal);
 }
 
 /**
@@ -242,6 +248,7 @@ async function notifyFileSaved(
 	cwd: string,
 	servers: Array<[string, ServerConfig]>,
 	signal?: AbortSignal,
+	createMissing = true,
 ): Promise<void> {
 	throwIfAborted(signal);
 	await Promise.allSettled(
@@ -250,10 +257,14 @@ async function notifyFileSaved(
 			if (serverConfig.createClient) {
 				return;
 			}
-			const client = await getOrCreateClient(serverConfig, cwd, undefined, signal);
+			const client = createMissing
+				? await getOrCreateClient(serverConfig, cwd, undefined, signal)
+				: await getActiveOrPendingClient(serverConfig, cwd, signal);
+			if (!client) return;
 			await notifySaved(client, absolutePath, signal);
 		}),
 	);
+	throwIfAborted(signal);
 }
 
 // Cache config per cwd to avoid repeated file I/O
@@ -1548,7 +1559,8 @@ async function runLspWritethrough(
 	// Capture diagnostic versions BEFORE syncing to detect stale diagnostics
 	// Bound client creation by the writethrough budget: a hung/broken server
 	// must not add its full init wait (30s default) to every edit.
-	const minVersions = enableDiagnostics ? await captureDiagnosticVersions(cwd, servers, 5_000, signal) : undefined;
+	const minVersionsPromise = enableDiagnostics ? captureDiagnosticVersions(cwd, servers, 5_000, signal) : undefined;
+	let minVersions = useCustomFormatter ? undefined : await minVersionsPromise;
 	let expectedDocumentVersions: ServerVersionMap | undefined;
 
 	let formatter: FileFormatResult | undefined;
@@ -1568,13 +1580,19 @@ async function runLspWritethrough(
 		operationSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
 		await untilAborted(operationSignal, async () => {
 			if (useCustomFormatter) {
-				// Custom linters (e.g. Biome CLI) require on-disk input.
+				// Custom linters operate on on-disk input; the shared pre-write also
+				// supports implementations that inspect the file before formatting.
 				await writeContent(content);
-				finalContent = await formatContent(dst, content, cwd, customLinterServers, operationSignal);
+				const [formattedContent, capturedVersions] = await Promise.all([
+					formatContent(dst, content, cwd, customLinterServers, operationSignal),
+					minVersionsPromise,
+				]);
+				finalContent = formattedContent;
+				minVersions = capturedVersions;
 				formatter = finalContent !== content ? FileFormatResult.FORMATTED : FileFormatResult.UNCHANGED;
 				await writeContent(finalContent);
 				await notifyWriteCommitted(operationSignal);
-				await syncFileContent(dst, finalContent, cwd, lspServers, operationSignal);
+				await syncFileContent(dst, finalContent, cwd, lspServers, operationSignal, enableDiagnostics);
 			} else {
 				// 1. Sync original content to LSP servers
 				await syncFileContent(dst, content, cwd, lspServers, operationSignal);
@@ -1600,7 +1618,7 @@ async function runLspWritethrough(
 			}
 
 			// 5. Notify saved to LSP servers
-			await notifyFileSaved(dst, cwd, lspServers, operationSignal);
+			await notifyFileSaved(dst, cwd, lspServers, operationSignal, !useCustomFormatter || enableDiagnostics);
 		});
 		synced = true;
 	} catch {
@@ -1781,7 +1799,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<LspToolDetails>> {
 		const { action, file, line, symbol, query, new_name, apply, timeout } = params;
-		const timeoutSec = clampTimeout("lsp", timeout);
+		const timeoutSec = clampTimeout("lsp", timeout, this.session.settings.get("tools.maxTimeout"));
 		const timeoutSignal = AbortSignal.timeout(timeoutSec * 1000);
 		const callerSignal = signal;
 		signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;

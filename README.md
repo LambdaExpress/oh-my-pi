@@ -26,6 +26,12 @@ The most capable agent surface that ships. Continuously tuned by real-world use 
 
 **40+** providers · **32** built-in tools · **14** lsp ops · **28** dap ops · **~55k** lines of Rust core.
 
+> [!NOTE]
+> Pull requests are **temporarily open to everyone** as a trial. We previously
+> required a vouch before accepting PRs; that requirement is lifted for now
+> while we evaluate how open contributions go. Depending on the results, the
+> vouch system may return.
+
 ## Install
 
 **macOS · Linux**
@@ -308,6 +314,32 @@ OpenAI-compatible `/v1/models`. Local instances skip the key.
 
 Ollama `local` · Ollama Cloud · LM Studio `local` · llama.cpp `local` · vLLM `local` · LiteLLM
 
+### Custom OpenAI-compatible providers
+
+Define custom providers in `~/.omp/agent/models.yml`:
+
+```yaml
+providers:
+  spark:
+    baseUrl: http://192.168.10.223:8000/v1
+    api: openai-completions
+    apiKey: dummy
+    models:
+      - id: minimax-m3
+        name: MiniMax M3
+        contextWindow: 100000
+        maxTokens: 32000
+```
+
+Run `omp models spark` to verify discovery. Then run `omp setup` and choose the model in the default-model step, or open `/model` in a session and assign it to the `default` role.
+
+To preconfigure the default without the picker, add the selector to `~/.omp/agent/config.yml`:
+
+```yaml
+modelRoles:
+  default: spark/minimax-m3
+```
+
 ### Four knobs that make routing useful
 
 - **Custom providers** — Declare anything that speaks `openai-completions`, `openai-responses`, `openai-codex-responses`, `azure-openai-responses`, `anthropic-messages`, `google-generative-ai`, or `google-vertex` in `~/.omp/agent/models.yml`.
@@ -566,12 +598,10 @@ For architecture and contribution guidelines, see [packages/coding-agent/DEVELOP
 
 ## Contributing
 
-Issues are open to everyone. **Pull requests require a vouch** — PRs from
-unvouched or denounced authors are closed automatically. If you're not yet
-vouched, open a [Discussion](https://github.com/can1357/oh-my-pi/discussions)
-and ask a maintainer to `!vouch` you rather than opening a PR (which would be
-closed on sight). See **[CONTRIBUTING.md](CONTRIBUTING.md)** and
-[`.github/VOUCHED.td`](.github/VOUCHED.td) for the full policy.
+Issues and pull requests are open to everyone. Open PRs are currently a
+**trial** — the previous vouch requirement is lifted while we evaluate how it
+goes, and it may return. See **[CONTRIBUTING.md](CONTRIBUTING.md)** for
+guidelines on contributing.
 
 ---
 

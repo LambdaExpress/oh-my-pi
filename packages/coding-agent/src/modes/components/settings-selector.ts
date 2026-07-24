@@ -65,6 +65,7 @@ class TextInputSubmenu extends Container {
 		label: string,
 		description: string,
 		currentValue: string,
+		secret: boolean,
 		private readonly onSubmit: (value: string) => void,
 		private readonly onCancel: () => void,
 	) {
@@ -78,6 +79,7 @@ class TextInputSubmenu extends Container {
 		this.addChild(new Spacer(1));
 
 		this.#input = new Input();
+		this.#input.mask = secret;
 		if (currentValue) {
 			this.#input.setValue(currentValue);
 		}
@@ -293,6 +295,7 @@ class ProviderLimitsSubmenu extends Container {
 				`Max In-Flight Requests: ${provider}`,
 				"Enter a positive number. Decimals round down. Clear the field to make this provider unlimited.",
 				limits[provider]?.toString() ?? "",
+				false,
 				value => {
 					const next = { ...limits };
 					const trimmed = value.trim();
@@ -837,7 +840,7 @@ export class SettingsSelectorComponent implements Component {
 					id: def.path,
 					label: def.label,
 					description: def.description,
-					currentValue: this.#formatTextInputValue(def.path, currentValue),
+					currentValue: this.#formatTextInputValue(def, currentValue),
 					submenu: (cv, done) => this.#createTextInput(def, cv, done),
 					changed,
 				};
@@ -992,12 +995,13 @@ export class SettingsSelectorComponent implements Component {
 			def.label,
 			def.description,
 			this.#formatTextInputEditValue(def.path, settings.get(def.path)),
+			def.secret,
 			value => {
 				// Empty string clears the setting; undefined-typed string settings
 				// store "" which the browser.ts expandPath ignores (no-op fallback).
 				this.#setSettingValue(def.path, value);
 				this.callbacks.onChange(def.path, settings.get(def.path));
-				wrappedDone(this.#formatTextInputValue(def.path, settings.get(def.path)));
+				wrappedDone(this.#formatTextInputValue(def, settings.get(def.path)));
 			},
 			() => wrappedDone(),
 		);
@@ -1022,9 +1026,9 @@ export class SettingsSelectorComponent implements Component {
 		return entries.map(([provider, limit]) => `${provider}: ${limit}`).join(", ");
 	}
 
-	#formatTextInputValue(path: SettingPath, value: unknown): string {
-		if (path === "providers.maxInFlightRequests") return this.#formatProviderLimitsValue(value);
-		return this.#formatTextInputEditValue(path, value);
+	#formatTextInputValue(def: SettingDef & { type: "text" }, value: unknown): string {
+		if (def.secret) return value ? "••••••••" : "";
+		return this.#formatTextInputEditValue(def.path, value);
 	}
 
 	#formatTextInputEditValue(_path: SettingPath, value: unknown): string {

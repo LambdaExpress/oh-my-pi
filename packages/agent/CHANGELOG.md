@@ -12,6 +12,12 @@
 - Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.
 - Fixed tool abort settlement so each tool can declare a bounded cleanup window before the agent synthesizes an interrupted result.
 - Fixed external cancellation after a completed tool execution to append an explicit aborted assistant boundary without issuing another provider request.
+## [17.0.8] - 2026-07-22
+
+### Fixed
+
+- Improved resilience against transient stream JSON parse failures by recovering completed tool calls while safely preventing incomplete, unknown, refused, or sensitive calls from executing.
+
 ## [17.0.5] - 2026-07-18
 
 ### Added

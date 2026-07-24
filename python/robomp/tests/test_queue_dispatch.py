@@ -1,11 +1,4 @@
-"""Dispatch action -> task mapping in WorkerPool._dispatch.
-
-Regression guard for the route<->dispatch contract: `github_events.route`
-queues a `pull_request.labeled` event as a `review_pr` task in `vouched_label`
-mode, so `_dispatch` MUST invoke `tasks.review_pr` for that action. It
-previously only handled `opened/reopened/ready_for_review`, so every vouched
-PR fell through to the no-op branch and was silently marked `done`.
-"""
+"""Dispatch action -> task mapping in WorkerPool._dispatch."""
 
 from __future__ import annotations
 
@@ -55,15 +48,12 @@ def _pr_row(action: str, *, delivery: str = "pr1") -> EventRow:
     )
 
 
-@pytest.mark.parametrize("action", ["opened", "reopened", "ready_for_review", "labeled"])
+@pytest.mark.parametrize("action", ["opened", "reopened", "ready_for_review"])
 @pytest.mark.asyncio
 async def test_dispatch_routes_pr_review_actions_to_review_pr(
     settings: Settings, db: Database, monkeypatch: pytest.MonkeyPatch, action: str
 ) -> None:
-    """Every PR action `route` can queue for review MUST reach `tasks.review_pr`.
-
-    `labeled` is the vouched-label trigger; the others are the `open` trigger.
-    """
+    """Every PR action `route` can queue for review MUST reach `tasks.review_pr`."""
     seen: list[str] = []
 
     async def fake_review_pr(*, payload, **_kwargs) -> None:

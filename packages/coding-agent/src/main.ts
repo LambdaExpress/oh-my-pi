@@ -50,6 +50,7 @@ import {
 	resolveActiveProjectRegistryPath,
 } from "./discovery/helpers";
 import { injectOmpExtensionCliRoots } from "./discovery/omp-extension-roots";
+import { formatExtensionLoadNotifications } from "./extensibility/extensions/load-errors";
 import { ExtensionRunner } from "./extensibility/extensions/runner";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { scheduleMarketplaceAutoUpdate } from "./extensibility/plugins/marketplace-auto-update";
@@ -134,6 +135,7 @@ async function checkForNewVersion(currentVersion: string): Promise<string | unde
 // embedders need project-level opt-outs for reminder/prelude prompt injection.
 const HOST_DEFAULTED_SETTING_PATHS: SettingPath[] = [
 	"task.isolation.mode",
+	"task.isolation.apply",
 	"task.isolation.merge",
 	"task.isolation.commits",
 	"task.eager",
@@ -898,6 +900,7 @@ export async function buildSessionOptions(
 			cliProvider: parsed.provider,
 			cliModel: parsed.model,
 			modelRegistry,
+			availableModels: modelRegistry.getAvailable(),
 			settings: activeSettings,
 			preferences: modelMatchPreferences,
 		});
@@ -970,13 +973,22 @@ export async function buildSessionOptions(
 		if (resolved.warning) {
 			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
 		}
+		// Prewalk is an optional optimization (off by default): switch to a fast
+		// model at the first edit. If its hand-off target can't be resolved or has
+		// no configured auth, warn and leave prewalk unarmed rather than aborting
+		// startup and locking the user out of the app (issue #6064).
 		if (resolved.error || !resolved.model) {
-			throw new Error(resolved.error ?? `Model "${parsed.prewalkInto ?? DEFAULT_PREWALK_TARGET}" not found`);
+			const target = parsed.prewalkInto ?? DEFAULT_PREWALK_TARGET;
+			process.stderr.write(
+				`${chalk.yellow(`Warning: prewalk disabled — ${resolved.error ?? `model "${target}" not found`}`)}\n`,
+			);
+		} else if (!modelRegistry.hasConfiguredAuth(resolved.model)) {
+			process.stderr.write(
+				`${chalk.yellow(`Warning: prewalk disabled — no API key for ${resolved.model.provider}/${resolved.model.id}`)}\n`,
+			);
+		} else {
+			options.prewalk = { target: resolved.model, thinkingLevel: resolved.thinkingLevel };
 		}
-		if (!modelRegistry.hasConfiguredAuth(resolved.model)) {
-			throw new Error(`No API key for ${resolved.model.provider}/${resolved.model.id}`);
-		}
-		options.prewalk = { target: resolved.model, thinkingLevel: resolved.thinkingLevel };
 	}
 
 	if (parsed.planYoloInto !== undefined && !parsed.planYolo) {
@@ -1451,6 +1463,13 @@ export async function runRootCommand(
 		};
 		const initialArgs = applyExtensionFlags(extensionFlagSink, rawArgs) ?? parsedArgs;
 		normalizeContinueSessionArgs(initialArgs, rawArgs);
+		for (const message of formatExtensionLoadNotifications(extensionsResult.errors)) {
+			if (isInteractive) {
+				notifs.push({ kind: "warn", message });
+			} else {
+				process.stderr.write(`${chalk.yellow(`${message}\n`)}`);
+			}
+		}
 		// Fail fast on stale/typo flags (e.g. `omp --list-models`) now that we
 		// know the real extension flag set. Without this check the unrecognized
 		// token gets silently consumed and any following positional leaks as the

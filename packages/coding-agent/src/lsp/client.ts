@@ -857,6 +857,29 @@ export async function getOrCreateClient(
 	return clientPromise;
 }
 
+/** Return an active or already-starting client without starting a language server. */
+export async function getActiveOrPendingClient(
+	config: ServerConfig,
+	cwd: string,
+	signal?: AbortSignal,
+): Promise<LspClient | undefined> {
+	throwIfAborted(signal);
+	const client = clients.get(`${config.command}:${cwd}`);
+	if (client) {
+		client.lastActivity = Date.now();
+		return client;
+	}
+
+	const pending = clientLocks.get(`${config.command}:${cwd}`);
+	if (!pending) return undefined;
+	try {
+		return await untilAborted(signal, pending);
+	} catch {
+		throwIfAborted(signal);
+		return undefined;
+	}
+}
+
 /**
  * Ensure a file is opened in the LSP client.
  * Sends didOpen notification if the file is not already tracked.
