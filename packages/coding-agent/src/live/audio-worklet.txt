@@ -1,0 +1,59 @@
+class OmpPcmSourceProcessor extends AudioWorkletProcessor {
+	constructor() {
+		super();
+		this.frames = [];
+		this.frameOffset = 0;
+		this.queuedSamples = 0;
+		this.muted = false;
+		this.maxQueuedSamples = Math.floor(sampleRate * 0.75);
+		this.port.onmessage = event => {
+			const message = event.data;
+			if (message.type === "mute") {
+				this.muted = message.muted;
+				this.clear();
+				return;
+			}
+			if (message.type !== "audio" || this.muted || !(message.samples instanceof Float32Array)) return;
+			let samples = message.samples;
+			if (samples.length > this.maxQueuedSamples) samples = samples.slice(samples.length - this.maxQueuedSamples);
+			this.frames.push(samples);
+			this.queuedSamples += samples.length;
+			while (this.queuedSamples > this.maxQueuedSamples && this.frames.length > 1) {
+				const stale = this.frames.shift();
+				this.queuedSamples -= stale.length - this.frameOffset;
+				this.frameOffset = 0;
+			}
+		};
+	}
+
+	clear() {
+		this.frames.length = 0;
+		this.frameOffset = 0;
+		this.queuedSamples = 0;
+	}
+
+	process(_inputs, outputs) {
+		const output = outputs[0];
+		const channel = output && output[0];
+		if (!channel) return true;
+		channel.fill(0);
+		if (this.muted) return true;
+		let outputOffset = 0;
+		while (outputOffset < channel.length && this.frames.length > 0) {
+			const frame = this.frames[0];
+			const available = frame.length - this.frameOffset;
+			const count = Math.min(available, channel.length - outputOffset);
+			channel.set(frame.subarray(this.frameOffset, this.frameOffset + count), outputOffset);
+			outputOffset += count;
+			this.frameOffset += count;
+			this.queuedSamples -= count;
+			if (this.frameOffset === frame.length) {
+				this.frames.shift();
+				this.frameOffset = 0;
+			}
+		}
+		return true;
+	}
+}
+
+registerProcessor("omp-pcm-source", OmpPcmSourceProcessor);

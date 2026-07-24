@@ -16,6 +16,8 @@ import {
 	Settings,
 } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
+import { AUTO_IMAGE_PROVIDER_ORDER } from "@oh-my-pi/pi-coding-agent/tools/image-providers";
+import { SEARCH_PROVIDER_ORDER } from "@oh-my-pi/pi-coding-agent/web/search/types";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import { YAML } from "bun";
 import * as fileLock from "../src/config/file-lock";
@@ -470,7 +472,6 @@ describe("Settings", () => {
 			const withFileLock = fileLock.withFileLock;
 			vi.spyOn(fileLock, "withFileLock").mockImplementation(async (filePath, fn, options) => {
 				firstSaveEntered.resolve();
-				await releaseFirstSave.promise;
 				const result = await withFileLock(filePath, fn, options);
 				firstSaveFinished.resolve();
 				return result;
@@ -596,6 +597,46 @@ describe("Settings", () => {
 
 			expect(settings.getEditVariantForModel("openrouter/moonshotai/Kimi-K2-Instruct")).toBeNull();
 			expect(settings.getEditVariantForModel("openai/gpt-5.2-codex")).toBe("apply_patch");
+		});
+	});
+
+	describe("provider preference migration", () => {
+		it("expands a legacy providers.webSearch choice into the head of webSearchOrder", async () => {
+			await writeSettings({ providers: { webSearch: "exa" } });
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("providers.webSearchOrder")).toEqual([
+				"exa",
+				...SEARCH_PROVIDER_ORDER.filter(id => id !== "exa"),
+			]);
+		});
+
+		it("drops legacy providers.webSearch auto without seeding an order", async () => {
+			await writeSettings({ providers: { webSearch: "auto" } });
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("providers.webSearchOrder")).toEqual([]);
+		});
+
+		it("keeps an explicit webSearchOrder over the legacy webSearch preference", async () => {
+			await writeSettings({ providers: { webSearch: "exa", webSearchOrder: ["gemini"] } });
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("providers.webSearchOrder")).toEqual(["gemini"]);
+		});
+
+		it("expands a legacy providers.image choice into the head of imageOrder", async () => {
+			await writeSettings({ providers: { image: "xai" } });
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("providers.imageOrder")).toEqual([
+				"xai",
+				...AUTO_IMAGE_PROVIDER_ORDER.filter(id => id !== "xai"),
+			]);
 		});
 	});
 

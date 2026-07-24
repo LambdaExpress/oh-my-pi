@@ -12,6 +12,22 @@
 - Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.
 - Fixed tool abort settlement so each tool can declare a bounded cleanup window before the agent synthesizes an interrupted result.
 - Fixed external cancellation after a completed tool execution to append an explicit aborted assistant boundary without issuing another provider request.
+## [17.1.0] - 2026-07-24
+
+### Added
+
+- Added support for tracking Cloudflare AI Gateway cache status (hit, miss, bypass, unknown) on chat spans.
+
+### Changed
+
+- Improved tool execution steering behavior: queued steering now cooperatively signals long-running, non-interruptible tools (via ToolCallContext.steeringSignal) to allow graceful early termination or backgrounding, rather than hard-aborting them.
+
+### Fixed
+
+- Fixed an out-of-memory (OOM) crash caused by an infinite loop when a steer or follow-up message was queued on an agent session with an empty transcript.
+- Fixed an issue where switching providers or models on a session could lose compacted history; the agent now correctly falls back to a portable local summary if the new model cannot replay the prior provider's remote-compaction payload.
+- Fixed a compaction failure with Anthropic models where serializing prior assistant reasoning inside <thinking> tags triggered reasoning_extraction refusals.
+
 ## [17.0.8] - 2026-07-22
 
 ### Fixed

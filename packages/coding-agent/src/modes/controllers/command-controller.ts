@@ -15,6 +15,7 @@ import { formatDuration, normalizePathForComparison, Snowflake, sanitizeText } f
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
 import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-share";
+import { parseExportArgs } from "../../export/html/args";
 import { shareSession } from "../../export/share";
 import type { CompactOptions } from "../../extensibility/extensions/types";
 import {
@@ -157,16 +158,14 @@ export class CommandController {
 	}
 
 	async handleExportCommand(text: string): Promise<void> {
-		const parts = text.split(/\s+/);
-		const arg = parts.length > 1 ? parts[1] : undefined;
-
-		if (arg === "--copy" || arg === "clipboard" || arg === "copy") {
-			this.ctx.showWarning("Use /dump to copy the session to clipboard.");
-			return;
-		}
-
 		try {
-			const filePath = await this.ctx.session.exportToHtml(arg);
+			const { outputPath, useUserThemes } = parseExportArgs(text.slice("/export".length));
+			if (outputPath === "--copy" || outputPath === "clipboard" || outputPath === "copy") {
+				this.ctx.showWarning("Use /dump to copy the session to clipboard.");
+				return;
+			}
+
+			const filePath = await this.ctx.session.exportToHtml(outputPath, useUserThemes);
 			this.ctx.showStatus(`Session exported to: ${filePath}`);
 			this.openInBrowser(filePath);
 		} catch (error: unknown) {
@@ -631,8 +630,14 @@ export class CommandController {
 					this.ctx.session.sessionId,
 				)
 			: undefined;
-		const output = renderUsageReports(usageReports, theme, Date.now(), availableWidth, provider =>
-			provider === currentProvider ? activeAccount : undefined,
+		const usageModelSelectors = this.ctx.session.getUsageReportingModelSelectors(usageReports);
+		const output = renderUsageReports(
+			usageReports,
+			theme,
+			Date.now(),
+			availableWidth,
+			provider => (provider === currentProvider ? activeAccount : undefined),
+			usageModelSelectors,
 		);
 		this.ctx.present([new Spacer(1), new Text(output, 1, 0)]);
 	}
@@ -1149,7 +1154,7 @@ export class CommandController {
 		}
 
 		try {
-			await this.ctx.sessionManager.moveTo(resolvedPath);
+			await this.ctx.session.moveSession(resolvedPath);
 		} catch (err) {
 			this.ctx.showError(`Move failed: ${err instanceof Error ? err.message : String(err)}`);
 			return;
@@ -2196,6 +2201,7 @@ export function renderUsageReports(
 	nowMs: number,
 	availableWidth: number,
 	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
+	usageModelSelectors: readonly string[] = [],
 ): string {
 	const lines: string[] = [];
 	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
@@ -2248,6 +2254,13 @@ export function renderUsageReports(
 		const activeAccountLabel = formatActiveAccountLabel(activeAccount);
 		if (activeAccountLabel) {
 			lines.push(`  ${uiTheme.fg("accent", "in use by this session:")} ${activeAccountLabel}`);
+		}
+		const reportingModels = usageModelSelectors.filter(selector => selector.startsWith(`${provider}/`));
+		if (reportingModels.length > 0) {
+			lines.push(`  ${uiTheme.fg("accent", "Models with usage data")}`);
+			for (const selector of reportingModels) {
+				lines.push(`    ${replaceTabs(truncateToWidth(sanitizeText(selector), availableWidth - 4))}`);
+			}
 		}
 
 		// Provider-wide disclaimers (e.g. "OMP-observed spend only") render once

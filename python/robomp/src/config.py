@@ -154,6 +154,15 @@ class Settings(BaseSettings):
     natives_cache_max_bytes: int = Field(4 * 1024**3, alias="ROBOMP_NATIVES_CACHE_MAX_BYTES")
     natives_cache_gc_interval_seconds: float = Field(3600.0, alias="ROBOMP_NATIVES_CACHE_GC_INTERVAL_SECONDS")
 
+    # Post-run workspace cache reclamation. Every task run reinstalls
+    # node_modules (`ensure_workspace_dependencies`), so between runs the
+    # checkout's node_modules and the workspace-private bun install cache are
+    # dead weight — multiple GB per issue that would otherwise persist until
+    # the issue closes and exhaust the disk. When enabled, the worker strips
+    # them after every event and WorkerPool.start() sweeps all workspaces once
+    # at boot. Costs a dependency re-download on the next run for that issue.
+    reclaim_workspace_caches: bool = Field(True, alias="ROBOMP_RECLAIM_WORKSPACE_CACHES")
+
     @field_validator("bot_login", mode="after")
     @classmethod
     def _require_bot_login(cls, value: str) -> str:

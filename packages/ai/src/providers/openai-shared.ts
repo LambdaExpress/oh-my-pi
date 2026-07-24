@@ -13,6 +13,7 @@ import type {
 	ResolvedOpenAISharedCompat,
 	VercelGatewayRouting,
 } from "@oh-my-pi/pi-catalog/types";
+import { parseAlibabaTokenPlanCredential } from "@oh-my-pi/pi-catalog/wire/alibaba-token-plan";
 import {
 	COREWEAVE_PROJECT_HEADER,
 	coreWeaveProjectHeaders,
@@ -54,6 +55,9 @@ import {
 	type ToolResultMessage,
 	type Usage,
 } from "../types";
+
+export type { OpenAIPromptCacheOptions } from "../types";
+
 import {
 	getOpenAIResponsesHistoryItems,
 	getOpenAIResponsesHistoryPayload,
@@ -253,6 +257,18 @@ export function resolveOpenAIRequestSetup(
 		Object.assign(headers, copilot.headers);
 		copilotPremiumRequests = copilot.premiumRequests;
 		baseUrl = resolveGitHubCopilotBaseUrl(model.baseUrl, rawApiKey) ?? model.baseUrl;
+	}
+
+	if (model.provider === "alibaba-token-plan") {
+		// Require an explicitly resolved Token Plan credential. The generic
+		// `$env.OPENAI_API_KEY` fallback above matches the broad `sk-*` token
+		// grammar and would otherwise be sent to QwenCloud as bearer material.
+		if (!options.apiKey) {
+			throw new AIError.MissingApiKeyError("alibaba-token-plan");
+		}
+		const credential = parseAlibabaTokenPlanCredential(rawApiKey);
+		if (!credential) throw new AIError.ConfigurationError("Invalid QwenCloud Token Plan credential");
+		apiKey = credential.token;
 	}
 
 	if (options.alibabaCodingPlanAuth && model.provider === "alibaba-coding-plan") {
@@ -598,7 +614,7 @@ export function resolveOpenAIOutputTokenParam(
 
 export interface OpenAIGatewayRoutingParams {
 	provider?: OpenRouterRouting;
-	providerOptions?: { gateway?: { only?: string[]; order?: string[] } };
+	providerOptions?: { gateway?: Pick<VercelGatewayRouting, "only" | "order" | "caching"> };
 }
 
 export interface OpenAIGatewayRoutingCompat {
@@ -610,26 +626,68 @@ export interface OpenAIGatewayRoutingCompat {
 
 /**
  * Apply gateway routing preferences to the request body. OpenRouter routes via
- * the top-level `provider` field; the Vercel AI Gateway routes via
- * `providerOptions.gateway`. Both Chat Completions and Responses call this; the
- * Vercel branch is inert for Responses, whose resolved compat never sets
- * `isVercelGatewayHost`.
+ * the top-level `provider` field; the Vercel AI Gateway routes Chat
+ * Completions through `providerOptions.gateway`.
  */
 export function applyOpenAIGatewayRouting(
 	params: OpenAIGatewayRoutingParams,
 	compat: OpenAIGatewayRoutingCompat,
+	cacheEnabled = true,
 ): void {
 	if (compat.isOpenRouterHost && compat.openRouterRouting) {
 		params.provider = compat.openRouterRouting;
 	}
 	if (compat.isVercelGatewayHost && compat.vercelGatewayRouting) {
 		const routing = compat.vercelGatewayRouting;
-		if (routing.only || routing.order) {
-			const gatewayOptions: { only?: string[]; order?: string[] } = {};
+		if (routing.only || routing.order || (cacheEnabled && routing.caching)) {
+			const gatewayOptions: Pick<VercelGatewayRouting, "only" | "order" | "caching"> = {};
 			if (routing.only) gatewayOptions.only = routing.only;
 			if (routing.order) gatewayOptions.order = routing.order;
+			if (cacheEnabled && routing.caching) gatewayOptions.caching = routing.caching;
 			params.providerOptions = { gateway: gatewayOptions };
 		}
+	}
+}
+
+export interface VercelResponsesCacheParams {
+	caching?: "auto";
+	cache_anchor_items?: number;
+	cache_ttl?: "5m" | "1h";
+	providerOptions?: { gateway?: Pick<VercelGatewayRouting, "only" | "order"> };
+}
+
+export interface VercelResponsesCacheCompat {
+	isVercelGatewayHost: boolean;
+	vercelGatewayRouting?: VercelGatewayRouting;
+}
+
+/**
+ * Apply Vercel AI Gateway's Responses-only automatic cache controls and
+ * provider routing. Cache settings are top-level Responses fields, while
+ * `only` and `order` remain under `providerOptions.gateway`.
+ */
+export function applyVercelResponsesCacheControls(
+	params: VercelResponsesCacheParams,
+	compat: VercelResponsesCacheCompat,
+	cacheRetention: CacheRetention = "short",
+): void {
+	const routing = compat.vercelGatewayRouting;
+	if (!compat.isVercelGatewayHost) return;
+
+	if (routing?.only || routing?.order) {
+		const gateway: Pick<VercelGatewayRouting, "only" | "order"> = {};
+		if (routing.only) gateway.only = routing.only;
+		if (routing.order) gateway.order = routing.order;
+		params.providerOptions = { gateway };
+	}
+
+	if (cacheRetention === "none" || routing?.caching !== "auto") return;
+
+	params.caching = "auto";
+	if (routing.cacheAnchorItems !== undefined) params.cache_anchor_items = routing.cacheAnchorItems;
+	// A configured 1h TTL is capped by resolved retention; default and short intentionally omit it.
+	if (routing.cacheTtl !== undefined && (routing.cacheTtl !== "1h" || cacheRetention === "long")) {
+		params.cache_ttl = routing.cacheTtl;
 	}
 }
 

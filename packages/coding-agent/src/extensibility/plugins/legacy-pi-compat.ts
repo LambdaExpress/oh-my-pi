@@ -1504,7 +1504,25 @@ function evaluateGraphCommonJs(modulePath: string): unknown {
 	}
 }
 
-Reflect.set(globalThis, COMMONJS_REQUIRE_GLOBAL, evaluateGraphCommonJs);
+/**
+ * Register {@link evaluateGraphCommonJs} as the graph-owned CommonJS require
+ * bridge on `globalThis`, first-wins.
+ *
+ * On source-link installs the `@(scope)/pi-coding-agent` root shim is served
+ * from `src/`, so an extension import can evaluate a second instance of this
+ * module with empty graph state. An unconditional set would let that empty
+ * instance clobber the host bundle's populated bridge and break transitive
+ * CommonJS resolution (#6449); guarding preserves the first (host-owned)
+ * registration. Idempotent: a subsequent call with a value already present is a
+ * no-op.
+ */
+export function ensureGraphCommonJsRequireRegistered(): void {
+	if (!Reflect.get(globalThis, COMMONJS_REQUIRE_GLOBAL)) {
+		Reflect.set(globalThis, COMMONJS_REQUIRE_GLOBAL, evaluateGraphCommonJs);
+	}
+}
+
+ensureGraphCommonJsRequireRegistered();
 
 let legacyPiLoadTag = 0;
 

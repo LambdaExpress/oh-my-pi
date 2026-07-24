@@ -42,6 +42,14 @@ Key data boundaries:
 - Native helpers flow from Rust crates to `packages/natives/native/*.node`, then through `@oh-my-pi/pi-natives` imports.
 - Sessions are JSONL journals with branch/tree metadata; `Agent` in-memory state and persisted session state are synchronized by `AgentSession`.
 
+## Central Utilities
+
+Before writing a helper, check whether one already exists — `packages/coding-agent/src/utils/`, `@oh-my-pi/pi-utils`, `@oh-my-pi/pi-tui`, and the domain modules next to your callsite. This applies to **everything**: VCS wrappers, formatting/truncation/path-display helpers, image handling, clipboard, streams, temp files, caching. The central versions carry hardening a fresh copy always loses (timeouts, output caps, non-interactive env, lock avoidance, caching, TUI sanitization).
+
+- Search first: `grep` for the operation before implementing it. Two implementations of the same thing is a bug even when both work.
+- Examples of the pattern: `src/utils/git.ts` and `src/utils/jj.ts` are the only sanctioned way to run git/jj (`import * as git from "../utils/git"` — never hand-spawn via `$`/`Bun.spawn`); rendering goes through the helpers in TUI Sanitization below (`replaceTabs`, `truncateToWidth`, `shortenPath`, `PREVIEW_LIMITS`) rather than ad-hoc string math.
+- Missing capability? Extend the central helper (new option, new sub-function on the namespace) and call it — don't fork its logic locally.
+
 ## Key Directories
 
 | Path | Purpose |

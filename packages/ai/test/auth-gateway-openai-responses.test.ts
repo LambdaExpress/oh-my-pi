@@ -177,6 +177,27 @@ describe("openai-responses parseRequest", () => {
 		expect(parsed.options.reasoning).toBe(Effort.Max);
 	});
 
+	it("rejects raw explicit prompt-cache controls instead of silently dropping them", () => {
+		expect(() =>
+			parseRequest({
+				model: "gpt-5.6",
+				input: "hi",
+				prompt_cache_options: { mode: "explicit", ttl: "30m" },
+			}),
+		).toThrow("prompt_cache_options and prompt_cache_breakpoint are unsupported");
+		expect(() =>
+			parseRequest({
+				model: "gpt-5.6",
+				input: [
+					{
+						role: "user",
+						content: [{ type: "input_text", text: "hi", prompt_cache_breakpoint: { mode: "explicit" } }],
+					},
+				],
+			}),
+		).toThrow("prompt_cache_options and prompt_cache_breakpoint are unsupported");
+	});
+
 	it("accepts a bare string input and rejects a missing model", () => {
 		const parsed = parseRequest({ model: "m", input: "hi" });
 		expect(parsed.context.messages).toHaveLength(1);

@@ -256,10 +256,10 @@ async function withXAIOAuthIdentity(
 	};
 }
 
-/** Build the SuperGrok CLI billing URL. */
+/** Build the SuperGrok CLI billing URL. Pass `""` to omit `format` (unified monthly payload). */
 export function buildXAICliBillingUrl(format: string = XAI_CLI_BILLING_FORMAT): string {
 	const url = new URL(XAI_CLI_BILLING_PATH, XAI_CLI_BILLING_BASE_URL);
-	url.searchParams.set("format", format);
+	if (format) url.searchParams.set("format", format);
 	return validateXAIBillingEndpoint(url.toString());
 }
 

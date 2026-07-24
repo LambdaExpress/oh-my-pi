@@ -81,9 +81,9 @@ function makeResult(id: string, overrides: Partial<SingleResult> = {}): SingleRe
 	};
 }
 
-function mockDiscovery(agent: AgentDefinition = taskAgent): void {
+function mockDiscovery(agent: AgentDefinition | AgentDefinition[] = taskAgent): void {
 	vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({
-		agents: [agent],
+		agents: Array.isArray(agent) ? agent : [agent],
 		projectAgentsDir: null,
 	});
 }
@@ -393,6 +393,88 @@ describe("task.batch spawning", () => {
 		]);
 		expect(seen.map(spawn => spawn.assignment).sort()).toEqual(["Do A.", "Do B."]);
 		for (const spawn of seen) expect(spawn.parentAgentId).toBe("ParentA");
+	});
+
+	it("routes each mixed-agent item through its selected definition while preserving caller overrides", async () => {
+		const scoutSchema = { type: "object", properties: { findings: { type: "array" } } };
+		const reviewerSchema = { type: "object", properties: { verdict: { type: "string" } } };
+		const callerSchema = { type: "object", properties: { approved: { type: "boolean" } } };
+		const scoutAgent: AgentDefinition = {
+			...taskAgent,
+			name: "scout",
+			description: "Read-only scout",
+			systemPrompt: "Investigate the assigned target.",
+			tools: ["read"],
+			model: ["anthropic/claude-haiku-4-5:low"],
+			output: scoutSchema,
+		};
+		const reviewerAgent: AgentDefinition = {
+			...taskAgent,
+			name: "reviewer",
+			description: "Code review specialist",
+			systemPrompt: "Review the assigned target.",
+			tools: ["read", "bash"],
+			model: ["anthropic/claude-sonnet-4-6:medium"],
+			output: reviewerSchema,
+		};
+		mockDiscovery([scoutAgent, reviewerAgent]);
+
+		const seen: Array<{
+			id?: string;
+			agent: AgentDefinition;
+			modelOverride?: string | string[];
+			outputSchema?: unknown;
+			outputSchemaSource?: "caller" | "agent" | "session" | "none";
+			outputSchemaOverridesAgent?: boolean;
+		}> = [];
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+			seen.push({
+				id: options.id,
+				agent: options.agent,
+				modelOverride: options.modelOverride,
+				outputSchema: options.outputSchema,
+				outputSchemaSource: options.outputSchemaSource,
+				outputSchemaOverridesAgent: options.outputSchemaOverridesAgent,
+			});
+			return makeResult(options.id ?? "?", { agent: options.agent.name });
+		});
+
+		const manager = createManager();
+		const tool = await TaskTool.create(
+			createSession({ manager, settings: { "async.enabled": true, "task.batch": true } }),
+		);
+		const result = await tool.execute("tc-mixed-agents", {
+			context: "Shared routing context.",
+			tasks: [
+				{ name: "Scout", agent: "scout", task: "Investigate." },
+				{
+					name: "Review",
+					agent: "reviewer",
+					task: "Review.",
+					model: "openai-codex/gpt-5.6-sol:high",
+					outputSchema: callerSchema,
+				},
+			],
+		} as TaskParams);
+
+		expect(getFirstText(result)).toContain("Spawned 2 background agents");
+		await Promise.all([manager.getJob("Scout")!.promise, manager.getJob("Review")!.promise]);
+
+		const byId = new Map(seen.map(spawn => [spawn.id, spawn]));
+		const scoutSpawn = byId.get("Scout");
+		const reviewerSpawn = byId.get("Review");
+		expect(scoutSpawn?.agent).toBe(scoutAgent);
+		expect(scoutSpawn?.agent.tools).toEqual(["read"]);
+		expect(scoutSpawn?.modelOverride).toEqual(["anthropic/claude-haiku-4-5:low"]);
+		expect(scoutSpawn?.outputSchema).toBe(scoutSchema);
+		expect(scoutSpawn?.outputSchemaSource).toBe("agent");
+		expect(scoutSpawn?.outputSchemaOverridesAgent).toBe(false);
+		expect(reviewerSpawn?.agent).toBe(reviewerAgent);
+		expect(reviewerSpawn?.agent.tools).toEqual(["read", "bash"]);
+		expect(reviewerSpawn?.modelOverride).toEqual(["openai-codex/gpt-5.6-sol:high"]);
+		expect(reviewerSpawn?.outputSchema).toBe(callerSchema);
+		expect(reviewerSpawn?.outputSchemaSource).toBe("caller");
+		expect(reviewerSpawn?.outputSchemaOverridesAgent).toBe(true);
 	});
 
 	it("treats a one-item batch as a single spawn and forwards context", async () => {

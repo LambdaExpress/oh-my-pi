@@ -53,6 +53,27 @@ def test_route_issue_opened_queues_triage() -> None:
     assert decision.issue_key == "octo/widget#4"
 
 
+def test_route_issue_reopened_queues_triage() -> None:
+    # `finalized_issue_comment.md` promises re-triage on reopen; the router must
+    # queue it as a submitter-attributable triage (not drop it to the skip branch).
+    decision = route(
+        "issues",
+        {
+            "action": "reopened",
+            "issue": {"number": 4, "user": {"login": "alice"}, "author_association": "CONTRIBUTOR"},
+            "repository": {"full_name": "octo/widget"},
+        },
+        allowlist=ALLOWLIST,
+        bot_login=BOT,
+    )
+    assert decision.should_queue
+    assert decision.task == "triage_issue"
+    assert decision.issue_key == "octo/widget#4"
+    assert decision.reason == "issues.reopened"
+    assert decision.submitter == "alice"
+    assert decision.association == "CONTRIBUTOR"
+
+
 def test_route_skips_disallowed_repo() -> None:
     decision = route(
         "issues",

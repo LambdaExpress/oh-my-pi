@@ -58,6 +58,27 @@ function isObj(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+const UNSUPPORTED_EXPLICIT_PROMPT_CACHE_MESSAGE =
+	"openai-responses: prompt_cache_options and prompt_cache_breakpoint are unsupported by this auth-gateway route; use /v1/pi/stream with options.promptCache instead";
+
+function hasUnsupportedExplicitPromptCacheFields(body: unknown): boolean {
+	if (!isObj(body)) return false;
+	if ("prompt_cache_options" in body || "prompt_cache_breakpoint" in body) return true;
+	if (!Array.isArray(body.input)) return false;
+
+	return body.input.some(item => {
+		if (!isObj(item)) return false;
+		if ("prompt_cache_breakpoint" in item) return true;
+		return Array.isArray(item.content) && item.content.some(part => isObj(part) && "prompt_cache_breakpoint" in part);
+	});
+}
+
+function rejectUnsupportedExplicitPromptCacheFields(body: unknown): void {
+	if (hasUnsupportedExplicitPromptCacheFields(body)) {
+		throw new AIError.ValidationError(UNSUPPORTED_EXPLICIT_PROMPT_CACHE_MESSAGE);
+	}
+}
+
 function asString(v: unknown): string | undefined {
 	return typeof v === "string" ? v : undefined;
 }
@@ -294,6 +315,7 @@ export function parseRequest(body: unknown, headers?: Headers): ParsedRequest {
 	// client signals a cache identity outside the body — see the
 	// `resolvePromptCacheKey` call further down.
 
+	rejectUnsupportedExplicitPromptCacheFields(body);
 	const data = openaiResponsesRequestSchema(body);
 	if (data instanceof type.errors) {
 		throw new AIError.ValidationError(`openai-responses: ${data.summary}`);

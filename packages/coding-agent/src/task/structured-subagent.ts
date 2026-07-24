@@ -377,6 +377,7 @@ function buildExecutorOptions(
 	const enableMCP = !policy.planMode && (session.enableMCP ?? true);
 	return {
 		cwd: session.cwd,
+		additionalDirectories: session.additionalDirectories,
 		agent: policy.effectiveAgent,
 		task: renderSubagentPrompt(request.assignment),
 		assignment: request.assignment.trim(),

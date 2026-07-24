@@ -1,0 +1,221 @@
+(() => {
+	const INPUT_SAMPLE_RATE = 16_000;
+	const LEVEL_INTERVAL_MS = 50;
+	const OPEN_TIMEOUT_MS = 20_000;
+	let context;
+	let peer;
+	let channel;
+	let sourceNode;
+	let sourceTrack;
+	let remoteSource;
+	let analyser;
+	let levelWaveform;
+	let levelTimer;
+	let disconnectTimer;
+	let workletUrl;
+	let closing = false;
+	let muted = false;
+	let openSettled = false;
+	let openResolve;
+	let openReject;
+	let previousInputSample;
+	let inputPhase = 0;
+	const openPromise = new Promise((resolve, reject) => {
+		openResolve = resolve;
+		openReject = reject;
+	});
+
+	function reportFailure(message) {
+		if (closing) return;
+		if (!openSettled) {
+			openSettled = true;
+			openReject(new Error(message));
+		}
+		Promise.resolve(window.__ompLiveFailure(message)).catch(() => {});
+	}
+
+	function waitForIceGathering() {
+		if (peer.iceGatheringState === "complete") return Promise.resolve();
+		return new Promise((resolve, reject) => {
+			const timeout = setTimeout(() => {
+				peer.removeEventListener("icegatheringstatechange", onChange);
+				reject(new Error("Timed out gathering WebRTC ICE candidates"));
+			}, 10_000);
+			function onChange() {
+				if (peer.iceGatheringState !== "complete") return;
+				clearTimeout(timeout);
+				peer.removeEventListener("icegatheringstatechange", onChange);
+				resolve();
+			}
+			peer.addEventListener("icegatheringstatechange", onChange);
+		});
+	}
+
+	function decodePcm(base64) {
+		const encoded = atob(base64);
+		const bytes = new Uint8Array(encoded.length);
+		for (let index = 0; index < encoded.length; index++) bytes[index] = encoded.charCodeAt(index);
+		const view = new DataView(bytes.buffer);
+		const samples = new Float32Array(bytes.length / 4);
+		for (let index = 0; index < samples.length; index++) samples[index] = view.getFloat32(index * 4, true);
+		return samples;
+	}
+
+	function resample(samples) {
+		if (samples.length === 0) return new Float32Array();
+		const step = INPUT_SAMPLE_RATE / context.sampleRate;
+		const prefix = previousInputSample === undefined ? 0 : 1;
+		const input = new Float32Array(samples.length + prefix);
+		if (prefix === 1) input[0] = previousInputSample;
+		input.set(samples, prefix);
+		if (prefix === 0) inputPhase = 0;
+		const available = input.length - 1;
+		if (available <= 0) {
+			previousInputSample = input[0];
+			return new Float32Array();
+		}
+		const outputLength = Math.max(0, Math.ceil((available - inputPhase) / step));
+		const output = new Float32Array(outputLength);
+		let written = 0;
+		while (inputPhase < available) {
+			const index = Math.floor(inputPhase);
+			const fraction = inputPhase - index;
+			output[written++] = input[index] + (input[index + 1] - input[index]) * fraction;
+			inputPhase += step;
+		}
+		inputPhase -= available;
+		previousInputSample = input[input.length - 1];
+		return written === output.length ? output : output.slice(0, written);
+	}
+
+	function reportLevel() {
+		if (!analyser || !levelWaveform) return;
+		analyser.getFloatTimeDomainData(levelWaveform);
+		let sum = 0;
+		for (const sample of levelWaveform) sum += sample * sample;
+		const level = Math.min(1, Math.max(0, Math.sqrt(sum / levelWaveform.length)));
+		Promise.resolve(window.__ompLiveOutputLevel(level)).catch(() => {});
+	}
+
+	function attachRemoteTrack(event) {
+		if (closing || event.track.kind !== "audio") return;
+		if (remoteSource) remoteSource.disconnect();
+		const stream = new MediaStream([event.track]);
+		remoteSource = context.createMediaStreamSource(stream);
+		analyser = context.createAnalyser();
+		analyser.fftSize = 1024;
+		levelWaveform = new Float32Array(analyser.fftSize);
+		remoteSource.connect(analyser);
+		analyser.connect(context.destination);
+		clearInterval(levelTimer);
+		levelTimer = setInterval(reportLevel, LEVEL_INTERVAL_MS);
+	}
+
+	async function start(workletSource) {
+		if (peer) throw new Error("Live browser runtime already started");
+		context = new AudioContext({ latencyHint: "interactive" });
+		await context.resume();
+		workletUrl = URL.createObjectURL(new Blob([workletSource], { type: "text/javascript" }));
+		await context.audioWorklet.addModule(workletUrl);
+		sourceNode = new AudioWorkletNode(context, "omp-pcm-source", {
+			numberOfInputs: 0,
+			numberOfOutputs: 1,
+			outputChannelCount: [1],
+		});
+		const destination = context.createMediaStreamDestination();
+		sourceNode.connect(destination);
+		sourceTrack = destination.stream.getAudioTracks()[0];
+		sourceTrack.enabled = !muted;
+
+		peer = new RTCPeerConnection();
+		peer.addTrack(sourceTrack, destination.stream);
+		peer.ontrack = attachRemoteTrack;
+		peer.onconnectionstatechange = () => {
+			clearTimeout(disconnectTimer);
+			if (peer.connectionState === "failed" || peer.connectionState === "closed") {
+				reportFailure(`WebRTC peer connection ${peer.connectionState}`);
+			} else if (peer.connectionState === "disconnected") {
+				disconnectTimer = setTimeout(() => {
+					if (peer && peer.connectionState === "disconnected") reportFailure("WebRTC peer connection disconnected");
+				}, 2_000);
+			}
+		};
+		channel = peer.createDataChannel("oai-events");
+		channel.onopen = () => {
+			if (openSettled) return;
+			openSettled = true;
+			openResolve();
+		};
+		channel.onerror = () => reportFailure("Live data channel failed");
+		channel.onclose = () => reportFailure("Live data channel closed unexpectedly");
+		channel.onmessage = event => {
+			if (typeof event.data !== "string") return;
+			Promise.resolve(window.__ompLiveServerEvent(event.data)).catch(() => {});
+		};
+
+		const offer = await peer.createOffer();
+		await peer.setLocalDescription(offer);
+		await waitForIceGathering();
+		if (!peer.localDescription || !peer.localDescription.sdp) throw new Error("Browser produced an empty WebRTC offer");
+		return peer.localDescription.sdp;
+	}
+
+	async function acceptAnswer(sdp) {
+		if (!peer) throw new Error("Live browser runtime has not started");
+		await peer.setRemoteDescription({ type: "answer", sdp });
+	}
+
+	async function waitForOpen() {
+		let timeout;
+		try {
+			await Promise.race([
+				openPromise,
+				new Promise((_, reject) => {
+					timeout = setTimeout(() => reject(new Error("Timed out waiting for the live data channel to open")), OPEN_TIMEOUT_MS);
+				}),
+			]);
+		} finally {
+			clearTimeout(timeout);
+		}
+	}
+
+	function send(payload) {
+		if (!channel || channel.readyState !== "open") throw new Error("Live data channel is not open");
+		channel.send(payload);
+	}
+
+	function pushAudio(base64) {
+		if (!sourceNode || muted) return;
+		const output = resample(decodePcm(base64));
+		if (output.length === 0) return;
+		sourceNode.port.postMessage({ type: "audio", samples: output }, [output.buffer]);
+	}
+
+	function setMuted(nextMuted) {
+		muted = nextMuted;
+		previousInputSample = undefined;
+		inputPhase = 0;
+		if (sourceTrack) sourceTrack.enabled = !muted;
+		if (sourceNode) sourceNode.port.postMessage({ type: "mute", muted });
+	}
+
+	async function close() {
+		if (closing) return;
+		closing = true;
+		clearInterval(levelTimer);
+		clearTimeout(disconnectTimer);
+		if (channel) channel.close();
+		if (peer) peer.close();
+		if (remoteSource) remoteSource.disconnect();
+		if (analyser) analyser.disconnect();
+		if (sourceNode) {
+			sourceNode.port.postMessage({ type: "mute", muted: true });
+			sourceNode.disconnect();
+		}
+		if (sourceTrack) sourceTrack.stop();
+		if (workletUrl) URL.revokeObjectURL(workletUrl);
+		if (context && context.state !== "closed") await context.close();
+	}
+
+	window.ompCodexLive = { start, acceptAnswer, waitForOpen, send, pushAudio, setMuted, close };
+})();

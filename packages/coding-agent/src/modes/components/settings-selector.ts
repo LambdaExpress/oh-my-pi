@@ -221,6 +221,131 @@ class SelectSubmenu extends Container {
 	}
 }
 
+/**
+ * Submenu for array-of-enum settings: every option is a toggle row. Enter or
+ * Space flips membership; ordered lists render 1-based positions and reorder
+ * the highlighted member with ←/→. Changes apply live; Esc goes back.
+ */
+class MultiSelectSubmenu extends Container {
+	#selectList!: SelectList;
+	#value: string[];
+	#cursor = 0;
+	#selectListLineOffset = 0;
+
+	constructor(
+		private readonly title: string,
+		private readonly description: string,
+		private readonly options: ReadonlyArray<SelectItem>,
+		initial: readonly string[],
+		private readonly ordered: boolean,
+		private readonly onApply: (value: string[]) => void,
+		private readonly onClose: () => void,
+	) {
+		super();
+		// Drop stale ids (renamed/removed providers) so positions stay contiguous.
+		this.#value = initial.filter(id => options.some(option => option.value === id));
+		this.#rebuild();
+	}
+
+	#rebuild(): void {
+		this.clear();
+		this.addChild(new Text(theme.bold(theme.fg("accent", this.title)), 0, 0));
+		if (this.description) {
+			this.addChild(new Spacer(1));
+			this.addChild(new Text(theme.fg("muted", this.description), 0, 0));
+		}
+		this.addChild(new Spacer(1));
+
+		const items = this.options.map((option): SelectItem => {
+			const position = this.#value.indexOf(option.value);
+			const mark =
+				position === -1
+					? theme.fg("dim", this.ordered ? " · " : " ○ ")
+					: this.ordered
+						? theme.fg("accent", `${String(position + 1).padStart(2)}.`)
+						: theme.fg("accent", " ● ");
+			return { value: option.value, label: `${mark} ${option.label}`, description: option.description };
+		});
+		this.#selectList = new SelectList(items, Math.min(items.length, 12), getSelectListTheme());
+		this.#selectList.setSelectedIndex(this.#cursor);
+		this.#selectList.onSelect = item => this.#toggle(item.value);
+		this.#selectList.onSelectionChange = item => {
+			this.#cursor = this.options.findIndex(option => option.value === item.value);
+		};
+		this.#selectList.onCancel = this.onClose;
+		this.addChild(this.#selectList);
+
+		this.addChild(new Spacer(1));
+		const hint = this.ordered
+			? "  Enter/Space to toggle · ←/→ move · 1-9 place at position · Esc to go back"
+			: "  Enter/Space to toggle · Esc to go back";
+		this.addChild(new Text(theme.fg("dim", hint), 0, 0));
+	}
+
+	#apply(next: string[]): void {
+		this.#value = next;
+		this.onApply([...next]);
+		this.#rebuild();
+	}
+
+	#toggle(id: string): void {
+		const next = this.#value.includes(id) ? this.#value.filter(v => v !== id) : [...this.#value, id];
+		this.#apply(next);
+	}
+
+	#move(id: string, delta: -1 | 1): void {
+		const from = this.#value.indexOf(id);
+		if (from === -1) return;
+		const to = from + delta;
+		if (to < 0 || to >= this.#value.length) return;
+		const next = [...this.#value];
+		next[from] = next[to]!;
+		next[to] = id;
+		this.#apply(next);
+	}
+
+	/** Splice the option into the 1-based `position` of the selection (adding it if unselected). */
+	#placeAt(id: string, position: number): void {
+		const next = this.#value.filter(v => v !== id);
+		next.splice(Math.min(position - 1, next.length), 0, id);
+		this.#apply(next);
+	}
+
+	/** Concatenate children, recording the select list's line offset for mouse routing. */
+	override render(width: number): readonly string[] {
+		const lines: string[] = [];
+		for (const child of this.children) {
+			const childLines = child.render(Math.max(1, width));
+			if (child === this.#selectList) {
+				this.#selectListLineOffset = lines.length;
+			}
+			lines.push(...childLines);
+		}
+		return lines;
+	}
+
+	routeMouse(event: SgrMouseEvent, line: number, _col: number): void {
+		routeSelectListMouse(this.#selectList, event, line - this.#selectListLineOffset);
+	}
+
+	handleInput(data: string): void {
+		const current = this.options[this.#cursor]?.value;
+		if (data === " " && current !== undefined) {
+			this.#toggle(current);
+			return;
+		}
+		if (this.ordered && current !== undefined && (data === "\x1b[D" || data === "\x1b[C")) {
+			this.#move(current, data === "\x1b[D" ? -1 : 1);
+			return;
+		}
+		if (this.ordered && current !== undefined && data.length === 1 && data >= "1" && data <= "9") {
+			this.#placeAt(current, Number(data));
+			return;
+		}
+		this.#selectList.handleInput(data);
+	}
+}
+
 class ProviderLimitsSubmenu extends Container {
 	#selectList: SelectList | undefined;
 
@@ -854,6 +979,16 @@ export class SettingsSelectorComponent implements Component {
 					submenu: (_cv, done) => this.#createProviderLimitsInput(done),
 					changed,
 				};
+
+			case "multiselect":
+				return {
+					id: def.path,
+					label: def.label,
+					description: def.description,
+					currentValue: this.#formatMultiSelectValue(def, currentValue),
+					submenu: (_cv, done) => this.#createMultiSelect(def, done),
+					changed,
+				};
 		}
 	}
 
@@ -865,7 +1000,14 @@ export class SettingsSelectorComponent implements Component {
 	}
 
 	#isChanged(def: SettingDef, currentValue: unknown): boolean {
-		return !Object.is(currentValue, getDefault(def.path));
+		const defaultValue: unknown = getDefault(def.path);
+		if (Array.isArray(currentValue) && Array.isArray(defaultValue)) {
+			return (
+				currentValue.length !== defaultValue.length ||
+				currentValue.some((entry, index) => entry !== defaultValue[index])
+			);
+		}
+		return !Object.is(currentValue, defaultValue);
 	}
 
 	#getSubmenuCurrentValue(path: SettingPath, value: unknown): string {
@@ -1024,6 +1166,32 @@ export class SettingsSelectorComponent implements Component {
 		const entries = Object.entries(limits).sort(([a], [b]) => a.localeCompare(b));
 		if (entries.length === 0) return "Unlimited";
 		return entries.map(([provider, limit]) => `${provider}: ${limit}`).join(", ");
+	}
+
+	#createMultiSelect(def: SettingDef & { type: "multiselect" }, done: (value?: string) => void): Container {
+		const current: unknown = settings.get(def.path);
+		const initial = Array.isArray(current)
+			? current.filter((entry): entry is string => typeof entry === "string")
+			: [];
+		return new MultiSelectSubmenu(
+			def.label,
+			def.description,
+			def.options,
+			initial,
+			def.ordered,
+			value => {
+				settings.set(def.path, value as never);
+				this.callbacks.onChange(def.path, value);
+			},
+			() => done(this.#formatMultiSelectValue(def, settings.get(def.path))),
+		);
+	}
+
+	#formatMultiSelectValue(def: SettingDef & { type: "multiselect" }, value: unknown): string {
+		const ids = Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+		if (ids.length === 0) return def.ordered ? "default" : "none";
+		const labels = ids.map(id => def.options.find(option => option.value === id)?.label ?? id);
+		return def.ordered ? labels.join(" → ") : labels.join(", ");
 	}
 
 	#formatTextInputValue(def: SettingDef & { type: "text" }, value: unknown): string {

@@ -136,6 +136,7 @@ describe("xAI OAuth helpers", () => {
 	it("builds the billing URL and CLI-aligned headers", () => {
 		expect(buildXAICliBillingUrl()).toBe("https://cli-chat-proxy.grok.com/v1/billing?format=credits");
 		expect(buildXAICliBillingUrl("tokens")).toBe("https://cli-chat-proxy.grok.com/v1/billing?format=tokens");
+		expect(buildXAICliBillingUrl("")).toBe("https://cli-chat-proxy.grok.com/v1/billing");
 		expect(getXAICliBillingHeaders({ accessToken: "access-token" })).toEqual({
 			Authorization: "Bearer access-token",
 			Accept: "application/json",

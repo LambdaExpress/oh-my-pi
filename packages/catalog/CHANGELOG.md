@@ -2,10 +2,17 @@
 
 ## [Unreleased]
 
+## [17.1.0] - 2026-07-24
+
 ### Added
 
 - Added a distinct user-facing `max` effort for GPT-5.6 wire-effort models. Their native `low` through `max` tiers now pass through by name, while `minimal` remains a compatibility alias for native `low`. Standard Devin GPT-5.6 families route `max` to the real `-max` sibling; Fast families remain capped at `xhigh` because no `-max-priority` sibling exists.
 - Added the native Meta Model API provider and Muse Spark 1.1 with Responses API reasoning replay, image input, and the full supported reasoning-effort ladder ([#4941](https://github.com/can1357/oh-my-pi/issues/4941)).
+- Added Bedrock Converse prompt-cache compatibility limits, including 5-minute checkpoint support for Nova models (Lite, Micro, Pro, Premier, Nova 2 Lite) and 1-hour Claude retention.
+- Added native Meta Model API provider and Muse Spark 1.1 support, featuring Responses API reasoning replay, image input, and reasoning-effort controls.
+- Added Vercel AI Gateway integration features, including opt-in automatic prompt-cache compatibility, provider routing preferences, and Responses cache-anchor and cache-lifetime controls.
+- Added prompt-cache breakpoint capability metadata for OpenAI GPT-5.6, with opt-in support for older models and compatible endpoints.
+- Added native alibaba-token-plan provider with QwenCloud Token Plan Individual discovery and a curated chat-model fallback catalog.
 
 ## [17.0.9] - 2026-07-23
 

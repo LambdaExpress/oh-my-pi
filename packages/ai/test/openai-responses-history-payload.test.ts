@@ -1387,4 +1387,63 @@ describe("OpenAI responses history payload", () => {
 		}) as { content?: string } | undefined;
 		expect(note?.content).toContain(orphanOutput);
 	});
+
+	it("honors strict pairing overrides against opposite catalog defaults", async () => {
+		const orphanCallId = "call_override_orphan";
+		const orphanOutput = "orphan result";
+		const context: Context = {
+			messages: [
+				{
+					role: "assistant",
+					content: [{ type: "toolCall", id: orphanCallId, name: "read", arguments: { path: "README.md" } }],
+					api: "openai-responses",
+					provider: "openai",
+					model: "gpt-5-mini",
+					usage: issue5002ZeroUsage,
+					stopReason: "toolUse",
+					providerPayload: createOpenAIResponsesHistoryPayload(
+						"openai",
+						[{ type: "message", role: "assistant", content: [{ type: "output_text", text: "snapshot" }] }],
+						false,
+					),
+					timestamp: Date.now(),
+				},
+				{
+					role: "toolResult",
+					toolCallId: orphanCallId,
+					toolName: "read",
+					content: [{ type: "text", text: orphanOutput }],
+					isError: false,
+					timestamp: Date.now(),
+				},
+				{ role: "user", content: "Continue", timestamp: Date.now() },
+			],
+		};
+		const catalogNonStrictModel = getOpenAIReasoningModel("openai", "gpt-5-mini");
+		const catalogStrictModel: Model<"openai-responses"> = {
+			...catalogNonStrictModel,
+			compat: { ...catalogNonStrictModel.compat, strictResponsesPairing: true },
+		};
+		const strictOverridePayload = (await captureResponsesPayload(catalogNonStrictModel, context, undefined, {
+			strictResponsesPairing: true,
+		})) as { input?: unknown[] };
+		const nonStrictOverridePayload = (await captureResponsesPayload(catalogStrictModel, context, undefined, {
+			strictResponsesPairing: false,
+		})) as { input?: unknown[] };
+		const orphanNote = (input: unknown[] | undefined): { content?: string } | undefined =>
+			input?.find(item => {
+				if (!item || typeof item !== "object") return false;
+				const candidate = item as { type?: unknown; role?: unknown; content?: unknown };
+				return (
+					candidate.type === "message" &&
+					candidate.role === "assistant" &&
+					typeof candidate.content === "string" &&
+					candidate.content.includes(orphanCallId) &&
+					candidate.content.includes(orphanOutput)
+				);
+			}) as { content?: string } | undefined;
+
+		expect(orphanNote(strictOverridePayload.input)?.content).toContain("[Orphan read result;");
+		expect(orphanNote(nonStrictOverridePayload.input)?.content).toContain("[Orphan tool result;");
+	});
 });

@@ -48,6 +48,38 @@ def _pr_row(action: str, *, delivery: str = "pr1") -> EventRow:
     )
 
 
+def _issue_row(action: str, *, delivery: str = "is1") -> EventRow:
+    return EventRow(
+        delivery_id=delivery,
+        event_type="issues",
+        repo="octo/widget",
+        issue_key="octo/widget#4",
+        payload={"action": action, "issue": {"number": 4}},
+        received_at="2026-01-01T00:00:00Z",
+        state="running",
+        attempts=1,
+        last_error=None,
+    )
+
+
+@pytest.mark.parametrize("action", ["opened", "reopened"])
+@pytest.mark.asyncio
+async def test_dispatch_routes_issue_triage_actions_to_triage_issue(
+    settings: Settings, db: Database, monkeypatch: pytest.MonkeyPatch, action: str
+) -> None:
+    """Every issue action `route` can queue for triage MUST reach `tasks.triage_issue`."""
+    seen: list[str] = []
+
+    async def fake_triage_issue(*, payload, **_kwargs) -> None:
+        seen.append(str(payload.get("action")))
+
+    monkeypatch.setattr(tasks, "triage_issue", fake_triage_issue)
+
+    await _make_pool(settings, db)._dispatch(_issue_row(action))  # noqa: SLF001
+
+    assert seen == [action]
+
+
 @pytest.mark.parametrize("action", ["opened", "reopened", "ready_for_review"])
 @pytest.mark.asyncio
 async def test_dispatch_routes_pr_review_actions_to_review_pr(

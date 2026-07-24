@@ -1,6 +1,7 @@
 import type { KnownProvider } from "@oh-my-pi/pi-catalog";
 import { aimlApiProvider } from "./aimlapi";
 import { alibabaCodingPlanProvider } from "./alibaba-coding-plan";
+import { alibabaTokenPlanProvider } from "./alibaba-token-plan";
 import { amazonBedrockProvider } from "./amazon-bedrock";
 import { anthropicProvider } from "./anthropic";
 import { azureProvider } from "./azure";
@@ -94,6 +95,7 @@ const ALL = [
 	gitlabDuoProvider,
 	gitLabDuoWorkflowProvider,
 	alibabaCodingPlanProvider,
+	alibabaTokenPlanProvider,
 	aimlApiProvider,
 	zhipuCodingPlanProvider,
 	umansProvider,

@@ -493,6 +493,8 @@ describe("ACP lazy startup", () => {
 			const { runRootCommand } = await import("@oh-my-pi/pi-coding-agent/main");
 			const { createAgentSession } = await import("@oh-my-pi/pi-coding-agent/sdk");
 			let session: AgentSession | undefined;
+			let sessionHasUI: boolean | undefined;
+			let deferredUsageReserveConfirmation: boolean | undefined;
 
 			const stopped = runRootCommand(
 				{
@@ -515,6 +517,8 @@ describe("ACP lazy startup", () => {
 					discoverAuthStorage: async () => authStorage,
 					createAgentSession: options => {
 						const sessionOptions = options ?? {};
+						sessionHasUI = sessionOptions.hasUI;
+						deferredUsageReserveConfirmation = sessionOptions.deferUsageReserveConfirmation;
 						return createAgentSession({
 							...sessionOptions,
 							workspaceTree: sessionOptions.workspaceTree ?? emptyWorkspaceTree(sessionOptions.cwd ?? cwd),
@@ -534,6 +538,8 @@ describe("ACP lazy startup", () => {
 			}
 			expect(session.model.provider).toBe("runtime-provider");
 			expect(await session.modelRegistry.getApiKey(session.model)).toBe("cli-runtime-key");
+			expect(sessionHasUI).toBe(false);
+			expect(deferredUsageReserveConfirmation).toBe(true);
 			await session.dispose();
 		} finally {
 			authStorage.close();

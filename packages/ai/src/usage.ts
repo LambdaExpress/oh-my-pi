@@ -304,6 +304,8 @@ export interface UsageProvider {
 	supports?(params: UsageFetchParams): boolean;
 	/** True when fetchUsage contacts upstream and can authenticate the credential for health checks. */
 	validatesCredentials?: boolean;
+	/** Whether a failed refresh may serve the previous successful report. Defaults to true. */
+	retainLastGoodOnFailure?: boolean;
 }
 
 /** Request context used when ranking usage for a specific model. */

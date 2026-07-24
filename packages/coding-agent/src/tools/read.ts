@@ -11,12 +11,14 @@ import type {
 	ToolTier,
 } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
-import { glob, type SummaryResult, summarizeCode } from "@oh-my-pi/pi-natives";
+import { type SummaryResult, summarizeCode } from "@oh-my-pi/pi-natives";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import {
 	getRemoteDir,
 	type ImageMetadata,
+	isEexist,
+	isEnotempty,
 	isProbablyBinary,
 	logger,
 	parseImageMetadata,
@@ -43,7 +45,7 @@ import { InternalUrlRouter, resolveLocalUrlToFile, resolveLocalUrlToPath } from 
 import { type ResolvedArtifactFile, resolveArtifactFile } from "../internal-urls/artifact-protocol";
 import { parseInternalUrl } from "../internal-urls/parse";
 import type { InternalUrl } from "../internal-urls/types";
-import { getLanguageFromPath, type Theme } from "../modes/theme/theme";
+import { getLanguageFromPath, isMarkdownPath, type Theme } from "../modes/theme/theme";
 import readDescription from "../prompts/tools/read.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import {
@@ -104,6 +106,7 @@ import {
 } from "./output-meta";
 import {
 	expandPath,
+	findUniqueWorkspaceSuffix,
 	formatPathRelativeToCwd,
 	isReadableUrlPath,
 	type LineRange,
@@ -172,10 +175,8 @@ const MAX_SUMMARY_BYTES = 2 * 1024 * 1024;
 const MAX_SUMMARY_LINES = 20_000;
 const MAX_ARTIFACT_RAW_INLINE_BYTES = DEFAULT_MAX_BYTES;
 /**
- * Per-line column cap for file reads. Lines wider than the value of
- * `tools.outputMaxColumns` are ellipsis-truncated at display time; the file
- * on disk is unchanged. Shared with the streaming sink path so one setting
- * covers `bash`/`ssh`/`python`/`js eval` and `read` uniformly.
+ * Prose files (Markdown flavors and plain text) skip code-block summarization
+ * unless `read.summarize.prose` opts them in.
  */
 const PROSE_SUMMARY_EXTENSIONS = new Set([".md", ".txt"]);
 const INTERNAL_SUMMARY_SELECTOR_SCHEMES: Record<string, true> = {
@@ -191,6 +192,9 @@ const INTERNAL_SUMMARY_SELECTOR_SCHEMES: Record<string, true> = {
 	ssh: true,
 	vault: true,
 };
+function isProseSummaryPath(filePath: string): boolean {
+	return isMarkdownPath(filePath) || path.extname(filePath).toLowerCase() === ".txt";
+}
 // Remote mount path prefix (sshfs mounts) - skip fuzzy matching to avoid hangs
 const REMOTE_MOUNT_PREFIX = getRemoteDir() + path.sep;
 
@@ -679,73 +683,18 @@ async function streamLinesFromFile(
 
 // Maximum image file size (20MB) - larger images will be rejected to prevent OOM during serialization
 const MAX_IMAGE_SIZE = MAX_IMAGE_INPUT_BYTES;
-const GLOB_TIMEOUT_MS = 5000;
 
 function isNotFoundError(error: unknown): boolean {
 	if (!error || typeof error !== "object") return false;
 	const code = (error as { code?: string }).code;
 	return code === "ENOENT" || code === "ENOTDIR";
 }
-
-/**
- * Escape glob metacharacters so a literal path (e.g. `foo[1].ts`) interpolated
- * into a suffix-glob pattern matches itself. Each metachar is wrapped in a
- * character class (the native glob engine rewrites `\` to `/`, so backslash
- * escaping is unavailable). `]`/`}` need no escaping once their openers are
- * neutralized — unmatched closers are literal.
- */
-function escapeGlobMetachars(value: string): string {
-	return value.replace(/[*?[{]/g, "[$&]");
+function prependSuffixResolutionNotice(text: string, suffixResolution?: { from: string; to: string }): string {
+	if (!suffixResolution) return text;
+	const notice = `[Path '${suffixResolution.from}' not found; resolved to '${suffixResolution.to}' via suffix match]`;
+	return text ? `${notice}\n${text}` : notice;
 }
 
-/**
- * Find one workspace path whose full relative path ends with the missing input.
- * The match is suggestion-only: callers must never read it in place of the
- * exact path the user requested.
- */
-async function findUniqueSuffixSuggestion(
-	rawPath: string,
-	cwd: string,
-	signal?: AbortSignal,
-): Promise<{ absolutePath: string; displayPath: string } | null> {
-	const normalized = rawPath.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
-	if (!normalized) return null;
-	const pattern = `**/${escapeGlobMetachars(normalized)}`;
-
-	const timeoutSignal = AbortSignal.timeout(GLOB_TIMEOUT_MS);
-	const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-
-	let matches: string[];
-	try {
-		const result = await untilAborted(combinedSignal, () =>
-			glob({
-				pattern,
-				path: cwd,
-				// No fileType filter: both files and readable directories can be suggested.
-				hidden: true,
-			}),
-		);
-		matches = result.matches.map(m => m.path);
-	} catch (error) {
-		if (error instanceof Error && error.name === "AbortError") {
-			if (!signal?.aborted) return null; // timeout — give up silently
-			throw new ToolAbortError();
-		}
-		return null;
-	}
-
-	if (matches.length !== 1) return null;
-
-	return {
-		absolutePath: path.resolve(cwd, matches[0]),
-		displayPath: matches[0],
-	};
-}
-
-function formatPathNotFound(rawPath: string, suggestedPath?: string): string {
-	const message = `Path '${rawPath}' not found`;
-	return suggestedPath ? `${message}.\nDid you mean '${suggestedPath}'?` : message;
-}
 function decodeUtf8Text(bytes: Uint8Array): string | null {
 	if (bytes.indexOf(0) !== -1) return null;
 
@@ -759,6 +708,22 @@ function decodeUtf8Text(bytes: Uint8Array): string | null {
 const PDF_IMAGE_PLACEHOLDER_RE = /<!--\s*image:\s*([^\s<>]+)(.*?)-->/g;
 const PDF_IMAGE_MEMBER_RE = /^(.*\.pdf):(.*)$/i;
 const PDF_IMAGE_MEMBER_EXTENSION_RE = /\.png$/i;
+const PDF_IMAGE_CACHE_BASENAME_MAX_LENGTH = 96;
+
+interface PdfImageSnapshot {
+	directory: string;
+	filePath: string;
+	digest: string;
+}
+
+interface PdfImageExtraction {
+	controller: AbortController;
+	promise: Promise<string>;
+	settled: boolean;
+	waiters: number;
+}
+
+const pdfImageExtractions = new Map<string, PdfImageExtraction>();
 
 function pdfImageMemberName(imageId: string): string {
 	return PDF_IMAGE_MEMBER_EXTENSION_RE.test(imageId) ? imageId : `${imageId}.png`;
@@ -799,6 +764,7 @@ export interface ReadToolDetails {
 	truncation?: TruncationResult;
 	isDirectory?: boolean;
 	resolvedPath?: string;
+	suffixResolution?: { from: string; to: string };
 	url?: string;
 	finalUrl?: string;
 	contentType?: string;
@@ -819,7 +785,6 @@ export interface ReadToolDetails {
 	/** Paths recovered from a delimited read argument; used only by the TUI to render one call as multiple read rows. */
 	displayReadTargets?: string[];
 }
-
 type ReadParams = ReadToolInput;
 
 /** Parsed representation of a path-embedded selector. */
@@ -907,16 +872,18 @@ function selToOffsetLimit(parsed: ParsedSelector): { offset?: number; limit?: nu
 interface ResolvedArchiveReadPath {
 	absolutePath: string;
 	archiveSubPath: string;
+	suffixResolution?: { from: string; to: string };
 }
 
 interface ResolvedSqliteReadPath {
 	absolutePath: string;
 	sqliteSubPath: string;
 	queryString: string;
+	suffixResolution?: { from: string; to: string };
 }
 
 /** Per-execute memo of suffix suggestions; `null` records a confirmed miss. */
-type SuffixSuggestionCache = Map<string, { absolutePath: string; displayPath: string } | null>;
+type SuffixMatchCache = Map<string, { absolutePath: string; displayPath: string } | null>;
 
 /**
  * Read tool implementation.
@@ -1005,7 +972,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		for (const part of parts) {
 			try {
 				const result = await this.execute("read-delimited-part", { path: part }, signal);
-				displayReadTargets.push(part);
+				displayReadTargets.push(result.details?.suffixResolution?.to ?? part);
 				for (const block of result.content) {
 					if (block.type === "text") {
 						appendText(block.text);
@@ -1028,28 +995,45 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		return toolResult<ReadToolDetails>({ notes, displayReadTargets }).content(content).done();
 	}
 
-	/** Memoize workspace suffix suggestions within one read call. */
-	async #findSuffixSuggestionCached(
-		cache: SuffixSuggestionCache,
+	/**
+	 * Memoized {@link findUniqueWorkspaceSuffix} for a single read call. A missing
+	 * path with archive/sqlite extensions probes the workspace once per stage
+	 * (archive candidates, sqlite candidates, plain path) — each glob carries a
+	 * 5s timeout, so repeated lookups of the same string stack into a long
+	 * stall before erroring. The cache collapses repeats within one execute().
+	 */
+	async #findSuffixMatchCached(
+		cache: SuffixMatchCache,
 		rawPath: string,
 		signal?: AbortSignal,
 	): Promise<{ absolutePath: string; displayPath: string } | null> {
 		const hit = cache.get(rawPath);
 		if (hit !== undefined) return hit;
-		const result = await findUniqueSuffixSuggestion(rawPath, this.session.cwd, signal);
+		const result = await findUniqueWorkspaceSuffix(rawPath, this.session.cwd, signal);
 		cache.set(rawPath, result);
+		return result;
+	}
+	#withSuffixResolution(
+		result: AgentToolResult<ReadToolDetails>,
+		suffixResolution: { from: string; to: string } | undefined,
+	): AgentToolResult<ReadToolDetails> {
+		if (!suffixResolution) return result;
+		result.details ??= {};
+		result.details.suffixResolution = suffixResolution;
+		const firstText = result.content.find((block): block is TextContent => block.type === "text");
+		if (firstText) firstText.text = prependSuffixResolutionNotice(firstText.text, suffixResolution);
 		return result;
 	}
 
 	async #resolveArchiveReadPath(
 		readPath: string,
-		suffixCache: SuffixSuggestionCache,
+		suffixCache: SuffixMatchCache,
 		signal?: AbortSignal,
 	): Promise<ResolvedArchiveReadPath | null> {
-		let suggestion: { from: string; to: string } | undefined;
 		const candidates = parseArchivePathCandidates(readPath);
 		for (const candidate of candidates) {
-			const absolutePath = resolveReadPath(candidate.archivePath, this.session.cwd);
+			let absolutePath = resolveReadPath(candidate.archivePath, this.session.cwd);
+			let suffixResolution: { from: string; to: string } | undefined;
 
 			try {
 				const stat = await Bun.file(absolutePath).stat();
@@ -1057,66 +1041,75 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				return {
 					absolutePath,
 					archiveSubPath: candidate.archivePath === readPath ? "" : candidate.subPath,
+					suffixResolution,
 				};
 			} catch (error) {
 				if (!isNotFoundError(error) || isRemoteMountPath(absolutePath)) continue;
-				const suffixMatch = await this.#findSuffixSuggestionCached(suffixCache, candidate.archivePath, signal);
-				if (!suffixMatch || suggestion) continue;
+				const suffixMatch = await this.#findSuffixMatchCached(suffixCache, candidate.archivePath, signal);
+				if (!suffixMatch) continue;
 				try {
-					const candidateStat = await Bun.file(suffixMatch.absolutePath).stat();
-					if (!candidateStat.isDirectory()) {
-						suggestion = { from: candidate.archivePath, to: suffixMatch.displayPath };
-					}
-				} catch {
-					// Candidate disappeared after the glob; omit the suggestion.
+					const retryStat = await Bun.file(suffixMatch.absolutePath).stat();
+					if (retryStat.isDirectory()) continue;
+					absolutePath = suffixMatch.absolutePath;
+					suffixResolution = { from: candidate.archivePath, to: suffixMatch.displayPath };
+					return {
+						absolutePath,
+						archiveSubPath: candidate.archivePath === readPath ? "" : candidate.subPath,
+						suffixResolution,
+					};
+				} catch (retryError) {
+					if (!isNotFoundError(retryError)) throw retryError;
 				}
 			}
 		}
-
-		if (suggestion) throw new ToolError(formatPathNotFound(suggestion.from, suggestion.to));
 		return null;
 	}
 
 	async #resolveSqliteReadPath(
 		readPath: string,
-		suffixCache: SuffixSuggestionCache,
+		suffixCache: SuffixMatchCache,
 		signal?: AbortSignal,
 	): Promise<ResolvedSqliteReadPath | null> {
-		let suggestion: { from: string; to: string } | undefined;
 		const candidates = parseSqlitePathCandidates(readPath);
 		for (const candidate of candidates) {
-			const absolutePath = resolveReadPath(candidate.sqlitePath, this.session.cwd);
+			let absolutePath = resolveReadPath(candidate.sqlitePath, this.session.cwd);
+			let suffixResolution: { from: string; to: string } | undefined;
 
 			try {
 				const stat = await Bun.file(absolutePath).stat();
 				if (stat.isDirectory()) continue;
 				if (!(await isSqliteFile(absolutePath))) continue;
-
 				return {
 					absolutePath,
 					sqliteSubPath: candidate.subPath,
 					queryString: candidate.queryString,
+					suffixResolution,
 				};
 			} catch (error) {
 				if (!isNotFoundError(error) || isRemoteMountPath(absolutePath)) continue;
-				const suffixMatch = await this.#findSuffixSuggestionCached(suffixCache, candidate.sqlitePath, signal);
-				if (!suffixMatch || suggestion) continue;
+				const suffixMatch = await this.#findSuffixMatchCached(suffixCache, candidate.sqlitePath, signal);
+				if (!suffixMatch) continue;
 				try {
-					const candidateStat = await Bun.file(suffixMatch.absolutePath).stat();
-					if (!candidateStat.isDirectory() && (await isSqliteFile(suffixMatch.absolutePath))) {
-						suggestion = { from: candidate.sqlitePath, to: suffixMatch.displayPath };
-					}
-				} catch {
-					// Candidate disappeared after the glob; omit the suggestion.
+					const retryStat = await Bun.file(suffixMatch.absolutePath).stat();
+					if (retryStat.isDirectory()) continue;
+					if (!(await isSqliteFile(suffixMatch.absolutePath))) continue;
+					absolutePath = suffixMatch.absolutePath;
+					suffixResolution = { from: candidate.sqlitePath, to: suffixMatch.displayPath };
+					return {
+						absolutePath,
+						sqliteSubPath: candidate.subPath,
+						queryString: candidate.queryString,
+						suffixResolution,
+					};
+				} catch (retryError) {
+					if (!isNotFoundError(retryError)) throw retryError;
 				}
 			}
 		}
-
-		if (suggestion) throw new ToolError(formatPathNotFound(suggestion.from, suggestion.to));
 		return null;
 	}
 
-	#pdfImageCacheDir(absolutePdfPath: string): string {
+	#pdfImageCacheDir(absolutePdfPath: string, contentDigest: string): string {
 		const artifactsDir = this.session.getArtifactsDir?.();
 		let root = artifactsDir ?? undefined;
 		if (root === undefined) {
@@ -1125,8 +1118,28 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				? sessionFile.slice(0, -6)
 				: path.join(os.tmpdir(), "omp-read-pdf-images");
 		}
-		const basename = path.basename(absolutePdfPath).replace(/[^A-Za-z0-9._-]/g, "_");
-		return path.join(root, "read-pdf-images", `${basename}-${Bun.hash(absolutePdfPath).toString(36)}`);
+		const basename = path
+			.basename(absolutePdfPath)
+			.replace(/[^A-Za-z0-9._-]/g, "_")
+			.slice(0, PDF_IMAGE_CACHE_BASENAME_MAX_LENGTH);
+		const pathDigest = Bun.hash(absolutePdfPath).toString(36);
+		return path.join(root, "read-pdf-images", `${basename}-${pathDigest}-${contentDigest}`);
+	}
+
+	async #snapshotPdfSource(absolutePdfPath: string, signal?: AbortSignal): Promise<PdfImageSnapshot> {
+		const directory = await fs.mkdtemp(path.join(os.tmpdir(), "omp-read-pdf-"));
+		try {
+			const bytes = await untilAborted(signal, () => Bun.file(absolutePdfPath).bytes());
+			signal?.throwIfAborted();
+			const digest = new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+			const filePath = path.join(directory, "source.pdf");
+			await Bun.write(filePath, bytes);
+			signal?.throwIfAborted();
+			return { directory, filePath, digest };
+		} catch (error) {
+			await fs.rm(directory, { recursive: true, force: true });
+			throw error;
+		}
 	}
 
 	#archivePdfImageCacheDir(absoluteArchivePath: string, pdfMemberPath: string): string {
@@ -1157,8 +1170,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 	}
 
-	async #ensurePdfImageCache(absolutePdfPath: string, signal?: AbortSignal): Promise<string> {
-		const imageDir = this.#pdfImageCacheDir(absolutePdfPath);
+	async #extractPdfImages(snapshot: PdfImageSnapshot, imageDir: string, signal: AbortSignal): Promise<string> {
 		const markerPath = path.join(imageDir, ".extracted");
 		try {
 			await fs.stat(markerPath);
@@ -1167,15 +1179,74 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			if (!isNotFoundError(error)) throw error;
 		}
 
-		await fs.rm(imageDir, { recursive: true, force: true });
-		await fs.mkdir(imageDir, { recursive: true });
-		const result = await convertFileWithMarkit(absolutePdfPath, signal, { imageDir });
-		if (!result.ok) {
-			await fs.rm(imageDir, { recursive: true, force: true });
-			throw new ToolError(`Cannot extract images from PDF: ${result.error ?? "conversion failed"}`);
+		await fs.mkdir(path.dirname(imageDir), { recursive: true });
+		const stagingDir = await fs.mkdtemp(`${imageDir}.tmp-`);
+		let published = false;
+		try {
+			const result = await convertFileWithMarkit(snapshot.filePath, signal, { imageDir: stagingDir });
+			if (!result.ok) {
+				throw new ToolError(`Cannot extract images from PDF: ${result.error ?? "conversion failed"}`);
+			}
+			await Bun.write(path.join(stagingDir, ".extracted"), "ok");
+			try {
+				await fs.rename(stagingDir, imageDir);
+				published = true;
+			} catch (error) {
+				if (!isEexist(error) && !isEnotempty(error)) throw error;
+				try {
+					await fs.stat(markerPath);
+				} catch (markerError) {
+					if (isNotFoundError(markerError)) throw error;
+					throw markerError;
+				}
+			}
+			return imageDir;
+		} finally {
+			if (!published) await fs.rm(stagingDir, { recursive: true, force: true });
 		}
-		await Bun.write(markerPath, "ok");
-		return imageDir;
+	}
+
+	#createPdfImageExtraction(snapshot: PdfImageSnapshot, imageDir: string): PdfImageExtraction {
+		const controller = new AbortController();
+		const promise = this.#extractPdfImages(snapshot, imageDir, controller.signal).finally(() =>
+			fs.rm(snapshot.directory, { recursive: true, force: true }),
+		);
+		const extraction: PdfImageExtraction = { controller, promise, settled: false, waiters: 0 };
+		const settle = () => {
+			extraction.settled = true;
+			if (pdfImageExtractions.get(imageDir) === extraction) pdfImageExtractions.delete(imageDir);
+		};
+		void promise.then(settle, settle);
+		return extraction;
+	}
+
+	async #waitForPdfImageExtraction(extraction: PdfImageExtraction, signal: AbortSignal | undefined): Promise<string> {
+		extraction.waiters++;
+		try {
+			return await untilAborted(signal, extraction.promise);
+		} finally {
+			extraction.waiters--;
+			if (extraction.waiters === 0 && !extraction.settled) {
+				extraction.controller.abort();
+				try {
+					await extraction.promise;
+				} catch {}
+			}
+		}
+	}
+
+	async #ensurePdfImageCache(absolutePdfPath: string, signal?: AbortSignal): Promise<string> {
+		const snapshot = await this.#snapshotPdfSource(absolutePdfPath, signal);
+		const imageDir = this.#pdfImageCacheDir(absolutePdfPath, snapshot.digest);
+		const existing = pdfImageExtractions.get(imageDir);
+		if (existing && !existing.settled && !existing.controller.signal.aborted) {
+			await fs.rm(snapshot.directory, { recursive: true, force: true });
+			return this.#waitForPdfImageExtraction(existing, signal);
+		}
+
+		const extraction = this.#createPdfImageExtraction(snapshot, imageDir);
+		pdfImageExtractions.set(imageDir, extraction);
+		return this.#waitForPdfImageExtraction(extraction, signal);
 	}
 
 	async #ensureArchivePdfImageCache(
@@ -1708,6 +1779,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		fileSize: number,
 		parsed: ParsedSelector,
 		displayMode: { hashLines: boolean; lineNumbers: boolean },
+		suffixResolution: { from: string; to: string } | undefined,
 		signal: AbortSignal | undefined,
 		allowBridge = true,
 	): Promise<{
@@ -1724,11 +1796,15 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			try {
 				const bridgeText = await bridgePromise;
 				const bridgeResult = this.#buildInMemoryMultiRangeResult(bridgeText, ranges, {
-					details: { resolvedPath: absolutePath },
+					details: this.#markMarkdownContentType({ resolvedPath: absolutePath, suffixResolution }, absolutePath),
 					sourcePath: absolutePath,
 					entityLabel: "file",
 					raw: rawSelector,
 				});
+				if (suffixResolution) {
+					const firstText = bridgeResult.content.find((block): block is TextContent => block.type === "text");
+					if (firstText) firstText.text = prependSuffixResolutionNotice(firstText.text, suffixResolution);
+				}
 				return { outputText: "", columnTruncated: 0, bridgeResult };
 			} catch (error) {
 				logger.warn("ACP fs readTextFile failed; falling back to disk", { path: absolutePath, error });
@@ -2017,9 +2093,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		throwIfAborted(signal);
 		const archiveDisplayPath = formatPathRelativeToCwd(resolvedArchivePath.absolutePath, this.session.cwd);
 
-		const details: ReadToolDetails = {
-			resolvedPath: resolvedArchivePath.absolutePath,
-		};
+		const details: ReadToolDetails = this.#markMarkdownContentType(
+			{
+				resolvedPath: resolvedArchivePath.absolutePath,
+				suffixResolution: resolvedArchivePath.suffixResolution,
+			},
+			resolvedArchivePath.archiveSubPath,
+		);
 
 		let archiveSubPath = resolvedArchivePath.archiveSubPath;
 		let sel = parsedSel;
@@ -2230,6 +2310,20 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const bridge = this.session.getClientBridge?.();
 		if (!bridge?.capabilities.readTextFile || !bridge.readTextFile) return undefined;
 		return bridge.readTextFile({ path: absolutePath, ...options });
+	}
+
+	/**
+	 * Tag Markdown reads for the TUI's formatted preview, gated on the opt-in
+	 * `read.renderMarkdown` setting. Off by default; when disabled, no local
+	 * read is tagged `text/markdown`, so the renderer output is identical to
+	 * the pre-setting behavior. Internal-URL reads keep their protocol-supplied
+	 * `contentType` and render as Markdown regardless of the setting.
+	 */
+	#markMarkdownContentType(details: ReadToolDetails, filePath: string): ReadToolDetails {
+		if (!details.contentType && this.session.settings.get("read.renderMarkdown") && isMarkdownPath(filePath)) {
+			details.contentType = "text/markdown";
+		}
+		return details;
 	}
 
 	async #trySummarize(absolutePath: string, fileSize: number, signal?: AbortSignal): Promise<SummaryResult | null> {
@@ -2482,7 +2576,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 
 		// One suffix-suggestion memo per read call — archive, SQLite, PDF, and
 		// plain-path misses share lookups instead of re-globbing the workspace.
-		const suffixCache: SuffixSuggestionCache = new Map();
+		const suffixCache: SuffixMatchCache = new Map();
 
 		// Prefer a literal filesystem match over selector interpretation so real
 		// POSIX filenames containing selector-looking suffixes win over structured
@@ -2505,41 +2599,43 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						? splitPathAndSel(archivePath.archiveSubPath)
 						: { path: archivePath.archiveSubPath, sel: promotedSelector };
 				const archiveParsed = parseSel(archiveSubPath.sel);
-				return this.#readArchive(
+				const result = await this.#readArchive(
 					readPath,
 					archiveParsed,
 					{ ...archivePath, archiveSubPath: archiveSubPath.path },
 					signal,
 				);
+				return this.#withSuffixResolution(result, archivePath.suffixResolution);
 			}
 
 			const sqlitePath = await this.#resolveSqliteReadPath(readPath, suffixCache, signal);
 			if (sqlitePath) {
-				return this.#readSqlite(sqlitePath, signal);
+				const result = await this.#readSqlite(sqlitePath, signal);
+				return this.#withSuffixResolution(result, sqlitePath.suffixResolution);
 			}
 
 			const pdfImageMemberPath = splitPdfImageMemberReadPath(readPath);
 			if (pdfImageMemberPath) {
-				const absolutePdfPath = resolveReadPath(pdfImageMemberPath.pdfPath, this.session.cwd);
+				let absolutePdfPath = resolveReadPath(pdfImageMemberPath.pdfPath, this.session.cwd);
+				let suffixResolution: { from: string; to: string } | undefined;
 				try {
 					const stat = await Bun.file(absolutePdfPath).stat();
 					if (stat.isDirectory())
 						throw new ToolError(`Path '${pdfImageMemberPath.pdfPath}' is a directory, not a PDF file`);
 				} catch (error) {
 					if (!isNotFoundError(error) || isRemoteMountPath(absolutePdfPath)) throw error;
-					const suggestion = await this.#findSuffixSuggestionCached(
-						suffixCache,
-						pdfImageMemberPath.pdfPath,
-						signal,
-					);
-					throw new ToolError(formatPathNotFound(pdfImageMemberPath.pdfPath, suggestion?.displayPath));
+					const suffixMatch = await this.#findSuffixMatchCached(suffixCache, pdfImageMemberPath.pdfPath, signal);
+					if (!suffixMatch) throw new ToolError(`Path '${pdfImageMemberPath.pdfPath}' not found`);
+					absolutePdfPath = suffixMatch.absolutePath;
+					suffixResolution = { from: pdfImageMemberPath.pdfPath, to: suffixMatch.displayPath };
 				}
-				return this.#readPdfImageMember(
+				const result = await this.#readPdfImageMember(
 					absolutePdfPath,
 					pdfImageMemberPath.pdfPath,
 					pdfImageMemberPath.member,
 					signal,
 				);
+				return this.#withSuffixResolution(result, suffixResolution);
 			}
 		}
 
@@ -2548,6 +2644,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const parsed = parseSel(localTarget.sel);
 
 		let absolutePath = resolveReadPath(localReadPath, this.session.cwd);
+		let suffixResolution: { from: string; to: string } | undefined;
 
 		let isDirectory = false;
 		let fileSize = 0;
@@ -2557,32 +2654,45 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			isDirectory = stat.isDirectory();
 		} catch (error) {
 			if (isNotFoundError(error)) {
-				let recoveredApprovedPlan = false;
-				const approvedPlanPath = this.#approvedPlanAlias(absolutePath);
-				if (approvedPlanPath) {
-					try {
-						const approvedPlanStat = await Bun.file(approvedPlanPath).stat();
-						absolutePath = approvedPlanPath;
-						fileSize = approvedPlanStat.size;
-						isDirectory = approvedPlanStat.isDirectory();
-						recoveredApprovedPlan = true;
-					} catch {
-						// The referenced plan disappeared after resolution; continue through
-						// the ordinary delimited-path fallback and not-found error.
+				if (!isRemoteMountPath(absolutePath)) {
+					const suffixMatch = await this.#findSuffixMatchCached(suffixCache, localReadPath, signal);
+					if (suffixMatch) {
+						try {
+							const retryStat = await Bun.file(suffixMatch.absolutePath).stat();
+							absolutePath = suffixMatch.absolutePath;
+							fileSize = retryStat.size;
+							isDirectory = retryStat.isDirectory();
+							suffixResolution = { from: localReadPath, to: suffixMatch.displayPath };
+						} catch {
+							// Candidate disappeared after resolution; continue through the normal fallback.
+						}
 					}
 				}
-				if (!recoveredApprovedPlan) {
+
+				let recoveredApprovedPlan = false;
+				if (!suffixResolution) {
+					const approvedPlanPath = this.#approvedPlanAlias(absolutePath);
+					if (approvedPlanPath) {
+						try {
+							const approvedPlanStat = await Bun.file(approvedPlanPath).stat();
+							absolutePath = approvedPlanPath;
+							fileSize = approvedPlanStat.size;
+							isDirectory = approvedPlanStat.isDirectory();
+							recoveredApprovedPlan = true;
+						} catch {
+							// The referenced plan disappeared after resolution; continue through normal fallback.
+						}
+					}
+				}
+
+				if (!recoveredApprovedPlan && !suffixResolution) {
 					const delimitedResult = await this.#tryReadDelimitedPaths(readPath, signal);
 					if (delimitedResult) return delimitedResult;
-					const suggestion = isRemoteMountPath(absolutePath)
-						? null
-						: await this.#findSuffixSuggestionCached(suffixCache, localReadPath, signal);
-					throw new ToolError(formatPathNotFound(localReadPath, suggestion?.displayPath));
+					throw new ToolError(`Path '${localReadPath}' not found`);
 				}
 			} else {
 				throw error;
 			}
-			throw error;
 		}
 
 		if (isDirectory) {
@@ -2590,13 +2700,13 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				throw new ToolError("Multi-range line selectors are not supported for directory listings.");
 			}
 			const { offset, limit } = selToOffsetLimit(parsed);
-			// Directory listings are deterministic and fast; never abort them mid-scan
-			// (an interrupt would otherwise surface a misleading "Operation aborted").
-			return this.#readDirectory(absolutePath, offset, limit, undefined);
+			const result = await this.#readDirectory(absolutePath, offset, limit, undefined);
+			return this.#withSuffixResolution(result, suffixResolution);
 		}
 
 		if (parsed.kind === "conflicts") {
-			return this.#readFileConflicts(absolutePath, signal);
+			const result = await this.#readFileConflicts(absolutePath, signal);
+			return this.#withSuffixResolution(result, suffixResolution);
 		}
 
 		const imageMetadata = await readImageMetadata(absolutePath);
@@ -2648,14 +2758,20 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				// because only `truncateHead` was being applied.
 				if (isMultiRange(parsed) && parsed.kind === "lines") {
 					return this.#buildInMemoryMultiRangeResult(renderedContent, parsed.ranges, {
-						details: { resolvedPath: absolutePath },
+						details: {
+							resolvedPath: absolutePath,
+							contentType: this.session.settings.get("read.renderMarkdown") ? "text/markdown" : undefined,
+						},
 						sourcePath: absolutePath,
 						entityLabel: "document",
 					});
 				}
 				const { offset, limit } = selToOffsetLimit(parsed);
 				return this.#buildInMemoryTextResult(renderedContent, offset, limit, {
-					details: { resolvedPath: absolutePath },
+					details: {
+						resolvedPath: absolutePath,
+						contentType: this.session.settings.get("read.renderMarkdown") ? "text/markdown" : undefined,
+					},
 					sourcePath: absolutePath,
 					entityLabel: "document",
 					raw: isRawSelector(parsed),
@@ -2685,7 +2801,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			if (
 				parsed.kind === "none" &&
 				this.session.settings.get("read.summarize.enabled") &&
-				(this.session.settings.get("read.summarize.prose") || !PROSE_SUMMARY_EXTENSIONS.has(ext))
+				(this.session.settings.get("read.summarize.prose") || !isProseSummaryPath(absolutePath))
 			) {
 				const summary = await this.#trySummarize(absolutePath, fileSize, signal);
 				if (summary?.parsed && summary.elided) {
@@ -2725,6 +2841,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						fileSize,
 						parsed,
 						displayMode,
+						suffixResolution,
 						undefined, // plain-file read: deterministic and fast, never abort mid-read
 					);
 					if (multiResult.bridgeResult) return multiResult.bridgeResult;
@@ -2744,7 +2861,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						try {
 							const bridgeText = await bridgePromise;
 							const bridgeResult = this.#buildInMemoryTextResult(bridgeText, offset, limit, {
-								details: { resolvedPath: absolutePath },
+								details: this.#markMarkdownContentType(
+									{ resolvedPath: absolutePath, suffixResolution },
+									absolutePath,
+								),
 								sourcePath: absolutePath,
 								entityLabel: "file",
 								raw: isRawSelector(parsed),
@@ -3038,6 +3158,18 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 		}
 
+		this.#markMarkdownContentType(details, absolutePath);
+		if (suffixResolution) {
+			details.suffixResolution = suffixResolution;
+			// Inline resolution notice into first text block so the model sees the actual path
+			const notice = `[Path '${suffixResolution.from}' not found; resolved to '${suffixResolution.to}' via suffix match]`;
+			const firstText = content.find((c): c is TextContent => c.type === "text");
+			if (firstText) {
+				firstText.text = `${notice}\n${firstText.text}`;
+			} else {
+				content = [{ type: "text", text: notice }, ...content];
+			}
+		}
 		const resultBuilder = toolResult(details).content(content);
 		if (sourcePath) {
 			resultBuilder.sourcePath(sourcePath);
@@ -3166,6 +3298,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				artifact.size,
 				parsedSel,
 				displayMode,
+				undefined,
 				signal,
 				false,
 			);

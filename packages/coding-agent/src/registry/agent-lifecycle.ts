@@ -14,13 +14,23 @@
  * - ensureLive during an in-flight park either cancels the park (session still
  *   live) or waits for detach+park and then revives.
  * - Concurrent ensureLive/park operations coalesce per id.
+ *
+ * Every adoption, park, and revival is bound to the exact {@link AgentRef} it
+ * started from, so stale async work (a late finalizer, a cancelled initializer,
+ * a superseded revive) can never clobber a newer same-id ref.
  */
 
 import { logger } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
-import { type AgentRef, AgentRegistry, MAIN_AGENT_ID, type RegistryEvent } from "./agent-registry";
+import {
+	type AgentRef,
+	type AgentRefExpectation,
+	AgentRegistry,
+	MAIN_AGENT_ID,
+	type RegistryEvent,
+} from "./agent-registry";
 
-export type AgentReviver = () => Promise<AgentSession>;
+export type AgentReviver = (expected: AgentRef) => Promise<AgentSession>;
 
 /**
  * Builds a reviver for a `parked` ref restored from disk (Agent Hub scan,
@@ -39,14 +49,15 @@ export interface AdoptOptions {
 }
 
 interface AdoptedAgent {
+	ref: AgentRef;
 	idleTtlMs: number;
 	revive?: AgentReviver;
-	scopeId?: string;
 	timer?: NodeJS.Timeout;
 }
 
 interface ParkInFlight {
-	scopeId?: string;
+	/** The exact ref this park was started for. */
+	ref: AgentRef;
 	/** Resolves when the park attempt finishes (success, cancel, or dispose error). */
 	promise: Promise<void>;
 	/** Cancel before the session is detached. Returns true if cancel took effect. */
@@ -58,7 +69,7 @@ interface ParkInFlight {
 }
 
 interface RevivingAgent {
-	scopeId?: string;
+	ref: AgentRef;
 	promise: Promise<AgentSession>;
 }
 
@@ -93,11 +104,12 @@ export class AgentLifecycleManager {
 	readonly #registry: AgentRegistry;
 	readonly #adopted = new Map<string, AdoptedAgent>();
 	/**
-	 * In-flight park attempts. A park is cancelable until the live session is
-	 * detached; after detach, ensureLive waits for the park and revives.
+	 * In-flight park attempts, each bound to the ref it started from. A park is
+	 * cancelable until the live session is detached; after detach, ensureLive
+	 * waits for the park and revives.
 	 */
 	readonly #parks = new Map<string, ParkInFlight>();
-	/** In-flight revives, so concurrent {@link ensureLive} calls coalesce. */
+	/** In-flight revives, bound to the parked ref that initiated them, so concurrent {@link ensureLive} calls coalesce. */
 	readonly #revivals = new Map<string, RevivingAgent>();
 	/** Completed promises remain cached: releasing a scope is permanently idempotent. */
 	readonly #scopeReleases = new Map<string, Promise<void>>();
@@ -125,31 +137,31 @@ export class AgentLifecycleManager {
 	/**
 	 * Take ownership of a finished subagent. Caller has already set registry
 	 * status to "idle". Arms the TTL timer (idleTtlMs <= 0 adopts without one).
-	 * expectedScopeId guards a delayed finalize callback from adopting a
-	 * replacement ref with the same id in a newer scope.
+	 * When `expected` is given, the adoption is refused if the id no longer
+	 * resolves to that ref (or that ref's session).
 	 */
-	adopt(id: string, opts: AdoptOptions, expectedScopeId?: string): void {
+	adopt(id: string, opts: AdoptOptions, expected?: AgentRefExpectation): void {
 		if (id === MAIN_AGENT_ID) return;
 		const ref = this.#registry.get(id);
-		if (!ref) {
-			logger.warn("AgentLifecycleManager.adopt: unknown agent id", { id });
+		if (!ref || !this.#matchesExpectation(ref, expected)) {
+			logger.warn("AgentLifecycleManager.adopt: unknown or replaced agent id", { id });
 			return;
 		}
-		if (expectedScopeId !== undefined && ref.scopeId !== expectedScopeId) return;
 		if (this.#registry.isScopeRetired(ref.scopeId)) {
 			void this.#releaseRef(ref);
 			return;
 		}
 		const existing = this.#adopted.get(id);
 		clearTimeout(existing?.timer);
-		const adopted: AdoptedAgent = { idleTtlMs: opts.idleTtlMs, revive: opts.revive, scopeId: ref.scopeId };
+		const adopted: AdoptedAgent = { ref, idleTtlMs: opts.idleTtlMs, revive: opts.revive };
 		this.#adopted.set(id, adopted);
 		this.#armTimer(id, adopted);
 	}
 
-	/** True if the id is adopted (parked or live). */
-	has(id: string): boolean {
-		return this.#adopted.has(id);
+	/** True if the id is adopted (parked or live) — and, when `expected` is given, still bound to that ref. */
+	has(id: string, expected?: AgentRefExpectation): boolean {
+		const adopted = this.#adopted.get(id);
+		return Boolean(adopted && this.#matchesExpectation(adopted.ref, expected));
 	}
 
 	/**
@@ -165,11 +177,12 @@ export class AgentLifecycleManager {
 	/**
 	 * True while {@link park} is disposing this agent's session (lets dispose
 	 * hooks distinguish park from teardown). False once the park is cancelled
-	 * by ensureLive or after detach+dispose completes.
+	 * by ensureLive or after detach+dispose completes. When `expected` is
+	 * given, only a park bound to that ref (or its session) counts.
 	 */
-	isParking(id: string): boolean {
+	isParking(id: string, expected?: AgentRefExpectation): boolean {
 		const park = this.#parks.get(id);
-		return Boolean(park && !park.cancelled);
+		return Boolean(park && !park.cancelled && this.#matchesExpectation(park.ref, expected));
 	}
 
 	/**
@@ -185,14 +198,12 @@ export class AgentLifecycleManager {
 		const existing = this.#parks.get(id);
 		if (existing) return existing.promise;
 		const adopted = this.#adopted.get(id);
+		if (!adopted) return;
 		const ref = this.#registry.get(id);
-		if (!adopted || !ref?.session) return;
-		if (adopted.scopeId !== ref.scopeId) {
-			if (this.#adopted.get(id) === adopted) this.#adopted.delete(id);
-			return;
-		}
+		if (!ref || adopted.ref !== ref) return;
 		if (this.#registry.isScopeRetired(ref.scopeId)) return this.#releaseRef(ref);
 		const session = ref.session;
+		if (!session) return;
 		if (adopted.timer) {
 			clearTimeout(adopted.timer);
 			adopted.timer = undefined;
@@ -200,7 +211,7 @@ export class AgentLifecycleManager {
 
 		let cancelled = false;
 		const park: ParkInFlight = {
-			scopeId: ref.scopeId,
+			ref,
 			promise: undefined as unknown as Promise<void>,
 			cancel: () => {
 				// Cancel only before detach — once detached the old session is already
@@ -221,16 +232,16 @@ export class AgentLifecycleManager {
 				await Promise.resolve();
 				if (cancelled) return;
 
-				// Re-check liveness: release/unregister or scope replacement may have raced us.
+				// Re-check liveness: release/unregister/replace may have raced us.
 				const live = this.#registry.get(id);
-				if (!live?.session || live.session !== session || live.scopeId !== ref.scopeId) return;
-				if (this.#adopted.get(id) !== adopted) return;
+				if (live !== ref || !live.session || live.session !== session) return;
+				if (this.#adopted.get(id)?.ref !== ref) return;
 
 				// Commit: detach + parked *before* dispose so callers never see a
 				// dying session via ref.session / idle status.
 				park.detached = true;
-				this.#registry.detachSession(id, ref.scopeId);
-				this.#registry.setStatus(id, "parked", ref.scopeId);
+				this.#registry.detachSession(id, ref);
+				this.#registry.setStatus(id, "parked", ref);
 
 				try {
 					await session.dispose();
@@ -258,18 +269,17 @@ export class AgentLifecycleManager {
 	 */
 	async ensureLive(id: string): Promise<AgentSession> {
 		const park = this.#parks.get(id);
-		const parkRef = this.#registry.get(id);
-		if (park && park.scopeId === parkRef?.scopeId) {
-			const ref = this.#registry.get(id);
+		if (park) {
+			const parked = this.#registry.get(id);
 			// Cancel if the live session is still attached — keep it instead of
 			// thrashing dispose + revive.
-			if (ref?.session && !park.detached && park.cancel()) {
+			if (parked?.session && !park.detached && park.cancel()) {
 				await park.promise;
 				const kept = this.#registry.get(id)?.session;
 				if (kept) {
 					// Park cleared the idle timer; re-arm so TTL park still works.
 					const adopted = this.#adopted.get(id);
-					if (adopted && ref.status === "idle") this.#armTimer(id, adopted);
+					if (adopted && adopted.ref === parked && parked.status === "idle") this.#armTimer(id, adopted);
 					return kept;
 				}
 			} else {
@@ -291,16 +301,14 @@ export class AgentLifecycleManager {
 		}
 		if (ref.session) return ref.session;
 		const inflight = this.#revivals.get(id);
-		if (inflight && inflight.scopeId === ref.scopeId) return inflight.promise;
-		const revival: RevivingAgent = {
-			scopeId: ref.scopeId,
-			promise: this.#resolveAndRevive(id, ref),
-		};
-		this.#revivals.set(id, revival);
+		if (inflight?.ref === ref) return inflight.promise;
+		const revival = this.#resolveAndRevive(id, ref);
+		const pending: RevivingAgent = { ref, promise: revival };
+		this.#revivals.set(id, pending);
 		try {
-			return await revival.promise;
+			return await revival;
 		} finally {
-			if (this.#revivals.get(id) === revival) this.#revivals.delete(id);
+			if (this.#revivals.get(id) === pending) this.#revivals.delete(id);
 		}
 	}
 
@@ -311,49 +319,73 @@ export class AgentLifecycleManager {
 	 * adopt it so the agent rejoins the normal idle↔parked lifecycle.
 	 */
 	async #resolveAndRevive(id: string, ref: AgentRef): Promise<AgentSession> {
-		let adopted = this.#adopted.get(id);
-		if (adopted?.scopeId !== ref.scopeId) adopted = undefined;
-		let revive = adopted?.revive;
-		let coldAdopted: AdoptedAgent | undefined;
+		let adoption = this.#adopted.get(id);
+		let revive = adoption?.ref === ref ? adoption.revive : undefined;
+		let coldAdopted = false;
 		if (!revive && ref.status === "parked" && ref.sessionFile && this.#persistedReviverFactory) {
 			revive = await this.#persistedReviverFactory(ref);
 			if (this.#registry.get(id) !== ref || this.#registry.isScopeRetired(ref.scopeId)) {
 				throw new Error(`Agent "${id}" was released while its reviver was being prepared.`);
 			}
 			if (revive) {
-				coldAdopted = { idleTtlMs: this.#persistedReviveTtlMs, revive, scopeId: ref.scopeId };
-				this.#adopted.set(id, coldAdopted);
+				adoption = { ref, idleTtlMs: this.#persistedReviveTtlMs, revive };
+				this.#adopted.set(id, adoption);
+				coldAdopted = true;
 			}
 		}
-		if (ref.status !== "parked" || !revive) {
+		if (this.#registry.get(id) !== ref) {
+			throw new Error(`Agent "${id}" changed while its persisted session was being prepared.`);
+		}
+		if (ref.status !== "parked" || !revive || !adoption) {
 			throw new Error(
 				`Agent "${id}" is ${ref.status} and cannot be revived${revive ? "" : " (no reviver registered)"}. Its transcript remains readable at history://${id}.`,
 			);
 		}
 		try {
-			return await this.#revive(id, ref, revive);
+			return await this.#revive(id, revive, ref, adoption);
 		} catch (error) {
-			// A failed cold revive must rebuild from fresh persisted context next time.
-			if (coldAdopted && this.#adopted.get(id) === coldAdopted) this.#adopted.delete(id);
+			// A failed cold revive (stale ctx, missing cwd, bad MCP) must not leave a
+			// poisoned reviver stuck in #adopted — drop it so a later ensureLive
+			// rebuilds via the factory (which may have fresher context by then).
+			if (coldAdopted && this.#adopted.get(id) === adoption) this.#adopted.delete(id);
 			throw error;
 		}
 	}
 
-	/** Hard removal: dispose if live, unregister from registry, drop timers. */
-	async release(id: string): Promise<void> {
+	/**
+	 * Hard removal: dispose if live, unregister from registry, drop timers.
+	 * When `expected` is given, only a ref matching it is released; a stale
+	 * release can never take down a newer same-id ref. Returns true when a
+	 * matching ref was released.
+	 */
+	async release(id: string, expected?: AgentRefExpectation): Promise<boolean> {
 		const adopted = this.#adopted.get(id);
-		clearTimeout(adopted?.timer);
-		this.#adopted.delete(id);
+		const current = this.#registry.get(id);
+		const currentMatches = current && this.#matchesExpectation(current, expected);
+		const adoptedMatches = adopted && this.#matchesExpectation(adopted.ref, expected);
+		const ref = currentMatches ? current : adoptedMatches ? adopted.ref : undefined;
+		if (!ref) return false;
+		if (adopted?.ref === ref) {
+			clearTimeout(adopted.timer);
+			this.#adopted.delete(id);
+		}
 
 		const park = this.#parks.get(id);
-		if (park) {
+		if (park && park.ref === ref) {
 			// Prefer cancel when the session is still live so release owns dispose.
 			if (!park.detached) park.cancel();
 			await park.promise;
 		}
-		const ref = this.#registry.get(id);
-		if (!ref) return;
-		await this.#releaseRef(ref);
+
+		if (this.#registry.get(id) === ref && ref.session) {
+			try {
+				await ref.session.dispose();
+			} catch (error) {
+				logger.warn("AgentLifecycleManager.release: session dispose failed", { id, error: String(error) });
+			}
+		}
+		this.#registry.unregister(id, ref);
+		return true;
 	}
 
 	/**
@@ -368,17 +400,19 @@ export class AgentLifecycleManager {
 
 		const revivals = new Map<string, RevivingAgent>();
 		for (const [id, revival] of this.#revivals) {
-			if (revival.scopeId !== scopeId) continue;
+			if (revival.ref.scopeId !== scopeId) continue;
 			revivals.set(id, revival);
 			this.#revivals.delete(id);
 		}
 		for (const [id, adopted] of this.#adopted) {
-			if (adopted.scopeId !== scopeId) continue;
+			if (adopted.ref.scopeId !== scopeId) continue;
 			clearTimeout(adopted.timer);
 			this.#adopted.delete(id);
 		}
 		const refs = this.#registry.list().filter(ref => ref.kind !== "main" && ref.scopeId === scopeId);
-		const release = Promise.all(refs.map(ref => this.#releaseRef(ref, revivals.get(ref.id)))).then(() => undefined);
+		const release = Promise.all(refs.map(ref => this.#releaseRef(ref, revivals.get(ref.id), false))).then(
+			() => undefined,
+		);
 		this.#scopeReleases.set(scopeId, release);
 		return release;
 	}
@@ -395,37 +429,53 @@ export class AgentLifecycleManager {
 		this.#persistedReviverFactory = undefined;
 	}
 
-	async #revive(id: string, ref: AgentRef, revive: AgentReviver): Promise<AgentSession> {
-		const session = await revive();
-		if (this.#registry.get(id) !== ref || this.#registry.isScopeRetired(ref.scopeId)) {
-			try {
-				await session.dispose();
-			} catch (error) {
-				logger.warn("AgentLifecycleManager.revive: stale session dispose failed", { id, error: String(error) });
-			}
+	async #revive(id: string, revive: AgentReviver, ref: AgentRef, adopted: AdoptedAgent): Promise<AgentSession> {
+		const session = await revive(ref);
+		if (this.#registry.isScopeRetired(ref.scopeId)) {
+			await session.dispose();
 			throw new Error(`Agent "${id}" was released while it was being revived.`);
 		}
-		this.#registry.attachSession(id, session, ref.sessionFile, ref.scopeId);
+		let liveRef = this.#registry.get(id);
+		if (liveRef === ref) {
+			if (!this.#registry.attachSession(id, session, ref.sessionFile, ref)) {
+				await session.dispose();
+				throw new Error(`Agent "${id}" changed before its persisted session could attach.`);
+			}
+			liveRef = ref;
+		} else if (
+			!liveRef ||
+			liveRef.session !== session ||
+			liveRef.kind !== ref.kind ||
+			liveRef.parentId !== ref.parentId ||
+			liveRef.sessionFile !== ref.sessionFile
+		) {
+			await session.dispose();
+			throw new Error(`Agent "${id}" was replaced while its persisted session was reviving.`);
+		}
+		adopted.ref = liveRef;
 		// Emits status_changed → "idle", which re-arms the TTL timer below.
-		this.#registry.setStatus(id, "idle", ref.scopeId);
+		if (!this.#registry.setStatus(id, "idle", liveRef)) {
+			await session.dispose();
+			throw new Error(`Agent "${id}" changed before its persisted session became idle.`);
+		}
 		return session;
 	}
 
-	async #releaseRef(ref: AgentRef, inFlightRevival?: RevivingAgent): Promise<void> {
+	async #releaseRef(ref: AgentRef, inFlightRevival?: RevivingAgent, cancelPark = true): Promise<void> {
 		const adopted = this.#adopted.get(ref.id);
-		if (adopted && adopted.scopeId === ref.scopeId) {
+		if (adopted?.ref === ref) {
 			clearTimeout(adopted.timer);
 			this.#adopted.delete(ref.id);
 		}
 
 		const park = this.#parks.get(ref.id);
-		if (park && park.scopeId === ref.scopeId) {
-			if (!park.detached) park.cancel();
+		if (park?.ref === ref) {
+			if (!park.detached && cancelPark) park.cancel();
 			await park.promise;
 		}
 
 		const revival = inFlightRevival ?? this.#revivals.get(ref.id);
-		if (revival && revival.scopeId === ref.scopeId) {
+		if (revival?.ref === ref) {
 			if (this.#revivals.get(ref.id) === revival) this.#revivals.delete(ref.id);
 			try {
 				await revival.promise;
@@ -442,11 +492,11 @@ export class AgentLifecycleManager {
 				logger.warn("AgentLifecycleManager.release: session dispose failed", { id: ref.id, error: String(error) });
 			}
 		}
-		if (this.#registry.get(ref.id) === ref) this.#registry.unregister(ref.id, ref.scopeId);
+		this.#registry.unregister(ref.id, ref);
 	}
 
 	#armTimer(id: string, adopted: AdoptedAgent): void {
-		if (adopted.idleTtlMs <= 0 || this.#registry.isScopeRetired(adopted.scopeId)) return;
+		if (adopted.idleTtlMs <= 0 || this.#registry.isScopeRetired(adopted.ref.scopeId)) return;
 		clearTimeout(adopted.timer);
 		const timer = setTimeout(() => {
 			adopted.timer = undefined;
@@ -456,9 +506,14 @@ export class AgentLifecycleManager {
 		adopted.timer = timer;
 	}
 
+	#matchesExpectation(ref: AgentRef, expected?: AgentRefExpectation): boolean {
+		if (typeof expected === "string") return ref.scopeId === expected;
+		return expected === undefined || ref === expected || ref.session === expected;
+	}
+
 	#onRegistryEvent(event: RegistryEvent): void {
 		const adopted = this.#adopted.get(event.ref.id);
-		if (!adopted || adopted.scopeId !== event.ref.scopeId) return;
+		if (!adopted || adopted.ref !== event.ref) return;
 		if (event.type === "removed") {
 			clearTimeout(adopted.timer);
 			this.#adopted.delete(event.ref.id);

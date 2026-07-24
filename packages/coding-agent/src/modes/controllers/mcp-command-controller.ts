@@ -38,6 +38,7 @@ import {
 	getSmitheryApiKey,
 	getSmitheryLoginUrl,
 	pollSmitheryCliAuthSession,
+	type SmitheryCliPollResponse,
 	saveSmitheryApiKey,
 } from "../../mcp/smithery-auth";
 import { SmitheryConnectError } from "../../mcp/smithery-connect";
@@ -51,6 +52,7 @@ import type { MCPAuthChallenge, MCPAuthConfig, MCPServerConfig, MCPServerConnect
 import { shortenPath } from "../../tools/render-utils";
 import { urlHyperlinkAlways } from "../../tui";
 import { copyToClipboard } from "../../utils/clipboard";
+import { isTimeoutError } from "../../utils/fetch-timeout";
 import { openPath } from "../../utils/open";
 import { ChatBlock } from "../components/chat-block";
 import { MCPAddWizard } from "../components/mcp-add-wizard";
@@ -2121,7 +2123,14 @@ export class MCPCommandController {
 			if (Date.now() - startedAt >= timeoutMs) {
 				throw new Error("Smithery authorization timed out after 5 minutes.");
 			}
-			const response = await pollSmitheryCliAuthSession(sessionId, signal);
+			let response: SmitheryCliPollResponse;
+			try {
+				response = await pollSmitheryCliAuthSession(sessionId, signal);
+			} catch (error) {
+				// A single hung/slow poll aborts with TimeoutError; retry until the deadline.
+				if (isTimeoutError(error)) continue;
+				throw error;
+			}
 			if (response.status === "success" && response.apiKey) {
 				return response.apiKey;
 			}

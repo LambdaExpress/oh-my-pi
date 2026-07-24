@@ -186,6 +186,7 @@ describe("read and write route xd:// device URLs", () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "write-xdev-docs-"));
 		try {
 			const session = xdevSession(tempDir);
+			expect(session.settings.get("tools.xdevDocs")).toBe("builtins");
 			await createTools(session);
 			const mounted = session.xdevRegistry?.list() ?? [];
 			expect(mounted.length).toBeGreaterThan(0);
@@ -208,10 +209,11 @@ describe("read and write route xd:// device URLs", () => {
 		}
 	});
 
-	it("docsAll truncates external (dynamic-mount) descriptions to the cap; built-ins and read xd:// stay full", async () => {
+	it("docsAll supports inline, builtins, and catalog prompt modes", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "write-xdev-external-"));
 		try {
 			const session = xdevSession(tempDir);
+			expect(session.settings.get("tools.xdevDocs")).toBe("builtins");
 			await createTools(session);
 			const registry = session.xdevRegistry;
 			if (!registry) throw new Error("expected xdev registry");
@@ -221,18 +223,49 @@ describe("read and write route xd:// device URLs", () => {
 			const external = Object.create(mounted[0]!) as (typeof mounted)[number];
 			Object.defineProperty(external, "name", { value: "mcp_external_tool" });
 			Object.defineProperty(external, "description", { value: longDescription });
+			Object.defineProperty(external, "summary", {
+				value: `SUMMARY ${"z".repeat(XdevRegistry.EXTERNAL_DESCRIPTION_CAP * 3)} TAIL`,
+			});
 			registry.reconcile([external]);
 
-			const docs = registry.docsAll();
-			// External device: schema section present, description cut at the cap.
-			expect(docs).toContain("## mcp_external_tool");
-			expect(docs).toContain("LEDE ");
-			expect(docs).not.toContain("TAIL");
-			expect(docs).toContain("… (full docs: read xd://mcp_external_tool)");
-			// Built-in devices keep their full curated description.
-			expect(docs).toContain(mounted[0]!.description ?? "");
-			// On-demand docs return the untruncated text.
+			const inlineDocs = registry.docsAll("inline");
+			expect(inlineDocs).toContain("## mcp_external_tool");
+			expect(inlineDocs).toContain("LEDE ");
+			expect(inlineDocs).not.toContain("TAIL");
+			expect(inlineDocs).toContain("… (full docs: read xd://mcp_external_tool)");
+
+			const builtinsDocs = registry.docsAll("builtins");
+			expect(builtinsDocs).toContain("## ");
+			expect(builtinsDocs).not.toContain("## mcp_external_tool");
+			expect(builtinsDocs).toContain("- xd://mcp_external_tool —");
+			expect(builtinsDocs).not.toContain("TAIL");
+			const catalogDocs = registry.docsAll("catalog");
+			expect(catalogDocs).not.toContain(`## ${mounted[0]!.name}`);
+			expect(catalogDocs).toContain("- xd://");
+			expect(catalogDocs).toContain("- xd://mcp_external_tool —");
 			expect(registry.docs("mcp_external_tool")).toContain("TAIL");
+
+			const contextMode = Object.create(mounted[0]!) as (typeof mounted)[number];
+			Object.defineProperty(contextMode, "name", { value: "mcp__context_mode_ctx_execute" });
+			const unrelatedMcp = Object.create(mounted[0]!) as (typeof mounted)[number];
+			Object.defineProperty(unrelatedMcp, "name", { value: "mcp__other_server_execute" });
+			registry.reconcile([contextMode, unrelatedMcp]);
+
+			const allowlistedDocs = registry.docsAll("builtins", ["mcp__context_mode_*"]);
+			expect(allowlistedDocs).toContain("## mcp__context_mode_ctx_execute");
+			expect(allowlistedDocs).not.toContain("## mcp__other_server_execute");
+			expect(allowlistedDocs).toContain("- xd://mcp__other_server_execute —");
+
+			const catalogWithAllowlistDocs = registry.docsAll("catalog", ["mcp__context_mode_*"]);
+			expect(catalogWithAllowlistDocs).not.toContain("## mcp__context_mode_ctx_execute");
+
+			// Malformed user config (scalar or non-string entries reach the
+			// registry unvalidated) degrades to the catalog listing instead of
+			// throwing while the system prompt is built.
+			const scalarAllowlistDocs = registry.docsAll("builtins", "mcp__context_mode_*" as never);
+			expect(scalarAllowlistDocs).toContain("- xd://mcp__context_mode_ctx_execute —");
+			const nonStringAllowlistDocs = registry.docsAll("builtins", [123] as never);
+			expect(nonStringAllowlistDocs).toContain("- xd://mcp__context_mode_ctx_execute —");
 		} finally {
 			await removeWithRetries(tempDir);
 		}

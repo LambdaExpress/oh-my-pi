@@ -45,6 +45,19 @@ function renderSession(session: MinimalSession) {
 		value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
 		configurable: true,
 	});
+	// linkedom's HTMLSelectElement.value is getter-only; template.js assigns it
+	// under 'use strict', which would throw. Shim a writable value like a browser.
+	const themeSelect = document.getElementById("theme-select");
+	if (themeSelect) {
+		let themeValue = "auto";
+		Object.defineProperty(themeSelect, "value", {
+			get: () => themeValue,
+			set: next => {
+				themeValue = String(next);
+			},
+			configurable: true,
+		});
+	}
 
 	const context = vm.createContext({
 		window,

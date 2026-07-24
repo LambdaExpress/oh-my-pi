@@ -31,7 +31,7 @@ import {
 	sendNotification,
 	sendRequest,
 	setIdleTimeout,
-	shutdownClient,
+	shutdownClientInstance,
 	supportsDocumentDiagnostics,
 	syncContent,
 	WARMUP_TIMEOUT_MS,
@@ -711,22 +711,37 @@ function isMethodNotFoundError(err: unknown): boolean {
 }
 
 async function reloadServer(client: LspClient, serverName: string, signal?: AbortSignal): Promise<string> {
-	// rust-analyzer exposes a real workspace reload. Other servers need a
-	// process restart: didChangeConfiguration does not invalidate open document
-	// buffers or project graphs, so it cannot recover a desynchronized client.
+	throwIfAborted(signal);
+	// rust-analyzer exposes a real reload request. Every other server rejects it
+	// with method-not-found — that alone justifies the generic fallback. A caller
+	// cancel or tool timeout must propagate, never be mistaken for an unsupported
+	// method and swallowed into a bogus "Restarted" (issue #6369).
 	try {
 		await sendRequest(client, "rust-analyzer/reloadWorkspace", null, signal);
 		return `Reloaded ${serverName}`;
 	} catch (err) {
-		if (err instanceof ToolAbortError || signal?.aborted) {
-			throw err;
-		}
+		throwIfAborted(signal);
+		if (!isMethodNotFoundError(err)) throw err;
+		// Method not supported — fall through to the generic reload.
 	}
-
-	await shutdownClient(client.name);
-	throwIfAborted(signal);
-	await getOrCreateClient(client.config, client.cwd, undefined, signal);
-	return `Restarted ${serverName}`;
+	// workspace/didChangeConfiguration is a notification per spec; sending it
+	// as a request hangs until the tool deadline on servers that route it to
+	// the notification handler and never respond.
+	try {
+		await sendNotification(client, "workspace/didChangeConfiguration", { settings: {} }, signal);
+		return `Reloaded ${serverName}`;
+	} catch {
+		throwIfAborted(signal);
+		// The reload notification could not be delivered — the connection is
+		// wedged or the process already died. Tear the client down (removing it
+		// from the registry by identity and awaiting confirmed process exit) so
+		// the next request cold-starts a fresh client. A kill that never confirms
+		// exit is not a restart: surface the teardown failure truthfully.
+		if (!(await shutdownClientInstance(client))) {
+			throw new Error(`Failed to restart ${serverName}: server process did not exit after kill`);
+		}
+		return `Restarted ${serverName}`;
+	}
 }
 
 interface WaitForDiagnosticsOptions {

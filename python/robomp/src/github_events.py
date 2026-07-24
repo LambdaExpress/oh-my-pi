@@ -300,10 +300,13 @@ def route(
         if not isinstance(number, int):
             return RouteDecision("skip", None, repo, None, "issue missing number")
         key = issue_key(repo, number)
-        if action == "opened":
+        if action in ("opened", "reopened"):
+            # A reopen is submitter-attributable exactly like an open, and
+            # `finalized_issue_comment.md` promises re-triage on reopen, so it
+            # re-triages from scratch and spends the same per-user rate budget.
             login, assoc = _submitter_info(issue)
             return RouteDecision(
-                "queue", "triage_issue", repo, key, "issues.opened", submitter=login, association=assoc
+                "queue", "triage_issue", repo, key, f"issues.{action}", submitter=login, association=assoc
             )
         if action == "closed":
             # Cleanup is a lifecycle event, not a user submission; no rate-limit subject.

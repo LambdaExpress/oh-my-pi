@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as dapModule from "@oh-my-pi/pi-coding-agent/dap";
-import { DapClient, waitForTcpServerListening } from "@oh-my-pi/pi-coding-agent/dap/client";
+import { connectSocket, DapClient, waitForTcpServerListening } from "@oh-my-pi/pi-coding-agent/dap/client";
 import { DapSessionManager } from "@oh-my-pi/pi-coding-agent/dap/session";
 import type {
 	DapCapabilities,
@@ -565,6 +565,23 @@ describe("DAP launch failure handling", () => {
 		} finally {
 			Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
 		}
+	});
+});
+
+describe("connectSocket unix transport", () => {
+	it("rejects instead of hanging when the unix socket cannot be connected", async () => {
+		// A path that stat would report as a socket but that no one listens on
+		// yields ECONNREFUSED/ENOENT from Bun.connect. Before the fix the error
+		// handler only errored the stream and the returned promise never settled,
+		// so `await connectSocket(...)` hung the launch forever.
+		const deadSocket = path.join(
+			os.tmpdir(),
+			`omp-dap-dead-${Date.now()}-${Math.random().toString(36).slice(2)}.sock`,
+		);
+		const start = Date.now();
+		await expect(connectSocket({ unix: deadSocket }, 5_000)).rejects.toThrow();
+		// Must settle on the connect error, not linger until the timeout bound.
+		expect(Date.now() - start).toBeLessThan(2_000);
 	});
 });
 

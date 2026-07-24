@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, test, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -36,6 +36,11 @@ beforeAll(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	await initTheme();
+	await Settings.init({ inMemory: true });
+});
+
+afterAll(() => {
+	resetSettingsForTest();
 });
 
 afterEach(() => {

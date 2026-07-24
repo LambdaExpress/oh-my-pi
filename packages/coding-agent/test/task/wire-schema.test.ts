@@ -107,14 +107,14 @@ describe("task approval details surface the dispatch", () => {
 		vi.restoreAllMocks();
 	});
 
-	async function makeTool(): Promise<TaskTool> {
+	async function makeTool(spawns = "*"): Promise<TaskTool> {
 		vi.spyOn(discoveryModule, "discoverAgents").mockResolvedValue({ agents: [], projectAgentsDir: null });
 		return TaskTool.create({
 			cwd: "/tmp",
 			hasUI: false,
-			settings: Settings.isolated({ "task.isolation.mode": "none", "task.batch": false }),
+			settings: Settings.isolated({ "task.isolation.mode": "none", "task.batch": true }),
 			getSessionFile: () => null,
-			getSessionSpawns: () => "*",
+			getSessionSpawns: () => spawns,
 		} as unknown as ToolSession);
 	}
 
@@ -132,14 +132,13 @@ describe("task approval details surface the dispatch", () => {
 		expect(lines).toContain("Task:\naudit the auth module");
 	});
 
-	it("surfaces the first batch item and the remainder count", async () => {
-		const tool = await makeTool();
+	it("summarizes a homogeneous batch whose agents use the session default", async () => {
+		const tool = await makeTool("scout,reviewer");
 		const lines = tool.formatApprovalDetails({
 			context: "shared background",
 			tasks: [
 				{
 					name: "DbMigrator",
-					agent: "sonic",
 					model: ["anthropic/claude-sonnet-4", "openai/gpt-5"],
 					task: "migrate the schema",
 				},
@@ -147,10 +146,27 @@ describe("task approval details surface the dispatch", () => {
 			],
 		});
 		expect(lines).toContain("Context:\nshared background");
+		expect(lines).toContain("Batch agents: scout ×2");
 		expect(lines).toContain("Name: DbMigrator");
-		expect(lines).toContain("Agent: sonic");
+		expect(lines).toContain("Agent: scout");
 		expect(lines).toContain("Model: anthropic/claude-sonnet-4 → openai/gpt-5");
 		expect(lines).toContain("Task:\nmigrate the schema");
 		expect(lines).toContain("+1 more task");
+	});
+
+	it("summarizes mixed effective agents and safely renders partial batch items", async () => {
+		const tool = await makeTool("scout,reviewer");
+		const lines = tool.formatApprovalDetails({
+			tasks: [
+				{ name: "DefaultScout", task: "map the flow" },
+				{ agent: " reviewer ", task: "review it" },
+			],
+		});
+		expect(lines).toContain("Batch agents: scout ×1, reviewer ×1");
+		expect(lines).toContain("Name: DefaultScout");
+		expect(lines).toContain("Agent: scout");
+		expect(lines.join("\n")).not.toContain("undefined");
+
+		expect(() => tool.formatApprovalDetails({ tasks: [undefined, { agent: "reviewer" }] })).not.toThrow();
 	});
 });

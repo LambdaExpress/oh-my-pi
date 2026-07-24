@@ -32,6 +32,41 @@ function makeBillingPayload(overrides?: Record<string, unknown>) {
 	};
 }
 
+/** Live unified-billing `?format=credits` body: weekly period, no percents. */
+function makeUnifiedCreditsPayload() {
+	return {
+		config: {
+			currentPeriod: {
+				type: "USAGE_PERIOD_TYPE_WEEKLY",
+				start: "2026-07-23T11:11:10.769917+00:00",
+				end: "2026-07-30T11:11:10.769917+00:00",
+			},
+			onDemandCap: { val: 0 },
+			onDemandUsed: { val: 0 },
+			isUnifiedBillingUser: true,
+			prepaidBalance: { val: 0 },
+			topUpMethod: "TOP_UP_METHOD_SAVED_PAYMENT_METHOD",
+			billingPeriodStart: "2026-07-23T11:11:10.769917+00:00",
+			billingPeriodEnd: "2026-07-30T11:11:10.769917+00:00",
+		},
+	};
+}
+
+/** Default billing URL body for unified accounts (monthly included quota). */
+function makeUnifiedMonthlyPayload(overrides?: Record<string, unknown>) {
+	return {
+		config: {
+			monthlyLimit: { val: 15000 },
+			used: { val: 10548 },
+			onDemandCap: { val: 0 },
+			billingPeriodStart: "2026-07-01T00:00:00+00:00",
+			billingPeriodEnd: "2026-08-01T00:00:00+00:00",
+			history: [],
+			...overrides,
+		},
+	};
+}
+
 function makeCredential(overrides?: Partial<UsageFetchParams["credential"]>): UsageFetchParams["credential"] {
 	return {
 		type: "oauth",
@@ -71,6 +106,33 @@ function capturingFetch(payload: unknown): {
 	return { fetch, calls };
 }
 
+/** Route credits vs default billing URLs to different live-shaped payloads. */
+function dualBillingFetch(
+	creditsPayload: unknown,
+	monthlyPayload: unknown,
+): {
+	fetch: FetchImpl;
+	calls: Array<{ url: string }>;
+} {
+	const calls: Array<{ url: string }> = [];
+	const fetch: FetchImpl = async input => {
+		const url = String(input);
+		calls.push({ url });
+		if (url.includes("/oauth2/userinfo")) {
+			return new Response(JSON.stringify({ sub: USER_ID, email: "user@example.com" }), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		}
+		const payload = url.includes("format=credits") ? creditsPayload : monthlyPayload;
+		return new Response(JSON.stringify(payload), {
+			status: 200,
+			headers: { "content-type": "application/json" },
+		});
+	};
+	return { fetch, calls };
+}
+
 describe("xai-oauth usage provider", () => {
 	it("accepts stored OAuth credentials but never shared API-key fallbacks", () => {
 		expect(xaiOauthUsageProvider.supports?.({ provider: "xai-oauth", credential: makeCredential() })).toBe(true);
@@ -97,6 +159,7 @@ describe("xai-oauth usage provider", () => {
 		expect(report?.limits[0]?.amount.usedFraction).toBeCloseTo(0.18, 5);
 		expect(report?.metadata?.accountId).toBe(USER_ID);
 		expect(report?.metadata?.email).toBe("user@example.com");
+		expect(report?.metadata?.billingKind).toBe("weekly");
 
 		const billingCall = calls.find(call => call.url.includes("/v1/billing"));
 		expect(billingCall?.url).toBe(buildXAICliBillingUrl());
@@ -106,6 +169,8 @@ describe("xai-oauth usage provider", () => {
 			"x-xai-token-auth": "xai-grok-cli",
 		});
 		expect(billingCall?.redirect).toBe("error");
+		// Non-unified weekly path must not issue a second default-format probe.
+		expect(calls.filter(call => call.url.includes("/v1/billing"))).toHaveLength(1);
 	});
 
 	it("uses a stored email without an extra userinfo request", async () => {
@@ -158,6 +223,91 @@ describe("xai-oauth usage provider", () => {
 
 		expect(report?.limits[0]?.id).toBe("xai-oauth:credits:1w");
 		expect(report?.limits[0]?.window?.resetsAt).toBe(Date.parse(periodEnd));
+	});
+
+	it("falls back to monthly included quota when credits has no percent fields", async () => {
+		const { fetch, calls } = dualBillingFetch(makeUnifiedCreditsPayload(), makeUnifiedMonthlyPayload());
+		const report = await xaiOauthUsageProvider.fetchUsage(
+			{
+				provider: "xai-oauth",
+				credential: makeCredential({ accountId: "stored-account", email: "stored@example.com" }),
+			},
+			{ fetch },
+		);
+
+		expect(calls.map(call => call.url)).toEqual([buildXAICliBillingUrl(), buildXAICliBillingUrl("")]);
+		expect(report?.metadata?.billingKind).toBe("monthly");
+		expect(report?.metadata?.endpoint).toBe(buildXAICliBillingUrl(""));
+		expect(report?.metadata?.accountId).toBe("stored-account");
+		expect(report?.metadata?.email).toBe("stored@example.com");
+		expect(report?.limits.map(limit => limit.id)).toEqual(["xai-oauth:included:1mo"]);
+
+		const included = report?.limits[0];
+		expect(included?.label).toBe("SuperGrok Monthly Included");
+		expect(included?.amount.used).toBe(10548);
+		expect(included?.amount.limit).toBe(15000);
+		expect(included?.amount.remaining).toBe(4452);
+		expect(included?.amount.usedFraction).toBeCloseTo(10548 / 15000, 5);
+		expect(included?.window?.id).toBe("1mo");
+		expect(included?.window?.label).toBe("Monthly");
+		expect(included?.window?.resetsAt).toBe(Date.parse("2026-08-01T00:00:00+00:00"));
+		expect(included?.status).toBe("ok");
+	});
+
+	it("merges weekly credits with monthly included when unified account returns both", async () => {
+		const creditsBoth = {
+			config: {
+				...makeUnifiedCreditsPayload().config,
+				creditUsagePercent: 2,
+				productUsage: [{ product: "Api", usagePercent: 2 }],
+			},
+		};
+		const { fetch, calls } = dualBillingFetch(creditsBoth, makeUnifiedMonthlyPayload());
+		const report = await xaiOauthUsageProvider.fetchUsage(
+			{ provider: "xai-oauth", credential: makeCredential({ email: "stored@example.com" }) },
+			{ fetch },
+		);
+
+		expect(calls.map(call => call.url)).toEqual([buildXAICliBillingUrl(), buildXAICliBillingUrl("")]);
+		expect(report?.metadata?.billingKind).toBe("unified");
+		expect(report?.limits.map(limit => limit.id)).toEqual([
+			"xai-oauth:credits:1w",
+			"xai-oauth:product:api:1w",
+			"xai-oauth:included:1mo",
+		]);
+		expect(report?.limits[0]?.amount.usedFraction).toBeCloseTo(0.02, 5);
+		expect(report?.limits[2]?.amount.used).toBe(10548);
+		expect(report?.limits[2]?.amount.limit).toBe(15000);
+	});
+
+	it("maps unified monthly on-demand when the included quota payload carries a positive cap", async () => {
+		const report = await xaiOauthUsageProvider.fetchUsage(
+			{ provider: "xai-oauth", credential: makeCredential() },
+			{
+				fetch: dualBillingFetch(
+					makeUnifiedCreditsPayload(),
+					makeUnifiedMonthlyPayload({ onDemandCap: { val: 100 }, onDemandUsed: { val: 25 } }),
+				).fetch,
+			},
+		);
+
+		expect(report?.limits.map(limit => limit.id)).toEqual(["xai-oauth:included:1mo", "xai-oauth:on-demand"]);
+		const onDemand = report?.limits.find(limit => limit.id === "xai-oauth:on-demand");
+		expect(onDemand?.amount.used).toBe(25);
+		expect(onDemand?.amount.limit).toBe(100);
+		expect(onDemand?.amount.usedFraction).toBeCloseTo(0.25, 5);
+	});
+
+	it("returns null when both credits and monthly billing shapes are unusable", async () => {
+		const report = await xaiOauthUsageProvider.fetchUsage(
+			{ provider: "xai-oauth", credential: makeCredential() },
+			{
+				fetch: dualBillingFetch(makeUnifiedCreditsPayload(), {
+					config: { isUnifiedBillingUser: true, monthlyLimit: { val: 0 }, used: { val: 0 } },
+				}).fetch,
+			},
+		);
+		expect(report).toBeNull();
 	});
 
 	it("skips expired OAuth tokens and returns null for rejected billing", async () => {

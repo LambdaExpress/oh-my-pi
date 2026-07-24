@@ -187,7 +187,6 @@ function renderDescription(
 		agents: renderedAgents,
 		spawningDisabled,
 		defaultAgent: spawnPolicy.defaultAgent,
-		allowedAgentsText: spawnPolicy.allowedPromptText,
 		isolationEnabled,
 		applyIsolatedChanges,
 		batchEnabled,
@@ -531,19 +530,35 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		if (typeof params.context === "string" && params.context.trim()) {
 			lines.push(`Context:\n${truncateForPrompt(params.context)}`);
 		}
-		const tasks = Array.isArray(params.tasks) ? params.tasks : [];
-		const firstTask = tasks[0];
-		if (firstTask) {
-			if (typeof firstTask.name === "string" && firstTask.name.trim()) {
-				lines.push(`Name: ${truncateForPrompt(firstTask.name)}`);
+		const tasks: unknown[] = Array.isArray(params.tasks) ? params.tasks : [];
+		if (tasks.length > 0) {
+			const defaultAgent = resolveSpawnPolicy(this.session.getSessionSpawns()).defaultAgent;
+			const effectiveAgent = (item: unknown): string => {
+				if (item && typeof item === "object" && "agent" in item) {
+					const agent = item.agent;
+					if (typeof agent === "string" && agent.trim()) return agent.trim();
+				}
+				return defaultAgent;
+			};
+			const agentCounts = new Map<string, number>();
+			for (const item of tasks) {
+				const agent = effectiveAgent(item);
+				agentCounts.set(agent, (agentCounts.get(agent) ?? 0) + 1);
 			}
-			if (typeof firstTask.agent === "string" && firstTask.agent.trim()) {
-				lines.push(`Agent: ${truncateForPrompt(firstTask.agent)}`);
-			}
-			const itemModel = formatModelForApproval(firstTask.model);
-			if (itemModel) lines.push(`Model: ${itemModel}`);
-			if (typeof firstTask.task === "string") {
-				lines.push(`Task:\n${truncateForPrompt(firstTask.task)}`);
+			const agentSummary = [...agentCounts].map(([agent, count]) => `${agent} ×${count}`).join(", ");
+			lines.push(`Batch agents: ${truncateForPrompt(agentSummary)}`);
+
+			const firstTask = tasks[0];
+			if (firstTask && typeof firstTask === "object") {
+				if ("name" in firstTask && typeof firstTask.name === "string" && firstTask.name.trim()) {
+					lines.push(`Name: ${truncateForPrompt(firstTask.name)}`);
+				}
+				lines.push(`Agent: ${truncateForPrompt(effectiveAgent(firstTask))}`);
+				const itemModel = formatModelForApproval("model" in firstTask ? firstTask.model : undefined);
+				if (itemModel) lines.push(`Model: ${itemModel}`);
+				if ("task" in firstTask && typeof firstTask.task === "string") {
+					lines.push(`Task:\n${truncateForPrompt(firstTask.task)}`);
+				}
 			}
 			if (tasks.length > 1) {
 				lines.push(`+${tasks.length - 1} more task${tasks.length === 2 ? "" : "s"}`);
@@ -688,27 +703,53 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const spawnItems = resolveSpawnItems(params);
 		const normalizedSpawnParams = spawnItems.map(item => spawnParamsFor(params, item, defaultAgent));
 		const resolvedAgents = normalizedSpawnParams.map(spawn => spawn.agent ?? defaultAgent);
+		// Resolve every item before choosing an execution path. No executor or
+		// job manager may observe a batch unless every effective policy is valid.
+		const preflights = await Promise.all(
+			normalizedSpawnParams.map(async spawn => {
+				try {
+					return { policy: await this.#resolveSpawnPreflight(spawn) };
+				} catch (error) {
+					return { error: error instanceof StructuredSubagentError ? error.message : String(error) };
+				}
+			}),
+		);
+		const preflightFailures = preflights
+			.map((preflight, index) => ("error" in preflight ? { index, error: preflight.error } : undefined))
+			.filter((failure): failure is { index: number; error: string } => failure !== undefined);
+		if (preflightFailures.length > 0) {
+			if (!batchEnabled) {
+				return createTaskModeError(`Task execution failed: ${preflightFailures[0]!.error}`);
+			}
+			return createTaskModeError(
+				preflightFailures
+					.map(({ index, error }) => {
+						const item = spawnItems[index]!;
+						return `Task ${item.name?.trim() || `#${index + 1}`} failed preflight: ${error}`;
+					})
+					.join("\n"),
+			);
+		}
+		const policies = preflights.map(preflight => preflight.policy!);
+		const itemBlocking = policies.map(policy => policy.effectiveAgent.blocking === true);
+
 		// Execution mode is per item: an item whose agent type declares
 		// `blocking: true` runs inline on this turn (the parent waits on its
 		// result); every other item becomes a background job when async
 		// execution is available.
-		const provisionalBlocking = resolvedAgents.map(
-			name => this.#discoveredAgents.find(agent => agent.name === name)?.blocking === true,
-		);
 		const asyncEnabled = this.session.settings.get("async.enabled");
 		const manager = asyncEnabled ? this.session.asyncJobManager : undefined;
-		const provisionalAsyncItems = manager ? spawnItems.filter((_, index) => !provisionalBlocking[index]) : [];
+		const asyncItems = manager ? spawnItems.filter((_, index) => !itemBlocking[index]) : [];
 		const depthCapacity = canSpawnAtDepth(
 			this.session.settings.get("task.maxRecursionDepth") ?? 2,
 			this.session.taskDepth ?? 0,
 		);
 		const ircEnabled = isIrcEnabled(this.session.settings, this.session.taskDepth ?? 0);
 
-		if (!manager || provisionalAsyncItems.length === 0) {
+		if (!manager || asyncItems.length === 0) {
 			// Sync fallback: async execution disabled, orphaned host that never
 			// wired a job manager, or every item's agent type declares
-			// `blocking: true`. `runStructuredSubagent` performs its own shared
-			// preflight before reserving an id in these inline paths.
+			// `blocking: true`.
 			if (asyncEnabled && !this.session.asyncJobManager) {
 				logger.warn("task: no AsyncJobManager registered; falling back to sync execution");
 			}
@@ -716,7 +757,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				? undefined
 				: composeSpawnAdvisory({
 						agents: resolvedAgents,
-						items: provisionalAsyncItems,
+						items: asyncItems,
 						depthCapacity,
 						ircEnabled,
 						willRunAsync: false,
@@ -743,43 +784,13 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			return { ...result, content };
 		}
 
-		// Async jobs are otherwise registered before their body can reach
-		// `runStructuredSubagent`. Resolve the shared policy first so policy
-		// failures remain synchronous and cannot leave a queued invalid job.
-		const preflights = await Promise.all(
-			normalizedSpawnParams.map(async spawn => {
-				try {
-					return { policy: await this.#resolveSpawnPreflight(spawn) };
-				} catch (error) {
-					return { error: error instanceof StructuredSubagentError ? error.message : String(error) };
-				}
-			}),
-		);
-		const preflightFailures = preflights
-			.map((preflight, index) => ("error" in preflight ? { index, error: preflight.error } : undefined))
-			.filter((failure): failure is { index: number; error: string } => failure !== undefined);
-		const renderPreflightFailures = () =>
-			preflightFailures
-				.map(({ index, error }) => {
-					const item = spawnItems[index]!;
-					return `Task ${item.name?.trim() || `#${index + 1}`} failed preflight: ${error}`;
-				})
-				.join("\n");
-		if (preflightFailures.length === spawnItems.length) {
-			return createTaskModeError(renderPreflightFailures());
-		}
-
-		const validIndices = preflights.flatMap((preflight, index) => (preflight.policy ? [index] : []));
-		const validSpawns = validIndices.map(index => ({ item: spawnItems[index]!, index }));
-		const itemBlocking = preflights.map(preflight => preflight.policy?.effectiveAgent.blocking === true);
-		const asyncItems = validIndices.filter(index => !itemBlocking[index]).map(index => spawnItems[index]!);
 		// Coordination only makes sense for spawns that keep running after this
 		// call returns (the async subset). Blocking items have already completed
 		// by then, so a "coordinate while they run" hint would misfire.
 		const advisory = this.session.suppressSpawnAdvisory
 			? undefined
 			: composeSpawnAdvisory({
-					agents: validIndices.map(index => resolvedAgents[index]!),
+					agents: resolvedAgents,
 					items: asyncItems,
 					depthCapacity,
 					ircEnabled,
@@ -801,24 +812,16 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			if (!appended) content.push({ type: "text", text: advisory });
 			return { ...result, content };
 		};
-		const withPreflightFailures = (result: AgentToolResult<TaskToolDetails>): AgentToolResult<TaskToolDetails> => {
-			if (preflightFailures.length === 0) return result;
-			const failures = renderPreflightFailures();
-			let prepended = false;
-			const content = result.content.map(part => {
-				if (!prepended && part.type === "text" && typeof part.text === "string") {
-					prepended = true;
-					return { ...part, text: `${failures}\n\n${part.text}` };
-				}
-				return part;
-			});
-			if (!prepended) content.unshift({ type: "text", text: failures });
-			return { ...result, content };
-		};
 		if (asyncItems.length === 0) {
-			return withPreflightFailures(
-				withAdvisory(
-					await this.#executeSyncFanout(toolCallId, params, validSpawns, defaultAgent, scopeId, signal, onUpdate),
+			return withAdvisory(
+				await this.#executeSyncFanout(
+					toolCallId,
+					params,
+					spawnItems.map((item, index) => ({ item, index })),
+					defaultAgent,
+					scopeId,
+					signal,
+					onUpdate,
 				),
 			);
 		}
@@ -838,12 +841,9 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 			blocking: boolean;
 			progress: AgentProgress;
 		}> = [];
-		for (const index of validIndices) {
-			const item = spawnItems[index]!;
+		for (const [index, item] of spawnItems.entries()) {
 			const agentType = resolvedAgents[index]!;
-			const preflight = preflights[index]!;
-			const policy = preflight.policy;
-			if (!policy) continue;
+			const policy = policies[index]!;
 			const agentSource = policy.agent.source;
 			const agentId = await outputManager.allocate(item.name?.trim() || generateTaskName());
 			const assignment = (item.task ?? "").trim();
@@ -881,7 +881,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		// failed. Blocking spawns run inline below and land in `results` before
 		// the call returns, so post-return job updates never drop them.
 		let settledCount = 0;
-		let failedCount = preflightFailures.length;
+		let failedCount = 0;
 		let primaryJobId = asyncSpawns[0].agentId;
 		const syncResults: SingleResult[] = [];
 		let syncUsage: Usage | undefined;
@@ -933,7 +933,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		}
 
 		if (started.length === 0 && syncSpawns.length === 0) {
-			return withPreflightFailures({
+			return {
 				content: [
 					{
 						type: "text",
@@ -941,7 +941,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					},
 				],
 				details: { projectAgentsDir: null, results: [], totalDurationMs: 0 },
-			});
+			};
 		}
 
 		const scheduleFailureSummary =
@@ -966,34 +966,30 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 					content: [{ type: "text", text: `Spawned agent \`${agentId}\`...` }],
 					details: buildAsyncDetails(),
 				});
-				return withPreflightFailures(
-					withAdvisory({
-						content: [
-							{
-								type: "text",
-								text: `Spawned agent \`${agentId}\` (job \`${jobId}\`). Its result auto-delivers on yield unless a settled \`hub jobs\`/\`wait\` snapshot consumes it first. ${coordinationHint}`,
-							},
-						],
-						details: buildAsyncDetails(),
-					}),
-				);
+				return withAdvisory({
+					content: [
+						{
+							type: "text",
+							text: `Spawned agent \`${agentId}\` (job \`${jobId}\`). Its result auto-delivers on yield unless a settled \`hub jobs\`/\`wait\` snapshot consumes it first. ${coordinationHint}`,
+						},
+					],
+					details: buildAsyncDetails(),
+				});
 			}
 			const startedListing = started.map(({ agentId, jobId }) => `- \`${agentId}\` (job \`${jobId}\`)`).join("\n");
 			onUpdate?.({
 				content: [{ type: "text", text: `Spawned ${started.length} agents...` }],
 				details: buildAsyncDetails(),
 			});
-			return withPreflightFailures(
-				withAdvisory({
-					content: [
-						{
-							type: "text",
-							text: `Spawned ${started.length} background agents using ${agentLabel}.${scheduleFailureSummary} Each result auto-delivers on yield unless a settled \`hub jobs\`/\`wait\` snapshot consumes it first.\n${startedListing}\n${coordinationHint}`,
-						},
-					],
-					details: buildAsyncDetails(),
-				}),
-			);
+			return withAdvisory({
+				content: [
+					{
+						type: "text",
+						text: `Spawned ${started.length} background agents using ${agentLabel}.${scheduleFailureSummary} Each result auto-delivers on yield unless a settled \`hub jobs\`/\`wait\` snapshot consumes it first.\n${startedListing}\n${coordinationHint}`,
+					},
+				],
+				details: buildAsyncDetails(),
+			});
 		}
 
 		// Mixed call: the async jobs above already run detached; the blocking
@@ -1059,12 +1055,10 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const text = [merged.contentParts.join("\n\n"), spawnedSummary]
 			.filter(section => section.trim().length > 0)
 			.join("\n\n");
-		return withPreflightFailures(
-			withAdvisory({
-				content: [{ type: "text", text: text.length > 0 ? text : "No results." }],
-				details: buildAsyncDetails(),
-			}),
-		);
+		return withAdvisory({
+			content: [{ type: "text", text: text.length > 0 ? text : "No results." }],
+			details: buildAsyncDetails(),
+		});
 	}
 
 	/**

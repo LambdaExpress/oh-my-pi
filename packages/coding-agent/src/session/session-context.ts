@@ -18,6 +18,8 @@ import { type CompactionEntry, EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } 
 const LEGACY_SNAPCOMPACT_FRAME_COUNT_GUARD = 16;
 const LEGACY_SNAPCOMPACT_ARCHIVE_TEXT_GUARD = 250_000;
 const LEGACY_SNAPCOMPACT_TRUNCATED_CHARS_GUARD = 1_000_000;
+const SUPERSEDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided after a newer compaction]";
+const SUPERSEDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
 
 function hasLegacySnapcompactFrames(archive: snapcompact.Archive): boolean {
 	return archive.frames.some(frame => frame.font === undefined && frame.variant === undefined);
@@ -344,13 +346,14 @@ export function buildSessionContext(
 		for (const entry of path) {
 			handleEntryResetTracking(entry);
 			if (entry.type === "compaction") {
-				const snapcompactArchive = snapcompact.getPreservedArchive(entry.preserveData);
+				const active = entry.id === compaction?.id;
+				const snapcompactArchive = active ? snapcompact.getPreservedArchive(entry.preserveData) : undefined;
 				pushMessage(
 					createCompactionSummaryMessage(
-						entry.summary,
+						active ? entry.summary : SUPERSEDED_COMPACTION_SUMMARY,
 						entry.tokensBefore,
 						entry.timestamp,
-						entry.shortSummary,
+						active ? entry.shortSummary : SUPERSEDED_COMPACTION_SHORT_SUMMARY,
 						undefined,
 						undefined,
 						snapcompactHistoryBlocksForContext(snapcompactArchive, options),

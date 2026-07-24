@@ -96,6 +96,9 @@ export const SEARCH_PROVIDER_ORDER: readonly SearchProviderId[] = SEARCH_PROVIDE
 	option.value === "auto" ? [] : [option.value],
 );
 
+/** Concrete provider choices (no `auto` sentinel) — for list-valued settings like order/exclude. */
+export const SEARCH_PROVIDER_CHOICES = SEARCH_PROVIDER_OPTIONS.filter(option => option.value !== "auto");
+
 export const SEARCH_PROVIDER_PREFERENCES = ["auto", ...SEARCH_PROVIDER_ORDER] as const;
 
 /** Display labels, derived from {@link SEARCH_PROVIDER_OPTIONS}. */

@@ -32,6 +32,23 @@ import type {
 } from "./types";
 
 /**
+ * Per-provider OAuth identities visible to this trusted broker client.
+ * Missing providers are unrestricted; an empty set excludes that provider's
+ * OAuth credentials. API keys are never filtered.
+ */
+export type AuthBrokerAccountPool = ReadonlyMap<string, ReadonlySet<string>>;
+
+function isCredentialInAccountPool(
+	entry: Pick<SnapshotEntry, "provider" | "credential" | "identityKey">,
+	accountPool: AuthBrokerAccountPool | undefined,
+): boolean {
+	if (entry.credential.type !== "oauth") return true;
+	const identities = accountPool?.get(entry.provider);
+	if (identities === undefined) return true;
+	return entry.identityKey !== null && identities.has(entry.identityKey);
+}
+
+/**
  * Client-side TTL for the aggregate `/v1/usage` response. The broker dedups
  * upstream `/usage` hits via AuthStorage's 5-minute per-credential cache plus
  * single-flight, so this short client TTL mainly folds the parallel fan-out
@@ -205,16 +222,23 @@ export interface RemoteAuthCredentialStoreOptions {
 	 */
 	streamSnapshots?: boolean;
 	/**
-	 * Called after broker-sourced full snapshots are applied. The constructor's
-	 * initial snapshot intentionally does not trigger this hook.
+	 * Called with each broker-sourced raw full snapshot after the filtered
+	 * public view is applied. The constructor's initial snapshot intentionally
+	 * does not trigger this hook.
 	 */
 	onSnapshot?: (snapshot: SnapshotResponse, generation: number) => void;
+	/**
+	 * OAuth identities visible through this store. This is a trusted-client
+	 * routing policy, not broker authorization.
+	 */
+	accountPool?: AuthBrokerAccountPool;
 }
 
 export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	readonly #client: AuthBrokerClient;
 	readonly #streamSnapshots: boolean;
 	readonly #onSnapshot?: (snapshot: SnapshotResponse, generation: number) => void;
+	readonly #accountPool?: AuthBrokerAccountPool;
 	#snapshot: SnapshotResponse = emptySnapshot();
 	#snapshotReceivedAt = Date.now();
 	#generation = 0;
@@ -239,6 +263,9 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	constructor(opts: RemoteAuthCredentialStoreOptions) {
 		this.#client = opts.client;
 		this.#streamSnapshots = opts.streamSnapshots ?? true;
+		this.#accountPool = opts.accountPool
+			? new Map([...opts.accountPool].map(([provider, identities]) => [provider, new Set(identities)]))
+			: undefined;
 		this.#applySnapshot(opts.initialSnapshot ?? emptySnapshot(), opts.initialSnapshot?.generation ?? 0);
 		this.#onSnapshot = opts.onSnapshot;
 		void this.#runBackground();
@@ -255,7 +282,9 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	#applySnapshot(snapshot: SnapshotResponse, generation: number, protectNewBlocks = true): void {
 		const nowMs = Date.now();
 		const previousCredentials = this.#snapshot.credentials;
-		const credentials = snapshot.credentials.map(entry => this.#normalizeSnapshotEntryBlocks(entry, nowMs));
+		const credentials = snapshot.credentials
+			.filter(entry => isCredentialInAccountPool(entry, this.#accountPool))
+			.map(entry => this.#normalizeSnapshotEntryBlocks(entry, nowMs));
 		if (snapshotBlocksChanged(previousCredentials, credentials)) this.#invalidateUsageCache();
 		if (protectNewBlocks) this.#protectNewSnapshotBlocks(previousCredentials, credentials, nowMs);
 		this.#snapshot = { ...snapshot, credentials };
@@ -264,7 +293,7 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		const onSnapshot = this.#onSnapshot;
 		if (!onSnapshot) return;
 		try {
-			onSnapshot(this.#snapshot, generation);
+			onSnapshot(snapshot, generation);
 		} catch (error) {
 			logger.debug("auth-broker snapshot callback failed", { error: String(error) });
 		}
@@ -383,6 +412,10 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		generation: number,
 		serverNowMs: number,
 	): void {
+		if (!isCredentialInAccountPool(entry, this.#accountPool)) {
+			this.#removeStreamCredential(entry.id, refresher, generation, serverNowMs);
+			return;
+		}
 		const incoming = this.#normalizeSnapshotEntryBlocks(entry, Date.now());
 		const index = this.#snapshot.credentials.findIndex(candidate => candidate.id === incoming.id);
 		const previousBlocks = index === -1 ? undefined : this.#snapshot.credentials[index]?.blocks;
@@ -577,7 +610,11 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		if (entry.credential.type !== "oauth") {
 			throw new AIError.AuthBrokerError(`Broker returned non-OAuth credential for id=${credentialId}`);
 		}
-		this.#applyCredentialEntry(entry);
+		if (!this.#applyCredentialEntry(entry)) {
+			throw new AIError.AuthBrokerError(
+				`Broker refreshed credential id=${credentialId} outside the configured account pool`,
+			);
+		}
 		this.#maybeRefreshSnapshot("suspect credential refresh");
 	}
 
@@ -677,20 +714,27 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 				.map(entry => [entry.id, entry.blocks] as const),
 		);
 		const others = this.#snapshot.credentials.filter(entry => entry.provider !== provider);
-		const incoming = entries.map(entry => credentialEntryWithBlocks(entry, existingBlocks.get(entry.id)));
+		const incoming = entries
+			.filter(entry => isCredentialInAccountPool(entry, this.#accountPool))
+			.map(entry => credentialEntryWithBlocks(entry, existingBlocks.get(entry.id)));
 		this.#snapshot = { ...this.#snapshot, credentials: [...others, ...incoming] };
 	}
-	#applyCredentialEntry(entry: AuthCredentialSnapshotEntry): void {
+	#applyCredentialEntry(entry: AuthCredentialSnapshotEntry): boolean {
+		if (!isCredentialInAccountPool(entry, this.#accountPool)) {
+			this.#removeCredentialById(entry.id);
+			return false;
+		}
 		const index = this.#snapshot.credentials.findIndex(candidate => candidate.id === entry.id);
 		const existingBlocks = index === -1 ? undefined : this.#snapshot.credentials[index]?.blocks;
 		const incoming = credentialEntryWithBlocks(entry, existingBlocks);
 		if (index === -1) {
 			this.#snapshot = { ...this.#snapshot, credentials: [...this.#snapshot.credentials, incoming] };
-			return;
+			return true;
 		}
 		const credentials = [...this.#snapshot.credentials];
 		credentials[index] = incoming;
 		this.#snapshot = { ...this.#snapshot, credentials };
+		return true;
 	}
 
 	#removeProviderEntries(provider: string): void {
@@ -837,13 +881,18 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		signal?: AbortSignal,
 	): Promise<OAuthCredentials> {
 		const { entry } = await this.#client.refreshCredential(credentialId, signal);
+		if (entry.credential.type !== "oauth") {
+			throw new AIError.AuthBrokerError(`Broker returned non-OAuth credential for id=${credentialId}`);
+		}
+		if (!this.#applyCredentialEntry(entry)) {
+			throw new AIError.AuthBrokerError(
+				`Broker refreshed credential id=${credentialId} outside the configured account pool`,
+			);
+		}
 		if (!this.#streamingActive) {
 			await this.refreshSnapshot().catch(error => {
 				logger.debug("auth-broker snapshot refresh after credential refresh failed", { error: String(error) });
 			});
-		}
-		if (entry.credential.type !== "oauth") {
-			throw new AIError.AuthBrokerError(`Broker returned non-OAuth credential for id=${credentialId}`);
 		}
 		const refreshed = entry.credential;
 		return {
@@ -865,7 +914,8 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 	 */
 	async fetchUsageReports(signal?: AbortSignal): Promise<UsageReport[] | null> {
 		const reports = await this.#raceWithSignal(this.#loadUsageReports(), signal);
-		return reports ? this.#applyUsageOverlays(reports) : null;
+		if (!reports) return null;
+		return this.#filterUsageReports(this.#applyUsageOverlays(reports));
 	}
 
 	/**
@@ -883,10 +933,25 @@ export class RemoteAuthCredentialStore implements AuthCredentialStore {
 		signal?: AbortSignal,
 	): Promise<UsageReport | null> {
 		const reports = await this.#raceWithSignal(this.#loadUsageReports(), signal);
-		const matched = reports ? matchUsageReport(reports, provider, credential) : null;
+		const visibleReports = reports ? this.#filterUsageReports(reports) : null;
+		const matched = visibleReports ? matchUsageReport(visibleReports, provider, credential) : null;
 		const overlay = this.#getActiveUsageOverlay(provider, credential);
 		if (matched && overlay) return mergeUsageReports(matched, overlay);
 		return overlay ?? matched;
+	}
+
+	#filterUsageReports(reports: UsageReport[]): UsageReport[] {
+		const accountPool = this.#accountPool;
+		if (!accountPool) return reports;
+		return reports.filter(report => {
+			if (!accountPool.has(report.provider)) return true;
+			return this.#snapshot.credentials.some(
+				entry =>
+					entry.provider === report.provider &&
+					entry.credential.type === "oauth" &&
+					usageReportMatchesCredential(report, entry.credential),
+			);
+		});
 	}
 
 	ingestUsageReport(provider: Provider, credential: OAuthCredential, report: UsageReport): boolean {
@@ -1057,6 +1122,21 @@ function matchUsageReport(reports: UsageReport[], provider: Provider, credential
 		if (reportMatchesIdentity(report, accountId, email, projectId)) return report;
 	}
 	return null;
+}
+
+function usageReportMatchesCredential(report: UsageReport, credential: OAuthCredential): boolean {
+	const metadata = (report.metadata ?? {}) as Record<string, unknown>;
+	const credentialOrg = credential.orgId?.trim().toLowerCase();
+	const reportOrg = readMetadataString(metadata, "orgId")?.toLowerCase();
+	if (credentialOrg !== reportOrg) return false;
+
+	const accountId = credential.accountId?.trim().toLowerCase();
+	const email = credential.email?.trim().toLowerCase();
+	const projectId = credential.projectId?.trim().toLowerCase();
+	if (accountId || email || projectId) {
+		return reportMatchesIdentity(report, accountId, email, projectId);
+	}
+	return credentialOrg !== undefined;
 }
 
 function findMatchingReportIndex(reports: UsageReport[], overlay: UsageReport): number {

@@ -1,9 +1,12 @@
 /**
  * SuperGrok (`xai-oauth`) subscription usage provider.
  *
- * Reads weekly credit and product utilization from the Grok CLI billing
- * endpoint. Only OAuth access credentials are accepted; paid API keys are a
- * separate product and must never be sent here.
+ * Reads utilization from the Grok CLI billing endpoint. Prefer the legacy
+ * weekly `format=credits` payload (creditUsagePercent / productUsage). When
+ * xAI marks the account as unified billing and omits those fields, fall back
+ * to the default monthly included-quota shape (`monthlyLimit` / `used`).
+ * Only OAuth access credentials are accepted; paid API keys are a separate
+ * product and must never be sent here.
  */
 
 import {
@@ -27,6 +30,8 @@ import { toNumber } from "./shared";
 
 const PROVIDER_ID = "xai-oauth";
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const BILLING_SOURCE = "cli-chat-proxy.grok.com/v1/billing";
 
 interface XaiBillingPeriod {
 	start: string;
@@ -39,13 +44,32 @@ interface XaiProductUsage {
 	usagePercent: number;
 }
 
-interface XaiBillingConfig {
+/** Legacy SuperGrok weekly credits (`?format=credits`). */
+interface XaiWeeklyBillingConfig {
+	kind: "weekly";
 	currentPeriod: XaiBillingPeriod;
 	creditUsagePercent: number;
 	productUsage: XaiProductUsage[];
 	onDemandCap?: number;
 	onDemandUsed?: number;
 }
+
+/**
+ * Unified-billing monthly included quota.
+ * Live `isUnifiedBillingUser` accounts omit creditUsagePercent on
+ * `?format=credits` and expose monthlyLimit/used on the default billing URL.
+ */
+interface XaiMonthlyBillingConfig {
+	kind: "monthly";
+	periodStart: string;
+	periodEnd: string;
+	used: number;
+	limit: number;
+	onDemandCap?: number;
+	onDemandUsed?: number;
+}
+
+type XaiBillingConfig = XaiWeeklyBillingConfig | XaiMonthlyBillingConfig;
 
 function parseIsoMs(value: string): number | undefined {
 	const parsed = Date.parse(value);
@@ -98,9 +122,22 @@ function buildPeriodWindow(period: XaiBillingPeriod): UsageWindow {
 	};
 }
 
-function parseBillingConfig(payload: unknown): XaiBillingConfig | null {
-	if (!isRecord(payload) || !isRecord(payload.config)) return null;
-	const raw = payload.config;
+function buildMonthlyWindow(periodStart: string, periodEnd: string): UsageWindow | undefined {
+	const startMs = parseIsoMs(periodStart);
+	const endMs = parseIsoMs(periodEnd);
+	if (startMs === undefined || endMs === undefined || endMs <= startMs) return undefined;
+	// Real calendar months vary; use the observed period length from the API.
+	const durationMs = endMs - startMs;
+	const approxDays = Math.max(1, Math.round(durationMs / DAY_MS));
+	return {
+		id: "1mo",
+		label: approxDays === 30 || approxDays === 31 ? "Monthly" : `${approxDays}d`,
+		durationMs,
+		resetsAt: endMs,
+	};
+}
+
+function parseWeeklyBillingConfig(raw: Record<string, unknown>): XaiWeeklyBillingConfig | null {
 	if (!isRecord(raw.currentPeriod)) return null;
 
 	const start = typeof raw.currentPeriod.start === "string" ? parseIsoMs(raw.currentPeriod.start) : undefined;
@@ -129,6 +166,7 @@ function parseBillingConfig(payload: unknown): XaiBillingConfig | null {
 	}
 
 	return {
+		kind: "weekly",
 		currentPeriod: {
 			start: raw.currentPeriod.start as string,
 			end: raw.currentPeriod.end as string,
@@ -141,62 +179,145 @@ function parseBillingConfig(payload: unknown): XaiBillingConfig | null {
 	};
 }
 
-function buildLimits(config: XaiBillingConfig, accountId: string | undefined): UsageLimit[] {
-	const window = buildPeriodWindow(config.currentPeriod);
-	const scope = {
-		provider: PROVIDER_ID,
-		...(accountId ? { accountId } : {}),
-		windowId: window.id,
-		shared: true as const,
+function parseMonthlyBillingConfig(raw: Record<string, unknown>): XaiMonthlyBillingConfig | null {
+	const periodStart = typeof raw.billingPeriodStart === "string" ? raw.billingPeriodStart : "";
+	const periodEnd = typeof raw.billingPeriodEnd === "string" ? raw.billingPeriodEnd : "";
+	const startMs = parseIsoMs(periodStart);
+	const endMs = parseIsoMs(periodEnd);
+	if (!periodStart || !periodEnd || startMs === undefined || endMs === undefined || endMs <= startMs) {
+		return null;
+	}
+
+	const limit = parseOnDemandAmount(raw.monthlyLimit);
+	const used = parseOnDemandAmount(raw.used);
+	// Require a positive included quota; zero/missing is not a usable report.
+	if (limit === undefined || limit <= 0 || used === undefined) return null;
+
+	return {
+		kind: "monthly",
+		periodStart,
+		periodEnd,
+		used,
+		limit,
+		onDemandCap: parseOnDemandAmount(raw.onDemandCap),
+		onDemandUsed: parseOnDemandAmount(raw.onDemandUsed),
 	};
-	const overall = buildPercentAmount(config.creditUsagePercent);
+}
+
+function buildOnDemandLimit(
+	onDemandCap: number | undefined,
+	onDemandUsed: number | undefined,
+	accountId: string | undefined,
+): UsageLimit | undefined {
+	if (onDemandCap === undefined || onDemandCap <= 0 || onDemandUsed === undefined) return undefined;
+	const usedFraction = Math.min(onDemandUsed / onDemandCap, 1);
+	return {
+		id: `${PROVIDER_ID}:on-demand`,
+		label: "On-demand",
+		scope: {
+			provider: PROVIDER_ID,
+			...(accountId ? { accountId } : {}),
+			shared: true,
+		},
+		amount: {
+			used: onDemandUsed,
+			limit: onDemandCap,
+			remaining: Math.max(0, onDemandCap - onDemandUsed),
+			usedFraction,
+			remainingFraction: 1 - usedFraction,
+			unit: "unknown",
+		},
+		status: buildUsageStatus(usedFraction),
+	};
+}
+
+function buildLimits(config: XaiBillingConfig, accountId: string | undefined): UsageLimit[] {
+	if (config.kind === "weekly") {
+		const window = buildPeriodWindow(config.currentPeriod);
+		const scope = {
+			provider: PROVIDER_ID,
+			...(accountId ? { accountId } : {}),
+			windowId: window.id,
+			shared: true as const,
+		};
+		const overall = buildPercentAmount(config.creditUsagePercent);
+		const limits: UsageLimit[] = [
+			{
+				id: `${PROVIDER_ID}:credits:1w`,
+				label: "SuperGrok Weekly Credits",
+				scope,
+				window,
+				amount: overall,
+				status: buildUsageStatus(overall.usedFraction ?? 0),
+			},
+		];
+
+		for (const item of config.productUsage) {
+			const amount = buildPercentAmount(item.usagePercent);
+			const slug = slugifyProduct(item.product);
+			if (!slug) continue;
+			limits.push({
+				id: `${PROVIDER_ID}:product:${slug}:1w`,
+				label: `${item.product === "GrokBuild" ? "Grok Build" : item.product === "Api" ? "API" : item.product} (Weekly)`,
+				scope,
+				window,
+				amount,
+				status: buildUsageStatus(amount.usedFraction ?? 0),
+			});
+		}
+		const onDemand = buildOnDemandLimit(config.onDemandCap, config.onDemandUsed, accountId);
+		if (onDemand) limits.push(onDemand);
+		return limits;
+	}
+
+	const window = buildMonthlyWindow(config.periodStart, config.periodEnd);
+	if (!window) return [];
+	const usedFraction = Math.min(config.used / config.limit, 1);
 	const limits: UsageLimit[] = [
 		{
-			id: `${PROVIDER_ID}:credits:1w`,
-			label: "SuperGrok Weekly Credits",
-			scope,
-			window,
-			amount: overall,
-			status: buildUsageStatus(overall.usedFraction ?? 0),
-		},
-	];
-
-	for (const item of config.productUsage) {
-		const amount = buildPercentAmount(item.usagePercent);
-		const slug = slugifyProduct(item.product);
-		if (!slug) continue;
-		limits.push({
-			id: `${PROVIDER_ID}:product:${slug}:1w`,
-			label: `${item.product === "GrokBuild" ? "Grok Build" : item.product === "Api" ? "API" : item.product} (Weekly)`,
-			scope,
-			window,
-			amount,
-			status: buildUsageStatus(amount.usedFraction ?? 0),
-		});
-	}
-	if (config.onDemandCap !== undefined && config.onDemandCap > 0 && config.onDemandUsed !== undefined) {
-		const usedFraction = Math.min(config.onDemandUsed / config.onDemandCap, 1);
-		limits.push({
-			id: `${PROVIDER_ID}:on-demand`,
-			label: "On-demand",
+			id: `${PROVIDER_ID}:included:1mo`,
+			label: "SuperGrok Monthly Included",
 			scope: {
 				provider: PROVIDER_ID,
 				...(accountId ? { accountId } : {}),
+				windowId: window.id,
 				shared: true,
 			},
+			window,
 			amount: {
-				used: config.onDemandUsed,
-				limit: config.onDemandCap,
-				remaining: Math.max(0, config.onDemandCap - config.onDemandUsed),
+				used: config.used,
+				limit: config.limit,
+				remaining: Math.max(0, config.limit - config.used),
 				usedFraction,
 				remainingFraction: 1 - usedFraction,
+				// xAI does not label the unit; amounts match the dashboard quota points.
 				unit: "unknown",
 			},
 			status: buildUsageStatus(usedFraction),
-		});
-	}
-
+		},
+	];
+	const onDemand = buildOnDemandLimit(config.onDemandCap, config.onDemandUsed, accountId);
+	if (onDemand) limits.push(onDemand);
 	return limits;
+}
+
+async function fetchBillingPayload(
+	url: string,
+	accessToken: string,
+	ctx: UsageFetchContext,
+	signal: AbortSignal | undefined,
+): Promise<unknown | null> {
+	try {
+		const response = await ctx.fetch(url, {
+			headers: getXAICliBillingHeaders({ accessToken }),
+			redirect: "error",
+			signal,
+		});
+		if (!response.ok) return null;
+		return await response.json();
+	} catch {
+		return null;
+	}
 }
 
 export const xaiOauthUsageProvider: UsageProvider = {
@@ -224,33 +345,70 @@ export const xaiOauthUsageProvider: UsageProvider = {
 			}
 		}
 
-		const url = buildXAICliBillingUrl();
-		let payload: unknown;
-		try {
-			const response = await ctx.fetch(url, {
-				headers: getXAICliBillingHeaders({ accessToken }),
-				redirect: "error",
-				signal: params.signal,
-			});
-			if (!response.ok) return null;
-			payload = await response.json();
-		} catch {
-			return null;
+		// Always probe weekly credits first (legacy SuperGrok shape).
+		const creditsUrl = buildXAICliBillingUrl();
+		const monthlyUrl = buildXAICliBillingUrl("");
+		const creditsPayload = await fetchBillingPayload(creditsUrl, accessToken, ctx, params.signal);
+		const weekly =
+			creditsPayload && isRecord(creditsPayload) && isRecord(creditsPayload.config)
+				? parseWeeklyBillingConfig(creditsPayload.config)
+				: null;
+		const creditsLooksUnified =
+			!!creditsPayload &&
+			isRecord(creditsPayload) &&
+			isRecord(creditsPayload.config) &&
+			creditsPayload.config.isUnifiedBillingUser === true;
+
+		// Unified accounts expose a separate monthly included-quota payload on the
+		// default billing URL. Fetch it when credits is missing/unusable, or when
+		// credits itself marks the account unified (even if weekly percents exist —
+		// live responses sometimes include both shapes).
+		let monthlyPayload: unknown | null = null;
+		let monthly: XaiMonthlyBillingConfig | null = null;
+		const shouldProbeMonthly = (!weekly || creditsLooksUnified) && monthlyUrl !== creditsUrl;
+		if (shouldProbeMonthly) {
+			monthlyPayload = await fetchBillingPayload(monthlyUrl, accessToken, ctx, params.signal);
+			monthly =
+				monthlyPayload && isRecord(monthlyPayload) && isRecord(monthlyPayload.config)
+					? parseMonthlyBillingConfig(monthlyPayload.config)
+					: null;
 		}
 
-		const config = parseBillingConfig(payload);
-		if (!config) return null;
+		if (!weekly && !monthly) return null;
+
+		const limits: UsageLimit[] = [];
+		if (weekly) limits.push(...buildLimits(weekly, accountId));
+		if (monthly) limits.push(...buildLimits(monthly, accountId));
+		// Deduplicate on-demand if both shapes carried the same cap (keep first).
+		const seen = new Set<string>();
+		const deduped = limits.filter(limit => {
+			if (seen.has(limit.id)) return false;
+			seen.add(limit.id);
+			return true;
+		});
+		if (deduped.length === 0) return null;
+
+		const billingKind = weekly && monthly ? "unified" : weekly ? "weekly" : "monthly";
+		const endpoint = weekly && monthly ? `${creditsUrl} + ${monthlyUrl}` : weekly ? creditsUrl : monthlyUrl;
+		const raw =
+			weekly && monthly
+				? { credits: creditsPayload, monthly: monthlyPayload }
+				: weekly
+					? creditsPayload
+					: monthlyPayload;
+
 		return {
 			provider: PROVIDER_ID,
 			fetchedAt: Date.now(),
-			limits: buildLimits(config, accountId),
+			limits: deduped,
 			metadata: {
-				endpoint: url,
-				source: "cli-chat-proxy.grok.com/v1/billing",
+				endpoint,
+				source: BILLING_SOURCE,
+				billingKind,
 				...(accountId ? { accountId } : {}),
 				...(email ? { email } : {}),
 			},
-			raw: payload,
+			raw,
 		};
 	},
 };

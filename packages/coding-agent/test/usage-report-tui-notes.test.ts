@@ -69,6 +69,17 @@ describe("renderUsageReports (#3268 TUI aggregate)", () => {
 		expect(occurrences).toBe(1);
 	});
 
+	it("lists every model mapped to the provider's live usage data", () => {
+		const reports = [
+			report("github-copilot", "acct@example.test", [limit("Copilot", "monthly", 30 * 24 * HOUR, 0.4)]),
+		];
+		const models = ["github-copilot/gpt-5.6", "github-copilot/claude-sonnet-4.6"];
+		const text = stripVTControlCharacters(renderUsageReports(reports, theme, Date.now(), 120, undefined, models));
+		expect(text).toContain("Models with usage data");
+		expect(text).toContain(models[0]);
+		expect(text).toContain(models[1]);
+	});
+
 	it("deduplicates identical per-limit notes when accounts share one window group", () => {
 		// Both accounts report the SAME label+windowId, so their limits land in
 		// one aggregate group; both carry an identical per-limit note.

@@ -101,7 +101,7 @@ function createContext(options: { terminalProgress?: boolean } = {}) {
 }
 
 const AGENT_START = { type: "agent_start" } as unknown as AgentSessionEvent;
-const AGENT_END = { type: "agent_end" } as unknown as AgentSessionEvent;
+const AGENT_END = { type: "agent_end", messages: [] } as unknown as AgentSessionEvent;
 const COMPACTION_START = {
 	type: "auto_compaction_start",
 	reason: "overflow",

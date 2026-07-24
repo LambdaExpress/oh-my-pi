@@ -63,6 +63,7 @@ function renderUsageReports(
 	reports: UsageReport[],
 	nowMs: number,
 	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
+	usageModelSelectors: readonly string[] = [],
 ): string {
 	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
 	const lines = [`Usage${latestFetchedAt ? ` (${formatDuration(nowMs - latestFetchedAt)} ago)` : ""}`];
@@ -77,6 +78,11 @@ function renderUsageReports(
 		left.localeCompare(right),
 	)) {
 		lines.push("", formatProviderName(provider));
+		const reportingModels = usageModelSelectors.filter(selector => selector.startsWith(`${provider}/`));
+		if (reportingModels.length > 0) {
+			lines.push("  Models with usage data");
+			for (const selector of reportingModels) lines.push(`    ${sanitizeText(selector)}`);
+		}
 		const activeAccount = resolveActiveAccount?.(provider);
 		// Provider-wide disclaimers render once per provider, not per limit.
 		const providerNotes = [...new Set(providerReports.flatMap(report => report.notes ?? []))];
@@ -154,6 +160,7 @@ function renderUsageReports(
 export async function buildUsageReportText(runtime: SlashCommandRuntime): Promise<string> {
 	const provider = runtime.session as SlashCommandRuntime["session"] & {
 		fetchUsageReports?: () => Promise<UsageReport[] | null>;
+		getUsageReportingModelSelectors?: (reports: readonly UsageReport[]) => string[];
 	};
 	if (provider.fetchUsageReports) {
 		const reports = await provider.fetchUsageReports();
@@ -165,8 +172,12 @@ export async function buildUsageReportText(runtime: SlashCommandRuntime): Promis
 						runtime.session.sessionId,
 					)
 				: undefined;
-			return renderUsageReports(reports, Date.now(), providerId =>
-				providerId === currentProvider ? activeAccount : undefined,
+			const usageModelSelectors = provider.getUsageReportingModelSelectors?.(reports) ?? [];
+			return renderUsageReports(
+				reports,
+				Date.now(),
+				providerId => (providerId === currentProvider ? activeAccount : undefined),
+				usageModelSelectors,
 			);
 		}
 	}

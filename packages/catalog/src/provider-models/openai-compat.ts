@@ -17,6 +17,7 @@ import type { ModelManagerOptions } from "../model-manager";
 import { getBundledModels } from "../models";
 import type { Api, FetchImpl, Model, ModelSpec, OpenAICompat, Provider, ThinkingConfig } from "../types";
 import { discoveryFetch, isAnthropicOAuthToken, isRecord, toBoolean, toNumber, toPositiveNumber } from "../utils";
+import { parseAlibabaTokenPlanCredential } from "../wire/alibaba-token-plan";
 import { coreWeaveProjectHeaders } from "../wire/coreweave";
 import {
 	COPILOT_API_HEADERS,
@@ -2426,6 +2427,164 @@ export function alibabaCodingPlanModelManagerOptions(
 				},
 				fetch: config?.fetch,
 			}),
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Alibaba Token Plan
+// ---------------------------------------------------------------------------
+
+export const ALIBABA_TOKEN_PLAN_BASE_URL = "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1";
+
+const ALIBABA_TOKEN_PLAN_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
+const ALIBABA_TOKEN_PLAN_COMPAT: OpenAICompat = {
+	supportsDeveloperRole: false,
+};
+const ALIBABA_TOKEN_PLAN_REASONING: ThinkingConfig = {
+	mode: "effort",
+	efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High],
+};
+
+export const ALIBABA_TOKEN_PLAN_STATIC_MODELS: readonly ModelSpec<"openai-completions">[] = [
+	{
+		id: "qwen3.8-max-preview",
+		name: "Qwen3.8 Max Preview",
+		api: "openai-completions",
+		provider: "alibaba-token-plan",
+		baseUrl: ALIBABA_TOKEN_PLAN_BASE_URL,
+		reasoning: true,
+		input: ["text", "image"],
+		cost: ALIBABA_TOKEN_PLAN_COST,
+		contextWindow: 983_616,
+		maxTokens: 131_072,
+		thinking: {
+			mode: "effort",
+			efforts: [Effort.Low, Effort.High, Effort.XHigh],
+			requiresEffort: true,
+		},
+		compat: {
+			...ALIBABA_TOKEN_PLAN_COMPAT,
+			supportsReasoningEffort: true,
+		},
+	},
+	{
+		id: "qwen3.7-max",
+		name: "Qwen3.7 Max",
+		api: "openai-completions",
+		provider: "alibaba-token-plan",
+		baseUrl: ALIBABA_TOKEN_PLAN_BASE_URL,
+		reasoning: true,
+		input: ["text"],
+		cost: ALIBABA_TOKEN_PLAN_COST,
+		contextWindow: 1_000_000,
+		maxTokens: 65_536,
+		thinking: ALIBABA_TOKEN_PLAN_REASONING,
+		compat: ALIBABA_TOKEN_PLAN_COMPAT,
+	},
+	{
+		id: "qwen3.7-plus",
+		name: "Qwen3.7 Plus",
+		api: "openai-completions",
+		provider: "alibaba-token-plan",
+		baseUrl: ALIBABA_TOKEN_PLAN_BASE_URL,
+		reasoning: true,
+		input: ["text", "image"],
+		cost: ALIBABA_TOKEN_PLAN_COST,
+		contextWindow: 1_000_000,
+		maxTokens: 64_000,
+		thinking: ALIBABA_TOKEN_PLAN_REASONING,
+		compat: ALIBABA_TOKEN_PLAN_COMPAT,
+	},
+	{
+		id: "qwen3.6-flash",
+		name: "Qwen3.6 Flash",
+		api: "openai-completions",
+		provider: "alibaba-token-plan",
+		baseUrl: ALIBABA_TOKEN_PLAN_BASE_URL,
+		reasoning: true,
+		input: ["text", "image"],
+		cost: ALIBABA_TOKEN_PLAN_COST,
+		contextWindow: 1_000_000,
+		maxTokens: 65_536,
+		thinking: ALIBABA_TOKEN_PLAN_REASONING,
+		compat: ALIBABA_TOKEN_PLAN_COMPAT,
+	},
+	{
+		id: "glm-5.2",
+		name: "GLM-5.2",
+		api: "openai-completions",
+		provider: "alibaba-token-plan",
+		baseUrl: ALIBABA_TOKEN_PLAN_BASE_URL,
+		reasoning: true,
+		input: ["text"],
+		cost: ALIBABA_TOKEN_PLAN_COST,
+		contextWindow: 1_000_000,
+		maxTokens: 131_072,
+		thinking: {
+			mode: "effort",
+			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.Max],
+		},
+		compat: ALIBABA_TOKEN_PLAN_COMPAT,
+	},
+	{
+		id: "deepseek-v4-pro",
+		name: "DeepSeek V4 Pro",
+		api: "openai-completions",
+		provider: "alibaba-token-plan",
+		baseUrl: ALIBABA_TOKEN_PLAN_BASE_URL,
+		reasoning: true,
+		input: ["text"],
+		cost: ALIBABA_TOKEN_PLAN_COST,
+		contextWindow: 1_000_000,
+		maxTokens: 384_000,
+		thinking: {
+			mode: "effort",
+			efforts: [Effort.High, Effort.Max],
+		},
+		compat: ALIBABA_TOKEN_PLAN_COMPAT,
+	},
+];
+
+export interface AlibabaTokenPlanModelManagerConfig {
+	apiKey?: string;
+	baseUrl?: string;
+	fetch?: FetchImpl;
+}
+
+export function alibabaTokenPlanModelManagerOptions(
+	config?: AlibabaTokenPlanModelManagerConfig,
+): ModelManagerOptions<"openai-completions"> {
+	const credential = config?.apiKey ? parseAlibabaTokenPlanCredential(config.apiKey) : undefined;
+	const apiKey = credential?.token;
+	const baseUrl = config?.baseUrl ?? ALIBABA_TOKEN_PLAN_BASE_URL;
+	return {
+		providerId: "alibaba-token-plan",
+		dynamicModelsAuthoritative: true,
+		staticModels: ALIBABA_TOKEN_PLAN_STATIC_MODELS,
+		...(apiKey && {
+			fetchDynamicModels: () =>
+				fetchOpenAICompatibleModels({
+					api: "openai-completions",
+					provider: "alibaba-token-plan",
+					baseUrl,
+					apiKey,
+					filterModel: (_entry, model) =>
+						ALIBABA_TOKEN_PLAN_STATIC_MODELS.some(reference => reference.id === model.id),
+					mapModel: (_entry, defaults) => {
+						const reference = ALIBABA_TOKEN_PLAN_STATIC_MODELS.find(model => model.id === defaults.id);
+						return reference
+							? {
+									...reference,
+									id: defaults.id,
+									api: defaults.api,
+									provider: defaults.provider,
+									baseUrl: defaults.baseUrl,
+								}
+							: defaults;
+					},
+					fetch: config?.fetch,
+				}),
+		}),
 	};
 }
 

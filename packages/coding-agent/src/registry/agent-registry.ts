@@ -47,6 +47,8 @@ export interface AgentRef {
 	activity?: string;
 }
 
+export type AgentRefExpectation = AgentRef | AgentSession | string;
+
 export type RegistryEvent =
 	| { type: "registered"; ref: AgentRef }
 	| { type: "status_changed"; ref: AgentRef }
@@ -84,6 +86,11 @@ export class AgentRegistry {
 	readonly #listeners = new Set<RegistryListener>();
 	readonly #retiredScopes = new Set<string>();
 
+	#matchesExpected(ref: AgentRef, expected?: AgentRefExpectation): boolean {
+		if (typeof expected === "string") return ref.scopeId === expected;
+		return expected === undefined || ref === expected || ref.session === expected;
+	}
+
 	register(input: RegisterInput): AgentRef {
 		if (this.isScopeRetired(input.scopeId)) {
 			throw new Error(`Cannot register agent "${input.id}" in retired scope "${input.scopeId}".`);
@@ -106,15 +113,28 @@ export class AgentRegistry {
 		return ref;
 	}
 
-	setStatus(id: string, status: AgentStatus, expectedScopeId?: string): void {
+	/**
+	 * Register a new id only when it is absent, or reuse the exact ref a parked
+	 * revival was authorized to revive. A missing expected ref is a failed CAS:
+	 * callers must never claim an id after its prior generation disappeared.
+	 */
+	registerIfAvailable(input: RegisterInput, expected: AgentRef | null): AgentRef | undefined {
+		const current = this.#refs.get(input.id);
+		if (expected === null) return current ? undefined : this.register(input);
+		return current === expected ? current : undefined;
+	}
+
+	setStatus(id: string, status: AgentStatus, expected?: AgentRefExpectation): boolean {
 		const ref = this.#refs.get(id);
-		if (!ref || !this.#matchesExpectedScope(ref, expectedScopeId) || ref.status === status) return;
+		if (!ref || !this.#matchesExpected(ref, expected)) return false;
+		if (ref.status === status) return true;
 		ref.status = status;
 		// Activity describes current work; it is meaningless once the agent
 		// leaves `running`, so drop it to avoid showing stale work in rosters.
 		if (status !== "running") ref.activity = undefined;
 		ref.lastActivity = Date.now();
 		this.#emit({ type: "status_changed", ref });
+		return true;
 	}
 
 	/**
@@ -141,25 +161,33 @@ export class AgentRegistry {
 		ref.activity = gist;
 	}
 
-	attachSession(id: string, session: AgentSession, sessionFile?: string | null, expectedScopeId?: string): void {
+	attachSession(
+		id: string,
+		session: AgentSession,
+		sessionFile?: string | null,
+		expected?: AgentRefExpectation,
+	): boolean {
 		const ref = this.#refs.get(id);
-		if (!ref || !this.#matchesExpectedScope(ref, expectedScopeId)) return;
+		if (!ref || !this.#matchesExpected(ref, expected)) return false;
 		ref.session = session;
 		if (sessionFile !== undefined) ref.sessionFile = sessionFile;
 		ref.lastActivity = Date.now();
+		return true;
 	}
 
-	detachSession(id: string, expectedScopeId?: string): void {
+	detachSession(id: string, expected?: AgentRefExpectation): boolean {
 		const ref = this.#refs.get(id);
-		if (!ref || !this.#matchesExpectedScope(ref, expectedScopeId)) return;
+		if (!ref || !this.#matchesExpected(ref, expected)) return false;
 		ref.session = null;
+		return true;
 	}
 
-	unregister(id: string, expectedScopeId?: string): void {
+	unregister(id: string, expected?: AgentRefExpectation): boolean {
 		const ref = this.#refs.get(id);
-		if (!ref || !this.#matchesExpectedScope(ref, expectedScopeId)) return;
+		if (!ref || !this.#matchesExpected(ref, expected)) return false;
 		this.#refs.delete(id);
 		this.#emit({ type: "removed", ref });
+		return true;
 	}
 
 	get(id: string): AgentRef | undefined {
