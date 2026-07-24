@@ -814,6 +814,8 @@ export interface Model<TApi extends Api = Api> {
 	 * reports that native tool calling is unsupported.
 	 */
 	supportsTools?: boolean;
+	/** Whether this model accepts the GA OpenAI Responses `{ type: "computer" }` native tool. */
+	supportsComputerUse?: boolean;
 	/** GitLab Duo Workflow root namespace selected during catalog discovery. */
 	gitlabDuoWorkflowRootNamespaceId?: string;
 	/** Cursor `max_mode` request flag returned by `GetUsableModels` for premium models that require max mode. */

@@ -306,6 +306,9 @@ function normalizeSessionMessageForProviderReplay(message: AgentMessage): unknow
 /** Fallback type for extension-injected messages that omit a custom type. */
 export const DEFAULT_CUSTOM_MESSAGE_TYPE = "custom-message";
 
+/** Custom message carrying a coding request delegated by the live voice model. */
+export const LIVE_DELEGATION_MESSAGE_TYPE = "live-delegation";
+
 /** Content shape accepted for extension-injected messages. */
 export type CustomMessageContent = string | (TextContent | ImageContent)[];
 

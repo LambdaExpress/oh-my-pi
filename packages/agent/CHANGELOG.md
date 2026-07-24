@@ -12,6 +12,22 @@
 - Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.
 - Fixed tool abort settlement so each tool can declare a bounded cleanup window before the agent synthesizes an interrupted result.
 - Fixed external cancellation after a completed tool execution to append an explicit aborted assistant boundary without issuing another provider request.
+## [17.1.2] - 2026-07-24
+
+### Added
+
+- Added `resolveFallbackTool` option to allow routing unadvertised tool calls to host-side transports (e.g., device mounts)
+
+## [17.1.1] - 2026-07-24
+
+### Added
+
+- Added the provider-neutral native computer-call lifecycle, preserving observation outputs and input actions across pending and acknowledged tool results.
+
+### Changed
+
+- Queued steering no longer hard-aborts non-interruptible tools (e.g. `bash`): it aborts interruptible waits only and raises a cooperative steering signal (`ToolCallContext.steeringSignal`) that long-running tools may observe to finish early or background themselves. The mid-batch steering/IRC watch now runs for every tool batch instead of only batches containing an interruptible tool.
+
 ## [17.1.0] - 2026-07-24
 
 ### Added

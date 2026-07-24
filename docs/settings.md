@@ -476,7 +476,30 @@ tools:
 | `tools.artifactTailBytes` | number | `20` | KB of tail kept inline on spill. |
 | `tools.artifactTailLines` | number | `500` | Max tail lines kept inline on spill. |
 
-Individual built-in tools are toggled by their own keys, e.g. `bash.enabled`, `launch.enabled`, `eval.py`, `eval.js`, `glob.enabled`, `grep.enabled`, `fetch.enabled`, `browser.enabled`, `astEdit.enabled`, `astGrep.enabled`, `web_search.enabled`, `inspect_image.enabled`.
+Individual built-in tools are toggled by their own keys, e.g. `bash.enabled`, `launch.enabled`, `eval.py`, `eval.js`, `glob.enabled`, `grep.enabled`, `fetch.enabled`, `browser.enabled`, `computer.enabled`, `astEdit.enabled`, `astGrep.enabled`, `web_search.enabled`, and `inspect_image.enabled`.
+
+### Native computer use
+
+The disabled-by-default `computer` essential tool captures and controls the real host desktop through native OS APIs. It is separate from `browser`: `computer` can drive IDEs, terminals, native applications, browser windows, and system dialogs, while `browser` manages Chromium/CDP tabs and structured page automation.
+
+```yaml
+computer:
+  enabled: true
+  backend: auto
+  display: all
+  maxWidth: 1920
+  maxHeight: 1200
+```
+
+| Key | Type | Default | Notes |
+|---|---|---|---|
+| `computer.enabled` | boolean | `false` | Enable the native computer tool. Natively capable OpenAI GA models use the `{ "type": "computer" }` wire form; every other function-calling model gets `computer` as a regular function tool. The `/computer` slash command toggles this for the current session only. |
+| `computer.backend` | enum | `auto` | `auto` or `native`; both require native capture/input and never fall back to browser automation. |
+| `computer.display` | string | `all` | Composite all active displays, or use a numeric display ID reported by a successful computer result. |
+| `computer.maxWidth` | number | `1920` | Maximum composite screenshot width in pixels; must be greater than zero. |
+| `computer.maxHeight` | number | `1200` | Maximum composite screenshot height in pixels; must be greater than zero. |
+
+Computer settings are captured when the session tool is constructed; start a new session after changing them. Before enabling input, configure `tools.approvalMode` or `tools.approval.computer` and grant platform permissions. See [Native computer use](./computer-use.md) for supported providers, actions, coordinate mapping, displays, platform setup, safety, Files behavior, troubleshooting, and verified limitations.
 
 ### Shell, eval, and LSP
 

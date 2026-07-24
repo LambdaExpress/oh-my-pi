@@ -1,10 +1,11 @@
 import * as os from "node:os";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { AudioCapture } from "@oh-my-pi/pi-natives";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionEvent } from "../session/agent-session-events";
-import { type StreamingRecordingHandle, startStreamingRecording } from "../stt/recorder";
+import { LIVE_DELEGATION_MESSAGE_TYPE } from "../session/messages";
 import agentFinalMessageTemplate from "./prompts/agent-final-message.md" with { type: "text" };
 import liveInstructionsTemplate from "./prompts/live-instructions.md" with { type: "text" };
 import {
@@ -15,12 +16,21 @@ import {
 	type LiveServerEvent,
 } from "./protocol";
 import { CodexLiveTransport } from "./transport";
-import type { LivePhase, LiveTranscript } from "./visualizer";
+import type { LivePhase } from "./visualizer";
 
-const DEFAULT_VOICE = "marin";
+const DEFAULT_VOICE = "sol";
 const OUTPUT_ACTIVE_LEVEL = 0.015;
 const MIN_BARGE_IN_LEVEL = 0.04;
 const OUTPUT_ECHO_RATIO = 0.65;
+
+/** Incremental or final transcript for one realtime conversational turn. */
+export interface LiveTranscript {
+	role: "user" | "assistant";
+	text: string;
+	/** Monotonic role-local turn number used to coalesce streaming updates. */
+	turn: number;
+	final: boolean;
+}
 
 /** UI notifications emitted during a live session. */
 export interface LiveSessionCallbacks {
@@ -42,7 +52,7 @@ export interface LiveSessionControllerOptions {
 	callbacks: LiveSessionCallbacks;
 	/** Extracts visible assistant text using the caller's normal UI rules. */
 	extractAssistantText(message: AssistantMessage): string;
-	/** Realtime output voice, defaulting to marin. */
+	/** Realtime output voice, defaulting to sol. */
 	voice?: string;
 }
 
@@ -85,7 +95,7 @@ export class LiveSessionController {
 	readonly #voice: string;
 
 	#transport: CodexLiveTransport | undefined;
-	#recorder: StreamingRecordingHandle | undefined;
+	#recorder: AudioCapture | undefined;
 	#unsubscribeSession: (() => void) | undefined;
 	#sendChain: Promise<void> = Promise.resolve();
 	#stopPromise: Promise<void> | undefined;
@@ -102,6 +112,8 @@ export class LiveSessionController {
 	#assistantTranscript = "";
 	#userTranscriptFinal = false;
 	#assistantTranscriptFinal = false;
+	#userTranscriptTurn = 0;
+	#assistantTranscriptTurn = 0;
 	#lastTranscript: LiveTranscript | undefined;
 
 	constructor(options: LiveSessionControllerOptions) {
@@ -161,19 +173,20 @@ export class LiveSessionController {
 			if (this.#stopped) {
 				throw this.#failure ?? new Error("The live session stopped before recording began.");
 			}
-			const recorder = await startStreamingRecording(samples => this.#handleMicrophoneAudio(samples));
+			const recorder = new AudioCapture(16_000, (error, samples) => {
+				if (error) {
+					this.#reportFailure(error);
+					return;
+				}
+				this.#handleMicrophoneAudio(samples);
+			});
 			if (this.#stopped) {
-				if (recorder) {
-					try {
-						await recorder.stop();
-					} catch {
-						// Preserve the failure that stopped startup.
-					}
+				try {
+					recorder.stop();
+				} catch {
+					// Preserve the failure that stopped startup.
 				}
 				throw this.#failure ?? new Error("The live session stopped while recording began.");
-			}
-			if (!recorder) {
-				throw new Error("Live mode needs a streaming audio recorder; run `omp setup speech` and try again.");
 			}
 			this.#recorder = recorder;
 			this.#refreshAudioPhase();
@@ -216,7 +229,7 @@ export class LiveSessionController {
 		this.#recorder = undefined;
 		if (recorder) {
 			try {
-				await recorder.stop();
+				recorder.stop();
 			} catch (cause) {
 				cleanupError = errorFrom(cause);
 			}
@@ -288,7 +301,17 @@ export class LiveSessionController {
 		if (!request) return;
 		this.#activeDelegationId = event.item.id;
 		this.#emitPhase("working");
-		void this.#session.sendUserMessage(request).catch(cause => this.#reportFailure(errorFrom(cause)));
+		void this.#session
+			.sendCustomMessage(
+				{
+					customType: LIVE_DELEGATION_MESSAGE_TYPE,
+					content: request,
+					display: true,
+					attribution: "agent",
+				},
+				{ triggerTurn: true },
+			)
+			.catch(cause => this.#reportFailure(errorFrom(cause)));
 	}
 
 	#handleSessionEvent(event: AgentSessionEvent): void {
@@ -354,7 +377,12 @@ export class LiveSessionController {
 		const current = role === "user" ? this.#userTranscript : this.#assistantTranscript;
 		const wasFinal = role === "user" ? this.#userTranscriptFinal : this.#assistantTranscriptFinal;
 		let next: string;
-		if (wasFinal && current !== text && !text.startsWith(current) && !current.endsWith(text)) {
+		if (!current) {
+			this.#startTranscriptTurn(role);
+			next = text;
+		} else if (wasFinal) {
+			if (text === current || current.endsWith(text)) return;
+			this.#startTranscriptTurn(role);
 			next = text;
 		} else if (text.startsWith(current)) {
 			next = text;
@@ -369,20 +397,45 @@ export class LiveSessionController {
 	#finishTranscript(role: LiveTranscript["role"], text: string): void {
 		if (!text) return;
 		const current = role === "user" ? this.#userTranscript : this.#assistantTranscript;
-		const next = current.startsWith(text) && current.length > text.length ? current : text;
+		const wasFinal = role === "user" ? this.#userTranscriptFinal : this.#assistantTranscriptFinal;
+		if (!current) {
+			this.#startTranscriptTurn(role);
+		} else if (wasFinal) {
+			if (text === current) return;
+			this.#startTranscriptTurn(role);
+		}
+		const next = !wasFinal && current.startsWith(text) && current.length > text.length ? current : text;
 		this.#storeTranscript(role, next, true);
 	}
 
-	#storeTranscript(role: LiveTranscript["role"], text: string, final: boolean): void {
+	#startTranscriptTurn(role: LiveTranscript["role"]): void {
 		if (role === "user") {
-			this.#userTranscript = text;
+			this.#userTranscriptTurn += 1;
+		} else {
+			this.#assistantTranscriptTurn += 1;
+		}
+	}
+
+	#storeTranscript(role: LiveTranscript["role"], text: string, final: boolean): void {
+		const normalized = text.trim();
+		if (!normalized) return;
+		const turn = role === "user" ? this.#userTranscriptTurn : this.#assistantTranscriptTurn;
+		if (role === "user") {
+			this.#userTranscript = normalized;
 			this.#userTranscriptFinal = final;
 		} else {
-			this.#assistantTranscript = text;
+			this.#assistantTranscript = normalized;
 			this.#assistantTranscriptFinal = final;
 		}
-		if (this.#lastTranscript?.role === role && this.#lastTranscript.text === text) return;
-		this.#emitTranscript({ role, text });
+		if (
+			this.#lastTranscript?.role === role &&
+			this.#lastTranscript.turn === turn &&
+			this.#lastTranscript.text === normalized &&
+			this.#lastTranscript.final === final
+		) {
+			return;
+		}
+		this.#emitTranscript({ role, turn, text: normalized, final });
 	}
 
 	#queueSend(message: LiveClientMessage): void {

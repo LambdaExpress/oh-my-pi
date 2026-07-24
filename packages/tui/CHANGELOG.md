@@ -18,6 +18,18 @@
 - Fixed editor caret movement entering image or paste placeholders; keyboard left/right, word, and vertical movement now treat matched placeholders as atomic tokens.
 - Fixed live rows below a native-scrollback seam vanishing while streaming; scrolled-off live rows now enter history as frozen snapshots, with finalize-time repairs bounded so unchanged output does not repeat indefinitely.
 - Fixed OSC 8 hyperlinks staying disabled in Windows Terminal when `tui.hyperlinks=auto`.
+## [17.1.2] - 2026-07-24
+
+### Fixed
+
+- Fixed the terminal flickering when leaving a fullscreen overlay (e.g. `/settings`, the models page) or resizing on terminals that re-report their size whenever the alternate screen buffer toggles: the alt-toggle size echo no longer arms a destructive full-screen (ED3) rebuild, and the in-place repaint path is now auto-detected for any such terminal instead of only Warp ([#6511](https://github.com/can1357/oh-my-pi/issues/6511)).
+
+## [17.1.1] - 2026-07-24
+
+### Fixed
+
+- Fixed WarpTerminal wrapping streamed Compatibility Jamo at the platform-default width instead of its rendered one-cell width ([#6461](https://github.com/can1357/oh-my-pi/issues/6461)).
+
 ## [17.1.0] - 2026-07-24
 
 ### Added

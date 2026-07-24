@@ -1158,6 +1158,7 @@ export function buildParams(
 		store: false,
 		stream_options: model.compat.supportsObfuscationOptOut ? { include_obfuscation: false } : undefined,
 	};
+	if (options?.include?.length) params.include = Array.from(new Set(options.include));
 	maybeAddOpenRouterAnthropicCacheControl(params, model, cacheRetention);
 	const outputToken = resolveOpenAIOutputTokenParam({
 		field: "max_output_tokens",
@@ -1268,6 +1269,13 @@ export function mapOpenAIResponsesToolChoiceForTools(
 	model: Model<"openai-responses">,
 ): OpenAIResponsesToolChoice {
 	if (!model.compat.supportsToolChoice) return undefined;
+	if (
+		typeof choice !== "string" &&
+		choice?.type === "computer" &&
+		(model.supportsComputerUse !== true || !tools.some(tool => tool.native?.type === "computer"))
+	) {
+		return undefined;
+	}
 	if (isForcedToolChoice(choice) && !model.compat.supportsForcedToolChoice) {
 		return "auto";
 	}
@@ -1300,6 +1308,13 @@ export function convertTools(
 	const allowFreeform = supportsFreeformApplyPatch(model);
 	const out: OpenAITool[] = [];
 	for (const tool of tools) {
+		if (tool.native?.type === "computer" && model.supportsComputerUse === true) {
+			out.push({ type: "computer" });
+			continue;
+		}
+		// Models without native computer support fall through and receive the
+		// tool as a plain function tool (name/description/schema below), so
+		// function-calling models can still drive the desktop.
 		if (allowFreeform && tool.customFormat) {
 			out.push({
 				type: "custom",

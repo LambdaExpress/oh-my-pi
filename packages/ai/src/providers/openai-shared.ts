@@ -37,6 +37,8 @@ import {
 	type Api,
 	type AssistantMessage,
 	type CacheRetention,
+	type ComputerAction,
+	type ComputerToolCallMetadata,
 	type Context,
 	type ImageContent,
 	type Message,
@@ -87,6 +89,7 @@ import type { ChatCompletionCreateParamsStreaming } from "./openai-chat-wire";
 import type { InputItem } from "./openai-codex/request-transformer";
 import type {
 	Response as OpenAIResponse,
+	ResponseComputerToolCall,
 	ResponseContentPartAddedEvent,
 	ResponseCreateParamsStreaming,
 	ResponseCustomToolCall,
@@ -1282,17 +1285,32 @@ export function normalizeResponsesToolCallIdForTransform(
 	return `${normalized.callId}|${normalized.itemId}`;
 }
 
+type ResponsesToolCallKind = "function" | "custom" | "computer";
+
+function responsesToolCallKind(type: unknown): ResponsesToolCallKind | undefined {
+	if (type === "function_call") return "function";
+	if (type === "custom_tool_call") return "custom";
+	if (type === "computer_call") return "computer";
+	return undefined;
+}
+
+function responsesToolOutputKind(type: unknown): ResponsesToolCallKind | undefined {
+	if (type === "function_call_output") return "function";
+	if (type === "custom_tool_call_output") return "custom";
+	if (type === "computer_call_output") return "computer";
+	return undefined;
+}
+function responseInputCallId(item: ResponseInput[number]): string | undefined {
+	if (!("call_id" in item)) return undefined;
+	return typeof item.call_id === "string" ? item.call_id : undefined;
+}
+
 export function collectKnownCallIds(messages: ResponseInput): Set<string> {
 	const knownCallIds = new Set<string>();
 	for (const item of messages) {
-		if (item.type === "function_call" && typeof item.call_id === "string") {
-			knownCallIds.add(item.call_id);
-		} else if (
-			(item as { type?: string }).type === "custom_tool_call" &&
-			typeof (item as { call_id?: string }).call_id === "string"
-		) {
-			knownCallIds.add((item as { call_id: string }).call_id);
-		}
+		if (responsesToolCallKind(item.type) === undefined) continue;
+		const callId = responseInputCallId(item);
+		if (callId) knownCallIds.add(callId);
 	}
 	return knownCallIds;
 }
@@ -1301,14 +1319,22 @@ export function collectKnownCallIds(messages: ResponseInput): Set<string> {
 export function collectCustomCallIds(messages: ResponseInput): Set<string> {
 	const customCallIds = new Set<string>();
 	for (const item of messages) {
-		if (
-			(item as { type?: string }).type === "custom_tool_call" &&
-			typeof (item as { call_id?: string }).call_id === "string"
-		) {
-			customCallIds.add((item as { call_id: string }).call_id);
-		}
+		if (item.type !== "custom_tool_call") continue;
+		const callId = responseInputCallId(item);
+		if (callId) customCallIds.add(callId);
 	}
 	return customCallIds;
+}
+
+/** Scan replay items for call_ids that were originally native computer calls. */
+export function collectComputerCallIds(messages: ResponseInput): Set<string> {
+	const computerCallIds = new Set<string>();
+	for (const item of messages) {
+		if (item.type !== "computer_call") continue;
+		const callId = responseInputCallId(item);
+		if (callId) computerCallIds.add(callId);
+	}
+	return computerCallIds;
 }
 
 /**
@@ -1335,32 +1361,29 @@ export function collectCustomCallIds(messages: ResponseInput): Set<string> {
  * codex provider — issue #1351 / regression of #472.
  */
 export function repairOrphanResponsesToolOutputs(input: ResponseInput): ResponseInput {
-	const knownCallIds = new Set<string>();
+	const callKinds = new Map<string, ResponsesToolCallKind>();
 	for (const item of input) {
-		const t = (item as { type?: string }).type;
-		const callId = (item as { call_id?: unknown }).call_id;
-		if (typeof callId !== "string") continue;
-		if (t === "function_call" || t === "custom_tool_call") knownCallIds.add(callId);
+		const kind = responsesToolCallKind(item.type);
+		const callId = responseInputCallId(item);
+		if (kind && callId) callKinds.set(callId, kind);
 	}
 	let hasOrphan = false;
 	for (const item of input) {
-		const t = (item as { type?: string }).type;
-		if (t !== "function_call_output" && t !== "custom_tool_call_output") continue;
-		const callId = (item as { call_id?: unknown }).call_id;
-		if (typeof callId === "string" && !knownCallIds.has(callId)) {
+		const kind = responsesToolOutputKind(item.type);
+		const callId = responseInputCallId(item);
+		if (kind && callId && callKinds.get(callId) !== kind) {
 			hasOrphan = true;
 			break;
 		}
 	}
 	if (!hasOrphan) return input;
 	return input.map(item => {
-		const t = (item as { type?: string }).type;
-		if (t !== "function_call_output" && t !== "custom_tool_call_output") return item;
-		const record = item as { call_id?: unknown; output?: unknown; name?: unknown };
-		const callId = record.call_id;
-		if (typeof callId !== "string" || knownCallIds.has(callId)) return item;
-		const toolName = typeof record.name === "string" && record.name.length > 0 ? record.name : "tool";
-		const rawOutput = record.output;
+		const kind = responsesToolOutputKind(item.type);
+		if (!kind) return item;
+		const callId = responseInputCallId(item);
+		if (!callId || callKinds.get(callId) === kind) return item;
+		const toolName = kind === "computer" ? "computer" : "tool";
+		const rawOutput = "output" in item ? item.output : undefined;
 		let text: string;
 		if (typeof rawOutput === "string") text = rawOutput;
 		else if (rawOutput == null) text = "";
@@ -1400,19 +1423,17 @@ const ORPHAN_TOOL_CALL_PLACEHOLDER =
  * {@link repairOrphanResponsesToolOutputs}.
  */
 export function repairOrphanResponsesToolCalls(input: ResponseInput): ResponseInput {
-	const outputCallIds = new Set<string>();
+	const outputKinds = new Map<string, ResponsesToolCallKind>();
 	for (const item of input) {
-		const t = (item as { type?: string }).type;
-		if (t !== "function_call_output" && t !== "custom_tool_call_output") continue;
-		const callId = (item as { call_id?: unknown }).call_id;
-		if (typeof callId === "string") outputCallIds.add(callId);
+		const kind = responsesToolOutputKind(item.type);
+		const callId = responseInputCallId(item);
+		if (kind && callId) outputKinds.set(callId, kind);
 	}
 	let hasOrphan = false;
 	for (const item of input) {
-		const t = (item as { type?: string }).type;
-		if (t !== "function_call" && t !== "custom_tool_call") continue;
-		const callId = (item as { call_id?: unknown }).call_id;
-		if (typeof callId === "string" && !outputCallIds.has(callId)) {
+		const kind = responsesToolCallKind(item.type);
+		const callId = responseInputCallId(item);
+		if (kind && callId && outputKinds.get(callId) !== kind) {
 			hasOrphan = true;
 			break;
 		}
@@ -1420,13 +1441,23 @@ export function repairOrphanResponsesToolCalls(input: ResponseInput): ResponseIn
 	if (!hasOrphan) return input;
 	const repaired: ResponseInput = [];
 	for (const item of input) {
+		const kind = responsesToolCallKind(item.type);
+		const callId = responseInputCallId(item);
+		if (!kind || !callId || outputKinds.get(callId) === kind) {
+			repaired.push(item);
+			continue;
+		}
+		if (kind === "computer") {
+			repaired.push({
+				type: "message",
+				role: "assistant",
+				content: `[Computer call interrupted before a screenshot was recorded; call_id=${callId}]`,
+			} as ResponseInput[number]);
+			continue;
+		}
 		repaired.push(item);
-		const t = (item as { type?: string }).type;
-		if (t !== "function_call" && t !== "custom_tool_call") continue;
-		const callId = (item as { call_id?: unknown }).call_id;
-		if (typeof callId !== "string" || outputCallIds.has(callId)) continue;
 		repaired.push({
-			type: t === "custom_tool_call" ? "custom_tool_call_output" : "function_call_output",
+			type: kind === "custom" ? "custom_tool_call_output" : "function_call_output",
 			call_id: callId,
 			output: ORPHAN_TOOL_CALL_PLACEHOLDER,
 		} as ResponseInput[number]);
@@ -1511,13 +1542,14 @@ function adaptResponsesReplayItemsForModel(
 	input: ResponseInput,
 	supportsCustomToolCalls: boolean,
 	wireNameMap: ReadonlyMap<string, string> | undefined,
+	supportsComputerUse: boolean,
 ): ResponseInput {
-	if (supportsCustomToolCalls) return input;
+	if (supportsCustomToolCalls && supportsComputerUse) return input;
 
 	let changed = false;
 	const adapted: ResponseInput = [];
 	for (const item of input) {
-		if (item.type === "custom_tool_call") {
+		if (!supportsCustomToolCalls && item.type === "custom_tool_call") {
 			changed = true;
 			adapted.push({
 				type: "function_call",
@@ -1529,13 +1561,23 @@ function adaptResponsesReplayItemsForModel(
 			});
 			continue;
 		}
-		if (item.type === "custom_tool_call_output") {
+		if (!supportsCustomToolCalls && item.type === "custom_tool_call_output") {
 			changed = true;
 			adapted.push({
 				type: "function_call_output",
 				call_id: item.call_id,
 				output: item.output,
 			});
+			continue;
+		}
+		if (!supportsComputerUse && (item.type === "computer_call" || item.type === "computer_call_output")) {
+			changed = true;
+			const callId = responseInputCallId(item) ?? "unknown";
+			adapted.push({
+				type: "message",
+				role: "assistant",
+				content: `[Previous computer ${item.type === "computer_call" ? "call" : "result"}; call_id=${callId}]: ${stringifyJson(item) ?? ""}`,
+			} as ResponseInput[number]);
 			continue;
 		}
 		adapted.push(item);
@@ -1578,6 +1620,7 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 		: buildCustomToolWireNameMap(options.context.tools);
 	let knownCallIds = new Set<string>();
 	const customCallIds = new Set<string>();
+	const computerCallIds = new Set<string>();
 	const transformedMessages = transformMessages(
 		options.context.messages,
 		options.model,
@@ -1607,10 +1650,16 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 					supportsImageDetailOriginal,
 				});
 				messages.push(
-					...adaptResponsesReplayItemsForModel(sanitizedItems, supportsCustomToolCalls, customToolWireNameMap),
+					...adaptResponsesReplayItemsForModel(
+						sanitizedItems,
+						supportsCustomToolCalls,
+						customToolWireNameMap,
+						options.model.supportsComputerUse === true,
+					),
 				);
 				knownCallIds = collectKnownCallIds(messages);
 				for (const id of collectCustomCallIds(messages)) customCallIds.add(id);
+				for (const id of collectComputerCallIds(messages)) computerCallIds.add(id);
 				msgIndex++;
 				continue;
 			}
@@ -1654,6 +1703,7 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 							rawSanitizedHistoryItems,
 							supportsCustomToolCalls,
 							customToolWireNameMap,
+							options.model.supportsComputerUse === true,
 						)
 					: undefined;
 				if (nativeReplayEnabled && sanitizedHistoryItems) {
@@ -1661,9 +1711,12 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 						messages.push(...sanitizedHistoryItems);
 					} else {
 						messages.splice(0, messages.length, ...sanitizedHistoryItems);
+						customCallIds.clear();
+						computerCallIds.clear();
 					}
 					knownCallIds = collectKnownCallIds(messages);
 					for (const id of collectCustomCallIds(messages)) customCallIds.add(id);
+					for (const id of collectComputerCallIds(messages)) computerCallIds.add(id);
 					msgIndex++;
 					continue;
 				}
@@ -1680,6 +1733,7 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 				options.preserveAssistantMessageIds,
 				supportsCustomToolCalls,
 				customToolWireNameMap,
+				computerCallIds,
 			);
 			const outputItems = suppressHiddenEmptyFallback
 				? sanitizeOpenAIResponsesAssistantFallbackItemsForReplay(convertedOutputItems)
@@ -1696,6 +1750,7 @@ export function buildResponsesInput<TApi extends Api>(options: BuildResponsesInp
 				knownCallIds,
 				customCallIds,
 				supportsCustomToolCalls,
+				computerCallIds,
 			);
 		}
 		msgIndex++;
@@ -1730,6 +1785,7 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 	preserveMessageIds = false,
 	supportsCustomToolCalls = true,
 	customToolWireNameMap?: ReadonlyMap<string, string>,
+	computerCallIds?: Set<string>,
 ): ResponseInput {
 	const outputItems: ResponseInput = [];
 	let unsignedTextBlocks = 0;
@@ -1787,6 +1843,29 @@ export function convertResponsesAssistantMessage<TApi extends Api>(
 			continue;
 		}
 
+		if (block.providerMetadata?.type === "computer") {
+			if (model.supportsComputerUse !== true) {
+				const callId = normalizeResponsesToolCallId(block.id, "ctc").callId;
+				outputItems.push({
+					type: "message",
+					role: "assistant",
+					content: `[Previous computer call; call_id=${callId}]: ${stringifyJson(block.providerMetadata.actions) ?? ""}`,
+				} as ResponseInput[number]);
+				continue;
+			}
+			const normalized = normalizeResponsesToolCallId(block.id, "ctc");
+			knownCallIds.add(normalized.callId);
+			computerCallIds?.add(normalized.callId);
+			outputItems.push({
+				type: "computer_call",
+				id: block.providerMetadata.providerItemId,
+				call_id: normalized.callId,
+				actions: structuredCloneJSON(block.providerMetadata.actions),
+				pending_safety_checks: structuredCloneJSON(block.providerMetadata.pendingSafetyChecks),
+				status: "completed",
+			} as ResponseInput[number]);
+			continue;
+		}
 		const normalized = normalizeResponsesToolCallId(block.id, block.customWireName ? "ctc" : "fc");
 		let itemId: string | undefined = normalized.itemId;
 		if (
@@ -1853,6 +1932,7 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 	knownCallIds: ReadonlySet<string>,
 	customCallIds?: ReadonlySet<string>,
 	supportsCustomToolCalls = true,
+	computerCallIds?: ReadonlySet<string>,
 ): void {
 	const supportsImages = model.input.includes("image");
 	const textResult = toolResult.content
@@ -1876,6 +1956,41 @@ export function appendResponsesToolResultMessages<TApi extends Api>(
 					? "(see attached image)"
 					: ""
 	).toWellFormed();
+	if (toolResult.providerMetadata?.type === "computer" && model.supportsComputerUse !== true) {
+		messages.push({
+			type: "message",
+			role: "assistant",
+			content: `[Previous computer result; call_id=${normalized.callId}]: ${stringifyJson(toolResult.providerMetadata.screenshot) ?? ""}`,
+		} as ResponseInput[number]);
+		return;
+	}
+	if (computerCallIds?.has(normalized.callId)) {
+		if (toolResult.providerMetadata?.type !== "computer") {
+			const limit = 16_000;
+			const noteText = output.length > limit ? `${output.slice(0, limit)}\n...[truncated]` : output;
+			messages.push({
+				type: "message",
+				role: "assistant",
+				content: `[Computer tool failed before a screenshot was produced; call_id=${normalized.callId}]: ${noteText}`,
+			} as ResponseInput[number]);
+			return;
+		}
+		if (strictResponsesPairing && !knownCallIds.has(normalized.callId)) {
+			messages.push({
+				type: "message",
+				role: "assistant",
+				content: `[Orphan computer result; call_id=${normalized.callId}]`,
+			} as ResponseInput[number]);
+			return;
+		}
+		insertResponsesToolOutput(messages, {
+			type: "computer_call_output",
+			call_id: normalized.callId,
+			output: structuredCloneJSON(toolResult.providerMetadata.screenshot),
+			acknowledged_safety_checks: structuredCloneJSON(toolResult.providerMetadata.acknowledgedSafetyChecks),
+		} as ResponseInput[number]);
+		return;
+	}
 	if (strictResponsesPairing && !knownCallIds.has(normalized.callId)) {
 		// Strict backends (Azure, Copilot) reject unpaired outputs outright, but
 		// silently dropping the result loses information the model needs. Fold it
@@ -2169,7 +2284,6 @@ export function accumulateCustomToolCallInputDelta(
 }
 
 export function finalizeCustomToolCallInputDone(block: ResponsesToolCallBlock, input: string): void {
-	block[kStreamingPartialJson] = input;
 	block.arguments = { input };
 }
 
@@ -2203,6 +2317,16 @@ export interface ProcessResponsesStreamOptions {
 	requestServiceTier?: ServiceTier;
 }
 
+export function computerCallMetadata(item: ResponseComputerToolCall): ComputerToolCallMetadata {
+	const actions = item.actions?.length ? item.actions : item.action ? [item.action] : [];
+	return {
+		type: "computer",
+		providerItemId: item.id,
+		actions: structuredCloneJSON(actions) as ComputerAction[],
+		pendingSafetyChecks: structuredCloneJSON(item.pending_safety_checks ?? []),
+	};
+}
+
 export async function processResponsesStream<TApi extends Api>(
 	openaiStream: AsyncIterable<ResponseStreamEvent>,
 	output: AssistantMessage,
@@ -2216,7 +2340,12 @@ export async function processResponsesStream<TApi extends Api>(
 		[kStreamingArgumentsDone]?: boolean;
 	};
 	interface StreamingItem {
-		item: ResponseReasoningItem | ResponseOutputMessage | ResponseFunctionToolCall | ResponseCustomToolCall;
+		item:
+			| ResponseReasoningItem
+			| ResponseOutputMessage
+			| ResponseFunctionToolCall
+			| ResponseCustomToolCall
+			| ResponseComputerToolCall;
 		block: ThinkingContent | TextContent | StreamingToolCallBlock;
 	}
 
@@ -2466,6 +2595,18 @@ export async function processResponsesStream<TApi extends Api>(
 					prefixedFunctionCallItemKey(item.call_id),
 				);
 				stream.push({ type: "toolcall_start", contentIndex: contentIndexOf(block), partial: output });
+			} else if (item.type === "computer_call") {
+				const block: StreamingToolCallBlock = {
+					type: "toolCall",
+					id: encodeResponsesToolCallId(item.call_id, item.id),
+					name: "computer",
+					arguments: {},
+					providerMetadata: computerCallMetadata(item),
+					[kStreamingPartialJson]: "",
+				};
+				output.content.push(block);
+				registerOpenItem(event.output_index, item.id, { item, block }, item.call_id);
+				stream.push({ type: "toolcall_start", contentIndex: contentIndexOf(block), partial: output });
 			} else if (item.type === "custom_tool_call") {
 				const block: StreamingToolCallBlock = {
 					type: "toolCall",
@@ -2654,6 +2795,27 @@ export async function processResponsesStream<TApi extends Api>(
 				}
 				closeOpenItem(event.output_index, item.id, entry, item.call_id, prefixedFunctionCallItemKey(item.call_id));
 				stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
+			} else if (item.type === "computer_call") {
+				const block = entry?.block.type === "toolCall" ? entry.block : undefined;
+				const toolCall: ToolCall = {
+					type: "toolCall",
+					id: encodeResponsesToolCallId(item.call_id, item.id),
+					name: "computer",
+					arguments: {},
+					providerMetadata: computerCallMetadata(item),
+				};
+				let contentIndex: number;
+				if (block) {
+					block.id = toolCall.id;
+					block.providerMetadata = toolCall.providerMetadata;
+					clearStreamingPartialJson(block);
+					contentIndex = contentIndexOf(block);
+				} else {
+					output.content.push(toolCall);
+					contentIndex = output.content.length - 1;
+				}
+				closeOpenItem(event.output_index, item.id, entry, item.call_id);
+				stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
 			} else if (item.type === "custom_tool_call") {
 				const block = entry?.block.type === "toolCall" ? entry.block : undefined;
 				const rawInput = block?.[kStreamingPartialJson] ? block[kStreamingPartialJson] : (item.input ?? "");
@@ -2793,7 +2955,7 @@ export function mapOpenAIResponsesStopReason(status: ResponseStatus | undefined)
 	}
 }
 
-function hasExecutableIncompleteResponsesToolCalls(output: AssistantMessage): boolean {
+export function hasExecutableIncompleteResponsesToolCalls(output: AssistantMessage): boolean {
 	let hasToolCall = false;
 	for (const block of output.content) {
 		if (block.type !== "toolCall") continue;
@@ -2802,6 +2964,10 @@ function hasExecutableIncompleteResponsesToolCalls(output: AssistantMessage): bo
 			[kStreamingPartialJson]?: string;
 			[kStreamingArgumentsDone]?: boolean;
 		};
+		if (pending.providerMetadata?.type === "computer") {
+			if (pending.providerMetadata.actions.length === 0) return false;
+			continue;
+		}
 		const rawArguments = pending[kStreamingPartialJson];
 		// `output_item.done` is not positive completion proof: our Responses
 		// compatibility encoder force-closes still-open calls before forwarding an

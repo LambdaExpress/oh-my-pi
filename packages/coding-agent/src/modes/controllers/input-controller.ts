@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
-import { isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { $env, isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { resolveLocalRoot } from "../../internal-urls";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
@@ -24,11 +24,11 @@ import manualContinuePrompt from "../../prompts/system/manual-continue.md" with 
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
 import { isTinyTitleLocalModelKey } from "../../tiny/models";
+import { isLowSignalTitleInput } from "../../tiny/text";
 import { tinyTitleClient } from "../../tiny/title-client";
 import type { TinyTitleProgressEvent } from "../../tiny/title-protocol";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { vocalizer } from "../../tts/vocalizer";
-import { startAutoSessionTitleGeneration } from "../../utils/auto-session-title";
 import {
 	copyToClipboard,
 	readImageFromClipboard,
@@ -191,9 +191,9 @@ export class InputController {
 	// (>= LEFT_DOUBLE_TAP_MAX_GAP_MS) starts a fresh sequence. See
 	// #detectLeftDoubleTap.
 	#leftTapCount = 0;
-	// Sequential index for `local://attachment-N` references created by large-paste and
-	// pasted-file attachments. Seeded from 0 and bumped past existing attachment files.
-	#attachmentCounter = 0;
+	// Sequential index for `local://paste-N.md` references created by the large-paste
+	// flow. Seeded from 0 and bumped past existing paste files.
+	#pasteCounter = 0;
 
 	#showTinyTitleDownloadProgress(modelKey: string): void {
 		if (!isTinyTitleLocalModelKey(modelKey)) return;
@@ -861,33 +861,7 @@ export class InputController {
 			// First, move any pending bash components to chat
 			this.ctx.flushPendingBashComponents();
 
-			// AgentSession.prompt() consumes registered extension commands locally.
-			// Classify them here because title generation starts before prompt dispatch.
-			const extensionCommandSpace = text.indexOf(" ");
-			const isLocalExtensionCommand =
-				text.startsWith("/") &&
-				runner?.getCommand(extensionCommandSpace === -1 ? text.slice(1) : text.slice(1, extensionCommandSpace)) !==
-					undefined;
-
-			// Auto-generate a session title while the session is still unnamed.
-			// Greetings / acknowledgements / empty input carry no task, so they are
-			// skipped deterministically (no model invoked, no download-progress UI)
-			// and the session stays unnamed — the next user message gets a fresh
-			// chance, so titling defers past "hi" instead of latching onto it.
 			const displayText = this.ctx.session.previewPromptExpansion(text);
-			if (!isLocalExtensionCommand) {
-				startAutoSessionTitleGeneration({
-					text: displayText,
-					session: this.ctx.session,
-					sessionManager: this.ctx.sessionManager,
-					settings: this.ctx.settings,
-					titleSystemPrompt: this.ctx.titleSystemPrompt,
-					onBeforeGenerate: () =>
-						this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel")),
-					onTitleApplied: () => this.ctx.updateEditorBorderColor(),
-				});
-			}
-
 			if (this.ctx.onInputCallback) {
 				// Include any pending images from clipboard paste
 				this.ctx.editor.imageLinks = undefined;
@@ -908,6 +882,9 @@ export class InputController {
 					imageLinks: inputImageLinks,
 					streamingBehavior: "steer",
 				});
+				// Start titling only after the optimistic row painted, so the local
+				// tiny-title worker's subprocess spawn never blocks the first frame.
+				this.#maybeStartTitleGeneration(text);
 
 				this.ctx.onInputCallback(submission);
 			} else {
@@ -922,6 +899,7 @@ export class InputController {
 				const images = inputImages && inputImages.length > 0 ? [...inputImages] : undefined;
 				this.ctx.editor.pendingImages = [];
 				this.ctx.editor.pendingImageLinks = [];
+				this.#maybeStartTitleGeneration(text);
 				try {
 					await this.ctx.withLocalSubmission(
 						displayText,
@@ -949,6 +927,49 @@ export class InputController {
 			}
 			this.ctx.editor.addToHistory(text);
 		};
+	}
+
+	/**
+	 * Kick off session-title generation while the session is still unnamed.
+	 * Invoked AFTER the optimistic user row is painted so the local tiny-title
+	 * worker's subprocess spawn never lands ahead of the first frame (issue #6462).
+	 * Skips slash extension commands (consumed locally by AgentSession.prompt()),
+	 * already-named sessions, PI_NO_TITLE, and low-signal greetings — no model or
+	 * download UI for those.
+	 */
+	#maybeStartTitleGeneration(text: string): void {
+		const runner = this.ctx.session.extensionRunner;
+		const extensionCommandSpace = text.indexOf(" ");
+		const isLocalExtensionCommand =
+			text.startsWith("/") &&
+			runner?.getCommand(extensionCommandSpace === -1 ? text.slice(1) : text.slice(1, extensionCommandSpace)) !==
+				undefined;
+		if (
+			isLocalExtensionCommand ||
+			this.ctx.sessionManager.getSessionName() ||
+			$env.PI_NO_TITLE ||
+			isLowSignalTitleInput(text)
+		) {
+			return;
+		}
+		this.#showTinyTitleDownloadProgress(this.ctx.settings.get("providers.tinyModel"));
+		this.ctx.session
+			.generateTitle(text)
+			.then(async title => {
+				// Re-check: a concurrent attempt for an earlier message may have
+				// already named the session. Don't clobber it. Terminal title and
+				// accent updates fire from the onSessionNameChanged listener.
+				if (title && !this.ctx.sessionManager.getSessionName()) {
+					await this.ctx.sessionManager.setSessionName(title, "auto");
+				}
+			})
+			.catch(err => {
+				logger.warn("title-generator: uncaught auto-title error", {
+					sessionId: this.ctx.session.sessionId,
+					reason: "uncaught-auto-title-error",
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
 	}
 
 	/** Submit editor text to the focused subagent session (chat-only focus policy). */
@@ -1746,7 +1767,7 @@ export class InputController {
 				`Pasted ${lineCount} lines`,
 				[
 					{ label: WRAPPED_BLOCK, description: "Wrap the text in <attachment> tags, collapsed to a marker" },
-					{ label: LOCAL_FILE, description: "Save the text to a local://attachment file" },
+					{ label: LOCAL_FILE, description: "Save the text to a local://paste file" },
 					{ label: INLINE, description: "Collapse the text to an inline paste marker" },
 				],
 				{ helpText: "Esc to paste inline" },
@@ -1775,7 +1796,7 @@ export class InputController {
 	}
 
 	/**
-	 * Save a large paste to the session's `local://` store and insert a clean `local://attachment-N`
+	 * Save a large paste to the session's `local://` store and insert a clean `local://paste-N.md`
 	 * reference into the editor so the agent can `read` it on demand — instead of inlining the text or
 	 * leaking a raw temp path. Falls back to an inline paste marker when the write fails, so the
 	 * content is never lost.
@@ -1783,7 +1804,7 @@ export class InputController {
 	async #attachPasteAsFile(text: string, lineCount: number): Promise<void> {
 		try {
 			// Mirror the exact mapping the read tool's local:// resolver uses so a later
-			// `read local://attachment-N` lands on the file written here.
+			// `read local://paste-N.md` lands on the file written here.
 			const localRoot = resolveLocalRoot({
 				getArtifactsDir: () => this.ctx.sessionManager.getArtifactsDir(),
 				getSessionId: () => this.ctx.sessionManager.getSessionId(),
@@ -1791,8 +1812,8 @@ export class InputController {
 			let name: string;
 			let filePath: string;
 			do {
-				this.#attachmentCounter++;
-				name = `attachment-${this.#attachmentCounter}`;
+				this.#pasteCounter++;
+				name = `paste-${this.#pasteCounter}.md`;
 				filePath = path.join(localRoot, name);
 			} while (await Bun.file(filePath).exists());
 			await Bun.write(filePath, text);

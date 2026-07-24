@@ -1065,6 +1065,62 @@ describe("agentLoop with AgentMessage", () => {
 		expect(finalTurn.content).toContainEqual({ type: "text", text: "done after custom recovery" });
 	});
 
+	it("routes unadvertised tool calls through resolveFallbackTool", async () => {
+		const executedParams: Array<{ value: string }> = [];
+		const toolSchema = type({ value: "string" });
+		const deviceTool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "browser",
+			label: "Browser",
+			description: "Mounted device tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executedParams.push(params);
+				return {
+					content: [{ type: "text", text: `device: ${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+		// The device is NOT in the advertised tool set.
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [] };
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "browser", arguments: { value: "open" } },
+						{ type: "toolCall", id: "tool-2", name: "nonexistent", arguments: {} },
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const config: AgentLoopConfig = {
+			model: mock.model,
+			convertToLlm: identityConverter,
+			resolveFallbackTool: name => (name === "browser" ? deviceTool : undefined),
+		};
+
+		const messages = await agentLoop(
+			[createUserMessage("use the device")],
+			context,
+			config,
+			undefined,
+			mock.stream,
+		).result();
+
+		expect(executedParams).toEqual([{ value: "open" }]);
+		const results = messages.filter((m): m is ToolResultMessage => m.role === "toolResult");
+		const deviceResult = results.find(r => r.toolCallId === "tool-1");
+		expect(deviceResult?.isError).toBeFalsy();
+		expect(deviceResult?.content).toContainEqual({ type: "text", text: "device: open" });
+		// Names the resolver does not know keep the "not found" failure.
+		const missingResult = results.find(r => r.toolCallId === "tool-2");
+		expect(missingResult?.isError).toBe(true);
+		expect(missingResult?.content.some(c => c.type === "text" && c.text.includes("Tool nonexistent not found"))).toBe(
+			true,
+		);
+	});
+
 	it("injects and strips intent when intent tracing is enabled", async () => {
 		const toolSchema = type({ value: "string" });
 		const executedParams: Record<string, unknown>[] = [];
@@ -3109,6 +3165,54 @@ describe("agentLoopContinue with AgentMessage", () => {
 			expect(toolResultMessage.isError).toBe(true);
 			expect(toolResultMessage.content).toEqual([{ type: "text", text: "rewritten" }]);
 		}
+	});
+
+	it("fails closed when afterToolCall returns malformed computer provider metadata", async () => {
+		const toolSchema = type({});
+		const tool: AgentTool<typeof toolSchema> = {
+			name: "probe",
+			label: "Probe",
+			description: "Probe tool",
+			parameters: toolSchema,
+			async execute() {
+				return { content: [], details: {} };
+			},
+		};
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-metadata", name: "probe", arguments: {} }] },
+				{ content: ["done"] },
+			],
+		});
+		const config: AgentLoopConfig = {
+			model: mock.model,
+			convertToLlm: identityConverter,
+			afterToolCall: async () =>
+				({
+					providerMetadata: {
+						type: "computer",
+						screenshot: {
+							type: "computer_screenshot",
+							image_url: "data:image/png;base64,AAEC",
+							file_id: "file_conflicting_ref",
+						},
+						acknowledgedSafetyChecks: [{ id: 42 }],
+					},
+				}) as never,
+		};
+		const events: AgentEvent[] = [];
+		for await (const event of agentLoop([createUserMessage("go")], context, config, undefined, mock.stream)) {
+			events.push(event);
+		}
+		const result = events
+			.filter(event => event.type === "message_end" && event.message.role === "toolResult")
+			.map(event =>
+				event.type === "message_end" && event.message.role === "toolResult" ? event.message : undefined,
+			)[0];
+		expect(result?.isError).toBe(true);
+		expect(result?.providerMetadata).toBeUndefined();
+		expect(JSON.stringify(result?.content)).toContain("computer providerMetadata had an unsupported shape");
 	});
 
 	it("runs afterToolCall for a completed result even when the run aborts before the hook", async () => {

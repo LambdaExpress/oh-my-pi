@@ -504,6 +504,7 @@ export async function executeWithKernelBase<
 		logger.error(`${errorLogLabel} execution failed`, { error: error.message });
 		throw error;
 	} finally {
+		await sink.dispose();
 		unregisterBridge?.();
 		abortShield.dispose?.();
 	}

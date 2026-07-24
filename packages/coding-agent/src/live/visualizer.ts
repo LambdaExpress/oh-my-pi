@@ -1,20 +1,32 @@
-import { type Component, matchesKey, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import {
+	type Component,
+	matchesKey,
+	replaceTabs,
+	sliceWithWidth,
+	truncateToWidth,
+	visibleWidth,
+} from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { type ThemeColor, theme } from "../modes/theme/theme";
 
 /** Distinct states of a realtime call connection. */
 export type LivePhase = "connecting" | "listening" | "working" | "speaking" | "muted" | "error";
-
-/** A transcribed turn in the realtime call. */
-export interface LiveTranscript {
-	role: "user" | "assistant";
-	text: string;
-}
-
 /** Configuration callbacks for user interactions in the visualizer. */
 export interface LiveVisualizerOptions {
 	onStop(): void;
 	onToggleMute(): void;
+}
+
+function normalizeTranscript(text: string): string {
+	return replaceTabs(sanitizeText(text)).replace(/\s+/g, " ").trim();
+}
+
+function truncateFromStart(text: string, width: number): string {
+	if (width <= 0) return "";
+	const textWidth = visibleWidth(text);
+	if (textWidth <= width) return text;
+	if (width === 1) return "…";
+	return `…${sliceWithWidth(text, textWidth - width + 1, width - 1, true).text}`;
 }
 
 /** A compact, fixed-height terminal component for displaying a realtime call. */
@@ -25,19 +37,17 @@ export class LiveVisualizer implements Component {
 
 	#phase: LivePhase = "connecting";
 	#inputLevel = 0;
-	#outputLevel = 0;
-	#transcript: LiveTranscript | undefined;
+	#displayLevel = 0;
 	#frame = 0;
+	#userTranscript = "";
 
 	#cache:
 		| {
 				width: number;
 				phase: LivePhase;
-				inputLevel: number;
-				outputLevel: number;
-				transcriptRole: string | undefined;
-				transcriptText: string | undefined;
+				displayLevel: number;
 				frame: number;
+				userTranscript: string;
 				lines: readonly string[];
 		  }
 		| undefined;
@@ -54,34 +64,43 @@ export class LiveVisualizer implements Component {
 		}
 	}
 
-	/** Updates the current input and output volume levels (0..1). */
-	setLevels(input: number, output: number): void {
-		if (this.#inputLevel !== input || this.#outputLevel !== output) {
-			this.#inputLevel = input;
-			this.#outputLevel = output;
-			this.invalidate();
-		}
+	/** Updates the microphone volume level (0..1). */
+	setInputLevel(level: number): void {
+		const next = Number.isFinite(level) ? Math.min(1, Math.max(0, level)) : 0;
+		if (this.#inputLevel === next) return;
+		this.#inputLevel = next;
+		if (next > this.#displayLevel) this.#displayLevel = next;
+		this.invalidate();
 	}
 
-	/** Updates the latest transcript fragment. */
-	setTranscript(transcript: LiveTranscript | undefined): void {
-		if (this.#transcript?.role !== transcript?.role || this.#transcript?.text !== transcript?.text) {
-			this.#transcript = transcript ? { ...transcript } : undefined;
-			this.invalidate();
-		}
-	}
-
-	/** Updates the animation frame for spinners and waveforms. */
+	/** Advances the spectrum animation and its peak decay. */
 	setFrame(frame: number): void {
-		if (this.#frame !== frame) {
+		const nextLevel = Math.max(this.#inputLevel, this.#displayLevel * 0.84);
+		if (this.#frame !== frame || this.#displayLevel !== nextLevel) {
 			this.#frame = frame;
+			this.#displayLevel = nextLevel;
 			this.invalidate();
 		}
+	}
+
+	/** Updates the user's streaming voice transcript. */
+	setTranscript(text: string): void {
+		const normalized = normalizeTranscript(text);
+		if (this.#userTranscript === normalized) return;
+		this.#userTranscript = normalized;
+		this.invalidate();
+	}
+
+	/** Clears the user's voice transcript row. */
+	clearTranscript(): void {
+		if (!this.#userTranscript) return;
+		this.#userTranscript = "";
+		this.invalidate();
 	}
 
 	/** Processes user keypresses. */
 	handleInput(data: string): void {
-		if (matchesKey(data, "escape")) {
+		if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) {
 			this.#options.onStop();
 		} else if (matchesKey(data, "space")) {
 			this.#options.onToggleMute();
@@ -93,67 +112,61 @@ export class LiveVisualizer implements Component {
 		this.#cache = undefined;
 	}
 
-	/** Renders the visualizer into a fixed array of rows at the given width. */
+	/** Renders the microphone spectrum into a compact fixed-height panel. */
 	render(width: number): readonly string[] {
 		if (
 			this.#cache &&
 			this.#cache.width === width &&
 			this.#cache.phase === this.#phase &&
-			this.#cache.inputLevel === this.#inputLevel &&
-			this.#cache.outputLevel === this.#outputLevel &&
+			this.#cache.displayLevel === this.#displayLevel &&
 			this.#cache.frame === this.#frame &&
-			this.#cache.transcriptRole === this.#transcript?.role &&
-			this.#cache.transcriptText === this.#transcript?.text
+			this.#cache.userTranscript === this.#userTranscript
 		) {
 			return this.#cache.lines;
 		}
 
 		const lines = this.#renderLines(width);
-
 		this.#cache = {
 			width,
 			phase: this.#phase,
-			inputLevel: this.#inputLevel,
-			outputLevel: this.#outputLevel,
+			displayLevel: this.#displayLevel,
 			frame: this.#frame,
-			transcriptRole: this.#transcript?.role,
-			transcriptText: this.#transcript?.text,
+			userTranscript: this.#userTranscript,
 			lines,
 		};
-
 		return lines;
 	}
 
 	#renderLines(maxWidth: number): readonly string[] {
-		const w = Math.max(2, Math.min(maxWidth, 120));
-		const innerW = w - 2;
+		const width = Math.max(2, maxWidth);
+		const innerWidth = width - 2;
+		const border = (content: string): string =>
+			theme.fg("border", "│") + content + (width > 1 ? theme.fg("border", "│") : "");
+		const top = theme.fg("border", `┌${"─".repeat(innerWidth)}${width > 1 ? "┐" : ""}`);
+		const spectrumColor: ThemeColor = this.#phase === "muted" ? "dim" : this.#phase === "error" ? "error" : "success";
+		const spectrum = this.#generateSpectrum(innerWidth, 2);
+		const spectrumRows = spectrum.map(row => border(theme.fg(spectrumColor, row)));
+		const transcript = this.#renderTranscript(this.#userTranscript, innerWidth, border);
+		return [top, ...spectrumRows, transcript, this.#renderFooter(width, innerWidth)];
+	}
 
-		const topBorder = theme.fg("border", `┌${"─".repeat(innerW)}${w > 1 ? "┐" : ""}`);
+	#renderTranscript(transcript: string, innerWidth: number, border: (content: string) => string): string {
+		const content = truncateFromStart(transcript, innerWidth);
+		const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(content)));
+		return border(theme.fg("accent", content) + padding);
+	}
 
-		const maxWaveW = Math.min(40, Math.max(0, w - 4));
-		const sideW = Math.max(0, Math.floor((maxWaveW - 3) / 2));
-
-		const inWave = this.#generateWaveform(this.#inputLevel, sideW, true);
-		const outWave = this.#generateWaveform(this.#outputLevel, sideW, false);
-
-		const inColor: ThemeColor = this.#phase === "muted" ? "dim" : "success";
-		const outColor: ThemeColor = this.#phase === "error" ? "error" : "accent";
-
-		const waveContent = truncateToWidth(
-			theme.fg(inColor, inWave) + theme.fg("dim", " │ ") + theme.fg(outColor, outWave),
-			innerW,
-		);
-		const waveLen = visibleWidth(waveContent);
-
-		const wavePadL = Math.floor((innerW - waveLen) / 2);
-		const wavePadR = innerW - waveLen - wavePadL;
-		const row1 =
-			theme.fg("border", "│") +
-			" ".repeat(Math.max(0, wavePadL)) +
-			waveContent +
-			" ".repeat(Math.max(0, wavePadR)) +
-			(w > 1 ? theme.fg("border", "│") : "");
-
+	#renderFooter(width: number, innerWidth: number): string {
+		const spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+		const staticIcons: Record<LivePhase, string> = {
+			connecting: "○",
+			listening: "●",
+			working: "○",
+			speaking: "»",
+			muted: "×",
+			error: "!",
+		};
+		const icon = this.#phase === "working" ? spinners[this.#frame % spinners.length] : staticIcons[this.#phase];
 		const phaseColors: Record<LivePhase, ThemeColor> = {
 			connecting: "dim",
 			listening: "success",
@@ -162,73 +175,40 @@ export class LiveVisualizer implements Component {
 			muted: "dim",
 			error: "error",
 		};
-
-		const spinners = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-		let phaseIcon: string;
-		if (this.#phase === "working") {
-			phaseIcon = spinners[this.#frame % spinners.length];
-		} else {
-			const staticIcons: Record<LivePhase, string> = {
-				connecting: "○",
-				listening: "●",
-				working: "○",
-				speaking: "»",
-				muted: "×",
-				error: "!",
-			};
-			phaseIcon = staticIcons[this.#phase];
+		const status = `${icon} ${this.#phase}`;
+		const fullLabel = ` ${status} · space mute · esc end `;
+		const shortLabel = ` ${status} `;
+		const label =
+			innerWidth >= visibleWidth(fullLabel) + 1
+				? fullLabel
+				: innerWidth >= visibleWidth(shortLabel) + 1
+					? shortLabel
+					: "";
+		if (!label) {
+			return theme.fg("border", `└${"─".repeat(innerWidth)}${width > 1 ? "┘" : ""}`);
 		}
-
-		const phaseText = truncateToWidth(` ${phaseIcon} ${this.#phase.toUpperCase()} `, innerW);
-		const coloredPhase = theme.fg(phaseColors[this.#phase], phaseText);
-
-		const pLen = visibleWidth(coloredPhase);
-		const pPadL = Math.floor((innerW - pLen) / 2);
-		const pPadR = innerW - pLen - pPadL;
-		const row2 =
-			theme.fg("border", "│") +
-			" ".repeat(Math.max(0, pPadL)) +
-			coloredPhase +
-			" ".repeat(Math.max(0, pPadR)) +
-			(w > 1 ? theme.fg("border", "│") : "");
-
-		const row3 = theme.fg("border", "│") + " ".repeat(Math.max(0, innerW)) + (w > 1 ? theme.fg("border", "│") : "");
-
-		let transcriptText = "";
-		if (this.#transcript) {
-			const cleanText = sanitizeText(this.#transcript.text).replace(/[\r\n\t]+/g, " ");
-			const roleStr = this.#transcript.role === "user" ? "User: " : "Assistant: ";
-			transcriptText = theme.fg("dim", roleStr + cleanText);
-		}
-		const row4Content = truncateToWidth(`  ${transcriptText}`, Math.max(0, innerW - 2)) || "";
-		const r4Pad = Math.max(0, innerW - visibleWidth(row4Content));
-		const row4 = theme.fg("border", "│") + row4Content + " ".repeat(r4Pad) + (w > 1 ? theme.fg("border", "│") : "");
-
-		const footerContent = truncateToWidth(" space mute · esc end ", innerW);
-		const dashCount = Math.max(0, innerW - visibleWidth(footerContent));
-		let bottomBorder: string;
-		if (innerW >= visibleWidth(footerContent) + 2) {
-			bottomBorder =
-				theme.fg("border", "└─") +
-				theme.fg("dim", footerContent) +
-				theme.fg("border", "─".repeat(dashCount - 2) + (w > 1 ? "┘" : ""));
-		} else {
-			bottomBorder = theme.fg("border", `└${"─".repeat(Math.max(0, innerW))}${w > 1 ? "┘" : ""}`);
-		}
-
-		return [topBorder, row1, row2, row3, row4, bottomBorder];
+		const remaining = Math.max(0, innerWidth - visibleWidth(label) - 1);
+		return (
+			theme.fg("border", "└─") +
+			theme.fg(phaseColors[this.#phase], truncateToWidth(label, innerWidth - 1)) +
+			theme.fg("border", `${"─".repeat(remaining)}${width > 1 ? "┘" : ""}`)
+		);
 	}
 
-	#generateWaveform(level: number, width: number, reverse: boolean): string {
-		const chars = [" ", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-		let out = "";
-		for (let i = 0; i < width; i++) {
-			const dist = reverse ? width - 1 - i : i;
-			const decay = Math.max(0, 1 - (dist / width) * 1.5);
-			const val = level * decay * (0.5 + 0.5 * Math.sin(this.#frame * 0.5 + dist * 0.8));
-			const charIdx = Math.max(0, Math.min(chars.length - 1, Math.floor(val * chars.length)));
-			out += chars[charIdx];
+	#generateSpectrum(width: number, rows: number): string[] {
+		const blocks = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+		const output = Array.from({ length: rows }, () => "");
+		const energy = this.#phase === "muted" ? 0 : Math.min(1, Math.sqrt(this.#displayLevel * 5));
+		const maxHeight = rows * (blocks.length - 1);
+		for (let column = 0; column < width; column += 1) {
+			const carrier = 0.5 + 0.5 * Math.sin(this.#frame * 0.43 + column * 0.71);
+			const shimmer = 0.5 + 0.5 * Math.sin(this.#frame * 0.19 - column * 1.17);
+			const height = Math.round(energy * (0.3 + carrier * 0.5 + shimmer * 0.2) * maxHeight);
+			for (let row = 0; row < rows; row += 1) {
+				const units = Math.max(0, Math.min(blocks.length - 1, height - (rows - row - 1) * 8));
+				output[row] += blocks[units];
+			}
 		}
-		return out;
+		return output;
 	}
 }

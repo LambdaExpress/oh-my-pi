@@ -16,6 +16,24 @@
 
 - Fixed compiled-binary native embedding accepting stale `pi_natives.*.node` artifacts whose version sentinel does not match the current `@oh-my-pi/pi-natives` package version. `gen:native` now validates the sentinel before archiving and can read native artifacts from an explicit `PI_NATIVE_SOURCE_DIR`, preventing local Windows builds from producing an `omp` binary that only starts while another install keeps a correct cached addon locked.
 - Fixed Windows AVX2 detection preferring Windows PowerShell 5.1, whose .NET runtime lacks `System.Runtime.Intrinsics.X86.Avx2`; the loader now tries `pwsh` first so AVX2-capable Windows hosts select the `modern` native addon by default.
+## [17.1.2] - 2026-07-24
+
+### Fixed
+
+- Fixed native addon builds with CMake 4.x (bundled opus policy floor) and stopped passing `-C target-cpu=native` on darwin arm64, which baked build-host CPU features into shipped addons and broke `ring` compilation.
+
+## [17.1.1] - 2026-07-24
+
+### Added
+
+- Added native `AudioCapture`, `AudioPlayback`, and `LiveWebRtcPeer` classes for low-latency microphone capture, gapless speaker playback, and WebRTC offer/answer sessions with Opus media and `oai-events` data-channel delivery.
+- Added a macOS `deviceCheckGenerateToken` export that generates Apple DeviceCheck attestation tokens natively: it drives `DCDevice.generateToken` through raw Objective-C runtime FFI with a hand-built completion block literal and a bounded one-second wait, resolving `{ supported, tokenBase64, error, latencyMs }` to mirror the ChatGPT desktop app's `devicecheck.node` addon contract. Non-macOS builds resolve `supported: false` without touching the network.
+- Added a genuine native desktop backend for computer use, bundled in the core addon on every published platform: macOS Quartz/CGEvent, Windows Win32/`SendInput`, and a pure-Rust Linux X11 backend (`x11rb` capture over the display socket, XTest input with keysym mapping) that links no GUI system libraries — so Linux x64/arm64, glibc and musl are all supported and headless hosts are unaffected. Wayland sessions work through XWayland. Execute batches enforce a 60-second native deadline (`DESKTOP_DEADLINE_EXCEEDED`) and never emit input after it expires; unsupported pure-Wayland capture and out-of-XTest-range or negative-origin coordinate layouts fail closed.
+
+### Fixed
+
+- Fixed macOS computer screenshots taking roughly 30 seconds under Bun by replacing xcap's deprecated window-list capture with a bounded system capture path; direct screenshots now complete in under half a second on the verified host.
+
 ## [17.0.8] - 2026-07-22
 
 ### Added

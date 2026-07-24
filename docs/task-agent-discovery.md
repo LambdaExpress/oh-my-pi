@@ -126,12 +126,9 @@ In spawn execution (`TaskTool.#executeSync` → `#runSpawn`):
 
 Runtime model precedence is resolved by `resolveEffectiveSubagentPolicy()`:
 
-1. the task item's explicit `model` selector or fallback chain
-2. `task.agentModelOverrides[agentName]`
-3. agent frontmatter `model`
-4. the parent session model fallback
-
-Reasoning suffixes such as `:high` are preserved. The task tool rejects blank, empty-array, and comma-only per-call selectors before policy resolution so they cannot bypass a configured agent override.
+1. `task.agentModelOverrides[agentName]`
+2. agent frontmatter `model`
+3. the parent session model fallback
 
 Runtime output schema precedence is:
 

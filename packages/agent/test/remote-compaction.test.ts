@@ -302,6 +302,163 @@ describe("buildOpenAiNativeHistory call-id tracking", () => {
 	});
 });
 
+describe("buildOpenAiNativeHistory computer calls", () => {
+	const computerModel = makeOpenAiModel({ supportsComputerUse: true });
+	const pendingSafetyChecks = [{ id: "safe_1", code: "confirm", message: "Confirm click" }];
+	const acknowledgedSafetyChecks = [{ id: "safe_1", code: "confirm", message: "Confirm click" }];
+
+	function computerAssistant(): AssistantMessage {
+		return {
+			role: "assistant",
+			content: [
+				{
+					type: "toolCall",
+					id: "call_computer_1|item_computer_1",
+					name: "computer",
+					arguments: { actions: [{ type: "click", button: "left", x: 12, y: 34 }] },
+					providerMetadata: {
+						type: "computer",
+						providerItemId: "item_computer_1",
+						actions: [{ type: "click", button: "left", x: 12, y: 34 }],
+						pendingSafetyChecks,
+					},
+				},
+			],
+			timestamp: Date.now(),
+			provider: "openai",
+			model: "gpt-5",
+			api: "openai-responses",
+			usage: ZERO_USAGE,
+			stopReason: "toolUse",
+		};
+	}
+
+	test("preserves provider item id, actions, safety checks, screenshot file_id, and acknowledgements", () => {
+		const result: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "call_computer_1|item_computer_1",
+			toolName: "computer",
+			content: [],
+			isError: false,
+			timestamp: Date.now(),
+			providerMetadata: {
+				type: "computer",
+				screenshot: { type: "computer_screenshot", file_id: "file_screen_电脑/%2F" },
+				acknowledgedSafetyChecks,
+			},
+		};
+		const items = buildOpenAiNativeHistory([computerAssistant(), result], computerModel);
+		expect(items).toEqual([
+			{
+				type: "computer_call",
+				id: "item_computer_1",
+				call_id: "call_computer_1",
+				actions: [{ type: "click", button: "left", x: 12, y: 34 }],
+				pending_safety_checks: pendingSafetyChecks,
+				status: "completed",
+			},
+			{
+				type: "computer_call_output",
+				call_id: "call_computer_1",
+				output: { type: "computer_screenshot", file_id: "file_screen_电脑/%2F" },
+				acknowledged_safety_checks: acknowledgedSafetyChecks,
+			},
+		]);
+	});
+
+	test("registers native provider-payload computer calls for exact output pairing", () => {
+		const assistant = computerAssistant();
+		assistant.providerPayload = {
+			type: "openaiResponsesHistory",
+			provider: "openai",
+			dt: true,
+			items: [
+				{
+					type: "computer_call",
+					id: "item_raw_stable",
+					call_id: "call_computer_1",
+					actions: [{ type: "screenshot" }],
+					pending_safety_checks: [],
+					status: "completed",
+				},
+			],
+		};
+		const result: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "call_computer_1|item_computer_1",
+			toolName: "computer",
+			content: [],
+			isError: false,
+			timestamp: Date.now(),
+			providerMetadata: {
+				type: "computer",
+				screenshot: { type: "computer_screenshot", image_url: "data:image/png;base64,AAEC" },
+				acknowledgedSafetyChecks: [],
+			},
+		};
+		const items = buildOpenAiNativeHistory([assistant, result], computerModel);
+		expect(items[0]?.id).toBe("item_raw_stable");
+		expect(items[1]).toEqual({
+			type: "computer_call_output",
+			call_id: "call_computer_1",
+			output: { type: "computer_screenshot", image_url: "data:image/png;base64,AAEC" },
+			acknowledged_safety_checks: [],
+		});
+	});
+
+	test("replaces a failed call without a screenshot with valid recovery history", () => {
+		const failed: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "call_computer_1|item_computer_1",
+			toolName: "computer",
+			content: [{ type: "text", text: "capture failed" }],
+			isError: true,
+			timestamp: Date.now(),
+		};
+		const items = buildOpenAiNativeHistory([computerAssistant(), failed], computerModel);
+		expect(items).toHaveLength(1);
+		const recovery = items[0];
+		expect(recovery).toMatchObject({
+			type: "message",
+			role: "assistant",
+			status: "completed",
+		});
+		expect(String(recovery?.id)).toMatch(/^msg_[a-z0-9-]+$/);
+		expect(recovery?.content).toEqual([expect.objectContaining({ type: "output_text", annotations: [] })]);
+		expect(JSON.stringify(items)).toContain("failed before a screenshot was recorded");
+		expect(JSON.stringify(items)).toContain("capture failed");
+	});
+
+	test("downgrades unsupported native computer history to stable valid assistant message items", () => {
+		const unsupportedModel = makeOpenAiModel({ supportsComputerUse: false });
+		const result: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "call_computer_1|item_computer_1",
+			toolName: "computer",
+			content: [],
+			isError: false,
+			timestamp: Date.now(),
+			providerMetadata: {
+				type: "computer",
+				screenshot: { type: "computer_screenshot", file_id: "file_downgraded_screen" },
+				acknowledgedSafetyChecks: [{ id: "safe_downgraded" }],
+			},
+		};
+		const first = buildOpenAiNativeHistory([computerAssistant(), result], unsupportedModel);
+		const second = buildOpenAiNativeHistory([computerAssistant(), result], unsupportedModel);
+		expect(first).toHaveLength(2);
+		for (const note of first) {
+			expect(note).toMatchObject({ type: "message", role: "assistant", status: "completed" });
+			expect(String(note.id)).toMatch(/^msg_[a-z0-9-]+$/);
+			expect(note.content).toEqual([expect.objectContaining({ type: "output_text", annotations: [] })]);
+		}
+		expect(first.map(item => item.id)).toEqual(second.map(item => item.id));
+		expect(first.every(item => String(item.id).length <= 64)).toBe(true);
+		expect(JSON.stringify(first)).toContain("file_downgraded_screen");
+		expect(JSON.stringify(first)).toContain("safe_downgraded");
+	});
+});
+
 describe("remote compaction input forwarding", () => {
 	test("sends the full native history without local trimming", async () => {
 		// Contract: the compact endpoint owns compression. Trimming locally dropped

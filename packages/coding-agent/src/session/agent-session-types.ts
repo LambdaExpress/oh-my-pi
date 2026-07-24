@@ -5,6 +5,7 @@ import type {
 	Message,
 	MessageAttribution,
 	Model,
+	OAuthAccountSummary,
 	ServiceTierByFamily,
 	SimpleStreamOptions,
 	ToolChoice,
@@ -149,6 +150,8 @@ export interface AgentSessionConfig {
 	memoryTaskDepth?: number;
 	/** Creates built-in memory tools for the current backend. */
 	createMemoryTools?: () => Promise<AgentTool[]>;
+	/** Creates the built-in `computer` tool for session-scoped runtime enablement (see {@link AgentSession.setComputerToolEnabled}). */
+	createComputerTool?: () => Promise<AgentTool | null>;
 	/** Model registry for API key resolution and model discovery. */
 	modelRegistry: ModelRegistry;
 	/** Tool registry for LSP and settings. */
@@ -347,6 +350,12 @@ export interface SessionStats {
 	premiumRequests: number;
 	cost: number;
 	contextUsage?: ContextUsage;
+}
+
+/** Stored OAuth accounts available to the current model provider. */
+export interface SessionOAuthAccountList {
+	provider: string;
+	accounts: OAuthAccountSummary[];
 }
 
 /** IDs for a newly created session and the session it replaced. */

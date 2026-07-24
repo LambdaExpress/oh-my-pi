@@ -2,7 +2,7 @@ import type { Usage } from "@oh-my-pi/pi-ai";
 import { $env } from "@oh-my-pi/pi-utils";
 import { type BaseType, type } from "arktype";
 import type { AgentSessionEvent } from "../session/agent-session";
-import type { ConfiguredThinkingLevel } from "../thinking";
+import type { ConfiguredThinkingLevel, TaskEffort } from "../thinking";
 import type { NestedRepoPatch } from "./worktree";
 
 /** Source of an agent definition */
@@ -112,12 +112,14 @@ export const LABEL_MAX = 80;
 
 // Keep this explicit: ArkType serializes `unknown` as a boolean subschema, which llama.cpp grammars reject.
 const outputSchemaInputSchema = type("object | boolean | string | null");
+// Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
+const effortRule = '"lo" | "med" | "hi"' as const;
 
 export const taskItemSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
-	"model?": "string | string[]",
+	"effort?": effortRule,
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"+": "delete",
@@ -126,7 +128,7 @@ const taskItemSchemaIsolated = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
-	"model?": "string | string[]",
+	"effort?": effortRule,
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"isolated?": "boolean",
@@ -141,8 +143,8 @@ export interface TaskItem {
 	agent?: string;
 	/** The work; required by the schema. */
 	task?: string;
-	/** Explicit model selector or fallback chain for this spawn, including optional reasoning suffixes. */
-	model?: string | string[];
+	/** Per-spawn thinking effort: lowest/middle/highest level the resolved model supports. Overrides the agent's default selector (e.g. `auto`). */
+	effort?: TaskEffort;
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */
@@ -155,7 +157,7 @@ export const taskSchema = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
-	"model?": "string | string[]",
+	"effort?": effortRule,
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"isolated?": "boolean",
@@ -165,7 +167,7 @@ const taskSchemaNoIsolation = type({
 	"name?": "string",
 	agent: "string = 'task'",
 	task: "string",
-	"model?": "string | string[]",
+	"effort?": effortRule,
 	"outputSchema?": outputSchemaInputSchema,
 	"schemaMode?": '"permissive" | "strict"',
 	"+": "delete",
@@ -210,7 +212,7 @@ function createTaskSchema(options: {
 				"name?": "string",
 				agent,
 				task: "string",
-				"model?": "string | string[]",
+				"effort?": effortRule,
 				"outputSchema?": outputSchemaInputSchema,
 				"schemaMode?": '"permissive" | "strict"',
 				"isolated?": "boolean",
@@ -226,7 +228,7 @@ function createTaskSchema(options: {
 			"name?": "string",
 			agent,
 			task: "string",
-			"model?": "string | string[]",
+			"effort?": effortRule,
 			"outputSchema?": outputSchemaInputSchema,
 			"schemaMode?": '"permissive" | "strict"',
 			"+": "delete",
@@ -242,7 +244,7 @@ function createTaskSchema(options: {
 			"name?": "string",
 			agent,
 			task: "string",
-			"model?": "string | string[]",
+			"effort?": effortRule,
 			"outputSchema?": outputSchemaInputSchema,
 			"schemaMode?": '"permissive" | "strict"',
 			"isolated?": "boolean",
@@ -253,7 +255,7 @@ function createTaskSchema(options: {
 		"name?": "string",
 		agent,
 		task: "string",
-		"model?": "string | string[]",
+		"effort?": effortRule,
 		"outputSchema?": outputSchemaInputSchema,
 		"schemaMode?": '"permissive" | "strict"',
 		"+": "delete",
@@ -297,8 +299,8 @@ export interface TaskParams {
 	agent?: string;
 	/** The work (flat form). */
 	task?: string;
-	/** Explicit model selector or fallback chain for the spawn, including optional reasoning suffixes. */
-	model?: string | string[];
+	/** Per-spawn thinking effort (flat form): lowest/middle/highest level the resolved model supports. */
+	effort?: TaskEffort;
 	/** Caller-provided output schema; its presence overrides the selected agent's schema. */
 	outputSchema?: unknown;
 	/** Validation behavior for a caller-provided or inherited output schema. */

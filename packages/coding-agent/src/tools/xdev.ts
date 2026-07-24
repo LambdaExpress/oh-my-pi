@@ -30,10 +30,11 @@ import { parseStreamingJson } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import type { Theme } from "../modes/theme/theme";
+import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool } from "./index";
 import { replaceTabs } from "./render-utils";
 import type { ToolRenderer } from "./renderers";
-import { ToolError } from "./tool-errors";
+import { renderError, ToolAbortError, ToolError } from "./tool-errors";
 
 /**
  * Discoverable built-ins that must stay top-level even when xdev mounting is
@@ -399,28 +400,45 @@ export class XdevRegistry {
 		onUpdate?: AgentToolUpdateCallback,
 		context?: AgentToolContext,
 	): Promise<{ result: AgentToolResult<unknown>; xdev: XdevDispatch }> {
-		const inst = this.#resolve(name);
+		let xdev: XdevDispatch = { tool: name, mode: "execute" };
+		try {
+			const inst = this.#resolve(name);
 
-		if (HELP_CONTENT_RE.test(content)) {
+			if (HELP_CONTENT_RE.test(content)) {
+				return {
+					result: { content: [{ type: "text", text: renderDocs(inst) }] },
+					xdev: { tool: name, mode: "help" },
+				};
+			}
+
+			const validated = parseDeviceArgs(inst as AiTool, content, toolCallId, () => renderDocs(inst));
+			xdev = { ...xdev, args: validated };
+			const innerOnUpdate: AgentToolUpdateCallback | undefined = onUpdate
+				? partial =>
+						onUpdate({
+							content: partial.content,
+							details: { xdev: { ...xdev, inner: partial.details } },
+							isError: partial.isError,
+						})
+				: undefined;
+			const result = await inst.execute(toolCallId, validated as never, signal, innerOnUpdate, context);
+			return { result, xdev: { ...xdev, inner: result.details } };
+		} catch (error) {
+			if (
+				error instanceof ToolAbortError ||
+				signal?.aborted ||
+				(error instanceof Error && error.name === "AbortError")
+			) {
+				throw error;
+			}
 			return {
-				result: { content: [{ type: "text", text: renderDocs(inst) }] },
-				xdev: { tool: name, mode: "help" },
+				result: {
+					content: [{ type: "text", text: renderError(error) }],
+					isError: true,
+				},
+				xdev,
 			};
 		}
-
-		const validated = parseDeviceArgs(inst as AiTool, content, toolCallId, () => renderDocs(inst));
-
-		const xdevBase: XdevDispatch = { tool: name, mode: "execute", args: validated };
-		const innerOnUpdate: AgentToolUpdateCallback | undefined = onUpdate
-			? partial =>
-					onUpdate({
-						content: partial.content,
-						details: { xdev: { ...xdevBase, inner: partial.details } },
-						isError: partial.isError,
-					})
-			: undefined;
-		const result = await inst.execute(toolCallId, validated as never, signal, innerOnUpdate, context);
-		return { result, xdev: { ...xdevBase, inner: result.details } };
 	}
 }
 
@@ -433,9 +451,8 @@ export class XdevRegistry {
  *  map keyed by name. */
 function resolveDeviceRenderer(
 	name: string,
-	resolveMounted: ((name: string) => Tool | undefined) | undefined,
+	mounted: Tool | undefined,
 ): Pick<ToolRenderer, "renderCall" | "renderResult" | "mergeCallAndResult"> | undefined {
-	const mounted = resolveMounted?.(name);
 	if (mounted && (mounted.renderCall || mounted.renderResult)) {
 		// A mounted AgentTool exposes the same renderCall/renderResult/mergeCallAndResult
 		// surface as a static ToolRenderer; only the parameter generics differ, so unify
@@ -457,11 +474,13 @@ export function renderXdevCall(
 	theme: Theme,
 	resolveMounted?: (name: string) => Tool | undefined,
 ): Component | undefined {
-	const renderer = resolveDeviceRenderer(name, resolveMounted);
+	const mounted = resolveMounted?.(name);
+	const renderer = resolveDeviceRenderer(name, mounted);
+	const args = decodeInnerArgs(content);
 	if (renderer?.renderCall) {
-		return renderer.renderCall(decodeInnerArgs(content), options, theme);
+		return renderer.renderCall(args, options, theme);
 	}
-	return new Text(theme.fg("toolTitle", theme.bold(`${XD_URL_PREFIX}${name}`)), 0, 0);
+	return renderDefaultToolExecution({ label: mounted?.label ?? name, args, options }, theme);
 }
 
 /** Forward an `xd://` dispatch result to the mounted tool's renderer. */
@@ -479,7 +498,8 @@ export function renderXdevResult(
 	if (dispatch.mode === "help") {
 		return text ? new Text(theme.fg("toolOutput", replaceTabs(text)), 0, 0) : undefined;
 	}
-	const renderer = resolveDeviceRenderer(dispatch.tool, resolveMounted);
+	const mounted = resolveMounted?.(dispatch.tool);
+	const renderer = resolveDeviceRenderer(dispatch.tool, mounted);
 	const innerResult = { content: result.content, details: dispatch.inner, isError: result.isError };
 	if (renderer?.renderResult) {
 		const parts: Component[] = [];
@@ -498,5 +518,13 @@ export function renderXdevResult(
 			return box;
 		}
 	}
-	return text ? new Text(theme.fg("toolOutput", replaceTabs(text)), 0, 0) : undefined;
+	return renderDefaultToolExecution(
+		{
+			label: mounted?.label ?? dispatch.tool,
+			args: dispatch.args ?? {},
+			result: { output: text, isError: result.isError },
+			options,
+		},
+		theme,
+	);
 }

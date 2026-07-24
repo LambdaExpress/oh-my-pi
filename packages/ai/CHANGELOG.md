@@ -2,9 +2,44 @@
 
 ## [Unreleased]
 
+## [17.1.2] - 2026-07-24
+
+### Added
+
+- Added `GET /v1/usage/history` to the auth broker (recorded usage-limit snapshots with `sinceMs`/`provider` filters) and `AuthBrokerClient.fetchUsageHistory` — in broker deployments the broker host performs every upstream usage fetch, so its durable history is the only complete utilization record
+- Added per-client burn tracking to the auth broker: clients batch observed request usage per (provider, model) and flush it to `POST /v1/usage/observed` every 10 seconds (install id as client key, hostname as display name); the broker persists 5-minute buckets in `client_usage`/`clients` and serves aggregates from `GET /v1/usage/clients`. Brokers without the endpoint disable reporting for the process lifetime
+
+### Changed
+
+- Renamed the Z.AI feature quota row to `ZAI Zread Quota` (tier/id slug `zread`), replacing the 74-char `ZAI Web Search / Reader / Zread Quota (web-search-reader-zread)` title that wrapped `omp usage` rows
+
+### Fixed
+
+- Fixed every Claude (`anthropic-messages`) model on the `opencode-zen` provider failing with `401 Missing API key`: the gateway requires `x-api-key`, so `opencode-zen` now uses X-Api-Key auth like `opencode-go`/`umans` instead of bearer-only, and no longer sends the `context_management` field its Anthropic proxy rejects on thinking requests ([#6510](https://github.com/can1357/oh-my-pi/issues/6510)).
+- Fixed Anthropic native server-tool blocks being dropped from persisted assistant turns, preserving signed web-search continuations in their original response order ([#6495](https://github.com/can1357/oh-my-pi/issues/6495))
+
+## [17.1.1] - 2026-07-24
+
+### Added
+
+- Added `setCodexAttestationProvider` API for injecting `x-oai-attestation` headers in ChatGPT-OAuth Codex requests
+- Added OAuth account session pinning and active status tracking in storage
+- Added OpenAI Responses native computer-use transport, including batched actions and exact `computer_call`/`computer_call_output` replay with pending/acknowledged safety checks and `image_url`/`file_id` output references. Models without native support receive the same action surface as a regular function tool; provider-specific tool-choice forcing is used where supported.
+- Added `PI_CODEX_RESPONSES_LITE` to override the catalog-selected Codex Responses transport for diagnostics (`1`/`true` forces Lite; `0`/`false` forces the standard body).
+- Added caller-owned `cachedContent` on `google-generative-ai` and `google-vertex` GenerateContent options: pass an opaque cache resource name through the shared builder (blank values rejected); no create/refresh/delete lifecycle and no guessed model/project/location validation; existing `cachedContentTokenCount` → `Usage.cacheRead` normalization is unchanged.
+- Added Anthropic extra-usage reporting across `omp usage`, interactive `/usage`, and ACP `/usage`: the OAuth usage endpoint's authoritative `spend` payload (or legacy `extra_usage` fallback when absent) is normalized into a `Claude Extra Usage` USD row; capped accounts show limit/remaining/fractions and status, while uncapped spend exposes only its absolute used amount—rendered as `$… used` in CLI/TUI and `123.45 usd used` in ACP—without a fabricated cap, percentage, or status. ([#5575](https://github.com/can1357/oh-my-pi/issues/5575))
+- Added process-scoped OAuth account pools for trusted auth-broker clients via `OMP_AUTH_BROKER_ACCOUNT_POOL_FILE`, consistently filtering snapshots, streaming updates, refreshes, and usage reports to selected OAuth identities while leaving API-key credentials and the shared encrypted snapshot cache unrestricted.
+- Added opt-in Vercel AI Gateway automatic prompt caching for OpenAI Chat Completions while preserving `only` and `order` routing preferences.
+- Added Vercel AI Gateway Responses cache anchors and cache lifetimes, emitted only with automatic caching.
+- Added opt-in OpenAI GPT-5.6 explicit prompt-cache controls for Responses and Chat Completions. Existing requests remain implicit; the policy marks at most one existing stable-history block and is rejected locally on unsupported explicit routes.
+- Forwarded `statefulResponses` through `streamSimple`, so diagnostic callers can explicitly disable OpenAI Responses `previous_response_id` chaining.
+- Added native QwenCloud Token Plan API-key login, model discovery, and an optional interactive console-Cookie prompt for 5-hour and 7-day quota reporting ([#6151](https://github.com/can1357/oh-my-pi/issues/6151)).
+- Added model-scoped usage health and same-provider reselection for native coding-plan credential pools, preserving OAuth/login-pool precedence, scoped broker blocks, sibling rotation state, and conservative unknown-account handling while excluding ordinary configured API keys ([#5018](https://github.com/can1357/oh-my-pi/issues/5018)).
+
 ### Fixed
 
 - Fixed stateful OpenAI Responses explicit cache breakpoints being restored onto edited historical messages, ensuring full replays recompute the latest stable cache boundary.
+- Fixed ChatGPT Codex standard and Lite transports rejecting or hiding native computer-use payloads by unrolling the tool definition, forced choice, `computer_call`, and `computer_call_output` into ordinary function-tool forms.
 
 ## [17.1.0] - 2026-07-24
 

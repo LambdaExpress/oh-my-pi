@@ -345,6 +345,7 @@ function buildParams(
 		strictResponsesPairing: true,
 		supportsImageDetailOriginal: model.compat.supportsImageDetailOriginal,
 		systemRole,
+		nativeHistory: { replay: true, filterReasoning: false },
 		includeThinkingSignatures: true,
 		developerStringContent: true,
 		preserveAssistantMessageIds: true,
@@ -361,24 +362,41 @@ function buildParams(
 	};
 
 	applyCommonResponsesSamplingParams(params, options, model);
+	if (options?.include?.length) params.include = Array.from(new Set(options.include));
 
 	if (context.tools) {
-		params.tools = context.tools.map(tool => ({
-			type: "function" as const,
-			name: tool.name,
-			description: tool.description || "",
-			parameters: sanitizeSchemaForOpenAIResponses(toolWireSchema(tool)),
-			strict: false,
-		}));
-		if (options?.toolChoice && context.tools.length > 0) {
-			const toolChoice = mapToOpenAIResponsesToolChoice(options.toolChoice);
-			if (
-				toolChoice &&
-				(typeof toolChoice === "string" ||
-					toolChoice.type !== "function" ||
-					context.tools.some(tool => tool.name === toolChoice.name))
-			) {
-				params.tool_choice = toolChoice;
+		const serializedTools: NonNullable<AzureOpenAIResponsesSamplingParams["tools"]> = [];
+		for (const tool of context.tools) {
+			if (tool.native?.type === "computer") {
+				if (model.supportsComputerUse === true) {
+					serializedTools.push({ type: "computer" });
+					continue;
+				}
+				// Fall through: unsupported models get the computer tool as a
+				// plain function tool so function-calling models can drive it.
+			} else if (tool.native !== undefined) continue;
+			serializedTools.push({
+				type: "function",
+				name: tool.name,
+				description: tool.description || "",
+				parameters: sanitizeSchemaForOpenAIResponses(toolWireSchema(tool)),
+				strict: false,
+			});
+		}
+		if (serializedTools.length > 0) {
+			params.tools = serializedTools;
+			if (options?.toolChoice) {
+				const toolChoice = mapToOpenAIResponsesToolChoice(options.toolChoice);
+				const hasComputerTool = serializedTools.some(tool => tool.type === "computer");
+				if (
+					toolChoice &&
+					(typeof toolChoice === "string" ||
+						(toolChoice.type === "computer" && hasComputerTool) ||
+						(toolChoice.type === "function" &&
+							serializedTools.some(tool => tool.type === "function" && tool.name === toolChoice.name)))
+				) {
+					params.tool_choice = toolChoice;
+				}
 			}
 		}
 	}

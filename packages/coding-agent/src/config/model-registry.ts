@@ -65,6 +65,7 @@ const BUILT_IN_DISCOVERY_NON_AUTHORITATIVE_RETRY_MS = 5 * 60 * 1000;
 import type { ApiKeyResolver, FetchImpl } from "@oh-my-pi/pi-ai";
 import { registerOAuthProvider, unregisterOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai/oauth/types";
+import { setCodexAttestationProvider } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import {
 	getBundledModelReferenceIndex,
 	inheritReferenceThinking,
@@ -72,6 +73,7 @@ import {
 } from "@oh-my-pi/pi-catalog/identity";
 import { isBunTestRuntime, isRecord, logger, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
 import { parseModelString, resolveProviderModelReference } from "../config/model-resolver";
+import { generateCodexAttestation } from "../live/attestation";
 import type { AuthStorage, OAuthCredential } from "../session/auth-storage";
 import { type ApiKeyResolverModel, type ApiKeyResolverOptions, createApiKeyResolver } from "./api-key-resolver";
 import type { ConfigError, ConfigFile } from "./config-file";
@@ -89,6 +91,10 @@ import {
 import { ModelsConfigFile, type ProviderValidationModel, validateProviderConfiguration } from "./models-config";
 import type { ModelOverride, ModelsConfig, ProviderAuthMode } from "./models-config-schema";
 import { settings } from "./settings";
+
+// DeviceCheck attestation (`x-oai-attestation`) for ChatGPT-OAuth Codex
+// requests; the pi-ai provider resolves it just-in-time per request.
+setCodexAttestationProvider(generateCodexAttestation);
 
 export const kNoAuth = "N/A";
 

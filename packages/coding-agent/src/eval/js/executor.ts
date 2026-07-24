@@ -175,5 +175,7 @@ export async function executeJs(code: string, options: JsExecutorOptions): Promi
 			outputBytes: summary.outputBytes,
 			displayOutputs,
 		};
+	} finally {
+		await outputSink.dispose();
 	}
 }

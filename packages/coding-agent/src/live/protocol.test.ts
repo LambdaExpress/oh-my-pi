@@ -95,12 +95,12 @@ describe("Frameless Bidi server events", () => {
 });
 
 describe("Frameless Bidi client payloads", () => {
-	test("builds the exact multipart call session JSON", () => {
+	test("builds the exact live call session JSON", () => {
 		const payload = buildLiveSessionPayload("Be concise.", "marin");
 
-		expect(LIVE_MODEL).toBe("gpt-live-1-boulder-alpha");
+		expect(LIVE_MODEL).toBe("gpt-live-1-codex");
 		expect(JSON.stringify(payload)).toBe(
-			'{"model":"gpt-live-1-boulder-alpha","instructions":"Be concise.","audio":{"output":{"voice":"marin"}},"delegation":{"type":"client"}}',
+			'{"model":"gpt-live-1-codex","instructions":"Be concise.","audio":{"output":{"voice":"marin"}},"delegation":{"type":"client"}}',
 		);
 	});
 

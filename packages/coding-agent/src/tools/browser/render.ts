@@ -11,6 +11,7 @@ import type { RenderResultOptions } from "../../extensibility/custom-tools/types
 import type { Theme } from "../../modes/theme/theme";
 import { Hasher, isFramedBlockComponent, markFramedBlockComponent, renderCodeCell, renderStatusLine } from "../../tui";
 import type { BrowserToolDetails } from "../browser";
+import { formatJavaScriptForDisplay } from "../eval-format/javascript";
 import { formatStyledTruncationWarning, stripOutputNotice } from "../output-meta";
 import { extractPartialJsonString, replaceTabs, shortenPath } from "../render-utils";
 
@@ -91,7 +92,9 @@ function renderRunCell(
 	isError: boolean,
 	theme: Theme,
 ): Component {
-	const code = dropTrailingBlankLines(extractPartialJsonString(args.__partialJson, "code") ?? args.code ?? "");
+	const code = formatJavaScriptForDisplay(
+		dropTrailingBlankLines(extractPartialJsonString(args.__partialJson, "code") ?? args.code ?? ""),
+	);
 	const status = cellStatus(options.isPartial, isError);
 
 	const titleParts: string[] = [tabLabel(args, details)];

@@ -588,6 +588,7 @@ export async function executeBash(command: string, options?: BashExecutorOptions
 		resetSession = true;
 		throw err;
 	} finally {
+		await sink.dispose();
 		if (timeoutTimer) {
 			clearTimeout(timeoutTimer);
 		}

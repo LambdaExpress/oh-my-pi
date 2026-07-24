@@ -28,8 +28,12 @@ import type {
 import { getEnvApiKey, getEnvApiKeyName } from "./stream";
 import type { Provider } from "./types";
 import type {
+	ClientProviderUsage,
+	ClientUsageReport,
+	ClientUsageSummary,
 	CredentialRankingContext,
 	CredentialRankingStrategy,
+	ObservedUsageEntry,
 	UsageCostHistoryEntry,
 	UsageCostHistoryQuery,
 	UsageCredential,
@@ -400,6 +404,16 @@ export interface AuthCredentialStore {
 	/** Read recorded usage-limit snapshots, oldest first. */
 	listUsageHistory?(query?: UsageHistoryQuery): UsageHistoryEntry[];
 	/**
+	 * Client hook: forward locally observed request usage. Remote broker stores
+	 * batch these to the broker so it can attribute token burn per install;
+	 * local stores omit it and observation is skipped.
+	 */
+	recordObservedUsage?(entries: ObservedUsageEntry[]): void;
+	/** Broker host: persist one client's observed-usage report. */
+	recordClientUsage?(report: ClientUsageReport): void;
+	/** Broker host: aggregate recorded per-client usage since a timestamp. */
+	getClientUsageSummary?(sinceMs: number): ClientUsageSummary;
+	/**
 	 * Optional store-supplied OAuth refresh. When present, `AuthStorage` uses
 	 * it before the per-provider local refresh path. `RemoteAuthCredentialStore`
 	 * implements this against the broker; SQLite stores leave it undefined.
@@ -625,6 +639,12 @@ const USAGE_LAST_GOOD_RETENTION_MS = 24 * 60 * 60_000;
  */
 const USAGE_HISTORY_BUCKET_MS = 60 * 60_000;
 /**
+ * Merge client observed-usage flushes into at most one row per 5 minutes per
+ * (install, provider, model): ~300 rows/day per active model per client
+ * instead of one row per 10s flush.
+ */
+const CLIENT_USAGE_BUCKET_MS = 5 * 60_000;
+/**
  * Per-credential cool-down after a usage fetch fails. While this window is
  * active we serve the last successful value to avoid dropping the credential
  * from the report; without a previous value we just return null and retry
@@ -830,6 +850,8 @@ export interface OAuthAccountSummary {
 	/** Organization/workspace the credential is scoped to (Anthropic/ChatGPT multi-subscription). */
 	orgId?: string;
 	orgName?: string;
+	/** True when this account is the session-sticky OAuth credential requested by `listOAuthAccounts`. */
+	active: boolean;
 }
 export interface InvalidateCredentialMatchingOptions {
 	signal?: AbortSignal;
@@ -3140,6 +3162,56 @@ export class AuthStorage {
 		}
 	}
 
+	/**
+	 * Forward one completed request's usage to the store's observer hook.
+	 * Broker-backed stores batch these into per-install reports so the broker
+	 * can track actual token burn per client; local stores have no hook and
+	 * the call is a no-op.
+	 */
+	recordObservedUsage(entry: {
+		provider: Provider;
+		model: string;
+		usage: { input: number; output: number; cacheRead: number; cacheWrite: number };
+		costUsd?: number;
+		at?: number;
+	}): void {
+		const record = this.#store.recordObservedUsage;
+		if (!record) return;
+		try {
+			record.call(this.#store, [
+				{
+					at: entry.at ?? Date.now(),
+					provider: entry.provider,
+					model: entry.model,
+					requests: 1,
+					inputTokens: entry.usage.input,
+					outputTokens: entry.usage.output,
+					cacheReadTokens: entry.usage.cacheRead,
+					cacheWriteTokens: entry.usage.cacheWrite,
+					costUsd: Number.isFinite(entry.costUsd) ? (entry.costUsd ?? 0) : 0,
+				},
+			]);
+		} catch (error) {
+			this.#usageLogger?.debug("observed usage record failed", {
+				provider: entry.provider,
+				error: String(error),
+			});
+		}
+	}
+
+	/** Broker host: persist one client's observed-usage report (per-install token burn). */
+	recordClientUsage(report: ClientUsageReport): boolean {
+		const record = this.#store.recordClientUsage;
+		if (!record) return false;
+		record.call(this.#store, report);
+		return true;
+	}
+
+	/** Broker host: aggregate recorded per-client usage since `sinceMs`. */
+	getClientUsageSummary(sinceMs: number): ClientUsageSummary {
+		return this.#store.getClientUsageSummary?.(sinceMs) ?? { clients: [] };
+	}
+
 	#resolveObservedUsageCredential(provider: Provider, sessionId?: string): UsageCredential | undefined {
 		const entries = this.#getStoredCredentials(provider);
 		const sessionCredential = this.#getSessionCredential(provider, sessionId);
@@ -5202,11 +5274,20 @@ export class AuthStorage {
 	 * order, WITHOUT refreshing any token. The array position (0-based) is the
 	 * selector accepted by {@link AuthStorage.getOAuthAccessAt}; a "pick the Nth
 	 * account" UI should render `position + 1`.
+	 *
+	 * When `sessionId` is supplied, the session-sticky OAuth credential is marked
+	 * `active`. No account is active before that session has resolved or pinned a
+	 * credential.
 	 */
-	listOAuthAccounts(provider: string): OAuthAccountSummary[] {
+	listOAuthAccounts(provider: string, sessionId?: string): OAuthAccountSummary[] {
 		if (this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
 			return [];
 		}
+		const sessionCredential = this.#getSessionCredential(provider, sessionId);
+		const activeCredentialId =
+			sessionCredential?.type === "oauth"
+				? this.#getStoredCredentials(provider)[sessionCredential.index]?.id
+				: undefined;
 		return this.#getStoredOAuthSelections(provider).map((selection, position) => ({
 			position,
 			credentialId: selection.credentialId,
@@ -5216,7 +5297,27 @@ export class AuthStorage {
 			enterpriseUrl: selection.credential.enterpriseUrl,
 			orgId: selection.credential.orgId,
 			orgName: selection.credential.orgName,
+			active: selection.credentialId === activeCredentialId,
 		}));
+	}
+
+	/**
+	 * Pin one stored OAuth account as this session's preferred credential.
+	 *
+	 * The durable credential id keeps the pin stable across credential refreshes,
+	 * storage reordering, and process restarts. Normal auth retry and usage-limit
+	 * handling may still route around an unavailable account.
+	 */
+	pinSessionOAuthAccount(provider: string, sessionId: string, credentialId: number): boolean {
+		if (!sessionId || this.#runtimeOverrides.has(provider) || this.#configOverrides.has(provider)) {
+			return false;
+		}
+		const stored = this.#getStoredCredentials(provider);
+		const index = stored.findIndex(entry => entry.id === credentialId);
+		const target = stored[index];
+		if (target?.credential.type !== "oauth") return false;
+		this.#recordSessionCredential(provider, sessionId, "oauth", index);
+		return true;
 	}
 
 	/**
@@ -6572,6 +6673,27 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 			);
 			CREATE INDEX IF NOT EXISTS idx_usage_cost_history_lookup ON usage_cost_history(provider, account_key, recorded_at);
 			CREATE INDEX IF NOT EXISTS idx_usage_history_recorded ON usage_history(recorded_at);
+			CREATE TABLE IF NOT EXISTS clients (
+				install_id TEXT PRIMARY KEY,
+				hostname TEXT,
+				first_seen INTEGER NOT NULL,
+				last_seen INTEGER NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS client_usage (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				recorded_at INTEGER NOT NULL,
+				install_id TEXT NOT NULL,
+				provider TEXT NOT NULL,
+				model TEXT NOT NULL,
+				requests INTEGER NOT NULL,
+				input_tokens INTEGER NOT NULL,
+				output_tokens INTEGER NOT NULL,
+				cache_read_tokens INTEGER NOT NULL,
+				cache_write_tokens INTEGER NOT NULL,
+				cost_usd REAL NOT NULL DEFAULT 0
+			);
+			CREATE INDEX IF NOT EXISTS idx_client_usage_series ON client_usage(install_id, provider, model, recorded_at);
+			CREATE INDEX IF NOT EXISTS idx_client_usage_recorded ON client_usage(recorded_at);
 		`);
 
 		if (!this.#authCredentialsTableExists()) {
@@ -7348,6 +7470,113 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		} catch {
 			return [];
 		}
+	}
+
+	recordClientUsage(report: ClientUsageReport): void {
+		const now = Date.now();
+		this.#db
+			.query(
+				`INSERT INTO clients (install_id, hostname, first_seen, last_seen) VALUES (?, ?, ?, ?)
+				 ON CONFLICT(install_id) DO UPDATE SET hostname = COALESCE(excluded.hostname, hostname), last_seen = excluded.last_seen`,
+			)
+			.run(report.installId, report.hostname ?? null, now, now);
+		const findBucket = this.#db.query(
+			`SELECT id FROM client_usage
+			 WHERE install_id = ? AND provider = ? AND model = ? AND recorded_at >= ?
+			 ORDER BY recorded_at DESC LIMIT 1`,
+		);
+		const merge = this.#db.query(
+			`UPDATE client_usage SET recorded_at = ?, requests = requests + ?, input_tokens = input_tokens + ?,
+				output_tokens = output_tokens + ?, cache_read_tokens = cache_read_tokens + ?,
+				cache_write_tokens = cache_write_tokens + ?, cost_usd = cost_usd + ? WHERE id = ?`,
+		);
+		const insert = this.#db.query(
+			`INSERT INTO client_usage (recorded_at, install_id, provider, model, requests, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		);
+		for (const entry of report.entries) {
+			// Merge into the newest row of the same (install, provider, model)
+			// bucket so 10s client flushes don't accrete one row apiece forever.
+			const bucketFloor = entry.at - CLIENT_USAGE_BUCKET_MS;
+			const existing = findBucket.get(report.installId, entry.provider, entry.model, bucketFloor) as {
+				id: number;
+			} | null;
+			if (existing) {
+				merge.run(
+					entry.at,
+					entry.requests,
+					entry.inputTokens,
+					entry.outputTokens,
+					entry.cacheReadTokens,
+					entry.cacheWriteTokens,
+					entry.costUsd,
+					existing.id,
+				);
+				continue;
+			}
+			insert.run(
+				entry.at,
+				report.installId,
+				entry.provider,
+				entry.model,
+				entry.requests,
+				entry.inputTokens,
+				entry.outputTokens,
+				entry.cacheReadTokens,
+				entry.cacheWriteTokens,
+				entry.costUsd,
+			);
+		}
+	}
+
+	getClientUsageSummary(sinceMs: number): ClientUsageSummary {
+		const clients = this.#db
+			.query("SELECT install_id, hostname, first_seen, last_seen FROM clients ORDER BY last_seen DESC")
+			.all() as Array<{ install_id: string; hostname: string | null; first_seen: number; last_seen: number }>;
+		const aggregates = this.#db
+			.query(
+				`SELECT install_id, provider, SUM(requests) requests, SUM(input_tokens) input_tokens,
+					SUM(output_tokens) output_tokens, SUM(cache_read_tokens) cache_read_tokens,
+					SUM(cache_write_tokens) cache_write_tokens, SUM(cost_usd) cost_usd
+				 FROM client_usage WHERE recorded_at >= ? GROUP BY install_id, provider
+				 ORDER BY install_id, SUM(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens) DESC`,
+			)
+			.all(sinceMs) as Array<{
+			install_id: string;
+			provider: string;
+			requests: number;
+			input_tokens: number;
+			output_tokens: number;
+			cache_read_tokens: number;
+			cache_write_tokens: number;
+			cost_usd: number;
+		}>;
+		const providersByInstall = new Map<string, ClientProviderUsage[]>();
+		for (const row of aggregates) {
+			let list = providersByInstall.get(row.install_id);
+			if (!list) {
+				list = [];
+				providersByInstall.set(row.install_id, list);
+			}
+			list.push({
+				provider: row.provider,
+				requests: row.requests,
+				inputTokens: row.input_tokens,
+				outputTokens: row.output_tokens,
+				cacheReadTokens: row.cache_read_tokens,
+				cacheWriteTokens: row.cache_write_tokens,
+				costUsd: row.cost_usd,
+			});
+		}
+		return {
+			clients: clients.map(client => ({
+				installId: client.install_id,
+				hostname: client.hostname ?? undefined,
+				firstSeen: client.first_seen,
+				lastSeen: client.last_seen,
+				providers: providersByInstall.get(client.install_id) ?? [],
+			})),
+		};
 	}
 
 	// ─── Convenience methods for CLI ────────────────────────────────────────

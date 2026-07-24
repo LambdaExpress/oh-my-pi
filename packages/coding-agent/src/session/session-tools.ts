@@ -61,6 +61,7 @@ interface SessionToolsOptions {
 	autoApprove?: boolean;
 	toolRegistry?: Map<string, AgentTool>;
 	createVibeTools?: () => AgentTool[];
+	createComputerTool?: () => Promise<AgentTool | null>;
 	builtInToolNames?: Iterable<string>;
 	presentationPinnedToolNames?: ReadonlySet<string>;
 	ensureWriteRegistered?: () => Promise<boolean>;
@@ -85,6 +86,7 @@ export class SessionTools {
 	#autoApprove: boolean;
 	#toolRegistry: Map<string, AgentTool>;
 	#createVibeTools: (() => AgentTool[]) | undefined;
+	#createComputerTool: SessionToolsOptions["createComputerTool"];
 	#installedVibeToolNames = new Set<string>();
 	#builtInToolNames: Set<string>;
 	#rpcHostToolNames = new Set<string>();
@@ -112,6 +114,7 @@ export class SessionTools {
 		this.#autoApprove = options.autoApprove === true;
 		this.#toolRegistry = options.toolRegistry ?? new Map();
 		this.#createVibeTools = options.createVibeTools;
+		this.#createComputerTool = options.createComputerTool;
 		this.#builtInToolNames = new Set(options.builtInToolNames ?? []);
 		this.#presentationPinnedToolNames = options.presentationPinnedToolNames;
 		this.#ensureWriteRegistered = options.ensureWriteRegistered;
@@ -748,6 +751,40 @@ export class SessionTools {
 			nextActive.push(wrapped.name);
 		}
 		await this.applyActiveToolsByName([...new Set(nextActive)]);
+	}
+
+	/**
+	 * Session-scoped enable/disable for the settings-gated `computer` tool.
+	 *
+	 * `createTools` derives the built-in slate once at session start, so a runtime
+	 * `computer.enabled` override alone never changes the active tools. Enabling
+	 * builds the tool through the config factory on first use (later toggles reuse
+	 * the registry entry, so only one desktop controller is ever registered) and
+	 * activates it; disabling drops it from the active set while keeping the
+	 * registry entry. Takes effect before the next model call.
+	 *
+	 * @returns false when enabling was requested but this session cannot build the
+	 * tool (e.g. restricted child sessions have no factory).
+	 */
+	async setComputerToolEnabled(enabled: boolean): Promise<boolean> {
+		const active = this.getEnabledToolNames();
+		if (!enabled) {
+			if (active.includes("computer")) {
+				await this.applyActiveToolsByName(active.filter(name => name !== "computer"));
+			}
+			return true;
+		}
+		if (!this.#toolRegistry.has("computer")) {
+			const tool = await this.#createComputerTool?.();
+			if (tool?.name !== "computer") return false;
+			const wrapped = this.#wrapRuntimeTool(tool);
+			this.#toolRegistry.set(wrapped.name, wrapped);
+			this.#builtInToolNames.add(wrapped.name);
+		}
+		if (!active.includes("computer")) {
+			await this.applyActiveToolsByName([...active, "computer"]);
+		}
+		return true;
 	}
 
 	/** Rebuilds the stable base prompt for the current tools and model. */

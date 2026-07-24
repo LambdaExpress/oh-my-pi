@@ -5,6 +5,8 @@
 import {
 	type AssistantMessage,
 	type AssistantMessageEvent,
+	type ComputerAction,
+	type ComputerSafetyCheck,
 	type Context,
 	EventStream,
 	isApiKeyResolver,
@@ -12,8 +14,10 @@ import {
 	seedApiKeyResolver,
 	streamSimple,
 	stripSchemaDescriptions,
+	type ToolCallProviderMetadata,
 	type ToolChoice,
 	type ToolResultMessage,
+	type ToolResultProviderMetadata,
 	type TSchema,
 	toolWireSchema,
 	validateToolArguments,
@@ -106,6 +110,7 @@ const MAX_SOFT_TOOL_ESCALATIONS = 3;
 function hardToolChoiceBlocks(choice: ToolChoice | undefined, requiredTool: string): boolean {
 	if (choice === undefined) return false;
 	if (typeof choice === "string") return choice === "none";
+	if (choice.type === "computer") return requiredTool !== "computer";
 	const name = choice.type === "tool" ? choice.name : "function" in choice ? choice.function.name : choice.name;
 	return name !== requiredTool;
 }
@@ -188,6 +193,160 @@ export function resolveOwnedDialectFromEnv(value: string | undefined): Dialect |
 type AssistantContentBlock = AssistantMessage["content"][number];
 type AssistantToolCallBlock = Extract<AssistantContentBlock, { type: "toolCall" }>;
 
+function snapshotComputerSafetyChecks(value: unknown): ComputerSafetyCheck[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const checks: ComputerSafetyCheck[] = [];
+	for (const raw of value) {
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+		const check = raw as Record<string, unknown>;
+		if (typeof check.id !== "string" || check.id.length === 0) return undefined;
+		if (check.code !== undefined && check.code !== null && typeof check.code !== "string") return undefined;
+		if (check.message !== undefined && check.message !== null && typeof check.message !== "string") return undefined;
+		checks.push({
+			id: check.id,
+			...(check.code !== undefined ? { code: check.code as string | null } : {}),
+			...(check.message !== undefined ? { message: check.message as string | null } : {}),
+		});
+	}
+	return checks;
+}
+
+function isFiniteCoordinate(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value);
+}
+
+function hasValidComputerKeys(value: unknown, optional: boolean): boolean {
+	return (
+		(optional && value === undefined) ||
+		value === null ||
+		(Array.isArray(value) && value.every(key => typeof key === "string"))
+	);
+}
+
+function snapshotComputerAction(value: unknown): ComputerAction | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const action = value as Record<string, unknown>;
+	switch (action.type) {
+		case "click":
+			if (
+				!(["left", "right", "wheel", "back", "forward"] as unknown[]).includes(action.button) ||
+				!isFiniteCoordinate(action.x) ||
+				!isFiniteCoordinate(action.y) ||
+				!hasValidComputerKeys(action.keys, true)
+			)
+				return undefined;
+			break;
+		case "double_click":
+			if (
+				!isFiniteCoordinate(action.x) ||
+				!isFiniteCoordinate(action.y) ||
+				!hasValidComputerKeys(action.keys, false)
+			)
+				return undefined;
+			break;
+		case "drag":
+			if (
+				!Array.isArray(action.path) ||
+				!action.path.every(
+					point =>
+						point &&
+						typeof point === "object" &&
+						isFiniteCoordinate((point as Record<string, unknown>).x) &&
+						isFiniteCoordinate((point as Record<string, unknown>).y),
+				) ||
+				!hasValidComputerKeys(action.keys, true)
+			)
+				return undefined;
+			break;
+		case "keypress":
+			if (!Array.isArray(action.keys) || !action.keys.every(key => typeof key === "string")) return undefined;
+			break;
+		case "move":
+			if (!isFiniteCoordinate(action.x) || !isFiniteCoordinate(action.y) || !hasValidComputerKeys(action.keys, true))
+				return undefined;
+			break;
+		case "screenshot":
+		case "wait":
+			break;
+		case "scroll":
+			if (
+				!isFiniteCoordinate(action.x) ||
+				!isFiniteCoordinate(action.y) ||
+				!isFiniteCoordinate(action.scroll_x) ||
+				!isFiniteCoordinate(action.scroll_y) ||
+				!hasValidComputerKeys(action.keys, true)
+			)
+				return undefined;
+			break;
+		case "type":
+			if (typeof action.text !== "string") return undefined;
+			break;
+		default:
+			return undefined;
+	}
+	return structuredCloneJSON(action) as ComputerAction;
+}
+
+function snapshotToolCallProviderMetadata(value: unknown): ToolCallProviderMetadata | undefined {
+	if (value === undefined) return undefined;
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const metadata = value as Record<string, unknown>;
+	if (
+		metadata.type !== "computer" ||
+		typeof metadata.providerItemId !== "string" ||
+		metadata.providerItemId.length === 0
+	)
+		return undefined;
+	if (!Array.isArray(metadata.actions) || metadata.actions.length === 0) return undefined;
+	const actions = metadata.actions.map(snapshotComputerAction);
+	if (actions.some(action => action === undefined)) return undefined;
+	const pendingSafetyChecks = snapshotComputerSafetyChecks(metadata.pendingSafetyChecks);
+	if (!pendingSafetyChecks) return undefined;
+	return {
+		type: "computer",
+		providerItemId: metadata.providerItemId,
+		actions: actions as ComputerAction[],
+		pendingSafetyChecks,
+	};
+}
+
+function snapshotToolResultProviderMetadata(value: unknown): {
+	metadata?: ToolResultProviderMetadata;
+	malformed: boolean;
+} {
+	if (value === undefined) return { malformed: false };
+	if (!value || typeof value !== "object" || Array.isArray(value)) return { malformed: true };
+	const metadata = value as Record<string, unknown>;
+	if (
+		metadata.type !== "computer" ||
+		!metadata.screenshot ||
+		typeof metadata.screenshot !== "object" ||
+		Array.isArray(metadata.screenshot)
+	) {
+		return { malformed: true };
+	}
+	const screenshot = metadata.screenshot as Record<string, unknown>;
+	const hasImageUrl = Object.hasOwn(screenshot, "image_url");
+	const hasFileId = Object.hasOwn(screenshot, "file_id");
+	if (screenshot.type !== "computer_screenshot" || hasImageUrl === hasFileId) return { malformed: true };
+	if (hasImageUrl && (typeof screenshot.image_url !== "string" || screenshot.image_url.length === 0))
+		return { malformed: true };
+	if (hasFileId && (typeof screenshot.file_id !== "string" || screenshot.file_id.length === 0))
+		return { malformed: true };
+	const acknowledgedSafetyChecks = snapshotComputerSafetyChecks(metadata.acknowledgedSafetyChecks);
+	if (!acknowledgedSafetyChecks) return { malformed: true };
+	return {
+		malformed: false,
+		metadata: {
+			type: "computer",
+			screenshot: hasImageUrl
+				? { type: "computer_screenshot", image_url: screenshot.image_url as string }
+				: { type: "computer_screenshot", file_id: screenshot.file_id as string },
+			acknowledgedSafetyChecks,
+		},
+	};
+}
+
 function snapshotAssistantContentBlock(block: AssistantContentBlock): AssistantContentBlock {
 	switch (block.type) {
 		case "text":
@@ -197,10 +356,16 @@ function snapshotAssistantContentBlock(block: AssistantContentBlock): AssistantC
 			return { ...block };
 		case "redactedThinking":
 			return { ...block };
+		case "anthropicServerTool":
+			return { ...block, block: structuredCloneJSON(block.block) };
 		case "fallback":
 			return { ...block, from: { ...block.from }, to: { ...block.to } };
 		case "toolCall":
-			return { ...block, arguments: structuredCloneJSON(block.arguments) };
+			return {
+				...block,
+				arguments: structuredCloneJSON(block.arguments),
+				providerMetadata: snapshotToolCallProviderMetadata(block.providerMetadata),
+			};
 	}
 }
 
@@ -276,6 +441,10 @@ function coerceToolResult(raw: unknown): { result: AgentToolResult<unknown>; mal
 	const rawObj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
 	const rawContent = rawObj?.content;
 	const details = rawObj && "details" in rawObj ? rawObj.details : {};
+	const providerMetadataResult = snapshotToolResultProviderMetadata(
+		rawObj && "providerMetadata" in rawObj ? rawObj.providerMetadata : undefined,
+	);
+	const providerMetadata = providerMetadataResult.metadata;
 	// Tools may flag a non-throwing failure on the result itself (e.g. an
 	// aggregator that catches per-entry errors and synthesizes a combined
 	// result). Preserve the flag so agent-loop can surface it on the wire.
@@ -320,7 +489,13 @@ function coerceToolResult(raw: unknown): { result: AgentToolResult<unknown>; mal
 			text: `Tool returned an invalid result: ${invalidBlocks} content block${invalidBlocks === 1 ? "" : "s"} had an unsupported shape.`,
 		});
 	}
-	const isError = explicitError || invalidBlocks > 0;
+	if (providerMetadataResult.malformed) {
+		content.push({
+			type: "text",
+			text: "Tool returned an invalid result: computer providerMetadata had an unsupported shape.",
+		});
+	}
+	const isError = explicitError || invalidBlocks > 0 || providerMetadataResult.malformed;
 	// Anthropic rejects tool_result blocks with is_error: true and empty content.
 	if (isError && !hasSubstantiveToolResultContent(content)) {
 		content.length = 0;
@@ -330,10 +505,11 @@ function coerceToolResult(raw: unknown): { result: AgentToolResult<unknown>; mal
 		result: {
 			content,
 			details,
+			providerMetadata,
 			...(isError ? { isError: true } : {}),
 			...(useless && !isError ? { useless: true } : {}),
 		},
-		malformed: invalidBlocks > 0,
+		malformed: invalidBlocks > 0 || providerMetadataResult.malformed,
 	};
 }
 
@@ -1826,6 +2002,7 @@ async function executeToolCalls(
 		interruptMode = "immediate",
 		getToolContext,
 		transformToolCallArguments,
+		resolveFallbackTool,
 		intentTracing,
 		beforeToolCall,
 		afterToolCall,
@@ -1887,7 +2064,10 @@ async function executeToolCalls(
 		// determinism if both somehow collide.
 		const tool =
 			tools?.find(t => t.name === toolCall.name) ??
-			tools?.find(t => t.customWireName !== undefined && t.customWireName === toolCall.name);
+			tools?.find(t => t.customWireName !== undefined && t.customWireName === toolCall.name) ??
+			// Not in the advertised set: let the host route side-transport tools
+			// (e.g. xd:// device mounts) called by their top-level name.
+			resolveFallbackTool?.(toolCall.name);
 		const args = toolCall.arguments as Record<string, unknown>;
 		const interruptibleMode = tool?.interruptible;
 		let interruptible = false;
@@ -1994,6 +2174,7 @@ async function executeToolCalls(
 			toolName: toolCall.name,
 			content: result.content,
 			details: result.details,
+			providerMetadata: result.providerMetadata,
 			isError,
 			...(result.useless && !isError ? { useless: true } : {}),
 			timestamp: Date.now(),
@@ -2158,6 +2339,7 @@ async function executeToolCalls(
 							total: toolCalls.length,
 							toolCalls: toolCallInfos,
 							steeringSignal: steeringSoftController.signal,
+							providerMetadata: toolCall.providerMetadata,
 						})
 					: undefined;
 				const { promise: abortPromise, resolve: resolveAbort } = Promise.withResolvers<{ kind: "abort" }>();
@@ -2267,6 +2449,7 @@ async function executeToolCalls(
 							content: after.content ?? result.content,
 							details: after.details ?? result.details,
 							isError: after.isError ?? result.isError,
+							providerMetadata: after.providerMetadata ?? result.providerMetadata,
 							useless: after.useless ?? result.useless,
 						});
 						result = coerced.result;

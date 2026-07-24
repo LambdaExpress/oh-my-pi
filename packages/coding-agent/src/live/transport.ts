@@ -4,13 +4,10 @@ import {
 	CODEX_BASE_URL,
 	CODEX_CLIENT_VERSION,
 	getCodexAccountId,
-	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/codex";
-import type { Browser, HTTPRequest, Page } from "puppeteer-core";
-import { launchHeadlessBrowser } from "../tools/browser/launch";
-import audioWorkletSource from "./audio-worklet.txt" with { type: "text" };
-import browserRuntimeSource from "./browser-runtime.txt" with { type: "text" };
+import { LiveWebRtcPeer } from "@oh-my-pi/pi-natives";
+import { generateCodexAttestation } from "./attestation";
 import {
 	buildLiveSessionPayload,
 	type LiveClientMessage,
@@ -20,37 +17,19 @@ import {
 
 const SIGNALING_URL = `${CODEX_BASE_URL}/codex/realtime/calls?intent=quicksilver&architecture=avas`;
 const MAX_ERROR_BODY_LENGTH = 2_048;
-const MAX_HOST_AUDIO_SAMPLES = 32_000;
 const SIDEBAND_CONNECT_ATTEMPTS = 5;
 const SIDEBAND_CONNECT_TIMEOUT_MS = 15_000;
 const LIVE_PROVIDER = "openai-codex";
-const LIVE_CALL_ID_PATTERN = /^rtc_[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
+const LIVE_ORIGINATOR = "Codex Desktop";
+const LIVE_CALL_ID_PATTERN = /^rtc_[\w-]+$/;
 
 type Lifecycle = "idle" | "connecting" | "connected" | "closing" | "closed";
-
-type BrowserLiveApi = {
-	start(workletSource: string): Promise<string>;
-	acceptAnswer(sdp: string): Promise<void>;
-	waitForOpen(): Promise<void>;
-	send(payload: string): void;
-	pushAudio(payload: string): void;
-	setMuted(muted: boolean): void;
-	close(): Promise<void>;
-};
-
-declare global {
-	var ompCodexLive: BrowserLiveApi;
-}
-
-interface QueuedAudio {
-	payload: string;
-	sampleCount: number;
-}
 
 interface LiveSignalingResult {
 	answer: string;
 	callId: string;
 	access: OAuthAccess;
+	attestation: string | undefined;
 }
 
 class LiveSignalingError extends Error {
@@ -81,7 +60,7 @@ export interface LiveTransportOptions {
 	signal?: AbortSignal;
 }
 
-/** Extracts the server-assigned `rtc_<uuid>` call ID from a signaling Location header. */
+/** Extracts the server-assigned `rtc_*` call ID from a signaling Location header. */
 export function parseLiveCallId(location: string | null): string | undefined {
 	if (!location) return undefined;
 	return location
@@ -92,23 +71,30 @@ export function parseLiveCallId(location: string | null): string | undefined {
 
 /** Builds the Frameless Bidi sideband WebSocket URL for an accepted Codex call. */
 export function buildLiveSidebandUrl(callId: string): string {
-	const url = new URL(`${CODEX_BASE_URL}/codex/${encodeURIComponent(callId)}`);
-	url.protocol = url.protocol === "http:" ? "ws:" : "wss:";
+	const url = new URL(`https://api.openai.com/v1/live/${encodeURIComponent(callId)}`);
+	url.protocol = "wss:";
 	return url.toString();
 }
 
-function liveSessionHeaders(access: OAuthAccess, sessionId: string): Record<string, string> {
+function liveSessionHeaders(
+	access: OAuthAccess,
+	sessionId: string,
+	realtimeSessionId: string,
+	attestation: string | undefined,
+): Record<string, string> {
 	const headers: Record<string, string> = {
 		Authorization: `Bearer ${access.accessToken}`,
 		"OpenAI-Alpha": "quicksilver=v2",
-		"x-session-id": sessionId,
-		[OPENAI_HEADERS.ORIGINATOR]: OPENAI_HEADER_VALUES.ORIGINATOR_CODEX,
+		"User-Agent": `Codex Desktop/${CODEX_CLIENT_VERSION}`,
+		"x-session-id": realtimeSessionId,
+		[OPENAI_HEADERS.ORIGINATOR]: LIVE_ORIGINATOR,
 		[OPENAI_HEADERS.VERSION]: CODEX_CLIENT_VERSION,
 		[OPENAI_HEADERS.SCOPED_SESSION_ID]: sessionId,
 		[OPENAI_HEADERS.THREAD_ID]: sessionId,
 	};
 	const accountId = access.accountId ?? getCodexAccountId(access.accessToken);
 	if (accountId) headers[OPENAI_HEADERS.ACCOUNT_ID] = accountId;
+	if (attestation) headers["x-oai-attestation"] = attestation;
 	return headers;
 }
 
@@ -128,23 +114,16 @@ function abortReason(signal: AbortSignal | undefined): Error {
 	return new DOMException("Live connection aborted", "AbortError");
 }
 
-function encodePcm(samples: Float32Array): string {
-	return Buffer.from(samples.buffer, samples.byteOffset, samples.byteLength).toString("base64");
-}
-
-/** Headless-Chromium WebRTC transport for a Codex Frameless Bidi live session. */
+/** Native WebRTC transport for a Codex Frameless Bidi live session. */
 export class CodexLiveTransport {
 	readonly #options: LiveTransportOptions;
-	#browser: Browser | undefined;
-	#page: Page | undefined;
+	#peer: LiveWebRtcPeer | undefined;
+	readonly #realtimeSessionId = crypto.randomUUID();
 	#sideband: Bun.WebSocket | undefined;
 	#state: Lifecycle = "idle";
 	#connectPromise: Promise<void> | undefined;
 	#closePromise: Promise<void> | undefined;
 	#sendTail: Promise<void> = Promise.resolve();
-	#audioQueue: QueuedAudio[] = [];
-	#queuedAudioSamples = 0;
-	#audioPumpRunning = false;
 	#muted = false;
 	#unexpectedFailureReported = false;
 	readonly #abortListener: () => void;
@@ -157,7 +136,7 @@ export class CodexLiveTransport {
 		if (!options.signal?.aborted) options.signal?.addEventListener("abort", this.#abortListener, { once: true });
 	}
 
-	/** Establish the browser peer, perform Codex signaling, and wait for the data channel. */
+	/** Establish the native peer, perform Codex signaling, and wait for the data channel. */
 	connect(): Promise<void> {
 		if (this.#state === "connected") return Promise.resolve();
 		if (this.#connectPromise) return this.#connectPromise;
@@ -174,49 +153,42 @@ export class CodexLiveTransport {
 	}
 
 	async #connect(): Promise<void> {
-		const browser = await launchHeadlessBrowser({
-			headless: true,
-			args: ["--autoplay-policy=no-user-gesture-required"],
-			ignoreDefaultArgs: ["--mute-audio"],
-		});
-		this.#browser = browser;
-		if (this.#state !== "connecting") throw abortReason(this.#options.signal);
-		const page = await browser.newPage();
-		this.#page = page;
-		await page.setRequestInterception(true);
-		const serveBlankPage = (request: HTTPRequest): void => {
-			void request
-				.respond({ status: 200, contentType: "text/html", body: "<!doctype html><title>Codex Live</title>" })
-				.catch(() => {});
-		};
-		page.on("request", serveBlankPage);
-		try {
-			await page.goto("http://localhost/", { waitUntil: "domcontentloaded" });
-		} finally {
-			page.off("request", serveBlankPage);
-			await page.setRequestInterception(false);
-		}
-		await page.exposeFunction("__ompLiveServerEvent", (payload: string) => this.#handleServerEvent(payload));
-		await page.exposeFunction("__ompLiveOutputLevel", (level: number) => this.#handleOutputLevel(level));
-		await page.exposeFunction("__ompLiveFailure", (message: string) => this.#handleBrowserFailure(message));
-		await page.evaluate(source => Function(source)(), browserRuntimeSource);
-		const offer = await page.evaluate(source => globalThis.ompCodexLive.start(source), audioWorkletSource);
+		const peer = new LiveWebRtcPeer(
+			(error, payload) => {
+				if (error) {
+					this.#handlePeerFailure(error.message);
+				} else {
+					this.#handleServerEvent(payload);
+				}
+			},
+			(error, level) => {
+				if (error) {
+					this.#handlePeerFailure(error.message);
+				} else {
+					this.#handleOutputLevel(level);
+				}
+			},
+			(error, message) => this.#handlePeerFailure(error?.message ?? message),
+		);
+		this.#peer = peer;
+		const offer = await peer.createOffer();
 		if (this.#state !== "connecting") throw abortReason(this.#options.signal);
 		const signaling = await this.#signal(offer);
-		await page.evaluate(sdp => globalThis.ompCodexLive.acceptAnswer(sdp), signaling.answer);
-		await page.evaluate(muted => globalThis.ompCodexLive.setMuted(muted), this.#muted);
-		await page.evaluate(() => globalThis.ompCodexLive.waitForOpen());
+		await peer.acceptAnswer(signaling.answer);
+		peer.setMuted(this.#muted);
+		await peer.waitForOpen();
 		if (this.#state !== "connecting") throw abortReason(this.#options.signal);
-		await this.#connectSideband(signaling.callId, signaling.access);
+		await this.#connectSideband(signaling.callId, signaling.access, signaling.attestation);
 		if (this.#state !== "connecting") throw abortReason(this.#options.signal);
 		this.#state = "connected";
 	}
 
 	async #signal(offer: string): Promise<LiveSignalingResult> {
+		const attestation = await generateCodexAttestation();
 		return await withOAuthAccess(
 			this.#options.authStorage,
 			LIVE_PROVIDER,
-			access => this.#signalWithAccess(offer, access),
+			access => this.#signalWithAccess(offer, access, attestation),
 			{
 				sessionId: this.#options.sessionId,
 				signal: this.#options.signal,
@@ -226,10 +198,14 @@ export class CodexLiveTransport {
 		);
 	}
 
-	async #signalWithAccess(offer: string, access: OAuthAccess): Promise<LiveSignalingResult> {
+	async #signalWithAccess(
+		offer: string,
+		access: OAuthAccess,
+		attestation: string | undefined,
+	): Promise<LiveSignalingResult> {
 		const headers = new Headers({
-			...liveSessionHeaders(access, this.#options.sessionId),
-			Accept: "application/sdp",
+			...liveSessionHeaders(access, this.#options.sessionId, this.#realtimeSessionId, attestation),
+			Accept: "*/*",
 			"Content-Type": "application/json",
 		});
 		const fetchImpl = wrapFetchForProxy(fetch, LIVE_PROVIDER);
@@ -247,20 +223,21 @@ export class CodexLiveTransport {
 			const detail = boundedErrorBody(responseBody, response.statusText);
 			throw new LiveSignalingError(response.status, `Codex live signaling failed (${response.status}): ${detail}`);
 		}
-		const answer = responseBody.trim();
-		if (!answer) throw new LiveSignalingError(response.status, "Codex live signaling returned an empty SDP answer");
+		const answer = responseBody;
+		if (!answer.trim())
+			throw new LiveSignalingError(response.status, "Codex live signaling returned an empty SDP answer");
 		const callId = parseLiveCallId(response.headers.get("location"));
 		if (!callId) {
 			throw new LiveSignalingError(response.status, "Codex live signaling returned no valid call ID");
 		}
-		return { answer, callId, access };
+		return { answer, callId, access, attestation };
 	}
 
-	async #connectSideband(callId: string, access: OAuthAccess): Promise<void> {
+	async #connectSideband(callId: string, access: OAuthAccess, attestation: string | undefined): Promise<void> {
 		let failure = new Error("Codex live sideband connection failed");
 		for (let attempt = 0; attempt < SIDEBAND_CONNECT_ATTEMPTS; attempt++) {
 			try {
-				await this.#openSideband(callId, access);
+				await this.#openSideband(callId, access, attestation);
 				return;
 			} catch (cause) {
 				failure = cause instanceof Error ? cause : new Error(String(cause));
@@ -271,10 +248,10 @@ export class CodexLiveTransport {
 		throw failure;
 	}
 
-	async #openSideband(callId: string, access: OAuthAccess): Promise<void> {
+	async #openSideband(callId: string, access: OAuthAccess, attestation: string | undefined): Promise<void> {
 		const url = buildLiveSidebandUrl(callId);
 		const options = {
-			headers: liveSessionHeaders(access, this.#options.sessionId),
+			headers: liveSessionHeaders(access, this.#options.sessionId, this.#realtimeSessionId, attestation),
 			proxy: getProxyForProvider(LIVE_PROVIDER),
 		} satisfies Bun.WebSocketOptions;
 		const socket: Bun.WebSocket = Reflect.construct(WebSocket, [url, options]);
@@ -377,7 +354,7 @@ export class CodexLiveTransport {
 		} catch {}
 	}
 
-	#handleBrowserFailure(message: string): void {
+	#handlePeerFailure(message: string): void {
 		this.#reportFailure(message);
 	}
 
@@ -405,52 +382,19 @@ export class CodexLiveTransport {
 		return operation;
 	}
 
-	/** Queue 16 kHz mono Float32 PCM for continuous browser-side resampling and playback. */
+	/** Queue 16 kHz mono Float32 PCM for native Opus transmission. */
 	pushAudio(samples: Float32Array): void {
 		if (this.#state !== "connected" || this.#muted || samples.length === 0) return;
-		const retained =
-			samples.length > MAX_HOST_AUDIO_SAMPLES ? samples.subarray(samples.length - MAX_HOST_AUDIO_SAMPLES) : samples;
-		const queued = { payload: encodePcm(retained), sampleCount: retained.length };
-		this.#audioQueue.push(queued);
-		this.#queuedAudioSamples += queued.sampleCount;
-		while (this.#queuedAudioSamples > MAX_HOST_AUDIO_SAMPLES && this.#audioQueue.length > 1) {
-			const stale = this.#audioQueue.shift();
-			if (stale) this.#queuedAudioSamples -= stale.sampleCount;
-		}
-		if (!this.#audioPumpRunning) void this.#pumpAudio();
+		this.#peer?.pushAudio(samples);
 	}
 
-	async #pumpAudio(): Promise<void> {
-		this.#audioPumpRunning = true;
-		try {
-			while (this.#state === "connected" && !this.#muted) {
-				const queued = this.#audioQueue.shift();
-				if (!queued) break;
-				this.#queuedAudioSamples -= queued.sampleCount;
-				const page = this.#page;
-				if (!page) break;
-				await page.evaluate(payload => globalThis.ompCodexLive.pushAudio(payload), queued.payload);
-			}
-		} catch {
-			this.#audioQueue.length = 0;
-			this.#queuedAudioSamples = 0;
-		} finally {
-			this.#audioPumpRunning = false;
-			if (this.#audioQueue.length > 0 && this.#state === "connected" && !this.#muted) void this.#pumpAudio();
-		}
-	}
-
-	/** Enable or disable the browser audio source and discard queued input when muted. */
+	/** Enable or disable the native audio source and discard partial input when muted. */
 	async setMuted(muted: boolean): Promise<void> {
 		this.#muted = muted;
-		this.#audioQueue.length = 0;
-		this.#queuedAudioSamples = 0;
-		const page = this.#page;
-		if (!page || this.#state !== "connected") return;
-		await page.evaluate(value => globalThis.ompCodexLive.setMuted(value), muted);
+		if (this.#state === "connected") this.#peer?.setMuted(muted);
 	}
 
-	/** Stop audio, WebRTC, the page, and Chromium. Safe to call repeatedly. */
+	/** Stop sideband signaling and the native WebRTC media peer. Safe to call repeatedly. */
 	close(): Promise<void> {
 		if (this.#closePromise) return this.#closePromise;
 		this.#state = "closing";
@@ -461,28 +405,16 @@ export class CodexLiveTransport {
 
 	async #close(): Promise<void> {
 		this.#options.signal?.removeEventListener("abort", this.#abortListener);
-		this.#audioQueue.length = 0;
-		this.#queuedAudioSamples = 0;
 		const sideband = this.#sideband;
-		const page = this.#page;
-		const browser = this.#browser;
+		const peer = this.#peer;
 		this.#sideband = undefined;
-		this.#page = undefined;
-		this.#browser = undefined;
+		this.#peer = undefined;
 		if (sideband && (sideband.readyState === WebSocket.OPEN || sideband.readyState === WebSocket.CONNECTING)) {
 			sideband.close(1000, "done");
 		}
-		if (page) {
+		if (peer) {
 			try {
-				await page.evaluate(() => globalThis.ompCodexLive?.close());
-			} catch {}
-			try {
-				await page.close();
-			} catch {}
-		}
-		if (browser) {
-			try {
-				await browser.close();
+				await peer.close();
 			} catch {}
 		}
 		this.#state = "closed";

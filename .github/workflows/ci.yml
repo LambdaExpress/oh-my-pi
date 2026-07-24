@@ -36,6 +36,10 @@ env:
    # cargo-zigbuild against this floor keeps them portable. Bump to raise the
    # minimum supported glibc.
    GLIBC_FLOOR: "2.17"
+   # audiopus_sys bundles an opus tree whose CMakeLists declares a
+   # cmake_minimum_required below 3.5; CMake 4.x refuses to configure it
+   # without this override (macOS runner images ship CMake 4).
+   CMAKE_POLICY_VERSION_MINIMUM: "3.5"
 
 permissions:
    contents: read
@@ -510,6 +514,7 @@ jobs:
          - uses: ./.github/actions/ensure-rust-toolchain
            with:
               toolchain: nightly-2026-04-29
+         - uses: ./.github/actions/ensure-cmake
          - name: Detect runner environment
            id: detect
            shell: bash

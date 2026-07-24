@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+## [17.1.1] - 2026-07-24
+
+### Added
+
+- Added catalog metadata for models that support native computer-use requests.
+- Added resolved Bedrock Converse prompt-cache compatibility limits, including explicit 5-minute checkpoint support for bundled Nova Lite, Micro, Pro, Premier, and Nova 2 Lite models plus their documented in-region, regional, and global IDs, and model-specific 1-hour Claude retention.
+- Added resolved Bedrock Converse prompt-cache compatibility limits, including explicit 5-minute checkpoint support for bundled Nova Lite, Micro, Pro, and Premier models plus Nova Premier's documented in-region model ID, and model-specific 1-hour Claude retention.
+- Added the native Meta Model API provider and Muse Spark 1.1 with Responses API reasoning replay, image input, and the full supported reasoning-effort ladder ([#4941](https://github.com/can1357/oh-my-pi/issues/4941)).
+- Added an opt-in Vercel AI Gateway automatic prompt-cache compatibility option alongside provider routing preferences.
+- Added Vercel AI Gateway Responses cache-anchor and cache-lifetime compatibility controls.
+- Added resolved OpenAI GPT-5.6 prompt-cache breakpoint capability metadata, keeping older models and compatible endpoints opt-in only.
+- Added the native `alibaba-token-plan` provider with QwenCloud Token Plan Individual discovery and a curated chat-model fallback catalog ([#6151](https://github.com/can1357/oh-my-pi/issues/6151)).
+
 ## [17.1.0] - 2026-07-24
 
 ### Added

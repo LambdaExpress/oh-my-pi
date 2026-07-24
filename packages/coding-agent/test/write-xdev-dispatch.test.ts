@@ -2,13 +2,17 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-queue";
 import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { writeToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/write";
+import { githubToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/gh-renderer";
+import { ToolError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { WriteTool, writeToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { XdevRegistry } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { type } from "arktype";
 
 // xdev mounting is default-on: discoverable tools like ast_edit unmount into
 // xd://, and a plain `write xd://ast_edit` dispatches them. These guard the
@@ -180,6 +184,93 @@ describe("read and write route xd:// device URLs", () => {
 		// instead of throwing ReferenceError inside a generic Write frame.
 		const rendered = writeToolRenderer.renderCall({ path: "xd://ast_edit", content }, options, uiTheme);
 		expect(rendered).toBeDefined();
+	});
+
+	it("renders device execution errors as the mounted tool instead of write", async () => {
+		await themeModule.initTheme();
+		const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
+		if (!uiTheme) throw new Error("expected an initialized theme");
+
+		const githubDevice = {
+			name: "github",
+			label: "GitHub",
+			description: "fixture",
+			parameters: type({ op: "string" }),
+			...githubToolRenderer,
+			async execute() {
+				throw new ToolError("gh: Not Found (HTTP 404)");
+			},
+		};
+		const registry = new XdevRegistry([githubDevice]);
+		const write = new WriteTool(xdevSession(process.cwd(), { xdevRegistry: registry }));
+		const content = JSON.stringify({ op: "repo_view" });
+
+		const result = await write.execute("write-xdev-error", { path: "xd://github", content });
+		expect(result.isError).toBe(true);
+		expect(result.details?.xdev).toMatchObject({
+			tool: "github",
+			mode: "execute",
+			args: { op: "repo_view" },
+		});
+
+		const component = writeToolRenderer.renderResult(
+			result,
+			{
+				expanded: false,
+				isPartial: false,
+				renderContext: { resolveXdevMounted: name => registry.get(name) },
+			},
+			uiTheme,
+			{ path: "xd://github", content },
+		);
+		const rendered = Bun.stripANSI(component.render(80).join("\n"));
+		expect(rendered).toContain("GitHub Repo");
+		expect(rendered).toContain("gh: Not Found (HTTP 404)");
+		expect(rendered).not.toContain("Write");
+	});
+
+	it("keeps the generic custom-tool card when a mounted device has no renderer", async () => {
+		await themeModule.initTheme();
+		const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
+		if (!uiTheme) throw new Error("expected an initialized theme");
+
+		const weatherDevice: AgentTool = {
+			name: "weather",
+			label: "Weather",
+			description: "Gets the weather",
+			parameters: type({ query: "string" }),
+			async execute() {
+				return { content: [{ type: "text", text: "Tokyo: 22°C" }] };
+			},
+		};
+		const registry = new XdevRegistry([weatherDevice]);
+		const write = new WriteTool(xdevSession(process.cwd(), { xdevRegistry: registry }));
+		const content = JSON.stringify({ query: "Tokyo" });
+		const result = await write.execute("write-xdev-default-renderer", {
+			path: "xd://weather",
+			content,
+		});
+
+		const component = writeToolRenderer.renderResult(
+			result,
+			{
+				expanded: false,
+				isPartial: false,
+				renderContext: { resolveXdevMounted: name => registry.get(name) },
+			},
+			uiTheme,
+			{ path: "xd://weather", content },
+		);
+		const lines = component.render(80);
+		const rendered = Bun.stripANSI(lines.join("\n"));
+		const backgroundProbe = uiTheme.bg("toolSuccessBg", "|");
+		const backgroundPrefix = backgroundProbe.slice(0, backgroundProbe.indexOf("|"));
+
+		expect(rendered).toContain("Weather");
+		expect(rendered).toContain('query="Tokyo"');
+		expect(rendered).toContain("Tokyo: 22°C");
+		expect(backgroundPrefix).not.toBe("");
+		expect(lines.some(line => line.includes(backgroundPrefix))).toBe(true);
 	});
 
 	it("docsAll inlines small device docs and falls back to a listing past the caps", async () => {

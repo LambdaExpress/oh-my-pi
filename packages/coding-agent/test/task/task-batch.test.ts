@@ -101,7 +101,6 @@ describe("task.batch schema gating", () => {
 		expect(offProperties.context).toBeUndefined();
 		expect(offProperties.task).toBeDefined();
 		expect(offProperties.name).toBeDefined();
-		expect(offProperties.model).toBeDefined();
 		expect(offProperties.outputSchema).toBeDefined();
 		expect(typeof offProperties.outputSchema).toBe("object");
 		expect(offProperties.schemaMode).toBeDefined();
@@ -115,14 +114,12 @@ describe("task.batch schema gating", () => {
 		expect(onProperties.task).toBeUndefined();
 		expect(onProperties.name).toBeUndefined();
 		expect(onProperties.agent).toBeUndefined();
-		expect(onProperties.model).toBeUndefined();
 		expect(onProperties.outputSchema).toBeUndefined();
 		expect(onProperties.schemaMode).toBeUndefined();
 		const items = (onProperties.tasks as { items?: { properties?: Record<string, unknown> } }).items;
 		expect(items?.properties?.task).toBeDefined();
 		expect(items?.properties?.name).toBeDefined();
 		expect(items?.properties?.agent).toBeDefined();
-		expect(items?.properties?.model).toBeDefined();
 		expect(items?.properties?.outputSchema).toBeDefined();
 		expect(typeof items?.properties?.outputSchema).toBe("object");
 		expect(items?.properties?.schemaMode).toBeDefined();
@@ -232,21 +229,6 @@ describe("task.batch validation", () => {
 		expect(text).toContain("Missing `context`");
 	});
 
-	it.each([{ model: [","] }, { model: Array<string>(1) }])(
-		"rejects an empty per-item model selector",
-		async ({ model }) => {
-			const text = await executeText(
-				{
-					context: "Background.",
-					tasks: [{ name: "Alpha", task: "Work.", model }],
-				},
-				{ "task.batch": true },
-			);
-			expect(text).toContain("Task 1 (`Alpha`) has an invalid `model`");
-			expect(text).toContain("non-empty array");
-		},
-	);
-
 	it("rejects duplicate provided names case-insensitively", async () => {
 		const text = await executeText(
 			{
@@ -347,14 +329,12 @@ describe("task.batch spawning", () => {
 				{
 					name: "Alpha",
 					task: "Do A.",
-					model: "openai-codex/gpt-5.6-sol:high",
 					outputSchema: alphaSchema,
 					schemaMode: "strict",
 				},
 				{
 					name: "Beta",
 					task: "Do B.",
-					model: ["anthropic/claude-sonnet-4-6:medium", "openai-codex/gpt-5.6-sol:low"],
 					outputSchema: betaSchema,
 					schemaMode: "permissive",
 				},
@@ -382,15 +362,10 @@ describe("task.batch spawning", () => {
 			expect(spawn.outputSchemaOverridesAgent).toBe(true);
 		}
 		const byId = new Map(seen.map(spawn => [spawn.id, spawn]));
-		expect(byId.get("Alpha")?.modelOverride).toEqual(["openai-codex/gpt-5.6-sol:high"]);
 		expect(byId.get("Alpha")?.outputSchema).toEqual(alphaSchema);
 		expect(byId.get("Alpha")?.outputSchemaMode).toBe("strict");
 		expect(byId.get("Beta")?.outputSchema).toEqual(betaSchema);
 		expect(byId.get("Beta")?.outputSchemaMode).toBe("permissive");
-		expect(byId.get("Beta")?.modelOverride).toEqual([
-			"anthropic/claude-sonnet-4-6:medium",
-			"openai-codex/gpt-5.6-sol:low",
-		]);
 		expect(seen.map(spawn => spawn.assignment).sort()).toEqual(["Do A.", "Do B."]);
 		for (const spawn of seen) expect(spawn.parentAgentId).toBe("ParentA");
 	});
@@ -451,7 +426,6 @@ describe("task.batch spawning", () => {
 					name: "Review",
 					agent: "reviewer",
 					task: "Review.",
-					model: "openai-codex/gpt-5.6-sol:high",
 					outputSchema: callerSchema,
 				},
 			],
@@ -471,7 +445,7 @@ describe("task.batch spawning", () => {
 		expect(scoutSpawn?.outputSchemaOverridesAgent).toBe(false);
 		expect(reviewerSpawn?.agent).toBe(reviewerAgent);
 		expect(reviewerSpawn?.agent.tools).toEqual(["read", "bash"]);
-		expect(reviewerSpawn?.modelOverride).toEqual(["openai-codex/gpt-5.6-sol:high"]);
+		expect(reviewerSpawn?.modelOverride).toEqual(["anthropic/claude-sonnet-4-6:medium"]);
 		expect(reviewerSpawn?.outputSchema).toBe(callerSchema);
 		expect(reviewerSpawn?.outputSchemaSource).toBe("caller");
 		expect(reviewerSpawn?.outputSchemaOverridesAgent).toBe(true);
@@ -547,7 +521,6 @@ describe("task.batch spawning", () => {
 			agent: "task",
 			name: "Flat",
 			task: "Do the thing.",
-			model: ["openai-codex/gpt-5.6-sol:high", "anthropic/claude-sonnet-4:low"],
 			outputSchema: callerSchema,
 			schemaMode: "strict",
 		} as TaskParams);
@@ -556,7 +529,7 @@ describe("task.batch spawning", () => {
 		const job = manager.getJob(result.details!.async!.jobId)!;
 		await job.promise;
 		expect(job.status).toBe("completed");
-		expect(captured?.modelOverride).toEqual(["openai-codex/gpt-5.6-sol:high", "anthropic/claude-sonnet-4:low"]);
+		expect(captured?.modelOverride).toEqual(["openai/gpt-4.1-mini"]);
 		expect(captured?.outputSchema).toEqual(callerSchema);
 		expect(captured?.outputSchemaMode).toBe("strict");
 		expect(captured?.outputSchemaSource).toBe("caller");

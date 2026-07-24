@@ -32,6 +32,7 @@ import { theme } from "../modes/theme/theme";
 import type { InteractiveModeContext } from "../modes/types";
 import { extractLastCodeBlock, extractLastCommand } from "../modes/utils/copy-targets";
 import type { AgentSession, FreshSessionResult } from "../session/agent-session";
+import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
 import { resolveResumableSession } from "../session/session-listing";
 import { formatShakeSummary, type ShakeMode } from "../session/shake-types";
@@ -64,6 +65,7 @@ import { createMarketplaceManager } from "./helpers/marketplace-manager";
 import { handleMcpAcp } from "./helpers/mcp";
 import { commandConsumed, errorMessage, parseSlashCommand, parseSubcommand, usage } from "./helpers/parse";
 import { describeRedeemOutcome, type ResetUsageAccount, toResetUsageAccounts } from "./helpers/reset-usage";
+import { matchSessionPinAccounts, toSessionPinAccounts } from "./helpers/session-pin";
 import { handleSshAcp } from "./helpers/ssh";
 import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-dashboard";
 import { handleTodoAcp } from "./helpers/todo";
@@ -98,6 +100,26 @@ function refreshStatusLine(ctx: InteractiveModeContext): void {
 /** `/fast status` label for the active model: "on" when its family is priority, else "off". */
 function formatFastModeStatus(session: AgentSession): string {
 	return session.isFastModeEnabled() ? "on" : "off";
+}
+
+/** `/computer status` label for the session-effective `computer.enabled` value. */
+function formatComputerUseStatus(session: AgentSession): string {
+	return session.settings.get("computer.enabled") ? "on" : "off";
+}
+
+/**
+ * Apply a session-scoped computer-use toggle: flip the active tool slate first
+ * (so a failed enable never leaves a stale settings override), then record the
+ * runtime override — never `settings.set`, which would persist to settings.json.
+ * Returns the operator feedback line.
+ */
+async function applyComputerUseToggle(session: AgentSession, enable: boolean): Promise<string> {
+	const applied = await session.setComputerToolEnabled(enable);
+	if (enable && !applied) {
+		return "Computer use is unavailable in this session.";
+	}
+	session.settings.override("computer.enabled", enable);
+	return `Computer use ${enable ? "enabled" : "disabled"} for this session.`;
 }
 
 const AUTOCOMPLETE_DETAIL_LIMIT = 48;
@@ -207,6 +229,74 @@ async function handleUsageResetCommand(
 	const outcome = await session.redeemResetCredit(target.target);
 	await output(describeRedeemOutcome(outcome, target.label));
 	return outcome.ok;
+}
+
+async function handleSessionPinCommand(
+	arg: string,
+	session: AgentSession,
+	output: SlashCommandRuntime["output"],
+): Promise<void> {
+	if (session.isStreaming) {
+		await output("Cannot pin an account while the session is streaming.");
+		return;
+	}
+	let accountList: SessionOAuthAccountList | undefined;
+	try {
+		accountList = await session.listCurrentProviderOAuthAccounts();
+	} catch (error) {
+		await output(`Could not load provider accounts: ${errorMessage(error)}`);
+		return;
+	}
+	if (!accountList) {
+		await output("Select a model before pinning a provider account.");
+		return;
+	}
+	const provider = getOAuthProviders().find(candidate => candidate.id === accountList.provider);
+	const providerName = provider?.name ?? accountList.provider;
+	const accounts = toSessionPinAccounts(accountList.accounts);
+	if (accounts.length === 0) {
+		const source = session.modelRegistry.authStorage.describeCredentialSource(
+			accountList.provider,
+			session.sessionId,
+		);
+		await output(
+			source
+				? `No stored OAuth accounts for ${providerName}. Current auth comes from ${source}.`
+				: `No stored OAuth accounts for ${providerName}. Use /login to add one.`,
+		);
+		return;
+	}
+
+	const selector = arg.trim();
+	if (!selector) {
+		const lines = [`OAuth accounts for ${providerName}:`];
+		for (const account of accounts) {
+			lines.push(`${account.position + 1}. ${account.label}${account.active ? " (active)" : ""}`);
+		}
+		lines.push("", "Pin one with `/session pin <number|email|account id>`.");
+		await output(lines.join("\n"));
+		return;
+	}
+
+	const matches = matchSessionPinAccounts(accounts, selector);
+	if (matches.length === 0) {
+		await output(`No ${providerName} account matches "${selector}".`);
+		return;
+	}
+	if (matches.length > 1) {
+		await output(
+			`"${selector}" matches multiple ${providerName} accounts: ${matches
+				.map(account => `${account.position + 1}. ${account.label}`)
+				.join(", ")}. Use the account number.`,
+		);
+		return;
+	}
+	const account = matches[0];
+	if (!account || !session.pinCurrentProviderOAuthAccount(account.credentialId)) {
+		await output(`${account?.label ?? selector} is no longer available to pin.`);
+		return;
+	}
+	await output(`Pinned ${account.label} to this session for ${providerName}.`);
 }
 
 /** Parse the `/shake` subcommand into a {@link ShakeMode}; empty defaults to elide. */
@@ -767,6 +857,49 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "computer",
+		description: "Toggle the native computer-use tool for this session",
+		acpDescription: "Toggle computer use",
+		acpInputHint: "[on|off|status]",
+		subcommands: [
+			{ name: "on", description: "Enable computer use for this session" },
+			{ name: "off", description: "Disable computer use for this session" },
+			{ name: "status", description: "Show computer use status" },
+		],
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime => `Computer: ${formatComputerUseStatus(runtime.ctx.session)}`,
+		handle: async (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (arg === "status") {
+				await runtime.output(`Computer use is ${formatComputerUseStatus(runtime.session)}.`);
+				return commandConsumed();
+			}
+			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
+				const enable = arg === "off" ? false : arg === "on" || !runtime.session.settings.get("computer.enabled");
+				await runtime.output(await applyComputerUseToggle(runtime.session, enable));
+				return commandConsumed();
+			}
+			return usage("Usage: /computer [on|off|status]", runtime);
+		},
+		handleTui: async (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (arg === "status") {
+				runtime.ctx.showStatus(`Computer use is ${formatComputerUseStatus(runtime.ctx.session)}.`);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
+				const enable =
+					arg === "off" ? false : arg === "on" || !runtime.ctx.session.settings.get("computer.enabled");
+				runtime.ctx.showStatus(await applyComputerUseToggle(runtime.ctx.session, enable));
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			runtime.ctx.showStatus("Usage: /computer [on|off|status]");
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "prewalk",
 		description: "Switch to a fast/cheap model at the next action (works even without --prewalk)",
 		acpDescription: "Prewalk at the next action",
@@ -1275,15 +1408,21 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "session",
 		description: "Session management commands",
-		acpDescription: "Show session information",
-		acpInputHint: "info|delete",
+		acpDescription: "Show or configure the current session",
+		acpInputHint: "[info|delete|pin [account]]",
 		subcommands: [
 			{ name: "info", description: "Show session info and stats" },
 			{ name: "delete", description: "Delete current session and return to selector" },
+			{
+				name: "pin",
+				description: "Pin the current provider to a stored OAuth account",
+				usage: "[account]",
+			},
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
-			if (!command.args || command.args === "info") {
+			const { verb, rest } = parseSubcommand(command.args);
+			if (!verb || (verb === "info" && !rest)) {
 				await runtime.output(
 					[
 						`Session: ${runtime.session.sessionId}`,
@@ -1293,7 +1432,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				);
 				return commandConsumed();
 			}
-			if (command.args === "delete") {
+			if (verb === "delete" && !rest) {
 				if (runtime.session.isStreaming) return usage("Cannot delete the session while streaming.", runtime);
 				const sessionFile = runtime.sessionManager.getSessionFile();
 				if (!sessionFile) return usage("No session file to delete (in-memory session).", runtime);
@@ -1312,17 +1451,34 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				);
 				return commandConsumed();
 			}
-			return usage("Usage: /session [info|delete]", runtime);
+			if (verb === "pin") {
+				await handleSessionPinCommand(rest, runtime.session, runtime.output);
+				return commandConsumed();
+			}
+			return usage("Usage: /session [info|delete|pin [account]]", runtime);
 		},
 		handleTui: async (command, runtime) => {
-			const sub = command.args.trim().toLowerCase() || "info";
-			if (sub === "delete") {
+			const { verb, rest } = parseSubcommand(command.args);
+			if (verb === "delete" && !rest) {
 				runtime.ctx.editor.setText("");
 				await runtime.ctx.handleSessionDeleteCommand();
 				return;
 			}
-			// Default: show session info
-			await runtime.ctx.handleSessionCommand();
+			if (verb === "pin") {
+				if (rest) {
+					await handleSessionPinCommand(rest, runtime.ctx.session, text => runtime.ctx.showStatus(text));
+					refreshStatusLine(runtime.ctx);
+				} else {
+					await runtime.ctx.showSessionPinSelector();
+				}
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (!verb || (verb === "info" && !rest)) {
+				await runtime.ctx.handleSessionCommand();
+			} else {
+				runtime.ctx.showStatus("Usage: /session [info|delete|pin [account]]");
+			}
 			runtime.ctx.editor.setText("");
 		},
 	},

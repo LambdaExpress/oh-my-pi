@@ -145,6 +145,11 @@ export class EvalRunner {
 		return this.#pendingMessages.length > 0;
 	}
 
+	/** Returns the stable owner shared by eval and session-owned tools. */
+	getKernelOwnerId(): string {
+		return this.#kernelOwnerId;
+	}
+
 	/** Returns the eval session shared with the Python backend. */
 	getSessionId(): string | null {
 		if (this.#parentSessionId !== undefined) return this.#parentSessionId;
