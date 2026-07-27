@@ -41,6 +41,7 @@
 
 ### Fixed
 
+- Fixed the `computer` tool publishing every action as one flat object, which made generated callers attach unrelated fields that runtime validation rejected; action schemas now use closed discriminated variants so clicks, typing, scrolling, and other input reach the native desktop backend.
 - Fixed long model and provider names collapsing the welcome screen to one column by preserving the LSP and recent-session panel while truncating oversized labels with three dots.
 - Fixed transcript rebuilds and session restoration misclassifying active subagents and background Bash jobs as SSH file transfers.
 - Fixed startup falsely reporting `xdev: xd://: unmounted ssh_transfer` after tool repartitioning by tracking the registry's complete mounted-device set, including built-in devices.

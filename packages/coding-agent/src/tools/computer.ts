@@ -35,28 +35,83 @@ const pointSchema = type({
 	"+": "reject",
 });
 
-const computerActionSchema = type({
-	type: type(
-		"'click' | 'double_click' | 'drag' | 'keypress' | 'move' | 'screenshot' | 'scroll' | 'type' | 'wait'",
-	).describe("action kind"),
-	"x?": coordinateSchema.describe(
-		"x pixel coordinate in the most recent screenshot (click, double_click, move, scroll)",
-	),
-	"y?": coordinateSchema.describe(
-		"y pixel coordinate in the most recent screenshot (click, double_click, move, scroll)",
-	),
-	"button?": type("'left' | 'right' | 'wheel' | 'back' | 'forward'").describe("mouse button; required for click"),
-	"path?": pointSchema.array().atLeastLength(2).describe("waypoints from press to release; required for drag"),
-	"keys?": type("string[] | null").describe(
-		"key names (e.g. CTRL, SHIFT, ENTER, A); required chord for keypress, optional held modifiers for pointer actions",
-	),
-	"scroll_x?": scrollDeltaSchema.describe("horizontal scroll delta in pixels; required for scroll"),
-	"scroll_y?": scrollDeltaSchema.describe(
-		"vertical scroll delta in pixels, positive scrolls content down; required for scroll",
-	),
-	"text?": type("string").describe("literal text to type; required for type"),
+const modifierKeysSchema = type("string[] | null").describe(
+	"key names (e.g. CTRL, SHIFT, ENTER, A); optional held modifiers for pointer actions",
+);
+
+const clickActionSchema = type({
+	type: type("'click'").describe("action kind"),
+	x: coordinateSchema.describe("x pixel coordinate in the most recent screenshot"),
+	y: coordinateSchema.describe("y pixel coordinate in the most recent screenshot"),
+	button: type("'left' | 'right' | 'wheel' | 'back' | 'forward'").describe("mouse button"),
+	"keys?": modifierKeysSchema,
 	"+": "reject",
 });
+
+const doubleClickActionSchema = type({
+	type: type("'double_click'").describe("action kind"),
+	x: coordinateSchema.describe("x pixel coordinate in the most recent screenshot"),
+	y: coordinateSchema.describe("y pixel coordinate in the most recent screenshot"),
+	"keys?": modifierKeysSchema,
+	"+": "reject",
+});
+
+const dragActionSchema = type({
+	type: type("'drag'").describe("action kind"),
+	path: pointSchema.array().atLeastLength(2).describe("waypoints from press to release"),
+	"keys?": modifierKeysSchema,
+	"+": "reject",
+});
+
+const keypressActionSchema = type({
+	type: type("'keypress'").describe("action kind"),
+	keys: type("string[]").atLeastLength(1).describe("key chord (e.g. CTRL, L)"),
+	"+": "reject",
+});
+
+const moveActionSchema = type({
+	type: type("'move'").describe("action kind"),
+	x: coordinateSchema.describe("x pixel coordinate in the most recent screenshot"),
+	y: coordinateSchema.describe("y pixel coordinate in the most recent screenshot"),
+	"keys?": modifierKeysSchema,
+	"+": "reject",
+});
+
+const screenshotActionSchema = type({
+	type: type("'screenshot'").describe("action kind"),
+	"+": "reject",
+});
+
+const scrollActionSchema = type({
+	type: type("'scroll'").describe("action kind"),
+	x: coordinateSchema.describe("x pixel coordinate in the most recent screenshot"),
+	y: coordinateSchema.describe("y pixel coordinate in the most recent screenshot"),
+	scroll_x: scrollDeltaSchema.describe("horizontal scroll delta in pixels"),
+	scroll_y: scrollDeltaSchema.describe("vertical scroll delta in pixels; positive scrolls content down"),
+	"keys?": modifierKeysSchema,
+	"+": "reject",
+});
+
+const typeActionSchema = type({
+	type: type("'type'").describe("action kind"),
+	text: type("string").describe("literal text to type"),
+	"+": "reject",
+});
+
+const waitActionSchema = type({
+	type: type("'wait'").describe("action kind"),
+	"+": "reject",
+});
+
+const computerActionSchema = clickActionSchema
+	.or(doubleClickActionSchema)
+	.or(dragActionSchema)
+	.or(keypressActionSchema)
+	.or(moveActionSchema)
+	.or(screenshotActionSchema)
+	.or(scrollActionSchema)
+	.or(typeActionSchema)
+	.or(waitActionSchema);
 
 const computerSchema = type({
 	"actions?": computerActionSchema

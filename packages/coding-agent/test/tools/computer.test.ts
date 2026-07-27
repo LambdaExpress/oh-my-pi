@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentTool, AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import type { Api, ComputerAction, ComputerToolCallMetadata, Model } from "@oh-my-pi/pi-ai";
+import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
@@ -429,6 +430,45 @@ describe("computer tool", () => {
 			expect(tool.parameters({ actions }) instanceof arkType.errors).toBe(true);
 		}
 		expect(tool.parameters({ actions: [], unexpected: true }) instanceof arkType.errors).toBe(true);
+	});
+
+	it("publishes action-specific wire schemas without unrelated fields", () => {
+		const tool = new ComputerTool(
+			toolSession(Settings.isolated({ "computer.enabled": true })),
+			() => new FakeController(),
+		);
+		const schema = toolWireSchema(tool) as {
+			properties?: {
+				actions?: {
+					items?: {
+						anyOf?: Array<{
+							properties?: Record<string, { const?: string }>;
+							required?: string[];
+						}>;
+					};
+				};
+			};
+		};
+		const branches = schema.properties?.actions?.items?.anyOf ?? [];
+		expect(branches).toHaveLength(9);
+		const byType = new Map(branches.map(branch => [branch.properties?.type?.const, branch]));
+		expect([...byType.keys()].sort()).toEqual([
+			"click",
+			"double_click",
+			"drag",
+			"keypress",
+			"move",
+			"screenshot",
+			"scroll",
+			"type",
+			"wait",
+		]);
+		expect(Object.keys(byType.get("click")?.properties ?? {}).sort()).toEqual(["button", "keys", "type", "x", "y"]);
+		expect(byType.get("click")?.required?.sort()).toEqual(["button", "type", "x", "y"]);
+		expect(Object.keys(byType.get("screenshot")?.properties ?? {})).toEqual(["type"]);
+		expect(byType.get("screenshot")?.required).toEqual(["type"]);
+		expect(Object.keys(byType.get("type")?.properties ?? {}).sort()).toEqual(["text", "type"]);
+		expect(byType.get("type")?.required?.sort()).toEqual(["text", "type"]);
 	});
 
 	it("executes function-call params.actions and defaults empty batches to a screenshot", async () => {
