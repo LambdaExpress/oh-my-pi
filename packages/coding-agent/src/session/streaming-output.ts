@@ -1441,18 +1441,20 @@ export function formatHeadTruncationNotice(
 
 /**
  * Build an onChunk handler that appends to a TailBuffer and emits a streaming
- * update (when `onUpdate` is defined) with the buffer's current text.
+ * update (when `onUpdate` is defined) with the buffer's current text and the
+ * caller-supplied stable details.
  */
 export function streamTailUpdates<TDetails, TInput = unknown>(
 	tailBuffer: TailBuffer,
 	onUpdate: AgentToolUpdateCallback<TDetails, TInput> | undefined,
+	details: TDetails = {} as TDetails,
 ): (chunk: string) => void {
 	return chunk => {
 		tailBuffer.append(chunk);
 		if (onUpdate) {
 			onUpdate({
 				content: [{ type: "text", text: tailBuffer.text() }],
-				details: {} as TDetails,
+				details,
 			});
 		}
 	};

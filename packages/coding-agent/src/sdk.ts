@@ -200,6 +200,7 @@ import {
 	HIDDEN_TOOLS,
 	isMountableUnderXdev,
 	type LspStartupServerInfo,
+	loadSshTool,
 	loadSshTransferTool,
 	ReadTool,
 	releaseComputerSessionsForOwner,
@@ -650,6 +651,7 @@ export {
 	GlobTool,
 	GrepTool,
 	HIDDEN_TOOLS,
+	loadSshTool,
 	loadSshTransferTool,
 	ReadTool,
 	SshSessionTool,
@@ -2663,6 +2665,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			await ensureWriteRegistered();
 		}
 
+		const reloadSshTool = async (): Promise<Tool | null> => {
+			const sshAllowed = !explicitlyRequestedToolNames || explicitlyRequestedToolNames.includes("ssh");
+			if (!sshAllowed) return null;
+			const currentToolSession: ToolSession = {
+				...toolSession,
+				cwd: sessionManager.getCwd(),
+			};
+			const sshTool = await loadSshTool(currentToolSession);
+			if (!sshTool) return null;
+			return new ExtensionToolWrapper(wrapToolWithMetaNotice(sshTool), extensionRunner) as Tool;
+		};
 		const reloadSshTransferTool = async (): Promise<Tool | null> => {
 			const transferAllowed = !explicitlyRequestedToolNames || explicitlyRequestedToolNames.includes("ssh_transfer");
 			if (!transferAllowed) return null;
@@ -3235,6 +3248,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			preferWebsockets: preferOpenAICodexWebsockets,
 			convertToLlm: convertToLlmFinal,
 			rebuildSystemPrompt,
+			reloadSshTool,
 			reloadSshTransferTool,
 			getXdevToolEntries: () => toolSession.xdevRegistry?.entries() ?? [],
 			xdevRegistry: toolSession.xdevRegistry,

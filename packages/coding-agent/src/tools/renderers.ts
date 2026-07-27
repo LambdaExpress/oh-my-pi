@@ -28,6 +28,7 @@ import { recallToolRenderer, reflectToolRenderer, retainToolRenderer } from "./m
 import { pwshToolRenderer } from "./pwsh";
 import { readToolRenderer } from "./read";
 import { resolveRenderer } from "./resolve";
+import { sshToolRenderer } from "./ssh";
 import { sshSessionToolRenderer } from "./ssh-session";
 import { sshTransferToolRenderer } from "./ssh-transfer";
 import { todoToolRenderer } from "./todo";
@@ -117,6 +118,7 @@ export const toolRenderers: Record<string, ToolRenderer> = {
 	retain: retainToolRenderer as ToolRenderer,
 	recall: recallToolRenderer as ToolRenderer,
 	reflect: reflectToolRenderer as ToolRenderer,
+	ssh: sshToolRenderer as ToolRenderer,
 	ssh_transfer: sshTransferToolRenderer as ToolRenderer,
 	ssh_session: sshSessionToolRenderer as ToolRenderer,
 	// Lazy getter: `taskToolRenderer` lives in a module that closes an import

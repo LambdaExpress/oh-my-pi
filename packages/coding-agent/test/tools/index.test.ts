@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createTools, HIDDEN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 
@@ -10,6 +11,7 @@ function createTestSession(overrides: Partial<ToolSession> = {}): ToolSession {
 		hasUI: false,
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
+		getSessionSshHosts: async () => [],
 		settings: Settings.isolated(),
 		...overrides,
 	};
@@ -282,6 +284,26 @@ describe("createTools", () => {
 		expect(session.xdevRegistry?.get("ssh")).toBeUndefined();
 	});
 
+	it("mounts configured SSH command execution under xd:// by default", async () => {
+		const host: SSHHost = {
+			name: "prod",
+			host: "192.0.2.10",
+			username: "root",
+			password: "secret",
+			_source: {
+				provider: "test",
+				providerName: "Test",
+				level: "project",
+				path: "/tmp/test/ssh.json",
+			},
+		};
+		const session = createTestSession({ getSessionSshHosts: async () => [host] });
+		const tools = await createTools(session);
+
+		expect(tools.map(tool => tool.name)).not.toContain("ssh");
+		expect(session.xdevRegistry?.get("ssh")?.description).toContain("prod (192.0.2.10)");
+	});
+
 	it("keeps SSH session configuration top-level when xd:// is disabled", async () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({ "tools.xdev": false }),
@@ -298,7 +320,7 @@ describe("createTools", () => {
 		const tools = await createTools(session, ["ssh_session"]);
 
 		expect(tools.map(tool => tool.name)).toEqual(["ssh_session"]);
-		expect(session.xdevRegistry).toBeUndefined();
+		expect(session.xdevRegistry?.size).toBe(0);
 	});
 
 	it("auto-includes goal when goal mode is active", async () => {

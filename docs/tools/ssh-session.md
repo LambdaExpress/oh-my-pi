@@ -38,7 +38,7 @@
 4. The session reducer reconstructs aliases by following the selected branch from root to leaf.
 5. The effective host registry merges aliases with whole-entry precedence: current session, managed project config, managed user config, repository `ssh.json`, then repository `.ssh.json`.
 6. A session alias therefore overrides a persistent alias with the same name. Deleting the session alias reveals the persistent alias again when one exists.
-7. Every mutation refreshes the `ssh` tool and all `ssh://` consumers. The same alias is immediately available to `ssh`, Read, Write, Grep, Edit, hashline snapshots, host indexes, and path autocomplete.
+7. Every mutation refreshes `ssh`, `ssh_transfer`, and all `ssh://` consumers. With `xd://` enabled, remote command execution mounts at `xd://ssh`; explicit tool selection or disabled `xd://` keeps `ssh` top-level. The alias is immediately available to Read, Write, Grep, Edit, hashline snapshots, host indexes, and path autocomplete.
 8. Switching branches, forking, rewinding, navigating the session tree, creating a new session, or switching session files reconstructs the aliases for the selected leaf and closes obsolete SSH connection targets.
 
 ## Persistence and credential handling
@@ -58,8 +58,8 @@
 
 ## Side effects
 - Filesystem: appends session journal entries and may cause SSH host-info cache or ControlMaster files to be created when the alias is used.
-- Network: none for CRUD operations; using the alias through `ssh` or `ssh://` opens the remote connection.
-- Session state: refreshes the effective host registry, SSH tool registration, active tool set, system prompt host list, and autocomplete host index.
+- Network: none for CRUD operations; using the alias through `ssh`, `xd://ssh`, `ssh_transfer`, or `ssh://` opens the remote connection.
+- Session state: refreshes the effective host registry, SSH command and transfer tool registration, mounted or active tool sets, system prompt host list, and autocomplete host index.
 - Persistent SSH configuration: never modified. `update` and `delete` only operate on aliases already defined in the session layer.
 
 ## Errors
@@ -72,7 +72,7 @@
 
 ## Notes
 - A session alias can intentionally shadow persistent project or user configuration without editing its JSON file.
-- `list` reports the session layer, while `ssh` and `ssh://` use the merged effective registry.
+- `list` reports the session layer, while `ssh`, `xd://ssh`, `ssh_transfer`, and `ssh://` use the merged effective registry.
 - Session aliases are unavailable in a different session unless they are inherited through a forked session history.
 - URL-embedded passwords remain unsupported, and configured aliases cannot be overridden with a different URL username or port.
 - Glob continues to reject `ssh://` targets; this tool does not add remote recursive globbing.

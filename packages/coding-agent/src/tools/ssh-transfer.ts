@@ -8,7 +8,7 @@ import type { SSHHost } from "../capability/ssh";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import sshTransferDescriptionBase from "../prompts/tools/ssh-transfer.md" with { type: "text" };
-import { ensureHostInfo, getCachedHostInfoSync } from "../ssh/connection-manager";
+import { ensureHostInfo } from "../ssh/connection-manager";
 import {
 	executeSshFileTransfer,
 	prepareSshFileTransfer,
@@ -17,7 +17,6 @@ import {
 	type SshFileTransferProgress,
 	type SshTransferOperation,
 } from "../ssh/file-transfer";
-import { loadEffectiveSshHosts } from "../ssh/host-registry";
 import { Ellipsis, renderStatusLine, truncateToWidth } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import type { ToolSession } from ".";
@@ -25,41 +24,8 @@ import { truncateForPrompt } from "./approval";
 import { isInternalUrlPath, resolveToCwd } from "./path-utils";
 import { enforcePlanModeWrite } from "./plan-mode-guard";
 import { formatDuration, replaceTabs, shortenPath } from "./render-utils";
+import { formatSshHostsDescription, loadSshHosts } from "./ssh-hosts";
 import { ToolError } from "./tool-errors";
-
-function formatHostEntry(host: SSHHost): string {
-	const info = getCachedHostInfoSync(host);
-	let shell: string;
-	if (!info) {
-		shell = "detecting...";
-	} else if (info.os === "windows") {
-		if (info.compatEnabled) {
-			shell = `windows/${info.compatShell || "bash"}`;
-		} else {
-			shell = info.shell === "powershell" ? "windows/powershell" : "windows/cmd";
-		}
-	} else {
-		shell = `${info.os}/${info.shell}`;
-	}
-	return `- ${host.name} (${host.host}) | ${shell}`;
-}
-
-function formatSshHostsDescription(baseDescription: string, hosts: readonly SSHHost[]): string {
-	if (hosts.length === 0) return baseDescription;
-	return `${baseDescription}\n\nAvailable hosts:\n${hosts.map(formatHostEntry).join("\n")}`;
-}
-
-async function loadSshHosts(session: ToolSession): Promise<{
-	hostNames: string[];
-	hostsByName: Map<string, SSHHost>;
-}> {
-	const hosts = session.getSessionSshHosts
-		? await session.getSessionSshHosts()
-		: await loadEffectiveSshHosts(session.cwd);
-	const hostsByName = new Map<string, SSHHost>();
-	for (const host of hosts) hostsByName.set(host.name, host);
-	return { hostNames: [...hostsByName.keys()].sort(), hostsByName };
-}
 
 const sshTransferSchema = type({
 	op: type("'upload' | 'download'").describe("transfer operation"),

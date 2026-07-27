@@ -205,12 +205,12 @@ export class SessionTools {
 	getMountedXdevToolNames(): string[] {
 		return [...this.#mountedXdevToolNames];
 	}
-	/**
-	 * Replaces the capability-backed SSH transfer tool while preserving its
-	 * current top-level or `xd://` presentation.
-	 */
-	async replaceSshTransferTool(tool: Tool | null, options?: { activateIfAvailable?: boolean }): Promise<void> {
-		const name = "ssh_transfer";
+	/** Replaces a capability-backed SSH tool while preserving its presentation. */
+	async replaceSshCapabilityTool(
+		name: "ssh" | "ssh_transfer",
+		tool: Tool | null,
+		options?: { activateIfAvailable?: boolean },
+	): Promise<void> {
 		const previousEnabled = this.getEnabledToolNames();
 		const wasEnabled = previousEnabled.includes(name);
 		const wasAvailable = this.#toolRegistry.has(name) || this.#xdevRegistry?.get(name) !== undefined;

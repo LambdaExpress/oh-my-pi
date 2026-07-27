@@ -62,6 +62,7 @@ import { wrapToolWithMetaNotice } from "./output-meta";
 import { PwshTool } from "./pwsh";
 import { ReadTool } from "./read";
 import type { PlanProposalHandler } from "./resolve";
+import { loadSshTool } from "./ssh";
 import { SshSessionTool } from "./ssh-session";
 import { loadSshTransferTool } from "./ssh-transfer";
 import { type TodoPhase, TodoTool } from "./todo";
@@ -105,6 +106,7 @@ export * from "./read";
 export * from "./report-tool-issue";
 export * from "./resolve";
 export * from "./review";
+export * from "./ssh";
 export * from "./ssh-session";
 export * from "./ssh-transfer";
 export * from "./todo";
@@ -421,6 +423,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	ask: AskTool.createIf,
 	debug: DebugTool.createIf,
 	eval: s => new EvalTool(s),
+	ssh: loadSshTool,
 	ssh_transfer: loadSshTransferTool,
 	ssh_session: s => new SshSessionTool(s),
 	github: GithubTool.createIf,

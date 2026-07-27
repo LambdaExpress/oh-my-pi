@@ -508,6 +508,7 @@ export class AgentSession {
 	fileSnapshotStore?: InMemorySnapshotStore;
 	#sessionSshConfigs = new Map<string, SessionSshConfig>();
 	#effectiveSshHosts: readonly SSHHost[] = [];
+	readonly #reloadSshTool: (() => Promise<Tool | null>) | undefined;
 	readonly #reloadSshTransferTool: (() => Promise<Tool | null>) | undefined;
 
 	#powerAssertion: MacOSPowerAssertion | undefined;
@@ -938,6 +939,7 @@ export class AgentSession {
 		this.sessionManager = config.sessionManager;
 		this.settings = config.settings;
 		this.#modelRegistry = config.modelRegistry;
+		this.#reloadSshTool = config.reloadSshTool;
 		this.#reloadSshTransferTool = config.reloadSshTransferTool;
 		this.#restoreSessionSshConfigs();
 		const bashHost: BashRunnerHost = {
@@ -1553,7 +1555,7 @@ export class AgentSession {
 	}
 
 	/**
-	 * Reload the SSH file-transfer tool after session or persistent host
+	 * Reload capability-backed SSH tools after session or persistent host
 	 * configuration changes, invalidating connections whose targets changed.
 	 */
 	async refreshSshTools(options?: { activateIfAvailable?: boolean }): Promise<void> {
@@ -1570,9 +1572,12 @@ export class AgentSession {
 		}
 		this.#effectiveSshHosts = nextHosts;
 
-		const refreshedTool = await this.#reloadSshTransferTool?.();
+		const [sshTool, transferTool] = await Promise.all([this.#reloadSshTool?.(), this.#reloadSshTransferTool?.()]);
+		if (this.#reloadSshTool) {
+			await this.#tools.replaceSshCapabilityTool("ssh", sshTool ?? null, options);
+		}
 		if (this.#reloadSshTransferTool) {
-			await this.#tools.replaceSshTransferTool(refreshedTool ?? null, options);
+			await this.#tools.replaceSshCapabilityTool("ssh_transfer", transferTool ?? null, options);
 		}
 	}
 

@@ -188,6 +188,8 @@ export interface AgentSessionConfig {
 	rebuildSystemPrompt?: (toolNames: string[], tools: Map<string, AgentTool>) => Promise<{ systemPrompt: string[] }>;
 	/** Local calendar date provider used by prompt-cache invalidation. */
 	getLocalCalendarDate?: () => string;
+	/** Rebuilds the SSH command tool from current capability discovery results. */
+	reloadSshTool?: () => Promise<Tool | null>;
 	/** Rebuilds the SSH file-transfer tool from current capability discovery results. */
 	reloadSshTransferTool?: () => Promise<Tool | null>;
 	/** Tools mounted under `xd://`, for `/tools` display. */

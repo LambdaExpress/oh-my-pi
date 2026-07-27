@@ -8,6 +8,7 @@
 - Added DAP adapter preflight and regex-based output readiness waits for launched debug services.
 
 - Added streaming SSH file uploads and downloads with foreground/background progress, cancellation, and temporary-session host support.
+- Restored configured-host remote command execution as the discoverable `ssh` tool, mounted at `xd://ssh` by default and refreshed immediately when persistent or session SSH aliases change.
 
 - Added managed `omp worktree` background workspaces with add/list/switch/apply/remove/branch/snapshot restore flows, plus `/worktree` TUI and ACP quick actions.
 - Added a discoverable `worktree` tool so agents can list, create, enter, apply, remove, branch, and restore managed worktrees from tool calls.
@@ -85,7 +86,7 @@
 - Fixed ordinary interactive session titles using the default title prompt before later replan refreshes honored user `TITLE_SYSTEM.md` overrides.
 - Fixed approved plan execution sessions being retitled to the generic title fallback after the executor initializes todos.
 - Fixed hashline edit support for ssh:// remote files.
-- Fixed SSH tool command previews to syntax-highlight cached POSIX/PowerShell remote shells and render `cwd` as the command sent to the remote host.
+- Fixed SSH tool command previews to syntax-highlight from the first streamed `host`/`command` arguments through completion, using cached remote Shell metadata when available and Bash/PowerShell syntax inference on first connection; previews also render `cwd` as the command sent to the remote host.
 - Fixed completed `ssh_session` tool calls replacing their pending operation row instead of rendering the operation and result on separate rows.
 - Fixed `ssh_session` tool guidance exposing session-storage mechanics instead of limiting its description to actionable alias behavior and password safety.
 
