@@ -1,13 +1,12 @@
 /**
- * Consent gate around `report_tool_issue`. Asserts:
+ * Legacy remote-grievance consent resolution. Asserts:
  *
- * 1. With no handler registered, consent defaults to `false` and the tool's
- *    `execute` returns the canonical "Noted, thanks!" without touching the DB.
- * 2. The handler fires exactly once per process even across concurrent calls
- *    (single-flight), and the decision is persisted to both the local and
- *    registered persistent `Settings` instances.
- * 3. A persisted `"granted"` short-circuits the handler.
- * 4. A persisted `"denied"` short-circuits the handler AND no-ops the tool.
+ * 1. No handler defaults to `false`.
+ * 2. Concurrent calls share one handler invocation.
+ * 3. Decisions persist to local and registered settings.
+ * 4. Persisted decisions short-circuit the handler.
+ *
+ * Local `xd://report_issue` Markdown capture does not use this gate.
  */
 import { afterEach, describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";

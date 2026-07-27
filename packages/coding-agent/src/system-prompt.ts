@@ -512,7 +512,7 @@ export interface BuildSystemPromptOptions {
 	xdevTools?: Array<{ name: string; summary: string }>;
 	/** Full docs + JSON schema for every `xd://`-mounted tool, inlined into the protocol section so no discovery `read` is needed. */
 	xdevDocs?: string;
-	/** Whether Auto-QA grievance reporting is enabled; renders the `xd://report_issue` note. */
+	/** Whether local Auto-QA issue reporting is enabled; renders the `xd://report_issue` instructions. */
 	autoQaEnabled?: boolean;
 }
 

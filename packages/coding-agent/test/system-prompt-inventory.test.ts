@@ -38,6 +38,14 @@ const TOOLS = new Map<string, SystemPromptToolMetadata>([
 			parameters: { type: "object", properties: { command: { type: "string" } } },
 		},
 	],
+	[
+		"write",
+		{
+			label: "Write",
+			description: "Writes files to disk.",
+			parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } } },
+		},
+	],
 ]);
 
 const DIRECT_WEB_SEARCH: SystemPromptToolMetadata = {
@@ -85,6 +93,30 @@ describe("system prompt tool inventory", () => {
 		});
 		return systemPrompt.join("\n\n");
 	}
+
+	it("renders reproducible local QA report instructions", async () => {
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: ["write"],
+			tools: TOOLS,
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+			nativeTools: false,
+			inlineToolDescriptors: false,
+			autoQaEnabled: true,
+		});
+		const text = systemPrompt.join("\n\n");
+
+		expect(text).toContain("write xd://report_issue");
+		expect(text).toContain("exact arguments, verbatim failure output");
+		expect(text).toContain("## Steps to Reproduce");
+		expect(text).toContain("## Expected Behavior");
+		expect(text).toContain("## Actual Behavior");
+		expect(text).toContain("## Context");
+		expect(text).not.toContain("<tool>: <concise description>");
+	});
 
 	function inventoryFrom(text: string): string {
 		// Tolerate either prompt layout: the merge-base "# Inventory" / "ENV" framing and the

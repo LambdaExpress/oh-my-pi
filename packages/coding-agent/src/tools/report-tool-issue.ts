@@ -1,32 +1,13 @@
 /**
- * report_issue — automated QA backend for tracking unexpected tool behavior.
+ * report_issue — local QA capture for unexpected tool behavior.
  *
- * No model-facing tool schema anymore: the write tool dispatches plain text to
- * `xd://report_issue`, and the system prompt tells the model to write
- * `<tool>: <concise description>` there when auto-QA is enabled.
+ * The write tool dispatches structured Markdown to `xd://report_issue`.
+ * Reports are written synchronously to {@link REPORT_ISSUE_DIRECTORY} with
+ * runtime metadata so a later maintainer can reproduce the failure.
  *
- * Enabled by default (`dev.autoqa` defaults to true); `PI_AUTO_QA=0` or an
- * explicit `dev.autoqa: false` short-circuits injection entirely. When the
- * user is only enabled by default (never configured `dev.autoqa` themselves),
- * a persisted `dev.autoqaConsent: "denied"` also disables injection so a "No"
- * in the consent dialog fully turns the feature off.
- * Records grievances to a local SQLite database; never throws from the device
- * dispatch path.
- *
- * Nothing is written until consent resolves. If the user has never been asked
- * (`dev.autoqaConsent === "unset"`) the process-global consent handler —
- * wired by `InteractiveMode` to a Yes/No popup — is invoked exactly once and
- * the decision is persisted; a denial (or dismissal) drops the pending report
- * without touching the database. Subsequent calls (including from subagents)
- * read the cached decision without prompting. `PI_AUTO_QA_PUSH=1` bypasses
- * the dialog for headless environments.
- *
- * When the user grants consent, push is automatically active against the
- * bundled endpoint (`dev.autoqaPush.endpoint`, default `qa.omp.sh`). Each
- * insert schedules a background flush that POSTs pending rows and deletes them
- * on HTTP 2xx. `PI_AUTO_QA_PUSH=1` forces push in non-interactive environments
- * where the consent dialog never fires. Device execution is never blocked on
- * the network and never throws.
+ * The SQLite grievance and remote-push exports below remain available for
+ * managing legacy queued reports through the `omp grievances` CLI. New
+ * `report_issue` writes never enter that queue or require sharing consent.
  */
 import { Database } from "bun:sqlite";
 import * as fs from "node:fs";
@@ -46,10 +27,35 @@ import type { XdevDispatch } from "./xdev";
 
 export const REPORT_ISSUE_DEVICE_NAME = "report_issue";
 export const REPORT_ISSUE_DEVICE_PATH = `xd://${REPORT_ISSUE_DEVICE_NAME}`;
+export const REPORT_ISSUE_DIRECTORY = String.raw`D:\project\oh-my-pi\issues`;
+
+const REPORT_ISSUE_REQUIRED_SECTIONS = [
+	"Summary",
+	"Steps to Reproduce",
+	"Expected Behavior",
+	"Actual Behavior",
+	"Context",
+] as const;
+
+const REPORT_ISSUE_TEMPLATE = `<tool-name>
+## Summary
+<concise failure description>
+
+## Steps to Reproduce
+<numbered, deterministic steps with exact tool arguments>
+
+## Expected Behavior
+<expected tool result>
+
+## Actual Behavior
+<actual result or error, verbatim when practical>
+
+## Context
+<cwd, relevant prior state, environment, frequency, and redacted evidence>`;
 
 /** Usage text for `read xd://report_issue`. */
 export function reportIssueDeviceUsage(): string {
-	return `Write \`<tool>: <concise description>\` as plain text to ${REPORT_ISSUE_DEVICE_PATH}. A two-line fallback also works: tool name on line 1, report body below.`;
+	return `Write structured Markdown as plain text to ${REPORT_ISSUE_DEVICE_PATH}. Replace every placeholder in this template:\n${REPORT_ISSUE_TEMPLATE}`;
 }
 
 /** Whether a tool call writes to `xd://report_issue`. */
@@ -75,43 +81,98 @@ export function renderReportIssueDeviceCall(content: unknown, uiTheme: Theme): C
 	return new Text(text, 0, 0);
 }
 
+function reportSectionHasContent(report: string, heading: string): boolean {
+	const lines = report.split(/\r?\n/);
+	const start = lines.findIndex(line => line.trim() === `## ${heading}`);
+	if (start < 0) return false;
+	for (let index = start + 1; index < lines.length; index++) {
+		const line = lines[index]!.trim();
+		if (line.startsWith("## ")) break;
+		if (line.length > 0) return true;
+	}
+	return false;
+}
+
 function parseReportIssueBody(text: string): { tool: string; report: string } {
 	const body = text.trim();
-	if (!body) {
-		throw new ToolError(`Empty report. ${reportIssueDeviceUsage()}`);
-	}
 	const firstNewline = body.indexOf("\n");
-	if (firstNewline >= 0) {
-		const tool = body.slice(0, firstNewline).trim();
-		const report = body.slice(firstNewline + 1).trim();
-		if (tool && report) return { tool, report };
+	if (firstNewline <= 0) {
+		throw new ToolError(`Invalid report format. ${reportIssueDeviceUsage()}`);
 	}
-	const colon = body.indexOf(":");
-	if (colon > 0) {
-		const tool = body.slice(0, colon).trim();
-		const report = body.slice(colon + 1).trim();
-		if (tool && report) return { tool, report };
+	const tool = body.slice(0, firstNewline).trim();
+	const report = body.slice(firstNewline + 1).trim();
+	if (!/^[a-zA-Z0-9_.-]+$/.test(tool) || report.length === 0) {
+		throw new ToolError(`Invalid report format. ${reportIssueDeviceUsage()}`);
 	}
-	throw new ToolError(`Invalid report format. ${reportIssueDeviceUsage()}`);
+	const missing = REPORT_ISSUE_REQUIRED_SECTIONS.filter(section => !reportSectionHasContent(report, section));
+	if (missing.length > 0) {
+		throw new ToolError(
+			`Incomplete report; missing non-empty sections: ${missing.join(", ")}. ${reportIssueDeviceUsage()}`,
+		);
+	}
+	return { tool, report };
+}
+
+export interface ReportIssueDispatchOptions {
+	directory?: string;
+	now?: () => Date;
+	createId?: () => string;
+}
+
+function filenamePart(value: string, fallback: string): string {
+	return (
+		value
+			.toLowerCase()
+			.replace(/[^a-z0-9._-]+/g, "-")
+			.replace(/^-+|-+$/g, "") || fallback
+	);
+}
+
+function metadataValue(value: string): string {
+	return value.replace(/\s+/g, " ").trim();
+}
+
+async function writeReportIssueFile(
+	session: ToolSession,
+	tool: string,
+	report: string,
+	options: ReportIssueDispatchOptions,
+): Promise<string> {
+	const directory = options.directory ?? REPORT_ISSUE_DIRECTORY;
+	const createdAt = options.now?.() ?? new Date();
+	const canonicalTool = tool.startsWith("proxy_") ? tool.slice("proxy_".length) : tool;
+	const id = options.createId?.() ?? Bun.randomUUIDv7();
+	const timestamp = createdAt.toISOString().replaceAll(":", "-");
+	const fileName = `${timestamp}-${filenamePart(canonicalTool, "tool")}-${filenamePart(id, "issue")}.md`;
+	const issuePath = path.join(directory, fileName);
+	const sessionFile = session.getSessionFile();
+	const metadata = [
+		`- Created: ${createdAt.toISOString()}`,
+		`- OMP version: ${VERSION}`,
+		`- Model: ${metadataValue(session.getActiveModelString?.() ?? "unknown")}`,
+		`- Platform: ${process.platform}/${process.arch}`,
+		`- Working directory: ${metadataValue(session.cwd)}`,
+	];
+	if (sessionFile) metadata.push(`- Session file: ${metadataValue(sessionFile)}`);
+	const content = `# Tool Issue: ${canonicalTool}\n\n${metadata.join("\n")}\n\n${report}\n`;
+	try {
+		await fs.promises.mkdir(directory, { recursive: true });
+		await fs.promises.writeFile(issuePath, content, { encoding: "utf8", flag: "wx" });
+		return issuePath;
+	} catch (error) {
+		logger.error("Failed to write local tool issue", { directory, error });
+		throw new ToolError(`Failed to write issue report to '${directory}': ${String(error)}`);
+	}
 }
 
 /**
- * Whether Auto-QA is active for this session.
+ * Whether local Auto-QA capture is active for this session.
  *
- * Precedence: `PI_AUTO_QA` env flag > explicit `dev.autoqa` setting >
- * default-on unless the user previously denied consent. The denial veto only
- * applies to the default: explicitly configuring `dev.autoqa: true` re-enables
- * injection (recording still no-ops until consent is granted).
+ * Precedence: `PI_AUTO_QA` env flag > `dev.autoqa` setting. Legacy remote
+ * sharing consent never disables local issue files.
  */
 export function isAutoQaEnabled(settings?: Settings): boolean {
-	let fallback = false;
-	if (settings) {
-		const enabled = !!settings.get("dev.autoqa");
-		fallback = settings.isConfigured("dev.autoqa")
-			? enabled
-			: enabled && settings.get("dev.autoqaConsent") !== "denied";
-	}
-	return $flag("PI_AUTO_QA", fallback);
+	return $flag("PI_AUTO_QA", settings ? !!settings.get("dev.autoqa") : false);
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -508,61 +569,27 @@ export async function flushGrievances(
 }
 
 /**
- * Most recently scheduled record pipeline. Never rejects (the pipeline
- * swallows its own errors); retained so tests can await the fire-and-forget
- * work deterministically via {@link __awaitAutoQaRecordPipelineForTests}.
- */
-let lastRecordPipeline: Promise<void> = Promise.resolve();
-
-/** Test-only: await the last consent → insert → flush pipeline. */
-export function __awaitAutoQaRecordPipelineForTests(): Promise<void> {
-	return lastRecordPipeline;
-}
-
-/**
- * Queue a grievance for recording. The consent → insert → flush pipeline is
- * fire-and-forget: nothing is written until the user grants consent (or
- * `PI_AUTO_QA_PUSH=1` forces headless recording), and the device result
- * returns immediately so the model never waits on the dialog or the network.
- */
-function recordToolIssue(session: ToolSession, tool: string, report: string): void {
-	const canonicalTool = tool.startsWith("proxy_") ? tool.slice("proxy_".length) : tool;
-	const model = session.getActiveModelString?.() ?? "unknown";
-	lastRecordPipeline = (async () => {
-		try {
-			if (!$flag("PI_AUTO_QA_PUSH") && !(await resolveAutoQaConsent(session.settings))) return;
-			const db = openAutoQaDb();
-			if (!db) return;
-			db.prepare(
-				"INSERT INTO grievances (model, version, tool, report, created_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)",
-			).run(model, VERSION, canonicalTool, report);
-			await flushGrievances(db, session.settings);
-		} catch (error) {
-			logger.debug("autoqa consent pipeline failed", { error: String(error) });
-		}
-	})();
-}
-
-/**
- * Execute `write xd://report_issue`. `text` must be either:
- * - `<tool>: <concise description>` on one line, or
- * - tool name on the first line with the report body below.
+ * Execute `write xd://report_issue`.
+ *
+ * The first line names the tool. The remaining Markdown MUST contain every
+ * section in {@link REPORT_ISSUE_REQUIRED_SECTIONS}.
  */
 export async function dispatchReportIssueDevice(
 	session: ToolSession,
 	text: string,
+	options: ReportIssueDispatchOptions = {},
 ): Promise<{ result: AgentToolResult<unknown>; xdev: XdevDispatch }> {
-	try {
-		if (isAutoQaEnabled(session.settings)) {
-			const { tool, report } = parseReportIssueBody(text);
-			recordToolIssue(session, tool, report);
-		}
-	} catch (error) {
-		if (error instanceof ToolError) throw error;
-		logger.error("Failed to record tool issue", { error });
+	const trimmed = text.trim();
+	if (!isAutoQaEnabled(session.settings)) {
+		return {
+			result: { content: [{ type: "text", text: "Issue reporting is disabled." }] },
+			xdev: { tool: REPORT_ISSUE_DEVICE_NAME, mode: "execute", args: { report: trimmed } },
+		};
 	}
+	const { tool, report } = parseReportIssueBody(trimmed);
+	const issuePath = await writeReportIssueFile(session, tool, report, options);
 	return {
-		result: { content: [{ type: "text", text: "Noted, thanks!" }] },
-		xdev: { tool: REPORT_ISSUE_DEVICE_NAME, mode: "execute", args: { report: text.trim() } },
+		result: { content: [{ type: "text", text: `Saved issue report to ${issuePath}` }] },
+		xdev: { tool: REPORT_ISSUE_DEVICE_NAME, mode: "execute", args: { report: trimmed, path: issuePath } },
 	};
 }

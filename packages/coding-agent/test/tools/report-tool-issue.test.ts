@@ -1,15 +1,16 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import * as reportIssue from "@oh-my-pi/pi-coding-agent/tools/report-tool-issue";
 import {
-	__awaitAutoQaRecordPipelineForTests,
-	__resetAutoQaConsentForTests,
 	__resetAutoQaFlushStateForTests,
 	dispatchReportIssueDevice,
 	flushGrievances,
 	isAutoQaEnabled,
+	REPORT_ISSUE_DIRECTORY,
 	reportIssueDeviceUsage,
 } from "@oh-my-pi/pi-coding-agent/tools/report-tool-issue";
 import * as piUtils from "@oh-my-pi/pi-utils";
@@ -111,8 +112,8 @@ describe("flushGrievances", () => {
 		expect(isAutoQaEnabled(Settings.isolated())).toBe(true);
 	});
 
-	it("vetoes default-on auto QA once the user denied consent", () => {
-		expect(isAutoQaEnabled(Settings.isolated({ "dev.autoqaConsent": "denied" }))).toBe(false);
+	it("keeps local auto QA enabled after legacy push consent was denied", () => {
+		expect(isAutoQaEnabled(Settings.isolated({ "dev.autoqaConsent": "denied" }))).toBe(true);
 	});
 
 	it("keeps explicitly enabled auto QA on despite denied consent", () => {
@@ -350,90 +351,100 @@ describe("flushGrievances", () => {
 });
 
 describe("dispatchReportIssueDevice", () => {
-	afterEach(() => {
-		__resetAutoQaConsentForTests();
+	let issueDir: string;
+
+	it("targets the repository issues directory by default", () => {
+		expect(REPORT_ISSUE_DIRECTORY).toBe("D:\\project\\oh-my-pi\\issues");
 	});
 
-	/** Drain the fire-and-forget consent → insert → flush pipeline. */
-	async function settlePipeline(): Promise<void> {
-		await __awaitAutoQaRecordPipelineForTests();
+	beforeEach(async () => {
+		issueDir = await fs.mkdtemp(path.join(os.tmpdir(), "report-tool-issue-"));
+	});
+
+	afterEach(async () => {
+		await fs.rm(issueDir, { recursive: true, force: true });
+	});
+
+	function session(): ToolSession {
+		return {
+			cwd: "D:\\project\\MistChess",
+			getActiveModelString: () => "openai/test-model",
+			getSessionFile: () => "C:\\sessions\\repro.jsonl",
+			settings: Settings.isolated({
+				"dev.autoqa": true,
+				"dev.autoqaConsent": "denied",
+			}),
+		} as ToolSession;
 	}
 
-	/** Auto QA on, consent already granted, push disabled (empty endpoint). */
-	function consentedSettings(): Settings {
-		return Settings.isolated({
-			"dev.autoqa": true,
-			"dev.autoqaConsent": "granted",
-			"dev.autoqaPush.endpoint": "",
+	function reproducibleReport(tool = "read"): string {
+		return `${tool}
+## Summary
+The raw selector was treated as part of the filesystem path.
+
+## Steps to Reproduce
+1. Create \`.config/dotnet-tools.json\`.
+2. Call read with \`{"path":".config/dotnet-tools.json:raw"}\`.
+
+## Expected Behavior
+Read returns the file contents without line annotations.
+
+## Actual Behavior
+Read returns \`ENOENT\` for \`dotnet-tools.json:raw\`.
+
+## Context
+- The plain path succeeds in the same session.
+- The failure occurred on Windows with an NTFS workspace.`;
+	}
+
+	it("writes a reproducible Markdown report without requiring legacy push consent", async () => {
+		const { result, xdev } = await dispatchReportIssueDevice(session(), reproducibleReport(), {
+			directory: issueDir,
+			now: () => new Date("2026-07-27T03:25:00.000Z"),
+			createId: () => "019fa2c9-test",
 		});
-	}
 
-	it("records a grievance from `<tool>: <report>` text", async () => {
-		Bun.env.PI_AUTO_QA = "1";
-		const db = openTempDb();
-		const openSpy = vi.spyOn(reportIssue, "openAutoQaDb").mockReturnValue(db);
-		try {
-			const session = { settings: consentedSettings() } as ToolSession;
-			const { result, xdev } = await dispatchReportIssueDevice(
-				session,
-				"read: selector parse dropped trailing line",
-			);
-			const first = result.content[0];
-			expect(first?.type).toBe("text");
-			if (first?.type === "text") expect(first.text).toBe("Noted, thanks!");
-			expect(xdev.tool).toBe("report_issue");
-			await settlePipeline();
-			expect(selectIds(db)).toHaveLength(1);
-			const row = db.prepare("SELECT tool, report FROM grievances").get() as { tool: string; report: string };
-			expect(row).toEqual({ tool: "read", report: "selector parse dropped trailing line" });
-		} finally {
-			openSpy.mockRestore();
-			db.close();
-		}
+		const files = await fs.readdir(issueDir);
+		expect(files).toHaveLength(1);
+		expect(files[0]).toMatch(/read.*019fa2c9-test\.md$/);
+		const issuePath = path.join(issueDir, files[0]!);
+		const saved = await Bun.file(issuePath).text();
+		expect(saved).toContain("# Tool Issue: read");
+		expect(saved).toContain("- Created: 2026-07-27T03:25:00.000Z");
+		expect(saved).toContain("- Model: openai/test-model");
+		expect(saved).toContain("- Working directory: D:\\project\\MistChess");
+		expect(saved).toContain("- Session file: C:\\sessions\\repro.jsonl");
+		expect(saved).toContain("## Steps to Reproduce");
+		expect(saved).toContain('{"path":".config/dotnet-tools.json:raw"}');
+		expect(saved).toContain("## Context");
+
+		const first = result.content[0];
+		expect(first?.type).toBe("text");
+		if (first?.type === "text") expect(first.text).toBe(`Saved issue report to ${issuePath}`);
+		expect(xdev).toEqual({
+			tool: "report_issue",
+			mode: "execute",
+			args: { report: reproducibleReport(), path: issuePath },
+		});
 	});
 
-	it("accepts the two-line fallback body format", async () => {
-		Bun.env.PI_AUTO_QA = "1";
-		const db = openTempDb();
-		const openSpy = vi.spyOn(reportIssue, "openAutoQaDb").mockReturnValue(db);
-		try {
-			const session = { settings: consentedSettings() } as ToolSession;
-			await dispatchReportIssueDevice(session, "grep\nreported matches include a deleted file");
-			await settlePipeline();
-			const row = db.prepare("SELECT tool, report FROM grievances").get() as { tool: string; report: string };
-			expect(row).toEqual({ tool: "grep", report: "reported matches include a deleted file" });
-		} finally {
-			openSpy.mockRestore();
-			db.close();
-		}
+	it("allocates a distinct file for each concurrent report", async () => {
+		await Promise.all([
+			dispatchReportIssueDevice(session(), reproducibleReport("read"), { directory: issueDir }),
+			dispatchReportIssueDevice(session(), reproducibleReport("grep"), { directory: issueDir }),
+		]);
+
+		const files = await fs.readdir(issueDir);
+		expect(files).toHaveLength(2);
+		expect(new Set(files).size).toBe(2);
 	});
 
-	it("writes nothing while consent is unresolved", async () => {
-		Bun.env.PI_AUTO_QA = "1";
-		const originalPush = Bun.env.PI_AUTO_QA_PUSH;
-		delete Bun.env.PI_AUTO_QA_PUSH;
-		const db = openTempDb();
-		const openSpy = vi.spyOn(reportIssue, "openAutoQaDb").mockReturnValue(db);
-		try {
-			// Consent unset and no UI handler registered → resolves to false.
-			const session = { settings: Settings.isolated({ "dev.autoqa": true }) } as ToolSession;
-			const { result } = await dispatchReportIssueDevice(session, "read: selector parse dropped trailing line");
-			const first = result.content[0];
-			if (first?.type === "text") expect(first.text).toBe("Noted, thanks!");
-			await settlePipeline();
-			expect(selectIds(db)).toHaveLength(0);
-		} finally {
-			if (originalPush === undefined) delete Bun.env.PI_AUTO_QA_PUSH;
-			else Bun.env.PI_AUTO_QA_PUSH = originalPush;
-			openSpy.mockRestore();
-			db.close();
-		}
-	});
-
-	it("rejects malformed body text with a usage hint", async () => {
-		const session = { settings: Settings.isolated({ "dev.autoqa": true }) } as ToolSession;
-		await expect(dispatchReportIssueDevice(session, "just a vague sentence")).rejects.toThrow(
-			reportIssueDeviceUsage(),
-		);
+	it("rejects reports without all reproducibility sections", async () => {
+		await expect(
+			dispatchReportIssueDevice(session(), "read\n## Summary\nA vague selector failure", {
+				directory: issueDir,
+			}),
+		).rejects.toThrow(reportIssueDeviceUsage());
+		expect(await fs.readdir(issueDir)).toEqual([]);
 	});
 });

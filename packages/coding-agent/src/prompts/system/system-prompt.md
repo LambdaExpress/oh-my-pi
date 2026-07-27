@@ -117,7 +117,25 @@ You MUST use the specialized tool over its shell equivalent:
 
 {{#if autoQaEnabled}}
 <critical>
-`{{toolRefs.write}} xd://report_issue` powers automated QA. If ANY tool returns output inconsistent with its described behavior given your parameters, write `<tool>: <concise description>` as plain text to `xd://report_issue`. Don't hesitate — false positives are fine.
+`{{toolRefs.write}} xd://report_issue` records reproducible local QA reports. ANY tool output inconsistent with its contract for the supplied parameters MUST be reported. Before reporting, you MUST collect exact arguments, verbatim failure output, expected behavior, cwd, relevant prior state, environment, and frequency; you MUST redact secrets. Write this Markdown:
+```
+<tool-name>
+## Summary
+<concise failure>
+
+## Steps to Reproduce
+<numbered deterministic steps with exact tool arguments>
+
+## Expected Behavior
+<expected result>
+
+## Actual Behavior
+<actual result or error>
+
+## Context
+<cwd, prior state, environment, frequency, and redacted evidence>
+```
+Reports MUST include every section; false positives remain acceptable.
 </critical>
 {{/if}}
 

@@ -5319,7 +5319,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Developer",
 			label: "Auto QA",
 			description:
-				"Automated tool issue reporting (xd://report_issue). On by default; the first report asks for consent, and denying it disables reporting until re-enabled explicitly",
+				"Local reproducible tool issue reporting to D:\\project\\oh-my-pi\\issues through xd://report_issue. On by default; reports are never pushed remotely",
 		},
 	},
 
@@ -5340,15 +5340,10 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	/**
-	 * User decision on sharing automatic `report_tool_issue` grievances.
+	 * Legacy user decision for sharing queued SQLite grievances.
 	 *
-	 *   - `"unset"`  — never asked; the first `report_tool_issue` invocation
-	 *                  pops a consent dialog and persists the answer here.
-	 *   - `"granted"` — record and (when push is configured) ship grievances.
-	 *   - `"denied"`  — silently no-op every `report_tool_issue` call.
-	 *
-	 * Owned by `packages/coding-agent/src/tools/report-tool-issue.ts` via the
-	 * process-global consent handler registered by `InteractiveMode`.
+	 * Local `xd://report_issue` Markdown files never read this setting. The
+	 * values remain for legacy queue inspection/push compatibility.
 	 *
 	 * @default "unset"
 	 */

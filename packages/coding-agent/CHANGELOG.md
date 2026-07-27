@@ -26,6 +26,7 @@
 
 ### Changed
 
+- Changed `xd://report_issue` to write structured, reproducible Markdown reports to `D:\project\oh-my-pi\issues`, including agent-supplied reproduction context plus runtime model, platform, cwd, and session metadata, without requiring remote-sharing consent.
 - Changed the status line to drop the default Pi glyph and show subscription usage limits instead of subscription cost markers.
 - Changed subscription usage status-line labels to show rounded remaining reset time, using minutes below one hour and hours below one day.
 - Changed the interactive working indicator to show current-run elapsed time and an explicit Esc-to-interrupt hint without replacing dynamic status text.
