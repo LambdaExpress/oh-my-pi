@@ -334,7 +334,7 @@ export function splitPathAndSel(rawPath: string): { path: string; sel?: string }
  * silently reinterpreted a real literal path such as `test:1-2` as `test`
  * plus selector `1-2` (issue #4618). `lstat` inspects the entry itself, so a
  * dangling symlink is still detected as present; ambiguous errors resolve to
- * `"unknown"` so callers keep the raw path instead of guessing.
+ * `"unknown"` so callers can apply platform-specific ambiguity policy.
  */
 export async function probeLiteralPathExists(filePath: string, cwd: string): Promise<"exists" | "missing" | "unknown"> {
 	const resolved = resolveReadPath(filePath, cwd);
@@ -352,19 +352,22 @@ export async function probeLiteralPathExists(filePath: string, cwd: string): Pro
  * path over selector interpretation. Filenames whose tail matches the selector
  * grammar (e.g. `test:1-2`, `log:raw`) are legal on POSIX; without this the
  * strict splitter peels the tail and both `read` and `grep` refuse to open the
- * real file (issue #4618). The literal wins on a confirmed `lstat`, and also
- * on `"unknown"` (`EACCES` on a parent, transient I/O), so an unreachable
- * literal is never silently reinterpreted as `path + selector`. Only a
- * definitive `ENOENT`/`ENOTDIR` falls back to the strict split.
+ * real file (issue #4618). The literal wins on a confirmed `lstat`. Ambiguous
+ * errors also preserve the literal on POSIX, where colon filenames are ordinary
+ * files. On Windows, an ambiguous probe falls back to selector interpretation
+ * so a transient filesystem error cannot reinterpret the selector as an NTFS
+ * alternate data stream.
  */
 export async function splitPathAndSelPreferringLiteral(
 	rawPath: string,
 	cwd: string,
+	platform: NodeJS.Platform = process.platform,
 ): Promise<{ path: string; sel?: string }> {
 	const strict = splitPathAndSel(rawPath);
 	if (strict.sel === undefined) return strict;
 	const probe = await probeLiteralPathExists(rawPath, cwd);
-	return probe === "missing" ? strict : { path: rawPath };
+	if (probe === "missing" || (probe === "unknown" && platform === "win32")) return strict;
+	return { path: rawPath };
 }
 
 /**

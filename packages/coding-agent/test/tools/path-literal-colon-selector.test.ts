@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -82,6 +83,23 @@ describe("literal colon filename resolution (issue #4618)", () => {
 				path: "test",
 				sel: "1-2",
 			});
+		});
+
+		it("interprets an unknown literal probe as a selector only on Windows", async () => {
+			const lstatSpy = spyOn(nodeFs.promises, "lstat").mockRejectedValue(
+				Object.assign(new Error("injected access failure"), { code: "EACCES" }),
+			);
+			try {
+				expect(await splitPathAndSelPreferringLiteral("manifest.json:raw", tmpDir, "win32")).toEqual({
+					path: "manifest.json",
+					sel: "raw",
+				});
+				expect(await splitPathAndSelPreferringLiteral("manifest.json:raw", tmpDir, "linux")).toEqual({
+					path: "manifest.json:raw",
+				});
+			} finally {
+				lstatSpy.mockRestore();
+			}
 		});
 
 		it("also protects `:raw`-shaped literal filenames", async () => {
