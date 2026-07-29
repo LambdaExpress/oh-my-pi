@@ -263,6 +263,21 @@ function extractFirstDisplayMessageFromPrefix(content: string): string | undefin
 	return fallback;
 }
 
+async function readSessionListSlices(
+	file: string,
+	storage: SessionStorage,
+	size: number,
+	withStatus: boolean,
+): Promise<[string, string]> {
+	let prefixBytes = Math.min(SESSION_LIST_PREFIX_BYTES, size);
+	let [content, suffix] = await storage.readTextSlices(file, prefixBytes, withStatus ? SESSION_LIST_SUFFIX_BYTES : 0);
+	while (prefixBytes < size && !extractFirstDisplayMessageFromPrefix(content)) {
+		prefixBytes = Math.min(size, prefixBytes * 4);
+		[content] = await storage.readTextSlices(file, prefixBytes, 0);
+	}
+	return [content, suffix];
+}
+
 interface SessionListHeader {
 	type: "session";
 	id: string;
@@ -356,13 +371,8 @@ async function scanSessionFile(
 	withStatus: boolean,
 ): Promise<SessionInfo | undefined> {
 	try {
-		const stat = storage.statSync(file);
-		const [content, suffix] = await storage.readTextSlices(
-			file,
-			SESSION_LIST_PREFIX_BYTES,
-			withStatus ? SESSION_LIST_SUFFIX_BYTES : 0,
-		);
-		const { size, mtime } = stat;
+		const { size, mtime } = storage.statSync(file);
+		const [content, suffix] = await readSessionListSlices(file, storage, size, withStatus);
 		const entries = parseJsonlLenient<Record<string, unknown>>(content);
 		const header = parseSessionListHeader(content, entries);
 		if (!header) return undefined;

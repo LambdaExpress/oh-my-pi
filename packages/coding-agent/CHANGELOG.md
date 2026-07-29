@@ -26,6 +26,7 @@
 
 ### Changed
 
+- Changed tool routing prompts to call built-in tools and batched `task` directly by default, reserving `eval` JavaScript orchestration for complex value-dependent loops, branching, pipelines, and structured aggregation.
 - Changed `xd://report_issue` to write structured, reproducible Markdown reports to `D:\project\oh-my-pi\issues`, including agent-supplied reproduction context plus runtime model, platform, cwd, and session metadata, without requiring remote-sharing consent.
 - Changed the status line to drop the default Pi glyph and show subscription usage limits instead of subscription cost markers.
 - Changed subscription usage status-line labels to show rounded remaining reset time, using minutes below one hour and hours below one day.
@@ -41,6 +42,10 @@
 
 ### Fixed
 
+- Fixed resume-session previews reporting `(no messages)` when a large leading hidden device notice pushed the first user message beyond the initial session-list scan window.
+
+- Fixed the SSH transfer HUD async-job fixture preserving typed transfer progress as a plain details record, restoring the coding-agent TypeScript check.
+- Fixed completed background SSH transfers losing their terminal progress details, so the TUI now replaces the transient HUD with a persistent completed, failed, or cancelled transfer summary instead of a generic completion line.
 - Fixed Windows local read selectors occasionally being treated as NTFS alternate data stream paths when the literal-path probe returned an ambiguous filesystem error.
 - Fixed the `computer` tool publishing every action as one flat object, which made generated callers attach unrelated fields that runtime validation rejected; action schemas now use closed discriminated variants so clicks, typing, scrolling, and other input reach the native desktop backend.
 - Fixed long model and provider names collapsing the welcome screen to one column by preserving the LSP and recent-session panel while truncating oversized labels with three dots.

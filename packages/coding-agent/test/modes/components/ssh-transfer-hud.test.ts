@@ -1,9 +1,10 @@
 import { beforeAll, describe, expect, it } from "bun:test";
+import type { AsyncJob } from "@oh-my-pi/pi-coding-agent/async";
 import { SshTransferHud } from "@oh-my-pi/pi-coding-agent/modes/components/ssh-transfer-hud";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { buildAsyncResultBlock } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
+import { buildAsyncResultBatchMessage } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 import type { AsyncJobSnapshot, AsyncJobSnapshotItem } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { SshTransferToolDetails } from "@oh-my-pi/pi-coding-agent/tools/ssh-transfer";
 
 function details(status: SshTransferToolDetails["status"]): SshTransferToolDetails {
@@ -130,29 +131,26 @@ describe("SshTransferHud", () => {
 		expect(rendered).toContain("1 SSH transfer");
 		expect(rendered).not.toContain("Running agent");
 	});
-	it("rebuilds a persistent cancelled transfer block from async-result details", () => {
+	it("rebuilds the delivered transfer result from the async job", () => {
 		const transfer = details("cancelled");
-		const message: CustomMessage = {
-			role: "custom",
-			customType: "async-result",
-			content: "cancelled",
-			display: true,
-			attribution: "agent",
-			details: {
-				jobs: [
-					{
-						jobId: "job-1",
-						type: "ssh_transfer",
-						status: "cancelled",
-						durationMs: 2_000,
-						progress: { text: "cancelled", details: transfer, updatedAt: 300 },
-						settledAt: 300,
-					},
-				],
-			},
-			timestamp: 400,
+		const asyncJob: AsyncJob = {
+			id: "job-1",
+			type: "ssh_transfer",
+			status: "cancelled",
+			label: "download blob",
+			startTime: 100,
+			abortController: new AbortController(),
+			promise: Promise.resolve(),
+			toolCallId: "tool-1",
+			progress: { text: "cancelled", details: { ...transfer }, updatedAt: 300 },
+			settledAt: 300,
 		};
-		const output = buildAsyncResultBlock(message)
+		const message = buildAsyncResultBatchMessage([
+			{ jobId: asyncJob.id, result: "cancelled", job: asyncJob, durationMs: 2_000 },
+		]);
+		expect(message).not.toBeNull();
+
+		const output = buildAsyncResultBlock(message!)
 			.render(120)
 			.map(line => Bun.stripANSI(line))
 			.join("\n");

@@ -93,6 +93,31 @@ describe("system prompt tool inventory", () => {
 		});
 		return systemPrompt.join("\n\n");
 	}
+	it("routes routine calls away from eval orchestration", async () => {
+		const tools = new Map(TOOLS);
+		tools.set("eval", {
+			label: "Eval",
+			description: "Runs code.",
+			parameters: { type: "object", properties: {} },
+		});
+		const { systemPrompt } = await buildSystemPrompt({
+			cwd: tempDir,
+			contextFiles: [],
+			skills: [],
+			rules: [],
+			toolNames: ["read", "eval"],
+			tools,
+			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
+			nativeTools: true,
+			inlineToolDescriptors: true,
+		});
+		const text = systemPrompt.join("\n\n");
+
+		expect(text).toContain("Call available tools directly.");
+		expect(text).toContain("NEVER use `eval` merely to wrap, batch, or parallelize independent calls.");
+		expect(text).toContain("Use `eval` only for complex, value-dependent workflows");
+	});
+
 
 	it("renders reproducible local QA report instructions", async () => {
 		const { systemPrompt } = await buildSystemPrompt({

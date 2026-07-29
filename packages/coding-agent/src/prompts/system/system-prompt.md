@@ -97,6 +97,8 @@ Use tools whenever they improve correctness, completeness, or grounding.
 - Empty, partial, or suspiciously narrow lookup? Retry with a different strategy.
 - SHOULD parallelize independent calls.
 {{#has tools "task"}}- User says `parallel` or `parallelize` → MUST use `{{toolRefs.task}}` subagents; parallel tool calls alone do not satisfy.{{/has}}
+{{#has tools "eval"}}- Call available tools directly. NEVER use `{{toolRefs.eval}}` merely to wrap, batch, or parallelize independent calls.
+- Use `{{toolRefs.eval}}` only for complex, value-dependent workflows requiring loops, branching, pipelines, or structured aggregation.{{/has}}
 
 # Tool I/O
 - Prefer relative paths for `path`-like fields.

@@ -36,6 +36,9 @@ type AsyncResultJobDetails = {
 	type?: AsyncJob["type"];
 	label?: string;
 	durationMs?: number;
+	status?: AsyncJob["status"];
+	progress?: AsyncJob["progress"];
+	settledAt?: number;
 };
 
 export type AsyncResultDetails = {
@@ -50,6 +53,9 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 		type: entry.job?.type,
 		label: entry.job?.label,
 		durationMs: entry.durationMs,
+		status: entry.job?.status,
+		progress: entry.job?.progress,
+		settledAt: entry.job?.settledAt,
 	}));
 	const details: AsyncResultDetails = {
 		jobs: jobs.map(job => ({
@@ -57,6 +63,9 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 			type: job.type,
 			label: job.label,
 			durationMs: job.durationMs,
+			status: job.status,
+			progress: job.progress,
+			settledAt: job.settledAt,
 		})),
 	};
 	return {
