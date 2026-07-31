@@ -1368,19 +1368,20 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				if (params.pid === undefined && params.port === undefined) {
 					throw new ToolError("attach requires pid or port");
 				}
-				const commandCwd = params.cwd ? resolveToCwd(params.cwd, this.session.cwd) : this.session.cwd;
-				const adapter = selectAttachAdapter(commandCwd, params.adapter, params.port);
+				const workspaceCwd = this.session.cwd;
+				const runtimeCwd = params.cwd ? resolveToCwd(params.cwd, workspaceCwd) : workspaceCwd;
+				const adapter = selectAttachAdapter(workspaceCwd, params.adapter, params.port);
 				if (!adapter) {
 					if (params.adapter) {
-						const command = getAdapterConfigs(commandCwd)[params.adapter]?.command ?? params.adapter;
-						throw new ToolError(formatAdapterUnavailable(params.adapter, command, commandCwd));
+						const command = getAdapterConfigs(workspaceCwd)[params.adapter]?.command ?? params.adapter;
+						throw new ToolError(formatAdapterUnavailable(params.adapter, command, workspaceCwd));
 					}
 					throw new ToolError(
-						`No debugger adapter available. Installed adapters: ${getConfiguredAdapters(commandCwd)}`,
+						`No debugger adapter available. Installed adapters: ${getConfiguredAdapters(workspaceCwd)}`,
 					);
 				}
 				let snapshot = await dapSessionManager.attach(
-					{ adapter, cwd: commandCwd, pid: params.pid, port: params.port, host: params.host },
+					{ adapter, cwd: runtimeCwd, pid: params.pid, port: params.port, host: params.host },
 					signal,
 					timeoutSec * 1000,
 				);

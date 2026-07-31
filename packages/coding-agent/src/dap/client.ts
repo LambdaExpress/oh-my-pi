@@ -106,6 +106,7 @@ export class DapClient {
 			writeSink?: DapWriteSink;
 			socket?: { end(): void };
 			port?: number;
+			startReader?: boolean;
 		},
 	) {
 		this.adapter = adapter;
@@ -119,6 +120,7 @@ export class DapClient {
 			() => this.#rejectPendingWritesForExit(),
 			() => this.#rejectPendingWritesForExit(),
 		);
+		if (options?.startReader) void this.#startMessageReader();
 	}
 
 	static async spawn({ adapter, cwd, socketReadyTimeoutMs }: DapSpawnOptions): Promise<DapClient> {
@@ -917,7 +919,13 @@ export async function waitForTcpServerListening(
 		}
 		ready.resolve();
 	})();
-	await Promise.race([ready.promise, Bun.sleep(timeoutMs)]);
+	const timeout = Promise.withResolvers<void>();
+	const timer = setTimeout(timeout.resolve, timeoutMs);
+	try {
+		await Promise.race([ready.promise, timeout.promise]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 interface SocketTransport {

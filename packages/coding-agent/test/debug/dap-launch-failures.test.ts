@@ -586,74 +586,59 @@ describe("connectSocket unix transport", () => {
 });
 
 describe("DAP TCP transport resilience", () => {
-	const TCP_ADAPTER_BASE: DapResolvedAdapter = {
+	const TCP_ADAPTER: DapResolvedAdapter = {
 		...TEST_ADAPTER,
 		name: "js-debug-adapter",
-		command: process.execPath,
-		resolvedCommand: process.execPath,
 		connectMode: "tcp",
 	};
 
-	// Adapter that binds the reserved port, accepts the first connection, then
-	// drops it after 30ms without answering — the WSL2-mirrored ghost socket.
-	const GHOST_ADAPTER = `
-const port = Number(process.argv[2]);
-const server = Bun.listen({ hostname: "127.0.0.1", port, socket: {
-	open(s){ setTimeout(() => { try { s.end(); } catch {} }, 30); },
-	data(){}, close(){}, error(){},
-}});
-console.log("Debug server listening at 127.0.0.1:" + port);
-await Bun.sleep(60_000);
-`;
-
-	async function withTcpAdapter(
-		source: string,
-		run: (adapter: DapResolvedAdapter, cwd: string) => Promise<void>,
-	): Promise<void> {
-		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-debug-tcp-"));
-		const adapterPath = path.join(cwd, "tcp-adapter.mjs");
-		await fs.writeFile(adapterPath, source);
-		const adapter: DapResolvedAdapter = {
-			...TCP_ADAPTER_BASE,
-			// biome-ignore lint/suspicious/noTemplateCurlyInString: literal DAP `${port}` placeholder substituted by the adapter launcher
-			args: [adapterPath, "${port}", "127.0.0.1"],
+	function createGhostTransportClient(): { client: DapClient; closePeer(): void } {
+		let controller!: ReadableStreamDefaultController<Uint8Array>;
+		const readable = new ReadableStream<Uint8Array>({
+			start(streamController) {
+				controller = streamController;
+			},
+		});
+		const proc = createFakeManagedProcess();
+		const client = new DapClient(TCP_ADAPTER, process.cwd(), proc, {
+			readable,
+			writeSink: {
+				write: () => 0,
+				flush: () => undefined,
+			},
+			startReader: true,
+		});
+		return {
+			client,
+			closePeer: () => controller.close(),
 		};
-		try {
-			await run(adapter, cwd);
-		} finally {
-			await removeWithRetries(cwd);
-		}
 	}
 
 	it("rejects a pending request fast when the transport closes cleanly without answering", async () => {
-		await withTcpAdapter(GHOST_ADAPTER, async (adapter, cwd) => {
-			const client = await DapClient.spawn({ adapter, cwd, socketReadyTimeoutMs: 5_000 });
-			try {
-				// The ghost socket ends the read stream cleanly. The reader must wake
-				// the pending request with a connection-closed error; a wake regression
-				// rejects with `DAP request initialize timed out` instead.
-				await expect(client.sendRequest("initialize", {}, undefined, 60_000)).rejects.toThrow(
-					/DAP connection closed/,
-				);
-			} finally {
-				await client.dispose();
-			}
-		});
+		const { client, closePeer } = createGhostTransportClient();
+		try {
+			const request = client.sendRequest("initialize", {}, undefined, 60_000);
+			closePeer();
+			// A TCP peer close becomes a clean readable-stream end. The reader must
+			// wake the pending request with a connection error; a wake regression
+			// rejects with `DAP request initialize timed out` instead.
+			await expect(request).rejects.toThrow(/DAP connection closed/);
+		} finally {
+			await client.dispose();
+		}
 	}, 20_000);
 
 	it("wakes an event waiter when the transport closes instead of waiting out its timeout", async () => {
-		await withTcpAdapter(GHOST_ADAPTER, async (adapter, cwd) => {
-			const client = await DapClient.spawn({ adapter, cwd, socketReadyTimeoutMs: 5_000 });
-			try {
-				// A close must wake the event waiter with the connection error rather
-				// than letting it wait out its own timeout.
-				await expect(client.waitForEvent("stopped", undefined, undefined, 60_000)).rejects.toThrow(
-					/DAP connection closed/,
-				);
-			} finally {
-				await client.dispose();
-			}
-		});
+		const { client, closePeer } = createGhostTransportClient();
+		try {
+			const waiter = client.waitForEvent("stopped", undefined, undefined, 60_000);
+			closePeer();
+			// A close must wake the event waiter with the connection error rather
+			// than letting it wait out its own timeout.
+			await expect(waiter).rejects.toThrow(/DAP connection closed/);
+		} finally {
+			await client.dispose();
+		}
 	}, 20_000);
 
 	// Deterministic gate contract: the client must not open its first connect
@@ -910,6 +895,72 @@ describe("DebugTool launch validation", () => {
 			}
 		} finally {
 			attachSpy.mockRestore();
+		}
+	});
+
+	it("resolves explicit attach adapters from the session root while preserving the runtime cwd", async () => {
+		const workspaceCwd = await fs.mkdtemp(path.join(os.tmpdir(), "omp-debug-attach-cwd-scope-"));
+		const runtimeCwd = path.join(workspaceCwd, "services", "api");
+		const adapterFile = process.platform === "win32" ? "root-adapter.cmd" : "root-adapter";
+		const adapterCommand = path.join(workspaceCwd, ".omp", "debuggers", adapterFile);
+		const configuredCommand =
+			process.platform === "win32"
+				? `.\\.omp\\debuggers\\${adapterFile}`
+				: `./.omp/debuggers/${adapterFile}`;
+		const missingCommand =
+			process.platform === "win32" ? ".\\.omp\\debuggers\\missing-adapter.cmd" : "./.omp/debuggers/missing-adapter";
+		const sessionAttachSpy = spyOn(dapModule.dapSessionManager, "attach").mockImplementation(async () => {
+			throw new Error("captured attach");
+		});
+		try {
+			await fs.mkdir(runtimeCwd, { recursive: true });
+			await fs.mkdir(path.dirname(adapterCommand), { recursive: true });
+			await fs.writeFile(adapterCommand, process.platform === "win32" ? "@echo off\r\n" : "#!/bin/sh\n");
+			await fs.chmod(adapterCommand, 0o755);
+			await fs.writeFile(
+				path.join(workspaceCwd, ".omp", "dap.json"),
+				JSON.stringify({
+					adapters: {
+						"root-available": { command: configuredCommand },
+						"root-missing": { command: missingCommand },
+					},
+				}),
+			);
+			const session: ToolSession = {
+				cwd: workspaceCwd,
+				hasUI: false,
+				getSessionFile: () => null,
+				getSessionSpawns: () => "*",
+				settings: Settings.isolated({ "debug.enabled": true }),
+			};
+			const tool = new DebugTool(session);
+
+			await expect(
+				tool.execute("call", {
+					action: "attach",
+					pid: 1234,
+					adapter: "root-missing",
+					cwd: runtimeCwd,
+				}),
+			).rejects.toThrow(/configured command '.*missing-adapter.*' did not resolve.*DAP adapter config/);
+			expect(sessionAttachSpy).not.toHaveBeenCalled();
+
+			await expect(
+				tool.execute("call", {
+					action: "attach",
+					pid: 1234,
+					adapter: "root-available",
+					cwd: runtimeCwd,
+				}),
+			).rejects.toThrow(/captured attach/);
+			expect(sessionAttachSpy).toHaveBeenCalledTimes(1);
+			const [options] = sessionAttachSpy.mock.calls[0]!;
+			expect(options.cwd).toBe(runtimeCwd);
+			expect(options.adapter.name).toBe("root-available");
+			expect(options.adapter.resolvedCommand).toBe(adapterCommand);
+		} finally {
+			sessionAttachSpy.mockRestore();
+			await removeWithRetries(workspaceCwd);
 		}
 	});
 
