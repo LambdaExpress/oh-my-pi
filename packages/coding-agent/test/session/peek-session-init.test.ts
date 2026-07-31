@@ -50,6 +50,7 @@ describe("SessionManager.peekSessionInit", () => {
 			systemPrompt: "second",
 			task: "t2",
 			tools: ["read", "bash", "yield"],
+			mountedXdevTools: ["bash"],
 			spawns: "task",
 			readSummarize: false,
 			restrictToolNames: true,
@@ -62,6 +63,7 @@ describe("SessionManager.peekSessionInit", () => {
 		// Latest init wins — the reviver must rebuild from the most recent contract.
 		expect(peek?.init?.systemPrompt).toBe("second");
 		expect(peek?.init?.tools).toEqual(["read", "bash", "yield"]);
+		expect(peek?.init?.mountedXdevTools).toEqual(["bash"]);
 		expect(peek?.init?.spawns).toBe("task");
 		expect(peek?.init?.readSummarize).toBe(false);
 		expect(peek?.init?.restrictToolNames).toBe(true);

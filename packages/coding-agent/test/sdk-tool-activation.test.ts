@@ -108,6 +108,7 @@ describe("createAgentSession defaultInactive tool activation", () => {
 	});
 
 	afterAll(() => {
+		modelRegistry.authStorage.close();
 		removeSyncWithRetries(registryAuthDir);
 	});
 
@@ -188,6 +189,28 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			expect(session.getXdevToolEntries().map(entry => entry.name)).toContain("default_active_tool");
 			expect(session.getXdevToolEntries().map(entry => entry.name)).not.toContain("default_inactive_tool");
 			expect(session.systemPrompt.join("\n")).toContain("default_inactive_tool");
+		} finally {
+			await session.dispose();
+		}
+	});
+
+	it("restores a mounted partition for tools that were explicit at startup", async () => {
+		const tempDir = makeTempDir();
+		const enabled = ["read", "write", "default_active_tool"];
+		const { session } = await createAgentSession({
+			...baseOptions(tempDir),
+			extensions: [toolActivationExtension],
+			toolNames: enabled,
+		});
+
+		try {
+			expect(session.getActiveToolNames()).toContain("default_active_tool");
+
+			await session.setActiveToolPresentation(enabled, ["default_active_tool"]);
+
+			expect(session.getEnabledToolNames()).toEqual(expect.arrayContaining(enabled));
+			expect(session.getActiveToolNames()).not.toContain("default_active_tool");
+			expect(session.getMountedXdevToolNames()).toContain("default_active_tool");
 		} finally {
 			await session.dispose();
 		}

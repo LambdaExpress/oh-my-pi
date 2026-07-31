@@ -2918,7 +2918,8 @@ export async function runSubprocess(options: ExecutorOptions): Promise<SingleRes
 			session.sessionManager.appendSessionInit({
 				systemPrompt: session.agent.state.systemPrompt.join("\n\n"),
 				task,
-				tools: session.getActiveToolNames(),
+				tools: session.getEnabledToolNames(),
+				mountedXdevTools: session.getMountedXdevToolNames(),
 				spawns: spawnsEnv,
 				readSummarize: agent.readSummarize,
 				outputSchema,

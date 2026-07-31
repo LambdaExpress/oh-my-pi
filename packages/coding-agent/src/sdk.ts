@@ -3201,6 +3201,8 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			serviceTierByFamily: initialServiceTierByFamily,
 			sessionManager,
 			settings,
+			extensionPaths,
+			customToolPaths,
 			autoApprove: options.autoApprove,
 			titleSystemPrompt: options.titleSystemPrompt,
 			evalKernelOwnerId,

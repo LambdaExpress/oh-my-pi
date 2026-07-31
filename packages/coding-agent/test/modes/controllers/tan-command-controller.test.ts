@@ -3,6 +3,7 @@ import * as path from "node:path";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import type { AsyncJobRegisterOptions } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { MCPManager } from "@oh-my-pi/pi-coding-agent/mcp/manager";
 import { TanCommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/tan-command-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -53,12 +54,17 @@ function createCloneStub(overrides?: {
 	abort?: () => void;
 	sessionManager?: { appendSessionInit: (init: unknown) => void };
 	lastAssistantText?: string;
+	enabledToolNames?: string[];
+	mountedXdevToolNames?: string[];
 }) {
 	const appendMessage = vi.fn();
 	let listener: ((event: TanSessionEvent) => void) | undefined;
 	const clone = {
 		agent: { appendMessage },
 		sessionManager: overrides?.sessionManager,
+		setActiveToolPresentation: vi.fn(async () => {}),
+		getEnabledToolNames: vi.fn(() => [...(overrides?.enabledToolNames ?? ["read", "bash"])]),
+		getMountedXdevToolNames: vi.fn(() => [...(overrides?.mountedXdevToolNames ?? [])]),
 		setTodoPhases: vi.fn(),
 		subscribe: vi.fn((l: (event: TanSessionEvent) => void) => {
 			listener = l;
@@ -86,6 +92,9 @@ function createContext(overrides?: {
 	model?: Model;
 	agentId?: string;
 	parentPromptCacheKey?: string;
+	mcpManager?: MCPManager;
+	extensionPaths?: string[];
+	customToolPaths?: NonNullable<InteractiveModeContext["session"]["customToolPaths"]>;
 	register?: (run: CapturedJobRun, options?: AsyncJobRegisterOptions) => string;
 }) {
 	const tempDir = TempDir.createSync("@omp-tan-controller-");
@@ -113,6 +122,10 @@ function createContext(overrides?: {
 		configuredThinkingLevel: vi.fn(() => undefined),
 		systemPrompt: ["system prompt"],
 		getActiveToolNames: vi.fn(() => ["read", "bash"]),
+		getEnabledToolNames: vi.fn(() => ["read", "bash"]),
+		getMountedXdevToolNames: vi.fn(() => []),
+		extensionPaths: overrides?.extensionPaths ?? [],
+		customToolPaths: overrides?.customToolPaths ?? [],
 		modelRegistry: { authStorage: { marker: "auth" } },
 		getAgentId: vi.fn(() => overrides?.agentId),
 		sendCustomMessage: vi.fn(async () => {
@@ -133,6 +146,7 @@ function createContext(overrides?: {
 	const ctx = {
 		session,
 		sessionManager,
+		mcpManager: overrides?.mcpManager,
 		settings: Settings.isolated({ "task.enableLsp": true }),
 		showStatus: vi.fn(),
 		showWarning: vi.fn(),
@@ -345,6 +359,7 @@ describe("TanCommandController", () => {
 			systemPrompt: "system prompt",
 			task: "park me",
 			tools: ["read", "bash"],
+			mountedXdevTools: [],
 		});
 		// Parked (not unregistered) before dispose, then the disposed session is nulled
 		// out — the hub keeps the ref and reads its transcript from the session file.
@@ -352,6 +367,126 @@ describe("TanCommandController", () => {
 		expect(detachSession).toHaveBeenCalledWith(expect.stringMatching(/^Tan-/), "parent-scope");
 		expect(clone.dispose).toHaveBeenCalled();
 		expect(unregister).not.toHaveBeenCalled();
+	});
+
+	it("rebinds source-backed tools, verifies the exact presentation, and persists the clone's actual sets", async () => {
+		const mcpManager = {
+			getTools: () => [
+				{ name: "mcp__server_browse", label: "server/browse" },
+				{ name: "mcp__ambient_admin", label: "ambient/admin" },
+			],
+		} as unknown as MCPManager;
+		const extensionPaths = ["/parent/extensions/browser-tools.ts"];
+		const customToolPaths: NonNullable<InteractiveModeContext["session"]["customToolPaths"]> = [
+			{
+				path: "/parent/tools/project-tools.ts",
+				source: { provider: "test", providerName: "Test", level: "project" },
+			},
+		];
+		const harness = createContext({ mcpManager, extensionPaths, customToolPaths });
+		vi.spyOn(harness.ctx.session, "getEnabledToolNames").mockReturnValue([
+			"read",
+			"write",
+			"browser",
+			"mcp__server_browse",
+		]);
+		vi.spyOn(harness.ctx.session, "getMountedXdevToolNames").mockReturnValue([
+			"browser",
+			"mcp__server_browse",
+		]);
+		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
+		const appendSessionInit = vi.fn();
+		const actualEnabled = ["mcp__server_browse", "browser", "write", "read"];
+		const actualMounted = ["mcp__server_browse", "browser"];
+		const { clone } = createCloneStub({
+			sessionManager: { appendSessionInit },
+			enabledToolNames: actualEnabled,
+			mountedXdevToolNames: actualMounted,
+		});
+		const createAgentSessionSpy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+			session: clone,
+		} as unknown as CreateAgentSessionResult);
+		const controller = new TanCommandController(harness.ctx);
+
+		await controller.start("browse from the tangent");
+		extensionPaths.push("/parent/extensions/added-after-dispatch.ts");
+		customToolPaths[0]!.path = "/parent/tools/mutated-after-dispatch.ts";
+		customToolPaths[0]!.source!.providerName = "Mutated";
+		const run = harness.capturedRun;
+		if (!run) throw new Error("run function was not captured");
+		await run({ jobId: "job-123", signal: new AbortController().signal, reportProgress: async () => {} });
+
+		const requestedEnabled = ["read", "write", "browser", "mcp__server_browse"];
+		const requestedMounted = ["browser", "mcp__server_browse"];
+		const createOptions = createAgentSessionSpy.mock.calls[0]?.[0];
+		expect(createOptions?.toolNames).toEqual(requestedEnabled);
+		expect(createOptions?.preloadedExtensionPaths).toEqual(["/parent/extensions/browser-tools.ts"]);
+		expect(createOptions?.preloadedExtensionPaths).not.toBe(extensionPaths);
+		expect(createOptions?.preloadedCustomToolPaths).toEqual([
+			{
+				path: "/parent/tools/project-tools.ts",
+				source: { provider: "test", providerName: "Test", level: "project" },
+			},
+		]);
+		expect(createOptions?.preloadedCustomToolPaths).not.toBe(customToolPaths);
+		expect(createOptions?.preloadedCustomToolPaths?.[0]).not.toBe(customToolPaths[0]);
+		expect(createOptions?.extensions).toBeUndefined();
+		expect(createOptions?.preloadedExtensions).toBeUndefined();
+		expect(createOptions?.customTools?.map(tool => tool.name)).toEqual(["mcp__server_browse"]);
+		expect(clone.setActiveToolPresentation).toHaveBeenCalledWith(requestedEnabled, requestedMounted);
+		expect(clone.setActiveToolPresentation.mock.invocationCallOrder[0]).toBeLessThan(
+			clone.getEnabledToolNames.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
+		expect(clone.getMountedXdevToolNames.mock.invocationCallOrder[0]).toBeLessThan(
+			appendSessionInit.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
+		expect(appendSessionInit.mock.invocationCallOrder[0]).toBeLessThan(
+			clone.prompt.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
+		expect(appendSessionInit).toHaveBeenCalledWith({
+			systemPrompt: "system prompt",
+			task: "browse from the tangent",
+			tools: actualEnabled,
+			mountedXdevTools: actualMounted,
+		});
+	});
+
+	it("fails before prompt and session-init when an inline capability cannot be reconstructed", async () => {
+		const harness = createContext();
+		vi.spyOn(harness.ctx.session, "getEnabledToolNames").mockReturnValue(["read", "sdk_custom_tool"]);
+		vi.spyOn(harness.ctx.session, "getMountedXdevToolNames").mockReturnValue(["sdk_custom_tool"]);
+		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
+		const appendSessionInit = vi.fn();
+		const { clone } = createCloneStub({
+			sessionManager: { appendSessionInit },
+			enabledToolNames: ["read"],
+			mountedXdevToolNames: [],
+		});
+		const createAgentSessionSpy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+			session: clone,
+		} as unknown as CreateAgentSessionResult);
+		const controller = new TanCommandController(harness.ctx);
+
+		await controller.start("use the inline tool");
+		const run = harness.capturedRun;
+		if (!run) throw new Error("run function was not captured");
+
+		await expect(
+			run({ jobId: "job-123", signal: new AbortController().signal, reportProgress: async () => {} }),
+		).rejects.toThrow(
+			"Tan capability reconstruction failed: missing enabled tools: sdk_custom_tool; missing mounted tools: sdk_custom_tool",
+		);
+		expect(createAgentSessionSpy.mock.calls[0]?.[0]?.customTools).toBeUndefined();
+		expect(clone.setActiveToolPresentation).toHaveBeenCalledWith(
+			["read", "sdk_custom_tool"],
+			["sdk_custom_tool"],
+		);
+		expect(clone.getEnabledToolNames).toHaveBeenCalledTimes(1);
+		expect(clone.getMountedXdevToolNames).toHaveBeenCalledTimes(1);
+		expect(appendSessionInit).not.toHaveBeenCalled();
+		expect(clone.prompt).not.toHaveBeenCalled();
+		expect(clone.setTodoPhases).not.toHaveBeenCalled();
+		expect(clone.dispose).toHaveBeenCalledTimes(1);
 	});
 
 	it("isolates the fork: clears inherited todos, injects the fork notice, and re-injects after compaction", async () => {

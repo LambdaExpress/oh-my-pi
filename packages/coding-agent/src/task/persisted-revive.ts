@@ -83,7 +83,11 @@ export function createPersistedSubagentReviverFactory(
 			// state: same-name MCP tools are untrusted capability sources.
 			const restrictToolNames = init.restrictToolNames === true;
 			const mcpManager = restrictToolNames ? undefined : MCPManager.instance();
-			const mcpProxyTools = mcpManager ? createMCPProxyTools(mcpManager) : [];
+			const persistedToolNames = new Set(init.tools);
+			const persistedMountedXdevTools = init.mountedXdevTools ?? [];
+			const mcpProxyTools = mcpManager
+				? createMCPProxyTools(mcpManager).filter(tool => persistedToolNames.has(tool.name))
+				: [];
 			const { session } = await createAgentSession({
 				cwd: ctx.session.sessionManager.getCwd(),
 				authStorage: ctx.authStorage,
@@ -118,15 +122,17 @@ export function createPersistedSubagentReviverFactory(
 							preloadedCustomToolPaths: [],
 						}
 					: {
-							enableMCP: !mcpManager,
-							mcpManager,
+							// Reuse only proxy tools already present in the persisted
+							// capability set; never launch ambient MCP discovery.
+							enableMCP: false,
 							customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
 						}),
 			});
-			// Clamp the active set to the persisted list: createAgentSession's
-			// `alwaysInclude` can re-add non-defaultInactive extension/custom tools
-			// the original run didn't carry. Unknown/missing names are ignored.
-			await session.setActiveToolsByName([...init.tools, ...session.getMountedXdevToolNames()]);
+			// Restore the exact persisted capability/presentation partition before
+			// the first turn. Legacy entries have no mounted metadata, so every
+			// recorded capability remains top-level and ambient devices are dropped.
+			// Unknown/missing names are ignored by the session tool registry.
+			await session.setActiveToolPresentation(init.tools, persistedMountedXdevTools);
 			// Cold revives must drive registry status themselves — createAgentSession
 			// doesn't wire this generically (the live path does it in the executor).
 			// Without it the idle-TTL timer never clears on a turn and the lifecycle

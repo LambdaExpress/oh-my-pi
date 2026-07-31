@@ -214,8 +214,9 @@ export class SessionTools {
 		const previousEnabled = this.getEnabledToolNames();
 		const wasEnabled = previousEnabled.includes(name);
 		const wasAvailable = this.#toolRegistry.has(name) || this.#xdevRegistry?.get(name) !== undefined;
-		const pinnedTopLevel =
-			this.#presentationPinnedToolNames?.has(name) === true || this.#runtimeSelectedToolNames?.has(name) === true;
+		const pinnedTopLevel = this.#runtimeSelectedToolNames
+			? this.#runtimeSelectedToolNames.has(name)
+			: this.#presentationPinnedToolNames?.has(name) === true;
 
 		if (this.#xdevRegistry && !pinnedTopLevel) {
 			const previousMounted = this.#mountedXdevToolNames;
@@ -493,7 +494,9 @@ export class SessionTools {
 		});
 		const xdevReadAvailable = this.#builtInToolNames.has("read") && selectedTools.some(({ name }) => name === "read");
 		const isPresentationPinned = (name: string): boolean =>
-			this.#presentationPinnedToolNames?.has(name) === true || this.#runtimeSelectedToolNames?.has(name) === true;
+			this.#runtimeSelectedToolNames
+				? this.#runtimeSelectedToolNames.has(name)
+				: this.#presentationPinnedToolNames?.has(name) === true;
 		const mountCandidates = selectedTools.filter(
 			({ name, tool }) =>
 				this.#xdevRegistry !== undefined &&
@@ -714,11 +717,13 @@ export class SessionTools {
 		mounted: ReadonlySet<string>,
 		writeSelected: boolean,
 	): Promise<void> {
+		const writePinned = this.#runtimeSelectedToolNames
+			? this.#runtimeSelectedToolNames.has("write")
+			: this.#presentationPinnedToolNames?.has("write") === true;
 		const transportWriteActive =
 			writeSelected &&
 			this.#builtInToolNames.has("write") &&
-			this.#presentationPinnedToolNames?.has("write") !== true &&
-			this.#runtimeSelectedToolNames?.has("write") !== true &&
+			!writePinned &&
 			(mounted.size > 0 || this.#host.planModeEnabled());
 		const previousRuntimeSelectedToolNames = this.#runtimeSelectedToolNames;
 		this.#runtimeSelectedToolNames = new Set(

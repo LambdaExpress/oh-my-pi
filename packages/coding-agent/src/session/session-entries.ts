@@ -191,6 +191,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	task: string;
 	/** Tools available to the agent */
 	tools: string[];
+	/** Enabled tools presented through the `xd://` transport. Absent on legacy entries. */
+	mountedXdevTools?: string[];
 	/** Output schema if structured output was requested. */
 	outputSchema?: unknown;
 	/** Enforcement policy recorded with the output schema for faithful revival. */

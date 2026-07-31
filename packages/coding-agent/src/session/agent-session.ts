@@ -502,6 +502,10 @@ export class AgentSession {
 	readonly agent: Agent;
 	readonly sessionManager: SessionManager;
 	readonly settings: Settings;
+	/** Re-runnable extension sources from which this session was constructed. */
+	readonly extensionPaths: AgentSessionConfig["extensionPaths"];
+	/** Re-runnable custom-tool sources from which this session was constructed. */
+	readonly customToolPaths: AgentSessionConfig["customToolPaths"];
 	/** Entries of tools mounted under `xd://`; empty when virtual devices are unmounted. */
 	getXdevToolEntries: () => Array<{ name: string; summary: string }>;
 	readonly yieldQueue: YieldQueue;
@@ -938,6 +942,8 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settings = config.settings;
+		this.extensionPaths = config.extensionPaths;
+		this.customToolPaths = config.customToolPaths;
 		this.#modelRegistry = config.modelRegistry;
 		this.#reloadSshTool = config.reloadSshTool;
 		this.#reloadSshTransferTool = config.reloadSshTransferTool;

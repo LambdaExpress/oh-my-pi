@@ -1939,6 +1939,7 @@ export class SessionManager {
 		systemPrompt: string;
 		task: string;
 		tools: string[];
+		mountedXdevTools?: string[];
 		outputSchema?: unknown;
 		outputSchemaMode?: StructuredSubagentSchemaMode;
 		restrictToolNames?: boolean;
@@ -2402,6 +2403,7 @@ export class SessionManager {
 			systemPrompt: string;
 			task: string;
 			tools: string[];
+			mountedXdevTools?: string[];
 			outputSchema?: unknown;
 			outputSchemaMode?: StructuredSubagentSchemaMode;
 			restrictToolNames?: boolean;
@@ -2422,6 +2424,7 @@ export class SessionManager {
 			systemPrompt: string;
 			task: string;
 			tools: string[];
+			mountedXdevTools?: string[];
 			outputSchema?: unknown;
 			outputSchemaMode?: StructuredSubagentSchemaMode;
 			restrictToolNames?: boolean;
@@ -2435,6 +2438,7 @@ export class SessionManager {
 					systemPrompt: entry.systemPrompt,
 					task: entry.task,
 					tools: entry.tools,
+					mountedXdevTools: entry.mountedXdevTools,
 					outputSchema: entry.outputSchema,
 					outputSchemaMode: entry.outputSchemaMode,
 					restrictToolNames: entry.restrictToolNames,

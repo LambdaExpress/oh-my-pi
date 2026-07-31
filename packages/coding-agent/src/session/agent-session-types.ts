@@ -18,6 +18,7 @@ import type { PromptTemplate } from "../config/prompt-templates";
 import type { Settings, SkillsSettings } from "../config/settings";
 import type { RawSseDebugBuffer } from "../debug/raw-sse-buffer";
 import type { TtsrManager } from "../export/ttsr";
+import type { ToolPathWithSource } from "../extensibility/custom-tools/loader";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { ExtensionRunner } from "../extensibility/extensions";
 import type { ContextUsage } from "../extensibility/extensions/types";
@@ -115,6 +116,10 @@ export interface AgentSessionConfig {
 	agent: Agent;
 	sessionManager: SessionManager;
 	settings: Settings;
+	/** Re-runnable extension source paths used to build this session's extensions. */
+	extensionPaths?: string[];
+	/** Re-runnable custom-tool source paths used to build this session's custom tools. */
+	customToolPaths?: ToolPathWithSource[];
 	/** Whether the caller explicitly requested yolo/auto-approve behavior for this session. */
 	autoApprove?: boolean;
 	/** Models to cycle through with Ctrl+P (from --models flag). */

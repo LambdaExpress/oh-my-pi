@@ -37,6 +37,31 @@ async function removeCloneSession(cloneFile: string): Promise<void> {
 	]);
 }
 
+function sortedSetDifference(left: readonly string[], right: readonly string[]): string[] {
+	const rightSet = new Set(right);
+	return [...new Set(left)].filter(name => !rightSet.has(name)).sort();
+}
+
+function assertExactToolPresentation(
+	requestedEnabled: readonly string[],
+	requestedMounted: readonly string[],
+	actualEnabled: readonly string[],
+	actualMounted: readonly string[],
+): void {
+	const mismatches = [
+		["missing enabled tools", sortedSetDifference(requestedEnabled, actualEnabled)],
+		["unexpected enabled tools", sortedSetDifference(actualEnabled, requestedEnabled)],
+		["missing mounted tools", sortedSetDifference(requestedMounted, actualMounted)],
+		["unexpected mounted tools", sortedSetDifference(actualMounted, requestedMounted)],
+	] as const;
+	const details = mismatches.flatMap(([label, names]) =>
+		names.length > 0 ? [`${label}: ${names.join(", ")}`] : [],
+	);
+	if (details.length > 0) {
+		throw new Error(`Tan capability reconstruction failed: ${details.join("; ")}`);
+	}
+}
+
 export class TanCommandController {
 	constructor(private readonly ctx: InteractiveModeContext) {}
 
@@ -75,7 +100,12 @@ export class TanCommandController {
 		const parentPromptCacheKey = session.agent.promptCacheKey ?? parentSessionId;
 		const thinkingLevel = session.configuredThinkingLevel();
 		const systemPrompt = [...session.systemPrompt];
-		const toolNames = session.getActiveToolNames();
+		const toolNames = [...session.getEnabledToolNames()];
+		const mountedXdevToolNames = [...session.getMountedXdevToolNames()];
+		const preloadedExtensionPaths = session.extensionPaths ? [...session.extensionPaths] : undefined;
+		const preloadedCustomToolPaths = session.customToolPaths?.map(source =>
+			source.source ? { ...source, source: { ...source.source } } : { ...source },
+		);
 		const modelRegistry = session.modelRegistry;
 		const ownerId = session.getAgentId() ?? MAIN_AGENT_ID;
 		const scopeId = session.getAgentScopeId();
@@ -86,7 +116,10 @@ export class TanCommandController {
 		// artifacts in place — no copy needed.
 		const sessionDir = parentFile.slice(0, -6);
 		const settings = createSubagentSettings(this.ctx.settings);
-		const customTools = mcpManager ? createMCPProxyTools(mcpManager) : undefined;
+		const inheritedToolNames = new Set(toolNames);
+		const customTools = mcpManager
+			? createMCPProxyTools(mcpManager).filter(tool => inheritedToolNames.has(tool.name))
+			: undefined;
 		const enableLsp = this.ctx.settings.get("task.enableLsp") !== false;
 		const agentRegistry = AgentRegistry.global();
 		const cloneId = `Tan-${Snowflake.next()}`;
@@ -127,6 +160,8 @@ export class TanCommandController {
 							hasUI: false,
 							enableMCP: false,
 							customTools,
+							preloadedExtensionPaths,
+							preloadedCustomToolPaths,
 							enableLsp,
 							agentId: cloneId,
 							agentDisplayName: "tan",
@@ -136,10 +171,20 @@ export class TanCommandController {
 							disableExtensionDiscovery: true,
 						});
 						clone = created.session;
+						await clone.setActiveToolPresentation(toolNames, mountedXdevToolNames);
+						const actualToolNames = clone.getEnabledToolNames();
+						const actualMountedXdevToolNames = clone.getMountedXdevToolNames();
+						assertExactToolPresentation(
+							toolNames,
+							mountedXdevToolNames,
+							actualToolNames,
+							actualMountedXdevToolNames,
+						);
 						clone.sessionManager?.appendSessionInit?.({
 							systemPrompt: clone.systemPrompt ? clone.systemPrompt.join("\n\n") : systemPrompt.join("\n\n"),
 							task: trimmedWork,
-							tools: clone.getActiveToolNames ? clone.getActiveToolNames() : toolNames,
+							tools: actualToolNames,
+							mountedXdevTools: actualMountedXdevToolNames,
 						});
 						const abortClone = () => {
 							void clone?.abort();
