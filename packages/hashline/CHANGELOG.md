@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Clarified that editing only displayed lines remains required model guidance while runtime rejection of unseen anchors depends on `edit.enforceSeenLines`.
+
 ## [17.1.2] - 2026-07-24
 
 ### Changed

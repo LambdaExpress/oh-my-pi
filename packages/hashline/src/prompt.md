@@ -26,7 +26,7 @@ Body rows appear only under a `:` header. Every body row is `+TEXT` — add a li
 - Line numbers + `[PATH#TAG]` header come from your latest `read`/`search` (`LINE:TEXT` rows).
 - Numbers refer to the ORIGINAL file; never shift as hunks apply.
 - They die with the call: every applied edit mints a fresh `#TAG` and renumbers — anchor the next edit on the edit response or a fresh `read`.
-- Touch only lines your latest `read`/`search` literally displayed as `LINE:TEXT`; the tag certifies the snapshot, not your memory. A hunk anchored on a line you never displayed is REJECTED — re-`read` first. Seeing a line ≠ it holds the code you mean; confirm numbers map to the construct you intend, especially far from your read window.
+- Touch only lines your latest `read`/`search` literally displayed as `LINE:TEXT`; the tag certifies the snapshot, not your memory. NEVER anchor a hunk on an undisplayed line — re-`read` first. Tool-enforced rejection is opt-in via `edit.enforceSeenLines` and requires recorded `read`/`search` provenance; NEVER rely on it. Seeing a line ≠ it holds the code you mean; confirm numbers map to the intended construct, especially far from your read window.
 - Elided regions are UNSEEN: `…`/`..` markers and a collapsed `N-M:` summary row (only boundary lines N and M shown) hide their interior. NEVER place or span a hunk inside one — `read` the range first.
 - Never start or end a range mid-expression or mid-block.
 - Indent body rows exactly for the depth they should live at.
