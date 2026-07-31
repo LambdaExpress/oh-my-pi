@@ -13,9 +13,12 @@ use std::collections::BTreeSet;
 use anyhow::{Result, anyhow};
 use ast_grep_core::tree_sitter::LanguageExt;
 use serde::{Deserialize, Serialize};
-use tree_sitter::{Parser, Point, TreeCursor};
+use tree_sitter::{Node, Parser, Point, TreeCursor};
 
-use crate::summary::{node_content_end_line, node_start_line, resolve_language};
+use crate::{
+	language::SupportLang,
+	summary::{node_content_end_line, node_start_line, resolve_language},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockRangeOptions {
@@ -46,6 +49,105 @@ fn first_content_column(code: &str, row: usize) -> Option<usize> {
 		if byte != b' ' && byte != b'\t' {
 			return Some(col);
 		}
+	}
+	None
+}
+
+/// Return the first syntactic component of an attributed C# method signature:
+/// its first modifier, or its `returns` field when it has no modifiers.
+fn csharp_attributed_method_signature_start(node: Node<'_>) -> Option<Node<'_>> {
+	if node.kind() != "method_declaration" {
+		return None;
+	}
+
+	let returns = node.child_by_field_name("returns")?;
+	let mut cursor = node.walk();
+	let mut saw_attribute = false;
+	for child in node.named_children(&mut cursor) {
+		if matches!(child.kind(), "attribute_list" | "preproc_if_in_attribute_list") {
+			saw_attribute = true;
+			continue;
+		}
+		if child.is_extra() {
+			continue;
+		}
+		if !saw_attribute {
+			return None;
+		}
+		if child.kind() == "modifier" || child.id() == returns.id() {
+			return Some(child);
+		}
+		return None;
+	}
+	None
+}
+
+/// Whether `node` is an attributed C# method whose actual signature starts on
+/// `row`. Attribute/preprocessor metadata and extras may precede the signature,
+/// but must end before the requested row and are never signature candidates.
+fn is_csharp_attributed_method_header(node: Node<'_>, row: usize) -> bool {
+	if node.start_position().row >= row {
+		return false;
+	}
+	let Some(signature) = csharp_attributed_method_signature_start(node) else {
+		return false;
+	};
+	if signature.start_position().row != row {
+		return false;
+	}
+
+	let mut cursor = node.walk();
+	for child in node.named_children(&mut cursor) {
+		if child.id() == signature.id() {
+			return true;
+		}
+		if (matches!(child.kind(), "attribute_list" | "preproc_if_in_attribute_list")
+			|| child.is_extra())
+			&& child.end_position().row < row
+		{
+			continue;
+		}
+		return false;
+	}
+	false
+}
+
+/// Reject rows within attributed-method metadata or a continued signature.
+/// They can contain named nodes of their own, but do not begin a block.
+fn is_csharp_attributed_method_non_header_anchor(
+	method: Node<'_>,
+	requested: Node<'_>,
+	row: usize,
+) -> bool {
+	let Some(signature) = csharp_attributed_method_signature_start(method) else {
+		return false;
+	};
+	let signature_row = signature.start_position().row;
+
+	let mut ancestor = Some(requested);
+	while let Some(node) = ancestor {
+		if node.is_extra() || node.kind() == "preproc_if_in_attribute_list" {
+			return row <= signature_row;
+		}
+		if node.id() == method.id() {
+			break;
+		}
+		ancestor = node.parent();
+	}
+
+	let header_end_row = method
+		.child_by_field_name("body")
+		.map_or_else(|| method.end_position().row, |body| body.start_position().row);
+	row > signature_row && row < header_end_row
+}
+
+fn enclosing_csharp_attributed_method(node: Node<'_>) -> Option<Node<'_>> {
+	let mut ancestor = Some(node);
+	while let Some(candidate) = ancestor {
+		if csharp_attributed_method_signature_start(candidate).is_some() {
+			return Some(candidate);
+		}
+		ancestor = candidate.parent();
 	}
 	None
 }
@@ -99,18 +201,32 @@ pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> 
 	if leaf.start_position().row != row {
 		return Ok(None);
 	}
+
+	if language == SupportLang::CSharp
+		&& let Some(method) = enclosing_csharp_attributed_method(leaf)
+		&& is_csharp_attributed_method_non_header_anchor(method, leaf, row)
+	{
+		return Ok(None);
+	}
 	// Climb to the outermost named ancestor that still begins on `row`,
-	// excluding the whole-file root. Ancestors can only begin on an earlier
-	// row, so the first parent that starts before `row` stops the climb.
+	// excluding the whole-file root. C# method declarations are the sole
+	// exception: tree-sitter includes leading attributes in the declaration,
+	// so its syntactic start can precede the method's actual header.
 	let mut node = leaf;
+	let mut start_line = node_start_line(node);
 	while let Some(parent) = node.parent() {
 		if parent.id() == root.id() {
 			break;
 		}
 		if parent.start_position().row != row {
+			if language == SupportLang::CSharp && is_csharp_attributed_method_header(parent, row) {
+				node = parent;
+				start_line = line;
+			}
 			break;
 		}
 		node = parent;
+		start_line = node_start_line(node);
 	}
 	// Refuse degenerate error-recovery spans: a missing brace can make
 	// tree-sitter wrap a huge region in an ERROR node. Checking only the
@@ -119,10 +235,7 @@ pub fn block_range_at(options: BlockRangeOptions) -> Result<Option<BlockRange>> 
 	if node.has_error() {
 		return Ok(None);
 	}
-	Ok(Some(BlockRange {
-		start_line: node_start_line(node),
-		end_line:   node_content_end_line(node),
-	}))
+	Ok(Some(BlockRange { start_line, end_line: node_content_end_line(node) }))
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -376,6 +489,46 @@ mod tests {
 		// refuse to resolve a degenerate recovery span.
 		let code = "function broken() {\n  if (y) {\n}\n";
 		assert_eq!(resolve(code, "b.ts", 1), None);
+	}
+
+	#[test]
+	fn resolves_csharp_attributed_method_from_attribute_or_header() {
+		let code = "class Tests\n{\n    [Test]\n    public void Example()\n    {\n        \
+		            Assert.Pass();\n    }\n}\n";
+		assert_eq!(resolve(code, "Tests.cs", 3), Some(BlockRange { start_line: 3, end_line: 7 }));
+		assert_eq!(resolve(code, "Tests.cs", 4), Some(BlockRange { start_line: 4, end_line: 7 }));
+
+		let unmodified = "class Tests\n{\n    [Test]\n    void Example()\n    {\n    }\n}\n";
+		assert_eq!(
+			resolve(unmodified, "Tests.cs", 4),
+			Some(BlockRange { start_line: 4, end_line: 6 })
+		);
+	}
+
+	#[test]
+	fn rejects_csharp_attributed_method_metadata_and_signature_continuations() {
+		let code = "class Tests\n{\n    [Test]\n#if DEBUG\n    [Conditional]\n#endif\n    // Keep \
+		            this comment.\n    public void Example(\n        string value)\n    {\n    \
+		            }\n}\n";
+		assert_eq!(resolve(code, "Tests.cs", 3), Some(BlockRange { start_line: 3, end_line: 11 }));
+		assert_eq!(resolve(code, "Tests.cs", 4), None);
+		assert_eq!(resolve(code, "Tests.cs", 7), None);
+		assert_eq!(resolve(code, "Tests.cs", 8), Some(BlockRange { start_line: 8, end_line: 11 }));
+		assert_eq!(resolve(code, "Tests.cs", 9), None);
+		assert_eq!(resolve(code, "Tests.cs", 11), None);
+	}
+
+	#[test]
+	fn does_not_widen_other_csharp_attribute_or_continuation_anchors() {
+		let attributed_type = "[Obsolete]\npublic class Example\n{\n}\n";
+		assert_eq!(
+			resolve(attributed_type, "Example.cs", 2),
+			Some(BlockRange { start_line: 2, end_line: 2 })
+		);
+
+		let continued_header =
+			"class Tests\n{\n    [Test]\n    public void Example(\n    )\n    {\n    }\n}\n";
+		assert_eq!(resolve(continued_header, "Tests.cs", 5), None);
 	}
 
 	#[test]
