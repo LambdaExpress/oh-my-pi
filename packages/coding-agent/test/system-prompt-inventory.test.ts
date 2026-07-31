@@ -168,7 +168,7 @@ describe("system prompt tool inventory", () => {
 			contextFiles: [],
 			skills: [],
 			rules: [],
-			toolNames: ["read", "web_search"],
+			toolNames: ["read", "write", "web_search"],
 			tools,
 			workspaceTree: { ...EMPTY_TREE, rootPath: tempDir },
 			nativeTools: opts.nativeTools,
@@ -226,6 +226,8 @@ describe("system prompt tool inventory", () => {
 		expect(inventory).not.toContain(nativeTools ? "`web_search`" : "# Tool: web_search");
 		expect(text).toContain("# xd:// Tool Devices");
 		expect(text).toContain("Mounted web search documentation.");
+		expect(text).toContain("Call the top-level `write` tool directly");
+		expect(text).toContain("NEVER use eval's `write()`");
 	});
 
 	it.each([

@@ -42,6 +42,7 @@ describe("eval js helpers internal-url resolution", () => {
 		await expect(helpers.writeFile("local://../escape.md", "x")).rejects.toThrow(/traversal|escapes/i);
 		await expect(helpers.writeFile("memory://x.md", "x")).rejects.toThrow(/not supported/i);
 		await expect(helpers.read("https://example.com/page")).rejects.toThrow(/not supported/i);
+		await expect(helpers.writeFile("xd://lsp", "{}")).rejects.toThrow(/top-level write tool directly/i);
 	});
 
 	it("leaves plain relative and absolute paths resolving against the cwd", async () => {

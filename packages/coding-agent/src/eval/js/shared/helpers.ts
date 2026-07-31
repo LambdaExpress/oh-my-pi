@@ -112,6 +112,11 @@ function resolveHelperPath(ctx: HelperContext, rawPath: string, op: "read" | "wr
 	if (!match) return resolvePath(ctx, rawPath);
 	const scheme = match[1].toLowerCase();
 	const root = ctx.localRoots()[scheme];
+	if (scheme === "xd") {
+		throw new ToolError(
+			`xd:// tool devices are not files. Call the top-level write tool directly with { path: "${rawPath}", content: "<JSON args>" }; eval write() only writes filesystem/local:// paths.`,
+		);
+	}
 	if (!root) {
 		throw new ToolError(`Protocol paths are not supported by ${op}(): ${rawPath}`);
 	}

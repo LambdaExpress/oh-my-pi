@@ -81,7 +81,7 @@ Special URLs for internal resources; with most FS/bash tools they auto-resolve t
 
 {{#if xdevTools.length}}
 # xd:// Tool Devices
-Additional tools are mounted as virtual devices, executed by writing a JSON args object as `content` to `xd://<tool>` via `{{toolRefs.write}}`.
+Additional tools are mounted as virtual devices. Call the top-level `{{toolRefs.write}}` tool directly with `path: "xd://<tool>"` and the JSON args object as `content`. NEVER use eval's `write()`, `Bun.write()`, `tool.<name>()`, or shell for xd://.
 Invalid args return the schema in the error — fix and retry
 {{xdevDocs}}
 {{/if}}

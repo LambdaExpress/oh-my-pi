@@ -57,6 +57,9 @@ describe("read and write route xd:// device URLs", () => {
 			expect(listing.content.find(entry => entry.type === "text")?.text).toContain("xd://ast_edit");
 			const docs = await read!.execute("read-xd-docs", { path: "xd://ast_edit" });
 			expect(docs.content.find(entry => entry.type === "text")?.text).toContain("# ast_edit");
+			expect(docs.content.find(entry => entry.type === "text")?.text).toContain(
+				"Call the top-level `write` tool directly",
+			);
 
 			const content = JSON.stringify({
 				ops: [{ pat: "legacyWrap($A, $B)", out: "modernWrap($A, $B)" }],

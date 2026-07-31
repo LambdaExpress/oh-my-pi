@@ -121,7 +121,8 @@ function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string 
 		"```json",
 		schema,
 		"```",
-		`Execute by writing JSON to ${XD_URL_PREFIX}${inst.name}.`,
+		`Call the top-level \`write\` tool directly with \`path: "${XD_URL_PREFIX}${inst.name}"\` and the JSON args object as \`content\`.`,
+		`NEVER use eval's \`write()\`, \`Bun.write()\`, \`tool.${inst.name}()\`, or shell for xd://.`,
 	].join("\n");
 }
 
