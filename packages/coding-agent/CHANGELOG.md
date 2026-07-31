@@ -42,7 +42,14 @@
 
 ### Fixed
 
+- Fixed DAP TCP readiness retaining a losing timeout after the adapter announced its port, so completed debug validation no longer remains alive behind stale readiness timers on Windows.
+- Fixed mounted `xd://` tools being invoked through eval's filesystem write helper by directing agents to the top-level `write` transport and returning an actionable correction for eval `xd://` writes.
+- Fixed `pwsh` command deadlines being bypassed by GUI or background descendants that inherited stdout/stderr handles; output draining is now bounded and timeout/abort cleanup terminates the process tree.
 - Fixed resume-session previews reporting `(no messages)` when a large leading hidden device notice pushed the first user message beyond the initial session-list scan window.
+- Fixed explicit debugger attachment resolving project-local adapter configuration from the runtime working directory, so descendant attach directories no longer hide root-scoped adapters.
+- Fixed cold-revived subagents and `/tan` forks losing built-in `xd://` devices while retaining stale device documentation or only MCP mounts.
+- Fixed mixed Python/JavaScript `eval` descriptions advertising JavaScript's `schemaMode` keyword in the Python `agent()` signature.
+- Fixed C# block edits rejecting method-header anchors when a contiguous leading attribute starts the enclosing method declaration.
 
 - Fixed the SSH transfer HUD async-job fixture preserving typed transfer progress as a plain details record, restoring the coding-agent TypeScript check.
 - Fixed completed background SSH transfers losing their terminal progress details, so the TUI now replaces the transient HUD with a persistent completed, failed, or cancelled transfer summary instead of a generic completion line.
