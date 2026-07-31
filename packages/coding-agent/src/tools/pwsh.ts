@@ -5,6 +5,7 @@ import type {
 	AgentToolUpdateCallback,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
+import { Process } from "@oh-my-pi/pi-natives";
 import { getProjectDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { type } from "arktype";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
@@ -36,6 +37,9 @@ import { extractPartialJsonString, formatToolWorkingDirectory, replaceTabs } fro
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
+
+const PWSH_STREAM_DRAIN_MS = 250;
+const PWSH_TERMINATE_WAIT_MS = 500;
 
 const pwshSchema = type({
 	script: type("string").describe("PowerShell script to execute"),
@@ -117,20 +121,66 @@ function formatPwshScriptLines(args: PwshRenderArgs | undefined, uiTheme: Theme)
 	return highlightedLines.map((line, index) => (index === 0 ? `${prefix}${line}` : line));
 }
 
-async function pumpStream(stream: ReadableStream<Uint8Array> | null, sink: OutputSink): Promise<void> {
-	if (!stream) return;
+interface PwshStreamPump {
+	readonly done: Promise<void>;
+	cancel(): Promise<void>;
+}
+
+function pumpStream(stream: ReadableStream<Uint8Array> | null, sink: OutputSink): PwshStreamPump {
+	if (!stream) {
+		const done = Promise.resolve();
+		return { done, cancel: () => done };
+	}
 	const reader = stream.getReader();
 	const decoder = new TextDecoder();
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			if (value) sink.push(decoder.decode(value, { stream: true }));
+	const done = (async () => {
+		try {
+			for (;;) {
+				const { done: streamDone, value } = await reader.read();
+				if (streamDone) break;
+				if (value) sink.push(decoder.decode(value, { stream: true }));
+			}
+			const rest = decoder.decode();
+			if (rest) sink.push(rest);
+		} finally {
+			reader.releaseLock();
 		}
-		const rest = decoder.decode();
-		if (rest) sink.push(rest);
-	} finally {
-		reader.releaseLock();
+	})();
+	return {
+		done,
+		async cancel() {
+			await reader.cancel().catch(() => undefined);
+			await done.catch(() => undefined);
+		},
+	};
+}
+
+async function drainPwshStreams(pumps: readonly PwshStreamPump[], maxWaitMs: number): Promise<void> {
+	const done = Promise.allSettled(pumps.map(pump => pump.done));
+	if (maxWaitMs > 0) {
+		const timeout = Promise.withResolvers<false>();
+		const timer = setTimeout(() => timeout.resolve(false), maxWaitMs);
+		try {
+			const drained = await Promise.race([done.then(() => true as const), timeout.promise]);
+			if (drained) return;
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+	await Promise.allSettled(pumps.map(pump => pump.cancel()));
+}
+
+async function terminatePwshTree(pid: number, fallbackKill: () => void): Promise<void> {
+	const processRef = Process.fromPid(pid);
+	if (!processRef) {
+		fallbackKill();
+		return;
+	}
+	try {
+		const terminated = await processRef.terminate({ gracefulMs: -1, timeoutMs: PWSH_TERMINATE_WAIT_MS });
+		if (!terminated) fallbackKill();
+	} catch {
+		fallbackKill();
 	}
 }
 
@@ -268,8 +318,12 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 
 		const abortDeferred = signal ? Promise.withResolvers<"aborted">() : undefined;
 		const abortListener = abortDeferred ? () => abortDeferred.resolve("aborted") : undefined;
-		if (signal && abortListener) signal.addEventListener("abort", abortListener, { once: true });
+		if (signal && abortListener) {
+			if (signal.aborted) abortListener();
+			else signal.addEventListener("abort", abortListener, { once: true });
+		}
 		const wallTimeStart = performance.now();
+		const deadline = wallTimeStart + timeoutMs;
 		const commandEnv = buildNonInteractiveEnv(resolvedEnv);
 		const commandScript = process.platform === "win32" ? `${buildPwshEnvPrologue(commandEnv)}\n${script}` : script;
 		const proc = Bun.spawn([this.#pwshPath, ...buildPwshArgs(commandScript)], {
@@ -283,22 +337,27 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 				hostHasInheritableConsole: hostHasInheritableConsole(),
 			}),
 		});
-		const stdoutPump = pumpStream(proc.stdout, sink);
-		const stderrPump = pumpStream(proc.stderr, sink);
+		const processRef = Process.fromPid(proc.pid);
+		const rootExited = processRef ? processRef.waitForExit().then(() => proc.exitCode ?? 0) : proc.exited;
+		const pumps = [pumpStream(proc.stdout, sink), pumpStream(proc.stderr, sink)];
+		const timeoutDeferred = Promise.withResolvers<"timeout">();
+		const timeoutTimer = setTimeout(
+			() => timeoutDeferred.resolve("timeout"),
+			Math.max(0, deadline - performance.now()),
+		);
 
 		try {
 			const racers: Array<Promise<{ kind: "exit"; exitCode: number } | { kind: "timeout" } | { kind: "aborted" }>> =
 				[
-					proc.exited.then(exitCode => ({ kind: "exit" as const, exitCode })),
-					Bun.sleep(timeoutMs).then(() => ({ kind: "timeout" as const })),
+					rootExited.then(exitCode => ({ kind: "exit" as const, exitCode })),
+					timeoutDeferred.promise.then(() => ({ kind: "timeout" as const })),
 				];
 			if (abortDeferred) racers.push(abortDeferred.promise.then(() => ({ kind: "aborted" as const })));
 			const raced = await Promise.race(racers);
 
 			if (raced.kind !== "exit") {
-				proc.kill();
-				await proc.exited.catch(() => undefined);
-				await Promise.allSettled([stdoutPump, stderrPump]);
+				await terminatePwshTree(proc.pid, () => proc.kill("SIGKILL"));
+				await drainPwshStreams(pumps, PWSH_STREAM_DRAIN_MS);
 				const summary = await sink.dump();
 				const output = summary.output.trimEnd();
 				if (raced.kind === "aborted") {
@@ -313,13 +372,15 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 				);
 			}
 
-			await Promise.allSettled([stdoutPump, stderrPump]);
+			const drainMs = Math.max(0, Math.min(PWSH_STREAM_DRAIN_MS, deadline - performance.now()));
+			await drainPwshStreams(pumps, drainMs);
 			const summary = await sink.dump();
 			return this.#buildCompletedResult({ ...summary, exitCode: raced.exitCode }, timeoutSec, {
 				requestedTimeoutSec,
 				wallTimeMs: performance.now() - wallTimeStart,
 			});
 		} finally {
+			clearTimeout(timeoutTimer);
 			if (signal && abortListener) signal.removeEventListener("abort", abortListener);
 		}
 	}

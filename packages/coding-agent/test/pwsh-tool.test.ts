@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { PwshTool, resolvePwshExecutable, shouldHidePwshWindow } from "@oh-my-pi/pi-coding-agent/tools/pwsh";
+import { Process } from "@oh-my-pi/pi-natives";
 
 const pwshPath = resolvePwshExecutable();
 const describeIfPwsh = pwshPath ? describe : describe.skip;
@@ -27,6 +28,17 @@ function makeSession(cwd: string): ToolSession {
 		getSessionFile: () => null,
 		getClientBridge: () => undefined,
 	} as unknown as ToolSession;
+}
+
+async function terminateRecordedProcess(pidPath: string): Promise<void> {
+	const rawPid = await fs.readFile(pidPath, "utf8").catch(() => undefined);
+	const pid = rawPid === undefined ? Number.NaN : Number.parseInt(rawPid, 10);
+	if (Number.isInteger(pid)) {
+		await Process.fromPid(pid)
+			?.terminate({ gracefulMs: -1, timeoutMs: 500 })
+			.catch(() => undefined);
+	}
+	await fs.rm(pidPath, { force: true });
 }
 
 describe("shouldHidePwshWindow", () => {
@@ -93,5 +105,41 @@ describeIfPwsh("PwshTool", () => {
 		expect(text).toContain("native-out");
 		expect(text).toContain("last=0");
 		expect(text).toContain("ps-after");
+	});
+
+	itIfWindowsPwsh("does not wait for descendants that inherit output pipes after PowerShell exits", async () => {
+		const tool = new PwshTool(makeSession(process.cwd()), pwshPath ?? "pwsh");
+		const pidPath = path.join(tempDir, "inherited-pipe.pid");
+		const escapedPidPath = pidPath.replace(/'/g, "''");
+		const startedAt = performance.now();
+		try {
+			const result = await tool.execute("call-pwsh-inherited-pipe", {
+				script: `$child = Start-Process -FilePath $env:ComSpec -ArgumentList '/d', '/c', 'ping -n 6 127.0.0.1' -NoNewWindow -PassThru\n$child.Id | Set-Content -LiteralPath '${escapedPidPath}'`,
+				timeout: 1,
+			});
+
+			expect(result.isError).toBeUndefined();
+			expect(performance.now() - startedAt).toBeLessThan(3000);
+		} finally {
+			await terminateRecordedProcess(pidPath);
+		}
+	});
+
+	itIfWindowsPwsh("bounds timeout cleanup when descendants inherit output pipes", async () => {
+		const tool = new PwshTool(makeSession(process.cwd()), pwshPath ?? "pwsh");
+		const pidPath = path.join(tempDir, "timeout-inherited-pipe.pid");
+		const escapedPidPath = pidPath.replace(/'/g, "''");
+		const startedAt = performance.now();
+		try {
+			const execution = tool.execute("call-pwsh-timeout-inherited-pipe", {
+				script: `$child = Start-Process -FilePath $env:ComSpec -ArgumentList '/d', '/c', 'ping -n 6 127.0.0.1' -NoNewWindow -PassThru\n$child.Id | Set-Content -LiteralPath '${escapedPidPath}'\nStart-Sleep -Seconds 30`,
+				timeout: 1,
+			});
+
+			await expect(execution).rejects.toThrow("PowerShell timed out after 1 seconds");
+			expect(performance.now() - startedAt).toBeLessThan(3000);
+		} finally {
+			await terminateRecordedProcess(pidPath);
+		}
 	});
 });
