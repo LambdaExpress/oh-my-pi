@@ -156,6 +156,40 @@ describe("hashline body contracts", () => {
 		expect(applyEdits(FILE, result.edits).text).toBe("a\nfoo\nc\nbaz\ne");
 	});
 
+	it("treats a plus-prefixed delete header after blank insert rows as the next operation", () => {
+		const text = Array.from({ length: 260 }, (_, index) => `line-${index + 1}`).join("\n");
+		const diff = [
+			"INS.POST 175:",
+			"+",
+			"+    ValueTask<PortResultV2<ReportSetAttemptIdentityV2>> AllocateReportSetAttemptAsync(",
+			"+        TrustedSessionContextV2 context,",
+			"+        BatchKeyV2 key,",
+			"+        string correlationId,",
+			"+        IReadOnlyList<ReportRecipeIdentityV2> requiredReports,",
+			"+        CancellationToken cancellationToken);",
+			"+",
+			"+    ValueTask<PortResultV2<PersistedReportSetV2>> CommitReportSetAsync(",
+			"+        TrustedSessionContextV2 context,",
+			"+        BatchKeyV2 key,",
+			"+        ReportSetAttemptIdentityV2 identity,",
+			"+        ReportSetMaterialV2 material,",
+			"+        long expectedVersion,",
+			"+        CancellationToken cancellationToken);",
+			"+",
+			"+DEL 248.=259",
+		].join("\n");
+
+		const result = applyPatch(text, diff);
+
+		expect(result).toContain("line-175\n\n    ValueTask<PortResultV2<ReportSetAttemptIdentityV2>>");
+		expect(result).not.toContain("DEL 248.=259");
+		for (let line = 248; line <= 259; line++) {
+			expect(result.split("\n")).not.toContain(`line-${line}`);
+		}
+		expect(result.split("\n")).toContain("line-247");
+		expect(result.split("\n")).toContain("line-260");
+	});
+
 	it("skips blank rows when checking N: prefix uniformity", () => {
 		const result = parsePatch("SWAP 2.=3:\n2:foo\n\n3:bar");
 		expect(applyEdits(FILE, result.edits).text).toBe("a\nfoo\n\nbar\nd\ne");

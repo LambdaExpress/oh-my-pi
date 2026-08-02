@@ -39,6 +39,10 @@ function largeArtifactText(): string {
 	).join("\n");
 }
 
+function jiraSingleLineArtifactText(): string {
+	return JSON.stringify({ marker: "jira-openapi", schema: "x".repeat(500 * 1024) });
+}
+
 describe("read tool large artifact handling", () => {
 	let testDir: string;
 	let artifactDir: string;
@@ -50,6 +54,7 @@ describe("read tool large artifact handling", () => {
 		artifactDir = path.join(testDir, "session");
 		await fs.mkdir(artifactDir, { recursive: true });
 		await Bun.write(path.join(artifactDir, "0.mcp.log"), largeArtifactText());
+		await Bun.write(path.join(artifactDir, "1.mcp.log"), jiraSingleLineArtifactText());
 		resetRegisteredArtifactDirsForTests();
 		unregisterArtifactsDir = registerArtifactsDir(artifactDir);
 		tool = new ReadTool(makeSession(testDir));
@@ -61,13 +66,25 @@ describe("read tool large artifact handling", () => {
 		await fs.rm(testDir, { recursive: true, force: true });
 	});
 
+	it.each(["artifact://1", "artifact://1:1", "artifact://1:raw:1-1"])(
+		"returns a bounded preview for a Jira-sized single-line artifact via %s",
+		async artifactUrl => {
+			const result = await tool.execute("call-single-line", { path: artifactUrl });
+			const output = getTextOutput(result);
+
+			expect(output).toContain('"marker":"jira-openapi"');
+			expect(output.length).toBeGreaterThan(100);
+			expect(output).not.toContain("Unable to display a valid UTF-8 snippet");
+		},
+	);
+
 	it("blocks unbounded raw reads and points to bounded artifact workflows", async () => {
 		const result = await tool.execute("call-raw", { path: "artifact://0:raw" });
 		const output = getTextOutput(result);
 
 		expect(output).toContain("Unbounded raw read blocked for artifact://0");
 		expect(output).toContain("artifact://0:raw:1-3000");
-		expect(output).toContain(artifactDir);
+		expect(output).toContain("/session/0.mcp.log");
 		expect(output).not.toContain("line-001");
 	});
 
@@ -111,7 +128,7 @@ describe("read tool large artifact handling", () => {
 			const output = getTextOutput(result);
 			// artifactDir sits under the (mocked) home, so shortenPath rewrites the
 			// prefix to `~` — the notice must NOT leak the absolute artifact path.
-			expect(output).toContain(`~${path.sep}session`);
+			expect(output).toContain("~/session/0.mcp.log");
 			expect(output).not.toContain(artifactDir);
 		} finally {
 			homeSpy.mockRestore();

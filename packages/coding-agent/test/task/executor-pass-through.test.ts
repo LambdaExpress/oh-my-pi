@@ -249,12 +249,7 @@ describe("runSubprocess parent-discovery pass-through (issue #2190)", () => {
 	it("retains inherited MCP proxy tools and persists the full xdev partition for normal children", async () => {
 		const session = yieldEmittingSession();
 		vi.spyOn(session, "getActiveToolNames").mockReturnValue(["read", "yield"]);
-		vi.spyOn(session, "getEnabledToolNames").mockReturnValue([
-			"read",
-			"yield",
-			"browser",
-			"mcp__private_read",
-		]);
+		vi.spyOn(session, "getEnabledToolNames").mockReturnValue(["read", "yield", "browser", "mcp__private_read"]);
 		vi.spyOn(session, "getMountedXdevToolNames").mockReturnValue(["browser", "mcp__private_read"]);
 		const persistedInits: Array<{ tools: string[]; mountedXdevTools?: string[] }> = [];
 		vi.spyOn(session.sessionManager, "appendSessionInit").mockImplementation(init => {

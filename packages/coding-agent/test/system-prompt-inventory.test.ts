@@ -118,7 +118,6 @@ describe("system prompt tool inventory", () => {
 		expect(text).toContain("Use `eval` only for complex, value-dependent workflows");
 	});
 
-
 	it("renders reproducible local QA report instructions", async () => {
 		const { systemPrompt } = await buildSystemPrompt({
 			cwd: tempDir,

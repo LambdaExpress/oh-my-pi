@@ -51,6 +51,10 @@ const BARE_LITERAL_VALUE_RE = /^\s*(?:"[^"]*"|'[^']*'|[-+]?\d+(?:\.\d+)?)\s*,?\s
  */
 const MD_BULLET_ROW_RE = /^\s*- \S/;
 
+// Reused only to recognize a narrowly recoverable op accidentally carrying
+// the previous payload row's `+` prefix; `tokenize()` is stateless.
+const PREFIXED_HEADER_TOKENIZER = new Tokenizer();
+
 function detectApplyPatchContamination(text: string, _hasPending: boolean): string | null {
 	const trimmed = text.trimStart();
 	if (trimmed.length === 0) return null;
@@ -267,6 +271,19 @@ export class Executor {
 
 	#handleLiteralPayload(text: string, lineNum: number): void {
 		const pending = this.#pending;
+		if (pending) {
+			const recoveredOperation = PREFIXED_HEADER_TOKENIZER.tokenize(text, lineNum);
+			const hasTrailingBlank =
+				pending.deferredBlanks.length > 0 || pending.payloads.at(-1)?.text.trim().length === 0;
+			if (
+				hasTrailingBlank &&
+				recoveredOperation.kind === "op-block" &&
+				(recoveredOperation.target.kind === "delete" || recoveredOperation.target.kind === "delete_block")
+			) {
+				this.feed(recoveredOperation);
+				return;
+			}
+		}
 		if (!pending) {
 			if (this.#fileOp !== undefined) throw new Error(`line ${lineNum}: ${MOVE_TAKES_NO_BODY}`);
 			throw new Error(

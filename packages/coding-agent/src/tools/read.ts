@@ -689,11 +689,6 @@ function isNotFoundError(error: unknown): boolean {
 	const code = (error as { code?: string }).code;
 	return code === "ENOENT" || code === "ENOTDIR";
 }
-function prependSuffixResolutionNotice(text: string, suffixResolution?: { from: string; to: string }): string {
-	if (!suffixResolution) return text;
-	const notice = `[Path '${suffixResolution.from}' not found; resolved to '${suffixResolution.to}' via suffix match]`;
-	return text ? `${notice}\n${text}` : notice;
-}
 
 function decodeUtf8Text(bytes: Uint8Array): string | null {
 	if (bytes.indexOf(0) !== -1) return null;
@@ -764,7 +759,6 @@ export interface ReadToolDetails {
 	truncation?: TruncationResult;
 	isDirectory?: boolean;
 	resolvedPath?: string;
-	suffixResolution?: { from: string; to: string };
 	url?: string;
 	finalUrl?: string;
 	contentType?: string;
@@ -872,14 +866,12 @@ function selToOffsetLimit(parsed: ParsedSelector): { offset?: number; limit?: nu
 interface ResolvedArchiveReadPath {
 	absolutePath: string;
 	archiveSubPath: string;
-	suffixResolution?: { from: string; to: string };
 }
 
 interface ResolvedSqliteReadPath {
 	absolutePath: string;
 	sqliteSubPath: string;
 	queryString: string;
-	suffixResolution?: { from: string; to: string };
 }
 
 /** Per-execute memo of suffix suggestions; `null` records a confirmed miss. */
@@ -972,7 +964,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		for (const part of parts) {
 			try {
 				const result = await this.execute("read-delimited-part", { path: part }, signal);
-				displayReadTargets.push(result.details?.suffixResolution?.to ?? part);
+				displayReadTargets.push(part);
 				for (const block of result.content) {
 					if (block.type === "text") {
 						appendText(block.text);
@@ -1013,17 +1005,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		cache.set(rawPath, result);
 		return result;
 	}
-	#withSuffixResolution(
-		result: AgentToolResult<ReadToolDetails>,
-		suffixResolution: { from: string; to: string } | undefined,
-	): AgentToolResult<ReadToolDetails> {
-		if (!suffixResolution) return result;
-		result.details ??= {};
-		result.details.suffixResolution = suffixResolution;
-		const firstText = result.content.find((block): block is TextContent => block.type === "text");
-		if (firstText) firstText.text = prependSuffixResolutionNotice(firstText.text, suffixResolution);
-		return result;
-	}
 
 	async #resolveArchiveReadPath(
 		readPath: string,
@@ -1032,8 +1013,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	): Promise<ResolvedArchiveReadPath | null> {
 		const candidates = parseArchivePathCandidates(readPath);
 		for (const candidate of candidates) {
-			let absolutePath = resolveReadPath(candidate.archivePath, this.session.cwd);
-			let suffixResolution: { from: string; to: string } | undefined;
+			const absolutePath = resolveReadPath(candidate.archivePath, this.session.cwd);
 
 			try {
 				const stat = await Bun.file(absolutePath).stat();
@@ -1041,24 +1021,14 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				return {
 					absolutePath,
 					archiveSubPath: candidate.archivePath === readPath ? "" : candidate.subPath,
-					suffixResolution,
 				};
 			} catch (error) {
 				if (!isNotFoundError(error) || isRemoteMountPath(absolutePath)) continue;
 				const suffixMatch = await this.#findSuffixMatchCached(suffixCache, candidate.archivePath, signal);
-				if (!suffixMatch) continue;
-				try {
-					const retryStat = await Bun.file(suffixMatch.absolutePath).stat();
-					if (retryStat.isDirectory()) continue;
-					absolutePath = suffixMatch.absolutePath;
-					suffixResolution = { from: candidate.archivePath, to: suffixMatch.displayPath };
-					return {
-						absolutePath,
-						archiveSubPath: candidate.archivePath === readPath ? "" : candidate.subPath,
-						suffixResolution,
-					};
-				} catch (retryError) {
-					if (!isNotFoundError(retryError)) throw retryError;
+				if (suffixMatch) {
+					throw new ToolError(
+						`Path '${candidate.archivePath}' not found.\nDid you mean '${suffixMatch.displayPath}'?`,
+					);
 				}
 			}
 		}
@@ -1072,8 +1042,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	): Promise<ResolvedSqliteReadPath | null> {
 		const candidates = parseSqlitePathCandidates(readPath);
 		for (const candidate of candidates) {
-			let absolutePath = resolveReadPath(candidate.sqlitePath, this.session.cwd);
-			let suffixResolution: { from: string; to: string } | undefined;
+			const absolutePath = resolveReadPath(candidate.sqlitePath, this.session.cwd);
 
 			try {
 				const stat = await Bun.file(absolutePath).stat();
@@ -1083,26 +1052,14 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					absolutePath,
 					sqliteSubPath: candidate.subPath,
 					queryString: candidate.queryString,
-					suffixResolution,
 				};
 			} catch (error) {
 				if (!isNotFoundError(error) || isRemoteMountPath(absolutePath)) continue;
 				const suffixMatch = await this.#findSuffixMatchCached(suffixCache, candidate.sqlitePath, signal);
-				if (!suffixMatch) continue;
-				try {
-					const retryStat = await Bun.file(suffixMatch.absolutePath).stat();
-					if (retryStat.isDirectory()) continue;
-					if (!(await isSqliteFile(suffixMatch.absolutePath))) continue;
-					absolutePath = suffixMatch.absolutePath;
-					suffixResolution = { from: candidate.sqlitePath, to: suffixMatch.displayPath };
-					return {
-						absolutePath,
-						sqliteSubPath: candidate.subPath,
-						queryString: candidate.queryString,
-						suffixResolution,
-					};
-				} catch (retryError) {
-					if (!isNotFoundError(retryError)) throw retryError;
+				if (suffixMatch) {
+					throw new ToolError(
+						`Path '${candidate.sqlitePath}' not found.\nDid you mean '${suffixMatch.displayPath}'?`,
+					);
 				}
 			}
 		}
@@ -1779,7 +1736,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		fileSize: number,
 		parsed: ParsedSelector,
 		displayMode: { hashLines: boolean; lineNumbers: boolean },
-		suffixResolution: { from: string; to: string } | undefined,
 		signal: AbortSignal | undefined,
 		allowBridge = true,
 	): Promise<{
@@ -1796,15 +1752,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			try {
 				const bridgeText = await bridgePromise;
 				const bridgeResult = this.#buildInMemoryMultiRangeResult(bridgeText, ranges, {
-					details: this.#markMarkdownContentType({ resolvedPath: absolutePath, suffixResolution }, absolutePath),
+					details: this.#markMarkdownContentType({ resolvedPath: absolutePath }, absolutePath),
 					sourcePath: absolutePath,
 					entityLabel: "file",
 					raw: rawSelector,
 				});
-				if (suffixResolution) {
-					const firstText = bridgeResult.content.find((block): block is TextContent => block.type === "text");
-					if (firstText) firstText.text = prependSuffixResolutionNotice(firstText.text, suffixResolution);
-				}
 				return { outputText: "", columnTruncated: 0, bridgeResult };
 			} catch (error) {
 				logger.warn("ACP fs readTextFile failed; falling back to disk", { path: absolutePath, error });
@@ -2096,7 +2048,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const details: ReadToolDetails = this.#markMarkdownContentType(
 			{
 				resolvedPath: resolvedArchivePath.absolutePath,
-				suffixResolution: resolvedArchivePath.suffixResolution,
 			},
 			resolvedArchivePath.archiveSubPath,
 		);
@@ -2605,19 +2556,18 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					{ ...archivePath, archiveSubPath: archiveSubPath.path },
 					signal,
 				);
-				return this.#withSuffixResolution(result, archivePath.suffixResolution);
+				return result;
 			}
 
 			const sqlitePath = await this.#resolveSqliteReadPath(readPath, suffixCache, signal);
 			if (sqlitePath) {
 				const result = await this.#readSqlite(sqlitePath, signal);
-				return this.#withSuffixResolution(result, sqlitePath.suffixResolution);
+				return result;
 			}
 
 			const pdfImageMemberPath = splitPdfImageMemberReadPath(readPath);
 			if (pdfImageMemberPath) {
-				let absolutePdfPath = resolveReadPath(pdfImageMemberPath.pdfPath, this.session.cwd);
-				let suffixResolution: { from: string; to: string } | undefined;
+				const absolutePdfPath = resolveReadPath(pdfImageMemberPath.pdfPath, this.session.cwd);
 				try {
 					const stat = await Bun.file(absolutePdfPath).stat();
 					if (stat.isDirectory())
@@ -2626,8 +2576,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					if (!isNotFoundError(error) || isRemoteMountPath(absolutePdfPath)) throw error;
 					const suffixMatch = await this.#findSuffixMatchCached(suffixCache, pdfImageMemberPath.pdfPath, signal);
 					if (!suffixMatch) throw new ToolError(`Path '${pdfImageMemberPath.pdfPath}' not found`);
-					absolutePdfPath = suffixMatch.absolutePath;
-					suffixResolution = { from: pdfImageMemberPath.pdfPath, to: suffixMatch.displayPath };
+					throw new ToolError(
+						`Path '${pdfImageMemberPath.pdfPath}' not found.\nDid you mean '${suffixMatch.displayPath}'?`,
+					);
 				}
 				const result = await this.#readPdfImageMember(
 					absolutePdfPath,
@@ -2635,7 +2586,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					pdfImageMemberPath.member,
 					signal,
 				);
-				return this.#withSuffixResolution(result, suffixResolution);
+				return result;
 			}
 		}
 
@@ -2644,7 +2595,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const parsed = parseSel(localTarget.sel);
 
 		let absolutePath = resolveReadPath(localReadPath, this.session.cwd);
-		let suffixResolution: { from: string; to: string } | undefined;
 
 		let isDirectory = false;
 		let fileSize = 0;
@@ -2654,41 +2604,28 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			isDirectory = stat.isDirectory();
 		} catch (error) {
 			if (isNotFoundError(error)) {
-				if (!isRemoteMountPath(absolutePath)) {
-					const suffixMatch = await this.#findSuffixMatchCached(suffixCache, localReadPath, signal);
-					if (suffixMatch) {
-						try {
-							const retryStat = await Bun.file(suffixMatch.absolutePath).stat();
-							absolutePath = suffixMatch.absolutePath;
-							fileSize = retryStat.size;
-							isDirectory = retryStat.isDirectory();
-							suffixResolution = { from: localReadPath, to: suffixMatch.displayPath };
-						} catch {
-							// Candidate disappeared after resolution; continue through the normal fallback.
-						}
-					}
-				}
-
 				let recoveredApprovedPlan = false;
-				if (!suffixResolution) {
-					const approvedPlanPath = this.#approvedPlanAlias(absolutePath);
-					if (approvedPlanPath) {
-						try {
-							const approvedPlanStat = await Bun.file(approvedPlanPath).stat();
-							absolutePath = approvedPlanPath;
-							fileSize = approvedPlanStat.size;
-							isDirectory = approvedPlanStat.isDirectory();
-							recoveredApprovedPlan = true;
-						} catch {
-							// The referenced plan disappeared after resolution; continue through normal fallback.
-						}
+				const approvedPlanPath = this.#approvedPlanAlias(absolutePath);
+				if (approvedPlanPath) {
+					try {
+						const approvedPlanStat = await Bun.file(approvedPlanPath).stat();
+						absolutePath = approvedPlanPath;
+						fileSize = approvedPlanStat.size;
+						isDirectory = approvedPlanStat.isDirectory();
+						recoveredApprovedPlan = true;
+					} catch {
+						// The referenced plan disappeared after resolution; continue through normal fallback.
 					}
 				}
 
-				if (!recoveredApprovedPlan && !suffixResolution) {
+				if (!recoveredApprovedPlan) {
 					const delimitedResult = await this.#tryReadDelimitedPaths(readPath, signal);
 					if (delimitedResult) return delimitedResult;
-					throw new ToolError(`Path '${localReadPath}' not found`);
+					const suffixMatch = isRemoteMountPath(absolutePath)
+						? null
+						: await this.#findSuffixMatchCached(suffixCache, localReadPath, signal);
+					const suggestion = suffixMatch ? `.\nDid you mean '${suffixMatch.displayPath}'?` : "";
+					throw new ToolError(`Path '${localReadPath}' not found${suggestion}`);
 				}
 			} else {
 				throw error;
@@ -2701,12 +2638,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			}
 			const { offset, limit } = selToOffsetLimit(parsed);
 			const result = await this.#readDirectory(absolutePath, offset, limit, undefined);
-			return this.#withSuffixResolution(result, suffixResolution);
+			return result;
 		}
 
 		if (parsed.kind === "conflicts") {
 			const result = await this.#readFileConflicts(absolutePath, signal);
-			return this.#withSuffixResolution(result, suffixResolution);
+			return result;
 		}
 
 		const imageMetadata = await readImageMetadata(absolutePath);
@@ -2841,7 +2778,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						fileSize,
 						parsed,
 						displayMode,
-						suffixResolution,
 						undefined, // plain-file read: deterministic and fast, never abort mid-read
 					);
 					if (multiResult.bridgeResult) return multiResult.bridgeResult;
@@ -2861,10 +2797,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 						try {
 							const bridgeText = await bridgePromise;
 							const bridgeResult = this.#buildInMemoryTextResult(bridgeText, offset, limit, {
-								details: this.#markMarkdownContentType(
-									{ resolvedPath: absolutePath, suffixResolution },
-									absolutePath,
-								),
+								details: this.#markMarkdownContentType({ resolvedPath: absolutePath }, absolutePath),
 								sourcePath: absolutePath,
 								entityLabel: "file",
 								raw: isRawSelector(parsed),
@@ -3159,17 +3092,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 
 		this.#markMarkdownContentType(details, absolutePath);
-		if (suffixResolution) {
-			details.suffixResolution = suffixResolution;
-			// Inline resolution notice into first text block so the model sees the actual path
-			const notice = `[Path '${suffixResolution.from}' not found; resolved to '${suffixResolution.to}' via suffix match]`;
-			const firstText = content.find((c): c is TextContent => c.type === "text");
-			if (firstText) {
-				firstText.text = `${notice}\n${firstText.text}`;
-			} else {
-				content = [{ type: "text", text: notice }, ...content];
-			}
-		}
 		const resultBuilder = toolResult(details).content(content);
 		if (sourcePath) {
 			resultBuilder.sourcePath(sourcePath);
@@ -3298,7 +3220,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 				artifact.size,
 				parsedSel,
 				displayMode,
-				undefined,
 				signal,
 				false,
 			);

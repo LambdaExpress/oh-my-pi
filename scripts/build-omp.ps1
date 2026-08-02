@@ -211,6 +211,11 @@ try {
 			Remove-Item -LiteralPath $nativeSourceDir -Recurse -Force -ErrorAction SilentlyContinue
 		}
 	}
+} catch {
+	Write-Host ""
+	Write-Host "Build failed: $($_.Exception.Message)" -ForegroundColor Red
+	[void] (Read-Host "Press Enter to exit")
+	throw
 } finally {
 	Pop-Location
 }

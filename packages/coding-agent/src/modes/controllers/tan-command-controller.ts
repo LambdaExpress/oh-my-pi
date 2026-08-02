@@ -54,9 +54,7 @@ function assertExactToolPresentation(
 		["missing mounted tools", sortedSetDifference(requestedMounted, actualMounted)],
 		["unexpected mounted tools", sortedSetDifference(actualMounted, requestedMounted)],
 	] as const;
-	const details = mismatches.flatMap(([label, names]) =>
-		names.length > 0 ? [`${label}: ${names.join(", ")}`] : [],
-	);
+	const details = mismatches.flatMap(([label, names]) => (names.length > 0 ? [`${label}: ${names.join(", ")}`] : []));
 	if (details.length > 0) {
 		throw new Error(`Tan capability reconstruction failed: ${details.join("; ")}`);
 	}

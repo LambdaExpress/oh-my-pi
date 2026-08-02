@@ -349,14 +349,13 @@ export async function probeLiteralPathExists(filePath: string, cwd: string): Pro
 
 /**
  * Async sibling of {@link splitPathAndSel} that prefers a literal filesystem
- * path over selector interpretation. Filenames whose tail matches the selector
- * grammar (e.g. `test:1-2`, `log:raw`) are legal on POSIX; without this the
- * strict splitter peels the tail and both `read` and `grep` refuse to open the
- * real file (issue #4618). The literal wins on a confirmed `lstat`. Ambiguous
- * errors also preserve the literal on POSIX, where colon filenames are ordinary
- * files. On Windows, an ambiguous probe falls back to selector interpretation
- * so a transient filesystem error cannot reinterpret the selector as an NTFS
- * alternate data stream.
+ * path over selector interpretation on POSIX. Filenames whose tail matches the
+ * selector grammar (e.g. `test:1-2`, `log:raw`) are legal there; without this
+ * the strict splitter peels the tail and both `read` and `grep` refuse to open
+ * the real file (issue #4618). Windows reserves colon tails for NTFS alternate
+ * data streams, so selector syntax always wins there; probing an ADS as though
+ * it were a normal filename would make the selector depend on prior filesystem
+ * state. Ambiguous POSIX probe errors preserve the literal path.
  */
 export async function splitPathAndSelPreferringLiteral(
 	rawPath: string,
@@ -364,9 +363,9 @@ export async function splitPathAndSelPreferringLiteral(
 	platform: NodeJS.Platform = process.platform,
 ): Promise<{ path: string; sel?: string }> {
 	const strict = splitPathAndSel(rawPath);
-	if (strict.sel === undefined) return strict;
+	if (strict.sel === undefined || platform === "win32") return strict;
 	const probe = await probeLiteralPathExists(rawPath, cwd);
-	if (probe === "missing" || (probe === "unknown" && platform === "win32")) return strict;
+	if (probe === "missing") return strict;
 	return { path: rawPath };
 }
 

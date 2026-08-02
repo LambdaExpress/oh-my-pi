@@ -202,12 +202,15 @@ async function parsePathSpecs(rawEntries: readonly string[], cwd: string): Promi
 
 function mergeRangesInto(map: Map<string, LineRange[]>, absKey: string, ranges: readonly LineRange[]): void {
 	// Concat-without-merge is correct: `isLineInRanges` scans linearly, so
-	// duplicates/overlaps only cost a few extra comparisons per match.
-	const existing = map.get(absKey);
+	// duplicates/overlaps only cost a few extra comparisons per match. Windows
+	// native results may vary in slash style and drive/path casing.
+	const normalizedAbsKey = path.normalize(path.resolve(absKey));
+	const key = process.platform === "win32" ? normalizedAbsKey.toLowerCase() : normalizedAbsKey;
+	const existing = map.get(key);
 	if (existing) {
 		existing.push(...ranges);
 	} else {
-		map.set(absKey, [...ranges]);
+		map.set(key, [...ranges]);
 	}
 }
 
@@ -1236,8 +1239,9 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 				if (rangesByAbsPath.size > 0) {
 					const filteredMatches: GrepMatch[] = [];
 					for (const match of result.matches) {
-						const abs = matchAbsolutePath(match.path, searchPath);
-						const ranges = rangesByAbsPath.get(abs);
+						const absoluteMatchPath = path.normalize(path.resolve(matchAbsolutePath(match.path, searchPath)));
+						const rangeKey = process.platform === "win32" ? absoluteMatchPath.toLowerCase() : absoluteMatchPath;
+						const ranges = rangesByAbsPath.get(rangeKey);
 						if (!ranges) {
 							// Path has no line-range constraint (e.g. a peer entry without `:N-M`).
 							filteredMatches.push(match);

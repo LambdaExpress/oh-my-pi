@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { reset as resetCapabilities } from "@oh-my-pi/pi-coding-agent/capability";
@@ -79,6 +80,9 @@ interface CreateSessionOptions {
 	xdevRegistry?: XdevRegistry;
 	reloadSshTool?: () => Promise<Tool | null>;
 	reloadSshTransferTool?: () => Promise<Tool | null>;
+	asyncJobManager?: AsyncJobManager;
+	agentId?: string;
+	agentScopeId?: string;
 }
 
 describe("AgentSession SSH transfer refresh", () => {
@@ -138,6 +142,9 @@ describe("AgentSession SSH transfer refresh", () => {
 			sessionManager,
 			settings,
 			modelRegistry: {} as never,
+			asyncJobManager: options.asyncJobManager,
+			agentId: options.agentId,
+			agentScopeId: options.agentScopeId,
 			toolRegistry,
 			reloadSshTool,
 			reloadSshTransferTool,
@@ -392,5 +399,93 @@ describe("AgentSession SSH transfer refresh", () => {
 			args: { op: "create", name: "prod", host: "example.com", password },
 		});
 		expect(JSON.stringify(await executionStartPromise)).not.toContain(password);
+	});
+	it("publishes mounted SSH transfer background progress after the write call returns", async () => {
+		const tempDir = TempDir.createSync("@pi-ssh-transfer-progress-");
+		tempDirs.push(tempDir);
+		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+		const agentScopeId = "ssh-transfer-progress-scope";
+		const agentId = "Main";
+		const session = createSession(tempDir.path(), { asyncJobManager: manager, agentId, agentScopeId });
+		const release = Promise.withResolvers<void>();
+		const publishProgress = Promise.withResolvers<void>();
+		const toolCallId = "mounted-ssh-transfer";
+		const jobId = manager.register(
+			"ssh_transfer",
+			"upload fixture",
+			async ({ jobId: runningJobId, reportProgress }) => {
+				await publishProgress.promise;
+				await reportProgress("50%", {
+					operation: "upload",
+					host: "fixture",
+					localPath: "/tmp/blob.bin",
+					remotePath: "/srv/blob.bin",
+					status: "running",
+					totalBytes: 100,
+					transferredBytes: 50,
+					percent: 50,
+					bytesPerSecond: 25,
+					averageBytesPerSecond: 25,
+					elapsedMs: 2_000,
+					async: { state: "running", jobId: runningJobId, type: "ssh_transfer" },
+				});
+				await release.promise;
+				return "completed";
+			},
+			{ toolCallId, ownerId: agentId, scopeId: agentScopeId },
+		);
+		const events: AgentSessionEvent[] = [];
+		const unsubscribe = session.subscribe(event => events.push(event));
+		const published = waitForSessionEvent(
+			session,
+			event => event.type === "tool_execution_end" && event.toolCallId === toolCallId,
+		);
+
+		session.agent.emitExternalEvent({
+			type: "tool_execution_end",
+			toolCallId,
+			toolName: "write",
+			result: {
+				content: [{ type: "text", text: "Background upload started." }],
+				details: {
+					xdev: {
+						tool: "ssh_transfer",
+						mode: "execute",
+						args: {
+							op: "upload",
+							host: "fixture",
+							local_path: "/tmp/blob.bin",
+							remote_path: "/srv/blob.bin",
+							async: true,
+						},
+						inner: { async: { state: "running", jobId, type: "ssh_transfer" } },
+					},
+				},
+			},
+		});
+
+		await published;
+		await Promise.resolve();
+		expect(events.find(event => event.type === "async_job_update")).toMatchObject({
+			type: "async_job_update",
+			job: { id: jobId, toolCallId, type: "ssh_transfer", status: "running" },
+		});
+		const progressed = waitForSessionEvent(
+			session,
+			event =>
+				event.type === "async_job_update" && event.job.progress?.details?.transferredBytes === 50,
+		);
+		publishProgress.resolve();
+		expect(await progressed).toMatchObject({
+			type: "async_job_update",
+			job: {
+				id: jobId,
+				progress: { details: { transferredBytes: 50, percent: 50 } },
+			},
+		});
+		unsubscribe();
+
+		release.resolve();
+		await manager.getJob(jobId)?.promise;
 	});
 });

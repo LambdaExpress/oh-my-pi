@@ -51,9 +51,14 @@
 - Fixed mixed Python/JavaScript `eval` descriptions advertising JavaScript's `schemaMode` keyword in the Python `agent()` signature.
 - Fixed C# block edits rejecting method-header anchors when a contiguous leading attribute starts the enclosing method declaration.
 
+- Fixed background SSH transfer progress remaining at zero when `ssh_transfer` ran through the mounted `xd://` write transport by publishing the inner transfer's async-job updates to the TUI.
 - Fixed the SSH transfer HUD async-job fixture preserving typed transfer progress as a plain details record, restoring the coding-agent TypeScript check.
 - Fixed completed background SSH transfers losing their terminal progress details, so the TUI now replaces the transient HUD with a persistent completed, failed, or cancelled transfer summary instead of a generic completion line.
-- Fixed Windows local read selectors occasionally being treated as NTFS alternate data stream paths when the literal-path probe returned an ambiguous filesystem error.
+- Fixed Windows local read selectors always parsing as selectors instead of probing NTFS alternate data streams, while preserving literal selector-shaped filenames on POSIX.
+- Fixed large single-line artifacts, including Jira/OpenAPI responses, returning an empty wrapper when the first line exceeded the inline byte budget; bounded numbered and raw reads now return a UTF-8 preview.
+- Fixed transient provider stream failures after tool-call emission remaining terminal even when every synthetic result proved the tools never executed; those failed turns now replay safely without retaining orphan tool results.
+- Fixed netcoredbg PID attachment sending the adapter-required `processId` before `configurationDone`, with regression coverage for the attach handshake.
+- Fixed Bash deadlines returning no later than the JavaScript fallback grace when a crashed native root leaves descendant output handles or the native drain promise alive.
 - Fixed the `computer` tool publishing every action as one flat object, which made generated callers attach unrelated fields that runtime validation rejected; action schemas now use closed discriminated variants so clicks, typing, scrolling, and other input reach the native desktop backend.
 - Fixed long model and provider names collapsing the welcome screen to one column by preserving the LSP and recent-session panel while truncating oversized labels with three dots.
 - Fixed transcript rebuilds and session restoration misclassifying active subagents and background Bash jobs as SSH file transfers.

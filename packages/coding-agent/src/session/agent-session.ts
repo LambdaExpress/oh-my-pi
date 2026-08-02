@@ -372,15 +372,28 @@ function snapshotAsyncJob(job: Readonly<AsyncJob>): AsyncJobSnapshotItem {
 	};
 }
 
-function toolResultAsyncState(
-	result: AgentToolResult<unknown> | undefined,
-): "running" | "completed" | "failed" | undefined {
-	const details = result?.details;
+type AsyncToolState = "running" | "completed" | "failed";
+
+function toolDetailsAsyncState(details: unknown): AsyncToolState | undefined {
 	if (!details || typeof details !== "object" || !("async" in details)) return undefined;
 	const asyncDetails = details.async;
 	if (!asyncDetails || typeof asyncDetails !== "object" || !("state" in asyncDetails)) return undefined;
 	const state = asyncDetails.state;
 	return state === "running" || state === "completed" || state === "failed" ? state : undefined;
+}
+
+function toolResultAsyncState(result: AgentToolResult<unknown> | undefined): AsyncToolState | undefined {
+	return toolDetailsAsyncState(result?.details);
+}
+
+function sshTransferAsyncState(
+	toolName: string,
+	result: AgentToolResult<unknown> | undefined,
+): AsyncToolState | undefined | null {
+	if (toolName === "ssh_transfer") return toolResultAsyncState(result);
+	const dispatch = writeDeviceDispatch(toolName, result);
+	if (dispatch?.tool !== "ssh_transfer" || dispatch.mode !== "execute") return null;
+	return toolDetailsAsyncState(dispatch.inner);
 }
 
 /** Internal marker for hook messages queued through the agent loop */
@@ -2523,32 +2536,35 @@ export class AgentSession {
 				throw error;
 			}
 		}
-		if (event.type === "tool_execution_end" && event.toolName === "ssh_transfer") {
-			if (toolResultAsyncState(event.result) === "running") {
-				this.#publishedAsyncJobToolCallIds.add(event.toolCallId);
-				const buffered = this.#bufferedAsyncJobUpdates.get(event.toolCallId);
-				if (buffered) {
+		if (event.type === "tool_execution_end") {
+			const transferAsyncState = sshTransferAsyncState(event.toolName, event.result);
+			if (transferAsyncState !== null) {
+				if (transferAsyncState === "running") {
+					this.#publishedAsyncJobToolCallIds.add(event.toolCallId);
+					const buffered = this.#bufferedAsyncJobUpdates.get(event.toolCallId);
+					if (buffered) {
+						this.#bufferedAsyncJobUpdates.delete(event.toolCallId);
+						this.#emit({ type: "async_job_update", job: buffered });
+					}
+				} else {
 					this.#bufferedAsyncJobUpdates.delete(event.toolCallId);
-					this.#emit({ type: "async_job_update", job: buffered });
+					this.#publishedAsyncJobToolCallIds.delete(event.toolCallId);
+					const manager = this.#asyncJobManager;
+					const filter = {
+						...(this.#agentId ? { ownerId: this.#agentId } : {}),
+						scopeId: this.#agentScopeId,
+						type: "ssh_transfer" as const,
+					};
+					const job = manager
+						?.getAllJobs(filter)
+						.find(
+							candidate =>
+								candidate.toolCallId === event.toolCallId &&
+								(candidate.status === "running" ||
+									(candidate.status === "cancelled" && candidate.settledAt === undefined)),
+						);
+					if (job) manager?.cancel(job.id, filter);
 				}
-			} else {
-				this.#bufferedAsyncJobUpdates.delete(event.toolCallId);
-				this.#publishedAsyncJobToolCallIds.delete(event.toolCallId);
-				const manager = this.#asyncJobManager;
-				const filter = {
-					...(this.#agentId ? { ownerId: this.#agentId } : {}),
-					scopeId: this.#agentScopeId,
-					type: "ssh_transfer" as const,
-				};
-				const job = manager
-					?.getAllJobs(filter)
-					.find(
-						candidate =>
-							candidate.toolCallId === event.toolCallId &&
-							(candidate.status === "running" ||
-								(candidate.status === "cancelled" && candidate.settledAt === undefined)),
-					);
-				if (job) manager?.cancel(job.id, filter);
 			}
 		}
 

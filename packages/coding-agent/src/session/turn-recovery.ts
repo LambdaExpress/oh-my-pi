@@ -597,6 +597,12 @@ export class TurnRecovery {
 		reason = "assistant-context-cleanup",
 	): void {
 		const messages = this.#host.agent.state.messages;
+		const replayableTurnStart = this.#syntheticUnexecutedToolResultTailStart(assistantMessage);
+		if (replayableTurnStart !== undefined) {
+			this.#host.agent.replaceMessages(messages.slice(0, replayableTurnStart));
+			return;
+		}
+
 		const lastMessage = messages[messages.length - 1];
 		const lastAssistant: AssistantMessage | undefined = lastMessage?.role === "assistant" ? lastMessage : undefined;
 		if (lastAssistant !== undefined && this.#isSameAssistantMessage(lastAssistant, assistantMessage)) {
@@ -874,13 +880,52 @@ export class TurnRecovery {
 		return unresolvedToolCallIds.size === 0;
 	}
 	/**
-	 * Retried turns remove the failed assistant message from active context.
-	 * Text/thinking-only partials are safe to discard and replay. Retained
-	 * tool calls are not: a completed tool call may already have emitted its
-	 * tool result after this assistant message, so replaying can duplicate work.
+	 * Return the failed assistant's index when every emitted tool call is paired
+	 * with a trailing synthetic result proving that no local tool executed.
+	 * The suffix must contain only those exact placeholders; any real, missing,
+	 * duplicate, or unrelated result keeps replay fail-closed.
+	 */
+	#syntheticUnexecutedToolResultTailStart(message: AssistantMessage): number | undefined {
+		const toolCallIds = new Set<string>();
+		for (const block of message.content) {
+			if (block.type === "toolCall") toolCallIds.add(block.id);
+		}
+		if (toolCallIds.size === 0) return undefined;
+
+		const messages = this.#host.agent.state.messages;
+		let assistantIndex = -1;
+		for (let i = messages.length - 1; i >= 0; i--) {
+			const candidate = messages[i];
+			if (candidate.role === "assistant" && this.#isSameAssistantMessage(candidate, message)) {
+				assistantIndex = i;
+				break;
+			}
+		}
+		if (assistantIndex < 0) return undefined;
+
+		const unresolvedToolCallIds = new Set(toolCallIds);
+		for (let i = assistantIndex + 1; i < messages.length; i++) {
+			const candidate = messages[i];
+			if (
+				!isSyntheticToolResultMessage(candidate) ||
+				candidate.details?.executed !== false ||
+				candidate.details?.source !== "assistant_stop_error" ||
+				!unresolvedToolCallIds.delete(candidate.toolCallId)
+			) {
+				return undefined;
+			}
+		}
+		return unresolvedToolCallIds.size === 0 ? assistantIndex : undefined;
+	}
+
+	/**
+	 * Retried turns discard partial assistant output. Tool calls are replay-safe
+	 * only when their exact trailing synthetic results prove that execution never
+	 * started; all other tool output may have side effects and blocks replay.
 	 */
 	#hasReplayUnsafeToolOutput(message: AssistantMessage): boolean {
-		return message.content.some(block => block.type === "toolCall");
+		const hasToolCalls = message.content.some(block => block.type === "toolCall");
+		return hasToolCalls && this.#syntheticUnexecutedToolResultTailStart(message) === undefined;
 	}
 
 	/**

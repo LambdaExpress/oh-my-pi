@@ -33,9 +33,7 @@ function createRef(sessionFile: string): AgentRef {
 	};
 }
 
-function createRevivedSession(
-	presentations: Array<{ tools: string[]; mountedXdevTools: string[] }>,
-): AgentSession {
+function createRevivedSession(presentations: Array<{ tools: string[]; mountedXdevTools: string[] }>): AgentSession {
 	return {
 		setActiveToolPresentation: async (tools: string[], mountedXdevTools: string[]) => {
 			presentations.push({ tools, mountedXdevTools });

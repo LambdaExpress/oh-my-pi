@@ -261,6 +261,29 @@ describe("DAP launch failure handling", () => {
 		expect(launch?.args).toMatchObject({ args: ["--configured"], program: "/bin/echo" });
 	});
 
+	it("sends netcoredbg processId before configurationDone when attaching by pid", async () => {
+		const adapter: DapResolvedAdapter = {
+			...TEST_ADAPTER,
+			name: "netcoredbg",
+			command: "netcoredbg",
+			resolvedCommand: "netcoredbg",
+			attachDefaults: { request: "attach" },
+		};
+		const manager = new DapSessionManager();
+		const fake = new FakeDapClient(adapter, process.cwd(), {});
+		spyOn(DapClient, "spawn").mockResolvedValue(fake as unknown as DapClient);
+
+		try {
+			await manager.attach({ adapter, cwd: process.cwd(), pid: 12_004 }, undefined, 10);
+
+			expect(fake.requests.map(request => request.command)).toEqual(["attach", "configurationDone"]);
+			const attach = fake.requests[0];
+			expect(attach?.args).toMatchObject({ pid: 12_004, processId: 12_004 });
+		} finally {
+			await manager.terminate();
+		}
+	});
+
 	it("surfaces the launch failure when configurationDone also fails", async () => {
 		const manager = new DapSessionManager();
 		const fake = new FakeDapClient(TEST_ADAPTER, process.cwd(), {
@@ -904,9 +927,7 @@ describe("DebugTool launch validation", () => {
 		const adapterFile = process.platform === "win32" ? "root-adapter.cmd" : "root-adapter";
 		const adapterCommand = path.join(workspaceCwd, ".omp", "debuggers", adapterFile);
 		const configuredCommand =
-			process.platform === "win32"
-				? `.\\.omp\\debuggers\\${adapterFile}`
-				: `./.omp/debuggers/${adapterFile}`;
+			process.platform === "win32" ? `.\\.omp\\debuggers\\${adapterFile}` : `./.omp/debuggers/${adapterFile}`;
 		const missingCommand =
 			process.platform === "win32" ? ".\\.omp\\debuggers\\missing-adapter.cmd" : "./.omp/debuggers/missing-adapter";
 		const sessionAttachSpy = spyOn(dapModule.dapSessionManager, "attach").mockImplementation(async () => {

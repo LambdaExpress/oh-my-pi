@@ -6,6 +6,10 @@
 
 - Clarified that editing only displayed lines remains required model guidance while runtime rejection of unseen anchors depends on `edit.enforceSeenLines`.
 
+### Fixed
+
+- Recovered a plus-prefixed `DEL` header after a trailing blank insert row as the next operation instead of inserting the header text into the target file.
+
 ## [17.1.2] - 2026-07-24
 
 ### Changed

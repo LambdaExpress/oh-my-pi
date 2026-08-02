@@ -390,10 +390,7 @@ describe("TanCommandController", () => {
 			"browser",
 			"mcp__server_browse",
 		]);
-		vi.spyOn(harness.ctx.session, "getMountedXdevToolNames").mockReturnValue([
-			"browser",
-			"mcp__server_browse",
-		]);
+		vi.spyOn(harness.ctx.session, "getMountedXdevToolNames").mockReturnValue(["browser", "mcp__server_browse"]);
 		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
 		const appendSessionInit = vi.fn();
 		const actualEnabled = ["mcp__server_browse", "browser", "write", "read"];
@@ -477,10 +474,7 @@ describe("TanCommandController", () => {
 			"Tan capability reconstruction failed: missing enabled tools: sdk_custom_tool; missing mounted tools: sdk_custom_tool",
 		);
 		expect(createAgentSessionSpy.mock.calls[0]?.[0]?.customTools).toBeUndefined();
-		expect(clone.setActiveToolPresentation).toHaveBeenCalledWith(
-			["read", "sdk_custom_tool"],
-			["sdk_custom_tool"],
-		);
+		expect(clone.setActiveToolPresentation).toHaveBeenCalledWith(["read", "sdk_custom_tool"], ["sdk_custom_tool"]);
 		expect(clone.getEnabledToolNames).toHaveBeenCalledTimes(1);
 		expect(clone.getMountedXdevToolNames).toHaveBeenCalledTimes(1);
 		expect(appendSessionInit).not.toHaveBeenCalled();

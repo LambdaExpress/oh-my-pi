@@ -661,7 +661,7 @@ describe("AgentSession retry delay cap", () => {
 		expect(last.stopReason).toBe("stop");
 	});
 
-	it("does not auto-retry a timeout after streaming a complete write tool call", async () => {
+	it("auto-retries a timeout after a complete synthetic unexecuted write call", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) {
 			throw new Error("Expected bundled Anthropic test model to exist");
@@ -677,7 +677,7 @@ describe("AgentSession retry delay cap", () => {
 				messages: [],
 			},
 			streamFn: requestedModel => {
-				streamCalls += 1;
+				const streamCall = ++streamCalls;
 				const stream = new AssistantMessageEventStream();
 				queueMicrotask(() => {
 					const partial: AssistantMessage = {
@@ -697,6 +697,14 @@ describe("AgentSession retry delay cap", () => {
 						stopReason: "stop",
 						timestamp: Date.now(),
 					};
+					if (streamCall > 1) {
+						const text = { type: "text" as const, text: "Recovered after write timeout" };
+						partial.content.push(text);
+						stream.push({ type: "start", partial });
+						stream.push({ type: "text_delta", contentIndex: 0, delta: text.text, partial });
+						stream.push({ type: "done", reason: "stop", message: partial });
+						return;
+					}
 					const toolCall: ToolCall = {
 						type: "toolCall",
 						id: "tc-write",
@@ -754,18 +762,162 @@ describe("AgentSession retry delay cap", () => {
 		await session.prompt("Write a large report");
 		await session.waitForIdle();
 
-		expect(streamCalls).toBe(1);
-		expect(retryStartEvents).toHaveLength(0);
-		expect(retryEndEvents).toHaveLength(0);
-		expect(session.agent.state.messages.at(-1)?.role).toBe("toolResult");
+		expect(streamCalls).toBe(2);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryEndEvents).toContainEqual(expect.objectContaining({ success: true, attempt: 1 }));
+		expect(
+			session.agent.state.messages.some(
+				message => message.role === "toolResult" && message.toolCallId === "tc-write",
+			),
+		).toBe(false);
 		expect(agentEndEvents).toHaveLength(1);
-		expect(agentEndEvents[0].isTerminal).toBe(true);
-		const terminalError = [...agentEndEvents[0].messages]
-			.reverse()
-			.find((message): message is AssistantMessage => message.role === "assistant");
-		expect(terminalError?.stopReason).toBe("error");
-		expect(terminalError?.errorMessage).toBe("The operation timed out.");
+		expect(agentEndEvents.at(-1)?.isTerminal).toBe(true);
+		expect(lastAssistant(session).content).toContainEqual({ type: "text", text: "Recovered after write timeout" });
 	});
+
+	it.each([1, 6])(
+		"replays %i fully emitted tool calls when provider closure proves none executed",
+		async toolCallCount => {
+			const socketClosure =
+				"The socket connection was closed unexpectedly. For more information, pass verbose: true in the second argument to fetch()";
+			const model = createMockModel({
+				id: "provider-closure-replay",
+				provider: "openrouter",
+			});
+			authStorage.setRuntimeApiKey("openrouter", "openrouter-test-key");
+			const toolCalls: ToolCall[] = Array.from({ length: toolCallCount }, (_, index) => ({
+				type: "toolCall",
+				id: `read-${index + 1}`,
+				name: "read",
+				arguments: { path: `report-${index + 1}.json:1-20` },
+			}));
+			const toolCallIds = new Set(toolCalls.map(call => call.id));
+			let streamCalls = 0;
+			let replayedWithoutFailedTurn = false;
+			const agent = new Agent({
+				getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
+				initialState: {
+					model,
+					systemPrompt: ["Test"],
+					tools: [],
+					messages: [],
+				},
+				streamFn: (_requestedModel, context, options) => {
+					streamCalls += 1;
+					if (streamCalls > 1) {
+						replayedWithoutFailedTurn = !context.messages.some(message => {
+							if (message.role === "toolResult") return toolCallIds.has(message.toolCallId);
+							return (
+								message.role === "assistant" &&
+								message.content.some(block => block.type === "toolCall" && toolCallIds.has(block.id))
+							);
+						});
+						model.push({ content: ["Recovered after provider closure"] });
+						return model.stream(model, context, options);
+					}
+
+					const stream = new AssistantMessageEventStream();
+					queueMicrotask(() => {
+						const partial: AssistantMessage = {
+							role: "assistant",
+							content: [...toolCalls],
+							api: model.api,
+							provider: model.provider,
+							model: model.id,
+							usage: {
+								input: 0,
+								output: 0,
+								cacheRead: 0,
+								cacheWrite: 0,
+								totalTokens: 0,
+								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+							},
+							stopReason: "stop",
+							timestamp: Date.now(),
+						};
+						stream.push({ type: "start", partial });
+						for (let index = 0; index < toolCalls.length; index++) {
+							const toolCall = toolCalls[index];
+							stream.push({ type: "toolcall_start", contentIndex: index, partial });
+							stream.push({
+								type: "toolcall_delta",
+								contentIndex: index,
+								delta: JSON.stringify(toolCall.arguments),
+								partial,
+							});
+							stream.push({ type: "toolcall_end", contentIndex: index, toolCall, partial });
+						}
+						stream.push({
+							type: "error",
+							reason: "error",
+							error: { ...partial, stopReason: "error", errorMessage: socketClosure },
+						});
+					});
+					return stream;
+				},
+			});
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				"retry.baseDelayMs": 5,
+				"retry.maxRetries": 1,
+				"retry.modelFallback": false,
+			});
+			settings.setModelRole("default", `${model.provider}/${model.id}`);
+			const sessionManager = SessionManager.create(tempDir.path(), path.join(tempDir.path(), "sessions"));
+			session = new AgentSession({
+				agent,
+				sessionManager,
+				settings,
+				modelRegistry,
+			});
+
+			await session.prompt("Read the reports");
+			await session.waitForIdle();
+
+			expect(streamCalls).toBe(2);
+			expect(replayedWithoutFailedTurn).toBe(true);
+			expect(
+				session.agent.state.messages.some(
+					message => message.role === "toolResult" && toolCallIds.has(message.toolCallId),
+				),
+			).toBe(false);
+			await sessionManager.flush();
+			const sessionFile = sessionManager.getSessionFile();
+			if (!sessionFile) throw new Error("Expected provider closure recovery to persist a session file");
+			const reloadedManager = await SessionManager.open(
+				sessionFile,
+				path.join(tempDir.path(), "sessions"),
+				undefined,
+				{ suppressBreadcrumb: true },
+			);
+			try {
+				const transcript = reloadedManager.buildSessionContext({ transcript: true });
+				expect(
+					transcript.messages.filter(
+						message => message.role === "toolResult" && toolCallIds.has(message.toolCallId),
+					),
+				).toHaveLength(toolCallCount);
+
+				const modelContext = reloadedManager.buildSessionContext();
+				expect(
+					modelContext.messages.some(message => {
+						if (message.role === "toolResult") return toolCallIds.has(message.toolCallId);
+						return (
+							message.role === "assistant" &&
+							message.content.some(block => block.type === "toolCall" && toolCallIds.has(block.id))
+						);
+					}),
+				).toBe(false);
+			} finally {
+				await reloadedManager.close();
+			}
+			expect(lastAssistant(session).content).toContainEqual({
+				type: "text",
+				text: "Recovered after provider closure",
+			});
+		},
+	);
 
 	it("resumes an OpenAI-completions stall after a synthetic unexecuted tool result", async () => {
 		const stallMessage = "OpenAI completions stream stalled while waiting for the next event";

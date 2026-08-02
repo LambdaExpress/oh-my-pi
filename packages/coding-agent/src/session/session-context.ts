@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { type AgentMessage, isSyntheticToolResultMessage } from "@oh-my-pi/pi-agent-core";
 import { coerceServiceTierByFamily, type ProviderPayload, type ServiceTierByFamily } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import {
@@ -275,6 +275,49 @@ export function buildSessionContext(
 	// 2. Emit kept messages (from firstKeptEntryId up to compaction)
 	// 3. Emit messages after compaction
 	const messages: AgentMessage[] = [];
+	const modelEntriesToSkip = new Set<SessionEntry>();
+	if (!options?.transcript) {
+		for (let i = 0; i < path.length; i++) {
+			const entry = path[i];
+			if (
+				entry.type !== "message" ||
+				entry.message.role !== "assistant" ||
+				entry.message.retryRecovery?.status !== "recovered"
+			) {
+				continue;
+			}
+
+			const toolCallIds: string[] = [];
+			for (const block of entry.message.content) {
+				if (block.type === "toolCall") toolCallIds.push(block.id);
+			}
+			if (toolCallIds.length === 0) {
+				modelEntriesToSkip.add(entry);
+				continue;
+			}
+
+			const unresolvedToolCallIds = new Set(toolCallIds);
+			if (unresolvedToolCallIds.size !== toolCallIds.length) continue;
+			const resultEntries: SessionEntry[] = [];
+			for (let j = i + 1; j < path.length && unresolvedToolCallIds.size > 0; j++) {
+				const candidate = path[j];
+				if (
+					candidate.type !== "message" ||
+					!isSyntheticToolResultMessage(candidate.message) ||
+					candidate.message.details?.executed !== false ||
+					candidate.message.details?.source !== "assistant_stop_error" ||
+					!unresolvedToolCallIds.delete(candidate.message.toolCallId)
+				) {
+					resultEntries.length = 0;
+					break;
+				}
+				resultEntries.push(candidate);
+			}
+			if (unresolvedToolCallIds.size !== 0 || resultEntries.length === 0) continue;
+			modelEntriesToSkip.add(entry);
+			for (const resultEntry of resultEntries) modelEntriesToSkip.add(resultEntry);
+		}
+	}
 	const cacheMissExplainedAt: boolean[] = [];
 	let pendingReset = false;
 	let currentMode = "none";
@@ -311,13 +354,7 @@ export function buildSessionContext(
 	const appendMessage = (entry: SessionEntry) => {
 		handleEntryResetTracking(entry);
 		if (entry.type === "message") {
-			if (
-				!options?.transcript &&
-				entry.message.role === "assistant" &&
-				entry.message.retryRecovery?.status === "recovered"
-			) {
-				return;
-			}
+			if (modelEntriesToSkip.has(entry)) return;
 			pushMessage(entry.message);
 		} else if (entry.type === "custom_message") {
 			if (!isCustomMessageContent(entry.content)) return;
