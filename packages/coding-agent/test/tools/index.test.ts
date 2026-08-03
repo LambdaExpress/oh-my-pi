@@ -66,7 +66,7 @@ describe("createTools", () => {
 		expect(names).toContain("task");
 		expect(names).toContain("todo");
 		expect(names).toContain("web_search");
-		expect(names).toContain("worktree");
+		expect(names).not.toContain("worktree");
 		expect(names).not.toContain("fetch");
 		expect(names).not.toContain("vim");
 	});
@@ -149,13 +149,6 @@ describe("createTools", () => {
 		const names = tools.map(t => t.name);
 
 		expect(names).toEqual(["read", "write"]);
-	});
-
-	it("includes explicit worktree requests without a legacy resolve tool", async () => {
-		const session = createTestSession();
-		const tools = await createTools(session, ["worktree"]);
-
-		expect(tools.map(t => t.name)).toEqual(["worktree"]);
 	});
 
 	it("creates an xd:// registry without remounting explicitly requested built-ins", async () => {

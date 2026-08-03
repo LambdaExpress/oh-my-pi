@@ -42,7 +42,6 @@ export const commands: CommandEntry[] = [
 	{ name: "tiny-models", load: () => import("./commands/tiny-models").then(m => m.default) },
 	{ name: "token", load: () => import("./commands/token").then(m => m.default) },
 	{ name: "ttsr", load: () => import("./commands/ttsr").then(m => m.default) },
-	{ name: "worktree", load: () => import("./commands/worktree").then(m => m.default), aliases: ["wt"] },
 	{ name: "search", load: () => import("./commands/web-search").then(m => m.default), aliases: ["q"] },
 ];
 
@@ -54,6 +53,13 @@ export const commands: CommandEntry[] = [
 // The real commands live under `omp plugin <action>`; each entry maps a verb to
 // a hint pointing there. See {@link reservedTopLevelWordMessage} for when a hint
 // fires vs. when the argv still falls through to `launch`.
+const REMOVED_TOP_LEVEL_WORDS: Record<string, string> = {
+	worktree:
+		'`omp worktree` has been removed. Managed worktree operations are no longer exposed as a CLI command; run `omp launch worktree` if you meant to send "worktree" as a prompt.',
+	wt:
+		'`omp wt` has been removed. Managed worktree operations are no longer exposed as a CLI command; run `omp launch wt` if you meant to send "wt" as a prompt.',
+};
+
 const RESERVED_TOP_LEVEL_WORDS: Record<string, string> = {
 	extensions:
 		'`omp extensions` is not a management command. Use `omp plugin list` / `omp plugin install`, or run `omp launch extensions` if you meant to send "extensions" as a prompt.',
@@ -80,14 +86,17 @@ const RESERVED_TOP_LEVEL_WORDS: Record<string, string> = {
 const MARKETPLACE_SUBCOMMANDS: Record<string, true> = { add: true, remove: true, rm: true, update: true, list: true };
 
 /**
- * Hint for a reserved plugin/marketplace verb used as a top-level command, or
+ * Hint for retired or reserved management words used as top-level commands, or
  * `undefined` when the argv should fall through to `launch`.
  *
- * A bare verb (`omp marketplace`) always hints. A multi-word invocation only
- * hints when the arguments follow the documented plugin grammar — a marketplace
- * sub-action (`omp marketplace add …`) or a `name@marketplace` plugin id
- * (`omp uninstall foo@bar`) — so genuine prompts that merely begin with one of
- * these words (`omp list all my files`, `omp upgrade the deps`) still launch.
+ * Retired commands (`worktree`, `wt`) always hint so invocations with arguments
+ * do not silently become prompts. Plugin/marketplace verbs keep their narrower
+ * historical behavior: a bare verb (`omp marketplace`) always hints, while a
+ * multi-word invocation only hints when the arguments follow the documented
+ * plugin grammar — a marketplace sub-action (`omp marketplace add …`) or a
+ * `name@marketplace` plugin id (`omp uninstall foo@bar`). Genuine prompts that
+ * merely begin with those words (`omp list all my files`, `omp upgrade the deps`)
+ * still launch.
  *
  * Flags (`-…`) and `@file` arguments in the verb slot are never management
  * commands; those fall through to the default `launch` command.
@@ -95,6 +104,8 @@ const MARKETPLACE_SUBCOMMANDS: Record<string, true> = { add: true, remove: true,
 export function reservedTopLevelWordMessage(argv: readonly string[]): string | undefined {
 	const first = argv[0];
 	if (!first || first.startsWith("-") || first.startsWith("@")) return undefined;
+	const removed = REMOVED_TOP_LEVEL_WORDS[first];
+	if (removed) return removed;
 	const hint = RESERVED_TOP_LEVEL_WORDS[first];
 	if (!hint) return undefined;
 	const second = argv[1];

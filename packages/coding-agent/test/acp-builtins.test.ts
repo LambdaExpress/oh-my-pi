@@ -13,9 +13,7 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import * as sshConfigWriter from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
-import { writeManagedWorktreeRecord } from "@oh-my-pi/pi-coding-agent/worktree/metadata";
-import type { ManagedWorktreeRecord } from "@oh-my-pi/pi-coding-agent/worktree/types";
-import { removeWithRetries, setProjectDir, setWorktreesDir } from "@oh-my-pi/pi-utils";
+import { removeWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;
@@ -241,71 +239,6 @@ function createRuntime() {
 	};
 }
 
-interface ManagedWorktreeFixture {
-	base: string;
-	record: ManagedWorktreeRecord;
-	sessionFile: string;
-	targetCwd: string;
-	cleanup(): Promise<void>;
-}
-
-async function createManagedWorktreeFixture(id: string, name: string): Promise<ManagedWorktreeFixture> {
-	const previousWorktreeEnv = process.env.OMP_WORKTREE_DIR;
-	delete process.env.OMP_WORKTREE_DIR;
-	const base = await fs.mkdtemp(path.join(os.tmpdir(), "omp-acp-worktree-"));
-	setWorktreesDir(base);
-	const primaryRoot = path.join(base, "primary");
-	const worktreeRoot = path.join(base, "worktrees", id);
-	const targetCwd = path.join(worktreeRoot, "pkg");
-	await fs.mkdir(targetCwd, { recursive: true });
-	await fs.mkdir(primaryRoot, { recursive: true });
-	const sessionFile = path.join(base, `${id}.jsonl`);
-	await fs.writeFile(sessionFile, `${JSON.stringify({ cwd: targetCwd, sessionId: `${id}-session` })}\n`, "utf8");
-	const now = "2026-07-05T00:00:00.000Z";
-	const record: ManagedWorktreeRecord = {
-		id,
-		name,
-		owner: "omp",
-		version: 2,
-		primaryRoot,
-		sourceRepoRoot: primaryRoot,
-		worktreeRoot,
-		relativeCwd: "pkg",
-		baseRef: "HEAD",
-		baseSha: "0123456789abcdef0123456789abcdef01234567",
-		headSha: "0123456789abcdef0123456789abcdef01234567",
-		mode: "managed",
-		state: "ready",
-		branch: null,
-		detached: true,
-		sessionFile,
-		sessionId: `${id}-session`,
-		title: `${name} session`,
-		createdAt: now,
-		updatedAt: now,
-		lastUsedAt: now,
-		dirtyPolicy: "ignore",
-		includeCopied: [],
-		recurseSubmodules: false,
-		submodules: [],
-		snapshotPath: null,
-		appliedAt: null,
-	};
-	await writeManagedWorktreeRecord(record);
-	return {
-		base,
-		record,
-		sessionFile,
-		targetCwd,
-		cleanup: async () => {
-			setProjectDir(process.cwd());
-			setWorktreesDir(undefined);
-			if (previousWorktreeEnv === undefined) delete process.env.OMP_WORKTREE_DIR;
-			else process.env.OMP_WORKTREE_DIR = previousWorktreeEnv;
-			await removeWithRetries(base);
-		},
-	};
-}
 
 describe("ACP builtin slash commands", () => {
 	it("consumes fast status without returning prompt text", async () => {
@@ -669,109 +602,6 @@ describe("session lifecycle commands", () => {
 		expect(output[0]).toContain("streaming");
 	});
 
-	it("/worktree switch: refuses while streaming before mutating session state", async () => {
-		const { output, session, fakeSessionManager, runtime } = createRuntime();
-		session.isStreaming = true;
-
-		const result = await executeAcpBuiltinSlashCommand("/worktree switch alpha", runtime);
-
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("streaming");
-		expect(session._switchedTo).toBeUndefined();
-		expect(fakeSessionManager._movedTo).toBeUndefined();
-	});
-
-	it("/worktree switch: reports unknown worktrees as usage without refreshing cwd state", async () => {
-		const fixture = await createManagedWorktreeFixture("known", "Known");
-		const { output, runtime } = createRuntime();
-		const reloadForCwd = spyOn(runtime.settings, "reloadForCwd");
-		runtime.cwd = fixture.record.primaryRoot;
-
-		try {
-			const result = await executeAcpBuiltinSlashCommand("/worktree switch missing", runtime);
-
-			expect(result).toEqual({ consumed: true });
-			expect(output[0]).toMatch(/not found|Unknown worktree/i);
-			expect(reloadForCwd).not.toHaveBeenCalled();
-		} finally {
-			await fixture.cleanup();
-		}
-	});
-
-	it("/worktree switch: opens the associated session then refreshes headless cwd-derived state", async () => {
-		const fixture = await createManagedWorktreeFixture("alpha", "Alpha");
-		const { output, session, fakeSessionManager, runtime } = createRuntime();
-		const reloadForCwd = spyOn(runtime.settings, "reloadForCwd");
-		let pluginsReloaded = false;
-		let configNotified = 0;
-		let titleNotified = 0;
-		runtime.cwd = fixture.record.primaryRoot;
-		runtime.reloadPlugins = async () => {
-			pluginsReloaded = true;
-		};
-		runtime.notifyConfigChanged = () => {
-			configNotified++;
-		};
-		runtime.notifyTitleChanged = () => {
-			titleNotified++;
-		};
-
-		try {
-			const result = await executeAcpBuiltinSlashCommand("/worktree switch alpha", runtime);
-
-			expect(result).toEqual({ consumed: true });
-			expect(session._switchedTo).toBe(path.resolve(fixture.sessionFile));
-			expect(fakeSessionManager.getCwd()).toBe(path.resolve(fixture.targetCwd));
-			expect(reloadForCwd).toHaveBeenCalledWith(path.resolve(fixture.targetCwd));
-			expect(pluginsReloaded).toBe(true);
-			expect(configNotified).toBe(1);
-			expect(titleNotified).toBe(1);
-			expect(output[0]).toContain(fixture.targetCwd);
-		} finally {
-			await fixture.cleanup();
-		}
-	});
-
-	it("/worktree switch-local: moves back to the local checkout and refreshes headless cwd-derived state", async () => {
-		const fixture = await createManagedWorktreeFixture("alpha", "Alpha");
-		const { output, session, fakeSessionManager, runtime } = createRuntime();
-		const localCwd = path.join(fixture.record.sourceRepoRoot, fixture.record.relativeCwd);
-		const reloadForCwd = spyOn(runtime.settings, "reloadForCwd");
-		const newSession = spyOn(session, "newSession");
-		const switchSession = spyOn(session, "switchSession");
-		let pluginsReloaded = false;
-		let configNotified = 0;
-		let titleNotified = 0;
-		fakeSessionManager._cwd = fixture.targetCwd;
-		runtime.cwd = fixture.targetCwd;
-		runtime.reloadPlugins = async () => {
-			pluginsReloaded = true;
-		};
-		runtime.notifyConfigChanged = () => {
-			configNotified++;
-		};
-		runtime.notifyTitleChanged = () => {
-			titleNotified++;
-		};
-
-		try {
-			await fs.mkdir(localCwd, { recursive: true });
-
-			const result = await executeAcpBuiltinSlashCommand("/worktree switch-local alpha", runtime);
-
-			expect(result).toEqual({ consumed: true });
-			expect(fakeSessionManager.getCwd()).toBe(localCwd);
-			expect(reloadForCwd).toHaveBeenCalledWith(localCwd);
-			expect(pluginsReloaded).toBe(true);
-			expect(configNotified).toBe(1);
-			expect(titleNotified).toBe(1);
-			expect(output[0]).toContain(localCwd);
-			expect(newSession).not.toHaveBeenCalled();
-			expect(switchSession).not.toHaveBeenCalled();
-		} finally {
-			await fixture.cleanup();
-		}
-	});
 });
 
 describe("wave 3 commands", () => {

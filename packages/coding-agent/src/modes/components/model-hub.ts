@@ -404,8 +404,6 @@ export class ModelHubComponent implements Component {
 			if (assignment && !assignment.autoSelected) assignedCount++;
 		}
 
-		// Roles leads the fixed section so downward hops from Recent head into
-		// model scopes instead of being captured by the roles view.
 		const fixed: SidebarEntry[] = [
 			{
 				id: "roles",
@@ -1178,7 +1176,6 @@ export class ModelHubComponent implements Component {
 			}
 			return;
 		}
-
 		// ←/→ are spatial pane switches: the sidebar sits left of the rows.
 		// They never reach the search caret — fuzzy queries don't need one.
 		if (matchesKey(data, "left")) {

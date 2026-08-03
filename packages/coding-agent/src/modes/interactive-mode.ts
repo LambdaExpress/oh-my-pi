@@ -4658,12 +4658,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#commandController.handleMoveCommand(targetPath);
 	}
 
-	handleWorktreeCommand(actionText?: string): Promise<void> {
-		this.#btwController.dispose();
-		this.#omfgController.dispose();
-		return this.#commandController.handleWorktreeCommand(actionText);
-	}
-
 	handleRenameCommand(title: string): Promise<void> {
 		return this.#commandController.handleRenameCommand(title);
 	}

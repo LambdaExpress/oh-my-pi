@@ -38,9 +38,9 @@ const spec: CompletionSpec = {
 			args: [],
 		},
 		{
-			name: "worktree",
-			aliases: ["wt"],
-			description: "Worktrees",
+			name: "review",
+			aliases: ["rv"],
+			description: "Reviews",
 			flags: [],
 			args: [{ name: "action", description: "Action", value: { kind: "enum", values: ["list", "clear"] } }],
 		},
@@ -53,8 +53,8 @@ describe("generateCompletion — bash", () => {
 	it("registers the dispatcher and resolves alias arms to the canonical handler", () => {
 		expect(out).toContain("complete -F _omp omp");
 		expect(out).toContain("_omp_cmd_commit");
-		// worktree + its alias dispatch to the same function
-		expect(out).toContain("worktree|wt)");
+		// review + its alias dispatch to the same function
+		expect(out).toContain("review|rv)");
 	});
 
 	it("completes enum, dynamic, and comma-list flag values by previous flag", () => {
@@ -69,11 +69,11 @@ describe("generateCompletion — bash", () => {
 	});
 
 	it("offers subcommand names and root flags at the top level", () => {
-		expect(out).toMatch(/compgen -W "commit worktree wt [^"]*--model/);
+		expect(out).toMatch(/compgen -W "commit review rv [^"]*--model/);
 	});
 
 	it("completes a subcommand's positional enum and its own flags", () => {
-		expect(out).toContain("_omp_cmd_worktree()");
+		expect(out).toContain("_omp_cmd_review()");
 		expect(out).toContain('compgen -W "list clear"');
 		expect(out).toContain("_omp_cmd_commit()");
 		expect(out).toContain('compgen -W "--push"');
@@ -103,7 +103,7 @@ describe("generateCompletion — zsh", () => {
 	});
 
 	it("dispatches aliased subcommands and completes positional enums", () => {
-		expect(out).toContain("worktree|wt) _omp_cmd_worktree ;;");
+		expect(out).toContain("review|rv) _omp_cmd_review ;;");
 		expect(out).toContain("':action:(list clear)'");
 	});
 });
@@ -113,12 +113,12 @@ describe("generateCompletion — fish", () => {
 
 	it("declares the no-subcommand predicate over every command token", () => {
 		expect(out).toContain("function __fish_omp_no_subcommand");
-		expect(out).toContain("if contains -- $i commit worktree wt");
+		expect(out).toContain("if contains -- $i commit review rv");
 	});
 
 	it("renders subcommand names, including aliases, with descriptions", () => {
 		expect(out).toContain("-a 'commit' -d 'Commit'");
-		expect(out).toContain("-a 'wt' -d 'Worktrees'");
+		expect(out).toContain("-a 'rv' -d 'Reviews'");
 	});
 
 	it("maps value sources to fish completion args", () => {
@@ -132,7 +132,7 @@ describe("generateCompletion — fish", () => {
 	});
 
 	it("gates a positional enum on its subcommand", () => {
-		expect(out).toContain("-n '__fish_seen_subcommand_from worktree wt' -a 'list clear'");
+		expect(out).toContain("-n '__fish_seen_subcommand_from review rv' -a 'list clear'");
 	});
 });
 

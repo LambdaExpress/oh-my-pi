@@ -66,7 +66,6 @@ import { loadSshTool } from "./ssh";
 import { SshSessionTool } from "./ssh-session";
 import { loadSshTransferTool } from "./ssh-transfer";
 import { type TodoPhase, TodoTool } from "./todo";
-import { WorktreeTool } from "./worktree";
 import { WriteTool } from "./write";
 import { isMountableUnderXdev, XdevRegistry } from "./xdev";
 import { YieldTool } from "./yield";
@@ -112,7 +111,6 @@ export * from "./ssh-transfer";
 export * from "./todo";
 export * from "./tts";
 export * from "./vibe";
-export * from "./worktree";
 export * from "./write";
 export * from "./xdev";
 export * from "./yield";
@@ -446,7 +444,6 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	reflect: MemoryReflectTool.createIf,
 	learn: LearnTool.createIf,
 	manage_skill: ManageSkillTool.createIf,
-	worktree: s => new WorktreeTool(s),
 };
 
 export const HIDDEN_TOOLS: Record<HiddenToolName, ToolFactory> = {
