@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed locally observed OpenCode Go reset windows to follow the service's rolling 5-hour, Monday-UTC weekly, and subscription-day calendar-month boundaries instead of treating every limit as an independent fixed-duration rolling window.
+
 ## [17.1.2] - 2026-07-24
 
 ### Added

@@ -238,9 +238,9 @@ describe("OpenCode Go usage from observed request costs", () => {
 		const nowMs = Date.parse("2026-06-18T12:00:00Z");
 		setSystemTime(new Date(nowMs));
 		storage.recordUsageCost("opencode-go", 4, { recordedAt: nowMs - HOUR });
-		storage.recordUsageCost("opencode-go", 7, { recordedAt: nowMs - 6 * HOUR });
+		storage.recordUsageCost("opencode-go", 7, { recordedAt: nowMs - 2 * 24 * HOUR });
 		storage.recordUsageCost("opencode-go", 11, { recordedAt: nowMs - 10 * 24 * HOUR });
-		storage.recordUsageCost("opencode-go", 13, { recordedAt: nowMs - 31 * 24 * HOUR });
+		storage.recordUsageCost("opencode-go", 13, { recordedAt: nowMs - 40 * 24 * HOUR });
 
 		const reports = await storage.fetchUsageReports();
 		const report = reports?.find(candidate => candidate.provider === "opencode-go");
@@ -253,5 +253,23 @@ describe("OpenCode Go usage from observed request costs", () => {
 
 		const fiveHour = report.limits.find(limit => limit.id === "rolling-5h");
 		expect(fiveHour?.window?.resetsAt).toBe(nowMs - HOUR + 5 * HOUR);
+		const weekly = report.limits.find(limit => limit.id === "weekly");
+		expect(weekly?.window?.resetsAt).toBe(Date.parse("2026-06-22T00:00:00Z"));
+		const monthly = report.limits.find(limit => limit.id === "monthly");
+		expect(monthly?.window?.resetsAt).toBe(Date.parse("2026-07-08T12:00:00Z"));
+	});
+
+	it("uses a calendar month from the first observed request instead of a fixed 30-day window", async () => {
+		const nowMs = Date.parse("2026-08-04T07:52:00Z");
+		const firstRequestAt = Date.parse("2026-08-04T07:35:00Z");
+		setSystemTime(new Date(nowMs));
+		storage.recordUsageCost("opencode-go", 1, { recordedAt: firstRequestAt });
+
+		const reports = await storage.fetchUsageReports();
+		const report = reports?.find(candidate => candidate.provider === "opencode-go");
+		const monthly = report?.limits.find(limit => limit.id === "monthly");
+
+		expect(monthly?.window?.durationMs).toBe(31 * 24 * HOUR);
+		expect(monthly?.window?.resetsAt).toBe(Date.parse("2026-09-04T07:35:00Z"));
 	});
 });
