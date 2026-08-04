@@ -376,10 +376,14 @@ function createRunPageScope(page: Page): RunPageScope {
 	const off = page.off;
 	const once = page.once;
 	const removeAllListeners = page.removeAllListeners;
+	const setRequestInterception = page.setRequestInterception;
 	const onDescriptor = Object.getOwnPropertyDescriptor(page, "on");
 	const offDescriptor = Object.getOwnPropertyDescriptor(page, "off");
 	const onceDescriptor = Object.getOwnPropertyDescriptor(page, "once");
 	const removeAllDescriptor = Object.getOwnPropertyDescriptor(page, "removeAllListeners");
+	const setRequestInterceptionDescriptor = Object.getOwnPropertyDescriptor(page, "setRequestInterception");
+	/** True only while user code left request interception enabled at cleanup time. */
+	let interceptionEnabled = false;
 
 	Object.defineProperties(page, {
 		on: {
@@ -430,6 +434,13 @@ function createRunPageScope(page: Page): RunPageScope {
 				return page;
 			},
 		},
+		setRequestInterception: {
+			configurable: true,
+			value: async (enabled: boolean): Promise<void> => {
+				await Reflect.apply(setRequestInterception, page, [enabled]);
+				interceptionEnabled = enabled;
+			},
+		},
 	});
 
 	return {
@@ -443,8 +454,12 @@ function createRunPageScope(page: Page): RunPageScope {
 			else Reflect.deleteProperty(page, "once");
 			if (removeAllDescriptor) Object.defineProperty(page, "removeAllListeners", removeAllDescriptor);
 			else Reflect.deleteProperty(page, "removeAllListeners");
+			if (setRequestInterceptionDescriptor)
+				Object.defineProperty(page, "setRequestInterception", setRequestInterceptionDescriptor);
+			else Reflect.deleteProperty(page, "setRequestInterception");
 			for (const handler of requestHandlers) Reflect.apply(off, page, ["request", handler]);
 			requestHandlers.length = 0;
+			if (!interceptionEnabled) return;
 			try {
 				await withTimeout(
 					page.setRequestInterception(false),

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import type {
 	ReadyInfo,
 	Transport,
@@ -146,5 +146,118 @@ describe("browser tab worker page activation", () => {
 		expect(result.ok).toBe(true);
 		expect(calls[0]).toBe("bringToFront");
 		if (result.ok) expect(result.payload.returnValue).toBe("Visible fixture");
+	});
+});
+
+describe("browser tab worker run interception cleanup", () => {
+	interface FakePage {
+		target(): unknown;
+		url(): string;
+		title(): Promise<string>;
+		viewport(): unknown;
+		isClosed(): boolean;
+		on(): void;
+		once(): void;
+		off(): void;
+		removeAllListeners(): void;
+		mainFrame(): undefined;
+		setRequestInterception(enabled: boolean): Promise<void>;
+	}
+
+	function makePage(setRequestInterception: (enabled: boolean) => Promise<void>): FakePage {
+		const target = {
+			_targetId: "target-interception",
+			page: async () => page,
+		};
+		const page: FakePage = {
+			target: () => target,
+			url: () => "data:text/html,interception",
+			title: async () => "Interception fixture",
+			viewport: () => ({ width: 390, height: 844, deviceScaleFactor: 1 }),
+			isClosed: () => false,
+			on: () => {},
+			once: () => {},
+			off: () => {},
+			removeAllListeners: () => {},
+			mainFrame: () => undefined,
+			setRequestInterception,
+		};
+		return page;
+	}
+
+	async function runOnPage(page: FakePage, code: string): Promise<Extract<WorkerOutbound, { type: "result" }>> {
+		const target = {
+			_targetId: "target-interception",
+			page: async () => page,
+		};
+		const browser = {
+			targets: () => [target],
+			connected: true,
+			disconnect: () => {},
+		};
+		const loadPuppeteer = async () => ({
+			connect: async () => browser,
+		});
+		const transport = new FakeWorkerTransport();
+		new WorkerCore(transport, loadPuppeteer as never);
+		transport.deliver({
+			type: "init",
+			payload: {
+				mode: "attach",
+				browserWSEndpoint: "ws://127.0.0.1/devtools/browser/test",
+				safeDir: "/tmp/omp-puppeteer",
+				targetId: "target-interception",
+			},
+		});
+		await transport.ready.promise;
+		transport.deliver({
+			type: "run",
+			id: "run-interception",
+			name: "interception",
+			code,
+			timeoutMs: 1_000,
+			session: { cwd: process.cwd() },
+		});
+		return await transport.result.promise;
+	}
+
+	it("skips interception cleanup when the run never enabled interception", async () => {
+		const page = makePage(async () => {});
+		const setRequestInterception = spyOn(page, "setRequestInterception");
+
+		const result = await runOnPage(page, "return await page.title();");
+
+		expect(result.ok).toBe(true);
+		expect(setRequestInterception).not.toHaveBeenCalled();
+	});
+
+	it("reports RequestInterceptionCleanupError when disabling interception fails", async () => {
+		const calls: boolean[] = [];
+		const page = makePage(async enabled => {
+			calls.push(enabled);
+			if (!enabled) throw new Error("CDP session gone");
+		});
+
+		const result = await runOnPage(page, "await page.setRequestInterception(true); return await page.title();");
+
+		expect(result.ok).toBe(false);
+		expect(calls).toEqual([true, false]);
+		if (!result.ok) {
+			expect(result.error.message).toBe("Failed to clear browser request interception after browser.run");
+			expect(result.error.isToolError).toBe(true);
+			expect(result.error.recoverTab).toBe(true);
+		}
+	});
+
+	it("disables interception at cleanup when the run left it enabled", async () => {
+		const calls: boolean[] = [];
+		const page = makePage(async enabled => {
+			calls.push(enabled);
+		});
+
+		const result = await runOnPage(page, "await page.setRequestInterception(true); return await page.title();");
+
+		expect(result.ok).toBe(true);
+		expect(calls).toEqual([true, false]);
 	});
 });
