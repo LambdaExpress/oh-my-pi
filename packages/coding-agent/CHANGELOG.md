@@ -42,6 +42,7 @@
 
 ### Fixed
 
+- Fixed OpenCode Go plans showing request cost instead of quota in the default status line: API-key subscriptions now use their usage report, plan titles render, and the 5-hour, weekly, and monthly caps show dynamically decreasing time-to-reset labels.
 - Fixed DAP TCP readiness retaining a losing timeout after the adapter announced its port, so completed debug validation no longer remains alive behind stale readiness timers on Windows.
 - Fixed mounted `xd://` tools being invoked through eval's filesystem write helper by directing agents to the top-level `write` transport and returning an actionable correction for eval `xd://` writes.
 - Fixed `pwsh` command deadlines being bypassed by GUI or background descendants that inherited stdout/stderr handles; output draining is now bounded and timeout/abort cleanup terminates the process tree.

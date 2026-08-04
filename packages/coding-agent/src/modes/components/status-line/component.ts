@@ -28,6 +28,22 @@ import type {
 } from "./types";
 
 const JJ_REFRESH_TTL_MS = 5000;
+const STATUS_USAGE_WINDOWS = [
+	{ id: "5h", durationMs: 5 * 60 * 60_000 },
+	{ id: "7d", durationMs: 7 * 24 * 60 * 60_000 },
+	{ id: "30d", durationMs: 30 * 24 * 60 * 60_000 },
+] as const;
+type StatusUsageWindowId = (typeof STATUS_USAGE_WINDOWS)[number]["id"];
+
+function statusUsageWindowId(limit: UsageLimit): StatusUsageWindowId | undefined {
+	const windowId = limit.scope.windowId?.toLowerCase();
+	const exact = STATUS_USAGE_WINDOWS.find(candidate => candidate.id === windowId);
+	if (exact) return exact.id;
+
+	const durationMs = limit.window?.durationMs;
+	if (typeof durationMs !== "number") return undefined;
+	return STATUS_USAGE_WINDOWS.find(candidate => Math.abs(candidate.durationMs - durationMs) <= 60_000)?.id;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Context-usage memo
@@ -371,12 +387,8 @@ export class StatusLineComponent implements Component {
 	#lastTokensPerSecond: number | null = null;
 	#lastTokensPerSecondTimestamp: number | null = null;
 
-	// Provider usage caching (5-min TTL, OAuth/sub only)
-	#cachedUsage: {
-		tier?: string;
-		fiveHour?: { percent: number; resetMinutes?: number };
-		sevenDay?: { percent: number; resetHours?: number };
-	} | null = null;
+	// Provider usage caching (5-min TTL; reset countdowns remain absolute and render dynamically)
+	#cachedUsage: SegmentContext["usage"] = null;
 	#cachedUsageContextKey: string | null = null;
 	#usageFetchedAt = 0;
 	#usageInFlight = false;
@@ -1135,65 +1147,53 @@ export class StatusLineComponent implements Component {
 		reports: unknown,
 		activeProvider?: string,
 		activeIdentity?: OAuthAccountIdentity,
-	): {
-		tier?: string;
-		fiveHour?: { percent: number; resetMinutes?: number };
-		sevenDay?: { percent: number; resetHours?: number };
-	} | null {
+	): SegmentContext["usage"] {
 		if (!Array.isArray(reports)) return null;
-		let fiveHour: { percent: number; resetMinutes?: number } | undefined;
-		let sevenDay: { percent: number; resetHours?: number } | undefined;
-		let fiveHourTier: string | undefined;
-		let sevenDayTier: string | undefined;
-		const now = Date.now();
-		for (const report of reports) {
-			if (!report || typeof report !== "object") continue;
-			const provider = (report as { provider?: unknown }).provider;
+		const selected = new Map<
+			StatusUsageWindowId,
+			{ window: NonNullable<SegmentContext["usage"]>["windows"][number]; tier?: string }
+		>();
+		let planTitle: string | undefined;
+		for (const rawReport of reports) {
+			if (!rawReport || typeof rawReport !== "object") continue;
+			const report = rawReport as UsageReport;
+			const provider = report.provider;
 			if (activeProvider && provider !== activeProvider) continue;
-			const limits = (report as { limits?: unknown }).limits;
+			const reportPlanType = report.metadata?.planType;
+			if (!planTitle && typeof reportPlanType === "string" && reportPlanType) planTitle = reportPlanType;
+			const limits = report.limits;
 			if (!Array.isArray(limits)) continue;
 			for (const limit of limits) {
 				if (!limit || typeof limit !== "object") continue;
-				if (
-					activeIdentity &&
-					!limitMatchesActiveAccount(report as UsageReport, limit as UsageLimit, activeIdentity)
-				) {
+				if (activeIdentity && !limitMatchesActiveAccount(report, limit, activeIdentity)) {
 					continue;
 				}
-				const l = limit as {
-					scope?: { windowId?: string; tier?: string };
-					window?: { resetsAt?: number };
-					amount?: { usedFraction?: number };
-				};
-				const fraction = l.amount?.usedFraction;
+				const fraction = limit.amount.usedFraction;
 				if (typeof fraction !== "number") continue;
-				const windowId = l.scope?.windowId;
-				const tier = l.scope?.tier;
-				const resetsAt = l.window?.resetsAt;
+				const windowId = statusUsageWindowId(limit);
+				if (!windowId) continue;
+				const tier = limit.scope.tier || undefined;
+				const existing = selected.get(windowId);
 				// Accept tiered limits, but prefer untiered (backward compat with Anthropic).
 				// An untiered limit always replaces a tiered one; among same-tieredness, first wins.
-				if (windowId === "5h" && (!fiveHour || (fiveHourTier !== undefined && !tier))) {
-					fiveHour = {
+				if (existing && (existing.tier === undefined || tier !== undefined)) continue;
+				selected.set(windowId, {
+					window: {
+						id: windowId,
 						percent: fraction * 100,
-						resetMinutes:
-							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 60_000)) : undefined,
-					};
-					fiveHourTier = tier || undefined;
-				}
-				if (windowId === "7d" && (!sevenDay || (sevenDayTier !== undefined && !tier))) {
-					sevenDay = {
-						percent: fraction * 100,
-						resetHours:
-							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 3_600_000)) : undefined,
-					};
-					sevenDayTier = tier || undefined;
-				}
+						...(typeof limit.window?.resetsAt === "number" ? { resetsAt: limit.window.resetsAt } : {}),
+					},
+					...(tier ? { tier } : {}),
+				});
 			}
 		}
-		if (!fiveHour && !sevenDay) return null;
-		// Single compact label; prefer the five-hour tier if displayed windows ever disagree.
-		const effectiveTier = fiveHourTier ?? sevenDayTier;
-		return { tier: effectiveTier, fiveHour, sevenDay };
+		if (selected.size === 0) return null;
+		const windows = STATUS_USAGE_WINDOWS.flatMap(candidate => {
+			const selectedWindow = selected.get(candidate.id);
+			return selectedWindow ? [selectedWindow.window] : [];
+		});
+		const effectiveTier = STATUS_USAGE_WINDOWS.map(candidate => selected.get(candidate.id)?.tier).find(Boolean);
+		return { ...(planTitle || effectiveTier ? { title: planTitle ?? effectiveTier } : {}), windows };
 	}
 
 	/**

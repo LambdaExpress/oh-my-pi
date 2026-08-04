@@ -62,22 +62,94 @@ function makeUsageReport(fiveHourFraction: number) {
 	];
 }
 
-function makeSessionWithUsageFetcher(fetchUsageReports: (signal?: AbortSignal) => Promise<unknown>) {
+function makeOpenCodeGoUsageReport() {
+	const now = Date.now();
+	return [
+		{
+			provider: "opencode-go",
+			fetchedAt: now,
+			limits: [
+				{
+					id: "rolling-5h",
+					label: "5 Hour limit",
+					scope: { provider: "opencode-go", windowId: "rolling-5h" },
+					window: {
+						id: "rolling-5h",
+						label: "5 Hour",
+						durationMs: 5 * 60 * 60_000,
+						resetsAt: now + 4 * 60 * 60_000,
+					},
+					amount: { usedFraction: 0.25 },
+				},
+				{
+					id: "weekly",
+					label: "Weekly limit",
+					scope: { provider: "opencode-go", windowId: "weekly" },
+					window: {
+						id: "weekly",
+						label: "Weekly",
+						durationMs: 7 * 24 * 60 * 60_000,
+						resetsAt: now + 6 * 24 * 60 * 60_000,
+					},
+					amount: { usedFraction: 0.5 },
+				},
+				{
+					id: "monthly",
+					label: "Monthly limit",
+					scope: { provider: "opencode-go", windowId: "monthly" },
+					window: {
+						id: "monthly",
+						label: "Monthly",
+						durationMs: 30 * 24 * 60 * 60_000,
+						resetsAt: now + 29 * 24 * 60 * 60_000,
+					},
+					amount: { usedFraction: 0.75 },
+				},
+			],
+			metadata: { planType: "OpenCode Go" },
+		},
+	];
+}
+
+function makeSessionWithUsageFetcher(
+	fetchUsageReports: (signal?: AbortSignal) => Promise<unknown>,
+	provider: string = "openai-codex",
+) {
 	const messages: unknown[] = [];
 	return {
 		messages,
 		state: {
 			messages,
-			model: { provider: "openai-codex", contextWindow: 128000 },
+			model: { provider, contextWindow: 128000 },
 		},
-		model: { provider: "openai-codex", contextWindow: 128000 },
+		model: { provider, contextWindow: 128000 },
 		contextUsageRevision: 0,
 		systemPrompt: [],
 		agent: { state: { tools: [] } },
 		skills: [],
 		isStreaming: false,
+		sessionId: "test-session",
 		getAsyncJobSnapshot: () => undefined,
 		getContextUsage: () => ({ tokens: 42, contextWindow: 128000 }),
+		sessionManager: {
+			getUsageStatistics: () => ({
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				orchestrationInput: 0,
+				orchestrationOutput: 0,
+				orchestrationCacheRead: 0,
+				premiumRequests: 0,
+				cost: 0.0084,
+				tokensPerSecond: null,
+			}),
+		},
+		modelRegistry: {
+			isUsingOAuth: () => false,
+			authStorage: { getOAuthAccountIdentity: () => undefined },
+		},
 		fetchUsageReports,
 	};
 }
@@ -85,14 +157,16 @@ function makeSessionWithUsageFetcher(fetchUsageReports: (signal?: AbortSignal) =
 function makeUsageOnlyStatusLine(
 	fetchUsageReports: (signal?: AbortSignal) => Promise<unknown>,
 	onUsageRefresh?: () => void,
+	provider?: string,
+	segment: "usage" | "cost" = "usage",
 ) {
 	const statusLine = new StatusLineComponent(
-		makeSessionWithUsageFetcher(fetchUsageReports) as unknown as AgentSession,
+		makeSessionWithUsageFetcher(fetchUsageReports, provider) as unknown as AgentSession,
 		{ onUsageRefresh },
 	);
 	statusLine.updateSettings({
 		preset: "custom",
-		leftSegments: ["usage"],
+		leftSegments: [segment],
 		rightSegments: [],
 		separator: "none",
 		segmentOptions: {},
@@ -166,6 +240,66 @@ describe("StatusLineComponent", () => {
 			const refreshed = statusLine.getTopBorder(120).content;
 			expect(refreshed).toContain("73%");
 			expect(refreshed).not.toContain("11%");
+		} finally {
+			statusLine.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("renders the OpenCode Go plan title and all rolling limits with decreasing reset labels", async () => {
+		vi.useFakeTimers();
+		const waiters: Array<() => void> = [];
+		const report = makeOpenCodeGoUsageReport();
+		const statusLine = makeUsageOnlyStatusLine(
+			async () => report,
+			() => waiters.shift()?.(),
+			"opencode-go",
+		);
+
+		try {
+			const refreshed = nextRefresh(waiters);
+			statusLine.getTopBorder(160);
+			await startScheduledUsageFetch();
+			await refreshed;
+
+			const rendered = Bun.stripANSI(statusLine.getTopBorder(160).content);
+			expect(rendered).toContain("OpenCode Go");
+			expect(rendered).toContain("4h 25%");
+			expect(rendered).toContain("6d 50%");
+			expect(rendered).toContain("29d 75%");
+
+			vi.advanceTimersByTime(3.5 * 60 * 60_000);
+			const later = Bun.stripANSI(statusLine.getTopBorder(160).content);
+			expect(later).toContain("30m 25%");
+		} finally {
+			statusLine.dispose();
+			vi.useRealTimers();
+		}
+	});
+
+	it("shows OpenCode Go quota instead of API-key request cost in the default cost segment", async () => {
+		vi.useFakeTimers();
+		const waiters: Array<() => void> = [];
+		const report = makeOpenCodeGoUsageReport();
+		const statusLine = makeUsageOnlyStatusLine(
+			async () => report,
+			() => waiters.shift()?.(),
+			"opencode-go",
+			"cost",
+		);
+
+		try {
+			const refreshed = nextRefresh(waiters);
+			statusLine.getTopBorder(160);
+			await startScheduledUsageFetch();
+			await refreshed;
+
+			const rendered = Bun.stripANSI(statusLine.getTopBorder(160).content);
+			expect(rendered).toContain("OpenCode Go");
+			expect(rendered).toContain("4h 75%");
+			expect(rendered).toContain("6d 50%");
+			expect(rendered).toContain("29d 25%");
+			expect(rendered).not.toContain("$0.01");
 		} finally {
 			statusLine.dispose();
 			vi.useRealTimers();

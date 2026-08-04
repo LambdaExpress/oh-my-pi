@@ -443,57 +443,30 @@ function pickUsageRemainingColor(percent: number): "muted" | "warning" | "error"
 	return "muted";
 }
 
-function formatUsageReset(value: number, unit: "m" | "h"): string {
-	if (unit === "m") {
-		// total minutes (5h window: max 300)
-		if (value < 60) return `${value}m`;
-		const hours = Math.floor(value / 60);
-		const mins = value % 60;
-		return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
-	}
-	// total hours (7d window: max 168)
-	if (value < 24) return `${value}h`;
-	const days = Math.floor(value / 24);
-	const hours = value % 24;
-	return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
-}
-
-function formatCompactUsageWindowLabel(fallback: string, value: number | undefined, unit: "m" | "h"): string {
-	if (value === undefined) return fallback;
-	const remaining = Math.max(0, Math.round(value));
-	if (unit === "m") {
-		return remaining < 60 ? `${remaining}m` : `${Math.round(remaining / 60)}h`;
-	}
-	return remaining < 24 ? `${remaining}h` : `${Math.round(remaining / 24)}d`;
+function formatUsageWindowLabel(fallback: string, resetsAt: number | undefined): string {
+	if (resetsAt === undefined) return fallback;
+	const remainingMs = Math.max(0, resetsAt - Date.now());
+	const minutes = Math.round(remainingMs / 60_000);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.round(remainingMs / 3_600_000);
+	if (hours < 24) return `${hours}h`;
+	return `${Math.round(remainingMs / 86_400_000)}d`;
 }
 
 function renderUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
 	const u = ctx.usage;
-	if (!u || (!u.fiveHour && !u.sevenDay)) {
+	if (!u || u.windows.length === 0) {
 		return { content: "", visible: false };
 	}
 	const parts: string[] = [];
-	if (u.tier) {
-		const tier = truncateToWidth(sanitizeStatusText(u.tier), TRUNCATE_LENGTHS.SHORT);
-		if (tier) parts.push(theme.fg("accent", tier));
+	if (u.title) {
+		const title = truncateToWidth(sanitizeStatusText(u.title), TRUNCATE_LENGTHS.SHORT);
+		if (title) parts.push(theme.fg("accent", title));
 	}
-	if (u.fiveHour) {
-		const pct = u.fiveHour.percent;
+	for (const window of u.windows) {
+		const pct = window.percent;
 		const pctText = theme.fg(pickUsageColor(pct), `${Math.round(pct)}%`);
-		const reset =
-			u.fiveHour.resetMinutes !== undefined
-				? theme.fg("muted", ` (${formatUsageReset(u.fiveHour.resetMinutes, "m")})`)
-				: "";
-		parts.push(`5h ${pctText}${reset}`);
-	}
-	if (u.sevenDay) {
-		const pct = u.sevenDay.percent;
-		const pctText = theme.fg(pickUsageColor(pct), `${Math.round(pct)}%`);
-		const reset =
-			u.sevenDay.resetHours !== undefined
-				? theme.fg("muted", ` (${formatUsageReset(u.sevenDay.resetHours, "h")})`)
-				: "";
-		parts.push(`7d ${pctText}${reset}`);
+		parts.push(`${formatUsageWindowLabel(window.id, window.resetsAt)} ${pctText}`);
 	}
 	const content = withIcon(theme.icon.time, parts.join(theme.sep.dot));
 	return { content, visible: true };
@@ -501,19 +474,18 @@ function renderUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
 
 function renderCompactUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
 	const u = ctx.usage;
-	if (!u || (!u.fiveHour && !u.sevenDay)) {
+	if (!u || u.windows.length === 0) {
 		return { content: "", visible: false };
 	}
 
 	const parts: string[] = [];
-	if (u.fiveHour) {
-		const label = formatCompactUsageWindowLabel("5h", u.fiveHour.resetMinutes, "m");
-		const remaining = Math.max(0, Math.min(100, 100 - u.fiveHour.percent));
-		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
+	if (u.title) {
+		const title = truncateToWidth(sanitizeStatusText(u.title), TRUNCATE_LENGTHS.SHORT);
+		if (title) parts.push(theme.fg("accent", title));
 	}
-	if (u.sevenDay) {
-		const label = formatCompactUsageWindowLabel("7d", u.sevenDay.resetHours, "h");
-		const remaining = Math.max(0, Math.min(100, 100 - u.sevenDay.percent));
+	for (const window of u.windows) {
+		const label = formatUsageWindowLabel(window.id, window.resetsAt);
+		const remaining = Math.max(0, Math.min(100, 100 - window.percent));
 		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
 	}
 
@@ -525,7 +497,7 @@ const costSegment: StatusLineSegment = {
 	render(ctx) {
 		const state = ctx.session.state;
 		const usingSubscription = state.model ? ctx.session.modelRegistry.isUsingOAuth(state.model) : false;
-		if (usingSubscription) {
+		if (usingSubscription || ctx.usage) {
 			return renderCompactUsageLimitSegment(ctx);
 		}
 
