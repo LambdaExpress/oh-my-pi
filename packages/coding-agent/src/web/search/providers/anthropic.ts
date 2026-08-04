@@ -383,6 +383,19 @@ export async function searchAnthropic(
 		result.sources = result.sources.slice(0, numResults);
 	}
 
+	// The model may answer with plain text without invoking the web_search tool
+	// (e.g. a clarifying question). That is not a search result — surface it as
+	// a provider error so executeSearch falls back to the next provider. A
+	// completed search that returned zero hits still has a server_tool_use
+	// block (searchQueries non-empty) and must pass through untouched.
+	if (result.sources.length === 0 && (result.searchQueries === undefined || result.searchQueries.length === 0)) {
+		throw new SearchProviderError(
+			"anthropic",
+			"Anthropic model did not execute a web search; the response was returned without search results.",
+			502,
+		);
+	}
+
 	return result;
 }
 
