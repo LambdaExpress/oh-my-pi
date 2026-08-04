@@ -50,7 +50,11 @@ const findSchema = type({
 export type GlobToolInput = typeof findSchema.infer;
 
 const DEFAULT_LIMIT = 200;
-const MAX_LIMIT = 200;
+// The native glob (crates/pi-natives) has no built-in result cap — the ceiling
+// lives purely in this TS layer. 5000 is a conservative upper bound so huge
+// result sets and their mtime sort stay inside the 5s DEFAULT_GLOB_TIMEOUT_MS
+// budget; requests above it are clamped rather than run unbounded.
+const MAX_LIMIT = 5000;
 const DEFAULT_GLOB_TIMEOUT_MS = 5000;
 
 export interface GlobToolDetails {
@@ -283,7 +287,7 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 					return toolResult(details).text(parts.join("\n")).useless().done();
 				}
 
-				const listLimit = applyListLimit(files, { limit: effectiveLimit });
+				const listLimit = applyListLimit(files, { limit: effectiveLimit, maxSuggestion: MAX_LIMIT });
 				const limited = listLimit.items;
 				const limitMeta = listLimit.meta;
 				const baseOutput = formatGroupedPaths(limited);
@@ -306,7 +310,10 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 
 				const resultBuilder = toolResult(details)
 					.text(truncation.content)
-					.limits({ resultLimit: limitMeta.resultLimit?.reached });
+					// Forward the full notice (including the suggestion capped at
+					// MAX_LIMIT) so the "Use limit=N for more" hint never exceeds what
+					// a follow-up call can actually deliver.
+					.limits({ resultLimit: limitMeta.resultLimit });
 				if (truncation.truncated) {
 					resultBuilder.truncation(truncation, { direction: "head" });
 				}

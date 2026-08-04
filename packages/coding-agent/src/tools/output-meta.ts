@@ -73,6 +73,17 @@ export interface LimitsMeta {
 }
 
 /**
+ * Input for a limit notice. `suggestion` is the follow-up limit hint; when
+ * omitted it defaults to `reached * 2`. Callers that cap the effective limit
+ * (e.g. glob's MAX_LIMIT) pass an explicit suggestion so the hint never
+ * promises more than the tool can actually deliver.
+ */
+export interface LimitNoticeInput {
+	reached: number;
+	suggestion?: number;
+}
+
+/**
  * Structured metadata for tool outputs.
  */
 export interface OutputMeta {
@@ -311,15 +322,25 @@ export class OutputMetaBuilder {
 	}
 
 	/** Add limit notices in one call. */
-	limits(limits: { matchLimit?: number; resultLimit?: number; headLimit?: number; columnMax?: number }): this {
+	limits(limits: {
+		matchLimit?: number | LimitNoticeInput;
+		resultLimit?: number | LimitNoticeInput;
+		headLimit?: number | LimitNoticeInput;
+		columnMax?: number;
+	}): this {
+		const limitArgs = (input: number | LimitNoticeInput): [reached: number, suggestion?: number] =>
+			typeof input === "number" ? [input] : [input.reached, input.suggestion];
 		if (limits.matchLimit !== undefined) {
-			this.matchLimit(limits.matchLimit);
+			const [reached, suggestion] = limitArgs(limits.matchLimit);
+			this.matchLimit(reached, suggestion);
 		}
 		if (limits.resultLimit !== undefined) {
-			this.resultLimit(limits.resultLimit);
+			const [reached, suggestion] = limitArgs(limits.resultLimit);
+			this.resultLimit(reached, suggestion);
 		}
 		if (limits.headLimit !== undefined) {
-			this.headLimit(limits.headLimit);
+			const [reached, suggestion] = limitArgs(limits.headLimit);
+			this.headLimit(reached, suggestion);
 		}
 		if (limits.columnMax !== undefined) {
 			this.columnTruncated(limits.columnMax);
