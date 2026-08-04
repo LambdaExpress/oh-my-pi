@@ -45,6 +45,24 @@ function makeSessionWithLastMessage(lastMessage: unknown, prewalkArmed: boolean 
 	};
 }
 
+function makeProviderStatusLine(provider: string, modelName: string) {
+	const session = makeSessionWithLastMessage(null);
+	const model = { provider, name: modelName, contextWindow: 128000 };
+	session.model = model;
+	session.state.model = model;
+	const statusLine = new StatusLineComponent(session as unknown as AgentSession);
+	statusLine.updateSettings({
+		preset: "custom",
+		leftSegments: ["provider", "model"],
+		rightSegments: [],
+		separator: "ascii",
+		segmentOptions: {},
+		transparent: true,
+		sessionAccent: false,
+	});
+	return statusLine;
+}
+
 function makeUsageReport(fiveHourFraction: number) {
 	return [
 		{
@@ -77,7 +95,7 @@ function makeOpenCodeGoUsageReport() {
 						id: "rolling-5h",
 						label: "5 Hour",
 						durationMs: 5 * 60 * 60_000,
-						resetsAt: now + 4 * 60 * 60_000,
+						resetsAt: now + 4 * 60 * 60_000 + 43 * 60_000,
 					},
 					amount: { usedFraction: 0.25 },
 				},
@@ -89,7 +107,7 @@ function makeOpenCodeGoUsageReport() {
 						id: "weekly",
 						label: "Weekly",
 						durationMs: 7 * 24 * 60 * 60_000,
-						resetsAt: now + 6 * 24 * 60 * 60_000,
+						resetsAt: now + 5 * 24 * 60 * 60_000 + 16 * 60 * 60_000,
 					},
 					amount: { usedFraction: 0.5 },
 				},
@@ -100,8 +118,8 @@ function makeOpenCodeGoUsageReport() {
 					window: {
 						id: "monthly",
 						label: "Monthly",
-						durationMs: 30 * 24 * 60 * 60_000,
-						resetsAt: now + 29 * 24 * 60 * 60_000,
+						durationMs: 31 * 24 * 60 * 60_000,
+						resetsAt: now + 30 * 24 * 60 * 60_000 + 23 * 60 * 60_000,
 					},
 					amount: { usedFraction: 0.75 },
 				},
@@ -195,6 +213,26 @@ beforeAll(async () => {
 });
 
 describe("StatusLineComponent", () => {
+	it("renders the subscription provider as a separate segment before the model", () => {
+		const cases = [
+			{ provider: "openai-codex", providerLabel: "OpenAI", modelName: "GPT-5.3 Codex" },
+			{ provider: "opencode-go", providerLabel: "OpenCode", modelName: "DeepSeek V4 Flash" },
+			{ provider: "deepseek", providerLabel: "DeepSeek", modelName: "DeepSeek Chat" },
+		];
+
+		for (const testCase of cases) {
+			const statusLine = makeProviderStatusLine(testCase.provider, testCase.modelName);
+			try {
+				const rendered = Bun.stripANSI(statusLine.getTopBorder(160).content);
+				expect(rendered).toContain(testCase.providerLabel);
+				expect(rendered).toContain(testCase.modelName);
+				expect(rendered.indexOf(testCase.providerLabel)).toBeLessThan(rendered.indexOf(testCase.modelName));
+			} finally {
+				statusLine.dispose();
+			}
+		}
+	});
+
 	it("fingerprints tool-call arguments containing bigint values", () => {
 		const statusLine = new StatusLineComponent(
 			makeSessionWithLastMessage({
@@ -246,7 +284,7 @@ describe("StatusLineComponent", () => {
 		}
 	});
 
-	it("renders the OpenCode Go plan title and all rolling limits with decreasing reset labels", async () => {
+	it("renders rounded OpenCode Go reset countdowns without the provider name", async () => {
 		vi.useFakeTimers();
 		const waiters: Array<() => void> = [];
 		const report = makeOpenCodeGoUsageReport();
@@ -263,12 +301,12 @@ describe("StatusLineComponent", () => {
 			await refreshed;
 
 			const rendered = Bun.stripANSI(statusLine.getTopBorder(160).content);
-			expect(rendered).toContain("OpenCode Go");
-			expect(rendered).toContain("4h 25%");
+			expect(rendered).not.toContain("OpenCode Go");
+			expect(rendered).toContain("5h 25%");
 			expect(rendered).toContain("6d 50%");
-			expect(rendered).toContain("29d 75%");
+			expect(rendered).toContain("31d 75%");
 
-			vi.advanceTimersByTime(3.5 * 60 * 60_000);
+			vi.advanceTimersByTime(4 * 60 * 60_000 + 13 * 60_000);
 			const later = Bun.stripANSI(statusLine.getTopBorder(160).content);
 			expect(later).toContain("30m 25%");
 		} finally {
@@ -295,10 +333,10 @@ describe("StatusLineComponent", () => {
 			await refreshed;
 
 			const rendered = Bun.stripANSI(statusLine.getTopBorder(160).content);
-			expect(rendered).toContain("OpenCode Go");
-			expect(rendered).toContain("4h 75%");
+			expect(rendered).not.toContain("OpenCode Go");
+			expect(rendered).toContain("5h 75%");
 			expect(rendered).toContain("6d 50%");
-			expect(rendered).toContain("29d 25%");
+			expect(rendered).toContain("31d 25%");
 			expect(rendered).not.toContain("$0.01");
 		} finally {
 			statusLine.dispose();

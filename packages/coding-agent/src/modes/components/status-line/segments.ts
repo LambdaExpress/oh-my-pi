@@ -92,6 +92,52 @@ const piSegment: StatusLineSegment = {
 	},
 };
 
+const STATUS_PROVIDER_LABELS: Record<string, string> = {
+	"amazon-bedrock": "AWS",
+	"azure-openai": "Azure OpenAI",
+	"azure-openai-responses": "Azure OpenAI",
+	deepseek: "DeepSeek",
+	"github-copilot": "GitHub",
+	"google-antigravity": "Google",
+	"google-gemini-cli": "Google",
+	"google-vertex": "Google Cloud",
+	openai: "OpenAI",
+	"openai-codex": "OpenAI",
+	"opencode-go": "OpenCode",
+	"opencode-zen": "OpenCode",
+	openrouter: "OpenRouter",
+	xai: "xAI",
+};
+
+const STATUS_PROVIDER_WORD_LABELS: Record<string, string> = {
+	ai: "AI",
+	aws: "AWS",
+	github: "GitHub",
+	openai: "OpenAI",
+	opencode: "OpenCode",
+	openrouter: "OpenRouter",
+	xai: "xAI",
+};
+
+function formatStatusProvider(provider: string): string {
+	const known = STATUS_PROVIDER_LABELS[provider];
+	if (known) return known;
+	return provider
+		.split(/[-_]/u)
+		.filter(Boolean)
+		.map(part => STATUS_PROVIDER_WORD_LABELS[part.toLowerCase()] ?? `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+		.join(" ");
+}
+
+const providerSegment: StatusLineSegment = {
+	id: "provider",
+	render(ctx) {
+		const provider = ctx.session.state.model?.provider;
+		if (!provider) return { content: "", visible: false };
+		return { content: theme.fg("accent", sanitizeStatusText(formatStatusProvider(provider))), visible: true };
+	},
+};
+
 const modelSegment: StatusLineSegment = {
 	id: "model",
 	render(ctx) {
@@ -688,6 +734,7 @@ const usageSegment: StatusLineSegment = {
 
 export const SEGMENTS: Record<StatusLineSegmentId, StatusLineSegment> = {
 	pi: piSegment,
+	provider: providerSegment,
 	model: modelSegment,
 	mode: modeSegment,
 	path: pathSegment,

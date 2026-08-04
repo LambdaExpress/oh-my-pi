@@ -34,11 +34,17 @@ const STATUS_USAGE_WINDOWS = [
 	{ id: "30d", durationMs: 30 * 24 * 60 * 60_000 },
 ] as const;
 type StatusUsageWindowId = (typeof STATUS_USAGE_WINDOWS)[number]["id"];
+const STATUS_USAGE_WINDOW_ALIASES: Record<string, StatusUsageWindowId> = {
+	"rolling-5h": "5h",
+	weekly: "7d",
+	monthly: "30d",
+};
 
 function statusUsageWindowId(limit: UsageLimit): StatusUsageWindowId | undefined {
 	const windowId = limit.scope.windowId?.toLowerCase();
 	const exact = STATUS_USAGE_WINDOWS.find(candidate => candidate.id === windowId);
 	if (exact) return exact.id;
+	if (windowId && STATUS_USAGE_WINDOW_ALIASES[windowId]) return STATUS_USAGE_WINDOW_ALIASES[windowId];
 
 	const durationMs = limit.window?.durationMs;
 	if (typeof durationMs !== "number") return undefined;
@@ -1153,14 +1159,11 @@ export class StatusLineComponent implements Component {
 			StatusUsageWindowId,
 			{ window: NonNullable<SegmentContext["usage"]>["windows"][number]; tier?: string }
 		>();
-		let planTitle: string | undefined;
 		for (const rawReport of reports) {
 			if (!rawReport || typeof rawReport !== "object") continue;
 			const report = rawReport as UsageReport;
 			const provider = report.provider;
 			if (activeProvider && provider !== activeProvider) continue;
-			const reportPlanType = report.metadata?.planType;
-			if (!planTitle && typeof reportPlanType === "string" && reportPlanType) planTitle = reportPlanType;
 			const limits = report.limits;
 			if (!Array.isArray(limits)) continue;
 			for (const limit of limits) {
@@ -1193,7 +1196,7 @@ export class StatusLineComponent implements Component {
 			return selectedWindow ? [selectedWindow.window] : [];
 		});
 		const effectiveTier = STATUS_USAGE_WINDOWS.map(candidate => selected.get(candidate.id)?.tier).find(Boolean);
-		return { ...(planTitle || effectiveTier ? { title: planTitle ?? effectiveTier } : {}), windows };
+		return { ...(effectiveTier ? { title: effectiveTier } : {}), windows };
 	}
 
 	/**
