@@ -28,6 +28,9 @@
 ### Changed
 
 - Updated the lightweight CLI runner to support static command metadata, allowing root help to render without importing full command implementations.
+### Added
+
+- Added postmortem fatal recovery hint providers so applications can print actionable recovery commands before cleanup starts.
 
 ## [17.2.4] - 2026-08-01
 

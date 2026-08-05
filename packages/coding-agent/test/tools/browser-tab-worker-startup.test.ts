@@ -119,7 +119,7 @@ describe("browser tab worker page activation", () => {
 			connect: async () => browser,
 		});
 		const transport = new FakeWorkerTransport();
-		new WorkerCore(transport, loadPuppeteer as never);
+		new WorkerCore(transport, false, loadPuppeteer as never);
 		transport.deliver({
 			type: "init",
 			payload: {
@@ -200,7 +200,7 @@ describe("browser tab worker run interception cleanup", () => {
 			connect: async () => browser,
 		});
 		const transport = new FakeWorkerTransport();
-		new WorkerCore(transport, loadPuppeteer as never);
+		new WorkerCore(transport, false, loadPuppeteer as never);
 		transport.deliver({
 			type: "init",
 			payload: {
