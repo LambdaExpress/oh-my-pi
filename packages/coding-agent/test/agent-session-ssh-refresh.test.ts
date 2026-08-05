@@ -1,21 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
-import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { reset as resetCapabilities } from "@oh-my-pi/pi-coding-agent/capability";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { addSSHHost } from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
 import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
-import {
-	loadSshTool,
-	loadSshTransferTool,
-	type Tool,
-	type ToolSession,
-	XdevRegistry,
-} from "@oh-my-pi/pi-coding-agent/tools";
+import { loadSshTool, loadSshTransferTool, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { type XdevState, xdevEntries } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import { getAgentDir, getSSHConfigPath, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 
 function createModel(): Model<"openai-responses"> {
@@ -77,12 +72,21 @@ interface CreateSessionOptions {
 	initialTools?: AgentTool[];
 	registryTools?: AgentTool[];
 	requestedToolNames?: ReadonlySet<string>;
-	xdevRegistry?: XdevRegistry;
+	xdev?: XdevState;
 	reloadSshTool?: () => Promise<Tool | null>;
 	reloadSshTransferTool?: () => Promise<Tool | null>;
 	asyncJobManager?: AsyncJobManager;
 	agentId?: string;
 	agentScopeId?: string;
+}
+
+function createTestXdevState(): XdevState {
+	return {
+		tools: new Map(),
+		mountedNames: new Set(),
+		builtInNames: new Set(),
+		isActive: () => true,
+	};
 }
 
 describe("AgentSession SSH transfer refresh", () => {
@@ -115,7 +119,10 @@ describe("AgentSession SSH transfer refresh", () => {
 		};
 		const initialTools = options.initialTools ?? [];
 		const registryTools = options.registryTools ?? initialTools;
-		const toolRegistry = new Map(registryTools.map(tool => [tool.name, tool]));
+		const toolRegistry = options.xdev?.tools ?? new Map(registryTools.map(tool => [tool.name, tool]));
+		if (options.xdev) {
+			for (const tool of registryTools) toolRegistry.set(tool.name, tool);
+		}
 		const agent = new Agent({
 			initialState: {
 				model: createModel(),
@@ -148,8 +155,8 @@ describe("AgentSession SSH transfer refresh", () => {
 			toolRegistry,
 			reloadSshTool,
 			reloadSshTransferTool,
-			getXdevToolEntries: () => options.xdevRegistry?.entries() ?? [],
-			xdevRegistry: options.xdevRegistry,
+			getXdevToolEntries: () => (options.xdev ? xdevEntries(options.xdev) : []),
+			xdev: options.xdev,
 			rebuildSystemPrompt: async (toolNames, tools) => ({
 				systemPrompt: toolNames.map(name => `${name}:${tools.get(name)?.description ?? ""}`),
 			}),
@@ -164,8 +171,8 @@ describe("AgentSession SSH transfer refresh", () => {
 	it("refreshes mounted xd:// SSH devices after session SSH CRUD", async () => {
 		const tempDir = TempDir.createSync("@pi-ssh-xdev-refresh-");
 		tempDirs.push(tempDir);
-		const xdevRegistry = new XdevRegistry([]);
-		const session = createSession(tempDir.path(), { xdevRegistry });
+		const xdev = createTestXdevState();
+		const session = createSession(tempDir.path(), { xdev });
 
 		await session.mutateSessionSshConfig({
 			operation: "upsert",
@@ -173,22 +180,22 @@ describe("AgentSession SSH transfer refresh", () => {
 			config: { host: "192.0.2.50", username: "session-user", password: "secret" },
 		});
 
-		expect(xdevRegistry.get("ssh")?.description).toContain("ephemeral (192.0.2.50)");
-		expect(xdevRegistry.get("ssh_transfer")?.description).toContain("ephemeral (192.0.2.50)");
+		expect(xdev.tools.get("ssh")?.description).toContain("ephemeral (192.0.2.50)");
+		expect(xdev.tools.get("ssh_transfer")?.description).toContain("ephemeral (192.0.2.50)");
 		expect(session.getMountedXdevToolNames()).toEqual(expect.arrayContaining(["ssh", "ssh_transfer"]));
-		expect(session.getAllToolNames()).not.toContain("ssh");
-		expect(session.getAllToolNames()).not.toContain("ssh_transfer");
+		expect(session.getActiveToolNames()).not.toContain("ssh");
+		expect(session.getActiveToolNames()).not.toContain("ssh_transfer");
 
 		await session.mutateSessionSshConfig({ operation: "delete", name: "ephemeral" });
-		expect(xdevRegistry.get("ssh_transfer")).toBeUndefined();
-		expect(xdevRegistry.get("ssh")).toBeUndefined();
+		expect(xdev.tools.get("ssh_transfer")).toBeUndefined();
+		expect(xdev.tools.get("ssh")).toBeUndefined();
 	});
 
 	it("preserves configured passwords in mounted session aliases without exposing them in descriptions", async () => {
 		const tempDir = TempDir.createSync("@pi-ssh-xdev-password-");
 		tempDirs.push(tempDir);
-		const xdevRegistry = new XdevRegistry([]);
-		const session = createSession(tempDir.path(), { xdevRegistry });
+		const xdev = createTestXdevState();
+		const session = createSession(tempDir.path(), { xdev });
 		const password = "session-ssh-password-sentinel";
 		await session.mutateSessionSshConfig({
 			operation: "upsert",
@@ -198,15 +205,15 @@ describe("AgentSession SSH transfer refresh", () => {
 
 		const hosts = await session.getSessionSshHosts();
 		expect(hosts).toContainEqual(expect.objectContaining({ name: "prod", password }));
-		expect(xdevRegistry.get("ssh")?.description).toContain("prod (192.0.2.60)");
-		expect(xdevRegistry.get("ssh")?.description).not.toContain(password);
+		expect(xdev.tools.get("ssh")?.description).toContain("prod (192.0.2.60)");
+		expect(xdev.tools.get("ssh")?.description).not.toContain(password);
 	});
 
 	it("keeps mounted SSH devices tracked across tool repartitioning", async () => {
 		const tempDir = TempDir.createSync("@pi-ssh-xdev-repartition-");
 		tempDirs.push(tempDir);
-		const xdevRegistry = new XdevRegistry([]);
-		const session = createSession(tempDir.path(), { xdevRegistry });
+		const xdev = createTestXdevState();
+		const session = createSession(tempDir.path(), { xdev });
 
 		await session.mutateSessionSshConfig({
 			operation: "upsert",
@@ -222,8 +229,8 @@ describe("AgentSession SSH transfer refresh", () => {
 		});
 		await session.setActiveToolsByName(session.getEnabledToolNames());
 
-		expect(xdevRegistry.get("ssh")).toBeDefined();
-		expect(xdevRegistry.get("ssh_transfer")).toBeDefined();
+		expect(xdev.tools.get("ssh")).toBeDefined();
+		expect(xdev.tools.get("ssh_transfer")).toBeDefined();
 		expect(session.getMountedXdevToolNames()).toContain("ssh");
 		expect(session.getMountedXdevToolNames()).toContain("ssh_transfer");
 		expect(notices).not.toContain("xd://: unmounted ssh");
@@ -472,8 +479,7 @@ describe("AgentSession SSH transfer refresh", () => {
 		});
 		const progressed = waitForSessionEvent(
 			session,
-			event =>
-				event.type === "async_job_update" && event.job.progress?.details?.transferredBytes === 50,
+			event => event.type === "async_job_update" && event.job.progress?.details?.transferredBytes === 50,
 		);
 		publishProgress.resolve();
 		expect(await progressed).toMatchObject({

@@ -20,6 +20,7 @@ type FakeEditor = {
 	onPasteImage?: () => Promise<boolean>;
 	onCopyPrompt?: () => void;
 	onExpandTools?: () => void;
+	onToggleToolActivity?: () => void;
 	onToggleThinking?: () => void;
 	onExternalEditor?: () => void;
 	onRetry?: () => void;
@@ -64,6 +65,7 @@ async function createContext() {
 		"app.retry": ["alt+r"],
 		"app.completedRuns.toggle": ["alt+o"],
 		"app.clipboard.pasteImage": ["ctrl+v"],
+		"app.tools.toggleVisibility": ["ctrl+shift+o"],
 	};
 	const customHandlers = new Map<string, () => void>();
 	const setActionKeys = vi.fn();
@@ -75,6 +77,7 @@ async function createContext() {
 	});
 	const resetDisplay = vi.fn();
 	const toggleCompletedRunCollapse = vi.fn();
+	const clearInlineImages = vi.fn();
 	const showModelSelector = vi.fn();
 	const requestRender = vi.fn();
 	const showError = vi.fn();
@@ -85,6 +88,10 @@ async function createContext() {
 	const addStartListener = vi.fn();
 	const terminalWrite = vi.fn();
 	const refreshAppearance = vi.fn();
+	const resetDisplayAfterAppearanceRefresh = vi.fn(() => {
+		refreshAppearance();
+		resetDisplay();
+	});
 	const prompt = vi.fn(async () => {});
 	const retry = vi.fn(async () => true);
 	const abort = vi.fn(async () => {});
@@ -105,6 +112,8 @@ async function createContext() {
 	const handleBtwCopyKey = vi.fn(async () => true);
 	const canBranchBtw = vi.fn(() => false);
 	const canCopyBtw = vi.fn(() => false);
+	const hasActiveBtw = vi.fn(() => false);
+	const handlesBtwBranchKey = vi.fn(() => false);
 	const editor: FakeEditor = {
 		setText(text: string) {
 			editorText = text;
@@ -135,9 +144,11 @@ async function createContext() {
 	focused = editor;
 	const ctx = {
 		editor: editor as unknown as InteractiveModeContext["editor"],
+		resetDisplayAfterAppearanceRefresh,
 		ui: {
 			requestRender,
 			resetDisplay,
+			clearInlineImages,
 			addInputListener,
 			addStartListener,
 			getFocused: vi.fn(() => focused),
@@ -188,6 +199,10 @@ async function createContext() {
 		updatePendingMessagesDisplay,
 		isBashMode: false,
 		isPythonMode: false,
+		hideToolActivity: false,
+		toolOutputExpanded: false,
+		settings: { set: vi.fn() },
+		chatContainer: { children: [] },
 		handleHotkeysCommand: vi.fn(),
 		handlePlanModeCommand: vi.fn(),
 		handleClearCommand: vi.fn(),
@@ -201,7 +216,8 @@ async function createContext() {
 		toggleCompletedRunCollapse,
 		showModelSelector,
 		updateEditorBorderColor: vi.fn(),
-		hasActiveBtw: vi.fn(() => false),
+		hasActiveBtw,
+		handlesBtwBranchKey,
 		handleBtwBranchKey,
 		canBranchBtw,
 		canCopyBtw,
@@ -228,10 +244,14 @@ async function createContext() {
 			abort,
 			resetDisplay,
 			toggleCompletedRunCollapse,
+			clearInlineImages,
 			refreshAppearance,
+			resetDisplayAfterAppearanceRefresh,
 			handleBtwBranchKey,
 			addInputListener,
 			canBranchBtw,
+			hasActiveBtw,
+			handlesBtwBranchKey,
 			handleBtwCopyKey,
 			canCopyBtw,
 			showError,
@@ -260,13 +280,24 @@ describe("InputController keybinding setup", () => {
 
 		expect(spies.showModelSelector).toHaveBeenNthCalledWith(1, { temporaryOnly: true });
 		expect(spies.showModelSelector).toHaveBeenNthCalledWith(2);
+		expect(spies.resetDisplayAfterAppearanceRefresh).toHaveBeenCalledTimes(1);
+	});
+
+	it("registers the tool activity visibility action", async () => {
+		const { InputController, ctx, editor, spies } = await createContext();
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+
+		expect(spies.setActionKeys).toHaveBeenCalledWith("app.tools.toggleVisibility", ["ctrl+shift+o"]);
+		expect(editor.onToggleToolActivity).toBeDefined();
+
+		editor.onToggleToolActivity?.();
+
+		expect(ctx.hideToolActivity).toBe(true);
+		expect(ctx.settings.set).toHaveBeenCalledWith("display.hideToolActivity", true);
+		expect(spies.clearInlineImages).toHaveBeenCalledTimes(1);
 		expect(spies.resetDisplay).toHaveBeenCalledTimes(1);
-		expect(spies.refreshAppearance).toHaveBeenCalledTimes(1);
-		// The background re-query must run before the repaint so the appearance
-		// callback re-evaluates the auto theme against the fresh classification.
-		expect(spies.refreshAppearance.mock.invocationCallOrder[0]!).toBeLessThan(
-			spies.resetDisplay.mock.invocationCallOrder[0]!,
-		);
 	});
 
 	it("registers and handles the completed-runs toggle action", async () => {
@@ -385,7 +416,7 @@ describe("InputController keybinding setup", () => {
 
 	it("routes b to branch a branchable /btw panel", async () => {
 		const { InputController, ctx, spies } = await createContext();
-		(ctx.canBranchBtw as unknown as { mockReturnValue(value: boolean): void }).mockReturnValue(true);
+		spies.handlesBtwBranchKey.mockReturnValue(true);
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
@@ -399,7 +430,7 @@ describe("InputController keybinding setup", () => {
 
 	it("lets b fall through while the editor has draft text", async () => {
 		const { InputController, ctx, editor, spies } = await createContext();
-		(ctx.canBranchBtw as unknown as { mockReturnValue(value: boolean): void }).mockReturnValue(true);
+		spies.handlesBtwBranchKey.mockReturnValue(true);
 		editor.setText("build a branch");
 		const controller = new InputController(ctx);
 
@@ -412,8 +443,23 @@ describe("InputController keybinding setup", () => {
 		expect(spies.handleBtwBranchKey).not.toHaveBeenCalled();
 	});
 
-	it("lets b fall through when /btw is not branchable", async () => {
+	it("consumes b while a completed /btw branch is unavailable", async () => {
 		const { InputController, ctx, spies } = await createContext();
+		spies.handlesBtwBranchKey.mockReturnValue(true);
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		const listener = spies.addInputListener.mock.calls[1]?.[0];
+		expect(listener).toBeDefined();
+		const result = listener?.("b");
+
+		expect(result).toEqual({ consume: true });
+		expect(spies.handleBtwBranchKey).toHaveBeenCalledTimes(1);
+	});
+
+	it("lets b reach the composer before an active /btw answer is branchable", async () => {
+		const { InputController, ctx, spies } = await createContext();
+		spies.hasActiveBtw.mockReturnValue(true);
 		const controller = new InputController(ctx);
 
 		controller.setupKeyHandlers();
@@ -427,7 +473,7 @@ describe("InputController keybinding setup", () => {
 
 	it("lets b fall through while another input is focused", async () => {
 		const { InputController, ctx, setFocused, spies } = await createContext();
-		(ctx.canBranchBtw as unknown as { mockReturnValue(value: boolean): void }).mockReturnValue(true);
+		spies.handlesBtwBranchKey.mockReturnValue(true);
 		setFocused({ pasteText: vi.fn() });
 		const controller = new InputController(ctx);
 

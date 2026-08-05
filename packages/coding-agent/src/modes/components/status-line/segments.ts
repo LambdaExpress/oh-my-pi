@@ -5,6 +5,7 @@ import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { type ThemeColor, theme } from "../../../modes/theme/theme";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
+import { fileHyperlink } from "../../../tui/hyperlink";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
 import { sanitizeStatusText } from "../../shared";
 import { formatContextUsage, getContextUsageLevel, getContextUsageThemeColor } from "./context-thresholds";
@@ -328,7 +329,8 @@ const pathSegment: StatusLineSegment = {
 			const branchDuplicateNames = duplicateNames ?? [worktreeName];
 			const duplicatesBranch = ctx.git.branch !== null && branchDuplicateNames.includes(ctx.git.branch);
 			const label = duplicatesBranch ? projectName : `${projectName}/${worktreeName}`;
-			const content = withIcon(theme.icon.worktree, clampPathLength(label, opts.maxLength ?? 40));
+			const text = fileHyperlink(getProjectDir(), clampPathLength(label, opts.maxLength ?? 40));
+			const content = withIcon(theme.icon.worktree, text);
 			return { content: theme.fg("statusLinePath", content), visible: true };
 		}
 
@@ -349,13 +351,10 @@ const pathSegment: StatusLineSegment = {
 		}
 
 		pwd = clampPathLength(pwd, opts.maxLength ?? 40);
-		if (repoSuffix) {
-			pwd = `${pwd}${repoSuffix}`;
-		}
 
 		const showScratchIcon = scratch && stripPrefix;
 		const icon = showScratchIcon ? theme.icon.scratchFolder : theme.icon.folder;
-		const content = withIcon(icon, pwd);
+		const content = withIcon(icon, `${fileHyperlink(projectDir, pwd)}${repoSuffix}`);
 		return { content: theme.fg("statusLinePath", content), visible: true };
 	},
 };
@@ -541,21 +540,24 @@ function renderCompactUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
 const costSegment: StatusLineSegment = {
 	id: "cost",
 	render(ctx) {
+		const { cost, premiumRequests } = ctx.usageStats;
+		const advisorCost = ctx.session.getAdvisorCost?.() ?? 0;
+		const normalizedPremiumRequests = normalizePremiumRequests(premiumRequests);
 		const state = ctx.session.state;
 		const usingSubscription = state.model ? ctx.session.modelRegistry.isUsingOAuth(state.model) : false;
 		if (usingSubscription || ctx.usage) {
 			return renderCompactUsageLimitSegment(ctx);
 		}
 
-		const { cost, premiumRequests } = ctx.usageStats;
-		const normalizedPremiumRequests = normalizePremiumRequests(premiumRequests);
-		if (!cost && !normalizedPremiumRequests) {
+		if (!cost && !advisorCost && !usingSubscription && !normalizedPremiumRequests) {
 			return { content: "", visible: false };
 		}
 
 		const billingParts: string[] = [];
 		if (cost) billingParts.push(`$${cost.toFixed(2)}`);
 		if (normalizedPremiumRequests) billingParts.push(`★ ${formatNumber(normalizedPremiumRequests)}`);
+		if (usingSubscription) billingParts.push("(sub)");
+		if (advisorCost) billingParts.push(`${billingParts.length ? "+ " : ""}$${advisorCost.toFixed(2)} (adv)`);
 
 		return { content: theme.fg("statusLineCost", billingParts.join(" ")), visible: true };
 	},

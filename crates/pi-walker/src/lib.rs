@@ -4090,7 +4090,9 @@ mod platform {
 					return Err(invalid_data("invalid NtQueryDirectoryFile name length").into());
 				}
 				let name_units: Vec<u16> = buffer[name_offset..name_offset + name_len]
-					.chunks_exact(2)
+					.as_chunks::<2>()
+					.0
+					.iter()
 					.map(|chunk| u16::from_ne_bytes([chunk[0], chunk[1]]))
 					.collect();
 				let name = OsString::from_wide(&name_units);

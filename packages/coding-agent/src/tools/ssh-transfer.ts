@@ -1,9 +1,9 @@
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import type { SSHHost } from "../capability/ssh";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";

@@ -53,14 +53,19 @@ export interface OutputSummary {
 export interface OutputSinkOptions {
 	artifactPath?: string;
 	artifactId?: string;
-	/** Inline output byte threshold before eliding and writing an artifact. Default DEFAULT_MAX_BYTES. */
+	/**
+	 * Total inline body budget (bytes). Default DEFAULT_MAX_BYTES. The head
+	 * window and rolling tail window share this budget, so a composed
+	 * `dump()` body never exceeds it (plus the elision marker).
+	 */
 	spillThreshold?: number;
 	/** Tail buffer budget after inline spill begins. Defaults to spillThreshold. */
 	tailBytes?: number;
 	/**
 	 * When > 0, the sink keeps the first `headBytes` of output in addition to
 	 * the rolling tail window. Output between the two windows is elided
-	 * (middle elision). Default 0 = tail-only behavior.
+	 * (middle elision). Clamped to `spillThreshold / 2` so the tail keeps at
+	 * least half the inline budget. Default 0 = tail-only behavior.
 	 */
 	headBytes?: number;
 	/**
@@ -806,7 +811,7 @@ export class OutputSink {
 		this.#artifactId = artifactId;
 		this.#spillThreshold = Math.max(0, spillThreshold);
 		this.#tailLimit = Math.max(0, tailBytes ?? this.#spillThreshold);
-		this.#headLimit = Math.max(0, headBytes);
+		this.#headLimit = Math.max(0, Math.min(headBytes, Math.floor(spillThreshold / 2)));
 		this.#maxColumns = Math.max(0, maxColumns);
 		this.#onChunk = onChunk;
 		this.#chunkThrottleMs = chunkThrottleMs;
@@ -976,16 +981,24 @@ export class OutputSink {
 		return parts.join("");
 	}
 
+	// The rolling tail budget is whatever the head window has not consumed of
+	// the inline budget: `spillThreshold - #headBytes`. While the head window
+	// fills it shrinks toward `spillThreshold - headLimit`; after `replace()`
+	// (head cleared) it grows back to the full threshold. This keeps
+	// `head + tail <= spillThreshold`, so the composed dump body fits the
+	// inline byte cap by construction.
+
 	#willOverflow(dataBytes: number): boolean {
-		// Trigger file mirroring when the next chunk would push the visible
-		// inline output (head + rolling tail) over the spill threshold.
-		return this.#headBytes + this.#bufferBytes + dataBytes > this.#spillThreshold;
+		// Triggers file mirroring as soon as the next chunk would push us over
+		// the tail budget — i.e. the first byte that could be lost from memory.
+		return this.#bufferBytes + dataBytes > this.#spillThreshold - this.#headBytes;
 	}
 
 	#pushTail(chunk: string, dataBytes: number): void {
 		if (dataBytes === 0) return;
 
-		const willOverflow = this.#headBytes + this.#bufferBytes + dataBytes > this.#spillThreshold;
+		const threshold = Math.max(0, this.#spillThreshold - this.#headBytes);
+		const willOverflow = this.#bufferBytes + dataBytes > threshold;
 
 		if (willOverflow || this.#truncated) {
 			this.#truncated = true;

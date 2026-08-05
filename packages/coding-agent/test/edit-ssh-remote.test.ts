@@ -11,7 +11,7 @@ import {
 	EDIT_MODE_STRATEGIES,
 	EditTool,
 	executePatchSingle,
-	executeReplaceSingle,
+	executeReplace,
 } from "@oh-my-pi/pi-coding-agent/edit";
 import type { WritethroughCallback } from "@oh-my-pi/pi-coding-agent/lsp";
 import type { ClientBridge } from "@oh-my-pi/pi-coding-agent/session/client-bridge";
@@ -258,10 +258,10 @@ describe("ssh:// edit targets", () => {
 		installRemoteStore(files);
 		const { bridge, spy: bridgeSpy } = makeBridge();
 		const { writethrough, calledWith } = makeWritethroughMock();
-		const result = await executeReplaceSingle({
+		const result = await executeReplace({
 			session: createSession(tmpDir, bridge),
 			path: "ssh://icaro/tmp/a.ts",
-			params: { old_text: "old", new_text: "new", all: false },
+			params: { old_string: "old", new_string: "new", replace_all: false },
 			allowFuzzy: false,
 			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
 			writethrough,

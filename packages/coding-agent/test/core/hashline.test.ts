@@ -7,6 +7,7 @@ import {
 	formatHashlineHeader,
 	MismatchError as HashlineMismatchError,
 } from "@oh-my-pi/hashline";
+import { type Type, type } from "@oh-my-pi/omptype";
 import * as capability from "@oh-my-pi/pi-coding-agent/capability";
 import type { CapabilityResult } from "@oh-my-pi/pi-coding-agent/capability/types";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -26,7 +27,6 @@ import {
 import * as fileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
-import { type Type, type } from "arktype";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -59,7 +59,7 @@ function header(filePath: string, tag: string): string {
 }
 
 function sameLineRange(anchor: string): string {
-	return `SWAP ${anchor}..${anchor}:`;
+	return `PUT ${anchor}.=${anchor}:`;
 }
 
 async function withTempDir(fn: (tempDir: string) => Promise<void>): Promise<void> {
@@ -147,7 +147,7 @@ function setupSshRemote(remoteFiles: Map<string, string>) {
 describe("hashline executor", () => {
 	it("rejects file creation and directs to the write tool", async () => {
 		await withTempDir(async tempDir => {
-			const input = `[new.ts]\nINS.HEAD:\n${repl("export const x = 1;")}\n`;
+			const input = `[new.ts]\nPUT <1:\n${repl("export const x = 1;")}\n`;
 			await expect(executeHashlineSingle(hashlineExecuteOptions(tempDir, input))).rejects.toThrow(/write tool/);
 			expect(await Bun.file(path.join(tempDir, "new.ts")).exists()).toBe(false);
 		});
@@ -160,7 +160,7 @@ describe("hashline executor", () => {
 
 			await Bun.write(filePath, source);
 			const sourceTag = recordFullSnapshot(getFileReadCache(session), filePath, source);
-			const input = `${header("a.ts", sourceTag)}\nINS.TAIL:\n${repl("bbb")}\n${repl("ccc")}\n${repl("NEW")}\n`;
+			const input = `${header("a.ts", sourceTag)}\nPUT >$:\n${repl("bbb")}\n${repl("ccc")}\n${repl("NEW")}\n`;
 			const result = await executeHashlineSingle(hashlineExecuteOptions(tempDir, input, undefined, session));
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 
@@ -315,7 +315,7 @@ describe("hashline executor", () => {
 				repl("L2h"),
 				repl("L2i"),
 				header("a.ts", originalTag),
-				`INS.POST ${tag(8, "L8")}:`,
+				`PUT >${tag(8, "L8")}:`,
 				repl("INSERTED"),
 			].join("\n");
 
@@ -486,14 +486,14 @@ describe("hashlineEditParamsSchema — payload shape", () => {
 	it("tolerates provider extra fields without declaring `path`", () => {
 		const result = arkSafeParse(hashlineEditParamsSchema, {
 			path: "x.ts",
-			input: `[x.ts]\nINS.HEAD:\n${repl("x")}`,
+			input: `[x.ts]\nPUT <1:\n${repl("x")}`,
 		});
 		expect(result.success).toBe(true);
 	});
 
 	it("rejects `_input` as an alias for `input`", () => {
 		const result = arkSafeParse(hashlineEditParamsSchema, {
-			_input: `[x.ts]\nINS.HEAD:\n${repl("x")}`,
+			_input: `[x.ts]\nPUT <1:\n${repl("x")}`,
 		});
 		expect(result.success).toBe(false);
 	});

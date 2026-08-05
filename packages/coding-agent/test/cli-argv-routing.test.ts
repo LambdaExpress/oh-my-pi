@@ -64,12 +64,10 @@ describe("resolveCliArgv routes subcommands hidden behind leading global flags",
 
 	test("removed worktree command names error instead of becoming launch prompts", () => {
 		expect(resolveCliArgv(["worktree", "list"])).toEqual({
-			error:
-				'`omp worktree` has been removed. Managed worktree operations are no longer exposed as a CLI command; run `omp launch worktree` if you meant to send "worktree" as a prompt.',
+			error: '`omp worktree` has been removed. Managed worktree operations are no longer exposed as a CLI command; run `omp launch worktree` if you meant to send "worktree" as a prompt.',
 		});
 		expect(resolveCliArgv(["wt"])).toEqual({
-			error:
-				'`omp wt` has been removed. Managed worktree operations are no longer exposed as a CLI command; run `omp launch wt` if you meant to send "wt" as a prompt.',
+			error: '`omp wt` has been removed. Managed worktree operations are no longer exposed as a CLI command; run `omp launch wt` if you meant to send "wt" as a prompt.',
 		});
 	});
 });

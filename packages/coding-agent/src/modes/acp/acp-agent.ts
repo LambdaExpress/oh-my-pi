@@ -82,7 +82,6 @@ import {
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { createAcpClientBridge } from "./acp-client-bridge";
 import {
-	buildToolCallStartUpdate,
 	extractAssistantMessageText,
 	mapAgentSessionEventToAcpSessionUpdates,
 	mapAsyncJobUpdateToAcpSessionUpdates,
@@ -303,7 +302,7 @@ function buildAcpSpeechModelsCatalog(): Record<string, unknown> {
 async function elicitFromAcpClient(
 	connection: AgentSideConnection,
 	sessionId: string,
-	method: "select" | "confirm" | "input",
+	method: "select" | "confirm" | "input" | "editor",
 	message: string,
 	property: ElicitationPropertySchema,
 	dialogOptions: ExtensionUIDialogOptions | undefined,
@@ -384,9 +383,9 @@ function isAcceptedElicitation(
  * symmetric with every other `sessionUpdate` call in this file
  * (`record.session.sessionId` is always evaluated at emit time).
  *
- * The non-elicitation surface (custom components, editor, theming,
- * terminal input) remains stubbed — ACP clients render those themselves
- * or not at all. Capability gating respects the client's `initialize`
+ * The non-elicitation surface (custom components, theming, terminal
+ * input) remains stubbed — ACP clients render those themselves or not
+ * at all. Capability gating respects the client's `initialize`
  * advertisement.
  */
 export function createAcpExtensionUiContext(
@@ -450,7 +449,18 @@ export function createAcpExtensionUiContext(
 		pasteToEditor: () => {},
 		setEditorText: () => {},
 		getEditorText: () => "",
-		editor: async () => undefined,
+		editor: async (title, prefill, dialogOptions) => {
+			if (!supportsForm) return undefined;
+			const value = await elicitFromAcpClient(
+				connection,
+				getSessionId(),
+				"editor",
+				title,
+				{ type: "string", ...(prefill ? { default: prefill } : {}) },
+				dialogOptions,
+			);
+			return typeof value === "string" ? value : undefined;
+		},
 		addAutocompleteProvider: () => {},
 		setEditorComponent: () => {},
 		get theme() {
@@ -658,11 +668,17 @@ export class AcpAgent implements Agent {
 			});
 		}
 
-		// For `thinking` the lifetime subscription pushes post-bootstrap. Before
-		// bootstrap, the generic config-option API must push its own response-safe
-		// notification because internal thinking events are intentionally suppressed.
-		const thinkingHandledBySubscription = params.configId === THINKING_CONFIG_ID && record.bootstrapComplete;
-		if (!thinkingHandledBySubscription) {
+		// For `model`/`thinking`, `#setModelById`/`#setThinkingLevelById` change
+		// the session model/thinking level through AgentSession, which now emits
+		// a lifetime event (`model_changed`/`thinking_level_changed`) that
+		// `#handleLifetimeEvent` turns into a push once the subscription is
+		// installed. Only push here when that subscription is not yet
+		// installed, so pre-bootstrap callers still see the change without a
+		// post-bootstrap duplicate.
+		const handledBySubscription =
+			(params.configId === THINKING_CONFIG_ID || params.configId === MODEL_CONFIG_ID) &&
+			record.lifetimeUnsubscribe !== undefined;
+		if (!handledBySubscription) {
 			await this.#pushConfigOptionUpdate(record);
 		}
 		return { configOptions: this.#buildConfigOptions(record.session) };
@@ -1178,13 +1194,15 @@ export class AcpAgent implements Agent {
 			}
 			return;
 		}
-		if (!record.bootstrapComplete) return;
-		if (event.type !== "thinking_level_changed") return;
+		if (event.type !== "thinking_level_changed" && event.type !== "model_changed") {
+			return;
+		}
 		try {
 			await this.#pushConfigOptionUpdate(record);
 		} catch (error) {
-			logger.warn("Failed to push thinking-level config_option_update", {
+			logger.warn("Failed to push config_option_update after a lifetime event", {
 				sessionId: record.session.sessionId,
+				eventType: event.type,
 				error,
 			});
 		}
@@ -1603,7 +1621,7 @@ export class AcpAgent implements Agent {
 	#buildThinkingOptions(session: AgentSession): Array<{ value: string; name: string; description?: string }> {
 		return [
 			{ value: THINKING_OFF, name: "Off" },
-			{ value: AUTO_THINKING, name: "Auto", description: "Auto-detect per prompt (low–xhigh)" },
+			{ value: AUTO_THINKING, name: "Auto", description: "Auto-detect per prompt" },
 			...session.getAvailableThinkingLevels().map(level => ({
 				value: level,
 				name: level,
@@ -1718,6 +1736,12 @@ export class AcpAgent implements Agent {
 			planExists: true,
 		};
 		if (!approved) {
+			// Rejection keeps plan mode active for another planning turn. Promote the
+			// reviewed path into plan-mode state so the next `#buildPlanModeMessage()`
+			// targets the plan just reviewed, not the stale state path.
+			if (state.planFilePath !== planFilePath) {
+				session.setPlanModeState({ ...state, planFilePath });
+			}
 			const normalizedTitle = normalizePlanTitle(resolvedTitle).title;
 			return {
 				content: [
@@ -2176,14 +2200,18 @@ export class AcpAgent implements Agent {
 					typeof toolItem.name === "string"
 				) {
 					const args = this.#buildReplayAssistantToolArgs(toolItem);
-					const update = buildToolCallStartUpdate({
-						toolCallId: toolItem.id,
-						toolName: toolItem.name,
-						args,
-						status: "completed",
-						cwd,
-					});
-					notifications.push({ sessionId, update });
+					notifications.push(
+						...mapAgentSessionEventToAcpSessionUpdates(
+							{
+								type: "tool_execution_start",
+								toolCallId: toolItem.id,
+								toolName: toolItem.name,
+								args,
+							},
+							sessionId,
+							{ cwd },
+						),
+					);
 					replayedToolCallIds.add(toolItem.id);
 					replayedToolCallArgs.set(toolItem.id, args);
 				}
@@ -2310,7 +2338,7 @@ export class AcpAgent implements Agent {
 			this.#clientCapabilities,
 		);
 		if (this.#clientCapabilities?.elicitation?.form != null) {
-			record.session.setUsageFallbackConfirmer(confirmation => {
+			record.session.setUsageFallbackConfirmer((confirmation, signal) => {
 				const reserve =
 					confirmation.remainingPercent === undefined
 						? "inside the configured reserve margin"
@@ -2318,6 +2346,7 @@ export class AcpAgent implements Agent {
 				return uiContext.confirm(
 					"Coding-plan reserve reached",
 					`${confirmation.from} has ${reserve}. Switch to ${confirmation.to}? Choose No to keep using the current plan.`,
+					{ signal },
 				);
 			});
 		}

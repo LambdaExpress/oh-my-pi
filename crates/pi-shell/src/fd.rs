@@ -511,6 +511,7 @@ struct SizeFilter {
 	bytes:    u64,
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Clone, Copy)]
 #[cfg_attr(not(unix), allow(dead_code, reason = "owner id matching is only implemented on Unix"))]
 enum OwnerSide {
@@ -518,6 +519,7 @@ enum OwnerSide {
 	Exclude(u32),
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 #[derive(Clone, Copy)]
 #[cfg_attr(not(unix), allow(dead_code, reason = "owner id matching is only implemented on Unix"))]
 struct OwnerMatcher {

@@ -3,8 +3,8 @@ import type { AsyncJob } from "@oh-my-pi/pi-coding-agent/async";
 import { SshTransferHud } from "@oh-my-pi/pi-coding-agent/modes/components/ssh-transfer-hud";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { buildAsyncResultBlock } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
-import { buildAsyncResultBatchMessage } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 import type { AsyncJobSnapshot, AsyncJobSnapshotItem } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { buildAsyncResultBatchMessage } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 import type { SshTransferToolDetails } from "@oh-my-pi/pi-coding-agent/tools/ssh-transfer";
 
 function details(status: SshTransferToolDetails["status"]): SshTransferToolDetails {
@@ -146,7 +146,7 @@ describe("SshTransferHud", () => {
 			settledAt: 300,
 		};
 		const message = buildAsyncResultBatchMessage([
-			{ jobId: asyncJob.id, result: "cancelled", job: asyncJob, durationMs: 2_000 },
+			{ jobId: asyncJob.id, result: "cancelled", job: asyncJob, durationMs: 2_000, epoch: 0 },
 		]);
 		expect(message).not.toBeNull();
 

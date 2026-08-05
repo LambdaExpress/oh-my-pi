@@ -479,6 +479,9 @@ export function formatTruncationMetaNotice(truncation: TruncationMeta): string {
 		} else {
 			notice = `Showing ${truncation.outputLines} of ${totalLines} lines; middle elided`;
 		}
+		if (truncation.nextOffset != null) {
+			notice += `. Use :${truncation.nextOffset} to continue`;
+		}
 		if (truncation.artifactId != null) {
 			notice += `. ${formatFullOutputReference(truncation.artifactId)}`;
 		}
@@ -661,6 +664,26 @@ export function resolveOutputSinkTailBytes(s: Settings | undefined): number {
 }
 
 /**
+ * Slack on top of the configured spill threshold before the final-defense
+ * inline byte cap fires. The OutputSink already bounds inline bodies to the
+ * threshold; only notice slop (wall time, exit code, elision marker,
+ * `[raw output: artifact://N]` footer) rides above it. The slack keeps the
+ * cap a genuine last resort for paths that bypass the sink (e.g. ACP
+ * client-bridge terminals) instead of re-truncating — and re-saving — every
+ * sink-elided result (the double-artifact `Artifact: N+1` vs `artifact://N`
+ * mismatch).
+ */
+const INLINE_CAP_SLACK_BYTES = 2 * 1024;
+
+/**
+ * Resolve the `enforceInlineByteCap` budget for streaming tools (bash/ssh)
+ * from session settings: the user's spill threshold plus notice slack.
+ */
+export function resolveInlineByteCapBudget(s: Settings | undefined): number {
+	return getSpillConfig(s).threshold + INLINE_CAP_SLACK_BYTES;
+}
+
+/**
  * Resolve the per-line column cap from session settings. Shared by streaming
  * executors (bash/python/ssh/eval via OutputSink) and the `read` tool's
  * line-buffer post-processing, so one setting controls both surfaces.
@@ -683,12 +706,22 @@ async function spillLargeResultToArtifact(
 ): Promise<AgentToolResult> {
 	const sessionManager = context?.sessionManager;
 	if (!sessionManager) return result;
-	if (toolName === "read") return result;
 	const { threshold, tailBytes, tailLines, headBytes } = getSpillConfig(context?.settings);
 
 	// Skip if tool already saved an artifact
 	const existingMeta: OutputMeta | undefined = result.details?.meta;
 	if (existingMeta?.truncation?.artifactId) return result;
+
+	// Reading an artifact already addresses recoverable full output. Spilling that
+	// read would only create a redundant artifact containing another artifact's
+	// page (and can repeat indefinitely on subsequent reads).
+	if (
+		toolName === "read" &&
+		existingMeta?.source?.type === "internal" &&
+		existingMeta.source.value.startsWith("artifact://")
+	) {
+		return result;
+	}
 
 	// Measure total text content
 	const textParts: string[] = [];
@@ -769,6 +802,7 @@ async function spillLargeResultToArtifact(
 			elidedLines,
 			elidedBytes,
 			artifactId,
+			nextOffset: existingMeta?.truncation?.nextOffset,
 		};
 	} else {
 		const shownStart = truncated.totalLines - outputLines + 1;
@@ -782,6 +816,7 @@ async function spillLargeResultToArtifact(
 			maxBytes: tailBytes,
 			shownRange: { start: shownStart, end: truncated.totalLines },
 			artifactId,
+			nextOffset: existingMeta?.truncation?.nextOffset,
 		};
 	}
 

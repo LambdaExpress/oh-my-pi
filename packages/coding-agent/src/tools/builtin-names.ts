@@ -20,6 +20,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"computer",
 	"checkpoint",
 	"rewind",
+	"security_scan",
 	"task",
 	"hub",
 	"todo",

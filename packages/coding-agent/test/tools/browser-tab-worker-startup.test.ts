@@ -128,6 +128,7 @@ describe("browser tab worker page activation", () => {
 				safeDir: "/tmp/omp-puppeteer",
 				targetId: "target-visible",
 				activatePageBeforeRun: true,
+				timeoutMs: 1_000,
 			},
 		});
 		await transport.ready.promise;
@@ -207,6 +208,7 @@ describe("browser tab worker run interception cleanup", () => {
 				browserWSEndpoint: "ws://127.0.0.1/devtools/browser/test",
 				safeDir: "/tmp/omp-puppeteer",
 				targetId: "target-interception",
+				timeoutMs: 1_000,
 			},
 		});
 		await transport.ready.promise;

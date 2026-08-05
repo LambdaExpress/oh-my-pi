@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { type } from "@oh-my-pi/omptype";
 import type {
 	AgentTool,
 	AgentToolResult,
@@ -7,7 +8,6 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import { Process } from "@oh-my-pi/pi-natives";
 import { getProjectDir, isEnoent } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import { buildNonInteractiveEnv } from "../exec/non-interactive-env";
 import { InternalUrlRouter } from "../internal-urls";

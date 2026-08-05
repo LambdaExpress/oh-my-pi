@@ -241,7 +241,7 @@ describe("OpenRouter pseudo API dual-surface request parity", () => {
 			reasoning: true,
 		});
 		const expected = [
-			[Effort.Minimal, "low"],
+			[Effort.Minimal, "minimal"],
 			[Effort.Low, "low"],
 			[Effort.Medium, "medium"],
 			[Effort.High, "high"],

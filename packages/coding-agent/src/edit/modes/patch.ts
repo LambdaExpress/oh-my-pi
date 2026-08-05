@@ -7,9 +7,9 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { isEnoent } from "@oh-my-pi/pi-utils";
-import { type } from "arktype";
 import {
 	type FileDiagnosticsResult,
 	flushLspWritethroughBatch,
@@ -19,6 +19,7 @@ import {
 import { FileChangeType, notifyWorkspaceWatchedFiles } from "../../lsp/client";
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
+import { assertEditableFile } from "../../tools/auto-generated-guard";
 import {
 	invalidateFsScanAfterDelete,
 	invalidateFsScanAfterRename,
@@ -2032,9 +2033,19 @@ export async function executePatchSingle(
 	const resolvedPath = targetPatchPath(target);
 	const resolvedRename = renameTarget ? targetPatchPath(renameTarget) : undefined;
 
-	// Capture pre-edit content so local post-write verification can prove the
-	// write actually hit disk. Remote protocol handlers own their persistence
-	// checks and must not be re-read through local fs APIs.
+	await assertEditableFile(resolvedPath, path, session.settings);
+
+	// Capture pre-edit content so we can verify the write actually hit disk.
+	// `LspFileSystem.writeFile` delegates to a writethrough callback that, in
+	// some host integrations, has been observed to report success without
+	// persisting bytes — leaving the tool to claim "Updated <path>" while the
+	// file on disk is byte-identical to before. After the write we re-read
+	// the file and assert the bytes match the expected newContent; relying
+	// on stat (mtime/size) is unreliable because filesystems with coarse
+	// timestamp resolution can record an unchanged mtime even when the
+	// content was rewritten, and same-length rewrites leave size unchanged.
+	// Remote protocol handlers own their persistence checks and must not be
+	// re-read through local fs APIs.
 	let preEditContent: Uint8Array | undefined;
 	if (target.kind === "local" && op === "update") {
 		try {
