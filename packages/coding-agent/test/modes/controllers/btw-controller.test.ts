@@ -498,7 +498,7 @@ describe("BtwController", () => {
 
 			expect(await controller.handleBranch()).toBe(true);
 			expect(handleBtwBranch).toHaveBeenCalledTimes(1);
-			const [question, promotedAssistant, leafId, sessionId, preludeMessages] = handleBtwBranch.mock.calls[0] ?? [];
+			const [question, promotedAssistant, , , preludeMessages] = handleBtwBranch.mock.calls[0] ?? [];
 			expect(question).toBe("why did this fail? focus on auth");
 			expect(promotedAssistant).toEqual(assistantMessage);
 			expect(preludeMessages).toHaveLength(1);
