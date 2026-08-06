@@ -38,6 +38,7 @@ export const ADDON_OUTPUTS: Record<string, string> = {
 	"darwin-x64-baseline": "pi_natives.darwin-x64-baseline.node",
 	"darwin-arm64": "pi_natives.darwin-arm64.node",
 	"win32-x64-baseline": "pi_natives.win32-x64-baseline.node",
+	"win32-x64-modern": "pi_natives.win32-x64-modern.node",
 };
 
 /** Aggregate filegroups → their member addon targets (mirrors BUILD.bazel). */
@@ -69,7 +70,9 @@ export function hostTargetName(host: HostInfo): string {
 		if (host.arch === "arm64") return "linux-arm64";
 		if (host.arch === "x64") return host.avx2 ? "linux-x64-modern" : "linux-x64-baseline";
 	}
-	if (host.platform === "win32" && host.arch === "x64") return "win32-x64-baseline";
+	if (host.platform === "win32" && host.arch === "x64") {
+		return host.avx2 ? "win32-x64-modern" : "win32-x64-baseline";
+	}
 	throw new Error(`No pi_natives addon target for host ${host.platform}-${host.arch}`);
 }
 
@@ -216,7 +219,15 @@ async function installAddon(sourcePath: string, destPath: string): Promise<void>
 
 async function main(): Promise<void> {
 	const options = parseCliArgs(process.argv.slice(2));
-	const host: HostInfo = { platform: process.platform, arch: process.arch, avx2: detectHostAvx2Support() };
+	const targetVariant = Bun.env.TARGET_VARIANT?.trim();
+	if (targetVariant && targetVariant !== "baseline" && targetVariant !== "modern") {
+		throw new Error(`Unsupported TARGET_VARIANT: ${targetVariant}. Expected baseline or modern.`);
+	}
+	const host: HostInfo = {
+		platform: process.platform,
+		arch: process.arch,
+		avx2: targetVariant ? targetVariant === "modern" : detectHostAvx2Support(),
+	};
 	const destDir = options.dest ? path.resolve(options.dest) : path.join(repoRoot, "packages/natives/native");
 	let outputs: string[];
 
@@ -232,8 +243,16 @@ async function main(): Promise<void> {
 		// endpoint composition stays in .github/actions/bazel-cache.
 		const rcPath = Bun.env.OMP_BAZEL_RC?.trim();
 		const startupArgs = rcPath ? [`--bazelrc=${rcPath}`] : [];
+		const hostArgs =
+			host.platform === "win32"
+				? [
+						`--override_repository=msvc_cc=${path
+							.join(repoRoot, "bazel/toolchains/msvc/host-windows")
+							.replaceAll("\\", "/")}`,
+					]
+				: [];
 
-		const buildArgs = [...startupArgs, "build", ...options.bazelArgs, "--", ...labels];
+		const buildArgs = [...startupArgs, "build", ...hostArgs, ...options.bazelArgs, "--", ...labels];
 		console.log(`$ ${path.basename(bazel)} ${buildArgs.join(" ")}`);
 		const build = await runBazel(bazel, buildArgs, "inherit");
 		if (build.exitCode !== 0) {
@@ -246,7 +265,7 @@ async function main(): Promise<void> {
 		// into a single union rather than positional args.
 		const cquery = await runBazel(
 			bazel,
-			[...startupArgs, "cquery", ...options.bazelArgs, "--output=files", labels.join(" + ")],
+			[...startupArgs, "cquery", ...hostArgs, ...options.bazelArgs, "--output=files", labels.join(" + ")],
 			"pipe",
 		);
 		if (cquery.exitCode === 0) {

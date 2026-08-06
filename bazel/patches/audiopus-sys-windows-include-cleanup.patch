@@ -1,0 +1,14 @@
+--- a/build.rs
++++ b/build.rs
+@@ -46,6 +46,11 @@ fn build_opus(is_static: bool) {
+     let opus_build_dir = cmake::Config::new(opus_path)
+         // link_opus() expects the installed archive under <prefix>/lib.
+         .define("CMAKE_INSTALL_LIBDIR", "lib")
+         .build();
++    // Bazel's output-tree validation rejects symlinks whose targets only
++    // exist while the action runs (the runfiles/execroot view on Windows
++    // hosts); the installed headers are not needed for linking, so drop them.
++    #[cfg(windows)]
++    let _ = std::fs::remove_dir_all(opus_build_dir.join("include"));
+     link_opus(is_static, opus_build_dir.display())
+ }

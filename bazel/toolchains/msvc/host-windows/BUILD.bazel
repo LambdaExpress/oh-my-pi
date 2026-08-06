@@ -1,0 +1,3 @@
+# Windows execution-host override for @msvc_cc. Windows native builds use the
+# system MSVC toolchain; audiopus_sys only needs this CMake toolchain file.
+exports_files(["toolchain.cmake"])

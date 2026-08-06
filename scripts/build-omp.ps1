@@ -119,12 +119,19 @@ function Get-NativeBuildInputs {
 		"Cargo.lock",
 		"rust-toolchain.toml",
 		"packages/natives/package.json",
-		"packages/natives/scripts/build-native.ts",
+		"scripts/bazel-natives.ts",
+		"BUILD.bazel",
+		"MODULE.bazel",
+		"MODULE.bazel.lock",
+		".bazelrc",
+		".bazelversion",
 		"packages/natives/scripts/gen-enums.ts",
 		"scripts/host-detect.ts"
 	)) {
 		Get-Item -LiteralPath (Join-Path $RepoRoot $relativePath)
 	}
+
+	Get-ChildItem -LiteralPath (Join-Path $RepoRoot "bazel") -File -Recurse -Force
 }
 
 function Get-NativeBuildReason {
@@ -214,7 +221,6 @@ try {
 } catch {
 	Write-Host ""
 	Write-Host "Build failed: $($_.Exception.Message)" -ForegroundColor Red
-	[void] (Read-Host "Press Enter to exit")
 	throw
 } finally {
 	Pop-Location

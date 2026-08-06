@@ -77,7 +77,10 @@ async function runCommand(
 async function main(): Promise<void> {
 	const crossBuild = resolveCrossBuild(Bun.env.CROSS_TARGET);
 	const outName = crossBuild ? `omp-${crossBuild.id}` : "omp";
-	const outputPath = path.join(packageDir, "dist", outName);
+	const configuredOutput = Bun.env.OMP_BINARY_OUTFILE?.trim();
+	const outputPath = configuredOutput
+		? path.resolve(packageDir, configuredOutput)
+		: path.join(packageDir, "dist", outName);
 	// Generate inside the try so the finally always restores the empty checked-in
 	// placeholders (stats client archive, docs index) even on failure.
 	try {

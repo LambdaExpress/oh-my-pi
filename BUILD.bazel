@@ -22,6 +22,7 @@ _ADDONS = {
     "darwin-x64-baseline": ("//bazel/platforms:darwin-x64-baseline", "pi_natives.darwin-x64-baseline.node"),
     "darwin-arm64": ("//bazel/platforms:darwin-arm64", "pi_natives.darwin-arm64.node"),
     "win32-x64-baseline": ("//bazel/platforms:win32-x64-baseline", "pi_natives.win32-x64-baseline.node"),
+    "win32-x64-modern": ("//bazel/platforms:win32-x64-modern", "pi_natives.win32-x64-modern.node"),
 }
 
 [

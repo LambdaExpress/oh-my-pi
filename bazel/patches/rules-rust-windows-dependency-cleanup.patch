@@ -1,0 +1,138 @@
+diff --git a/util/process_wrapper/main.rs b/util/process_wrapper/main.rs
+--- a/util/process_wrapper/main.rs
++++ b/util/process_wrapper/main.rs
+@@ -83,25 +83,29 @@
+ #[cfg(windows)]
+ struct TemporaryDirectoryGuard {
+     path: Option<PathBuf>,
++    files: Vec<PathBuf>,
+ }
+ 
+ #[cfg(windows)]
+ impl TemporaryDirectoryGuard {
+-    fn new(path: Option<PathBuf>) -> Self {
+-        Self { path }
+-    }
+-
+-    fn take(&mut self) -> Option<PathBuf> {
+-        self.path.take()
++    fn new(path: Option<PathBuf>, files: Vec<PathBuf>) -> Self {
++        Self { path, files }
++    }
++
++    fn cleanup(&mut self) {
++        for file in self.files.drain(..) {
++            let _ = fs::remove_file(file);
++        }
++        if let Some(path) = self.path.take() {
++            let _ = fs::remove_dir_all(path);
++        }
+     }
+ }
+ 
+ #[cfg(windows)]
+ impl Drop for TemporaryDirectoryGuard {
+     fn drop(&mut self) {
+-        if let Some(path) = self.path.take() {
+-            let _ = fs::remove_dir_all(path);
+-        }
++        self.cleanup();
+     }
+ }
+ 
+@@ -110,19 +114,17 @@
+ 
+ #[cfg(not(windows))]
+ impl TemporaryDirectoryGuard {
+-    fn new(_: Option<PathBuf>) -> Self {
++    fn new(_: Option<PathBuf>, _: Vec<PathBuf>) -> Self {
+         TemporaryDirectoryGuard
+     }
+ 
+-    fn take(&mut self) -> Option<PathBuf> {
+-        None
+-    }
++    fn cleanup(&mut self) {}
+ }
+ 
+ #[cfg(windows)]
+ fn get_dependency_search_paths_from_args(
+     initial_args: &[String],
+-) -> Result<(Vec<PathBuf>, Vec<String>), ProcessWrapperError> {
++) -> Result<(Vec<PathBuf>, Vec<String>, Vec<PathBuf>), ProcessWrapperError> {
+     let mut dependency_paths = Vec::new();
+     let mut filtered_args = Vec::new();
+     let mut argfile_contents: HashMap<String, Vec<String>> = HashMap::new();
+@@ -163,23 +165,25 @@
+         }
+     }
+ 
++    let mut filtered_argfiles = Vec::with_capacity(argfile_contents.len());
+     for (path, content) in argfile_contents {
+         fs::write(&path, content.join("\n")).map_err(|e| {
+             ProcessWrapperError(format!("unable to write filtered argfile {}: {}", path, e))
+         })?;
+-    }
+-
+-    Ok((dependency_paths, filtered_args))
++        filtered_argfiles.push(PathBuf::from(path));
++    }
++
++    Ok((dependency_paths, filtered_args, filtered_argfiles))
+ }
+ 
+ #[cfg(windows)]
+ fn consolidate_dependency_search_paths(
+     args: &[String],
+-) -> Result<(Vec<String>, Option<PathBuf>), ProcessWrapperError> {
+-    let (dependency_paths, mut filtered_args) = get_dependency_search_paths_from_args(args)?;
++) -> Result<(Vec<String>, Option<PathBuf>, Vec<PathBuf>), ProcessWrapperError> {
++    let (dependency_paths, mut filtered_args, filtered_argfiles) = get_dependency_search_paths_from_args(args)?;
+ 
+     if dependency_paths.is_empty() {
+-        return Ok((filtered_args, None));
++        return Ok((filtered_args, None, filtered_argfiles));
+     }
+ 
+     let unique_suffix = SystemTime::now()
+@@ -268,14 +272,14 @@
+ 
+     filtered_args.push(format!("-Ldependency={}", unified_dir.display()));
+ 
+-    Ok((filtered_args, Some(unified_dir)))
++    Ok((filtered_args, Some(unified_dir), filtered_argfiles))
+ }
+ 
+ #[cfg(not(windows))]
+ fn consolidate_dependency_search_paths(
+     args: &[String],
+-) -> Result<(Vec<String>, Option<PathBuf>), ProcessWrapperError> {
+-    Ok((args.to_vec(), None))
++) -> Result<(Vec<String>, Option<PathBuf>, Vec<PathBuf>), ProcessWrapperError> {
++    Ok((args.to_vec(), None, Vec::new()))
+ }
+ 
+ fn json_warning(line: &str) -> JsonValue {
+@@ -325,9 +329,9 @@
+ fn main() -> Result<(), ProcessWrapperError> {
+     let opts = options().map_err(|e| ProcessWrapperError(e.to_string()))?;
+ 
+-    let (child_arguments, dep_dir_cleanup) =
++    let (child_arguments, dep_dir_cleanup, filtered_argfiles) =
+         consolidate_dependency_search_paths(&opts.child_arguments)?;
+-    let mut temp_dir_guard = TemporaryDirectoryGuard::new(dep_dir_cleanup);
++    let mut temp_dir_guard = TemporaryDirectoryGuard::new(dep_dir_cleanup, filtered_argfiles);
+ 
+     let mut command = Command::new(opts.executable);
+     command
+@@ -437,9 +441,7 @@
+         }
+     }
+ 
+-    if let Some(path) = temp_dir_guard.take() {
+-        let _ = fs::remove_dir_all(path);
+-    }
++    temp_dir_guard.cleanup();
+ 
+     exit(code)
+ }

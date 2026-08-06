@@ -21,6 +21,22 @@ module(name = "oh-my-pi")
 bazel_dep(name = "bazel_skylib", version = "1.8.2")
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "rules_rust", version = "0.71.3")
+
+# Windows rustc appends every -Ldependency path to the child PATH. Large
+# dependency graphs can exceed the 32,767-character environment-variable
+# limit and surface as E0463. Consolidate dependency files behind one search
+# directory in process_wrapper; the second upstream patch handles the
+# response files used by rustc actions. See rules_rust#3767.
+single_version_override(
+    module_name = "rules_rust",
+    patch_strip = 1,
+    patches = [
+        "//bazel/patches:rules-rust-windows-dependency-paths.patch",
+        "//bazel/patches:rules-rust-windows-argfiles.patch",
+        "//bazel/patches:rules-rust-windows-dependency-cleanup.patch",
+        "//bazel/patches:rules-rust-process-wrapper-params.patch",
+    ],
+)
 bazel_dep(name = "hermetic_cc_toolchain", version = "4.2.0")
 
 # zig 0.14's cache corrupts under concurrent `zig cc` (ziglang/zig#18763);
@@ -157,8 +173,25 @@ crate.from_cargo(
 # crate picks up CC/CFLAGS from the Bazel cc toolchain on its own.
 crate.annotation(
     crate = "audiopus_sys",
-    patches = ["//bazel/patches:audiopus-sys-libdir.patch"],
+    patches = [
+        "//bazel/patches:audiopus-sys-libdir.patch",
+        # Windows hosts: CMake install copies the runfiles' symlinked headers
+        # as symlinks into the bazel output tree, whose targets vanish after
+        # the action; drop the unneeded include dir (cfg(windows) only).
+        "//bazel/patches:audiopus-sys-windows-include-cleanup.patch",
+        # Windows hosts: locate the VS-bundled CMake/Ninja via vswhere so the
+        # build script does not need CMAKE action env vars (any non-empty
+        # rustc env breaks large-crate extern loading on Windows).
+        "//bazel/patches:audiopus-sys-windows-cmake-locate.patch",
+    ],
     patch_args = ["-p1"],
+    # The cmake crate receives CMAKE_TOOLCHAIN_FILE ($${pwd}/external/...)
+    # from build_script_env below; declaring the file as build script data
+    # makes bazel fetch @msvc_cc and expose it in the exec root view even on
+    # hosts where the msvc-cc cc_toolchain never resolves (Windows hosts use
+    # local_config_cc and would otherwise fail CMake configuration because
+    # the toolchain file does not exist).
+    build_script_data = ["@@+msvc_cc_repository+msvc_cc//:toolchain.cmake"],
     build_script_env = {
         "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
         # Release artifacts must use the vendored Opus rather than a host

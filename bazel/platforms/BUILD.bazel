@@ -59,3 +59,12 @@ platform(
         "//bazel/variants:baseline",
     ],
 )
+
+platform(
+    name = "win32-x64-modern",
+    constraint_values = [
+        "@platforms//os:windows",
+        "@platforms//cpu:x86_64",
+        "//bazel/variants:modern",
+    ],
+)

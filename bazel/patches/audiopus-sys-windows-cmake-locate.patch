@@ -1,0 +1,62 @@
+diff --git a/build.rs b/build.rs
+--- a/build.rs
++++ b/build.rs
+@@ -130,7 +130,58 @@
+     }
+ }
+ 
++// On Windows hosts the build-script PATH from the bazel crate.annotation is
++// Unix-formatted and useless, and cmake-rs cannot auto-detect VS because
++// Build Tools ships no devenv.exe. Locate the CMake/Ninja bundled with the
++// VS installation via vswhere and expose them through the env vars cmake-rs
++// reads first. cfg(windows) scopes this to Windows exec hosts only, so
++// linux/mac cross builds keep using the annotation PATH.
++#[cfg(windows)]
++fn configure_cmake_env() {
++    let vswhere = std::path::Path::new(
++        r"C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe",
++    );
++    if !vswhere.exists() {
++        return;
++    }
++    let probe = |relative: &str| -> Option<std::path::PathBuf> {
++        let output = std::process::Command::new(vswhere)
++            .args([
++                "-latest",
++                "-products",
++                "*",
++                "-requires",
++                "Microsoft.VisualStudio.Component.VC.CMake.Project",
++                "-find",
++                relative,
++            ])
++            .output()
++            .ok()?;
++        if !output.status.success() {
++            return None;
++        }
++        let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
++        if path.is_empty() {
++            None
++        } else {
++            Some(std::path::PathBuf::from(path))
++        }
++    };
++    if let Some(cmake) =
++        probe(r"Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe")
++    {
++        env::set_var("CMAKE", cmake);
++    }
++    if let Some(ninja) = probe(r"Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe")
++    {
++        env::set_var("CMAKE_MAKE_PROGRAM", ninja);
++    }
++}
++
+ fn main() {
++    #[cfg(windows)]
++    configure_cmake_env();
++
+     #[cfg(feature = "generate_binding")]
+     generate_binding();
+ 

@@ -84,6 +84,20 @@ process.stdout.write(JSON.stringify([
 		expect(bundledModuleKeys.has("@oh-my-pi/pi-ai/oauth/openai-codex")).toBe(true);
 	});
 
+	it("renders nested wildcard exports with portable module keys and bindings", async () => {
+		const key = "@oh-my-pi/pi-ai/providers/cursor/exec-modern";
+		const entry = (await collectBundledPiEntries()).find(candidate => candidate.key === key);
+		expect(entry).toEqual({
+			key,
+			binding: "bundledPiAiProvidersCursorExecModern",
+			importSpecifier: key,
+		});
+
+		const source = __renderLegacyPiVirtualModule([entry!]);
+		const output = new Bun.Transpiler({ loader: "ts" }).transformSync(source);
+		expect(output).toContain("const bundledPiAiProvidersCursorExecModern");
+	});
+
 	it("actually loads the shim's shared Pi translation through the bundled registry", async () => {
 		// The legacy shim performs the same Pi arg translation as the modern
 		// bridge and imports the shared helpers rather than copying them. Those
