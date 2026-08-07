@@ -1622,6 +1622,17 @@ export class Theme {
 		return `${ansi}${text}\x1b[39m`; // Reset only foreground color
 	}
 
+	/**
+	 * Foreground-color `text` with a raw color value (hex or 256-index),
+	 * bypassing the theme's named color slots. Used by fixed semantic palettes
+	 * that must not vary with the active theme — e.g. the context gauge's alert
+	 * colors, which stay distinguishable under every theme (see
+	 * `context-thresholds.ts`).
+	 */
+	fgHex(color: string, text: string): string {
+		return `${fgAnsi(color, this.mode)}${text}\x1b[39m`;
+	}
+
 	bg(color: ThemeBg, text: string): string {
 		const ansi = this.#bgColors[color];
 		if (!ansi) throw new Error(`Unknown theme background color: ${color}`);
