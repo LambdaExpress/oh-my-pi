@@ -80,6 +80,9 @@ enum PanicDisposition {
 /// Install the panic and allocation-error hooks. Idempotent.
 pub fn install() {
 	INSTALL.call_once(|| {
+		#[cfg(target_os = "windows")]
+		segv::install();
+
 		let prev_panic = std::panic::take_hook();
 		std::panic::set_hook(Box::new(move |info| match panic_disposition() {
 			PanicDisposition::LoggedRecoverable => {
@@ -147,6 +150,8 @@ fn panic_disposition() -> PanicDisposition {
 enum CrashKind {
 	Panic,
 	Alloc,
+	#[cfg(target_os = "windows")]
+	Segv,
 }
 
 impl CrashKind {
@@ -154,7 +159,148 @@ impl CrashKind {
 		match self {
 			Self::Panic => "panic",
 			Self::Alloc => "alloc",
+			#[cfg(target_os = "windows")]
+			Self::Segv => "segv",
 		}
+	}
+}
+
+/// Windows-only access-violation (segfault) diagnostics.
+///
+/// A Rust panic hook never sees a `SIGSEGV`: on Windows that surfaces as a
+/// structured `EXCEPTION_ACCESS_VIOLATION`, which Bun's own crash reporter
+/// prints as `panic(<thread>): Segmentation fault at address 0x…` and then
+/// exits without any module/offset detail. This first-chance vectored
+/// handler records the faulting address, the loaded module that contains it,
+/// and its RVA so a post-mortem can resolve the exact instruction (export
+/// tables symbolise dense `onig_*`/`tree-sitter` names, so offsets are the
+/// only reliable signal without PDBs).
+///
+/// The handler always returns `EXCEPTION_CONTINUE_SEARCH` so Bun's own crash
+/// reporting keeps running unchanged; the report file is purely additive.
+#[cfg(target_os = "windows")]
+mod segv {
+	use std::{
+		ffi::c_void,
+		fmt::Write as _,
+		sync::atomic::{AtomicBool, Ordering},
+	};
+
+	const EXCEPTION_ACCESS_VIOLATION: u32 = 0xc000_0005;
+	const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
+	const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x0000_0004;
+
+	// Hand-declared rather than windows-sys: the Bazel lockfile pins the
+	// workspace feature set, so adding a windows-sys feature requires a
+	// cargo-bazel regen. These three functions need no loader-lock heavy
+	// machinery and keep the crash handler free of new dependencies.
+	#[link(name = "kernel32")]
+	unsafe extern "system" {
+		fn AddVectoredExceptionHandler(
+			first: u32,
+			handler: Option<unsafe extern "system" fn(*mut ExceptionPointers) -> i32>,
+		) -> *mut c_void;
+		fn GetModuleHandleExW(flags: u32, name: *const u16, module: *mut *mut c_void) -> i32;
+		fn GetModuleFileNameW(module: *mut c_void, name: *mut u16, size: u32) -> u32;
+	}
+
+	#[repr(C)]
+	struct ExceptionRecord {
+		code:    u32,
+		flags:   u32,
+		record:  *mut ExceptionRecord,
+		address: *mut c_void,
+		info:    [usize; 15],
+	}
+
+	#[repr(C)]
+	struct ExceptionPointers {
+		record:  *mut ExceptionRecord,
+		context: *mut c_void,
+	}
+
+	/// Re-entrancy guard: the fault may be heap corruption, and report
+	/// formatting allocates. One report per crash is enough; a second fault
+	/// while reporting is dropped.
+	static ACTIVE: AtomicBool = AtomicBool::new(false);
+
+	/// Register the first-chance vectored exception handler. Idempotent-safe
+	/// (called from `install()`'s `Once`).
+	pub(super) fn install() {
+		unsafe {
+			AddVectoredExceptionHandler(1, Some(handler));
+		}
+	}
+
+	unsafe extern "system" fn handler(pointers: *mut ExceptionPointers) -> i32 {
+		if pointers.is_null() || ACTIVE.swap(true, Ordering::AcqRel) {
+			return EXCEPTION_CONTINUE_SEARCH;
+		}
+		let record = unsafe { &*(*pointers).record };
+		if record.code != EXCEPTION_ACCESS_VIOLATION {
+			ACTIVE.store(false, Ordering::Release);
+			return EXCEPTION_CONTINUE_SEARCH;
+		}
+		let _ = std::panic::catch_unwind(|| {
+			let info = record.info;
+			let write = info.len() >= 2 && info[0] != 0;
+			let fault = info.get(1).copied().unwrap_or(0);
+			let report = format_segv_report(record.address as usize, fault, write);
+			super::persist(&report, super::CrashKind::Segv, false);
+		});
+		ACTIVE.store(false, Ordering::Release);
+		EXCEPTION_CONTINUE_SEARCH
+	}
+
+	/// Resolve `address` to the loaded module that contains it, as
+	/// `(module path, RVA within module)`. Uses the `FROM_ADDRESS` variant,
+	/// which walks the loaded-module list without taking the loader lock.
+	pub(super) fn resolve_module(address: usize) -> Option<(String, usize)> {
+		unsafe {
+			let mut module: *mut c_void = core::ptr::null_mut();
+			if GetModuleHandleExW(
+				GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+				address as *const u16,
+				&mut module,
+			) == 0 || module.is_null()
+			{
+				return None;
+			}
+			let mut buffer = [0u16; 1024];
+			let len = GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as u32);
+			if len == 0 {
+				return None;
+			}
+			let name = String::from_utf16_lossy(&buffer[..len as usize]);
+			Some((name, address.wrapping_sub(module as usize)))
+		}
+	}
+
+	/// Format the access-violation report persisted by the vectored handler.
+	pub(super) fn format_segv_report(address: usize, fault: usize, write: bool) -> String {
+		let thread_name = super::thread::current()
+			.name()
+			.unwrap_or("<unnamed>")
+			.to_owned();
+		let now_ms = super::unix_millis();
+		let mut out = String::new();
+		let _ = writeln!(out, "pi-natives segv crash");
+		let _ = writeln!(out, "pid:       {}", super::process::id());
+		let _ = writeln!(out, "thread:    {thread_name}");
+		let _ = writeln!(out, "timestamp: {now_ms} (unix ms)");
+		let _ = writeln!(out, "access:    {}", if write { "write" } else { "read" });
+		let _ = writeln!(out, "faulting address: 0x{fault:016x}");
+		let _ = writeln!(out, "crash address:    0x{address:016x}");
+		match resolve_module(address) {
+			Some((name, rva)) => {
+				let _ = writeln!(out, "module:    {name}");
+				let _ = writeln!(out, "offset:    0x{rva:x} (RVA in module)");
+			},
+			None => {
+				let _ = writeln!(out, "module:    <outside loaded modules>");
+			},
+		}
+		out
 	}
 }
 
@@ -602,5 +748,33 @@ mod tests {
 			alloc_log,
 			PathBuf::from("/tmp/pi-natives-test-home/.omp/logs/native-alloc-99-1.log")
 		);
+	}
+
+	#[cfg(all(test, target_os = "windows"))]
+	#[test]
+	fn segv_report_resolves_module_and_marks_access() {
+		// The test binary itself is a loaded module, so the function address
+		// must resolve to it with a small RVA.
+		let probe = segv::format_segv_report as usize;
+		let (name, rva) = segv::resolve_module(probe).expect("test binary is a loaded module");
+		assert!(!name.is_empty(), "module name should not be empty");
+		assert!(rva < 0x7fff_ffff, "RVA should be small, got 0x{rva:x}");
+
+		let report = segv::format_segv_report(probe, probe, true);
+		assert!(report.contains("pi-natives segv crash"), "report missing header: {report}");
+		assert!(report.contains("access:    write"), "report missing access kind: {report}");
+		assert!(report.contains("module:"), "report missing module: {report}");
+		assert!(report.contains("offset:"), "report missing offset: {report}");
+
+		let read_report = segv::format_segv_report(probe, 0, false);
+		assert!(read_report.contains("access:    read"), "report missing read kind: {read_report}");
+	}
+
+	#[cfg(all(test, target_os = "windows"))]
+	#[test]
+	fn build_crash_log_path_tags_segv_kind() {
+		let dir = Path::new("/tmp/pi-natives-test-home/.omp/logs");
+		let log = build_crash_log_path(dir, CrashKind::Segv, 7, 1);
+		assert_eq!(log, PathBuf::from("/tmp/pi-natives-test-home/.omp/logs/native-segv-7-1.log"));
 	}
 }
