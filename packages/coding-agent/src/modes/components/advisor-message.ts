@@ -7,6 +7,7 @@ import {
 	type ToolUIColor,
 	wrapTextWithAnsi,
 } from "../../tools/render-utils";
+import { t } from "../../i18n";
 import { Ellipsis, truncateToWidth } from "../../tui";
 import type { Theme } from "../theme/theme";
 
@@ -54,13 +55,13 @@ export function createAdvisorMessageCard(
 ): Component {
 	const notes = details?.notes ?? [];
 	const blockers = notes.filter(note => note.severity === "blocker").length;
-	const meta: string[] = [`${notes.length} ${notes.length === 1 ? "note" : "notes"}`];
-	if (blockers > 0) meta.push(uiTheme.fg("error", `${blockers} blocker${blockers === 1 ? "" : "s"}`));
+	const meta: string[] = [`${notes.length} ${notes.length === 1 ? t("note") : t("notes")}`];
+	if (blockers > 0) meta.push(uiTheme.fg("error", `${blockers} ${blockers === 1 ? t("blocker") : t("blockers")}`));
 
 	return createCachedComponent(
 		getExpanded,
 		(width, expanded) => {
-			const tag = uiTheme.fg("customMessageLabel", uiTheme.bold(`${uiTheme.status.info} Advisor`));
+			const tag = uiTheme.fg("customMessageLabel", uiTheme.bold(`${uiTheme.status.info} ${t("Advisor")}`));
 			const lines = [`${tag} ${uiTheme.fg("dim", meta.join(uiTheme.sep.dot))}`];
 			const railGlyph = uiTheme.symbol("advisor.rail");
 			const shown = expanded ? notes : notes.slice(0, COLLAPSED_NOTES);
@@ -100,7 +101,7 @@ export function createAdvisorMessageCard(
 			const hidden = notes.length - shown.length;
 			if (hidden > 0) {
 				const rail = uiTheme.fg("dim", railGlyph);
-				lines.push(`  ${rail} ${uiTheme.fg("dim", `… +${hidden} more ${hidden === 1 ? "note" : "notes"}`)}`);
+				lines.push(`  ${rail} ${uiTheme.fg("dim", `… +${hidden} more ${hidden === 1 ? t("note") : t("notes")}`)}`);
 			}
 			return lines.map(line => truncateToWidth(line, width, Ellipsis.Unicode));
 		},

@@ -22,6 +22,7 @@ import type { TtsrSettings } from "../config/settings-schema";
 import { initializeWithSettings, loadCapability } from "../discovery";
 import { buildRuleFromMarkdown, createSourceMeta } from "../discovery/helpers";
 import type { TtsrManager } from "../export/ttsr";
+import { t } from "../i18n";
 
 export type TtsrAction = "test" | "list" | "scan";
 
@@ -153,13 +154,13 @@ async function readSnippet(opts: { snippet?: string; file?: string }): Promise<s
 		const resolved = path.resolve(opts.file);
 		const file = Bun.file(resolved);
 		if (!(await file.exists())) {
-			throw new Error(`Snippet file not found: ${resolved}`);
+			throw new Error(t("Snippet file not found: {path}", { path: resolved }));
 		}
 		return await file.text();
 	}
 	if (opts.snippet !== undefined) return opts.snippet;
 	if (process.stdin.isTTY === false) return await Bun.stdin.text();
-	throw new Error("No snippet provided. Pass inline text, --file <path>, or pipe via --file -.");
+	throw new Error(t("No snippet provided. Pass inline text, --file <path>, or pipe via --file -."));
 }
 
 function previewSnippet(text: string): string {
@@ -240,7 +241,7 @@ async function evaluate(
 			defined: { regex: rule.condition ?? [], ast: rule.astCondition ?? [] },
 		};
 		if (!astEligible && (rule.astCondition ?? []).length > 0) {
-			detail.skippedAst = "astCondition requires --source tool and a --path with a file extension";
+			detail.skippedAst = t("astCondition requires --source tool and a --path with a file extension");
 		}
 		(hitNames.has(rule.name) ? triggered : notTriggered).push(detail);
 	}
@@ -300,7 +301,7 @@ async function readIsolatedRule(rulePath: string): Promise<Rule> {
 	const resolved = path.resolve(rulePath);
 	const file = Bun.file(resolved);
 	if (!(await file.exists())) {
-		throw new Error(`Rule file not found: ${resolved}`);
+		throw new Error(t("Rule file not found: {path}", { path: resolved }));
 	}
 	const content = await file.text();
 	const name = path.basename(resolved).replace(/\.(md|mdc)$/, "");
@@ -322,7 +323,10 @@ async function loadIsolatedRule(rulePath: string): Promise<{ rules: Rule[]; mana
 	});
 	if (!manager.addRule(rule)) {
 		throw new Error(
-			`Rule "${rule.name}" has no usable TTSR condition. Add a \`condition\` (regex) or \`astCondition\` (ast-grep pattern) to its frontmatter.`,
+			t(
+				'Rule "{name}" has no usable TTSR condition. Add a `condition` (regex) or `astCondition` (ast-grep pattern) to its frontmatter.',
+				{ name: rule.name },
+			),
 		);
 	}
 	return { rules: manager.getRules(), manager };
@@ -335,7 +339,12 @@ async function loadIsolatedScanRule(rulePath: string): Promise<Rule[]> {
 
 async function runTest(args: TtsrTestArgs, json: boolean, cwd: string): Promise<void> {
 	if (args.source && !TTSR_SOURCES.includes(args.source)) {
-		throw new Error(`Invalid --source: ${args.source}. Expected one of: ${TTSR_SOURCES.join(", ")}`);
+		throw new Error(
+			t("Invalid --source: {source}. Expected one of: {values}", {
+				source: args.source,
+				values: TTSR_SOURCES.join(", "),
+			}),
+		);
 	}
 
 	const snippet = await readSnippet(args);
@@ -353,7 +362,10 @@ async function runTest(args: TtsrTestArgs, json: boolean, cwd: string): Promise<
 	// that so a false negative reads as a context mismatch, not a bad regex.
 	const inferenceNote =
 		!args.source && filePath && source === "text"
-			? `inferred --source text from '${path.extname(filePath) || filePath}' (not in the source-file extension set); pass --source tool --tool edit to evaluate tool-scoped rules`
+			? t(
+					"inferred --source text from '{ext}' (not in the source-file extension set); pass --source tool --tool edit to evaluate tool-scoped rules",
+					{ ext: path.extname(filePath) || filePath },
+				)
 			: undefined;
 
 	const context: TtsrMatchContext = {
@@ -366,8 +378,8 @@ async function runTest(args: TtsrTestArgs, json: boolean, cwd: string): Promise<
 
 	if (rules.length === 0) {
 		const msg = args.rule
-			? "Rule registered but produced no TTSR entry."
-			: "No TTSR rules registered for this project. Add a `condition` or `astCondition` to a rule file, then re-run.";
+			? t("Rule registered but produced no TTSR entry.")
+			: t("No TTSR rules registered for this project. Add a `condition` or `astCondition` to a rule file, then re-run.");
 		if (json) {
 			process.stdout.write(`${JSON.stringify({ error: msg })}\n`);
 		} else {
@@ -400,24 +412,26 @@ async function runTest(args: TtsrTestArgs, json: boolean, cwd: string): Promise<
 
 function renderTestReport(report: TestReport, verbose: boolean, isolated: boolean): void {
 	const ctxLabel = report.source === "tool" ? `tool:${report.tool ?? "?"}` : report.source;
-	const pathLabel = report.filePath ? ` path=${report.filePath}` : "";
+	const pathLabel = report.filePath ? t(" path={path}", { path: report.filePath }) : "";
 	process.stdout.write(
-		`${chalk.bold("TTSR test")} — source=${chalk.cyan(ctxLabel)}${pathLabel} snippet=${chalk.dim(`${report.snippetBytes}b`)}\n`,
+		`${chalk.bold(t("TTSR test"))} — ${t("source={source}", { source: chalk.cyan(ctxLabel) })}${pathLabel} ${t("snippet={snippet}", { snippet: chalk.dim(`${report.snippetBytes}b`) })}\n`,
 	);
 	process.stdout.write(`${chalk.dim(`  "${report.snippetPreview}"`)}\n\n`);
 	if (report.inferenceNote) {
-		process.stdout.write(`${chalk.yellow(`note: ${report.inferenceNote}`)}\n\n`);
+		process.stdout.write(`${chalk.yellow(t("note: {note}", { note: report.inferenceNote }))}\n\n`);
 	}
 
 	if (report.triggered.length === 0) {
-		process.stdout.write(`${chalk.red("No rules triggered.")} (evaluated ${report.evaluated})\n`);
+		process.stdout.write(
+			`${chalk.red(t("No rules triggered."))} ${t("(evaluated {count})", { count: report.evaluated })}\n`,
+		);
 	} else {
-		process.stdout.write(`${chalk.green.bold(`Triggered (${report.triggered.length})`)}\n`);
+		process.stdout.write(`${chalk.green.bold(t("Triggered ({count})", { count: report.triggered.length }))}\n`);
 		for (const detail of report.triggered) renderRuleDetail(detail, true);
 	}
 
 	if (verbose && report.notTriggered.length > 0) {
-		process.stdout.write(`\n${chalk.dim(`Not triggered (${report.notTriggered.length})`)}\n`);
+		process.stdout.write(`\n${chalk.dim(t("Not triggered ({count})", { count: report.notTriggered.length }))}\n`);
 		for (const detail of report.notTriggered) renderRuleDetail(detail, false);
 	}
 
@@ -434,15 +448,15 @@ function renderRuleDetail(detail: RuleMatchDetail, hit: boolean): void {
 	const regex = hit ? detail.matched.regex : detail.defined.regex;
 	const ast = hit ? detail.matched.ast : detail.defined.ast;
 	if (regex.length > 0) {
-		condParts.push(`condition: ${regex.map(c => chalk.yellow(`/${c}/`)).join(", ")}`);
+		condParts.push(t("condition: {patterns}", { patterns: regex.map(c => chalk.yellow(`/${c}/`)).join(", ") }));
 	}
 	if (ast.length > 0) {
-		condParts.push(`astCondition: ${ast.map(c => chalk.magenta(c)).join(", ")}`);
+		condParts.push(t("astCondition: {patterns}", { patterns: ast.map(c => chalk.magenta(c)).join(", ") }));
 	}
 	if (detail.skippedAst) {
-		condParts.push(chalk.dim(`astCondition: ${detail.skippedAst}`));
+		condParts.push(chalk.dim(t("astCondition: {reason}", { reason: detail.skippedAst })));
 	}
-	const condLabel = condParts.length > 0 ? condParts.join("  ") : chalk.dim("no active conditions");
+	const condLabel = condParts.length > 0 ? condParts.join("  ") : chalk.dim(t("no active conditions"));
 	const provider = detail.sourceProvider ? chalk.dim(` [${detail.sourceProvider}]`) : "";
 	process.stdout.write(`  ${mark} ${chalk.bold(detail.name)}  ${condLabel}${provider}\n`);
 }
@@ -469,20 +483,22 @@ async function runList(json: boolean, cwd: string): Promise<void> {
 	}
 
 	if (rules.length === 0) {
-		process.stdout.write(`${chalk.yellow("No TTSR rules registered for this project.")}\n`);
+		process.stdout.write(`${chalk.yellow(t("No TTSR rules registered for this project."))}\n`);
 		return;
 	}
 
-	process.stdout.write(`${chalk.bold(`TTSR rules (${rules.length})`)}\n`);
+	process.stdout.write(`${chalk.bold(t("TTSR rules ({count})", { count: rules.length }))}\n`);
 	for (const rule of rules) {
 		const condParts: string[] = [];
-		if ((rule.condition ?? []).length > 0) condParts.push(`condition: ${rule.condition!.join(", ")}`);
-		if ((rule.astCondition ?? []).length > 0) condParts.push(`astCondition: ${rule.astCondition!.join(", ")}`);
-		if ((rule.scope ?? []).length > 0) condParts.push(`scope: ${rule.scope!.join(", ")}`);
-		if ((rule.globs ?? []).length > 0) condParts.push(`globs: ${rule.globs!.join(", ")}`);
+		if ((rule.condition ?? []).length > 0)
+			condParts.push(t("condition: {patterns}", { patterns: rule.condition!.join(", ") }));
+		if ((rule.astCondition ?? []).length > 0)
+			condParts.push(t("astCondition: {patterns}", { patterns: rule.astCondition!.join(", ") }));
+		if ((rule.scope ?? []).length > 0) condParts.push(t("scope: {patterns}", { patterns: rule.scope!.join(", ") }));
+		if ((rule.globs ?? []).length > 0) condParts.push(t("globs: {patterns}", { patterns: rule.globs!.join(", ") }));
 		const provider = rule._source?.provider ? chalk.dim(` [${rule._source.provider}]`) : "";
 		process.stdout.write(
-			`  ${chalk.bold(rule.name)}${provider} ${chalk.dim(condParts.join("  ") || "no conditions")}\n`,
+			`  ${chalk.bold(rule.name)}${provider} ${chalk.dim(condParts.join("  ") || t("no conditions"))}\n`,
 		);
 		if (rule.description) process.stdout.write(`${chalk.dim(`    ${rule.description}`)}\n`);
 	}
@@ -794,9 +810,11 @@ async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<
 	const scanDir = args.directory ? path.resolve(cwd, args.directory) : cwd;
 	if (!fs.existsSync(scanDir)) {
 		if (json) {
-			process.stdout.write(`${JSON.stringify({ error: `Directory not found: ${scanDir}` })}\n`);
+			process.stdout.write(`${JSON.stringify({ error: t("Directory not found: {path}", { path: scanDir }) })}\n`);
 		} else {
-			process.stderr.write(`${chalk.red(`error: scan directory not found: ${scanDir}`)}\n`);
+			process.stderr.write(
+				`${chalk.red(t("error: scan directory not found: {path}", { path: scanDir }))}\n`,
+			);
 		}
 		process.exit(1);
 	}
@@ -805,8 +823,8 @@ async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<
 
 	if (rules.length === 0) {
 		const msg = args.rule
-			? "Rule registered but produced no TTSR entry."
-			: "No TTSR rules registered for this project.";
+			? t("Rule registered but produced no TTSR entry.")
+			: t("No TTSR rules registered for this project.");
 		if (json) {
 			process.stdout.write(`${JSON.stringify({ error: msg })}\n`);
 		} else {
@@ -820,8 +838,8 @@ async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<
 	);
 	if (scanRulePlans.length === 0) {
 		const msg = args.rule
-			? "Rule registered but produced no usable TTSR condition."
-			: "No usable TTSR rules registered for this project.";
+			? t("Rule registered but produced no usable TTSR condition.")
+			: t("No usable TTSR rules registered for this project.");
 		if (json) {
 			process.stdout.write(`${JSON.stringify({ error: msg })}\n`);
 		} else {
@@ -836,7 +854,7 @@ async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<
 	const files = await discoverScanFiles(scanDir, cwd, gitignore);
 	const emptySkipped: ScanSkipSummary = { binary: 0, large: 0, unreadable: 0, noRelevantRules: 0 };
 	if (files.length === 0) {
-		const msg = `No files found to scan in ${scanDir}`;
+		const msg = t("No files found to scan in {path}", { path: scanDir });
 		if (json) {
 			process.stdout.write(
 				`${JSON.stringify({
@@ -953,24 +971,33 @@ async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<
 		);
 	} else {
 		process.stdout.write(
-			`${chalk.bold("TTSR scan")} — directory=${chalk.cyan(scanDir)} files=${chalk.dim(files.length)} scanned=${chalk.dim(scannedFiles)} rules=${chalk.dim(scanRulePlans.length)} gitignore=${chalk.dim(gitignore ? "on" : "off")} max-bytes=${chalk.dim(maxBytes === 0 ? "off" : String(maxBytes))}\n`,
+			`${chalk.bold(t("TTSR scan"))} — ${t("directory={dir}", { dir: chalk.cyan(scanDir) })} ${t("files={count}", { count: chalk.dim(files.length) })} ${t("scanned={count}", { count: chalk.dim(scannedFiles) })} ${t("rules={count}", { count: chalk.dim(scanRulePlans.length) })} ${t("gitignore={value}", { value: chalk.dim(gitignore ? t("on") : t("off")) })} ${t("max-bytes={value}", { value: chalk.dim(maxBytes === 0 ? t("off") : String(maxBytes)) })}\n`,
 		);
 		if (countSkipped(skipped) > 0) {
 			process.stdout.write(
-				`${chalk.dim(`  skipped: binary=${skipped.binary} large=${skipped.large} unreadable=${skipped.unreadable} no-relevant-rules=${skipped.noRelevantRules}`)}\n`,
+				`${chalk.dim(
+					t("  skipped: binary={binary} large={large} unreadable={unreadable} no-relevant-rules={none}", {
+						binary: skipped.binary,
+						large: skipped.large,
+						unreadable: skipped.unreadable,
+						none: skipped.noRelevantRules,
+					}),
+				)}\n`,
 			);
 		}
 
 		if (matchedFiles === 0) {
 			process.stdout.write(
-				`${chalk.green.bold("No rule matches found.")} (evaluated ${rules.length} rules on ${scannedFiles}/${files.length} files)\n`,
+				`${chalk.green.bold(t("No rule matches found."))} ${t("(evaluated {rules} rules on {scanned}/{files} files)", { rules: rules.length, scanned: scannedFiles, files: files.length })}\n`,
 			);
 		} else {
 			process.stdout.write(
-				`${chalk.red.bold("Found violations/matches:")} (${totalMatches} matches across ${matchedFiles} files)\n`,
+				`${chalk.red.bold(t("Found violations/matches:"))} ${t("({matches} matches across {files} files)", { matches: totalMatches, files: matchedFiles })}\n`,
 			);
 			if (!includeDetails) {
-				process.stdout.write(`${chalk.dim("  rerun with --verbose to list matched files and conditions")}\n`);
+				process.stdout.write(
+					`${chalk.dim("  " + t("rerun with --verbose to list matched files and conditions"))}\n`,
+				);
 				return;
 			}
 
@@ -990,7 +1017,9 @@ export async function runTtsrCommand(cmd: TtsrCommandArgs): Promise<void> {
 	const cwd = getProjectDir();
 	if (cmd.action === "test") {
 		if (!cmd.test) {
-			process.stderr.write(`${chalk.red("error: `ttsr test` requires a snippet, --file, or piped stdin")}\n`);
+			process.stderr.write(
+				`${chalk.red(t("error: `ttsr test` requires a snippet, --file, or piped stdin"))}\n`,
+			);
 			process.exit(1);
 		}
 		await runTest(cmd.test, cmd.json ?? false, cwd);
@@ -1002,12 +1031,12 @@ export async function runTtsrCommand(cmd: TtsrCommandArgs): Promise<void> {
 	}
 	if (cmd.action === "scan") {
 		if (!cmd.scan) {
-			process.stderr.write(`${chalk.red("error: scan arguments missing")}\n`);
+			process.stderr.write(`${chalk.red(t("error: scan arguments missing"))}\n`);
 			process.exit(1);
 		}
 		await runScan(cmd.scan, cmd.json ?? false, cwd);
 		return;
 	}
-	process.stderr.write(`${chalk.red(`error: unknown ttsr action: ${cmd.action}`)}\n`);
+	process.stderr.write(`${chalk.red(t("error: unknown ttsr action: {action}", { action: cmd.action }))}\n`);
 	process.exit(1);
 }

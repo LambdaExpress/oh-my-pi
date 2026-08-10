@@ -14,6 +14,7 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
 import type { TruncationMeta } from "../../tools/output-meta";
 import { getSixelLineMask, isSixelPassthroughEnabled, sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
@@ -200,7 +201,7 @@ export class BashExecutionComponent extends Container {
 			return line;
 		}
 		const omitted = visible - MAX_DISPLAY_LINE_CHARS;
-		return `${truncateToWidth(line, MAX_DISPLAY_LINE_CHARS, Ellipsis.Omit)}… [${omitted} visible columns omitted]`;
+		return `${truncateToWidth(line, MAX_DISPLAY_LINE_CHARS, Ellipsis.Omit)}… ${t("[{count} visible columns omitted]", { count: omitted })}`;
 	}
 
 	#clampLinesPreservingSixel(lines: string[]): string[] {

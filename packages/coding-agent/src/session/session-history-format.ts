@@ -10,6 +10,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent, TextContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { escapeXmlText } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
+import { t } from "../i18n";
 import type {
 	BashExecutionMessage,
 	BranchSummaryMessage,
@@ -193,16 +194,18 @@ function toolCallLine(
 	const head = `→ ${name}(${formatToolCallPrimaryArg(name, args)})`;
 	let base: string;
 	if (!result) {
-		base = `${head} ⇒ pending`;
+		base = `${head} ⇒ ${t("pending")}`;
 	} else {
 		const text = contentToText(result.content);
 		const lines = lineCount(text);
-		const count = `${lines} ${lines === 1 ? "line" : "lines"}`;
+		const count = lines === 1 ? t("{count} line", { count: lines }) : t("{count} lines", { count: lines });
 		if (result.isError) {
 			const firstLine = formatToolResultErrorPreview(result.content);
-			base = firstLine ? `${head} ⇒ error · ${count} — ${firstLine}` : `${head} ⇒ error · ${count}`;
+			base = firstLine
+				? `${head} ⇒ ${t("error")} · ${count} — ${firstLine}`
+				: `${head} ⇒ ${t("error")} · ${count}`;
 		} else {
-			base = `${head} ⇒ ok · ${count}`;
+			base = `${head} ⇒ ${t("ok")} · ${count}`;
 		}
 	}
 
@@ -228,13 +231,14 @@ function executionLine(
 	msg: BashExecutionMessage | PythonExecutionMessage,
 ): string {
 	const status = msg.cancelled
-		? "cancelled"
+		? t("cancelled")
 		: msg.exitCode !== undefined && msg.exitCode !== 0
-			? `error · exit ${msg.exitCode}`
-			: "ok";
+			? `${t("error")} · exit ${msg.exitCode}`
+			: t("ok");
 	const lines = lineCount(msg.output);
 	const sourcePreview = formatExecutionSourcePreview(source);
-	return `→ user-${kind}! ${sourcePreview} ⇒ ${status} · ${lines} ${lines === 1 ? "line" : "lines"}`;
+	const count = lines === 1 ? t("{count} line", { count: lines }) : t("{count} lines", { count: lines });
+	return `→ user-${kind}! ${sourcePreview} ⇒ ${status} · ${count}`;
 }
 
 /**
@@ -263,7 +267,7 @@ function customOneLiner(msg: CustomMessage | HookMessage): string {
 	const str = (key: string): string => (typeof details[key] === "string" ? (details[key] as string) : "");
 	switch (msg.customType) {
 		case "irc:incoming":
-			return `[irc] ${str("from") || "?"} → me: ${oneLine(str("message"))}`;
+			return `[irc] ${str("from") || "?"} → ${t("me")}: ${oneLine(str("message"))}`;
 		case "irc:relay":
 			return `[irc] ${str("from") || "?"} → ${str("to") || "?"}: ${oneLine(str("body"))}`;
 		case "async-result": {
@@ -271,7 +275,11 @@ function customOneLiner(msg: CustomMessage | HookMessage): string {
 			const labels = jobs
 				.map(job => {
 					const j = (job ?? {}) as Record<string, unknown>;
-					return typeof j.label === "string" && j.label ? j.label : typeof j.jobId === "string" ? j.jobId : "job";
+					return typeof j.label === "string" && j.label
+						? j.label
+						: typeof j.jobId === "string"
+							? j.jobId
+							: t("job");
 				})
 				.join(", ");
 			return `[async-result] ${oneLine(labels)}`;
@@ -359,7 +367,7 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 							toolCallLine(block.name, block.arguments, result, opts?.includeToolIntent, opts?.expandEditDiffs),
 						);
 					} else if (opts?.includeThinking && block.type === "thinking" && block.thinking.trim()) {
-						body.push(`_thinking:_ ${block.thinking}`);
+						body.push(`${t("_thinking:_")} ${block.thinking}`);
 					}
 					// redactedThinking elided entirely (no readable text)
 				}
@@ -436,7 +444,7 @@ export function formatSessionHistoryMarkdown(messages: unknown[], opts?: History
 			}
 			case "branchSummary": {
 				const branchMsg = msg as BranchSummaryMessage;
-				lines.push(`[branch] from ${branchMsg.fromId}: ${oneLine(branchMsg.summary)}`, "");
+				lines.push(`[branch] ${t("from")} ${branchMsg.fromId}: ${oneLine(branchMsg.summary)}`, "");
 				lastWatchedLabel = undefined;
 				break;
 			}

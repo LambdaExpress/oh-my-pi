@@ -10,6 +10,7 @@ import {
 	runAuthGatewayCommand,
 } from "../cli/auth-gateway-cli";
 import { authGatewayHelp as commandHelp } from "../cli/command-help";
+import { t } from "../i18n";
 import { initTheme } from "../modes/theme/theme";
 
 export default class AuthGateway extends Command {
@@ -51,7 +52,7 @@ export default class AuthGateway extends Command {
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(AuthGateway);
 		if (!args.action) {
-			renderCommandHelp("omp", "auth-gateway", AuthGateway);
+			renderCommandHelp("omp", "auth-gateway", AuthGateway, t);
 			return;
 		}
 		const cmd: AuthGatewayCommandArgs = {

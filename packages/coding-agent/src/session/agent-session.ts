@@ -146,6 +146,7 @@ import { normalizeToolEventInput, resolveToolEventInput } from "../extensibility
 import { GoalRuntime } from "../goals/runtime";
 import type { GoalModeState } from "../goals/state";
 import type { HindsightSessionState } from "../hindsight/state";
+import { t } from "../i18n";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import type { IrcMessage } from "../irc/bus";
 import type { DaemonCompletionNotification } from "../launch/protocol";
@@ -2824,7 +2825,7 @@ export class AgentSession {
 					this.setServiceTierFamily("anthropic", undefined);
 					this.emitNotice(
 						"warning",
-						"Priority/fast mode rejected for this model; retried without it. Fast mode is now off.",
+						t("Priority/fast mode rejected for this model; retried without it. Fast mode is now off."),
 						"priority",
 					);
 				}
@@ -4857,7 +4858,7 @@ export class AgentSession {
 
 	#assertVibeSessionTransitionAllowed(action: string): void {
 		if (this.#vibeModeState?.enabled) {
-			throw new Error(`Cannot ${action} while vibe mode is active. Exit vibe mode first.`);
+			throw new Error(t("Cannot {action} while vibe mode is active. Exit vibe mode first.", { action }));
 		}
 	}
 
@@ -6628,7 +6629,7 @@ export class AgentSession {
 	 * @returns true if completed, false if cancelled by hook
 	 */
 	async newSession(options?: NewSessionOptions): Promise<boolean> {
-		this.#assertVibeSessionTransitionAllowed("start a new session");
+		this.#assertVibeSessionTransitionAllowed(t("start a new session"));
 		const previousSessionFile = this.sessionFile;
 
 		// Emit session_before_switch event with reason "new" (can be cancelled)
@@ -6751,7 +6752,7 @@ export class AgentSession {
 	 * @returns true if completed, false if cancelled by hook or not persisting
 	 */
 	async fork(): Promise<boolean> {
-		this.#assertVibeSessionTransitionAllowed("fork the session");
+		this.#assertVibeSessionTransitionAllowed(t("fork the session"));
 		const previousSessionFile = this.sessionFile;
 
 		// Emit session_before_switch event with reason "fork" (can be cancelled)
@@ -6839,7 +6840,7 @@ export class AgentSession {
 
 	/** Move the active session and artifacts after enforcing mode transition invariants. */
 	async moveSession(newCwd: string, targetSessionDir?: string): Promise<void> {
-		this.#assertVibeSessionTransitionAllowed("move the session");
+		this.#assertVibeSessionTransitionAllowed(t("move the session"));
 		await this.sessionManager.moveTo(newCwd, targetSessionDir);
 	}
 
@@ -8850,7 +8851,9 @@ export class AgentSession {
 				coordinator.notifiedKeys.add(first.attemptKey);
 				this.emitNotice(
 					"warning",
-					"Saved Codex resets are eligible to spend, but auto-redeem is unset and no prompt UI is available. Run `/usage reset` or set codexResets.autoRedeem.",
+					t(
+						"Saved Codex resets are eligible to spend, but auto-redeem is unset and no prompt UI is available. Run `/usage reset` or set codexResets.autoRedeem.",
+					),
 					"codex-auto-reset",
 				);
 			}
@@ -8859,29 +8862,38 @@ export class AgentSession {
 
 		const lines = actions.map(action =>
 			action.reason === "blocked-account"
-				? `${action.label} is blocked by the Codex ${(action.blockedWindows ?? []).join(" + ") || "usage"} limit for about ${formatDuration(action.remainingMs ?? 0)}.`
-				: `${action.label}: a saved reset expires in ${formatDuration(action.expiresInMs ?? 0)} (${action.salvageWindow ?? "weekly"} window ${Math.round((action.salvageUsedFraction ?? action.weeklyUsedFraction ?? 0) * 100)}% used).`,
+				? t("{label} is blocked by the Codex {windows} limit for about {duration}.", {
+						label: action.label,
+						windows: (action.blockedWindows ?? []).join(" + ") || "usage",
+						duration: formatDuration(action.remainingMs ?? 0),
+					})
+				: t("{label}: a saved reset expires in {duration} ({window} window {percent}% used).", {
+						label: action.label,
+						duration: formatDuration(action.expiresInMs ?? 0),
+						window: action.salvageWindow ?? "weekly",
+						percent: Math.round((action.salvageUsedFraction ?? action.weeklyUsedFraction ?? 0) * 100),
+					}),
 		);
 		const question =
 			actions.length === 1
-				? `Spend a saved Codex rate-limit reset?\n${lines[0]}`
-				: `Spend ${actions.length} saved Codex rate-limit resets?\n${lines.join("\n")}`;
+				? `${t("Spend a saved Codex rate-limit reset?")}\n${lines[0]}`
+				: `${t("Spend {count} saved Codex rate-limit resets?", { count: actions.length })}\n${lines.join("\n")}`;
 		try {
 			const choice = await runner.getUIContext().select(question, [
 				{
-					label: "Yes",
-					description: "Redeem now and remember yes for future eligible Codex resets.",
+					label: t("Yes"),
+					description: t("Redeem now and remember yes for future eligible Codex resets."),
 				},
 				{
-					label: "No",
-					description: "Do not auto-redeem saved Codex resets.",
+					label: t("No"),
+					description: t("Do not auto-redeem saved Codex resets."),
 				},
 			]);
-			if (choice === "Yes") {
+			if (choice === t("Yes")) {
 				this.settings.set("codexResets.autoRedeem", "yes");
 				return true;
 			}
-			if (choice === "No") {
+			if (choice === t("No")) {
 				this.settings.set("codexResets.autoRedeem", "no");
 			}
 		} catch (error) {
@@ -8975,14 +8987,20 @@ export class AgentSession {
 				case "reset": {
 					redeemed++;
 					const left =
-						action.availableCount === undefined ? undefined : ` (${Math.max(0, action.availableCount - 1)} left)`;
+						action.availableCount === undefined
+							? undefined
+							: ` ${t("({count} left)", { count: Math.max(0, action.availableCount - 1) })}`;
 					const detail =
 						action.reason === "expiring-credit"
-							? `it was set to expire in ${formatDuration(action.expiresInMs ?? 0)}`
-							: "retrying now";
+							? t("it was set to expire in {duration}", { duration: formatDuration(action.expiresInMs ?? 0) })
+							: t("retrying now");
 					this.emitNotice(
 						"info",
-						`Auto-redeemed a saved Codex rate-limit reset for ${action.label}${left ?? ""}; ${detail}.`,
+						t("Auto-redeemed a saved Codex rate-limit reset for {label}{left}; {detail}.", {
+							label: action.label,
+							left: left ?? "",
+							detail,
+						}),
 						"codex-auto-reset",
 					);
 					break;
@@ -8990,7 +9008,7 @@ export class AgentSession {
 				case "already_redeemed":
 					this.emitNotice(
 						"warning",
-						`A saved Codex reset for ${action.label} was already redeemed elsewhere.`,
+						t("A saved Codex reset for {label} was already redeemed elsewhere.", { label: action.label }),
 						"codex-auto-reset",
 					);
 					break;
@@ -9003,7 +9021,9 @@ export class AgentSession {
 					if (action.reason === "blocked-account") {
 						this.emitNotice(
 							"warning",
-							`Codex reset for ${action.label} reported nothing to reset; will retry later.`,
+							t("Codex reset for {label} reported nothing to reset; will retry later.", {
+								label: action.label,
+							}),
 							"codex-auto-reset",
 						);
 					} else {
@@ -9014,7 +9034,10 @@ export class AgentSession {
 					if (action.reason === "blocked-account") {
 						this.emitNotice(
 							"warning",
-							`Codex auto-redeem for ${action.label} failed (${outcome.code}); will retry later.`,
+							t("Codex auto-redeem for {label} failed ({code}); will retry later.", {
+								label: action.label,
+								code: outcome.code,
+							}),
 							"codex-auto-reset",
 						);
 					} else {

@@ -14,6 +14,7 @@ import {
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
 import type { TreeFilterMode } from "../../config/settings-schema";
+import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
 import {
 	matchesAppInterrupt,
@@ -500,11 +501,21 @@ class TreeList implements Component {
 			//    `model_change` + `thinking_level_change` (both hidden by the default filter)
 			//    read as "broken /tree" — see #1909.
 			if (this.#flatNodes.length === 0) {
-				lines.push(truncateToWidth(theme.fg("muted", "  No entries found"), width));
+				lines.push(truncateToWidth(theme.fg("muted", `  ${t("No entries found")}`), width));
 				lines.push(truncateToWidth(theme.fg("muted", `  (0/0)${this.#getFilterLabel()}`), width));
 			} else if (this.#searchQuery.length > 0) {
-				lines.push(truncateToWidth(theme.fg("muted", `  No entries match search "${this.#searchQuery}"`), width));
-				lines.push(truncateToWidth(theme.fg("muted", "  Press Backspace to clear the search"), width));
+				lines.push(
+					truncateToWidth(
+						theme.fg(
+							"muted",
+							`  ${t("No entries match search \"{query}\"", { query: this.#searchQuery })}`,
+						),
+						width,
+					),
+				);
+				lines.push(
+					truncateToWidth(theme.fg("muted", `  ${t("Press Backspace to clear the search")}`), width),
+				);
 				lines.push(
 					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
 				);
@@ -512,11 +523,22 @@ class TreeList implements Component {
 				const filterLabel = this.#getFilterLabel().trim() || "[default]";
 				lines.push(
 					truncateToWidth(
-						theme.fg("muted", `  ${this.#flatNodes.length} entries hidden by the current filter ${filterLabel}`),
+						theme.fg(
+							"muted",
+							`  ${t("{count} entries hidden by the current filter {filter}", {
+								count: this.#flatNodes.length,
+								filter: filterLabel,
+							})}`,
+						),
 						width,
 					),
 				);
-				lines.push(truncateToWidth(theme.fg("muted", "  Press Alt+A to show all, Alt+D for default"), width));
+				lines.push(
+					truncateToWidth(
+						theme.fg("muted", `  ${t("Press Alt+A to show all, Alt+D for default")}`),
+						width,
+					),
+				);
 				lines.push(
 					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
 				);
@@ -671,9 +693,9 @@ class TreeList implements Component {
 						result =
 							theme.fg("success", "assistant: ") + theme.fg("error", normalize(presentation.text).slice(0, 80));
 					} else if (msgWithContent.stopReason === "aborted") {
-						result = theme.fg("success", "assistant: ") + theme.fg("muted", "(aborted)");
+						result = theme.fg("success", "assistant: ") + theme.fg("muted", t("(aborted)"));
 					} else {
-						result = theme.fg("success", "assistant: ") + theme.fg("muted", "(no content)");
+						result = theme.fg("success", "assistant: ") + theme.fg("muted", t("(no content)"));
 					}
 				} else if (role === "toolResult") {
 					const toolMsg = msg as { toolCallId?: string; toolName?: string };
@@ -681,7 +703,7 @@ class TreeList implements Component {
 					if (toolCall) {
 						result = theme.fg("muted", this.#formatToolCall(toolCall.name, toolCall.arguments));
 					} else {
-						result = theme.fg("muted", `[${toolMsg.toolName ?? "tool"}]`);
+						result = theme.fg("muted", `[${toolMsg.toolName ?? t("tool")}]`);
 					}
 				} else if (role === "bashExecution") {
 					const bashMsg = msg as { command?: string };
@@ -735,11 +757,11 @@ class TreeList implements Component {
 				result = theme.fg("dim", `[custom: ${entry.customType}]`);
 				break;
 			case "label":
-				result = theme.fg("dim", `[label: ${entry.label ?? "(cleared)"}]`);
+				result = theme.fg("dim", `[label: ${entry.label ?? t("(cleared)")}]`);
 				break;
 			default: {
 				const unknownEntry = entry as unknown as { type?: string };
-				result = theme.fg("dim", `[${unknownEntry.type ?? "unknown"}]`);
+				result = theme.fg("dim", `[${unknownEntry.type ?? t("unknown")}]`);
 				break;
 			}
 		}
@@ -824,7 +846,7 @@ class TreeList implements Component {
 							: undefined;
 				const paths = toPathList(searchPathsInput);
 				const scope = paths.length > 0 ? paths.join(", ") : ".";
-				return `[grep: /${pattern}/ in ${shortenPath(scope)}]`;
+				return `[grep: /${pattern}/ ${t("in")} ${shortenPath(scope)}]`;
 			}
 			case "glob": {
 				const globInput =
@@ -956,9 +978,9 @@ class SearchLine implements Component {
 	render(width: number): readonly string[] {
 		const query = this.treeList.getSearchQuery();
 		if (query) {
-			return [truncateToWidth(`  ${theme.fg("muted", "Search:")} ${theme.fg("accent", query)}`, width)];
+			return [truncateToWidth(`  ${theme.fg("muted", t("Search:"))} ${theme.fg("accent", query)}`, width)];
 		}
-		return [truncateToWidth(`  ${theme.fg("muted", "Search:")}`, width)];
+		return [truncateToWidth(`  ${theme.fg("muted", t("Search:"))}`, width)];
 	}
 
 	handleInput(_keyData: string): void {}
@@ -986,9 +1008,9 @@ class LabelInput implements Component {
 		const lines: string[] = [];
 		const indent = "  ";
 		const availableWidth = width - indent.length;
-		lines.push(truncateToWidth(`${indent}${theme.fg("muted", "Label (empty to remove):")}`, width));
+		lines.push(truncateToWidth(`${indent}${theme.fg("muted", t("Label (empty to remove):"))}`, width));
 		lines.push(...this.#input.render(availableWidth).map(line => truncateToWidth(`${indent}${line}`, width)));
-		lines.push(truncateToWidth(`${indent}${theme.fg("dim", "enter: save  esc: cancel")}`, width));
+		lines.push(truncateToWidth(`${indent}${theme.fg("dim", t("enter: save  esc: cancel"))}`, width));
 		return lines;
 	}
 
@@ -1042,12 +1064,14 @@ export class TreeSelectorComponent extends Container {
 
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
-		this.addChild(new Text(theme.bold("  Session Tree"), 1, 0));
+		this.addChild(new Text(theme.bold(`  ${t("Session Tree")}`), 1, 0));
 		this.addChild(
 			new TruncatedText(
 				theme.fg(
 					"muted",
-					"Up/Down/Wheel: move. Click/Enter: switch. Alt+↑/↓: previous/next turn. PgUp/PgDn (←/→): page. Home/End: first/last item. Shift+Enter: summarize & switch. Shift+L: label. Ctrl+O/Shift+Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search",
+					t(
+						"Up/Down/Wheel: move. Click/Enter: switch. Alt+↑/↓: previous/next turn. PgUp/PgDn (←/→): page. Home/End: first/last item. Shift+Enter: summarize & switch. Shift+L: label. Ctrl+O/Shift+Ctrl+O: filter. Alt+D/T/U/L/A: filter. Type to search",
+					),
 				),
 				0,
 				0,

@@ -28,6 +28,7 @@ import {
 } from "../config/model-resolver";
 import { buildServiceTierByFamily, serviceTierForAllFamilies, serviceTierSettingToTier } from "../config/service-tier";
 import { Settings } from "../config/settings";
+import { t } from "../i18n";
 import cachePrefixTemplate from "../prompts/bench/cache-prefix.md" with { type: "text" };
 import cachePrefixChunk from "../prompts/bench/cache-prefix-chunk.md" with { type: "text" };
 import cacheSuffixTemplate from "../prompts/bench/cache-suffix.md" with { type: "text" };
@@ -201,7 +202,7 @@ function getErrorMessage(error: unknown): string {
 function normalizePositiveInteger(name: string, value: number | undefined, fallback: number): number {
 	if (value === undefined) return fallback;
 	if (!Number.isInteger(value) || value <= 0) {
-		throw new Error(`Expected --${name} to be a positive integer, got ${value}`);
+		throw new Error(t("Expected --{name} to be a positive integer, got {value}", { name, value }));
 	}
 	return value;
 }
@@ -349,7 +350,7 @@ function renderCacheBenchmarkPrefix(prefix: string, namespace: string): string {
 		namespace,
 	});
 	if (!rendered.includes(CACHE_PREFIX_PLACEHOLDER)) {
-		throw new Error("Cache benchmark prefix template is missing its raw prefix placeholder");
+		throw new Error(t("Cache benchmark prefix template is missing its raw prefix placeholder"));
 	}
 	// Render the static wrapper first, then inject caller bytes so prompt
 	// normalization cannot trim spaces or collapse blank lines in prefix files.
@@ -403,12 +404,15 @@ function formatCacheCost(cost: number): string {
 function formatCachePairLine(pair: BenchCachePairReport, index: number, total: number): string {
 	const formatPhase = (run: BenchCacheRunReport, alreadyWarm = false) => {
 		if (!run.result.ok) {
-			return `${run.phase} failed: ${truncateToWidth(replaceTabs(run.result.error), ERROR_WIDTH)}`;
+			return t("{phase} failed: {error}", {
+				phase: run.phase,
+				error: truncateToWidth(replaceTabs(run.result.error), ERROR_WIDTH),
+			});
 		}
 		const usage = run.usage;
-		return `${run.phase}${alreadyWarm ? " (already warm)" : ""} ${run.observations.join(", ")} ${chalk.dim("input")} ${usage?.inputTokens ?? 0} ${chalk.dim("cache-read")} ${usage?.cacheReadTokens ?? 0} ${chalk.dim("cache-write")} ${usage?.cacheWriteTokens ?? 0} ${chalk.dim("output")} ${usage?.outputTokens ?? run.result.outputTokens} ${chalk.dim("total")} ${usage?.totalTokens ?? 0} ${chalk.dim("cost")} ${formatCacheCost(usage?.cost ?? 0)} ${chalk.dim("TTFT")} ${formatMs(run.result.ttftMs)} ${chalk.dim("duration")} ${formatMs(run.result.durationMs)} ${chalk.dim("throughput")} ${run.result.tokensPerSecond.toFixed(1)}/s`;
+		return `${run.phase}${alreadyWarm ? t(" (already warm)") : ""} ${run.observations.join(", ")} ${chalk.dim(t("input"))} ${usage?.inputTokens ?? 0} ${chalk.dim(t("cache-read"))} ${usage?.cacheReadTokens ?? 0} ${chalk.dim(t("cache-write"))} ${usage?.cacheWriteTokens ?? 0} ${chalk.dim(t("output"))} ${usage?.outputTokens ?? run.result.outputTokens} ${chalk.dim(t("total"))} ${usage?.totalTokens ?? 0} ${chalk.dim(t("cost"))} ${formatCacheCost(usage?.cost ?? 0)} ${chalk.dim(t("TTFT"))} ${formatMs(run.result.ttftMs)} ${chalk.dim(t("duration"))} ${formatMs(run.result.durationMs)} ${chalk.dim(t("throughput"))} ${run.result.tokensPerSecond.toFixed(1)}/s`;
 	};
-	return `  ${chalk.dim(`pair ${index + 1}/${total}`)} ${formatPhase(pair.cold, pair.coldAlreadyWarm)}; ${formatPhase(pair.warm)}`;
+	return `  ${chalk.dim(t("pair {index}/{total}", { index: index + 1, total }))} ${formatPhase(pair.cold, pair.coldAlreadyWarm)}; ${formatPhase(pair.warm)}`;
 }
 
 interface BenchRequestOptions {
@@ -488,7 +492,7 @@ async function runBenchRequest(
 				firstTokenAt = now();
 			}
 			if (event.type === "error") {
-				return { ok: false, error: event.error.errorMessage ?? "request failed" };
+				return { ok: false, error: event.error.errorMessage ?? t("request failed") };
 			}
 			if (event.type === "done") {
 				message = event.message;
@@ -496,7 +500,7 @@ async function runBenchRequest(
 		}
 		message ??= await stream.result();
 		if (message.stopReason === "error" || message.errorMessage) {
-			return { ok: false, error: message.errorMessage ?? "request failed" };
+			return { ok: false, error: message.errorMessage ?? t("request failed") };
 		}
 		const rawDuration = message.duration ?? now() - startedAt;
 		const durationMs = Number.isFinite(rawDuration) && rawDuration > 0 ? rawDuration : 0;
@@ -512,7 +516,9 @@ async function runBenchRequest(
 		if (firstTokenAt === undefined && outputTokens === 0 && !hasVisibleFinalContent(message)) {
 			return {
 				ok: false,
-				error: `provider returned no output (0 tokens, empty stream; stop reason: ${message.stopReason ?? "unknown"})`,
+				error: t("provider returned no output (0 tokens, empty stream; stop reason: {reason})", {
+					reason: message.stopReason ?? t("unknown"),
+				}),
 			};
 		}
 		if (options.cacheCapture) options.cacheCapture.usage = captureUsage(message);
@@ -563,9 +569,9 @@ function formatMs(ms: number): string {
 }
 
 function formatRunLine(result: BenchRunResult, index: number, total: number): string {
-	const prefix = chalk.dim(`run ${index + 1}/${total}`);
+	const prefix = chalk.dim(t("run {index}/{total}", { index: index + 1, total }));
 	if (result.ok) {
-		return `  ${chalk.green("✓")} ${prefix} ${chalk.dim("TTFT")} ${formatMs(result.ttftMs)} ${chalk.dim("TPS")} ${result.tokensPerSecond.toFixed(1)}/s ${chalk.dim("tokens")} ${result.outputTokens} ${chalk.dim("total")} ${formatMs(result.durationMs)}`;
+		return `  ${chalk.green("✓")} ${prefix} ${chalk.dim(t("TTFT"))} ${formatMs(result.ttftMs)} ${chalk.dim(t("TPS"))} ${result.tokensPerSecond.toFixed(1)}/s ${chalk.dim(t("tokens"))} ${result.outputTokens} ${chalk.dim(t("total"))} ${formatMs(result.durationMs)}`;
 	}
 	return `  ${chalk.red("✗")} ${prefix} ${chalk.red(truncateToWidth(replaceTabs(result.error).replace(/\r?\n/g, " "), ERROR_WIDTH))}`;
 }
@@ -585,7 +591,13 @@ export function formatBenchTable(summary: BenchSummary): string {
 		total: report.average ? formatMs(report.average.durationMs) : "-",
 		failed: report.results.filter(result => !result.ok).length,
 	}));
-	const headers = { model: "model", ttft: "TTFT", tps: "TPS", tokens: "tokens", total: "total" } as const;
+	const headers = {
+		model: t("model"),
+		ttft: t("TTFT"),
+		tps: t("TPS"),
+		tokens: t("tokens"),
+		total: t("total"),
+	} as const;
 	const width = (key: keyof typeof headers): number =>
 		Math.max(headers[key].length, ...rows.map(row => row[key].length));
 	const lines = [
@@ -600,7 +612,7 @@ export function formatBenchTable(summary: BenchSummary): string {
 			.trimEnd(),
 	];
 	for (const row of rows) {
-		const failedSuffix = row.failed > 0 ? `  ${chalk.red(`(${row.failed} failed)`)}` : "";
+		const failedSuffix = row.failed > 0 ? `  ${chalk.red(t("({count} failed)", { count: row.failed }))}` : "";
 		lines.push(
 			[
 				row.model.padEnd(width("model")),
@@ -710,10 +722,10 @@ function resolveBenchModels(
 			continue;
 		}
 		if (!result.model) {
-			errors.push(`${selector}: model not found`);
+			errors.push(t("{selector}: model not found", { selector }));
 			continue;
 		}
-		if (result.warning) writeStderr(`${chalk.yellow(`Warning: ${result.warning}`)}\n`);
+		if (result.warning) writeStderr(`${chalk.yellow(t("Warning: {warning}", { warning: result.warning }))}\n`);
 		let model = result.model;
 		const authSelector = result.configuredPatterns?.[result.configuredPatternIndex ?? 0] ?? selector;
 		const authenticated = resolveAuthenticatedAlternative(
@@ -725,7 +737,11 @@ function resolveBenchModels(
 		if (authenticated) {
 			writeStderr(
 				`${chalk.yellow(
-					`Warning: no credentials for "${model.provider}"; benchmarking ${formatModelString(authenticated)} instead. Pin "${formatModelString(model)}" to force it.`,
+					t('Warning: no credentials for "{provider}"; benchmarking {alternative} instead. Pin "{original}" to force it.', {
+						provider: model.provider,
+						alternative: formatModelString(authenticated),
+						original: formatModelString(model),
+					}),
 				)}\n`,
 			);
 			model = authenticated;
@@ -737,14 +753,21 @@ function resolveBenchModels(
 		});
 	}
 	if (errors.length > 0) {
-		throw new Error(`Could not resolve ${errors.length === 1 ? "model" : "models"}:\n${errors.join("\n")}`);
+		throw new Error(
+			t("Could not resolve {word}:\n{errors}", {
+				word: errors.length === 1 ? t("model") : t("models"),
+				errors: errors.join("\n"),
+			}),
+		);
 	}
 	return resolved;
 }
 function assertCacheModeSupported(targets: BenchTarget[]): void {
 	if (targets.some(({ model }) => model.api === "openai-codex-responses")) {
 		throw new Error(
-			"--cache is not supported for openai-codex-responses because Codex WebSocket chaining cannot produce independent prompt-cache pairs",
+			t(
+				"--cache is not supported for openai-codex-responses because Codex WebSocket chaining cannot produce independent prompt-cache pairs",
+			),
 		);
 	}
 }
@@ -756,12 +779,12 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 		command.flags.cachePrefixBytes !== undefined ||
 		command.flags.cachePairs !== undefined ||
 		command.flags.cacheConcurrency !== undefined;
-	if (!cacheMode && cacheFlagsUsed) throw new Error("Cache flags require --cache");
+	if (!cacheMode && cacheFlagsUsed) throw new Error(t("Cache flags require --cache"));
 	if (cacheMode && command.flags.runs !== undefined)
-		throw new Error("Use --cache-pairs instead of --runs with --cache");
-	if (cacheMode && command.flags.prompt !== undefined) throw new Error("--cache builds its own stable-prefix prompts");
+		throw new Error(t("Use --cache-pairs instead of --runs with --cache"));
+	if (cacheMode && command.flags.prompt !== undefined) throw new Error(t("--cache builds its own stable-prefix prompts"));
 	if (cacheMode && (command.flags.par ?? 1) > 1) {
-		throw new Error("--par cannot parallelize cold/warm pairs; use --cache-concurrency instead");
+		throw new Error(t("--par cannot parallelize cold/warm pairs; use --cache-concurrency instead"));
 	}
 
 	const cachePairs = cacheMode
@@ -794,7 +817,7 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 	const now = deps.now ?? (() => performance.now());
 	const interactive = deps.stdoutIsTTY ?? process.stdout.isTTY === true;
 	if (command.models.length === 0) {
-		throw new Error("Pass at least one model selector, e.g. `omp bench opus gpt-5.2`");
+		throw new Error(t("Pass at least one model selector, e.g. `omp bench opus gpt-5.2`"));
 	}
 
 	const runtime = await (deps.createRuntime ?? createDefaultRuntime)();
@@ -812,7 +835,7 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 					runtime.settings?.get("tier.anthropic") ?? "none",
 					runtime.settings?.get("tier.google") ?? "none",
 				);
-		if (!json && flagTier) writeStdout(`${chalk.dim(`service tier: ${flagTier}`)}\n`);
+		if (!json && flagTier) writeStdout(`${chalk.dim(t("service tier: {tier}", { tier: flagTier }))}\n`);
 		const reports: BenchModelReport[] = [];
 		for (const { selector, model, thinking } of targets) {
 			if (!json) {
@@ -830,7 +853,9 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 			if (!preflightKey) {
 				const failure: BenchRunFailure = {
 					ok: false,
-					error: `No credentials for provider "${model.provider}". Run \`omp\` and use /login, or set the provider API key.`,
+					error: t('No credentials for provider "{provider}". Run `omp` and use /login, or set the provider API key.', {
+						provider: model.provider,
+					}),
 				};
 				results.push(failure);
 				if (!json) writeStdout(`${formatRunLine(failure, 0, runs)}\n`);
@@ -954,7 +979,10 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 			const processNext = async (): Promise<void> => {
 				if (queue.length === 0) return;
 				const index = queue.shift()!;
-				if (!json && interactive) writeStdout(chalk.dim(`  … run ${index + 1}/${runs} streaming\n`));
+				if (!json && interactive)
+					writeStdout(
+						`${chalk.dim("  … " + t("run {index}/{total} streaming", { index: index + 1, total: runs }))}\n`,
+					);
 				await runWorker(index);
 				if (!json) {
 					while (nextToPrint < runs && results[nextToPrint] !== undefined) {

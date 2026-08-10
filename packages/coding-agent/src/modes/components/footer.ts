@@ -5,6 +5,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { type Component, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
+import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
 import { shortenPath } from "../../tools/render-utils";
@@ -151,7 +152,7 @@ export class FooterComponent implements Component {
 		// Add git branch if available
 		const branch = this.#getCurrentBranch();
 		if (branch) {
-			pwd = `${pwd} (${branch})`;
+			pwd = `${pwd} (${branch === "detached" ? t("detached") : branch})`;
 		}
 
 		// Truncate path if too long to fit width
@@ -180,13 +181,13 @@ export class FooterComponent implements Component {
 			const billingParts: string[] = [];
 			if (totalCost) billingParts.push(`$${totalCost.toFixed(3)}`);
 			if (normalizedPremiumRequests) billingParts.push(`★ ${formatNumber(normalizedPremiumRequests)}`);
-			if (usingSubscription) billingParts.push("(sub)");
+			if (usingSubscription) billingParts.push(t("(sub)"));
 			if (billingParts.length > 0) statsParts.push(billingParts.join(" "));
 		}
 
 		// Colorize context percentage based on usage
 		let contextPercentStr: string;
-		const autoIndicator = this.#autoCompactEnabled ? " (auto)" : "";
+		const autoIndicator = this.#autoCompactEnabled ? ` ${t("(auto)")}` : "";
 		const contextPercentDisplay = `${formatContextUsage(contextPercentValue, contextWindow, contextTokens)}${autoIndicator}`;
 		if (contextUsage && contextPercentValue !== null) {
 			const color = getContextUsageThemeColor(
@@ -211,7 +212,7 @@ export class FooterComponent implements Component {
 				// Pending (no turn classified yet / classifying) shows a symbol-theme
 				// question-box marker; once resolved it shows `<level>`.
 				const resolved = this.session.autoResolvedThinkingLevel();
-				rightSide = `${modelName} • ${resolved ? resolved : `${theme.thinking.autoPending} auto`}`;
+				rightSide = `${modelName} • ${resolved ? resolved : `${theme.thinking.autoPending} ${t("auto")}`}`;
 			} else {
 				const thinkingLevel = state.thinkingLevel ?? ThinkingLevel.Off;
 				if (thinkingLevel !== ThinkingLevel.Off) {

@@ -8,6 +8,7 @@
  */
 
 import { type Component, Container, Loader, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { t } from "../../i18n";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
 import { formatTruncationMetaNotice, type TruncationMeta } from "../../tools/output-meta";
 import { DynamicBorder } from "./dynamic-border";
@@ -40,7 +41,7 @@ export function buildExecutionFrame(
 		ui,
 		spinner => theme.fg(colorKey, spinner),
 		text => theme.fg("muted", text),
-		`Running… (esc to cancel)`,
+		t("Running… (esc to cancel)"),
 		getSymbolTheme().spinnerFrames,
 	);
 
@@ -75,12 +76,12 @@ export function buildStatusFooter(opts: {
 	const parts: string[] = [];
 
 	if (opts.hiddenLineCount > 0 && !opts.suppressHiddenCount) {
-		parts.push(theme.fg("dim", `… ${opts.hiddenLineCount} more lines (ctrl+o to expand)`));
+		parts.push(theme.fg("dim", t("… {count} more lines (ctrl+o to expand)", { count: opts.hiddenLineCount })));
 	}
 	if (opts.status === "cancelled") {
-		parts.push(theme.fg("warning", "(cancelled)"));
+		parts.push(theme.fg("warning", t("(cancelled)")));
 	} else if (opts.status === "error") {
-		parts.push(theme.fg("error", `(exit ${opts.exitCode})`));
+		parts.push(theme.fg("error", t("(exit {code})", { code: opts.exitCode })));
 	}
 	if (opts.truncation) {
 		parts.push(theme.fg("warning", formatTruncationMetaNotice(opts.truncation)));

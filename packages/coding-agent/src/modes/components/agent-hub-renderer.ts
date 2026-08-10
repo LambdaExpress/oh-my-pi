@@ -3,6 +3,7 @@ import { Ellipsis, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import { getRoleInfo } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
+import { t } from "../../i18n";
 import { type AgentRef, MAIN_AGENT_ID } from "../../registry/agent-registry";
 import { parseThinkingLevel } from "../../thinking";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
@@ -109,7 +110,7 @@ export function modelBadge(ref: AgentRef, observed: ObservableSession | undefine
 		(progress?.resolvedModelIsFallback ? progress.resolvedModel : undefined) ??
 		(ref.history?.resolvedModelIsFallback ? ref.history.resolvedModel : undefined);
 	if (fallbackSelector) {
-		return `${theme.fg("warning", "fallback →")} ${formatResolvedModelBadge(fallbackSelector, true, liveThinkingLevel)}`;
+		return `${theme.fg("warning", `${t("fallback")} →`)} ${formatResolvedModelBadge(fallbackSelector, true, liveThinkingLevel)}`;
 	}
 	const resolvedModel = progress?.resolvedModel ?? ref.history?.resolvedModel;
 	if (resolvedModel) return formatResolvedModelBadge(resolvedModel, false, liveThinkingLevel);
@@ -136,10 +137,10 @@ export function formatCost(cost: number): string {
 export function formatMetrics(metrics: AgentMetrics): string {
 	return [
 		formatCost(metrics.cost),
-		formatMetricDuration(metrics) ?? "time —",
-		`${formatNumber(metrics.requests)} req`,
-		`${formatNumber(metrics.tools)} tools`,
-		`${formatNumber(metrics.tokens)} tok`,
+		formatMetricDuration(metrics) ?? `${t("time")} —`,
+		`${formatNumber(metrics.requests)} ${t("req")}`,
+		`${formatNumber(metrics.tools)} ${t("tools")}`,
+		`${formatNumber(metrics.tokens)} ${t("tok")}`,
 	].join(theme.sep.dot);
 }
 

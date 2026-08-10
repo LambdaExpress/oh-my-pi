@@ -36,6 +36,7 @@ import { SpeechEnhancer } from "../../tts/speech-enhancer";
 import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { setTerminalTitleState } from "../../utils/title-generator";
+import { t } from "../../i18n";
 import { interruptHint } from "../shared";
 import { createAssistantMessageComponent } from "../utils/interactive-context-helpers";
 import {
@@ -1710,7 +1711,9 @@ export class EventController {
 			// error stays full-fidelity for the transcript and for replays.
 			const detail = textContent ? previewLine(sanitizeText(textContent), TRUNCATE_LENGTHS.LINE) : "";
 			this.ctx.showWarning(
-				`Todo update failed${detail ? `: ${detail}` : ". Progress may be stale until todo succeeds."}`,
+				detail
+					? t("Todo update failed: {detail}", { detail })
+					: t("Todo update failed. Progress may be stale until todo succeeds."),
 			);
 		}
 		// Plan approval rides a `write` to xd://propose: the dispatch metadata on
@@ -1919,7 +1922,7 @@ export class EventController {
 	 * label carries no dangling whitespace.
 	 */
 	#maintenanceEscHint(): string {
-		return this.ctx.focusedAgentId ? "" : " (esc to cancel)";
+		return this.ctx.focusedAgentId ? "" : ` ${t("(esc to cancel)")}`;
 	}
 
 	async #handleAutoCompactionStart(
@@ -1932,20 +1935,20 @@ export class EventController {
 		this.ctx.statusContainer.disposeChildren();
 		const reasonText =
 			event.reason === "overflow"
-				? "Context overflow detected, "
+				? `${t("Context overflow detected")}, `
 				: event.reason === "incomplete"
-					? "Response incomplete, "
+					? `${t("Response incomplete")}, `
 					: event.reason === "idle"
-						? "Idle "
+						? `${t("Idle")} `
 						: "";
 		const actionLabel =
 			event.action === "handoff"
-				? "Auto-handoff"
+				? t("Auto-handoff")
 				: event.action === "shake"
-					? "Auto-shake"
+					? t("Auto-shake")
 					: event.action === "snapcompact"
-						? "Auto-snapcompact"
-						: "Auto context-full maintenance";
+						? t("Auto-snapcompact")
+						: t("Auto context-full maintenance");
 		this.ctx.autoCompactionLoader = new Loader(
 			this.ctx.ui,
 			spinner => theme.fg("accent", spinner),
@@ -1972,12 +1975,12 @@ export class EventController {
 		if (event.aborted) {
 			this.ctx.showStatus(
 				isHandoffAction
-					? "Auto-handoff cancelled"
+					? t("Auto-handoff cancelled")
 					: isShakeAction
-						? "Auto-shake cancelled"
+						? t("Auto-shake cancelled")
 						: isSnapcompactAction
-							? "Auto-snapcompact cancelled"
-							: "Auto context-full maintenance cancelled",
+							? t("Auto-snapcompact cancelled")
+							: t("Auto context-full maintenance cancelled"),
 			);
 		} else if (isShakeAction) {
 			// Shake produces no CompactionResult; rebuild on success, suppress benign skips.
@@ -1996,7 +1999,7 @@ export class EventController {
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.statusLine.invalidate();
 				this.ctx.ui.requestRender();
-				this.ctx.showStatus("Auto-shake completed");
+				this.ctx.showStatus(t("Auto-shake completed"));
 			}
 		} else if (event.result) {
 			this.ctx.lastAssistantUsage = undefined;
@@ -2024,14 +2027,14 @@ export class EventController {
 			this.ctx.statusLine.invalidate();
 			await this.ctx.reloadTodos();
 			this.ctx.ui.requestRender(true, { clearScrollback: true });
-			this.ctx.showStatus("Auto-handoff completed");
+			this.ctx.showStatus(t("Auto-handoff completed"));
 		} else if (event.skipped) {
 			// Benign skip: no model selected, no candidate models available, or nothing
 			// to compact yet. Not a failure — suppress the warning.
 		} else if (isSnapcompactAction) {
-			this.ctx.showWarning("Auto-snapcompact maintenance failed; continuing without maintenance");
+			this.ctx.showWarning(t("Auto-snapcompact maintenance failed; continuing without maintenance"));
 		} else {
-			this.ctx.showWarning("Auto context-full maintenance failed; continuing without maintenance");
+			this.ctx.showWarning(t("Auto context-full maintenance failed; continuing without maintenance"));
 		}
 		await this.ctx.flushCompactionQueue({ willRetry: event.willRetry });
 		this.#ensureWorkingLoaderWhileStreaming();
@@ -2066,7 +2069,11 @@ export class EventController {
 			this.ctx.ui,
 			spinner => theme.fg("warning", spinner),
 			text => theme.fg("muted", text),
-			`Retrying (${event.attempt}/${event.maxAttempts}) in ${delaySeconds}s…${this.#maintenanceEscHint()}`,
+			`${t("Retrying ({attempt}/{max}) in {delay}s…", {
+				attempt: event.attempt,
+				max: event.maxAttempts,
+				delay: delaySeconds,
+			})}${this.#maintenanceEscHint()}`,
 			getSymbolTheme().spinnerFrames,
 		);
 		this.ctx.statusContainer.addChild(this.ctx.retryLoader);
@@ -2095,7 +2102,12 @@ export class EventController {
 			this.#clearRetrySupersededAssistantComponents();
 		} else {
 			this.#clearRetrySupersededAssistantComponents();
-			this.ctx.showError(`Retry failed after ${event.attempt} attempts: ${event.finalError || "Unknown error"}`);
+			this.ctx.showError(
+				t("Retry failed after {attempt} attempts: {error}", {
+					attempt: event.attempt,
+					error: event.finalError || t("Unknown error"),
+				}),
+			);
 		}
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.ctx.ui.requestRender();
@@ -2104,13 +2116,13 @@ export class EventController {
 	async #handleRetryFallbackApplied(
 		event: Extract<AgentSessionEvent, { type: "retry_fallback_applied" }>,
 	): Promise<void> {
-		this.ctx.showWarning(`Fallback: ${event.from} -> ${event.to}`);
+		this.ctx.showWarning(t("Fallback: {from} -> {to}", { from: event.from, to: event.to }));
 	}
 
 	async #handleRetryFallbackSucceeded(
 		event: Extract<AgentSessionEvent, { type: "retry_fallback_succeeded" }>,
 	): Promise<void> {
-		this.ctx.showStatus(`Fallback succeeded on ${event.model}`);
+		this.ctx.showStatus(t("Fallback succeeded on {model}", { model: event.model }));
 	}
 
 	async #handleTtsrTriggered(event: Extract<AgentSessionEvent, { type: "ttsr_triggered" }>): Promise<void> {
@@ -2235,7 +2247,7 @@ export class EventController {
 			if (this.#idleRecapAbort !== abort || abort.signal.aborted || !this.#idleConditionsHold()) return;
 			const recap = previewLine(replyText, TRUNCATE_LENGTHS.RECAP);
 			if (!recap) return;
-			this.ctx.showStatus(theme.fg("dim", theme.italic(`※ recap: ${recap}`)), { dim: false });
+			this.ctx.showStatus(theme.fg("dim", theme.italic(`※ ${t("recap: {recap}", { recap })}`)), { dim: false });
 		} catch (error) {
 			if (!abort.signal.aborted) logger.debug("Idle recap turn failed", { error: String(error) });
 		} finally {
@@ -2300,7 +2312,7 @@ export class EventController {
 		const sessionName = this.ctx.sessionManager.getSessionName();
 		TERMINAL.sendNotification({
 			title: sessionName || "Oh My Pi",
-			body: "Stopped with error",
+			body: t("Stopped with error"),
 			type: "error",
 			actions: "focus",
 		});
@@ -2325,7 +2337,7 @@ export class EventController {
 		const sessionName = this.ctx.sessionManager.getSessionName();
 		TERMINAL.sendNotification({
 			title: sessionName || "Oh My Pi",
-			body: "Complete",
+			body: t("Complete"),
 			type: "completion",
 			actions: "focus",
 		});

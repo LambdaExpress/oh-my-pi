@@ -8,6 +8,7 @@
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { Settings } from "../config/settings";
+import { t } from "../i18n";
 import { extractUriScheme } from "../internal-urls/parse";
 import { InternalUrlRouter } from "../internal-urls/router";
 import { discoverAndLoadMCPTools } from "../mcp/loader";
@@ -36,7 +37,7 @@ function shouldDiscoverMcp(path: string): boolean {
 
 export async function runReadCommand(cmd: ReadCommandArgs): Promise<void> {
 	if (!cmd.path) {
-		process.stderr.write(chalk.red("error: path is required\n"));
+		process.stderr.write(`${chalk.red(t("error: path is required"))}\n`);
 		process.exit(1);
 	}
 
@@ -80,7 +81,7 @@ export async function runReadCommand(cmd: ReadCommandArgs): Promise<void> {
 			} else if (block.type === "image") {
 				const decodedBytes = Buffer.from(block.data, "base64").byteLength;
 				process.stdout.write(
-					chalk.dim(`[image content: ${block.mimeType}, ${decodedBytes} bytes base64-decoded]\n`),
+					`${chalk.dim(t("[image content: {mime}, {bytes} bytes base64-decoded]", { mime: block.mimeType, bytes: decodedBytes }))}\n`,
 				);
 			}
 		}

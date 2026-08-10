@@ -13,6 +13,7 @@ import { pipeline } from "node:stream/promises";
 import { $env, $which, APP_NAME, compareVersions, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
 import chalk from "chalk";
+import { t } from "../i18n";
 import { theme } from "../modes/theme/theme";
 import { isTimeoutError, withTimeoutSignal } from "../utils/fetch-timeout";
 
@@ -89,41 +90,47 @@ export function resolveReleaseBinaryAsset(
 	binaryName: string,
 ): ReleaseBinaryAsset {
 	if (!isRecord(release)) {
-		throw new Error("Invalid GitHub release metadata");
+		throw new Error(t("Invalid GitHub release metadata"));
 	}
 	if (release.tag_name !== expectedTag) {
-		throw new Error(`GitHub release tag mismatch: expected ${expectedTag}`);
+		throw new Error(t("GitHub release tag mismatch: expected {tag}", { tag: expectedTag }));
 	}
 	if (release.draft !== false || release.prerelease !== false) {
-		throw new Error(`GitHub release ${expectedTag} is not a published stable release`);
+		throw new Error(t("GitHub release {tag} is not a published stable release", { tag: expectedTag }));
 	}
 	if (!Array.isArray(release.assets)) {
-		throw new Error(`GitHub release ${expectedTag} has no asset list`);
+		throw new Error(t("GitHub release {tag} has no asset list", { tag: expectedTag }));
 	}
 
 	const matches = release.assets.filter(asset => isRecord(asset) && asset.name === binaryName);
 	if (matches.length !== 1) {
-		throw new Error(`GitHub release ${expectedTag} has ${matches.length} assets named ${binaryName}`);
+		throw new Error(
+			t("GitHub release {tag} has {count} assets named {binary}", {
+				tag: expectedTag,
+				count: matches.length,
+				binary: binaryName,
+			}),
+		);
 	}
 
 	const asset = matches[0];
 	if (!isRecord(asset) || asset.state !== "uploaded") {
-		throw new Error(`GitHub release asset ${binaryName} is not fully uploaded`);
+		throw new Error(t("GitHub release asset {binary} is not fully uploaded", { binary: binaryName }));
 	}
 	if (typeof asset.size !== "number" || !Number.isSafeInteger(asset.size) || asset.size <= 0) {
-		throw new Error(`GitHub release asset ${binaryName} has an invalid size`);
+		throw new Error(t("GitHub release asset {binary} has an invalid size", { binary: binaryName }));
 	}
 	if (typeof asset.digest !== "string") {
-		throw new Error(`GitHub release asset ${binaryName} has no digest`);
+		throw new Error(t("GitHub release asset {binary} has no digest", { binary: binaryName }));
 	}
 	const digest = /^sha256:([0-9a-f]{64})$/i.exec(asset.digest)?.[1];
 	if (!digest) {
-		throw new Error(`GitHub release asset ${binaryName} has an unsupported digest`);
+		throw new Error(t("GitHub release asset {binary} has an unsupported digest", { binary: binaryName }));
 	}
 
 	const expectedUrl = `https://github.com/${REPO}/releases/download/${expectedTag}/${binaryName}`;
 	if (asset.browser_download_url !== expectedUrl) {
-		throw new Error(`GitHub release asset ${binaryName} has an unexpected download URL`);
+		throw new Error(t("GitHub release asset {binary} has an unexpected download URL", { binary: binaryName }));
 	}
 
 	return {
@@ -154,17 +161,19 @@ async function getReleaseBinaryAsset(
 		});
 	} catch (err) {
 		if (isTimeoutError(err)) {
-			throw new Error("Timed out fetching GitHub release metadata after 30s", { cause: err });
+			throw new Error(t("Timed out fetching GitHub release metadata after 30s"), { cause: err });
 		}
 		throw err;
 	}
 	if ((response.status === 403 && !githubToken) || response.status === 429) {
 		throw new Error(
-			"GitHub API rate limit exceeded while fetching release metadata; retry later or set GITHUB_TOKEN or GH_TOKEN",
+			t(
+				"GitHub API rate limit exceeded while fetching release metadata; retry later or set GITHUB_TOKEN or GH_TOKEN",
+			),
 		);
 	}
 	if (!response.ok) {
-		throw new Error(`Failed to fetch GitHub release metadata: ${response.statusText}`);
+		throw new Error(t("Failed to fetch GitHub release metadata: {reason}", { reason: response.statusText }));
 	}
 
 	return resolveReleaseBinaryAsset(await response.json(), tag, binaryName);
@@ -193,12 +202,12 @@ export async function downloadVerifiedBinary(options: VerifiedBinaryDownloadOpti
 		});
 	} catch (err) {
 		if (isTimeoutError(err)) {
-			throw new Error("Timed out downloading release binary after 15 minutes", { cause: err });
+			throw new Error(t("Timed out downloading release binary after 15 minutes"), { cause: err });
 		}
 		throw err;
 	}
 	if (!response.ok || !response.body) {
-		throw new Error(`Download failed: ${response.statusText}`);
+		throw new Error(t("Download failed: {reason}", { reason: response.statusText }));
 	}
 
 	const hash = createHash("sha256");
@@ -209,7 +218,10 @@ export async function downloadVerifiedBinary(options: VerifiedBinaryDownloadOpti
 			if (size > options.expectedSize) {
 				callback(
 					new Error(
-						`Downloaded binary size mismatch: expected ${options.expectedSize} bytes, received at least ${size}`,
+						t("Downloaded binary size mismatch: expected {expected} bytes, received at least {received}", {
+							expected: options.expectedSize,
+							received: size,
+						}),
 					),
 				);
 				return;
@@ -223,16 +235,26 @@ export async function downloadVerifiedBinary(options: VerifiedBinaryDownloadOpti
 		await pipeline(response.body, verifier, fs.createWriteStream(options.targetPath, { mode: 0o600 }));
 		const digest = `sha256:${hash.digest("hex")}`;
 		if (size !== options.expectedSize) {
-			throw new Error(`Downloaded binary size mismatch: expected ${options.expectedSize} bytes, received ${size}`);
+			throw new Error(
+				t("Downloaded binary size mismatch: expected {expected} bytes, received {received}", {
+					expected: options.expectedSize,
+					received: size,
+				}),
+			);
 		}
 		if (digest !== options.expectedDigest) {
-			throw new Error(`Downloaded binary digest mismatch: expected ${options.expectedDigest}, received ${digest}`);
+			throw new Error(
+				t("Downloaded binary digest mismatch: expected {expected}, received {received}", {
+					expected: options.expectedDigest,
+					received: digest,
+				}),
+			);
 		}
 		await fs.promises.chmod(options.targetPath, 0o755);
 	} catch (err) {
 		await unlinkIfExists(options.targetPath);
 		if (isTimeoutError(err)) {
-			throw new Error("Timed out downloading release binary after 15 minutes", { cause: err });
+			throw new Error(t("Timed out downloading release binary after 15 minutes"), { cause: err });
 		}
 		throw err;
 	}
@@ -465,7 +487,7 @@ async function resolveUpdateTarget(): Promise<UpdateTarget> {
 
 	if (bunBinDir) return { method: "bun" };
 
-	throw new Error(`Could not resolve ${APP_NAME} binary path in PATH`);
+	throw new Error(t("Could not resolve {app} binary path in PATH", { app: APP_NAME }));
 }
 
 /**
@@ -480,12 +502,12 @@ async function getLatestRelease(): Promise<ReleaseInfo> {
 		});
 	} catch (err) {
 		if (isTimeoutError(err)) {
-			throw new Error("Timed out fetching release info after 30s", { cause: err });
+			throw new Error(t("Timed out fetching release info after 30s"), { cause: err });
 		}
 		throw err;
 	}
 	if (!response.ok) {
-		throw new Error(`Failed to fetch release info: ${response.statusText}`);
+		throw new Error(t("Failed to fetch release info: {reason}", { reason: response.statusText }));
 	}
 
 	const data = (await response.json()) as { version: string };
@@ -759,7 +781,7 @@ function getBinaryName(): string {
 			os = "windows";
 			break;
 		default:
-			throw new Error(`Unsupported platform: ${platform}`);
+			throw new Error(t("Unsupported platform: {platform}", { platform }));
 	}
 
 	let archName: string;
@@ -771,7 +793,7 @@ function getBinaryName(): string {
 			archName = "arm64";
 			break;
 		default:
-			throw new Error(`Unsupported architecture: ${arch}`);
+			throw new Error(t("Unsupported architecture: {arch}", { arch }));
 	}
 
 	if (os === "windows") {
@@ -807,14 +829,21 @@ async function verifyInstalledVersion(expectedVersion: string): Promise<Installe
 }
 
 function printVerifiedVersion(expectedVersion: string): void {
-	console.log(chalk.green(`\n${theme.status.success} Updated to ${expectedVersion}`));
+	console.log(chalk.green(`\n${theme.status.success} ${t("Updated to {version}", { version: expectedVersion })}`));
 }
 
 function formatVerificationFailure(result: InstalledVersionVerification, expectedVersion: string): string {
 	if (result.actual) {
-		return `${APP_NAME} at ${result.path} still reports ${result.actual} (expected ${expectedVersion})`;
+		return t("{app} at {path} still reports {actual} (expected {expected})", {
+			app: APP_NAME,
+			path: result.path,
+			actual: result.actual,
+			expected: expectedVersion,
+		});
 	}
-	return `could not verify updated version${result.path ? ` at ${result.path}` : ""}`;
+	return t("could not verify updated version{scope}", {
+		scope: result.path ? t(" at {path}", { path: result.path }) : "",
+	});
 }
 
 /**
@@ -826,8 +855,10 @@ async function printVerification(expectedVersion: string): Promise<void> {
 		printVerifiedVersion(expectedVersion);
 		return;
 	}
-	console.log(chalk.yellow(`\nWarning: ${formatVerificationFailure(result, expectedVersion)}`));
-	console.log(chalk.yellow(`You may need to reinstall: curl -fsSL https://omp.sh/install | sh`));
+	console.log(
+		chalk.yellow(`\n${t("Warning: {reason}", { reason: formatVerificationFailure(result, expectedVersion) })}`),
+	);
+	console.log(chalk.yellow(t("You may need to reinstall: curl -fsSL https://omp.sh/install | sh")));
 }
 
 async function unlinkIfExists(filePath: string): Promise<void> {
@@ -903,7 +934,10 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 		const verification = await options.verifyInstalledVersion(options.expectedVersion);
 		if (!verification.ok) {
 			throw new Error(
-				`${formatVerificationFailure(verification, options.expectedVersion)}; restored previous ${APP_NAME} binary`,
+				t("{reason}; restored previous {app} binary", {
+					reason: formatVerificationFailure(verification, options.expectedVersion),
+					app: APP_NAME,
+				}),
 			);
 		}
 
@@ -998,65 +1032,67 @@ export function buildMiseForceInstallArgs(expectedVersion: string): string[] {
  * Update via package manager.
  */
 async function updateViaBun(expectedVersion: string): Promise<void> {
-	console.log(chalk.dim("Updating via bun..."));
+	console.log(chalk.dim(t("Updating via bun...")));
 	const args = buildBunInstallArgs(expectedVersion);
 	const result = await $`bun ${args}`.nothrow();
 	if (result.exitCode !== 0) {
-		throw new Error(`bun install failed with exit code ${result.exitCode}`);
+		throw new Error(t("bun install failed with exit code {code}", { code: result.exitCode }));
 	}
 
 	await printVerification(expectedVersion);
 	try {
 		const pruneResult = await pruneBunCacheAfterGlobalInstall();
 		if (pruneResult && pruneResult.removedEntries > 0) {
-			console.log(chalk.dim(`Pruned ${pruneResult.removedEntries} stale Bun cache entries`));
+			console.log(
+				chalk.dim(t("Pruned {count} stale Bun cache entries", { count: pruneResult.removedEntries })),
+			);
 		}
 	} catch (err) {
-		console.log(chalk.yellow(`Warning: could not prune stale Bun cache entries: ${err}`));
+		console.log(chalk.yellow(t("Warning: could not prune stale Bun cache entries: {error}", { error: err })));
 	}
 }
 
 async function updateViaNpm(expectedVersion: string): Promise<void> {
-	console.log(chalk.dim("Updating via npm..."));
+	console.log(chalk.dim(t("Updating via npm...")));
 	const args = buildNpmInstallArgs(expectedVersion);
 	const result = await $`npm ${args}`.nothrow();
 	if (result.exitCode !== 0) {
-		throw new Error(`npm install failed with exit code ${result.exitCode}`);
+		throw new Error(t("npm install failed with exit code {code}", { code: result.exitCode }));
 	}
 
 	await printVerification(expectedVersion);
 }
 
 async function updateViaHomebrew(expectedVersion: string, force: boolean): Promise<void> {
-	console.log(chalk.dim("Updating Homebrew formulae..."));
+	console.log(chalk.dim(t("Updating Homebrew formulae...")));
 	const update = await $`brew update`.nothrow();
 	if (update.exitCode !== 0) {
-		throw new Error(`brew update failed with exit code ${update.exitCode}`);
+		throw new Error(t("brew update failed with exit code {code}", { code: update.exitCode }));
 	}
 
-	console.log(chalk.dim("Updating via Homebrew..."));
+	console.log(chalk.dim(t("Updating via Homebrew...")));
 	const args = buildHomebrewUpdateArgs(force);
 	const result = await $`brew ${args}`.nothrow();
 	if (result.exitCode !== 0) {
-		throw new Error(`brew ${args[0]} failed with exit code ${result.exitCode}`);
+		throw new Error(t("brew {command} failed with exit code {code}", { command: args[0], code: result.exitCode }));
 	}
 
 	await printVerification(expectedVersion);
 }
 
 async function updateViaMise(expectedVersion: string, force: boolean): Promise<void> {
-	console.log(chalk.dim("Updating via mise..."));
+	console.log(chalk.dim(t("Updating via mise...")));
 	const args = buildMiseUpgradeArgs();
 	const result = await $`mise ${args}`.nothrow();
 	if (result.exitCode !== 0) {
-		throw new Error(`mise upgrade failed with exit code ${result.exitCode}`);
+		throw new Error(t("mise upgrade failed with exit code {code}", { code: result.exitCode }));
 	}
 
 	if (force) {
 		const forceArgs = buildMiseForceInstallArgs(expectedVersion);
 		const forceResult = await $`mise ${forceArgs}`.nothrow();
 		if (forceResult.exitCode !== 0) {
-			throw new Error(`mise install --force failed with exit code ${forceResult.exitCode}`);
+			throw new Error(t("mise install --force failed with exit code {code}", { code: forceResult.exitCode }));
 		}
 	}
 
@@ -1084,7 +1120,7 @@ export async function updateViaBinaryAt(
 	// two forced updates in the same millisecond from colliding.
 	const backupPath = `${targetPath}.${Date.now()}.${process.pid}.bak`;
 	const asset = await getReleaseBinaryAsset(expectedVersion, binaryName, options.fetchImpl, options.githubToken);
-	console.log(chalk.dim(`Downloading ${binaryName}…`));
+	console.log(chalk.dim(t("Downloading {binary}…", { binary: binaryName })));
 	await downloadVerifiedBinary({
 		url: asset.url,
 		targetPath: tempPath,
@@ -1092,9 +1128,9 @@ export async function updateViaBinaryAt(
 		expectedDigest: asset.digest,
 		fetchImpl: options.fetchImpl,
 	});
-	console.log(chalk.dim(`Verified ${asset.digest}`));
+	console.log(chalk.dim(t("Verified {digest}", { digest: asset.digest })));
 
-	console.log(chalk.dim("Installing update..."));
+	console.log(chalk.dim(t("Installing update...")));
 	await replaceBinaryForUpdate({
 		targetPath,
 		tempPath,
@@ -1105,35 +1141,35 @@ export async function updateViaBinaryAt(
 	// Reclaim backups from earlier updates whose owning process has since exited.
 	await sweepStaleBackups(targetPath);
 	printVerifiedVersion(expectedVersion);
-	console.log(chalk.dim(`Restart ${APP_NAME} to use the new version`));
+	console.log(chalk.dim(t("Restart {app} to use the new version", { app: APP_NAME })));
 }
 
 /**
  * Run the update command.
  */
 export async function runUpdateCommand(opts: { force: boolean; check: boolean }): Promise<void> {
-	console.log(chalk.dim(`Current version: ${VERSION}`));
+	console.log(chalk.dim(t("Current version: {version}", { version: VERSION })));
 
 	// Check for updates
 	let release: ReleaseInfo;
 	try {
 		release = await getLatestRelease();
 	} catch (err) {
-		console.error(chalk.red(`Failed to check for updates: ${err}`));
+		console.error(chalk.red(t("Failed to check for updates: {error}", { error: err })));
 		process.exit(1);
 	}
 
 	const comparison = compareVersions(release.version, VERSION);
 
 	if (comparison <= 0 && !opts.force) {
-		console.log(chalk.green(`${theme.status.success} Already up to date`));
+		console.log(chalk.green(`${theme.status.success} ${t("Already up to date")}`));
 		return;
 	}
 
 	if (comparison > 0) {
-		console.log(chalk.cyan(`New version available: ${release.version}`));
+		console.log(chalk.cyan(t("New version available: {version}", { version: release.version })));
 	} else {
-		console.log(chalk.yellow(`Forcing reinstall of ${release.version}`));
+		console.log(chalk.yellow(t("Forcing reinstall of {version}", { version: release.version })));
 	}
 
 	if (opts.check) {
@@ -1156,7 +1192,7 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
 			await updateViaBinaryAt(target.path, release.version);
 		}
 	} catch (err) {
-		console.error(chalk.red(`Update failed: ${err}`));
+		console.error(chalk.red(t("Update failed: {error}", { error: err })));
 		process.exit(1);
 	}
 }
@@ -1165,20 +1201,20 @@ export async function runUpdateCommand(opts: { force: boolean; check: boolean })
  * Print update command help.
  */
 export function printUpdateHelp(): void {
-	console.log(`${chalk.bold(`${APP_NAME} update`)} - Check for and install updates
+	console.log(`${chalk.bold(`${APP_NAME} update`)} - ${t("Check for and install updates")}
 
-${chalk.bold("Usage:")}
+${chalk.bold(t("Usage:"))}
   ${APP_NAME} update [options]
 
-${chalk.bold("Options:")}
-  -c, --check     Check for updates without installing
-  -f, --force     Force reinstall even if up to date
-  -l, --plugins   Update installed plugins
+${chalk.bold(t("Options:"))}
+  -c, --check     ${t("Check for updates without installing")}
+  -f, --force     ${t("Force reinstall even if up to date")}
+  -l, --plugins   ${t("Update installed plugins")}
 
-${chalk.bold("Examples:")}
-  ${APP_NAME} update              Update to latest version
-  ${APP_NAME} update --check      Check if updates are available
-  ${APP_NAME} update --force      Force reinstall
-  ${APP_NAME} update -l           Update installed plugins
+${chalk.bold(t("Examples:"))}
+  ${APP_NAME} update              ${t("Update to latest version")}
+  ${APP_NAME} update --check      ${t("Check if updates are available")}
+  ${APP_NAME} update --force      ${t("Force reinstall")}
+  ${APP_NAME} update -l           ${t("Update installed plugins")}
 `);
 }

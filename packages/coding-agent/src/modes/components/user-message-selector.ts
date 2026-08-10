@@ -9,6 +9,7 @@ import {
 	Text,
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
+import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import { DynamicBorder } from "./dynamic-border";
@@ -51,7 +52,7 @@ class UserMessageList implements Component {
 
 	#renderStatusLine(_total: number): string {
 		const query = this.#searchQuery.trim();
-		const suffix = query ? `Search: ${this.#searchQuery}` : "Type to search";
+		const suffix = query ? t("Search: {query}", { query: this.#searchQuery }) : t("Type to search");
 		return theme.fg("muted", `  ${suffix}`);
 	}
 
@@ -86,7 +87,7 @@ class UserMessageList implements Component {
 		const lines: string[] = [];
 
 		if (this.messages.length === 0) {
-			lines.push(theme.fg("muted", "  No user messages found"));
+			lines.push(theme.fg("muted", `  ${t("No user messages found")}`));
 			return lines;
 		}
 
@@ -121,14 +122,14 @@ class UserMessageList implements Component {
 
 			// Second line: metadata (position in history)
 			const position = this.messages.indexOf(message) + 1;
-			const metadata = `  Message ${position} of ${this.messages.length}`;
+			const metadata = `  ${t("Message {position} of {total}", { position, total: this.messages.length })}`;
 			const metadataLine = theme.fg("muted", metadata);
 			messageLines.push(metadataLine);
 			messageLines.push(""); // Blank line between messages
 		}
 
 		if (total === 0) {
-			lines.push(theme.fg("muted", "  No matching messages"));
+			lines.push(theme.fg("muted", `  ${t("No matching messages")}`));
 		} else {
 			const visibleCount = endIndex - startIndex;
 			const linesPerItem = visibleCount > 0 ? messageLines.length / visibleCount : 1;
@@ -198,8 +199,8 @@ export class UserMessageSelectorComponent extends Container {
 
 		// Add header
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.bold("Branch from Message"), 1, 0));
-		this.addChild(new Text(theme.fg("muted", "Select a message to create a new branch from that point"), 1, 0));
+		this.addChild(new Text(theme.bold(t("Branch from Message")), 1, 0));
+		this.addChild(new Text(theme.fg("muted", t("Select a message to create a new branch from that point")), 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
 		this.addChild(new Spacer(1));

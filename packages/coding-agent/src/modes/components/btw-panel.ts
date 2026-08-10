@@ -1,4 +1,5 @@
 import { type Component, Container, Markdown, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { t } from "../../i18n";
 import { replaceTabs } from "../../tools/render-utils";
 import { getMarkdownTheme, theme } from "../theme/theme";
 import { DynamicBorder } from "./dynamic-border";
@@ -129,31 +130,33 @@ export class BtwPanelComponent extends Container {
 	#footerLine(): string {
 		switch (this.#state) {
 			case "running":
-				return theme.fg("muted", "Esc cancel /btw");
+				return theme.fg("muted", t("Esc cancel /btw"));
 			case "complete": {
-				if (!this.isCopyable()) return theme.fg("muted", "Esc dismiss");
-				const actions = ["c copy"];
-				if (this.#canBranch?.() ?? this.isBranchable()) actions.push("b branch to chat");
-				actions.push("Esc dismiss");
+				if (!this.isCopyable()) return theme.fg("muted", t("Esc dismiss"));
+				const actions = [t("c copy")];
+				if (this.#canBranch?.() ?? this.isBranchable()) actions.push(t("b branch to chat"));
+				actions.push(t("Esc dismiss"));
 				return theme.fg("muted", actions.join(" · "));
 			}
 			case "branching":
-				return theme.fg("muted", `${theme.status.pending} Branching to chat…`);
+				return theme.fg("muted", `${theme.status.pending} ${t("Branching to chat…")}`);
 			case "aborted":
-				return theme.fg("warning", `${theme.status.warning} Cancelled · Esc dismiss`);
+				return theme.fg("warning", `${theme.status.warning} ${t("Cancelled · Esc dismiss")}`);
 			case "error":
-				return theme.fg("error", `${theme.status.error} Error · Esc dismiss`);
+				return theme.fg("error", `${theme.status.error} ${t("Error · Esc dismiss")}`);
 		}
 	}
 
 	#contentComponent(): Component {
 		if (this.#state === "error") {
-			return new Text(theme.fg("error", replaceTabs(this.#errorMessage ?? "Unknown error")), 1, 0);
+			return new Text(theme.fg("error", replaceTabs(this.#errorMessage ?? t("Unknown error"))), 1, 0);
 		}
 		const text = this.#visibleAnswer;
 		if (!text) {
 			const waiting =
-				this.#state === "running" ? `${theme.status.pending} Waiting for response…` : "No text returned.";
+				this.#state === "running"
+					? `${theme.status.pending} ${t("Waiting for response…")}`
+					: t("No text returned.");
 			return new Text(theme.fg("dim", waiting), 1, 0);
 		}
 		return new Markdown(text, 1, 0, getMarkdownTheme());

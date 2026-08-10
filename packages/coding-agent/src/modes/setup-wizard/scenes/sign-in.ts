@@ -10,17 +10,18 @@ import {
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
 import { getAgentDbPath } from "@oh-my-pi/pi-utils";
+import { t } from "../../../i18n";
 import { copyToClipboard } from "../../../utils/clipboard";
 import { OAuthSelectorComponent } from "../../components/oauth-selector";
 import { theme } from "../../theme/theme";
 import type { SetupSceneHost, SetupTab } from "./types";
 
 function loginUrlLink(url: string): string {
-	return `\x1b]8;;${url}\x07Open login URL\x1b]8;;\x07`;
+	return `\x1b]8;;${url}\x07${t("Open login URL")}\x1b]8;;\x07`;
 }
 
 function loginCopyHint(): string {
-	return theme.fg("dim", "(clipboard copy attempted; Alt+C retries)");
+	return theme.fg("dim", t("(clipboard copy attempted; Alt+C retries)"));
 }
 
 class CopyablePromptInput implements Component, Focusable {
@@ -74,7 +75,7 @@ interface PromptState {
  */
 export class SignInTab implements SetupTab {
 	readonly id = "sign-in";
-	readonly label = "Sign in";
+	readonly label = t("Sign in");
 
 	#authStorage: AuthStorage;
 	#selector: OAuthSelectorComponent;
@@ -134,13 +135,16 @@ export class SignInTab implements SetupTab {
 	render(width: number, maxLines?: number): readonly string[] {
 		const lines: string[] = [];
 		if (this.#loggingInProvider) {
-			lines.push(theme.bold(`Signing in to ${this.#loggingInProvider}`));
+			lines.push(theme.bold(t("Signing in to {provider}", { provider: this.#loggingInProvider })));
 		} else {
 			// Hint + blank cost two rows; the wizard subtitle already explains
 			// this panel, so on short screens the rows go to the provider list
 			// instead (17 = full selector: 4 chrome above, 10 rows, 3 below).
 			if (maxLines === undefined || maxLines >= 17 + 2) {
-				lines.push(theme.fg("muted", "Pick a provider to sign in — you can connect more than one."), "");
+				lines.push(
+					theme.fg("muted", t("Pick a provider to sign in — you can connect more than one.")),
+					"",
+				);
 			}
 			this.#selectorRowStart = lines.length;
 			if (maxLines !== undefined) this.#selector.setMaxHeight(maxLines - lines.length);
@@ -150,11 +154,13 @@ export class SignInTab implements SetupTab {
 		const urlLines = this.#authUrl ? wrapTextWithAnsi(theme.fg("dim", this.#authUrl), width) : [];
 		if (this.#authUrl) {
 			lines.push(
-				theme.fg("accent", `Browser login: ${loginUrlLink(this.#authUrl)} ${loginCopyHint()}`),
+				theme.fg("accent", `${t("Browser login")}: ${loginUrlLink(this.#authUrl)} ${loginCopyHint()}`),
 				...urlLines.slice(0, 2),
 			);
 			if (this.#authLaunchUrl) {
-				lines.push(theme.fg("dim", `Local shortcut (this machine only): ${this.#authLaunchUrl}`));
+				lines.push(
+					theme.fg("dim", `${t("Local shortcut (this machine only)")}: ${this.#authLaunchUrl}`),
+				);
 			}
 		}
 		if (this.#prompt) {
@@ -190,7 +196,7 @@ export class SignInTab implements SetupTab {
 		const useManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(providerId);
 		this.#selector.stopValidation();
 		this.#loggingInProvider = providerId;
-		this.#statusLines = [theme.fg("dim", "Starting OAuth flow…")];
+		this.#statusLines = [theme.fg("dim", `${t("Starting OAuth flow")}…`)];
 		this.#authUrl = undefined;
 		this.#authLaunchUrl = undefined;
 		this.#loginAbort = new AbortController();
@@ -216,7 +222,9 @@ export class SignInTab implements SetupTab {
 						this.#statusLines.push(theme.fg("warning", info.instructions));
 					}
 					if (useManualInput) {
-						this.#statusLines.push(theme.fg("dim", "Paste the returned code or redirect URL when prompted."));
+						this.#statusLines.push(
+							theme.fg("dim", t("Paste the returned code or redirect URL when prompted.")),
+						);
 					}
 					void this.#copyAuthUrl();
 					this.host.ctx.openInBrowser(info.url);
@@ -228,15 +236,15 @@ export class SignInTab implements SetupTab {
 					this.host.requestRender();
 				},
 				onManualCodeInput: () =>
-					this.#showPrompt({ message: "Paste the authorization code (or full redirect URL):" }),
+					this.#showPrompt({ message: t("Paste the authorization code (or full redirect URL):") }),
 			});
 			// Provider-scoped online refresh so the just-persisted credential re-runs
 			// discovery instead of reusing a fresh authoritative cache row (#5780).
 			await this.host.ctx.session.modelRegistry.refreshProvider(providerId, "online");
 			if (this.#disposed) return;
 			this.#statusLines = [
-				theme.fg("success", `${theme.status.success} Signed in to ${providerId}`),
-				theme.fg("dim", `Credentials saved to ${getAgentDbPath()}`),
+				theme.fg("success", `${theme.status.success} ${t("Signed in to {provider}", { provider: providerId })}`),
+				theme.fg("dim", t("Credentials saved to {path}", { path: getAgentDbPath() })),
 			];
 			this.#authUrl = undefined;
 			this.#authLaunchUrl = undefined;
@@ -249,14 +257,14 @@ export class SignInTab implements SetupTab {
 		} catch (error) {
 			if (this.#disposed) return;
 			if (this.#loginAbort?.signal.aborted) {
-				this.#statusLines = [theme.fg("dim", "Login cancelled.")];
+				this.#statusLines = [theme.fg("dim", t("Login cancelled."))];
 				this.#authUrl = undefined;
 				this.#authLaunchUrl = undefined;
 			} else {
 				const message = error instanceof Error ? error.message : String(error);
 				this.#statusLines = [
-					theme.fg("error", `Login failed: ${message}`),
-					theme.fg("dim", "Choose another provider or press Esc to continue."),
+					theme.fg("error", `${t("Login failed")}: ${message}`),
+					theme.fg("dim", t("Choose another provider or press Esc to continue.")),
 				];
 				this.#authUrl = undefined;
 				this.#authLaunchUrl = undefined;

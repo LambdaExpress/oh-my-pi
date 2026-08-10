@@ -8,6 +8,7 @@ import type { Model } from "@oh-my-pi/pi-ai";
 import type { Component, TUI } from "@oh-my-pi/pi-tui";
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
+import { t } from "../../i18n";
 import type { ResolvedRoleModel } from "../../session/agent-session";
 import { theme } from "../theme/theme";
 import {
@@ -56,11 +57,6 @@ const MIN_VISIBLE = 5;
 /** Fraction of the terminal height the floating overlay occupies. */
 const HEIGHT_FRACTION = 0.4;
 
-const STATUS_HINT = "Session-only switch — role models stay unchanged";
-const QUICK_ROLE_STATUS_HINT = "Quick role switch — applies its model and thinking for this session";
-const FOOTER_HINT = "↑/↓ models · Enter use for this session · type to search · @ quick roles · Esc close";
-const QUICK_ROLE_FOOTER_HINT = "↑/↓ roles · Enter apply role model · type to search · Esc close";
-
 /**
  * The alt+p picker component. Hosted as a non-fullscreen bottom-anchored
  * overlay (`ui.showOverlay(..., { anchor: "bottom-center" })`); keyboard-only,
@@ -102,7 +98,7 @@ export class ModelPickerComponent implements Component {
 		this.#browser = new ModelBrowser(settings, {
 			currentContextTokens: options.currentContextTokens,
 			markOverContext: true,
-			emptyText: () => (this.#roleMode ? "  No quick roles in the Ctrl+P cycle" : undefined),
+			emptyText: () => (this.#roleMode ? `  ${t("No quick roles in the Ctrl+P cycle")}` : undefined),
 		});
 		this.#browser.onActivate = item => {
 			const quickRole = this.#quickRoles.get(item.selector);
@@ -222,15 +218,30 @@ export class ModelPickerComponent implements Component {
 		const inner = Math.max(1, width - 4);
 		const status = this.#configError
 			? theme.fg("error", ` ${this.#configError}`)
-			: theme.fg("muted", ` ${this.#roleMode ? QUICK_ROLE_STATUS_HINT : STATUS_HINT}`);
+			: theme.fg(
+					"muted",
+					this.#roleMode
+						? ` ${t("Quick role switch — applies its model and thinking for this session")}`
+						: ` ${t("Session-only switch — role models stay unchanged")}`,
+				);
 
 		const out: string[] = [];
-		out.push(topBorder(width, "Switch Model"));
+		out.push(topBorder(width, t("Switch Model")));
 		out.push(row(status, width));
 		for (const line of this.#browser.render(inner)) {
 			out.push(row(line, width));
 		}
-		out.push(row(theme.fg("dim", this.#roleMode ? QUICK_ROLE_FOOTER_HINT : FOOTER_HINT), width));
+		out.push(
+			row(
+				theme.fg(
+					"dim",
+					this.#roleMode
+						? t("↑/↓ roles · Enter apply role model · type to search · Esc close")
+						: t("↑/↓ models · Enter use for this session · type to search · @ quick roles · Esc close"),
+				),
+				width,
+			),
+		);
 		out.push(bottomBorder(width));
 		return out;
 	}

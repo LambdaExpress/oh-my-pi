@@ -14,6 +14,7 @@
  * keeps falling through to the existing prompt-action menu.
  */
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
+import { t } from "../i18n";
 
 /** Candidate kinds, in default display order. */
 const GITHUB_REF_KINDS = [
@@ -68,8 +69,8 @@ export function getGithubRefSuggestions(
 		: GITHUB_REF_KINDS;
 	const items: AutocompleteItem[] = kinds.map(kind => ({
 		value: `${kind.scheme}://${context.number}`,
-		label: `${kind.label} #${context.number}`,
-		description: kind.description,
+		label: `${kind.qualifier === "pr" ? t("PR") : t("Issue")} #${context.number}`,
+		description: kind.qualifier === "pr" ? t("GitHub pull request") : t("GitHub issue"),
 	}));
 	return { items, prefix: context.prefix };
 }

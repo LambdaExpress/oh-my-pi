@@ -1,3 +1,5 @@
+import { t } from "../i18n";
+
 export type LoopLimitConfig =
 	| {
 			kind: "iterations";
@@ -37,8 +39,6 @@ const TIME_UNITS_MS = new Map<string, number>([
 	["hour", 3_600_000],
 	["hours", 3_600_000],
 ]);
-
-const LOOP_USAGE = "Usage: /loop [count|duration]. Examples: /loop 10, /loop 10m, /loop 10min.";
 
 export interface ParsedLoopArgs {
 	/** Iteration/duration budget, when the user supplied a leading limit token. */
@@ -92,13 +92,13 @@ export function parseLoopLimitArgs(args: string): ParsedLoopArgs | string {
 	}
 
 	// Limit-shaped but unparseable ("-1", "1.5h", "10x10").
-	return LOOP_USAGE;
+	return t("Usage: /loop [count|duration]. Examples: /loop 10, /loop 10m, /loop 10min.");
 }
 
 function makeIterations(amountText: string): LoopLimitConfig | string {
 	const amount = Number(amountText);
 	if (!Number.isSafeInteger(amount) || amount <= 0) {
-		return "Loop count must be a positive integer.";
+		return t("Loop count must be a positive integer.");
 	}
 	return { kind: "iterations", iterations: amount };
 }
@@ -106,7 +106,7 @@ function makeIterations(amountText: string): LoopLimitConfig | string {
 function makeDuration(amountText: string, unitMs: number): LoopLimitConfig | string {
 	const amount = Number(amountText);
 	if (!Number.isSafeInteger(amount) || amount <= 0) {
-		return "Loop duration must be positive.";
+		return t("Loop duration must be positive.");
 	}
 	return { kind: "duration", durationMs: amount * unitMs };
 }
@@ -124,18 +124,18 @@ function parseCompoundDuration(token: string): LoopLimitConfig | string | undefi
 	let totalMs = 0;
 	for (const segment of segments) {
 		const match = /^(\d+)([a-z]+)$/.exec(segment);
-		if (!match) return LOOP_USAGE;
+		if (!match) return t("Usage: /loop [count|duration]. Examples: /loop 10, /loop 10m, /loop 10min.");
 		const unitMs = TIME_UNITS_MS.get(match[2]);
 		if (unitMs === undefined) {
-			return "Loop duration unit must be seconds, minutes, or hours.";
+			return t("Loop duration unit must be seconds, minutes, or hours.");
 		}
 		const amount = Number(match[1]);
 		if (!Number.isSafeInteger(amount) || amount <= 0) {
-			return "Loop duration must be positive.";
+			return t("Loop duration must be positive.");
 		}
 		totalMs += amount * unitMs;
 	}
-	if (totalMs <= 0) return "Loop duration must be positive.";
+	if (totalMs <= 0) return t("Loop duration must be positive.");
 	return { kind: "duration", durationMs: totalMs };
 }
 
@@ -166,27 +166,43 @@ export function isLoopDurationExpired(limit: LoopLimitRuntime | undefined, nowMs
 
 export function describeLoopLimit(config: LoopLimitConfig): string {
 	if (config.kind === "iterations") {
-		return `${config.iterations} ${config.iterations === 1 ? "iteration" : "iterations"}`;
+		return config.iterations === 1
+			? t("{count} iteration", { count: config.iterations })
+			: t("{count} iterations", { count: config.iterations });
 	}
 	return formatDuration(config.durationMs);
 }
 
 export function describeLoopLimitRuntime(limit: LoopLimitRuntime): string {
 	if (limit.kind === "iterations") {
-		return `${limit.remaining} of ${limit.initial} ${limit.initial === 1 ? "iteration" : "iterations"} remaining`;
+		return limit.initial === 1
+			? t("{remaining} of {initial} iteration remaining", {
+					remaining: limit.remaining,
+					initial: limit.initial,
+				})
+			: t("{remaining} of {initial} iterations remaining", {
+					remaining: limit.remaining,
+					initial: limit.initial,
+				});
 	}
-	return `${formatDuration(limit.durationMs)} limit`;
+	return t("{duration} limit", { duration: formatDuration(limit.durationMs) });
 }
 
 function formatDuration(durationMs: number): string {
 	if (durationMs % 3_600_000 === 0) {
 		const hours = durationMs / 3_600_000;
-		return `${hours} ${hours === 1 ? "hour" : "hours"}`;
+		return hours === 1
+			? t("{count} hour", { count: hours })
+			: t("{count} hours", { count: hours });
 	}
 	if (durationMs % 60_000 === 0) {
 		const minutes = durationMs / 60_000;
-		return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
+		return minutes === 1
+			? t("{count} minute", { count: minutes })
+			: t("{count} minutes", { count: minutes });
 	}
 	const seconds = durationMs / 1_000;
-	return `${seconds} ${seconds === 1 ? "second" : "seconds"}`;
+	return seconds === 1
+		? t("{count} second", { count: seconds })
+		: t("{count} seconds", { count: seconds });
 }

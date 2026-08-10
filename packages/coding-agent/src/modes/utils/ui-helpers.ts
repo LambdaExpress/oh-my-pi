@@ -5,6 +5,7 @@ import { type Component, Spacer, Text, TruncatedText } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
+import { t } from "../../i18n";
 import { getEditClipboard } from "../../edit/edit-clipboard";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { createAdvisorMessageCard } from "../../modes/components/advisor-message";
@@ -730,8 +731,11 @@ export class UiHelpers {
 			0,
 		);
 		if (compactionCount > 0) {
-			const times = compactionCount === 1 ? "1 time" : `${compactionCount} times`;
-			this.ctx.showStatus(`Session compacted ${times}`);
+			this.ctx.showStatus(
+				compactionCount === 1
+					? t("Session compacted 1 time")
+					: t("Session compacted {count} times", { count: compactionCount }),
+			);
 		}
 		if (options.clearTerminalHistory) {
 			this.ctx.ui.requestRender(true, { clearScrollback: true });
@@ -750,20 +754,22 @@ export class UiHelpers {
 	}
 
 	showError(errorMessage: string): void {
-		const text = new Text(`Error: ${errorMessage}`, 1, 0).setStyleFn(t => theme.fg("error", t));
+		const text = new Text(t("Error: {message}", { message: errorMessage }), 1, 0).setStyleFn(t => theme.fg("error", t));
 		this.ctx.present([new Spacer(1), text]);
 	}
 
 	showWarning(warningMessage: string): void {
-		const text = new Text(`Warning: ${warningMessage}`, 1, 0).setStyleFn(t => theme.fg("warning", t));
+		const text = new Text(t("Warning: {message}", { message: warningMessage }), 1, 0).setStyleFn(t =>
+			theme.fg("warning", t),
+		);
 		this.ctx.present([new Spacer(1), text]);
 	}
 
 	showNewVersionNotification(newVersion: string): void {
 		const block = new TranscriptBlock();
 		block.addChild(new DynamicBorder(text => theme.fg("warning", text)));
-		const title = "Update Available";
-		const prefix = `New version ${newVersion} is available. Run: `;
+		const title = t("Update Available");
+		const prefix = t("New version {version} is available. Run: ", { version: newVersion });
 		const command = "omp update";
 		block.addChild(
 			new Text(`${title}\n${prefix}${command}`, 1, 0).setStyleFn(
@@ -790,8 +796,8 @@ export class UiHelpers {
 		}
 
 		const groups = [
-			{ label: "Steering", messages: steeringMessages },
-			{ label: "After yield", messages: followUpMessages },
+			{ label: t("Steering"), messages: steeringMessages },
+			{ label: t("After yield"), messages: followUpMessages },
 		].filter(group => group.messages.length > 0);
 		if (groups.length > 0) {
 			this.ctx.pendingMessagesContainer.addChild(new Spacer(1));
@@ -805,7 +811,7 @@ export class UiHelpers {
 				}
 			}
 			const dequeueKey = this.ctx.keybindings.getDisplayString("app.message.dequeue") || "Alt+Up";
-			const hintText = theme.fg("dim", `  ${theme.tree.hook} ${dequeueKey} to edit`);
+			const hintText = theme.fg("dim", `  ${theme.tree.hook} ${dequeueKey} ${t("to edit")}`);
 			this.ctx.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
 		}
 		this.ctx.ui.requestComponentRender(this.ctx.pendingMessagesContainer);
@@ -817,7 +823,9 @@ export class UiHelpers {
 		this.ctx.editor.clearDraft(text);
 		this.ctx.updatePendingMessagesDisplay();
 		this.ctx.showStatus(
-			queuedImages ? "Queued message with image for after compaction" : "Queued message for after compaction",
+			queuedImages
+				? t("Queued message with image for after compaction")
+				: t("Queued message for after compaction"),
 		);
 	}
 
@@ -877,10 +885,11 @@ export class UiHelpers {
 			this.ctx.session.clearQueue();
 			this.ctx.compactionQueuedMessages = queuedMessages;
 			this.ctx.updatePendingMessagesDisplay();
+			const errorText = error instanceof Error ? error.message : String(error);
 			this.ctx.showError(
-				`Failed to send queued message${queuedMessages.length > 1 ? "s" : ""}: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+				queuedMessages.length > 1
+					? t("Failed to send queued messages: {error}", { error: errorText })
+					: t("Failed to send queued message: {error}", { error: errorText }),
 			);
 		};
 

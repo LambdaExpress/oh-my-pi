@@ -1,5 +1,6 @@
 import { stripVTControlCharacters } from "node:util";
 import type { TabBarTheme } from "@oh-my-pi/pi-tui";
+import { t } from "../i18n";
 import { theme } from "./theme/theme";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -54,8 +55,8 @@ function formatWorkingElapsed(elapsedMs: number): string {
  * by `endsWith`/`slice` matching in the loader renderer.
  */
 export function interruptHint(elapsedMs?: number): string {
-	if (elapsedMs === undefined) return " (esc to interrupt)";
-	return ` (${formatWorkingElapsed(elapsedMs)} · esc to interrupt)`;
+	if (elapsedMs === undefined) return ` ${t("esc to interrupt")}`;
+	return ` ${t("{time} · esc to interrupt", { time: formatWorkingElapsed(elapsedMs) })}`;
 }
 
 export { parseCommandArgs } from "../utils/command-args";

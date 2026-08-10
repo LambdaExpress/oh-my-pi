@@ -29,6 +29,7 @@ import { getAvailableThemesWithPaths, getThemeByName, setTheme, type Theme, them
 import type { InteractiveModeContext, InteractiveSelectorDialogOptions } from "../../modes/types";
 import { normalizeCustomMessagePayload, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { setExtensionTerminalTitle, setSessionTerminalTitle } from "../../utils/title-generator";
+import { t } from "../../i18n";
 
 const MAX_WIDGET_LINES = 10;
 const ASK_OTHER_OPTION = "Other (type your own)";
@@ -131,11 +132,15 @@ export class ExtensionUiController {
 		this.ctx.session.setUsageFallbackConfirmer?.((confirmation, signal) => {
 			const reserve =
 				confirmation.remainingPercent === undefined
-					? "inside the configured reserve margin"
-					: `${confirmation.remainingPercent.toFixed(1)}% remaining`;
+					? t("inside the configured reserve margin")
+					: t("{pct}% remaining", { pct: confirmation.remainingPercent.toFixed(1) });
 			return this.showHookConfirm(
-				"Coding-plan reserve reached",
-				`${confirmation.from} has ${reserve}. Switch to ${confirmation.to}? Choose No to keep using the current plan.`,
+				t("Coding-plan reserve reached"),
+				t("{from} has {reserve}. Switch to {to}? Choose No to keep using the current plan.", {
+					from: confirmation.from,
+					reserve,
+					to: confirmation.to,
+				}),
 				{ signal },
 			);
 		});
@@ -154,7 +159,9 @@ export class ExtensionUiController {
 					.then(() => this.#applyCustomMessageDisplay(wasStreaming, normalized.display))
 					.catch((err: unknown) => {
 						this.ctx.showError(
-							`Extension sendMessage failed: ${err instanceof Error ? err.message : String(err)}`,
+							t("Extension sendMessage failed: {error}", {
+								error: err instanceof Error ? err.message : String(err),
+							}),
 						);
 					});
 			},
@@ -204,7 +211,7 @@ export class ExtensionUiController {
 				await this.ctx.session.reload();
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
-				this.ctx.showStatus("Reloaded session");
+				this.ctx.showStatus(t("Reloaded session"));
 			},
 			newSession: async options => {
 				this.ctx.clearTransientSessionUi();
@@ -231,7 +238,7 @@ export class ExtensionUiController {
 
 				this.ctx.present([
 					new Spacer(1),
-					new Text(`${theme.fg("accent", `${theme.status.success} New session started`)}`, 1, 1),
+					new Text(`${theme.fg("accent", `${theme.status.success} ${t("New session started")}`)}`, 1, 1),
 				]);
 				await this.ctx.reloadTodos();
 				this.ctx.ui.requestRender(true, { clearScrollback: true });
@@ -248,7 +255,7 @@ export class ExtensionUiController {
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
-				this.ctx.showStatus("Branched to new session");
+				this.ctx.showStatus(t("Branched to new session"));
 
 				return { cancelled: false };
 			},
@@ -264,7 +271,7 @@ export class ExtensionUiController {
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setDraft(result.editorText, result.editorImages);
 				}
-				this.ctx.showStatus("Navigated to selected point");
+				this.ctx.showStatus(t("Navigated to selected point"));
 
 				return { cancelled: false };
 			},
@@ -334,12 +341,12 @@ export class ExtensionUiController {
 				container.addChild(new Text(line, 1, 0));
 			}
 			if (content.length > MAX_WIDGET_LINES) {
-				container.addChild(new Text(theme.fg("muted", "... (widget truncated)"), 1, 0));
+				container.addChild(new Text(theme.fg("muted", t("... (widget truncated)")), 1, 0));
 			}
 			return container;
 		}
 		if (content === undefined) {
-			throw new Error("Widget content missing");
+			throw new Error(t("Widget content missing"));
 		}
 		return content(this.ctx.ui, theme);
 	}
@@ -387,7 +394,9 @@ export class ExtensionUiController {
 					.sendCustomMessage(normalized, options)
 					.then(() => this.#applyCustomMessageDisplay(wasStreaming, normalized.display))
 					.catch((err: unknown) => {
-						const errorText = `Extension sendMessage failed: ${err instanceof Error ? err.message : String(err)}`;
+						const errorText = t("Extension sendMessage failed: {error}", {
+							error: err instanceof Error ? err.message : String(err),
+						});
 						this.ctx.showError(errorText);
 					});
 			},
@@ -437,7 +446,7 @@ export class ExtensionUiController {
 				await this.ctx.session.reload();
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
-				this.ctx.showStatus("Reloaded session");
+				this.ctx.showStatus(t("Reloaded session"));
 			},
 			newSession: async options => {
 				this.ctx.clearTransientSessionUi();
@@ -461,7 +470,7 @@ export class ExtensionUiController {
 
 				this.ctx.present([
 					new Spacer(1),
-					new Text(`${theme.fg("accent", `${theme.status.success} New session started`)}`, 1, 1),
+					new Text(`${theme.fg("accent", `${theme.status.success} ${t("New session started")}`)}`, 1, 1),
 				]);
 				await this.ctx.reloadTodos();
 				this.ctx.ui.requestRender(true, { clearScrollback: true });
@@ -478,7 +487,7 @@ export class ExtensionUiController {
 				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
-				this.ctx.showStatus("Branched to new session");
+				this.ctx.showStatus(t("Branched to new session"));
 
 				return { cancelled: false };
 			},
@@ -494,7 +503,7 @@ export class ExtensionUiController {
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setDraft(result.editorText, result.editorImages);
 				}
-				this.ctx.showStatus("Navigated to selected point");
+				this.ctx.showStatus(t("Navigated to selected point"));
 
 				return { cancelled: false };
 			},
@@ -547,7 +556,9 @@ export class ExtensionUiController {
 	 * Show a tool error in the chat.
 	 */
 	showToolError(toolName: string, error: string): void {
-		const errorText = new Text(`Tool "${toolName}" error: ${error}`, 1, 0).setStyleFn(t => theme.fg("error", t));
+		const errorText = new Text(t('Tool "{toolName}" error: {error}', { toolName, error }), 1, 0).setStyleFn(
+			text => theme.fg("error", text),
+		);
 		this.ctx.present(errorText);
 	}
 
@@ -630,7 +641,7 @@ export class ExtensionUiController {
 					? {
 							isBlocked: () => draftEditor.getText().length > 0,
 							handleInput: (keyData: string) => draftEditor.handleDraftEdit(keyData),
-							hint: "Finish or clear the current prompt to answer",
+							hint: t("Finish or clear the current prompt to answer"),
 							// Show the draft's insertion cursor while it owns input; drop it
 							// once the draft clears and the ask controls take over.
 							syncPresentation: () => {
@@ -792,8 +803,8 @@ export class ExtensionUiController {
 						checkedIndices,
 						markableCount: question.options.length,
 						helpText: hasAnswer
-							? "up/down navigate  enter toggle  Next → continue  esc cancel"
-							: "up/down navigate  enter toggle  esc cancel",
+							? t("up/down navigate  enter toggle  Next → continue  esc cancel")
+							: t("up/down navigate  enter toggle  esc cancel"),
 					},
 					signal,
 				);
@@ -803,7 +814,7 @@ export class ExtensionUiController {
 				if (choice.value === ASK_NEXT_OPTION) break;
 				if (choice.value === ASK_OTHER_OPTION) {
 					const input = await this.#requestGuestUiString(
-						{ kind: "editor", title: boundPromptTitle("Custom answer: ", question.question) },
+						{ kind: "editor", title: boundPromptTitle(t("Custom answer: "), question.question) },
 						signal,
 					);
 					if (input.kind === "unavailable") return "unavailable";
@@ -831,7 +842,7 @@ export class ExtensionUiController {
 						initialIndex,
 						selectionMarker: "radio",
 						markableCount: question.options.length,
-						helpText: "up/down navigate  enter select  esc cancel",
+						helpText: t("up/down navigate  enter select  esc cancel"),
 					},
 					signal,
 				);
@@ -840,7 +851,7 @@ export class ExtensionUiController {
 				if (choice.value === ASK_CHAT_OPTION) return "chat";
 				if (choice.value === ASK_OTHER_OPTION) {
 					const input = await this.#requestGuestUiString(
-						{ kind: "editor", title: boundPromptTitle("Custom answer: ", question.question) },
+						{ kind: "editor", title: boundPromptTitle(t("Custom answer: "), question.question) },
 						signal,
 					);
 					if (input.kind === "unavailable") return "unavailable";
@@ -1128,9 +1139,11 @@ export class ExtensionUiController {
 	}
 
 	showExtensionError(extensionPath: string, error: string): void {
-		const errorText = new Text(`Extension "${extensionPath}" error: ${error}`, 1, 0).setStyleFn(t =>
-			theme.fg("error", t),
-		);
+		const errorText = new Text(
+			t('Extension "{extensionPath}" error: {error}', { extensionPath, error }),
+			1,
+			0,
+		).setStyleFn(text => theme.fg("error", text));
 		this.ctx.present(errorText);
 	}
 	async #handleInteractiveCompact(instructionsOrOptions: string | CompactOptions | undefined): Promise<void> {
@@ -1150,7 +1163,11 @@ export class ExtensionUiController {
 
 	#sendExtensionUserMessage: SendUserMessageHandler = (content, options) => {
 		this.ctx.session.sendUserMessage(content, options).catch((err: unknown) => {
-			this.ctx.showError(`Extension sendUserMessage failed: ${err instanceof Error ? err.message : String(err)}`);
+			this.ctx.showError(
+				t("Extension sendUserMessage failed: {error}", {
+					error: err instanceof Error ? err.message : String(err),
+				}),
+			);
 		});
 	};
 

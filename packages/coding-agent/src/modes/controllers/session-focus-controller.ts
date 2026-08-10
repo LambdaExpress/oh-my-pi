@@ -13,6 +13,7 @@ import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID, type RegistryEvent } from "../../registry/agent-registry";
 import type { AgentSession } from "../../session/agent-session";
 import { setTerminalTitleState } from "../../utils/title-generator";
+import { t } from "../../i18n";
 import type { InteractiveModeContext } from "../types";
 
 export class SessionFocusController {
@@ -38,7 +39,7 @@ export class SessionFocusController {
 
 	/** Focus the main view on an agent's live session. Throws an Error with a user-displayable message. */
 	async focusAgent(id: string): Promise<void> {
-		if (this.ctx.collabGuest) throw new Error("Viewing agents is unavailable in a collab session.");
+		if (this.ctx.collabGuest) throw new Error(t("Viewing agents is unavailable in a collab session."));
 		if (id === MAIN_AGENT_ID) return this.unfocus();
 		const session = await this.lifecycle().ensureLive(id);
 		if (id === this.#focusedAgentId && session === this.#attachedSession) return;
@@ -46,7 +47,7 @@ export class SessionFocusController {
 		this.#attachedSession = session;
 		this.#registryUnsubscribe ??= this.registry.onChange(e => this.#onRegistryEvent(e));
 		await this.#attach(session);
-		this.ctx.showStatus(`Viewing agent ${id} — Esc returns to main, ←← hops to parent`);
+		this.ctx.showStatus(t("Viewing agent {id} — Esc returns to main, ←← hops to parent", { id }));
 	}
 
 	/** Focus the focused agent's parent agent, falling back to the main session. No-op when unfocused. */
@@ -65,7 +66,7 @@ export class SessionFocusController {
 		this.#focusedAgentId = undefined;
 		this.#attachedSession = undefined;
 		await this.#attach(this.ctx.session);
-		this.ctx.showStatus("Returned to main session");
+		this.ctx.showStatus(t("Returned to main session"));
 	}
 
 	dispose(): void {
@@ -79,7 +80,12 @@ export class SessionFocusController {
 		const dead = event.type === "status_changed" && (event.ref.status === "parked" || event.ref.status === "aborted");
 		if (!gone && !dead) return;
 		void this.unfocus().then(() => {
-			this.ctx.showStatus(`Agent ${event.ref.id} is ${gone ? "gone" : event.ref.status}; returned to main session`);
+			this.ctx.showStatus(
+				t("Agent {id} is {state}; returned to main session", {
+					id: event.ref.id,
+					state: gone ? t("gone") : event.ref.status,
+				}),
+			);
 		});
 	}
 

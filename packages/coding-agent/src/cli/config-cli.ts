@@ -20,6 +20,7 @@ import {
 	validateProviderMaxInFlightRequests,
 } from "../config/settings";
 import { SETTINGS_SCHEMA } from "../config/settings-schema";
+import { t } from "../i18n";
 import { theme } from "../modes/theme/theme";
 import { initXdg } from "./commands/init-xdg";
 
@@ -95,8 +96,8 @@ export function parseConfigArgs(args: string[]): ConfigCommandArgs | undefined {
 
 	const action = args[1];
 	if (!VALID_ACTIONS.includes(action as ConfigAction)) {
-		console.error(chalk.red(`Unknown config command: ${action}`));
-		console.error(`Valid commands: ${VALID_ACTIONS.join(", ")}`);
+		console.error(chalk.red(t("Unknown config command: {action}", { action })));
+		console.error(t("Valid commands: {commands}", { commands: VALID_ACTIONS.join(", ") }));
 		process.exit(1);
 	}
 
@@ -131,7 +132,7 @@ export function parseConfigArgs(args: string[]): ConfigCommandArgs | undefined {
 
 function formatValue(value: unknown): string {
 	if (value === undefined || value === null) {
-		return chalk.dim("(not set)");
+		return chalk.dim(t("(not set)"));
 	}
 	if (typeof value === "boolean") {
 		return value ? chalk.green("true") : chalk.red("false");
@@ -185,17 +186,22 @@ function parseAndSetValue(path: SettingPath, rawValue: string): void {
 			const lower = trimmed.toLowerCase();
 			if (["true", "1", "yes", "on"].includes(lower)) parsedValue = true;
 			else if (["false", "0", "no", "off"].includes(lower)) parsedValue = false;
-			else throw new Error(`Invalid boolean value: ${rawValue}. Use true/false, yes/no, on/off, or 1/0`);
+			else
+				throw new Error(
+					t("Invalid boolean value: {value}. Use true/false, yes/no, on/off, or 1/0", { value: rawValue }),
+				);
 			break;
 		}
 		case "number":
 			parsedValue = Number(trimmed);
-			if (!Number.isFinite(parsedValue)) throw new Error(`Invalid number: ${rawValue}`);
+			if (!Number.isFinite(parsedValue)) throw new Error(t("Invalid number: {value}", { value: rawValue }));
 			break;
 		case "enum": {
 			const valid = getEnumValues(path);
 			if (valid && !valid.includes(trimmed)) {
-				throw new Error(`Invalid value: ${rawValue}. Valid values: ${valid.join(", ")}`);
+				throw new Error(
+					t("Invalid value: {value}. Valid values: {valid}", { value: rawValue, valid: valid.join(", ") }),
+				);
 			}
 			parsedValue = trimmed;
 			break;
@@ -205,10 +211,10 @@ function parseAndSetValue(path: SettingPath, rawValue: string): void {
 			try {
 				parsed = JSON.parse(trimmed);
 			} catch {
-				throw new Error(`Invalid array JSON: ${rawValue}`);
+				throw new Error(t("Invalid array JSON: {value}", { value: rawValue }));
 			}
 			if (!Array.isArray(parsed)) {
-				throw new Error(`Invalid array JSON: ${rawValue}`);
+				throw new Error(t("Invalid array JSON: {value}", { value: rawValue }));
 			}
 			parsedValue = parsed;
 			break;
@@ -218,10 +224,10 @@ function parseAndSetValue(path: SettingPath, rawValue: string): void {
 			try {
 				parsed = JSON.parse(trimmed);
 			} catch {
-				throw new Error(`Invalid record JSON: ${rawValue}`);
+				throw new Error(t("Invalid record JSON: {value}", { value: rawValue }));
 			}
 			if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-				throw new Error(`Invalid record JSON: ${rawValue}`);
+				throw new Error(t("Invalid record JSON: {value}", { value: rawValue }));
 			}
 			if (path === "providers.maxInFlightRequests") {
 				parsed = validateProviderMaxInFlightRequests(parsed);
@@ -302,7 +308,7 @@ async function handleList(flags: { json?: boolean }): Promise<void> {
 		return;
 	}
 
-	console.log(chalk.bold("Settings:\n"));
+	console.log(`${chalk.bold(t("Settings:"))}\n`);
 
 	const groups: Record<string, CliSettingDef[]> = {};
 	for (const def of defs) {
@@ -337,15 +343,15 @@ async function handleList(flags: { json?: boolean }): Promise<void> {
 
 function handleGet(key: string | undefined, flags: { json?: boolean }): void {
 	if (!key) {
-		console.error(chalk.red(`Usage: ${APP_NAME} config get <key>`));
-		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
+		console.error(chalk.red(t("Usage: {app} config get <key>", { app: APP_NAME })));
+		console.error(chalk.dim(`\n${t("Run '{app} config list' to see available keys", { app: APP_NAME })}`));
 		process.exit(1);
 	}
 
 	const def = findSettingDef(key);
 	if (!def) {
-		console.error(chalk.red(`Unknown setting: ${key}`));
-		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
+		console.error(chalk.red(t("Unknown setting: {key}", { key })));
+		console.error(chalk.dim(`\n${t("Run '{app} config list' to see available keys", { app: APP_NAME })}`));
 		process.exit(1);
 	}
 
@@ -361,15 +367,15 @@ function handleGet(key: string | undefined, flags: { json?: boolean }): void {
 
 async function handleSet(key: string | undefined, value: string | undefined, flags: { json?: boolean }): Promise<void> {
 	if (!key || value === undefined) {
-		console.error(chalk.red(`Usage: ${APP_NAME} config set <key> <value>`));
-		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
+		console.error(chalk.red(t("Usage: {app} config set <key> <value>", { app: APP_NAME })));
+		console.error(chalk.dim(`\n${t("Run '{app} config list' to see available keys", { app: APP_NAME })}`));
 		process.exit(1);
 	}
 
 	const def = findSettingDef(key);
 	if (!def) {
-		console.error(chalk.red(`Unknown setting: ${key}`));
-		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
+		console.error(chalk.red(t("Unknown setting: {key}", { key })));
+		console.error(chalk.dim(`\n${t("Run '{app} config list' to see available keys", { app: APP_NAME })}`));
 		process.exit(1);
 	}
 
@@ -386,21 +392,23 @@ async function handleSet(key: string | undefined, value: string | undefined, fla
 	if (flags.json) {
 		console.log(JSON.stringify({ key: def.path, value: newValue }));
 	} else {
-		console.log(chalk.green(`${theme.status.success} Set ${def.path} = ${formatValue(newValue)}`));
+		console.log(
+			chalk.green(`${theme.status.success} ${t("Set {path} = {value}", { path: def.path, value: formatValue(newValue) })}`),
+		);
 	}
 }
 
 async function handleReset(key: string | undefined, flags: { json?: boolean }): Promise<void> {
 	if (!key) {
-		console.error(chalk.red(`Usage: ${APP_NAME} config reset <key>`));
-		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
+		console.error(chalk.red(t("Usage: {app} config reset <key>", { app: APP_NAME })));
+		console.error(chalk.dim(`\n${t("Run '{app} config list' to see available keys", { app: APP_NAME })}`));
 		process.exit(1);
 	}
 
 	const def = findSettingDef(key);
 	if (!def) {
-		console.error(chalk.red(`Unknown setting: ${key}`));
-		console.error(chalk.dim(`\nRun '${APP_NAME} config list' to see available keys`));
+		console.error(chalk.red(t("Unknown setting: {key}", { key })));
+		console.error(chalk.dim(`\n${t("Run '{app} config list' to see available keys", { app: APP_NAME })}`));
 		process.exit(1);
 	}
 
@@ -417,7 +425,11 @@ async function handleReset(key: string | undefined, flags: { json?: boolean }): 
 	if (flags.json) {
 		console.log(JSON.stringify({ key: def.path, value: defaultValue }));
 	} else {
-		console.log(chalk.green(`${theme.status.success} Reset ${def.path} to ${formatValue(defaultValue)}`));
+		console.log(
+			chalk.green(
+				`${theme.status.success} ${t("Reset {path} to {value}", { path: def.path, value: formatValue(defaultValue) })}`,
+			),
+		);
 	}
 }
 
@@ -430,20 +442,20 @@ function handlePath(): void {
 // =============================================================================
 
 export function printConfigHelp(): void {
-	console.log(`${chalk.bold(`${APP_NAME} config`)} - Manage settings
+	console.log(`${chalk.bold(`${APP_NAME} config`)} - ${t("Manage settings")}
 
-${chalk.bold("Commands:")}
-  list               List all settings with current values
-  get <key>          Get a specific setting value
-  set <key> <value>  Set a setting value
-  reset <key>        Reset a setting to its default value
-  path               Print the config directory path
-  init-xdg           Initialize XDG Base Directory structure
+${chalk.bold(t("Commands:"))}
+  list               ${t("List all settings with current values")}
+  get <key>          ${t("Get a specific setting value")}
+  set <key> <value>  ${t("Set a setting value")}
+  reset <key>        ${t("Reset a setting to its default value")}
+  path               ${t("Print the config directory path")}
+  init-xdg           ${t("Initialize XDG Base Directory structure")}
 
-${chalk.bold("Options:")}
-  --json             Output as JSON
+${chalk.bold(t("Options:"))}
+  --json             ${t("Output as JSON")}
 
-${chalk.bold("Examples:")}
+${chalk.bold(t("Examples:"))}
   ${APP_NAME} config list
   ${APP_NAME} config get theme
   ${APP_NAME} config set theme catppuccin-mocha
@@ -453,7 +465,7 @@ ${chalk.bold("Examples:")}
   ${APP_NAME} config list --json
   ${APP_NAME} config init-xdg
 
-${chalk.bold("Boolean Values:")}
+${chalk.bold(t("Boolean Values:"))}
   true, false, yes, no, on, off, 1, 0
 `);
 }

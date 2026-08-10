@@ -2,6 +2,7 @@ import type { Agent, AgentMessage, AgentToolResult, AgentTurnEndContext } from "
 import { invalidateMessageCache } from "@oh-my-pi/pi-agent-core/compaction";
 import type { Model, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { prompt } from "@oh-my-pi/pi-utils";
+import { t } from "../i18n";
 import type { LocalProtocolOptions } from "../internal-urls";
 import { resolveApprovedPlan } from "../plan-mode/approved-plan";
 import { listPlanFiles, readPlanFile } from "../plan-mode/plan-files";
@@ -136,7 +137,7 @@ export class PrewalkCoordinator {
 					attribution: "agent",
 					timestamp: Date.now(),
 				});
-				this.#host.emitNotice("info", "Prewalk: injected deep-plan nudge.", "prewalk");
+				this.#host.emitNotice("info", t("Prewalk: injected deep-plan nudge."), "prewalk");
 			}
 			return;
 		}
@@ -152,7 +153,9 @@ export class PrewalkCoordinator {
 			this.#prewalk = undefined;
 			this.#host.emitNotice(
 				"info",
-				`Prewalk: target ${target.provider}/${target.id} already matches the active model and thinking level; nothing to switch.`,
+				t("Prewalk: target {model} already matches the active model and thinking level; nothing to switch.", {
+					model: `${target.provider}/${target.id}`,
+				}),
 				"prewalk",
 			);
 			return;
@@ -161,7 +164,10 @@ export class PrewalkCoordinator {
 		this.#prewalk = undefined;
 		this.#host.emitNotice(
 			"info",
-			`Prewalk: switched to ${target.provider}/${target.id} after first ${action.toolName} call.`,
+			t("Prewalk: switched to {model} after first {tool} call.", {
+				model: `${target.provider}/${target.id}`,
+				tool: action.toolName,
+			}),
 			"prewalk",
 		);
 		this.#host.agent.steer({
@@ -179,7 +185,9 @@ export class PrewalkCoordinator {
 		if (this.#prewalk) {
 			this.#host.emitNotice(
 				"info",
-				`Prewalk: already armed for ${this.#prewalk.target.provider}/${this.#prewalk.target.id}, waiting for the first edit/write.`,
+				t("Prewalk: already armed for {model}, waiting for the first edit/write.", {
+					model: `${this.#prewalk.target.provider}/${this.#prewalk.target.id}`,
+				}),
 				"prewalk",
 			);
 			return;
@@ -197,7 +205,9 @@ export class PrewalkCoordinator {
 		});
 		this.#host.emitNotice(
 			"info",
-			`Prewalk: armed for ${target.provider}/${target.id} — will switch at the first edit/write once the todo list exists.`,
+			t("Prewalk: armed for {model} — will switch at the first edit/write once the todo list exists.", {
+				model: `${target.provider}/${target.id}`,
+			}),
 			"prewalk",
 		);
 	}
@@ -260,7 +270,10 @@ export class PrewalkCoordinator {
 		await this.#host.setModelTemporary(planYolo.target, planYolo.thinkingLevel, { ephemeral: true });
 		this.#host.emitNotice(
 			"info",
-			`Plan-yolo: plan approved, switched to ${planYolo.target.provider}/${planYolo.target.id} to implement "${resolvedTitle}".`,
+			t('Plan-yolo: plan approved, switched to {model} to implement "{title}".', {
+				model: `${planYolo.target.provider}/${planYolo.target.id}`,
+				title: resolvedTitle,
+			}),
 			"plan-yolo",
 		);
 		this.#host.agent.steer({

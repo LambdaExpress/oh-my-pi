@@ -1,4 +1,5 @@
 import type { InteractiveModeContext } from "../types";
+import { t } from "../../i18n";
 
 export async function runProviderSetupWizard(ctx: InteractiveModeContext): Promise<void> {
 	// Keep the full setup wizard behind the existing cold-start boundary; a static
@@ -6,7 +7,7 @@ export async function runProviderSetupWizard(ctx: InteractiveModeContext): Promi
 	const { ALL_SCENES, runSetupWizard } = await import("./index");
 	const providersScene = ALL_SCENES.find(scene => scene.id === "providers");
 	if (!providersScene) {
-		ctx.showError("Provider setup is unavailable.");
+		ctx.showError(t("Provider setup is unavailable."));
 		return;
 	}
 	await runSetupWizard(ctx, [providersScene], {

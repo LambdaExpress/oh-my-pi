@@ -9,6 +9,7 @@ import {
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
 import { APP_NAME } from "@oh-my-pi/pi-utils";
+import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
 import tipsText from "./tips.txt" with { type: "text" };
 
@@ -84,7 +85,7 @@ function renderNewTag(phase: number, encoding: ColorEncoding): string {
 	return out + reset;
 }
 export function renderWelcomeTip(tip: string, boxWidth: number, phase = 0): string[] {
-	const label = "Tip: ";
+	const label = `${t("Tip")}: `;
 	const labelWidth = visibleWidth(label);
 	const bodyBudget = boxWidth - 1 - labelWidth; // 1 = leading indent
 	if (bodyBudget < 8) return [];
@@ -159,7 +160,7 @@ export class WelcomeComponent implements Component {
 	get tip(): string | undefined {
 		if (this.#selectedTip === undefined) {
 			if (theme.getSymbolPreset() === "unicode" && Math.random() < 0.1) {
-				this.#selectedTip = "Please use nerdfont 😭.";
+				this.#selectedTip = t("Please use nerdfont 😭.");
 			} else {
 				this.#selectedTip = pickWeightedTip(TIPS, Math.random());
 			}
@@ -243,7 +244,7 @@ export class WelcomeComponent implements Component {
 		const preferredLeftCol = 26;
 		const minLeftCol = 12; // logo width
 		const minRightCol = 20;
-		const leftMinContentWidth = Math.max(minLeftCol, visibleWidth("Welcome back!"));
+		const leftMinContentWidth = Math.max(minLeftCol, visibleWidth(t("Welcome back!")));
 		const desiredLeftCol = Math.min(preferredLeftCol, Math.max(minLeftCol, Math.floor(dualContentWidth * 0.35)));
 		const dualLeftCol =
 			dualContentWidth >= minRightCol + 1
@@ -260,7 +261,7 @@ export class WelcomeComponent implements Component {
 		// Left column - centered content
 		const leftLines = [
 			"",
-			this.#centerText(theme.bold("Welcome back!"), leftCol),
+			this.#centerText(theme.bold(t("Welcome back!")), leftCol),
 			"",
 			...logoColored.map(l => this.#centerText(l, leftCol)),
 			"",
@@ -275,7 +276,7 @@ export class WelcomeComponent implements Component {
 		// Recent sessions content
 		const sessionLines: string[] = [];
 		if (this.recentSessions.length === 0) {
-			sessionLines.push(` ${theme.fg("dim", "No recent sessions")}`);
+			sessionLines.push(` ${theme.fg("dim", t("No recent sessions"))}`);
 		} else {
 			// Reserve width for the bullet prefix (" • ") and the trailing " (timeAgo)"
 			// so the relative time is never the part that gets truncated. The name
@@ -301,7 +302,7 @@ export class WelcomeComponent implements Component {
 		// LSP servers content
 		const lspLines: string[] = [];
 		if (this.lspServers.length === 0) {
-			lspLines.push(` ${theme.fg("dim", "No LSP servers")}`);
+			lspLines.push(` ${theme.fg("dim", t("No LSP servers"))}`);
 		} else {
 			for (const server of this.lspServers.slice(0, WELCOME_LSP_SLOTS)) {
 				const icon =
@@ -323,16 +324,16 @@ export class WelcomeComponent implements Component {
 
 		// Right column
 		const rightLines = [
-			` ${theme.bold(theme.fg("accent", "Tips"))}`,
-			` ${theme.fg("dim", "#")}${theme.fg("muted", " for prompt actions")}`,
-			` ${theme.fg("dim", "/")}${theme.fg("muted", " for commands")}`,
-			` ${theme.fg("dim", "!")}${theme.fg("muted", " to run bash")}`,
-			` ${theme.fg("dim", "$")}${theme.fg("muted", " to run python")}`,
+			` ${theme.bold(theme.fg("accent", t("Tips")))}`,
+			` ${theme.fg("dim", "#")}${theme.fg("muted", ` ${t("for prompt actions")}`)}`,
+			` ${theme.fg("dim", "/")}${theme.fg("muted", ` ${t("for commands")}`)}`,
+			` ${theme.fg("dim", "!")}${theme.fg("muted", ` ${t("to run bash")}`)}`,
+			` ${theme.fg("dim", "$")}${theme.fg("muted", ` ${t("to run python")}`)}`,
 			separator,
-			` ${theme.bold(theme.fg("accent", "LSP Servers"))}`,
+			` ${theme.bold(theme.fg("accent", t("LSP Servers")))}`,
 			...lspLines,
 			separator,
-			` ${theme.bold(theme.fg("accent", "Recent sessions"))}`,
+			` ${theme.bold(theme.fg("accent", t("Recent sessions")))}`,
 			...sessionLines,
 			"",
 		];
@@ -396,9 +397,9 @@ export class WelcomeComponent implements Component {
 		// A trailing "[NEW]" marker paints an animated rainbow "NEW!" tag. Derive
 		// its hue phase from wall-clock time so it shimmers across the welcome
 		// intro's re-render frames, then settles into a still rainbow once the box
-		// caches its resting frame. Non-"[NEW]" tips ignore the phase entirely.
+		// cache its resting frame. Non-"[NEW]" tips ignore the phase entirely.
 		const phase = NEW_TIP_MARKER.test(tip) ? performance.now() / NEW_GLOW_PERIOD_MS : 0;
-		return renderWelcomeTip(tip, boxWidth, phase);
+		return renderWelcomeTip(t(tip), boxWidth, phase);
 	}
 
 	/** Center text within a given width */

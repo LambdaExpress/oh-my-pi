@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
+import { t } from "../../../i18n";
 import { type ThemeColor, theme } from "../../../modes/theme/theme";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { fileHyperlink } from "../../../tui/hyperlink";
@@ -160,7 +161,7 @@ const modelSegment: StatusLineSegment = {
 				const resolved = ctx.session.autoResolvedThinkingLevel();
 				thinkingDisplay = resolved
 					? (theme.thinking[resolved as keyof typeof theme.thinking] ?? resolved)
-					: `${theme.thinking.autoPending} auto`;
+					: `${theme.thinking.autoPending} ${t("auto")}`;
 			} else {
 				const level = state.thinkingLevel ?? ThinkingLevel.Off;
 				if (level !== ThinkingLevel.Off) {
@@ -249,7 +250,7 @@ function renderGoalMode(ctx: SegmentContext, mode: { enabled: boolean; paused: b
 			break;
 	}
 
-	const parts: string[] = [withIcon(icon, "Goal")];
+	const parts: string[] = [withIcon(icon, t("Goal"))];
 	const showBudget = ctx.session.settings.get("goal.statusInFooter") === true;
 	if (showBudget && goal) {
 		parts.push(formatGoalBudget(goal.tokensUsed, goal.tokenBudget));
@@ -265,19 +266,19 @@ function formatLoopLimit(limit: NonNullable<SegmentContext["loopMode"]>["limit"]
 	const hours = Math.floor(totalSeconds / 3_600);
 	const minutes = Math.floor((totalSeconds % 3_600) / 60);
 	const seconds = totalSeconds % 60;
-	if (hours > 0) return `${hours}h${minutes > 0 ? `${minutes}m` : ""} left`;
-	if (minutes > 0) return `${minutes}m${seconds > 0 ? `${seconds}s` : ""} left`;
-	return `${seconds}s left`;
+	if (hours > 0) return `${hours}h${minutes > 0 ? `${minutes}m` : ""} ${t("left")}`;
+	if (minutes > 0) return `${minutes}m${seconds > 0 ? `${seconds}s` : ""} ${t("left")}`;
+	return `${seconds}s ${t("left")}`;
 }
 
 const modeSegment: StatusLineSegment = {
 	id: "mode",
 	render(ctx) {
-		const pauseSuffix = theme.icon.pause ? ` ${theme.icon.pause}` : " (paused)";
+		const pauseSuffix = theme.icon.pause ? ` ${theme.icon.pause}` : ` ${t("(paused)")}`;
 
 		const plan = ctx.planMode;
 		if (plan && (plan.enabled || plan.paused)) {
-			const label = plan.paused ? `Plan${pauseSuffix}` : "Plan";
+			const label = plan.paused ? `${t("Plan")}${pauseSuffix}` : t("Plan");
 			const content = withIcon(theme.icon.plan, label);
 			const color = plan.paused ? "warning" : "accent";
 			return { content: theme.fg(color, content), visible: true };
@@ -285,7 +286,7 @@ const modeSegment: StatusLineSegment = {
 
 		const prewalk = ctx.prewalk;
 		if (prewalk?.enabled) {
-			const content = withIcon(theme.icon.prewalk, "Prewalk");
+			const content = withIcon(theme.icon.prewalk, t("Prewalk"));
 			return { content: theme.fg("accent", content), visible: true };
 		}
 
@@ -296,7 +297,7 @@ const modeSegment: StatusLineSegment = {
 
 		const vibe = ctx.vibeMode;
 		if (vibe?.enabled) {
-			const content = withIcon(theme.icon.agents, "Vibe");
+			const content = withIcon(theme.icon.agents, t("Vibe"));
 			return { content: theme.fg("accent", content), visible: true };
 		}
 
@@ -304,7 +305,13 @@ const modeSegment: StatusLineSegment = {
 		if (loop) {
 			const icon = loop.state === "paused" ? theme.icon.pause || theme.icon.loop : theme.icon.loop;
 			const color: ThemeColor = loop.state === "paused" ? "warning" : "customMessageLabel";
-			const parts = [withIcon(icon, `Loop ${loop.state}`)];
+			const loopLabel =
+				loop.state === "paused"
+					? t("Loop paused")
+					: loop.state === "running"
+						? t("Loop running")
+						: t("Loop waiting");
+			const parts = [withIcon(icon, loopLabel)];
 			const limit = formatLoopLimit(loop.limit);
 			if (limit) parts.push(limit);
 			return { content: theme.fg(color, parts.join(" ")), visible: true };
@@ -372,7 +379,7 @@ const gitSegment: StatusLineSegment = {
 		const showBranch = opts.showBranch !== false;
 		let content = "";
 		if (showBranch && branch) {
-			content = withIcon(theme.icon.branch, branch);
+			content = withIcon(theme.icon.branch, branch === "detached" ? t("detached") : branch);
 		}
 
 		// Add status indicators
@@ -556,8 +563,8 @@ const costSegment: StatusLineSegment = {
 		const billingParts: string[] = [];
 		if (cost) billingParts.push(`$${cost.toFixed(2)}`);
 		if (normalizedPremiumRequests) billingParts.push(`★ ${formatNumber(normalizedPremiumRequests)}`);
-		if (usingSubscription) billingParts.push("(sub)");
-		if (advisorCost) billingParts.push(`${billingParts.length ? "+ " : ""}$${advisorCost.toFixed(2)} (adv)`);
+		if (usingSubscription) billingParts.push(t("(sub)"));
+		if (advisorCost) billingParts.push(`${billingParts.length ? "+ " : ""}$${advisorCost.toFixed(2)} ${t("(adv)")}`);
 
 		return { content: theme.fg("statusLineCost", billingParts.join(" ")), visible: true };
 	},
@@ -638,7 +645,7 @@ const sessionSegment: StatusLineSegment = {
 		const sessionId = sessionManager?.getSessionId?.();
 		const display = sessionId?.slice(0, 8) || "new";
 
-		return { content: withIcon(theme.icon.session, display), visible: true };
+		return { content: withIcon(theme.icon.session, display === "new" ? t("new") : display), visible: true };
 	},
 };
 
@@ -717,8 +724,8 @@ const collabSegment: StatusLineSegment = {
 		if (!ctx.collab) return { content: "", visible: false };
 		const label =
 			ctx.collab.role === "host"
-				? `⇄ collab:${ctx.collab.participantCount}`
-				: `⇄ collab guest:${ctx.collab.participantCount}`;
+				? `⇄ ${t("collab:{count}", { count: ctx.collab.participantCount })}`
+				: `⇄ ${t("collab guest:{count}", { count: ctx.collab.participantCount })}`;
 		return { content: theme.fg("accent", label), visible: true };
 	},
 };

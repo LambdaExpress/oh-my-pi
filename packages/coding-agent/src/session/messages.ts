@@ -25,6 +25,7 @@ import type {
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { isRecord, logger, prompt } from "@oh-my-pi/pi-utils";
 import { COLLAB_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-wire";
+import { t } from "../i18n";
 import userInterjectionTemplate from "../prompts/steering/user-interjection.md" with { type: "text" };
 import { formatTitleConversationContext, type TitleConversationTurn } from "../tiny/message-preproc";
 
@@ -519,9 +520,11 @@ export function resolveAbortLabel(
 		return message.errorMessage!;
 	}
 	if (retryAttempt > 0) {
-		return `Aborted after ${retryAttempt} retry attempt${retryAttempt > 1 ? "s" : ""}`;
+		return retryAttempt > 1
+			? t("Aborted after {count} retry attempts", { count: retryAttempt })
+			: t("Aborted after {count} retry attempt", { count: retryAttempt });
 	}
-	return "Operation aborted";
+	return t("Operation aborted");
 }
 
 /** Extract the optional `__queueChipText` field from a CustomMessage's

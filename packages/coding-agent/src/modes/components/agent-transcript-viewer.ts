@@ -18,6 +18,7 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { type Component, Editor, matchesKey, routeSgrMouseInput, ScrollView, type TUI } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, logger } from "@oh-my-pi/pi-utils";
 import type { KeyId } from "../../config/keybindings";
+import { t } from "../../i18n";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
 import type { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import type { AgentRegistry, AgentStatus } from "../../registry/agent-registry";
@@ -592,9 +593,12 @@ export class AgentTranscriptViewer implements Component {
 	}
 
 	#headerLines(status: AgentStatus | undefined, kind: string | undefined, parentId: string | undefined): string[] {
-		const lines = [theme.fg("accent", `Agent Hub ${theme.sep.dot} ${this.deps.agentId}`)];
+		const lines = [theme.fg("accent", `${t("Agent Hub")} ${theme.sep.dot} ${this.deps.agentId}`)];
 		if (status && kind) {
-			const kindTag = theme.fg("dim", ` ${parentId ? `${kind} ${theme.sep.dot} of ${parentId}` : kind}`);
+			const kindTag = theme.fg(
+				"dim",
+				` ${parentId ? `${kind} ${theme.sep.dot} ${t("of {parent}", { parent: parentId })}` : kind}`,
+			);
 			const modelLabel = this.#model ? theme.fg("muted", `${theme.sep.dot}${this.#model}`) : "";
 			lines.push(`${theme.bold(this.deps.agentId)} ${statusBadge(status)}${kindTag}${modelLabel}`);
 		}
@@ -606,8 +610,12 @@ export class AgentTranscriptViewer implements Component {
 		const statsLine = this.#statsLine();
 		if (statsLine) lines.push(` ${statsLine}`);
 		const hint = this.#editor
-			? `Enter:send  Esc:close  ${this.deps.expandKeys[0] ?? "ctrl+o"}:expand  empty input → j/k:scroll  g/G:top/bottom`
-			: `Esc:close  ${this.deps.expandKeys[0] ?? "ctrl+o"}:expand  j/k:scroll  g/G:top/bottom`;
+			? t("Enter:send  Esc:close  {expand}:expand  empty input → j/k:scroll  g/G:top/bottom", {
+					expand: this.deps.expandKeys[0] ?? "ctrl+o",
+				})
+			: t("Esc:close  {expand}:expand  j/k:scroll  g/G:top/bottom", {
+					expand: this.deps.expandKeys[0] ?? "ctrl+o",
+				});
 		lines.push(` ${theme.fg("dim", hint)}`);
 		return lines;
 	}
@@ -638,10 +646,10 @@ export class AgentTranscriptViewer implements Component {
 	#placeholder(maxWidth: number): string {
 		if (this.deps.remote) {
 			if (this.#remoteError) return sanitizeErrorLine(this.#remoteError, maxWidth);
-			if (this.#remoteUnavailable) return "Transcript lives on the host — not available.";
-			return this.#hasRemoteData ? "No messages yet." : "Loading transcript from host…";
+			if (this.#remoteUnavailable) return t("Transcript lives on the host — not available.");
+			return this.#hasRemoteData ? t("No messages yet.") : t("Loading transcript from host…");
 		}
-		if (!this.deps.registry.get(this.deps.agentId)?.sessionFile) return "No session file available yet.";
-		return "No messages yet.";
+		if (!this.deps.registry.get(this.deps.agentId)?.sessionFile) return t("No session file available yet.");
+		return t("No messages yet.");
 	}
 }

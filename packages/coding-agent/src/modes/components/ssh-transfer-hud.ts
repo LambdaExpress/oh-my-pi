@@ -1,5 +1,6 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { t } from "../../i18n";
 import type { AsyncJobSnapshot, AsyncJobSnapshotItem } from "../../session/agent-session";
 import { formatStatusIcon, replaceTabs } from "../../tools/render-utils";
 import {
@@ -89,8 +90,8 @@ export class SshTransferHud implements Component {
 		const header = renderStatusLine(
 			{
 				icon: activeCount > 0 ? "info" : "success",
-				title: `${jobs.length} SSH transfer${jobs.length === 1 ? "" : "s"}`,
-				meta: activeCount > 0 ? [`${activeCount} active`] : ["settled"],
+				title: t("{count} SSH transfer{s}", { count: jobs.length, s: jobs.length === 1 ? "" : "s" }),
+				meta: activeCount > 0 ? [t("{count} active", { count: activeCount })] : [t("settled")],
 			},
 			theme,
 		);
@@ -110,7 +111,7 @@ export class SshTransferHud implements Component {
 			const icon = formatStatusIcon(status, theme);
 			if (details) {
 				const summary = formatSshTransferSummary(details, { width: Math.max(1, width - 5) }).split("\n");
-				lines.push(`${branch}${icon} ${summary[0] ?? "SSH transfer"}`);
+				lines.push(`${branch}${icon} ${summary[0] ?? t("SSH transfer")}`);
 				for (const line of summary.slice(1)) lines.push(`${continuation}  ${line}`);
 				continue;
 			}

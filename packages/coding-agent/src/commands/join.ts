@@ -7,6 +7,7 @@ import { APP_NAME } from "@oh-my-pi/pi-utils";
 import { Args, Command } from "@oh-my-pi/pi-utils/cli";
 import { parseArgs } from "../cli/args";
 import { joinHelp as commandHelp } from "../cli/command-help";
+import { t } from "../i18n";
 import { runRootCommand } from "../main";
 
 export default class Join extends Command {
@@ -24,12 +25,12 @@ export default class Join extends Command {
 		const { args } = await this.parse(Join);
 		const link = args.link?.trim();
 		if (!link) {
-			process.stderr.write(`Usage: ${APP_NAME} join <link>\n`);
+			process.stderr.write(t("Usage: {app} join <link>", { app: APP_NAME }) + "\n");
 			process.exitCode = 1;
 			return;
 		}
 		if (!process.stdin.isTTY || !process.stdout.isTTY) {
-			process.stderr.write(`${APP_NAME} join requires an interactive terminal\n`);
+			process.stderr.write(t("{app} join requires an interactive terminal", { app: APP_NAME }) + "\n");
 			process.exitCode = 1;
 			return;
 		}

@@ -25,6 +25,7 @@ import { formatNumber } from "@oh-my-pi/pi-utils";
 import { getModelMatchPreferences, resolveModelRoleValue } from "../../config/model-resolver";
 import { getKnownRoleIds, getRoleInfo, MODEL_ROLE_IDS } from "../../config/model-roles";
 import type { Settings } from "../../config/settings";
+import { t } from "../../i18n";
 import type { ModelPerfStats } from "../../session/agent-storage";
 import { AUTO_THINKING, type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../../thinking";
 import { type ThemeColor, theme } from "../theme/theme";
@@ -271,7 +272,7 @@ export function formatRoleChip(role: string, assignment: RoleAssignment, setting
 /** `$in/out` per-million cost pair; `free` when both legs are zero. */
 function formatCostPair(model: Model): string {
 	const cost = model.cost;
-	if (!cost || (cost.input <= 0 && cost.output <= 0)) return "free";
+	if (!cost || (cost.input <= 0 && cost.output <= 0)) return t("free");
 	const fmt = (n: number): string => {
 		if (n <= 0) return "0";
 		const s = n >= 100 ? String(Math.round(n)) : n >= 10 ? n.toFixed(1) : n.toFixed(2);
@@ -734,7 +735,7 @@ export class ModelBrowser implements Component {
 		const currentMark =
 			item.selector === this.#currentSelector ? ` ${theme.fg("success", theme.status.enabled)}` : "";
 		const overLimit = overContext
-			? ` ${theme.status.disabled} context>${formatNumber(item.model.contextWindow ?? 0).toLowerCase()}`
+			? ` ${theme.status.disabled} ${t("context")}>${formatNumber(item.model.contextWindow ?? 0).toLowerCase()}`
 			: "";
 		let left = `${prefix}${providerPrefix}${name}${currentMark}${overLimit}`;
 
@@ -768,26 +769,32 @@ export class ModelBrowser implements Component {
 		const model = selected.model;
 
 		const facts: string[] = [model.name];
-		if (model.contextWindow) facts.push(`${formatNumber(model.contextWindow).toLowerCase()} ctx`);
-		if (model.maxTokens) facts.push(`${formatNumber(model.maxTokens).toLowerCase()} out`);
-		facts.push(`${formatCostPair(model)} per M`);
-		if (model.reasoning) facts.push("reasoning");
-		if (model.input.includes("image")) facts.push("vision");
+		if (model.contextWindow) facts.push(`${formatNumber(model.contextWindow).toLowerCase()} ${t("ctx")}`);
+		if (model.maxTokens) facts.push(`${formatNumber(model.maxTokens).toLowerCase()} ${t("out")}`);
+		facts.push(`${formatCostPair(model)} ${t("per M")}`);
+		if (model.reasoning) facts.push(t("reasoning"));
+		if (model.input.includes("image")) facts.push(t("vision"));
 		const perf = this.#perf.get(selected.selector);
 		if (perf) {
 			facts.push(`~${formatTps(perf.tps)}`);
-			if (perf.ttftMs !== null) facts.push(`${formatTtft(perf.ttftMs)} ttft`);
+			if (perf.ttftMs !== null) facts.push(`${formatTtft(perf.ttftMs)} ${t("ttft")}`);
 		}
 		const line1 = truncateToWidth(theme.fg("muted", `  ${facts.join(" · ")}`), width);
 
 		if (this.isOverContext(selected)) {
-			const warning = `  ${theme.status.disabled} context ${formatNumber(this.#currentContextTokens).toLowerCase()} exceeds ${formatNumber(model.contextWindow ?? 0).toLowerCase()} limit · compacts with current model, then switches`;
+			const warning = `  ${theme.status.disabled} ${t(
+				"context {used} exceeds {limit} limit · compacts with current model, then switches",
+				{
+					used: formatNumber(this.#currentContextTokens).toLowerCase(),
+					limit: formatNumber(model.contextWindow ?? 0).toLowerCase(),
+				},
+			)}`;
 			return [line1, truncateToWidth(theme.fg("warning", warning), width)];
 		}
 
 		const chips: string[] = [];
 		if (selected.selector === this.#currentSelector) {
-			chips.push(theme.fg("success", `${theme.status.enabled} current`));
+			chips.push(theme.fg("success", `${theme.status.enabled} ${t("current")}`));
 		}
 		const seen = new Set<string>();
 		const pushRole = (role: string) => {
@@ -823,7 +830,8 @@ export class ModelBrowser implements Component {
 
 		if (total === 0) {
 			const message =
-				this.#emptyText?.() ?? (this.query.trim() ? "  No matching models" : "  No models available in this scope");
+				this.#emptyText?.() ??
+				(this.query.trim() ? `  ${t("No matching models")}` : `  ${t("No models available in this scope")}`);
 			lines.push(truncateToWidth(theme.fg("muted", message), width));
 			for (let i = 1; i < this.#maxVisible; i++) lines.push("");
 		} else {

@@ -1,6 +1,7 @@
 import type { Usage } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { formatNumber } from "@oh-my-pi/pi-utils";
+import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
 
 /**
@@ -96,9 +97,9 @@ export class CacheInvalidationMarkerComponent implements Component {
 
 	#divider(width: number): string {
 		const icon = theme.icon.cacheMiss;
-		const head = icon ? `${icon} cache miss` : "cache miss";
+		const head = icon ? `${icon} ${t("cache miss")}` : t("cache miss");
 		const tokens = this.info.reprocessedTokens;
-		const label = tokens > 0 ? `${head} ${theme.sep.dot.trim()} ${formatNumber(tokens)} tokens` : head;
+		const label = tokens > 0 ? `${head} ${theme.sep.dot.trim()} ${formatNumber(tokens)} ${t("tokens")}` : head;
 		const labelWidth = Bun.stringWidth(label, { countAnsiEscapeCodes: false });
 		const ruleWidth = Math.min(CACHE_INVALIDATION_RULE_WIDTH, width - labelWidth - 1);
 		if (ruleWidth < 1) {

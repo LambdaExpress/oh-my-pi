@@ -24,6 +24,7 @@ import {
 	resolveModelRoleValue,
 } from "../config/model-resolver";
 import { Settings } from "../config/settings";
+import { t } from "../i18n";
 import dryBalanceBenchPrompt from "../prompts/dry-balance-bench.md" with { type: "text" };
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 
@@ -198,7 +199,7 @@ type DryBalanceBenchTarget =
 function normalizePositiveInteger(name: string, value: number | undefined, fallback: number): number {
 	const resolved = value ?? fallback;
 	if (!Number.isInteger(resolved) || resolved <= 0) {
-		throw new Error(`--${name} must be a positive integer`);
+		throw new Error(t("--{name} must be a positive integer", { name }));
 	}
 	return resolved;
 }
@@ -206,7 +207,7 @@ function normalizePositiveInteger(name: string, value: number | undefined, fallb
 function getErrorMessage(error: unknown): string {
 	if (error instanceof Error && error.message) return error.message;
 	const message = String(error);
-	return message ? message : "Unknown error";
+	return message ? message : t("Unknown error");
 }
 
 function extractAccount(access: {
@@ -218,7 +219,7 @@ function extractAccount(access: {
 	orgName?: string;
 }): string {
 	const base =
-		access.email ?? access.accountId ?? access.projectId ?? access.enterpriseUrl ?? "(unknown oauth account)";
+		access.email ?? access.accountId ?? access.projectId ?? access.enterpriseUrl ?? t("(unknown oauth account)");
 	// Two subscriptions (orgs) can share one email — name the org so per-account
 	// bench rows stay tellable apart.
 	const org = access.orgName ?? access.orgId;
@@ -255,7 +256,7 @@ function formatBenchIndex(index: number, total: number): string {
 }
 
 function formatBenchAccount(account: string | undefined): string {
-	return account ? sanitizeBenchText(account, BENCH_ACCOUNT_WIDTH) : chalk.dim("(no account)");
+	return account ? sanitizeBenchText(account, BENCH_ACCOUNT_WIDTH) : chalk.dim(t("(no account)"));
 }
 
 function formatBenchDuration(ms: number): string {
@@ -297,9 +298,9 @@ function normalizeBenchMs(value: number): number {
 function renderBenchResultLine(index: number, total: number, result: DryBalanceBenchResult): string {
 	const prefix = formatBenchIndex(index, total);
 	if (result.ok) {
-		return `${chalk.green("✓")} ${prefix} ${formatBenchAccount(result.account)} ${chalk.dim("TTFT")} ${formatBenchDuration(
+		return `${chalk.green("✓")} ${prefix} ${formatBenchAccount(result.account)} ${chalk.dim(t("TTFT"))} ${formatBenchDuration(
 			result.ttftMs,
-		)} ${chalk.dim("TPS")} ${formatBenchTps(result.tokensPerSecond)}`;
+		)} ${chalk.dim(t("TPS"))} ${formatBenchTps(result.tokensPerSecond)}`;
 	}
 	return `${chalk.red("✗")} ${prefix} ${formatBenchAccount(result.account)} ${chalk.red(
 		sanitizeBenchText(result.error, BENCH_ERROR_WIDTH),
@@ -315,10 +316,10 @@ function renderBenchStatusLine(
 	const prefix = formatBenchIndex(index, total);
 	switch (status.state) {
 		case "waiting":
-			return `${chalk.dim("○")} ${prefix} ${chalk.dim("waiting")}`;
+			return `${chalk.dim("○")} ${prefix} ${chalk.dim(t("waiting"))}`;
 		case "running": {
 			const spinner = BENCH_SPINNER_FRAMES[frame % BENCH_SPINNER_FRAMES.length] ?? "*";
-			return `${chalk.yellow(spinner)} ${prefix} ${formatBenchAccount(status.account)} ${chalk.dim("sending request")}`;
+			return `${chalk.yellow(spinner)} ${prefix} ${formatBenchAccount(status.account)} ${chalk.dim(t("sending request"))}`;
 		}
 		case "success":
 			return renderBenchResultLine(index, total, status.result);
@@ -354,7 +355,7 @@ export function createBenchProgressSink(
 	const width = Number.isFinite(columns) && columns > 0 ? Math.trunc(columns) : 80;
 	const render = (): void => {
 		const lines = [
-			chalk.bold("bench requests"),
+			chalk.bold(t("bench requests")),
 			...statuses.map((status, index) => renderBenchStatusLine(status, index, total, frame)),
 		];
 		// Anchor every redraw at column 0 and terminate each row with CRLF: a
@@ -438,7 +439,7 @@ async function runBenchRequest(
 				firstTokenAt = now();
 			}
 			if (event.type === "error") {
-				return { ok: false, account, error: event.error.errorMessage ?? "request failed" };
+				return { ok: false, account, error: event.error.errorMessage ?? t("request failed") };
 			}
 			if (event.type === "done") {
 				message = event.message;
@@ -446,7 +447,7 @@ async function runBenchRequest(
 		}
 		message ??= await stream.result();
 		if (message.stopReason === "error" || message.errorMessage) {
-			return { ok: false, account, error: message.errorMessage ?? "request failed" };
+			return { ok: false, account, error: message.errorMessage ?? t("request failed") };
 		}
 		const durationMs = normalizeBenchMs(message.duration ?? now() - startedAt);
 		const ttftMs = normalizeBenchMs(
@@ -559,14 +560,14 @@ async function resolveDryBalanceModel(
 			preferences,
 		});
 		if (resolved.error) throw new Error(resolved.error);
-		if (!resolved.model) throw new Error(`Model "${modelSelector}" not found`);
+		if (!resolved.model) throw new Error(t('Model "{model}" not found', { model: modelSelector }));
 		return { model: resolved.model, warning: resolved.warning };
 	}
 
 	const allowedModels = await resolveAllowedModels(modelRegistry, settings, preferences);
 	if (allowedModels.length === 0) {
 		throw new Error(
-			"No models available. Use --model to select a model or configure enabledModels/default model settings.",
+			t("No models available. Use --model to select a model or configure enabledModels/default model settings."),
 		);
 	}
 
@@ -586,7 +587,9 @@ async function resolveDryBalanceModel(
 	return {
 		model: allowedModels[0],
 		warning:
-			"No allowed model had usable credentials during default resolution; dry-balance will report OAuth failures for the first allowed model.",
+			t(
+				"No allowed model had usable credentials during default resolution; dry-balance will report OAuth failures for the first allowed model.",
+			),
 	};
 }
 
@@ -603,7 +606,7 @@ async function runOneAttempt(
 			baseUrl: model.baseUrl,
 			modelId: model.id,
 		});
-		if (!access) return { ok: false, reason: "no OAuth access resolved" };
+		if (!access) return { ok: false, reason: t("no OAuth access resolved") };
 		return { ok: true, account: extractAccount(access) };
 	} catch (error) {
 		return { ok: false, reason: getErrorMessage(error) };
@@ -713,7 +716,7 @@ function summarizeResults(
 }
 
 function formatRows(rows: Array<{ count: number; percent: number; label: string }>): string[] {
-	if (rows.length === 0) return [`  ${chalk.dim("(none)")}`];
+	if (rows.length === 0) return [`  ${chalk.dim(t("(none)"))}`];
 	const maxCountWidth = Math.max(...rows.map(row => row.count.toString().length));
 	return rows.map(row => {
 		const count = row.count.toString().padStart(maxCountWidth);
@@ -734,16 +737,16 @@ export function formatDryBalanceText(summary: DryBalanceSummary): string {
 		label: row.reason,
 	}));
 	const lines = [
-		chalk.bold("dry-balance"),
-		`model: ${summary.model}`,
-		`provider: ${summary.provider}`,
-		`samples: ${summary.samples}`,
-		`concurrency: ${summary.concurrency}`,
+		chalk.bold(t("dry-balance")),
+		t("model: {model}", { model: summary.model }),
+		t("provider: {provider}", { provider: summary.provider }),
+		t("samples: {samples}", { samples: summary.samples }),
+		t("concurrency: {concurrency}", { concurrency: summary.concurrency }),
 		"",
-		`${chalk.green("success")} ${summary.success.total}`,
+		`${chalk.green(t("success"))} ${summary.success.total}`,
 		...formatRows(accountRows),
 		"",
-		`${summary.failure.total > 0 ? chalk.red("failure") : chalk.dim("failure")} ${summary.failure.total}`,
+		`${summary.failure.total > 0 ? chalk.red(t("failure")) : chalk.dim(t("failure"))} ${summary.failure.total}`,
 		...formatRows(failureRows),
 	];
 	if (summary.bench) {
@@ -760,13 +763,13 @@ export function formatDryBalanceText(summary: DryBalanceSummary): string {
 		}));
 		lines.push(
 			"",
-			chalk.bold("bench"),
-			`requests: ${summary.bench.total}`,
-			`${chalk.green("success")} ${summary.bench.success.total}`,
-			`avg TTFT: ${avgTtft}`,
-			`avg TPS: ${avgTps}`,
+			chalk.bold(t("bench")),
+			t("requests: {count}", { count: summary.bench.total }),
+			`${chalk.green(t("success"))} ${summary.bench.success.total}`,
+			t("avg TTFT: {value}", { value: avgTtft }),
+			t("avg TPS: {value}", { value: avgTps }),
 			"",
-			`${summary.bench.failure.total > 0 ? chalk.red("failure") : chalk.dim("failure")} ${summary.bench.failure.total}`,
+			`${summary.bench.failure.total > 0 ? chalk.red(t("failure")) : chalk.dim(t("failure"))} ${summary.bench.failure.total}`,
 			...formatRows(benchFailureRows),
 		);
 	}
@@ -808,14 +811,15 @@ export async function runDryBalanceCommand(
 			runtime.settings,
 			randomSessionId,
 		);
-		if (warning) writeStderr(`${chalk.yellow(`Warning: ${warning}`)}\n`);
+		if (warning) writeStderr(`${chalk.yellow(t("Warning: {warning}", { warning }))}\n`);
 		let results: DryBalanceAttemptResult[];
 		let benchResults: DryBalanceBenchResult[] | undefined;
 		let summarySamples = samples;
 		let summaryConcurrency = concurrency;
 		if (isBench) {
 			const targets = await resolveBenchTargets(model, runtime.modelRegistry.authStorage);
-			if (targets.length === 0) throw new Error(`No OAuth accounts resolved for provider ${model.provider}`);
+			if (targets.length === 0)
+				throw new Error(t("No OAuth accounts resolved for provider {provider}", { provider: model.provider }));
 			summarySamples = targets.length;
 			summaryConcurrency = targets.length;
 			const progressWrite = command.flags.json ? writeStderr : writeStdout;

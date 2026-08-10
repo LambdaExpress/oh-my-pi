@@ -4,6 +4,9 @@
 
 ### Added
 
+- Added an i18n framework with natural-key `t()` translation (English source strings are the keys, zh-CN is a flat dictionary with English fallback) covering all user-visible terminal UI, dialogs, controllers, slash commands, CLI help and subcommand output, plus a new `display.language` setting ("English" or "简体中文") that applies immediately from the settings panel.
+- Added `scripts/extract-i18n-keys.ts` to extract translation keys from `t()` call sites, settings-schema metadata, command descriptions, and welcome tips, reporting missing and orphaned catalog entries.
+
 - Added autonomous request-triggered debugging with non-blocking execution ids, late `wait_for_stop`, bounded stop snapshots, and race-safe async Bash trigger coordination.
 - Added DAP adapter preflight and regex-based output readiness waits for launched debug services.
 

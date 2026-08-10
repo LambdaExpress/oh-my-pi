@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added an optional `translate` hook to the lightweight CLI runner (`run`, `renderRootHelp`, `renderCommandHelp`) so help headers, command/flag/argument descriptions, examples, and usage-error lines can be localized; identity by default, so existing callers are unchanged.
+
 ## [17.2.9] - 2026-08-05
 
 ### Added

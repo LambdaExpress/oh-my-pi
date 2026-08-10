@@ -708,6 +708,21 @@ export const SETTINGS_SCHEMA = {
 				"Show the thinking level as a single icon on the model name instead of a separate ` · <level>` suffix.",
 		},
 	},
+	"display.language": {
+		type: "enum",
+		values: ["en", "zh-CN"] as const,
+		default: "en",
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Language",
+			description: "Language for user-facing interface text (English fallback for untranslated strings)",
+			options: [
+				{ value: "en", label: "English", description: "English (default)" },
+				{ value: "zh-CN", label: "简体中文", description: "Simplified Chinese" },
+			],
+		},
+	},
 	"tools.artifactSpillThreshold": {
 		type: "number",
 		default: 50,

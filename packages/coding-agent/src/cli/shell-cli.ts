@@ -10,6 +10,7 @@ import { APP_NAME, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { Settings } from "../config/settings";
 import { buildMinimizerOptions } from "../exec/bash-executor";
+import { t } from "../i18n";
 import { getOrCreateSnapshot } from "../utils/shell-snapshot";
 
 export interface ShellCommandArgs {
@@ -44,7 +45,7 @@ export function parseShellArgs(args: string[]): ShellCommandArgs | undefined {
 
 export async function runShellCommand(cmd: ShellCommandArgs): Promise<void> {
 	if (!process.stdin.isTTY) {
-		process.stderr.write("Error: shell console requires an interactive TTY.\n");
+		process.stderr.write(`${t("Error: shell console requires an interactive TTY.")}\n`);
 		process.exit(1);
 	}
 
@@ -63,23 +64,23 @@ export async function runShellCommand(cmd: ShellCommandArgs): Promise<void> {
 
 	const printHelp = () => {
 		process.stdout.write(
-			`${chalk.bold("Shell Console Commands")}
+			`${chalk.bold(t("Shell Console Commands"))}
 
 ` +
-				`${chalk.bold("Special Commands:")}
-  .help           Show this help
-  .exit, exit     Exit the console
+				`${chalk.bold(t("Special Commands:"))}
+  .help           ${t("Show this help")}
+  .exit, exit     ${t("Exit the console")}
 
 ` +
-				`${chalk.bold("Options:")}
-  --cwd, -C <path>     Set working directory for commands
-  --timeout, -t <ms>   Timeout per command in milliseconds
-  --no-snapshot        Skip sourcing snapshot from user shell
+				`${chalk.bold(t("Options:"))}
+  --cwd, -C <path>     ${t("Set working directory for commands")}
+  --timeout, -t <ms>   ${t("Timeout per command in milliseconds")}
+  --no-snapshot        ${t("Skip sourcing snapshot from user shell")}
 
 ` +
-				`${chalk.bold("Notes:")}
-  Runs in a persistent brush-core shell session.
-  Variables and functions defined in one command persist for the next.
+				`${chalk.bold(t("Notes:"))}
+  ${t("Runs in a persistent brush-core shell session.")}
+  ${t("Variables and functions defined in one command persist for the next.")}
 
 `,
 		);
@@ -95,7 +96,7 @@ export async function runShellCommand(cmd: ShellCommandArgs): Promise<void> {
 	};
 
 	process.on("SIGINT", interruptHandler);
-	process.stdout.write(chalk.dim("Type .help for commands.\n"));
+	process.stdout.write(`${chalk.dim(t("Type .help for commands."))}\n`);
 
 	try {
 		while (true) {
@@ -137,15 +138,15 @@ export async function runShellCommand(cmd: ShellCommandArgs): Promise<void> {
 				}
 
 				if (result.timedOut) {
-					process.stderr.write(chalk.yellow("Command timed out.\n"));
+					process.stderr.write(`${chalk.yellow(t("Command timed out."))}\n`);
 				} else if (result.cancelled) {
-					process.stderr.write(chalk.yellow("Command cancelled.\n"));
+					process.stderr.write(`${chalk.yellow(t("Command cancelled."))}\n`);
 				} else if (result.exitCode !== 0 && result.exitCode !== undefined) {
-					process.stderr.write(chalk.yellow(`Exit code: ${result.exitCode}\n`));
+					process.stderr.write(`${chalk.yellow(t("Exit code: {code}", { code: result.exitCode }))}\n`);
 				}
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
-				process.stderr.write(chalk.red(`Error: ${message}\n`));
+				process.stderr.write(`${chalk.red(t("Error: {message}", { message }))}\n`);
 			} finally {
 				active = false;
 			}
@@ -157,18 +158,18 @@ export async function runShellCommand(cmd: ShellCommandArgs): Promise<void> {
 }
 
 export function printShellHelp(): void {
-	process.stdout.write(`${chalk.bold(`${APP_NAME} shell`)} - Interactive shell console for testing
+	process.stdout.write(`${chalk.bold(`${APP_NAME} shell`)} - ${t("Interactive shell console for testing")}
 
-${chalk.bold("Usage:")}
+${chalk.bold(t("Usage:"))}
   ${APP_NAME} shell [options]
 
-${chalk.bold("Options:")}
-  --cwd, -C <path>     Set working directory for commands
-  --timeout, -t <ms>   Timeout per command in milliseconds
-  --no-snapshot        Skip sourcing snapshot from user shell
-  -h, --help           Show this help
+${chalk.bold(t("Options:"))}
+  --cwd, -C <path>     ${t("Set working directory for commands")}
+  --timeout, -t <ms>   ${t("Timeout per command in milliseconds")}
+  --no-snapshot        ${t("Skip sourcing snapshot from user shell")}
+  -h, --help           ${t("Show this help")}
 
-${chalk.bold("Examples:")}
+${chalk.bold(t("Examples:"))}
   ${APP_NAME} shell
   ${APP_NAME} shell --cwd ./tmp
   ${APP_NAME} shell --timeout 2000

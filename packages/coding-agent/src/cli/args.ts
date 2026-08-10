@@ -15,6 +15,7 @@ import {
 	STRING_VALUE_FLAGS,
 } from "./flag-tables";
 import { getExtraHelpText } from "./help-extra";
+import { t } from "../i18n";
 import { CliUsageError } from "./usage-error";
 
 export { getExtraHelpText };
@@ -319,9 +320,9 @@ export function reportUnrecognizedFlags(
 ): boolean {
 	if (args.unrecognizedFlags.length === 0) return false;
 	const flags = args.unrecognizedFlags;
-	const plural = flags.length === 1 ? "" : "s";
-	write(`${chalk.red(`Error: unknown flag${plural}: ${flags.join(", ")}`)}\n`);
-	write(`Run \`${APP_NAME} --help\` for available flags.\n`);
+	const word = flags.length === 1 ? t("flag") : t("flags");
+	write(`${chalk.red(t("Error: unknown {word}: {flags}", { word, flags: flags.join(", ") }))}\n`);
+	write(`${t("Run `{app} --help` for available flags.", { app: APP_NAME })}\n`);
 	return true;
 }
 
@@ -331,16 +332,16 @@ export function reportCliUsageError(
 	write: (text: string) => void = text => process.stderr.write(text),
 ): boolean {
 	if (!(error instanceof CliUsageError)) return false;
-	write(`${chalk.red(`Error: ${error.message}`)}\n`);
-	write(`Run \`${APP_NAME} --help\` for available flags.\n`);
+	write(`${chalk.red(t("Error: {message}", { message: error.message }))}\n`);
+	write(`${t("Run `{app} --help` for available flags.", { app: APP_NAME })}\n`);
 	return true;
 }
 
 export function printHelp(): void {
 	process.stdout.write(
-		`${chalk.bold(APP_NAME)} - AI coding assistant\n\n` +
-			`Run ${APP_NAME} --help for full command and option details.\n` +
-			`Run ${APP_NAME} <command> --help for command-specific help.\n\n` +
+		`${chalk.bold(APP_NAME)} - ${t("AI coding assistant")}\n\n` +
+			`${t("Run {app} --help for full command and option details.", { app: APP_NAME })}\n` +
+			`${t("Run {app} <command> --help for command-specific help.", { app: APP_NAME })}\n\n` +
 			`${getExtraHelpText()}\n`,
 	);
 }

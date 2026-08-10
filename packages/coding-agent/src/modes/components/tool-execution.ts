@@ -16,6 +16,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { getProjectDir, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { EDIT_MODE_STRATEGIES, type EditMode, type PerFileDiffPreview } from "../../edit";
+import { t } from "../../i18n";
 import type { Theme } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
@@ -1200,7 +1201,10 @@ export class ToolExecutionComponent extends Container implements NativeScrollbac
 						{
 							iconOverride: spinner,
 							title: "Edit",
-							description: theme.fg("dim", `${remaining} more file${remaining > 1 ? "s" : ""} pending…`),
+							description: theme.fg(
+								"dim",
+								t("{count} more file{s} pending…", { count: remaining, s: remaining > 1 ? "s" : "" }),
+							),
 						},
 						theme,
 					);

@@ -5,6 +5,7 @@
 import { Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { gcHelp as commandHelp } from "../cli/command-help";
 import { collectGcErrors, type GcCommandArgs, runGcCommand } from "../cli/gc-cli";
+import { t } from "../i18n";
 
 export default class Gc extends Command {
 	static description = commandHelp.description;
@@ -39,7 +40,13 @@ export default class Gc extends Command {
 		const errors = collectGcErrors(result);
 		if (errors.length > 0) {
 			process.stderr.write(
-				`GC completed with ${errors.length} error${errors.length === 1 ? "" : "s"}:\n${errors.map(error => `- ${error}`).join("\n")}\n`,
+				t("GC completed with {n} {word}:", {
+					n: errors.length,
+					word: errors.length === 1 ? t("error") : t("errors"),
+				}) +
+					"\n" +
+					errors.map(error => `- ${error}`).join("\n") +
+					"\n",
 			);
 			process.exitCode = 1;
 		}

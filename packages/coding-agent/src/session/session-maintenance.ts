@@ -59,6 +59,7 @@ import { getDefault } from "../config/settings";
 import type { ExtensionRunner, SessionBeforeCompactResult } from "../extensibility/extensions";
 import type { CompactOptions, ContextUsage } from "../extensibility/extensions/types";
 import type { GoalModeState } from "../goals/state";
+import { t } from "../i18n";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
 import type { MemoryBackendOperationContext } from "../memory-backend/types";
 import type { NonMessageTokenSource } from "../modes/utils/context-usage";
@@ -115,8 +116,10 @@ const COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION: CompactionCheckResult = {
  */
 function compactionDeadEndWarning(remedies: string): string {
 	return (
-		"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. " +
-		`The most recent turn alone is too large to reduce further; ${remedies} or switch to a larger-context model.`
+		t(
+			"Compaction freed too little context to make progress — pausing automatic maintenance to avoid a compaction loop. The most recent turn alone is too large to reduce further; {remedies} or switch to a larger-context model.",
+			{ remedies },
+		)
 	);
 }
 
@@ -573,7 +576,7 @@ export class SessionMaintenance {
 	 */
 	async compact(customInstructions?: string, options?: CompactOptions): Promise<CompactionResult> {
 		if (this.#compactionAbortController) {
-			throw new Error("Compaction already in progress");
+			throw new Error(t("Compaction already in progress"));
 		}
 		// Resolve the `/compact <mode>` subcommand up front so input validation
 		// runs before we disconnect/abort the active agent operation below.
@@ -586,7 +589,7 @@ export class SessionMaintenance {
 		// wires it up so we don't silently drop the directive on the snapcompact
 		// fallback (issue #4359).
 		if (compactMode?.rejectsFocus && (customInstructions || options?.internalGuidance)) {
-			throw new Error(`/compact ${compactMode.name} does not take focus instructions.`);
+			throw new Error(t("/compact {mode} does not take focus instructions.", { mode: compactMode.name }));
 		}
 		const compactionAbortController = new AbortController();
 		this.#compactionAbortController = compactionAbortController;
@@ -595,7 +598,7 @@ export class SessionMaintenance {
 			this.#host.disconnectFromAgent();
 			await this.#host.abort({ goalReason: "internal", preserveCompaction: true });
 			if (!this.#model) {
-				throw new Error("No model selected");
+				throw new Error(t("No model selected"));
 			}
 
 			const compactionSettings = this.#host.settings.getGroup("compaction");
@@ -621,7 +624,10 @@ export class SessionMaintenance {
 			if (requireProviderRemote && compactionCandidates.length === 0) {
 				this.#host.emitNotice(
 					"warning",
-					`remote compaction is unavailable for ${this.#model.id} (no remote endpoint configured and no provider-native remote-capable model in the fallback chain) — using a local summary instead`,
+					t(
+						"remote compaction is unavailable for {model} (no remote endpoint configured and no provider-native remote-capable model in the fallback chain) — using a local summary instead",
+						{ model: this.#model.id },
+					),
 					"compaction",
 				);
 				compactionCandidates = this.#getCompactionModelCandidates(availableModels);
@@ -632,9 +638,9 @@ export class SessionMaintenance {
 				// Check why we can't compact
 				const lastEntry = pathEntries[pathEntries.length - 1];
 				if (lastEntry?.type === "compaction") {
-					throw new Error("Already compacted");
+					throw new Error(t("Already compacted"));
 				}
-				throw new Error("Nothing to compact (session too small)");
+				throw new Error(t("Nothing to compact (session too small)"));
 			}
 
 			let hookCompaction: CompactionResult | undefined;
@@ -689,14 +695,18 @@ export class SessionMaintenance {
 				if (explicitSnapcompact) {
 					this.#host.emitNotice(
 						"warning",
-						`snapcompact needs a vision-capable model (${this.#model.id} is text-only)`,
+						t("snapcompact needs a vision-capable model ({model} is text-only)", {
+							model: this.#model.id,
+						}),
 						"compaction",
 					);
-					throw new Error(`snapcompact cannot run locally: ${this.#model.id} is text-only.`);
+					throw new Error(t("snapcompact cannot run locally: {model} is text-only.", { model: this.#model.id }));
 				}
 				this.#host.emitNotice(
 					"warning",
-					`snapcompact needs a vision-capable model (${this.#model.id} is text-only); falling back to LLM compaction`,
+					t("snapcompact needs a vision-capable model ({model} is text-only); falling back to LLM compaction", {
+						model: this.#model.id,
+					}),
 					"compaction",
 				);
 				snapcompactReady = false;
@@ -716,11 +726,17 @@ export class SessionMaintenance {
 					const percent = (renderScan.unrenderableRatio * 100).toFixed(1);
 					this.#host.emitNotice(
 						"warning",
-						`snapcompact disabled: unsupported characters for selected snapcompact font (${percent}%). No LLM fallback was attempted.`,
+						t(
+							"snapcompact disabled: unsupported characters for selected snapcompact font ({percent}%). No LLM fallback was attempted.",
+							{ percent },
+						),
 						"compaction",
 					);
 					throw new Error(
-						`snapcompact cannot render this conversation locally: unsupported characters for selected snapcompact font (${percent}%).`,
+						t(
+							"snapcompact cannot render this conversation locally: unsupported characters for selected snapcompact font ({percent}%).",
+							{ percent },
+						),
 					);
 				}
 			}
@@ -745,10 +761,10 @@ export class SessionMaintenance {
 					});
 					this.#host.emitNotice(
 						"warning",
-						"snapcompact: kept history alone exceeds the context budget. No LLM fallback was attempted.",
+						t("snapcompact: kept history alone exceeds the context budget. No LLM fallback was attempted."),
 						"compaction",
 					);
-					throw new Error("snapcompact cannot run locally: kept history alone exceeds the context budget.");
+					throw new Error(t("snapcompact cannot run locally: kept history alone exceeds the context budget."));
 				} else {
 					const shape = snapcompactShape;
 					if (!shape) {
@@ -770,11 +786,11 @@ export class SessionMaintenance {
 						});
 						this.#host.emitNotice(
 							"warning",
-							"snapcompact produced too much standing image payload. No LLM fallback was attempted.",
+							t("snapcompact produced too much standing image payload. No LLM fallback was attempted."),
 							"compaction",
 						);
 						throw new Error(
-							"snapcompact cannot run locally: standing image payload exceeds the per-request budget.",
+							t("snapcompact cannot run locally: standing image payload exceeds the per-request budget."),
 						);
 					}
 					const ctxWindow = this.#model?.contextWindow ?? 0;
@@ -788,10 +804,10 @@ export class SessionMaintenance {
 						});
 						this.#host.emitNotice(
 							"warning",
-							"snapcompact could not bring the context under the limit. No LLM fallback was attempted.",
+							t("snapcompact could not bring the context under the limit. No LLM fallback was attempted."),
 							"compaction",
 						);
-						throw new Error("snapcompact could not bring the context under the limit locally.");
+						throw new Error(t("snapcompact could not bring the context under the limit locally."));
 					}
 				}
 			}
@@ -1523,12 +1539,17 @@ export class SessionMaintenance {
 		const currentModel = this.#model;
 		if (!currentModel) {
 			return new Error(
-				"Compaction requires a model with usable credentials, but no authenticated compaction model is available.",
+				t("Compaction requires a model with usable credentials, but no authenticated compaction model is available."),
 			);
 		}
 		return new Error(
-			`Compaction requires usable credentials for ${currentModel.provider}/${currentModel.id}. ` +
-				`Configure ${currentModel.provider} credentials or assign an authenticated fallback role such as modelRoles.smol.`,
+			t(
+				"Compaction requires usable credentials for {model}. Configure {provider} credentials or assign an authenticated fallback role such as modelRoles.smol.",
+				{
+					model: `${currentModel.provider}/${currentModel.id}`,
+					provider: currentModel.provider,
+				},
+			),
 		);
 	}
 
@@ -1890,13 +1911,13 @@ export class SessionMaintenance {
 		if (frameRescue !== undefined && options.hasProgress()) return true;
 		let elided = 0;
 		let elidedTokens = 0;
-		let elideSink = "placeholders";
+		let elideSink = t("placeholders");
 		if (!options.skipElide) {
 			try {
 				const result = await this.#host.shake("elide", { config: RESCUE_SHAKE_CONFIG, signal });
 				elided = result.toolResultsDropped + result.blocksDropped;
 				elidedTokens = result.tokensFreed;
-				if (result.artifactId) elideSink = "an artifact";
+				if (result.artifactId) elideSink = t("an artifact");
 				if (elided > 0) {
 					// The elide pass rewrote history; re-anchor the in-flight snapshot
 					// so the caller's headroom/retry-fit re-test measures the shaken
@@ -1911,7 +1932,9 @@ export class SessionMaintenance {
 			if (elided > 0 && options.hasProgress()) {
 				this.#host.emitNotice(
 					"info",
-					`Compaction dead-end recovery: ${this.#describeElideRescue(elided, elidedTokens, elideSink)} so maintenance could make progress.`,
+					t("Compaction dead-end recovery: {elide} so maintenance could make progress.", {
+						elide: this.#describeElideRescue(elided, elidedTokens, elideSink),
+					}),
 					"compaction",
 				);
 				return true;
@@ -1931,7 +1954,11 @@ export class SessionMaintenance {
 			const elidedPart = elided > 0 ? `${this.#describeElideRescue(elided, elidedTokens, elideSink)} and ` : "";
 			this.#host.emitNotice(
 				"info",
-				`Compaction dead-end recovery: ${elidedPart}dropped ${imagesDropped} attached image${imagesDropped === 1 ? "" : "s"} so maintenance could make progress.`,
+				t("Compaction dead-end recovery: {elide}dropped {count} attached image{plural} so maintenance could make progress.", {
+					elide: elidedPart,
+					count: imagesDropped,
+					plural: imagesDropped === 1 ? "" : "s",
+				}),
 				"compaction",
 			);
 			return true;
@@ -1941,7 +1968,12 @@ export class SessionMaintenance {
 
 	/** Notice fragment for a dead-end elide tier: what was freed and where it went. */
 	#describeElideRescue(elided: number, tokensFreed: number, sink: string): string {
-		return `elided ${elided} heavy block${elided === 1 ? "" : "s"} (~${tokensFreed.toLocaleString()} tokens) to ${sink}`;
+		return t("elided {count} heavy block{plural} (~{tokens} tokens) to {sink}", {
+			count: elided,
+			plural: elided === 1 ? "" : "s",
+			tokens: tokensFreed.toLocaleString(),
+			sink,
+		});
 	}
 
 	/**
@@ -2111,7 +2143,10 @@ export class SessionMaintenance {
 		}
 		this.#host.emitNotice(
 			"info",
-			`Compaction dead-end recovery: rebuilt the trailing snapcompact archive at a smaller frame budget (${archive.frames.length} → ${rebuilt.frames.length} frames) so maintenance could make progress.`,
+			t(
+				"Compaction dead-end recovery: rebuilt the trailing snapcompact archive at a smaller frame budget ({from} → {to} frames) so maintenance could make progress.",
+				{ from: archive.frames.length, to: rebuilt.frames.length },
+			),
 			"compaction",
 		);
 		return result;
@@ -2212,7 +2247,9 @@ export class SessionMaintenance {
 		if (action === "snapcompact" && this.#model && !this.#model.input.includes("image")) {
 			this.#host.emitNotice(
 				"warning",
-				`snapcompact needs a vision-capable active model (${this.#model.id} is text-only); using context-full auto-compaction instead.`,
+				t("snapcompact needs a vision-capable active model ({model} is text-only); using context-full auto-compaction instead.", {
+					model: this.#model.id,
+				}),
 				"compaction",
 			);
 			action = "context-full";
@@ -2366,7 +2403,7 @@ export class SessionMaintenance {
 				if (!preparation) {
 					const noProgressDeadEnd = reason !== "idle" && !frameRescueCreatedHeadroom;
 					const deadEndWarning = noProgressDeadEnd
-						? compactionDeadEndWarning("shrink it (e.g. clear large tool output)")
+					? compactionDeadEndWarning(t("shrink it (e.g. clear large tool output)"))
 						: undefined;
 					// A rescue that appended a rebuilt archive without creating
 					// headroom must carry the dead-end badge on the entry the
@@ -2501,7 +2538,10 @@ export class SessionMaintenance {
 						model: this.#model?.id,
 						unrenderableRatio: renderScan.unrenderableRatio,
 					});
-					snapcompactBlocker = `snapcompact disabled: unsupported characters for selected snapcompact font (${percent}%); using context-full auto-compaction instead.`;
+					snapcompactBlocker = t(
+						"snapcompact disabled: unsupported characters for selected snapcompact font ({percent}%); using context-full auto-compaction instead.",
+						{ percent },
+					);
 				} else {
 					const maxFrames = this.#computeSnapcompactMaxFrames(preparation, compactionSettings);
 					if (maxFrames < 1) {
@@ -2509,7 +2549,7 @@ export class SessionMaintenance {
 							model: this.#model?.id,
 						});
 						snapcompactBlocker =
-							"snapcompact: kept history alone exceeds the context budget; using context-full auto-compaction instead.";
+							t("snapcompact: kept history alone exceeds the context budget; using context-full auto-compaction instead.");
 					} else {
 						snapcompactResult = await snapcompact.compact(preparation, {
 							convertToLlm,
@@ -2524,10 +2564,10 @@ export class SessionMaintenance {
 								model: this.#model?.id,
 								framePayloadBytes,
 								budget: snapcompact.FRAME_DATA_BYTES_BUDGET,
-							});
-							snapcompactBlocker =
-								"snapcompact produced too much standing image payload; using context-full auto-compaction instead.";
-							snapcompactResult = undefined;
+						});
+						snapcompactBlocker =
+								t("snapcompact produced too much standing image payload; using context-full auto-compaction instead.");
+						snapcompactResult = undefined;
 						}
 						if (snapcompactResult) {
 							const ctxWindow = this.#model?.contextWindow ?? 0;
@@ -2541,10 +2581,10 @@ export class SessionMaintenance {
 									model: this.#model?.id,
 									projected,
 									budget,
-								});
-								snapcompactBlocker =
-									"snapcompact could not bring the context under the limit; using context-full auto-compaction instead.";
-								snapcompactResult = undefined;
+							});
+							snapcompactBlocker =
+								t("snapcompact could not bring the context under the limit; using context-full auto-compaction instead.");
+							snapcompactResult = undefined;
 							}
 						}
 					}
@@ -2724,7 +2764,7 @@ export class SessionMaintenance {
 					if (lastError) {
 						throw lastError;
 					}
-					throw new Error("Compaction failed: no available model");
+					throw new Error(t("Compaction failed: no available model"));
 				}
 
 				summary = compactResult.summary;
@@ -2868,7 +2908,7 @@ export class SessionMaintenance {
 				}
 			}
 
-			const deadEndWarning = noProgressDeadEnd ? compactionDeadEndWarning("clear large tool output") : undefined;
+			const deadEndWarning = noProgressDeadEnd ? compactionDeadEndWarning(t("clear large tool output")) : undefined;
 			if (deadEndWarning) {
 				// Stamp the divider: the compaction bar badges the dead-end and
 				// carries the full warning in its ctrl+o detail, so the pause

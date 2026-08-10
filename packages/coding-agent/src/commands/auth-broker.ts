@@ -10,6 +10,7 @@ import {
 	runAuthBrokerCommand,
 } from "../cli/auth-broker-cli";
 import { authBrokerHelp as commandHelp } from "../cli/command-help";
+import { t } from "../i18n";
 import { initTheme } from "../modes/theme/theme";
 
 export default class AuthBroker extends Command {
@@ -72,7 +73,7 @@ export default class AuthBroker extends Command {
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(AuthBroker);
 		if (!args.action) {
-			renderCommandHelp("omp", "auth-broker", AuthBroker);
+			renderCommandHelp("omp", "auth-broker", AuthBroker, t);
 			return;
 		}
 		const action = args.action as AuthBrokerAction;

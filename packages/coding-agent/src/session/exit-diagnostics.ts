@@ -1,5 +1,6 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { t } from "../i18n";
 import type { SessionEntry } from "./session-entries";
 
 export const TOOL_EXECUTION_START_CUSTOM_TYPE = "tool_execution_start";
@@ -161,7 +162,7 @@ export function createInterruptedTurnAbortMessage(
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "aborted",
-		errorMessage: "Previous OMP process exited before completing the turn.",
+		errorMessage: t("Previous OMP process exited before completing the turn."),
 		timestamp: Number.isFinite(recordedAt) ? recordedAt : Date.now(),
 	};
 }
@@ -305,6 +306,9 @@ export function describePendingToolCalls(entries: readonly SessionEntry[]): stri
 	const pending = collectPendingToolCalls(entries);
 	if (pending.length === 0) return undefined;
 	const formatted = pending.map(formatPendingToolCall).join(", ");
-	const noun = pending.length === 1 ? "tool call" : "tool calls";
-	return `Previous session ended while ${pending.length} ${noun} remained pending: ${formatted}. The prior OMP process exited before recording tool result(s).`;
+	const noun = pending.length === 1 ? t("tool call") : t("tool calls");
+	return t(
+		"Previous session ended while {count} {noun} remained pending: {formatted}. The prior OMP process exited before recording tool result(s).",
+		{ count: pending.length, noun, formatted },
+	);
 }

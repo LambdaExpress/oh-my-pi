@@ -2,6 +2,7 @@ import type * as fsTypes from "node:fs";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { t } from "../i18n";
 import type {
 	AssistantMessage,
 	ImageContent,
@@ -352,10 +353,10 @@ export class ClaudeSessionStore implements ForeignSessionStore {
 			[records, stats] = await Promise.all([collectForeignJsonRecords(info.path), fs.stat(info.path)]);
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
-			throw new Error(`Unable to read Claude session ${info.id}: ${detail}`);
+			throw new Error(t("Unable to read Claude session {id}: {detail}", { id: info.id, detail }));
 		}
 		if (records.length === 0 && stats.size > 0)
-			throw new Error(`Claude session ${info.id} contains no readable records`);
+			throw new Error(t("Claude session {id} contains no readable records", { id: info.id }));
 
 		const sourceParents = new Map<string, string | null>();
 		let sourceCwd: string | undefined;

@@ -30,6 +30,7 @@ import { formatAge, formatNumber, getProjectDir, logger } from "@oh-my-pi/pi-uti
 import type { KeyId } from "../../config/keybindings";
 import type { Settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
+import { t } from "../../i18n";
 import { IrcBus } from "../../irc/bus";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry, type AgentStatus, MAIN_AGENT_ID } from "../../registry/agent-registry";
@@ -510,7 +511,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			const detailWidth = splitBodyWidth(width, split);
 			const roster = this.#renderRosterPanel(split, contentRows, observedById);
 			const details = this.#renderDetailPanel(selected, detailWidth, contentRows, observedById);
-			lines.push(topBorderSplit(width, "Agent Hub", split));
+			lines.push(topBorderSplit(width, t("Agent Hub"), split));
 			for (let i = 0; i < contentRows; i++) {
 				const hit = roster.hitRows[i];
 				if (hit !== undefined) this.#hitRows[lines.length] = hit;
@@ -525,11 +526,11 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const innerWidth = Math.max(1, width - 4);
 		if (this.#narrowDetailsOpen && selected) {
 			const details = this.#renderDetailPanel(selected, innerWidth, contentRows, observedById);
-			lines.push(topBorder(width, `Agent Hub · ${selected.id}`));
+			lines.push(topBorder(width, t("Agent Hub · {id}", { id: selected.id })));
 			for (const detail of details) lines.push(row(detail, width));
 		} else {
 			const roster = this.#renderRosterPanel(innerWidth, contentRows, observedById);
-			lines.push(topBorder(width, "Agent Hub"));
+			lines.push(topBorder(width, t("Agent Hub")));
 			for (let i = 0; i < contentRows; i++) {
 				const hit = roster.hitRows[i];
 				if (hit !== undefined) this.#hitRows[lines.length] = hit;
@@ -549,16 +550,24 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 	}
 
 	#footer(showingNarrowDetails: boolean, availableWidth: number): string {
-		const nextView = this.#viewMode === "roster" ? "by parent" : "flat";
+		const nextView = this.#viewMode === "roster" ? t("by parent") : t("flat");
 		if (showingNarrowDetails) {
-			return theme.fg("dim", `Tab:roster  PgUp/PgDn:scroll  Enter:open  t:${nextView}  Esc:roster`);
+			return theme.fg(
+				"dim",
+				t("Tab:roster  PgUp/PgDn:scroll  Enter:open  t:{view}  Esc:roster", { view: nextView }),
+			);
 		}
 		if (availableWidth < 96) {
-			return theme.fg("dim", `j/k:select  Enter:open  t:${nextView}  Tab:details  r/x:manage  Esc:close`);
+			return theme.fg(
+				"dim",
+				t("j/k:select  Enter:open  t:{view}  Tab:details  r/x:manage  Esc:close", { view: nextView }),
+			);
 		}
 		return theme.fg(
 			"dim",
-			`j/k/wheel:select  PgUp/PgDn:details  Enter/click:open  t:${nextView}  r:revive  x:kill  Esc:close`,
+			t("j/k/wheel:select  PgUp/PgDn:details  Enter/click:open  t:{view}  r:revive  x:kill  Esc:close", {
+				view: nextView,
+			}),
 		);
 	}
 
@@ -575,14 +584,19 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		if (this.#rows.length === 0) {
 			if (this.#loadingPersistedSubagents) {
 				if (budget > 0) {
-					lines.push(`${statusGlyph("running")} ${theme.fg("accent", "Loading saved agents…")}`);
+					lines.push(
+						`${statusGlyph("running")} ${theme.fg("accent", `${t("Loading saved agents")}…`)}`,
+					);
 					hitRows.push(undefined);
 				}
 			} else {
 				const emptyState = [
-					`${theme.fg("muted", theme.status.shadowed)} ${theme.bold("No agents in this session")}`,
-					theme.fg("dim", "Finished, parked, and killed subagents remain with the session that created them."),
-					theme.fg("dim", "Resume that session with omp-dev --continue, or spawn a task here."),
+					`${theme.fg("muted", theme.status.shadowed)} ${theme.bold(t("No agents in this session"))}`,
+					theme.fg(
+						"dim",
+						t("Finished, parked, and killed subagents remain with the session that created them."),
+					),
+					theme.fg("dim", t("Resume that session with omp-dev --continue, or spawn a task here.")),
 				];
 				for (const line of emptyState.slice(0, budget)) {
 					lines.push(line);
@@ -682,12 +696,12 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const showTopOverflow = start > 0 && used < budget;
 		const showBottomOverflow = end < this.#rows.length && used + Number(showTopOverflow) < budget;
 		if (showTopOverflow) {
-			lines.push(theme.fg("dim", `… ${start} more`));
+			lines.push(theme.fg("dim", `… ${t("{count} more", { count: start })}`));
 			hitRows.push(undefined);
 		}
 		for (let i = start; i < end; i++) appendEntry(i);
 		if (showBottomOverflow) {
-			lines.push(theme.fg("dim", `… ${this.#rows.length - end} more`));
+			lines.push(theme.fg("dim", `… ${t("{count} more", { count: this.#rows.length - end })}`));
 			hitRows.push(undefined);
 		}
 		return { lines, hitRows };
@@ -698,17 +712,17 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const inactive = (label: string): string => theme.fg("muted", ` ${label} `);
 		const projection =
 			this.#viewMode === "roster"
-				? `${active("Flat")}${theme.fg("dim", "/")}${inactive("By parent")}`
-				: `${inactive("Flat")}${theme.fg("dim", "/")}${active("By parent")}`;
+				? `${active(t("Flat"))}${theme.fg("dim", "/")}${inactive(t("By parent"))}`
+				: `${inactive(t("Flat"))}${theme.fg("dim", "/")}${active(t("By parent"))}`;
 		const counts = this.#statusSummary();
-		const header = `${theme.bold("Roster")}${theme.fg("dim", theme.sep.dot)}${projection}${counts ? theme.fg("dim", theme.sep.dot) + counts : ""}`;
+		const header = `${theme.bold(t("Roster"))}${theme.fg("dim", theme.sep.dot)}${projection}${counts ? theme.fg("dim", theme.sep.dot) + counts : ""}`;
 		const lines = wrapTextWithAnsi(header, Math.max(1, width));
 
 		const metrics = this.#aggregate;
 		if (metrics.reportedAgents === 0) {
 			lines.push(
 				...wrapTextWithAnsi(
-					theme.fg("dim", `Usage —${theme.sep.dot}0/${this.#rows.length} measured`),
+					theme.fg("dim", `${t("Usage")} —${theme.sep.dot}0/${this.#rows.length} ${t("measured")}`),
 					Math.max(1, width),
 				),
 			);
@@ -717,12 +731,12 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const activeTime = formatMetricDuration(metrics);
 		const usage = [
 			theme.fg("statusLineCost", formatCost(metrics.cost)),
-			theme.fg("dim", activeTime ? `${activeTime} agent time` : "agent time —"),
-			theme.fg("dim", `${formatNumber(metrics.requests)} req`),
-			theme.fg("dim", `${formatNumber(metrics.tools)} tools`),
-			theme.fg("dim", `${formatNumber(metrics.tokens)} tok`),
-			theme.fg("dim", `${metrics.activeDurationAgents}/${metrics.reportedAgents} timed`),
-			theme.fg("dim", `${metrics.reportedAgents}/${this.#rows.length} measured`),
+			theme.fg("dim", activeTime ? `${activeTime} ${t("agent time")}` : `${t("agent time")} —`),
+			theme.fg("dim", `${formatNumber(metrics.requests)} ${t("req")}`),
+			theme.fg("dim", `${formatNumber(metrics.tools)} ${t("tools")}`),
+			theme.fg("dim", `${formatNumber(metrics.tokens)} ${t("tok")}`),
+			theme.fg("dim", `${metrics.activeDurationAgents}/${metrics.reportedAgents} ${t("timed")}`),
+			theme.fg("dim", `${metrics.reportedAgents}/${this.#rows.length} ${t("measured")}`),
 		].join(theme.fg("dim", theme.sep.dot));
 		lines.push(...wrapTextWithAnsi(usage, Math.max(1, width)));
 		return lines;
@@ -760,7 +774,8 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		rows: number,
 		_observedById: ReadonlyMap<string, ObservableSession>,
 	): string[] {
-		if (!ref) return [theme.fg("dim", "Select an agent to inspect"), ...Array.from({ length: rows - 1 }, () => "")];
+		if (!ref)
+			return [theme.fg("dim", t("Select an agent to inspect")), ...Array.from({ length: rows - 1 }, () => "")];
 		const observed = this.#observableFor(ref.id);
 		const progress = observed?.progress;
 		const metrics = this.#metricsFor(ref, observed);
@@ -781,7 +796,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		if (ref.displayName && ref.displayName !== ref.id) add(theme.fg("dim", sanitizeDisplayText(ref.id)));
 		const lifecycleDetails = [
 			metrics ? formatMetricDuration(metrics) : undefined,
-			`active ${formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000)))}`,
+			`${t("active")} ${formatAge(Math.max(1, Math.round((Date.now() - ref.lastActivity) / 1000)))}`,
 		].filter(Boolean);
 		add(
 			`${statusText(ref.status, ref.status)}${theme.fg("dim", `${theme.sep.dot}${lifecycleDetails.join(theme.sep.dot)}`)}`,
@@ -795,7 +810,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 
 		const task = observed?.description ?? progress?.task ?? ref.activity;
 		if (task) {
-			section("Task");
+			section(t("Task"));
 			addWrapped(task);
 		}
 
@@ -803,43 +818,55 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			? `${progress.currentTool}${progress.currentToolArgs ? ` · ${progress.currentToolArgs}` : ""}`
 			: (progress?.lastIntent ?? ref.activity);
 		if (current) {
-			section("Current");
+			section(t("Current"));
 			addWrapped(current);
 			if (progress?.retryState) {
-				add(theme.fg("warning", `retry ${progress.retryState.attempt}/${progress.retryState.maxAttempts}`));
+				add(
+					theme.fg(
+						"warning",
+						`${t("retry")} ${progress.retryState.attempt}/${progress.retryState.maxAttempts}`,
+					),
+				);
 			}
 		}
 
-		section("Usage", 1);
+		section(t("Usage"), 1);
 		if (metrics) {
 			addWrapped(formatMetrics(metrics), 3);
 			if (metrics.contextTokens !== undefined && metrics.contextWindow) {
 				add(contextGauge(metrics.contextTokens, metrics.contextWindow));
 			}
 		} else {
-			add(theme.fg("dim", "usage —"));
+			add(theme.fg("dim", `${t("usage")} —`));
 		}
 
-		section("Lineage");
+		section(t("Lineage"));
 		add(
-			`Spawned by ${sanitizeDisplayText(ref.parentId ?? MAIN_AGENT_ID)}${children.length > 0 ? ` · ${children.length} children` : ""}`,
+			`${t("Spawned by")} ${sanitizeDisplayText(ref.parentId ?? MAIN_AGENT_ID)}${
+				children.length > 0 ? ` · ${t("{count} children", { count: children.length })}` : ""
+			}`,
 		);
 		if (children.length > 0) add(theme.fg("dim", formatChildIds(children, width)));
-		add(theme.fg("dim", `Registered ${new Date(ref.createdAt).toISOString().slice(0, 16).replace("T", " ")}Z`));
+		add(
+			theme.fg(
+				"dim",
+				`${t("Registered")} ${new Date(ref.createdAt).toISOString().slice(0, 16).replace("T", " ")}Z`,
+			),
+		);
 
-		section("Changes");
+		section(t("Changes"));
 		add(
 			theme.fg(
 				"dim",
 				ref.kind === "advisor" || ref.history?.readOnly
-					? "Read-only · 0 LoC"
-					: "Shared workspace · per-agent LoC not attributable",
+					? t("Read-only · 0 LoC")
+					: t("Shared workspace · per-agent LoC not attributable"),
 			),
 		);
 		const artifacts = ref.history;
-		if (artifacts?.outputPath) addWrapped(`Output ${shortenPath(artifacts.outputPath)}`);
-		if (artifacts?.patchPath) addWrapped(`Patch ${shortenPath(artifacts.patchPath)}`);
-		if (artifacts?.branchName) addWrapped(`Worktree branch ${artifacts.branchName}`);
+		if (artifacts?.outputPath) addWrapped(`${t("Output")} ${shortenPath(artifacts.outputPath)}`);
+		if (artifacts?.patchPath) addWrapped(`${t("Patch")} ${shortenPath(artifacts.patchPath)}`);
+		if (artifacts?.branchName) addWrapped(`${t("Worktree branch")} ${artifacts.branchName}`);
 
 		const maxScroll = Math.max(0, lines.length - rows);
 		this.#detailScrollOffset = Math.min(this.#detailScrollOffset, maxScroll);
@@ -877,7 +904,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			fields.push(theme.fg("dim", `↳ ${sanitizeDisplayText(ref.parentId)}`));
 		}
 		if (ref.kind === "advisor") {
-			fields.push(theme.fg("warning", "read-only"));
+			fields.push(theme.fg("warning", t("read-only")));
 		}
 		const unread = this.#irc.unreadCount(ref.id);
 		if (unread > 0) {
@@ -907,7 +934,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		}
 
 		const metrics = this.#metricsFor(ref, observed);
-		const usage = metrics ? theme.fg("dim", formatMetrics(metrics)) : theme.fg("dim", "usage —");
+		const usage = metrics ? theme.fg("dim", formatMetrics(metrics)) : theme.fg("dim", `${t("usage")} —`);
 		const task = observed?.description ?? observed?.progress?.task ?? ref.activity;
 		const detailWidth = Math.max(1, max - detailIndent);
 		const details = task
@@ -1070,12 +1097,15 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const ref = this.#rows[this.#selectedRow];
 		if (!ref) return;
 		if (ref.kind === "advisor") {
-			this.#notice = `"${ref.id}" is a read-only advisor transcript — nothing to revive.`;
+			this.#notice = t("\"{id}\" is a read-only advisor transcript — nothing to revive.", { id: ref.id });
 			this.#requestRender();
 			return;
 		}
 		if (ref.status !== "parked") {
-			this.#notice = `Agent "${ref.id}" is ${ref.status} — only parked agents can be revived.`;
+			this.#notice = t("Agent \"{id}\" is {status} — only parked agents can be revived.", {
+				id: ref.id,
+				status: ref.status,
+			});
 			this.#requestRender();
 			return;
 		}
@@ -1099,7 +1129,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const ref = this.#rows[this.#selectedRow];
 		if (!ref) return;
 		if (ref.kind === "advisor") {
-			this.#notice = `"${ref.id}" is a read-only advisor transcript — cannot be killed.`;
+			this.#notice = t("\"{id}\" is a read-only advisor transcript — cannot be killed.", { id: ref.id });
 			this.#requestRender();
 			return;
 		}

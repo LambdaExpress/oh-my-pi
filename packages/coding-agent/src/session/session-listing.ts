@@ -3,6 +3,7 @@ import * as path from "node:path";
 import type { Message } from "@oh-my-pi/pi-ai";
 import { getAgentDir as getDefaultAgentDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "lru-cache/raw";
+import { t } from "../i18n";
 import { computeDefaultSessionDir } from "./session-paths";
 import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
 
@@ -142,7 +143,7 @@ function sessionDisplayName(info: SessionInfo): string {
 	const ts = Number.isFinite(created) ? created : info.modified.getTime();
 	const date = new Date(ts);
 	const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-	return `Untitled · ${time}`;
+	return `${t("Untitled")} · ${time}`;
 }
 
 function extractTextFromContent(content: Message["content"]): string {

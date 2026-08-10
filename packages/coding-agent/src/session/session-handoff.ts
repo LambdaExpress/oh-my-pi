@@ -14,6 +14,7 @@ import { logger, Snowflake } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import type { ExtensionRunner, SessionBeforeSwitchResult } from "../extensibility/extensions";
+import { t } from "../i18n";
 import { obfuscateProviderContext, type SecretObfuscator } from "../secrets/obfuscator";
 import type { HandoffResult, SessionHandoffOptions } from "./agent-session-types";
 import type { BashSessionTransition } from "./bash-runner";
@@ -101,12 +102,12 @@ export class SessionHandoff {
 	 * @returns The handoff document text, or undefined if cancelled/failed
 	 */
 	async handoff(customInstructions?: string, options?: SessionHandoffOptions): Promise<HandoffResult | undefined> {
-		this.#host.assertVibeSessionTransitionAllowed("handoff to a new session");
+		this.#host.assertVibeSessionTransitionAllowed(t("handoff to a new session"));
 		const entries = this.#host.sessionManager.getBranch();
 		const messageCount = entries.filter(e => e.type === "message").length;
 
 		if (messageCount < 2) {
-			throw new Error("Nothing to hand off (no messages yet)");
+			throw new Error(t("Nothing to hand off (no messages yet)"));
 		}
 
 		this.#host.setSkipPostTurnMaintenance(undefined);
@@ -136,7 +137,7 @@ export class SessionHandoff {
 
 			const model = this.#host.model();
 			if (!model) {
-				throw new Error("No model selected for handoff");
+				throw new Error(t("No model selected for handoff"));
 			}
 			const apiKey = await this.#host.modelRegistry.getApiKey(model, this.#host.sessionId());
 			if (!apiKey) {

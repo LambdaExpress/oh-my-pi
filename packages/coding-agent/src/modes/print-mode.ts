@@ -8,6 +8,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { logger, sanitizeText } from "@oh-my-pi/pi-utils";
+import { t } from "../i18n";
 import { resolvePlanModelTransition } from "../plan-mode/model-transition";
 import { type AgentSession, type AgentSessionEvent, SHUTDOWN_CONSOLIDATE_BUDGET_MS } from "../session/agent-session";
 import { isSilentAbort } from "../session/messages";
@@ -152,11 +153,16 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	await initializeExtensions(session, {
 		reportSendError: (action, err) => {
 			process.stderr.write(
-				`Extension ${action === "extension_send" ? "sendMessage" : "sendUserMessage"} failed: ${err.message}\n`,
+				`${t("Extension {action} failed: {message}", {
+					action: action === "extension_send" ? "sendMessage" : "sendUserMessage",
+					message: err.message,
+				})}\n`,
 			);
 		},
 		reportRuntimeError: err => {
-			process.stderr.write(`Extension error (${err.extensionPath}): ${err.error}\n`);
+			process.stderr.write(
+				`${t("Extension error ({path}): {error}", { path: err.extensionPath, error: err.error })}\n`,
+			);
 		},
 	});
 
@@ -229,7 +235,7 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 	let wroteTextWorkingIndicator = false;
 	const writeTextWorkingIndicator = (): void => {
 		if (mode !== "text" || wroteTextWorkingIndicator) return;
-		process.stderr.write("Working...\n");
+		process.stderr.write(`${t("Working...")}\n`);
 		wroteTextWorkingIndicator = true;
 	};
 
@@ -266,7 +272,10 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 				(assistantMsg.stopReason === "error" || assistantMsg.stopReason === "aborted") &&
 				!isSilentAbort(assistantMsg)
 			) {
-				const errorLine = sanitizeText(assistantMsg.errorMessage || `Request ${assistantMsg.stopReason}`);
+				const errorLine = sanitizeText(
+					assistantMsg.errorMessage ||
+						t("Request {reason}", { reason: assistantMsg.stopReason }),
+				);
 				// This branch hard-exits, bypassing the `await session.dispose()` at
 				// the end of runPrintMode. Flush telemetry and dispose the session
 				// HERE so error spans reach the exporter (the postmortem `exit`

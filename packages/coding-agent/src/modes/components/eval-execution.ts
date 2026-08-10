@@ -5,6 +5,7 @@
 
 import { Container, type Loader, Text, type TUI } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { t } from "../../i18n";
 import { highlightCode, theme } from "../../modes/theme/theme";
 import type { TruncationMeta } from "../../tools/output-meta";
 import {
@@ -151,7 +152,7 @@ export class EvalExecutionComponent extends Container {
 			return line;
 		}
 		const omitted = line.length - MAX_DISPLAY_LINE_CHARS;
-		return `${line.slice(0, MAX_DISPLAY_LINE_CHARS)}… [${omitted} chars omitted]`;
+		return `${line.slice(0, MAX_DISPLAY_LINE_CHARS)}… ${t("[{count} chars omitted]", { count: omitted })}`;
 	}
 
 	#setOutput(output: string): void {

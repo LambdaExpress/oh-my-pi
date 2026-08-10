@@ -20,6 +20,7 @@ import {
 import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { ModelRegistry } from "../config/model-registry";
+import { t } from "../i18n";
 import { discoverAuthStorage } from "../sdk";
 
 const BAR_WIDTH = 28;
@@ -209,10 +210,10 @@ function formatUnitValue(value: number, unit: UsageUnit): string {
 }
 
 const UNIT_SUFFIX: Record<UsageUnit, string> = {
-	tokens: " tokens",
-	requests: " requests",
-	minutes: " min",
-	bytes: " bytes",
+	tokens: t(" tokens"),
+	requests: t(" requests"),
+	minutes: t(" min"),
+	bytes: t(" bytes"),
 	percent: "",
 	usd: "",
 	unknown: "",
@@ -228,7 +229,11 @@ function describeAmount(limit: UsageLimit): string {
 			`${formatUnitValue(amount.used, amount.unit)} / ${formatUnitValue(amount.limit, amount.unit)}${UNIT_SUFFIX[amount.unit]}`,
 		);
 	} else if (absoluteUnit && amount.remaining !== undefined) {
-		parts.push(`${formatUnitValue(amount.remaining, amount.unit)}${UNIT_SUFFIX[amount.unit]} left`);
+		parts.push(
+			t("{value} left", {
+				value: `${formatUnitValue(amount.remaining, amount.unit)}${UNIT_SUFFIX[amount.unit]}`,
+			}),
+		);
 	} else if (
 		absoluteUnit &&
 		amount.used !== undefined &&
@@ -237,14 +242,18 @@ function describeAmount(limit: UsageLimit): string {
 		amount.remaining === undefined &&
 		fraction === undefined
 	) {
-		parts.push(`${formatUnitValue(amount.used, amount.unit)}${UNIT_SUFFIX[amount.unit]} used`);
+		parts.push(
+			t("{value} used", {
+				value: `${formatUnitValue(amount.used, amount.unit)}${UNIT_SUFFIX[amount.unit]}`,
+			}),
+		);
 	}
 	if (fraction !== undefined) {
-		parts.push(`${(fraction * 100).toFixed(1)}% used`);
+		parts.push(t("{pct}% used", { pct: (fraction * 100).toFixed(1) }));
 	} else if (amount.remainingFraction !== undefined) {
-		parts.push(`${(amount.remainingFraction * 100).toFixed(1)}% left`);
+		parts.push(t("{pct}% left", { pct: (amount.remainingFraction * 100).toFixed(1) }));
 	}
-	if (parts.length === 0) parts.push("no data");
+	if (parts.length === 0) parts.push(t("no data"));
 	return parts.join(" · ");
 }
 
@@ -279,7 +288,7 @@ function reportAccountLabel(report: UsageReport, index: number): string {
 		const scoped = limit.scope.accountId ?? limit.scope.projectId;
 		if (scoped) return scoped;
 	}
-	return `account ${index + 1}`;
+	return t("account {n}", { n: index + 1 });
 }
 
 /** Lowercased identity strings a report can be attributed to. */
@@ -377,8 +386,8 @@ export function collectUnreportedAccounts(
 
 /** Compose the account label from parts, masking each part individually so `--redact` cannot be bypassed by the composite string. */
 function accountIdentityLabel(account: UsageAccountIdentity, redaction?: Map<string, string>): string {
-	if (account.type === "api_key") return "API key";
-	const base = account.email ?? account.accountId ?? account.projectId ?? account.enterpriseUrl ?? "OAuth account";
+	if (account.type === "api_key") return t("API key");
+	const base = account.email ?? account.accountId ?? account.projectId ?? account.enterpriseUrl ?? t("OAuth account");
 	const masked = redaction?.get(base) ?? base;
 	// orgId fallback: the uuid is the actual scoped identity; a token response
 	// can carry it without a display name, and two same-email rows must still
@@ -405,10 +414,11 @@ function formatAccountHeader(
 		header += chalk.dim(` · ${redaction?.get(org) ?? org}`);
 	}
 	const planType = report.metadata?.planType;
-	if (typeof planType === "string" && planType) header += chalk.dim(` · plan: ${planType}`);
+	if (typeof planType === "string" && planType) header += chalk.dim(` · ${t("plan: {plan}", { plan: planType })}`);
 	const savedResets = report.resetCredits?.availableCount ?? 0;
 	if (savedResets > 0) {
-		header += chalk.cyan(` · ✦ ${savedResets} saved reset${savedResets === 1 ? "" : "s"}`);
+		const resetWord = savedResets === 1 ? t("saved reset") : t("saved resets");
+		header += chalk.cyan(` · ✦ ${savedResets} ${resetWord}`);
 		const credits = report.resetCredits?.credits;
 		if (credits) {
 			const expiries = credits
@@ -419,16 +429,24 @@ function formatAccountHeader(
 			const upcoming = expiries.find(c => c.ms > nowMs);
 			if (upcoming) {
 				header += chalk.dim(
-					` · soonest expires in ${formatDuration(upcoming.ms - nowMs)} (${upcoming.date.slice(0, 10)})`,
+					` · ${t("soonest expires in {duration} ({date})", {
+						duration: formatDuration(upcoming.ms - nowMs),
+						date: upcoming.date.slice(0, 10),
+					})}`,
 				);
 			} else {
 				const lastExpired = expiries.at(-1);
-				if (lastExpired) header += chalk.dim(` · expired (${lastExpired.date.slice(0, 10)})`);
+				if (lastExpired)
+					header += chalk.dim(
+						` · ${t("expired ({date})", { date: lastExpired.date.slice(0, 10) })}`,
+					);
 			}
 		}
 	}
 	if (report.fetchedAt && nowMs - report.fetchedAt > 90_000) {
-		header += chalk.dim(` · fetched ${formatDuration(nowMs - report.fetchedAt)} ago`);
+		header += chalk.dim(
+			` · ${t("fetched {duration} ago", { duration: formatDuration(nowMs - report.fetchedAt) })}`,
+		);
 	}
 	return header;
 }
@@ -440,7 +458,12 @@ function formatLimitLine(limit: UsageLimit, labelWidth: number, nowMs: number): 
 	const details: string[] = [describeAmount(limit)];
 	const resetsAt = limit.window?.resetsAt;
 	if (resetsAt !== undefined && resetsAt > nowMs) {
-		details.push(`${limit.window?.resetLabel ?? "resets"} in ${formatDuration(resetsAt - nowMs)}`);
+		details.push(
+			t("{label} in {duration}", {
+				label: limit.window?.resetLabel ?? t("resets"),
+				duration: formatDuration(resetsAt - nowMs),
+			}),
+		);
 	}
 	const lines = [
 		`      ${STATUS_COLOR[status]("●")} ${padded}  ${renderBar(limit)}  ${chalk.dim(details.join(" · "))}`,
@@ -471,7 +494,7 @@ function collectProviderLimitTemplates(reports: UsageReport[]): ProviderLimitTem
 
 function formatMissingLimitLine(template: ProviderLimitTemplate, labelWidth: number): string {
 	const padded = template.title.padEnd(labelWidth);
-	return `      ${chalk.dim("○")} ${padded}  ${chalk.dim("·".repeat(BAR_WIDTH))}  ${chalk.dim("not reported")}`;
+	return `      ${chalk.dim("○")} ${padded}  ${chalk.dim("·".repeat(BAR_WIDTH))}  ${chalk.dim(t("not reported"))}`;
 }
 
 /** Per-window capacity stat: how much account quota is burned and left. */
@@ -550,9 +573,14 @@ function formatReloginDeadline(
 	if (remaining > RELOGIN_WARN_WINDOW_MS) return undefined;
 	const label = accountIdentityLabel(account, redaction);
 	if (remaining <= 0) {
-		return `  ${chalk.red(`⚠ ${label} — grant is past Anthropic's ~30d lifetime; re-login now`)}`;
+		return `  ${chalk.red(`⚠ ${t("{label} — grant is past Anthropic's ~30d lifetime; re-login now", { label })}`)}`;
 	}
-	return `  ${chalk.yellow(`⚠ ${label} — re-login within ${formatDuration(remaining)} (Anthropic expires OAuth grants ~30d after login)`)}`;
+	return `  ${chalk.yellow(
+		`⚠ ${t("{label} — re-login within {duration} (Anthropic expires OAuth grants ~30d after login)", {
+			label,
+			duration: formatDuration(remaining),
+		})}`,
+	)}`;
 }
 
 /**
@@ -601,7 +629,7 @@ function shortDisableCause(cause: string): string {
 
 /** Label for a disabled tombstone, masking each identity part under `--redact`. */
 function disabledIdentityLabel(summary: DisabledCredentialSummary, redaction?: Map<string, string>): string {
-	const base = summary.email ?? summary.accountId ?? "OAuth account";
+	const base = summary.email ?? summary.accountId ?? t("OAuth account");
 	const masked = redaction?.get(base) ?? base;
 	const org = summary.orgName ?? summary.orgId;
 	if (!org || org === base) return masked;
@@ -647,16 +675,19 @@ export function formatUsageBreakdown(
 
 	const lines: string[] = [];
 	const latestFetchedAt = Math.max(0, ...reports.map(report => report.fetchedAt ?? 0));
-	const headerSuffix = latestFetchedAt ? chalk.dim(` · fetched ${formatDuration(nowMs - latestFetchedAt)} ago`) : "";
-	lines.push(`${chalk.bold("Usage")}${headerSuffix}`);
+	const headerSuffix = latestFetchedAt
+		? chalk.dim(` · ${t("fetched {duration} ago", { duration: formatDuration(nowMs - latestFetchedAt) })}`)
+		: "";
+	lines.push(`${chalk.bold(t("Usage"))}${headerSuffix}`);
 
 	for (const provider of providers) {
 		const providerReports = reportsByProvider.get(provider) ?? [];
 		const providerUnreported = unreportedByProvider.get(provider) ?? [];
 		const accountCount = providerReports.length + providerUnreported.length;
 		lines.push("");
+		const accountWord = accountCount === 1 ? t("account") : t("accounts");
 		lines.push(
-			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accountCount} ${accountCount === 1 ? "account" : "accounts"}`)}`,
+			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accountCount} ${accountWord}`)}`,
 		);
 		// Provider-wide disclaimers render once per provider, not per limit.
 		const providerNotes = [...new Set(providerReports.flatMap(report => report.notes ?? []))];
@@ -669,7 +700,7 @@ export function formatUsageBreakdown(
 		providerReports.forEach((report, index) => {
 			lines.push(`  ${formatAccountHeader(report, index, nowMs, redaction)}`);
 			if (report.limits.length === 0) {
-				lines.push(`      ${chalk.dim("no limits reported")}`);
+				lines.push(`      ${chalk.dim(t("no limits reported"))}`);
 				return;
 			}
 			const limitsById = new Map<string, UsageLimit>();
@@ -686,14 +717,23 @@ export function formatUsageBreakdown(
 
 		for (const account of providerUnreported) {
 			const label = accountIdentityLabel(account, redaction);
-			lines.push(`  ${chalk.dim("○")} ${chalk.dim(`${label} — no usage data`)}`);
+			lines.push(`  ${chalk.dim("○")} ${chalk.dim(t("{label} — no usage data", { label }))}`);
 		}
 
 		for (const summary of disabledByProvider.get(provider) ?? []) {
 			const label = disabledIdentityLabel(summary, redaction);
-			const ago = summary.disabledAtMs !== undefined ? ` ${formatDuration(nowMs - summary.disabledAtMs)} ago` : "";
+			const ago =
+				summary.disabledAtMs !== undefined
+					? ` ${t("{duration} ago", { duration: formatDuration(nowMs - summary.disabledAtMs) })}`
+					: "";
 			lines.push(
-				`  ${chalk.red(`✗ ${label} — disabled${ago}: ${sanitizeText(shortDisableCause(summary.cause))}`)} ${chalk.dim("(re-login to restore)")}`,
+				`  ${chalk.red(
+					t("✗ {label} — disabled{ago}: {cause}", {
+						label,
+						ago,
+						cause: sanitizeText(shortDisableCause(summary.cause)),
+					}),
+				)} ${chalk.dim(t("(re-login to restore)"))}`,
 			);
 		}
 
@@ -705,11 +745,11 @@ export function formatUsageBreakdown(
 
 		const stats = computeProviderWindowStats(providerReports);
 		if (stats.length > 0) {
-			const parts = stats.map(
-				stat =>
-					`${stat.window} → ${stat.usedAccounts.toFixed(2)}/${stat.accounts} ${stat.accounts === 1 ? "account" : "accounts"} used (${stat.remainingAccounts.toFixed(2)}× quota left)`,
-			);
-			lines.push(`  ${chalk.dim(`capacity: ${parts.join(" · ")}`)}`);
+			const parts = stats.map(stat => {
+				const accountWord = stat.accounts === 1 ? t("account") : t("accounts");
+				return `${stat.window} → ${stat.usedAccounts.toFixed(2)}/${stat.accounts} ${t("{accounts} used ({remaining}× quota left)", { accounts: accountWord, remaining: stat.remainingAccounts.toFixed(2) })}`;
+			});
+			lines.push(`  ${chalk.dim(t("capacity: {parts}", { parts: parts.join(" · ") }))}`);
 		}
 	}
 
@@ -818,14 +858,17 @@ export function formatUsageHistory(
 
 	const lines: string[] = [];
 	lines.push(
-		`${chalk.bold("Usage history")}${chalk.dim(` · last ${formatDuration(nowMs - sinceMs)} · peak per bucket`)}`,
+		`${chalk.bold(t("Usage history"))}${chalk.dim(
+			t(" · last {duration} · peak per bucket", { duration: formatDuration(nowMs - sinceMs) }),
+		)}`,
 	);
 
 	for (const provider of [...providers.keys()].sort((a, b) => a.localeCompare(b))) {
 		const accounts = providers.get(provider) ?? new Map<string, HistoryAccount>();
 		lines.push("");
+		const accountWord = accounts.size === 1 ? t("account") : t("accounts");
 		lines.push(
-			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accounts.size} ${accounts.size === 1 ? "account" : "accounts"}`)}`,
+			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accounts.size} ${accountWord}`)}`,
 		);
 		const sortedAccounts = [...accounts.values()].sort((a, b) => a.label.localeCompare(b.label));
 		for (const account of sortedAccounts) {
@@ -841,9 +884,10 @@ export function formatUsageHistory(
 				const peakFraction = fractions.length > 0 ? Math.max(...fractions) : undefined;
 				const status = historyStatus(latestFraction, latestEntry?.status);
 				const details: string[] = [];
-				if (latestFraction !== undefined) details.push(`latest ${(latestFraction * 100).toFixed(1)}%`);
-				if (peakFraction !== undefined) details.push(`peak ${(peakFraction * 100).toFixed(1)}%`);
-				details.push(`${series.entries.length} snapshot${series.entries.length === 1 ? "" : "s"}`);
+				if (latestFraction !== undefined) details.push(t("latest {pct}%", { pct: (latestFraction * 100).toFixed(1) }));
+				if (peakFraction !== undefined) details.push(t("peak {pct}%", { pct: (peakFraction * 100).toFixed(1) }));
+				const snapshotWord = series.entries.length === 1 ? t("snapshot") : t("snapshots");
+				details.push(`${series.entries.length} ${snapshotWord}`);
 				lines.push(
 					`      ${STATUS_COLOR[status]("●")} ${series.title.padEnd(labelWidth)}  ${renderHistorySparkline(series.entries, sinceMs, nowMs)}  ${chalk.dim(details.join(" · "))}`,
 				);
@@ -942,9 +986,11 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			const provider = cmd.provider?.toLowerCase();
 			await authStorage.invalidateUsageCache(provider);
 			if (provider) {
-				process.stdout.write(`Invalidated cached usage reports for provider "${provider}".\n`);
+				process.stdout.write(
+					`${t('Invalidated cached usage reports for provider "{provider}".', { provider })}\n`,
+				);
 			} else {
-				process.stdout.write("Invalidated cached usage reports for all providers.\n");
+				process.stdout.write(`${t("Invalidated cached usage reports for all providers.")}\n`);
 			}
 			return;
 		}
@@ -967,10 +1013,10 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 				return;
 			}
 			if (entries.length === 0) {
-				const scope = cmd.provider ? ` for provider "${cmd.provider}"` : "";
+				const scope = cmd.provider ? ` ${t('for provider "{provider}"', { provider: cmd.provider })}` : "";
 				process.stderr.write(
 					chalk.yellow(
-						`No usage history recorded${scope} yet. Snapshots accumulate whenever usage is fetched (TUI footer, /usage, omp usage).\n`,
+						`${t("No usage history recorded{scope} yet. Snapshots accumulate whenever usage is fetched (TUI footer, /usage, omp usage).", { scope })}\n`,
 					),
 				);
 				process.exitCode = 1;
@@ -1065,13 +1111,13 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 		}
 
 		if (filteredReports.length === 0 && accounts.length === 0) {
-			const scope = cmd.provider ? ` for provider "${cmd.provider}"` : "";
+			const scope = cmd.provider ? ` ${t('for provider "{provider}"', { provider: cmd.provider })}` : "";
 			// Credentials exist but every one is for a provider without a usage
 			// endpoint — say so rather than implying nothing is logged in.
 			const message =
 				storedAccounts.length > 0
-					? `No usage data${scope}. Stored credentials are for providers without a usage endpoint.\n`
-					: `No credentials found${scope}. Run \`omp\` and use /login to add accounts.\n`;
+					? `${t("No usage data{scope}. Stored credentials are for providers without a usage endpoint.", { scope })}\n`
+					: `${t("No credentials found{scope}. Run `omp` and use /login to add accounts.", { scope })}\n`;
 			process.stderr.write(chalk.yellow(message));
 			process.exitCode = 1;
 			return;

@@ -11,6 +11,8 @@
  * ACP hint), the parser, and the engine override all read this table.
  */
 
+import { t } from "../i18n";
+
 /** Subcommand selecting a one-off compaction mode for manual `/compact`. */
 export type CompactMode = "soft" | "remote" | "snapcompact";
 
@@ -98,7 +100,9 @@ export function parseCompactArgs(args: string): ParsedCompactArgs | { error: str
 	const focus = spaceIndex === -1 ? "" : trimmed.slice(spaceIndex + 1).trim();
 	if (mode.rejectsFocus && focus) {
 		return {
-			error: `/compact ${mode.name} does not take focus instructions (it archives history without an LLM summary).`,
+			error: t("/compact {mode} does not take focus instructions (it archives history without an LLM summary).", {
+				mode: mode.name,
+			}),
 		};
 	}
 	return { mode: mode.name, instructions: focus || undefined };

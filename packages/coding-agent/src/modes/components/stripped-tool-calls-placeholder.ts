@@ -1,4 +1,5 @@
 import { Text } from "@oh-my-pi/pi-tui";
+import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
 
 /**
@@ -14,7 +15,10 @@ export class StrippedToolCallsPlaceholder extends Text {
 			theme.fg(
 				"dim",
 				theme.italic(
-					`${strippedToolCalls} tool call${strippedToolCalls === 1 ? "" : "s"} elided — no result on this branch`,
+					t("{count} tool call{s} elided — no result on this branch", {
+						count: strippedToolCalls,
+						s: strippedToolCalls === 1 ? "" : "s",
+					}),
 				),
 			),
 			1,

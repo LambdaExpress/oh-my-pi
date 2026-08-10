@@ -20,6 +20,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
+import { t } from "../../i18n";
 import { getMarkdownTheme, type ThemeColor, theme } from "../../modes/theme/theme";
 import {
 	matchesAppExternalEditor,
@@ -262,7 +263,7 @@ export class HookSelectorComponent extends Container {
 			this.addChild(this.#listContainer);
 		}
 		this.addChild(new Spacer(1));
-		const controlsHint = opts?.helpText ?? "up/down navigate  enter select  esc cancel";
+		const controlsHint = opts?.helpText ?? t("up/down navigate  enter select  esc cancel");
 		this.addChild(new Text(theme.fg("dim", controlsHint), 1, 0));
 		this.addChild(new Spacer(1));
 		this.addChild(new DynamicBorder());
@@ -538,7 +539,7 @@ export class HookSelectorComponent extends Container {
 		}
 
 		if (total === 0) {
-			rows.push({ text: theme.fg("dim", "  No matching options"), highlight: false });
+			rows.push({ text: theme.fg("dim", `  ${t("No matching options")}`), highlight: false });
 		}
 
 		if (startIndex > 0 || endIndex < total || this.#shouldRenderSearchStatus(renderWidth, mdTheme)) {
@@ -602,9 +603,15 @@ export class HookSelectorComponent extends Container {
 		const selectedCount = total === 0 ? 0 : this.#selectedIndex + 1;
 		const count =
 			this.#searchQuery.trim() && total !== this.#options.length
-				? `${selectedCount}/${total} of ${this.#options.length}`
+				? t("{selectedCount}/{total} of {totalCount}", {
+						selectedCount,
+						total,
+						totalCount: this.#options.length,
+					})
 				: `${selectedCount}/${total}`;
-		const suffix = this.#searchQuery.trim() ? `  Search: ${this.#searchQuery}` : "  Type to search";
+		const suffix = this.#searchQuery.trim()
+			? `  ${t("Search: {query}", { query: this.#searchQuery })}`
+			: `  ${t("Type to search")}`;
 		return theme.fg("dim", `  (${count})${suffix}`);
 	}
 

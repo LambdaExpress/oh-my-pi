@@ -19,6 +19,7 @@ import type { CliConfig, CommandMetadata } from "@oh-my-pi/pi-utils/cli";
 import {
 	APP_NAME,
 	getActiveProfile,
+	getProjectDir,
 	MIN_BUN_VERSION,
 	resolveProfileEnv,
 	setProfile,
@@ -27,10 +28,12 @@ import {
 import { interceptUnhandledRejections } from "@oh-my-pi/pi-utils/postmortem";
 import { setProcessName } from "@oh-my-pi/pi-utils/process-name";
 import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from "@oh-my-pi/pi-utils/worker-host";
+import { Settings } from "./config/settings";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
 import { startJsEvalProcess } from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
+import { setLocale, t } from "./i18n";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
 import { TERMINAL_OUTPUT_WORKER_ARG } from "./launch/terminal-output-worker-protocol";
 import { LSP_MUX_WORKER_ARG } from "./lsp/mux/protocol";
@@ -68,10 +71,10 @@ async function showHelp(config: CliConfig<CommandMetadata>): Promise<void> {
 		import("@oh-my-pi/pi-utils/cli"),
 		import("./cli/help-extra"),
 	]);
-	renderRootHelp(config);
+	renderRootHelp(config, t);
 	const extra = getExtraHelpText();
 	if (extra.trim().length > 0) {
-		process.stdout.write(`\n${extra}\n`);
+		process.stdout.write(`\n${t(extra)}\n`);
 	}
 }
 /**
@@ -409,7 +412,17 @@ export async function runCli(argv: string[]): Promise<void> {
 		process.exitCode = 1;
 		return;
 	}
-	return run({ bin: APP_NAME, version: VERSION, argv: resolved.argv, commands, metadataHelp: showHelp });
+	// Help renders before Settings.init() runs (main.ts owns the authoritative
+	// instance), so pin the locale from a side-effect-free read of config.yml.
+	if (resolved.argv.includes("--help") || resolved.argv.includes("-h")) {
+		try {
+			const readOnly = await Settings.loadReadOnly({ cwd: getProjectDir() });
+			setLocale(readOnly.get("display.language"));
+		} catch {
+			// Fall back to en
+		}
+	}
+	return run({ bin: APP_NAME, version: VERSION, argv: resolved.argv, commands, metadataHelp: showHelp, translate: t });
 }
 
 // Floating call instead of top-level await: TLA forces `--bytecode` (CJS

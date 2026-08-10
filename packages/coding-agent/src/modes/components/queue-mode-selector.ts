@@ -1,4 +1,5 @@
 import { Container, type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
+import { t } from "../../i18n";
 import { getSelectListTheme } from "../../modes/theme/theme";
 import { DynamicBorder } from "./dynamic-border";
 import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
@@ -20,9 +21,9 @@ export class QueueModeSelectorComponent extends Container {
 			{
 				value: "one-at-a-time",
 				label: "one-at-a-time",
-				description: "Process queued messages one by one (recommended)",
+				description: t("Process queued messages one by one (recommended)"),
 			},
-			{ value: "all", label: "all", description: "Process all queued messages at once" },
+			{ value: "all", label: "all", description: t("Process all queued messages at once") },
 		];
 
 		// Add top border

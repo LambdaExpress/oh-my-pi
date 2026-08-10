@@ -10,6 +10,7 @@ import { CustomToolAdapter } from "../extensibility/custom-tools/wrapper";
 import type { ExtensionRunner } from "../extensibility/extensions";
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
+import { t } from "../i18n";
 import { type LocalProtocolOptions, XD_URL_PREFIX } from "../internal-urls";
 import { deduplicateMCPToolsByName } from "../mcp/tool-bridge";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
@@ -479,11 +480,13 @@ export class SessionTools {
 		const computerActive = this.getEnabledToolNames().includes("computer");
 		if (computerExpected && !computerActive) {
 			const model = this.#host.model();
-			const modelName = model ? formatModelString(model) : "the current model";
+			const modelName = model ? formatModelString(model) : t("the current model");
 			logger.warn("Enabled computer tool missing after model change", { model: modelName });
 			this.#host.emitNotice(
 				"warning",
-				`Computer use remains enabled, but the computer tool is unavailable to ${modelName}.`,
+				t("Computer use remains enabled, but the computer tool is unavailable to {model}.", {
+					model: modelName,
+				}),
 				"computer",
 			);
 		} else if (computerExpected) {
@@ -1113,12 +1116,14 @@ export class SessionTools {
 		const after = this.getEnabledToolNames().includes("inspect_image");
 		if (!reconciled || before === after) return;
 		const model = this.#host.model();
-		const modelName = model ? formatModelString(model) : "the current model";
+		const modelName = model ? formatModelString(model) : t("the current model");
 		this.#host.emitNotice(
 			"info",
 			after
-				? `inspect_image is now available: ${modelName} has no native image input.`
-				: `inspect_image is now hidden: ${modelName} supports image input natively. Override with /vision on.`,
+				? t("inspect_image is now available: {model} has no native image input.", { model: modelName })
+				: t("inspect_image is now hidden: {model} supports image input natively. Override with /vision on.", {
+						model: modelName,
+					}),
 			"vision",
 		);
 	}

@@ -6,6 +6,7 @@ import { type RepeatedToolCallDetection, ToolCallLoopGuard } from "@oh-my-pi/pi-
 import { isEnoent, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../config/settings";
 import { normalizeDiff, normalizeToLF, ParseError, previewPatch, stripBom } from "../edit";
+import { t } from "../i18n";
 import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
 import geminiToolReminderTemplate from "../prompts/system/gemini-tool-call-reminder.md" with { type: "text" };
 import toolCallLoopRedirectTemplate from "../prompts/system/tool-call-loop-redirect.md" with { type: "text" };
@@ -375,7 +376,9 @@ export class LoopGuards {
 		});
 		this.#host.emitNotice(
 			"warning",
-			`Interrupted ${headerCount} planning headers with no tool call; reminded the model to issue one.`,
+			t("Interrupted {count} planning headers with no tool call; reminded the model to issue one.", {
+				count: headerCount,
+			}),
 			"loop-guard",
 		);
 		this.#host.agent.abort(GEMINI_HEADER_INTERRUPT_REASON);

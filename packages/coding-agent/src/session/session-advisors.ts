@@ -72,6 +72,7 @@ import { serviceTierForAllFamilies, serviceTierSettingToTier } from "../config/s
 import type { Settings } from "../config/settings";
 import { CursorExecHandlers, type CursorMcpResourceAdapter } from "../cursor";
 import { bridgeToolMap } from "../cursor-bridge-tools";
+import { t } from "../i18n";
 import { estimateToolSchemaTokens } from "../modes/utils/context-usage";
 import type { PlanModeState } from "../plan-mode/state";
 import advisorSystemPrompt from "../prompts/advisor/system.md" with { type: "text" };
@@ -582,7 +583,10 @@ export class SessionAdvisors {
 					if (emitWarnings) {
 						this.#host.emitNotice(
 							"warning",
-							`Advisor "${config.name}": no model matched "${config.model}"`,
+							t('Advisor "{name}": no model matched "{model}"', {
+								name: config.name,
+								model: config.model,
+							}),
 							"advisor",
 						);
 					}
@@ -898,7 +902,11 @@ export class SessionAdvisors {
 					const message = error instanceof Error ? error.message : String(error);
 					this.#host.emitNotice(
 						"warning",
-						`Advisor${slug ? ` "${advisorName}"` : ""} unavailable for ${formatModelString(advisorAgent.state.model)}: ${message}`,
+						t("Advisor{name} unavailable for {model}: {message}", {
+							name: slug ? ` "${advisorName}"` : "",
+							model: formatModelString(advisorAgent.state.model),
+							message,
+						}),
 						"advisor",
 					);
 				},
@@ -906,7 +914,7 @@ export class SessionAdvisors {
 					this.#advisorStatuses.set(slug, { name: advisorName, status: "quota_exhausted" });
 					this.#host.emitNotice(
 						"warning",
-						`Advisor "${advisorName}" quota exhausted — pausing until reset.`,
+						t('Advisor "{name}" quota exhausted — pausing until reset.', { name: advisorName }),
 						"advisor",
 					);
 				},
@@ -1785,39 +1793,63 @@ export class SessionAdvisors {
 		const stats = this.getAdvisorStats();
 		if (!stats.active && stats.advisors.length === 0) {
 			return stats.configured
-				? "Advisor setting is enabled, but no model is assigned to the 'advisor' role."
-				: "Advisor is disabled.";
+				? t("Advisor setting is enabled, but no model is assigned to the 'advisor' role.")
+				: t("Advisor is disabled.");
 		}
 		if (stats.advisors.length <= 1) {
 			const s = stats.advisors[0];
 			if (s && s.status === "no_model") {
 				return stats.configured
-					? "Advisor setting is enabled, but no model is assigned to the 'advisor' role."
-					: "Advisor is disabled.";
+					? t("Advisor setting is enabled, but no model is assigned to the 'advisor' role.")
+					: t("Advisor is disabled.");
 			}
 			const contextLine =
 				s.contextWindow > 0
-					? `Context: ${s.contextTokens.toLocaleString()} / ${s.contextWindow.toLocaleString()} tokens (${Math.round((s.contextTokens / s.contextWindow) * 100)}%)`
-					: `Context: ${s.contextTokens.toLocaleString()} tokens`;
-			const spendParts = [`${s.tokens.input.toLocaleString()} input`, `${s.tokens.output.toLocaleString()} output`];
-			if (s.tokens.cacheRead > 0) spendParts.push(`${s.tokens.cacheRead.toLocaleString()} cache read`);
-			if (s.tokens.cacheWrite > 0) spendParts.push(`${s.tokens.cacheWrite.toLocaleString()} cache write`);
-			const spendLine = `Spend: ${spendParts.join(", ")}, $${stats.cost.toFixed(4)}`;
-			if (!s.model || s.status !== "running") return `Advisor "${s.name}" is ${s.status.replace("_", " ")}.`;
-			return `Advisor is enabled (${s.model.provider}/${s.model.id}). ${contextLine}. ${spendLine}.`;
+					? t("Context: {used} / {total} tokens ({percent}%)", {
+							used: s.contextTokens.toLocaleString(),
+							total: s.contextWindow.toLocaleString(),
+							percent: Math.round((s.contextTokens / s.contextWindow) * 100),
+						})
+					: t("Context: {used} tokens", { used: s.contextTokens.toLocaleString() });
+			const spendParts = [
+				t("{count} input", { count: s.tokens.input.toLocaleString() }),
+				t("{count} output", { count: s.tokens.output.toLocaleString() }),
+			];
+			if (s.tokens.cacheRead > 0) spendParts.push(t("{count} cache read", { count: s.tokens.cacheRead.toLocaleString() }));
+			if (s.tokens.cacheWrite > 0)
+				spendParts.push(t("{count} cache write", { count: s.tokens.cacheWrite.toLocaleString() }));
+			const spendLine = t("Spend: {parts}, {cost}", {
+				parts: spendParts.join(", "),
+				cost: `$${stats.cost.toFixed(4)}`,
+			});
+			if (!s.model || s.status !== "running")
+				return t('Advisor "{name}" is {status}.', { name: s.name, status: s.status.replace("_", " ") });
+			return t("Advisor is enabled ({model}). {context}. {spend}.", {
+				model: `${s.model.provider}/${s.model.id}`,
+				context: contextLine,
+				spend: spendLine,
+			});
 		}
-		const lines = [`Advisors enabled (${stats.advisors.length}):`];
+		const lines = [t("Advisors enabled ({count}):", { count: stats.advisors.length })];
 		for (const s of stats.advisors) {
 			const ctx =
 				s.contextWindow > 0
 					? `${s.contextTokens.toLocaleString()} / ${s.contextWindow.toLocaleString()} (${Math.round((s.contextTokens / s.contextWindow) * 100)}%)`
 					: `${s.contextTokens.toLocaleString()}`;
 			lines.push(
-				`  • ${s.name}${s.model && s.status === "running" ? ` (${s.model.provider}/${s.model.id})` : ` [${s.status}]`} — context ${ctx} tokens, $${s.cost.toFixed(4)}`,
+				`  • ${t("{name} — context {ctx} tokens, {cost}", {
+					name: `${s.name}${s.model && s.status === "running" ? ` (${s.model.provider}/${s.model.id})` : ` [${s.status}]`}`,
+					ctx,
+					cost: `$${s.cost.toFixed(4)}`,
+				})}`,
 			);
 		}
 		lines.push(
-			`Totals: ${stats.tokens.input.toLocaleString()} input, ${stats.tokens.output.toLocaleString()} output, $${stats.cost.toFixed(4)}.`,
+			t("Totals: {input} input, {output} output, {cost}.", {
+				input: stats.tokens.input.toLocaleString(),
+				output: stats.tokens.output.toLocaleString(),
+				cost: `$${stats.cost.toFixed(4)}`,
+			}),
 		);
 		return lines.join("\n");
 	}

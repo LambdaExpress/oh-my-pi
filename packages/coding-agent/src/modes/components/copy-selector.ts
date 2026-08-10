@@ -18,6 +18,7 @@ import {
 	matchesSelectPageUp,
 	matchesSelectUp,
 } from "../utils/keybinding-matchers";
+import { t } from "../../i18n";
 import { keyHint, rawKeyHint } from "./keybinding-hints";
 import { bottomBorder, divider, fit, row, topBorder } from "./overlay-box";
 
@@ -209,7 +210,7 @@ export class CopySelectorComponent implements Component {
 	#renderPreview(width: number, target: CopyTarget | undefined, rows: number): string[] {
 		const out: string[] = [];
 		const hint = target?.hint;
-		out.push(row(theme.fg("dim", `Preview${hint ? ` · ${hint}` : ""}`), width));
+		out.push(row(theme.fg("dim", hint ? `${t("Preview")} · ${hint}` : t("Preview")), width));
 
 		const contentRows = rows - 1;
 		if (!target || contentRows <= 0) {
@@ -239,7 +240,9 @@ export class CopySelectorComponent implements Component {
 			if (k < visibleCount) {
 				out.push(row(isCode ? wrapped[k]! : theme.fg("muted", wrapped[k]!), width));
 			} else if (k === visibleCount && hasMore) {
-				out.push(row(theme.fg("dim", `… ${wrapped.length - visibleCount} more lines`), width));
+				out.push(
+					row(theme.fg("dim", t("… {count} more lines", { count: wrapped.length - visibleCount })), width),
+				);
 			} else {
 				out.push(row("", width));
 			}
@@ -260,13 +263,13 @@ export class CopySelectorComponent implements Component {
 		const previewRows = Math.max(1, available - treeRows);
 
 		const footer = [
-			rawKeyHint("↑↓", "move"),
-			keyHint("tui.select.confirm", "copy"),
-			keyHint("tui.select.cancel", "quit"),
+			rawKeyHint("↑↓", t("move")),
+			keyHint("tui.select.confirm", t("copy")),
+			keyHint("tui.select.cancel", t("quit")),
 		].join(theme.fg("dim", " · "));
 
 		const lines: string[] = [];
-		lines.push(topBorder(width, "Copy to clipboard"));
+		lines.push(topBorder(width, t("Copy to clipboard")));
 		this.#treeLineOffset = lines.length;
 		lines.push(...this.#renderTree(width, flat, cursorIdx, treeRows));
 		lines.push(divider(width));

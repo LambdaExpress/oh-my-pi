@@ -23,6 +23,7 @@ import {
 } from "../config/model-resolver";
 import { getKnownRoleIds } from "../config/model-roles";
 import type { Settings } from "../config/settings";
+import { t } from "../i18n";
 import { containsUltrathink } from "../modes/ultrathink";
 import {
 	AUTO_THINKING,
@@ -726,7 +727,7 @@ export class ModelControls {
 		if (!family) {
 			this.#host.emitNotice(
 				"info",
-				"The current model has no service-tier control for /fast to toggle.",
+				t("The current model has no service-tier control for /fast to toggle."),
 				"priority",
 			);
 			return false;

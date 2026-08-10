@@ -11,6 +11,7 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
+import { t } from "../i18n";
 import { ToolExecutionComponent } from "../modes/components/tool-execution";
 import { initTheme, theme } from "../modes/theme/theme";
 import { toolRenderers } from "../tools/renderers";
@@ -23,10 +24,10 @@ export type GalleryState = (typeof GALLERY_STATES)[number];
 
 /** User-facing labels printed above each rendered lifecycle state. */
 export const GALLERY_STATE_LABELS: Record<GalleryState, string> = {
-	streaming: "streaming args",
-	progress: "in progress",
-	success: "done",
-	error: "failed",
+	streaming: t("streaming args"),
+	progress: t("in progress"),
+	success: t("done"),
+	error: t("failed"),
 };
 
 const GALLERY_STATE_ALIASES: Record<string, GalleryState> = {
@@ -50,7 +51,12 @@ export function parseGalleryStates(states: readonly string[] | undefined): Galle
 	for (const raw of states) {
 		const state = GALLERY_STATE_ALIASES[raw.trim().toLowerCase()];
 		if (!state) {
-			throw new Error(`Invalid --state '${raw}'. Valid values: ${GALLERY_STATE_TOKENS.join(", ")}`);
+			throw new Error(
+				t("Invalid --state '{raw}'. Valid values: {values}", {
+					raw,
+					values: GALLERY_STATE_TOKENS.join(", "),
+				}),
+			);
 		}
 		if (!parsed.includes(state)) parsed.push(state);
 	}
@@ -211,7 +217,7 @@ async function renderGallerySections(
 			try {
 				for (const line of await renderGalleryState(name, fixture, state, width, expanded)) lines.push(line);
 			} catch (err) {
-				lines.push(theme.fg("error", `  render failed: ${String(err)}`));
+				lines.push(theme.fg("error", `  ${t("render failed: {error}", { error: String(err) })}`));
 			}
 		}
 		sections.push({ heading, lines });
@@ -248,7 +254,9 @@ export async function runGalleryCommand(args: GalleryCommandArgs): Promise<void>
 	const allNames = Array.from(new Set([...Object.keys(toolRenderers), ...Object.keys(galleryFixtures)])).sort();
 	const names = args.tool ? allNames.filter(name => name === args.tool) : allNames;
 	if (args.tool && names.length === 0) {
-		process.stdout.write(`Unknown tool '${args.tool}'. Known tools: ${allNames.join(", ")}\n`);
+		process.stdout.write(
+			`${t("Unknown tool '{tool}'. Known tools: {known}", { tool: args.tool, known: allNames.join(", ") })}\n`,
+		);
 		return;
 	}
 

@@ -10,6 +10,7 @@ import btwUserPrompt from "../../prompts/system/btw-user.md" with { type: "text"
 import { type CustomMessage, SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails } from "../../session/messages";
 import { copyToClipboard } from "../../utils/clipboard";
 import { BtwPanelComponent } from "../components/btw-panel";
+import { t } from "../../i18n";
 import type { InteractiveModeContext } from "../types";
 
 interface BtwRequest {
@@ -83,19 +84,19 @@ export class BtwController {
 	}
 
 	#branchUnavailableReason(): string | undefined {
-		if (this.#branchInFlight) return "a branch is already in progress";
-		if (this.#activeRequest?.component.isBranchable() !== true) return "the answer is not ready";
+		if (this.#branchInFlight) return t("a branch is already in progress");
+		if (this.#activeRequest?.component.isBranchable() !== true) return t("the answer is not ready");
 		if (!this.#lastQuestion || !this.#lastReplyText || !this.#lastAssistantMessage) {
-			return "the answer is unavailable";
+			return t("the answer is unavailable");
 		}
-		if (!this.#lastLeafId) return "the session has no branch point";
+		if (!this.#lastLeafId) return t("the session has no branch point");
 		if (
 			this.#lastSessionId !== this.ctx.sessionManager.getSessionId() ||
 			this.#lastLeafId !== this.ctx.sessionManager.getLeafId()
 		) {
-			return "the session changed since /btw started";
+			return t("the session changed since /btw started");
 		}
-		if (this.ctx.session.isStreaming) return "a turn is still running";
+		if (this.ctx.session.isStreaming) return t("a turn is still running");
 		return undefined;
 	}
 
@@ -110,7 +111,7 @@ export class BtwController {
 		this.#copyInFlight = true;
 		try {
 			await copyToClipboard(this.#lastCopyText);
-			this.ctx.showStatus("Copied /btw answer to clipboard");
+			this.ctx.showStatus(t("Copied /btw answer to clipboard"));
 			return true;
 		} catch (error) {
 			this.ctx.showError(error instanceof Error ? error.message : String(error));
@@ -123,7 +124,7 @@ export class BtwController {
 	async handleBranch(): Promise<boolean> {
 		const unavailableReason = this.#branchUnavailableReason();
 		if (unavailableReason) {
-			this.ctx.showStatus(`/btw branch unavailable: ${unavailableReason}`, { dim: true });
+			this.ctx.showStatus(t("/btw branch unavailable: {reason}", { reason: unavailableReason }), { dim: true });
 			return false;
 		}
 		const request = this.#activeRequest;
@@ -152,7 +153,7 @@ export class BtwController {
 
 	handleEscape(): boolean {
 		if (this.#branchInFlight) {
-			this.ctx.showStatus("/btw branch is in progress", { dim: true });
+			this.ctx.showStatus(t("/btw branch is in progress"), { dim: true });
 			return true;
 		}
 		if (!this.#activeRequest) return false;
@@ -167,7 +168,7 @@ export class BtwController {
 	async start(question: string): Promise<void> {
 		const trimmedQuestion = question.trim();
 		if (!trimmedQuestion) {
-			this.ctx.showStatus("Usage: /btw <question>");
+			this.ctx.showStatus(t("Usage: /btw <question>"));
 			return;
 		}
 
@@ -177,11 +178,11 @@ export class BtwController {
 		if (parsedSkill) {
 			const skill = this.ctx.skillCommands.get(getSkillSlashCommandName({ name: parsedSkill.name }));
 			if (!skill) {
-				this.ctx.showError(`Unknown skill for /btw: ${parsedSkill.name}`);
+				this.ctx.showError(t("Unknown skill for /btw: {skill}", { skill: parsedSkill.name }));
 				return;
 			}
 			if (!parsedSkill.args) {
-				this.ctx.showStatus(`Usage: /btw /skill:${parsedSkill.name} <question>`);
+				this.ctx.showStatus(t("Usage: /btw /skill:{skill} <question>", { skill: parsedSkill.name }));
 				return;
 			}
 			const body = await loadSkillBody(skill);
@@ -205,7 +206,7 @@ export class BtwController {
 
 		const model = this.ctx.session.model;
 		if (!model) {
-			this.ctx.showError("No active model available for /btw.");
+			this.ctx.showError(t("No active model available for /btw."));
 			return;
 		}
 

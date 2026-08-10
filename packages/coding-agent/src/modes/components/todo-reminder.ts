@@ -1,4 +1,5 @@
 import { Box, Container, Spacer, Text } from "@oh-my-pi/pi-tui";
+import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
 import type { TodoItem } from "../../tools/todo";
 
@@ -31,8 +32,13 @@ export class TodoReminderComponent extends Container {
 		this.#box.clear();
 
 		const count = this.todos.length;
-		const label = count === 1 ? "todo" : "todos";
-		const header = `${theme.icon.warning} ${count} incomplete ${label} - reminder ${this.attempt}/${this.maxAttempts}`;
+		const label = count === 1 ? t("todo") : t("todos");
+		const header = `${theme.icon.warning} ${t("{count} incomplete {label} - reminder {attempt}/{maxAttempts}", {
+			count,
+			label,
+			attempt: this.attempt,
+			maxAttempts: this.maxAttempts,
+		})}`;
 
 		this.#box.addChild(new Text(header, 0, 0));
 		this.#box.addChild(new Spacer(1));

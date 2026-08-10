@@ -13,6 +13,7 @@ import {
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import type { AssistantThinkingRenderer } from "../../extensibility/extensions/types";
+import { t } from "../../i18n";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import { expandKeyHint, getPreviewLines, resolveImageOptions, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { convertImageToPng } from "../../utils/image-loading";
@@ -425,7 +426,7 @@ export class AssistantMessageComponent extends Container {
 	#thinkingDotsLabel(): string {
 		const glyph = THINKING_DOTS_FRAMES[this.#thinkingDotsFrame % THINKING_DOTS_FRAMES.length] ?? "…";
 		const coloredGlyph = theme.fg("thinkingText", glyph);
-		const thinkingLabel = theme.fg("muted", " Thinking");
+		const thinkingLabel = theme.fg("muted", ` ${t("Thinking")}`);
 		const rate = Math.min(SPEED_MAX, sharedSpeedTracker.getSpeed());
 		// The numeric badge ("<total> · <rate> toks/s") only renders while this block
 		// is genuinely streaming provider tokens. A block that has observed no token
@@ -612,8 +613,8 @@ export class AssistantMessageComponent extends Container {
 	 */
 	#appendErrorBlock(message: string): void {
 		if (this.#errorExpanded) {
-			const [first = "Unknown error", ...rest] = replaceTabs(message.replace(/\s+$/, "")).split("\n");
-			this.#contentContainer.addChild(new Text(theme.fg("error", `Error: ${first}`), 1, 0));
+			const [first = t("Unknown error"), ...rest] = replaceTabs(message.replace(/\s+$/, "")).split("\n");
+			this.#contentContainer.addChild(new Text(theme.fg("error", `${t("Error:")} ${first}`), 1, 0));
 			for (const line of rest) {
 				this.#contentContainer.addChild(new Text(theme.fg("error", `  ${line}`), 1, 0));
 			}
@@ -621,9 +622,9 @@ export class AssistantMessageComponent extends Container {
 		}
 		const total = message.split("\n").filter(l => l.trim()).length;
 		const lines = getPreviewLines(message, MAX_TRANSCRIPT_ERROR_LINES, TRUNCATE_LENGTHS.LINE);
-		if (lines.length === 0) lines.push("Unknown error");
+		if (lines.length === 0) lines.push(t("Unknown error"));
 		// The caller owns the separating Spacer; adding one here doubled the gap.
-		this.#contentContainer.addChild(new Text(theme.fg("error", `Error: ${lines[0]}`), 1, 0));
+		this.#contentContainer.addChild(new Text(theme.fg("error", `${t("Error:")} ${lines[0]}`), 1, 0));
 		for (const line of lines.slice(1)) {
 			this.#contentContainer.addChild(new Text(theme.fg("error", `  ${line}`), 1, 0));
 		}
@@ -631,7 +632,14 @@ export class AssistantMessageComponent extends Container {
 			const hidden = total - lines.length;
 			this.#contentContainer.addChild(
 				new Text(
-					theme.fg("dim", `  … +${hidden} more line${hidden === 1 ? "" : "s"} (${expandKeyHint()} to expand)`),
+					theme.fg(
+						"dim",
+						`  ${t("… +{count} more line{s} ({key} to expand)", {
+							count: hidden,
+							s: hidden === 1 ? "" : "s",
+							key: expandKeyHint(),
+						})}`,
+					),
 					1,
 					0,
 				),
@@ -723,7 +731,9 @@ export class AssistantMessageComponent extends Container {
 				);
 				continue;
 			}
-			this.#contentContainer.addChild(new Text(theme.fg("toolOutput", `[Image: ${image.mimeType}]`), 1, 0));
+			this.#contentContainer.addChild(
+				new Text(theme.fg("toolOutput", t("[Image: {mime}]", { mime: image.mimeType })), 1, 0),
+			);
 		}
 	}
 

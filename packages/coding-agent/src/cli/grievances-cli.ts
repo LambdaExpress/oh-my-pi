@@ -3,6 +3,7 @@
  */
 import chalk from "chalk";
 import { Settings } from "../config/settings";
+import { t } from "../i18n";
 import { flushGrievances, openAutoQaDb } from "../tools/report-tool-issue";
 
 interface GrievanceRow {
@@ -41,7 +42,9 @@ export async function listGrievances(options: ListGrievancesOptions): Promise<vo
 			console.log("[]");
 		} else {
 			console.log(
-				chalk.dim("No grievances database found. Auto-QA has not recorded any reports yet (or was disabled)."),
+				chalk.dim(
+					t("No grievances database found. Auto-QA has not recorded any reports yet (or was disabled)."),
+				),
 			);
 		}
 		return;
@@ -65,7 +68,7 @@ export async function listGrievances(options: ListGrievancesOptions): Promise<vo
 		}
 
 		if (rows.length === 0) {
-			console.log(chalk.dim("No grievances recorded yet."));
+			console.log(chalk.dim(t("No grievances recorded yet.")));
 			return;
 		}
 
@@ -77,7 +80,8 @@ export async function listGrievances(options: ListGrievancesOptions): Promise<vo
 			console.log();
 		}
 
-		console.log(chalk.dim(`Showing ${rows.length} most recent${options.tool ? ` for ${options.tool}` : ""}`));
+		const scope = options.tool ? t(" for {tool}", { tool: options.tool }) : "";
+		console.log(chalk.dim(t("Showing {count} most recent{scope}", { count: rows.length, scope })));
 	} finally {
 		db.close();
 	}
@@ -94,12 +98,12 @@ export async function listGrievances(options: ListGrievancesOptions): Promise<vo
 export async function cleanGrievances(options: CleanGrievancesOptions): Promise<void> {
 	const selectors = [options.id !== undefined, !!options.tool, !!options.all].filter(Boolean).length;
 	if (selectors === 0) {
-		console.error(chalk.red("Specify exactly one of --id, --tool, or --all."));
+		console.error(chalk.red(t("Specify exactly one of --id, --tool, or --all.")));
 		process.exitCode = 1;
 		return;
 	}
 	if (selectors > 1) {
-		console.error(chalk.red("--id, --tool, and --all are mutually exclusive."));
+		console.error(chalk.red(t("--id, --tool, and --all are mutually exclusive.")));
 		process.exitCode = 1;
 		return;
 	}
@@ -110,7 +114,9 @@ export async function cleanGrievances(options: CleanGrievancesOptions): Promise<
 			console.log(JSON.stringify({ deleted: 0 }));
 		} else {
 			console.log(
-				chalk.dim("No grievances database found. Auto-QA has not recorded any reports yet (or was disabled)."),
+				chalk.dim(
+					t("No grievances database found. Auto-QA has not recorded any reports yet (or was disabled)."),
+				),
 			);
 		}
 		return;
@@ -142,13 +148,14 @@ export async function cleanGrievances(options: CleanGrievancesOptions): Promise<
 		}
 
 		if (deleted === 0) {
-			console.log(chalk.dim("No matching grievances to delete."));
+			console.log(chalk.dim(t("No matching grievances to delete.")));
 			return;
 		}
 
 		const scope =
-			options.id !== undefined ? `#${options.id}` : options.tool ? `for ${options.tool}` : "(all entries)";
-		console.log(chalk.green(`Deleted ${deleted} grievance${deleted === 1 ? "" : "s"} ${scope}.`));
+			options.id !== undefined ? `#${options.id}` : options.tool ? t("for {tool}", { tool: options.tool }) : t("(all entries)");
+		const word = deleted === 1 ? t("grievance") : t("grievances");
+		console.log(chalk.green(t("Deleted {count} {word} {scope}.", { count: deleted, word, scope })));
 	} finally {
 		db.close();
 	}
@@ -181,7 +188,7 @@ function makeProgressBar(total: number, width = 30): ProgressBar {
 		const pct = `${Math.floor(ratio * 100)
 			.toString()
 			.padStart(3, " ")}%`;
-		process.stdout.write(`\r${chalk.cyan("Pushing")} [${bar}] ${pct} ${done}/${total}`);
+		process.stdout.write(`\r${chalk.cyan(t("Pushing"))} [${bar}] ${pct} ${done}/${total}`);
 	};
 	render(0);
 	return {
@@ -203,7 +210,7 @@ export async function pushGrievances(options: PushGrievancesOptions): Promise<vo
 		if (options.json) {
 			console.log(JSON.stringify({ pushed: 0, ok: false, skipped: true, reason: "no_db" }));
 		} else {
-			console.log(chalk.dim("No grievances database found — nothing to push."));
+			console.log(chalk.dim(t("No grievances database found — nothing to push.")));
 		}
 		return;
 	}
@@ -230,23 +237,29 @@ export async function pushGrievances(options: PushGrievancesOptions): Promise<vo
 		if (result.skipped) {
 			console.log(
 				chalk.yellow(
-					"Push skipped — no endpoint configured. Set `dev.autoqaPush.endpoint` or `PI_AUTO_QA_PUSH_URL`.",
+					t("Push skipped — no endpoint configured. Set `dev.autoqaPush.endpoint` or `PI_AUTO_QA_PUSH_URL`."),
 				),
 			);
 			return;
 		}
 		if (total === 0) {
-			console.log(chalk.dim("Nothing to push — all grievances are already shipped."));
+			console.log(chalk.dim(t("Nothing to push — all grievances are already shipped.")));
 			return;
 		}
 		if (result.ok) {
-			console.log(chalk.green(`Pushed ${result.pushed}/${total} grievance${result.pushed === 1 ? "" : "s"}.`));
+			const word = result.pushed === 1 ? t("grievance") : t("grievances");
+			console.log(chalk.green(t("Pushed {pushed}/{total} {word}.", { pushed: result.pushed, total, word })));
 			return;
 		}
 		const remaining = total - result.pushed;
 		console.log(
 			chalk.red(
-				`Push failed after ${result.pushed}/${total}; ${remaining} grievance${remaining === 1 ? "" : "s"} remain unpushed.`,
+				t("Push failed after {pushed}/{total}; {count} {word} remain unpushed.", {
+					pushed: result.pushed,
+					total,
+					count: remaining,
+					word: remaining === 1 ? t("grievance") : t("grievances"),
+				}),
 			),
 		);
 		process.exitCode = 1;

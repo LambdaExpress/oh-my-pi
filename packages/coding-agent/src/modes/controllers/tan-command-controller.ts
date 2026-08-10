@@ -11,6 +11,7 @@ import { BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE } from "../../session/messages";
 import { SessionManager } from "../../session/session-manager";
 import { createMCPProxyTools, createSubagentSettings } from "../../task/executor";
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
+import { t } from "../../i18n";
 import type { InteractiveModeContext } from "../types";
 
 const TAN_LABEL_PREVIEW_LENGTH = 80;
@@ -66,7 +67,7 @@ export class TanCommandController {
 	async start(work: string): Promise<void> {
 		const trimmedWork = work.trim();
 		if (!trimmedWork) {
-			this.ctx.showStatus("Usage: /tan <work>");
+			this.ctx.showStatus(t("Usage: /tan <work>"));
 			return;
 		}
 
@@ -74,19 +75,19 @@ export class TanCommandController {
 
 		const model = session.model;
 		if (!model) {
-			this.ctx.showError("No active model available for /tan.");
+			this.ctx.showError(t("No active model available for /tan."));
 			return;
 		}
 
 		const manager = session.asyncJobManager;
 		if (!manager) {
-			this.ctx.showError("Background jobs are disabled; enable async jobs to use /tan.");
+			this.ctx.showError(t("Background jobs are disabled; enable async jobs to use /tan."));
 			return;
 		}
 
 		const parentFile = this.ctx.sessionManager.getSessionFile();
 		if (!parentFile) {
-			this.ctx.showError("/tan requires a persisted session.");
+			this.ctx.showError(t("/tan requires a persisted session."));
 			return;
 		}
 
@@ -235,7 +236,7 @@ export class TanCommandController {
 							injectContextSwitch();
 							await clone.prompt(trimmedWork, { attribution: "user" });
 							await clone.waitForIdle();
-							return extractAssistantText(clone.getLastAssistantMessage()) || "(no output)";
+							return extractAssistantText(clone.getLastAssistantMessage()) || t("(no output)");
 						} finally {
 							unsubscribeCompaction();
 							signal.removeEventListener("abort", abortClone);
@@ -283,6 +284,6 @@ export class TanCommandController {
 			{ triggerTurn: false, deliverAs: "nextTurn" },
 		);
 		if (!wasStreaming) this.ctx.rebuildChatFromMessages();
-		this.ctx.showStatus(`Dispatched background tan ${jobId}`);
+		this.ctx.showStatus(t("Dispatched background tan {jobId}", { jobId }));
 	}
 }

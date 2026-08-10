@@ -5,6 +5,8 @@
  * an import cycle through the slash-command registry).
  */
 
+import { t } from "../i18n";
+
 /** Mode selector for `AgentSession.shake`. */
 export type ShakeMode = "elide" | "images";
 
@@ -28,16 +30,29 @@ export function formatShakeSummary(result: ShakeResult): string {
 	if (result.mode === "images") {
 		const n = result.imagesDropped ?? 0;
 		return n === 0
-			? "No images found in this session."
-			: `Dropped ${n} image${n === 1 ? "" : "s"} from this session.`;
+			? t("No images found in this session.")
+			: n === 1
+				? t("Dropped {count} image from this session.", { count: n })
+				: t("Dropped {count} images from this session.", { count: n });
 	}
 	const parts: string[] = [];
 	if (result.toolResultsDropped > 0) {
-		parts.push(`${result.toolResultsDropped} tool result${result.toolResultsDropped === 1 ? "" : "s"}`);
+		parts.push(
+			result.toolResultsDropped === 1
+				? t("{count} tool result", { count: result.toolResultsDropped })
+				: t("{count} tool results", { count: result.toolResultsDropped }),
+		);
 	}
 	if (result.blocksDropped > 0) {
-		parts.push(`${result.blocksDropped} block${result.blocksDropped === 1 ? "" : "s"}`);
+		parts.push(
+			result.blocksDropped === 1
+				? t("{count} block", { count: result.blocksDropped })
+				: t("{count} blocks", { count: result.blocksDropped }),
+		);
 	}
-	if (parts.length === 0) return "Nothing to shake.";
-	return `Shook ${parts.join(" + ")} (~${result.tokensFreed} tokens freed).`;
+	if (parts.length === 0) return t("Nothing to shake.");
+	return t("Shook {parts} (~{tokens} tokens freed).", {
+		parts: parts.join(" + "),
+		tokens: result.tokensFreed,
+	});
 }

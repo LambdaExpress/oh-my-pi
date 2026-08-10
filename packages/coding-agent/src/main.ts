@@ -43,6 +43,7 @@ import {
 import { ModelsConfigFile } from "./config/models-config";
 import { serviceTierSettingToTier } from "./config/service-tier";
 import { getDefault, type SettingPath, Settings, type SettingValue, settings } from "./config/settings";
+import { setLocale, t } from "./i18n";
 import { initializeWithSettings } from "./discovery";
 import {
 	clearPluginRootsAndCaches,
@@ -196,7 +197,9 @@ export async function readPipedInput(): Promise<string | undefined> {
 	// stdin is a pipe: a producer that never writes nor closes would block
 	// startup forever with zero output. Say what we're blocked on after 1s.
 	const notice = setTimeout(() => {
-		process.stderr.write(`${chalk.dim("Reading prompt from piped stdin (waiting for EOF; ctrl+c to abort)…")}\n`);
+		process.stderr.write(
+			`${chalk.dim(t("Reading prompt from piped stdin (waiting for EOF; ctrl+c to abort)…"))}\n`,
+		);
 	}, 1000);
 	notice.unref?.();
 	try {
@@ -228,10 +231,14 @@ function armStartupWatchdog(): void {
 	if (startupWatchdogTimer) return;
 	startupWatchdogTimer = setInterval(() => {
 		const elapsed = Math.round((Date.now() - startupWatchdogStartedAt) / 1000);
-		const phase = logger.openSpanPath().join(" > ") || "module load / pre-phase work";
+		const phase = logger.openSpanPath().join(" > ") || t("module load / pre-phase work");
 		process.stderr.write(
-			`${chalk.yellow(`Still starting after ${elapsed}s`)}${chalk.dim(` — phase: ${phase}`)}\n` +
-				`${chalk.dim(`  logs: ${getLogPath()} · re-run with PI_DEBUG_STARTUP=1 for streaming phase markers`)}\n`,
+			`${chalk.yellow(t("Still starting after {elapsed}s", { elapsed }))}${chalk.dim(t(" — phase: {phase}", { phase }))}\n` +
+				`${chalk.dim(
+					t("  logs: {path} · re-run with PI_DEBUG_STARTUP=1 for streaming phase markers", {
+						path: getLogPath(),
+					}),
+				)}\n`,
 		);
 	}, STARTUP_WATCHDOG_INTERVAL_MS);
 	startupWatchdogTimer.unref?.();
@@ -285,7 +292,7 @@ export function buildModelScopeNotification(
 			return `${scopedModel.model.id}${thinkingStr}`;
 		})
 		.join(", ");
-	return { kind: "info", message: `Model scope: ${modelList} (Ctrl+P to cycle)` };
+	return { kind: "info", message: t("Model scope: {models} (Ctrl+P to cycle)", { models: modelList }) };
 }
 export async function submitInteractiveInput(
 	mode: Pick<
@@ -343,7 +350,7 @@ export async function submitInteractiveInput(
 			await session.prompt(input.text, { images: input.images, streamingBehavior });
 		}
 	} catch (error: unknown) {
-		const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+		const errorMessage = error instanceof Error ? error.message : t("Unknown error occurred");
 		mode.showError(errorMessage);
 	} finally {
 		mode.finishPendingSubmission(input);
@@ -527,7 +534,7 @@ async function runInteractiveMode(
 			using _keepalive = new EventLoopKeepalive();
 			await session.prompt(initialMessage, { images: initialImages });
 		} catch (error: unknown) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+			const errorMessage = error instanceof Error ? error.message : t("Unknown error occurred");
 			mode.showError(errorMessage);
 		}
 	}
@@ -539,7 +546,7 @@ async function runInteractiveMode(
 			using _keepalive = new EventLoopKeepalive();
 			await session.prompt(message);
 		} catch (error: unknown) {
-			const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+			const errorMessage = error instanceof Error ? error.message : t("Unknown error occurred");
 			mode.showError(errorMessage);
 		}
 	}
@@ -558,7 +565,9 @@ async function promptMoveSession(session: SessionInfo): Promise<SessionPromptRes
 	if (!process.stdin.isTTY) {
 		return "unavailable";
 	}
-	const message = `Session's directory no longer exists (${session.cwd}). Move (re-root) it into the current directory? [Y/n] `;
+	const message = t("Session's directory no longer exists ({cwd}). Move (re-root) it into the current directory? [Y/n] ", {
+		cwd: session.cwd,
+	});
 	pauseStartupWatchdog();
 	const rl = createInterface({ input: process.stdin, output: process.stdout });
 	try {
@@ -590,15 +599,17 @@ function resolveForeignSessionSource(
 	parsed: Pick<Args, "continue" | "fork" | "fromClaude" | "fromCodex" | "noSession" | "resume">,
 ): ForeignSessionSource | undefined {
 	if (parsed.fromClaude && parsed.fromCodex) {
-		throw new SessionResolutionError("--from-claude and --from-codex cannot be used together");
+		throw new SessionResolutionError(t("--from-claude and --from-codex cannot be used together"));
 	}
 	const source = parsed.fromClaude ? "claude" : parsed.fromCodex ? "codex" : undefined;
 	if (!source) return undefined;
 	if (parsed.noSession) {
-		throw new SessionResolutionError(`--from-${source} requires session persistence`);
+		throw new SessionResolutionError(t("--from-{source} requires session persistence", { source }));
 	}
 	if (parsed.continue || parsed.resume || parsed.fork) {
-		throw new SessionResolutionError(`--from-${source} cannot be combined with --continue, --resume, or --fork`);
+		throw new SessionResolutionError(
+			t("--from-{source} cannot be combined with --continue, --resume, or --fork", { source }),
+		);
 	}
 	return source;
 }
@@ -627,7 +638,10 @@ async function moveMissingCwdSessionIfNeeded(
 	const movePromptResult = await askToMoveSession(session);
 	if (movePromptResult === "unavailable") {
 		throw new SessionResolutionError(
-			`Session "${sessionArg}" belongs to a directory that no longer exists (${sourceCwd}); run interactively to move it into the current project.`,
+			t('Session "{session}" belongs to a directory that no longer exists ({cwd}); run interactively to move it into the current project.', {
+				session: sessionArg,
+				cwd: sourceCwd,
+			}),
 		);
 	}
 	if (movePromptResult === "declined") {
@@ -738,7 +752,7 @@ export async function createSessionManager(
 ): Promise<SessionManager | undefined> {
 	if (parsed.fork) {
 		if (parsed.noSession) {
-			throw new SessionResolutionError("--fork requires session persistence");
+			throw new SessionResolutionError(t("--fork requires session persistence"));
 		}
 		const forkSource = parsed.fork;
 		if (forkSource.includes("/") || forkSource.includes("\\") || forkSource.endsWith(".jsonl")) {
@@ -747,8 +761,8 @@ export async function createSessionManager(
 		const match = await resolveResumableSession(forkSource, cwd, parsed.sessionDir);
 		if (!match) {
 			throw new SessionResolutionError(
-				`Session "${forkSource}" not found.`,
-				"Run `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one.",
+				t('Session "{session}" not found.', { session: forkSource }),
+				t("Run `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one."),
 			);
 		}
 		return await SessionManager.forkFrom(match.session.path, cwd, parsed.sessionDir);
@@ -767,8 +781,8 @@ export async function createSessionManager(
 		const match = await resolveResumableSession(sessionArg, cwd, parsed.sessionDir);
 		if (!match) {
 			throw new SessionResolutionError(
-				`Session "${sessionArg}" not found.`,
-				"Run `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one.",
+				t('Session "{session}" not found.', { session: sessionArg }),
+				t("Run `omp --resume` without an argument to pick from recent sessions, or `omp` to start a new one."),
 			);
 		}
 		if (match.scope === "local") {
@@ -947,7 +961,7 @@ export async function buildSessionOptions(
 			preferences: modelMatchPreferences,
 		});
 		if (resolved.warning) {
-			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
+			process.stderr.write(`${chalk.yellow(t("Warning: {warning}", { warning: resolved.warning }))}\n`);
 		}
 		const matchedAfterMissingRolePattern = (resolved.configuredPatternIndex ?? 0) > 0;
 		if (matchedAfterMissingRolePattern) {
@@ -1015,7 +1029,7 @@ export async function buildSessionOptions(
 	}
 
 	if (parsed.noPrewalk && (parsed.prewalk || parsed.prewalkInto !== undefined)) {
-		throw new Error("--no-prewalk cannot be combined with --prewalk or --prewalk-into");
+		throw new Error(t("--no-prewalk cannot be combined with --prewalk or --prewalk-into"));
 	}
 	const prewalkEnabled = parsed.noPrewalk
 		? false
@@ -1026,7 +1040,7 @@ export async function buildSessionOptions(
 		const rolePattern = expandRoleAlias(parsed.prewalkInto ?? DEFAULT_PREWALK_TARGET, activeSettings);
 		const resolved = resolveCliModel({ cliModel: rolePattern, modelRegistry, preferences: modelMatchPreferences });
 		if (resolved.warning) {
-			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
+			process.stderr.write(`${chalk.yellow(t("Warning: {warning}", { warning: resolved.warning }))}\n`);
 		}
 		// Prewalk is an optional optimization (off by default): switch to a fast
 		// model at the first edit. If its hand-off target can't be resolved or has
@@ -1035,11 +1049,19 @@ export async function buildSessionOptions(
 		if (resolved.error || !resolved.model) {
 			const target = parsed.prewalkInto ?? DEFAULT_PREWALK_TARGET;
 			process.stderr.write(
-				`${chalk.yellow(`Warning: prewalk disabled — ${resolved.error ?? `model "${target}" not found`}`)}\n`,
+				`${chalk.yellow(
+					t("Warning: prewalk disabled — {reason}", {
+						reason: resolved.error ?? t('model "{target}" not found', { target }),
+					}),
+				)}\n`,
 			);
 		} else if (!modelRegistry.hasConfiguredAuth(resolved.model)) {
 			process.stderr.write(
-				`${chalk.yellow(`Warning: prewalk disabled — no API key for ${resolved.model.provider}/${resolved.model.id}`)}\n`,
+				`${chalk.yellow(
+					t("Warning: prewalk disabled — no API key for {model}", {
+						model: `${resolved.model.provider}/${resolved.model.id}`,
+					}),
+				)}\n`,
 			);
 		} else {
 			options.prewalk = { target: resolved.model, thinkingLevel: resolved.thinkingLevel };
@@ -1047,19 +1069,21 @@ export async function buildSessionOptions(
 	}
 
 	if (parsed.planYoloInto !== undefined && !parsed.planYolo) {
-		throw new Error("--plan-yolo-into requires --plan-yolo");
+		throw new Error(t("--plan-yolo-into requires --plan-yolo"));
 	}
 	if (parsed.planYolo) {
 		const rolePattern = expandRoleAlias(parsed.planYoloInto ?? "@smol", activeSettings);
 		const resolved = resolveCliModel({ cliModel: rolePattern, modelRegistry, preferences: modelMatchPreferences });
 		if (resolved.warning) {
-			process.stderr.write(`${chalk.yellow(`Warning: ${resolved.warning}`)}\n`);
+			process.stderr.write(`${chalk.yellow(t("Warning: {warning}", { warning: resolved.warning }))}\n`);
 		}
 		if (resolved.error || !resolved.model) {
-			throw new Error(resolved.error ?? `Model "${parsed.planYoloInto ?? "@smol"}" not found`);
+			throw new Error(resolved.error ?? t('Model "{target}" not found', { target: parsed.planYoloInto ?? "@smol" }));
 		}
 		if (!modelRegistry.hasConfiguredAuth(resolved.model)) {
-			throw new Error(`No API key for ${resolved.model.provider}/${resolved.model.id}`);
+			throw new Error(
+				t("No API key for {model}", { model: `${resolved.model.provider}/${resolved.model.id}` }),
+			);
 		}
 		options.planYolo = { target: resolved.model, thinkingLevel: resolved.thinkingLevel };
 	}
@@ -1184,16 +1208,16 @@ export async function runRootCommand(
 			const { exportFromFile } = await import("./export/html");
 			result = await exportFromFile(parsedArgs.export, outputPath);
 		} catch (error: unknown) {
-			const message = error instanceof Error ? error.message : "Failed to export session";
-			process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
+			const message = error instanceof Error ? error.message : t("Failed to export session");
+			process.stderr.write(`${chalk.red(t("Error: {message}", { message }))}\n`);
 			process.exit(1);
 		}
-		writeStartupNotice(parsedArgs, `Exported to: ${result}\n`);
+		writeStartupNotice(parsedArgs, `${t("Exported to: {path}", { path: result })}\n`);
 		process.exit(0);
 	}
 
 	if ((parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui") && parsedArgs.fileArgs.length > 0) {
-		process.stderr.write(`${chalk.red("Error: @file arguments are not supported in RPC mode")}\n`);
+		process.stderr.write(`${chalk.red(t("Error: @file arguments are not supported in RPC mode"))}\n`);
 		process.exit(1);
 	}
 	const mode = parsedArgs.mode || "text";
@@ -1241,6 +1265,9 @@ export async function runRootCommand(
 
 	const settingsInstance =
 		deps.settings ?? (await logger.time("settings:init", Settings.init, { cwd, configFiles: parsedArgs.config }));
+	// Authoritative locale pin: covers interactive, print, RPC, and ACP paths.
+	// `--config` overlay languages take effect from here on.
+	setLocale(settingsInstance.get("display.language"));
 	if (parsedArgs.approvalMode) {
 		// Runtime override (not persisted): every settings.get("tools.approvalMode") downstream
 		// sees this value. The wrapper still honours --auto-approve / --yolo on top of it.
@@ -1324,7 +1351,9 @@ export async function runRootCommand(
 		foreignSource = resolveForeignSessionSource(parsedArgs);
 		if (foreignSource) {
 			if (isProtocolMode) {
-				throw new SessionResolutionError(`--from-${foreignSource} is not supported in ${mode} mode`);
+				throw new SessionResolutionError(
+					t("--from-{source} is not supported in {mode} mode", { source: foreignSource, mode }),
+				);
 			}
 			const sourceName = foreignSessionSourceName(foreignSource);
 			const store = (deps.createForeignSessionStore ?? createForeignSessionStore)(foreignSource);
@@ -1333,10 +1362,12 @@ export async function runRootCommand(
 				foreignSessions = await logger.time(`list${sourceName}Sessions`, () => store.list());
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				throw new SessionResolutionError(`Failed to list ${sourceName} sessions: ${message}`);
+				throw new SessionResolutionError(
+					t("Failed to list {source} sessions: {message}", { source: sourceName, message }),
+				);
 			}
 			if (foreignSessions.length === 0) {
-				writeStartupNotice(parsedArgs, `${chalk.dim(`No ${sourceName} sessions found`)}\n`);
+				writeStartupNotice(parsedArgs, `${chalk.dim(t("No {source} sessions found", { source: sourceName }))}\n`);
 				stopStartupWatchdog();
 				process.exit(0);
 			}
@@ -1345,7 +1376,7 @@ export async function runRootCommand(
 			let selected: SessionInfo | null;
 			try {
 				selected = await logger.time(`select${sourceName}Session`, deps.selectSession ?? selectSession, choices, {
-					title: `Import ${sourceName} Session`,
+					title: t("Import {source} Session", { source: sourceName }),
 					scopeLabel: false,
 					showCwd: true,
 					allowDelete: false,
@@ -1356,7 +1387,7 @@ export async function runRootCommand(
 				resumeStartupWatchdog();
 			}
 			if (!selected) {
-				writeStartupNotice(parsedArgs, `${chalk.dim(`No ${sourceName} session selected`)}\n`);
+				writeStartupNotice(parsedArgs, `${chalk.dim(t("No {source} session selected", { source: sourceName }))}\n`);
 				stopStartupWatchdog();
 				process.exit(0);
 			}
@@ -1364,7 +1395,9 @@ export async function runRootCommand(
 				session => session.id === selected.id && session.path === selected.path,
 			);
 			if (!foreignSession) {
-				throw new SessionResolutionError(`Selected ${sourceName} session is no longer available`);
+				throw new SessionResolutionError(
+					t("Selected {source} session is no longer available", { source: sourceName }),
+				);
 			}
 			try {
 				sessionManager = await logger.time(
@@ -1376,7 +1409,9 @@ export async function runRootCommand(
 				);
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
-				throw new SessionResolutionError(`Failed to import ${sourceName} session: ${message}`);
+				throw new SessionResolutionError(
+					t("Failed to import {source} session: {message}", { source: sourceName, message }),
+				);
 			}
 		} else {
 			sessionManager = await logger.time(
@@ -1389,7 +1424,7 @@ export async function runRootCommand(
 		}
 	} catch (error: unknown) {
 		if (error instanceof SessionResolutionError) {
-			process.stderr.write(`${chalk.red(`Error: ${error.message}`)}\n`);
+			process.stderr.write(`${chalk.red(t("Error: {message}", { message: error.message }))}\n`);
 			if (error.hint) {
 				process.stderr.write(`${chalk.dim(error.hint)}\n`);
 			}
@@ -1415,7 +1450,7 @@ export async function runRootCommand(
 	// User declined the missing-directory move prompt — exit cleanly instead of
 	// letting the cancellation fall through to a new session.
 	if (typeof parsedArgs.resume === "string" && !sessionManager) {
-		writeStartupNotice(parsedArgs, `${chalk.dim("Resume cancelled: session was not moved.")}\n`);
+		writeStartupNotice(parsedArgs, `${chalk.dim(t("Resume cancelled: session was not moved."))}\n`);
 		stopStartupWatchdog();
 		process.exit(0);
 	}
@@ -1432,7 +1467,7 @@ export async function runRootCommand(
 			// instant on the way in.
 			preloadedAllSessions = await logger.time("SessionManager.listAll", SessionManager.listAll);
 			if (preloadedAllSessions.length === 0) {
-				writeStartupNotice(parsedArgs, `${chalk.dim("No sessions found")}\n`);
+				writeStartupNotice(parsedArgs, `${chalk.dim(t("No sessions found"))}\n`);
 				stopStartupWatchdog();
 				process.exit(0);
 			}
@@ -1443,7 +1478,7 @@ export async function runRootCommand(
 		});
 		resumeStartupWatchdog();
 		if (!selected) {
-			writeStartupNotice(parsedArgs, `${chalk.dim("No session selected")}\n`);
+			writeStartupNotice(parsedArgs, `${chalk.dim(t("No session selected"))}\n`);
 			// Quit instead of returning: startup already armed long-lived handles
 			// (theme watcher + SIGWINCH/macOS appearance listeners via initTheme,
 			// settings save timer, model registry) that keep the event loop alive,
@@ -1518,7 +1553,9 @@ export async function runRootCommand(
 	if (parsedArgs.apiKey) {
 		if (!sessionOptions.model && !sessionOptions.modelPattern) {
 			process.stderr.write(
-				`${chalk.red("--api-key requires a model to be specified via --model, --provider/--model, or --models")}\n`,
+				`${chalk.red(
+					t("--api-key requires a model to be specified via --model, --provider/--model, or --models"),
+				)}\n`,
 			);
 			process.exit(1);
 		}
@@ -1672,11 +1709,11 @@ export async function runRootCommand(
 			if (modelFallbackMessage) {
 				process.stderr.write(`${chalk.red(modelFallbackMessage)}\n`);
 			} else {
-				process.stderr.write(`${chalk.red("No models available.")}\n`);
+				process.stderr.write(`${chalk.red(t("No models available."))}\n`);
 			}
-			process.stderr.write(`${chalk.yellow("\nSet an API key environment variable:")}\n`);
+			process.stderr.write(`${chalk.yellow("\n" + t("Set an API key environment variable:"))}\n`);
 			process.stderr.write("  ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, etc.\n");
-			process.stderr.write(`${chalk.yellow(`\nOr create ${ModelsConfigFile.path()}`)}\n`);
+			process.stderr.write(`${chalk.yellow("\n" + t("Or create {path}", { path: ModelsConfigFile.path() }))}\n`);
 			process.exit(1);
 		}
 

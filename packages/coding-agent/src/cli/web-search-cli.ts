@@ -8,6 +8,7 @@ import { APP_NAME, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "chalk";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
 import { Settings } from "../config/settings";
+import { t } from "../i18n";
 import { initTheme, theme } from "../modes/theme/theme";
 import { runSearchQuery, type SearchQueryParams } from "../web/search/index";
 import { SEARCH_PROVIDER_ORDER } from "../web/search/provider";
@@ -66,24 +67,26 @@ export function parseSearchArgs(args: string[]): SearchCommandArgs | undefined {
 
 export async function runSearchCommand(cmd: SearchCommandArgs): Promise<void> {
 	if (!cmd.query) {
-		process.stderr.write(`${chalk.red("Error: Query is required")}\n`);
+		process.stderr.write(`${chalk.red(t("Error: Query is required"))}\n`);
 		process.exit(1);
 	}
 
 	if (cmd.provider && !PROVIDERS.includes(cmd.provider)) {
-		process.stderr.write(`${chalk.red(`Error: Unknown provider "${cmd.provider}"`)}\n`);
-		process.stderr.write(`${chalk.dim(`Valid providers: ${PROVIDERS.join(", ")}`)}\n`);
+		process.stderr.write(`${chalk.red(t('Error: Unknown provider "{provider}"', { provider: cmd.provider }))}\n`);
+		process.stderr.write(`${chalk.dim(t("Valid providers: {providers}", { providers: PROVIDERS.join(", ") }))}\n`);
 		process.exit(1);
 	}
 
 	if (cmd.recency && !RECENCY_OPTIONS.includes(cmd.recency)) {
-		process.stderr.write(`${chalk.red(`Error: Invalid recency "${cmd.recency}"`)}\n`);
-		process.stderr.write(`${chalk.dim(`Valid recency values: ${RECENCY_OPTIONS.join(", ")}`)}\n`);
+		process.stderr.write(`${chalk.red(t('Error: Invalid recency "{recency}"', { recency: cmd.recency }))}\n`);
+		process.stderr.write(
+			`${chalk.dim(t("Valid recency values: {values}", { values: RECENCY_OPTIONS.join(", ") }))}\n`,
+		);
 		process.exit(1);
 	}
 
 	if (cmd.limit !== undefined && Number.isNaN(cmd.limit)) {
-		process.stderr.write(`${chalk.red("Error: --limit must be a number")}\n`);
+		process.stderr.write(`${chalk.red(t("Error: --limit must be a number"))}\n`);
 		process.exit(1);
 	}
 
@@ -114,29 +117,28 @@ export async function runSearchCommand(cmd: SearchCommandArgs): Promise<void> {
 }
 
 export function printSearchHelp(): void {
-	process.stdout.write(`${chalk.bold(`${APP_NAME} q`)} - Test web search providers
+	process.stdout.write(`${chalk.bold(`${APP_NAME} q`)} - ${t("Test web search providers")}
 
-${chalk.bold("Usage:")}
+${chalk.bold(t("Usage:"))}
   ${APP_NAME} q [options] <query>
   ${APP_NAME} web-search [options] <query>
 
-${chalk.bold("Arguments:")}
-  query      Search query text
+${chalk.bold(t("Arguments:"))}
+  query      ${t("Search query text")}
 
-${chalk.bold("Options:")}
-  --provider <name>   Provider: ${PROVIDERS.join(", ")}
-  --recency <value>   Recency filter (when supported): ${RECENCY_OPTIONS.join(", ")}
-  -l, --limit <n>     Max results to return
-  --compact           Render condensed output
-  -h, --help          Show this help
+${chalk.bold(t("Options:"))}
+  --provider <name>   ${t("Provider: {providers}", { providers: PROVIDERS.join(", ") })}
+  --recency <value>   ${t("Recency filter (when supported): {values}", { values: RECENCY_OPTIONS.join(", ") })}
+  -l, --limit <n>     ${t("Max results to return")}
+  --compact           ${t("Render condensed output")}
+  -h, --help          ${t("Show this help")}
 
-${chalk.bold("Query directives:")}
+${chalk.bold(t("Query directives:"))}
   site:/-site:  after:/before: (YYYY-MM-DD)  inurl:  intitle:  filetype:
   "exact phrase"  -term  OR
-  Mapped to native provider filters where available, otherwise applied as a
-  lenient post-filter (a constraint matching nothing is relaxed, not fatal).
+  ${t("Mapped to native provider filters where available, otherwise applied as a\n  lenient post-filter (a constraint matching nothing is relaxed, not fatal).")}
 
-${chalk.bold("Examples:")}
+${chalk.bold(t("Examples:"))}
   ${APP_NAME} q --provider=exa "what's the color of the sky"
   ${APP_NAME} q --provider=brave --recency=week "latest TypeScript 5.7 changes"
   ${APP_NAME} q 'transformer scaling site:arxiv.org after:2024 -site:reddit.com'

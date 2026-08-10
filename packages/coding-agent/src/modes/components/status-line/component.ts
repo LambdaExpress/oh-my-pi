@@ -5,6 +5,7 @@ import type { AssistantMessage, UsageLimit, UsageReport } from "@oh-my-pi/pi-ai"
 import { type Component, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { getProjectDir, getWorktreesDir, normalizePathForComparison } from "@oh-my-pi/pi-utils";
 import { settings } from "../../../config/settings";
+import { t } from "../../../i18n";
 import type { AgentSession } from "../../../session/agent-session";
 import type { OAuthAccountIdentity } from "../../../session/auth-storage";
 import { limitMatchesActiveAccount } from "../../../slash-commands/helpers/active-oauth-account";
@@ -1738,7 +1739,7 @@ export class StatusLineComponent implements Component {
 
 	#subagentBadgeText(): string | undefined {
 		if (this.#subagentCount === 0) return undefined;
-		const noun = this.#subagentCount === 1 ? "agent" : "agents";
+		const noun = this.#subagentCount === 1 ? t("agent") : t("agents");
 		return theme.fg("statusLineSubagents", `${theme.icon.agents} ${this.#subagentCount} ${noun}`);
 	}
 

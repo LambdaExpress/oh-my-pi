@@ -7,6 +7,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
+import { t } from "../../../i18n";
 import {
 	enableAutoTheme,
 	getAvailableThemes,
@@ -65,8 +66,8 @@ function renderMockEditor(width: number): string[] {
 	const horizontal = box.horizontal.repeat(innerWidth);
 	const top = theme.fg("borderAccent", `${box.topLeft}${horizontal}${box.topRight}`);
 	const bottom = theme.fg("borderMuted", `${box.bottomLeft}${horizontal}${box.bottomRight}`);
-	const prompt = `${theme.fg("accent", ">")} ${theme.fg("text", "Ask anything, edit files, run tools")}${theme.inverse(" ")}`;
-	const hint = theme.fg("dim", "enter send · shift+enter newline · / commands");
+	const prompt = `${theme.fg("accent", ">")} ${theme.fg("text", t("Ask anything, edit files, run tools"))}${theme.inverse(" ")}`;
+	const hint = theme.fg("dim", t("enter send · shift+enter newline · / commands"));
 	return [
 		top,
 		`${theme.fg("borderAccent", box.vertical)}${fitLine(prompt, innerWidth)}${theme.fg("borderAccent", box.vertical)}`,
@@ -78,19 +79,35 @@ function renderMockEditor(width: number): string[] {
 function renderThemePreview(width: number): string[] {
 	const previewWidth = Math.max(24, Math.min(width, 88));
 	return [
-		theme.bold("Preview"),
+		theme.bold(t("Preview")),
 		`${theme.fg("success", `${theme.status.success} success`)}  ${theme.fg("warning", `${theme.status.warning} warning`)}  ${theme.fg("error", `${theme.status.error} error`)}  ${theme.fg("accent", "accent")}`,
 		"",
-		theme.fg("muted", "Status line"),
+		theme.fg("muted", t("Status line")),
 		renderMockStatusLine(previewWidth),
-		theme.fg("muted", "Editor"),
+		theme.fg("muted", t("Editor")),
 		...renderMockEditor(previewWidth),
 	];
 }
 
+/** Curated theme picker rows with localized labels/descriptions. */
+function curatedItems(): SelectItem[] {
+	return [
+		{
+			value: "auto",
+			label: t("Match terminal"),
+			description: t("Titanium in dark terminals, Light in light terminals"),
+		},
+		{ value: "theme:titanium", label: t("Titanium"), description: t("Default dark theme") },
+		{ value: "theme:light", label: t("Light"), description: t("Default light theme") },
+		{ value: "colorblind", label: t("Colorblind colors"), description: t("Adjust red/green contrast") },
+		{ value: "ansi", label: t("ANSI-safe"), description: t("ASCII glyphs with the dark terminal theme") },
+		{ value: "browse", label: t("Browse all…"), description: t("Show every built-in and custom theme") },
+	];
+}
+
 class ThemeSceneController implements SetupSceneController {
-	title = "Pick a theme";
-	subtitle = "Move through the list to preview; Enter saves the highlighted choice.";
+	title = t("Pick a theme");
+	subtitle = t("Move through the list to preview; Enter saves the highlighted choice.");
 	#mode: ThemeMode = "curated";
 	#selectList: SelectList;
 	#loadingAllThemes = false;
@@ -106,7 +123,7 @@ class ThemeSceneController implements SetupSceneController {
 	constructor(private readonly host: SetupSceneHost) {
 		this.#originalSymbolPreset = host.ctx.settings.get("symbolPreset");
 		this.#originalColorBlindMode = host.ctx.settings.get("colorBlindMode");
-		this.#selectList = this.#createSelectList(CURATED_ITEMS, this.#currentCuratedIndex());
+		this.#selectList = this.#createSelectList(curatedItems(), this.#currentCuratedIndex());
 	}
 
 	dispose(): void {
@@ -139,10 +156,10 @@ class ThemeSceneController implements SetupSceneController {
 	render(width: number, maxLines?: number): readonly string[] {
 		const budget = maxLines ?? Number.POSITIVE_INFINITY;
 		const lines = [
-			theme.fg("muted", "Theme changes preview live. Nothing is saved until you press Enter."),
+			theme.fg("muted", t("Theme changes preview live. Nothing is saved until you press Enter.")),
 			this.#mode === "all"
-				? theme.fg("dim", "Browsing all themes · Esc returns to curated choices")
-				: theme.fg("dim", "Esc skips this step"),
+				? theme.fg("dim", t("Browsing all themes · Esc returns to curated choices"))
+				: theme.fg("dim", t("Esc skips this step")),
 			"",
 		];
 		// The mock status-line/editor block is decorative — the wizard itself
@@ -155,7 +172,7 @@ class ThemeSceneController implements SetupSceneController {
 		}
 		if (this.#loadingAllThemes) {
 			this.#listRowStart = -1;
-			lines.push(theme.fg("dim", "Loading themes…"));
+			lines.push(theme.fg("dim", `${t("Loading themes")}…`));
 		} else {
 			this.#listRowStart = lines.length;
 			if (maxLines !== undefined) {
@@ -181,7 +198,7 @@ class ThemeSceneController implements SetupSceneController {
 		list.onCancel = () => {
 			if (this.#mode === "all") {
 				this.#mode = "curated";
-				this.#selectList = this.#createSelectList(CURATED_ITEMS, this.#currentCuratedIndex());
+				this.#selectList = this.#createSelectList(curatedItems(), this.#currentCuratedIndex());
 				this.host.requestRender();
 				return;
 			}
@@ -224,14 +241,14 @@ class ThemeSceneController implements SetupSceneController {
 			const items = themes.map(name => ({
 				value: `theme:${name}`,
 				label: name,
-				description: name === this.#originalTheme ? "current" : undefined,
+				description: name === this.#originalTheme ? t("current") : undefined,
 			}));
 			const selectedIndex = Math.max(0, themes.indexOf(this.#originalTheme ?? ""));
 			this.#mode = "all";
 			this.#selectList = this.#createSelectList(items, selectedIndex);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			this.#message = theme.fg("error", `Failed to load themes: ${message}`);
+			this.#message = theme.fg("error", `${t("Failed to load themes")}: ${message}`);
 		} finally {
 			this.#loadingAllThemes = false;
 			this.host.requestRender();
@@ -295,7 +312,7 @@ class ThemeSceneController implements SetupSceneController {
 		}
 		if (request !== this.#previewRequest || this.#disposed) return;
 		if (!result.success) {
-			this.#message = theme.fg("error", result.error ?? "Theme preview failed");
+			this.#message = theme.fg("error", result.error ?? t("Theme preview failed"));
 		}
 		this.host.ctx.ui.invalidate();
 		this.host.requestRender();

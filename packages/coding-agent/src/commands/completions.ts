@@ -10,6 +10,7 @@ import { Args, type CliConfig, Command, type CommandCtor } from "@oh-my-pi/pi-ut
 import { completionsHelp as commandHelp } from "../cli/command-help";
 import { buildSpec, generateCompletion, type Shell } from "../cli/completion-gen";
 import { commands } from "../cli-commands";
+import { t } from "../i18n";
 
 /** Entry name of the default command whose flags become top-level completions. */
 const ROOT_COMMAND = "launch";
@@ -34,7 +35,9 @@ export default class Completions extends Command {
 	async run(): Promise<void> {
 		const shell = this.argv[0];
 		if (!isShell(shell)) {
-			process.stderr.write(`Usage: ${APP_NAME} completions <${SHELLS.join("|")}>\n`);
+			process.stderr.write(
+				t("Usage: {app} completions <{shells}>", { app: APP_NAME, shells: SHELLS.join("|") }) + "\n",
+			);
 			process.exitCode = 1;
 			return;
 		}
