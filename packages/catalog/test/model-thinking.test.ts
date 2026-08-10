@@ -226,6 +226,40 @@ describe("model thinking derivation", () => {
 		expect(openRouterAnthropic.thinking?.effortMap).toBeUndefined();
 	});
 
+	it("keeps DeepSeek V4 low/high/max on Responses APIs (opencode-go regression)", () => {
+		// opencode-go serves Flash through /responses; the generic five-tier
+		// fallback must not mask the upstream low/high/max ladder.
+		const flash = createModel({
+			id: "deepseek-v4-flash",
+			api: "openai-responses",
+			provider: "opencode-go",
+			baseUrl: "https://opencode.ai/zen/go/v1",
+		});
+		const pro = createModel({
+			id: "deepseek-v4-pro",
+			api: "openai-responses",
+			provider: "opencode-go",
+			baseUrl: "https://opencode.ai/zen/go/v1",
+		});
+		// A stale cached ladder (the five-tier snapshot baked before the fix)
+		// must also re-normalize at build time.
+		const staleFlash = createModel({
+			id: "deepseek-v4-flash",
+			api: "openai-responses",
+			provider: "opencode-go",
+			baseUrl: "https://opencode.ai/zen/go/v1",
+			thinking: {
+				mode: "effort",
+				efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+			},
+		});
+
+		expect(getSupportedEfforts(flash)).toEqual([Effort.Low, Effort.High, Effort.Max]);
+		expect(requireSupportedEffort(flash, Effort.Max)).toBe(Effort.Max);
+		expect(getSupportedEfforts(pro)).toEqual([Effort.High, Effort.Max]);
+		expect(staleFlash.thinking?.efforts).toEqual([Effort.Low, Effort.High, Effort.Max]);
+	});
+
 	it("derives Anthropic adaptive thinking for SAP hai-proxy version-first Claude ids", () => {
 		const opus48 = createModel({
 			id: "anthropic--claude-4.8-opus",

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed `opencode-go/deepseek-v4-flash` losing the `max` thinking effort after the model was routed through the OpenAI responses API — the model-defined `low`/`high`/`max` ladder now applies to Responses endpoints as well.
+
 ## [17.2.12] - 2026-08-08
 
 ### Fixed

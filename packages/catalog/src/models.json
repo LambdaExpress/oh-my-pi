@@ -28627,9 +28627,9 @@
 				"text"
 			],
 			"cost": {
-				"input": 0.079996,
-				"output": 0.252,
-				"cacheRead": 0.0252,
+				"input": 0.0798,
+				"output": 0.1596,
+				"cacheRead": 0.01596,
 				"cacheWrite": 0
 			},
 			"contextWindow": 1048576,
@@ -29351,7 +29351,7 @@
 		},
 		"anthropic/claude-3.5-haiku": {
 			"id": "anthropic/claude-3.5-haiku",
-			"name": "Claude 3.5 Haiku",
+			"name": "Claude Haiku 3.5",
 			"api": "openai-completions",
 			"provider": "kilo",
 			"baseUrl": "https://api.kilo.ai/api/gateway",
@@ -35883,7 +35883,7 @@
 				"cacheWrite": 0
 			},
 			"contextWindow": 128000,
-			"maxTokens": 16384
+			"maxTokens": 32000
 		},
 		"openai/gpt-5.2-codex": {
 			"id": "openai/gpt-5.2-codex",
@@ -35951,8 +35951,7 @@
 			"baseUrl": "https://api.kilo.ai/api/gateway",
 			"reasoning": false,
 			"input": [
-				"text",
-				"image"
+				"text"
 			],
 			"cost": {
 				"input": 1.75,
@@ -35961,7 +35960,8 @@
 				"cacheWrite": 0
 			},
 			"contextWindow": 128000,
-			"maxTokens": 16384
+			"maxTokens": 16384,
+			"supportsComputerUse": false
 		},
 		"openai/gpt-5.3-codex": {
 			"id": "openai/gpt-5.3-codex",
@@ -55668,8 +55668,7 @@
 			"baseUrl": "https://nano-gpt.com/api/v1",
 			"reasoning": false,
 			"input": [
-				"text",
-				"image"
+				"text"
 			],
 			"cost": {
 				"input": 0,
@@ -73268,11 +73267,9 @@
 			"thinking": {
 				"mode": "effort",
 				"efforts": [
-					"minimal",
 					"low",
-					"medium",
 					"high",
-					"xhigh"
+					"max"
 				]
 			}
 		},
@@ -76944,7 +76941,7 @@
 		},
 		"anthropic/claude-3.5-haiku": {
 			"id": "anthropic/claude-3.5-haiku",
-			"name": "Claude 3.5 Haiku",
+			"name": "Claude Haiku 3.5",
 			"api": "openrouter",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -78434,7 +78431,7 @@
 		},
 		"deepseek/deepseek-chat": {
 			"id": "deepseek/deepseek-chat",
-			"name": "DeepSeek-V3.2 (Non-thinking Mode)",
+			"name": "DeepSeek Chat",
 			"api": "openrouter",
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"provider": "openrouter",
@@ -83521,8 +83518,7 @@
 			"baseUrl": "https://openrouter.ai/api/v1",
 			"reasoning": false,
 			"input": [
-				"text",
-				"image"
+				"text"
 			],
 			"cost": {
 				"input": 1.75,
@@ -93165,10 +93161,10 @@
 				"image"
 			],
 			"cost": {
-				"input": 0.26666667,
-				"output": 1.6,
-				"cacheRead": 0.02666667,
-				"cacheWrite": 0.33333334
+				"input": 1.25,
+				"output": 7.5,
+				"cacheRead": 0.125,
+				"cacheWrite": 1.5625
 			},
 			"contextWindow": 1000000,
 			"maxTokens": 128000,
@@ -94987,7 +94983,7 @@
 		},
 		"anthropic/claude-3.5-haiku": {
 			"id": "anthropic/claude-3.5-haiku",
-			"name": "Claude 3.5 Haiku",
+			"name": "Claude Haiku 3.5",
 			"api": "anthropic-messages",
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"provider": "vercel-ai-gateway",
@@ -95461,8 +95457,7 @@
 				],
 				"supportsDisplay": true
 			},
-			"supportsComputerUse": false,
-			"supportsComputerUseConfig": false
+			"supportsComputerUse": false
 		},
 		"anthropic/claude-sonnet-4": {
 			"id": "anthropic/claude-sonnet-4",
@@ -98648,7 +98643,8 @@
 					"high"
 				]
 			},
-			"supportsComputerUse": false
+			"supportsComputerUse": false,
+			"supportsComputerUseConfig": false
 		},
 		"openai/gpt-5.1-thinking": {
 			"id": "openai/gpt-5.1-thinking",
@@ -98801,8 +98797,7 @@
 			"baseUrl": "https://ai-gateway.vercel.sh",
 			"reasoning": false,
 			"input": [
-				"text",
-				"image"
+				"text"
 			],
 			"cost": {
 				"input": 1.75,
@@ -98812,7 +98807,8 @@
 			},
 			"contextWindow": 128000,
 			"maxTokens": 16384,
-			"supportsComputerUse": false
+			"supportsComputerUse": false,
+			"supportsComputerUseConfig": false
 		},
 		"openai/gpt-5.3-codex": {
 			"id": "openai/gpt-5.3-codex",
@@ -103382,7 +103378,7 @@
 	"zenmux": {
 		"anthropic/claude-3.5-haiku": {
 			"id": "anthropic/claude-3.5-haiku",
-			"name": "Claude 3.5 Haiku",
+			"name": "Claude Haiku 3.5",
 			"api": "anthropic-messages",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/anthropic",
@@ -103398,7 +103394,8 @@
 				"cacheWrite": 1
 			},
 			"contextWindow": 200000,
-			"maxTokens": 64000
+			"maxTokens": 64000,
+			"supportsComputerUse": false
 		},
 		"anthropic/claude-3.5-sonnet": {
 			"id": "anthropic/claude-3.5-sonnet",
@@ -103450,7 +103447,8 @@
 					"high",
 					"xhigh"
 				]
-			}
+			},
+			"supportsComputerUse": false
 		},
 		"anthropic/claude-fable-5": {
 			"id": "anthropic/claude-fable-5",
@@ -104302,7 +104300,7 @@
 		},
 		"deepseek/deepseek-chat": {
 			"id": "deepseek/deepseek-chat",
-			"name": "DeepSeek-V3.2 (Non-thinking Mode)",
+			"name": "DeepSeek Chat",
 			"api": "openai-completions",
 			"provider": "zenmux",
 			"baseUrl": "https://zenmux.ai/api/v1",
@@ -104317,7 +104315,8 @@
 				"cacheWrite": 0
 			},
 			"contextWindow": 128000,
-			"maxTokens": 64000
+			"maxTokens": 64000,
+			"supportsComputerUse": false
 		},
 		"deepseek/deepseek-chat-v3.1": {
 			"id": "deepseek/deepseek-chat-v3.1",
@@ -105068,7 +105067,8 @@
 				"cacheWrite": 0
 			},
 			"contextWindow": 128000,
-			"maxTokens": 64000
+			"maxTokens": 64000,
+			"supportsComputerUse": false
 		},
 		"inclusionai/ling-2.6-1t": {
 			"id": "inclusionai/ling-2.6-1t",
@@ -105292,7 +105292,8 @@
 					"high",
 					"xhigh"
 				]
-			}
+			},
+			"supportsComputerUse": false
 		},
 		"inclusionai/ring-2.6-1t": {
 			"id": "inclusionai/ring-2.6-1t",
@@ -105896,7 +105897,8 @@
 				"cacheWrite": 0
 			},
 			"contextWindow": 262000,
-			"maxTokens": 64000
+			"maxTokens": 64000,
+			"supportsComputerUse": false
 		},
 		"moonshotai/kimi-k2-thinking": {
 			"id": "moonshotai/kimi-k2-thinking",
@@ -105926,7 +105928,8 @@
 					"xhigh"
 				],
 				"requiresEffort": true
-			}
+			},
+			"supportsComputerUse": false
 		},
 		"moonshotai/kimi-k2-thinking-turbo": {
 			"id": "moonshotai/kimi-k2-thinking-turbo",
@@ -105956,7 +105959,8 @@
 					"xhigh"
 				],
 				"requiresEffort": true
-			}
+			},
+			"supportsComputerUse": false
 		},
 		"moonshotai/kimi-k2.5": {
 			"id": "moonshotai/kimi-k2.5",
@@ -107740,6 +107744,68 @@
 			},
 			"supportsComputerUse": false
 		},
+		"sapiens-ai/agnes-2.5-flash": {
+			"id": "sapiens-ai/agnes-2.5-flash",
+			"name": "Agnes-2.5-Flash",
+			"api": "openai-completions",
+			"provider": "zenmux",
+			"baseUrl": "https://zenmux.ai/api/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0,
+				"output": 0,
+				"cacheRead": 0,
+				"cacheWrite": 0
+			},
+			"contextWindow": 524288,
+			"maxTokens": null,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			},
+			"supportsComputerUse": false
+		},
+		"sapiens-ai/agnes-2.5-pro": {
+			"id": "sapiens-ai/agnes-2.5-pro",
+			"name": "Agnes-2.5-Pro",
+			"api": "openai-completions",
+			"provider": "zenmux",
+			"baseUrl": "https://zenmux.ai/api/v1",
+			"reasoning": true,
+			"input": [
+				"text",
+				"image"
+			],
+			"cost": {
+				"input": 0.45,
+				"output": 0.9,
+				"cacheRead": 0.0038,
+				"cacheWrite": 0
+			},
+			"contextWindow": 1048576,
+			"maxTokens": null,
+			"thinking": {
+				"mode": "effort",
+				"efforts": [
+					"minimal",
+					"low",
+					"medium",
+					"high",
+					"xhigh"
+				]
+			},
+			"supportsComputerUse": false
+		},
 		"stepfun/step-3": {
 			"id": "stepfun/step-3",
 			"name": "Step-3",
@@ -107768,7 +107834,8 @@
 					"high",
 					"xhigh"
 				]
-			}
+			},
+			"supportsComputerUse": false
 		},
 		"stepfun/step-3.5-flash": {
 			"id": "stepfun/step-3.5-flash",
@@ -108170,7 +108237,8 @@
 					"high",
 					"xhigh"
 				]
-			}
+			},
+			"supportsComputerUse": false
 		},
 		"x-ai/grok-4": {
 			"id": "x-ai/grok-4",
@@ -108200,7 +108268,8 @@
 					"high",
 					"xhigh"
 				]
-			}
+			},
+			"supportsComputerUse": false
 		},
 		"x-ai/grok-4-fast": {
 			"id": "x-ai/grok-4-fast",
@@ -108230,7 +108299,8 @@
 					"high",
 					"xhigh"
 				]
-			}
+			},
+			"supportsComputerUse": false
 		},
 		"x-ai/grok-4-fast-non-reasoning": {
 			"id": "x-ai/grok-4-fast-non-reasoning",
@@ -108282,7 +108352,8 @@
 					"high",
 					"xhigh"
 				]
-			}
+			},
+			"supportsComputerUse": false
 		},
 		"x-ai/grok-4.1-fast-non-reasoning": {
 			"id": "x-ai/grok-4.1-fast-non-reasoning",
@@ -108302,7 +108373,8 @@
 				"cacheWrite": 0
 			},
 			"contextWindow": 2000000,
-			"maxTokens": 64000
+			"maxTokens": 64000,
+			"supportsComputerUse": false
 		},
 		"x-ai/grok-4.2-fast": {
 			"id": "x-ai/grok-4.2-fast",
@@ -108503,7 +108575,8 @@
 					"high",
 					"xhigh"
 				]
-			}
+			},
+			"supportsComputerUse": false
 		},
 		"xiaomi/mimo-v2-flash": {
 			"id": "xiaomi/mimo-v2-flash",

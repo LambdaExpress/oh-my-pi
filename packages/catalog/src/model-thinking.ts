@@ -288,6 +288,23 @@ function isOpenAICompatReasoningApi(api: Api): boolean {
 }
 
 /**
+ * APIs whose discrete reasoning-effort ladder is user-controllable
+ * (`reasoning_effort` / `reasoning.effort`). Wider than
+ * {@link isOpenAICompatReasoningApi}: the Responses family also encodes
+ * per-level effort, so model-defined wire ladders (DeepSeek V4's low/high/max)
+ * must apply there too — the generic five-tier fallback otherwise masks `max`
+ * for DeepSeek models served through Responses endpoints (opencode-go).
+ */
+function isEffortLadderApi(api: Api): boolean {
+	return (
+		isOpenAICompatReasoningApi(api) ||
+		api === "openai-responses" ||
+		api === "openai-codex-responses" ||
+		api === "azure-openai-responses"
+	);
+}
+
+/**
  * GPT-5.6+ addressed through a wire `reasoning.effort`/`reasoning_effort`
  * field, where the five-tier `low..max` wire scale applies. Devin
  * (`devin-agent`) selects effort by routing to per-tier sibling model ids
@@ -366,7 +383,7 @@ function getModelDefinedEfforts<TApi extends Api>(
 	if (spec.provider === "ollama") {
 		return OLLAMA_REASONING_EFFORTS;
 	}
-	if (isOpenAICompatReasoningApi(spec.api) && isDeepseekReasoningModel(spec)) {
+	if (isEffortLadderApi(spec.api) && isDeepseekReasoningModel(spec)) {
 		// DeepSeek V4 Flash accepts the wire-exact low/high/max ladder on every
 		// host — the direct API and aggregators alike (medium/xhigh map to
 		// high). V4 Pro and the older reasoners top out at high/max, and
