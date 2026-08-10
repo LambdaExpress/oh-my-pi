@@ -163,7 +163,10 @@ function createCompleteSimpleHangingStub(): CompleteSimpleStub {
 	return { calls, fn };
 }
 
-async function createWrappedInspectImageSession(cwd: string): Promise<{
+async function createWrappedInspectImageSession(
+	cwd: string,
+	toolNames: string[] = ["inspect_image"],
+): Promise<{
 	session: AgentSession;
 	authStorage: AuthStorage;
 }> {
@@ -185,7 +188,7 @@ async function createWrappedInspectImageSession(cwd: string): Promise<{
 		slashCommands: [],
 		enableMCP: false,
 		enableLsp: false,
-		toolNames: ["inspect_image"],
+		toolNames,
 	});
 	return { session, authStorage };
 }
@@ -371,6 +374,38 @@ describe("InspectImageTool", () => {
 					} as AgentToolContext,
 				),
 			).rejects.toThrow(/requires approval but no interactive UI available/);
+		} finally {
+			await session.dispose();
+			authStorage.close();
+		}
+	});
+
+	it("requires explicit approval when mounted behind write xd://", async () => {
+		const { session, authStorage } = await createWrappedInspectImageSession(testDir, ["write", "inspect_image"]);
+		try {
+			const write = session.getToolByName("write");
+			expect(write).toBeDefined();
+			const result = await write!.execute(
+				"inspect-image-xdev-yolo",
+				{
+					path: "xd://inspect_image",
+					content: JSON.stringify({ path: "missing.png", question: "Describe it." }),
+				},
+				undefined,
+				undefined,
+				{
+					settings: Settings.isolated({ "tools.approvalMode": "yolo" }),
+					autoApprove: true,
+				} as AgentToolContext,
+			);
+
+			expect(result.isError).toBe(true);
+			expect(result.content).toEqual([
+				{
+					type: "text",
+					text: expect.stringContaining("requires approval but no interactive UI available"),
+				},
+			]);
 		} finally {
 			await session.dispose();
 			authStorage.close();

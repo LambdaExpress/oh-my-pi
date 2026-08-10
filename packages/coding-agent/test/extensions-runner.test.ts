@@ -2535,6 +2535,37 @@ describe("ExtensionRunner", () => {
 			expect(executed).toEqual([{ command: "echo original" }, { command: "echo revised" }]);
 		});
 
+		it("does not let xdevApproved bypass a tool-declared prompt policy", async () => {
+			const recordPath = path.join(tempDir.path(), "xdev-tool-prompt.jsonl");
+			const result = await loadTestExtensions();
+			const runner = new ExtensionRunner(
+				result.extensions,
+				result.runtime,
+				tempDir.path(),
+				sessionManager,
+				modelRegistry,
+			);
+			const promptTool: AgentTool = {
+				...createRecordingTool(recordPath),
+				approval: {
+					tier: "read",
+					policy: "prompt",
+					reason: "This tool requires explicit approval",
+				},
+			};
+			const wrapped = new ExtensionToolWrapper(promptTool, runner);
+			const xdevContext = {
+				settings: { get: (key: string) => (key === "tools.approvalMode" ? "yolo" : {}) },
+				autoApprove: true,
+				xdevApproved: true,
+			} as never;
+
+			await expect(
+				wrapped.execute("xdev-tool-prompt", { command: "echo blocked" }, undefined, undefined, xdevContext),
+			).rejects.toThrow(/requires approval but no interactive UI available/);
+			expect(fs.existsSync(recordPath)).toBe(false);
+		});
+
 		it("forfeits the xdevApproved prompt bypass when a handler revises the input", async () => {
 			// write.ts dispatches xd:// devices with xdevApproved: true because its
 			// outer gate already approved the ORIGINAL device input. A tool_call

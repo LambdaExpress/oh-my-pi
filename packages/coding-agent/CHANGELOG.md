@@ -47,6 +47,7 @@
 
 ### Fixed
 
+- Fixed `write xd://<tool>` dispatches treating an outer tier approval as approval of the mounted tool's own prompt policy, which allowed `inspect_image` and similarly configured dynamic tools to run without their required confirmation.
 - Fixed text-only models receiving automatic vision-model descriptions without consent by requiring explicit approval for attachment fallback and every `inspect_image` call; headless, cancelled, and denied requests now fail closed.
 - Fixed Windows compiled builds emitting invalid legacy virtual-module identifiers when nested provider paths returned by `Bun.Glob` contained backslashes.
 - Fixed OpenCode Go plans showing request cost instead of quota in the default status line: API-key subscriptions now show the 5-hour, weekly, and monthly remaining percentages with rounded time-to-reset labels; the active provider is displayed in a separate segment before the model name.
