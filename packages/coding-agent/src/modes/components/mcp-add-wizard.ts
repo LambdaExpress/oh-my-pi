@@ -359,9 +359,7 @@ export class MCPAddWizard extends Container {
 			this.#contentContainer.addChild(new Spacer(1));
 		}
 
-		this.#contentContainer.addChild(
-			new Text(theme.fg("muted", t("[Must start with http:// or https://]")), 0, 0),
-		);
+		this.#contentContainer.addChild(new Text(theme.fg("muted", t("[Must start with http:// or https://]")), 0, 0));
 		this.#contentContainer.addChild(new Text(theme.fg("muted", t("[Enter to continue, Esc to go back]")), 0, 0));
 	}
 
@@ -446,7 +444,9 @@ export class MCPAddWizard extends Container {
 		this.#contentContainer.addChild(new Spacer(1));
 
 		// Show summary
-		this.#contentContainer.addChild(new Text(t("Name: {name}", { name: theme.fg("accent", this.#state.name) }), 0, 0));
+		this.#contentContainer.addChild(
+			new Text(t("Name: {name}", { name: theme.fg("accent", this.#state.name) }), 0, 0),
+		);
 		this.#contentContainer.addChild(new Text(t("Type: {type}", { type: this.#state.transport }), 0, 0));
 
 		if (this.#state.transport === "stdio") {
@@ -967,9 +967,7 @@ export class MCPAddWizard extends Container {
 		this.#contentContainer.addChild(new Text(theme.fg("accent", t("API Key Required"))));
 		this.#contentContainer.addChild(new Spacer(1));
 		this.#contentContainer.addChild(new Text(t("Enter your API key or token:"), 0, 0));
-		this.#contentContainer.addChild(
-			new Text(theme.fg("muted", t("(Supports !command for password manager)")), 0, 0),
-		);
+		this.#contentContainer.addChild(new Text(theme.fg("muted", t("(Supports !command for password manager)")), 0, 0));
 		this.#contentContainer.addChild(new Spacer(1));
 
 		this.#inputField = new Input();
@@ -999,9 +997,7 @@ export class MCPAddWizard extends Container {
 
 			// Success! No auth required
 			this.#contentContainer.clear();
-			this.#contentContainer.addChild(
-				new Text(theme.fg("success", `✓ ${t("Connection successful!")}`), 0, 0),
-			);
+			this.#contentContainer.addChild(new Text(theme.fg("success", `✓ ${t("Connection successful!")}`), 0, 0));
 			this.#contentContainer.addChild(new Spacer(1));
 			this.#contentContainer.addChild(new Text(t("No authentication required"), 0, 0));
 			this.#contentContainer.addChild(new Spacer(1));
@@ -1049,9 +1045,7 @@ export class MCPAddWizard extends Container {
 					this.#state.authMethod = "oauth";
 
 					this.#contentContainer.clear();
-					this.#contentContainer.addChild(
-						new Text(theme.fg("success", `✓ ${t("OAuth detected")}`), 0, 0),
-					);
+					this.#contentContainer.addChild(new Text(theme.fg("success", `✓ ${t("OAuth detected")}`), 0, 0));
 					this.#contentContainer.addChild(new Spacer(1));
 					this.#contentContainer.addChild(new Text(t("Launching browser for authorization..."), 0, 0));
 					this.#contentContainer.addChild(new Spacer(1));
@@ -1062,9 +1056,7 @@ export class MCPAddWizard extends Container {
 
 				// OAuth metadata unavailable: fallback to manual API key.
 				this.#contentContainer.clear();
-				this.#contentContainer.addChild(
-					new Text(theme.fg("warning", `⚠ ${t("Authentication required")}`), 0, 0),
-				);
+				this.#contentContainer.addChild(new Text(theme.fg("warning", `⚠ ${t("Authentication required")}`), 0, 0));
 				this.#contentContainer.addChild(new Spacer(1));
 				this.#contentContainer.addChild(new Text(t("OAuth parameters could not be discovered."), 0, 0));
 				this.#contentContainer.addChild(new Text(t("Provide API key/token manually."), 0, 0));
@@ -1231,20 +1223,12 @@ export class MCPAddWizard extends Container {
 
 			// Show success message
 			this.#contentContainer.clear();
-			this.#contentContainer.addChild(
-				new Text(theme.fg("success", `✓ ${t("Authentication successful!")}`), 0, 0),
-			);
+			this.#contentContainer.addChild(new Text(theme.fg("success", `✓ ${t("Authentication successful!")}`), 0, 0));
 			this.#contentContainer.addChild(new Spacer(1));
-			this.#contentContainer.addChild(
-				new Text(theme.fg("muted", t("Running connection health check...")), 0, 0),
-			);
+			this.#contentContainer.addChild(new Text(theme.fg("muted", t("Running connection health check...")), 0, 0));
 			const spinnerFrames = theme.spinnerFrames;
 			const initialFrame = spinnerFrames[0] ?? "|";
-			const healthText = new Text(
-				theme.fg("muted", `${initialFrame} ${t("Checking server connection...")}`),
-				0,
-				0,
-			);
+			const healthText = new Text(theme.fg("muted", `${initialFrame} ${t("Checking server connection...")}`), 0, 0);
 			this.#contentContainer.addChild(healthText);
 
 			let spinnerIndex = 0;

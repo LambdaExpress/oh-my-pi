@@ -141,10 +141,7 @@ export class SignInTab implements SetupTab {
 			// this panel, so on short screens the rows go to the provider list
 			// instead (17 = full selector: 4 chrome above, 10 rows, 3 below).
 			if (maxLines === undefined || maxLines >= 17 + 2) {
-				lines.push(
-					theme.fg("muted", t("Pick a provider to sign in — you can connect more than one.")),
-					"",
-				);
+				lines.push(theme.fg("muted", t("Pick a provider to sign in — you can connect more than one.")), "");
 			}
 			this.#selectorRowStart = lines.length;
 			if (maxLines !== undefined) this.#selector.setMaxHeight(maxLines - lines.length);
@@ -158,9 +155,7 @@ export class SignInTab implements SetupTab {
 				...urlLines.slice(0, 2),
 			);
 			if (this.#authLaunchUrl) {
-				lines.push(
-					theme.fg("dim", `${t("Local shortcut (this machine only)")}: ${this.#authLaunchUrl}`),
-				);
+				lines.push(theme.fg("dim", `${t("Local shortcut (this machine only)")}: ${this.#authLaunchUrl}`));
 			}
 		}
 		if (this.#prompt) {
@@ -222,9 +217,7 @@ export class SignInTab implements SetupTab {
 						this.#statusLines.push(theme.fg("warning", info.instructions));
 					}
 					if (useManualInput) {
-						this.#statusLines.push(
-							theme.fg("dim", t("Paste the returned code or redirect URL when prompted.")),
-						);
+						this.#statusLines.push(theme.fg("dim", t("Paste the returned code or redirect URL when prompted.")));
 					}
 					void this.#copyAuthUrl();
 					this.host.ctx.openInBrowser(info.url);

@@ -1,5 +1,6 @@
 import { type Component, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails, AdvisorSeverity } from "../../advisor";
+import { t } from "../../i18n";
 import {
 	createCachedComponent,
 	formatBadge,
@@ -7,7 +8,6 @@ import {
 	type ToolUIColor,
 	wrapTextWithAnsi,
 } from "../../tools/render-utils";
-import { t } from "../../i18n";
 import { Ellipsis, truncateToWidth } from "../../tui";
 import type { Theme } from "../theme/theme";
 

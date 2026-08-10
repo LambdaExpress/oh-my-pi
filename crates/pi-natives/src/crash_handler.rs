@@ -139,7 +139,7 @@ fn blocking_task_panic_scope_active() -> bool {
 }
 
 fn panic_disposition() -> PanicDisposition {
-	if blocking_task_panic_scope_active() || pi_uutils_ctx::is_active() {
+	if blocking_task_panic_scope_active() || pi_shell::panic_scope_active() {
 		PanicDisposition::LoggedRecoverable
 	} else {
 		PanicDisposition::Fatal
@@ -195,6 +195,9 @@ mod segv {
 	// cargo-bazel regen. These three functions need no loader-lock heavy
 	// machinery and keep the crash handler free of new dependencies.
 	#[link(name = "kernel32")]
+	// SAFETY: these are stable, documented kernel32 exports whose signatures
+	// match the Win32 ABI modeled by the `system` calling convention; each call
+	// site below documents its own pointer and handle preconditions.
 	unsafe extern "system" {
 		fn AddVectoredExceptionHandler(
 			first: u32,
@@ -208,7 +211,7 @@ mod segv {
 	struct ExceptionRecord {
 		code:    u32,
 		flags:   u32,
-		record:  *mut ExceptionRecord,
+		record:  *mut Self,
 		address: *mut c_void,
 		info:    [usize; 15],
 	}
@@ -227,6 +230,11 @@ mod segv {
 	/// Register the first-chance vectored exception handler. Idempotent-safe
 	/// (called from `install()`'s `Once`).
 	pub(super) fn install() {
+		// SAFETY: `handler` is a 'static-compatible extern fn with the exact
+		// `EXCEPTION_POINTERS` callback ABI the kernel expects, and the cdylib
+		// stays loaded for the host process lifetime, so the OS-held function
+		// pointer cannot dangle. The returned registration handle is
+		// intentionally discarded because the handler is never unregistered.
 		unsafe {
 			AddVectoredExceptionHandler(1, Some(handler));
 		}
@@ -236,6 +244,10 @@ mod segv {
 		if pointers.is_null() || ACTIVE.swap(true, Ordering::AcqRel) {
 			return EXCEPTION_CONTINUE_SEARCH;
 		}
+		// SAFETY: the OS passes a valid, non-null `EXCEPTION_POINTERS*` for the
+		// duration of this callback (the null check above is defensive), and its
+		// `record` member points into the same exception frame, which outlives
+		// the call. The reference is only read.
 		let record = unsafe { &*(*pointers).record };
 		if record.code != EXCEPTION_ACCESS_VIOLATION {
 			ACTIVE.store(false, Ordering::Release);
@@ -256,6 +268,13 @@ mod segv {
 	/// `(module path, RVA within module)`. Uses the `FROM_ADDRESS` variant,
 	/// which walks the loaded-module list without taking the loader lock.
 	pub(super) fn resolve_module(address: usize) -> Option<(String, usize)> {
+		// SAFETY: GetModuleHandleExW with FROM_ADDRESS walks the loaded-module
+		// list without taking the loader lock and never dereferences `address`;
+		// `module` points to a writable out-parameter that the callee
+		// initializes. GetModuleFileNameW writes at most `buffer.len()` UTF-16
+		// code units into `buffer`, a live stack array for the duration of the
+		// call, and the module handle stays owned by the loader, so it is never
+		// released.
 		unsafe {
 			let mut module: *mut c_void = core::ptr::null_mut();
 			if GetModuleHandleExW(

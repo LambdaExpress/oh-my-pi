@@ -93,7 +93,10 @@ export class SnapcompactShapePreview implements Component {
 			chars,
 			tokens,
 		});
-		const lines: string[] = [theme.fg("muted", `  ${t("Sample (zoomed) · {label} · {stats}", { label, stats })}`), ""];
+		const lines: string[] = [
+			theme.fg("muted", `  ${t("Sample (zoomed) · {label} · {stats}", { label, stats })}`),
+			"",
+		];
 
 		if (!this.#budget || !TERMINAL.imageProtocol) {
 			lines.push(theme.fg("dim", `  ${t("(graphic sample needs a Kitty-graphics terminal)")}`));

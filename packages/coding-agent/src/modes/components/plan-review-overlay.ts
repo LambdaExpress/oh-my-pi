@@ -30,6 +30,7 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { t } from "../../i18n";
 import { sanitizeStatusText } from "../shared";
 import { getMarkdownTheme, theme } from "../theme/theme";
 import {
@@ -38,7 +39,6 @@ import {
 	matchesSelectDown,
 	matchesSelectUp,
 } from "../utils/keybinding-matchers";
-import { t } from "../../i18n";
 import type { HookSelectorSlider } from "./hook-selector";
 import {
 	bottomBorder,
@@ -952,8 +952,7 @@ export class PlanReviewOverlay implements Component {
 		}
 		if (this.callbacks.onCopyPlan) parts.push(`c ${t("copy")}`);
 		parts.push(`tab ${t("regions")}`);
-		if (this.#externalEditorLabel && this.#focus !== "toc")
-			parts.push(`${this.#externalEditorLabel} ${t("editor")}`);
+		if (this.#externalEditorLabel && this.#focus !== "toc") parts.push(`${this.#externalEditorLabel} ${t("editor")}`);
 		parts.push(this.#helpSuffix);
 		return parts.join(sep);
 	}

@@ -49,6 +49,7 @@ import { t } from "../../i18n";
 import agentCreationArchitectPrompt from "../../prompts/system/agent-creation-architect.md" with { type: "text" };
 import agentCreationUserPrompt from "../../prompts/system/agent-creation-user.md" with { type: "text" };
 import { createAgentSession } from "../../sdk";
+import { refreshAgentDiscovery } from "../../task";
 import { discoverAgents } from "../../task/discovery";
 import { resolveAgentPrewalkDefault } from "../../task/prewalk";
 import type { AgentDefinition, AgentSource } from "../../task/types";
@@ -530,7 +531,9 @@ export class AgentDashboard extends Container {
 			wrapTextWithAnsi(
 				theme.fg(
 					"dim",
-					t(" ↑/↓: navigate  Space: toggle  Enter: model override  P: prewalk  N: new agent  ←/→: source  Ctrl+R: reload  Esc: close"),
+					t(
+						" ↑/↓: navigate  Space: toggle  Enter: model override  P: prewalk  N: new agent  ←/→: source  Ctrl+R: reload  Esc: close",
+					),
 				),
 				this.#uiWidth(),
 			).length,
@@ -836,6 +839,7 @@ export class AgentDashboard extends Container {
 		).trimEnd();
 		const content = `---\n${frontmatter}\n---\n\n${spec.systemPrompt.trim()}\n`;
 		await Bun.write(filePath, content);
+		await refreshAgentDiscovery(this.cwd);
 		await this.#reloadData();
 		this.#clearCreateFlow();
 		this.#notice = t("Created agent {name} at {path}", { name: spec.identifier, path: shortenPath(filePath) });
@@ -953,10 +957,7 @@ export class AgentDashboard extends Container {
 				if (wrappedLines.length > maxPreview) {
 					this.addChild(
 						new Text(
-							theme.fg(
-								"dim",
-								`  ... ${t("{count} lines above", { count: wrappedLines.length - maxPreview })}`,
-							),
+							theme.fg("dim", `  ... ${t("{count} lines above", { count: wrappedLines.length - maxPreview })}`),
 							0,
 							0,
 						),
@@ -1075,10 +1076,7 @@ export class AgentDashboard extends Container {
 			this.addChild(
 				new Text(
 					theme.bold(
-						theme.fg(
-							"accent",
-							t("Model override: {name}", { name: replaceTabs(this.#editingAgentName) }),
-						),
+						theme.fg("accent", t("Model override: {name}", { name: replaceTabs(this.#editingAgentName) })),
 					),
 					0,
 					0,
@@ -1162,7 +1160,9 @@ export class AgentDashboard extends Container {
 				new Text(
 					theme.fg(
 						"dim",
-						t(" ↑/↓: navigate  Space: toggle  Enter: model override  P: prewalk  N: new agent  ←/→: source  Ctrl+R: reload  Esc: close"),
+						t(
+							" ↑/↓: navigate  Space: toggle  Enter: model override  P: prewalk  N: new agent  ←/→: source  Ctrl+R: reload  Esc: close",
+						),
 					),
 					0,
 					0,

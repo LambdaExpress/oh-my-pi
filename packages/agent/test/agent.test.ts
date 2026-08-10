@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "bun:test";
+import { type } from "@oh-my-pi/omptype";
 import { Agent, AgentBusyError, type AgentEvent, type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
-import { type SimpleStreamOptions, type ToolResultMessage, z } from "@oh-my-pi/pi-ai";
+import type { SimpleStreamOptions, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
@@ -38,7 +39,7 @@ describe("Agent", () => {
 	});
 
 	it("classifies agent-authored steering as a parent steering message", async () => {
-		const toolSchema = z.object({ value: z.string() });
+		const toolSchema = type({ value: type("string") });
 		const executed: string[] = [];
 		let agent: Agent;
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
@@ -101,7 +102,7 @@ describe("Agent", () => {
 	});
 
 	it("classifies user-attributed custom steering as a queued user message", async () => {
-		const toolSchema = z.object({ value: z.string() });
+		const toolSchema = type({ value: type("string") });
 		const executed: string[] = [];
 		let agent: Agent;
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
@@ -185,7 +186,7 @@ describe("Agent", () => {
 		];
 
 		for (const scenario of cases) {
-			const toolSchema = z.object({ value: z.string() });
+			const toolSchema = type({ value: type("string") });
 			const executed: string[] = [];
 			let agent: Agent;
 			const tool: AgentTool<typeof toolSchema, { value: string }> = {
@@ -1056,7 +1057,7 @@ describe("Agent", () => {
 	});
 
 	it("prompt() refreshes tools and system prompt between same-turn model calls", async () => {
-		const toolSchema = z.object({ value: z.string() });
+		const toolSchema = type({ value: type("string") });
 		type Details = { value: string };
 
 		const betaTool: AgentTool<typeof toolSchema, Details> = {
@@ -1121,7 +1122,7 @@ describe("Agent", () => {
 	});
 
 	it("prompt() drops stale forced toolChoice after same-turn tool refresh", async () => {
-		const toolSchema = z.object({ value: z.string() });
+		const toolSchema = type({ value: type("string") });
 		type Details = { value: string };
 
 		const betaTool: AgentTool<typeof toolSchema, Details> = {
@@ -1179,7 +1180,7 @@ describe("Agent", () => {
 	});
 
 	it("drops queued forced toolChoice when the queued tool is not active", async () => {
-		const toolSchema = z.object({ value: z.string() });
+		const toolSchema = type({ value: type("string") });
 		type Details = { value: string };
 
 		const betaTool: AgentTool<typeof toolSchema, Details> = {
@@ -1211,7 +1212,7 @@ describe("Agent", () => {
 	});
 
 	it("re-reads thinking level for each model call within a run", async () => {
-		const toolSchema = z.object({ value: z.string() });
+		const toolSchema = type({ value: type("string") });
 		type Details = { value: string };
 		const alphaTool: AgentTool<typeof toolSchema, Details> = {
 			name: "alpha",
@@ -1272,7 +1273,7 @@ describe("Agent", () => {
 	});
 
 	it("re-reads disableReasoning for each model call within a run", async () => {
-		const toolSchema = z.object({ value: z.string() });
+		const toolSchema = type({ value: type("string") });
 		type Details = { value: string };
 		const alphaTool: AgentTool<typeof toolSchema, Details> = {
 			name: "alpha",
@@ -1364,7 +1365,7 @@ describe("Agent", () => {
 	});
 
 	it("re-reads cwd from cwdResolver for each model call within a run (a /move mid-run is seen)", async () => {
-		const toolSchema = z.object({ value: z.string() });
+		const toolSchema = type({ value: type("string") });
 		type Details = { value: string };
 		const alphaTool: AgentTool<typeof toolSchema, Details> = {
 			name: "alpha",

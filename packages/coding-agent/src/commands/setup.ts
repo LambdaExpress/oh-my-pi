@@ -24,7 +24,7 @@ export async function runOnboardingSetup(deps: OnboardingSetupDependencies = {})
 	const stdinIsTTY = deps.stdinIsTTY ?? process.stdin.isTTY;
 	const stdoutIsTTY = deps.stdoutIsTTY ?? process.stdout.isTTY;
 	if (!stdinIsTTY || !stdoutIsTTY) {
-		(deps.writeStderr ?? (text => process.stderr.write(text)))(t("omp setup requires an interactive TTY.") + "\n");
+		(deps.writeStderr ?? (text => process.stderr.write(text)))(`${t("omp setup requires an interactive TTY.")}\n`);
 		(deps.exit ?? process.exit)(1);
 		return;
 	}

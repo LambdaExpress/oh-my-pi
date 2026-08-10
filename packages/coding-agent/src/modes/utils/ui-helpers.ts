@@ -5,9 +5,9 @@ import { type Component, Spacer, Text, TruncatedText } from "@oh-my-pi/pi-tui";
 import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
-import { t } from "../../i18n";
 import { getEditClipboard } from "../../edit/edit-clipboard";
 import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
+import { t } from "../../i18n";
 import { createAdvisorMessageCard } from "../../modes/components/advisor-message";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { createBackgroundTanDispatchBlock } from "../../modes/components/background-tan-message";
@@ -512,6 +512,7 @@ export class UiHelpers {
 						content.name,
 						renderArgs,
 						{
+							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(content.name),
 							snapshots: getFileSnapshotStore(this.ctx.viewSession),
 							clipboard: getEditClipboard(this.ctx.viewSession),
 							showImages: settings.get("terminal.showImages"),
@@ -754,7 +755,9 @@ export class UiHelpers {
 	}
 
 	showError(errorMessage: string): void {
-		const text = new Text(t("Error: {message}", { message: errorMessage }), 1, 0).setStyleFn(t => theme.fg("error", t));
+		const text = new Text(t("Error: {message}", { message: errorMessage }), 1, 0).setStyleFn(t =>
+			theme.fg("error", t),
+		);
 		this.ctx.present([new Spacer(1), text]);
 	}
 
@@ -823,9 +826,7 @@ export class UiHelpers {
 		this.ctx.editor.clearDraft(text);
 		this.ctx.updatePendingMessagesDisplay();
 		this.ctx.showStatus(
-			queuedImages
-				? t("Queued message with image for after compaction")
-				: t("Queued message for after compaction"),
+			queuedImages ? t("Queued message with image for after compaction") : t("Queued message for after compaction"),
 		);
 	}
 

@@ -168,7 +168,8 @@ console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProto
 		expect(exitCode).toBe(0);
 		const resolved = JSON.parse(stdout) as { id: string; imageProtocol: string | null; expected: string | null };
 		expect(resolved.id).toBe("warp");
-		expect(resolved.imageProtocol).toBe(resolved.expected);
+		// Warp for Windows lacks Kitty graphics support.
+		expect(resolved.imageProtocol).toBe(process.platform === "win32" ? null : resolved.expected);
 	});
 
 	it("is Kitty-capable with true color but no OSC 8 hyperlinks on supported hosts", () => {
@@ -180,14 +181,27 @@ console.log(JSON.stringify({ id: TERMINAL_ID, imageProtocol: TERMINAL.imageProto
 		expect(warp.textSizing).toBe(false);
 	});
 
+	it("is Kitty-capable with true color but no OSC 8 hyperlinks", () => {
+		const warp = getTerminalInfo("warp");
+		// Warp lacks Kitty graphics on Windows hosts, including WSL.
+		const windowsHost =
+			process.platform === "win32" ||
+			(process.platform === "linux" && Boolean(Bun.env.WSL_DISTRO_NAME || Bun.env.WSL_INTEROP));
+		expect(warp.imageProtocol).toBe(windowsHost ? null : ImageProtocol.Kitty);
+		expect(warp.trueColor).toBe(true);
+		expect(warp.hyperlinks).toBe(false);
+		expect(warp.notifyProtocol).toBe(NotifyProtocol.Osc9);
+		expect(warp.textSizing).toBe(false);
+	});
+
 	it("uses Kitty images on macOS/Linux and disables them on Windows", () => {
 		const mac = getTerminalInfo("warp", "darwin", {});
 		const linux = getTerminalInfo("warp", "linux", {});
 		const windows = getTerminalInfo("warp", "win32", {});
 
-		expect(resolveWarpImageProtocol("darwin")).toBe(ImageProtocol.Kitty);
-		expect(resolveWarpImageProtocol("linux")).toBe(ImageProtocol.Kitty);
-		expect(resolveWarpImageProtocol("win32")).toBeNull();
+		expect(resolveWarpImageProtocol("darwin", {})).toBe(ImageProtocol.Kitty);
+		expect(resolveWarpImageProtocol("linux", {})).toBe(ImageProtocol.Kitty);
+		expect(resolveWarpImageProtocol("win32", {})).toBeNull();
 		expect(mac.imageProtocol).toBe(ImageProtocol.Kitty);
 		expect(linux.imageProtocol).toBe(ImageProtocol.Kitty);
 		expect(windows.imageProtocol).toBeNull();

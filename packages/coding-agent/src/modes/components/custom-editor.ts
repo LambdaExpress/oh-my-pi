@@ -921,7 +921,6 @@ export class CustomEditor extends Editor {
 				this.onToggleCompletedRuns();
 				return;
 			}
-
 			// Intercept configured tool activity visibility toggle
 			if (this.#matchesAction(canonical, "app.tools.toggleVisibility") && this.onToggleToolActivity) {
 				this.onToggleToolActivity();

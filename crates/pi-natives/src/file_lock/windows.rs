@@ -21,12 +21,15 @@ pub fn try_acquire(path: &str) -> io::Result<Option<PlatformFileLock>> {
 		.chain(std::iter::once(0))
 		.collect();
 
+	// SAFETY: SetLastError is a trivial FFI call with no pointers, handles, or
+	// buffers; it only writes this thread's last-error slot, clearing it so the
+	// `ERROR_ALREADY_EXISTS` probe below is unambiguous.
+	unsafe { SetLastError(0) };
 	// `bInitialOwner` only grants ownership when this call creates the mutex.
 	// Existing mutexes return `ERROR_ALREADY_EXISTS` without changing ownership,
 	// which also prevents Win32's same-thread recursive acquisition behavior.
 	// SAFETY: the attributes pointer is null, and `wide_name` is a live,
 	// NUL-terminated UTF-16 string for the duration of the call.
-	unsafe { SetLastError(0) };
 	let raw_handle = unsafe { CreateMutexW(ptr::null(), 1, wide_name.as_ptr()) };
 	if raw_handle.is_null() {
 		return Err(io::Error::last_os_error());

@@ -219,7 +219,10 @@ export class OmfgController {
 
 			if (location === AMEND_OPTION) {
 				request.component.setStatus("confirming", t("Describe how to amend the rule…"));
-				const amendment = await this.ctx.showHookInput(t("Amend TTSR rule"), t("e.g. Make it specific to Ruby string eval in tool:write(*.rb)"));
+				const amendment = await this.ctx.showHookInput(
+					t("Amend TTSR rule"),
+					t("e.g. Make it specific to Ruby string eval in tool:write(*.rb)"),
+				);
 				if (!this.#isActiveRequest(request)) return { kind: "aborted" };
 				const feedback = amendment?.trim();
 				if (!feedback) continue;

@@ -273,8 +273,7 @@ export async function runPrintMode(session: AgentSession, options: PrintModeOpti
 				!isSilentAbort(assistantMsg)
 			) {
 				const errorLine = sanitizeText(
-					assistantMsg.errorMessage ||
-						t("Request {reason}", { reason: assistantMsg.stopReason }),
+					assistantMsg.errorMessage || t("Request {reason}", { reason: assistantMsg.stopReason }),
 				);
 				// This branch hard-exits, bypassing the `await session.dispose()` at
 				// the end of runPrintMode. Flush telemetry and dispose the session

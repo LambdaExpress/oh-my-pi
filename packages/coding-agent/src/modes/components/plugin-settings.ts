@@ -120,18 +120,11 @@ export class PluginListComponent extends Container {
 			this.addChild(new Text(theme.fg("muted", `  ${t("No plugins installed")}`), 0, 0));
 			this.addChild(new Spacer(1));
 			this.addChild(
-				new Text(
-					theme.fg("dim", `  ${t("Install npm plugins:        omp plugin install <package>")}`),
-					0,
-					0,
-				),
+				new Text(theme.fg("dim", `  ${t("Install npm plugins:        omp plugin install <package>")}`), 0, 0),
 			);
 			this.addChild(
 				new Text(
-					theme.fg(
-						"dim",
-						`  ${t("Install marketplace plugins: omp plugin install <name>@<marketplace>")}`,
-					),
+					theme.fg("dim", `  ${t("Install marketplace plugins: omp plugin install <name>@<marketplace>")}`),
 					0,
 					0,
 				),
@@ -462,9 +455,7 @@ export class MarketplacePluginDetailComponent extends Container {
 
 		// Read-only metadata. SettingsList rejects items without `values`/`submenu`,
 		// so we render the metadata as plain text rows beneath the toggle.
-		this.addChild(
-			new Text(theme.fg("dim", `  ${t("version")}       ${entry?.version ?? t("(unknown)")}`), 0, 0),
-		);
+		this.addChild(new Text(theme.fg("dim", `  ${t("version")}       ${entry?.version ?? t("(unknown)")}`), 0, 0));
 		this.addChild(new Text(theme.fg("dim", `  ${t("scope")}         ${plugin.scope}`), 0, 0));
 		this.addChild(
 			new Text(
@@ -476,12 +467,8 @@ export class MarketplacePluginDetailComponent extends Container {
 				0,
 			),
 		);
-		this.addChild(
-			new Text(theme.fg("dim", `  ${t("installed at")}  ${entry?.installedAt ?? t("(unknown)")}`), 0, 0),
-		);
-		this.addChild(
-			new Text(theme.fg("dim", `  ${t("last updated")}  ${entry?.lastUpdated ?? t("(unknown)")}`), 0, 0),
-		);
+		this.addChild(new Text(theme.fg("dim", `  ${t("installed at")}  ${entry?.installedAt ?? t("(unknown)")}`), 0, 0));
+		this.addChild(new Text(theme.fg("dim", `  ${t("last updated")}  ${entry?.lastUpdated ?? t("(unknown)")}`), 0, 0));
 		if (entry?.gitCommitSha) {
 			this.addChild(new Text(theme.fg("dim", `  ${t("git sha")}       ${entry.gitCommitSha}`), 0, 0));
 		}

@@ -52,7 +52,7 @@ import {
 	prompt,
 	setProjectDir,
 } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { reset as resetCapabilities } from "../capability";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
@@ -1595,7 +1595,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		const remainingSuffix = this.loopLimit
 			? t(" {remaining}.", { remaining: describeLoopLimitRuntime(this.loopLimit) })
 			: "";
-		const tail = parsed.prompt ? t("Repeating it after each turn.") : t("Your next prompt will repeat after each turn.");
+		const tail = parsed.prompt
+			? t("Repeating it after each turn.")
+			: t("Your next prompt will repeat after each turn.");
 		this.showStatus(
 			t(
 				"Loop mode enabled.{limitSuffix}{remainingSuffix} {tail} Esc cancels the current iteration; /loop again to disable.",
@@ -3567,7 +3569,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#updateVibeModeStatus();
 		if (options?.persistModeChange !== false) this.sessionManager.appendModeChange("vibe");
 		this.showStatus(
-			t("Vibe mode enabled. You direct fast/good worker sessions; toolset is read + optional parent Todo + vibe tools."),
+			t(
+				"Vibe mode enabled. You direct fast/good worker sessions; toolset is read + optional parent Todo + vibe tools.",
+			),
 		);
 	}
 
@@ -3615,7 +3619,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#resetGoalContinuationSuppression();
 		this.#scheduleGoalContinuation();
 		this.showStatus(
-			nextBudget === undefined ? t("Goal budget cleared.") : t("Goal budget set to {budget}.", { budget: nextBudget }),
+			nextBudget === undefined
+				? t("Goal budget cleared.")
+				: t("Goal budget set to {budget}.", { budget: nextBudget }),
 		);
 	}
 
@@ -3741,9 +3747,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			case "budget":
 				if (!this.goalModeEnabled) {
 					this.showWarning(
-						this.#getPausedGoalState()
-							? t("Resume the goal before adjusting the budget.")
-							: t("No active goal."),
+						this.#getPausedGoalState() ? t("Resume the goal before adjusting the budget.") : t("No active goal."),
 					);
 					return;
 				}
@@ -3823,14 +3827,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		const goal = this.session.getGoalModeState()?.goal;
 		const prefill = goal?.tokenBudget !== undefined ? String(goal.tokenBudget) : "";
 		const input = (
-			await this.showHookEditor(
-				t("Goal budget (number, `off`, or empty to cancel)"),
-				prefill,
-				undefined,
-				{
-					promptStyle: true,
-				},
-			)
+			await this.showHookEditor(t("Goal budget (number, `off`, or empty to cancel)"), prefill, undefined, {
+				promptStyle: true,
+			})
 		)?.trim();
 		if (!input) return;
 		await this.#handleGoalBudgetCommand(input);
@@ -4358,7 +4357,14 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
-	/** Defer transcript command panels until the active turn can no longer grow above them. */
+	/**
+	 * Defer transcript command panels while the agent is streaming, then mount
+	 * them at the next settle, terminal or not. A non-terminal settle is only a
+	 * scheduling pause, so resumed streaming can still land below a panel
+	 * flushed there. That is preferred over leaving it queued behind a command
+	 * the user runs during the pause, which mounts immediately and would put the
+	 * older panel out of order.
+	 */
 	presentCommandOutput(content: Component | readonly Component[]): void {
 		if (!this.session.isStreaming) {
 			this.present(content);
@@ -4371,6 +4377,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#pendingCommandOutputSessionId = sessionId;
 		const items = Array.isArray(content) ? content : [content as Component];
 		this.#pendingCommandOutput.push(...items);
+		// No feedback here on purpose: mounting anything into the transcript
+		// mid-turn (even a status line) re-renders rows below the growing live
+		// block and duplicates them in native scrollback — the exact regression
+		// issues #4806/#6767 pin. The queue flushes at the next settle.
 	}
 
 	/** Mount every command panel queued for the current session while the agent was streaming. */
@@ -4450,9 +4460,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		if (failedServers.length > 1) {
 			const failedNames = failedServers.map(server => server.name).join(", ");
-			this.showWarning(
-				t("LSP startup failed for {names}. It will retry lazily on write.", { names: failedNames }),
-			);
+			this.showWarning(t("LSP startup failed for {names}. It will retry lazily on write.", { names: failedNames }));
 		}
 	}
 

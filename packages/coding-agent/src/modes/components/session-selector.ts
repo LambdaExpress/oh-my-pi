@@ -564,10 +564,8 @@ class SessionList implements Component {
 			const diffDays = Math.floor(diffMs / 86400000);
 
 			if (diffMins < 1) return t("just now");
-			if (diffMins < 60)
-				return diffMins === 1 ? t("1 minute ago") : t("{count} minutes ago", { count: diffMins });
-			if (diffHours < 24)
-				return diffHours === 1 ? t("1 hour ago") : t("{count} hours ago", { count: diffHours });
+			if (diffMins < 60) return diffMins === 1 ? t("1 minute ago") : t("{count} minutes ago", { count: diffMins });
+			if (diffHours < 24) return diffHours === 1 ? t("1 hour ago") : t("{count} hours ago", { count: diffHours });
 			if (diffDays === 1) return t("1 day ago");
 			if (diffDays < 7) return t("{count} days ago", { count: diffDays });
 
@@ -886,9 +884,7 @@ export class SessionSelectorComponent extends Container {
 				if (!this.#loadAllSessions) return;
 				this.#toggling = true;
 				this.#messageContainer.clear();
-				this.#messageContainer.addChild(
-					new Text(theme.fg("muted", `  ${t("Loading all projects")}…`), 1, 0),
-				);
+				this.#messageContainer.addChild(new Text(theme.fg("muted", `  ${t("Loading all projects")}…`), 1, 0));
 				this.#onRequestRender?.();
 				try {
 					global = await this.#loadAllSessions();
@@ -940,9 +936,7 @@ export class SessionSelectorComponent extends Container {
 
 	#showError(message: string): void {
 		this.#messageContainer.clear();
-		this.#messageContainer.addChild(
-			new Text(theme.fg("error", `${t("Error")}: ${replaceTabs(message)}`), 1, 0),
-		);
+		this.#messageContainer.addChild(new Text(theme.fg("error", `${t("Error")}: ${replaceTabs(message)}`), 1, 0));
 		this.#messageContainer.addChild(new Spacer(1));
 	}
 

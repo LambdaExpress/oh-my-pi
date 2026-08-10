@@ -33,7 +33,13 @@ export type StreamMarkupHealingEvent =
 	| { readonly type: "text"; readonly text: string }
 	| { readonly type: "thinking"; readonly thinking: string }
 	| { readonly type: "toolCallStart"; readonly call: { readonly id: string; readonly name: string } }
-	| { readonly type: "toolCallArgDelta"; readonly call: { readonly id: string; readonly name: string }; readonly key: string; readonly delta: string; readonly isString: boolean }
+	| {
+			readonly type: "toolCallArgDelta";
+			readonly call: { readonly id: string; readonly name: string };
+			readonly key: string;
+			readonly delta: string;
+			readonly isString: boolean;
+	  }
 	| { readonly type: "toolCall"; readonly call: HealedToolCall };
 
 /**

@@ -593,9 +593,12 @@ mod foreground {
 	impl ForegroundGuard {
 		fn activate(id: &str) -> CoreResult<Self> {
 			let target = background::hwnd(id)?;
-			// SAFETY: both calls access process-global foreground state; target was
-			// validated.
+			// SAFETY: GetForegroundWindow is a stateless query of process-global
+			// foreground state; the returned HWND is never dereferenced.
 			let previous = unsafe { GetForegroundWindow() };
+			// SAFETY: `target` was validated by `background::hwnd` and is still
+			// live; SetForegroundWindow checks the handle itself and signals a
+			// refusal with a zero return instead of undefined behavior.
 			if previous != target && unsafe { SetForegroundWindow(target) } == 0 {
 				return Err(DesktopError::input_failed(format!(
 					"SetForegroundWindow failed for window {id}"
@@ -644,11 +647,17 @@ mod foreground {
 
 	fn move_to(x: f64, y: f64) -> CoreResult<()> {
 		let (x, y) = capture::logical_to_physical(x, y)?;
-		// SAFETY: GetSystemMetrics has no preconditions.
-		let origin_x = unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) };
-		let origin_y = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
-		let width = unsafe { GetSystemMetrics(SM_CXVIRTUALSCREEN) };
-		let height = unsafe { GetSystemMetrics(SM_CYVIRTUALSCREEN) };
+		// SAFETY: GetSystemMetrics is a stateless query of global metric state —
+		// no pointers, handles, or buffers — so the four calls have no
+		// preconditions and cannot alias anything.
+		let (origin_x, origin_y, width, height) = unsafe {
+			(
+				GetSystemMetrics(SM_XVIRTUALSCREEN),
+				GetSystemMetrics(SM_YVIRTUALSCREEN),
+				GetSystemMetrics(SM_CXVIRTUALSCREEN),
+				GetSystemMetrics(SM_CYVIRTUALSCREEN),
+			)
+		};
 		if width <= 1 || height <= 1 {
 			return Err(DesktopError::input_failed("Win32 virtual desktop geometry is unavailable"));
 		}

@@ -7,9 +7,9 @@
  * streaming.
  */
 import { describe, expect, it } from "bun:test";
-import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
 import type { FetchImpl, Model } from "@oh-my-pi/pi-ai/types";
+import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
 function deepseekModel(): Model<"openai-completions"> {
@@ -42,7 +42,9 @@ const streamedWriteCall = [
 			{
 				index: 0,
 				delta: {
-					tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "write", arguments: '{"path"' } }],
+					tool_calls: [
+						{ index: 0, id: "call_1", type: "function", function: { name: "write", arguments: '{"path"' } },
+					],
 				},
 			},
 		],
@@ -50,12 +52,17 @@ const streamedWriteCall = [
 	{
 		id: "3",
 		object: "chat.completion.chunk",
-		choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: ':"src/demo.ts","content":"line 01' } }] } }],
+		choices: [
+			{
+				index: 0,
+				delta: { tool_calls: [{ index: 0, function: { arguments: ':"src/demo.ts","content":"line 01' } }] },
+			},
+		],
 	},
 	{
 		id: "4",
 		object: "chat.completion.chunk",
-		choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: '\\nline 02\\nline 03' } }] } }],
+		choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "\\nline 02\\nline 03" } }] } }],
 	},
 	{ id: "5", object: "chat.completion.chunk", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] },
 ];
@@ -80,7 +87,11 @@ describe("openai-completions streaming partialJson", () => {
 				toolChoice: "auto",
 				stream: true,
 			} as never,
-			{ apiKey: "probe", fetch: createMockFetch(streamedWriteCall), baseUrl: "https://opencode.ai/zen/go/v1" } as never,
+			{
+				apiKey: "probe",
+				fetch: createMockFetch(streamedWriteCall),
+				baseUrl: "https://opencode.ai/zen/go/v1",
+			} as never,
 		);
 
 		const frames: string[] = [];
@@ -129,7 +140,11 @@ describe("openai-completions streaming partialJson", () => {
 				toolChoice: "auto",
 				stream: true,
 			} as never,
-			{ apiKey: "probe", fetch: createMockFetch(streamedWriteCall), baseUrl: "https://opencode.ai/zen/go/v1" } as never,
+			{
+				apiKey: "probe",
+				fetch: createMockFetch(streamedWriteCall),
+				baseUrl: "https://opencode.ai/zen/go/v1",
+			} as never,
 		);
 
 		for await (const event of events) {

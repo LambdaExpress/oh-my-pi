@@ -6,11 +6,11 @@ import {
 	loadSkillBody,
 	parseSkillInvocation,
 } from "../../extensibility/skills";
+import { t } from "../../i18n";
 import btwUserPrompt from "../../prompts/system/btw-user.md" with { type: "text" };
 import { type CustomMessage, SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails } from "../../session/messages";
 import { copyToClipboard } from "../../utils/clipboard";
 import { BtwPanelComponent } from "../components/btw-panel";
-import { t } from "../../i18n";
 import type { InteractiveModeContext } from "../types";
 
 interface BtwRequest {

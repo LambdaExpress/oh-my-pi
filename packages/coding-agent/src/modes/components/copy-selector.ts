@@ -8,6 +8,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
+import { t } from "../../i18n";
 import { replaceTabs } from "../../tools/render-utils";
 import { highlightCode, theme } from "../theme/theme";
 import type { CopyTarget } from "../utils/copy-targets";
@@ -18,7 +19,6 @@ import {
 	matchesSelectPageUp,
 	matchesSelectUp,
 } from "../utils/keybinding-matchers";
-import { t } from "../../i18n";
 import { keyHint, rawKeyHint } from "./keybinding-hints";
 import { bottomBorder, divider, fit, row, topBorder } from "./overlay-box";
 
@@ -240,9 +240,7 @@ export class CopySelectorComponent implements Component {
 			if (k < visibleCount) {
 				out.push(row(isCode ? wrapped[k]! : theme.fg("muted", wrapped[k]!), width));
 			} else if (k === visibleCount && hasMore) {
-				out.push(
-					row(theme.fg("dim", t("… {count} more lines", { count: wrapped.length - visibleCount })), width),
-				);
+				out.push(row(theme.fg("dim", t("… {count} more lines", { count: wrapped.length - visibleCount })), width));
 			} else {
 				out.push(row("", width));
 			}

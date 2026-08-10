@@ -10,8 +10,8 @@
  */
 
 import { getProjectDir } from "@oh-my-pi/pi-utils";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
-import chalk from "chalk";
 import { sayHelp as commandHelp } from "../cli/command-help";
 import { Settings, settings } from "../config/settings";
 import { t } from "../i18n";
@@ -43,7 +43,7 @@ export default class Say extends Command {
 	async run(): Promise<void> {
 		const { args, flags } = await this.parse(Say);
 		if (args.text && flags.file) {
-			process.stderr.write(chalk.red(t("error: pass either text or --file, not both") + "\n"));
+			process.stderr.write(chalk.red(`${t("error: pass either text or --file, not both")}\n`));
 			process.exit(1);
 		}
 
@@ -74,7 +74,7 @@ export default class Say extends Command {
 			const splitter = new SpeakableStream();
 			const segments = [...splitter.push(text), ...splitter.flush()];
 			if (segments.length === 0) {
-				process.stderr.write(chalk.red(t("error: nothing speakable in the input") + "\n"));
+				process.stderr.write(chalk.red(`${t("error: nothing speakable in the input")}\n`));
 				exitCode = 1;
 				return;
 			}
@@ -107,7 +107,7 @@ export default class Say extends Command {
 				await Bun.write(flags.out, wav);
 				const durationSec = total / sampleRate;
 				process.stdout.write(
-					t("{saved} {out} {meta}", {
+					`${t("{saved} {out} {meta}", {
 						saved: chalk.green(t("saved")),
 						out: flags.out,
 						meta: chalk.dim(
@@ -118,7 +118,7 @@ export default class Say extends Command {
 								bytes: wav.byteLength,
 							}),
 						),
-					}) + "\n",
+					})}\n`,
 				);
 				return;
 			}
@@ -140,7 +140,7 @@ export default class Say extends Command {
 			}
 			await player.end();
 			process.stdout.write(
-				t("{spoke} {meta}", {
+				`${t("{spoke} {meta}", {
 					spoke: chalk.green(t("spoke")),
 					meta: chalk.dim(
 						t("({voice}, {model}, {seconds}s, {spoken} segments)", {
@@ -150,11 +150,11 @@ export default class Say extends Command {
 							spoken,
 						}),
 					),
-				}) + "\n",
+				})}\n`,
 			);
 		} catch (err) {
 			process.stderr.write(
-				chalk.red(t("error: {message}", { message: err instanceof Error ? err.message : String(err) }) + "\n"),
+				chalk.red(`${t("error: {message}", { message: err instanceof Error ? err.message : String(err) })}\n`),
 			);
 			exitCode = 1;
 		} finally {
@@ -168,10 +168,9 @@ export default class Say extends Command {
 	#synthesisFailed(model: string): void {
 		process.stderr.write(
 			chalk.red(
-				t(
-					"error: could not synthesize with local TTS model \"{model}\". Run `omp setup speech` to install it.",
-					{ model },
-				) + "\n",
+				`${t('error: could not synthesize with local TTS model "{model}". Run `omp setup speech` to install it.', {
+					model,
+				})}\n`,
 			),
 		);
 	}

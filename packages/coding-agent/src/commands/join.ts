@@ -25,12 +25,12 @@ export default class Join extends Command {
 		const { args } = await this.parse(Join);
 		const link = args.link?.trim();
 		if (!link) {
-			process.stderr.write(t("Usage: {app} join <link>", { app: APP_NAME }) + "\n");
+			process.stderr.write(`${t("Usage: {app} join <link>", { app: APP_NAME })}\n`);
 			process.exitCode = 1;
 			return;
 		}
 		if (!process.stdin.isTTY || !process.stdout.isTTY) {
-			process.stderr.write(t("{app} join requires an interactive terminal", { app: APP_NAME }) + "\n");
+			process.stderr.write(`${t("{app} join requires an interactive terminal", { app: APP_NAME })}\n`);
 			process.exitCode = 1;
 			return;
 		}

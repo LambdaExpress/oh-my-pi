@@ -100,11 +100,7 @@ export class LoginDialogComponent extends Container {
 
 		if (launchUrl && launchUrl !== url) {
 			this.#contentContainer.addChild(
-				new Text(
-					theme.fg("dim", t("Local shortcut (this machine only): {launchUrl}", { launchUrl })),
-					1,
-					0,
-				),
+				new Text(theme.fg("dim", t("Local shortcut (this machine only): {launchUrl}", { launchUrl })), 1, 0),
 			);
 		}
 
@@ -149,16 +145,12 @@ export class LoginDialogComponent extends Container {
 		this.#contentContainer.addChild(new Spacer(1));
 		this.#contentContainer.addChild(new Text(theme.fg("text", message), 1, 0));
 		if (placeholder) {
-			this.#contentContainer.addChild(
-				new Text(theme.fg("dim", t("e.g., {placeholder}", { placeholder })), 1, 0),
-			);
+			this.#contentContainer.addChild(new Text(theme.fg("dim", t("e.g., {placeholder}", { placeholder })), 1, 0));
 		}
 		if (!this.#contentContainer.children.includes(this.#input)) {
 			this.#contentContainer.addChild(this.#input);
 		}
-		this.#contentContainer.addChild(
-			new Text(theme.fg("dim", t("(Escape to cancel, Enter to submit)")), 1, 0),
-		);
+		this.#contentContainer.addChild(new Text(theme.fg("dim", t("(Escape to cancel, Enter to submit)")), 1, 0));
 
 		this.#input.setValue("");
 		this.#tui.requestRender();

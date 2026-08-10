@@ -843,7 +843,10 @@ export class ModelHubComponent implements Component {
 				chips.push({
 					label,
 					styled: assignedHere
-						? theme.fg(info.color ?? "muted", `${theme.status.enabled}${label}`) +
+						? // Separator required: under the `nerd` preset this glyph is a
+							// two-cell-wide PUA icon that `visibleWidth` counts as one, so
+							// without it the icon overhangs and eats `label`'s first char.
+							theme.fg(info.color ?? "muted", `${theme.status.enabled} ${label}`) +
 							theme.fg("dim", ` ${theme.status.success}`)
 						: theme.fg(info.color ?? "muted", label),
 					role,
@@ -1644,10 +1647,7 @@ export class ModelHubComponent implements Component {
 		if (this.#assigning !== null) {
 			if (this.#assigning.kind === "fallbackKey") {
 				return truncateToWidth(
-					theme.fg(
-						"accent",
-						` ${t("New fallback chain — Enter picks the model it protects, Esc cancels")}`,
-					),
+					theme.fg("accent", ` ${t("New fallback chain — Enter picks the model it protects, Esc cancels")}`),
 					width,
 				);
 			}
@@ -1664,10 +1664,7 @@ export class ModelHubComponent implements Component {
 				);
 			}
 			return truncateToWidth(
-				theme.fg(
-					"accent",
-					` ${t("Assigning")} ${theme.bold(label)} — ${t("Enter assigns, Esc cancels")}`,
-				),
+				theme.fg("accent", ` ${t("Assigning")} ${theme.bold(label)} — ${t("Enter assigns, Esc cancels")}`),
 				width,
 			);
 		}
@@ -1743,8 +1740,7 @@ export class ModelHubComponent implements Component {
 			}
 
 			if (rowDef.kind === "newRole" || rowDef.kind === "newFallback") {
-				const label =
-					rowDef.kind === "newRole" ? `${t("+ New role")}…` : `${t("+ New fallback")}…`;
+				const label = rowDef.kind === "newRole" ? `${t("+ New role")}…` : `${t("+ New fallback")}…`;
 				let line = ` ${cursor} ${theme.fg(selected ? "accent" : "dim", label)}`;
 				line = this.#finishRolesRow(line, width, hovered);
 				lines.push(line);
@@ -1828,10 +1824,7 @@ export class ModelHubComponent implements Component {
 					cycleOrder.map(role => ({ label: role })),
 					activeIndex,
 				);
-				lines[rows - 1] = truncateToWidth(
-					`  ${theme.fg("dim", `${cycleKey} ${t("cycle")}:`)} ${track}`,
-					width,
-				);
+				lines[rows - 1] = truncateToWidth(`  ${theme.fg("dim", `${cycleKey} ${t("cycle")}:`)} ${track}`, width);
 			} else {
 				lines[rows - 1] = truncateToWidth(
 					theme.fg("dim", `  ${cycleKey} ${t("cycle is empty — press c on a role to add it")}`),
@@ -1867,17 +1860,12 @@ export class ModelHubComponent implements Component {
 				),
 			);
 		} else {
-			lines.push(
-				truncateToWidth(theme.fg("muted", `  ${t("Add an API key for this provider in config.")}`), width),
-			);
+			lines.push(truncateToWidth(theme.fg("muted", `  ${t("Add an API key for this provider in config.")}`), width));
 		}
 		if (entry.oauth) {
 			this.#lockedLoginLine = lines.length + 1; // +1 for the status row offset handled by caller
 			lines.push(
-				truncateToWidth(
-					theme.fg("accent", `  ${theme.nav.cursor} ${t("Log in with OAuth (Enter)")}`),
-					width,
-				),
+				truncateToWidth(theme.fg("accent", `  ${theme.nav.cursor} ${t("Log in with OAuth (Enter)")}`), width),
 			);
 		}
 		lines.push("");
@@ -1935,9 +1923,7 @@ export class ModelHubComponent implements Component {
 			return t("↑/↓ rows · Enter pick · f fallback · x clear · t thinking · c cycle · [/] reorder · n new");
 		}
 		if (entry.kind === "provider" && entry.locked) {
-			return entry.oauth
-				? t("Enter log in · ↑/↓ providers · Esc close")
-				: t("↑/↓ providers · Esc close");
+			return entry.oauth ? t("Enter log in · ↑/↓ providers · Esc close") : t("↑/↓ providers · Esc close");
 		}
 		const arrows = this.#focus === "scope" ? t("↑/↓ providers · → models") : t("↑/↓ models · ← providers");
 		const refresh = entry.kind === "provider" ? ` · F5 ${t("refresh")}` : "";
@@ -1956,10 +1942,7 @@ export class ModelHubComponent implements Component {
 			const label = theme.fg("accent", t("New role name:"));
 			const inputWidth = Math.max(8, Math.min(32, width - visibleWidth(t("New role name:")) - 24));
 			const inputLine = strip.input.render(inputWidth)[0] ?? "";
-			return truncateToWidth(
-				`${label} ${inputLine} ${theme.fg("dim", t("(letters, digits, - and _)"))}`,
-				width,
-			);
+			return truncateToWidth(`${label} ${inputLine} ${theme.fg("dim", t("(letters, digits, - and _)"))}`, width);
 		}
 
 		const prefix =

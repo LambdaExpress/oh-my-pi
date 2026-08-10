@@ -13,8 +13,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { AstMatchStrictness, astMatch, FileType, type GlobMatch, glob } from "@oh-my-pi/pi-natives";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { getProjectDir } from "@oh-my-pi/pi-utils/dirs";
-import chalk from "chalk";
 import { BUILTIN_DEFAULTS_PROVIDER_ID, compileRuleCondition, type Rule, ruleCapability } from "../capability/rule";
 import { bucketRules } from "../capability/rule-buckets";
 import { Settings } from "../config/settings";
@@ -379,7 +379,9 @@ async function runTest(args: TtsrTestArgs, json: boolean, cwd: string): Promise<
 	if (rules.length === 0) {
 		const msg = args.rule
 			? t("Rule registered but produced no TTSR entry.")
-			: t("No TTSR rules registered for this project. Add a `condition` or `astCondition` to a rule file, then re-run.");
+			: t(
+					"No TTSR rules registered for this project. Add a `condition` or `astCondition` to a rule file, then re-run.",
+				);
 		if (json) {
 			process.stdout.write(`${JSON.stringify({ error: msg })}\n`);
 		} else {
@@ -812,9 +814,7 @@ async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<
 		if (json) {
 			process.stdout.write(`${JSON.stringify({ error: t("Directory not found: {path}", { path: scanDir }) })}\n`);
 		} else {
-			process.stderr.write(
-				`${chalk.red(t("error: scan directory not found: {path}", { path: scanDir }))}\n`,
-			);
+			process.stderr.write(`${chalk.red(t("error: scan directory not found: {path}", { path: scanDir }))}\n`);
 		}
 		process.exit(1);
 	}
@@ -996,7 +996,7 @@ async function runScan(args: TtsrScanArgs, json: boolean, cwd: string): Promise<
 			);
 			if (!includeDetails) {
 				process.stdout.write(
-					`${chalk.dim("  " + t("rerun with --verbose to list matched files and conditions"))}\n`,
+					`${chalk.dim(`  ${t("rerun with --verbose to list matched files and conditions")}`)}\n`,
 				);
 				return;
 			}
@@ -1017,9 +1017,7 @@ export async function runTtsrCommand(cmd: TtsrCommandArgs): Promise<void> {
 	const cwd = getProjectDir();
 	if (cmd.action === "test") {
 		if (!cmd.test) {
-			process.stderr.write(
-				`${chalk.red(t("error: `ttsr test` requires a snippet, --file, or piped stdin"))}\n`,
-			);
+			process.stderr.write(`${chalk.red(t("error: `ttsr test` requires a snippet, --file, or piped stdin"))}\n`);
 			process.exit(1);
 		}
 		await runTest(cmd.test, cmd.json ?? false, cwd);

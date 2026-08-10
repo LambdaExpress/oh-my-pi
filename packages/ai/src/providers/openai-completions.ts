@@ -993,7 +993,9 @@ const streamOpenAICompletionsOnce = (
 			// `toolCall` closes it with the scanner's authoritative arguments.
 			// Without the incremental path the whole payload would snap in at
 			// `toolEnd`, killing the streaming preview for write/edit/bash.
-			let healedStream: { block: ToolCallStreamBlock; prefix: string; pendingKey: string; pendingIsString: boolean } | undefined;
+			let healedStream:
+				| { block: ToolCallStreamBlock; prefix: string; pendingKey: string; pendingIsString: boolean }
+				| undefined;
 			const closeHealedParam = (): void => {
 				const stream = healedStream;
 				if (!stream?.pendingKey) return;

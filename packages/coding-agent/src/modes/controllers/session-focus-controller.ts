@@ -9,11 +9,11 @@
  * authoritative state.
  */
 
+import { t } from "../../i18n";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID, type RegistryEvent } from "../../registry/agent-registry";
 import type { AgentSession } from "../../session/agent-session";
 import { setTerminalTitleState } from "../../utils/title-generator";
-import { t } from "../../i18n";
 import type { InteractiveModeContext } from "../types";
 
 export class SessionFocusController {

@@ -5,7 +5,7 @@
  */
 import * as path from "node:path";
 import { APP_NAME, getProjectDir, getPythonEnvDir } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Settings, settings } from "../config/settings";
 import { checkPythonKernelAvailability } from "../eval/py/kernel";
 import { t } from "../i18n";
@@ -274,8 +274,7 @@ async function handleSpeechSetup(flags: { json?: boolean; check?: boolean }): Pr
 			process.stdout.write("\n");
 		} catch (err) {
 			process.stdout.write("\n");
-			const msg =
-				err instanceof Error ? err.message : t("Failed to set up {name}", { name: component.name });
+			const msg = err instanceof Error ? err.message : t("Failed to set up {name}", { name: component.name });
 			console.error(chalk.red(`${theme.status.error} ${msg}`));
 			process.exit(1);
 		}

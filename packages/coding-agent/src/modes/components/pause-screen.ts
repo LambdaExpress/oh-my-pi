@@ -20,8 +20,8 @@ import {
 	type OverlayOptions,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
-import { formatDuration } from "../../slash-commands/helpers/format";
 import { t } from "../../i18n";
+import { formatDuration } from "../../slash-commands/helpers/format";
 import { theme } from "../theme/theme";
 import { matchesAppInterrupt } from "../utils/keybinding-matchers";
 

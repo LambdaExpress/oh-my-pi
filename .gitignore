@@ -89,4 +89,6 @@ packages/coding-agent/bench/boot-baseline.json
 /bazel-out
 /bazel-testlogs
 /bazel-*
+/bazel-pi
+/bazel-oh-my-pi
 /.bazelrc.user

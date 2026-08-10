@@ -25,6 +25,7 @@ import type { SessionContext, StrippedToolCallsMarker } from "@oh-my-pi/pi-codin
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { type Component, Container, Image, ImageProtocol, setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../../../src/i18n";
 
 interface DisplaySnapshotFixture {
 	toolCallId: string;
@@ -46,12 +47,16 @@ beforeEach(async () => {
 	// Settings (display.collapseCompacted) — re-init before every test.
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
+	// Pin English so assertions are deterministic on non-English (e.g. zh-CN)
+	// developer machines where display.language auto-detects the system locale.
+	setLocale("en");
 });
 
 const originalImageProtocol = TERMINAL.imageProtocol;
 
 afterEach(() => {
 	resetSettingsForTest();
+	setLocale(null);
 	setTerminalImageProtocol(originalImageProtocol);
 	vi.restoreAllMocks();
 });
@@ -87,6 +92,7 @@ function makeCtx(): {
 		session: { buildTranscriptSessionContext: unusedPrimarySessionTranscriptSpy },
 		viewSession: {
 			buildTranscriptSessionContext: transcriptSpy,
+			hasBuiltInTool: () => true,
 			sessionManager: {
 				buildSessionContext: llmContextSpy,
 				getEntries: vi.fn(() => []),
@@ -194,6 +200,7 @@ function makeRenderCtx(
 			buildTranscriptSessionContext,
 			getToolByName: () => undefined,
 			getToolExecutionDisplaySnapshots: () => toolExecutionDisplaySnapshots,
+			hasBuiltInTool: () => true,
 			extensionRunner: undefined,
 			sessionManager: {
 				getEntries: vi.fn(() => []),

@@ -31,7 +31,7 @@ describe("i18n t()", () => {
 	});
 
 	it("returns the zh-CN translation when present and falls back to the key otherwise", () => {
-		zhCN["Hello"] = "你好";
+		zhCN.Hello = "你好";
 		setLocale("zh-CN");
 		expect(t("Hello")).toBe("你好");
 		expect(t("Untranslated string")).toBe("Untranslated string");
@@ -52,7 +52,7 @@ describe("i18n t()", () => {
 	});
 
 	it("resolves locale from settings when not pinned", () => {
-		zhCN["Hello"] = "你好";
+		zhCN.Hello = "你好";
 		const s = Settings.isolated({ "display.language": "zh-CN" });
 		// Pin through the same code path the settings panel uses: the value
 		// coming out of Settings is what drives t().
@@ -84,7 +84,7 @@ describe("auto system-language detection", () => {
 	});
 
 	it("drives t() through the auto setting", () => {
-		zhCN["Hello"] = "你好";
+		zhCN.Hello = "你好";
 		process.env.LC_ALL = "zh_CN.UTF-8";
 		const s = Settings.isolated({ "display.language": "auto" });
 		setLocale(s.get("display.language"));

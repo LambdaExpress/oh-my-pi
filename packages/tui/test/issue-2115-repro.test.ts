@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { type Component, type RenderScheduler, type RenderTimer, TUI } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "./virtual-terminal";
 
@@ -14,6 +14,7 @@ import { VirtualTerminal } from "./virtual-terminal";
 
 const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
 const ORIGINAL_WT_SESSION = Bun.env.WT_SESSION;
+const ORIGINAL_HERDR_ENV = Bun.env.HERDR_ENV;
 
 class LargeCjkContent implements Component {
 	#lines: string[];
@@ -86,11 +87,17 @@ class ManualRenderScheduler implements RenderScheduler {
 	}
 }
 
+beforeEach(() => {
+	delete Bun.env.HERDR_ENV;
+});
+
 describe("issue #2115: ConPTY large-session resume truncates at logical lines", () => {
 	afterEach(() => {
 		if (PLATFORM_DESCRIPTOR) Object.defineProperty(process, "platform", PLATFORM_DESCRIPTOR);
 		if (ORIGINAL_WT_SESSION === undefined) delete Bun.env.WT_SESSION;
 		else Bun.env.WT_SESSION = ORIGINAL_WT_SESSION;
+		if (ORIGINAL_HERDR_ENV === undefined) delete Bun.env.HERDR_ENV;
+		else Bun.env.HERDR_ENV = ORIGINAL_HERDR_ENV;
 		vi.restoreAllMocks();
 	});
 

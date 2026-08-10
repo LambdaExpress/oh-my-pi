@@ -58,8 +58,7 @@ class ModelSceneController implements SetupSceneController {
 
 	render(width: number, maxLines?: number): readonly string[] {
 		const lines = [
-			this.#status ??
-				theme.fg("muted", t("Type to search. Enter saves the highlighted model as your default.")),
+			this.#status ?? theme.fg("muted", t("Type to search. Enter saves the highlighted model as your default.")),
 			"",
 		];
 		const budget = maxLines === undefined ? MAX_VISIBLE_MODELS : maxLines - lines.length - BROWSER_FRAME_ROWS;

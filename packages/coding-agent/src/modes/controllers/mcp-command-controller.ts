@@ -8,6 +8,7 @@ import { type Component, replaceTabs, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { getMCPConfigPath, getProjectDir } from "@oh-my-pi/pi-utils";
 import type { SourceMeta } from "../../capability/types";
 import { expandEnvVarsDeep } from "../../discovery/helpers";
+import { t } from "../../i18n";
 import {
 	analyzeAuthError,
 	discoverOAuthEndpoints,
@@ -63,7 +64,6 @@ import { openPath } from "../../utils/open";
 import { ChatBlock } from "../components/chat-block";
 import { MCPAddWizard } from "../components/mcp-add-wizard";
 import { TranscriptBlock } from "../components/transcript-container";
-import { t } from "../../i18n";
 import { parseCommandArgs } from "../shared";
 import { theme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
@@ -87,6 +87,66 @@ function raceAbortSignal<T>(promise: Promise<T>, signal: AbortSignal, createErro
 	return Promise.race([promise, aborted.promise]).finally(() => {
 		signal.removeEventListener("abort", onAbort);
 	});
+}
+
+type ActiveMCPOAuthFlow = {
+	cancel: (reason: string) => void;
+	completion: Promise<void>;
+	complete: () => void;
+};
+
+type MCPOAuthFlowCoordinator = {
+	active?: ActiveMCPOAuthFlow;
+	transition: Promise<void>;
+};
+
+const mcpOAuthFlowCoordinators = new WeakMap<object, MCPOAuthFlowCoordinator>();
+const MCP_OAUTH_SUPERSEDED_REASON = "MCP OAuth flow superseded by a new login";
+
+/**
+ * Serialize MCP OAuth ownership across slash-command controller instances.
+ * Interactive mode creates a new controller for every command, while the
+ * manual-input manager remains stable for the session and is therefore the
+ * lifecycle key.
+ */
+async function claimMCPOAuthFlow(owner: object, cancel: (reason: string) => void): Promise<{ release: () => void }> {
+	let coordinator = mcpOAuthFlowCoordinators.get(owner);
+	if (!coordinator) {
+		coordinator = { transition: Promise.resolve() };
+		mcpOAuthFlowCoordinators.set(owner, coordinator);
+	}
+
+	const precedingTransition = coordinator.transition;
+	const transition = Promise.withResolvers<void>();
+	coordinator.transition = transition.promise;
+	await precedingTransition;
+
+	try {
+		const active = coordinator.active;
+		if (active) {
+			active.cancel(MCP_OAUTH_SUPERSEDED_REASON);
+			await active.completion;
+		}
+
+		const completion = Promise.withResolvers<void>();
+		const flow: ActiveMCPOAuthFlow = {
+			cancel,
+			completion: completion.promise,
+			complete: () => completion.resolve(),
+		};
+		coordinator.active = flow;
+		let released = false;
+		return {
+			release: () => {
+				if (released) return;
+				released = true;
+				if (coordinator.active === flow) coordinator.active = undefined;
+				flow.complete();
+			},
+		};
+	} finally {
+		transition.resolve();
+	}
 }
 
 /**
@@ -546,7 +606,9 @@ export class MCPCommandController {
 				scope: "project",
 				limit: 20,
 				semantic: false,
-				error: t("Keyword required. Usage: /mcp smithery-search <keyword> [--scope project|user] [--limit <1-100>] [--semantic]"),
+				error: t(
+					"Keyword required. Usage: /mcp smithery-search <keyword> [--scope project|user] [--limit <1-100>] [--semantic]",
+				),
 			};
 		}
 
@@ -608,7 +670,9 @@ export class MCPCommandController {
 				scope,
 				limit,
 				semantic,
-				error: t("Keyword required. Usage: /mcp smithery-search <keyword> [--scope project|user] [--limit <1-100>] [--semantic]"),
+				error: t(
+					"Keyword required. Usage: /mcp smithery-search <keyword> [--scope project|user] [--limit <1-100>] [--semantic]",
+				),
 			};
 		}
 
@@ -666,9 +730,12 @@ export class MCPCommandController {
 
 						if (!oauth) {
 							this.ctx.showError(
-								t('Authentication required for "{name}", but OAuth endpoints could not be discovered. Use /mcp add {name} (wizard) or configure auth manually.', {
-									name: parsed.initialName,
-								}),
+								t(
+									'Authentication required for "{name}", but OAuth endpoints could not be discovered. Use /mcp add {name} (wizard) or configure auth manually.',
+									{
+										name: parsed.initialName,
+									},
+								),
 							);
 							return;
 						}
@@ -815,20 +882,21 @@ export class MCPCommandController {
 		}
 		let manualInputClaim: { promise: Promise<string>; clear: (reason?: string) => void } | undefined;
 		const oauthTimeout = new AbortController();
-		// User Esc and external aborts route through here; the timeout path sets
-		// its own reason and leaves this flag false so the catch can distinguish
-		// "user cancelled" (status) from "deadline elapsed" (error).
-		let userCancelled = false;
-		const requestUserCancel = (reason: string): void => {
-			userCancelled = true;
+		// Esc, external aborts, and a replacement MCP flow route through here;
+		// the timeout path sets its own reason and leaves this flag false so the
+		// catch can distinguish cancellation (status) from deadline failure.
+		let cancellationRequested = false;
+		const requestCancellation = (reason: string): void => {
+			cancellationRequested = true;
 			if (!oauthTimeout.signal.aborted) oauthTimeout.abort(reason);
 		};
+		const flowClaim = await claimMCPOAuthFlow(manualInput, requestCancellation);
 		const originalOnEscape = this.ctx.editor.onEscape;
-		this.ctx.editor.onEscape = () => requestUserCancel(MCP_OAUTH_USER_CANCEL_REASON);
+		this.ctx.editor.onEscape = () => requestCancellation(MCP_OAUTH_USER_CANCEL_REASON);
 		const externalSignal = opts?.abortSignal;
 		const onExternalAbort = (): void => {
 			const reason = externalSignal?.reason;
-			requestUserCancel(typeof reason === "string" ? reason : MCP_OAUTH_USER_CANCEL_REASON);
+			requestCancellation(typeof reason === "string" ? reason : MCP_OAUTH_USER_CANCEL_REASON);
 		};
 		if (externalSignal?.aborted) {
 			onExternalAbort();
@@ -836,6 +904,12 @@ export class MCPCommandController {
 			externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
 		}
 		try {
+			if (manualInput.hasPending()) {
+				const pendingProvider = manualInput.pendingProviderId ?? "another provider";
+				throw new Error(
+					`OAuth login already in progress for ${pendingProvider}. Complete or cancel it before starting MCP OAuth.`,
+				);
+			}
 			// Create OAuth flow
 			const flow = new MCPOAuthFlow(
 				{
@@ -859,16 +933,11 @@ export class MCPCommandController {
 						this.ctx.present(block);
 						block.addChild(new Text(theme.fg("accent", t("━━━ OAuth Authorization Required ━━━")), 1, 0));
 						block.addChild(new Spacer(1));
-						block.addChild(
-							new Text(theme.fg("muted", t("Preparing browser authorization...")), 1, 0),
-						);
+						block.addChild(new Text(theme.fg("muted", t("Preparing browser authorization...")), 1, 0));
 						block.addChild(new Spacer(1));
 						block.addChild(
 							new Text(
-								theme.fg(
-									"muted",
-									t("Waiting for authorization... (Press Esc to cancel, 5 minute timeout)"),
-								),
+								theme.fg("muted", t("Waiting for authorization... (Press Esc to cancel, 5 minute timeout)")),
 								1,
 								0,
 							),
@@ -896,13 +965,9 @@ export class MCPCommandController {
 						// whether or not the terminal honors OSC 52.
 						void copyToClipboard(info.url).catch(() => {});
 						block.addChild(new Spacer(1));
-						block.addChild(
-							new Text(theme.fg("success", `→ ${t("Attempting to open browser...")}`), 1, 0),
-						);
+						block.addChild(new Text(theme.fg("success", `→ ${t("Attempting to open browser...")}`), 1, 0));
 						block.addChild(new Spacer(1));
-						block.addChild(
-							new Text(theme.fg("muted", t("Alternative if browser did not open:")), 1, 0),
-						);
+						block.addChild(new Text(theme.fg("muted", t("Alternative if browser did not open:")), 1, 0));
 						block.addChild(new MCPAuthorizationLinkPrompt(info.url, info.launchUrl));
 						this.ctx.ui.requestRender();
 					},
@@ -915,9 +980,12 @@ export class MCPCommandController {
 						if (!pendingInput) {
 							const pendingProvider = manualInput.pendingProviderId ?? "another provider";
 							throw new Error(
-								t("OAuth login already in progress for {provider}. Complete or cancel it before starting MCP OAuth.", {
-									provider: pendingProvider,
-								}),
+								t(
+									"OAuth login already in progress for {provider}. Complete or cancel it before starting MCP OAuth.",
+									{
+										provider: pendingProvider,
+									},
+								),
 							);
 						}
 						manualInputClaim = pendingInput;
@@ -929,7 +997,7 @@ export class MCPCommandController {
 
 			const createAbortError = (): Error => {
 				const reason = String(oauthTimeout.signal.reason ?? "MCP OAuth flow aborted");
-				return userCancelled ? new MCPOAuthCancelledError() : new Error(reason);
+				return cancellationRequested ? new MCPOAuthCancelledError() : new Error(reason);
 			};
 			if (oauthTimeout.signal.aborted) throw createAbortError();
 
@@ -976,11 +1044,10 @@ export class MCPCommandController {
 				resource: flow.resource,
 			};
 		} catch (error) {
-			// User-initiated cancel (Esc or external signal) → neutral status, not
-			// a failure. Check the flag we set in `requestUserCancel`, not the
-			// abort reason: the timeout path also aborts but with a different
-			// reason, and we want it to surface as a timeout error below.
-			if (userCancelled) {
+			// Esc, an external abort, or a newer MCP flow are neutral
+			// cancellations. The timeout path also aborts the controller but does
+			// not set this flag, so it remains a surfaced error.
+			if (cancellationRequested) {
 				throw new MCPOAuthCancelledError();
 			}
 
@@ -994,9 +1061,7 @@ export class MCPCommandController {
 			} else if (errorMsg.includes("invalid_grant")) {
 				throw new Error(t("OAuth authorization code is invalid or expired. Please try again."));
 			} else if (errorMsg.includes("ECONNREFUSED") || errorMsg.includes("fetch failed")) {
-				throw new Error(
-					t("Could not connect to OAuth server. Please check the URLs and your network connection."),
-				);
+				throw new Error(t("Could not connect to OAuth server. Please check the URLs and your network connection."));
 			} else {
 				throw new Error(t("OAuth authentication failed: {error}", { error: errorMsg }));
 			}
@@ -1004,6 +1069,7 @@ export class MCPCommandController {
 			this.ctx.editor.onEscape = originalOnEscape;
 			externalSignal?.removeEventListener("abort", onExternalAbort);
 			manualInputClaim?.clear("Manual MCP OAuth input cleared");
+			flowClaim.release();
 		}
 	}
 
@@ -1167,12 +1233,18 @@ export class MCPCommandController {
 			const usesMcpRemote = [config.command, ...(config.args ?? [])].some(part => part?.includes("mcp-remote"));
 			throw new Error(
 				usesMcpRemote
-					? t("this server proxies OAuth through mcp-remote, which caches tokens machine-wide in ~/.mcp-auth (shared across every OMP profile). Clear ~/.mcp-auth to force a fresh login, or replace the proxy with {hint} so OMP manages OAuth per profile.", {
-							hint: httpHint,
-						})
-					: t("stdio servers manage their own credentials, so OMP has no OAuth to reauthorize. If the service supports OAuth over HTTP, configure it as {hint} instead.", {
-							hint: httpHint,
-						}),
+					? t(
+							"this server proxies OAuth through mcp-remote, which caches tokens machine-wide in ~/.mcp-auth (shared across every OMP profile). Clear ~/.mcp-auth to force a fresh login, or replace the proxy with {hint} so OMP manages OAuth per profile.",
+							{
+								hint: httpHint,
+							},
+						)
+					: t(
+							"stdio servers manage their own credentials, so OMP has no OAuth to reauthorize. If the service supports OAuth over HTTP, configure it as {hint} instead.",
+							{
+								hint: httpHint,
+							},
+						),
 			);
 		}
 		// First test if server actually needs auth by connecting without OAuth
@@ -1319,17 +1391,12 @@ export class MCPCommandController {
 			];
 
 			if (isConnected) {
-				lines.push(
-					theme.fg("success", `${theme.status.enabled} ${t("Successfully connected to server")}`),
-				);
+				lines.push(theme.fg("success", `${theme.status.enabled} ${t("Successfully connected to server")}`));
 				lines.push("");
 			} else if (isConnecting) {
 				lines.push(theme.fg("muted", `◌ ${t("Server is connecting in background...")}`));
 				lines.push(
-					theme.fg(
-						"muted",
-						t("  Run {cmd} in a few seconds.", { cmd: theme.fg("accent", `/mcp test ${name}`) }),
-					),
+					theme.fg("muted", t("  Run {cmd} in a few seconds.", { cmd: theme.fg("accent", `/mcp test ${name}`) })),
 				);
 				lines.push("");
 			} else {
@@ -1344,10 +1411,7 @@ export class MCPCommandController {
 			}
 
 			lines.push(
-				theme.fg(
-					"muted",
-					t("Run {cmd} to see all configured servers.", { cmd: theme.fg("accent", "/mcp list") }),
-				),
+				theme.fg("muted", t("Run {cmd} to see all configured servers.", { cmd: theme.fg("accent", "/mcp list") })),
 			);
 			lines.push("");
 
@@ -1507,9 +1571,7 @@ export class MCPCommandController {
 			// Show servers disabled via /mcp disable (from third-party configs)
 			const relevantDisabled = [...disabledServerNames].filter(n => !configServerNames.has(n));
 			if (relevantDisabled.length > 0) {
-				lines.push(
-					theme.fg("accent", t("Disabled")) + theme.fg("muted", ` ${t("(discovered servers)")}:`),
-				);
+				lines.push(theme.fg("accent", t("Disabled")) + theme.fg("muted", ` ${t("(discovered servers)")}:`));
 				for (const name of relevantDisabled) {
 					lines.push(`  ${theme.fg("accent", name)}${theme.fg("warning", ` ◌ ${t("disabled")}`)}`);
 				}
@@ -1615,9 +1677,7 @@ export class MCPCommandController {
 			}
 
 			this.#showMessage(
-				["", theme.fg("muted", t('Testing connection to "{name}"... (esc to cancel)', { name })), ""].join(
-					"\n",
-				),
+				["", theme.fg("muted", t('Testing connection to "{name}"... (esc to cancel)', { name })), ""].join("\n"),
 			);
 
 			// Resolve auth config if needed
@@ -1862,9 +1922,7 @@ export class MCPCommandController {
 			if (found.discovered && currentAuth?.type !== "oauth") {
 				if (!removedUrlKeyedCredential) {
 					this.#showMessage(
-						["", theme.fg("muted", t('No stored OAuth auth to remove for "{name}".', { name })), ""].join(
-							"\n",
-						),
+						["", theme.fg("muted", t('No stored OAuth auth to remove for "{name}".', { name })), ""].join("\n"),
 					);
 					return;
 				}
@@ -1872,10 +1930,7 @@ export class MCPCommandController {
 				this.#showMessage(
 					[
 						"",
-						theme.fg(
-							"success",
-							t('- Cleared auth for "{name}" ({scope} config)', { name, scope: found.scope }),
-						),
+						theme.fg("success", t('- Cleared auth for "{name}" ({scope} config)', { name, scope: found.scope })),
 						"",
 					].join("\n"),
 				);
@@ -1887,7 +1942,11 @@ export class MCPCommandController {
 			await this.reloadServers();
 
 			this.#showMessage(
-				["", theme.fg("success", t('- Cleared auth for "{name}" ({scope} config)', { name, scope: found.scope })), ""].join("\n"),
+				[
+					"",
+					theme.fg("success", t('- Cleared auth for "{name}" ({scope} config)', { name, scope: found.scope })),
+					"",
+				].join("\n"),
 			);
 		} catch (error) {
 			this.ctx.showError(
@@ -2046,9 +2105,7 @@ export class MCPCommandController {
 
 	async #handleReload(): Promise<void> {
 		try {
-			this.#showMessage(
-				["", theme.fg("muted", t("Reloading MCP servers and runtime tools...")), ""].join("\n"),
-			);
+			this.#showMessage(["", theme.fg("muted", t("Reloading MCP servers and runtime tools...")), ""].join("\n"));
 			await this.reloadServers();
 			const connectedCount = this.ctx.mcpManager?.getConnectedServers().length ?? 0;
 			this.#showMessage(
@@ -2460,9 +2517,7 @@ export class MCPCommandController {
 
 		const loggedIn = await this.#promptSmitheryLogin(reason);
 		if (!loggedIn) {
-			throw new Error(
-				t("Smithery login cancelled. Run /mcp smithery-login, then retry /mcp smithery-search."),
-			);
+			throw new Error(t("Smithery login cancelled. Run /mcp smithery-login, then retry /mcp smithery-search."));
 		}
 
 		apiKey = await getSmitheryApiKey();
@@ -2625,9 +2680,11 @@ export class MCPCommandController {
 
 		try {
 			this.#showMessage(
-				["", theme.fg("muted", t('Searching Smithery registry for "{keyword}"...', { keyword: parsed.keyword })), ""].join(
-					"\n",
-				),
+				[
+					"",
+					theme.fg("muted", t('Searching Smithery registry for "{keyword}"...', { keyword: parsed.keyword })),
+					"",
+				].join("\n"),
 			);
 			const results = await this.#runSmitheryOperationWithAuthRetry(
 				apiKey =>
@@ -2642,10 +2699,7 @@ export class MCPCommandController {
 				this.#showMessage(
 					[
 						"",
-						theme.fg(
-							"warning",
-							t('No Smithery results found for "{keyword}".', { keyword: parsed.keyword }),
-						),
+						theme.fg("warning", t('No Smithery results found for "{keyword}".', { keyword: parsed.keyword })),
 						"",
 					].join("\n"),
 				);
@@ -2662,9 +2716,7 @@ export class MCPCommandController {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (/authentication was cancelled|login cancelled/i.test(message)) {
-				this.ctx.showError(
-					`${message} ${t("Run /mcp smithery-login to authenticate first.")}`,
-				);
+				this.ctx.showError(`${message} ${t("Run /mcp smithery-login to authenticate first.")}`);
 				return;
 			}
 			this.ctx.showError(t("Smithery search failed: {error}", { error: message }));

@@ -11,8 +11,8 @@ import * as path from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { $env, $which, APP_NAME, compareVersions, isEnoent, VERSION } from "@oh-my-pi/pi-utils";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { $ } from "bun";
-import chalk from "chalk";
 import { t } from "../i18n";
 import { theme } from "../modes/theme/theme";
 import { isTimeoutError, withTimeoutSignal } from "../utils/fetch-timeout";
@@ -1043,9 +1043,7 @@ async function updateViaBun(expectedVersion: string): Promise<void> {
 	try {
 		const pruneResult = await pruneBunCacheAfterGlobalInstall();
 		if (pruneResult && pruneResult.removedEntries > 0) {
-			console.log(
-				chalk.dim(t("Pruned {count} stale Bun cache entries", { count: pruneResult.removedEntries })),
-			);
+			console.log(chalk.dim(t("Pruned {count} stale Bun cache entries", { count: pruneResult.removedEntries })));
 		}
 	} catch (err) {
 		console.log(chalk.yellow(t("Warning: could not prune stale Bun cache entries: {error}", { error: err })));

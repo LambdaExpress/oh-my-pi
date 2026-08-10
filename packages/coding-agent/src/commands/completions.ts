@@ -36,7 +36,7 @@ export default class Completions extends Command {
 		const shell = this.argv[0];
 		if (!isShell(shell)) {
 			process.stderr.write(
-				t("Usage: {app} completions <{shells}>", { app: APP_NAME, shells: SHELLS.join("|") }) + "\n",
+				`${t("Usage: {app} completions <{shells}>", { app: APP_NAME, shells: SHELLS.join("|") })}\n`,
 			);
 			process.exitCode = 1;
 			return;

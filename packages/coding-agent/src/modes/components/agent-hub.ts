@@ -124,6 +124,8 @@ export interface AgentHubDeps {
 	ui?: TUI;
 	/** Tool lookup for transcript renderers (labels, custom render functions). */
 	getTool?: (name: string) => AgentTool | undefined;
+	/** Whether the active registry entry came from a built-in factory. */
+	isBuiltInTool?: (name: string) => boolean;
 	/** Extension message renderers for custom messages in the transcript. */
 	getMessageRenderer?: (customType: string) => MessageRenderer | undefined;
 	/** Cwd used by tool renderers for path shortening; defaults to the project dir. */
@@ -208,6 +210,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 	// Transcript-viewer launch deps (passed through to AgentTranscriptViewer).
 	#ui: TUI;
 	#getTool: ((name: string) => AgentTool | undefined) | undefined;
+	#isBuiltInTool: ((name: string) => boolean) | undefined;
 	#getMessageRenderer: ((customType: string) => MessageRenderer | undefined) | undefined;
 	#cwd: string;
 	#hideThinkingBlock: (() => boolean) | undefined;
@@ -240,6 +243,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 				requestComponentRender: () => deps.requestRender(),
 			} as unknown as TUI);
 		this.#getTool = deps.getTool;
+		this.#isBuiltInTool = deps.isBuiltInTool;
 		this.#getMessageRenderer = deps.getMessageRenderer;
 		this.#cwd = deps.cwd ?? getProjectDir();
 		this.#hideThinkingBlock = deps.hideThinkingBlock;
@@ -366,6 +370,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			lifecycle: this.#remote ? undefined : this.#lifecycle,
 			ui: this.#ui,
 			getTool: this.#getTool,
+			isBuiltInTool: this.#isBuiltInTool,
 			getMessageRenderer: this.#getMessageRenderer,
 			cwd: this.#cwd,
 			hideThinkingBlock: this.#hideThinkingBlock,
@@ -584,18 +589,13 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		if (this.#rows.length === 0) {
 			if (this.#loadingPersistedSubagents) {
 				if (budget > 0) {
-					lines.push(
-						`${statusGlyph("running")} ${theme.fg("accent", `${t("Loading saved agents")}…`)}`,
-					);
+					lines.push(`${statusGlyph("running")} ${theme.fg("accent", `${t("Loading saved agents")}…`)}`);
 					hitRows.push(undefined);
 				}
 			} else {
 				const emptyState = [
 					`${theme.fg("muted", theme.status.shadowed)} ${theme.bold(t("No agents in this session"))}`,
-					theme.fg(
-						"dim",
-						t("Finished, parked, and killed subagents remain with the session that created them."),
-					),
+					theme.fg("dim", t("Finished, parked, and killed subagents remain with the session that created them.")),
 					theme.fg("dim", t("Resume that session with omp-dev --continue, or spawn a task here.")),
 				];
 				for (const line of emptyState.slice(0, budget)) {
@@ -821,12 +821,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			section(t("Current"));
 			addWrapped(current);
 			if (progress?.retryState) {
-				add(
-					theme.fg(
-						"warning",
-						`${t("retry")} ${progress.retryState.attempt}/${progress.retryState.maxAttempts}`,
-					),
-				);
+				add(theme.fg("warning", `${t("retry")} ${progress.retryState.attempt}/${progress.retryState.maxAttempts}`));
 			}
 		}
 
@@ -842,16 +837,13 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 
 		section(t("Lineage"));
 		add(
-			`${t("Spawned by")} ${sanitizeDisplayText(ref.parentId ?? MAIN_AGENT_ID)}${
+			`${t("Spawned by {parent}", { parent: sanitizeDisplayText(ref.parentId ?? MAIN_AGENT_ID) })}${
 				children.length > 0 ? ` · ${t("{count} children", { count: children.length })}` : ""
 			}`,
 		);
 		if (children.length > 0) add(theme.fg("dim", formatChildIds(children, width)));
 		add(
-			theme.fg(
-				"dim",
-				`${t("Registered")} ${new Date(ref.createdAt).toISOString().slice(0, 16).replace("T", " ")}Z`,
-			),
+			theme.fg("dim", `${t("Registered")} ${new Date(ref.createdAt).toISOString().slice(0, 16).replace("T", " ")}Z`),
 		);
 
 		section(t("Changes"));
@@ -1097,12 +1089,12 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const ref = this.#rows[this.#selectedRow];
 		if (!ref) return;
 		if (ref.kind === "advisor") {
-			this.#notice = t("\"{id}\" is a read-only advisor transcript — nothing to revive.", { id: ref.id });
+			this.#notice = t('"{id}" is a read-only advisor transcript — nothing to revive.', { id: ref.id });
 			this.#requestRender();
 			return;
 		}
 		if (ref.status !== "parked") {
-			this.#notice = t("Agent \"{id}\" is {status} — only parked agents can be revived.", {
+			this.#notice = t('Agent "{id}" is {status} — only parked agents can be revived.', {
 				id: ref.id,
 				status: ref.status,
 			});
@@ -1129,7 +1121,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const ref = this.#rows[this.#selectedRow];
 		if (!ref) return;
 		if (ref.kind === "advisor") {
-			this.#notice = t("\"{id}\" is a read-only advisor transcript — cannot be killed.", { id: ref.id });
+			this.#notice = t('"{id}" is a read-only advisor transcript — cannot be killed.', { id: ref.id });
 			this.#requestRender();
 			return;
 		}

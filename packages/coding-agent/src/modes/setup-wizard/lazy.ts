@@ -1,5 +1,5 @@
-import type { InteractiveModeContext } from "../types";
 import { t } from "../../i18n";
+import type { InteractiveModeContext } from "../types";
 
 export async function runProviderSetupWizard(ctx: InteractiveModeContext): Promise<void> {
 	// Keep the full setup wizard behind the existing cold-start boundary; a static

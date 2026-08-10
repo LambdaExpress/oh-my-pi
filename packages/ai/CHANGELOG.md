@@ -6,6 +6,36 @@
 
 - Fixed OpenAI-completions streams (OpenCode Go, DeepSeek, OpenRouter, most OpenAI-compatible gateways) not exposing streamed tool-call arguments to the TUI reveal path, so `write` previews snapped in fully at execution instead of streaming the payload. Structured `delta.tool_calls` now carry `kStreamingPartialJson`, and DSML/Kimi chat-template leaked calls are rebuilt incrementally (`toolCallStart`/`toolCallArgDelta`) so healed `write`/`edit`/`bash` previews stream line by line instead of landing once at envelope close.
 - Fixed locally observed OpenCode Go reset windows to follow the service's rolling 5-hour, Monday-UTC weekly, and subscription-day calendar-month boundaries instead of treating every limit as an independent fixed-duration rolling window.
+## [17.2.12] - 2026-08-08
+
+### Fixed
+
+- Fixed account-scoped Codex cyber-policy denials bypassing sibling credential rotation; replay-safe requests now try every configured account before surfacing the error.
+
+## [17.2.11] - 2026-08-07
+
+### Breaking Changes
+
+- Fixed handling of GitHub Copilot's model_not_available_for_integrator error to prevent unnecessary retries, preserving the actionable available models list.
+
+### Added
+
+- Added support for reporting Cursor personal monthly USD quotas and remaining balances, labeled by verified profile email accounts.
+
+### Fixed
+
+- Fixed an issue where ANTHROPIC_BASE_URL was ignored for Anthropic chat requests, ensuring requests are routed to the configured host and forwarding ANTHROPIC_CUSTOM_HEADERS to non-official gateways.
+- Fixed an issue where a legacy pre-organization login credential could persist and cause a permanent error row in omp usage even after a successful organization-scoped re-login.
+- Fixed an issue where lazy provider streams (including Amazon Bedrock, Google, Cursor, Devin, and Ollama) ignored model-specific idle timeouts, which previously caused healthy but slow reasoning turns to prematurely time out.
+- Improved error classification for Simplified Chinese quota-exhaustion and rate-limit messages, ensuring affected credentials are correctly rotated or backed off instead of being treated as unknown errors.
+- Classified subscription and plan-cap 429 responses as rotatable usage limits rather than transient rate-limit throttles, enabling smoother credential rotation.
+
+## [17.2.10] - 2026-08-06
+
+### Breaking Changes
+
+- Removed the `zod` dependency and `z`/`ZodType` re-exports. Tool schemas now use `omptype` `type()` schemas, with Zod-style authoring still available via `@oh-my-pi/omptype/zod`.
+
 ## [17.2.9] - 2026-08-05
 
 ### Fixed

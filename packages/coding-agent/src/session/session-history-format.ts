@@ -201,9 +201,7 @@ function toolCallLine(
 		const count = lines === 1 ? t("{count} line", { count: lines }) : t("{count} lines", { count: lines });
 		if (result.isError) {
 			const firstLine = formatToolResultErrorPreview(result.content);
-			base = firstLine
-				? `${head} ⇒ ${t("error")} · ${count} — ${firstLine}`
-				: `${head} ⇒ ${t("error")} · ${count}`;
+			base = firstLine ? `${head} ⇒ ${t("error")} · ${count} — ${firstLine}` : `${head} ⇒ ${t("error")} · ${count}`;
 		} else {
 			base = `${head} ⇒ ${t("ok")} · ${count}`;
 		}

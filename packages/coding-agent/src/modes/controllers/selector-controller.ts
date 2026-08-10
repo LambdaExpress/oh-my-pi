@@ -29,6 +29,7 @@ import {
 	getPluginsCacheDir,
 	MarketplaceManager,
 } from "../../extensibility/plugins/marketplace";
+import { t } from "../../i18n";
 import {
 	getAvailableThemes,
 	getSymbolTheme,
@@ -104,7 +105,6 @@ import { TreeSelectorComponent } from "../components/tree-selector";
 import { UserMessageSelectorComponent } from "../components/user-message-selector";
 import type { SessionObserverRegistry } from "../session-observer-registry";
 import { buildCopyTargets } from "../utils/copy-targets";
-import { t } from "../../i18n";
 
 export class SelectorController {
 	constructor(private ctx: InteractiveModeContext) {}
@@ -850,9 +850,7 @@ export class SelectorController {
 					const concreteThinking = isAuto || thinkingLevel === undefined ? undefined : thinkingLevel;
 					const selectorValue = selector ?? `${model.provider}/${model.id}`;
 					const scopeLabel =
-						configuredStorage === "project"
-							? `${targetScope === "project" ? t("Project") : t("Global")} `
-							: "";
+						configuredStorage === "project" ? `${targetScope === "project" ? t("Project") : t("Global")} ` : "";
 					const defaultStatusLabel =
 						configuredStorage === "project" ? `${scopeLabel}${t("default")}` : t("Default");
 					try {
@@ -944,9 +942,7 @@ export class SelectorController {
 					const configuredStorage = this.ctx.settings.get("modelRoleStorage");
 					const targetScope = configuredStorage === "project" ? (scope ?? "project") : "global";
 					const scopeLabel =
-						configuredStorage === "project"
-							? `${targetScope === "project" ? t("Project") : t("Global")} `
-							: "";
+						configuredStorage === "project" ? `${targetScope === "project" ? t("Project") : t("Global")} ` : "";
 					try {
 						const previousEffectiveRoleValue =
 							role === "default" ? this.ctx.settings.getModelRole("default") : undefined;
@@ -1437,7 +1433,9 @@ export class SelectorController {
 		// user's intent to chat (roboomp review on #5895).
 		if (result.details?.chatRedirect) {
 			this.ctx.showError(
-				t("Chat about this isn't available when re-answering from the tree — pick an option or type a custom answer instead."),
+				t(
+					"Chat about this isn't available when re-answering from the tree — pick an option or type a custom answer instead.",
+				),
 			);
 			return undefined;
 		}
@@ -1742,7 +1740,8 @@ export class SelectorController {
 				// editor's `/login <url>` path is unreachable while the dialog holds
 				// focus (#5339).
 				onManualCodeInput: useManualInput
-					? () => dialog.showManualInput(t("Paste the authorization code (or full redirect URL), then press Enter:"))
+					? () =>
+							dialog.showManualInput(t("Paste the authorization code (or full redirect URL), then press Enter:"))
 					: undefined,
 			});
 			// Scope the post-login refresh to the just-authenticated provider with an
@@ -1766,14 +1765,15 @@ export class SelectorController {
 					: "";
 			block.addChild(
 				new Text(
-					theme.fg("success", `${theme.status.success} ${t("Successfully logged in to {provider}{who}", { provider: providerId, who })}`),
+					theme.fg(
+						"success",
+						`${theme.status.success} ${t("Successfully logged in to {provider}{who}", { provider: providerId, who })}`,
+					),
 					1,
 					0,
 				),
 			);
-			block.addChild(
-				new Text(theme.fg("dim", t("Credentials saved to {path}", { path: getAgentDbPath() })), 1, 0),
-			);
+			block.addChild(new Text(theme.fg("dim", t("Credentials saved to {path}", { path: getAgentDbPath() })), 1, 0));
 			this.ctx.present(block);
 			return true;
 		} catch (error: unknown) {
@@ -1874,7 +1874,9 @@ export class SelectorController {
 			const suffix = source
 				? ` ${t("Current auth comes from {source}; remove that source to log out.", { source })}`
 				: "";
-			this.ctx.showError(t("Logout skipped: no stored credentials for {provider}.", { provider: providerId }) + suffix);
+			this.ctx.showError(
+				t("Logout skipped: no stored credentials for {provider}.", { provider: providerId }) + suffix,
+			);
 			return;
 		}
 
@@ -2133,6 +2135,7 @@ export class SelectorController {
 			remote: this.ctx.collabGuest?.hubRemote,
 			ui: this.ctx.ui,
 			getTool: name => this.ctx.session.getToolByName(name),
+			isBuiltInTool: name => this.ctx.session.hasBuiltInTool(name),
 			getMessageRenderer: type => this.ctx.session.extensionRunner?.getMessageRenderer(type),
 			cwd: this.ctx.sessionManager.getCwd(),
 			hideThinkingBlock: () => this.ctx.effectiveHideThinkingBlock,

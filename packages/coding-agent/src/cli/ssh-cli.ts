@@ -5,7 +5,7 @@
  */
 
 import { getSSHConfigPath } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { SSHHostConfig } from "../capability/ssh";
 import { addSSHHost, readSSHConfigFile, removeSSHHost, type SSHConfigFile } from "../ssh/config-writer";
 

@@ -221,13 +221,11 @@ mkdir -p "$TARBALL_APP_DIR"
    omptype_probe="$(bun -e '
       import { type } from "@oh-my-pi/omptype";
       import { Type } from "@oh-my-pi/omptype/typebox";
-      import { z } from "@oh-my-pi/omptype/zod";
       const root = type({ name: "string", enabled: "boolean = false" }).assert({ name: "omp" });
       const typebox = Type.Object({ name: Type.String() }).assert({ name: "tb" });
-      const zod = z.object({ name: z.string() }).parse({ name: "z" });
-      process.stdout.write(`${root.name}:${root.enabled}:${typebox.name}:${zod.name}`);
+      process.stdout.write(`${root.name}:${root.enabled}:${typebox.name}`);
    ')"
-   [ "$omptype_probe" = "omp:false:tb:z" ] || {
+   [ "$omptype_probe" = "omp:false:tb" ] || {
       echo "Unexpected @oh-my-pi/omptype probe result: $omptype_probe"
       exit 1
    }

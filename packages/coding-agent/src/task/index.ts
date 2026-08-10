@@ -441,16 +441,19 @@ export function composeSpawnAdvisory(args: {
 class TaskJobError extends Error {}
 
 /**
- * Process-level memo for create-time agent discovery, keyed by resolved cwd.
+ * Process-level create-time discovery memo and published reload snapshots,
+ * keyed by resolved cwd.
  *
  * `TaskTool.create` runs for every (sub)agent session in this process and the
  * walk-up + plugin-registry scan in `discoverAgents` is identical for a given
- * cwd, so repeat creations reuse the first scan. Execution-time discovery
- * (`#runSpawn`) intentionally stays fresh. The memo also tracks the live
- * `discoverAgents` binding: test spies swap that binding, which invalidates
- * the memo automatically.
+ * cwd, so repeat creations reuse the first scan. Explicit plugin reloads
+ * replace the matching snapshot so already-created tools advertise the latest
+ * definitions. Execution-time discovery (`#runSpawn`) intentionally stays
+ * fresh. The memo also tracks the live `discoverAgents` binding: test spies
+ * swap that binding, which invalidates both caches automatically.
  */
 const discoveryMemo = new Map<string, Promise<DiscoveryResult>>();
+const discoverySnapshots = new Map<string, AgentDefinition[]>();
 let discoveryMemoFn: typeof discoverAgents | undefined;
 
 function discoverAgentsForCreate(cwd: string): Promise<DiscoveryResult> {
@@ -458,6 +461,7 @@ function discoverAgentsForCreate(cwd: string): Promise<DiscoveryResult> {
 	if (discoveryMemoFn !== fn) {
 		discoveryMemoFn = fn;
 		discoveryMemo.clear();
+		discoverySnapshots.clear();
 	}
 	const key = path.resolve(cwd);
 	let pending = discoveryMemo.get(key);
@@ -469,6 +473,17 @@ function discoverAgentsForCreate(cwd: string): Promise<DiscoveryResult> {
 		});
 	}
 	return pending;
+}
+
+/** Rescan one cwd and publish its definitions to existing and future task tools. */
+export async function refreshAgentDiscovery(cwd: string): Promise<void> {
+	const key = path.resolve(cwd);
+	discoveryMemo.delete(key);
+	const pending = discoverAgentsForCreate(cwd);
+	const { agents } = await pending;
+	if (discoveryMemo.get(key) === pending) {
+		discoverySnapshots.set(key, agents);
+	}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -587,7 +602,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 		const planMode = this.session.getPlanModeState?.()?.enabled === true;
 		const isolationMode = this.session.settings.get("task.isolation.mode");
 		return renderDescription({
-			agents: this.#discoveredAgents,
+			agents: discoverySnapshots.get(path.resolve(this.session.cwd)) ?? this.#discoveredAgents,
 			isolationEnabled: !planMode && isolationMode !== "none",
 			applyIsolatedChanges: this.session.settings.get("task.isolation.apply"),
 			disabledAgents,

@@ -3,8 +3,8 @@
  */
 
 import { PROVIDER_REGISTRY } from "@oh-my-pi/pi-ai";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
-import chalk from "chalk";
 import { tokenHelp as commandHelp } from "../cli/command-help";
 import { isAuthenticated, ModelRegistry } from "../config/model-registry";
 import { t } from "../i18n";
@@ -59,11 +59,10 @@ export default class Token extends Command {
 				const accounts = authStorage.listOAuthAccounts(provider);
 				if (accounts.length === 0) {
 					process.stderr.write(
-						chalk.red(t("No OAuth accounts found for provider \"{provider}\".", { provider: providerName })) +
-							"\n",
+						`${chalk.red(t('No OAuth accounts found for provider "{provider}".', { provider: providerName }))}\n`,
 					);
 					process.stderr.write(
-						t("--account/--list select among OAuth accounts; this provider has none stored.") + "\n",
+						`${t("--account/--list select among OAuth accounts; this provider has none stored.")}\n`,
 					);
 					process.exitCode = 1;
 					return;
@@ -87,7 +86,7 @@ export default class Token extends Command {
 					process.stderr.write(
 						chalk.red(t("Invalid --account {n}.", { n: n ?? t("(missing)") })) +
 							" " +
-							t("Provider \"{provider}\" has {count} OAuth account(s) (1-{max}).", {
+							t('Provider "{provider}" has {count} OAuth account(s) (1-{max}).', {
 								provider: providerName,
 								count: accounts.length,
 								max: accounts.length,
@@ -101,16 +100,15 @@ export default class Token extends Command {
 					forceRefresh: flags["force-refresh"],
 				});
 				if (!resolution?.ok) {
-					const reason =
-						resolution && !resolution.ok ? resolution.error : t("no OAuth credential available");
+					const reason = resolution && !resolution.ok ? resolution.error : t("no OAuth credential available");
 					process.stderr.write(
-						chalk.red(
-							t("Could not get token for account {n} of \"{provider}\": {reason}", {
+						`${chalk.red(
+							t('Could not get token for account {n} of "{provider}": {reason}', {
 								n,
 								provider: providerName,
 								reason,
 							}),
-						) + "\n",
+						)}\n`,
 					);
 					process.exitCode = 1;
 					return;
@@ -155,13 +153,13 @@ export default class Token extends Command {
 					}
 				}
 
-				const msg = t("No active credential found for provider \"{provider}\".", { provider: providerName });
-				process.stderr.write(chalk.red(msg) + "\n");
+				const msg = t('No active credential found for provider "{provider}".', { provider: providerName });
+				process.stderr.write(`${chalk.red(msg)}\n`);
 				if (activeProviders.size > 0) {
 					process.stderr.write(
-						t("Configured providers: {providers}", {
+						`${t("Configured providers: {providers}", {
 							providers: Array.from(activeProviders).sort().join(", "),
-						}) + "\n",
+						})}\n`,
 					);
 				}
 				process.exitCode = 1;

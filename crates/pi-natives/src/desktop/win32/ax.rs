@@ -37,11 +37,11 @@ impl Win32Ax {
 		}
 	}
 
-	const fn element(handle: &AxHandle) -> CoreResult<&UIElement> {
+	const fn element(handle: &AxHandle) -> &UIElement {
 		match handle {
-			AxHandle::Uia(element) => Ok(element),
+			AxHandle::Uia(element) => element,
 			#[cfg(test)]
-			_ => Err(DesktopError::ax_failed("accessibility handle does not belong to UI Automation")),
+			_ => unreachable!("UI Automation backend received a non-UI-Automation handle"),
 		}
 	}
 
@@ -161,7 +161,7 @@ impl AxBackend for Win32Ax {
 	}
 
 	fn props(&mut self, handle: &AxHandle) -> CoreResult<AxProps> {
-		let element = Self::element(handle)?;
+		let element = Self::element(handle);
 		let control_type = element.get_control_type().map_err(ax_error)?;
 		let native_role = control_type.to_string();
 		let walker = self.walker()?;
@@ -186,7 +186,7 @@ impl AxBackend for Win32Ax {
 	}
 
 	fn children(&mut self, handle: &AxHandle) -> CoreResult<Vec<AxHandle>> {
-		let element = Self::element(handle)?;
+		let element = Self::element(handle);
 		Ok(self
 			.walker()?
 			.get_children(element)
@@ -197,12 +197,12 @@ impl AxBackend for Win32Ax {
 	}
 
 	fn parent(&mut self, handle: &AxHandle) -> CoreResult<Option<AxHandle>> {
-		let element = Self::element(handle)?;
+		let element = Self::element(handle);
 		Ok(self.walker()?.get_parent(element).ok().map(AxHandle::Uia))
 	}
 
 	fn perform(&mut self, handle: &AxHandle, action: &str) -> CoreResult<()> {
-		let element = Self::element(handle)?;
+		let element = Self::element(handle);
 		match action.trim().to_ascii_lowercase().as_str() {
 			"press" => {
 				if let Ok(pattern) = element.get_pattern::<UIInvokePattern>() {
@@ -247,14 +247,14 @@ impl AxBackend for Win32Ax {
 	}
 
 	fn set_value(&mut self, handle: &AxHandle, value: &str) -> CoreResult<()> {
-		Self::element(handle)?
+		Self::element(handle)
 			.get_pattern::<UIValuePattern>()
 			.and_then(|pattern| pattern.set_value(value))
 			.map_err(ax_error)
 	}
 
 	fn focus(&mut self, handle: &AxHandle) -> CoreResult<()> {
-		Self::element(handle)?.set_focus().map_err(ax_error)
+		Self::element(handle).set_focus().map_err(ax_error)
 	}
 
 	fn element_at(&mut self, x: f64, y: f64) -> CoreResult<Option<AxHandle>> {
@@ -278,7 +278,7 @@ impl AxBackend for Win32Ax {
 	}
 
 	fn attributes(&mut self, handle: &AxHandle) -> CoreResult<Vec<(String, String)>> {
-		let element = Self::element(handle)?;
+		let element = Self::element(handle);
 		let properties = [
 			UIProperty::RuntimeId,
 			UIProperty::BoundingRectangle,

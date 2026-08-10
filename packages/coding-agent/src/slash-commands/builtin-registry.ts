@@ -295,7 +295,7 @@ async function handleUsageResetCommand(
 						account.target.accountId?.toLowerCase() === wanted,
 				);
 	if (!target) {
-		await output(t("No Codex account matches \"{name}\".", { name: targetArg }));
+		await output(t('No Codex account matches "{name}".', { name: targetArg }));
 		return false;
 	}
 	if (target.availableCount <= 0) {
@@ -364,12 +364,12 @@ async function handleSessionPinCommand(
 
 	const matches = matchSessionPinAccounts(accounts, selector);
 	if (matches.length === 0) {
-		await output(t("No {provider} account matches \"{selector}\".", { provider: providerName, selector }));
+		await output(t('No {provider} account matches "{selector}".', { provider: providerName, selector }));
 		return;
 	}
 	if (matches.length > 1) {
 		await output(
-			t("\"{selector}\" matches multiple {provider} accounts: {list}. Use the account number.", {
+			t('"{selector}" matches multiple {provider} accounts: {list}. Use the account number.', {
 				selector,
 				provider: providerName,
 				list: matches.map(account => `${account.position + 1}. ${account.label}`).join(", "),
@@ -390,14 +390,18 @@ function parseShakeMode(args: string): ShakeMode | { error: string } {
 	const verb = args.trim().toLowerCase();
 	if (verb === "" || verb === "elide") return "elide";
 	if (verb === "images") return "images";
-	return { error: t("Unknown /shake mode \"{mode}\". Use elide or images.", { mode: verb }) };
+	return { error: t('Unknown /shake mode "{mode}". Use elide or images.', { mode: verb }) };
 }
 
 /** Format the session's workspace directories (cwd + additional) for display. */
 function formatWorkspaceDirectories(runtime: SlashCommandRuntime, note?: string): string {
 	const cwd = runtime.sessionManager.getCwd();
 	const additional = runtime.sessionManager.getAdditionalDirectories();
-	const lines = [t("Workspace directories:"), `  ${cwd} ${t("(working directory)")}`, ...additional.map(d => `  ${d}`)];
+	const lines = [
+		t("Workspace directories:"),
+		`  ${cwd} ${t("(working directory)")}`,
+		...additional.map(d => `  ${d}`),
+	];
 	return note ? `${note}\n${lines.join("\n")}` : lines.join("\n");
 }
 
@@ -541,7 +545,8 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		getTuiAutocompleteDescription: runtime => {
 			if (!runtime.ctx.loopModeEnabled) return t("Loop: off");
 			if (runtime.ctx.loopModePaused) return t("Loop: paused");
-			if (runtime.ctx.loopLimit) return t("Loop: on ({detail})", { detail: describeLoopLimitRuntime(runtime.ctx.loopLimit) });
+			if (runtime.ctx.loopLimit)
+				return t("Loop: on ({detail})", { detail: describeLoopLimitRuntime(runtime.ctx.loopLimit) });
 			if (runtime.ctx.loopPrompt) return t("Loop: on (repeating prompt)");
 			return t("Loop: on (waiting for next prompt)");
 		},
@@ -580,9 +585,12 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				);
 				if (!match) {
 					return usage(
-						t("Unknown model: {model}. Use ACP `session/setModel` for picker-driven selection or list available models with /model.", {
-							model: modelId,
-						}),
+						t(
+							"Unknown model: {model}. Use ACP `session/setModel` for picker-driven selection or list available models with /model.",
+							{
+								model: modelId,
+							},
+						),
 						runtime,
 					);
 				}
@@ -794,7 +802,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				preferences: getModelMatchPreferences(runtime.settings),
 			});
 			if (resolved.error || !resolved.model) {
-				return usage(resolved.error ?? t("Model \"{model}\" not found", { model: rolePattern }), runtime);
+				return usage(resolved.error ?? t('Model "{model}" not found', { model: rolePattern }), runtime);
 			}
 			if (!runtime.session.modelRegistry.hasConfiguredAuth(resolved.model)) {
 				return usage(
@@ -802,12 +810,17 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 					runtime,
 				);
 			}
-			runtime.session.armPrewalk(resolved.model, resolved.thinkingLevel);
-			await runtime.output(
-				t("Prewalk on: switching to {model} at the next edit/write (todo-gated).", {
-					model: `${resolved.model.provider}/${resolved.model.id}`,
-				}),
-			);
+			// Only report success when the requested arm remains active: arming
+			// a no-op target (already on it) or a target that loses to an
+			// existing arm is silent, so the status line is not spammed.
+			const armed = runtime.session.armPrewalk(resolved.model, resolved.thinkingLevel);
+			if (armed) {
+				await runtime.output(
+					t("Prewalk on: switching to {model} at the next edit/write (todo-gated).", {
+						model: `${resolved.model.provider}/${resolved.model.id}`,
+					}),
+				);
+			}
 			return commandConsumed();
 		},
 	},
@@ -1965,7 +1978,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				{ allowGlobalFallback: true },
 			);
 			if (!match) {
-				runtime.ctx.showError(t("Session \"{id}\" not found", { id: sessionArg }));
+				runtime.ctx.showError(t('Session "{id}" not found', { id: sessionArg }));
 				return;
 			}
 			await runtime.ctx.handleResumeSession(match.session.path);
@@ -2177,8 +2190,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			if (runtime.session.isStreaming) return usage(t("Cannot add a directory while streaming."), runtime);
-			if (!command.args)
-				return usage(formatWorkspaceDirectories(runtime, t("Usage: /add-dir <path>")), runtime);
+			if (!command.args) return usage(formatWorkspaceDirectories(runtime, t("Usage: /add-dir <path>")), runtime);
 			const resolved = resolveToCwd(command.args, runtime.cwd);
 			try {
 				const stat = await fs.stat(resolved);
@@ -2347,7 +2359,9 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 							const marketplaces = await manager.listMarketplaces();
 							await runtime.output(
 								marketplaces.length === 0
-									? t("No marketplaces configured. Try:\n  /marketplace add anthropics/claude-plugins-official")
+									? t(
+											"No marketplaces configured. Try:\n  /marketplace add anthropics/claude-plugins-official",
+										)
 									: t("No plugins available in configured marketplaces"),
 							);
 							return commandConsumed();
@@ -2496,9 +2510,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 							const marketplaces = await mgr.listMarketplaces();
 							if (marketplaces.length === 0) {
 								runtime.ctx.showStatus(
-									t(
-										"No marketplaces configured. Try:\n  /marketplace add anthropics/claude-plugins-official",
-									),
+									t("No marketplaces configured. Try:\n  /marketplace add anthropics/claude-plugins-official"),
 								);
 							} else {
 								runtime.ctx.showStatus(t("No plugins available in configured marketplaces"));

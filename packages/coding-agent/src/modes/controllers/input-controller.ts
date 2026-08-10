@@ -5,6 +5,7 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { type AutocompleteProvider, matchesKey, type SlashCommand } from "@oh-my-pi/pi-tui";
 import { isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
+import { t } from "../../i18n";
 import { resolveLocalRoot } from "../../internal-urls";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { extractImagePathFromText } from "../../modes/components/custom-editor";
@@ -13,6 +14,7 @@ import { renderSegmentTrack } from "../../modes/components/segment-track";
 import { StrippedToolCallsPlaceholder } from "../../modes/components/stripped-tool-calls-placeholder";
 import { TinyTitleDownloadProgressComponent } from "../../modes/components/tiny-title-download-progress";
 import { ToolExecutionComponent } from "../../modes/components/tool-execution";
+import { TreeSelectorComponent } from "../../modes/components/tree-selector";
 import { expandEmoticons } from "../../modes/emoji-autocomplete";
 import {
 	materializeImageReferenceLinks,
@@ -41,7 +43,6 @@ import { EnhancedPasteController } from "../../utils/enhanced-paste";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import { ensureSupportedImageInput, ImageInputTooLargeError, loadImageInput } from "../../utils/image-loading";
 import { resizeImage } from "../../utils/image-resize";
-import { t } from "../../i18n";
 
 /**
  * Slash commands that may carry secrets in their arguments should never be
@@ -190,6 +191,7 @@ export class InputController {
 	#focusedPasteListenerInstalled = false;
 	#btwBranchListenerInstalled = false;
 	#btwCopyListenerInstalled = false;
+	#expandToolsListenerInstalled = false;
 	// Tap counter for the double-← gesture; reset whenever a quiet gap
 	// (>= LEFT_DOUBLE_TAP_MAX_GAP_MS) starts a fresh sequence. See
 	// #detectLeftDoubleTap.
@@ -298,6 +300,24 @@ export class InputController {
 				if (!focused || focused === this.ctx.editor || !hasPasteText(focused)) return undefined;
 				if (!this.ctx.keybindings.matches(data, "app.clipboard.pasteImage")) return undefined;
 				void this.handleImagePaste();
+				return { consume: true };
+			});
+		}
+		if (!this.#expandToolsListenerInstalled) {
+			this.#expandToolsListenerInstalled = true;
+			// `app.tools.expand` (Ctrl+O) toggles the transcript's tool-output
+			// preview. It must fire regardless of focus so a truncated edit stays
+			// expandable while an approval prompt / select dialog holds keyboard
+			// focus (#7837). Defers when the main transcript is not the active
+			// surface (a fullscreen/anchored overlay — agent hub, transcript
+			// viewer, log viewer, model picker) or when the focused component
+			// rebinds Ctrl+O for its own use (the tree selector's filter cycle).
+			this.ctx.ui.addInputListener(data => {
+				if (!this.ctx.keybindings.matches(data, "app.tools.expand")) return undefined;
+				if (this.ctx.ui.hasOverlay()) return undefined;
+				if (this.ctx.ui.getFocused() instanceof TreeSelectorComponent && matchesKey(data, "ctrl+o"))
+					return undefined;
+				this.toggleToolOutputExpansion();
 				return { consume: true };
 			});
 		}
@@ -479,8 +499,6 @@ export class InputController {
 			this.ctx.keybindings.getKeys("app.clipboard.copyPrompt"),
 		);
 		this.ctx.editor.onCopyPrompt = () => this.handleCopyPrompt();
-		this.ctx.editor.setActionKeys("app.tools.expand", this.ctx.keybindings.getKeys("app.tools.expand"));
-		this.ctx.editor.onExpandTools = () => this.toggleToolOutputExpansion();
 		this.ctx.editor.setActionKeys(
 			"app.completedRuns.toggle",
 			this.ctx.keybindings.getKeys("app.completedRuns.toggle"),
@@ -812,9 +830,7 @@ export class InputController {
 				const { code, isExcluded } = pythonCommand;
 				if (code) {
 					if (this.ctx.session.isEvalRunning) {
-						this.ctx.showWarning(
-							t("A Python execution is already running. Press Esc to cancel it first."),
-						);
+						this.ctx.showWarning(t("A Python execution is already running. Press Esc to cancel it first."));
 						this.ctx.editor.setText(text);
 						return;
 					}
@@ -1653,9 +1669,12 @@ export class InputController {
 				);
 				this.ctx.showStatus(
 					overSsh
-						? t("Image not found at {path}. Over SSH this path is local to your terminal — paste the image directly (clipboard image-paste shortcut) to send its bytes.", {
-								path: displayPath,
-							})
+						? t(
+								"Image not found at {path}. Over SSH this path is local to your terminal — paste the image directly (clipboard image-paste shortcut) to send its bytes.",
+								{
+									path: displayPath,
+								},
+							)
 						: t("Image not found at {path}", { path: displayPath }),
 				);
 				return;
@@ -1952,7 +1971,9 @@ export class InputController {
 		if (this.ctx.hideToolActivity) {
 			const visibilityKey = this.ctx.keybindings.getDisplayString("app.tools.toggleVisibility");
 			const visibilityHint = visibilityKey ? `${visibilityKey} or /settings` : "/settings";
-			this.ctx.showStatus(t("Tool activity is hidden — show it with {hint} before expanding", { hint: visibilityHint }));
+			this.ctx.showStatus(
+				t("Tool activity is hidden — show it with {hint} before expanding", { hint: visibilityHint }),
+			);
 			return;
 		}
 		this.setToolsExpanded(!this.ctx.toolOutputExpanded);

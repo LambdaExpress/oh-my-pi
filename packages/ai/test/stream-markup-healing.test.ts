@@ -383,7 +383,10 @@ describe("StreamMarkupHealing DSML envelope pattern", () => {
 		// the authoritative `toolCall` closes it; surrounding text keeps its
 		// position relative to the call as a whole.
 		const leadingText = events
-			.slice(0, events.findIndex(event => event.type === "toolCallStart"))
+			.slice(
+				0,
+				events.findIndex(event => event.type === "toolCallStart"),
+			)
 			.map(event => (event.type === "text" ? event.text : ""))
 			.join("");
 		const trailingText = events

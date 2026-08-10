@@ -669,6 +669,7 @@ describe("AgentSession message pipeline", () => {
 				type: "toolcall_delta",
 				contentIndex: 0,
 				delta: "rep",
+				partial: assistantMessage,
 			},
 		} as never);
 
@@ -998,7 +999,7 @@ describe("AgentSession message pipeline", () => {
 				name: "bash",
 				label: "Bash",
 				description: "wrapped bash",
-				parameters: pi.typebox.Type.Object({ command: pi.typebox.Type.String() }),
+				parameters: pi.arktype({ command: pi.arktype("string") }),
 				async execute(
 					_toolCallId: string,
 					_params: unknown,

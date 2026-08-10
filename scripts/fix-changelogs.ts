@@ -719,12 +719,18 @@ async function git(args: readonly string[], cwd: string): Promise<string> {
  * permitted"), which would break every git call in a repo cloned under a
  * space-containing path.
  */
-function runGit(
-	args: readonly string[],
-	cwd: string,
-): { exitCode: number | null; stdout: Buffer; stderr: Buffer } {
+function runGit(args: readonly string[], cwd: string): { exitCode: number | null; stdout: Buffer; stderr: Buffer } {
 	return Bun.spawnSync({
-		cmd: ["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "fetch.pruneTags=false", ...args],
+		cmd: [
+			"git",
+			"-c",
+			"core.fsmonitor=false",
+			"-c",
+			"core.untrackedCache=false",
+			"-c",
+			"fetch.pruneTags=false",
+			...args,
+		],
 		cwd,
 		stdout: "pipe",
 		stderr: "pipe",

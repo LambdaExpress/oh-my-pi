@@ -10,7 +10,7 @@ export interface AggregateMetrics extends AgentMetrics {
 	activeDurationAgents: number;
 }
 
-export interface AgentTreeProjection {
+interface AgentTreeProjection {
 	rows: AgentRef[];
 	depthById: Map<string, number>;
 	parentById: Map<string, string>;
@@ -65,7 +65,7 @@ export function progressMetrics(observed: ObservableSession | undefined): AgentM
  * usage embedded in completed `task` tool results, so using it for a parent
  * row would double-count child rows in the aggregate.
  */
-export function readSessionMetrics(session: NonNullable<AgentRef["session"]>): AgentMetrics | undefined {
+function readSessionMetrics(session: NonNullable<AgentRef["session"]>): AgentMetrics | undefined {
 	try {
 		const stats = session.getSessionStats();
 		const messages = session.agent?.state?.messages;

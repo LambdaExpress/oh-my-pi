@@ -191,18 +191,12 @@ export function describeLoopLimitRuntime(limit: LoopLimitRuntime): string {
 function formatDuration(durationMs: number): string {
 	if (durationMs % 3_600_000 === 0) {
 		const hours = durationMs / 3_600_000;
-		return hours === 1
-			? t("{count} hour", { count: hours })
-			: t("{count} hours", { count: hours });
+		return hours === 1 ? t("{count} hour", { count: hours }) : t("{count} hours", { count: hours });
 	}
 	if (durationMs % 60_000 === 0) {
 		const minutes = durationMs / 60_000;
-		return minutes === 1
-			? t("{count} minute", { count: minutes })
-			: t("{count} minutes", { count: minutes });
+		return minutes === 1 ? t("{count} minute", { count: minutes }) : t("{count} minutes", { count: minutes });
 	}
 	const seconds = durationMs / 1_000;
-	return seconds === 1
-		? t("{count} second", { count: seconds })
-		: t("{count} seconds", { count: seconds });
+	return seconds === 1 ? t("{count} second", { count: seconds }) : t("{count} seconds", { count: seconds });
 }

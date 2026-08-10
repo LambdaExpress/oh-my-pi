@@ -10,9 +10,10 @@ let pinnedLocale: Locale | null = null; // setLocale 固定；null = 从 setting
 
 /** 固定当前 locale；null/非法值 = 恢复为 settings 驱动。main.ts、runCli 帮助路径、设置面板保存、测试使用。 */
 export function setLocale(locale: string | null | undefined): void {
-	pinnedLocale = typeof locale === "string" && (SUPPORTED_LOCALES as readonly string[]).includes(locale)
-		? (locale as Locale)
-		: null;
+	pinnedLocale =
+		typeof locale === "string" && (SUPPORTED_LOCALES as readonly string[]).includes(locale)
+			? (locale as Locale)
+			: null;
 }
 
 export function getLocale(): Locale {

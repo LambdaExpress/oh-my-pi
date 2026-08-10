@@ -14,7 +14,7 @@ import type {
 import { streamSimple } from "@oh-my-pi/pi-ai";
 import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, getProjectDir } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
 import {
 	formatModelString,
@@ -586,10 +586,9 @@ async function resolveDryBalanceModel(
 
 	return {
 		model: allowedModels[0],
-		warning:
-			t(
-				"No allowed model had usable credentials during default resolution; dry-balance will report OAuth failures for the first allowed model.",
-			),
+		warning: t(
+			"No allowed model had usable credentials during default resolution; dry-balance will report OAuth failures for the first allowed model.",
+		),
 	};
 }
 

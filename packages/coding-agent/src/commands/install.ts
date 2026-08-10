@@ -22,8 +22,8 @@ import { existsSync } from "node:fs";
 import * as path from "node:path";
 import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { installHelp as commandHelp } from "../cli/command-help";
-import { t } from "../i18n";
 import { type PluginAction, type PluginCommandArgs, runPluginCommand } from "../cli/plugin-cli";
+import { t } from "../i18n";
 import { initTheme } from "../modes/theme/theme";
 
 /**
@@ -67,7 +67,7 @@ export default class Install extends Command {
 		const targets = Array.isArray(args.targets) ? args.targets : args.targets ? [args.targets] : [];
 
 		if (targets.length === 0) {
-			process.stderr.write(t("Usage: omp install <path | npm-spec | name@marketplace> [...]") + "\n");
+			process.stderr.write(`${t("Usage: omp install <path | npm-spec | name@marketplace> [...]")}\n`);
 			process.exit(1);
 		}
 

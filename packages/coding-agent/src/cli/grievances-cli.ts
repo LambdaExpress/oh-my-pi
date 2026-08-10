@@ -1,7 +1,7 @@
 /**
  * CLI handler for `omp grievances` — view, clean, and manually push reported tool issues.
  */
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Settings } from "../config/settings";
 import { t } from "../i18n";
 import { flushGrievances, openAutoQaDb } from "../tools/report-tool-issue";
@@ -42,9 +42,7 @@ export async function listGrievances(options: ListGrievancesOptions): Promise<vo
 			console.log("[]");
 		} else {
 			console.log(
-				chalk.dim(
-					t("No grievances database found. Auto-QA has not recorded any reports yet (or was disabled)."),
-				),
+				chalk.dim(t("No grievances database found. Auto-QA has not recorded any reports yet (or was disabled).")),
 			);
 		}
 		return;
@@ -114,9 +112,7 @@ export async function cleanGrievances(options: CleanGrievancesOptions): Promise<
 			console.log(JSON.stringify({ deleted: 0 }));
 		} else {
 			console.log(
-				chalk.dim(
-					t("No grievances database found. Auto-QA has not recorded any reports yet (or was disabled)."),
-				),
+				chalk.dim(t("No grievances database found. Auto-QA has not recorded any reports yet (or was disabled).")),
 			);
 		}
 		return;
@@ -153,7 +149,11 @@ export async function cleanGrievances(options: CleanGrievancesOptions): Promise<
 		}
 
 		const scope =
-			options.id !== undefined ? `#${options.id}` : options.tool ? t("for {tool}", { tool: options.tool }) : t("(all entries)");
+			options.id !== undefined
+				? `#${options.id}`
+				: options.tool
+					? t("for {tool}", { tool: options.tool })
+					: t("(all entries)");
 		const word = deleted === 1 ? t("grievance") : t("grievances");
 		console.log(chalk.green(t("Deleted {count} {word} {scope}.", { count: deleted, word, scope })));
 	} finally {

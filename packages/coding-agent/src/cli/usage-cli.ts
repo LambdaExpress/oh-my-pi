@@ -18,7 +18,7 @@ import {
 	type UsageUnit,
 } from "@oh-my-pi/pi-ai";
 import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
 import { t } from "../i18n";
 import { discoverAuthStorage } from "../sdk";
@@ -437,16 +437,12 @@ function formatAccountHeader(
 			} else {
 				const lastExpired = expiries.at(-1);
 				if (lastExpired)
-					header += chalk.dim(
-						` · ${t("expired ({date})", { date: lastExpired.date.slice(0, 10) })}`,
-					);
+					header += chalk.dim(` · ${t("expired ({date})", { date: lastExpired.date.slice(0, 10) })}`);
 			}
 		}
 	}
 	if (report.fetchedAt && nowMs - report.fetchedAt > 90_000) {
-		header += chalk.dim(
-			` · ${t("fetched {duration} ago", { duration: formatDuration(nowMs - report.fetchedAt) })}`,
-		);
+		header += chalk.dim(` · ${t("fetched {duration} ago", { duration: formatDuration(nowMs - report.fetchedAt) })}`);
 	}
 	return header;
 }
@@ -686,9 +682,7 @@ export function formatUsageBreakdown(
 		const accountCount = providerReports.length + providerUnreported.length;
 		lines.push("");
 		const accountWord = accountCount === 1 ? t("account") : t("accounts");
-		lines.push(
-			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accountCount} ${accountWord}`)}`,
-		);
+		lines.push(`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accountCount} ${accountWord}`)}`);
 		// Provider-wide disclaimers render once per provider, not per limit.
 		const providerNotes = [...new Set(providerReports.flatMap(report => report.notes ?? []))];
 		for (const note of providerNotes)
@@ -867,9 +861,7 @@ export function formatUsageHistory(
 		const accounts = providers.get(provider) ?? new Map<string, HistoryAccount>();
 		lines.push("");
 		const accountWord = accounts.size === 1 ? t("account") : t("accounts");
-		lines.push(
-			`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accounts.size} ${accountWord}`)}`,
-		);
+		lines.push(`${chalk.bold.cyan(formatProviderName(provider))} ${chalk.dim(`— ${accounts.size} ${accountWord}`)}`);
 		const sortedAccounts = [...accounts.values()].sort((a, b) => a.label.localeCompare(b.label));
 		for (const account of sortedAccounts) {
 			lines.push(`  ${chalk.bold(redaction?.get(account.label) ?? account.label)}`);
@@ -884,7 +876,8 @@ export function formatUsageHistory(
 				const peakFraction = fractions.length > 0 ? Math.max(...fractions) : undefined;
 				const status = historyStatus(latestFraction, latestEntry?.status);
 				const details: string[] = [];
-				if (latestFraction !== undefined) details.push(t("latest {pct}%", { pct: (latestFraction * 100).toFixed(1) }));
+				if (latestFraction !== undefined)
+					details.push(t("latest {pct}%", { pct: (latestFraction * 100).toFixed(1) }));
 				if (peakFraction !== undefined) details.push(t("peak {pct}%", { pct: (peakFraction * 100).toFixed(1) }));
 				const snapshotWord = series.entries.length === 1 ? t("snapshot") : t("snapshots");
 				details.push(`${series.entries.length} ${snapshotWord}`);
@@ -986,9 +979,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			const provider = cmd.provider?.toLowerCase();
 			await authStorage.invalidateUsageCache(provider);
 			if (provider) {
-				process.stdout.write(
-					`${t('Invalidated cached usage reports for provider "{provider}".', { provider })}\n`,
-				);
+				process.stdout.write(`${t('Invalidated cached usage reports for provider "{provider}".', { provider })}\n`);
 			} else {
 				process.stdout.write(`${t("Invalidated cached usage reports for all providers.")}\n`);
 			}

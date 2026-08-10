@@ -251,9 +251,7 @@ export class MoveOverlay implements Component, Focusable {
 		}
 
 		lines.push(row("", w));
-		lines.push(
-			row(theme.fg("dim", t("Type to filter · ↑↓ navigate · Tab accept · Enter confirm · Esc cancel")), w),
-		);
+		lines.push(row(theme.fg("dim", t("Type to filter · ↑↓ navigate · Tab accept · Enter confirm · Esc cancel")), w));
 		lines.push(bottomBorder(w));
 		return lines;
 	}

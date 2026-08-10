@@ -75,6 +75,8 @@ function isBookkeepingEntry(entry: SessionEntry): boolean {
 		case "ttsr_injection":
 		case "session_init":
 		case "mode_change":
+		case "credential_pin":
+		case "reset_boundary":
 			return true;
 		default:
 			return false;
@@ -308,7 +310,8 @@ class TreeList implements Component {
 
 			// Apply filter mode
 			let passesFilter = true;
-			// Entry types hidden in default view (settings/bookkeeping)
+			// Entry types hidden in default view (settings/bookkeeping). These carry
+			// no conversation content, so the tree only shows them in "all" mode.
 			const isSettingsEntry = isBookkeepingEntry(entry);
 
 			switch (this.#filterMode) {
@@ -405,13 +408,20 @@ class TreeList implements Component {
 				parts.push("thinking", entry.thinkingLevel ?? ThinkingLevel.Off);
 				break;
 			case "service_tier_change":
-				parts.push("service tier", JSON.stringify(entry.serviceTier ?? null));
+				parts.push("service tier");
+				if (entry.serviceTier) {
+					const serviceTier = entry.serviceTier;
+					for (const family in serviceTier) {
+						const tier = serviceTier[family as keyof typeof serviceTier];
+						if (tier) parts.push(family, tier);
+					}
+				}
 				break;
 			case "title_change":
 				parts.push("title", entry.title, entry.source);
 				break;
 			case "ttsr_injection":
-				parts.push("ttsr", ...entry.injectedRules);
+				parts.push("ttsr injection", ...entry.injectedRules);
 				break;
 			case "session_init":
 				parts.push("session init", entry.task);
@@ -424,6 +434,12 @@ class TreeList implements Component {
 				break;
 			case "label":
 				parts.push("label", entry.label ?? "");
+				break;
+			case "credential_pin":
+				parts.push("credential pin", entry.provider);
+				break;
+			case "reset_boundary":
+				parts.push("reset boundary");
 				break;
 		}
 
@@ -506,16 +522,11 @@ class TreeList implements Component {
 			} else if (this.#searchQuery.length > 0) {
 				lines.push(
 					truncateToWidth(
-						theme.fg(
-							"muted",
-							`  ${t("No entries match search \"{query}\"", { query: this.#searchQuery })}`,
-						),
+						theme.fg("muted", `  ${t('No entries match search "{query}"', { query: this.#searchQuery })}`),
 						width,
 					),
 				);
-				lines.push(
-					truncateToWidth(theme.fg("muted", `  ${t("Press Backspace to clear the search")}`), width),
-				);
+				lines.push(truncateToWidth(theme.fg("muted", `  ${t("Press Backspace to clear the search")}`), width));
 				lines.push(
 					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
 				);
@@ -534,10 +545,7 @@ class TreeList implements Component {
 					),
 				);
 				lines.push(
-					truncateToWidth(
-						theme.fg("muted", `  ${t("Press Alt+A to show all, Alt+D for default")}`),
-						width,
-					),
+					truncateToWidth(theme.fg("muted", `  ${t("Press Alt+A to show all, Alt+D for default")}`), width),
 				);
 				lines.push(
 					truncateToWidth(theme.fg("muted", `  (0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
@@ -739,13 +747,21 @@ class TreeList implements Component {
 				result = theme.fg("dim", `[thinking: ${entry.thinkingLevel ?? ThinkingLevel.Off}]`);
 				break;
 			case "service_tier_change":
-				result = theme.fg("dim", `[service tier: ${JSON.stringify(entry.serviceTier ?? null)}]`);
+				// Per-family map, or "(default)" when the session went back to
+				// the default tier.
+				result = theme.fg(
+					"dim",
+					`[service tier: ${
+						entry.serviceTier
+							? Object.entries(entry.serviceTier)
+									.map(([family, tier]) => `${family}:${tier}`)
+									.join(" ")
+							: "(default)"
+					}]`,
+				);
 				break;
 			case "title_change":
 				result = theme.fg("dim", `[title: ${normalize(entry.title)}]`);
-				break;
-			case "ttsr_injection":
-				result = theme.fg("dim", `[ttsr: ${entry.injectedRules.join(", ")}]`);
 				break;
 			case "session_init":
 				result = theme.fg("dim", `[session init]: ${normalize(entry.task)}`);
@@ -759,9 +775,16 @@ class TreeList implements Component {
 			case "label":
 				result = theme.fg("dim", `[label: ${entry.label ?? t("(cleared)")}]`);
 				break;
+			case "credential_pin":
+				result = theme.fg("dim", `[credential pin: ${entry.provider}]`);
+				break;
 			default: {
+				// Bookkeeping entries with nothing worth spelling out still get their
+				// type. A row that renders to the empty string is worse than a
+				// useless one: it draws as a bare bullet with no way to tell what it
+				// is or why the tree has a gap in it.
 				const unknownEntry = entry as unknown as { type?: string };
-				result = theme.fg("dim", `[${unknownEntry.type ?? t("unknown")}]`);
+				result = theme.fg("dim", `[${(unknownEntry.type ?? t("unknown")).replaceAll("_", " ")}]`);
 				break;
 			}
 		}

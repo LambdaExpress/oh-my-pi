@@ -17,7 +17,7 @@ import { resolveModelServiceTier, streamSimple } from "@oh-my-pi/pi-ai";
 import { buildModelProviderPriorityRank } from "@oh-my-pi/pi-catalog/identity";
 import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, getProjectDir, prompt } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { ApiKeyResolverModel } from "../config/api-key-resolver";
 import { ModelRegistry } from "../config/model-registry";
 import {
@@ -737,11 +737,14 @@ function resolveBenchModels(
 		if (authenticated) {
 			writeStderr(
 				`${chalk.yellow(
-					t('Warning: no credentials for "{provider}"; benchmarking {alternative} instead. Pin "{original}" to force it.', {
-						provider: model.provider,
-						alternative: formatModelString(authenticated),
-						original: formatModelString(model),
-					}),
+					t(
+						'Warning: no credentials for "{provider}"; benchmarking {alternative} instead. Pin "{original}" to force it.',
+						{
+							provider: model.provider,
+							alternative: formatModelString(authenticated),
+							original: formatModelString(model),
+						},
+					),
 				)}\n`,
 			);
 			model = authenticated;
@@ -782,7 +785,8 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 	if (!cacheMode && cacheFlagsUsed) throw new Error(t("Cache flags require --cache"));
 	if (cacheMode && command.flags.runs !== undefined)
 		throw new Error(t("Use --cache-pairs instead of --runs with --cache"));
-	if (cacheMode && command.flags.prompt !== undefined) throw new Error(t("--cache builds its own stable-prefix prompts"));
+	if (cacheMode && command.flags.prompt !== undefined)
+		throw new Error(t("--cache builds its own stable-prefix prompts"));
 	if (cacheMode && (command.flags.par ?? 1) > 1) {
 		throw new Error(t("--par cannot parallelize cold/warm pairs; use --cache-concurrency instead"));
 	}
@@ -853,9 +857,12 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 			if (!preflightKey) {
 				const failure: BenchRunFailure = {
 					ok: false,
-					error: t('No credentials for provider "{provider}". Run `omp` and use /login, or set the provider API key.', {
-						provider: model.provider,
-					}),
+					error: t(
+						'No credentials for provider "{provider}". Run `omp` and use /login, or set the provider API key.',
+						{
+							provider: model.provider,
+						},
+					),
 				};
 				results.push(failure);
 				if (!json) writeStdout(`${formatRunLine(failure, 0, runs)}\n`);
@@ -981,7 +988,7 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 				const index = queue.shift()!;
 				if (!json && interactive)
 					writeStdout(
-						`${chalk.dim("  … " + t("run {index}/{total} streaming", { index: index + 1, total: runs }))}\n`,
+						`${chalk.dim(`  … ${t("run {index}/{total} streaming", { index: index + 1, total: runs })}`)}\n`,
 					);
 				await runWorker(index);
 				if (!json) {

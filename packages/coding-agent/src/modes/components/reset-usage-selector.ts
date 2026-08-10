@@ -96,7 +96,10 @@ export class ResetUsageSelectorComponent extends Container {
 
 		const pending = this.#pendingIndex !== null ? this.#accounts[this.#pendingIndex] : undefined;
 		const hint = pending
-			? theme.fg("warning", `  ${t("Press Enter again to spend 1 reset for {name}, Esc to cancel", { name: pending.label })}`)
+			? theme.fg(
+					"warning",
+					`  ${t("Press Enter again to spend 1 reset for {name}, Esc to cancel", { name: pending.label })}`,
+				)
 			: theme.fg("muted", `  ${t("↑/↓ select · ↵ spend a reset · Esc cancel")}`);
 		this.#listContainer.addChild(new TruncatedText(hint, 0, 0));
 

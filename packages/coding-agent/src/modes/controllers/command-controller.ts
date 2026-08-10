@@ -11,7 +11,7 @@ import {
 	type UsageReport,
 } from "@oh-my-pi/pi-ai";
 import { Loader, Markdown, padding, Spacer, Text, visibleWidth } from "@oh-my-pi/pi-tui";
-import { formatDuration, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
+import { formatDuration, logger, Snowflake, sanitizeText } from "@oh-my-pi/pi-utils";
 import { shouldEnableAppendOnlyContext } from "../../config/append-only-context-mode";
 import { type BashResult, isPersistentShellCdCommand } from "../../exec/bash-executor";
 import { type LoadedCustomShare, loadCustomShare } from "../../export/custom-share";
@@ -28,6 +28,7 @@ import {
 	seedAlreadyExists,
 	summarizeMentalModel,
 } from "../../hindsight";
+import { t } from "../../i18n";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../../memory-backend";
 import { BashExecutionComponent } from "../../modes/components/bash-execution";
 import { BorderedLoader } from "../../modes/components/bordered-loader";
@@ -58,7 +59,6 @@ import {
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
-import { t } from "../../i18n";
 
 function showMarkdownPanel(ctx: InteractiveModeContext, title: string, markdown: string): void {
 	const block = new TranscriptBlock();
@@ -644,9 +644,7 @@ export class CommandController {
 		if (action === "view") {
 			const payload = await backend.buildDeveloperInstructions(agentDir, this.ctx.settings, this.ctx.session);
 			if (!payload) {
-				this.ctx.showWarning(
-					t("Memory payload is empty (memory backend off, disabled, or no memory available)."),
-				);
+				this.ctx.showWarning(t("Memory payload is empty (memory backend off, disabled, or no memory available)."));
 				return;
 			}
 			const block = new TranscriptBlock();
@@ -783,7 +781,9 @@ export class CommandController {
 				.map(summarizeMentalModel);
 			showMarkdownPanel(this.ctx, t("Mental Models — {bank}", { bank: state.bankId }), lines.join("\n"));
 		} catch (error) {
-			this.ctx.showError(t("mm list failed: {error}", { error: error instanceof Error ? error.message : String(error) }));
+			this.ctx.showError(
+				t("mm list failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 		}
 	}
 
@@ -804,7 +804,9 @@ export class CommandController {
 				`**${t("id:")}** \`${model.id}\`${tags}${refreshed}${sourceQuery}\n\n${content}`,
 			);
 		} catch (error) {
-			this.ctx.showError(t("mm show failed: {error}", { error: error instanceof Error ? error.message : String(error) }));
+			this.ctx.showError(
+				t("mm show failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 		}
 	}
 
@@ -833,9 +835,12 @@ export class CommandController {
 				const skipped = items.length - targets.length;
 				if (targets.length === 0) {
 					this.ctx.showStatus(
-						t("No mental models opted into auto-refresh; {skipped} curated model(s) left untouched. Pass an explicit id to refresh one of them.", {
-							skipped,
-						}),
+						t(
+							"No mental models opted into auto-refresh; {skipped} curated model(s) left untouched. Pass an explicit id to refresh one of them.",
+							{
+								skipped,
+							},
+						),
 					);
 					return;
 				}
@@ -867,7 +872,9 @@ export class CommandController {
 			await Bun.sleep(500);
 			await reloadMentalModelsForSession(state.session);
 		} catch (error) {
-			this.ctx.showError(t("mm refresh failed: {error}", { error: error instanceof Error ? error.message : String(error) }));
+			this.ctx.showError(
+				t("mm refresh failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 		}
 	}
 
@@ -900,7 +907,9 @@ export class CommandController {
 			}
 			showMarkdownPanel(this.ctx, t("History — {name}", { name: model.name }), sections.join("\n\n"));
 		} catch (error) {
-			this.ctx.showError(t("mm history failed: {error}", { error: error instanceof Error ? error.message : String(error) }));
+			this.ctx.showError(
+				t("mm history failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 		}
 	}
 
@@ -950,7 +959,9 @@ export class CommandController {
 				t("Seeded {created} new mental model(s); {skipped} already present.", { created, skipped }),
 			);
 		} catch (error) {
-			this.ctx.showError(t("mm seed failed: {error}", { error: error instanceof Error ? error.message : String(error) }));
+			this.ctx.showError(
+				t("mm seed failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 		}
 	}
 
@@ -975,7 +986,9 @@ export class CommandController {
 			await reloadMentalModelsForSession(state.session);
 			this.ctx.showStatus(t("Deleted mental model {id} from bank {bank}.", { id, bank: state.bankId }));
 		} catch (error) {
-			this.ctx.showError(t("mm delete failed: {error}", { error: error instanceof Error ? error.message : String(error) }));
+			this.ctx.showError(
+				t("mm delete failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 		}
 	}
 
@@ -1035,9 +1048,7 @@ export class CommandController {
 		}
 		const result = await this.ctx.session.resetSessionContext();
 		if (!result) {
-			this.ctx.showWarning(
-				t("Wait for the current response to finish or abort it before resetting the context."),
-			);
+			this.ctx.showWarning(t("Wait for the current response to finish or abort it before resetting the context."));
 			return;
 		}
 		// Drop the rendered transcript so the UI matches the now-empty model
@@ -1097,7 +1108,11 @@ export class CommandController {
 		const shortPath = sessionFile ? sessionFile.split("/").pop() : t("new session");
 		this.ctx.present([
 			new Spacer(1),
-			new Text(`${theme.fg("accent", `${theme.status.success} ${t("Session forked to {path}", { path: shortPath })}`)}`, 1, 1),
+			new Text(
+				`${theme.fg("accent", `${theme.status.success} ${t("Session forked to {path}", { path: shortPath })}`)}`,
+				1,
+				1,
+			),
 		]);
 	}
 
@@ -1202,7 +1217,11 @@ export class CommandController {
 
 		this.ctx.present([
 			new Spacer(1),
-			new Text(`${theme.fg("accent", `${theme.status.success} ${t("Moved to {path}", { path: resolvedPath })}`)}`, 1, 1),
+			new Text(
+				`${theme.fg("accent", `${theme.status.success} ${t("Moved to {path}", { path: resolvedPath })}`)}`,
+				1,
+				1,
+			),
 		]);
 	}
 
@@ -1224,9 +1243,7 @@ export class CommandController {
 		const isDeferred = this.ctx.session.isStreaming;
 		const shouldPersistCwd = isPersistentShellCdCommand(command);
 		if (isDeferred && shouldPersistCwd) {
-			this.ctx.showWarning(
-				t("Wait for the current response to finish or abort it before changing directories."),
-			);
+			this.ctx.showWarning(t("Wait for the current response to finish or abort it before changing directories."));
 			return;
 		}
 
@@ -1386,7 +1403,9 @@ export class CommandController {
 		try {
 			result = await this.ctx.session.shake(mode);
 		} catch (error) {
-			this.ctx.showError(t("Shake failed: {error}", { error: error instanceof Error ? error.message : String(error) }));
+			this.ctx.showError(
+				t("Shake failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 			return;
 		}
 
@@ -1537,9 +1556,15 @@ export class CommandController {
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			if (message === "Handoff cancelled" || (error instanceof Error && error.name === "AbortError")) {
+			// `session.handoff()` normalizes genuine cancellations to this exact message; a
+			// provider error (even one named AbortError) is re-thrown verbatim so it surfaces
+			// as a real failure instead of a false "cancelled".
+			if (message === "Handoff cancelled") {
 				this.ctx.showError(t("Handoff cancelled"));
 			} else {
+				// Persist the real failure so it is debuggable after the transient
+				// TUI error clears (#7993).
+				logger.error("Handoff failed", { error: message });
 				this.ctx.showError(t("Handoff failed: {error}", { error: message }));
 			}
 		} finally {

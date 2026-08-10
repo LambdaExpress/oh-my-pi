@@ -6,7 +6,7 @@
  */
 
 import { APP_NAME, getAgentDir } from "@oh-my-pi/pi-utils";
-import chalk from "chalk";
+import chalk from "@oh-my-pi/pi-utils/chalk";
 import {
 	getDefault,
 	getEnumValues,
@@ -393,7 +393,9 @@ async function handleSet(key: string | undefined, value: string | undefined, fla
 		console.log(JSON.stringify({ key: def.path, value: newValue }));
 	} else {
 		console.log(
-			chalk.green(`${theme.status.success} ${t("Set {path} = {value}", { path: def.path, value: formatValue(newValue) })}`),
+			chalk.green(
+				`${theme.status.success} ${t("Set {path} = {value}", { path: def.path, value: formatValue(newValue) })}`,
+			),
 		);
 	}
 }

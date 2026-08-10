@@ -6,8 +6,8 @@
 import { getProjectDir, getSSHConfigPath } from "@oh-my-pi/pi-utils";
 import { type SSHHost, type SSHHostConfig, sshCapability } from "../../capability/ssh";
 import { loadCapability } from "../../discovery";
-import { addSSHHost, readSSHConfigFile, removeSSHHost } from "../../ssh/config-writer";
 import { t } from "../../i18n";
+import { addSSHHost, readSSHConfigFile, removeSSHHost } from "../../ssh/config-writer";
 import { parseCommandArgs } from "../shared";
 import { theme } from "../theme/theme";
 import type { InteractiveModeContext } from "../types";
@@ -79,7 +79,9 @@ export class SSHCommandController {
 		const rest = prefixMatch?.[1]?.trim() ?? "";
 		if (!rest) {
 			this.ctx.showError(
-				t("Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]"),
+				t(
+					"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
+				),
 			);
 			return;
 		}
@@ -87,7 +89,9 @@ export class SSHCommandController {
 		const tokens = parseCommandArgs(rest);
 		if (tokens.length === 0) {
 			this.ctx.showError(
-				t("Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]"),
+				t(
+					"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
+				),
 			);
 			return;
 		}
@@ -346,7 +350,9 @@ export class SSHCommandController {
 
 			this.#showMessage(lines.join("\n"));
 		} catch (error) {
-			this.ctx.showError(t("Failed to list hosts: {error}", { error: error instanceof Error ? error.message : String(error) }));
+			this.ctx.showError(
+				t("Failed to list hosts: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 		}
 	}
 
@@ -392,10 +398,14 @@ export class SSHCommandController {
 			await this.ctx.session.refreshSshTools();
 
 			this.#showMessage(
-				["", theme.fg("success", t('- Removed SSH host "{name}" from {scope} config', { name, scope })), ""].join("\n"),
+				["", theme.fg("success", t('- Removed SSH host "{name}" from {scope} config', { name, scope })), ""].join(
+					"\n",
+				),
 			);
 		} catch (error) {
-			this.ctx.showError(t("Failed to remove host: {error}", { error: error instanceof Error ? error.message : String(error) }));
+			this.ctx.showError(
+				t("Failed to remove host: {error}", { error: error instanceof Error ? error.message : String(error) }),
+			);
 		}
 	}
 

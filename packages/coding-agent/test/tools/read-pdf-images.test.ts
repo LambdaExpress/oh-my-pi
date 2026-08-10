@@ -125,8 +125,8 @@ describe("read PDF image extraction", () => {
 			.join("\n");
 
 		expect(text).not.toContain("<!-- image:");
-		expect(text).toContain(`read \`${pdfPath}:p11-img0.png\``);
-		expect(text).toContain(`read \`${pdfPath}:p11-img1.png\``);
+		expect(text).toContain("read `doc.pdf:p11-img0.png`");
+		expect(text).toContain("read `doc.pdf:p11-img1.png`");
 		// Page/size metadata is preserved in the handle text.
 		expect(text).toContain("page 11, 199x124pt");
 	});
@@ -144,7 +144,7 @@ describe("read PDF image extraction", () => {
 			.join("\n");
 
 		expect(text).not.toContain("<!-- image:");
-		expect(text).toContain(`read \`${pdfPath}:p3-img0.png\``);
+		expect(text).toContain("read `doc.pdf:p3-img0.png`");
 	});
 
 	it("extracts a PDF image member as an inline image block", async () => {
@@ -379,7 +379,12 @@ describe("read PDF image extraction", () => {
 	});
 
 	it("supports PDF basenames at the filesystem component limit", async () => {
-		const longPdfPath = path.join(testDir, `${"a".repeat(250)}.pdf`);
+		// Windows caps total path length (MAX_PATH), so the component-limit
+		// basename must be shorter there (the extraction staging dir appends a
+		// long snapshot-key suffix); Linux CI exercises the real 255-char
+		// component ceiling.
+		const basenameLength = process.platform === "win32" ? 60 : 250;
+		const longPdfPath = path.join(testDir, `${"a".repeat(basenameLength)}.pdf`);
 		fs.writeFileSync(longPdfPath, "%PDF-stub");
 		mockExtraction();
 

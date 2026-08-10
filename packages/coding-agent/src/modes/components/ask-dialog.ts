@@ -20,6 +20,7 @@ import type {
 	ExtensionAskDialogResultItem,
 	ExtensionAskDialogSubmitResult,
 } from "../../extensibility/extensions";
+import { t } from "../../i18n";
 import { getTabBarTheme } from "../shared";
 import { getMarkdownTheme, highlightCode, theme } from "../theme/theme";
 import {
@@ -29,7 +30,6 @@ import {
 	matchesSelectPageUp,
 	matchesSelectUp,
 } from "../utils/keybinding-matchers";
-import { t } from "../../i18n";
 import { CountdownTimer } from "./countdown-timer";
 import { editorKey } from "./keybinding-hints";
 import { bottomBorder, divider, row, topBorder } from "./overlay-box";
@@ -314,8 +314,7 @@ function renderRowLabel(
 	const cursor = selected ? theme.fg("accent", `${theme.nav.cursor} `) : "  ";
 	const displayLabel = rowItem.label.replace(/ \(Recommended\)$/, t(" (Recommended)"));
 	const label = renderInlineMarkdown(displayLabel, mdTheme, t => theme.fg(color, t));
-	const noteMarker =
-		state.note && state.noteRowKey === rowItem.key ? theme.fg("success", `  ✎ ${t("note")}`) : "";
+	const noteMarker = state.note && state.noteRowKey === rowItem.key ? theme.fg("success", `  ✎ ${t("note")}`) : "";
 	const firstLine = `${cursor}${marker}${label}${noteMarker}`;
 	const lines = [truncateToWidth(firstLine, width, Ellipsis.Unicode)];
 	if (rowItem.kind === "option") {

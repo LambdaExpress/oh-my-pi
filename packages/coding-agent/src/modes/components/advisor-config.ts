@@ -388,8 +388,16 @@ export class AdvisorConfigOverlayComponent implements Component {
 			description: this.#advisorSummary(advisor),
 		}));
 		items.push({ value: "add", label: `+ ${t("Add advisor")}` });
-		items.push({ value: "shared", label: t("Shared instructions"), description: previewLine(this.#doc.instructions) });
-		items.push({ value: "scope", label: t("Scope: {scope}", { scope: this.#scope }), description: `→ ${this.#otherScope()}` });
+		items.push({
+			value: "shared",
+			label: t("Shared instructions"),
+			description: previewLine(this.#doc.instructions),
+		});
+		items.push({
+			value: "scope",
+			label: t("Scope: {scope}", { scope: this.#scope }),
+			description: `→ ${this.#otherScope()}`,
+		});
 		items.push({ value: "save", label: t("Save & apply") });
 		items.push({ value: "close", label: t("Close") });
 
@@ -404,11 +412,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 				this.#cb.notify(t("Advisor config: {error}", { error: err instanceof Error ? err.message : String(err) }));
 			});
 		list.onCancel = () => this.#cb.close();
-		this.#setScreen(
-			"list",
-			list,
-			t("↑↓ move · Enter / click select · scroll preview on the right · Esc close"),
-		);
+		this.#setScreen("list", list, t("↑↓ move · Enter / click select · scroll preview on the right · Esc close"));
 	}
 
 	async #onListSelect(value: string): Promise<void> {
@@ -477,7 +481,11 @@ export class AdvisorConfigOverlayComponent implements Component {
 		const list = new SelectList(items, Math.max(1, items.length), getSelectListTheme());
 		list.onSelect = item => this.#onDetailSelect(index, item.value);
 		list.onCancel = () => this.#showList();
-		this.#setScreen("detail", list, t('Editing "{name}" · Enter / click edit field · Esc back', { name: advisor.name }));
+		this.#setScreen(
+			"detail",
+			list,
+			t('Editing "{name}" · Enter / click edit field · Esc back', { name: advisor.name }),
+		);
 	}
 
 	#onDetailSelect(index: number, field: string): void {

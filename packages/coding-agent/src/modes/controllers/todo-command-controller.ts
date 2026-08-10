@@ -1,4 +1,5 @@
 import * as fs from "node:fs/promises";
+import { t } from "../../i18n";
 import {
 	applyOpsToPhases,
 	getLatestTodoPhasesFromEntries,
@@ -11,7 +12,6 @@ import {
 } from "../../tools/todo";
 import { copyToClipboard } from "../../utils/clipboard";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
-import { t } from "../../i18n";
 import type { InteractiveModeContext } from "../types";
 
 const USAGE_TEXT =
@@ -187,7 +187,7 @@ export class TodoCommandController {
 				this.#remove(rest);
 				return;
 			default:
-				this.ctx.showError(t('Unknown /todo verb "{verb}".', { verb }) + `\n${t(USAGE_TEXT)}`);
+				this.ctx.showError(`${t('Unknown /todo verb "{verb}".', { verb })}\n${t(USAGE_TEXT)}`);
 		}
 	}
 
@@ -343,7 +343,9 @@ export class TodoCommandController {
 				return;
 			}
 			this.#commit(phases, `/todo ${op} (all)`);
-			this.ctx.showStatus(t("Marked all tasks {state}.", { state: target === "completed" ? t("completed") : t("abandoned") }));
+			this.ctx.showStatus(
+				t("Marked all tasks {state}.", { state: target === "completed" ? t("completed") : t("abandoned") }),
+			);
 			return;
 		}
 
