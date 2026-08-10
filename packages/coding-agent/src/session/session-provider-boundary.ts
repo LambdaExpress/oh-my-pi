@@ -18,6 +18,7 @@ import {
 } from "../secrets/obfuscator";
 import { normalizeModelContextImages } from "../utils/image-loading";
 import { describeAttachedImagesForTextModel } from "../utils/image-vision-fallback";
+import type { VisionFallbackConfirmation } from "./agent-session-types";
 import { type CustomMessage, convertToLlm } from "./messages";
 import { IMAGE_ATTACHMENT_DESCRIPTION_TYPE } from "./queued-messages";
 import type { BuildSessionContextOptions, SessionContext } from "./session-context";
@@ -34,6 +35,7 @@ export interface SessionProviderBoundaryHost {
 	model(): Model | undefined;
 	sessionId(): string;
 	localProtocolOptions(): LocalProtocolOptions;
+	confirmVisionFallback(confirmation: VisionFallbackConfirmation, signal?: AbortSignal): Promise<boolean>;
 	transformContext(messages: AgentMessage[], signal?: AbortSignal): AgentMessage[] | Promise<AgentMessage[]>;
 	convertToLlm(messages: AgentMessage[]): Message[] | Promise<Message[]>;
 	onPayload: SimpleStreamOptions["onPayload"] | undefined;
@@ -236,6 +238,11 @@ export class SessionProviderBoundary {
 					activeModelString: formatModelString(model),
 					telemetryConfig: this.#host.agent.telemetry,
 					sessionId: this.#host.sessionId(),
+					requestVisionApproval: ({ model: visionModel, imageCount }, approvalSignal) =>
+						this.#host.confirmVisionFallback(
+							{ model: formatModelString(visionModel), imageCount },
+							approvalSignal,
+						),
 				},
 				signal,
 			);

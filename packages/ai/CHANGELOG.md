@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed OpenAI-completions streams (OpenCode Go, DeepSeek, OpenRouter, most OpenAI-compatible gateways) not exposing streamed tool-call arguments to the TUI reveal path, so `write` previews snapped in fully at execution instead of streaming the payload. Structured `delta.tool_calls` now carry `kStreamingPartialJson`, and DSML/Kimi chat-template leaked calls are rebuilt incrementally (`toolCallStart`/`toolCallArgDelta`) so healed `write`/`edit`/`bash` previews stream line by line instead of landing once at envelope close.
 - Fixed locally observed OpenCode Go reset windows to follow the service's rolling 5-hour, Monday-UTC weekly, and subscription-day calendar-month boundaries instead of treating every limit as an independent fixed-duration rolling window.
 ## [17.2.9] - 2026-08-05
 

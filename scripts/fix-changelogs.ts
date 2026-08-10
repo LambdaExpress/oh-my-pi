@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import * as path from "node:path";
-import { $, Glob } from "bun";
+import { Glob } from "bun";
 
 const CHANGELOG_GLOB = "packages/*/CHANGELOG.md";
 const ORDERED_SECTION_TITLES = ["Breaking Changes", "Added", "Changed", "Fixed", "Removed"] as const;
@@ -705,10 +705,30 @@ export function collectPromotableAddedItemLines(diffText: string): Map<string, S
 }
 
 async function git(args: readonly string[], cwd: string): Promise<string> {
-	const result = await $`git -c core.fsmonitor=false -c core.untrackedCache=false -c fetch.pruneTags=false ${args}`
-		.cwd(cwd)
-		.quiet();
-	return result.text();
+	const result = runGit(args, cwd);
+	if (result.exitCode !== 0) {
+		throw new Error(`git ${args.join(" ")} failed (exit ${result.exitCode})`);
+	}
+	return result.stdout.toString();
+}
+
+/**
+ * Run git with the repo-wide safety flags. Spawns through Bun.spawnSync rather
+ * than Bun Shell: on Windows, Bun Shell refuses to spawn anything (even its own
+ * builtins) when the explicit working directory contains spaces ("Operation not
+ * permitted"), which would break every git call in a repo cloned under a
+ * space-containing path.
+ */
+function runGit(
+	args: readonly string[],
+	cwd: string,
+): { exitCode: number | null; stdout: Buffer; stderr: Buffer } {
+	return Bun.spawnSync({
+		cmd: ["git", "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "-c", "fetch.pruneTags=false", ...args],
+		cwd,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 }
 
 export async function resolveRepoRoot(repoRoot: string | undefined): Promise<string> {
@@ -770,12 +790,9 @@ async function pinChangelogBaseline(repoRoot: string): Promise<string> {
 }
 
 async function gitMaybe(args: readonly string[], cwd: string): Promise<string | undefined> {
-	const result = await $`git -c core.fsmonitor=false -c core.untrackedCache=false -c fetch.pruneTags=false ${args}`
-		.cwd(cwd)
-		.quiet()
-		.nothrow();
+	const result = runGit(args, cwd);
 	if (result.exitCode !== 0) return undefined;
-	return result.text();
+	return result.stdout.toString();
 }
 
 async function collectHistoricalReleaseRecovery(

@@ -38,6 +38,9 @@ const NO_VISION_MODEL_NOTE =
 const DESCRIPTION_UNAVAILABLE_NOTE =
 	"[Image description unavailable: the vision model returned no usable text. The image was saved for further analysis.]";
 
+const VISION_NOT_APPROVED_NOTE =
+	"[The image was saved but not described because use of the configured vision model was not approved.]";
+
 /** Registry surface needed to resolve a vision model and authorize requests. */
 export type VisionFallbackRegistry = Pick<ModelRegistry, "getAvailable" | "getApiKey" | "resolver">;
 
@@ -52,6 +55,11 @@ export interface DescribeAttachedImagesDeps {
 	activeModelString?: string;
 	telemetryConfig?: AgentTelemetryConfig;
 	sessionId?: string;
+	/** Required approval boundary before any image is sent to the resolved vision model. Missing approval fails closed. */
+	requestVisionApproval?: (
+		request: { model: Model<Api>; imageCount: number },
+		signal?: AbortSignal,
+	) => Promise<boolean>;
 	/** Test seam: overrides the underlying completeSimple call. */
 	completeImpl?: typeof completeSimple;
 }
@@ -178,15 +186,28 @@ export async function describeAttachedImagesForTextModel(
 	const visionModel = resolveVisionModel(deps);
 	const apiKey = visionModel ? await deps.modelRegistry.getApiKey(visionModel, deps.sessionId) : undefined;
 	const canDescribe = Boolean(visionModel && apiKey);
+	let approved = false;
+	if (canDescribe && visionModel && deps.requestVisionApproval && !signal?.aborted) {
+		try {
+			approved = await deps.requestVisionApproval({ model: visionModel, imageCount: images.length }, signal);
+		} catch (err) {
+			logger.warn("image attachment vision approval failed closed", {
+				error: toError(err).message,
+				model: `${visionModel.provider}/${visionModel.id}`,
+			});
+		}
+	}
 	const telemetry = resolveTelemetry(deps.telemetryConfig, deps.sessionId);
 
 	return Promise.all(
 		images.map(async (image): Promise<TextContent> => {
 			const localUrl = await saveImage(image, localRoot);
 			let description: string;
-			if (canDescribe && visionModel) {
+			if (canDescribe && visionModel && approved && !signal?.aborted) {
 				description =
 					(await describeImage(image, visionModel, deps, telemetry, signal)) ?? DESCRIPTION_UNAVAILABLE_NOTE;
+			} else if (canDescribe) {
+				description = VISION_NOT_APPROVED_NOTE;
 			} else {
 				description = NO_VISION_MODEL_NOTE;
 			}

@@ -60,6 +60,7 @@ function makeDeps(
 	available: Model<"openai-responses">[],
 	completeImpl: typeof completeSimple,
 	apiKey: string | undefined = "test-key",
+	requestVisionApproval?: DescribeAttachedImagesDeps["requestVisionApproval"],
 ): DescribeAttachedImagesDeps {
 	return {
 		activeModel: textModel,
@@ -72,6 +73,7 @@ function makeDeps(
 		localProtocolOptions: { getArtifactsDir: () => artifactsDir, getSessionId: () => "test-session" },
 		activeModelString: `${textModel.provider}/${textModel.id}`,
 		completeImpl,
+		requestVisionApproval,
 	};
 }
 
@@ -88,9 +90,13 @@ describe("describeAttachedImagesForTextModel", () => {
 
 	it("saves the image under local:// and injects a vision description block", async () => {
 		const stub = makeCompleteStub("A man holding a red balloon.");
+		const approvals: Array<{ model: Model; imageCount: number }> = [];
 		const blocks = await describeAttachedImagesForTextModel(
 			[{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
-			makeDeps(testDir, [textModel, visionModel], stub.fn),
+			makeDeps(testDir, [textModel, visionModel], stub.fn, "test-key", async request => {
+				approvals.push(request);
+				return true;
+			}),
 		);
 
 		expect(blocks).toHaveLength(1);
@@ -102,11 +108,41 @@ describe("describeAttachedImagesForTextModel", () => {
 
 		// The vision model was actually consulted.
 		expect(stub.calls).toHaveLength(1);
+		expect(approvals).toHaveLength(1);
+		expect(approvals[0]?.model).toBe(visionModel);
+		expect(approvals[0]?.imageCount).toBe(1);
 
 		// The image was persisted under <artifactsDir>/local and round-trips.
 		const fileName = match![1].slice("local://".length);
 		const saved = await fs.readFile(path.join(testDir, "local", fileName));
 		expect(saved.toString("base64")).toBe(TINY_PNG_BASE64);
+	});
+
+	it("fails closed when no approval surface is available", async () => {
+		const stub = makeCompleteStub("should not be used");
+		const blocks = await describeAttachedImagesForTextModel(
+			[{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
+			makeDeps(testDir, [textModel, visionModel], stub.fn),
+		);
+
+		expect(stub.calls).toHaveLength(0);
+		expect(blocks[0]?.text).toContain("vision model was not approved");
+	});
+
+	it("continues without visual content when the user denies approval", async () => {
+		const stub = makeCompleteStub("should not be used");
+		let approvalRequests = 0;
+		const blocks = await describeAttachedImagesForTextModel(
+			[{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
+			makeDeps(testDir, [textModel, visionModel], stub.fn, "test-key", async () => {
+				approvalRequests++;
+				return false;
+			}),
+		);
+
+		expect(approvalRequests).toBe(1);
+		expect(stub.calls).toHaveLength(0);
+		expect(blocks[0]?.text).toContain("vision model was not approved");
 	});
 
 	it("saves the image but emits a no-vision note when no vision model is available", async () => {
@@ -131,7 +167,7 @@ describe("describeAttachedImagesForTextModel", () => {
 		const stub = makeCompleteStub("   ");
 		const blocks = await describeAttachedImagesForTextModel(
 			[{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
-			makeDeps(testDir, [textModel, visionModel], stub.fn),
+			makeDeps(testDir, [textModel, visionModel], stub.fn, "test-key", async () => true),
 		);
 
 		expect(stub.calls).toHaveLength(1);
@@ -143,7 +179,7 @@ describe("describeAttachedImagesForTextModel", () => {
 		const stub = makeCompleteStub("desc");
 		const blocks = await describeAttachedImagesForTextModel(
 			[image, image],
-			makeDeps(testDir, [textModel, visionModel], stub.fn),
+			makeDeps(testDir, [textModel, visionModel], stub.fn, "test-key", async () => true),
 		);
 
 		const paths = blocks.map(b => b.text.match(/path="(local:\/\/[^"]+)"/)![1]);

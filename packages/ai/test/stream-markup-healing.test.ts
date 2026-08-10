@@ -9,6 +9,7 @@ import { streamGoogleGeminiCli } from "@oh-my-pi/pi-ai/providers/google-gemini-c
 import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
 import { stream } from "@oh-my-pi/pi-ai/stream";
 import type { Context, FetchImpl, Model, TextContent, ThinkingContent, Tool, ToolCall } from "@oh-my-pi/pi-ai/types";
+import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { getStreamMarkupHealingPattern, StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -351,7 +352,7 @@ describe("StreamMarkupHealing DSML envelope pattern", () => {
 		expect(calls).toHaveLength(1);
 		const call = calls[0];
 		expect(call.name).toBe("bash");
-		expect(call.id).toMatch(/^call_[0-9a-f]+$/);
+		expect(call.id).toMatch(/^ptc_/);
 
 		const args = JSON.parse(call.arguments) as Record<string, unknown>;
 		expect(args[INTENT_FIELD]).toBe("Check Fedora 42 available packages");
@@ -378,15 +379,22 @@ describe("StreamMarkupHealing DSML envelope pattern", () => {
 	it("preserves text/tool-call/text order for mixed chunks", () => {
 		const healing = new StreamMarkupHealing({ pattern: "dsml" });
 		const events = healing.feedEvents(`Before\n${REPORTED_DSML_LEAK}\nAfter`);
-		expect(events.map(event => event.type)).toEqual(["text", "toolCall", "text"]);
-
-		const [before, call, after] = events;
-		if (before?.type !== "text" || call?.type !== "toolCall" || after?.type !== "text") {
-			throw new Error("DSML healing emitted unexpected event order");
-		}
-		expect(before.text).toBe("Before\n");
-		expect(call.call.name).toBe("bash");
-		expect(after.text).toBe("\nAfter");
+		// The healed call now streams incrementally (start/arg deltas) before
+		// the authoritative `toolCall` closes it; surrounding text keeps its
+		// position relative to the call as a whole.
+		const leadingText = events
+			.slice(0, events.findIndex(event => event.type === "toolCallStart"))
+			.map(event => (event.type === "text" ? event.text : ""))
+			.join("");
+		const trailingText = events
+			.slice(events.findIndex(event => event.type === "toolCall") + 1)
+			.map(event => (event.type === "text" ? event.text : ""))
+			.join("");
+		const call = events.find(event => event.type === "toolCall");
+		expect(leadingText).toBe("Before\n");
+		expect(call?.type).toBe("toolCall");
+		if (call?.type === "toolCall") expect(call.call.name).toBe("bash");
+		expect(trailingText).toBe("\nAfter");
 	});
 
 	it("drops partial calls when the stream ends mid-envelope", () => {
@@ -614,7 +622,9 @@ describe("Kimi K2 leaked markup healing", () => {
 		expect(toolCalls).toHaveLength(1);
 		expect(toolCalls[0].name).toBe("read");
 		expect(toolCalls[0].arguments).toEqual({ path: "src/index.ts" });
-		expect(toolCalls[0].id).toMatch(/^call_[0-9a-f]+$/);
+		// Kimi chat-template call ids (functions.read:0) flow through from the
+		// scanner so the incremental start/end frames share one identity.
+		expect(toolCalls[0].id).toBe("functions.read:0");
 
 		// Section was emitted alongside finish_reason:"stop" — promote to toolUse.
 		expect(result.stopReason).toBe("toolUse");
@@ -1155,5 +1165,76 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 		expect(toolCalls.map(call => call.name)).toEqual(["read", "read"]);
 		expect(toolCalls.map(call => call.arguments)).toEqual([{ path: "a.ts" }, { path: "b.ts" }]);
 		expect(result.stopReason).toBe("toolUse");
+	});
+
+	it("streams healed DSML write arguments incrementally for the reveal path", async () => {
+		const model: Model<"openai-completions"> = buildModel({
+			id: "deepseek-v4-pro",
+			name: "DeepSeek V4 Pro",
+			api: "openai-completions",
+			provider: "deepseek",
+			baseUrl: "https://api.deepseek.com",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 131_072,
+			maxTokens: 8_192,
+		});
+		// A write call whose DSML envelope is split across chunks, the way
+		// opencode-go / deepseek streams it: path first, then content growing
+		// line by line.
+		const dsmlChunks = [
+			"<｜DSML｜tool_calls>",
+			'<｜DSML｜invoke name="write">',
+			'<｜DSML｜parameter name="path">',
+			"src/demo.ts",
+			"</｜DSML｜parameter>",
+			'<｜DSML｜parameter name="content">',
+			"line 01\\n",
+			"line 02\\n",
+			"line 03",
+			"</｜DSML｜parameter>",
+			"</｜DSML｜invoke>",
+			"</｜DSML｜tool_calls>",
+		];
+		const fetchMock = mockFetch([
+			...dsmlChunks.map(content => chunk(model.id, { content })),
+			chunk(model.id, {}, "stop"),
+			"[DONE]",
+		]);
+
+		const events = streamOpenAICompletions(
+			model,
+			{ messages: [{ role: "user", content: "write a file", timestamp: Date.now() }], tools: [readTool] },
+			{ apiKey: "test-key", fetch: fetchMock },
+		);
+
+		const frames: string[] = [];
+		for await (const event of events) {
+			if (event.type === "toolcall_delta") {
+				const block = event.partial.content[event.contentIndex ?? 0];
+				if (block !== null && typeof block === "object" && kStreamingPartialJson in block) {
+					const partialJson = block[kStreamingPartialJson];
+					if (typeof partialJson === "string") frames.push(partialJson);
+				}
+			}
+			if (event.type === "error") {
+				const error = "error" in event && event.error ? event.error : undefined;
+				const errorMessage =
+					error && typeof error === "object" && "errorMessage" in error ? error.errorMessage : undefined;
+				throw new Error(`stream error: ${errorMessage}`);
+			}
+		}
+
+		// More than the single final frame: the path lands before content, and
+		// content grows line by line — exactly what the TUI reveal needs.
+		expect(frames.length).toBeGreaterThan(1);
+		expect(frames[0]!).toContain('"path":"src/demo.ts');
+		for (let index = 1; index < frames.length; index++) {
+			expect(frames[index]!.startsWith(frames[index - 1]!)).toBe(true);
+		}
+		const last = frames.at(-1) ?? "";
+		expect(last).toContain("line 01");
+		expect(last).toContain("line 03");
 	});
 });

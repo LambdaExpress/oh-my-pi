@@ -118,6 +118,18 @@ export interface UsageFallbackConfirmation {
  */
 export type UsageFallbackConfirmer = (confirmation: UsageFallbackConfirmation, signal: AbortSignal) => Promise<boolean>;
 
+/** Details shown before attached images are delegated to a configured vision model. */
+export interface VisionFallbackConfirmation {
+	model: string;
+	imageCount: number;
+}
+
+/** Confirms whether a vision-model attachment description may proceed. */
+export type VisionFallbackConfirmer = (
+	confirmation: VisionFallbackConfirmation,
+	signal?: AbortSignal,
+) => Promise<boolean>;
+
 /** Identifies a retry fallback chain already entered during startup model resolution. */
 export interface InitialRetryFallbackState {
 	/** Role whose configured primary was unavailable. */

@@ -3262,6 +3262,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 
 		const setToolUIContext = (uiContext: ExtensionUIContext, hasUI: boolean) => {
 			toolContextStore.setUIContext(uiContext, hasUI);
+			session?.setVisionFallbackUIContext(hasUI ? uiContext : undefined);
 		};
 
 		const initialTools = initialToolNames

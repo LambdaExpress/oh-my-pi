@@ -874,7 +874,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Vision",
 			label: "Describe Images for Text Models",
 			description:
-				"When an image is attached to a model without vision support, save it under local:// and inject a description from a vision-capable model instead of dropping it",
+				"When an image is attached to a model without vision support, ask for approval before a vision-capable model describes it; denied images are only saved under local://",
 		},
 	},
 

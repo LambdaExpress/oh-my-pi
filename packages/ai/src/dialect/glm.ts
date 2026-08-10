@@ -323,7 +323,14 @@ export class GLMInbandScanner implements InbandScanner {
 		if (!call || call.key === null || chunk.length === 0) return;
 		call.valueRaw += chunk;
 		call.rawBlock += chunk;
-		events.push({ type: "toolArgDelta", id: call.id, name: call.name, key: call.key, delta: chunk });
+		events.push({
+			type: "toolArgDelta",
+			id: call.id,
+			name: call.name,
+			key: call.key,
+			delta: chunk,
+			isString: call.stringArgs.has(call.key),
+		});
 	}
 
 	#endValue(): void {

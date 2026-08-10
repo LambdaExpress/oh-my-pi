@@ -32,6 +32,8 @@ export interface StreamMarkupHealingOptions {
 export type StreamMarkupHealingEvent =
 	| { readonly type: "text"; readonly text: string }
 	| { readonly type: "thinking"; readonly thinking: string }
+	| { readonly type: "toolCallStart"; readonly call: { readonly id: string; readonly name: string } }
+	| { readonly type: "toolCallArgDelta"; readonly call: { readonly id: string; readonly name: string }; readonly key: string; readonly delta: string; readonly isString: boolean }
 	| { readonly type: "toolCall"; readonly call: HealedToolCall };
 
 /**
@@ -108,7 +110,7 @@ export class StreamMarkupHealing {
 		let out: StreamMarkupHealingEvent[] | undefined;
 		for (let i = 0; i < events.length; i++) {
 			const event = events[i]!;
-			if (event.type === "toolCall") {
+			if (event.type === "toolCall" || event.type === "toolCallStart" || event.type === "toolCallArgDelta") {
 				out ??= events.slice(0, i);
 			} else if (out) {
 				out.push(event);
@@ -187,20 +189,32 @@ export class StreamMarkupHealing {
 				case "thinkingDelta":
 					if (event.delta.length > 0) out.push({ type: "thinking", thinking: event.delta });
 					break;
+				case "toolStart":
+					out.push({ type: "toolCallStart", call: { id: event.id, name: event.name } });
+					break;
+				case "toolArgDelta":
+					out.push({
+						type: "toolCallArgDelta",
+						call: { id: event.id, name: event.name },
+						key: event.key,
+						delta: event.delta,
+						isString: event.isString,
+					});
+					break;
 				case "toolEnd":
 					out.push({
 						type: "toolCall",
 						call: {
-							id: generateHealedToolCallId(),
+							id: event.id,
 							name: event.name,
 							arguments: JSON.stringify(event.arguments),
 						},
 					});
 					break;
-				case "thinkingStart":
-				case "thinkingEnd":
-				case "toolStart":
-				case "toolArgDelta":
+				case "toolParamEnd":
+					// Parameter close is consumed by the streamer's incremental
+					// tool-call reconstruction; the complete `toolEnd` still
+					// carries the final arguments for feed/drainCompleted.
 					break;
 			}
 		}
@@ -208,8 +222,50 @@ export class StreamMarkupHealing {
 	}
 }
 
-function generateHealedToolCallId(): string {
-	return `call_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+/**
+ * Escape a plain-text fragment into JSON string-literal body (quotes,
+ * backslashes, control chars). Healed DSML/chat-template parameter values are
+ * plain text, not JSON-encoded text, so incremental prefix rebuilds re-encode
+ * each fragment. A trailing escape straddling two chunks is tolerated the same
+ * way decodePartialJsonStringFragment handles a dangling escape at the end of
+ * a partial prefix.
+ */
+export function escapeHealedJsonString(fragment: string): string {
+	let out = "";
+	for (const ch of fragment) {
+		switch (ch) {
+			case '"':
+				out += '\\"';
+				break;
+			case "\\":
+				out += "\\\\";
+				break;
+			case "\b":
+				out += "\\b";
+				break;
+			case "\f":
+				out += "\\f";
+				break;
+			case "\n":
+				out += "\\n";
+				break;
+			case "\r":
+				out += "\\r";
+				break;
+			case "\t":
+				out += "\\t";
+				break;
+			default: {
+				const code = ch.charCodeAt(0);
+				if (code < 0x20) {
+					out += `\\u${code.toString(16).padStart(4, "0")}`;
+				} else {
+					out += ch;
+				}
+			}
+		}
+	}
+	return out;
 }
 
 /** Cheap model/provider gate for Kimi-K2 chat-template token leaks. */

@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
-import { $ } from "bun";
+
 import {
 	getBehaviorDashboardStats,
 	getCostDashboardStats,
@@ -165,9 +165,18 @@ const ensureClientBuild = async () => {
 
 	console.log("Building stats client...");
 	const packageRoot = path.join(import.meta.dir, "..");
-	const buildResult = await $`bun run build.ts`.cwd(packageRoot).quiet().nothrow();
+	// Bun.spawnSync instead of Bun Shell: Bun Shell cannot spawn when the
+	// explicit working directory contains spaces on Windows ("Operation not
+	// permitted"), which would break the stats build for space-containing
+	// checkout paths.
+	const buildResult = Bun.spawnSync({
+		cmd: ["bun", "run", "build.ts"],
+		cwd: packageRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 	if (buildResult.exitCode !== 0) {
-		const output = buildResult.text().trim();
+		const output = `${buildResult.stdout.toString()}${buildResult.stderr.toString()}`.trim();
 		const details = output ? `\n${output}` : "";
 		throw new Error(`Failed to build stats client (exit ${buildResult.exitCode})${details}`);
 	}

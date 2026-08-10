@@ -29,7 +29,12 @@ import type {
 } from "../types";
 import { normalizeSystemPrompts, resolveCacheRetention } from "../utils";
 import { createAbortSourceTracker } from "../utils/abort";
-import { isDemotedThinking, kStreamingLastParseLen } from "../utils/block-symbols";
+import {
+	clearStreamingPartialJson,
+	isDemotedThinking,
+	kStreamingLastParseLen,
+	kStreamingPartialJson,
+} from "../utils/block-symbols";
 import { hasVisibleAssistantContent, withEmptyCompletionRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { RawHttpRequestDump } from "../utils/http-inspector";
@@ -50,6 +55,7 @@ import {
 	toolWireSchema,
 } from "../utils/schema";
 import {
+	escapeHealedJsonString,
 	type HealedToolCall,
 	StreamMarkupHealing,
 	type StreamMarkupHealingEvent,
@@ -787,6 +793,7 @@ const streamOpenAICompletionsOnce = (
 				partialArgs?: string | Record<string, unknown>;
 				streamIndex?: number;
 				[kStreamingLastParseLen]?: number;
+				[kStreamingPartialJson]?: string;
 			};
 			type OpenAIStreamBlock = TextContent | ThinkingContent | ToolCallStreamBlock;
 			const pendingToolCallBlocks: ToolCallStreamBlock[] = [];
@@ -827,6 +834,7 @@ const streamOpenAICompletionsOnce = (
 				block.arguments =
 					typeof block.partialArgs === "string" ? parseStreamingJson(block.partialArgs) : block.partialArgs;
 				delete block.partialArgs;
+				clearStreamingPartialJson(block);
 				if (block.streamIndex !== undefined) {
 					toolCallBlockByIndex.delete(block.streamIndex);
 					delete block.streamIndex;
@@ -979,14 +987,102 @@ const streamOpenAICompletionsOnce = (
 			const explicitReasoningDeltasMayBeCumulative = policy.stream.reasoningDeltasMayBeCumulative;
 			let suppressHealedThinking = false;
 			let healedToolCallEmitted = false;
+			// Incremental reconstruction of a healed (DSML/Kimi chat-template)
+			// tool call: `toolCallStart` opens the block, `toolCallArgDelta`
+			// grows `partialJson` (and the throttled `arguments`), and the final
+			// `toolCall` closes it with the scanner's authoritative arguments.
+			// Without the incremental path the whole payload would snap in at
+			// `toolEnd`, killing the streaming preview for write/edit/bash.
+			let healedStream: { block: ToolCallStreamBlock; prefix: string; pendingKey: string; pendingIsString: boolean } | undefined;
+			const closeHealedParam = (): void => {
+				const stream = healedStream;
+				if (!stream?.pendingKey) return;
+				if (stream.pendingIsString) stream.prefix += '"';
+				stream.prefix += ",";
+				stream.pendingKey = "";
+			};
+			const healToolCallStart = (call: { id: string; name: string }): void => {
+				finishCurrentBlock(currentBlock);
+				const block: ToolCallStreamBlock = {
+					type: "toolCall",
+					id: call.id,
+					name: call.name,
+					arguments: {},
+					partialArgs: "",
+					[kStreamingPartialJson]: "",
+				};
+				currentBlock = block;
+				output.content.push(block);
+				stream.push({ type: "toolcall_start", contentIndex: blockIndex(block), partial: output });
+				healedStream = { block, prefix: "{", pendingKey: "", pendingIsString: true };
+				healedToolCallEmitted = true;
+			};
+			const healToolCallArgDelta = (
+				call: { id: string; name: string },
+				key: string,
+				delta: string,
+				isString: boolean,
+			): void => {
+				const streamState = healedStream;
+				if (!streamState || streamState.block.id !== call.id || delta.length === 0) return;
+				if (streamState.pendingKey !== key) {
+					closeHealedParam();
+					streamState.pendingKey = key;
+					streamState.pendingIsString = isString;
+					streamState.prefix += `${JSON.stringify(key)}:${isString ? '"' : ""}`;
+				}
+				streamState.prefix += isString ? escapeHealedJsonString(delta) : delta;
+				streamState.block[kStreamingPartialJson] = streamState.prefix;
+				const throttled = parseStreamingJsonThrottled(
+					streamState.prefix,
+					streamState.block[kStreamingLastParseLen] ?? 0,
+				);
+				if (throttled) {
+					streamState.block.arguments = throttled.value;
+					streamState.block[kStreamingLastParseLen] = throttled.parsedLen;
+				}
+				stream.push({
+					type: "toolcall_delta",
+					contentIndex: blockIndex(streamState.block),
+					delta,
+					partial: output,
+				});
+			};
+			const healToolCallEnd = (call: HealedToolCall): void => {
+				const streamState = healedStream;
+				if (!streamState || streamState.block.id !== call.id) {
+					// No incremental frames seen (e.g. a scanner that emits the
+					// call wholesale): fall back to the one-shot emit.
+					emitHealedToolCall(call);
+					return;
+				}
+				closeHealedParam();
+				// `HealedToolCall.arguments` is already the JSON-encoded
+				// arguments string (the scanner serializes the final object).
+				const finalJson = call.arguments;
+				streamState.block[kStreamingPartialJson] = finalJson;
+				streamState.block.partialArgs = finalJson;
+				streamState.block.arguments = parseStreamingJson(finalJson);
+				stream.push({
+					type: "toolcall_delta",
+					contentIndex: blockIndex(streamState.block),
+					delta: finalJson,
+					partial: output,
+				});
+				finishCurrentBlock(streamState.block);
+				currentBlock = undefined;
+				healedStream = undefined;
+				healedToolCallEmitted = true;
+			};
 			const emitHealedToolCall = (call: HealedToolCall): void => {
 				finishCurrentBlock(currentBlock);
-				const block: ToolCall & { partialArgs: string } = {
+				const block: ToolCallStreamBlock = {
 					type: "toolCall",
 					id: call.id,
 					name: call.name,
 					arguments: {},
 					partialArgs: call.arguments,
+					[kStreamingPartialJson]: call.arguments,
 				};
 				block.arguments = parseStreamingJson(call.arguments);
 				currentBlock = block;
@@ -1007,8 +1103,12 @@ const streamOpenAICompletionsOnce = (
 					appendProcessedText(event.text);
 				} else if (event.type === "thinking") {
 					if (!suppressThinking) appendThinkingDelta(event.thinking);
+				} else if (event.type === "toolCallStart") {
+					healToolCallStart(event.call);
+				} else if (event.type === "toolCallArgDelta") {
+					healToolCallArgDelta(event.call, event.key, event.delta, event.isString);
 				} else {
-					emitHealedToolCall(event.call);
+					healToolCallEnd(event.call);
 				}
 			};
 			const flushHealedToolCalls = (): void => {
@@ -1180,6 +1280,7 @@ const streamOpenAICompletionsOnce = (
 									arguments: {},
 									partialArgs: "",
 									streamIndex,
+									[kStreamingPartialJson]: "",
 								};
 								if (streamIndex !== undefined) toolCallBlockByIndex.set(streamIndex, block);
 								pendingToolCallBlocks.push(block);
@@ -1216,6 +1317,7 @@ const streamOpenAICompletionsOnce = (
 									delta = rawArgs;
 									const prev = typeof block.partialArgs === "string" ? block.partialArgs : "";
 									block.partialArgs = prev + rawArgs;
+									block[kStreamingPartialJson] = `${block[kStreamingPartialJson] ?? ""}${rawArgs}`;
 									const throttled = parseStreamingJsonThrottled(
 										block.partialArgs,
 										block[kStreamingLastParseLen] ?? 0,

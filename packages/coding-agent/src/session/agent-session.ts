@@ -239,6 +239,7 @@ import type {
 	SessionStats,
 	ToolExecutionDisplaySnapshot,
 	UsageFallbackConfirmer,
+	VisionFallbackConfirmer,
 } from "./agent-session-types";
 import {
 	ASYNC_INLINE_RESULT_MAX_CHARS,
@@ -648,6 +649,7 @@ export class AgentSession {
 	// Model registry for API key resolution
 	#modelRegistry: ModelRegistry;
 	#usageFallbackConfirmer: UsageFallbackConfirmer | undefined;
+	#visionFallbackConfirmer: VisionFallbackConfirmer | undefined;
 	#usagePreflightAbortControllers = new Set<AbortController>();
 	#queuedMessageDrainBlocked = false;
 	#usagePreflightReadyForNextModelCall = false;
@@ -1375,6 +1377,8 @@ export class AgentSession {
 			model: () => this.model,
 			sessionId: () => this.sessionId,
 			localProtocolOptions: () => this.#localProtocolOptions(),
+			confirmVisionFallback: (confirmation, signal) =>
+				this.#visionFallbackConfirmer?.(confirmation, signal) ?? Promise.resolve(false),
 			transformContext: (messages, signal) => this.#transformContext(messages, signal),
 			convertToLlm: messages => this.#convertToLlm(messages),
 			onPayload: this.#onPayload,
@@ -4268,6 +4272,21 @@ export class AgentSession {
 	/** Install the interactive decision surface for reserve-triggered model changes. */
 	setUsageFallbackConfirmer(confirmer: UsageFallbackConfirmer | undefined): void {
 		this.#usageFallbackConfirmer = confirmer;
+	}
+
+	/** Install the UI used to approve attachment delegation to a configured vision model. */
+	setVisionFallbackUIContext(uiContext: Pick<ExtensionUIContext, "confirm"> | undefined): void {
+		this.#visionFallbackConfirmer = uiContext
+			? (confirmation, signal) => {
+					const imageLabel =
+						confirmation.imageCount === 1 ? "1 attached image" : `${confirmation.imageCount} attached images`;
+					return uiContext.confirm(
+						"Allow vision model access?",
+						`Send ${imageLabel} to ${confirmation.model} so the current text-only model can receive a description? Choose No to continue without image contents.`,
+						signal ? { signal } : undefined,
+					);
+				}
+			: undefined;
 	}
 
 	#allowQueuedMessageDrainRetry(): void {

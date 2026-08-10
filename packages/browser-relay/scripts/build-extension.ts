@@ -12,7 +12,6 @@
  */
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { $ } from "bun";
 
 const root = path.resolve(import.meta.dir, "..");
 const dist = path.join(root, "dist");
@@ -37,7 +36,14 @@ for (const file of ["manifest.json", "options.html", "options.js"]) {
 	await Bun.write(path.join(distExtension, file), Bun.file(path.join(root, "extension", file)));
 }
 
-const zip = await $`zip -qr ../omp-browser-relay-extension.zip .`.cwd(distExtension).nothrow();
+// Bun.spawnSync instead of Bun Shell: Bun Shell cannot spawn when the explicit
+// working directory contains spaces on Windows ("Operation not permitted").
+const zip = Bun.spawnSync({
+	cmd: ["zip", "-qr", "../omp-browser-relay-extension.zip", "."],
+	cwd: distExtension,
+	stdout: "pipe",
+	stderr: "pipe",
+});
 if (zip.exitCode !== 0) {
 	console.error("zip failed:", zip.stderr.toString());
 	process.exit(1);

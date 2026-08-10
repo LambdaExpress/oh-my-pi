@@ -1,4 +1,4 @@
-import { fetchWithRetry, parseStreamingJson, readJsonl } from "@oh-my-pi/pi-utils";
+import { fetchWithRetry, parseStreamingJson, parseStreamingJsonThrottled, readJsonl } from "@oh-my-pi/pi-utils";
 import * as AIError from "../error";
 import { getEnvApiKey } from "../stream";
 import type {
@@ -15,7 +15,11 @@ import type {
 	ToolChoice,
 } from "../types";
 import { normalizeSystemPrompts } from "../utils";
-import { clearStreamingPartialJson, kStreamingPartialJson } from "../utils/block-symbols";
+import {
+	clearStreamingPartialJson,
+	kStreamingLastParseLen,
+	kStreamingPartialJson,
+} from "../utils/block-symbols";
 import { withEmptyCompletionRetry } from "../utils/empty-completion-retry";
 import { AssistantMessageEventStream } from "../utils/event-stream";
 import type { CapturedHttpErrorResponse, RawHttpRequestDump } from "../utils/http-inspector";
@@ -26,6 +30,7 @@ import {
 } from "../utils/idle-iterator";
 import { sanitizeSchemaForOllama, toolWireSchema } from "../utils/schema";
 import {
+	escapeHealedJsonString,
 	getStreamMarkupHealingPattern,
 	type HealedToolCall,
 	StreamMarkupHealing,
@@ -542,13 +547,108 @@ const streamOllamaOnce = (
 			healedToolCallEmitted = true;
 			if (!firstTokenTime) firstTokenTime = performance.now();
 		};
+		// Incremental reconstruction of a healed tool call: `toolCallStart`
+		// opens the block, `toolCallArgDelta` grows `partialJson` (and the
+		// throttled `arguments`), and the final `toolCall` closes it with the
+		// scanner's authoritative arguments. Without it the whole payload would
+		// snap in at `toolEnd`, killing the streaming preview.
+		let healedStream:
+			| { block: InternalToolCallBlock; prefix: string; pendingKey: string; pendingIsString: boolean }
+			| undefined;
+		const closeHealedParam = (): void => {
+			const streamState = healedStream;
+			if (!streamState?.pendingKey) return;
+			if (streamState.pendingIsString) streamState.prefix += '"';
+			streamState.prefix += ",";
+			streamState.pendingKey = "";
+		};
+		const healToolCallStart = (call: { id: string; name: string }): void => {
+			endActiveThinkingBlock();
+			endActiveTextBlock();
+			const block: InternalToolCallBlock = {
+				type: "toolCall",
+				id: call.id,
+				name: call.name,
+				arguments: {},
+				[kStreamingPartialJson]: "",
+			};
+			output.content.push(block);
+			const index = output.content.length - 1;
+			activeToolIndices.add(index);
+			stream.push({ type: "toolcall_start", contentIndex: index, partial: output });
+			healedStream = { block, prefix: "{", pendingKey: "", pendingIsString: true };
+			healedToolCallEmitted = true;
+			if (!firstTokenTime) firstTokenTime = performance.now();
+		};
+		const healToolCallArgDelta = (
+			call: { id: string; name: string },
+			key: string,
+			delta: string,
+			isString: boolean,
+		): void => {
+			const streamState = healedStream;
+			if (!streamState || streamState.block.id !== call.id || delta.length === 0) return;
+			if (streamState.pendingKey !== key) {
+				closeHealedParam();
+				streamState.pendingKey = key;
+				streamState.pendingIsString = isString;
+				streamState.prefix += `${JSON.stringify(key)}:${isString ? '"' : ""}`;
+			}
+			streamState.prefix += isString ? escapeHealedJsonString(delta) : delta;
+			streamState.block[kStreamingPartialJson] = streamState.prefix;
+			const throttled = parseStreamingJsonThrottled(
+				streamState.prefix,
+				(streamState.block as InternalToolCallBlock & { [kStreamingLastParseLen]?: number })[
+					kStreamingLastParseLen
+				] ?? 0,
+			);
+			if (throttled) {
+				streamState.block.arguments = throttled.value;
+				(streamState.block as InternalToolCallBlock & { [kStreamingLastParseLen]?: number })[
+					kStreamingLastParseLen
+				] = throttled.parsedLen;
+			}
+			stream.push({
+				type: "toolcall_delta",
+				contentIndex: output.content.indexOf(streamState.block),
+				delta,
+				partial: output,
+			});
+		};
+		const healToolCallEnd = (call: HealedToolCall): void => {
+			const streamState = healedStream;
+			if (!streamState || streamState.block.id !== call.id) {
+				emitHealedToolCall(call);
+				return;
+			}
+			closeHealedParam();
+			// `HealedToolCall.arguments` is already the JSON-encoded
+			// arguments string (the scanner serializes the final object).
+			const finalJson = call.arguments;
+			streamState.block[kStreamingPartialJson] = finalJson;
+			streamState.block.arguments = parseStreamingJson<Record<string, unknown>>(finalJson);
+			stream.push({
+				type: "toolcall_delta",
+				contentIndex: output.content.indexOf(streamState.block),
+				delta: finalJson,
+				partial: output,
+			});
+			endToolCallBlock(stream, output, output.content.indexOf(streamState.block));
+			activeToolIndices.delete(output.content.indexOf(streamState.block));
+			healedStream = undefined;
+			healedToolCallEmitted = true;
+		};
 		const emitHealingEvent = (event: StreamMarkupHealingEvent): void => {
 			if (event.type === "text") {
 				appendVisibleText(event.text);
 			} else if (event.type === "thinking") {
 				if (!suppressHealedThinking) appendVisibleThinking(event.thinking);
+			} else if (event.type === "toolCallStart") {
+				healToolCallStart(event.call);
+			} else if (event.type === "toolCallArgDelta") {
+				healToolCallArgDelta(event.call, event.key, event.delta, event.isString);
 			} else {
-				emitHealedToolCall(event.call);
+				healToolCallEnd(event.call);
 			}
 		};
 		const drainHealedToolCalls = (): void => {

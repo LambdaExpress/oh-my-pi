@@ -191,15 +191,26 @@ export async function rewriteManifest(pkg: PublishPackage, write: boolean): Prom
 
 async function preparePackage(pkg: PublishPackage): Promise<PackageManifest> {
 	const pkgDir = path.join(repoRoot, pkg.dir);
+	// Run build steps through Bun.spawnSync rather than Bun Shell: Bun Shell
+	// cannot spawn anything (even its own builtins) when the explicit working
+	// directory contains spaces on Windows ("Operation not permitted"), which
+	// would break packaging for space-containing checkout paths.
+	const runInPackage = (argv: readonly string[]): void => {
+		const result = Bun.spawnSync({ cmd: [...argv], cwd: pkgDir, stdout: "pipe", stderr: "pipe" });
+		if (result.exitCode !== 0) {
+			const output = `${result.stdout.toString()}${result.stderr.toString()}`.trim();
+			throw new Error(`Command failed (exit ${result.exitCode}): ${argv.join(" ")}${output ? `\n${output}` : ""}`);
+		}
+	};
 	for (const argv of pkg.preBuild ?? []) {
-		await $`${argv}`.cwd(pkgDir);
+		runInPackage(argv);
 	}
-	await $`bun x tsgo -p tsconfig.publish.json`.cwd(pkgDir);
+	runInPackage(["bun", "x", "tsgo", "-p", "tsconfig.publish.json"]);
 	for (const cfg of pkg.extraTypeConfigs ?? []) {
-		await $`bun x tsgo -p ${cfg}`.cwd(pkgDir);
+		runInPackage(["bun", "x", "tsgo", "-p", cfg]);
 	}
 	if (pkg.publishJs) {
-		await $`bun x tsgo -p tsconfig.publish.js.json`.cwd(pkgDir);
+		runInPackage(["bun", "x", "tsgo", "-p", "tsconfig.publish.js.json"]);
 	}
 	// Both emits run under `moduleResolution: "Bundler"`, so relative
 	// specifiers land extensionless — unresolvable for a `nodenext` consumer
@@ -300,7 +311,15 @@ async function packAndPublish(dir: string, name: string): Promise<void> {
 	console.log(`Publishing ${name}…`);
 	const packDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-pack-"));
 	try {
-		const packed = await $`bun pm pack --quiet --destination ${packDir}`.cwd(dir).quiet().nothrow();
+		// Bun.spawnSync instead of Bun Shell: see preparePackage — Bun Shell
+		// cannot spawn when the explicit working directory contains spaces on
+		// Windows ("Operation not permitted").
+		const packed = Bun.spawnSync({
+			cmd: ["bun", "pm", "pack", "--quiet", "--destination", packDir],
+			cwd: dir,
+			stdout: "pipe",
+			stderr: "pipe",
+		});
 		const packOutput = `${packed.stdout.toString()}${packed.stderr.toString()}`.trim();
 		if (packed.exitCode !== 0) {
 			if (packOutput) console.log(packOutput);

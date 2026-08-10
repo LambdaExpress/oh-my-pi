@@ -3,12 +3,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
+import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
 import { AuthStorage, type completeSimple, Effort, type ImageContent, type Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { InspectImageTool } from "@oh-my-pi/pi-coding-agent/tools/inspect-image";
@@ -161,6 +163,33 @@ function createCompleteSimpleHangingStub(): CompleteSimpleStub {
 	return { calls, fn };
 }
 
+async function createWrappedInspectImageSession(cwd: string): Promise<{
+	session: AgentSession;
+	authStorage: AuthStorage;
+}> {
+	const authStorage = await AuthStorage.create(path.join(cwd, "auth.db"));
+	const modelRegistry = new ModelRegistry(authStorage);
+	const settings = Settings.isolated({ "compaction.enabled": false, "inspect_image.mode": "on" });
+	settings.setModelRole("vision", `${visionModel.provider}/${visionModel.id}`);
+	const { session } = await createAgentSession({
+		cwd,
+		agentDir: cwd,
+		sessionManager: SessionManager.inMemory(cwd),
+		settings,
+		model: visionModel,
+		modelRegistry,
+		disableExtensionDiscovery: true,
+		skills: [],
+		contextFiles: [],
+		promptTemplates: [],
+		slashCommands: [],
+		enableMCP: false,
+		enableLsp: false,
+		toolNames: ["inspect_image"],
+	});
+	return { session, authStorage };
+}
+
 describe("InspectImageTool", () => {
 	let testDir: string;
 
@@ -299,45 +328,51 @@ describe("InspectImageTool", () => {
 
 	it("wires createAgentSession tool sessions to live image attachments", async () => {
 		const image: ImageContent = { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" };
-		const authStorage = await AuthStorage.create(path.join(testDir, "auth.db"));
-		const modelRegistry = new ModelRegistry(authStorage);
-		const settings = Settings.isolated({ "compaction.enabled": false, "inspect_image.enabled": true });
-		settings.setModelRole("vision", `${visionModel.provider}/${visionModel.id}`);
+		const { session, authStorage } = await createWrappedInspectImageSession(testDir);
 
 		try {
-			const { session } = await createAgentSession({
-				cwd: testDir,
-				agentDir: testDir,
-				sessionManager: SessionManager.inMemory(testDir),
-				settings,
-				model: visionModel,
-				modelRegistry,
-				disableExtensionDiscovery: true,
-				skills: [],
-				contextFiles: [],
-				promptTemplates: [],
-				slashCommands: [],
-				enableMCP: false,
-				enableLsp: false,
-				toolNames: ["inspect_image"],
+			session.agent.appendMessage({
+				role: "user",
+				content: [{ type: "text", text: "inspect this" }, image],
+				timestamp: Date.now(),
 			});
-			try {
-				session.agent.appendMessage({
-					role: "user",
-					content: [{ type: "text", text: "inspect this" }, image],
-					timestamp: Date.now(),
-				});
 
-				const tool = session.getToolByName("inspect_image");
-				expect(tool).toBeDefined();
-				const wiredToolSession = (tool as unknown as { session?: ToolSession }).session;
-				expect(wiredToolSession?.getImageAttachments?.()).toEqual([
-					{ label: "Image #1", uri: "attachment://1", image },
-				]);
-			} finally {
-				await session.dispose();
-			}
+			const tool = session.getToolByName("inspect_image");
+			expect(tool).toBeDefined();
+			// The production wrapper proxies the concrete built-in tool; recover its test-only session seam.
+			const wiredTool = tool as unknown as { session?: ToolSession };
+			const wiredToolSession = wiredTool.session;
+			expect(wiredToolSession?.getImageAttachments?.()).toEqual([
+				{ label: "Image #1", uri: "attachment://1", image },
+			]);
 		} finally {
+			await session.dispose();
+			authStorage.close();
+		}
+	});
+
+	it("requires explicit approval even when yolo and auto-approve are enabled", async () => {
+		const { session, authStorage } = await createWrappedInspectImageSession(testDir);
+		try {
+			const tool = session.getToolByName("inspect_image");
+			expect(tool).toBeDefined();
+			await expect(
+				tool!.execute(
+					"inspect-image-yolo",
+					{ path: "missing.png", question: "Describe it." },
+					undefined,
+					undefined,
+					{
+						settings: Settings.isolated({
+							"tools.approvalMode": "yolo",
+							"tools.approval": { inspect_image: "allow" },
+						}),
+						autoApprove: true,
+					} as AgentToolContext,
+				),
+			).rejects.toThrow(/requires approval but no interactive UI available/);
+		} finally {
+			await session.dispose();
 			authStorage.close();
 		}
 	});

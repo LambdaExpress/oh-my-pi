@@ -39,9 +39,11 @@
 - Changed the default `Ctrl+Z` composer shortcut to undo text edits instead of suspending the application; `app.suspend` now has no default key but remains available for explicit remapping.
 - Changed the `/copy` picker to support mouse wheel navigation, click-to-copy row selection, and hover/drag row highlighting, matching `/resume` and `/tree`.
 - Changed the /copy picker preview to follow the hovered row while keeping Enter bound to the keyboard-selected target.
+- Changed mid-session `xd://` tool mounts to stop emitting a user-visible notice (`xdev: xd://: mounted …`), which flooded the status area when an MCP server mounted dozens of tools at once; the model-facing mount delta delivery is unchanged.
 
 ### Fixed
 
+- Fixed text-only models receiving automatic vision-model descriptions without consent by requiring explicit approval for attachment fallback and every `inspect_image` call; headless, cancelled, and denied requests now fail closed.
 - Fixed Windows compiled builds emitting invalid legacy virtual-module identifiers when nested provider paths returned by `Bun.Glob` contained backslashes.
 - Fixed OpenCode Go plans showing request cost instead of quota in the default status line: API-key subscriptions now show the 5-hour, weekly, and monthly remaining percentages with rounded time-to-reset labels; the active provider is displayed in a separate segment before the model name.
 - Fixed DAP TCP readiness retaining a losing timeout after the adapter announced its port, so completed debug validation no longer remains alive behind stale readiness timers on Windows.
@@ -52,6 +54,7 @@
 - Fixed cold-revived subagents and `/tan` forks losing built-in `xd://` devices while retaining stale device documentation or only MCP mounts.
 - Fixed mixed Python/JavaScript `eval` descriptions advertising JavaScript's `schemaMode` keyword in the Python `agent()` signature.
 - Fixed C# block edits rejecting method-header anchors when a contiguous leading attribute starts the enclosing method declaration.
+- Fixed eval Python/Julia/Ruby availability probes failing with "Operation not permitted" when the session working directory contains spaces on Windows (e.g. `C:\Program Files\…`), which made the Python backend report "unavailable" even though the interpreter was installed and working; probes now spawn through `Bun.spawnSync` instead of Bun Shell.
 
 - Fixed background SSH transfer progress remaining at zero when `ssh_transfer` ran through the mounted `xd://` write transport by publishing the inner transfer's async-job updates to the TUI.
 - Fixed the SSH transfer HUD async-job fixture preserving typed transfer progress as a plain details record, restoring the coding-agent TypeScript check.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import * as path from "node:path";
-import { $ } from "bun";
+
 
 const RUST_AFFECTING_FILE_NAMES = [
 	"Cargo.toml",
@@ -92,7 +92,15 @@ function isCI(): boolean {
 }
 
 async function hasRustAffectingChanges(): Promise<boolean> {
-	const result = await $`git status --porcelain -z`.cwd(repoRoot).quiet().nothrow();
+	// Bun.spawnSync instead of Bun Shell: Bun Shell refuses to spawn anything
+	// (even its own builtins) when the explicit working directory contains
+	// spaces on Windows ("Operation not permitted").
+	const result = Bun.spawnSync({
+		cmd: ["git", "status", "--porcelain", "-z"],
+		cwd: repoRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 	if (result.exitCode !== 0) {
 		const stderr = result.stderr.toString().trim();
 		const suffix = stderr === "" ? `exit ${result.exitCode}` : stderr;
@@ -145,7 +153,14 @@ async function resolveCargoBinary(): Promise<string> {
 	// rustup proxies in `$CARGO_HOME/bin`, and invoking it as `cargo` falls
 	// through to its installer mode ("unexpected argument 'nextest' found").
 	// Ask rustup directly for the cargo binary in the active toolchain.
-	const result = await $`rustup which cargo`.cwd(repoRoot).quiet().nothrow();
+	// Bun.spawnSync instead of Bun Shell: see hasRustAffectingChanges — Bun Shell
+	// cannot spawn when the explicit working directory contains spaces on Windows.
+	const result = Bun.spawnSync({
+		cmd: ["rustup", "which", "cargo"],
+		cwd: repoRoot,
+		stdout: "pipe",
+		stderr: "pipe",
+	});
 	if (result.exitCode === 0) {
 		const resolved = result.stdout.toString().trim();
 		if (resolved !== "") return resolved;

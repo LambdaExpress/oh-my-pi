@@ -9,7 +9,8 @@ export type InbandScanEvent =
 	| { type: "thinkingDelta"; delta: string }
 	| { type: "thinkingEnd"; thinking: string }
 	| { type: "toolStart"; id: string; name: string }
-	| { type: "toolArgDelta"; id: string; name: string; key: string; delta: string }
+	| { type: "toolArgDelta"; id: string; name: string; key: string; delta: string; isString: boolean }
+	| { type: "toolParamEnd"; id: string; name: string; key: string; value: string; isString: boolean }
 	| { type: "toolEnd"; id: string; name: string; arguments: Record<string, unknown>; rawBlock?: string };
 
 export interface InbandScanner {

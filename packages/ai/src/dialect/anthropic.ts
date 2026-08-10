@@ -266,7 +266,7 @@ export class AnthropicInbandScanner implements InbandScanner {
 		}
 		if (!tag.closing && tag.localName === "parameter") {
 			this.#startParameter(tag);
-			if (tag.selfClosing) this.#finishParameter();
+			if (tag.selfClosing) this.#finishParameter(events);
 			return true;
 		}
 		return true;
@@ -298,7 +298,7 @@ export class AnthropicInbandScanner implements InbandScanner {
 		if (tag?.closing && tag.localName === "parameter") {
 			this.#rawBlock += tag.raw;
 			this.#buffer = this.#buffer.slice(tag.raw.length);
-			this.#finishParameter();
+			this.#finishParameter(events);
 			return true;
 		}
 		if (final && !tag) {
@@ -391,17 +391,28 @@ export class AnthropicInbandScanner implements InbandScanner {
 					name: this.#name,
 					key: this.#paramName,
 					delta: accepted,
+					isString: this.#paramString ?? this.#stringArgs(this.#name).has(this.#paramName),
 				});
 			}
 		}
 		if (delta.length > remaining) this.#paramTruncated = true;
 	}
 
-	#finishParameter(): void {
+	#finishParameter(events: InbandScanEvent[]): void {
 		if (this.#paramName.length > 0) {
 			const value = this.#paramTruncated
 				? `${this.#paramValue}\n…[parameter truncated: exceeded ${MAX_PARAMETER_VALUE_LENGTH} bytes]`
 				: this.#paramValue;
+			if (this.#started) {
+				events.push({
+					type: "toolParamEnd",
+					id: this.#id,
+					name: this.#name,
+					key: this.#paramName,
+					value,
+					isString: this.#paramString ?? this.#stringArgs(this.#name).has(this.#paramName),
+				});
+			}
 			this.#args[this.#paramName] = this.#coerceParameterValue(this.#paramName, value, this.#paramString);
 		}
 		this.#paramName = "";

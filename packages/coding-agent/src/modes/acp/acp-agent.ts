@@ -2337,6 +2337,9 @@ export class AcpAgent implements Agent {
 			() => record.session.sessionId,
 			this.#clientCapabilities,
 		);
+		record.session.setVisionFallbackUIContext(
+			this.#clientCapabilities?.elicitation?.form != null ? uiContext : undefined,
+		);
 		if (this.#clientCapabilities?.elicitation?.form != null) {
 			record.session.setUsageFallbackConfirmer((confirmation, signal) => {
 				const reserve =

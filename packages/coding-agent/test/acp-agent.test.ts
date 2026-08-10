@@ -20,6 +20,7 @@ import {
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import {
 	ACP_BOOTSTRAP_RACE_GUARD_MS,
@@ -141,6 +142,7 @@ class FakeAgentSession {
 	waitForIdleBlocker: (() => Promise<void>) | undefined;
 	asyncJobDrain: ((options?: { timeoutMs?: number }) => Promise<boolean>) | undefined;
 	usageFallbackConfirmer: ((confirmation: UsageFallbackConfirmation) => Promise<boolean>) | undefined;
+	visionFallbackUIContext: Pick<ExtensionUIContext, "confirm"> | undefined;
 	#listeners = new Set<(event: AgentSessionEvent) => void>();
 
 	constructor(
@@ -196,6 +198,9 @@ class FakeAgentSession {
 		confirmer: ((confirmation: UsageFallbackConfirmation) => Promise<boolean>) | undefined,
 	): void {
 		this.usageFallbackConfirmer = confirmer;
+	}
+	setVisionFallbackUIContext(uiContext: Pick<ExtensionUIContext, "confirm"> | undefined): void {
+		this.visionFallbackUIContext = uiContext;
 	}
 
 	async refreshSshTools(_options?: { activateIfAvailable?: boolean }): Promise<void> {}
@@ -527,6 +532,28 @@ async function waitForBootstrapGuard(): Promise<void> {
 }
 
 describe("ACP agent", () => {
+	it("installs a form-backed approval surface for vision fallback", async () => {
+		const requests: CreateElicitationRequest[] = [];
+		const harness = await createHarness({
+			elicitationHandler: async request => {
+				requests.push(request);
+				return { action: "accept", content: { value: true } };
+			},
+		});
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId);
+		expect(session?.visionFallbackUIContext).toBeDefined();
+
+		const approved = await session!.visionFallbackUIContext!.confirm(
+			"Allow vision model access?",
+			"Send 1 attached image to openai/gpt-4o so the current text-only model can receive a description?",
+		);
+
+		expect(approved).toBe(true);
+		expect(requests).toHaveLength(1);
+		expect(requests[0]?.message).toContain("Allow vision model access?");
+	});
+
 	it("supports multiple live ACP sessions with model and lifecycle handlers", async () => {
 		const harness = await createHarness();
 		const first = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });

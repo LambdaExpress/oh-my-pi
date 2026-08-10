@@ -732,14 +732,17 @@ export class SessionTools {
 
 	/**
 	 * Record a mid-session `xd://` mount delta for the model. Non-MCP mount
-	 * churn remains notice-only, leaving the system prompt and provider cache
-	 * prefix byte-stable; mounted MCP route changes additionally rebuild the
-	 * global route guidance through the applied-tool signature. The delta is NOT
-	 * steered immediately — a steered notice landing at a run's stop boundary
-	 * (or while the session is idle) forces an unsolicited extra assistant turn
-	 * — so it is coalesced into {@link #pendingXdevMountDelta} and rides along
-	 * with the next prompt (docs + schema stay one `read xd://<tool>` away).
-	 * Full docs join the system prompt opportunistically on a rebuild.
+	 * churn leaves the system prompt and provider cache prefix byte-stable;
+	 * mounted MCP route changes additionally rebuild the global route guidance
+	 * through the applied-tool signature. The delta is NOT steered immediately
+	 * — a steered notice landing at a run's stop boundary (or while the session
+	 * is idle) forces an unsolicited extra assistant turn — so it is coalesced
+	 * into {@link #pendingXdevMountDelta} and rides along with the next prompt
+	 * (docs + schema stay one `read xd://<tool>` away). Full docs join the
+	 * system prompt opportunistically on a rebuild. No user-visible notice is
+	 * emitted for mount churn: tool-name lists are noise (MCP servers can mount
+	 * dozens of devices at once) and the model still learns the delta through
+	 * the pending mount message.
 	 */
 	#notifyXdevMountDelta(previousMounted: ReadonlySet<string>): void {
 		const current = this.#xdev?.mountedNames;
@@ -758,11 +761,6 @@ export class SessionTools {
 			if (!pending.added.delete(name)) pending.removed.add(name);
 		}
 		this.#pendingXdevMountDelta = pending.added.size > 0 || pending.removed.size > 0 ? pending : undefined;
-		if (this.#host.settings.get("startup.quiet")) return;
-		const parts: string[] = [];
-		if (addedNames.length > 0) parts.push(`mounted ${addedNames.join(", ")}`);
-		if (removedNames.length > 0) parts.push(`unmounted ${removedNames.join(", ")}`);
-		this.#host.emitNotice("info", `xd://: ${parts.join("; ")}`, "xdev");
 	}
 
 	/**

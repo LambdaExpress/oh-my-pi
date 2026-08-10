@@ -9,7 +9,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $flag, Snowflake } from "@oh-my-pi/pi-utils";
-import { $ } from "bun";
 import { Settings } from "../../config/settings";
 import { BaseKernel, getRemainingTimeMs, type KernelStartOptions } from "../kernel-base";
 import type { KernelDisplayOutput } from "../py/display";
@@ -106,7 +105,19 @@ async function probeJuliaKernelAvailability(cwd: string, interpreter?: string): 
 	const failures: string[] = [];
 	for (const runtime of runtimes) {
 		try {
-			const probe = await $`${runtime.juliaPath} -e "exit(0)"`.quiet().nothrow().cwd(cwd).env(runtime.env);
+			// Bun Shell cannot spawn any external program when the working
+			// directory contains spaces on Windows ("Operation not permitted",
+			// Bun 1.3.14), which silently marks every Julia installation
+			// unavailable for sessions rooted under e.g. "C:\Program Files\…".
+			// Probe through Bun.spawnSync, which resolves the same env/cwd
+			// without the Bun Shell limitation.
+			const probe = Bun.spawnSync({
+				cmd: [runtime.juliaPath, "-e", "exit(0)"],
+				cwd,
+				env: runtime.env,
+				stdout: "pipe",
+				stderr: "pipe",
+			});
 			if (probe.exitCode === 0) {
 				return { ok: true, juliaPath: runtime.juliaPath, runtime };
 			}

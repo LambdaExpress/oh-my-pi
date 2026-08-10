@@ -408,6 +408,14 @@ export class DeepSeekInbandScanner implements InbandScanner {
 			return false;
 		}
 		this.#streamDsmlParam(this.#buffer.slice(0, close.index), events);
+		events.push({
+			type: "toolParamEnd",
+			id: this.#id,
+			name: this.#name,
+			key: this.#dsmlParamName,
+			value: this.#dsmlParamRaw,
+			isString: this.#dsmlParamIsString,
+		});
 		this.#dsmlArgs[this.#dsmlParamName] = coerceDsmlValue(this.#dsmlParamRaw, this.#dsmlParamIsString);
 		this.#rawBlock += close.token;
 		this.#buffer = this.#buffer.slice(close.index + close.token.length);
@@ -428,7 +436,14 @@ export class DeepSeekInbandScanner implements InbandScanner {
 		if (chunk.length === 0) return;
 		this.#dsmlParamRaw += chunk;
 		this.#rawBlock += chunk;
-		events.push({ type: "toolArgDelta", id: this.#id, name: this.#name, key: this.#dsmlParamName, delta: chunk });
+		events.push({
+			type: "toolArgDelta",
+			id: this.#id,
+			name: this.#name,
+			key: this.#dsmlParamName,
+			delta: chunk,
+			isString: this.#dsmlParamIsString,
+		});
 	}
 
 	#emitThinking(delta: string, events: InbandScanEvent[]): void {

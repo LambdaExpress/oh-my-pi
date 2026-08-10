@@ -1158,12 +1158,11 @@ These tools became available:
 		expect(text).toContain("xd://mcp__nucleus_search");
 	});
 
-	it("keeps xd:// mount deltas model-visible without rendering them during quiet startup", async () => {
+	it("keeps xd:// mount deltas model-visible without emitting user-visible notices", async () => {
 		const { session, contexts } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
 			xdev: createTestXdevState(),
 			responses: [{ content: ["ok"] }],
 		});
-		session.settings.set("startup.quiet", true);
 		const notices: string[] = [];
 		session.subscribe(event => {
 			if (event.type === "notice" && event.source === "xdev") notices.push(event.message);
@@ -1265,7 +1264,7 @@ These tools became available:
 		expect(session.getMountedXdevToolNames()).toContain(newTool.name);
 	});
 
-	it("summarizes user-visible xd:// MCP mount notices by server", async () => {
+	it("does not announce xd:// MCP mounts to the user", async () => {
 		const { session } = newSession(async toolNames => `tools:${toolNames.join(",")}`, {
 			xdev: createTestXdevState(),
 		});
@@ -1283,11 +1282,11 @@ These tools became available:
 		);
 
 		await session.refreshMCPTools(tools);
-		expect(notices.at(-1)).toBe("mounted 38 tools from atlassian");
+		expect(notices).toEqual([]);
 		expect(session.getMountedXdevToolNames()).toHaveLength(38);
 
 		await session.refreshMCPTools([]);
-		expect(notices.at(-1)).toBe("unmounted 38 tools from atlassian");
+		expect(notices).toEqual([]);
 		expect(session.getMountedXdevToolNames()).toHaveLength(0);
 	});
 });

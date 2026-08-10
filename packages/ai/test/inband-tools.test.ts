@@ -191,14 +191,14 @@ describe("in-band tool dialects", () => {
 			const callId = starts[0]!.id;
 			expect(starts[0], dialect).toMatchObject({ id: callId, name: "read" });
 			expect(parameterDeltaEvents(perFeedEvents[1]!), dialect).toEqual([
-				{ type: "toolArgDelta", id: callId, name: "read", key: "path", delta: "src/" },
+				{ type: "toolArgDelta", id: callId, name: "read", key: "path", delta: "src/", isString: true },
 			]);
 			expect(parameterDeltaEvents(perFeedEvents[2]!), dialect).toEqual([
-				{ type: "toolArgDelta", id: callId, name: "read", key: "path", delta: "a.ts" },
+				{ type: "toolArgDelta", id: callId, name: "read", key: "path", delta: "a.ts", isString: true },
 			]);
 			expect(toolEnds(perFeedEvents[2]!), dialect).toHaveLength(0);
 			expect(parameterDeltaEvents(perFeedEvents[4]!), dialect).toEqual([
-				{ type: "toolArgDelta", id: callId, name: "read", key: "count", delta: "2" },
+				{ type: "toolArgDelta", id: callId, name: "read", key: "count", delta: "2", isString: false },
 			]);
 
 			const calls = toolEnds(events);
