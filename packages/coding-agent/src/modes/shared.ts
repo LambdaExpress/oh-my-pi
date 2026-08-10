@@ -55,8 +55,8 @@ function formatWorkingElapsed(elapsedMs: number): string {
  * by `endsWith`/`slice` matching in the loader renderer.
  */
 export function interruptHint(elapsedMs?: number): string {
-	if (elapsedMs === undefined) return ` ${t("esc to interrupt")}`;
-	return ` ${t("{time} · esc to interrupt", { time: formatWorkingElapsed(elapsedMs) })}`;
+	if (elapsedMs === undefined) return ` ${t("(esc to interrupt)")}`;
+	return ` ${t("({time} · esc to interrupt)", { time: formatWorkingElapsed(elapsedMs) })}`;
 }
 
 export { parseCommandArgs } from "../utils/command-args";

@@ -111,6 +111,7 @@
 - Fixed `read` structural summaries being skipped for `ssh://` and other selector-capable in-memory internal URL resources.
 - Fixed LSP client reuse when multiple servers in one workspace share a wrapper command but use different arguments.
 - Fixed streaming tool truncation notices showing inconsistent `artifact://...` recovery ids after final inline output capping.
+- Fixed the interactive working indicator's Esc-to-interrupt hint dropping its surrounding parentheses during the i18n migration, so the status line renders `Working… (1m 5s · esc to interrupt)` and the zh-CN `工作中… (1m 5s · 按 Esc 中断)` form again.
 - Fixed plan-mode automatic session titles honoring `TITLE_SYSTEM.md`, with plan slugs kept as file-safe fallbacks instead of deciding execution-session display titles.
 - Fixed ordinary interactive session titles using the default title prompt before later replan refreshes honored user `TITLE_SYSTEM.md` overrides.
 - Fixed approved plan execution sessions being retitled to the generic title fallback after the executor initializes todos.

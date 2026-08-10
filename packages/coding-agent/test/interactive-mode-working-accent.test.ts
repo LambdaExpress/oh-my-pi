@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { setLocale } from "../src/i18n";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { interruptHint } from "@oh-my-pi/pi-coding-agent/modes/shared";
@@ -83,6 +84,13 @@ afterEach(() => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
 	resetSettingsForTest();
+	setLocale(null);
+});
+
+beforeEach(() => {
+	// Assertions below are English literal texts; pin the locale so the suite
+	// is deterministic on non-English (e.g. zh-CN) developer machines.
+	setLocale("en");
 });
 
 describe("InteractiveMode working-message session accent cache", () => {
