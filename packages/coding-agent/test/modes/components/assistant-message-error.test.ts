@@ -7,6 +7,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../../../src/i18n";
 
 const originalImageProtocol = TERMINAL.imageProtocol;
 
@@ -48,10 +49,14 @@ beforeEach(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	setTerminalImageProtocol(null);
+	// Assertions use English labels; pin the locale so tests stay deterministic
+	// on non-English (e.g. zh-CN) developer machines.
+	setLocale("en");
 });
 
 afterEach(() => {
 	resetSettingsForTest();
+	setLocale(null);
 	setTerminalImageProtocol(originalImageProtocol);
 });
 
