@@ -120,6 +120,7 @@ import type {
 	ExtensionCommandContext,
 	ExtensionRunner,
 	ExtensionUIContext,
+	ExtensionUIDialogOptions,
 	MessageEndEvent,
 	MessageStartEvent,
 	MessageUpdateEvent,
@@ -4280,10 +4281,27 @@ export class AgentSession {
 			? (confirmation, signal) => {
 					const imageLabel =
 						confirmation.imageCount === 1 ? "1 attached image" : `${confirmation.imageCount} attached images`;
+					const timeoutMs = this.settings.get("images.visionApprovalTimeoutMs");
+					const dialogOptions: ExtensionUIDialogOptions | undefined =
+						signal || timeoutMs > 0
+							? {
+									...(signal ? { signal } : {}),
+									...(timeoutMs > 0
+										? {
+												timeout: timeoutMs,
+												onTimeout: () =>
+													logger.warn("Vision approval prompt timed out; request denied", {
+														model: confirmation.model,
+														timeoutMs,
+													}),
+											}
+										: {}),
+								}
+							: undefined;
 					return uiContext.confirm(
 						"Allow vision model access?",
 						`Send ${imageLabel} to ${confirmation.model} so the current text-only model can receive a description? Choose No to continue without image contents.`,
-						signal ? { signal } : undefined,
+						dialogOptions,
 					);
 				}
 			: undefined;

@@ -878,6 +878,25 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"images.visionApprovalTimeoutMs": {
+		type: "number",
+		default: 30_000,
+		ui: {
+			tab: "model",
+			group: "Vision",
+			label: "Vision Approval Timeout",
+			description:
+				"Timeout for the vision-model approval prompt, in milliseconds. When the prompt times out, the request is automatically denied and the image is only saved under local://. Set to 0 to wait indefinitely.",
+			options: [
+				{ value: "0", label: "Disabled" },
+				{ value: "30000", label: "30 seconds" },
+				{ value: "60000", label: "1 minute" },
+				{ value: "120000", label: "2 minutes" },
+				{ value: "300000", label: "5 minutes" },
+			],
+		},
+	},
+
 	"tui.maxInlineImageColumns": {
 		type: "number",
 		default: 100,

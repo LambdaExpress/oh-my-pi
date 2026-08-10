@@ -421,6 +421,12 @@ describe("Settings", () => {
 			expect(getDefault("providers.maxInFlightRequests")).toEqual({});
 		});
 
+		it("times out vision approval prompts after 30s by default", async () => {
+			const settings = Settings.isolated();
+			expect(settings.get("images.visionApprovalTimeoutMs")).toBe(30_000);
+			expect(getDefault("images.visionApprovalTimeoutMs")).toBe(30_000);
+		});
+
 		it("exposes all tool calling mode options", () => {
 			const values = getEnumValues("tools.format");
 			expect(values).toEqual([

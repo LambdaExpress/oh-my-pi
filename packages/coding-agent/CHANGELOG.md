@@ -23,6 +23,7 @@
 - Added a distinct `max` thinking level for GPT-5.6 models that advertise it; model menus, role suffixes, CLI parsing, session state, cycling, and status rendering preserve the tier end to end.
 - Added an opt-in `display.collapseCompletedRuns` TUI setting that keeps model loops and user adjustments live while running, then replaces them after normal completion with an English elapsed-time/text/tool-call summary that `Alt+O` toggles between collapsed and fully expanded views.
 - Added structured interactive interrupt diagnostics that preserve the exact terminal sequence and UI source through agent cancellation.
+- Added `images.visionApprovalTimeoutMs` setting (default 30s, `0` to disable) that times out the vision-model approval prompt and automatically denies the request, so images attached to text-only models fail closed instead of waiting indefinitely.
 
 ### Changed
 
