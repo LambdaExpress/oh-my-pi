@@ -710,15 +710,16 @@ export const SETTINGS_SCHEMA = {
 	},
 	"display.language": {
 		type: "enum",
-		values: ["en", "zh-CN"] as const,
-		default: "en",
+		values: ["auto", "en", "zh-CN"] as const,
+		default: "auto",
 		ui: {
 			tab: "appearance",
 			group: "Display",
 			label: "Language",
 			description: "Language for user-facing interface text (English fallback for untranslated strings)",
 			options: [
-				{ value: "en", label: "English", description: "English (default)" },
+				{ value: "auto", label: "Auto (follow system)", description: "Automatically match the system language" },
+				{ value: "en", label: "English", description: "English" },
 				{ value: "zh-CN", label: "简体中文", description: "Simplified Chinese" },
 			],
 		},

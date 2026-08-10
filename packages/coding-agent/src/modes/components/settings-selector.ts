@@ -1261,7 +1261,8 @@ function translatedOptions(path: SettingPath, options: ReadonlyArray<SubmenuOpti
 			];
 		case "display.language":
 			return [
-				{ value: "en", label: t("English"), description: t("English (default)") },
+				{ value: "auto", label: t("Auto (follow system)"), description: t("Automatically match the system language") },
+				{ value: "en", label: t("English"), description: t("English") },
 				{ value: "zh-CN", label: t("简体中文"), description: t("Simplified Chinese") },
 			];
 		case "display.shimmer":

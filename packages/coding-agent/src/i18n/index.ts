@@ -18,9 +18,28 @@ export function setLocale(locale: string | null | undefined): void {
 export function getLocale(): Locale {
 	if (pinnedLocale) return pinnedLocale;
 	try {
-		return settings.get("display.language");
+		const setting = settings.get("display.language");
+		return setting === "auto" ? detectSystemLocale() : setting;
 	} catch {
-		return "en"; // settings 未初始化（测试、CLI 早期路径）
+		return detectSystemLocale(); // settings 未初始化（测试、CLI 早期路径）：跟随系统语言
+	}
+}
+
+/**
+ * Detect the system UI language. Prefers explicit locale env vars (POSIX
+ * convention), falling back to the runtime's default ICU locale, which
+ * follows the OS UI language on Windows (Bun resolves it via ICU).
+ */
+export function detectSystemLocale(): Locale {
+	const envLang = process.env.LANG ?? process.env.LC_ALL ?? process.env.LC_MESSAGES ?? "";
+	if (/^zh/i.test(envLang)) return "zh-CN";
+	// A non-C locale env var is authoritative (e.g. en_US.UTF-8).
+	if (envLang && !/^C\b|^POSIX\b/i.test(envLang)) return "en";
+	try {
+		const locale = Intl.DateTimeFormat().resolvedOptions().locale;
+		return /^zh/i.test(locale) ? "zh-CN" : "en";
+	} catch {
+		return "en";
 	}
 }
 
