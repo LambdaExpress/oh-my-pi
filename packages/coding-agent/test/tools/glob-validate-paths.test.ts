@@ -124,6 +124,36 @@ describe("delimited path expansion", () => {
 		expect(await expandDelimitedPathEntries([joined], tempDir)).toEqual(names);
 	});
 
+	it("splits a semicolon list of ssh:// URLs into separate entries", async () => {
+		expect(await splitDelimitedPathEntry("ssh://h/root/a.py;ssh://h/root/b.py", tempDir)).toEqual([
+			"ssh://h/root/a.py",
+			"ssh://h/root/b.py",
+		]);
+		// Whitespace after the delimiter is tolerated, like local path lists.
+		expect(await splitDelimitedPathEntry("ssh://h/root/a.py; ssh://h/root/b.py", tempDir)).toEqual([
+			"ssh://h/root/a.py",
+			"ssh://h/root/b.py",
+		]);
+		expect(await expandDelimitedPathEntries(["ssh://h/root/a.py;ssh://h/root/b.py"], tempDir)).toEqual([
+			"ssh://h/root/a.py",
+			"ssh://h/root/b.py",
+		]);
+	});
+
+	it("does not split a single ssh:// URL or one whose path contains a literal semicolon", async () => {
+		expect(await splitDelimitedPathEntry("ssh://h/root/a.py", tempDir)).toBeNull();
+		// POSIX filenames may contain `;` — only a `scheme://` immediately after
+		// the delimiter is evidence of a list, so the remote path stays intact.
+		expect(await splitDelimitedPathEntry("ssh://h/root/a;b.py", tempDir)).toBeNull();
+		// A trailing non-URL segment is not an internal URL, so no split.
+		expect(await splitDelimitedPathEntry("ssh://h/root/a.py;local.txt", tempDir)).toBeNull();
+	});
+
+	it("keeps a real file whose name contains a semicolon intact", async () => {
+		await Bun.write(path.join(tempDir, "a;b.txt"), "literal\n");
+		expect(await splitDelimitedPathEntry("a;b.txt", tempDir)).toBeNull();
+	});
+
 	it("normalizes Windows path separators before parsing find globs", async () => {
 		expect(parseFindPattern("apps\\**\\*.txt")).toEqual({
 			basePath: "apps",

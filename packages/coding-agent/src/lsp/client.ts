@@ -381,6 +381,10 @@ async function startMessageReader(client: LspClient): Promise<void> {
 								const params = message.params as { token: string | number; value?: { kind?: string } };
 								if (params.value?.kind === "begin") {
 									client.activeProgressTokens.add(params.token);
+									// A fresh loading cycle after the previous one settled: re-arm the
+									// project-loaded promise so waitForProjectLoaded covers this cycle
+									// too (on-demand project loads, post-reload reloads).
+									client.rearmProjectLoaded?.();
 								} else if (params.value?.kind === "end") {
 									client.activeProgressTokens.delete(params.token);
 									if (client.activeProgressTokens.size === 0) {
@@ -708,7 +712,11 @@ const SHUTDOWN_TIMEOUT_MS = 5_000;
 const EXIT_TIMEOUT_MS = 1_000;
 
 function clientKey(config: ServerConfig, cwd: string): string {
-	return `${config.command}:${cwd}`;
+	// Key clients by the full server identity: two configurations may share a
+	// command binary but differ in args (e.g. a shared wrapper dispatching
+	// json-ls vs csharp-ls) and must not share a client. Mirrors the exported
+	// `getLspClientKey` used for status reporting.
+	return getLspClientKey(config, cwd);
 }
 
 /** Allow an explicit user reload to retry a matching initialization failure immediately. */
@@ -780,16 +788,31 @@ export async function getOrCreateClient(
 			env: env ? { ...Bun.env, ...env } : undefined,
 		});
 
-		let resolveProjectLoaded!: () => void;
-		const projectLoaded = new Promise<void>(resolve => {
-			resolveProjectLoaded = resolve;
-		});
-		// Auto-resolve after timeout in case server doesn't use progress tokens
-		const projectLoadTimeout = setTimeout(resolveProjectLoaded, PROJECT_LOAD_TIMEOUT_MS);
-		const originalResolve = resolveProjectLoaded;
-		resolveProjectLoaded = () => {
-			clearTimeout(projectLoadTimeout);
-			originalResolve();
+		let projectLoadedSettled = true;
+		let projectLoadTimeout: Timer | undefined;
+
+		/**
+		 * (Re-)arm the project-loaded promise. Runs at client creation and again
+		 * whenever a new $/progress loading cycle begins after the previous one
+		 * settled. Project-aware servers (typescript-language-server above all)
+		 * load projects on demand, so the first cycle finishing does not mean a
+		 * later on-demand load or a post-reload reload is complete. A still
+		 * pending cycle is never replaced — re-arming mid-cycle would strand
+		 * waiters on the old promise.
+		 */
+		const armProjectLoaded = (): void => {
+			if (!projectLoadedSettled) return;
+			projectLoadedSettled = false;
+			client.projectLoaded = new Promise<void>(resolve => {
+				client.resolveProjectLoaded = () => {
+					if (projectLoadedSettled) return;
+					clearTimeout(projectLoadTimeout);
+					projectLoadedSettled = true;
+					resolve();
+				};
+			});
+			// Auto-resolve after timeout in case server doesn't use progress tokens
+			projectLoadTimeout = setTimeout(client.resolveProjectLoaded, PROJECT_LOAD_TIMEOUT_MS);
 		};
 
 		const client: LspClient = {
@@ -809,9 +832,12 @@ export async function getOrCreateClient(
 			lastActivity: Date.now(),
 			writeQueue: Promise.resolve(),
 			activeProgressTokens: new Set(),
-			projectLoaded,
-			resolveProjectLoaded,
+			// Placeholders, replaced synchronously by armProjectLoaded() below.
+			projectLoaded: Promise.resolve(),
+			resolveProjectLoaded: () => {},
+			rearmProjectLoaded: armProjectLoaded,
 		};
+		armProjectLoaded();
 
 		// Register crash recovery - remove client on process exit
 		proc.exited.then(() => {

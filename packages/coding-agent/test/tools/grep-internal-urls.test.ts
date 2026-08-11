@@ -672,4 +672,30 @@ describe("GrepTool internal URL resolution", () => {
 		const result = await tool.execute("ssh-ipv6", { pattern: "needle", path: "ssh://[::1]/etc/hosts" });
 		expect(getResultText(result)).toContain("needle");
 	});
+
+	it("searches two ssh:// files passed as one semicolon-delimited path", async () => {
+		vi.spyOn(capability, "loadCapability").mockResolvedValue({
+			items: [],
+			all: [],
+			warnings: [],
+			providers: [],
+		} as CapabilityResult<unknown>);
+		vi.spyOn(sshFileTransfer, "statRemotePath").mockResolvedValue("file");
+		const readSpy = vi.spyOn(sshFileTransfer, "readRemoteFile").mockImplementation(async (_target, remotePath) => ({
+			bytes: new TextEncoder().encode(remotePath === "/root/ComfyUI/server.py" ? "needle alpha\n" : "needle beta\n"),
+			truncated: false,
+		}));
+		const tool = new GrepTool(createSession());
+		const result = await tool.execute("ssh-multi", {
+			pattern: "needle",
+			path: "ssh://h/root/ComfyUI/server.py;ssh://h/root/ComfyUI/app/custom_node_manager.py",
+		});
+		const text = getResultText(result);
+		expect(text).toContain("needle alpha");
+		expect(text).toContain("needle beta");
+		const calledRemotePaths = readSpy.mock.calls.map(call => call[1]);
+		expect(calledRemotePaths).toContain("/root/ComfyUI/server.py");
+		expect(calledRemotePaths).toContain("/root/ComfyUI/app/custom_node_manager.py");
+		expect(calledRemotePaths.some(p => p.includes(";"))).toBe(false);
+	});
 });

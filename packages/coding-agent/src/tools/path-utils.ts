@@ -817,9 +817,52 @@ async function tryDelimitedPathSplit(
 }
 
 /**
+ * Split a semicolon-joined list of internal URLs (`ssh://h/a;ssh://h/b`) into
+ * its entries, or return `null` when the entry is not such a list.
+ *
+ * A `;` is a split point only when the next non-space text starts a
+ * `scheme://` prefix, and every resulting segment must itself be a valid
+ * internal URL. A literal `;` inside an ssh:// path (a legal POSIX filename)
+ * is therefore never a split point — `ssh://h/a;b` stays a single remote
+ * path — while `ssh://h/a;ssh://h/b` fans out into two entries.
+ */
+function splitInternalUrlDelimitedList(entry: string): string[] | null {
+	const parts: string[] = [];
+	let braceDepth = 0;
+	let start = 0;
+	for (let i = 0; i < entry.length; i++) {
+		const ch = entry[i];
+		if (ch === "\\" && i + 1 < entry.length) {
+			i++;
+			continue;
+		}
+		if (ch === "{") {
+			braceDepth++;
+			continue;
+		}
+		if (ch === "}") {
+			if (braceDepth > 0) braceDepth--;
+			continue;
+		}
+		if (braceDepth !== 0 || ch !== ";") continue;
+		if (!INTERNAL_URL_SCHEME_RE.test(entry.slice(i + 1).trimStart())) continue;
+		parts.push(entry.slice(start, i));
+		start = i + 1;
+	}
+	parts.push(entry.slice(start));
+	if (parts.length < 2) return null;
+	const segments = parts.map(normalizePathLikeInput).filter(part => part.length > 0);
+	if (segments.length < 2 || !segments.every(isInternalUrlPath)) return null;
+	return segments;
+}
+
+/**
  * Split one path-like entry whose multiple targets were flattened into one
  * string. Existing paths are kept intact, so real filenames containing spaces,
- * commas, or semicolons win over delimiter recovery.
+ * commas, or semicolons win over delimiter recovery. Internal-URL entries get
+ * their own conservative list handling: a semicolon only splits when the text
+ * after it starts a `scheme://` prefix and every segment is itself an internal
+ * URL (see {@link splitInternalUrlDelimitedList}).
  */
 export async function splitDelimitedPathEntry(
 	entry: string,
@@ -836,7 +879,15 @@ export async function splitDelimitedPathEntry(
 		const parts = await tryDelimitedPathSplit(normalizedEntry, cwd, splitter, "semicolon", "none");
 		return parts?.every(options.routedUrlPredicate) ? parts : null;
 	}
-	if (isInternalUrlPath(normalizedEntry)) return null;
+	if (isInternalUrlPath(normalizedEntry)) {
+		// The joined string itself looks like one internal URL, so the blanket
+		// guard below would hand `ssh://h/a;ssh://h/b` to the router as a single
+		// remote path (grep's documented semicolon-delimited `path` list — the
+		// remote side fails with `head: cannot open '/root/…/a;ssh://…/b'`).
+		// Split only conservative internal-URL lists here; anything else keeps
+		// the previous no-split behavior (single URL, or a `;` inside a path).
+		return splitInternalUrlDelimitedList(normalizedEntry);
+	}
 	// A real POSIX file may contain the delimiter and a selector-shaped tail
 	// (`a;b:1-2`, `a b:1-2`). Preserve the raw entry whenever the full literal
 	// resolves — or is only ambiguous — so downstream literal-preferring

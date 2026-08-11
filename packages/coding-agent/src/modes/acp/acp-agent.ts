@@ -55,6 +55,7 @@ import { runExtensionCompact } from "../../extensibility/extensions/compact-hand
 import { getSessionSlashCommands } from "../../extensibility/extensions/get-commands-handler";
 import { buildSkillPromptMessage, parseSkillInvocation } from "../../extensibility/skills";
 import { loadSlashCommands } from "../../extensibility/slash-commands";
+import { t } from "../../i18n";
 import { resolveLocalUrlToPath } from "../../internal-urls";
 import { MCPManager } from "../../mcp/manager";
 import type { MCPServerConfig } from "../../mcp/types";
@@ -2355,11 +2356,15 @@ export class AcpAgent implements Agent {
 			record.session.setUsageFallbackConfirmer((confirmation, signal) => {
 				const reserve =
 					confirmation.remainingPercent === undefined
-						? "inside the configured reserve margin"
+						? t("inside the configured reserve margin")
 						: `${confirmation.remainingPercent.toFixed(1)}% remaining`;
 				return uiContext.confirm(
-					"Coding-plan reserve reached",
-					`${confirmation.from} has ${reserve}. Switch to ${confirmation.to}? Choose No to keep using the current plan.`,
+					t("Coding-plan reserve reached"),
+					t("{from} has {reserve}. Switch to {to}? Choose No to keep using the current plan.", {
+						from: confirmation.from,
+						reserve,
+						to: confirmation.to,
+					}),
 					{ signal },
 				);
 			});

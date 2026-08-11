@@ -154,6 +154,7 @@ async function createContext() {
 			requestRender,
 			resetDisplay,
 			clearInlineImages,
+			rebuildScrollbackIfDirty: vi.fn(),
 			addInputListener,
 			addStartListener,
 			getFocused: vi.fn(() => focused),
@@ -598,7 +599,10 @@ describe("InputController keybinding setup", () => {
 		controller.setupEditorSubmitHandler();
 		await editor.onSubmit?.("");
 
-		expect(spies.abort).toHaveBeenCalledWith({ reason: "Interrupted by user" });
+		// The empty-Enter flush must carry the force-flush semantics explicitly so
+		// the interrupted run's collapse span survives until the continuation
+		// settles (the queue may already be drained when its agent_end is handled).
+		expect(spies.abort).toHaveBeenCalledWith({ reason: "Interrupted by user", forceFlush: true });
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 		expect(spies.requestRender).toHaveBeenCalledTimes(1);
 		expect(spies.prompt).not.toHaveBeenCalled();

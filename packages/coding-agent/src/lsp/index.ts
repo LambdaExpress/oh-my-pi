@@ -617,6 +617,40 @@ const REFERENCE_CONTEXT_LIMIT = 50;
 
 const REFERENCES_RETRY_COUNT = 2;
 const REFERENCES_RETRY_DELAY_MS = 250;
+/**
+ * Settle delay before a cold-start definition/type_definition/implementation
+ * retry: the project may have finished loading only moments ago, so give the
+ * index one more beat before re-asking.
+ */
+const DEFINITION_COLD_START_RETRY_DELAY_MS = 500;
+
+/**
+ * True when the server is csharp-ls, the legacy OmniSharp-based C# language
+ * server (the .NET Framework build). Unlike modern servers it exposes no
+ * project-loading signal: it loads MSBuild projects asynchronously after
+ * startup, emits no $/progress for the load, and its references handler
+ * returns an empty (non-error) result for any file whose project is still
+ * loading or failed to load — so an empty result cannot be read as "the
+ * symbol genuinely has no references".
+ */
+function isCsharpLsServer(serverName: string, serverConfig: ServerConfig): boolean {
+	return (
+		serverName === "csharp-ls" ||
+		path.basename(serverConfig.command) === "csharp-ls" ||
+		(serverConfig.resolvedCommand ? path.basename(serverConfig.resolvedCommand) === "csharp-ls" : false)
+	);
+}
+
+/**
+ * Replaces the bare "No references found" when the empty result came from
+ * csharp-ls: the server returns [] both for a real absence and for a file
+ * whose project never finished loading (or failed to load, e.g. a legacy
+ * .NET Framework project missing MSBuild tooling). The naked message makes a
+ * server-side indexing problem look like a genuine absence of references, so
+ * this variant carries an actionable hint instead of being compaction-elided.
+ */
+const CSHARP_LS_NO_REFERENCES_MESSAGE =
+	"No references found. csharp-ls may not have indexed this project yet: it loads MSBuild projects asynchronously after startup and returns no references for files whose project is still loading or failed to load (legacy .NET Framework projects need MSBuild tooling). Retry after project load completes, or check the csharp-ls server logs (stderr) for MSBuild load errors.";
 
 function comparePosition(a: Position, b: Position): number {
 	return a.line === b.line ? a.character - b.character : a.line - b.line;
@@ -628,6 +662,20 @@ function rangeContainsPosition(range: Location["range"], position: Position): bo
 
 function isOnlyQueriedDeclaration(locations: Location[], uri: string, position: Position): boolean {
 	return locations.length === 1 && locations[0]?.uri === uri && rangeContainsPosition(locations[0].range, position);
+}
+
+function locationKey(location: Location): string {
+	return `${location.uri}\0${location.range.start.line}:${location.range.start.character}\0${location.range.end.line}:${location.range.end.character}`;
+}
+
+/**
+ * Set comparison of locations; ordering is not significant because servers may
+ * reorder results between attempts.
+ */
+function sameLocationSet(a: Location[], b: Location[]): boolean {
+	if (a.length !== b.length) return false;
+	const keys = new Set(b.map(locationKey));
+	return a.every(location => keys.has(locationKey(location)));
 }
 
 function normalizeLocationResult(result: Location | Location[] | LocationLink | LocationLink[] | null): Location[] {
@@ -2757,15 +2805,29 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				// =====================================================================
 
 				case "definition": {
-					const result = (await sendRequest(
-						client,
-						"textDocument/definition",
-						{
-							textDocument: { uri },
-							position,
-						},
-						signal,
-					)) as Location | Location[] | LocationLink | LocationLink[] | null;
+					const maxAttempts = isProjectAwareLspServer(serverConfig) ? 2 : 1;
+					let result: Location | Location[] | LocationLink | LocationLink[] | null = null;
+					for (let attempt = 0; attempt < maxAttempts; attempt++) {
+						result = (await sendRequest(
+							client,
+							"textDocument/definition",
+							{
+								textDocument: { uri },
+								position,
+							},
+							signal,
+						)) as Location | Location[] | LocationLink | LocationLink[] | null;
+
+						if (normalizeLocationResult(result).length > 0 || attempt === maxAttempts - 1) {
+							break;
+						}
+						// Cold start (fresh server or just reloaded while the project is
+						// still loading): an empty answer may be provisional. Wait for the
+						// load cycle, settle, then retry once before reporting "not found".
+						await waitForProjectLoaded(client, signal);
+						throwIfAborted(signal);
+						await untilAborted(signal, () => Bun.sleep(DEFINITION_COLD_START_RETRY_DELAY_MS));
+					}
 
 					const locations = normalizeLocationResult(result);
 
@@ -2782,15 +2844,26 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 
 				case "type_definition": {
-					const result = (await sendRequest(
-						client,
-						"textDocument/typeDefinition",
-						{
-							textDocument: { uri },
-							position,
-						},
-						signal,
-					)) as Location | Location[] | LocationLink | LocationLink[] | null;
+					const maxAttempts = isProjectAwareLspServer(serverConfig) ? 2 : 1;
+					let result: Location | Location[] | LocationLink | LocationLink[] | null = null;
+					for (let attempt = 0; attempt < maxAttempts; attempt++) {
+						result = (await sendRequest(
+							client,
+							"textDocument/typeDefinition",
+							{
+								textDocument: { uri },
+								position,
+							},
+							signal,
+						)) as Location | Location[] | LocationLink | LocationLink[] | null;
+
+						if (normalizeLocationResult(result).length > 0 || attempt === maxAttempts - 1) {
+							break;
+						}
+						await waitForProjectLoaded(client, signal);
+						throwIfAborted(signal);
+						await untilAborted(signal, () => Bun.sleep(DEFINITION_COLD_START_RETRY_DELAY_MS));
+					}
 
 					const locations = normalizeLocationResult(result);
 
@@ -2807,15 +2880,26 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 
 				case "implementation": {
-					const result = (await sendRequest(
-						client,
-						"textDocument/implementation",
-						{
-							textDocument: { uri },
-							position,
-						},
-						signal,
-					)) as Location | Location[] | LocationLink | LocationLink[] | null;
+					const maxAttempts = isProjectAwareLspServer(serverConfig) ? 2 : 1;
+					let result: Location | Location[] | LocationLink | LocationLink[] | null = null;
+					for (let attempt = 0; attempt < maxAttempts; attempt++) {
+						result = (await sendRequest(
+							client,
+							"textDocument/implementation",
+							{
+								textDocument: { uri },
+								position,
+							},
+							signal,
+						)) as Location | Location[] | LocationLink | LocationLink[] | null;
+
+						if (normalizeLocationResult(result).length > 0 || attempt === maxAttempts - 1) {
+							break;
+						}
+						await waitForProjectLoaded(client, signal);
+						throwIfAborted(signal);
+						await untilAborted(signal, () => Bun.sleep(DEFINITION_COLD_START_RETRY_DELAY_MS));
+					}
 
 					const locations = normalizeLocationResult(result);
 
@@ -2832,6 +2916,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 				case "references": {
 					let result: Location[] | null = null;
+					let previousLocations: Location[] | null = null;
 					for (let attempt = 0; attempt <= REFERENCES_RETRY_COUNT; attempt++) {
 						result = (await sendRequest(
 							client,
@@ -2848,9 +2933,21 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						if (!isProjectAwareLspServer(serverConfig) || attempt === REFERENCES_RETRY_COUNT) {
 							break;
 						}
-						if (locations.length > 0 && !isOnlyQueriedDeclaration(locations, uri, position)) {
+						// A cold-start or post-reload server may answer with a partial result
+						// set that looks complete (self-file hits only, cross-file callers
+						// still indexing). Accept a result as final only once two consecutive
+						// attempts agree on the same location set — ordering is not stable
+						// across attempts, so compare normalized sets. Empty and
+						// declaration-only results stay provisional.
+						if (
+							locations.length > 0 &&
+							!isOnlyQueriedDeclaration(locations, uri, position) &&
+							previousLocations !== null &&
+							sameLocationSet(locations, previousLocations)
+						) {
 							break;
 						}
+						previousLocations = locations;
 
 						await waitForProjectLoaded(client, signal);
 						throwIfAborted(signal);
@@ -2858,8 +2955,18 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					}
 
 					if (!result || result.length === 0) {
-						output = "No references found";
-						useless = true;
+						if (isCsharpLsServer(serverName, serverConfig)) {
+							// csharp-ls returns an empty (non-error) references result
+							// when the file's project is still loading or failed to
+							// load — indistinguishable from a genuine absence without
+							// server logs. Keep the actionable hint visible (not
+							// `useless`) so callers don't mistake an indexing problem
+							// for "no references exist".
+							output = CSHARP_LS_NO_REFERENCES_MESSAGE;
+						} else {
+							output = "No references found";
+							useless = true;
+						}
 					} else {
 						const contextualReferences = result.slice(0, REFERENCE_CONTEXT_LIMIT);
 						const plainReferences = result.slice(REFERENCE_CONTEXT_LIMIT);

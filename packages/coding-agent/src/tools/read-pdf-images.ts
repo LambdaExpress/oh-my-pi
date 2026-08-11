@@ -5,7 +5,8 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { isEexist, isEnotempty, readImageMetadata, untilAborted } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../sdk";
 import { loadImageInput, MAX_IMAGE_INPUT_BYTES, webpExclusionForModel } from "../utils/image-loading";
-import { convertFileWithMarkit } from "../utils/markit";
+import { convertBufferWithMarkit, convertFileWithMarkit } from "../utils/markit";
+import type { ArchiveReader } from "../utils/zip";
 import type { ReadToolDetails } from "./read";
 import { prependSuffixResolutionNotice } from "./read-format";
 import { isNotFoundError } from "./read-path-resolution";
@@ -56,6 +57,42 @@ export function splitPdfImageMemberReadPath(readPath: string): { pdfPath: string
 	if (pdfPath === undefined || member === undefined) return null;
 	if (member.length !== 0 && !PDF_IMAGE_MEMBER_EXTENSION_RE.test(member)) return null;
 	return { pdfPath, member };
+}
+
+/**
+ * Split an archive sub-path like `report.pdf:p11-img0.png` (or a trailing-colon
+ * handle `report.pdf:`) into the PDF member path and the image member name,
+ * validating that the PDF member exists as a file inside the archive. Returns
+ * `null` when the sub-path is not an archive PDF image handle.
+ */
+export function splitArchivePdfImageMemberPath(
+	archive: ArchiveReader,
+	archiveSubPath: string,
+): { pdfMemberPath: string; member: string } | null {
+	const split = splitPdfImageMemberReadPath(archiveSubPath);
+	if (!split) return null;
+	const node = archive.getNode(split.pdfPath);
+	if (!node || node.isDirectory) return null;
+	return { pdfMemberPath: split.pdfPath, member: split.member };
+}
+
+/**
+ * Rewrite markit's `<!-- image: <id> ... -->` placeholders from an in-memory
+ * archive PDF conversion into read handles rooted at the archive path, e.g.
+ * ``Image <id> (metadata): read `<archive>:<pdfMember>:<id>.png` ``. The
+ * member-name suffix differs from {@link rewritePdfImagePlaceholders} because
+ * the handle is an archive member path rather than a filesystem path.
+ */
+export function rewriteArchivePdfImagePlaceholders(
+	markdown: string,
+	archiveDisplayPath: string,
+	pdfMemberPath: string,
+): string {
+	return markdown.replace(PDF_IMAGE_PLACEHOLDER_RE, (_match: string, imageId: string, metadataText: string) => {
+		const metadata = metadataText.trim();
+		const suffix = metadata.length > 0 ? ` ${metadata}` : "";
+		return `Image ${imageId}${suffix}: read \`${pdfImageMemberPath(`${archiveDisplayPath}:${pdfMemberPath}`, imageId)}\``;
+	});
 }
 function pdfImageCacheDir(session: ToolSession, absolutePdfPath: string, contentDigest: string): string {
 	const artifactsDir = session.getArtifactsDir?.();
@@ -188,6 +225,71 @@ async function ensurePdfImageCache(
 	return waitForPdfImageExtraction(extraction, signal);
 }
 
+function archivePdfImageCacheDir(session: ToolSession, absoluteArchivePath: string, pdfMemberPath: string): string {
+	const artifactsDir = session.getArtifactsDir?.();
+	let root = artifactsDir ?? undefined;
+	if (root === undefined) {
+		const sessionFile = session.getSessionFile();
+		root = sessionFile?.endsWith(".jsonl") ? sessionFile.slice(0, -6) : path.join(os.tmpdir(), "omp-read-pdf-images");
+	}
+	const basename = path
+		.basename(absoluteArchivePath)
+		.replace(/[^A-Za-z0-9._-]/g, "_")
+		.slice(0, PDF_IMAGE_CACHE_BASENAME_MAX_LENGTH);
+	const key = Bun.hash(`${absoluteArchivePath}\0${pdfMemberPath}`).toString(36);
+	return path.join(root, "read-archive-pdf-images", `${basename}-${key}`);
+}
+
+const archivePdfImageExtractions = new Map<string, Promise<string>>();
+
+/**
+ * Cache the images extracted from an archive PDF member. The member bytes are
+ * converted in memory via {@link convertBufferWithMarkit} with the image
+ * directory set, which writes each embedded image to `<id>.png`; a `.extracted`
+ * marker makes subsequent reads reuse the directory without re-running the
+ * converter. The directory is hash-named from the archive path + member path
+ * so distinct archives never collide. Concurrent extractions of the same
+ * member share one in-process promise.
+ */
+async function ensureArchivePdfImageCache(
+	session: ToolSession,
+	absoluteArchivePath: string,
+	pdfMemberPath: string,
+	pdfBytes: Uint8Array,
+	signal?: AbortSignal,
+): Promise<string> {
+	const imageDir = archivePdfImageCacheDir(session, absoluteArchivePath, pdfMemberPath);
+	const markerPath = path.join(imageDir, ".extracted");
+	try {
+		await fs.stat(markerPath);
+		return imageDir;
+	} catch (error) {
+		if (!isNotFoundError(error)) throw error;
+	}
+
+	const existing = archivePdfImageExtractions.get(imageDir);
+	if (existing) return untilAborted(signal, existing);
+
+	const extraction = (async () => {
+		await fs.rm(imageDir, { recursive: true, force: true });
+		await fs.mkdir(imageDir, { recursive: true });
+		const result = await convertBufferWithMarkit(pdfBytes, ".pdf", signal, { imageDir, useCache: false });
+		if (!result.ok) {
+			await fs.rm(imageDir, { recursive: true, force: true });
+			throw new ToolError(
+				`Cannot extract images from PDF archive member '${pdfMemberPath}': ${result.error ?? "conversion failed"}`,
+			);
+		}
+		await Bun.write(markerPath, "ok");
+		return imageDir;
+	})();
+	archivePdfImageExtractions.set(imageDir, extraction);
+	void extraction.finally(() => {
+		if (archivePdfImageExtractions.get(imageDir) === extraction) archivePdfImageExtractions.delete(imageDir);
+	});
+	return untilAborted(signal, extraction);
+}
+
 export async function readPdfImageMember(
 	session: ToolSession,
 	autoResizeImages: boolean,
@@ -243,6 +345,70 @@ export async function readPdfImageMember(
 	return toolResult<ReadToolDetails>({ resolvedPath: absolutePdfPath, suffixResolution })
 		.content([
 			{ type: "text", text: textNote },
+			{ type: "image", data: imageInput.data, mimeType: imageInput.mimeType },
+		])
+		.sourcePath(imageInput.resolvedPath)
+		.done();
+}
+
+/**
+ * Read an image extracted from an archive PDF member (handle like
+ * `archive.zip:report.pdf:p11-img0.png`). An empty `member` lists the
+ * extractable images as read handles; an unknown member raises a
+ * {@link ToolError} naming the available members.
+ */
+export async function readArchivePdfImageMember(
+	session: ToolSession,
+	absoluteArchivePath: string,
+	archiveDisplayPath: string,
+	pdfMemberPath: string,
+	pdfBytes: Uint8Array,
+	member: string,
+	details: ReadToolDetails,
+	signal?: AbortSignal,
+): Promise<AgentToolResult<ReadToolDetails>> {
+	const imageDir = await ensureArchivePdfImageCache(session, absoluteArchivePath, pdfMemberPath, pdfBytes, signal);
+	const members = await listPdfImageMembers(imageDir);
+	if (member.length === 0) {
+		const text =
+			members.length === 0
+				? "No extractable PDF image members found."
+				: `Extractable PDF image members:\n${members
+						.map(imageMember => `- read \`${archiveDisplayPath}:${pdfMemberPath}:${imageMember}\``)
+						.join("\n")}`;
+		return toolResult<ReadToolDetails>(details).text(text).sourcePath(absoluteArchivePath).done();
+	}
+
+	if (!members.includes(member)) {
+		const available = members.length === 0 ? "(none)" : members.join(", ");
+		throw new ToolError(`PDF image member '${member}' not found. Available members: ${available}`);
+	}
+
+	const imagePath = path.join(imageDir, member);
+	const imageStat = await Bun.file(imagePath).stat();
+	if (imageStat.size > MAX_IMAGE_SIZE) {
+		const sizeStr = formatBytes(imageStat.size);
+		const maxStr = formatBytes(MAX_IMAGE_SIZE);
+		throw new ToolError(`Image file too large: ${sizeStr} exceeds ${maxStr} limit.`);
+	}
+	const metadata = await readImageMetadata(imagePath);
+	const mimeType = metadata?.mimeType;
+	if (!mimeType) throw new ToolError(`PDF image member '${member}' is not a supported image.`);
+	const imageInput = await loadImageInput({
+		path: `${archiveDisplayPath}:${pdfMemberPath}:${member}`,
+		cwd: session.cwd,
+		autoResize: session.settings.get("images.autoResize"),
+		maxBytes: MAX_IMAGE_SIZE,
+		resolvedPath: imagePath,
+		detectedMimeType: mimeType,
+		excludeWebP: webpExclusionForModel(session.getActiveModel?.()),
+	});
+	if (!imageInput) {
+		throw new ToolError(`Read image file [${mimeType}] failed: unsupported image format.`);
+	}
+	return toolResult<ReadToolDetails>(details)
+		.content([
+			{ type: "text", text: imageInput.textNote },
 			{ type: "image", data: imageInput.data, mimeType: imageInput.mimeType },
 		])
 		.sourcePath(imageInput.resolvedPath)

@@ -696,6 +696,17 @@ export class AgentSession {
 	 */
 	#toolExecutionDisplaySnapshots = new Map<string, ToolExecutionDisplaySnapshot>();
 	#abortInProgress = false;
+	/**
+	 * Set by the Enter force-flush path (empty submit while streaming with
+	 * queued user messages) before aborting the active run. Survives the
+	 * post-abort queue drain, so the event controller can distinguish a
+	 * force-flushed continuation from a plain interrupt even when the queue is
+	 * already empty by the time the interrupted run's agent_end is processed.
+	 * Consumed (cleared) by the event controller when the continuation's span
+	 * lifecycle is set up, or by `clearQueue({ forInterrupt })` when the user
+	 * abandons the queued work.
+	 */
+	#forceFlushPending = false;
 	// Wire-level agent_end emission deferred until #promptInFlightCount drops to 0.
 	// Internal extension hooks and post-emit work (auto-retry, auto-compaction, todo
 	// checks in #handleAgentEvent) still fire on the original schedule — only the
@@ -4401,7 +4412,9 @@ export class AgentSession {
 		this.#visionFallbackConfirmer = uiContext
 			? (confirmation, signal) => {
 					const imageLabel =
-						confirmation.imageCount === 1 ? "1 attached image" : `${confirmation.imageCount} attached images`;
+						confirmation.imageCount === 1
+							? t("1 attached image")
+							: t("{count} attached images", { count: confirmation.imageCount });
 					const timeoutMs = this.settings.get("images.visionApprovalTimeoutMs");
 					const dialogOptions: ExtensionUIDialogOptions | undefined =
 						signal || timeoutMs > 0
@@ -4420,8 +4433,11 @@ export class AgentSession {
 								}
 							: undefined;
 					return uiContext.confirm(
-						"Allow vision model access?",
-						`Send ${imageLabel} to ${confirmation.model} so the current text-only model can receive a description? Choose No to continue without image contents.`,
+						t("Allow vision model access?"),
+						t(
+							"Send {image} to {model} so the current text-only model can receive a description? Choose No to continue without image contents.",
+							{ image: imageLabel, model: confirmation.model },
+						),
 						dialogOptions,
 					);
 				}
@@ -6096,7 +6112,14 @@ export class AgentSession {
 		this.#scheduleAgentContinue({
 			shouldContinue: () => {
 				this.#queuedMessageDrainScheduled = false;
-				return this.#canAutoContinueForFollowUp() && this.agent.hasQueuedMessages();
+				const shouldContinue = this.#canAutoContinueForFollowUp() && this.agent.hasQueuedMessages();
+				if (!shouldContinue) {
+					// The force-flush abort had no runnable continuation after all
+					// (queue drained or auto-continue blocked): the flush marker
+					// must not leak into a later unrelated interrupt.
+					this.#forceFlushPending = false;
+				}
+				return shouldContinue;
 			},
 			onSkip: () => {
 				this.#queuedMessageDrainScheduled = false;
@@ -6452,6 +6475,12 @@ export class AgentSession {
 		steering: RestoredQueuedMessage[];
 		followUp: RestoredQueuedMessage[];
 	} {
+		if (options?.forInterrupt) {
+			// The user abandoned the queued work after a force-flush abort: no
+			// continuation will start, so the flush marker must not leak into a
+			// later unrelated interrupt.
+			this.#forceFlushPending = false;
+		}
 		const steeringAll = this.agent.peekSteeringQueue();
 		const followUpAll = this.agent.peekFollowUpQueue();
 		const steering = steeringAll.filter(isUserQueuedMessage).map(toRestoredQueuedMessage);
@@ -6474,6 +6503,20 @@ export class AgentSession {
 			if (isUserQueuedMessage(message)) count++;
 		}
 		return count;
+	}
+
+	/**
+	 * True between an Enter force-flush abort and the continuation's lifecycle
+	 * setup. The event controller uses this instead of the instantaneous queue
+	 * length so a stale agent_end cannot mistake an already-drained flush for a
+	 * plain interrupt and destroy the interrupted run's collapse span.
+	 */
+	get forceFlushPending(): boolean {
+		return this.#forceFlushPending;
+	}
+
+	clearForceFlushPending(): void {
+		this.#forceFlushPending = false;
 	}
 
 	/** Number of pending displayable messages (includes steering, follow-up, and next-turn messages).
@@ -6678,10 +6721,15 @@ export class AgentSession {
 	async abort(options?: {
 		goalReason?: "interrupted" | "internal";
 		reason?: string;
+		/** Set by the Enter force-flush path: queued user messages were flushed into the next run. */
+		forceFlush?: boolean;
 		/** Internal `/compact` startup keeps the manual-compaction marker alive while aborting the active turn. */
 		preserveCompaction?: boolean;
 	}): Promise<void> {
 		const userInterrupt = options?.reason === USER_INTERRUPT_LABEL;
+		if (userInterrupt && options?.forceFlush) {
+			this.#forceFlushPending = true;
+		}
 		this.#pendingAbortErrorId = userInterrupt ? AIError.create(AIError.Flag.UserInterrupt) : undefined;
 		if (userInterrupt) this.#advisors.autoResumeSuppressed = true;
 		// Pull advisor concerns out of the steer/follow-up queues before any await so

@@ -742,11 +742,21 @@ export async function preparePageForScreenshot(
 	page: Pick<Page, "bringToFront" | "evaluate">,
 	signal: AbortSignal | undefined,
 	activate: boolean,
+	/**
+	 * User-driven browsers (connected CDP attach, browser relay): the tab's document can
+	 * be legitimately hidden — the user may be looking at another window — so
+	 * `document.visibilityState` is not a reliable gate, and `bringToFront()` would steal
+	 * the user's focus without fixing it (in relay mode it only switches the user's
+	 * visible tab). CDP `Page.captureScreenshot` renders the target tab's own surface
+	 * regardless of visibility, so skip the gate entirely. Never set for tabs we launch.
+	 */
+	allowInvisible = false,
 ): Promise<void> {
 	if (activate) {
 		await untilAborted(signal, () => page.bringToFront()).catch(() => undefined);
 		return;
 	}
+	if (allowInvisible) return;
 	const visible = await untilAborted(signal, () => page.evaluate(() => document.visibilityState === "visible")).catch(
 		() => false,
 	);
@@ -780,6 +790,8 @@ export class WorkerCore {
 	#uninstallRejectionGuard: () => void;
 	#mode?: WorkerInitPayload["mode"];
 	#activateForScreenshot = true;
+	/** True for tabs in browsers the user drives directly (connected CDP attach, relay). */
+	#userDriven = false;
 	#dialogPolicy?: DialogPolicy;
 	#dialogHandler?: (dialog: Dialog) => void;
 	#openDialog?: OpenDialogInfo;
@@ -887,6 +899,7 @@ export class WorkerCore {
 			this.#mode = payload.mode;
 			this.#activatePageBeforeRun = payload.activatePageBeforeRun ?? false;
 			this.#activateForScreenshot = payload.mode === "headless" || payload.activateForScreenshot !== false;
+			this.#userDriven = payload.mode === "attach" && payload.userDriven === true;
 			const puppeteer = await this.#loadPuppeteer(payload.safeDir);
 			this.#browser = await puppeteer.connect({
 				browserWSEndpoint: payload.browserWSEndpoint,
@@ -1684,10 +1697,20 @@ export class WorkerCore {
 		// or hand back a sibling tab's pixels. Activate first; best-effort so an
 		// already-active or freshly-closed target never fails the capture.
 		//
-		// For a user-driven browser, redundant activation would steal window focus.
-		// The supervisor disables it only after adopting the visible tab; if the user
-		// later switches away, reject capture rather than risk sibling-tab pixels.
-		await preparePageForScreenshot(page, signal, this.#activateForScreenshot);
+		// For a user-driven browser, redundant activation would steal window focus,
+		// so the supervisor disables it after adopting the visible tab. For tabs we
+		// launched, activation before capture avoids sibling-tab pixels on shared
+		// endpoints (a backgrounded page can stall or hand back another tab's frame).
+		//
+		// User-driven tabs (connected/relay) drop the visibility gate instead of
+		// rejecting: `visibilityState` reads "hidden" whenever the user is in another
+		// window — even after `bringToFront()`, which in relay mode merely switches the
+		// user's visible tab — so the check would fail for tabs the user is legitimately
+		// not looking at. The sibling-pixel worry does not apply: a user-driven tab
+		// renders on its own CDP surface, and `Page.captureScreenshot` captures that
+		// tab's content, not window pixels. A silent screenshot is the user's explicit
+		// request, so capture without raising the tab and without requiring visibility.
+		await preparePageForScreenshot(page, signal, this.#activateForScreenshot, this.#userDriven);
 		const fullPage = opts.selector ? false : (opts.fullPage ?? false);
 		const captureType = "png";
 		const captureMime = "image/png" as const;

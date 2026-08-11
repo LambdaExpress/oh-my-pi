@@ -142,6 +142,7 @@ function createContext(): {
 		ui: {
 			requestRender,
 			resetDisplay,
+			rebuildScrollbackIfDirty: vi.fn(),
 			addInputListener: vi.fn(listener => {
 				inputListeners.push(listener as (data: string) => { consume?: boolean; data?: string } | undefined);
 				return () => {};
@@ -365,7 +366,9 @@ describe("InputController escape behavior", () => {
 		await editor.onSubmit?.("");
 
 		expect(order).toEqual(["abort", "refresh"]);
-		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+		// The empty-Enter flush carries explicit force-flush semantics so the
+		// interrupted run's collapse span survives until the continuation settles.
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 		expect(spies.requestRender).toHaveBeenCalledTimes(1);
 	});

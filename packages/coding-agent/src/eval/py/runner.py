@@ -73,6 +73,28 @@ except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
     _CAPTURE_READ_FD = None
 _OUT_LOCK = threading.Lock()
 
+# User subprocesses must never inherit fd 0: it is the host's NDJSON control
+# channel. On Windows a child that inherits it hangs in the OS loader before
+# running a single instruction whenever this process has a pending read on
+# the pipe (the stdin reader thread between requests): the loader's console-
+# detection probe serializes against the outstanding read and blocks forever.
+# Observed deterministically with `git.exe` and `python.exe` children spawned
+# via `subprocess.run(..., capture_output=True)` with default stdin
+# (tool-issue reports 2026-08-07; `subprocess.run` hangs ~30s until the host
+# escalates and kills the kernel). The same swap also guarantees a
+# stdin-reading child sees EOF instead of stealing NDJSON frames. Keep the
+# channel on a private non-inheritable dup and point fd 0 at DEVNULL.
+try:
+    _NDJSON_STDIN_FD = os.dup(0)
+    os.set_inheritable(_NDJSON_STDIN_FD, False)
+    _NDJSON_STDIN = os.fdopen(_NDJSON_STDIN_FD, "r", encoding="utf-8", errors="replace")
+    _DEVNULL_FD = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(_DEVNULL_FD, 0)
+    os.close(_DEVNULL_FD)
+except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
+    # fd 0 unavailable (e.g. an embedder with no stdin): keep the old path.
+    _NDJSON_STDIN = sys.__stdin__
+
 
 def _json_default(o: Any) -> Any:
     try:
@@ -1376,7 +1398,7 @@ async def _main_async() -> None:
     _start_parent_watchdog()
     _start_capture_drain()
 
-    stdin = sys.__stdin__
+    stdin = _NDJSON_STDIN
     if stdin is None:
         return
 

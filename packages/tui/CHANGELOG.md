@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Fixed divergence rebuilds (`tui.scrollbackRebuild`) jumping the viewport to the top of the transcript on ConPTY hosts; their ED3 clear unconditionally moves the host viewport to the buffer top and a scrolled reader's position is host state no escape sequence can reset (issues #1635/#1746), so ConPTY hosts now defer the erase-and-replay to an input checkpoint (`TUI.rebuildScrollbackIfDirty()`, wired into prompt submit) where the viewport is provably at the bottom. POSIX hosts keep the eager rebuild.
 - Fixed destructive Windows/ConPTY resize replays permanently dropping history above 512 KiB; large paints now retain every row and disable synchronized output so existing bounded writes remain responsive.
 - Fixed virtualized roots being mistaken for semantic frame shrink after native-scrollback compaction; the commit, viewport, and cursor ledgers now rebase the exact removed ranges before divergence auditing.
 - Fixed editor caret movement entering image or paste placeholders; keyboard left/right, word, and vertical movement now treat matched placeholders as atomic tokens.

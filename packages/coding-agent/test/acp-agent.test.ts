@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -46,6 +46,7 @@ import {
 	zPromptResponse,
 	zSessionNotification,
 } from "@oh-my-pi/pi-utils/acp";
+import { setLocale } from "../src/i18n";
 import { TOOL_NAME as DELAYED_MCP_TOOL_NAME } from "./fixtures/delayed-tool-mcp";
 
 /** Validates an ACP wire payload against the in-house protocol schemas. */
@@ -457,6 +458,10 @@ const cleanupRoots: string[] = [];
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
+beforeEach(() => {
+	setLocale("en");
+});
+
 afterEach(async () => {
 	if (originalAgentDir) {
 		setAgentDir(originalAgentDir);
@@ -464,6 +469,7 @@ afterEach(async () => {
 		setAgentDir(fallbackAgentDir);
 		delete process.env.PI_CODING_AGENT_DIR;
 	}
+	setLocale(null);
 	resetSettingsForTest();
 
 	for (const root of cleanupRoots.splice(0)) {

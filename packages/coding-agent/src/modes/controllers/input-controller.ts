@@ -677,7 +677,15 @@ export class InputController {
 			// turn and let the post-unwind drain deliver the agent-core queue.
 			if (!text && !hasPendingImages && this.ctx.session.isStreaming) {
 				if (this.ctx.session.queuedMessageCount > 0) {
-					const aborting = this.ctx.session.abort({ reason: USER_INTERRUPT_LABEL });
+					const aborting = this.ctx.session.abort({
+						reason: USER_INTERRUPT_LABEL,
+						// Carry the force-flush semantics explicitly: the queued
+						// messages were flushed into the next run, so the interrupted
+						// run's collapse span must survive until that continuation
+						// settles (the queue may already be drained when its stale
+						// agent_end is processed).
+						forceFlush: true,
+					});
 					await aborting;
 					this.ctx.updatePendingMessagesDisplay();
 					this.ctx.ui.requestRender();
@@ -908,6 +916,12 @@ export class InputController {
 			// Normal message submission
 			// First, move any pending bash components to chat
 			this.ctx.flushPendingBashComponents();
+			// A scrollback divergence may have deferred its erase-and-replay
+			// rebuild on ConPTY hosts (the reader could be scrolled into
+			// history when the divergence fired). This Enter is the input
+			// checkpoint that proves the host viewport is back at the bottom,
+			// so flush the pending rebuild before the new message paints.
+			this.ctx.ui.rebuildScrollbackIfDirty();
 
 			const displayText = this.ctx.session.previewPromptExpansion(text);
 			if (this.ctx.onInputCallback) {

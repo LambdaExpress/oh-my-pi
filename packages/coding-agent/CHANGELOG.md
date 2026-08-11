@@ -27,6 +27,7 @@
 - Added an opt-in `display.collapseCompletedRuns` TUI setting that keeps model loops and user adjustments live while running, then replaces them after normal completion with an English elapsed-time/text/tool-call summary that `Alt+O` toggles between collapsed and fully expanded views.
 - Added structured interactive interrupt diagnostics that preserve the exact terminal sequence and UI source through agent cancellation.
 - Added `images.visionApprovalTimeoutMs` setting (default 30s, `0` to disable) that times out the vision-model approval prompt and automatically denies the request, so images attached to text-only models fail closed instead of waiting indefinitely.
+- Added an "Approve and execute in goal mode" option to the plan-review overlay: it approves the plan in fresh context and starts goal mode with the plan as the objective, so the approved plan executes autonomously until verified complete; the option is disabled when goal mode is disabled in settings or a paused goal already exists.
 
 ### Changed
 
@@ -46,6 +47,18 @@
 - Changed mid-session `xd://` tool mounts to stop emitting a user-visible notice (`xdev: xd://: mounted …`), which flooded the status area when an MCP server mounted dozens of tools at once; the model-facing mount delta delivery is unchanged.
 
 ### Fixed
+
+- Fixed `display.collapseCompletedRuns` leaving the interrupted run permanently expanded when a queued message was force-flushed with Enter: the flush now carries explicit force-flush semantics from the input path, the interrupted run's span is parked (kept fully expanded) instead of destroyed when its stale `agent_end` arrives after the queue drained, and both the interrupted run and its continuation collapse atomically with their own summaries once the continuation settles with a natural final reply.
+- Fixed `tui.scrollbackRebuild` on Windows jumping the viewport to the top of the transcript when an answer finalized: ConPTY hosts now defer the scrollback erase-and-replay to the next prompt submission (`TUI.rebuildScrollbackIfDirty()`), when the host viewport is provably at the bottom, so the reader's scroll position is preserved and history still converges to the final content exactly once.
+- Fixed `read` rejecting image members inside ZIP archives with `Cannot read binary archive entry` instead of decoding them inline; archived PNG/JPEG/GIF/WebP members now produce image blocks (or `inspect_image` metadata notes when inspection is active), honoring the same size cap, auto-resize, and WebP-exclusion settings as plain image files.
+- Fixed archived document members (XLSX, PDF, and other markit-convertible extensions) losing their conversion-to-markdown path in the per-source read refactor, which also broke reading images embedded in archived PDFs (`archive.zip:report.pdf:image.png` handles and trailing-colon member listings).
+- Fixed cold-start LSP `references` returning a complete-looking but partial result set: project-aware servers now retry until two consecutive attempts agree on the same normalized location set, and empty `definition`/`type_definition`/`implementation` answers get one retry after the project finishes loading.
+- Fixed `projectLoaded` resolving only for the first `$/progress` loading cycle: the promise re-arms for each new cycle, so on-demand project loads and post-reload reloads are actually awaited before queries.
+- Fixed LSP client caching keying clients by `command:cwd` only, so two servers sharing one command binary with different args (e.g. a wrapper dispatching json-ls vs csharp-ls) shared a single client; clients are now keyed by the full server identity.
+- Fixed `csharp-ls` empty references results being reported as a bare `No references found`: csharp-ls loads MSBuild projects asynchronously and returns empty results for unindexed files, so the tool now surfaces an actionable hint instead of masking an indexing problem.
+- Fixed Python `eval` kernel cells hanging when user `subprocess` calls inherited the kernel's stdin control pipe on Windows; the runner now redirects fd 0 to DEVNULL while keeping the NDJSON channel on a private non-inheritable descriptor.
+- Fixed `tab.screenshot` on Browser Relay tabs failing with "The attached browser tab is not visible" even after `bringToFront`; user-driven (relay/connected) tabs no longer require visibility for CDP captures, while headless and self-launched browsers keep the strict gate.
+- Fixed `grep` treating a semicolon-delimited list of `ssh://` paths as one remote path; delimited ssh lists now split into per-file searches and merge results.
 
 - Fixed `write xd://<tool>` dispatches treating an outer tier approval as approval of the mounted tool's own prompt policy, which allowed `inspect_image` and similarly configured dynamic tools to run without their required confirmation.
 - Fixed text-only models receiving automatic vision-model descriptions without consent by requiring explicit approval for attachment fallback and every `inspect_image` call; headless, cancelled, and denied requests now fail closed.

@@ -345,7 +345,8 @@ function formatHudNoteMarker(count: number): string {
 type GoalSubcommand = "set" | "show" | "pause" | "resume" | "drop" | "budget";
 
 const GOAL_SUBCOMMANDS = new Set<GoalSubcommand>(["set", "show", "pause", "resume", "drop", "budget"]);
-const PLAN_KEEP_CONTEXT_OPTION_INDEX = 2;
+const PLAN_KEEP_CONTEXT_OPTION_INDEX = 3;
+const PLAN_GOAL_MODE_OPTION_INDEX = 1;
 const PLAN_KEEP_CONTEXT_DISABLE_THRESHOLD_PERCENT = 95;
 
 function parseGoalSubcommand(args: string): { sub: GoalSubcommand | undefined; rest: string } {
@@ -657,8 +658,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		const existing = this.#completedRunCollapses.get(session);
 		if (existing) {
 			if (
-				!existing.some(item =>
-					isSameTranscriptMessage(item.collapse.finalAssistantMessage, collapse.finalAssistantMessage),
+				!existing.some(
+					item =>
+						isSameTranscriptMessage(item.collapse.firstMessage, collapse.firstMessage) &&
+						isSameTranscriptMessage(item.collapse.initialUserMessage, collapse.initialUserMessage),
 				)
 			) {
 				existing.push({ collapse, expanded: false });
@@ -3301,6 +3304,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			preserveContext?: boolean;
 			compactBeforeExecute?: boolean;
 			executionModel?: ResolvedRoleModel;
+			enableGoalMode?: boolean;
 		},
 	): Promise<boolean> {
 		const previousTools = this.#planModePreviousTools ?? this.session.getEnabledToolNames();
@@ -3389,6 +3393,25 @@ export class InteractiveMode implements InteractiveModeContext {
 			await this.#applyDeferredPlanModelTransition(compactOutcome, options.executionModel);
 		} else {
 			await this.#applyPlanExecutionModel(options.executionModel);
+		}
+
+		// Approve-and-execute-in-goal-mode: start goal mode with the approved plan
+		// as the objective before the execution turn is dispatched, so the
+		// plan-approved prompt (and every goal continuation after it) carries the
+		// goal context. The objective points at the durable plan file — the plan
+		// reference itself is only injected once — so a continuation after context
+		// compaction can re-read the authoritative plan. The operator can manage
+		// or stop the goal afterwards with /goal; the goal tool is exposed to the
+		// agent so it can call `goal({op:"complete"})` when the plan is done.
+		if (options.enableGoalMode) {
+			await this.#enterGoalMode({
+				objective: t('Implement the approved plan "{title}" ({planFilePath}).', {
+					title: options.title,
+					planFilePath: options.planFilePath,
+				}),
+				silent: true,
+			});
+			this.showStatus(t("Plan approved; goal mode enabled."));
 		}
 
 		if (compactOutcome === "cancelled") {
@@ -4005,12 +4028,22 @@ export class InteractiveMode implements InteractiveModeContext {
 		const annotationStateKey = this.#resolvePlanFilePath(planFilePath);
 
 		const approveLabel = t("Approve and execute");
+		const goalApproveLabel = t("Approve and execute in goal mode");
 		const compactLabel = t("Approve and compact context");
 		const refineLabel = t("Refine plan");
+		// Goal-mode execution needs goal mode enabled in settings and no paused
+		// goal left behind — `createGoal` rejects a session that already owns a
+		// non-terminal goal, and approval must not silently drop the operator's
+		// paused goal. Disable (not hide) the option so the layout stays stable.
+		const goalModeAvailable =
+			this.session.settings.get("goal.enabled") !== false && this.#getPausedGoalState() === undefined;
+		const disabledIndices: number[] = [];
+		if (keepContextDisabled) disabledIndices.push(PLAN_KEEP_CONTEXT_OPTION_INDEX);
+		if (!goalModeAvailable) disabledIndices.push(PLAN_GOAL_MODE_OPTION_INDEX);
 		const choice = await this.showPlanReview(
 			planContent,
 			t("Plan mode - next step"),
-			[approveLabel, compactLabel, keepContextLabel, refineLabel],
+			[approveLabel, goalApproveLabel, compactLabel, keepContextLabel, refineLabel],
 			{
 				helpText,
 				onExternalEditor: () => void this.#openPlanInExternalEditor(planFilePath),
@@ -4026,7 +4059,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					if (state.annotations.length > 0) this.#planReviewAnnotationState.set(annotationStateKey, state);
 					else this.#planReviewAnnotationState.delete(annotationStateKey);
 				},
-				disabledIndices: keepContextDisabled ? [PLAN_KEEP_CONTEXT_OPTION_INDEX] : undefined,
+				disabledIndices: disabledIndices.length > 0 ? disabledIndices : undefined,
 			},
 			{ slider },
 		);
@@ -4035,7 +4068,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		};
 
-		if (choice === approveLabel || choice === compactLabel || choice === keepContextLabel) {
+		if (
+			choice === approveLabel ||
+			choice === goalApproveLabel ||
+			choice === compactLabel ||
+			choice === keepContextLabel
+		) {
 			try {
 				// Prefer in-overlay edits (already in memory) over a disk re-read. The
 				// overlay mirrors edits as they happen, and approval awaits one final
@@ -4080,9 +4118,10 @@ export class InteractiveMode implements InteractiveModeContext {
 				const executionDispatched = await this.#approvePlan(latestPlanContent, {
 					planFilePath,
 					title: details.title,
-					preserveContext: choice !== approveLabel,
+					preserveContext: choice !== approveLabel && choice !== goalApproveLabel,
 					compactBeforeExecute: choice === compactLabel,
 					executionModel,
+					enableGoalMode: choice === goalApproveLabel,
 				});
 				if (executionDispatched) this.#planReviewAnnotationState.delete(annotationStateKey);
 			} catch (error) {

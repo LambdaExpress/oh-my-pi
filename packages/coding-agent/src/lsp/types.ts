@@ -455,6 +455,13 @@ export interface LspClient {
 	projectLoaded: Promise<void>;
 	/** Call to signal that project loading has completed */
 	resolveProjectLoaded: () => void;
+	/**
+	 * Re-arm the project-loaded promise for a new loading cycle. Invoked by the
+	 * message reader when a $/progress "begin" arrives after the previous cycle
+	 * settled; a no-op while a cycle is still pending. Absent on hand-built
+	 * clients (tests), which never observe progress cycles.
+	 */
+	rearmProjectLoaded?: () => void;
 }
 
 // =============================================================================

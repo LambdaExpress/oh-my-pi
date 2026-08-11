@@ -5,6 +5,7 @@ import type { HookSelectorSlider } from "@oh-my-pi/pi-coding-agent/modes/compone
 import { PlanReviewOverlay } from "@oh-my-pi/pi-coding-agent/modes/components/plan-review-overlay";
 import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { setKeybindings } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../../../src/i18n";
 
 const UP = "\x1b[A";
 const DOWN = "\x1b[B";
@@ -37,11 +38,15 @@ describe("PlanReviewOverlay", () => {
 	beforeEach(() => {
 		setThemeInstance(darkTheme!);
 		setKeybindings(KeybindingsManager.inMemory({ "tui.select.cancel": "ctrl+g" }));
+		// Pin English so string assertions are deterministic on non-English
+		// (e.g. zh-CN) developer machines where display.language auto-detects.
+		setLocale("en");
 	});
 
 	afterEach(() => {
 		setKeybindings(KeybindingsManager.inMemory());
 		vi.restoreAllMocks();
+		setLocale(null);
 	});
 
 	it("renders the plan body, prompt, options and footer inside one outlined box", () => {

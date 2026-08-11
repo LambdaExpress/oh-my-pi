@@ -7,6 +7,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text, TruncatedText } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
+import { t } from "../../i18n";
 import {
 	type CustomMessage,
 	type FileMentionMessage,
@@ -29,8 +30,17 @@ export interface CompletedRunCollapse {
 	firstMessage: AgentMessage;
 	/** Initial user request that remains visible after collapse. */
 	initialUserMessage: Extract<AgentMessage, { role: "user" }>;
-	/** Naturally completed assistant answer that remains visible after collapse. */
-	finalAssistantMessage: AssistantAgentMessage;
+	/**
+	 * Naturally completed assistant answer that remains visible after collapse.
+	 * Absent when the run was interrupted (e.g. by a force-flushed follow-up)
+	 * and therefore has no natural final reply.
+	 */
+	finalAssistantMessage?: AssistantAgentMessage;
+	/**
+	 * Last message of an interrupted run (the abort boundary). Hidden together
+	 * with the rest of the span; required when `finalAssistantMessage` is absent.
+	 */
+	spanEndMessage?: AgentMessage;
 	/** Wall-clock time from the first agent_start through the settled agent_end. */
 	durationMs: number;
 }
@@ -92,16 +102,31 @@ export function collapseCompletedRuns(
 	if (collapses.length === 0) return { context: sessionContext, summaries: [] };
 
 	const source = sessionContext.messages;
-	const spans: Array<{ start: number; request: number; answer: number; durationMs: number }> = [];
+	const spans: Array<{
+		start: number;
+		request: number;
+		answer: number;
+		durationMs: number;
+		/** Whether the answer message itself is preserved (natural final reply). */
+		keepAnswer: boolean;
+	}> = [];
 	let searchFrom = 0;
 	for (const collapse of collapses) {
 		const start = findMessageIndex(source, collapse.firstMessage, searchFrom);
 		if (start < 0) continue;
 		const request = findMessageIndex(source, collapse.initialUserMessage, start);
 		if (request < 0) continue;
-		const answer = findMessageIndex(source, collapse.finalAssistantMessage, request);
+		const answerTarget = collapse.finalAssistantMessage ?? collapse.spanEndMessage;
+		if (!answerTarget) continue;
+		const answer = findMessageIndex(source, answerTarget, request);
 		if (answer < 0) continue;
-		spans.push({ start, request, answer, durationMs: collapse.durationMs });
+		spans.push({
+			start,
+			request,
+			answer,
+			durationMs: collapse.durationMs,
+			keepAnswer: Boolean(collapse.finalAssistantMessage),
+		});
 		searchFrom = answer + 1;
 	}
 	if (spans.length === 0) return { context: sessionContext, summaries: [] };
@@ -122,7 +147,7 @@ export function collapseCompletedRuns(
 		}
 		const requestMessage = source[span.request];
 		const finalMessage = source[span.answer];
-		if (requestMessage?.role !== "user" || finalMessage?.role !== "assistant") {
+		if (requestMessage?.role !== "user" || !finalMessage) {
 			sourceIndex = span.answer + 1;
 			continue;
 		}
@@ -139,13 +164,17 @@ export function collapseCompletedRuns(
 		}
 
 		push(requestMessage, span.request);
-		const textContent = finalMessage.content.filter(
-			content => content.type === "text" && canonicalizeMessage(content.text),
-		);
-		push(
-			textContent.length === finalMessage.content.length ? finalMessage : { ...finalMessage, content: textContent },
-			span.answer,
-		);
+		if (span.keepAnswer && finalMessage.role === "assistant") {
+			const textContent = finalMessage.content.filter(
+				content => content.type === "text" && canonicalizeMessage(content.text),
+			);
+			push(
+				textContent.length === finalMessage.content.length
+					? finalMessage
+					: { ...finalMessage, content: textContent },
+				span.answer,
+			);
+		}
 		summaries.push({ afterMessage: requestMessage, agentTextSegments, toolCalls, durationMs: span.durationMs });
 		sourceIndex = span.answer + 1;
 	}
@@ -162,12 +191,24 @@ export function collapseCompletedRuns(
 
 /** Render one static row describing the completed-run content hidden above it. */
 export function createCompletedRunSummary(summary: CompletedRunSummary, toggleKey: string | undefined): Component {
-	const textSegments = `${summary.agentTextSegments} agent text segment${summary.agentTextSegments === 1 ? "" : "s"}`;
-	const toolCalls = `${summary.toolCalls} tool call${summary.toolCalls === 1 ? "" : "s"}`;
-	const duration = `${formatDuration(summary.durationMs)} elapsed`;
+	const textSegments = t("{count} agent text segment{s}", {
+		count: summary.agentTextSegments,
+		s: summary.agentTextSegments === 1 ? "" : "s",
+	});
+	const toolCalls = t("{count} tool call{s}", {
+		count: summary.toolCalls,
+		s: summary.toolCalls === 1 ? "" : "s",
+	});
+	const duration = t("{time} elapsed", { time: formatDuration(summary.durationMs) });
 	const separator = ` ${theme.sep.dot.trim()} `;
-	const keyHint = toggleKey ? `${separator}${toggleKey} to expand` : "";
-	const text = `※ collapsed: ${textSegments}${separator}${toolCalls}${separator}${duration}${keyHint}`;
+	const keyHint = toggleKey ? `${separator}${t("{key} to expand", { key: toggleKey })}` : "";
+	const text = t("※ collapsed: {segments}{sep}{calls}{sep}{duration}{hint}", {
+		segments: textSegments,
+		sep: separator,
+		calls: toolCalls,
+		duration,
+		hint: keyHint,
+	});
 	return new TruncatedText(theme.fg("dim", theme.italic(text)), 1, 0);
 }
 

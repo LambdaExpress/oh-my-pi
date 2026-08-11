@@ -15,8 +15,8 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import type { TuiSlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
 import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
-import { setLocale } from "../src/i18n";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 /**
  * Prewalk: one-way switch from the starting model to a fast/cheap target

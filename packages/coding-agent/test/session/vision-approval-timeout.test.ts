@@ -18,6 +18,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../../src/i18n";
 
 // 1x1 transparent PNG.
 const TINY_PNG_BASE64 =
@@ -73,6 +74,7 @@ describe("vision approval timeout", () => {
 	}
 
 	beforeEach(async () => {
+		setLocale("en");
 		tempDir = path.join(os.tmpdir(), `pi-vision-approval-${Snowflake.next()}`);
 		await fs.mkdir(tempDir, { recursive: true });
 		authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
@@ -80,6 +82,7 @@ describe("vision approval timeout", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		vi.restoreAllMocks();
 		await session?.dispose();
 		await authStorage?.close();

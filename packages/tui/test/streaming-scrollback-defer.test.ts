@@ -1367,6 +1367,14 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 				tui.requestRender();
 				await settle(term);
 
+				// ConPTY hosts defer the divergence rebuild to an input
+				// checkpoint: the finalize itself must not erase scrollback,
+				// which would strand a scrolled reader's viewport at the top
+				// (issues #1635/#1746).
+				expect(eraseScrollbackCount(writes)).toBe(0);
+				tui.rebuildScrollbackIfDirty();
+				await settle(term);
+
 				const finalFrame = ["phase: done", ...unchangedTail];
 				const afterFinalize = tape(term);
 				expect(afterFinalize.slice(-finalFrame.length)).toEqual(finalFrame);
@@ -1449,6 +1457,11 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 				tui.requestRender();
 				await settle(term);
 
+				// Deferred: the finalize must not erase scrollback on ConPTY.
+				expect(eraseScrollbackCount(writes)).toBe(0);
+				tui.rebuildScrollbackIfDirty();
+				await settle(term);
+
 				const finalLiveBlock = finalFrame.slice(stableTop.length);
 				const afterFinalize = tape(term);
 				expect(afterFinalize.slice(0, stableTop.length)).toEqual(stableTop);
@@ -1529,6 +1542,8 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 				root.seam = undefined;
 				tui.requestRender();
 				await settle(term);
+				tui.rebuildScrollbackIfDirty();
+				await settle(term);
 
 				const afterFinalize = tape(term);
 				const finalBlockHits = contiguousAt(afterFinalize, finalBlock);
@@ -1585,6 +1600,10 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 				root.setLines(finalFrame);
 				root.seam = undefined;
 				tui.requestRender();
+				await settle(term);
+
+				expect(eraseScrollbackCount(writes)).toBe(0);
+				tui.rebuildScrollbackIfDirty();
 				await settle(term);
 
 				const afterFinalize = tape(term);

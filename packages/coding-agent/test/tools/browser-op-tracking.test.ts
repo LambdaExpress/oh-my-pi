@@ -71,7 +71,7 @@ describe("browser screenshot activation", () => {
 		expect(activations).toBe(0);
 	});
 
-	it("rejects a background user-driven target instead of capturing sibling pixels", async () => {
+	it("rejects a backgrounded target in strict mode instead of capturing sibling pixels", async () => {
 		const page = {
 			bringToFront: async () => undefined,
 			evaluate: async () => false,
@@ -80,5 +80,33 @@ describe("browser screenshot activation", () => {
 		await expect(preparePageForScreenshot(page as ScreenshotPage, undefined, false)).rejects.toThrow(
 			"The attached browser tab is not visible",
 		);
+	});
+
+	it("captures a backgrounded user-driven tab without raising it", async () => {
+		let activations = 0;
+		const page = {
+			bringToFront: async () => {
+				activations += 1;
+			},
+			evaluate: async () => false,
+		};
+
+		// activate=false + allowInvisible=true is the connected/relay tab shape: the
+		// document is hidden because the user is elsewhere, but CDP still captures the
+		// tab's own surface — no error, and no focus-stealing activation.
+		await expect(preparePageForScreenshot(page as ScreenshotPage, undefined, false, true)).resolves.toBeUndefined();
+
+		expect(activations).toBe(0);
+	});
+
+	it("never probes visibility for relaxed user-driven captures", async () => {
+		const page = {
+			bringToFront: async () => undefined,
+			evaluate: async () => {
+				throw new Error("visibility must not be queried");
+			},
+		};
+
+		await expect(preparePageForScreenshot(page as ScreenshotPage, undefined, false, true)).resolves.toBeUndefined();
 	});
 });

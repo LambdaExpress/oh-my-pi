@@ -125,6 +125,19 @@ interface ActiveCompletedRun {
 	gate?: CompletedRunGate;
 }
 
+/**
+ * A run interrupted by an Enter force-flush. Its span is parked (kept fully
+ * expanded) while the continuation runs; it is only committed as a collapse
+ * record together with the continuation's own span once the whole chain
+ * settles with a qualifying final reply.
+ */
+interface PendingCompletedRun {
+	span: ActiveCompletedRun;
+	/** Last message of the interrupted run (the abort boundary). */
+	endMessage?: AgentMessage;
+	endedAtMs: number;
+}
+
 export class EventController {
 	#lastReadGroup: ReadToolGroupComponent | undefined = undefined;
 	// Count of visible assistant content blocks (rendered non-empty text/thinking)
@@ -223,6 +236,11 @@ export class EventController {
 	#handlers: AgentSessionEventHandlers;
 	#terminalProgressActive = false;
 	#activeCompletedRun: ActiveCompletedRun | undefined;
+	// Runs interrupted by an Enter force-flush whose spans must stay fully
+	// expanded (and out of native scrollback) while the force-flushed
+	// continuation runs. Committed as collapse records together with the
+	// continuation's own span once the whole chain settles.
+	#pendingCompletedRuns: PendingCompletedRun[] = [];
 
 	get activeCompletedRunGate(): { component: Component; afterMessage: AgentMessage } | undefined {
 		const active = this.#activeCompletedRun;
@@ -338,6 +356,10 @@ export class EventController {
 	dispose(): void {
 		this.#activeCompletedRun?.gate?.finalize();
 		this.#activeCompletedRun = undefined;
+		for (const pending of this.#pendingCompletedRuns) {
+			pending.span.gate?.finalize();
+		}
+		this.#pendingCompletedRuns = [];
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
@@ -534,6 +556,10 @@ export class EventController {
 	}
 
 	subscribeToAgent(): void {
+		// Idempotent: InteractiveMode.init() subscribes here, and tests or SDK
+		// embeddings may subscribe before init runs (init then re-subscribes).
+		// A duplicate subscription would dispatch every agent event twice.
+		this.ctx.unsubscribe?.();
 		// Serialize non-update dispatch behind any in-flight handler run:
 		// AgentSession.#emit fires listeners fire-and-forget (it does not await
 		// listener promises), so without this a rapid stream tail
@@ -773,6 +799,39 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
+		// An Enter force-flush parks the interrupted run's span (kept fully
+		// expanded) and starts the continuation on a fresh span, so the final
+		// commit can produce one independent summary per run instead of merging
+		// A into B. Without this branch the continuation would inherit A's span
+		// via the lifecycleVersion bump below and the flush would collapse as a
+		// single merged run.
+		// The force-flush marker is consumed by the continuation's agent_start:
+		// it either parks the interrupted run's span (its own agent_end has not
+		// been processed yet and can lag behind) or confirms a span already
+		// parked by that agent_end. A lagging first agent_start of the
+		// interrupted run itself (no active span, nothing parked yet) must NOT
+		// consume the marker — its agent_end will park the span.
+		if (this.ctx.session.forceFlushPending) {
+			if (this.#activeCompletedRun?.gate && this.#activeCompletedRun.initialUserMessage) {
+				const parked = this.#activeCompletedRun;
+				this.#pendingCompletedRuns.push({
+					span: parked,
+					endMessage: parked.messages[parked.messages.length - 1],
+					endedAtMs: Date.now(),
+				});
+				this.#activeCompletedRun = undefined;
+				this.ctx.session.clearForceFlushPending();
+			} else if (this.#pendingCompletedRuns.length > 0) {
+				// The interrupted run's agent_end already parked its span; this
+				// agent_start is the continuation.
+				this.ctx.session.clearForceFlushPending();
+			}
+		} else if (this.#pendingCompletedRuns.length > 0) {
+			// No continuation follows the flush (the user abandoned the queued
+			// work via clearQueue/Alt+Up, or the drain declined to auto-resume):
+			// the parked spans must not leak into this unrelated new turn.
+			this.#discardPendingCompletedRuns();
+		}
 		if (!this.#activeCompletedRun && this.ctx.settings.get("display.collapseCompletedRuns")) {
 			this.#activeCompletedRun = { lifecycleVersion: 1, messages: [], startedAtMs: Date.now() };
 		} else if (this.#activeCompletedRun) {
@@ -1761,6 +1820,54 @@ export class EventController {
 		}
 	}
 	async #handleAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
+		// A force-flushed run's agent_end can arrive while the continuation is
+		// already streaming (its agent_start won the race). Backfill the parked
+		// span's end boundary from the full event message list (which includes
+		// the synthesized aborted assistant that never got a message_end) before
+		// the isStreaming guard below drops the event. This only touches the
+		// parked span's bookkeeping — never the active span or the UI.
+		if (this.#pendingCompletedRuns.length > 0) {
+			const matchingPending = this.#pendingCompletedRuns.find(
+				pending =>
+					pending.span.initialUserMessage &&
+					event.messages.some(message =>
+						isSameTranscriptMessage(message, pending.span.initialUserMessage!),
+					),
+			);
+			if (matchingPending) {
+				matchingPending.endMessage = event.messages[event.messages.length - 1];
+				matchingPending.endedAtMs = Date.now();
+				return;
+			}
+		}
+		// The interrupted run's own agent_end (before the continuation's
+		// agent_start) parks the span with the precise abort boundary — including
+		// the synthesized aborted assistant that never got a message_end. This
+		// must run before the isStreaming guard below: the force-flushed
+		// continuation starts immediately after the abort, so this stale
+		// agent_end typically arrives while the continuation is already streaming.
+		const flushInterruptedInitialUserMessage = this.#activeCompletedRun?.initialUserMessage;
+		if (
+			this.ctx.session.forceFlushPending &&
+			this.#activeCompletedRun?.gate &&
+			flushInterruptedInitialUserMessage &&
+			event.messages.some(message => isSameTranscriptMessage(message, flushInterruptedInitialUserMessage))
+		) {
+			const parked = this.#activeCompletedRun;
+			this.#pendingCompletedRuns.push({
+				span: parked,
+				endMessage: event.messages[event.messages.length - 1],
+				endedAtMs: Date.now(),
+			});
+			this.#activeCompletedRun = undefined;
+			// Only tear the interrupted turn down when the continuation has not
+			// started yet; otherwise the continuation owns the loader and the
+			// isStreaming guard below would have returned anyway.
+			if (!this.ctx.session.isStreaming) {
+				await this.#finishAgentEnd(event);
+			}
+			return;
+		}
 		// A superseded agent_end: the agent is already streaming a fresh turn, so
 		// this event belongs to a turn that has already been replaced. The session
 		// dispatches to listeners fire-and-forget across an async extension-emit hop
@@ -1806,6 +1913,19 @@ export class EventController {
 		if (activeRun && (this.#activeCompletedRun !== activeRun || activeRun.lifecycleVersion !== lifecycleVersion)) {
 			return;
 		}
+		// An Enter force-flush interrupted the current run: park its span (kept
+		// fully expanded, gate open) until the force-flushed continuation
+		// settles, then commit A and B atomically as separate collapse records.
+		if (this.ctx.session.forceFlushPending && activeRun?.gate && activeRun.initialUserMessage) {
+			this.#pendingCompletedRuns.push({
+				span: activeRun,
+				endMessage: event.messages[event.messages.length - 1],
+				endedAtMs: Date.now(),
+			});
+			this.#activeCompletedRun = undefined;
+			await this.#finishAgentEnd(event);
+			return;
+		}
 		// A user interrupt can settle before its queued correction emits the next
 		// agent_start. Keep the original span/gate so that continuation still collapses
 		// from the initial request; an interrupt with no queued user work finalizes below.
@@ -1815,7 +1935,24 @@ export class EventController {
 			this.ctx.session.queuedUserMessageCount > 0;
 		const collapse = continuesInterruptedRun ? undefined : this.#takeCompletedRunCollapse(finalAssistant);
 		await this.#finishAgentEnd(event);
-		if (!collapse) return;
+		if (!collapse) {
+			// The continuation did not produce a qualifying final reply: never
+			// commit a half-finished collapse. Discard the parked span(s) — their
+			// gates finalize so the interrupted content stays in the transcript.
+			this.#discardPendingCompletedRuns();
+			return;
+		}
+		// Commit the parked (force-flushed) runs first, then the completed run,
+		// in a single rebuild + reset so A and B collapse atomically with their
+		// own summaries.
+		for (const pending of this.#pendingCompletedRuns) {
+			const parkedCollapse = this.#buildPendingCollapse(pending);
+			if (parkedCollapse) {
+				this.ctx.recordCompletedRunCollapse(parkedCollapse);
+				pending.span.gate?.finalize();
+			}
+		}
+		this.#pendingCompletedRuns = [];
 		this.ctx.recordCompletedRunCollapse(collapse);
 		this.ctx.rebuildChatFromMessages();
 		// The run gate kept its intermediate rows out of native scrollback. Reset
@@ -1854,6 +1991,33 @@ export class EventController {
 			finalAssistantMessage: finalAssistant,
 			durationMs: Math.max(0, Date.now() - active.startedAtMs),
 		};
+	}
+
+	/**
+	 * Build the collapse record for a run that was interrupted by an Enter
+	 * force-flush. Such a run has no natural final reply; its span ends at the
+	 * abort boundary message, which the projection hides together with the span
+	 * (the summary row replaces the whole interrupted run).
+	 */
+	#buildPendingCollapse(pending: PendingCompletedRun): CompletedRunCollapse | undefined {
+		const { span, endMessage, endedAtMs } = pending;
+		if (!span.gate || !span.initialUserMessage || span.messages.length === 0 || !endMessage) {
+			return undefined;
+		}
+		return {
+			firstMessage: span.messages[0]!,
+			initialUserMessage: span.initialUserMessage,
+			spanEndMessage: endMessage,
+			durationMs: Math.max(0, endedAtMs - span.startedAtMs),
+		};
+	}
+
+	/** Abandon parked force-flush spans: finalize their gates and drop them. */
+	#discardPendingCompletedRuns(): void {
+		for (const pending of this.#pendingCompletedRuns) {
+			pending.span.gate?.finalize();
+		}
+		this.#pendingCompletedRuns = [];
 	}
 
 	async #finishAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {

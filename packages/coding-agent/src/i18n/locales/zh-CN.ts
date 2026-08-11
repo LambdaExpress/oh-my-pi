@@ -22,10 +22,12 @@ export const zhCN: Record<string, string> = {
 		"  /mcp remove <name> [--scope project|user]    移除 MCP 服务器（默认：project）",
 	"  /mcp resources        List available resources from connected servers":
 		"  /mcp resources        列出已连接服务器提供的可用资源",
-	"  /mcp smithery-login   Login to Smithery and cache API key": "  /mcp smithery-login    登录 Smithery 并缓存 API 密钥",
+	"  /mcp smithery-login   Login to Smithery and cache API key":
+		"  /mcp smithery-login    登录 Smithery 并缓存 API 密钥",
 	"  /mcp smithery-logout  Remove cached Smithery API key": "  /mcp smithery-logout   移除已缓存的 Smithery API 密钥",
 	"  /mcp test <name>      Test connection to an MCP server": "  /mcp test <name>       测试与 MCP 服务器的连接",
-	"  /mcp unauth <name>    Remove OAuth auth from an MCP server": "  /mcp unauth <name>     移除 MCP 服务器的 OAuth 授权",
+	"  /mcp unauth <name>    Remove OAuth auth from an MCP server":
+		"  /mcp unauth <name>     移除 MCP 服务器的 OAuth 授权",
 	"  /ssh help             Show this help message": "  /ssh help              显示此帮助信息",
 	"  /ssh list             List all configured SSH hosts": "  /ssh list              列出所有已配置的 SSH 主机",
 	"  /ssh remove <name> [--scope project|user]    Remove an SSH host (default: project)":
@@ -216,6 +218,7 @@ export const zhCN: Record<string, string> = {
 	"1": "1",
 	"1 KB": "1 KB",
 	"1 MB": "1 MB",
+	"1 attached image": "1 张附加图片",
 	"1 day ago": "1 天前",
 	"1 hour": "1 小时",
 	"1 hour ago": "1 小时前",
@@ -359,8 +362,7 @@ export const zhCN: Record<string, string> = {
 	"A Python execution is already running. Press Esc to cancel it first.":
 		"已有 Python 执行正在运行。请先按 Esc 取消。",
 	"A bash command is already running. Press Esc to cancel it first.": "已有 bash 命令正在运行。请先按 Esc 取消。",
-	"A saved Codex reset for {label} was already redeemed elsewhere.":
-		"为 {label} 保存的 Codex 重置已在他处兑换。",
+	"A saved Codex reset for {label} was already redeemed elsewhere.": "为 {label} 保存的 Codex 重置已在他处兑换。",
 	"AGENTS.md": "AGENTS.md",
 	AI: "AI",
 	"AI coding assistant": "AI 编程助手",
@@ -480,6 +482,7 @@ export const zhCN: Record<string, string> = {
 	"Allow the eval tool to dispatch Ruby cells to the persistent Ruby kernel":
 		"允许 eval 工具将 Ruby 单元分派到持久化 Ruby 内核",
 	"Allow the read tool to fetch and process URLs": "允许 read 工具获取并处理 URL",
+	"Allow vision model access?": "允许访问视觉模型？",
 	"Already at this point": "已经在此位置",
 	"Already compacted": "已压缩",
 	"Already in a collab session (/leave first)": "已在协作会话中（请先 /leave）",
@@ -530,6 +533,7 @@ export const zhCN: Record<string, string> = {
 	Approvals: "审批",
 	"Approve and compact context": "批准并压缩上下文",
 	"Approve and execute": "批准并执行",
+	"Approve and execute in goal mode": "批准并按目标模式执行",
 	"Approve and keep context": "批准并保留上下文",
 	"Approve and keep context (~{tokens} / {contextWindow})": "批准并保留上下文（~{tokens} / {contextWindow}）",
 	"Archive cold sessions": "归档冷会话",
@@ -547,7 +551,8 @@ export const zhCN: Record<string, string> = {
 	"Ask ({seconds}s)": "Ask（{seconds}秒）",
 	"Ask Notification": "Ask 通知",
 	"Ask Timeout": "Ask 超时",
-	"Ask an ephemeral side question using the current session context": "基于当前会话上下文，提出一个不打断主流程的临时问题",
+	"Ask an ephemeral side question using the current session context":
+		"基于当前会话上下文，提出一个不打断主流程的临时问题",
 	"Ask anything, edit files, run tools": "询问任何问题、编辑文件、运行工具",
 	"Ask the agent to describe the intent of each tool call before executing it":
 		"要求代理在执行每个工具调用前说明其意图",
@@ -586,7 +591,8 @@ export const zhCN: Record<string, string> = {
 	"Auto Thinking Model": "自动思考模型",
 	"Auto context-full maintenance": "自动完整上下文维护",
 	"Auto context-full maintenance cancelled": "自动完整上下文维护已取消",
-	"Auto context-full maintenance failed; continuing without maintenance": "自动完整上下文维护失败；继续运行而不进行维护",
+	"Auto context-full maintenance failed; continuing without maintenance":
+		"自动完整上下文维护失败；继续运行而不进行维护",
 	"Auto-Compact": "Auto-Compact",
 	"Auto-Learn": "自动学习",
 	"Auto-Learn (experimental)": "自动学习（实验性）",
@@ -711,14 +717,14 @@ export const zhCN: Record<string, string> = {
 	"Cache system prompt + tool specs and keep an append-only message log so provider prefix caches (DeepSeek, Xiaomi/SGLang, Anthropic) hit at maximum rate. Auto enables for known prefix-cache providers.":
 		"缓存系统提示词 + 工具规格，并维护只追加的消息日志，让提供商前缀缓存（DeepSeek、Xiaomi/SGLang、Anthropic）达到最高命中率。对已知支持前缀缓存的提供商自动启用。",
 	"Cancel a running native scan": "取消正在运行的原生扫描",
-	'Cancelled MCP test for "{name}"': '已取消对“{name}”的 MCP 测试',
+	'Cancelled MCP test for "{name}"': "已取消对“{name}”的 MCP 测试",
 	"Cancelled · Esc dismiss": "已取消 · Esc 关闭",
 	"Cancelled.": "已取消。",
 	"Candidate file path for scope/glob matching and AST language inference":
 		"用于 scope/glob 匹配和 AST 语言推断的候选文件路径",
 	"Cannot add a directory while streaming.": "流式传输期间无法添加目录。",
 	"Cannot branch /btw: {error}": "无法执行 /btw 分支：{error}",
-	'Cannot create "{name}": parent directory does not exist': '无法创建“{name}”：父目录不存在',
+	'Cannot create "{name}": parent directory does not exist': "无法创建“{name}”：父目录不存在",
 	"Cannot delete the session while streaming.": "流式传输期间无法删除会话。",
 	"Cannot move while streaming.": "流式传输期间无法移动。",
 	"Cannot pin an account while the session is streaming.": "会话流式传输期间无法固定账户。",
@@ -1303,7 +1309,7 @@ export const zhCN: Record<string, string> = {
 	"Error: @file arguments are not supported in RPC mode": "错误：RPC 模式下不支持 @file 参数",
 	'Error: Invalid recency "{recency}"': '错误：无效的 recency "{recency}"',
 	"Error: Query is required": "错误：必须提供查询",
-	'Error: Unknown provider "{provider}"': '错误：未知的提供商“{provider}”',
+	'Error: Unknown provider "{provider}"': "错误：未知的提供商“{provider}”",
 	"Error: command {cmd} not found": "错误：找不到命令 {cmd}",
 	"Error: shell console requires an interactive TTY.": "错误：shell 控制台需要交互式 TTY。",
 	"Error: unknown {word}: {flags}": "错误：未知的 {word}：{flags}",
@@ -1668,6 +1674,7 @@ export const zhCN: Record<string, string> = {
 		"在 {path} 未找到图像。通过 SSH 时，该路径指向你终端上的本地文件——请直接粘贴图像（剪贴板图像粘贴快捷键）将其发送。",
 	"Image paste is not supported in this prompt": "此提示不支持粘贴图像",
 	Images: "图像",
+	'Implement the approved plan "{title}" ({planFilePath}).': "按照已批准的计划“{title}”（{planFilePath}）实施。",
 	"Import SARIF or a Codex Security bundle": "导入 SARIF 或 Codex 安全包",
 	"Import a Claude Code session into OMP": "将 Claude Code 会话导入 OMP",
 	"Import a Codex session into OMP": "将 Codex 会话导入 OMP",
@@ -2199,22 +2206,22 @@ export const zhCN: Record<string, string> = {
 	"Next turn forced to use {tool}.": "下一轮将强制使用 {tool}。",
 	No: "否",
 	"No API key for {model}": "没有 {model} 的 API 密钥",
-	'No Codex account matches "{name}".': '没有与“{name}”匹配的 Codex 账户。',
+	'No Codex account matches "{name}".': "没有与“{name}”匹配的 Codex 账户。",
 	"No Codex accounts found. Use /login to add one.": "未找到 Codex 账户。使用 /login 添加一个。",
 	"No Codex accounts with saved resets": "没有已保存重置的 Codex 账户",
 	"No LSP servers": "没有 LSP 服务器",
 	"No MCP manager available.": "没有可用的 MCP 管理器。",
 	"No MCP servers configured.": "未配置 MCP 服务器。",
-	'No OAuth accounts found for provider "{provider}".': '未找到提供商“{provider}”的 OAuth 账户。',
+	'No OAuth accounts found for provider "{provider}".': "未找到提供商“{provider}”的 OAuth 账户。",
 	"No OAuth accounts resolved for provider {provider}": "未为提供商 {provider} 解析到 OAuth 账户",
 	"No OAuth login is waiting for a manual callback.": "没有正在等待手动回调的 OAuth 登录。",
 	"No OAuth providers available": "没有可用的 OAuth 提供商",
 	"No SSH hosts configured.": "未配置 SSH 主机。",
-	'No Smithery results found for "{keyword}".': '未找到“{keyword}”的 Smithery 结果。',
+	'No Smithery results found for "{keyword}".': "未找到“{keyword}”的 Smithery 结果。",
 	"No TTSR rules registered for this project.": "未为此项目注册 TTSR 规则。",
 	"No TTSR rules registered for this project. Add a `condition` or `astCondition` to a rule file, then re-run.":
 		"未为此项目注册 TTSR 规则。在规则文件中添加 `condition` 或 `astCondition`，然后重新运行。",
-	'No active credential found for provider "{provider}".': '未找到提供商“{provider}”的活动凭据。',
+	'No active credential found for provider "{provider}".': "未找到提供商“{provider}”的活动凭据。",
 	"No active goal to pause.": "没有可暂停的活动目标。",
 	"No active goal.": "没有活动目标。",
 	"No active model available for /btw.": "没有可用于 /btw 的活动模型。",
@@ -2236,14 +2243,14 @@ export const zhCN: Record<string, string> = {
 	"No code block to copy.": "没有可复制的代码块。",
 	"No command to copy.": "没有可复制的命令。",
 	'No credentials for provider "{provider}". Run `omp` and use /login, or set the provider API key.':
-		'没有提供商“{provider}”的凭据。运行 `omp` 并使用 /login，或设置提供商 API 密钥。',
+		"没有提供商“{provider}”的凭据。运行 `omp` 并使用 /login，或设置提供商 API 密钥。",
 	"No credentials found{scope}. Run `omp` and use /login to add accounts.":
 		"未找到凭据{scope}。运行 `omp` 并使用 /login 添加账户。",
 	"No editor configured. Set $VISUAL or $EDITOR environment variable.":
 		"未配置编辑器。设置 $VISUAL 或 $EDITOR 环境变量。",
 	"No entries found": "未找到条目",
 	"No entries in session": "会话中没有条目",
-	'No entries match search "{query}"': '没有与搜索“{query}”匹配的条目',
+	'No entries match search "{query}"': "没有与搜索“{query}”匹配的条目",
 	"No files found to scan in {path}": "在 {path} 中未找到可扫描的文件",
 	"No goal set.": "未设置目标。",
 	"No goal to drop.": "没有可放弃的目标。",
@@ -2289,7 +2296,7 @@ export const zhCN: Record<string, string> = {
 	"No models available. Set API keys in environment variables.": "没有可用模型。请在环境变量中设置 API 密钥。",
 	"No models available. Use --model to select a model or configure enabledModels/default model settings.":
 		"没有可用模型。请使用 --model 选择模型，或配置 enabledModels/default 模型设置。",
-	'No models matching "{pattern}"': '没有与“{pattern}”匹配的模型',
+	'No models matching "{pattern}"': "没有与“{pattern}”匹配的模型",
 	"No native tool_calling? Inference provider botches parsing them? `PI_DIALECT=glm|kimi|anthropic…` rolls it locally for them!":
 		"没有原生 tool_calling？推理提供商无法正确解析它们？`PI_DIALECT=glm|kimi|anthropic…` 可在本地为它们处理！",
 	"No nucleus filtering": "无核采样过滤",
@@ -2329,7 +2336,7 @@ export const zhCN: Record<string, string> = {
 		"没有为 {provider} 存储的 OAuth 账户。当前认证来自 {source}。",
 	"No stored OAuth accounts for {provider}. Use /login to add one.":
 		"没有为 {provider} 存储的 OAuth 账户。请使用 /login 添加一个。",
-	'No stored OAuth auth to remove for "{name}".': '没有为“{name}”存储的 OAuth 认证可移除。',
+	'No stored OAuth auth to remove for "{name}".': "没有为“{name}”存储的 OAuth 认证可移除。",
 	"No stored accounts to log out": "没有可退出登录的已存储账户",
 	"No stored provider credentials to log out": "没有可退出登录的已存储提供商凭据",
 	"No stored provider credentials to log out. Remove env or config auth at its source.":
@@ -2397,7 +2404,7 @@ export const zhCN: Record<string, string> = {
 	"OAuth configuration incomplete": "OAuth 配置不完整",
 	"OAuth detected": "检测到 OAuth",
 	"OAuth flow (web-based)": "OAuth 流程（基于 Web）",
-	'OAuth flow failed for "{name}": {error}': '“{name}”的 OAuth 流程失败：{error}',
+	'OAuth flow failed for "{name}": {error}': "“{name}”的 OAuth 流程失败：{error}",
 	"OAuth flow not available": "OAuth 流程不可用",
 	"OAuth flow timed out. Please try again.": "OAuth 流程超时。请重试。",
 	"OAuth login already in progress for {provider}. Complete or cancel it before starting MCP OAuth.":
@@ -2426,8 +2433,7 @@ export const zhCN: Record<string, string> = {
 		"关闭、本地摘要流水线、Mnemopi SQLite 或 Hindsight 远程记忆",
 	"Ollama Cloud Max Concurrency": "Ollama Cloud 最大并发数",
 	"Omit Thinking summaries": "省略思考摘要",
-	"Omit code blocks from thinking summaries and replace them with an ellipsis":
-		"从思考摘要中省略代码块，代之以省略号",
+	"Omit code blocks from thinking summaries and replace them with an ellipsis": "从思考摘要中省略代码块，代之以省略号",
 	"Omit the personality block entirely": "完全省略个性模块",
 	On: "开启",
 	"On-device neural TTS (Kokoro-82M); output is WAV/PCM16": "设备端神经 TTS（Kokoro-82M）；输出为 WAV/PCM16",
@@ -2571,6 +2577,7 @@ export const zhCN: Record<string, string> = {
 	Plan: "计划",
 	"Plan Mode": "计划模式",
 	"Plan Review": "计划审查",
+	"Plan approved; goal mode enabled.": "计划已批准；目标模式已启用。",
 	"Plan approved, but compaction was cancelled — execution not dispatched. Submit a turn to continue.":
 		"计划已批准，但压缩已取消 — 未派发执行。提交一轮以继续。",
 	"Plan file not found at {planFilePath}": "在 {planFilePath} 未找到计划文件",
@@ -2743,7 +2750,8 @@ export const zhCN: Record<string, string> = {
 	"Queued message with image for after compaction": "已排队一条带图像的消息，将在压缩后发送",
 	"Queued {count} messages for after compaction": "已排队 {count} 条消息，将在压缩后发送",
 	"Queued {count} messages for when the agent yields": "已排队 {count} 条消息，将在代理让出控制权时发送",
-	"Quick role switch — applies its model and thinking for this session": "快速角色切换 — 将角色的模型和思考应用于本次会话",
+	"Quick role switch — applies its model and thinking for this session":
+		"快速角色切换 — 将角色的模型和思考应用于本次会话",
 	"Quick-switch cycle cleared": "快速切换循环已清除",
 	"Quick-switch cycle: {cycle}": "快速切换循环：{cycle}",
 	"Quiet Startup": "静默启动",
@@ -3062,6 +3070,8 @@ export const zhCN: Record<string, string> = {
 	"Select {providerName} account to log out:": "选择要退出登录的 {providerName} 账户：",
 	"Selected {source} session is no longer available": "所选的 {source} 会话不再可用",
 	"Send one live benchmark request per OAuth account": "每个 OAuth 账户发送一个实时基准测试请求",
+	"Send {image} to {model} so the current text-only model can receive a description? Choose No to continue without image contents.":
+		"将 {image} 发送给 {model}，让当前仅支持文本的模型能够收到描述？选择“否”可不携带图片内容继续。",
 	"Sent first message; queued {count} for later yields": "已发送第一条消息；已排队 {count} 条供后续产出",
 	"Sent queued message": "已发送排队消息",
 	'Server "{name}" is already {state}.': '服务器 "{name}" 已处于 {state} 状态。',
@@ -3528,8 +3538,7 @@ export const zhCN: Record<string, string> = {
 	"Todo Auto-Clear Delay": "待办自动清除延迟",
 	"Todo Reminder Limit": "待办提醒上限",
 	"Todo Reminders": "待办提醒",
-	"Todo update failed. Progress may be stale until todo succeeds.":
-		"待办更新失败。在待办成功更新前，进度可能已过期。",
+	"Todo update failed. Progress may be stale until todo succeeds.": "待办更新失败。在待办成功更新前，进度可能已过期。",
 	"Todo update failed: {detail}": "待办更新失败：{detail}",
 	Todos: "待办事项",
 	"Todos updated from editor: {phases} phase(s), {tasks} task(s).":
@@ -3850,8 +3859,7 @@ export const zhCN: Record<string, string> = {
 	"Waiting for response…": "正在等待响应…",
 	"Warm, encouraging collaborator focused on momentum and morale": "温暖、鼓励型的协作者，专注于推进势头与士气",
 	"Warning: could not prune stale Bun cache entries: {error}": "警告：无法清理过期的 Bun 缓存条目：{error}",
-	"Warning: models.yml validation failed — custom providers disabled":
-		"警告：models.yml 校验失败——已禁用自定义提供商",
+	"Warning: models.yml validation failed — custom providers disabled": "警告：models.yml 校验失败——已禁用自定义提供商",
 	'Warning: no credentials for "{provider}"; benchmarking {alternative} instead. Pin "{original}" to force it.':
 		'警告："{provider}" 没有凭据；改为对 {alternative} 进行基准测试。固定 "{original}" 以强制使用它。',
 	"Warning: prewalk disabled — no API key for {model}": "警告：prewalk 已禁用——{model} 没有 API 密钥",
@@ -4428,6 +4436,8 @@ export const zhCN: Record<string, string> = {
 	"{command} is host-only during a collab session": "{command} 在协作会话期间仅限主机使用",
 	"{count} SSH transfer{s}": "{count} 个 SSH 传输",
 	"{count} active": "{count} 个活跃",
+	"{count} agent text segment{s}": "{count} 个代理文本片段",
+	"{count} attached images": "{count} 张附加图片",
 	"{count} block": "{count} 个块",
 	"{count} blocks": "{count} 个块",
 	"{count} cache": "{count} 个缓存",
@@ -4463,6 +4473,7 @@ export const zhCN: Record<string, string> = {
 	"{count} saved reset{s}": "{count} 个已保存重置",
 	"{count} second": "{count} 秒",
 	"{count} seconds": "{count} 秒",
+	"{count} tool call{s}": "{count} 个工具调用",
 	"{count} tool call{s} elided — no result on this branch": "{count} 个工具调用已省略 — 此分支无结果",
 	"{count} tool result": "{count} 个工具结果",
 	"{count} tool results": "{count} 个工具结果",
@@ -4477,6 +4488,7 @@ export const zhCN: Record<string, string> = {
 	"{header}: {pct}% used": "{header}: 已用 {pct}%",
 	"{key} (optional)": "{key}（可选）",
 	"{key} (required)": "{key}（必填）",
+	"{key} to expand": "按 {key} 展开",
 	"{label} in {duration}": "{duration} 后{label}",
 	"{label} is blocked by the Codex {windows} limit for about {duration}.":
 		"{label} 因 Codex {windows} 限制被阻止约 {duration}。",
@@ -4514,6 +4526,7 @@ export const zhCN: Record<string, string> = {
 	"{selectedCount}/{total} of {totalCount}": "{selectedCount}/{total}，共 {totalCount}",
 	"{selector}: model not found": "{selector}：未找到模型",
 	"{spoke} {meta}": "{spoke} {meta}",
+	"{time} elapsed": "耗时 {time}",
 	"{used} (no budget)": "{used}（无预算）",
 	"{used} / {budget} ({left} left)": "{used} / {budget}（剩余 {left}）",
 	"{used} used": "已使用 {used}",
@@ -4539,6 +4552,7 @@ export const zhCN: Record<string, string> = {
 	"… {count} more lines": "… 还有 {count} 行",
 	"… {count} more lines (ctrl+o to expand)": "… 还有 {count} 行（ctrl+o 展开）",
 	"… {count} more running — open Agent Hub for full list": "… 还有 {count} 个正在运行 — 打开 Agent Hub 查看完整列表",
+	"※ collapsed: {segments}{sep}{calls}{sep}{duration}{hint}": "※ 已折叠：{segments}{sep}{calls}{sep}{duration}{hint}",
 	"←/→ choose · Enter assign/clear · Esc cancel": "←/→ 选择 · Enter 分配/清除 · Esc 取消",
 	"←/→ save scope · Enter choose · Esc cancel": "←/→ 保存范围 · Enter 选择 · Esc 取消",
 	"←/→ thinking level · Enter apply · Esc keep": "←/→ 思考级别 · Enter 应用 · Esc 保留",
@@ -4556,8 +4570,7 @@ export const zhCN: Record<string, string> = {
 		"↑/↓ 行 · Enter 选择 · f 回退 · x 清除 · t 思考 · c 循环 · [/] 重新排序 · n 新建",
 	"↑/↓ rows · Enter replace · f add another · x remove · [/] reorder · ← providers":
 		"↑/↓ 行 · Enter 替换 · f 添加另一个 · x 移除 · [/] 重新排序 · ← 提供商",
-	"↑/↓ rows · Enter/f add fallback · x clear chain · ← providers":
-		"↑/↓ 行 · Enter/f 添加回退 · x 清除链 · ← 提供商",
+	"↑/↓ rows · Enter/f add fallback · x clear chain · ← providers": "↑/↓ 行 · Enter/f 添加回退 · x 清除链 · ← 提供商",
 	"↑/↓ select · enter confirm · esc skip · ctrl+c exit setup": "↑/↓ 选择 · enter 确认 · esc 跳过 · ctrl+c 退出设置",
 	"↑/↓ select · ↵ log out account · Esc cancel": "↑/↓ 选择 · ↵ 退出登录 · Esc 取消",
 	"↑/↓ select · ↵ spend a reset · Esc cancel": "↑/↓ 选择 · ↵ 消耗一次重置 · Esc 取消",

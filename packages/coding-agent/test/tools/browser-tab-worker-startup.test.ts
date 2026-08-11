@@ -263,3 +263,106 @@ describe("browser tab worker run interception cleanup", () => {
 		expect(calls).toEqual([true, false]);
 	});
 });
+
+describe("browser tab worker screenshot visibility gating", () => {
+	// 1x1 PNG (67 bytes) — valid input for the Bun.Image resize pipeline.
+	const TINY_PNG = Buffer.from(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+		"base64",
+	);
+
+	function makeScreenshotPage(calls: string[]) {
+		const target = {
+			_targetId: "target-screenshot",
+			page: async () => page,
+		};
+		const page = {
+			target: () => target,
+			url: () => "data:text/html,screenshot",
+			title: async () => "Screenshot fixture",
+			viewport: () => ({ width: 390, height: 844, deviceScaleFactor: 1 }),
+			bringToFront: async () => {
+				calls.push("bringToFront");
+			},
+			// The user is looking at another window: the adopted tab reports hidden.
+			evaluate: async () => {
+				calls.push("evaluate");
+				return false;
+			},
+			screenshot: async () => {
+				calls.push("screenshot");
+				return TINY_PNG;
+			},
+			isClosed: () => false,
+			on: () => {},
+			once: () => {},
+			off: () => {},
+			removeAllListeners: () => {},
+			mainFrame: () => undefined,
+			setRequestInterception: async () => {},
+		};
+		return page;
+	}
+
+	async function runScreenshot(
+		calls: string[],
+		extraInit: Record<string, unknown>,
+	): Promise<Extract<WorkerOutbound, { type: "result" }>> {
+		const page = makeScreenshotPage(calls);
+		const target = { _targetId: "target-screenshot", page: async () => page };
+		const browser = { targets: () => [target], connected: true, disconnect: () => {} };
+		const loadPuppeteer = async () => ({ connect: async () => browser });
+		const transport = new FakeWorkerTransport();
+		new WorkerCore(transport, false, loadPuppeteer as never);
+		transport.deliver({
+			type: "init",
+			payload: {
+				mode: "attach",
+				browserWSEndpoint: "ws://127.0.0.1/devtools/browser/test",
+				safeDir: "/tmp/omp-puppeteer",
+				targetId: "target-screenshot",
+				activateForScreenshot: false,
+				timeoutMs: 1_000,
+				...extraInit,
+			},
+		});
+		await transport.ready.promise;
+		calls.length = 0;
+		transport.deliver({
+			type: "run",
+			id: "run-screenshot",
+			name: "screenshot",
+			code: "const dest = await tab.screenshot({ silent: true }); return dest.length > 0;",
+			timeoutMs: 1_000,
+			session: { cwd: process.cwd() },
+		});
+		return await transport.result.promise;
+	}
+
+	it("captures a backgrounded relay/connected tab when userDriven", async () => {
+		const calls: string[] = [];
+		const result = await runScreenshot(calls, { userDriven: true });
+
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(result.payload.returnValue).toBe(true);
+		// Never raised (no focus theft) and never gated on document visibility.
+		expect(calls).not.toContain("bringToFront");
+		expect(calls).not.toContain("evaluate");
+		expect(calls).toContain("screenshot");
+	});
+
+	it("rejects a backgrounded tab when the supervisor kept strict visibility", async () => {
+		const calls: string[] = [];
+		const result = await runScreenshot(calls, {});
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error.message).toBe(
+				"The attached browser tab is not visible; switch to it before taking a screenshot",
+			);
+			expect(result.error.isToolError).toBe(true);
+		}
+		expect(calls).toContain("evaluate");
+		expect(calls).not.toContain("screenshot");
+	});
+});

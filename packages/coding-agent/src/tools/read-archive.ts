@@ -1,10 +1,15 @@
+import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { TextContent } from "@oh-my-pi/pi-ai";
+import { parseImageMetadata } from "@oh-my-pi/pi-utils";
 import type { ToolSession } from "../sdk";
 import { truncateHead } from "../session/streaming-output";
+import { loadImageBytesInput, MAX_IMAGE_INPUT_BYTES, webpExclusionForModel } from "../utils/image-loading";
+import { isInspectImageToolAvailable } from "../utils/inspect-image-mode";
+import { convertBufferWithMarkit } from "../utils/markit";
 import { type ArchiveReader, formatArchiveEntryLines, openArchive, parseArchivePathCandidates } from "../utils/zip";
 import { applyListLimit } from "./list-limit";
-import { resolveReadPath } from "./path-utils";
+import { formatPathRelativeToCwd, resolveReadPath } from "./path-utils";
 import type { ReadToolDetails } from "./read";
 import {
 	buildInMemoryMultiRangeResult,
@@ -13,16 +18,33 @@ import {
 	markMarkdownContentType,
 	prependSuffixResolutionNotice,
 } from "./read-format";
+import { buildReadImageContent } from "./read-image-content";
 import {
 	findSuffixMatchCached,
 	isNotFoundError,
 	isRemoteMountPath,
 	type SuffixMatchCache,
 } from "./read-path-resolution";
+import {
+	readArchivePdfImageMember,
+	rewriteArchivePdfImagePlaceholders,
+	splitArchivePdfImageMemberPath,
+} from "./read-pdf-images";
 import { isMultiRange, isRawSelector, type ParsedSelector, parseSel, selToOffsetLimit } from "./read-selector";
 import { formatBytes } from "./render-utils";
 import { ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
+
+// Document types convertible to markdown via markit's buffer converter inside
+// archives. Mirrors the file-path set (`CONVERTIBLE_EXTENSIONS` in markit.ts);
+// legacy binary formats (.doc/.ppt/.xls/.rtf) intentionally stay opaque.
+const ARCHIVE_CONVERTIBLE_EXTENSIONS: Record<string, true> = {
+	".pdf": true,
+	".docx": true,
+	".pptx": true,
+	".xlsx": true,
+	".epub": true,
+};
 
 interface ResolvedArchiveReadPath {
 	absolutePath: string;
@@ -123,6 +145,9 @@ export async function readArchive(
 	throwIfAborted(signal);
 	const archive = await openArchive(resolvedArchivePath.absolutePath);
 	throwIfAborted(signal);
+	const archiveDisplayPath =
+		resolvedArchivePath.suffixResolution?.to ??
+		formatPathRelativeToCwd(resolvedArchivePath.absolutePath, session.cwd);
 
 	const details: ReadToolDetails = markMarkdownContentType(
 		session,
@@ -137,6 +162,25 @@ export async function readArchive(
 	let sel = parsedSel;
 	let node = archive.getNode(archiveSubPath);
 	if (!node && archiveSubPath) {
+		// `archive.zip:report.pdf:p11-img0.png` / `archive.zip:report.pdf:`:
+		// the subPath is an archive PDF image handle, not a member name. The
+		// PDF member itself takes precedence for the handle prefix (getNode
+		// above), so this runs only for handles whose PDF member exists.
+		const pdfImageMemberPath = splitArchivePdfImageMemberPath(archive, archiveSubPath);
+		if (pdfImageMemberPath) {
+			const pdfEntry = await archive.readFile(pdfImageMemberPath.pdfMemberPath);
+			return readArchivePdfImageMember(
+				session,
+				resolvedArchivePath.absolutePath,
+				archiveDisplayPath,
+				pdfImageMemberPath.pdfMemberPath,
+				pdfEntry.bytes,
+				pdfImageMemberPath.member,
+				details,
+				signal,
+			);
+		}
+
 		// `archive.zip:500` / `archive.zip:raw`: the whole subPath is a
 		// selector on the archive root, not a member name. Member names take
 		// precedence (getNode above); fall back to root + selector.
@@ -168,6 +212,80 @@ export async function readArchive(
 	}
 
 	const entry = await archive.readFile(archiveSubPath);
+	const imageMetadata = parseImageMetadata(entry.bytes);
+	const mimeType = imageMetadata?.mimeType;
+	if (mimeType) {
+		const inspectImageActive = isInspectImageToolAvailable(session);
+		// Oversized members keep the status-quo opaque notice; the cheap
+		// inspect_image metadata note still applies when inspection is active.
+		if (inspectImageActive || entry.size <= MAX_IMAGE_INPUT_BYTES) {
+			const { content, sourcePath } = await buildReadImageContent({
+				inspectImageActive,
+				mimeType,
+				imageMetadata,
+				fileSize: entry.size,
+				inspectHintPath: readPath,
+				sourcePath: resolvedArchivePath.absolutePath,
+				load: () =>
+					loadImageBytesInput({
+						label: entry.path,
+						uri: resolvedArchivePath.absolutePath,
+						bytes: entry.bytes,
+						mimeType,
+						autoResize: session.settings.get("images.autoResize"),
+						maxBytes: MAX_IMAGE_INPUT_BYTES,
+						excludeWebP: webpExclusionForModel(session.getActiveModel?.()),
+						textNotePrefix: `Read image archive entry [${entry.path}]`,
+					}),
+			});
+			const firstText = content[0];
+			if (resolvedArchivePath.suffixResolution && firstText?.type === "text") {
+				content[0] = {
+					type: "text",
+					text: prependSuffixResolutionNotice(firstText.text, resolvedArchivePath.suffixResolution),
+				};
+			}
+			return toolResult<ReadToolDetails>(details).content(content).sourcePath(sourcePath).done();
+		}
+	}
+
+	const ext = path.extname(entry.path).toLowerCase();
+	if (ARCHIVE_CONVERTIBLE_EXTENSIONS[ext] === true) {
+		const result = await convertBufferWithMarkit(entry.bytes, ext, signal);
+		if (result.ok) {
+			const renderedContent =
+				ext === ".pdf"
+					? rewriteArchivePdfImagePlaceholders(result.content, archiveDisplayPath, entry.path)
+					: result.content;
+			const raw = isRawSelector(sel);
+			return isMultiRange(sel) && sel.kind === "lines"
+				? buildInMemoryMultiRangeResult(session, renderedContent, sel.ranges, {
+						details,
+						sourcePath: resolvedArchivePath.absolutePath,
+						entityLabel: "archive document",
+						raw,
+						immutable: true,
+					})
+				: buildInMemoryTextResult(
+						session,
+						renderedContent,
+						selToOffsetLimit(sel).offset,
+						selToOffsetLimit(sel).limit,
+						{
+							details,
+							sourcePath: resolvedArchivePath.absolutePath,
+							entityLabel: "archive document",
+							raw,
+							immutable: true,
+						},
+					);
+		}
+		return toolResult<ReadToolDetails>(details)
+			.text(`[Cannot read archive document '${entry.path}': ${result.error || "conversion failed"}]`)
+			.sourcePath(resolvedArchivePath.absolutePath)
+			.done();
+	}
+
 	const text = decodeUtf8Text(entry.bytes);
 	if (text === null) {
 		return toolResult<ReadToolDetails>(details)

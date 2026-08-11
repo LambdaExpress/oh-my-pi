@@ -1535,6 +1535,22 @@ describe("TUI terminal-state regressions", () => {
 	});
 
 	describe("scrollback integrity", () => {
+		// These tests pin the eager erase-and-replay divergence contract
+		// (ED3 exactly once, tape holds the final content exactly once). That
+		// contract is POSIX-only: ConPTY hosts defer the rebuild to an input
+		// checkpoint because their ED3 strands the reader's viewport at the
+		// buffer top (issues #1635/#1746). Run this group under the linux
+		// platform so it exercises the eager path regardless of the host the
+		// suite runs on; the deferred contract is covered by
+		// `scrollback-divergence-conpty.test.ts`.
+		const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
+		beforeEach(() => {
+			Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+		});
+		afterEach(() => {
+			if (PLATFORM_DESCRIPTOR) Object.defineProperty(process, "platform", PLATFORM_DESCRIPTOR);
+		});
+
 		it("does not probe native viewport state before appends can affect scrollback", async () => {
 			const term = new CountingViewportTerminal(32, 5);
 			const tui = new TUI(term);

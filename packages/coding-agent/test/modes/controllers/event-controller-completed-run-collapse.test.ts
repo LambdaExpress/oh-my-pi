@@ -4,7 +4,10 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
-import { collapseCompletedRuns } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
+import {
+	collapseCompletedRuns,
+	type CompletedRunCollapse,
+} from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
 import { Text } from "@oh-my-pi/pi-tui";
 
 const usage = {
@@ -39,7 +42,19 @@ function fixture(collapseCompletedRuns = true, waitForMessagePersistence = vi.fn
 	const resetDisplay = vi.fn();
 	const requestRender = vi.fn();
 	const chatContainer = new TranscriptContainer();
-	const session = { isStreaming: false, queuedUserMessageCount: 0, waitForMessagePersistence };
+	const session = {
+		isStreaming: false,
+		queuedUserMessageCount: 0,
+		waitForMessagePersistence,
+		// Set by the Enter force-flush path (input-controller) before aborting the
+		// active run; survives the queue drain so the interrupted run's span can be
+		// parked instead of destroyed when the queue is already empty by the time
+		// the stale agent_end reaches the controller.
+		forceFlushPending: false,
+		clearForceFlushPending: () => {
+			session.forceFlushPending = false;
+		},
+	};
 	const ctx = {
 		isInitialized: true,
 		settings,
@@ -262,6 +277,255 @@ describe("completed run collapse", () => {
 		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(
 			expect.objectContaining({ initialUserMessage: initial, finalAssistantMessage: final }),
 		);
+	});
+
+	it("parks the interrupted run and collapses A and B with separate summaries after the force-flushed continuation settles", async () => {
+		const { controller, session, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+		const initial = { role: "user", content: "build it", timestamp: 40 } as AgentMessage;
+		const loopA1 = assistant("working", "toolUse", 41);
+		loopA1.content.push({ type: "toolCall", id: "tc-a1", name: "read", arguments: {} });
+		const resultA1 = {
+			role: "toolResult",
+			toolCallId: "tc-a1",
+			toolName: "read",
+			content: [{ type: "text", text: "data" }],
+			timestamp: 42,
+		} as AgentMessage;
+		const loopA2 = assistant("", "toolUse", 43);
+		loopA2.content.push({ type: "toolCall", id: "tc-a2", name: "grep", arguments: {} });
+		const resultA2 = {
+			role: "toolResult",
+			toolCallId: "tc-a2",
+			toolName: "grep",
+			content: [{ type: "text", text: "hits" }],
+			timestamp: 44,
+		} as AgentMessage;
+		const interrupted = assistant("", "aborted", 45);
+		interrupted.errorMessage = "Interrupted by user";
+		const steer = { role: "user", content: "adjust it", steering: true, timestamp: 46 } as AgentMessage;
+		const loopB1 = assistant("working B", "toolUse", 47);
+		loopB1.content.push({ type: "toolCall", id: "tc-b1", name: "read", arguments: {} });
+		const resultB1 = {
+			role: "toolResult",
+			toolCallId: "tc-b1",
+			toolName: "read",
+			content: [{ type: "text", text: "data" }],
+			timestamp: 48,
+		} as AgentMessage;
+		const loopB2 = assistant("", "toolUse", 49);
+		loopB2.content.push({ type: "toolCall", id: "tc-b2", name: "edit", arguments: {} });
+		const resultB2 = {
+			role: "toolResult",
+			toolCallId: "tc-b2",
+			toolName: "edit",
+			content: [{ type: "text", text: "done" }],
+			timestamp: 50,
+		} as AgentMessage;
+		const finalB = assistant("done", "stop", 51);
+
+		// Run A starts and works through two text segments and two tool calls.
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: initial });
+		await controller.handleEvent({ type: "message_end", message: initial });
+		await controller.handleEvent({ type: "message_end", message: loopA1 });
+		await controller.handleEvent({ type: "message_end", message: resultA1 });
+		await controller.handleEvent({ type: "message_end", message: loopA2 });
+		await controller.handleEvent({ type: "message_end", message: resultA2 });
+
+		// The second message queued while A was streaming is force-flushed with
+		// Enter: the source marks the flush and the drain already consumed the
+		// queue by the time A's stale agent_end reaches the controller.
+		session.forceFlushPending = true;
+		now.mockReturnValue(160_000);
+		await controller.handleEvent({
+			type: "agent_end",
+			messages: [initial, loopA1, resultA1, loopA2, resultA2, interrupted],
+		});
+
+		// A must stay fully expanded while B runs: no collapse, no rebuild, no reset.
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
+		expect(resetDisplay).not.toHaveBeenCalled();
+
+		// Run B starts on the force-flushed steer and completes normally.
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: steer });
+		await controller.handleEvent({ type: "message_end", message: steer });
+		await controller.handleEvent({ type: "message_end", message: loopB1 });
+		await controller.handleEvent({ type: "message_end", message: resultB1 });
+		await controller.handleEvent({ type: "message_end", message: loopB2 });
+		await controller.handleEvent({ type: "message_end", message: resultB2 });
+		now.mockReturnValue(320_000);
+		await controller.handleEvent({ type: "message_end", message: finalB });
+		await controller.handleEvent({ type: "agent_end", messages: [steer, loopB1, resultB1, loopB2, resultB2, finalB] });
+
+		// Both runs collapse atomically: A first, B second, each with its own span.
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(2);
+		const aCollapse = recordCompletedRunCollapse.mock.calls[0]![0] as CompletedRunCollapse;
+		const bCollapse = recordCompletedRunCollapse.mock.calls[1]![0] as CompletedRunCollapse;
+		expect(aCollapse).toEqual(
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				spanEndMessage: interrupted,
+				durationMs: 159_000,
+			}),
+		);
+		expect(aCollapse.finalAssistantMessage).toBeUndefined();
+		expect(bCollapse).toEqual(
+			expect.objectContaining({
+				firstMessage: steer,
+				initialUserMessage: steer,
+				finalAssistantMessage: finalB,
+				durationMs: 160_000,
+			}),
+		);
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	it("parks the interrupted run when the abort lands in the turn gap without a synthesized aborted assistant", async () => {
+		const { controller, session, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+		const initial = { role: "user", content: "build it", timestamp: 60 } as AgentMessage;
+		const loopA = assistant("working", "toolUse", 61);
+		loopA.content.push({ type: "toolCall", id: "tc-a", name: "read", arguments: {} });
+		const resultA = {
+			role: "toolResult",
+			toolCallId: "tc-a",
+			toolName: "read",
+			content: [{ type: "text", text: "data" }],
+			timestamp: 62,
+		} as AgentMessage;
+		const steer = { role: "user", content: "adjust it", steering: true, timestamp: 63 } as AgentMessage;
+		const finalB = assistant("done", "stop", 64);
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: initial });
+		await controller.handleEvent({ type: "message_end", message: initial });
+		await controller.handleEvent({ type: "message_end", message: loopA });
+		await controller.handleEvent({ type: "message_end", message: resultA });
+
+		// Abort lands between tool turns: agent-loop emits no aborted assistant,
+		// so A's agent_end carries only the completed tool-use turn.
+		session.forceFlushPending = true;
+		now.mockReturnValue(120_000);
+		await controller.handleEvent({ type: "agent_end", messages: [initial, loopA, resultA] });
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: steer });
+		await controller.handleEvent({ type: "message_end", message: steer });
+		now.mockReturnValue(180_000);
+		await controller.handleEvent({ type: "message_end", message: finalB });
+		await controller.handleEvent({ type: "agent_end", messages: [steer, finalB] });
+
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(2);
+		const aCollapse = recordCompletedRunCollapse.mock.calls[0]![0] as CompletedRunCollapse;
+		const bCollapse = recordCompletedRunCollapse.mock.calls[1]![0] as CompletedRunCollapse;
+		expect(aCollapse.spanEndMessage).toBe(resultA);
+		expect(aCollapse.finalAssistantMessage).toBeUndefined();
+		expect(bCollapse.finalAssistantMessage).toBe(finalB);
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not commit a parked run when the continuation ends without a qualifying final reply", async () => {
+		const { controller, session, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
+		const initial = { role: "user", content: "build it", timestamp: 70 } as AgentMessage;
+		const loopA = assistant("working", "toolUse", 71);
+		loopA.content.push({ type: "toolCall", id: "tc-a", name: "read", arguments: {} });
+		const resultA = {
+			role: "toolResult",
+			toolCallId: "tc-a",
+			toolName: "read",
+			content: [{ type: "text", text: "data" }],
+			timestamp: 72,
+		} as AgentMessage;
+		const interrupted = assistant("", "aborted", 73);
+		interrupted.errorMessage = "Interrupted by user";
+		const steer = { role: "user", content: "adjust it", steering: true, timestamp: 74 } as AgentMessage;
+		const errored = assistant("", "error", 75);
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: initial });
+		await controller.handleEvent({ type: "message_end", message: initial });
+		await controller.handleEvent({ type: "message_end", message: loopA });
+		await controller.handleEvent({ type: "message_end", message: resultA });
+		session.forceFlushPending = true;
+		await controller.handleEvent({
+			type: "agent_end",
+			messages: [initial, loopA, resultA, interrupted],
+		});
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: steer });
+		await controller.handleEvent({ type: "message_end", message: steer });
+		await controller.handleEvent({ type: "message_end", message: errored });
+		await controller.handleEvent({ type: "agent_end", messages: [steer, errored] });
+
+		// Neither run collapses: the continuation failed, so the parked span is
+		// discarded and the transcript stays fully expanded.
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
+		expect(resetDisplay).not.toHaveBeenCalled();
+	});
+
+	it("keeps every parked span across repeated force-flushes and commits all three summaries at the end of the chain", async () => {
+		const { controller, session, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
+		const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+		const initial = { role: "user", content: "build it", timestamp: 80 } as AgentMessage;
+		const interruptedA = assistant("", "aborted", 81);
+		interruptedA.errorMessage = "Interrupted by user";
+		const steerB = { role: "user", content: "adjust it", steering: true, timestamp: 82 } as AgentMessage;
+		const interruptedB = assistant("", "aborted", 83);
+		interruptedB.errorMessage = "Interrupted by user";
+		const steerC = { role: "user", content: "one more adjustment", steering: true, timestamp: 84 } as AgentMessage;
+		const finalC = assistant("done", "stop", 85);
+
+		// A runs, then is force-flushed into B.
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: initial });
+		await controller.handleEvent({ type: "message_end", message: initial });
+		session.forceFlushPending = true;
+		now.mockReturnValue(10_000);
+		await controller.handleEvent({ type: "agent_end", messages: [initial, interruptedA] });
+
+		// B runs, then is force-flushed into C.
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: steerB });
+		await controller.handleEvent({ type: "message_end", message: steerB });
+		session.forceFlushPending = true;
+		now.mockReturnValue(20_000);
+		await controller.handleEvent({ type: "agent_end", messages: [steerB, interruptedB] });
+
+		// C completes normally.
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: steerC });
+		await controller.handleEvent({ type: "message_end", message: steerC });
+		now.mockReturnValue(30_000);
+		await controller.handleEvent({ type: "message_end", message: finalC });
+		await controller.handleEvent({ type: "agent_end", messages: [steerC, finalC] });
+
+		// All three runs collapse with their own summaries, committed atomically.
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(3);
+		const [aCollapse, bCollapse, cCollapse] = recordCompletedRunCollapse.mock.calls.map(
+			call => call[0] as CompletedRunCollapse,
+		);
+		expect(aCollapse).toEqual(
+			expect.objectContaining({ initialUserMessage: initial, spanEndMessage: interruptedA }),
+		);
+		expect(aCollapse.finalAssistantMessage).toBeUndefined();
+		expect(bCollapse).toEqual(
+			expect.objectContaining({ initialUserMessage: steerB, spanEndMessage: interruptedB }),
+		);
+		expect(bCollapse.finalAssistantMessage).toBeUndefined();
+		expect(cCollapse).toEqual(
+			expect.objectContaining({ initialUserMessage: steerC, finalAssistantMessage: finalC }),
+		);
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
 	});
 
 	it("retains the full run after an abort", async () => {

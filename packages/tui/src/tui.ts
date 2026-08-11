@@ -1083,6 +1083,11 @@ export class TUI extends Container {
 	#forceViewportRepaintOnNextRender = false;
 	#pendingDestructiveReplay = false;
 	#pendingDestructiveReplayReason: string | undefined;
+	// A scrollback divergence detected on a ConPTY host where ED3 would strand
+	// the reader's viewport at the buffer top (issues #1635/#1746). Consumed
+	// by the next destructive replay or by #rebuildScrollbackIfDirty at an
+	// input checkpoint, where the viewport is provably at the bottom.
+	#pendingScrollbackRebuild = false;
 	#hasEverRendered = false;
 	#scrollbackRebuildEnabled =
 		Bun.env.PI_TUI_SCROLLBACK_REBUILD === "1" || Bun.env.PI_TUI_SCROLLBACK_REBUILD === "true";
@@ -1982,6 +1987,20 @@ export class TUI extends Container {
 		this.#resizeEventPending = true;
 		this.#renderRequested = false;
 		this.#executeRender();
+	}
+
+	/**
+	 * Perform the erase-and-replay scrollback rebuild that a ConPTY-hosted
+	 * divergence deferred (see {@link #pendingScrollbackRebuild}). Safe only at
+	 * an input checkpoint — prompt submit, an explicit reset, or any other
+	 * moment where the host viewport is provably at the bottom — because ED3
+	 * strands a scrolled reader at the buffer top and no escape sequence can
+	 * re-anchor it. No-op when there is nothing pending.
+	 */
+	rebuildScrollbackIfDirty(): void {
+		if (this.#stopped || !this.#pendingScrollbackRebuild) return;
+		this.#pendingScrollbackRebuild = false;
+		this.resetDisplay();
 	}
 
 	/**
@@ -3123,13 +3142,23 @@ export class TUI extends Container {
 		// instead of recommitting the final form below the stale fragment
 		// (a visibly duplicated block). Multiplexer panes cannot ED3 safely
 		// and keep the repair-below fallback in the branches under this one.
-		const divergenceRebuild =
+		// ConPTY hosts (Windows Terminal and friends) also defer: their ED3
+		// unconditionally moves the host viewport to the top of the buffer
+		// (issues #1635/#1746), and a scrolled reader's viewport position is
+		// host state that no escape sequence can reset — only user input
+		// re-anchors it. The divergence is instead recorded for the next
+		// input checkpoint (see #rebuildScrollbackIfDirty), when the viewport
+		// is provably at the bottom.
+		const divergenceDetected =
 			this.#scrollbackRebuildEnabled &&
 			!firstPaint &&
 			!replaceRequested &&
 			!geometryChanged &&
-			!isMultiplexerSession() &&
 			(committedRowsResynced || frameLength <= this.#committedRows);
+		if (divergenceDetected && !isMultiplexerSession() && isConPTYHosted()) {
+			this.#pendingScrollbackRebuild = true;
+		}
+		const divergenceRebuild = divergenceDetected && !isMultiplexerSession() && !isConPTYHosted();
 		const fullPaint = firstPaint || replaceRequested || geometryRebuild || divergenceRebuild;
 		let windowTop: number;
 		let chunkTo: number;
@@ -3268,6 +3297,7 @@ export class TUI extends Container {
 			if (intent.clearScrollback) {
 				this.#pendingDestructiveReplay = false;
 				this.#pendingDestructiveReplayReason = undefined;
+				this.#pendingScrollbackRebuild = false;
 			}
 			this.#clearScrollbackOnNextRender = false;
 			this.#hasEverRendered = true;

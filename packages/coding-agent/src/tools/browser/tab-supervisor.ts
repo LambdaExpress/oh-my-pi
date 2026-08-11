@@ -82,6 +82,8 @@ export interface WorkerTabSession extends TabSessionBase<PuppeteerBrowserHandle>
 	backend: "worker";
 	worker: WorkerHandle;
 	activateForScreenshot: boolean;
+	/** True for browsers the user drives directly (connected CDP attach, relay). */
+	userDriven: boolean;
 }
 
 export interface CmuxTabSession extends TabSessionBase<CmuxBrowserHandle> {
@@ -335,6 +337,7 @@ async function acquireTabImpl(
 		dialogPolicy: opts.dialogs,
 		kindTag: browser.kind.kind,
 		activateForScreenshot: initPayload.mode === "headless" || initPayload.activateForScreenshot !== false,
+		userDriven: browser.kind.kind === "connected" || browser.kind.kind === "relay",
 		ownerSessionId: opts.ownerSessionId,
 	};
 	worker.onMessage(msg => handleTabMessage(tab, msg));
@@ -728,6 +731,7 @@ async function buildInitPayload(browser: PuppeteerBrowserHandle, opts: AcquireTa
 		waitUntil: opts.waitUntil,
 		timeoutMs: opts.timeoutMs,
 		activateForScreenshot,
+		userDriven,
 	};
 }
 
@@ -832,6 +836,7 @@ async function recycleTimedOutWorkerTab(tab: WorkerTabSession, timeoutMs: number
 		recover: true,
 		timeoutMs,
 		activateForScreenshot: tab.activateForScreenshot,
+		userDriven: tab.userDriven,
 	};
 	let worker = await spawnTabWorker();
 	try {

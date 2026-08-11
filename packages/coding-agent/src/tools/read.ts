@@ -44,13 +44,8 @@ import {
 import { buildLineEntriesWithBlockContext, type LineEntry, lineEntriesToPlainText } from "../utils/block-context";
 import { isCpuProfilePath, renderCpuProfile } from "../utils/cpuprofile";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
-import {
-	ImageInputTooLargeError,
-	loadImageInput,
-	MAX_IMAGE_INPUT_BYTES,
-	webpExclusionForModel,
-} from "../utils/image-loading";
-import { isInspectImageToolActive } from "../utils/inspect-image-mode";
+import { loadImageInput, MAX_IMAGE_INPUT_BYTES, webpExclusionForModel } from "../utils/image-loading";
+import { isInspectImageToolAvailable } from "../utils/inspect-image-mode";
 import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "../utils/markit";
 import { isSampleProfilePath, renderSampleProfile } from "../utils/sample-profile";
 
@@ -105,6 +100,7 @@ import {
 	READ_CHUNK_SIZE,
 	readHashlineHeaderContext,
 } from "./read-format";
+import { buildReadImageContent } from "./read-image-content";
 import {
 	findSuffixMatchCached,
 	isNotFoundError,
@@ -442,9 +438,6 @@ async function streamLinesFromFile(
 	};
 }
 
-// Maximum image file size (20MB) - larger images will be rejected to prevent OOM during serialization
-const MAX_IMAGE_SIZE = MAX_IMAGE_INPUT_BYTES;
-
 const readSchema = type({
 	path: type("string").describe(
 		"Local path, internal URI (e.g. memory://, skill://), or URL. Inline selectors are supported.",
@@ -549,11 +542,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	 * blocks instead of guidance pointing at an absent tool.
 	 */
 	#resolveInspectImageAvailability(): boolean {
-		const topLevel = this.session.isToolActive?.("inspect_image");
-		const xdev = this.session.xdev;
-		if (topLevel === undefined && xdev === undefined) return isInspectImageToolActive(this.session);
-		if (topLevel === true) return true;
-		return xdev?.mountedNames.has("inspect_image") === true && isInspectImageToolActive(this.session);
+		return isInspectImageToolAvailable(this.session);
 	}
 
 	/**
@@ -647,7 +636,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	}
 
 	/**
-
+	/**
 	 * Build content blocks for an on-disk image file: an `inspect_image`
 	 * metadata note when inspection is active, otherwise the decoded image
 	 * block. Shared by the plain-file read path and the `local://` image fast
@@ -662,62 +651,25 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		fileSize: number;
 	}): Promise<{ content: Array<TextContent | ImageContent>; details: ReadToolDetails; sourcePath: string }> {
 		const { readPath, absolutePath, mimeType, imageMetadata, fileSize } = options;
-		if (this.syncInspectImageState()) {
-			const outputMime = imageMetadata?.mimeType ?? mimeType;
-			const metadataLines = [
-				"Image metadata:",
-				`- MIME: ${outputMime}`,
-				`- Bytes: ${fileSize} (${formatBytes(fileSize)})`,
-				imageMetadata?.width !== undefined && imageMetadata.height !== undefined
-					? `- Dimensions: ${imageMetadata.width}x${imageMetadata.height}`
-					: "- Dimensions: unknown",
-				imageMetadata?.channels !== undefined ? `- Channels: ${imageMetadata.channels}` : "- Channels: unknown",
-				imageMetadata?.hasAlpha === true
-					? "- Alpha: yes"
-					: imageMetadata?.hasAlpha === false
-						? "- Alpha: no"
-						: "- Alpha: unknown",
-				"",
-				`If you want to analyze the image, call inspect_image with path="${formatPathRelativeToCwd(
-					absolutePath,
-					this.session.cwd,
-				)}" and a question describing what to inspect and the desired output format.`,
-			];
-			return { content: [{ type: "text", text: metadataLines.join("\n") }], details: {}, sourcePath: absolutePath };
-		}
-
-		if (fileSize > MAX_IMAGE_SIZE) {
-			const sizeStr = formatBytes(fileSize);
-			const maxStr = formatBytes(MAX_IMAGE_SIZE);
-			throw new ToolError(`Image file too large: ${sizeStr} exceeds ${maxStr} limit.`);
-		}
-		try {
-			const imageInput = await loadImageInput({
-				path: readPath,
-				cwd: this.session.cwd,
-				autoResize: this.#autoResizeImages,
-				maxBytes: MAX_IMAGE_SIZE,
-				resolvedPath: absolutePath,
-				detectedMimeType: mimeType,
-				excludeWebP: webpExclusionForModel(this.session.getActiveModel?.()),
-			});
-			if (!imageInput) {
-				throw new ToolError(`Read image file [${mimeType}] failed: unsupported image format.`);
-			}
-			return {
-				content: [
-					{ type: "text", text: imageInput.textNote },
-					{ type: "image", data: imageInput.data, mimeType: imageInput.mimeType },
-				],
-				details: {},
-				sourcePath: imageInput.resolvedPath,
-			};
-		} catch (error) {
-			if (error instanceof ImageInputTooLargeError) {
-				throw new ToolError(error.message);
-			}
-			throw error;
-		}
+		const { content, sourcePath } = await buildReadImageContent({
+			inspectImageActive: this.syncInspectImageState(),
+			mimeType,
+			imageMetadata,
+			fileSize,
+			inspectHintPath: formatPathRelativeToCwd(absolutePath, this.session.cwd),
+			sourcePath: absolutePath,
+			load: () =>
+				loadImageInput({
+					path: readPath,
+					cwd: this.session.cwd,
+					autoResize: this.#autoResizeImages,
+					maxBytes: MAX_IMAGE_INPUT_BYTES,
+					resolvedPath: absolutePath,
+					detectedMimeType: mimeType,
+					excludeWebP: webpExclusionForModel(this.session.getActiveModel?.()),
+				}),
+		});
+		return { content, details: {}, sourcePath };
 	}
 
 	#buildInMemoryTextResult(

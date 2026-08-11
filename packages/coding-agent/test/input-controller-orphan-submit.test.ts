@@ -107,7 +107,7 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 	});
 	const ctx = {
 		editor: editor as unknown as InteractiveModeContext["editor"],
-		ui: { requestRender } as unknown as InteractiveModeContext["ui"],
+		ui: { requestRender, rebuildScrollbackIfDirty: vi.fn() } as unknown as InteractiveModeContext["ui"],
 		session,
 		settings: session.settings,
 		sessionManager: { getSessionName: () => "named-session" } as InteractiveModeContext["sessionManager"],

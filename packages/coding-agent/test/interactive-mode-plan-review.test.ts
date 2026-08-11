@@ -26,6 +26,7 @@ import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import { type OverlayHandle, type OverlayOptions, setKeybindings, Text } from "@oh-my-pi/pi-tui";
 import { formatNumber, TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 /**
  * Matches the plan-approved synthetic-prompt dispatch. `#approvePlan` calls
@@ -110,6 +111,9 @@ describe("InteractiveMode plan review rendering", () => {
 
 	beforeEach(async () => {
 		resetSettingsForTest();
+		// Pin English so string assertions are deterministic on non-English
+		// (e.g. zh-CN) developer machines where display.language auto-detects.
+		setLocale("en");
 		tempDir = TempDir.createSync("@pi-plan-review-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
@@ -146,6 +150,7 @@ describe("InteractiveMode plan review rendering", () => {
 		currentTempDir?.removeSync();
 		setKeybindings(KeybindingsManager.inMemory());
 		resetSettingsForTest();
+		setLocale(null);
 	});
 
 	it("copies the resolved session title prompt into the interactive mode before any refresh", async () => {
@@ -765,6 +770,7 @@ describe("InteractiveMode plan review rendering", () => {
 			"Plan mode - next step",
 			[
 				"Approve and execute",
+				"Approve and execute in goal mode",
 				"Approve and compact context",
 				"Approve and keep context (~7.3k / 10k)",
 				"Refine plan",
@@ -772,6 +778,143 @@ describe("InteractiveMode plan review rendering", () => {
 			expect.any(Object),
 			expect.any(Object),
 		);
+	});
+
+	it("offers approve-and-execute-in-goal-mode as a distinct plan approval path", async () => {
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Plan\n\nDo the thing.");
+
+		mode.planModeEnabled = true;
+		mode.planModePlanFilePath = planFilePath;
+		vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
+		const selector = vi.spyOn(mode, "showPlanReview").mockResolvedValue("Refine plan");
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "PLAN",
+		});
+
+		expect(selector).toHaveBeenCalledWith(
+			expect.any(String),
+			"Plan mode - next step",
+			[
+				"Approve and execute",
+				"Approve and execute in goal mode",
+				"Approve and compact context",
+				"Approve and keep context",
+				"Refine plan",
+			],
+			expect.any(Object),
+			expect.any(Object),
+		);
+	});
+
+	it("disables approve-and-execute-in-goal-mode when goal mode is disabled in settings", async () => {
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Plan\n\nDo the thing.");
+
+		mode.planModeEnabled = true;
+		mode.planModePlanFilePath = planFilePath;
+		vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
+		session.settings.set("goal.enabled", false);
+		const selector = vi.spyOn(mode, "showPlanReview").mockResolvedValue("Refine plan");
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "PLAN",
+		});
+
+		expect(selector.mock.calls[0]?.[3]).toEqual(
+			expect.objectContaining({
+				disabledIndices: [1],
+			}),
+		);
+	});
+
+	it("disables approve-and-execute-in-goal-mode when a paused goal exists", async () => {
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Plan\n\nDo the thing.");
+
+		mode.planModeEnabled = true;
+		mode.planModePlanFilePath = planFilePath;
+		vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
+		// A paused goal can survive into plan mode (only an *enabled* goal blocks
+		// it); creating a second goal would throw, and approval must not silently
+		// drop the operator's paused goal — so the option is disabled instead.
+		session.setGoalModeState({
+			enabled: false,
+			mode: "active",
+			goal: {
+				id: "paused-goal",
+				objective: "old objective",
+				status: "paused",
+				tokensUsed: 0,
+				timeUsedSeconds: 0,
+				createdAt: 0,
+				updatedAt: 0,
+			},
+		});
+		const selector = vi.spyOn(mode, "showPlanReview").mockResolvedValue("Refine plan");
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "PLAN",
+		});
+
+		expect(selector.mock.calls[0]?.[3]).toEqual(
+			expect.objectContaining({
+				disabledIndices: [1],
+			}),
+		);
+	});
+
+	it("approve-and-execute-in-goal-mode clears context, starts goal mode, and dispatches execution", async () => {
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Plan\n\nRun autonomously.");
+
+		mode.planModeEnabled = true;
+		mode.planModePlanFilePath = planFilePath;
+		vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
+		const clear = vi.spyOn(mode, "handleClearCommand").mockResolvedValue();
+		const prompt = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+		vi.spyOn(mode, "showPlanReview").mockResolvedValue("Approve and execute in goal mode");
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "Run autonomously",
+		});
+
+		// Fresh-context execution, same as plain approve-and-execute.
+		expect(clear).toHaveBeenCalledTimes(1);
+		expect(prompt).toHaveBeenCalledWith(expect.any(String), { synthetic: true });
+		// Goal mode started with the approved plan as the objective, pointing at
+		// the durable plan file so autonomous continuations can re-read it.
+		expect(mode.goalModeEnabled).toBe(true);
+		const goalState = session.getGoalModeState();
+		expect(goalState?.enabled).toBe(true);
+		expect(goalState?.goal.status).toBe("active");
+		expect(goalState?.goal.objective).toContain("Run autonomously");
+		expect(goalState?.goal.objective).toContain(planFilePath);
 	});
 
 	it("ignores aborted zero-usage assistant messages when estimating context usage", () => {
@@ -839,6 +982,7 @@ describe("InteractiveMode plan review rendering", () => {
 		expect(contextSpy).toHaveBeenCalledWith({ contextWindow: executionModel.contextWindow });
 		expect(selector.mock.calls[0]?.[2]).toEqual([
 			"Approve and execute",
+			"Approve and execute in goal mode",
 			"Approve and compact context",
 			`Approve and keep context (~${compactNumber(tokens)} / ${compactNumber(executionModel.contextWindow)})`,
 			"Refine plan",
@@ -866,7 +1010,7 @@ describe("InteractiveMode plan review rendering", () => {
 
 		expect(selector.mock.calls[0]?.[3]).toEqual(
 			expect.objectContaining({
-				disabledIndices: [2],
+				disabledIndices: [3],
 			}),
 		);
 	});
@@ -920,7 +1064,13 @@ describe("InteractiveMode plan review rendering", () => {
 		expect(selector).toHaveBeenCalledWith(
 			expect.any(String),
 			"Plan mode - next step",
-			["Approve and execute", "Approve and compact context", "Approve and keep context", "Refine plan"],
+			[
+				"Approve and execute",
+				"Approve and execute in goal mode",
+				"Approve and compact context",
+				"Approve and keep context",
+				"Refine plan",
+			],
 			expect.any(Object),
 			expect.any(Object),
 		);
@@ -977,12 +1127,13 @@ describe("InteractiveMode plan review rendering", () => {
 		vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
 
 		// Drive the pick synchronously the moment the real overlay mounts: move to
-		// "Approve and keep context" (index 2) — that branch keeps the session, so no
+		// "Approve and keep context" (index 3) — that branch keeps the session, so no
 		// clear machinery runs — and confirm with Enter. `showOverlay` runs inside
 		// `showPlanReview`, so the pick resolves the picker promise without a wait.
 		const overlayHandle = { hide: vi.fn() };
 		vi.spyOn(mode.ui, "showOverlay").mockImplementation(component => {
 			const overlay = component as PlanReviewOverlay;
+			overlay.handleInput("j");
 			overlay.handleInput("j");
 			overlay.handleInput("j");
 			overlay.handleInput("\n");
@@ -1041,11 +1192,11 @@ describe("InteractiveMode plan review rendering", () => {
 		});
 		const followUpSpy = vi.spyOn(session, "followUp").mockResolvedValue();
 		// Simulate a re-stream landing during the overlay, then pick keep-context
-		// (options[2]) — that branch skips clear/compact so `this.session` stays the
+		// (options[3]) — that branch skips clear/compact so `this.session` stays the
 		// instance the spies are on.
 		vi.spyOn(mode, "showPlanReview").mockImplementation(async (_plan, _title, options) => {
 			streaming = true;
-			return options[2];
+			return options[3];
 		});
 		const errorSpy = vi.spyOn(mode, "showError");
 
@@ -1085,7 +1236,7 @@ describe("InteractiveMode plan review rendering", () => {
 			throw new AgentBusyError();
 		});
 		const followUpSpy = vi.spyOn(session, "followUp").mockResolvedValue();
-		vi.spyOn(mode, "showPlanReview").mockImplementation(async (_plan, _title, options) => options[2]);
+		vi.spyOn(mode, "showPlanReview").mockImplementation(async (_plan, _title, options) => options[3]);
 		const errorSpy = vi.spyOn(mode, "showError");
 
 		await mode.handlePlanApproval({ planFilePath, planExists: true, title: "PLAN" });
@@ -1147,7 +1298,7 @@ describe("InteractiveMode plan review rendering", () => {
 			mode.queueCompactionMessage("queued message", "followUp");
 			return undefined as never;
 		});
-		vi.spyOn(mode, "showPlanReview").mockImplementation(async (_plan, _title, options) => options[1]);
+		vi.spyOn(mode, "showPlanReview").mockImplementation(async (_plan, _title, options) => options[2]);
 		const errorSpy = vi.spyOn(mode, "showError");
 
 		await mode.handlePlanApproval({ planFilePath, planExists: true, title: "PLAN" });

@@ -77,6 +77,14 @@ export type WorkerInitPayload =
 			 * behaves as `true`; the supervisor clears it for browsers we did not launch.
 			 */
 			activateForScreenshot?: boolean;
+			/**
+			 * True when the tab lives in a browser the user drives directly (connected CDP
+			 * attach, browser relay). Its document can be legitimately backgrounded — the
+			 * user may be looking at another window — so `document.visibilityState` is not a
+			 * reliable screenshot gate and the worker must not raise the tab (that would
+			 * steal the user's focus). The supervisor sets this only for user-driven kinds.
+			 */
+			userDriven?: boolean;
 	  };
 
 export type ToolReply = { ok: true; value: unknown } | { ok: false; error: RunErrorPayload };

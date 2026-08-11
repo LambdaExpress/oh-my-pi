@@ -4,6 +4,7 @@ import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/mode
 import { sanitizeWithOptionalSixelPassthrough } from "@oh-my-pi/pi-coding-agent/utils/sixel";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const SIXEL = "\x1bPqabc\x1b\\";
 
@@ -13,11 +14,13 @@ describe("BashExecutionComponent SIXEL sanitization", () => {
 	const ui = { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI;
 
 	beforeEach(async () => {
+		setLocale("en");
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		setThemeInstance(theme!);
 	});
 	afterEach(() => {
+		setLocale(null);
 		if (originalForceProtocol === undefined) delete Bun.env.PI_FORCE_IMAGE_PROTOCOL;
 		else Bun.env.PI_FORCE_IMAGE_PROTOCOL = originalForceProtocol;
 		if (originalAllowPassthrough === undefined) delete Bun.env.PI_ALLOW_SIXEL_PASSTHROUGH;

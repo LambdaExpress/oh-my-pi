@@ -14,6 +14,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import type { TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../../src/i18n";
 
 function createToolSession(cwd: string, settings: Settings, overrides: Partial<ToolSession> = {}): ToolSession {
 	return {
@@ -161,6 +162,9 @@ describe("InteractiveMode goal mode integration", () => {
 	});
 
 	beforeEach(async () => {
+		// Pin English so string assertions are deterministic on non-English
+		// (e.g. zh-CN) developer machines where display.language auto-detects.
+		setLocale("en");
 		harness = await createGoalHarness(shared);
 	});
 
@@ -168,6 +172,7 @@ describe("InteractiveMode goal mode integration", () => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		await harness.cleanup();
+		setLocale(null);
 	});
 
 	it("toggles goal tool exposure when goal mode enters and pauses", async () => {
