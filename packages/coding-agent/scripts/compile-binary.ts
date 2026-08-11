@@ -1,4 +1,5 @@
 import { buildDocsIndexPayload } from "./generate-docs-index";
+import { generateCollabWebEmbed, resetCollabWebEmbed } from "./embed-collab-web";
 import { createLegacyPiVirtualModulePlugin } from "./legacy-pi-virtual-module";
 
 /** Native runtime dependencies always resolved from the on-demand install instead of embedded into compiled binaries. */
@@ -32,6 +33,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 		Bun.env.BUN_NO_CODESIGN_MACHO_BINARY = "1";
 	}
 	try {
+		await generateCollabWebEmbed(options.repoRoot);
 		const output = await Bun.build({
 			entrypoints: [options.entrypoint],
 			root: options.repoRoot,
@@ -60,6 +62,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			throw new Error(`Coding-agent binary bundle failed:\n${output.logs.map(log => log.message).join("\n")}`);
 		}
 	} finally {
+		await resetCollabWebEmbed(options.repoRoot);
 		if (previousCodesignSetting === undefined) {
 			delete Bun.env.BUN_NO_CODESIGN_MACHO_BINARY;
 		} else {

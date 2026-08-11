@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added `omp --mode core`, a headless session engine that prints a browser deep link and serves the collab web UI plus a local relay room on one loopback port; browsers and `omp join` TUI clients connect to the same running session as peers, and Ctrl+C exits cleanly with code 0. Compiled binaries embed the collab-web dist (base64-baked at build time, materialized to a content-hashed temp cache on first start) so `--mode core` works with no dist checkout or environment variable.
+
 - Added an i18n framework with natural-key `t()` translation (English source strings are the keys, zh-CN is a flat dictionary with English fallback) covering all user-visible terminal UI, dialogs, controllers, slash commands, CLI help and subcommand output, plus a new `display.language` setting ("English" or "简体中文") that applies immediately from the settings panel.
 - Added `scripts/extract-i18n-keys.ts` to extract translation keys from `t()` call sites, settings-schema metadata, command descriptions, and welcome tips, reporting missing and orphaned catalog entries.
 

@@ -122,7 +122,14 @@ export const STRING_SETTERS: Record<string, StringSetter> = {
 		result.addDir = [...(result.addDir ?? []), value];
 	},
 	"--mode": (result, value) => {
-		if (value === "text" || value === "json" || value === "rpc" || value === "acp" || value === "rpc-ui") {
+		if (
+			value === "text" ||
+			value === "json" ||
+			value === "rpc" ||
+			value === "acp" ||
+			value === "rpc-ui" ||
+			value === "core"
+		) {
 			result.mode = value;
 		}
 	},

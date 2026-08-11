@@ -106,6 +106,11 @@ type RunRpcMode = (
 	eventBus?: EventBus,
 	input?: ReadableStream<Uint8Array>,
 ) => Promise<never>;
+type RunCoreMode = (
+	session: AgentSession,
+	eventBus?: EventBus,
+	options?: { openBrowser?: boolean },
+) => Promise<never>;
 
 export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string): void {
 	(parsedArgs.mode === "json" ? process.stderr : process.stdout).write(text);
@@ -1342,10 +1347,16 @@ export async function runRootCommand(
 	} else if (parsedArgs.mode === "acp") {
 		applyAcpDefaultSettingOverrides(settingsInstance);
 	}
-	if (parsedArgs.noPty || parsedArgs.mode === "rpc-ui") {
+	if (parsedArgs.noPty || parsedArgs.mode === "rpc-ui" || parsedArgs.mode === "core") {
 		Bun.env.PI_NO_PTY = "1";
 	}
-	if (parsedArgs.noTitle || parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui" || parsedArgs.mode === "acp") {
+	if (
+		parsedArgs.noTitle ||
+		parsedArgs.mode === "rpc" ||
+		parsedArgs.mode === "rpc-ui" ||
+		parsedArgs.mode === "acp" ||
+		parsedArgs.mode === "core"
+	) {
 		Bun.env.PI_NO_TITLE = "1";
 	}
 
@@ -1789,6 +1800,11 @@ export async function runRootCommand(
 			const runRpcMode: RunRpcMode = (await import("./modes/rpc/rpc-mode")).runRpcMode;
 			stopStartupWatchdog();
 			await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, eventBus, rpcInput);
+		} else if (mode === "core") {
+			// Headless engine: browser/TUI peers connect through the local server.
+			const runCoreMode: RunCoreMode = (await import("./modes/core-mode")).runCoreMode;
+			stopStartupWatchdog();
+			await runCoreMode(session, eventBus, { openBrowser: !parsedArgs.noOpen });
 		} else if (isInteractive) {
 			const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
 			const startupChangelog = await startupChangelogPromise;
