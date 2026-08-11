@@ -54,6 +54,9 @@ function makeHostContext(): HostHarness {
 			sessionName: "test",
 			model: undefined,
 			thinkingLevel: undefined,
+			// host.ts scopes agent snapshots/control to `getAgentScopeId()`;
+			// the harness session is the "sess-1" tree.
+			getAgentScopeId: () => "sess-1",
 			subscribe: () => () => {},
 			emitNotice: () => {},
 			promptCustomMessage: (message: { details?: { from?: string } }) => {
@@ -232,6 +235,9 @@ describe("collab read-only links", () => {
 			id,
 			displayName: "remote kill",
 			kind: "sub",
+			// Same tree as the harness session: the scope gate in host.ts
+			// rejects agent-cmd for refs registered under another scope.
+			scopeId: "sess-1",
 			session,
 			sessionFile: "/tmp/Remote-Killed-Sub.jsonl",
 			status: "running",

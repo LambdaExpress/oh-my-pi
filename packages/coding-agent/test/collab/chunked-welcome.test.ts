@@ -69,6 +69,8 @@ function makeHostContext(snapshot: SizedSnapshot): InteractiveModeContext {
 			sessionName: "large",
 			model: undefined,
 			thinkingLevel: undefined,
+			// host.ts scopes agent snapshots to `getAgentScopeId()`.
+			getAgentScopeId: () => snapshot.header.id,
 			subscribe: () => () => {},
 			emitNotice: () => {},
 			promptCustomMessage: () => Promise.resolve(),

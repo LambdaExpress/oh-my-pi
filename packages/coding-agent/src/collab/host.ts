@@ -11,7 +11,7 @@
 
 import { timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs/promises";
-import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { ImageContent, Model, TextContent } from "@oh-my-pi/pi-ai";
 import { logger } from "@oh-my-pi/pi-utils";
 import type {
 	BusChannel,
@@ -19,6 +19,7 @@ import type {
 	CollabUiRequestDraft,
 	CollabUiResponseValue,
 	AgentEvent as WireAgentEvent,
+	WireModel,
 	SessionEntry as WireSessionEntry,
 } from "@oh-my-pi/pi-wire";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
@@ -100,6 +101,12 @@ function isWireAgentEvent(event: AgentSessionEvent): event is AgentSessionEvent 
 export function isWireSessionEntry(entry: StoredSessionEntry): entry is StoredSessionEntry & WireSessionEntry {
 	return entry.type in WIRE_SESSION_ENTRY_TYPES;
 }
+
+/** Wire-shaped descriptor for a session model (id/name/provider/contextWindow). */
+function toWireModel(m: Model): WireModel {
+	return { id: m.id, name: m.name, provider: m.provider, contextWindow: m.contextWindow ?? null };
+}
+
 const CONNECT_TIMEOUT_MS = 15_000;
 /** Max bytes served per fetch-transcript reply (guest re-requests from `newSize`). */
 export const TRANSCRIPT_READ_CAP = 4 * 1024 * 1024;
@@ -350,6 +357,12 @@ export class CollabHost {
 			case "fetch-transcript":
 				void this.#handleFetchTranscript(frame.reqId, frame.agentId, frame.fromByte, fromPeer);
 				break;
+			case "model-list":
+				void this.#handleModelList(fromPeer);
+				break;
+			case "model-change":
+				void this.#handleModelChange(frame.provider, frame.id, fromPeer);
+				break;
 			default:
 				logger.debug("collab host ignoring unexpected frame", { type: frame.t, fromPeer });
 		}
@@ -511,6 +524,43 @@ export class CollabHost {
 			.catch(err => logger.warn("collab guest abort failed", { error: String(err) }));
 	}
 
+	/** Targeted reply to `model-list`: current available models after background discovery settles. */
+	async #handleModelList(fromPeer: number): Promise<void> {
+		await this.#ctx.session.modelRegistry.awaitBackgroundRefresh();
+		const models = this.#ctx.session.getAvailableModels().map(toWireModel);
+		this.#socket?.send({ t: "model-list", models }, fromPeer);
+	}
+
+	/**
+	 * Switch the session model. Mirrors the RPC `set_model` semantics: the
+	 * model must exist in the current catalog, with one background-discovery
+	 * refresh allowed for cold-start providers. Success is not answered with a
+	 * dedicated frame — `model_changed` is in {@link STATE_TRIGGER_EVENTS}, so
+	 * the regular debounced state broadcast carries the new model to every
+	 * guest.
+	 */
+	async #handleModelChange(provider: string, id: string, fromPeer: number): Promise<void> {
+		if (!this.#peers.get(fromPeer)?.canWrite) {
+			this.#rejectReadOnly("changing the model", fromPeer);
+			return;
+		}
+		let model = this.#ctx.session.getAvailableModels().find(m => m.provider === provider && m.id === id);
+		if (!model) {
+			await this.#ctx.session.modelRegistry.awaitBackgroundRefresh();
+			model = this.#ctx.session.getAvailableModels().find(m => m.provider === provider && m.id === id);
+		}
+		if (!model) {
+			this.#socket?.send({ t: "error", message: `Model not found: ${provider}/${id}` }, fromPeer);
+			return;
+		}
+		try {
+			await this.#ctx.session.setModel(model);
+		} catch (err) {
+			logger.warn("collab guest model change failed", { provider, id, error: String(err) });
+			this.#socket?.send({ t: "error", message: String(err) }, fromPeer);
+		}
+	}
+
 	#handlePeerLeft(peer: number): void {
 		const name = this.#peers.get(peer)?.name;
 		this.#peers.delete(peer);
@@ -562,6 +612,14 @@ export class CollabHost {
 				// guests (the wire AgentSnapshot kind has no `advisor`, and guests must not
 				// be able to chat/kill/revive them).
 				.filter((ref): ref is AgentRef & { kind: "main" | "sub" } => ref.kind !== "advisor")
+				// Multi-session core mode registers every session's agents in the same
+				// process-wide AgentRegistry; each CollabHost must only mirror its own
+				// session's tree. Scope key: AgentRef.scopeId is set to
+				// `options.agentScopeId ?? sessionManager.getSessionId()` at registration
+				// (sdk.ts), AgentSession.getAgentScopeId() returns that same value, and
+				// subagents inherit it via executor's agentScopeId — so equality with the
+				// host session's scope id selects exactly this session's agents.
+				.filter(ref => ref.scopeId === this.#ctx.session.getAgentScopeId())
 				.map(ref => ({
 					id: ref.id,
 					displayName: ref.displayName,
@@ -594,6 +652,15 @@ export class CollabHost {
 			this.#socket?.send({ t: "error", message: `agent ${agentId}: advisor transcripts are read-only` }, fromPeer);
 			return;
 		}
+		// Multi-session scope gate: agents registered under another session's scope
+		// must not be controllable from here (scope key as in #snapshotAgents).
+		// Unknown ids are intentionally left alone so the ensureLive path below
+		// reports the canonical error for them.
+		const ref = AgentRegistry.global().get(agentId);
+		if (ref && ref.scopeId !== this.#ctx.session.getAgentScopeId()) {
+			this.#socket?.send({ t: "error", message: "agent not in this session" }, fromPeer);
+			return;
+		}
 		const fail = (err: unknown) => {
 			logger.warn("collab agent-cmd failed", { cmd, agentId, error: String(err) });
 			this.#socket?.send({ t: "error", message: `agent ${agentId}: ${String(err)}` }, fromPeer);
@@ -614,7 +681,6 @@ export class CollabHost {
 			}
 			case "kill": {
 				const kill = async () => {
-					const ref = AgentRegistry.global().get(agentId);
 					if (!ref) return;
 					if (ref.status === "running" && ref.session) {
 						await ref.session.abort({ reason: USER_INTERRUPT_LABEL });
@@ -634,7 +700,15 @@ export class CollabHost {
 	async #handleFetchTranscript(reqId: number, agentId: string, fromByte: number, fromPeer: number): Promise<void> {
 		const reply = (text: string, newSize: number, error?: string) =>
 			this.#socket?.send({ t: "transcript", reqId, text, newSize, error }, fromPeer);
-		const file = AgentRegistry.global().get(agentId)?.sessionFile;
+		// Multi-session scope gate: transcripts are only readable for this session's
+		// own agent tree (scope key as in #snapshotAgents); out-of-scope ids are
+		// reported exactly like unknown ones so no existence is leaked.
+		const ref = AgentRegistry.global().get(agentId);
+		if (ref && ref.scopeId !== this.#ctx.session.getAgentScopeId()) {
+			reply("", 0, "no transcript available");
+			return;
+		}
+		const file = ref?.sessionFile;
 		if (!file) {
 			reply("", fromByte, "no transcript available");
 			return;

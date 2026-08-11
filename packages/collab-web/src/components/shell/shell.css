@@ -58,6 +58,323 @@
 	display: none;
 }
 
+/* ---- control mode: session sidebar ---- */
+.sh-control {
+	display: flex;
+	height: var(--viewport-height, 100%);
+	min-height: 0;
+}
+
+.sh-sidebar {
+	display: flex;
+	flex-direction: column;
+	width: 260px;
+	flex: none;
+	min-height: 0;
+	overflow-y: auto;
+	border-right: 1px solid var(--border);
+	background: var(--bg);
+}
+
+.sh-sidebar-backdrop {
+	display: none;
+}
+
+.sh-control-main {
+	flex: 1;
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.sh-control-toolbar {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 10px;
+	border-bottom: 1px solid var(--border);
+	flex: none;
+}
+
+.sh-control-room {
+	flex: 1;
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--fg-faint);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sh-sidebar-toggle {
+	display: none;
+}
+
+.sh-control-view {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+/* The nested Session app frame fills the right column. */
+.sh-control-view > .sh-app {
+	height: 100%;
+	min-height: 0;
+}
+
+.sh-header-back {
+	align-self: center;
+}
+
+/* ---- sessions panel ---- */
+.sh-sessions {
+	display: flex;
+	flex-direction: column;
+	height: 100%;
+	min-height: 0;
+}
+
+.sh-sessions-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 10px 12px 8px;
+	border-bottom: 1px solid var(--border);
+	flex: none;
+}
+
+.sh-sessions-title {
+	flex: 1;
+	font-size: 12px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--fg-muted);
+}
+
+.sh-sessions-dot {
+	width: 8px;
+	height: 8px;
+	border-radius: 50%;
+	background: var(--fg-faint);
+	flex: none;
+}
+
+.sh-sessions-dot-live {
+	background: var(--ok);
+}
+
+.sh-sessions-dot-reconnecting {
+	background: var(--warn);
+}
+
+.sh-sessions-dot-ended {
+	background: var(--err);
+}
+
+.sh-sessions-list {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 6px;
+}
+
+.sh-sessions-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 8px 10px;
+	border-radius: var(--radius);
+}
+
+.sh-sessions-item:hover {
+	background: var(--bg-overlay);
+}
+
+.sh-sessions-item-main {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.sh-sessions-item-title {
+	font-size: 13px;
+	font-weight: 500;
+	color: var(--fg);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sh-sessions-item-meta {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 11px;
+	color: var(--fg-faint);
+	white-space: nowrap;
+}
+
+.sh-sessions-status {
+	font-size: 10px;
+	text-transform: capitalize;
+	color: var(--fg-muted);
+	background: var(--bg-raised);
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	padding: 0 6px;
+}
+
+.sh-sessions-streaming {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--ok);
+	animation: sh-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes sh-pulse {
+	0%,
+	100% {
+		opacity: 1;
+	}
+	50% {
+		opacity: 0.35;
+	}
+}
+
+.sh-sessions-item-actions {
+	display: none;
+	gap: 4px;
+	flex: none;
+}
+
+.sh-sessions-item:hover .sh-sessions-item-actions,
+.sh-sessions-item:focus-within .sh-sessions-item-actions {
+	display: flex;
+}
+
+.sh-sessions-empty-hint {
+	padding: 16px 10px;
+	font-size: 12px;
+	color: var(--fg-faint);
+	text-align: center;
+}
+
+.sh-sessions-foot {
+	padding: 8px 10px;
+	border-top: 1px solid var(--border);
+	flex: none;
+	display: flex;
+	justify-content: center;
+}
+
+.sh-sessions-new {
+	width: 100%;
+	justify-content: center;
+}
+
+.sh-sessions-readonly {
+	font-size: 11px;
+	color: var(--fg-faint);
+}
+
+/* ---- control empty state ---- */
+.sh-sessions-empty {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 18px;
+	padding: 24px;
+}
+
+.sh-sessions-empty-card {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 10px;
+	text-align: center;
+}
+
+.sh-sessions-empty-title {
+	font-size: 18px;
+	font-weight: 600;
+	color: var(--fg);
+	margin: 0;
+}
+
+.sh-sessions-empty-sub {
+	font-size: 13px;
+	color: var(--fg-muted);
+	margin: 0;
+	max-width: 320px;
+}
+
+.sh-sessions-recent {
+	width: 100%;
+	max-width: 420px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.sh-sessions-recent-label {
+	font-size: 11px;
+	font-weight: 500;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: var(--fg-faint);
+	padding: 0 4px 4px;
+}
+
+.sh-sessions-recent-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 8px 10px;
+	border-radius: var(--radius);
+	background: var(--bg-raised);
+	border: 1px solid var(--border);
+	color: var(--fg);
+	font-size: 13px;
+	text-align: left;
+}
+
+.sh-sessions-recent-item:hover:not(:disabled) {
+	background: var(--bg-overlay);
+	border-color: var(--border-strong);
+}
+
+.sh-sessions-recent-item:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
+.sh-sessions-recent-name {
+	flex: 1;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sh-sessions-recent-meta {
+	flex: none;
+	font-size: 11px;
+	color: var(--fg-faint);
+}
+
 /* ---- shared controls ---- */
 .sh-btn {
 	display: inline-flex;
@@ -178,8 +495,11 @@
 	gap: 12px;
 	padding: 8px 12px;
 	padding-top: calc(8px + env(safe-area-inset-top, 0px));
-	border-bottom: 1px solid var(--border);
-	background: var(--bg);
+	margin: 8px 8px 0;
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	background: var(--bg-raised);
+	box-shadow: var(--shadow-pop);
 }
 
 .sh-header-left {
@@ -292,6 +612,157 @@
 
 .sh-dot-ended {
 	background: var(--err);
+}
+
+/* ---- model picker ---- */
+.sh-model-picker {
+	position: relative;
+}
+
+.sh-model-picker-trigger {
+	gap: 6px;
+	max-width: 220px;
+}
+
+.sh-model-picker-name {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sh-model-picker-menu {
+	position: absolute;
+	top: calc(100% + 6px);
+	right: 0;
+	z-index: 20;
+	min-width: 240px;
+	max-width: 320px;
+	max-height: 320px;
+	overflow-y: auto;
+	padding: 4px;
+	background: var(--bg-overlay);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-pop);
+}
+
+.sh-model-picker-empty {
+	padding: 8px 10px;
+	font-size: 12px;
+	color: var(--fg-faint);
+}
+
+.sh-model-picker-item {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+	width: 100%;
+	padding: 6px 10px;
+	font-size: 12px;
+	color: var(--fg);
+	background: transparent;
+	border: none;
+	border-radius: var(--radius);
+	text-align: left;
+	cursor: pointer;
+}
+
+.sh-model-picker-item:hover {
+	background: var(--bg-raised);
+}
+
+.sh-model-picker-item-name {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sh-model-picker-item-provider {
+	font: 400 10px / 1.4 var(--font-mono);
+	color: var(--fg-faint);
+	flex: none;
+}
+
+.sh-model-picker-on {
+	color: var(--accent);
+}
+
+.sh-model-picker-on .sh-model-picker-item-provider {
+	color: var(--accent-muted);
+}
+
+/* ---- settings modal ---- */
+.sh-settings-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 45;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: var(--backdrop);
+	animation: sh-fade-in 150ms ease-out;
+}
+
+.sh-settings-modal {
+	width: min(360px, calc(100vw - 32px));
+	background: var(--bg-raised);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-overlay);
+	overflow: hidden;
+}
+
+.sh-settings-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--border);
+}
+
+.sh-settings-title {
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.sh-settings-body {
+	padding: 12px;
+}
+
+.sh-settings-section {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.sh-settings-label {
+	font: 600 11px / 1.5 var(--font-mono);
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--fg-faint);
+}
+
+.sh-settings-option {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px;
+	font-size: 12px;
+	color: var(--fg-muted);
+	border-radius: var(--radius);
+	cursor: pointer;
+}
+
+.sh-settings-option:hover {
+	background: var(--bg-inset);
+	color: var(--fg);
+}
+
+.sh-settings-option input[type="radio"] {
+	margin: 0;
+	accent-color: var(--accent);
 }
 
 /* ---- composer ---- */
@@ -671,6 +1142,20 @@
 	margin-top: 8px;
 }
 
+.sh-connect-restore {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 8px 10px;
+	margin-top: 8px;
+	font-size: 12px;
+	color: var(--fg-muted);
+	background: var(--bg-raised);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
 /* ---- responsive mobile styles ---- */
 @media (max-width: 768px) {
 	.sh-main {
@@ -694,6 +1179,43 @@
 		z-index: 25;
 		background: var(--backdrop);
 		animation: sh-fade-in 150ms ease-out;
+	}
+	.sh-control {
+		position: relative;
+	}
+	.sh-sidebar {
+		position: absolute;
+		left: 0;
+		top: 0;
+		bottom: 0;
+		z-index: 30;
+		width: 260px;
+		max-width: 85vw;
+		border-right: 1px solid var(--border-strong);
+		box-shadow: var(--rail-mobile-shadow);
+		transform: translateX(-100%);
+		visibility: hidden;
+		transition:
+			transform 150ms ease-out,
+			visibility 150ms ease-out;
+	}
+	.sh-sidebar[data-open="true"] {
+		transform: translateX(0);
+		visibility: visible;
+	}
+	.sh-sidebar-backdrop {
+		display: block;
+		position: absolute;
+		inset: 0;
+		z-index: 25;
+		background: var(--backdrop);
+		animation: sh-fade-in 150ms ease-out;
+	}
+	.sh-sidebar-toggle {
+		display: inline-flex;
+	}
+	.sh-sessions-item-actions {
+		display: flex;
 	}
 }
 

@@ -1095,7 +1095,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Collapse Completed Runs",
 			description:
-				"After a request completes normally, show only its initial user request and final assistant answer",
+				"Keep a completed run fully on screen while you read it; when you send your next message, collapse it to its initial request and final assistant answer",
 		},
 	},
 

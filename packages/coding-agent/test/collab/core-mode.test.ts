@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createHeadlessCollabContext, formatCoreStdout, materializeCollabWebFiles } from "../../src/modes/core-mode";
 import type { AgentSession } from "../../src/session/agent-session";
-import { createHeadlessCollabContext, materializeCollabWebFiles } from "../../src/modes/core-mode";
 
 const cacheDirs: string[] = [];
 
@@ -22,9 +22,7 @@ function makeSession(getContextUsage: () => unknown): AgentSession {
 
 describe("createHeadlessCollabContext", () => {
 	it("maps the session's context usage into the status-line breakdown", () => {
-		const ctx = createHeadlessCollabContext(
-			makeSession(() => ({ tokens: 100, contextWindow: 200, percent: 50 })),
-		);
+		const ctx = createHeadlessCollabContext(makeSession(() => ({ tokens: 100, contextWindow: 200, percent: 50 })));
 		expect(ctx.statusLine.getCachedContextBreakdown()).toEqual({ usedTokens: 100, contextWindow: 200 });
 	});
 
@@ -69,5 +67,16 @@ describe("materializeCollabWebFiles", () => {
 		const cacheRoot = path.join(os.tmpdir(), `omp-core-materialize-${Date.now()}`);
 		cacheDirs.push(cacheRoot);
 		expect(await materializeCollabWebFiles(cacheRoot, {}, "v1")).toBeNull();
+	});
+});
+
+describe("formatCoreStdout", () => {
+	it("prints exactly the control and session deep-link lines with the right prefixes", () => {
+		expect(formatCoreStdout("ws://ctrl", "ws://session")).toBe("ctrl: ws://ctrl\nsession: ws://session\n");
+	});
+
+	it("ends with a newline and contains exactly two lines", () => {
+		const lines = formatCoreStdout("a", "b").split("\n");
+		expect(lines).toEqual(["ctrl: a", "session: b", ""]);
 	});
 });

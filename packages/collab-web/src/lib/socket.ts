@@ -8,7 +8,13 @@
  * reconnect.
  */
 
-import type { GuestFrame, HostFrame, RelayControlMessage } from "@oh-my-pi/pi-wire";
+import type {
+	ControlGuestFrame,
+	ControlHostFrame,
+	GuestFrame,
+	HostFrame,
+	RelayControlMessage,
+} from "@oh-my-pi/pi-wire";
 import { open, seal } from "./codec";
 import { packEnvelope, unpackEnvelope } from "./link";
 
@@ -35,7 +41,7 @@ export interface CollabSocketOptions {
 export class CollabSocket {
 	/** Fires after every successful (re)connect. */
 	onOpen?: () => void;
-	onFrame?: (frame: HostFrame, fromPeer: number) => void;
+	onFrame?: (frame: HostFrame | ControlHostFrame, fromPeer: number) => void;
 	onControl?: (msg: RelayControlMessage) => void;
 	/** Fires once per terminal close (intentional, fatal code, or bad key). willReconnect=true for transient drops that will retry. */
 	onClose?: (reason: string, willReconnect: boolean) => void;
@@ -68,7 +74,7 @@ export class CollabSocket {
 		this.#openSocket();
 	}
 
-	send(frame: GuestFrame, targetPeer = 0): void {
+	send(frame: GuestFrame | ControlGuestFrame, targetPeer = 0): void {
 		this.#sendChain = this.#sendChain
 			.then(async () => {
 				if (this.#closed) return;
@@ -153,9 +159,9 @@ export class CollabSocket {
 		this.#recvChain = this.#recvChain
 			.then(async () => {
 				if (this.#ws !== ws) return;
-				let frame: HostFrame;
+				let frame: HostFrame | ControlHostFrame;
 				try {
-					frame = (await open(await this.#opts.key, envelope.payload)) as HostFrame;
+					frame = (await open(await this.#opts.key, envelope.payload)) as HostFrame | ControlHostFrame;
 				} catch {
 					this.#failFatal("bad key or corrupted frame");
 					return;

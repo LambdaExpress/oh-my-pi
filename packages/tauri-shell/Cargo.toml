@@ -1,0 +1,26 @@
+[package]
+name = "omp-shell"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Tauri desktop host for the omp headless core engine"
+
+# Self-contained workspace root: do NOT join the repo root workspace
+# (Tauri's dependency tree would drag `check:rs` and its strict clippy gate).
+[workspace]
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "time", "sync", "macros", "rt"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

@@ -1,0 +1,13 @@
+{
+	"$schema": "../gen/schemas/desktop-schema.json",
+	"identifier": "default",
+	"windows": ["main"],
+	"permissions": [
+		"core:default",
+		"dialog:default",
+		"allow-project-list",
+		"allow-project-open",
+		"allow-project-switch",
+		"allow-app-info"
+	]
+}

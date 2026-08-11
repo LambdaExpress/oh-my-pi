@@ -337,7 +337,11 @@ export type GuestFrame =
 	| { t: "ui-response"; reqId: number; value?: CollabUiResponseValue }
 	| { t: "abort" }
 	| { t: "agent-cmd"; cmd: "chat" | "kill" | "revive"; agentId: string; text?: string }
-	| { t: "fetch-transcript"; reqId: number; agentId: string; fromByte: number };
+	| { t: "fetch-transcript"; reqId: number; agentId: string; fromByte: number }
+	/** Request the available models for the session room (targeted reply: `model-list` host frame). */
+	| { t: "model-list" }
+	/** Switch the session model; success is broadcast to all guests through the regular `state` frame. */
+	| { t: "model-change"; provider: string; id: string };
 
 /** EventBus channels mirrored to guests (task subagent traffic only). */
 export type BusChannel = "task:subagent:progress" | "task:subagent:lifecycle";
@@ -376,10 +380,45 @@ export type HostFrame =
 	| { t: "ui-request-end"; reqId: number }
 	/** Targeted reply to fetch-transcript; `text` is decoded JSONL from `fromByte`, `newSize` the next offset base. */
 	| { t: "transcript"; reqId: number; text: string; newSize: number; error?: string }
+	/** Targeted reply to `model-list`. */
+	| { t: "model-list"; models: WireModel[] }
 	| { t: "bye"; reason: string }
 	| { t: "error"; message: string };
 
 export type WireFrame = GuestFrame | HostFrame;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Control room frames (session registry / multi-session control room)
+// ═══════════════════════════════════════════════════════════════════════════
+
+export type ControlGuestFrame =
+	| { t: "ctrl-hello"; proto: number; name: string; writeToken?: string }
+	| { t: "ctrl-list" }
+	| { t: "ctrl-create" }
+	| { t: "ctrl-resume"; id: string }
+	| { t: "ctrl-drop"; id: string };
+
+export type ControlHostFrame =
+	| { t: "ctrl-welcome"; proto: number; readOnly?: true }
+	| { t: "ctrl-sessions"; sessions: SessionSummary[] }
+	| { t: "ctrl-session"; op: "created" | "resumed"; id: string; link: string; title?: string }
+	| { t: "ctrl-error"; message: string }
+	| { t: "ctrl-bye"; reason: string };
+
+export interface SessionSummary {
+	id: string;
+	title?: string;
+	cwd: string;
+	createdAt: string;
+	modifiedAt: string;
+	messageCount: number;
+	status?: SessionStatus;
+	running: boolean;
+	streaming: boolean;
+	link?: string; // 仅全权(read-write)控制端可见
+}
+
+export type SessionStatus = "complete" | "interrupted" | "aborted" | "error" | "pending" | "unknown";
 
 /**
  * Wire protocol version carried in `hello`; the host rejects mismatches.
@@ -393,8 +432,12 @@ export type WireFrame = GuestFrame | HostFrame;
  *   answered by the `ui-response` guest frame. Guests that predate the
  *   grammar would silently drop `ui-request` (asks hang forever on the
  *   host), so they must be rejected at hello.
+ * - `4`: guests can request the session model list (`model-list`) and switch
+ *   the session model (`model-change`); the host replies with a targeted
+ *   `model-list` frame and broadcasts the new model through the regular
+ *   `state` frame.
  */
-export const COLLAB_PROTO = 3;
+export const COLLAB_PROTO = 4;
 
 /** Parameter key used for intent tracing (e.g. prompt explanation/reasoning) */
 export const INTENT_FIELD = "i";

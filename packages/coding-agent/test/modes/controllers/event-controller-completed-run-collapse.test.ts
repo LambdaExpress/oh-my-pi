@@ -157,7 +157,7 @@ describe("completed run collapse", () => {
 		expect(final.content).toHaveLength(2);
 	});
 
-	it("triggers collapse only after a normal final stop", async () => {
+	it("defers the collapse until the user sends the next content", async () => {
 		const { controller, chatContainer, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } =
 			fixture();
 		const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
@@ -177,13 +177,20 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "message_end", message: final });
 		now.mockReturnValue(66_000);
 		await controller.handleEvent({ type: "agent_end", messages: [initial, adjustment, followUp, final] });
+		// The run stays fully expanded while the answer is on screen: the end of
+		// the model's final text alone does not commit the collapse.
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
+		expect(resetDisplay).not.toHaveBeenCalled();
+		// Sending the next content starts a new turn, which commits the collapse.
+		await controller.handleEvent({ type: "agent_start" });
 		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
 		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(expect.objectContaining({ durationMs: 65_000 }));
 		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
 	});
 
-	it("waits for a late final message_end before collapsing the completed run", async () => {
+	it("waits for a late final message_end before parking the completed run", async () => {
 		const persisted = Promise.withResolvers<void>();
 		const waitForMessagePersistence = vi.fn(() => persisted.promise);
 		const { controller, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture(
@@ -205,6 +212,10 @@ describe("completed run collapse", () => {
 		persisted.resolve();
 		await ending;
 
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
+		expect(resetDisplay).not.toHaveBeenCalled();
+		await controller.handleEvent({ type: "agent_start" });
 		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
 		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
@@ -237,6 +248,8 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "message_end", message: final });
 		session.isStreaming = false;
 		await controller.handleEvent({ type: "agent_end", messages: [followUp, final] });
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		await controller.handleEvent({ type: "agent_start" });
 		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
 		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(
 			expect.objectContaining({ initialUserMessage: initial, finalAssistantMessage: final }),
@@ -273,6 +286,8 @@ describe("completed run collapse", () => {
 		session.isStreaming = false;
 		await controller.handleEvent({ type: "agent_end", messages: [correction, final] });
 
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		await controller.handleEvent({ type: "agent_start" });
 		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
 		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(
 			expect.objectContaining({ initialUserMessage: initial, finalAssistantMessage: final }),
@@ -360,7 +375,15 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "message_end", message: finalB });
 		await controller.handleEvent({ type: "agent_end", messages: [steer, loopB1, resultB1, loopB2, resultB2, finalB] });
 
-		// Both runs collapse atomically: A first, B second, each with its own span.
+		// The chain stays fully expanded while B's answer is on screen: neither
+		// the interruption nor B's settle commits the collapse.
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
+		expect(resetDisplay).not.toHaveBeenCalled();
+
+		// The next user turn commits both runs atomically: A first, B second,
+		// each with its own span.
+		await controller.handleEvent({ type: "agent_start" });
 		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(2);
 		const aCollapse = recordCompletedRunCollapse.mock.calls[0]![0] as CompletedRunCollapse;
 		const bCollapse = recordCompletedRunCollapse.mock.calls[1]![0] as CompletedRunCollapse;
@@ -421,6 +444,8 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "message_end", message: finalB });
 		await controller.handleEvent({ type: "agent_end", messages: [steer, finalB] });
 
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		await controller.handleEvent({ type: "agent_start" });
 		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(2);
 		const aCollapse = recordCompletedRunCollapse.mock.calls[0]![0] as CompletedRunCollapse;
 		const bCollapse = recordCompletedRunCollapse.mock.calls[1]![0] as CompletedRunCollapse;
@@ -465,8 +490,9 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "message_end", message: errored });
 		await controller.handleEvent({ type: "agent_end", messages: [steer, errored] });
 
-		// Neither run collapses: the continuation failed, so the parked span is
-		// discarded and the transcript stays fully expanded.
+		// Neither run collapses: the continuation failed, so the parked span was
+		// discarded and the next user turn has nothing to flush.
+		await controller.handleEvent({ type: "agent_start" });
 		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
 		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
 		expect(resetDisplay).not.toHaveBeenCalled();
@@ -508,7 +534,10 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "message_end", message: finalC });
 		await controller.handleEvent({ type: "agent_end", messages: [steerC, finalC] });
 
-		// All three runs collapse with their own summaries, committed atomically.
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		await controller.handleEvent({ type: "agent_start" });
+		// All three runs collapse with their own summaries, committed atomically
+		// when the user sends the next content.
 		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(3);
 		const [aCollapse, bCollapse, cCollapse] = recordCompletedRunCollapse.mock.calls.map(
 			call => call[0] as CompletedRunCollapse,
@@ -538,6 +567,9 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "message_end", message: initial });
 		await controller.handleEvent({ type: "message_end", message: final });
 		await controller.handleEvent({ type: "agent_end", messages: [initial, final] });
+		// Even the next user turn has nothing to collapse: aborted runs park no
+		// record, so the transcript stays fully expanded.
+		await controller.handleEvent({ type: "agent_start" });
 		chatContainer.render(80);
 		expect(chatContainer.getNativeScrollbackLiveRegionStart()).toBeUndefined();
 		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();

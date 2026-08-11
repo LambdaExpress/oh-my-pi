@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Upgraded the collaboration protocol to version 4: guests can now request the session model list (`model-list`) and switch the session model (`model-change`), with the host replying through a targeted `model-list` frame and broadcasting the new model via the regular `state` frame. Guests speaking proto v3 are rejected during the handshake with the protocol-mismatch error.
+
+### Added
+
+- Added session-room model frames: guest `model-list`/`model-change` variants and the host `model-list` reply carrying `WireModel[]`.
+- Added control-room wire contracts (`ControlGuestFrame`/`ControlHostFrame`/`SessionSummary`/`SessionStatus`) for multi-session core mode: guests can list, create, resume, and drop sessions through a `ctrl-` room, with read-only peers stripped of session links.
+
 ## [16.3.0] - 2026-07-02
 
 ### Breaking Changes

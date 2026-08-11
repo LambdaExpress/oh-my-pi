@@ -165,6 +165,8 @@ function makeHostContext(snapshot: OversizedSnapshot): HostHarness {
 			sessionName: "big",
 			model: undefined,
 			thinkingLevel: undefined,
+			// host.ts scopes agent snapshots to `getAgentScopeId()`.
+			getAgentScopeId: () => snapshot.header.id,
 			subscribe: () => () => {},
 			emitNotice: () => {},
 			promptCustomMessage: () => Promise.resolve(),

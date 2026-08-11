@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added a model picker to the session header (dropdown fed by the `model-list`/`model-change` frames, current model highlighted) and a settings panel with light/dark theme radios over the existing `omp-collab-theme` store, opened from a header settings button; the standalone theme toggle moved into the panel.
+- Added a control-room client and session sidebar for core-mode multi-session management: `ctrl-` links open a 260px session list with create/resume/drop actions, live streaming indicators, and auto-return to the list when an opened session ends; plain session links keep the existing single-session behavior.
+
 ## [17.2.10] - 2026-08-06
 
 ### Changed

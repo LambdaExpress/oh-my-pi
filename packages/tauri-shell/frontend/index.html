@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>omp shell</title>
+		<style>
+			:root {
+				color-scheme: dark;
+				--bg: #0f0a14;
+				--bg-raised: #171020;
+				--bg-overlay: #241a30;
+				--fg: #eae6f0;
+				--fg-muted: #a99fb8;
+				--fg-faint: #837a92;
+				--accent: #ed4abf;
+				--border: rgba(255, 255, 255, 0.09);
+				--border-strong: rgba(255, 255, 255, 0.14);
+			}
+			* {
+				box-sizing: border-box;
+			}
+			body {
+				margin: 0;
+				min-height: 100vh;
+				display: grid;
+				place-items: center;
+				background: var(--bg);
+				color: var(--fg);
+				font: 400 14px/1.5 ui-sans-serif, system-ui, "Segoe UI", "Helvetica Neue", sans-serif;
+				-webkit-font-smoothing: antialiased;
+			}
+			.card {
+				width: min(480px, calc(100vw - 48px));
+				padding: 28px;
+				background: var(--bg-raised);
+				border: 1px solid var(--border);
+				border-radius: 12px;
+				box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+			}
+			h1 {
+				margin: 0 0 4px;
+				font-size: 20px;
+				font-weight: 600;
+			}
+			h1 .pi {
+				color: var(--accent);
+			}
+			.sub {
+				margin: 0 0 20px;
+				font-size: 12px;
+				color: var(--fg-muted);
+			}
+			.section-label {
+				display: block;
+				margin-bottom: 8px;
+				font: 600 11px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+				text-transform: uppercase;
+				letter-spacing: 0.06em;
+				color: var(--fg-faint);
+			}
+			#recent {
+				list-style: none;
+				margin: 0 0 16px;
+				padding: 0;
+				display: flex;
+				flex-direction: column;
+				gap: 6px;
+			}
+			#recent .empty {
+				padding: 10px 12px;
+				font-size: 13px;
+				color: var(--fg-faint);
+				border: 1px dashed var(--border);
+				border-radius: 8px;
+			}
+			.recent-item {
+				display: flex;
+				flex-direction: column;
+				gap: 2px;
+				width: 100%;
+				padding: 10px 12px;
+				text-align: left;
+				color: var(--fg);
+				background: var(--bg-overlay);
+				border: 1px solid var(--border);
+				border-radius: 8px;
+				cursor: pointer;
+				transition: border-color 140ms ease-out, background 140ms ease-out;
+			}
+			.recent-item:hover {
+				border-color: var(--border-strong);
+				background: #2b2038;
+			}
+			.recent-item .name {
+				font-size: 13px;
+				font-weight: 600;
+			}
+			.recent-item .path {
+				font: 400 11px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
+				color: var(--fg-faint);
+				white-space: nowrap;
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
+			.actions {
+				display: flex;
+				gap: 10px;
+				align-items: center;
+				margin-bottom: 18px;
+			}
+			button.open {
+				padding: 8px 14px;
+				font-size: 13px;
+				font-weight: 500;
+				color: #1a0f18;
+				background: var(--accent);
+				border: none;
+				border-radius: 8px;
+				cursor: pointer;
+			}
+			button.open:hover {
+				filter: brightness(1.06);
+			}
+			#err {
+				margin: 0 0 12px;
+				padding: 8px 10px;
+				font-size: 12px;
+				color: #ffb4a8;
+				background: rgba(255, 60, 60, 0.12);
+				border: 1px solid rgba(255, 90, 90, 0.35);
+				border-radius: 8px;
+				word-break: break-all;
+			}
+			#err[hidden] {
+				display: none;
+			}
+			.foot {
+				margin: 0;
+				font: 400 11px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+				color: var(--fg-faint);
+			}
+		</style>
+	</head>
+	<body>
+		<div class="card">
+			<h1><span class="pi">omp</span> shell</h1>
+			<p class="sub">打开一个项目目录，启动 omp 核心引擎。</p>
+			<span class="section-label">最近项目</span>
+			<ul id="recent"></ul>
+			<div class="actions">
+				<button type="button" class="open" id="open">打开其他项目…</button>
+			</div>
+			<p id="err" hidden></p>
+			<p class="foot" id="version"></p>
+		</div>
+		<script>
+			const invoke = window.__TAURI_INTERNALS__.invoke;
+			const err = document.getElementById("err");
+
+			function fail(error) {
+				err.textContent = String(error);
+				err.hidden = false;
+			}
+
+			function openProject(path) {
+				err.hidden = true;
+				invoke("project_switch", { path }).catch(fail);
+			}
+
+			document.getElementById("open").addEventListener("click", () => {
+				err.hidden = true;
+				invoke("project_open").catch(fail);
+			});
+
+			(async () => {
+				try {
+					const info = await invoke("app_info");
+					document.getElementById("version").textContent = `${info.product_name} v${info.version}`;
+					const list = await invoke("project_list");
+					const ul = document.getElementById("recent");
+					const items = list.recent_projects ?? [];
+					if (items.length === 0) {
+						const li = document.createElement("li");
+						li.className = "empty";
+						li.textContent = "暂无最近项目";
+						ul.appendChild(li);
+						return;
+					}
+					for (const path of items) {
+						const li = document.createElement("li");
+						const btn = document.createElement("button");
+						btn.type = "button";
+						btn.className = "recent-item";
+						const name = document.createElement("span");
+						name.className = "name";
+						name.textContent = path.split(/[\\/]/).filter(Boolean).pop() || path;
+						const pathSpan = document.createElement("span");
+						pathSpan.className = "path";
+						pathSpan.textContent = path;
+						btn.append(name, pathSpan);
+						btn.addEventListener("click", () => openProject(path));
+						li.appendChild(btn);
+						ul.appendChild(li);
+					}
+				} catch (error) {
+					fail(error);
+				}
+			})();
+		</script>
+	</body>
+</html>

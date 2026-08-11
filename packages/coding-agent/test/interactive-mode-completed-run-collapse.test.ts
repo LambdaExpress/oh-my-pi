@@ -238,13 +238,15 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(messages).toHaveLength(8);
 	});
 
-	it("end-to-end: an Enter force-flush parks run A and commits A and B separately after B settles", async () => {
+	it("end-to-end: an Enter force-flush parks run A and commits A and B separately when the user sends the next content", async () => {
 		const mock = createMockModel({
 			responses: [
 				// Run A: long-running, interrupted by the force-flush abort.
 				{ content: [{ type: "text", text: "working through the request" }], delayMs: 500 },
 				// Run B: the force-flushed continuation, settles normally.
 				{ content: [{ type: "text", text: "adjusted" }] },
+				// Run C: the next user turn, whose start commits A and B.
+				{ content: [{ type: "text", text: "third answer" }] },
 			],
 		});
 		const modelRegistry = new ModelRegistry(authStorage);
@@ -291,20 +293,36 @@ describe("InteractiveMode completed-run collapse", () => {
 		});
 		await e2eSession.abort({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
 
-		// Wait for the continuation to settle and the atomic commit to land.
-		// Integration test against the real agent loop: deterministic fake timers
-		// cannot drive the abort/drain/continue chain, so a bounded real-time
-		// guard stands in for the rebuilt signal if the fix regresses.
-		await Promise.race([rebuilt.promise, Bun.sleep(10_000)]);
+		// Wait for the continuation to settle and park A and B's collapse
+		// records. Integration test against the real agent loop: deterministic
+		// fake timers cannot drive the abort/drain/continue chain, so a bounded
+		// real-time guard stands in for the parked-chain signal if the fix
+		// regresses.
+		const settled = Promise.withResolvers<void>();
+		const agentEnds: number[] = [];
+		e2eSession.subscribe(event => {
+			if (event.type === "agent_end") {
+				agentEnds.push(agentEnds.length);
+				if (agentEnds.length === 2) settled.resolve();
+			}
+		});
+		await Promise.race([settled.promise, Bun.sleep(10_000)]);
 		await firstPrompt.catch(() => {});
 
-		// Both runs collapse with their own summaries, A parked and B natural.
+		// B's settle parks both runs but leaves them fully expanded: nothing has
+		// been recorded or rebuilt yet.
+		expect(record).not.toHaveBeenCalled();
+
+		// Sending the next content commits both parked runs: A parked, B natural.
+		const thirdPrompt = e2eSession.prompt("third request", { expandPromptTemplates: false });
+		await Promise.race([rebuilt.promise, Bun.sleep(10_000)]);
 		expect(record).toHaveBeenCalledTimes(2);
 		const [aCollapse, bCollapse] = record.mock.calls.map(call => call[0] as CompletedRunCollapse);
 		expect(aCollapse.finalAssistantMessage).toBeUndefined();
 		expect(aCollapse.spanEndMessage).toBeDefined();
 		expect(bCollapse.finalAssistantMessage?.stopReason).toBe("stop");
-		expect(mock.calls.length).toBe(2);
+		await thirdPrompt;
+		expect(mock.calls.length).toBe(3);
 
 		await e2eMode.stop();
 		await e2eSession.dispose();

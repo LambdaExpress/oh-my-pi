@@ -19,6 +19,7 @@ import type {
 	SessionState,
 	SubagentLifecyclePayload,
 	SubagentProgressPayload,
+	WireModel,
 } from "@oh-my-pi/pi-wire";
 import { importRoomKey } from "./codec";
 import { COLLAB_PROTO, encodeBase64Url, parseCollabLink } from "./link";
@@ -63,6 +64,8 @@ export interface GuestSnapshot {
 	readOnly: boolean;
 	/** Pending host-side UI request (`ask` select/editor) this guest can answer. */
 	uiRequest: CollabUiRequest | null;
+	/** Available models from the host's `model-list` reply; null until first loaded. */
+	models: WireModel[] | null;
 	/** Capped at 50, newest last. */
 	notices: readonly Notice[];
 }
@@ -117,6 +120,7 @@ export class GuestClient {
 	#readOnly = false;
 	#uiRequest: CollabUiRequest | null = null;
 	#uiRequestQueue: CollabUiRequest[] = [];
+	#models: WireModel[] | null = null;
 	#notices: readonly Notice[] = [];
 	#snapshot: GuestSnapshot;
 
@@ -128,7 +132,9 @@ export class GuestClient {
 		this.#writeToken = parsed.writeToken ? encodeBase64Url(parsed.writeToken) : undefined;
 		this.#socket = new CollabSocket({ wsUrl: parsed.wsUrl, role: "guest", key: importRoomKey(parsed.key) });
 		this.#socket.onOpen = () => this.#handleOpen();
-		this.#socket.onFrame = frame => this.#applyFrameSafe(frame);
+		// Session rooms only ever receive HostFrame payloads; control-room
+		// frames arrive on a separate socket (ControlClient).
+		this.#socket.onFrame = frame => this.#applyFrameSafe(frame as HostFrame);
 		this.#socket.onControl = msg => {
 			if (msg.t === "room-closed") this.#end("room closed");
 		};
@@ -183,6 +189,14 @@ export class GuestClient {
 
 	sendAbort(): void {
 		this.#socket.send({ t: "abort" });
+	}
+
+	sendModelList(): void {
+		this.#socket.send({ t: "model-list" });
+	}
+
+	sendModelChange(provider: string, id: string): void {
+		this.#socket.send({ t: "model-change", provider, id });
 	}
 
 	sendAgentCmd(cmd: "chat" | "kill" | "revive", agentId: string, text?: string): void {
@@ -369,6 +383,9 @@ export class GuestClient {
 				if (this.#uiRequest?.reqId === frame.reqId) this.#showNextUiRequest();
 				else this.#uiRequestQueue = this.#uiRequestQueue.filter(request => request.reqId !== frame.reqId);
 				break;
+			case "model-list":
+				this.#models = frame.models;
+				break;
 			case "transcript": {
 				const pending = this.#pendingTranscripts.get(frame.reqId);
 				if (pending) {
@@ -519,6 +536,7 @@ export class GuestClient {
 			working: this.#working,
 			readOnly: this.#readOnly,
 			uiRequest: this.#uiRequest,
+			models: this.#models,
 			notices: this.#notices,
 		};
 	}

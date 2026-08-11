@@ -509,6 +509,13 @@ export interface CreateAgentSessionOptions {
 	enableMCP?: boolean;
 	/** Existing MCP manager to reuse when MCP is enabled (skips discovery, propagates to toolSession). */
 	mcpManager?: MCPManager;
+	/**
+	 * Externally injected async job manager, NOT owned by the session. The sdk
+	 * never disposes an injected instance; ownership (and disposal) stays with
+	 * the caller. When omitted, the sdk creates its own manager for the first
+	 * top-level session and shares the process singleton for the rest.
+	 */
+	asyncJobManager?: AsyncJobManager;
 
 	/** Enable LSP integration (tool, formatting, diagnostics, warmup). Default: true */
 	enableLsp?: boolean;
@@ -1699,7 +1706,8 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			? new AsyncJobManager({ maxRunningJobs: asyncMaxJobs })
 			: undefined;
 
-	const scopedAsyncJobManager = asyncJobManager ?? (options.parentTaskPrefix ? AsyncJobManager.instance() : undefined);
+	const scopedAsyncJobManager =
+		asyncJobManager ?? options.asyncJobManager ?? (options.parentTaskPrefix ? AsyncJobManager.instance() : undefined);
 
 	const agentRegistry = options.agentRegistry ?? AgentRegistry.global();
 	const resolvedAgentId = options.agentId ?? options.parentTaskPrefix ?? MAIN_AGENT_ID;
@@ -1725,6 +1733,11 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		agentRegistry.unregister(resolvedAgentId, ref);
 	};
 	const evalKernelOwnerId = `agent-session:${Snowflake.next()}`;
+	// Owned only when this session created the manager; subagents receive a
+	// parent's manager via `options.mcpManager` and MUST NOT disconnect it.
+	// Hoisted to function scope so the catch block below can also clean it up
+	// on startup failure (a try-block `const` is invisible to its `catch`).
+	let ownedMcpManager: MCPManager | undefined;
 
 	try {
 		const getActiveModelString = (): string | undefined => {
@@ -2028,8 +2041,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// Only top-level sessions own the global MCPManager. Subagents already
 		// receive the parent's manager via `options.mcpManager`, and reassigning
 		// the singleton to the same value is a no-op — keep the gate explicit
-		// to mirror the AsyncJobManager ownership rule.
-		if (mcpManager && !options.parentTaskPrefix) MCPManager.setInstance(mcpManager);
+		// to mirror the AsyncJobManager ownership rule. Only the first top-level
+		// session in the process becomes the global instance; later sessions
+		// inject `MCPManager.instance()` and must not overwrite it.
+		if (mcpManager && !options.parentTaskPrefix && !MCPManager.instance()) MCPManager.setInstance(mcpManager);
 
 		const builtInToolNames = [...toolRegistry.keys()];
 		let customToolPaths: ToolPathWithSource[] = [];
@@ -3466,7 +3481,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		const advisorContextPrompt = formatAdvisorContextPrompt(contextFiles);
 		// Owned only when this session created the manager; subagents receive a
 		// parent's manager via `options.mcpManager` and MUST NOT disconnect it.
-		const ownedMcpManager = options.mcpManager ? undefined : mcpManager;
+		ownedMcpManager = options.mcpManager ? undefined : mcpManager;
 		// A resumed session already has advisor turns on disk; without this the status
 		// line would restart its `(adv)` total at zero for the rest of the session.
 		const initialAdvisorCosts = await loadAdvisorTranscriptCosts(sessionManager.getSessionFile());
@@ -3559,7 +3574,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						return out;
 					}
 				: undefined,
-			disconnectOwnedMcpManager: ownedMcpManager ? () => ownedMcpManager.disconnectAll() : undefined,
+			// Capture into a const: the outer `let` may be reassigned later, so
+			// the closure must hold its own stable reference.
+			disconnectOwnedMcpManager: ownedMcpManager
+				? (() => {
+						const ownedMcp = ownedMcpManager;
+						return () => ownedMcp.disconnectAll();
+					})()
+				: undefined,
 			ttsrManager,
 			obfuscator,
 			agentId: resolvedAgentId,
@@ -3960,6 +3982,14 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 						AsyncJobManager.setInstance(undefined);
 					}
 					await asyncJobManager.dispose({ timeoutMs: 3_000 });
+				}
+				// Clean up an MCP manager this session created (not injected via
+				// options.mcpManager), mirroring cli/read-cli.ts. The setInstance
+				// guard short-circuits when the manager never became the global
+				// instance (e.g. a later top-level session already owns it).
+				if (ownedMcpManager) {
+					await ownedMcpManager.disconnectAll();
+					if (MCPManager.instance() === ownedMcpManager) MCPManager.setInstance(undefined);
 				}
 				await releaseComputerSessionsForOwner(evalKernelOwnerId);
 				await disposeKernelSessionsByOwner(evalKernelOwnerId);

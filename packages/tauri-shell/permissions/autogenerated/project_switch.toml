@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-project-switch"
+description = "Enables the project_switch command without any pre-configured scope."
+commands.allow = ["project_switch"]
+
+[[permission]]
+identifier = "deny-project-switch"
+description = "Denies the project_switch command without any pre-configured scope."
+commands.deny = ["project_switch"]

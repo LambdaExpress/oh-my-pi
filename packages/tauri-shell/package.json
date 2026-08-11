@@ -1,0 +1,10 @@
+{
+	"name": "@oh-my-pi/tauri-shell",
+	"version": "0.1.0",
+	"private": true,
+	"scripts": {
+		"dev": "cargo run",
+		"build": "cargo build --release",
+		"test": "cargo test"
+	}
+}

@@ -241,6 +241,11 @@ export class EventController {
 	// continuation runs. Committed as collapse records together with the
 	// continuation's own span once the whole chain settles.
 	#pendingCompletedRuns: PendingCompletedRun[] = [];
+	// Collapse records of completed runs parked at their agent_end. The run
+	// stays fully expanded while the user reads the final answer; sending the
+	// next content is what commits the collapse (see
+	// `#flushPendingCompletedRunCollapses` at the next agent_start).
+	#pendingCompletedRunCollapses: CompletedRunCollapse[] = [];
 
 	get activeCompletedRunGate(): { component: Component; afterMessage: AgentMessage } | undefined {
 		const active = this.#activeCompletedRun;
@@ -360,6 +365,7 @@ export class EventController {
 			pending.span.gate?.finalize();
 		}
 		this.#pendingCompletedRuns = [];
+		this.#pendingCompletedRunCollapses = [];
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
@@ -698,6 +704,7 @@ export class EventController {
 	resetTranscriptAnchors(): void {
 		this.#activeCompletedRun?.gate?.finalize();
 		this.#activeCompletedRun = undefined;
+		this.#pendingCompletedRunCollapses = [];
 		if (this.#messageUpdateTimer) {
 			clearTimeout(this.#messageUpdateTimer);
 			this.#messageUpdateTimer = undefined;
@@ -799,6 +806,10 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
+		// The user just sent content: commit collapses parked by completed runs.
+		// A run stays fully expanded while its final answer is on screen; the
+		// next user message is what triggers the previous run's collapse.
+		this.#flushPendingCompletedRunCollapses();
 		// An Enter force-flush parks the interrupted run's span (kept fully
 		// expanded) and starts the continuation on a fresh span, so the final
 		// commit can produce one independent summary per run instead of merging
@@ -1942,22 +1953,22 @@ export class EventController {
 			this.#discardPendingCompletedRuns();
 			return;
 		}
-		// Commit the parked (force-flushed) runs first, then the completed run,
-		// in a single rebuild + reset so A and B collapse atomically with their
-		// own summaries.
+		// Park the collapse records — the interrupted (force-flushed) runs
+		// first, then the completed run — instead of committing them now. The
+		// runs stay fully expanded while the user reads the final answer; the
+		// collapse is applied in a single rebuild + reset when the user sends
+		// the next content (see `#flushPendingCompletedRunCollapses`).
+		const parkedCollapses: CompletedRunCollapse[] = [];
 		for (const pending of this.#pendingCompletedRuns) {
 			const parkedCollapse = this.#buildPendingCollapse(pending);
 			if (parkedCollapse) {
-				this.ctx.recordCompletedRunCollapse(parkedCollapse);
+				parkedCollapses.push(parkedCollapse);
 				pending.span.gate?.finalize();
 			}
 		}
 		this.#pendingCompletedRuns = [];
-		this.ctx.recordCompletedRunCollapse(collapse);
-		this.ctx.rebuildChatFromMessages();
-		// The run gate kept its intermediate rows out of native scrollback. Reset
-		// still forces one authoritative clear/replay on terminals that support it.
-		this.ctx.ui.resetDisplay();
+		parkedCollapses.push(collapse);
+		this.#pendingCompletedRunCollapses = parkedCollapses;
 	}
 
 	#takeCompletedRunCollapse(
@@ -2018,6 +2029,23 @@ export class EventController {
 			pending.span.gate?.finalize();
 		}
 		this.#pendingCompletedRuns = [];
+	}
+
+	/**
+	 * Apply collapses parked by completed runs at their agent_end. The runs
+	 * stay fully expanded while the user reads the final answers; sending the
+	 * next content starts a new agent turn, which is what commits the previous
+	 * run's collapse in one rebuild + reset.
+	 */
+	#flushPendingCompletedRunCollapses(): void {
+		if (this.#pendingCompletedRunCollapses.length === 0) return;
+		const collapses = this.#pendingCompletedRunCollapses;
+		this.#pendingCompletedRunCollapses = [];
+		for (const collapse of collapses) {
+			this.ctx.recordCompletedRunCollapse(collapse);
+		}
+		this.ctx.rebuildChatFromMessages();
+		this.ctx.ui.resetDisplay();
 	}
 
 	async #finishAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {

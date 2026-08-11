@@ -6,9 +6,11 @@ export interface ConnectScreenProps {
 	defaultName: string;
 	error: string | null;
 	onConnect(link: string, name: string): void;
+	/** Optional stored control-room link — shown as a one-click restore hint. */
+	savedControlLink?: string | null;
 }
 
-export function ConnectScreen({ defaultName, error, onConnect }: ConnectScreenProps): ReactNode {
+export function ConnectScreen({ defaultName, error, onConnect, savedControlLink }: ConnectScreenProps): ReactNode {
 	const [link, setLink] = useState("");
 	const [name, setName] = useState(defaultName);
 	const [localError, setLocalError] = useState<string | null>(null);
@@ -22,6 +24,11 @@ export function ConnectScreen({ defaultName, error, onConnect }: ConnectScreenPr
 		}
 		setLocalError(null);
 		onConnect(trimmed, name.trim() || "guest");
+	};
+
+	const restore = (): void => {
+		if (!savedControlLink) return;
+		onConnect(savedControlLink, name.trim() || "guest");
 	};
 
 	const shown = localError ?? error;
@@ -65,6 +72,14 @@ export function ConnectScreen({ defaultName, error, onConnect }: ConnectScreenPr
 					/>
 				</label>
 				{shown && <div className="sh-connect-error">{shown}</div>}
+				{savedControlLink && (
+					<div className="sh-connect-restore">
+						<span>you have a saved control room</span>
+						<button type="button" className="sh-btn" onClick={restore}>
+							Restore
+						</button>
+					</div>
+				)}
 				<button className="sh-btn sh-btn-primary sh-connect-submit" type="submit">
 					Connect
 				</button>

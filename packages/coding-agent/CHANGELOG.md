@@ -4,6 +4,10 @@
 
 ### Added
 
+- Added session-room model frames to the collab host: guests can request the available models (`model-list`, answered after background discovery settles) and switch the session model (`model-change`, write-gated with the RPC `set_model` lookup semantics); the new model reaches every guest through the existing `state` broadcast.
+- Evolved `omp --mode core` into a multi-session engine: a process-wide `SessionRegistry` holds any number of concurrent sessions (created/resumed/dropped through a new `ctrl-` control room), `CollabHost` scopes agent snapshots and agent-cmd/transcript access to each session's own agent tree, and the core process now prints two deep links (`ctrl:` for the session sidebar, `session:` for the unchanged join/connect contract). Browser guests get a 260px session sidebar with list/create/resume/drop, live streaming dots, and an auto-return to the list when a session ends.
+- Added `asyncJobManager` injection to `CreateAgentSessionOptions` so in-process multi-session hosts can share the process singleton, gated `MCPManager.setInstance` to the first top-level session, and added MCP disconnect cleanup to the session-creation failure path.
+
 - Added `omp --mode core`, a headless session engine that prints a browser deep link and serves the collab web UI plus a local relay room on one loopback port; browsers and `omp join` TUI clients connect to the same running session as peers, and Ctrl+C exits cleanly with code 0. Compiled binaries embed the collab-web dist (base64-baked at build time, materialized to a content-hashed temp cache on first start) so `--mode core` works with no dist checkout or environment variable.
 
 - Added an i18n framework with natural-key `t()` translation (English source strings are the keys, zh-CN is a flat dictionary with English fallback) covering all user-visible terminal UI, dialogs, controllers, slash commands, CLI help and subcommand output, plus a new `display.language` setting ("English" or "简体中文") that applies immediately from the settings panel.
@@ -47,6 +51,7 @@
 - Changed the `/copy` picker to support mouse wheel navigation, click-to-copy row selection, and hover/drag row highlighting, matching `/resume` and `/tree`.
 - Changed the /copy picker preview to follow the hovered row while keeping Enter bound to the keyboard-selected target.
 - Changed mid-session `xd://` tool mounts to stop emitting a user-visible notice (`xdev: xd://: mounted …`), which flooded the status area when an MCP server mounted dozens of tools at once; the model-facing mount delta delivery is unchanged.
+- Changed the opt-in `display.collapseCompletedRuns` TUI setting to keep a completed run fully expanded while its answer is on screen and commit the collapse only when the user sends the next message, instead of collapsing the instant the model finishes its final text.
 
 ### Fixed
 

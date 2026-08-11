@@ -11,11 +11,14 @@ import type { ImageContent, Model } from "@oh-my-pi/pi-ai";
 import type {
 	BusChannel,
 	CollabUiRequest,
+	ControlGuestFrame,
+	ControlHostFrame,
 	GuestFrame,
 	ParsedCollabLink,
 	Participant,
 	SessionState,
 	AgentSnapshot as WireAgentSnapshot,
+	WireModel,
 } from "@oh-my-pi/pi-wire";
 import {
 	DEFAULT_RELAY_URL,
@@ -34,10 +37,14 @@ export type {
 	CollabUiRequestDraft,
 	CollabUiResponseValue,
 	CollabUiSelectItem,
+	ControlGuestFrame,
+	ControlHostFrame,
 	ParsedCollabLink,
 	RelayControlMessage,
 	RelayControlToGuest,
 	RelayControlToHost,
+	SessionStatus,
+	SessionSummary,
 } from "@oh-my-pi/pi-wire";
 export { COLLAB_PROMPT_MESSAGE_TYPE, COLLAB_PROTO } from "@oh-my-pi/pi-wire";
 export { DEFAULT_RELAY_URL, ENVELOPE_HEADER_LENGTH, ROOM_ID_BYTES };
@@ -102,8 +109,13 @@ export type CollabFrame =
 	| { t: "ui-request-end"; reqId: number }
 	/** Targeted reply to fetch-transcript; `error` marks a terminal read failure that guests must surface without hot retrying. */
 	| { t: "transcript"; reqId: number; text: string; newSize: number; error?: string }
+	/** Targeted reply to `model-list` (wire-shaped model descriptors). */
+	| { t: "model-list"; models: WireModel[] }
 	| { t: "bye"; reason: string }
-	| { t: "error"; message: string };
+	| { t: "error"; message: string }
+	// control-room frames (session registry / multi-session control)
+	| ControlGuestFrame
+	| ControlHostFrame;
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Wire envelope: [4B uint32 BE peerId][sealed payload]

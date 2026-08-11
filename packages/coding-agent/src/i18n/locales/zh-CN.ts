@@ -439,8 +439,8 @@ export const zhCN: Record<string, string> = {
 	"Advisor: on ({model})": "顾问: 开启（{model}）",
 	"Advisors enabled ({count}):": "已启用顾问（{count}）：",
 	"Advisor{name} unavailable for {model}: {message}": "顾问{name}对{model}不可用：{message}",
-	"After a request completes normally, show only its initial user request and final assistant answer":
-		"请求正常完成后，仅显示其初始用户请求和最终助手回答",
+	"Keep a completed run fully on screen while you read it; when you send your next message, collapse it to its initial request and final assistant answer":
+		"阅读时保持已完成轮次完整显示；发送下一条消息时，再将其折叠为初始请求和最终助手回答",
 	"After an advisor concern or blocker interrupts, route further concerns/blockers non-interruptingly for this many primary turns.":
 		"在顾问的顾虑或阻塞中断后，在接下来的这么多主轮次中，以非中断方式处理后续的顾虑/阻塞。",
 	"After the agent stops, nudge it to capture lessons to memory and create/enhance isolated managed skills":

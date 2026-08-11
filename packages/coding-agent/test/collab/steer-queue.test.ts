@@ -109,6 +109,8 @@ function makeStreamingHostContext(): StreamingHostHarness {
 			sessionName: "test",
 			model: undefined,
 			thinkingLevel: undefined,
+			// host.ts scopes agent snapshots to `getAgentScopeId()`.
+			getAgentScopeId: () => "sess-1",
 			subscribe: () => () => {},
 			emitNotice: () => {},
 			promptCustomMessage: (message: CapturedPrompt, options?: CapturedPrompt["options"]) => {

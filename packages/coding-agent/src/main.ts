@@ -109,7 +109,7 @@ type RunRpcMode = (
 type RunCoreMode = (
 	session: AgentSession,
 	eventBus?: EventBus,
-	options?: { openBrowser?: boolean },
+	options?: { openBrowser?: boolean; sessionOptions?: CreateAgentSessionOptions },
 ) => Promise<never>;
 
 export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string): void {
@@ -1742,9 +1742,20 @@ export async function runRootCommand(
 				)
 			: undefined;
 
+		// Core mode runs N sessions under one process; every top-level session
+		// carries a `session-<id>` agentId so CollabHost scopes agents per
+		// session. The default new-session path leaves sessionManager undefined
+		// (the SDK would mint one internally), so materialize it up front to
+		// know the id and thread it into the options.
+		if (mode === "core" && !sessionManager) {
+			sessionManager = SessionManager.create(cwd, parsedArgs.sessionDir);
+			sessionOptions.sessionManager = sessionManager;
+		}
+
 		const { session, setToolUIContext, modelFallbackMessage, lspServers, mcpManager, startDeferredMCPDiscovery } =
 			await createSession({
 				...sessionOptions,
+				...(mode === "core" && sessionManager ? { agentId: `session-${sessionManager.getSessionId()}` } : {}),
 				eventBus,
 				preloadedExtensions: extensionsResult,
 			});
@@ -1804,7 +1815,7 @@ export async function runRootCommand(
 			// Headless engine: browser/TUI peers connect through the local server.
 			const runCoreMode: RunCoreMode = (await import("./modes/core-mode")).runCoreMode;
 			stopStartupWatchdog();
-			await runCoreMode(session, eventBus, { openBrowser: !parsedArgs.noOpen });
+			await runCoreMode(session, eventBus, { openBrowser: !parsedArgs.noOpen, sessionOptions });
 		} else if (isInteractive) {
 			const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
 			const startupChangelog = await startupChangelogPromise;

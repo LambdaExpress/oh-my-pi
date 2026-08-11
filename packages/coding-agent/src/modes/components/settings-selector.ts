@@ -1336,7 +1336,9 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 				"Collapse pre-compaction history behind the summary divider on the live transcript; disable to keep the full transcript inline with dividers at each compaction point",
 			);
 		case "display.collapseCompletedRuns":
-			return t("After a request completes normally, show only its initial user request and final assistant answer");
+			return t(
+				"Keep a completed run fully on screen while you read it; when you send your next message, collapse it to its initial request and final assistant answer",
+			);
 		case "display.hideToolActivity":
 			return t("Hide model-initiated tool calls and results from the transcript");
 		case "display.language":
