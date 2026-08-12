@@ -28,6 +28,7 @@ import type { AgentSessionEvent } from "../session/agent-session";
 import { stripImagesFromMessage, USER_INTERRUPT_LABEL } from "../session/messages";
 import type { SessionEntry as StoredSessionEntry } from "../session/session-entries";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL } from "../task/types";
+import { AUTO_THINKING, type ConfiguredThinkingLevel, parseConfiguredThinkingLevel } from "../thinking";
 import { generateRoomKey, generateWriteToken, importRoomKey } from "./crypto";
 import { collabDisplayName } from "./display-name";
 import type { CollabHostContext } from "./host-context";
@@ -363,6 +364,9 @@ export class CollabHost {
 			case "model-change":
 				void this.#handleModelChange(frame.provider, frame.id, fromPeer);
 				break;
+			case "thinking-change":
+				this.#handleThinkingChange(frame.level, fromPeer);
+				break;
 			default:
 				logger.debug("collab host ignoring unexpected frame", { type: frame.t, fromPeer });
 		}
@@ -561,6 +565,30 @@ export class CollabHost {
 		}
 	}
 
+	/** Apply only a selector advertised for the active model, preserving `auto`. */
+	#handleThinkingChange(level: string, fromPeer: number): void {
+		if (!this.#peers.get(fromPeer)?.canWrite) {
+			this.#rejectReadOnly("changing thinking", fromPeer);
+			return;
+		}
+		const parsed = parseConfiguredThinkingLevel(level);
+		const available = this.#availableThinkingLevels();
+		if (!parsed || !available.includes(parsed)) {
+			this.#socket?.send(
+				{ t: "error", message: `Thinking level not supported by the current model: ${level}` },
+				fromPeer,
+			);
+			return;
+		}
+		this.#ctx.session.setThinkingLevel(parsed);
+		this.#scheduleStateBroadcast();
+	}
+
+	#availableThinkingLevels(): ConfiguredThinkingLevel[] {
+		if (!this.#ctx.session.model?.reasoning) return [];
+		return ["off", AUTO_THINKING, ...this.#ctx.session.getAvailableThinkingLevels()];
+	}
+
 	#handlePeerLeft(peer: number): void {
 		const name = this.#peers.get(peer)?.name;
 		this.#peers.delete(peer);
@@ -584,6 +612,8 @@ export class CollabHost {
 			cwd: this.#ctx.sessionManager.getCwd(),
 			model: session.model,
 			thinkingLevel: session.thinkingLevel,
+			configuredThinkingLevel: session.configuredThinkingLevel(),
+			availableThinkingLevels: this.#availableThinkingLevels(),
 			contextUsage: {
 				tokens,
 				contextWindow: breakdown.contextWindow,

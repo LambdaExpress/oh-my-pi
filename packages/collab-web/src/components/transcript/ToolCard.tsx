@@ -17,18 +17,20 @@ export interface ToolCardProps {
 
 /** Wire-type adapter over the shared per-tool renderer stack. */
 export const ToolCard = memo(function ToolCard(props: ToolCardProps): ReactNode {
-	const { name, intent, args, result, running, partialResult, host } = props;
+	const { toolCallId, name, intent, args, result, running, partialResult, host } = props;
 	const partial =
 		running && !result ? (typeof partialResult === "string" ? partialResult : messageText(partialResult)) : "";
 	return (
-		<ToolView
-			name={name}
-			args={args}
-			result={result}
-			running={running}
-			intent={intent}
-			partial={partial || undefined}
-			host={host}
-		/>
+		<div className="tr-tool-card" data-tool-call-id={toolCallId}>
+			<ToolView
+				name={name}
+				args={args}
+				result={result}
+				running={running}
+				intent={intent}
+				partial={partial || undefined}
+				host={host}
+			/>
+		</div>
 	);
 });

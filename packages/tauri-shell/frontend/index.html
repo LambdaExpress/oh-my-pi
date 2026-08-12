@@ -6,16 +6,46 @@
 		<title>omp shell</title>
 		<style>
 			:root {
-				color-scheme: dark;
-				--bg: #0f0a14;
-				--bg-raised: #171020;
-				--bg-overlay: #241a30;
-				--fg: #eae6f0;
-				--fg-muted: #a99fb8;
-				--fg-faint: #837a92;
-				--accent: #ed4abf;
-				--border: rgba(255, 255, 255, 0.09);
-				--border-strong: rgba(255, 255, 255, 0.14);
+				color-scheme: light dark;
+				--bg: #fcfcfb;
+				--bg-raised: #fdfdfc;
+				--bg-subtle: #f5f6f4;
+				--bg-hover: #eaebe9;
+				--fg: #202321;
+				--fg-muted: #565c58;
+				--fg-faint: #686e6a;
+				--accent: #0b74b1;
+				--accent-hover: #095f94;
+				--accent-fg: #f7fbfd;
+				--border: #dee1de;
+				--border-strong: #c9ceca;
+				--ring: rgb(11 116 177 / 38%);
+				--err: #b84242;
+				--err-muted: #f9eded;
+				--radius-sm: 6px;
+				--radius: 10px;
+				--radius-lg: 14px;
+				--shadow-pop: 0 14px 36px rgb(25 33 29 / 12%), 0 2px 8px rgb(25 33 29 / 7%);
+			}
+			@media (prefers-color-scheme: dark) {
+				:root {
+					--bg: #181a19;
+					--bg-raised: #222523;
+					--bg-subtle: #262a27;
+					--bg-hover: #303531;
+					--fg: #eef1ee;
+					--fg-muted: #b6bcb7;
+					--fg-faint: #929a94;
+					--accent: #56a9d5;
+					--accent-hover: #71b9de;
+					--accent-fg: #102a37;
+					--border: #343936;
+					--border-strong: #49504b;
+					--ring: rgb(86 169 213 / 48%);
+					--err: #df7777;
+					--err-muted: #382323;
+					--shadow-pop: 0 14px 36px rgb(0 0 0 / 38%), 0 2px 8px rgb(0 0 0 / 32%);
+				}
 			}
 			* {
 				box-sizing: border-box;
@@ -27,36 +57,35 @@
 				place-items: center;
 				background: var(--bg);
 				color: var(--fg);
-				font: 400 14px/1.5 ui-sans-serif, system-ui, "Segoe UI", "Helvetica Neue", sans-serif;
+				font: 400 14px/22px ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", sans-serif;
 				-webkit-font-smoothing: antialiased;
 			}
 			.card {
 				width: min(480px, calc(100vw - 48px));
-				padding: 28px;
+				padding: 32px;
 				background: var(--bg-raised);
 				border: 1px solid var(--border);
-				border-radius: 12px;
-				box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
+				border-radius: var(--radius-lg);
+				box-shadow: var(--shadow-pop);
 			}
 			h1 {
-				margin: 0 0 4px;
-				font-size: 20px;
+				margin: 0 0 8px;
+				font-size: 24px;
+				line-height: 32px;
 				font-weight: 600;
 			}
 			h1 .pi {
 				color: var(--accent);
 			}
 			.sub {
-				margin: 0 0 20px;
-				font-size: 12px;
+				margin: 0 0 24px;
+				font-size: 14px;
 				color: var(--fg-muted);
 			}
 			.section-label {
 				display: block;
 				margin-bottom: 8px;
-				font: 600 11px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
-				text-transform: uppercase;
-				letter-spacing: 0.06em;
+				font: 500 12px/16px ui-sans-serif, system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 				color: var(--fg-faint);
 			}
 			#recent {
@@ -68,33 +97,58 @@
 				gap: 6px;
 			}
 			#recent .empty {
-				padding: 10px 12px;
+				padding: 12px;
 				font-size: 13px;
 				color: var(--fg-faint);
 				border: 1px dashed var(--border);
-				border-radius: 8px;
+				border-radius: var(--radius);
 			}
 			.recent-item {
 				display: flex;
 				flex-direction: column;
 				gap: 2px;
 				width: 100%;
-				padding: 10px 12px;
+				padding: 12px;
 				text-align: left;
 				color: var(--fg);
-				background: var(--bg-overlay);
+				background: var(--bg-subtle);
 				border: 1px solid var(--border);
-				border-radius: 8px;
+				border-radius: var(--radius);
 				cursor: pointer;
 				transition: border-color 140ms ease-out, background 140ms ease-out;
 			}
 			.recent-item:hover {
 				border-color: var(--border-strong);
-				background: #2b2038;
+				background: var(--bg-hover);
+			}
+			.recent-item[aria-current="true"] {
+				border-color: var(--border-strong);
+				background: var(--bg-hover);
+			}
+			.recent-item:focus-visible,
+			button.open:focus-visible {
+				outline: 2px solid var(--accent);
+				outline-offset: 2px;
+				box-shadow: 0 0 0 4px var(--ring);
 			}
 			.recent-item .name {
 				font-size: 13px;
 				font-weight: 600;
+			}
+			.recent-item .name-row {
+				display: flex;
+				gap: 8px;
+				align-items: center;
+			}
+			.recent-item .current-label {
+				padding: 1px 6px;
+				font-size: 10px;
+				font-weight: 500;
+				line-height: 16px;
+				color: var(--fg-muted);
+				background: var(--bg-raised);
+				border: 1px solid var(--border);
+				border-radius: var(--radius-sm);
 			}
 			.recent-item .path {
 				font: 400 11px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace;
@@ -110,26 +164,28 @@
 				margin-bottom: 18px;
 			}
 			button.open {
-				padding: 8px 14px;
+				min-height: 36px;
+				padding: 8px 16px;
 				font-size: 13px;
 				font-weight: 500;
-				color: #1a0f18;
+				color: var(--accent-fg);
 				background: var(--accent);
 				border: none;
-				border-radius: 8px;
+				border-radius: var(--radius);
 				cursor: pointer;
+				transition: background 140ms ease-out;
 			}
 			button.open:hover {
-				filter: brightness(1.06);
+				background: var(--accent-hover);
 			}
 			#err {
 				margin: 0 0 12px;
-				padding: 8px 10px;
+				padding: 8px 12px;
 				font-size: 12px;
-				color: #ffb4a8;
-				background: rgba(255, 60, 60, 0.12);
-				border: 1px solid rgba(255, 90, 90, 0.35);
-				border-radius: 8px;
+				color: var(--err);
+				background: var(--err-muted);
+				border: 1px solid var(--err);
+				border-radius: var(--radius);
 				word-break: break-all;
 			}
 			#err[hidden] {
@@ -139,6 +195,27 @@
 				margin: 0;
 				font: 400 11px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
 				color: var(--fg-faint);
+			}
+			@media (max-width: 640px) {
+				body {
+					place-items: start center;
+					padding-block: 24px;
+				}
+				.card {
+					width: calc(100vw - 24px);
+					padding: 24px;
+				}
+				.recent-item,
+				button.open {
+					min-height: 44px;
+				}
+			}
+			@media (prefers-reduced-motion: reduce) {
+				*,
+				*::before,
+				*::after {
+					transition-duration: 0.01ms !important;
+				}
 			}
 		</style>
 	</head>
@@ -151,7 +228,7 @@
 			<div class="actions">
 				<button type="button" class="open" id="open">打开其他项目…</button>
 			</div>
-			<p id="err" hidden></p>
+			<p id="err" role="alert" aria-live="assertive" hidden></p>
 			<p class="foot" id="version"></p>
 		</div>
 		<script>
@@ -188,17 +265,30 @@
 						return;
 					}
 					for (const path of items) {
+						const current = path === list.current_project;
 						const li = document.createElement("li");
 						const btn = document.createElement("button");
 						btn.type = "button";
 						btn.className = "recent-item";
+						if (current) {
+							btn.setAttribute("aria-current", "true");
+						}
+						const nameRow = document.createElement("span");
+						nameRow.className = "name-row";
 						const name = document.createElement("span");
 						name.className = "name";
 						name.textContent = path.split(/[\\/]/).filter(Boolean).pop() || path;
+						nameRow.appendChild(name);
+						if (current) {
+							const currentLabel = document.createElement("span");
+							currentLabel.className = "current-label";
+							currentLabel.textContent = "当前";
+							nameRow.appendChild(currentLabel);
+						}
 						const pathSpan = document.createElement("span");
 						pathSpan.className = "path";
 						pathSpan.textContent = path;
-						btn.append(name, pathSpan);
+						btn.append(nameRow, pathSpan);
 						btn.addEventListener("click", () => openProject(path));
 						li.appendChild(btn);
 						ul.appendChild(li);

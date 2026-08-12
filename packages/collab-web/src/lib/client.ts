@@ -199,6 +199,10 @@ export class GuestClient {
 		this.#socket.send({ t: "model-change", provider, id });
 	}
 
+	sendThinkingChange(level: string): void {
+		this.#socket.send({ t: "thinking-change", level });
+	}
+
 	sendAgentCmd(cmd: "chat" | "kill" | "revive", agentId: string, text?: string): void {
 		this.#socket.send({ t: "agent-cmd", cmd, agentId, text });
 	}

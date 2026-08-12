@@ -310,6 +310,20 @@ describe("GuestClient frame apply", () => {
 		}
 	});
 
+	it("sends a thinking-change frame for the selected host-advertised level", () => {
+		const sent: GuestFrame[] = [];
+		const sendSpy = vi.spyOn(CollabSocket.prototype, "send").mockImplementation((frame: GuestFrame) => {
+			sent.push(frame);
+		});
+		try {
+			const client = liveClient();
+			client.sendThinkingChange("high");
+			expect(sent).toEqual([{ t: "thinking-change", level: "high" }]);
+		} finally {
+			sendSpy.mockRestore();
+		}
+	});
+
 	it("clears pending host UI requests when the host ends them", () => {
 		const client = liveClient();
 		client.applyFrameForTest({

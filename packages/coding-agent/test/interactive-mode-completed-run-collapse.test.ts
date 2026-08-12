@@ -175,16 +175,7 @@ describe("InteractiveMode completed-run collapse", () => {
 			timestamp: 7,
 		} as AgentMessage;
 		const finalB = assistant([{ type: "text", text: "done" }], "stop", 8);
-		const messages = [
-			initialA,
-			loopA,
-			resultA,
-			abortedA,
-			initialB,
-			loopB,
-			resultB,
-			finalB,
-		] as AgentMessage[];
+		const messages = [initialA, loopA, resultA, abortedA, initialB, loopB, resultB, finalB] as AgentMessage[];
 		const context = {
 			messages,
 			models: {},

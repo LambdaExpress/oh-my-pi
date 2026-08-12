@@ -64,6 +64,7 @@ const transcriptDecoder = new TextDecoder();
 let lastEntryId: string | null = entries[entries.length - 1]?.id ?? null;
 let streaming = false;
 let queuedPrompts = 0;
+let configuredThinkingLevel = "medium";
 let turnSeq = 0;
 let liveEntrySeq = 0;
 let replayQueue: ScriptedStep[] = [];
@@ -102,7 +103,9 @@ function buildState(): SessionState {
 		sessionName: fixtureHeader.title,
 		cwd: fixtureHeader.cwd,
 		model: fixtureModel,
-		thinkingLevel: "medium",
+		thinkingLevel: configuredThinkingLevel === "auto" ? "medium" : configuredThinkingLevel,
+		configuredThinkingLevel,
+		availableThinkingLevels: ["off", "auto", "low", "medium", "high"],
 		contextUsage: {
 			tokens,
 			contextWindow: fixtureModel.contextWindow,
@@ -266,6 +269,12 @@ function handleFrame(frame: WireFrame, fromPeer: number): void {
 			break;
 		case "fetch-transcript":
 			handleFetchTranscript(frame.reqId, frame.fromByte, fromPeer);
+			break;
+		case "thinking-change":
+			if (["off", "auto", "low", "medium", "high"].includes(frame.level)) {
+				configuredThinkingLevel = frame.level;
+				broadcastState();
+			}
 			break;
 		default:
 			// Host-frame echoes or unknown types: ignore.

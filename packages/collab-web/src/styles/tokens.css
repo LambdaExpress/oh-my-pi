@@ -1,116 +1,172 @@
-/* Design tokens — omp brand palette: deep-purple surfaces, pink accent, cyan
- * focus ring. Dark is the default; `[data-theme="light"]` and the
- * prefers-color-scheme light fallback flip to light surfaces.
- * The ONLY file allowed to contain raw color values. */
+/* Codex-style desktop design tokens.
+ * Raw color values belong here; component styles consume semantic tokens only.
+ * Light is the visual reference, while the product preference remains System. */
 :root {
-	color-scheme: dark;
+	color-scheme: light dark;
 
-	/* surfaces — neutral ramp tinted by the brand purple (hue 307, anchored to #0f0a14) */
-	--bg: oklch(0.16 0.02 307);
-	--bg-raised: oklch(0.19 0.022 307);
-	--bg-inset: oklch(0.13 0.016 307);
-	--bg-overlay: oklch(0.235 0.026 307);
+	/* light surfaces */
+	--bg: #fcfcfb;
+	--bg-sidebar: #f2f2f1;
+	--bg-raised: #fdfdfc;
+	--bg-subtle: #f5f6f4;
+	--bg-inset: #f5f6f4;
+	--bg-overlay: #f5f6f4;
+	--bg-hover: #eaebe9;
+	--bg-selected: #e1e4e2;
 
 	/* text */
-	--fg: oklch(0.92 0.01 307);
-	--fg-muted: oklch(0.71 0.016 307);
-	--fg-faint: oklch(0.53 0.018 307);
+	--fg: #202321;
+	--fg-muted: #565c58;
+	--fg-faint: #686e6a;
 
-	/* one accent: brand pink (#ed4abf) */
-	--accent: oklch(0.674 0.23 341);
-	--accent-fg: oklch(0.2 0.07 341);
-	--accent-muted: oklch(0.674 0.23 341 / 18%);
+	/* interaction */
+	--accent: #0b74b1;
+	--accent-hover: #095f94;
+	--accent-muted: #e5f2f8;
+	--accent-fg: #f7fbfd;
+	--brand-mark-gradient: linear-gradient(135deg, #0b74b1 0%, #3488b8 100%);
 
-	/* brand lockup */
-	--brand-mark-gradient: linear-gradient(135deg, #ed4abf 0%, #9b4dff 50%, #5ad8e6 100%);
+	/* semantic status */
+	--ok: #2b7f53;
+	--warn: #b96522;
+	--err: #b84242;
 
-	/* status — used sparingly */
-	--ok: oklch(0.76 0.14 150);
-	--warn: oklch(0.79 0.14 85);
-	--err: oklch(0.66 0.19 25);
+	/* hairlines, focus, and overlays */
+	--border: #dee1de;
+	--border-strong: #c9ceca;
+	--ring: rgb(11 116 177 / 38%);
+	--backdrop: rgb(28 35 31 / 18%);
 
-	/* hairlines */
-	--border: oklch(1 0 0 / 9%);
-	--border-strong: oklch(1 0 0 / 13%);
-	/* focus ring: brand cyan (#5ad8e6) — distinct from the accent */
-	--ring: oklch(0.817 0.112 205 / 70%);
-
-	/* type — system stacks only */
-	--font-ui: ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
+	/* system type stacks */
+	--font-ui: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei",
+		"Helvetica Neue", sans-serif;
 	--font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Menlo, Consolas, monospace;
 
-	/* radii */
-	--radius-sm: 3px;
-	--radius: 6px;
-	--radius-lg: 8px;
+	/* 4px-based geometry */
+	--radius-sm: 6px;
+	--radius: 10px;
+	--radius-lg: 14px;
+	--radius-xl: 20px;
 
-	/* non-pinned helpers (kept here so no raw colors leak outside this file) */
-	--shadow-overlay: 0 12px 32px oklch(0 0 0 / 45%), 0 2px 8px oklch(0 0 0 / 30%);
-	--shadow-pop: 0 6px 20px oklch(0 0 0 / 38%), 0 2px 6px oklch(0 0 0 / 26%);
-	--rail-mobile-shadow: -4px 0 16px oklch(0 0 0 / 30%);
-	--backdrop: oklch(0.1 0.014 307 / 62%);
+	/* elevation is reserved for composers, popovers, drawers, and overlays */
+	--shadow-composer: 0 10px 30px rgb(25 33 29 / 8%), 0 1px 3px rgb(25 33 29 / 8%);
+	--shadow-pop: 0 14px 36px rgb(25 33 29 / 12%), 0 2px 8px rgb(25 33 29 / 7%);
+	--shadow-overlay: 0 14px 36px rgb(25 33 29 / 12%), 0 2px 8px rgb(25 33 29 / 7%);
+	--rail-mobile-shadow: 4px 0 24px rgb(25 33 29 / 14%);
 }
 
-/* Light theme — explicit override (toggle writes data-theme="light"). */
+/* Explicit light preference. This also wins when the operating system is dark. */
 [data-theme="light"] {
 	color-scheme: light;
 
-	--bg: oklch(0.985 0.004 307);
-	--bg-raised: oklch(1 0 0);
-	--bg-inset: oklch(0.95 0.006 307);
-	--bg-overlay: oklch(0.965 0.006 307);
+	--bg: #fcfcfb;
+	--bg-sidebar: #f2f2f1;
+	--bg-raised: #fdfdfc;
+	--bg-subtle: #f5f6f4;
+	--bg-inset: #f5f6f4;
+	--bg-overlay: #f5f6f4;
+	--bg-hover: #eaebe9;
+	--bg-selected: #e1e4e2;
 
-	--fg: oklch(0.26 0.03 307);
-	--fg-muted: oklch(0.46 0.03 307);
-	--fg-faint: oklch(0.58 0.025 307);
+	--fg: #202321;
+	--fg-muted: #565c58;
+	--fg-faint: #686e6a;
 
-	--accent: oklch(0.62 0.23 341);
-	--accent-fg: oklch(0.99 0.01 341);
-	--accent-muted: oklch(0.62 0.23 341 / 14%);
+	--accent: #0b74b1;
+	--accent-hover: #095f94;
+	--accent-muted: #e5f2f8;
+	--accent-fg: #f7fbfd;
+	--brand-mark-gradient: linear-gradient(135deg, #0b74b1 0%, #3488b8 100%);
 
-	--ok: oklch(0.55 0.13 150);
-	--warn: oklch(0.6 0.13 85);
-	--err: oklch(0.55 0.19 25);
+	--ok: #2b7f53;
+	--warn: #b96522;
+	--err: #b84242;
 
-	--border: oklch(0 0 0 / 10%);
-	--border-strong: oklch(0 0 0 / 15%);
-	--ring: oklch(0.58 0.13 230 / 70%);
+	--border: #dee1de;
+	--border-strong: #c9ceca;
+	--ring: rgb(11 116 177 / 38%);
+	--backdrop: rgb(28 35 31 / 18%);
 
-	--shadow-overlay: 0 12px 32px oklch(0 0 0 / 14%), 0 2px 8px oklch(0 0 0 / 10%);
-	--shadow-pop: 0 6px 20px oklch(0 0 0 / 12%), 0 2px 6px oklch(0 0 0 / 9%);
-	--rail-mobile-shadow: -4px 0 16px oklch(0 0 0 / 14%);
-	--backdrop: oklch(0.55 0.02 307 / 28%);
+	--shadow-composer: 0 10px 30px rgb(25 33 29 / 8%), 0 1px 3px rgb(25 33 29 / 8%);
+	--shadow-pop: 0 14px 36px rgb(25 33 29 / 12%), 0 2px 8px rgb(25 33 29 / 7%);
+	--shadow-overlay: 0 14px 36px rgb(25 33 29 / 12%), 0 2px 8px rgb(25 33 29 / 7%);
+	--rail-mobile-shadow: 4px 0 24px rgb(25 33 29 / 14%);
 }
 
-/* Light theme — system fallback when no explicit preference is stored. */
-@media (prefers-color-scheme: light) {
+/* Explicit dark preference. */
+[data-theme="dark"] {
+	color-scheme: dark;
+
+	--bg: #181a19;
+	--bg-sidebar: #202321;
+	--bg-raised: #222523;
+	--bg-subtle: #262a27;
+	--bg-inset: #151716;
+	--bg-overlay: #2a2e2b;
+	--bg-hover: #303531;
+	--bg-selected: #39403b;
+
+	--fg: #eef1ee;
+	--fg-muted: #b6bcb7;
+	--fg-faint: #929a94;
+
+	--accent: #56a9d5;
+	--accent-hover: #71b9de;
+	--accent-muted: #173e52;
+	--accent-fg: #102a37;
+	--brand-mark-gradient: linear-gradient(135deg, #56a9d5 0%, #79b9d8 100%);
+
+	--ok: #69b98d;
+	--warn: #d69558;
+	--err: #df7777;
+
+	--border: #343936;
+	--border-strong: #49504b;
+	--ring: rgb(86 169 213 / 48%);
+	--backdrop: rgb(5 8 6 / 58%);
+
+	--shadow-composer: 0 10px 30px rgb(0 0 0 / 28%), 0 1px 3px rgb(0 0 0 / 32%);
+	--shadow-pop: 0 14px 36px rgb(0 0 0 / 38%), 0 2px 8px rgb(0 0 0 / 32%);
+	--shadow-overlay: 0 14px 36px rgb(0 0 0 / 42%), 0 2px 8px rgb(0 0 0 / 34%);
+	--rail-mobile-shadow: 4px 0 24px rgb(0 0 0 / 38%);
+}
+
+/* System fallback before the first-paint script resolves an explicit data-theme. */
+@media (prefers-color-scheme: dark) {
 	:root:not([data-theme]) {
-		color-scheme: light;
+		color-scheme: dark;
 
-		--bg: oklch(0.985 0.004 307);
-		--bg-raised: oklch(1 0 0);
-		--bg-inset: oklch(0.95 0.006 307);
-		--bg-overlay: oklch(0.965 0.006 307);
+		--bg: #181a19;
+		--bg-sidebar: #202321;
+		--bg-raised: #222523;
+		--bg-subtle: #262a27;
+		--bg-inset: #151716;
+		--bg-overlay: #2a2e2b;
+		--bg-hover: #303531;
+		--bg-selected: #39403b;
 
-		--fg: oklch(0.26 0.03 307);
-		--fg-muted: oklch(0.46 0.03 307);
-		--fg-faint: oklch(0.58 0.025 307);
+		--fg: #eef1ee;
+		--fg-muted: #b6bcb7;
+		--fg-faint: #929a94;
 
-		--accent: oklch(0.62 0.23 341);
-		--accent-fg: oklch(0.99 0.01 341);
-		--accent-muted: oklch(0.62 0.23 341 / 14%);
+		--accent: #56a9d5;
+		--accent-hover: #71b9de;
+		--accent-muted: #173e52;
+		--accent-fg: #102a37;
+		--brand-mark-gradient: linear-gradient(135deg, #56a9d5 0%, #79b9d8 100%);
 
-		--ok: oklch(0.55 0.13 150);
-		--warn: oklch(0.6 0.13 85);
-		--err: oklch(0.55 0.19 25);
+		--ok: #69b98d;
+		--warn: #d69558;
+		--err: #df7777;
 
-		--border: oklch(0 0 0 / 10%);
-		--border-strong: oklch(0 0 0 / 15%);
-		--ring: oklch(0.58 0.13 230 / 70%);
+		--border: #343936;
+		--border-strong: #49504b;
+		--ring: rgb(86 169 213 / 48%);
+		--backdrop: rgb(5 8 6 / 58%);
 
-		--shadow-overlay: 0 12px 32px oklch(0 0 0 / 14%), 0 2px 8px oklch(0 0 0 / 10%);
-		--shadow-pop: 0 6px 20px oklch(0 0 0 / 12%), 0 2px 6px oklch(0 0 0 / 9%);
-		--backdrop: oklch(0.55 0.02 307 / 28%);
-		--rail-mobile-shadow: -4px 0 16px oklch(0 0 0 / 14%);
+		--shadow-composer: 0 10px 30px rgb(0 0 0 / 28%), 0 1px 3px rgb(0 0 0 / 32%);
+		--shadow-pop: 0 14px 36px rgb(0 0 0 / 38%), 0 2px 8px rgb(0 0 0 / 32%);
+		--shadow-overlay: 0 14px 36px rgb(0 0 0 / 42%), 0 2px 8px rgb(0 0 0 / 34%);
+		--rail-mobile-shadow: 4px 0 24px rgb(0 0 0 / 38%);
 	}
 }

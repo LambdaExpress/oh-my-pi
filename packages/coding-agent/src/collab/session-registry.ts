@@ -17,14 +17,14 @@ import { MCPManager } from "../mcp";
 // to run it). Safe: the binding is only invoked at call time inside
 // #provisionSession, long after both modules finished evaluating.
 import { createHeadlessCollabContext } from "../modes/core-mode";
-import { parseCollabLink, type SessionSummary } from "./protocol";
-import { createAgentSession, type CreateAgentSessionOptions } from "../sdk";
+import { type CreateAgentSessionOptions, createAgentSession } from "../sdk";
 import type { AgentSession, AgentSessionEvent } from "../session/agent-session";
 import { listSessions, resolveResumableSession } from "../session/session-listing";
 import { SessionManager } from "../session/session-manager";
 import { FileSessionStorage } from "../session/session-storage";
 import { EventBus } from "../utils/event-bus";
 import { CollabHost } from "./host";
+import { parseCollabLink, type SessionSummary } from "./protocol";
 
 /** One live session tracked by the registry. */
 export interface ManagedSession {
@@ -298,16 +298,16 @@ export class SessionRegistry {
 			state: "running",
 		};
 		this.#active.set(id, entry);
-		this.#streamingUnsubs.set(id, session.subscribe(event => this.#onSessionEventFor(entry, event)));
+		this.#streamingUnsubs.set(
+			id,
+			session.subscribe(event => this.#onSessionEventFor(entry, event)),
+		);
 		this.#emitChange();
 		return { id, link: host.webLink };
 	}
 
 	/** Idempotent best-effort teardown after a failed provision; never throws. */
-	async #cleanupFailedProvision(
-		host: CollabHost | undefined,
-		session: AgentSession | undefined,
-	): Promise<void> {
+	async #cleanupFailedProvision(host: CollabHost | undefined, session: AgentSession | undefined): Promise<void> {
 		try {
 			await host?.stop("create failed");
 		} catch (err) {

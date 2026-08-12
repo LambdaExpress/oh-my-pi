@@ -5,8 +5,8 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import {
-	collapseCompletedRuns,
 	type CompletedRunCollapse,
+	collapseCompletedRuns,
 } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
 import { Text } from "@oh-my-pi/pi-tui";
 
@@ -373,7 +373,10 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "message_end", message: resultB2 });
 		now.mockReturnValue(320_000);
 		await controller.handleEvent({ type: "message_end", message: finalB });
-		await controller.handleEvent({ type: "agent_end", messages: [steer, loopB1, resultB1, loopB2, resultB2, finalB] });
+		await controller.handleEvent({
+			type: "agent_end",
+			messages: [steer, loopB1, resultB1, loopB2, resultB2, finalB],
+		});
 
 		// The chain stays fully expanded while B's answer is on screen: neither
 		// the interruption nor B's settle commits the collapse.
@@ -542,17 +545,11 @@ describe("completed run collapse", () => {
 		const [aCollapse, bCollapse, cCollapse] = recordCompletedRunCollapse.mock.calls.map(
 			call => call[0] as CompletedRunCollapse,
 		);
-		expect(aCollapse).toEqual(
-			expect.objectContaining({ initialUserMessage: initial, spanEndMessage: interruptedA }),
-		);
+		expect(aCollapse).toEqual(expect.objectContaining({ initialUserMessage: initial, spanEndMessage: interruptedA }));
 		expect(aCollapse.finalAssistantMessage).toBeUndefined();
-		expect(bCollapse).toEqual(
-			expect.objectContaining({ initialUserMessage: steerB, spanEndMessage: interruptedB }),
-		);
+		expect(bCollapse).toEqual(expect.objectContaining({ initialUserMessage: steerB, spanEndMessage: interruptedB }));
 		expect(bCollapse.finalAssistantMessage).toBeUndefined();
-		expect(cCollapse).toEqual(
-			expect.objectContaining({ initialUserMessage: steerC, finalAssistantMessage: finalC }),
-		);
+		expect(cCollapse).toEqual(expect.objectContaining({ initialUserMessage: steerC, finalAssistantMessage: finalC }));
 		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
 	});

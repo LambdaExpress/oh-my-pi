@@ -14,11 +14,10 @@ import {
 	COLLAB_PROTO,
 	type CollabFrame,
 	type ControlGuestFrame,
-	type ControlHostFrame,
-	type SessionSummary,
 	formatCollabWebLink,
 	generateRoomId,
 	parseCollabLink,
+	type SessionSummary,
 } from "./protocol";
 import { CollabSocket } from "./relay-client";
 import type { SessionRegistry } from "./session-registry";

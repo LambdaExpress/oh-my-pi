@@ -1,5 +1,5 @@
 /**
- * End-to-end contract for the session-room model frames (proto v4): guests
+ * End-to-end contract for the session-room model and thinking controls (proto v4): guests
  * request the available models with `model-list` (targeted reply after
  * background discovery settles) and switch the session model with
  * `model-change` (write-gated; unknown models and setModel failures surface
@@ -21,6 +21,9 @@ interface ModelHarness {
 	refreshCount: number;
 	/** Models the stub session accepted via setModel, in call order. */
 	switched: { provider: string; id: string }[];
+	/** Thinking selectors the stub session accepted, in call order. */
+	thinkingChanges: string[];
+	configuredThinkingLevel: string;
 	setModelError?: Error;
 	ctx: InteractiveModeContext;
 }
@@ -31,6 +34,8 @@ function makeHostContext(): ModelHarness {
 		models,
 		refreshCount: 0,
 		switched: [],
+		thinkingChanges: [],
+		configuredThinkingLevel: "medium",
 		ctx: undefined as unknown as InteractiveModeContext,
 	};
 	const ctx = {
@@ -48,8 +53,20 @@ function makeHostContext(): ModelHarness {
 			isStreaming: false,
 			queuedMessageCount: 0,
 			sessionName: "models",
-			model: undefined,
-			thinkingLevel: undefined,
+			model: {
+				id: "opus",
+				name: "Opus",
+				provider: "anthropic",
+				contextWindow: 200_000,
+				reasoning: true,
+			},
+			thinkingLevel: "medium",
+			configuredThinkingLevel: () => harness.configuredThinkingLevel,
+			getAvailableThinkingLevels: () => ["low", "medium", "high"],
+			setThinkingLevel: (level: string) => {
+				harness.configuredThinkingLevel = level;
+				harness.thinkingChanges.push(level);
+			},
 			getAgentScopeId: () => "sess-models",
 			subscribe: () => () => {},
 			emitNotice: () => {},
@@ -95,7 +112,7 @@ const FILTERED_FRAME_TYPES: Record<string, true> = {
 	"snapshot-chunk": true,
 };
 
-async function joinAsGuest(link: string, name: string): Promise<TestGuest> {
+async function joinAsGuest(link: string, name: string, includeState = false): Promise<TestGuest> {
 	const parsed = parseCollabLink(link);
 	if ("error" in parsed) throw new Error(parsed.error);
 	const writeToken = parsed.writeToken ? Buffer.from(parsed.writeToken).toString("base64url") : undefined;
@@ -104,7 +121,7 @@ async function joinAsGuest(link: string, name: string): Promise<TestGuest> {
 	const queue: CollabFrame[] = [];
 	const waiters: ((frame: CollabFrame) => void)[] = [];
 	socket.onFrame = frame => {
-		if (FILTERED_FRAME_TYPES[frame.t]) return;
+		if (FILTERED_FRAME_TYPES[frame.t] && !(includeState && frame.t === "state")) return;
 		const waiter = waiters.shift();
 		if (waiter) waiter(frame);
 		else queue.push(frame);
@@ -151,6 +168,17 @@ afterEach(() => {
 });
 
 describe("collab session-room model frames", () => {
+	it("advertises the current configured thinking selector and model-supported choices", async () => {
+		const guest = await joinAsGuest(host.link, "thinking-browser");
+		guestCleanups.push(() => guest.socket.close());
+		const welcome = await guest.nextFrame();
+		if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
+
+		expect(welcome.state.thinkingLevel).toBe("medium");
+		expect(welcome.state.configuredThinkingLevel).toBe("medium");
+		expect(welcome.state.availableThinkingLevels).toEqual(["off", "auto", "low", "medium", "high"]);
+	});
+
 	it("replies to model-list with the available models mapped to wire shape after discovery", async () => {
 		const guest = await joinAsGuest(host.link, "model-browser");
 		guestCleanups.push(() => guest.socket.close());
@@ -222,5 +250,38 @@ describe("collab session-room model frames", () => {
 		const reply = await guest.nextFrame();
 		expect(reply).toEqual({ t: "error", message: "Error: provider session reset failed" });
 		expect(harness.switched).toEqual([]);
+	});
+
+	it("changes thinking for a writable guest and rejects unsupported selectors", async () => {
+		const guest = await joinAsGuest(host.link, "thinking-switcher", true);
+		guestCleanups.push(() => guest.socket.close());
+		const welcome = await guest.nextFrame();
+		if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
+
+		guest.socket.send({ t: "thinking-change", level: "high" });
+		let update = await guest.nextFrame();
+		while (update.t === "state" && update.state.configuredThinkingLevel !== "high") {
+			update = await guest.nextFrame();
+		}
+		if (update.t !== "state") throw new Error(`expected state, got ${update.t}`);
+		expect(update.state.configuredThinkingLevel).toBe("high");
+		expect(harness.thinkingChanges).toEqual(["high"]);
+
+		guest.socket.send({ t: "thinking-change", level: "max" });
+		const reply = await guest.nextFrame();
+		expect(reply).toEqual({ t: "error", message: "Thinking level not supported by the current model: max" });
+		expect(harness.thinkingChanges).toEqual(["high"]);
+	});
+
+	it("rejects thinking changes from a read-only guest", async () => {
+		const guest = await joinAsGuest(host.viewLink, "thinking-viewer");
+		guestCleanups.push(() => guest.socket.close());
+		const welcome = await guest.nextFrame();
+		if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
+
+		guest.socket.send({ t: "thinking-change", level: "low" });
+		const reply = await guest.nextFrame();
+		expect(reply).toEqual({ t: "error", message: "changing thinking is disabled on a read-only link" });
+		expect(harness.thinkingChanges).toEqual([]);
 	});
 });

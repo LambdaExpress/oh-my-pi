@@ -4,8 +4,10 @@
 
 ### Added
 
-- Added a model picker to the session header (dropdown fed by the `model-list`/`model-change` frames, current model highlighted) and a settings panel with light/dark theme radios over the existing `omp-collab-theme` store, opened from a header settings button; the standalone theme toggle moved into the panel.
-- Added a control-room client and session sidebar for core-mode multi-session management: `ctrl-` links open a 260px session list with create/resume/drop actions, live streaming indicators, and auto-return to the list when an opened session ends; plain session links keep the existing single-session behavior.
+- Redesigned the collab desktop and browser interface with 288px project-aware navigation, neutral light/dark themes, a conversational transcript, centered Composer, focused General/Appearance settings, responsive overlays, and accessible session/agent controls while preserving the existing wire protocol and session behavior.
+- Added a Composer model picker backed by the existing `model-list`/`model-change` frames, with the current model highlighted and all mutations disabled for read-only or unavailable sessions.
+- Added a Composer thinking-level selector backed by host-advertised model capabilities and the write-gated `thinking-change` frame, including Auto and every effort supported by the active model.
+- Added a control-room client and project/session sidebar for core-mode multi-session management, including serialized create/resume actions, authoritative active-session highlighting, accurate read-only summaries, and an ended-session recovery card that replaces the Composer.
 
 ## [17.2.10] - 2026-08-06
 

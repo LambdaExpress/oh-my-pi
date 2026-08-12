@@ -58,7 +58,7 @@ export async function generateCollabWebEmbed(repoRoot: string): Promise<void> {
 		if (await Bun.file(path.join(distDir, "index.html")).exists()) {
 			const rels = await scanFiles(distDir, "");
 			const entries = await Promise.all(
-				rels.map(async rel => [rel, (await Bun.file(path.join(distDir, rel)).arrayBuffer())] as const),
+				rels.map(async rel => [rel, await Bun.file(path.join(distDir, rel)).arrayBuffer()] as const),
 			);
 			files = Object.fromEntries(entries.map(([rel, bytes]) => [rel, Buffer.from(bytes).toString("base64")]));
 		}

@@ -1841,9 +1841,7 @@ export class EventController {
 			const matchingPending = this.#pendingCompletedRuns.find(
 				pending =>
 					pending.span.initialUserMessage &&
-					event.messages.some(message =>
-						isSameTranscriptMessage(message, pending.span.initialUserMessage!),
-					),
+					event.messages.some(message => isSameTranscriptMessage(message, pending.span.initialUserMessage!)),
 			);
 			if (matchingPending) {
 				matchingPending.endMessage = event.messages[event.messages.length - 1];

@@ -1,68 +1,85 @@
-/* Transcript — dense gutter-labeled rows, terminal heritage. tr-* namespace. */
+/* Transcript — conversational message flow with transcript-owned renderer chrome. tr-* namespace. */
 
 .tr-root {
 	height: 100%;
-	overflow-y: auto;
 	overflow-x: hidden;
-	padding: 12px 16px 24px;
-	font-family: var(--font-ui);
-	font-size: 13px;
-	line-height: 1.5;
+	overflow-y: auto;
+	padding: 24px 28px 176px;
 	color: var(--fg);
+	font-family: var(--font-ui);
+	font-size: 14px;
+	line-height: 1.55;
 }
 
 .tr-empty {
-	padding: 24px 0;
-	text-align: center;
+	padding: 48px 0;
 	color: var(--fg-faint);
-	font-family: var(--font-mono);
-	font-size: 12px;
+	font-size: 13px;
+	text-align: center;
 }
 
-/* ---- rows ---- */
+/* ---- message flow ---- */
 
 .tr-row {
-	display: grid;
-	grid-template-columns: 72px minmax(0, 1fr);
-	gap: 0 12px;
-	padding: 5px 0;
-}
-
-.tr-gutter {
-	padding-top: 3px;
-	text-align: right;
-	font-family: var(--font-mono);
-	font-size: 10px;
-	font-weight: 500;
-	text-transform: uppercase;
-	letter-spacing: 0.08em;
-	color: var(--fg-faint);
-	user-select: none;
-}
-
-.tr-row--user .tr-gutter {
-	color: var(--accent);
-}
-
-.tr-body {
-	min-width: 0;
 	display: flex;
 	flex-direction: column;
 	align-items: flex-start;
-	gap: 4px;
+	width: 100%;
+	min-width: 0;
+	margin: 0 0 24px;
 }
 
-.tr-row--assistant .tr-body {
+.tr-row--user {
+	align-items: flex-end;
+}
+
+/* Speaker identity remains available to assistive technology without recreating
+ * the former visual author column or adding a visible display-name badge. */
+.tr-speaker {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0 0 0 0);
+	clip-path: inset(50%);
+	white-space: nowrap;
+	border: 0;
+}
+
+.tr-body {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
 	gap: 8px;
+	width: 100%;
+	min-width: 0;
 }
 
-.tr-body > .tr-md {
-	align-self: stretch;
+.tr-row--user .tr-body {
+	width: fit-content;
+	max-width: min(78%, 640px);
+	padding: 10px 14px;
+	border-radius: var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg);
+	background: var(--bg-subtle);
 }
 
+.tr-row--user .tr-md,
+.tr-row--assistant .tr-md,
+.tr-row--custom .tr-md {
+	width: 100%;
+}
 
-.tr-row--custom .tr-body {
-	color: var(--fg-muted);
+.tr-row--custom,
+.tr-row--marker {
+	margin-bottom: 12px;
+}
+
+.tr-row--custom .tr-body,
+.tr-row--marker .tr-body {
+	color: var(--fg-faint);
+	font-size: 12px;
 }
 
 .tr-custom {
@@ -70,38 +87,42 @@
 	flex-direction: column;
 	align-items: flex-start;
 	gap: 4px;
+	width: 100%;
+}
+
+.tr-marker-label,
+.tr-marker {
+	color: var(--fg-faint);
+	font-family: var(--font-mono);
+	font-size: 11px;
+	line-height: 1.5;
+}
+
+.tr-marker-label {
+	text-transform: lowercase;
 }
 
 .tr-msg-img {
-	max-height: 240px;
+	display: block;
+	width: auto;
 	max-width: 100%;
+	max-height: 480px;
+	object-fit: contain;
 	border: 1px solid var(--border);
-	border-radius: var(--radius-sm);
+	border-radius: var(--radius);
+	background: var(--bg-subtle);
 }
 
-/* ---- chips & badges ---- */
-
-.tr-badge {
-	display: inline-block;
-	padding: 0 5px;
-	border-radius: var(--radius-sm);
-	background: var(--accent-muted);
-	color: var(--accent);
-	font-family: var(--font-mono);
-	font-size: 10px;
-	line-height: 16px;
-	text-transform: none;
-	letter-spacing: 0;
-}
+/* ---- status and result feedback ---- */
 
 .tr-chip {
 	display: inline-flex;
 	align-items: center;
-	height: 16px;
+	height: 20px;
 	padding: 0 6px;
 	border: 1px solid var(--border);
 	border-radius: var(--radius-sm);
-	background: var(--bg-inset);
+	background: var(--bg-subtle);
 	color: var(--fg-muted);
 	font-family: var(--font-mono);
 	font-size: 10px;
@@ -110,45 +131,69 @@
 
 .tr-chip--err {
 	border-color: color-mix(in oklch, var(--err) 50%, var(--border));
-	color: var(--err);
 	background: color-mix(in oklch, var(--err) 10%, transparent);
+	color: var(--err);
 }
 
 .tr-chip--warn {
 	border-color: color-mix(in oklch, var(--warn) 50%, var(--border));
-	color: var(--warn);
 	background: color-mix(in oklch, var(--warn) 10%, transparent);
+	color: var(--warn);
 }
 
 .tr-stop {
 	display: flex;
 	align-items: baseline;
 	gap: 8px;
+	width: 100%;
 	margin-top: 2px;
 }
 
 .tr-stop-msg {
 	color: var(--err);
 	font-family: var(--font-mono);
-	font-size: 11.5px;
+	font-size: 12px;
 	white-space: pre-wrap;
-	word-break: break-word;
+	overflow-wrap: anywhere;
+}
+
+.tr-stream-status {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	min-height: 24px;
+	color: var(--fg-faint);
+	font-size: 12px;
+}
+
+.tr-stream-dot {
+	width: 6px;
+	height: 6px;
+	flex: none;
+	border-radius: 50%;
+	background: var(--accent);
+	animation: tr-pulse 1.4s ease-in-out infinite;
 }
 
 /* ---- thinking ---- */
+
+.tr-think {
+	width: 100%;
+}
 
 .tr-think-head {
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;
+	min-height: 28px;
 	padding: 0;
-	border: none;
+	border: 0;
 	background: none;
-	cursor: pointer;
 	color: var(--fg-faint);
 	font-family: var(--font-ui);
 	font-size: 12px;
 	font-style: italic;
+	cursor: pointer;
 }
 
 .tr-think-head:hover {
@@ -156,15 +201,15 @@
 }
 
 .tr-think-body {
-	align-self: stretch;
-	margin: 2px 0;
-	padding: 2px 0 2px 10px;
-	border-left: 2px solid var(--border);
+	width: 100%;
+	margin: 4px 0 2px;
+	padding: 4px 0 4px 12px;
+	border-left: 2px solid var(--border-strong);
 	color: var(--fg-muted);
-	font-style: italic;
 	font-size: 12px;
+	font-style: italic;
 	white-space: pre-wrap;
-	word-break: break-word;
+	overflow-wrap: anywhere;
 }
 
 .tr-chev {
@@ -177,56 +222,63 @@
 	transform: rotate(90deg);
 }
 
-/* ---- dividers & markers ---- */
+/* ---- system markers ---- */
 
 .tr-divider {
 	display: flex;
 	align-items: center;
-	gap: 10px;
-	margin: 10px 0;
-	color: var(--fg-faint);
-	font-family: var(--font-mono);
-	font-size: 10px;
-	text-transform: uppercase;
-	letter-spacing: 0.08em;
-	user-select: none;
-}
-
-.tr-divider::before,
-.tr-divider::after {
-	content: "";
-	flex: 1;
-	height: 1px;
-	background: var(--border);
-}
-
-.tr-marker {
+	min-width: 0;
+	margin: 4px 0 16px;
 	color: var(--fg-faint);
 	font-family: var(--font-mono);
 	font-size: 11px;
+	line-height: 1.5;
 }
 
-.tr-shimmer {
-	color: var(--fg-muted);
-	font-size: 12.5px;
-	animation: tr-pulse 1.4s ease-in-out infinite;
+/* ---- tool renderer host ---- */
+
+.tr-tool-card {
+	width: 100%;
+	min-width: 0;
 }
 
-/* ---- tool cards ----
- * Cards themselves are rendered by src/tool-render (tv-* namespace);
- * only host-level layout lives here. */
+.tr-tool-card > .tv-card {
+	border-color: var(--border);
+	border-radius: var(--radius);
+	background: var(--bg-subtle);
+	font-family: var(--font-mono);
+}
 
-.tr-body > .tv-card {
-	align-self: stretch;
-	background: var(--bg-raised);
+.tr-tool-card .tv-head {
+	min-height: 36px;
+	padding: 7px 12px;
+}
+
+.tr-tool-card .tv-body {
+	padding: 10px 12px 12px;
+}
+
+.tr-tool-card .tv-partial {
+	padding: 8px 12px;
+	background: var(--bg-inset);
+}
+
+.tr-tool-card .tv-spin {
+	width: 10px;
+	height: 10px;
+}
+
+.tr-tool-card .tv-status {
+	width: 6px;
+	height: 6px;
 }
 
 /* ---- markdown ---- */
 
-/* Match the TUI's word-boundary wrapping: keep Korean/CJK words intact when
- * possible, but still emergency-break long URLs or identifiers before they
- * overflow the transcript. */
+/* Keep Korean/CJK words intact where possible while still breaking long URLs
+ * and identifiers before they overflow the conversation column. */
 .tr-md {
+	min-width: 0;
 	line-height: 1.55;
 	overflow-wrap: break-word;
 	word-break: keep-all;
@@ -241,7 +293,7 @@
 }
 
 .tr-md p {
-	margin: 6px 0;
+	margin: 8px 0;
 }
 
 .tr-md p,
@@ -255,33 +307,36 @@
 .tr-md h4,
 .tr-md h5,
 .tr-md h6 {
-	margin: 14px 0 6px;
+	margin: 20px 0 8px;
 	font-weight: 600;
-	line-height: 1.3;
 }
 
 .tr-md h1 {
-	font-size: 17px;
+	font-size: 22px;
+	line-height: 30px;
 }
 
 .tr-md h2 {
-	font-size: 15px;
+	font-size: 18px;
+	line-height: 26px;
 }
 
 .tr-md h3 {
-	font-size: 14px;
+	font-size: 16px;
+	line-height: 24px;
 }
 
 .tr-md h4,
 .tr-md h5,
 .tr-md h6 {
-	font-size: 13px;
+	font-size: 14px;
+	line-height: 22px;
 }
 
 .tr-md ul,
 .tr-md ol {
-	margin: 6px 0;
-	padding-left: 22px;
+	margin: 8px 0;
+	padding-left: 24px;
 }
 
 .tr-md li {
@@ -300,14 +355,15 @@
 .tr-md code {
 	padding: 1px 4px;
 	border-radius: var(--radius-sm);
-	background: var(--bg-inset);
+	background: var(--bg-subtle);
 	font-family: var(--font-mono);
-	font-size: 12px;
+	font-size: 0.9em;
 }
 
 .tr-md pre {
-	margin: 8px 0;
-	padding: 8px 10px;
+	max-width: 100%;
+	margin: 10px 0;
+	padding: 12px;
 	overflow-x: auto;
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
@@ -323,71 +379,102 @@
 }
 
 .tr-md blockquote {
-	margin: 8px 0;
-	padding: 2px 12px;
-	border-left: 3px solid var(--border-strong);
+	margin: 10px 0;
+	padding: 4px 12px;
+	border-left: 2px solid var(--border-strong);
 	color: var(--fg-muted);
 }
 
 .tr-md table {
-	margin: 8px 0;
+	display: block;
+	max-width: 100%;
+	margin: 10px 0;
+	overflow-x: auto;
 	border-collapse: collapse;
-	font-size: 12.5px;
+	font-size: 13px;
 }
 
-/* Table cells need `anywhere` so long URLs/identifiers contribute a shrinkable
- * intrinsic width instead of expanding under the transcript's clipped overflow. */
 .tr-md th,
 .tr-md td {
-	padding: 3px 8px;
+	padding: 4px 8px;
 	border: 1px solid var(--border);
-	overflow-wrap: anywhere;
 	text-align: left;
+	overflow-wrap: anywhere;
 	word-break: keep-all;
 }
 
 .tr-md th {
-	background: var(--bg-inset);
+	background: var(--bg-subtle);
 	font-weight: 600;
 }
 
 .tr-md a {
 	color: var(--accent);
-	text-decoration: none;
+	text-decoration: underline;
+	text-decoration-color: color-mix(in oklch, var(--accent) 40%, transparent);
+	text-underline-offset: 2px;
 }
 
 .tr-md a:hover {
-	text-decoration: underline;
+	text-decoration-color: currentColor;
 }
 
 .tr-md hr {
-	margin: 12px 0;
-	border: none;
 	height: 1px;
+	margin: 16px 0;
+	border: 0;
 	background: var(--border);
 }
 
 .tr-md img {
+	display: block;
+	width: auto;
 	max-width: 100%;
-	max-height: 320px;
-	border-radius: var(--radius-sm);
+	max-height: 480px;
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+	object-fit: contain;
 }
 
 /* ---- compact variant (agent drawer) ---- */
 
 .tr-root--compact {
-	padding: 8px 10px 16px;
+	padding: 16px 14px 24px;
 	font-size: 12px;
 }
 
 .tr-root--compact .tr-row {
-	grid-template-columns: 52px 1fr;
-	gap: 0 8px;
-	padding: 3px 0;
+	margin-bottom: 16px;
 }
 
-.tr-root--compact .tr-gutter {
-	font-size: 9px;
+.tr-root--compact .tr-row--user .tr-body {
+	max-width: 88%;
+	padding: 8px 10px;
+}
+
+.tr-root--compact .tr-divider {
+	margin-bottom: 12px;
+	font-size: 10px;
+}
+
+.tr-root--compact .tr-md h1 {
+	font-size: 18px;
+	line-height: 26px;
+}
+
+.tr-root--compact .tr-md h2 {
+	font-size: 16px;
+	line-height: 24px;
+}
+
+.tr-root--compact .tr-md h3 {
+	font-size: 14px;
+	line-height: 22px;
+}
+
+.tr-root--compact .tr-msg-img,
+.tr-root--compact .tr-md img {
+	max-height: 280px;
 }
 
 .tr-root--compact .tv-pre {
@@ -395,33 +482,44 @@
 	overflow-y: auto;
 }
 
-/* ---- animation ---- */
-
 @keyframes tr-pulse {
 	0%,
 	100% {
-		opacity: 0.45;
+		opacity: 0.35;
 	}
 	50% {
 		opacity: 1;
 	}
 }
 
-/* ---- responsive mobile styles ---- */
-@media (max-width: 640px) {
+@media (max-width: 720px) {
+	.tr-root {
+		padding: 20px 12px 160px;
+	}
+
 	.tr-row {
-		display: flex;
-		flex-direction: column;
-		gap: 4px;
-		padding: 8px 0;
+		margin-bottom: 20px;
 	}
-	.tr-gutter {
-		text-align: left;
-		padding-top: 0;
-		font-size: 10px;
-		margin-bottom: 2px;
+
+	.tr-row--user .tr-body {
+		max-width: 88%;
 	}
-	.tr-gutter:empty {
-		display: none;
+}
+
+@media (max-width: 640px) {
+
+	.tr-think-head,
+	.tr-tool-card .tv-head {
+		min-height: 44px;
+	}
+
+	.tr-md h1 {
+		font-size: 20px;
+		line-height: 28px;
+	}
+
+	.tr-md h2 {
+		font-size: 18px;
+		line-height: 26px;
 	}
 }

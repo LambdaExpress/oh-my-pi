@@ -15,7 +15,8 @@
 			}
 		],
 		"security": {
-			"csp": null
+			"csp": null,
+			"capabilities": ["default", "remote-project-commands"]
 		}
 	},
 	"bundle": {

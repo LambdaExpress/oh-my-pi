@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Normalized Windows extended-length prefixes at the project-directory boundary so `--cwd \\?\…` cannot create invalid session-directory names.
+
 ### Added
 
 - Added an optional `translate` hook to the lightweight CLI runner (`run`, `renderRootHelp`, `renderCommandHelp`) so help headers, command/flag/argument descriptions, examples, and usage-error lines can be localized; identity by default, so existing callers are unchanged.

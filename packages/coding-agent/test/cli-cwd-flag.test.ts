@@ -65,4 +65,16 @@ describe("parseArgs — --cwd flag", () => {
 		expect(path.resolve(parsed.cwd ?? "")).toBe(getProjectDir());
 		expect(parsed.cwd?.endsWith(`${childName}${path.sep}${childName}`)).toBe(false);
 	});
+
+	it.skipIf(process.platform !== "win32")("normalizes an extended-length Windows --cwd before session setup", async () => {
+		const targetDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cwd-extended-"));
+		const extendedTarget = `\\\\?\\${targetDir}`;
+		const parsed = parseArgs(["--cwd", extendedTarget]);
+
+		await applyStartupCwd(parsed);
+
+		expect(parsed.cwd).toBe(targetDir);
+		expect(getProjectDir()).toBe(targetDir);
+		expect(process.cwd()).toBe(targetDir);
+	});
 });

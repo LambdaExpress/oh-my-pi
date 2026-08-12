@@ -229,7 +229,12 @@ export interface SessionState {
 	/** Host cwd — display only; the guest never chdirs. */
 	cwd: string;
 	model?: WireModel;
+	/** Effective concrete effort currently applied by the host. */
 	thinkingLevel?: string;
+	/** User-selected thinking mode; preserves `auto` while its concrete effort changes per turn. */
+	configuredThinkingLevel?: string;
+	/** Selectors accepted by `thinking-change`, in host display order. */
+	availableThinkingLevels?: string[];
 	contextUsage?: ContextUsage;
 	participants: Participant[];
 	isAborting?: boolean;
@@ -341,7 +346,9 @@ export type GuestFrame =
 	/** Request the available models for the session room (targeted reply: `model-list` host frame). */
 	| { t: "model-list" }
 	/** Switch the session model; success is broadcast to all guests through the regular `state` frame. */
-	| { t: "model-change"; provider: string; id: string };
+	| { t: "model-change"; provider: string; id: string }
+	/** Switch the session thinking selector; success is broadcast through the regular `state` frame. */
+	| { t: "thinking-change"; level: string };
 
 /** EventBus channels mirrored to guests (task subagent traffic only). */
 export type BusChannel = "task:subagent:progress" | "task:subagent:lifecycle";
@@ -432,10 +439,10 @@ export type SessionStatus = "complete" | "interrupted" | "aborted" | "error" | "
  *   answered by the `ui-response` guest frame. Guests that predate the
  *   grammar would silently drop `ui-request` (asks hang forever on the
  *   host), so they must be rejected at hello.
- * - `4`: guests can request the session model list (`model-list`) and switch
- *   the session model (`model-change`); the host replies with a targeted
- *   `model-list` frame and broadcasts the new model through the regular
- *   `state` frame.
+ * - `4`: guests can request the session model list (`model-list`), switch the
+ *   session model (`model-change`), and select a host-advertised thinking
+ *   effort (`thinking-change`); the host broadcasts authoritative model and
+ *   thinking state through the regular `state` frame.
  */
 export const COLLAB_PROTO = 4;
 

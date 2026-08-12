@@ -9,6 +9,8 @@ import { useEffect, useMemo, useState } from "react";
 import { fmtCost, fmtDuration, fmtTokens, relTime } from "../../lib/format";
 import "./agents.css";
 
+type AgentVisualStatus = AgentSnapshot["status"] | "error";
+
 /** Re-render tick so running-tool durations and relative times stay live. */
 function useNow(intervalMs: number): number {
 	const [now, setNow] = useState(() => Date.now());
@@ -47,6 +49,16 @@ function activityLine(
 	return agent.status;
 }
 
+/** A failed progress/lifecycle frame is more specific than the registry's parked terminal state. */
+function visualStatus(
+	agent: AgentSnapshot,
+	p: AgentProgress | undefined,
+	lc: SubagentLifecyclePayload | undefined,
+): AgentVisualStatus {
+	if (p?.status === "failed" || lc?.status === "failed") return "error";
+	return agent.status;
+}
+
 function AgentRow(props: {
 	agent: AgentSnapshot;
 	payload: SubagentProgressPayload | undefined;
@@ -57,21 +69,27 @@ function AgentRow(props: {
 }): ReactNode {
 	const { agent, payload, lifecycle, selected, now, onSelect } = props;
 	const p = payload?.progress;
+	const status = visualStatus(agent, p, lifecycle);
+	const activity = activityLine(agent, p, lifecycle, now);
 	return (
 		<button
 			type="button"
 			className={selected ? "ag-row ag-row--selected" : "ag-row"}
 			onClick={() => onSelect(selected ? null : agent.id)}
+			aria-label={`${selected ? "Close" : "View"} ${agent.displayName}, ${status}. ${activity}`}
+			aria-pressed={selected}
+			aria-haspopup="dialog"
 		>
 			<span className="ag-row-head">
-				<span className={`ag-dot ag-dot--${agent.status}`} />
+				<span className={`ag-dot ag-dot--${status}`} aria-hidden="true" />
 				<span className="ag-row-name">{agent.displayName}</span>
 				<span className="ag-chip">{agent.kind}</span>
 			</span>
-			<span className="ag-row-activity">{activityLine(agent, p, lifecycle, now)}</span>
+			<span className="ag-row-activity">{activity}</span>
 			<span className="ag-row-meta">
-				{p ? <span>{fmtTokens(p.tokens)} tok</span> : null}
-				{p ? <span>{fmtCost(p.cost)}</span> : null}
+				<span className={`ag-row-status ag-row-status--${status}`}>{status}</span>
+				{p ? <span aria-label={`${fmtTokens(p.tokens)} tokens`}>{fmtTokens(p.tokens)} tok</span> : null}
+				{p ? <span aria-label={`Cost ${fmtCost(p.cost)}`}>{fmtCost(p.cost)}</span> : null}
 				<span className="ag-row-meta-when">{relTime(agent.lastActivity)}</span>
 			</span>
 		</button>
@@ -102,7 +120,15 @@ export function AgentsPanel(props: {
 	}, [agents]);
 
 	return (
-		<div className="ag-panel">
+		<section className="ag-panel" aria-labelledby="ag-panel-title">
+			<header className="ag-panel-head">
+				<h2 id="ag-panel-title" className="ag-panel-title">
+					Agents
+				</h2>
+				<span className="ag-panel-count" aria-label={`${sorted.subs.length} subagents`}>
+					{sorted.subs.length}
+				</span>
+			</header>
 			{sorted.mains.map(agent => (
 				<AgentRow
 					key={agent.id}
@@ -125,7 +151,12 @@ export function AgentsPanel(props: {
 					onSelect={onSelect}
 				/>
 			))}
-			{sorted.subs.length === 0 ? <div className="ag-empty">no subagents</div> : null}
-		</div>
+			{sorted.subs.length === 0 ? (
+				<div className="ag-empty">
+					<strong>No subagents yet</strong>
+					<span>Active collaborators will appear here.</span>
+				</div>
+			) : null}
+		</section>
 	);
 }

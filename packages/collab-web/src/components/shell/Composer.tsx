@@ -1,17 +1,30 @@
-import { SendHorizontal, Square } from "lucide-react";
+import { Folder, SendHorizontal, Square } from "lucide-react";
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { GuestClient, GuestSnapshot } from "../../lib/client";
+import { shortenPath } from "../../lib/format";
+import { ModelPicker } from "./ModelPicker";
 
 export interface ComposerProps {
 	client: GuestClient;
 	snapshot: GuestSnapshot;
 }
 
-/** Textarea metrics: line-height 20px + 8px vertical padding × 2 (kept in sync with shell.css). */
+/** Textarea metrics: line-height 20px + 8px vertical padding × 2 (kept in sync with composer.css). */
 const LINE_PX = 20;
 const PAD_Y = 16;
 const MAX_ROWS = 8;
+
+const THINKING_LABELS: Readonly<Record<string, string>> = {
+	off: "Off",
+	auto: "Auto",
+	minimal: "Minimal",
+	low: "Low",
+	medium: "Medium",
+	high: "High",
+	xhigh: "Extra high",
+	max: "Max",
+};
 
 function autosize(el: HTMLTextAreaElement | null): void {
 	if (!el) return;
@@ -81,7 +94,7 @@ function AskEditor({ prefill, onSubmit }: AskEditorProps): ReactNode {
 	};
 
 	return (
-		<div className="sh-composer-inner">
+		<div className="sh-composer-editor">
 			<textarea
 				ref={taRef}
 				className="sh-composer-input"
@@ -94,17 +107,34 @@ function AskEditor({ prefill, onSubmit }: AskEditorProps): ReactNode {
 				rows={1}
 				spellCheck={false}
 			/>
-			<div className="sh-composer-actions">
+			<div className="sh-composer-controls sh-ask-editor-controls">
+				<span className="sh-composer-hint">Enter to submit · Shift+Enter for newline</span>
 				<button
 					type="button"
-					className="sh-btn sh-btn-primary"
+					className="sh-composer-submit"
 					onClick={() => onSubmit(draft)}
 					title="submit response"
 				>
-					<SendHorizontal size={12} /> <span className="sh-btn-label">Submit</span>
+					<SendHorizontal size={13} />
+					Submit
 				</button>
 			</div>
 		</div>
+	);
+}
+
+function Workspace({ cwd }: { cwd: string | undefined }): ReactNode {
+	if (!cwd) return <span className="sh-workspace sh-workspace-empty">workspace unavailable</span>;
+
+	const normalized = cwd.replace(/[\\/]+$/, "");
+	const segments = normalized.split(/[\\/]/);
+	const project = segments[segments.length - 1] || cwd;
+	return (
+		<span className="sh-workspace" title={cwd}>
+			<Folder size={13} aria-hidden="true" />
+			<span className="sh-workspace-project">{project}</span>
+			<span className="sh-workspace-path">{shortenPath(cwd)}</span>
+		</span>
 	);
 }
 
@@ -120,6 +150,8 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 	const busy = snapshot.working;
 	const queued = snapshot.state?.queuedMessageCount ?? 0;
 	const canSend = canPrompt && text.trim().length > 0;
+	const thinkingLevels = snapshot.state?.availableThinkingLevels ?? [];
+	const configuredThinkingLevel = snapshot.state?.configuredThinkingLevel;
 
 	useLayoutEffect(() => {
 		autosize(taRef.current);
@@ -142,54 +174,64 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 	if (uiRequest && canPrompt) {
 		return (
 			<div className="sh-composer sh-composer-ask">
-				<div className="sh-ask-title">{uiRequest.title}</div>
-				{uiRequest.kind === "select" ? (
-					<div className="sh-ask-options">
-						{uiRequest.options.map((option, index) => {
-							const label = typeof option === "string" ? option : option.label;
-							const checked = uiRequest.checkedIndices?.includes(index) ?? false;
-							return (
-								<button
-									key={`${uiRequest.reqId}-${index}-${label}`}
-									type="button"
-									className={`sh-ask-option${checked ? " sh-ask-option-checked" : ""}`}
-									onClick={() => client.sendUiResponse(uiRequest.reqId, label)}
-								>
-									<span className="sh-ask-option-marker">
-										{uiRequest.selectionMarker === "checkbox" ? (checked ? "☑" : "☐") : checked ? "◉" : "○"}
-									</span>
-									<span className="sh-ask-option-copy">
-										<span className="sh-ask-option-label">{label}</span>
-										{typeof option !== "string" && option.description && (
-											<span className="sh-ask-option-description">{option.description}</span>
-										)}
-									</span>
-								</button>
-							);
-						})}
-					</div>
-				) : (
-					<AskEditor
-						key={uiRequest.reqId}
-						prefill={uiRequest.prefill}
-						onSubmit={value => client.sendUiResponse(uiRequest.reqId, value)}
-					/>
-				)}
-				<div className="sh-composer-actions sh-ask-actions">
-					<button type="button" className="sh-btn" onClick={() => client.sendUiResponse(uiRequest.reqId)}>
-						Cancel
-					</button>
-					{busy && (
-						<button
-							type="button"
-							className="sh-btn sh-btn-stop"
-							onClick={() => client.sendAbort()}
-							disabled={!live}
-							title="stop the current turn"
-						>
-							<Square size={11} /> <span className="sh-btn-label">Stop</span>
-						</button>
+				<div className="sh-composer-card">
+					<div className="sh-ask-title">{uiRequest.title}</div>
+					{uiRequest.kind === "select" ? (
+						<div className="sh-ask-options">
+							{uiRequest.options.map((option, index) => {
+								const label = typeof option === "string" ? option : option.label;
+								const checked = uiRequest.checkedIndices?.includes(index) ?? false;
+								return (
+									<button
+										key={`${uiRequest.reqId}-${index}-${label}`}
+										type="button"
+										className={`sh-ask-option${checked ? " sh-ask-option-checked" : ""}`}
+										onClick={() => client.sendUiResponse(uiRequest.reqId, label)}
+									>
+										<span className="sh-ask-option-marker">
+											{uiRequest.selectionMarker === "checkbox"
+												? checked
+													? "☑"
+													: "☐"
+												: checked
+													? "◉"
+													: "○"}
+										</span>
+										<span className="sh-ask-option-copy">
+											<span className="sh-ask-option-label">{label}</span>
+											{typeof option !== "string" && option.description && (
+												<span className="sh-ask-option-description">{option.description}</span>
+											)}
+										</span>
+									</button>
+								);
+							})}
+						</div>
+					) : (
+						<AskEditor
+							key={uiRequest.reqId}
+							prefill={uiRequest.prefill}
+							onSubmit={value => client.sendUiResponse(uiRequest.reqId, value)}
+						/>
 					)}
+					<div className="sh-composer-controls sh-ask-actions">
+						<Workspace cwd={snapshot.state?.cwd} />
+						<span className="sh-composer-control-spacer" />
+						<button type="button" className="sh-btn" onClick={() => client.sendUiResponse(uiRequest.reqId)}>
+							Cancel
+						</button>
+						{busy && (
+							<button
+								type="button"
+								className="sh-btn sh-btn-stop"
+								onClick={() => client.sendAbort()}
+								disabled={!live}
+								title="stop the current turn"
+							>
+								<Square size={11} /> <span className="sh-btn-label">Stop</span>
+							</button>
+						)}
+					</div>
 				</div>
 			</div>
 		);
@@ -197,7 +239,7 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 
 	return (
 		<div className="sh-composer">
-			<div className="sh-composer-inner">
+			<div className="sh-composer-card">
 				<textarea
 					ref={taRef}
 					className="sh-composer-input"
@@ -217,7 +259,31 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 					rows={1}
 					spellCheck={false}
 				/>
-				<div className="sh-composer-actions">
+				<div className="sh-composer-controls">
+					<Workspace cwd={snapshot.state?.cwd} />
+					{thinkingLevels.length > 0 && configuredThinkingLevel && (
+						<select
+							className="sh-thinking-picker"
+							value={configuredThinkingLevel}
+							disabled={!canPrompt}
+							title="change thinking level"
+							aria-label="thinking level"
+							onChange={event => client.sendThinkingChange(event.target.value)}
+						>
+							{thinkingLevels.map(level => (
+								<option key={level} value={level}>
+									{THINKING_LABELS[level] ?? level}
+								</option>
+							))}
+						</select>
+					)}
+					<ModelPicker
+						snapshot={snapshot}
+						disabled={!canPrompt}
+						onModelList={() => client.sendModelList()}
+						onModelChange={(provider, id) => client.sendModelChange(provider, id)}
+					/>
+					<span className="sh-composer-control-spacer" />
 					{busy && queued > 0 && (
 						<span className="sh-queued">
 							<span className="sh-queued-label">queued </span>×{queued}
@@ -236,12 +302,13 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 					)}
 					<button
 						type="button"
-						className="sh-btn sh-btn-primary"
+						className="sh-composer-send"
 						onClick={send}
 						disabled={!canSend}
 						title="send (Enter)"
+						aria-label="send prompt"
 					>
-						<SendHorizontal size={12} /> <span className="sh-btn-label">Send</span>
+						<SendHorizontal size={14} />
 					</button>
 				</div>
 			</div>

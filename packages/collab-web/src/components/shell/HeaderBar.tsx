@@ -1,5 +1,5 @@
 import { ArrowLeft, LogOut, PanelRight, Settings } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import type { ReactNode, RefObject } from "react";
 import type { GuestSnapshot } from "../../lib/client";
 import { fmtPercent, shortenPath } from "../../lib/format";
 
@@ -7,90 +7,22 @@ export interface HeaderBarProps {
 	snapshot: GuestSnapshot;
 	subCount: number;
 	railOpen: boolean;
+	agentsButtonRef?: RefObject<HTMLButtonElement | null>;
 	onToggleRail(): void;
 	onLeave(): void;
-	/** Open the model picker dropdown (requests the model list when not yet loaded). */
-	onModelList(): void;
-	/** Switch the session model. */
-	onModelChange(provider: string, id: string): void;
 	settingsOpen: boolean;
 	onToggleSettings(): void;
 	/** Optional back entry on the header's left (control-mode session view). */
 	onBack?: () => void;
 }
 
-/**
- * Model picker dropdown. Requests the model list through `onModelList` on
- * first open (the host answers with a targeted `model-list` frame); the
- * current model is highlighted from the session state broadcast.
- */
-function ModelPicker({
-	snapshot,
-	onModelList,
-	onModelChange,
-}: {
-	snapshot: GuestSnapshot;
-	onModelList(): void;
-	onModelChange(provider: string, id: string): void;
-}): ReactNode {
-	const [open, setOpen] = useState(false);
-	const model = snapshot.state?.model;
-	const models = snapshot.models;
-	const currentId = model?.id;
-	const currentProvider = model?.provider;
-	return (
-		<div className="sh-model-picker">
-			<button
-				type="button"
-				className="sh-btn sh-model-picker-trigger"
-				onClick={() => {
-					if (!open && models === null) onModelList();
-					setOpen(open => !open);
-				}}
-				title="switch model"
-			>
-				<span className="sh-model-picker-name">{model?.name ?? "model"}</span>
-			</button>
-			{open && (
-				<div className="sh-model-picker-menu">
-					{models === null ? (
-						<div className="sh-model-picker-empty">loading models…</div>
-					) : models.length === 0 ? (
-						<div className="sh-model-picker-empty">no models available</div>
-					) : (
-						models.map(m => (
-							<button
-								key={`${m.provider}/${m.id}`}
-								type="button"
-								className={
-									m.id === currentId && m.provider === currentProvider
-										? "sh-model-picker-item sh-model-picker-on"
-										: "sh-model-picker-item"
-								}
-								onClick={() => {
-									setOpen(false);
-									onModelChange(m.provider, m.id);
-								}}
-							>
-								<span className="sh-model-picker-item-name">{m.name}</span>
-								<span className="sh-model-picker-item-provider">{m.provider}</span>
-							</button>
-						))
-					)}
-				</div>
-			)}
-		</div>
-	);
-}
-
 export function HeaderBar({
 	snapshot,
 	subCount,
 	railOpen,
+	agentsButtonRef,
 	onToggleRail,
 	onLeave,
-	onModelList,
-	onModelChange,
 	settingsOpen,
 	onToggleSettings,
 	onBack,
@@ -108,14 +40,15 @@ export function HeaderBar({
 	}
 
 	return (
-		<header className="sh-header">
-			<div className="sh-header-left">
+		<header className="sh-header-bar">
+			<div className="sh-header-bar-left">
 				{onBack && (
 					<button
 						type="button"
-						className="sh-btn sh-btn-icon sh-header-back"
+						className="sh-header-bar-action sh-header-back"
 						onClick={onBack}
 						title="back to session list"
+						aria-label="back to session list"
 					>
 						<ArrowLeft size={14} />
 					</button>
@@ -129,13 +62,12 @@ export function HeaderBar({
 					</span>
 				)}
 			</div>
-			<div className="sh-header-right">
+			<div className="sh-header-bar-right">
 				{readOnly && (
 					<span className="sh-chip" title="you joined with a read-only link — watching only">
 						read-only
 					</span>
 				)}
-				<ModelPicker snapshot={snapshot} onModelList={onModelList} onModelChange={onModelChange} />
 				{state?.thinkingLevel && <span className="sh-chip sh-chip-meta">{state.thinkingLevel}</span>}
 				{pct != null && (
 					<span
@@ -164,7 +96,7 @@ export function HeaderBar({
 				<span className={`sh-dot sh-dot-${phase}`} title={phase} />
 				<button
 					type="button"
-					className={settingsOpen ? "sh-btn sh-btn-icon sh-btn-on" : "sh-btn sh-btn-icon"}
+					className={settingsOpen ? "sh-header-bar-action sh-header-bar-action-on" : "sh-header-bar-action"}
 					onClick={onToggleSettings}
 					title="settings"
 					aria-label="open settings"
@@ -172,15 +104,23 @@ export function HeaderBar({
 					<Settings size={14} />
 				</button>
 				<button
+					ref={agentsButtonRef}
 					type="button"
-					className={railOpen ? "sh-btn sh-btn-icon sh-btn-on" : "sh-btn sh-btn-icon"}
+					className={railOpen ? "sh-header-bar-action sh-header-bar-action-on" : "sh-header-bar-action"}
 					onClick={onToggleRail}
 					title={railOpen ? "hide agents" : "show agents"}
+					aria-label={railOpen ? "hide agents" : "show agents"}
 				>
 					<PanelRight size={14} />
 					{subCount > 0 && <span className="sh-badge">{subCount}</span>}
 				</button>
-				<button type="button" className="sh-btn sh-btn-icon" onClick={onLeave} title="leave session">
+				<button
+					type="button"
+					className="sh-header-bar-action"
+					onClick={onLeave}
+					title="leave session"
+					aria-label="leave session"
+				>
 					<LogOut size={14} />
 				</button>
 			</div>

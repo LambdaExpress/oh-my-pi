@@ -1,7 +1,7 @@
 import type { AssistantMessage, ImageContent, SessionEntry, TextContent, ToolResultMessage } from "@oh-my-pi/pi-wire";
 import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ActiveTool } from "../../lib/client";
 import { fmtTokens } from "../../lib/format";
 import type { ToolRenderHost } from "../../tool-render";
@@ -22,20 +22,18 @@ export interface TranscriptProps {
 
 function Row({
 	kind,
-	gutter,
+	speaker,
 	title,
 	children,
 }: {
 	kind: "user" | "assistant" | "custom" | "marker";
-	gutter: ReactNode;
+	speaker: string;
 	title?: string;
 	children: ReactNode;
 }): ReactNode {
 	return (
-		<div className={`tr-row tr-row--${kind}`}>
-			<div className="tr-gutter" title={title}>
-				{gutter}
-			</div>
+		<div className={`tr-row tr-row--${kind}`} title={title}>
+			<span className="tr-speaker">{speaker}</span>
 			<div className="tr-body">{children}</div>
 		</div>
 	);
@@ -43,13 +41,33 @@ function Row({
 
 function ThinkingBlock({ text, redacted }: { text: string; redacted?: boolean }): ReactNode {
 	const [open, setOpen] = useState(false);
+	const contentId = useId();
 	return (
 		<div className="tr-think">
-			<button type="button" className="tr-think-head" onClick={() => setOpen(v => !v)}>
-				<ChevronRight size={11} className={`tr-chev${open ? " tr-chev--open" : ""}`} />
+			<button
+				type="button"
+				className="tr-think-head"
+				aria-expanded={open}
+				aria-controls={contentId}
+				onClick={() => setOpen(v => !v)}
+			>
+				<ChevronRight aria-hidden size={12} className={`tr-chev${open ? " tr-chev--open" : ""}`} />
 				thinking{redacted ? " · redacted" : ""}
 			</button>
-			{open && <div className="tr-think-body">{redacted ? "(redacted by provider)" : text}</div>}
+			{open && (
+				<div id={contentId} className="tr-think-body">
+					{redacted ? "(redacted by provider)" : text}
+				</div>
+			)}
+		</div>
+	);
+}
+
+function StreamStatus({ label }: { label: string }): ReactNode {
+	return (
+		<div className="tr-stream-status" role="status" aria-live="polite">
+			<span className="tr-stream-dot" aria-hidden />
+			<span>{label}</span>
 		</div>
 	);
 }
@@ -168,13 +186,13 @@ const EntryRow = memo(function EntryRow({ entry, results, active, host }: EntryR
 			switch (msg.role) {
 				case "user":
 					return (
-						<Row kind="user" gutter="host" title={entry.timestamp}>
+						<Row kind="user" speaker="host" title={entry.timestamp}>
 							<MsgContent content={msg.content} />
 						</Row>
 					);
 				case "assistant":
 					return (
-						<Row kind="assistant" gutter="agent" title={entry.timestamp}>
+						<Row kind="assistant" speaker="agent" title={entry.timestamp}>
 							<AssistantBody message={msg} results={results} active={active} pending={false} host={host} />
 						</Row>
 					);
@@ -193,16 +211,16 @@ const EntryRow = memo(function EntryRow({ entry, results, active, host }: EntryR
 						? ((details as Record<string, unknown>).from as string)
 						: "guest";
 				return (
-					<Row kind="user" gutter={<span className="tr-badge">{from}</span>} title={entry.timestamp}>
+					<Row kind="user" speaker={from} title={entry.timestamp}>
 						<MsgContent content={entry.content} />
 					</Row>
 				);
 			}
 			if (!entry.display) return null;
 			return (
-				<Row kind="custom" gutter="" title={entry.timestamp}>
+				<Row kind="custom" speaker="system" title={entry.timestamp}>
 					<div className="tr-custom">
-						<span className="tr-chip">{entry.customType}</span>
+						<span className="tr-marker-label">{entry.customType}</span>
 						<MsgContent content={entry.content} />
 					</div>
 				</Row>
@@ -211,24 +229,26 @@ const EntryRow = memo(function EntryRow({ entry, results, active, host }: EntryR
 		case "compaction":
 			return (
 				<div className="tr-divider" title={entry.shortSummary ?? entry.summary}>
+					<span className="tr-speaker">system</span>
 					<span>context compacted · {fmtTokens(entry.tokensBefore)} tokens</span>
 				</div>
 			);
 		case "branch_summary":
 			return (
 				<div className="tr-divider" title={entry.summary}>
+					<span className="tr-speaker">system</span>
 					<span>branch summary</span>
 				</div>
 			);
 		case "model_change":
 			return (
-				<Row kind="marker" gutter="" title={entry.timestamp}>
+				<Row kind="marker" speaker="system" title={entry.timestamp}>
 					<span className="tr-marker">model → {entry.model}</span>
 				</Row>
 			);
 		case "thinking_level_change":
 			return (
-				<Row kind="marker" gutter="" title={entry.timestamp}>
+				<Row kind="marker" speaker="system" title={entry.timestamp}>
 					<span className="tr-marker">thinking → {entry.thinkingLevel ?? "off"}</span>
 				</Row>
 			);
@@ -294,7 +314,7 @@ export function Transcript(props: TranscriptProps): ReactNode {
 				<EntryRow key={entry.id} entry={entry} results={results} active={activeTools} host={host} />
 			))}
 			{stream !== null && (
-				<Row kind="assistant" gutter="agent">
+				<Row kind="assistant" speaker="agent">
 					<AssistantBody
 						message={stream}
 						results={results}
@@ -302,10 +322,11 @@ export function Transcript(props: TranscriptProps): ReactNode {
 						pending={!streamDone}
 						host={host}
 					/>
+					{!streamDone && <StreamStatus label="responding…" />}
 				</Row>
 			)}
 			{tailTools.length > 0 && (
-				<Row kind="assistant" gutter={stream === null ? "agent" : ""}>
+				<Row kind="assistant" speaker="agent">
 					{tailTools.map(tool => (
 						<ToolCard
 							key={tool.toolCallId}
@@ -321,8 +342,8 @@ export function Transcript(props: TranscriptProps): ReactNode {
 				</Row>
 			)}
 			{working && stream === null && activeTools.size === 0 && (
-				<Row kind="assistant" gutter="agent">
-					<div className="tr-shimmer">thinking…</div>
+				<Row kind="assistant" speaker="agent">
+					<StreamStatus label="thinking…" />
 				</Row>
 			)}
 		</div>

@@ -1,0 +1,630 @@
+/* Project, session navigation, and control home styles. */
+
+.sh-visually-hidden {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
+
+/* ---- control mode: double-column shell ---- */
+.sh-control {
+	display: grid;
+	grid-template-columns: 288px minmax(0, 1fr);
+	height: var(--viewport-height, 100%);
+	min-height: 0;
+	background: var(--bg);
+}
+
+.sh-sidebar {
+	display: flex;
+	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
+	border-right: 1px solid var(--border);
+	background: var(--bg-sidebar);
+}
+
+.sh-sidebar-backdrop,
+.sh-sidebar-toggle {
+	display: none;
+}
+
+.sh-control-main {
+	position: relative;
+	min-width: 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	background: var(--bg);
+}
+
+.sh-control-view {
+	flex: 1;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+/* The nested Session app frame fills the right column without another control toolbar. */
+.sh-control-view > .sh-app {
+	height: 100%;
+	min-height: 0;
+}
+
+.sh-header-back {
+	align-self: center;
+}
+
+/* ---- projects and sessions panel ---- */
+.sh-sessions {
+	display: flex;
+	flex-direction: column;
+	width: 100%;
+	height: 100%;
+	min-height: 0;
+	padding: 12px 8px 8px;
+}
+
+.sh-sessions-brand {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	min-height: 44px;
+	padding: 4px 10px 12px;
+	flex: none;
+}
+
+.sh-sessions-mark {
+	width: 24px;
+	height: 24px;
+	flex: none;
+	border-radius: var(--radius-sm);
+	background: var(--brand-mark-gradient);
+}
+
+.sh-sessions-brand-copy {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	min-width: 0;
+}
+
+.sh-sessions-brand-name {
+	font-size: 14px;
+	font-weight: 650;
+	color: var(--fg);
+}
+
+.sh-sessions-brand-status {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	font-size: 10px;
+	line-height: 16px;
+	text-transform: capitalize;
+	color: var(--fg-faint);
+}
+
+.sh-sessions-dot {
+	width: 6px;
+	height: 6px;
+	border-radius: 50%;
+	background: var(--fg-faint);
+	flex: none;
+}
+
+.sh-sessions-dot-live {
+	background: var(--ok);
+}
+
+.sh-sessions-dot-reconnecting,
+.sh-sessions-dot-waiting {
+	background: var(--warn);
+}
+
+.sh-sessions-dot-ended {
+	background: var(--err);
+}
+
+.sh-sessions-action,
+.sh-sessions-open-project,
+.sh-sessions-leave {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+	min-height: 40px;
+	padding: 8px 10px;
+	color: var(--fg-muted);
+	background: transparent;
+	border: 0;
+	border-radius: var(--radius);
+	text-align: left;
+	transition:
+		background 140ms ease-out,
+		color 140ms ease-out;
+}
+
+.sh-sessions-action {
+	font-weight: 550;
+	color: var(--fg);
+	margin-bottom: 12px;
+}
+
+.sh-sessions-action:hover,
+.sh-sessions-open-project:hover,
+.sh-sessions-leave:hover {
+	color: var(--fg);
+	background: var(--bg-hover);
+}
+
+.sh-sessions-open-project:disabled,
+.sh-project-switch:disabled {
+	cursor: default;
+	opacity: 0.55;
+}
+
+.sh-sessions-projects {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding-right: 2px;
+}
+
+.sh-sessions-section-title {
+	padding: 4px 10px 6px;
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--fg-faint);
+}
+
+.sh-sessions-open-project {
+	min-height: 36px;
+	font-size: 12px;
+	margin-bottom: 4px;
+}
+
+.sh-sessions-project-error {
+	padding: 4px 12px 8px;
+	font-size: 11px;
+	line-height: 16px;
+	color: var(--err);
+}
+
+.sh-project + .sh-project {
+	margin-top: 4px;
+}
+
+.sh-project-row {
+	display: flex;
+	align-items: center;
+	min-height: 40px;
+	border-radius: var(--radius);
+	transition: background 140ms ease-out;
+}
+
+.sh-project-row:hover,
+.sh-project-row:focus-within,
+.sh-project-row[data-current="true"] {
+	background: var(--bg-hover);
+}
+
+.sh-project-disclosure {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 32px;
+	align-self: stretch;
+	flex: none;
+	padding: 0;
+	color: var(--fg-faint);
+	background: transparent;
+	border: 0;
+	border-radius: var(--radius-sm);
+}
+
+.sh-project-disclosure svg {
+	transition: transform 140ms ease-out;
+}
+
+.sh-project-disclosure[aria-expanded="true"] svg {
+	transform: rotate(90deg);
+}
+
+.sh-project-label {
+	display: flex;
+	flex: 1;
+	min-width: 0;
+	flex-direction: column;
+	justify-content: center;
+	align-self: stretch;
+	padding: 4px 10px 4px 0;
+	color: var(--fg);
+	background: transparent;
+	border: 0;
+	border-radius: 0 var(--radius) var(--radius) 0;
+	text-align: left;
+}
+
+.sh-project-switch:hover .sh-project-name {
+	color: var(--accent);
+}
+
+.sh-project-name,
+.sh-project-path {
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sh-project-name {
+	font-size: 13px;
+	font-weight: 600;
+}
+
+.sh-project-path {
+	font: 400 10px / 14px var(--font-mono);
+	color: var(--fg-faint);
+}
+
+.sh-sessions-list {
+	display: grid;
+	gap: 2px;
+	padding: 2px 0 4px 24px;
+}
+
+.sh-sessions-list[hidden] {
+	display: none;
+}
+
+.sh-sessions-item {
+	position: relative;
+	display: flex;
+	align-items: stretch;
+	min-width: 0;
+	min-height: 36px;
+	border-radius: var(--radius);
+}
+
+.sh-sessions-item-open {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	min-width: 0;
+	min-height: 36px;
+	padding: 5px 32px 5px 10px;
+	color: var(--fg-muted);
+	background: transparent;
+	border: 0;
+	border-radius: var(--radius);
+	text-align: left;
+	transition:
+		background 140ms ease-out,
+		color 140ms ease-out;
+}
+
+.sh-sessions-item-open:hover:not(:disabled),
+.sh-sessions-item-open:focus-visible,
+.sh-sessions-item:focus-within .sh-sessions-item-open {
+	color: var(--fg);
+	background: var(--bg-hover);
+}
+
+.sh-sessions-item-open[aria-current="page"] {
+	color: var(--fg);
+	background: var(--bg-selected);
+}
+
+.sh-sessions-item-open:disabled {
+	cursor: default;
+}
+
+.sh-sessions-item-copy {
+	display: flex;
+	align-items: baseline;
+	gap: 8px;
+	min-width: 0;
+	flex: 1;
+}
+
+.sh-sessions-item-title {
+	min-width: 0;
+	flex: 1;
+	font-size: 13px;
+	font-weight: 450;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.sh-sessions-item-meta {
+	flex: none;
+	font-size: 10px;
+	color: var(--fg-faint);
+	white-space: nowrap;
+}
+
+.sh-sessions-state {
+	display: none;
+	width: 6px;
+	height: 6px;
+	flex: none;
+	border-radius: 50%;
+}
+
+.sh-sessions-state-streaming,
+.sh-sessions-state-error {
+	display: block;
+}
+
+.sh-sessions-state-streaming {
+	background: var(--ok);
+}
+
+.sh-sessions-state-error {
+	background: var(--err);
+}
+
+.sh-sessions-drop {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	color: var(--fg-faint);
+	background: transparent;
+	border: 0;
+	border-radius: var(--radius-sm);
+	opacity: 0;
+	pointer-events: none;
+	transition:
+		opacity 140ms ease-out,
+		background 140ms ease-out,
+		color 140ms ease-out;
+}
+
+.sh-sessions-item:hover .sh-sessions-drop,
+.sh-sessions-item:focus-within .sh-sessions-drop {
+	opacity: 1;
+	pointer-events: auto;
+}
+
+.sh-sessions-drop:hover,
+.sh-sessions-drop:focus-visible {
+	color: var(--err);
+	background: var(--bg-raised);
+}
+
+.sh-sessions-empty-hint {
+	padding: 16px 10px;
+	font-size: 12px;
+	line-height: 18px;
+	color: var(--fg-faint);
+	text-align: left;
+}
+
+.sh-sessions-foot {
+	flex: none;
+	display: grid;
+	gap: 4px;
+	padding-top: 8px;
+	border-top: 1px solid var(--border);
+}
+
+.sh-sessions-readonly {
+	padding: 2px 10px;
+	font-size: 11px;
+	color: var(--fg-faint);
+}
+
+.sh-sessions-leave {
+	font-size: 12px;
+}
+
+/* ---- control empty state ---- */
+.sh-sessions-empty {
+	flex: 1;
+	min-height: 0;
+	overflow-y: auto;
+	padding: 24px 48px;
+}
+
+.sh-sessions-empty-stack {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: 28px;
+	width: 100%;
+	max-width: 760px;
+	margin: clamp(112px, 38vh, 360px) auto 48px;
+	transform: translateY(-50%);
+}
+
+.sh-sessions-empty-title {
+	font-size: 28px;
+	line-height: 36px;
+	font-weight: 600;
+	letter-spacing: -0.025em;
+	color: var(--fg);
+	text-align: center;
+}
+
+.sh-sessions-empty-composer {
+	display: flex;
+	align-items: flex-end;
+	justify-content: space-between;
+	gap: 16px;
+	width: 100%;
+	min-height: 112px;
+	padding: 20px;
+	color: var(--fg-muted);
+	background: var(--bg-raised);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-xl);
+	box-shadow: var(--shadow-composer);
+}
+
+.sh-sessions-empty-composer[data-disabled="true"] {
+	background: var(--bg-subtle);
+	box-shadow: none;
+}
+
+.sh-sessions-empty-composer p {
+	max-width: 480px;
+	font-size: 14px;
+	line-height: 22px;
+	color: var(--fg-faint);
+}
+
+@media (max-width: 900px) {
+	.sh-control {
+		position: relative;
+		display: block;
+	}
+
+	.sh-sidebar {
+		position: absolute;
+		left: 0;
+		top: 0;
+		bottom: 0;
+		z-index: 30;
+		width: 288px;
+		max-width: 88vw;
+		border-right-color: var(--border-strong);
+		box-shadow: var(--rail-mobile-shadow);
+		transform: translateX(-100%);
+		visibility: hidden;
+		transition:
+			transform 180ms ease-out,
+			visibility 180ms ease-out;
+	}
+
+	.sh-sidebar[data-open="true"] {
+		transform: translateX(0);
+		visibility: visible;
+	}
+
+	.sh-sidebar-backdrop {
+		display: block;
+		position: absolute;
+		inset: 0;
+		z-index: 25;
+		width: 100%;
+		height: 100%;
+		padding: 0;
+		background: var(--backdrop);
+		border: 0;
+	}
+
+	.sh-sidebar-toggle {
+		position: absolute;
+		top: 8px;
+		left: 8px;
+		z-index: 20;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 44px;
+		height: 44px;
+		padding: 0;
+		color: var(--fg-muted);
+		background: var(--bg-raised);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		box-shadow: var(--shadow-pop);
+	}
+
+	.sh-control-main {
+		height: 100%;
+	}
+
+	.sh-sessions-empty {
+		padding-inline: 24px;
+	}
+
+	.sh-sessions-drop {
+		opacity: 1;
+		pointer-events: auto;
+	}
+}
+
+@media (max-width: 640px) {
+	.sh-sessions-empty {
+		padding-inline: 16px;
+	}
+
+	.sh-sessions-empty-stack {
+		gap: 24px;
+		margin-top: clamp(112px, 34vh, 240px);
+	}
+
+	.sh-sessions-empty-title {
+		font-size: 24px;
+		line-height: 32px;
+	}
+
+	.sh-sessions-empty-composer {
+		flex-direction: column;
+		align-items: stretch;
+		min-height: 112px;
+		padding: 16px;
+	}
+
+	.sh-sessions-empty-composer .sh-btn {
+		align-self: flex-end;
+	}
+}
+
+@media (max-height: 680px) {
+	.sh-sessions-empty-stack {
+		margin-top: 24px;
+		transform: none;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.sh-sidebar,
+	.sh-project-disclosure svg {
+		transition: none;
+	}
+}
+
+@media (hover: none) and (pointer: coarse) {
+	.sh-sessions-action,
+	.sh-sessions-open-project,
+	.sh-sessions-leave,
+	.sh-project-row,
+	.sh-sessions-item-open {
+		min-height: 44px;
+	}
+
+	.sh-project-disclosure {
+		width: 44px;
+	}
+
+	.sh-sessions-drop {
+		top: 0;
+		right: 0;
+		width: 44px;
+		height: 44px;
+		opacity: 1;
+		pointer-events: auto;
+	}
+
+	.sh-sessions-item-open {
+		padding-right: 48px;
+	}
+}

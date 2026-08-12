@@ -1,0 +1,526 @@
+/* Header bar, composer, interactive ask, and model-picker styles. */
+
+/* ---- session header ---- */
+.sh-header-bar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	min-height: 50px;
+	padding: env(safe-area-inset-top, 0px) 12px 0;
+	border-bottom: 1px solid var(--border);
+	background: var(--bg);
+}
+
+.sh-header-bar-left,
+.sh-header-bar-right {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.sh-header-bar-left {
+	min-width: 0;
+}
+
+.sh-header-bar-right {
+	flex: none;
+}
+
+.sh-header-bar-action {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	color: var(--fg-muted);
+	background: transparent;
+	border: 0;
+	border-radius: var(--radius);
+	transition:
+		background 150ms ease-out,
+		color 150ms ease-out;
+}
+
+.sh-header-bar-action:hover {
+	color: var(--fg);
+	background: var(--bg-hover);
+}
+
+.sh-header-bar-action-on {
+	color: var(--accent);
+	background: var(--accent-muted);
+}
+
+/* ---- composer dock + card ---- */
+.sh-composer {
+	position: relative;
+	z-index: 10;
+	width: calc(100% - 48px);
+	max-width: 760px;
+	margin: 0 auto 22px;
+	padding-bottom: env(safe-area-inset-bottom, 0px);
+	background: transparent;
+}
+
+.sh-composer-card {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-height: 112px;
+	padding: 14px 16px 12px;
+	background: var(--bg-raised);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-xl);
+	box-shadow: var(--shadow-composer);
+	transition:
+		border-color 150ms ease-out,
+		box-shadow 150ms ease-out;
+}
+
+.sh-composer-card:focus-within {
+	border-color: var(--accent);
+	box-shadow: var(--shadow-composer), 0 0 0 3px var(--ring);
+}
+
+.sh-composer-editor {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	min-width: 0;
+}
+
+.sh-composer-input {
+	width: 100%;
+	min-width: 0;
+	min-height: 36px;
+	padding: 8px 0;
+	font-size: 14px;
+	line-height: 20px;
+	color: var(--fg);
+	background: transparent;
+	border: 0;
+	resize: none;
+}
+
+.sh-composer-input::placeholder {
+	color: var(--fg-faint);
+}
+
+.sh-composer-input:disabled {
+	cursor: not-allowed;
+	opacity: 0.6;
+}
+
+.sh-composer-input:focus,
+.sh-composer-input:focus-visible {
+	outline: 0;
+	box-shadow: none;
+}
+
+.sh-composer-controls {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	min-height: 32px;
+}
+
+.sh-composer-control-spacer {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.sh-workspace {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	min-width: 0;
+	max-width: 260px;
+	font-size: 11px;
+	line-height: 20px;
+	color: var(--fg-muted);
+}
+
+.sh-workspace svg {
+	flex: none;
+	color: var(--fg-faint);
+}
+
+.sh-workspace-project {
+	flex: none;
+	max-width: 112px;
+	overflow: hidden;
+	font-weight: 600;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.sh-workspace-path {
+	min-width: 0;
+	overflow: hidden;
+	font: 400 10px / 20px var(--font-mono);
+	color: var(--fg-faint);
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.sh-workspace-empty {
+	color: var(--fg-faint);
+}
+
+.sh-thinking-picker {
+	flex: none;
+	max-width: 112px;
+	height: 28px;
+	padding: 0 22px 0 7px;
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--fg-muted);
+	background-color: transparent;
+	border: 0;
+	border-radius: var(--radius);
+}
+
+.sh-thinking-picker:hover:not(:disabled) {
+	color: var(--fg);
+	background-color: var(--bg-hover);
+}
+
+.sh-thinking-picker:disabled {
+	color: var(--fg-faint);
+	cursor: default;
+}
+
+.sh-composer-send {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 32px;
+	height: 32px;
+	flex: none;
+	padding: 0;
+	color: var(--accent-fg);
+	background: var(--accent);
+	border: 0;
+	border-radius: 50%;
+	transition:
+		background 150ms ease-out,
+		color 150ms ease-out,
+		transform 150ms ease-out;
+}
+
+.sh-composer-send:hover:not(:disabled) {
+	background: var(--accent-hover);
+}
+
+.sh-composer-send:active:not(:disabled) {
+	transform: scale(0.95);
+}
+
+.sh-composer-send:disabled {
+	cursor: default;
+	color: var(--fg-faint);
+	background: var(--bg-hover);
+}
+
+.sh-composer-submit {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 5px;
+	height: 32px;
+	flex: none;
+	padding: 0 10px;
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--accent-fg);
+	background: var(--accent);
+	border: 0;
+	border-radius: var(--radius);
+}
+
+.sh-composer-submit:hover {
+	background: var(--accent-hover);
+}
+
+.sh-composer-hint {
+	min-width: 0;
+	margin-right: auto;
+	font-size: 11px;
+	color: var(--fg-faint);
+}
+
+/* ---- model picker ---- */
+.sh-model-picker {
+	position: relative;
+	min-width: 0;
+}
+
+.sh-model-picker-trigger {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	max-width: 180px;
+	height: 28px;
+	padding: 0 7px;
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--fg-muted);
+	background: transparent;
+	border: 0;
+	border-radius: var(--radius);
+	transition:
+		background 150ms ease-out,
+		color 150ms ease-out;
+}
+
+.sh-model-picker-trigger:hover,
+.sh-model-picker-trigger[aria-expanded="true"] {
+	color: var(--fg);
+	background: var(--bg-hover);
+}
+
+.sh-model-picker-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.sh-model-picker-menu {
+	position: absolute;
+	left: 0;
+	bottom: calc(100% + 8px);
+	z-index: 20;
+	width: max-content;
+	min-width: 240px;
+	max-width: 320px;
+	max-height: 320px;
+	overflow-y: auto;
+	padding: 4px;
+	background: var(--bg-overlay);
+	border: 1px solid var(--border-strong);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-pop);
+}
+
+.sh-model-picker-empty {
+	padding: 8px 10px;
+	font-size: 12px;
+	color: var(--fg-faint);
+}
+
+.sh-model-picker-item {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	width: 100%;
+	padding: 7px 9px;
+	font-size: 12px;
+	color: var(--fg);
+	background: transparent;
+	border: 0;
+	border-radius: var(--radius);
+	text-align: left;
+}
+
+.sh-model-picker-item:hover {
+	background: var(--bg-hover);
+}
+
+.sh-model-picker-item-copy {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 12px;
+	min-width: 0;
+	flex: 1;
+}
+
+.sh-model-picker-item-name {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.sh-model-picker-item-provider {
+	flex: none;
+	font: 400 10px / 1.4 var(--font-mono);
+	color: var(--fg-faint);
+}
+
+.sh-model-picker-on {
+	color: var(--accent);
+}
+
+.sh-model-picker-on .sh-model-picker-item-provider {
+	color: var(--fg-muted);
+}
+
+/* ---- interactive ask ---- */
+.sh-composer-ask .sh-composer-card {
+	max-height: min(70vh, 520px);
+	overflow-y: auto;
+}
+
+.sh-ask-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--fg);
+	white-space: pre-wrap;
+}
+
+.sh-ask-options {
+	display: grid;
+	gap: 6px;
+}
+
+.sh-ask-option {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	width: 100%;
+	padding: 8px 10px;
+	color: var(--fg);
+	text-align: left;
+	background: var(--bg-subtle);
+	border: 1px solid var(--border);
+	border-radius: var(--radius);
+}
+
+.sh-ask-option:hover {
+	border-color: var(--accent);
+}
+
+.sh-ask-option-checked {
+	border-color: var(--accent);
+	background: var(--accent-muted);
+}
+
+.sh-ask-option-marker {
+	width: 18px;
+	font: 400 13px / 18px var(--font-mono);
+	color: var(--accent);
+}
+
+.sh-ask-option-copy {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+
+.sh-ask-option-label {
+	font-size: 13px;
+	font-weight: 500;
+}
+
+.sh-ask-option-description {
+	font-size: 12px;
+	line-height: 1.35;
+	color: var(--fg-muted);
+}
+
+.sh-ask-actions {
+	width: 100%;
+}
+
+.sh-queued {
+	padding: 1px 6px;
+	font: 400 11px / 1.5 var(--font-mono);
+	color: var(--accent);
+	background: var(--accent-muted);
+	border-radius: var(--radius-sm);
+	white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+	.sh-composer {
+		width: calc(100% - 24px);
+		margin-bottom: 12px;
+	}
+
+	.sh-composer-card {
+		border-radius: var(--radius-lg);
+	}
+}
+
+@media (max-width: 640px) {
+	.sh-header-bar {
+		gap: 8px;
+		padding-right: 8px;
+		padding-left: 8px;
+	}
+
+	.sh-header-bar-right {
+		gap: 3px;
+	}
+
+	.sh-composer-card {
+		padding: 12px;
+	}
+
+	.sh-composer-input,
+	.sh-ask-title,
+	.sh-ask-option-label {
+		font-size: 16px;
+	}
+
+	.sh-workspace {
+		max-width: 132px;
+	}
+
+	.sh-workspace-path,
+	.sh-composer-hint {
+		display: none;
+	}
+
+	.sh-thinking-picker {
+		min-height: 44px;
+	}
+
+	.sh-model-picker-trigger {
+		max-width: 130px;
+		min-height: 44px;
+	}
+
+	.sh-header-bar-action,
+	.sh-composer-send {
+		width: 44px;
+		height: 44px;
+		min-height: 44px;
+		justify-content: center;
+	}
+
+	.sh-composer-submit,
+	.sh-composer-controls .sh-btn,
+	.sh-model-picker-item,
+	.sh-ask-option {
+		min-height: 44px;
+	}
+
+	.sh-model-picker-menu {
+		left: auto;
+		right: 0;
+		max-width: min(320px, calc(100vw - 48px));
+	}
+
+	.sh-queued-label {
+		display: none;
+	}
+}
+
+@media (max-width: 480px) {
+	.sh-model-picker-menu {
+		position: fixed;
+		left: 12px;
+		right: 12px;
+		bottom: calc(132px + env(safe-area-inset-bottom, 0px));
+		width: calc(100vw - 24px);
+		max-width: none;
+	}
+}

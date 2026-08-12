@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use tauri::{
-	AppHandle, Manager, Url,
+	AppHandle, Manager, State, Url,
 	menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
 	tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
@@ -13,13 +13,55 @@ use tokio::sync::Mutex;
 
 use crate::{
 	config::{OmpCommand, ShellConfig, load_config, save_config},
-	core_engine::CoreEngine,
+	core_engine::{CoreEngine, CoreError, ProjectCore},
 };
+
+#[cfg(test)]
+struct ProjectRuntime<C> {
+	core: Option<C>,
+	omp:  OmpCommand,
+}
 
 pub struct AppState {
 	pub core:   Option<CoreEngine>,
 	pub config: ShellConfig,
 	pub omp:    OmpCommand,
+}
+
+impl AppState {
+	async fn switch_core<F, Fut>(&mut self, canonical: &Path, start: F) -> Result<bool, CoreError>
+	where
+		F: FnOnce(OmpCommand, PathBuf) -> Fut,
+		Fut: Future<Output = Result<CoreEngine, CoreError>>,
+	{
+		switch_core(&mut self.core, &self.omp, canonical, start).await
+	}
+}
+
+async fn switch_core<C, F, Fut>(
+	core: &mut Option<C>,
+	omp: &OmpCommand,
+	canonical: &Path,
+	start: F,
+) -> Result<bool, CoreError>
+where
+	C: ProjectCore,
+	F: FnOnce(OmpCommand, PathBuf) -> Fut,
+	Fut: Future<Output = Result<C, CoreError>>,
+{
+	if core
+		.as_ref()
+		.is_some_and(|core| core.project_dir() == canonical)
+	{
+		return Ok(false);
+	}
+
+	if let Some(mut current) = core.take() {
+		current.stop_for_project().await;
+	}
+
+	*core = Some(start(omp.clone(), canonical.to_path_buf()).await?);
+	Ok(true)
 }
 
 const CONFIG_FILE: &str = "config.json";
@@ -103,6 +145,9 @@ pub async fn switch_project(app: &AppHandle, new_dir: &Path) -> Result<(), Strin
 	let canonical_str = canonical.to_string_lossy().into_owned();
 
 	let state = app.state::<Mutex<AppState>>();
+	// Hold the state lock through stop + start. Concurrent menu/WebView switch
+	// requests then re-check the installed core after the active transition,
+	// rather than starting a second process for the same project.
 	let mut guard = state.lock().await;
 	if guard
 		.core
@@ -111,16 +156,9 @@ pub async fn switch_project(app: &AppHandle, new_dir: &Path) -> Result<(), Strin
 	{
 		return Ok(());
 	}
-
-	if let Some(mut core) = guard.core.take() {
-		core.stop().await;
-	}
-
 	guard.config.record_project(&canonical_str);
 	let cfg_snapshot = guard.config.clone();
-	let omp = guard.omp.clone();
 	let recent = guard.config.recent_projects.clone();
-	drop(guard);
 
 	if let Err(e) = save_config(&config_path(app), &cfg_snapshot) {
 		eprintln!("failed to save shell config: {e}");
@@ -150,15 +188,23 @@ pub async fn switch_project(app: &AppHandle, new_dir: &Path) -> Result<(), Strin
 		});
 	};
 
-	match CoreEngine::start(&omp, &canonical, exit_cb).await {
-		Ok(core) => {
-			let control = core.control_link.clone();
+	match guard
+		.switch_core(&canonical, |omp, project_dir| async move {
+			CoreEngine::start(&omp, &project_dir, exit_cb).await
+		})
+		.await
+	{
+		Ok(true) => {
+			let control = guard
+				.core
+				.as_ref()
+				.expect("a successful switch installs the started core")
+				.control_link
+				.clone();
 			let title = canonical
 				.file_name()
 				.map(|name| name.to_string_lossy().into_owned())
 				.unwrap_or_else(|| canonical_str.clone());
-			let mut guard = state.lock().await;
-			guard.core = Some(core);
 			drop(guard);
 			if let Some(win) = app.get_webview_window("main") {
 				if let Ok(url) = Url::parse(&control) {
@@ -168,6 +214,7 @@ pub async fn switch_project(app: &AppHandle, new_dir: &Path) -> Result<(), Strin
 			}
 			Ok(())
 		},
+		Ok(false) => Ok(()),
 		Err(e) => {
 			let msg = format!("无法启动 omp core：{e}");
 			let _ = app.dialog().message(msg.clone()).show(|_| {});
@@ -184,6 +231,7 @@ pub async fn switch_project(app: &AppHandle, new_dir: &Path) -> Result<(), Strin
 pub struct ProjectList {
 	pub last_project:    Option<String>,
 	pub recent_projects: Vec<String>,
+	pub current_project: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -193,12 +241,16 @@ pub struct AppInfo {
 }
 
 #[tauri::command]
-pub async fn project_list(app: AppHandle) -> ProjectList {
-	let state = app.state::<Mutex<AppState>>();
+pub async fn project_list(state: State<'_, Mutex<AppState>>) -> Result<ProjectList, String> {
 	let guard = state.lock().await;
+	Ok(project_list_from(&guard.config, guard.core.as_ref().map(CoreEngine::project_dir)))
+}
+
+fn project_list_from(config: &ShellConfig, current_project: Option<&Path>) -> ProjectList {
 	ProjectList {
-		last_project:    guard.config.last_project.clone(),
-		recent_projects: guard.config.recent_projects.clone(),
+		last_project:    config.last_project.clone(),
+		recent_projects: config.recent_projects.clone(),
+		current_project: current_project.map(|path| path.to_string_lossy().into_owned()),
 	}
 }
 
@@ -217,6 +269,120 @@ pub fn app_info() -> AppInfo {
 	AppInfo {
 		version:      env!("CARGO_PKG_VERSION").to_string(),
 		product_name: "omp shell".to_string(),
+	}
+}
+
+#[cfg(test)]
+mod command_tests {
+	use std::sync::{
+		Arc, Mutex as StdMutex,
+		atomic::{AtomicUsize, Ordering},
+	};
+
+	use super::*;
+
+	struct ProbeCore {
+		project_dir: PathBuf,
+		events:      Arc<StdMutex<Vec<String>>>,
+	}
+
+	impl ProjectCore for ProbeCore {
+		fn stop_for_project(&mut self) -> impl Future<Output = ()> {
+			let events = Arc::clone(&self.events);
+			let project_dir = self.project_dir.clone();
+			async move {
+				events
+					.lock()
+					.expect("event log lock")
+					.push(format!("stop:{}", project_dir.display()));
+			}
+		}
+
+		fn project_dir(&self) -> &Path {
+			&self.project_dir
+		}
+	}
+
+	#[test]
+	fn project_list_serializes_the_active_project_separately_from_last_project() {
+		let config = ShellConfig {
+			last_project: Some("/work/last".into()),
+			recent_projects: vec!["/work/active".into(), "/work/last".into()],
+			..Default::default()
+		};
+
+		let value = serde_json::to_value(project_list_from(&config, Some(Path::new("/work/active"))))
+			.expect("ProjectList should serialize");
+
+		assert_eq!(value["last_project"], "/work/last");
+		assert_eq!(value["recent_projects"][0], "/work/active");
+		assert_eq!(value["current_project"], "/work/active");
+	}
+
+	#[test]
+	fn project_list_serializes_no_active_project_as_null() {
+		let config = ShellConfig { last_project: Some("/work/last".into()), ..Default::default() };
+
+		let value = serde_json::to_value(project_list_from(&config, None))
+			.expect("ProjectList should serialize");
+
+		assert_eq!(value["last_project"], "/work/last");
+		assert!(value["current_project"].is_null());
+	}
+
+	#[tokio::test]
+	async fn concurrent_switches_serialize_to_one_active_start_and_current_project() {
+		let original = PathBuf::from("/work/original");
+		let target = PathBuf::from("/work/target");
+		let events = Arc::new(StdMutex::new(Vec::new()));
+		let starts = Arc::new(AtomicUsize::new(0));
+		let runtime = Arc::new(Mutex::new(ProjectRuntime {
+			core: Some(ProbeCore { project_dir: original.clone(), events: Arc::clone(&events) }),
+			omp:  OmpCommand { argv: vec!["probe".into()] },
+		}));
+
+		let switch = |runtime: Arc<Mutex<ProjectRuntime<ProbeCore>>>| {
+			let target = target.clone();
+			let starts = Arc::clone(&starts);
+			let events = Arc::clone(&events);
+			async move {
+				let mut guard = runtime.lock().await;
+				let ProjectRuntime { core, omp } = &mut *guard;
+				switch_core(core, omp, &target, move |_omp, project_dir| async move {
+					starts.fetch_add(1, Ordering::SeqCst);
+					events
+						.lock()
+						.expect("event log lock")
+						.push(format!("start:{}", project_dir.display()));
+					tokio::task::yield_now().await;
+					Ok(ProbeCore { project_dir, events })
+				})
+				.await
+				.expect("switch succeeds")
+			}
+		};
+
+		let (first_changed, second_changed) =
+			tokio::join!(switch(Arc::clone(&runtime)), switch(Arc::clone(&runtime)),);
+		let guard = runtime.lock().await;
+
+		assert_eq!(starts.load(Ordering::SeqCst), 1);
+		assert_eq!(
+			[first_changed, second_changed]
+				.into_iter()
+				.filter(|changed| *changed)
+				.count(),
+			1
+		);
+		let projects = project_list_from(
+			&ShellConfig::default(),
+			guard.core.as_ref().map(ProjectCore::project_dir),
+		);
+		assert_eq!(projects.current_project, Some(target.to_string_lossy().into_owned()));
+		assert_eq!(*events.lock().expect("event log lock"), vec![
+			format!("stop:{}", original.display()),
+			format!("start:{}", target.display()),
+		]);
 	}
 }
 

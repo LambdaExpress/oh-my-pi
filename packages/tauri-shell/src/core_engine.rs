@@ -22,6 +22,41 @@ use crate::config::OmpCommand;
 
 const STDERR_TAIL_CHARS: usize = 4096;
 
+/// Convert canonical Win32 `\\?\` drive/UNC paths to the ordinary form Bun
+/// and the coding-agent session-path encoder accept. The canonical path stays
+/// on `CoreEngine` for identity comparisons; only the child CLI argument uses
+/// this representation.
+#[cfg(windows)]
+fn project_dir_for_cli(project_dir: &Path) -> PathBuf {
+	use std::path::{Component, Prefix};
+
+	let mut components = project_dir.components();
+	let Some(Component::Prefix(prefix)) = components.next() else {
+		return project_dir.to_path_buf();
+	};
+	let mut normalized = match prefix.kind() {
+		Prefix::VerbatimDisk(drive) => PathBuf::from(format!("{}:\\", char::from(drive))),
+		Prefix::VerbatimUNC(server, share) => {
+			let mut root = PathBuf::from(r"\\");
+			root.push(server);
+			root.push(share);
+			root
+		},
+		_ => return project_dir.to_path_buf(),
+	};
+	for component in components {
+		if !matches!(component, Component::RootDir) {
+			normalized.push(component.as_os_str());
+		}
+	}
+	normalized
+}
+
+#[cfg(not(windows))]
+fn project_dir_for_cli(project_dir: &Path) -> PathBuf {
+	project_dir.to_path_buf()
+}
+
 #[derive(Debug)]
 pub enum CoreError {
 	Spawn { command: String, source: io::Error },
@@ -95,6 +130,14 @@ pub struct CoreEngine {
 	exit_watch:       Option<JoinHandle<()>>,
 }
 
+/// Operations needed by project switching. Keeping this small makes the
+/// serialized stop/start transition observable without replacing Tauri or a
+/// real subprocess in tests.
+pub(crate) trait ProjectCore: Sized {
+	fn stop_for_project(&mut self) -> impl Future<Output = ()>;
+	fn project_dir(&self) -> &Path;
+}
+
 impl CoreEngine {
 	pub async fn start(
 		omp: &OmpCommand,
@@ -110,12 +153,19 @@ impl CoreEngine {
 		timeout: Duration,
 		on_unexpected_exit: impl FnOnce(i32) + Send + 'static,
 	) -> Result<CoreEngine, CoreError> {
+		let cli_project_dir = project_dir_for_cli(project_dir);
 		let mut command = Command::new(&omp.argv[0]);
 		command
 			.args(&omp.argv[1..])
 			.arg("--mode")
 			.arg("core")
 			.arg("--no-open")
+			// Launcher wrappers may set their own working directory (the source
+			// launcher uses `bun --cwd=<repo>/packages/coding-agent`). Make the
+			// selected project authoritative at the omp CLI boundary as well as at
+			// the OS process boundary so wrapper cwd handling cannot replace it.
+			.arg("--cwd")
+			.arg(&cli_project_dir)
 			.current_dir(project_dir)
 			.stdin(Stdio::null())
 			.stdout(Stdio::piped())
@@ -242,6 +292,16 @@ impl CoreEngine {
 
 	pub fn child_id(&self) -> u32 {
 		self.child_id
+	}
+}
+
+impl ProjectCore for CoreEngine {
+	fn stop_for_project(&mut self) -> impl Future<Output = ()> {
+		self.stop()
+	}
+
+	fn project_dir(&self) -> &Path {
+		CoreEngine::project_dir(self)
 	}
 }
 

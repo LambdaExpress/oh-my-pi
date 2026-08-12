@@ -5,6 +5,8 @@
 	"scripts": {
 		"dev": "cargo run",
 		"build": "cargo build --release",
-		"test": "cargo test"
+		"test": "cargo test",
+		"test:remote-project-list": "cargo test remote_project_list_probe -- --test-threads=1",
+		"test:project-switch-concurrency": "cargo test concurrent_switches_serialize_to_one_active_start_and_current_project"
 	}
 }

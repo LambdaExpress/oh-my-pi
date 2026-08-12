@@ -1,5 +1,5 @@
-import { buildDocsIndexPayload } from "./generate-docs-index";
 import { generateCollabWebEmbed, resetCollabWebEmbed } from "./embed-collab-web";
+import { buildDocsIndexPayload } from "./generate-docs-index";
 import { createLegacyPiVirtualModulePlugin } from "./legacy-pi-virtual-module";
 
 /** Native runtime dependencies always resolved from the on-demand install instead of embedded into compiled binaries. */

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { KeyboardEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentDrawer } from "./components/agents/AgentDrawer";
 import { AgentsPanel } from "./components/agents/AgentsPanel";
@@ -10,8 +10,10 @@ import { HeaderBar } from "./components/shell/HeaderBar";
 import { SettingsModal } from "./components/shell/SettingsModal";
 import { Toasts } from "./components/shell/Toasts";
 import { Transcript } from "./components/transcript/Transcript";
-import { GuestClient, type Notice } from "./lib/client";
+import { GuestClient, type GuestSnapshot, type Notice } from "./lib/client";
 import { ControlClient, type ControlSessionInfo } from "./lib/control-client";
+import { ControlSessionFlow } from "./lib/control-session-flow";
+import { fmtPercent, fmtTokens } from "./lib/format";
 import { parseCollabLink } from "./lib/link";
 import { useGuestSnapshot } from "./lib/use-guest";
 import type { ToolRenderHost } from "./tool-render";
@@ -24,24 +26,18 @@ const MAX_CONTROL_NOTICES = 50;
 /**
  * `control`: joined a core-mode control room (session sidebar). The control
  * client lives in state so the sidebar keeps receiving `ctrl-sessions`
- * broadcasts while a session is open (`session` field).
+ * broadcasts while a session is open. `sessionId` is the authoritative id
+ * supplied by that session's directed `ctrl-session` reply.
  * `session`: a plain session deep link, no control room.
  */
 type AppState =
-	| { kind: "control"; client: ControlClient; session: GuestClient | null }
+	| { kind: "control"; client: ControlClient; session: GuestClient | null; sessionId: string | null }
 	| { kind: "session"; client: GuestClient }
 	| null;
 
 interface Creds {
 	link: string;
 	name: string;
-}
-
-/** Pending create/resume round trip awaiting a directed `ctrl-session` reply. */
-interface PendingSessionOp {
-	op: "created" | "resumed";
-	/** null for create: the host assigns the id. */
-	id: string | null;
 }
 
 function storedName(): string {
@@ -68,14 +64,21 @@ function hashLink(): string | null {
 	return href.slice(i + 1);
 }
 
+function contextLabel(snapshot: GuestSnapshot): string | null {
+	const usage = snapshot.state?.contextUsage;
+	if (!usage) return null;
+	if (usage.percent != null) return fmtPercent(usage.percent);
+	if (usage.tokens != null) return `${fmtTokens(usage.tokens)} tokens`;
+	return null;
+}
+
 export function App(): ReactNode {
 	const [appState, setAppState] = useState<AppState>(null);
+	const [controlPending, setControlPending] = useState(false);
 	const [connectError, setConnectError] = useState<string | null>(null);
 	const [controlNotices, setControlNotices] = useState<Notice[]>([]);
 	const credsRef = useRef<Creds | null>(null);
-	/** The control-room client while one is active; survives session view switches. */
-	const controlRef = useRef<ControlClient | null>(null);
-	const pendingRef = useRef<PendingSessionOp | null>(null);
+	const [controlFlow] = useState(() => new ControlSessionFlow());
 	const noticeSeqRef = useRef(0);
 
 	const pushNotice = useCallback((level: Notice["level"], message: string): void => {
@@ -88,7 +91,7 @@ export function App(): ReactNode {
 
 	/** Open a session room from the control sidebar; the control client stays connected. */
 	const openSessionLink = useCallback(
-		(link: string): void => {
+		(ctrl: ControlClient, link: string, sessionId: string): void => {
 			let next: GuestClient;
 			try {
 				next = new GuestClient(link, storedName());
@@ -97,39 +100,30 @@ export function App(): ReactNode {
 				return;
 			}
 			next.connect();
-			credsRef.current = { link, name: storedName() };
-			window.location.hash = link;
-			const ctrl = controlRef.current;
-			if (!ctrl) {
-				// No control room (defensive — sidebar flows always have one):
-				// fall back to a plain session.
-				setAppState(prev => {
-					if (prev?.kind === "session") prev.client.close();
-					if (prev?.kind === "control") prev.session?.close();
-					return { kind: "session", client: next };
-				});
+			if (controlFlow.activeClient !== ctrl) {
+				next.close();
 				return;
 			}
+			credsRef.current = { link, name: storedName() };
+			window.location.hash = link;
 			setAppState(prev => {
 				if (prev?.kind === "session") prev.client.close();
 				if (prev?.kind === "control") prev.session?.close();
-				return { kind: "control", client: ctrl, session: next };
+				return { kind: "control", client: ctrl, session: next, sessionId };
 			});
 		},
-		[pushNotice],
+		[controlFlow, pushNotice],
 	);
 
 	/** Directed `ctrl-session` reply: honored only when it matches a pending op. */
 	const handleCtrlSession = useCallback(
-		(info: ControlSessionInfo): void => {
-			const pending = pendingRef.current;
-			if (!pending) return;
-			if (pending.op !== info.op) return;
-			if (pending.op === "resumed" && pending.id !== info.id) return;
-			pendingRef.current = null;
-			openSessionLink(info.link);
+		(source: ControlClient, info: ControlSessionInfo): void => {
+			const accepted = controlFlow.accept(source, info);
+			if (!accepted) return;
+			setControlPending(false);
+			openSessionLink(source, accepted.link, accepted.id);
 		},
-		[openSessionLink],
+		[controlFlow, openSessionLink],
 	);
 
 	const connect = useCallback(
@@ -152,10 +146,10 @@ export function App(): ReactNode {
 				}
 				ctrl.onError = message => {
 					// A failed op ends the pending create/resume round trip.
-					pendingRef.current = null;
+					if (controlFlow.fail(ctrl)) setControlPending(false);
 					pushNotice("error", message);
 				};
-				ctrl.onSession = handleCtrlSession;
+				ctrl.onSession = info => handleCtrlSession(ctrl, info);
 				ctrl.connect();
 				try {
 					localStorage.setItem(NAME_KEY, name);
@@ -164,12 +158,12 @@ export function App(): ReactNode {
 					// storage unavailable (private mode) — non-fatal
 				}
 				window.location.hash = link;
-				controlRef.current?.close();
-				controlRef.current = ctrl;
+				controlFlow.activate(ctrl)?.close();
+				setControlPending(false);
 				setAppState(prev => {
 					if (prev?.kind === "session") prev.client.close();
 					if (prev?.kind === "control") prev.session?.close();
-					return { kind: "control", client: ctrl, session: null };
+					return { kind: "control", client: ctrl, session: null, sessionId: null };
 				});
 				return;
 			}
@@ -189,31 +183,34 @@ export function App(): ReactNode {
 			}
 			window.location.hash = link;
 			// A plain session deep link replaces any active control room.
-			controlRef.current?.close();
-			controlRef.current = null;
+			controlFlow.deactivate()?.close();
+			setControlPending(false);
 			setAppState(prev => {
 				if (prev?.kind === "session") prev.client.close();
 				if (prev?.kind === "control") prev.session?.close();
 				return { kind: "session", client: next };
 			});
 		},
-		[handleCtrlSession, pushNotice],
+		[controlFlow, handleCtrlSession, pushNotice],
 	);
 
 	const leave = useCallback((): void => {
+		const control = controlFlow.deactivate();
+		setControlPending(false);
 		setAppState(prev => {
 			prev?.client.close();
 			if (prev?.kind === "control") prev.session?.close();
 			return null;
 		});
-		controlRef.current?.close();
-		controlRef.current = null;
+		control?.close();
 		history.replaceState(null, "", window.location.pathname + window.location.search);
-	}, []);
+	}, [controlFlow]);
 
 	/** Control mode: return from a session view to the sidebar. */
 	const backToSessions = useCallback((): void => {
-		const ctrl = controlRef.current;
+		controlFlow.cancelPending();
+		setControlPending(false);
+		const ctrl = controlFlow.activeClient;
 		if (!ctrl) {
 			leave();
 			return;
@@ -222,9 +219,9 @@ export function App(): ReactNode {
 		setAppState(prev => {
 			if (prev?.kind === "session") prev.client.close();
 			if (prev?.kind === "control") prev.session?.close();
-			return { kind: "control", client: ctrl, session: null };
+			return { kind: "control", client: ctrl, session: null, sessionId: null };
 		});
-	}, [leave]);
+	}, [controlFlow, leave]);
 
 	const rejoin = useCallback((): void => {
 		const creds = credsRef.current;
@@ -262,15 +259,21 @@ export function App(): ReactNode {
 		else if (appState.kind === "control" && !appState.session) document.title = "sessions · omp collab";
 	}, [appState]);
 
-	const startCreate = useCallback((client: ControlClient): void => {
-		pendingRef.current = { op: "created", id: null };
-		client.sendCreate();
-	}, []);
+	const startCreate = useCallback(
+		(client: ControlClient): void => {
+			if (!controlFlow.startCreate(client)) return;
+			setControlPending(true);
+		},
+		[controlFlow],
+	);
 
-	const startResume = useCallback((client: ControlClient, id: string): void => {
-		pendingRef.current = { op: "resumed", id };
-		client.sendResume(id);
-	}, []);
+	const startResume = useCallback(
+		(client: ControlClient, id: string): void => {
+			if (!controlFlow.startResume(client, id)) return;
+			setControlPending(true);
+		},
+		[controlFlow],
+	);
 
 	const startDrop = useCallback((client: ControlClient, id: string): void => {
 		// The sidebar is authoritative: the entry disappears on the next
@@ -305,6 +308,8 @@ export function App(): ReactNode {
 		<>
 			<SessionsLayout
 				client={appState.client}
+				activeSessionId={appState.sessionId}
+				pending={controlPending}
 				content={
 					appState.session ? (
 						<Session
@@ -312,7 +317,6 @@ export function App(): ReactNode {
 							onLeave={backToSessions}
 							onRejoin={backToSessions}
 							onBack={backToSessions}
-							onEnded={backToSessions}
 						/>
 					) : null
 				}
@@ -332,18 +336,37 @@ interface SessionProps {
 	onRejoin(): void;
 	/** Control mode: back entry shown in the header; also the post-end auto-return. */
 	onBack?: () => void;
-	/** Control mode: fired when the session ends so the app can return to the sidebar. */
-	onEnded?: () => void;
 }
 
-function Session({ client, onLeave, onRejoin, onBack, onEnded }: SessionProps): ReactNode {
+function Session({ client, onLeave, onRejoin, onBack }: SessionProps): ReactNode {
 	const snap = useGuestSnapshot(client);
 	const [railOpen, setRailOpen] = useState(false);
+	const [railOverlay, setRailOverlay] = useState(() => window.matchMedia("(max-width: 1100px)").matches);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const autoOpenedRef = useRef(false);
+	const agentsButtonRef = useRef<HTMLButtonElement | null>(null);
+	const railRef = useRef<HTMLElement | null>(null);
+	const closeRail = useCallback((): void => {
+		setRailOpen(false);
+		requestAnimationFrame(() => agentsButtonRef.current?.focus());
+	}, []);
+	const toggleRail = useCallback((): void => {
+		if (railOpen) closeRail();
+		else {
+			setSettingsOpen(false);
+			setRailOpen(true);
+		}
+	}, [closeRail, railOpen]);
 
 	const subCount = useMemo(() => snap.agents.filter(a => a.kind === "sub").length, [snap.agents]);
+
+	useEffect(() => {
+		const media = window.matchMedia("(max-width: 1100px)");
+		const update = (): void => setRailOverlay(media.matches);
+		media.addEventListener("change", update);
+		return () => media.removeEventListener("change", update);
+	}, []);
 
 	// Task-card agent chips drill into the same drawer the rail uses.
 	const agentIds = useMemo(() => new Set(snap.agents.map(a => a.id)), [snap.agents]);
@@ -359,16 +382,55 @@ function Session({ client, onLeave, onRejoin, onBack, onEnded }: SessionProps): 
 
 	// Auto-open the rail the first time a subagent appears.
 	useEffect(() => {
-		if (subCount > 0 && !autoOpenedRef.current) {
+		if (subCount > 0 && !railOverlay && !autoOpenedRef.current) {
 			autoOpenedRef.current = true;
 			setRailOpen(true);
 		}
-	}, [subCount]);
+	}, [railOverlay, subCount]);
 
-	// Control mode: a ended session returns to the sidebar automatically.
 	useEffect(() => {
-		if (snap.phase === "ended") onEnded?.();
-	}, [snap.phase, onEnded]);
+		if (!railOpen) return;
+		const closeOnEscape = (event: globalThis.KeyboardEvent): void => {
+			if (event.key !== "Escape") return;
+			event.preventDefault();
+			closeRail();
+		};
+		document.addEventListener("keydown", closeOnEscape);
+		return () => document.removeEventListener("keydown", closeOnEscape);
+	}, [closeRail, railOpen]);
+
+	useEffect(() => {
+		if (!railOpen || !railOverlay) return;
+		const previousOverflow = document.body.style.overflow;
+		document.body.style.overflow = "hidden";
+		const frame = requestAnimationFrame(() => {
+			const rail = railRef.current;
+			(rail?.querySelector<HTMLElement>("button:not(:disabled)") ?? rail)?.focus();
+		});
+		return () => {
+			cancelAnimationFrame(frame);
+			document.body.style.overflow = previousOverflow;
+		};
+	}, [railOpen, railOverlay]);
+
+	const trapRailFocus = (event: KeyboardEvent<HTMLElement>): void => {
+		if (!railOverlay || event.key !== "Tab") return;
+		const focusable = railRef.current?.querySelectorAll<HTMLElement>("button:not(:disabled), [href]");
+		if (!focusable || focusable.length === 0) {
+			event.preventDefault();
+			railRef.current?.focus();
+			return;
+		}
+		const first = focusable.item(0);
+		const last = focusable.item(focusable.length - 1);
+		if (event.shiftKey && document.activeElement === first) {
+			event.preventDefault();
+			last.focus();
+		} else if (!event.shiftKey && document.activeElement === last) {
+			event.preventDefault();
+			first.focus();
+		}
+	};
 
 	const title = snap.header?.title ?? snap.state?.sessionName ?? "session";
 	useEffect(() => {
@@ -379,21 +441,40 @@ function Session({ client, onLeave, onRejoin, onBack, onEnded }: SessionProps): 
 
 	return (
 		<div className="sh-app">
-			<HeaderBar
-				snapshot={snap}
-				subCount={subCount}
-				railOpen={railOpen}
-				onToggleRail={() => setRailOpen(open => !open)}
-				onLeave={onLeave}
-				onBack={onBack}
-				onModelList={() => client.sendModelList()}
-				onModelChange={(provider, id) => client.sendModelChange(provider, id)}
-				settingsOpen={settingsOpen}
-				onToggleSettings={() => setSettingsOpen(open => !open)}
-			/>
-			{settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+			<div inert={railOpen && railOverlay ? true : undefined}>
+				<HeaderBar
+					snapshot={snap}
+					subCount={subCount}
+					railOpen={railOpen}
+					agentsButtonRef={agentsButtonRef}
+					onToggleRail={toggleRail}
+					onLeave={onLeave}
+					onBack={onBack}
+					settingsOpen={settingsOpen}
+					onToggleSettings={() => {
+						if (!settingsOpen) setRailOpen(false);
+						setSettingsOpen(open => !open);
+					}}
+				/>
+			</div>
+			{settingsOpen && (
+				<SettingsModal
+					onClose={() => setSettingsOpen(false)}
+					project={snap.state?.cwd}
+					session={title}
+					readOnly={snap.readOnly}
+					connection={snap.phase}
+					model={snap.state?.model?.name}
+					context={contextLabel(snap)}
+				/>
+			)}
 			<main className="sh-main">
-				<section className="sh-content" data-rail={railOpen ? "true" : "false"}>
+				{railOpen && railOverlay && <div className="sh-rail-backdrop" aria-hidden="true" onClick={closeRail} />}
+				<section
+					className="sh-content"
+					data-rail={railOpen ? "true" : "false"}
+					inert={railOpen && railOverlay ? true : undefined}
+				>
 					<div className="sh-transcript">
 						<Transcript
 							entries={snap.entries}
@@ -406,21 +487,30 @@ function Session({ client, onLeave, onRejoin, onBack, onEnded }: SessionProps): 
 					</div>
 				</section>
 				{railOpen && (
-					<>
-						<div className="sh-rail-backdrop" onClick={() => setRailOpen(false)} />
-						<aside className="sh-rail">
-							<AgentsPanel
-								agents={snap.agents}
-								progress={snap.progress}
-								lifecycle={snap.lifecycle}
-								selectedId={selectedId}
-								onSelect={setSelectedId}
-							/>
-						</aside>
-					</>
+					<aside
+						ref={railRef}
+						className="sh-rail"
+						role={railOverlay ? "dialog" : undefined}
+						aria-modal={railOverlay ? "true" : undefined}
+						aria-label="Agents"
+						tabIndex={railOverlay ? -1 : undefined}
+						onKeyDown={trapRailFocus}
+					>
+						<AgentsPanel
+							agents={snap.agents}
+							progress={snap.progress}
+							lifecycle={snap.lifecycle}
+							selectedId={selectedId}
+							onSelect={setSelectedId}
+						/>
+					</aside>
 				)}
 			</main>
-			<Composer client={client} snapshot={snap} />
+			{snap.phase === "ended" ? (
+				<Banners phase={snap.phase} endedReason={snap.endedReason} onRejoin={onRejoin} onNewLink={onLeave} />
+			) : (
+				<Composer client={client} snapshot={snap} />
+			)}
 			{drawerAgent && (
 				<>
 					<div className="ag-drawer-backdrop" onClick={() => setSelectedId(null)} />
@@ -434,7 +524,9 @@ function Session({ client, onLeave, onRejoin, onBack, onEnded }: SessionProps): 
 					/>
 				</>
 			)}
-			<Banners phase={snap.phase} endedReason={snap.endedReason} onRejoin={onRejoin} onNewLink={onLeave} />
+			{snap.phase !== "ended" && (
+				<Banners phase={snap.phase} endedReason={snap.endedReason} onRejoin={onRejoin} onNewLink={onLeave} />
+			)}
 			<Toasts notices={snap.notices} />
 		</div>
 	);

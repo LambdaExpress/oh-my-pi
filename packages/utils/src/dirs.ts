@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { engines, version } from "../package.json" with { type: "json" };
+import { stripWindowsExtendedLengthPathPrefix } from "./path";
 
 /** App name (e.g. "omp") */
 export const APP_NAME: string = "omp";
@@ -184,7 +185,7 @@ export function getProjectDir(): string {
 
 /** Set the project directory. */
 export function setProjectDir(dir: string): void {
-	projectDir = standardizeMacOSPath(path.resolve(dir));
+	projectDir = standardizeMacOSPath(stripWindowsExtendedLengthPathPrefix(path.resolve(dir)));
 	process.chdir(projectDir);
 }
 

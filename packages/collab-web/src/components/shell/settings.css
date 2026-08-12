@@ -1,0 +1,347 @@
+/* Responsive settings view / mobile sheet. */
+.sh-settings-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 70;
+	background: var(--bg);
+	animation: sh-fade-in 150ms ease-out;
+}
+
+.sh-settings-sheet {
+	width: 100%;
+	height: 100%;
+	display: grid;
+	grid-template-columns: 288px minmax(0, 1fr);
+	background: var(--bg);
+	overflow: hidden;
+}
+
+.sh-settings-sidebar {
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	gap: 24px;
+	padding: 24px 16px;
+	background: var(--bg-sidebar);
+	border-right: 1px solid var(--border);
+}
+
+.sh-settings-back,
+.sh-settings-nav-item {
+	min-height: 40px;
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 0 12px;
+	font-size: 13px;
+	font-weight: 500;
+	text-align: left;
+	color: var(--fg-muted);
+	background: transparent;
+	border: 0;
+	border-radius: var(--radius);
+}
+
+.sh-settings-back:hover,
+.sh-settings-nav-item:hover {
+	color: var(--fg);
+	background: var(--bg-hover);
+}
+
+.sh-settings-back {
+	width: 100%;
+	color: var(--fg);
+}
+
+.sh-settings-sidebar-title {
+	padding: 0 12px;
+	font-size: 13px;
+	font-weight: 650;
+}
+
+.sh-settings-nav {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.sh-settings-nav-item.is-active {
+	color: var(--fg);
+	background: var(--bg-selected);
+}
+
+.sh-settings-main {
+	min-width: 0;
+	min-height: 0;
+	overflow-y: auto;
+}
+
+.sh-settings-content {
+	width: 100%;
+	max-width: 840px;
+	padding: 56px 64px 80px;
+}
+
+.sh-settings-head {
+	margin-bottom: 48px;
+}
+
+.sh-settings-eyebrow {
+	margin-bottom: 8px;
+	font-size: 11px;
+	font-weight: 650;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	color: var(--fg-faint);
+}
+
+.sh-settings-title {
+	font-size: 28px;
+	font-weight: 650;
+	letter-spacing: -0.02em;
+}
+
+.sh-settings-description {
+	max-width: 560px;
+	margin-top: 8px;
+	font-size: 13px;
+	color: var(--fg-muted);
+}
+
+.sh-settings-section,
+.sh-settings-section-head {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.sh-settings-section-head {
+	margin-bottom: 16px;
+}
+
+.sh-settings-section-head h2 {
+	font-size: 16px;
+	font-weight: 650;
+}
+
+.sh-settings-section-head p {
+	font-size: 12px;
+	color: var(--fg-muted);
+}
+
+.sh-settings-metadata {
+	border-top: 1px solid var(--border);
+}
+
+.sh-settings-metadata-row {
+	min-height: 52px;
+	display: grid;
+	grid-template-columns: minmax(160px, 0.8fr) minmax(0, 1.2fr);
+	align-items: center;
+	gap: 24px;
+	padding: 12px 4px;
+	border-bottom: 1px solid var(--border);
+}
+
+.sh-settings-metadata-row dt {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	font-size: 12px;
+	color: var(--fg-muted);
+}
+
+.sh-settings-metadata-row dt svg {
+	flex: none;
+	color: var(--fg-faint);
+}
+
+.sh-settings-metadata-row dd {
+	min-width: 0;
+	font-size: 13px;
+	font-weight: 500;
+	text-align: right;
+	color: var(--fg);
+	overflow-wrap: anywhere;
+}
+
+.sh-settings-themes {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 12px;
+}
+
+.sh-settings-theme {
+	min-height: 76px;
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 16px;
+	color: var(--fg-muted);
+	background: var(--bg-raised);
+	border: 1px solid var(--border);
+	border-radius: var(--radius-lg);
+	cursor: pointer;
+	transition:
+		background 150ms ease-out,
+		border-color 150ms ease-out,
+		color 150ms ease-out;
+}
+
+.sh-settings-theme:hover {
+	color: var(--fg);
+	background: var(--bg-hover);
+	border-color: var(--border-strong);
+}
+
+.sh-settings-theme.is-selected {
+	color: var(--fg);
+	background: var(--accent-muted);
+	border-color: var(--accent);
+}
+
+.sh-settings-theme-copy {
+	min-width: 0;
+	display: flex;
+	align-items: flex-start;
+	gap: 10px;
+}
+
+.sh-settings-theme-copy > svg {
+	flex: none;
+	margin-top: 1px;
+}
+
+.sh-settings-theme-copy strong,
+.sh-settings-theme-copy small {
+	display: block;
+}
+
+.sh-settings-theme-copy strong {
+	font-size: 13px;
+	font-weight: 650;
+}
+
+.sh-settings-theme-copy small {
+	margin-top: 4px;
+	font-size: 11px;
+	font-weight: 400;
+	color: var(--fg-muted);
+}
+
+.sh-settings-theme input[type="radio"] {
+	flex: none;
+	margin: 0;
+	accent-color: var(--accent);
+}
+
+@media (max-width: 720px) {
+	.sh-settings-backdrop {
+		display: grid;
+		place-items: center;
+		padding: 12px;
+		background: var(--backdrop);
+	}
+
+	.sh-settings-sheet {
+		width: 100%;
+		max-height: 100%;
+		grid-template-columns: minmax(0, 1fr);
+		grid-template-rows: auto minmax(0, 1fr);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-lg);
+		box-shadow: var(--shadow-overlay);
+	}
+
+	.sh-settings-sidebar {
+		position: relative;
+		z-index: 1;
+		gap: 8px;
+		padding: 8px;
+		border-right: 0;
+		border-bottom: 1px solid var(--border);
+	}
+
+	.sh-settings-back {
+		min-height: 44px;
+	}
+
+	.sh-settings-sidebar-title {
+		display: none;
+	}
+
+	.sh-settings-nav {
+		flex-direction: row;
+	}
+
+	.sh-settings-nav-item {
+		min-height: 44px;
+		flex: 1;
+		justify-content: center;
+	}
+
+	.sh-settings-content {
+		max-width: none;
+		padding: 32px 16px 48px;
+	}
+
+	.sh-settings-head {
+		margin-bottom: 32px;
+	}
+
+	.sh-settings-title {
+		font-size: 24px;
+	}
+
+	.sh-settings-themes {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+@media (max-width: 480px) {
+	.sh-settings-backdrop {
+		padding: 0;
+	}
+
+	.sh-settings-sheet {
+		border: 0;
+		border-radius: 0;
+	}
+
+	.sh-settings-metadata-row {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 4px;
+		padding: 12px 4px;
+	}
+
+	.sh-settings-metadata-row dd {
+		padding-left: 24px;
+		text-align: left;
+	}
+}
+
+@media (max-height: 680px) {
+	.sh-settings-sidebar,
+	.sh-settings-head {
+		position: sticky;
+		top: 0;
+	}
+
+	.sh-settings-head {
+		z-index: 1;
+		padding: 16px 0;
+		margin-top: -16px;
+		background: var(--bg);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.sh-settings-backdrop {
+		animation: none;
+	}
+
+	.sh-settings-theme {
+		transition: none;
+	}
+}

@@ -9,7 +9,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { packEnvelope, unpackEnvelope } from "@oh-my-pi/pi-coding-agent/collab/protocol";
-import { startLocalServer, type LocalServer } from "../../src/collab/local-server";
+import { type LocalServer, startLocalServer } from "../../src/collab/local-server";
 
 const WAIT_TIMEOUT_MS = 5_000;
 const ROOM_ID = "a".repeat(20);
