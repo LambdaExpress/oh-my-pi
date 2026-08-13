@@ -1499,13 +1499,14 @@ function formatStreamingContent(
 	streamKey?: object,
 ): StreamingContentPreview | undefined {
 	if (!content) return undefined;
+	let startIndex = 0;
+	let lineNumberWidth = WRITE_GUTTER_MIN_WIDTH;
 	const bodyText = cachedRenderedString(cache, uiTheme, expanded, language ?? "", content, () => {
 		// Collapsed: follow the streaming edge with a bounded tail window so the box
 		// stays short enough not to strand its scrolled-off head above the viewport
 		// while the block is volatile. `Ctrl+O` (expanded) lifts the cap for a
 		// deliberate full view — matching the eval streaming preview.
 		let totalLines: number;
-		let startIndex: number;
 		let visibleText: string;
 		if (expanded) {
 			visibleText = normalizeDisplayText(content);
@@ -1521,7 +1522,7 @@ function formatStreamingContent(
 		}
 		if (visibleText.length === 0) return "";
 		const highlighted = highlightCode(visibleText, language);
-		const lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
+		lineNumberWidth = Math.max(WRITE_GUTTER_MIN_WIDTH, String(totalLines).length);
 		const logicalRows: string[] = [];
 		for (let i = 0; i < highlighted.length; i++) {
 			const lineNum = startIndex + i + 1;
@@ -1537,7 +1538,9 @@ function formatStreamingContent(
 	// slice up to the tail-window start — the same boundary `tailWindowStart`
 	// computed for the visible tail — then normalize for wrap accounting.
 	const hiddenLines =
-		startIndex === 0 ? [] : normalizeDisplayText(content.slice(0, tailWindowStart(content, WRITE_STREAMING_PREVIEW_LINES))).split("\n");
+		startIndex === 0
+			? []
+			: normalizeDisplayText(content.slice(0, tailWindowStart(content, WRITE_STREAMING_PREVIEW_LINES))).split("\n");
 	const hiddenVisualRows = (() => {
 		const contentWidth = outputBlockContentWidth(width);
 		let rows = 0;
