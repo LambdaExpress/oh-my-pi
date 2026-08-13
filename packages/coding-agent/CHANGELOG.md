@@ -57,6 +57,7 @@
 
 ### Fixed
 
+- Fixed approved image messages queued for text-only models remaining invisible until vision-model description completed; the queue now shows them immediately, preserves later message order, and atomically delivers each hidden description with its user message.
 - Fixed completed-run collapsing for Ctrl+Up follow-ups so the prior completed turn collapses immediately without waiting for context compaction, and compaction rebuilds now preserve the visible collapse summary when its request still owns the live scrollback gate.
 - Fixed `/new` retaining plan or goal mode state, mode-specific tools, and goal continuation state from the previous session; new sessions now run the same mode reconciliation lifecycle as resumed sessions before rebuilding their system prompt.
 - Fixed the settings panel rejecting and misordering the `pwsh.enabled` section by registering its PowerShell group in the Shell tab layout.

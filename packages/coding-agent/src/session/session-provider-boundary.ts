@@ -214,6 +214,7 @@ export class SessionProviderBoundary {
 	async buildImageDescriptionNotice(
 		normalizedImages: ImageContent[],
 		signal?: AbortSignal,
+		onVisionApproved?: () => void,
 	): Promise<CustomMessage | undefined> {
 		const model = this.#host.model();
 		const shouldDescribe =
@@ -240,6 +241,7 @@ export class SessionProviderBoundary {
 							{ model: formatModelString(visionModel), imageCount },
 							approvalSignal,
 						),
+					onVisionApproved,
 				},
 				signal,
 			);

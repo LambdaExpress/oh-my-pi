@@ -60,6 +60,8 @@ export interface DescribeAttachedImagesDeps {
 		request: { model: Model<Api>; imageCount: number },
 		signal?: AbortSignal,
 	) => Promise<boolean>;
+	/** Fires synchronously after approval succeeds, before any vision request starts. */
+	onVisionApproved?: () => void;
 	/** Test seam: overrides the underlying completeSimple call. */
 	completeImpl?: typeof completeSimple;
 }
@@ -194,6 +196,16 @@ export async function describeAttachedImagesForTextModel(
 			logger.warn("image attachment vision approval failed closed", {
 				error: toError(err).message,
 				model: `${visionModel.provider}/${visionModel.id}`,
+			});
+		}
+	}
+	if (approved) {
+		try {
+			deps.onVisionApproved?.();
+		} catch (err) {
+			logger.warn("image attachment vision approval listener failed", {
+				error: toError(err).message,
+				model: visionModel ? `${visionModel.provider}/${visionModel.id}` : undefined,
 			});
 		}
 	}

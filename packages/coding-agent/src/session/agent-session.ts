@@ -486,6 +486,18 @@ type ScheduledAgentContinueOptions = {
 	onError?: (error: unknown) => void;
 };
 
+type QueuedMessageDelivery = "steer" | "followUp";
+
+type QueuedMessagePreparation = {
+	deliverAs: QueuedMessageDelivery;
+	readyMessages?: AgentMessage[];
+	restorableMessage?: AgentMessage;
+	visible: boolean;
+	displayableCount: number;
+	abortController?: AbortController;
+	cancelled: boolean;
+};
+
 type SessionTitleSource = "auto" | "user";
 type SessionNameTrigger = "replan";
 type SetSessionNameWithTrigger = (
@@ -687,6 +699,8 @@ export class AgentSession {
 	#usageFallbackConfirmer: UsageFallbackConfirmer | undefined;
 	#visionFallbackConfirmer: VisionFallbackConfirmer | undefined;
 	#usagePreflightAbortControllers = new Set<AbortController>();
+	#queuedMessagePreparations: QueuedMessagePreparation[] = [];
+	#queuedMessagePreparationTasks = new Set<Promise<void>>();
 	#queuedMessageDrainBlocked = false;
 	#usagePreflightReadyForNextModelCall = false;
 	#usagePreflightReadyModel: Model | undefined;
@@ -4080,6 +4094,7 @@ export class AgentSession {
 	 */
 	beginDispose(): void {
 		this.#isDisposed = true;
+		this.#cancelQueuedMessagePreparations();
 		this.#queuedMessageDrainBlocked = false;
 		this.#usagePreflightReadyForNextModelCall = false;
 		this.#detachUsageBeforeQueueDequeue?.();
@@ -4284,6 +4299,7 @@ export class AgentSession {
 			await withTimeout(
 				(async () => {
 					await this.agent.waitForIdle();
+					await this.#waitForQueuedMessagePreparations();
 					await this.#drainInFlightEventHandlers();
 				})(),
 				options.drainTimeoutMs ?? POST_PROMPT_DRAIN_TIMEOUT_MS,
@@ -4416,6 +4432,7 @@ export class AgentSession {
 
 		// Drop the conversation: messages, queued steers/follow-ups, pending tool
 		// calls, and error state. agent.reset() keeps the model and system prompt.
+		this.#cancelQueuedMessagePreparations();
 		this.agent.reset();
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
@@ -4536,7 +4553,7 @@ export class AgentSession {
 	}
 
 	#reconcileQueuedMessageDrain(): void {
-		if (!this.agent.hasQueuedMessages()) {
+		if (!this.agent.hasQueuedMessages() && this.#queuedMessagePreparations.length === 0) {
 			this.#queuedMessageDrainBlocked = false;
 		}
 	}
@@ -5489,8 +5506,9 @@ export class AgentSession {
 	#buildImageDescriptionNotice(
 		normalizedImages: ImageContent[],
 		signal?: AbortSignal,
+		onVisionApproved?: () => void,
 	): Promise<CustomMessage | undefined> {
-		return this.#providerBoundary.buildImageDescriptionNotice(normalizedImages, signal);
+		return this.#providerBoundary.buildImageDescriptionNotice(normalizedImages, signal, onVisionApproved);
 	}
 
 	#normalizeAgentMessageImages<T extends AgentMessage>(message: T): Promise<T> {
@@ -5627,16 +5645,10 @@ export class AgentSession {
 			const streamingBehavior = options?.streamingBehavior;
 			if (!streamingBehavior) throw new AgentBusyError();
 
-			// Steer/follow-up the keyword notices BEFORE the queued user message so the
-			// model reads the steering notice ahead of the prompt it modifies.
-			for (const notice of keywordNotices) {
-				await this.#queueCustomMessage(notice, streamingBehavior);
-			}
-			if (streamingBehavior === "followUp") {
-				await this.#queueUserMessage(expandedText, options?.images, "followUp");
-			} else {
-				await this.#queueUserMessage(expandedText, options?.images, "steer");
-			}
+			// Keep keyword notices in the same prepared batch as their user prompt.
+			// A slow image description can otherwise let the agent consume the
+			// notice before the prompt it modifies.
+			await this.#queueUserMessage(expandedText, options?.images, streamingBehavior, keywordNotices);
 			return true;
 		}
 
@@ -5739,20 +5751,14 @@ export class AgentSession {
 			const streamingBehavior = options?.streamingBehavior;
 			if (!streamingBehavior) throw new AgentBusyError();
 
-			for (const notice of keywordNotices) {
-				await this.#queueCustomMessage(notice, streamingBehavior);
-			}
-			await this.#queueCustomMessage(message, streamingBehavior, options.queueChipText);
+			await this.#queueCustomMessage(message, streamingBehavior, options.queueChipText, keywordNotices);
 			return;
 		}
 		if (this.isStreaming) {
 			const streamingBehavior = options?.streamingBehavior;
 			if (!streamingBehavior) throw new AgentBusyError();
 
-			for (const notice of keywordNotices) {
-				await this.#queueCustomMessage(notice, streamingBehavior);
-			}
-			await this.#queueCustomMessage(message, streamingBehavior, options?.queueChipText);
+			await this.#queueCustomMessage(message, streamingBehavior, options?.queueChipText, keywordNotices);
 			return;
 		}
 
@@ -6199,56 +6205,157 @@ export class AgentSession {
 		const imageDescriptionNotice = normalizedImages?.length
 			? await this.#buildImageDescriptionNotice(normalizedImages)
 			: undefined;
-		this.#allowQueuedMessageDrainRetry();
-		if (imageDescriptionNotice) this.agent.followUp(imageDescriptionNotice);
-		this.agent.followUp({
-			role: "developer",
-			content,
-			attribution: options.attribution ?? "agent",
-			timestamp: Date.now(),
-		});
-		this.#scheduleIdleQueueDrain();
+		this.#enqueuePreparedQueuedMessageBatch("followUp", [
+			...(imageDescriptionNotice ? [imageDescriptionNotice] : []),
+			{
+				role: "developer",
+				content,
+				attribution: options.attribution ?? "agent",
+				timestamp: Date.now(),
+			},
+		]);
 	}
 
 	async #queueUserMessage(
 		text: string,
 		images: ImageContent[] | undefined,
-		mode: "steer" | "followUp",
+		mode: QueuedMessageDelivery,
+		prependMessages: readonly AgentMessage[] = [],
 	): Promise<void> {
 		// A queued user message (RPC/SDK/collab steer or follow-up, or a typed message
 		// while streaming) is a deliberate resume; re-enable advisor auto-resume that
 		// a user interrupt suppressed.
 		this.#advisors.autoResumeSuppressed = false;
+		const preparation: QueuedMessagePreparation = {
+			deliverAs: mode,
+			visible: false,
+			displayableCount: 0,
+			abortController: new AbortController(),
+			cancelled: false,
+		};
+		// Reserve ordering before image normalization or approval awaits. Concurrent
+		// callers and later text-only messages must not overtake a slow vision request.
+		this.#queuedMessagePreparations.push(preparation);
 		const normalizedImages = await this.#normalizeImagesForModel(images);
+		if (preparation.cancelled) return;
 		const content: (TextContent | ImageContent)[] = [{ type: "text", text }];
 		if (normalizedImages?.length) {
 			content.push(...normalizedImages);
 		}
-		// Text-only model + image attachment: describe via a vision model and enqueue the
-		// description as a hidden companion immediately before the user message.
-		const imageDescriptionNotice = normalizedImages?.length
-			? await this.#buildImageDescriptionNotice(normalizedImages)
-			: undefined;
-		this.#allowQueuedMessageDrainRetry();
-		if (mode === "followUp") {
-			if (imageDescriptionNotice) this.agent.followUp(imageDescriptionNotice);
-			this.agent.followUp({
-				role: "user",
-				content,
-				attribution: "user",
-				timestamp: Date.now(),
-			});
-		} else {
-			if (imageDescriptionNotice) this.agent.steer(imageDescriptionNotice);
-			this.agent.steer({
-				role: "user",
-				content,
-				steering: true,
-				attribution: "user",
-				timestamp: Date.now(),
-			});
+		const userMessage: AgentMessage =
+			mode === "followUp"
+				? {
+						role: "user",
+						content,
+						attribution: "user",
+						timestamp: Date.now(),
+					}
+				: {
+						role: "user",
+						content,
+						steering: true,
+						attribution: "user",
+						timestamp: Date.now(),
+					};
+		preparation.restorableMessage = userMessage;
+
+		const accepted = Promise.withResolvers<void>();
+		const descriptionPromise = normalizedImages?.length
+			? this.#buildImageDescriptionNotice(normalizedImages, preparation.abortController?.signal, () => {
+					if (preparation.cancelled) return;
+					// Approval is the user-visible acceptance boundary. The
+					// description request continues in the tracked background task.
+					preparation.visible = true;
+					preparation.displayableCount = 1;
+					accepted.resolve();
+				})
+			: Promise.resolve(undefined);
+		const completion = descriptionPromise
+			.catch(error => {
+				logger.warn("queued image description preparation failed; delivering image without description", {
+					error: String(error),
+				});
+				return undefined;
+			})
+			.then(imageDescriptionNotice => {
+				if (preparation.cancelled) return;
+				const readyMessages: AgentMessage[] = [
+					...prependMessages,
+					...(imageDescriptionNotice ? [imageDescriptionNotice] : []),
+					userMessage,
+				];
+				preparation.readyMessages = readyMessages;
+				preparation.visible = true;
+				preparation.displayableCount = readyMessages.filter(isDisplayableQueuedMessage).length;
+				this.#drainQueuedMessagePreparations();
+			})
+			.finally(() => accepted.resolve());
+		this.#trackQueuedMessagePreparation(completion);
+
+		// Approved vision work returns here before the provider response. All other
+		// paths return after their cheap preparation has either queued or cancelled.
+		await accepted.promise;
+	}
+
+	#trackQueuedMessagePreparation(task: Promise<void>): void {
+		this.#queuedMessagePreparationTasks.add(task);
+		void task.then(
+			() => this.#queuedMessagePreparationTasks.delete(task),
+			error => {
+				this.#queuedMessagePreparationTasks.delete(task);
+				logger.warn("queued message preparation failed", { error: String(error) });
+			},
+		);
+	}
+
+	async #waitForQueuedMessagePreparations(): Promise<void> {
+		while (this.#queuedMessagePreparationTasks.size > 0) {
+			await Promise.allSettled([...this.#queuedMessagePreparationTasks]);
 		}
+	}
+
+	#enqueuePreparedQueuedMessageBatch(deliverAs: QueuedMessageDelivery, messages: readonly AgentMessage[]): void {
+		const readyMessages = [...messages];
+		const restorableMessage = readyMessages.findLast(isUserQueuedMessage);
+		this.#queuedMessagePreparations.push({
+			deliverAs,
+			readyMessages,
+			restorableMessage,
+			visible: true,
+			displayableCount: readyMessages.filter(isDisplayableQueuedMessage).length,
+			cancelled: false,
+		});
+		this.#drainQueuedMessagePreparations();
+	}
+
+	#drainQueuedMessagePreparations(): void {
+		let delivered = false;
+		while (this.#queuedMessagePreparations[0]?.readyMessages !== undefined) {
+			const preparation = this.#queuedMessagePreparations.shift()!;
+			if (preparation.cancelled) continue;
+			for (const message of preparation.readyMessages!) {
+				if (preparation.deliverAs === "followUp") {
+					this.agent.followUp(message);
+				} else {
+					this.agent.steer(message);
+				}
+			}
+			delivered = true;
+		}
+		if (!delivered) return;
+		this.#allowQueuedMessageDrainRetry();
 		this.#scheduleIdleQueueDrain();
+	}
+
+	#cancelQueuedMessagePreparation(preparation: QueuedMessagePreparation): void {
+		preparation.cancelled = true;
+		preparation.abortController?.abort();
+	}
+
+	#cancelQueuedMessagePreparations(): void {
+		const preparations = this.#queuedMessagePreparations;
+		this.#queuedMessagePreparations = [];
+		for (const preparation of preparations) this.#cancelQueuedMessagePreparation(preparation);
 	}
 
 	#scheduleIdleQueueDrain(): void {
@@ -6437,8 +6544,9 @@ export class AgentSession {
 	/** Queue a custom message without starting a turn, matching steer/follow-up delivery. */
 	async #queueCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details" | "attribution">,
-		deliverAs: "steer" | "followUp",
+		deliverAs: QueuedMessageDelivery,
 		queueChipText?: string,
+		prependMessages: readonly AgentMessage[] = [],
 	): Promise<void> {
 		const details =
 			queueChipText !== undefined
@@ -6460,13 +6568,7 @@ export class AgentSession {
 			timestamp: Date.now(),
 		};
 		const normalizedAppMessage = await this.#normalizeAgentMessageImages(appMessage);
-		this.#allowQueuedMessageDrainRetry();
-		if (deliverAs === "followUp") {
-			this.agent.followUp(normalizedAppMessage);
-		} else {
-			this.agent.steer(normalizedAppMessage);
-		}
-		this.#scheduleIdleQueueDrain();
+		this.#enqueuePreparedQueuedMessageBatch(deliverAs, [...prependMessages, normalizedAppMessage]);
 	}
 
 	/**
@@ -6517,14 +6619,9 @@ export class AgentSession {
 				this.#queueHiddenNextTurnMessage(normalizedAppMessage, options?.triggerTurn ?? false);
 				return false;
 			}
-			this.#allowQueuedMessageDrainRetry();
-
-			if (options?.deliverAs === "followUp") {
-				this.agent.followUp(normalizedAppMessage);
-			} else {
-				this.agent.steer(normalizedAppMessage);
-			}
-			this.#scheduleIdleQueueDrain();
+			this.#enqueuePreparedQueuedMessageBatch(options?.deliverAs === "followUp" ? "followUp" : "steer", [
+				normalizedAppMessage,
+			]);
 			return false;
 		}
 
@@ -6641,10 +6738,41 @@ export class AgentSession {
 		const followUpAll = this.agent.peekFollowUpQueue();
 		const steering = steeringAll.filter(isUserQueuedMessage).map(toRestoredQueuedMessage);
 		const followUp = followUpAll.filter(isUserQueuedMessage).map(toRestoredQueuedMessage);
+		const keptPreparations: QueuedMessagePreparation[] = [];
+		for (const preparation of this.#queuedMessagePreparations) {
+			const restorableMessage = preparation.restorableMessage;
+			if (restorableMessage && isUserQueuedMessage(restorableMessage)) {
+				if (preparation.visible) {
+					const restored = toRestoredQueuedMessage(restorableMessage);
+					if (preparation.deliverAs === "followUp") {
+						followUp.push(restored);
+					} else {
+						steering.push(restored);
+					}
+				}
+				this.#cancelQueuedMessagePreparation(preparation);
+				continue;
+			}
+			if (!options?.forInterrupt) {
+				keptPreparations.push(preparation);
+				continue;
+			}
+			const advisorMessages = preparation.readyMessages?.filter(isAdvisorCard) ?? [];
+			if (advisorMessages.length === 0) {
+				this.#cancelQueuedMessagePreparation(preparation);
+				continue;
+			}
+			preparation.readyMessages = advisorMessages;
+			preparation.visible = true;
+			preparation.displayableCount = advisorMessages.filter(isDisplayableQueuedMessage).length;
+			keptPreparations.push(preparation);
+		}
+		this.#queuedMessagePreparations = keptPreparations;
 		const keep: (m: AgentMessage) => boolean = options?.forInterrupt
 			? isAdvisorCard
 			: m => !isUserQueuedMessage(m) && !isHiddenUserCompanion(m);
 		this.agent.replaceQueues(steeringAll.filter(keep), followUpAll.filter(keep));
+		this.#drainQueuedMessagePreparations();
 		this.#reconcileQueuedMessageDrain();
 		return { steering, followUp };
 	}
@@ -6657,6 +6785,15 @@ export class AgentSession {
 		}
 		for (const message of this.agent.peekFollowUpQueue()) {
 			if (isUserQueuedMessage(message)) count++;
+		}
+		for (const preparation of this.#queuedMessagePreparations) {
+			if (
+				preparation.visible &&
+				preparation.restorableMessage &&
+				isUserQueuedMessage(preparation.restorableMessage)
+			) {
+				count++;
+			}
 		}
 		return count;
 	}
@@ -6682,14 +6819,35 @@ export class AgentSession {
 		return (
 			this.agent.peekSteeringQueue().filter(isDisplayableQueuedMessage).length +
 			this.agent.peekFollowUpQueue().filter(isDisplayableQueuedMessage).length +
+			this.#queuedMessagePreparations.reduce(
+				(count, preparation) => count + (preparation.visible ? preparation.displayableCount : 0),
+				0,
+			) +
 			this.#pendingNextTurnMessages.length
 		);
 	}
 
 	getQueuedMessages(): { steering: readonly string[]; followUp: readonly string[] } {
+		const preparingSteering: string[] = [];
+		const preparingFollowUp: string[] = [];
+		for (const preparation of this.#queuedMessagePreparations) {
+			const message = preparation.restorableMessage;
+			if (!preparation.visible || !message || !isUserQueuedMessage(message)) continue;
+			if (preparation.deliverAs === "followUp") {
+				preparingFollowUp.push(queueChipText(message));
+			} else {
+				preparingSteering.push(queueChipText(message));
+			}
+		}
 		return {
-			steering: this.agent.peekSteeringQueue().filter(isUserQueuedMessage).map(queueChipText),
-			followUp: this.agent.peekFollowUpQueue().filter(isUserQueuedMessage).map(queueChipText),
+			steering: [
+				...this.agent.peekSteeringQueue().filter(isUserQueuedMessage).map(queueChipText),
+				...preparingSteering,
+			],
+			followUp: [
+				...this.agent.peekFollowUpQueue().filter(isUserQueuedMessage).map(queueChipText),
+				...preparingFollowUp,
+			],
 		};
 	}
 
@@ -6701,6 +6859,26 @@ export class AgentSession {
 	popLastQueuedMessage(): RestoredQueuedMessage | undefined {
 		const steering = this.agent.peekSteeringQueue();
 		const followUp = this.agent.peekFollowUpQueue();
+		const popPrepared = (deliverAs: QueuedMessageDelivery): RestoredQueuedMessage | undefined => {
+			for (let i = this.#queuedMessagePreparations.length - 1; i >= 0; i--) {
+				const preparation = this.#queuedMessagePreparations[i]!;
+				const message = preparation.restorableMessage;
+				if (
+					preparation.deliverAs !== deliverAs ||
+					!preparation.visible ||
+					!message ||
+					!isUserQueuedMessage(message)
+				) {
+					continue;
+				}
+				this.#queuedMessagePreparations.splice(i, 1);
+				this.#cancelQueuedMessagePreparation(preparation);
+				this.#drainQueuedMessagePreparations();
+				this.#reconcileQueuedMessageDrain();
+				return toRestoredQueuedMessage(message);
+			}
+			return undefined;
+		};
 		const lastUserIndex = (queue: readonly AgentMessage[]): number => {
 			for (let i = queue.length - 1; i >= 0; i--) {
 				if (isUserQueuedMessage(queue[i])) return i;
@@ -6717,6 +6895,8 @@ export class AgentSession {
 			next.splice(start, userIndex - start + 1);
 			return next;
 		};
+		const preparedSteer = popPrepared("steer");
+		if (preparedSteer) return preparedSteer;
 		const fromSteer = lastUserIndex(steering);
 		if (fromSteer >= 0) {
 			const removed = steering[fromSteer];
@@ -6724,6 +6904,8 @@ export class AgentSession {
 			this.#reconcileQueuedMessageDrain();
 			return toRestoredQueuedMessage(removed);
 		}
+		const preparedFollowUp = popPrepared("followUp");
+		if (preparedFollowUp) return preparedFollowUp;
 		const fromFollowUp = lastUserIndex(followUp);
 		if (fromFollowUp >= 0) {
 			const removed = followUp[fromFollowUp];
@@ -7001,6 +7183,7 @@ export class AgentSession {
 			advisorRecordersDetached = true;
 			await this.#advisors.drainAndDetachRecorders();
 			try {
+				this.#cancelQueuedMessagePreparations();
 				this.agent.reset();
 				this.#toolExecutionDisplaySnapshots.clear();
 				if (options?.drop && previousSessionFile) {
@@ -8117,6 +8300,7 @@ export class AgentSession {
 		const previousLastCompletedRewind = this.#lastCompletedRewind;
 		const previousRewoundToolResultIds = new Set(this.#rewoundToolResultIds);
 
+		this.#cancelQueuedMessagePreparations();
 		this.agent.clearAllQueues();
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
@@ -8394,6 +8578,7 @@ export class AgentSession {
 		}
 
 		// Clear pending messages (bound to old session state)
+		this.#cancelQueuedMessagePreparations();
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 		this.#queuedMessageDrainBlocked = false;
@@ -8527,6 +8712,7 @@ export class AgentSession {
 			throw new Error("Cannot branch /btw while session maintenance or user work is still running");
 		}
 
+		this.#cancelQueuedMessagePreparations();
 		this.#pendingNextTurnMessages = [];
 		this.#scheduledHiddenNextTurnGeneration = undefined;
 		this.agent.replaceQueues([], []);

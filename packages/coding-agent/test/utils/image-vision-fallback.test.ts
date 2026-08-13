@@ -145,6 +145,36 @@ describe("describeAttachedImagesForTextModel", () => {
 		expect(blocks[0]?.text).toContain("vision model was not approved");
 	});
 
+	it("reports approval before the vision request completes", async () => {
+		const releaseVision = Promise.withResolvers<void>();
+		const visionStarted = Promise.withResolvers<void>();
+		const stub = makeCompleteStub("description");
+		let approved = false;
+		let approvedWhenVisionStarted = false;
+		const completeImpl = (async (...args: Parameters<typeof completeSimple>) => {
+			approvedWhenVisionStarted = approved;
+			visionStarted.resolve();
+			await releaseVision.promise;
+			return stub.fn(...args);
+		}) as typeof completeSimple;
+		const deps = makeDeps(testDir, [textModel, visionModel], completeImpl, "test-key", async () => true);
+		deps.onVisionApproved = () => {
+			approved = true;
+		};
+
+		const describing = describeAttachedImagesForTextModel(
+			[{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
+			deps,
+		);
+		await visionStarted.promise;
+
+		expect(approved).toBe(true);
+		expect(approvedWhenVisionStarted).toBe(true);
+
+		releaseVision.resolve();
+		await describing;
+	});
+
 	it("saves the image but emits a no-vision note when no vision model is available", async () => {
 		const stub = makeCompleteStub("should not be used");
 		const blocks = await describeAttachedImagesForTextModel(
