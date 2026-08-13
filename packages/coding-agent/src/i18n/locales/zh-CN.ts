@@ -445,7 +445,7 @@ export const zhCN: Record<string, string> = {
 		"在顾问的顾虑或阻塞中断后，在接下来的这么多主轮次中，以非中断方式处理后续的顾虑/阻塞。",
 	"After the agent stops, nudge it to capture lessons to memory and create/enhance isolated managed skills":
 		"在代理停止后，提示它将经验教训存入记忆，并创建/增强隔离的托管技能",
-	"After yield": "让出后",
+	"After yield": "排队",
 	Agent: "代理",
 	'Agent "{id}" is {status} — only parked agents can be revived.':
 		"代理“{id}”处于{status} — 只有已停驻的代理才能恢复。",

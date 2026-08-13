@@ -3185,6 +3185,8 @@ function groupLabel(group: string): string {
 			return t("Output Limits");
 		case "Power (macOS)":
 			return t("Power (macOS)");
+		case "PowerShell":
+			return t("PowerShell");
 		case "Prewalk":
 			return t("Prewalk");
 		case "Privacy":
