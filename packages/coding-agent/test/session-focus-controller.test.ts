@@ -57,6 +57,7 @@ interface Harness {
 		clearTransientSessionUi: () => number;
 		resetTranscriptAnchors: () => number;
 		renderInitialMessages: () => number;
+		updatePendingMessagesDisplay: () => number;
 		mainUnsubscribe: () => number;
 	};
 }
@@ -68,6 +69,7 @@ function makeHarness(): Harness {
 	let clearTransientSessionUi = 0;
 	let resetTranscriptAnchors = 0;
 	let renderInitialMessages = 0;
+	let updatePendingMessagesDisplay = 0;
 	let mainUnsubscribe = 0;
 
 	const ctx = {
@@ -95,6 +97,9 @@ function makeHarness(): Harness {
 		renderInitialMessages: () => {
 			renderInitialMessages++;
 		},
+		updatePendingMessagesDisplay: () => {
+			updatePendingMessagesDisplay++;
+		},
 		updateEditorBorderColor() {},
 		ui: { requestRender() {} },
 		showStatus() {},
@@ -116,6 +121,7 @@ function makeHarness(): Harness {
 			clearTransientSessionUi: () => clearTransientSessionUi,
 			resetTranscriptAnchors: () => resetTranscriptAnchors,
 			renderInitialMessages: () => renderInitialMessages,
+			updatePendingMessagesDisplay: () => updatePendingMessagesDisplay,
 			mainUnsubscribe: () => mainUnsubscribe,
 		},
 	};
@@ -213,6 +219,21 @@ describe("SessionFocusController", () => {
 			[worker.session, "Worker"],
 			[h.main.session, undefined],
 		]);
+	});
+
+	it("rebuilds the pending bar on every attach so queued steer/follow-up chips survive a focus round-trip", async () => {
+		const h = makeHarness();
+		const worker = makeSessionStub();
+		registerSub(h.registry, "Worker", worker.session, MAIN_AGENT_ID);
+
+		// Focus swaps the pending bar onto the worker view session…
+		await h.controller.focusAgent("Worker");
+		expect(h.counts.updatePendingMessagesDisplay()).toBe(1);
+
+		// …and returning re-attaches the main session, restoring the main
+		// session's queued messages instead of leaving the bar empty.
+		await h.controller.unfocus();
+		expect(h.counts.updatePendingMessagesDisplay()).toBe(2);
 	});
 });
 describe("AgentSession tool display snapshots", () => {

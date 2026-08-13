@@ -110,7 +110,10 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 		ui: { requestRender, rebuildScrollbackIfDirty: vi.fn() } as unknown as InteractiveModeContext["ui"],
 		session,
 		settings: session.settings,
-		sessionManager: { getSessionName: () => "named-session" } as InteractiveModeContext["sessionManager"],
+		sessionManager: {
+			getSessionName: () => "named-session",
+			putBlobSync: () => ({ hash: "h", path: "/blob/h", displayPath: "/blob/h", get ref() { return "h"; } }),
+		} as unknown as InteractiveModeContext["sessionManager"],
 		compactionQueuedMessages: [] as InteractiveModeContext["compactionQueuedMessages"],
 		fileSlashCommands: new Set<string>(),
 		locallySubmittedUserSignatures: new Set<string>(),
@@ -277,7 +280,9 @@ describe("InputController orphaned submit", () => {
 		expect(restored).toBe(1);
 		expect(editor.getText()).toBe("queued with image");
 		expect(ctx.editor.pendingImages).toEqual([image]);
-		expect(ctx.editor.pendingImageLinks).toEqual([undefined]);
+		// Restored markers are materialized through the blob store, so the
+		// pending-image mirror carries the blob's display path, not undefined.
+		expect(ctx.editor.pendingImageLinks).toEqual(["/blob/h"]);
 	});
 	it("skips automatic titles only for locally consumed extension commands", async () => {
 		const previousNoTitle = Bun.env.PI_NO_TITLE;

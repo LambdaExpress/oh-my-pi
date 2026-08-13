@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent, AgentBusyError } from "@oh-my-pi/pi-agent-core";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
@@ -13,6 +13,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../../src/i18n";
 
 function createToolSession(cwd: string, settings: Settings, overrides: Partial<ToolSession> = {}): ToolSession {
 	return {
@@ -99,8 +100,15 @@ describe("guided goal setup", () => {
 		initTheme();
 	});
 
+	beforeEach(() => {
+		// Warning/status strings assert English; pin English so they are stable
+		// on zh-CN auto-detecting developer machines.
+		setLocale("en");
+	});
+
 	afterEach(() => {
 		vi.restoreAllMocks();
+		setLocale(null);
 	});
 
 	it("kicks off the interview as a hidden developer prompt and exposes the goal tool", async () => {

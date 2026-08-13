@@ -50,6 +50,7 @@ function createContext() {
 			isEvalRunning: false,
 			extensionRunner: undefined,
 			maybeStartTitleGeneration: vi.fn(),
+			previewPromptExpansion: (text: string) => text,
 			prompt,
 			queuedMessageCount: 0,
 			getQueuedMessages: () => ({ steering: [], followUp: [] }),
@@ -95,6 +96,7 @@ describe("InputController Python prompt prefix", () => {
 		expect(handlePythonCommand).not.toHaveBeenCalled();
 		expect(startPendingSubmission).toHaveBeenCalledWith({
 			text: "$HOME is home",
+			displayText: "$HOME is home",
 			images: undefined,
 			imageLinks: undefined,
 			streamingBehavior: "steer",
@@ -103,6 +105,7 @@ describe("InputController Python prompt prefix", () => {
 		expect(submitted).toEqual([
 			{
 				text: "$HOME is home",
+				displayText: "$HOME is home",
 				images: undefined,
 				imageLinks: undefined,
 				streamingBehavior: "steer",
@@ -125,6 +128,7 @@ describe("InputController Python prompt prefix", () => {
 		expect(handlePythonCommand).not.toHaveBeenCalled();
 		expect(startPendingSubmission).toHaveBeenCalledWith({
 			text: transcript,
+			displayText: transcript,
 			images: undefined,
 			imageLinks: undefined,
 			streamingBehavior: "steer",
@@ -133,6 +137,7 @@ describe("InputController Python prompt prefix", () => {
 		expect(submitted).toEqual([
 			{
 				text: transcript,
+				displayText: transcript,
 				images: undefined,
 				imageLinks: undefined,
 				streamingBehavior: "steer",

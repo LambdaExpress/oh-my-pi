@@ -1437,8 +1437,28 @@ export class InputController {
 		}
 
 		if (text) {
+			// Draft-detaching modes consume the editor's attachments: detach the
+			// pending images/link mirrors here, mirroring the main submit path,
+			// so a follow-up `/plan|/vibe|/goal|/guided-goal` with pasted images
+			// forwards them without leaving stale images in the pending buffer.
+			const submittedMode = parseSlashCommand(text)?.name;
+			const draftDetached =
+				submittedMode === "plan" ||
+				submittedMode === "vibe" ||
+				submittedMode === "goal" ||
+				submittedMode === "guided-goal";
+			if (
+				draftDetached &&
+				images?.length &&
+				images.every((image, index) => this.ctx.editor.pendingImages[index] === image)
+			) {
+				this.ctx.editor.pendingImages.splice(0, images.length);
+				this.ctx.editor.pendingImageLinks.splice(0, images.length);
+				this.ctx.editor.imageLinks =
+					this.ctx.editor.pendingImageLinks.length > 0 ? this.ctx.editor.pendingImageLinks : undefined;
+			}
 			const input = (images?.length ?? 0) > 0 || (imageLinks?.length ?? 0) > 0 ? { images, imageLinks } : undefined;
-			const slashResult = await executeBuiltinSlashCommand(text, { ctx: this.ctx, input });
+			const slashResult = await executeBuiltinSlashCommand(text, { ctx: this.ctx, input, draftDetached });
 			if (slashResult === true) {
 				if (!shouldSkipHistory(text)) this.ctx.editor.addToHistory(text);
 				return;

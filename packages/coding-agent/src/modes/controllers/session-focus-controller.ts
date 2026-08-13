@@ -111,6 +111,10 @@ export class SessionFocusController {
 		});
 		this.ctx.statusLine.setSession(target, this.#focusedAgentId);
 		await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+		// clearTransientSessionUi above wiped the pending bar; rebuild it for the
+		// newly attached view session so queued steer/follow-up chips survive a
+		// focus round-trip (focus → unfocus) instead of staying invisible.
+		this.ctx.updatePendingMessagesDisplay();
 		// Sync the run-state title to the attached target: a streaming target has no
 		// agent_start incoming, so arm the loader/working title manually; an idle
 		// target would otherwise inherit the previous session's stuck spinner, so

@@ -4079,7 +4079,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		objective: string,
 		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
 	): Promise<boolean> {
-		await this.#enterGoalMode({ objective, silent: true });
+		try {
+			await this.#enterGoalMode({ objective, silent: true });
+		} catch (error) {
+			// Goal creation failure must not blow through the slash dispatch:
+			// surface it and leave the draft (text + attachments) untouched so
+			// the user can retry.
+			this.showError(error instanceof Error ? error.message : String(error));
+			return false;
+		}
 		this.#resetGoalContinuationSuppression();
 		if (this.session.isStreaming) {
 			const images = input?.images?.length ? input.images : undefined;

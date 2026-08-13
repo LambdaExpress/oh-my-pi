@@ -25,6 +25,17 @@ import { SKILL_PROMPT_MESSAGE_TYPE, type SkillPromptDetails } from "@oh-my-pi/pi
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Container } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
+
+beforeEach(() => {
+	// Pending-bar labels (Steering/After yield) localize; pin English so
+	// assertions are stable on zh-CN auto-detecting developer machines.
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 type StubEditor = {
 	setText: (text: string) => void;
@@ -109,7 +120,7 @@ function createStubInputControllerContext(opts: {
 	});
 	const markPendingSubmissionStarted = vi.fn(() => true);
 	const finishPendingSubmission = vi.fn();
-	const handleGoalModeCommand = vi.fn(async (_rest?: string) => {});
+	const handleGoalModeCommand = vi.fn(async (_rest?: string) => true);
 	const updatePendingMessagesDisplay = vi.fn();
 	const requestRender = vi.fn();
 	const showError = vi.fn();

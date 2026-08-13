@@ -466,7 +466,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			return t("Plan: off");
 		},
 		handleTui: async (command, runtime) => {
-			await runtime.ctx.handlePlanModeCommand(command.args || undefined);
+			await runtime.ctx.handlePlanModeCommand(command.args || undefined, runtime.input);
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -492,7 +492,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			return t("Vibe: off");
 		},
 		handleTui: async (command, runtime) => {
-			await runtime.ctx.handleVibeModeCommand(command.args || undefined);
+			await runtime.ctx.handleVibeModeCommand(command.args || undefined, runtime.input);
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -518,8 +518,10 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 				: t("Goal: off");
 		},
 		handleTui: async (command, runtime) => {
-			await runtime.ctx.handleGoalModeCommand(command.args || undefined);
-			runtime.ctx.editor.setText("");
+			const handled = await runtime.ctx.handleGoalModeCommand(command.args || undefined, runtime.input);
+			// Only detach the draft when the command actually started: on setup
+			// failure the editor text and attachments must stay restorable.
+			if (handled) runtime.ctx.editor.setText("");
 		},
 	},
 	{
@@ -532,7 +534,7 @@ const BUILTIN_SLASH_COMMAND_REGISTRY: ReadonlyArray<SlashCommandSpec> = [
 			// whole kickoff turn, and a post-await clear would wipe an answer the
 			// user starts typing while the first interview question streams.
 			runtime.ctx.editor.setText("");
-			await runtime.ctx.handleGuidedGoalCommand(command.args || undefined);
+			await runtime.ctx.handleGuidedGoalCommand(command.args || undefined, runtime.input);
 		},
 	},
 	{

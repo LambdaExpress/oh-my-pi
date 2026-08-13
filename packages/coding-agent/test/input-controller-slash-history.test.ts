@@ -1,8 +1,19 @@
-import { describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import { isQueuedMessageList, splitQueuedMessages } from "@oh-my-pi/pi-coding-agent/modes/queue-input";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { setLocale } from "../src/i18n";
+
+beforeEach(() => {
+	// Status strings assert English (Queued message…, Sent first message…);
+	// pin English so they are stable on zh-CN auto-detecting machines.
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 // Drives the real editor submit handler through the builtin slash dispatch
 // path. Before #3148 only a handful of commands recorded their text (each
