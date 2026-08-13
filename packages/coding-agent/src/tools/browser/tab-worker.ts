@@ -129,6 +129,26 @@ const PLAYWRIGHT_ONLY_SELECTOR_RE =
 type DialogPolicy = "accept" | "dismiss";
 type DragTarget = string | { readonly x: number; readonly y: number };
 type ActionabilityResult = { ok: true; x: number; y: number } | { ok: false; reason: string };
+type SelectorAction = "click" | "fill";
+type ResolvedActionTarget = { handle: ElementHandle; owned: boolean };
+type PageElement = Element & {
+	readonly tagName: string;
+	readonly isContentEditable?: boolean;
+	readonly disabled?: boolean;
+	readonly readOnly?: boolean;
+	getAttribute(name: string): string | null;
+	hasAttribute(name: string): boolean;
+	closest(selector: string): Element | null;
+	contains(other: Element | null): boolean;
+	getBoundingClientRect(): {
+		left: number;
+		right: number;
+		top: number;
+		bottom: number;
+		width: number;
+		height: number;
+	};
+};
 /** Last JS dialog seen on the page; kept for timeout attribution until handled or navigation. */
 interface OpenDialogInfo {
 	type: string;
@@ -585,7 +605,14 @@ async function collectObservationEntries(
 	}
 }
 
-async function resolveActionableQueryHandlerClickTarget(handles: ElementHandle[]): Promise<ElementHandle | null> {
+async function resolveActionableSelectorTarget(
+	handles: ElementHandle[],
+	resolveClickableAncestor: boolean,
+): Promise<ResolvedActionTarget | null> {
+	if (!resolveClickableAncestor) {
+		const handle = handles[0];
+		return handle ? { handle, owned: false } : null;
+	}
 	const candidates: Array<{
 		handle: ElementHandle;
 		rect: { x: number; y: number; w: number; h: number };
@@ -594,51 +621,72 @@ async function resolveActionableQueryHandlerClickTarget(handles: ElementHandle[]
 	for (const handle of handles) {
 		let clickable: ElementHandle = handle;
 		let clickableProxy: ElementHandle | null = null;
+		if (resolveClickableAncestor) {
+			try {
+				const proxy = await handle.evaluateHandle(el => {
+					const target =
+						(el as unknown as PageElement).closest(
+							'a,button,[role="button"],[role="link"],input[type="button"],input[type="submit"]',
+						) ?? el;
+					return target;
+				});
+				clickableProxy = asElementHandle(proxy.asElement());
+				if (clickableProxy) clickable = clickableProxy;
+				else await proxy.dispose().catch(() => undefined);
+			} catch {}
+		}
 		try {
-			const proxy = await handle.evaluateHandle(el => {
-				const target =
-					(el as Element).closest(
-						'a,button,[role="button"],[role="link"],input[type="button"],input[type="submit"]',
-					) ?? el;
-				return target;
-			});
-			clickableProxy = asElementHandle(proxy.asElement());
-			if (clickableProxy) clickable = clickableProxy;
-		} catch {}
-		try {
-			const intersecting = await clickable.isIntersectingViewport();
-			if (!intersecting) continue;
 			const rect = (await clickable.evaluate(el => {
-				const r = (el as Element).getBoundingClientRect();
+				const r = (el as unknown as PageElement).getBoundingClientRect();
 				return { x: r.left, y: r.top, w: r.width, h: r.height };
 			})) as { x: number; y: number; w: number; h: number };
-			if (rect.w < 1 || rect.h < 1) continue;
+			if (rect.w < 1 || rect.h < 1) {
+				await clickableProxy?.dispose().catch(() => undefined);
+				clickableProxy = null;
+				continue;
+			}
 			candidates.push({ handle: clickable, rect, ownedProxy: clickableProxy ?? undefined });
 		} catch {
+			await clickableProxy?.dispose().catch(() => undefined);
+			clickableProxy = null;
 		} finally {
-			if (clickableProxy && clickableProxy !== handle && clickable !== clickableProxy) {
-				await clickableProxy.dispose().catch(() => undefined);
-			}
+			if (clickableProxy && clickable !== clickableProxy) await clickableProxy.dispose().catch(() => undefined);
 		}
 	}
 	if (!candidates.length) return null;
 	candidates.sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x);
-	const winner = candidates[0]?.handle ?? null;
+	const winner = candidates[0];
 	for (let i = 1; i < candidates.length; i++) {
 		const candidate = candidates[i]!;
 		if (candidate.ownedProxy) await candidate.ownedProxy.dispose().catch(() => undefined);
 	}
-	return winner;
+	return winner ? { handle: winner.handle, owned: winner.ownedProxy !== undefined } : null;
 }
 
-async function isClickActionable(handle: ElementHandle): Promise<ActionabilityResult> {
-	return (await handle.evaluate(el => {
-		const element = el as HTMLElement;
+async function isActionable(handle: ElementHandle, action: SelectorAction): Promise<ActionabilityResult> {
+	return (await handle.evaluate((el, requestedAction) => {
+		const element = el as unknown as PageElement;
 		const style = globalThis.getComputedStyle(element);
 		if (style.display === "none") return { ok: false as const, reason: "display:none" };
-		if (style.visibility === "hidden") return { ok: false as const, reason: "visibility:hidden" };
+		if (style.visibility === "hidden" || style.visibility === "collapse")
+			return { ok: false as const, reason: `visibility:${String(style.visibility)}` };
 		if (style.pointerEvents === "none") return { ok: false as const, reason: "pointer-events:none" };
 		if (Number(style.opacity) === 0) return { ok: false as const, reason: "opacity:0" };
+		if (element.disabled === true || element.getAttribute("aria-disabled") === "true")
+			return { ok: false as const, reason: "disabled" };
+		if (requestedAction === "fill") {
+			const tag = element.tagName;
+			const inputType = element.getAttribute("type")?.toLowerCase() ?? "text";
+			const typeableInput =
+				tag === "INPUT" &&
+				!["button", "checkbox", "color", "file", "hidden", "image", "radio", "range", "reset", "submit"].includes(
+					inputType,
+				);
+			if (!typeableInput && tag !== "TEXTAREA" && element.isContentEditable !== true)
+				return { ok: false as const, reason: "not-fillable" };
+			if (element.readOnly === true || element.hasAttribute("readonly"))
+				return { ok: false as const, reason: "readonly" };
+		}
 		const r = element.getBoundingClientRect();
 		if (r.width < 1 || r.height < 1) return { ok: false as const, reason: "zero-size" };
 		const left = Math.max(0, Math.min(globalThis.innerWidth, r.left));
@@ -650,55 +698,51 @@ async function isClickActionable(handle: ElementHandle): Promise<ActionabilityRe
 		const y = Math.floor((top + bottom) / 2);
 		const topEl = globalThis.document.elementFromPoint(x, y);
 		if (!topEl) return { ok: false as const, reason: "elementFromPoint-null" };
-		if (topEl === element || element.contains(topEl) || (topEl as Element).contains(element))
+		if (
+			topEl === element ||
+			element.contains(topEl) ||
+			(topEl as unknown as Pick<PageElement, "contains">).contains(element)
+		)
 			return { ok: true as const, x, y };
 		return { ok: false as const, reason: "obscured" };
-	})) as ActionabilityResult;
+	}, action)) as ActionabilityResult;
 }
 
-async function clickQueryHandlerText(
+async function runSelectorHandleAction(
 	page: Page,
 	selector: string,
-	timeoutMs: number,
-	signal?: AbortSignal,
+	action: SelectorAction,
+	signal: AbortSignal,
+	value?: string,
 ): Promise<void> {
-	const timeoutSignal = AbortSignal.timeout(timeoutMs);
-	const clickSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-	const start = Date.now();
-	let lastSeen = 0;
-	let lastReason: string | null = null;
-	while (Date.now() - start < timeoutMs) {
-		throwIfAborted(clickSignal);
-		const handles = (await untilAborted(clickSignal, () => page.$$(selector))) as ElementHandle[];
+	for (;;) {
+		throwIfAborted(signal);
+		const handles = (await untilAborted(signal, () => page.$$(selector))) as ElementHandle[];
+		let ownedTarget: ElementHandle | undefined;
 		try {
-			lastSeen = handles.length;
-			const target = await resolveActionableQueryHandlerClickTarget(handles);
+			const target = await resolveActionableSelectorTarget(handles, selector.startsWith("text/"));
 			if (!target) {
-				lastReason = handles.length ? "no-visible-candidate" : "no-matches";
-				await untilAborted(clickSignal, () => Bun.sleep(100));
+				await untilAborted(signal, () => Bun.sleep(100));
 				continue;
 			}
-			const actionability = await isClickActionable(target);
+			if (target.owned) ownedTarget = target.handle;
+			const actionability = await untilAborted(signal, () => isActionable(target.handle, action));
 			if (!actionability.ok) {
-				lastReason = actionability.reason;
-				await untilAborted(clickSignal, () => Bun.sleep(100));
+				await untilAborted(signal, () => Bun.sleep(100));
 				continue;
 			}
 			try {
-				await untilAborted(clickSignal, () => target.click());
+				if (action === "click") await untilAborted(signal, () => target.handle.click());
+				else await fillViaHandle(target.handle, value ?? "", signal);
 				return;
-			} catch (err) {
-				lastReason = err instanceof Error ? err.message : String(err);
-				await untilAborted(clickSignal, () => Bun.sleep(100));
+			} catch {
+				await untilAborted(signal, () => Bun.sleep(100));
 			}
 		} finally {
+			await ownedTarget?.dispose().catch(() => undefined);
 			await Promise.all(handles.map(async handle => handle.dispose().catch(() => undefined)));
 		}
 	}
-	throw new ToolError(
-		`Timed out clicking ${selector} (seen ${lastSeen} matches; last reason: ${lastReason ?? "unknown"}). ` +
-			"If there are multiple matching elements, use observe + tab.id() or a more specific selector.",
-	);
 }
 
 /**
@@ -1188,6 +1232,11 @@ export class WorkerCore {
 			} catch (error) {
 				failure = { error };
 			}
+			// Rejection observers report through a zero-delay task. Cleanup can finish in
+			// the microtask that follows a continuation rejection, before that report runs.
+			// Drain exactly that queued turn while the run is still active; continuations
+			// which settle later remain post-run warnings rather than delaying completion.
+			await Bun.sleep(0);
 			failure = this.#foldFloatingRejections(active, failure);
 			if (this.#active?.id === msg.id) this.#active = null;
 		}
@@ -1474,12 +1523,7 @@ export class WorkerCore {
 							}
 							return;
 						}
-						const resolved = normalizeSelector(selector);
-						if (resolved.startsWith("text/")) await clickQueryHandlerText(page, resolved, actionOpMs, sig);
-						else
-							await untilAborted(sig, () =>
-								page.locator(resolved).setTimeout(actionOpMs).click({ signal: sig }),
-							);
+						await runSelectorHandleAction(page, normalizeSelector(selector), "click", sig);
 					},
 					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
 				),
@@ -1511,9 +1555,7 @@ export class WorkerCore {
 							}
 							return;
 						}
-						await untilAborted(sig, () =>
-							page.locator(normalizeSelector(selector)).setTimeout(actionOpMs).fill(value, { signal: sig }),
-						);
+						await runSelectorHandleAction(page, normalizeSelector(selector), "fill", sig, value);
 					},
 					{ selector, zeroMatchAfterMs: ZERO_MATCH_FAIL_FAST_MS },
 				),

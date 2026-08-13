@@ -42,6 +42,102 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser tab evaluation", () => {
 		}
 	}, 30_000);
 
+	it("clicks and fills actionable CSS targets at a scaled viewport", async () => {
+		const tool = new BrowserTool(makeSession());
+		const name = `selector-actions-${process.pid}`;
+		const html = `<!doctype html>
+			<meta name="viewport" content="width=device-width">
+			<button data-language-button="en">English</button>
+			<input class="sh-input-mono" type="text" value="old">
+			<script>
+				document.querySelector('button').addEventListener('click', event => {
+					event.currentTarget.dataset.selected = 'true';
+				});
+				document.querySelector('input').addEventListener('input', event => {
+					event.currentTarget.dataset.inputEvents = String(Number(event.currentTarget.dataset.inputEvents || 0) + 1);
+				});
+			</script>`;
+
+		try {
+			await tool.execute("open", {
+				action: "open",
+				name,
+				url: `data:text/html,${encodeURIComponent(html)}`,
+				viewport: { width: 1440, height: 900, scale: 1.25 },
+			});
+			const result = await tool.execute("run", {
+				action: "run",
+				name,
+				code: `
+					await tab.click('[data-language-button="en"]');
+					await tab.fill('.sh-input-mono', 'room-link');
+					return await tab.evaluate(() => ({
+						clicked: document.querySelector('button').dataset.selected,
+						value: document.querySelector('input').value,
+						inputEvents: Number(document.querySelector('input').dataset.inputEvents || 0) > 0,
+					}));
+				`,
+			});
+
+			expect(result.content).toEqual([
+				{
+					type: "text",
+					text: '{\n  "clicked": "true",\n  "value": "room-link",\n  "inputEvents": true\n}',
+				},
+			]);
+		} finally {
+			await tool.execute("close", { action: "close", name, kill: true });
+		}
+	}, 30_000);
+
+	it("rejects covered and missing CSS click targets with named errors", async () => {
+		const tool = new BrowserTool(makeSession());
+		const name = `selector-action-rejections-${process.pid}`;
+		const html = `<!doctype html>
+			<style>
+				#target, #cover { position: fixed; left: 20px; top: 20px; width: 160px; height: 40px; }
+				#cover { z-index: 1; }
+			</style>
+			<button id="target">Covered</button><div id="cover"></div>`;
+
+		try {
+			await tool.execute("open", {
+				action: "open",
+				name,
+				url: `data:text/html,${encodeURIComponent(html)}`,
+			});
+			let missingFailure = "";
+			try {
+				await tool.execute("run", {
+					action: "run",
+					name,
+					timeout: 3,
+					code: "await tab.click('#missing');",
+				});
+			} catch (error) {
+				missingFailure = error instanceof Error ? error.message : String(error);
+			}
+			expect(missingFailure).toContain('tab.click("#missing")');
+			expect(missingFailure).toContain("selector currently matches no elements");
+
+			let coveredFailure = "";
+			try {
+				await tool.execute("run", {
+					action: "run",
+					name,
+					timeout: 2,
+					code: "await tab.click('#target');",
+				});
+			} catch (error) {
+				coveredFailure = error instanceof Error ? error.message : String(error);
+			}
+			expect(coveredFailure).toContain('tab.click("#target") timed out after 1000ms');
+			expect(coveredFailure).toContain("selector currently matches 1 element(s)");
+		} finally {
+			await tool.execute("close", { action: "close", name, kill: true });
+		}
+	}, 30_000);
+
 	it("clears request interception and held requests between runs, including thrown runs", async () => {
 		const server = Bun.serve({
 			port: 0,
@@ -435,15 +531,31 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser tab evaluation", () => {
 					name,
 					code: `
 						await page.setRequestInterception(true);
-						page.setRequestInterception = async () => {
-							await Bun.sleep(50);
+						const pagePrototype = Object.getPrototypeOf(page);
+						const originalSetRequestInterception = pagePrototype.setRequestInterception;
+						const cleanupStarted = Promise.withResolvers();
+						const continuationSettled = Promise.withResolvers();
+						pagePrototype.setRequestInterception = async function(enabled) {
+							if (enabled) {
+								return await Reflect.apply(originalSetRequestInterception, this, [enabled]);
+							}
+							cleanupStarted.resolve();
+							await continuationSettled.promise;
+							pagePrototype.setRequestInterception = originalSetRequestInterception;
+							return await Reflect.apply(originalSetRequestInterception, this, [enabled]);
 						};
 						const continuationStarted = Promise.withResolvers();
-						void tab.title().then(async () => {
+						const continuation = tab.title().then(async () => {
 							continuationStarted.resolve();
-							await Bun.sleep(10);
+							await cleanupStarted.promise;
 							throw new Error("cleanup continuation failed");
 						});
+						// Observe settlement without using the instrumented own .then(), which
+						// would mark the floated continuation as handled.
+						void Reflect.apply(Object.getPrototypeOf(continuation).then, continuation, [
+							undefined,
+							() => continuationSettled.resolve(),
+						]);
 						await continuationStarted.promise;
 						return "incorrect success";
 					`,
