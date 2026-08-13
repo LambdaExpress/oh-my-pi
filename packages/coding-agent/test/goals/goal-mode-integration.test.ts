@@ -193,6 +193,21 @@ describe("InteractiveMode goal mode integration", () => {
 		expect(await toolNamesFor(harness)).not.toContain("goal");
 	});
 
+	it("clears goal mode when a new session starts", async () => {
+		await harness.mode.init({ suppressWelcomeIntro: true });
+		await harness.mode.handleGoalModeCommand("Ship the release");
+		expect(harness.mode.goalModeEnabled).toBe(true);
+		expect(harness.session.getGoalModeState()?.enabled).toBe(true);
+		expect(await toolNamesFor(harness)).toContain("goal");
+
+		expect(await harness.session.newSession()).toBe(true);
+
+		expect(harness.mode.goalModeEnabled).toBe(false);
+		expect(harness.mode.goalModePaused).toBe(false);
+		expect(harness.session.getGoalModeState()).toBeUndefined();
+		expect(await toolNamesFor(harness)).not.toContain("goal");
+	});
+
 	it("replaces the active goal via /goal set", async () => {
 		await harness.mode.handleGoalModeCommand("Ship the release");
 		const originalGoal = harness.session.getGoalModeState()?.goal;

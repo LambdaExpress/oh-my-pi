@@ -6826,7 +6826,8 @@ export class AgentSession {
 		const previousScopeId = this.#agentScopeId;
 		this.#disconnectFromAgent();
 		let advisorRecordersDetached = false;
-		await this.abort();
+		await this.abort({ goalReason: "internal" });
+		await this.#sessionBeforeSwitchReconciler?.();
 		if (this.#agentKind === "main") {
 			this.#irc.retireScope(previousScopeId);
 			this.#fenceAgentScope?.(previousScopeId);
@@ -6894,6 +6895,14 @@ export class AgentSession {
 			this.#advisors.resetSessionState();
 			advisorRecordersDetached = false;
 			this.#reconnectToAgent();
+			try {
+				await this.#sessionSwitchReconciler?.();
+			} catch (error) {
+				logger.warn("Failed to reconcile session mode after new session", {
+					targetSessionFile: this.sessionFile,
+					error: String(error),
+				});
+			}
 			// The workspace-roots block must reflect the new session's directory set,
 			// not the previous session's — refresh before the next turn goes out.
 			await this.refreshBaseSystemPrompt();

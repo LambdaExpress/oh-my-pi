@@ -917,6 +917,36 @@ describe("InteractiveMode plan review rendering", () => {
 		expect(goalState?.goal.objective).toContain(planFilePath);
 	});
 
+	it("approve-and-execute-in-goal-mode creates the goal after the real new-session reconciliation", async () => {
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# Plan\n\nRun autonomously.");
+		await mode.init({ suppressWelcomeIntro: true });
+		await mode.handlePlanModeCommand();
+		expect(mode.planModeEnabled).toBe(true);
+		const oldSessionId = session.sessionId;
+		vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
+		vi.spyOn(mode, "showPlanReview").mockResolvedValue("Approve and execute in goal mode");
+		const prompt = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "Run autonomously",
+		});
+
+		expect(session.sessionId).not.toBe(oldSessionId);
+		expect(mode.planModeEnabled).toBe(false);
+		expect(session.getPlanModeState()).toBeUndefined();
+		expect(mode.goalModeEnabled).toBe(true);
+		expect(session.getGoalModeState()?.goal.objective).toContain("Run autonomously");
+		expect(session.sessionManager.buildSessionContext().mode).toBe("goal");
+		expect(prompt).toHaveBeenCalledWith(expect.any(String), { synthetic: true });
+	});
+
 	it("ignores aborted zero-usage assistant messages when estimating context usage", () => {
 		session.agent.appendMessage(assistantWithUsage({ usage: usageWithInput(7320), stopReason: "stop" }));
 		session.agent.appendMessage(assistantWithUsage({ usage: usageWithInput(0), stopReason: "aborted" }));

@@ -129,6 +129,25 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 		expect(session?.getActiveToolNames()).toContain("read");
 	});
 
+	it("clears plan mode when a new session starts", async () => {
+		const writeTool = makeTool("write");
+		const created = createHarness(Settings.isolated({ "plan.defaultOnStartup": true, "compaction.enabled": false }), {
+			extraRegistryTools: [writeTool],
+			builtInToolNames: ["read", "write"],
+		});
+		await created.init({ suppressWelcomeIntro: true });
+		expect(created.planModeEnabled).toBe(true);
+		expect(session?.getPlanModeState()?.enabled).toBe(true);
+		expect(session?.getActiveToolNames()).toContain("write");
+
+		expect(await session?.newSession()).toBe(true);
+
+		expect(created.planModeEnabled).toBe(false);
+		expect(created.planModePaused).toBe(false);
+		expect(session?.getPlanModeState()).toBeUndefined();
+		expect(session?.getActiveToolNames()).toEqual(["read"]);
+	});
+
 	it("activates a registered but inactive write tool for xd://propose in plan mode (issue #3165)", async () => {
 		// Plan approval writes to xd://propose. A registered built-in `write` may
 		// not be in the initial active set, so plan-mode entry must force-activate
