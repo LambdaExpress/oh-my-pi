@@ -15,6 +15,7 @@ import {
 	parseSearchDateBound,
 	resolveDefaultRepoMemoized,
 } from "@oh-my-pi/pi-coding-agent/tools/gh";
+import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { $which, getAgentDir, hashPath, removeWithRetries, setAgentDir, WhichCachePolicy } from "@oh-my-pi/pi-utils";
@@ -782,6 +783,117 @@ describe("github tool", () => {
 			).rejects.toThrow(/search_code does not support since\/until/);
 		}
 		expect(spy).not.toHaveBeenCalled();
+	});
+
+	it.each(["unexpected EOF", "net/http: TLS handshake timeout"] as const)(
+		"search_code: retries one transient %s transport failure",
+		async transportError => {
+			const waits: number[] = [];
+			const runSpy = vi
+				.spyOn(git.github, "run")
+				.mockResolvedValueOnce({
+					exitCode: 1,
+					stdout: "",
+					stderr: `Get "https://api.github.com/search/code?q=findThing": ${transportError}`,
+				})
+				.mockResolvedValueOnce({ exitCode: 0, stdout: '{"items":[]}', stderr: "" });
+
+			const request = git.github.json<{ items: unknown[] }>(
+				"/tmp/test",
+				["api", "-X", "GET", "/search/code", "-f", "q=findThing"],
+				undefined,
+				{
+					retryWait: async delayMs => {
+						waits.push(delayMs);
+					},
+				},
+			);
+
+			await expect(request).resolves.toEqual({ items: [] });
+			expect(runSpy).toHaveBeenCalledTimes(2);
+			expect(waits).toEqual([100]);
+		},
+	);
+
+	it("search_code: bounds repeated transient transport failures", async () => {
+		const waits: number[] = [];
+		const failure = {
+			exitCode: 1,
+			stdout: "",
+			stderr: 'Get "https://api.github.com/search/code?q=findThing": unexpected EOF',
+		};
+		const runSpy = vi.spyOn(git.github, "run").mockResolvedValue(failure);
+		const request = git.github.json(
+			"/tmp/test",
+			["api", "-X", "GET", "/search/code", "-f", "q=findThing"],
+			undefined,
+			{
+				retryWait: async delayMs => {
+					waits.push(delayMs);
+				},
+			},
+		);
+
+		await expect(request).rejects.toThrow("unexpected EOF");
+		expect(runSpy).toHaveBeenCalledTimes(3);
+		expect(waits).toEqual([100, 200]);
+	});
+
+	it("search_code: aborts during transport retry backoff", async () => {
+		const controller = new AbortController();
+		const waitStarted = Promise.withResolvers<void>();
+		const runSpy = vi.spyOn(git.github, "run").mockResolvedValue({
+			exitCode: 1,
+			stdout: "",
+			stderr: 'Get "https://api.github.com/search/code?q=findThing": unexpected EOF',
+		});
+		const request = git.github.json(
+			"/tmp/test",
+			["api", "-X", "GET", "/search/code", "-f", "q=findThing"],
+			controller.signal,
+			{
+				retryWait: async (_delayMs, signal) => {
+					waitStarted.resolve();
+					if (signal?.aborted) throw signal.reason;
+					const aborted = Promise.withResolvers<void>();
+					signal?.addEventListener("abort", () => aborted.reject(signal.reason), { once: true });
+					await aborted.promise;
+				},
+			},
+		);
+
+		await waitStarted.promise;
+		expect(runSpy).toHaveBeenCalledTimes(1);
+		controller.abort();
+
+		await expect(request).rejects.toBeInstanceOf(ToolAbortError);
+		expect(runSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("search_code: does not retry a deterministic 404 response", async () => {
+		const runSpy = vi.spyOn(git.github, "run").mockResolvedValue({
+			exitCode: 1,
+			stdout: "",
+			stderr: "gh: Not Found (HTTP 404)",
+		});
+
+		await expect(
+			git.github.json("/tmp/test", ["api", "-X", "GET", "/search/code", "-f", "q=findThing"]),
+		).rejects.toThrow("HTTP 404");
+		expect(runSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not retry a write operation with a transport-like failure", async () => {
+		const runSpy = vi.spyOn(git.github, "run").mockResolvedValue({
+			exitCode: 1,
+			stdout: "",
+			stderr: 'Get "https://api.github.com/repos/owner/repo/pulls": unexpected EOF',
+		});
+
+		await expect(git.github.text("/tmp/test", ["pr", "create", "--title", "Feature"])).rejects.toThrow(
+			"unexpected EOF",
+		);
+		expect(runSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it("formats code search results with paths, repo, sha, and match fragment", async () => {

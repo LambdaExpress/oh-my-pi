@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { scheduler } from "node:timers/promises";
 import { $which, hasFsCode, isEisdir, isEnoent, isEnotdir, Snowflake } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
 import {
@@ -2442,7 +2443,75 @@ export interface GhCommandResult {
 
 export interface GhCommandOptions {
 	repoProvided?: boolean;
+	/** Injectable retry wait for deterministic tests. */
+	retryWait?: (delayMs: number, signal?: AbortSignal) => Promise<void>;
 	trimOutput?: boolean;
+}
+
+// Keep retries below one second total and only at the JSON boundary for the
+// idempotent search API. Mutating `gh` commands still execute exactly once.
+const GH_READONLY_API_RETRY_DELAYS_MS = [100, 200] as const;
+const GH_TRANSIENT_TRANSPORT_ERROR =
+	/^Get "https:\/\/api\.github\.com\/[^"\r\n]+": (?:unexpected EOF|net\/http: TLS handshake timeout)$/;
+
+function waitForGhRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+	return scheduler.wait(delayMs, { signal });
+}
+
+function isReadonlyGhApiSearch(args: readonly string[]): boolean {
+	if (args[0] !== "api") return false;
+	let method: string | undefined;
+	let endpoint: string | undefined;
+	for (let index = 1; index < args.length; index += 1) {
+		const arg = args[index];
+		if (
+			arg === "-f" ||
+			arg === "--raw-field" ||
+			arg === "-F" ||
+			arg === "--field" ||
+			arg === "-H" ||
+			arg === "--header"
+		) {
+			index += 1;
+			continue;
+		}
+		if (arg === "-X" || arg === "--method") {
+			method = args[index + 1]?.toUpperCase() ?? "";
+			index += 1;
+			continue;
+		}
+		if (!arg.startsWith("-") && endpoint === undefined) endpoint = arg;
+	}
+	return method === "GET" && endpoint?.startsWith("/search/") === true;
+}
+
+async function runGhJsonCommand(
+	cwd: string,
+	args: string[],
+	signal?: AbortSignal,
+	options?: GhCommandOptions,
+): Promise<GhCommandResult> {
+	const canRetry = isReadonlyGhApiSearch(args);
+	const retryWait = options?.retryWait ?? waitForGhRetry;
+	for (let attempt = 0; ; attempt += 1) {
+		const result = await github.run(cwd, args, signal, options);
+		const retryDelayMs = GH_READONLY_API_RETRY_DELAYS_MS[attempt];
+		if (
+			!canRetry ||
+			retryDelayMs === undefined ||
+			result.exitCode === 0 ||
+			!GH_TRANSIENT_TRANSPORT_ERROR.test(result.stderr.trim())
+		) {
+			return result;
+		}
+		throwIfAborted(signal);
+		try {
+			await retryWait(retryDelayMs, signal);
+		} catch (error) {
+			throwIfAborted(signal);
+			throw error;
+		}
+	}
 }
 
 function formatGhFailure(args: readonly string[], stdout: string, stderr: string, options?: GhCommandOptions): string {
@@ -2500,7 +2569,7 @@ export const github = {
 
 	/** Run `gh` and parse stdout as JSON. Throws on non-zero exit or invalid JSON. */
 	async json<T>(cwd: string, args: string[], signal?: AbortSignal, options?: GhCommandOptions): Promise<T> {
-		const result = await github.run(cwd, args, signal, options);
+		const result = await runGhJsonCommand(cwd, args, signal, options);
 		if (result.exitCode !== 0) {
 			throw new ToolError(formatGhFailure(args, result.stdout, result.stderr, options));
 		}
