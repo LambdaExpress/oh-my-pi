@@ -23,7 +23,9 @@ import { quotePosixPath, quotePowerShellString, wrapInPosixShell } from "./utils
 /** Per-operation timeout for remote transfers (matches the ssh tool's grep window). */
 const DEFAULT_TIMEOUT_MS = 30_000;
 const SSH_TRANSFER_FINALIZE_MS = 10_000;
-const SSH_TRANSFER_COMMIT_MS = 5_000;
+const SSH_TRANSFER_COMMIT_POSIX_TIMEOUT_MS = 8_000;
+const SSH_TRANSFER_COMMIT_POWERSHELL_TIMEOUT_MS = 20_000;
+const SSH_TRANSFER_RECOVERY_MS = 20_000;
 const SSH_TRANSFER_STAGE_TERMINATE_MS = 2_000;
 const SSH_TRANSFER_PROGRESS_INTERVAL_MS = 250;
 const SSH_TRANSFER_COMMIT_MARKER = "OMP_TRANSFER_COMMITTED";
@@ -1243,9 +1245,13 @@ if [ "$actual_size" != ${plan.totalBytes} ]; then
 	exit 1
 fi
 if ! ln "$stage" "$proof"; then
-	printf '%s\\n' 'cannot create transfer proof hardlink' >&2
-	rm -f -- "$stage"
-	exit 1
+	if [ -e "$proof" ] && [ "$stage" -ef "$proof" ]; then
+		:
+	else
+		printf '%s\n' 'cannot create transfer proof hardlink' >&2
+		rm -f -- "$stage"
+		exit 1
+	fi
 fi
 ${commit}
 if [ ! "$destination" -ef "$proof" ]; then
@@ -1379,7 +1385,11 @@ if ($stageItem.Length -ne ${plan.totalBytes}) {
 	Remove-Item -LiteralPath $stage -Force -ErrorAction SilentlyContinue
 	throw 'staged transfer size does not match preflight'
 }
-New-Item -ItemType HardLink -Path $proof -Target $stage -ErrorAction Stop | Out-Null
+if (-not (Test-Path -LiteralPath $proof)) {
+	New-Item -ItemType HardLink -Path $proof -Target $stage -ErrorAction Stop | Out-Null
+} elseif (-not [OmpSshTransferNative]::SameFile($stage, $proof)) {
+	throw 'transfer proof exists but does not match the stage'
+}
 ${overwriteCommit}
 if (-not [OmpSshTransferNative]::SameFile($destination, $proof)) {
 	throw 'destination identity does not match transfer proof'
@@ -1434,6 +1444,14 @@ if [ -e "$stage" ] && [ -e "$proof" ] && [ "$stage" -ef "$proof" ]; then
 	printf '%s\\n' 'commit did not reach the destination; staged transfer was cleaned' >&2
 	exit 1
 fi
+if [ ! -e "$stage" ] && [ ! -L "$stage" ] && [ ! -e "$proof" ] && [ ! -L "$proof" ] && [ -f "$destination" ] && [ ! -L "$destination" ]; then
+	actual_size=$(LC_ALL=C wc -c < "$destination") || exit 1
+	if [ "$actual_size" = ${plan.totalBytes} ]; then
+		rm -f -- "$backup"
+		printf '%s\\n' '${SSH_TRANSFER_COMMIT_MARKER}'
+		exit 0
+	fi
+fi
 printf '%s\\n' 'cannot determine SSH transfer commit state; residual paths:' >&2
 printf '  %s\\n' "$stage" "$proof" "$backup" >&2
 exit 1
@@ -1457,6 +1475,14 @@ if ($proofExists -and $destinationExists -and [OmpSshTransferNative]::SameFile($
 if ($proofExists -and (Test-Path -LiteralPath $stage) -and [OmpSshTransferNative]::SameFile($stage, $proof)) {
 	Remove-Item -LiteralPath $stage, $proof -Force -ErrorAction SilentlyContinue
 	throw 'commit did not reach the destination; staged transfer was cleaned'
+}
+if (-not $proofExists -and -not (Test-Path -LiteralPath $stage)) {
+	$item = Get-Item -LiteralPath $destination -Force -ErrorAction SilentlyContinue
+	if ($null -ne $item -and -not $item.PSIsContainer -and (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0) -and $item.Length -eq ${plan.totalBytes}) {
+		Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+		[Console]::Out.WriteLine('${SSH_TRANSFER_COMMIT_MARKER}')
+		exit 0
+	}
 }
 throw "cannot determine SSH transfer commit state; residual paths: $stage, $proof, $backup"
 `);
@@ -1490,17 +1516,21 @@ async function runUploadCommitAttempt(
 	plan: SshFileTransferPlan,
 	mode: RemoteTransferMode,
 	artifacts: RemoteTransferArtifacts,
+	timeoutMs?: number,
 ): Promise<SshCommitAttemptResult> {
 	const script =
 		mode.kind === "posix"
 			? wrapInPosixShell(mode.shell, buildPosixUploadCommitScript(plan, artifacts))
 			: buildPowerShellCommand(mode.executable, buildPowerShellUploadCommitScript(plan, artifacts));
 	const invocation = await buildRemoteCommandInvocation(plan.target, script, { allowStdin: true });
+	const commitTimeoutMs =
+		timeoutMs ??
+		(mode.kind === "powershell" ? SSH_TRANSFER_COMMIT_POWERSHELL_TIMEOUT_MS : SSH_TRANSFER_COMMIT_POSIX_TIMEOUT_MS);
 	let markerSeen = false;
 	try {
 		using child = ptree.spawn(["ssh", ...invocation.args], {
 			stdin: "pipe",
-			signal: ptree.combineSignals(SSH_TRANSFER_COMMIT_MS - 1_000),
+			signal: ptree.combineSignals(commitTimeoutMs - 1_000),
 			env: invocation.env,
 		});
 		const reader = child.stdout.getReader();
@@ -1536,9 +1566,16 @@ async function runUploadCommitAttempt(
 				: { markerSeen: false, error: new Error("SSH transfer commit exited without an identity marker") };
 		} catch (error) {
 			child.kill();
+			let message = error instanceof Error ? error.message : String(error);
+			if (!message.includes("stderr")) {
+				const tail = typeof child.peekStderr === "function" ? child.peekStderr().slice(0, 512) : "";
+				if (tail.length > 0) message = `${message}; remote stderr: ${tail}`;
+			}
+			const commitError =
+				error instanceof Error && message === error.message ? error : new Error(message, { cause: error });
 			return {
 				markerSeen,
-				error: error instanceof Error ? error : new Error(String(error)),
+				error: commitError,
 			};
 		} finally {
 			reader.releaseLock();
@@ -1659,12 +1696,17 @@ async function executeUploadTransfer(
 		throw new SshFileTransferCancelledError(`SSH upload cancelled before commit.${suffix}`);
 	}
 
-	const finalizeStartedAt = Date.now();
-	const attempt = await runUploadCommitAttempt(plan, mode, artifacts);
+	let attempt = await runUploadCommitAttempt(plan, mode, artifacts);
 	if (attempt.error === undefined && attempt.markerSeen) return;
-	const recoveryBudget = Math.max(1, SSH_TRANSFER_FINALIZE_MS - (Date.now() - finalizeStartedAt));
+	// Retry once when the commit died before the identity marker was acknowledged: the
+	// commit script is idempotent (it tolerates an existing proof hardlink), so a timed-out
+	// attempt that actually committed on the remote is confirmed on the retry.
+	if (attempt.error !== undefined && !attempt.markerSeen && !signal?.aborted) {
+		attempt = await runUploadCommitAttempt(plan, mode, artifacts);
+		if (attempt.error === undefined && attempt.markerSeen) return;
+	}
 	try {
-		await recoverUploadCommit(plan, mode, artifacts, recoveryBudget);
+		await recoverUploadCommit(plan, mode, artifacts, SSH_TRANSFER_RECOVERY_MS);
 	} catch (recoveryError) {
 		const attemptMessage = attempt.error ? describeTransferError(attempt.error) : "commit acknowledgement was lost";
 		throw new Error(
