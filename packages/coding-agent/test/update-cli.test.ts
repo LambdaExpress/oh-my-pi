@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
+import { afterEach, describe, expect, it, type Mock, spyOn, vi } from "bun:test";
 import { createHash } from "node:crypto";
 import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
@@ -12,16 +12,24 @@ import {
 	buildMiseForceInstallArgs,
 	buildMiseUpgradeArgs,
 	buildNpmInstallArgs,
+	buildRenameCleanupPackages,
 	downloadVerifiedBinary,
 	isMuslLinuxForTest,
+	migrateRenamedInstall,
 	parseUpdateArgs,
 	pruneBunInstallCache,
+	type ReleaseInfo,
+	type RenameMigrationSteps,
 	replaceBinaryForUpdate,
 	resolveBunGlobalNodeModulesDirFromLocations,
 	resolveReleaseBinaryAsset,
+	resolveReleaseDist,
+	resolveReleaseRename,
 	resolveUpdateMethodForTest,
+	shouldForceBinaryUpdate,
 	sweepStaleBackups,
 	updateViaBinaryAt,
+	updateViaShimTakeover,
 } from "@oh-my-pi/pi-coding-agent/cli/update-cli";
 import Update from "@oh-my-pi/pi-coding-agent/commands/update";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -99,6 +107,15 @@ describe("update-cli libc detection", () => {
 });
 
 describe("update-cli install target detection", () => {
+	it("leaves Nix store installations under Nix management", () => {
+		const method = resolveUpdateMethodForTest(
+			"/nix/store/0123456789-omp-17.2.15/bin/omp",
+			"/nix/store/9876543210-bun-1.3.14/bin",
+		);
+
+		expect(method).toBe("nix");
+	});
+
 	it("uses bun update when prioritized omp is inside bun global bin", () => {
 		const method = resolveUpdateMethodForTest("/Users/test/.bun/bin/omp", "/Users/test/.bun/bin");
 
@@ -237,6 +254,140 @@ describe("update-cli package manager commands", () => {
 		expect(args).toContain("@oh-my-pi/pi-coding-agent@16.3.15");
 		expect(args).toContain("@oh-my-pi/pi-natives@16.3.15");
 		expect(args).toContain("@oh-my-pi/pi-natives-win32-x64@16.3.15");
+	});
+});
+
+describe("update-cli npm rename contract", () => {
+	it("parses a well-formed omp.rename pointer and rejects malformed ones", () => {
+		expect(resolveReleaseRename({ omp: { rename: { package: "@new/omp", natives: "@new/natives" } } })).toEqual({
+			pkg: "@new/omp",
+			natives: "@new/natives",
+		});
+		expect(resolveReleaseRename({ omp: { rename: { package: "@new/omp" } } })).toEqual({
+			pkg: "@new/omp",
+			natives: undefined,
+		});
+		expect(resolveReleaseRename({ omp: { rename: { package: "" } } })).toBeUndefined();
+		expect(resolveReleaseRename({ omp: { rename: "@new/omp" } })).toBeUndefined();
+		expect(resolveReleaseRename({ omp: {} })).toBeUndefined();
+		expect(resolveReleaseRename(undefined)).toBeUndefined();
+	});
+
+	it("installs renamed package names in lock-step, with no old-name leftovers in the argv", () => {
+		const packages = { pkg: "@new/omp", natives: "@new/natives" };
+
+		const bunArgs = buildBunInstallArgs("17.0.0", "linux-x64", packages);
+		expect(bunArgs).toContain("@new/omp@17.0.0");
+		expect(bunArgs).toContain("@new/natives@17.0.0");
+		expect(bunArgs).toContain("@new/natives-linux-x64@17.0.0");
+		expect(bunArgs.some(arg => arg.startsWith("@oh-my-pi/"))).toBe(false);
+
+		expect(buildNpmInstallArgs("17.0.0", "linux-x64", packages)).toContain("@new/omp@17.0.0");
+	});
+
+	it("adds --force to npm argv only for rename migrations so the old package's bin can be clobbered", () => {
+		const packages = { pkg: "@new/omp", natives: "@new/natives" };
+		expect(buildNpmInstallArgs("17.0.0", "linux-x64", packages, { force: true })).toContain("--force");
+		expect(buildNpmInstallArgs("16.3.15", "win32-x64")).not.toContain("--force");
+	});
+
+	it("removes the old agent package and its natives companions when both names moved", () => {
+		const packages = { pkg: "@new/omp", natives: "@new/natives" };
+		expect(buildRenameCleanupPackages(packages, "darwin-arm64")).toEqual([
+			"@oh-my-pi/pi-coding-agent",
+			"@oh-my-pi/pi-natives",
+			"@oh-my-pi/pi-natives-darwin-arm64",
+		]);
+		expect(buildRenameCleanupPackages(packages, "linux-arm")).toEqual([
+			"@oh-my-pi/pi-coding-agent",
+			"@oh-my-pi/pi-natives",
+		]);
+	});
+
+	it("keeps the natives packages on an agent-only rename so cleanup cannot strip the addon the new install pinned", () => {
+		const packages = { pkg: "@new/omp", natives: "@oh-my-pi/pi-natives" };
+		expect(buildRenameCleanupPackages(packages, "darwin-arm64")).toEqual(["@oh-my-pi/pi-coding-agent"]);
+		expect(buildRenameCleanupPackages(packages, "linux-arm")).toEqual(["@oh-my-pi/pi-coding-agent"]);
+	});
+});
+
+describe("migrateRenamedInstall transaction", () => {
+	const release: ReleaseInfo = {
+		tag: "v999.1.0",
+		version: "999.1.0",
+		packages: { pkg: "@new/omp", natives: "@new/natives" },
+	};
+
+	function scriptedSteps(script: { install: number[]; removeOld?: number; verify: boolean[] }): {
+		steps: RenameMigrationSteps;
+		calls: string[];
+	} {
+		const calls: string[] = [];
+		let installs = 0;
+		let verifies = 0;
+		return {
+			calls,
+			steps: {
+				async install() {
+					calls.push("install");
+					return script.install[installs++] ?? 0;
+				},
+				async removeOld() {
+					calls.push("removeOld");
+					return script.removeOld ?? 0;
+				},
+				async verify() {
+					calls.push("verify");
+					return script.verify[verifies++]
+						? { ok: true, actual: "999.1.0", path: "/bin/omp" }
+						: { ok: false, path: "/bin/omp" };
+				},
+			},
+		};
+	}
+
+	it("never touches the old install when the new install fails", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { steps, calls } = scriptedSteps({ install: [1], verify: [] });
+
+		await expect(migrateRenamedInstall(release, steps)).rejects.toThrow("left untouched");
+		expect(calls).toEqual(["install"]);
+	});
+
+	it("installs the new package before removing the old one and verifies the result", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { steps, calls } = scriptedSteps({ install: [0], verify: [true] });
+
+		await migrateRenamedInstall(release, steps);
+		expect(calls).toEqual(["install", "removeOld", "verify"]);
+	});
+
+	it("restores the bin link by reinstalling when old-package removal breaks verification", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { steps, calls } = scriptedSteps({ install: [0, 0], verify: [false, true] });
+
+		await migrateRenamedInstall(release, steps);
+		expect(calls).toEqual(["install", "removeOld", "verify", "install", "verify"]);
+	});
+
+	it("treats old-package removal failure as a warning when the new install verifies", async () => {
+		const logs: string[] = [];
+		vi.spyOn(console, "log").mockImplementation(message => {
+			logs.push(String(message));
+		});
+		const { steps, calls } = scriptedSteps({ install: [0], removeOld: 1, verify: [true] });
+
+		await migrateRenamedInstall(release, steps);
+		expect(calls).toEqual(["install", "removeOld", "verify"]);
+		expect(logs.some(line => line.includes("could not remove the old"))).toBe(true);
+	});
+
+	it("aborts with a recovery hint when verification still fails after the restore install", async () => {
+		vi.spyOn(console, "log").mockImplementation(() => {});
+		const { steps, calls } = scriptedSteps({ install: [0, 0], verify: [false, false] });
+
+		await expect(migrateRenamedInstall(release, steps)).rejects.toThrow("curl -fsSL https://omp.sh/install");
+		expect(calls).toEqual(["install", "removeOld", "verify", "install", "verify"]);
 	});
 });
 
@@ -738,5 +889,185 @@ describe("update-cli stale backup sweep", () => {
 		expect(await Bun.file(`${targetPath}.1800000000000.99.bak`).exists()).toBe(false);
 		expect(await Bun.file(path.join(dir, "notes.bak")).exists()).toBe(true);
 		expect(await Bun.file(`${targetPath}.config.bak`).exists()).toBe(true);
+	});
+});
+
+describe("update-cli binary-only release gating", () => {
+	it("honors an explicit omp.dist field from the registry manifest", () => {
+		expect(resolveReleaseDist({ omp: { dist: "binary" } })).toBe("binary");
+		expect(resolveReleaseDist({ omp: { dist: "npm" } })).toBe("npm");
+	});
+
+	it("treats unknown dist values as binary-only", () => {
+		expect(resolveReleaseDist({ omp: { dist: "cargo" } })).toBe("binary");
+	});
+
+	it("returns undefined when the manifest carries no dist field", () => {
+		expect(resolveReleaseDist({ version: "1.2.3" })).toBeUndefined();
+		expect(resolveReleaseDist({ omp: {} })).toBeUndefined();
+		expect(resolveReleaseDist(undefined)).toBeUndefined();
+	});
+
+	it("forces binary updates when dist is binary regardless of version", () => {
+		expect(shouldForceBinaryUpdate({ version: "1.2.3", dist: "binary" }, "1.2.2")).toBe(true);
+	});
+
+	it("allows package-manager updates across majors when dist is explicitly npm", () => {
+		expect(shouldForceBinaryUpdate({ version: "2.0.0", dist: "npm" }, "1.9.0")).toBe(false);
+	});
+
+	it("forces binary updates on a major bump without a dist field", () => {
+		expect(shouldForceBinaryUpdate({ version: "2.0.0" }, "1.9.0")).toBe(true);
+		expect(shouldForceBinaryUpdate({ version: "2.0.0-rc.1" }, "1.9.0")).toBe(true);
+	});
+
+	it("keeps package-manager updates within the same major and on downgrades", () => {
+		expect(shouldForceBinaryUpdate({ version: "1.10.0" }, "1.9.0")).toBe(false);
+		expect(shouldForceBinaryUpdate({ version: "1.0.0" }, "2.0.0")).toBe(false);
+	});
+});
+
+describe("update-cli script-shim takeover", () => {
+	const version = "18.0.0";
+	const binaryName = "omp-windows-x64.exe";
+	const url = `https://github.com/can1357/oh-my-pi/releases/download/v${version}/${binaryName}`;
+
+	function makeFetch(content: string): (input: string | URL | Request) => Promise<Response> {
+		const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
+		return async (input: string | URL | Request): Promise<Response> => {
+			const requestUrl = String(input);
+			if (requestUrl.startsWith("https://api.github.com/")) {
+				return new Response(
+					JSON.stringify({
+						tag_name: `v${version}`,
+						draft: false,
+						prerelease: false,
+						assets: [
+							{
+								name: binaryName,
+								state: "uploaded",
+								size: Buffer.byteLength(content),
+								digest,
+								browser_download_url: url,
+							},
+						],
+					}),
+				);
+			}
+			if (requestUrl === url) return new Response(content);
+			throw new Error(`Unexpected request: ${requestUrl}`);
+		};
+	}
+
+	const shims: Record<string, string> = {
+		omp: "#!/bin/sh\nnode omp.js\n",
+		"omp.cmd": "@node omp.js %*\n",
+		"omp.ps1": "node omp.js @args\n",
+	};
+
+	async function writeShims(dir: string): Promise<void> {
+		for (const name in shims) {
+			await Bun.write(path.join(dir, name), shims[name]);
+		}
+	}
+
+	it("installs omp.exe beside the shims and retires them", async () => {
+		const dir = await makeTempDir();
+		await writeShims(dir);
+		// Real executable, no injected verifier: the takeover must verify the
+		// exe by explicit path — $which cached the shim path before it was
+		// renamed away, so a PATH re-resolution would fail here.
+		const exe = `#!/bin/sh\necho omp/${version}\n`;
+
+		await updateViaShimTakeover(path.join(dir, "omp.cmd"), version, {
+			binaryName,
+			fetchImpl: makeFetch(exe),
+			githubToken: "test-token",
+		});
+
+		expect(await Bun.file(path.join(dir, "omp.exe")).text()).toBe(exe);
+		for (const name in shims) {
+			expect(await Bun.file(path.join(dir, name)).exists()).toBe(false);
+		}
+		const residue = (await fs.readdir(dir)).filter(name => name.endsWith(".bak") || name.endsWith(".new"));
+		expect(residue).toEqual([]);
+	});
+
+	it("restores the shims and removes the exe when the exe reports the wrong version", async () => {
+		const dir = await makeTempDir();
+		await writeShims(dir);
+		// Executable runs but reports the previous version -> full rollback.
+		const exe = "#!/bin/sh\necho omp/17.2.12\n";
+
+		await expect(
+			updateViaShimTakeover(path.join(dir, "omp.cmd"), version, {
+				binaryName,
+				fetchImpl: makeFetch(exe),
+				githubToken: "test-token",
+			}),
+		).rejects.toThrow(/still reports 17\.2\.12 \(expected 18\.0\.0\); restored previous omp launcher/);
+
+		expect(await Bun.file(path.join(dir, "omp.exe")).exists()).toBe(false);
+		for (const name in shims) {
+			expect(await Bun.file(path.join(dir, name)).text()).toBe(shims[name]);
+		}
+		const residue = (await fs.readdir(dir)).filter(name => name.endsWith(".bak") || name.endsWith(".new"));
+		expect(residue).toEqual([]);
+	});
+
+	function renameLockingPs1(): Mock<typeof nodeFs.promises.rename> {
+		const realRename = nodeFs.promises.rename;
+		return spyOn(nodeFs.promises, "rename").mockImplementation(async (from, to) => {
+			if (path.basename(String(from)) === "omp.ps1") {
+				throw Object.assign(new Error("EPERM: file is locked"), { code: "EPERM" });
+			}
+			return await realRename(from, to);
+		});
+	}
+
+	it("rewrites an immovable precedence-winning shim as a forwarder to the exe", async () => {
+		const dir = await makeTempDir();
+		await writeShims(dir);
+		const exe = `#!/bin/sh\necho omp/${version}\n`;
+		const renameSpy = renameLockingPs1();
+		try {
+			await updateViaShimTakeover(path.join(dir, "omp.cmd"), version, {
+				binaryName,
+				fetchImpl: makeFetch(exe),
+				githubToken: "test-token",
+			});
+		} finally {
+			renameSpy.mockRestore();
+		}
+
+		expect(await Bun.file(path.join(dir, "omp.exe")).text()).toBe(exe);
+		expect(await Bun.file(path.join(dir, "omp")).exists()).toBe(false);
+		expect(await Bun.file(path.join(dir, "omp.cmd")).exists()).toBe(false);
+		// PowerShell resolves .ps1 before .exe: the locked shim must now exec
+		// the new binary instead of keeping its old body.
+		expect(await Bun.file(path.join(dir, "omp.ps1")).text()).toContain('& "$PSScriptRoot\\omp.exe" @args');
+	});
+
+	it("restores a forwarded shim's original body when verification fails", async () => {
+		const dir = await makeTempDir();
+		await writeShims(dir);
+		const exe = "#!/bin/sh\necho omp/17.2.12\n";
+		const renameSpy = renameLockingPs1();
+		try {
+			await expect(
+				updateViaShimTakeover(path.join(dir, "omp.cmd"), version, {
+					binaryName,
+					fetchImpl: makeFetch(exe),
+					githubToken: "test-token",
+				}),
+			).rejects.toThrow("restored previous omp launcher");
+		} finally {
+			renameSpy.mockRestore();
+		}
+
+		expect(await Bun.file(path.join(dir, "omp.exe")).exists()).toBe(false);
+		for (const name in shims) {
+			expect(await Bun.file(path.join(dir, name)).text()).toBe(shims[name]);
+		}
 	});
 });

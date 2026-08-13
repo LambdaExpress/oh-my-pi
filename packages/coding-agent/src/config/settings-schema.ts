@@ -386,6 +386,8 @@ export const DEFAULT_BASH_INTERCEPTOR_RULES: BashInterceptorRule[] = [
 	},
 ];
 
+const DEFAULT_AGENT_MODEL_OVERRIDES: Record<string, string | string[]> = {};
+
 export const SETTINGS_SCHEMA = {
 	// ────────────────────────────────────────────────────────────────────────
 	// General settings (no UI)
@@ -465,17 +467,6 @@ export const SETTINGS_SCHEMA = {
 			label: "Enable Prewalk",
 			description:
 				"Start on the active model, then switch to a fast/cheap model (default the 'smol' role) at the first edit/write after the plan nudge's todo list exists — the strong model plans, commits the todos, and starts the implementation before handing off. Overridable per session with --prewalk / --no-prewalk.",
-		},
-	},
-	"advisor.subagents": {
-		type: "boolean",
-		default: false,
-		ui: {
-			tab: "model",
-			group: "Advisor",
-			label: "Advisor for Subagents",
-			description: "Also enable the advisor on spawned task/eval subagents.",
-			condition: "advisorEnabled",
 		},
 	},
 	"advisor.syncBacklog": {
@@ -1184,6 +1175,17 @@ export const SETTINGS_SCHEMA = {
 			label: "Omit Thinking summaries",
 			description:
 				"Instruct upstream providers to completely omit thinking summaries from responses (where supported)",
+		},
+	},
+
+	externalThinking: {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "model",
+			group: "Thinking",
+			label: "External Thinking",
+			description: "Private scratchpad; not shown to user. Disables supported GPT, Claude, and Gemini reasoning",
 		},
 	},
 
@@ -4783,9 +4785,13 @@ export const SETTINGS_SCHEMA = {
 
 	"task.agentModelOverrides": {
 		type: "record",
-		default: {} as Record<string, string>,
+		default: DEFAULT_AGENT_MODEL_OVERRIDES,
 	},
 	"task.agentPrewalk": {
+		type: "record",
+		default: {} as Record<string, string>,
+	},
+	"task.agentAdvisor": {
 		type: "record",
 		default: {} as Record<string, string>,
 	},
@@ -4797,7 +4803,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Subagents",
 			label: "Generic Task Prewalk",
 			description:
-				"Arm prewalk for the bundled generic `task` subagent: it starts on its resolved model, plans and begins the implementation, then hands off to the 'smol' role at its first edit/write. Per-agent overrides (task.agentPrewalk, toggled with P in /agents) and user agent `prewalk` frontmatter apply regardless of this toggle.",
+				"Arm prewalk for the bundled generic `task` subagent: it starts on its resolved model, plans and begins the implementation, then hands off to the 'smol' role at its first edit/write. Per-agent overrides (task.agentPrewalk, configured from the /agents hub) and user agent `prewalk` frontmatter apply regardless of this toggle.",
 		},
 	},
 
@@ -5527,6 +5533,11 @@ export const SETTINGS_SCHEMA = {
 
 	"searxng.language": {
 		type: "string",
+		default: undefined,
+	},
+
+	"searxng.safesearch": {
+		type: "number",
 		default: undefined,
 	},
 

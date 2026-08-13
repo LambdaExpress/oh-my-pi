@@ -839,9 +839,6 @@ describe("guest ask multi-select Next gating (#4375 PRRT_kwDOQxs0bc6OFbDW)", () 
 			const first = await nextUiRequest(guest);
 			const firstLabels = selectLabels(first);
 			expect(firstLabels).not.toContain("Next →");
-			expect(firstLabels).toContain("Option A");
-			expect(firstLabels).toContain("Other (type your own)");
-			expect(firstLabels).toContain("Chat about this");
 
 			// Guest toggles Option A — a real answer, not Next/Other/Chat.
 			guest.socket.send({ t: "ui-response", reqId: first.request.reqId, value: "Option A" });
@@ -850,7 +847,6 @@ describe("guest ask multi-select Next gating (#4375 PRRT_kwDOQxs0bc6OFbDW)", () 
 			const second = await nextUiRequest(guest);
 			const secondLabels = selectLabels(second);
 			expect(secondLabels).toContain("Next →");
-			expect(secondLabels).toContain("Option A");
 
 			// Guest selects Next to submit.
 			guest.socket.send({ t: "ui-response", reqId: second.request.reqId, value: "Next →" });

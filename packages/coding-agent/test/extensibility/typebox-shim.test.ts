@@ -59,6 +59,70 @@ describe("pi.typebox compatibility shim", () => {
 		).toThrow('Validation failed for tool "unsafe-schema"');
 	});
 
+	it("composes optional Type.Unsafe schemas without making sibling properties required", () => {
+		const schema = Type.Object({
+			kind: Type.Unsafe({ type: "string", enum: ["question"] }),
+			mode: Type.Optional(Type.Unsafe({ type: "string", enum: ["overlay", "inline"] })),
+			label: Type.Optional(Type.String()),
+		});
+
+		const document = schema.toJsonSchema();
+		expect(document.required).toEqual(["kind"]);
+		expect(document).toMatchObject({
+			properties: {
+				mode: { type: "string", enum: ["overlay", "inline"] },
+				label: { type: "string" },
+			},
+		});
+		expect(schema.safeParse({ kind: "question", mode: "overlay" }).success).toBe(true);
+		expect(schema.safeParse({ kind: "question", mode: "other" }).success).toBe(false);
+	});
+
+	it("preserves nested Type.Unsafe keywords fromJsonSchema cannot lower", () => {
+		const raw = Type.Unsafe({
+			type: "object",
+			properties: { a: { type: "string" } },
+			patternProperties: { "^x-": { type: "number" } },
+			additionalProperties: false,
+		});
+		const nested = {
+			type: "object",
+			properties: { a: { type: "string" } },
+			patternProperties: { "^x-": { type: "number" } },
+			additionalProperties: false,
+		};
+
+		// The wire schema must keep patternProperties even when the Unsafe schema
+		// is embedded inside Type.Object / Type.Optional — a `.toJsonSchema`
+		// method override would vanish at these nested positions.
+		expect((Type.Object({ cfg: raw }).toJsonSchema().properties as Record<string, unknown>).cfg).toEqual(nested);
+		expect(
+			(Type.Object({ cfg: Type.Optional(raw) }).toJsonSchema().properties as Record<string, unknown>).cfg,
+		).toEqual(nested);
+
+		// Runtime validation still enforces the nested keyword.
+		const object = Type.Object({ cfg: raw });
+		expect(object.safeParse({ cfg: { a: "ok", "x-n": 3 } }).success).toBe(true);
+		expect(object.safeParse({ cfg: { a: "ok", "x-n": "bad" } }).success).toBe(false);
+	});
+
+	it("applies schema-valued additionalProperties only to undeclared raw-object keys", () => {
+		const schema = Type.Object(
+			{ known: { type: "number" } as unknown as TSchema },
+			{ additionalProperties: { type: "string" } as unknown as TSchema },
+		);
+
+		expect(schema.safeParse({ known: 1, extra: "ok" }).success).toBe(true);
+		expect(schema.safeParse({ known: "bad", extra: "ok" }).success).toBe(false);
+		expect(schema.safeParse({ known: 1, extra: 2 }).success).toBe(false);
+		expect(schema.toJsonSchema()).toEqual({
+			type: "object",
+			properties: { known: { type: "number" } },
+			required: ["known"],
+			additionalProperties: { type: "string" },
+		});
+	});
+
 	it("validates Type.Unsafe draft-07 documents like the wire path", () => {
 		const schema = Type.Unsafe({
 			type: "object",

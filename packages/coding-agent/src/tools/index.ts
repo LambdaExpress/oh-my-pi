@@ -68,6 +68,7 @@ import { SecurityScanTool } from "./security-scan";
 import { loadSshTool } from "./ssh";
 import { SshSessionTool } from "./ssh-session";
 import { loadSshTransferTool } from "./ssh-transfer";
+import { supportsExternalThinking, ThinkTool } from "./think";
 import { type TodoPhase, TodoTool } from "./todo";
 import { WriteTool } from "./write";
 import { isMountableUnderXdev, type XdevState } from "./xdev";
@@ -112,6 +113,7 @@ export * from "./security-scan";
 export * from "./ssh";
 export * from "./ssh-session";
 export * from "./ssh-transfer";
+export * from "./think";
 export * from "./todo";
 export * from "./tts";
 export * from "./vibe";
@@ -472,6 +474,7 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 };
 
 export const HIDDEN_TOOLS: Record<HiddenToolName, ToolFactory> = {
+	think: () => new ThinkTool(),
 	yield: s => new YieldTool(s),
 	goal: s => new GoalTool(s),
 };
@@ -492,6 +495,8 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			: undefined;
 	const goalEnabled = session.settings.get("goal.enabled");
 	const goalModeActive = !restrictToolNames && goalEnabled && session.getGoalModeState?.()?.enabled === true;
+	const externalThinkingActive =
+		session.settings.get("externalThinking") && supportsExternalThinking(session.getActiveModel?.());
 	if (goalModeActive && requestedTools && !requestedTools.includes("goal")) {
 		requestedTools.push("goal");
 	}
@@ -590,6 +595,9 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (session.settings.get("memory.backend") === "mnemopi" && !requestedTools.includes("memory_edit")) {
 			requestedTools.push("memory_edit");
 		}
+		if (externalThinkingActive && !requestedTools.includes("think")) {
+			requestedTools.push("think");
+		}
 		// Auto-learn tools are gated by `autolearn.enabled` but, like the memory
 		// tools above, must also be force-included into an explicit requestedTools
 		// list so a restricted top-level session whose controller/guidance is
@@ -633,6 +641,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 		if (name === "inspect_image") return isInspectImageToolActive(session);
 		if (name === "web_search") return session.settings.get("web_search.enabled");
 		if (name === "security_scan") return session.settings.get("security.enabled");
+		if (name === "think") return externalThinkingActive;
 		if (name === "ask") return session.settings.get("ask.enabled");
 		if (name === "browser") return session.settings.get("browser.enabled");
 		if (name === "computer") return session.settings.get("computer.enabled");
@@ -679,6 +688,7 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 					...Object.entries(BUILTIN_TOOLS)
 						.filter(([name]) => isToolAllowed(name))
 						.map(([name, factory]) => [name, factory] as const),
+					...(externalThinkingActive ? ([["think", HIDDEN_TOOLS.think]] as const) : []),
 					...(includeYield ? ([["yield", HIDDEN_TOOLS.yield]] as const) : []),
 					...(goalModeActive ? ([["goal", HIDDEN_TOOLS.goal]] as const) : []),
 				];

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { BrowserTool } from "@oh-my-pi/pi-coding-agent/tools/browser";
@@ -19,6 +19,23 @@ function makeSession(): ToolSession {
 }
 
 describe.skipIf(!CHROMIUM_AVAILABLE)("browser tab evaluation", () => {
+	const suiteTool = new BrowserTool(makeSession());
+	const suiteTabName = `evaluation-suite-${process.pid}`;
+
+	// Keep one browser lease across the suite. Tests still get isolated tabs and workers,
+	// while the chunked full run avoids relaunching Chromium for every test under load.
+	beforeAll(async () => {
+		await suiteTool.execute("open", {
+			action: "open",
+			name: suiteTabName,
+			url: "data:text/html,<title>Browser evaluation suite</title>",
+		});
+	}, 30_000);
+
+	afterAll(async () => {
+		await suiteTool.execute("close", { action: "close", name: suiteTabName, kill: true });
+	}, 30_000);
+
 	// Launches real headless Chromium; CI cold start easily exceeds bun's 5s default.
 	it("runs tab.evaluate in the page's main JavaScript world", async () => {
 		const tool = new BrowserTool(makeSession());

@@ -47,11 +47,12 @@ const SMILE = String.fromCodePoint(0x1f642);
 type TestPlatform = "darwin" | "linux" | "win32";
 type TerminalMode = "normal" | "unknown" | "intermittentUnknown" | "staleBottom";
 type GeometryMode = "small" | "large";
-type EnvMode = "plain" | "tmux" | "termux" | "appleTerminal" | "iterm2" | "wsl" | "vteNoSync" | "ghostty";
+type EnvMode = "plain" | "tmux" | "herdr" | "termux" | "appleTerminal" | "iterm2" | "wsl" | "vteNoSync" | "ghostty";
 export type ScenarioTag =
 	| "small"
 	| "large"
 	| "tmux"
+	| "herdr"
 	| "strictScrollback"
 	| "unknownViewport"
 	| "foregroundStream"
@@ -60,6 +61,7 @@ const ENV_KEYS = [
 	"TMUX",
 	"STY",
 	"ZELLIJ",
+	"HERDR_ENV",
 	"TERMUX_VERSION",
 	"WEZTERM_PANE",
 	"KITTY_WINDOW_ID",
@@ -306,6 +308,8 @@ interface Snapshot {
 	width: number;
 	height: number;
 	frame: string[];
+	rawFrame: string[];
+	writeCount: number;
 	atBottom: boolean;
 	shadowTapeLength: number;
 }
@@ -585,6 +589,7 @@ function scenarioTags(
 ): readonly ScenarioTag[] {
 	const tags: ScenarioTag[] = [template.geometryMode];
 	if (template.envMode === "tmux") tags.push("tmux");
+	if (template.envMode === "herdr") tags.push("herdr");
 	if (strictNativeScrollback) tags.push("strictScrollback");
 	if (template.terminalMode !== "normal") tags.push("unknownViewport");
 	if (foregroundStreaming) tags.push("foregroundStream");
@@ -1140,9 +1145,14 @@ class StressDriver {
 	#shadowRawPrefix: string[] = [];
 	#shadowWindowTop = 0;
 	#shadowFrame: string[] = [];
+	#shadowPreviousFrameLength = 0;
 	#shadowFrameHeight = 0;
+	#shadowPreviousFrameHeight = 0;
 	#shadowFrameWidth = 0;
 	#shadowFrameOverlay = false;
+	#shadowFrameWidthChanged = false;
+	#shadowWidthEpochActive = false;
+	#shadowWidthEpochBaselineRows = 0;
 	#shadowFrameGeometryChanged = false;
 	#shadowResizePending = false;
 	#shadowAltActive = false;
@@ -1198,10 +1208,13 @@ class StressDriver {
 		const realRender = this.#tui.render.bind(this.#tui);
 		(this.#tui as { render: (width: number) => readonly string[] }).render = (width: number) => {
 			const lines = realRender(width);
+			this.#shadowPreviousFrameLength = this.#shadowFrame.length;
+			this.#shadowPreviousFrameHeight = this.#shadowFrameHeight;
+			this.#shadowFrameWidthChanged = this.#shadowFrameWidth > 0 && width !== this.#shadowFrameWidth;
 			this.#shadowFrameGeometryChanged =
 				this.#shadowResizePending ||
 				(this.#shadowFrameWidth > 0 &&
-					(width !== this.#shadowFrameWidth || this.#term.rows !== this.#shadowFrameHeight));
+					(this.#shadowFrameWidthChanged || this.#term.rows !== this.#shadowFrameHeight));
 			this.#shadowResizePending = false;
 			// Markers are engine-internal sentinels; the engine strips them from
 			// this same array immediately after render returns, and its commit
@@ -1217,7 +1230,7 @@ class StressDriver {
 			// Mirror the engine's render-time ledger transitions here: the audit
 			// resync and the shrink-into-prefix re-anchor can both fire on frames
 			// that emit zero bytes, which the write hook would never observe.
-			if (!this.#shadowFrameGeometryChanged && this.#shadowRawPrefix.length > 0) {
+			if (!this.#shadowWidthEpochActive && !this.#shadowFrameGeometryChanged && this.#shadowRawPrefix.length > 0) {
 				const resyncTo = findCommittedPrefixResync(stripped, this.#shadowRawPrefix);
 				if (resyncTo >= 0) {
 					this.#shadowCommitted = resyncTo;
@@ -1246,7 +1259,7 @@ class StressDriver {
 					}
 				}
 			}
-			if (stripped.length <= this.#shadowCommitted) {
+			if (!this.#shadowWidthEpochActive && stripped.length <= this.#shadowCommitted) {
 				this.#shadowCommitted = Math.max(0, stripped.length - Math.max(1, this.#term.rows));
 				this.#shadowWindowTop = this.#shadowCommitted;
 				this.#shadowRawPrefix = stripped.slice(0, this.#shadowCommitted);
@@ -1317,8 +1330,10 @@ class StressDriver {
 			width: this.#term.columns,
 			height: this.#term.rows,
 			frame: expected.frame,
+			rawFrame: [...this.#shadowRawFrame],
 			atBottom: position.viewportY >= position.baseY,
 			shadowTapeLength: this.#shadowTape.length,
+			writeCount: this.#writeLog.length,
 		};
 	}
 
@@ -2331,13 +2346,14 @@ class StressDriver {
 	#assertViewportFidelity(op: AppliedOperation, before: Snapshot, after: Snapshot, index: number): void {
 		if (this.#hasVisibleOverlay()) return;
 		if (!after.atBottom) return;
-		// The grid must show the shadow window slice: the frame tail anchored at
-		// the ledger's window top (which floors at the committed boundary after
-		// a shrink, leaving blank rows below the content instead of re-showing
-		// committed rows). Multiplexer mode only checks geometry frames — tmux
-		// reflows the pane grid on resize and the renderer must repaint the
-		// whole visible window at the new geometry.
-		if (this.#traits.preservesPaneHistory && !op.geometryChanged) return;
+		// Direct terminals must show the engine's exact window slice. Multiplexer
+		// height changes retain the old physical-row epoch and remain exact too.
+		// A multiplexer width change is different: the host owns the canonical
+		// reflow, so byte-for-byte rows may differ until post-epoch output arrives.
+		if (this.#traits.preservesPaneHistory) {
+			if (op.kind === "resizeWidth") return;
+			if (!op.geometryChanged) return;
+		}
 		const expected: string[] = [];
 		for (let r = 0; r < after.height; r++) {
 			expected.push(after.frame[this.#shadowWindowTop + r] ?? "");
@@ -2376,12 +2392,19 @@ class StressDriver {
 		if (this.#hasVisibleOverlay()) return;
 		if (!this.#traits.strictNativeScrollback || op.checkpoint || op.geometryChanged) return;
 		if (!before.atBottom || !after.atBottom) return;
-		if (!sameLines(before.frame, after.frame)) return;
-		if (after.buffer.length > before.buffer.length) {
+		// Prepared terminal rows can collide at narrow widths even when the raw
+		// component frame changed. That is not frame-neutral to the renderer:
+		// committed-prefix audits intentionally compare raw rows and may recommit
+		// below an immutable stale copy when divergence rebuilding is disabled.
+		if (!sameLines(before.frame, after.frame) || !sameLines(before.rawFrame, after.rawFrame)) return;
+		const growth = after.buffer.length - before.buffer.length;
+		const transientGrowth = op.transientFrameGrowth ?? 0;
+		if (growth > transientGrowth) {
 			if (this.#isCleanBuffer(after.buffer, after.frame, after.height)) return;
 			this.#fail("frame-neutral scrollback growth", op, before, after, index, {
 				beforeLength: before.buffer.length,
 				afterLength: after.buffer.length,
+				transientGrowth,
 			});
 		}
 	}
@@ -2467,8 +2490,41 @@ class StressDriver {
 	#assertMultiplexerPaneHistoryGrowth(op: AppliedOperation, before: Snapshot, after: Snapshot, index: number): void {
 		if (!this.#traits.preservesPaneHistory) return;
 		if (op.checkpoint) return;
+		if (op.kind === "resizeWidth") {
+			if (after.shadowTapeLength !== before.shadowTapeLength) {
+				this.#fail("multiplexer width resize advanced the shadow tape", op, before, after, index, {
+					beforeTapeLength: before.shadowTapeLength,
+					afterTapeLength: after.shadowTapeLength,
+					expected: "width resize is a viewport-only repaint; only post-epoch output may append",
+				});
+			}
+			const output = this.#writeLog.slice(before.writeCount, after.writeCount).join("");
+			if (
+				output.includes("\x1b[3J") ||
+				output.includes("\x1b[22J") ||
+				output.includes(ALT_SCREEN_ENTER) ||
+				output.includes(ALT_SCREEN_EXIT)
+			) {
+				this.#fail("multiplexer width resize used a destructive screen transition", op, before, after, index, {
+					ed3: output.includes("\x1b[3J"),
+					ed22: output.includes("\x1b[22J"),
+					altEnter: output.includes(ALT_SCREEN_ENTER),
+					altExit: output.includes(ALT_SCREEN_EXIT),
+				});
+			}
+			return;
+		}
 		const heightOnlyResize = op.kind === "resizeHeight";
 		if (op.geometryChanged && !heightOnlyResize) return;
+		// A mutation that changes rows already above the live window cannot be
+		// repaired in place: multiplexer history is immutable, so the renderer's
+		// "duplication, never loss" fallback recommits the corrected suffix below
+		// the opaque old-width copy. The shadow tape tracks logical append
+		// commits, not that physical recovery, so it cannot bound pane growth for
+		// this case. Keep enforcing the oracle when the preserved history prefix
+		// itself is unchanged — ordinary appends and live-window repaints must not
+		// replay the transcript.
+		if (multiplexerHistoryPrefixChanged(before.frame, before.height, after.frame, after.height)) return;
 		const reflowAllowance = heightOnlyResize ? Math.max(0, before.height - after.height) : 0;
 		const deltaBaseY = after.position.baseY - before.position.baseY;
 		if (deltaBaseY <= 0) return;
@@ -2576,6 +2632,7 @@ class StressDriver {
 			this.#shadowWindowTop = this.#shadowCommitted;
 			this.#shadowTape = frame.slice(0, this.#shadowCommitted);
 			this.#shadowRawPrefix = raw.slice(0, this.#shadowCommitted);
+			this.#shadowWidthEpochActive = false;
 			return;
 		}
 		if (data.includes("\x1b[2J")) {
@@ -2585,14 +2642,48 @@ class StressDriver {
 			for (let i = 0; i < chunkTo; i++) this.#shadowTape.push(frame[i] ?? "");
 			this.#shadowCommitted = chunkTo;
 			this.#shadowWindowTop = chunkTo;
+			this.#shadowWidthEpochActive = false;
 			this.#shadowRawPrefix = raw.slice(0, chunkTo);
 			return;
 		}
 		// Audit and shrink re-anchoring are mirrored at render time (they can
 		// fire on zero-byte frames); the write hook only applies commits.
 		const tail = Math.max(0, length - height);
-		// Overlays and multiplexer geometry frames freeze commits; a geometry
-		// frame also re-bases the raw prefix at the new width (accepted wrap
+		// Multiplexer width changes terminate the physical-row epoch. Other
+		// geometry frames retain the legacy height-only rebase below.
+		if (this.#traits.preservesPaneHistory && this.#shadowFrameWidthChanged) {
+			// Existing history and its old-width prefix stay opaque. The resize
+			// write changes only the viewport and establishes an independent
+			// frame-length baseline; it does not advance native commits.
+			this.#shadowWindowTop = tail;
+			this.#shadowWidthEpochBaselineRows = length;
+			this.#shadowWidthEpochActive = true;
+			return;
+		}
+		if (this.#shadowWidthEpochActive) {
+			const previousWindowTop = this.#shadowWindowTop;
+			if (this.#shadowFrameOverlay) return;
+			const windowMovement = Math.max(0, tail - previousWindowTop);
+			const previousViewportRows = Math.min(
+				this.#shadowPreviousFrameHeight,
+				Math.max(0, this.#shadowPreviousFrameLength - previousWindowTop),
+			);
+			const hostHeightShrinkRows = Math.min(
+				windowMovement,
+				Math.max(0, previousViewportRows - this.#shadowFrameHeight),
+			);
+			const appendTo = Math.max(this.#shadowWidthEpochBaselineRows, length);
+			const epochGrowthRows = appendTo - this.#shadowWidthEpochBaselineRows;
+			const scrollRows = Math.min(windowMovement - hostHeightShrinkRows, epochGrowthRows);
+			const commitFrom = previousWindowTop + hostHeightShrinkRows;
+			for (let index = 0; index < scrollRows; index++) {
+				this.#shadowTape.push(frame[commitFrom + index] ?? "");
+			}
+			this.#shadowCommitted += scrollRows;
+			this.#shadowWindowTop = tail;
+			this.#shadowWidthEpochBaselineRows = length;
+			return;
+		}
 		// drift, mirrored from the engine).
 		if (this.#shadowFrameGeometryChanged) {
 			if (tail < this.#shadowCommitted) {
@@ -2826,6 +2917,18 @@ function sameLines(left: readonly string[], right: readonly string[]): boolean {
 		if (left[i] !== right[i]) return false;
 	}
 	return true;
+}
+
+export function multiplexerHistoryPrefixChanged(
+	beforeFrame: readonly string[],
+	beforeHeight: number,
+	afterFrame: readonly string[],
+	afterHeight: number,
+): boolean {
+	const beforeHistoryRows = Math.max(0, beforeFrame.length - beforeHeight);
+	const afterHistoryRows = Math.max(0, afterFrame.length - afterHeight);
+	const sharedHistoryRows = Math.min(beforeHistoryRows, afterHistoryRows);
+	return !sameLines(beforeFrame.slice(0, sharedHistoryRows), afterFrame.slice(0, sharedHistoryRows));
 }
 
 // ghostty-web's cell-grid text extraction can migrate or merge Unicode
@@ -3371,6 +3474,7 @@ function scenarioEnv(envMode: EnvMode): Record<EnvKey, string | undefined> {
 		TMUX: envMode === "tmux" ? "1" : undefined,
 		STY: undefined,
 		ZELLIJ: undefined,
+		HERDR_ENV: envMode === "herdr" ? "1" : undefined,
 		TERMUX_VERSION: envMode === "termux" ? "0.118.0" : undefined,
 		WEZTERM_PANE: undefined,
 		KITTY_WINDOW_ID: undefined,
@@ -3439,7 +3543,10 @@ function materializeScenario(
 	replayOperations?: readonly OperationKind[],
 ): Scenario {
 	const strictScrollback =
-		template.envMode !== "tmux" && template.terminalMode === "normal" && template.platform !== "win32";
+		template.envMode !== "tmux" &&
+		template.envMode !== "herdr" &&
+		template.terminalMode === "normal" &&
+		template.platform !== "win32";
 	const foregroundStream = template.foregroundStream ?? false;
 	const reflow = template.reflow ?? false;
 	return {
@@ -3649,6 +3756,23 @@ function coreTemplates(): ScenarioTemplate[] {
 			heightChoices: [3, 4, 6],
 		},
 		{
+			// Direct HerdR implements ED3, so a settled width change clears and
+			// replays the source-owned transcript at its new wrap. Streaming
+			// updates may race the resize but must survive that replay exactly once.
+			name: "darwin-normal-herdr-reflow-stream-small",
+			platform: "darwin",
+			terminalMode: "normal",
+			envMode: "herdr",
+			geometryMode: "small",
+			columns: 40,
+			rows: 6,
+			widthChoices: [17, 40],
+			heightChoices: [6],
+			scrollbackRows: 10_000,
+			reflow: true,
+			foregroundStream: true,
+		},
+		{
 			name: "linux-staleBottom-large",
 			platform: "linux",
 			terminalMode: "staleBottom",
@@ -3806,7 +3930,7 @@ function coreTemplates(): ScenarioTemplate[] {
 function soakTemplates(): ScenarioTemplate[] {
 	const templates: ScenarioTemplate[] = [];
 	const platformEnvModes: readonly { platform: TestPlatform; envModes: readonly EnvMode[] }[] = [
-		{ platform: "darwin", envModes: ["plain", "tmux"] },
+		{ platform: "darwin", envModes: ["plain", "tmux", "herdr"] },
 		{ platform: "linux", envModes: ["plain", "tmux", "termux", "vteNoSync"] },
 		{ platform: "win32", envModes: ["plain"] },
 	];
@@ -3886,6 +4010,7 @@ export function applyStressEnv(envMode: Scenario["envMode"]): StressEnvSnapshot 
 			TMUX: undefined,
 			STY: undefined,
 			ZELLIJ: undefined,
+			HERDR_ENV: undefined,
 			TERMUX_VERSION: undefined,
 			WEZTERM_PANE: undefined,
 			KITTY_WINDOW_ID: undefined,
@@ -3903,6 +4028,7 @@ export function applyStressEnv(envMode: Scenario["envMode"]): StressEnvSnapshot 
 			TMUX: undefined,
 			STY: undefined,
 			ZELLIJ: undefined,
+			HERDR_ENV: undefined,
 			TERMUX_VERSION: undefined,
 			WEZTERM_PANE: undefined,
 			KITTY_WINDOW_ID: undefined,
@@ -4012,6 +4138,47 @@ export async function runStressScenario(scenario: Scenario, options?: { patchEnv
 	} else {
 		await withPatchedEnv(scenario.envMode, run);
 	}
+}
+
+export async function runWidthEpochOverlayReplayRegression(): Promise<void> {
+	const base = coreTemplates().find(candidate => candidate.name === "darwin-normal-herdr-reflow-stream-small");
+	if (base === undefined) throw new Error("Missing reflow-stream stress template");
+	const template: ScenarioTemplate = { ...base, name: "darwin-normal-tmux-reflow-stream-small", envMode: "tmux" };
+	const operations: readonly OperationKind[] = ["resizeWidth", "showOverlay", "streamOne", "streamOne", "hideOverlay"];
+	const scenario = materializeScenario(
+		template,
+		0x61477027,
+		operations.length,
+		CORE_BULK_MAX,
+		CORE_TIMEOUT_MS,
+		maxOf(template.heightChoices),
+		operations,
+	);
+	await runStressScenario(scenario);
+}
+
+export async function runWidthEpochHeightAppendReplayRegression(): Promise<void> {
+	const source = coreTemplates().find(candidate => candidate.name === "darwin-normal-herdr-reflow-stream-small");
+	if (source === undefined) throw new Error("Missing reflow-stream stress template");
+	const base: ScenarioTemplate = { ...source, name: "darwin-normal-tmux-reflow-stream-small", envMode: "tmux" };
+	const template: ScenarioTemplate = {
+		...base,
+		columns: 40,
+		rows: 10,
+		widthChoices: [17],
+		heightChoices: [5],
+	};
+	const operations: readonly OperationKind[] = ["resizeWidth", "resizeWithAppend"];
+	const scenario = materializeScenario(
+		template,
+		0x61477028,
+		operations.length,
+		CORE_BULK_MAX,
+		CORE_TIMEOUT_MS,
+		10,
+		operations,
+	);
+	await runStressScenario(scenario);
 }
 
 function restoreOwnProperty(target: object, key: string, descriptor: PropertyDescriptor | undefined): void {

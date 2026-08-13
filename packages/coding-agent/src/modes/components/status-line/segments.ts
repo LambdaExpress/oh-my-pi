@@ -490,54 +490,44 @@ function pickUsageColor(percent: number): "muted" | "warning" | "error" {
 	return "muted";
 }
 
+function formatUsageReset(value: number, unit: "m" | "h"): string {
+	if (unit === "m") {
+		// total minutes (5h window: max 300)
+		if (value < 60) return `${value}m`;
+		const hours = Math.floor(value / 60);
+		const mins = value % 60;
+		return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
+	}
+	// total hours (7d window: max 168)
+	if (value < 24) return `${value}h`;
+	const days = Math.floor(value / 24);
+	const hours = value % 24;
+	return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
+}
+
 function pickUsageRemainingColor(percent: number): "muted" | "warning" | "error" {
 	if (percent <= 20) return "error";
 	if (percent <= 50) return "warning";
 	return "muted";
 }
 
-function formatUsageWindowLabel(fallback: string, resetsAt: number | undefined): string {
-	if (resetsAt === undefined) return fallback;
-	const remainingMs = Math.max(0, resetsAt - Date.now());
-	const minutes = Math.round(remainingMs / 60_000);
-	if (minutes < 60) return `${minutes}m`;
-	const hours = Math.round(remainingMs / 3_600_000);
-	if (hours < 24) return `${hours}h`;
-	return `${Math.round(remainingMs / 86_400_000)}d`;
-}
-
-function renderUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
-	const u = ctx.usage;
-	if (!u || u.windows.length === 0) {
-		return { content: "", visible: false };
-	}
-	const parts: string[] = [];
-	if (u.title) {
-		const title = truncateToWidth(sanitizeStatusText(u.title), TRUNCATE_LENGTHS.SHORT);
-		if (title) parts.push(theme.fg("accent", title));
-	}
-	for (const window of u.windows) {
-		const pct = window.percent;
-		const pctText = theme.fg(pickUsageColor(pct), `${Math.round(pct)}%`);
-		parts.push(`${formatUsageWindowLabel(window.id, window.resetsAt)} ${pctText}`);
-	}
-	const content = withIcon(theme.icon.time, parts.join(theme.sep.dot));
-	return { content, visible: true };
-}
-
 function renderCompactUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
 	const u = ctx.usage;
-	if (!u || u.windows.length === 0) {
+	if (!u || (!u.fiveHour && !u.sevenDay && !u.monthly)) {
 		return { content: "", visible: false };
 	}
 
 	const parts: string[] = [];
-	if (u.title) {
-		const title = truncateToWidth(sanitizeStatusText(u.title), TRUNCATE_LENGTHS.SHORT);
+	if (u.tier) {
+		const title = truncateToWidth(sanitizeStatusText(u.tier), TRUNCATE_LENGTHS.SHORT);
 		if (title) parts.push(theme.fg("accent", title));
 	}
-	for (const window of u.windows) {
-		const label = formatUsageWindowLabel(window.id, window.resetsAt);
+	for (const [label, window] of [
+		["5h", u.fiveHour],
+		["7d", u.sevenDay],
+		["mo", u.monthly],
+	] as const) {
+		if (!window) continue;
 		const remaining = Math.max(0, Math.min(100, 100 - window.percent));
 		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
 	}
@@ -736,7 +726,47 @@ const collabSegment: StatusLineSegment = {
 const usageSegment: StatusLineSegment = {
 	id: "usage",
 	render(ctx) {
-		return renderUsageLimitSegment(ctx);
+		const u = ctx.usage;
+		if (!u || (!u.fiveHour && !u.sevenDay && !u.monthly)) {
+			return { content: "", visible: false };
+		}
+		const parts: string[] = [];
+		if (u.tier) {
+			const tier = truncateToWidth(sanitizeStatusText(u.tier), TRUNCATE_LENGTHS.SHORT);
+			if (tier) parts.push(theme.fg("accent", tier));
+		}
+		if (u.fiveHour) {
+			const pct = u.fiveHour.percent;
+			const pctText = theme.fg(pickUsageColor(pct), `${Math.round(pct)}%`);
+			const reset =
+				u.fiveHour.resetMinutes !== undefined
+					? theme.fg("muted", ` (${formatUsageReset(u.fiveHour.resetMinutes, "m")})`)
+					: "";
+			parts.push(`5h ${pctText}${reset}`);
+		}
+		if (u.sevenDay) {
+			const pct = u.sevenDay.percent;
+			const pctText = theme.fg(pickUsageColor(pct), `${Math.round(pct)}%`);
+			const reset =
+				u.sevenDay.resetHours !== undefined
+					? theme.fg("muted", ` (${formatUsageReset(u.sevenDay.resetHours, "h")})`)
+					: "";
+			parts.push(`7d ${pctText}${reset}`);
+		}
+		if (u.monthly) {
+			const pct = u.monthly.percent;
+			// Cursor and OpenCode Go (normalize gates monthly to those providers).
+			// Both floor used percents upstream (Cursor's dashboard shows 1.88 →
+			// "1% used"; OpenCode's endpoint already emits floored integers).
+			const pctText = theme.fg(pickUsageColor(pct), `${Math.floor(pct)}%`);
+			const reset =
+				u.monthly.resetHours !== undefined
+					? theme.fg("muted", ` (${formatUsageReset(u.monthly.resetHours, "h")})`)
+					: "";
+			parts.push(`mo ${pctText}${reset}`);
+		}
+		const content = withIcon(theme.icon.time, parts.join(theme.sep.dot));
+		return { content, visible: true };
 	},
 };
 

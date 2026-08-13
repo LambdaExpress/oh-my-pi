@@ -34,29 +34,6 @@ import type {
 } from "./types";
 
 const JJ_REFRESH_TTL_MS = 5000;
-const STATUS_USAGE_WINDOWS = [
-	{ id: "5h", durationMs: 5 * 60 * 60_000 },
-	{ id: "7d", durationMs: 7 * 24 * 60 * 60_000 },
-	{ id: "30d", durationMs: 30 * 24 * 60 * 60_000 },
-] as const;
-type StatusUsageWindowId = (typeof STATUS_USAGE_WINDOWS)[number]["id"];
-const STATUS_USAGE_WINDOW_ALIASES: Record<string, StatusUsageWindowId> = {
-	"rolling-5h": "5h",
-	weekly: "7d",
-	monthly: "30d",
-};
-
-function statusUsageWindowId(limit: UsageLimit): StatusUsageWindowId | undefined {
-	const windowId = limit.scope.windowId?.toLowerCase();
-	const exact = STATUS_USAGE_WINDOWS.find(candidate => candidate.id === windowId);
-	if (exact) return exact.id;
-	if (windowId && STATUS_USAGE_WINDOW_ALIASES[windowId]) return STATUS_USAGE_WINDOW_ALIASES[windowId];
-
-	const durationMs = limit.window?.durationMs;
-	if (typeof durationMs !== "number") return undefined;
-	return STATUS_USAGE_WINDOWS.find(candidate => Math.abs(candidate.durationMs - durationMs) <= 60_000)?.id;
-}
-
 const WATCHER_FAILURE_POLL_TTL_MS = 5000;
 
 function normalizeCodexIdentityValue(value: unknown): string | undefined {
@@ -368,6 +345,7 @@ export interface StatusLineComponentDeps {
 }
 
 export class StatusLineComponent implements Component {
+	#widthEpochRevision = 0;
 	#settings: StatusLineSettings = {};
 	#effectiveSettings: EffectiveStatusLineSettings | undefined;
 	#cachedBranch: string | null | undefined = undefined;
@@ -467,8 +445,13 @@ export class StatusLineComponent implements Component {
 	#lastTokensPerSecond: number | null = null;
 	#lastTokensPerSecondTimestamp: number | null = null;
 
-	// Provider usage caching (5-min TTL; reset countdowns remain absolute and render dynamically)
-	#cachedUsage: SegmentContext["usage"] = null;
+	// Provider usage caching (5-min TTL, OAuth/sub only)
+	#cachedUsage: {
+		tier?: string;
+		fiveHour?: { percent: number; resetMinutes?: number };
+		sevenDay?: { percent: number; resetHours?: number };
+		monthly?: { percent: number; resetHours?: number };
+	} | null = null;
 	#cachedUsageContextKey: string | null = null;
 	#usageFetchedAt = 0;
 	#usageInFlight = false;
@@ -805,6 +788,7 @@ export class StatusLineComponent implements Component {
 	}
 
 	invalidate(): void {
+		this.#widthEpochRevision++;
 		// Generic repaint invalidation (theme change, message event, model
 		// switch, …). Must NOT abort or restart a live reftable HEAD/PR resolve:
 		// the render path self-invalidates via cwd/context cache-miss checks, so
@@ -1372,9 +1356,13 @@ export class StatusLineComponent implements Component {
 		const normalized = this.#normalizeUsageReports(reports, activeProvider, activeIdentity);
 		const resetSnapshot =
 			activeProvider === "openai-codex" ? this.#normalizeCodexResetSnapshot(reports, activeIdentity) : null;
+		const usageChanged = this.#cachedUsage !== normalized;
 		this.#cachedUsage = normalized;
 		this.#usageFetchedAt = Date.now();
 		this.#onUsageRefresh?.();
+		// Usage fetch is async; without a repaint the top border stays blank until
+		// some unrelated event (git resolve, keystroke, …) rebuilds it.
+		if (usageChanged) this.#onBranchChange?.();
 		if (!resetSnapshot) return;
 		const contextKey = this.#formatUsageContextKey(activeProvider, activeIdentity);
 		const previous = this.#codexResetSnapshots.get(contextKey);
@@ -1486,16 +1474,32 @@ export class StatusLineComponent implements Component {
 		reports: unknown,
 		activeProvider?: string,
 		activeIdentity?: OAuthAccountIdentity,
-	): SegmentContext["usage"] {
+	): {
+		tier?: string;
+		fiveHour?: { percent: number; resetMinutes?: number };
+		sevenDay?: { percent: number; resetHours?: number };
+		monthly?: { percent: number; resetHours?: number };
+	} | null {
 		if (!Array.isArray(reports)) return null;
-		const selected = new Map<
-			StatusUsageWindowId,
-			{ window: NonNullable<SegmentContext["usage"]>["windows"][number]; tier?: string }
-		>();
-		for (const rawReport of reports) {
-			if (!rawReport || typeof rawReport !== "object") continue;
-			const report = rawReport as UsageReport;
-			const provider = report.provider;
+		let fiveHour: { percent: number; resetMinutes?: number } | undefined;
+		let sevenDay: { percent: number; resetHours?: number } | undefined;
+		let monthly: { percent: number; resetHours?: number } | undefined;
+		let fiveHourTier: string | undefined;
+		let sevenDayTier: string | undefined;
+		let monthlyTier: string | undefined;
+		let monthlyPriority = Number.POSITIVE_INFINITY;
+		const now = Date.now();
+		const cursorMonthlyPriority = (limitId: unknown): number => {
+			// When /auth/usage and /api/usage-summary are merged, prefer the personal
+			// dashboard rails over legacy per-model request fractions.
+			if (limitId === "cursor:usd:individual-auto") return 0;
+			if (limitId === "cursor:usd:individual-plan" || limitId === "cursor:usd:individual-overall") return 1;
+			if (typeof limitId === "string" && limitId.startsWith("cursor:usd:individual-")) return 2;
+			return 3;
+		};
+		for (const report of reports) {
+			if (!report || typeof report !== "object") continue;
+			const provider = (report as { provider?: unknown }).provider;
 			if (activeProvider && provider !== activeProvider) continue;
 			const limits = report.limits;
 			if (!Array.isArray(limits)) continue;
@@ -1505,32 +1509,80 @@ export class StatusLineComponent implements Component {
 				if (activeIdentity && !limitMatchesActiveAccount(usageReport, limit as UsageLimit, activeIdentity)) {
 					continue;
 				}
-				const fraction = limit.amount.usedFraction;
+				const l = limit as {
+					id?: string;
+					scope?: { windowId?: string; tier?: string };
+					window?: { resetsAt?: number; durationMs?: number };
+					amount?: { usedFraction?: number };
+				};
+				const fraction = l.amount?.usedFraction;
 				if (typeof fraction !== "number") continue;
-				const windowId = statusUsageWindowId(limit);
-				if (!windowId) continue;
-				const tier = limit.scope.tier || undefined;
-				const existing = selected.get(windowId);
+				const windowId = l.scope?.windowId;
+				const tier = l.scope?.tier;
+				const resetsAt = l.window?.resetsAt;
+				// Canonical window ids win. Fall back to the reported span (same
+				// tolerance as the 5h priority-boost check) so providers that emit
+				// non-canonical ids, and cache rows written before a provider was
+				// canonicalized, still map onto the two subscription windows.
+				const durationMs = l.window?.durationMs;
+				const windowClass =
+					windowId === "5h" || windowId === "7d"
+						? windowId
+						: durationMs !== undefined && Math.abs(durationMs - 5 * 3_600_000) <= 60_000
+							? "5h"
+							: durationMs !== undefined && Math.abs(durationMs - 7 * 86_400_000) <= 60_000
+								? "7d"
+								: undefined;
 				// Accept tiered limits, but prefer untiered (backward compat with Anthropic).
 				// An untiered limit always replaces a tiered one; among same-tieredness, first wins.
-				if (existing && (existing.tier === undefined || tier !== undefined)) continue;
-				selected.set(windowId, {
-					window: {
-						id: windowId,
+				if (windowClass === "5h" && (!fiveHour || (fiveHourTier !== undefined && !tier))) {
+					fiveHour = {
 						percent: fraction * 100,
-						...(typeof limit.window?.resetsAt === "number" ? { resetsAt: limit.window.resetsAt } : {}),
-					},
-					...(tier ? { tier } : {}),
-				});
+						resetMinutes:
+							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 60_000)) : undefined,
+					};
+					fiveHourTier = tier || undefined;
+				}
+				if (windowClass === "7d" && (!sevenDay || (sevenDayTier !== undefined && !tier))) {
+					sevenDay = {
+						percent: fraction * 100,
+						resetHours:
+							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 3_600_000)) : undefined,
+					};
+					sevenDayTier = tier || undefined;
+				}
+				// Monthly rendering is gated to providers with a single monthly
+				// bucket (Cursor's priority selector picks its personal rail;
+				// OpenCode Go emits exactly one). Copilot also emits monthly
+				// windows, but its multi-bucket shape needs a dedicated selector
+				// before we surface `mo N%` for it.
+				if (
+					(activeProvider === "cursor" || activeProvider === "opencode-go") &&
+					(windowId === "monthly" || windowId === "30d")
+				) {
+					const priority = cursorMonthlyPriority(l.id);
+					const shouldReplace =
+						!monthly ||
+						priority < monthlyPriority ||
+						(priority === monthlyPriority && monthlyTier !== undefined && !tier);
+					if (shouldReplace) {
+						monthly = {
+							percent: fraction * 100,
+							resetHours:
+								typeof resetsAt === "number"
+									? Math.max(0, Math.round((resetsAt - now) / 3_600_000))
+									: undefined,
+						};
+						monthlyTier = tier || undefined;
+						monthlyPriority = priority;
+					}
+				}
 			}
 		}
-		if (selected.size === 0) return null;
-		const windows = STATUS_USAGE_WINDOWS.flatMap(candidate => {
-			const selectedWindow = selected.get(candidate.id);
-			return selectedWindow ? [selectedWindow.window] : [];
-		});
-		const effectiveTier = STATUS_USAGE_WINDOWS.map(candidate => selected.get(candidate.id)?.tier).find(Boolean);
-		return { ...(effectiveTier ? { title: effectiveTier } : {}), windows };
+		if (!fiveHour && !sevenDay && !monthly) return null;
+		// Single compact label; prefer the five-hour tier if displayed windows ever disagree.
+		const effectiveTier = fiveHourTier ?? sevenDayTier ?? monthlyTier;
+		return { tier: effectiveTier, fiveHour, sevenDay, monthly };
 	}
 
 	/**
@@ -1927,7 +1979,7 @@ export class StatusLineComponent implements Component {
 		return leftGroup + gapFill + rightGroup;
 	}
 
-	getTopBorder(width: number): { content: string; width: number } {
+	getTopBorder(width: number): { content: string; width: number; revision: number } {
 		let content = this.#buildStatusLine(width);
 		if (this.#focusedAgentId && content) {
 			// Dim the whole bar while focus-proxied. Group/cap terminators emit full
@@ -1937,6 +1989,7 @@ export class StatusLineComponent implements Component {
 		return {
 			content,
 			width: visibleWidth(content),
+			revision: this.#widthEpochRevision,
 		};
 	}
 

@@ -1287,6 +1287,10 @@ export class SessionManager {
 
 	/** Switch to a different session file (resume / branch). */
 	async setSessionFile(sessionFile: string): Promise<void> {
+		await this.#setSessionFile(sessionFile);
+	}
+
+	async #setSessionFile(sessionFile: string, loadedEntries?: FileEntry[]): Promise<void> {
 		await this.#drainAndCloseWriter();
 		this.#clearDiskError();
 		this.#draftOnlySessionCleanupArmed = false;
@@ -1296,7 +1300,7 @@ export class SessionManager {
 		this.#rememberBreadcrumb(this.#cwd, resolvedSessionFile);
 
 		const titleSlot = await readTitleSlotFromFile(resolvedSessionFile, this.#storage);
-		const fileEntries = await loadEntriesFromFile(resolvedSessionFile, this.#storage);
+		const fileEntries = loadedEntries ?? (await loadEntriesFromFile(resolvedSessionFile, this.#storage));
 		if (fileEntries.length === 0) {
 			// Explicit but empty/missing path (e.g. --session flag): start fresh but
 			// keep the requested path and materialize the header immediately.
@@ -2141,6 +2145,7 @@ export class SessionManager {
 		restrictToolNames?: boolean;
 		spawns?: string;
 		readSummarize?: boolean;
+		advisor?: string;
 	}): string {
 		const entry: SessionInitEntry = { type: "session_init", ...this.#freshEntryFields(), ...init };
 		this.#recordEntry(entry);
@@ -2627,7 +2632,7 @@ export class SessionManager {
 				: path.dirname(path.resolve(filePath)));
 		const manager = new SessionManager(cwd, dir, true, storage);
 		manager.#suppressBreadcrumb = options?.suppressBreadcrumb === true;
-		await manager.setSessionFile(filePath);
+		await manager.#setSessionFile(filePath, loaded);
 		return manager;
 	}
 
@@ -2657,6 +2662,7 @@ export class SessionManager {
 			restrictToolNames?: boolean;
 			spawns?: string;
 			readSummarize?: boolean;
+			advisor?: string;
 		} | null;
 	} | null> {
 		let loaded: FileEntry[];
@@ -2681,6 +2687,7 @@ export class SessionManager {
 			restrictToolNames?: boolean;
 			spawns?: string;
 			readSummarize?: boolean;
+			advisor?: string;
 		} | null = null;
 		for (let index = loaded.length - 1; index >= 0; index--) {
 			const entry = loaded[index];
@@ -2698,6 +2705,7 @@ export class SessionManager {
 					restrictToolNames: entry.restrictToolNames,
 					readSummarize: entry.readSummarize,
 					spawns: entry.spawns,
+					advisor: entry.advisor,
 				};
 				break;
 			}

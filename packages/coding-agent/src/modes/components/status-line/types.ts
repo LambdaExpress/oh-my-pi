@@ -48,13 +48,6 @@ export type EffectiveStatusLineSettings = Required<
 
 export type RGB = readonly [number, number, number];
 
-export interface StatusUsageWindow {
-	id: "5h" | "7d" | "30d";
-	percent: number;
-	/** Absolute reset time; renderers derive the decreasing countdown from this value. */
-	resetsAt?: number;
-}
-
 export interface SegmentContext {
 	session: AgentSession;
 	/** Focused subagent id while the view is proxied at its session, undefined otherwise. */
@@ -127,8 +120,10 @@ export interface SegmentContext {
 	 */
 	worktree: { projectName: string; worktreeName: string; duplicateNames?: readonly string[] } | null;
 	usage: {
-		title?: string;
-		windows: StatusUsageWindow[];
+		tier?: string;
+		fiveHour?: { percent: number; resetMinutes?: number };
+		sevenDay?: { percent: number; resetHours?: number };
+		monthly?: { percent: number; resetHours?: number };
 	} | null;
 }
 

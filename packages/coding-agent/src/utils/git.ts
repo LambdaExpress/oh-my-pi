@@ -11,6 +11,7 @@ import {
 	parseNumstat,
 } from "../commit/git/diff";
 import type { FileDiff, FileHunks, NumstatEntry } from "../commit/types";
+import { REJECT_PROMPT_COMMAND } from "../exec/non-interactive-env";
 import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -211,7 +212,7 @@ const GIT_NON_INTERACTIVE_ENV = {
 	GIT_TERMINAL_PROMPT: "0",
 	LC_ALL: undefined,
 	LC_MESSAGES: "C",
-	SSH_ASKPASS: "/usr/bin/false",
+	SSH_ASKPASS: REJECT_PROMPT_COMMAND,
 } satisfies Record<string, string | undefined>;
 const GH_NON_INTERACTIVE_ENV = {
 	...GIT_NON_INTERACTIVE_ENV,

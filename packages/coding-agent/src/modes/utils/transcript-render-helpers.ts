@@ -19,6 +19,7 @@ import { createIrcMessageCard } from "../../tools/hub";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { formatSshTransferSummary, isSshTransferToolDetails } from "../../tools/ssh-transfer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
+import { ToolActivityContainer } from "../components/tool-activity";
 import { TranscriptBlock } from "../components/transcript-container";
 import { theme } from "../theme/theme";
 
@@ -384,7 +385,7 @@ function normalizeAsyncResultJob(value: unknown): AsyncResultTranscriptJob {
  * or a batch of them) as a transcript block of one "Background job completed"
  * row per job.
  */
-export function buildAsyncResultBlock(message: CustomOrHookMessage): TranscriptBlock {
+export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivityContainer {
 	const details = message.details;
 	const rawJobs =
 		details !== null &&
@@ -421,7 +422,7 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): TranscriptB
 			.join(" ");
 		block.addChild(new Text(line, 1, 0));
 	}
-	return block;
+	return new ToolActivityContainer(block);
 }
 
 /**

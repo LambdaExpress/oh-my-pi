@@ -13,6 +13,18 @@
 - Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.
 - Fixed tool abort settlement so each tool can declare a bounded cleanup window before the agent synthesizes an interrupted result.
 - Fixed external cancellation after a completed tool execution to append an explicit aborted assistant boundary without issuing another provider request.
+## [17.3.0] - 2026-08-13
+
+### Fixed
+
+- Improved the manual `/shake` command to retain a small history of recent tool results, preventing the agent from losing its active working context.
+
+## [17.2.13] - 2026-08-11
+
+### Fixed
+
+- Fixed Cursor sessions re-executing settled tools when an owned dialect projector rebuilds toolCall blocks: `snapshotAssistantContentBlock` now copies `kCursorExecResolved` explicitly so agent-loop still skips already-settled calls.
+
 ## [17.2.10] - 2026-08-06
 
 ### Fixed

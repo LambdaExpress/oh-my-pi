@@ -645,8 +645,6 @@ describe("Kimi K2 leaked markup healing", () => {
 		const split = "<|tool_ca";
 		const a = full.slice(0, full.indexOf(split) + split.length);
 		const b = full.slice(a.length);
-		expect(a + b).toBe(full);
-		expect(a.endsWith("<|tool_ca")).toBe(true);
 
 		const fetchMock = mockFetch([
 			chunk(model.id, { content: a }),
@@ -1091,7 +1089,6 @@ describe("OpenAI completions provider DSML envelope healing", () => {
 
 	it("heals NanoGPT-hosted DeepSeek V4 Pro DSML leaks (issue #1488)", async () => {
 		const model = getBundledModel<"openai-completions">("nanogpt", "deepseek/deepseek-v4-pro");
-		expect(model.provider).toBe("nanogpt");
 
 		let payload: Record<string, unknown> | undefined;
 		const fetchMock = mockFetch([

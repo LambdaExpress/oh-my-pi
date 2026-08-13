@@ -10,6 +10,7 @@ import type {
 	ExtensionAskDialogResultItem,
 	ExtensionCommandContextActions,
 	ExtensionContextActions,
+	ExtensionCustomOptions,
 	ExtensionError,
 	ExtensionUIContext,
 	ExtensionUIDialogOptions,
@@ -209,7 +210,7 @@ export class ExtensionUiController {
 			waitForIdle: () => this.ctx.session.agent.waitForIdle(),
 			reload: async () => {
 				await this.ctx.session.reload();
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus(t("Reloaded session"));
 			},
@@ -252,7 +253,7 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
 				this.ctx.showStatus(t("Branched to new session"));
@@ -266,7 +267,7 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setDraft(result.editorText, result.editorImages);
@@ -283,7 +284,7 @@ export class ExtensionUiController {
 					return { cancelled: true };
 				}
 				setSessionTerminalTitle(this.ctx.sessionManager.getSessionName(), this.ctx.sessionManager.getCwd());
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				return { cancelled: false };
 			},
@@ -444,7 +445,7 @@ export class ExtensionUiController {
 			waitForIdle: () => this.ctx.session.agent.waitForIdle(),
 			reload: async () => {
 				await this.ctx.session.reload();
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.showStatus(t("Reloaded session"));
 			},
@@ -484,7 +485,7 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
 				this.ctx.showStatus(t("Branched to new session"));
@@ -498,7 +499,7 @@ export class ExtensionUiController {
 				}
 
 				// Update UI
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				if (result.editorText && !this.ctx.editor.getText().trim()) {
 					this.ctx.editor.setDraft(result.editorText, result.editorImages);
@@ -514,7 +515,7 @@ export class ExtensionUiController {
 				if (!result) {
 					return { cancelled: true };
 				}
-				this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+				await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 				await this.ctx.reloadTodos();
 				return { cancelled: false };
 			},
@@ -1060,7 +1061,7 @@ export class ExtensionUiController {
 			keybindings: KeybindingsManager,
 			done: (result: T) => void,
 		) => (Component & { dispose?(): void }) | Promise<Component & { dispose?(): void }>,
-		options?: { overlay?: boolean },
+		options?: ExtensionCustomOptions,
 	): Promise<T> {
 		const savedText = this.ctx.editor.getText();
 		const keybindings = KeybindingsManager.inMemory();
@@ -1093,12 +1094,18 @@ export class ExtensionUiController {
 			}
 			component = c;
 			if (options?.overlay) {
-				overlayHandle = this.ctx.ui.showOverlay(component, {
-					anchor: "bottom-center",
-					width: "100%",
-					maxHeight: "100%",
-					margin: 0,
-				});
+				const overlayOptions =
+					typeof options.overlayOptions === "function" ? options.overlayOptions() : options.overlayOptions;
+				overlayHandle = this.ctx.ui.showOverlay(
+					component,
+					overlayOptions ?? {
+						anchor: "bottom-center",
+						width: "100%",
+						maxHeight: "100%",
+						margin: 0,
+					},
+				);
+				options.onHandle?.(overlayHandle);
 				return;
 			}
 			this.ctx.editorContainer.clear();

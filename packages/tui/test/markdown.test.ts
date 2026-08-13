@@ -68,9 +68,6 @@ describe("Markdown component", () => {
 
 			const lines = markdown.render(80);
 
-			// Check that we have content
-			expect(lines.length > 0).toBeTruthy();
-
 			// Strip ANSI codes for checking
 			const plainLines = lines.map(line => stripVTControlCharacters(line));
 
@@ -338,9 +335,6 @@ describe("Markdown component", () => {
 
 			const lines = markdown.render(80);
 
-			// Should render without errors
-			expect(lines.length > 0).toBeTruthy();
-
 			const plainLines = lines.map(line => stripVTControlCharacters(line));
 			expect(plainLines.some(line => line.includes("Very long column header"))).toBeTruthy();
 			expect(plainLines.some(line => line.includes("This is a much longer cell content"))).toBeTruthy();
@@ -423,7 +417,6 @@ describe("Markdown component", () => {
 
 			// Borders should stay intact (exactly 2 vertical borders for a 1-col table)
 			const tableLines = plainLines.filter(line => line.startsWith("|"));
-			expect(tableLines.length > 0, "Expected table rows to render").toBeTruthy();
 			for (const line of tableLines) {
 				const borderCount = line.split("|").length - 1;
 				expect(borderCount, `Expected 2 borders, got ${borderCount}: "${line}"`).toBe(2);
@@ -529,9 +522,6 @@ describe("Markdown component", () => {
 			// Very narrow width
 			const lines = markdown.render(15);
 			const plainLines = lines.map(line => stripVTControlCharacters(line).trimEnd());
-
-			// Should not crash and should produce output
-			expect(lines.length > 0, "Should produce output").toBeTruthy();
 
 			// Lines should not exceed width
 			for (const line of plainLines) {

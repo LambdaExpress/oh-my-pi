@@ -1,0 +1,214 @@
+Auto-merging .gitignore
+Auto-merging AGENTS.md
+Auto-merging docs/models.md
+Auto-merging docs/settings.md
+Auto-merging docs/skills.md
+Auto-merging packages/agent/CHANGELOG.md
+Auto-merging packages/agent/src/agent-loop.ts
+Auto-merging packages/agent/src/types.ts
+Auto-merging packages/agent/test/agent.test.ts
+Auto-merging packages/ai/CHANGELOG.md
+Auto-merging packages/ai/src/providers/anthropic.ts
+Auto-merging packages/ai/src/providers/ollama.ts
+Auto-merging packages/ai/src/providers/openai-codex-responses.ts
+Auto-merging packages/ai/src/providers/openai-codex/request-transformer.ts
+CONFLICT (content): Merge conflict in packages/ai/src/providers/openai-codex/request-transformer.ts
+Auto-merging packages/ai/src/usage/opencode-go.ts
+CONFLICT (content): Merge conflict in packages/ai/src/usage/opencode-go.ts
+Auto-merging packages/ai/test/anthropic-alignment.test.ts
+Auto-merging packages/ai/test/auth-storage-usage-history.test.ts
+CONFLICT (content): Merge conflict in packages/ai/test/auth-storage-usage-history.test.ts
+Auto-merging packages/ai/test/openai-codex-stream.test.ts
+Auto-merging packages/ai/test/stream-markup-healing.test.ts
+Auto-merging packages/catalog/CHANGELOG.md
+Auto-merging packages/catalog/src/model-thinking.ts
+CONFLICT (content): Merge conflict in packages/catalog/src/model-thinking.ts
+Auto-merging packages/catalog/src/models.json
+CONFLICT (content): Merge conflict in packages/catalog/src/models.json
+Auto-merging packages/catalog/test/model-thinking.test.ts
+Auto-merging packages/coding-agent/CHANGELOG.md
+Auto-merging packages/coding-agent/package.json
+Auto-merging packages/coding-agent/scripts/build-binary.ts
+Auto-merging packages/coding-agent/scripts/compile-binary.ts
+Auto-merging packages/coding-agent/src/async/job-manager.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/async/job-manager.ts
+Auto-merging packages/coding-agent/src/cli-commands.ts
+Auto-merging packages/coding-agent/src/cli/args.ts
+Auto-merging packages/coding-agent/src/cli/flag-tables.ts
+Auto-merging packages/coding-agent/src/cli/update-cli.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/cli/update-cli.ts
+Auto-merging packages/coding-agent/src/commands/cleanse.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/commands/cleanse.ts
+Auto-merging packages/coding-agent/src/commands/launch-help.ts
+Auto-merging packages/coding-agent/src/config/keybindings.ts
+Auto-merging packages/coding-agent/src/config/model-resolver.ts
+Auto-merging packages/coding-agent/src/config/settings-schema.ts
+Auto-merging packages/coding-agent/src/dap/session.ts
+Auto-merging packages/coding-agent/src/eval/jl/kernel.ts
+Auto-merging packages/coding-agent/src/eval/py/kernel.ts
+Auto-merging packages/coding-agent/src/eval/rb/kernel.ts
+Auto-merging packages/coding-agent/src/extensibility/extensions/runner.ts
+Auto-merging packages/coding-agent/src/extensibility/extensions/wrapper.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/extensibility/extensions/wrapper.ts
+Auto-merging packages/coding-agent/src/lsp/client.ts
+Auto-merging packages/coding-agent/src/lsp/servers.ts
+Auto-merging packages/coding-agent/src/lsp/tool.ts
+Auto-merging packages/coding-agent/src/lsp/types.ts
+Auto-merging packages/coding-agent/src/main.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/main.ts
+Auto-merging packages/coding-agent/src/mnemopi/state.ts
+CONFLICT (modify/delete): packages/coding-agent/src/modes/components/agent-dashboard.ts deleted in origin/main and modified in HEAD.  Version HEAD of packages/coding-agent/src/modes/components/agent-dashboard.ts left in tree.
+Auto-merging packages/coding-agent/src/modes/components/agent-hub-renderer.ts
+Auto-merging packages/coding-agent/src/modes/components/agent-hub.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/modes/components/agent-hub.ts
+Auto-merging packages/coding-agent/src/modes/components/codex-reset-fireworks.ts
+Auto-merging packages/coding-agent/src/modes/components/late-diagnostics-message.ts
+Auto-merging packages/coding-agent/src/modes/components/status-line/component.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/modes/components/status-line/component.ts
+Auto-merging packages/coding-agent/src/modes/components/status-line/segments.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/modes/components/status-line/segments.ts
+Auto-merging packages/coding-agent/src/modes/components/status-line/types.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/modes/components/status-line/types.ts
+Auto-merging packages/coding-agent/src/modes/components/todo-reminder.ts
+Auto-merging packages/coding-agent/src/modes/components/transcript-container.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/modes/components/transcript-container.ts
+Auto-merging packages/coding-agent/src/modes/components/user-message.ts
+Auto-merging packages/coding-agent/src/modes/controllers/command-controller.ts
+Auto-merging packages/coding-agent/src/modes/controllers/event-controller.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/modes/controllers/event-controller.ts
+Auto-merging packages/coding-agent/src/modes/controllers/extension-ui-controller.ts
+Auto-merging packages/coding-agent/src/modes/controllers/input-controller.ts
+Auto-merging packages/coding-agent/src/modes/controllers/selector-controller.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/modes/controllers/selector-controller.ts
+Auto-merging packages/coding-agent/src/modes/controllers/session-focus-controller.ts
+Auto-merging packages/coding-agent/src/modes/interactive-mode.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/modes/interactive-mode.ts
+Auto-merging packages/coding-agent/src/modes/print-mode.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/modes/print-mode.ts
+Auto-merging packages/coding-agent/src/modes/types.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/modes/types.ts
+Auto-merging packages/coding-agent/src/modes/utils/hotkeys-markdown.ts
+Auto-merging packages/coding-agent/src/modes/utils/transcript-render-helpers.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/modes/utils/transcript-render-helpers.ts
+Auto-merging packages/coding-agent/src/modes/utils/ui-helpers.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/modes/utils/ui-helpers.ts
+Auto-merging packages/coding-agent/src/prompts/system/autolearn-guidance.md
+CONFLICT (content): Merge conflict in packages/coding-agent/src/prompts/system/autolearn-guidance.md
+Auto-merging packages/coding-agent/src/prompts/system/btw-user.md
+Auto-merging packages/coding-agent/src/prompts/system/plan-mode-active.md
+CONFLICT (content): Merge conflict in packages/coding-agent/src/prompts/system/plan-mode-active.md
+Auto-merging packages/coding-agent/src/prompts/system/system-prompt.md
+CONFLICT (content): Merge conflict in packages/coding-agent/src/prompts/system/system-prompt.md
+Auto-merging packages/coding-agent/src/prompts/tools/apply-patch.md
+CONFLICT (content): Merge conflict in packages/coding-agent/src/prompts/tools/apply-patch.md
+Auto-merging packages/coding-agent/src/prompts/tools/grep.md
+CONFLICT (content): Merge conflict in packages/coding-agent/src/prompts/tools/grep.md
+Auto-merging packages/coding-agent/src/prompts/tools/learn.md
+CONFLICT (content): Merge conflict in packages/coding-agent/src/prompts/tools/learn.md
+Auto-merging packages/coding-agent/src/prompts/tools/manage-skill.md
+CONFLICT (content): Merge conflict in packages/coding-agent/src/prompts/tools/manage-skill.md
+Auto-merging packages/coding-agent/src/prompts/tools/memory-edit.md
+CONFLICT (content): Merge conflict in packages/coding-agent/src/prompts/tools/memory-edit.md
+Auto-merging packages/coding-agent/src/prompts/tools/replace.md
+CONFLICT (content): Merge conflict in packages/coding-agent/src/prompts/tools/replace.md
+Auto-merging packages/coding-agent/src/registry/agent-lifecycle.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/registry/agent-lifecycle.ts
+Auto-merging packages/coding-agent/src/registry/persisted-agents.ts
+Auto-merging packages/coding-agent/src/sdk.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/sdk.ts
+Auto-merging packages/coding-agent/src/session/agent-session-types.ts
+Auto-merging packages/coding-agent/src/session/agent-session.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/session/agent-session.ts
+Auto-merging packages/coding-agent/src/session/messages.ts
+Auto-merging packages/coding-agent/src/session/session-advisors.ts
+Auto-merging packages/coding-agent/src/session/session-entries.ts
+Auto-merging packages/coding-agent/src/session/session-handoff.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/session/session-handoff.ts
+Auto-merging packages/coding-agent/src/session/session-history-format.ts
+Auto-merging packages/coding-agent/src/session/session-maintenance.ts
+Auto-merging packages/coding-agent/src/session/session-manager.ts
+Auto-merging packages/coding-agent/src/session/session-tools.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/session/session-tools.ts
+Auto-merging packages/coding-agent/src/session/stream-guards.ts
+Auto-merging packages/coding-agent/src/session/turn-recovery.ts
+Auto-merging packages/coding-agent/src/task/executor.ts
+Auto-merging packages/coding-agent/src/task/persisted-revive.ts
+Auto-merging packages/coding-agent/src/task/structured-subagent.ts
+Auto-merging packages/coding-agent/src/task/types.ts
+Auto-merging packages/coding-agent/src/tools/builtin-names.ts
+Auto-merging packages/coding-agent/src/tools/fetch.ts
+Auto-merging packages/coding-agent/src/tools/index.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/tools/index.ts
+Auto-merging packages/coding-agent/src/tools/read-format.ts
+Auto-merging packages/coding-agent/src/tools/read.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/tools/read.ts
+Auto-merging packages/coding-agent/src/tools/renderers.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/tools/renderers.ts
+Auto-merging packages/coding-agent/src/tools/write.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/src/tools/write.ts
+Auto-merging packages/coding-agent/src/utils/git.ts
+Auto-merging packages/coding-agent/src/utils/image-loading.ts
+Auto-merging packages/coding-agent/src/web/search/providers/anthropic.ts
+Auto-merging packages/coding-agent/test/acp-agent.test.ts
+Auto-merging packages/coding-agent/test/acp-builtins.test.ts
+Auto-merging packages/coding-agent/test/acp-lazy-startup.test.ts
+Auto-merging packages/coding-agent/test/agent-session-eager-todo.test.ts
+Auto-merging packages/coding-agent/test/agent-session-message-pipeline.test.ts
+Auto-merging packages/coding-agent/test/agent-session-prewalk.test.ts
+Auto-merging packages/coding-agent/test/agent-session-tool-rebuild-skip.test.ts
+Auto-merging packages/coding-agent/test/bash-executor.test.ts
+Auto-merging packages/coding-agent/test/collab/guest-ui-request.test.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/test/collab/guest-ui-request.test.ts
+Auto-merging packages/coding-agent/test/debug/dap-multi-session.test.ts
+Auto-merging packages/coding-agent/test/extensions-runner.test.ts
+Auto-merging packages/coding-agent/test/goals/goal-mode-integration.test.ts
+Auto-merging packages/coding-agent/test/input-controller-keybindings.test.ts
+Auto-merging packages/coding-agent/test/input-controller-skill-queue.test.ts
+Auto-merging packages/coding-agent/test/interactive-mode-todo-clear.test.ts
+Auto-merging packages/coding-agent/test/keybindings-display.test.ts
+Auto-merging packages/coding-agent/test/memory-tools.test.ts
+Auto-merging packages/coding-agent/test/modes/components/transcript-container.test.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/test/modes/components/transcript-container.test.ts
+Auto-merging packages/coding-agent/test/modes/controllers/command-controller-hotkeys.test.ts
+Auto-merging packages/coding-agent/test/modes/controllers/event-controller-args-reveal.test.ts
+Auto-merging packages/coding-agent/test/modes/utils/render-initial-messages.test.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/test/modes/utils/render-initial-messages.test.ts
+Auto-merging packages/coding-agent/test/prompt-action-autocomplete.test.ts
+Auto-merging packages/coding-agent/test/registry/agent-lifecycle.test.ts
+Auto-merging packages/coding-agent/test/sdk-mcp-defer.test.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/test/sdk-mcp-defer.test.ts
+Auto-merging packages/coding-agent/test/sdk-tool-activation.test.ts
+Auto-merging packages/coding-agent/test/settings-manager.test.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/test/settings-manager.test.ts
+Auto-merging packages/coding-agent/test/skills.test.ts
+Auto-merging packages/coding-agent/test/status-line-settings-cache.test.ts
+Auto-merging packages/coding-agent/test/status-line-usage-refresh.test.ts
+Auto-merging packages/coding-agent/test/status-line-usage.test.ts
+Auto-merging packages/coding-agent/test/system-prompt-inventory.test.ts
+Auto-merging packages/coding-agent/test/task/persisted-revive.test.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/test/task/persisted-revive.test.ts
+Auto-merging packages/coding-agent/test/tools.test.ts
+Auto-merging packages/coding-agent/test/tools/approval.test.ts
+Auto-merging packages/coding-agent/test/tools/browser-tab-evaluate.test.ts
+Auto-merging packages/coding-agent/test/tools/index.test.ts
+Auto-merging packages/coding-agent/test/tools/irc.test.ts
+Auto-merging packages/coding-agent/test/tools/lsp-regressions.test.ts
+CONFLICT (content): Merge conflict in packages/coding-agent/test/tools/lsp-regressions.test.ts
+Auto-merging packages/coding-agent/test/write-xdev-dispatch.test.ts
+Auto-merging packages/hashline/CHANGELOG.md
+Auto-merging packages/natives/CHANGELOG.md
+Auto-merging packages/natives/native/index.d.ts
+Auto-merging packages/natives/native/index.js
+Auto-merging packages/stats/CHANGELOG.md
+Auto-merging packages/tui/CHANGELOG.md
+Auto-merging packages/tui/src/components/editor.ts
+Auto-merging packages/tui/src/terminal-capabilities.ts
+Auto-merging packages/tui/src/tui.ts
+CONFLICT (content): Merge conflict in packages/tui/src/tui.ts
+Auto-merging packages/tui/test/editor.test.ts
+Auto-merging packages/tui/test/image-budget.test.ts
+Auto-merging packages/tui/test/render-regressions.test.ts
+Auto-merging packages/utils/CHANGELOG.md
+Auto-merging packages/utils/src/dirs.ts
+Auto-merging scripts/bazel-natives.ts
+Automatic merge failed; fix conflicts and then commit the result.

@@ -37,6 +37,7 @@ import { type AgentRef, AgentRegistry, type AgentStatus, MAIN_AGENT_ID } from ".
 import { registerPersistedSubagents } from "../../registry/persisted-agents";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { shortenPath, truncateToWidth } from "../../tools/render-utils";
+import { formatLocalDateTimeWithOffset } from "../../utils/local-date";
 import type { ObservableSession, SessionObserverRegistry } from "../session-observer-registry";
 import { theme } from "../theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
@@ -843,7 +844,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		);
 		if (children.length > 0) add(theme.fg("dim", formatChildIds(children, width)));
 		add(
-			theme.fg("dim", `${t("Registered")} ${new Date(ref.createdAt).toISOString().slice(0, 16).replace("T", " ")}Z`),
+			theme.fg("dim", `${t("Registered")} ${formatLocalDateTimeWithOffset(new Date(ref.createdAt))}`),
 		);
 
 		section(t("Changes"));

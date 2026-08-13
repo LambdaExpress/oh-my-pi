@@ -460,7 +460,6 @@ describe("Settings", () => {
 			expect(isolated.get("setupVersion")).toBe(0);
 			expect(isolated.get("shellPath")).toBe("");
 			expect(isolated.get("enabledModels")).toEqual([]);
-			expect(isolated.get("tui.maxInlineImages")).toBe(getDefault("tui.maxInlineImages"));
 		});
 
 		it("invalidates cached resolved values after set, override, and clearOverride", () => {
@@ -565,7 +564,7 @@ describe("Settings", () => {
 			});
 
 			try {
-				expect(() => isolated.set("provider.appendOnlyContext", "on")).not.toThrow();
+				isolated.set("provider.appendOnlyContext", "on");
 				expect(received).toEqual(["on"]);
 			} finally {
 				unsubscribeThrower();

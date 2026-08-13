@@ -990,6 +990,13 @@ class DaemonBroker {
 		) {
 			this.#notifyCompletion(completion);
 		}
+		// Terminal settlement can free the last live persistent daemon. The idle
+		// timer that fired while that daemon was alive returned without rearming
+		// (see #scheduleIdleShutdown), so rearm here or the broker, its endpoint,
+		// timers, and record maps stay alive forever after the daemon exits. The
+		// timer re-checks clients, remaining live persistent records, and detached
+		// project presence before it shuts anything down.
+		this.#scheduleIdleShutdown();
 	}
 
 	async #logs(operation: Extract<DaemonOperation, { op: "logs" }>): Promise<DaemonRpcResult> {

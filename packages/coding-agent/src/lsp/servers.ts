@@ -198,9 +198,9 @@ export function getConfig(cwd: string): LspConfig {
 	let config = configCache.get(cwd);
 	if (!config) {
 		config = loadConfig(cwd);
-		setIdleTimeout(config.idleTimeoutMs);
 		configCache.set(cwd, config);
 	}
+	setIdleTimeout(config.idleTimeoutMs);
 	return config;
 }
 

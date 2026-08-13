@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type } from "@oh-my-pi/omptype";
 import { AuthStorage } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -11,7 +12,7 @@ import {
 	MCP_CONNECTION_STATUS_EVENT_CHANNEL,
 	type McpConnectionStatusEvent,
 } from "@oh-my-pi/pi-coding-agent/mcp/startup-events";
-import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { type CustomTool, createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
@@ -82,6 +83,20 @@ describe("createAgentSession MCP deferral (B1)", () => {
 			// The explicitly requested MCP tool is a known, resolvable tool even
 			// though no server has connected — deterministic, not "unknown tool".
 			expect(session.getActiveToolNames()).toContain(PENDING_MCP_TOOL);
+			await session.refreshMCPTools([
+				{
+					name: PENDING_MCP_TOOL,
+					label: "Connected MCP tool",
+					description: "Connected replacement.",
+					parameters: type({}),
+					mcpServerName: "pending",
+					mcpToolName: "connectingtool",
+					async execute() {
+						return { content: [{ type: "text", text: "connected" }] };
+					},
+				} satisfies CustomTool,
+			]);
+			expect(session.getToolByName(PENDING_MCP_TOOL)?.label).toBe("Connected MCP tool");
 		} finally {
 			await session.dispose();
 		}

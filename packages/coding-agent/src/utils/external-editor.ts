@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { $env, Snowflake } from "@oh-my-pi/pi-utils";
+import { $env, $which, Snowflake } from "@oh-my-pi/pi-utils";
 
 /**
  * Returns the user's preferred editor command, or a platform default.
@@ -56,7 +56,7 @@ export async function openInEditor(
 		const child =
 			process.platform === "win32"
 				? spawn(editor, [...editorArgs, tmpFile], { stdio, shell: true })
-				: spawn("/bin/sh", ["-c", `${editorCmd} "$1"`, "sh", tmpFile], { stdio });
+				: spawn($which("sh") ?? "sh", ["-c", `${editorCmd} "$1"`, "sh", tmpFile], { stdio });
 		const { promise, reject, resolve } = Promise.withResolvers<number>();
 		child.once("exit", (code, signal) => resolve(code ?? (signal ? -1 : 0)));
 		child.once("error", error => reject(error));
