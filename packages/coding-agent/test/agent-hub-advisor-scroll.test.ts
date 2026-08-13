@@ -26,6 +26,7 @@ import {
 	type TUI,
 } from "@oh-my-pi/pi-tui";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const TS = new Date().toISOString();
 
@@ -186,11 +187,15 @@ describe("AgentTranscriptViewer", () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
 		initTheme();
+		// Summary rows localize (lines → 行); pin English so assertions are
+		// stable on zh-CN auto-detecting developer machines.
+		setLocale("en");
 		rowsDesc = Object.getOwnPropertyDescriptor(process.stdout, "rows");
 		Object.defineProperty(process.stdout, "rows", { configurable: true, get: () => 24, set: () => {} });
 	});
 
 	afterEach(() => {
+		setLocale(null);
 		if (rowsDesc) {
 			Object.defineProperty(process.stdout, "rows", rowsDesc);
 		} else {

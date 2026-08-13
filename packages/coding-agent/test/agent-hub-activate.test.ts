@@ -19,9 +19,20 @@ import { visitEntriesFromFileStream } from "@oh-my-pi/pi-coding-agent/session/se
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getBundledAgent } from "@oh-my-pi/pi-coding-agent/task/agents";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const AGENT_ID = "Worker";
 const TEST_CWD = path.resolve("agent-hub-cwd");
+
+beforeEach(() => {
+	// Rendered hub rows localize labels (usage/tools/measured…); pin English so
+	// assertions are stable on zh-CN auto-detecting developer machines.
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 function makeHub(focusAgent: (id: string) => Promise<void>) {
 	const agents = new AgentRegistry();
@@ -320,7 +331,6 @@ describe("Agent hub Enter activation", () => {
 		hub.dispose();
 	});
 	it("yields to a macrotask while streaming a large session", async () => {
-		vi.useFakeTimers();
 		using tempDir = TempDir.createSync("@omp-agent-hub-responsive-");
 		const sessionFile = path.join(tempDir.path(), "session.jsonl");
 		const entry = JSON.stringify({
@@ -334,28 +344,32 @@ describe("Agent hub Enter activation", () => {
 		let complete = false;
 		let yieldedBeforeComplete = false;
 		let visited = 0;
+		const reachedYieldPoint = Promise.withResolvers<void>();
 		const visit = visitEntriesFromFileStream(
 			sessionFile,
 			() => {
 				visited++;
 				if (visited !== 8_192) return;
-				setTimeout(() => {
+				reachedYieldPoint.resolve();
+				setImmediate(() => {
 					if (!complete) yieldedBeforeComplete = true;
-				}, 0);
+				});
 			},
 			{ yieldEveryBytes: 0, yieldEveryEntries: 8_192 },
 		).finally(() => {
 			complete = true;
 		});
-		try {
-			for (let i = 0; i < 20_000 && visited < 8_192 && !complete; i++) await Promise.resolve();
-			expect(visited).toBeGreaterThanOrEqual(8_192);
-			vi.runOnlyPendingTimers();
-			await visit;
-			expect(yieldedBeforeComplete).toBe(true);
-		} finally {
-			vi.useRealTimers();
-		}
+		// The stream must hand off to a macrotask at the yield point so an
+		// externally scheduled callback runs before the stream finishes. Fake
+		// timers would make this deterministic, but they stall Bun's native
+		// file-stream reads on Windows (no chunk ever arrives). With real timers
+		// a setTimeout(0) observer loses the race because Bun.sleep(0) resumes
+		// ahead of the timer phase; setImmediate shares the check phase with
+		// Bun.sleep and runs FIFO, so it observes the yield reliably.
+		await reachedYieldPoint.promise;
+		await visit;
+		expect(visited).toBeGreaterThanOrEqual(8_192);
+		expect(yieldedBeforeComplete).toBe(true);
 	});
 
 	it("does not generically revive active or tombstoned Vibe children copied by a post-exit fork", async () => {
@@ -463,7 +477,7 @@ describe("Agent hub Enter activation", () => {
 				focusResolved.resolve();
 			},
 			session: { getToolByName: () => undefined, extensionRunner: undefined },
-			sessionManager: { getCwd: () => TEST_CWD, getSessionFile: () => null },
+			sessionManager: { getCwd: () => TEST_CWD, getSessionFile: () => null, getSessionId: () => "test-session" },
 			hideThinkingBlock: false,
 		};
 		const controller = new SelectorController(ctx as unknown as InteractiveModeContext);
@@ -520,7 +534,7 @@ describe("Agent hub double-← gating", () => {
 			collabGuest: { agentRegistry: agents, hubRemote: undefined },
 			focusAgentSession: async () => {},
 			session: { getToolByName: () => undefined, extensionRunner: undefined },
-			sessionManager: { getCwd: () => TEST_CWD, getSessionFile: () => sessionFile },
+			sessionManager: { getCwd: () => TEST_CWD, getSessionFile: () => sessionFile, getSessionId: () => "test-session" },
 			hideThinkingBlock: false,
 		};
 		const controller = new SelectorController(ctx as unknown as InteractiveModeContext);

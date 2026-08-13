@@ -5,7 +5,7 @@
  * selection must not jump around as agents heartbeat or update activity. New
  * agents that appear while the hub is open are appended at the end.
  */
-import { afterEach, beforeAll, describe, expect, it, setSystemTime, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, setSystemTime, vi } from "bun:test";
 import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
@@ -15,6 +15,7 @@ import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
+import { setLocale } from "../src/i18n";
 
 interface GeometryStub {
 	setRows(n: number): void;
@@ -133,6 +134,12 @@ describe("Agent hub row ordering", () => {
 		await initTheme();
 	});
 
+	beforeEach(() => {
+		// Rendered hub rows localize labels (measured/requests/tools…); pin
+		// English so assertions are stable on zh-CN auto-detecting machines.
+		setLocale("en");
+	});
+
 	afterEach(() => {
 		vi.useRealTimers();
 		setSystemTime();
@@ -140,6 +147,7 @@ describe("Agent hub row ordering", () => {
 		geometry?.restore();
 		geometry = undefined;
 		AgentRegistry.resetGlobalForTests();
+		setLocale(null);
 	});
 
 	it("renders a useful empty state before any task agents exist", () => {
