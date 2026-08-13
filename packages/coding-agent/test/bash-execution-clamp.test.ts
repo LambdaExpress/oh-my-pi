@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { BashExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/bash-execution";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../src/i18n";
 
 const MAX_DISPLAY_LINE_CHARS = 4000;
 
@@ -10,9 +11,14 @@ describe("BashExecutionComponent #clampDisplayLine", () => {
 	const ui = { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI;
 
 	beforeEach(async () => {
+		setLocale("en");
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		setThemeInstance(theme!);
+	});
+
+	afterEach(() => {
+		setLocale(null);
 	});
 
 	function createComponentWithOutput(output: string): BashExecutionComponent {

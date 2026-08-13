@@ -782,8 +782,8 @@ export class UiHelpers {
 			: undefined;
 		let context = this.ctx.viewSession.buildTranscriptSessionContext({
 			collapseCompactedHistory: shouldCollapseCompactedHistoryForDisplay(
-				settings.get("display.collapseCompacted"),
-				settings.get("display.collapseCompletedRuns"),
+				this.ctx.settings.get("display.collapseCompacted"),
+				this.ctx.settings.get("display.collapseCompletedRuns"),
 			),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
@@ -828,8 +828,8 @@ export class UiHelpers {
 				terminalHistoryCleared = false;
 				context = this.ctx.viewSession.buildTranscriptSessionContext({
 					collapseCompactedHistory: shouldCollapseCompactedHistoryForDisplay(
-						settings.get("display.collapseCompacted"),
-						settings.get("display.collapseCompletedRuns"),
+						this.ctx.settings.get("display.collapseCompacted"),
+						this.ctx.settings.get("display.collapseCompletedRuns"),
 					),
 					keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 				});

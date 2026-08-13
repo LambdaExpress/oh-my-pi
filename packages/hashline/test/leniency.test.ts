@@ -195,7 +195,7 @@ describe("hashline body contracts", () => {
 	it("treats a plus-prefixed delete header after blank insert rows as the next operation", () => {
 		const text = Array.from({ length: 260 }, (_, index) => `line-${index + 1}`).join("\n");
 		const diff = [
-			"INS.POST 175:",
+			"PUT >175:",
 			"+",
 			"+    ValueTask<PortResultV2<ReportSetAttemptIdentityV2>> AllocateReportSetAttemptAsync(",
 			"+        TrustedSessionContextV2 context,",
@@ -212,13 +212,13 @@ describe("hashline body contracts", () => {
 			"+        long expectedVersion,",
 			"+        CancellationToken cancellationToken);",
 			"+",
-			"+DEL 248.=259",
+			"+CUT 248.=259",
 		].join("\n");
 
 		const result = applyPatch(text, diff);
 
 		expect(result).toContain("line-175\n\n    ValueTask<PortResultV2<ReportSetAttemptIdentityV2>>");
-		expect(result).not.toContain("DEL 248.=259");
+		expect(result).not.toContain("CUT 248.=259");
 		for (let line = 248; line <= 259; line++) {
 			expect(result.split("\n")).not.toContain(`line-${line}`);
 		}

@@ -448,7 +448,6 @@ export const BUILTIN_TOOLS: Record<BuiltinToolName, ToolFactory> = {
 	ask: AskTool.createIf,
 	debug: DebugTool.createIf,
 	eval: s => new EvalTool(s),
-	ssh: loadSshTool,
 	ssh_transfer: loadSshTransferTool,
 	ssh_session: s => new SshSessionTool(s),
 	github: GithubTool.createIf,
@@ -729,6 +728,19 @@ export async function createTools(session: ToolSession, toolNames?: string[]): P
 			const mountable = mountBuiltinTools && isMountableUnderXdev(tool) && tool.name in BUILTIN_TOOLS;
 			if (mountable) mountedNames.add(tool.name);
 			else kept.push(tool);
+		}
+		// `ssh` is a capability-backed device outside the `--tools` surface
+		// (BUILTIN_TOOL_NAMES/BUILTIN_TOOLS), so it is never a top-level tool.
+		// With configured hosts it still mounts under xd:// for the default
+		// tool set; an explicit whitelist keeps it hidden entirely.
+		if (mountBuiltinTools) {
+			const sshTool = (await logger.time("createTools:ssh", loadSshTool, session)) as Tool | null;
+			if (sshTool) {
+				const wrapped = wrapToolWithMetaNotice(sshTool);
+				toolRegistry.set(wrapped.name, wrapped);
+				builtInNames.add(wrapped.name);
+				mountedNames.add(wrapped.name);
+			}
 		}
 		session.xdev = {
 			tools: toolRegistry,

@@ -74,12 +74,14 @@ function getDefaultSessionDirName(cwd: string): {
 	const tempRelative = path.relative(canonicalTempRoot, canonicalCwd);
 	let encodedDirName: string;
 	let scope: "home" | "tmp" | "abs";
-	if (homeRelative === "" || (!homeRelative.startsWith("..") && !path.isAbsolute(homeRelative))) {
-		encodedDirName = encodeRelativeSessionDirName("-", homeRelative);
-		scope = "home";
-	} else if (tempRelative === "" || (!tempRelative.startsWith("..") && !path.isAbsolute(tempRelative))) {
+	// Check the temp root first: on Windows the temp dir lives under the home
+	// dir, so a home-relative match would otherwise shadow temp-root cwds.
+	if (tempRelative === "" || (!tempRelative.startsWith("..") && !path.isAbsolute(tempRelative))) {
 		encodedDirName = encodeRelativeSessionDirName("-tmp", tempRelative);
 		scope = "tmp";
+	} else if (homeRelative === "" || (!homeRelative.startsWith("..") && !path.isAbsolute(homeRelative))) {
+		encodedDirName = encodeRelativeSessionDirName("-", homeRelative);
+		scope = "home";
 	} else {
 		encodedDirName = encodeLegacyAbsoluteSessionDirName(canonicalCwd);
 		scope = "abs";
@@ -99,6 +101,13 @@ function migrateHomeSessionDirs(sessionsRoot: string): void {
 	const homeEncoded = home.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-");
 	const oldPrefix = `--${homeEncoded}-`;
 	const oldExact = `--${homeEncoded}--`;
+	// On Windows the temp root lives under the home dir, so a legacy absolute
+	// dir for a temp-root cwd also matches the old home-relative prefix. Leave
+	// those entries to migrateLegacyAbsoluteSessionDir, which renames them into
+	// the canonical -tmp- scheme.
+	const tempRootRelative = path.relative(home, os.tmpdir()).replace(/[/\\:]/g, "-");
+	const fold = (s: string): string => (process.platform === "win32" ? s.toLowerCase() : s);
+	const foldedTempPrefix = fold(tempRootRelative);
 
 	let entries: string[];
 	try {
@@ -114,6 +123,13 @@ function migrateHomeSessionDirs(sessionsRoot: string): void {
 		} else if (entry.startsWith(oldPrefix) && entry.endsWith("--")) {
 			remainder = entry.slice(oldPrefix.length, -2);
 		} else {
+			continue;
+		}
+		const foldedRemainder = fold(remainder);
+		if (
+			foldedTempPrefix &&
+			(foldedRemainder === foldedTempPrefix || foldedRemainder.startsWith(`${foldedTempPrefix}-`))
+		) {
 			continue;
 		}
 

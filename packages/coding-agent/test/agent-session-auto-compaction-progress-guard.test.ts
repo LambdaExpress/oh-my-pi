@@ -14,6 +14,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { CompactionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 /**
  * Regression test for the auto-compaction thrash loop.
@@ -42,6 +43,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 	const NO_PROGRESS_FRAGMENT = "Compaction freed too little context to make progress";
 
 	beforeEach(async () => {
+		setLocale("en");
 		tempDir = TempDir.createSync("@pi-auto-compaction-progress-");
 
 		// Short-circuit the actual summarization so the test makes no LLM call: the
@@ -121,6 +123,7 @@ describe("AgentSession auto-compaction progress guard", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		try {
 			await session?.dispose();
 		} finally {

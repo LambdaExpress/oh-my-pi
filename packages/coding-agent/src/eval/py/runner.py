@@ -6,6 +6,7 @@ wrapper writes typed frames back.
 Host -> wrapper:
   {"id": str, "code": str, "silent": bool?, "storeHistory": bool?}
   {"id": str, "code": str, "silent": bool?, "storeHistory": bool?, "cwd": str?, "env": dict?}
+  {"type": "interrupt"}                           # interrupt the in-flight cell (win32)
   {"type": "exit"}                                # graceful shutdown
 
 Wrapper -> host:
@@ -32,6 +33,7 @@ import base64
 import builtins
 import codecs
 import contextvars
+import ctypes
 import inspect
 import io
 import json
@@ -208,6 +210,9 @@ class _RunnerState:
         self.last_install_marker: int = 0
         self.loop: asyncio.AbstractEventLoop | None = None
         self.active_executions: int = 0
+        # Ident of the thread executing user code (the main thread). The
+        # in-band interrupt frame targets it with PyThreadState_SetAsyncExc.
+        self.main_thread_id: int | None = None
         # Best-effort attribution target for captured fd-1 bytes (child
         # processes inheriting stdout). With overlapping requests the most
         # recently started one wins — strictly better than dropping the bytes.
@@ -1191,6 +1196,32 @@ def _end_exec_sigint() -> None:
         _install_idle_sigint()
 
 
+def _inject_main_thread_interrupt() -> None:
+    """Raise KeyboardInterrupt in the main runner thread (in-band interrupt).
+
+    Windows cannot deliver a real SIGINT to this process (the host emulates
+    ``kill("SIGINT")`` with ``TerminateProcess`` there, which would destroy the
+    persistent kernel), so the host sends an ``{"type": "interrupt"}`` frame
+    and we inject the exception with the CPython C API — the same effect a
+    signal handler has on POSIX. Runs on the stdin reader thread; the pending
+    async exception is delivered to the main thread at its next bytecode
+    boundary or when it wakes from a blocking wait.
+    """
+    if _STATE.active_executions <= 0:
+        return
+    tid = _STATE.main_thread_id
+    if tid is None:
+        return
+    try:
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(tid), ctypes.py_object(KeyboardInterrupt)
+        )
+    except Exception:
+        # Already-pending async exceptions, missing thread states, and other
+        # C-API errors must not take the stdin reader down.
+        pass
+
+
 _MANAGED_ENV_KEYS = (
     "PI_SESSION_FILE",
     "PI_ARTIFACTS_DIR",
@@ -1387,6 +1418,12 @@ def _read_stdin(loop: asyncio.AbstractEventLoop, queue: asyncio.Queue, stdin) ->
                 }
             )
             continue
+        if req.get("type") == "interrupt":
+            # Interrupt frame: the host cannot signal this process (win32), so
+            # it interrupts through the control pipe instead. The event loop is
+            # busy running the cell, so inject directly rather than queueing.
+            _inject_main_thread_interrupt()
+            continue
         loop.call_soon_threadsafe(queue.put_nowait, req)
     loop.call_soon_threadsafe(queue.put_nowait, {"type": "exit"})
 
@@ -1440,6 +1477,7 @@ async def _main_async() -> None:
 
 
 def main() -> None:
+    _STATE.main_thread_id = threading.get_ident()
     asyncio.run(_main_async())
 
 

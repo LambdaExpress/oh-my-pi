@@ -682,6 +682,14 @@ export class AcpAgent implements Agent {
 			record.lifetimeUnsubscribe !== undefined;
 		if (!handledBySubscription) {
 			await this.#pushConfigOptionUpdate(record);
+		} else {
+			// The change surfaces through the session-lifetime subscription,
+			// which serializes pushes on `record.lifetimeEvents`. Await that
+			// chain so the notification is delivered before the RPC resolves —
+			// otherwise a client applying two config changes back-to-back can
+			// observe only the first push, because the second handler is queued
+			// behind the first push's delivery.
+			await record.lifetimeEvents;
 		}
 		return { configOptions: this.#buildConfigOptions(record.session) };
 	}

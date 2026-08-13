@@ -12,6 +12,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import type { LspStartupServerInfo } from "@oh-my-pi/pi-coding-agent/tools";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 describe("InteractiveMode LSP startup welcome banner", () => {
 	let authStorage: AuthStorage;
@@ -26,6 +27,7 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 	});
 
 	beforeEach(async () => {
+		setLocale("en");
 		// Prevent ProcessTerminal.start() from sending escape queries to the real
 		// terminal (OSC 11, DA1, kitty protocol, cell-size).  The test only reads
 		// rendered output via mode.ui.render(), so real terminal I/O is unnecessary.
@@ -82,6 +84,7 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 		await session?.dispose();
 		authStorage?.close();
 		tempDir?.removeSync();
+		setLocale(null);
 		resetSettingsForTest();
 	});
 

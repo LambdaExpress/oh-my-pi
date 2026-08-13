@@ -37,7 +37,8 @@ function placeholders(count: number): string {
 }
 
 function hasTable(db: Database, name: string): boolean {
-	return db.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== null;
+	using statement = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?");
+	return statement.get(name) !== null;
 }
 
 function copyDatabase(source: DatabasePath, destination: string): void {

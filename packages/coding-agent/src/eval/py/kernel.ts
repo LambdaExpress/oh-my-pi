@@ -136,6 +136,11 @@ export class PythonKernel extends BaseKernel {
 			languageName: "Python",
 			traceIpc: TRACE_IPC,
 			exitPayload: JSON.stringify({ type: "exit" }),
+			// Windows cannot deliver a real SIGINT to the kernel process (Bun
+			// emulates kill("SIGINT") with TerminateProcess there), so the
+			// runner accepts this in-band frame and injects a KeyboardInterrupt
+			// into the executing cell, keeping the persistent kernel alive.
+			interruptPayload: JSON.stringify({ type: "interrupt" }),
 			interruptEscalationMs: INTERRUPT_ESCALATION_MS,
 			shutdownGraceMs: SHUTDOWN_GRACE_MS,
 			buildPayload: (code, msgId, opts) =>

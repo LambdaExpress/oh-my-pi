@@ -23,6 +23,7 @@ import { VIBE_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/vibe";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { VibeSessionRegistry } from "@oh-my-pi/pi-coding-agent/vibe/runtime";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 function stubTool(name: string): AgentTool {
 	return {
@@ -94,6 +95,7 @@ describe("InteractiveMode vibe mode toggle", () => {
 	});
 
 	beforeEach(async () => {
+		setLocale("en");
 		resetSettingsForTest();
 		VibeSessionRegistry.resetGlobalForTests();
 		tempDir = TempDir.createSync("@pi-vibe-toggle-");
@@ -127,6 +129,7 @@ describe("InteractiveMode vibe mode toggle", () => {
 	afterEach(async () => {
 		mode?.stop();
 		await session?.dispose();
+		setLocale(null);
 		VibeSessionRegistry.resetGlobalForTests();
 		authStorage?.close();
 		tempDir?.removeSync();

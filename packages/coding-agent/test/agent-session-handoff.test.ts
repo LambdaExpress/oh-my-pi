@@ -22,6 +22,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
+import { setLocale } from "../src/i18n";
 
 const HANDOFF_SECRET = "HANDOFF_SECRET_TOKEN_12345";
 const UNRENDERABLE_SNAPCOMPACT_TEXT = "\uE000\uE001\uE002\uE003\uE004\uE005\uE006\uE007\uE008\uE009";
@@ -85,6 +86,7 @@ describe("AgentSession handoff", () => {
 	});
 
 	beforeEach(async () => {
+		setLocale("en");
 		tempDir = TempDir.createSync("@pi-handoff-");
 		sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
 		events = [];
@@ -145,6 +147,7 @@ describe("AgentSession handoff", () => {
 		try {
 			await tempDir.remove();
 		} catch {}
+		setLocale(null);
 		vi.restoreAllMocks();
 	});
 

@@ -21,6 +21,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { AutocompleteProvider } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 function makeTool(name: string): AgentTool {
 	return {
@@ -67,6 +68,7 @@ describe("InteractiveMode prompt-template autocomplete (#2462)", () => {
 	});
 
 	beforeEach(() => {
+		setLocale("en");
 		// Re-assert the home seam each test (afterEach's restoreAllMocks clears it).
 		// os.homedir() is what the capability loader reads to locate user-level slash
 		// commands; aiming it at the empty temp home makes discovery fast and
@@ -78,6 +80,7 @@ describe("InteractiveMode prompt-template autocomplete (#2462)", () => {
 		vi.restoreAllMocks();
 		mode?.stop();
 		await session?.dispose();
+		setLocale(null);
 		mode = undefined;
 		session = undefined;
 	});

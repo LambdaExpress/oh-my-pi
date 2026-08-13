@@ -52,7 +52,10 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 		originalAgentDir = getAgentDir();
 		setAgentDir(isolatedAgentDir);
 		authStorage = await AuthStorage.create(path.join(registryDir, "auth.db"));
-		modelRegistry = new ModelRegistry(authStorage);
+		// Pin the model cache to a per-call database under registryDir: the default
+		// shared cache would open models.db in the redirected agent dir and hold a
+		// process-lifetime SQLite handle, locking isolatedHome on Windows cleanup.
+		modelRegistry = new ModelRegistry(authStorage, path.join(registryDir, "models.yml"));
 	});
 
 	afterAll(() => {

@@ -8,14 +8,22 @@
  */
 import { describe, expect, it } from "bun:test";
 import { streamOpenAICompletions } from "@oh-my-pi/pi-ai/providers/openai-completions";
-import type { FetchImpl, Model } from "@oh-my-pi/pi-ai/types";
+import type { FetchImpl, Model, ModelSpec } from "@oh-my-pi/pi-ai/types";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 
 function deepseekModel(): Model<"openai-completions"> {
 	const bundled = getBundledModel("opencode-go", "deepseek-v4-flash") as Model<"openai-completions">;
 	const { compat: _resolved, compatConfig, ...rest } = bundled;
-	return { ...rest, compat: compatConfig } as Model<"openai-completions">;
+	// Project back to spec stage and rebuild, exactly like the model manager
+	// does: `buildModel` resolves the sparse `compatConfig` into the full
+	// compat record the providers read (a bare spec-stage object would leave
+	// `model.compat` undefined and crash the compat policy resolver).
+	return buildModel({
+		...rest,
+		compat: compatConfig,
+	} as ModelSpec<"openai-completions">) as Model<"openai-completions">;
 }
 
 function createSseResponse(events: unknown[]): Response {

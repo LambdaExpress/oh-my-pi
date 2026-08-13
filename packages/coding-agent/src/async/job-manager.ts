@@ -139,11 +139,13 @@ export interface AsyncJobRegisterOptions {
 
 /**
  * Filter applied to job query/cancel/delivery APIs. Every provided field must
- * match, so owner and session scope constraints compose conjunctively.
+ * match, so owner and session scope constraints compose conjunctively. A
+ * `scopeId` of `null` matches jobs registered WITHOUT a scope (legacy/SDK
+ * registrations); an omitted `scopeId` leaves the scope unconstrained.
  */
 export interface AsyncJobFilter {
 	ownerId?: string;
-	scopeId?: string;
+	scopeId?: string | null;
 	type?: AsyncJobType;
 }
 
@@ -188,7 +190,13 @@ export class AsyncJobManager {
 		filter?: AsyncJobFilter,
 	): boolean {
 		if (filter?.ownerId !== undefined && value.ownerId !== filter.ownerId) return false;
-		if (filter?.scopeId !== undefined && value.scopeId !== filter.scopeId) return false;
+		if (filter?.scopeId !== undefined) {
+			if (filter.scopeId === null) {
+				if (value.scopeId !== undefined) return false;
+			} else if (value.scopeId !== filter.scopeId) {
+				return false;
+			}
+		}
 		if (filter?.type !== undefined && value.type !== filter.type) return false;
 		return true;
 	}
@@ -377,6 +385,57 @@ export class AsyncJobManager {
 
 	getAllJobs(filter?: AsyncJobFilter): AsyncJob[] {
 		return this.#filterJobs(this.#jobs.values(), filter);
+	}
+
+	/**
+	 * The session-owned job view: jobs of the session scope plus unscoped jobs
+	 * of the owning agent. A job registered without an explicit scopeId belongs
+	 * to its owner's top-level session, so it must stay visible there even
+	 * though the conjunctive {@link AsyncJobFilter} cannot express that union.
+	 */
+	getSessionJobs(ownerId: string | undefined, scopeId: string): AsyncJob[] {
+		const ownerFilter = ownerId !== undefined ? { ownerId } : undefined;
+		const scoped = this.#filterJobs(this.#jobs.values(), { ...(ownerFilter ?? {}), scopeId });
+		if (ownerFilter === undefined) return scoped;
+		const unscopedOwner = this.#filterJobs(this.#jobs.values(), ownerFilter).filter(job => job.scopeId === undefined);
+		return [...scoped, ...unscopedOwner];
+	}
+
+	/** Session-owned settled jobs, most recent first. See {@link getSessionJobs}. */
+	getSessionRecentJobs(ownerId: string | undefined, scopeId: string, limit: number): AsyncJob[] {
+		return this.getSessionJobs(ownerId, scopeId)
+			.filter(job => job.status !== "running" && !(job.status === "cancelled" && job.settledAt === undefined))
+			.sort((a, b) => b.startTime - a.startTime)
+			.slice(0, limit);
+	}
+
+	/** Session-owned delivery state. See {@link getSessionJobs}. */
+	getSessionDeliveryState(ownerId: string | undefined, scopeId: string): AsyncJobDeliveryState {
+		const ownerFilter = ownerId !== undefined ? { ownerId } : undefined;
+		const scopedFilter = { ...(ownerFilter ?? {}), scopeId };
+		const deliveries = [
+			...this.#filterDeliveries(scopedFilter),
+			...(ownerFilter !== undefined
+				? this.#filterDeliveries(ownerFilter).filter(delivery => delivery.scopeId === undefined)
+				: []),
+		];
+		const inFlightDeliveries = [
+			...this.#filterInFlightDeliveries(scopedFilter),
+			...(ownerFilter !== undefined
+				? this.#filterInFlightDeliveries(ownerFilter).filter(delivery => delivery.scopeId === undefined)
+				: []),
+		];
+		const nextRetryAt = deliveries.reduce<number | undefined>((next, delivery) => {
+			if (next === undefined) return delivery.nextAttemptAt;
+			return Math.min(next, delivery.nextAttemptAt);
+		}, undefined);
+
+		return {
+			queued: deliveries.length + inFlightDeliveries.length,
+			delivering: inFlightDeliveries.length > 0 || (this.#deliveryLoop !== undefined && deliveries.length > 0),
+			nextRetryAt,
+			pendingJobIds: deliveries.concat(inFlightDeliveries).map(delivery => delivery.jobId),
+		};
 	}
 
 	getDeliveryState(filter?: AsyncJobFilter): AsyncJobDeliveryState {
@@ -627,6 +686,75 @@ export class AsyncJobManager {
 		for (const [key, state] of this.#pollEscalation) {
 			if (state.scopeId === scopeId) this.#pollEscalation.delete(key);
 		}
+	}
+
+	/**
+	 * Session-owned teardown complement of {@link getSessionJobs}: cancel, drop
+	 * deliveries for, and evict the unscoped jobs of `ownerId`. A job registered
+	 * without an explicit scopeId belongs to its owner's top-level session, so a
+	 * session transition must retire those rows exactly like {@link retireScope}
+	 * retires the scoped half — the conjunctive {@link AsyncJobFilter} cannot
+	 * express "unscoped only", so the rows are resolved explicitly. Awaits the
+	 * in-flight settlement of affected jobs and deliveries. Returns the number
+	 * of jobs retired.
+	 */
+	async retireUnscopedOwnerJobs(ownerId: string): Promise<number> {
+		const unscoped = this.#filterJobs(this.#jobs.values(), { ownerId }).filter(job => job.scopeId === undefined);
+		if (unscoped.length === 0) return 0;
+		const jobIds = new Set(unscoped.map(job => job.id));
+		const inFlightDeliveries = this.#inFlightDeliveries.filter(
+			delivery => delivery.ownerId === ownerId && delivery.scopeId === undefined,
+		);
+		for (const delivery of this.#deliveries) {
+			if (delivery.ownerId === ownerId && delivery.scopeId === undefined) jobIds.add(delivery.jobId);
+		}
+		for (const delivery of inFlightDeliveries) {
+			jobIds.add(delivery.jobId);
+		}
+		for (const jobId of jobIds) {
+			this.#suppressedDeliveries.add(jobId);
+			const timer = this.#evictionTimers.get(jobId);
+			if (timer) {
+				clearTimeout(timer);
+				this.#evictionTimers.delete(jobId);
+			}
+		}
+		this.#deliveries.splice(
+			0,
+			this.#deliveries.length,
+			...this.#deliveries.filter(delivery => !(delivery.ownerId === ownerId && delivery.scopeId === undefined)),
+		);
+		this.#settleDeliveryWaiters();
+		for (const job of unscoped) {
+			if (job.status !== "running") continue;
+			job.status = "cancelled";
+			job.abortController.abort();
+			this.#notifyJobChange(job);
+		}
+
+		const deliveryPromises = inFlightDeliveries
+			.map(delivery => delivery.promise)
+			.filter((promise): promise is Promise<void> => promise !== undefined);
+		await Promise.allSettled([...unscoped.map(job => job.promise), ...deliveryPromises]);
+
+		this.#inFlightDeliveries.splice(
+			0,
+			this.#inFlightDeliveries.length,
+			...this.#inFlightDeliveries.filter(
+				delivery => !(delivery.ownerId === ownerId && delivery.scopeId === undefined),
+			),
+		);
+		for (const job of unscoped) {
+			this.#jobs.delete(job.id);
+		}
+		for (const jobId of jobIds) {
+			const timer = this.#evictionTimers.get(jobId);
+			clearTimeout(timer);
+			this.#evictionTimers.delete(jobId);
+			this.#suppressedDeliveries.delete(jobId);
+			this.#watchedJobs.delete(jobId);
+		}
+		return unscoped.length;
 	}
 
 	/**

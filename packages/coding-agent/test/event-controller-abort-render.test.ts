@@ -24,6 +24,7 @@ import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/eve
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SILENT_ABORT_MARKER, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { setLocale } from "../src/i18n";
 
 function makeAssistantMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
 	return {
@@ -86,9 +87,11 @@ function createFixture(opts: {
 
 describe("EventController #handleMessageEnd abort labeling", () => {
 	beforeEach(async () => {
+		setLocale("en");
 		await Settings.init({ inMemory: true, cwd: process.cwd() });
 	});
 	afterEach(() => {
+		setLocale(null);
 		resetSettingsForTest();
 	});
 

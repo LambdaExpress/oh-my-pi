@@ -357,7 +357,7 @@ describe("hashline ssh remote files", () => {
 			const { writeSpy, deleteSpy, moveSpy } = setupSshRemote(remoteFiles);
 			const session = makeHashlineSession(tempDir);
 			const sourceTag = recordSshSnapshot(session, url, "one\ntwo\nthree\n");
-			const input = `${header(url, sourceTag)}\nSWAP 2.=2:\n${repl("TWO")}\n`;
+			const input = `${header(url, sourceTag)}\nPUT 2.=2:\n${repl("TWO")}\n`;
 
 			const result = await executeHashlineSingle(sshHashlineExecuteOptions(tempDir, input, session));
 
@@ -379,13 +379,13 @@ describe("hashline ssh remote files", () => {
 			setupSshRemote(remoteFiles);
 			const session = makeHashlineSession(tempDir);
 			const sourceTag = recordSshSnapshot(session, url, v0);
-			const input = `${header(url, sourceTag)}\nSWAP 2.=2:\n${repl("TWO")}\n`;
+			const input = `${header(url, sourceTag)}\nPUT 2.=2:\n${repl("TWO")}\n`;
 
 			const result = await executeHashlineSingle(sshHashlineExecuteOptions(tempDir, input, session));
 			const text = result.content[0]?.type === "text" ? result.content[0].text : "";
 
 			expect(remoteFiles.get("/tmp/app.ts")).toBe("header\none\nTWO\nthree\n");
-			expect(text).toMatch(/Recovered from a stale file hash using a previous read snapshot/);
+			expect(text).toMatch(/Recovered by remapping stale line anchors to unchanged current lines/);
 		});
 	});
 
@@ -419,7 +419,7 @@ describe("hashline ssh remote files", () => {
 			const sourceTag = recordSshSnapshot(session, fromUrl, source);
 			const fromKey = canonicalSshResourceKey(parseInternalUrl(fromUrl));
 			const toKey = canonicalSshResourceKey(parseInternalUrl(toUrl));
-			const input = `${header(fromUrl, sourceTag)}\nSWAP 2.=2:\n${repl("TWO")}\nMV ${toUrl}`;
+			const input = `${header(fromUrl, sourceTag)}\nPUT 2.=2:\n${repl("TWO")}\nMV ${toUrl}`;
 
 			const result = await executeHashlineSingle(sshHashlineExecuteOptions(tempDir, input, session));
 

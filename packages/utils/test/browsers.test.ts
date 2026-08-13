@@ -62,6 +62,9 @@ describe("Chrome-for-Testing layout goldens", () => {
 	for (const golden of goldens) {
 		test(golden.platform, () => {
 			expect(String(getDownloadUrl(Browser.CHROME, golden.platform, BUILD_ID))).toBe(golden.url);
+			// Goldens spell the cache layout with POSIX separators, but
+			// computeExecutablePath returns a platform-native path (path.join),
+			// so compare with the current platform's separators.
 			expect(
 				computeExecutablePath({
 					browser: Browser.CHROME,
@@ -69,7 +72,7 @@ describe("Chrome-for-Testing layout goldens", () => {
 					buildId: BUILD_ID,
 					cacheDir: "/cache",
 				}),
-			).toBe(golden.executable);
+			).toBe(golden.executable.replaceAll("/", path.sep));
 		});
 	}
 });
@@ -119,11 +122,19 @@ test("install streams and extracts stored, deflated, nested, executable, and sym
 		});
 		const executable = await fs.readFile(installed.executablePath, "utf8");
 		expect(executable).toBe("#!/bin/sh\necho synthetic chrome\n");
-		expect((await fs.stat(installed.executablePath)).mode & 0o777).toBe(0o755);
+		// Windows emulates POSIX modes with a fixed 0o666 and `chmod` only
+		// toggles the read-only bit, so 0o755/0o640 are unrepresentable there.
+		// The contract — ZIP modes are applied to extracted entries — is
+		// observable on POSIX, where modes are real.
+		if (process.platform !== "win32") {
+			expect((await fs.stat(installed.executablePath)).mode & 0o777).toBe(0o755);
+		}
 		expect(await fs.readFile(path.join(installed.path, "chrome-linux64/nested/data.txt"), "utf8")).toBe(
 			"nested fixture\n",
 		);
-		expect((await fs.stat(path.join(installed.path, "chrome-linux64/nested/data.txt"))).mode & 0o777).toBe(0o640);
+		if (process.platform !== "win32") {
+			expect((await fs.stat(path.join(installed.path, "chrome-linux64/nested/data.txt"))).mode & 0o777).toBe(0o640);
+		}
 		expect(await fs.readlink(path.join(installed.path, "chrome-linux64/chrome-link"))).toBe("chrome");
 		expect(progress.length).toBeGreaterThan(0);
 		expect(progress.at(-1)?.downloadedBytes).toBe(fixture.size);

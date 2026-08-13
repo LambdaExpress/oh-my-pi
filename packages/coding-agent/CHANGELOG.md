@@ -57,6 +57,7 @@
 
 ### Fixed
 
+- Fixed the agentic and legacy `omp commit` pipelines leaking the `AuthStorage` SQLite connection opened by `discoverAuthStorage()`: the handle is now closed in a `finally` after the pipeline finishes (matching `models-cli`/`usage-cli`/`bench-cli`), so in-process callers and Windows tests can remove temp agent directories instead of hitting EBUSY on `agent.db`.
 - Fixed approved image messages queued for text-only models remaining invisible until vision-model description completed; the queue now shows them immediately, preserves later message order, and atomically delivers each hidden description with its user message.
 - Fixed completed-run collapsing for Ctrl+Up follow-ups so the prior completed turn collapses immediately without waiting for context compaction, and compaction rebuilds now preserve the visible collapse summary when its request still owns the live scrollback gate.
 - Fixed `/new` retaining plan or goal mode state, mode-specific tools, and goal continuation state from the previous session; new sessions now run the same mode reconciliation lifecycle as resumed sessions before rebuilding their system prompt.

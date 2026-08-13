@@ -27,24 +27,24 @@ function oauthCredential(suffix: string): OAuthCredential {
 
 function readAuthSchemaVersion(dbPath: string): number | null {
 	const db = new Database(dbPath, { readonly: true });
+	const stmt = db.prepare("SELECT version FROM auth_schema_version WHERE id = 1");
 	try {
-		const row = db.prepare("SELECT version FROM auth_schema_version WHERE id = 1").get() as
-			| { version?: number }
-			| undefined;
+		const row = stmt.get() as { version?: number } | undefined;
 		return typeof row?.version === "number" ? row.version : null;
 	} finally {
+		stmt.finalize();
 		db.close();
 	}
 }
 
 function tableExists(dbPath: string, tableName: string): boolean {
 	const db = new Database(dbPath, { readonly: true });
+	const stmt = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?");
 	try {
-		const row = db
-			.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?")
-			.get(tableName) as { present?: number } | undefined;
+		const row = stmt.get(tableName) as { present?: number } | undefined;
 		return row?.present === 1;
 	} finally {
+		stmt.finalize();
 		db.close();
 	}
 }
@@ -57,12 +57,11 @@ function readCredentialBlockRows(dbPath: string): Array<{
 	updated_at: number;
 }> {
 	const db = new Database(dbPath, { readonly: true });
+	const stmt = db.prepare(
+		"SELECT credential_id, provider_key, block_scope, blocked_until_ms, updated_at FROM auth_credential_blocks ORDER BY credential_id, provider_key, block_scope",
+	);
 	try {
-		return db
-			.prepare(
-				"SELECT credential_id, provider_key, block_scope, blocked_until_ms, updated_at FROM auth_credential_blocks ORDER BY credential_id, provider_key, block_scope",
-			)
-			.all() as Array<{
+		return stmt.all() as Array<{
 			credential_id: number;
 			provider_key: string;
 			block_scope: string;
@@ -70,6 +69,7 @@ function readCredentialBlockRows(dbPath: string): Array<{
 			updated_at: number;
 		}>;
 	} finally {
+		stmt.finalize();
 		db.close();
 	}
 }
@@ -80,22 +80,22 @@ function readLegacyCodexSharedBlock(
 	nowMs = Date.now(),
 ): { blocked_until_ms: number; updated_at: number } | undefined {
 	const db = new Database(dbPath, { readonly: true });
+	const stmt = db.prepare(
+		`SELECT blocked_until_ms, updated_at
+		FROM auth_credential_blocks
+		WHERE credential_id = ?
+			AND provider_key = ?
+			AND block_scope = 'shared'
+			AND blocked_until_ms > ?`,
+	);
 	try {
-		const row = db
-			.prepare(
-				`SELECT blocked_until_ms, updated_at
-				FROM auth_credential_blocks
-				WHERE credential_id = ?
-					AND provider_key = ?
-					AND block_scope = 'shared'
-					AND blocked_until_ms > ?`,
-			)
-			.get(credentialId, CODEX_PROVIDER_KEY, nowMs) as
+		const row = stmt.get(credentialId, CODEX_PROVIDER_KEY, nowMs) as
 			| { blocked_until_ms: number; updated_at: number }
 			| null
 			| undefined;
 		return row ?? undefined;
 	} finally {
+		stmt.finalize();
 		db.close();
 	}
 }
@@ -440,11 +440,13 @@ describe("AuthStorage credential block persistence", () => {
 		if (!row) throw new Error("expected credential row");
 		const blockedUntilMs = FUTURE_BLOCK_MS + 60_000;
 		const db = new Database(dbPath);
+		const insert = db.prepare(
+			"INSERT INTO auth_credential_blocks (credential_id, provider_key, block_scope, blocked_until_ms, updated_at) VALUES (?, ?, ?, ?, ?)",
+		);
 		try {
-			db.prepare(
-				"INSERT INTO auth_credential_blocks (credential_id, provider_key, block_scope, blocked_until_ms, updated_at) VALUES (?, ?, ?, ?, ?)",
-			).run(row.id, CODEX_PROVIDER_KEY, "shared", blockedUntilMs, LEGACY_TIMESTAMP);
+			insert.run(row.id, CODEX_PROVIDER_KEY, "shared", blockedUntilMs, LEGACY_TIMESTAMP);
 		} finally {
+			insert.finalize();
 			db.close();
 		}
 
@@ -490,11 +492,13 @@ describe("AuthStorage credential block persistence", () => {
 		const insertedAtSec = Math.floor(insertedAtMs / 1000);
 		const blockedUntilMs = FUTURE_BLOCK_MS + 60_000;
 		const db = new Database(dbPath);
+		const insert = db.prepare(
+			"INSERT INTO auth_credential_blocks (credential_id, provider_key, block_scope, blocked_until_ms, updated_at) VALUES (?, ?, ?, ?, ?)",
+		);
 		try {
-			db.prepare(
-				"INSERT INTO auth_credential_blocks (credential_id, provider_key, block_scope, blocked_until_ms, updated_at) VALUES (?, ?, ?, ?, ?)",
-			).run(row.id, CODEX_PROVIDER_KEY, "shared", blockedUntilMs, insertedAtSec);
+			insert.run(row.id, CODEX_PROVIDER_KEY, "shared", blockedUntilMs, insertedAtSec);
 		} finally {
+			insert.finalize();
 			db.close();
 		}
 
@@ -503,23 +507,23 @@ describe("AuthStorage credential block persistence", () => {
 		expect(readLegacyCodexSharedBlock(dbPath, row.id)?.blocked_until_ms).toBe(blockedUntilMs);
 
 		const legacyWriter = new Database(dbPath);
+		const upsert = legacyWriter.prepare(
+			`INSERT INTO auth_credential_blocks (
+				credential_id,
+				provider_key,
+				block_scope,
+				blocked_until_ms,
+				updated_at
+			)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(credential_id, provider_key, block_scope) DO UPDATE SET
+				blocked_until_ms = MAX(blocked_until_ms, excluded.blocked_until_ms),
+				updated_at = excluded.updated_at`,
+		);
 		try {
-			legacyWriter
-				.prepare(
-					`INSERT INTO auth_credential_blocks (
-						credential_id,
-						provider_key,
-						block_scope,
-						blocked_until_ms,
-						updated_at
-					)
-					VALUES (?, ?, ?, ?, ?)
-					ON CONFLICT(credential_id, provider_key, block_scope) DO UPDATE SET
-						blocked_until_ms = MAX(blocked_until_ms, excluded.blocked_until_ms),
-						updated_at = excluded.updated_at`,
-				)
-				.run(row.id, CODEX_PROVIDER_KEY, "shared", blockedUntilMs, insertedAtSec + 1);
+			upsert.run(row.id, CODEX_PROVIDER_KEY, "shared", blockedUntilMs, insertedAtSec + 1);
 		} finally {
+			upsert.finalize();
 			legacyWriter.close();
 		}
 
@@ -667,13 +671,13 @@ describe("AuthStorage credential block persistence", () => {
 
 		upsertMeterBlocks();
 		const legacyWriter = new Database(dbPath);
+		const deleteLegacyShared = legacyWriter.prepare(
+			"DELETE FROM auth_credential_blocks WHERE credential_id = ? AND provider_key = ? AND block_scope = 'shared'",
+		);
 		try {
-			legacyWriter
-				.prepare(
-					"DELETE FROM auth_credential_blocks WHERE credential_id = ? AND provider_key = ? AND block_scope = 'shared'",
-				)
-				.run(row.id, CODEX_PROVIDER_KEY);
+			deleteLegacyShared.run(row.id, CODEX_PROVIDER_KEY);
 		} finally {
+			deleteLegacyShared.finalize();
 			legacyWriter.close();
 		}
 		expect(store.listCredentialBlocks([row.id])).toEqual([]);
@@ -732,11 +736,11 @@ describe("AuthStorage credential block persistence", () => {
 				updated_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
 			);
 		`);
-		legacyDb
-			.prepare(
-				"INSERT INTO auth_credentials (provider, credential_type, data, disabled_cause, identity_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			)
-			.run(
+		const insertLegacyCredential = legacyDb.prepare(
+			"INSERT INTO auth_credentials (provider, credential_type, data, disabled_cause, identity_key, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		);
+		try {
+			insertLegacyCredential.run(
 				PROVIDER,
 				"oauth",
 				JSON.stringify({
@@ -751,6 +755,9 @@ describe("AuthStorage credential block persistence", () => {
 				LEGACY_TIMESTAMP,
 				LEGACY_TIMESTAMP,
 			);
+		} finally {
+			insertLegacyCredential.finalize();
+		}
 		legacyDb.close();
 
 		const migratedStore = await SqliteAuthCredentialStore.open(dbPath);

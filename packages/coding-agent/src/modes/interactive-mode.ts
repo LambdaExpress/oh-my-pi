@@ -4956,7 +4956,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#uiHelpers.addMessageToChat(message, options);
 	}
 
-	renderSessionContext(sessionContext: SessionContext, options?: RenderSessionContextOptions): void {
+	/**
+	 * Derive the display projection completed-run collapsing applies before
+	 * rendering: the collapsed message list plus the summary/gate inserter for
+	 * the rows following each collapsed request. Shared by the synchronous and
+	 * chunked transcript replays so both paths collapse the same runs.
+	 */
+	#completedRunProjection(sessionContext: SessionContext): {
+		context: SessionContext;
+		insertAfterMessage: NonNullable<RenderSessionContextOptions["insertAfterMessage"]>;
+	} {
 		const persistedContext = this.settings.get("display.collapseCompletedRuns")
 			? this.viewSession.buildTranscriptSessionContext({ collapseCompactedHistory: false })
 			: sessionContext;
@@ -4977,28 +4986,29 @@ export class InteractiveMode implements InteractiveModeContext {
 			completedRuns.map(run => run.collapse),
 			fullContext.messages,
 		);
-		for (const message of projection.context.messages) {
-			this.noteDisplayableThinkingContent(message);
-		}
 		const activeGate = this.#eventController.activeCompletedRunGate;
 		const toggleKey = this.keybindings.getDisplayString("app.completedRuns.toggle") || undefined;
 		let summaryIndex = 0;
-		this.#uiHelpers.renderSessionContext(projection.context, {
-			...options,
-			insertAfterMessage: message => {
-				const summary = projection.summaries[summaryIndex];
-				const matchingSummary =
-					summary && isSameTranscriptMessage(message, summary.afterMessage) ? summary : undefined;
-				const matchingGate =
-					activeGate && isSameTranscriptMessage(message, activeGate.afterMessage) ? activeGate : undefined;
-				if (!matchingSummary) return matchingGate?.component;
-				summaryIndex++;
-				const summaryComponent = createCompletedRunSummary(matchingSummary, toggleKey);
-				return matchingGate
-					? new CompletedRunSummaryGate(summaryComponent, matchingGate.component)
-					: summaryComponent;
-			},
-		});
+		const insertAfterMessage = (message: AgentMessage): Component | undefined => {
+			const summary = projection.summaries[summaryIndex];
+			const matchingSummary =
+				summary && isSameTranscriptMessage(message, summary.afterMessage) ? summary : undefined;
+			const matchingGate =
+				activeGate && isSameTranscriptMessage(message, activeGate.afterMessage) ? activeGate : undefined;
+			if (!matchingSummary) return matchingGate?.component;
+			summaryIndex++;
+			const summaryComponent = createCompletedRunSummary(matchingSummary, toggleKey);
+			return matchingGate ? new CompletedRunSummaryGate(summaryComponent, matchingGate.component) : summaryComponent;
+		};
+		return { context: projection.context, insertAfterMessage };
+	}
+
+	renderSessionContext(sessionContext: SessionContext, options?: RenderSessionContextOptions): void {
+		const { context, insertAfterMessage } = this.#completedRunProjection(sessionContext);
+		for (const message of context.messages) {
+			this.noteDisplayableThinkingContent(message);
+		}
+		this.#uiHelpers.renderSessionContext(context, { ...options, insertAfterMessage });
 	}
 
 	/** Render a session context in bounded chunks so terminal input runs between transcript paints. */
@@ -5007,10 +5017,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		options: RenderSessionContextOptions,
 		renderChunk?: () => void,
 	): Promise<void> {
-		for (const message of sessionContext.messages) {
+		const { context, insertAfterMessage } = this.#completedRunProjection(sessionContext);
+		for (const message of context.messages) {
 			this.noteDisplayableThinkingContent(message);
 		}
-		await this.#uiHelpers.renderSessionContextIncrementally(sessionContext, options, renderChunk);
+		await this.#uiHelpers.renderSessionContextIncrementally(context, { ...options, insertAfterMessage }, renderChunk);
 	}
 
 	async renderInitialMessages(options?: RenderInitialMessagesOptions): Promise<void> {

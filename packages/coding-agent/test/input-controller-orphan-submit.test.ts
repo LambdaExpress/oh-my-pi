@@ -112,7 +112,14 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 		settings: session.settings,
 		sessionManager: {
 			getSessionName: () => "named-session",
-			putBlobSync: () => ({ hash: "h", path: "/blob/h", displayPath: "/blob/h", get ref() { return "h"; } }),
+			putBlobSync: () => ({
+				hash: "h",
+				path: "/blob/h",
+				displayPath: "/blob/h",
+				get ref() {
+					return "h";
+				},
+			}),
 		} as unknown as InteractiveModeContext["sessionManager"],
 		compactionQueuedMessages: [] as InteractiveModeContext["compactionQueuedMessages"],
 		fileSlashCommands: new Set<string>(),

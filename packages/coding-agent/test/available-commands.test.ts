@@ -1,5 +1,18 @@
-import { describe, expect, test } from "bun:test";
-import { buildAvailableSlashCommands } from "@oh-my-pi/pi-coding-agent/slash-commands/available-commands";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { setLocale } from "../src/i18n";
+
+// Builtin slash-command descriptions are localized at module load, so pin the
+// locale before importing the registry (import is deferred on purpose).
+setLocale("en");
+const { buildAvailableSlashCommands } = await import("@oh-my-pi/pi-coding-agent/slash-commands/available-commands");
+
+beforeEach(() => {
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 describe("buildAvailableSlashCommands", () => {
 	test("returns RPC-safe command metadata with stable sources", async () => {

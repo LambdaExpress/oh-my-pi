@@ -17,6 +17,7 @@ import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 describe("AgentSession advisor toggle", () => {
 	let sharedDir: TempDir;
@@ -52,6 +53,7 @@ describe("AgentSession advisor toggle", () => {
 	let sessionManager: SessionManager;
 
 	beforeEach(async () => {
+		setLocale("en");
 		tempDir = TempDir.createSync("@pi-advisor-toggle-");
 		sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
 		const agent = new Agent({
@@ -73,6 +75,7 @@ describe("AgentSession advisor toggle", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		await session.dispose();
 		try {
 			await tempDir.remove();

@@ -13,6 +13,7 @@ import { EPHEMERAL_MODEL_CHANGE_ROLE } from "@oh-my-pi/pi-coding-agent/session/s
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 describe("AgentSession model persistence", () => {
 	let tempDir: TempDir;
@@ -38,6 +39,7 @@ describe("AgentSession model persistence", () => {
 	});
 
 	beforeEach(() => {
+		setLocale("en");
 		tempDir = TempDir.createSync("@pi-model-persistence-");
 	});
 
@@ -47,6 +49,7 @@ describe("AgentSession model persistence", () => {
 			session = undefined;
 		}
 		tempDir.removeSync();
+		setLocale(null);
 	});
 
 	function getAnthropicModelOrThrow(id: string): Model<Api> {

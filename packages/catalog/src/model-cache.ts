@@ -108,6 +108,21 @@ function getSharedDb(): Database {
 	return db;
 }
 
+/**
+ * Close the process-global shared cache database, if open. Test-only: the
+ * shared handle is deliberately kept for the process lifetime in production,
+ * but tests redirect the agent directory to temp dirs and must release the
+ * handle before removing them on Windows (EBUSY on locked SQLite files).
+ * The next cache access transparently reopens the database.
+ */
+export function closeModelCacheSharedDb(): void {
+	if (sharedDb) {
+		sharedDb.close();
+		sharedDb = null;
+		sharedDbPath = null;
+	}
+}
+
 function withModelCacheDb<T>(dbPath: string | undefined, useDb: (db: Database) => T): T {
 	if (!dbPath) return useDb(getSharedDb());
 	const db = openDb(dbPath);

@@ -15,6 +15,7 @@ const arkSessionNotification = type({
 
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import type { ExtensionUIContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { AcpAgent } from "@oh-my-pi/pi-coding-agent/modes/acp/acp-agent";
 import {
 	buildToolCallStartUpdate,
@@ -97,6 +98,8 @@ class ReplayTestSession {
 	}
 
 	setClientBridge(_bridge: unknown): void {}
+
+	setVisionFallbackUIContext(_uiContext: Pick<ExtensionUIContext, "confirm"> | undefined): void {}
 
 	subscribe(_listener: (event: AgentSessionEvent) => void): () => void {
 		return () => {};

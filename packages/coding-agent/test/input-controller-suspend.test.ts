@@ -1,6 +1,7 @@
-import { afterEach, describe, expect, it, type Mock, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { setLocale } from "../src/i18n";
 
 interface SuspendCtx {
 	ctx: InteractiveModeContext;
@@ -35,9 +36,14 @@ function setPlatform(value: NodeJS.Platform): void {
 	Object.defineProperty(process, "platform", { value, configurable: true, writable: true });
 }
 
+beforeEach(() => {
+	setLocale("en");
+});
+
 afterEach(() => {
 	Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true, writable: true });
 	vi.restoreAllMocks();
+	setLocale(null);
 	// Drop any SIGCONT listener a passing test left behind so a later test
 	// (or the next file) doesn't get spurious callbacks.
 	process.removeAllListeners("SIGCONT");

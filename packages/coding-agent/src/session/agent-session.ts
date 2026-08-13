@@ -99,7 +99,7 @@ import {
 	withTimeout,
 } from "@oh-my-pi/pi-utils";
 import { type AdvisorConfig, type AdvisorRuntimeStatus, loadAdvisorTranscriptCosts } from "../advisor";
-import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, AsyncJobManager } from "../async";
+import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, type AsyncJobFilter, AsyncJobManager } from "../async";
 import { reset as resetCapabilities } from "../capability";
 import type { SSHHost } from "../capability/ssh";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
@@ -1978,16 +1978,17 @@ export class AgentSession {
 	getAsyncJobSnapshot(options?: { recentLimit?: number }): AsyncJobSnapshot | null {
 		const manager = this.#asyncJobManager;
 		if (!manager) return null;
-		const filter = {
-			...(this.#agentId ? { ownerId: this.#agentId } : {}),
-			scopeId: this.#agentScopeId,
-		};
-		const running = manager
-			.getAllJobs(filter)
+		// Session-owned view: jobs of the session scope plus unscoped jobs of
+		// the owning agent (a job registered without an explicit scope belongs
+		// to its owner's top-level session).
+		const ownedJobs = manager.getSessionJobs(this.#agentId, this.#agentScopeId);
+		const running = ownedJobs
 			.filter(job => job.status === "running" || (job.status === "cancelled" && job.settledAt === undefined))
 			.map(snapshotAsyncJob);
-		const recent = manager.getRecentJobs(options?.recentLimit ?? 5, filter).map(snapshotAsyncJob);
-		const delivery = manager.getDeliveryState(filter);
+		const recent = manager
+			.getSessionRecentJobs(this.#agentId, this.#agentScopeId, options?.recentLimit ?? 5)
+			.map(snapshotAsyncJob);
+		const delivery = manager.getSessionDeliveryState(this.#agentId, this.#agentScopeId);
 		return { running, recent, delivery };
 	}
 
@@ -2037,25 +2038,33 @@ export class AgentSession {
 	async #cancelOwnAsyncJobs(reason?: unknown): Promise<void> {
 		const manager = this.#asyncJobManager;
 		if (!manager || !this.#agentId) return;
+		const agentId = this.#agentId;
 		const filter =
 			this.#agentKind === "main"
 				? { scopeId: this.#agentScopeId }
-				: this.#agentId
-					? { ownerId: this.#agentId, scopeId: this.#agentScopeId }
+				: agentId
+					? { ownerId: agentId, scopeId: this.#agentScopeId }
 					: undefined;
 		if (!filter) return;
-		const sshFilter = { ...filter, type: "ssh_transfer" as const };
-		const sshJobIds = manager
-			.getAllJobs(sshFilter)
-			.filter(job => job.status === "running" || (job.status === "cancelled" && job.settledAt === undefined))
-			.map(job => job.id);
-		manager.watchJobs(sshJobIds);
-		manager.acknowledgeDeliveries(sshJobIds);
-		await manager.cancelAndWait(sshFilter);
-		manager.acknowledgeDeliveries(sshJobIds);
-		manager.unwatchJobs(sshJobIds);
-		manager.cancelAll(filter, reason);
-		manager.evictCompletedJobs(filter);
+		// Jobs registered without an explicit scopeId belong to their owner's
+		// top-level session (the union AsyncJobManager.getSessionJobs exposes),
+		// so teardown must cancel them alongside the scoped ones — otherwise
+		// legacy/SDK registrations would strand running jobs through dispose.
+		const filters: AsyncJobFilter[] = [filter, { ownerId: agentId, scopeId: null }];
+		for (const current of filters) {
+			const sshFilter = { ...current, type: "ssh_transfer" as const };
+			const sshJobIds = manager
+				.getAllJobs(sshFilter)
+				.filter(job => job.status === "running" || (job.status === "cancelled" && job.settledAt === undefined))
+				.map(job => job.id);
+			manager.watchJobs(sshJobIds);
+			manager.acknowledgeDeliveries(sshJobIds);
+			await manager.cancelAndWait(sshFilter);
+			manager.acknowledgeDeliveries(sshJobIds);
+			manager.unwatchJobs(sshJobIds);
+			manager.cancelAll(current, reason);
+			manager.evictCompletedJobs(current);
+		}
 		// Invalidate this owner's in-flight/drained deliveries against the new
 		// generation, then drop any async-result follow-up already queued, so a
 		// prior session's background result cannot inject into the next transcript.
@@ -7170,6 +7179,19 @@ export class AgentSession {
 			this.#irc.retireScope(previousScopeId);
 			this.#fenceAgentScope?.(previousScopeId);
 			await this.#asyncJobManager?.retireScope(previousScopeId);
+			// The session-owned view (getSessionJobs) also covers unscoped jobs
+			// of this agent; retire those rows with the scoped half so the
+			// replaced session's finished jobs cannot linger in the next
+			// session's snapshot.
+			if (this.#agentId) {
+				await this.#asyncJobManager?.retireUnscopedOwnerJobs(this.#agentId);
+			}
+			// Fence in-flight/drained deliveries against the new generation,
+			// then drop any async-result follow-up already queued, so a prior
+			// session's background result cannot inject into the next
+			// transcript even when its job id is reused (mirrors
+			// #cancelOwnAsyncJobs).
+			this.#asyncDeliveryEpoch += 1;
 			await this.#releaseAgentScope?.(previousScopeId);
 			this.yieldQueue.clear();
 		} else {

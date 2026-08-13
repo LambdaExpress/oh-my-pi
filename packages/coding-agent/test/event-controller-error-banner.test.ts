@@ -17,6 +17,7 @@ import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/eve
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { setLocale } from "../src/i18n";
 
 function makeAssistantMessage(overrides: Partial<AssistantMessage> = {}): AssistantMessage {
 	return {
@@ -44,11 +45,13 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+	setLocale("en");
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 });
 
 afterEach(() => {
+	setLocale(null);
 	resetSettingsForTest();
 });
 

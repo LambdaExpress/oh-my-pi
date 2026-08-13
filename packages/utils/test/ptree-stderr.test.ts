@@ -9,11 +9,16 @@ const FULL_CAPTURE_ERROR = "Full stderr capture must be requested when spawning 
 
 function stderrFixture(size: number, exitCode = 0, stdout = ""): string[] {
 	const fillLength = size - STDERR_HEAD.length - STDERR_TAIL.length;
+	// Omit the stdout write when empty: Bun on Windows throws
+	// EINVAL (ftruncate) on an empty `Bun.stdout.write("")`, which would
+	// crash the fixture child before it exercises stderr capture.
 	const script = [
-		`await Bun.stdout.write(${JSON.stringify(stdout)});`,
+		stdout ? `await Bun.stdout.write(${JSON.stringify(stdout)});` : "",
 		`await Bun.stderr.write(${JSON.stringify(STDERR_HEAD)} + "x".repeat(${fillLength}) + ${JSON.stringify(STDERR_TAIL)});`,
 		`process.exitCode = ${exitCode};`,
-	].join("\n");
+	]
+		.filter(Boolean)
+		.join("\n");
 	return ["bun", "-e", script];
 }
 

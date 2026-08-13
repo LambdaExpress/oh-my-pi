@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 
 export interface MemoryThread {
 	id: string;
@@ -42,6 +42,43 @@ const DEFAULT_RETRY_REMAINING = 3;
  */
 function globalJobKey(cwd: string): string {
 	return `global:${cwd}`;
+}
+
+/**
+ * Run a one-off SQL statement through a freshly prepared statement that is
+ * finalized immediately after stepping.
+ *
+ * bun:sqlite's `Database.close()` defers the real close while prepared
+ * statements are still alive, leaving the WAL `-wal`/`-shm` sidecars behind
+ * (and briefly locked on Windows). Inline `db.prepare(...).run(...)` calls
+ * therefore must finalize their statement, or recursive temp-dir cleanup
+ * races the deferred close. These helpers make the finalize explicit.
+ */
+function runPrepared(db: Database, sql: string, ...params: SQLQueryBindings[]): { changes: number | bigint } {
+	const stmt = db.prepare(sql);
+	try {
+		return stmt.run(...params);
+	} finally {
+		stmt.finalize();
+	}
+}
+
+function getPrepared<T>(db: Database, sql: string, ...params: SQLQueryBindings[]): T | undefined {
+	const stmt = db.prepare(sql);
+	try {
+		return stmt.get(...params) as T | undefined;
+	} finally {
+		stmt.finalize();
+	}
+}
+
+function allPrepared<T>(db: Database, sql: string, ...params: SQLQueryBindings[]): T[] {
+	const stmt = db.prepare(sql);
+	try {
+		return stmt.all(...params) as T[];
+	} finally {
+		stmt.finalize();
+	}
 }
 
 export function openMemoryDb(dbPath: string): Database {
@@ -90,6 +127,18 @@ CREATE TABLE IF NOT EXISTS jobs (
 }
 
 export function closeMemoryDb(db: Database): void {
+	// Checkpoint synchronously before closing so the -wal/-shm sidecar files
+	// are deterministically flushed and removed. Without this, the WAL cleanup
+	// can be deferred past close on Windows, leaving locked sidecars behind and
+	// tripping recursive temp-dir removal (EBUSY) in tests and tooling.
+	// Callers must also finalize every prepared statement (see runPrepared &
+	// co.): bun:sqlite's close is deferred while statements are alive.
+	try {
+		db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+	} catch {
+		// Best-effort: a concurrent connection may hold a read lock that blocks
+		// the checkpoint; closing still releases this handle.
+	}
 	db.close();
 }
 
@@ -112,26 +161,42 @@ ON CONFLICT(id) DO UPDATE SET
 	cwd = excluded.cwd,
 	source_kind = excluded.source_kind
 `);
-	const tx = db.transaction((rows: MemoryThread[]) => {
-		for (const row of rows) {
-			stmt.run(row.id, row.updatedAt, row.rolloutPath, row.cwd, row.sourceKind);
-		}
-	});
-	tx(threads);
+	try {
+		const tx = db.transaction((rows: MemoryThread[]) => {
+			for (const row of rows) {
+				stmt.run(row.id, row.updatedAt, row.rolloutPath, row.cwd, row.sourceKind);
+			}
+		});
+		tx(threads);
+	} finally {
+		stmt.finalize();
+	}
 }
 
 function ensureStage1Job(db: Database, threadId: string): void {
-	db.prepare(`
+	runPrepared(
+		db,
+		`
 INSERT OR IGNORE INTO jobs (kind, job_key, status, retry_remaining, input_watermark, last_success_watermark)
 VALUES (?, ?, 'pending', ?, 0, 0)
-`).run(STAGE1_KIND, threadId, DEFAULT_RETRY_REMAINING);
+`,
+		STAGE1_KIND,
+		threadId,
+		DEFAULT_RETRY_REMAINING,
+	);
 }
 
 function ensureGlobalJob(db: Database, cwd: string): void {
-	db.prepare(`
+	runPrepared(
+		db,
+		`
 INSERT OR IGNORE INTO jobs (kind, job_key, status, retry_remaining, input_watermark, last_success_watermark)
 VALUES (?, ?, 'pending', ?, 0, 0)
-`).run(GLOBAL_KIND, globalJobKey(cwd), DEFAULT_RETRY_REMAINING);
+`,
+		GLOBAL_KIND,
+		globalJobKey(cwd),
+		DEFAULT_RETRY_REMAINING,
+	);
 }
 
 export function claimStage1Jobs(
@@ -161,22 +226,25 @@ export function claimStage1Jobs(
 	} = params;
 	const maxAgeSec = maxRolloutAgeDays * 24 * 60 * 60;
 	const minIdleSec = minRolloutIdleHours * 60 * 60;
-	const runningCountRow = db
-		.prepare(
-			"SELECT COUNT(*) AS count FROM jobs WHERE kind = ? AND status = 'running' AND lease_until IS NOT NULL AND lease_until > ?",
-		)
-		.get(STAGE1_KIND, nowSec) as { count?: number } | undefined;
+	const runningCountRow = getPrepared<{ count?: number }>(
+		db,
+		"SELECT COUNT(*) AS count FROM jobs WHERE kind = ? AND status = 'running' AND lease_until IS NOT NULL AND lease_until > ?",
+		STAGE1_KIND,
+		nowSec,
+	);
 	let runningCount = runningCountRow?.count ?? 0;
 	if (runningCount >= runningConcurrencyCap) return [];
-	const candidateRows = db
-		.prepare("SELECT id, updated_at, rollout_path, cwd, source_kind FROM threads ORDER BY updated_at DESC LIMIT ?")
-		.all(threadScanLimit) as Array<{
+	const candidateRows = allPrepared<{
 		id: string;
 		updated_at: number;
 		rollout_path: string;
 		cwd: string;
 		source_kind: string;
-	}>;
+	}>(
+		db,
+		"SELECT id, updated_at, rollout_path, cwd, source_kind FROM threads ORDER BY updated_at DESC LIMIT ?",
+		threadScanLimit,
+	);
 	const claims: Stage1Claim[] = [];
 	const excluded = new Set(excludeThreadIds);
 	for (const row of candidateRows) {
@@ -186,15 +254,18 @@ export function claimStage1Jobs(
 		if (nowSec - row.updated_at > maxAgeSec) continue;
 		if (nowSec - row.updated_at < minIdleSec) continue;
 		if (runningCount >= runningConcurrencyCap) break;
-		const stage1 = db.prepare("SELECT source_updated_at FROM stage1_outputs WHERE thread_id = ?").get(row.id) as
-			| { source_updated_at?: number }
-			| undefined;
+		const stage1 = getPrepared<{ source_updated_at?: number }>(
+			db,
+			"SELECT source_updated_at FROM stage1_outputs WHERE thread_id = ?",
+			row.id,
+		);
 		if ((stage1?.source_updated_at ?? 0) >= row.updated_at) continue;
 		ensureStage1Job(db, row.id);
 		const ownershipToken = crypto.randomUUID();
 		const leaseUntil = nowSec + leaseSeconds;
-		const claimed = db
-			.prepare(`
+		const claimed = runPrepared(
+			db,
+			`
 UPDATE jobs
 SET status = 'running', worker_id = ?, ownership_token = ?, started_at = ?, finished_at = NULL,
 	lease_until = ?, retry_at = NULL, last_error = NULL, input_watermark = ?,
@@ -214,23 +285,22 @@ WHERE kind = ? AND job_key = ?
 			AND (retry_at IS NULL OR retry_at <= ?)
 		)
 	)
-`)
-			.run(
-				workerId,
-				ownershipToken,
-				nowSec,
-				leaseUntil,
-				row.updated_at,
-				DEFAULT_RETRY_REMAINING,
-				row.updated_at,
-				DEFAULT_RETRY_REMAINING,
-				STAGE1_KIND,
-				row.id,
-				row.updated_at,
-				nowSec,
-				row.updated_at,
-				nowSec,
-			);
+`,
+			workerId,
+			ownershipToken,
+			nowSec,
+			leaseUntil,
+			row.updated_at,
+			DEFAULT_RETRY_REMAINING,
+			row.updated_at,
+			DEFAULT_RETRY_REMAINING,
+			STAGE1_KIND,
+			row.id,
+			row.updated_at,
+			nowSec,
+			row.updated_at,
+			nowSec,
+		);
 		if (Number(claimed.changes ?? 0) <= 0) continue;
 		claims.push({
 			threadId: row.id,
@@ -253,7 +323,9 @@ export function enqueueGlobalWatermark(
 ): void {
 	const forceDirtyWhenNotAdvanced = params?.forceDirtyWhenNotAdvanced ?? false;
 	ensureGlobalJob(db, cwd);
-	db.prepare(`
+	runPrepared(
+		db,
+		`
 UPDATE jobs
 SET
 	input_watermark = CASE
@@ -279,7 +351,7 @@ SET
 		ELSE retry_at
 	END
 WHERE kind = ? AND job_key = ?
-`).run(
+`,
 		sourceUpdatedAt,
 		sourceUpdatedAt,
 		sourceUpdatedAt,
@@ -311,21 +383,32 @@ export function markStage1SucceededWithOutput(
 ): boolean {
 	const { threadId, ownershipToken, sourceUpdatedAt, rawMemory, rolloutSummary, rolloutSlug, nowSec, cwd } = params;
 	const tx = db.transaction(() => {
-		const matched = db
-			.prepare(
-				"SELECT 1 AS ok FROM jobs WHERE kind = ? AND job_key = ? AND status = 'running' AND ownership_token = ?",
-			)
-			.get(STAGE1_KIND, threadId, ownershipToken) as { ok?: number } | undefined;
+		const matched = getPrepared<{ ok?: number }>(
+			db,
+			"SELECT 1 AS ok FROM jobs WHERE kind = ? AND job_key = ? AND status = 'running' AND ownership_token = ?",
+			STAGE1_KIND,
+			threadId,
+			ownershipToken,
+		);
 		if (!matched?.ok) return false;
 
-		db.prepare(`
+		runPrepared(
+			db,
+			`
 UPDATE jobs
 SET status = 'done', finished_at = ?, lease_until = NULL, retry_at = NULL,
 	last_error = NULL, last_success_watermark = input_watermark
 WHERE kind = ? AND job_key = ? AND ownership_token = ?
-`).run(nowSec, STAGE1_KIND, threadId, ownershipToken);
+`,
+			nowSec,
+			STAGE1_KIND,
+			threadId,
+			ownershipToken,
+		);
 
-		db.prepare(`
+		runPrepared(
+			db,
+			`
 INSERT INTO stage1_outputs (thread_id, source_updated_at, raw_memory, rollout_summary, rollout_slug, generated_at)
 VALUES (?, ?, ?, ?, ?, ?)
 ON CONFLICT(thread_id) DO UPDATE SET
@@ -335,7 +418,14 @@ ON CONFLICT(thread_id) DO UPDATE SET
 	rollout_slug = excluded.rollout_slug,
 	generated_at = excluded.generated_at
 WHERE excluded.source_updated_at >= stage1_outputs.source_updated_at
-`).run(threadId, sourceUpdatedAt, rawMemory, rolloutSummary, rolloutSlug, nowSec);
+`,
+			threadId,
+			sourceUpdatedAt,
+			rawMemory,
+			rolloutSummary,
+			rolloutSlug,
+			nowSec,
+		);
 
 		enqueueGlobalWatermark(db, sourceUpdatedAt, cwd, { forceDirtyWhenNotAdvanced: true });
 		return true;
@@ -349,21 +439,30 @@ export function markStage1SucceededNoOutput(
 ): boolean {
 	const { threadId, ownershipToken, sourceUpdatedAt, nowSec, cwd } = params;
 	const tx = db.transaction(() => {
-		const matched = db
-			.prepare(
-				"SELECT 1 AS ok FROM jobs WHERE kind = ? AND job_key = ? AND status = 'running' AND ownership_token = ?",
-			)
-			.get(STAGE1_KIND, threadId, ownershipToken) as { ok?: number } | undefined;
+		const matched = getPrepared<{ ok?: number }>(
+			db,
+			"SELECT 1 AS ok FROM jobs WHERE kind = ? AND job_key = ? AND status = 'running' AND ownership_token = ?",
+			STAGE1_KIND,
+			threadId,
+			ownershipToken,
+		);
 		if (!matched?.ok) return false;
 
-		db.prepare(`
+		runPrepared(
+			db,
+			`
 UPDATE jobs
 SET status = 'done', finished_at = ?, lease_until = NULL, retry_at = NULL,
 	last_error = NULL, last_success_watermark = input_watermark
 WHERE kind = ? AND job_key = ? AND ownership_token = ?
-`).run(nowSec, STAGE1_KIND, threadId, ownershipToken);
+`,
+			nowSec,
+			STAGE1_KIND,
+			threadId,
+			ownershipToken,
+		);
 
-		db.prepare("DELETE FROM stage1_outputs WHERE thread_id = ?").run(threadId);
+		runPrepared(db, "DELETE FROM stage1_outputs WHERE thread_id = ?", threadId);
 		enqueueGlobalWatermark(db, sourceUpdatedAt, cwd, { forceDirtyWhenNotAdvanced: true });
 		return true;
 	});
@@ -375,15 +474,22 @@ export function markStage1Failed(
 	params: { threadId: string; ownershipToken: string; retryDelaySeconds: number; reason: string; nowSec: number },
 ): boolean {
 	const { threadId, ownershipToken, retryDelaySeconds, reason, nowSec } = params;
-	const result = db
-		.prepare(`
+	const result = runPrepared(
+		db,
+		`
 UPDATE jobs
 SET status = 'error', finished_at = ?, lease_until = NULL, retry_at = ?,
 	retry_remaining = CASE WHEN retry_remaining > 0 THEN retry_remaining - 1 ELSE 0 END,
 	last_error = ?
 WHERE kind = ? AND job_key = ? AND status = 'running' AND ownership_token = ?
-`)
-		.run(nowSec, nowSec + retryDelaySeconds, reason, STAGE1_KIND, threadId, ownershipToken);
+`,
+		nowSec,
+		nowSec + retryDelaySeconds,
+		reason,
+		STAGE1_KIND,
+		threadId,
+		ownershipToken,
+	);
 	return Number(result.changes ?? 0) > 0;
 }
 
@@ -394,24 +500,24 @@ export function tryClaimGlobalPhase2Job(
 	const { workerId, leaseSeconds, nowSec, cwd } = params;
 	const jobKey = globalJobKey(cwd);
 	ensureGlobalJob(db, cwd);
-	const pre = db
-		.prepare(
-			"SELECT status, lease_until, input_watermark, last_success_watermark, retry_at, retry_remaining FROM jobs WHERE kind = ? AND job_key = ?",
-		)
-		.get(GLOBAL_KIND, jobKey) as
-		| {
-				status: string;
-				lease_until: number | null;
-				input_watermark: number | null;
-				last_success_watermark: number | null;
-				retry_at: number | null;
-				retry_remaining: number;
-		  }
-		| undefined;
+	const pre = getPrepared<{
+		status: string;
+		lease_until: number | null;
+		input_watermark: number | null;
+		last_success_watermark: number | null;
+		retry_at: number | null;
+		retry_remaining: number;
+	}>(
+		db,
+		"SELECT status, lease_until, input_watermark, last_success_watermark, retry_at, retry_remaining FROM jobs WHERE kind = ? AND job_key = ?",
+		GLOBAL_KIND,
+		jobKey,
+	);
 	if (!pre) return { kind: "skipped_not_dirty" };
 	const ownershipToken = crypto.randomUUID();
-	const claimed = db
-		.prepare(`
+	const claimed = runPrepared(
+		db,
+		`
 UPDATE jobs
 SET status = 'running', worker_id = ?, ownership_token = ?, started_at = ?, finished_at = NULL,
 	lease_until = ?, retry_at = NULL, last_error = NULL
@@ -420,12 +526,24 @@ WHERE kind = ? AND job_key = ?
 	AND (input_watermark IS NOT NULL AND (last_success_watermark IS NULL OR input_watermark > last_success_watermark))
 	AND retry_remaining > 0
 	AND (retry_at IS NULL OR retry_at <= ?)
-`)
-		.run(workerId, ownershipToken, nowSec, nowSec + leaseSeconds, GLOBAL_KIND, jobKey, nowSec, nowSec);
+`,
+		workerId,
+		ownershipToken,
+		nowSec,
+		nowSec + leaseSeconds,
+		GLOBAL_KIND,
+		jobKey,
+		nowSec,
+		nowSec,
+	);
 	if (Number(claimed.changes ?? 0) > 0) {
-		const row = db
-			.prepare("SELECT input_watermark FROM jobs WHERE kind = ? AND job_key = ? AND ownership_token = ?")
-			.get(GLOBAL_KIND, jobKey, ownershipToken) as { input_watermark: number | null } | undefined;
+		const row = getPrepared<{ input_watermark: number | null }>(
+			db,
+			"SELECT input_watermark FROM jobs WHERE kind = ? AND job_key = ? AND ownership_token = ?",
+			GLOBAL_KIND,
+			jobKey,
+			ownershipToken,
+		);
 		return {
 			kind: "claimed",
 			claim: {
@@ -450,20 +568,19 @@ WHERE kind = ? AND job_key = ?
 		return { kind: "skipped_not_dirty" };
 	}
 
-	const post = db
-		.prepare(
-			"SELECT status, lease_until, input_watermark, last_success_watermark, retry_at, retry_remaining FROM jobs WHERE kind = ? AND job_key = ?",
-		)
-		.get(GLOBAL_KIND, jobKey) as
-		| {
-				status: string;
-				lease_until: number | null;
-				input_watermark: number | null;
-				last_success_watermark: number | null;
-				retry_at: number | null;
-				retry_remaining: number;
-		  }
-		| undefined;
+	const post = getPrepared<{
+		status: string;
+		lease_until: number | null;
+		input_watermark: number | null;
+		last_success_watermark: number | null;
+		retry_at: number | null;
+		retry_remaining: number;
+	}>(
+		db,
+		"SELECT status, lease_until, input_watermark, last_success_watermark, retry_at, retry_remaining FROM jobs WHERE kind = ? AND job_key = ?",
+		GLOBAL_KIND,
+		jobKey,
+	);
 	if (!post) return { kind: "skipped_not_dirty" };
 	if (post.status === "running" && post.lease_until !== null && post.lease_until > nowSec) {
 		return { kind: "skipped_running" };
@@ -477,13 +594,18 @@ export function heartbeatGlobalJob(
 	params: { ownershipToken: string; leaseSeconds: number; nowSec: number; cwd: string },
 ): boolean {
 	const { ownershipToken, leaseSeconds, nowSec, cwd } = params;
-	const result = db
-		.prepare(`
+	const result = runPrepared(
+		db,
+		`
 UPDATE jobs
 SET lease_until = ?
 WHERE kind = ? AND job_key = ? AND status = 'running' AND ownership_token = ?
-`)
-		.run(nowSec + leaseSeconds, GLOBAL_KIND, globalJobKey(cwd), ownershipToken);
+`,
+		nowSec + leaseSeconds,
+		GLOBAL_KIND,
+		globalJobKey(cwd),
+		ownershipToken,
+	);
 	return Number(result.changes ?? 0) > 0;
 }
 
@@ -491,17 +613,7 @@ WHERE kind = ? AND job_key = ? AND status = 'running' AND ownership_token = ?
 // Before this filter existed, whichever project ran Phase 2 first got every
 // project's data written into its memory directory (see #369).
 export function listStage1OutputsForGlobal(db: Database, limit: number, cwd: string): Stage1OutputRow[] {
-	const rows = db
-		.prepare(`
-SELECT o.thread_id, o.source_updated_at, o.raw_memory, o.rollout_summary, o.rollout_slug, o.generated_at, t.cwd
-FROM stage1_outputs o
-LEFT JOIN threads t ON t.id = o.thread_id
-WHERE (TRIM(COALESCE(o.raw_memory, '')) != '' OR TRIM(COALESCE(o.rollout_summary, '')) != '')
-  AND t.cwd = ?
-ORDER BY o.source_updated_at DESC
-LIMIT ?
-`)
-		.all(cwd, limit) as Array<{
+	const rows = allPrepared<{
 		thread_id: string;
 		source_updated_at: number;
 		raw_memory: string;
@@ -509,7 +621,20 @@ LIMIT ?
 		rollout_slug: string | null;
 		generated_at: number;
 		cwd: string | null;
-	}>;
+	}>(
+		db,
+		`
+SELECT o.thread_id, o.source_updated_at, o.raw_memory, o.rollout_summary, o.rollout_slug, o.generated_at, t.cwd
+FROM stage1_outputs o
+LEFT JOIN threads t ON t.id = o.thread_id
+WHERE (TRIM(COALESCE(o.raw_memory, '')) != '' OR TRIM(COALESCE(o.rollout_summary, '')) != '')
+  AND t.cwd = ?
+ORDER BY o.source_updated_at DESC
+LIMIT ?
+`,
+		cwd,
+		limit,
+	);
 	return rows.map(row => ({
 		threadId: row.thread_id,
 		sourceUpdatedAt: row.source_updated_at,
@@ -526,8 +651,9 @@ export function markGlobalPhase2Succeeded(
 	params: { ownershipToken: string; newWatermark: number; nowSec: number; cwd: string },
 ): boolean {
 	const { ownershipToken, newWatermark, nowSec, cwd } = params;
-	const result = db
-		.prepare(`
+	const result = runPrepared(
+		db,
+		`
 UPDATE jobs
 SET status = 'done', finished_at = ?, lease_until = NULL, retry_at = NULL,
 	last_error = NULL,
@@ -537,8 +663,15 @@ SET status = 'done', finished_at = ?, lease_until = NULL, retry_at = NULL,
 		ELSE last_success_watermark
 	END
 WHERE kind = ? AND job_key = ? AND status = 'running' AND ownership_token = ?
-`)
-		.run(nowSec, newWatermark, newWatermark, newWatermark, GLOBAL_KIND, globalJobKey(cwd), ownershipToken);
+`,
+		nowSec,
+		newWatermark,
+		newWatermark,
+		newWatermark,
+		GLOBAL_KIND,
+		globalJobKey(cwd),
+		ownershipToken,
+	);
 	return Number(result.changes ?? 0) > 0;
 }
 
@@ -547,15 +680,22 @@ export function markGlobalPhase2Failed(
 	params: { ownershipToken: string; retryDelaySeconds: number; reason: string; nowSec: number; cwd: string },
 ): boolean {
 	const { ownershipToken, retryDelaySeconds, reason, nowSec, cwd } = params;
-	const result = db
-		.prepare(`
+	const result = runPrepared(
+		db,
+		`
 UPDATE jobs
 SET status = 'error', finished_at = ?, lease_until = NULL, retry_at = ?,
 	retry_remaining = CASE WHEN retry_remaining > 0 THEN retry_remaining - 1 ELSE 0 END,
 	last_error = ?
 WHERE kind = ? AND job_key = ? AND status = 'running' AND ownership_token = ?
-`)
-		.run(nowSec, nowSec + retryDelaySeconds, reason, GLOBAL_KIND, globalJobKey(cwd), ownershipToken);
+`,
+		nowSec,
+		nowSec + retryDelaySeconds,
+		reason,
+		GLOBAL_KIND,
+		globalJobKey(cwd),
+		ownershipToken,
+	);
 	return Number(result.changes ?? 0) > 0;
 }
 
@@ -564,15 +704,22 @@ export function markGlobalPhase2FailedUnowned(
 	params: { retryDelaySeconds: number; reason: string; nowSec: number; cwd: string },
 ): boolean {
 	const { retryDelaySeconds, reason, nowSec, cwd } = params;
-	const result = db
-		.prepare(`
+	const result = runPrepared(
+		db,
+		`
 UPDATE jobs
 SET status = 'error', finished_at = ?, lease_until = NULL, retry_at = ?,
 	retry_remaining = CASE WHEN retry_remaining > 0 THEN retry_remaining - 1 ELSE 0 END,
 	last_error = ?
 WHERE kind = ? AND job_key = ? AND status = 'running'
 	AND (ownership_token IS NULL OR lease_until IS NULL OR lease_until <= ?)
-`)
-		.run(nowSec, nowSec + retryDelaySeconds, reason, GLOBAL_KIND, globalJobKey(cwd), nowSec);
+`,
+		nowSec,
+		nowSec + retryDelaySeconds,
+		reason,
+		GLOBAL_KIND,
+		globalJobKey(cwd),
+		nowSec,
+	);
 	return Number(result.changes ?? 0) > 0;
 }

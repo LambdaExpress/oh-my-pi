@@ -809,7 +809,12 @@ export class SessionTools {
 		);
 	}
 
-	async #applyActiveToolsByName(toolNames: string[], forcePromptRefresh = false, signal?: AbortSignal): Promise<void> {
+	async #applyActiveToolsByName(
+		toolNames: string[],
+		forcePromptRefresh = false,
+		signal?: AbortSignal,
+		mountedTarget?: ReadonlySet<string>,
+	): Promise<void> {
 		signal?.throwIfAborted();
 		toolNames = normalizeToolNames(toolNames);
 		let builtInWriteAvailable = this.#builtInToolNames.has("write");
@@ -828,11 +833,18 @@ export class SessionTools {
 			this.#runtimeSelectedToolNames
 				? this.#runtimeSelectedToolNames.has(name)
 				: this.#presentationPinnedToolNames?.has(name) === true;
+		// Capability-backed devices (e.g. the SSH tools mounted by
+		// `replaceSshCapabilityTool`) are mounted outside the transport gate and
+		// must survive a repartitioning pass: a name the caller designates as
+		// mounted — or that is already mounted for direct callers — stays mounted
+		// while it remains enabled, built-in, mountable, and unpinned. The
+		// read/write transport gate below governs NEW mounts only.
+		const preservedMounts = mountedTarget ?? this.#xdev?.mountedNames ?? new Set<string>();
 		const mountCandidates = selectedTools.filter(
 			({ name, tool }) =>
 				this.#xdev !== undefined &&
-				xdevReadAvailable &&
-				xdevWriteAvailable &&
+				((xdevReadAvailable && xdevWriteAvailable) ||
+					(preservedMounts.has(name) && this.#builtInToolNames.has(name))) &&
 				!isPresentationPinned(name) &&
 				isMountableUnderXdev(tool),
 		);
@@ -1172,7 +1184,7 @@ export class SessionTools {
 			normalized.filter(name => !mounted.has(name) && !(name === "write" && transportWriteActive)),
 		);
 		try {
-			await this.#applyActiveToolsByName(normalized, forcePromptRefresh, signal);
+			await this.#applyActiveToolsByName(normalized, forcePromptRefresh, signal, mounted);
 		} catch (error) {
 			this.#runtimeSelectedToolNames = previousRuntimeSelectedToolNames;
 			throw error;

@@ -10,6 +10,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 async function flushMicrotasks(): Promise<void> {
 	await Promise.resolve();
@@ -29,6 +30,7 @@ describe("InteractiveMode loop auto-submit", () => {
 
 	beforeEach(async () => {
 		resetSettingsForTest();
+		setLocale("en");
 		tempDir = TempDir.createSync("@pi-loop-auto-submit-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
@@ -53,6 +55,7 @@ describe("InteractiveMode loop auto-submit", () => {
 		mode?.stop();
 		vi.useRealTimers();
 		vi.restoreAllMocks();
+		setLocale(null);
 		await session?.dispose();
 		authStorage?.close();
 		tempDir?.removeSync();

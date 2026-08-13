@@ -149,9 +149,14 @@ describe("BashExecutionComponent expand footer", () => {
 	const ui = { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI;
 
 	beforeEach(async () => {
+		setLocale("en");
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
 		setThemeInstance(theme!);
+	});
+
+	afterEach(() => {
+		setLocale(null);
 	});
 
 	// PREVIEW_LINES is 20: 27 lines leaves 7 hidden in the collapsed preview.

@@ -39,9 +39,11 @@ const ENV_KEYS = [
 ] as const;
 
 function quoteForConfig(p: string): string {
-	if (!/[\s"]/.test(p)) return p;
-	// Wrap in double quotes; our tokenizer preserves backslashes so Windows
-	// paths survive without further escaping.
+	if (!/[\s"\\]/.test(p)) return p;
+	// Wrap in double quotes; our tokenizer preserves backslashes inside double
+	// quotes so Windows paths survive without further escaping. Unquoted
+	// backslashes are escape characters in the POSIX-style tokenizer and would
+	// be swallowed (C:\Users\... would collapse to C:Users...).
 	return `"${p.replace(/(["])/g, "\\$1")}"`;
 }
 

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
@@ -10,6 +10,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 /**
  * Regression for issue #5064.
@@ -30,12 +31,17 @@ describe("AgentSession manual snapcompact text-only fallback", () => {
 	let authStorage: AuthStorage | undefined;
 	let tempDir: TempDir | undefined;
 
+	beforeEach(() => {
+		setLocale("en");
+	});
+
 	afterEach(async () => {
 		try {
 			await session?.dispose();
 		} finally {
 			authStorage?.close();
 			await tempDir?.remove();
+			setLocale(null);
 			vi.restoreAllMocks();
 			session = undefined;
 			authStorage = undefined;

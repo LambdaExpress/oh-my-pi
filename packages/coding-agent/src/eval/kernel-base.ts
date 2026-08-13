@@ -61,6 +61,15 @@ export interface BaseKernelOptions<TExecuteOptions extends KernelExecuteOptions 
 	traceIpc: boolean;
 	/** Wire payload asking the runner to exit cleanly. */
 	exitPayload: string;
+	/**
+	 * Optional wire payload that asks the runner to interrupt the in-flight
+	 * cell. Used on Windows, where `Subprocess.kill("SIGINT")` is emulated
+	 * with `TerminateProcess` and would destroy the persistent kernel instead
+	 * of unwinding user code; the runner translates the frame into an
+	 * exception in the executing code (see the Python runner's in-band
+	 * interrupt handling). Absent on platforms where a real SIGINT works.
+	 */
+	interruptPayload?: string;
 	/** How long to wait after SIGINT before escalating to subprocess termination. */
 	interruptEscalationMs: number;
 	/** Default grace period applied by {@link BaseKernel.shutdown}. */
@@ -215,7 +224,7 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 			void this.interrupt();
 			const escalation = setTimeout(() => {
 				if (pending.settled) return;
-				logger.warn(`${this.#options.languageName} runner did not respond to SIGINT; terminating subprocess`, {
+				logger.warn(`${this.#options.languageName} runner did not respond to interrupt; terminating subprocess`, {
 					kernelId: this.id,
 				});
 				pending.kernelKilled = true;
@@ -284,6 +293,21 @@ export abstract class BaseKernel<TExecuteOptions extends KernelExecuteOptions = 
 
 	async interrupt(): Promise<void> {
 		if (!this.#proc || this.#disposed) return;
+		// On Windows Bun emulates `kill("SIGINT")` with `TerminateProcess`,
+		// which kills the kernel outright instead of interrupting the cell —
+		// losing all session state. Runners that can interrupt in-band declare
+		// an interrupt payload; send that first and only fall back to a
+		// (hard-killing on Windows) signal when the control pipe is gone.
+		if (process.platform === "win32" && this.#options.interruptPayload !== undefined) {
+			try {
+				await this.#writeLine(this.#options.interruptPayload);
+				return;
+			} catch (err) {
+				logger.warn(`Failed to interrupt ${this.#options.languageName.toLowerCase()} runner over stdin`, {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
 		try {
 			this.#proc.kill("SIGINT");
 		} catch (err) {

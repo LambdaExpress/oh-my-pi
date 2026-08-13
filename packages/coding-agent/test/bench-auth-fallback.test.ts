@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type {
 	Api,
 	ApiKeyResolver,
@@ -10,6 +10,15 @@ import type {
 } from "@oh-my-pi/pi-ai";
 import { type BenchModelRegistry, type BenchSummary, runBenchCommand } from "@oh-my-pi/pi-coding-agent/cli/bench-cli";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { setLocale } from "../src/i18n";
+
+beforeEach(() => {
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 function fakeModel(provider: string, id: string): Model<Api> {
 	return {

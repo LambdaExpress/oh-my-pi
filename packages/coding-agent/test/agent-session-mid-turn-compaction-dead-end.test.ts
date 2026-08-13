@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
@@ -14,6 +14,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const noopSchema = type({});
 const noopTool: AgentTool<typeof noopSchema, undefined> = {
@@ -38,10 +39,15 @@ describe("AgentSession mid-turn compaction dead-end", () => {
 	let authStorage: AuthStorage;
 	let session: AgentSession;
 
+	beforeEach(() => {
+		setLocale("en");
+	});
+
 	afterEach(async () => {
 		await session?.dispose();
 		authStorage?.close();
 		await tempDir?.remove();
+		setLocale(null);
 		vi.restoreAllMocks();
 	});
 

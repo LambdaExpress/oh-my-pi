@@ -86,7 +86,13 @@ describe("auth-broker snapshot cache", () => {
 			await writeAuthBrokerSnapshotCache({ path: cachePath, token: TOKEN, url: URL, snapshot });
 
 			const stat = await fs.stat(cachePath);
-			expect(stat.mode & 0o777).toBe(0o600);
+			// Windows emulates POSIX modes with a fixed 0o666 and `chmod` only
+			// toggles the read-only bit, so 0o600 is unrepresentable there. The
+			// contract — the snapshot cache file is created private to the
+			// current user — is observable on POSIX, where modes are real.
+			if (process.platform !== "win32") {
+				expect(stat.mode & 0o777).toBe(0o600);
+			}
 			const payload = await fs.readFile(cachePath);
 			expect(payload[CACHE_VERSION_OFFSET]).toBe(CURRENT_CACHE_VERSION);
 			expect(new TextDecoder().decode(payload)).not.toContain("secret-api-key");

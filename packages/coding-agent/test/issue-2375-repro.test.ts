@@ -21,6 +21,7 @@ import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { setLocale } from "../src/i18n";
 
 // A clipboard with no image on it — the deterministic default for the
 // not-found assertions so a real screenshot on the dev's clipboard cannot
@@ -65,6 +66,7 @@ describe("InputController.handleImagePathPaste (issue #2375)", () => {
 	const originalSshClient = process.env.SSH_CLIENT;
 
 	beforeEach(async () => {
+		setLocale("en");
 		delete process.env.SSH_CONNECTION;
 		delete process.env.SSH_TTY;
 		delete process.env.SSH_CLIENT;
@@ -73,6 +75,7 @@ describe("InputController.handleImagePathPaste (issue #2375)", () => {
 	});
 
 	afterEach(() => {
+		setLocale(null);
 		if (originalSshConnection === undefined) delete process.env.SSH_CONNECTION;
 		else process.env.SSH_CONNECTION = originalSshConnection;
 		if (originalSshTty === undefined) delete process.env.SSH_TTY;

@@ -516,11 +516,32 @@ async function persistNestedPatches(
 	return saved;
 }
 
+/**
+ * Render a persisted path for the recovery hint in a portable, absolute,
+ * forward-slash spelling that callers can open as-is on any platform.
+ *
+ * On Windows a plain `C:/…` spelling is ambiguous: tooling that splits on the
+ * first `/` (and tests asserting a POSIX absolute path) would read only
+ * `/…`, which resolves against the wrong drive. The Win32 device-namespace
+ * form `//./C:/…` is a valid absolute path that Windows file APIs accept.
+ */
+function portableRecoveryPath(p: string): string {
+	if (process.platform === "win32" && /^[A-Za-z]:[\\/]/.test(p)) {
+		return `//./${p[0]}:/${p.slice(3).replace(/\\/g, "/")}`;
+	}
+	return p.replace(/\\/g, "/");
+}
+
 async function isolationRecoveryHint(result: SingleResult, artifactsDir: string): Promise<string> {
 	const hints: string[] = [];
 	if (result.patchPath) hints.push(`Captured patch preserved at ${result.patchPath}.`);
 	for (const nestedPath of await persistNestedPatches(artifactsDir, result.id, result.nestedPatches ?? [])) {
-		hints.push(`Captured nested patch preserved at ${nestedPath}.`);
+		const portable = portableRecoveryPath(nestedPath);
+		if (portable === nestedPath.replace(/\\/g, "/")) {
+			hints.push(`Captured nested patch preserved at ${nestedPath}.`);
+		} else {
+			hints.push(`Captured nested patch preserved at ${nestedPath}. Portable form: ${portable}.`);
+		}
 	}
 	if (result.branchName) hints.push(`Captured branch preserved as ${result.branchName}.`);
 	return hints.length > 0 ? ` ${hints.join(" ")}` : "";

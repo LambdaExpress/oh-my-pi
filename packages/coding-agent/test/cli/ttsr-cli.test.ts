@@ -11,6 +11,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/cli/ttsr-cli";
 import { resetSettingsForTest } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getProjectAgentDir, getProjectDir, removeSyncWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../../src/i18n";
 
 let testTmpDir: string;
 
@@ -97,7 +98,15 @@ function cleanupTmp(): void {
 }
 
 describe("omp ttsr", () => {
+	beforeEach(() => {
+		// Rendered TTSR output (scan headers, triggered/matches lines, notes,
+		// error messages) localizes on zh-CN auto-detecting machines; pin
+		// English so assertions are host-independent.
+		setLocale("en");
+	});
+
 	afterEach(() => {
+		setLocale(null);
 		restoreStreams();
 		cleanupTmp();
 	});

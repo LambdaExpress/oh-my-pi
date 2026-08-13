@@ -534,7 +534,11 @@ describe("Agent hub double-← gating", () => {
 			collabGuest: { agentRegistry: agents, hubRemote: undefined },
 			focusAgentSession: async () => {},
 			session: { getToolByName: () => undefined, extensionRunner: undefined },
-			sessionManager: { getCwd: () => TEST_CWD, getSessionFile: () => sessionFile, getSessionId: () => "test-session" },
+			sessionManager: {
+				getCwd: () => TEST_CWD,
+				getSessionFile: () => sessionFile,
+				getSessionId: () => "test-session",
+			},
 			hideThinkingBlock: false,
 		};
 		const controller = new SelectorController(ctx as unknown as InteractiveModeContext);

@@ -416,6 +416,12 @@ if "__omp_prelude_loaded__" not in globals():
             ) from None
         if not isinstance(data, dict) or not data.get("ok"):
             msg = (data or {}).get("error") if isinstance(data, dict) else None
+            if msg and "eval cell was interrupted" in msg:
+                # The host aborted this cell. Surface as KeyboardInterrupt so a
+                # parallel() fan-out settles as cancelled (the same way the
+                # in-band interrupt does) instead of a bridge failure, even
+                # when worker futures error before the injected exception.
+                raise KeyboardInterrupt("Execution interrupted")
             raise RuntimeError(msg or f"bridge call {name!r} failed")
         return data.get("value")
 

@@ -1,4 +1,4 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,6 +14,15 @@ import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-m
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import * as sshConfigWriter from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
 import { removeWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
+
+beforeEach(() => {
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 interface FakeAcpBuiltinSession {
 	fastMode: boolean;

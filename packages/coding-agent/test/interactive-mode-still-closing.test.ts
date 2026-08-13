@@ -9,6 +9,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 async function flushMicrotasks(): Promise<void> {
 	await Promise.resolve();
@@ -27,6 +28,7 @@ describe("InteractiveMode long shutdown status", () => {
 	});
 
 	beforeEach(async () => {
+		setLocale("en");
 		resetSettingsForTest();
 		tempDir = TempDir.createSync("@omp-still-closing-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
@@ -49,6 +51,7 @@ describe("InteractiveMode long shutdown status", () => {
 	afterEach(async () => {
 		vi.useRealTimers();
 		mode.stop();
+		setLocale(null);
 		vi.restoreAllMocks();
 		await session.dispose();
 		authStorage.close();

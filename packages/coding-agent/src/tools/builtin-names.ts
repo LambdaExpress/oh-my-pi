@@ -8,7 +8,6 @@ export const BUILTIN_TOOL_NAMES = [
 	"ask",
 	"debug",
 	"eval",
-	"ssh",
 	"ssh_transfer",
 	"ssh_session",
 	"github",

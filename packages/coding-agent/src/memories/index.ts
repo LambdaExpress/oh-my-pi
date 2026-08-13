@@ -189,7 +189,7 @@ async function readMemoryToolDeveloperInstructionsSnapshot(
 
 	let summary = "";
 	try {
-		summary = (await Bun.file(path.join(memoryRoot, "memory_summary.md")).text()).trim();
+		summary = (await fs.readFile(path.join(memoryRoot, "memory_summary.md"), "utf8")).trim();
 	} catch {
 		// Missing or unreadable summary — injection is best-effort; fall through
 		// so any captured lessons still surface on their own.
@@ -654,7 +654,7 @@ async function collectThreads(session: AgentSession, currentThreadId?: string): 
 		let cwd = "";
 		let id = name.slice(0, -6);
 		try {
-			const fileText = await Bun.file(fullPath).text();
+			const fileText = await fs.readFile(fullPath, "utf8");
 			let sawTitleSlot = false;
 			for (const rawLine of fileText.split(/\r?\n/)) {
 				const line = rawLine.trim();
@@ -743,7 +743,7 @@ async function runStage1Job(options: {
 > {
 	const { claim, model, apiKey, modelMaxTokens, config } = options;
 	try {
-		const rolloutRaw = await Bun.file(claim.rolloutPath).text();
+		const rolloutRaw = await fs.readFile(claim.rolloutPath, "utf8");
 		const persisted = extractPersistableMessages(rolloutRaw);
 		const serializedItems = JSON.stringify(persisted);
 		const budgetTokens = Math.min(
@@ -819,7 +819,7 @@ async function syncPhase2Artifacts(memoryRoot: string, outputs: Stage1OutputRow[
 		const body = [`thread_id: ${row.threadId}`, `updated_at: ${row.sourceUpdatedAt}`, "", row.rolloutSummary].join(
 			"\n",
 		);
-		await Bun.write(path.join(summariesDir, filename), `${body.trim()}\n`);
+		await writeMemoryFile(path.join(summariesDir, filename), `${body.trim()}\n`);
 	}
 
 	const currentFiles = await fs.readdir(summariesDir).catch(() => [] as string[]);
@@ -830,7 +830,7 @@ async function syncPhase2Artifacts(memoryRoot: string, outputs: Stage1OutputRow[
 	}
 
 	const rawBody = buildRawMemoriesMarkdown(outputs);
-	await Bun.write(path.join(memoryRoot, "raw_memories.md"), rawBody);
+	await writeMemoryFile(path.join(memoryRoot, "raw_memories.md"), rawBody);
 }
 
 async function cleanupConsolidatedArtifacts(memoryRoot: string): Promise<void> {
@@ -859,9 +859,7 @@ async function readRolloutSummaries(memoryRoot: string): Promise<string> {
 
 	const blocks: string[] = [];
 	for (const name of summaryNames) {
-		const text = await Bun.file(path.join(summariesDir, name))
-			.text()
-			.catch(() => "");
+		const text = await fs.readFile(path.join(summariesDir, name), "utf8").catch(() => "");
 		if (!text.trim()) continue;
 		blocks.push(`--- ${name} ---\n${text.trim()}`);
 	}
@@ -886,7 +884,7 @@ async function runConsolidationModel(options: {
 	}>;
 }> {
 	const { memoryRoot, model, apiKey } = options;
-	const rawMemories = await Bun.file(path.join(memoryRoot, "raw_memories.md")).text();
+	const rawMemories = await fs.readFile(path.join(memoryRoot, "raw_memories.md"), "utf8");
 	const rolloutSummaries = await readRolloutSummaries(memoryRoot);
 	const input = prompt.render(consolidationTemplate, {
 		raw_memories: truncateByApproxTokens(rawMemories, 20_000),
@@ -964,8 +962,8 @@ async function applyConsolidation(
 		}>;
 	},
 ): Promise<void> {
-	await Bun.write(path.join(memoryRoot, "MEMORY.md"), `${consolidated.memoryMd.trim()}\n`);
-	await Bun.write(path.join(memoryRoot, "memory_summary.md"), `${consolidated.memorySummary.trim()}\n`);
+	await writeMemoryFile(path.join(memoryRoot, "MEMORY.md"), `${consolidated.memoryMd.trim()}\n`);
+	await writeMemoryFile(path.join(memoryRoot, "memory_summary.md"), `${consolidated.memorySummary.trim()}\n`);
 	const skillsDir = path.join(memoryRoot, "skills");
 	await fs.mkdir(skillsDir, { recursive: true });
 	const keep = new Set<string>();
@@ -986,7 +984,7 @@ async function applyConsolidation(
 		}
 
 		for (const [relativePath, content] of [...files.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-			await Bun.write(path.join(dir, ...relativePath.split("/")), content);
+			await writeMemoryFile(path.join(dir, ...relativePath.split("/")), content);
 		}
 
 		const keepFiles = new Set(files.keys());
@@ -1273,6 +1271,16 @@ function loadMemoryConfig(settings: Settings): MemoryRuntimeConfig {
 	};
 }
 
+/**
+ * Write a file under a memory root, creating its parent directory first.
+ * Node's fs.writeFile (unlike Bun.write) fails with ENOENT when the parent
+ * directory does not exist, and memory roots are created lazily at runtime.
+ */
+async function writeMemoryFile(target: string, content: string): Promise<void> {
+	await fs.mkdir(path.dirname(target), { recursive: true });
+	await fs.writeFile(target, content);
+}
+
 export function getMemoryRoot(agentDir: string, cwd: string): string {
 	return path.join(getMemoriesDir(agentDir), encodeProjectPath(cwd));
 }
@@ -1363,7 +1371,7 @@ export async function saveLearnedLesson(
 async function appendLearnedLine(filePath: string, line: string): Promise<void> {
 	let existing = "";
 	try {
-		existing = await Bun.file(filePath).text();
+		existing = await fs.readFile(filePath, "utf8");
 	} catch (err) {
 		if (!isEnoent(err)) throw err;
 	}
@@ -1391,7 +1399,7 @@ async function appendLearnedLine(filePath: string, line: string): Promise<void> 
 			lessonCount--;
 		}
 	}
-	await Bun.write(filePath, `${out.join("\n")}\n`);
+	await writeMemoryFile(filePath, `${out.join("\n")}\n`);
 }
 
 /**
@@ -1402,7 +1410,7 @@ async function appendLearnedLine(filePath: string, line: string): Promise<void> 
 async function readLearnedLessons(memoryRoot: string): Promise<string> {
 	let raw = "";
 	try {
-		raw = (await Bun.file(path.join(memoryRoot, LEARNED_LESSONS_FILE)).text()).trim();
+		raw = (await fs.readFile(path.join(memoryRoot, LEARNED_LESSONS_FILE), "utf8")).trim();
 	} catch {
 		return "";
 	}

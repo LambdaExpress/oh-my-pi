@@ -48,6 +48,10 @@ async function runScenario(scenario: string): Promise<ScenarioResult> {
 			env: {
 				...process.env,
 				HOME: primaryDir,
+				// Windows homedir resolution ignores $HOME and reads
+				// $USERPROFILE; point it at the fixture root so the default
+				// file transport lands in primaryDir/.omp/logs there too.
+				...(process.platform === "win32" ? { USERPROFILE: primaryDir } : {}),
 				PI_CONFIG_DIR: ".omp",
 				OMP_PROFILE: "",
 				PI_PROFILE: "",

@@ -192,8 +192,14 @@ describe("github-cache db layer", () => {
 		const db = openDb();
 
 		expect(db).not.toBeNull();
-		const stat = await fs.stat(parent);
-		expect(stat.mode & 0o777).toBe(0o755);
+		// Windows emulates POSIX modes with a fixed 0o666 and `chmod` only
+		// toggles the read-only bit, so 0o755 is unrepresentable there. The
+		// contract — openDb() must not chmod an existing caller-owned parent —
+		// is observable on POSIX, where modes are real.
+		if (process.platform !== "win32") {
+			const stat = await fs.stat(parent);
+			expect(stat.mode & 0o777).toBe(0o755);
+		}
 	});
 
 	it("preserves rows across openDb() and honors the configured hard TTL via per-lookup sweep", async () => {

@@ -1451,12 +1451,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		// for every secrets.enabled session; a session whose content never
 		// contains a credential-shaped token must not require the key, otherwise a
 		// headless run on an unwritable default config root pays for a feature it
-		// does not use.
-		const needsPlaceholderKey = secretEntriesNeedPlaceholderKey([
-			...envEntries,
-			...fileEntries,
-			...sshPasswordEntries,
-		]);
+		// does not use. SSH host passwords are the same dynamic class: they are
+		// obfuscated once collected, but ambient ~/.ssh/config hosts must not mint
+		// the key file for every session, so they stay out of this gate too.
+		const needsPlaceholderKey = secretEntriesNeedPlaceholderKey([...envEntries, ...fileEntries]);
 		const explicitAgentDir = options.agentDir;
 		const placeholderKey = needsPlaceholderKey
 			? await getSecretPlaceholderKey(explicitAgentDir)

@@ -557,8 +557,7 @@ export class MnemopiSessionState {
 	#restoreRetainedTurnCursor(): void {
 		if (this.#retentionCursorLoaded) return;
 		this.#retentionCursorLoaded = true;
-		const rows = this.memory.beam.db
-			.prepare<MnemopiRetentionCursorRow, [string]>(`
+		const statement = this.memory.beam.db.prepare<MnemopiRetentionCursorRow, [string]>(`
 				SELECT
 					content,
 					json_extract(metadata_json, '$.source_id') AS sourceId,
@@ -568,9 +567,13 @@ export class MnemopiSessionState {
 				WHERE source = 'coding-agent-transcript'
 				  AND json_extract(metadata_json, '$.session_id') = ?
 				ORDER BY rowid
-			`)
-			.all(this.sessionId);
-		this.lastRetainedTurn = Math.max(this.lastRetainedTurn, deriveRetainedTurnCursor(rows, this.sessionId));
+			`);
+		try {
+			const rows = statement.all(this.sessionId);
+			this.lastRetainedTurn = Math.max(this.lastRetainedTurn, deriveRetainedTurnCursor(rows, this.sessionId));
+		} finally {
+			statement.finalize();
+		}
 	}
 
 	attachSessionListeners(): void {
