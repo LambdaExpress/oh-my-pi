@@ -9,6 +9,7 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import * as path from "node:path";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import {
 	RedisSessionStorage,
@@ -155,7 +156,7 @@ describe("SessionManager + RedisSessionStorage", () => {
 	it("persists appended assistant messages into Redis and reloads them via open()", async () => {
 		const redis = createFakeRedis();
 		const storage = await RedisSessionStorage.create({ client: redis });
-		const sessionDir = "/sessions/proj";
+		const sessionDir = path.join("/sessions", "proj");
 
 		const manager = SessionManager.create("/cwd", sessionDir, storage);
 		manager.appendMessage({
@@ -206,7 +207,7 @@ describe("SessionManager + RedisSessionStorage", () => {
 	it("SessionManager.list returns Redis-backed sessions for the cwd", async () => {
 		const redis = createFakeRedis();
 		const storage = await RedisSessionStorage.create({ client: redis });
-		const sessionDir = "/sessions/list-proj";
+		const sessionDir = path.join("/sessions", "list-proj");
 
 		const a = SessionManager.create("/cwd", sessionDir, storage);
 		a.appendMessage({

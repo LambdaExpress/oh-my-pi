@@ -8,9 +8,10 @@
  * - Custom messages render as one-liners (`[irc] from → me: …`).
  * - No system prompt / tool catalog sections.
  */
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { formatSessionHistoryMarkdown } from "@oh-my-pi/pi-coding-agent/session/session-history-format";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
+import { setLocale } from "../../src/i18n";
 
 function buildMessages(): unknown[] {
 	return [
@@ -57,6 +58,16 @@ function buildMessages(): unknown[] {
 }
 
 describe("formatSessionHistoryMarkdown", () => {
+	beforeEach(() => {
+		// Rendered transcript labels localize (⇒ ok → 确定、error → 错误、me → 我);
+		// pin English so assertions are stable on zh-CN auto-detecting machines.
+		setLocale("en");
+	});
+
+	afterEach(() => {
+		setLocale(null);
+	});
+
 	it("renders role headers, collapses tool pairs to one line, and elides thinking", () => {
 		const output = formatSessionHistoryMarkdown(buildMessages());
 
