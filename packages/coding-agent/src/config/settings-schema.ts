@@ -1095,7 +1095,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Collapse Completed Runs",
 			description:
-				"Keep a completed run fully on screen while you read it; when you send your next message, collapse it to its initial request and final assistant answer",
+				"Keep a completed run fully on screen while you read it; when you send your next message, collapse it to its initial request and final assistant answer. Pre-compaction display history remains available so older runs can be expanded",
 		},
 	},
 
@@ -1107,7 +1107,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Collapse Compacted History",
 			description:
-				"Collapse pre-compaction history behind the summary divider on the live transcript; disable to keep the full transcript inline with dividers at each compaction point",
+				"Collapse pre-compaction history behind the summary divider on the live transcript; ignored while completed-run collapsing is enabled so older runs remain expandable",
 		},
 	},
 

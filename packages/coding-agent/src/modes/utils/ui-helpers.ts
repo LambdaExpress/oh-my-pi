@@ -40,7 +40,12 @@ import { UserMessageComponent } from "../../modes/components/user-message";
 import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../../modes/controllers/tool-args-reveal";
 import { materializeImageReferenceLinksSync } from "../../modes/image-references";
 import { theme } from "../../modes/theme/theme";
-import type { CompactionQueuedMessage, InteractiveModeContext, RenderSessionContextOptions } from "../../modes/types";
+import type {
+	CompactionQueuedMessage,
+	InteractiveModeContext,
+	RenderInitialMessagesOptions,
+	RenderSessionContextOptions,
+} from "../../modes/types";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
 	type CustomMessage,
@@ -60,15 +65,11 @@ import {
 	buildIrcMessageCard,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
+	shouldCollapseCompactedHistoryForDisplay,
 	splitAssistantMessageToolTimeline,
 } from "./transcript-render-helpers";
 
 type TextBlock = { type: "text"; text: string };
-interface RenderInitialMessagesOptions {
-	preserveExistingChat?: boolean;
-	clearTerminalHistory?: boolean;
-}
-
 type QueuedMessages = {
 	steering: string[];
 	followUp: string[];
@@ -709,15 +710,24 @@ export class UiHelpers {
 		this.ctx.pendingMessagesContainer.disposeChildren();
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
+		if (options.recoverCompletedRuns && !this.ctx.viewSession.isStreaming) {
+			// AgentSession is reused by in-process /resume. Replace the WeakMap
+			// index so records from the previously loaded branch cannot affect the
+			// new session's Alt+O expansion state.
+			this.ctx.recoverCompletedRunCollapses({ includeLatest: true, replaceExisting: true });
+		}
 
-		// Live display collapses to the compacted transcript tail unless the
-		// user opted into the full inline history; export/resume callers can
-		// still request either mode. Mid-turn rebuilds
+		// Completed-run collapse projects the full persisted transcript itself,
+		// so keep pre-compaction requests available for Alt+O even when the
+		// separate compacted-history setting is enabled. Mid-turn rebuilds
 		// (focus attach/unfocus while a tool executes) keep dangling toolCalls so
 		// the in-flight call re-renders as pending instead of vanishing;
 		// renderSessionContext then keeps it in `pendingTools` for live routing.
 		const context = this.ctx.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
+			collapseCompactedHistory: shouldCollapseCompactedHistoryForDisplay(
+				this.ctx.settings.get("display.collapseCompacted"),
+				this.ctx.settings.get("display.collapseCompletedRuns"),
+			),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
 		this.ctx.renderSessionContext(context, {

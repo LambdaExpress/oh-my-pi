@@ -439,8 +439,8 @@ export const zhCN: Record<string, string> = {
 	"Advisor: on ({model})": "顾问: 开启（{model}）",
 	"Advisors enabled ({count}):": "已启用顾问（{count}）：",
 	"Advisor{name} unavailable for {model}: {message}": "顾问{name}对{model}不可用：{message}",
-	"Keep a completed run fully on screen while you read it; when you send your next message, collapse it to its initial request and final assistant answer":
-		"阅读时保持已完成轮次完整显示；发送下一条消息时，再将其折叠为初始请求和最终助手回答",
+	"Keep a completed run fully on screen while you read it; when you send your next message, collapse it to its initial request and final assistant answer. Pre-compaction display history remains available so older runs can be expanded":
+		"阅读时保持已完成轮次完整显示；发送下一条消息时，再将其折叠为初始请求和最终助手回答。压缩前的显示历史仍会保留，以便展开更早的轮次",
 	"After an advisor concern or blocker interrupts, route further concerns/blockers non-interruptingly for this many primary turns.":
 		"在顾问的顾虑或阻塞中断后，在接下来的这么多主轮次中，以非中断方式处理后续的顾虑/阻塞。",
 	"After the agent stops, nudge it to capture lessons to memory and create/enhance isolated managed skills":
@@ -826,8 +826,8 @@ export const zhCN: Record<string, string> = {
 	"Collab: {names} — {link}": "协作：{names}——{link}",
 	"Collapse Compacted History": "折叠压缩历史记录",
 	"Collapse Completed Runs": "折叠已完成的运行",
-	"Collapse pre-compaction history behind the summary divider on the live transcript; disable to keep the full transcript inline with dividers at each compaction point":
-		"将预压缩历史折叠到实时记录中摘要分隔线的后面；禁用后则保留完整记录内联，并在每个压缩点显示分隔线",
+	"Collapse pre-compaction history behind the summary divider on the live transcript; ignored while completed-run collapsing is enabled so older runs remain expandable":
+		"将压缩前历史折叠到实时记录的摘要分隔线后；开启已完成轮次折叠时会忽略此设置，以便更早的轮次仍可展开",
 	"Collapse the text to an inline paste marker": "将文本折叠为内联粘贴标记",
 	"Color-Blind Mode": "色盲模式",
 	"Colorblind colors": "色盲配色",

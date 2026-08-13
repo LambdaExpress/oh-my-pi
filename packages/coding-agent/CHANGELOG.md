@@ -38,6 +38,7 @@
 
 ### Changed
 
+- Changed completed-run collapsing to retain the full persisted display transcript across compaction, so older requests remain reachable through terminal scrollback and Alt+O while provider context stays compacted.
 - Changed tool routing prompts to call built-in tools and batched `task` directly by default, reserving `eval` JavaScript orchestration for complex value-dependent loops, branching, pipelines, and structured aggregation.
 - Changed `xd://report_issue` to write structured, reproducible Markdown reports to `D:\project\oh-my-pi\issues`, including agent-supplied reproduction context plus runtime model, platform, cwd, and session metadata, without requiring remote-sharing consent.
 - Changed the status line to drop the default Pi glyph and show subscription usage limits instead of subscription cost markers.
@@ -56,6 +57,9 @@
 
 ### Fixed
 
+- Fixed OpenAI Codex `apply_patch` custom-tool calls falling back to generic raw-input cards after a provider switch; built-in renderer provenance now resolves model-facing wire aliases while direct same-named extension registrations still take precedence.
+- Fixed `display.collapseCompletedRuns` losing the original request boundary after a manual interrupt, replay-safe upstream stream interruption, mid-run compaction, process disconnect, or session reload; `omp --resume` and `/resume` now reconstruct and immediately collapse every completed request including the latest, Alt+O can expand/collapse the recovered records, the compacted tail remains the live rendering source, and simultaneous `tui.scrollbackRebuild` performs one final ConPTY replay instead of replaying expanded then collapsed history.
+- Fixed `stream_interrupted: Upstream stream interrupted after output began` ending replay-safe turns instead of entering automatic retry; empty/thinking-only failures now retry through the existing bounded backoff path, while committed text, images, server tools, and executed tool calls remain fail-closed. Complete but unexecuted tool calls are replayed only when every call has a matching persisted `executed: false` result, including sessions whose tool-result entries are separated by non-message metadata.
 - Fixed `display.collapseCompletedRuns` leaving the interrupted run permanently expanded when a queued message was force-flushed with Enter: the flush now carries explicit force-flush semantics from the input path, the interrupted run's span is parked (kept fully expanded) instead of destroyed when its stale `agent_end` arrives after the queue drained, and both the interrupted run and its continuation collapse atomically with their own summaries once the continuation settles with a natural final reply.
 - Fixed `tui.scrollbackRebuild` on Windows jumping the viewport to the top of the transcript when an answer finalized: ConPTY hosts now defer the scrollback erase-and-replay to the next prompt submission (`TUI.rebuildScrollbackIfDirty()`), when the host viewport is provably at the bottom, so the reader's scroll position is preserved and history still converges to the final content exactly once.
 - Fixed `read` rejecting image members inside ZIP archives with `Cannot read binary archive entry` instead of decoding them inline; archived PNG/JPEG/GIF/WebP members now produce image blocks (or `inspect_image` metadata notes when inspection is active), honoring the same size cap, auto-resize, and WebP-exclusion settings as plain image files.

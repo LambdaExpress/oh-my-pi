@@ -46,6 +46,7 @@ import {
 import { logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { agentPauseGate } from "./pause";
+import { isProviderRefusalMessage, STREAM_INTERRUPTED_AFTER_CONTENT_STOP_DETAIL } from "./replay-policy";
 import { type AgentRunCoverage, type AgentRunSummary, ToolCallBlockedError } from "./run-collector";
 import {
 	type AgentTelemetry,
@@ -83,9 +84,6 @@ import type {
 } from "./types";
 import { ASIDE_MESSAGE_COMMIT, ASIDE_MESSAGE_DISCARD, isSoftToolRequirement } from "./types";
 import { yieldIfDue } from "./utils/yield";
-
-/** Stop-details marker for a provider error after assistant content/tool args already streamed. */
-export const STREAM_INTERRUPTED_AFTER_CONTENT_STOP_DETAIL = "stream_interrupted_after_content";
 
 /** Sentinel returned by the abort race in `streamAssistantResponse`. */
 const ABORTED: unique symbol = Symbol("agent-loop-aborted");
@@ -1959,15 +1957,7 @@ function recoverTransientErrorToolTurn(
 	if (message.stopReason !== "error") return message;
 	const toolCalls = message.content.filter(block => block.type === "toolCall");
 	if (toolCalls.length === 0) return message;
-	const stopDetailType = message.stopDetails?.type;
-	const stopDetailCategory = message.stopDetails?.category;
-	if (
-		stopDetailType === "refusal" ||
-		stopDetailType === "sensitive" ||
-		stopDetailCategory === "refusal" ||
-		stopDetailCategory === "sensitive"
-	)
-		return message;
+	if (isProviderRefusalMessage(message)) return message;
 	const availableToolNames = new Set<string>();
 	for (const tool of availableTools) {
 		availableToolNames.add(tool.name);

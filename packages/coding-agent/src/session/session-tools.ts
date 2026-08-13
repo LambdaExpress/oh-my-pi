@@ -403,14 +403,30 @@ export class SessionTools {
 		return this.#toolRegistry.has("edit");
 	}
 
-	/** Looks up a registered tool by name. */
-	getToolByName(name: string): AgentTool | undefined {
-		return this.#toolRegistry.get(name);
+	/**
+	 * Resolve a registry key from either its internal name or its model-facing
+	 * custom-tool wire name. Direct registry names take precedence so an
+	 * extension that deliberately registers the same name as a built-in
+	 * tool's wire alias keeps its own provenance and renderer behavior.
+	 */
+	#resolveRegisteredToolName(name: string): string | undefined {
+		if (this.#toolRegistry.has(name)) return name;
+		for (const [registeredName, tool] of this.#toolRegistry) {
+			if (tool.customWireName === name) return registeredName;
+		}
+		return undefined;
 	}
 
-	/** Whether a registry entry came from a built-in factory. */
+	/** Looks up a registered tool by its internal or model-facing wire name. */
+	getToolByName(name: string): AgentTool | undefined {
+		const registeredName = this.#resolveRegisteredToolName(name);
+		return registeredName === undefined ? undefined : this.#toolRegistry.get(registeredName);
+	}
+
+	/** Whether an internal or model-facing tool name resolves to a built-in factory entry. */
 	hasBuiltInTool(name: string): boolean {
-		return this.#builtInToolNames.has(name);
+		const registeredName = this.#resolveRegisteredToolName(name);
+		return registeredName !== undefined && this.#builtInToolNames.has(registeredName);
 	}
 
 	/** Names of every registered tool. */

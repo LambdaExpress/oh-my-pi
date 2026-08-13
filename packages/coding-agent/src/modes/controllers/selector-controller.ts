@@ -553,9 +553,10 @@ export class SelectorController {
 				this.ctx.ui.resetDisplay();
 				break;
 			case "display.collapseCompacted":
-				// Rebuild swaps between the collapsed tail and the full inline
-				// history; full reset retires blocks already committed to native
-				// scrollback (mirrors cacheMissMarker).
+			case "display.collapseCompletedRuns":
+				// These settings jointly choose the display transcript source and
+				// projection. Rebuild immediately so enabling completed-run collapse
+				// restores pre-compaction history for Alt+O.
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;
@@ -1645,7 +1646,7 @@ export class SelectorController {
 		this.ctx.updateEditorBorderColor();
 
 		// Clear and re-render the chat
-		this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+		this.ctx.renderInitialMessages({ clearTerminalHistory: true, recoverCompletedRuns: true });
 		await this.ctx.reloadTodos();
 		this.ctx.showStatus(
 			movedProject ? t("Resumed session in {path}", { path: shortenPath(newCwd) }) : t("Resumed session"),

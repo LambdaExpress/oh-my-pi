@@ -1064,9 +1064,10 @@ export class TurnRecovery {
 	 * so replaying the turn can duplicate user-visible output or work.
 	 */
 	#hasReplayUnsafeOutput(message: AssistantMessage): boolean {
+		const toolCallsAreReplaySafe = this.#syntheticUnexecutedToolResultTailStart(message) !== undefined;
 		return message.content.some(
 			block =>
-				block.type === "toolCall" ||
+				(block.type === "toolCall" && !toolCallsAreReplaySafe) ||
 				block.type === "image" ||
 				block.type === "anthropicServerTool" ||
 				(block.type === "text" && this.#host.textOutputCommitted() && block.text.trim().length > 0),

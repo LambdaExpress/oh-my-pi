@@ -501,6 +501,43 @@ describe("completed run collapse", () => {
 		expect(resetDisplay).not.toHaveBeenCalled();
 	});
 
+	it("keeps one live collapse span across an upstream stream interruption and manual continuation", async () => {
+		const { controller, recordCompletedRunCollapse } = fixture();
+		const initial = { role: "user", content: "build it", timestamp: 76 } as AgentMessage;
+		const interrupted = assistant("", "error", 77);
+		interrupted.errorMessage = "stream_interrupted: Upstream stream interrupted after output began.";
+		interrupted.stopDetails = {
+			type: "stream_interrupted_after_content",
+			category: null,
+			explanation: interrupted.errorMessage,
+		};
+		const continuation = { role: "user", content: "continue", timestamp: 78 } as AgentMessage;
+		const final = assistant("done", "stop", 79);
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: initial });
+		await controller.handleEvent({ type: "message_end", message: initial });
+		await controller.handleEvent({ type: "message_end", message: interrupted });
+		await controller.handleEvent({ type: "agent_end", messages: [initial, interrupted] });
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: continuation });
+		await controller.handleEvent({ type: "message_end", message: continuation });
+		await controller.handleEvent({ type: "message_end", message: final });
+		await controller.handleEvent({ type: "agent_end", messages: [continuation, final] });
+
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		await controller.handleEvent({ type: "agent_start" });
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		expect(recordCompletedRunCollapse.mock.calls[0]![0]).toEqual(
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+			}),
+		);
+	});
+
 	it("keeps every parked span across repeated force-flushes and commits all three summaries at the end of the chain", async () => {
 		const { controller, session, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
 		const now = vi.spyOn(Date, "now").mockReturnValue(1_000);

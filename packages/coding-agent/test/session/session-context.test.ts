@@ -4,7 +4,7 @@ import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { type CompactionSummaryMessage, INTERRUPTED_THINKING_MESSAGE_TYPE } from "../../src/session/messages";
 import { buildSessionContext, type StrippedToolCallsMarker } from "../../src/session/session-context";
-import type { SessionEntry } from "../../src/session/session-entries";
+import type { SessionEntry, SessionMessageEntry } from "../../src/session/session-entries";
 
 const timestamp = "2026-07-09T00:00:00.000Z";
 
@@ -170,7 +170,12 @@ const assistantUsage: AssistantMessage["usage"] = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-function userEntry(id: string, parentId: string | null, content: string, messageTimestamp: number): SessionEntry {
+function userEntry(
+	id: string,
+	parentId: string | null,
+	content: string,
+	messageTimestamp: number,
+): SessionMessageEntry {
 	return {
 		type: "message",
 		id,
@@ -186,7 +191,7 @@ function assistantEntry(
 	stopReason: AssistantMessage["stopReason"],
 	text: string,
 	messageTimestamp: number,
-): SessionEntry {
+): SessionMessageEntry {
 	return {
 		type: "message",
 		id,
@@ -211,7 +216,7 @@ function toolCallAssistantEntry(
 	stopReason: AssistantMessage["stopReason"],
 	toolCallId: string,
 	messageTimestamp: number,
-): SessionEntry {
+): SessionMessageEntry {
 	return {
 		type: "message",
 		id,
@@ -235,7 +240,7 @@ function syntheticToolResultEntry(
 	parentId: string | null,
 	toolCallId: string,
 	messageTimestamp: number,
-): SessionEntry {
+): SessionMessageEntry {
 	return {
 		type: "message",
 		id,
@@ -365,6 +370,62 @@ describe("buildSessionContext failed replay tails", () => {
 
 		expect(context.messages.map(message => message.role)).toEqual(["user"]);
 		expectUserTail(context.messages, "write the plan");
+	});
+
+	it("drops every recovered synthetic tool result across non-message metadata entries", () => {
+		const failed = toolCallAssistantEntry("assistant", "user", "error", "call-1", 2);
+		if (failed.type !== "message" || failed.message.role !== "assistant") {
+			throw new Error("Expected failed assistant entry");
+		}
+		failed.message.content.push({
+			type: "toolCall",
+			id: "call-2",
+			name: "write",
+			arguments: { path: "notes.md", content: "y" },
+		});
+		failed.message.retryRecovery = {
+			kind: "auto-retry",
+			status: "recovered",
+			attempt: 1,
+			recoveredAt: timestamp,
+			recovery: "plain",
+			note: "error; retried",
+			supersededBy: {
+				timestamp: 7,
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+			},
+		};
+		const metadataOne: SessionEntry = {
+			type: "custom",
+			id: "metadata-1",
+			parentId: "assistant",
+			timestamp,
+			customType: "tool-display-snapshot",
+		};
+		const resultOne = syntheticToolResultEntry("result-1", "metadata-1", "call-1", 3);
+		const metadataTwo: SessionEntry = {
+			type: "custom",
+			id: "metadata-2",
+			parentId: "result-1",
+			timestamp,
+			customType: "tool-display-snapshot",
+		};
+		const resultTwo = syntheticToolResultEntry("result-2", "metadata-2", "call-2", 4);
+		const final = assistantEntry("final", "result-2", "stop", "recovered", 7);
+
+		const context = buildSessionContext([
+			userEntry("user", null, "write both files", 1),
+			failed,
+			metadataOne,
+			resultOne,
+			metadataTwo,
+			resultTwo,
+			final,
+		]);
+
+		expect(context.messages.map(message => message.role)).toEqual(["user", "assistant"]);
+		expect(context.messages.at(-1)).toEqual(final.message);
 	});
 
 	it("keeps the failed tool-call turn and its result in transcript mode", () => {

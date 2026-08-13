@@ -41,6 +41,7 @@ import type { InteractiveModeContext } from "../../modes/types";
 import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
 import { buildHotkeysMarkdown } from "../../modes/utils/hotkeys-markdown";
 import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
+import { shouldCollapseCompactedHistoryForDisplay } from "../../modes/utils/transcript-render-helpers";
 import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
@@ -1466,11 +1467,15 @@ export class CommandController {
 			this.ctx.rebuildChatFromMessages({ reuseSettledComponents: true });
 
 			this.ctx.statusLine.invalidate();
-			// Same as the auto-compaction rebuild: a collapsed transcript is an
-			// intentional replacement, so drop the stale pre-compaction scrollback
-			// instead of repainting the shrunken frame below it. With collapse
-			// disabled the full history stays inline and scrollback is kept.
-			if (this.ctx.settings.get("display.collapseCompacted")) {
+			// Clear only when the visible transcript actually shrinks to the
+			// compacted tail. Completed-run collapse retains the full transcript and
+			// applies its own reversible projection, so its scrollback must survive.
+			if (
+				shouldCollapseCompactedHistoryForDisplay(
+					this.ctx.settings.get("display.collapseCompacted"),
+					this.ctx.settings.get("display.collapseCompletedRuns"),
+				)
+			) {
 				this.ctx.ui.requestRender(true, { clearScrollback: true });
 			} else {
 				this.ctx.ui.requestRender();

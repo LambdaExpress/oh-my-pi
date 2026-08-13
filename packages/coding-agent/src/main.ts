@@ -531,7 +531,11 @@ async function runInteractiveMode(
 	// Every in-process session load also uses `clearTerminalHistory`; cold launch
 	// follows the same clean-cutover path instead of preserving a previous run's
 	// transcript above the fresh one.
-	mode.renderInitialMessages({ preserveExistingChat: true, clearTerminalHistory: true });
+	mode.renderInitialMessages({
+		preserveExistingChat: true,
+		clearTerminalHistory: true,
+		recoverCompletedRuns: resuming,
+	});
 
 	for (const notify of notifs) {
 		if (!notify) {

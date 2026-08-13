@@ -119,6 +119,13 @@ export interface RenderSessionContextOptions {
 	insertAfterMessage?: (message: AgentMessage) => Component | undefined;
 }
 
+export interface RenderInitialMessagesOptions {
+	preserveExistingChat?: boolean;
+	clearTerminalHistory?: boolean;
+	/** Reconstruct every completed request, including the latest, when loading persisted history. */
+	recoverCompletedRuns?: boolean;
+}
+
 export interface InteractiveModeContext {
 	// UI access
 	ui: TUI;
@@ -347,7 +354,7 @@ export interface InteractiveModeContext {
 		},
 	): Component[];
 	renderSessionContext(sessionContext: SessionContext, options?: RenderSessionContextOptions): void;
-	renderInitialMessages(options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean }): void;
+	renderInitialMessages(options?: RenderInitialMessagesOptions): void;
 	getUserMessageText(message: Message): string;
 	findLastAssistantMessage(): AssistantMessage | undefined;
 	extractAssistantText(message: AssistantMessage): string;
@@ -355,8 +362,10 @@ export interface InteractiveModeContext {
 	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;
 	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
-	/** Record a display-only projection for one naturally completed agent run. */
-	recordCompletedRunCollapse(collapse: CompletedRunCollapse): void;
+	/** Record a display-only projection for one completed request span. */
+	recordCompletedRunCollapse(collapse: CompletedRunCollapse): boolean;
+	/** Recover completed request spans from the persisted transcript. */
+	recoverCompletedRunCollapses(options: { includeLatest: boolean; replaceExisting?: boolean }): boolean;
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(): Promise<void>;
 	toggleTodoExpansion(): void;

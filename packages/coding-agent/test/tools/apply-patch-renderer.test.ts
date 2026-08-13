@@ -2,9 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { SessionTools, type SessionToolsHost } from "@oh-my-pi/pi-coding-agent/session/session-tools";
 import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -76,6 +78,60 @@ describe("apply_patch rendering", () => {
 		expect(rendered).toContain("src/demo.ts");
 		expect(rendered).toContain("+new");
 		expect(rendered).not.toContain("(no output)");
+	});
+
+	it("renders a built-in edit call by its apply_patch wire name", async () => {
+		await getUiTheme();
+		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
+		const editTool = {
+			name: "edit",
+			customWireName: "apply_patch",
+			label: "Edit",
+			description: "Edit files",
+			parameters: { type: "object", additionalProperties: true },
+			async execute() {
+				return { content: [{ type: "text" as const, text: "ok" }] };
+			},
+		} satisfies AgentTool;
+		const sessionTools = new SessionTools(
+			{
+				model: () => undefined,
+			} as unknown as SessionToolsHost,
+			{
+				toolRegistry: new Map([[editTool.name, editTool]]),
+				builtInToolNames: [editTool.name],
+				baseSystemPrompt: [],
+			},
+		);
+		const wireName = editTool.customWireName;
+		const component = new ToolExecutionComponent(
+			wireName,
+			{
+				input: "*** Begin Patch\n*** Update File: src/demo.ts\n@@\n-old\n+new\n*** End Patch",
+			},
+			{
+				useBuiltInRenderer: sessionTools.hasBuiltInTool(wireName),
+			},
+			sessionTools.getToolByName(wireName),
+			uiStub,
+		);
+
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "Updated src/demo.ts" }],
+				details: {
+					path: "src/demo.ts",
+					op: "update",
+					diff: "@@\n-old\n+new",
+				},
+			},
+			false,
+		);
+
+		const rendered = Bun.stripANSI(component.render(140).join("\n"));
+		expect(rendered).toContain("src/demo.ts");
+		expect(rendered).toContain("+new");
+		expect(rendered).not.toContain('input="*** Begin Patch');
 	});
 
 	it("derives call path, operation, and file-count hints from apply_patch input", async () => {

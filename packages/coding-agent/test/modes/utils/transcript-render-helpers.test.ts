@@ -7,6 +7,7 @@ import {
 	assistantUsageIsBilled,
 	collapseCompletedRuns,
 	createCompletedRunSummary,
+	deriveCompletedRunCollapses,
 } from "../../../src/modes/utils/transcript-render-helpers";
 
 function usage(overrides: Partial<Usage> = {}): Usage {
@@ -67,6 +68,145 @@ describe("assistantUsageIsBilled", () => {
 });
 
 describe("completed-run collapse projection", () => {
+	it("keeps the initial request across a manual interrupt and later successful continuation", () => {
+		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
+		const interrupted = assistant([{ type: "text", text: "partial work" }], "aborted", 2);
+		interrupted.errorMessage = "Interrupted by user";
+		const continuation = { role: "user", content: "continue and finish", timestamp: 3 } as const;
+		const final = assistant([{ type: "text", text: "done" }], "stop", 4);
+		const next = { role: "user", content: "next request", timestamp: 5 } as const;
+		const messages = [initial, interrupted, continuation, final, next] as AgentMessage[];
+
+		const collapses = deriveCompletedRunCollapses(messages, { includeLatest: false });
+		expect(collapses).toEqual([
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+			}),
+		]);
+		const context = { messages, models: {}, injectedTtsrRules: [], mode: "none" };
+		const projection = collapseCompletedRuns(context, collapses);
+		expect(projection.context.messages).toEqual([initial, final, next]);
+		expect(projection.summaries).toEqual([
+			{ afterMessage: initial, agentTextSegments: 1, toolCalls: 0, durationMs: 3 },
+		]);
+	});
+
+	it("keeps the initial request across a persisted upstream stream interruption", () => {
+		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
+		const loop = assistant(
+			[
+				{ type: "text", text: "working before disconnect" },
+				{ type: "toolCall", id: "tc", name: "read", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const interrupted = assistant([], "error", 3);
+		interrupted.errorMessage = "stream_interrupted: Upstream stream interrupted after output began.";
+		interrupted.errorId = 0;
+		interrupted.stopDetails = {
+			type: "stream_interrupted_after_content",
+			category: null,
+			explanation: interrupted.errorMessage,
+		};
+		const continuation = { role: "user", content: "continue", timestamp: 4 } as const;
+		const final = assistant([{ type: "text", text: "done" }], "stop", 5);
+		const next = { role: "user", content: "next request", timestamp: 6 } as const;
+		const messages = [initial, loop, interrupted, continuation, final, next] as AgentMessage[];
+
+		const collapses = deriveCompletedRunCollapses(messages, { includeLatest: false });
+		expect(collapses).toEqual([
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+			}),
+		]);
+		const context = { messages, models: {}, injectedTtsrRules: [], mode: "none" };
+		const projection = collapseCompletedRuns(context, collapses);
+		expect(projection.context.messages).toEqual([initial, final, next]);
+		expect(projection.summaries).toEqual([
+			{ afterMessage: initial, agentTextSegments: 1, toolCalls: 1, durationMs: 4 },
+		]);
+	});
+
+	it.each([
+		["refusal", "stream_interrupted_after_content"],
+		["sensitive", "stream_interrupted_after_content"],
+		[null, "authentication_error"],
+	] as const)("keeps a %s terminal error isolated from the next request", (category, type) => {
+		const initial = { role: "user", content: "blocked request", timestamp: 1 } as const;
+		const errored = assistant([], "error", 2);
+		errored.errorMessage = category ? `Provider ${category}` : "401 Unauthorized";
+		errored.stopDetails = { type, category };
+		const next = { role: "user", content: "independent request", timestamp: 3 } as const;
+		const final = assistant([{ type: "text", text: "done" }], "stop", 4);
+		const after = { role: "user", content: "after", timestamp: 5 } as const;
+
+		const collapses = deriveCompletedRunCollapses([initial, errored, next, final, after] as AgentMessage[], {
+			includeLatest: false,
+		});
+		expect(collapses).toEqual([
+			expect.objectContaining({
+				firstMessage: next,
+				initialUserMessage: next,
+				finalAssistantMessage: final,
+			}),
+		]);
+	});
+
+	it("reconstructs one completed request across an interrupt, compaction, and resumed continuation", () => {
+		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
+		const loop = assistant(
+			[
+				{ type: "text", text: "working before disconnect" },
+				{ type: "toolCall", id: "tc", name: "read", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const interrupted = assistant([], "aborted", 3);
+		interrupted.errorMessage = "Previous OMP process exited before completing the turn.";
+		const compaction = {
+			role: "compactionSummary",
+			summary: "Earlier work was compacted",
+			tokensBefore: 100,
+			timestamp: 4,
+		} as AgentMessage;
+		const continuation = { role: "user", content: "continue", timestamp: 5 } as const;
+		const final = assistant([{ type: "text", text: "done" }], "stop", 6);
+		const next = { role: "user", content: "next request", timestamp: 7 } as const;
+		const fullMessages = [initial, loop, interrupted, compaction, continuation, final, next] as AgentMessage[];
+		const collapses = deriveCompletedRunCollapses(fullMessages, { includeLatest: false });
+
+		expect(collapses).toHaveLength(1);
+		expect(collapses[0]).toEqual(
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+				durationMs: 5,
+			}),
+		);
+
+		// The compacted live transcript no longer contains the original request.
+		// Projection must use the full persisted transcript as its boundary source
+		// and restore only that request plus the final answer.
+		const visibleContext = {
+			messages: [compaction, continuation, final, next] as AgentMessage[],
+			models: {},
+			injectedTtsrRules: [],
+			mode: "none",
+		};
+		const projection = collapseCompletedRuns(visibleContext, collapses, fullMessages);
+		expect(projection.context.messages).toEqual([initial, final, next]);
+		expect(projection.summaries).toEqual([
+			{ afterMessage: initial, agentTextSegments: 1, toolCalls: 1, durationMs: 5 },
+		]);
+	});
+
 	it("counts only hidden assistant text segments and tool calls", () => {
 		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
 		const loop = assistant(

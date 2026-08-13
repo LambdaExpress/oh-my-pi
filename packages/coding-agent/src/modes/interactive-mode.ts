@@ -223,6 +223,7 @@ import type {
 	InteractiveModeContext,
 	InteractiveModeInitOptions,
 	InteractiveSelectorDialogOptions,
+	RenderInitialMessagesOptions,
 	RenderSessionContextOptions,
 	SubmittedUserInput,
 	TodoItem,
@@ -233,7 +234,9 @@ import {
 	type CompletedRunCollapse,
 	collapseCompletedRuns,
 	createCompletedRunSummary,
+	deriveCompletedRunCollapses,
 	isSameTranscriptMessage,
+	shouldCollapseCompactedHistoryForDisplay,
 } from "./utils/transcript-render-helpers";
 import { UiHelpers } from "./utils/ui-helpers";
 
@@ -653,7 +656,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#focusController.unfocus();
 	}
 
-	recordCompletedRunCollapse(collapse: CompletedRunCollapse): void {
+	recordCompletedRunCollapse(collapse: CompletedRunCollapse): boolean {
 		const session = this.viewSession;
 		const existing = this.#completedRunCollapses.get(session);
 		if (existing) {
@@ -665,10 +668,34 @@ export class InteractiveMode implements InteractiveModeContext {
 				)
 			) {
 				existing.push({ collapse, expanded: false });
+				return true;
 			}
-			return;
+			return false;
 		}
 		this.#completedRunCollapses.set(session, [{ collapse, expanded: false }]);
+		return true;
+	}
+
+	recoverCompletedRunCollapses(options: { includeLatest: boolean; replaceExisting?: boolean }): boolean {
+		if (!this.settings.get("display.collapseCompletedRuns")) return false;
+		const session = this.viewSession;
+		if (options.replaceExisting) this.#completedRunCollapses.delete(session);
+		const fullContext = session.buildTranscriptSessionContext({ collapseCompactedHistory: false });
+		const known = this.#completedRunCollapses.get(session) ?? [];
+		let changed = false;
+		for (const collapse of deriveCompletedRunCollapses(fullContext.messages, options)) {
+			if (
+				known.some(
+					item =>
+						isSameTranscriptMessage(item.collapse.firstMessage, collapse.firstMessage) &&
+						isSameTranscriptMessage(item.collapse.initialUserMessage, collapse.initialUserMessage),
+				)
+			) {
+				continue;
+			}
+			changed = this.recordCompletedRunCollapse(collapse) || changed;
+		}
+		return changed;
 	}
 
 	toggleCompletedRunCollapse(): void {
@@ -1910,11 +1937,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 		}
 		this.chatContainer.clear();
-		// Live display collapses to the compacted transcript tail unless the
-		// user opted into the full inline history; export/resume callers choose
-		// their own mode.
+		// Completed-run collapse owns display projection and needs the full
+		// persisted transcript so Alt+O can expand pre-compaction runs.
 		const context = this.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
+			collapseCompactedHistory: shouldCollapseCompactedHistoryForDisplay(
+				this.settings.get("display.collapseCompacted"),
+				this.settings.get("display.collapseCompletedRuns"),
+			),
 		});
 		const preservedLiveToolCallIds = new Set<string>();
 		// A preserved pending-tool component whose result has already landed in
@@ -4707,12 +4736,25 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	renderSessionContext(sessionContext: SessionContext, options?: RenderSessionContextOptions): void {
+		const persistedContext = this.settings.get("display.collapseCompletedRuns")
+			? this.viewSession.buildTranscriptSessionContext({ collapseCompactedHistory: false })
+			: sessionContext;
+		const fullContext =
+			persistedContext.messages.length === 0 && sessionContext.messages.length > 0
+				? sessionContext
+				: persistedContext;
+		if (this.settings.get("display.collapseCompletedRuns")) {
+			for (const collapse of deriveCompletedRunCollapses(fullContext.messages, { includeLatest: false })) {
+				this.recordCompletedRunCollapse(collapse);
+			}
+		}
 		const completedRuns = this.settings.get("display.collapseCompletedRuns")
 			? (this.#completedRunCollapses.get(this.viewSession) ?? []).filter(run => !run.expanded)
 			: [];
 		const projection = collapseCompletedRuns(
 			sessionContext,
 			completedRuns.map(run => run.collapse),
+			fullContext.messages,
 		);
 		for (const message of projection.context.messages) {
 			this.noteDisplayableThinkingContent(message);
@@ -4734,7 +4776,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		});
 	}
 
-	renderInitialMessages(options?: { preserveExistingChat?: boolean; clearTerminalHistory?: boolean }): void {
+	renderInitialMessages(options?: RenderInitialMessagesOptions): void {
 		this.#uiHelpers.renderInitialMessages(options);
 	}
 

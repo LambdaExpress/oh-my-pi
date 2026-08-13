@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -137,6 +137,148 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(rebuild).toHaveBeenCalledTimes(2);
 		expect(resetDisplay).toHaveBeenCalledTimes(2);
 		expect(messages).toHaveLength(4);
+	});
+
+	it("automatically collapses the latest completed run when a session is resumed", () => {
+		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
+		const loop = assistant(
+			[
+				{ type: "text", text: "working through the request" },
+				{ type: "toolCall", id: "tc", name: "read", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const result = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "read",
+			content: [{ type: "text", text: "tool data" }],
+			timestamp: 3,
+		} as ToolResultMessage;
+		const final = assistant([{ type: "text", text: "done" }], "stop", 4);
+		session.sessionManager.appendMessage(initial);
+		session.sessionManager.appendMessage(loop);
+		session.sessionManager.appendMessage(result);
+		session.sessionManager.appendMessage(final);
+
+		// There is no in-memory collapse record, matching a freshly resumed TUI.
+		const resetDisplay = vi.spyOn(mode.ui, "resetDisplay").mockImplementation(() => {});
+		mode.renderInitialMessages({ recoverCompletedRuns: true });
+
+		let rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("※ collapsed: 1 agent text segment · 1 tool call");
+		expect(rendered).not.toContain("working through the request");
+		expect(rendered).toContain("done");
+
+		// The recovered record must also power Alt+O; before the fix the resumed
+		// view had no record, so the key was a no-op in both directions.
+		mode.toggleCompletedRunCollapse();
+		mode.chatContainer.clear();
+		mode.renderSessionContext(session.buildTranscriptSessionContext({ collapseCompactedHistory: false }));
+		rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("working through the request");
+		expect(rendered).not.toContain("※ collapsed:");
+
+		mode.toggleCompletedRunCollapse();
+		mode.chatContainer.clear();
+		mode.renderSessionContext(session.buildTranscriptSessionContext({ collapseCompactedHistory: false }));
+		rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("※ collapsed: 1 agent text segment · 1 tool call");
+		expect(resetDisplay).toHaveBeenCalledTimes(2);
+	});
+
+	it("recovers and toggles a completed run after a persisted upstream stream interruption", () => {
+		const initial = { role: "user", content: "original request", timestamp: 1 } as const;
+		const loop = assistant(
+			[
+				{ type: "text", text: "work before upstream disconnect" },
+				{ type: "toolCall", id: "tc", name: "read", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const result = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "read",
+			content: [{ type: "text", text: "tool data" }],
+			timestamp: 3,
+		} as ToolResultMessage;
+		const interrupted = assistant([], "error", 4);
+		interrupted.errorMessage = "stream_interrupted: Upstream stream interrupted after output began.";
+		interrupted.errorId = 0;
+		interrupted.stopDetails = {
+			type: "stream_interrupted_after_content",
+			category: null,
+			explanation: interrupted.errorMessage,
+		};
+		const continuation = { role: "user", content: "continue", timestamp: 5 } as const;
+		const final = assistant([{ type: "text", text: "done after continuation" }], "stop", 6);
+		session.sessionManager.appendMessage(initial);
+		session.sessionManager.appendMessage(loop);
+		session.sessionManager.appendMessage(result);
+		session.sessionManager.appendMessage(interrupted);
+		session.sessionManager.appendMessage(continuation);
+		session.sessionManager.appendMessage(final);
+
+		mode.renderInitialMessages({ recoverCompletedRuns: true });
+
+		let rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("original request");
+		expect(rendered).toContain("done after continuation");
+		expect(rendered).toContain("※ collapsed: 1 agent text segment · 1 tool call");
+		expect(rendered).not.toContain("work before upstream disconnect");
+		expect(rendered).not.toContain("continue");
+
+		mode.toggleCompletedRunCollapse();
+		rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("work before upstream disconnect");
+		expect(rendered).toContain("continue");
+		expect(rendered).toContain("Upstream stream interrupted after output began");
+		expect(rendered).not.toContain("※ collapsed:");
+
+		mode.toggleCompletedRunCollapse();
+		rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("※ collapsed: 1 agent text segment · 1 tool call");
+		expect(rendered).not.toContain("work before upstream disconnect");
+	});
+
+	it("rebuilds from full persisted history after compaction while completed-run collapse is enabled", () => {
+		Settings.instance.set("display.collapseCompacted", true);
+		const buildTranscriptSessionContext = vi.spyOn(session, "buildTranscriptSessionContext");
+
+		mode.rebuildChatFromMessages();
+
+		expect(buildTranscriptSessionContext.mock.calls[0]?.[0]).toEqual({ collapseCompactedHistory: false });
+	});
+
+	it("keeps a pre-compaction completed run visible and expandable", () => {
+		Settings.instance.set("display.collapseCompacted", true);
+		const initial = { role: "user", content: "old request before compaction", timestamp: 1 } as const;
+		const loop = assistant([{ type: "text", text: "old intermediate work" }], "toolUse", 2);
+		const final = assistant([{ type: "text", text: "old final answer" }], "stop", 3);
+		const next = { role: "user", content: "new request after compaction", timestamp: 4 } as const;
+		session.sessionManager.appendMessage(initial);
+		session.sessionManager.appendMessage(loop);
+		session.sessionManager.appendMessage(final);
+		const firstKeptEntryId = session.sessionManager.appendMessage(next);
+		session.sessionManager.appendCompaction("provider summary", undefined, firstKeptEntryId, 100);
+
+		const compactedTail = session.buildTranscriptSessionContext({ collapseCompactedHistory: true });
+		expect(compactedTail.messages).not.toContain(initial);
+		mode.renderInitialMessages({ recoverCompletedRuns: true });
+
+		let rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("old request before compaction");
+		expect(rendered).toContain("old final answer");
+		expect(rendered).toContain("※ collapsed: 1 agent text segment");
+		expect(rendered).not.toContain("old intermediate work");
+
+		mode.toggleCompletedRunCollapse();
+		rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("old intermediate work");
+		expect(rendered).not.toContain("※ collapsed:");
 	});
 
 	it("toggles a force-flushed interrupted run and its continuation together", () => {
@@ -314,6 +456,56 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(bCollapse.finalAssistantMessage?.stopReason).toBe("stop");
 		await thirdPrompt;
 		expect(mock.calls.length).toBe(3);
+
+		await e2eMode.stop();
+		await e2eSession.dispose();
+	});
+
+	it("end-to-end: a later successful continuation collapses from the request that was manually interrupted", async () => {
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "text", text: "partial work that must disappear" }], delayMs: 500 },
+				{ content: [{ type: "text", text: "done after resume" }] },
+				{ content: [{ type: "text", text: "unrelated answer" }] },
+			],
+		});
+		const modelRegistry = new ModelRegistry(authStorage);
+		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 test model");
+		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		const e2eSession = new AgentSession({
+			agent: new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model, systemPrompt: ["Test"], tools: [] },
+				streamFn: mock.stream,
+			}),
+			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
+			settings: Settings.isolated({ "display.collapseCompletedRuns": true }),
+			modelRegistry,
+		});
+		const e2eMode = new InteractiveMode(e2eSession, "test");
+		e2eMode.eventController.subscribeToAgent();
+		const firstStart = Promise.withResolvers<void>();
+		e2eSession.subscribe(event => {
+			if (event.type === "agent_start") firstStart.resolve();
+		});
+
+		const firstPrompt = e2eSession.prompt("original request", { expandPromptTemplates: false });
+		await firstStart.promise;
+		await e2eSession.abort({ reason: USER_INTERRUPT_LABEL });
+		await firstPrompt.catch(() => {});
+		await e2eSession.prompt("continue and finish", { expandPromptTemplates: false });
+		await e2eSession.prompt("next request", { expandPromptTemplates: false });
+
+		e2eMode.chatContainer.clear();
+		e2eMode.renderSessionContext(e2eSession.buildTranscriptSessionContext({ collapseCompactedHistory: false }));
+		const rendered = Bun.stripANSI(e2eMode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("original request");
+		expect(rendered).toContain("done after resume");
+		expect(rendered).not.toContain("continue and finish");
+		expect(rendered).not.toContain("partial work that must disappear");
+		expect(rendered).toContain("next request");
+		expect(rendered).toContain("unrelated answer");
 
 		await e2eMode.stop();
 		await e2eSession.dispose();

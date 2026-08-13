@@ -916,12 +916,19 @@ export class InputController {
 			// Normal message submission
 			// First, move any pending bash components to chat
 			this.ctx.flushPendingBashComponents();
+			// Commit the previous request's completed-run projection before a
+			// deferred ConPTY scrollback replay. With both features enabled, doing
+			// this at agent_start would replay the expanded history here and then
+			// erase/replay again after the collapse settled.
+			const completedRunsCollapsed = this.ctx.eventController?.commitCompletedRunCollapses() ?? false;
 			// A scrollback divergence may have deferred its erase-and-replay
 			// rebuild on ConPTY hosts (the reader could be scrolled into
 			// history when the divergence fired). This Enter is the input
 			// checkpoint that proves the host viewport is back at the bottom,
-			// so flush the pending rebuild before the new message paints.
-			this.ctx.ui.rebuildScrollbackIfDirty();
+			// so flush the pending rebuild after the component tree has converged
+			// to its final collapsed form and before the new message paints.
+			const scrollbackRebuilt = this.ctx.ui.rebuildScrollbackIfDirty();
+			if (completedRunsCollapsed && !scrollbackRebuilt) this.ctx.ui.resetDisplay();
 
 			const displayText = this.ctx.session.previewPromptExpansion(text);
 			if (this.ctx.onInputCallback) {

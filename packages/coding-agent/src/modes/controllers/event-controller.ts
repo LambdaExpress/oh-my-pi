@@ -1,4 +1,4 @@
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { type AgentMessage, isContinuableStreamInterruption } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
@@ -25,6 +25,7 @@ import { createUsageRowBlock } from "../../modes/components/usage-row";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
 import type { InteractiveModeContext, TodoPhase } from "../../modes/types";
 import { customSubmissionSignature, userSubmissionSignature } from "../../modes/types";
+import { shouldCollapseCompactedHistoryForDisplay } from "../../modes/utils/transcript-render-helpers";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { isSilentAbort, isUserInterruptAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
@@ -43,6 +44,7 @@ import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
 	type CompletedRunCollapse,
+	isCollapsibleRunFinalAssistant,
 	isSameTranscriptMessage,
 	splitAssistantMessageToolTimeline,
 } from "../utils/transcript-render-helpers";
@@ -251,6 +253,20 @@ export class EventController {
 		const active = this.#activeCompletedRun;
 		if (!active?.gate || !active.initialUserMessage) return undefined;
 		return { component: active.gate, afterMessage: active.initialUserMessage };
+	}
+
+	/**
+	 * Commit completed-run projections before a new submission paints. The input
+	 * path calls this before flushing a deferred ConPTY scrollback rebuild so that
+	 * one destructive replay contains the collapsed transcript, not the stale
+	 * expanded frame. Programmatic submissions fall back to the agent_start call.
+	 */
+	commitCompletedRunCollapses(): boolean {
+		const committedPendingCollapse = this.#flushPendingCompletedRunCollapses();
+		const recoveredPersistedCollapse = this.ctx.recoverCompletedRunCollapses?.({ includeLatest: true }) ?? false;
+		if (!committedPendingCollapse && !recoveredPersistedCollapse) return false;
+		this.ctx.rebuildChatFromMessages();
+		return true;
 	}
 	// Coalescing window for `message_update` events at the subscription boundary.
 	// `message_update` carries the CUMULATIVE assistant message (every update
@@ -809,7 +825,7 @@ export class EventController {
 		// The user just sent content: commit collapses parked by completed runs.
 		// A run stays fully expanded while its final answer is on screen; the
 		// next user message is what triggers the previous run's collapse.
-		this.#flushPendingCompletedRunCollapses();
+		if (this.commitCompletedRunCollapses()) this.ctx.ui.resetDisplay();
 		// An Enter force-flush parks the interrupted run's span (kept fully
 		// expanded) and starts the continuation on a fresh span, so the final
 		// commit can produce one independent summary per run instead of merging
@@ -1939,9 +1955,10 @@ export class EventController {
 		// agent_start. Keep the original span/gate so that continuation still collapses
 		// from the initial request; an interrupt with no queued user work finalizes below.
 		const continuesInterruptedRun =
-			finalAssistant?.stopReason === "aborted" &&
-			isUserInterruptAbort(finalAssistant) &&
-			this.ctx.session.queuedUserMessageCount > 0;
+			(finalAssistant?.stopReason === "aborted" &&
+				isUserInterruptAbort(finalAssistant) &&
+				this.ctx.session.queuedUserMessageCount > 0) ||
+			(finalAssistant !== undefined && isContinuableStreamInterruption(finalAssistant));
 		const collapse = continuesInterruptedRun ? undefined : this.#takeCompletedRunCollapse(finalAssistant);
 		await this.#finishAgentEnd(event);
 		if (!collapse) {
@@ -1980,13 +1997,7 @@ export class EventController {
 		}
 		const initialUserMessage = active.initialUserMessage;
 		if (
-			finalAssistant?.stopReason !== "stop" ||
-			finalAssistant.stopDetails?.type === "pause_turn" ||
-			finalAssistant.errorMessage ||
-			finalAssistant.content.some(content => content.type === "toolCall") ||
-			!finalAssistant.content.some(
-				content => content.type === "text" && Boolean(canonicalizeMessage(content.text)),
-			) ||
+			!isCollapsibleRunFinalAssistant(finalAssistant) ||
 			!active.messages.some(message => isSameTranscriptMessage(message, initialUserMessage)) ||
 			!active.messages.some(message => isSameTranscriptMessage(message, finalAssistant))
 		) {
@@ -2035,15 +2046,14 @@ export class EventController {
 	 * next content starts a new agent turn, which is what commits the previous
 	 * run's collapse in one rebuild + reset.
 	 */
-	#flushPendingCompletedRunCollapses(): void {
-		if (this.#pendingCompletedRunCollapses.length === 0) return;
+	#flushPendingCompletedRunCollapses(): boolean {
+		if (this.#pendingCompletedRunCollapses.length === 0) return false;
 		const collapses = this.#pendingCompletedRunCollapses;
 		this.#pendingCompletedRunCollapses = [];
 		for (const collapse of collapses) {
 			this.ctx.recordCompletedRunCollapse(collapse);
 		}
-		this.ctx.rebuildChatFromMessages();
-		this.ctx.ui.resetDisplay();
+		return true;
 	}
 
 	async #finishAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
@@ -2227,9 +2237,14 @@ export class EventController {
 			// the whole collapsed transcript (welcome box included) BELOW the
 			// stale pre-compaction scrollback. Compaction is an intentional
 			// transcript replacement then — same as auto-handoff below. With
-			// collapse disabled the rebuilt transcript keeps the full history,
-			// so the resync handles it and scrollback stays.
-			if (settings.get("display.collapseCompacted")) {
+			// Completed-run collapse also keeps the full persisted transcript and
+			// projects it reversibly, so the resync handles it without clearing.
+			if (
+				shouldCollapseCompactedHistoryForDisplay(
+					this.ctx.settings.get("display.collapseCompacted"),
+					this.ctx.settings.get("display.collapseCompletedRuns"),
+				)
+			) {
 				this.ctx.ui.requestRender(true, { clearScrollback: true });
 			} else {
 				this.ctx.ui.requestRender();

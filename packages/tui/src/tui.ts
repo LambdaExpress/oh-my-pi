@@ -1997,10 +1997,11 @@ export class TUI extends Container {
 	 * strands a scrolled reader at the buffer top and no escape sequence can
 	 * re-anchor it. No-op when there is nothing pending.
 	 */
-	rebuildScrollbackIfDirty(): void {
-		if (this.#stopped || !this.#pendingScrollbackRebuild) return;
+	rebuildScrollbackIfDirty(): boolean {
+		if (this.#stopped || !this.#pendingScrollbackRebuild) return false;
 		this.#pendingScrollbackRebuild = false;
 		this.resetDisplay();
+		return true;
 	}
 
 	/**

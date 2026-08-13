@@ -104,6 +104,7 @@ function makeCtx(): {
 			getEntries: vi.fn(() => []),
 			getCwd: vi.fn(() => "/tmp"),
 		},
+		settings: Settings.instance,
 		renderSessionContext: renderSessionContextSpy,
 		showStatus: vi.fn(),
 		ui: { requestRender: vi.fn() },
@@ -251,6 +252,17 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 			updateFooter: true,
 			populateHistory: true,
 		});
+	});
+
+	it("keeps pre-compaction display history when completed runs are collapsed", () => {
+		Settings.instance.set("display.collapseCompacted", true);
+		Settings.instance.set("display.collapseCompletedRuns", true);
+		const { ctx, transcriptSpy } = makeCtx();
+
+		new UiHelpers(ctx).renderInitialMessages();
+
+		const [transcriptOptions] = transcriptSpy.mock.calls[0] ?? [];
+		expect(transcriptOptions?.collapseCompactedHistory).toBe(false);
 	});
 
 	it("keeps pre-compaction display history visible when collapsing is disabled", () => {

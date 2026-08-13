@@ -79,6 +79,7 @@ function createContext(): {
 		previewPromptExpansion: Mock<(text: string) => string>;
 		prompt: Spy;
 		requestRender: Spy;
+		rebuildScrollbackIfDirty: Mock<() => boolean>;
 		resetDisplay: Spy;
 		shutdown: Spy;
 		showStatus: Spy;
@@ -99,7 +100,9 @@ function createContext(): {
 	const getQueuedMessages = vi.fn(() => ({ steering: [], followUp: [] }));
 	const onInputCallback = vi.fn();
 	const requestRender = vi.fn();
+	const rebuildScrollbackIfDirty = vi.fn(() => false);
 	const resetDisplay = vi.fn();
+	const commitCompletedRunCollapses = vi.fn(() => false);
 	const showStatus = vi.fn();
 	const inputListeners: Array<(data: string) => { consume?: boolean; data?: string } | undefined> = [];
 	const sessionListeners: Array<(event: { type: string }) => void> = [];
@@ -142,7 +145,7 @@ function createContext(): {
 		ui: {
 			requestRender,
 			resetDisplay,
-			rebuildScrollbackIfDirty: vi.fn(),
+			rebuildScrollbackIfDirty,
 			addInputListener: vi.fn(listener => {
 				inputListeners.push(listener as (data: string) => { consume?: boolean; data?: string } | undefined);
 				return () => {};
@@ -200,6 +203,7 @@ function createContext(): {
 		optimisticUserMessageSignature: undefined,
 		locallySubmittedUserSignatures: new Set<string>(),
 		onInputCallback,
+		eventController: { commitCompletedRunCollapses } as unknown as InteractiveModeContext["eventController"],
 		addMessageToChat,
 		cancelPendingSubmission,
 		ensureLoadingAnimation,
@@ -252,6 +256,7 @@ function createContext(): {
 			prompt,
 			previewPromptExpansion,
 			requestRender,
+			rebuildScrollbackIfDirty,
 			resetDisplay,
 			showStatus,
 			shutdown: ctx.shutdown as Spy,
@@ -347,6 +352,51 @@ describe("InputController escape behavior", () => {
 			cancelled: false,
 			started: false,
 		});
+	});
+
+	it("replays the collapsed final transcript once when scrollback rebuilding is also pending", async () => {
+		const { ctx, editor, spies } = createContext();
+		const order: string[] = [];
+		const eventController = ctx.eventController as unknown as {
+			commitCompletedRunCollapses: Mock<() => boolean>;
+		};
+		eventController.commitCompletedRunCollapses.mockImplementation(() => {
+			order.push("collapse");
+			return true;
+		});
+		spies.rebuildScrollbackIfDirty.mockImplementation(() => {
+			order.push("scrollback");
+			return true;
+		});
+		spies.startPendingSubmission.mockImplementation(input => {
+			order.push("submit");
+			return createSubmission(input);
+		});
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+
+		await editor.onSubmit?.("next request");
+
+		expect(order).toEqual(["collapse", "scrollback", "submit"]);
+		expect(spies.rebuildScrollbackIfDirty).toHaveBeenCalledTimes(1);
+		// rebuildScrollbackIfDirty owns the one reset; InputController must not
+		// request a second replay for the same collapse.
+		expect(spies.resetDisplay).not.toHaveBeenCalled();
+	});
+
+	it("redraws a newly collapsed transcript when no scrollback replay was pending", async () => {
+		const { ctx, editor, spies } = createContext();
+		const eventController = ctx.eventController as unknown as {
+			commitCompletedRunCollapses: Mock<() => boolean>;
+		};
+		eventController.commitCompletedRunCollapses.mockReturnValue(true);
+		spies.rebuildScrollbackIfDirty.mockReturnValue(false);
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+
+		await editor.onSubmit?.("next request");
+
+		expect(spies.resetDisplay).toHaveBeenCalledTimes(1);
 	});
 
 	it("empty-submit with a queued message aborts the active stream and refreshes pending display", async () => {

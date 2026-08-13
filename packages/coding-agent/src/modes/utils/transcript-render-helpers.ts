@@ -4,7 +4,7 @@
  * transcript rows from persisted message entries; holding the row construction
  * here keeps the two byte-for-byte identical.
  */
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { type AgentMessage, isContinuableStreamInterruption } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text, TruncatedText } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
 import { t } from "../../i18n";
@@ -61,6 +61,23 @@ export interface CompletedRunProjection {
 	summaries: CompletedRunSummary[];
 }
 
+export interface DeriveCompletedRunCollapsesOptions {
+	/** Include the trailing completed request even when no later user request has started. */
+	includeLatest: boolean;
+}
+
+/**
+ * Completed-run collapsing needs the full persisted transcript so Alt+O can
+ * reconstruct runs from before the latest compaction. Provider context remains
+ * compacted; this policy applies only to the interactive display transcript.
+ */
+export function shouldCollapseCompactedHistoryForDisplay(
+	collapseCompacted: boolean,
+	collapseCompletedRuns: boolean,
+): boolean {
+	return collapseCompacted && !collapseCompletedRuns;
+}
+
 /**
  * Match the same persisted transcript message across live events and rebuilds.
  * Rebuilds can clone messages while deobfuscating secrets, so object identity is
@@ -84,11 +101,73 @@ export function isSameTranscriptMessage(candidate: AgentMessage, expected: Agent
 	return true;
 }
 
-function findMessageIndex(messages: AgentMessage[], target: AgentMessage, from: number): number {
+function findMessageIndex(messages: readonly AgentMessage[], target: AgentMessage, from: number): number {
 	for (let index = from; index < messages.length; index++) {
 		if (isSameTranscriptMessage(messages[index]!, target)) return index;
 	}
 	return -1;
+}
+
+function isNonSyntheticUserMessage(message: AgentMessage): message is Extract<AgentMessage, { role: "user" }> {
+	return message.role === "user" && message.synthetic !== true;
+}
+
+export function isCollapsibleRunFinalAssistant(message: AgentMessage | undefined): message is AssistantAgentMessage {
+	return (
+		message?.role === "assistant" &&
+		message.stopReason === "stop" &&
+		message.stopDetails?.type !== "pause_turn" &&
+		!message.errorMessage &&
+		!message.content.some(content => content.type === "toolCall") &&
+		message.content.some(content => content.type === "text" && Boolean(canonicalizeMessage(content.text)))
+	);
+}
+
+/**
+ * Reconstruct collapsible request spans from the persisted transcript. A request
+ * survives aborted turns and compaction dividers until a qualifying final answer
+ * appears; a terminal error starts a fresh request at the next user message.
+ */
+export function deriveCompletedRunCollapses(
+	messages: readonly AgentMessage[],
+	options: DeriveCompletedRunCollapsesOptions,
+): CompletedRunCollapse[] {
+	const collapses: Array<CompletedRunCollapse & { answerIndex: number }> = [];
+	let initialUserMessage: Extract<AgentMessage, { role: "user" }> | undefined;
+	let terminalError = false;
+	let lastUserIndex = -1;
+
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index]!;
+		if (isNonSyntheticUserMessage(message)) {
+			lastUserIndex = index;
+			if (!initialUserMessage || terminalError) {
+				initialUserMessage = message;
+				terminalError = false;
+			}
+			continue;
+		}
+		if (!initialUserMessage || message.role !== "assistant") continue;
+		if (message.stopReason === "error" && !isContinuableStreamInterruption(message)) {
+			terminalError = true;
+			continue;
+		}
+		if (!isCollapsibleRunFinalAssistant(message)) continue;
+
+		collapses.push({
+			firstMessage: initialUserMessage,
+			initialUserMessage,
+			finalAssistantMessage: message,
+			durationMs: Math.max(0, message.timestamp - initialUserMessage.timestamp),
+			answerIndex: index,
+		});
+		initialUserMessage = undefined;
+		terminalError = false;
+	}
+
+	return collapses
+		.filter(collapse => options.includeLatest || collapse.answerIndex < lastUserIndex)
+		.map(({ answerIndex: _, ...collapse }) => collapse);
 }
 
 /**
@@ -98,11 +177,12 @@ function findMessageIndex(messages: AgentMessage[], target: AgentMessage, from: 
 export function collapseCompletedRuns(
 	sessionContext: SessionContext,
 	collapses: readonly CompletedRunCollapse[],
+	boundaryMessages: readonly AgentMessage[] = sessionContext.messages,
 ): CompletedRunProjection {
 	if (collapses.length === 0) return { context: sessionContext, summaries: [] };
 
 	const source = sessionContext.messages;
-	const spans: Array<{
+	const candidates: Array<{
 		start: number;
 		request: number;
 		answer: number;
@@ -110,52 +190,75 @@ export function collapseCompletedRuns(
 		/** Whether the answer message itself is preserved (natural final reply). */
 		keepAnswer: boolean;
 	}> = [];
-	let searchFrom = 0;
 	for (const collapse of collapses) {
-		const start = findMessageIndex(source, collapse.firstMessage, searchFrom);
+		const start = findMessageIndex(boundaryMessages, collapse.firstMessage, 0);
 		if (start < 0) continue;
-		const request = findMessageIndex(source, collapse.initialUserMessage, start);
+		const request = findMessageIndex(boundaryMessages, collapse.initialUserMessage, start);
 		if (request < 0) continue;
 		const answerTarget = collapse.finalAssistantMessage ?? collapse.spanEndMessage;
 		if (!answerTarget) continue;
-		const answer = findMessageIndex(source, answerTarget, request);
+		const answer = findMessageIndex(boundaryMessages, answerTarget, request);
 		if (answer < 0) continue;
-		spans.push({
+		candidates.push({
 			start,
 			request,
 			answer,
 			durationMs: collapse.durationMs,
 			keepAnswer: Boolean(collapse.finalAssistantMessage),
 		});
-		searchFrom = answer + 1;
+	}
+	candidates.sort((left, right) => left.answer - right.answer || left.start - right.start);
+	const spans: typeof candidates = [];
+	let previousAnswer = -1;
+	for (const candidate of candidates) {
+		if (candidate.start <= previousAnswer) continue;
+		spans.push(candidate);
+		previousAnswer = candidate.answer;
 	}
 	if (spans.length === 0) return { context: sessionContext, summaries: [] };
+
+	const boundaryIndexBySourceIndex: number[] = [];
+	let boundarySearchFrom = 0;
+	for (const message of source) {
+		const boundaryIndex = findMessageIndex(boundaryMessages, message, boundarySearchFrom);
+		boundaryIndexBySourceIndex.push(boundaryIndex);
+		if (boundaryIndex >= 0) boundarySearchFrom = boundaryIndex + 1;
+	}
 
 	const messages: AgentMessage[] = [];
 	const summaries: CompletedRunSummary[] = [];
 	const cacheMissExplainedAt: boolean[] | undefined = sessionContext.cacheMissExplainedAt ? [] : undefined;
-	const push = (message: AgentMessage, sourceIndex: number): void => {
+	const push = (message: AgentMessage, cacheMissExplained = false): void => {
 		messages.push(message);
-		cacheMissExplainedAt?.push(sessionContext.cacheMissExplainedAt?.[sourceIndex] ?? false);
+		cacheMissExplainedAt?.push(cacheMissExplained);
 	};
 
 	let sourceIndex = 0;
 	for (const span of spans) {
-		while (sourceIndex < span.start) {
-			push(source[sourceIndex]!, sourceIndex);
+		let visibleStart = -1;
+		let visibleEnd = -1;
+		for (let index = sourceIndex; index < source.length; index++) {
+			const boundaryIndex = boundaryIndexBySourceIndex[index]!;
+			if (boundaryIndex < span.start || boundaryIndex > span.answer) continue;
+			if (visibleStart < 0) visibleStart = index;
+			visibleEnd = index;
+		}
+		if (visibleStart < 0) continue;
+		while (sourceIndex < visibleStart) {
+			push(source[sourceIndex]!, sessionContext.cacheMissExplainedAt?.[sourceIndex] ?? false);
 			sourceIndex++;
 		}
-		const requestMessage = source[span.request];
-		const finalMessage = source[span.answer];
+		const requestMessage = boundaryMessages[span.request];
+		const finalMessage = boundaryMessages[span.answer];
 		if (requestMessage?.role !== "user" || !finalMessage) {
-			sourceIndex = span.answer + 1;
+			sourceIndex = visibleEnd + 1;
 			continue;
 		}
 
 		let agentTextSegments = 0;
 		let toolCalls = 0;
 		for (let index = span.start; index < span.answer; index++) {
-			const message = source[index];
+			const message = boundaryMessages[index];
 			if (message?.role !== "assistant") continue;
 			for (const content of message.content) {
 				if (content.type === "text" && canonicalizeMessage(content.text)) agentTextSegments++;
@@ -163,23 +266,32 @@ export function collapseCompletedRuns(
 			}
 		}
 
-		push(requestMessage, span.request);
+		const visibleRequestIndex = boundaryIndexBySourceIndex.findIndex(
+			(boundaryIndex, index) => index >= visibleStart && index <= visibleEnd && boundaryIndex === span.request,
+		);
+		push(
+			requestMessage,
+			visibleRequestIndex >= 0 ? (sessionContext.cacheMissExplainedAt?.[visibleRequestIndex] ?? false) : false,
+		);
 		if (span.keepAnswer && finalMessage.role === "assistant") {
 			const textContent = finalMessage.content.filter(
 				content => content.type === "text" && canonicalizeMessage(content.text),
+			);
+			const visibleAnswerIndex = boundaryIndexBySourceIndex.findIndex(
+				(boundaryIndex, index) => index >= visibleStart && index <= visibleEnd && boundaryIndex === span.answer,
 			);
 			push(
 				textContent.length === finalMessage.content.length
 					? finalMessage
 					: { ...finalMessage, content: textContent },
-				span.answer,
+				visibleAnswerIndex >= 0 ? (sessionContext.cacheMissExplainedAt?.[visibleAnswerIndex] ?? false) : false,
 			);
 		}
 		summaries.push({ afterMessage: requestMessage, agentTextSegments, toolCalls, durationMs: span.durationMs });
-		sourceIndex = span.answer + 1;
+		sourceIndex = visibleEnd + 1;
 	}
 	while (sourceIndex < source.length) {
-		push(source[sourceIndex]!, sourceIndex);
+		push(source[sourceIndex]!, sessionContext.cacheMissExplainedAt?.[sourceIndex] ?? false);
 		sourceIndex++;
 	}
 

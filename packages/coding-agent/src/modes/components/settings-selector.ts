@@ -1333,11 +1333,11 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			return t("Show a divider above an assistant turn whose request lost (missed) the prompt cache");
 		case "display.collapseCompacted":
 			return t(
-				"Collapse pre-compaction history behind the summary divider on the live transcript; disable to keep the full transcript inline with dividers at each compaction point",
+				"Collapse pre-compaction history behind the summary divider on the live transcript; ignored while completed-run collapsing is enabled so older runs remain expandable",
 			);
 		case "display.collapseCompletedRuns":
 			return t(
-				"Keep a completed run fully on screen while you read it; when you send your next message, collapse it to its initial request and final assistant answer",
+				"Keep a completed run fully on screen while you read it; when you send your next message, collapse it to its initial request and final assistant answer. Pre-compaction display history remains available so older runs can be expanded",
 			);
 		case "display.hideToolActivity":
 			return t("Hide model-initiated tool calls and results from the transcript");

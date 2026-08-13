@@ -24,7 +24,9 @@ interface FakeWorkingLoader {
  * kept streaming. The fix tears the working loader down (stop + dereference) so
  * the next `agent_start` recreates and re-attaches it.
  */
-function createContext(options: { terminalProgress?: boolean } = {}) {
+function createContext(
+	options: { terminalProgress?: boolean; collapseCompacted?: boolean; collapseCompletedRuns?: boolean } = {},
+) {
 	const streamState = { isStreaming: false };
 	const children: unknown[] = [];
 	const statusContainer = {
@@ -48,7 +50,12 @@ function createContext(options: { terminalProgress?: boolean } = {}) {
 	const ctx = {
 		isInitialized: true,
 		settings: {
-			get: (path: string) => path === "terminal.showProgress" && options.terminalProgress === true,
+			get: (path: string) => {
+				if (path === "terminal.showProgress") return options.terminalProgress === true;
+				if (path === "display.collapseCompacted") return options.collapseCompacted ?? true;
+				if (path === "display.collapseCompletedRuns") return options.collapseCompletedRuns ?? false;
+				return false;
+			},
 		},
 		statusLine: { invalidate: vi.fn(), markActivityStart: vi.fn(), markActivityEnd: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
@@ -176,6 +183,16 @@ describe("EventController loader recovery after overflow maintenance", () => {
 		expect(ctx.loadingAnimation).toBeDefined();
 		expect(statusContainer.children).toContain(ctx.loadingAnimation);
 		expect(workingLoaders).toHaveLength(2);
+	});
+
+	it("preserves terminal scrollback after auto-compaction when completed runs own display collapsing", async () => {
+		const { ctx } = createContext({ collapseCompacted: true, collapseCompletedRuns: true });
+		const controller = new EventController(ctx);
+
+		await controller.handleEvent(COMPACTION_END);
+
+		expect(ctx.ui.requestRender).toHaveBeenLastCalledWith();
+		expect(ctx.ui.requestRender).not.toHaveBeenCalledWith(true, { clearScrollback: true });
 	});
 
 	it("re-shows the Working… loader after an auto-retry resumes the turn", async () => {

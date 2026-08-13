@@ -323,8 +323,8 @@ export function buildSessionContext(
 			const resultEntries: SessionEntry[] = [];
 			for (let j = i + 1; j < path.length && unresolvedToolCallIds.size > 0; j++) {
 				const candidate = path[j];
+				if (candidate.type !== "message") continue;
 				if (
-					candidate.type !== "message" ||
 					!isSyntheticToolResultMessage(candidate.message) ||
 					candidate.message.details?.executed !== false ||
 					candidate.message.details?.source !== "assistant_stop_error" ||

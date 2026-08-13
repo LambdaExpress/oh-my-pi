@@ -1,9 +1,10 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { CompactionCancelledError, type CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import { getThemeByName, setThemeInstance, type Theme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { Container, Spacer } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../src/i18n";
 
 /**
  * Contract under test: `CommandController.executeCompaction` must not leak
@@ -20,7 +21,10 @@ import { Container, Spacer } from "@oh-my-pi/pi-tui";
  * in-memory Container instances and a session stub whose `compact()` outcome we
  * drive.
  */
-function buildCtx(compact: InteractiveModeContext["session"]["compact"]) {
+function buildCtx(
+	compact: InteractiveModeContext["session"]["compact"],
+	display: { collapseCompacted?: boolean; collapseCompletedRuns?: boolean } = {},
+) {
 	const chatContainer = new Container();
 	const statusContainer = new Container();
 	// Pre-existing transcript content. The regression we defend leaked an extra
@@ -50,7 +54,13 @@ function buildCtx(compact: InteractiveModeContext["session"]["compact"]) {
 		flushCompactionQueue: vi.fn(async () => undefined),
 		// executeCompaction consults display.collapseCompacted on the ok path to
 		// decide whether the rebuild replaces the terminal transcript.
-		settings: { get: vi.fn(() => true) },
+		settings: {
+			get: vi.fn((path: string) => {
+				if (path === "display.collapseCompacted") return display.collapseCompacted ?? true;
+				if (path === "display.collapseCompletedRuns") return display.collapseCompletedRuns ?? false;
+				return undefined;
+			}),
+		},
 	} as unknown as InteractiveModeContext;
 
 	return {
@@ -76,11 +86,16 @@ describe("executeCompaction UI lifecycle", () => {
 		setThemeInstance(dark);
 	});
 
+	beforeEach(() => {
+		setLocale("en");
+	});
+
 	afterAll(() => {
 		if (priorTheme) setThemeInstance(priorTheme);
 	});
 
 	afterEach(() => {
+		setLocale(null);
 		vi.restoreAllMocks();
 	});
 
@@ -123,5 +138,18 @@ describe("executeCompaction UI lifecycle", () => {
 		// finally that runs afterward: the status container was already empty at
 		// the instant rebuildChatFromMessages ran (1 leaked loader without the fix).
 		expect(statusAtRebuild()).toBe(0);
+	});
+
+	it("preserves terminal scrollback after compaction when completed runs own display collapsing", async () => {
+		const compact = vi.fn(
+			async (): Promise<CompactionResult<unknown>> => ({ summary: "", firstKeptEntryId: "", tokensBefore: 0 }),
+		);
+		const { ctx } = buildCtx(compact, { collapseCompacted: true, collapseCompletedRuns: true });
+
+		const controller = new CommandController(ctx);
+		expect(await controller.executeCompaction()).toBe("ok");
+
+		expect(ctx.ui.requestRender).toHaveBeenLastCalledWith();
+		expect(ctx.ui.requestRender).not.toHaveBeenCalledWith(true, { clearScrollback: true });
 	});
 });
