@@ -482,8 +482,6 @@ function translatedLabel(path: SettingPath, fallback: string): string {
 			return t("Enable Advisor");
 		case "advisor.immuneTurns":
 			return t("Advisor Immune Turns");
-		case "advisor.subagents":
-			return t("Advisor for Subagents");
 		case "advisor.syncBacklog":
 			return t("Advisor Sync Backlog");
 		case "ask.enabled":
@@ -1165,8 +1163,6 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			return t(
 				"After an advisor concern or blocker interrupts, route further concerns/blockers non-interruptingly for this many primary turns.",
 			);
-		case "advisor.subagents":
-			return t("Also enable the advisor on spawned task/eval subagents.");
 		case "advisor.syncBacklog":
 			return t(
 				"Pause the main agent for up to 30 seconds if the advisor falls behind by this many turns. Off disables catch-up delays.",

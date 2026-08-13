@@ -1344,7 +1344,6 @@ export class SelectorController {
 							allowAskReopen: true,
 							reanswerAskResult: reanswer,
 						});
-
 					}
 
 					if (result.aborted) {

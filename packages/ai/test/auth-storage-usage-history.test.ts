@@ -377,6 +377,7 @@ describe("OpenCode Go usage via the upstream endpoint", () => {
 		} finally {
 			partialStorage.close();
 		}
+	});
 
 	it("carries the upstream resetsAt and duration through the OpenCode Go cap windows", async () => {
 		const reports = await storage.fetchUsageReports();

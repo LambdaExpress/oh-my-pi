@@ -241,7 +241,9 @@ describe("model thinking derivation", () => {
 
 		expect(getSupportedEfforts(flash)).toEqual([Effort.Low, Effort.High, Effort.Max]);
 		expect(requireSupportedEffort(flash, Effort.Max)).toBe(Effort.Max);
-		expect(getSupportedEfforts(pro)).toEqual([Effort.High, Effort.Max]);
+		// V4 Pro shares Flash's low/high/max ladder on every first-party and
+		// aggregator host (DeepSeek's docs advertise `low` for both V4 SKUs).
+		expect(getSupportedEfforts(pro)).toEqual([Effort.Low, Effort.High, Effort.Max]);
 		expect(staleFlash.thinking?.efforts).toEqual([Effort.Low, Effort.High, Effort.Max]);
 	});
 

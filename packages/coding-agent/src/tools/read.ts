@@ -1,7 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { formatHashlineHeader } from "@oh-my-pi/hashline";
-import { splitAddressableFileLines } from "@oh-my-pi/hashline";
+import { formatHashlineHeader, splitAddressableFileLines } from "@oh-my-pi/hashline";
 import { type } from "@oh-my-pi/omptype";
 import type {
 	AgentTool,
@@ -229,6 +228,8 @@ function expandRangeWithContext(
 		startLine: expandStart ? Math.max(0, requestedStart - RANGE_LEADING_CONTEXT_LINES) : requestedStart,
 		endLine: expandEnd ? Math.min(totalLines, requestedEnd + RANGE_TRAILING_CONTEXT_LINES) : requestedEnd,
 	};
+}
+
 interface StreamFileLinesOptions {
 	includeTerminalNewline?: boolean;
 	stopScanAfterCollect?: boolean;

@@ -456,10 +456,14 @@ function makeHostContext(): InteractiveModeContext {
 		},
 		session: {
 			isStreaming: false,
+			isAborting: false,
 			queuedMessageCount: 0,
 			sessionName: "proto test",
 			model: undefined,
 			thinkingLevel: undefined,
+			// Local v4 host.ts `#buildState()` reads these from the session.
+			configuredThinkingLevel: () => undefined,
+			getAvailableThinkingLevels: () => [],
 			// host.ts scopes agent snapshots to `getAgentScopeId()`.
 			getAgentScopeId: () => "sess-proto",
 			subscribe: () => () => {},

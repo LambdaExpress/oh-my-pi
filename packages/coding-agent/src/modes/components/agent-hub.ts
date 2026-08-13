@@ -843,9 +843,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			}`,
 		);
 		if (children.length > 0) add(theme.fg("dim", formatChildIds(children, width)));
-		add(
-			theme.fg("dim", `${t("Registered")} ${formatLocalDateTimeWithOffset(new Date(ref.createdAt))}`),
-		);
+		add(theme.fg("dim", `${t("Registered")} ${formatLocalDateTimeWithOffset(new Date(ref.createdAt))}`));
 
 		section(t("Changes"));
 		add(
