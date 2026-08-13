@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { MismatchError as HashlineMismatchError } from "@oh-my-pi/hashline";
 import hashlineGrammar from "@oh-my-pi/hashline/grammar.lark" with { type: "text" };
 import hashlineDescription from "@oh-my-pi/hashline/prompt.md" with { type: "text" };
@@ -17,7 +18,12 @@ import { findUniqueWorkspaceSuffix, isInternalUrlPath, pathTargetsSsh } from "..
 import { resolvePlanPath, unwrapHashlineHeaderPath } from "../tools/plan-mode-guard";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
 import { executeHashlineSingle, hashlineEditParamsSchema } from "./hashline";
-import { type ApplyPatchParams, applyPatchSchema, expandApplyPatchToEntries } from "./modes/apply-patch";
+import {
+	type ApplyPatchEntry,
+	type ApplyPatchParams,
+	applyPatchSchema,
+	expandApplyPatchToEntries,
+} from "./modes/apply-patch";
 import applyPatchGrammar from "./modes/apply-patch.lark" with { type: "text" };
 import { executePatchSingle, type PatchEditEntry, type PatchParams, patchEditSchema } from "./modes/patch";
 import { executeReplace, type ReplaceBatchParams, type ReplaceParams, replaceEditSchema } from "./modes/replace";
@@ -73,6 +79,22 @@ function resolveConfiguredEditMode(rawEditMode: string): EditMode | undefined {
 	}
 
 	return editMode;
+}
+
+function assertApplyPatchPathsAreWorkspaceRelative(entries: readonly ApplyPatchEntry[]): void {
+	for (const entry of entries) {
+		assertApplyPatchPathIsWorkspaceRelative(entry.path);
+		if (entry.rename) assertApplyPatchPathIsWorkspaceRelative(entry.rename);
+	}
+}
+
+function assertApplyPatchPathIsWorkspaceRelative(authoredPath: string): void {
+	if (isInternalUrlPath(authoredPath)) return;
+	if (path.posix.isAbsolute(authoredPath) || path.win32.isAbsolute(authoredPath)) {
+		throw new Error(
+			`Local apply_patch paths must be workspace-relative; absolute paths are not allowed: ${authoredPath}`,
+		);
+	}
 }
 
 async function resolveEditPath(
@@ -646,6 +668,7 @@ export class EditTool implements AgentTool<TInput> {
 					onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
 					const entries = expandApplyPatchToEntries(params as ApplyPatchParams);
+					assertApplyPatchPathsAreWorkspaceRelative(entries);
 					// Resolve each authored path once per patch so paired hunks (e.g. delete
 					// then re-add of the same file) share the same workspace target.
 					const resolvedTargets = new Map<string, Promise<string>>();
