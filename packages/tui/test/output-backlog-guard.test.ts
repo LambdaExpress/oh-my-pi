@@ -58,9 +58,9 @@ describe("issue #6854: OutputBacklogGuard bounds a stalled stdout", () => {
 it("stops writing when the real terminal path crosses the backlog cap", () => {
 	const previousHeadless = setTerminalHeadless(false);
 	const isTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-	let writes = 0;
-	const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => {
-		writes++;
+	let bytesWritten = 0;
+	const stdout = vi.spyOn(process.stdout, "write").mockImplementation((chunk: string | Uint8Array) => {
+		bytesWritten += Buffer.byteLength(chunk);
 		return false;
 	});
 
@@ -71,8 +71,11 @@ it("stops writing when the real terminal path crosses the backlog cap", () => {
 		for (let i = 0; i < 70; i++) terminal.write(frame);
 
 		// The 65th MiB crosses the 64 MiB cap and marks the terminal dead;
-		// later frames must not reach stdout.
-		expect(writes).toBe(65);
+		// later frames must not reach stdout. Assert bytes, not call count:
+		// ConPTY hosts chunk each frame into 16 KiB writes (#2034/#2095), so
+		// the number of write() calls is platform-dependent while the emitted
+		// bytes are not.
+		expect(bytesWritten).toBe(65 * 1024 * 1024);
 		process.stdout.emit("drain");
 	} finally {
 		stdout.mockRestore();

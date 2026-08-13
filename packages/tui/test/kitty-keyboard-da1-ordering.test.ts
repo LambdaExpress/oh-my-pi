@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import {
@@ -25,7 +25,23 @@ const originalSshClient = Bun.env.SSH_CLIENT;
 const originalTmux = Bun.env.TMUX;
 const originalTerminalId = TERMINAL.id;
 
-function restoreEnv(name: "SSH_CONNECTION" | "SSH_TTY" | "SSH_CLIENT" | "TMUX", value: string | undefined): void {
+// These tests assert the POSIX kitty flag semantics (`>5u` / `>7u`).
+// terminal.ts deliberately swaps those for flag 1 / flag 3 on ConPTY hosts
+// (native Windows, and WSL whose stdout crosses into ConPTY at wslhost) —
+// "use Kitty flag 1 on Windows to fix Shift+letter input" (91be0eba77), with
+// the isConPTYHosted() predicate landed in 0072385e22. That ConPTY branch is
+// asserted separately in terminal-appearance.test.ts ("uses
+// disambiguation-only keyboard reporting on ConPTY"). Pinning this file to a
+// clean (non-ConPTY) linux keeps it exercising the progressive-enhancement
+// ordering contract regardless of the host OS the suite runs on.
+const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+const originalWslDistroName = Bun.env.WSL_DISTRO_NAME;
+const originalWslInterop = Bun.env.WSL_INTEROP;
+
+function restoreEnv(
+	name: "SSH_CONNECTION" | "SSH_TTY" | "SSH_CLIENT" | "TMUX" | "WSL_DISTRO_NAME" | "WSL_INTEROP",
+	value: string | undefined,
+): void {
 	if (value === undefined) {
 		delete Bun.env[name];
 		return;
@@ -36,6 +52,12 @@ function restoreEnv(name: "SSH_CONNECTION" | "SSH_TTY" | "SSH_CLIENT" | "TMUX", 
 describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () => {
 	let harness: ProcessTerminalRenderHarness | undefined;
 
+	beforeEach(() => {
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+		delete Bun.env.WSL_DISTRO_NAME;
+		delete Bun.env.WSL_INTEROP;
+	});
+
 	afterEach(() => {
 		harness?.dispose();
 		harness = undefined;
@@ -43,6 +65,9 @@ describe("ProcessTerminal kitty keyboard progressive-enhancement ordering", () =
 		restoreEnv("SSH_TTY", originalSshTty);
 		restoreEnv("SSH_CLIENT", originalSshClient);
 		restoreEnv("TMUX", originalTmux);
+		restoreEnv("WSL_DISTRO_NAME", originalWslDistroName);
+		restoreEnv("WSL_INTEROP", originalWslInterop);
+		if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
 		Object.defineProperty(TERMINAL, "id", { value: originalTerminalId, configurable: true });
 	});
 
