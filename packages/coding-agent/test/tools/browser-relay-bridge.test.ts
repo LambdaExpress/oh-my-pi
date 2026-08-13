@@ -1,10 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import { RelayBridge, type RelaySocket } from "@oh-my-pi/pi-coding-agent/tools/browser/relay/bridge";
 import type {
 	RelayRpcRequest,
 	RelayToExtMessage,
 	TabSnapshot,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/relay/protocol";
+import { TOOL_TIMEOUTS } from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 
 /** A relay→extension RPC narrowed to one op, tabIds/title/etc. included. */
 type ExtRpc<Op extends RelayRpcRequest["op"]> = { t: "rpc"; id: number } & Extract<RelayRpcRequest, { op: Op }>;
@@ -278,5 +279,131 @@ describe("RelayBridge tab grouping", () => {
 		const groups = ext2.rpcs("group");
 		expect(groups).toHaveLength(1);
 		expect(groups[0]!.tabIds).toEqual([1]);
+	});
+});
+
+describe("RelayBridge extension RPC deadlines", () => {
+	it("allows a forwarded CDP command to settle after the old 20 second boundary", async () => {
+		vi.useFakeTimers();
+		const bridge = new RelayBridge();
+		const ext = new FakeExtSocket();
+		try {
+			connect(bridge, ext, [tab({ tabId: 1 })]);
+			const cdp = new FakeCdpSocket();
+			const connId = bridge.cdpConnected(cdp);
+			const sessionId = await attachPage(bridge, ext, cdp, connId, 1);
+			const commandId = ++msgSeq;
+			bridge.cdpMessage(
+				connId,
+				JSON.stringify({ id: commandId, sessionId, method: "Runtime.callFunctionOn", params: {} }),
+			);
+			const send = ext.pending("send")[0];
+			expect(send).toBeDefined();
+
+			vi.advanceTimersByTime(20_001);
+			await flush();
+			expect(cdp.messages.find(message => message.id === commandId)).toBeUndefined();
+
+			ext.markAcked(send!.id);
+			bridge.extMessage(ext, JSON.stringify({ t: "rpcResult", id: send!.id, ok: true, result: { value: 42 } }));
+			await flush();
+			expect(cdp.messages.find(message => message.id === commandId)).toEqual({
+				id: commandId,
+				sessionId,
+				result: { value: 42 },
+			});
+		} finally {
+			bridge.extClosed(ext);
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps the short timeout for extension control RPCs", async () => {
+		vi.useFakeTimers();
+		const bridge = new RelayBridge();
+		const ext = new FakeExtSocket();
+		try {
+			connect(bridge, ext, []);
+			const cdp = new FakeCdpSocket();
+			const connId = bridge.cdpConnected(cdp);
+			const commandId = ++msgSeq;
+			bridge.cdpMessage(
+				connId,
+				JSON.stringify({ id: commandId, method: "Target.createTarget", params: { url: "about:blank" } }),
+			);
+			expect(ext.pending("createTab")).toHaveLength(1);
+
+			vi.advanceTimersByTime(20_000);
+			await flush();
+			expect(cdp.messages.find(message => message.id === commandId)).toEqual({
+				id: commandId,
+				error: { code: -32000, message: "extension rpc 'createTab' timed out after 20000ms" },
+			});
+		} finally {
+			bridge.extClosed(ext);
+			vi.useRealTimers();
+		}
+	});
+
+	it("eventually drops an unanswered send instead of retaining it without a bound", async () => {
+		vi.useFakeTimers();
+		const bridge = new RelayBridge();
+		const ext = new FakeExtSocket();
+		try {
+			connect(bridge, ext, [tab({ tabId: 1 })]);
+			const cdp = new FakeCdpSocket();
+			const connId = bridge.cdpConnected(cdp);
+			const sessionId = await attachPage(bridge, ext, cdp, connId, 1);
+			const commandId = ++msgSeq;
+			bridge.cdpMessage(connId, JSON.stringify({ id: commandId, sessionId, method: "Runtime.evaluate" }));
+			const send = ext.pending("send")[0];
+			expect(send).toBeDefined();
+			expect(vi.getTimerCount()).toBe(1);
+
+			const sendTimeoutMs = (TOOL_TIMEOUTS.browser.max + 1) * 1000;
+			vi.advanceTimersByTime(sendTimeoutMs);
+			await flush();
+			expect(vi.getTimerCount()).toBe(0);
+			expect(cdp.messages.find(message => message.id === commandId)).toEqual({
+				id: commandId,
+				sessionId,
+				error: { code: -32000, message: `extension rpc 'send' timed out after ${sendTimeoutMs}ms` },
+			});
+
+			bridge.extMessage(ext, JSON.stringify({ t: "rpcResult", id: send!.id, ok: true, result: {} }));
+			await flush();
+			expect(cdp.messages.filter(message => message.id === commandId)).toHaveLength(1);
+		} finally {
+			bridge.extClosed(ext);
+			vi.useRealTimers();
+		}
+	});
+
+	it("rejects a pending send and clears its deadline when the extension disconnects", async () => {
+		vi.useFakeTimers();
+		const bridge = new RelayBridge();
+		const ext = new FakeExtSocket();
+		try {
+			connect(bridge, ext, [tab({ tabId: 1 })]);
+			const cdp = new FakeCdpSocket();
+			const connId = bridge.cdpConnected(cdp);
+			const sessionId = await attachPage(bridge, ext, cdp, connId, 1);
+			const commandId = ++msgSeq;
+			bridge.cdpMessage(connId, JSON.stringify({ id: commandId, sessionId, method: "Runtime.evaluate" }));
+			expect(ext.pending("send")).toHaveLength(1);
+			expect(vi.getTimerCount()).toBe(1);
+
+			bridge.extClosed(ext);
+			await flush();
+			expect(vi.getTimerCount()).toBe(0);
+			expect(cdp.messages.find(message => message.id === commandId)).toEqual({
+				id: commandId,
+				sessionId,
+				error: { code: -32000, message: "relay extension disconnected" },
+			});
+		} finally {
+			bridge.extClosed(ext);
+			vi.useRealTimers();
+		}
 	});
 });

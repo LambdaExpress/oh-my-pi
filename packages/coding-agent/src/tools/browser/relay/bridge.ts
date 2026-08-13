@@ -21,6 +21,7 @@
  * - real child session ids (OOPIFs, workers) — created by Chrome under the
  *   shared root session and passed through verbatim
  */
+import { TOOL_TIMEOUTS } from "../../tool-timeouts";
 import type { ExtToRelayMessage, RelayRpcRequest, RelayToExtMessage, TabSnapshot } from "./protocol";
 
 /** Transport-agnostic websocket surface the bridge writes to. */
@@ -122,7 +123,16 @@ class TabState {
 /** URLs `chrome.debugger` cannot attach to; hidden from downstream discovery entirely. */
 const INELIGIBLE_URL = /^(chrome|devtools|edge|view-source|chrome-extension|chrome-untrusted|chrome-search):/i;
 
-const RPC_TIMEOUT_MS = 20_000;
+/** Fast failure for extension control operations that should never wait on page work. */
+const CONTROL_RPC_TIMEOUT_MS = 20_000;
+/**
+ * Forwarded CDP commands can legitimately await the whole browser run (notably
+ * `Runtime.callFunctionOn`). Keep this emergency cleanup one second beyond the
+ * browser tool's maximum caller budget so the run owns the user-visible
+ * deadline, while a connected extension that never answers still cannot leak a
+ * pending RPC forever.
+ */
+const CDP_SEND_RPC_TIMEOUT_MS = (TOOL_TIMEOUTS.browser.max + 1) * 1000;
 const CDP_ERROR_METHOD_NOT_FOUND = -32601;
 const CDP_ERROR_SERVER = -32000;
 
@@ -929,9 +939,10 @@ export class RelayBridge {
 		conn.socket.send(JSON.stringify({ sessionId, method, params }));
 	}
 
-	#rpc(req: RelayRpcRequest, timeoutMs = RPC_TIMEOUT_MS): Promise<unknown> {
+	#rpc(req: RelayRpcRequest): Promise<unknown> {
 		const ext = this.#ext;
 		if (!ext) return Promise.reject(new Error("relay extension is not connected"));
+		const timeoutMs = req.op === "send" ? CDP_SEND_RPC_TIMEOUT_MS : CONTROL_RPC_TIMEOUT_MS;
 		const id = ++this.#rpcSeq;
 		const { promise, resolve, reject } = Promise.withResolvers<unknown>();
 		const timer = setTimeout(() => {
