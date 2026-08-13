@@ -4713,11 +4713,6 @@ export class TUI extends Container {
 		// replay above the threshold keeps every logical row but disables DEC
 		// 2026 for this paint, so legacy hosts can process those bounded chunks
 		// incrementally instead of buffering one giant synchronized transaction.
-		// `paintLines` stays null: this merge kept the local ConPTY handling
-		// above (disable DEC 2026 for oversized replays) instead of official's
-		// `#truncateLargeConptyFrame` truncation, so the truncated-replay branch
-		// in the emit loops below is inert but structurally present.
-		let paintLines: string[] | null = null;
 		const paintLineCount = chunkTo + height;
 		const largeConptyReplay = this.#isLargeConptyReplay(frame, window, chunkTo);
 		const paintBeginSequence = largeConptyReplay ? PAINT_BEGIN_NO_SYNC : this.#paintBeginSequence;
@@ -4757,69 +4752,43 @@ export class TUI extends Container {
 			// Untruncated, the visible slice is exactly the caller's window
 			// (visibleStart === chunkTo) — reuse it rather than copying;
 			// planDeccaraFills fills its own `texts` and never mutates input.
-			let visible = window;
-			if (paintLines !== null) {
-				visible = new Array<string>(paintLineCount - visibleStart);
-				for (let k = 0; k < visible.length; k++) visible[k] = paintLines[visibleStart + k] ?? "";
-			}
-			const plan = planDeccaraFills(visible, width);
+			const plan = planDeccaraFills(window, width);
 			visibleTexts = plan.texts;
 			fillSequence = plan.sequence;
 		}
-		if (paintLines === null) {
-			// Common path: emit straight from the source arrays (the
-			// pre-merge two-loop form); byte-identical to replaying the
-			// merged array. Destructive history clears deliberately avoid ED2, so
-			// each row must self-clear stale cells left by the previous viewport.
-			for (let i = 0; i < chunkTo; i++) {
-				if (i > 0) buffer += "\r\n";
-				const writeRow = Math.min(i, height - 1);
-				buffer += options.clearScrollback
-					? this.#lineRewriteSequence(
-							frame[i] ?? "",
-							width,
-							writeRow,
-							i,
-							chunkTo,
-							this.#osc66SpacerGlyphWidth(frame, i),
-						)
-					: this.#terminalLine(frame[i] ?? "", writeRow, i, chunkTo);
-			}
-			for (let screenRow = 0; screenRow < height; screenRow++) {
-				if (chunkTo + screenRow > 0) buffer += "\r\n";
-				const line = visibleTexts ? (visibleTexts[screenRow] ?? "") : (window[screenRow] ?? "");
-				const writeRow = Math.min(chunkTo + screenRow, height - 1);
-				const frameRow = windowTop + screenRow;
-				buffer += options.clearScrollback
-					? this.#lineRewriteSequence(
-							line,
-							width,
-							writeRow,
-							frameRow,
-							chunkTo,
-							this.#osc66SpacerGlyphWidth(frame, frameRow),
-						)
-					: this.#terminalLine(line, writeRow, frameRow, chunkTo);
-			}
-		} else {
-			// ConPTY-truncated replay: leading rows were dropped, so frame-space
-			// positions are unknown — placements still clip to the write row but
-			// skip epoch bookkeeping.
-			for (let i = 0; i < paintLines.length; i++) {
-				if (i > 0) buffer += "\r\n";
-				const line = visibleTexts && i >= visibleStart ? visibleTexts[i - visibleStart] : (paintLines[i] ?? "");
-				const writeRow = Math.min(i, height - 1);
-				buffer += options.clearScrollback
-					? this.#lineRewriteSequence(
-							line,
-							width,
-							writeRow,
-							-1,
-							chunkTo,
-							this.#osc66SpacerGlyphWidth(paintLines, i),
-						)
-					: this.#terminalLine(line, writeRow, -1, chunkTo);
-			}
+		// Emit straight from the source arrays (the pre-merge two-loop form);
+		// byte-identical to replaying the merged array. Destructive history
+		// clears deliberately avoid ED2, so each row must self-clear stale cells
+		// left by the previous viewport.
+		for (let i = 0; i < chunkTo; i++) {
+			if (i > 0) buffer += "\r\n";
+			const writeRow = Math.min(i, height - 1);
+			buffer += options.clearScrollback
+				? this.#lineRewriteSequence(
+						frame[i] ?? "",
+						width,
+						writeRow,
+						i,
+						chunkTo,
+						this.#osc66SpacerGlyphWidth(frame, i),
+					)
+				: this.#terminalLine(frame[i] ?? "", writeRow, i, chunkTo);
+		}
+		for (let screenRow = 0; screenRow < height; screenRow++) {
+			if (chunkTo + screenRow > 0) buffer += "\r\n";
+			const line = visibleTexts ? (visibleTexts[screenRow] ?? "") : (window[screenRow] ?? "");
+			const writeRow = Math.min(chunkTo + screenRow, height - 1);
+			const frameRow = windowTop + screenRow;
+			buffer += options.clearScrollback
+				? this.#lineRewriteSequence(
+						line,
+						width,
+						writeRow,
+						frameRow,
+						chunkTo,
+						this.#osc66SpacerGlyphWidth(frame, frameRow),
+					)
+				: this.#terminalLine(line, writeRow, frameRow, chunkTo);
 		}
 		buffer += fillSequence;
 		// Park the hardware cursor at real content bottom, not the padded
