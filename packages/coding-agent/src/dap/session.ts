@@ -251,13 +251,13 @@ function normalizePath(filePath: string): string {
 	return path.resolve(filePath);
 }
 
-function truncateOutput(session: DapSession, event: DapOutputEventBody): void {
-	if (!event.output) return;
-	const bytes = Buffer.byteLength(event.output, "utf-8");
+function truncateOutput(session: DapSession, output: string, category = "console"): void {
+	if (!output) return;
+	const bytes = Buffer.byteLength(output, "utf-8");
 	const startByte = session.outputBytes;
 	session.outputChunks.push({
-		category: event.category ?? "console",
-		output: event.output,
+		category,
+		output,
 		startByte,
 		endByte: startByte + bytes,
 	});
@@ -1628,7 +1628,7 @@ export class DapSessionManager {
 			return {};
 		});
 		client.onEvent("output", body => {
-			truncateOutput(session, (body as DapOutputEventBody | undefined) ?? { output: "" });
+			truncateOutput(session, (body as DapOutputEventBody | undefined)?.output ?? "");
 		});
 		client.onEvent("initialized", () => {
 			session.initializedSeen = true;
