@@ -13,6 +13,7 @@ import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { SessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { setLocale } from "../../../src/i18n";
 
 beforeAll(async () => {
 	await initTheme();
@@ -20,10 +21,12 @@ beforeAll(async () => {
 
 beforeEach(async () => {
 	resetSettingsForTest();
+	setLocale("en");
 	await Settings.init({ inMemory: true });
 });
 
 afterEach(() => {
+	setLocale(null);
 	resetSettingsForTest();
 });
 
@@ -210,5 +213,9 @@ describe("SelectorController.showTreeSelector re-answering the active ask leaf",
 		await pickEntry(editorContainer, "some-other-entry");
 
 		expect(resumeAfterAskReanswer).not.toHaveBeenCalled();
+		expect(ctx.renderInitialMessages).toHaveBeenCalledWith({
+			clearTerminalHistory: true,
+			recoverCompletedRuns: true,
+		});
 	});
 });

@@ -122,7 +122,7 @@ export interface RenderSessionContextOptions {
 export interface RenderInitialMessagesOptions {
 	preserveExistingChat?: boolean;
 	clearTerminalHistory?: boolean;
-	/** Reconstruct every completed request, including the latest, when loading persisted history. */
+	/** Reconstruct completed requests and any unfinished run anchor when loading persisted history. */
 	recoverCompletedRuns?: boolean;
 }
 

@@ -44,6 +44,7 @@ import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
 	type CompletedRunCollapse,
+	deriveCompletedRunAnchor,
 	isCollapsibleRunFinalAssistant,
 	isSameTranscriptMessage,
 	splitAssistantMessageToolTimeline,
@@ -122,6 +123,8 @@ class CompletedRunGate extends Container {
 interface ActiveCompletedRun {
 	startedAtMs: number;
 	lifecycleVersion: number;
+	/** Lifecycle that emitted the most recent assistant message in `messages`. */
+	lastAssistantLifecycleVersion?: number;
 	messages: AgentMessage[];
 	initialUserMessage?: Extract<AgentMessage, { role: "user" }>;
 	gate?: CompletedRunGate;
@@ -244,9 +247,8 @@ export class EventController {
 	// continuation's own span once the whole chain settles.
 	#pendingCompletedRuns: PendingCompletedRun[] = [];
 	// Collapse records of completed runs parked at their agent_end. The run
-	// stays fully expanded while the user reads the final answer; sending the
-	// next content is what commits the collapse (see
-	// `#flushPendingCompletedRunCollapses` at the next agent_start).
+	// stays fully expanded while the user reads the final answer; Alt+O or the
+	// next content commits the collapse through `#flushPendingCompletedRunCollapses`.
 	#pendingCompletedRunCollapses: CompletedRunCollapse[] = [];
 
 	get activeCompletedRunGate(): { component: Component; afterMessage: AgentMessage } | undefined {
@@ -256,17 +258,41 @@ export class EventController {
 	}
 
 	/**
-	 * Commit completed-run projections before a new submission paints. The input
-	 * path calls this before flushing a deferred ConPTY scrollback rebuild so that
-	 * one destructive replay contains the collapsed transcript, not the stale
-	 * expanded frame. Programmatic submissions fall back to the agent_start call.
+	 * Commit completed-run projections before a new submission paints or when the
+	 * user explicitly toggles completed runs. The input path calls this before
+	 * flushing a deferred ConPTY scrollback rebuild so that one destructive replay
+	 * contains the collapsed transcript, not the stale expanded frame.
+	 * Programmatic submissions fall back to the agent_start call.
 	 */
-	commitCompletedRunCollapses(): boolean {
+	commitCompletedRunCollapses(options: { rebuild?: boolean } = {}): boolean {
 		const committedPendingCollapse = this.#flushPendingCompletedRunCollapses();
 		const recoveredPersistedCollapse = this.ctx.recoverCompletedRunCollapses?.({ includeLatest: true }) ?? false;
 		if (!committedPendingCollapse && !recoveredPersistedCollapse) return false;
-		this.ctx.rebuildChatFromMessages();
+		if (options.rebuild !== false) this.ctx.rebuildChatFromMessages();
 		return true;
+	}
+
+	/**
+	 * Rebuild the live collapse anchor after a persisted-history transition such
+	 * as `/tree` or `/resume`. Call before repainting the selected transcript so
+	 * the restored zero-row gate lands after the original request.
+	 */
+	restoreCompletedRunAnchor(messages: readonly AgentMessage[]): void {
+		this.#activeCompletedRun?.gate?.finalize();
+		this.#activeCompletedRun = undefined;
+		this.#discardPendingCompletedRuns();
+		this.#pendingCompletedRunCollapses = [];
+		if (!this.ctx.settings.get("display.collapseCompletedRuns")) return;
+
+		const anchor = deriveCompletedRunAnchor(messages);
+		if (!anchor) return;
+		this.#activeCompletedRun = {
+			startedAtMs: anchor.initialUserMessage.timestamp,
+			lifecycleVersion: 0,
+			messages: anchor.messages,
+			initialUserMessage: anchor.initialUserMessage,
+			gate: new CompletedRunGate(),
+		};
 	}
 	// Coalescing window for `message_update` events at the subscription boundary.
 	// `message_update` carries the CUMULATIVE assistant message (every update
@@ -823,8 +849,7 @@ export class EventController {
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
 		// The user just sent content: commit collapses parked by completed runs.
-		// A run stays fully expanded while its final answer is on screen; the
-		// next user message is what triggers the previous run's collapse.
+		// This is the automatic fallback when Alt+O did not commit them earlier.
 		if (this.commitCompletedRunCollapses()) this.ctx.ui.resetDisplay();
 		// An Enter force-flush parks the interrupted run's span (kept fully
 		// expanded) and starts the continuation on a fresh span, so the final
@@ -925,6 +950,35 @@ export class EventController {
 			this.ctx.ui.requestRender();
 		} else if (event.message.role === "user") {
 			vocalizer.clear();
+			// Ctrl+Up follow-ups are drained inside the current agent lifecycle, so
+			// agent-core emits no second agent_start between the naturally completed
+			// answer and this user message. Treat the user message itself as the run
+			// boundary: commit the completed span now, then open a fresh live gate for
+			// the follow-up below. Aborts, errors, and tool-use turns do not satisfy
+			// isCollapsibleRunFinalAssistant and therefore retain their original span.
+			if (!event.message.synthetic && this.#activeCompletedRun?.initialUserMessage) {
+				const finalAssistant = this.#activeCompletedRun.messages.findLast(
+					(message): message is Extract<AgentMessage, { role: "assistant" }> => message.role === "assistant",
+				);
+				if (
+					isCollapsibleRunFinalAssistant(finalAssistant) &&
+					this.#activeCompletedRun.lastAssistantLifecycleVersion === this.#activeCompletedRun.lifecycleVersion
+				) {
+					await this.ctx.viewSession.waitForMessagePersistence(finalAssistant);
+					const previousLifecycleVersion = this.#activeCompletedRun.lifecycleVersion;
+					const collapse = this.#takeCompletedRunCollapse(finalAssistant);
+					if (collapse) {
+						this.ctx.recordCompletedRunCollapse(collapse);
+						this.ctx.rebuildChatFromMessages();
+						this.ctx.ui.resetDisplay();
+						this.#activeCompletedRun = {
+							lifecycleVersion: previousLifecycleVersion + 1,
+							messages: [],
+							startedAtMs: Date.now(),
+						};
+					}
+				}
+			}
 			const textContent = this.ctx.getUserMessageText(event.message);
 			const imageBlocks =
 				typeof event.message.content === "string"
@@ -1336,6 +1390,9 @@ export class EventController {
 
 	async #handleMessageEnd(event: Extract<AgentSessionEvent, { type: "message_end" }>): Promise<void> {
 		this.#activeCompletedRun?.messages.push(event.message);
+		if (event.message.role === "assistant" && this.#activeCompletedRun) {
+			this.#activeCompletedRun.lastAssistantLifecycleVersion = this.#activeCompletedRun.lifecycleVersion;
+		}
 		if (event.message.role === "user") return;
 		const unlockedThinkingVisibility =
 			event.message.role === "assistant" && this.ctx.noteDisplayableThinkingContent(event.message);
@@ -1970,9 +2027,9 @@ export class EventController {
 		}
 		// Park the collapse records — the interrupted (force-flushed) runs
 		// first, then the completed run — instead of committing them now. The
-		// runs stay fully expanded while the user reads the final answer; the
-		// collapse is applied in a single rebuild + reset when the user sends
-		// the next content (see `#flushPendingCompletedRunCollapses`).
+		// runs stay fully expanded while the user reads the final answer; Alt+O or
+		// the next content applies the collapse in a single rebuild + reset (see
+		// `#flushPendingCompletedRunCollapses`).
 		const parkedCollapses: CompletedRunCollapse[] = [];
 		for (const pending of this.#pendingCompletedRuns) {
 			const parkedCollapse = this.#buildPendingCollapse(pending);
@@ -2042,9 +2099,8 @@ export class EventController {
 
 	/**
 	 * Apply collapses parked by completed runs at their agent_end. The runs
-	 * stay fully expanded while the user reads the final answers; sending the
-	 * next content starts a new agent turn, which is what commits the previous
-	 * run's collapse in one rebuild + reset.
+	 * stay fully expanded while the user reads the final answers; Alt+O can
+	 * commit them immediately, otherwise the next agent turn does so.
 	 */
 	#flushPendingCompletedRunCollapses(): boolean {
 		if (this.#pendingCompletedRunCollapses.length === 0) return false;

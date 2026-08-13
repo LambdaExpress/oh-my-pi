@@ -66,6 +66,13 @@ export interface DeriveCompletedRunCollapsesOptions {
 	includeLatest: boolean;
 }
 
+export interface CompletedRunAnchor {
+	/** Original request that the next continuation still belongs to. */
+	initialUserMessage: Extract<AgentMessage, { role: "user" }>;
+	/** Persisted messages already emitted for the unfinished request. */
+	messages: AgentMessage[];
+}
+
 /**
  * Completed-run collapsing needs the full persisted transcript so Alt+O can
  * reconstruct runs from before the latest compaction. Provider context remains
@@ -132,8 +139,26 @@ export function deriveCompletedRunCollapses(
 	messages: readonly AgentMessage[],
 	options: DeriveCompletedRunCollapsesOptions,
 ): CompletedRunCollapse[] {
+	return deriveCompletedRunState(messages, options).collapses;
+}
+
+/**
+ * Recover the unfinished request at the selected transcript leaf. Tree
+ * navigation can move behind an inserted correction, leaving a tool-use run
+ * with no natural final answer. The next user continuation must inherit that
+ * original request so its eventual collapse covers the whole run.
+ */
+export function deriveCompletedRunAnchor(messages: readonly AgentMessage[]): CompletedRunAnchor | undefined {
+	return deriveCompletedRunState(messages, { includeLatest: true }).anchor;
+}
+
+function deriveCompletedRunState(
+	messages: readonly AgentMessage[],
+	options: DeriveCompletedRunCollapsesOptions,
+): { collapses: CompletedRunCollapse[]; anchor?: CompletedRunAnchor } {
 	const collapses: Array<CompletedRunCollapse & { answerIndex: number }> = [];
 	let initialUserMessage: Extract<AgentMessage, { role: "user" }> | undefined;
+	let initialUserIndex = -1;
 	let terminalError = false;
 	let lastUserIndex = -1;
 
@@ -143,6 +168,7 @@ export function deriveCompletedRunCollapses(
 			lastUserIndex = index;
 			if (!initialUserMessage || terminalError) {
 				initialUserMessage = message;
+				initialUserIndex = index;
 				terminalError = false;
 			}
 			continue;
@@ -162,12 +188,18 @@ export function deriveCompletedRunCollapses(
 			answerIndex: index,
 		});
 		initialUserMessage = undefined;
+		initialUserIndex = -1;
 		terminalError = false;
 	}
 
-	return collapses
+	const completed = collapses
 		.filter(collapse => options.includeLatest || collapse.answerIndex < lastUserIndex)
 		.map(({ answerIndex: _, ...collapse }) => collapse);
+	const anchor =
+		initialUserMessage && initialUserIndex >= 0 && !terminalError
+			? { initialUserMessage, messages: messages.slice(initialUserIndex) }
+			: undefined;
+	return { collapses: completed, anchor };
 }
 
 /**

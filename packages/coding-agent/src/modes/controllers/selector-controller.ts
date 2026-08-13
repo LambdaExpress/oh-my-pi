@@ -1352,7 +1352,7 @@ export class SelectorController {
 
 					// Update UI — rebuild the display transcript for the new leaf (the
 					// context from navigateTree is the LLM context, not the transcript).
-					this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+					this.ctx.renderInitialMessages({ clearTerminalHistory: true, recoverCompletedRuns: true });
 					await this.ctx.reloadTodos();
 					if (result.editorText && !this.ctx.editor.getText().trim()) {
 						this.ctx.editor.setDraft(result.editorText, result.editorImages);

@@ -439,8 +439,8 @@ export const zhCN: Record<string, string> = {
 	"Advisor: on ({model})": "顾问: 开启（{model}）",
 	"Advisors enabled ({count}):": "已启用顾问（{count}）：",
 	"Advisor{name} unavailable for {model}: {message}": "顾问{name}对{model}不可用：{message}",
-	"Keep a completed run fully on screen while you read it; when you send your next message, collapse it to its initial request and final assistant answer. Pre-compaction display history remains available so older runs can be expanded":
-		"阅读时保持已完成轮次完整显示；发送下一条消息时，再将其折叠为初始请求和最终助手回答。压缩前的显示历史仍会保留，以便展开更早的轮次",
+	"Keep a completed run fully on screen while you read it; press the completed-run toggle (Alt+O by default) after it finishes to collapse it immediately, or send your next message to collapse it automatically. Pre-compaction display history remains available so older runs can be expanded":
+		"阅读时保持已完成轮次完整显示；结束后按已完成轮次切换键（默认为 Alt+O）可立即折叠，发送下一条消息时也会自动折叠。压缩前的显示历史仍会保留，以便展开更早的轮次",
 	"After an advisor concern or blocker interrupts, route further concerns/blockers non-interruptingly for this many primary turns.":
 		"在顾问的顾虑或阻塞中断后，在接下来的这么多主轮次中，以非中断方式处理后续的顾虑/阻塞。",
 	"After the agent stops, nudge it to capture lessons to memory and create/enhance isolated managed skills":

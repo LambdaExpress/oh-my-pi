@@ -710,13 +710,6 @@ export class UiHelpers {
 		this.ctx.pendingMessagesContainer.disposeChildren();
 		this.ctx.pendingBashComponents = [];
 		this.ctx.pendingPythonComponents = [];
-		if (options.recoverCompletedRuns && !this.ctx.viewSession.isStreaming) {
-			// AgentSession is reused by in-process /resume. Replace the WeakMap
-			// index so records from the previously loaded branch cannot affect the
-			// new session's Alt+O expansion state.
-			this.ctx.recoverCompletedRunCollapses({ includeLatest: true, replaceExisting: true });
-		}
-
 		// Completed-run collapse projects the full persisted transcript itself,
 		// so keep pre-compaction requests available for Alt+O even when the
 		// separate compacted-history setting is enabled. Mid-turn rebuilds
@@ -730,6 +723,13 @@ export class UiHelpers {
 			),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
+		if (options.recoverCompletedRuns && !this.ctx.viewSession.isStreaming) {
+			// AgentSession is reused by in-process /resume and /tree. Replace branch-
+			// local collapse records, then recover an unfinished request anchor so a
+			// continuation from the selected leaf still collapses the whole run.
+			this.ctx.recoverCompletedRunCollapses({ includeLatest: true, replaceExisting: true });
+			this.ctx.eventController.restoreCompletedRunAnchor(context.messages);
+		}
 		this.ctx.renderSessionContext(context, {
 			updateFooter: true,
 			populateHistory: !this.ctx.focusedAgentId,

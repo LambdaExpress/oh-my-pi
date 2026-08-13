@@ -244,6 +244,42 @@ interface CompletedRunView {
 	collapse: CompletedRunCollapse;
 	expanded: boolean;
 }
+
+/**
+ * A compaction rebuild can recover a completed run while a queued follow-up
+ * still keeps that run's zero-row scrollback gate alive. Both blocks share the
+ * original request anchor: render the stable summary before the gate instead
+ * of letting either insertion replace the other.
+ */
+class CompletedRunSummaryGate extends Container {
+	#gate: Component;
+	#summaryRows = 0;
+
+	constructor(summary: Component, gate: Component) {
+		super();
+		this.#gate = gate;
+		this.addChild(summary);
+		this.addChild(gate);
+	}
+
+	isTranscriptBlockFinalized(): boolean {
+		const finalized = (this.#gate as Component & { isTranscriptBlockFinalized?(): boolean })
+			.isTranscriptBlockFinalized;
+		return finalized ? finalized.call(this.#gate) : true;
+	}
+
+	getTranscriptBlockSettledRows(): number {
+		return this.#summaryRows;
+	}
+
+	override render(width: number): readonly string[] {
+		const lines = super.render(width);
+		// Completed-run summaries are one-line TruncatedText components. The gate
+		// renders zero rows, so this stable prefix ends immediately before it.
+		this.#summaryRows = lines.length > 0 ? 1 : 0;
+		return lines;
+	}
+}
 const STILL_CLOSING_DELAY_MS = 3_000;
 
 const HINT_SHIMMER_PALETTE: ShimmerPalette = {
@@ -700,10 +736,17 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	toggleCompletedRunCollapse(): void {
 		if (!this.settings.get("display.collapseCompletedRuns")) return;
+		// A just-finished run stays expanded until the next submission. Alt+O must
+		// be able to claim that parked record immediately; defer its rebuild so this
+		// toggle still performs one clear + replay below.
+		const committedCompletedRun = this.#eventController.commitCompletedRunCollapses({ rebuild: false });
 		const completedRuns = this.#completedRunCollapses.get(this.viewSession);
 		if (!completedRuns?.length) return;
 
-		const expanded = completedRuns.some(run => !run.expanded);
+		// Newly committed runs start collapsed, so the first Alt+O after agent_end
+		// preserves that state. Later presses retain the normal all-expand/all-
+		// collapse toggle semantics.
+		const expanded = committedCompletedRun ? false : completedRuns.some(run => !run.expanded);
 		for (const run of completedRuns) {
 			run.expanded = expanded;
 		}
@@ -4765,13 +4808,17 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#uiHelpers.renderSessionContext(projection.context, {
 			...options,
 			insertAfterMessage: message => {
-				if (activeGate && isSameTranscriptMessage(message, activeGate.afterMessage)) {
-					return activeGate.component;
-				}
 				const summary = projection.summaries[summaryIndex];
-				if (!summary || !isSameTranscriptMessage(message, summary.afterMessage)) return undefined;
+				const matchingSummary =
+					summary && isSameTranscriptMessage(message, summary.afterMessage) ? summary : undefined;
+				const matchingGate =
+					activeGate && isSameTranscriptMessage(message, activeGate.afterMessage) ? activeGate : undefined;
+				if (!matchingSummary) return matchingGate?.component;
 				summaryIndex++;
-				return createCompletedRunSummary(summary, toggleKey);
+				const summaryComponent = createCompletedRunSummary(matchingSummary, toggleKey);
+				return matchingGate
+					? new CompletedRunSummaryGate(summaryComponent, matchingGate.component)
+					: summaryComponent;
 			},
 		});
 	}

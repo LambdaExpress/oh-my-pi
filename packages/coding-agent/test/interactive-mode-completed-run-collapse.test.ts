@@ -139,6 +139,55 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(messages).toHaveLength(4);
 	});
 
+	it("collapses a just-finished run when Alt+O is pressed before the next submission", () => {
+		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
+		const loop = assistant(
+			[
+				{ type: "text", text: "working through the request" },
+				{ type: "toolCall", id: "tc", name: "read", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const result = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "read",
+			content: [{ type: "text", text: "tool data" }],
+			timestamp: 3,
+		} as AgentMessage;
+		const final = assistant([{ type: "text", text: "done" }], "stop", 4);
+		const context = {
+			messages: [initial, loop, result, final] as AgentMessage[],
+			models: {},
+			injectedTtsrRules: [],
+			mode: "none",
+		};
+		const commit = vi.spyOn(mode.eventController, "commitCompletedRunCollapses").mockImplementation(() => {
+			mode.recordCompletedRunCollapse({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+				durationMs: 65_000,
+			});
+			return true;
+		});
+		const rebuild = vi.spyOn(mode, "rebuildChatFromMessages").mockImplementation(() => {});
+		const resetDisplay = vi.spyOn(mode.ui, "resetDisplay").mockImplementation(() => {});
+
+		mode.toggleCompletedRunCollapse();
+		mode.chatContainer.clear();
+		mode.renderSessionContext(context);
+		const rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+
+		expect(commit).toHaveBeenCalledTimes(1);
+		expect(rendered).toContain("※ collapsed: 1 agent text segment · 1 tool call · 1m5s elapsed");
+		expect(rendered).not.toContain("working through the request");
+		expect(rendered).toContain("done");
+		expect(rebuild).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
 	it("automatically collapses the latest completed run when a session is resumed", () => {
 		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
 		const loop = assistant(
@@ -279,6 +328,50 @@ describe("InteractiveMode completed-run collapse", () => {
 		rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
 		expect(rendered).toContain("old intermediate work");
 		expect(rendered).not.toContain("※ collapsed:");
+	});
+
+	it("shows a completed-run summary when compaction rebuilds during a queued follow-up", () => {
+		Settings.instance.set("display.collapseCompacted", true);
+		const initial = { role: "user", content: "original request", timestamp: 1 } as const;
+		const loop = assistant(
+			[
+				{ type: "text", text: "old intermediate work" },
+				{ type: "toolCall", id: "tc", name: "read", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const result = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "read",
+			content: [{ type: "text", text: "tool data" }],
+			timestamp: 3,
+		} as ToolResultMessage;
+		const final = assistant([{ type: "text", text: "first answer" }], "stop", 4);
+		const followUp = { role: "user", content: "queued follow-up", timestamp: 5 } as const;
+		for (const message of [initial, loop, result, final, followUp]) {
+			session.sessionManager.appendMessage(message);
+		}
+
+		// Ctrl+Up follow-ups run inside the existing agent lifecycle. Until that
+		// lifecycle settles, the live zero-row gate still belongs to the original
+		// request even though persisted history already contains a completed answer.
+		mode.eventController.restoreCompletedRunAnchor([initial, loop, result]);
+
+		// Auto-compaction rebuilds from persisted history. That recovery projects
+		// the first answer as collapsed while the live gate still shares its anchor.
+		mode.rebuildChatFromMessages();
+		const lines = mode.chatContainer.render(120).map(line => Bun.stripANSI(line));
+		const summaryIndex = lines.findIndex(line => line.includes("※ collapsed: 1 agent text segment · 1 tool call"));
+
+		expect(summaryIndex).toBeGreaterThanOrEqual(0);
+		expect(lines.join("\n")).not.toContain("old intermediate work");
+		expect(lines.join("\n")).toContain("first answer");
+		expect(lines.join("\n")).toContain("queued follow-up");
+		// The summary is stable, but the gate must still keep the running follow-up
+		// and everything below it in the repaintable transcript suffix.
+		expect(mode.chatContainer.getNativeScrollbackLiveRegionStart()).toBe(summaryIndex + 1);
 	});
 
 	it("toggles a force-flushed interrupted run and its continuation together", () => {

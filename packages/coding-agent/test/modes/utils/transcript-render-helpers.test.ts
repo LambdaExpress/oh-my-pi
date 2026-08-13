@@ -7,6 +7,7 @@ import {
 	assistantUsageIsBilled,
 	collapseCompletedRuns,
 	createCompletedRunSummary,
+	deriveCompletedRunAnchor,
 	deriveCompletedRunCollapses,
 } from "../../../src/modes/utils/transcript-render-helpers";
 
@@ -130,6 +131,47 @@ describe("completed-run collapse projection", () => {
 		expect(projection.summaries).toEqual([
 			{ afterMessage: initial, agentTextSegments: 1, toolCalls: 1, durationMs: 4 },
 		]);
+	});
+
+	it("recovers only an unfinished request as the next continuation anchor", () => {
+		const initial = { role: "user", content: "unfinished deployment", timestamp: 1 } as const;
+		const loop = assistant(
+			[
+				{ type: "text", text: "working" },
+				{ type: "toolCall", id: "tc", name: "write", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const result = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "write",
+			content: [{ type: "text", text: "Skipped due to queued user message." }],
+			isError: true,
+			timestamp: 3,
+		} as AgentMessage;
+
+		expect(deriveCompletedRunAnchor([initial, loop, result])).toEqual({
+			initialUserMessage: initial,
+			messages: [initial, loop, result],
+		});
+
+		const final = assistant([{ type: "text", text: "done" }], "stop", 4);
+		expect(deriveCompletedRunAnchor([initial, loop, result, final])).toBeUndefined();
+	});
+
+	it("starts a fresh anchor after a terminal error", () => {
+		const failed = { role: "user", content: "invalid request", timestamp: 1 } as const;
+		const error = assistant([], "error", 2);
+		error.errorMessage = "401 Unauthorized";
+		error.stopDetails = { type: "authentication_error", category: null };
+		const next = { role: "user", content: "independent request", timestamp: 3 } as const;
+
+		expect(deriveCompletedRunAnchor([failed, error, next])).toEqual({
+			initialUserMessage: next,
+			messages: [next],
+		});
 	});
 
 	it.each([

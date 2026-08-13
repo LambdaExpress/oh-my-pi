@@ -190,6 +190,59 @@ describe("completed run collapse", () => {
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
 	});
 
+	it("collapses a naturally completed turn when a queued follow-up starts in the same agent lifecycle", async () => {
+		const persisted = Promise.withResolvers<void>();
+		const waitForMessagePersistence = vi.fn(() => persisted.promise);
+		const { controller, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture(
+			true,
+			waitForMessagePersistence,
+		);
+		const initial = { role: "user", content: "explain the modes", timestamp: 10 } as AgentMessage;
+		const final = assistant("first answer", "stop", 11);
+		const followUp = { role: "user", content: "now fix the bug", timestamp: 12 } as AgentMessage;
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: initial });
+		await controller.handleEvent({ type: "message_end", message: initial });
+		await controller.handleEvent({ type: "message_end", message: final });
+
+		// Agent-core drains Ctrl+Up follow-ups without emitting another agent_start.
+		// The follow-up user message itself is therefore the completed-turn boundary.
+		const startingFollowUp = controller.handleEvent({ type: "message_start", message: followUp });
+		await Promise.resolve();
+		expect(waitForMessagePersistence).toHaveBeenCalledWith(final);
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		persisted.resolve();
+		await startingFollowUp;
+
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+			}),
+		);
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
+	it("lets an explicit visibility toggle claim a completed run without rebuilding twice", async () => {
+		const { controller, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
+		const initial = { role: "user", content: "build it", timestamp: 10 } as AgentMessage;
+		const final = assistant("done", "stop", 11);
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: initial });
+		await controller.handleEvent({ type: "message_end", message: initial });
+		await controller.handleEvent({ type: "message_end", message: final });
+		await controller.handleEvent({ type: "agent_end", messages: [initial, final] });
+
+		expect(controller.commitCompletedRunCollapses({ rebuild: false })).toBe(true);
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
+		expect(resetDisplay).not.toHaveBeenCalled();
+	});
+
 	it("waits for a late final message_end before parking the completed run", async () => {
 		const persisted = Promise.withResolvers<void>();
 		const waitForMessagePersistence = vi.fn(() => persisted.promise);
@@ -530,6 +583,41 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "agent_start" });
 		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
 		expect(recordCompletedRunCollapse.mock.calls[0]![0]).toEqual(
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+			}),
+		);
+	});
+
+	it("restores the original run anchor after navigating to an unfinished branch", async () => {
+		const { controller, recordCompletedRunCollapse } = fixture();
+		const initial = { role: "user", content: "deploy every service", timestamp: 76 } as AgentMessage;
+		const loop = assistant("working before the branch", "toolUse", 77);
+		loop.content.push({ type: "toolCall", id: "tc", name: "write", arguments: {} });
+		const skipped = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "write",
+			content: [{ type: "text", text: "Skipped due to queued user message." }],
+			isError: true,
+			timestamp: 78,
+		} as AgentMessage;
+		const continuation = { role: "user", content: "continue", timestamp: 79 } as AgentMessage;
+		const final = assistant("done", "stop", 80);
+
+		controller.restoreCompletedRunAnchor([initial, loop, skipped]);
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: continuation });
+		await controller.handleEvent({ type: "message_end", message: continuation });
+		await controller.handleEvent({ type: "message_end", message: final });
+		await controller.handleEvent({ type: "agent_end", messages: [continuation, final] });
+
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		await controller.handleEvent({ type: "agent_start" });
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(
 			expect.objectContaining({
 				firstMessage: initial,
 				initialUserMessage: initial,

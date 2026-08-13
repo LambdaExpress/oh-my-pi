@@ -1095,7 +1095,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Display",
 			label: "Collapse Completed Runs",
 			description:
-				"Keep a completed run fully on screen while you read it; when you send your next message, collapse it to its initial request and final assistant answer. Pre-compaction display history remains available so older runs can be expanded",
+				"Keep a completed run fully on screen while you read it; press the completed-run toggle (Alt+O by default) after it finishes to collapse it immediately, or send your next message to collapse it automatically. Pre-compaction display history remains available so older runs can be expanded",
 		},
 	},
 
