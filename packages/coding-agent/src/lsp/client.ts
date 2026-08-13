@@ -31,6 +31,43 @@ const fileOperationLocks = new Map<string, Promise<void>>();
 const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
 const initFailures = new Map<string, { at: number; message: string }>();
 const READER_EXIT_GRACE_MS = 100;
+const CLEAN_INITIALIZATION_EXIT_RETRY_COUNT = 1;
+
+class LspServerExitError extends Error {
+	constructor(
+		message: string,
+		readonly exitCode: number | null,
+		readonly duringInitialization: boolean,
+	) {
+		super(message);
+		this.name = "LspServerExitError";
+	}
+}
+
+function isCleanInitializationExit(err: unknown): err is LspServerExitError {
+	return err instanceof LspServerExitError && err.exitCode === 0 && err.duringInitialization;
+}
+
+/** Build one actionable exit diagnostic shared by initialize and live requests. */
+function processExitError(
+	proc: LspTransport,
+	exitCode: number | null,
+	duringInitialization: boolean,
+): LspServerExitError {
+	// Strip informational log lines (e.g. marksman's [INF]/[DBG] prefix)
+	// — they are startup noise, not actionable errors.
+	const rawStderr = proc.peekStderr().trim();
+	const stderr = rawStderr
+		.split("\n")
+		.filter(line => !/^\[\d{2}:\d{2}:\d{2} (?:INF|DBG|VRB)\]/.test(line))
+		.join("\n")
+		.trim();
+	return new LspServerExitError(
+		stderr ? `LSP server exited (code ${exitCode}): ${stderr}` : `LSP server exited unexpectedly (code ${exitCode})`,
+		exitCode,
+		duringInitialization,
+	);
+}
 
 export function getLspClientKey(config: ServerConfig, cwd: string): string {
 	return JSON.stringify({
@@ -745,14 +782,18 @@ export async function getOrCreateClient(
 	// Check if client already exists
 	const existingClient = clients.get(key);
 	if (existingClient) {
-		existingClient.lastActivity = Date.now();
-		return existingClient;
+		if (existingClient.proc.exitCode !== null) {
+			clients.delete(key);
+		} else {
+			existingClient.lastActivity = Date.now();
+			return existingClient;
+		}
 	}
 
 	// Check if another coroutine is already creating this client
 	const existingLock = clientLocks.get(key);
 	if (existingLock) {
-		return existingLock;
+		return await untilAborted(signal, existingLock);
 	}
 
 	// Fail fast on a recent deterministic init failure instead of re-spawning
@@ -765,169 +806,202 @@ export async function getOrCreateClient(
 		initFailures.delete(key);
 	}
 
-	// Create new client with lock
+	// Create new client with lock. A process that exits cleanly before replying
+	// to initialize is a transient cold-start race (observed with tsgo), not a
+	// deterministic configuration failure. Rebuild exactly once while retaining
+	// this outer lock so concurrent callers cannot acquire the dead first attempt.
 	const clientPromise = (async () => {
-		const baseCommand = config.resolvedCommand ?? config.command;
-		const baseArgs = config.args ?? [];
+		let cleanInitializationExitRetries = 0;
+		while (true) {
+			const baseCommand = config.resolvedCommand ?? config.command;
+			const baseArgs = config.args ?? [];
 
-		// Wrap with lspmux if available and supported
-		const { command, args, env } = isLspmuxSupported(baseCommand)
-			? await getLspmuxCommand(baseCommand, baseArgs)
-			: { command: baseCommand, args: baseArgs };
+			// Wrap with lspmux if available and supported
+			const { command, args, env } = isLspmuxSupported(baseCommand)
+				? await getLspmuxCommand(baseCommand, baseArgs)
+				: { command: baseCommand, args: baseArgs };
 
-		// Prefer the broker-shared server unless an external lspmux wrapper is
-		// already multiplexing this command. Any shared-path failure falls back
-		// to a private spawn so LSP never regresses on broker trouble.
-		let proc: LspTransport | null = null;
-		if (sharedLspEnabled && command === baseCommand) {
-			proc = await connectSharedLspTransport({ command, args, cwd, env, signal });
-		}
-		proc ??= ptree.spawn([command, ...args], {
-			cwd,
-			stdin: "pipe",
-			env: env ? { ...Bun.env, ...env } : undefined,
-		});
-
-		let projectLoadedSettled = true;
-		let projectLoadTimeout: Timer | undefined;
-
-		/**
-		 * (Re-)arm the project-loaded promise. Runs at client creation and again
-		 * whenever a new $/progress loading cycle begins after the previous one
-		 * settled. Project-aware servers (typescript-language-server above all)
-		 * load projects on demand, so the first cycle finishing does not mean a
-		 * later on-demand load or a post-reload reload is complete. A still
-		 * pending cycle is never replaced — re-arming mid-cycle would strand
-		 * waiters on the old promise.
-		 */
-		const armProjectLoaded = (): void => {
-			if (!projectLoadedSettled) return;
-			projectLoadedSettled = false;
-			client.projectLoaded = new Promise<void>(resolve => {
-				client.resolveProjectLoaded = () => {
-					if (projectLoadedSettled) return;
-					clearTimeout(projectLoadTimeout);
-					projectLoadedSettled = true;
-					resolve();
-				};
+			// Prefer the broker-shared server unless an external lspmux wrapper is
+			// already multiplexing this command. Any shared-path failure falls back
+			// to a private spawn so LSP never regresses on broker trouble.
+			let proc: LspTransport | null = null;
+			if (sharedLspEnabled && command === baseCommand) {
+				proc = await connectSharedLspTransport({ command, args, cwd, env, signal });
+			}
+			proc ??= ptree.spawn([command, ...args], {
+				cwd,
+				stdin: "pipe",
+				env: env ? { ...Bun.env, ...env } : undefined,
 			});
-			// Auto-resolve after timeout in case server doesn't use progress tokens
-			projectLoadTimeout = setTimeout(client.resolveProjectLoaded, PROJECT_LOAD_TIMEOUT_MS);
-		};
 
-		const client: LspClient = {
-			name: key,
-			cwd,
-			proc,
-			config,
-			requestId: 0,
-			diagnostics: new EquivalentUriMap(),
-			diagnosticsVersion: 0,
-			dynamicCapabilityRegistrations: new Map(),
-			openFiles: new Map(),
-			pendingRequests: new Map(),
-			messageBuffer: new Uint8Array(0),
-			isReading: false,
-			status: "connecting",
-			lastActivity: Date.now(),
-			writeQueue: Promise.resolve(),
-			activeProgressTokens: new Set(),
-			// Placeholders, replaced synchronously by armProjectLoaded() below.
-			projectLoaded: Promise.resolve(),
-			resolveProjectLoaded: () => {},
-			rearmProjectLoaded: armProjectLoaded,
-		};
-		armProjectLoaded();
+			let projectLoadedSettled = true;
+			let projectLoadTimeout: Timer | undefined;
 
-		// Register crash recovery - remove client on process exit
-		proc.exited.then(() => {
-			if (clients.get(key) === client) clients.delete(key);
-			if (clientLocks.get(key) === clientPromise) clientLocks.delete(key);
-			client.resolveProjectLoaded();
+			/**
+			 * (Re-)arm the project-loaded promise. Runs at client creation and again
+			 * whenever a new $/progress loading cycle begins after the previous one
+			 * settled. Project-aware servers (typescript-language-server above all)
+			 * load projects on demand, so the first cycle finishing does not mean a
+			 * later on-demand load or a post-reload reload is complete. A still
+			 * pending cycle is never replaced — re-arming mid-cycle would strand
+			 * waiters on the old promise.
+			 */
+			const armProjectLoaded = (): void => {
+				if (!projectLoadedSettled) return;
+				projectLoadedSettled = false;
+				client.projectLoaded = new Promise<void>(resolve => {
+					client.resolveProjectLoaded = () => {
+						if (projectLoadedSettled) return;
+						clearTimeout(projectLoadTimeout);
+						projectLoadedSettled = true;
+						resolve();
+					};
+				});
+				// Auto-resolve after timeout in case server doesn't use progress tokens
+				projectLoadTimeout = setTimeout(client.resolveProjectLoaded, PROJECT_LOAD_TIMEOUT_MS);
+			};
 
-			// Reject any pending requests — the server is gone, they will never complete.
-			if (client.pendingRequests.size > 0) {
-				// Strip informational log lines (e.g. marksman's [INF]/[DBG] prefix)
-				// — they are startup noise, not actionable errors.
-				const rawStderr = proc.peekStderr().trim();
-				const stderr = rawStderr
-					.split("\n")
-					.filter(line => !/^\[\d{2}:\d{2}:\d{2} (?:INF|DBG|VRB)\]/.test(line))
-					.join("\n")
-					.trim();
-				const code = proc.exitCode;
-				const err = new Error(
-					stderr ? `LSP server exited (code ${code}): ${stderr}` : `LSP server exited unexpectedly (code ${code})`,
-				);
-				for (const pending of client.pendingRequests.values()) {
-					pending.reject(err);
+			const client: LspClient = {
+				name: key,
+				cwd,
+				proc,
+				config,
+				requestId: 0,
+				diagnostics: new EquivalentUriMap(),
+				diagnosticsVersion: 0,
+				dynamicCapabilityRegistrations: new Map(),
+				openFiles: new Map(),
+				pendingRequests: new Map(),
+				messageBuffer: new Uint8Array(0),
+				isReading: false,
+				status: "connecting",
+				lastActivity: Date.now(),
+				writeQueue: Promise.resolve(),
+				activeProgressTokens: new Set(),
+				// Placeholders, replaced synchronously by armProjectLoaded() below.
+				projectLoaded: Promise.resolve(),
+				resolveProjectLoaded: () => {},
+				rearmProjectLoaded: armProjectLoaded,
+			};
+			armProjectLoaded();
+
+			let initializationExit: LspServerExitError | undefined;
+			// Register crash recovery - remove client on process exit
+			proc.exited.then(exitCode => {
+				const wasConnecting = client.status === "connecting";
+				if (clients.get(key) === client) clients.delete(key);
+				client.resolveProjectLoaded();
+				const code = proc.exitCode ?? exitCode;
+				if (wasConnecting) {
+					initializationExit = processExitError(proc, code, true);
 				}
-				client.pendingRequests.clear();
+				client.status = "error";
+
+				// Reject any pending requests — the server is gone, they will never complete.
+				if (client.pendingRequests.size > 0) {
+					const err = initializationExit ?? processExitError(proc, code, false);
+					for (const pending of client.pendingRequests.values()) {
+						pending.reject(err);
+					}
+					client.pendingRequests.clear();
+				}
+			});
+
+			// Start background message reader
+			startMessageReader(client);
+
+			try {
+				// Send initialize request
+				const initResult = (await sendRequest(
+					client,
+					"initialize",
+					{
+						processId: process.pid,
+						rootUri: fileToUri(cwd),
+						rootPath: cwd,
+						capabilities: CLIENT_CAPABILITIES,
+						initializationOptions: config.initOptions ?? {},
+						workspaceFolders: currentWorkspaceFolders(client),
+					},
+					signal,
+					initTimeoutMs,
+				)) as { capabilities?: unknown };
+
+				if (!initResult) {
+					throw new Error("Failed to initialize LSP: no response");
+				}
+
+				client.serverCapabilities = initResult.capabilities as LspClient["serverCapabilities"];
+
+				// Finish the initialize handshake before publishing the client as ready.
+				await sendNotification(client, "initialized", {}, signal);
+				await sendNotification(
+					client,
+					"workspace/didChangeConfiguration",
+					{ settings: config.settings ?? {} },
+					signal,
+				);
+				if (initializationExit || proc.exitCode !== null) {
+					throw initializationExit ?? processExitError(proc, proc.exitCode, true);
+				}
+
+				client.status = "ready";
+				// Publish only after init succeeds: pre-init clients are reachable
+				// solely through clientLocks, so concurrent callers (warmup vs first
+				// tool call) wait for init instead of using an unacknowledged client.
+				clients.set(key, client);
+				initFailures.delete(key);
+				return client;
+			} catch (err) {
+				// Clean up on initialization failure
+				client.status = "error";
+				if (clients.get(key) === client) clients.delete(key);
+				client.resolveProjectLoaded();
+				proc.kill();
+				const initializationError = initializationExit ?? err;
+				const message =
+					initializationError instanceof Error ? initializationError.message : String(initializationError);
+				const cleanInitializationExit = isCleanInitializationExit(initializationError);
+				const cleanPrivateInitializationExit = cleanInitializationExit && !proc.sharedMux;
+				if (
+					cleanPrivateInitializationExit &&
+					cleanInitializationExitRetries < CLEAN_INITIALIZATION_EXIT_RETRY_COUNT &&
+					!signal?.aborted
+				) {
+					cleanInitializationExitRetries++;
+					await proc.exited.catch(() => {});
+					continue;
+				}
+				// Negative-cache deterministic failures. Timeouts under a
+				// caller-shortened deadline (warmup/writethrough) and caller-signal
+				// aborts are transient — the server may simply be slow or the user may
+				// have cancelled, so a later call with a fresh deadline should retry.
+				// A private code-0 initialization exit is transient too, even if the
+				// bounded replacement also exits; surface the concrete failure without
+				// poisoning the next independent request with a stale negative cache.
+				if (
+					!cleanPrivateInitializationExit &&
+					!signal?.aborted &&
+					!(initTimeoutMs !== undefined && message.includes("timed out"))
+				) {
+					initFailures.set(key, { at: Date.now(), message });
+				}
+				throw initializationError;
 			}
-		});
-
-		// Start background message reader
-		startMessageReader(client);
-
-		try {
-			// Send initialize request
-			const initResult = (await sendRequest(
-				client,
-				"initialize",
-				{
-					processId: process.pid,
-					rootUri: fileToUri(cwd),
-					rootPath: cwd,
-					capabilities: CLIENT_CAPABILITIES,
-					initializationOptions: config.initOptions ?? {},
-					workspaceFolders: currentWorkspaceFolders(client),
-				},
-				signal,
-				initTimeoutMs,
-			)) as { capabilities?: unknown };
-
-			if (!initResult) {
-				throw new Error("Failed to initialize LSP: no response");
-			}
-
-			client.serverCapabilities = initResult.capabilities as LspClient["serverCapabilities"];
-
-			// Finish the initialize handshake before publishing the client as ready.
-			await sendNotification(client, "initialized", {}, signal);
-			await sendNotification(
-				client,
-				"workspace/didChangeConfiguration",
-				{ settings: config.settings ?? {} },
-				signal,
-			);
-
-			client.status = "ready";
-			// Publish only after init succeeds: pre-init clients are reachable
-			// solely through clientLocks, so concurrent callers (warmup vs first
-			// tool call) wait for init instead of using an unacknowledged client.
-			clients.set(key, client);
-			initFailures.delete(key);
-			return client;
-		} catch (err) {
-			// Clean up on initialization failure
-			client.status = "error";
-			if (clients.get(key) === client) clients.delete(key);
-			proc.kill();
-			const message = err instanceof Error ? err.message : String(err);
-			// Negative-cache deterministic failures. Timeouts under a
-			// caller-shortened deadline (warmup/writethrough) and caller-signal
-			// aborts are transient — the server may simply be slow or the user may
-			// have cancelled, so a later call with a fresh deadline should retry.
-			if (!signal?.aborted && !(initTimeoutMs !== undefined && message.includes("timed out"))) {
-				initFailures.set(key, { at: Date.now(), message });
-			}
-			throw err;
-		} finally {
-			clientLocks.delete(key);
 		}
 	})();
 
 	clientLocks.set(key, clientPromise);
+	// Only the outer creation attempt owns this lock. Individual process exits
+	// must not delete it while a bounded replacement is being initialized.
+	clientPromise.then(
+		() => {
+			if (clientLocks.get(key) === clientPromise) clientLocks.delete(key);
+		},
+		() => {
+			if (clientLocks.get(key) === clientPromise) clientLocks.delete(key);
+		},
+	);
 	return clientPromise;
 }
 
@@ -938,13 +1012,18 @@ export async function getActiveOrPendingClient(
 	signal?: AbortSignal,
 ): Promise<LspClient | undefined> {
 	throwIfAborted(signal);
-	const client = clients.get(clientKey(config, cwd));
+	const key = clientKey(config, cwd);
+	const client = clients.get(key);
 	if (client) {
-		client.lastActivity = Date.now();
-		return client;
+		if (client.proc.exitCode !== null) {
+			if (clients.get(key) === client) clients.delete(key);
+		} else {
+			client.lastActivity = Date.now();
+			return client;
+		}
 	}
 
-	const pending = clientLocks.get(clientKey(config, cwd));
+	const pending = clientLocks.get(key);
 	if (!pending) return undefined;
 	try {
 		return await untilAborted(signal, pending);

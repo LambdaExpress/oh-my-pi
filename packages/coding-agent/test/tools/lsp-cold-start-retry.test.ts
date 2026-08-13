@@ -46,10 +46,14 @@ interface FakeLspServer {
 }
 
 type FakeLspHandler = (message: RpcMessage, server: FakeLspServer) => void | Promise<void>;
+type TestStdin = "pipe" | "ignore" | Buffer | Uint8Array | null;
 
 // In-memory LSP transport fake, mirroring the pattern in lsp-regressions.test.ts:
 // replaces the real subprocess (`ptree.spawn`) with an in-process JSON-RPC peer.
-function installFakeLsp(handler: FakeLspHandler): FakeLspServer {
+function createFakeLspProcess(handler: FakeLspHandler): {
+	server: FakeLspServer;
+	proc: LspClient["proc"];
+} {
 	const encoder = new TextEncoder();
 	let exitCode: number | null = null;
 	let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
@@ -126,8 +130,25 @@ function installFakeLsp(handler: FakeLspHandler): FakeLspServer {
 		},
 	} as unknown as LspClient["proc"];
 
+	return { server, proc };
+}
+
+function installFakeLsp(handler: FakeLspHandler): FakeLspServer {
+	const { server, proc } = createFakeLspProcess(handler);
 	vi.spyOn(piUtils.ptree, "spawn").mockReturnValue(proc as unknown as piUtils.ptree.ChildProcess<"pipe">);
 	return server;
+}
+
+function installFakeLspSequence(handlers: FakeLspHandler[]): { spawnCount: () => number } {
+	let spawnCount = 0;
+	vi.spyOn(piUtils.ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
+		const handler = handlers[Math.min(spawnCount, handlers.length - 1)];
+		if (!handler) throw new Error("Fake LSP sequence requires at least one handler");
+		spawnCount++;
+		const created = createFakeLspProcess(handler);
+		return created.proc as unknown as piUtils.ptree.ChildProcess<In>;
+	});
+	return { spawnCount: () => spawnCount };
 }
 
 /** Project-aware fake server config: answered over the fake transport, never spawned for real. */
@@ -166,6 +187,98 @@ function answerInitialize(message: RpcMessage, srv: FakeLspServer): void {
 describe("lsp cold-start retries", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+	});
+
+	it("rebuilds once when the first initialize exits cleanly without a response", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-clean-exit-retry-");
+		try {
+			const sourcePath = path.join(tempDir.path(), "src", "main.ts");
+			await Bun.write(sourcePath, "export function greet() {}\n");
+			const uri = fileToUri(sourcePath);
+			const reference = {
+				uri,
+				range: { start: { line: 0, character: 15 }, end: { line: 0, character: 20 } },
+			};
+
+			let referenceRequests = 0;
+			const installation = installFakeLspSequence([
+				(message, server) => {
+					if (message.method === "initialize") server.exit(0);
+				},
+				(message, server) => {
+					if (message.method === "initialize") {
+						answerInitialize(message, server);
+					} else if (message.method === "textDocument/references") {
+						referenceRequests++;
+						server.send({ jsonrpc: "2.0", id: message.id, result: [reference, reference] });
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						server.exit(0);
+					}
+				},
+			]);
+
+			const config = tsServerConfig();
+			mockTsConfig(config);
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("clean-exit-retry", {
+				action: "references",
+				file: sourcePath,
+				line: 1,
+				symbol: "greet",
+				timeout: 10,
+			});
+
+			expect(installation.spawnCount()).toBe(2);
+			// The normal result-set stabilization loop runs on the one replacement
+			// process; the exited first process received only `initialize`.
+			expect(referenceRequests).toBe(2);
+			expect(textResult(result)).toContain("Found 2 reference(s)");
+			expect(lspClient.getActiveClients().filter(client => client.name === config.command)).toHaveLength(1);
+			const active = await lspClient.getOrCreateClient(config, tempDir.path());
+			expect(active.pendingRequests.size).toBe(0);
+			expect(installation.spawnCount()).toBe(2);
+		} finally {
+			vi.restoreAllMocks();
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("stops after one rebuild when initialize keeps exiting cleanly", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-clean-exit-bounded-");
+		try {
+			const sourcePath = path.join(tempDir.path(), "src", "main.ts");
+			await Bun.write(sourcePath, "export function greet() {}\n");
+
+			const installation = installFakeLspSequence([
+				(message, server) => {
+					if (message.method === "initialize") server.exit(0);
+				},
+			]);
+			mockTsConfig(tsServerConfig());
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const result = await tool.execute("clean-exit-bounded", {
+				action: "references",
+				file: sourcePath,
+				line: 1,
+				symbol: "greet",
+				timeout: 10,
+			});
+
+			expect(installation.spawnCount()).toBe(2);
+			expect(textResult(result)).toContain("LSP server exited unexpectedly (code 0)");
+			expect(lspClient.getActiveClients()).toHaveLength(0);
+			await Bun.sleep(0);
+			expect(installation.spawnCount()).toBe(2);
+		} finally {
+			vi.restoreAllMocks();
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
 	});
 
 	it("references converges on the complete result set after a partial cold-start answer", async () => {

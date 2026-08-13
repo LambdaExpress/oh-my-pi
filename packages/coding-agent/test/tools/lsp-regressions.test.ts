@@ -16,11 +16,13 @@ import {
 	sortAndValidateTextEdits,
 } from "@oh-my-pi/pi-coding-agent/lsp/edits";
 import { renderCall, renderResult } from "@oh-my-pi/pi-coding-agent/lsp/render";
+import { findLspProjectRoot } from "@oh-my-pi/pi-coding-agent/lsp/servers";
 import {
 	type CodeAction,
 	type CreateFile,
 	type DeleteFile,
 	type Diagnostic,
+	type DocumentSymbol,
 	type LspClient,
 	type LspToolDetails,
 	lspSchema,
@@ -37,12 +39,14 @@ import {
 	detectLanguageId,
 	fileToUri,
 	filterWorkspaceSymbols,
+	formatDocumentSymbol,
 	hasGlobPattern,
 	resolveDiagnosticTargets,
 	resolveSymbolColumn,
+	resolveSymbolPosition,
 	uriToFile,
 } from "@oh-my-pi/pi-coding-agent/lsp/utils";
-import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { clampTimeout } from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
@@ -285,6 +289,30 @@ describe("lsp regressions", () => {
 		expect(hasGlobPattern("src/[ab].ts")).toBe(true);
 		expect(hasGlobPattern("src/**/*.ts")).toBe(true);
 		expect(hasGlobPattern("src/main.ts")).toBe(false);
+	});
+
+	it("finds the nearest marker-bearing LSP project root", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-server-cwd-");
+		try {
+			const workspaceRoot = path.join(tempDir.path(), "workspace");
+			const externalRoot = path.join(tempDir.path(), "external");
+			const nestedProject = path.join(externalRoot, "packages", "app");
+			const server: ServerConfig = {
+				command: "fake-lsp-root",
+				fileTypes: [".ts"],
+				rootMarkers: ["tsconfig.json", "package.json"],
+			};
+			await Bun.write(path.join(workspaceRoot, "nested", "tsconfig.json"), "{}\n");
+			await Bun.write(path.join(externalRoot, "package.json"), "{}\n");
+			await Bun.write(path.join(nestedProject, "tsconfig.json"), "{}\n");
+
+			expect(findLspProjectRoot(path.join(workspaceRoot, "nested", "file.ts"), server.rootMarkers)).toBe(
+				path.join(workspaceRoot, "nested"),
+			);
+			expect(findLspProjectRoot(path.join(nestedProject, "src", "file.ts"), server.rootMarkers)).toBe(nestedProject);
+		} finally {
+			tempDir.removeSync();
+		}
 	});
 
 	it("supports long LSP timeouts up to the advertised ceiling", () => {
@@ -1205,6 +1233,205 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("formats document symbols from their declaration selection", () => {
+		const symbol: DocumentSymbol = {
+			name: "HomeScreen",
+			kind: 5,
+			range: {
+				start: { line: 0, character: 0 },
+				end: { line: 5, character: 1 },
+			},
+			selectionRange: {
+				start: { line: 3, character: 21 },
+				end: { line: 3, character: 31 },
+			},
+		};
+
+		expect(formatDocumentSymbol(symbol)[0]).toContain("HomeScreen @ line 4");
+	});
+
+	it("resolves a unique symbol on a bounded adjacent line", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-adjacent-symbol-");
+		try {
+			const filePath = path.join(tempDir.path(), "symbol.ts");
+			await Bun.write(filePath, "@first\n@second\n@third\nexport default class HomeScreen {}\n");
+
+			expect(await resolveSymbolColumn(filePath, 1, "HomeScreen")).toBe(21);
+			expect(await resolveSymbolPosition(filePath, 1, "HomeScreen")).toEqual({ line: 4, character: 21 });
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("resolves through a bounded declaration comment prefix", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-commented-symbol-");
+		try {
+			const filePath = path.join(tempDir.path(), "symbol.ts");
+			await Bun.write(filePath, "/** screen */\n// exported screen\nclass HomeScreen {}\n");
+
+			expect(await resolveSymbolPosition(filePath, 1, "HomeScreen")).toEqual({ line: 3, character: 6 });
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not cross to ambiguous adjacent occurrences", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-ambiguous-symbol-");
+		try {
+			const filePath = path.join(tempDir.path(), "symbol.ts");
+			await Bun.write(filePath, "const target = 1;\n// declaration line\nconst target = 2;\n");
+
+			expect(resolveSymbolColumn(filePath, 2, "target")).rejects.toThrow('Symbol "target" not found on line 2');
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not cross unrelated code to an adjacent same-name symbol", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-unrelated-symbol-");
+		try {
+			const filePath = path.join(tempDir.path(), "symbol.ts");
+			await Bun.write(filePath, "// requested line\nconst unrelated = true;\nclass HomeScreen {}\n");
+
+			expect(resolveSymbolPosition(filePath, 1, "HomeScreen")).rejects.toThrow(
+				'Symbol "HomeScreen" not found on line 1',
+			);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("keeps adjacent-line fallback bounded", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-bounded-symbol-");
+		try {
+			const filePath = path.join(tempDir.path(), "symbol.ts");
+			await Bun.write(filePath, "// requested line\n// comment\n// comment\n// comment\nclass HomeScreen {}\n");
+
+			expect(resolveSymbolPosition(filePath, 1, "HomeScreen")).rejects.toThrow(
+				'Symbol "HomeScreen" not found on line 1',
+			);
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("preserves occurrence selectors when resolving adjacent lines", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-adjacent-occurrence-");
+		try {
+			const filePath = path.join(tempDir.path(), "symbol.ts");
+			await Bun.write(filePath, "// declaration line\nfoo(bar(foo));\n");
+
+			expect(await resolveSymbolColumn(filePath, 1, "foo#2")).toBe(8);
+			expect(await resolveSymbolPosition(filePath, 1, "foo#2")).toEqual({ line: 2, character: 8 });
+		} finally {
+			tempDir.removeSync();
+		}
+	});
+
+	it("uses the displayed document-symbol line unchanged for references", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-symbol-reference-line-");
+		try {
+			const sourcePath = path.join(tempDir.path(), "screen.ts");
+			await Bun.write(sourcePath, "@first\n@second\n@third\nexport default class HomeScreen {}\n");
+
+			const referencePositions: Array<{ line: number; character: number }> = [];
+			installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					srv.send({
+						jsonrpc: "2.0",
+						method: "$/progress",
+						params: { token: "workspace", value: { kind: "end" } },
+					});
+				} else if (message.method === "textDocument/documentSymbol") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: [
+							{
+								name: "HomeScreen",
+								kind: 5,
+								range: {
+									start: { line: 0, character: 0 },
+									end: { line: 3, character: 35 },
+								},
+								selectionRange: {
+									start: { line: 3, character: 21 },
+									end: { line: 3, character: 31 },
+								},
+							},
+						],
+					});
+				} else if (message.method === "textDocument/references") {
+					const params = message.params as { position: { line: number; character: number } };
+					referencePositions.push(params.position);
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: [
+							{
+								uri: fileToUri(sourcePath),
+								range: {
+									start: { line: 3, character: 21 },
+									end: { line: 3, character: 31 },
+								},
+							},
+						],
+					});
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+
+			const server: ServerConfig = {
+				command: "fake-lsp",
+				resolvedCommand: process.execPath,
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				isLinter: false,
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-lsp": server },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["fake-lsp", server]]);
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const symbols = await tool.execute("symbols-selection-line", {
+				action: "symbols",
+				file: sourcePath,
+			});
+			const displayedLine = Number(/HomeScreen @ line (\d+)/.exec(textResult(symbols))?.[1]);
+			expect(displayedLine).toBe(4);
+
+			const references = await tool.execute("references-selection-line", {
+				action: "references",
+				file: sourcePath,
+				line: displayedLine,
+				symbol: "HomeScreen",
+			});
+
+			expect(textResult(references)).toContain("Found 1 reference(s)");
+			expect(referencePositions.length).toBeGreaterThan(0);
+			expect(referencePositions.every(position => position.line === 3 && position.character === 21)).toBe(true);
+			const referenceRequestCount = referencePositions.length;
+
+			const missing = await tool.execute("references-missing-symbol", {
+				action: "references",
+				file: sourcePath,
+				line: displayedLine,
+				symbol: "MissingSymbol",
+			});
+			expect(textResult(missing)).toContain('LSP error: Symbol "MissingSymbol" not found on line 4');
+			expect(referencePositions).toHaveLength(referenceRequestCount);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("throws when symbol does not exist on the target line", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-missing-symbol-");
 		try {
@@ -1605,6 +1832,138 @@ describe("lsp regressions", () => {
 			}
 		}, 15_000);
 	}
+
+	it("uses the external glob project's nearest root for diagnostics", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-external-glob-root-");
+		try {
+			const uiTheme = await getThemeByName("dark");
+			expect(uiTheme).toBeDefined();
+			setThemeInstance(uiTheme!);
+
+			const sessionCwd = path.join(tempDir.path(), "session");
+			const worktree = path.join(tempDir.path(), "sibling-worktree");
+			const nestedPackage = path.join(worktree, "packages", "app");
+			const targetFile = path.join(nestedPackage, "src", "screen.tsx");
+			const secondTargetFile = path.join(nestedPackage, "src", "routes.ts");
+			await fs.promises.mkdir(sessionCwd, { recursive: true });
+			await Bun.write(path.join(worktree, "package.json"), "{}\n");
+			await Bun.write(path.join(nestedPackage, "tsconfig.json"), "{}\n");
+			await Bun.write(targetFile, "export const Screen = () => <View />;\n");
+			await Bun.write(secondTargetFile, "export const route = 'home';\n");
+
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: { capabilities: { diagnosticProvider: true } },
+					});
+					srv.send({
+						jsonrpc: "2.0",
+						method: "$/progress",
+						params: { token: "external-project", value: { kind: "end" } },
+					});
+				} else if (message.method === "textDocument/diagnostic") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { kind: "full", items: [] } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+
+			const serverConfig: ServerConfig = {
+				command: "fake-lsp-external-glob",
+				fileTypes: [".ts", ".tsx"],
+				rootMarkers: ["tsconfig.json", "package.json"],
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-lsp": serverConfig },
+				idleTimeoutMs: undefined,
+			});
+
+			const result = await new LspTool(makeLspSession(sessionCwd)).execute("external-glob-root", {
+				action: "diagnostics",
+				file: path.join(nestedPackage, "src", "**", "*.ts*"),
+				timeout: 5,
+			});
+			const initialize = await server.waitFor(message => message.method === "initialize");
+			const expectedRootUri = fileToUri(nestedPackage);
+			const documentDiagnosticUris = server.received
+				.filter(message => message.method === "textDocument/diagnostic")
+				.map(message => (message.params as { textDocument?: { uri?: string } } | undefined)?.textDocument?.uri);
+
+			expect(initialize.params).toMatchObject({
+				rootUri: expectedRootUri,
+				rootPath: nestedPackage,
+				workspaceFolders: [{ uri: expectedRootUri, name: path.basename(nestedPackage) }],
+			});
+			expect(server.received.filter(message => message.method === "initialize")).toHaveLength(1);
+			expect(documentDiagnosticUris.sort()).toEqual([fileToUri(targetFile), fileToUri(secondTargetFile)].sort());
+			expect(textResult(result)).toContain("no issues");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 15_000);
+
+	it("keeps relative diagnostics on the session workspace client", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-relative-glob-root-");
+		try {
+			const nestedPackage = path.join(tempDir.path(), "packages", "app");
+			const targetFile = path.join(nestedPackage, "src", "screen.tsx");
+			await Bun.write(path.join(tempDir.path(), "package.json"), "{}\n");
+			await Bun.write(path.join(nestedPackage, "tsconfig.json"), "{}\n");
+			await Bun.write(targetFile, "export const Screen = () => <View />;\n");
+
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: { capabilities: { diagnosticProvider: true } },
+					});
+					srv.send({
+						jsonrpc: "2.0",
+						method: "$/progress",
+						params: { token: "session-project", value: { kind: "end" } },
+					});
+				} else if (message.method === "textDocument/diagnostic") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { kind: "full", items: [] } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const serverConfig: ServerConfig = {
+				command: "fake-lsp-relative-glob",
+				fileTypes: [".ts", ".tsx"],
+				rootMarkers: ["tsconfig.json", "package.json"],
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-lsp": serverConfig },
+				idleTimeoutMs: undefined,
+			});
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("relative-glob-root", {
+				action: "diagnostics",
+				file: path.join("packages", "app", "src", "**", "*.ts*"),
+				timeout: 5,
+			});
+			const initialize = await server.waitFor(message => message.method === "initialize");
+
+			expect(initialize.params).toMatchObject({
+				rootUri: fileToUri(tempDir.path()),
+				rootPath: tempDir.path(),
+				workspaceFolders: [{ uri: fileToUri(tempDir.path()), name: path.basename(tempDir.path()) }],
+			});
+			expect(textResult(result)).toBe("OK");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 15_000);
 
 	it("does not reuse stale file diagnostics after another URI publishes", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-stale-diags-");

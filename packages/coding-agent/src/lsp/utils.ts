@@ -464,7 +464,7 @@ export function symbolKindToName(kind: SymbolKind): string {
 export function formatDocumentSymbol(symbol: DocumentSymbol, indent = 0): string[] {
 	const prefix = "  ".repeat(indent);
 	const icon = symbolKindToIcon(symbol.kind);
-	const line = symbol.range.start.line + 1;
+	const line = symbol.selectionRange.start.line + 1;
 	const detail = symbol.detail ? ` ${symbol.detail}` : "";
 	const results = [`${prefix}${icon} ${symbol.name}${detail} @ line ${line}`];
 
@@ -692,34 +692,93 @@ function parseSymbolSpec(spec: string): { symbol: string; occurrence: number } {
 	return { symbol: match[1], occurrence };
 }
 
-export async function resolveSymbolColumn(filePath: string, line: number, symbolSpec?: string): Promise<number> {
+export interface ResolvedSymbolPosition {
+	/** 1-based source line, matching the line accepted and displayed by the LSP tool. */
+	line: number;
+	/** 0-based UTF-16 character offset passed to the language server. */
+	character: number;
+}
+
+const SYMBOL_LINE_TOLERANCE = 3;
+
+function findSymbolIndexes(lineText: string, symbol: string): number[] {
+	const exactIndexes = findSymbolMatchIndexes(lineText, symbol);
+	return exactIndexes.length > 0 ? exactIndexes : findSymbolMatchIndexes(lineText, symbol, true);
+}
+
+function isSymbolPrefixLine(lineText: string): boolean {
+	const trimmed = lineText.trim();
+	if (trimmed.length === 0 || trimmed.startsWith("@") || trimmed.startsWith("//")) return true;
+	if (!trimmed.startsWith("/*") && !trimmed.startsWith("*")) return false;
+	const commentEnd = trimmed.indexOf("*/");
+	return commentEnd === -1 || trimmed.slice(commentEnd + 2).trim().length === 0;
+}
+
+export async function resolveSymbolPosition(
+	filePath: string,
+	line: number,
+	symbolSpec?: string,
+): Promise<ResolvedSymbolPosition> {
 	const lineNumber = Math.max(1, line);
 	try {
 		const fileText = await Bun.file(filePath).text();
 		const lines = fileText.split("\n");
 		const targetLine = lines[lineNumber - 1] ?? "";
 		if (!symbolSpec) {
-			return firstNonWhitespaceColumn(targetLine);
+			return { line: lineNumber, character: firstNonWhitespaceColumn(targetLine) };
 		}
 
 		const { symbol, occurrence } = parseSymbolSpec(symbolSpec);
-		const exactIndexes = findSymbolMatchIndexes(targetLine, symbol);
-		const fallbackIndexes = exactIndexes.length > 0 ? exactIndexes : findSymbolMatchIndexes(targetLine, symbol, true);
-		if (fallbackIndexes.length === 0) {
+		const targetIndexes = findSymbolIndexes(targetLine, symbol);
+		if (targetIndexes.length > 0) {
+			if (occurrence > targetIndexes.length) {
+				throw new Error(
+					`Symbol "${symbol}" occurrence ${occurrence} is out of bounds on line ${lineNumber} (found ${targetIndexes.length})`,
+				);
+			}
+			return { line: lineNumber, character: targetIndexes[occurrence - 1] };
+		}
+
+		// Some servers anchor a document symbol at a short decorator/comment prefix
+		// instead of its selected declaration name. Search only that bounded prefix
+		// shape: a unique match with no unrelated source line between the requested
+		// and resolved positions.
+		const adjacentMatches: ResolvedSymbolPosition[] = [];
+		for (let distance = 1; distance <= SYMBOL_LINE_TOLERANCE; distance++) {
+			for (const adjacentLine of [lineNumber - distance, lineNumber + distance]) {
+				if (adjacentLine < 1 || adjacentLine > lines.length) continue;
+				const indexes = findSymbolIndexes(lines[adjacentLine - 1] ?? "", symbol);
+				if (occurrence <= indexes.length) {
+					adjacentMatches.push({ line: adjacentLine, character: indexes[occurrence - 1] });
+				}
+			}
+		}
+		if (adjacentMatches.length !== 1) {
 			throw new Error(`Symbol "${symbol}" not found on line ${lineNumber}`);
 		}
-		if (occurrence > fallbackIndexes.length) {
-			throw new Error(
-				`Symbol "${symbol}" occurrence ${occurrence} is out of bounds on line ${lineNumber} (found ${fallbackIndexes.length})`,
-			);
+		const [adjacentMatch] = adjacentMatches;
+		if (!adjacentMatch) throw new Error(`Symbol "${symbol}" not found on line ${lineNumber}`);
+		for (
+			let currentLine = Math.min(lineNumber, adjacentMatch.line);
+			currentLine <= Math.max(lineNumber, adjacentMatch.line);
+			currentLine++
+		) {
+			if (currentLine === adjacentMatch.line) continue;
+			if (!isSymbolPrefixLine(lines[currentLine - 1] ?? "")) {
+				throw new Error(`Symbol "${symbol}" not found on line ${lineNumber}`);
+			}
 		}
-		return fallbackIndexes[occurrence - 1];
+		return adjacentMatch;
 	} catch (error) {
 		if (isEnoent(error)) {
 			throw new Error(`File not found: ${filePath}`);
 		}
 		throw error;
 	}
+}
+
+export async function resolveSymbolColumn(filePath: string, line: number, symbolSpec?: string): Promise<number> {
+	return (await resolveSymbolPosition(filePath, line, symbolSpec)).character;
 }
 
 export async function readLocationContext(filePath: string, line: number, contextLines = 1): Promise<string[]> {

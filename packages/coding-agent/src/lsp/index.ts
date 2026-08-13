@@ -50,6 +50,7 @@ import {
 import { resolveFormatOptions } from "./format-options";
 import { detectLspmux } from "./lspmux";
 import { MUX_RESTART_METHOD } from "./mux/protocol";
+import { findLspProjectRoot } from "./servers";
 import {
 	type CodeAction,
 	type CodeActionContext,
@@ -84,9 +85,10 @@ import {
 	formatLocation,
 	formatSymbolInformation,
 	formatWorkspaceEdit,
+	hasGlobPattern,
 	readLocationContext,
 	resolveDiagnosticTargets,
-	resolveSymbolColumn,
+	resolveSymbolPosition,
 	sortDiagnostics,
 	summarizeDiagnosticMessages,
 	symbolKindToIcon,
@@ -1998,6 +2000,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 			let targets: string[];
 			let truncatedGlobTargets = false;
+			// Only an explicit absolute glob opts into another workspace. Relative
+			// globs and concrete files keep the session client's established scope.
+			const useTargetProjectRoot = path.isAbsolute(file) && hasGlobPattern(file);
 			const resolvedTargets = await resolveDiagnosticTargets(file, this.session.cwd, MAX_GLOB_DIAGNOSTIC_TARGETS);
 			targets = resolvedTargets.matches;
 			truncatedGlobTargets = resolvedTargets.truncated;
@@ -2042,12 +2047,18 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					try {
 						throwIfAborted(signal);
 						if (serverConfig.createClient) {
-							const linterClient = getLinterClient(serverName, serverConfig, this.session.cwd);
+							const linterCwd = useTargetProjectRoot
+								? (findLspProjectRoot(resolved, serverConfig.rootMarkers) ?? this.session.cwd)
+								: this.session.cwd;
+							const linterClient = getLinterClient(serverName, serverConfig, linterCwd);
 							const diagnostics = await linterClient.lint(resolved);
 							allDiagnostics.push(...diagnostics);
 							continue;
 						}
-						const client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal);
+						const serverCwd = useTargetProjectRoot
+							? (findLspProjectRoot(resolved, serverConfig.rootMarkers) ?? this.session.cwd)
+							: this.session.cwd;
+						const client = await getOrCreateClient(serverConfig, serverCwd, undefined, signal);
 						if (isProjectAwareLspServer(serverConfig)) {
 							await waitForProjectLoaded(client, signal);
 							throwIfAborted(signal);
@@ -2557,8 +2568,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			} else if (resolvedTarget) {
 				const uri = fileToUri(resolvedTarget);
 				if (line !== undefined) {
-					const character = await resolveSymbolColumn(resolvedTarget, line, symbol);
-					requestParams = { textDocument: { uri }, position: { line: line - 1, character } };
+					const resolvedPosition = await resolveSymbolPosition(resolvedTarget, line, symbol);
+					requestParams = {
+						textDocument: { uri },
+						position: { line: resolvedPosition.line - 1, character: resolvedPosition.character },
+					};
 				} else {
 					requestParams = { textDocument: { uri } };
 				}
@@ -2785,8 +2799,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			}
 			const uri = targetFile ? fileToUri(targetFile) : "";
 			const resolvedLine = line ?? 1;
-			const resolvedCharacter = targetFile ? await resolveSymbolColumn(targetFile, resolvedLine, symbol) : 0;
-			const position = { line: resolvedLine - 1, character: resolvedCharacter };
+			const resolvedPosition = targetFile
+				? await resolveSymbolPosition(targetFile, resolvedLine, symbol)
+				: { line: resolvedLine, character: 0 };
+			const position = { line: resolvedPosition.line - 1, character: resolvedPosition.character };
 
 			let output: string;
 			// Set on bare empty-lookup outcomes (no definition/references/…): the

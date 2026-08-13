@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { logger } from "@oh-my-pi/pi-utils";
 import { throwIfAborted } from "../tools/tool-errors";
 import {
@@ -13,7 +14,7 @@ import {
 	syncContent,
 	WARMUP_TIMEOUT_MS,
 } from "./client";
-import { getServersForFile, type LspConfig, loadConfig } from "./config";
+import { getServersForFile, hasRootMarkers, type LspConfig, loadConfig } from "./config";
 import { MUX_RESTART_METHOD } from "./mux/protocol";
 import type { LspClient, ServerConfig } from "./types";
 
@@ -201,6 +202,16 @@ export function getConfig(cwd: string): LspConfig {
 		configCache.set(cwd, config);
 	}
 	return config;
+}
+
+/** Find the nearest marker-bearing ancestor for an LSP file. */
+export function findLspProjectRoot(filePath: string, rootMarkers: string[]): string | null {
+	for (let dir = path.dirname(path.resolve(filePath)); ; ) {
+		if (hasRootMarkers(dir, rootMarkers)) return dir;
+		const parent = path.dirname(dir);
+		if (parent === dir) return null;
+		dir = parent;
+	}
 }
 
 function isCustomLinter(serverConfig: ServerConfig): boolean {
