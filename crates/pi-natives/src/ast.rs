@@ -6,7 +6,9 @@ use std::{
 	path::{Path, PathBuf},
 };
 
-use ast_grep_core::{MatchStrictness, matcher::Pattern, source::Edit, tree_sitter::LanguageExt};
+use ast_grep_core::{
+	MatchStrictness, matcher::Pattern, replacer::TemplateFix, source::Edit, tree_sitter::LanguageExt,
+};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use pi_ast::{
@@ -493,6 +495,32 @@ fn compile_pattern(
 		.map_err(|err| Error::from_reason(err.to_string()))
 }
 
+/// C# parses a bare assignment fragment as an incomplete expression and drops
+/// a trailing metavariable from the match environment. Put the same fragment
+/// in a statement context and select the assignment node so both matching and
+/// replacement see the capture. Other languages keep their existing pattern.
+fn compile_rewrite_pattern(
+	pattern: &str,
+	selector: Option<&str>,
+	strictness: &MatchStrictness,
+	lang: SupportLang,
+) -> Result<Pattern> {
+	let compiled = compile_pattern(pattern, selector, strictness, lang)?;
+	if selector.is_some() || lang != SupportLang::CSharp {
+		return Ok(compiled);
+	}
+
+	let wrapped = format!("{{ {pattern}; }}");
+	let contextual = Pattern::contextual(&wrapped, "assignment_expression", lang);
+	match contextual {
+		Ok(mut contextual) if contextual.defined_vars().len() > compiled.defined_vars().len() => {
+			contextual.strictness = strictness.clone();
+			Ok(contextual)
+		},
+		_ => Ok(compiled),
+	}
+}
+
 fn apply_edits(content: &str, edits: &[Edit<String>]) -> Result<String> {
 	shared_ops::apply_edits(content, edits).map_err(|err| Error::from_reason(err.to_string()))
 }
@@ -548,14 +576,18 @@ struct CompiledFindPattern {
 	compile_errors_by_lang: HashMap<String, String>,
 }
 
+struct CompiledRewrite {
+	pattern:  Pattern,
+	replacer: TemplateFix,
+}
+
 /// A rewrite rule compiled for every language discovered among the candidate
 /// files. A rule that fails to parse in one language of a mixed tree skips
 /// that language's files (reported as parse errors) instead of failing the
 /// whole call.
 struct CompiledRewriteRule {
 	pattern:                String,
-	rewrite:                String,
-	compiled_by_lang:       HashMap<String, Pattern>,
+	compiled_by_lang:       HashMap<String, CompiledRewrite>,
 	compile_errors_by_lang: HashMap<String, String>,
 }
 
@@ -986,14 +1018,18 @@ fn ast_edit_blocking(
 		let mut compile_errors_by_lang = HashMap::new();
 		for (lang_key, &language) in &languages {
 			ct.heartbeat()?;
-			match compile_pattern(&pattern, selector.as_deref(), &strictness, language) {
-				Ok(compiled) => {
-					compiled_by_lang.insert(lang_key.clone(), compiled);
-				},
-				Err(err) => {
-					compile_errors_by_lang.insert(lang_key.clone(), err.to_string());
-				},
-			}
+			let compiled_pattern =
+				match compile_rewrite_pattern(&pattern, selector.as_deref(), &strictness, language) {
+					Ok(compiled) => compiled,
+					Err(err) => {
+						compile_errors_by_lang.insert(lang_key.clone(), err.to_string());
+						continue;
+					},
+				};
+			let replacer = TemplateFix::try_new(&rewrite, &language)
+				.expect("ast-grep template construction is infallible");
+			compiled_by_lang
+				.insert(lang_key.clone(), CompiledRewrite { pattern: compiled_pattern, replacer });
 		}
 		// A pattern that parses in NO discovered language is a genuine pattern
 		// error; failing in only some languages of a mixed tree is expected (the
@@ -1018,7 +1054,6 @@ fn ast_edit_blocking(
 		}
 		compiled_rules.push(CompiledRewriteRule {
 			pattern,
-			rewrite,
 			compiled_by_lang,
 			compile_errors_by_lang,
 		});
@@ -1059,7 +1094,7 @@ fn ast_edit_blocking(
 		};
 		let lang_key = language.canonical_name();
 
-		let mut runnable_rules: Vec<(&str, &Pattern)> = Vec::new();
+		let mut runnable_rules: Vec<&CompiledRewrite> = Vec::new();
 		for rule in &compiled_rules {
 			ct.heartbeat()?;
 			if let Some(error) = rule.compile_errors_by_lang.get(lang_key) {
@@ -1067,7 +1102,7 @@ fn ast_edit_blocking(
 				continue;
 			}
 			if let Some(compiled) = rule.compiled_by_lang.get(lang_key) {
-				runnable_rules.push((rule.rewrite.as_str(), compiled));
+				runnable_rules.push(compiled);
 			}
 		}
 		if runnable_rules.is_empty() {
@@ -1098,10 +1133,10 @@ fn ast_edit_blocking(
 
 		let mut file_changes = Vec::new();
 		let mut reached_max_replacements = false;
-		'patterns: for &(rewrite, compiled) in &runnable_rules {
-			for matched in ast.root().find_all(compiled.clone()) {
+		'patterns: for compiled in runnable_rules {
+			for matched in ast.root().find_all(compiled.pattern.clone()) {
 				ct.heartbeat()?;
-				let edit = matched.replace_by(rewrite);
+				let edit = matched.replace_by(&compiled.replacer);
 				// Multiple rules matching the same node with the same output are one
 				// deterministic edit; list and count it once instead of staging a
 				// duplicate that trips the apply-time overlap check.
@@ -1358,6 +1393,32 @@ mod tests {
 			"fn main() {}\n",
 			"the Rust file must be untouched",
 		);
+	}
+
+	#[test]
+	fn rewrite_patterns_preserve_language_metavariables() {
+		let strictness = MatchStrictness::Smart;
+		let csharp =
+			compile_rewrite_pattern("TxnDate = $VALUE", None, &strictness, SupportLang::CSharp)
+				.expect("C# assignment pattern should compile in context");
+		let typescript = compile_rewrite_pattern(
+			"const $NAME = $VALUE",
+			None,
+			&strictness,
+			SupportLang::TypeScript,
+		)
+		.expect("TypeScript pattern should keep compiling directly");
+		let emacs_lisp = compile_rewrite_pattern(
+			"(message $FORMAT $ARG)",
+			None,
+			&strictness,
+			SupportLang::EmacsLisp,
+		)
+		.expect("Emacs Lisp pattern should keep compiling directly");
+
+		assert_eq!(csharp.defined_vars(), ["VALUE"].into_iter().collect());
+		assert_eq!(typescript.defined_vars(), ["NAME", "VALUE"].into_iter().collect(),);
+		assert_eq!(emacs_lisp.defined_vars(), ["FORMAT", "ARG"].into_iter().collect(),);
 	}
 
 	#[test]

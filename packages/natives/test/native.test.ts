@@ -989,6 +989,51 @@ console.log("ok");
 			expect(await Bun.file(filePath).text()).toBe('(defun greet (name)\n  (format-message "Hello %s" name))\n');
 		});
 
+		it("preserves C# assignment captures in previews and writes", async () => {
+			const filePath = path.join(testDir, "csharp-ast-edit.cs");
+			const values = Array.from({ length: 33 }, (_, index) =>
+				index === 0 ? "item.InvoiceDate" : `invoiceDate${index}`,
+			);
+			const source = `class InvoiceMapper
+{
+	public object Map() => new Invoice
+	{
+		${values.map(value => `TxnDate = ${value}`).join(",\n\t\t")}
+	};
+}
+`;
+			await Bun.write(filePath, source);
+
+			const options = {
+				path: filePath,
+				lang: "cs",
+				rewrites: {
+					"TxnDate = $VALUE": "TxnDate = ToQuickBooksDate($VALUE)",
+				},
+			};
+			const preview = await astEdit({ ...options, dryRun: true });
+
+			expect(preview.applied).toBe(false);
+			expect(preview.totalReplacements).toBe(values.length);
+			expect(preview.changes.map(change => change.after)).toEqual(
+				values.map(value => `TxnDate = ToQuickBooksDate(${value})`),
+			);
+			expect(preview.changes[0]?.after).toBe("TxnDate = ToQuickBooksDate(item.InvoiceDate)");
+			expect(await Bun.file(filePath).text()).toBe(source);
+
+			const applied = await astEdit({ ...options, dryRun: false });
+			expect(applied.applied).toBe(true);
+			expect(applied.changes).toEqual(preview.changes);
+			expect(await Bun.file(filePath).text()).toBe(`class InvoiceMapper
+{
+	public object Map() => new Invoice
+	{
+		${values.map(value => `TxnDate = ToQuickBooksDate(${value})`).join(",\n\t\t")}
+	};
+}
+`);
+		});
+
 		it("reports parse errors for incomplete source without throwing", async () => {
 			const result = await astMatch({ source: "console.log(", lang: "ts", patterns: ["console.log($A)"] });
 			expect(result.totalMatches).toBe(0);
