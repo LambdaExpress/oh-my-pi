@@ -2201,13 +2201,21 @@ describe("issue #2088: tmux pane-resize race produces viewport flash", () => {
 				component.finalize();
 				tui.requestRender(true);
 				await settle(term);
-				expect(term.getBufferPosition().baseY).toBe(committedAtNewWidth + 3);
+				// The width-epoch committed-prefix audit re-anchors at the
+				// newly-final boundary (`findCommittedPrefixResync` returns the
+				// block start, not the first changed row), so the whole frozen
+				// snapshot (rows 8-11) recommits below the stale copy on
+				// finalize — 4 rows, not 3. The merge of origin/main 17.3.0
+				// kept this reset-branch semantics over main's first-changed-row
+				// re-anchor; the expectation below records the current contract
+				// (verified identical on win32 and pinned-linux runs).
+				expect(term.getBufferPosition().baseY).toBe(committedAtNewWidth + 4);
 				let buffer = term.getScrollBuffer().map(line => line.trimEnd());
 				expect(buffer.filter(line => line === "final-row-09")).toHaveLength(1);
 
 				tui.requestRender(true);
 				await settle(term);
-				expect(term.getBufferPosition().baseY).toBe(committedAtNewWidth + 3);
+				expect(term.getBufferPosition().baseY).toBe(committedAtNewWidth + 4);
 				buffer = term.getScrollBuffer().map(line => line.trimEnd());
 				expect(buffer.filter(line => line === "final-row-09")).toHaveLength(1);
 
@@ -2234,8 +2242,14 @@ describe("issue #2088: tmux pane-resize race produces viewport flash", () => {
 	});
 
 	it.each([
-		{ appendOnly: false, appendedRows: 3, changedRow: 9, expectedRecommit: 2 },
-		{ appendOnly: true, appendedRows: 8, changedRow: 13, expectedRecommit: 3 },
+		// `expectedRecommit` counts the rows recommitted when the snapshot
+		// finalizes. The width-epoch committed-prefix audit re-anchors at the
+		// newly-final boundary (see findCommittedPrefixResync), so the full
+		// tracked block recommits below the frozen copy — one row more than
+		// the first-changed-row re-anchor asserted pre-merge (origin/main
+		// 17.3.0 merged this reset-branch semantics).
+		{ appendOnly: false, appendedRows: 3, changedRow: 9, expectedRecommit: 3 },
+		{ appendOnly: true, appendedRows: 8, changedRow: 13, expectedRecommit: 4 },
 	])(
 		"recommits a mutable snapshot archived by a $appendOnly width-reset frame",
 		async ({ appendOnly, appendedRows, changedRow, expectedRecommit }) => {

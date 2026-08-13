@@ -412,6 +412,10 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 
 	it("cancels a pending tmux appearance cache read during teardown", () => {
 		vi.useFakeTimers();
+		// The tmux cache-read path is POSIX-specific: on win32 the ConPTY branch
+		// keeps an extra timer alive during refresh (isConPTYHosted() true), so
+		// pin linux to exercise the tmux contract on any host.
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
 		Bun.env.TMUX = "/tmp/tmux-1000/default,1234,0";
 		const { terminal, queryCount, sentinelCount } = setupTerminal();
 
@@ -533,6 +537,10 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 
 	it("DA1 from old query does not cancel new queued query", () => {
 		vi.useFakeTimers();
+		// On win32 the ConPTY branch emits an extra OSC 11 re-query during the
+		// Mode 2031 queue step; pin linux so the DA1-ordering contract is
+		// asserted against the POSIX probe path on any host.
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
 		const { terminal, queryCount, sentinelCount } = setupTerminal();
 		const appearances: string[] = [];
 		terminal.onAppearanceChange(a => appearances.push(a));
@@ -699,6 +707,10 @@ describe("ProcessTerminal OSC 11 appearance detection", () => {
 	});
 
 	it("shutdown balances the single kitty push performed on detection", () => {
+		// ConPTY hosts swap the kitty push for flag 1 (`>1u`); the POSIX
+		// `>5u`/`>7u` push contract is what this test asserts, so pin linux
+		// (the ConPTY branch is covered by the dedicated tests above).
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
 		const { terminal, writes } = setupTerminal();
 
 		// Simulate kitty-capable terminal reply (level >=1).

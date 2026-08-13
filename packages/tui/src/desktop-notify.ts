@@ -50,7 +50,10 @@ export function hasLinuxDesktopSession(
 	if (platform !== "linux") return false;
 	if (env.DBUS_SESSION_BUS_ADDRESS) return true;
 	const runtimeDir = env.XDG_RUNTIME_DIR;
-	return Boolean(runtimeDir && fileExists(path.join(runtimeDir, "bus")));
+	// XDG_RUNTIME_DIR is a POSIX path by definition (systemd user bus socket);
+	// path.posix.join keeps the probe identical on win32 runners, where the
+	// host-platform path.join would emit backslashes and miss the socket.
+	return Boolean(runtimeDir && fileExists(path.posix.join(runtimeDir, "bus")));
 }
 
 /**

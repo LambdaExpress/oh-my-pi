@@ -17,6 +17,19 @@ import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
 const stdinIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 const stdinSetRawModeDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "setRawMode");
+// The crash-restore tests assert the POSIX kitty flag semantics (`>5u` push,
+// `\x1b[<u` pop). terminal.ts deliberately swaps the push for flag 1 / flag 3
+// on ConPTY hosts (native Windows, and WSL whose stdout crosses into ConPTY at
+// wslhost) — "use Kitty flag 1 on Windows to fix Shift+letter input"
+// (91be0eba77), with the isConPTYHosted() predicate landed in 0072385e22.
+// On win32 the reply to `\x1b[?0u` therefore yields `\x1b[>1u`, not `\x1b[>5u`.
+// Pinning this file to a clean (non-ConPTY) linux keeps it exercising the
+// restore contract regardless of the host OS the suite runs on — same pattern
+// as kitty-keyboard-da1-ordering.test.ts. The ConPTY branch itself is asserted
+// in terminal-appearance.test.ts.
+const originalPlatformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+const originalWslDistroName = Bun.env.WSL_DISTRO_NAME;
+const originalWslInterop = Bun.env.WSL_INTEROP;
 // This suite asserts the real emergencyTerminalRestore() write path, so it opts
 // out of the test-default headless suppression. Restored in afterEach (not the
 // helper) so the blind restore branch — gated on !isTerminalHeadless() — still
@@ -55,12 +68,22 @@ function startCapturedTerminal() {
 
 describe("emergencyTerminalRestore alt-screen gating", () => {
 	beforeEach(() => {
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+		delete Bun.env.WSL_DISTRO_NAME;
+		delete Bun.env.WSL_INTEROP;
 		previousHeadless = setTerminalHeadless(false);
 	});
 
 	afterEach(() => {
 		setAltScreenActive(false);
 		setTerminalHeadless(previousHeadless);
+		if (originalWslDistroName === undefined) delete Bun.env.WSL_DISTRO_NAME;
+		else Bun.env.WSL_DISTRO_NAME = originalWslDistroName;
+		if (originalWslInterop === undefined) delete Bun.env.WSL_INTEROP;
+		else Bun.env.WSL_INTEROP = originalWslInterop;
+		if (originalPlatformDescriptor) {
+			Object.defineProperty(process, "platform", originalPlatformDescriptor);
+		}
 		vi.restoreAllMocks();
 		restoreProperty(process.stdin, "isTTY", stdinIsTtyDescriptor);
 		restoreProperty(process.stdout, "isTTY", stdoutIsTtyDescriptor);

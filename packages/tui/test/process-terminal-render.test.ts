@@ -95,6 +95,11 @@ describe("ProcessTerminal geometry reflow through the renderer", () => {
 	});
 
 	it("stops rendering and raises SIGHUP when terminal input ends", async () => {
+		// SIGHUP delivery is the POSIX disconnect path; on win32 the terminal
+		// calls postmortem.quit(129) instead (covered by the Windows-specific
+		// test below). Pin to linux so this exercises the signal path on any
+		// host the suite runs on.
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
 		harness = createProcessTerminalRenderHarness(100, 30);
 		await harness.settle();
 		const rendersBeforeDisconnect = harness.probe.widths.length;
@@ -119,6 +124,9 @@ describe("ProcessTerminal geometry reflow through the renderer", () => {
 	});
 
 	it("stops rendering and raises SIGHUP when terminal output fails", async () => {
+		// Same POSIX-only signal path as the input-end test above; pin to linux
+		// so the suite exercises it identically on win32 hosts.
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
 		harness = createProcessTerminalRenderHarness(100, 30);
 		await harness.settle();
 		const rendersBeforeDisconnect = harness.probe.widths.length;

@@ -4,13 +4,21 @@ import { VirtualTerminal } from "./virtual-terminal";
 
 // Regression probe for https://github.com/can1357/oh-my-pi/issues/4863
 //
-// On ConPTY hosts (native Windows + WSL) a full paint over a large transcript
-// is bounded by #truncateLargeConptyFrame: it keeps only the tail and replaces
-// the older committed prefix with an "older lines hidden" marker. That bound is
-// wanted for the *initial* session resume (issue #2115) where a multi-megabyte
-// synchronized frame stalls conhost. But it also fired on the user-initiated
-// Ctrl+O expand (resetDisplay), so pressing Ctrl+O to review the whole session
-// dropped everything above the retained tail. The reporter hit this under WSL.
+// History: main's #truncateLargeConptyFrame bounded a full paint over a large
+// transcript on ConPTY hosts (native Windows + WSL): it kept only the tail and
+// replaced the older committed prefix with an "older lines hidden" marker —
+// wanted for the *initial* session resume (issue #2115), where a
+// multi-megabyte synchronized frame stalls conhost. But it also fired on the
+// user-initiated Ctrl+O expand (resetDisplay), so pressing Ctrl+O to review the
+// whole session dropped everything above the retained tail. The reporter hit
+// this under WSL. Reset fixed the intent keying (#unboundedConptyPaintRequested,
+// 0f385b2435 + 432e54dfdc), and the origin/main (17.3.0) merge kept reset's
+// #isLargeConptyReplay: a large ConPTY replay now keeps EVERY row and disables
+// DEC 2026 synchronized output for that paint (PAINT_BEGIN_NO_SYNC =
+// `ESC[?25l ESC[?7l`), so legacy hosts process the ConPTY-bounded chunks
+// incrementally instead of buffering one giant transaction (#2115).
+// #truncateLargeConptyFrame and the "older lines hidden" marker no longer
+// exist in the source; these tests assert the merged contract.
 
 const PLATFORM_DESCRIPTOR = Object.getOwnPropertyDescriptor(process, "platform");
 const WSL_DISTRO_NAME = process.env.WSL_DISTRO_NAME;
@@ -71,7 +79,7 @@ describe("issue #4863: Ctrl+O full-view expand truncates the session on ConPTY",
 			realWrite(data);
 		});
 		const tui = new TUI(term);
-		// ~8000 * ~110 bytes ≈ 880 KiB — over the 512 KiB ConPTY truncate threshold.
+		// ~8000 * ~110 bytes ≈ 880 KiB — over the 512 KiB ConPTY sync threshold.
 		tui.addChild(new LargeContent(8000));
 
 		try {
@@ -94,7 +102,7 @@ describe("issue #4863: Ctrl+O full-view expand truncates the session on ConPTY",
 		}
 	});
 
-	it("still bounds the initial session-resume paint on ConPTY (issue #2115)", async () => {
+	it("keeps every row of the initial session-resume paint and disables DEC 2026 sync on ConPTY (issue #2115)", async () => {
 		Object.defineProperty(process, "platform", { value: "win32", configurable: true });
 		const term = new VirtualTerminal(80, 24, 20_000);
 		const writes: string[] = [];
@@ -112,15 +120,29 @@ describe("issue #4863: Ctrl+O full-view expand truncates the session on ConPTY",
 
 			const resumePaint = writes.find(isFullPaint);
 			expect(resumePaint).toBeDefined();
-			// The first paint is a resume replay — it stays bounded.
-			expect(resumePaint).toContain("older lines hidden");
-			expect(Buffer.byteLength(resumePaint ?? "", "utf8")).toBeLessThan(128 * 1024);
+			// The first paint is a resume replay. The origin/main (17.3.0) merge
+			// kept reset's #isLargeConptyReplay and dropped main's
+			// #truncateLargeConptyFrame (the marker no longer exists in the
+			// source): a large ConPTY replay keeps EVERY row and bounds the frame
+			// by disabling DEC 2026 sync for the paint (PAINT_BEGIN_NO_SYNC), so
+			// legacy hosts process the ConPTY-bounded chunks incrementally
+			// instead of buffering one giant synchronized transaction.
+			expect(resumePaint).not.toContain("older lines hidden");
+			expect(resumePaint).toContain("row 00000");
+			// Whole transcript retained — the replay crossed the 512 KiB
+			// #CONPTY_SYNC_THRESHOLD_BYTES (main's truncation capped the frame at
+			// < 128 KiB).
+			expect(Buffer.byteLength(resumePaint ?? "", "utf8")).toBeGreaterThan(512 * 1024);
+			// The bound is the sync scope: PAINT_BEGIN_NO_SYNC (`ESC[?25l ESC[?7l`)
+			// opens no DEC 2026 transaction.
+			expect(resumePaint).toMatch(/^\x1b\[\?25l\x1b\[\?7l/);
+			expect(resumePaint).not.toContain("\x1b[?2026h");
 		} finally {
 			tui.stop();
 		}
 	});
 
-	it("bounds a session replace after a resetDisplay update under WSL+tmux", async () => {
+	it("keeps every row of a session replace after a resetDisplay update under WSL+tmux", async () => {
 		// Under a multiplexer, resetDisplay() is an in-place update rather than
 		// a full paint. Its one-shot unbounded intent must be consumed by that
 		// update, not leak into the next /resume or handoff replacement.
@@ -147,15 +169,22 @@ describe("issue #4863: Ctrl+O full-view expand truncates the session on ConPTY",
 			await term.waitForRender();
 			expect(writes.some(isFullPaint)).toBe(false);
 
-			// Then simulate /resume: the later bulk replace must still be bounded.
+			// Then simulate /resume: the later bulk replace must still be a full
+			// retained replay carrying the large-replay DEC 2026 sync bound.
 			writes.length = 0;
 			tui.requestRender(true, { clearScrollback: true });
 			await term.waitForRender();
 
 			const replacePaint = writes.find(isFullPaint);
 			expect(replacePaint).toBeDefined();
-			expect(replacePaint).toContain("older lines hidden");
-			expect(Buffer.byteLength(replacePaint ?? "", "utf8")).toBeLessThan(128 * 1024);
+			// Same merged contract as the resume paint: the bulk replace keeps
+			// every row (no truncation marker) and bounds the frame by disabling
+			// DEC 2026 sync (PAINT_BEGIN_NO_SYNC).
+			expect(replacePaint).not.toContain("older lines hidden");
+			expect(replacePaint).toContain("row 00000");
+			expect(Buffer.byteLength(replacePaint ?? "", "utf8")).toBeGreaterThan(512 * 1024);
+			expect(replacePaint).toMatch(/^\x1b\[\?25l\x1b\[\?7l/);
+			expect(replacePaint).not.toContain("\x1b[?2026h");
 		} finally {
 			tui.stop();
 		}

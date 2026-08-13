@@ -16,6 +16,7 @@ const REVOKED_PTY = "setRawMode failed with errno: 2";
 const stdinIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
 const stdoutIsTtyDescriptor = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
 const stdinSetRawModeDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "setRawMode");
+const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
 
 function restoreProperty(target: object, key: string, descriptor: PropertyDescriptor | undefined): void {
 	if (descriptor) {
@@ -32,6 +33,10 @@ describe("ProcessTerminal disconnect with a revoked pty", () => {
 	beforeEach(() => {
 		signals = [];
 		previousHeadless = setTerminalHeadless(false);
+		// SIGHUP delivery is the POSIX disconnect path; on win32
+		// #markTerminalDisconnected calls postmortem.quit(129) instead. Pin to a
+		// clean linux so these tests exercise the signal path on any host.
+		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
 		Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
 		Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
 		vi.spyOn(process, "kill").mockImplementation(((_pid: number, signal: string) => {
@@ -46,6 +51,7 @@ describe("ProcessTerminal disconnect with a revoked pty", () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		if (platformDescriptor) Object.defineProperty(process, "platform", platformDescriptor);
 		restoreProperty(process.stdin, "isTTY", stdinIsTtyDescriptor);
 		restoreProperty(process.stdout, "isTTY", stdoutIsTtyDescriptor);
 		restoreProperty(process.stdin, "setRawMode", stdinSetRawModeDescriptor);
