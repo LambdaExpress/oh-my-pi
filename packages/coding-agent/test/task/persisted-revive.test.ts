@@ -192,7 +192,10 @@ describe("persisted subagent revival", () => {
 		expect(capturedOptions?.restrictToolNames).toBeUndefined();
 		expect(capturedOptions?.enableLsp).toBe(true);
 		expect(capturedOptions?.mcpManager).toBe(hostileMcp);
-		expect(capturedOptions?.customTools?.map(tool => tool.name)).toEqual(["mcp__server_read"]);
+		// The ambient proxy (mcp__server_read) is not part of the persisted
+		// contract (["read", "yield"]), so the non-widening filter keeps
+		// customTools empty even though the manager is passed through.
+		expect(capturedOptions?.customTools).toBeUndefined();
 	});
 	it("restores the persisted per-agent advisor opt-in on cold revival", async () => {
 		const cwd = makeTempDir("@pi-advisor-revive-");

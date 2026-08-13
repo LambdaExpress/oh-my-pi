@@ -151,6 +151,11 @@ export function createPersistedSubagentReviverFactory(
 							// Reuse only proxy tools already present in the persisted
 							// capability set; never launch ambient MCP discovery.
 							enableMCP: false,
+							// Mirror the live subagent path's manager pass-through so the
+							// options contract matches the executor wiring; with enableMCP
+							// false the sdk never consults it for discovery — the filtered
+							// proxies above are the execution surface.
+							mcpManager,
 							customTools: mcpProxyTools.length > 0 ? mcpProxyTools : undefined,
 						}),
 			});
