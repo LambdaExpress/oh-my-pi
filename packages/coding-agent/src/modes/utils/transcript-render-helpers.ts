@@ -175,6 +175,12 @@ function deriveCompletedRunState(
 			continue;
 		}
 		if (!initialUserMessage || message.role !== "assistant") continue;
+		// A persisted terminal-looking error is only a request boundary if the
+		// next non-synthetic user message arrives before the assistant continues.
+		// Legacy sessions can lack stopDetails on transient provider failures even
+		// though the agent loop auto-resumed immediately; a following assistant
+		// message proves that the original request is still in progress.
+		if (terminalError) terminalError = false;
 		if (message.stopReason === "error" && !isContinuableStreamInterruption(message)) {
 			terminalError = true;
 			continue;

@@ -789,9 +789,13 @@ export class UiHelpers {
 		});
 		if (options.recoverCompletedRuns && !this.ctx.viewSession.isStreaming) {
 			// AgentSession is reused by in-process /resume and /tree. Replace branch-
-			// local collapse records, then recover an unfinished request anchor so a
-			// continuation from the selected leaf still collapses the whole run.
+			// local collapse records so a previously selected leaf cannot affect the
+			// new branch's Alt+O state.
 			this.ctx.recoverCompletedRunCollapses({ includeLatest: true, replaceExisting: true });
+		}
+		if (options.recoverCompletedRuns || options.recoverCompletedRunAnchor) {
+			// Focus reattachment also clears EventController's transcript anchors.
+			// Restore the unfinished request independently of completed projections.
 			this.ctx.eventController.restoreCompletedRunAnchor(context.messages);
 		}
 		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;

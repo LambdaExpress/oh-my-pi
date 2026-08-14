@@ -125,6 +125,8 @@ export interface RenderInitialMessagesOptions {
 	clearTerminalHistory?: boolean;
 	/** Reconstruct completed requests and any unfinished run anchor when loading persisted history. */
 	recoverCompletedRuns?: boolean;
+	/** Reconstruct only the unfinished run anchor after a transcript-controller reset. */
+	recoverCompletedRunAnchor?: boolean;
 }
 
 export interface InteractiveModeContext {

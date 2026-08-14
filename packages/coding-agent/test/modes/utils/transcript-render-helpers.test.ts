@@ -133,6 +133,27 @@ describe("completed-run collapse projection", () => {
 		]);
 	});
 
+	it("keeps the initial request when a legacy stream error auto-resumes before the next steering message", () => {
+		const initial = { role: "user", content: "fix every failing test", timestamp: 1 } as const;
+		const beforeError = assistant([{ type: "toolCall", id: "tc-1", name: "bash", arguments: {} }], "toolUse", 2);
+		const interrupted = assistant([], "error", 3);
+		interrupted.errorMessage = "OpenAI responses stream closed before a terminal response event was received";
+		const resumed = assistant([{ type: "toolCall", id: "tc-2", name: "bash", arguments: {} }], "toolUse", 4);
+		const steer = { role: "user", content: "are you done yet?", steering: true, timestamp: 5 } as const;
+		const final = assistant([{ type: "text", text: "done" }], "stop", 6);
+		const messages = [initial, beforeError, interrupted, resumed, steer, final] as AgentMessage[];
+
+		const collapses = deriveCompletedRunCollapses(messages, { includeLatest: true });
+
+		expect(collapses).toEqual([
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+			}),
+		]);
+	});
+
 	it("recovers only an unfinished request as the next continuation anchor", () => {
 		const initial = { role: "user", content: "unfinished deployment", timestamp: 1 } as const;
 		const loop = assistant(

@@ -161,6 +161,7 @@ function makeRenderCtx(
 	showImages = true,
 	hideToolActivity = false,
 	toolExecutionDisplaySnapshots: ReadonlyMap<string, DisplaySnapshotFixture> = new Map(),
+	isStreaming = false,
 ): { ctx: InteractiveModeContext; chatContainer: TranscriptContainer } {
 	const chatContainer = new TranscriptContainer();
 	chatContainer.setToolActivityVisible(!hideToolActivity);
@@ -203,6 +204,7 @@ function makeRenderCtx(
 		focusedAgentId: undefined,
 		editor: { addToHistory: vi.fn() },
 		viewSession: {
+			isStreaming,
 			buildTranscriptSessionContext,
 			getToolByName: () => undefined,
 			getToolExecutionDisplaySnapshots: () => toolExecutionDisplaySnapshots,
@@ -292,6 +294,21 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 		expect(rendered).toContain("pre-compaction user request must remain scrollable");
 		expect(rendered).toContain("compacted");
 		expect(rendered).toContain("post-compaction follow-up remains visible");
+	});
+
+	it("recovers the unfinished completed-run anchor when reattaching a streaming session", async () => {
+		const initial = { role: "user", content: "original request", timestamp: 1 } as AgentMessage;
+		const loop = assistantToolCall("tc", "read", { path: "src/app.ts" });
+		const transcript = transcriptWith([initial, loop]);
+		const { ctx } = makeRenderCtx(transcript, true, false, new Map(), true);
+		ctx.settings = Settings.isolated({ "display.collapseCompletedRuns": true });
+		ctx.recoverCompletedRunCollapses = vi.fn();
+		ctx.eventController = { restoreCompletedRunAnchor: vi.fn() } as never;
+
+		await new UiHelpers(ctx).renderInitialMessages({ recoverCompletedRunAnchor: true });
+
+		expect(ctx.recoverCompletedRunCollapses).not.toHaveBeenCalled();
+		expect(ctx.eventController.restoreCompletedRunAnchor).toHaveBeenCalledWith(transcript.messages);
 	});
 });
 

@@ -56,19 +56,29 @@ interface Harness {
 	counts: {
 		clearTransientSessionUi: () => number;
 		resetTranscriptAnchors: () => number;
-		renderInitialMessages: () => number;
+		renderInitialMessages: () => Array<{
+			clearTerminalHistory?: boolean;
+			recoverCompletedRuns?: boolean;
+			recoverCompletedRunAnchor?: boolean;
+		}>;
+		recoverCompletedRunCollapses: () => Array<{ includeLatest: boolean }>;
 		updatePendingMessagesDisplay: () => number;
 		mainUnsubscribe: () => number;
 	};
 }
 
-function makeHarness(): Harness {
-	const main = makeSessionStub();
+function makeHarness(options: { mainIsStreaming?: boolean } = {}): Harness {
+	const main = makeSessionStub({ isStreaming: options.mainIsStreaming });
 	const handledEvents: unknown[] = [];
 	const setSessionCalls: Array<[AgentSession, string | undefined]> = [];
 	let clearTransientSessionUi = 0;
 	let resetTranscriptAnchors = 0;
-	let renderInitialMessages = 0;
+	const renderInitialMessages: Array<{
+		clearTerminalHistory?: boolean;
+		recoverCompletedRuns?: boolean;
+		recoverCompletedRunAnchor?: boolean;
+	}> = [];
+	const recoverCompletedRunCollapses: Array<{ includeLatest: boolean }> = [];
 	let updatePendingMessagesDisplay = 0;
 	let mainUnsubscribe = 0;
 
@@ -94,8 +104,16 @@ function makeHarness(): Harness {
 		clearTransientSessionUi: () => {
 			clearTransientSessionUi++;
 		},
-		renderInitialMessages: () => {
-			renderInitialMessages++;
+		renderInitialMessages: (options?: {
+			clearTerminalHistory?: boolean;
+			recoverCompletedRuns?: boolean;
+			recoverCompletedRunAnchor?: boolean;
+		}) => {
+			renderInitialMessages.push(options ?? {});
+		},
+		recoverCompletedRunCollapses: (options: { includeLatest: boolean }) => {
+			recoverCompletedRunCollapses.push(options);
+			return false;
 		},
 		updatePendingMessagesDisplay: () => {
 			updatePendingMessagesDisplay++;
@@ -121,6 +139,7 @@ function makeHarness(): Harness {
 			clearTransientSessionUi: () => clearTransientSessionUi,
 			resetTranscriptAnchors: () => resetTranscriptAnchors,
 			renderInitialMessages: () => renderInitialMessages,
+			recoverCompletedRunCollapses: () => recoverCompletedRunCollapses,
 			updatePendingMessagesDisplay: () => updatePendingMessagesDisplay,
 			mainUnsubscribe: () => mainUnsubscribe,
 		},
@@ -149,7 +168,10 @@ describe("SessionFocusController", () => {
 		expect(h.counts.mainUnsubscribe()).toBe(1);
 		expect(h.counts.clearTransientSessionUi()).toBe(1);
 		expect(h.counts.resetTranscriptAnchors()).toBe(1);
-		expect(h.counts.renderInitialMessages()).toBe(1);
+		expect(h.counts.renderInitialMessages()).toEqual([
+			{ clearTerminalHistory: true, recoverCompletedRunAnchor: true },
+		]);
+		expect(h.counts.recoverCompletedRunCollapses()).toEqual([{ includeLatest: true }]);
 		expect(h.setSessionCalls).toEqual([[worker.session, "Worker"]]);
 
 		const event = { type: "message_start", message: { role: "user" } };
@@ -234,6 +256,20 @@ describe("SessionFocusController", () => {
 		// session's queued messages instead of leaving the bar empty.
 		await h.controller.unfocus();
 		expect(h.counts.updatePendingMessagesDisplay()).toBe(2);
+	});
+
+	it("recovers the main run anchor after a mid-run focus round-trip", async () => {
+		const h = makeHarness({ mainIsStreaming: true });
+		const worker = makeSessionStub();
+		registerSub(h.registry, "Worker", worker.session, MAIN_AGENT_ID);
+
+		await h.controller.focusAgent("Worker");
+		await h.controller.unfocus();
+
+		expect(h.counts.renderInitialMessages()).toEqual([
+			{ clearTerminalHistory: true, recoverCompletedRunAnchor: true },
+			{ clearTerminalHistory: true, recoverCompletedRunAnchor: true },
+		]);
 	});
 });
 describe("AgentSession tool display snapshots", () => {

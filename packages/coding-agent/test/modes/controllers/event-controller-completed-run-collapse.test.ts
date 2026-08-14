@@ -626,6 +626,52 @@ describe("completed run collapse", () => {
 		);
 	});
 
+	it("keeps the original run anchor after focus reattachment and repeated steering", async () => {
+		const { controller, recordCompletedRunCollapse } = fixture();
+		const initial = { role: "user", content: "fix every failing test", timestamp: 80 } as AgentMessage;
+		const loop = assistant("working before focus changed", "toolUse", 81);
+		loop.content.push({ type: "toolCall", id: "tc", name: "task", arguments: {} });
+		const firstSteer = {
+			role: "user",
+			content: "are you done yet?",
+			steering: true,
+			timestamp: 82,
+		} as AgentMessage;
+		const progress = assistant("still working", "toolUse", 83);
+		progress.content.push({ type: "toolCall", id: "tc-2", name: "bash", arguments: {} });
+		const secondSteer = {
+			role: "user",
+			content: "finish and commit",
+			steering: true,
+			timestamp: 84,
+		} as AgentMessage;
+		const final = assistant("done", "stop", 85);
+
+		// Returning from a focused subagent rebuilds this anchor from persisted
+		// main-session history, then synthesizes the missed live agent_start.
+		controller.restoreCompletedRunAnchor([initial, loop]);
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: firstSteer });
+		await controller.handleEvent({ type: "message_end", message: firstSteer });
+		await controller.handleEvent({ type: "message_end", message: progress });
+		await controller.handleEvent({ type: "message_start", message: secondSteer });
+		await controller.handleEvent({ type: "message_end", message: secondSteer });
+		await controller.handleEvent({ type: "message_end", message: final });
+		await controller.handleEvent({ type: "agent_end", messages: [firstSteer, progress, secondSteer, final] });
+
+		// Alt+O claims the parked run immediately. The collapse must still begin at
+		// the original request, not at either post-focus steering message.
+		expect(controller.commitCompletedRunCollapses({ rebuild: false })).toBe(true);
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+			}),
+		);
+	});
+
 	it("keeps every parked span across repeated force-flushes and commits all three summaries at the end of the chain", async () => {
 		const { controller, session, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
 		const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
