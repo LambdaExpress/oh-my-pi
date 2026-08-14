@@ -511,6 +511,21 @@ function pickUsageRemainingColor(percent: number): "muted" | "warning" | "error"
 	return "muted";
 }
 
+/**
+ * Compact window label: the time until reset when known, else the fixed
+ * window span. A 5h window with 3h 11m left reads `3h`, a 7d window with
+ * 5d 2h left reads `5d`; the monthly window (calendar/subscription month,
+ * no fixed span) falls back to `mo` only when no reset time was reported.
+ */
+function formatCompactUsageWindowLabel(fallback: string, value: number | undefined, unit: "m" | "h"): string {
+	if (value === undefined) return fallback;
+	const remaining = Math.max(0, Math.round(value));
+	if (unit === "m") {
+		return remaining < 60 ? `${remaining}m` : `${Math.round(remaining / 60)}h`;
+	}
+	return remaining < 24 ? `${remaining}h` : `${Math.round(remaining / 24)}d`;
+}
+
 function renderCompactUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
 	const u = ctx.usage;
 	if (!u || (!u.fiveHour && !u.sevenDay && !u.monthly)) {
@@ -518,17 +533,19 @@ function renderCompactUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
 	}
 
 	const parts: string[] = [];
-	if (u.tier) {
-		const title = truncateToWidth(sanitizeStatusText(u.tier), TRUNCATE_LENGTHS.SHORT);
-		if (title) parts.push(theme.fg("accent", title));
+	if (u.fiveHour) {
+		const label = formatCompactUsageWindowLabel("5h", u.fiveHour.resetMinutes, "m");
+		const remaining = Math.max(0, Math.min(100, 100 - u.fiveHour.percent));
+		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
 	}
-	for (const [label, window] of [
-		["5h", u.fiveHour],
-		["7d", u.sevenDay],
-		["mo", u.monthly],
-	] as const) {
-		if (!window) continue;
-		const remaining = Math.max(0, Math.min(100, 100 - window.percent));
+	if (u.sevenDay) {
+		const label = formatCompactUsageWindowLabel("7d", u.sevenDay.resetHours, "h");
+		const remaining = Math.max(0, Math.min(100, 100 - u.sevenDay.percent));
+		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
+	}
+	if (u.monthly) {
+		const label = formatCompactUsageWindowLabel("mo", u.monthly.resetHours, "h");
+		const remaining = Math.max(0, Math.min(100, 100 - u.monthly.percent));
 		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
 	}
 

@@ -776,4 +776,32 @@ describe("cost status-line segment", () => {
 		expect(content).toContain("$12.34");
 		expect(content).toContain("★ 2");
 	});
+
+	it("shows days until reset for monthly usage in the compact cost segment", () => {
+		const result = renderSegment("cost", {
+			usage: { monthly: { percent: 27, resetHours: 437 } },
+			usageStats: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				cost: 0,
+				premiumRequests: 0,
+			},
+			session: {
+				state: { model: { provider: "opencode-go" } },
+				modelRegistry: { isUsingOAuth: () => true },
+			},
+		} as unknown as SegmentContext);
+		const content = stripVTControlCharacters(result.content);
+
+		expect(result.visible).toBe(true);
+		// Remaining fraction, not used fraction: 100 - 27.
+		expect(content).toContain("73%");
+		// The monthly window (calendar/subscription month) has no fixed span,
+		// so the compact label is the days until the subscription-anniversary
+		// reset (437h → 18d) instead of a bare "mo".
+		expect(content).toContain("18d");
+		expect(content).not.toContain("mo");
+	});
 });
