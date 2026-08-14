@@ -37,7 +37,7 @@ The most capable agent surface that ships. Continuously tuned by real-world use 
 **macOS · Linux**
 
 ```sh
-curl -fsSL https://omp.sh/install | sh
+curl -fsSL https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/reset/scripts/install.sh | sh
 ```
 
 > **Alpine / musl:** the prebuilt musl binary links `libstdc++`/`libgcc` dynamically, which stock Alpine does not ship. Install them first: `apk add libstdc++ libgcc`.
@@ -58,17 +58,17 @@ bun install -g @oh-my-pi/pi-coding-agent
 
 ```sh
 # Run without installing
-nix run github:can1357/oh-my-pi
+nix run github:LambdaExpress/oh-my-pi/reset
 
 # Or install into the active profile
-nix profile install github:can1357/oh-my-pi
+nix profile install github:LambdaExpress/oh-my-pi/reset
 ```
 
 Flake consumers can use `packages.<system>.omp`, `overlays.default`, `nixosModules.default`, or `homeManagerModules.default`. A Home Manager configuration can install OMP and own its settings declaratively:
 
 ```nix
 {
-  inputs.omp.url = "github:can1357/oh-my-pi";
+  inputs.omp.url = "github:LambdaExpress/oh-my-pi/reset";
 
   # In your Home Manager module:
   imports = [ inputs.omp.homeManagerModules.default ];
@@ -82,13 +82,13 @@ Flake consumers can use `packages.<system>.omp`, `overlays.default`, `nixosModul
 **Windows (PowerShell)**
 
 ```powershell
-irm https://omp.sh/install.ps1 | iex
+irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/reset/scripts/install.ps1 | iex
 ```
 
 **Pinned versions (mise)**
 
 ```sh
-mise use -g github:can1357/oh-my-pi
+mise use -g github:LambdaExpress/oh-my-pi/reset
 ```
 
 macOS · Linux · Windows · bun ≥ 1.3.14
