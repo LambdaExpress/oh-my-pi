@@ -1625,10 +1625,15 @@ export const writeToolRenderer = {
 		const partialContent = extractPartialJsonString(args.__partialJson, "content");
 		const rawContent = partialContent ?? args.content;
 		const content = normalizeDisplayText(rawContent);
-		// Render nothing until the streamed path arrives and provably is not an
-		// xd:// device; xd:// writes then delegate to the mounted tool's renderer.
+		// Render once either streamed field arrives. The path can lag the content
+		// (DeepSeek-family models emit `content` before `path`), so the header
+		// holds the "…" placeholder until the path lands and then swaps it in.
+		// A half-typed "xd://" prefix alone still renders nothing — the xd branch
+		// below waits for the settled path — and with neither field present there
+		// is nothing to preview.
 		const hasPath = partialPath !== undefined || args.path !== undefined || args.file_path !== undefined;
-		if (!hasPath) return undefined;
+		const hasContent = partialContent !== undefined || args.content !== undefined;
+		if (!hasPath && !hasContent) return undefined;
 		if (rawPath && couldBecomeXdUrl(rawPath)) {
 			const xdev = parseXdUrl(rawPath);
 			// The path string is settled once the content field started streaming.

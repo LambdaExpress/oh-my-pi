@@ -57,6 +57,7 @@
 
 ### Fixed
 
+- Fixed the write tool's streaming preview staying blank until `path` had streamed in: models that emit `content` before `path` (DeepSeek-family via OpenAI-compatible gateways) now show the live content preview with a placeholder path immediately, swapping the real path in when it lands.
 - Fixed queued `/tan` sessions appearing in Agent Hub as unrecoverable parked agents before execution began; tangential forks now stay in memory until the live agent is registered and their durable revival metadata is ready.
 - Fixed `Alt+O` clearing and replaying the native scrollback while a later run was still streaming, which could hide large transcript regions until the next idle toggle or prompt; running toggles now refresh non-destructively while preserving subsequent streamed output.
 - Fixed `apply_patch` rejecting absolute local paths (`D:/...`, `/var/...`, `\\server\share\...`) across Add/Update/Delete and `*** Move to`; absolute paths now resolve like every other edit mode, so sibling-worktree and out-of-workspace targets edit in place.
