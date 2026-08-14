@@ -61,4 +61,4 @@ Full patches may combine operations:
 *** End Patch
 ```
 
-MUST use Add/Delete/Update header; new-file lines MUST start `+`; file references workspace-relative, except `ssh://host/absolute/path` targets whole remote UTF-8 text files; directories not editable.
+MUST use Add/Delete/Update header; new-file lines MUST start `+`; paths may be workspace-relative or absolute (`D:/…`, `/var/…`, `\\server\share\…`), and `ssh://host/absolute/path` targets whole remote UTF-8 text files; directories not editable.

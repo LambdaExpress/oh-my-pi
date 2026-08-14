@@ -136,8 +136,6 @@ function applyPatchEnvelope(lines: readonly string[]): string {
 	return ["*** Begin Patch", ...lines, "*** End Patch", ""].join("\n");
 }
 
-const ABSOLUTE_PATH_ERROR = /Local apply_patch paths must be workspace-relative/;
-
 describe("EditTool apply_patch local path contract", () => {
 	let tempRoot: string;
 	let workspace: string;
@@ -155,20 +153,7 @@ describe("EditTool apply_patch local path contract", () => {
 		await removeWithRetries(tempRoot);
 	});
 
-	test("treats both reported D:/project sibling-worktree updates as the same rejected contract", async () => {
-		const tool = new EditTool(createApplyPatchSession("D:/project/21cp"), "apply_patch");
-		const reportedPaths = [
-			"D:/project/21cp-worktrees/cen21-6771-services/21stCenturyServices/ROM.WindowsAgent.Client/WindowsAgentClient.cs",
-			"D:/project/21cp-worktrees/cen21-6771-services/21stCenturyServices/IdentityService/Properties/launchSettings.json",
-		];
-
-		for (const reportedPath of reportedPaths) {
-			const input = applyPatchEnvelope([`*** Update File: ${reportedPath}`, "@@", "-old", "+new"]);
-			await expect(tool.execute(`reported-${reportedPath}`, { input })).rejects.toThrow(ABSOLUTE_PATH_ERROR);
-		}
-	});
-
-	test("rejects absolute update paths both inside and outside the workspace without modifying either file", async () => {
+	test("applies absolute update paths both inside and outside the workspace", async () => {
 		const insidePath = path.join(workspace, "inside.txt");
 		const outsidePath = path.join(tempRoot, "outside.txt");
 		await Bun.write(insidePath, "original\n");
@@ -177,36 +162,58 @@ describe("EditTool apply_patch local path contract", () => {
 
 		for (const absolutePath of [insidePath, outsidePath]) {
 			const input = applyPatchEnvelope([`*** Update File: ${absolutePath}`, "@@", "-original", "+modified"]);
-			await expect(tool.execute(`absolute-${absolutePath}`, { input })).rejects.toThrow(ABSOLUTE_PATH_ERROR);
+			const result = await tool.execute(`absolute-${absolutePath}`, { input });
+			expect(result.isError).toBeUndefined();
 		}
 
-		expect(await Bun.file(insidePath).text()).toBe("original\n");
-		expect(await Bun.file(outsidePath).text()).toBe("original\n");
+		expect(await Bun.file(insidePath).text()).toBe("modified\n");
+		expect(await Bun.file(outsidePath).text()).toBe("modified\n");
 	});
 
-	test("rejects Windows drive, UNC, and POSIX absolute path syntax on every file operation", async () => {
-		const absolutePaths = [
-			"D:/project/21cp-worktrees/repo/file.txt",
-			String.raw`\\server\share\repo\file.txt`,
-			"/var/tmp/repo/file.txt",
-		];
+	test("applies absolute sibling-worktree updates outside the workspace", async () => {
+		// User-reported flow: apply_patch editing sibling-worktree paths while
+		// the session cwd is a different project root (D:/project/21cp-worktrees/…).
+		const outsideRoot = path.join(tempRoot, "sibling-worktree");
+		const targetPath = path.join(outsideRoot, "src", "File.cs");
+		await fs.mkdir(path.dirname(targetPath), { recursive: true });
+		await Bun.write(targetPath, "old\n");
+		const tool = new EditTool(createApplyPatchSession(workspace), "apply_patch");
+		const input = applyPatchEnvelope([`*** Update File: ${targetPath}`, "@@", "-old", "+new"]);
+
+		const result = await tool.execute("absolute-sibling-update", { input });
+
+		expect(result.isError).toBeUndefined();
+		expect(await Bun.file(targetPath).text()).toBe("new\n");
+	});
+
+	test("applies absolute paths to create, update, and delete operations", async () => {
+		const createdPath = path.join(tempRoot, "created.txt");
+		const updatedPath = path.join(tempRoot, "updated.txt");
+		const deletedPath = path.join(tempRoot, "deleted.txt");
+		await Bun.write(updatedPath, "old\n");
+		await Bun.write(deletedPath, "delete-me\n");
 		const tool = new EditTool(createApplyPatchSession(workspace), "apply_patch");
 
-		for (const absolutePath of absolutePaths) {
-			const operations = [
-				[`*** Add File: ${absolutePath}`, "+created"],
-				[`*** Delete File: ${absolutePath}`],
-				[`*** Update File: ${absolutePath}`, "@@", "-old", "+new"],
-			];
-			for (const lines of operations) {
-				await expect(
-					tool.execute(`absolute-operation-${absolutePath}`, { input: applyPatchEnvelope(lines) }),
-				).rejects.toThrow(ABSOLUTE_PATH_ERROR);
-			}
-		}
+		const createResult = await tool.execute("absolute-create", {
+			input: applyPatchEnvelope([`*** Add File: ${createdPath}`, "+created"]),
+		});
+		expect(createResult.isError).toBeUndefined();
+		expect(await Bun.file(createdPath).text()).toBe("created\n");
+
+		const updateResult = await tool.execute("absolute-update", {
+			input: applyPatchEnvelope([`*** Update File: ${updatedPath}`, "@@", "-old", "+new"]),
+		});
+		expect(updateResult.isError).toBeUndefined();
+		expect(await Bun.file(updatedPath).text()).toBe("new\n");
+
+		const deleteResult = await tool.execute("absolute-delete", {
+			input: applyPatchEnvelope([`*** Delete File: ${deletedPath}`]),
+		});
+		expect(deleteResult.isError).toBeUndefined();
+		expect(await Bun.file(deletedPath).exists()).toBe(false);
 	});
 
-	test("preflights an absolute move destination before changing its relative source", async () => {
+	test("moves a relative source to an absolute destination", async () => {
 		const tool = new EditTool(createApplyPatchSession(workspace), "apply_patch");
 		const destinations = [path.join(workspace, "inside-moved.txt"), path.join(tempRoot, "outside-moved.txt")];
 
@@ -223,14 +230,16 @@ describe("EditTool apply_patch local path contract", () => {
 				"+modified",
 			]);
 
-			await expect(tool.execute(`absolute-move-${index}`, { input })).rejects.toThrow(ABSOLUTE_PATH_ERROR);
-			expect(await Bun.file(sourcePath).text()).toBe("original\n");
-			expect(await Bun.file(destinationPath).exists()).toBe(false);
+			const result = await tool.execute(`absolute-move-${index}`, { input });
+			expect(result.isError).toBeUndefined();
+			expect(await Bun.file(sourcePath).exists()).toBe(false);
+			expect(await Bun.file(destinationPath).text()).toBe("modified\n");
 		}
 	});
 
-	test("rejects the whole patch before a preceding relative entry can write", async () => {
+	test("applies a mixed relative-and-absolute patch in one call", async () => {
 		const relativePath = path.join(workspace, "relative-first.txt");
+		const absoluteCreatedPath = path.join(tempRoot, "created-after.txt");
 		await Bun.write(relativePath, "original\n");
 		const tool = new EditTool(createApplyPatchSession(workspace), "apply_patch");
 		const input = applyPatchEnvelope([
@@ -238,12 +247,14 @@ describe("EditTool apply_patch local path contract", () => {
 			"@@",
 			"-original",
 			"+modified",
-			"*** Add File: D:/project/21cp-worktrees/repo/created.txt",
+			`*** Add File: ${absoluteCreatedPath}`,
 			"+created",
 		]);
 
-		await expect(tool.execute("absolute-preflight", { input })).rejects.toThrow(ABSOLUTE_PATH_ERROR);
-		expect(await Bun.file(relativePath).text()).toBe("original\n");
+		const result = await tool.execute("absolute-preflight", { input });
+		expect(result.isError).toBeUndefined();
+		expect(await Bun.file(relativePath).text()).toBe("modified\n");
+		expect(await Bun.file(absoluteCreatedPath).text()).toBe("created\n");
 	});
 
 	test("continues to apply workspace-relative paths", async () => {
