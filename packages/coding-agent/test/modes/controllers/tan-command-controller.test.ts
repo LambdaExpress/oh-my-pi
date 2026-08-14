@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import type { AsyncJobRegisterOptions } from "@oh-my-pi/pi-coding-agent/async/job-manager";
@@ -12,6 +12,7 @@ import type { CreateAgentSessionOptions, CreateAgentSessionResult } from "@oh-my
 import * as sdkModule from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../../../src/i18n";
 
 interface CapturedJobRunContext {
 	jobId: string;
@@ -136,6 +137,7 @@ function createContext(overrides?: {
 	const parentArtifactsDir = parentFile.slice(0, -6);
 	const getArtifactsDir = vi.fn(() => parentArtifactsDir);
 	const getSessionId = vi.fn(() => "parent-local-session");
+	const materializeDeferredSession = vi.fn(async () => {});
 	const sessionManager = {
 		getSessionFile: vi.fn(() => parentFile),
 		getCwd: vi.fn(() => tempDir.path()),
@@ -148,6 +150,7 @@ function createContext(overrides?: {
 	const cloneManager = {
 		getSessionFile: vi.fn(() => cloneFile),
 		appendCustomEntry: vi.fn(),
+		materializeDeferredSession,
 	} as unknown as SessionManager;
 	const ctx = {
 		session,
@@ -168,6 +171,7 @@ function createContext(overrides?: {
 		ctx,
 		getArtifactsDir,
 		getSessionId,
+		materializeDeferredSession,
 		register,
 		sequence,
 		get capturedRun() {
@@ -180,7 +184,12 @@ function createContext(overrides?: {
 }
 
 describe("TanCommandController", () => {
+	beforeEach(() => {
+		setLocale("en");
+	});
+
 	afterEach(() => {
+		setLocale(null);
 		vi.restoreAllMocks();
 	});
 
@@ -226,7 +235,7 @@ describe("TanCommandController", () => {
 			harness.tempDir.path(),
 			harness.parentFile.slice(0, -6),
 			undefined,
-			{ suppressBreadcrumb: true, sessionFile: expect.stringMatching(/Tan-.+\.jsonl$/) },
+			{ suppressBreadcrumb: true, sessionFile: expect.stringMatching(/Tan-.+\.jsonl$/), deferWrite: true },
 		);
 		expect(harness.register).toHaveBeenCalledWith("task", "/tan write the release note", expect.any(Function), {
 			ownerId: MAIN_AGENT_ID,
@@ -371,7 +380,7 @@ describe("TanCommandController", () => {
 		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
 		const appendSessionInit = vi.fn();
 		const { clone } = createCloneStub({ sessionManager: { appendSessionInit } });
-		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+		const createAgentSessionSpy = vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
 			session: clone,
 		} as unknown as CreateAgentSessionResult);
 		const registry = AgentRegistry.global();
@@ -381,6 +390,7 @@ describe("TanCommandController", () => {
 		const controller = new TanCommandController(harness.ctx);
 
 		await controller.start("park me");
+		expect(harness.materializeDeferredSession).not.toHaveBeenCalled();
 		const run = harness.capturedRun;
 		if (!run) throw new Error("run function was not captured");
 		const result = await run({
@@ -396,6 +406,13 @@ describe("TanCommandController", () => {
 			tools: ["read", "bash"],
 			mountedXdevTools: [],
 		});
+		expect(harness.materializeDeferredSession).toHaveBeenCalledTimes(1);
+		expect(createAgentSessionSpy.mock.invocationCallOrder[0]).toBeLessThan(
+			harness.materializeDeferredSession.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
+		expect(appendSessionInit.mock.invocationCallOrder[0]).toBeLessThan(
+			harness.materializeDeferredSession.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
 		// Parked (not unregistered) before dispose, then the disposed session is nulled
 		// out — the hub keeps the ref and reads its transcript from the session file.
 		expect(setStatus).toHaveBeenCalledWith(expect.stringMatching(/^Tan-/), "parked", "parent-scope");

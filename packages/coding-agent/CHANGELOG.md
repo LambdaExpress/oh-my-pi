@@ -57,6 +57,8 @@
 
 ### Fixed
 
+- Fixed queued `/tan` sessions appearing in Agent Hub as unrecoverable parked agents before execution began; tangential forks now stay in memory until the live agent is registered and their durable revival metadata is ready.
+- Fixed `Alt+O` clearing and replaying the native scrollback while a later run was still streaming, which could hide large transcript regions until the next idle toggle or prompt; running toggles now refresh non-destructively while preserving subsequent streamed output.
 - Fixed `apply_patch` rejecting absolute local paths (`D:/...`, `/var/...`, `\\server\share\...`) across Add/Update/Delete and `*** Move to`; absolute paths now resolve like every other edit mode, so sibling-worktree and out-of-workspace targets edit in place.
 - Fixed the compact status-line usage labels regressing to fixed window names (`5h 100% · 7d 82% · mo 73%`) instead of the time-to-reset labels (e.g. `3h 76% · 5d 92%`): the `cost` segment now shows rounded time until reset per window — minutes/hours for the 5h window, hours/days for the 7d window, and days for the monthly window (falling back to `5h`/`7d`/`mo` only when no reset time was reported) — and no longer duplicates the plan tier.
 - Fixed the agentic and legacy `omp commit` pipelines leaking the `AuthStorage` SQLite connection opened by `discoverAuthStorage()`: the handle is now closed in a `finally` after the pipeline finishes (matching `models-cli`/`usage-cli`/`bench-cli`), so in-process callers and Windows tests can remove temp agent directories instead of hitting EBUSY on `agent.db`.

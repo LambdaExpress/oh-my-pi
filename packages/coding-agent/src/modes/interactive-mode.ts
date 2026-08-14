@@ -793,7 +793,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!this.settings.get("display.collapseCompletedRuns")) return;
 		// A just-finished run stays expanded until the next submission. Alt+O must
 		// be able to claim that parked record immediately; defer its rebuild so this
-		// toggle still performs one clear + replay below.
+		// toggle still performs one transcript rebuild before choosing the safe
+		// repaint strategy below.
 		const committedCompletedRun = this.#eventController.commitCompletedRunCollapses({ rebuild: false });
 		const completedRuns = this.#completedRunCollapses.get(this.viewSession);
 		if (!completedRuns?.length) return;
@@ -806,7 +807,17 @@ export class InteractiveMode implements InteractiveModeContext {
 			run.expanded = expanded;
 		}
 		this.rebuildChatFromMessages();
-		this.ui.resetDisplay();
+		// `resetDisplay()` clears and replays the whole native scrollback tape.
+		// While the active run is still changing, a long expanded transcript can
+		// race the next ConPTY paint and leave Windows Terminal showing only a
+		// suffix until another destructive replay. Keep the live tail attached and
+		// repaint it non-destructively; an idle Alt+O or the next input checkpoint
+		// still performs the clean scrollback rebuild.
+		if (this.viewSession.isStreaming) {
+			this.ui.refreshDisplay("completed-run-toggle-during-stream");
+		} else {
+			this.ui.resetDisplay();
+		}
 	}
 	clearTransientSessionUi(): void {
 		if (this.loadingAnimation) {

@@ -146,6 +146,10 @@ export class TanCommandController {
 			const cloneManager = await SessionManager.forkFrom(parentFile, cwd, sessionDir, undefined, {
 				suppressBreadcrumb: true,
 				sessionFile: cloneFile,
+				// The task may wait behind the async concurrency limit. Keep its
+				// snapshot in memory until createAgentSession starts, otherwise the
+				// Agent Hub mistakes the pre-init JSONL for a revivable parked agent.
+				deferWrite: true,
 			});
 
 			jobId = manager.register(
@@ -208,6 +212,10 @@ export class TanCommandController {
 						// Clear runtime state and persist an empty edit so reloads agree.
 						clone.setTodoPhases([]);
 						cloneManager.appendCustomEntry(USER_TODO_EDIT_CUSTOM_TYPE, { phases: [] });
+						// createAgentSession has now attached the live registry ref, and the
+						// durable recovery contract plus todo reset are both present. Only
+						// now expose the JSONL to persisted-subagent discovery.
+						await cloneManager.materializeDeferredSession();
 						const injectContextSwitch = () => {
 							clone?.agent.appendMessage({
 								role: "developer",

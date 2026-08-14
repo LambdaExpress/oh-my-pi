@@ -139,6 +139,37 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(messages).toHaveLength(4);
 	});
 
+	it("keeps repeated Alt+O toggles non-destructive while a later run is streaming", () => {
+		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
+		const final = assistant([{ type: "text", text: "done" }], "stop", 2);
+		mode.recordCompletedRunCollapse({
+			firstMessage: initial,
+			initialUserMessage: initial,
+			finalAssistantMessage: final,
+			durationMs: 1_000,
+		});
+		const agentState = session.agent.state as { isStreaming: boolean };
+		agentState.isStreaming = true;
+		const rebuild = vi.spyOn(mode, "rebuildChatFromMessages").mockImplementation(() => {});
+		const refreshDisplay = vi.spyOn(mode.ui, "refreshDisplay").mockImplementation(() => {});
+		const resetDisplay = vi.spyOn(mode.ui, "resetDisplay").mockImplementation(() => {});
+
+		mode.toggleCompletedRunCollapse();
+		mode.toggleCompletedRunCollapse();
+
+		expect(rebuild).toHaveBeenCalledTimes(2);
+		expect(refreshDisplay).toHaveBeenCalledTimes(2);
+		expect(refreshDisplay).toHaveBeenNthCalledWith(1, "completed-run-toggle-during-stream");
+		expect(resetDisplay).not.toHaveBeenCalled();
+
+		agentState.isStreaming = false;
+		mode.toggleCompletedRunCollapse();
+
+		expect(rebuild).toHaveBeenCalledTimes(3);
+		expect(refreshDisplay).toHaveBeenCalledTimes(2);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
 	it("collapses a just-finished run when Alt+O is pressed before the next submission", () => {
 		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
 		const loop = assistant(

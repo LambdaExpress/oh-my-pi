@@ -362,6 +362,7 @@ interface SessionManagerStateSnapshot {
 	hasTitleSlot: boolean;
 	onDisk: boolean;
 	needsRewrite: boolean;
+	deferFileMaterialization: boolean;
 	draftOnlySessionCleanupArmed: boolean;
 	header: SessionHeader;
 	entries: SessionEntry[];
@@ -450,6 +451,11 @@ export class SessionManager {
 	#rewriteRequired = false;
 	/** Lazy gate crossed (ensureOnDisk / loaded file): every entry must persist from now on. */
 	#forceFileCreation = false;
+	/**
+	 * Hold a complete named fork in memory until its owner has registered. This
+	 * prevents persisted-subagent discovery from adopting an unfinished file.
+	 */
+	#deferFileMaterialization = false;
 	/**
 	 * Armed only when this manager observed a draft sidecar lifecycle that
 	 * materialized an otherwise metadata-only session file. Explicit
@@ -777,7 +783,10 @@ export class SessionManager {
 	}
 
 	#shouldHaveSessionFile(): boolean {
-		return this.#forceFileCreation || this.#fileIsCurrent || this.#historyContainsAssistantMessage();
+		return (
+			!this.#deferFileMaterialization &&
+			(this.#forceFileCreation || this.#fileIsCurrent || this.#historyContainsAssistantMessage())
+		);
 	}
 
 	/**
@@ -848,6 +857,7 @@ export class SessionManager {
 	 */
 	async #rewriteAtomically(): Promise<void> {
 		if (!this.#persist || !this.#sessionFile) return;
+		if (this.#deferFileMaterialization) return;
 		if (this.#released) return;
 
 		const startEpoch = this.#diskEpoch;
@@ -1060,6 +1070,7 @@ export class SessionManager {
 		this.#fileIsCurrent = false;
 		this.#rewriteRequired = false;
 		this.#forceFileCreation = false;
+		this.#deferFileMaterialization = false;
 		this.#draftOnlySessionCleanupArmed = false;
 		this.#turnBudgetTotal = null;
 		this.#turnBudgetHard = false;
@@ -1232,6 +1243,7 @@ export class SessionManager {
 			sessionFile: this.#sessionFile,
 			onDisk: this.#fileIsCurrent,
 			needsRewrite: this.#rewriteRequired,
+			deferFileMaterialization: this.#deferFileMaterialization,
 			draftOnlySessionCleanupArmed: this.#draftOnlySessionCleanupArmed,
 			// Snapshot header + entries by reference: switch/reload replaces the
 			// active header/array wholesale, so rollback needs no deep clone.
@@ -1270,6 +1282,7 @@ export class SessionManager {
 		this.#sessionFile = snapshot.sessionFile;
 		this.#fileIsCurrent = snapshot.onDisk;
 		this.#rewriteRequired = snapshot.needsRewrite;
+		this.#deferFileMaterialization = snapshot.deferFileMaterialization;
 		this.#forceFileCreation = snapshot.onDisk;
 		this.#draftOnlySessionCleanupArmed = snapshot.draftOnlySessionCleanupArmed;
 		this.#applyEntries(snapshot.header, [...snapshot.entries]);
@@ -1293,6 +1306,7 @@ export class SessionManager {
 	async #setSessionFile(sessionFile: string, loadedEntries?: FileEntry[]): Promise<void> {
 		await this.#drainAndCloseWriter();
 		this.#clearDiskError();
+		this.#deferFileMaterialization = false;
 		this.#draftOnlySessionCleanupArmed = false;
 
 		const resolvedSessionFile = path.resolve(sessionFile);
@@ -1538,8 +1552,16 @@ export class SessionManager {
 	async ensureOnDisk(): Promise<void> {
 		if (!this.#persist || !this.#sessionFile) return;
 		this.#forceFileCreation = true;
+		if (this.#deferFileMaterialization) return;
 		if (this.#fileIsCurrent && !this.#rewriteRequired) return;
 		await this.#rewriteAtomically();
+	}
+
+	/** Publish a fork created with `deferWrite` after its live owner is registered. */
+	async materializeDeferredSession(): Promise<void> {
+		if (!this.#deferFileMaterialization) return;
+		this.#deferFileMaterialization = false;
+		await this.ensureOnDisk();
 	}
 
 	/** Persist this session's transcript as a newly identified OMP session. */
@@ -2497,6 +2519,7 @@ export class SessionManager {
 		this.#artifactManager = null;
 		this.#artifactManagerSessionFile = null;
 		this.#forceFileCreation = this.#persist;
+		this.#deferFileMaterialization = false;
 
 		if (!this.#persist) {
 			this.#sessionFile = undefined;
@@ -2562,13 +2585,16 @@ export class SessionManager {
 	 * auto-named `<timestamp>_<id>.jsonl` in `sessionDir`). Callers that register
 	 * the fork as a named agent (e.g. `/tan`) pass `<agentId>.jsonl` so the
 	 * persisted-subagent scan keys the agent by the same id the live ref uses.
+	 * `options.deferWrite` keeps the complete fork in memory until
+	 * {@link materializeDeferredSession}. Use it when a queued owner must not
+	 * expose a transcript as revivable before the owner registers.
 	 */
 	static async forkFrom(
 		sourcePath: string,
 		cwd: string,
 		sessionDir?: string,
 		storage: SessionStorage = new FileSessionStorage(),
-		options?: { suppressBreadcrumb?: boolean; sessionFile?: string },
+		options?: { suppressBreadcrumb?: boolean; sessionFile?: string; deferWrite?: boolean },
 	): Promise<SessionManager> {
 		const dir = sessionDir ?? SessionManager.getDefaultSessionDir(cwd, undefined, storage);
 		const manager = new SessionManager(cwd, dir, true, storage);
@@ -2600,7 +2626,8 @@ export class SessionManager {
 		manager.#index.rebuild(history);
 		manager.sanitizeLoadedOpenAIResponsesReplayMetadata();
 		manager.#forceFileCreation = true;
-		await manager.#rewriteAtomically();
+		manager.#deferFileMaterialization = options?.deferWrite === true;
+		if (!options?.deferWrite) await manager.#rewriteAtomically();
 		return manager;
 	}
 

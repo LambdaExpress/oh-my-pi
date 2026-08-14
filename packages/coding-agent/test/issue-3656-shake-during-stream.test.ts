@@ -172,6 +172,7 @@ describe("issue #3656 /shake mid-stream preserves the in-flight assistant turn",
 			get: () => ({
 				isStreaming: true,
 				buildTranscriptSessionContext: () => ({ messages: [] }),
+				getAsyncJobSnapshot: () => null,
 				getToolByName: () => undefined,
 				sessionManager: { getCwd: () => tempDir.path() },
 				retryAttempt: undefined,
