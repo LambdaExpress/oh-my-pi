@@ -3,25 +3,25 @@
  * Host-adaptive tokens: collab-web defines --fg/--fg-muted/…, the HTML export
  * page defines --text/--muted/--dim/… from the active theme. Every color used
  * below resolves through the `--tv-*` bridge with a static fallback so the
- * bundle also works standalone. Dense devtool aesthetic: mono type, hairlines,
- * 4px radii, whisper hovers. */
+ * bundle also works standalone. Deepseek-harness palette (light reference):
+ * mono type, hairlines, 8/12px radii, whisper hovers. */
 
 .tv-card {
-	--tv-fg: var(--fg, var(--text, oklch(0.92 0.01 307)));
-	--tv-muted: var(--fg-muted, var(--muted, oklch(0.71 0.016 307)));
-	--tv-faint: var(--fg-faint, var(--dim, oklch(0.53 0.018 307)));
-	--tv-accent: var(--accent, oklch(0.674 0.23 341));
-	--tv-ok: var(--ok, var(--success, oklch(0.76 0.14 150)));
-	--tv-err: var(--err, var(--error, oklch(0.66 0.19 25)));
-	--tv-warn: var(--warn, var(--warning, oklch(0.79 0.14 85)));
-	--tv-border: var(--border, oklch(1 0 0 / 9%));
-	--tv-inset: var(--bg-inset, var(--info-bg, oklch(0 0 0 / 22%)));
-	--tv-raised: var(--bg-raised, var(--container-bg, oklch(1 0 0 / 4%)));
-	--tv-ring: var(--ring, oklch(0.817 0.112 205 / 70%));
+	--tv-fg: var(--fg, var(--text, #0f1115));
+	--tv-muted: var(--fg-muted, var(--muted, #61666b));
+	--tv-faint: var(--fg-faint, var(--dim, #81858c));
+	--tv-accent: var(--accent, #4176e6);
+	--tv-ok: var(--ok, var(--success, #22c55e));
+	--tv-err: var(--err, var(--error, #ec1313));
+	--tv-warn: var(--warn, var(--warning, #f59e0b));
+	--tv-border: var(--border, rgb(0 0 0 / 10%));
+	--tv-inset: var(--bg-inset, var(--info-bg, #f9fafb));
+	--tv-raised: var(--bg-raised, var(--container-bg, #ffffff));
+	--tv-ring: var(--ring, rgb(65 118 230 / 35%));
 	--tv-mono: var(--font-mono, ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace);
 
 	border: 1px solid var(--tv-border);
-	border-radius: 6px;
+	border-radius: var(--radius, 12px);
 	font-family: var(--tv-mono);
 	font-size: 12px;
 	line-height: 1.5;
@@ -41,7 +41,7 @@
 	align-items: center;
 	gap: 8px;
 	width: 100%;
-	padding: 5px 10px;
+	padding: 3px 10px;
 	background: none;
 	border: 0;
 	font: inherit;
@@ -61,41 +61,56 @@
 	outline-offset: -2px;
 }
 
-.tv-status {
+.tv-status-dots {
+	display: inline-grid;
+	grid-template-columns: repeat(2, 3px);
+	gap: 2px;
 	flex: none;
-	width: 7px;
-	height: 7px;
-	border-radius: 50%;
 }
 
-.tv-status--ok {
+.tv-status-dots span {
+	box-sizing: border-box;
+	width: 3px;
+	height: 3px;
+	border-radius: 1px;
+}
+
+.tv-status-dots--ok span {
 	background: var(--tv-ok);
 }
 
-.tv-status--err {
+.tv-status-dots--pending span {
+	background: transparent;
+	border: 1px solid var(--tv-border);
+}
+
+.tv-status-dots--err span {
 	background: var(--tv-err);
 }
 
-.tv-status--pending {
-	background: var(--tv-faint);
+.tv-status-dots--run span {
+	background: var(--tv-accent);
+	animation: tv-dot-sweep 1.2s ease-in-out infinite;
 }
 
-.tv-spin {
-	flex: none;
-	width: 9px;
-	height: 9px;
-	border-radius: 50%;
-	border: 1.5px solid color-mix(in oklch, var(--tv-faint) 50%, transparent);
-	border-top-color: var(--tv-accent);
-	animation: tv-rot 0.7s linear infinite;
+.tv-status-dots--run span:nth-child(2) {
+	animation-delay: 0.1s;
+}
+
+.tv-status-dots--run span:nth-child(3) {
+	animation-delay: 0.2s;
+}
+
+.tv-status-dots--run span:nth-child(4) {
+	animation-delay: 0.3s;
 }
 
 .tv-name {
 	flex: none;
-	font-size: 11px;
+	font-size: 13px;
 	font-weight: 600;
 	letter-spacing: 0.02em;
-	color: var(--tv-muted);
+	color: var(--tv-fg);
 }
 
 .tv-sum {
@@ -104,7 +119,7 @@
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
-	font-size: 11.5px;
+	font-size: 12px;
 	color: var(--tv-muted);
 }
 
@@ -120,7 +135,7 @@
 	border-right: 1.5px solid var(--tv-faint);
 	border-bottom: 1.5px solid var(--tv-faint);
 	transform: rotate(-45deg) translateY(-1px);
-	transition: transform 0.15s ease;
+	transition: transform var(--dur-fast, 0.1s) var(--ease, cubic-bezier(0.4, 0, 0.2, 1));
 }
 
 .tv-head[aria-expanded="true"] .tv-chev {
@@ -140,6 +155,25 @@
 .tv-intent {
 	font-style: italic;
 	font-size: 11px;
+	color: var(--tv-faint);
+}
+
+.tv-in {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	min-width: 0;
+	padding: 8px 10px;
+	border: 1px solid var(--tv-border);
+	border-radius: var(--radius, 12px);
+	background: var(--tv-inset);
+}
+
+.tv-in-title {
+	padding: 0 1px 3px;
+	font-size: 12px;
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
 	color: var(--tv-faint);
 }
 
@@ -278,17 +312,25 @@
 .tv-out {
 	display: flex;
 	flex-direction: column;
+	gap: 4px;
 	min-width: 0;
+}
+
+.tv-body > .tv-out {
+	padding: 8px 10px;
+	border: 1px solid var(--tv-border);
+	border-radius: var(--radius, 12px);
+	background: var(--tv-inset);
 }
 
 .tv-pre {
 	margin: 0;
 	padding: 7px 9px;
-	border-radius: 4px;
+	border-radius: var(--radius-sm, 8px);
 	background: var(--tv-inset);
 	font-family: var(--tv-mono);
-	font-size: 11.5px;
-	line-height: 1.5;
+	font-size: 13px;
+	line-height: 22px;
 	overflow-x: auto;
 	tab-size: 3;
 }
@@ -309,7 +351,7 @@
 
 .tv-out-title {
 	padding: 0 1px 3px;
-	font-size: 10px;
+	font-size: 12px;
 	letter-spacing: 0.05em;
 	text-transform: uppercase;
 	color: var(--tv-faint);
@@ -366,7 +408,7 @@
 
 .tv-diff {
 	margin: 0;
-	border-radius: 4px;
+	border-radius: var(--radius-sm, 8px);
 	background: var(--tv-inset);
 	font-size: 11.5px;
 	line-height: 1.5;
@@ -538,7 +580,7 @@
 .tv-img {
 	max-height: 180px;
 	max-width: 100%;
-	border-radius: 4px;
+	border-radius: var(--radius-sm, 8px);
 	border: 1px solid var(--tv-border);
 	cursor: zoom-in;
 	background: var(--tv-inset);
@@ -611,24 +653,23 @@
 
 /* ---- animation ---- */
 
-@keyframes tv-rot {
-	to {
-		transform: rotate(360deg);
+@keyframes tv-dot-sweep {
+	0%,
+	55%,
+	100% {
+		opacity: 0.25;
+	}
+	25% {
+		opacity: 1;
 	}
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.tv-spin {
-		animation: tv-pulse 1.4s ease-in-out infinite;
+	.tv-status-dots--run span {
+		animation: none;
 	}
 
 	.tv-chev {
 		transition: none;
-	}
-
-	@keyframes tv-pulse {
-		50% {
-			opacity: 0.35;
-		}
 	}
 }

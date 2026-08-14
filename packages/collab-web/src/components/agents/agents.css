@@ -46,26 +46,21 @@
 	flex-direction: column;
 	gap: 4px;
 	width: 100%;
-	padding: 8px 10px;
-	border: 1px solid var(--border);
-	border-radius: var(--radius);
-	background: var(--bg-raised);
+	min-height: 36px;
+	padding: 7px 10px;
+	border-radius: var(--radius-sm);
 	color: var(--fg);
 	font: inherit;
 	text-align: left;
 	cursor: pointer;
-	transition:
-		background 150ms ease-out,
-		border-color 150ms ease-out;
+	transition: background var(--dur-fast) var(--ease);
 }
 
 .ag-row:hover {
-	border-color: var(--border-strong);
 	background: var(--bg-hover);
 }
 
 .ag-row--selected {
-	border-color: var(--border-strong);
 	background: var(--bg-selected);
 }
 
@@ -91,31 +86,10 @@
 	white-space: nowrap;
 }
 
-.ag-row-activity {
-	overflow: hidden;
-	padding-left: 15px;
-	color: var(--fg-muted);
-	font-size: 12px;
-	line-height: 18px;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
+/* Compact single-line rows: activity + meta details live in the drawer. */
+.ag-row-activity,
 .ag-row-meta {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-	min-width: 0;
-	padding-left: 15px;
-	color: var(--fg-faint);
-	font-family: var(--font-mono);
-	font-size: 10px;
-	line-height: 16px;
-}
-
-.ag-row-meta-when {
-	margin-left: auto;
-	white-space: nowrap;
+	display: none;
 }
 
 .ag-row-status {
@@ -125,7 +99,7 @@
 }
 
 .ag-row-status--running {
-	color: var(--ok);
+	color: var(--accent);
 }
 
 .ag-row-status--parked {
@@ -183,8 +157,8 @@
 }
 
 .ag-dot--running {
-	background: var(--ok);
-	animation: ag-pulse 1.6s ease-out infinite;
+	background: var(--accent);
+	animation: ag-pulse 1.6s var(--ease) infinite;
 }
 
 .ag-dot--parked {
@@ -198,7 +172,7 @@
 
 @keyframes ag-pulse {
 	0% {
-		box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 45%, transparent);
+		box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 45%, transparent);
 	}
 	70%,
 	100% {
@@ -210,30 +184,26 @@
 
 .ag-chip {
 	flex: none;
-	padding: 1px 5px;
-	border: 1px solid var(--border);
+	padding: 1px 6px;
 	border-radius: var(--radius-sm);
-	background: var(--bg-subtle);
+	background: var(--bg-inset);
 	color: var(--fg-muted);
 	font-family: var(--font-mono);
-	font-size: 10px;
+	font-size: 12px;
 	line-height: 1.5;
 	white-space: nowrap;
 }
 
 .ag-chip--running {
-	border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
 	color: var(--ok);
 }
 
 .ag-chip--parked {
-	border-color: color-mix(in srgb, var(--warn) 45%, var(--border));
 	color: var(--warn);
 }
 
 .ag-chip--aborted,
 .ag-chip--error {
-	border-color: color-mix(in srgb, var(--err) 45%, var(--border));
 	color: var(--err);
 }
 
@@ -259,7 +229,7 @@
 	inset: 0;
 	z-index: 35;
 	background: var(--backdrop);
-	animation: ag-fade-in 150ms ease-out;
+	animation: ag-fade-in var(--dur-fast) var(--ease);
 }
 
 @keyframes ag-fade-in {
@@ -285,7 +255,7 @@
 	border-radius: var(--radius-lg);
 	background: var(--bg-overlay);
 	box-shadow: var(--shadow-overlay);
-	animation: ag-drawer-in 150ms ease-out;
+	animation: ag-drawer-in var(--dur-fast) var(--ease);
 }
 
 @keyframes ag-drawer-in {
@@ -351,9 +321,9 @@
 	font-weight: 500;
 	cursor: pointer;
 	transition:
-		background 150ms ease-out,
-		border-color 150ms ease-out,
-		color 150ms ease-out;
+		background var(--dur-fast) var(--ease),
+		border-color var(--dur-fast) var(--ease),
+		color var(--dur-fast) var(--ease);
 }
 
 .ag-btn:hover {
@@ -386,8 +356,8 @@
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
-	width: 32px;
-	height: 32px;
+	width: 36px;
+	height: 36px;
 	padding: 0;
 	border: 1px solid transparent;
 	border-radius: var(--radius-sm);
@@ -395,9 +365,9 @@
 	color: var(--fg-muted);
 	cursor: pointer;
 	transition:
-		background 150ms ease-out,
-		border-color 150ms ease-out,
-		color 150ms ease-out;
+		background var(--dur-fast) var(--ease),
+		border-color var(--dur-fast) var(--ease),
+		color var(--dur-fast) var(--ease);
 }
 
 .ag-iconbtn:hover:not(:disabled) {
@@ -422,9 +392,11 @@
 	flex-wrap: wrap;
 	align-items: center;
 	gap: 8px 12px;
-	padding: 8px 14px;
-	border-bottom: 1px solid var(--border);
-	background: var(--bg-subtle);
+	margin: 10px 12px;
+	padding: 8px 12px;
+	border: 0;
+	border-radius: var(--radius-sm);
+	background: var(--bg-inset);
 	color: var(--fg-muted);
 	font-family: var(--font-mono);
 	font-size: 10px;
@@ -480,6 +452,9 @@
 .ag-drawer-body > .tr-root {
 	flex: 1;
 	min-height: 0;
+	font-family: var(--font-mono);
+	font-size: 13px;
+	line-height: 22px;
 }
 
 .ag-chat {
@@ -504,6 +479,9 @@
 	color: var(--fg);
 	font: inherit;
 	font-size: 13px;
+	transition:
+		border-color var(--dur-fast) var(--ease),
+		box-shadow var(--dur-fast) var(--ease);
 }
 
 .ag-chat-input::placeholder {
@@ -540,13 +518,13 @@
  * alongside the transcript, narrower screens preserve the content width by
  * floating it above the main area. Specificity intentionally wins over the
  * shell's generic rail geometry without duplicating its component styles. */
-@media (min-width: 1101px) {
+@media (min-width: 1025px) {
 	.sh-main > .sh-rail {
 		width: clamp(360px, 27vw, 400px);
 	}
 }
 
-@media (max-width: 1100px) {
+@media (max-width: 1024px) {
 	.sh-main {
 		position: relative;
 	}
@@ -570,7 +548,7 @@
 		z-index: 25;
 		display: block;
 		background: var(--backdrop);
-		animation: ag-fade-in 150ms ease-out;
+		animation: ag-fade-in var(--dur-fast) var(--ease);
 	}
 }
 

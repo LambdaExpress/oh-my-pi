@@ -80,11 +80,12 @@ export function ToolView(props: ToolViewProps): ReactNode {
 				onClick={() => setOpen(v => !v)}
 				title={intent || undefined}
 			>
-				{status === "run" ? (
-					<span className="tv-spin" aria-label="running" />
-				) : (
-					<span className={`tv-status tv-status--${status}`} aria-hidden="true" />
-				)}
+				<span className={`tv-status-dots tv-status-dots--${status}`} aria-hidden="true">
+					<span />
+					<span />
+					<span />
+					<span />
+				</span>
 				<span className="tv-name">{xdev ? `xd://${name}` : name}</span>
 				<span className="tv-sum">
 					<renderer.Summary {...renderProps} />
@@ -94,6 +95,12 @@ export function ToolView(props: ToolViewProps): ReactNode {
 			{open && (
 				<div className="tv-body">
 					{intent && <div className="tv-intent">{intent}</div>}
+					{Object.keys(args).length > 0 && (
+						<div className="tv-in">
+							<div className="tv-in-title">IN</div>
+							<pre className="tv-pre tv-pre--bare">{JSON.stringify(args, null, 2)}</pre>
+						</div>
+					)}
 					{renderer.Body ? <renderer.Body {...renderProps} /> : null}
 				</div>
 			)}

@@ -38,7 +38,7 @@
 
 .sh-transcript {
 	width: 100%;
-	max-width: 880px;
+	max-width: 748px;
 	min-height: 0;
 	display: flex;
 	flex-direction: column;
@@ -54,17 +54,81 @@
 }
 
 .sh-rail {
-	width: 300px;
+	width: 360px;
 	flex: none;
 	min-width: 0;
 	min-height: 0;
-	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
 	border-left: 1px solid var(--border);
 	background: var(--bg);
 }
 
 .sh-rail-backdrop {
 	display: none;
+}
+
+.sh-rail > :last-child {
+	flex: 1;
+	min-height: 0;
+}
+
+.sh-rail-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	min-height: 44px;
+	padding: 0 8px 0 14px;
+	flex: none;
+}
+
+.sh-rail-title {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--fg);
+}
+
+.sh-rail-close {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 36px;
+	height: 36px;
+	padding: 0;
+	color: var(--fg-muted);
+	background: transparent;
+	border: 0;
+	border-radius: var(--radius-sm);
+	cursor: pointer;
+	transition:
+		background var(--dur-fast) var(--ease),
+		color var(--dur-fast) var(--ease);
+}
+
+.sh-rail-close:hover {
+	color: var(--fg);
+	background: var(--bg-hover);
+}
+
+/* quiet scrollbars inside the rail: thin, visible only on hover */
+.sh-rail ::-webkit-scrollbar {
+	width: 2px;
+	height: 2px;
+}
+
+.sh-rail ::-webkit-scrollbar-thumb {
+	background: transparent;
+	border: 0;
+	border-radius: 1px;
+}
+
+.sh-rail:hover ::-webkit-scrollbar-thumb {
+	background: var(--border-strong);
+}
+
+.sh-rail ::-webkit-scrollbar-track {
+	background: transparent;
 }
 
 /* ---- shared controls ---- */
@@ -80,9 +144,9 @@
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 	transition:
-		background 150ms ease-out,
-		color 150ms ease-out,
-		border-color 150ms ease-out;
+		background var(--dur-fast) var(--ease),
+		color var(--dur-fast) var(--ease),
+		border-color var(--dur-fast) var(--ease);
 }
 
 .sh-btn:hover:not(:disabled) {
@@ -140,7 +204,10 @@
 	background: var(--bg-raised);
 	color: var(--fg-muted);
 	cursor: pointer;
-	transition: color 0.14s ease, background 0.14s ease, border-color 0.14s ease;
+	transition:
+		color var(--dur-fast) var(--ease),
+		background var(--dur-fast) var(--ease),
+		border-color var(--dur-fast) var(--ease);
 }
 
 .sh-theme-toggle:hover {
@@ -170,17 +237,18 @@
 
 .sh-chip {
 	padding: 1px 6px;
-	font: 400 11px / 1.5 var(--font-mono);
+	font: 400 12px / 1.5 var(--font-mono);
 	color: var(--fg-muted);
-	background: var(--bg-raised);
-	border: 1px solid var(--border);
+	background: var(--bg-inset);
+	border: 0;
 	border-radius: var(--radius-sm);
 	white-space: nowrap;
 }
 
 .sh-title {
-	font-size: 13px;
+	font-size: 16px;
 	font-weight: 600;
+	color: var(--fg);
 	white-space: nowrap;
 	overflow: hidden;
 	text-overflow: ellipsis;
@@ -188,7 +256,7 @@
 }
 
 .sh-cwd {
-	font: 400 11px / 1.5 var(--font-mono);
+	font: 400 13px / 1.5 var(--font-mono);
 	color: var(--fg-faint);
 	white-space: nowrap;
 	overflow: hidden;
@@ -215,7 +283,7 @@
 	height: 100%;
 	background: var(--accent);
 	border-radius: inherit;
-	transition: width 150ms ease-out;
+	transition: width var(--dur-fast) var(--ease);
 }
 
 .sh-gauge-warn .sh-gauge-fill {

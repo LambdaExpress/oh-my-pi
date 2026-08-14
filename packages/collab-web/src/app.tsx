@@ -1,3 +1,4 @@
+import { X } from "lucide-react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentDrawer } from "./components/agents/AgentDrawer";
@@ -341,7 +342,7 @@ interface SessionProps {
 function Session({ client, onLeave, onRejoin, onBack }: SessionProps): ReactNode {
 	const snap = useGuestSnapshot(client);
 	const [railOpen, setRailOpen] = useState(false);
-	const [railOverlay, setRailOverlay] = useState(() => window.matchMedia("(max-width: 1100px)").matches);
+	const [railOverlay, setRailOverlay] = useState(() => window.matchMedia("(max-width: 1024px)").matches);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const autoOpenedRef = useRef(false);
@@ -362,7 +363,7 @@ function Session({ client, onLeave, onRejoin, onBack }: SessionProps): ReactNode
 	const subCount = useMemo(() => snap.agents.filter(a => a.kind === "sub").length, [snap.agents]);
 
 	useEffect(() => {
-		const media = window.matchMedia("(max-width: 1100px)");
+		const media = window.matchMedia("(max-width: 1024px)");
 		const update = (): void => setRailOverlay(media.matches);
 		media.addEventListener("change", update);
 		return () => media.removeEventListener("change", update);
@@ -496,6 +497,12 @@ function Session({ client, onLeave, onRejoin, onBack }: SessionProps): ReactNode
 						tabIndex={railOverlay ? -1 : undefined}
 						onKeyDown={trapRailFocus}
 					>
+						<div className="sh-rail-header">
+							<span className="sh-rail-title">Agents</span>
+							<button type="button" className="sh-rail-close" onClick={closeRail} aria-label="Close agents">
+								<X size={14} />
+							</button>
+						</div>
 						<AgentsPanel
 							agents={snap.agents}
 							progress={snap.progress}

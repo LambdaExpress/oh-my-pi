@@ -26,7 +26,7 @@
 	align-items: flex-start;
 	width: 100%;
 	min-width: 0;
-	margin: 0 0 24px;
+	margin: 0 0 20px;
 }
 
 .tr-row--user {
@@ -52,16 +52,16 @@
 	display: flex;
 	flex-direction: column;
 	align-items: flex-start;
-	gap: 8px;
+	gap: 4px;
 	width: 100%;
 	min-width: 0;
 }
 
 .tr-row--user .tr-body {
 	width: fit-content;
-	max-width: min(78%, 640px);
+	max-width: min(525px, 82%);
 	padding: 10px 14px;
-	border-radius: var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg);
+	border-radius: var(--radius-xl) var(--radius-xl) var(--radius-sm) var(--radius-xl);
 	background: var(--bg-subtle);
 }
 
@@ -71,9 +71,19 @@
 	width: 100%;
 }
 
+.tr-row--user .tr-md {
+	font-size: 16px;
+	line-height: 24px;
+}
+
+.tr-row--assistant .tr-md {
+	font-size: 16px;
+	line-height: 28px;
+}
+
 .tr-row--custom,
 .tr-row--marker {
-	margin-bottom: 12px;
+	margin-bottom: 16px;
 }
 
 .tr-row--custom .tr-body,
@@ -94,7 +104,7 @@
 .tr-marker {
 	color: var(--fg-faint);
 	font-family: var(--font-mono);
-	font-size: 11px;
+	font-size: 12px;
 	line-height: 1.5;
 }
 
@@ -162,7 +172,8 @@
 	align-items: center;
 	gap: 8px;
 	min-height: 24px;
-	color: var(--fg-faint);
+	color: var(--fg-muted);
+	font-family: var(--font-mono);
 	font-size: 12px;
 }
 
@@ -205,6 +216,7 @@
 	margin: 4px 0 2px;
 	padding: 4px 0 4px 12px;
 	border-left: 2px solid var(--border-strong);
+	border-radius: var(--radius-sm);
 	color: var(--fg-muted);
 	font-size: 12px;
 	font-style: italic;
@@ -215,7 +227,7 @@
 .tr-chev {
 	flex: none;
 	color: var(--fg-faint);
-	transition: transform 150ms ease-out;
+	transition: transform var(--dur-fast) var(--ease);
 }
 
 .tr-chev--open {
@@ -231,8 +243,25 @@
 	margin: 4px 0 16px;
 	color: var(--fg-faint);
 	font-family: var(--font-mono);
-	font-size: 11px;
+	font-size: 12px;
 	line-height: 1.5;
+}
+
+.tr-divider::before,
+.tr-divider::after {
+	content: "";
+	flex: 1;
+	height: 1px;
+	min-width: 12px;
+	background: var(--border);
+}
+
+.tr-divider::before {
+	margin-right: 8px;
+}
+
+.tr-divider::after {
+	margin-left: 8px;
 }
 
 /* ---- tool renderer host ---- */
@@ -250,8 +279,8 @@
 }
 
 .tr-tool-card .tv-head {
-	min-height: 36px;
-	padding: 7px 12px;
+	min-height: 24px;
+	padding: 3px 10px;
 }
 
 .tr-tool-card .tv-body {
@@ -261,16 +290,6 @@
 .tr-tool-card .tv-partial {
 	padding: 8px 12px;
 	background: var(--bg-inset);
-}
-
-.tr-tool-card .tv-spin {
-	width: 10px;
-	height: 10px;
-}
-
-.tr-tool-card .tv-status {
-	width: 6px;
-	height: 6px;
 }
 
 /* ---- markdown ---- */
@@ -293,7 +312,7 @@
 }
 
 .tr-md p {
-	margin: 8px 0;
+	margin: 4px 0;
 }
 
 .tr-md p,
@@ -355,7 +374,7 @@
 .tr-md code {
 	padding: 1px 4px;
 	border-radius: var(--radius-sm);
-	background: var(--bg-subtle);
+	background: var(--bg-inset);
 	font-family: var(--font-mono);
 	font-size: 0.9em;
 }
@@ -368,14 +387,16 @@
 	border: 1px solid var(--border);
 	border-radius: var(--radius);
 	background: var(--bg-inset);
+	font-size: 13px;
+	line-height: 22px;
 }
 
 .tr-md pre code {
 	padding: 0;
 	border-radius: 0;
 	background: none;
-	font-size: 12px;
-	line-height: 1.5;
+	font-size: 13px;
+	line-height: 22px;
 }
 
 .tr-md blockquote {

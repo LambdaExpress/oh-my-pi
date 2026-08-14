@@ -1,4 +1,4 @@
-import { Folder, SendHorizontal, Square } from "lucide-react";
+import { ArrowUp, Folder, SendHorizontal, Square } from "lucide-react";
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import type { GuestClient, GuestSnapshot } from "../../lib/client";
@@ -308,7 +308,7 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 						title="send (Enter)"
 						aria-label="send prompt"
 					>
-						<SendHorizontal size={14} />
+						<ArrowUp size={14} />
 					</button>
 				</div>
 			</div>

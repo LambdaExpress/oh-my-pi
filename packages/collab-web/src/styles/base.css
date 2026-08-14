@@ -80,7 +80,7 @@ textarea {
 /* subtle scrollbars */
 * {
 	scrollbar-width: thin;
-	scrollbar-color: var(--border-strong) transparent;
+	scrollbar-color: var(--border) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -89,14 +89,14 @@ textarea {
 }
 
 *::-webkit-scrollbar-thumb {
-	background: var(--border-strong);
+	background: var(--border);
 	border: 2px solid transparent;
 	background-clip: padding-box;
 	border-radius: 999px;
 }
 
 *::-webkit-scrollbar-thumb:hover {
-	background: var(--fg-faint);
+	background: var(--border-strong);
 	border: 2px solid transparent;
 	background-clip: padding-box;
 }

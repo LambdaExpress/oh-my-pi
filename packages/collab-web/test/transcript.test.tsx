@@ -99,7 +99,7 @@ describe("Transcript live tool rendering", () => {
 		});
 
 		expect(countElements(html, ".tv-card")).toBe(1);
-		expect(countElements(html, '[aria-label="running"]')).toBe(1);
+		expect(countElements(html, ".tv-status-dots--run")).toBe(1);
 		expect(countOccurrences(html, TOOL_NAME)).toBe(1);
 		expect(html).not.toContain("thinking…");
 		expect(html).toContain(ACTIVE_TOOL_TARGET);
