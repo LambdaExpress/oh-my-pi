@@ -714,6 +714,8 @@ function translatedLabel(path: SettingPath, fallback: string): string {
 			return t("Block Images");
 		case "images.describeForTextModels":
 			return t("Describe Images for Text Models");
+		case "images.visionApproval":
+			return t("Require Vision Approval");
 		case "images.visionApprovalTimeoutMs":
 			return t("Vision Approval Timeout");
 		case "includeModelInPrompt":
@@ -1457,7 +1459,11 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			return t("Prevent images from being sent to LLM providers");
 		case "images.describeForTextModels":
 			return t(
-				"When an image is attached to a model without vision support, ask for approval before a vision-capable model describes it; denied images are only saved under local://",
+				"When an image is attached to a model without vision support, describe it with a vision-capable model. Enable images.visionApproval to require approval before the vision model runs; otherwise the image is described directly.",
+			);
+		case "images.visionApproval":
+			return t(
+				"Ask for approval before a vision-capable model describes attached images for text-only models. When off (default), the description is generated directly without prompting. Requires images.describeForTextModels to be enabled.",
 			);
 		case "images.visionApprovalTimeoutMs":
 			return t(

@@ -45,10 +45,11 @@ describe("vision approval timeout", () => {
 	let session: AgentSession;
 	let confirmCalls: Array<{ title: string; message: string; dialogOptions?: ExtensionUIDialogOptions }>;
 	let timeoutFired: number;
+	let modelRegistry: ModelRegistry;
 
 	async function createSession(settings: Settings): Promise<void> {
 		const mock = createMockModel({ provider: "openai", id: "text-only", responses: [{ content: ["ok"] }] });
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+		modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
 		vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([textModel, visionModel]);
 		const agent = new Agent({
 			getApiKey: () => "test-key",
@@ -90,7 +91,7 @@ describe("vision approval timeout", () => {
 	});
 
 	it("passes the default 30s timeout to the approval confirm dialog", async () => {
-		await createSession(Settings.isolated());
+		await createSession(Settings.isolated({ "images.visionApproval": true }));
 		const result = await session.prompt("hello", {
 			images: [{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
 		});
@@ -102,7 +103,7 @@ describe("vision approval timeout", () => {
 	});
 
 	it("uses the configured setting value as the approval timeout", async () => {
-		await createSession(Settings.isolated({ "images.visionApprovalTimeoutMs": 5000 }));
+		await createSession(Settings.isolated({ "images.visionApproval": true, "images.visionApprovalTimeoutMs": 5000 }));
 		await session.prompt("hello", {
 			images: [{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
 		});
@@ -111,7 +112,7 @@ describe("vision approval timeout", () => {
 	});
 
 	it("waits indefinitely when the timeout is disabled (0)", async () => {
-		await createSession(Settings.isolated({ "images.visionApprovalTimeoutMs": 0 }));
+		await createSession(Settings.isolated({ "images.visionApproval": true, "images.visionApprovalTimeoutMs": 0 }));
 		await session.prompt("hello", {
 			images: [{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
 		});
@@ -121,7 +122,7 @@ describe("vision approval timeout", () => {
 	});
 
 	it("fires onTimeout and denies when the approval prompt times out", async () => {
-		await createSession(Settings.isolated());
+		await createSession(Settings.isolated({ "images.visionApproval": true }));
 		await session.prompt("hello", {
 			images: [{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
 		});
@@ -131,5 +132,23 @@ describe("vision approval timeout", () => {
 		// still completes.
 		expect(timeoutFired).toBe(1);
 		expect(confirmCalls[0]?.dialogOptions?.onTimeout).toBeTypeOf("function");
+	});
+
+	it("describes without an approval prompt when images.visionApproval is off (default)", async () => {
+		// With images.visionApproval off (default), the approval boundary is not
+		// injected, so no confirm dialog appears — even when no vision model is
+		// available, the image falls back to the no-vision note path without any
+		// approval prompt and without a network call.
+		await createSession(Settings.isolated());
+		// Re-mock getAvailable to hide the vision model, avoiding a real vision
+		// API call; the image then goes down the no-vision note path.
+		vi.spyOn(modelRegistry, "getAvailable").mockReturnValue([textModel]);
+		const result = await session.prompt("hello", {
+			images: [{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
+		});
+
+		expect(result).toBe(true);
+		expect(confirmCalls).toHaveLength(0);
+		expect(timeoutFired).toBe(0);
 	});
 });

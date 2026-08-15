@@ -225,6 +225,7 @@ export class SessionProviderBoundary {
 		if (!shouldDescribe || !model) return undefined;
 
 		let blocks: TextContent[];
+		const visionApprovalRequired = this.#host.settings.get("images.visionApproval") === true;
 		try {
 			blocks = await describeAttachedImagesForTextModel(
 				normalizedImages,
@@ -236,11 +237,13 @@ export class SessionProviderBoundary {
 					activeModelString: formatModelString(model),
 					telemetryConfig: this.#host.agent.telemetry,
 					sessionId: this.#host.sessionId(),
-					requestVisionApproval: ({ model: visionModel, imageCount }, approvalSignal) =>
-						this.#host.confirmVisionFallback(
-							{ model: formatModelString(visionModel), imageCount },
-							approvalSignal,
-						),
+					requestVisionApproval: visionApprovalRequired
+						? ({ model: visionModel, imageCount }, approvalSignal) =>
+								this.#host.confirmVisionFallback(
+									{ model: formatModelString(visionModel), imageCount },
+									approvalSignal,
+								)
+						: undefined,
 					onVisionApproved,
 				},
 				signal,

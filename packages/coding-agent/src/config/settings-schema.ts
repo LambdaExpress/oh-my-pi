@@ -881,7 +881,19 @@ export const SETTINGS_SCHEMA = {
 			group: "Vision",
 			label: "Describe Images for Text Models",
 			description:
-				"When an image is attached to a model without vision support, ask for approval before a vision-capable model describes it; denied images are only saved under local://",
+				"When an image is attached to a model without vision support, describe it with a vision-capable model. Enable images.visionApproval to require approval before the vision model runs; otherwise the image is described directly.",
+		},
+	},
+
+	"images.visionApproval": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "model",
+			group: "Vision",
+			label: "Require Vision Approval",
+			description:
+				"Ask for approval before a vision-capable model describes attached images for text-only models. When off (default), the description is generated directly without prompting. Requires images.describeForTextModels to be enabled.",
 		},
 	},
 

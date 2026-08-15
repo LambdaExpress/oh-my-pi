@@ -118,15 +118,16 @@ describe("describeAttachedImagesForTextModel", () => {
 		expect(saved.toString("base64")).toBe(TINY_PNG_BASE64);
 	});
 
-	it("fails closed when no approval surface is available", async () => {
-		const stub = makeCompleteStub("should not be used");
+	it("describes directly when no approval surface is configured", async () => {
+		const stub = makeCompleteStub("A man holding a red balloon.");
 		const blocks = await describeAttachedImagesForTextModel(
 			[{ type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" }],
 			makeDeps(testDir, [textModel, visionModel], stub.fn),
 		);
 
-		expect(stub.calls).toHaveLength(0);
-		expect(blocks[0]?.text).toContain("vision model was not approved");
+		expect(stub.calls).toHaveLength(1);
+		expect(blocks[0]?.text).toContain("A man holding a red balloon.");
+		expect(blocks[0]?.text).not.toContain("was not approved");
 	});
 
 	it("continues without visual content when the user denies approval", async () => {

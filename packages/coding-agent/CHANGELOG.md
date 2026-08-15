@@ -55,6 +55,7 @@
 - Changed the /copy picker preview to follow the hovered row while keeping Enter bound to the keyboard-selected target.
 - Changed mid-session `xd://` tool mounts to stop emitting a user-visible notice (`xdev: xd://: mounted …`), which flooded the status area when an MCP server mounted dozens of tools at once; the model-facing mount delta delivery is unchanged.
 - Changed the opt-in `display.collapseCompletedRuns` TUI setting to keep a completed run fully expanded while its answer is on screen, while allowing Alt+O to collapse it immediately after completion; sending the next message still collapses it automatically.
+- Image attachments for text-only models are now described directly without an approval prompt. The approval step is a separate `images.visionApproval` setting (default off); enable it to restore the confirm-before-describe behavior.
 
 ### Fixed
 

@@ -55,12 +55,12 @@ export interface DescribeAttachedImagesDeps {
 	activeModelString?: string;
 	telemetryConfig?: AgentTelemetryConfig;
 	sessionId?: string;
-	/** Required approval boundary before any image is sent to the resolved vision model. Missing approval fails closed. */
+	/** Optional approval boundary before any image is sent to the resolved vision model. When omitted, the description proceeds without approval. */
 	requestVisionApproval?: (
 		request: { model: Model<Api>; imageCount: number },
 		signal?: AbortSignal,
 	) => Promise<boolean>;
-	/** Fires synchronously after approval succeeds, before any vision request starts. */
+	/** Fires synchronously once the vision request is authorized (either by approval or because no approval boundary is configured), before any vision request starts. */
 	onVisionApproved?: () => void;
 	/** Test seam: overrides the underlying completeSimple call. */
 	completeImpl?: typeof completeSimple;
@@ -188,10 +188,11 @@ export async function describeAttachedImagesForTextModel(
 	const visionModel = resolveVisionModel(deps);
 	const apiKey = visionModel ? await deps.modelRegistry.getApiKey(visionModel, deps.sessionId) : undefined;
 	const canDescribe = Boolean(visionModel && apiKey);
-	let approved = false;
-	if (canDescribe && visionModel && deps.requestVisionApproval && !signal?.aborted) {
+	const approvalRequired = deps.requestVisionApproval !== undefined;
+	let approved = !approvalRequired;
+	if (approvalRequired && canDescribe && visionModel && !signal?.aborted) {
 		try {
-			approved = await deps.requestVisionApproval({ model: visionModel, imageCount: images.length }, signal);
+			approved = await deps.requestVisionApproval!({ model: visionModel, imageCount: images.length }, signal);
 		} catch (err) {
 			logger.warn("image attachment vision approval failed closed", {
 				error: toError(err).message,

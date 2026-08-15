@@ -581,6 +581,8 @@ export const zhCN: Record<string, string> = {
 	"Ask an ephemeral side question using the current session context":
 		"基于当前会话上下文，提出一个不打断主流程的临时问题",
 	"Ask anything, edit files, run tools": "询问任何问题、编辑文件、运行工具",
+	"Ask for approval before a vision-capable model describes attached images for text-only models. When off (default), the description is generated directly without prompting. Requires images.describeForTextModels to be enabled.":
+		"当为纯文本模型描述附加的图片时，在视觉模型运行前请求审批。关闭（默认）时直接生成描述而不弹窗提示。需要启用 images.describeForTextModels。",
 	"Ask the agent to describe the intent of each tool call before executing it":
 		"要求代理在执行每个工具调用前说明其意图",
 	"Ask tool UI is not ready": "Ask 工具界面尚未就绪",
@@ -2934,6 +2936,7 @@ export const zhCN: Record<string, string> = {
 	"Replacing fallback of": "正在替换回退",
 	"Request {reason}": "请求 {reason}",
 	"Requests per model (results are averaged; default: 10)": "每个模型的请求数（结果取平均值；默认：10）",
+	"Require Vision Approval": "要求视觉审批",
 	"Require the extension to present this token": "要求扩展提供此令牌",
 	"Requires Nerd Font": "需要 Nerd Font",
 	"Requires PARALLEL_API_KEY": "需要 PARALLEL_API_KEY",
@@ -3962,7 +3965,9 @@ export const zhCN: Record<string, string> = {
 	"When a paste reaches this many lines, offer a menu to wrap it in a code block, wrap it in XML tags, or save it to a file. 0 disables the menu (large pastes still collapse to a [Paste] marker).":
 		"当粘贴达到此行数时，提供菜单以将其包裹在代码块或 XML 标签中，或保存到文件。0 禁用该菜单（大型粘贴仍会折叠为 [Paste] 标记）。",
 	"When an image is attached to a model without vision support, ask for approval before a vision-capable model describes it; denied images are only saved under local://":
-		"当图片附加到不支持视觉的模型时，在支持视觉的模型描述图片之前请求审批；被拒绝的图片仅保存在 local:// 下",
+		"当图片附加到不支持视觉的模型时，使用支持视觉的模型描述它。启用 images.visionApproval 可在视觉模型运行前要求审批；否则直接描述图片。",
+	"When an image is attached to a model without vision support, describe it with a vision-capable model. Enable images.visionApproval to require approval before the vision model runs; otherwise the image is described directly.":
+		"当图片附加到不支持视觉的模型时，使用支持视觉的模型描述它。启用 images.visionApproval 可在视觉模型运行前要求审批；否则直接描述图片。",
 	"When on, auto-run one private capture turn at stop (uses extra tokens). When off, only standing auto-learn guidance remains.":
 		"开启时，停止时会自动运行一轮私有捕获（消耗额外 token）。关闭时，仅保留常驻的自动学习指导。",
 	"When steering messages interrupt tool execution": "当引导消息中断工具执行时",
