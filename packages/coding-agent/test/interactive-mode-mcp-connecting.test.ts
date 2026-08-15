@@ -15,6 +15,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { logger, TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 /**
  * Behavioral wiring guard for MCP startup status (mirrors
@@ -35,6 +36,8 @@ describe("InteractiveMode MCP connection status", () => {
 	});
 
 	beforeEach(async () => {
+		// English so assertions are stable on zh-CN auto-detecting machines.
+		setLocale("en");
 		// Keep ProcessTerminal.start() from probing the real terminal; the test
 		// only drives the event bus and spies on showStatus.
 		vi.spyOn(process.stdout, "write").mockReturnValue(true);
@@ -81,6 +84,7 @@ describe("InteractiveMode MCP connection status", () => {
 		await session?.dispose();
 		authStorage?.close();
 		tempDir?.removeSync();
+		setLocale(null);
 		resetSettingsForTest();
 	});
 

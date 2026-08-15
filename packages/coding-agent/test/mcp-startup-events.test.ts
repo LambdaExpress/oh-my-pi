@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import {
 	formatMCPConnectingMessage,
@@ -6,6 +6,7 @@ import {
 	isMcpConnectionStatusEvent,
 	MCP_CONNECTION_STATUS_EVENT_CHANNEL,
 } from "@oh-my-pi/pi-coding-agent/mcp/startup-events";
+import { setLocale } from "../src/i18n";
 
 // Cross-module contract guard.
 //
@@ -17,6 +18,14 @@ import {
 // They agree only through this shared module. Drift in the channel, payload
 // guard, or user-facing status text silently leaves the startup banner stale.
 describe("mcp/startup-events — connection-status cross-module contract", () => {
+	beforeEach(() => {
+		setLocale("en");
+	});
+
+	afterEach(() => {
+		setLocale(null);
+	});
+
 	it("pins the wire channel string sdk(emit) and interactive-mode(subscribe) share", () => {
 		expect(MCP_CONNECTION_STATUS_EVENT_CHANNEL).toBe("mcp:connection-status");
 	});
@@ -82,9 +91,12 @@ describe("mcp/startup-events — connection-status cross-module contract", () =>
 	it("shortens config sources when the home directory contains spaces", () => {
 		const homeDir = "/tmp/OMP User";
 		const moduleUrl = new URL("../src/mcp/startup-events.ts", import.meta.url).href;
+		const i18nUrl = new URL("../src/i18n/index.ts", import.meta.url).href;
 		const script = `
 			import os from "node:os";
 			import { formatMCPConnectionStatusMessage } from ${JSON.stringify(moduleUrl)};
+			import { setLocale } from ${JSON.stringify(i18nUrl)};
+			setLocale("en");
 			const sourcePath = os.homedir() + "/.codex/config.toml";
 			process.stdout.write(formatMCPConnectionStatusMessage({
 				pendingServers: [],
