@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- GPT-family models on Responses adapters (`openai-responses`, `azure-openai-responses`, `openai-codex-responses`) now default to provider-native compaction: `buildModel` injects the `remoteCompaction` metadata block (V2 streaming enabled) when the spec carries none, so GPT models served through custom providers or proxies get the same server-side compaction as first-party OpenAI models, with compaction endpoints derived from the model's base URL.
+
 ### Fixed
 
 - Added a test-only `closeModelCacheSharedDb()` export so callers can release the process-global shared model-cache SQLite handle before removing redirected agent temp dirs on Windows (EBUSY cleanup failures).

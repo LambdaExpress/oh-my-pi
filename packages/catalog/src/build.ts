@@ -16,8 +16,37 @@ import { buildDevinCompat } from "./compat/devin";
 import { buildOpenAICompat, buildOpenAIResponsesCompat, buildOpenRouterCompat } from "./compat/openai";
 import { bareModelId, parseOpenAIModel, semverGte } from "./identity/classify";
 import { resolveModelThinking } from "./model-thinking";
-import type { Api, CompatOf, Model, ModelSpec } from "./types";
+import type { Api, CompatOf, Model, ModelSpec, RemoteCompactionConfig } from "./types";
 import { cleanModelName } from "./utils";
+
+/**
+ * GPT-family Responses models without explicit compaction metadata get
+ * provider-native compaction enabled by default.
+ *
+ * The request side keys off exactly these two conditions
+ * (`shouldUseCompactionV2Streaming` / `shouldUseOpenAiRemoteCompaction` in
+ * @oh-my-pi/pi-agent-core): a Responses adapter (`openai-responses`,
+ * `azure-openai-responses`, `openai-codex-responses`) and the
+ * `remoteCompaction` metadata block. Injecting the block here means GPT models
+ * served through custom providers, proxies, and relabeled endpoints get the
+ * same server-side compaction as first-party OpenAI models. The compaction
+ * adapters derive their endpoints from `model.baseUrl`, so a proxy base URL is
+ * honored automatically; V2 is enabled for every injected model and falls back
+ * to V1 when the endpoint rejects the streaming compaction request.
+ */
+function gptFamilyRemoteCompaction<TApi extends Api>(spec: ModelSpec<TApi>): RemoteCompactionConfig<TApi> | undefined {
+	if (
+		spec.api !== "openai-responses" &&
+		spec.api !== "azure-openai-responses" &&
+		spec.api !== "openai-codex-responses"
+	) {
+		return undefined;
+	}
+	const id = bareModelId(spec.requestModelId ?? spec.id).toLowerCase();
+	const isGptFamily = /^(gpt|chatgpt)-/.test(id) || parseOpenAIModel(id) !== null;
+	if (!isGptFamily) return undefined;
+	return { enabled: true, api: spec.api, v2StreamingEnabled: true };
+}
 
 function isDirectOpenAIResponsesEndpoint(spec: ModelSpec<Api>): boolean {
 	if (spec.api === "openai-responses") {
@@ -67,6 +96,7 @@ export function buildModel<TApi extends Api>(spec: ModelSpec<TApi>): Model<TApi>
 		thinking: resolveModelThinking(spec, compat),
 		supportsComputerUse: supportsOpenAIGAComputerUse(spec, supportsComputerUseConfig),
 		supportsComputerUseConfig,
+		remoteCompaction: spec.remoteCompaction ?? gptFamilyRemoteCompaction(spec),
 		compat,
 		compatConfig: spec.compat,
 	} as Model<TApi>;

@@ -1267,3 +1267,121 @@ describe("isOfficialAnthropicApiUrl", () => {
 		expect(isOfficialAnthropicApiUrl("https://api.anthropic.com.evil.com")).toBe(false);
 	});
 });
+
+describe("GPT-family remote compaction metadata injection", () => {
+	function responsesSpec<TApi extends "openai-responses" | "azure-openai-responses" | "openai-codex-responses">(
+		overrides: Partial<ModelSpec<TApi>> = {},
+	): ModelSpec<TApi> {
+		const base: ModelSpec<"openai-responses"> = {
+			id: "gpt-5",
+			name: "GPT-5",
+			api: "openai-responses",
+			provider: "my-proxy",
+			baseUrl: "https://proxy.example.com/v1",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 400_000,
+			maxTokens: 100_000,
+		};
+		return { ...base, ...overrides } as ModelSpec<TApi>;
+	}
+
+	it("enables provider-native compaction for a GPT model on a custom Responses provider", () => {
+		const model = buildModel(responsesSpec());
+
+		expect(model.remoteCompaction).toEqual({
+			enabled: true,
+			api: "openai-responses",
+			v2StreamingEnabled: true,
+		});
+	});
+
+	it("honors explicit compaction metadata over injection", () => {
+		const model = buildModel(
+			responsesSpec({
+				remoteCompaction: { enabled: false, api: "openai-responses" },
+			}),
+		);
+
+		expect(model.remoteCompaction).toEqual({ enabled: false, api: "openai-responses" });
+	});
+
+	it("injects for azure Responses GPT models with the azure adapter", () => {
+		const model = buildModel(
+			responsesSpec({
+				api: "azure-openai-responses",
+				provider: "azure",
+				baseUrl: "https://acme.openai.azure.com/openai/v1",
+			}),
+		);
+
+		expect(model.remoteCompaction).toEqual({
+			enabled: true,
+			api: "azure-openai-responses",
+			v2StreamingEnabled: true,
+		});
+	});
+
+	it("injects for codex-responses GPT models on a custom proxy", () => {
+		const model = buildModel(
+			responsesSpec({
+				id: "gpt-5.3-codex",
+				api: "openai-codex-responses",
+				baseUrl: "https://proxy.example.com/codex",
+			}),
+		);
+
+		expect(model.remoteCompaction).toEqual({
+			enabled: true,
+			api: "openai-codex-responses",
+			v2StreamingEnabled: true,
+		});
+	});
+
+	it("injects for chatgpt-prefixed model ids", () => {
+		const model = buildModel(responsesSpec({ id: "chatgpt-4o" }));
+
+		expect(model.remoteCompaction).toEqual({
+			enabled: true,
+			api: "openai-responses",
+			v2StreamingEnabled: true,
+		});
+	});
+
+	it("injects for version-parsed OpenAI aliases without a gpt prefix", () => {
+		const model = buildModel(responsesSpec({ id: "daybreak-blue-latest" }));
+
+		expect(model.remoteCompaction).toEqual({
+			enabled: true,
+			api: "openai-responses",
+			v2StreamingEnabled: true,
+		});
+	});
+
+	it("does not inject for non-GPT models on a Responses adapter", () => {
+		const model = buildModel(
+			responsesSpec({
+				id: "llama-3.3-70b",
+				provider: "ollama",
+				baseUrl: "http://127.0.0.1:11434/v1",
+			}),
+		);
+
+		expect(model.remoteCompaction).toBeUndefined();
+	});
+
+	it("does not inject for GPT models on non-Responses adapters", () => {
+		const model = buildModel(
+			completionsSpec({
+				id: "gpt-5",
+				provider: "my-proxy",
+				baseUrl: "https://proxy.example.com/v1",
+			}),
+		);
+		const openrouter = buildModel(openrouterSpec({ id: "openai/gpt-5" }));
+
+		expect(model.remoteCompaction).toBeUndefined();
+		expect(openrouter.remoteCompaction).toBeUndefined();
+	});
+});
