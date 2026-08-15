@@ -38,6 +38,7 @@
 
 ### Changed
 
+- Provider-native (remote) compaction failures no longer block the session: when every compaction candidate fails remote compaction (V2 streaming and V1 fallback), auto-compaction and manual `/compact` now warn with a notice and produce a local summary instead of aborting.
 - Changed completed-run collapsing to retain the full persisted display transcript across compaction, so older requests remain reachable through terminal scrollback and Alt+O while provider context stays compacted.
 - Changed tool routing prompts to call built-in tools and batched `task` directly by default, reserving `eval` JavaScript orchestration for complex value-dependent loops, branching, pipelines, and structured aggregation.
 - Changed `xd://report_issue` to write structured, reproducible Markdown reports to `D:\project\oh-my-pi\issues`, including agent-supplied reproduction context plus runtime model, platform, cwd, and session metadata, without requiring remote-sharing consent.

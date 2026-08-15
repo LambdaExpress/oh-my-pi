@@ -1578,7 +1578,10 @@ export class SessionMaintenance {
 				(candidate.provider !== nativeCompactionFailure.provider ||
 					!shouldUseProviderNativeCompaction(candidate, preparation.settings))
 			) {
-				throw nativeCompactionFailure.error;
+				// No further candidate can retry provider-native compaction; fall
+				// through to the local-summary fallback below instead of failing
+				// the whole compaction.
+				break;
 			}
 
 			try {
@@ -1628,8 +1631,70 @@ export class SessionMaintenance {
 			}
 		}
 
-		if (nativeCompactionFailure) throw nativeCompactionFailure.error;
+		if (nativeCompactionFailure) {
+			// Provider-native compaction failed across the whole candidate chain.
+			// Don't block on it: warn and produce a local summary instead.
+			const fallback = await this.#runLocalFallbackCompaction(
+				preparation,
+				customInstructions,
+				signal,
+				options,
+				candidates,
+			);
+			if (fallback) return fallback;
+			throw nativeCompactionFailure.error;
+		}
 		throw this.#buildCompactionAuthError();
+	}
+
+	/**
+	 * Local-summary fallback after provider-native compaction failed across
+	 * every candidate. Runs `compact()` with `forceLocal` — never re-entering
+	 * the dead remote endpoint — on the first candidate that can summarize,
+	 * emits a warning notice, and returns the result. Returns `undefined` when
+	 * no candidate can summarize locally so the caller surfaces the original
+	 * native failure.
+	 */
+	async #runLocalFallbackCompaction(
+		preparation: CompactionPreparation,
+		customInstructions: string | undefined,
+		signal: AbortSignal,
+		options: SummaryOptions | undefined,
+		candidates: Model[],
+	): Promise<CompactionResult | undefined> {
+		for (const candidate of candidates) {
+			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
+			if (!apiKey) continue;
+			try {
+				const result = await compact(
+					this.#host.obfuscatePreparationForProvider(preparation),
+					candidate,
+					this.#host.modelRegistry.resolver(candidate, this.#host.sessionId()),
+					this.#host.obfuscateTextForProvider(customInstructions),
+					signal,
+					{
+						...options,
+						forceLocal: true,
+						metadata: this.#host.agent.metadataForProvider(candidate.provider),
+					},
+				);
+				this.#host.emitNotice(
+					"warning",
+					t("Provider-native compaction failed for {provider}; summarized locally instead.", {
+						provider: candidate.provider,
+					}),
+					"compaction",
+				);
+				return result;
+			} catch (error) {
+				if (signal.aborted) throw error;
+				logger.warn("Local fallback summarization failed", {
+					model: `${candidate.provider}/${candidate.id}`,
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+		}
+		return undefined;
 	}
 
 	async #prepareCompactionFromHooks(
@@ -2659,6 +2724,28 @@ export class SessionMaintenance {
 						options.phase ??
 						(reason === "threshold" ? "pre_turn" : reason === "idle" ? "standalone_turn" : "mid_turn"),
 				});
+				// Shared by the candidate loop and the local-summary fallback so
+				// the fallback reuses the exact same request shaping.
+				const compactionOptions: SummaryOptions = {
+					promptOverride: this.#host.obfuscateTextForProvider(compactionPrep.hookPrompt),
+					extraContext: compactionPrep.hookContext,
+					remoteInstructions: this.#host.baseSystemPrompt().join("\n\n"),
+					metadata: this.#host.agent.metadataForProvider(this.#model!.provider),
+					initiatorOverride: "agent",
+					convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+					telemetry,
+					// Honor the user's /model thinking selection on the
+					// auto-compaction path — the most-fired compaction
+					// site. Clamped per-model inside compact() via
+					// resolveCompactionEffort.
+					thinkingLevel: this.#host.thinkingLevel(),
+					tools: this.#host.agent.state.tools,
+					sessionId: this.#host.sessionId(),
+					promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
+					providerSessionState: this.#host.providerSessionState,
+					preferWebsockets: this.#host.preferWebsockets,
+					codexCompaction,
+				};
 
 				for (let candidateIndex = 0; candidateIndex < candidates.length; candidateIndex++) {
 					const candidate = candidates[candidateIndex];
@@ -2670,7 +2757,10 @@ export class SessionMaintenance {
 						(candidate.provider !== nativeCompactionFailure.provider ||
 							!shouldUseProviderNativeCompaction(candidate, preparation.settings))
 					) {
-						throw nativeCompactionFailure.error;
+						// No further candidate can retry provider-native compaction;
+						// fall through to the local-summary fallback below instead of
+						// failing the whole compaction.
+						break;
 					}
 
 					let attempt = 0;
@@ -2682,26 +2772,7 @@ export class SessionMaintenance {
 								this.#host.modelRegistry.resolver(candidate, this.#host.sessionId()),
 								undefined,
 								autoCompactionSignal,
-								{
-									promptOverride: this.#host.obfuscateTextForProvider(compactionPrep.hookPrompt),
-									extraContext: compactionPrep.hookContext,
-									remoteInstructions: this.#host.baseSystemPrompt().join("\n\n"),
-									metadata: this.#host.agent.metadataForProvider(candidate.provider),
-									initiatorOverride: "agent",
-									convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
-									telemetry,
-									// Honor the user's /model thinking selection on the
-									// auto-compaction path — the most-fired compaction
-									// site. Clamped per-model inside compact() via
-									// resolveCompactionEffort.
-									thinkingLevel: this.#host.thinkingLevel(),
-									tools: this.#host.agent.state.tools,
-									sessionId: this.#host.sessionId(),
-									promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
-									providerSessionState: this.#host.providerSessionState,
-									preferWebsockets: this.#host.preferWebsockets,
-									codexCompaction,
-								},
+								{ ...compactionOptions, metadata: this.#host.agent.metadataForProvider(candidate.provider) },
 							);
 							break;
 						} catch (error) {
@@ -2794,6 +2865,19 @@ export class SessionMaintenance {
 					if (compactResult) {
 						break;
 					}
+				}
+
+				if (!compactResult && lastError instanceof NativeCompactionError) {
+					// Provider-native compaction failed across the whole candidate
+					// chain. Don't block the session on it: warn and produce a
+					// local summary instead.
+					compactResult = await this.#runLocalFallbackCompaction(
+						preparation,
+						undefined,
+						autoCompactionSignal,
+						compactionOptions,
+						candidates,
+					);
 				}
 
 				if (!compactResult) {

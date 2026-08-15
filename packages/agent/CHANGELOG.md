@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added `SummaryOptions.forceLocal` to `compact()`, which skips provider-native (remote) compaction entirely so hosts can retry summarization locally after a remote compaction failure without re-entering the dead endpoint.
 - Added `ThinkingLevel.Max` so agent state can preserve a model's distinct `max` reasoning effort.
 - Added structured agent and tool-execution abort diagnostics, including cancellation reasons, run state, and abort call stacks.
 

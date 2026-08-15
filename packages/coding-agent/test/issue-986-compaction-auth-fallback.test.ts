@@ -11,6 +11,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 import { assistantMsg, userMsg } from "./utilities";
 
 describe("issue #986 compaction auth fallback", () => {
@@ -20,6 +21,7 @@ describe("issue #986 compaction auth fallback", () => {
 	let modelRegistry: ModelRegistry;
 
 	beforeEach(() => {
+		setLocale("en");
 		tempDir = TempDir.createSync("@pi-issue-986-");
 	});
 
@@ -166,6 +168,10 @@ describe("issue #986 compaction auth fallback", () => {
 		const { crossProviderModel, currentModel, sameProviderModel, triggerAutoCompaction } =
 			await createAutoNativeFallbackSession();
 		const attemptedModels: string[] = [];
+		let resultSummary: string | undefined;
+		session.subscribe(event => {
+			if (event.type === "auto_compaction_end" && event.result) resultSummary = event.result.summary;
+		});
 		vi.spyOn(compactionModule, "compact").mockImplementation(async (preparation, model) => {
 			attemptedModels.push(`${model.provider}/${model.id}`);
 			if (model.provider === currentModel.provider || model.provider === sameProviderModel.provider) {
@@ -187,7 +193,14 @@ describe("issue #986 compaction auth fallback", () => {
 		expect(attemptedModels).toEqual([
 			`${currentModel.provider}/${currentModel.id}`,
 			`${sameProviderModel.provider}/${sameProviderModel.id}`,
+			// Local-summary fallback retries the chain with remote compaction off;
+			// the cross-provider candidate succeeds without re-entering the dead
+			// remote endpoint.
+			`${currentModel.provider}/${currentModel.id}`,
+			`${sameProviderModel.provider}/${sameProviderModel.id}`,
+			`${crossProviderModel.provider}/${crossProviderModel.id}`,
 		]);
+		expect(resultSummary).toBe("cross-provider summary");
 	});
 
 	it("preserves a native transport failure when a later same-provider candidate fails authentication", async () => {
@@ -217,6 +230,11 @@ describe("issue #986 compaction auth fallback", () => {
 		await triggerAutoCompaction();
 
 		expect(attemptedModels).toEqual([
+			`${currentModel.provider}/${currentModel.id}`,
+			`${sameProviderModel.provider}/${sameProviderModel.id}`,
+			// Local-summary fallback retries the same chain; the unauthenticated
+			// cross-provider candidate stays skipped, so the native failure
+			// surfaces unchanged.
 			`${currentModel.provider}/${currentModel.id}`,
 			`${sameProviderModel.provider}/${sameProviderModel.id}`,
 		]);
@@ -250,6 +268,8 @@ describe("issue #986 compaction auth fallback", () => {
 
 		await triggerAutoCompaction();
 
+		// The same-provider candidate succeeds on the first pass, so no
+		// local-summary fallback runs.
 		expect(attemptedModels).toEqual([
 			`${currentModel.provider}/${currentModel.id}`,
 			`${sameProviderModel.provider}/${sameProviderModel.id}`,
@@ -312,9 +332,14 @@ describe("issue #986 compaction auth fallback", () => {
 
 		await triggerAutoCompaction();
 
+		// Local-summary fallback retries the chain with remote compaction off;
+		// the cross-provider candidate succeeds.
 		expect(attemptedModels).toEqual([
 			`${currentModel.provider}/${currentModel.id}`,
 			`${sameProviderModel.provider}/${sameProviderModel.id}`,
+			`${currentModel.provider}/${currentModel.id}`,
+			`${sameProviderModel.provider}/${sameProviderModel.id}`,
+			`${crossProviderModel.provider}/${crossProviderModel.id}`,
 		]);
 	});
 
@@ -338,7 +363,16 @@ describe("issue #986 compaction auth fallback", () => {
 
 		await triggerAutoCompaction();
 
-		expect(attemptedModels).toEqual([`${currentModel.provider}/${currentModel.id}`]);
+		// The disabled-native candidate is not retried with remote on, but the
+		// local-summary fallback still uses it (forceLocal skips the remote
+		// gate) so the compaction completes instead of blocking. The fallback
+		// re-attempts the current model first (it fails again) and then lands
+		// on the same-provider candidate.
+		expect(attemptedModels).toEqual([
+			`${currentModel.provider}/${currentModel.id}`,
+			`${currentModel.provider}/${currentModel.id}`,
+			`${sameProviderModel.provider}/${sameProviderModel.id}`,
+		]);
 		expect(sameProviderModel.remoteCompaction?.enabled).toBe(false);
 	});
 

@@ -816,6 +816,12 @@ export interface SummaryOptions {
 	codexCompaction?: CodexCompactionContext;
 	/** Provider-visible tools for remote compaction transports that replay native tool history. */
 	tools?: Tool[];
+	/**
+	 * Skip provider-native (remote) compaction entirely and summarize locally.
+	 * Used by hosts that fall back to a local summary after a remote compaction
+	 * failure, so the retry cannot re-enter the same dead endpoint.
+	 */
+	forceLocal?: boolean;
 	/** Optional fetch implementation threaded into remote compaction calls. */
 	fetch?: FetchImpl;
 	/**
@@ -1468,6 +1474,7 @@ export async function compact(
 	if (
 		settings.remoteEnabled !== false &&
 		settings.remoteStreamingV2Enabled !== false &&
+		!summaryOptions.forceLocal &&
 		shouldUseCompactionV2Streaming(model)
 	) {
 		const previousRemoteCompaction = getCompactionV2PreserveData(previousPreserveData);
@@ -1537,7 +1544,12 @@ export async function compact(
 		}
 	}
 
-	if (!usedRemoteCompaction && settings.remoteEnabled !== false && shouldUseOpenAiRemoteCompaction(model)) {
+	if (
+		!usedRemoteCompaction &&
+		settings.remoteEnabled !== false &&
+		!summaryOptions.forceLocal &&
+		shouldUseOpenAiRemoteCompaction(model)
+	) {
 		const previousRemoteCompaction = getPreservedOpenAiRemoteCompactionData(previousPreserveData);
 		const previousV2Compaction = getCompactionV2PreserveData(previousPreserveData);
 		const previousReplacementHistory =
