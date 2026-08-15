@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $ } from "bun";
+import { setLocale } from "../../src/i18n";
 import { importCodexSecurityBundle, importSarif, importSarifFile, SecurityStore } from "../../src/security";
 
 const FIXTURE_ROOT = path.join(import.meta.dir, "..", "fixtures", "security");
@@ -10,12 +11,14 @@ let temporaryRoot = "";
 let repositoryRoot = "";
 
 beforeEach(async () => {
+	setLocale("en");
 	temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-security-store-"));
 	repositoryRoot = path.join(temporaryRoot, "repo");
 	await fs.mkdir(repositoryRoot);
 });
 
 afterEach(async () => {
+	setLocale(null);
 	await fs.rm(temporaryRoot, { recursive: true, force: true });
 });
 

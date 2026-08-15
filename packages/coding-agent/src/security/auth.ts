@@ -1,6 +1,7 @@
 import type { AgentOptions } from "@oh-my-pi/pi-agent-core";
 import type { OAuthAccessResolution } from "@oh-my-pi/pi-ai";
 import type { ApiKeyResolver } from "@oh-my-pi/pi-ai/auth-retry";
+import { t } from "../i18n";
 import type { AuthStorage } from "../session/auth-storage";
 import type { SecurityAccountRef } from "./contracts";
 
@@ -26,7 +27,7 @@ export function assertSecurityIdentityMatches(
 		(account.organizationId !== undefined && account.organizationId !== resolution.orgId) ||
 		(account.organizationName !== undefined && account.organizationName !== resolution.orgName)
 	) {
-		throw new Error("Security scan authentication identity mismatch");
+		throw new Error(t("Security scan authentication identity mismatch"));
 	}
 }
 
@@ -35,19 +36,28 @@ export function selectSecurityAccount(
 	provider: string,
 	requestedCredentialId?: number,
 	sessionId?: string,
-): SecurityAccountRef {
+): SecurityAccountRef | null {
 	const accounts = authStorage.listOAuthAccounts(provider, sessionId);
 	const selected =
 		requestedCredentialId !== undefined
 			? accounts.find(account => account.credentialId === requestedCredentialId)
 			: (accounts.find(account => account.active) ?? (accounts.length === 1 ? accounts[0] : undefined));
 	if (!selected) {
-		if (accounts.length === 0) throw new Error(`Security scans require a stored OAuth account for ${provider}`);
 		if (requestedCredentialId !== undefined) {
-			throw new Error(`Security OAuth credential ${requestedCredentialId} is not available for ${provider}`);
+			if (accounts.length === 0)
+				throw new Error(t("Security scans require a stored OAuth account for {provider}", { provider }));
+			throw new Error(
+				t("Security OAuth credential {credentialId} is not available for {provider}", {
+					credentialId: requestedCredentialId,
+					provider,
+				}),
+			);
 		}
+		if (accounts.length === 0) return null;
 		throw new Error(
-			`Multiple OAuth accounts are available for ${provider}; supply credentialId to pin one exact account`,
+			t("Multiple OAuth accounts are available for {provider}; supply credentialId to pin one exact account", {
+				provider,
+			}),
 		);
 	}
 	const account: SecurityAccountRef = { provider, credentialId: selected.credentialId };
@@ -64,9 +74,9 @@ export async function resolveExactSecurityOAuthAccess(
 	options: { forceRefresh: boolean; signal?: AbortSignal },
 ): Promise<Extract<OAuthAccessResolution, { ok: true }>> {
 	const resolution = await authStorage.getOAuthAccessByCredentialId(account.provider, account.credentialId, options);
-	if (!resolution) throw new Error("The pinned security OAuth credential is unavailable");
+	if (!resolution) throw new Error(t("The pinned security OAuth credential is unavailable"));
 	assertSecurityIdentityMatches(account, resolution);
-	if (!resolution.ok) throw new Error("The pinned security OAuth credential could not be resolved");
+	if (!resolution.ok) throw new Error(t("The pinned security OAuth credential could not be resolved"));
 	return resolution;
 }
 
@@ -83,7 +93,7 @@ export function createExactSecurityOAuthResolver(
 	const { account, authStorage } = options;
 	return model => {
 		if (model.provider !== account.provider) {
-			throw new Error("Security scan authentication provider mismatch");
+			throw new Error(t("Security scan authentication provider mismatch"));
 		}
 		const resolver: ApiKeyResolver = async context => {
 			if (context.lastChance) return undefined;

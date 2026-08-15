@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { t } from "../../i18n";
 import type {
 	SecurityCoverage,
 	SecurityFinding,
@@ -102,30 +103,30 @@ async function resolveSarifArtifactPath(
 	repositoryRoot: string,
 ): Promise<string> {
 	const uri = artifact.uri;
-	if (!uri) throw new Error("SARIF artifact location is missing its URI");
+	if (!uri) throw new Error(t("SARIF artifact location is missing its URI"));
 	const rootUrl = pathToFileURL(`${repositoryRoot}${path.sep}`);
 	let baseUrl = rootUrl;
 	if (artifact.uriBaseId) {
 		const declaredBase = run.originalUriBaseIds?.[artifact.uriBaseId]?.uri;
 		if (!declaredBase && artifact.uriBaseId !== "%SRCROOT%") {
-			throw new Error(`SARIF artifact uses an unknown URI base: ${artifact.uriBaseId}`);
+			throw new Error(t("SARIF artifact uses an unknown URI base: {uriBaseId}", { uriBaseId: artifact.uriBaseId }));
 		}
 		baseUrl = declaredBase ? new URL(declaredBase, rootUrl) : rootUrl;
 	}
 	const resolvedUrl = new URL(uri.replaceAll("\\", "/"), baseUrl);
 	if (resolvedUrl.protocol !== "file:") {
-		throw new Error(`SARIF artifact URI must resolve to a repository file: ${uri}`);
+		throw new Error(t("SARIF artifact URI must resolve to a repository file: {uri}", { uri }));
 	}
 	const absolute = path.resolve(fileURLToPath(resolvedUrl));
 	if (!pathIsWithin(absolute, repositoryRoot)) {
-		throw new Error(`SARIF artifact resolves outside the repository: ${uri}`);
+		throw new Error(t("SARIF artifact resolves outside the repository: {uri}", { uri }));
 	}
 	const canonical = await fs.realpath(absolute).catch(error => {
 		if (error instanceof Error && "code" in error && error.code === "ENOENT") return absolute;
 		throw error;
 	});
 	if (!pathIsWithin(canonical, repositoryRoot)) {
-		throw new Error(`SARIF artifact resolves outside the repository through a symbolic link: ${uri}`);
+		throw new Error(t("SARIF artifact resolves outside the repository through a symbolic link: {uri}", { uri }));
 	}
 	return path.relative(repositoryRoot, canonical).replaceAll(path.sep, "/");
 }
@@ -224,7 +225,7 @@ function importedDispositionStatus(value: unknown): SecurityFinding["disposition
 export async function importSarif(input: unknown, options: SarifImportOptions): Promise<SecurityScanBundle> {
 	const sarif = input as SarifLog;
 	if (sarif.version !== "2.1.0" || !Array.isArray(sarif.runs)) {
-		throw new Error("Expected SARIF 2.1.0 input");
+		throw new Error(t("Expected SARIF 2.1.0 input"));
 	}
 	const canonicalRoot = await fs.realpath(path.resolve(options.repositoryRoot));
 	const scanId = options.createScanId?.() ?? createSecurityScanId();

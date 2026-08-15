@@ -1,8 +1,17 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { IsoBackendKind } from "@oh-my-pi/pi-natives";
+import { setLocale } from "../../src/i18n";
 import { assertSecurityRemediationBaselineClean, prepareSecurityRemediationWorkspace } from "../../src/security";
 import type { IsolationContext } from "../../src/task/isolation-runner";
 import type { IsolationHandle, WorktreeBaseline } from "../../src/task/worktree";
+
+beforeEach(() => {
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 function cleanBaseline(): WorktreeBaseline {
 	return {

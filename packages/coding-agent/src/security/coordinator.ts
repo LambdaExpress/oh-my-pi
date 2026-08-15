@@ -6,6 +6,7 @@ import type { AsyncJobManager } from "../async/job-manager";
 import type { ModelRegistry } from "../config/model-registry";
 import type { Settings } from "../config/settings";
 import type { ToolDefinition } from "../extensibility/extensions";
+import { t } from "../i18n";
 import securityReviewerPrompt from "../prompts/agents/security-reviewer.md" with { type: "text" };
 import securityCoordinatorPrompt from "../prompts/security/scan-coordinator.md" with { type: "text" };
 import securityRequestPrompt from "../prompts/security/scan-request.md" with { type: "text" };
@@ -243,10 +244,12 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 		modelRegistry: input.host.modelRegistry,
 		settings: scanSettings,
 		model: input.model,
-		getApiKey: createExactSecurityOAuthResolver({
-			authStorage: input.host.authStorage,
-			account: input.plan.account,
-		}),
+		getApiKey: input.plan.account
+			? createExactSecurityOAuthResolver({
+					authStorage: input.host.authStorage,
+					account: input.plan.account,
+				})
+			: undefined,
 		providerSessionId: `security:${input.scanId}`,
 		sessionManager: input.sessionManager,
 		customTools: [input.publicationTool],
@@ -328,7 +331,7 @@ async function prepareSecurityExecutionTarget(
 	}
 	const headRevision = plan.target.headRevision;
 	const baseRevision = plan.target.baseRevision;
-	if (!headRevision || !baseRevision) throw new Error("ref_diff security plan is missing resolved revisions");
+	if (!headRevision || !baseRevision) throw new Error(t("ref_diff security plan is missing resolved revisions"));
 	const targetsRoot = path.join(store.projectDirectory, "targets");
 	await fs.mkdir(targetsRoot, { recursive: true, mode: 0o700 });
 	if (process.platform !== "win32") await fs.chmod(targetsRoot, 0o700);
@@ -411,10 +414,10 @@ export class SecurityCoordinator {
 
 	async preflight(input: SecurityPreflightInput = {}): Promise<SecurityScanPlan> {
 		if (!this.#host.settings.get("security.enabled")) {
-			throw new Error("Security is disabled; enable security.enabled before planning a scan");
+			throw new Error(t("Security is disabled; enable security.enabled before planning a scan"));
 		}
 		const model = input.model ?? this.#host.activeModel;
-		if (!model) throw new Error("Security scan preflight requires an active model");
+		if (!model) throw new Error(t("Security scan preflight requires an active model"));
 		const account = selectSecurityAccount(
 			this.#host.authStorage,
 			model.provider,
@@ -435,7 +438,7 @@ export class SecurityCoordinator {
 				outputRoot: input.outputRoot ?? path.join(workRoot, Bun.randomUUIDv7()),
 				archiveExisting: input.archiveExisting,
 				model: modelRef,
-				account,
+				account: account ?? undefined,
 				config: securityConfigSnapshot(this.#host.settings),
 				workflowFingerprint: SECURITY_WORKFLOW_FINGERPRINT,
 				signal: input.signal,
@@ -448,12 +451,12 @@ export class SecurityCoordinator {
 
 	async start(input: SecurityStartInput): Promise<SecurityOperationSnapshot> {
 		if (!this.#host.settings.get("security.enabled")) {
-			throw new Error("Security is disabled; enable security.enabled before starting a scan");
+			throw new Error(t("Security is disabled; enable security.enabled before starting a scan"));
 		}
 		await this.#ensureRecovered();
 		const store = await this.#openStore(this.#host.cwd);
 		const plan = await store.getPlan(input.planId);
-		if (!plan) throw new Error(`Unknown security scan plan: ${input.planId}`);
+		if (!plan) throw new Error(t("Unknown security scan plan: {planId}", { planId: input.planId }));
 		await assertSecurityScanPlanFresh(
 			plan,
 			{
@@ -528,14 +531,14 @@ export class SecurityCoordinator {
 		if (record.snapshot.jobId && this.#host.asyncJobManager) {
 			return this.#host.asyncJobManager.cancel(record.snapshot.jobId, { ownerId: this.#host.agentId });
 		}
-		record.abortController?.abort(new Error("Security scan cancelled"));
+		record.abortController?.abort(new Error(t("Security scan cancelled")));
 		return true;
 	}
 
 	async wait(operationId: string): Promise<SecurityOperationSnapshot> {
 		await this.#ensureRecovered();
 		const record = this.#operations.get(operationId);
-		if (!record) throw new Error(`Unknown security operation: ${operationId}`);
+		if (!record) throw new Error(t("Unknown security operation: {operationId}", { operationId }));
 		await record.promise;
 		return { ...record.snapshot };
 	}
@@ -561,10 +564,10 @@ export class SecurityCoordinator {
 			await store.putBundle(
 				initialBundle(store, plan, record.snapshot.scanId, record.snapshot.operationId, startedAt),
 			);
-			if (signal.aborted) throw signal.reason ?? new Error("Security scan cancelled");
+			if (signal.aborted) throw signal.reason ?? new Error(t("Security scan cancelled"));
 			await prepareSecurityOutputDirectory(plan.output, record.snapshot.scanId);
 			this.#update(record, "preparing");
-			await reportProgress?.("Preparing OMP-native security scan");
+			await reportProgress?.(t("Preparing OMP-native security scan"));
 			executionTarget = await prepareSecurityExecutionTarget(
 				plan,
 				store,
@@ -578,7 +581,12 @@ export class SecurityCoordinator {
 					? activeModel
 					: this.#host.modelRegistry.find(plan.model.provider, plan.model.modelId);
 			if (!model)
-				throw new Error(`Security scan model is unavailable: ${plan.model.provider}/${plan.model.modelId}`);
+				throw new Error(
+					t("Security scan model is unavailable: {provider}/{modelId}", {
+						provider: plan.model.provider,
+						modelId: plan.model.modelId,
+					}),
+				);
 			const sessionsDirectory = path.join(store.projectDirectory, "sessions");
 			await fs.mkdir(sessionsDirectory, { recursive: true, mode: 0o700 });
 			const sessionManager = SessionManager.create(executionTarget.cwd, sessionsDirectory);
@@ -608,13 +616,13 @@ export class SecurityCoordinator {
 			});
 			record.snapshot.sessionFile = session.sessionFile;
 			const abortSession = (): void => {
-				void session?.abort({ reason: "Security scan cancelled" });
+				void session?.abort({ reason: t("Security scan cancelled") });
 			};
 			signal.addEventListener("abort", abortSession, { once: true });
 			try {
-				if (signal.aborted) throw signal.reason ?? new Error("Security scan cancelled");
+				if (signal.aborted) throw signal.reason ?? new Error(t("Security scan cancelled"));
 				this.#update(record, "reviewing");
-				await reportProgress?.("Reviewing repository with OMP security workers");
+				await reportProgress?.(t("Reviewing repository with OMP security workers"));
 				await session.prompt(requestText(plan, executionTarget.cwd, executionTarget.diffText), {
 					expandPromptTemplates: false,
 					synthetic: true,
@@ -640,10 +648,12 @@ export class SecurityCoordinator {
 			} finally {
 				signal.removeEventListener("abort", abortSession);
 			}
-			if (signal.aborted) throw signal.reason ?? new Error("Security scan cancelled");
+			if (signal.aborted) throw signal.reason ?? new Error(t("Security scan cancelled"));
 			if (publishedBundle) {
 				this.#update(record, "completed");
-				await reportProgress?.(`Published ${publishedBundle.findings.length} security finding(s)`);
+				await reportProgress?.(
+					t("Published {count} security finding(s)", { count: publishedBundle.findings.length }),
+				);
 				return;
 			}
 			const partial = initialBundle(
@@ -655,7 +665,7 @@ export class SecurityCoordinator {
 				"partial",
 			);
 			partial.scan.completedAt = toIsoTimestamp(this.#now);
-			partial.scan.error = "The scan session ended without publishing a canonical result";
+			partial.scan.error = t("The scan session ended without publishing a canonical result");
 			this.#update(record, "partial", partial.scan.error);
 			await store.putBundle(partial);
 		} catch (error) {

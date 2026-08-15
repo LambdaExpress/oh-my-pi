@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { t } from "../../i18n";
 import type {
 	SecurityCoverage,
 	SecurityEvidence,
@@ -116,7 +117,7 @@ function importedLocationPath(value: string): string {
 		/^[a-zA-Z]:\//.test(normalized) ||
 		normalized.split("/").includes("..")
 	) {
-		throw new Error(`Codex Security bundle locations must be repository-relative: ${value}`);
+		throw new Error(t("Codex Security bundle locations must be repository-relative: {value}", { value }));
 	}
 	return normalized;
 }
@@ -194,20 +195,20 @@ export async function importCodexSecurityBundle(
 	const findingsDocument = await readJson<CodexFindingsDocument>(path.join(root, "findings.json"));
 	const coverageDocument = await readJson<CodexCoverageDocument>(path.join(root, "coverage.json"));
 	if (manifest.documentType !== "codex-security.scan-manifest" || manifest.schemaVersion !== "1.0") {
-		throw new Error("Unsupported Codex Security scan manifest");
+		throw new Error(t("Unsupported Codex Security scan manifest"));
 	}
 	if (findingsDocument.documentType !== "codex-security.findings" || findingsDocument.schemaVersion !== "1.0") {
-		throw new Error("Unsupported Codex Security findings document");
+		throw new Error(t("Unsupported Codex Security findings document"));
 	}
 	if (coverageDocument.documentType !== "codex-security.coverage" || coverageDocument.schemaVersion !== "1.0") {
-		throw new Error("Unsupported Codex Security coverage document");
+		throw new Error(t("Unsupported Codex Security coverage document"));
 	}
 	if (
 		!manifest.scan?.id ||
 		findingsDocument.scanId !== manifest.scan.id ||
 		coverageDocument.scanId !== manifest.scan.id
 	) {
-		throw new Error("Codex Security bundle scan IDs do not agree");
+		throw new Error(t("Codex Security bundle scan IDs do not agree"));
 	}
 	const fixtureProvenance = await readJson<CodexFixtureProvenance>(path.join(root, "PROVENANCE.json")).catch(
 		(): CodexFixtureProvenance => ({}),

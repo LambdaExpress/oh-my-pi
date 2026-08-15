@@ -1,4 +1,5 @@
 import type { IsoBackendKind } from "@oh-my-pi/pi-natives";
+import { t } from "../i18n";
 import type { IsolationContext } from "../task/isolation-runner";
 import { prepareIsolationContext } from "../task/isolation-runner";
 import type { IsolationHandle, WorktreeBaseline } from "../task/worktree";
@@ -35,9 +36,9 @@ function createRemediationId(): string {
 
 function repoBaselineDirty(baseline: WorktreeBaseline): string[] {
 	const dirty: string[] = [];
-	if (baseline.root.staged.trim()) dirty.push("staged changes");
-	if (baseline.root.unstaged.trim()) dirty.push("unstaged changes");
-	if (baseline.root.untracked.length > 0 || baseline.root.untrackedPatch.trim()) dirty.push("untracked files");
+	if (baseline.root.staged.trim()) dirty.push(t("staged changes"));
+	if (baseline.root.unstaged.trim()) dirty.push(t("unstaged changes"));
+	if (baseline.root.untracked.length > 0 || baseline.root.untrackedPatch.trim()) dirty.push(t("untracked files"));
 	for (const nested of baseline.nested) {
 		if (
 			nested.baseline.staged.trim() ||
@@ -45,7 +46,7 @@ function repoBaselineDirty(baseline: WorktreeBaseline): string[] {
 			nested.baseline.untracked.length > 0 ||
 			nested.baseline.untrackedPatch.trim()
 		) {
-			dirty.push(`dirty nested repository ${nested.relativePath}`);
+			dirty.push(t("dirty nested repository {path}", { path: nested.relativePath }));
 		}
 	}
 	return dirty;
@@ -56,8 +57,8 @@ export function assertSecurityRemediationBaselineClean(baseline: WorktreeBaselin
 	if (dirty.length === 0) return;
 	throw new Error(
 		[
-			`Security remediation refuses a dirty working tree (${dirty.join(", ")}).`,
-			"Commit or stash the changes before creating an isolated remediation workspace.",
+			t("Security remediation refuses a dirty working tree ({dirty}).", { dirty: dirty.join(", ") }),
+			t("Commit or stash the changes before creating an isolated remediation workspace."),
 		].join(" "),
 	);
 }
@@ -67,7 +68,7 @@ export async function prepareSecurityRemediationWorkspace(
 	dependencies: SecurityRemediationDependencies = {},
 ): Promise<SecurityRemediationWorkspace> {
 	const findingIds = [...new Set(request.findingIds.map(id => id.trim()).filter(Boolean))];
-	if (findingIds.length === 0) throw new Error("Security remediation requires at least one finding id");
+	if (findingIds.length === 0) throw new Error(t("Security remediation requires at least one finding id"));
 	const prepareContext = dependencies.prepareContext ?? prepareIsolationContext;
 	const createIsolation = dependencies.createIsolation ?? ensureIsolation;
 	const disposeIsolation = dependencies.cleanupIsolation ?? cleanupIsolation;

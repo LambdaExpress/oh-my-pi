@@ -1,8 +1,17 @@
-import { describe, expect, test, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import type { ApiKeyResolver } from "@oh-my-pi/pi-ai/auth-retry";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { setLocale } from "../../src/i18n";
 import { createExactSecurityOAuthResolver, selectSecurityAccount } from "../../src/security";
 import type { AuthStorage } from "../../src/session/auth-storage";
+
+beforeEach(() => {
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 function model() {
 	const value = getBundledModel("openai-codex", "gpt-5.6-sol");
@@ -24,6 +33,26 @@ describe("exact security OAuth resolver", () => {
 		);
 		expect(selected).toEqual({ provider: "openai-codex", credentialId: 42, accountId: "workspace-b" });
 		expect(listOAuthAccounts).toHaveBeenCalledWith("openai-codex", "session-a");
+	});
+
+	test("returns null for key mode when no OAuth accounts exist and no credential is requested", () => {
+		const listOAuthAccounts = vi.fn(() => []);
+		const selected = selectSecurityAccount(
+			{ listOAuthAccounts } as unknown as AuthStorage,
+			"opencode-go",
+			undefined,
+			"session-a",
+		);
+		expect(selected).toBeNull();
+		expect(listOAuthAccounts).toHaveBeenCalledWith("opencode-go", "session-a");
+	});
+
+	test("throws the stored-account requirement when a credential is pinned without accounts", () => {
+		const listOAuthAccounts = vi.fn(() => []);
+		expect(() =>
+			selectSecurityAccount({ listOAuthAccounts } as unknown as AuthStorage, "opencode-go", 42, "session-a"),
+		).toThrow("Security scans require a stored OAuth account for opencode-go");
+		expect(listOAuthAccounts).toHaveBeenCalledWith("opencode-go", "session-a");
 	});
 
 	test("resolves and refreshes only the pinned durable row", async () => {

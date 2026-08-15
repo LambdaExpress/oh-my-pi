@@ -8,6 +8,7 @@ import { createMockModel, type MockResponseSource, registerMockApi } from "@oh-m
 import { $ } from "bun";
 import { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
+import { setLocale } from "../../src/i18n";
 import {
 	createNativeSecurityProvenance,
 	DEFAULT_SECURITY_GIT_ADAPTER,
@@ -59,10 +60,12 @@ beforeEach(async () => {
 	if (!account) throw new Error("expected fixture OAuth account");
 	credentialId = account.credentialId;
 	settings = Settings.isolated({ "security.enabled": true, "compaction.enabled": false });
+	setLocale("en");
 	registerMockApi(MOCK_SOURCE_ID);
 });
 
 afterEach(async () => {
+	setLocale(null);
 	vi.restoreAllMocks();
 	unregisterCustomApis(MOCK_SOURCE_ID);
 	settings.cancelPendingSaves();
@@ -368,5 +371,75 @@ describe("native security coordinator", () => {
 			error: "Security scan was interrupted by a process restart",
 		});
 		expect((await restarted.listOperations()).map(operation => operation.operationId)).toContain(operationId);
+	});
+
+	// Key mode: the fixture stores an OAuth account only for "openai-codex", so
+	// account selection for "openai" finds none and preflight plans without an
+	// account. The mock provider never touches the network; the OPENAI_API_KEY
+	// env var satisfies the session's API-key gate through AuthStorage's env
+	// fallback (modelRegistry.resolver), so `start` completes without the exact
+	// OAuth resolver, which the coordinator only injects when plan.account exists.
+	test("key mode plans and completes a scan without any stored OAuth account", async () => {
+		const previousApiKey = process.env.OPENAI_API_KEY;
+		process.env.OPENAI_API_KEY = "fixture-api-key";
+		try {
+			const mock = createMockModel({
+				id: "security-mock",
+				provider: "openai",
+				responses: [
+					{
+						content: [
+							{
+								type: "toolCall",
+								name: "security_publish",
+								arguments: {
+									findings: [
+										{
+											rule_id: "fixture.command-injection",
+											title: "Untrusted command reaches a shell",
+											summary: "A fixture value is interpolated into a shell command.",
+											severity: "high",
+											confidence: "high",
+											category: "command-injection",
+											locations: [{ path: "src/app.ts", start_line: 1, role: "sink" }],
+											evidence: [{ label: "shell sink", explanation: "Fixture evidence" }],
+											remediation: "Use an argument-vector API.",
+											validation: "validated",
+										},
+									],
+									coverage: { completeness: "complete" },
+									report: "# Fixture security report\n\nOne validated finding.\n",
+								},
+							},
+						],
+					},
+					{ content: ["Security publication completed."] },
+				],
+			});
+			const coordinator = new SecurityCoordinator(
+				{
+					cwd: repositoryRoot,
+					settings,
+					authStorage,
+					modelRegistry: new ModelRegistry(authStorage, path.join(temporaryRoot, "models.yml")),
+					activeModel: mock.model,
+					sessionId: "parent-session",
+					agentId: "Main",
+				},
+				{ openStore: storeFactory, gitAdapter },
+			);
+			const createdPlan = await coordinator.preflight({ model: mock.model });
+			expect(createdPlan.account).toBeUndefined();
+			const started = await coordinator.start({ planId: createdPlan.id });
+			const terminal = await coordinator.wait(started.operationId);
+			expect(terminal.phase).toBe("completed");
+			expect(terminal.findingCount).toBe(1);
+			const bundle = await (await storeFactory()).getBundle(terminal.scanId);
+			expect(bundle?.scan.status).toBe("completed");
+			expect(bundle?.findings).toHaveLength(1);
+		} finally {
+			if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+			else process.env.OPENAI_API_KEY = previousApiKey;
+		}
 	});
 });

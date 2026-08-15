@@ -1,8 +1,9 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $ } from "bun";
+import { setLocale } from "../../src/i18n";
 import type { CodexSecurityCloudFetch } from "../../src/security";
 import {
 	CodexSecurityCloudClient,
@@ -13,6 +14,14 @@ import {
 import type { AuthStorage } from "../../src/session/auth-storage";
 
 const ACCOUNT = { provider: "openai-codex", credentialId: 42, accountId: "workspace-a" } as const;
+
+beforeEach(() => {
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 function jwt(subject = "user-a"): string {
 	return `header.${Buffer.from(JSON.stringify({ sub: subject })).toString("base64url")}.signature`;

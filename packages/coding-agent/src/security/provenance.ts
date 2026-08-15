@@ -56,10 +56,12 @@ export function createPublicSecurityScan(scan: SecurityScan, options: { includeP
 		options.includePlan && scan.plan
 			? {
 					...scan.plan,
-					account: {
-						provider: scan.plan.account.provider,
-						credentialAffinity: createSecurityCredentialAffinity(scan.plan.account),
-					},
+					account: scan.plan.account
+						? {
+								provider: scan.plan.account.provider,
+								credentialAffinity: createSecurityCredentialAffinity(scan.plan.account),
+							}
+						: undefined,
 				}
 			: undefined;
 	return redactPrivateSecurityMetadata({
@@ -70,7 +72,7 @@ export function createPublicSecurityScan(scan: SecurityScan, options: { includeP
 
 export function createNativeSecurityProvenance(options: {
 	createdAt: string;
-	account: SecurityAccountRef;
+	account?: SecurityAccountRef;
 	planFingerprint: string;
 	workflowFingerprint: string;
 	sessionId?: string;
@@ -80,8 +82,10 @@ export function createNativeSecurityProvenance(options: {
 	const metadata: Record<string, unknown> = {
 		planFingerprint: options.planFingerprint,
 		workflowFingerprint: options.workflowFingerprint,
-		credentialAffinity: createSecurityCredentialAffinity(options.account),
 	};
+	if (options.account !== undefined) {
+		metadata.credentialAffinity = createSecurityCredentialAffinity(options.account);
+	}
 	if (options.sessionId !== undefined) {
 		metadata.sessionAffinity = `omp-security-session/v1:sha256:${Bun.SHA256.hash(options.sessionId, "hex")}`;
 	}

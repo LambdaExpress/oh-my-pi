@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { t } from "../i18n";
 import * as git from "../utils/git";
 import type {
 	SecurityAccountRef,
@@ -24,7 +25,7 @@ export interface SecurityPlanRequest {
 	outputRoot: string;
 	archiveExisting?: boolean;
 	model: SecurityModelRef;
-	account: SecurityAccountRef;
+	account?: SecurityAccountRef;
 	config: unknown;
 	workflowFingerprint: string;
 	signal?: AbortSignal;
@@ -62,7 +63,12 @@ export class StaleSecurityScanPlanError extends Error {
 		readonly expected: string,
 		readonly actual: string,
 	) {
-		super(`Security scan plan is stale: expected ${expected}, got ${actual}. Run security preflight again.`);
+		super(
+			t("Security scan plan is stale: expected {expected}, got {actual}. Run security preflight again.", {
+				expected,
+				actual,
+			}),
+		);
 		this.name = "StaleSecurityScanPlanError";
 	}
 }
@@ -78,7 +84,7 @@ async function hashFile(filePath: string): Promise<{ sha256: string; size: numbe
 
 function normalizeRelativePath(input: string): string {
 	const slashed = input.replaceAll("\\", "/");
-	if (slashed.includes("\0")) throw new Error(`Security scope path contains a null byte: ${input}`);
+	if (slashed.includes("\0")) throw new Error(t("Security scope path contains a null byte: {input}", { input }));
 	const rawSegments = slashed.split("/");
 	const normalized = path.posix.normalize(slashed).replace(/^\.\//, "").replace(/\/$/, "");
 	if (!slashed) return "";
@@ -90,7 +96,7 @@ function normalizeRelativePath(input: string): string {
 		path.posix.isAbsolute(normalized) ||
 		/^[a-zA-Z]:/.test(slashed)
 	) {
-		throw new Error(`Security scope path must be repository-relative: ${input}`);
+		throw new Error(t("Security scope path must be repository-relative: {input}", { input }));
 	}
 	return normalized;
 }
@@ -124,10 +130,11 @@ async function validateScopePaths(repositoryRoot: string, paths: readonly string
 	for (const relative of paths) {
 		if (!relative) continue;
 		const absolute = path.resolve(repositoryRoot, relative);
-		if (!pathIsWithin(absolute, repositoryRoot)) throw new Error(`Security scope escapes repository: ${relative}`);
+		if (!pathIsWithin(absolute, repositoryRoot))
+			throw new Error(t("Security scope escapes repository: {relative}", { relative }));
 		const canonical = await fs.realpath(absolute);
 		if (!pathIsWithin(canonical, repositoryRoot)) {
-			throw new Error(`Security scope resolves outside repository: ${relative}`);
+			throw new Error(t("Security scope resolves outside repository: {relative}", { relative }));
 		}
 	}
 }
@@ -149,7 +156,8 @@ async function digestWorkingTree(
 	for (const relativePath of files) {
 		if (signal?.aborted) throw signal.reason;
 		const absolutePath = path.resolve(repositoryRoot, relativePath);
-		if (!pathIsWithin(absolutePath, repositoryRoot)) throw new Error(`Git path escapes repository: ${relativePath}`);
+		if (!pathIsWithin(absolutePath, repositoryRoot))
+			throw new Error(t("Git path escapes repository: {relativePath}", { relativePath }));
 		const stats = await fs.lstat(absolutePath).catch(() => null);
 		hasher.update(relativePath);
 		hasher.update("\0");
@@ -180,7 +188,7 @@ async function normalizeTarget(
 	signal?: AbortSignal,
 ): Promise<SecurityTarget> {
 	if (request.kind === "scoped_path" && !request.includePaths?.some(value => value.trim().length > 0)) {
-		throw new Error("scoped_path security scans require at least one include path");
+		throw new Error(t("scoped_path security scans require at least one include path"));
 	}
 	const includePaths = normalizeScopePaths(request.includePaths);
 	const excludePaths = normalizeScopePaths(request.excludePaths);
@@ -190,8 +198,14 @@ async function normalizeTarget(
 	if (request.kind === "ref_diff") {
 		const baseRevision = await adapter.resolveRef(repositoryRoot, request.baseRevision, signal);
 		const headRevision = await adapter.resolveRef(repositoryRoot, request.headRevision, signal);
-		if (!baseRevision) throw new Error(`Unknown security scan base revision: ${request.baseRevision}`);
-		if (!headRevision) throw new Error(`Unknown security scan head revision: ${request.headRevision}`);
+		if (!baseRevision)
+			throw new Error(
+				t("Unknown security scan base revision: {baseRevision}", { baseRevision: request.baseRevision }),
+			);
+		if (!headRevision)
+			throw new Error(
+				t("Unknown security scan head revision: {headRevision}", { headRevision: request.headRevision }),
+			);
 		const rawDiff = await adapter.diffTree(repositoryRoot, baseRevision, headRevision, signal);
 		return {
 			kind: "ref_diff",
@@ -228,7 +242,7 @@ async function normalizeKnowledgeBases(
 	for (const input of paths ?? []) {
 		const canonical = await fs.realpath(path.resolve(baseDirectory, input));
 		const stats = await fs.stat(canonical);
-		if (!stats.isFile()) throw new Error(`Security knowledge base is not a file: ${input}`);
+		if (!stats.isFile()) throw new Error(t("Security knowledge base is not a file: {input}", { input }));
 		const digest = await hashFile(canonical);
 		results.push({ path: canonical, sha256: digest.sha256, size: digest.size });
 	}
@@ -244,19 +258,22 @@ async function normalizeOutput(
 	const parent = await fs.realpath(path.dirname(requested));
 	const canonicalCandidate = path.join(parent, path.basename(requested));
 	if (pathIsWithin(canonicalCandidate, repositoryRoot)) {
-		throw new Error("Security output directory must be outside the scanned repository");
+		throw new Error(t("Security output directory must be outside the scanned repository"));
 	}
 	let existingState: SecurityOutputPlan["existingState"] = "absent";
 	try {
 		const stats = await fs.lstat(canonicalCandidate);
-		if (stats.isSymbolicLink()) throw new Error("Security output directory must not be a symbolic link");
-		if (!stats.isDirectory()) throw new Error("Security output path exists and is not a directory");
+		if (stats.isSymbolicLink()) throw new Error(t("Security output directory must not be a symbolic link"));
+		if (!stats.isDirectory()) throw new Error(t("Security output path exists and is not a directory"));
 		const real = await fs.realpath(canonicalCandidate);
-		if (real !== canonicalCandidate) throw new Error("Security output directory does not have a canonical identity");
+		if (real !== canonicalCandidate)
+			throw new Error(t("Security output directory does not have a canonical identity"));
 		const entries = await fs.readdir(canonicalCandidate);
 		existingState = entries.length === 0 ? "empty" : "archivable";
 		if (entries.length > 0 && !archiveExisting) {
-			throw new Error("Security output directory is not empty; enable archiveExisting or choose another directory");
+			throw new Error(
+				t("Security output directory is not empty; enable archiveExisting or choose another directory"),
+			);
 		}
 	} catch (error) {
 		if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
@@ -278,15 +295,17 @@ export async function prepareSecurityOutputDirectory(
 ): Promise<PreparedSecurityOutput> {
 	const root = path.resolve(output.root);
 	const stats = await fs.lstat(root);
-	if (stats.isSymbolicLink()) throw new Error("Security output directory must not be a symbolic link");
-	if (!stats.isDirectory()) throw new Error("Security output path exists and is not a directory");
+	if (stats.isSymbolicLink()) throw new Error(t("Security output directory must not be a symbolic link"));
+	if (!stats.isDirectory()) throw new Error(t("Security output path exists and is not a directory"));
 	const canonical = await fs.realpath(root);
-	if (canonical !== root) throw new Error("Security output directory does not have a canonical identity");
+	if (canonical !== root) throw new Error(t("Security output directory does not have a canonical identity"));
 	const entries = await fs.readdir(root);
 	let archivedTo: string | undefined;
 	if (entries.length > 0) {
 		if (!output.archiveExisting) {
-			throw new Error("Security output directory is not empty; enable archiveExisting or choose another directory");
+			throw new Error(
+				t("Security output directory is not empty; enable archiveExisting or choose another directory"),
+			);
 		}
 		const safeSuffix = archiveSuffix.replace(/[^a-zA-Z0-9._-]/g, "-");
 		archivedTo = `${root}.archive-${safeSuffix}`;
@@ -303,7 +322,7 @@ interface SecurityPlanMaterial {
 	knowledgeBases: SecurityKnowledgeBaseRef[];
 	output: SecurityOutputPlan;
 	model: SecurityModelRef;
-	account: SecurityAccountRef;
+	account?: SecurityAccountRef;
 	configFingerprint: string;
 	workflowFingerprint: string;
 }
@@ -313,7 +332,7 @@ async function buildPlanMaterial(
 	adapter: SecurityGitAdapter,
 ): Promise<SecurityPlanMaterial> {
 	const repositoryRoot = await adapter.root(path.resolve(request.cwd), request.signal);
-	if (!repositoryRoot) throw new Error(`Security scans require a Git repository: ${request.cwd}`);
+	if (!repositoryRoot) throw new Error(t("Security scans require a Git repository: {cwd}", { cwd: request.cwd }));
 	const canonicalRoot = await fs.realpath(repositoryRoot);
 	const target = await normalizeTarget(canonicalRoot, request.target, adapter, request.signal);
 	const knowledgeBases = await normalizeKnowledgeBases(request.knowledgeBasePaths, canonicalRoot);
@@ -323,14 +342,17 @@ async function buildPlanMaterial(
 		modelId: request.model.modelId,
 	};
 	if (request.model.thinkingLevel !== undefined) model.thinkingLevel = request.model.thinkingLevel;
-	const account: SecurityAccountRef = {
-		provider: request.account.provider,
-		credentialId: request.account.credentialId,
-	};
-	if (request.account.accountId !== undefined) account.accountId = request.account.accountId;
-	if (request.account.email !== undefined) account.email = request.account.email;
-	if (request.account.organizationId !== undefined) account.organizationId = request.account.organizationId;
-	if (request.account.organizationName !== undefined) account.organizationName = request.account.organizationName;
+	let account: SecurityAccountRef | undefined;
+	if (request.account !== undefined) {
+		account = {
+			provider: request.account.provider,
+			credentialId: request.account.credentialId,
+		};
+		if (request.account.accountId !== undefined) account.accountId = request.account.accountId;
+		if (request.account.email !== undefined) account.email = request.account.email;
+		if (request.account.organizationId !== undefined) account.organizationId = request.account.organizationId;
+		if (request.account.organizationName !== undefined) account.organizationName = request.account.organizationName;
+	}
 	return {
 		repositoryRoot: canonicalRoot,
 		target,
@@ -349,12 +371,14 @@ export async function createSecurityScanPlan(
 ): Promise<SecurityScanPlan> {
 	const material = await buildPlanMaterial(request, adapter);
 	const fingerprint = `omp-security-plan/v1:sha256:${Bun.SHA256.hash(canonicalSecurityJson(material), "hex")}`;
+	const { account, ...materialWithoutAccount } = material;
 	return parseSecurityScanPlan({
 		documentType: "omp-security.scan-plan",
 		schemaVersion: "1.0",
 		id: createSecurityPlanId(fingerprint),
 		createdAt: request.createdAt ?? new Date().toISOString(),
-		...material,
+		...materialWithoutAccount,
+		...(account !== undefined ? { account } : {}),
 		fingerprint,
 	});
 }

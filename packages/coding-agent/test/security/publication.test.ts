@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { setLocale } from "../../src/i18n";
 import type { SecurityScanPlan } from "../../src/security";
 import { createSecurityPublicationTool, SecurityStore } from "../../src/security";
 
@@ -11,6 +12,7 @@ let store: SecurityStore;
 let plan: SecurityScanPlan;
 
 beforeEach(async () => {
+	setLocale("en");
 	temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-security-publication-"));
 	repositoryRoot = path.join(temporaryRoot, "repo");
 	await fs.mkdir(repositoryRoot);
@@ -41,6 +43,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	setLocale(null);
 	await fs.rm(temporaryRoot, { recursive: true, force: true });
 });
 

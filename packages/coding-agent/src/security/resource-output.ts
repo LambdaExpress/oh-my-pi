@@ -1,4 +1,5 @@
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { t } from "../i18n";
 import type { InternalResource } from "../internal-urls";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "../session/streaming-output";
 
@@ -44,7 +45,12 @@ export function createSecurityResource(options: SecurityResourceOptions): Intern
 		size: Buffer.byteLength(bounded.content),
 		isDirectory: options.isDirectory,
 		notes: bounded.truncated
-			? [`Security resource truncated to ${DEFAULT_MAX_LINES} lines / ${DEFAULT_MAX_BYTES} bytes.`]
+			? [
+					t("Security resource truncated to {lines} lines / {bytes} bytes.", {
+						lines: DEFAULT_MAX_LINES,
+						bytes: DEFAULT_MAX_BYTES,
+					}),
+				]
 			: undefined,
 	};
 }

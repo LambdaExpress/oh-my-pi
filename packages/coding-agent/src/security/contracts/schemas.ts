@@ -147,7 +147,7 @@ export const getSecurityContractSchemas = once(() => {
 			existingState: "'absent' | 'empty' | 'archivable'",
 		},
 		model: { provider: "string > 0", modelId: "string > 0", "thinkingLevel?": "string" },
-		account: {
+		"account?": {
 			provider: "string > 0",
 			credentialId: "number.integer >= 1",
 			"accountId?": "string",

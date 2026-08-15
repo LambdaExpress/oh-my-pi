@@ -2,6 +2,7 @@ import * as path from "node:path";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { getDefault } from "../config/settings-schema";
+import { t } from "../i18n";
 import type { SecurityFinding } from "../security/contracts";
 import { createPublicSecurityScan, redactPrivateSecurityMetadata } from "../security/provenance";
 import { createSecurityResource } from "../security/resource-output";
@@ -32,12 +33,11 @@ function securityEnabledFromContext(context?: ResolveContext): boolean | undefin
 	}
 }
 
-const SECURITY_DISABLED_MESSAGE =
-	"security:// is disabled. Enable it by setting `security.enabled = true` (Settings → Tools → Security).";
-
 export class SecurityDisabledError extends Error {
 	constructor() {
-		super(SECURITY_DISABLED_MESSAGE);
+		super(
+			t("security:// is disabled. Enable it by setting `security.enabled = true` (Settings → Tools → Security)."),
+		);
 		this.name = "SecurityDisabledError";
 	}
 }
@@ -49,12 +49,17 @@ function splitSecurityPath(url: InternalUrl): string[] {
 }
 
 function formatScans(scans: SecurityScanSummary[]): string {
-	if (scans.length === 0) return "# Security scans\n\nNo scans are stored for this project.\n";
-	const rows = scans.map(
-		scan =>
-			`- \`${scan.id}\` — ${scan.status}; ${scan.findingCount} finding(s); ${scan.producer.name}; ${scan.createdAt}`,
+	if (scans.length === 0) return `${t("# Security scans")}\n\n${t("No scans are stored for this project.")}\n`;
+	const rows = scans.map(scan =>
+		t("- `{id}` — {status}; {findingCount} finding(s); {producer}; {createdAt}", {
+			id: scan.id,
+			status: scan.status,
+			findingCount: scan.findingCount,
+			producer: scan.producer.name,
+			createdAt: scan.createdAt,
+		}),
 	);
-	return `# Security scans\n\n${rows.join("\n")}\n`;
+	return `${t("# Security scans")}\n\n${rows.join("\n")}\n`;
 }
 
 function formatFinding(finding: SecurityFinding): string {
@@ -72,28 +77,28 @@ function formatFinding(finding: SecurityFinding): string {
 	return [
 		`# ${sanitizeText(finding.title)}`,
 		"",
-		`- ID: \`${finding.id}\``,
-		`- Rule: \`${sanitizeText(finding.ruleId)}\``,
-		`- Severity: **${finding.severity.level}**`,
-		`- Confidence: **${finding.confidence.level}**`,
-		`- Disposition: **${finding.disposition.status}**`,
-		`- Fingerprint: \`${finding.fingerprint}\``,
+		t("- ID: `{id}`", { id: finding.id }),
+		t("- Rule: `{ruleId}`", { ruleId: sanitizeText(finding.ruleId) }),
+		t("- Severity: **{level}**", { level: finding.severity.level }),
+		t("- Confidence: **{level}**", { level: finding.confidence.level }),
+		t("- Disposition: **{status}**", { status: finding.disposition.status }),
+		t("- Fingerprint: `{fingerprint}`", { fingerprint: finding.fingerprint }),
 		"",
-		"## Summary",
+		t("## Summary"),
 		"",
 		sanitizeText(finding.summary),
 		"",
-		"## Locations",
+		t("## Locations"),
 		"",
-		...(locationLines.length > 0 ? locationLines : ["No source locations recorded."]),
+		...(locationLines.length > 0 ? locationLines : [t("No source locations recorded.")]),
 		"",
-		"## Evidence",
+		t("## Evidence"),
 		"",
-		...(evidence.length > 0 ? evidence : ["No expanded evidence recorded."]),
+		...(evidence.length > 0 ? evidence : [t("No expanded evidence recorded.")]),
 		"",
-		"## Remediation",
+		t("## Remediation"),
 		"",
-		sanitizeText(finding.remediation ?? "No remediation guidance recorded."),
+		sanitizeText(finding.remediation ?? t("No remediation guidance recorded.")),
 		"",
 	].join("\n");
 }
@@ -124,18 +129,21 @@ export class SecurityProtocolHandler implements ProtocolHandler {
 			return createSecurityResource({
 				url: "security://",
 				content: [
-					"# Security",
+					t("# Security"),
 					"",
-					"OMP-owned software-security analysis resources. The namespace is read-only; use explicit security commands or tools for mutations.",
+					t(
+						"OMP-owned software-security analysis resources. The namespace is read-only; use explicit security commands or tools for mutations.",
+					),
 					"",
-					"- `security://scans` — list scans",
+					t("- `security://scans` — list scans"),
 					"",
 				].join("\n"),
 				contentType: "text/markdown",
 				isDirectory: true,
 			});
 		}
-		if (parts[0] !== "scans") throw new Error(`Unknown security resource: security://${parts.join("/")}`);
+		if (parts[0] !== "scans")
+			throw new Error(t("Unknown security resource: security://{path}", { path: parts.join("/") }));
 		if (parts.length === 1) {
 			return createSecurityResource({
 				url: "security://scans",
@@ -146,20 +154,20 @@ export class SecurityProtocolHandler implements ProtocolHandler {
 		}
 		const scanId = parts[1];
 		const bundle = await store.getBundle(scanId);
-		if (!bundle) throw new Error(`Unknown security scan: ${scanId}`);
+		if (!bundle) throw new Error(t("Unknown security scan: {scanId}", { scanId }));
 		if (parts.length === 2) {
 			return createSecurityResource({
 				url: `security://scans/${scanId}`,
 				content: [
-					`# Security scan ${scanId}`,
+					t("# Security scan {scanId}", { scanId }),
 					"",
-					`- Status: **${bundle.scan.status}**`,
-					`- Producer: **${sanitizeText(bundle.scan.producer.name)}**`,
-					`- Findings: **${bundle.findings.length}**`,
-					`- Coverage: **${bundle.scan.coverage.completeness}**`,
-					`- Target: \`${sanitizeText(bundle.scan.target.displayName)}\``,
+					t("- Status: **{status}**", { status: bundle.scan.status }),
+					t("- Producer: **{producer}**", { producer: sanitizeText(bundle.scan.producer.name) }),
+					t("- Findings: **{count}**", { count: bundle.findings.length }),
+					t("- Coverage: **{completeness}**", { completeness: bundle.scan.coverage.completeness }),
+					t("- Target: `{target}`", { target: sanitizeText(bundle.scan.target.displayName) }),
 					"",
-					"Resources: `manifest`, `findings`, `coverage`, `report`, `sarif`, `provenance`.",
+					t("Resources: `manifest`, `findings`, `coverage`, `report`, `sarif`, `provenance`."),
 					"",
 				].join("\n"),
 				contentType: "text/markdown",
@@ -168,7 +176,8 @@ export class SecurityProtocolHandler implements ProtocolHandler {
 		}
 		switch (parts[2]) {
 			case "manifest":
-				if (parts.length !== 3) throw new Error(`Unknown security resource: security://${parts.join("/")}`);
+				if (parts.length !== 3)
+					throw new Error(t("Unknown security resource: security://{path}", { path: parts.join("/") }));
 				return createSecurityResource({
 					url: `security://scans/${scanId}/manifest`,
 					content: `${JSON.stringify(createPublicSecurityScan(bundle.scan, { includePlan: true }), null, 2)}\n`,
@@ -178,21 +187,28 @@ export class SecurityProtocolHandler implements ProtocolHandler {
 				if (parts.length === 3) {
 					const listing = bundle.findings.map(finding =>
 						[
-							`- \`${finding.id}\` **${finding.severity.level}** — ${sanitizeText(finding.title)}`,
-							` (\`${sanitizeText(finding.ruleId)}\`)`,
+							t("- `{id}` **{severity}** — {title}", {
+								id: finding.id,
+								severity: finding.severity.level,
+								title: sanitizeText(finding.title),
+							}),
+							t(" (`{ruleId}`)", { ruleId: sanitizeText(finding.ruleId) }),
 						].join(""),
 					);
 					return createSecurityResource({
 						url: `security://scans/${scanId}/findings`,
-						content: `# Findings for ${scanId}\n\n${listing.length > 0 ? listing.join("\n") : "No findings."}\n`,
+						content: `${t("# Findings for {scanId}", { scanId })}\n\n${
+							listing.length > 0 ? listing.join("\n") : t("No findings.")
+						}\n`,
 						contentType: "text/markdown",
 						isDirectory: true,
 					});
 				}
-				if (parts.length !== 4) throw new Error(`Unknown security resource: security://${parts.join("/")}`);
+				if (parts.length !== 4)
+					throw new Error(t("Unknown security resource: security://{path}", { path: parts.join("/") }));
 				const findingId = parts[3];
 				const finding = await store.getFinding(scanId, findingId);
-				if (!finding) throw new Error(`Unknown security finding: ${findingId}`);
+				if (!finding) throw new Error(t("Unknown security finding: {findingId}", { findingId }));
 				return createSecurityResource({
 					url: `security://scans/${scanId}/findings/${findingId}`,
 					content: formatFinding(finding),
@@ -200,37 +216,42 @@ export class SecurityProtocolHandler implements ProtocolHandler {
 				});
 			}
 			case "coverage":
-				if (parts.length !== 3) throw new Error(`Unknown security resource: security://${parts.join("/")}`);
+				if (parts.length !== 3)
+					throw new Error(t("Unknown security resource: security://{path}", { path: parts.join("/") }));
 				return createSecurityResource({
 					url: `security://scans/${scanId}/coverage`,
 					content: `${JSON.stringify(bundle.scan.coverage, null, 2)}\n`,
 					contentType: "application/json",
 				});
 			case "report":
-				if (parts.length !== 3) throw new Error(`Unknown security resource: security://${parts.join("/")}`);
-				if (bundle.report === undefined) throw new Error(`Security scan ${scanId} has no report`);
+				if (parts.length !== 3)
+					throw new Error(t("Unknown security resource: security://{path}", { path: parts.join("/") }));
+				if (bundle.report === undefined) throw new Error(t("Security scan {scanId} has no report", { scanId }));
 				return createSecurityResource({
 					url: `security://scans/${scanId}/report`,
 					content: bundle.report,
 					contentType: "text/markdown",
 				});
 			case "sarif":
-				if (parts.length !== 3) throw new Error(`Unknown security resource: security://${parts.join("/")}`);
-				if (bundle.sarif === undefined) throw new Error(`Security scan ${scanId} has no SARIF export`);
+				if (parts.length !== 3)
+					throw new Error(t("Unknown security resource: security://{path}", { path: parts.join("/") }));
+				if (bundle.sarif === undefined)
+					throw new Error(t("Security scan {scanId} has no SARIF export", { scanId }));
 				return createSecurityResource({
 					url: `security://scans/${scanId}/sarif`,
 					content: `${JSON.stringify(bundle.sarif, null, 2)}\n`,
 					contentType: "application/json",
 				});
 			case "provenance":
-				if (parts.length !== 3) throw new Error(`Unknown security resource: security://${parts.join("/")}`);
+				if (parts.length !== 3)
+					throw new Error(t("Unknown security resource: security://{path}", { path: parts.join("/") }));
 				return createSecurityResource({
 					url: `security://scans/${scanId}/provenance`,
 					content: `${JSON.stringify(redactPrivateSecurityMetadata(bundle.scan.provenance), null, 2)}\n`,
 					contentType: "application/json",
 				});
 			default:
-				throw new Error(`Unknown security resource: security://${parts.join("/")}`);
+				throw new Error(t("Unknown security resource: security://{path}", { path: parts.join("/") }));
 		}
 	}
 
@@ -238,13 +259,13 @@ export class SecurityProtocolHandler implements ProtocolHandler {
 		if (!(securityEnabledFromContext(context) ?? this.#enabled())) return [];
 		const store = await this.#store(context);
 		const scans = await store.listScans();
-		const candidates: UrlCompletion[] = [{ value: "scans", label: "Scans", description: "Stored security scans" }];
+		const candidates: UrlCompletion[] = [{ value: "scans", label: "Scans", description: t("Stored security scans") }];
 		for (const scan of scans.slice(0, 50)) {
 			const prefix = `scans/${scan.id}`;
 			candidates.push({
 				value: prefix,
 				label: scan.id,
-				description: `${scan.status}; ${scan.findingCount} findings`,
+				description: t("{status}; {count} findings", { status: scan.status, count: scan.findingCount }),
 			});
 			for (const child of ["manifest", "findings", "coverage", "report", "sarif", "provenance"]) {
 				candidates.push({ value: `${prefix}/${child}`, label: `${scan.id}/${child}` });

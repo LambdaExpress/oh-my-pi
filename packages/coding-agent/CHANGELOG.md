@@ -38,6 +38,7 @@
 
 ### Changed
 
+- Localized the security subsystem end to end: error messages, `security://` resource output, and `/security` slash-command descriptions now route through the i18n `t()` framework with zh-CN translations. Security scan plans also accept an optional OAuth account, so native scans can run in key mode without a stored ChatGPT/Codex credential.
 - Provider-native (remote) compaction failures no longer block the session: when every compaction candidate fails remote compaction (V2 streaming and V1 fallback), auto-compaction and manual `/compact` now warn with a notice and produce a local summary instead of aborting.
 - Changed completed-run collapsing to retain the full persisted display transcript across compaction, so older requests remain reachable through terminal scrollback and Alt+O while provider context stays compacted.
 - Changed tool routing prompts to call built-in tools and batched `task` directly by default, reserving `eval` JavaScript orchestration for complex value-dependent loops, branching, pipelines, and structured aggregation.

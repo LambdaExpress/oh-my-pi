@@ -1,5 +1,6 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult, ToolTier } from "@oh-my-pi/pi-agent-core";
+import { t } from "../i18n";
 import securityScanDescription from "../prompts/tools/security-scan.md" with { type: "text" };
 import { selectSecurityAccount } from "../security/auth";
 import {
@@ -95,6 +96,7 @@ function cloudClientForSession(session: ToolSession, credentialId?: number): Cod
 		credentialId,
 		session.getSessionId?.() ?? undefined,
 	);
+	if (!account) throw new ToolError(t("Codex Security cloud requires an openai-codex ChatGPT OAuth credential"));
 	return new CodexSecurityCloudClient({ authStorage: session.authStorage, account });
 }
 

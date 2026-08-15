@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { setLocale } from "../../src/i18n";
 import type { SecurityFinding, SecurityScanBundle } from "../../src/security/contracts";
 import {
 	createSecurityFindingFingerprint,
@@ -8,6 +9,14 @@ import {
 	parseSecurityFinding,
 	parseSecurityScanBundle,
 } from "../../src/security/contracts";
+
+beforeEach(() => {
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 const LOCATION = { path: "src/archive.ts", startLine: 10, endLine: 12, role: "sink" } as const;
 

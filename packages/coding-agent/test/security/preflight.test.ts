@@ -2,11 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { setLocale } from "../../src/i18n";
 import {
 	assertSecurityScanPlanFresh,
 	createSecurityScanPlan,
 	prepareSecurityOutputDirectory,
 	type SecurityGitAdapter,
+	type SecurityPlanRequest,
 	type SecurityTargetRequest,
 	StaleSecurityScanPlanError,
 } from "../../src/security";
@@ -29,6 +31,7 @@ const adapter: SecurityGitAdapter = {
 };
 
 beforeEach(async () => {
+	setLocale("en");
 	temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-security-preflight-"));
 	repositoryRoot = path.join(temporaryRoot, "repo");
 	stateRoot = path.join(temporaryRoot, "output");
@@ -44,6 +47,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	setLocale(null);
 	await fs.rm(temporaryRoot, { recursive: true, force: true });
 });
 
@@ -68,8 +72,26 @@ describe("security preflight", () => {
 		const first = await plan();
 		const second = await plan();
 		expect(first.fingerprint).toBe(second.fingerprint);
-		expect(first.account.credentialId).toBe(17);
+		expect(first.account?.credentialId).toBe(17);
 		expect(first.model).toEqual({ provider: "openai-codex", modelId: "gpt-5.6-sol", thinkingLevel: "xhigh" });
+	});
+
+	test("key mode plans without an account and keeps a stable fingerprint", async () => {
+		const request: SecurityPlanRequest = {
+			cwd: repositoryRoot,
+			target: { kind: "repository" },
+			outputRoot: stateRoot,
+			model: { provider: "opencode-go", modelId: "deepseek-v4-flash", thinkingLevel: "xhigh" },
+			config: { security: { enabled: true } },
+			workflowFingerprint: "security-reviewer@fixture",
+			createdAt: "2026-07-29T00:00:00.000Z",
+		};
+		const first = await createSecurityScanPlan(request, adapter);
+		const second = await createSecurityScanPlan(request, adapter);
+		expect(first.account).toBeUndefined();
+		expect(second.account).toBeUndefined();
+		expect(first.fingerprint).toBe(second.fingerprint);
+		expect(first.model).toEqual({ provider: "opencode-go", modelId: "deepseek-v4-flash", thinkingLevel: "xhigh" });
 	});
 
 	test("tree mutation makes a plan stale", async () => {

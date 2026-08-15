@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { setLocale } from "../../src/i18n";
 import { InternalUrlRouter, SecurityProtocolHandler } from "../../src/internal-urls";
 import { parseInternalUrl } from "../../src/internal-urls/parse";
 import { importCodexSecurityBundle, importSarifFile, SecurityStore } from "../../src/security";
@@ -12,6 +13,7 @@ let repositoryRoot = "";
 let store: SecurityStore;
 
 beforeEach(async () => {
+	setLocale("en");
 	temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), "omp-security-protocol-"));
 	repositoryRoot = path.join(temporaryRoot, "repo");
 	await fs.mkdir(repositoryRoot);
@@ -38,6 +40,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	setLocale(null);
 	InternalUrlRouter.resetForTests();
 	await fs.rm(temporaryRoot, { recursive: true, force: true });
 });

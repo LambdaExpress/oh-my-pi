@@ -188,7 +188,7 @@ export interface SecurityScanPlan {
 	knowledgeBases: SecurityKnowledgeBaseRef[];
 	output: SecurityOutputPlan;
 	model: SecurityModelRef;
-	account: SecurityAccountRef;
+	account?: SecurityAccountRef;
 	configFingerprint: string;
 	workflowFingerprint: string;
 	fingerprint: string;

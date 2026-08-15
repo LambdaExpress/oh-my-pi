@@ -2,8 +2,13 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { refreshDirsFromEnv } from "@oh-my-pi/pi-utils";
+import { $ } from "bun";
+import { ModelRegistry } from "../../src/config/model-registry";
 import { Settings } from "../../src/config/settings";
+import { setLocale } from "../../src/i18n";
 import { SecurityStore } from "../../src/security";
 import { handleSecurityCommand } from "../../src/slash-commands/helpers/security";
 import type { SlashCommandRuntime } from "../../src/slash-commands/types";
@@ -25,10 +30,12 @@ beforeEach(async () => {
 	process.env.XDG_STATE_HOME = path.join(temporaryRoot, "xdg-state");
 	refreshDirsFromEnv();
 	settings = Settings.isolated({ "security.enabled": true });
+	setLocale("en");
 	output = [];
 });
 
 afterEach(async () => {
+	setLocale(null);
 	settings.cancelPendingSaves();
 	if (previousStateHome === undefined) delete process.env.XDG_STATE_HOME;
 	else process.env.XDG_STATE_HOME = previousStateHome;
@@ -145,5 +152,37 @@ describe("/security", () => {
 		const result = await command("scans");
 		expect(result).toEqual({ consumed: true });
 		expect(output.at(-1)).toContain("disabled");
+	});
+
+	test("plan succeeds without a stored OAuth account (key mode)", async () => {
+		await fs.mkdir(path.join(repositoryRoot, "src"), { recursive: true });
+		await Bun.write(path.join(repositoryRoot, "src", "app.ts"), "export const app = true;\n");
+		await $`git init --initial-branch=main`.cwd(repositoryRoot).quiet();
+		await $`git config user.name Fixture`.cwd(repositoryRoot).quiet();
+		await $`git config user.email fixture@example.invalid`.cwd(repositoryRoot).quiet();
+		await $`git add src/app.ts`.cwd(repositoryRoot).quiet();
+		await $`git commit -m fixture`.cwd(repositoryRoot).quiet();
+		const credentialStore = await SqliteAuthCredentialStore.open(path.join(temporaryRoot, "agent.db"));
+		try {
+			const authStorage = new AuthStorage(credentialStore);
+			const modelRegistry = new ModelRegistry(authStorage, path.join(temporaryRoot, "models.yml"));
+			const mock = createMockModel({ id: "security-mock", provider: "openai" });
+			const session = {
+				modelRegistry,
+				model: mock.model,
+				sessionId: "key-mode-session",
+				getAgentId: () => "Main",
+			} as unknown as SlashCommandRuntime["session"];
+			const result = await handleSecurityCommand(
+				{ name: "security", args: "plan", text: "/security plan" },
+				{ ...runtime(), session },
+			);
+			expect(result).toEqual({ consumed: true });
+			expect(output.at(-1)).toContain("Security plan secplan_");
+			expect(output.at(-1)).toContain("Fingerprint: omp-security-plan/v1:sha256:");
+			expect(output.at(-1)).not.toContain("requires a stored OAuth account");
+		} finally {
+			await credentialStore.close();
+		}
 	});
 });

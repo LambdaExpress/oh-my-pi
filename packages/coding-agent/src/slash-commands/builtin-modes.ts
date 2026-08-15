@@ -6,6 +6,7 @@ import {
 	resolveCliModel,
 } from "../config/model-resolver";
 import type { SettingPath } from "../config/settings";
+import { t } from "../i18n";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
@@ -152,21 +153,21 @@ export function formatTokenCount(value: number): string {
 export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "security",
-		description: "Plan, run, inspect, import, and compare OMP-native security scans",
+		description: t("Plan, run, inspect, import, and compare OMP-native security scans"),
 		allowArgs: true,
 		acpInputHint: "<plan|scan|status|cancel|scans|show|import|export|validate|compare|disposition>",
 		subcommands: [
-			{ name: "plan", description: "Create an immutable security scan plan" },
-			{ name: "scan", description: "Start a planned or newly planned native scan" },
-			{ name: "status", description: "Show native scan operation status" },
-			{ name: "cancel", description: "Cancel a running native scan" },
-			{ name: "scans", description: "List stored project security scans" },
-			{ name: "show", description: "Render a scan or security:// resource" },
-			{ name: "import", description: "Import SARIF or a Codex Security bundle" },
-			{ name: "export", description: "Export a canonical bundle, SARIF, or report" },
-			{ name: "validate", description: "Validate one finding with OMP-native tools" },
-			{ name: "compare", description: "Compare finding lineage across two scans" },
-			{ name: "disposition", description: "Set a finding disposition with rationale" },
+			{ name: "plan", description: t("Create an immutable security scan plan") },
+			{ name: "scan", description: t("Start a planned or newly planned native scan") },
+			{ name: "status", description: t("Show native scan operation status") },
+			{ name: "cancel", description: t("Cancel a running native scan") },
+			{ name: "scans", description: t("List stored project security scans") },
+			{ name: "show", description: t("Render a scan or security:// resource") },
+			{ name: "import", description: t("Import SARIF or a Codex Security bundle") },
+			{ name: "export", description: t("Export a canonical bundle, SARIF, or report") },
+			{ name: "validate", description: t("Validate one finding with OMP-native tools") },
+			{ name: "compare", description: t("Compare finding lineage across two scans") },
+			{ name: "disposition", description: t("Set a finding disposition with rationale") },
 		],
 		handle: handleSecurityCommand,
 	},

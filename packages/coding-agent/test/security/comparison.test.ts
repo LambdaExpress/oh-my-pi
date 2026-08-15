@@ -1,6 +1,15 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { setLocale } from "../../src/i18n";
 import type { SecurityFinding, SecurityScanBundle } from "../../src/security";
 import { compareSecurityLineage, compareSecurityProducers } from "../../src/security";
+
+beforeEach(() => {
+	setLocale("en");
+});
+
+afterEach(() => {
+	setLocale(null);
+});
 
 function finding(
 	id: string,

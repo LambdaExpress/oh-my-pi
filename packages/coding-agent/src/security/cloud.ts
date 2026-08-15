@@ -1,4 +1,5 @@
 import { decodeJwt } from "@oh-my-pi/pi-ai/registry/oauth/openai-codex";
+import { t } from "../i18n";
 import type { AuthStorage } from "../session/auth-storage";
 import * as git from "../utils/git";
 import { resolveExactSecurityOAuthAccess } from "./auth";
@@ -100,7 +101,7 @@ export interface PullCodexSecurityCloudResultsInput {
 
 function object(value: unknown): JsonObject {
 	if (!value || typeof value !== "object" || Array.isArray(value))
-		throw new Error("Codex Security cloud returned an invalid object");
+		throw new Error(t("Codex Security cloud returned an invalid object"));
 	return value as JsonObject;
 }
 
@@ -110,7 +111,7 @@ function optionalObject(value: unknown): JsonObject {
 
 function requiredString(value: unknown, field: string): string {
 	if (typeof value !== "string" || value.length === 0)
-		throw new Error(`Codex Security cloud response is missing ${field}`);
+		throw new Error(t("Codex Security cloud response is missing {field}", { field }));
 	return value;
 }
 
@@ -158,7 +159,7 @@ function normalizeConfiguration(value: unknown): CodexSecurityCloudConfiguration
 
 function jwtSubject(accessToken: string): string {
 	const claims = decodeJwt(accessToken);
-	if (!claims) throw new Error("The selected ChatGPT credential is not a valid JWT");
+	if (!claims) throw new Error(t("The selected ChatGPT credential is not a valid JWT"));
 	return requiredString(claims.sub ?? claims.user_id, "authenticated user id");
 }
 
@@ -167,7 +168,7 @@ export class CodexSecurityCloudHttpError extends Error {
 		readonly status: number,
 		readonly endpoint: string,
 	) {
-		super(`Codex Security cloud request failed (${status}) at ${endpoint}`);
+		super(t("Codex Security cloud request failed ({status}) at {endpoint}", { status, endpoint }));
 		this.name = "CodexSecurityCloudHttpError";
 	}
 }
@@ -187,7 +188,7 @@ export class CodexSecurityCloudClient {
 
 	constructor(options: CodexSecurityCloudClientOptions) {
 		if (options.account.provider !== "openai-codex") {
-			throw new Error("Codex Security cloud requires an openai-codex ChatGPT OAuth credential");
+			throw new Error(t("Codex Security cloud requires an openai-codex ChatGPT OAuth credential"));
 		}
 		this.#authStorage = options.authStorage;
 		this.#account = options.account;
@@ -223,7 +224,7 @@ export class CodexSecurityCloudClient {
 			if (!response.ok) throw new CodexSecurityCloudHttpError(response.status, url.pathname);
 			return object(await response.json());
 		}
-		throw new Error("Codex Security cloud authentication refresh failed");
+		throw new Error(t("Codex Security cloud authentication refresh failed"));
 	}
 
 	async listConfigurations(
@@ -259,7 +260,7 @@ export class CodexSecurityCloudClient {
 			if (found) return found;
 			cursor = page.nextCursor;
 		} while (cursor);
-		throw new Error(`Unknown Codex Security cloud configuration: ${configurationId}`);
+		throw new Error(t("Unknown Codex Security cloud configuration: {configurationId}", { configurationId }));
 	}
 
 	async startScan(input: StartCodexSecurityCloudScanInput): Promise<CodexSecurityCloudConfiguration> {
@@ -268,7 +269,7 @@ export class CodexSecurityCloudClient {
 			input.lookbackDays !== "all" &&
 			(!Number.isInteger(input.lookbackDays) || input.lookbackDays < 1)
 		) {
-			throw new Error("lookbackDays must be a positive integer or 'all'");
+			throw new Error(t("lookbackDays must be a positive integer or 'all'"));
 		}
 		const raw = await this.#request("scan_configurations", {
 			method: "POST",
@@ -452,7 +453,7 @@ function locationsAndEvidence(
 		}
 	}
 	if (locations.length === 0)
-		throw new Error("Codex Security cloud finding has no usable repository-relative location");
+		throw new Error(t("Codex Security cloud finding has no usable repository-relative location"));
 	const validationReport = text(commit.validation_report) ?? text(commit.fix_check_report);
 	if (validationReport) {
 		evidenceInputs.push({
@@ -584,11 +585,13 @@ async function assertCloudRepositoryMatchesStore(
 	const origin = await git.remote.url(store.repositoryRoot, "origin", signal);
 	if (!origin) {
 		throw new Error(
-			"Codex Security cloud import requires a verifiable repository identity; this project has no 'origin' remote",
+			t(
+				"Codex Security cloud import requires a verifiable repository identity; this project has no 'origin' remote",
+			),
 		);
 	}
 	if (repositoryIdentity(origin) !== repositoryIdentity(configuration.repositoryUrl)) {
-		throw new Error("Codex Security cloud configuration does not match this project's origin remote");
+		throw new Error(t("Codex Security cloud configuration does not match this project's origin remote"));
 	}
 }
 
