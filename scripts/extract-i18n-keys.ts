@@ -22,7 +22,9 @@ const ZH_CN_PATH = `${SRC_DIR}i18n/locales/zh-CN.ts`;
 const T_CALL_RE = /\bt\(\s*((?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'))/g;
 const SCHEMA_LITERAL_RE = /\b(label|description):\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/gm;
 const CMD_DESCRIPTION_RE = /\bdescription:\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/gm;
-const ZH_CN_KEY_RE = /^(\t| )*((?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')):/;
+// Catalog keys may be quoted ("..." / '...') or bare identifiers (Yes:, Ask:);
+// the bare branch excludes quote chars so quoted keys always parse whole.
+const ZH_CN_KEY_RE = /^(\t| )*((?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')|[^\s"']+):(?=\s|$)/;
 
 /**
  * Dynamic keys that cannot be statically extracted from `t("...")` calls
@@ -105,7 +107,10 @@ async function readCatalogKeys(): Promise<Set<string>> {
 		const text = await Bun.file(ZH_CN_PATH).text();
 		for (const line of text.split("\n")) {
 			const match = line.match(ZH_CN_KEY_RE);
-			if (match) keys.add(parseStringLiteral(match[2]));
+			if (match) {
+				const literal = match[2];
+				keys.add(literal[0] === '"' || literal[0] === "'" ? parseStringLiteral(literal) : literal);
+			}
 		}
 	} catch {
 		// Catalog missing — treat as empty (all keys missing).

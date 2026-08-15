@@ -7,6 +7,7 @@
  */
 import { type Component, matchesKey, padding, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import { isProviderEnabled } from "../../../discovery";
+import { t } from "../../../i18n";
 import { theme } from "../../../modes/theme/theme";
 import { matchesSelectDown, matchesSelectUp } from "../../utils/keybinding-matchers";
 import { clampSelection, contentRowWidth, renderScrollableList, searchableChar } from "../selector-helpers";
@@ -114,14 +115,14 @@ export class ExtensionList implements Component {
 		this.#visibleCount = 0;
 
 		// Search bar
-		const searchPrefix = theme.fg("muted", "Search: ");
-		const searchText = this.#searchQuery || (this.#focused ? "" : theme.fg("dim", "type to filter"));
+		const searchPrefix = theme.fg("muted", t("Search: "));
+		const searchText = this.#searchQuery || (this.#focused ? "" : theme.fg("dim", t("type to filter")));
 		const cursor = this.#focused ? theme.fg("accent", "_") : "";
 		lines.push(searchPrefix + searchText + cursor);
 		lines.push("");
 
 		if (this.#listItems.length === 0) {
-			lines.push(theme.fg("muted", "  No extensions found for this provider."));
+			lines.push(theme.fg("muted", `  ${t("No extensions found for this provider.")}`));
 			return lines;
 		}
 
@@ -171,8 +172,8 @@ export class ExtensionList implements Component {
 			? theme.fg("success", theme.checkbox.checked)
 			: theme.fg("dim", theme.checkbox.unchecked);
 		const icon = theme.icon.package;
-		const label = `Enable ${item.providerName}`;
-		const badge = theme.fg("warning", "(Master Switch)");
+		const label = t("Enable {provider}", { provider: item.providerName });
+		const badge = theme.fg("warning", t("(Master Switch)"));
 
 		let line = `${checkbox} ${icon} ${label}  ${badge}`;
 
@@ -366,25 +367,25 @@ export class ExtensionList implements Component {
 	#getKindLabel(kind: ExtensionKind): string {
 		switch (kind) {
 			case "extension-module":
-				return "Extension Modules";
+				return t("Extension Modules");
 			case "skill":
-				return "Skills";
+				return t("Skills");
 			case "tool":
-				return "Tools";
+				return t("Tools");
 			case "slash-command":
-				return "Commands";
+				return t("Commands");
 			case "rule":
-				return "Rules";
+				return t("Rules");
 			case "mcp":
-				return "MCP Servers";
+				return t("MCP Servers");
 			case "hook":
-				return "Hooks";
+				return t("Hooks");
 			case "prompt":
-				return "Prompts";
+				return t("Prompts");
 			case "context-file":
-				return "Context";
+				return t("Context");
 			case "instruction":
-				return "Instructions";
+				return t("Instructions");
 			default:
 				return kind;
 		}

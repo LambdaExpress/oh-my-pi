@@ -9,6 +9,7 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { t } from "../i18n";
 import { bottomBorder, divider, row, topBorder } from "../modes/components/overlay-box";
 import { theme } from "../modes/theme/theme";
 import { copyToClipboard } from "../utils/clipboard";
@@ -687,7 +688,7 @@ export class DebugLogViewerComponent implements Component {
 		const visibleBodyLines = this.#renderVisibleBodyLines(rows, bodyHeight);
 
 		return [
-			topBorder(this.#lastRenderWidth, "Recent Logs"),
+			topBorder(this.#lastRenderWidth, t("Recent Logs")),
 			row(this.#summaryText(), this.#lastRenderWidth),
 			row(this.#filterText(), this.#lastRenderWidth),
 			divider(this.#lastRenderWidth),
@@ -702,27 +703,29 @@ export class DebugLogViewerComponent implements Component {
 	#summaryText(): string {
 		const selected = this.#model.getSelectedCount();
 		const expanded = this.#model.expandedCount;
-		return `${theme.fg("muted", "showing")} ${theme.fg("accent", `${this.#model.visibleLogCount}/${this.#model.logCount}`)}  ${theme.fg("muted", "selected")} ${theme.fg(selected > 0 ? "accent" : "muted", String(selected))}  ${theme.fg("muted", "expanded")} ${theme.fg(expanded > 0 ? "accent" : "muted", String(expanded))}`;
+		return `${theme.fg("muted", t("showing"))} ${theme.fg("accent", `${this.#model.visibleLogCount}/${this.#model.logCount}`)}  ${theme.fg("muted", t("selected"))} ${theme.fg(selected > 0 ? "accent" : "muted", String(selected))}  ${theme.fg("muted", t("expanded"))} ${theme.fg(expanded > 0 ? "accent" : "muted", String(expanded))}`;
 	}
 
 	#controlsText(): string {
-		return "Esc close · Ctrl+C copy · ↑/↓/wheel move · click toggle · Shift+↑/↓ select · ←/→ collapse/expand · Ctrl+A all · Ctrl+O older · Ctrl+P pid";
+		return t(
+			"Esc close · Ctrl+C copy · ↑/↓/wheel move · click toggle · Shift+↑/↓ select · ←/→ collapse/expand · Ctrl+A all · Ctrl+O older · Ctrl+P pid",
+		);
 	}
 
 	#filterText(): string {
 		const sanitized = replaceTabs(sanitizeText(this.#model.filterQuery));
-		const query = sanitized.length === 0 ? theme.fg("muted", "type to filter") : theme.fg("accent", sanitized);
+		const query = sanitized.length === 0 ? theme.fg("muted", t("type to filter")) : theme.fg("accent", sanitized);
 		const pidStatus = this.#model.isProcessFilterEnabled()
-			? theme.fg("success", "pid on")
-			: theme.fg("muted", "pid off");
-		const loading = this.#loadingOlder ? `  ${theme.fg("warning", "loading older…")}` : "";
-		return `${theme.fg("muted", "filter")} ${query}  ${pidStatus}${loading}`;
+			? theme.fg("success", t("pid on"))
+			: theme.fg("muted", t("pid off"));
+		const loading = this.#loadingOlder ? `  ${theme.fg("warning", t("loading older…"))}` : "";
+		return `${theme.fg("muted", t("filter"))} ${query}  ${pidStatus}${loading}`;
 	}
 
 	#statusText(): string {
 		return this.#statusMessage
 			? theme.fg("success", this.#statusMessage)
-			: theme.fg("dim", "Enter loads older when highlighted; printable keys update filter");
+			: theme.fg("dim", t("Enter loads older when highlighted; printable keys update filter"));
 	}
 
 	#bodyHeight(): number {
@@ -809,7 +812,7 @@ export class DebugLogViewerComponent implements Component {
 			if (row.kind === "warning") {
 				rendered.push({
 					rowIndex,
-					lines: [theme.fg("muted", truncateToWidth(SESSION_BOUNDARY_WARNING, innerWidth))],
+					lines: [theme.fg("muted", truncateToWidth(t(SESSION_BOUNDARY_WARNING), innerWidth))],
 				});
 				continue;
 			}
@@ -819,7 +822,7 @@ export class DebugLogViewerComponent implements Component {
 				const marker = active ? theme.fg("accent", "❯") : " ";
 				const prefix = `${marker}  `;
 				const contentWidth = Math.max(1, innerWidth - visibleWidth(prefix));
-				const label = truncateToWidth(LOAD_OLDER_LABEL, contentWidth);
+				const label = truncateToWidth(t(LOAD_OLDER_LABEL), contentWidth);
 				rendered.push({
 					rowIndex,
 					lines: [truncateToWidth(`${prefix}${theme.fg("muted", label)}`, innerWidth)],
@@ -861,7 +864,7 @@ export class DebugLogViewerComponent implements Component {
 		const lines: string[] = [];
 		if (rows.length === 0) {
 			this.#bodyLineToRowIndex.push(undefined);
-			lines.push(row(theme.fg("muted", "no matches"), this.#lastRenderWidth));
+			lines.push(row(theme.fg("muted", t("no matches")), this.#lastRenderWidth));
 		}
 		for (let i = this.#scrollRowOffset; i < rows.length; i++) {
 			const renderedRow = rows[i];
@@ -946,7 +949,7 @@ export class DebugLogViewerComponent implements Component {
 		const selected = selectedPayload.length === 0 ? [] : selectedPayload.split("\n");
 
 		if (selected.length === 0) {
-			const message = "No log entry selected";
+			const message = t("No log entry selected");
 			this.#statusMessage = message;
 			this.#onStatus?.(message);
 			return;
@@ -954,13 +957,16 @@ export class DebugLogViewerComponent implements Component {
 
 		try {
 			copyToClipboard(selectedPayload);
-			const message = `Copied ${selected.length} log ${selected.length === 1 ? "entry" : "entries"}`;
+			const message = t("Copied {count} log {word}", {
+				count: selected.length,
+				word: t(selected.length === 1 ? "entry" : "entries"),
+			});
 			this.#statusMessage = message;
 			this.#onStatus?.(message);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			this.#statusMessage = `Copy failed: ${message}`;
-			this.#onError?.(`Failed to copy logs: ${message}`);
+			this.#statusMessage = t("Copy failed: {message}", { message });
+			this.#onError?.(t("Failed to copy logs: {message}", { message }));
 		}
 	}
 }

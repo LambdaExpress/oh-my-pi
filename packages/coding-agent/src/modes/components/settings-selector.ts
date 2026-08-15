@@ -650,6 +650,12 @@ function translatedLabel(path: SettingPath, fallback: string): string {
 			return t("Ruby Eval Backend");
 		case "exa.searchDelayMs":
 			return t("Exa Search Delay");
+		case "exa.enabled":
+			return t("Exa");
+		case "externalThinking":
+			return t("External Thinking");
+		case "experimental.firstTurnAnchor":
+			return t("First-Turn Anchor");
 		case "features.unexpectedStopDetection":
 			return t("Detect unexpected stops");
 		case "fetch.enabled":
@@ -1371,6 +1377,14 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			return t("Allow the eval tool to dispatch Python cells to the IPython kernel");
 		case "exa.searchDelayMs":
 			return t("Minimum delay between Exa web search requests in milliseconds; set 0 to disable pacing");
+		case "exa.enabled":
+			return t("Enable the Exa web search provider");
+		case "externalThinking":
+			return t("Private scratchpad; not shown to user. Disables supported GPT, Claude, and Gemini reasoning");
+		case "experimental.firstTurnAnchor":
+			return t(
+				"Experimental: DeepSeek V4 optimization. The session's first model request uses the Minimal two-tool catalog (bash + str_replace_editor) with a one-line system prompt, then restores the full configuration from request #2 on. Only applies to DeepSeek-family models in fresh sessions.",
+			);
 		case "features.unexpectedStopDetection":
 			return t(
 				"Use a small model to detect when the assistant says it will continue but stops without tool calls; automatically prompt it to continue.",

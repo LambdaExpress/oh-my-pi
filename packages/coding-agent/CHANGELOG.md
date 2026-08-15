@@ -58,6 +58,8 @@
 
 ### Fixed
 
+- Fixed a batch of settings-panel and CLI help strings showing English under zh-CN: the `externalThinking` and `exa.enabled` settings were missing their `translatedLabel`/`translatedDescription` cases, the `/agents` hub and extension/log-viewer surfaces rendered untranslated literals, and CLI flag/argument descriptions from `compress`/`cleanse`/`share`/`dry-balance`/`launch-help` had no catalog entries. The `extract-i18n-keys.ts` audit also misread bare-identifier catalog keys (`Yes:`, `Ask:`), inflating the missing-key report from 0 to hundreds.
+- Fixed the settings panel showing the "First-Turn Anchor" (`experimental.firstTurnAnchor`) label and description in English under zh-CN: its path was missing from the settings-selector translation switches, so the catalog entry in `zh-CN.ts` was never reached.
 - Fixed per-tool "prompt" approval policies being skipped when the tool's own decision resolved without an override flag; the prompt requirement now follows the resolution source (tool decision or explicit user policy), so xdev approval no longer suppresses a tool's declared prompt policy.
 - Fixed the write tool's streaming preview staying blank until `path` had streamed in: models that emit `content` before `path` (DeepSeek-family via OpenAI-compatible gateways) now show the live content preview with a placeholder path immediately, swapping the real path in when it lands.
 - Fixed queued `/tan` sessions appearing in Agent Hub as unrecoverable parked agents before execution began; tangential forks now stay in memory until the live agent is registered and their durable revival metadata is ready.

@@ -17,6 +17,7 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import * as discovery from "@oh-my-pi/pi-coding-agent/task/discovery";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const ANSI_PATTERN = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const tempDirs: string[] = [];
@@ -87,6 +88,10 @@ afterEach(async () => {
 	vi.restoreAllMocks();
 	await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
 });
+
+// Rendering assertions target the English surface; the zh-CN machine
+// auto-detection would otherwise flip them (same pattern as issue-986).
+setLocale("en");
 
 describe("AgentsHub layout", () => {
 	test("renders the full-height split frame with sidebar scopes and agent rows", async () => {

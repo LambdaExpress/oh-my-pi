@@ -39,6 +39,7 @@ import {
 	resolveModelOverride,
 } from "../../config/model-resolver";
 import type { Settings } from "../../config/settings";
+import { t } from "../../i18n";
 import agentCreationArchitectPrompt from "../../prompts/system/agent-creation-architect.md" with { type: "text" };
 import agentCreationUserPrompt from "../../prompts/system/agent-creation-user.md" with { type: "text" };
 import { createAgentSession } from "../../sdk";
@@ -164,26 +165,26 @@ function extractJsonObject(raw: string): string {
 function parseGeneratedAgentSpec(raw: string): GeneratedAgentSpec {
 	const parsed = JSON.parse(extractJsonObject(raw)) as Partial<GeneratedAgentSpec>;
 	if (!parsed || typeof parsed !== "object") {
-		throw new Error("Model output is not a JSON object");
+		throw new Error(t("Model output is not a JSON object"));
 	}
 	if (
 		typeof parsed.identifier !== "string" ||
 		typeof parsed.whenToUse !== "string" ||
 		typeof parsed.systemPrompt !== "string"
 	) {
-		throw new Error("Model output is missing required fields (identifier, whenToUse, systemPrompt)");
+		throw new Error(t("Model output is missing required fields (identifier, whenToUse, systemPrompt)"));
 	}
 	const identifier = parsed.identifier.trim();
 	const whenToUse = parsed.whenToUse.trim();
 	const systemPrompt = parsed.systemPrompt.trim();
 	if (!IDENTIFIER_PATTERN.test(identifier)) {
-		throw new Error("Generated identifier is invalid (must be lowercase kebab-case, 2+ words)");
+		throw new Error(t("Generated identifier is invalid (must be lowercase kebab-case, 2+ words)"));
 	}
 	if (!whenToUse.toLowerCase().startsWith("use this agent when")) {
-		throw new Error("Generated whenToUse must start with 'Use this agent when...'");
+		throw new Error(t("Generated whenToUse must start with 'Use this agent when...'"));
 	}
 	if (!systemPrompt) {
-		throw new Error("Generated systemPrompt is empty");
+		throw new Error(t("Generated systemPrompt is empty"));
 	}
 	return { identifier, whenToUse, systemPrompt };
 }
@@ -331,7 +332,7 @@ export class AgentsHubComponent implements Component {
 		const counts: Record<AgentSource, number> = { project: 0, user: 0, bundled: 0 };
 		for (const agent of this.#allAgents) counts[agent.source]++;
 		const entries: SidebarEntry[] = [
-			{ id: "all", kind: "all", label: "All agents", annotation: String(this.#allAgents.length) },
+			{ id: "all", kind: "all", label: t("All agents"), annotation: String(this.#allAgents.length) },
 		];
 		const sources = (["project", "user", "bundled"] as const).filter(source => counts[source] > 0);
 		if (sources.length > 0) {
@@ -340,14 +341,14 @@ export class AgentsHubComponent implements Component {
 				entries.push({
 					id: `source:${source}`,
 					kind: "source",
-					label: SOURCE_LABEL[source],
+					label: t(SOURCE_LABEL[source]),
 					source,
 					annotation: String(counts[source]),
 				});
 			}
 		}
 		entries.push({ id: "sep:actions", kind: "separator", label: "" });
-		entries.push({ id: "new", kind: "new", label: "New agent" });
+		entries.push({ id: "new", kind: "new", label: t("New agent") });
 		this.#entries = entries;
 		if (!entries.some(entry => entry.id === this.#activeEntryId)) this.#activeEntryId = "all";
 	}
@@ -422,7 +423,7 @@ export class AgentsHubComponent implements Component {
 			.map(entry => entry.name)
 			.sort((a, b) => a.localeCompare(b));
 		this.#settings.set("task.disabledAgents", disabled);
-		this.#notice = `${agent.name} ${agent.disabled ? "disabled" : "enabled"}`;
+		this.#notice = `${agent.name} ${t(agent.disabled ? "disabled" : "enabled")}`;
 		this.#tui.requestRender();
 	}
 
@@ -497,14 +498,14 @@ export class AgentsHubComponent implements Component {
 	#propertySummary(agent: HubAgent, property: PropertyKind): string {
 		switch (property) {
 			case "model":
-				return agent.overrideModel ?? "auto";
+				return agent.overrideModel ?? t("auto");
 			case "prewalk": {
 				const pattern = this.#effectivePrewalkPattern(agent);
-				return pattern ?? "off";
+				return pattern ?? t("off");
 			}
 			case "advisor": {
 				const pattern = this.#effectiveAdvisorPattern(agent);
-				return pattern ?? "off";
+				return pattern ?? t("off");
 			}
 		}
 	}
@@ -512,17 +513,18 @@ export class AgentsHubComponent implements Component {
 	/** Level-1 strip: pick which knob of `agent` to change. */
 	#openAgentStrip(agent: HubAgent): void {
 		const enabledChip: StripChip = {
-			label: agent.disabled ? "enable" : "disable",
+			label: t(agent.disabled ? "enable" : "disable"),
 			styled: agent.disabled
-				? theme.fg("success", `${theme.status.enabled} enable`)
-				: theme.fg("dim", `${theme.status.disabled} disable`),
+				? theme.fg("success", `${theme.status.enabled} ${t("enable")}`)
+				: theme.fg("dim", `${theme.status.disabled} ${t("disable")}`),
 			action: { kind: "toggle" },
 		};
 		const propertyChip = (property: PropertyKind): StripChip => {
 			const summary = this.#propertySummary(agent, property);
+			const label = t(property === "model" ? "Model" : property === "prewalk" ? "Prewalk" : "Advisor");
 			return {
-				label: property,
-				styled: `${theme.fg("accent", property)}${theme.fg("dim", `: ${summary}`)}`,
+				label,
+				styled: `${theme.fg("accent", label)}${theme.fg("dim", `: ${summary}`)}`,
 				action: { kind: "property", property },
 			};
 		};
@@ -542,46 +544,46 @@ export class AgentsHubComponent implements Component {
 			active ? theme.fg("accent", `${theme.status.enabled} ${label}`) : theme.fg(color, label);
 		if (property === "model") {
 			chips.push({
-				label: "pick model…",
-				styled: theme.fg("accent", "pick model…"),
+				label: t("pick model…"),
+				styled: theme.fg("accent", t("pick model…")),
 				action: { kind: "pick", property },
 			});
 			chips.push({
-				label: "pattern…",
-				styled: theme.fg("muted", "pattern…"),
+				label: t("pattern…"),
+				styled: theme.fg("muted", t("pattern…")),
 				action: { kind: "pattern", property },
 			});
 			if (agent.overrideModel) {
 				chips.push({
-					label: "clear override",
-					styled: theme.fg("warning", "clear override"),
+					label: t("clear override"),
+					styled: theme.fg("warning", t("clear override")),
 					action: { kind: "set", property, value: undefined },
 				});
 			}
 		} else {
 			chips.push({
-				label: "agent default",
-				styled: mark("agent default", current === undefined),
+				label: t("agent default"),
+				styled: mark(t("agent default"), current === undefined),
 				action: { kind: "set", property, value: undefined },
 			});
 			chips.push({
-				label: "on",
-				styled: mark("on", current === "on"),
+				label: t("on"),
+				styled: mark(t("on"), current === "on"),
 				action: { kind: "set", property, value: "on" },
 			});
 			chips.push({
-				label: "off",
-				styled: mark("off", current === "off"),
+				label: t("off"),
+				styled: mark(t("off"), current === "off"),
 				action: { kind: "set", property, value: "off" },
 			});
 			chips.push({
-				label: "pick model…",
-				styled: theme.fg("accent", "pick model…"),
+				label: t("pick model…"),
+				styled: theme.fg("accent", t("pick model…")),
 				action: { kind: "pick", property },
 			});
 			chips.push({
-				label: "pattern…",
-				styled: theme.fg("muted", "pattern…"),
+				label: t("pattern…"),
+				styled: theme.fg("muted", t("pattern…")),
 				action: { kind: "pattern", property },
 			});
 		}
@@ -703,7 +705,7 @@ export class AgentsHubComponent implements Component {
 		const description = rawDescription.trim();
 		this.#createDescription = description;
 		if (!description) {
-			this.#createError = "Description is required.";
+			this.#createError = t("Description is required.");
 			this.#tui.requestRender();
 			return;
 		}
@@ -727,7 +729,7 @@ export class AgentsHubComponent implements Component {
 	async #runAgentCreationArchitect(description: string): Promise<GeneratedAgentSpec> {
 		const modelRegistry = this.#modelContext.modelRegistry;
 		if (!modelRegistry) {
-			throw new Error("Model registry unavailable in current session.");
+			throw new Error(t("Model registry unavailable in current session."));
 		}
 		await modelRegistry.refresh();
 		const modelPatterns = resolveConfiguredModelPatterns(
@@ -739,7 +741,7 @@ export class AgentsHubComponent implements Component {
 		const { model } = resolveModelOverride(modelPatterns, modelRegistry, this.#settings);
 		const selectedModel = model ?? modelRegistry.getAvailable()[0];
 		if (!selectedModel) {
-			throw new Error("No available model to generate agent specification.");
+			throw new Error(t("No available model to generate agent specification."));
 		}
 		const systemPrompt = prompt.render(agentCreationArchitectPrompt, {});
 		const userPrompt = prompt.render(agentCreationUserPrompt, { request: description });
@@ -774,7 +776,7 @@ export class AgentsHubComponent implements Component {
 			await session.prompt(userPrompt, { expandPromptTemplates: false });
 			const raw = extractAssistantText(session.state.messages);
 			if (!raw) {
-				throw new Error("No response returned by agent creation architect.");
+				throw new Error(t("No response returned by agent creation architect."));
 			}
 			return parseGeneratedAgentSpec(raw);
 		} finally {
@@ -793,12 +795,12 @@ export class AgentsHubComponent implements Component {
 		});
 		const targetDir = dirs[0]?.path;
 		if (!targetDir) {
-			throw new Error(`Cannot resolve ${this.#createScope} agents directory.`);
+			throw new Error(t("Cannot resolve {scope} agents directory.", { scope: this.#createScope }));
 		}
 		const filePath = path.join(targetDir, `${spec.identifier}.md`);
 		try {
 			await fs.stat(filePath);
-			throw new Error(`Agent file already exists: ${shortenPath(filePath)}`);
+			throw new Error(t("Agent file already exists: {path}", { path: shortenPath(filePath) }));
 		} catch (error) {
 			if (!isEnoent(error)) throw error;
 		}
@@ -807,7 +809,10 @@ export class AgentsHubComponent implements Component {
 		await Bun.write(filePath, content);
 		await refreshAgentDiscovery(this.#cwd);
 		this.#clearCreateFlow();
-		this.#notice = `Created agent ${spec.identifier} at ${shortenPath(filePath)}`;
+		this.#notice = t("Created agent {name} at {path}", {
+			name: spec.identifier,
+			path: shortenPath(filePath),
+		});
 		await this.#reload();
 	}
 
@@ -1186,26 +1191,38 @@ export class AgentsHubComponent implements Component {
 		if (this.#loadError) return truncateToWidth(theme.fg("error", ` ${this.#loadError}`), width);
 		if (this.#assigning) {
 			const { agent, property } = this.#assigning;
-			const what = property === "model" ? "model override" : `${property} model`;
+			const propertyLabel = property === "model" ? t("Model") : property === "prewalk" ? t("Prewalk") : t("Advisor");
+			const what = property === "model" ? t("model override") : `${propertyLabel} ${t("model")}`;
 			return truncateToWidth(
-				theme.fg("accent", ` Picking ${what} for ${theme.bold(agent.name)} — Enter assigns, Esc cancels`),
+				theme.fg(
+					"accent",
+					` ${t("Picking {what} for {name} — Enter assigns, Esc cancels", {
+						what,
+						name: agent.name,
+					})}`,
+				),
 				width,
 			);
 		}
 		if (this.#createActive) {
-			return truncateToWidth(theme.fg("accent", " New agent — describe it and let the architect draft it"), width);
+			return truncateToWidth(
+				theme.fg("accent", ` ${t("New agent — describe it and let the architect draft it")}`),
+				width,
+			);
 		}
 		if (this.#notice) return truncateToWidth(theme.fg("success", ` ${this.#notice}`), width);
 		const entry = this.#activeEntry();
-		const scopeLabel = entry.kind === "source" ? `${entry.label} agents` : "All agents";
+		const scopeLabel = entry.kind === "source" ? t("{label} agents", { label: entry.label }) : t("All agents");
 		const count = this.#rows.filter(rowDef => rowDef.kind === "agent").length;
 		return truncateToWidth(theme.fg("muted", ` ${scopeLabel} · ${count}`), width);
 	}
 
 	#renderList(width: number, rows: number): string[] {
 		const lines: string[] = [];
-		const searchText = this.#searchQuery ? theme.fg("accent", this.#searchQuery) : theme.fg("dim", "type to filter");
-		lines.push(truncateToWidth(` ${theme.fg("muted", "search:")} ${searchText}`, width));
+		const searchText = this.#searchQuery
+			? theme.fg("accent", this.#searchQuery)
+			: theme.fg("dim", t("type to filter"));
+		lines.push(truncateToWidth(` ${theme.fg("muted", t("search:"))} ${searchText}`, width));
 		lines.push("");
 		this.#listRowStart = lines.length;
 
@@ -1228,7 +1245,7 @@ export class AgentsHubComponent implements Component {
 			const hovered = i === this.#rowHover;
 			const cursor = selected && listFocused ? theme.fg("accent", theme.nav.cursor) : " ";
 			if (rowDef.kind === "new") {
-				let line = ` ${cursor} ${theme.fg(selected ? "accent" : "dim", "+ New agent…")}`;
+				let line = ` ${cursor} ${theme.fg(selected ? "accent" : "dim", t("+ New agent…"))}`;
 				if (hovered) line = theme.bg("selectedBg", line);
 				lines.push(truncateToWidth(line, width));
 				continue;
@@ -1274,20 +1291,20 @@ export class AgentsHubComponent implements Component {
 			lines.push(truncateToWidth(` ${theme.fg("dim", replaceTabs(agent.description))}`, width));
 			const patterns = this.#effectiveModelPatterns(agent);
 			const resolved = this.#resolvePatterns(patterns);
-			const modelLine = `${theme.fg("muted", "model:")} ${patterns.length > 0 ? replaceTabs(patterns.join(",")) : theme.fg("dim", "(session model)")}${resolved ? ` ${theme.fg("dim", "→")} ${theme.fg("success", resolved)}` : ""}`;
+			const modelLine = `${theme.fg("muted", t("model:"))} ${patterns.length > 0 ? replaceTabs(patterns.join(",")) : theme.fg("dim", t("(session model)"))}${resolved ? ` ${theme.fg("dim", "→")} ${theme.fg("success", resolved)}` : ""}`;
 			lines.push(truncateToWidth(` ${modelLine}`, width));
 			const prewalk = this.#effectivePrewalkPattern(agent);
 			const advisor = this.#effectiveAdvisorPattern(agent);
 			const flagLine = [
-				`${theme.fg("muted", "prewalk:")} ${prewalk ? theme.fg("success", prewalk) : theme.fg("dim", "off")}`,
-				`${theme.fg("muted", "advisor:")} ${advisor ? theme.fg("success", advisor) : theme.fg("dim", "off")}`,
+				`${theme.fg("muted", t("prewalk:"))} ${prewalk ? theme.fg("success", prewalk) : theme.fg("dim", t("off"))}`,
+				`${theme.fg("muted", t("advisor:"))} ${advisor ? theme.fg("success", advisor) : theme.fg("dim", t("off"))}`,
 				agent.filePath ? theme.fg("dim", shortenPath(agent.filePath)) : "",
 			]
 				.filter(Boolean)
 				.join("   ");
 			lines.push(truncateToWidth(` ${flagLine}`, width));
 		} else {
-			lines.push(theme.fg("dim", " Select an agent to inspect"));
+			lines.push(theme.fg("dim", ` ${t("Select an agent to inspect")}`));
 			lines.push("");
 			lines.push("");
 		}
@@ -1299,17 +1316,19 @@ export class AgentsHubComponent implements Component {
 		lines.push("");
 		if (this.#createSpec) {
 			const spec = this.#createSpec;
-			lines.push(truncateToWidth(theme.bold(theme.fg("accent", " Review generated agent")), width));
+			lines.push(truncateToWidth(theme.bold(theme.fg("accent", ` ${t("Review Generated Agent")}`)), width));
 			lines.push("");
-			lines.push(truncateToWidth(theme.fg("muted", ` Identifier: ${spec.identifier}`), width));
-			lines.push(truncateToWidth(theme.fg("muted", ` Scope: ${this.#createScope}`), width));
+			lines.push(
+				truncateToWidth(theme.fg("muted", ` ${t("Identifier: {value}", { value: spec.identifier })}`), width),
+			);
+			lines.push(truncateToWidth(theme.fg("muted", ` ${t("Scope: {scope}", { scope: this.#createScope })}`), width));
 			lines.push("");
-			lines.push(theme.fg("muted", " whenToUse:"));
+			lines.push(theme.fg("muted", ` ${t("whenToUse:")}`));
 			for (const line of wrapTextWithAnsi(replaceTabs(spec.whenToUse), Math.max(20, width - 2)).slice(0, 6)) {
 				lines.push(truncateToWidth(` ${line}`, width));
 			}
 			lines.push("");
-			lines.push(theme.fg("muted", " systemPrompt preview:"));
+			lines.push(theme.fg("muted", ` ${t("systemPrompt preview:")}`));
 			const promptWidth = Math.max(20, width - 4);
 			const wrapped: string[] = [];
 			for (const raw of spec.systemPrompt.split("\n")) {
@@ -1320,14 +1339,15 @@ export class AgentsHubComponent implements Component {
 				lines.push(truncateToWidth(`   ${theme.fg("dim", line)}`, width));
 			}
 			if (wrapped.length > budget) {
-				lines.push(theme.fg("dim", `   … ${wrapped.length - budget} more lines`));
+				lines.push(theme.fg("dim", `   ${t("… {count} more lines", { count: wrapped.length - budget })}`));
 			}
 		} else {
-			lines.push(truncateToWidth(theme.bold(theme.fg("accent", " Create new agent")), width));
+			lines.push(truncateToWidth(theme.bold(theme.fg("accent", ` ${t("Create New Agent")}`)), width));
 			lines.push("");
 			lines.push(
 				truncateToWidth(
-					theme.fg("muted", " Describe what the agent should do; scope: ") + theme.fg("accent", this.#createScope),
+					theme.fg("muted", ` ${t("Describe what the agent should do; scope:")} `) +
+						theme.fg("accent", this.#createScope),
 					width,
 				),
 			);
@@ -1338,7 +1358,7 @@ export class AgentsHubComponent implements Component {
 				}
 			}
 			if (this.#createGenerating) {
-				lines.push(theme.fg("muted", " Generating…"));
+				lines.push(theme.fg("muted", ` ${t("Generating...")}`));
 				lines.push("");
 				const contentWidth = Math.max(20, width - 4);
 				const wrapped: string[] = [];
@@ -1363,23 +1383,27 @@ export class AgentsHubComponent implements Component {
 		if (this.#strip) {
 			if (this.#strip.kind === "pattern") {
 				const property = this.#strip.property;
-				const values = property === "model" ? "a model pattern" : '"on", "off", or a model pattern';
-				return `Enter ${values} (role aliases like @smol and :level suffixes work; empty clears) · Esc back`;
+				const values = property === "model" ? t("a model pattern") : t('"on", "off", or a model pattern');
+				return t("Enter {values} (role aliases like @smol and :level suffixes work; empty clears) · Esc back", {
+					values,
+				});
 			}
-			return this.#strip.property ? "←/→ choose · Enter apply · Esc back" : "←/→ choose · Enter open · Esc cancel";
+			return this.#strip.property
+				? t("←/→ choose · Enter apply · Esc back")
+				: t("←/→ choose · Enter open · Esc cancel");
 		}
 		if (this.#assigning) {
-			return "Enter pick · ↑/↓ models · type to search · Esc cancel";
+			return t("Enter pick · ↑/↓ models · type to search · Esc cancel");
 		}
 		if (this.#createActive) {
-			if (this.#createSpec) return "Enter save · Tab scope · r regenerate · Esc cancel";
-			if (this.#createGenerating) return "Generating…";
-			return "Ctrl+Q/Ctrl+Enter generate · Enter newline · Tab scope · Esc cancel";
+			if (this.#createSpec) return t("Enter save · Tab scope · r regenerate · Esc cancel");
+			if (this.#createGenerating) return t("Generating...");
+			return t("Ctrl+Q/Ctrl+Enter generate · Enter newline · Tab scope · Esc cancel");
 		}
 		if (this.#focus === "scope") {
-			return "↑/↓ scopes · →/Enter agents · Esc close";
+			return t("↑/↓ scopes · →/Enter agents · Esc close");
 		}
-		return "Enter configure · Space enable/disable · ↑/↓ rows · type to search · Ctrl+R reload · Esc close";
+		return t("Enter configure · Space enable/disable · ↑/↓ rows · type to search · Ctrl+R reload · Esc close");
 	}
 
 	#renderFooter(width: number): string {
@@ -1389,8 +1413,10 @@ export class AgentsHubComponent implements Component {
 			return truncateToWidth(theme.fg("dim", this.#footerHint()), width);
 		}
 		if (strip.kind === "pattern") {
-			const label = theme.fg("accent", `${strip.agent.name} ${strip.property} pattern:`);
-			const labelWidth = visibleWidth(`${strip.agent.name} ${strip.property} pattern:`);
+			const propertyLabel =
+				strip.property === "model" ? t("Model") : strip.property === "prewalk" ? t("Prewalk") : t("Advisor");
+			const label = theme.fg("accent", `${strip.agent.name} ${propertyLabel} ${t("pattern:")}`);
+			const labelWidth = visibleWidth(`${strip.agent.name} ${propertyLabel} ${t("pattern:")}`);
 			const inputWidth = Math.max(8, Math.min(40, width - labelWidth - 4));
 			const inputLine = strip.input.render(inputWidth)[0] ?? "";
 			return truncateToWidth(`${label} ${inputLine}`, width);
@@ -1439,7 +1465,7 @@ export class AgentsHubComponent implements Component {
 
 		const sidebarLines = this.#renderSidebar(sidebarWidth, contentRows);
 		const out: string[] = [];
-		out.push(topBorderSplit(width, "Agents", sidebarWidth));
+		out.push(topBorderSplit(width, t("Agents"), sidebarWidth));
 		this.#contentRowStart = out.length;
 		for (let i = 0; i < contentRows; i++) {
 			out.push(splitRow(sidebarLines[i] ?? "", bodyLines[i] ?? "", width, sidebarWidth));
