@@ -154,7 +154,13 @@ export function resolveApproval(
 	}
 
 	if (mode === "yolo") {
-		if (decision.policy) {
+		// User-configured decisions (override-flagged, e.g. `bash.patterns`
+		// prompt/deny rules) stay authoritative in yolo mode, as do explicit
+		// `tools.approval.<tool>` user policies. Tool-declared hardcoded
+		// policies are ignored: an "allow" keeps its tool source, a "prompt"
+		// (e.g. inspect_image) is treated as auto-approved by yolo. Tool/user
+		// deny was already handled above.
+		if (decision.policy && decision.override) {
 			return {
 				policy: decision.policy,
 				tier: decision.tier,
@@ -164,12 +170,28 @@ export function resolveApproval(
 				...(decision.reason ? { reason: decision.reason } : {}),
 			};
 		}
+		if (effectiveUserPolicy) {
+			return {
+				policy: effectiveUserPolicy,
+				tier: decision.tier,
+				override: false,
+				source: "user",
+				policyKey: userPolicyKey,
+			};
+		}
+		if (decision.policy === "allow") {
+			return {
+				policy: "allow",
+				tier: decision.tier,
+				override: false,
+				source: "tool",
+			};
+		}
 		return {
-			policy: effectiveUserPolicy ?? "allow",
+			policy: "allow",
 			tier: decision.tier,
 			override: false,
-			source: effectiveUserPolicy ? "user" : "mode",
-			...(effectiveUserPolicy ? { policyKey: userPolicyKey } : {}),
+			source: "mode",
 		};
 	}
 

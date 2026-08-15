@@ -354,11 +354,15 @@ describe("InspectImageTool", () => {
 		}
 	});
 
-	it("requires explicit approval even when yolo and auto-approve are enabled", async () => {
+	it("executes under yolo and auto-approve despite the tool-declared prompt", async () => {
 		const { session, authStorage } = await createWrappedInspectImageSession(testDir);
 		try {
 			const tool = session.getToolByName("inspect_image");
 			expect(tool).toBeDefined();
+			// yolo auto-approves every tier: the tool's hardcoded `policy:
+			// "prompt"` declaration must not force a confirmation (it reaches the
+			// real execution path, which fails on the missing file instead of
+			// the approval gate).
 			await expect(
 				tool!.execute(
 					"inspect-image-yolo",
@@ -373,14 +377,14 @@ describe("InspectImageTool", () => {
 						autoApprove: true,
 					} as AgentToolContext,
 				),
-			).rejects.toThrow(/requires approval but no interactive UI available/);
+			).rejects.toThrow(/ENOENT/);
 		} finally {
 			await session.dispose();
 			authStorage.close();
 		}
 	});
 
-	it("requires explicit approval when mounted behind write xd://", async () => {
+	it("executes behind write xd:// under yolo instead of prompting", async () => {
 		const { session, authStorage } = await createWrappedInspectImageSession(testDir, ["write", "inspect_image"]);
 		try {
 			const write = session.getToolByName("write");
@@ -399,11 +403,13 @@ describe("InspectImageTool", () => {
 				} as AgentToolContext,
 			);
 
+			// The xd:// dispatch is approved by yolo (no approval gate), so the
+			// mounted inspect_image runs and fails on the missing file.
 			expect(result.isError).toBe(true);
 			expect(result.content).toEqual([
 				{
 					type: "text",
-					text: expect.stringContaining("requires approval but no interactive UI available"),
+					text: expect.stringContaining("ENOENT"),
 				},
 			]);
 		} finally {

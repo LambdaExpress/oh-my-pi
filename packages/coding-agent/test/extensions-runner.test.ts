@@ -2699,7 +2699,7 @@ describe("ExtensionRunner", () => {
 			expect(executed).toEqual([{ command: "echo original" }, { command: "echo revised" }]);
 		});
 
-		it("does not let xdevApproved bypass a tool-declared prompt policy", async () => {
+		it("yolo mode lets xdevApproved bypass a tool-declared prompt policy", async () => {
 			const recordPath = path.join(tempDir.path(), "xdev-tool-prompt.jsonl");
 			const result = await loadTestExtensions();
 			const runner = new ExtensionRunner(
@@ -2724,10 +2724,12 @@ describe("ExtensionRunner", () => {
 				xdevApproved: true,
 			} as never;
 
-			await expect(
-				wrapped.execute("xdev-tool-prompt", { command: "echo blocked" }, undefined, undefined, xdevContext),
-			).rejects.toThrow(/requires approval but no interactive UI available/);
-			expect(fs.existsSync(recordPath)).toBe(false);
+			// yolo auto-approves every tier: the tool's hardcoded `policy:
+			// "prompt"` declaration must not force a confirmation, so the
+			// dispatch runs through to the tool.
+			await wrapped.execute("xdev-tool-prompt", { command: "echo blocked" }, undefined, undefined, xdevContext);
+			const executed = JSON.parse(fs.readFileSync(recordPath, "utf8").trim()) as { command: string };
+			expect(executed).toEqual({ command: "echo blocked" });
 		});
 
 		it("forfeits the xdevApproved prompt bypass when a handler revises the input", async () => {

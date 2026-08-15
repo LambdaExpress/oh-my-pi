@@ -59,6 +59,7 @@
 
 ### Fixed
 
+- Fixed `tools.approvalMode: yolo` still prompting for tools that declare a hardcoded `policy: "prompt"` (e.g. `inspect_image`): tool-declared prompt policies are now ignored in yolo mode so it auto-approves every tier as documented, while user-configured `tools.approval.<tool>` policies and `bash.patterns` prompt/deny rules remain authoritative.
 - Fixed a batch of settings-panel and CLI help strings showing English under zh-CN: the `externalThinking` and `exa.enabled` settings were missing their `translatedLabel`/`translatedDescription` cases, the `/agents` hub and extension/log-viewer surfaces rendered untranslated literals, and CLI flag/argument descriptions from `compress`/`cleanse`/`share`/`dry-balance`/`launch-help` had no catalog entries. The `extract-i18n-keys.ts` audit also misread bare-identifier catalog keys (`Yes:`, `Ask:`), inflating the missing-key report from 0 to hundreds.
 - Fixed the settings panel showing the "First-Turn Anchor" (`experimental.firstTurnAnchor`) label and description in English under zh-CN: its path was missing from the settings-selector translation switches, so the catalog entry in `zh-CN.ts` was never reached.
 - Fixed per-tool "prompt" approval policies being skipped when the tool's own decision resolved without an override flag; the prompt requirement now follows the resolution source (tool decision or explicit user policy), so xdev approval no longer suppresses a tool's declared prompt policy.

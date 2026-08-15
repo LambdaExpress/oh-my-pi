@@ -86,6 +86,29 @@ describe("resolveApproval override and user policy", () => {
 		expect(result.reason).toBeUndefined();
 	});
 
+	it("ignores tool-declared prompt policies in yolo mode", () => {
+		const visionTool = tool("inspect_image", {
+			tier: "read",
+			policy: "prompt",
+			reason: "Sends an image to a configured vision model for analysis",
+		});
+		expect(resolveApproval(visionTool, {}, "yolo")).toMatchObject({ policy: "allow", source: "mode" });
+		expect(requiresApproval(visionTool, {}, "yolo").required).toBe(false);
+	});
+
+	it("user policy still tightens yolo mode for tool-declared prompt policies", () => {
+		const visionTool = tool("inspect_image", {
+			tier: "read",
+			policy: "prompt",
+			reason: "Sends an image to a configured vision model for analysis",
+		});
+		expect(resolveApproval(visionTool, {}, "yolo", { inspect_image: "prompt" }).policy).toBe("prompt");
+		expect(resolveApproval(visionTool, {}, "yolo", { inspect_image: "deny" }).policy).toBe("deny");
+		expect(() => requiresApproval(visionTool, {}, "yolo", { inspect_image: "deny" })).toThrow(
+			'Tool "inspect_image" is blocked by user policy',
+		);
+	});
+
 	it("user policy still controls execution in yolo mode", () => {
 		expect(resolveApproval(dangerous, {}, "yolo", { bash: "allow" }).policy).toBe("allow");
 		expect(resolveApproval(dangerous, {}, "yolo", { bash: "prompt" }).policy).toBe("prompt");
