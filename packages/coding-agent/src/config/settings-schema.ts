@@ -2455,6 +2455,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"experimental.firstTurnAnchor": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "context",
+			group: "Experimental",
+			label: "First-Turn Anchor",
+			description:
+				"Experimental: DeepSeek V4 optimization. The session's first model request uses the Minimal two-tool catalog (bash + str_replace_editor) with a one-line system prompt, then restores the full configuration from request #2 on. Only applies to DeepSeek-family models in fresh sessions.",
+		},
+	},
+
 	"tools.format": {
 		type: "enum",
 		values: [

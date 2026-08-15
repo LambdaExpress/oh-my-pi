@@ -7,6 +7,7 @@ import {
 	type AgentTool,
 	AppendOnlyContextManager,
 	filterProviderReplayMessages,
+	type StreamFn,
 	type ThinkingLevel,
 } from "@oh-my-pi/pi-agent-core";
 import type {
@@ -26,7 +27,7 @@ import {
 	getOpenAICodexTransportDetails,
 	prewarmOpenAICodexResponses,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
-import { FALLBACK_DIALECT, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
+import { FALLBACK_DIALECT, isDeepseekModelIdOrName, preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import type { Component } from "@oh-my-pi/pi-tui";
 import {
 	$env,
@@ -233,6 +234,7 @@ import {
 	xdevDocsAll,
 	xdevEntries,
 } from "./tools";
+import { ANCHOR_BASH_DESCRIPTION, anchorBashSchema, anchorStrReplaceEditorTool } from "./tools/anchor-tools";
 import { isMCPToolName, normalizeToolNames } from "./tools/builtin-names";
 import { ToolContextStore } from "./tools/context";
 import { isIrcEnabled } from "./tools/hub";
@@ -3264,7 +3266,28 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			return obfuscateMessages(obfuscator, converted);
 		};
 
+		// First-turn anchor (experimental.firstTurnAnchor): only fresh top-level
+		// DeepSeek sessions anchor their first user-bearing provider request. Resume
+		// sessions (existing assistant history) and subagents (taskDepth > 0) never
+		// anchor.
+		const anchorPending =
+			settings.get("experimental.firstTurnAnchor") === true &&
+			(options.taskDepth ?? 0) === 0 &&
+			!sessionManager.getEntries().some(entry => entry.type === "message" && entry.message.role === "assistant");
+		let anchorPendingForRequest = anchorPending; // consumed by the first user-bearing request
+		let anchorRequestActive = false; // true while THIS request was anchored (streamFn consults it)
+		let anchorWarningShown = false; // one-time warning when bash is missing at anchor time
+		let currentModelId: string | undefined = model?.id; // calibrated per request in transformProviderContext
+
 		const transformContext = async (messages: AgentMessage[], _signal?: AbortSignal) => {
+			if (
+				anchorPendingForRequest &&
+				messages.some(m => m.role === "user") &&
+				isDeepseekModelIdOrName(currentModelId ?? "")
+			) {
+				const kept = messages.filter(m => m.role === "user");
+				return kept.length > 0 ? kept : messages; // never drop the user's own message
+			}
 			const withContext = await extensionRunner.emitContext(messages);
 			return wrapSteeringForModel(withContext);
 		};
@@ -3290,7 +3313,33 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			let transformed = obfuscator ? obfuscateProviderContext(obfuscator, context) : context;
 			if (snapcompactInline) transformed = await snapcompactInline.transform(transformed, transformModel);
 			transformed = clampProviderContextImages(transformed, transformModel);
-			return await normalizeProviderContextImagesForModel(transformed, transformModel);
+			transformed = await normalizeProviderContextImagesForModel(transformed, transformModel);
+			// First-turn anchor (experimental.firstTurnAnchor): once per fresh DeepSeek
+			// session, replace the request with the dsh Minimal two-tool catalog and the
+			// one-line system prompt. Runs last so obfuscate/snapcompact/clamp can never
+			// touch the anchored payload. Degrades once (dsh behavior) when bash is absent.
+			currentModelId = transformModel.id;
+			if (
+				anchorPendingForRequest &&
+				context.messages.some(m => m.role === "user") &&
+				isDeepseekModelIdOrName(transformModel.id)
+			) {
+				anchorPendingForRequest = false;
+				anchorRequestActive = true;
+				const realBash = transformed.tools?.find(tool => tool.name === "bash");
+				const tools = [
+					...(realBash
+						? [{ ...realBash, description: ANCHOR_BASH_DESCRIPTION, parameters: anchorBashSchema }]
+						: []),
+					anchorStrReplaceEditorTool,
+				];
+				if (!realBash && !anchorWarningShown) {
+					anchorWarningShown = true;
+					logger.warn("first-turn anchor: bash tool unavailable, anchoring this request skipped");
+				}
+				transformed = { ...transformed, systemPrompt: ["You are a helpful software engineer assistant."], tools };
+			}
+			return transformed;
 		};
 		const onPayload = async (payload: unknown, model?: Model) => {
 			return await extensionRunner.emitBeforeProviderRequest(payload, model);
@@ -3340,6 +3389,15 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			settings,
 			createSettingsAwareStreamFn(settings),
 		);
+		// First-turn anchor: while the current request was anchored, cap the output
+		// budget to the dsh baseline. Consumed (reset) at the first stream call so
+		// retries reusing a prepared call never re-apply it.
+		const anchorAwareStreamFn: StreamFn = (model, context, options) => {
+			const anchored = anchorRequestActive;
+			anchorRequestActive = false;
+			const opts = anchored ? { ...options, maxTokens: 256000 } : options;
+			return settingsAwareStreamFn(model, context, opts);
+		};
 		const transformToolCallArguments = (args: Record<string, unknown>): Record<string, unknown> => {
 			let result = args;
 			const maxTimeout = settings.get("tools.maxTimeout");
@@ -3406,7 +3464,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					settings.get("externalThinking") &&
 					agent.state.tools.some(tool => tool.name === "think") &&
 					supportsExternalThinking(streamModel);
-				return settingsAwareStreamFn(streamModel, context, {
+				return anchorAwareStreamFn(streamModel, context, {
 					...streamOptions,
 					anthropicCacheRefresh: true,
 					forceReasoningOff: externalThinking || streamOptions?.forceReasoningOff,
@@ -3582,7 +3640,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			transformProviderContext,
 			onPayload,
 			onResponse,
-			sideStreamFn: settingsAwareStreamFn,
+			sideStreamFn: anchorAwareStreamFn,
 			advisorStreamFn: settingsAwareStreamFn,
 			preferWebsockets: preferOpenAICodexWebsockets,
 			convertToLlm: convertToLlmFinal,
