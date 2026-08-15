@@ -172,6 +172,60 @@ function Restore-ProcessEnvironmentVariable {
 	}
 }
 
+function Get-OmpBinaryPath {
+	param(
+		[Parameter(Mandatory = $true)]
+		[string] $RepoRoot
+	)
+
+	$packageDir = Join-Path $RepoRoot "packages/coding-agent"
+	$configuredOutput = [Environment]::GetEnvironmentVariable("OMP_BINARY_OUTFILE", "Process")
+	if (-not [string]::IsNullOrWhiteSpace($configuredOutput)) {
+		$resolved = [IO.Path]::GetFullPath((Join-Path $packageDir $configuredOutput))
+	} else {
+		$resolved = Join-Path $packageDir "dist/omp"
+	}
+	# Bun appends .exe to compiled outfiles on Windows; mirror that so the
+	# hot-replace targets the file the compile actually writes.
+	if (-not $resolved.EndsWith(".exe", [StringComparison]::OrdinalIgnoreCase)) {
+		$resolved = "$resolved.exe"
+	}
+	return $resolved
+}
+
+function Remove-StaleBinaryBackups {
+	param(
+		[Parameter(Mandatory = $true)]
+		[string] $BinaryPath
+	)
+
+	$dir = Split-Path $BinaryPath -Parent
+	if (-not (Test-Path -LiteralPath $dir -PathType Container)) {
+		return
+	}
+	$base = [IO.Path]::GetFileName($BinaryPath)
+	$suffixLength = ".bak".Length
+	Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue | ForEach-Object {
+		$name = $_.Name
+		if (-not $name.StartsWith("$base.", [StringComparison]::Ordinal)) {
+			return
+		}
+		if (-not $name.EndsWith(".bak", [StringComparison]::Ordinal)) {
+			return
+		}
+		# Legacy "<base>.bak" → empty middle; new "<base>.<timestamp>.<pid>.bak"
+		# → dot-separated numeric run. Anything else is an unrelated *.bak file.
+		$middle = ""
+		if ($name.Length -ge $base.Length + 1 + $suffixLength) {
+			$middle = $name.Substring($base.Length + 1, $name.Length - $base.Length - 1 - $suffixLength)
+		}
+		if ($middle.Length -gt 0 -and $middle -notmatch '^\d+(\.\d+)*$') {
+			return
+		}
+		Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue
+	}
+}
+
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 Push-Location $repoRoot
 try {
@@ -208,9 +262,47 @@ try {
 			New-Item -ItemType Directory -Path $nativeSourceDir | Out-Null
 			Copy-Item -LiteralPath $artifactPath -Destination $nativeSourceDir
 		}
+		$ompBinaryPath = Get-OmpBinaryPath -RepoRoot $repoRoot
 		$env:PI_NATIVE_SOURCE_DIR = $nativeSourceDir
 		Invoke-Step "Building compiled omp with pi-natives $variant" {
-			Invoke-NativeCommand bun --cwd=packages/coding-agent run build
+			$ompBackupPath = "$ompBinaryPath.$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()).$PID.bak"
+			if ($DryRun) {
+				Write-Host "DRY-RUN: hot-replace $ompBinaryPath (move aside, build, restore on failure)"
+				Invoke-NativeCommand bun --cwd=packages/coding-agent run build
+				return
+			}
+			# Hot-replace semantics (mirrors cli/update-cli.ts): Windows permits
+			# renaming a mapped executable; only overwriting or deleting it is
+			# blocked. Move the previous build aside so the compile can write
+			# the new exe even while the old one is still running.
+			Remove-StaleBinaryBackups -BinaryPath $ompBinaryPath
+			$binaryMovedAside = $false
+			if (Test-Path -LiteralPath $ompBinaryPath -PathType Leaf) {
+				Rename-Item -LiteralPath $ompBinaryPath -NewName ([IO.Path]::GetFileName($ompBackupPath))
+				$binaryMovedAside = $true
+			}
+			try {
+				Invoke-NativeCommand bun --cwd=packages/coding-agent run build
+			} catch {
+				# Roll back: remove any partial output from the failed compile,
+				# then restore the previous binary.
+				if (Test-Path -LiteralPath $ompBinaryPath -PathType Leaf) {
+					Remove-Item -LiteralPath $ompBinaryPath -Force -ErrorAction SilentlyContinue
+				}
+				if ($binaryMovedAside -and (Test-Path -LiteralPath $ompBackupPath -PathType Leaf)) {
+					Rename-Item -LiteralPath $ompBackupPath -NewName ([IO.Path]::GetFileName($ompBinaryPath))
+				}
+				throw
+			}
+			if ($binaryMovedAside) {
+				# The moved-aside exe may still be mapped by a running process,
+				# so deletion can fail until it exits; keep it for the next
+				# build's stale-backup sweep instead of failing a good build.
+				Remove-Item -LiteralPath $ompBackupPath -Force -ErrorAction SilentlyContinue
+				if (Test-Path -LiteralPath $ompBackupPath -PathType Leaf) {
+					Write-Host "==> Previous binary is still in use; kept as $ompBackupPath (removed on the next build)" -ForegroundColor DarkYellow
+				}
+			}
 		}
 	} finally {
 		Restore-ProcessEnvironmentVariable -Name "PI_NATIVE_SOURCE_DIR" -Value $previousNativeSourceDir
