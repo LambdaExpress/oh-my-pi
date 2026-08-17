@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { interruptHint } from "@oh-my-pi/pi-coding-agent/modes/shared";
@@ -16,14 +16,22 @@ type Harness = {
 	tempDir: TempDir;
 };
 
-let harnesses: Harness[] = [];
+let harness: Harness | undefined;
 
 function defined<T>(value: T | undefined): T {
-	expect(value).toBeDefined();
-	return value as T;
+	if (value === undefined) throw new Error("Expected value to be defined");
+	return value;
 }
 
 async function createHarness(sessionName: string): Promise<Harness> {
+	if (harness) {
+		harness.mode.loadingAnimation?.stop();
+		harness.mode.loadingAnimation = undefined;
+		harness.mode.statusContainer.disposeChildren();
+		await harness.sessionManager.setSessionName(sessionName, "user");
+		return harness;
+	}
+
 	const tempDir = TempDir.createSync("@pi-working-accent-");
 	await Settings.init({ inMemory: true, cwd: tempDir.path() });
 	await initTheme(false);
@@ -47,8 +55,7 @@ async function createHarness(sessionName: string): Promise<Harness> {
 		thinkingLevel: undefined,
 	} as unknown as AgentSession;
 	const mode = new InteractiveMode(session, "test");
-	const harness = { mode, sessionManager, tempDir };
-	harnesses.push(harness);
+	harness = { mode, sessionManager, tempDir };
 	return harness;
 }
 
@@ -76,13 +83,14 @@ function shadowAccentSurfaceLuminance(value: number | undefined): () => void {
 }
 
 afterEach(() => {
-	for (const harness of harnesses) {
-		harness.mode.stop();
-		harness.tempDir.removeSync();
-	}
-	harnesses = [];
 	vi.useRealTimers();
 	vi.restoreAllMocks();
+});
+
+afterAll(() => {
+	harness?.mode.stop();
+	harness?.tempDir.removeSync();
+	harness = undefined;
 	resetSettingsForTest();
 	setLocale(null);
 });
@@ -104,6 +112,7 @@ describe("InteractiveMode working-message session accent cache", () => {
 		// the animating loader out of immutable native scrollback.
 		startStableLoader(mode);
 		expect(statusContainer.getNativeScrollbackLiveRegionStart()).toBe(0);
+		expect(statusContainer.isNativeScrollbackLiveRegionPinned?.()).toBe(true);
 	});
 
 	it("reuses one computed accent across loader spinner and message colorizers", async () => {

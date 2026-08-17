@@ -69,6 +69,7 @@ const ENV_KEYS = [
 	"ALACRITTY_WINDOW_ID",
 	"VTE_VERSION",
 	"PI_NO_SYNC_OUTPUT",
+	"PI_TUI_RESIZE_IN_PLACE",
 	"TERM_PROGRAM",
 	"ITERM_SESSION_ID",
 	"WT_SESSION",
@@ -288,6 +289,7 @@ type ViewportProbeTrait = "known" | "unknown" | "intermittentUnknown" | "staleBo
 
 interface TerminalStressTraits {
 	readonly preservesPaneHistory: boolean;
+	readonly resizeRepaintsInPlace: boolean;
 	readonly strictNativeScrollback: boolean;
 	readonly syncOutputDisabled: boolean;
 	readonly viewportProbe: ViewportProbeTrait;
@@ -573,6 +575,9 @@ function assertNever(value: never): never {
 function terminalStressTraits(scenario: Scenario): TerminalStressTraits {
 	return {
 		preservesPaneHistory: scenario.envMode === "tmux",
+		// Direct HerdR panes take the in-place multiplexer resize path (no ED3
+		// reflow on width change), but keep direct-terminal scrollback semantics.
+		resizeRepaintsInPlace: scenario.envMode === "tmux" || scenario.envMode === "herdr",
 		strictNativeScrollback: scenario.strictScrollback,
 		syncOutputDisabled: scenario.envMode === "vteNoSync",
 		viewportProbe: scenario.terminalMode === "normal" ? "known" : scenario.terminalMode,
@@ -1272,6 +1277,7 @@ class StressDriver {
 		try {
 			this.#tui.start();
 			await this.#settle();
+			let before = this.#snapshot();
 			this.#assertOracles(
 				{
 					kind: "forceRender",
@@ -1283,22 +1289,19 @@ class StressDriver {
 					mutatesViewport: false,
 					checkpoint: false,
 				},
-				this.#snapshot(),
-				this.#snapshot(),
+				before,
+				before,
 				-1,
 			);
 
 			for (let index = 0; index < this.#scenario.iterations; index++) {
-				const before = this.#snapshot();
 				const kind = this.#scenario.replayOperations?.[index] ?? this.#chooseOperation(index, before);
 				const op = await this.#applyOperation(kind);
 				const after = this.#snapshot();
 				this.#recordOperation(index, op.kind, op.detail, before, after);
 				this.#assertOracles(op, before, after, index);
 
-				if ((index + 1) % 50 === 0) {
-					await this.#checkpoint(index, "periodicCheckpoint");
-				}
+				before = (index + 1) % 50 === 0 ? await this.#checkpoint(index, after) : after;
 			}
 		} finally {
 			this.#tui.stop();
@@ -1309,17 +1312,22 @@ class StressDriver {
 	#snapshot(): Snapshot {
 		const position = this.#term.getBufferPosition();
 		const expected = this.#expectedFrame();
-		const view = normalizeLines(this.#term.getViewport());
+		// A scroll-buffer read already contains the viewport rows. Derive the
+		// presented window from it instead of asking Ghostty to decode the active
+		// grid a second time on every oracle snapshot. Tmux-style scenarios do not
+		// consume historical rows, so retain their cheaper viewport-only path.
+		const buffer = this.#traits.preservesPaneHistory
+			? normalizeLines(this.#term.getViewport())
+			: normalizeLines(this.#term.getScrollBuffer());
+		const view = this.#traits.preservesPaneHistory
+			? buffer
+			: buffer.slice(position.viewportY, position.viewportY + this.#term.rows);
 		const viewBackgroundColumns: number[][] = [];
 		for (let row = 0; row < this.#term.rows; row++) {
 			viewBackgroundColumns.push(this.#term.getViewportRowBackgroundColumns(row));
 		}
-		// Tmux pane history is intentionally preserved, so overlay bytes can remain
-		// in historical scrollback after resize/reflow. The non-strict tmux stress
-		// oracle only checks live viewport behavior; avoid repeatedly materializing
-		// huge preserved pane history that no invariant consumes.
 		return {
-			buffer: this.#traits.preservesPaneHistory ? view : normalizeLines(this.#term.getScrollBuffer()),
+			buffer,
 			view,
 			viewBackgroundColumns,
 			frameBackgroundColumns: expected.backgroundColumns,
@@ -2083,8 +2091,7 @@ class StressDriver {
 		return candidates.length === 0 ? current : this.#streams.geometry.pick(candidates);
 	}
 
-	async #checkpoint(index: number, kind: "periodicCheckpoint"): Promise<void> {
-		const before = this.#snapshot();
+	async #checkpoint(index: number, before: Snapshot): Promise<Snapshot> {
 		// Model a prompt submit: the editor keystroke pins the terminal to the
 		// bottom, then the app reconciles any deferred native-scrollback rewrite
 		// only if the renderer can prove the native host viewport is at the tail.
@@ -2106,7 +2113,13 @@ class StressDriver {
 		}
 		await this.#settle();
 		const after = this.#snapshot();
-		this.#recordOperation(index, kind, { forcedCheckpoint: this.#traits.strictNativeScrollback }, before, after);
+		this.#recordOperation(
+			index,
+			"periodicCheckpoint",
+			{ forcedCheckpoint: this.#traits.strictNativeScrollback },
+			before,
+			after,
+		);
 		this.#assertOracles(
 			{
 				kind: "scrollToBottom",
@@ -2123,6 +2136,7 @@ class StressDriver {
 			after,
 			index,
 		);
+		return after;
 	}
 
 	#recordOperation(
@@ -2649,9 +2663,10 @@ class StressDriver {
 		// Audit and shrink re-anchoring are mirrored at render time (they can
 		// fire on zero-byte frames); the write hook only applies commits.
 		const tail = Math.max(0, length - height);
-		// Multiplexer width changes terminate the physical-row epoch. Other
-		// geometry frames retain the legacy height-only rebase below.
-		if (this.#traits.preservesPaneHistory && this.#shadowFrameWidthChanged) {
+		// In-place width changes (multiplexer panes and direct HerdR) terminate
+		// the physical-row epoch. Other geometry frames retain the legacy
+		// height-only rebase below.
+		if (this.#traits.resizeRepaintsInPlace && this.#shadowFrameWidthChanged) {
 			// Existing history and its old-width prefix stay opaque. The resize
 			// write changes only the viewport and establishes an independent
 			// frame-length baseline; it does not advance native commits.
@@ -3482,6 +3497,7 @@ function scenarioEnv(envMode: EnvMode): Record<EnvKey, string | undefined> {
 		ALACRITTY_WINDOW_ID: undefined,
 		VTE_VERSION: envMode === "vteNoSync" ? "6800" : undefined,
 		PI_NO_SYNC_OUTPUT: envMode === "vteNoSync" ? "1" : undefined,
+		PI_TUI_RESIZE_IN_PLACE: undefined,
 		TERM_PROGRAM: envMode === "appleTerminal" ? "Apple_Terminal" : envMode === "iterm2" ? "iTerm.app" : undefined,
 		ITERM_SESSION_ID: envMode === "iterm2" ? "w0t0p0" : undefined,
 		// WSL fronted by Windows Terminal: WT propagates WT_SESSION into the
@@ -3756,9 +3772,9 @@ function coreTemplates(): ScenarioTemplate[] {
 			heightChoices: [3, 4, 6],
 		},
 		{
-			// Direct HerdR implements ED3, so a settled width change clears and
-			// replays the source-owned transcript at its new wrap. Streaming
-			// updates may race the resize but must survive that replay exactly once.
+			// Direct HerdR follows the in-place multiplexer resize policy.
+			// Streaming updates may race the resize but must survive the settled
+			// repaint exactly once.
 			name: "darwin-normal-herdr-reflow-stream-small",
 			platform: "darwin",
 			terminalMode: "normal",
@@ -4018,6 +4034,7 @@ export function applyStressEnv(envMode: Scenario["envMode"]): StressEnvSnapshot 
 			ALACRITTY_WINDOW_ID: undefined,
 			VTE_VERSION: undefined,
 			PI_NO_SYNC_OUTPUT: undefined,
+			PI_TUI_RESIZE_IN_PLACE: undefined,
 			TERM_PROGRAM: undefined,
 			ITERM_SESSION_ID: undefined,
 			WT_SESSION: undefined,
@@ -4036,6 +4053,7 @@ export function applyStressEnv(envMode: Scenario["envMode"]): StressEnvSnapshot 
 			ALACRITTY_WINDOW_ID: undefined,
 			VTE_VERSION: undefined,
 			PI_NO_SYNC_OUTPUT: undefined,
+			PI_TUI_RESIZE_IN_PLACE: undefined,
 			TERM_PROGRAM: undefined,
 			ITERM_SESSION_ID: undefined,
 			WT_SESSION: undefined,
@@ -4177,6 +4195,25 @@ export async function runWidthEpochHeightAppendReplayRegression(): Promise<void>
 		CORE_TIMEOUT_MS,
 		10,
 		operations,
+	);
+	await runStressScenario(scenario);
+}
+
+export async function runHerdrWidthEpochCollapseReplayRegression(): Promise<void> {
+	const template = coreTemplates().find(candidate => candidate.name === "darwin-normal-herdr-reflow-stream-small");
+	if (template === undefined) throw new Error("Missing reflow-stream stress template");
+	// Unlike the tmux width-epoch regressions above, keep `envMode: "herdr"` so
+	// the direct-HerdR in-place resize path is exercised. Seed 0xcafed00d with 24
+	// iterations replays the width change followed by a high-water preview
+	// collapse that previously diverged the shadow ledger from the runtime
+	// viewport (foreground-stream viewport fidelity, op index 23).
+	const scenario = materializeScenario(
+		template,
+		0xcafed00d,
+		24,
+		CORE_BULK_MAX,
+		CORE_TIMEOUT_MS,
+		maxOf(template.heightChoices),
 	);
 	await runStressScenario(scenario);
 }

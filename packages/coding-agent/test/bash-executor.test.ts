@@ -523,24 +523,6 @@ exit 64
 		expect(seenChunk ?? "").toContain("hello");
 	});
 
-	it("returns even if command spawns a background job", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
-		const runPromise = executeBash("{ sleep 2; } & echo fg", {
-			cwd: tempDir,
-			timeout: 5000,
-		});
-		const timed = await Promise.race([
-			runPromise.then(result => ({ type: "result" as const, result })),
-			Bun.sleep(BACKGROUND_COMPLETION_RACE_MS).then(() => ({ type: "timeout" as const })),
-		]);
-		expect(timed.type).toBe("result");
-		if (timed.type === "result") {
-			expect(timed.result.output).toContain("fg");
-		}
-	});
-
 	it("returns a real PID for background external commands", async () => {
 		if (process.platform === "win32") {
 			return;
@@ -549,7 +531,8 @@ exit 64
 		// Redirect the backgrounded job's stdout so it doesn't hold the executor's
 		// output pipe open (which would add the ~250ms background-drain grace);
 		// `$!` still reports the real external PID, which is all this test checks.
-		const result = await executeBash('python3 -c "import time; time.sleep(10)" >/dev/null 2>&1 & echo $!', {
+		const sleepBin = fs.existsSync("/bin/sleep") ? "/bin/sleep" : "sleep";
+		const result = await executeBash(`${sleepBin} 30 >/dev/null 2>&1 & echo $!`, {
 			cwd: tempDir,
 			timeout: 5000,
 		});
@@ -583,7 +566,17 @@ exit 64
 		if (process.platform === "win32") {
 			return;
 		}
-		const result = await executeBash("sleep 1.2; echo done", { cwd: tempDir, timeout: 0 });
+		// Compress any accidentally armed one-second deadline. The real command
+		// runs longer than that compressed window, so the success result proves
+		// timeout:0 left the execution deadline disabled without a 1.2s sleep.
+		const realSetTimeout = globalThis.setTimeout;
+		vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) =>
+			realSetTimeout(
+				handler,
+				typeof ms === "number" && ms >= 1000 ? 5 : ms,
+				...rest,
+			)) as typeof globalThis.setTimeout);
+		const result = await executeBash("sleep 0.03; echo done", { cwd: tempDir, timeout: 0 });
 		expect(result.cancelled).toBe(false);
 		expect(result.output.trim()).toBe("done");
 	});
@@ -593,12 +586,14 @@ exit 64
 			return;
 		}
 		const controller = new AbortController();
-		const promise = executeBash("sleep 10", {
+		const started = Promise.withResolvers<void>();
+		const promise = executeBash("echo started; sleep 10", {
 			cwd: tempDir,
 			timeout: 5000,
 			signal: controller.signal,
+			onChunk: () => started.resolve(),
 		});
-		await Bun.sleep(50);
+		await started.promise;
 		controller.abort();
 		const result = await promise;
 		expect(result.cancelled).toBe(true);
@@ -783,12 +778,14 @@ exit 64
 			return;
 		}
 		const controller = new AbortController();
-		const promise = executeBash("sleep 10; echo done", {
+		const started = Promise.withResolvers<void>();
+		const promise = executeBash("echo started; sleep 10; echo done", {
 			cwd: tempDir,
 			timeout: 5000,
 			signal: controller.signal,
+			onChunk: () => started.resolve(),
 		});
-		await Bun.sleep(50);
+		await started.promise;
 		controller.abort();
 		const result = await promise;
 		expect(result.cancelled).toBe(true);

@@ -329,6 +329,9 @@ export type NormalizedCustomMessagePayload<T = unknown> = Pick<
 /** Custom message type for hidden interrupted-thinking continuity context. */
 export const INTERRUPTED_THINKING_MESSAGE_TYPE = "interrupted-thinking";
 
+/** Custom message type for the transient checkpoint-active reminder. */
+export const CHECKPOINT_ACTIVE_REMINDER_TYPE = "checkpoint-active-reminder";
+
 /** Metadata persisted with a hidden interrupted-thinking continuity message. */
 export interface InterruptedThinkingDetails {
 	interruptedAt: number;
@@ -1088,7 +1091,8 @@ function customMessageContentToLlmContent(content: CustomMessage["content"]): (T
 	return typeof content === "string" ? [{ type: "text", text: content }] : content;
 }
 
-function isUserInvokedSkillPrompt(message: CustomMessage): boolean {
+/** True for a `/skill:<name>` prompt the user invoked directly (attribution `user`), as opposed to an agent/autoload injection. */
+export function isUserInvokedSkillPrompt(message: CustomMessage): boolean {
 	return message.customType === SKILL_PROMPT_MESSAGE_TYPE && message.attribution === "user";
 }
 

@@ -372,7 +372,7 @@ describe("AgentSession shake", () => {
 			};
 			session.agent.emitExternalEvent({ type: "message_end", message: assistantMessage });
 			session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMessage] });
-			await Bun.sleep(20);
+			await session.waitForIdle();
 
 			expect(shakeSpy).toHaveBeenCalledWith("elide", expect.anything());
 			const start = events.filter(e => e.type === "auto_compaction_start");
@@ -580,7 +580,7 @@ describe("AgentSession shake", () => {
 			};
 			session.agent.emitExternalEvent({ type: "message_end", message: assistantMessage });
 			session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMessage] });
-			await Bun.sleep(50);
+			await session.waitForIdle();
 
 			// Shake fires once. The pre-fix bug auto-continued, which would re-trigger shake
 			// on the next agent_end. The fix replaces that loop with a one-shot fallback.
@@ -634,7 +634,7 @@ describe("AgentSession shake", () => {
 			};
 			session.agent.emitExternalEvent({ type: "message_end", message: assistantMessage });
 			session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMessage] });
-			await Bun.sleep(50);
+			await session.waitForIdle();
 
 			expect(shakeSpy).toHaveBeenCalledTimes(1);
 
@@ -705,7 +705,7 @@ describe("AgentSession shake", () => {
 
 			session.agent.emitExternalEvent({ type: "message_end", message: assistantMessage });
 			session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMessage] });
-			await Bun.sleep(50);
+			await session.waitForIdle();
 
 			expect(shakeSpy).toHaveBeenCalledTimes(1);
 			const fullStart = events.find(

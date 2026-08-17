@@ -608,6 +608,7 @@ describe("mcp oauth flow", () => {
 		const progress: string[] = [];
 		let authCalls = 0;
 		let advertisedUrl = "";
+		const callbackReady = new AbortController();
 		try {
 			const flow = new MCPOAuthFlow(
 				{
@@ -622,10 +623,12 @@ describe("mcp oauth flow", () => {
 					onAuth: ({ url }) => {
 						authCalls += 1;
 						advertisedUrl = url;
+						callbackReady.abort("callback URL captured");
 					},
 					onProgress: msg => progress.push(msg),
-					// Abort once the flow is waiting for the browser callback we never deliver.
-					signal: AbortSignal.timeout(500),
+					// Stop immediately once the fallback URL has been observed; no browser
+					// callback is needed for this port-selection/DCR contract.
+					signal: callbackReady.signal,
 				},
 			);
 

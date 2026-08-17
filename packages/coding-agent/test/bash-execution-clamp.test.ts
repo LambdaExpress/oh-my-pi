@@ -1,20 +1,25 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { BashExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/bash-execution";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { setLocale } from "../src/i18n";
 
 const MAX_DISPLAY_LINE_CHARS = 4000;
+let darkTheme: Theme;
+
+beforeAll(async () => {
+	const loaded = await getThemeByName("dark");
+	expect(loaded).toBeDefined();
+	darkTheme = loaded!;
+});
 
 describe("BashExecutionComponent #clampDisplayLine", () => {
 	const ui = { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI;
 
-	beforeEach(async () => {
+	beforeEach(() => {
 		setLocale("en");
-		const theme = await getThemeByName("dark");
-		expect(theme).toBeDefined();
-		setThemeInstance(theme!);
+		setThemeInstance(darkTheme);
 	});
 
 	afterEach(() => {

@@ -3,10 +3,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { removeWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 function textContent(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return (
@@ -39,10 +41,14 @@ describe("createAgentSession cwd after /move", () => {
 		fs.writeFileSync(path.join(cwdB, "marker.txt"), "moved\n", "utf8");
 
 		const sessionManager = SessionManager.create(cwdA, path.join(tempDir, "sessions"));
+		const authStorage = createInMemoryAuthStorage();
+		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
 		const { session } = await createAgentSession({
 			cwd: cwdA,
 			agentDir: tempDir,
 			sessionManager,
+			authStorage,
+			modelRegistry,
 			settings: Settings.isolated({
 				"async.enabled": false,
 				"bash.autoBackground.enabled": false,
@@ -56,7 +62,10 @@ describe("createAgentSession cwd after /move", () => {
 			slashCommands: [],
 			enableMCP: false,
 			enableLsp: false,
-			toolNames: ["read"],
+			skipPythonPreflight: true,
+			rules: [],
+			preloadedCustomToolPaths: [],
+			toolNames: ["read", "bash"],
 		});
 
 		try {
@@ -67,8 +76,18 @@ describe("createAgentSession cwd after /move", () => {
 			const result = await readTool.execute("read-after-move", { path: "marker.txt:raw" });
 
 			expect(textContent(result)).toBe("moved\n");
+
+			const bashTool = session.getToolByName("bash");
+			if (!bashTool) throw new Error("Expected bash tool");
+			const pwdResult = await bashTool.execute("pwd-after-move", { command: "pwd" });
+
+			expect(textContent(pwdResult)).toContain(cwdB);
 		} finally {
-			await session.dispose();
+			try {
+				await session.dispose();
+			} finally {
+				authStorage.close();
+			}
 		}
 	});
 });

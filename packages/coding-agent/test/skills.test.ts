@@ -1,4 +1,4 @@
-import { describe, expect, it, spyOn } from "bun:test";
+import { beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,6 +6,7 @@ import { type Skill as CapabilitySkill, skillCapability } from "@oh-my-pi/pi-cod
 import { getCapability } from "@oh-my-pi/pi-coding-agent/discovery";
 import { getWslWindowsHomeCandidate, runHostProbe } from "@oh-my-pi/pi-coding-agent/discovery/agents";
 import {
+	type LoadSkillsResult,
 	loadSkills,
 	loadSkillsFromDir,
 	parseSkillInvocation,
@@ -70,8 +71,13 @@ async function withIsolatedHomeAndAgentDir<T>(
 
 describe("skills", () => {
 	describe("loadSkillsFromDir", () => {
-		const loadFixtureRoot = () => loadSkillsFromDir({ dir: fixturesDir, source: "test" });
+		let fixtureRoot: LoadSkillsResult;
 
+		beforeAll(async () => {
+			fixtureRoot = await loadSkillsFromDir({ dir: fixturesDir, source: "test" });
+		});
+
+		const loadFixtureRoot = async () => fixtureRoot;
 		it("should load a valid skill from a skills root", async () => {
 			const { skills, warnings } = await loadFixtureRoot();
 			const validSkill = skills.find(skill => skill.name === "valid-skill");
@@ -181,19 +187,22 @@ describe("skills", () => {
 	});
 
 	describe("loadSkills with options", () => {
-		it("should load from customDirectories only when built-ins disabled", async () => {
-			const { skills } = await withIsolatedHomeAndAgentDir(() =>
+		let customDirectorySkills: LoadSkillsResult;
+
+		beforeAll(async () => {
+			customDirectorySkills = await withIsolatedHomeAndAgentDir(() =>
 				loadSkills({ ...DISABLE_ALL_BUILTIN_SKILLS, customDirectories: [fixturesDir] }),
 			);
+		});
+		it("should load from customDirectories only when built-ins disabled", async () => {
+			const { skills } = customDirectorySkills;
 			expect(skills.length).toBeGreaterThan(0);
 			// Custom directory skills have source "custom:user"
 			expect(skills.every(s => s.source.startsWith("custom"))).toBe(true);
 		});
 
 		it("should return customDirectory skills sorted by name (case-insensitive)", async () => {
-			const { skills } = await withIsolatedHomeAndAgentDir(() =>
-				loadSkills({ ...DISABLE_ALL_BUILTIN_SKILLS, customDirectories: [fixturesDir] }),
-			);
+			const { skills } = customDirectorySkills;
 
 			expect(skills.map(s => s.name)).toEqual(expectedFixtureSkillOrder);
 		});
@@ -328,17 +337,14 @@ describe("skills", () => {
 		it("kills a host probe that never exits instead of blocking startup (#8402)", () => {
 			// Integration test against real OS timer behavior: the contract is that
 			// runHostProbe's spawnSync `timeout` actually kills a genuinely blocked
-			// child. That is a native process-lifecycle effect the kernel drives, so
-			// fake timers cannot exercise it. The child would sleep a minute (stand-in
-			// for a wedged WSL->Windows interop pipe); the 500ms probe timeout must
-			// kill it and report "unavailable" rather than hang the calling thread.
+			// child. Injecting a short deadline preserves that native lifecycle
+			// coverage without paying the production discovery budget.
 			const start = performance.now();
-			const result = runHostProbe([process.execPath, "-e", "await Bun.sleep(60_000)"]);
+			const result = runHostProbe([process.execPath, "-e", "await Bun.sleep(60_000)"], 25);
 			const elapsed = performance.now() - start;
 			expect(result).toBeUndefined();
-			// Loose bound: proves the probe returned via its own timeout, not via the
-			// child completing; a broken timeout would block far past this ceiling.
-			expect(elapsed).toBeLessThan(5_000);
+			// Loose bound proves the probe returned via its timeout, not the child.
+			expect(elapsed).toBeLessThan(1_000);
 		});
 
 		it("returns trimmed stdout for a host probe that succeeds (#8402)", () => {

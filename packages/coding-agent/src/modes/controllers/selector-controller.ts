@@ -567,6 +567,12 @@ export class SelectorController {
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;
+			case "display.showTokenUsage":
+				// Rebuild reruns usage-row detection under the new setting; resetDisplay
+				// retires rows already committed to native scrollback.
+				this.ctx.rebuildChatFromMessages();
+				this.ctx.ui.resetDisplay();
+				break;
 			case "tui.tight":
 				setTuiTight(value as boolean);
 				this.ctx.ui.invalidate();

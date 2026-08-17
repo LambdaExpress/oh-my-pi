@@ -1056,7 +1056,9 @@ describe("ModelRegistry", () => {
 
 			const model = registry.find("custom-local", "gpt-5.4");
 			expect(model?.contextWindow).toBe(1_000_000);
-			expect(model?.baseUrl).toBe("http://127.0.0.1:8080");
+			// llama.cpp discovery probes the bare root (`/models`, `/props`); chat
+			// traffic must go to the OpenAI-compatible `/v1` prefix.
+			expect(model?.baseUrl).toBe("http://127.0.0.1:8080/v1");
 		});
 
 		test("discoverable custom compat survives refresh", async () => {

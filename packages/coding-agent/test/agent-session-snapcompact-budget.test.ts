@@ -18,8 +18,7 @@
  * result instead of falling back to the LLM summarizer.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import * as path from "node:path";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import { effectiveReserveTokens, estimateTokens, prepareCompaction } from "@oh-my-pi/pi-agent-core/compaction";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -30,23 +29,22 @@ import { computeNonMessageTokens } from "@oh-my-pi/pi-coding-agent/modes/utils/c
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { TempDir } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 
 describe("AgentSession snapcompact frame-budget sizing", () => {
-	let tempDir: TempDir;
 	let session: AgentSession;
 	let sessionManager: SessionManager;
 	let authStorage: AuthStorage;
 	let modelRegistry: ModelRegistry;
 
-	beforeEach(async () => {
-		tempDir = TempDir.createSync("@pi-snapcompact-budget-");
-
-		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
+	beforeAll(async () => {
+		authStorage = await AuthStorage.create(":memory:");
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
-		sessionManager = SessionManager.create(tempDir.path(), tempDir.path());
+	});
+
+	beforeEach(() => {
+		sessionManager = SessionManager.inMemory();
 
 		const bundled = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!bundled) throw new Error("Expected bundled claude-sonnet-4-5 model");
@@ -105,13 +103,12 @@ describe("AgentSession snapcompact frame-budget sizing", () => {
 	});
 
 	afterEach(async () => {
-		try {
-			await session?.dispose();
-		} finally {
-			authStorage?.close();
-			await tempDir?.remove();
-			vi.restoreAllMocks();
-		}
+		await session?.dispose();
+		vi.restoreAllMocks();
+	});
+
+	afterAll(() => {
+		authStorage.close();
 	});
 
 	it("passes a maxFrames whose full projection (frames + text edges + base) fits the budget", async () => {
@@ -246,25 +243,7 @@ describe("AgentSession snapcompact frame-budget sizing", () => {
 	it("applies the frame byte cap when the model context window is unknown", async () => {
 		const model = session.model;
 		if (!model) throw new Error("Expected model");
-		await session.dispose();
-		// dispose() released the manager's in-memory transcript; reopen the
-		// persisted file for the replacement session, as revival paths do.
-		const sessionFile = sessionManager.getSessionFile();
-		if (!sessionFile) throw new Error("Expected a persisted session file");
-		sessionManager = await SessionManager.open(sessionFile, tempDir.path());
-		const unknownWindowModel = { ...model, contextWindow: 0 };
-		session = new AgentSession({
-			agent: new Agent({
-				initialState: { model: unknownWindowModel, systemPrompt: ["Test"], tools: [], messages: [] },
-			}),
-			sessionManager,
-			settings: Settings.isolated({
-				"compaction.strategy": "snapcompact",
-				"compaction.autoContinue": false,
-				"compaction.keepRecentTokens": 4000,
-			}),
-			modelRegistry,
-		});
+		session.agent.setModel({ ...model, contextWindow: 0 });
 
 		const branchEntries = sessionManager.getBranch();
 		const lastEntry = branchEntries[branchEntries.length - 1];

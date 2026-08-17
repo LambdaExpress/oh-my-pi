@@ -2061,7 +2061,7 @@ function b() {
 				// Emit well past the ~50KB inline window across many lines so the
 				// output is genuinely window-truncated (not merely column-capped),
 				// which is what allocates the spill artifact.
-				command: "seq 1 30000",
+				command: "seq 1 15000",
 			});
 
 			const artifactId = result.details?.meta?.truncation?.artifactId;

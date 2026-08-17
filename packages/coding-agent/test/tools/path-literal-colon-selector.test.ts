@@ -36,6 +36,7 @@ const posixIt = it.skipIf(process.platform === "win32");
 // must prefer a real literal file over the selector interpretation.
 describe("literal colon filename resolution (issue #4618)", () => {
 	let tmpDir: string;
+	const sessionSettings = Settings.isolated({ "grep.contextBefore": 0, "grep.contextAfter": 0 });
 
 	beforeEach(async () => {
 		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "literal-colon-"));
@@ -51,7 +52,7 @@ describe("literal colon filename resolution (issue #4618)", () => {
 			hasUI: false,
 			getSessionFile: () => null,
 			getSessionSpawns: () => "*",
-			settings: Settings.isolated({ "grep.contextBefore": 0, "grep.contextAfter": 0 }),
+			settings: sessionSettings,
 			...overrides,
 		};
 	}
@@ -253,8 +254,13 @@ describe("literal colon filename resolution (issue #4618)", () => {
 			const lines = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join("\n");
 			await Bun.write(absolute, `${lines}\n`);
 
-			const session = createSession();
-			session.settings.set("read.summarize.enabled", false);
+			const session = createSession({
+				settings: Settings.isolated({
+					"grep.contextBefore": 0,
+					"grep.contextAfter": 0,
+					"read.summarize.enabled": false,
+				}),
+			});
 			const tool = new ReadTool(session);
 			const result = await tool.execute("read-selector-preserved", {
 				path: `${absolute}:5-10`,
@@ -404,11 +410,15 @@ describe("literal colon filename resolution (issue #4618)", () => {
 // and `edit` all open the intended file — see issue #5508.
 describe("leading-colon path recovery (issue #5508)", () => {
 	let tmpDir: string;
+	const sessionSettings = Settings.isolated({
+		"grep.contextBefore": 0,
+		"grep.contextAfter": 0,
+		"edit.mode": "patch",
+	});
 
 	beforeEach(async () => {
 		resetSettingsForTest();
 		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "leading-colon-"));
-		await Settings.init({ inMemory: true, cwd: tmpDir });
 	});
 
 	afterEach(async () => {
@@ -426,11 +436,7 @@ describe("leading-colon path recovery (issue #5508)", () => {
 			getArtifactsDir: () => null,
 			getSessionId: () => null,
 			getPlanModeState: () => undefined,
-			settings: Settings.isolated({
-				"grep.contextBefore": 0,
-				"grep.contextAfter": 0,
-				"edit.mode": "patch",
-			}),
+			settings: sessionSettings,
 			...overrides,
 		} as unknown as ToolSession;
 	}
@@ -506,6 +512,7 @@ describe("leading-colon path recovery (issue #5508)", () => {
 	it("edit updates a file addressed with a leading colon", async () => {
 		const abs = path.join(tmpDir, "colon-edit.txt");
 		await Bun.write(abs, "needle here\nsecond\n");
+		await Settings.init({ inMemory: true, cwd: tmpDir });
 
 		const result = await new EditTool(createSession()).execute("edit-leading-colon", {
 			path: `:${abs}`,

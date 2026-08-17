@@ -8,6 +8,7 @@ import {
 	expectedScrollbackBuffer,
 	multiplexerHistoryPrefixChanged,
 	resolveExpectedOverlayLayout,
+	runHerdrWidthEpochCollapseReplayRegression,
 	runWidthEpochHeightAppendReplayRegression,
 	runWidthEpochOverlayReplayRegression,
 	scrollbackProbePositions,
@@ -73,5 +74,8 @@ describe("render stress oracle helpers", () => {
 
 	it("replays append growth concurrent with a height shrink inside a multiplexer width epoch", async () => {
 		await runWidthEpochHeightAppendReplayRegression();
+	});
+	it("replays a direct HerdR width epoch through a foreground-stream collapse", async () => {
+		await runHerdrWidthEpochCollapseReplayRegression();
 	});
 });

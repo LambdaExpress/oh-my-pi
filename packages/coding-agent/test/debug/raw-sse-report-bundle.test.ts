@@ -104,8 +104,10 @@ describe("raw SSE report bundle", () => {
 			}),
 		];
 		await Bun.write(sessionFile, `${sessionLines.join("\n")}\n`);
+		const subagentDir = path.join(cleanupRoot, "main", "subagents");
+		await fs.mkdir(subagentDir, { recursive: true });
 		await Bun.write(
-			path.join(cleanupRoot, "subagent.jsonl"),
+			path.join(subagentDir, "subagent.jsonl"),
 			`${JSON.stringify({ type: "session", version: 3, id: "sub", timestamp, cwd: cleanupRoot })}\n${JSON.stringify({
 				type: "message",
 				id: "message-sub",
@@ -126,10 +128,17 @@ describe("raw SSE report bundle", () => {
 			const text = await file.text();
 			expect(text, name).not.toContain(password);
 		}
-		expect(await files.get("session.jsonl")?.text()).toContain("ssh_config_change");
-		expect(await files.get("session.jsonl")?.text()).toContain("[REDACTED]");
-		expect(await files.get("session.jsonl")?.text()).toContain("ordinary main");
-		expect(await files.get("subagents/subagent.jsonl")?.text()).toContain("ordinary sub");
+		expect(result.files).toContain("artifacts/subagents/subagent.jsonl");
+		const archivedSession = await files.get("session.jsonl")?.text();
+		const archivedSubagent = await files.get("artifacts/subagents/subagent.jsonl")?.text();
+		expect(archivedSession).toContain("ssh_config_change");
+		expect(archivedSession).toContain('"password":"[REDACTED]"');
+		expect(archivedSession).toContain("ordinary main [REDACTED]");
+		expect(archivedSubagent).toContain("ordinary sub [REDACTED]");
+		expect(await files.get("raw-sse.txt")?.text()).toBe('data: {"password":"[REDACTED]"}');
+		expect(await files.get("config.json")?.text()).toBe(
+			JSON.stringify({ diagnostic: "settings [REDACTED]" }, null, 2),
+		);
 		expect(await Bun.file(sessionFile).text()).toContain(password);
 	});
 });

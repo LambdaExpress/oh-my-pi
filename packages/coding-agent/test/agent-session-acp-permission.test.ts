@@ -5,7 +5,7 @@
  * `ClientBridge.requestPermission`, while regular file-editing tools keep the same no-approval
  * behavior they have in the TUI.
  */
-import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, it, spyOn } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createMockModel, type MockModelOptions } from "@oh-my-pi/pi-ai/providers/mock";
@@ -156,13 +156,16 @@ async function createSessionWithMockModel(
 	return sess;
 }
 
-beforeEach(() => {
+beforeAll(() => {
 	tempDir = TempDir.createSync("@pi-acp-permission-test-");
 });
 
 afterEach(async () => {
 	await session?.dispose();
 	session = undefined;
+});
+
+afterAll(async () => {
 	await tempDir.remove();
 });
 

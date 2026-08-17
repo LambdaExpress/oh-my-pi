@@ -687,7 +687,13 @@ export class LspMuxServer {
 		server.pending.set(id, { resolveInternal: resolve });
 		try {
 			await this.#writeServer(server, { jsonrpc: "2.0", id, method: "shutdown", params: null });
-			await Promise.race([promise, Bun.sleep(SHUTDOWN_BUDGET_MS)]);
+			const timeout = Promise.withResolvers<void>();
+			const timer = setTimeout(timeout.resolve, SHUTDOWN_BUDGET_MS);
+			try {
+				await Promise.race([promise, timeout.promise]);
+			} finally {
+				clearTimeout(timer);
+			}
 			await this.#writeServer(server, { jsonrpc: "2.0", method: "exit" });
 		} catch (error) {
 			logger.warn("LSP mux graceful server shutdown failed", { server: server.key, error: String(error) });

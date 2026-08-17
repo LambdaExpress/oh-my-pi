@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
@@ -9,7 +9,7 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
@@ -17,6 +17,7 @@ import type { TuiSlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-com
 import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { setLocale } from "../src/i18n";
+import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
 
 /**
  * Prewalk: one-way switch from the starting model to a fast/cheap target
@@ -30,18 +31,27 @@ import { setLocale } from "../src/i18n";
 describe("AgentSession prewalk", () => {
 	let tempDir: TempDir;
 	let authStorage: AuthStorage;
+	let modelRegistry: ModelRegistry;
 	let session: AgentSession | undefined;
 
-	beforeEach(async () => {
-		setLocale("en");
+	beforeAll(() => {
 		tempDir = TempDir.createSync("@pi-prewalk-");
-		authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
+		authStorage = createInMemoryAuthStorage();
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
+	});
+
+	beforeEach(() => {
+		setLocale("en");
 	});
 
 	afterEach(async () => {
 		setLocale(null);
 		if (session) await session.dispose();
+		session = undefined;
+	});
+
+	afterAll(() => {
 		authStorage.close();
 		tempDir.removeSync();
 	});
@@ -106,7 +116,6 @@ describe("AgentSession prewalk", () => {
 	it("prewalks at the first edit/write after the todo gate opens; bash and todo don't trigger", async () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
 		// Turn 1: read-only. Turn 2: bash is excluded. Turn 3: todo opens the gate.
 		// Turn 4: write is the first post-todo edit/write, so it switches.
@@ -159,7 +168,6 @@ describe("AgentSession prewalk", () => {
 	it("an edit before any todo call does not switch while a todo tool exists; the next edit after todo does", async () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
 		// Turn 1: exploration. Turn 2: write while the gate is closed.
 		// Turn 3: todo opens the gate. Turn 4: write switches.
@@ -212,7 +220,7 @@ describe("AgentSession prewalk", () => {
 	it("keeps the todo gate closed after a failed todo call", async () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
+
 		const failingTodoTool: AgentTool<typeof todoToolSchema, undefined> = {
 			...todoTool,
 			async execute() {
@@ -265,7 +273,6 @@ describe("AgentSession prewalk", () => {
 		// was written. The safety net must force one more turn.
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
 		const mock = createMockModel({
 			responses: [
@@ -322,7 +329,6 @@ describe("AgentSession prewalk", () => {
 		// reply end the run. No mock fallback: a stray extra turn rejects.
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
 		// Turn 1: record (nudge injected after). Turn 2: bash — not an action
 		// tool. Turn 3: prose — the single continuation fires. Turn 4: prose
@@ -377,7 +383,6 @@ describe("AgentSession prewalk", () => {
 	it("does not switch on a read-only xd:// device dispatched through write (issue #7312)", async () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
 		// A read-only lsp navigation is dispatched as `write xd://lsp`; the write
 		// result carries the wrapped tool's read tier. Like a bash step, it must
@@ -442,7 +447,6 @@ describe("AgentSession prewalk", () => {
 	it("switches on a write-tier xd:// device dispatched through write (issue #7312)", async () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
 		// An lsp rename is a write-tier device call — it must arm the hand-off
 		// just like a direct edit/write: the write turn stays on the strong model,
@@ -510,7 +514,6 @@ describe("AgentSession prewalk", () => {
 		// cannot end the run before edit/write.
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
 		// Turn 1: read-only (nudge injected after). Turn 2: prose plan —
 		// bridged. Turn 3: todo — gate opens and re-arms the net. Turn 4:
@@ -570,7 +573,6 @@ describe("AgentSession prewalk", () => {
 		// cannot call an inactive tool — and prewalk never fired.
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
 		// Turn 1: read-only (nudge injected after). Turn 2: write — first
 		// edit/write must switch immediately; no todo call is possible.
@@ -616,7 +618,7 @@ describe("AgentSession prewalk", () => {
 	it("armPrewalk (the /prewalk slash command) pre-arms the switch for the very next edit/write", async () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
+
 		const sessionManager = SessionManager.inMemory();
 		sessionManager.appendCustomMessageEntry(
 			"prewalk-plan",
@@ -679,7 +681,7 @@ describe("AgentSession prewalk", () => {
 
 	it("armPrewalk rejects a same-model same-effort no-op", async () => {
 		const model = modelOrThrow("claude-sonnet-4-5");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
+
 		const mock = createMockModel({ responses: [{ content: ["status only"] }] });
 		const agent = new Agent({
 			getApiKey: () => "test-key",
@@ -715,7 +717,7 @@ describe("AgentSession prewalk", () => {
 	it("/prewalk reports success only when the requested arm remains active", async () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
+
 		const settings = Settings.isolated({ "compaction.enabled": false });
 		const sessionManager = SessionManager.inMemory();
 		const agent = new Agent({
@@ -769,7 +771,7 @@ describe("AgentSession prewalk", () => {
 	it("requires a fresh todo before a later explicit prewalk can hand off", async () => {
 		const primary = modelOrThrow("claude-sonnet-4-5");
 		const target = modelOrThrow("claude-sonnet-4-6");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
+
 		const mock = createMockModel({
 			responses: [
 				toolCall("first-todo", "todo"),
@@ -829,7 +831,6 @@ describe("AgentSession prewalk", () => {
 		// as a no-op. On a reasoning model the effort is the bulk of the cost, so
 		// this must still switch.
 		const model = modelOrThrow("claude-sonnet-4-5");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
 		// todo excluded from the active slate → the gate opens; record then write.
 		const mock = createMockModel({
@@ -869,7 +870,6 @@ describe("AgentSession prewalk", () => {
 	it("emits a notice when the prewalk target is a genuine no-op", async () => {
 		// Same model and same effective thinking level: no state change.
 		const model = modelOrThrow("claude-sonnet-4-5");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
 		const mock = createMockModel({
 			responses: [toolCall("t1", "record"), toolCall("t2", "write"), { content: ["done"] }],
@@ -912,7 +912,6 @@ describe("AgentSession prewalk", () => {
 		// A model capped at high resolves an xhigh target back to high.
 		// The equal effective settings must be recognized as a no-op.
 		const model = modelOrThrow("claude-sonnet-4-6"); // supported efforts cap at high
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
 		const mock = createMockModel({
 			responses: [toolCall("t1", "record"), toolCall("t2", "write"), { content: ["done"] }],
@@ -955,7 +954,6 @@ describe("AgentSession prewalk", () => {
 		// per-turn classification, so this is a real change and must switch — not
 		// collapse to a no-op.
 		const model = modelOrThrow("claude-sonnet-4-5");
-		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
 		const mock = createMockModel({
 			responses: [toolCall("t1", "record"), toolCall("t2", "write"), { content: ["done"] }],

@@ -309,14 +309,12 @@ export class IrcBus {
 
 		if (liveness) {
 			const { registry, senderId } = liveness;
+			const scopeId = options?.scopeId;
 			const hasRunningSender = (from?: string): boolean =>
 				registry
 					.listVisibleTo(senderId)
 					.some(
-						ref =>
-							ref.status === "running" &&
-							(!options.scopeId || ref.scopeId === options.scopeId) &&
-							(!from || ref.id === from),
+						ref => registry.isRunning(ref) && (!scopeId || ref.scopeId === scopeId) && (!from || ref.id === from),
 					);
 			const check = filter.from ? () => hasRunningSender(filter.from) : () => hasRunningSender();
 			unsubscribeLiveness = registry.onChange(() => {

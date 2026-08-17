@@ -53,7 +53,7 @@ import { cursorUsageProvider } from "./usage/cursor";
 import { googleGeminiCliUsageProvider } from "./usage/gemini";
 import { githubCopilotUsageProvider } from "./usage/github-copilot";
 import { antigravityRankingStrategy, antigravityUsageProvider } from "./usage/google-antigravity";
-import { kimiUsageProvider } from "./usage/kimi";
+import { kimiRankingStrategy, kimiUsageProvider } from "./usage/kimi";
 import { minimaxCodeUsageProvider } from "./usage/minimax-code";
 import { ollamaCloudUsageProvider, ollamaUsageProvider } from "./usage/ollama";
 import { codexRankingStrategy, openaiCodexUsageProvider } from "./usage/openai-codex";
@@ -677,6 +677,7 @@ const DEFAULT_USAGE_PROVIDER_MAP = new Map<Provider, UsageProvider>(
 );
 
 const USAGE_CACHE_PREFIX = "usage_cache:";
+const USAGE_FORCE_REFRESH_CACHE_PREFIX = "force-refresh:";
 const USAGE_HEADER_INGEST_INTERVAL_MS = 60_000;
 const USAGE_LAST_GOOD_RETENTION_MS = 24 * 60 * 60_000;
 /**
@@ -686,6 +687,12 @@ const USAGE_LAST_GOOD_RETENTION_MS = 24 * 60 * 60_000;
  * on the next poll.
  */
 const USAGE_FAILURE_BACKOFF_MS = 10_000;
+/**
+ * A manual invalidation persists across the next CLI process and serializes
+ * same-provider probes, avoiding a cold-account burst against IP-limited
+ * upstream usage endpoints.
+ */
+const USAGE_FORCE_REFRESH_TTL_MS = 5 * 60_000;
 // Bumped from 3s — Claude usage retries up to 3 times with exponential backoff
 // (~3.5s total worst case); a tight per-request budget aborts retries mid-cycle.
 const DEFAULT_USAGE_REQUEST_TIMEOUT_MS = 10_000;
@@ -782,6 +789,7 @@ interface UsageCache {
 	get<T>(key: string): UsageCacheEntry<T> | undefined;
 	getStale<T>(key: string): UsageCacheEntry<T> | undefined;
 	set<T>(key: string, entry: UsageCacheEntry<T>): void;
+	deletePrefix(prefix: string): boolean;
 	cleanup?(): void;
 }
 
@@ -789,6 +797,11 @@ type UsageRequestDescriptor = {
 	provider: Provider;
 	credential: UsageCredential;
 	baseUrl?: string;
+};
+
+type ForcedUsageRefresh = {
+	all: boolean;
+	providers: Set<Provider>;
 };
 
 type AuthApiKeyOptions = {
@@ -1069,6 +1082,7 @@ const DEFAULT_RANKING_STRATEGIES = new Map<Provider, CredentialRankingStrategy>(
 	["openai-codex", codexRankingStrategy],
 	["anthropic", claudeRankingStrategy],
 	["google-antigravity", antigravityRankingStrategy],
+	["kimi-code", kimiRankingStrategy],
 	["zai", zaiRankingStrategy],
 	["opencode-go", opencodeGoRankingStrategy],
 ]);
@@ -1183,6 +1197,12 @@ class AuthStorageUsageCache implements UsageCache {
 		const durableExpiresAt =
 			entry.value === null ? entry.expiresAt : Math.max(entry.expiresAt, Date.now() + USAGE_LAST_GOOD_RETENTION_MS);
 		this.store.setCache(`${USAGE_CACHE_PREFIX}${key}`, payload, Math.floor(durableExpiresAt / 1000));
+	}
+
+	deletePrefix(prefix: string): boolean {
+		if (!this.store.deleteCachePrefix) return false;
+		this.store.deleteCachePrefix(`${USAGE_CACHE_PREFIX}${prefix}`);
+		return true;
 	}
 
 	cleanup(): void {
@@ -2661,16 +2681,30 @@ export class AuthStorage {
 	}
 
 	/**
-	 * Check if any form of auth is configured for a provider.
-	 * Unlike getApiKey(), this doesn't refresh OAuth tokens.
+	 * Dedicated auth for default-model availability (picker / `getAvailable`).
+	 * Unlike {@link getApiKey}, this does not refresh OAuth tokens, and unlike
+	 * {@link hasResolvableAuth} it ignores cross-provider env aliases so
+	 * `XAI_API_KEY` does not auto-select SuperGrok (`xai-oauth`).
 	 */
 	hasAuth(provider: string): boolean {
 		if (this.#runtimeOverrides.has(provider)) return true;
 		if (this.#configOverrides.has(provider)) return true;
 		if (this.#getCredentialsForProvider(provider).length > 0) return true;
-		if (getEnvApiKey(provider)) return true;
+		if (this.#hasDedicatedEnvAuth(provider)) return true;
 		if (this.#fallbackResolver?.(provider)) return true;
 		return false;
+	}
+
+	/**
+	 * Whether a request could resolve a key for this provider, including
+	 * cross-provider env aliases (`xai-oauth` borrowing `XAI_API_KEY`).
+	 * Use this for explicit model preflight (`xai-oauth/grok-4.5`); use
+	 * {@link hasAuth} for auto-availability so the default picker stays on
+	 * paid `xai` when only `XAI_API_KEY` is set.
+	 */
+	hasResolvableAuth(provider: string): boolean {
+		if (this.hasAuth(provider)) return true;
+		return Boolean(getEnvApiKey(provider));
 	}
 
 	/**
@@ -2693,6 +2727,22 @@ export class AuthStorage {
 	}
 
 	/**
+	 * Env auth that belongs to this provider, not a cross-provider alias.
+	 *
+	 * `getEnvApiKey("xai-oauth")` also accepts `XAI_API_KEY` so an explicit
+	 * `xai-oauth/…` stream can still borrow the paid key. Availability and
+	 * origin must not: otherwise an API-key-only setup marks SuperGrok as
+	 * signed in and `pickDefaultAvailableModel` prefers `xai-oauth/grok-4.5`
+	 * over paid `xai/grok-4.5`.
+	 */
+	#hasDedicatedEnvAuth(provider: string): boolean {
+		if (provider === "xai-oauth") {
+			return Boolean($env.XAI_OAUTH_TOKEN?.trim());
+		}
+		return Boolean(getEnvApiKey(provider));
+	}
+
+	/**
 	 * Classify where a provider's auth comes from, following the same precedence
 	 * as {@link AuthStorage.getApiKey}: runtime override → config override →
 	 * stored OAuth → login-stored api_key → env var → stored api_key →
@@ -2708,7 +2758,7 @@ export class AuthStorage {
 		if (stored.some(credential => credential.type === "api_key" && credential.source === "login")) {
 			return { kind: "api_key" };
 		}
-		if (getEnvApiKey(provider)) return { kind: "env", envVar: getEnvApiKeyName(provider) };
+		if (this.#hasDedicatedEnvAuth(provider)) return { kind: "env", envVar: getEnvApiKeyName(provider) };
 		if (stored.some(credential => credential.type === "api_key")) return { kind: "api_key" };
 		if (this.#fallbackResolver?.(provider)) return { kind: "fallback" };
 		return undefined;
@@ -2955,20 +3005,63 @@ export class AuthStorage {
 		return baseUrl?.trim().replace(/\/+$/, "") ?? "";
 	}
 
+	#usageCacheProviderKey(provider: Provider): string {
+		const versionOverride = USAGE_REPORT_CACHE_KEY_VERSION_OVERRIDES[provider];
+		return versionOverride === undefined ? provider : `${versionOverride}:${provider}`;
+	}
+
+	#usageForceRefreshCacheKey(provider?: Provider): string {
+		return provider
+			? `${USAGE_FORCE_REFRESH_CACHE_PREFIX}provider:${provider}`
+			: `${USAGE_FORCE_REFRESH_CACHE_PREFIX}all`;
+	}
+
+	#markUsageForceRefresh(provider?: Provider): void {
+		this.#usageCache.set(this.#usageForceRefreshCacheKey(provider), {
+			value: true,
+			expiresAt: Date.now() + USAGE_FORCE_REFRESH_TTL_MS,
+		});
+	}
+
+	#hasUsageForceRefresh(provider?: Provider): boolean {
+		const key = this.#usageForceRefreshCacheKey(provider);
+		const entry = this.#usageCache.get<boolean>(key);
+		if (entry?.value !== true) return false;
+		if (entry.expiresAt > Date.now()) return true;
+		this.#usageCache.set(key, { value: null, expiresAt: 0 });
+		return false;
+	}
+
+	#usageForceRefresh(requests: readonly UsageRequestDescriptor[]): ForcedUsageRefresh {
+		const all = this.#hasUsageForceRefresh();
+		const providers = new Set<Provider>();
+		for (const request of requests) providers.add(request.provider);
+		if (!all) {
+			for (const provider of providers) {
+				if (!this.#hasUsageForceRefresh(provider)) providers.delete(provider);
+			}
+		}
+		return { all, providers };
+	}
+
+	#clearUsageForceRefresh(refresh: ForcedUsageRefresh): void {
+		if (refresh.all) this.#usageCache.set(this.#usageForceRefreshCacheKey(), { value: null, expiresAt: 0 });
+		for (const provider of refresh.providers) {
+			this.#usageCache.set(this.#usageForceRefreshCacheKey(provider), { value: null, expiresAt: 0 });
+		}
+	}
+
 	#buildUsageReportCacheKey(request: UsageRequestDescriptor): string {
 		const baseUrl = this.#normalizeUsageBaseUrl(request.baseUrl) || "default";
 		const identity = this.#buildUsageCacheIdentity(request.credential);
-		const versionOverride = USAGE_REPORT_CACHE_KEY_VERSION_OVERRIDES[request.provider];
-		const providerKey = versionOverride === undefined ? request.provider : `${versionOverride}:${request.provider}`;
+		const providerKey = this.#usageCacheProviderKey(request.provider);
 		return `report:${providerKey}:${baseUrl}:${identity}`;
 	}
 
 	#buildUsageReportsCacheKey(requests: ReadonlyArray<UsageRequestDescriptor>): string {
 		const snapshot = requests
 			.map(request => {
-				const versionOverride = USAGE_REPORT_CACHE_KEY_VERSION_OVERRIDES[request.provider];
-				const providerKey =
-					versionOverride === undefined ? request.provider : `${versionOverride}:${request.provider}`;
+				const providerKey = this.#usageCacheProviderKey(request.provider);
 				return `${providerKey}:${this.#normalizeUsageBaseUrl(request.baseUrl) || "default"}:${this.#buildUsageCacheIdentity(request.credential)}`;
 			})
 			.sort()
@@ -3210,19 +3303,24 @@ export class AuthStorage {
 		}
 	}
 
-	async #fetchUsageCached(request: UsageRequestDescriptor, timeoutMs?: number): Promise<UsageReport | null> {
+	async #fetchUsageCached(
+		request: UsageRequestDescriptor,
+		options: { timeoutMs?: number; forceRefresh?: boolean } = {},
+	): Promise<UsageReport | null> {
+		const timeoutMs = options.timeoutMs;
+		const forceRefresh = options.forceRefresh ?? false;
 		const cacheKey = this.#buildUsageReportCacheKey(request);
 		const now = Date.now();
-		const cached = this.#usageCache.get<UsageReport | null>(cacheKey);
+		const cached = forceRefresh ? undefined : this.#usageCache.get<UsageReport | null>(cacheKey);
 		// Fresh cache hit: return whatever's there (success or null fallback).
 		if (cached && cached.expiresAt > now) {
 			return cached.value;
 		}
 
-		const inFlight = this.#usageRequestInFlight.get(cacheKey);
-		if (inFlight) return inFlight;
-
 		const usageCacheEpoch = this.#usageCacheEpoch;
+		const inFlightKey = `${cacheKey}\0${usageCacheEpoch}`;
+		const inFlight = this.#usageRequestInFlight.get(inFlightKey);
+		if (inFlight) return inFlight;
 		const promise = (async () => {
 			const report = await this.#fetchUsageUncached(request, timeoutMs);
 			if (usageCacheEpoch !== this.#usageCacheEpoch) return report;
@@ -3242,7 +3340,8 @@ export class AuthStorage {
 			// re-hit the endpoint on every poll. Most providers serve the last good
 			// value through transient failures. Session-cookie providers can opt out
 			// so an expired login does not display stale quota indefinitely.
-			const retainLastGood = this.#usageProviderResolver?.(request.provider)?.retainLastGoodOnFailure !== false;
+			const retainLastGood =
+				!forceRefresh && this.#usageProviderResolver?.(request.provider)?.retainLastGoodOnFailure !== false;
 			const lastGood = retainLastGood
 				? (this.#usageCache.getStale<UsageReport | null>(cacheKey)?.value ?? null)
 				: null;
@@ -3251,10 +3350,10 @@ export class AuthStorage {
 			this.#usageCache.set(cacheKey, { value: lastGood, expiresAt: coolDown });
 			return lastGood;
 		})().finally(() => {
-			this.#usageRequestInFlight.delete(cacheKey);
+			this.#usageRequestInFlight.delete(inFlightKey);
 		});
 
-		this.#usageRequestInFlight.set(cacheKey, promise);
+		this.#usageRequestInFlight.set(inFlightKey, promise);
 		return promise;
 	}
 
@@ -3730,10 +3829,9 @@ export class AuthStorage {
 			if (!resolvedApiKey) return null;
 			usageCredential.apiKey = resolvedApiKey;
 		}
-		return this.#fetchUsageCached(
-			this.#buildUsageRequest(provider, usageCredential, options?.baseUrl),
-			options?.timeoutMs ?? this.#usageRequestTimeoutMs,
-		);
+		return this.#fetchUsageCached(this.#buildUsageRequest(provider, usageCredential, options?.baseUrl), {
+			timeoutMs: options?.timeoutMs ?? this.#usageRequestTimeoutMs,
+		});
 	}
 
 	/**
@@ -3927,6 +4025,37 @@ export class AuthStorage {
 		return true;
 	}
 
+	/**
+	 * Fetch every requested report, keeping normal polls parallel while a
+	 * manually invalidated provider probes accounts one at a time.
+	 */
+	#fetchUsageRequests(
+		requests: readonly UsageRequestDescriptor[],
+		serializedProviders: ReadonlySet<Provider>,
+	): Promise<Array<UsageReport | null>> {
+		const tails = new Map<Provider, Promise<void>>();
+		return Promise.all(
+			requests.map(request => {
+				const forceRefresh = serializedProviders.has(request.provider);
+				if (!forceRefresh) {
+					return this.#fetchUsageCached(request, { timeoutMs: this.#usageRequestTimeoutMs });
+				}
+				const tail = tails.get(request.provider) ?? Promise.resolve();
+				const current = tail.then(() =>
+					this.#fetchUsageCached(request, { timeoutMs: this.#usageRequestTimeoutMs, forceRefresh: true }),
+				);
+				tails.set(
+					request.provider,
+					current.then(
+						() => undefined,
+						() => undefined,
+					),
+				);
+				return current;
+			}),
+		);
+	}
+
 	async fetchUsageReports(options?: {
 		baseUrlResolver?: (provider: Provider) => string | undefined;
 		/** Caller's cancel signal; only rejects this caller, never the shared upstream fetch. */
@@ -3945,15 +4074,15 @@ export class AuthStorage {
 			// dispatch + credential selection) coalesce into one upstream call.
 			// Each caller's `signal` only cancels THAT caller's await; the
 			// shared upstream fetch runs to completion so peers aren't punished.
-			const OVERRIDE_KEY = "__override__";
-			let shared = this.#usageReportsInFlight.get(OVERRIDE_KEY);
+			const overrideKey = `__override__\0${this.#usageCacheEpoch}`;
+			let shared = this.#usageReportsInFlight.get(overrideKey);
 			if (!shared) {
 				// Don't forward the caller signal into the shared fetch — first caller's
 				// abort would otherwise cancel the upstream for every peer.
 				shared = override().finally(() => {
-					this.#usageReportsInFlight.delete(OVERRIDE_KEY);
+					this.#usageReportsInFlight.delete(overrideKey);
 				});
-				this.#usageReportsInFlight.set(OVERRIDE_KEY, shared);
+				this.#usageReportsInFlight.set(overrideKey, shared);
 			}
 			const reports = await raceUsageWithSignal(shared, options?.signal);
 			if (shouldReconcileStoreHookReports && reports) this.#reconcileCodexUsageBlocksFromReports(reports);
@@ -3973,7 +4102,8 @@ export class AuthStorage {
 		// a single decorrelation snapshot for 30s, defeating the jitter (some
 		// accounts can be missing from one fetch and present in the next; the
 		// aggregate cache freezes whichever set landed first).
-		const cacheKey = this.#buildUsageReportsCacheKey(requests);
+		const forcedRefresh = this.#usageForceRefresh(requests);
+		const cacheKey = `${this.#buildUsageReportsCacheKey(requests)}\0${this.#usageCacheEpoch}`;
 
 		const inFlight = this.#usageReportsInFlight.get(cacheKey);
 		if (inFlight) return inFlight;
@@ -3989,9 +4119,7 @@ export class AuthStorage {
 				});
 			}
 
-			const results = await Promise.all(
-				requests.map(request => this.#fetchUsageCached(request, this.#usageRequestTimeoutMs)),
-			);
+			const results = await this.#fetchUsageRequests(requests, forcedRefresh.providers);
 			const reports = results.filter((report): report is UsageReport => report !== null);
 			const deduped = this.#dedupeUsageReports(reports);
 			// no outer cache write — see comment above.
@@ -4012,6 +4140,7 @@ export class AuthStorage {
 					};
 				}),
 			});
+			this.#clearUsageForceRefresh(forcedRefresh);
 			return resolved;
 		})().finally(() => {
 			this.#usageReportsInFlight.delete(cacheKey);
@@ -5729,31 +5858,32 @@ export class AuthStorage {
 	}
 
 	/**
-	 * Force-invalidate cached usage reports so the next fetch retrieves fresh
-	 * values from upstream providers. If `provider` is specified, only that
-	 * provider's credentials are invalidated; otherwise, all credentials in the
-	 * store are invalidated.
+	 * Drop report snapshots for a user-requested refresh so a failed probe
+	 * cannot replay the pre-invalidation last-good value. The persisted marker
+	 * makes the next same-provider refresh serial rather than a cold fan-out.
 	 */
-	async invalidateUsageCache(provider?: string, signal?: AbortSignal): Promise<void> {
-		if (provider) {
-			this.#invalidateUsageReportCache(provider);
-		} else {
-			this.#usageCacheEpoch += 1;
-			const expired = Date.now() - 1;
-			try {
-				const credentials = this.#store.listAuthCredentials();
-				for (const entry of credentials) {
-					if (entry.credential.type !== "oauth") continue;
-					const cacheKey = this.#buildUsageReportCacheKey(
-						this.#buildUsageRequestForOauth(entry.provider, entry.credential),
-					);
-					const existing = this.#usageCache.getStale<UsageReport | null>(cacheKey);
-					this.#usageCache.set(cacheKey, { value: existing?.value ?? null, expiresAt: expired });
-				}
-			} catch (err) {
-				logger.debug("Failed to list auth credentials for complete usage cache invalidation", { err });
+	async #clearUsageReportCache(provider?: string): Promise<void> {
+		this.#usageCacheEpoch += 1;
+		const prefix = provider ? `report:${this.#usageCacheProviderKey(provider)}:` : "report:";
+		if (!this.#usageCache.deletePrefix(prefix)) {
+			// Third-party stores may not support prefix deletion. Clear every active
+			// request key instead, including API-key and environment credentials.
+			const requests = await this.#collectUsageRequests();
+			for (const request of requests) {
+				if (provider && request.provider !== provider) continue;
+				this.#usageCache.set(this.#buildUsageReportCacheKey(request), { value: null, expiresAt: 0 });
 			}
 		}
+		if (!this.#fetchUsageReportsOverride && !this.#store.fetchUsageReports) this.#markUsageForceRefresh(provider);
+	}
+
+	/**
+	 * Discard cached usage reports before a user-requested refresh. The next
+	 * read probes upstream serially per provider; a failure reports no fresh
+	 * usage instead of replaying an invalidated last-good snapshot.
+	 */
+	async invalidateUsageCache(provider?: string, signal?: AbortSignal): Promise<void> {
+		await this.#clearUsageReportCache(provider);
 
 		if (this.#store.invalidateUsageCache) {
 			await this.#store.invalidateUsageCache(signal).catch(err => {

@@ -122,7 +122,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			const deadline = Date.now() + 12_000;
 			let prompt = session.systemPrompt.join("\n");
 			while (!prompt.includes(SERVER_INSTRUCTIONS) && Date.now() < deadline) {
-				await Bun.sleep(50);
+				await Bun.sleep(10);
 				prompt = session.systemPrompt.join("\n");
 			}
 
@@ -177,7 +177,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			expect(prompt).not.toContain(CONTEXT_MODE_ROUTE);
 			const deadline = Date.now() + 12_000;
 			while (!prompt.includes(CONTEXT_MODE_ROUTE) && Date.now() < deadline) {
-				await Bun.sleep(50);
+				await Bun.sleep(10);
 				prompt = session.systemPrompt.join("\n");
 			}
 
@@ -230,7 +230,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			const deadline = Date.now() + 12_000;
 			let prompt = session.systemPrompt.join("\n");
 			while (!prompt.includes(SERVER_INSTRUCTIONS) && Date.now() < deadline) {
-				await Bun.sleep(50);
+				await Bun.sleep(10);
 				prompt = session.systemPrompt.join("\n");
 			}
 
@@ -276,7 +276,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			const deadline = Date.now() + 12_000;
 			let activeNames = session.getActiveToolNames();
 			while (!activeNames.includes(MCP_TOOL_NAME) && Date.now() < deadline) {
-				await Bun.sleep(50);
+				await Bun.sleep(10);
 				activeNames = session.getActiveToolNames();
 			}
 
@@ -316,7 +316,7 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			const deadline = Date.now() + 12_000;
 			let prompt = session.systemPrompt.join("\n");
 			while (!prompt.includes(SERVER_INSTRUCTIONS) && Date.now() < deadline) {
-				await Bun.sleep(50);
+				await Bun.sleep(10);
 				prompt = session.systemPrompt.join("\n");
 			}
 			const activeNames = session.getActiveToolNames();
@@ -354,12 +354,12 @@ describe("createAgentSession MCP server instructions (deferred UI)", () => {
 			const deadline = Date.now() + 12_000;
 			let prompt = session.systemPrompt.join("\n");
 			while (!prompt.includes(SERVER_INSTRUCTIONS) && Date.now() < deadline) {
-				await Bun.sleep(50);
+				await Bun.sleep(10);
 				prompt = session.systemPrompt.join("\n");
 			}
 			let activeNames = session.getActiveToolNames();
 			while (!activeNames.includes(MCP_TOOL_NAME) && Date.now() < deadline) {
-				await Bun.sleep(50);
+				await Bun.sleep(10);
 				activeNames = session.getActiveToolNames();
 			}
 

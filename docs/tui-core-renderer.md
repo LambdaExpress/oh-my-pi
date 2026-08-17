@@ -66,7 +66,7 @@ needs to know whether the user has scrolled away from the tail.
 - A component tree that reports **no seam** gets shell semantics: whatever
   scrolls off is final. Shrinking such a frame into its committed prefix
   re-anchors the window and leaves the stale copy in history (§3).
-- Inside ED3-unsafe multiplexers, a width change terminates the physical-row
+- Inside terminal multiplexers, a width change terminates the physical-row
   coordinate epoch. The renderer captures an opaque
   `NativeScrollbackWidthEpoch` marker from the last emitted source state before
   `SIGWINCH`, then resolves that same logical boundary after the settled-width
@@ -77,11 +77,9 @@ needs to know whether the user has scrolled away from the tail.
   and no old viewport row is recommitted. Components without the source
   contract retain the conservative physical-row fallback. Visible overlays
   freeze the seam and pinned live regions clip advancement at their final
-  boundary. Height-only resizes retain the existing ledger.
-- Direct HerdR panes are not in that category. HerdR's Ghostty core implements
-  ED3, so OMP clears and replays its source-owned transcript after settlement,
-  matching direct terminals. Repainting host-reflowed rows in place would
-  harden soft wraps and leave residual rows after a later width reversal.
+  boundary. Height-only resizes retain the existing ledger. Direct HerdR panes
+  use this path because clearing and replaying scrollback flickers in its
+  host-owned pane.
 
 ---
 
@@ -188,20 +186,19 @@ contract, not a terminal-specific optimization.
    deliberate exception: it clears and replays the complete current frame.
 3. **Commits are exactly the chunk.** Any byte shape that scrolls the screen
    must scroll only rows accounted for by the commit advance.
-4. **An ED3-unsafe multiplexer width resize NEVER advances history.** The old
-   committed physical-row coordinate is opaque after reflow. The resize leaves
-   the host-reflowed viewport in place and establishes a complete-frame
-   baseline independent of the native commit count. Subsequent growth writes
-   the exact current-width rows newly crossing the seam—not blank scroll
-   commands—then repaints the bounded viewport; only that slice advances
-   commits. Visible overlays advance neither the baseline nor the seam ledger;
-   overlay exit backfills the exact hidden slice. Pinned live regions advance
-   only through their final boundary; finalization releases the deferred
-   mutable slice. During a height shrink, only occupied old-frame rows actually
-   moved into history by the host are excluded from the append-owned seam;
-   empty viewport rows do not consume content-driven movement. Height-only
-   resizes do not terminate the epoch. Direct HerdR uses ED3 source replay
-   instead.
+4. **A multiplexer width resize NEVER advances history.** The old committed
+   physical-row coordinate is opaque after reflow. The resize leaves the
+   host-reflowed viewport in place and establishes a complete-frame baseline
+   independent of the native commit count. Subsequent growth writes the exact
+   current-width rows newly crossing the seam—not blank scroll commands—then
+   repaints the bounded viewport; only that slice advances commits. Visible
+   overlays advance neither the baseline nor the seam ledger; overlay exit
+   backfills the exact hidden slice. Pinned live regions advance only through
+   their final boundary; finalization releases the deferred mutable slice.
+   During a height shrink, only occupied old-frame rows actually moved into
+   history by the host are excluded from the append-owned seam; empty viewport
+   rows do not consume content-driven movement. Height-only resizes do not
+   terminate the epoch.
 5. **NEVER probe the viewport position or fork on platform in the update
    path.** win32 behaves like POSIX. The probe APIs are gone; do not
    reintroduce them.

@@ -27,6 +27,7 @@ afterEach(async () => {
 	__providerInFlightForTesting.setHeartbeatTimings(undefined);
 	__providerInFlightForTesting.setHeartbeatWriter(undefined);
 	__providerInFlightForTesting.setLeaseRemover(undefined);
+	__providerInFlightForTesting.setWaitObserver(undefined);
 	if (limiterRoot !== undefined) {
 		await fs.rm(limiterRoot, { recursive: true, force: true });
 		limiterRoot = undefined;
@@ -40,6 +41,13 @@ async function useIsolatedLimiterRoot(): Promise<void> {
 
 function limiterDir(provider: string): string {
 	return __providerInFlightForTesting.providerDir(provider);
+}
+function nextLimiterWait(provider = "tests"): Promise<void> {
+	const waiting = Promise.withResolvers<void>();
+	__providerInFlightForTesting.setWaitObserver(waitingProvider => {
+		if (waitingProvider === provider) waiting.resolve();
+	});
+	return waiting.promise;
 }
 
 describe("provider in-flight request limits", () => {
@@ -75,9 +83,9 @@ describe("provider in-flight request limits", () => {
 		const firstResult = first.result();
 		await firstStarted.promise;
 
+		const secondWaiting = nextLimiterWait();
 		const second = streamSimple(mock.model, context(), { maxInFlightRequests: { tests: 1 } });
-		await Bun.sleep(20);
-		expect(mock.calls).toHaveLength(1);
+		await secondWaiting;
 
 		releaseFirst.resolve();
 		const [firstMessage, secondMessage] = await Promise.all([firstResult, second.result()]);
@@ -110,27 +118,21 @@ describe("provider in-flight request limits", () => {
 			return undefined;
 		})();
 		const resultPromise = stream.result();
-		const removalOutcome = await Promise.race([
-			removalStarted.promise.then(() => "started" as const),
-			Bun.sleep(2_000).then(() => "blocked" as const),
-		]);
-		if (removalOutcome === "blocked") {
-			allowRemoval.resolve();
-			throw new Error("Provider lease removal did not start");
-		}
-		let completionBeforeRelease: "terminal" | "result" | "pending";
-		try {
-			completionBeforeRelease = await Promise.race([
-				terminalObserved.promise.then(() => "terminal" as const),
-				resultPromise.then(() => "result" as const),
-				Bun.sleep(20).then(() => "pending" as const),
-			]);
-		} finally {
-			allowRemoval.resolve();
-		}
+		await removalStarted.promise;
+		let terminalCompleted = false;
+		let resultCompleted = false;
+		void terminalObserved.promise.then(() => {
+			terminalCompleted = true;
+		});
+		void resultPromise.then(() => {
+			resultCompleted = true;
+		});
+		await Promise.resolve();
+		expect(terminalCompleted).toBe(false);
+		expect(resultCompleted).toBe(false);
+		allowRemoval.resolve();
 		const [result, terminalType] = await Promise.all([resultPromise, terminalObservation]);
 
-		expect(completionBeforeRelease).toBe("pending");
 		expect(result.content).toEqual([{ type: "text", text: "reply" }]);
 		expect(terminalType).toBe("done");
 		const entries = await fs.readdir(limiterDir("tests"), { withFileTypes: true });
@@ -328,12 +330,13 @@ describe("provider in-flight request limits", () => {
 
 		const controller = new AbortController();
 		const mock = createMockModel({ provider: "tests", responses: [{ content: ["reply"] }] });
+		const waiting = nextLimiterWait();
 		const stream = streamSimple(mock.model, context(), {
 			maxInFlightRequests: { tests: 1 },
 			signal: controller.signal,
 		});
 
-		await Bun.sleep(150);
+		await waiting;
 		expect(mock.calls).toHaveLength(0);
 
 		await fs.rm(externalLease, { recursive: true, force: true });
@@ -355,12 +358,13 @@ describe("provider in-flight request limits", () => {
 
 		const controller = new AbortController();
 		const mock = createMockModel({ provider: "tests", responses: [{ content: ["reply"] }] });
+		const waiting = nextLimiterWait();
 		const stream = streamSimple(mock.model, context(), {
 			maxInFlightRequests: { tests: 1 },
 			signal: controller.signal,
 		});
 
-		await Bun.sleep(50);
+		await waiting;
 		expect(await Bun.file(path.join(providerDir, ".wakeup")).exists()).toBe(false);
 		expect(mock.calls).toHaveLength(0);
 
@@ -403,12 +407,13 @@ describe("provider in-flight request limits", () => {
 
 		const controller = new AbortController();
 		const mock = createMockModel({ provider: "tests", responses: [{ content: ["reply"] }] });
+		const waiting = nextLimiterWait();
 		const stream = streamSimple(mock.model, context(), {
 			maxInFlightRequests: { tests: 1 },
 			signal: controller.signal,
 		});
 
-		await Bun.sleep(150);
+		await waiting;
 		expect(mock.calls).toHaveLength(0);
 
 		controller.abort(new Error("cancel lock waiter"));
@@ -427,12 +432,13 @@ describe("provider in-flight request limits", () => {
 
 		const controller = new AbortController();
 		const mock = createMockModel({ provider: "tests", responses: [{ content: ["reply"] }] });
+		const waiting = nextLimiterWait();
 		const stream = streamSimple(mock.model, context(), {
 			maxInFlightRequests: { tests: 1 },
 			signal: controller.signal,
 		});
 
-		await Bun.sleep(150);
+		await waiting;
 		expect(mock.calls).toHaveLength(0);
 
 		controller.abort(new Error("cancel partial-info waiter"));

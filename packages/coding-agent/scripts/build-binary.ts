@@ -91,7 +91,6 @@ async function main(): Promise<void> {
 			["bun", "--cwd=../natives", "run", "gen:native"],
 			crossBuild ? { ...Bun.env, TARGET_PLATFORM: crossBuild.platform, TARGET_ARCH: crossBuild.arch } : Bun.env,
 		);
-		await runCommand(["bun", "run", "gen:mupdf"]);
 		try {
 			await compileCodingAgent({
 				repoRoot,
@@ -107,7 +106,6 @@ async function main(): Promise<void> {
 				await runCommand(["codesign", "--force", "--sign", "-", outputPath]);
 			}
 		} finally {
-			await runCommand(["bun", "run", "gen:mupdf:reset"]);
 			await runCommand(["bun", "--cwd=../natives", "run", "gen:native:reset"]);
 		}
 	} finally {

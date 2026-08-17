@@ -3308,7 +3308,7 @@ export function applyCommonResponsesSamplingParams<P extends CommonResponsesPara
 	params: P,
 	options: CommonSamplingOptions | undefined,
 	model: Pick<Model, "provider" | "api" | "id" | "omitMaxOutputTokens" | "maxTokens"> & {
-		compat: Pick<ResolvedOpenAISharedCompat, "supportsSamplingParams">;
+		compat: Pick<ResolvedOpenAISharedCompat, "supportsSamplingParams" | "supportsPenaltyAndStopParams">;
 	},
 ): void {
 	if (options?.maxTokens && !model.omitMaxOutputTokens) {
@@ -3325,8 +3325,10 @@ export function applyCommonResponsesSamplingParams<P extends CommonResponsesPara
 		if (options?.topP !== undefined) params.top_p = options.topP;
 		if (options?.topK !== undefined) params.top_k = options.topK;
 		if (options?.minP !== undefined) params.min_p = options.minP;
-		if (options?.presencePenalty !== undefined) params.presence_penalty = options.presencePenalty;
-		if (options?.repetitionPenalty !== undefined) params.repetition_penalty = options.repetitionPenalty;
+		if (model.compat.supportsPenaltyAndStopParams) {
+			if (options?.presencePenalty !== undefined) params.presence_penalty = options.presencePenalty;
+			if (options?.repetitionPenalty !== undefined) params.repetition_penalty = options.repetitionPenalty;
+		}
 	}
 	applyOpenAIServiceTier(params, options?.serviceTier, model);
 }

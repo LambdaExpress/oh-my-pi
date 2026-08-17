@@ -148,12 +148,14 @@ class MuxTestClient {
 }
 
 async function withTimeout<T>(promise: Promise<T>, description: string, timeoutMs = 5_000): Promise<T> {
-	return Promise.race([
-		promise,
-		Bun.sleep(timeoutMs).then(() => {
-			throw new Error(`Timed out waiting for ${description}`);
-		}),
-	]);
+	// Real socket/subprocess integration needs a wall-clock failure watchdog; always cancel it when the event wins.
+	const timeout = Promise.withResolvers<never>();
+	const timer = setTimeout(() => timeout.reject(new Error(`Timed out waiting for ${description}`)), timeoutMs);
+	try {
+		return await Promise.race([promise, timeout.promise]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 const fixturePath = path.join(import.meta.dir, "fixtures", "fake-lsp-server.ts");

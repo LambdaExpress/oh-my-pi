@@ -254,6 +254,91 @@ describe("Markdown component", () => {
 			expect(plainLines.some(line => line.includes("-"))).toBeTruthy();
 		});
 
+		it("recovers rich Markdown after a lone closing fence from Gemini", () => {
+			const markdown = new Markdown(
+				`=== PACED IP ROTATION SOAK RESULTS ===
+Total Queries: 20
+Average Latency: 1,240 ms
+\`\`\`
+
+---
+
+### Production Deployment Status
+
+| Workload | Pod Status |
+| :--- | :--- |
+| google-scraper | **1/1 Running** |`,
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+			markdown.transientRenderCache = true;
+			markdown.render(80);
+
+			markdown.transientRenderCache = false;
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines.some(line => line.includes("| :--- | :--- |"))).toBe(false);
+			expect(plainLines.filter(line => line.includes("+")).length).toBeGreaterThanOrEqual(2);
+			expect(plainLines.some(line => line.includes("google-scraper") && line.includes("1/1 Running"))).toBe(true);
+		});
+
+		it("keeps an intentional unclosed fenced Markdown example literal", () => {
+			const markdown = new Markdown(
+				`Markdown source:
+\`\`\`
+### Production Deployment Status
+
+| Workload | Pod Status |
+| :--- | :--- |
+| google-scraper | 1/1 Running |`,
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines.some(line => line.includes("| :--- | :--- |"))).toBe(true);
+			expect(plainLines.filter(line => line.includes("+"))).toHaveLength(0);
+		});
+
+		it("keeps a four-space-indented tree child inside its paragraph", () => {
+			const markdown = new Markdown(
+				`Two verified cases:
+
+├── **case 1** — first branch
+│   └── each family has its own counter
+└── **case 3: unnumbered limits**
+    └── limits that carry **only a label** are dropped from the list`,
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			// The attached indented line is a lazy paragraph continuation, never an
+			// indented code block: no fence border rows, no literal bold markers.
+			expect(plainLines.filter(line => line.includes("```"))).toHaveLength(0);
+			expect(plainLines.some(line => line.includes("only a label"))).toBe(true);
+			expect(plainLines.some(line => line.includes("**"))).toBe(false);
+		});
+
+		it("keeps an unfinished code block with a rule and heading literal when no table follows", () => {
+			const markdown = new Markdown(
+				`The process printed this
+\`\`\`
+---
+### Still inside the unfinished block`,
+				0,
+				0,
+				defaultMarkdownTheme,
+			);
+			const plainLines = markdown.render(80).map(line => stripVTControlCharacters(line).trimEnd());
+
+			expect(plainLines.some(line => line.includes("---"))).toBe(true);
+			expect(plainLines.some(line => line.includes("### Still inside the unfinished block"))).toBe(true);
+		});
+
 		it("should render row dividers between data rows", () => {
 			const markdown = new Markdown(
 				`| Name | Age |

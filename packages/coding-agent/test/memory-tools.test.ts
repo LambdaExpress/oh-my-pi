@@ -748,9 +748,14 @@ describe("Mnemopi backend lifecycle", () => {
 			flushCalls++;
 			await flushStall.promise;
 		});
-		const closeSpy = vi.spyOn(retainMemory, "close");
+		const closeDone = Promise.withResolvers<void>();
+		const close = retainMemory.close.bind(retainMemory);
+		const closeSpy = vi.spyOn(retainMemory, "close").mockImplementation(() => {
+			close();
+			closeDone.resolve();
+		});
 
-		const BUDGET_MS = 100;
+		const BUDGET_MS = 20;
 		const start = Bun.nanoseconds();
 		await state.dispose({ timeoutMs: BUDGET_MS });
 		const elapsedMs = (Bun.nanoseconds() - start) / 1_000_000;
@@ -767,7 +772,7 @@ describe("Mnemopi backend lifecycle", () => {
 		// Release the stall and confirm the deferred close runs once consolidate
 		// settles — i.e. the SQLite handle still ends up released eventually.
 		flushStall.resolve();
-		await Bun.sleep(50);
+		await closeDone.promise;
 		expect(closeSpy).toHaveBeenCalledTimes(1);
 
 		registeredMnemopiState = undefined;

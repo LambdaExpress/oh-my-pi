@@ -430,11 +430,9 @@ function parseSizeValue(value: SizeValue | undefined, referenceSize: number): nu
 }
 
 /**
- * Detect sessions where ED3 cannot safely rebuild scrollback. A direct HerdR
- * pane is deliberately excluded: HerdR's Ghostty core implements ED3, so the
- * source-owned replay used by direct terminals is both supported and the only
- * way to avoid hardening host-reflowed soft wraps. Nested multiplexers remain
- * unsafe because the inner tmux/screen/Zellij layer still owns its history.
+ * Detect sessions where ED3 cannot safely rebuild scrollback. Direct HerdR
+ * panes support explicit clears; nested multiplexers remain unsafe because the
+ * inner tmux/screen/Zellij layer owns their history.
  */
 function isMultiplexerSession(): boolean {
 	if (!isInsideTerminalMultiplexer()) return false;
@@ -473,12 +471,12 @@ function reportsSizeOnAltScreenToggle(): boolean {
 
 /**
  * Resize should repaint the visible window in place — no alternate-screen
- * borrow, no ED3 scrollback rewrap — for multiplexer panes and for terminals
- * that loop on alt-screen toggles. The tradeoff is identical to a multiplexer:
- * scrollback above the window keeps its old wrap instead of being re-flowed.
+ * borrow, no ED3 scrollback rewrap — for multiplexer and direct HerdR panes,
+ * plus terminals that loop on alt-screen toggles. Direct HerdR remains a
+ * direct terminal for explicit transcript replacement and display reset.
  */
 function resizeRepaintsInPlace(): boolean {
-	return isMultiplexerSession() || reportsSizeOnAltScreenToggle();
+	return isMultiplexerSession() || Bun.env.HERDR_ENV === "1" || reportsSizeOnAltScreenToggle();
 }
 
 /**
@@ -1828,12 +1826,75 @@ export class TUI extends Container {
 	}
 
 	/**
+	 * Replace the cursor markers contributed by one fixed-size root segment.
+	 * The ledger stays sorted by absolute frame row; entries belonging to later
+	 * siblings move as one tail and otherwise retain their identity.
+	 */
+	#replaceFrameCursorMarkers(startRow: number, lines: readonly string[]): void {
+		const markers = this.#frameCursorMarkers;
+		const endRow = startRow + lines.length;
+		let intervalStart = 0;
+		while (intervalStart < markers.length && markers[intervalStart]!.row < startRow) intervalStart++;
+		let intervalEnd = intervalStart;
+		while (intervalEnd < markers.length && markers[intervalEnd]!.row < endRow) intervalEnd++;
+
+		let nextCount = 0;
+		for (let row = 0; row < lines.length; row++) {
+			if (lines[row]!.includes(CURSOR_MARKER)) nextCount++;
+		}
+
+		const previousCount = intervalEnd - intervalStart;
+		const delta = nextCount - previousCount;
+		const previousLength = markers.length;
+		if (delta > 0) {
+			markers.length = previousLength + delta;
+			for (let index = previousLength - 1; index >= intervalEnd; index--) {
+				markers[index + delta] = markers[index]!;
+			}
+		} else if (delta < 0) {
+			for (let index = intervalEnd; index < previousLength; index++) {
+				markers[index + delta] = markers[index]!;
+			}
+			markers.length = previousLength + delta;
+		}
+
+		const reusableCount = Math.min(previousCount, nextCount);
+		let markerSlot = intervalStart;
+		for (let row = 0; row < lines.length; row++) {
+			const line = lines[row]!;
+			const markerIndex = line.indexOf(CURSOR_MARKER);
+			if (markerIndex === -1) continue;
+			const absoluteRow = startRow + row;
+			const col = visibleWidth(line.slice(0, markerIndex));
+			if (markerSlot < intervalStart + reusableCount) {
+				const marker = markers[markerSlot]!;
+				marker.row = absoluteRow;
+				marker.col = col;
+			} else {
+				markers[markerSlot] = { row: absoluteRow, col };
+			}
+			markerSlot++;
+		}
+	}
+
+	/** Strip every internal cursor sentinel from one rendered row. */
+	#stripCursorMarkers(line: string, markerIndex = line.indexOf(CURSOR_MARKER)): string {
+		if (markerIndex === -1) return line;
+		let stripped = line;
+		while (markerIndex !== -1) {
+			stripped = stripped.slice(0, markerIndex) + stripped.slice(markerIndex + CURSOR_MARKER.length);
+			markerIndex = stripped.indexOf(CURSOR_MARKER, markerIndex);
+		}
+		return stripped;
+	}
+
+	/**
 	 * Append one row to the composed frame, stripping CURSOR_MARKER occurrences
 	 * (internal sentinels that must never reach the terminal, the committed
 	 * prefix, or the resync audit) and recording the first marker's position.
 	 */
 	#ingestFrameRow(line: string): void {
-		let markerIndex = line.indexOf(CURSOR_MARKER);
+		const markerIndex = line.indexOf(CURSOR_MARKER);
 		if (markerIndex === -1) {
 			this.#composedFrame.push(line);
 			return;
@@ -1842,12 +1903,7 @@ export class TUI extends Container {
 			row: this.#composedFrame.length,
 			col: visibleWidth(line.slice(0, markerIndex)),
 		});
-		let stripped = line;
-		while (markerIndex !== -1) {
-			stripped = stripped.slice(0, markerIndex) + stripped.slice(markerIndex + CURSOR_MARKER.length);
-			markerIndex = stripped.indexOf(CURSOR_MARKER, markerIndex);
-		}
-		this.#composedFrame.push(stripped);
+		this.#composedFrame.push(this.#stripCursorMarkers(line, markerIndex));
 	}
 
 	#syncTerminalCursorMode(component: Component | null): void {
@@ -2655,12 +2711,6 @@ export class TUI extends Container {
 			this.requestComponentRender(component);
 			return;
 		}
-		for (const line of nextLines) {
-			if (line.includes(CURSOR_MARKER)) {
-				this.requestComponentRender(component);
-				return;
-			}
-		}
 
 		let firstChanged = -1;
 		let lastChanged = -1;
@@ -2668,8 +2718,9 @@ export class TUI extends Container {
 		for (let i = 0; i < nextLines.length; i++) {
 			const frameRow = segment.start + i;
 			const raw = nextLines[i]!;
-			const prepared = this.#prepareLine(raw, width);
-			this.#composedFrame[frameRow] = raw;
+			const composed = this.#stripCursorMarkers(raw);
+			const prepared = this.#prepareLine(composed, width);
+			this.#composedFrame[frameRow] = composed;
 			this.#preparedMeta[frameRow] = prepared;
 			this.#preparedFrame[frameRow] = prepared.line;
 			if (previousWindow[screenStart + i] === prepared.line) continue;
@@ -2677,7 +2728,8 @@ export class TUI extends Container {
 			if (firstChanged === -1) firstChanged = i;
 			lastChanged = i;
 		}
-		segments[segmentIndex] = { ...segment, lines: nextLines };
+		this.#replaceFrameCursorMarkers(segment.start, nextLines);
+		segment.lines = nextLines;
 		this.#preparedValidRows = Math.max(this.#preparedValidRows, segment.start + nextLines.length);
 		this.#renderStablePrefixRows = Math.min(this.#renderStablePrefixRows, segment.start);
 

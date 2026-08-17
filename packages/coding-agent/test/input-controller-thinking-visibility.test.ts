@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
@@ -12,12 +12,18 @@ afterEach(() => {
 	setLocale(null);
 });
 
+function createAssistant(): AssistantMessageComponent {
+	const assistant = Object.create(AssistantMessageComponent.prototype) as AssistantMessageComponent;
+	assistant.setHideThinkingBlock = vi.fn();
+	return assistant;
+}
+
 describe("InputController thinking visibility", () => {
 	it("keeps pre-stream pending transcript content mounted when Ctrl+T toggles thinking blocks", () => {
 		const pendingUserMessage = { kind: "pending-user" };
 		const loadingIndicator = { kind: "loading" };
-		const assistant = new AssistantMessageComponent();
-		const setHideThinkingBlock = vi.spyOn(assistant, "setHideThinkingBlock");
+		const assistant = createAssistant();
+		const setHideThinkingBlock = assistant.setHideThinkingBlock as Mock<(hidden: boolean) => void>;
 		const resetDisplay = vi.fn();
 		const clear = vi.fn();
 		const addChild = vi.fn();
@@ -57,8 +63,8 @@ describe("InputController thinking visibility", () => {
 		// When thinking is "off", effectiveHideThinkingBlock is true even if the
 		// user's hideThinkingBlock setting is false. The toggle should refuse
 		// instead of silently no-op'ing or corrupting the setting.
-		const assistant = new AssistantMessageComponent();
-		const setHideThinkingBlock = vi.spyOn(assistant, "setHideThinkingBlock");
+		const assistant = createAssistant();
+		const setHideThinkingBlock = assistant.setHideThinkingBlock as Mock<(hidden: boolean) => void>;
 		const set = vi.fn();
 		const showStatus = vi.fn();
 		const resetDisplay = vi.fn();
@@ -85,8 +91,8 @@ describe("InputController thinking visibility", () => {
 	});
 
 	it("allows toggling when thinking is off after reasoning content was received", () => {
-		const assistant = new AssistantMessageComponent();
-		const setHideThinkingBlock = vi.spyOn(assistant, "setHideThinkingBlock");
+		const assistant = createAssistant();
+		const setHideThinkingBlock = assistant.setHideThinkingBlock as Mock<(hidden: boolean) => void>;
 		const set = vi.fn();
 		const showStatus = vi.fn();
 		const resetDisplay = vi.fn();
@@ -113,8 +119,8 @@ describe("InputController thinking visibility", () => {
 	});
 
 	it("refuses to toggle when the focused view session has thinking off", () => {
-		const assistant = new AssistantMessageComponent();
-		const setHideThinkingBlock = vi.spyOn(assistant, "setHideThinkingBlock");
+		const assistant = createAssistant();
+		const setHideThinkingBlock = assistant.setHideThinkingBlock as Mock<(hidden: boolean) => void>;
 		const set = vi.fn();
 		const showStatus = vi.fn();
 		const resetDisplay = vi.fn();
@@ -145,8 +151,8 @@ describe("InputController thinking visibility", () => {
 		// where thinking was on. With thinking off, effectiveHideThinkingBlock
 		// is true regardless, so any toggle is a no-op — guard it rather than
 		// flipping the persisted preference back to false.
-		const assistant = new AssistantMessageComponent();
-		const setHideThinkingBlock = vi.spyOn(assistant, "setHideThinkingBlock");
+		const assistant = createAssistant();
+		const setHideThinkingBlock = assistant.setHideThinkingBlock as Mock<(hidden: boolean) => void>;
 		const set = vi.fn();
 		const showStatus = vi.fn();
 		const resetDisplay = vi.fn();

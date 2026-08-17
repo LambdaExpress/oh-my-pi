@@ -9,7 +9,7 @@ import { isInspectImageToolAvailable } from "../utils/inspect-image-mode";
 import { convertBufferWithMarkit } from "../utils/markit";
 import { type ArchiveReader, formatArchiveEntryLines, openArchive, parseArchivePathCandidates } from "../utils/zip";
 import { applyListLimit } from "./list-limit";
-import { formatPathRelativeToCwd, resolveReadPath } from "./path-utils";
+import { resolveReadPath } from "./path-utils";
 import type { ReadToolDetails } from "./read";
 import {
 	buildInMemoryMultiRangeResult,
@@ -25,11 +25,6 @@ import {
 	isRemoteMountPath,
 	type SuffixMatchCache,
 } from "./read-path-resolution";
-import {
-	readArchivePdfImageMember,
-	rewriteArchivePdfImagePlaceholders,
-	splitArchivePdfImageMemberPath,
-} from "./read-pdf-images";
 import { isMultiRange, isRawSelector, type ParsedSelector, parseSel, selToOffsetLimit } from "./read-selector";
 import { formatBytes } from "./render-utils";
 import { ToolError, throwIfAborted } from "./tool-errors";
@@ -145,9 +140,6 @@ export async function readArchive(
 	throwIfAborted(signal);
 	const archive = await openArchive(resolvedArchivePath.absolutePath);
 	throwIfAborted(signal);
-	const archiveDisplayPath =
-		resolvedArchivePath.suffixResolution?.to ??
-		formatPathRelativeToCwd(resolvedArchivePath.absolutePath, session.cwd);
 
 	const details: ReadToolDetails = markMarkdownContentType(
 		session,
@@ -162,25 +154,6 @@ export async function readArchive(
 	let sel = parsedSel;
 	let node = archive.getNode(archiveSubPath);
 	if (!node && archiveSubPath) {
-		// `archive.zip:report.pdf:p11-img0.png` / `archive.zip:report.pdf:`:
-		// the subPath is an archive PDF image handle, not a member name. The
-		// PDF member itself takes precedence for the handle prefix (getNode
-		// above), so this runs only for handles whose PDF member exists.
-		const pdfImageMemberPath = splitArchivePdfImageMemberPath(archive, archiveSubPath);
-		if (pdfImageMemberPath) {
-			const pdfEntry = await archive.readFile(pdfImageMemberPath.pdfMemberPath);
-			return readArchivePdfImageMember(
-				session,
-				resolvedArchivePath.absolutePath,
-				archiveDisplayPath,
-				pdfImageMemberPath.pdfMemberPath,
-				pdfEntry.bytes,
-				pdfImageMemberPath.member,
-				details,
-				signal,
-			);
-		}
-
 		// `archive.zip:500` / `archive.zip:raw`: the whole subPath is a
 		// selector on the archive root, not a member name. Member names take
 		// precedence (getNode above); fall back to root + selector.
@@ -253,13 +226,9 @@ export async function readArchive(
 	if (ARCHIVE_CONVERTIBLE_EXTENSIONS[ext] === true) {
 		const result = await convertBufferWithMarkit(entry.bytes, ext, signal);
 		if (result.ok) {
-			const renderedContent =
-				ext === ".pdf"
-					? rewriteArchivePdfImagePlaceholders(result.content, archiveDisplayPath, entry.path)
-					: result.content;
 			const raw = isRawSelector(sel);
 			return isMultiRange(sel) && sel.kind === "lines"
-				? buildInMemoryMultiRangeResult(session, renderedContent, sel.ranges, {
+				? buildInMemoryMultiRangeResult(session, result.content, sel.ranges, {
 						details,
 						sourcePath: resolvedArchivePath.absolutePath,
 						entityLabel: "archive document",
@@ -268,7 +237,7 @@ export async function readArchive(
 					})
 				: buildInMemoryTextResult(
 						session,
-						renderedContent,
+						result.content,
 						selToOffsetLimit(sel).offset,
 						selToOffsetLimit(sel).limit,
 						{

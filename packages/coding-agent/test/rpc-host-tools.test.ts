@@ -234,7 +234,7 @@ function handle(frame) {
 			});
 			expect(sessionEventTypes).toContain("async_job_update");
 		} finally {
-			client.stop();
+			await client.stop();
 		}
 	});
 });

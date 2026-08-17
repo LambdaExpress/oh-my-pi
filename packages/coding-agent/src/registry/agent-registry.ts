@@ -9,6 +9,7 @@
  * revival) and are only removed on explicit release/teardown.
  */
 
+import { logger } from "@oh-my-pi/pi-utils";
 import type { AgentSession } from "../session/agent-session";
 import { oneLineLabel } from "../task/types";
 
@@ -140,6 +141,11 @@ export class AgentRegistry {
 		return expected === undefined || ref === expected || ref.session === expected;
 	}
 
+	#rejectStatusUpdate(id: string, status: AgentStatus, reason: string): false {
+		logger.debug("Agent registry status update rejected", { id, status, reason });
+		return false;
+	}
+
 	register(input: RegisterInput): AgentRef {
 		if (this.isScopeRetired(input.scopeId)) {
 			throw new Error(`Cannot register agent "${input.id}" in retired scope "${input.scopeId}".`);
@@ -190,10 +196,15 @@ export class AgentRegistry {
 
 	setStatus(id: string, status: AgentStatus, expected?: AgentRefExpectation): boolean {
 		const ref = this.#refs.get(id);
-		if (!ref || !this.#matchesExpected(ref, expected)) return false;
+		if (!ref) return this.#rejectStatusUpdate(id, status, "missing-ref");
+		if (!this.#matchesExpected(ref, expected)) {
+			return this.#rejectStatusUpdate(id, status, "session-ownership-changed");
+		}
 		// `aborted` is terminal: delayed progress/revival work from the killed
 		// generation must never transition the tombstone back to a live status.
-		if (ref.status === "aborted") return status === "aborted";
+		if (ref.status === "aborted") {
+			return status === "aborted" || this.#rejectStatusUpdate(id, status, "aborted-is-terminal");
+		}
 		if (ref.status === status) return true;
 		ref.status = status;
 		// Activity describes current work; it is meaningless once the agent
@@ -301,6 +312,20 @@ export class AgentRegistry {
 		}
 		ref.scopeId = nextScopeId;
 		ref.lastActivity = Date.now();
+	}
+
+	/** Whether a ref's claimed running state is corroborated by its attached live session. */
+	isRunning(ref: AgentRef): boolean {
+		if (ref.status !== "running") return false;
+		return ref.session?.isStreaming === true;
+	}
+
+	/** Mirror a session's authoritative run-state notifications into its owned registry ref. */
+	syncSessionStatus(id: string, session: AgentSession): () => void {
+		const unsubscribe = session.subscribeRunState(status => {
+			this.setStatus(id, status, session);
+		});
+		return unsubscribe;
 	}
 
 	onChange(listener: RegistryListener): () => void {

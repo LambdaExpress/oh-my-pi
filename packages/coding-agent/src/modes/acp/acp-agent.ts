@@ -673,13 +673,12 @@ export class AcpAgent implements Agent {
 		// For `model`/`thinking`, `#setModelById`/`#setThinkingLevelById` change
 		// the session model/thinking level through AgentSession, which now emits
 		// a lifetime event (`model_changed`/`thinking_level_changed`) that
-		// `#handleLifetimeEvent` turns into a push once the subscription is
-		// installed. Only push here when that subscription is not yet
-		// installed, so pre-bootstrap callers still see the change without a
-		// post-bootstrap duplicate.
+		// `#handleLifetimeEvent` turns into a push after the bootstrap guard.
+		// Before the guard, the lifetime listener drops the event because the
+		// response's `configOptions` already carries the changed state, so push
+		// directly here; after the guard, let the serialized lifetime chain push it.
 		const handledBySubscription =
-			(params.configId === THINKING_CONFIG_ID || params.configId === MODEL_CONFIG_ID) &&
-			record.lifetimeUnsubscribe !== undefined;
+			(params.configId === THINKING_CONFIG_ID || params.configId === MODEL_CONFIG_ID) && record.bootstrapComplete;
 		if (!handledBySubscription) {
 			await this.#pushConfigOptionUpdate(record);
 		} else {
@@ -1153,7 +1152,8 @@ export class AcpAgent implements Agent {
 		const record = this.#createManagedSessionRecord(session);
 		session.setClientBridge(createAcpClientBridge(this.#connection, session.sessionId, this.#clientCapabilities));
 		// `record.lifetimeUnsubscribe` is installed in `#scheduleBootstrapUpdates`
-		// so it shares the bootstrap race guard — see that comment for why.
+		// before the response-delivery guard so immediate prompt events are not
+		// lost; config lifetime events are gated there until the guard completes.
 		try {
 			await this.#configureExtensions(record);
 			await this.#configureMcpServers(record, mcpServers);
@@ -1904,6 +1904,17 @@ export class AcpAgent implements Agent {
 		try {
 			if (!record.lifetimeUnsubscribe) {
 				record.lifetimeUnsubscribe = record.session.subscribe(event => {
+					// The session-lifetime subscription is installed before the
+					// response-delivery guard so immediate prompts and terminal
+					// events are not lost. Config changes are different: the
+					// response already carries their state, so discard events
+					// received before the client can know this session id.
+					if (
+						!record.bootstrapComplete &&
+						(event.type === "thinking_level_changed" || event.type === "model_changed")
+					) {
+						return;
+					}
 					record.lifetimeEvents = record.lifetimeEvents.then(() => this.#handleLifetimeEvent(record, event));
 				});
 			}
@@ -1918,7 +1929,7 @@ export class AcpAgent implements Agent {
 		// reached the client. Zed's agent-client-protocol reader dispatches
 		// responses and notifications to different async tasks; sending the first
 		// `available_commands_update` immediately can reach an unknown session.
-		// Internal thinking-level changes stay suppressed through this guard
+		// Internal model/thinking changes stay suppressed through this guard
 		// because the response's `configOptions` already contains their state.
 		setTimeout(() => {
 			if (this.#sessions.get(sessionId) !== record) return;
@@ -2461,6 +2472,7 @@ export class AcpAgent implements Agent {
 				compact: instructionsOrOptions => runExtensionCompact(record.session, instructionsOrOptions),
 			},
 			uiContext,
+			"rpc",
 		);
 		await extensionRunner.emit({ type: "session_start" });
 		record.extensionsConfigured = true;

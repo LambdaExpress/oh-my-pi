@@ -166,6 +166,25 @@ describe("selector setting side effects", () => {
 		});
 	}
 
+	for (const enabled of [false, true]) {
+		it(`rebuilds the transcript when display.showTokenUsage=${enabled} changes in /settings`, () => {
+			const rebuildChatFromMessages = vi.fn();
+			const resetDisplay = vi.fn();
+			const controller = new SelectorController({
+				rebuildChatFromMessages,
+				ui: { resetDisplay },
+			} as unknown as InteractiveModeContext);
+
+			controller.handleSettingChange("display.showTokenUsage", enabled);
+
+			expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+			expect(resetDisplay).toHaveBeenCalledTimes(1);
+			expect(rebuildChatFromMessages.mock.invocationCallOrder[0]).toBeLessThan(
+				resetDisplay.mock.invocationCallOrder[0],
+			);
+		});
+	}
+
 	it("clears stale default role thinking when auto is selected", async () => {
 		const testTheme = await getThemeByName("dark");
 		if (!testTheme) throw new Error("Failed to load dark theme for model selector test");

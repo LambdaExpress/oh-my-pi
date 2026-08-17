@@ -1248,13 +1248,18 @@ describe("createAgentSession defaultInactive tool activation", () => {
 			const errors: string[] = [];
 			const unsubscribe = runner.onError(error => {
 				errors.push(error.error);
+				// The 10ms budget exists only to reap the stalled first handler
+				// quickly; handlers run sequentially and the budget is read per
+				// handler, so restoring it here keeps machine load from timing out
+				// the genuine recovery registration too (flaked in full-suite runs).
+				testSetExtensionHandlerTimeoutMs(EXTENSION_HANDLER_TIMEOUT_MS);
 			});
-			testSetExtensionHandlerTimeoutMs(250);
+			testSetExtensionHandlerTimeoutMs(10);
 
 			await runner.emit({ type: "session_start" });
 			unsubscribe();
 
-			expect(errors).toContain("handler timed out after 250ms");
+			expect(errors).toContain("handler timed out after 10ms");
 			expect(session.getToolByName("stalled_registration_tool")).toBeUndefined();
 			expect(session.getToolByName("recovered_registration_tool")?.label).toBe("recovered_registration_tool");
 			expect(session.getEnabledToolNames()).toContain("recovered_registration_tool");
@@ -1451,10 +1456,14 @@ describe("createAgentSession defaultInactive tool activation", () => {
 					await originalSetPresentation(toolNames, mountedToolNames, forcePromptRefresh, signal);
 					if (toolNames.includes("recovered_detached_tool")) recoveredActivation.resolve();
 				});
-			testSetExtensionHandlerTimeoutMs(250);
+			testSetExtensionHandlerTimeoutMs(10);
 
 			releaseStalledRegistration.resolve();
 			const failure = await detachedFailure.promise;
+			// Restore the default budget before the recovered registration flush:
+			// the 10ms budget was only for reaping the stalled activation, and the
+			// real presentation pass can exceed it under full-suite load.
+			testSetExtensionHandlerTimeoutMs(EXTENSION_HANDLER_TIMEOUT_MS);
 			releaseRecoveredRegistration.resolve();
 			await recoveredActivation.promise;
 

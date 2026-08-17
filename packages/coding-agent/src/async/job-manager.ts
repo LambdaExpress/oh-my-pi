@@ -182,7 +182,7 @@ export class AsyncJobManager {
 	readonly #maxRunningJobs: number;
 	readonly #retentionMs: number;
 	#deliveryLoop: Promise<void> | undefined;
-	readonly #deliveryWaitResolves = new Set<() => void>();
+	#deliveryQueueChanged = Promise.withResolvers<void>();
 	#disposed = false;
 
 	#matchesFilter(
@@ -463,6 +463,7 @@ export class AsyncJobManager {
 		for (const jobId of uniqueJobIds) {
 			this.#watchedJobs.add(jobId);
 		}
+		this.#notifyDeliveryQueueChanged();
 		return uniqueJobIds.length;
 	}
 
@@ -525,15 +526,8 @@ export class AsyncJobManager {
 			this.#deliveries.length,
 			...this.#deliveries.filter(delivery => !this.isDeliverySuppressed(delivery.jobId)),
 		);
-		this.#settleDeliveryWaiters();
+		this.#notifyDeliveryQueueChanged();
 		return before - this.#deliveries.length;
-	}
-
-	#settleDeliveryWaiters(): void {
-		for (const resolve of this.#deliveryWaitResolves) {
-			resolve();
-		}
-		this.#deliveryWaitResolves.clear();
 	}
 
 	/**
@@ -624,7 +618,7 @@ export class AsyncJobManager {
 			this.#deliveries.length,
 			...this.#deliveries.filter(delivery => delivery.scopeId !== scopeId),
 		);
-		this.#settleDeliveryWaiters();
+		this.#notifyDeliveryQueueChanged();
 		for (const job of jobs) {
 			if (job.status !== "running") continue;
 			job.status = "cancelled";
@@ -667,7 +661,7 @@ export class AsyncJobManager {
 			this.#deliveries.length,
 			...this.#deliveries.filter(delivery => delivery.scopeId !== scopeId),
 		);
-		this.#settleDeliveryWaiters();
+		this.#notifyDeliveryQueueChanged();
 		this.#inFlightDeliveries.splice(
 			0,
 			this.#inFlightDeliveries.length,
@@ -724,7 +718,7 @@ export class AsyncJobManager {
 			this.#deliveries.length,
 			...this.#deliveries.filter(delivery => !(delivery.ownerId === ownerId && delivery.scopeId === undefined)),
 		);
-		this.#settleDeliveryWaiters();
+		this.#notifyDeliveryQueueChanged();
 		for (const job of unscoped) {
 			if (job.status !== "running") continue;
 			job.status = "cancelled";
@@ -926,8 +920,8 @@ export class AsyncJobManager {
 		this.#clearEvictionTimers();
 		this.#jobs.clear();
 		this.#deliveries.length = 0;
+		this.#notifyDeliveryQueueChanged();
 		this.#inFlightDeliveries.length = 0;
-		this.#settleDeliveryWaiters();
 		this.#suppressedDeliveries.clear();
 		this.#watchedJobs.clear();
 		this.#pollEscalation.clear();
@@ -1028,17 +1022,14 @@ export class AsyncJobManager {
 			const now = Date.now();
 			if (selected.nextAttemptAt > now) {
 				if (selected.nextAttemptAt > deadline) return false;
-				const wake = Promise.withResolvers<void>();
-				this.#deliveryWaitResolves.add(wake.resolve);
-				await Promise.race([Bun.sleep(selected.nextAttemptAt - now), wake.promise]);
-				this.#deliveryWaitResolves.delete(wake.resolve);
+				await this.#waitForDeliveryQueueChange(selected.nextAttemptAt - now);
 				continue;
 			}
 
 			const index = this.#deliveries.indexOf(selected);
 			if (index === -1) continue;
 			this.#deliveries.splice(index, 1);
-			this.#settleDeliveryWaiters();
+			this.#notifyDeliveryQueueChanged();
 			if (this.#isDeliverySuppressed(selected)) continue;
 
 			return this.#waitForDeliveryPromise(this.#deliverDelivery(selected), deadline);
@@ -1069,7 +1060,7 @@ export class AsyncJobManager {
 		}
 		const job = this.#jobs.get(jobId);
 		if (!job) return;
-		this.#deliveries.push({
+		this.#queueDelivery({
 			jobId,
 			text,
 			type: job.type,
@@ -1078,7 +1069,6 @@ export class AsyncJobManager {
 			ownerId: job.ownerId,
 			scopeId: job.scopeId,
 		});
-		this.#settleDeliveryWaiters();
 		this.#ensureDeliveryLoop();
 	}
 
@@ -1104,27 +1094,25 @@ export class AsyncJobManager {
 			const delivery = this.#deliveries[0];
 			if (this.#isDeliverySuppressed(delivery)) {
 				this.#deliveries.shift();
-				this.#settleDeliveryWaiters();
+				this.#notifyDeliveryQueueChanged();
 				continue;
 			}
 			const waitMs = delivery.nextAttemptAt - Date.now();
 			if (waitMs > 0) {
-				const wake = Promise.withResolvers<void>();
-				this.#deliveryWaitResolves.add(wake.resolve);
-				await Promise.race([Bun.sleep(waitMs), wake.promise]);
-				this.#deliveryWaitResolves.delete(wake.resolve);
+				await this.#waitForDeliveryQueueChange(waitMs);
+				continue;
 			}
 			if (this.#deliveries[0] !== delivery) {
 				continue;
 			}
 			if (this.#isDeliverySuppressed(delivery)) {
 				this.#deliveries.shift();
-				this.#settleDeliveryWaiters();
+				this.#notifyDeliveryQueueChanged();
 				continue;
 			}
 
 			this.#deliveries.shift();
-			this.#settleDeliveryWaiters();
+			this.#notifyDeliveryQueueChanged();
 			await this.#deliverDelivery(delivery);
 		}
 	}
@@ -1169,8 +1157,7 @@ export class AsyncJobManager {
 				delivery.lastError = error instanceof Error ? error.message : String(error);
 				delivery.nextAttemptAt = Date.now() + this.#getRetryDelay(delivery.attempt);
 				if (!this.#isDeliverySuppressed(delivery)) {
-					this.#deliveries.push(delivery);
-					this.#settleDeliveryWaiters();
+					this.#queueDelivery(delivery);
 				}
 				logger.warn("Async job completion delivery failed", {
 					jobId: delivery.jobId,
@@ -1186,6 +1173,29 @@ export class AsyncJobManager {
 		})();
 		delivery.promise = promise;
 		return promise;
+	}
+
+	#queueDelivery(delivery: AsyncJobDelivery): void {
+		const index = this.#deliveries.findIndex(candidate => candidate.nextAttemptAt > delivery.nextAttemptAt);
+		if (index === -1) this.#deliveries.push(delivery);
+		else this.#deliveries.splice(index, 0, delivery);
+		this.#notifyDeliveryQueueChanged();
+	}
+
+	async #waitForDeliveryQueueChange(delayMs: number): Promise<void> {
+		const timerElapsed = Promise.withResolvers<void>();
+		const timer = setTimeout(timerElapsed.resolve, delayMs);
+		timer.unref();
+		try {
+			await Promise.race([timerElapsed.promise, this.#deliveryQueueChanged.promise]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
+	#notifyDeliveryQueueChanged(): void {
+		this.#deliveryQueueChanged.resolve();
+		this.#deliveryQueueChanged = Promise.withResolvers<void>();
 	}
 
 	async #waitForDeliveryPromise(promise: Promise<void> | undefined, deadline: number): Promise<boolean> {

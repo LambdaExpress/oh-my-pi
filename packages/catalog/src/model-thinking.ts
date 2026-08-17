@@ -26,6 +26,8 @@ import {
 	isDeepseekModelIdOrName,
 	isDeepseekV4FlashModelId,
 	isGlm52ReasoningEffortModelId,
+	isGlm53ReasoningEffortModelId,
+	isGrokXHighEffortCapable,
 	isKimiK3ModelId,
 	isMimoModelIdOrName,
 	isMinimaxM2FamilyModelId,
@@ -178,7 +180,8 @@ function fillThinkingWireDefaults<TApi extends Api>(
 		(spec.api === "anthropic-messages" || spec.api === "bedrock-converse-stream") &&
 		supportsAdaptiveThinkingDisplay(spec.id);
 	const needsRequiresEffort = thinking.requiresEffort === undefined && impliesMandatoryReasoning(parsed, spec.id);
-	const needsDefaultLevel = thinking.defaultLevel === undefined && isKimiK3ModelId(spec.id);
+	const needsDefaultLevel =
+		thinking.defaultLevel === undefined && (isKimiK3ModelId(spec.id) || isGlm53ReasoningEffortModelId(spec.id));
 	if (!effortsChanged && !shouldReplaceEffortMap && !needsDisplay && !needsRequiresEffort && !needsDefaultLevel) {
 		return thinking;
 	}
@@ -216,7 +219,7 @@ export function deriveThinking<TApi extends Api>(spec: ModelSpec<TApi>, compat: 
 		mode: inferThinkingControlMode(spec, parsed),
 		efforts,
 	};
-	if (isKimiK3ModelId(spec.id)) {
+	if (isKimiK3ModelId(spec.id) || isGlm53ReasoningEffortModelId(spec.id)) {
 		config.defaultLevel = Effort.Max;
 	}
 	const effortMap = inferEffortMap(spec, compat, config.mode, config.efforts);
@@ -329,6 +332,13 @@ function getModelDefinedEfforts<TApi extends Api>(
 	spec: ModelSpec<TApi>,
 	compat: CompatOf<TApi>,
 ): readonly Effort[] | undefined {
+	if (isGlm53ReasoningEffortModelId(spec.id)) {
+		// GLM-5.3+ exposes a uniform wire-exact low/high/max ladder on every
+		// host — unlike GLM-5.2, whose reasoning_effort dialect is
+		// host-specific. Thinking can no longer be disabled (handled by
+		// impliesMandatoryReasoning), and the default effort is `max`.
+		return LOW_HIGH_MAX_REASONING_EFFORTS;
+	}
 	if (isGlm52ReasoningEffortModelId(spec.id)) {
 		// GLM-5.2's reasoning_effort dialect is host-specific (verified against
 		// live endpoints):
@@ -391,19 +401,31 @@ function getModelDefinedEfforts<TApi extends Api>(
 		// on every first-party/aggregator host — the direct API, aggregators, and
 		// Ollama Cloud alike (medium/xhigh fold into high, max is a real wire
 		// tier). See https://api-docs.deepseek.com/api/create-chat-completion.
-		// OpenRouter's non-Flash V4 route still exposes only high; the older
-		// reasoners (V3.x, R1, deepseek-reasoner) top out at high/max.
+		// OpenRouter's non-Flash V4 route exposes only high, except the dated
+		// `deepseek-v4-pro-0813` SKU: its /models metadata advertises (and the
+		// route accepts) the full low/high/max ladder like every other host.
+		// The older reasoners (V3.x, R1, deepseek-reasoner) top out at high/max.
 		if (isDeepseekV4FlashModelId(spec.id)) {
 			return LOW_HIGH_MAX_REASONING_EFFORTS;
 		}
 		if (bareModelId(spec.id).toLowerCase().includes("deepseek-v4")) {
-			return isOpenRouterThinkingFormat(compat) ? HIGH_ONLY_REASONING_EFFORTS : LOW_HIGH_MAX_REASONING_EFFORTS;
+			if (!isOpenRouterThinkingFormat(compat)) {
+				return LOW_HIGH_MAX_REASONING_EFFORTS;
+			}
+			return bareModelId(spec.id).toLowerCase() === "deepseek-v4-pro-0813"
+				? LOW_HIGH_MAX_REASONING_EFFORTS
+				: HIGH_ONLY_REASONING_EFFORTS;
 		}
 		return isOpenRouterThinkingFormat(compat) ? HIGH_ONLY_REASONING_EFFORTS : HIGH_MAX_REASONING_EFFORTS;
 	}
 	if (spec.provider === "baseten" && isOpenAIGptOssModelId(spec.id)) {
 		// Baseten's gpt-oss router mirrors its GLM route: high/max only.
 		return HIGH_MAX_REASONING_EFFORTS;
+	}
+	// First-party Grok: `grok-4.6*` and `grok-4.20-multi-agent*` advertise
+	// `xhigh`. Other effort-capable SKUs stay on `minimal/low/medium/high`.
+	if (modelMatchesHost({ provider: spec.provider, baseUrl: spec.baseUrl ?? "" }, "xai")) {
+		return isGrokXHighEffortCapable(spec.id) ? DEFAULT_REASONING_EFFORTS_WITH_XHIGH : DEFAULT_REASONING_EFFORTS;
 	}
 	return isOpenAICompatReasoningApi(spec.api) &&
 		(isMinimaxM2FamilyModelId(spec.id) ||
@@ -585,6 +607,9 @@ function impliesMandatoryReasoning(parsed: ParsedModel, modelId: string): boolea
 		if (parsed.kind === "pro" && semverGte(parsed.version, "2.5")) return true;
 	}
 	if (isKimiK3ModelId(modelId)) return true;
+	// GLM-5.3+ no longer supports disabling thinking — thinking.type must
+	// always be "enabled". Floor thinking-off requests to the lowest effort.
+	if (isGlm53ReasoningEffortModelId(modelId)) return true;
 	if (isMinimaxM2FamilyModelId(modelId)) return true;
 	if (OPENAI_O_SERIES_RE.test(bareModelId(modelId))) return true;
 	return findThinkingVariantToken(modelId) !== undefined;

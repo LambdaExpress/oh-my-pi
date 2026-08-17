@@ -15,6 +15,9 @@ import {
 	setAgentDir,
 } from "@oh-my-pi/pi-utils";
 
+const OLDER_MTIME = new Date("2000-01-01T00:00:00.000Z");
+const NEWER_MTIME = new Date("2000-01-01T00:00:01.000Z");
+
 describe("loadEntriesFromFile", () => {
 	let tempDir: string;
 
@@ -76,9 +79,9 @@ describe("findMostRecentSession", () => {
 		const file2 = path.join(tempDir, "newer.jsonl");
 
 		fs.writeFileSync(file1, '{"type":"session","id":"old","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
-		// Small delay to ensure different mtime
-		await new Promise(r => setTimeout(r, 10));
+		fs.utimesSync(file1, OLDER_MTIME, OLDER_MTIME);
 		fs.writeFileSync(file2, '{"type":"session","id":"new","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
+		fs.utimesSync(file2, NEWER_MTIME, NEWER_MTIME);
 
 		expect(await findMostRecentSession(tempDir)).toBe(file2);
 	});
@@ -88,7 +91,6 @@ describe("findMostRecentSession", () => {
 		const valid = path.join(tempDir, "valid.jsonl");
 
 		fs.writeFileSync(invalid, '{"type":"not-session"}\n');
-		await new Promise(r => setTimeout(r, 10));
 		fs.writeFileSync(valid, '{"type":"session","id":"abc","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n');
 
 		expect(await findMostRecentSession(tempDir)).toBe(valid);
@@ -327,6 +329,7 @@ describe("SessionManager legacy session migration persistence", () => {
 				}),
 			].join("\n")}\n`,
 		);
+		fs.utimesSync(sessionFile, OLDER_MTIME, OLDER_MTIME);
 		const initialMtimeMs = fs.statSync(sessionFile).mtimeMs;
 
 		const session = await SessionManager.open(sessionFile, tempDir);
@@ -339,11 +342,9 @@ describe("SessionManager legacy session migration persistence", () => {
 		expect(migratedEntries[0]?.parentId).toBeNull();
 		expect(migratedEntries[1]?.parentId).toBe(migratedEntries[0]?.id);
 
-		await new Promise(resolve => setTimeout(resolve, 20));
 		await session.flush();
 		expect(fs.statSync(sessionFile).mtimeMs).toBe(initialMtimeMs);
 
-		await new Promise(resolve => setTimeout(resolve, 20));
 		session.appendMessage({ role: "user", content: "follow up", timestamp: Date.now() });
 		await session.flush();
 
@@ -372,10 +373,10 @@ describe("SessionManager legacy session migration persistence", () => {
 				}),
 			].join("\n")}\n`,
 		);
+		fs.utimesSync(sessionFile, OLDER_MTIME, OLDER_MTIME);
 		const initialMtimeMs = fs.statSync(sessionFile).mtimeMs;
 
 		const session = await SessionManager.open(sessionFile, tempDir);
-		await new Promise(resolve => setTimeout(resolve, 20));
 		await session.rewriteEntries();
 
 		const persistedEntries = await loadEntriesFromFile(sessionFile);
@@ -404,10 +405,10 @@ describe("SessionManager legacy session migration persistence", () => {
 				}),
 			].join("\n")}\n`,
 		);
+		fs.utimesSync(sessionFile, OLDER_MTIME, OLDER_MTIME);
 		const initialMtimeMs = fs.statSync(sessionFile).mtimeMs;
 
 		const session = await SessionManager.open(sessionFile, tempDir);
-		await new Promise(resolve => setTimeout(resolve, 20));
 		await session.ensureOnDisk();
 
 		const persistedEntries = await loadEntriesFromFile(sessionFile);

@@ -67,18 +67,18 @@ const HOST_PROBE_TIMEOUT_MS = 500;
 
 /**
  * Run a best-effort discovery probe and return its trimmed stdout, or
- * `undefined` when the command fails, produces no output, or exceeds
- * {@link HOST_PROBE_TIMEOUT_MS}. On timeout the child is killed with SIGKILL so
- * a wedged interop pipe cannot hang startup; the killed/non-zero exit is then
- * reported as "unavailable" and discovery falls back to the Linux
- * `$HOME`/`~/.omp` candidates.
+ * `undefined` when the command fails, produces no output, or exceeds the
+ * timeout. On timeout the child is killed with SIGKILL so a wedged interop pipe
+ * cannot hang startup; the killed/non-zero exit is then reported as
+ * "unavailable" and discovery falls back to the Linux `$HOME`/`~/.omp`
+ * candidates.
  */
-export function runHostProbe(cmd: string[]): string | undefined {
+export function runHostProbe(cmd: string[], timeoutMs = HOST_PROBE_TIMEOUT_MS): string | undefined {
 	try {
 		const result = Bun.spawnSync(cmd, {
 			stdout: "pipe",
 			stderr: "ignore",
-			timeout: HOST_PROBE_TIMEOUT_MS,
+			timeout: timeoutMs,
 			killSignal: "SIGKILL",
 		});
 		if (result.exitCode !== 0) return undefined;

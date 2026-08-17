@@ -1,5 +1,4 @@
-import { describe, expect, it } from "bun:test";
-import * as path from "node:path";
+import { afterAll, describe, expect, it } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -7,9 +6,17 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { createInMemoryAuthStorage } from "./helpers/agent-session-setup";
+
+const sharedAuthStorage = createInMemoryAuthStorage();
+sharedAuthStorage.setRuntimeApiKey("anthropic", "test-key");
+const sharedModelRegistry = new ModelRegistry(sharedAuthStorage);
+
+afterAll(() => {
+	sharedAuthStorage.close();
+});
 
 function makeTool(name: string, customWireName?: string): AgentTool {
 	return {
@@ -30,8 +37,6 @@ async function withSession(
 	run: (session: AgentSession) => void,
 ): Promise<void> {
 	const tempDir = TempDir.createSync("@apply-patch-preview-");
-	const authStorage = await AuthStorage.create(path.join(tempDir.path(), "auth.db"));
-	authStorage.setRuntimeApiKey("anthropic", "test-key");
 	const settings = Settings.isolated({ "compaction.enabled": false });
 	const model = buildModel({
 		id: "mock",
@@ -54,7 +59,7 @@ async function withSession(
 		agent,
 		sessionManager: SessionManager.inMemory(tempDir.path()),
 		settings,
-		modelRegistry: new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml")),
+		modelRegistry: sharedModelRegistry,
 		toolRegistry: new Map<string, AgentTool>(tools.map(tool => [tool.name, tool])),
 		builtInToolNames: [...builtInToolNames],
 		rebuildSystemPrompt: async toolNames => ({ systemPrompt: [toolNames.join(",")] }),
@@ -63,7 +68,6 @@ async function withSession(
 		run(session);
 	} finally {
 		await session.dispose();
-		authStorage.close();
 		tempDir.removeSync();
 	}
 }

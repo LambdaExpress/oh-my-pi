@@ -105,7 +105,7 @@ describe("document conversion cache", () => {
 
 	it("skips cache for imageDir conversions", async () => {
 		const convert = vi.spyOn(Markit.prototype, "convert").mockResolvedValue({ markdown: "image body" });
-		const docPath = path.join(testDir, "image-doc.pdf");
+		const docPath = path.join(testDir, "image-doc.docx");
 		await fs.writeFile(docPath, new TextEncoder().encode("image bytes"));
 		const imageDir = path.join(testDir, "images");
 
@@ -116,17 +116,6 @@ describe("document conversion cache", () => {
 		expect(second.cache).toBe("skipped");
 
 		expect(convert).toHaveBeenCalledTimes(2);
-
-		convert.mockClear();
-		const bytes = new TextEncoder().encode("buffer image bytes");
-		const firstBuffer = await convertBufferWithMarkit(bytes, ".pdf", undefined, { imageDir });
-		expect(firstBuffer.cache).toBe("skipped");
-
-		const secondBuffer = await convertBufferWithMarkit(bytes, ".pdf", undefined, { imageDir });
-		expect(secondBuffer.cache).toBe("skipped");
-
-		expect(convert).toHaveBeenCalledTimes(2);
-		expect(convert.mock.calls[0]?.[1]).toEqual({ extension: ".pdf", filename: "input.pdf", imageDir });
 	});
 
 	it("sweeps orphaned .tmp files during prune", async () => {

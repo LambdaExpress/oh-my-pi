@@ -35,7 +35,7 @@ describe("ModelRegistry runtime provider registration", () => {
 		tempDir = path.join(os.tmpdir(), `pi-test-model-registry-runtime-${Snowflake.next()}`);
 		fs.mkdirSync(tempDir, { recursive: true });
 		modelsJsonPath = path.join(tempDir, "models.json");
-		authStorage = await AuthStorage.create(path.join(tempDir, "testauth.db"));
+		authStorage = await AuthStorage.create(":memory:");
 		registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: offlineFetch });
 	});
 

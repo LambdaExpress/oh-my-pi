@@ -34,6 +34,21 @@ afterEach(() => {
 	setLocale(null);
 });
 
+function persistedChildJsonl(id: string): string {
+	return [
+		JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-07-30T01:13:37.835Z", cwd: TEST_CWD }),
+		JSON.stringify({
+			type: "session_init",
+			id: "init",
+			parentId: null,
+			timestamp: "2026-07-30T01:13:37.835Z",
+			systemPrompt: "system",
+			task: "work",
+			tools: ["read"],
+		}),
+	].join("\n");
+}
+
 function makeHub(focusAgent: (id: string) => Promise<void>) {
 	const agents = new AgentRegistry();
 	agents.register({
@@ -134,7 +149,7 @@ describe("Agent hub Enter activation", () => {
 		const sessionFile = path.join(tempDir.path(), "main.jsonl");
 		const workerSessionFile = path.join(tempDir.path(), "main", "Worker.jsonl");
 		await Bun.write(sessionFile, "");
-		await Bun.write(workerSessionFile, "");
+		await Bun.write(workerSessionFile, persistedChildJsonl("worker"));
 		const agents = new AgentRegistry();
 		const hub = new AgentHubOverlayComponent({
 			settings: Settings.isolated(),
@@ -183,8 +198,8 @@ describe("Agent hub Enter activation", () => {
 		const parentSessionFile = path.join(tempDir.path(), "main", "Parent.jsonl");
 		const childSessionFile = path.join(tempDir.path(), "main", "Parent", "Child.jsonl");
 		await Bun.write(sessionFile, "");
-		await Bun.write(parentSessionFile, "");
-		await Bun.write(childSessionFile, "");
+		await Bun.write(parentSessionFile, persistedChildJsonl("parent"));
+		await Bun.write(childSessionFile, persistedChildJsonl("child"));
 		const agents = new AgentRegistry();
 		const hub = new AgentHubOverlayComponent({
 			settings: Settings.isolated(),
@@ -330,8 +345,49 @@ describe("Agent hub Enter activation", () => {
 		expect(Bun.stripANSI(hub.render(120).join("\n"))).toContain("Read-only · 0 LoC");
 		hub.dispose();
 	});
-	it("yields to a macrotask while streaming a large session", async () => {
+	it("yields to a macrotask at the configured streaming threshold", async () => {
+		vi.useFakeTimers();
 		using tempDir = TempDir.createSync("@omp-agent-hub-responsive-");
+		const sessionFile = path.join(tempDir.path(), "session.jsonl");
+		const entry = JSON.stringify({
+			type: "message",
+			id: "entry",
+			parentId: null,
+			timestamp: "2026-07-30T01:13:30.000Z",
+			message: { role: "user", content: [{ type: "text", text: "small" }] },
+		});
+		await Bun.write(sessionFile, `${entry}\n`.repeat(3));
+		const thresholdVisited = Promise.withResolvers<void>();
+		let complete = false;
+		let yieldedBeforeComplete = false;
+		let visited = 0;
+		const visit = visitEntriesFromFileStream(
+			sessionFile,
+			() => {
+				visited++;
+				if (visited !== 2) return;
+				setTimeout(() => {
+					if (!complete) yieldedBeforeComplete = true;
+				}, 0);
+				thresholdVisited.resolve();
+			},
+			{ yieldEveryBytes: 0, yieldEveryEntries: 2 },
+		).finally(() => {
+			complete = true;
+		});
+		try {
+			await thresholdVisited.promise;
+			vi.runOnlyPendingTimers();
+			await visit;
+			expect(visited).toBe(3);
+			expect(yieldedBeforeComplete).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("yields to a macrotask while streaming a large session", async () => {
+		using tempDir = TempDir.createSync("@omp-agent-hub-responsive-large-");
 		const sessionFile = path.join(tempDir.path(), "session.jsonl");
 		const entry = JSON.stringify({
 			type: "message",
@@ -405,9 +461,10 @@ describe("Agent hub Enter activation", () => {
 		if (!sourceSessionFile) throw new Error("Expected source session file");
 		const sourceArtifacts = sourceSessionFile.slice(0, -6);
 		await fs.mkdir(sourceArtifacts, { recursive: true });
-		for (const id of ["ActiveVibe", "KilledVibe", "OrdinaryTask"]) {
+		for (const id of ["ActiveVibe", "KilledVibe"]) {
 			await fs.writeFile(path.join(sourceArtifacts, `${id}.jsonl`), "persisted child");
 		}
+		await fs.writeFile(path.join(sourceArtifacts, "OrdinaryTask.jsonl"), persistedChildJsonl("OrdinaryTask"));
 		const fork = await manager.fork();
 		if (!fork) throw new Error("Expected persisted fork");
 		await fs.cp(sourceArtifacts, fork.newSessionFile.slice(0, -6), { recursive: true });
@@ -597,7 +654,7 @@ describe("Agent hub double-← gating", () => {
 		const sessionFile = path.join(tempDir.path(), "main.jsonl");
 		const workerSessionFile = path.join(tempDir.path(), "main", "Worker.jsonl");
 		await Bun.write(sessionFile, "");
-		await Bun.write(workerSessionFile, "");
+		await Bun.write(workerSessionFile, persistedChildJsonl("worker"));
 		const agents = new AgentRegistry();
 		const { controller, shown, shownReady } = setup(agents, sessionFile);
 
@@ -613,7 +670,7 @@ describe("Agent hub double-← gating", () => {
 		using tempDir = TempDir.createSync("@omp-agent-hub-explicit-");
 		const sessionFile = path.join(tempDir.path(), "main.jsonl");
 		await Bun.write(sessionFile, "");
-		await Bun.write(path.join(tempDir.path(), "main", "Worker.jsonl"), "");
+		await Bun.write(path.join(tempDir.path(), "main", "Worker.jsonl"), persistedChildJsonl("worker"));
 		const agents = new AgentRegistry();
 		const { controller, shown, overlayOptions } = setup(agents, sessionFile);
 

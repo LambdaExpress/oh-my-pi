@@ -23,6 +23,7 @@ describe("InteractiveMode loop auto-submit", () => {
 	let mode: InteractiveMode;
 	let session: AgentSession;
 	let tempDir: TempDir;
+	let pendingInput: Promise<SubmittedUserInput> | undefined;
 
 	beforeAll(() => {
 		initTheme();
@@ -45,14 +46,25 @@ describe("InteractiveMode loop auto-submit", () => {
 			modelRegistry,
 		});
 		mode = new InteractiveMode(session, "test");
+		mode.ui.requestRender = vi.fn();
+		settings.set("loop.mode", "prompt");
 		vi.spyOn(mode, "addMessageToChat").mockReturnValue([]);
 		vi.spyOn(mode, "ensureLoadingAnimation").mockImplementation(() => {});
-		mode.ui.requestRender = vi.fn();
 	});
 
 	afterEach(async () => {
-		mode?.disableLoopMode("Loop mode disabled.");
-		mode?.stop();
+		mode.disableLoopMode("Loop mode disabled.");
+		mode.cancelPendingSubmission();
+		if (mode.onInputCallback) {
+			mode.onInputCallback({ text: "", cancelled: true, started: false });
+		}
+		await pendingInput;
+		pendingInput = undefined;
+		mode.vibeModeEnabled = false;
+		Reflect.deleteProperty(session, "isCompacting");
+		Reflect.deleteProperty(session, "isStreaming");
+		Reflect.deleteProperty(session, "hasPostPromptWork");
+		mode.stop();
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		setLocale(null);
@@ -71,7 +83,8 @@ describe("InteractiveMode loop auto-submit", () => {
 		mode.loopModeEnabled = true;
 		mode.loopPrompt = "repeat this";
 		const resolved: SubmittedUserInput[] = [];
-		void mode.getUserInput().then(input => resolved.push(input));
+		pendingInput = mode.getUserInput();
+		void pendingInput.then(input => resolved.push(input));
 
 		vi.advanceTimersByTime(800);
 		await flushMicrotasks();
@@ -99,7 +112,8 @@ describe("InteractiveMode loop auto-submit", () => {
 		mode.loopModeEnabled = true;
 		mode.loopPrompt = "repeat after compact";
 		const resolved: SubmittedUserInput[] = [];
-		void mode.getUserInput().then(input => resolved.push(input));
+		pendingInput = mode.getUserInput();
+		void pendingInput.then(input => resolved.push(input));
 
 		vi.advanceTimersByTime(800);
 		await flushMicrotasks();
@@ -125,7 +139,8 @@ describe("InteractiveMode loop auto-submit", () => {
 		mode.loopModeEnabled = true;
 		mode.loopPrompt = "deliver this";
 		const resolved: SubmittedUserInput[] = [];
-		void mode.getUserInput().then(input => resolved.push(input));
+		pendingInput = mode.getUserInput();
+		void pendingInput.then(input => resolved.push(input));
 
 		// Loop timer fires while an idle-flush / delivery turn is still pending.
 		vi.advanceTimersByTime(800);
@@ -149,7 +164,8 @@ describe("InteractiveMode loop auto-submit", () => {
 		mode.loopPrompt = "do not resubmit";
 		const showStatus = vi.spyOn(mode, "showStatus");
 		const resolved: SubmittedUserInput[] = [];
-		void mode.getUserInput().then(input => resolved.push(input));
+		pendingInput = mode.getUserInput();
+		void pendingInput.then(input => resolved.push(input));
 
 		vi.advanceTimersByTime(800);
 		await flushMicrotasks();

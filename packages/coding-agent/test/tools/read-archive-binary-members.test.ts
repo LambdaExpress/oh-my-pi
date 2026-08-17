@@ -9,7 +9,6 @@ import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
-import * as markit from "@oh-my-pi/pi-coding-agent/utils/markit";
 import { type Unzipped, zip } from "@oh-my-pi/pi-coding-agent/utils/zip";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
@@ -61,27 +60,6 @@ async function writeBundle(testDir: string, entries: Unzipped): Promise<string> 
 	return bundlePath;
 }
 
-function mockPdfConversion(
-	markdown = ["Heading", "", "<!-- image: p11-img0 (page 11, 10x10pt) -->", "", "Footer"].join("\n"),
-	members: Record<string, Uint8Array> = { "p11-img0.png": TINY_PNG },
-) {
-	return vi
-		.spyOn(markit, "convertBufferWithMarkit")
-		.mockImplementation(async (_bytes, extension, _signal, options) => {
-			if (extension === ".pdf" && options?.imageDir) {
-				await fs.mkdir(options.imageDir, { recursive: true });
-				for (const name in members) {
-					await Bun.write(path.join(options.imageDir, name), members[name]!);
-				}
-				return { ok: true, content: "", cache: "skipped" };
-			}
-			if (extension === ".pdf") {
-				return { ok: true, content: markdown, cache: "miss" };
-			}
-			return { ok: false, content: "", error: `Unexpected extension ${extension}`, cache: "miss" };
-		});
-}
-
 describe("read archive binary members", () => {
 	let testDir: string;
 
@@ -129,51 +107,6 @@ describe("read archive binary members", () => {
 		expect(text).toContain("| Name | Age |");
 		expect(text).not.toContain("Cannot read binary archive entry");
 		expect(text).not.toContain("<?xml");
-	});
-
-	it("rewrites archived PDF image placeholders to archive member handles", async () => {
-		mockPdfConversion();
-		const bundlePath = await writeBundle(testDir, { "report.pdf": enc("%PDF-stub") });
-		const tool = new ReadTool(makeSession(testDir));
-
-		const result = await tool.execute("call", { path: `${bundlePath}:report.pdf` });
-		const text = joinText(result.content);
-
-		expect(text).not.toContain("<!-- image:");
-		expect(text).toContain("read `bundle.zip:report.pdf:p11-img0.png`");
-	});
-
-	it("lists extractable images for an archived PDF trailing-colon handle", async () => {
-		mockPdfConversion();
-		const bundlePath = await writeBundle(testDir, { "report.pdf": enc("%PDF-stub") });
-		const tool = new ReadTool(makeSession(testDir));
-
-		const result = await tool.execute("call", { path: `${bundlePath}:report.pdf:` });
-		const text = joinText(result.content);
-
-		expect(text).toContain("read `bundle.zip:report.pdf:p11-img0.png`");
-	});
-
-	it("reads an archived PDF image handle as an inline image block", async () => {
-		mockPdfConversion();
-		const bundlePath = await writeBundle(testDir, { "report.pdf": enc("%PDF-stub") });
-		const tool = new ReadTool(makeSession(testDir));
-
-		const result = await tool.execute("call", { path: `${bundlePath}:report.pdf:p11-img0.png` });
-
-		const image = result.content.find(c => c.type === "image");
-		expect(image).toBeDefined();
-		expect(image && "mimeType" in image ? image.mimeType : undefined).toBe("image/png");
-	});
-
-	it("errors with available archived PDF image members for an unknown image handle", async () => {
-		mockPdfConversion();
-		const bundlePath = await writeBundle(testDir, { "report.pdf": enc("%PDF-stub") });
-		const tool = new ReadTool(makeSession(testDir));
-
-		await expect(tool.execute("call", { path: `${bundlePath}:report.pdf:missing.png` })).rejects.toThrow(
-			/not found.*p11-img0\.png/s,
-		);
 	});
 
 	it("keeps unknown binary members opaque", async () => {

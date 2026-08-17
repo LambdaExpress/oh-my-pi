@@ -11,7 +11,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../src/config/model-registry";
 import type { CustomTool } from "../src/extensibility/custom-tools/types";
-import { InteractiveMode } from "../src/modes/interactive-mode";
+import { InteractiveMode, shouldEnterPlanModeOnStartup } from "../src/modes/interactive-mode";
 import { resolveXdevTool, type XdevState } from "../src/tools/xdev";
 
 function makeTool(name: string): AgentTool {
@@ -119,6 +119,19 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 		return mode;
 	}
 
+	function startupDecisionHarness(
+		sessionSettings: Settings,
+		options: { conversation?: boolean; explicitMode?: boolean } = {},
+	): boolean {
+		return shouldEnterPlanModeOnStartup(
+			{
+				buildSessionContext: () => ({ messages: options.conversation ? [{}] : [] }) as never,
+				getEntries: () => (options.explicitMode ? [{ type: "mode_change" }] : []) as never,
+			},
+			sessionSettings,
+		);
+	}
+
 	it("enters plan mode at startup when the setting is enabled", async () => {
 		const created = createHarness(Settings.isolated({ "plan.defaultOnStartup": true, "compaction.enabled": false }));
 
@@ -146,6 +159,33 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 		expect(created.planModePaused).toBe(false);
 		expect(session?.getPlanModeState()).toBeUndefined();
 		expect(session?.getActiveToolNames()).toEqual(["read"]);
+	});
+
+	it("keeps the welcome banner synchronized across startup and later model switches", async () => {
+		Settings.instance.set("startup.quiet", false);
+		const settings = Settings.isolated({ "plan.defaultOnStartup": true, "compaction.enabled": false });
+		settings.setModelRole("plan", "anthropic/claude-haiku-4-5:high");
+		const created = createHarness(settings);
+		const initialModel = session?.model;
+		if (!initialModel) throw new Error("Expected initial model");
+
+		await created.init({ suppressWelcomeIntro: true });
+
+		const planModel = session?.model;
+		if (!planModel) throw new Error("Expected plan model");
+		expect(planModel.id).toBe("claude-haiku-4-5");
+		const rendered = Bun.stripANSI(created.ui.render(120).join("\n"));
+		expect(rendered).toContain(planModel.name);
+		expect(rendered).not.toContain(initialModel.name);
+
+		const requestRenderSpy = vi.spyOn(created.ui, "requestRender");
+		requestRenderSpy.mockClear();
+		await session!.setModel(initialModel);
+
+		expect(requestRenderSpy).toHaveBeenCalled();
+		const switched = Bun.stripANSI(created.ui.render(120).join("\n"));
+		expect(switched).toContain(initialModel.name);
+		expect(switched).not.toContain(planModel.name);
 	});
 
 	it("activates a registered but inactive write tool for xd://propose in plan mode (issue #3165)", async () => {
@@ -343,23 +383,6 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 		expect(session?.getPlanModeState()).toBeUndefined();
 	});
 
-	it("preserves the restored model when resuming an active plan session", async () => {
-		const created = createHarness(
-			Settings.isolated({
-				"compaction.enabled": false,
-				modelRoles: { plan: "anthropic/claude-sonnet-4-6" },
-			}),
-		);
-		created.sessionManager.appendModelChange("anthropic/claude-sonnet-4-5");
-		created.sessionManager.appendModeChange("plan", { planFilePath: "local://PLAN.md" });
-		created.sessionManager.appendMessage({ role: "user", content: "prior plan turn", timestamp: Date.now() });
-
-		await created.init({ suppressWelcomeIntro: true });
-
-		expect(created.planModeEnabled).toBe(true);
-		expect(session?.model?.id).toBe("claude-sonnet-4-5");
-	});
-
 	it("enters plan mode for a fresh session that carries only startup metadata", async () => {
 		// createAgentSession appends model_change / thinking_level_change for a
 		// brand-new session before init(); those are not conversation history, so
@@ -426,5 +449,61 @@ describe("InteractiveMode plan.defaultOnStartup", () => {
 
 		expect(created.planModeEnabled).toBe(false);
 		expect(session?.getPlanModeState()).toBeUndefined();
+	});
+
+	it("enters only when enabled and the session has no conversation or explicit mode", () => {
+		expect(startupDecisionHarness(Settings.isolated({ "compaction.enabled": false }))).toBe(false);
+		const enabled = Settings.isolated({ "plan.defaultOnStartup": true, "compaction.enabled": false });
+		expect(startupDecisionHarness(enabled, { conversation: true })).toBe(false);
+		expect(startupDecisionHarness(enabled, { explicitMode: true })).toBe(false);
+		expect(
+			startupDecisionHarness(
+				Settings.isolated({
+					"plan.defaultOnStartup": true,
+					"plan.enabled": false,
+					"compaction.enabled": false,
+				}),
+			),
+		).toBe(false);
+	});
+
+	it("classifies persisted compaction, metadata, custom, and mode entries without constructing a TUI", async () => {
+		const enabled = Settings.isolated({ "plan.defaultOnStartup": true, "compaction.enabled": false });
+		const manager = SessionManager.create(
+			tempDir.path(),
+			path.join(tempDir.path(), `startup-decision-${Bun.nanoseconds()}`),
+		);
+		try {
+			manager.appendModelChange("anthropic/claude-sonnet-4-5");
+			manager.appendThinkingLevelChange("medium");
+			manager.appendCustomEntry("my-extension-state", { foo: "bar" });
+			expect(shouldEnterPlanModeOnStartup(manager, enabled)).toBe(true);
+
+			manager.appendCompaction("prior conversation summary", undefined, "first-kept", 1000);
+			expect(shouldEnterPlanModeOnStartup(manager, enabled)).toBe(false);
+
+			manager.appendModeChange("plan", { planFilePath: "local://PLAN.md" });
+			manager.appendModeChange("none");
+			expect(shouldEnterPlanModeOnStartup(manager, enabled)).toBe(false);
+		} finally {
+			await manager.close();
+		}
+	});
+
+	it("preserves the restored model when resuming an active plan session", async () => {
+		const created = createHarness(
+			Settings.isolated({
+				"compaction.enabled": false,
+				modelRoles: { plan: "anthropic/claude-sonnet-4-6" },
+			}),
+		);
+		created.sessionManager.appendModelChange("anthropic/claude-sonnet-4-5");
+		created.sessionManager.appendModeChange("plan", { planFilePath: "local://PLAN.md" });
+		created.sessionManager.appendMessage({ role: "user", content: "prior plan turn", timestamp: Date.now() });
+
+		await created.init({ suppressWelcomeIntro: true });
+
+		expect(created.planModeEnabled).toBe(true);
+		expect(session?.model?.id).toBe("claude-sonnet-4-5");
 	});
 });

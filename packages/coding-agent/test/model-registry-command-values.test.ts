@@ -9,12 +9,26 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
 
+function shellQuote(value: string): string {
+	return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
 function stdoutCommand(value: string): string {
+	if (process.platform !== "win32") return `printf %s ${shellQuote(value)}`;
 	return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(`process.stdout.write(${JSON.stringify(value)})`)}`;
 }
 
 function trackedTokenCommand(tokenFile: string, counterFile: string): string {
+	if (process.platform !== "win32") {
+		return `IFS= read -r token < ${shellQuote(tokenFile)}; printf 1 >> ${shellQuote(counterFile)}; [ "$token" = FAIL ] && exit 1; printf %s "$token"`;
+	}
 	const script = `const fs=require("node:fs");fs.appendFileSync(${JSON.stringify(counterFile)}, "1");const token=fs.readFileSync(${JSON.stringify(tokenFile)}, "utf8").trim();if(token==="FAIL")process.exit(1);process.stdout.write(token);`;
+	return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
+}
+
+function failedTrackingCommand(counterFile: string): string {
+	if (process.platform !== "win32") return `printf 1 >> ${shellQuote(counterFile)}; exit 1`;
+	const script = `const fs=require("node:fs");fs.appendFileSync(${JSON.stringify(counterFile)}, "1");process.exit(1);`;
 	return `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`;
 }
 
@@ -179,10 +193,10 @@ describe("ModelRegistry command-resolved models.yml values", () => {
 
 	test("resolveCommandConfig caches failed executions so they do not retry", async () => {
 		const counterFile = path.join(tempDir, "counter.txt");
-		fs.writeFileSync(counterFile, "0");
+		fs.writeFileSync(counterFile, "");
 
 		// Command increments a counter and then fails (exit 1).
-		const trackingCommand = `node -e "const fs=require('fs'); fs.writeFileSync('${counterFile.replace(/\\/g, "/")}', String(Number(fs.readFileSync('${counterFile.replace(/\\/g, "/")}', 'utf8')) + 1)); process.exit(1);"`;
+		const trackingCommand = failedTrackingCommand(counterFile);
 
 		fs.writeFileSync(
 			modelsPath,

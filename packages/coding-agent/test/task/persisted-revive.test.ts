@@ -58,6 +58,7 @@ function createRevivedSession(
 		setIrcWakeTurnObserver: (next: IrcWakeObserver | undefined) => {
 			observer = next;
 		},
+		subscribeRunState: () => () => {},
 		getLastAssistantMessage: () => undefined,
 	} as unknown as AgentSession;
 	return { session, observer: () => observer };

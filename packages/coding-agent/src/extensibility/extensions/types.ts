@@ -234,6 +234,8 @@ export interface ExtensionCustomOptions {
 	overlayOptions?: OverlayOptions | (() => OverlayOptions);
 	/** Invoked with the overlay handle once the overlay is created (overlay mode only). */
 	onHandle?: (handle: OverlayHandle) => void;
+	/** Abort the custom UI and reject its promise. */
+	signal?: AbortSignal;
 }
 
 /** Wrap the current autocomplete provider with additional behavior (pi-compatible). */
@@ -434,9 +436,14 @@ export interface ExtensionModelQuery {
 	family(model: Model): string;
 }
 
+/** Runtime host mode exposed to Pi-compatible extensions. */
+export type ExtensionMode = "tui" | "rpc" | "json" | "print";
+
 export interface ExtensionContext {
 	/** UI methods for user interaction */
 	ui: ExtensionUIContext;
+	/** Current run mode. Use `"tui"` to guard terminal-only UI such as custom components. */
+	mode: ExtensionMode;
 	/** Get current context usage for the active model. */
 	getContextUsage(): ContextUsage | undefined;
 	/** Get a read-only snapshot of async jobs owned by this session. */

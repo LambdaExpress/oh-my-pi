@@ -76,6 +76,7 @@ describe("listClaudePluginRoots", () => {
 	let originalAgentDirEnv: string | undefined;
 	let originalOmpProfileEnv: string | undefined;
 	let originalPiProfileEnv: string | undefined;
+	let originalClaudeConfigDir: string | undefined;
 
 	beforeEach(async () => {
 		clearClaudePluginRootsCache();
@@ -84,6 +85,8 @@ describe("listClaudePluginRoots", () => {
 		originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
 		originalOmpProfileEnv = process.env.OMP_PROFILE;
 		originalPiProfileEnv = process.env.PI_PROFILE;
+		originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+		delete process.env.CLAUDE_CONFIG_DIR;
 		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "claude-plugins-test-"));
 		testAgentDir = await fs.mkdtemp(path.join(os.tmpdir(), "claude-plugins-test-agent-"));
 		process.env.HOME = tempDir;
@@ -103,6 +106,7 @@ describe("listClaudePluginRoots", () => {
 		restoreEnvValue("OMP_PROFILE", originalOmpProfileEnv);
 		restoreEnvValue("PI_PROFILE", originalPiProfileEnv);
 		restoreEnvValue("PI_CODING_AGENT_DIR", originalAgentDirEnv);
+		restoreEnvValue("CLAUDE_CONFIG_DIR", originalClaudeConfigDir);
 		__resetDirsFromEnvForTests();
 		await removeWithRetries(tempDir);
 		await removeWithRetries(testAgentDir);
@@ -145,6 +149,41 @@ describe("listClaudePluginRoots", () => {
 			path: "/path/to/test-plugin",
 			scope: "user",
 		});
+	});
+
+	test("reads the user plugin registry from CLAUDE_CONFIG_DIR", async () => {
+		const relocated = path.join(tempDir, "relocated-claude");
+		const pluginsDir = path.join(relocated, "plugins");
+		process.env.CLAUDE_CONFIG_DIR = relocated;
+		await fs.mkdir(pluginsDir, { recursive: true });
+		await fs.writeFile(
+			path.join(pluginsDir, "installed_plugins.json"),
+			JSON.stringify({
+				version: 2,
+				plugins: {
+					"relocated@market": [
+						{
+							scope: "user",
+							installPath: "/path/to/relocated",
+							version: "1.0.0",
+						},
+					],
+				},
+			}),
+		);
+
+		const result = await listClaudePluginRoots(tempDir);
+
+		expect(result.roots).toEqual([
+			{
+				id: "relocated@market",
+				marketplace: "market",
+				plugin: "relocated",
+				version: "1.0.0",
+				path: "/path/to/relocated",
+				scope: "user",
+			},
+		]);
 	});
 
 	test("isolates local plugins to their canonical project", async () => {
@@ -353,6 +392,41 @@ describe("listClaudePluginRoots", () => {
 		clearFsCache(); // Also clear fs cache so the file is re-read
 		const result3 = await listClaudePluginRoots(tempDir);
 		expect(result3.roots).toHaveLength(2);
+	});
+
+	test("isolates cached OMP plugin roots by home when Claude config is shared", async () => {
+		const sharedClaudeConfig = path.join(tempDir, "shared-claude");
+		const firstHome = path.join(tempDir, "first-home");
+		const secondHome = path.join(tempDir, "second-home");
+		process.env.CLAUDE_CONFIG_DIR = sharedClaudeConfig;
+		for (const [home, pluginId] of [
+			[firstHome, "first@market"],
+			[secondHome, "second@market"],
+		] as const) {
+			const pluginsDir = path.join(home, ".omp", "plugins");
+			await fs.mkdir(pluginsDir, { recursive: true });
+			await fs.writeFile(
+				path.join(pluginsDir, "installed_plugins.json"),
+				JSON.stringify({
+					version: 2,
+					plugins: {
+						[pluginId]: [
+							{
+								scope: "user",
+								installPath: `/path/to/${pluginId.split("@")[0]}`,
+								version: "1.0.0",
+							},
+						],
+					},
+				}),
+			);
+		}
+
+		const first = await listClaudePluginRoots(firstHome);
+		const second = await listClaudePluginRoots(secondHome);
+
+		expect(first.roots.map(root => root.id)).toEqual(["first@market"]);
+		expect(second.roots.map(root => root.id)).toEqual(["second@market"]);
 	});
 
 	test("defaults scope to user when not specified", async () => {
@@ -1305,15 +1379,19 @@ describe("listClaudePluginRoots", () => {
 
 describe("discoverAgents plugin precedence", () => {
 	let tempDir: string;
+	let originalClaudeConfigDir: string | undefined;
 
 	beforeEach(async () => {
 		clearClaudePluginRootsCache();
 		clearFsCache();
+		originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+		delete process.env.CLAUDE_CONFIG_DIR;
 		tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "claude-plugins-precedence-test-"));
 	});
 
 	afterEach(async () => {
 		clearClaudePluginRootsCache();
+		restoreEnvValue("CLAUDE_CONFIG_DIR", originalClaudeConfigDir);
 		await removeWithRetries(tempDir);
 	});
 

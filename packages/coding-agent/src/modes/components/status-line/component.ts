@@ -373,8 +373,7 @@ export class StatusLineComponent implements Component {
 	// dropped rather than overwrite the value the newer resolve committed.
 	// Mirrors #jjCacheGeneration / #getJjBranch in this file.
 	#branchCacheGeneration = 0;
-	#gitWatcher: fs.FSWatcher | null = null;
-	#gitWatcherErrorListener: (() => void) | undefined = undefined;
+	#gitUnwatch: (() => void) | null = null;
 	#gitWatcherUnavailable = false;
 	#onBranchChange: (() => void) | null = null;
 	#disposed = false;
@@ -733,40 +732,29 @@ export class StatusLineComponent implements Component {
 			return;
 		}
 
-		const watchPath = git.repo.isReftableSync(repository)
-			? path.join(repository.gitDir, "reftable")
-			: repository.headPath;
-
+		// git swaps HEAD via `HEAD.lock` + atomic rename. That both unlinks the
+		// HEAD inode (freezing a file-bound `fs.watch` after the first switch —
+		// issue #8412) and, on Bun/Linux, permanently wedges an inotify-backed
+		// directory watch after the first rename event (oven-sh/bun#24875).
+		// `git.head.watch` stat-polls the HEAD path (or the reftable dir), which
+		// survives inode swaps on every platform. A vanished repo surfaces as a
+		// stat change too, so there is no separate watcher error path.
 		try {
-			const watcher = fs.watch(watchPath, () => {
-				if (this.#disposed || this.#gitWatcher !== watcher) return;
+			const unwatch = git.head.watch(repository, () => {
+				if (this.#disposed || this.#gitUnwatch !== unwatch) return;
 				this.invalidateGitCaches();
 				this.#onBranchChange?.();
 			});
-			const onError = () => {
-				if (this.#gitWatcher !== watcher) return;
-				this.#retireGitWatcher();
-				this.#gitWatcherUnavailable = true;
-				if (this.#disposed) return;
-				this.invalidateGitCaches();
-				this.#onBranchChange?.();
-			};
-			this.#gitWatcher = watcher;
-			this.#gitWatcherErrorListener = onError;
-			watcher.on("error", onError);
+			this.#gitUnwatch = unwatch;
 		} catch {
 			this.#gitWatcherUnavailable = true;
 		}
 	}
 
 	#retireGitWatcher(): void {
-		const watcher = this.#gitWatcher;
-		const onError = this.#gitWatcherErrorListener;
-		this.#gitWatcher = null;
-		this.#gitWatcherErrorListener = undefined;
-		if (!watcher) return;
-		if (onError) watcher.off("error", onError);
-		watcher.close();
+		const unwatch = this.#gitUnwatch;
+		this.#gitUnwatch = null;
+		unwatch?.();
 	}
 
 	dispose(): void {

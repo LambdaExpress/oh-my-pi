@@ -144,6 +144,7 @@ export class TanCommandController {
 		let jobId = "";
 		try {
 			const cloneManager = await SessionManager.forkFrom(parentFile, cwd, sessionDir, undefined, {
+				copyArtifacts: false,
 				suppressBreadcrumb: true,
 				sessionFile: cloneFile,
 				// The task may wait behind the async concurrency limit. Keep its

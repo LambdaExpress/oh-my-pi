@@ -7,6 +7,55 @@
 - Classified `stream_interrupted: Upstream stream interrupted after output began` as a transient transport failure while keeping authenticated rejections non-retryable, allowing replay-safe interrupted turns to use the existing automatic retry path.
 - Fixed OpenAI-completions streams (OpenCode Go, DeepSeek, OpenRouter, most OpenAI-compatible gateways) not exposing streamed tool-call arguments to the TUI reveal path, so `write` previews snapped in fully at execution instead of streaming the payload. Structured `delta.tool_calls` now carry `kStreamingPartialJson`, and DSML/Kimi chat-template leaked calls are rebuilt incrementally (`toolCallStart`/`toolCallArgDelta`) so healed `write`/`edit`/`bash` previews stream line by line instead of landing once at envelope close.
 - Fixed locally observed OpenCode Go reset windows to follow the service's rolling 5-hour, Monday-UTC weekly, and subscription-day calendar-month boundaries instead of treating every limit as an independent fixed-duration rolling window.
+## [17.3.5] - 2026-08-16
+
+### Added
+
+- Added retryable oneshot completion support (`retryTransientCompletion`) so non-agent LLM calls correctly retry on transient provider failures (Anthropic overload/rate-limit errors, HTTP 429/500/502/503/529), honoring provider-supplied retry-after timing before giving up.
+
+### Fixed
+
+- Fixed xAI availability detection so paid-key-only setups correctly default to `xai/grok-4.5` instead of the free SuperGrok catalog; explicit `xai-oauth/…` selectors still work as before.
+- Fixed xAI Responses requests sending unsupported parameters (reasoning summary, presence/frequency penalties) that some models rejected.
+- Fixed Umans usage reporting incorrectly marking quota as exhausted based on raw request counts instead of actual weighted usage, and improved the usage display to show both a soft-cap warning and a hard exhaustion limit with an accurate countdown to reset.
+- Fixed `omp usage invalidate` to fully clear stale usage data and force a fresh refresh, so upgraded subscriptions no longer show outdated quota information.
+- Improved session recovery to correctly treat certain Cursor HTTP/2 connection errors as transient instead of ending the session.
+- Fixed OpenAI-compatible streams (e.g. DeepSeek) that are cut off mid-generation being silently treated as a completed response instead of being retried.
+- Fixed DeepSeek resource-exhaustion interruptions not being automatically retried.
+- Fixed tool-call IDs being lost during same-model replay, which could break correlation with custom gateways.
+- Fixed Kimi Code multi-account routing to prefer accounts with more available quota, respect usage-limit cooldowns, and keep consistent usage history across token refreshes.
+- Fixed Anthropic custom signing-proxy conversations losing tool-search results and thinking content during replay.
+- Fixed rare runaway response loops across model providers so they now fail gracefully instead of repeating indefinitely.
+- Fixed xAI rejecting entire turns due to certain MCP tool schema shapes, restoring compatibility while isolating any remaining incompatible tools rather than failing the whole request.
+- Fixed Alibaba DashScope/Bailian transient per-minute rate limits being misclassified as full quota exhaustion, causing unnecessary long backoffs instead of quick retries.
+- Fixed Anthropic-compatible streams dropping thinking content, which broke replay of prior reasoning.
+- Updated the Alibaba Coding Plan China login flow to point to the current Bailian API-key management console.
+
+## [17.3.4] - 2026-08-14
+
+### Fixed
+
+- Fixed `omp usage invalidate` to discard stale OAuth and API-key usage snapshots, then force a cache-bypassing, per-provider serialized refresh with a broker request budget sized for the full unfiltered account batch, so upgraded subscriptions do not silently retain pre-change quota data.
+- Fixed quota reporting and Cookie capture guidance for China (Beijing) Alibaba Token Plan credentials ([#8509](https://github.com/can1357/oh-my-pi/issues/8509)).
+
+## [17.3.3] - 2026-08-14
+
+### Fixed
+
+- Distinguished Gemini thought-only `STOP` responses from empty transports, avoiding repeated identical reasoning requests and duplicate Antigravity endpoint streams while surfacing the missing final output for session-level recovery.
+
+## [17.3.2] - 2026-08-13
+
+### Fixed
+
+- Dropped unsigned thinking blocks from Antigravity Claude requests instead of sending them without a signature, preventing HTTP 400 responses when resuming sessions or switching models.
+- Classified Antigravity HTTP 429 responses from structured `google.rpc.ErrorInfo` reasons (`QUOTA_EXHAUSTED`, `RATE_LIMIT_EXCEEDED`, and `INSUFFICIENT_G1_CREDITS_BALANCE`), using retry delays of five minutes or longer to distinguish rotatable quota windows from transient throttling instead of relying only on message regexes.
+
+### Removed
+
+- Removed the Antigravity identity-prompt injection (`ANTIGRAVITY_SYSTEM_INSTRUCTION` and `shouldInjectAntigravitySystemInstruction`): Cloud Code Assist accepts arbitrary system instructions on gemini-3.x and Claude routes (verified live), and the injected stub never matched the real client's system prompt anyway. User system prompts are now sent unmodified (still tagged `role: "user"`).
+- Fixed Antigravity `auto` mode not failing over to the sandbox endpoint when the daily endpoint returned a thinking-only `STOP`, which caused Advisor turns to be falsely recorded as empty-response failures ([#8480](https://github.com/can1357/oh-my-pi/issues/8480)).
+
 ## [17.3.0] - 2026-08-13
 
 ### Breaking Changes
