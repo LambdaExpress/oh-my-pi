@@ -91,9 +91,16 @@ function readPersistedJobIds(details: unknown): string[] {
 	}
 	const jobIds: string[] = [];
 	for (const job of details.jobs) {
-		if (job !== null && typeof job === "object" && "jobId" in job && typeof job.jobId === "string") {
-			jobIds.push(job.jobId);
-		}
+		if (job === null || typeof job !== "object") continue;
+		// `async-result` messages carry `jobId`; hub wait/jobs/cancel snapshots
+		// carry `id`. Both identify the same job row, so accept either key.
+		const id =
+			"jobId" in job && typeof job.jobId === "string"
+				? job.jobId
+				: "id" in job && typeof job.id === "string"
+					? job.id
+					: undefined;
+		if (id !== undefined) jobIds.push(id);
 	}
 	return jobIds;
 }
@@ -1871,7 +1878,7 @@ export class EventController {
 				this.#orphanedToolCompletions.set(event.toolCallId, event);
 			}
 		}
-		if (event.toolName === "job") {
+		if (event.toolName === "hub") {
 			this.ctx.sshTransferHud.markPersisted(readPersistedJobIds(event.result.details));
 			this.#syncSshTransferHud();
 		}

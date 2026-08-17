@@ -258,17 +258,59 @@ const FUZZY_SCAN_INLINE_COUNT = 100;
  */
 const FUZZY_SCAN_CHUNK_COUNT = 150;
 
+/** Sessions shown per group before the "{count} more sessions" ellipsis row. */
+const GROUP_PREVIEW_COUNT = 3;
+
+/** Chrome rows around the list: spacers/borders/header (7) plus the list's
+ * search line, blank, scroll indicator, blank, and hint (5). */
+const CHROME_ROWS = 12;
+/** Reserved rows below the list (hook widgets / cursor). */
+const RESERVE_ROWS = 1;
+/** Worst-case per-session height: title + preview + metadata + blank. */
+const PER_SESSION_ROWS = 4;
+
+/** One parent-folder group in the grouped (by-parent) scope. */
+interface SessionGroup {
+	cwd: string;
+	sessions: SessionInfo[];
+	expanded: boolean;
+	showAll: boolean;
+}
+
+/**
+ * One entry of the render/navigation list: a group header, a session row, or
+ * the "{count} more sessions" ellipsis row of an expanded group.
+ */
+type VisibleItem = SessionGroup | SessionInfo | { moreOf: SessionGroup };
+
+function isSessionGroupItem(item: VisibleItem): item is SessionGroup {
+	return "sessions" in item;
+}
+
+function isMoreItem(item: VisibleItem): item is { moreOf: SessionGroup } {
+	return "moreOf" in item;
+}
+
 /**
  * Custom session list component with multi-line items and search
  */
 class SessionList implements Component {
 	#filteredSessions: SessionInfo[] = [];
 	#selectedIndex: number = 0;
-	// Maps a 0-based line within this list's own render to a filtered-session
-	// index, or undefined for chrome rows (search line, blanks, scrollbar gap).
-	// Rebuilt every render so the picker's mouse hit-testing tracks the live
-	// scroll window. Only consulted while the picker holds the alternate screen
-	// (where the overlay enables mouse tracking and paints from screen row 0).
+	/** Whether the list renders grouped by parent folder (by-parent scope). */
+	#grouped = false;
+	/** Full group list for the current dataset; rebuilt on dataset/toggle changes. */
+	#groups: SessionGroup[] = [];
+	/** Unified render/navigation items; derived from {@link #filteredSessions} and {@link #groups}. */
+	#visibleItems: VisibleItem[] = [];
+	/** Cross-rebuild memory of per-group expand/show-all state, keyed by cwd. */
+	#groupState = new Map<string, { expanded: boolean; showAll: boolean }>();
+	// Maps a 0-based line within this list's own render to a visible-item
+	// index (group header, session row, or ellipsis row), or undefined for
+	// chrome rows (search line, blanks, scrollbar gap). Rebuilt every render so
+	// the picker's mouse hit-testing tracks the live scroll window. Only
+	// consulted while the picker holds the alternate screen (where the overlay
+	// enables mouse tracking and paints from screen row 0).
 	#hitRows: (number | undefined)[] = [];
 	#hoveredIndex: number | null = null;
 	readonly #searchInput: Input;
@@ -320,13 +362,14 @@ class SessionList implements Component {
 		this.#showCwd = showCwd;
 		this.#historyMatcher = historyMatcher;
 		this.#filteredSessions = sessions;
+		this.#composeVisible();
 		this.#searchInput = new Input();
 
 		// Handle Enter in search input - select current item
 		this.#searchInput.onSubmit = () => {
-			const selected = this.#filteredSessions[this.#selectedIndex];
-			if (selected) {
-				this.onSelect?.(selected);
+			const item = this.#visibleItems[this.#selectedIndex];
+			if (item && !isSessionGroupItem(item) && !isMoreItem(item)) {
+				this.onSelect?.(item);
 			}
 		};
 	}
@@ -343,19 +386,132 @@ class SessionList implements Component {
 	 * entry has a title. The reserve covers below-editor hook widgets / cursor.
 	 */
 	#visibleCount(): number {
-		const CHROME = 12;
-		const PER_SESSION = 4;
-		const RESERVE = 1;
-		const budget = this.#getTerminalRows() - CHROME - RESERVE;
-		return Math.max(2, Math.floor(budget / PER_SESSION));
+		const budget = this.#getTerminalRows() - CHROME_ROWS - RESERVE_ROWS;
+		return Math.max(2, Math.floor(budget / PER_SESSION_ROWS));
 	}
 
-	/** Replace the visible dataset, e.g. when toggling folder/all-projects scope. */
-	setSessions(sessions: SessionInfo[], showCwd: boolean): void {
+	/** Rendered line count of a visible item: group header / ellipsis row 1, session 3-4. */
+	#itemHeight(item: VisibleItem): number {
+		if (isSessionGroupItem(item) || isMoreItem(item)) return 1;
+		return item.title ? 4 : 3;
+	}
+
+	/** Upper-bound total rendered lines of every visible item (scrollbar scale). */
+	#totalRowsApprox(): number {
+		let total = 0;
+		for (const item of this.#visibleItems) {
+			if (isSessionGroupItem(item) || isMoreItem(item)) total += 1;
+			else total += PER_SESSION_ROWS;
+		}
+		return total;
+	}
+
+	/**
+	 * Replace the visible dataset, e.g. when toggling scope. `grouped` switches
+	 * the render/navigation model to parent-folder groups; group expand state is
+	 * remembered across switches via {@link #groupState}.
+	 */
+	setSessions(sessions: SessionInfo[], showCwd: boolean, grouped = false): void {
 		this.#allSessions = sessions;
 		this.#showCwd = showCwd;
+		if (grouped) this.#groups = this.#buildGroups(sessions);
+		else if (grouped !== this.#grouped) this.#groups = [];
+		this.#grouped = grouped;
 		this.#selectedIndex = 0;
 		this.#filterSessions(this.#searchInput.getValue());
+	}
+
+	/**
+	 * Group sessions by parent folder: groups sorted by newest member session,
+	 * members sorted by recency, expand/show-all state restored from
+	 * {@link #groupState} (defaults: expanded, preview only).
+	 */
+	#buildGroups(sessions: SessionInfo[]): SessionGroup[] {
+		const byCwd = new Map<string, SessionInfo[]>();
+		for (const session of sessions) {
+			// An empty cwd marks the unknown-folder group; the label is resolved
+			// at render time so a locale switch re-translates it.
+			const key = session.cwd ?? "";
+			const list = byCwd.get(key);
+			if (list) list.push(session);
+			else byCwd.set(key, [session]);
+		}
+		const groups: SessionGroup[] = [];
+		for (const [cwd, groupSessions] of byCwd) {
+			groupSessions.sort(compareSessionRecency);
+			const state = this.#groupState.get(cwd);
+			groups.push({
+				cwd,
+				sessions: groupSessions,
+				expanded: state?.expanded ?? true,
+				showAll: state?.showAll ?? false,
+			});
+		}
+		groups.sort((a, b) => compareSessionRecency(a.sessions[0]!, b.sessions[0]!));
+		return groups;
+	}
+
+	/**
+	 * Derive the unified render/navigation items from the current search result
+	 * and grouping state. Flat scope mirrors {@link #filteredSessions} exactly;
+	 * grouped scope expands group headers (or, while searching, auto-expands
+	 * every group containing a hit) and appends ellipsis rows.
+	 */
+	#composeVisible(): void {
+		if (!this.#grouped) {
+			this.#visibleItems = this.#filteredSessions;
+		} else if (this.#searchInput.getValue().trim().length > 0) {
+			const byCwd = new Map<string, SessionInfo[]>();
+			for (const session of this.#filteredSessions) {
+				const key = session.cwd ?? "";
+				const list = byCwd.get(key);
+				if (list) list.push(session);
+				else byCwd.set(key, [session]);
+			}
+			const hitGroups: SessionGroup[] = [];
+			for (const [cwd, hitSessions] of byCwd) {
+				hitSessions.sort(compareSessionRecency);
+				hitGroups.push({ cwd, sessions: hitSessions, expanded: true, showAll: true });
+			}
+			hitGroups.sort((a, b) => compareSessionRecency(a.sessions[0]!, b.sessions[0]!));
+			const items: VisibleItem[] = [];
+			for (const group of hitGroups) {
+				items.push(group);
+				items.push(...group.sessions);
+			}
+			this.#visibleItems = items;
+		} else {
+			const items: VisibleItem[] = [];
+			for (const group of this.#groups) {
+				items.push(group);
+				if (!group.expanded) continue;
+				const shown = group.showAll ? group.sessions : group.sessions.slice(0, GROUP_PREVIEW_COUNT);
+				items.push(...shown);
+				if (!group.showAll && group.sessions.length > GROUP_PREVIEW_COUNT) items.push({ moreOf: group });
+			}
+			this.#visibleItems = items;
+		}
+		this.#selectedIndex = Math.min(this.#selectedIndex, Math.max(0, this.#visibleItems.length - 1));
+	}
+
+	/** Toggle a group header's expanded state and rebuild the visible items. */
+	#toggleGroup(cwd: string): void {
+		const state = this.#groupState.get(cwd) ?? { expanded: true, showAll: false };
+		state.expanded = !state.expanded;
+		this.#groupState.set(cwd, state);
+		this.#groups = this.#buildGroups(this.#allSessions);
+		this.#composeVisible();
+		this.onRequestRender?.();
+	}
+
+	/** Toggle a group's preview/all-members state and rebuild the visible items. */
+	#toggleShowAll(cwd: string): void {
+		const state = this.#groupState.get(cwd) ?? { expanded: true, showAll: false };
+		state.showAll = !state.showAll;
+		this.#groupState.set(cwd, state);
+		this.#groups = this.#buildGroups(this.#allSessions);
+		this.#composeVisible();
+		this.onRequestRender?.();
 	}
 
 	#filterSessions(query: string): void {
@@ -372,7 +528,7 @@ class SessionList implements Component {
 		const tokens = tokenizeSessionQuery(query);
 		if (tokens.length === 0) {
 			this.#filteredSessions = this.#allSessions;
-			this.#selectedIndex = Math.min(this.#selectedIndex, Math.max(0, this.#filteredSessions.length - 1));
+			this.#composeVisible();
 			this.#scheduleHistoryMerge(query);
 			return;
 		}
@@ -441,8 +597,8 @@ class SessionList implements Component {
 		for (const match of this.#fuzzyRanked) base.push(match.session);
 		this.#filteredSessions =
 			this.#historyIds.length > 0 ? mergeSessionRanking(this.#allSessions, base, this.#historyIds) : base;
-		this.#selectedIndex = Math.min(this.#selectedIndex, Math.max(0, this.#filteredSessions.length - 1));
 		this.setHoverIndex(null);
+		this.#composeVisible();
 	}
 
 	/**
@@ -490,11 +646,12 @@ class SessionList implements Component {
 		const index = this.#allSessions.findIndex(s => s.path === sessionPath);
 		if (index === -1) return;
 		this.#allSessions.splice(index, 1);
+		if (this.#grouped) this.#groups = this.#buildGroups(this.#allSessions);
 		// Re-filter to update filteredSessions
 		this.#filterSessions(this.#searchInput.getValue());
 		// Adjust selectedIndex if we deleted the last item or beyond
-		if (this.#selectedIndex >= this.#filteredSessions.length) {
-			this.#selectedIndex = Math.max(0, this.#filteredSessions.length - 1);
+		if (this.#selectedIndex >= this.#visibleItems.length) {
+			this.#selectedIndex = Math.max(0, this.#visibleItems.length - 1);
 		}
 		this.setHoverIndex(null);
 	}
@@ -505,7 +662,7 @@ class SessionList implements Component {
 	}
 
 	setHoverIndex(index: number | null): void {
-		if (index === null || index < 0 || index >= this.#filteredSessions.length) {
+		if (index === null || index < 0 || index >= this.#visibleItems.length) {
 			this.#hoveredIndex = null;
 			return;
 		}
@@ -514,17 +671,28 @@ class SessionList implements Component {
 
 	/** Wheel notch: move the selection one step (clamped, no wrap). */
 	handleWheel(delta: -1 | 1): void {
-		if (this.#filteredSessions.length === 0) return;
+		if (this.#visibleItems.length === 0) return;
 		this.#selectionMoved = true;
-		this.#selectedIndex = Math.max(0, Math.min(this.#filteredSessions.length - 1, this.#selectedIndex + delta));
+		this.#selectedIndex = Math.max(0, Math.min(this.#visibleItems.length - 1, this.#selectedIndex + delta));
 	}
 
-	/** Mouse click: select the session under the pointer and resume it. */
+	/**
+	 * Mouse click: group headers and ellipsis rows toggle their group, session
+	 * rows are selected and resumed.
+	 */
 	clickItem(index: number): void {
-		const session = this.#filteredSessions[index];
-		if (!session) return;
+		const item = this.#visibleItems[index];
+		if (!item) return;
+		if (isSessionGroupItem(item)) {
+			this.#toggleGroup(item.cwd);
+			return;
+		}
+		if (isMoreItem(item)) {
+			this.#toggleShowAll(item.moreOf.cwd);
+			return;
+		}
 		this.#selectedIndex = index;
-		this.onSelect?.(session);
+		this.onSelect?.(item);
 	}
 
 	invalidate(): void {
@@ -572,28 +740,61 @@ class SessionList implements Component {
 			return date.toLocaleDateString();
 		};
 
-		// Calculate visible range with scrolling. The window is sized to the
-		// current viewport so the picker never overflows past the top.
-		const maxVisible = this.#visibleCount();
-		const startIndex = Math.max(
-			0,
-			Math.min(this.#selectedIndex - Math.floor(maxVisible / 2), this.#filteredSessions.length - maxVisible),
-		);
-		const endIndex = Math.min(startIndex + maxVisible, this.#filteredSessions.length);
+		// Calculate the visible range with scrolling, accumulating item heights
+		// (group headers and ellipsis rows are 1 line, sessions 3-4) up and down
+		// from the selection until the viewport budget is filled. With uniform
+		// 4-line sessions this matches the old item-count window exactly.
+		const budget = this.#getTerminalRows() - CHROME_ROWS - RESERVE_ROWS;
+		const halfBudget = Math.floor(budget / 2);
+		let startIndex = this.#selectedIndex;
+		let upRows = 0;
+		while (startIndex > 0 && upRows + this.#itemHeight(this.#visibleItems[startIndex - 1]!) <= halfBudget) {
+			startIndex--;
+			upRows += this.#itemHeight(this.#visibleItems[startIndex]!);
+		}
+		let endIndex = this.#selectedIndex;
+		let downRows = 0;
+		while (endIndex < this.#visibleItems.length) {
+			const height = this.#itemHeight(this.#visibleItems[endIndex]!);
+			if (endIndex > this.#selectedIndex && downRows + height > budget - upRows) break;
+			downRows += height;
+			endIndex++;
+		}
 
 		// Render visible sessions (3 lines, or 4 when a title adds a preview line).
 		// Each session block is built into sessionLines, then wrapped by ScrollView
 		// so the right-edge scrollbar is proportional at the physical-line level.
 		const sessionLines: string[] = [];
 		const sessionRowIndex: number[] = [];
-		const overflow = this.#filteredSessions.length > maxVisible;
+		const overflow = this.#totalRowsApprox() > budget;
 		const rowWidth = Math.max(0, width - (overflow ? 1 : 0));
 		for (let i = startIndex; i < endIndex; i++) {
 			const blockStart = sessionLines.length;
-			const session = this.#filteredSessions[i];
 			const isSelected = i === this.#selectedIndex;
 			const isHovered = i === this.#hoveredIndex && !isSelected;
 
+			const item = this.#visibleItems[i]!;
+			if (isSessionGroupItem(item)) {
+				const caret = item.expanded ? "▾" : "▸";
+				const label = item.cwd || t("unknown folder");
+				const headerText = `${theme.fg("muted", caret)} ${shortenPath(label)} ${theme.fg("accent", `(${item.sessions.length})`)}`;
+				let headerLine = truncateToWidth(isSelected ? theme.bold(headerText) : headerText, rowWidth);
+				if (isHovered) headerLine = theme.bg("selectedBg", headerLine);
+				sessionLines.push(headerLine);
+				sessionRowIndex[sessionLines.length - 1] = i;
+				continue;
+			}
+			if (isMoreItem(item)) {
+				const moreText = `  … ${t("{count} more sessions", { count: item.moreOf.sessions.length - GROUP_PREVIEW_COUNT })}`;
+				let moreLine = truncateToWidth(theme.fg("dim", moreText), rowWidth);
+				if (isSelected) moreLine = theme.bold(moreLine);
+				if (isHovered) moreLine = theme.bg("selectedBg", moreLine);
+				sessionLines.push(moreLine);
+				sessionRowIndex[sessionLines.length - 1] = i;
+				continue;
+			}
+
+			const session = item;
 			// Normalize first message to single line
 			const normalizedMessage = session.firstMessage.replace(/\n/g, " ").trim();
 
@@ -647,15 +848,13 @@ class SessionList implements Component {
 		}
 
 		// Wrap the rendered window in a ScrollView for a proportional right-edge bar.
-		const visibleCount = endIndex - startIndex;
-		const linesPerItem = visibleCount > 0 ? sessionLines.length / visibleCount : 1;
 		const sv = new ScrollView(sessionLines, {
 			height: sessionLines.length,
 			scrollbar: "auto",
-			totalRows: Math.round(this.#filteredSessions.length * linesPerItem),
+			totalRows: this.#totalRowsApprox(),
 			theme: { track: t => theme.fg("muted", t), thumb: t => theme.fg("accent", t) },
 		});
-		sv.setScrollOffset(Math.round(startIndex * linesPerItem));
+		sv.setScrollOffset(upRows);
 		const sessionRegionStart = lines.length;
 		const svLines = sv.render(width);
 		for (let k = 0; k < svLines.length; k++) this.#hitRows[sessionRegionStart + k] = sessionRowIndex[k];
@@ -676,9 +875,9 @@ class SessionList implements Component {
 			matchesKey(keyData, "delete") ||
 			(matchesKey(keyData, "backspace") && this.#searchInput.getValue().length === 0)
 		) {
-			const selected = this.#filteredSessions[this.#selectedIndex];
-			if (selected && this.onDeleteRequest) {
-				this.onDeleteRequest(selected);
+			const item = this.#visibleItems[this.#selectedIndex];
+			if (item && !isSessionGroupItem(item) && !isMoreItem(item) && this.onDeleteRequest) {
+				this.onDeleteRequest(item);
 			}
 			return;
 		}
@@ -691,7 +890,7 @@ class SessionList implements Component {
 		// Down arrow
 		if (matchesSelectDown(keyData)) {
 			this.#selectionMoved = true;
-			this.#selectedIndex = Math.min(this.#filteredSessions.length - 1, this.#selectedIndex + 1);
+			this.#selectedIndex = Math.min(this.#visibleItems.length - 1, this.#selectedIndex + 1);
 			return;
 		}
 		// Page up - jump up by maxVisible items
@@ -703,14 +902,29 @@ class SessionList implements Component {
 		// Page down - jump down by maxVisible items
 		if (matchesKey(keyData, "pageDown")) {
 			this.#selectionMoved = true;
-			this.#selectedIndex = Math.min(this.#filteredSessions.length - 1, this.#selectedIndex + this.#visibleCount());
+			this.#selectedIndex = Math.min(this.#visibleItems.length - 1, this.#selectedIndex + this.#visibleCount());
+			return;
+		}
+		// Left/Right on a group header toggles it (collapse/expand).
+		if (matchesKey(keyData, "left") || matchesKey(keyData, "right")) {
+			const item = this.#visibleItems[this.#selectedIndex];
+			if (isSessionGroupItem(item)) this.#toggleGroup(item.cwd);
 			return;
 		}
 		// Enter
 		if (matchesKey(keyData, "enter") || matchesKey(keyData, "return") || keyData === "\n") {
-			const selected = this.#filteredSessions[this.#selectedIndex];
-			if (selected && this.onSelect) {
-				this.onSelect(selected);
+			const item = this.#visibleItems[this.#selectedIndex];
+			if (!item) return;
+			if (isSessionGroupItem(item)) {
+				this.#toggleGroup(item.cwd);
+				return;
+			}
+			if (isMoreItem(item)) {
+				this.#toggleShowAll(item.moreOf.cwd);
+				return;
+			}
+			if (this.onSelect) {
+				this.onSelect(item);
 			}
 			return;
 		}
@@ -784,7 +998,7 @@ export class SessionSelectorComponent extends Container {
 	readonly #loadAllSessions?: () => Promise<SessionInfo[]>;
 	#folderSessions: SessionInfo[];
 	#globalSessions: SessionInfo[] | null = null;
-	#scope: "folder" | "all" = "folder";
+	#scope: "folder" | "flat" | "grouped" = "folder";
 	#toggling = false;
 	#inputLocked = false;
 	// 0-based line where the session list begins within this component's own
@@ -867,14 +1081,17 @@ export class SessionSelectorComponent extends Container {
 
 	#headerLabel(): string {
 		if (this.#scopeLabel === false) return theme.bold(this.#title);
-		const scopeLabel = this.#scopeLabel ?? (this.#scope === "all" ? t("all projects") : t("current folder"));
+		const scopeLabel =
+			this.#scopeLabel ??
+			(this.#scope === "folder" ? t("current folder") : this.#scope === "flat" ? t("all projects") : t("by parent"));
 		return `${theme.bold(this.#title)} ${theme.fg("muted", `(${scopeLabel})`)}`;
 	}
 
 	/**
-	 * Toggle between current-folder and all-projects scope. The global list is
-	 * loaded lazily on first switch and cached, so the common folder-scope path
-	 * never pays for the cross-project scan.
+	 * Cycle through folder → flat (all projects) → grouped (by parent) → folder.
+	 * The global list is loaded lazily on the first switch to a global scope and
+	 * cached, so the common folder-scope path never pays for the cross-project
+	 * scan and flat ↔ grouped reuse the same cached list.
 	 */
 	async #toggleScope(): Promise<void> {
 		if (this.#toggling || this.#confirmationDialog) return;
@@ -898,8 +1115,11 @@ export class SessionSelectorComponent extends Container {
 				this.#messageContainer.clear();
 				this.#toggling = false;
 			}
-			this.#scope = "all";
+			this.#scope = "flat";
 			this.#sessionList.setSessions(global, true);
+		} else if (this.#scope === "flat") {
+			this.#scope = "grouped";
+			this.#sessionList.setSessions(this.#globalSessions ?? [], true, true);
 		} else {
 			this.#scope = "folder";
 			this.#sessionList.setSessions(this.#folderSessions, false);
@@ -1011,7 +1231,8 @@ export class SessionSelectorComponent extends Container {
 
 	/** Blank · keybinding hint · bottom border. Rendered by {@link render}. */
 	#footerLines(width: number): string[] {
-		const scopeHint = this.#scope === "all" ? t("current folder") : t("all projects");
+		const scopeHint =
+			this.#scope === "folder" ? t("all projects") : this.#scope === "flat" ? t("by parent") : t("current folder");
 		const hint = theme.fg(
 			"muted",
 			`  ${t("[Del/⌫ delete · Enter select · Tab {scope} · Esc cancel]", { scope: scopeHint })}`,

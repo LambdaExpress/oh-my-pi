@@ -1,10 +1,18 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
+import { setLocale } from "../../../src/i18n";
 
 beforeAll(async () => {
 	await initTheme();
+	// Assertions target the English scope labels; pin the locale so zh-CN
+	// machines don't render translated labels.
+	setLocale("en");
+});
+
+afterAll(() => {
+	setLocale(null);
 });
 
 function createSession(id: string, title: string, cwd: string, parentSessionPath?: string): SessionInfo {
@@ -26,7 +34,7 @@ function createSession(id: string, title: string, cwd: string, parentSessionPath
 const TAB = "\t";
 
 describe("SessionSelectorComponent scope toggle", () => {
-	it("loads the all-projects list on Tab and surfaces each session's directory", async () => {
+	it("cycles folder → flat → grouped → folder on Tab and surfaces each session's directory", async () => {
 		const folder = [createSession("local", "Local", "/work/current")];
 		const global = [
 			createSession("local", "Local", "/work/current"),
@@ -53,20 +61,25 @@ describe("SessionSelectorComponent scope toggle", () => {
 		selector.handleInput(TAB);
 		await Bun.sleep(0);
 
-		const rendered = selector.render(120).join("\n");
+		let rendered = selector.render(120).join("\n");
 		expect(rendered).toContain("(all projects)");
 		expect(rendered).toContain("other-project");
 		expect(loads).toBe(1);
 
-		// Toggling back returns to folder scope without reloading.
+		// Second Tab: grouped (by parent) scope, group headers with each session.
+		selector.handleInput(TAB);
+		await Bun.sleep(0);
+		rendered = selector.render(120).join("\n");
+		expect(rendered).toContain("(by parent)");
+		expect(rendered).toContain("(1)");
+		expect(rendered).toContain("Local");
+		expect(rendered).toContain("Remote");
+		expect(loads).toBe(1);
+
+		// Third Tab: back to folder scope without reloading.
 		selector.handleInput(TAB);
 		await Bun.sleep(0);
 		expect(selector.render(120).join("\n")).toContain("(current folder)");
-		expect(loads).toBe(1);
-
-		// Re-entering all scope reuses the cached global list.
-		selector.handleInput(TAB);
-		await Bun.sleep(0);
 		expect(loads).toBe(1);
 	});
 

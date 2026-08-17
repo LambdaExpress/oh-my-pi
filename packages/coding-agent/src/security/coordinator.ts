@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import type { Model } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { AsyncJobManager } from "../async/job-manager";
 import type { ModelRegistry } from "../config/model-registry";
@@ -42,6 +43,8 @@ import { createSecurityPublicationTool } from "./publication";
 import { SecurityStore, writeSecurityBundleToDirectory } from "./store";
 
 const SECURITY_SESSION_TOOLS = ["read", "grep", "glob", "lsp", "ast_grep", "task", "security_publish"];
+/** Total scan-prompt attempts (initial run + retries) before degrading to partial. */
+const SECURITY_SCAN_PROMPT_MAX_ATTEMPTS = 3;
 const SECURITY_WORKFLOW_FINGERPRINT = createSecurityWorkflowFingerprint([
 	securityCoordinatorPrompt,
 	securityRequestPrompt,
@@ -104,6 +107,13 @@ export interface SecurityScanSession {
 		options?: { expandPromptTemplates?: boolean; synthetic?: boolean; userInitiated?: boolean },
 	): Promise<boolean>;
 	waitForIdle(): Promise<void>;
+	/**
+	 * Last assistant message after the run settles, when the underlying session
+	 * exposes one. Used to distinguish a transient provider failure (stream
+	 * dropped mid-turn, rate limit) from a deliberate stop so the coordinator can
+	 * retry the scan prompt instead of discarding the whole scan as partial.
+	 */
+	getLastAssistantMessage?(): AssistantMessage | undefined;
 	getSessionStats?(): {
 		tokens: {
 			input: number;
@@ -269,6 +279,12 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 		agentId: `Security-${input.scanId.slice(-12)}`,
 		agentDisplayName: "security",
 	});
+	// The scan session is headless (`hasUI: false`): streamed text is never
+	// rendered to a user, so a failed turn's text is replay-safe. Without this
+	// the agent's auto-retry treats any text-bearing error turn (e.g. an OpenAI
+	// Responses stream that dropped after output began) as non-retryable and the
+	// whole scan degrades to partial on a transient connection failure.
+	session.setTextOutputCommitted(false);
 	return session;
 }
 
@@ -623,13 +639,37 @@ export class SecurityCoordinator {
 				if (signal.aborted) throw signal.reason ?? new Error(t("Security scan cancelled"));
 				this.#update(record, "reviewing");
 				await reportProgress?.(t("Reviewing repository with OMP security workers"));
-				await session.prompt(requestText(plan, executionTarget.cwd, executionTarget.diffText), {
-					expandPromptTemplates: false,
-					synthetic: true,
-					userInitiated: false,
-				});
-				await session.waitForIdle();
-				record.snapshot.sessionFile = session.sessionFile;
+				const scanRequest = requestText(plan, executionTarget.cwd, executionTarget.diffText);
+				for (let attempt = 1; ; attempt++) {
+					await session.prompt(scanRequest, {
+						expandPromptTemplates: false,
+						synthetic: true,
+						userInitiated: false,
+					});
+					await session.waitForIdle();
+					record.snapshot.sessionFile = session.sessionFile;
+					if (publishedBundle || attempt >= SECURITY_SCAN_PROMPT_MAX_ATTEMPTS) break;
+					// A transient provider failure (e.g. the OpenAI Responses stream
+					// closed before a terminal event) ends the run without publishing.
+					// The session history survives, so re-prompting lets the model
+					// finish the reconciliation and call security_publish instead of
+					// discarding the entire scan as partial.
+					const last = session.getLastAssistantMessage?.();
+					const retryable =
+						last?.stopReason === "error" && AIError.retriable(AIError.classifyMessage(last)) && !signal.aborted;
+					if (!retryable) break;
+					logger.warn("Security scan session ended with a transient provider error; retrying scan prompt", {
+						scanId: record.snapshot.scanId,
+						operationId: record.snapshot.operationId,
+						attempt,
+						errorMessage: last.errorMessage,
+					});
+					await reportProgress?.(
+						t("Retrying security scan after transient provider error (attempt {attempt})", {
+							attempt: attempt + 1,
+						}),
+					);
+				}
 				if (publishedBundle) {
 					const stats = session.getSessionStats?.();
 					publishedBundle.scan.metrics = {

@@ -4589,6 +4589,8 @@ export const zhCN: Record<string, string> = {
 	"rerun with --verbose to list matched files and conditions": "使用 --verbose 重新运行以列出匹配的文件和条件",
 	resets: "重置",
 	retry: "重试",
+	"Retrying security scan after transient provider error (attempt {attempt})":
+		"遭遇瞬时提供商错误，正在重试安全扫描（第 {attempt} 次尝试）",
 	"retry-fallback": "重试回退",
 	"retrying now": "正在重试",
 	"rules={count}": "规则={count}",
@@ -4699,6 +4701,7 @@ export const zhCN: Record<string, string> = {
 	unanswered: "未回答",
 	undo: "撤销",
 	unknown: "未知",
+	"unknown folder": "未知文件夹",
 	unsaved: "未保存",
 	"unscii square cell, black ink, every line printed twice with the copy on a pale highlight band.":
 		"unscii 方形单元，黑色墨迹，每行打印两次，副本置于淡色高亮带上。",
@@ -4762,6 +4765,7 @@ export const zhCN: Record<string, string> = {
 	"{count} more": "还有 {count} 个",
 	"{count} more file{s} pending…": "还有 {count} 个文件待处理…",
 	"{count} more lines": "还有 {count} 行",
+	"{count} more sessions": "还有 {count} 个会话",
 	"{count} out": "{count} 输出",
 	"{count} output": "{count} 输出",
 	"{count} saved reset": "{count} 个已保存重置",

@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { unregisterCustomApis } from "@oh-my-pi/pi-ai/api-registry";
 import { type AuthCredentialStore, AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai/auth-storage";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import { createMockModel, type MockResponseSource, registerMockApi } from "@oh-my-pi/pi-ai/providers/mock";
 import { $ } from "bun";
 import { ModelRegistry } from "../../src/config/model-registry";
@@ -15,6 +17,7 @@ import {
 	SecurityCoordinator,
 	type SecurityGitAdapter,
 	type SecurityScanBundle,
+	type SecurityScanSession,
 	SecurityStore,
 } from "../../src/security";
 import { SessionManager } from "../../src/session/session-manager";
@@ -257,6 +260,10 @@ describe("native security coordinator", () => {
 		await $`git init --initial-branch=main`.cwd(repositoryRoot).quiet();
 		await $`git config user.name Fixture`.cwd(repositoryRoot).quiet();
 		await $`git config user.email fixture@example.invalid`.cwd(repositoryRoot).quiet();
+		// Keep checkout bytes identical to the committed fixture (LF): a
+		// machine-level core.autocrlf=true would rewrite the checked-out head
+		// to CRLF and break the exact-content assertion below.
+		await $`git config core.autocrlf false`.cwd(repositoryRoot).quiet();
 		await $`git add src/app.ts`.cwd(repositoryRoot).quiet();
 		await $`git commit -m base`.cwd(repositoryRoot).quiet();
 		const baseRevision = (await $`git rev-parse HEAD`.cwd(repositoryRoot).text()).trim();
@@ -441,5 +448,141 @@ describe("native security coordinator", () => {
 			if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
 			else process.env.OPENAI_API_KEY = previousApiKey;
 		}
+	});
+
+	test("retries the scan prompt after a transient provider error and publishes", async () => {
+		const mock = createMockModel({ id: "security-mock", provider: "openai-codex" });
+		let promptCount = 0;
+		let lastMessage: AssistantMessage | undefined;
+		let publish: (() => Promise<void>) | undefined;
+		const session = (): SecurityScanSession => ({
+			async prompt() {
+				promptCount++;
+				if (promptCount === 1) {
+					// First run dies mid-turn with a transient stream failure and no
+					// security_publish call; the coordinator must re-prompt.
+					lastMessage = {
+						role: "assistant",
+						content: [{ type: "text", text: "All spot-checks confirm the workers' claims." }],
+						api: "openai-responses",
+						provider: "opencode-go",
+						model: "deepseek-v4-flash",
+						stopReason: "error",
+						errorMessage: "OpenAI responses stream closed before a terminal response event was received",
+						errorId: AIError.create(AIError.Flag.Transient),
+						usage: {
+							input: 0,
+							output: 0,
+							cacheRead: 0,
+							cacheWrite: 0,
+							totalTokens: 0,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+						},
+						timestamp: Date.now(),
+					} as unknown as AssistantMessage;
+					return true;
+				}
+				// Retried run finishes the reconciliation and publishes.
+				lastMessage = undefined;
+				await publish?.();
+				return true;
+			},
+			async waitForIdle() {},
+			async abort() {},
+			async dispose() {},
+			getLastAssistantMessage: () => lastMessage,
+		});
+		const coordinator = new SecurityCoordinator(
+			{
+				cwd: repositoryRoot,
+				settings,
+				authStorage,
+				modelRegistry: new ModelRegistry(authStorage, path.join(temporaryRoot, "models.yml")),
+				activeModel: mock.model,
+				sessionId: "parent-session",
+				agentId: "Main",
+			},
+			{
+				openStore: storeFactory,
+				gitAdapter,
+				createSession: async input => {
+					const publicationTool = input.publicationTool as unknown as {
+						execute: (callId: string, params: Record<string, unknown>) => Promise<unknown>;
+					};
+					publish = () =>
+						publicationTool
+							.execute("", {
+								findings: [
+									{
+										rule_id: "fixture.command-injection",
+										title: "Untrusted command reaches a shell",
+										summary: "A fixture value is interpolated into a shell command.",
+										severity: "high",
+										confidence: "high",
+										category: "command-injection",
+										locations: [{ path: "src/app.ts", start_line: 1, role: "sink" }],
+										evidence: [{ label: "shell sink", explanation: "Fixture evidence" }],
+										remediation: "Use an argument-vector API.",
+										validation: "validated",
+									},
+								],
+								coverage: { completeness: "complete" },
+								report: "# Fixture security report\n\nOne validated finding.\n",
+							})
+							.then(() => {});
+					return session();
+				},
+			},
+		);
+		const createdPlan = await coordinator.preflight({ credentialId, model: mock.model });
+		const started = await coordinator.start({ planId: createdPlan.id });
+		const terminal = await coordinator.wait(started.operationId);
+		expect(terminal.phase).toBe("completed");
+		expect(terminal.findingCount).toBe(1);
+		expect(promptCount).toBe(2);
+		const bundle = await (await storeFactory()).getBundle(terminal.scanId);
+		expect(bundle?.scan.status).toBe("completed");
+		expect(bundle?.findings).toHaveLength(1);
+	});
+
+	test("degrades to partial without retrying when the session ends on a non-transient stop", async () => {
+		const mock = createMockModel({ id: "security-mock", provider: "openai-codex" });
+		let promptCount = 0;
+		const session = (): SecurityScanSession => ({
+			async prompt() {
+				promptCount++;
+				return true;
+			},
+			async waitForIdle() {},
+			async abort() {},
+			async dispose() {},
+			getLastAssistantMessage: () =>
+				({
+					role: "assistant",
+					content: [{ type: "text", text: "No findings to report." }],
+					stopReason: "stop",
+				}) as unknown as AssistantMessage,
+		});
+		const coordinator = new SecurityCoordinator(
+			{
+				cwd: repositoryRoot,
+				settings,
+				authStorage,
+				modelRegistry: new ModelRegistry(authStorage, path.join(temporaryRoot, "models.yml")),
+				activeModel: mock.model,
+				sessionId: "parent-session",
+				agentId: "Main",
+			},
+			{
+				openStore: storeFactory,
+				gitAdapter,
+				createSession: async () => session(),
+			},
+		);
+		const createdPlan = await coordinator.preflight({ credentialId, model: mock.model });
+		const started = await coordinator.start({ planId: createdPlan.id });
+		const terminal = await coordinator.wait(started.operationId);
+		expect(terminal.phase).toBe("partial");
+		expect(promptCount).toBe(1);
 	});
 });

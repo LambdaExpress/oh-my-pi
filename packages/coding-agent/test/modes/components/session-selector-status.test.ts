@@ -2,14 +2,19 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { SessionInfo, SessionStatus } from "@oh-my-pi/pi-coding-agent/session/session-listing";
+import { setLocale } from "../../../src/i18n";
 
 beforeAll(async () => {
 	await initTheme();
+	// Assertions target the English status labels; pin the locale so zh-CN
+	// machines don't render translated labels.
+	setLocale("en");
 });
 
 afterAll(async () => {
 	// Other suites in the run share the global theme; restore the default preset.
 	await initTheme();
+	setLocale(null);
 });
 
 function createSession(id: string, status: SessionStatus | undefined): SessionInfo {
