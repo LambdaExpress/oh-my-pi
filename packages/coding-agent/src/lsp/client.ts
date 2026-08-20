@@ -13,6 +13,7 @@ import type {
 	LspJsonRpcResponse,
 	LspTransport,
 	LspWriteSink,
+	OpenFile,
 	PublishDiagnosticsParams,
 	ServerConfig,
 	WorkspaceEdit,
@@ -26,6 +27,8 @@ import { detectLanguageId, EquivalentUriMap, fileToUri, uriToFile } from "./util
 const clients = new Map<string, LspClient>();
 const clientLocks = new Map<string, Promise<LspClient>>();
 const fileOperationLocks = new Map<string, Promise<void>>();
+/** Last text successfully announced for an open document; entries expire with the OpenFile record. */
+const openFileContents = new WeakMap<OpenFile, string>();
 
 /** Negative cache of recent init failures so a broken server fails fast instead of re-spawning per call. */
 const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
@@ -1214,7 +1217,9 @@ export async function ensureFileOpen(client: LspClient, filePath: string, signal
 			signal,
 		);
 
-		client.openFiles.set(uri, { version: 1, languageId });
+		const info: OpenFile = { version: 1, languageId };
+		client.openFiles.set(uri, info);
+		openFileContents.set(info, content);
 		client.lastActivity = Date.now();
 	})();
 
@@ -1286,7 +1291,9 @@ export async function syncContent(
 				},
 				signal,
 			);
-			client.openFiles.set(uri, { version: 1, languageId });
+			const openedInfo: OpenFile = { version: 1, languageId };
+			client.openFiles.set(uri, openedInfo);
+			openFileContents.set(openedInfo, content);
 			client.lastActivity = Date.now();
 			return;
 		}
@@ -1302,6 +1309,7 @@ export async function syncContent(
 			},
 			signal,
 		);
+		openFileContents.set(info, content);
 		client.lastActivity = Date.now();
 	})();
 
@@ -1410,7 +1418,7 @@ export async function notifyWorkspaceWatchedFiles(
 
 /**
  * Refresh a file in the LSP client.
- * Increments version, sends didChange and didSave notifications.
+ * Sends didChange only when disk text differs from the open overlay, then didSave.
  */
 export async function refreshFile(client: LspClient, filePath: string, signal?: AbortSignal): Promise<void> {
 	throwIfAborted(signal);
@@ -1422,6 +1430,13 @@ export async function refreshFile(client: LspClient, filePath: string, signal?: 
 		await untilAborted(signal, () => existingLock);
 	}
 
+	// Open before taking the refresh lock. Calling ensureFileOpen from inside
+	// refreshPromise would wait on this operation's own lock forever.
+	if (!client.openFiles.has(uri)) {
+		await ensureFileOpen(client, filePath, signal);
+		return;
+	}
+
 	const refreshPromise = (async () => {
 		throwIfAborted(signal);
 		// Drop cached diagnostics for this URI before asking the server to recompute.
@@ -1429,11 +1444,7 @@ export async function refreshFile(client: LspClient, filePath: string, signal?: 
 		// diagnostics version and cause waiters to accept stale unversioned diagnostics.
 		client.diagnostics.delete(uri);
 		const info = client.openFiles.get(uri);
-
-		if (!info) {
-			await ensureFileOpen(client, filePath, signal);
-			return;
-		}
+		if (!info) return;
 
 		let content: string;
 		try {
@@ -1443,19 +1454,22 @@ export async function refreshFile(client: LspClient, filePath: string, signal?: 
 			if (isEnoent(err)) return;
 			throw err;
 		}
-		const version = ++info.version;
-		throwIfAborted(signal);
+		if (openFileContents.get(info) !== content) {
+			const version = ++info.version;
+			throwIfAborted(signal);
 
-		await sendNotification(
-			client,
-			"textDocument/didChange",
-			{
-				textDocument: { uri, version },
-				contentChanges: [{ text: content }],
-			},
-			signal,
-		);
-		throwIfAborted(signal);
+			await sendNotification(
+				client,
+				"textDocument/didChange",
+				{
+					textDocument: { uri, version },
+					contentChanges: [{ text: content }],
+				},
+				signal,
+			);
+			openFileContents.set(info, content);
+			throwIfAborted(signal);
+		}
 
 		await sendNotification(
 			client,

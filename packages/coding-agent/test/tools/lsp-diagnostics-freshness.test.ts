@@ -11,6 +11,7 @@ import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
 import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
 import type { Diagnostic, LinterClient, LspClient, ServerConfig } from "@oh-my-pi/pi-coding-agent/lsp/types";
 import { EquivalentUriMap, fileToUri } from "@oh-my-pi/pi-coding-agent/lsp/utils";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { DeferredDiagnosticsEntry, ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { WriteTool } from "@oh-my-pi/pi-coding-agent/tools/write";
 import { type ptree, TempDir } from "@oh-my-pi/pi-utils";
@@ -217,9 +218,65 @@ describe("LSP diagnostics freshness", () => {
 		});
 		const output = collectTextContent(result);
 
-		expect(output).not.toBe("OK");
-		expect(output).toMatch(/diagnostics (?:unavailable|stale)|no fresh diagnostics/i);
+		expect(result.details?.success).toBe(false);
+		expect(output).toContain("Diagnostics unavailable");
 		expect(output).toContain("target.ts");
+		expect(output).toContain("test-lsp");
+		expect(output).not.toContain("failed ()");
+	});
+
+	it("keeps unavailable and thrown server failures in batch diagnostics output", async () => {
+		const firstPath = path.join(tempDir.path(), "first.ts");
+		const secondPath = path.join(tempDir.path(), "second.ts");
+		await Promise.all([
+			Bun.write(firstPath, "export const first = 1;\n"),
+			Bun.write(secondPath, "export const second = 2;\n"),
+		]);
+		const unavailableServer = TEST_SERVER;
+		const failingServer: ServerConfig = { command: "failing-lsp", fileTypes: ["ts"], rootMarkers: [] };
+		const client = createClient(tempDir.path(), unavailableServer);
+		const clock = new VirtualClock(Date.now());
+		installVirtualTime(clock);
+
+		vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+			servers: { "test-lsp": unavailableServer, "failing-lsp": failingServer },
+			idleTimeoutMs: undefined,
+		});
+		vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([
+			["test-lsp", unavailableServer],
+			["failing-lsp", failingServer],
+		]);
+		vi.spyOn(lspClient, "getOrCreateClient").mockImplementation(async serverConfig => {
+			if (serverConfig === failingServer) throw new Error("intentional startup failure");
+			return client;
+		});
+		vi.spyOn(lspClient, "refreshFile").mockImplementation(async (mockClient, refreshedFilePath) => {
+			const refreshedUri = fileToUri(refreshedFilePath);
+			mockClient.diagnostics.delete(refreshedUri);
+			mockClient.openFiles.set(refreshedUri, { version: 1, languageId: "typescript" });
+		});
+
+		// Production initializes the global theme before tools execute; this case
+		// reaches the themed batch warning/error paths that earlier fixtures skip.
+		await initTheme();
+		const tool = createLspTool(tempDir.path());
+		const result = await tool.execute("diag-unavailable-and-failed", {
+			action: "diagnostics",
+			file: "*.ts",
+			timeout: 5,
+		});
+		const output = collectTextContent(result);
+
+		expect(result.details?.success).toBe(false);
+		expect(output).toContain("Diagnostics unavailable");
+		expect(output).toContain("test-lsp");
+		expect(output).toContain("did not publish fresh diagnostics for this file");
+		expect(output).toContain("failing-lsp");
+		expect(output).toContain("language servers failed");
+		expect(output).toContain("first.ts");
+		expect(output).toContain("second.ts");
+		expect(output).toContain("some language servers failed (failing-lsp)");
+		expect(output).not.toContain("failed ()");
 	});
 
 	it("uses TypeScript tsserver diagnostics when no fresh publish arrives", async () => {

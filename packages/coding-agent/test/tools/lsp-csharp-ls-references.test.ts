@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
 import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
 import type { LspClient, LspToolDetails } from "@oh-my-pi/pi-coding-agent/lsp/types";
+import { fileToUri } from "@oh-my-pi/pi-coding-agent/lsp/utils";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -40,6 +42,8 @@ interface FakeCsharpLs {
 	readonly received: RpcMessage[];
 	/** textDocument/references requests in arrival order. */
 	readonly referencesRequests: RpcMessage[];
+	/** textDocument/rename requests in arrival order. */
+	readonly renameRequests: RpcMessage[];
 }
 
 /**
@@ -49,10 +53,11 @@ interface FakeCsharpLs {
  * immediate `$/progress` begin/end pair so the client's projectLoaded
  * promise settles without waiting out the 15s auto-resolve timeout.
  */
-function installFakeLsp(options: { referencesResult: unknown }): FakeCsharpLs {
+function installFakeLsp(options: { referencesResult?: unknown; renameResult?: unknown }): FakeCsharpLs {
 	const encoder = new TextEncoder();
 	const received: RpcMessage[] = [];
 	const referencesRequests: RpcMessage[] = [];
+	const renameRequests: RpcMessage[] = [];
 	let exitCode: number | null = null;
 	let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
 	const { promise: exited, resolve: resolveExited } = Promise.withResolvers<number>();
@@ -81,14 +86,17 @@ function installFakeLsp(options: { referencesResult: unknown }): FakeCsharpLs {
 
 	const handle = (message: RpcMessage): void => {
 		if (message.method === "initialize" && message.id !== undefined) {
-			send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+			send({ jsonrpc: "2.0", id: message.id, result: { capabilities: { renameProvider: true } } });
 			// Settle projectLoaded immediately (csharp-ls emits no $/progress in
 			// production; the tests just must not wait the auto-resolve timeout).
 			send({ jsonrpc: "2.0", method: "$/progress", params: { token: 1, value: { kind: "begin", title: "load" } } });
 			send({ jsonrpc: "2.0", method: "$/progress", params: { token: 1, value: { kind: "end" } } });
 		} else if (message.method === "textDocument/references" && message.id !== undefined) {
 			referencesRequests.push(message);
-			send({ jsonrpc: "2.0", id: message.id, result: options.referencesResult });
+			send({ jsonrpc: "2.0", id: message.id, result: options.referencesResult ?? null });
+		} else if (message.method === "textDocument/rename" && message.id !== undefined) {
+			renameRequests.push(message);
+			send({ jsonrpc: "2.0", id: message.id, result: options.renameResult ?? null });
 		} else if (message.method === "shutdown" && message.id !== undefined) {
 			send({ jsonrpc: "2.0", id: message.id, result: null });
 		} else if (message.method === "exit") {
@@ -141,7 +149,7 @@ function installFakeLsp(options: { referencesResult: unknown }): FakeCsharpLs {
 	} as unknown as LspClient["proc"];
 
 	vi.spyOn(piUtils.ptree, "spawn").mockReturnValue(proc as unknown as piUtils.ptree.ChildProcess<"pipe">);
-	return { received, referencesRequests };
+	return { received, referencesRequests, renameRequests };
 }
 
 function makeSession(cwd: string): ToolSession {
@@ -156,11 +164,20 @@ function textResult(result: AgentToolResult<LspToolDetails>): string {
 }
 
 /** Write a .cs fixture with `UploadInventoryData` on line 45 and the LSP config. */
-async function writeCsFixture(tempDir: string, serverName: string, command: string): Promise<void> {
+function inventorySource(): string {
 	const lines: string[] = [];
 	for (let i = 0; i < 44; i++) lines.push(`// padding ${i + 1}`);
 	lines.push("        public void UploadInventoryData() { }");
-	await Bun.write(path.join(tempDir, "Inventory.cs"), `${lines.join("\n")}\n`);
+	return `${lines.join("\n")}\n`;
+}
+
+async function writeCsFixture(
+	tempDir: string,
+	serverName: string,
+	command: string,
+	rootMarkers: string[] = ["."],
+): Promise<void> {
+	await Bun.write(path.join(tempDir, "Inventory.cs"), inventorySource());
 	await Bun.write(
 		path.join(tempDir, ".omp", "lsp.json"),
 		JSON.stringify({
@@ -168,7 +185,7 @@ async function writeCsFixture(tempDir: string, serverName: string, command: stri
 				[serverName]: {
 					command,
 					fileTypes: [".cs"],
-					rootMarkers: ["."],
+					rootMarkers,
 					languageId: "csharp",
 				},
 			},
@@ -266,6 +283,94 @@ describe("lsp csharp-ls references", () => {
 			});
 
 			expect(textResult(result)).toContain("Found 1 reference(s)");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("initializes an absolute sibling-worktree file at its C# project root and applies rename edits", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-csharp-ls-sibling-");
+		try {
+			const sessionRoot = path.join(tempDir.path(), "session-worktree");
+			const targetRoot = path.join(tempDir.path(), "sibling-worktree");
+			const targetFile = path.join(targetRoot, "Inventory.cs");
+			await fs.mkdir(sessionRoot, { recursive: true });
+			await fs.mkdir(targetRoot, { recursive: true });
+			await writeCsFixture(sessionRoot, "csharp-ls", "csharp-ls", ["*.csproj"]);
+			await Bun.write(path.join(sessionRoot, "Inventory.csproj"), '<Project Sdk="Microsoft.NET.Sdk" />\n');
+			await Bun.write(path.join(targetRoot, "Inventory.csproj"), '<Project Sdk="Microsoft.NET.Sdk" />\n');
+			await Bun.write(targetFile, inventorySource());
+			mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
+
+			const targetUri = fileToUri(targetFile);
+			const oldName = "UploadInventoryData";
+			const newName = "UploadInventorySnapshot";
+			const character = "        public void UploadInventoryData() { }".indexOf(oldName);
+			const server = installFakeLsp({
+				renameResult: {
+					changes: {
+						[targetUri]: [
+							{
+								range: {
+									start: { line: 44, character },
+									end: { line: 44, character: character + oldName.length },
+								},
+								newText: newName,
+							},
+						],
+					},
+				},
+			});
+
+			const result = await new LspTool(makeSession(sessionRoot)).execute("rename-sibling-project", {
+				action: "rename",
+				file: targetFile,
+				line: 45,
+				symbol: oldName,
+				new_name: newName,
+				timeout: 60,
+			});
+			const initialize = server.received.find(message => message.method === "initialize");
+			const expectedRootUri = fileToUri(targetRoot);
+
+			expect(initialize).toMatchObject({
+				method: "initialize",
+				params: {
+					rootUri: expectedRootUri,
+					rootPath: targetRoot,
+					workspaceFolders: [{ uri: expectedRootUri, name: path.basename(targetRoot) }],
+				},
+			});
+			expect(server.renameRequests).toHaveLength(1);
+			expect(result.details).toMatchObject({ action: "rename", success: true });
+			expect(await Bun.file(targetFile).text()).toContain(newName);
+			expect(await Bun.file(targetFile).text()).not.toContain(oldName);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("reports a null rename result as a project or symbol resolution failure", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-csharp-ls-null-rename-");
+		try {
+			await writeCsFixture(tempDir.path(), "csharp-ls", "csharp-ls");
+			mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
+			installFakeLsp({ renameResult: null });
+
+			const result = await new LspTool(makeSession(tempDir.path())).execute("null-rename", {
+				action: "rename",
+				file: "Inventory.cs",
+				line: 45,
+				symbol: "UploadInventoryData",
+				new_name: "UploadInventorySnapshot",
+				timeout: 60,
+			});
+
+			expect(result.details).toMatchObject({ action: "rename", success: false });
+			expect(textResult(result)).toContain("initialized project");
+			expect(textResult(result)).toContain("symbol resolves");
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();

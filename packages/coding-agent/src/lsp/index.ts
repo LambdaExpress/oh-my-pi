@@ -25,6 +25,7 @@ import {
 	getActiveOrPendingClient,
 	getLspClientKey,
 	getOrCreateClient,
+	isRustAnalyzerClient,
 	type LspServerStatus,
 	notifyClientWatchedFiles,
 	notifySaved,
@@ -86,7 +87,6 @@ import {
 	formatLocation,
 	formatSymbolInformation,
 	formatWorkspaceEdit,
-	hasGlobPattern,
 	readLocationContext,
 	resolveDiagnosticTargets,
 	resolveSymbolPosition,
@@ -353,6 +353,17 @@ const PROJECT_INDEXED_ACTIONS: ReadonlySet<string> = new Set([
 	"references",
 	"rename",
 	"hover",
+]);
+
+/** File actions whose position must be resolved against the text announced to the server. */
+const POSITIONAL_ACTIONS: ReadonlySet<string> = new Set([
+	"definition",
+	"type_definition",
+	"implementation",
+	"references",
+	"hover",
+	"code_actions",
+	"rename",
 ]);
 
 const RUST_WORKSPACE_MARKERS = ["Cargo.toml", "rust-analyzer.toml"] as const;
@@ -717,6 +728,20 @@ interface FileRenamePair {
 }
 
 /**
+ * Keep relative tool paths in the session workspace, but let an explicit
+ * absolute file select the nearest project recognized by this server.
+ */
+function getExplicitFileClientCwd(
+	fileArgument: string,
+	resolvedFile: string,
+	serverConfig: ServerConfig,
+	sessionCwd: string,
+): string {
+	if (!path.isAbsolute(fileArgument)) return sessionCwd;
+	return findLspProjectRoot(resolvedFile, serverConfig.rootMarkers) ?? sessionCwd;
+}
+
+/**
  * Enumerate the {oldUri, newUri} pairs needed for an LSP willRenameFiles/didRenameFiles request.
  * For files this is a single pair. For directories this walks every regular file underneath
  * and produces a parallel pair anchored at the new directory root.
@@ -765,17 +790,22 @@ function isMethodNotFoundError(err: unknown): boolean {
 
 async function reloadServer(client: LspClient, serverName: string, signal?: AbortSignal): Promise<string> {
 	throwIfAborted(signal);
-	// rust-analyzer exposes a real reload request. Every other server rejects it
-	// with method-not-found — that alone justifies the generic fallback. A caller
-	// cancel or tool timeout must propagate, never be mistaken for an unsupported
-	// method and swallowed into a bogus "Restarted" (issue #6369).
-	try {
-		await sendRequest(client, "rust-analyzer/reloadWorkspace", null, signal);
-		return `Reloaded ${serverName}`;
-	} catch (err) {
-		throwIfAborted(signal);
-		if (!isMethodNotFoundError(err)) throw err;
-		// Method not supported — fall through to the generic reload.
+	// rust-analyzer exposes a real reload request. Only rust-analyzer implements
+	// it, so gate the request on the binary (or registered name) rather than
+	// probing every server: some servers (Roslyn) crash the whole process on an
+	// unknown method instead of replying with method-not-found — killing the
+	// server `lsp reload` was meant to refresh (issue #8571, dotnet/roslyn#84890).
+	// A caller cancel or tool timeout must propagate, never be mistaken for an
+	// unsupported method and swallowed into a bogus "Restarted" (issue #6369).
+	if (isRustAnalyzerClient(client) || serverName === "rust-analyzer") {
+		try {
+			await sendRequest(client, "rust-analyzer/reloadWorkspace", undefined, signal);
+			return `Reloaded ${serverName}`;
+		} catch (err) {
+			throwIfAborted(signal);
+			if (!isMethodNotFoundError(err)) throw err;
+			// Method not supported — fall through to the generic reload.
+		}
 	}
 	// workspace/didChangeConfiguration is a notification per spec; sending it
 	// as a request hangs until the tool deadline on servers that route it to
@@ -2001,9 +2031,6 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 			let targets: string[];
 			let truncatedGlobTargets = false;
-			// Only an explicit absolute glob opts into another workspace. Relative
-			// globs and concrete files keep the session client's established scope.
-			const useTargetProjectRoot = path.isAbsolute(file) && hasGlobPattern(file);
 			const resolvedTargets = await resolveDiagnosticTargets(file, this.session.cwd, MAX_GLOB_DIAGNOSTIC_TARGETS);
 			targets = resolvedTargets.matches;
 			truncatedGlobTargets = resolvedTargets.truncated;
@@ -2052,20 +2079,18 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					totalServerAttempts++;
 					try {
 						throwIfAborted(signal);
+						let serverCwd = this.session.cwd;
+						if (file && file !== "*" && path.isAbsolute(file)) {
+							serverCwd = getExplicitFileClientCwd(file, resolved, serverConfig, this.session.cwd);
+						}
 						if (serverConfig.createClient) {
-							const linterCwd = useTargetProjectRoot
-								? (findLspProjectRoot(resolved, serverConfig.rootMarkers) ?? this.session.cwd)
-								: this.session.cwd;
-							const linterClient = getLinterClient(serverName, serverConfig, linterCwd);
+							const linterClient = getLinterClient(serverName, serverConfig, serverCwd);
 							const diagnostics = await linterClient.lint(resolved);
 							allDiagnostics.push(...diagnostics);
 							succeededServers++;
 							totalServerSuccesses++;
 							continue;
 						}
-						const serverCwd = useTargetProjectRoot
-							? (findLspProjectRoot(resolved, serverConfig.rootMarkers) ?? this.session.cwd)
-							: this.session.cwd;
 						const client = await getOrCreateClient(serverConfig, serverCwd, undefined, signal);
 						if (isProjectAwareLspServer(serverConfig)) {
 							await waitForProjectLoaded(client, signal);
@@ -2135,11 +2160,20 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 				if (!detailed && targets.length === 1) {
 					if (succeededServers === 0) {
+						const unavailableOutput =
+							unavailableMessages.length > 0
+								? `${DIAGNOSTICS_UNAVAILABLE_SUMMARY}:\n${formatGroupedDiagnosticMessages(unavailableMessages)}`
+								: "";
+						const failedOutput =
+							failedServers.length > 0
+								? `${theme.status.error} ${relPath}: ${unavailableMessages.length > 0 ? "some" : "all"} language servers failed (${failedServers.join(", ")})`
+								: "";
+						const output = [unavailableOutput, failedOutput].filter(Boolean).join("\n");
 						return {
 							content: [
 								{
 									type: "text",
-									text: `${theme.status.error} ${relPath}: all language servers failed (${failedServers.join(", ")})`,
+									text: output || `${theme.status.error} ${relPath}: all language servers failed`,
 								},
 							],
 							details: { action, serverName: Array.from(allServerNames).join(", "), success: false },
@@ -2185,9 +2219,18 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 				if (uniqueDiagnostics.length === 0) {
 					if (succeededServers === 0) {
-						results.push(
-							`${theme.status.error} ${relPath}: all language servers failed (${failedServers.join(", ")})`,
-						);
+						if (unavailableMessages.length > 0) {
+							results.push(`${theme.status.warning} ${relPath}: ${DIAGNOSTICS_UNAVAILABLE_SUMMARY}`);
+							results.push(formatGroupedDiagnosticMessages(unavailableMessages));
+						}
+						if (failedServers.length > 0) {
+							results.push(
+								`${theme.status.error} ${relPath}: ${unavailableMessages.length > 0 ? "some" : "all"} language servers failed (${failedServers.join(", ")})`,
+							);
+						}
+						if (unavailableMessages.length === 0 && failedServers.length === 0) {
+							results.push(`${theme.status.error} ${relPath}: all language servers failed`);
+						}
 					} else {
 						if (unavailableMessages.length > 0) {
 							results.push(`${theme.status.warning} ${relPath}: ${DIAGNOSTICS_UNAVAILABLE_SUMMARY}`);
@@ -2668,9 +2711,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 			const [chosenName, chosenConfig] = chosenServer;
 			let requestParams: unknown;
-			if (params.payload !== undefined) {
+			const payload = params.payload;
+			const hasExplicitPayload = payload !== undefined;
+			if (hasExplicitPayload) {
 				try {
-					requestParams = JSON.parse(params.payload);
+					requestParams = JSON.parse(payload);
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : String(err);
 					return {
@@ -2680,15 +2725,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 			} else if (resolvedTarget) {
 				const uri = fileToUri(resolvedTarget);
-				if (line !== undefined) {
-					const resolvedPosition = await resolveSymbolPosition(resolvedTarget, line, symbol);
-					requestParams = {
-						textDocument: { uri },
-						position: { line: resolvedPosition.line - 1, character: resolvedPosition.character },
-					};
-				} else {
-					requestParams = { textDocument: { uri } };
-				}
+				requestParams = { textDocument: { uri } };
 			} else {
 				requestParams = {};
 			}
@@ -2696,7 +2733,18 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			try {
 				const client = await getOrCreateClient(chosenConfig, this.session.cwd, undefined, signal);
 				if (resolvedTarget) {
-					await ensureFileOpen(client, resolvedTarget, signal);
+					if (hasExplicitPayload) {
+						await ensureFileOpen(client, resolvedTarget, signal);
+					} else {
+						await refreshFile(client, resolvedTarget, signal);
+						if (line !== undefined) {
+							const resolvedPosition = await resolveSymbolPosition(resolvedTarget, line, symbol);
+							requestParams = {
+								textDocument: { uri: fileToUri(resolvedTarget) },
+								position: { line: resolvedPosition.line - 1, character: resolvedPosition.character },
+							};
+						}
+					}
 				}
 				const result = await sendRequest(client, method, requestParams, signal);
 				const formatted =
@@ -2872,11 +2920,15 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		}
 
 		const [serverName, serverConfig] = serverInfo;
+		let clientCwd = this.session.cwd;
+		if (resolvedFile && file && file !== "*" && path.isAbsolute(file)) {
+			clientCwd = getExplicitFileClientCwd(file, resolvedFile, serverConfig, this.session.cwd);
+		}
 
-		if (action === "reload") clearInitializationFailure(serverConfig, this.session.cwd);
+		if (action === "reload") clearInitializationFailure(serverConfig, clientCwd);
 
 		try {
-			const client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal);
+			const client = await getOrCreateClient(serverConfig, clientCwd, undefined, signal);
 			const targetFile = resolvedFile;
 			const isRustAnalyzerServer =
 				serverName === "rust-analyzer" ||
@@ -2888,7 +2940,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				needsProjectIndex && isRustAnalyzerServer && targetFile !== null && hasRustWorkspaceAncestor(targetFile);
 
 			if (targetFile) {
-				await ensureFileOpen(client, targetFile, signal);
+				if (POSITIONAL_ACTIONS.has(action)) {
+					await refreshFile(client, targetFile, signal);
+				} else {
+					await ensureFileOpen(client, targetFile, signal);
+				}
 			}
 			if (rustWorkspaceWait) {
 				await waitForProjectLoaded(client, signal);
@@ -3186,7 +3242,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						const appliedAction = await applyCodeAction(selectedAction, {
 							resolveCodeAction: async actionItem =>
 								(await sendRequest(client, "codeAction/resolve", actionItem, signal)) as CodeAction,
-							applyWorkspaceEdit: async edit => applyWorkspaceEditWithLsp(edit, this.session.cwd, signal),
+							applyWorkspaceEdit: async edit => applyWorkspaceEditWithLsp(edit, clientCwd, signal),
 							executeCommand: async commandItem => {
 								await sendRequest(
 									client,
@@ -3278,11 +3334,19 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					)) as WorkspaceEdit | null;
 
 					if (!result) {
-						output = "Rename returned no edits";
+						return {
+							content: [
+								{
+									type: "text",
+									text: "Rename could not be resolved: the language server returned no workspace edit. Verify that the file belongs to the initialized project and that the requested symbol resolves, then retry.",
+								},
+							],
+							details: { action, serverName, success: false, request: params },
+						};
 					} else {
 						const shouldApply = apply !== false;
 						if (shouldApply) {
-							const applied = await applyWorkspaceEditWithLsp(result, this.session.cwd, signal);
+							const applied = await applyWorkspaceEditWithLsp(result, clientCwd, signal);
 							output = `Applied rename:\n${applied.map(a => `  ${a}`).join("\n")}`;
 						} else {
 							const preview = formatWorkspaceEdit(result, this.session.cwd);

@@ -87,7 +87,10 @@ interface FakeLspServer {
 	/** Whether the client invoked `proc.kill()` (production's hard-kill fallback). */
 	readonly killed: boolean;
 	/** Resolve once a received message matches `predicate` (already-seen or future). */
-	waitFor(predicate: (message: RpcMessage) => boolean, timeoutMs?: number): Promise<RpcMessage>;
+	waitFor(
+		predicate: (message: RpcMessage) => boolean,
+		options?: number | { timeoutMs?: number; after?: number; label?: string },
+	): Promise<RpcMessage>;
 }
 
 type FakeLspHandler = (message: RpcMessage, server: FakeLspServer) => void | Promise<void>;
@@ -158,16 +161,31 @@ function installFakeLsp(handler: FakeLspHandler, options?: FakeLspOptions): Fake
 		get killed() {
 			return killed;
 		},
-		waitFor(predicate, timeoutMs = 1_000) {
-			const existing = received.find(predicate);
+		waitFor(predicate, options) {
+			const timeoutMs = typeof options === "number" ? options : (options?.timeoutMs ?? 1_000);
+			const after = typeof options === "object" ? (options.after ?? 0) : 0;
+			const label = typeof options === "object" ? (options.label ?? "message") : "message";
+			const existing = received.slice(after).find(predicate);
 			if (existing) return Promise.resolve(existing);
 			return new Promise<RpcMessage>((resolve, reject) => {
 				const timer = setTimeout(() => {
 					const index = waiters.findIndex(entry => entry.timer === timer);
 					if (index >= 0) waiters.splice(index, 1);
-					reject(new Error("FakeLspServer.waitFor: timed out"));
+					const history = received
+						.slice(after)
+						.map(message => message.method ?? `response:${String(message.id)}`)
+						.join(", ");
+					reject(
+						new Error(
+							`FakeLspServer.waitFor(${label}): timed out; received after cursor ${after}: ${history || "<none>"}`,
+						),
+					);
 				}, timeoutMs);
-				waiters.push({ predicate, resolve, timer });
+				waiters.push({
+					predicate: message => received.indexOf(message) >= after && predicate(message),
+					resolve,
+					timer,
+				});
 			});
 		},
 	};
@@ -1510,6 +1528,191 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("refreshes an open document from disk before resolving a reference position", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reference-overlay-");
+		try {
+			const sourcePath = path.join(tempDir.path(), "overlay.ts");
+			const oldText = "const target = 1;\nconsole.log(target);\n";
+			const newText = "const unrelated = 0;\nconst freshSymbol = 1;\nconsole.log(freshSymbol);\n";
+			await Bun.write(sourcePath, oldText);
+			const openText = (params: unknown): string => {
+				if (!params || typeof params !== "object" || !("textDocument" in params)) {
+					throw new Error("Expected didOpen textDocument params");
+				}
+				const textDocument = params.textDocument;
+				if (!textDocument || typeof textDocument !== "object" || !("text" in textDocument)) {
+					throw new Error("Expected didOpen document text");
+				}
+				if (typeof textDocument.text !== "string") throw new Error("Expected didOpen text to be a string");
+				return textDocument.text;
+			};
+			const changedText = (params: unknown): string => {
+				if (!params || typeof params !== "object" || !("contentChanges" in params)) {
+					throw new Error("Expected didChange contentChanges params");
+				}
+				const changes = params.contentChanges;
+				if (!Array.isArray(changes) || !changes[0] || typeof changes[0] !== "object" || !("text" in changes[0])) {
+					throw new Error("Expected didChange document text");
+				}
+				if (typeof changes[0].text !== "string") throw new Error("Expected didChange text to be a string");
+				return changes[0].text;
+			};
+			const requestPosition = (params: unknown): { line: number; character: number } => {
+				if (!params || typeof params !== "object" || !("position" in params)) {
+					throw new Error("Expected references position params");
+				}
+				const position = params.position;
+				if (
+					!position ||
+					typeof position !== "object" ||
+					!("line" in position) ||
+					typeof position.line !== "number" ||
+					!("character" in position) ||
+					typeof position.character !== "number"
+				) {
+					throw new Error("Expected numeric references position");
+				}
+				return { line: position.line, character: position.character };
+			};
+
+			let overlay = "";
+			const events: Array<{ method: string; text?: string; position?: { line: number; character: number } }> = [];
+			const fakeServer = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: { referencesProvider: true } } });
+					srv.send({
+						jsonrpc: "2.0",
+						method: "$/progress",
+						params: { token: "overlay-project", value: { kind: "begin" } },
+					});
+					srv.send({
+						jsonrpc: "2.0",
+						method: "$/progress",
+						params: { token: "overlay-project", value: { kind: "end" } },
+					});
+				} else if (message.method === "textDocument/didOpen") {
+					overlay = openText(message.params);
+					events.push({ method: message.method, text: overlay });
+				} else if (message.method === "textDocument/didChange") {
+					overlay = changedText(message.params);
+					events.push({ method: message.method, text: overlay });
+				} else if (message.method === "textDocument/references") {
+					const position = requestPosition(message.params);
+					events.push({ method: message.method, position });
+					const fresh = overlay === newText;
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: [
+							{
+								uri: fileToUri(sourcePath),
+								range: fresh
+									? { start: { line: 2, character: 12 }, end: { line: 2, character: 23 } }
+									: { start: { line: 0, character: 6 }, end: { line: 0, character: 12 } },
+							},
+						],
+					});
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+
+			const server: ServerConfig = {
+				command: "fake-overlay-lsp",
+				resolvedCommand: process.execPath,
+				fileTypes: ["ts"],
+				rootMarkers: [],
+				isLinter: false,
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-overlay-lsp": server },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([["fake-overlay-lsp", server]]);
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const initialCursor = fakeServer.received.length;
+			const initialRequest = tool.execute("open-reference-overlay", {
+				action: "references",
+				file: sourcePath,
+				line: 1,
+				symbol: "target",
+			});
+			const initialOpen = await fakeServer.waitFor(message => message.method === "textDocument/didOpen", {
+				after: initialCursor,
+				label: "initial didOpen",
+			});
+			expect(openText(initialOpen.params)).toBe(oldText);
+			await fakeServer.waitFor(
+				message =>
+					message.method === "textDocument/references" &&
+					requestPosition(message.params).line === 0 &&
+					requestPosition(message.params).character === 6,
+				{ after: initialCursor, label: "initial references" },
+			);
+			await initialRequest;
+			expect(events[0]).toEqual({ method: "textDocument/didOpen", text: oldText });
+
+			await Bun.write(sourcePath, newText);
+			const refreshCursor = fakeServer.received.length;
+			const refreshedRequest = tool.execute("refresh-reference-overlay", {
+				action: "references",
+				file: sourcePath,
+				line: 2,
+				symbol: "freshSymbol",
+			});
+			const didChange = await fakeServer.waitFor(message => message.method === "textDocument/didChange", {
+				after: refreshCursor,
+				label: "external-disk didChange",
+			});
+			expect(changedText(didChange.params)).toBe(newText);
+			await fakeServer.waitFor(
+				message =>
+					message.method === "textDocument/references" &&
+					requestPosition(message.params).line === 1 &&
+					requestPosition(message.params).character === 6,
+				{ after: refreshCursor, label: "refreshed references" },
+			);
+			const refreshed = await refreshedRequest;
+
+			const changeIndex = events.findIndex(event => event.method === "textDocument/didChange");
+			const refreshedRequestIndex = events.findIndex(
+				(event, index) =>
+					index > changeIndex &&
+					event.method === "textDocument/references" &&
+					event.position?.line === 1 &&
+					event.position.character === 6,
+			);
+			expect(changeIndex).toBeGreaterThanOrEqual(0);
+			expect(events[changeIndex]?.text).toBe(newText);
+			expect(refreshedRequestIndex).toBeGreaterThan(changeIndex);
+			expect(textResult(refreshed)).toContain("console.log(freshSymbol)");
+			expect(textResult(refreshed)).not.toContain("const unrelated = 0");
+
+			const unchangedCursor = fakeServer.received.length;
+			const unchangedRequest = tool.execute("unchanged-reference-overlay", {
+				action: "references",
+				file: sourcePath,
+				line: 2,
+				symbol: "freshSymbol",
+			});
+			await fakeServer.waitFor(
+				message =>
+					message.method === "textDocument/references" &&
+					requestPosition(message.params).line === 1 &&
+					requestPosition(message.params).character === 6,
+				{ after: unchangedCursor, label: "unchanged references" },
+			);
+			await unchangedRequest;
+			expect(events.filter(event => event.method === "textDocument/didChange")).toHaveLength(1);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("throws when symbol does not exist on the target line", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-missing-symbol-");
 		try {
@@ -1908,8 +2111,8 @@ describe("lsp regressions", () => {
 		}, 15_000);
 	}
 
-	it("uses the external glob project's nearest root for diagnostics", async () => {
-		const tempDir = TempDir.createSync("@omp-lsp-external-glob-root-");
+	it("uses an external concrete file's nearest project root for diagnostics", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-external-file-root-");
 		try {
 			const uiTheme = await getThemeByName("dark");
 			expect(uiTheme).toBeDefined();
@@ -1919,12 +2122,10 @@ describe("lsp regressions", () => {
 			const worktree = path.join(tempDir.path(), "sibling-worktree");
 			const nestedPackage = path.join(worktree, "packages", "app");
 			const targetFile = path.join(nestedPackage, "src", "screen.tsx");
-			const secondTargetFile = path.join(nestedPackage, "src", "routes.ts");
 			await fs.promises.mkdir(sessionCwd, { recursive: true });
 			await Bun.write(path.join(worktree, "package.json"), "{}\n");
 			await Bun.write(path.join(nestedPackage, "tsconfig.json"), "{}\n");
 			await Bun.write(targetFile, "export const Screen = () => <View />;\n");
-			await Bun.write(secondTargetFile, "export const route = 'home';\n");
 
 			const server = installFakeLsp((message, srv) => {
 				if (message.method === "initialize") {
@@ -1948,7 +2149,7 @@ describe("lsp regressions", () => {
 			});
 
 			const serverConfig: ServerConfig = {
-				command: "fake-lsp-external-glob",
+				command: "fake-lsp-external-file",
 				fileTypes: [".ts", ".tsx"],
 				rootMarkers: ["tsconfig.json", "package.json"],
 			};
@@ -1957,9 +2158,9 @@ describe("lsp regressions", () => {
 				idleTimeoutMs: undefined,
 			});
 
-			const result = await new LspTool(makeLspSession(sessionCwd)).execute("external-glob-root", {
+			const result = await new LspTool(makeLspSession(sessionCwd)).execute("external-file-root", {
 				action: "diagnostics",
-				file: path.join(nestedPackage, "src", "**", "*.ts*"),
+				file: targetFile,
 				timeout: 5,
 			});
 			const initialize = await server.waitFor(message => message.method === "initialize");
@@ -1974,8 +2175,8 @@ describe("lsp regressions", () => {
 				workspaceFolders: [{ uri: expectedRootUri, name: path.basename(nestedPackage) }],
 			});
 			expect(server.received.filter(message => message.method === "initialize")).toHaveLength(1);
-			expect(documentDiagnosticUris.sort()).toEqual([fileToUri(targetFile), fileToUri(secondTargetFile)].sort());
-			expect(textResult(result)).toContain("no issues");
+			expect(documentDiagnosticUris).toEqual([fileToUri(targetFile)]);
+			expect(textResult(result)).toBe("OK");
 		} finally {
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
@@ -4422,7 +4623,86 @@ describe("lsp regressions", () => {
 			}
 		});
 
-		it("does not send rust-analyzer/reloadWorkspace to a non-rust server that crashes on it (#8571)", async () => {
+		it("uses rust-analyzer/reloadWorkspace for a rust-analyzer client", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-reload-rust-analyzer-");
+			try {
+				const server = installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "rust-analyzer/reloadWorkspace") {
+						expect(message.params).toBeUndefined();
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						srv.exit(0);
+					}
+				});
+				const config: ServerConfig = { command: "rust-analyzer", fileTypes: [".rs"], rootMarkers: [] };
+				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { rust: config }, idleTimeoutMs: undefined });
+
+				await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+				const genericNotificationsBeforeReload = server.received.filter(
+					message => message.method === "workspace/didChangeConfiguration",
+				).length;
+
+				const tool = new LspTool(makeLspSession(tempDir.path()));
+				const result = await tool.execute("reload-rust-analyzer", { action: "reload", file: "*" });
+
+				expect(textResult(result)).toContain("Reloaded rust");
+				expect(server.received.filter(message => message.method === "rust-analyzer/reloadWorkspace")).toHaveLength(
+					1,
+				);
+				expect(
+					server.received.filter(message => message.method === "workspace/didChangeConfiguration"),
+				).toHaveLength(genericNotificationsBeforeReload);
+				expect(server.killed).toBe(false);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("file reload sends tsgo only the generic reload notification", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-reload-tsgo-file-");
+			try {
+				fs.writeFileSync(path.join(tempDir.path(), "main.ts"), "export const value = 1;\n");
+				let sawRustReload = false;
+				const server = installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "rust-analyzer/reloadWorkspace") {
+						sawRustReload = true;
+						srv.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							error: { code: -32_600, message: "Invalid Request" },
+						});
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						srv.exit(0);
+					}
+				});
+				const config: ServerConfig = { command: "tsgo", fileTypes: [".ts"], rootMarkers: [] };
+				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { tsgo: config }, idleTimeoutMs: undefined });
+
+				const tool = new LspTool(makeLspSession(tempDir.path()));
+				const result = await tool.execute("reload-tsgo-file", { action: "reload", file: "main.ts" });
+				await server.waitFor(message => message.method === "workspace/didChangeConfiguration");
+
+				expect(sawRustReload).toBe(false);
+				expect(textResult(result)).toContain("Reloaded tsgo");
+				expect(server.killed).toBe(false);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
+		it("workspace reload does not send rust-analyzer/reloadWorkspace to Roslyn (#8571)", async () => {
 			const tempDir = TempDir.createSync("@omp-lsp-reload-non-rust-");
 			try {
 				let sawRustReload = false;
