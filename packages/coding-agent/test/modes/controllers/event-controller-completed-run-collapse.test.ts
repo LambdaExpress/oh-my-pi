@@ -744,4 +744,55 @@ describe("completed run collapse", () => {
 		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
 		expect(resetDisplay).not.toHaveBeenCalled();
 	});
+
+	it("retains a manually interrupted tool run when its correction starts after agent_end", async () => {
+		const { controller, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
+		const initial = { role: "user", content: "open the pull request", timestamp: 90 } as AgentMessage;
+		const progress = assistant("merging the pull request", "toolUse", 91);
+		progress.content.push({ type: "toolCall", id: "tc", name: "pwsh", arguments: {} });
+		const result = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "pwsh",
+			content: [{ type: "text", text: "merged" }],
+			timestamp: 92,
+		} as AgentMessage;
+		const interrupted = assistant("", "aborted", 93);
+		interrupted.errorMessage = "Interrupted by user";
+		const correction = { role: "user", content: "open it, do not merge it", timestamp: 94 } as AgentMessage;
+		const final = assistant("I will repair it", "stop", 95);
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: initial });
+		await controller.handleEvent({ type: "message_end", message: initial });
+		await controller.handleEvent({ type: "message_end", message: progress });
+		await controller.handleEvent({ type: "message_end", message: result });
+		await controller.handleEvent({ type: "message_end", message: interrupted });
+		await controller.handleEvent({
+			type: "agent_end",
+			messages: [initial, progress, result, interrupted],
+		});
+
+		// Keep the interrupted work expanded until the user explicitly toggles it.
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
+		expect(resetDisplay).not.toHaveBeenCalled();
+		expect(controller.commitCompletedRunCollapses({ rebuild: false })).toBe(false);
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: correction });
+		await controller.handleEvent({ type: "message_end", message: correction });
+		await controller.handleEvent({ type: "message_end", message: final });
+		await controller.handleEvent({ type: "agent_end", messages: [correction, final] });
+		expect(controller.commitCompletedRunCollapses({ rebuild: false })).toBe(true);
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		const collapse = recordCompletedRunCollapse.mock.calls[0]![0] as CompletedRunCollapse;
+		expect(collapse).toEqual(
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+			}),
+		);
+	});
 });

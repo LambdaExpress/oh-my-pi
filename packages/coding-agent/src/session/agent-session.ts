@@ -6508,12 +6508,10 @@ export class AgentSession {
 		while (this.#queuedMessagePreparations[0]?.readyMessages !== undefined) {
 			const preparation = this.#queuedMessagePreparations.shift()!;
 			if (preparation.cancelled) continue;
-			for (const message of preparation.readyMessages!) {
-				if (preparation.deliverAs === "followUp") {
-					this.agent.followUp(message);
-				} else {
-					this.agent.steer(message);
-				}
+			if (preparation.deliverAs === "followUp") {
+				this.agent.followUpBatch(preparation.readyMessages!);
+			} else {
+				this.agent.steerBatch(preparation.readyMessages!);
 			}
 			delivered = true;
 		}
@@ -6992,8 +6990,8 @@ export class AgentSession {
 	}
 
 	/** Number of pending displayable messages (includes steering, follow-up, and next-turn messages).
-	 *  Reflects actual queued work (advisor cards included) — feeds hasPendingMessages()/RPC and the
-	 *  empty-submit abort gate. The user-restorable subset is surfaced by getQueuedMessages()/clearQueue(). */
+	 *  Includes visible messages whose asynchronous preparation is not runnable yet. Feeds pending-message
+	 *  UI/RPC state; the user-restorable subset is surfaced by getQueuedMessages()/clearQueue(). */
 	get queuedMessageCount(): number {
 		return (
 			this.agent.peekSteeringQueue().filter(isDisplayableQueuedMessage).length +
@@ -7004,6 +7002,11 @@ export class AgentSession {
 			) +
 			this.#pendingNextTurnMessages.length
 		);
+	}
+
+	/** Whether a steer or follow-up has finished preparation and entered the Agent queue. */
+	get hasRunnableQueuedMessages(): boolean {
+		return this.agent.hasQueuedMessages();
 	}
 
 	getQueuedMessages(): { steering: readonly string[]; followUp: readonly string[] } {

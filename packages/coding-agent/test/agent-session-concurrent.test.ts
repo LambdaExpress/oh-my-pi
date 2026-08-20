@@ -223,9 +223,16 @@ describe("AgentSession concurrent prompt guard", () => {
 
 		const firstPrompt = session.prompt("First message");
 		await waitFor(() => session.isStreaming);
+		const steerBatchSpy = vi.spyOn(session.agent, "steerBatch");
 
 		try {
 			await session.sendUserMessage("ultrathink fix via extension");
+			expect(steerBatchSpy).toHaveBeenCalledTimes(1);
+			expect(
+				steerBatchSpy.mock.calls[0]![0].map(message =>
+					message.role === "custom" ? message.customType : message.role,
+				),
+			).toEqual(["ultrathink-notice", "user"]);
 			const queuedShape = session.agent
 				.peekSteeringQueue()
 				.map(message => (message.role === "custom" ? message.customType : message.role));

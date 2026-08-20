@@ -942,6 +942,15 @@ export class EventController {
 			this.#activeCompletedRun = { lifecycleVersion: 1, messages: [], startedAtMs: Date.now() };
 		} else if (this.#activeCompletedRun) {
 			this.#activeCompletedRun.lifecycleVersion++;
+			// A user can interrupt a run, leave it idle long enough for the old
+			// scrollback gate to be finalized, then submit the correction. Preserve
+			// the original collapse anchor but install a fresh live gate for the
+			// resumed lifecycle so its changing tail cannot commit prematurely.
+			if (this.#activeCompletedRun.gate?.isTranscriptBlockFinalized()) {
+				const gate = new CompletedRunGate();
+				this.#activeCompletedRun.gate = gate;
+				this.ctx.chatContainer.addChild(gate);
+			}
 		}
 		this.#clearApprovalPreviewGates();
 		this.#toolTimelineComponents.clear();
@@ -2074,14 +2083,18 @@ export class EventController {
 			await this.#finishAgentEnd(event);
 			return;
 		}
-		// A user interrupt can settle before its queued correction emits the next
-		// agent_start. Keep the original span/gate so that continuation still collapses
-		// from the initial request; an interrupt with no queued user work finalizes below.
+		// A user interrupt can settle before its correction is queued. Keep the
+		// original span anchor so a later lifecycle still collapses from the initial
+		// request; only the idle scrollback gate is finalized below.
+		const isUserInterruptedRun = finalAssistant?.stopReason === "aborted" && isUserInterruptAbort(finalAssistant);
 		const continuesInterruptedRun =
-			(finalAssistant?.stopReason === "aborted" &&
-				isUserInterruptAbort(finalAssistant) &&
-				this.ctx.session.queuedUserMessageCount > 0) ||
-			(finalAssistant !== undefined && isContinuableStreamInterruption(finalAssistant));
+			isUserInterruptedRun || (finalAssistant !== undefined && isContinuableStreamInterruption(finalAssistant));
+		// With no correction already queued, the run may remain idle indefinitely.
+		// Finalize the old zero-row gate so stable rows can enter native scrollback;
+		// #handleAgentStart installs a new gate while retaining this run's anchor.
+		if (isUserInterruptedRun && this.ctx.session.queuedUserMessageCount === 0) {
+			activeRun?.gate?.finalize();
+		}
 		const collapse = continuesInterruptedRun ? undefined : this.#takeCompletedRunCollapse(finalAssistant);
 		await this.#finishAgentEnd(event);
 		if (!collapse) {

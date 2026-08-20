@@ -601,9 +601,14 @@ describe("InputController keybinding setup", () => {
 
 	it("empty Enter aborts the active stream when queued messages are pending", async () => {
 		const { InputController, ctx, editor, spies } = await createContext();
-		const session = ctx.session as unknown as { isStreaming: boolean; queuedMessageCount: number };
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			queuedMessageCount: number;
+			hasRunnableQueuedMessages: boolean;
+		};
 		session.isStreaming = true;
 		session.queuedMessageCount = 1;
+		session.hasRunnableQueuedMessages = true;
 		const controller = new InputController(ctx);
 
 		controller.setupEditorSubmitHandler();

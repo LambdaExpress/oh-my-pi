@@ -164,6 +164,7 @@ function createContext(): {
 			isBashRunning: false,
 			isEvalRunning: false,
 			queuedMessageCount: 0,
+			hasRunnableQueuedMessages: false,
 			messages: [],
 			extensionRunner: undefined,
 			abort,
@@ -379,6 +380,9 @@ describe("InputController escape behavior", () => {
 
 		expect(order).toEqual(["collapse", "scrollback", "submit"]);
 		expect(spies.rebuildScrollbackIfDirty).toHaveBeenCalledTimes(1);
+		expect(spies.rebuildScrollbackIfDirty).toHaveBeenCalledWith({
+			includePendingDestructiveReplay: true,
+		});
 		// rebuildScrollbackIfDirty owns the one reset; InputController must not
 		// request a second replay for the same collapse.
 		expect(spies.resetDisplay).not.toHaveBeenCalled();
@@ -401,8 +405,14 @@ describe("InputController escape behavior", () => {
 
 	it("empty-submit with a queued message aborts the active stream and refreshes pending display", async () => {
 		const { ctx, editor, spies } = createContext();
-		(ctx.session as { isStreaming: boolean; queuedMessageCount: number }).isStreaming = true;
-		(ctx.session as { isStreaming: boolean; queuedMessageCount: number }).queuedMessageCount = 1;
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			queuedMessageCount: number;
+			hasRunnableQueuedMessages: boolean;
+		};
+		session.isStreaming = true;
+		session.queuedMessageCount = 1;
+		session.hasRunnableQueuedMessages = true;
 		const order: string[] = [];
 		spies.abort.mockImplementation(async () => {
 			order.push("abort");
@@ -421,6 +431,26 @@ describe("InputController escape behavior", () => {
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
 		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
 		expect(spies.requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not abort on empty submit while the visible vision-backed steer is still preparing", async () => {
+		const { ctx, editor, spies } = createContext();
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			queuedMessageCount: number;
+			hasRunnableQueuedMessages: boolean;
+		};
+		session.isStreaming = true;
+		session.queuedMessageCount = 1;
+		session.hasRunnableQueuedMessages = false;
+		const controller = new InputController(ctx);
+
+		controller.setupEditorSubmitHandler();
+		await editor.onSubmit?.("");
+
+		expect(spies.abort).not.toHaveBeenCalled();
+		expect(spies.updatePendingMessagesDisplay).not.toHaveBeenCalled();
+		expect(spies.requestRender).not.toHaveBeenCalled();
 	});
 	it("runs /btw as a builtin side request instead of steering the active stream", async () => {
 		const { ctx, editor, spies } = createContext();

@@ -389,6 +389,9 @@ export class Agent {
 	#transformProviderContext?: (context: Context, model: Model) => Context | Promise<Context>;
 	#steeringQueue: AgentMessage[] = [];
 	#followUpQueue: AgentMessage[] = [];
+	/** Messages enqueued together must remain one delivery unit even when the
+	 * queue policy otherwise consumes one user submission per turn. */
+	#queuedMessageBatch = new WeakMap<AgentMessage, AgentMessage>();
 	#steeringWaiters = new Set<() => void>();
 
 	#steeringMode: "all" | "one-at-a-time";
@@ -991,7 +994,21 @@ export class Agent {
 	 * Delivered after current tool execution, skips remaining tools.
 	 */
 	steer(m: AgentMessage) {
+		this.#queuedMessageBatch.delete(m);
 		this.#steeringQueue.push(m);
+		this.#notifySteeringWaiters();
+	}
+
+	/** Queue hidden companions and their user steer as one interruption unit. */
+	steerBatch(messages: readonly AgentMessage[]) {
+		if (messages.length === 0) return;
+		if (messages.length === 1) {
+			this.steer(messages[0]!);
+			return;
+		}
+		const batch = messages[0]!;
+		for (const message of messages) this.#queuedMessageBatch.set(message, batch);
+		this.#steeringQueue.push(...messages);
 		this.#notifySteeringWaiters();
 	}
 
@@ -1000,7 +1017,20 @@ export class Agent {
 	 * Delivered only when agent has no more tool calls or steering messages.
 	 */
 	followUp(m: AgentMessage) {
+		this.#queuedMessageBatch.delete(m);
 		this.#followUpQueue.push(m);
+	}
+
+	/** Queue hidden companions and their user follow-up as one delivery unit. */
+	followUpBatch(messages: readonly AgentMessage[]) {
+		if (messages.length === 0) return;
+		if (messages.length === 1) {
+			this.followUp(messages[0]!);
+			return;
+		}
+		const batch = messages[0]!;
+		for (const message of messages) this.#queuedMessageBatch.set(message, batch);
+		this.#followUpQueue.push(...messages);
 	}
 
 	clearSteeringQueue() {
@@ -1054,8 +1084,12 @@ export class Agent {
 		if (this.#steeringMode === "one-at-a-time") {
 			if (this.#steeringQueue.length > 0) {
 				const first = this.#steeringQueue[0];
-				this.#steeringQueue = this.#steeringQueue.slice(1);
-				return [first];
+				const batch = this.#queuedMessageBatch.get(first!);
+				let count = 1;
+				while (batch && this.#queuedMessageBatch.get(this.#steeringQueue[count]!) === batch) count++;
+				const messages = this.#steeringQueue.slice(0, count);
+				this.#steeringQueue = this.#steeringQueue.slice(count);
+				return messages;
 			}
 			return [];
 		}
@@ -1068,8 +1102,12 @@ export class Agent {
 		if (this.#followUpMode === "one-at-a-time") {
 			if (this.#followUpQueue.length > 0) {
 				const first = this.#followUpQueue[0];
-				this.#followUpQueue = this.#followUpQueue.slice(1);
-				return [first];
+				const batch = this.#queuedMessageBatch.get(first!);
+				let count = 1;
+				while (batch && this.#queuedMessageBatch.get(this.#followUpQueue[count]!) === batch) count++;
+				const messages = this.#followUpQueue.slice(0, count);
+				this.#followUpQueue = this.#followUpQueue.slice(count);
+				return messages;
 			}
 			return [];
 		}

@@ -676,7 +676,7 @@ export class InputController {
 			// Empty submit while streaming with queued messages: abort the active
 			// turn and let the post-unwind drain deliver the agent-core queue.
 			if (!text && !hasPendingImages && this.ctx.session.isStreaming) {
-				if (this.ctx.session.queuedMessageCount > 0) {
+				if (this.ctx.session.hasRunnableQueuedMessages) {
 					const aborting = this.ctx.session.abort({
 						reason: USER_INTERRUPT_LABEL,
 						// Carry the force-flush semantics explicitly: the queued
@@ -946,7 +946,9 @@ export class InputController {
 			// checkpoint that proves the host viewport is back at the bottom,
 			// so flush the pending rebuild after the component tree has converged
 			// to its final collapsed form and before the new message paints.
-			const scrollbackRebuilt = this.ctx.ui.rebuildScrollbackIfDirty();
+			const scrollbackRebuilt = this.ctx.ui.rebuildScrollbackIfDirty({
+				includePendingDestructiveReplay: true,
+			});
 			if (completedRunsCollapsed && !scrollbackRebuilt) this.ctx.ui.resetDisplay();
 
 			const displayText = this.ctx.session.previewPromptExpansion(text);
@@ -1048,7 +1050,7 @@ export class InputController {
 		const imageLinks =
 			images && this.ctx.editor.pendingImageLinks.length > 0 ? [...this.ctx.editor.pendingImageLinks] : undefined;
 		if (!text && !images) {
-			if (target.isStreaming && target.queuedMessageCount > 0) {
+			if (target.isStreaming && target.hasRunnableQueuedMessages) {
 				const aborting = target.abort({ reason: USER_INTERRUPT_LABEL });
 				await aborting;
 				this.ctx.updatePendingMessagesDisplay();

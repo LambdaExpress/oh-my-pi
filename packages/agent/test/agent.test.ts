@@ -171,6 +171,94 @@ describe("Agent", () => {
 		expect(skippedContent.text).not.toContain("pending system advisory");
 	});
 
+	it("delivers a hidden companion and its user steer in one one-at-a-time interruption", async () => {
+		const toolSchema = type({ value: type("string") });
+		let agent: Agent;
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			concurrency: "exclusive",
+			async execute() {
+				agent.steerBatch([
+					{
+						role: "custom",
+						customType: "orchestrate-notice",
+						content: "orchestrate guidance",
+						display: false,
+						attribution: "user",
+						timestamp: Date.now(),
+					},
+					{
+						role: "user",
+						content: "orchestrate this task",
+						steering: true,
+						attribution: "user",
+						timestamp: Date.now(),
+					},
+				]);
+				return { content: [{ type: "text", text: "ok" }] };
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } }] },
+				{ content: ["done"] },
+			],
+		});
+		agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+			streamFn: mock.stream,
+			steeringMode: "one-at-a-time",
+			interruptMode: "immediate",
+		});
+
+		await agent.prompt("start");
+
+		expect(mock.calls).toHaveLength(2);
+		const secondTurn = mock.calls[1]?.context.messages ?? [];
+		const secondTurnJson = JSON.stringify(secondTurn);
+		expect(secondTurnJson).toContain("orchestrate this task");
+		expect(
+			agent.state.messages.some(message => message.role === "custom" && message.customType === "orchestrate-notice"),
+		).toBe(true);
+	});
+
+	it("delivers a hidden companion and its follow-up in one one-at-a-time turn", async () => {
+		const mock = createMockModel({ responses: [{ content: ["first done"] }, { content: ["follow-up done"] }] });
+		const agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: mock.stream,
+			followUpMode: "one-at-a-time",
+		});
+		agent.followUpBatch([
+			{
+				role: "custom",
+				customType: "orchestrate-notice",
+				content: "orchestrate guidance",
+				display: false,
+				attribution: "user",
+				timestamp: Date.now(),
+			},
+			{
+				role: "user",
+				content: "orchestrate this next task",
+				attribution: "user",
+				timestamp: Date.now(),
+			},
+		]);
+
+		await agent.prompt("start");
+
+		expect(mock.calls).toHaveLength(2);
+		const secondTurnJson = JSON.stringify(mock.calls[1]?.context.messages ?? []);
+		expect(secondTurnJson).toContain("orchestrate this next task");
+		expect(
+			agent.state.messages.some(message => message.role === "custom" && message.customType === "orchestrate-notice"),
+		).toBe(true);
+	});
+
 	it("classifies one-at-a-time steering from the next queued mixed source", async () => {
 		const cases = [
 			{

@@ -172,12 +172,12 @@ describe("vision-backed queued message timing", () => {
 	it("shows the approved image message immediately and delivers its companion atomically in order", async () => {
 		const { visionStarted } = await createRunningSession();
 		const batchDelivered = Promise.withResolvers<void>();
-		const deliveredMessages: AgentMessage[] = [];
-		const originalSteer = session.agent.steer.bind(session.agent);
-		session.agent.steer = message => {
-			deliveredMessages.push(message);
-			originalSteer(message);
-			if (deliveredMessages.length === 3) batchDelivered.resolve();
+		const deliveredBatches: AgentMessage[][] = [];
+		const originalSteerBatch = session.agent.steerBatch.bind(session.agent);
+		session.agent.steerBatch = messages => {
+			deliveredBatches.push([...messages]);
+			originalSteerBatch(messages);
+			if (deliveredBatches.length === 2) batchDelivered.resolve();
 		};
 		let enqueueSettled = false;
 		const enqueue = session
@@ -192,6 +192,7 @@ describe("vision-backed queued message timing", () => {
 		expect(session.getQueuedMessages()).toEqual({ steering: ["queued image"], followUp: [] });
 		expect(session.queuedUserMessageCount).toBe(1);
 		expect(session.queuedMessageCount).toBe(1);
+		expect(session.hasRunnableQueuedMessages).toBe(false);
 		expect(session.agent.hasQueuedMessages()).toBe(false);
 		expect(renderPendingMessages(session)).toContain("1. queued image");
 
@@ -203,10 +204,9 @@ describe("vision-backed queued message timing", () => {
 		await enqueue;
 		await batchDelivered.promise;
 
-		expect(deliveredMessages.map(messageLabel)).toEqual([
-			"image-attachment-description",
-			"queued image",
-			"queued after image",
+		expect(deliveredBatches.map(batch => batch.map(messageLabel))).toEqual([
+			["image-attachment-description", "queued image"],
+			["queued after image"],
 		]);
 		expect(session.getQueuedMessages().steering).toEqual(["queued image", "queued after image"]);
 	});

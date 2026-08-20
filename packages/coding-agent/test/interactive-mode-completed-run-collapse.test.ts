@@ -324,6 +324,47 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(rendered).not.toContain("work before upstream disconnect");
 	});
 
+	it("recovers a manually interrupted tool run with its later completed correction", () => {
+		const initialA = { role: "user", content: "open the pull request", timestamp: 1 } as const;
+		const progressA = assistant(
+			[
+				{ type: "text", text: "merging the pull request" },
+				{ type: "toolCall", id: "tc", name: "pwsh", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const resultA = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "pwsh",
+			content: [{ type: "text", text: "merged" }],
+			timestamp: 3,
+		} as ToolResultMessage;
+		const interruptedA = assistant([], "aborted", 4);
+		interruptedA.errorMessage = USER_INTERRUPT_LABEL;
+		const initialB = { role: "user", content: "I said open it, not merge it", timestamp: 5 } as const;
+		const finalB = assistant([{ type: "text", text: "I will repair it" }], "stop", 6);
+		for (const message of [initialA, progressA, resultA, interruptedA, initialB, finalB]) {
+			session.sessionManager.appendMessage(message);
+		}
+
+		mode.renderInitialMessages({ recoverCompletedRuns: true });
+
+		let rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered.match(/※ collapsed:/g)).toHaveLength(1);
+		expect(rendered).toContain("open the pull request");
+		expect(rendered).toContain("I will repair it");
+		expect(rendered).not.toContain("merging the pull request");
+		expect(rendered).not.toContain("I said open it, not merge it");
+
+		mode.toggleCompletedRunCollapse();
+		rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("merging the pull request");
+		expect(rendered).toContain("I said open it, not merge it");
+		expect(rendered).not.toContain("※ collapsed:");
+	});
+
 	it("rebuilds from full persisted history after compaction while completed-run collapse is enabled", () => {
 		Settings.instance.set("display.collapseCompacted", true);
 		const buildTranscriptSessionContext = vi.spyOn(session, "buildTranscriptSessionContext");

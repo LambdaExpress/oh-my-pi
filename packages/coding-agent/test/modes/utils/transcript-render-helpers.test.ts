@@ -94,6 +94,41 @@ describe("completed-run collapse projection", () => {
 		]);
 	});
 
+	it("recovers a manually interrupted tool run with its later completed correction", () => {
+		const initial = { role: "user", content: "open the pull request", timestamp: 1 } as const;
+		const progress = assistant(
+			[
+				{ type: "text", text: "merging the pull request" },
+				{ type: "toolCall", id: "tc", name: "pwsh", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const result = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "pwsh",
+			content: [{ type: "text", text: "merged" }],
+			timestamp: 3,
+		} as AgentMessage;
+		const interrupted = assistant([], "aborted", 4);
+		interrupted.errorMessage = "Interrupted by user";
+		const correction = { role: "user", content: "I said open it, not merge it", timestamp: 5 } as const;
+		const final = assistant([{ type: "text", text: "I will repair it" }], "stop", 6);
+		const messages = [initial, progress, result, interrupted, correction, final] as AgentMessage[];
+
+		const collapses = deriveCompletedRunCollapses(messages, { includeLatest: true });
+
+		expect(collapses).toEqual([
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+			}),
+		]);
+		expect(deriveCompletedRunAnchor(messages)).toBeUndefined();
+	});
+
 	it("keeps the initial request across a persisted upstream stream interruption", () => {
 		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
 		const loop = assistant(
