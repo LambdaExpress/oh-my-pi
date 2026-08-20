@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { ImageProtocol, setTerminalImageProtocol, TERMINAL, TUI } from "@oh-my-pi/pi-tui";
+import { createProcessTerminalRenderHarness } from "./process-terminal-render-harness";
 import { VirtualTerminal } from "./virtual-terminal";
 
 type MutableTerminalInfo = {
@@ -71,6 +72,37 @@ describe("TUI SIXEL capability probe", () => {
 
 		expect(TERMINAL.imageProtocol).toBe(ImageProtocol.Sixel);
 		tui.stop();
+	});
+
+	it("enables SIXEL when ProcessTerminal consumes its DA1 sentinel reply", async () => {
+		if (process.platform !== "win32") return;
+		setTerminalImageProtocol(null);
+		terminalInfo.imageProtocol = null;
+		Bun.env.WT_SESSION = "test-wt-session";
+
+		const harness = createProcessTerminalRenderHarness();
+		try {
+			expect(harness.writes).not.toContain("\x1b[?2;1;0S");
+			await harness.feed("\x1b[?1;2;4c");
+			expect(TERMINAL.imageProtocol).toBe(ImageProtocol.Sixel);
+		} finally {
+			harness.dispose();
+		}
+	});
+
+	it("keeps SIXEL disabled when ProcessTerminal reports DA1 without attribute 4", async () => {
+		if (process.platform !== "win32") return;
+		setTerminalImageProtocol(null);
+		terminalInfo.imageProtocol = null;
+		Bun.env.WT_SESSION = "test-wt-session";
+
+		const harness = createProcessTerminalRenderHarness();
+		try {
+			await harness.feed("\x1b[?1;2c");
+			expect(TERMINAL.imageProtocol).toBeNull();
+		} finally {
+			harness.dispose();
+		}
 	});
 
 	it("enables SIXEL when DA reply arrives split across chunks", () => {

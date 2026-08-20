@@ -13,6 +13,8 @@
 
 ### Fixed
 
+- Fixed deferred non-destructive transcript refreshes lacking an input-checkpoint replay path, which left stale live rows in native scrollback after the rendered frame had intentionally collapsed them.
+- Fixed Windows Terminal inline images falling back to MIME placeholders when `ProcessTerminal` consumed the SIXEL-capable DA1 reply as an internal probe sentinel; the TUI now receives parsed SIXEL support directly from the terminal layer.
 - Fixed divergence rebuilds (`tui.scrollbackRebuild`) jumping the viewport to the top of the transcript on ConPTY hosts; their ED3 clear unconditionally moves the host viewport to the buffer top and a scrolled reader's position is host state no escape sequence can reset (issues #1635/#1746), so ConPTY hosts now defer the erase-and-replay to an input checkpoint (`TUI.rebuildScrollbackIfDirty()`, wired into prompt submit) where the viewport is provably at the bottom. POSIX hosts keep the eager rebuild.
 - Fixed destructive Windows/ConPTY resize replays permanently dropping history above 512 KiB; large paints now retain every row and disable synchronized output so existing bounded writes remain responsive.
 - Fixed virtualized roots being mistaken for semantic frame shrink after native-scrollback compaction; the commit, viewport, and cursor ledgers now rebase the exact removed ranges before divergence auditing.

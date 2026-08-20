@@ -482,6 +482,12 @@ export interface Terminal {
 	 * is unavailable — not that the private mode itself is unsupported.
 	 */
 	onPrivateModeReport?(callback: (mode: number, supported: boolean, confirmed?: boolean) => void): void;
+	/**
+	 * Register a callback for SIXEL support reported through DA1. ProcessTerminal
+	 * owns DA1 sentinel parsing, so renderers must subscribe here instead of
+	 * issuing a competing DA1 query whose response would be consumed internally.
+	 */
+	onSixelSupportReport?(callback: (supported: boolean) => void): void;
 }
 
 /**
@@ -615,6 +621,8 @@ export class ProcessTerminal implements Terminal {
 	/** Resolved DECRQM support per private mode (mode → supported). */
 	#privateModeSupport = new Map<number, boolean>();
 	#privateModeCallbacks: Array<(mode: number, supported: boolean, confirmed: boolean) => void> = [];
+	#sixelSupported: boolean | undefined;
+	#sixelSupportCallbacks: Array<(supported: boolean) => void> = [];
 	/** Whether DEC 2048 in-band resize notifications are currently enabled. */
 	#inBandResizeActive = false;
 	/** Reassembly buffer for a DEC 2048 in-band resize report split across stdin reads. */
@@ -704,6 +712,16 @@ export class ProcessTerminal implements Terminal {
 
 	onPrivateModeReport(callback: (mode: number, supported: boolean, confirmed?: boolean) => void): void {
 		this.#privateModeCallbacks.push(callback);
+	}
+
+	onSixelSupportReport(callback: (supported: boolean) => void): void {
+		this.#sixelSupportCallbacks.push(callback);
+		if (this.#sixelSupported === undefined) return;
+		try {
+			callback(this.#sixelSupported);
+		} catch {
+			/* ignore callback errors */
+		}
 	}
 
 	start(onInput: (data: string) => void, onResize: () => void, onDisconnect?: () => void): void {
@@ -1105,6 +1123,7 @@ export class ProcessTerminal implements Terminal {
 			// outstanding sentinel — a reply that arrives after the FIFO drains (slow
 			// SSH/PTY links) must never reach the composer as literal text (#8542).
 			if (da1ResponsePattern.test(sequence)) {
+				this.#reportSixelSupport(sequence);
 				const owner = this.#da1SentinelOwners.shift();
 				if (!owner) {
 					// Late/unowned reply: nothing to resolve, just drop the bytes.
@@ -1264,6 +1283,22 @@ export class ProcessTerminal implements Terminal {
 			this.#logPostEscapeInput(data);
 			this.#stdinBuffer!.process(data);
 		};
+	}
+
+	#reportSixelSupport(sequence: string): void {
+		const supported = sequence
+			.slice(3, -1)
+			.split(";")
+			.some(value => Number.parseInt(value, 10) === 4);
+		if (this.#sixelSupported === supported) return;
+		this.#sixelSupported = supported;
+		for (const callback of this.#sixelSupportCallbacks) {
+			try {
+				callback(supported);
+			} catch {
+				/* ignore callback errors */
+			}
+		}
 	}
 
 	/**
@@ -1664,6 +1699,8 @@ export class ProcessTerminal implements Terminal {
 		this.#da1SentinelOwners.length = 0;
 		this.#privateModeCallbacks = [];
 		this.#privateModeSupport.clear();
+		this.#sixelSupportCallbacks = [];
+		this.#sixelSupported = undefined;
 		this.#xtermScrollToBottomRestoreModes.clear();
 		this.#reportedColumns = undefined;
 		this.#reportedRows = undefined;

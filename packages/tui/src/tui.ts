@@ -2163,6 +2163,8 @@ export class TUI extends Container {
 			if (synchronizedOutputUserOverride() !== null) return;
 			this.#setSynchronizedOutput(supported);
 		});
+		const terminalReportsSixelSupport = this.terminal.onSixelSupportReport !== undefined;
+		this.terminal.onSixelSupportReport?.(supported => this.#enableSixel(supported));
 		this.terminal.start(
 			data => this.#handleInput(data),
 			() => {
@@ -2241,7 +2243,7 @@ export class TUI extends Container {
 		}
 		this.terminal.hideCursor();
 		this.#recordHardwareCursorHidden();
-		this.#querySixelSupport();
+		if (!terminalReportsSixelSupport) this.#querySixelSupport();
 		this.#queryCellSize();
 		this.requestRender(true, { clearScrollback: options?.clearScrollback === true });
 	}
@@ -2385,6 +2387,10 @@ export class TUI extends Container {
 
 	#finishSixelProbe(supported: boolean): void {
 		this.#clearSixelProbeState();
+		this.#enableSixel(supported);
+	}
+
+	#enableSixel(supported: boolean): void {
 		if (!supported || TERMINAL.imageProtocol) return;
 
 		setTerminalImageProtocol(ImageProtocol.Sixel);
@@ -2523,10 +2529,18 @@ export class TUI extends Container {
 	 * an input checkpoint — prompt submit, an explicit reset, or any other
 	 * moment where the host viewport is provably at the bottom — because ED3
 	 * strands a scrolled reader at the buffer top and no escape sequence can
-	 * re-anchor it. No-op when there is nothing pending.
+	 * re-anchor it. Callers that explicitly own a deferred non-destructive
+	 * refresh (for example, completed-run collapse) can opt into consuming that
+	 * marker too; ordinary callers retain the original scrollback-only contract.
+	 * No-op when there is nothing pending.
 	 */
-	rebuildScrollbackIfDirty(): boolean {
-		if (this.#stopped || !this.#pendingScrollbackRebuild) return false;
+	rebuildScrollbackIfDirty(options?: { includePendingDestructiveReplay?: boolean }): boolean {
+		const includePendingDestructiveReplay = options?.includePendingDestructiveReplay === true;
+		if (
+			this.#stopped ||
+			(!this.#pendingScrollbackRebuild && !(includePendingDestructiveReplay && this.#pendingDestructiveReplay))
+		)
+			return false;
 		this.#pendingScrollbackRebuild = false;
 		this.resetDisplay();
 		return true;

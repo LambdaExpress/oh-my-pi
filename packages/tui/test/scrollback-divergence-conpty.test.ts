@@ -141,6 +141,42 @@ describe("scrollback divergence rebuild defers on ConPTY hosts", () => {
 		}
 	});
 
+	it("flushes a deferred non-destructive refresh at the input checkpoint", async () => {
+		Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+		const term = new VirtualTerminal(80, 5);
+		const writes = capture(term);
+		const tui = new TUI(term);
+		const component = new MutableLinesComponent(rows("tail", 200));
+		tui.addChild(component);
+
+		try {
+			tui.start();
+			await settle(term);
+
+			// A completed-run toggle during a later stream uses refreshDisplay so it
+			// does not erase a reader's current Windows viewport. The refresh still
+			// needs a destructive replay once the next prompt puts the viewport at
+			// the bottom.
+			term.scrollLines(-3);
+			component.setLines(rows("tail", 160));
+			writes.length = 0;
+			tui.refreshDisplay("completed-run-toggle-during-stream");
+			await settle(term);
+			expect(writes.join("")).not.toContain("\x1b[3J");
+
+			writes.length = 0;
+			expect(tui.rebuildScrollbackIfDirty({ includePendingDestructiveReplay: true })).toBe(true);
+			await settle(term);
+			await settle(term);
+
+			expect(writes.join("")).toContain("\x1b[H\x1b[3J");
+			expect(term.isNativeViewportAtBottom()).toBe(true);
+			expect(term.getScrollBuffer().map(line => line.trimEnd())).toEqual(rows("tail", 160));
+		} finally {
+			tui.stop();
+		}
+	});
+
 	it("keeps the eager erase-and-replay on POSIX hosts", async () => {
 		Object.defineProperty(process, "platform", { value: "linux", configurable: true });
 		const term = new VirtualTerminal(80, 5);
