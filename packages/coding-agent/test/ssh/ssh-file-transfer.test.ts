@@ -192,6 +192,37 @@ describe("SSH file transfer core", () => {
 		expect((await fs.readdir(path.dirname(localPath))).filter(name => name.endsWith(".part"))).toEqual([]);
 	});
 
+	it("downloads into an existing parent when recursive mkdir reports EEXIST", async () => {
+		const payload = binaryPayload(1024);
+		const parent = path.join(testDir, "existing");
+		const localPath = path.join(parent, "download.bin");
+		await fs.mkdir(parent);
+		const mkdirError = Object.assign(new Error("recursive mkdir reported an existing directory"), {
+			code: "EEXIST",
+		});
+		vi.spyOn(fs, "mkdir").mockRejectedValue(mkdirError);
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockResolvedValue({ args: ["download"] });
+		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => createChild<In>({ stdout: [payload] }));
+
+		await expect(executeSshFileTransfer(downloadPlan(localPath, payload.byteLength))).resolves.toMatchObject({
+			transferredBytes: payload.byteLength,
+		});
+		expect(await fs.readFile(localPath)).toEqual(Buffer.from(payload));
+		expect((await fs.readdir(parent)).filter(name => name.endsWith(".part"))).toEqual([]);
+	});
+
+	it("preserves recursive mkdir EEXIST when the download parent is a file", async () => {
+		const parent = path.join(testDir, "not-a-directory");
+		const localPath = path.join(parent, "download.bin");
+		await fs.writeFile(parent, "file");
+		const mkdirError = Object.assign(new Error("recursive mkdir found a file"), { code: "EEXIST" });
+		vi.spyOn(fs, "mkdir").mockRejectedValue(mkdirError);
+		const spawn = vi.spyOn(ptree, "spawn");
+
+		await expect(executeSshFileTransfer(downloadPlan(localPath, 1))).rejects.toBe(mkdirError);
+		expect(spawn).not.toHaveBeenCalled();
+	});
+
 	it("rejects a zero-byte remote sink write and cleans the stage", async () => {
 		const localPath = path.join(testDir, "upload.bin");
 		await fs.writeFile(localPath, new Uint8Array([1, 2, 3]));

@@ -9,7 +9,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { commitStagedFileAtomic } from "@oh-my-pi/pi-natives";
-import { ptree } from "@oh-my-pi/pi-utils";
+import { isEexist, ptree } from "@oh-my-pi/pi-utils";
 import {
 	buildPowerShellCommand,
 	buildRemoteCommandInvocation,
@@ -1718,6 +1718,21 @@ async function executeUploadTransfer(
 	}
 }
 
+async function ensureDownloadParentDirectory(parent: string): Promise<void> {
+	try {
+		await fs.mkdir(parent, { recursive: true });
+		return;
+	} catch (error) {
+		if (!isEexist(error)) throw error;
+		try {
+			if ((await fs.stat(parent)).isDirectory()) return;
+		} catch {
+			// Preserve mkdir's original EEXIST when the parent cannot be verified.
+		}
+		throw error;
+	}
+}
+
 async function executeDownloadTransfer(
 	plan: SshFileTransferPlan,
 	mode: RemoteTransferMode,
@@ -1725,7 +1740,7 @@ async function executeDownloadTransfer(
 	signal?: AbortSignal,
 ): Promise<void> {
 	const parent = path.dirname(plan.localPath);
-	await fs.mkdir(parent, { recursive: true });
+	await ensureDownloadParentDirectory(parent);
 	const stagePath = path.join(parent, `.omp-transfer-${crypto.randomUUID()}.part`);
 	try {
 		await streamDownloadStage(plan, mode, stagePath, reporter, signal);
