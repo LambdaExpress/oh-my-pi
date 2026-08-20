@@ -341,27 +341,78 @@ function asElementHandle(handle: unknown): ElementHandle | null {
 /** ElementHandle enriched with the `fill()` the tool docs promise on handles from `tab.id()`/`tab.ref()`/`tab.waitFor()`. */
 export type ActionableHandle = ElementHandle & { fill(value: string): Promise<void> };
 
+/** Bind direct handle actions back to the tab operation supervisor that produced the handle. */
+export interface ActionableHandleContext {
+	readonly source: string;
+	run<T>(label: string, action: (signal: AbortSignal) => Promise<T>): Promise<T>;
+}
+
+interface ActionableHandleState {
+	readonly click: ElementHandle["click"];
+	readonly type: ElementHandle["type"];
+	readonly evaluate: ElementHandle["evaluate"];
+	context: ActionableHandleContext | undefined;
+}
+
+const actionableHandleStates = new WeakMap<ElementHandle, ActionableHandleState>();
+
 /**
- * Attach `fill()` to a puppeteer ElementHandle before handing it to user code.
- * Puppeteer handles expose `type()` but no `fill()`; the semantics mirror the
+ * Attach supervised actions to a puppeteer ElementHandle before handing it to user
+ * code. Puppeteer handles expose `type()` but no `fill()`; the latter mirrors the
  * selector-based `tab.fill()`: focus, clear any existing value, then type.
  */
-export function toActionableHandle(handle: ElementHandle): ActionableHandle {
+export function toActionableHandle(handle: ElementHandle, context?: ActionableHandleContext): ActionableHandle {
 	const enriched = handle as ActionableHandle;
-	enriched.fill = value => fillViaHandle(enriched, value);
+	const existing = actionableHandleStates.get(handle);
+	if (existing) {
+		if (context) existing.context = context;
+		return enriched;
+	}
+
+	const state: ActionableHandleState = {
+		click: handle.click,
+		type: handle.type,
+		evaluate: handle.evaluate,
+		context,
+	};
+	actionableHandleStates.set(handle, state);
+
+	const run = <T>(method: string, action: (signal?: AbortSignal) => Promise<T>): Promise<T> => {
+		const current = state.context;
+		return current ? current.run(`${current.source}.${method}()`, signal => action(signal)) : action();
+	};
+
+	enriched.click = function (this: ElementHandle, ...args: Parameters<ElementHandle["click"]>) {
+		return run("click", signal =>
+			untilAborted(signal, () => Reflect.apply(state.click, this, args) as Promise<void>),
+		);
+	} as ElementHandle["click"];
+	enriched.type = function (this: ElementHandle, ...args: Parameters<ElementHandle["type"]>) {
+		return run("type", signal => untilAborted(signal, () => Reflect.apply(state.type, this, args) as Promise<void>));
+	} as ElementHandle["type"];
+	enriched.fill = function (this: ElementHandle, value: string) {
+		return run("fill", signal => fillViaHandle(this, value, signal));
+	};
 	return enriched;
 }
 
 /** Focus, clear any existing value, then retype — shared by `tab.fill(aria-ref)` and enriched handles. */
 async function fillViaHandle(handle: ElementHandle, value: string, signal?: AbortSignal): Promise<void> {
-	await untilAborted(signal, () =>
-		handle.evaluate(el => {
-			const node = el as unknown as { value?: string; focus?: () => void };
-			node.focus?.();
-			if ("value" in node) node.value = "";
-		}),
+	const state = actionableHandleStates.get(handle);
+	const evaluate = state?.evaluate ?? handle.evaluate;
+	const type = state?.type ?? handle.type;
+	await untilAborted(
+		signal,
+		() =>
+			Reflect.apply(evaluate, handle, [
+				(el: unknown) => {
+					const node = el as { value?: string; focus?: () => void };
+					node.focus?.();
+					if ("value" in node) node.value = "";
+				},
+			]) as Promise<unknown>,
 	);
-	await untilAborted(signal, () => handle.type(value, { delay: 0 }));
+	await untilAborted(signal, () => Reflect.apply(type, handle, [value, { delay: 0 }]) as Promise<void>);
 }
 
 /**
@@ -1437,6 +1488,11 @@ export class WorkerCore {
 			fn: (sig: AbortSignal) => Promise<T>,
 			selectorOpts?: { selector?: string; zeroMatchAfterMs?: number },
 		): Promise<T> => markHandled(this.#runOp(active, label, signal, perOpMs, fn, selectorOpts));
+		const actionableHandle = (handle: ElementHandle, source: string): ActionableHandle =>
+			toActionableHandle(handle, {
+				source,
+				run: (label, action) => op(label, actionOpMs, action),
+			});
 		return {
 			name,
 			page,
@@ -1584,7 +1640,11 @@ export class WorkerCore {
 				return op(
 					`tab.waitFor(${JSON.stringify(selector)})`,
 					w,
-					async sig => toActionableHandle(await this.#resolveActionHandle(selector, w, sig)),
+					async sig =>
+						actionableHandle(
+							await this.#resolveActionHandle(selector, w, sig),
+							`tab.waitFor(${JSON.stringify(selector)})`,
+						),
 					{ selector, zeroMatchAfterMs: opts?.timeout === undefined ? ZERO_MATCH_FAIL_FAST_MS : undefined },
 				);
 			},
@@ -1675,8 +1735,8 @@ export class WorkerCore {
 				const w = waitMs(opts?.timeout);
 				return op("tab.waitForResponse()", w, sig => this.#waitForResponse(pattern, w, sig));
 			},
-			id: async id => toActionableHandle(await this.#resolveCachedHandle(id)),
-			ref: async id => toActionableHandle(await this.#resolveAriaRef(id)),
+			id: async id => actionableHandle(await this.#resolveCachedHandle(id), `tab.id(${id})`),
+			ref: async id => actionableHandle(await this.#resolveAriaRef(id), `tab.ref(${JSON.stringify(id)})`),
 		};
 	}
 

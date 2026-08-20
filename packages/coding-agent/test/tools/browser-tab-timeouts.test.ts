@@ -1,11 +1,102 @@
 import { describe, expect, it, vi } from "bun:test";
+import type { Transport, WorkerInbound, WorkerOutbound } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-protocol";
 import {
 	dispatchScroll,
 	normalizeSelector,
 	resolveOpTimeouts,
 	resolveWaitTimeout,
+	WorkerCore,
 } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-worker";
 import { resolvePredicateTimeout } from "@oh-my-pi/pi-coding-agent/tools/run-scope";
+import type { ElementHandle } from "puppeteer-core";
+
+class HandleWorkerTransport implements Transport {
+	#handler?: (message: WorkerInbound | WorkerOutbound) => void;
+	readonly ready = Promise.withResolvers<void>();
+	readonly result = Promise.withResolvers<Extract<WorkerOutbound, { type: "result" }>>();
+
+	send(message: WorkerInbound | WorkerOutbound): void {
+		if (message.type === "ready") this.ready.resolve();
+		if (message.type === "result") this.result.resolve(message);
+	}
+
+	onMessage(handler: (message: WorkerInbound | WorkerOutbound) => void): () => void {
+		this.#handler = handler;
+		return () => {
+			if (this.#handler === handler) this.#handler = undefined;
+		};
+	}
+
+	close(): void {}
+
+	deliver(message: WorkerInbound): void {
+		this.#handler?.(message);
+	}
+}
+
+async function createHandleWorker(handle: ElementHandle): Promise<HandleWorkerTransport> {
+	let page: Record<string, unknown>;
+	const target = {
+		_targetId: "target-handle-timeout",
+		page: async () => page,
+	};
+	const locator = {
+		setTimeout: () => locator,
+		waitHandle: async () => handle,
+	};
+	page = {
+		target: () => target,
+		url: () => "data:text/html,handle-timeout",
+		title: async () => "Handle timeout fixture",
+		viewport: () => ({ width: 390, height: 844, deviceScaleFactor: 1 }),
+		isClosed: () => false,
+		on() {},
+		once() {},
+		off() {},
+		removeAllListeners() {},
+		mainFrame: () => undefined,
+		setRequestInterception: async () => {},
+		evaluateHandle: async () => ({ asElement: () => handle, dispose: async () => {} }),
+		locator: () => locator,
+	};
+	const browser = {
+		targets: () => [target],
+		connected: true,
+		disconnect() {},
+	};
+	const transport = new HandleWorkerTransport();
+	const core = new WorkerCore(transport, false, async () => ({ connect: async () => browser }) as never);
+	transport.deliver({
+		type: "init",
+		payload: {
+			mode: "attach",
+			browserWSEndpoint: "ws://127.0.0.1/devtools/browser/test",
+			safeDir: "/tmp/omp-puppeteer",
+			targetId: "target-handle-timeout",
+			timeoutMs: 1_000,
+		},
+	});
+	await transport.ready.promise;
+	core.cacheElement(82, handle);
+	return transport;
+}
+
+async function runHandleCode(
+	handle: ElementHandle,
+	code: string,
+	timeoutMs: number,
+): Promise<Extract<WorkerOutbound, { type: "result" }>> {
+	const transport = await createHandleWorker(handle);
+	transport.deliver({
+		type: "run",
+		id: "run-handle-timeout",
+		name: "handle-timeout",
+		code,
+		timeoutMs,
+		session: { cwd: process.cwd() },
+	});
+	return await transport.result.promise;
+}
 
 // Regression coverage for the "weird timeouts" failure mode: interactive `tab.*` helpers
 // used to run with the full cell budget as their internal puppeteer timeout, so a stalled
@@ -40,6 +131,106 @@ describe("browser per-op fail-fast ceilings", () => {
 		expect(actionOpMs).toBeGreaterThanOrEqual(1);
 		expect(quickOpMs).toBeGreaterThanOrEqual(1);
 		expect(actionOpMs).toBeLessThanOrEqual(budgetBound);
+	});
+});
+
+describe("browser direct handle action deadlines", () => {
+	it("attributes never-settling click/type/fill actions to the handle source before the cell deadline", async () => {
+		const stalled = Promise.withResolvers<void>();
+		const node = { isConnected: true, value: "old", focus() {} };
+		const handle = {
+			click: () => stalled.promise,
+			type: () => stalled.promise,
+			evaluate: async (fn: (element: typeof node) => unknown) => fn(node),
+			dispose: async () => {},
+		} as unknown as ElementHandle;
+		const result = await runHandleCode(
+			handle,
+			`const messages = [];
+			for (const [getHandle, action] of [
+				[() => tab.id(82), handle => handle.click()],
+				[() => tab.ref("e5"), handle => handle.type("text")],
+				[() => tab.waitFor("#button"), handle => handle.fill("text")],
+			]) {
+				try { await action(await getHandle()); }
+				catch (error) { messages.push(error.message); }
+			}
+			return messages;`,
+			100,
+		);
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error(result.error.message);
+		expect(result.payload.returnValue).toEqual([
+			"tab.id(82).click() timed out after 1ms",
+			'tab.ref("e5").type() timed out after 1ms',
+			'tab.waitFor("#button").fill() timed out after 1ms',
+		]);
+	});
+
+	it("removes a caught handle action from active in-flight diagnostics", async () => {
+		const stalled = Promise.withResolvers<void>();
+		const node = { isConnected: true };
+		const handle = {
+			click: () => stalled.promise,
+			type: async () => {},
+			evaluate: async (fn: (element: typeof node) => unknown) => fn(node),
+			dispose: async () => {},
+		} as unknown as ElementHandle;
+		const result = await runHandleCode(
+			handle,
+			`try { await (await tab.id(82)).click(); } catch {}
+			await wait(10_000);`,
+			50,
+		);
+
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("Expected the cell wait to time out");
+		expect(result.error.message).toContain("stalled on wait(10000ms)");
+		expect(result.error.message).not.toContain("tab.id(82).click()");
+	});
+
+	it("preserves successful click/type/fill arguments and receiver semantics without false timeouts", async () => {
+		const calls: Array<{ method: string; thisOk: boolean; args: unknown[] }> = [];
+		const node = {
+			isConnected: true,
+			value: "old",
+			focused: false,
+			focus() {
+				this.focused = true;
+			},
+		};
+		let handle: ElementHandle;
+		handle = {
+			click: async function (this: ElementHandle, ...args: unknown[]) {
+				calls.push({ method: "click", thisOk: this === handle, args });
+			},
+			type: async function (this: ElementHandle, ...args: unknown[]) {
+				calls.push({ method: "type", thisOk: this === handle, args });
+				if (typeof args[0] === "string") node.value += args[0];
+			},
+			evaluate: async (fn: (element: typeof node) => unknown) => fn(node),
+			dispose: async () => {},
+		} as unknown as ElementHandle;
+		const result = await runHandleCode(
+			handle,
+			`await (await tab.id(82)).click({ button: "right", clickCount: 2 });
+			await (await tab.ref("e5")).type("abc", { delay: 7 });
+			await (await tab.waitFor("#button")).fill("fresh");
+			return "done";`,
+			1_100,
+		);
+
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error(result.error.message);
+		expect(result.payload.returnValue).toBe("done");
+		expect(calls).toEqual([
+			{ method: "click", thisOk: true, args: [{ button: "right", clickCount: 2 }] },
+			{ method: "type", thisOk: true, args: ["abc", { delay: 7 }] },
+			{ method: "type", thisOk: true, args: ["fresh", { delay: 0 }] },
+		]);
+		expect(node.focused).toBe(true);
+		expect(node.value).toBe("fresh");
 	});
 });
 
