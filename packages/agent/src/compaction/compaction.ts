@@ -1483,6 +1483,7 @@ export async function compact(
 		preferWebsockets: options?.preferWebsockets,
 		codexCompaction: options?.codexCompaction,
 		tools: options?.tools,
+		forceLocal: options?.forceLocal,
 		fetch: options?.fetch,
 		completeImpl: options?.completeImpl,
 	};

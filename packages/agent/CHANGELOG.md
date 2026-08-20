@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- Fixed one-at-a-time steering and follow-up queues splitting hidden companion messages from their user submission into separate model turns; callers can now enqueue each submission as one atomic batch.
+- Fixed local-summary fallback after provider-native compaction failures re-entering the same failed V2/V1 endpoints because `compact()` dropped `forceLocal` while normalizing summary options.
 - Exposed a shared structural predicate for replay-safe upstream stream interruptions, including wrapped refusal and sensitive-stop exclusions, so persisted session recovery and live transcript lifecycle handling use the same boundary semantics.
 - Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.
 - Fixed tool abort settlement so each tool can declare a bounded cleanup window before the agent synthesizes an interrupted result.

@@ -1772,6 +1772,34 @@ describe("compact() remote compaction failure handling", () => {
 		};
 	}
 
+	test("forceLocal skips every provider-native compaction endpoint", async () => {
+		const preparation = makePreparation();
+		preparation.settings = { ...preparation.settings, remoteStreamingV2Enabled: true };
+		const model = makeOpenAiModel({
+			remoteCompaction: { enabled: true, v2StreamingEnabled: true },
+		});
+		const requestedUrls: string[] = [];
+		const summaries = ["local history summary", "local short summary"];
+		let completionIndex = 0;
+
+		const result = await compact(preparation, model, "test-key", undefined, undefined, {
+			forceLocal: true,
+			fetch: async input => {
+				requestedUrls.push(String(input));
+				return new Response("provider-native compaction must be skipped", {
+					status: 500,
+					statusText: "Internal Server Error",
+				});
+			},
+			completeImpl: async () => localSummaryMessage(summaries[completionIndex++] ?? "unexpected completion"),
+		});
+
+		expect(requestedUrls).toEqual([]);
+		expect(completionIndex).toBe(2);
+		expect(result.summary).toContain("local history summary");
+		expect(result.shortSummary).toBe("local short summary");
+	});
+
 	test("streams V2 compaction before V1 when both settings and model opt in", async () => {
 		const completeSpy = vi.spyOn(ai, "completeSimple").mockResolvedValue(localSummaryMessage("local summary"));
 		const compactionItem = { type: "compaction", encrypted_content: "enc_v2" };
