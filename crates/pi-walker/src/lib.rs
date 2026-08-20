@@ -3343,10 +3343,23 @@ where
 }
 
 fn is_skippable_directory_error(err: &io::Error) -> bool {
-	matches!(
+	if matches!(
 		err.kind(),
 		io::ErrorKind::NotFound | io::ErrorKind::NotADirectory | io::ErrorKind::PermissionDenied
-	)
+	) {
+		return true;
+	}
+
+	#[cfg(windows)]
+	{
+		// ERROR_SHARING_VIOLATION: another process may transiently hold a directory
+		// without permitting the walker to open its own handle.
+		err.raw_os_error() == Some(32)
+	}
+	#[cfg(not(windows))]
+	{
+		false
+	}
 }
 
 fn is_dot_entry(name: &OsStr) -> bool {
@@ -4245,7 +4258,7 @@ mod platform {
 #[cfg(test)]
 mod tests {
 	use std::{
-		fs,
+		fs, io,
 		path::PathBuf,
 		time::{Duration, SystemTime, UNIX_EPOCH},
 	};
@@ -4319,6 +4332,23 @@ mod tests {
 			same_file_system:  false,
 			cache:             false,
 		}
+	}
+
+	#[test]
+	fn common_skippable_directory_error_kinds_remain_skippable() {
+		for kind in
+			[io::ErrorKind::NotFound, io::ErrorKind::NotADirectory, io::ErrorKind::PermissionDenied]
+		{
+			assert!(is_skippable_directory_error(&io::Error::from(kind)));
+		}
+		assert!(!is_skippable_directory_error(&io::Error::other("unexpected directory error")));
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn windows_sharing_violation_is_skippable_but_lock_violation_is_not() {
+		assert!(is_skippable_directory_error(&io::Error::from_raw_os_error(32)));
+		assert!(!is_skippable_directory_error(&io::Error::from_raw_os_error(33)));
 	}
 
 	fn collect_file_paths(root: &Path, use_gitignore: bool) -> Vec<String> {
