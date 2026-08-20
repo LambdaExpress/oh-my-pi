@@ -1,7 +1,11 @@
-import { describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import type { SlashCommandRuntime } from "@oh-my-pi/pi-coding-agent/slash-commands/types";
 import type { DesktopCapabilities } from "@oh-my-pi/pi-natives";
+import { setLocale } from "../../src/i18n";
+
+beforeEach(() => setLocale("en"));
+afterEach(() => setLocale(null));
 
 const capabilities: DesktopCapabilities = {
 	backend: "quartz",

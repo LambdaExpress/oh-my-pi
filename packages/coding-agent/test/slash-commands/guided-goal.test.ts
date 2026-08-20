@@ -37,12 +37,12 @@ describe("/guided-goal slash command", () => {
 
 		// The command text must be gone before the turn resolves, so an answer
 		// typed while the first question streams is never wiped.
-		expect(harness.setText).toHaveBeenCalledWith("");
-		harness.setText.mockClear();
+		expect(harness.clearDraft).toHaveBeenCalledTimes(1);
+		harness.clearDraft.mockClear();
 
 		resolve(true);
 		expect(await dispatched).toBe(true);
-		expect(harness.setText).not.toHaveBeenCalled();
+		expect(harness.clearDraft).not.toHaveBeenCalled();
 		expect(harness.handleGuidedGoalCommand).toHaveBeenCalledWith("ship the release", input);
 	});
 

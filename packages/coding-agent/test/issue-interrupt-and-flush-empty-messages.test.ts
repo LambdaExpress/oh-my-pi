@@ -9,6 +9,7 @@ function createContext(options?: {
 	pendingImages?: ImageContent[];
 	pendingImageLinks?: (string | undefined)[];
 }) {
+	const queuedMessageCount = options?.queuedMessageCount ?? 1;
 	let editorText = "";
 	const abort = vi.fn(async () => {});
 	const prompt = vi.fn(async () => {});
@@ -37,7 +38,8 @@ function createContext(options?: {
 			isCompacting: false,
 			isBashRunning: false,
 			isEvalRunning: false,
-			queuedMessageCount: options?.queuedMessageCount ?? 1,
+			queuedMessageCount,
+			hasRunnableQueuedMessages: queuedMessageCount > 0,
 			extensionRunner: undefined,
 			abort,
 			prompt,
@@ -67,7 +69,7 @@ describe("empty submit with queued messages", () => {
 
 		await ctx.editor.onSubmit?.("");
 
-		expect(abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+		expect(abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
 		expect(prompt).not.toHaveBeenCalled();
 		expect(showError).not.toHaveBeenCalled();
 		expect(updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);

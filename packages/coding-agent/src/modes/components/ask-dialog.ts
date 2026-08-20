@@ -623,7 +623,13 @@ export class AskDialogComponent implements Component {
 			: `${t("Enter select")} · n ${t("note")}`;
 		const tabs = this.#hasSubmitTab() ? " · Tab/←/→" : "";
 		if (this.#questionCanPage && indicator) {
-			return `${action} · ↑/↓${tabs} · ${cancel} · ${pageKeysLabel()} ${indicator}`;
+			// A tall selected preview needs its paging keys to remain visible at
+			// 80 columns. Notes remain discoverable in the ordinary footer; omit
+			// that secondary action here rather than truncating PgUp/PgDn.
+			const pagedAction = question?.multi
+				? `${t("Space toggle")} · ${t("Enter {action}", { action: enterAction })}`
+				: t("Enter select");
+			return `${pagedAction} · ↑/↓${tabs} · ${cancel} · ${pageKeysLabel()} ${indicator}`;
 		}
 		const scroll = indicator ? ` ${indicator} ${t("scroll")} ·` : "";
 		return `${action} · ↑/↓ ${t("move")}${tabs} ·${scroll} ${cancel}`;

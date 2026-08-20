@@ -1,8 +1,17 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { KeybindingsManager as AppKeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import { getGithubRefContext, getGithubRefSuggestions } from "@oh-my-pi/pi-coding-agent/modes/github-ref-autocomplete";
 import { createPromptActionAutocompleteProvider } from "@oh-my-pi/pi-coding-agent/modes/prompt-action-autocomplete";
 import type { SlashCommand } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../../src/i18n";
+
+beforeAll(() => {
+	setLocale("en");
+});
+
+afterAll(() => {
+	setLocale(null);
+});
 
 function makeProvider(commands: SlashCommand[] = []) {
 	return createPromptActionAutocompleteProvider({

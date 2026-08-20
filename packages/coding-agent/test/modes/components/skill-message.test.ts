@@ -1,7 +1,8 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "../../../src/config/settings";
+import { setLocale } from "../../../src/i18n";
 import { SkillMessageComponent } from "../../../src/modes/components/skill-message";
 import { getThemeByName, setThemeInstance, type Theme } from "../../../src/modes/theme/theme";
 import type { CustomMessage, SkillPromptDetails } from "../../../src/session/messages";
@@ -24,11 +25,16 @@ describe("SkillMessageComponent", () => {
 	let uiTheme: Theme;
 
 	beforeAll(async () => {
+		setLocale("en");
 		await Settings.init({ inMemory: true });
 		const loaded = await getThemeByName("dark");
 		if (!loaded) throw new Error("theme unavailable");
 		uiTheme = loaded;
 		setThemeInstance(uiTheme);
+	});
+
+	afterAll(() => {
+		setLocale(null);
 	});
 
 	const skillPath = path.join(os.homedir(), ".agent/skills/atomic-commit/SKILL.md");

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
@@ -20,6 +20,7 @@ import {
 import { convertToLlm } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { postmortem, TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const pendingAssistant: AssistantMessage = {
 	role: "assistant",
@@ -51,7 +52,12 @@ describe("session exit diagnostics", () => {
 	let authStorage: AuthStorage | undefined;
 	let tempDir: TempDir | undefined;
 
+	beforeEach(() => {
+		setLocale("en");
+	});
+
 	afterEach(async () => {
+		setLocale(null);
 		await session?.dispose();
 		session = undefined;
 		authStorage?.close();

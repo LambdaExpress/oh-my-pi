@@ -1,8 +1,10 @@
 import * as fs from "node:fs/promises";
+import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { formatModelRoleAlias } from "../config/model-roles";
 import type { Settings } from "../config/settings";
 import { MCPManager } from "../mcp/manager";
+import { initializeExtensions } from "../modes/runtime-init";
 import type { PersistedSubagentReviverFactory } from "../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import { createAgentSession } from "../sdk";
@@ -164,6 +166,12 @@ export function createPersistedSubagentReviverFactory(
 			// recorded capability remains top-level and ambient devices are dropped.
 			// Unknown/missing names are ignored by the session tool registry.
 			await session.setActiveToolPresentation(init.tools, persistedMountedXdevTools);
+			// Wire the extension runtime exactly as the live executor does. Without
+			// this the runner stays pre-init and fail-closed hooks can block every tool.
+			await initializeExtensions(session, {
+				reportSendError: (action, err) => logger.error("Extension send failed", { action, error: err.message }),
+				reportRuntimeError: err => logger.error("Extension error", { path: err.extensionPath, error: err.error }),
+			});
 			// Cold revives must drive registry status themselves — createAgentSession
 			// doesn't wire this generically (the live path does it in the executor).
 			// The internal run-state signal precedes deferrable public `agent_end`,

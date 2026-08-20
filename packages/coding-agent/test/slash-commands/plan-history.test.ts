@@ -12,10 +12,23 @@ import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-comm
 function createPlanHarness(opts: { planModeEnabled: boolean; confirmExit: boolean }) {
 	const state = { planModeEnabled: opts.planModeEnabled };
 	const addToHistory = mock((_text: string) => {});
-	const clearDraft = mock((_historyText?: string) => {});
+	let editorText = "";
+	const clearDraft = mock((_historyText?: string) => {
+		editorText = "";
+	});
 
 	const ctx = {
-		editor: { addToHistory, clearDraft } as unknown as InteractiveModeContext["editor"],
+		editor: {
+			addToHistory,
+			clearDraft,
+			getText: () => editorText,
+			setText: (text: string) => {
+				editorText = text;
+			},
+			pendingImages: [],
+			pendingImageLinks: [],
+			imageLinks: undefined,
+		} as unknown as InteractiveModeContext["editor"],
 		get planModeEnabled() {
 			return state.planModeEnabled;
 		},
@@ -40,10 +53,23 @@ function createPlanHarness(opts: { planModeEnabled: boolean; confirmExit: boolea
 function createGoalHarness(opts: { goalModeEnabled: boolean; dropOnCall: boolean }) {
 	const state = { goalModeEnabled: opts.goalModeEnabled };
 	const addToHistory = mock((_text: string) => {});
-	const clearDraft = mock((_historyText?: string) => {});
+	let editorText = "";
+	const clearDraft = mock((_historyText?: string) => {
+		editorText = "";
+	});
 
 	const ctx = {
-		editor: { addToHistory, clearDraft } as unknown as InteractiveModeContext["editor"],
+		editor: {
+			addToHistory,
+			clearDraft,
+			getText: () => editorText,
+			setText: (text: string) => {
+				editorText = text;
+			},
+			pendingImages: [],
+			pendingImageLinks: [],
+			imageLinks: undefined,
+		} as unknown as InteractiveModeContext["editor"],
 		get goalModeEnabled() {
 			return state.goalModeEnabled;
 		},

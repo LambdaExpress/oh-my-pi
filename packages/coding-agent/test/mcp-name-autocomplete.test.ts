@@ -16,6 +16,7 @@ import {
 	setAgentDir,
 	setProjectDir,
 } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const originalProjectDir = getProjectDir();
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -57,6 +58,7 @@ describe("MCP server-name autocomplete", () => {
 	let agentDir = "";
 
 	beforeEach(async () => {
+		setLocale("en");
 		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-autocomplete-project-"));
 		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-mcp-autocomplete-agent-"));
 		setProjectDir(projectDir);
@@ -64,6 +66,7 @@ describe("MCP server-name autocomplete", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		vi.restoreAllMocks();
 		setProjectDir(originalProjectDir);
 		restoreAgentDir();

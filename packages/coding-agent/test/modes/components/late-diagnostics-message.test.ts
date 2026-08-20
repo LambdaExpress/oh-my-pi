@@ -1,7 +1,8 @@
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { LateDiagnosticsMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/late-diagnostics-message";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { setLocale } from "../../../src/i18n";
 
 const darkTheme = await getThemeByName("dark");
 
@@ -11,8 +12,13 @@ function plain(component: LateDiagnosticsMessageComponent): string {
 
 describe("LateDiagnosticsMessageComponent", () => {
 	beforeEach(() => {
+		setLocale("en");
 		if (!darkTheme) throw new Error("Failed to load dark theme");
 		setThemeInstance(darkTheme);
+	});
+
+	afterEach(() => {
+		setLocale(null);
 	});
 
 	it("renders late diagnostics through the shared tree renderer", () => {

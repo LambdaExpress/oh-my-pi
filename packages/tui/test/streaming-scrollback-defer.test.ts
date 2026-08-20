@@ -256,7 +256,7 @@ describe("streaming scrollback — visual record", () => {
 			const live = rows("live-", 9);
 			const term = new VirtualTerminal(20, height);
 			overrideProbe(term, undefined);
-			const tui = new TUI(term);
+			const tui = new TUI(term, undefined, { renderScheduler: scheduler });
 			const root = new SeamLineList(top);
 
 			try {
@@ -1346,7 +1346,7 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 		await withPlatform("win32", async () => {
 			const term = new VirtualTerminal(28, 4);
 			overrideProbe(term, undefined);
-			const tui = new TUI(term);
+			const tui = new TUI(term, undefined, { renderScheduler: scheduler });
 			const root = new SeamLineList([]);
 
 			try {
@@ -1407,7 +1407,7 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 			const stableTop = ["answer intro", "table follows"];
 			const term = new VirtualTerminal(34, 5);
 			overrideProbe(term, undefined);
-			const tui = new TUI(term);
+			const tui = new TUI(term, undefined, { renderScheduler: scheduler });
 			const root = new SeamLineList(stableTop);
 
 			try {
@@ -1496,7 +1496,7 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 		await withPlatform("win32", async () => {
 			const term = new VirtualTerminal(80, 12, 20_000);
 			overrideProbe(term, undefined);
-			const tui = new TUI(term);
+			const tui = new TUI(term, undefined, { renderScheduler: scheduler });
 			const root = new SeamLineList([]);
 
 			const stablePrefix = Array.from(
@@ -1562,7 +1562,7 @@ describe("win32 native scrollback — mutable block finalization artifacts", () 
 		await withPlatform("win32", async () => {
 			const term = new VirtualTerminal(36, 5);
 			overrideProbe(term, undefined);
-			const tui = new TUI(term);
+			const tui = new TUI(term, undefined, { renderScheduler: scheduler });
 			const root = new SeamLineList([]);
 
 			try {

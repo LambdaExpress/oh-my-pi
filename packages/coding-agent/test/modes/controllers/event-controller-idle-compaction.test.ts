@@ -4,6 +4,7 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { setLocale } from "../../../src/i18n";
 
 async function flushMicrotasks(): Promise<void> {
 	for (let i = 0; i < 10; i++) {
@@ -104,6 +105,7 @@ function createContext(
 
 describe("EventController idle compaction teardown", () => {
 	beforeEach(async () => {
+		setLocale("en");
 		await initTheme();
 		resetSettingsForTest();
 		await Settings.init({
@@ -118,6 +120,7 @@ describe("EventController idle compaction teardown", () => {
 	});
 
 	afterEach(() => {
+		setLocale(null);
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		resetSettingsForTest();

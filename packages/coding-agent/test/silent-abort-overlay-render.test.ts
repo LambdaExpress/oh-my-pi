@@ -20,6 +20,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { SILENT_ABORT_MARKER } from "@oh-my-pi/pi-coding-agent/session/messages";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const SESSION_ID = "test-session-1";
 
@@ -74,12 +75,14 @@ describe("Agent hub silent-abort regression", () => {
 	});
 
 	beforeEach(async () => {
+		setLocale("en");
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
 		tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-overlay-test-"));
 	});
 
 	afterEach(() => {
+		setLocale(null);
 		resetSettingsForTest();
 		removeSyncWithRetries(tmpDir);
 	});

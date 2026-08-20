@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as os from "node:os";
 import { stripVTControlCharacters } from "node:util";
 import { PluginManager } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
@@ -14,9 +14,15 @@ import {
 	PluginSettingsComponent,
 } from "@oh-my-pi/pi-coding-agent/modes/components/plugin-settings";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { setLocale } from "../../../src/i18n";
 
 beforeAll(async () => {
+	setLocale("en");
 	await initTheme();
+});
+
+afterAll(() => {
+	setLocale(null);
 });
 
 const npm = (name: string, opts: Partial<InstalledPlugin> = {}): InstalledPlugin => ({

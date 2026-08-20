@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,6 +10,7 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { Container, type TUI } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../../../src/i18n";
 
 const PROJECT_OPTION = "This project (.omp/rules)";
 const GLOBAL_OPTION = "Global — all projects (~/.omp/agent/rules)";
@@ -158,7 +159,12 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 beforeAll(async () => {
+	setLocale("en");
 	await initTheme();
+});
+
+afterAll(() => {
+	setLocale(null);
 });
 
 afterEach(async () => {
@@ -194,9 +200,9 @@ describe("OmfgController", () => {
 			[PROJECT_OPTION, GLOBAL_OPTION, AMEND_OPTION],
 		]);
 		expect(harness.ttsrAddRule.mock.calls[0]?.[0].path).toBe(savedPath);
-		const rendered = Bun.stripANSI(harness.container.render(120).join("\n"));
+		const rendered = Bun.stripANSI(harness.container.render(200).join("\n"));
 		expect(rendered).toContain("Registered live");
-		expect(rendered).toContain(path.join(".omp", "rules", "ts-no-any.md"));
+		expect(rendered).toContain(".omp/rules/ts-no-any.md");
 		expect(rendered).toContain("Esc dismiss");
 		expect(controller.hasActiveRequest()).toBe(true);
 		expect(controller.handleEscape()).toBe(true);

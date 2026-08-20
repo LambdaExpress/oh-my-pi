@@ -39,6 +39,7 @@ export {
 
 import type { OutputMeta } from "../tools/output-meta";
 import { formatOutputNotice } from "../tools/output-meta";
+import { titleTextFromSkillPrompt } from "./skill-title-input";
 
 export const SKILL_PROMPT_MESSAGE_TYPE = "skill-prompt";
 export const LSP_LATE_DIAGNOSTIC_MESSAGE_TYPE = "lsp-late-diagnostic";
@@ -164,6 +165,11 @@ function thinkingFromContent(content: unknown): string {
 }
 
 function titleConversationTurnFromMessage(message: AgentMessage): TitleConversationTurn | undefined {
+	if (message.role === "custom") {
+		const text = titleTextFromSkillPrompt(message);
+		if (!text) return undefined;
+		return { role: "user", text };
+	}
 	if (message.role !== "user" && message.role !== "assistant") return undefined;
 	const text = textFromContent(message.content);
 	const thinking = message.role === "assistant" ? thinkingFromContent(message.content) : undefined;

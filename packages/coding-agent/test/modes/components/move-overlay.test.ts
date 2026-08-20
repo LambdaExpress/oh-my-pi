@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../../src/config/settings";
+import { setLocale } from "../../../src/i18n";
 import {
 	MoveOverlay,
 	type MoveOverlayResult,
@@ -71,6 +72,7 @@ describe("MoveOverlay", () => {
 	});
 
 	beforeEach(async () => {
+		setLocale("en");
 		tmp = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-move-overlay-"));
 		cwd = tmp;
 		fs.mkdirSync(path.join(tmp, "alpha"));
@@ -79,6 +81,7 @@ describe("MoveOverlay", () => {
 		fs.writeFileSync(path.join(tmp, "file.txt"), "x");
 	});
 	afterEach(async () => {
+		setLocale(null);
 		await fsp.rm(tmp, { recursive: true, force: true });
 	});
 

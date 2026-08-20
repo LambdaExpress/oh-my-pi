@@ -9,12 +9,14 @@ import { STATUS_LINE_PRESETS } from "@oh-my-pi/pi-coding-agent/modes/components/
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 import { removeSyncWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 let settingsState: SettingsTestState | undefined;
 let projectDir = "";
 
 beforeEach(async () => {
+	setLocale("en");
 	settingsState = beginSettingsTest();
 	projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-settings-cache-"));
 	setProjectDir(projectDir);
@@ -23,6 +25,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+	setLocale(null);
 	restoreSettingsTestState(settingsState);
 	settingsState = undefined;
 	if (projectDir) {

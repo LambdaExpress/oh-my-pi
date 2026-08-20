@@ -4,8 +4,10 @@ import { LoginDialogComponent } from "@oh-my-pi/pi-coding-agent/modes/components
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import * as openModule from "@oh-my-pi/pi-coding-agent/utils/open";
 import type { TUI } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../../../src/i18n";
 
 beforeAll(async () => {
+	setLocale("en");
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	await initTheme();
@@ -16,6 +18,7 @@ afterEach(() => {
 });
 
 afterAll(() => {
+	setLocale(null);
 	resetSettingsForTest();
 });
 
@@ -32,7 +35,7 @@ describe("LoginDialogComponent", () => {
 			dialog.showAuth(authorizationUrl);
 			const linkTarget = `${authorizationUrl}\x07`;
 			const urlRows = dialog
-				.render(40)
+				.renderContent(40)
 				.filter(line => line.includes(linkTarget) && !Bun.stripANSI(line).includes("click to open"));
 
 			expect(urlRows.length).toBeGreaterThan(1);

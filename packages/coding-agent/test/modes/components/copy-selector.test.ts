@@ -5,6 +5,7 @@ import { CopySelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/component
 import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { CopyTarget } from "@oh-my-pi/pi-coding-agent/modes/utils/copy-targets";
 import { setKeybindings } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../../../src/i18n";
 
 const UP = "\x1b[A";
 const DOWN = "\x1b[B";
@@ -78,11 +79,13 @@ describe("CopySelectorComponent", () => {
 	});
 
 	beforeEach(() => {
+		setLocale("en");
 		setThemeInstance(darkTheme!);
 		setKeybindings(KeybindingsManager.inMemory({ "tui.select.cancel": "ctrl+g" }));
 	});
 
 	afterEach(() => {
+		setLocale(null);
 		setKeybindings(KeybindingsManager.inMemory());
 		vi.restoreAllMocks();
 	});

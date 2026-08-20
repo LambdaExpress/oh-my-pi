@@ -1,25 +1,22 @@
-import { Container, type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
+import { type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
 import { t } from "../../i18n";
 import { getSelectListTheme } from "../../modes/theme/theme";
-import { DynamicBorder } from "./dynamic-border";
+import { OverlayPanel } from "./overlay-box";
 import { routeSelectListMouseWithTopBorder } from "./select-list-mouse-routing";
 
 /**
  * Component that renders a show images selector with borders
  */
-export class ShowImagesSelectorComponent extends Container {
+export class ShowImagesSelectorComponent extends OverlayPanel {
 	#selectList: SelectList;
 
 	constructor(currentValue: boolean, onSelect: (show: boolean) => void, onCancel: () => void) {
-		super();
+		super(t("Show Images"));
 
 		const items: SelectItem[] = [
 			{ value: "yes", label: t("Yes"), description: t("Show images inline in terminal") },
 			{ value: "no", label: t("No"), description: t("Show text placeholder instead") },
 		];
-
-		// Add top border
-		this.addChild(new DynamicBorder());
 
 		// Create selector
 		this.#selectList = new SelectList(items, 5, getSelectListTheme());
@@ -36,9 +33,6 @@ export class ShowImagesSelectorComponent extends Container {
 		};
 
 		this.addChild(this.#selectList);
-
-		// Add bottom border
-		this.addChild(new DynamicBorder());
 	}
 
 	getSelectList(): SelectList {

@@ -8,6 +8,11 @@
 - Added a Composer model picker backed by the existing `model-list`/`model-change` frames, with the current model highlighted and all mutations disabled for read-only or unavailable sessions.
 - Added a Composer thinking-level selector backed by host-advertised model capabilities and the write-gated `thinking-change` frame, including Auto and every effort supported by the active model.
 - Added a control-room client and project/session sidebar for core-mode multi-session management, including serialized create/resume actions, authoritative active-session highlighting, accurate read-only summaries, and an ended-session recovery card that replaces the Composer.
+## [17.3.8] - 2026-08-19
+
+### Fixed
+
+- The ask tool card now renders the note the user attached to their answer; previously it was dropped from HTML exports and the collab guest view.
 
 ## [17.2.10] - 2026-08-06
 

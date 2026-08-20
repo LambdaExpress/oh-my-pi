@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, type Mock, test, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, type Mock, test, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -9,6 +9,7 @@ import { resolveSegmentPalette } from "@oh-my-pi/pi-coding-agent/modes/component
 import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ResolvedRoleModel } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { TUI } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../src/i18n";
 
 function normalize(lines: readonly string[]): string {
 	return stripVTControlCharacters(lines.join("\n")).replace(/\s+/g, " ").trim();
@@ -84,6 +85,14 @@ const DOWN = "\x1b[B";
 const ESC = "\x1b";
 
 describe("ModelPicker", () => {
+	beforeEach(() => {
+		setLocale("en");
+	});
+
+	afterEach(() => {
+		setLocale(null);
+	});
+
 	beforeAll(async () => {
 		testTheme = await getThemeByName("dark");
 		if (!testTheme) {

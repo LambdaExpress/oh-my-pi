@@ -4,7 +4,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber, getProjectDir, pathIsWithin, relativePathWithinRoot } from "@oh-my-pi/pi-utils";
 import { t } from "../../../i18n";
-import { type ThemeColor, theme } from "../../../modes/theme/theme";
+import { type Theme, type ThemeColor, theme } from "../../../modes/theme/theme";
 import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../../tools/render-utils";
 import { fileHyperlink } from "../../../tui/hyperlink";
 import { getSessionAccentAnsi, getSessionAccentHex } from "../../../utils/session-color";
@@ -49,6 +49,24 @@ function stripDisplayRoot(pwd: string): string {
 
 function normalizePremiumRequests(value: number): number {
 	return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+function formatSpend(amount: number, usingSubscription: boolean, uiTheme: Theme): string {
+	const formatted = amount.toFixed(2);
+	if (!usingSubscription) return `$${formatted}`;
+	if (uiTheme.getSymbolPreset() === "nerd") {
+		const icon = uiTheme.icon.subscription;
+		return icon ? `${icon} ${formatted}` : `S${formatted}`;
+	}
+	return `S${formatted}`;
+}
+
+function formatAdvisorSpend(amount: number, usingSubscription: boolean, uiTheme: Theme): string {
+	const spend = formatSpend(amount, usingSubscription, uiTheme);
+	const icon = uiTheme.icon.advisor;
+	if (icon && icon !== "(adv)") {
+		return `${icon} ${spend}`;
+	}
+	return `${spend} (adv)`;
 }
 
 const SCRATCH_ROOTS: readonly string[] = (() => {
@@ -177,8 +195,8 @@ const modelSegment: StatusLineSegment = {
 		const modelIcon = compact ? thinkingGlyph(thinkingDisplay) : theme.icon.model;
 
 		// Fast-mode icon and thinking-level suffix trail the model name and are
-		// colored together with it as `statusLineModel`. The advisor "++" badge
-		// sits between the name and that tail, so it reads as a distinct marker.
+		// colored together with it as `statusLineModel`. The advisor symbol sits
+		// between the name and that tail, so it reads as a distinct marker.
 		// theme.fg resets only the fg, so the spans are concatenated (not
 		// nested) to keep each color intact.
 		let tail = "";
@@ -192,14 +210,15 @@ const modelSegment: StatusLineSegment = {
 		// `statusLineModel` is aliased to `accent` in many themes, so the badge
 		// uses status colors to stay visibly distinct from the model name color.
 		let content = theme.fg("statusLineModel", withIcon(modelIcon, modelName));
-		// Advisor "++" badge, colored by the worst status in the roster:
+		// Advisor symbol, colored by the worst status in the roster:
 		// success = all running, warning = quota-exhausted, error = failed,
 		// dim = everything paused/no-model. Per-advisor detail lives in
 		// `/advisor status`.
 		// Optional chaining: lightweight session doubles (test mocks) that don't
 		// implement getAdvisorStatusOverview skip the badge instead of crashing.
+		const advisorIcon = theme.icon.advisor;
 		const advisorStats = ctx.session.getAdvisorStatusOverview?.();
-		if (advisorStats?.configured && advisorStats.advisors.length > 0) {
+		if (advisorIcon && advisorStats?.configured && advisorStats.advisors.length > 0) {
 			const statuses = advisorStats.advisors.map(a => a.status);
 			const badgeColor = statuses.includes("error")
 				? "error"
@@ -208,7 +227,7 @@ const modelSegment: StatusLineSegment = {
 					: statuses.includes("running")
 						? "success"
 						: "dim";
-			content += theme.fg(badgeColor, "++");
+			content += theme.fg(badgeColor, ` ${advisorIcon}`);
 		}
 		if (tail) {
 			content += theme.fg("statusLineModel", tail);
@@ -490,21 +509,6 @@ function pickUsageColor(percent: number): "muted" | "warning" | "error" {
 	return "muted";
 }
 
-function formatUsageReset(value: number, unit: "m" | "h"): string {
-	if (unit === "m") {
-		// total minutes (5h window: max 300)
-		if (value < 60) return `${value}m`;
-		const hours = Math.floor(value / 60);
-		const mins = value % 60;
-		return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
-	}
-	// total hours (7d window: max 168)
-	if (value < 24) return `${value}h`;
-	const days = Math.floor(value / 24);
-	const hours = value % 24;
-	return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
-}
-
 function pickUsageRemainingColor(percent: number): "muted" | "warning" | "error" {
 	if (percent <= 20) return "error";
 	if (percent <= 50) return "warning";
@@ -517,9 +521,16 @@ function pickUsageRemainingColor(percent: number): "muted" | "warning" | "error"
  * 5d 2h left reads `5d`; the monthly window (calendar/subscription month,
  * no fixed span) falls back to `mo` only when no reset time was reported.
  */
-function formatCompactUsageWindowLabel(fallback: string, value: number | undefined, unit: "m" | "h"): string {
+function formatCompactUsageWindowLabel(
+	fallback: string,
+	value: number | undefined,
+	unit: "m" | "h",
+	fetchedAt: number,
+): string {
 	if (value === undefined) return fallback;
-	const remaining = Math.max(0, Math.round(value));
+	const unitMs = unit === "m" ? 60_000 : 3_600_000;
+	const elapsed = fetchedAt > 0 ? Math.max(0, Date.now() - fetchedAt) / unitMs : 0;
+	const remaining = Math.max(0, Math.round(value - elapsed));
 	if (unit === "m") {
 		return remaining < 60 ? `${remaining}m` : `${Math.round(remaining / 60)}h`;
 	}
@@ -534,17 +545,17 @@ function renderCompactUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
 
 	const parts: string[] = [];
 	if (u.fiveHour) {
-		const label = formatCompactUsageWindowLabel("5h", u.fiveHour.resetMinutes, "m");
+		const label = formatCompactUsageWindowLabel("5h", u.fiveHour.resetMinutes, "m", ctx.usageFetchedAt);
 		const remaining = Math.max(0, Math.min(100, 100 - u.fiveHour.percent));
 		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
 	}
 	if (u.sevenDay) {
-		const label = formatCompactUsageWindowLabel("7d", u.sevenDay.resetHours, "h");
+		const label = formatCompactUsageWindowLabel("7d", u.sevenDay.resetHours, "h", ctx.usageFetchedAt);
 		const remaining = Math.max(0, Math.min(100, 100 - u.sevenDay.percent));
 		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
 	}
 	if (u.monthly) {
-		const label = formatCompactUsageWindowLabel("mo", u.monthly.resetHours, "h");
+		const label = formatCompactUsageWindowLabel("mo", u.monthly.resetHours, "h", ctx.usageFetchedAt);
 		const remaining = Math.max(0, Math.min(100, 100 - u.monthly.percent));
 		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
 	}
@@ -559,8 +570,9 @@ const costSegment: StatusLineSegment = {
 		const advisorCost = ctx.session.getAdvisorCost?.() ?? 0;
 		const normalizedPremiumRequests = normalizePremiumRequests(premiumRequests);
 		const state = ctx.session.state;
-		const usingSubscription = state.model ? ctx.session.modelRegistry.isUsingOAuth(state.model) : false;
-		if (usingSubscription || ctx.usage) {
+		const usingSubscription = state.model ? (ctx.session.modelRegistry?.isUsingOAuth(state.model) ?? false) : false;
+		const advisorUsingSubscription = ctx.session.isAdvisorUsingSubscription?.() ?? false;
+		if (ctx.usage) {
 			return renderCompactUsageLimitSegment(ctx);
 		}
 
@@ -569,10 +581,19 @@ const costSegment: StatusLineSegment = {
 		}
 
 		const billingParts: string[] = [];
-		if (cost) billingParts.push(`$${cost.toFixed(2)}`);
+		if (cost) {
+			billingParts.push(formatSpend(cost, usingSubscription, theme));
+		} else if (usingSubscription) {
+			billingParts.push(
+				theme.getSymbolPreset() === "nerd" && theme.icon.subscription ? theme.icon.subscription : "(sub)",
+			);
+		}
 		if (normalizedPremiumRequests) billingParts.push(`★ ${formatNumber(normalizedPremiumRequests)}`);
-		if (usingSubscription) billingParts.push(t("(sub)"));
-		if (advisorCost) billingParts.push(`${billingParts.length ? "+ " : ""}$${advisorCost.toFixed(2)} ${t("(adv)")}`);
+		if (advisorCost) {
+			const prefix = billingParts.length ? "+ " : "";
+			billingParts.push(`${prefix}${formatAdvisorSpend(advisorCost, advisorUsingSubscription, theme)}`);
+		}
+		if (billingParts.length === 0) return { content: "", visible: false };
 
 		return { content: theme.fg("statusLineCost", billingParts.join(" ")), visible: true };
 	},
@@ -584,11 +605,24 @@ const contextPctSegment: StatusLineSegment = {
 		const pct = ctx.contextPercent;
 		const window = ctx.contextWindow;
 
-		const autoIcon = ctx.autoCompactEnabled && theme.icon.auto ? ` ${theme.icon.auto}` : "";
-		const text = `${formatContextUsage(pct, window, ctx.contextTokens)}${autoIcon}`;
-
 		const color = getContextUsageThemeColor(getContextUsageLevel(pct ?? 0, window), theme.isLight);
-		const content = withIcon(theme.icon.context, theme.fgHex(color, text));
+		// Async-compaction indicator: pulse the auto icon while a background
+		// speculation runs, hold it in accent once a result is armed.
+		let autoIcon = "";
+		if (ctx.autoCompactEnabled && theme.icon.auto) {
+			const speculation = ctx.compactionSpeculation;
+			const themedIcon =
+				speculation === "running"
+					? ctx.speculationBlinkOn
+						? theme.fg("accent", theme.icon.auto)
+						: theme.fg("muted", theme.icon.auto)
+					: speculation === "armed"
+						? theme.fg("accent", theme.icon.auto)
+						: theme.fgHex(color, theme.icon.auto);
+			autoIcon = ` ${themedIcon}`;
+		}
+		const text = theme.fgHex(color, formatContextUsage(pct, window, ctx.contextTokens));
+		const content = withIcon(theme.icon.context, `${text}${autoIcon}`);
 
 		return { content, visible: true };
 	},
@@ -715,7 +749,7 @@ const sessionNameSegment: StatusLineSegment = {
 	id: "session_name",
 	render(ctx) {
 		const sessionManager = ctx.session.sessionManager;
-		const name = sessionManager?.getSessionName();
+		const name = sessionManager?.getSessionName() || ctx.previewTitle;
 		if (!name) return { content: "", visible: false };
 
 		const accentEnabled = ctx.sessionAccent !== false;
@@ -755,20 +789,14 @@ const usageSegment: StatusLineSegment = {
 		if (u.fiveHour) {
 			const pct = u.fiveHour.percent;
 			const pctText = theme.fg(pickUsageColor(pct), `${Math.round(pct)}%`);
-			const reset =
-				u.fiveHour.resetMinutes !== undefined
-					? theme.fg("muted", ` (${formatUsageReset(u.fiveHour.resetMinutes, "m")})`)
-					: "";
-			parts.push(`5h ${pctText}${reset}`);
+			const label = formatCompactUsageWindowLabel("5h", u.fiveHour.resetMinutes, "m", ctx.usageFetchedAt);
+			parts.push(`${label} ${pctText}`);
 		}
 		if (u.sevenDay) {
 			const pct = u.sevenDay.percent;
 			const pctText = theme.fg(pickUsageColor(pct), `${Math.round(pct)}%`);
-			const reset =
-				u.sevenDay.resetHours !== undefined
-					? theme.fg("muted", ` (${formatUsageReset(u.sevenDay.resetHours, "h")})`)
-					: "";
-			parts.push(`7d ${pctText}${reset}`);
+			const label = formatCompactUsageWindowLabel("7d", u.sevenDay.resetHours, "h", ctx.usageFetchedAt);
+			parts.push(`${label} ${pctText}`);
 		}
 		if (u.monthly) {
 			const pct = u.monthly.percent;
@@ -776,11 +804,8 @@ const usageSegment: StatusLineSegment = {
 			// Both floor used percents upstream (Cursor's dashboard shows 1.88 →
 			// "1% used"; OpenCode's endpoint already emits floored integers).
 			const pctText = theme.fg(pickUsageColor(pct), `${Math.floor(pct)}%`);
-			const reset =
-				u.monthly.resetHours !== undefined
-					? theme.fg("muted", ` (${formatUsageReset(u.monthly.resetHours, "h")})`)
-					: "";
-			parts.push(`mo ${pctText}${reset}`);
+			const label = formatCompactUsageWindowLabel("mo", u.monthly.resetHours, "h", ctx.usageFetchedAt);
+			parts.push(`${label} ${pctText}`);
 		}
 		const content = withIcon(theme.icon.time, parts.join(theme.sep.dot));
 		return { content, visible: true };

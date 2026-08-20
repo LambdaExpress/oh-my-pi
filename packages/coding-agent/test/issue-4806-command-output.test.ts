@@ -12,6 +12,7 @@ import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storag
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Text } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 describe("issue #4806 command output during streaming", () => {
 	let authStorage: AuthStorage;
@@ -25,6 +26,7 @@ describe("issue #4806 command output during streaming", () => {
 	});
 
 	beforeEach(async () => {
+		setLocale("en");
 		vi.spyOn(process.stdout, "write").mockReturnValue(true);
 		vi.spyOn(process.stdin, "resume").mockReturnValue(process.stdin);
 		vi.spyOn(process.stdin, "pause").mockReturnValue(process.stdin);
@@ -54,6 +56,7 @@ describe("issue #4806 command output during streaming", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		mode?.stop();
 		HistoryStorage.resetInstance();
 		vi.restoreAllMocks();

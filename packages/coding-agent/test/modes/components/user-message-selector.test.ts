@@ -1,9 +1,15 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { UserMessageSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/user-message-selector";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { setLocale } from "../../../src/i18n";
 
 beforeAll(async () => {
+	setLocale("en");
 	await initTheme();
+});
+
+afterAll(() => {
+	setLocale(null);
 });
 
 describe("UserMessageSelectorComponent", () => {

@@ -1,10 +1,11 @@
-import { beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import { LoginDialogComponent } from "@oh-my-pi/pi-coding-agent/modes/components/login-dialog";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { TUI } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../../../src/i18n";
 
 interface RenderableBlock {
 	render(width: number): string[];
@@ -20,7 +21,12 @@ function renderPresented(blocks: unknown[]): string {
 }
 
 beforeAll(async () => {
+	setLocale("en");
 	await initTheme();
+});
+
+afterAll(() => {
+	setLocale(null);
 });
 
 describe("SelectorController login", () => {

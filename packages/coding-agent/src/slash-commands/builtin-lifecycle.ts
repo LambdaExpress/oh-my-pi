@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { setProjectDir } from "@oh-my-pi/pi-utils";
 import { applyProviderGlobalsFromSettings } from "../config/provider-globals";
+import { t } from "../i18n";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../memory-backend";
 import type { FreshSessionResult } from "../session/agent-session";
 import { COMPACT_MODES, parseCompactArgs } from "../session/compact-modes";
@@ -20,7 +21,10 @@ import type {
 
 function formatFreshSessionResult(result: FreshSessionResult): string {
 	const stateLabel = result.closedProviderSessions === 1 ? "provider state" : "provider states";
-	return `Fresh provider session started (${result.closedProviderSessions} ${stateLabel} pruned).`;
+	return t("Fresh provider session started ({count} {stateLabel} pruned).", {
+		count: result.closedProviderSessions,
+		stateLabel,
+	});
 }
 
 export const shutdownHandlerTui = (
@@ -37,32 +41,36 @@ function parseShakeMode(args: string): ShakeMode | { error: string } {
 	const verb = args.trim().toLowerCase();
 	if (verb === "" || verb === "elide") return "elide";
 	if (verb === "images") return "images";
-	return { error: `Unknown /shake mode "${verb}". Use elide or images.` };
+	return { error: t('Unknown /shake mode "{mode}". Use elide or images.', { mode: verb }) };
 }
 
 /** Format the session's workspace directories (cwd + additional) for display. */
 function formatWorkspaceDirectories(runtime: SlashCommandRuntime, note?: string): string {
 	const cwd = runtime.sessionManager.getCwd();
 	const additional = runtime.sessionManager.getAdditionalDirectories();
-	const lines = ["Workspace directories:", `  ${cwd} (working directory)`, ...additional.map(d => `  ${d}`)];
+	const lines = [
+		t("Workspace directories:"),
+		`  ${cwd} ${t("(working directory)")}`,
+		...additional.map(d => `  ${d}`),
+	];
 	return note ? `${note}\n${lines.join("\n")}` : lines.join("\n");
 }
 
 export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "ssh",
-		description: "Manage SSH hosts (add, list, remove)",
-		acpDescription: "Manage SSH connections",
+		description: t("Manage SSH hosts (add, list, remove)"),
+		acpDescription: t("Manage SSH connections"),
 		inlineHint: "<subcommand>",
 		subcommands: [
 			{
 				name: "add",
-				description: "Add an SSH host",
+				description: t("Add an SSH host"),
 				usage: "<name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--scope project|user]",
 			},
-			{ name: "list", description: "List all configured SSH hosts" },
-			{ name: "remove", description: "Remove an SSH host", usage: "<name> [--scope project|user]" },
-			{ name: "help", description: "Show help message" },
+			{ name: "list", description: t("List all configured SSH hosts") },
+			{ name: "remove", description: t("Remove an SSH host"), usage: "<name> [--scope project|user]" },
+			{ name: "help", description: t("Show help message") },
 		],
 		allowArgs: true,
 		handle: handleSshAcp,
@@ -73,7 +81,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "new",
-		description: "Start a new session",
+		description: t("Start a new session"),
 		handleTui: async (_command, runtime) => {
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleClearCommand();
@@ -81,14 +89,14 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "fresh",
-		description: "Reset provider stream state without changing the local transcript",
+		description: t("Reset provider stream state without changing the local transcript"),
 		getTuiAutocompleteDescription: runtime =>
-			runtime.ctx.session.isStreaming ? "Fresh: unavailable while streaming" : "Fresh: ready",
+			runtime.ctx.session.isStreaming ? t("Fresh: unavailable while streaming") : t("Fresh: ready"),
 		handle: async (_command, runtime) => {
 			const result = runtime.session.freshSession();
 			if (!result) {
 				await runtime.output(
-					"Wait for the current response to finish or abort it before refreshing provider state.",
+					t("Wait for the current response to finish or abort it before refreshing provider state."),
 				);
 				return commandConsumed();
 			}
@@ -102,9 +110,11 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "clear",
-		description: "Clear the conversation context in place, keeping the session",
+		description: t("Clear the conversation context in place, keeping the session"),
 		getTuiAutocompleteDescription: runtime =>
-			runtime.ctx.session.isStreaming ? "Clear: unavailable while streaming" : "Clear: drop context, keep session",
+			runtime.ctx.session.isStreaming
+				? t("Clear: unavailable while streaming")
+				: t("Clear: drop context, keep session"),
 		handleTui: async (_command, runtime) => {
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleResetContextCommand();
@@ -112,7 +122,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "drop",
-		description: "Delete the current session and start a new one",
+		description: t("Delete the current session and start a new one"),
 		handleTui: async (_command, runtime) => {
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleDropCommand();
@@ -120,8 +130,8 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "compact",
-		description: "Manually compact the session context",
-		acpDescription: "Compact the conversation",
+		description: t("Manually compact the session context"),
+		acpDescription: t("Compact the conversation"),
 		subcommands: COMPACT_MODES.map(mode => ({
 			name: mode.name,
 			description: mode.description,
@@ -131,7 +141,9 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
 			const usage = runtime.ctx.session.getContextUsage();
-			return usage ? `Compact: context ${Math.round(usage.percent)}% used` : "Compact: context unavailable";
+			return usage
+				? t("Compact: context {percent}% used", { percent: Math.round(usage.percent) })
+				: t("Compact: context unavailable");
 		},
 		handle: async (command, runtime) => {
 			const parsed = parseCompactArgs(command.args);
@@ -144,15 +156,21 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				// Compaction precondition failures (no model, already compacted, too
 				// small) and provider errors propagate as plain Errors; surface them
 				// via runtime.output so they don't fail the ACP prompt turn.
-				return usage(`Compaction failed: ${errorMessage(err)}`, runtime);
+				return usage(t("Compaction failed: {error}", { error: errorMessage(err) }), runtime);
 			}
 			const after = runtime.session.getContextUsage?.();
 			const afterTokens = after?.tokens;
 			if (beforeTokens != null && afterTokens != null) {
 				const saved = beforeTokens - afterTokens;
-				await runtime.output(`Compaction complete. Tokens: ${beforeTokens} -> ${afterTokens} (saved ${saved}).`);
+				await runtime.output(
+					t("Compaction complete. Tokens: {before} -> {after} (saved {saved}).", {
+						before: beforeTokens,
+						after: afterTokens,
+						saved,
+					}),
+				);
 			} else {
-				await runtime.output("Compaction complete.");
+				await runtime.output(t("Compaction complete."));
 			}
 			return commandConsumed();
 		},
@@ -168,11 +186,11 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "shake",
-		description: "Drop heavy content from context (tool results, large blocks)",
-		acpDescription: "Shake heavy content out of the conversation context",
+		description: t("Drop heavy content from context (tool results, large blocks)"),
+		acpDescription: t("Shake heavy content out of the conversation context"),
 		subcommands: [
-			{ name: "elide", description: "Strip tool results + large blocks (default)" },
-			{ name: "images", description: "Strip image blocks" },
+			{ name: "elide", description: t("Strip tool results + large blocks (default)") },
+			{ name: "images", description: t("Strip image blocks") },
 		],
 		acpInputHint: "[elide|images]",
 		allowArgs: true,
@@ -195,8 +213,8 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "handoff",
-		description: "Hand off session context to a new session",
-		inlineHint: "[focus instructions]",
+		description: t("Hand off session context to a new session"),
+		inlineHint: t("[focus instructions]"),
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			const customInstructions = command.args || undefined;
@@ -206,7 +224,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "resume",
-		description: "Resume a different session",
+		description: t("Resume a different session"),
 		inlineHint: "[session id|@claude|@codex]",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
@@ -228,7 +246,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				{ allowGlobalFallback: true },
 			);
 			if (!match) {
-				runtime.ctx.showError(`Session "${sessionArg}" not found`);
+				runtime.ctx.showError(t('Session "{id}" not found', { id: sessionArg }));
 				return;
 			}
 			await runtime.ctx.handleResumeSession(match.session.path);
@@ -236,7 +254,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "btw",
-		description: "Ask an ephemeral side question using the current session context",
+		description: t("Ask an ephemeral side question using the current session context"),
 		inlineHint: "<question>",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
@@ -247,7 +265,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "tan",
-		description: "Run a full background agent on tangential work",
+		description: t("Run a full background agent on tangential work"),
 		inlineHint: "<work>",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
@@ -258,7 +276,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "omfg",
-		description: "Forge a TTSR rule from a complaint to stop a recurring behavior",
+		description: t("Forge a TTSR rule from a complaint to stop a recurring behavior"),
 		inlineHint: "<complaint>",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
@@ -268,19 +286,30 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		},
 	},
 	{
+		name: "cleanse",
+		description: t("Detect and fix project diagnostics with weighted parallel subagents"),
+		inlineHint: "[request] [--all]",
+		allowArgs: true,
+		handleTui: async (command, runtime) => {
+			const args = command.text.slice(`/${command.name}`.length).trim();
+			runtime.ctx.editor.setText("");
+			await runtime.ctx.handleCleanseCommand(args);
+		},
+	},
+	{
 		name: "retry",
-		description: "Retry the last failed agent turn",
+		description: t("Retry the last failed agent turn"),
 		handleTui: async (_command, runtime) => {
 			const didRetry = await runtime.ctx.session.retry();
 			if (!didRetry) {
-				runtime.ctx.showStatus("Nothing to retry");
+				runtime.ctx.showStatus(t("Nothing to retry"));
 			}
 			runtime.ctx.editor.setText("");
 		},
 	},
 	{
 		name: "debug",
-		description: "Open debug tools selector",
+		description: t("Open debug tools selector"),
 		handleTui: async (_command, runtime) => {
 			await runtime.ctx.showDebugSelector();
 			runtime.ctx.editor.setText("");
@@ -288,27 +317,27 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "memory",
-		description: "Inspect and operate memory maintenance",
-		acpDescription: "Manage memory",
+		description: t("Inspect and operate memory maintenance"),
+		acpDescription: t("Manage memory"),
 		acpInputHint: "<subcommand>",
 		subcommands: [
-			{ name: "view", description: "Show current memory injection payload" },
-			{ name: "stats", description: "Show memory backend statistics" },
-			{ name: "diagnose", description: "Run memory backend diagnostics" },
-			{ name: "clear", description: "Clear persisted memory data and artifacts" },
-			{ name: "reset", description: "Alias for clear" },
-			{ name: "enqueue", description: "Enqueue memory consolidation maintenance" },
-			{ name: "rebuild", description: "Alias for enqueue" },
-			{ name: "mm list", description: "List mental models on the active bank" },
-			{ name: "mm show", description: "Show one mental model (id required)" },
+			{ name: "view", description: t("Show current memory injection payload") },
+			{ name: "stats", description: t("Show memory backend statistics") },
+			{ name: "diagnose", description: t("Run memory backend diagnostics") },
+			{ name: "clear", description: t("Clear persisted memory data and artifacts") },
+			{ name: "reset", description: t("Alias for clear") },
+			{ name: "enqueue", description: t("Enqueue memory consolidation maintenance") },
+			{ name: "rebuild", description: t("Alias for enqueue") },
+			{ name: "mm list", description: t("List mental models on the active bank") },
+			{ name: "mm show", description: t("Show one mental model (id required)") },
 			{
 				name: "mm refresh",
-				description: "Refresh auto-refresh models bank-wide, or one model by id",
+				description: t("Refresh auto-refresh models bank-wide, or one model by id"),
 			},
-			{ name: "mm history", description: "Diff the change history of a mental model" },
-			{ name: "mm seed", description: "Create any built-in mental models that are missing" },
-			{ name: "mm delete", description: "Delete a mental model from the bank (id required)" },
-			{ name: "mm reload", description: "Re-pull the cached <mental_models> block" },
+			{ name: "mm history", description: t("Diff the change history of a mental model") },
+			{ name: "mm seed", description: t("Create any built-in mental models that are missing") },
+			{ name: "mm delete", description: t("Delete a mental model from the bank (id required)") },
+			{ name: "mm reload", description: t("Re-pull the cached <mental_models> block") },
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
@@ -321,20 +350,20 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 						runtime.settings,
 						runtime.session,
 					);
-					await runtime.output(payload || "Memory payload is empty.");
+					await runtime.output(payload || t("Memory payload is empty."));
 					return commandConsumed();
 				}
 				case "clear":
 				case "reset": {
 					await backend.clear(runtime.settings.getAgentDir(), runtime.cwd, runtime.session);
 					await runtime.session.refreshBaseSystemPrompt();
-					await runtime.output("Memory cleared.");
+					await runtime.output(t("Memory cleared."));
 					return commandConsumed();
 				}
 				case "enqueue":
 				case "rebuild": {
 					await backend.enqueue(runtime.settings.getAgentDir(), runtime.cwd, runtime.session);
-					await runtime.output("Memory consolidation enqueued.");
+					await runtime.output(t("Memory consolidation enqueued."));
 					return commandConsumed();
 				}
 				case "stats":
@@ -346,11 +375,13 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				}
 				case "mm":
 					return usage(
-						"Mental-model maintenance via /memory mm is unsupported in ACP mode; use the hindsight HTTP API directly.",
+						t(
+							"Mental-model maintenance via /memory mm is unsupported in ACP mode; use the hindsight HTTP API directly.",
+						),
 						runtime,
 					);
 				default:
-					return usage("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild>", runtime);
+					return usage(t("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild>"), runtime);
 			}
 		},
 		handleTui: async (command, runtime) => {
@@ -360,24 +391,24 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "rename",
-		description: "Rename the current session",
+		description: t("Rename the current session"),
 		inlineHint: "<title>",
 		allowArgs: true,
 		handle: async (command, runtime) => {
-			if (!command.args) return usage("Usage: /rename <title>", runtime);
+			if (!command.args) return usage(t("Usage: /rename <title>"), runtime);
 			const ok = await runtime.sessionManager.setSessionName(command.args, "user");
 			if (!ok) {
-				await runtime.output("Session name not changed (a user-set name takes precedence).");
+				await runtime.output(t("Session name not changed (a user-set name takes precedence)."));
 				return commandConsumed();
 			}
 			await runtime.notifyTitleChanged?.();
-			await runtime.output(`Session renamed to ${command.args}.`);
+			await runtime.output(t("Session renamed to {title}.", { title: command.args }));
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
 			const title = command.args.trim();
 			if (!title) {
-				runtime.ctx.showError("Usage: /rename <title>");
+				runtime.ctx.showError(t("Usage: /rename <title>"));
 				runtime.ctx.editor.setText("");
 				return;
 			}
@@ -387,31 +418,31 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "move",
-		description: "Move the current session to a different directory",
-		acpDescription: "Move the current session to a different directory",
+		description: t("Move the current session to a different directory"),
+		acpDescription: t("Move the current session to a different directory"),
 		inlineHint: "[<path>]",
 		allowArgs: true,
 		handle: async (command, runtime) => {
-			if (runtime.session.isStreaming) return usage("Cannot move while streaming.", runtime);
-			if (!command.args) return usage("Usage: /move <path>", runtime);
+			if (runtime.session.isStreaming) return usage(t("Cannot move while streaming."), runtime);
+			if (!command.args) return usage(t("Usage: /move <path>"), runtime);
 			const resolvedPath = resolveToCwd(command.args, runtime.cwd);
 			try {
 				const stat = await fs.stat(resolvedPath);
 				if (!stat.isDirectory()) {
-					return usage(`Not a directory: ${resolvedPath}`, runtime);
+					return usage(t("Not a directory: {path}", { path: resolvedPath }), runtime);
 				}
 			} catch {
-				return usage(`Directory does not exist: ${resolvedPath}`, runtime);
+				return usage(t("Directory does not exist: {path}", { path: resolvedPath }), runtime);
 			}
 			try {
 				await runtime.settings.flush();
 			} catch (err) {
-				return usage(`Failed to save pending settings: ${errorMessage(err)}`, runtime);
+				return usage(t("Failed to save pending settings: {error}", { error: errorMessage(err) }), runtime);
 			}
 			try {
 				await runtime.session.moveSession(resolvedPath);
 			} catch (err) {
-				return usage(`Move failed: ${errorMessage(err)}`, runtime);
+				return usage(t("Move failed: {error}", { error: errorMessage(err) }), runtime);
 			}
 			setProjectDir(resolvedPath);
 			await runtime.settings.reloadForCwd(resolvedPath);
@@ -421,7 +452,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			await runtime.reloadPlugins();
 			await runtime.notifyConfigChanged?.();
 			await runtime.notifyTitleChanged?.();
-			await runtime.output(`Moved to ${runtime.sessionManager.getCwd()}.`);
+			await runtime.output(t("Moved to {path}.", { path: runtime.sessionManager.getCwd() }));
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
@@ -432,19 +463,19 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "add-dir",
-		description: "Add a workspace directory to this session (multi-root)",
-		acpDescription: "Add a workspace directory to this session",
+		description: t("Add a workspace directory to this session (multi-root)"),
+		acpDescription: t("Add a workspace directory to this session"),
 		inlineHint: "<path>",
 		allowArgs: true,
 		handle: async (command, runtime) => {
-			if (runtime.session.isStreaming) return usage("Cannot add a directory while streaming.", runtime);
-			if (!command.args) return usage(formatWorkspaceDirectories(runtime, "Usage: /add-dir <path>"), runtime);
+			if (runtime.session.isStreaming) return usage(t("Cannot add a directory while streaming."), runtime);
+			if (!command.args) return usage(formatWorkspaceDirectories(runtime, t("Usage: /add-dir <path>")), runtime);
 			const resolved = resolveToCwd(command.args, runtime.cwd);
 			try {
 				const stat = await fs.stat(resolved);
-				if (!stat.isDirectory()) return usage(`Not a directory: ${resolved}`, runtime);
+				if (!stat.isDirectory()) return usage(t("Not a directory: {path}", { path: resolved }), runtime);
 			} catch {
-				return usage(`Directory does not exist: ${resolved}`, runtime);
+				return usage(t("Directory does not exist: {path}", { path: resolved }), runtime);
 			}
 			let added: string | null;
 			try {
@@ -453,26 +484,26 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				return usage(errorMessage(err), runtime);
 			}
 			if (added === null) {
-				await runtime.output(`Already in the workspace: ${resolved}`);
+				await runtime.output(t("Already in the workspace: {path}", { path: resolved }));
 				return commandConsumed();
 			}
 			await runtime.session.refreshBaseSystemPrompt();
-			await runtime.output(formatWorkspaceDirectories(runtime, `Added ${added}.`));
+			await runtime.output(formatWorkspaceDirectories(runtime, t("Added {path}.", { path: added })));
 			return commandConsumed();
 		},
 	},
 	{
 		name: "remove-dir",
-		description: "Remove a workspace directory from this session",
-		acpDescription: "Remove a workspace directory from this session",
+		description: t("Remove a workspace directory from this session"),
+		acpDescription: t("Remove a workspace directory from this session"),
 		inlineHint: "<path>",
 		allowArgs: true,
 		handle: async (command, runtime) => {
-			if (runtime.session.isStreaming) return usage("Cannot remove a directory while streaming.", runtime);
-			if (!command.args) return usage("Usage: /remove-dir <path>", runtime);
+			if (runtime.session.isStreaming) return usage(t("Cannot remove a directory while streaming."), runtime);
+			if (!command.args) return usage(t("Usage: /remove-dir <path>"), runtime);
 			const resolved = resolveToCwd(command.args, runtime.cwd);
 			if (resolved === path.resolve(runtime.cwd)) {
-				return usage("Cannot remove the working directory; use /move to change it.", runtime);
+				return usage(t("Cannot remove the working directory; use /move to change it."), runtime);
 			}
 			let removed: string | null;
 			try {
@@ -481,18 +512,18 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 				return usage(errorMessage(err), runtime);
 			}
 			if (removed === null) {
-				await runtime.output(`Not a workspace directory: ${resolved}`);
+				await runtime.output(t("Not a workspace directory: {path}", { path: resolved }));
 				return commandConsumed();
 			}
 			await runtime.session.refreshBaseSystemPrompt();
-			await runtime.output(formatWorkspaceDirectories(runtime, `Removed ${removed}.`));
+			await runtime.output(formatWorkspaceDirectories(runtime, t("Removed {path}.", { path: removed })));
 			return commandConsumed();
 		},
 	},
 	{
 		name: "dirs",
-		description: "List this session's workspace directories",
-		acpDescription: "List this session's workspace directories",
+		description: t("List this session's workspace directories"),
+		acpDescription: t("List this session's workspace directories"),
 		handle: async (_command, runtime) => {
 			await runtime.output(formatWorkspaceDirectories(runtime));
 			return commandConsumed();
@@ -500,7 +531,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "exit",
-		description: "Exit the application",
+		description: t("Exit the application"),
 		handleTui: shutdownHandlerTui,
 	},
 ];

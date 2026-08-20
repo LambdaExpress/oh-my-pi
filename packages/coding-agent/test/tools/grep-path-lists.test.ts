@@ -21,6 +21,7 @@ import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-q
 import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import type { Text } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../../src/i18n";
 import { grepToolRenderer } from "../../src/tools/grep";
 
 function createTestSession(cwd: string, overrides: Partial<ToolSession> = {}): ToolSession {
@@ -127,6 +128,7 @@ describe("tool path arrays", () => {
 	let tempDir: string;
 
 	beforeAll(async () => {
+		setLocale("en");
 		await initTheme(false, undefined, undefined, "dark", "light");
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
@@ -139,6 +141,7 @@ describe("tool path arrays", () => {
 	});
 
 	afterAll(async () => {
+		setLocale(null);
 		await removeWithRetries(tempDir);
 		resetSettingsForTest();
 	});

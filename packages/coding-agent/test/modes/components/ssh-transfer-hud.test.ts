@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { AsyncJob } from "@oh-my-pi/pi-coding-agent/async";
 import { SshTransferHud } from "@oh-my-pi/pi-coding-agent/modes/components/ssh-transfer-hud";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -6,6 +6,15 @@ import { buildAsyncResultBlock } from "@oh-my-pi/pi-coding-agent/modes/utils/tra
 import type { AsyncJobSnapshot, AsyncJobSnapshotItem } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { buildAsyncResultBatchMessage } from "@oh-my-pi/pi-coding-agent/session/async-job-delivery";
 import type { SshTransferToolDetails } from "@oh-my-pi/pi-coding-agent/tools/ssh-transfer";
+import { setLocale } from "../../../src/i18n";
+
+beforeAll(() => {
+	setLocale("en");
+});
+
+afterAll(() => {
+	setLocale(null);
+});
 
 function details(status: SshTransferToolDetails["status"]): SshTransferToolDetails {
 	return {

@@ -12,6 +12,7 @@ import {
 	getPluginsCacheDir,
 	MarketplaceManager,
 } from "../extensibility/plugins/marketplace";
+import { t } from "../i18n";
 import { MCPCommandController } from "../modes/controllers/mcp-command-controller";
 import type { InteractiveModeContext } from "../modes/types";
 import { refreshAgentDiscovery } from "../task";
@@ -42,24 +43,24 @@ export async function reloadTuiPluginState(ctx: InteractiveModeContext): Promise
 export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "marketplace",
-		description: "Manage marketplace plugin sources and installed plugins",
-		acpDescription: "Manage plugins from marketplaces",
+		description: t("Manage marketplace plugin sources and installed plugins"),
+		acpDescription: t("Manage plugins from marketplaces"),
 		acpInputHint: "<subcommand>",
 		subcommands: [
-			{ name: "add", description: "Add a marketplace source", usage: "<source>" },
-			{ name: "remove", description: "Remove a marketplace source", usage: "<name>" },
-			{ name: "update", description: "Update marketplace catalog(s)", usage: "[name]" },
-			{ name: "list", description: "List configured marketplaces" },
-			{ name: "discover", description: "Browse available plugins", usage: "[marketplace]" },
+			{ name: "add", description: t("Add a marketplace source"), usage: "<source>" },
+			{ name: "remove", description: t("Remove a marketplace source"), usage: "<name>" },
+			{ name: "update", description: t("Update marketplace catalog(s)"), usage: "[name]" },
+			{ name: "list", description: t("List configured marketplaces") },
+			{ name: "discover", description: t("Browse available plugins"), usage: "[marketplace]" },
 			{
 				name: "install",
-				description: "Install a plugin (interactive browser if no args)",
+				description: t("Install a plugin (interactive browser if no args)"),
 				usage: "[--force] [name@marketplace]",
 			},
-			{ name: "uninstall", description: "Uninstall a plugin (selector if no args)", usage: "[name@marketplace]" },
-			{ name: "installed", description: "List installed marketplace plugins" },
-			{ name: "upgrade", description: "Upgrade outdated plugins", usage: "[name@marketplace]" },
-			{ name: "help", description: "Show usage guide" },
+			{ name: "uninstall", description: t("Uninstall a plugin (selector if no args)"), usage: "[name@marketplace]" },
+			{ name: "installed", description: t("List installed marketplace plugins") },
+			{ name: "upgrade", description: t("Upgrade outdated plugins"), usage: "[name@marketplace]" },
+			{ name: "help", description: t("Show usage guide") },
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
@@ -70,43 +71,50 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 					const marketplaces = await manager.listMarketplaces();
 					if (marketplaces.length === 0) {
 						await runtime.output(
-							"No marketplaces configured.\n\nGet started:\n  /marketplace add anthropics/claude-plugins-official\n\nThen browse with /marketplace discover",
+							t(
+								"No marketplaces configured.\n\nGet started:\n  /marketplace add anthropics/claude-plugins-official\n\nThen browse with /marketplace discover",
+							),
 						);
 					} else {
 						const lines = marketplaces.map(m => `  ${m.name}  ${m.sourceUri}`);
 						await runtime.output(
-							`Marketplaces:\n${lines.join("\n")}\n\nUse /marketplace discover to browse plugins, or /marketplace help for all commands`,
+							t(
+								"Marketplaces:\n{list}\n\nUse /marketplace discover to browse plugins, or /marketplace help for all commands",
+								{ list: lines.join("\n") },
+							),
 						);
 					}
 					return commandConsumed();
 				} catch (err) {
-					return usage(`Marketplace error: ${errorMessage(err)}`, runtime);
+					return usage(t("Marketplace error: {error}", { error: errorMessage(err) }), runtime);
 				}
 			}
 			if (verb === "help") {
 				await runtime.output(
-					[
-						"Marketplace commands:",
-						"  /marketplace                              List configured marketplaces",
-						"  /marketplace add <source>                  Add a marketplace (e.g. owner/repo)",
-						"  /marketplace remove <name>                 Remove a marketplace",
-						"  /marketplace update [name]                 Re-fetch catalog(s)",
-						"  /marketplace list                          List configured marketplaces",
-						"  /marketplace discover [marketplace]        Browse available plugins",
-						"  /marketplace install <name@marketplace>    Install a plugin",
-						"  /marketplace uninstall <name@marketplace>  Uninstall a plugin",
-						"  /marketplace installed                     List installed plugins",
-						"  /marketplace upgrade [name@marketplace]    Upgrade plugin(s)",
-						"",
-						"Quick start:",
-						"  /marketplace add anthropics/claude-plugins-official",
-					].join("\n"),
+					t(
+						[
+							"Marketplace commands:",
+							"  /marketplace                              List configured marketplaces",
+							"  /marketplace add <source>                  Add a marketplace (e.g. owner/repo)",
+							"  /marketplace remove <name>                 Remove a marketplace",
+							"  /marketplace update [name]                 Re-fetch catalog(s)",
+							"  /marketplace list                          List configured marketplaces",
+							"  /marketplace discover [marketplace]        Browse available plugins",
+							"  /marketplace install <name@marketplace>    Install a plugin",
+							"  /marketplace uninstall <name@marketplace>  Uninstall a plugin",
+							"  /marketplace installed                     List installed plugins",
+							"  /marketplace upgrade [name@marketplace]    Upgrade plugin(s)",
+							"",
+							"Quick start:",
+							"  /marketplace add anthropics/claude-plugins-official",
+						].join("\n"),
+					),
 				);
 				return commandConsumed();
 			}
 			if ((verb === "install" || verb === "uninstall") && !rest) {
 				return usage(
-					"Interactive plugin pickers are TUI-only. Pass an explicit name@marketplace argument.",
+					t("Interactive plugin pickers are TUI-only. Pass an explicit name@marketplace argument."),
 					runtime,
 				);
 			}
@@ -114,35 +122,35 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 				const manager = await createMarketplaceManager(runtime);
 				switch (verb) {
 					case "add": {
-						if (!rest) return usage("Usage: /marketplace add <source>", runtime);
+						if (!rest) return usage(t("Usage: /marketplace add <source>"), runtime);
 						const entry = await manager.addMarketplace(rest);
-						await runtime.output(`Added marketplace: ${entry.name}`);
+						await runtime.output(t("Added marketplace: {name}", { name: entry.name }));
 						return commandConsumed();
 					}
 					case "remove":
 					case "rm": {
-						if (!rest) return usage("Usage: /marketplace remove <name>", runtime);
+						if (!rest) return usage(t("Usage: /marketplace remove <name>"), runtime);
 						await manager.removeMarketplace(rest);
-						await runtime.output(`Removed marketplace: ${rest}`);
+						await runtime.output(t("Removed marketplace: {name}", { name: rest }));
 						return commandConsumed();
 					}
 					case "update": {
 						if (rest) {
 							await manager.updateMarketplace(rest);
-							await runtime.output(`Updated marketplace: ${rest}`);
+							await runtime.output(t("Updated marketplace: {name}", { name: rest }));
 						} else {
 							const results = await manager.updateAllMarketplaces();
-							await runtime.output(`Updated ${results.length} marketplace(s)`);
+							await runtime.output(t("Updated {count} marketplace(s)", { count: results.length }));
 						}
 						return commandConsumed();
 					}
 					case "list": {
 						const marketplaces = await manager.listMarketplaces();
 						if (marketplaces.length === 0) {
-							await runtime.output("No marketplaces configured.");
+							await runtime.output(t("No marketplaces configured."));
 						} else {
 							const lines = marketplaces.map(m => `  ${m.name}  ${m.sourceUri}`);
-							await runtime.output(`Marketplaces:\n${lines.join("\n")}`);
+							await runtime.output(t("Marketplaces:\n{list}", { list: lines.join("\n") }));
 						}
 						return commandConsumed();
 					}
@@ -152,12 +160,14 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 							const marketplaces = await manager.listMarketplaces();
 							await runtime.output(
 								marketplaces.length === 0
-									? "No marketplaces configured. Try:\n  /marketplace add anthropics/claude-plugins-official"
-									: "No plugins available in configured marketplaces",
+									? t(
+											"No marketplaces configured. Try:\n  /marketplace add anthropics/claude-plugins-official",
+										)
+									: t("No plugins available in configured marketplaces"),
 							);
 							return commandConsumed();
 						}
-						const lines = ["Available plugins:"];
+						const lines = [t("Available plugins:")];
 						for (const plugin of plugins) {
 							lines.push(`  - ${plugin.name}${plugin.version ? `@${plugin.version}` : ""}`);
 							if (plugin.description) lines.push(`      ${plugin.description}`);
@@ -173,29 +183,29 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 						const marketplace = parsed.installSpec.slice(atIndex + 1);
 						await manager.installPlugin(pluginName, marketplace, { force: parsed.force, scope: parsed.scope });
 						await runtime.reloadPlugins();
-						await runtime.output(`Installed ${pluginName} from ${marketplace}`);
+						await runtime.output(t("Installed {name} from {marketplace}", { name: pluginName, marketplace }));
 						return commandConsumed();
 					}
 					case "uninstall": {
 						const parsed = parsePluginScopeArgs(
 							rest,
-							"Usage: /marketplace uninstall [--scope user|project] <name@marketplace>",
+							t("Usage: /marketplace uninstall [--scope user|project] <name@marketplace>"),
 						);
 						if ("error" in parsed) return usage(parsed.error, runtime);
 						await manager.uninstallPlugin(parsed.pluginId, parsed.scope);
 						await runtime.reloadPlugins();
-						await runtime.output(`Uninstalled ${parsed.pluginId}`);
+						await runtime.output(t("Uninstalled {name}", { name: parsed.pluginId }));
 						return commandConsumed();
 					}
 					case "installed": {
 						const installed = await manager.listInstalledPlugins();
 						if (installed.length === 0) {
-							await runtime.output("No marketplace plugins installed");
+							await runtime.output(t("No marketplace plugins installed"));
 						} else {
 							const lines = installed.map(
 								p => `  ${p.id} [${p.scope}]${p.shadowedBy ? " [shadowed]" : ""} (${p.entries.length} entry)`,
 							);
-							await runtime.output(`Installed plugins:\n${lines.join("\n")}`);
+							await runtime.output(t("Installed plugins:\n{list}", { list: lines.join("\n") }));
 						}
 						return commandConsumed();
 					}
@@ -203,32 +213,38 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 						if (rest) {
 							const parsed = parsePluginScopeArgs(
 								rest,
-								"Usage: /marketplace upgrade [--scope user|project] <name@marketplace>",
+								t("Usage: /marketplace upgrade [--scope user|project] <name@marketplace>"),
 							);
 							if ("error" in parsed) return usage(parsed.error, runtime);
 							const result = await manager.upgradePlugin(parsed.pluginId, parsed.scope);
 							await runtime.reloadPlugins();
-							await runtime.output(`Upgraded ${parsed.pluginId} to ${result.version}`);
+							await runtime.output(
+								t("Upgraded {name} to {version}", { name: parsed.pluginId, version: result.version }),
+							);
 							return commandConsumed();
 						}
 						const results = await manager.upgradeAllPlugins();
 						if (results.length === 0) {
-							await runtime.output("All marketplace plugins are up to date");
+							await runtime.output(t("All marketplace plugins are up to date"));
 						} else {
 							await runtime.reloadPlugins();
 							const lines = results.map(r => `  ${r.pluginId}: ${r.from} -> ${r.to}`);
-							await runtime.output(`Upgraded ${results.length} plugin(s):\n${lines.join("\n")}`);
+							await runtime.output(
+								t("Upgraded {count} plugin(s):\n{list}", { count: results.length, list: lines.join("\n") }),
+							);
 						}
 						return commandConsumed();
 					}
 					default:
 						return usage(
-							`Unknown /marketplace subcommand: ${verb}. Use /marketplace help for available commands.`,
+							t("Unknown /marketplace subcommand: {verb}. Use /marketplace help for available commands.", {
+								verb,
+							}),
 							runtime,
 						);
 				}
 			} catch (err) {
-				return usage(`Marketplace error: ${errorMessage(err)}`, runtime);
+				return usage(t("Marketplace error: {error}", { error: errorMessage(err) }), runtime);
 			}
 		},
 		handleTui: async (command, runtime) => {
@@ -242,7 +258,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 				try {
 					runtime.ctx.showPluginSelector("install");
 				} catch (err) {
-					runtime.ctx.showStatus(`Marketplace error: ${err}`);
+					runtime.ctx.showStatus(t("Marketplace error: {error}", { error: String(err) }));
 				}
 				return;
 			}
@@ -262,30 +278,30 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 				switch (sub) {
 					case "add": {
 						if (!rest) {
-							runtime.ctx.showStatus("Usage: /marketplace add <source>");
+							runtime.ctx.showStatus(t("Usage: /marketplace add <source>"));
 							return;
 						}
 						const entry = await mgr.addMarketplace(rest);
-						runtime.ctx.showStatus(`Added marketplace: ${entry.name}`);
+						runtime.ctx.showStatus(t("Added marketplace: {name}", { name: entry.name }));
 						break;
 					}
 					case "remove":
 					case "rm": {
 						if (!rest) {
-							runtime.ctx.showStatus("Usage: /marketplace remove <name>");
+							runtime.ctx.showStatus(t("Usage: /marketplace remove <name>"));
 							return;
 						}
 						await mgr.removeMarketplace(rest);
-						runtime.ctx.showStatus(`Removed marketplace: ${rest}`);
+						runtime.ctx.showStatus(t("Removed marketplace: {name}", { name: rest }));
 						break;
 					}
 					case "update": {
 						if (rest) {
 							await mgr.updateMarketplace(rest);
-							runtime.ctx.showStatus(`Updated marketplace: ${rest}`);
+							runtime.ctx.showStatus(t("Updated marketplace: {name}", { name: rest }));
 						} else {
 							const results = await mgr.updateAllMarketplaces();
-							runtime.ctx.showStatus(`Updated ${results.length} marketplace(s)`);
+							runtime.ctx.showStatus(t("Updated {count} marketplace(s)", { count: results.length }));
 						}
 						break;
 					}
@@ -295,17 +311,17 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 							const marketplaces = await mgr.listMarketplaces();
 							if (marketplaces.length === 0) {
 								runtime.ctx.showStatus(
-									"No marketplaces configured. Try:\n  /marketplace add anthropics/claude-plugins-official",
+									t("No marketplaces configured. Try:\n  /marketplace add anthropics/claude-plugins-official"),
 								);
 							} else {
-								runtime.ctx.showStatus("No plugins available in configured marketplaces");
+								runtime.ctx.showStatus(t("No plugins available in configured marketplaces"));
 							}
 						} else {
 							const lines = plugins.map(
 								p =>
 									`  ${p.name}${p.version ? `@${p.version}` : ""}${p.description ? ` - ${p.description}` : ""}`,
 							);
-							runtime.ctx.showStatus(`Available plugins:\n${lines.join("\n")}`);
+							runtime.ctx.showStatus(t("Available plugins:\n{list}", { list: lines.join("\n") }));
 						}
 						break;
 					}
@@ -320,7 +336,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 						const name = parsed.installSpec.slice(0, atIdx);
 						const marketplace = parsed.installSpec.slice(atIdx + 1);
 						await mgr.installPlugin(name, marketplace, { force: parsed.force, scope: parsed.scope });
-						runtime.ctx.showStatus(`Installed ${name} from ${marketplace}`);
+						runtime.ctx.showStatus(t("Installed {name} from {marketplace}", { name, marketplace }));
 						break;
 					}
 					case "uninstall": {
@@ -331,25 +347,25 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 						}
 						const uninstArgs = parsePluginScopeArgs(
 							rest,
-							"Usage: /marketplace uninstall [--scope user|project] <name@marketplace>",
+							t("Usage: /marketplace uninstall [--scope user|project] <name@marketplace>"),
 						);
 						if ("error" in uninstArgs) {
 							runtime.ctx.showStatus(uninstArgs.error);
 							return;
 						}
 						await mgr.uninstallPlugin(uninstArgs.pluginId, uninstArgs.scope);
-						runtime.ctx.showStatus(`Uninstalled ${uninstArgs.pluginId}`);
+						runtime.ctx.showStatus(t("Uninstalled {name}", { name: uninstArgs.pluginId }));
 						break;
 					}
 					case "installed": {
 						const installed = await mgr.listInstalledPlugins();
 						if (installed.length === 0) {
-							runtime.ctx.showStatus("No marketplace plugins installed");
+							runtime.ctx.showStatus(t("No marketplace plugins installed"));
 						} else {
 							const lines = installed.map(
 								p => `  ${p.id} [${p.scope}]${p.shadowedBy ? " [shadowed]" : ""} (${p.entries.length} entry)`,
 							);
-							runtime.ctx.showStatus(`Installed plugins:\n${lines.join("\n")}`);
+							runtime.ctx.showStatus(t("Installed plugins:\n{list}", { list: lines.join("\n") }));
 						}
 						break;
 					}
@@ -357,44 +373,53 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 						if (rest) {
 							const upArgs = parsePluginScopeArgs(
 								rest,
-								"Usage: /marketplace upgrade [--scope user|project] <name@marketplace>",
+								t("Usage: /marketplace upgrade [--scope user|project] <name@marketplace>"),
 							);
 							if ("error" in upArgs) {
 								runtime.ctx.showStatus(upArgs.error);
 								return;
 							}
 							const result = await mgr.upgradePlugin(upArgs.pluginId, upArgs.scope);
-							runtime.ctx.showStatus(`Upgraded ${upArgs.pluginId} to ${result.version}`);
+							runtime.ctx.showStatus(
+								t("Upgraded {name} to {version}", { name: upArgs.pluginId, version: result.version }),
+							);
 						} else {
 							const results = await mgr.upgradeAllPlugins();
 							if (results.length === 0) {
-								runtime.ctx.showStatus("All marketplace plugins are up to date");
+								runtime.ctx.showStatus(t("All marketplace plugins are up to date"));
 							} else {
 								const lines = results.map(r => `  ${r.pluginId}: ${r.from} -> ${r.to}`);
-								runtime.ctx.showStatus(`Upgraded ${results.length} plugin(s):\n${lines.join("\n")}`);
+								runtime.ctx.showStatus(
+									t("Upgraded {count} plugin(s):\n{list}", {
+										count: results.length,
+										list: lines.join("\n"),
+									}),
+								);
 							}
 						}
 						break;
 					}
 					case "help": {
 						runtime.ctx.showStatus(
-							[
-								"Marketplace commands:",
-								"  /marketplace                              Browse and install plugins",
-								"  /marketplace add <source>                  Add a marketplace (e.g. owner/repo)",
-								"  /marketplace remove <name>                 Remove a marketplace",
-								"  /marketplace update [name]                 Re-fetch catalog(s)",
-								"  /marketplace list                          List configured marketplaces",
-								"  /marketplace discover [marketplace]        Browse available plugins",
-								"  /marketplace install <name@marketplace>    Install a plugin",
-								"  /marketplace uninstall <name@marketplace>  Uninstall a plugin",
-								"  /marketplace installed                     List installed plugins",
-								"  /marketplace upgrade [name@marketplace]    Upgrade plugin(s)",
-								"",
-								"Quick start:",
-								"  /marketplace add anthropics/claude-plugins-official",
-								"  /marketplace                               (opens interactive browser)",
-							].join("\n"),
+							t(
+								[
+									"Marketplace commands:",
+									"  /marketplace                              Browse and install plugins",
+									"  /marketplace add <source>                  Add a marketplace (e.g. owner/repo)",
+									"  /marketplace remove <name>                 Remove a marketplace",
+									"  /marketplace update [name]                 Re-fetch catalog(s)",
+									"  /marketplace list                          List configured marketplaces",
+									"  /marketplace discover [marketplace]        Browse available plugins",
+									"  /marketplace install <name@marketplace>    Install a plugin",
+									"  /marketplace uninstall <name@marketplace>  Uninstall a plugin",
+									"  /marketplace installed                     List installed plugins",
+									"  /marketplace upgrade [name@marketplace]    Upgrade plugin(s)",
+									"",
+									"Quick start:",
+									"  /marketplace add anthropics/claude-plugins-official",
+									"  /marketplace                               (opens interactive browser)",
+								].join("\n"),
+							),
 						);
 						break;
 					}
@@ -402,12 +427,17 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 						const marketplaces = await mgr.listMarketplaces();
 						if (marketplaces.length === 0) {
 							runtime.ctx.showStatus(
-								"No marketplaces configured.\n\nGet started:\n  /marketplace add anthropics/claude-plugins-official\n\nThen browse plugins with /marketplace or /marketplace discover",
+								t(
+									"No marketplaces configured.\n\nGet started:\n  /marketplace add anthropics/claude-plugins-official\n\nThen browse plugins with /marketplace or /marketplace discover",
+								),
 							);
 						} else {
 							const lines = marketplaces.map(m => `  ${m.name}  ${m.sourceUri}`);
 							runtime.ctx.showStatus(
-								`Marketplaces:\n${lines.join("\n")}\n\nUse /marketplace discover to browse plugins, or /marketplace help for all commands`,
+								t(
+									"Marketplaces:\n{list}\n\nUse /marketplace discover to browse plugins, or /marketplace help for all commands",
+									{ list: lines.join("\n") },
+								),
 							);
 						}
 						break;
@@ -415,19 +445,19 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 				}
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
-				runtime.ctx.showStatus(`Marketplace error: ${msg}`);
+				runtime.ctx.showStatus(t("Marketplace error: {error}", { error: msg }));
 			}
 		},
 	},
 	{
 		name: "plugins",
-		description: "View and manage installed plugins",
-		acpDescription: "Manage plugins",
+		description: t("View and manage installed plugins"),
+		acpDescription: t("Manage plugins"),
 		acpInputHint: "[list|enable|disable]",
 		subcommands: [
-			{ name: "list", description: "List all installed plugins (npm + marketplace)" },
-			{ name: "enable", description: "Enable a marketplace plugin", usage: "<name@marketplace>" },
-			{ name: "disable", description: "Disable a marketplace plugin", usage: "<name@marketplace>" },
+			{ name: "list", description: t("List all installed plugins (npm + marketplace)") },
+			{ name: "enable", description: t("Enable a marketplace plugin"), usage: "<name@marketplace>" },
+			{ name: "disable", description: t("Disable a marketplace plugin"), usage: "<name@marketplace>" },
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
@@ -436,14 +466,19 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 				if (verb === "enable" || verb === "disable") {
 					const parsed = parsePluginScopeArgs(
 						rest,
-						`Usage: /plugins ${verb} [--scope user|project] <name@marketplace>`,
+						t("Usage: /plugins {verb} [--scope user|project] <name@marketplace>", { verb }),
 					);
 					if ("error" in parsed) return usage(parsed.error, runtime);
 					const manager = await createMarketplaceManager(runtime);
 					const isEnable = verb === "enable";
 					await manager.setPluginEnabled(parsed.pluginId, isEnable, parsed.scope);
 					await runtime.reloadPlugins();
-					await runtime.output(`${isEnable ? "Enabled" : "Disabled"} ${parsed.pluginId}`);
+					await runtime.output(
+						t("{action} {name}", {
+							action: t(isEnable ? "Enabled" : "Disabled"),
+							name: parsed.pluginId,
+						}),
+					);
 					return commandConsumed();
 				}
 				// Default: list
@@ -451,7 +486,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 				const npmManager = new PluginManager();
 				const npmPlugins = await npmManager.list();
 				if (npmPlugins.length > 0) {
-					lines.push("npm plugins:");
+					lines.push(t("npm plugins:"));
 					for (const plugin of npmPlugins) {
 						const status = plugin.enabled === false ? " (disabled)" : "";
 						lines.push(`  ${plugin.name}@${plugin.version}${status}`);
@@ -462,7 +497,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 				const marketplacePlugins = await marketplaceManager.listInstalledPlugins();
 				if (marketplacePlugins.length > 0) {
 					if (lines.length > 0) lines.push("");
-					lines.push("marketplace plugins:");
+					lines.push(t("marketplace plugins:"));
 					for (const plugin of marketplacePlugins) {
 						const entry = plugin.entries[0];
 						const status = entry?.enabled === false ? " (disabled)" : "";
@@ -471,10 +506,10 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 					}
 				}
 
-				await runtime.output(lines.length === 0 ? "No plugins installed" : lines.join("\n"));
+				await runtime.output(lines.length === 0 ? t("No plugins installed") : lines.join("\n"));
 				return commandConsumed();
 			} catch (err) {
-				return usage(`Plugin error: ${errorMessage(err)}`, runtime);
+				return usage(t("Plugin error: {error}", { error: errorMessage(err) }), runtime);
 			}
 		},
 		handleTui: async (command, runtime) => {
@@ -500,7 +535,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 					case "disable": {
 						const parsed = parsePluginScopeArgs(
 							rest ?? "",
-							`Usage: /plugins ${sub} [--scope user|project] <name@marketplace>`,
+							t("Usage: /plugins {verb} [--scope user|project] <name@marketplace>", { verb: sub }),
 						);
 						if ("error" in parsed) {
 							runtime.ctx.showStatus(parsed.error);
@@ -508,7 +543,12 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 						}
 						const isEnable = sub === "enable";
 						await mgr.setPluginEnabled(parsed.pluginId, isEnable, parsed.scope);
-						runtime.ctx.showStatus(`${isEnable ? "Enabled" : "Disabled"} ${parsed.pluginId}`);
+						runtime.ctx.showStatus(
+							t("{action} {name}", {
+								action: t(isEnable ? "Enabled" : "Disabled"),
+								name: parsed.pluginId,
+							}),
+						);
 						break;
 					}
 					default: {
@@ -517,7 +557,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 						const npm = new PluginManager();
 						const npmPlugins = await npm.list();
 						if (npmPlugins.length > 0) {
-							lines.push("npm plugins:");
+							lines.push(t("npm plugins:"));
 							for (const p of npmPlugins) {
 								const status = p.enabled === false ? " (disabled)" : "";
 								lines.push(`  ${p.name}@${p.version}${status}`);
@@ -527,7 +567,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 						const mktPlugins = await mgr.listInstalledPlugins();
 						if (mktPlugins.length > 0) {
 							if (lines.length > 0) lines.push("");
-							lines.push("marketplace plugins:");
+							lines.push(t("marketplace plugins:"));
 							for (const p of mktPlugins) {
 								const entry = p.entries[0];
 								const status = entry?.enabled === false ? " (disabled)" : "";
@@ -537,7 +577,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 						}
 
 						if (lines.length === 0) {
-							runtime.ctx.showStatus("No plugins installed");
+							runtime.ctx.showStatus(t("No plugins installed"));
 						} else {
 							runtime.ctx.showStatus(lines.join("\n"));
 						}
@@ -545,22 +585,22 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 					}
 				}
 			} catch (err) {
-				runtime.ctx.showStatus(`Plugin error: ${err}`);
+				runtime.ctx.showStatus(t("Plugin error: {error}", { error: String(err) }));
 			}
 		},
 	},
 	{
 		name: "reload-plugins",
-		description: "Reload all plugins (skills, commands, hooks, tools, agents, MCP)",
-		acpDescription: "Reload all plugins",
+		description: t("Reload all plugins (skills, commands, hooks, tools, agents, MCP)"),
+		acpDescription: t("Reload all plugins"),
 		handle: async (_command, runtime) => {
 			await runtime.reloadPlugins();
-			await runtime.output("Plugins reloaded.");
+			await runtime.output(t("Plugins reloaded."));
 			return commandConsumed();
 		},
 		handleTui: async (_command, runtime) => {
 			await reloadTuiPluginState(runtime.ctx);
-			runtime.ctx.showStatus("Plugins reloaded.");
+			runtime.ctx.showStatus(t("Plugins reloaded."));
 			runtime.ctx.editor.setText("");
 		},
 	},

@@ -6,6 +6,12 @@
 
 - Fixed facts returned by recall being impossible to delete by their visible fact id; `forgetFact()` now deletes visible `facts` rows and invalidates recall caches.
 - Added a non-destructive fact-id visibility check so hosts can distinguish non-editable fact operations from genuinely missing memory ids.
+## [17.3.8] - 2026-08-19
+
+### Added
+
+- Added optional task metadata to the runtime LLM completion interface so hosts can tell an extraction call from a consolidation call and choose the matching prompt
+
 ## [17.3.5] - 2026-08-16
 
 ### Fixed

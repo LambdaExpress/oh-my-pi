@@ -86,12 +86,10 @@ describe("usage status-line segment", () => {
 		const content = stripVTControlCharacters(result.content);
 
 		expect(result.visible).toBe(true);
-		expect(content).toContain("5h");
 		expect(content).toContain("24%");
 		expect(content).toContain("30m");
-		expect(content).toContain("7d");
 		expect(content).toContain("8%");
-		expect(content).toContain("5d 21h");
+		expect(content).toContain("6d");
 	});
 
 	it("renders tiered usage fetched from provider reports", async () => {
@@ -118,9 +116,9 @@ describe("usage status-line segment", () => {
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
 		expect(content).toContain("prolite");
-		expect(content).toContain("5h");
+		expect(content).toContain("30m");
 		expect(content).toContain("24%");
-		expect(content).toContain("7d");
+		expect(content).toContain("6d");
 		expect(content).toContain("8%");
 	});
 
@@ -484,9 +482,9 @@ describe("usage status-line segment", () => {
 
 		expect(result.visible).toBe(true);
 		expect(content).toContain("prolite");
-		expect(content).toContain("5h");
+		expect(content).toContain("2h");
 		expect(content).toContain("50%");
-		expect(content).toContain("7d");
+		expect(content).toContain("2d");
 		expect(content).toContain("10%");
 	});
 
@@ -537,11 +535,10 @@ describe("usage status-line segment", () => {
 		const content = stripVTControlCharacters(result.content);
 
 		expect(result.visible).toBe(true);
-		expect(content).toContain("mo");
+		expect(content).toContain("31d");
 		// Match Cursor web dashboard flooring (1.88 → 1%), not Math.round → 2%.
 		expect(content).toContain("1%");
 		expect(content).not.toContain("2%");
-		expect(content).toContain("30d 23h");
 		expect(content).not.toContain("5h");
 		expect(content).not.toContain("7d");
 	});
@@ -568,7 +565,7 @@ describe("usage status-line segment", () => {
 		await flushUsageRefresh();
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
-		expect(content).toContain("mo");
+		expect(content).toContain("31d");
 		expect(content).toContain("13%");
 	});
 
@@ -638,11 +635,11 @@ describe("usage status-line segment", () => {
 		await flushUsageRefresh();
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
-		expect(content).toContain("5h");
+		expect(content).toContain("2h");
 		expect(content).toContain("12%");
-		expect(content).toContain("7d");
+		expect(content).toContain("4d");
 		expect(content).toContain("8%");
-		expect(content).toContain("mo");
+		expect(content).toContain("7d");
 		expect(content).toContain("42%");
 	});
 
@@ -703,9 +700,9 @@ describe("usage status-line segment", () => {
 		await flushUsageRefresh();
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
-		expect(content).toContain("5h");
+		expect(content).toContain("30m");
 		expect(content).toContain("24%");
-		expect(content).toContain("7d");
+		expect(content).toContain("6d");
 		expect(content).toContain("8%");
 	});
 

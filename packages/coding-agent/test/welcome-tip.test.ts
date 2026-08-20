@@ -1,12 +1,16 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { renderWelcomeTip } from "@oh-my-pi/pi-coding-agent/modes/components/welcome";
 import { initTheme, setTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../src/i18n";
 
 describe("renderWelcomeTip", () => {
 	beforeAll(async () => {
 		await initTheme(false);
 	});
+
+	beforeEach(() => setLocale("en"));
+	afterEach(() => setLocale(null));
 
 	it("wraps long tips under the label instead of truncating", () => {
 		const tip = "Next time you see spaghetti try creating a TTSR rule that prevents this pattern before it spreads";

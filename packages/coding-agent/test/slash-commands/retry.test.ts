@@ -1,6 +1,10 @@
-import { describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
+import { setLocale } from "../../src/i18n";
+
+beforeEach(() => setLocale("en"));
+afterEach(() => setLocale(null));
 
 function createRuntime(didRetry: boolean) {
 	const retry = vi.fn(async () => didRetry);

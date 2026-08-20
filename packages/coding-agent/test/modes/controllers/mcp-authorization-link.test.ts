@@ -4,6 +4,7 @@ import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-ag
 import { MCPAuthorizationLinkPrompt } from "@oh-my-pi/pi-coding-agent/modes/controllers/mcp-command-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../../../src/i18n";
 
 const OSC = "\x1b]";
 const BEL = "\x07";
@@ -51,12 +52,14 @@ function reassembleUrl(plainLines: string[], label: string): string {
 
 describe("MCPAuthorizationLinkPrompt", () => {
 	beforeEach(async () => {
+		setLocale("en");
 		initTheme();
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true, cwd: process.cwd() });
 	});
 
 	afterEach(() => {
+		setLocale(null);
 		settings.clearOverride("tui.hyperlinks");
 		resetSettingsForTest();
 	});

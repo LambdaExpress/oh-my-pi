@@ -12,7 +12,7 @@
  * check risks a stale/absent lookup — dropping the intended notification, or
  * worse, pairing a misleading "Complete" toast with an error/abort.
  */
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -25,6 +25,7 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import type { AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import * as titleGenerator from "@oh-my-pi/pi-coding-agent/utils/title-generator";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../../../src/i18n";
 
 const originalWarpProtocolVersion = process.env.WARP_CLI_AGENT_PROTOCOL_VERSION;
 
@@ -37,7 +38,12 @@ function restoreWarpProtocolEnvironment(): void {
 }
 
 beforeAll(() => {
+	setLocale("en");
 	initTheme();
+});
+
+afterAll(() => {
+	setLocale(null);
 });
 
 beforeEach(async () => {
@@ -89,6 +95,7 @@ function makeTurnEndContext(options: { lastAssistantMessage?: AssistantMessage }
 	};
 	return {
 		isInitialized: true,
+		settings,
 		loadingAnimation: undefined,
 		autoCompactionLoader: undefined,
 		retryLoader: undefined,

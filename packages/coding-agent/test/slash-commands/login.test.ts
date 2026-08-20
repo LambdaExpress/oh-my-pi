@@ -1,7 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { OAuthManualInputManager } from "@oh-my-pi/pi-coding-agent/modes/oauth-manual-input";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
+import { setLocale } from "../../src/i18n";
+
+beforeEach(() => setLocale("en"));
+afterEach(() => setLocale(null));
 
 type RuntimeHarness = {
 	runtime: { ctx: InteractiveModeContext };

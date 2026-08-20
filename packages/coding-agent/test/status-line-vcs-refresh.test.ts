@@ -710,7 +710,11 @@ describe("StatusLineComponent git watcher survives atomic HEAD renames", () => {
 		vi.spyOn(git.branch, "default").mockReturnValue(Promise.withResolvers<string | null>().promise);
 		vi.spyOn(git.status, "summary").mockReturnValue(Promise.withResolvers<GitStatus | null>().promise);
 		vi.spyOn(jj.repo, "rootSync").mockReturnValue(null);
-		const watchFileSpy = vi.spyOn(nodeFs, "watchFile");
+		let watchListener: ((curr: nodeFs.Stats, prev: nodeFs.Stats) => void) | undefined;
+		const watchFileSpy = vi.spyOn(nodeFs, "watchFile").mockImplementation(((_filename, _options, listener) => {
+			watchListener = listener as (curr: nodeFs.Stats, prev: nodeFs.Stats) => void;
+			return { unref: vi.fn() } as unknown as nodeFs.StatWatcher;
+		}) as typeof nodeFs.watchFile);
 
 		setProjectDir(repoDir);
 		const component = new StatusLineComponent(makeSession());
@@ -738,6 +742,7 @@ describe("StatusLineComponent git watcher survives atomic HEAD renames", () => {
 
 		const switchTo = async (branchName: string) => {
 			const gitDir = path.join(repoDir, ".git");
+			const headPath = path.join(gitDir, "HEAD");
 			const headLock = path.join(gitDir, "HEAD.lock");
 			// Reproduce Git's relevant integration boundary directly: write the
 			// lock, then atomically replace HEAD. Spawning Git adds process startup
@@ -746,7 +751,11 @@ describe("StatusLineComponent git watcher survives atomic HEAD renames", () => {
 			branchChanged = Promise.withResolvers<void>();
 			expectedBranch = branchName;
 			const fired = branchChanged.promise;
-			await fs.rename(headLock, path.join(gitDir, "HEAD"));
+			const previous = await fs.stat(headPath);
+			await fs.rename(headLock, headPath);
+			const current = await fs.stat(headPath);
+			if (!watchListener) throw new Error("HEAD stat watcher was not installed");
+			watchListener(current, previous);
 			await fired;
 			expectedBranch = null;
 		};

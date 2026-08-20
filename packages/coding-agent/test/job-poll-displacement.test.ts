@@ -171,6 +171,8 @@ describe("EventController displaces consecutive waiting polls", () => {
 			init: vi.fn(async () => {}),
 			ui: { requestRender: vi.fn() },
 			statusLine: { invalidate: vi.fn() },
+			sshTransferHud: { markPersisted: vi.fn(), size: 0 },
+			sshTransferContainer: { clear: vi.fn(), addChild: vi.fn() },
 			updateEditorTopBorder: vi.fn(),
 			toolOutputExpanded: false,
 			pendingTools,

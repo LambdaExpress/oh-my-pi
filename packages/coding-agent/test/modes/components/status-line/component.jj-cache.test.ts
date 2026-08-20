@@ -85,6 +85,11 @@ beforeEach(() => {
 		// the real `git status` subprocess. Keeps the git segment's status empty so
 		// the visible content is exactly the branch label.
 		spyOn(jj.status, "summary").mockResolvedValue({ staged: 0, unstaged: 0, untracked: 0 }),
+		// The first async jj status read returns no cached value synchronously,
+		// so the status line also probes its git fallback. Keep that probe inside
+		// this unit boundary; a real child process would retain tmpA as its cwd on
+		// Windows until exit and make deterministic cleanup impossible.
+		spyOn(git.status, "summary").mockResolvedValue({ staged: 0, unstaged: 0, untracked: 0 }),
 		// Map each controlled project dir to a stable virtual jj root.
 		spyOn(jj.repo, "rootSync").mockImplementation(cwd => {
 			if (cwd === tmpA) return ROOT_A;

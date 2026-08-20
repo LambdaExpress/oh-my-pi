@@ -4,6 +4,7 @@ import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/typ
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../src/i18n";
 
 /**
  * Regression for issue #6337: a status message presented while the auto-theme
@@ -26,6 +27,7 @@ function isSingleComponent(component: Component | readonly Component[]): compone
 
 describe("lazy status color re-resolves on theme switch", () => {
 	beforeEach(async () => {
+		setLocale("en");
 		themeModule.stopThemeWatcher();
 		const dark = await themeModule.getThemeByName("dark");
 		if (!dark) throw new Error("Failed to load dark theme for tests");
@@ -34,6 +36,7 @@ describe("lazy status color re-resolves on theme switch", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		themeModule.stopThemeWatcher();
 		const dark = await themeModule.getThemeByName("dark");
 		if (dark) themeModule.setThemeInstance(dark);

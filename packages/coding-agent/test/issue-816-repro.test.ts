@@ -10,6 +10,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 describe("issue #816 — plan mode pendingModelSwitch leak", () => {
 	let tempDir: TempDir;
@@ -23,6 +24,7 @@ describe("issue #816 — plan mode pendingModelSwitch leak", () => {
 	});
 
 	beforeEach(async () => {
+		setLocale("en");
 		resetSettingsForTest();
 		tempDir = TempDir.createSync("@pi-issue-816-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
@@ -49,6 +51,7 @@ describe("issue #816 — plan mode pendingModelSwitch leak", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		vi.restoreAllMocks();
 		mode?.stop();
 		HistoryStorage.resetInstance();

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, type Mock, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,6 +6,15 @@ import { TodoCommandController } from "@oh-my-pi/pi-coding-agent/modes/controlle
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { type TodoPhase, USER_TODO_EDIT_CUSTOM_TYPE } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../../../src/i18n";
+
+beforeAll(() => {
+	setLocale("en");
+});
+
+afterAll(() => {
+	setLocale(null);
+});
 
 function createContext(cwd: string, phases: TodoPhase[]): InteractiveModeContext {
 	return {

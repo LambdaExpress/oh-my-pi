@@ -1,10 +1,16 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { HistorySearchComponent } from "@oh-my-pi/pi-coding-agent/modes/components/history-search";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { HistoryEntry, HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storage";
+import { setLocale } from "../../../src/i18n";
 
 beforeAll(async () => {
+	setLocale("en");
 	await initTheme();
+});
+
+afterAll(() => {
+	setLocale(null);
 });
 
 const NOW_SECONDS = Math.floor(Date.now() / 1000);

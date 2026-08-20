@@ -282,7 +282,7 @@ describe("selector navigation keybindings", () => {
 	it("uses PageUp and PageDown to move by a visible page in the session tree", () => {
 		const root = createMessageNode("node-0", null, "Message 0");
 		let parent = root;
-		for (let index = 1; index <= 25; index++) {
+		for (let index = 1; index <= 40; index++) {
 			const child = createMessageNode(`node-${index}`, parent.entry.id, `Message ${index}`);
 			parent.children.push(child);
 			parent = child;
@@ -302,7 +302,7 @@ describe("selector navigation keybindings", () => {
 		selector.handleInput("\x1b[5~");
 		selector.handleInput("\n");
 
-		expect(selected).toEqual(["node-20", "node-0"]);
+		expect(selected).toEqual(["node-30", "node-0"]);
 	});
 
 	it("uses tui.select.up in the user message selector", () => {

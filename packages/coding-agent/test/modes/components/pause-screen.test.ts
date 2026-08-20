@@ -1,7 +1,8 @@
-import { afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { agentPauseGate } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../../src/config/settings";
+import { setLocale } from "../../../src/i18n";
 import {
 	PauseScreenComponent,
 	type PauseScreenHost,
@@ -49,10 +50,15 @@ function makeHost(rows = 24): FakeHost {
 
 describe("pause screen", () => {
 	beforeAll(async () => {
+		setLocale("en");
 		await Settings.init({ inMemory: true });
 		const loaded = await getThemeByName("dark");
 		if (!loaded) throw new Error("theme unavailable");
 		setThemeInstance(loaded);
+	});
+
+	afterAll(() => {
+		setLocale(null);
 	});
 
 	afterEach(() => {

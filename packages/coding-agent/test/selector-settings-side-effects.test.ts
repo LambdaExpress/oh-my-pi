@@ -15,18 +15,22 @@ import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { ResolvedRoleModel } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { AgentStorage } from "@oh-my-pi/pi-coding-agent/session/agent-storage";
 import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 let settingsState: SettingsTestState | undefined;
 
 beforeEach(async () => {
+	setLocale("en");
 	settingsState = beginSettingsTest();
 	await Settings.init({ inMemory: true });
 });
 
 afterEach(() => {
+	setLocale(null);
 	restoreSettingsTestState(settingsState);
 	settingsState = undefined;
 });
@@ -272,6 +276,99 @@ describe("selector setting side effects", () => {
 				}),
 			);
 			expect(setThinkingLevel).toHaveBeenLastCalledWith(AUTO_THINKING, true);
+		} finally {
+			hub.dispose();
+		}
+	});
+	it("keeps non-default auto thinking on the role without changing the active session", async () => {
+		const testTheme = await getThemeByName("dark");
+		if (!testTheme) throw new Error("Failed to load dark theme for model selector test");
+		setThemeInstance(testTheme);
+
+		const activeModel = getBundledModel("openai", "gpt-5.5");
+		const taskModel = getBundledModel("openai-codex", "gpt-5.6-sol");
+		if (!activeModel || !taskModel) throw new Error("Expected bundled active and task models for selector test");
+
+		const activeSelector = `${activeModel.provider}/${activeModel.id}`;
+		const taskSelector = `${taskModel.provider}/${taskModel.id}`;
+		const settings = Settings.isolated({
+			defaultThinkingLevel: ThinkingLevel.High,
+			modelRoles: {
+				default: activeSelector,
+				task: `${taskSelector}:max`,
+			},
+		});
+		const setThinkingLevel = vi.fn();
+		const assignmentApplied = Promise.withResolvers<void>();
+		const showStatus = vi.fn((message: string) => {
+			if (message.startsWith("TASK model:")) assignmentApplied.resolve();
+		});
+		let captured: unknown;
+		const controller = new SelectorController({
+			ui: {
+				requestRender: vi.fn(),
+				setFocus: vi.fn(),
+				showOverlay: vi.fn((component: unknown) => {
+					captured = component;
+					return { hide: vi.fn() };
+				}),
+				terminal: { rows: 40 },
+			},
+			editorContainer: { clear: vi.fn(), addChild: vi.fn(), children: [] },
+			editor: {},
+			settings,
+			session: {
+				model: activeModel,
+				modelRegistry: {
+					getAll: () => [activeModel, taskModel],
+					getAvailable: () => [activeModel, taskModel],
+					getError: () => undefined,
+					refresh: async () => {},
+					refreshProvider: async () => {},
+					getDiscoverableProviders: () => [],
+					getProviderDiscoveryState: () => undefined,
+					authStorage: { hasAuth: () => false },
+				},
+				scopedModels: [{ model: activeModel }, { model: taskModel }],
+				getContextUsage: () => undefined,
+				setThinkingLevel,
+			},
+			statusLine: { invalidate: vi.fn() },
+			updateEditorBorderColor: vi.fn(),
+			keybindings: { getKeys: () => [] },
+			showStatus,
+			showError: vi.fn(),
+		} as unknown as InteractiveModeContext);
+
+		controller.showModelSelector();
+		const hub = captured as
+			| { handleInput(data: string): void; render(width: number): string[]; dispose(): void }
+			| undefined;
+		if (!hub) throw new Error("Expected model hub overlay to be shown");
+		try {
+			hub.handleInput("\x1b[A"); // All models → Roles.
+			hub.handleInput("\n"); // Enter the role rows.
+			for (let i = 0; i < 8; i++) hub.handleInput("\x1b[B"); // Default → task.
+			hub.handleInput("t");
+
+			const levels = [ThinkingLevel.Inherit, ThinkingLevel.Off, AUTO_THINKING, ...getSupportedEfforts(taskModel)];
+			const autoIndex = levels.indexOf(AUTO_THINKING);
+			const maxIndex = levels.indexOf(ThinkingLevel.Max);
+			if (maxIndex < autoIndex) throw new Error("Expected task model to support max thinking");
+			for (let i = autoIndex; i < maxIndex; i++) hub.handleInput("\x1b[D");
+			hub.handleInput("\n");
+			await assignmentApplied.promise;
+
+			expect(settings.getModelRole("task")).toBe(`${taskSelector}:auto`);
+			expect(settings.get("defaultThinkingLevel")).toBe(ThinkingLevel.High);
+			expect(setThinkingLevel).not.toHaveBeenCalled();
+			const lines = hub.render(220).map(line => stripVTControlCharacters(line));
+			const defaultRow = lines.find(line => line.includes("DEFAULT"));
+			const taskRow = lines.find(line => line.includes("TASK"));
+			expect(defaultRow).toContain("high");
+			expect(defaultRow).not.toContain("auto");
+			expect(taskRow).toContain("auto");
+			expect(taskRow).not.toContain("max");
 		} finally {
 			hub.dispose();
 		}
@@ -761,6 +858,7 @@ describe("selector setting side effects", () => {
 				hub.handleInput("\x1b[B"); // Project scope → global scope.
 				hub.handleInput("\n"); // Save the hidden global fallback.
 				await globalAssignmentApplied.promise;
+				await settings.flush();
 
 				expect(settings.getGlobalModelRole("default")).toBe(projectSelector);
 				expect(settings.getModelRole("default")).toBe(overlaySelector);
@@ -770,6 +868,7 @@ describe("selector setting side effects", () => {
 				hub.dispose();
 			}
 		} finally {
+			AgentStorage.resetInstance();
 			if (fs.existsSync(testDir)) removeSyncWithRetries(testDir);
 		}
 	});

@@ -1,9 +1,10 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
 	HookSelectorComponent,
 	type HookSelectorSlider,
 } from "@oh-my-pi/pi-coding-agent/modes/components/hook-selector";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { setLocale } from "../../../src/i18n";
 
 const LEFT = "\x1b[D";
 const RIGHT = "\x1b[C";
@@ -13,7 +14,12 @@ const KITTY_K = "\x1b[107;1u";
 const KITTY_L = "\x1b[108;1u";
 
 beforeAll(async () => {
+	setLocale("en");
 	await initTheme();
+});
+
+afterAll(() => {
+	setLocale(null);
 });
 
 interface Harness {

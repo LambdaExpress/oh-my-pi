@@ -6,14 +6,17 @@ import {
 } from "@oh-my-pi/pi-coding-agent/modes/components/compaction-summary-message";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { setLocale } from "../../../src/i18n";
 
 beforeAll(async () => {
+	setLocale("en");
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	await initTheme(false);
 });
 
 afterAll(() => {
+	setLocale(null);
 	resetSettingsForTest();
 });
 
@@ -39,7 +42,7 @@ describe("handoff summary divider", () => {
 
 		expect(component).toBeInstanceOf(HandoffSummaryMessageComponent);
 		const collapsed = Bun.stripANSI(component!.render(80).join("\n"));
-		expect(collapsed).toContain("handoff");
+		expect(collapsed).toContain("handed-off");
 		expect(collapsed).toContain("ctrl+o");
 		expect(collapsed).not.toContain("[handoff]");
 		expect(collapsed).not.toContain("Continue the resize fix");

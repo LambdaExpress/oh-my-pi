@@ -28,7 +28,13 @@ import { customSubmissionSignature, userSubmissionSignature } from "../../modes/
 import { shouldCollapseCompactedHistoryForDisplay } from "../../modes/utils/transcript-render-helpers";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
-import { isSilentAbort, isUserInterruptAbort, readQueueChipText, resolveAbortLabel } from "../../session/messages";
+import {
+	isSilentAbort,
+	isUserInterruptAbort,
+	isUserInvokedSkillPrompt,
+	readQueueChipText,
+	resolveAbortLabel,
+} from "../../session/messages";
 import { AUTO_THINKING } from "../../thinking";
 import { type ApprovalMode, resolveApproval } from "../../tools/approval";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
@@ -279,7 +285,9 @@ export class EventController {
 	 * user explicitly toggles completed runs. The input path calls this before
 	 * flushing a deferred ConPTY scrollback rebuild so that one destructive replay
 	 * contains the collapsed transcript, not the stale expanded frame.
-	 * Programmatic submissions fall back to the agent_start call.
+	 * Persisted recovery is intentionally limited to these current-UI actions;
+	 * lagging agent event handlers must not derive collapses from transcript
+	 * messages that were persisted after the event they are processing.
 	 */
 	commitCompletedRunCollapses(options: { rebuild?: boolean } = {}): boolean {
 		const committedPendingCollapse = this.#flushPendingCompletedRunCollapses();
@@ -902,9 +910,14 @@ export class EventController {
 	}
 
 	async #handleAgentStart(_event: Extract<AgentSessionEvent, { type: "agent_start" }>): Promise<void> {
-		// The user just sent content: commit collapses parked by completed runs.
-		// This is the automatic fallback when Alt+O did not commit them earlier.
-		if (this.commitCompletedRunCollapses()) this.ctx.ui.resetDisplay();
+		// Commit only records parked by this controller's preceding event stream.
+		// Session listeners are fire-and-forget, so this handler may process an old
+		// agent_start after newer turns already reached persisted history. Recovering
+		// from that mutable history here would let an old event consume future runs.
+		if (this.#flushPendingCompletedRunCollapses()) {
+			this.ctx.rebuildChatFromMessages();
+			this.ctx.ui.resetDisplay();
+		}
 		// An Enter force-flush parks the interrupted run's span (kept fully
 		// expanded) and starts the continuation on a fresh span, so the final
 		// commit can produce one independent summary per run instead of merging
@@ -1003,10 +1016,18 @@ export class EventController {
 			}
 			this.#renderedCustomMessages.add(signature);
 			this.#resetReadGroup();
-			this.ctx.addMessageToChat(event.message);
 			if (event.message.role === "custom" && event.message.customType === "async-result") {
 				this.ctx.sshTransferHud.markPersisted(readPersistedJobIds(event.message.details));
 				this.#syncSshTransferHud();
+			}
+			if (
+				event.message.role === "custom" &&
+				this.ctx.optimisticSkillMessagePending &&
+				isUserInvokedSkillPrompt(event.message)
+			) {
+				this.ctx.reconcileOptimisticSkillMessage(event.message);
+			} else {
+				this.ctx.addMessageToChat(event.message);
 			}
 			// Queued custom-message chips are derived from the agent queue; refresh the
 			// pending bar when the queued custom is consumed so the chip disappears
@@ -2303,13 +2324,15 @@ export class EventController {
 						? `${t("Idle")} `
 						: "";
 		const actionLabel =
-			event.action === "handoff"
-				? t("Auto-handoff")
-				: event.action === "shake"
-					? t("Auto-shake")
-					: event.action === "snapcompact"
-						? t("Auto-snapcompact")
-						: t("Auto context-full maintenance");
+			event.action === "remote"
+				? t("Auto server compaction")
+				: event.action === "handoff"
+					? t("Auto-handoff")
+					: event.action === "shake"
+						? t("Auto-shake")
+						: event.action === "snapcompact"
+							? t("Auto-snapcompact")
+							: t("Auto context-full maintenance");
 		this.ctx.autoCompactionLoader = new Loader(
 			this.ctx.ui,
 			spinner => theme.fg("accent", spinner),
@@ -2331,17 +2354,20 @@ export class EventController {
 			this.ctx.statusContainer.disposeChildren();
 		}
 		const isHandoffAction = event.action === "handoff";
+		const isRemoteAction = event.action === "remote";
 		const isShakeAction = event.action === "shake";
 		const isSnapcompactAction = event.action === "snapcompact";
 		if (event.aborted) {
 			this.ctx.showStatus(
 				isHandoffAction
 					? t("Auto-handoff cancelled")
-					: isShakeAction
-						? t("Auto-shake cancelled")
-						: isSnapcompactAction
-							? t("Auto-snapcompact cancelled")
-							: t("Auto context-full maintenance cancelled"),
+					: isRemoteAction
+						? t("Auto server compaction cancelled")
+						: isShakeAction
+							? t("Auto-shake cancelled")
+							: isSnapcompactAction
+								? t("Auto-snapcompact cancelled")
+								: t("Auto context-full maintenance cancelled"),
 			);
 		} else if (isShakeAction) {
 			// Shake produces no CompactionResult; rebuild on success, suppress benign skips.
@@ -2399,6 +2425,8 @@ export class EventController {
 			// to compact yet. Not a failure — suppress the warning.
 		} else if (isSnapcompactAction) {
 			this.ctx.showWarning(t("Auto-snapcompact maintenance failed; continuing without maintenance"));
+		} else if (isRemoteAction) {
+			this.ctx.showWarning(t("Auto server compaction failed; continuing without maintenance"));
 		} else {
 			this.ctx.showWarning(t("Auto context-full maintenance failed; continuing without maintenance"));
 		}

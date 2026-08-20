@@ -230,7 +230,13 @@ CREATE TABLE IF NOT EXISTS meta (
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
 `);
 
-		const settingsInfo = this.#db.prepare("PRAGMA table_info(settings)").all() as Array<{ name?: string }>;
+		const settingsInfoStmt = this.#db.prepare("PRAGMA table_info(settings)");
+		let settingsInfo: Array<{ name?: string }>;
+		try {
+			settingsInfo = settingsInfoStmt.all() as Array<{ name?: string }>;
+		} finally {
+			settingsInfoStmt.finalize();
+		}
 		const hasSettingsTable = settingsInfo.length > 0;
 		const hasKey = settingsInfo.some(column => column.name === "key");
 		const hasValue = settingsInfo.some(column => column.name === "value");
@@ -285,9 +291,13 @@ CREATE TABLE settings (
 			migrate(legacySettings);
 		}
 
-		const versionRow = this.#db.prepare("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1").get() as
-			| { version?: number }
-			| undefined;
+		const versionStmt = this.#db.prepare("SELECT version FROM schema_version ORDER BY version DESC LIMIT 1");
+		let versionRow: { version?: number } | undefined;
+		try {
+			versionRow = versionStmt.get() as { version?: number } | undefined;
+		} finally {
+			versionStmt.finalize();
+		}
 		const schemaVersion = typeof versionRow?.version === "number" ? versionRow.version : 0;
 		if (versionRow?.version !== undefined && versionRow.version !== SCHEMA_VERSION) {
 			logger.warn("AgentStorage schema version mismatch", {
@@ -298,7 +308,12 @@ CREATE TABLE settings (
 		if (schemaVersion < SCHEMA_VERSION) {
 			this.#migrateSchema(schemaVersion);
 		}
-		this.#db.prepare("INSERT OR REPLACE INTO schema_version(version) VALUES (?)").run(SCHEMA_VERSION);
+		const updateVersionStmt = this.#db.prepare("INSERT OR REPLACE INTO schema_version(version) VALUES (?)");
+		try {
+			updateVersionStmt.run(SCHEMA_VERSION);
+		} finally {
+			updateVersionStmt.finalize();
+		}
 	}
 
 	#migrateSchema(fromVersion: number): void {
@@ -315,7 +330,12 @@ CREATE TABLE settings (
 			// Purge the old aggregates and re-arm the stats.db backfill so
 			// history is re-imported through the corrected fold.
 			this.#db.run("DELETE FROM model_perf");
-			this.#db.prepare("DELETE FROM meta WHERE key = ?").run(MODEL_PERF_BACKFILL_KEY);
+			const resetBackfillStmt = this.#db.prepare("DELETE FROM meta WHERE key = ?");
+			try {
+				resetBackfillStmt.run(MODEL_PERF_BACKFILL_KEY);
+			} finally {
+				resetBackfillStmt.finalize();
+			}
 		}
 	}
 

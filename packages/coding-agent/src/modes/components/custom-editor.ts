@@ -168,8 +168,24 @@ function normalizePastedPath(path: string): string {
 		try {
 			return fileURLToPath(unquoted);
 		} catch {
-			// Malformed file URL: drop through to the shell-unescape branch
-			// so the caller can still reject it as a non-explicit path.
+			// A POSIX file URL forwarded from macOS is not a valid local file URL
+			// on Windows because it has no drive letter. Preserve that foreign
+			// absolute path while keeping encoded separators invalid, matching
+			// fileURLToPath's ambiguity guard.
+			try {
+				const url = new URL(unquoted);
+				if (
+					url.protocol === "file:" &&
+					!url.hostname &&
+					url.pathname.startsWith("/") &&
+					!/%(?:2f|5c)/i.test(url.pathname)
+				) {
+					return decodeURIComponent(url.pathname);
+				}
+			} catch {
+				// Malformed file URL: drop through to the shell-unescape branch
+				// so the caller can still reject it as a non-explicit path.
+			}
 		}
 	}
 	return unquoted.replace(SHELL_ESCAPED_PATH_CHAR_REGEX, "$1");

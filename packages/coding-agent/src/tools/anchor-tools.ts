@@ -213,7 +213,7 @@ async function listDirectory(path: string, maxOutputChars: number): Promise<stri
 		const rightPath = right.slice(right.indexOf("\t") + 1);
 		return codepointCompare(leftPath, rightPath);
 	});
-	const listing = maybeTruncate(rows.join("\n") + "\n", maxOutputChars);
+	const listing = maybeTruncate(`${rows.join("\n")}\n`, maxOutputChars);
 	return `Here're the files and directories up to 2 levels deep in ${path}, excluding hidden items, node_modules, and Python cache directories:\n${listing}\n`;
 }
 

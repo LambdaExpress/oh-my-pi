@@ -1,8 +1,9 @@
-import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
+import { setLocale } from "../../src/i18n";
 
 function assistantText(text: string): AgentMessage {
 	return { role: "assistant", content: [{ type: "text", text }] } as unknown as AgentMessage;
@@ -37,7 +38,10 @@ function createRuntimeHarness(messages: AgentMessage[]) {
 	};
 }
 
+beforeEach(() => setLocale("en"));
+
 afterEach(() => {
+	setLocale(null);
 	vi.restoreAllMocks();
 });
 

@@ -1,9 +1,13 @@
-import { describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import {
 	BUILTIN_SLASH_COMMAND_DEFS,
 	executeBuiltinSlashCommand,
 } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
+import { setLocale } from "../../src/i18n";
+
+beforeEach(() => setLocale("en"));
+afterEach(() => setLocale(null));
 
 function createRuntime() {
 	const showProviderSetup = vi.fn(async () => {});

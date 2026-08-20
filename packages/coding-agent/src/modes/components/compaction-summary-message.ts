@@ -1,7 +1,23 @@
 import { Box, type Component, Markdown } from "@oh-my-pi/pi-tui";
+import { formatNumber } from "@oh-my-pi/pi-utils";
 import { t } from "../../i18n";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import type { BranchSummaryMessage, CompactionSummaryMessage, CustomMessage } from "../../session/messages";
+
+/** Divider labels per compaction method; unknown/legacy methods fall back to "compacted". */
+const COMPACTION_METHOD_LABELS: Record<string, string> = {
+	remote: "remote-compacted",
+	soft: "soft-compacted",
+	handoff: "handed-off",
+	snapcompact: "snap-compacted",
+	shake: "shaken",
+};
+
+/** `256K→20K` amount badge, or undefined when the entry predates `tokensAfter`. */
+function compactionAmount(message: CompactionSummaryMessage): string | undefined {
+	if (message.tokensAfter === undefined || message.tokensBefore <= 0) return undefined;
+	return `${formatNumber(message.tokensBefore)}→${formatNumber(message.tokensAfter)}`;
+}
 
 interface SummaryDividerOptions {
 	label: () => string;
@@ -77,9 +93,12 @@ class SummaryDividerComponent implements Component {
 /**
  * Compaction point in the transcript, rendered as a slim horizontal divider:
  *
- *   ──────── 📷 compacted · ctrl+o ────────
+ *   ──────── 📷 remote-compacted · 256K→20K · ctrl+o ────────
  *
- * The conversation above the divider stays visible (display transcript keeps
+ * The label names the maintenance method that fired (remote/soft/handoff/
+ * snapcompact; "compacted" for legacy or extension-provided entries) and the
+ * before → after context amounts when the entry recorded them. The
+ * conversation above the divider stays visible (display transcript keeps
  * full history); only the LLM context was reset. Expanding (ctrl+o) reveals
  * the compaction summary below the divider.
  */
@@ -90,12 +109,18 @@ export class CompactionSummaryMessageComponent implements Component {
 		this.#divider = new SummaryDividerComponent({
 			// A dead-end warning stamped by the progress guard badges the bar;
 			// the full text lives in the ctrl+o detail block below.
-			label: () =>
-				this.message.warning
-					? `${theme.icon.camera} ${t("compacted")} ${theme.fg("warning", theme.icon.warning)}`
-					: `${theme.icon.camera} ${t("compacted")}`,
+			label: () => this.#label(),
 			detailMarkdown: () => this.#detailMarkdown(),
 		});
+	}
+
+	#label(): string {
+		const name = t((this.message.method && COMPACTION_METHOD_LABELS[this.message.method]) || "compacted");
+		let label = `${theme.icon.camera} ${name}`;
+		const amount = compactionAmount(this.message);
+		if (amount) label += `${theme.sep.dot}${amount}`;
+		if (this.message.warning) label += ` ${theme.fg("warning", theme.icon.warning)}`;
+		return label;
 	}
 
 	setExpanded(expanded: boolean): void {
@@ -111,7 +136,10 @@ export class CompactionSummaryMessageComponent implements Component {
 	}
 
 	#detailMarkdown(): string {
-		const tokenStr = this.message.tokensBefore.toLocaleString();
+		const tokenStr =
+			this.message.tokensAfter !== undefined
+				? `${this.message.tokensBefore.toLocaleString()} to ${this.message.tokensAfter.toLocaleString()}`
+				: this.message.tokensBefore.toLocaleString();
 		const frameCount = this.message.images?.length ?? 0;
 		const frameNote =
 			frameCount > 0
@@ -134,7 +162,7 @@ export class HandoffSummaryMessageComponent implements Component {
 
 	constructor(private readonly message: CustomMessage<unknown>) {
 		this.#divider = new SummaryDividerComponent({
-			label: () => `${theme.icon.context} ${t("handoff")}`,
+			label: () => `${theme.icon.context} ${t("handed-off")}`,
 			detailMarkdown: () => this.#detailMarkdown(),
 		});
 	}

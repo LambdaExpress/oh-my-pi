@@ -1533,7 +1533,8 @@ export class CommandController {
 		this.ctx.ui.requestRender();
 
 		try {
-			// Handoff generation runs as a oneshot request; the new session is shown after it completes.
+			// Handoff generation runs as a oneshot request; the document is then
+			// committed as a compaction entry on this session.
 			const result = await this.ctx.session.handoff(customInstructions);
 
 			if (!result) {
@@ -1541,7 +1542,7 @@ export class CommandController {
 				return;
 			}
 
-			// Rebuild chat from the new session (which now contains the handoff document).
+			// Rebuild chat from the session, which now shows the handoff compaction divider.
 			this.ctx.clearTransientSessionUi();
 			await this.ctx.renderInitialMessages();
 			this.ctx.statusLine.invalidate();
@@ -1551,7 +1552,7 @@ export class CommandController {
 			this.ctx.present([
 				new Spacer(1),
 				new Text(
-					`${theme.fg("accent", `${theme.status.success} ${t("New session started with handoff context")}`)}`,
+					`${theme.fg("accent", `${theme.status.success} ${t("Context handed off and compacted in place")}`)}`,
 					1,
 					1,
 				),

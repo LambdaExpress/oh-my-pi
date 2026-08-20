@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, mock, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock, vi } from "bun:test";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { runOnboardingSetup } from "@oh-my-pi/pi-coding-agent/commands/setup";
@@ -19,6 +19,7 @@ import { SetupWizardComponent } from "@oh-my-pi/pi-coding-agent/modes/setup-wiza
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { SEARCH_PROVIDER_OPTIONS, SEARCH_PROVIDER_ORDER } from "@oh-my-pi/pi-coding-agent/web/search/types";
+import { setLocale } from "../src/i18n";
 
 function fakeContextWithConfiguredModel(): InteractiveModeContext {
 	return {
@@ -44,7 +45,12 @@ function testScene(id: string, minVersion: number, shouldRun?: () => boolean): S
 	};
 }
 
+beforeEach(() => {
+	setLocale("en");
+});
+
 afterEach(async () => {
+	setLocale(null);
 	await initTheme(false, "unicode", false, "titanium", "light");
 });
 
@@ -390,7 +396,7 @@ describe("setup wizard short terminals", () => {
 				component.handleInput(key);
 				const frame = component.render(80).map(line => Bun.stripANSI(line));
 				expect(frame.length).toBe(24);
-				expect(frame.some(line => line.trimStart().startsWith(theme.nav.cursor))).toBe(true);
+				expect(frame.some(line => line.includes(`${theme.nav.cursor} `))).toBe(true);
 			}
 		} finally {
 			nowSpy.mockRestore();

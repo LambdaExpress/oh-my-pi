@@ -26,6 +26,7 @@ import type {
 import {
 	Container,
 	clearRenderCache,
+	getComposerStyle,
 	Loader,
 	Markdown,
 	ProcessTerminal,
@@ -104,6 +105,7 @@ import { type AgentRegistry, MAIN_AGENT_ID } from "../registry/agent-registry";
 import {
 	type AgentSession,
 	type AgentSessionEvent,
+	type DroppedPrompt,
 	type ResolvedRoleModel,
 	SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 } from "../session/agent-session";
@@ -119,12 +121,13 @@ import { BUILTIN_SLASH_COMMAND_RESERVED_NAMES, buildTuiBuiltinSlashCommands } fr
 import { formatDuration } from "../slash-commands/helpers/format";
 import { STTController, type SttState } from "../stt";
 import { discoverTitleSystemPromptFile, resolvePromptInput } from "../system-prompt";
-import { formatTaskId } from "../task/render";
+import { labelEchoesHandle } from "../task/label";
+import { agentTypeBadge, formatTaskId } from "../task/render";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import { tinyTitleClient } from "../tiny/title-client";
 import type { LspStartupServerInfo } from "../tools";
 import { normalizeLocalScheme } from "../tools/path-utils";
-import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
+import { formatMoreItems, replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
 import { setAutoQaConsentHandler } from "../tools/report-tool-issue";
 import {
 	formatPhaseDisplayName,
@@ -170,7 +173,7 @@ import type { HookSelectorComponent, HookSelectorSlider } from "./components/hoo
 import { type PlanReviewAnnotationState, PlanReviewOverlay } from "./components/plan-review-overlay";
 import { SshTransferHud } from "./components/ssh-transfer-hud";
 import { StatusLineComponent } from "./components/status-line";
-import type { ToolExecutionHandle } from "./components/tool-execution";
+import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
 import {
 	WelcomeComponent,
@@ -178,6 +181,7 @@ import {
 	type RecentSession as WelcomeRecentSession,
 } from "./components/welcome";
 import { BtwController } from "./controllers/btw-controller";
+import { CleanseCommandController } from "./controllers/cleanse-command-controller";
 import { CommandController } from "./controllers/command-controller";
 import { EventController } from "./controllers/event-controller";
 import { ExtensionUiController } from "./controllers/extension-ui-controller";
@@ -512,8 +516,8 @@ const SUBAGENT_OBSERVER_UI_COALESCE_MS = 100;
 
 /**
  * Build the anchored subagent HUD block: a bold accent "Subagents" header plus
- * a bounded set of running-agent rows in the same `Id: description` shape the
- * inline task rows use (muted task preview when no description was given).
+ * a bounded set of running-agent rows in the same `Id ⟨role⟩: description` shape
+ * the inline task rows use (muted task preview when no description was given).
  * Layout mirrors the Todos HUD exactly: unindented header, then
  * `renderTreeList` rows (dim connectors) shifted right by one space.
  * Only detached background spawns are listed: a sync task call blocks the
@@ -536,17 +540,26 @@ export function renderSubagentHudLines(sessions: ObservableSession[], columns: n
 			expanded: true,
 			renderItem: session => {
 				const displayId = formatTaskId(session.id);
-				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}`;
+				const role = session.agent ?? session.progress?.agent;
+				const badge = agentTypeBadge(role, theme);
+				let line = `${dot} ${theme.fg("accent", theme.bold(displayId))}${badge}`;
 				const description = session.description?.trim() || session.progress?.description?.trim();
-				if (description) {
-					const budget = Math.max(TRUNCATE_LENGTHS.SHORT, columns - visibleWidth(displayId) - 10);
-					line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(replaceTabs(description), budget))}`;
+				const distinctDescription =
+					description && !labelEchoesHandle(session.id, description) ? description : undefined;
+				if (distinctDescription) {
+					const budget = Math.max(
+						TRUNCATE_LENGTHS.SHORT,
+						columns - visibleWidth(displayId) - visibleWidth(Bun.stripANSI(badge)) - 10,
+					);
+					const formatted = replaceTabs(distinctDescription).replace(/\s*[\r\n]+\s*/g, " ↵ ");
+					line += `${theme.fg("accent", ":")} ${theme.fg("accent", truncateToWidth(formatted, budget))}`;
 				} else {
 					// No spawn description: fall back to a muted task preview, same as
 					// the inline task rows when a row has no label.
 					const taskPreview = session.progress?.task?.trim();
-					if (taskPreview) {
-						line += ` ${theme.fg("muted", truncateToWidth(replaceTabs(taskPreview), TRUNCATE_LENGTHS.SHORT))}`;
+					if (taskPreview && !labelEchoesHandle(session.id, taskPreview)) {
+						const formatted = replaceTabs(taskPreview).replace(/\s*[\r\n]+\s*/g, " ↵ ");
+						line += ` ${theme.fg("muted", truncateToWidth(formatted, TRUNCATE_LENGTHS.SHORT))}`;
 					}
 				}
 				return line;
@@ -579,6 +592,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	sshTransferContainer: Container;
 	btwContainer: Container;
 	omfgContainer: Container;
+	cleanseContainer: Container;
 	errorBannerContainer: Container;
 	modelCycleContainer: Container;
 	deferredCommandContainer: Container;
@@ -667,6 +681,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	#pendingSubmissionDispose: (() => void) | undefined;
 	#optimisticSubmissionComponents: Component[] = [];
 	#pendingSubmissionPreservesDraft = false;
+	#optimisticSkillMessageComponents: Component[] = [];
+	/** True while an optimistically-rendered `/skill:` row awaits its canonical
+	 *  `message_start`. Read by the event controller to reconcile the row. */
+	optimisticSkillMessagePending = false;
 	lastSigintTime = 0;
 	lastEscapeTime = 0;
 	lastLeftTapTime = 0;
@@ -732,6 +750,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	readonly #btwController: BtwController;
 	readonly #tanCommandController: TanCommandController;
 	readonly #omfgController: OmfgController;
+	readonly #cleanseController: CleanseCommandController;
 	readonly #commandController: CommandController;
 	readonly #todoCommandController: TodoCommandController;
 	readonly #liveCommandController: LiveCommandController;
@@ -949,6 +968,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.sshTransferHud = new SshTransferHud();
 		this.btwContainer = new AnchoredLiveContainer();
 		this.omfgContainer = new AnchoredLiveContainer();
+		this.cleanseContainer = new AnchoredLiveContainer();
 		this.errorBannerContainer = new AnchoredLiveContainer();
 		this.modelCycleContainer = new AnchoredLiveContainer();
 		this.deferredCommandContainer = new AnchoredLiveContainer();
@@ -1036,6 +1056,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#btwController = new BtwController(this);
 		this.#tanCommandController = new TanCommandController(this);
 		this.#omfgController = new OmfgController(this);
+		this.#cleanseController = new CleanseCommandController(this);
 		this.#extensionUiController = new ExtensionUiController(this);
 		this.#eventController = new EventController(this);
 		this.#commandController = new CommandController(this);
@@ -1045,6 +1066,10 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#focusController = new SessionFocusController(this);
 		this.#eventController.restoreAsyncJobHud();
 		this.#inputController = new InputController(this);
+		this.session.setTitleGenerationStart?.(() => {
+			this.#inputController.notifyTitleGenerationStart();
+		});
+		this.session.setPromptDropped?.(prompt => this.#restoreDroppedPrompt(prompt));
 		this.#observerRegistry = new SessionObserverRegistry();
 	}
 
@@ -1210,6 +1235,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.addChild(this.sshTransferContainer);
 		this.ui.addChild(this.btwContainer);
 		this.ui.addChild(this.omfgContainer);
+		this.ui.addChild(this.cleanseContainer);
 		this.ui.addChild(this.errorBannerContainer);
 		this.ui.addChild(this.modelCycleContainer);
 		this.ui.addChild(this.deferredCommandContainer);
@@ -1217,11 +1243,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// HUDs, just above the editor's hook-widget top margin — so it reads next to
 		// the prompt while keeping the one-line gap above the editor.
 		this.ui.addChild(this.statusContainer);
-		this.ui.addChild(this.statusLine); // Only renders hook statuses (main status in editor border)
 		this.ui.addChild(this.hookWidgetContainerAbove);
 		this.ui.addChild(this.editorContainer);
 		this.ui.addChild(this.hookWidgetContainerBelow);
+		this.ui.addChild(this.statusLine);
 		this.ui.setFocus(this.editor);
+		this.syncComposerShape();
 
 		this.#inputController.setupKeyHandlers();
 		this.#inputController.setupEditorSubmitHandler();
@@ -1852,6 +1879,51 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.addMessageToChat(message, options);
 	}
 
+	/**
+	 * Optimistically render a user-invoked `/skill:` row before its awaited
+	 * dispatch so a slow preflight (memory recall, `before_agent_start` hooks,
+	 * auto-thinking classification, pre-prompt compaction) does not leave the
+	 * submission invisible — normal prompts paint their row via
+	 * {@link startPendingSubmission} the same way (issue #8895). The canonical
+	 * skill `message_start` swaps this row in place via
+	 * {@link reconcileOptimisticSkillMessage}; a failed or bailed dispatch drops
+	 * it via {@link clearOptimisticSkillMessage}.
+	 */
+	renderOptimisticSkillMessage(
+		message: AgentMessage,
+		options?: { imageLinks?: readonly (string | undefined)[] },
+	): void {
+		this.clearOptimisticSkillMessage();
+		this.optimisticSkillMessagePending = true;
+		this.#optimisticSkillMessageComponents = this.#captureAddedChatComponents(() => {
+			this.addMessageToChat(message, options);
+		});
+		this.ensureLoadingAnimation();
+		this.ui.requestRender();
+	}
+
+	/** Replace the optimistic `/skill:` row with the canonical message emitted by
+	 *  the session, mirroring {@link replaceOptimisticUserMessage} for skills. */
+	reconcileOptimisticSkillMessage(message: AgentMessage): void {
+		this.optimisticSkillMessagePending = false;
+		for (const component of this.#optimisticSkillMessageComponents) {
+			this.chatContainer.removeChild(component);
+		}
+		this.#optimisticSkillMessageComponents = [];
+		this.addMessageToChat(message);
+	}
+
+	/** Drop the optimistic `/skill:` row when dispatch fails or bails before the
+	 *  message reaches the agent (aborted preflight, streaming-race requeue). */
+	clearOptimisticSkillMessage(): void {
+		this.optimisticSkillMessagePending = false;
+		if (this.#optimisticSkillMessageComponents.length === 0) return;
+		for (const component of this.#optimisticSkillMessageComponents) {
+			this.chatContainer.removeChild(component);
+		}
+		this.#optimisticSkillMessageComponents = [];
+	}
+
 	startPendingSubmission(
 		input: {
 			text: string;
@@ -1959,6 +2031,30 @@ export class InteractiveMode implements InteractiveModeContext {
 		return true;
 	}
 
+	/**
+	 * Hands back a prompt the session dropped before dispatch (an Esc abort or
+	 * usage preflight denial raced turn setup). The message was never persisted,
+	 * so the tree/branch selectors cannot offer it — remove the optimistic
+	 * transcript row and put the typed text back in the editor for editing.
+	 */
+	#restoreDroppedPrompt(prompt: DroppedPrompt): void {
+		this.clearOptimisticUserMessage();
+		this.#pendingWorkingMessage = undefined;
+		if (this.loadingAnimation) {
+			this.#stopLoadingAnimation(true);
+		}
+		this.rebuildChatFromMessages();
+		// The drop arrives asynchronously (after the abort settles); never clobber
+		// a draft the user has already started typing in the meantime.
+		if (!this.editor.getText().trim()) {
+			this.editor.pendingImages = prompt.images ? [...prompt.images] : [];
+			this.editor.pendingImageLinks = prompt.images ? prompt.images.map(() => undefined) : [];
+			this.editor.imageLinks = this.editor.pendingImageLinks;
+			this.editor.setText(prompt.text);
+		}
+		this.ui.requestRender();
+	}
+
 	markPendingSubmissionStarted(input: SubmittedUserInput): boolean {
 		if (this.#pendingSubmittedInput !== input || input.cancelled) {
 			return false;
@@ -2016,7 +2112,29 @@ export class InteractiveMode implements InteractiveModeContext {
 			transparent: settings.get("statusLine.transparent"),
 			segmentOptions: settings.get("statusLine.segmentOptions"),
 			compactThinkingLevel: settings.get("statusLine.compactThinkingLevel"),
+			contextLine: settings.get("statusLine.contextLine"),
 		});
+	}
+	syncComposerShape(): void {
+		const shape = settings.get("composer.shape") ?? "box";
+		const style = getComposerStyle(shape);
+		this.editor.setBorderStyle(shape);
+		this.statusLine.setAutocompleteActiveProbe(() => this.editor.isAutocompleteActive());
+		switch (style.statusAttachment) {
+			case "top-border":
+				this.editor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
+				break;
+			case "top-rule-chip":
+				this.editor.setTopBorderProvider(availableWidth => this.statusLine.getStandaloneTopBorder(availableWidth));
+				break;
+			case "none":
+				this.editor.setTopBorderProvider(undefined);
+				this.editor.setTopBorder(undefined);
+				break;
+		}
+		this.statusLine.setComposerStyle(style);
+		this.updateEditorBorderColor();
+		this.ui.requestRender();
 	}
 
 	#handleSessionAccentInputsChanged(): void {
@@ -2415,7 +2533,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const multiPhase = phases.length > 1;
 		const activeIdx = phases.indexOf(this.#getActivePhase(phases) ?? phases[0]);
 		// Fixed budgets keep the HUD bounded regardless of plan size / progress.
-		const subsequentStageCap = 4; // stages shown after the active one (header count implies the rest)
+		const subsequentStageCap = 4; // stages shown after the active one (a trailing summary row covers the rest)
 		const activeTaskCap = 5; // open tasks previewed for the active stage
 
 		const activeDescs = this.#getActiveSubagentDescriptions();
@@ -2453,7 +2571,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// One phase node. The active stage is highlighted with normal-brightness task
 		// progress; other stages render their whole row (name + progress) in the
-		// brighter muted gray. The root header carries overall stage progression.
+		// brighter muted gray. Overall progress lives in the tree spine (below).
 		const renderPhase = (phase: TodoPhase, oneBased: number, isActive: boolean): string | string[] => {
 			const label = multiPhase ? formatPhaseDisplayName(phase.name, oneBased) : phase.name;
 			// Closed, not just completed: the collapsed task window hides abandoned
@@ -2468,16 +2586,18 @@ export class InteractiveMode implements InteractiveModeContext {
 			return [header, ...renderTasks(phase)];
 		};
 
-		// Collapsed: active stage + a bounded number of following stages (the
-		// header's "n/total" count implies any not shown). Expanded: every stage
+		// Collapsed: active stage + a bounded number of following stages, with a
+		// "… n more stages" row for anything past the cap. Expanded: every stage
 		// from the top. Roman numerals stay tied to the real phase index.
 		const baseIdx = expanded ? 0 : activeIdx;
 		const phaseSlice = expanded ? phases.slice(baseIdx) : phases.slice(baseIdx, baseIdx + 1 + subsequentStageCap);
+		const hiddenStages = phases.length - baseIdx - phaseSlice.length;
 		const phaseTreeLines = renderTreeList(
 			{
 				items: phaseSlice,
 				expanded: true,
 				renderItem: (phase, ctx) => renderPhase(phase, baseIdx + ctx.index + 1, baseIdx + ctx.index === activeIdx),
+				trailingSummary: hiddenStages > 0 ? theme.fg("muted", formatMoreItems(hiddenStages, "stage")) : undefined,
 			},
 			theme,
 		);
@@ -4127,15 +4247,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		objective: string,
 		input?: Pick<SubmittedUserInput, "images" | "imageLinks">,
 	): Promise<boolean> {
-		try {
-			await this.#enterGoalMode({ objective, silent: true });
-		} catch (error) {
-			// Goal creation failure must not blow through the slash dispatch:
-			// surface it and leave the draft (text + attachments) untouched so
-			// the user can retry.
-			this.showError(error instanceof Error ? error.message : String(error));
-			return false;
-		}
+		await this.#enterGoalMode({ objective, silent: true });
 		this.#resetGoalContinuationSuppression();
 		if (this.session.isStreaming) {
 			const images = input?.images?.length ? input.images : undefined;
@@ -4493,6 +4605,9 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.#stopLoadingAnimation(false);
 		}
 		this.#cleanupMicAnimation();
+		// Stop the shared tool-spinner ticker: a live block missed by per-component
+		// stopAnimation would otherwise keep an 80ms interval pinning the process.
+		stopSharedSpinnerTicker();
 		this.#liveCommandController.dispose();
 		this.#cancelTodoAutoClearTimer();
 		this.#cancelObserverUiSyncTimer();
@@ -4503,6 +4618,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.#extensionUiController.clearHookWidgets();
+		this.#extensionUiController.disposeComposerShapes();
 		for (const unsubscribe of this.#eventBusUnsubscribers) {
 			unsubscribe();
 		}
@@ -4541,6 +4657,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.#btwController.dispose();
 		this.#omfgController.dispose();
+		this.#cleanseController.dispose();
 		this.#focusController.dispose();
 
 		// Surface an explicit "Closing session…" line so the user sees a reason
@@ -4583,10 +4700,15 @@ export class InteractiveMode implements InteractiveModeContext {
 		popTerminalTitle();
 		this.stop();
 
-		// Print resumption hint if this is a persisted session
+		// Print resumption hint only if the session was actually materialized to
+		// durable storage. Persistence is lazy — a session that exits before its
+		// first assistant message (or dies early to an auth error, a mid-flight
+		// Ctrl+C, or a launch-then-quit) never wrote its JSONL, so the path is
+		// allocated but the file does not exist and `--resume <id>` would fail
+		// (issue #8860).
 		const sessionId = this.sessionManager.getSessionId();
 		const sessionFile = this.sessionManager.getSessionFile();
-		if (sessionId && sessionFile) {
+		if (sessionId && sessionFile && this.sessionManager.isSessionOnDisk()) {
 			process.stderr.write(
 				`\n${chalk.dim(t("Resume this session with {app} --resume {id}", { app: APP_NAME, id: sessionId }))}\n`,
 			);
@@ -4629,7 +4751,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		};
 		nextEditor.setShimmerRepaintHandler(() => this.ui.requestDirectWrite(nextEditor));
-		nextEditor.setTopBorderProvider(availableWidth => this.statusLine.getTopBorder(availableWidth));
+		this.editor = nextEditor;
+		this.syncComposerShape();
 		nextEditor.setMaxHeight(this.#computeEditorMaxHeight());
 		if (this.historyStorage) {
 			nextEditor.setHistoryStorage(this.historyStorage);
@@ -5163,6 +5286,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#prepareSessionSwitch(): void {
 		this.#btwController.dispose();
 		this.#omfgController.dispose();
+		this.#cleanseController.dispose();
 		this.#extensionUiController.clearExtensionTerminalInputListeners();
 		this.clearPinnedError();
 		this.#hidePlanReview();
@@ -5192,6 +5316,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (this.#vibeSessionTransitionBlocked()) return;
 		this.#btwController.dispose();
 		this.#omfgController.dispose();
+		this.#cleanseController.dispose();
 		await this.#commandController.handleForkCommand();
 	}
 
@@ -5422,6 +5547,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		this.#btwController.dispose();
 		this.#omfgController.dispose();
+		this.#cleanseController.dispose();
 		this.resetObserverRegistry();
 		await this.#selectorController.handleResumeSession(sessionPath, { settingsFlushed: true });
 	}
@@ -5555,6 +5681,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			}
 			this.#btwController.dispose();
 			this.#omfgController.dispose();
+			this.#cleanseController.dispose();
 			await this.renderInitialMessages({ clearTerminalHistory: true });
 			this.updateEditorBorderColor();
 			this.showStatus(
@@ -5581,6 +5708,18 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	handleOmfgEscape(): boolean {
 		return this.#omfgController.handleEscape();
+	}
+
+	handleCleanseCommand(args: string): Promise<void> {
+		return this.#cleanseController.start(args);
+	}
+
+	hasActiveCleanse(): boolean {
+		return this.#cleanseController.hasActiveRun();
+	}
+
+	handleCleanseEscape(): boolean {
+		return this.#cleanseController.handleEscape();
 	}
 
 	cycleThinkingLevel(): void {

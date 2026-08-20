@@ -1,12 +1,18 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { pickWeightedTip, WelcomeComponent } from "@oh-my-pi/pi-coding-agent/modes/components/welcome";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { setLocale } from "../../../src/i18n";
 
 describe("WelcomeComponent", () => {
 	beforeAll(async () => {
+		setLocale("en");
 		await Settings.init({ inMemory: true });
 		await initTheme(false);
+	});
+
+	afterAll(() => {
+		setLocale(null);
 	});
 
 	afterEach(() => {
@@ -36,7 +42,7 @@ describe("WelcomeComponent", () => {
 		expect(welcomeRegular.tip).toBeDefined();
 	});
 
-	it("keeps the right column and truncates a long model name with three dots", () => {
+	it("keeps the right column and full model name when both fit", () => {
 		const modelName = "GPT-5.6 Sol via Grimoire Router";
 		const welcome = new WelcomeComponent(
 			"1.0.0",
@@ -49,8 +55,7 @@ describe("WelcomeComponent", () => {
 		const output = Bun.stripANSI(welcome.render(100).join("\n"));
 		expect(output).toContain("LSP Servers");
 		expect(output).toContain("Recent sessions");
-		expect(output).toContain("GPT-5.6 Sol via Grimoir...");
-		expect(output).not.toContain(modelName);
+		expect(output).toContain(modelName);
 	});
 
 	it("weights [NEW] tips above ordinary tips in selection", () => {

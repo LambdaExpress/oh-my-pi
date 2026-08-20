@@ -8,6 +8,7 @@ import { computeDefaultSessionDir } from "@oh-my-pi/pi-coding-agent/session/sess
 import { FileSessionStorage } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import { getConfigRootDir, setAgentDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../../src/i18n";
 
 let tempDir: string;
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -15,11 +16,13 @@ const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 const storage = new FileSessionStorage();
 
 beforeEach(async () => {
+	setLocale("en");
 	tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-resume-command-"));
 	setAgentDir(path.join(tempDir, "agent"));
 });
 
 afterEach(async () => {
+	setLocale(null);
 	if (originalAgentDir) {
 		setAgentDir(originalAgentDir);
 	} else {

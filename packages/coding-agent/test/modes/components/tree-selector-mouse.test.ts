@@ -1,13 +1,19 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { TreeSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tree-selector";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { SessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import { type RenderScheduler, TUI } from "@oh-my-pi/pi-tui";
 import { VirtualTerminal } from "../../../../tui/test/virtual-terminal";
+import { setLocale } from "../../../src/i18n";
 
 beforeAll(async () => {
+	setLocale("en");
 	await initTheme();
+});
+
+afterAll(() => {
+	setLocale(null);
 });
 
 function makeMessageNode(id: string, parentId: string | null, content: string): SessionTreeNode {

@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { stripVTControlCharacters } from "node:util";
 import type { Component, OverlayHandle, OverlayOptions } from "@oh-my-pi/pi-tui";
 import { Settings } from "../../../src/config/settings";
+import { setLocale } from "../../../src/i18n";
 import {
 	CodexResetFireworksController,
 	detectCodexResetFireworks,
@@ -77,10 +78,12 @@ describe("Codex reset fireworks", () => {
 	});
 
 	beforeEach(() => {
+		setLocale("en");
 		vi.useFakeTimers();
 	});
 
 	afterEach(() => {
+		setLocale(null);
 		vi.useRealTimers();
 	});
 

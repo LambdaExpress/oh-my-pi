@@ -1,13 +1,17 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { SegmentContext } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
 import { renderSegment } from "@oh-my-pi/pi-coding-agent/modes/components/status-line/segments";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { setLocale } from "../src/i18n";
 
 beforeAll(async () => {
 	await initTheme();
 });
 
+beforeEach(() => setLocale("en"));
+
 afterEach(() => {
+	setLocale(null);
 	vi.restoreAllMocks();
 });
 
@@ -40,12 +44,15 @@ function createContext(loopMode: SegmentContext["loopMode"]): SegmentContext {
 		contextTokens: 0,
 		contextWindow: 0,
 		autoCompactEnabled: false,
+		compactionSpeculation: "idle",
+		speculationBlinkOn: true,
 		subagentCount: 0,
 		activeMs: 0,
 		activeRepo: null,
 		worktree: null,
 		git: { branch: null, status: null, pr: null },
 		usage: null,
+		usageFetchedAt: 0,
 	};
 }
 

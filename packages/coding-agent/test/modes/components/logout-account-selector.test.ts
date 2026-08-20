@@ -1,11 +1,17 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { LogoutAccountSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/logout-account-selector";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { StoredAuthCredential } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { toLogoutAccounts } from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/logout";
+import { setLocale } from "../../../src/i18n";
 
 beforeAll(async () => {
+	setLocale("en");
 	await initTheme();
+});
+
+afterAll(() => {
+	setLocale(null);
 });
 
 describe("LogoutAccountSelectorComponent", () => {

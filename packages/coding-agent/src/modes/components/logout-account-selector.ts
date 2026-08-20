@@ -3,12 +3,12 @@ import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import type { LogoutAccount } from "../../slash-commands/helpers/logout";
-import { DynamicBorder } from "./dynamic-border";
+import { OverlayPanel } from "./overlay-box";
 
 const LOGOUT_SELECTOR_MAX_VISIBLE = 10;
 
 /** Account picker for `/logout` after the provider has been selected. */
-export class LogoutAccountSelectorComponent extends Container {
+export class LogoutAccountSelectorComponent extends OverlayPanel {
 	#listContainer: Container;
 	#accounts: LogoutAccount[];
 	#selectedIndex = 0;
@@ -22,21 +22,15 @@ export class LogoutAccountSelectorComponent extends Container {
 		onSelect: (account: LogoutAccount) => void,
 		onCancel: () => void,
 	) {
-		super();
+		super(t("Select {providerName} account to log out", { providerName }));
 		this.#accounts = accounts;
 		this.#onSelectCallback = onSelect;
 		this.#onCancelCallback = onCancel;
 		const activeIndex = accounts.findIndex(account => account.active);
 		this.#selectedIndex = activeIndex >= 0 ? activeIndex : 0;
 
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
-		this.addChild(new TruncatedText(theme.bold(t("Select {providerName} account to log out:", { providerName }))));
-		this.addChild(new Spacer(1));
 		this.#listContainer = new Container();
 		this.addChild(this.#listContainer);
-		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
 		this.#updateList();
 	}
 
@@ -76,18 +70,16 @@ export class LogoutAccountSelectorComponent extends Container {
 		}
 
 		if (total === 0) {
-			this.#listContainer.addChild(
-				new TruncatedText(theme.fg("muted", `  ${t("No stored accounts to log out")}`), 0, 0),
-			);
+			this.#listContainer.addChild(new TruncatedText(theme.fg("muted", t("No stored accounts to log out")), 0, 0));
 		}
 
 		this.#listContainer.addChild(
-			new TruncatedText(theme.fg("muted", `  ${t("↑/↓ select · ↵ log out account · Esc cancel")}`), 0, 0),
+			new TruncatedText(theme.fg("muted", t("↑/↓ select · ↵ log out account · Esc cancel")), 0, 0),
 		);
 
 		if (this.#statusMessage) {
 			this.#listContainer.addChild(new Spacer(1));
-			this.#listContainer.addChild(new TruncatedText(theme.fg("warning", `  ${this.#statusMessage}`), 0, 0));
+			this.#listContainer.addChild(new TruncatedText(theme.fg("warning", this.#statusMessage), 0, 0));
 		}
 	}
 

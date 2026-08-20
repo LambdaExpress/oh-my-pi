@@ -566,11 +566,16 @@ describe("InteractiveMode completed-run collapse", () => {
 		// interactive startup path); the test harness drives the session directly,
 		// so wire the controller up manually.
 		e2eMode.eventController.subscribeToAgent();
-		const record = vi.spyOn(e2eMode, "recordCompletedRunCollapse");
-		const rebuilt = Promise.withResolvers<void>();
-		vi.spyOn(e2eMode, "rebuildChatFromMessages").mockImplementation(() => {
-			rebuilt.resolve();
+		const recordCompletedRunCollapse = e2eMode.recordCompletedRunCollapse.bind(e2eMode);
+		const collapsesCommitted = Promise.withResolvers<void>();
+		let recordedCollapseCount = 0;
+		const record = vi.spyOn(e2eMode, "recordCompletedRunCollapse").mockImplementation(collapse => {
+			const changed = recordCompletedRunCollapse(collapse);
+			recordedCollapseCount++;
+			if (recordedCollapseCount === 2) collapsesCommitted.resolve();
+			return changed;
 		});
+		vi.spyOn(e2eMode, "rebuildChatFromMessages").mockImplementation(() => {});
 		const secondAgentStart = Promise.withResolvers<void>();
 		const agentStarts: number[] = [];
 		e2eSession.subscribe(event => {
@@ -613,7 +618,10 @@ describe("InteractiveMode completed-run collapse", () => {
 
 		// Sending the next content commits both parked runs: A parked, B natural.
 		const thirdPrompt = e2eSession.prompt("third request", { expandPromptTemplates: false });
-		await Promise.race([rebuilt.promise, Bun.sleep(10_000)]);
+		// AgentSession emits listeners fire-and-forget; wait for EventController's
+		// serialized dispatch chain to observe the new turn and commit both parked
+		// records instead of treating an unrelated transcript rebuild as completion.
+		await collapsesCommitted.promise;
 		expect(record).toHaveBeenCalledTimes(2);
 		const [aCollapse, bCollapse] = record.mock.calls.map(call => call[0] as CompletedRunCollapse);
 		expect(aCollapse.finalAssistantMessage).toBeUndefined();

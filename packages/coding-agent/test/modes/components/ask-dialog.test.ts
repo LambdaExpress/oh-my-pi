@@ -5,6 +5,7 @@ import type { ExtensionAskDialogQuestion } from "@oh-my-pi/pi-coding-agent/exten
 import { AskDialogComponent } from "@oh-my-pi/pi-coding-agent/modes/components/ask-dialog";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { setKeybindings } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../../../src/i18n";
 
 const DOWN = "\x1b[B";
 const UP = "\x1b[A";
@@ -29,11 +30,13 @@ describe("AskDialogComponent", () => {
 	});
 
 	beforeEach(() => {
+		setLocale("en");
 		setThemeInstance(darkTheme!);
 		setKeybindings(KeybindingsManager.inMemory({ "tui.select.cancel": "ctrl+g" }));
 	});
 
 	afterEach(() => {
+		setLocale(null);
 		setKeybindings(KeybindingsManager.inMemory());
 		vi.useRealTimers();
 		vi.restoreAllMocks();

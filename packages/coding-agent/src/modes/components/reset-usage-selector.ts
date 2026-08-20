@@ -3,7 +3,7 @@ import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
 import { matchesSelectCancel, matchesSelectDown, matchesSelectUp } from "../../modes/utils/keybinding-matchers";
 import type { ResetUsageAccount } from "../../slash-commands/helpers/reset-usage";
-import { DynamicBorder } from "./dynamic-border";
+import { OverlayPanel } from "./overlay-box";
 
 const RESET_SELECTOR_MAX_VISIBLE = 10;
 
@@ -12,7 +12,7 @@ const RESET_SELECTOR_MAX_VISIBLE = 10;
  * rate-limit reset counts; selecting one redeems a reset. Because a reset is a
  * scarce, irreversible credit, Enter requires a second press to confirm.
  */
-export class ResetUsageSelectorComponent extends Container {
+export class ResetUsageSelectorComponent extends OverlayPanel {
 	#listContainer: Container;
 	#accounts: ResetUsageAccount[];
 	#selectedIndex = 0;
@@ -22,21 +22,15 @@ export class ResetUsageSelectorComponent extends Container {
 	#onCancelCallback: () => void;
 
 	constructor(accounts: ResetUsageAccount[], onSelect: (account: ResetUsageAccount) => void, onCancel: () => void) {
-		super();
+		super(t("Spend a saved rate-limit reset"));
 		this.#accounts = accounts;
 		this.#onSelectCallback = onSelect;
 		this.#onCancelCallback = onCancel;
 		const firstRedeemable = accounts.findIndex(account => account.availableCount > 0);
 		this.#selectedIndex = firstRedeemable >= 0 ? firstRedeemable : 0;
 
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
-		this.addChild(new TruncatedText(theme.bold(t("Spend a saved rate-limit reset:"))));
-		this.addChild(new Spacer(1));
 		this.#listContainer = new Container();
 		this.addChild(this.#listContainer);
-		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
 		this.#updateList();
 	}
 
@@ -90,7 +84,7 @@ export class ResetUsageSelectorComponent extends Container {
 
 		if (total === 0) {
 			this.#listContainer.addChild(
-				new TruncatedText(theme.fg("muted", `  ${t("No Codex accounts with saved resets")}`), 0, 0),
+				new TruncatedText(theme.fg("muted", t("No Codex accounts with saved resets")), 0, 0),
 			);
 		}
 
@@ -98,14 +92,14 @@ export class ResetUsageSelectorComponent extends Container {
 		const hint = pending
 			? theme.fg(
 					"warning",
-					`  ${t("Press Enter again to spend 1 reset for {name}, Esc to cancel", { name: pending.label })}`,
+					t("Press Enter again to spend 1 reset for {name}, Esc to cancel", { name: pending.label }),
 				)
-			: theme.fg("muted", `  ${t("↑/↓ select · ↵ spend a reset · Esc cancel")}`);
+			: theme.fg("muted", t("↑/↓ select · ↵ spend a reset · Esc cancel"));
 		this.#listContainer.addChild(new TruncatedText(hint, 0, 0));
 
 		if (this.#statusMessage) {
 			this.#listContainer.addChild(new Spacer(1));
-			this.#listContainer.addChild(new TruncatedText(theme.fg("warning", `  ${this.#statusMessage}`), 0, 0));
+			this.#listContainer.addChild(new TruncatedText(theme.fg("warning", this.#statusMessage), 0, 0));
 		}
 	}
 

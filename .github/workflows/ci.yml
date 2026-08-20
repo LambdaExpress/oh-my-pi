@@ -465,6 +465,13 @@ jobs:
       needs: [release_metadata, check, rust_validate, native_addons, test_workspace, test_coding_agent_singleton, test_ts_native, test_coding_agent_ui, test_coding_agent_runtime, test_coding_agent_native, test_smoke, install_methods]
       runs-on: ubuntu-22.04
       steps:
+         - uses: actions/checkout@v4
+         - uses: ./.github/actions/bun-install
+         # Generated-config drift gate: bazel/clippy.bazelrc is maintained by
+         # scripts/release.ts (like the lockfiles); a stale file only blocks
+         # publishing, never ordinary CI.
+         - name: Check generated clippy config
+           run: bun scripts/gen-clippy-bazelrc.ts --check
          - run: echo "release validation green"
 
    # Builds (does not publish) the Linux-hosted release binaries in parallel

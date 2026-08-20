@@ -124,6 +124,10 @@ function createStubInputControllerContext(opts: {
 	const updatePendingMessagesDisplay = vi.fn();
 	const requestRender = vi.fn();
 	const showError = vi.fn();
+	const renderOptimisticSkillMessage = vi.fn();
+	const reconcileOptimisticSkillMessage = vi.fn();
+	const clearOptimisticSkillMessage = vi.fn();
+	const rebuildChatFromMessages = vi.fn();
 	const queueCompactionMessage = vi.fn((_text: string, _mode: "steer" | "followUp", _images?: ImageContent[]) => {});
 	const ctx = {
 		editor,
@@ -155,7 +159,11 @@ function createStubInputControllerContext(opts: {
 		startPendingSubmission,
 		markPendingSubmissionStarted,
 		finishPendingSubmission,
-		rebuildChatFromMessages: vi.fn(),
+		rebuildChatFromMessages,
+		optimisticSkillMessagePending: false,
+		renderOptimisticSkillMessage,
+		reconcileOptimisticSkillMessage,
+		clearOptimisticSkillMessage,
 	} as unknown as InteractiveModeContext;
 
 	return {
@@ -170,6 +178,11 @@ function createStubInputControllerContext(opts: {
 		startPendingSubmission,
 		markPendingSubmissionStarted,
 		finishPendingSubmission,
+		rebuildChatFromMessages,
+		showError,
+		renderOptimisticSkillMessage,
+		reconcileOptimisticSkillMessage,
+		clearOptimisticSkillMessage,
 	};
 }
 
@@ -327,6 +340,93 @@ describe("InputController skill queue chip metadata", () => {
 		expect(editor.pendingImages).toEqual([]);
 		expect(editor.pendingImageLinks).toEqual([]);
 		expect(editor.imageLinks).toBeUndefined();
+	});
+});
+
+describe("InputController optimistic skill row (#8895)", () => {
+	let tempDir: TempDir;
+	let skillCommands: Map<string, Skill>;
+
+	beforeEach(async () => {
+		tempDir = TempDir.createSync("@pi-skill-optimistic-stub-");
+		const skill = await writeSkillFile(tempDir.path(), "test-skill", "Do the thing.");
+		skillCommands = new Map<string, Skill>([["skill:test-skill", skill]]);
+	});
+
+	afterEach(() => {
+		tempDir.removeSync();
+		vi.restoreAllMocks();
+	});
+
+	it("paints the pending row before dispatching the idle skill turn", async () => {
+		const { ctx, editor, promptCustomMessage, startPendingSubmission } = createStubInputControllerContext({
+			skillCommands,
+			isStreaming: false,
+		});
+		// A slow preflight (memory recall, before_agent_start hooks, auto-thinking)
+		// lives inside promptCustomMessage; the row must already be painted when the
+		// dispatch begins, so it stays visible while that preflight runs.
+		const order: string[] = [];
+		startPendingSubmission.mockImplementation(input => {
+			order.push("render");
+			return { ...input, cancelled: false, started: false };
+		});
+		promptCustomMessage.mockImplementation(async () => {
+			order.push("dispatch");
+		});
+
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+		editor.setText("/skill:test-skill go");
+		await editor.onSubmit?.("/skill:test-skill go");
+
+		expect(order).toEqual(["render", "dispatch"]);
+		expect(startPendingSubmission.mock.calls[0]?.[0].customMessage).toMatchObject({
+			customType: SKILL_PROMPT_MESSAGE_TYPE,
+			attribution: "user",
+			display: true,
+			details: { name: "test-skill" },
+		});
+	});
+
+	it("skips the optimistic row when the skill submission queues while streaming", async () => {
+		const { ctx, editor, promptCustomMessage, renderOptimisticSkillMessage } = createStubInputControllerContext({
+			skillCommands,
+			isStreaming: true,
+		});
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+		editor.setText("/skill:test-skill go");
+		await editor.onSubmit?.("/skill:test-skill go");
+
+		expect(renderOptimisticSkillMessage).not.toHaveBeenCalled();
+		expect(promptCustomMessage).toHaveBeenCalledTimes(1);
+	});
+
+	it("drops the pending row and restores the draft when dispatch throws", async () => {
+		const {
+			ctx,
+			editor,
+			promptCustomMessage,
+			startPendingSubmission,
+			finishPendingSubmission,
+			rebuildChatFromMessages,
+			showError,
+		} = createStubInputControllerContext({ skillCommands, isStreaming: false });
+		promptCustomMessage.mockImplementation(async () => {
+			throw new Error("preflight failed");
+		});
+
+		const controller = new InputController(ctx);
+		controller.setupEditorSubmitHandler();
+		editor.setText("/skill:test-skill go");
+		await editor.onSubmit?.("/skill:test-skill go");
+
+		expect(startPendingSubmission).toHaveBeenCalledTimes(1);
+		expect(finishPendingSubmission).toHaveBeenCalledTimes(1);
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(showError).toHaveBeenCalledTimes(1);
+		expect(editor.getText()).toBe("/skill:test-skill go");
 	});
 });
 
@@ -832,9 +932,10 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 	});
 });
 
-function createEventControllerFixture() {
+function createEventControllerFixture(opts?: { optimisticSkillMessagePending?: boolean }) {
 	const updatePendingMessagesDisplay = vi.fn();
 	const addMessageToChat = vi.fn();
+	const reconcileOptimisticSkillMessage = vi.fn();
 	const requestRender = vi.fn();
 	let ctx!: InteractiveModeContext & { optimisticCustomMessageSignature: string | undefined };
 	const clearOptimisticCustomMessage = vi.fn(() => {
@@ -853,6 +954,8 @@ function createEventControllerFixture() {
 		transcriptMessageComponents: new WeakMap(),
 		pendingTools: new Map(),
 		session: {},
+		optimisticSkillMessagePending: opts?.optimisticSkillMessagePending ?? false,
+		reconcileOptimisticSkillMessage,
 		get viewSession() {
 			return (this as typeof ctx).session;
 		},

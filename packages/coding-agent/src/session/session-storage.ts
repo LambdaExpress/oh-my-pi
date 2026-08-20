@@ -115,7 +115,11 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 			fs.mkdirSync(dir, { recursive: true });
 		}
 		// Open file once, keep fd for lifetime
-		this.#fd = fs.openSync(fpath, flags === "w" ? "w" : "a");
+		// Windows opens O_APPEND handles with append-only access, which cannot be
+		// truncated after a partial write (ftruncateSync fails with EPERM). Keep a
+		// normal read/write handle and position each append explicitly at the EOF
+		// captured by #writeNow so rollback can restore that exact boundary.
+		this.#fd = fs.openSync(fpath, flags === "w" ? "w" : fs.constants.O_CREAT | fs.constants.O_RDWR);
 		// Register for cleanup if abandoned without close()
 		writerRegistry.register(this, this.#fd, this);
 	}
@@ -133,7 +137,7 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 		let offset = 0;
 		try {
 			while (offset < buf.length) {
-				const written = fs.writeSync(this.#fd, buf, offset, buf.length - offset);
+				const written = fs.writeSync(this.#fd, buf, offset, buf.length - offset, originalSize + offset);
 				if (written === 0) {
 					throw new Error("Short write");
 				}

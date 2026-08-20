@@ -1002,7 +1002,7 @@ export class OutputSink {
 
 		if (willOverflow || this.#truncated) {
 			this.#truncated = true;
-			const tailLimit = this.#tailLimit;
+			const tailLimit = Math.min(this.#tailLimit, threshold);
 
 			if (tailLimit === 0) {
 				this.#buffer = "";

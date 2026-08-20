@@ -5,9 +5,11 @@ import {
 } from "@oh-my-pi/pi-coding-agent/config/keybindings";
 import { createPromptActionAutocompleteProvider } from "@oh-my-pi/pi-coding-agent/modes/prompt-action-autocomplete";
 import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../src/i18n";
 
 describe("prompt action autocomplete", () => {
 	beforeEach(() => {
+		setLocale("en");
 		setKeybindings(
 			new KeybindingsManager({
 				"tui.editor.cursorLineStart": { defaultKeys: ["home", "f6"], description: "Move cursor to line start" },
@@ -19,6 +21,7 @@ describe("prompt action autocomplete", () => {
 	});
 
 	afterEach(() => {
+		setLocale(null);
 		setKeybindings(new KeybindingsManager(TUI_KEYBINDINGS));
 		setKeyHintPlatform(undefined);
 	});

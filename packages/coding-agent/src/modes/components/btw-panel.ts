@@ -1,8 +1,8 @@
-import { type Component, Container, Markdown, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { type Component, Markdown, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
 import { t } from "../../i18n";
 import { replaceTabs } from "../../tools/render-utils";
 import { getMarkdownTheme, theme } from "../theme/theme";
-import { DynamicBorder } from "./dynamic-border";
+import { OverlayPanel } from "./overlay-box";
 
 type BtwPanelState = "running" | "complete" | "branching" | "aborted" | "error";
 
@@ -25,14 +25,13 @@ class BtwFooter implements Component {
 		const line = this.#getLine();
 		if (line !== this.#line || !this.#text) {
 			this.#line = line;
-			this.#text = new Text(line, 1, 0);
+			this.#text = new Text(line, 0, 0);
 		}
 		return this.#text.render(width);
 	}
 }
 
-export class BtwPanelComponent extends Container {
-	#question: string;
+export class BtwPanelComponent extends OverlayPanel {
 	#tui: TUI;
 	#canBranch: (() => boolean) | undefined;
 	#state: BtwPanelState = "running";
@@ -42,8 +41,7 @@ export class BtwPanelComponent extends Container {
 	#closed = false;
 
 	constructor(options: BtwPanelComponentOptions) {
-		super();
-		this.#question = options.question;
+		super(`/btw ${replaceTabs(options.question)}`);
 		this.#tui = options.tui;
 		this.#canBranch = options.canBranch;
 		this.#rebuild();
@@ -111,15 +109,10 @@ export class BtwPanelComponent extends Container {
 
 	#rebuild(): void {
 		this.clear();
-		this.addChild(new DynamicBorder(str => theme.fg("dim", str)));
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("accent", replaceTabs(this.#question)), 1, 0));
-		this.addChild(new Spacer(1));
-		this.addChild(this.#contentComponent());
+		this.addChild(this.#buildBody());
 		this.addChild(new Spacer(1));
 		this.addChild(new BtwFooter(() => this.#footerLine()));
-		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder(str => theme.fg("dim", str)));
 		// Component-scoped: a rebuild replaces only this panel's own children
 		// (streaming deltas arrive per token, and a full compose would re-walk
 		// the whole transcript each time). Before the panel is mounted the TUI
@@ -147,9 +140,9 @@ export class BtwPanelComponent extends Container {
 		}
 	}
 
-	#contentComponent(): Component {
+	#buildBody(): Component {
 		if (this.#state === "error") {
-			return new Text(theme.fg("error", replaceTabs(this.#errorMessage ?? t("Unknown error"))), 1, 0);
+			return new Text(theme.fg("error", replaceTabs(this.#errorMessage ?? t("Unknown error"))), 0, 0);
 		}
 		const text = this.#visibleAnswer;
 		if (!text) {
@@ -157,8 +150,8 @@ export class BtwPanelComponent extends Container {
 				this.#state === "running"
 					? `${theme.status.pending} ${t("Waiting for response…")}`
 					: t("No text returned.");
-			return new Text(theme.fg("dim", waiting), 1, 0);
+			return new Text(theme.fg("dim", waiting), 0, 0);
 		}
-		return new Markdown(text, 1, 0, getMarkdownTheme());
+		return new Markdown(text, 0, 0, getMarkdownTheme());
 	}
 }

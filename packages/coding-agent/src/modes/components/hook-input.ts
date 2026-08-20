@@ -1,12 +1,12 @@
 /**
  * Simple text input component for hooks.
  */
-import { Container, Input, Markdown, matchesKey, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
+import { Input, matchesKey, Spacer, Text, type TUI } from "@oh-my-pi/pi-tui";
 import { t } from "../../i18n";
-import { getMarkdownTheme, theme } from "../../modes/theme/theme";
+import { theme } from "../../modes/theme/theme";
 import { matchesAppInterrupt } from "../../modes/utils/keybinding-matchers";
 import { CountdownTimer } from "./countdown-timer";
-import { DynamicBorder } from "./dynamic-border";
+import { OverlayPanel } from "./overlay-box";
 
 export interface HookInputOptions {
 	tui?: TUI;
@@ -14,11 +14,10 @@ export interface HookInputOptions {
 	onTimeout?: () => void;
 }
 
-export class HookInputComponent extends Container {
+export class HookInputComponent extends OverlayPanel {
 	#input: Input;
 	#onSubmitCallback: (value: string) => void;
 	#onCancelCallback: () => void;
-	#titleComponent: Markdown;
 	#baseTitle: string;
 	#countdown: CountdownTimer | undefined;
 
@@ -29,24 +28,19 @@ export class HookInputComponent extends Container {
 		onCancel: () => void,
 		opts?: HookInputOptions,
 	) {
-		super();
+		super(title);
 
 		this.#onSubmitCallback = onSubmit;
 		this.#onCancelCallback = onCancel;
 		this.#baseTitle = title;
 
-		this.addChild(new DynamicBorder());
-		this.addChild(new Spacer(1));
-
-		this.#titleComponent = new Markdown(title, 1, 0, getMarkdownTheme(), { color: t => theme.fg("accent", t) });
-		this.addChild(this.#titleComponent);
 		this.addChild(new Spacer(1));
 
 		if (opts?.timeout && opts.timeout > 0 && opts.tui) {
 			this.#countdown = new CountdownTimer(
 				opts.timeout,
 				opts.tui,
-				s => this.#titleComponent.setText(`${this.#baseTitle} (${s}s)`),
+				s => (this.title = `${this.#baseTitle} (${s}s)`),
 				() => {
 					opts.onTimeout?.();
 					this.#onCancelCallback();
@@ -57,9 +51,8 @@ export class HookInputComponent extends Container {
 		this.#input = new Input();
 		this.addChild(this.#input);
 		this.addChild(new Spacer(1));
-		this.addChild(new Text(theme.fg("dim", t("enter submit  esc cancel")), 1, 0));
+		this.addChild(new Text(theme.fg("dim", t("enter submit  esc cancel")), 0, 0));
 		this.addChild(new Spacer(1));
-		this.addChild(new DynamicBorder());
 	}
 
 	handleInput(keyData: string): void {

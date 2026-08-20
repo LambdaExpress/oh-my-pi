@@ -8,11 +8,12 @@ import { writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import type { ModelRegistry, ProviderDiscoveryState } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { ModelRegistry as ModelRegistryImpl } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { ModelHubComponent } from "@oh-my-pi/pi-coding-agent/modes/components/model-hub";
+import { ModelHubComponent, resetProviderAutoRefreshGuard } from "@oh-my-pi/pi-coding-agent/modes/components/model-hub";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 function normalizeRenderedText(text: string): string {
 	return stripVTControlCharacters(text).replace(/\s+/g, " ").trim();
@@ -44,12 +45,14 @@ async function createHub(state: ProviderDiscoveryState): Promise<ModelHubCompone
 		onUnassign: () => {},
 		onCancel: () => {},
 	});
-	await Bun.sleep(0);
+	await Promise.resolve();
 	installTestTheme();
 	// Scope-hop is the default arrow mode: one Down moves All models → the
 	// sole provider entry (separators are skipped).
 	hub.handleInput("\x1b[B");
-	await Bun.sleep(0);
+	vi.advanceTimersByTime(120);
+	await Promise.resolve();
+	await Promise.resolve();
 	return hub;
 }
 
@@ -66,6 +69,9 @@ describe("issue #970 custom provider discovery", () => {
 	});
 
 	beforeEach(async () => {
+		setLocale("en");
+		resetProviderAutoRefreshGuard();
+		vi.useFakeTimers();
 		tempDir = path.join(os.tmpdir(), `pi-test-issue-970-${Snowflake.next()}`);
 		fs.mkdirSync(tempDir, { recursive: true });
 		modelsPath = path.join(tempDir, "models.yml");
@@ -73,6 +79,8 @@ describe("issue #970 custom provider discovery", () => {
 	});
 
 	afterEach(() => {
+		setLocale(null);
+		vi.useRealTimers();
 		authStorage.close();
 		if (tempDir && fs.existsSync(tempDir)) {
 			removeSyncWithRetries(tempDir);

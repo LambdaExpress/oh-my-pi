@@ -1,8 +1,9 @@
-import { beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { setLocale } from "../../../src/i18n";
 
 interface RenderableBlock {
 	render(width: number): string[];
@@ -26,9 +27,14 @@ function createUsageSessionDouble() {
 
 describe("CommandController /usage", () => {
 	beforeAll(async () => {
+		setLocale("en");
 		const theme = await getThemeByName("dark");
 		if (!theme) throw new Error("Expected dark theme");
 		setThemeInstance(theme);
+	});
+
+	afterAll(() => {
+		setLocale(null);
 	});
 
 	it("renders bars and free percentage for limits that only report remainingFraction", async () => {

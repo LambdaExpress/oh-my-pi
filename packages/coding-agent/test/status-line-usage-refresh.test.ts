@@ -194,7 +194,7 @@ describe("StatusLineComponent usage refresh", () => {
 		await flushMicrotasks();
 
 		expect(repaints).toBe(1);
-		expect(plain(component.getTopBorder(80).content)).toContain("5h 42%");
+		expect(plain(component.getTopBorder(80).content)).toContain("1m 42%");
 	});
 
 	it("passes a startup timeout signal to the background usage fetch", async () => {
@@ -272,7 +272,7 @@ describe("StatusLineComponent usage refresh", () => {
 
 		expect(repaints).toBe(1);
 
-		expect(plain(component.getTopBorder(80).content)).toContain("5h 42%");
+		expect(plain(component.getTopBorder(80).content)).toContain("1m 42%");
 	});
 
 	it("re-fetches usage immediately when the session rotates to another org under the same email", async () => {

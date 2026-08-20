@@ -32,7 +32,11 @@ function assistant(text: string, stopReason: AssistantMessage["stopReason"], tim
 	};
 }
 
-function fixture(collapseCompletedRuns = true, waitForMessagePersistence = vi.fn(async () => {})) {
+function fixture(
+	collapseCompletedRuns = true,
+	waitForMessagePersistence = vi.fn(async () => {}),
+	recoverCompletedRunCollapses = vi.fn(() => false),
+) {
 	const settings = Settings.isolated({
 		"display.collapseCompletedRuns": collapseCompletedRuns,
 		"completion.notify": "off",
@@ -70,6 +74,7 @@ function fixture(collapseCompletedRuns = true, waitForMessagePersistence = vi.fn
 		flushPendingModelSwitch: vi.fn(async () => {}),
 		flushPendingCommandOutput: vi.fn(),
 		recordCompletedRunCollapse,
+		recoverCompletedRunCollapses,
 		rebuildChatFromMessages,
 		getUserMessageText: (message: AgentMessage) =>
 			message.role === "user" && typeof message.content === "string" ? message.content : "",
@@ -97,6 +102,7 @@ function fixture(collapseCompletedRuns = true, waitForMessagePersistence = vi.fn
 		session,
 		chatContainer,
 		recordCompletedRunCollapse,
+		recoverCompletedRunCollapses,
 		rebuildChatFromMessages,
 		resetDisplay,
 		waitForMessagePersistence,
@@ -121,6 +127,23 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "message_start", message: initial });
 		chatContainer.render(80);
 		expect(chatContainer.getNativeScrollbackLiveRegionStart()).toBeUndefined();
+	});
+
+	it("does not recover future persisted runs while handling agent_start", async () => {
+		const recoverCompletedRunCollapses = vi.fn(() => true);
+		const { controller, rebuildChatFromMessages, resetDisplay } = fixture(
+			true,
+			vi.fn(async () => {}),
+			recoverCompletedRunCollapses,
+		);
+
+		await controller.handleEvent({ type: "agent_start" });
+
+		expect(recoverCompletedRunCollapses).not.toHaveBeenCalled();
+		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
+		expect(resetDisplay).not.toHaveBeenCalled();
+		expect(controller.commitCompletedRunCollapses({ rebuild: false })).toBe(true);
+		expect(recoverCompletedRunCollapses).toHaveBeenCalledWith({ includeLatest: true });
 	});
 	it("projects a completed run to the initial request and text-only final answer", () => {
 		const initial = { role: "user", content: "build it", timestamp: 1 } as const;

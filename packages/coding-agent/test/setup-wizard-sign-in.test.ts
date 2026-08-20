@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AuthStorage } from "@oh-my-pi/pi-ai";
 import type { OAuthLoginCallbacks, OAuthProviderId } from "@oh-my-pi/pi-ai/oauth/types";
 import { SignInTab } from "@oh-my-pi/pi-coding-agent/modes/setup-wizard/scenes/sign-in";
@@ -6,12 +6,18 @@ import type { SetupSceneHost } from "@oh-my-pi/pi-coding-agent/modes/setup-wizar
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import type { Component } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../src/i18n";
 
 beforeAll(async () => {
 	await initTheme();
 });
 
+beforeEach(() => {
+	setLocale("en");
+});
+
 afterEach(() => {
+	setLocale(null);
 	vi.restoreAllMocks();
 });
 
