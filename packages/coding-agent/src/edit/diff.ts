@@ -485,7 +485,14 @@ export function normalizeDiff(diff: string): string {
 		lines = lines.slice(0, -1);
 	}
 
+	let hunkStarted = false;
 	lines = lines.filter(line => {
+		if (line.startsWith("@@")) {
+			hunkStarted = true;
+		}
+		if (hunkStarted) {
+			return true;
+		}
 		if (isDiffContentLine(line)) {
 			return true;
 		}

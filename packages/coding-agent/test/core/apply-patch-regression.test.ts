@@ -663,6 +663,48 @@ describe("plan: Codex-style wrapped patches", () => {
 		expect(await Bun.file(filePath).text()).toBe("new\n");
 	});
 
+	test("replaces repeated SQL comments that resemble unified file headers in place", async () => {
+		const filePath = path.join(tempDir, "dependency-matrix.sql");
+		await Bun.write(
+			filePath,
+			`SELECT 'alpha-before';
+-- skipping DependencyMatrix: 0 records
+SELECT 'alpha-after';
+
+SELECT 'beta-before';
+-- skipping DependencyMatrix: 0 records
+SELECT 'beta-after';
+`,
+		);
+
+		await applyPatch(
+			{
+				path: "dependency-matrix.sql",
+				op: "update",
+				diff: `@@
+ SELECT 'alpha-before';
+--- skipping DependencyMatrix: 0 records
++INSERT INTO audit_log(message) VALUES ('alpha');
+ SELECT 'alpha-after';
+@@
+ SELECT 'beta-before';
+--- skipping DependencyMatrix: 0 records
++INSERT INTO audit_log(message) VALUES ('beta');
+ SELECT 'beta-after';`,
+			},
+			{ cwd: tempDir },
+		);
+
+		expect(await Bun.file(filePath).text()).toBe(`SELECT 'alpha-before';
+INSERT INTO audit_log(message) VALUES ('alpha');
+SELECT 'alpha-after';
+
+SELECT 'beta-before';
+INSERT INTO audit_log(message) VALUES ('beta');
+SELECT 'beta-after';
+`);
+	});
+
 	test("strips unified diff metadata lines", async () => {
 		const filePath = path.join(tempDir, "unified-meta.txt");
 		await Bun.write(filePath, "first\nsecond\nthird\n");
