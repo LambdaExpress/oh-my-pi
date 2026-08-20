@@ -22,7 +22,12 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import { TaskTool } from "@oh-my-pi/pi-coding-agent/task";
 import * as discoveryModule from "@oh-my-pi/pi-coding-agent/task/discovery";
 import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
-import type { AgentDefinition, SingleResult, TaskParams } from "@oh-my-pi/pi-coding-agent/task/types";
+import {
+	type AgentDefinition,
+	getTaskSchema,
+	type SingleResult,
+	type TaskParams,
+} from "@oh-my-pi/pi-coding-agent/task/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { isRecord } from "@oh-my-pi/pi-utils";
 
@@ -130,6 +135,24 @@ describe("task.batch schema gating", () => {
 		expect(itemProperties.outputSchema).toBeDefined();
 		expect(typeof itemProperties.outputSchema).toBe("object");
 		expect(itemProperties.schemaMode).toBeDefined();
+	});
+
+	it("never advertises false output schemas that runtime preflight cannot satisfy", () => {
+		const flat = getTaskSchema({ isolationEnabled: false, batchEnabled: false }).toJsonSchema() as {
+			properties: { outputSchema: { anyOf: unknown[] } };
+		};
+		const batch = getTaskSchema({ isolationEnabled: false, batchEnabled: true }).toJsonSchema() as {
+			properties: { tasks: { items: { properties: { outputSchema: { anyOf: unknown[] } } } } };
+		};
+		const variantsByShape = [
+			flat.properties.outputSchema.anyOf,
+			batch.properties.tasks.items.properties.outputSchema.anyOf,
+		];
+
+		for (const variants of variantsByShape) {
+			expect(variants).toContainEqual({ const: true });
+			expect(variants).not.toContainEqual({ type: "boolean" });
+		}
 	});
 
 	it("hides effort by default and exposes it when task.enableEffort is enabled", async () => {

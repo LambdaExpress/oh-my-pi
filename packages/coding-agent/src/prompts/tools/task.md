@@ -27,7 +27,7 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
   - `task`: Complete, self-contained instructions. One-liners or missing acceptance criteria are PROHIBITED.
 {{#if effortEnabled}}  - `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
 {{/if}}
-  - `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
+  - `outputSchema`: Invocation-specific JSON Schema. Omit unless this call needs a custom contract; omission inherits the selected agent or parent-session schema. NEVER use `false`, which rejects every output.
   - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
 {{#if isolationEnabled}}
 {{#if applyIsolatedChanges}}
@@ -42,7 +42,7 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
 - `task`: Complete, self-contained instructions. One-liners or missing acceptance criteria are PROHIBITED.
 {{#if effortEnabled}}- `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
 {{/if}}
-- `outputSchema`: Invocation-specific JSON Schema. Overrides the selected agent and parent-session schemas.
+- `outputSchema`: Invocation-specific JSON Schema. Omit unless this call needs a custom contract; omission inherits the selected agent or parent-session schema. NEVER use `false`, which rejects every output.
 - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
 {{#if isolationEnabled}}
 {{#if applyIsolatedChanges}}

@@ -111,7 +111,9 @@ export interface SubagentLifecyclePayload {
 export const LABEL_MAX = 80;
 
 // Keep this explicit: ArkType serializes `unknown` as a boolean subschema, which llama.cpp grammars reject.
-const outputSchemaInputSchema = type("object | boolean | string | null");
+// `false` is intentionally excluded because it rejects every possible subagent result; `true` remains the
+// JSON Schema spelling for an explicitly unconstrained result.
+const outputSchemaInputSchema = type("object | true | string | null");
 // Coarse per-spawn thinking effort; must stay in sync with TASK_EFFORTS in ../thinking.
 const effortRule = '"lo" | "med" | "hi"' as const;
 
