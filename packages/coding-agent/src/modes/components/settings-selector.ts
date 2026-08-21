@@ -26,6 +26,7 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import type { ShapeTarget } from "@oh-my-pi/snapcompact";
+import { normalizeExtendedContextWindow } from "../../config/extended-context";
 import {
 	getDefault,
 	getType,
@@ -4023,7 +4024,13 @@ export class SettingsSelectorComponent implements Component {
 	#setSettingValue(path: SettingPath, value: string): void {
 		const currentValue = settings.get(path);
 		const schemaType = getType(path);
-		if (path === "compaction.thresholdPercent" && value === "default") {
+		if (path === "extendedContextWindow") {
+			const normalized = value.trim() ? normalizeExtendedContextWindow(value) : getDefault(path);
+			if (!normalized) {
+				throw new Error(t("Enter a positive token limit with a K or M suffix, such as 372K or 1M"));
+			}
+			settings.set(path, normalized);
+		} else if (path === "compaction.thresholdPercent" && value === "default") {
 			settings.set(path, -1 as never);
 		} else if (path === "compaction.thresholdTokens" && value === "default") {
 			settings.set(path, -1 as never);

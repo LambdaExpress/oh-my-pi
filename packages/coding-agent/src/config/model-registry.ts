@@ -32,6 +32,7 @@ import {
 	resolveOllamaModelCacheProviderId,
 } from "@oh-my-pi/pi-catalog/provider-models";
 import { toModelSpec } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
+import { OPENAI_GPT_56_LONG_CONTEXT_COSTS } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
 import { collapseBuiltModelVariants } from "@oh-my-pi/pi-catalog/variant-collapse";
 import { getAgentDir, isBunTestRuntime, logger, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
 import { resolveProviderModelReference } from "../config/model-resolver";
@@ -48,6 +49,7 @@ import {
 	normalizeSuppressedSelector,
 	resolveModelOverrideWithAliases,
 } from "./custom-models";
+import { DEFAULT_EXTENDED_CONTEXT_WINDOW, parseExtendedContextWindow } from "./extended-context";
 import {
 	type CommandApiKeyResolution,
 	createLiveConfigHeaders,
@@ -150,6 +152,31 @@ function isExtendedContextEnabledFromSettings(settingsInstance?: Settings): bool
 	} catch {
 		return true;
 	}
+}
+
+/** Maximum premium context window requested by the user. Invalid persisted values fall back to 1M. */
+function getExtendedContextWindowFromSettings(settingsInstance?: Settings): number {
+	try {
+		return (
+			parseExtendedContextWindow((settingsInstance ?? settings).get("extendedContextWindow")) ??
+			DEFAULT_EXTENDED_CONTEXT_WINDOW
+		);
+	} catch {
+		return DEFAULT_EXTENDED_CONTEXT_WINDOW;
+	}
+}
+
+// Relay catalogs frequently omit the provider's premium-tier metadata even
+// when they expose the same GPT-5.6 long-context model. Match the model
+// identity as a policy fallback so context caps do not depend on relay pricing
+// completeness. The separators cover canonical ids, names, routed ids, and
+// generated effort/pro aliases (for example `openai/gpt-5.6-sol-pro`).
+const GPT_56_LONG_CONTEXT_MODEL_PATTERN = /\bgpt[-_. ]5[.]6[-_. ](?:luna|sol|terra)(?=$|[^a-z0-9])/iu;
+
+function isGpt56LongContextModel(model: Model<Api>): boolean {
+	return [model.id, model.requestModelId, model.name].some(
+		value => typeof value === "string" && GPT_56_LONG_CONTEXT_MODEL_PATTERN.test(value),
+	);
 }
 
 /** Authentication material returned to legacy extensions for one model request. */
@@ -288,7 +315,7 @@ export class ModelRegistry {
 
 	/**
 	 * Rebuild the catalog after a policy-affecting setting change (e.g.
-	 * `extendedContext`). Forces the static reload past the models.yml mtime
+	 * `extendedContext` or its window cap). Forces the static reload past the models.yml mtime
 	 * gate, then restores runtime-discovered models from the SQLite cache —
 	 * offline, a settings flip must never hit the network. Concurrent calls
 	 * coalesce onto one rebuild.
@@ -626,7 +653,14 @@ export class ModelRegistry {
 		);
 		const withConfigModels = this.#mergeCustomModels(resolvedDefaults, select(this.#customModelOverlays));
 		const combined = this.#mergeCustomModels(withConfigModels, select(this.#runtimeModelOverlays));
-		const withModelOverrides = this.#applyModelOverrides(collapseBuiltModelVariants(combined), this.#modelOverrides);
+		// Apply the context policy after custom/runtime models are merged as well as
+		// before discovery. A relay's replacement row may omit the bundled
+		// `longContext` metadata and otherwise restore its native 1M window here.
+		const withContextPolicies = this.#applyContextWindowPolicies(combined);
+		const withModelOverrides = this.#applyModelOverrides(
+			collapseBuiltModelVariants(withContextPolicies),
+			this.#modelOverrides,
+		);
 		return this.#applyLlamaCppModelFixups(this.#applyRuntimeProviderOverrides(withModelOverrides));
 	}
 
@@ -1113,7 +1147,11 @@ export class ModelRegistry {
 		const resolved = this.#mergeResolvedModels(baseModels, discoveredModels);
 		const withConfigModels = this.#mergeCustomModels(resolved, this.#customModelOverlays);
 		const combined = this.#mergeCustomModels(withConfigModels, this.#runtimeModelOverlays);
-		const withModelOverrides = this.#applyModelOverrides(collapseBuiltModelVariants(combined), this.#modelOverrides);
+		const withContextPolicies = this.#applyContextWindowPolicies(combined);
+		const withModelOverrides = this.#applyModelOverrides(
+			collapseBuiltModelVariants(withContextPolicies),
+			this.#modelOverrides,
+		);
 		this.#unprojectedModels = this.#applyLlamaCppModelFixups(this.#applyRuntimeProviderOverrides(withModelOverrides));
 		this.#models = this.#applyRuntimeModelModifiers(this.#unprojectedModels);
 	}
@@ -1605,23 +1643,31 @@ export class ModelRegistry {
 			return applyModelOverride(model, override);
 		});
 	}
-	#applyHardcodedModelPolicies(models: Model<Api>[]): Model<Api>[] {
+	#applyContextWindowPolicies(models: Model<Api>[]): Model<Api>[] {
 		const extendedContext = isExtendedContextEnabledFromSettings(this.#settings);
+		const extendedContextWindow = getExtendedContextWindowFromSettings(this.#settings);
 		return models.map(model => {
-			// Extended context off: cap models with a premium long-context price
-			// tier (e.g. GPT-5.6 bills 2x input above 272K) at the standard-pricing
-			// threshold so compaction fires before a request crosses into the tier.
+			// Cap models with a premium long-context price tier at either the user's
+			// enabled-window limit or, while disabled, the standard-pricing threshold.
+			// The cap never inflates a model beyond its catalog-advertised window.
 			// Explicit per-model `contextWindow` overrides reapply later in
 			// composition and win over this cap.
-			if (!extendedContext) {
-				const threshold = model.cost.longContext?.inputThreshold;
-				if (threshold !== undefined && model.contextWindow !== null && model.contextWindow > threshold) {
-					model = applyModelOverride(model, { contextWindow: threshold });
-				}
+			const threshold =
+				model.cost.longContext?.inputThreshold ??
+				(isGpt56LongContextModel(model) ? OPENAI_GPT_56_LONG_CONTEXT_COSTS.sol.inputThreshold : undefined);
+			const contextWindowCap = extendedContext ? extendedContextWindow : threshold;
+			if (contextWindowCap !== undefined && model.contextWindow !== null && model.contextWindow > contextWindowCap) {
+				model = applyModelOverride(model, { contextWindow: contextWindowCap });
 			}
 			if (model.provider === "ollama-cloud" && model.omitMaxOutputTokens !== true) {
 				model = applyModelOverride(model, { omitMaxOutputTokens: true });
 			}
+			return model;
+		});
+	}
+
+	#applyHardcodedModelPolicies(models: Model<Api>[]): Model<Api>[] {
+		return this.#applyContextWindowPolicies(models).map(model => {
 			if (model.id !== "gpt-5.4" || model.provider === "github-copilot") {
 				return model;
 			}

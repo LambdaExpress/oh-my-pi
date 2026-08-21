@@ -1748,9 +1748,9 @@ export class AgentSession {
 		// Re-evaluate append-only context mode when the setting changes at runtime.
 		this.#unsubscribeAppendOnly = onAppendOnlyModeChanged(_value => this.#syncAppendOnlyContext(this.model));
 		this.#unsubscribeModelRoles = onModelRolesChanged(() => this.#advisors.onModelRolesChanged());
-		// Re-derive the active model's effective context window when the
-		// extended-context setting flips at runtime: the registry re-clamps (or
-		// restores) premium long-context windows, and the live model object must
+		// Re-derive the active model's effective context window when an
+		// extended-context policy setting changes at runtime: the registry re-clamps
+		// premium long-context windows, and the live model object must
 		// follow so compaction thresholds and context display react immediately.
 		this.#unsubscribeExtendedContext = onExtendedContextChanged(() => void this.#reapplyExtendedContextPolicy());
 	}
@@ -7982,7 +7982,7 @@ export class AgentSession {
 	}
 
 	/**
-	 * Rebuild the model catalog after an `extendedContext` toggle and rebind the
+	 * Rebuild the model catalog after an extended-context policy change and rebind the
 	 * active model when its effective context window changed. Same-model rebinds
 	 * skip provider-session resets (`modelsAreEqual` sees no change), so this
 	 * only refreshes metadata consumers (compaction thresholds, context display).

@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added a configurable premium extended-context window cap in `/settings`, accepting compact `K`/`M` values such as `372K` and defaulting to `1M`.
 - Added write-gated collab thinking controls, with model-supported selectors published in session state and authoritative changes broadcast to every guest.
 - Added session-room model frames to the collab host: guests can request the available models (`model-list`, answered after background discovery settles) and switch the session model (`model-change`, write-gated with the RPC `set_model` lookup semantics); the new model reaches every guest through the existing `state` broadcast.
 - Evolved `omp --mode core` into a multi-session engine: a process-wide `SessionRegistry` holds any number of concurrent sessions (created/resumed/dropped through a new `ctrl-` control room), `CollabHost` scopes agent snapshots and agent-cmd/transcript access to each session's own agent tree, and the core process now prints two deep links (`ctrl:` for the session sidebar, `session:` for the unchanged join/connect contract). Browser guests get a 260px session sidebar with list/create/resume/drop, live streaming dots, and an auto-return to the list when a session ends.
@@ -59,6 +60,7 @@
 - Image attachments for text-only models are now described directly without an approval prompt. The approval step is a separate `images.visionApproval` setting (default off); enable it to restore the confirm-before-describe behavior.
 
 ### Fixed
+
 
 - Fixed queued magic-keyword prompts such as `orchestrate` interrupting one-at-a-time steering twice; hidden keyword/image companions and their user message now enter the Agent queue as one atomic delivery batch.
 - Fixed empty Enter aborting an active run when its only visible steering message was still waiting for a vision-model image description and had not entered the runnable Agent queue.

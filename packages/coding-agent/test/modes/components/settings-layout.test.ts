@@ -80,6 +80,21 @@ describe("settings layout", () => {
 		expect(values).toEqual([...SETTINGS_SCHEMA["snapcompact.shape"].values]);
 	});
 
+	it("places the editable extended-context window immediately after its toggle", () => {
+		const defs = getSettingsForTab("context");
+		const toggleIndex = defs.findIndex(def => def.path === "extendedContext");
+		const windowIndex = defs.findIndex(def => def.path === "extendedContextWindow");
+
+		expect(toggleIndex).toBeGreaterThanOrEqual(0);
+		expect(windowIndex).toBe(toggleIndex + 1);
+		expect(defs[windowIndex]).toMatchObject({
+			type: "text",
+			label: "Extended Context Window",
+			group: "General",
+		});
+		expect(SETTINGS_SCHEMA.extendedContextWindow.default).toBe("1M");
+	});
+
 	it("hides advisor dependent settings when advisor is disabled", () => {
 		const advisorDependentPaths: SettingPath[] = ["advisor.syncBacklog", "advisor.immuneTurns"];
 		const advisorDependentPathSet = new Set(advisorDependentPaths);

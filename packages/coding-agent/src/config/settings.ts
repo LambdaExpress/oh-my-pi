@@ -2509,6 +2509,7 @@ const SETTING_HOOKS: Partial<Record<SettingPath, SettingHook<any>>> = {
 	"hindsight.bankIdPrefix": () => hindsightScopeSignal.fire(),
 	"hindsight.scoping": () => hindsightScopeSignal.fire(),
 	extendedContext: () => extendedContextSignal.fire(),
+	extendedContextWindow: () => extendedContextSignal.fire(),
 	"worktree.base": value => {
 		const dir = typeof value === "string" && value.trim() ? value : undefined;
 		// Always call so an unset/empty value clears a previously-applied override.
@@ -2537,13 +2538,12 @@ const modelRolesSignal = new SettingSignal("modelRoles");
 /** Subscribe to model role changes. Returns an unsubscribe function. */
 export const onModelRolesChanged: (cb: () => void) => () => void = modelRolesSignal.on.bind(modelRolesSignal);
 
-/** Fires when `extendedContext` changes at runtime. */
+/** Fires when an extended-context policy setting changes at runtime. */
 const extendedContextSignal = new SettingSignal("extendedContext");
 
 /**
- * Subscribe to extended-context setting changes. Sessions re-derive their
- * model's effective context window (the registry clamps premium long-context
- * models to the standard-pricing threshold while the setting is off).
+ * Subscribe to extended-context policy changes. Sessions re-derive their
+ * model's effective context window from the enabled state and configured cap.
  * Returns an unsubscribe function.
  */
 export const onExtendedContextChanged = (cb: () => void) => extendedContextSignal.on(cb);

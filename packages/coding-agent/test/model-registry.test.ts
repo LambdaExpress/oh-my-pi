@@ -1675,10 +1675,16 @@ describe("ModelRegistry", () => {
 			expect(registry.find("anthropic", "claude-opus-4-8")?.contextWindow).toBe(1_000_000);
 		});
 
-		test("reapplyModelPolicies re-clamps and restores premium windows on toggle", async () => {
+		test("reapplyModelPolicies applies the configured premium window without inflating native limits", async () => {
 			await Settings.init({ inMemory: true });
 			const registry = new ModelRegistry(authStorage, modelsJsonPath);
-			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_050_000);
+			// The 1M default caps the API model's 1.05M native window.
+			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_000_000);
+
+			settings.set("extendedContextWindow", "372K");
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(372_000);
+			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(372_000);
 
 			settings.set("extendedContext", false);
 			await registry.reapplyModelPolicies();
@@ -1686,8 +1692,37 @@ describe("ModelRegistry", () => {
 
 			settings.set("extendedContext", true);
 			await registry.reapplyModelPolicies();
+			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(372_000);
+
+			settings.set("extendedContextWindow", "2M");
+			await registry.reapplyModelPolicies();
 			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_050_000);
 			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(1_000_000);
+		});
+
+		test("configured relay GPT-5.6 models honor the premium window without pricing metadata", async () => {
+			await Settings.init({ inMemory: true, overrides: { extendedContextWindow: "352K" } });
+			writeRawModelsJson({
+				"relay-provider": {
+					baseUrl: "https://relay.example.com/v1",
+					apiKey: "TEST_KEY",
+					api: "openai-responses",
+					models: [
+						{
+							id: "openai/gpt-5.6-sol",
+							name: "GPT-5.6 Sol",
+							reasoning: true,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 1_050_000,
+							maxTokens: 128_000,
+						},
+					],
+				},
+			});
+
+			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			expect(registry.find("relay-provider", "openai/gpt-5.6-sol")?.contextWindow).toBe(352_000);
 		});
 	});
 	describe("bundled Anthropic catalog availability", () => {
