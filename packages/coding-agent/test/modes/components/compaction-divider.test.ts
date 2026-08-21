@@ -55,6 +55,19 @@ describe("CompactionSummaryMessageComponent", () => {
 		expect(rule).toContain("ctrl+o");
 	});
 
+	it("labels a local-summary compaction by its actual source", () => {
+		const component = new CompactionSummaryMessageComponent(
+			createCompactionSummaryMessage(SUMMARY, 232_000, new Date().toISOString(), {
+				method: "soft",
+				tokensAfter: 66_000,
+			}),
+		);
+		const rule = Bun.stripANSI(component.render(80)[1]);
+		expect(rule).toContain("locally-compacted");
+		expect(rule).not.toContain("remote-compacted");
+		expect(rule).toContain("232K→66K");
+	});
+
 	it("labels a handoff-method compaction as handed-off", () => {
 		const component = new CompactionSummaryMessageComponent(
 			createCompactionSummaryMessage(SUMMARY, 84_000, new Date().toISOString(), { method: "handoff" }),

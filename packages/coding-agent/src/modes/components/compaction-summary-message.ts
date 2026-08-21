@@ -7,7 +7,7 @@ import type { BranchSummaryMessage, CompactionSummaryMessage, CustomMessage } fr
 /** Divider labels per compaction method; unknown/legacy methods fall back to "compacted". */
 const COMPACTION_METHOD_LABELS: Record<string, string> = {
 	remote: "remote-compacted",
-	soft: "soft-compacted",
+	soft: "locally-compacted",
 	handoff: "handed-off",
 	snapcompact: "snap-compacted",
 	shake: "shaken",

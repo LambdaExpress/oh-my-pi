@@ -449,6 +449,33 @@ describe("issue #986 compaction auth fallback", () => {
 		expect(attemptedModels).not.toContain(`${crossProviderModel.provider}/${crossProviderModel.id}`);
 	});
 
+	it("records a local method when manual remote compaction falls back to a local summary", async () => {
+		await createAutoNativeFallbackSession();
+		const forceLocalAttempts: boolean[] = [];
+		vi.spyOn(compactionModule, "compact").mockImplementation(
+			async (preparation, _model, _apiKey, _customInstructions, _signal, options) => {
+				forceLocalAttempts.push(options?.forceLocal === true);
+				if (!options?.forceLocal) {
+					throw new compactionModule.NativeCompactionError(new Error("native manual compaction failed"));
+				}
+				return {
+					summary: "local fallback summary",
+					shortSummary: "local fallback",
+					firstKeptEntryId: preparation.firstKeptEntryId,
+					tokensBefore: 42,
+				};
+			},
+		);
+
+		const result = await session.compact();
+
+		expect(result.summary).toBe("local fallback summary");
+		expect(forceLocalAttempts).toEqual([false, false, true]);
+		const compactionEntry = session.sessionManager.getEntries().findLast(entry => entry.type === "compaction");
+		if (compactionEntry?.type !== "compaction") throw new Error("Expected persisted compaction entry");
+		expect(compactionEntry.method).toBe("soft");
+	});
+
 	it("falls back across providers when server compaction receives auth_unavailable", async () => {
 		const { currentModel, fallbackModel } = await createSession({ fallbackModelRole: "smol" });
 		const originalCompact = compactionModule.compact;

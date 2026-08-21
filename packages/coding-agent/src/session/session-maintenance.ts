@@ -180,6 +180,11 @@ const PRUNE_IDLE_FLUSH_MS = 90 * 60_000;
  */
 const COMPACTION_RECOVERY_BAND = 0.8;
 
+interface MaintenanceCompactionResult extends CompactionResult {
+	/** Actual method used when the selected method fell back internally. */
+	effectiveMethod?: CompactionMethod;
+}
+
 /** A speculation-produced compaction result, ready to commit at threshold. */
 interface ArmedSpeculation {
 	result: CompactionResult;
@@ -835,6 +840,7 @@ export class SessionMaintenance {
 			let tokensBefore: number;
 			let details: unknown;
 			let codexCompaction: CodexCompactionContext | undefined;
+			let effectiveMethod: CompactionMethod | undefined;
 
 			// Snapcompact runs locally first. The frame cap is sized from the live
 			// model window via #computeSnapcompactMaxFrames so the post-render context
@@ -951,6 +957,7 @@ export class SessionMaintenance {
 					tokensBefore = result.tokensBefore;
 					details = result.details;
 					preserveData = mergeLlmCompactionPreserveData(compactionPrep.preserveData, result.preserveData);
+					effectiveMethod = result.effectiveMethod;
 				} catch (err) {
 					if (err instanceof CompactionCancelledError) {
 						throw err;
@@ -975,7 +982,7 @@ export class SessionMaintenance {
 				details,
 				fromExtension,
 				preserveData,
-				method: fromExtension ? undefined : selectedMethod,
+				method: fromExtension ? undefined : (effectiveMethod ?? selectedMethod),
 				codexCompaction,
 				advisorResetReason: "compact",
 			});
@@ -1286,13 +1293,14 @@ export class SessionMaintenance {
 				},
 				candidates,
 			);
+			const effectiveMethod = result.effectiveMethod ?? method;
 			armed = {
 				result: {
 					...result,
 					preserveData: mergeLlmCompactionPreserveData(compactionPrep.preserveData, result.preserveData),
 				},
-				action: method === "remote" ? "remote" : "context-full",
-				method,
+				action: effectiveMethod === "remote" ? "remote" : "context-full",
+				method: effectiveMethod,
 				codexCompaction,
 				snapshotLeafId,
 				contextTokensAtStart: contextTokens,
@@ -2037,7 +2045,7 @@ export class SessionMaintenance {
 		signal: AbortSignal,
 		options?: SummaryOptions,
 		precomputedCandidates?: Model[],
-	): Promise<CompactionResult> {
+	): Promise<MaintenanceCompactionResult> {
 		const candidates =
 			precomputedCandidates ?? this.#getCompactionModelCandidates(this.#host.modelRegistry.getAvailable());
 		const telemetry = resolveTelemetry(this.#host.agent.telemetry, this.#host.sessionId());
@@ -2134,7 +2142,7 @@ export class SessionMaintenance {
 		signal: AbortSignal,
 		options: SummaryOptions | undefined,
 		candidates: Model[],
-	): Promise<CompactionResult | undefined> {
+	): Promise<MaintenanceCompactionResult | undefined> {
 		for (const candidate of candidates) {
 			const apiKey = await this.#host.modelRegistry.getApiKey(candidate, this.#host.sessionId());
 			if (!apiKey) continue;
@@ -2158,7 +2166,7 @@ export class SessionMaintenance {
 					}),
 					"compaction",
 				);
-				return result;
+				return { ...result, effectiveMethod: "soft" };
 			} catch (error) {
 				if (signal.aborted) throw error;
 				logger.warn("Local fallback summarization failed", {
@@ -2888,6 +2896,8 @@ export class SessionMaintenance {
 					: method === "handoff"
 						? "handoff"
 						: "context-full");
+		let effectiveMethod = method;
+		let effectiveAction = action;
 		// Abort any older auto-compaction before installing this run's controller.
 		this.#autoCompactionAbortController?.abort();
 		const autoCompactionAbortController = new AbortController();
@@ -3326,7 +3336,7 @@ export class SessionMaintenance {
 				);
 				const retrySettings = this.#host.settings.getGroup("retry");
 				const telemetry = resolveTelemetry(this.#host.agent.telemetry, this.#host.sessionId());
-				let compactResult: CompactionResult | undefined;
+				let compactResult: MaintenanceCompactionResult | undefined;
 				let lastError: unknown;
 				let nativeCompactionFailure: { error: NativeCompactionError; provider: string } | undefined;
 				codexCompaction = createCodexCompactionContext({
@@ -3513,6 +3523,10 @@ export class SessionMaintenance {
 					}
 					throw new Error(t("Compaction failed: no available model"));
 				}
+				if (compactResult.effectiveMethod) {
+					effectiveMethod = compactResult.effectiveMethod;
+					if (action === "remote" && effectiveMethod === "soft") effectiveAction = "context-full";
+				}
 
 				summary = compactResult.summary;
 				shortSummary = compactResult.shortSummary;
@@ -3531,8 +3545,8 @@ export class SessionMaintenance {
 				preserveData,
 				fromExtension,
 				codexCompaction,
-				method: fromExtension ? undefined : method,
-				action,
+				method: fromExtension ? undefined : effectiveMethod,
+				action: effectiveAction,
 				reason,
 				willRetry,
 				generation,
