@@ -1675,16 +1675,16 @@ describe("ModelRegistry", () => {
 			expect(registry.find("anthropic", "claude-opus-4-8")?.contextWindow).toBe(1_000_000);
 		});
 
-		test("reapplyModelPolicies applies the configured premium window without inflating native limits", async () => {
+		test("reapplyModelPolicies keeps the larger of configured and advertised premium windows", async () => {
 			await Settings.init({ inMemory: true });
 			const registry = new ModelRegistry(authStorage, modelsJsonPath);
-			// The 1M default caps the API model's 1.05M native window.
-			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_000_000);
+			// The API model's advertised 1.05M window exceeds the configured 1M floor.
+			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_050_000);
 
 			settings.set("extendedContextWindow", "372K");
 			await registry.reapplyModelPolicies();
-			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(372_000);
-			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(372_000);
+			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_050_000);
+			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(1_000_000);
 
 			settings.set("extendedContext", false);
 			await registry.reapplyModelPolicies();
@@ -1692,15 +1692,16 @@ describe("ModelRegistry", () => {
 
 			settings.set("extendedContext", true);
 			await registry.reapplyModelPolicies();
-			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(372_000);
+			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_050_000);
+			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(1_000_000);
 
 			settings.set("extendedContextWindow", "2M");
 			await registry.reapplyModelPolicies();
-			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(1_050_000);
-			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(1_000_000);
+			expect(registry.find("openai", "gpt-5.6-terra")?.contextWindow).toBe(2_000_000);
+			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(2_000_000);
 		});
 
-		test("configured relay GPT-5.6 models honor the premium window without pricing metadata", async () => {
+		test("configured models keep larger windows while GPT-5.6 expands without pricing metadata", async () => {
 			await Settings.init({ inMemory: true, overrides: { extendedContextWindow: "352K" } });
 			writeRawModelsJson({
 				"relay-provider": {
@@ -1709,12 +1710,21 @@ describe("ModelRegistry", () => {
 					api: "openai-responses",
 					models: [
 						{
+							id: "deepseek-v3",
+							name: "DeepSeek V3",
+							reasoning: false,
+							input: ["text"],
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+							contextWindow: 1_000_000,
+							maxTokens: 128_000,
+						},
+						{
 							id: "openai/gpt-5.6-sol",
 							name: "GPT-5.6 Sol",
 							reasoning: true,
 							input: ["text"],
 							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-							contextWindow: 1_050_000,
+							contextWindow: 272_000,
 							maxTokens: 128_000,
 						},
 					],
@@ -1722,6 +1732,7 @@ describe("ModelRegistry", () => {
 			});
 
 			const registry = new ModelRegistry(authStorage, modelsJsonPath);
+			expect(registry.find("relay-provider", "deepseek-v3")?.contextWindow).toBe(1_000_000);
 			expect(registry.find("relay-provider", "openai/gpt-5.6-sol")?.contextWindow).toBe(352_000);
 		});
 	});

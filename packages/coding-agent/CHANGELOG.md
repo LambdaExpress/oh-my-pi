@@ -4,7 +4,7 @@
 
 ### Added
 
-- Added a configurable premium extended-context window cap in `/settings`, accepting compact `K`/`M` values such as `372K` and defaulting to `1M`.
+- Added a configurable premium extended-context window in `/settings`; affected models use the larger of the configured and advertised windows, with compact `K`/`M` values such as `372K` and a `1M` default.
 - Added write-gated collab thinking controls, with model-supported selectors published in session state and authoritative changes broadcast to every guest.
 - Added session-room model frames to the collab host: guests can request the available models (`model-list`, answered after background discovery settles) and switch the session model (`model-change`, write-gated with the RPC `set_model` lookup semantics); the new model reaches every guest through the existing `state` broadcast.
 - Evolved `omp --mode core` into a multi-session engine: a process-wide `SessionRegistry` holds any number of concurrent sessions (created/resumed/dropped through a new `ctrl-` control room), `CollabHost` scopes agent snapshots and agent-cmd/transcript access to each session's own agent tree, and the core process now prints two deep links (`ctrl:` for the session sidebar, `session:` for the unchanged join/connect contract). Browser guests get a 260px session sidebar with list/create/resume/drop, live streaming dots, and an auto-return to the list when a session ends.

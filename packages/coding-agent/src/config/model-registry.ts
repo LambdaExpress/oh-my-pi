@@ -154,7 +154,7 @@ function isExtendedContextEnabledFromSettings(settingsInstance?: Settings): bool
 	}
 }
 
-/** Maximum premium context window requested by the user. Invalid persisted values fall back to 1M. */
+/** Premium context window requested by the user. Invalid persisted values fall back to 1M. */
 function getExtendedContextWindowFromSettings(settingsInstance?: Settings): number {
 	try {
 		return (
@@ -315,7 +315,7 @@ export class ModelRegistry {
 
 	/**
 	 * Rebuild the catalog after a policy-affecting setting change (e.g.
-	 * `extendedContext` or its window cap). Forces the static reload past the models.yml mtime
+	 * `extendedContext` or its configured window). Forces the static reload past the models.yml mtime
 	 * gate, then restores runtime-discovered models from the SQLite cache —
 	 * offline, a settings flip must never hit the network. Concurrent calls
 	 * coalesce onto one rebuild.
@@ -1647,17 +1647,21 @@ export class ModelRegistry {
 		const extendedContext = isExtendedContextEnabledFromSettings(this.#settings);
 		const extendedContextWindow = getExtendedContextWindowFromSettings(this.#settings);
 		return models.map(model => {
-			// Cap models with a premium long-context price tier at either the user's
-			// enabled-window limit or, while disabled, the standard-pricing threshold.
-			// The cap never inflates a model beyond its catalog-advertised window.
+			// Premium long-context models keep the larger of the configured and
+			// catalog-advertised windows while enabled. While disabled, cap them at
+			// the standard-pricing threshold so compaction runs before premium billing.
 			// Explicit per-model `contextWindow` overrides reapply later in
-			// composition and win over this cap.
+			// composition and win over this policy.
 			const threshold =
 				model.cost.longContext?.inputThreshold ??
 				(isGpt56LongContextModel(model) ? OPENAI_GPT_56_LONG_CONTEXT_COSTS.sol.inputThreshold : undefined);
-			const contextWindowCap = extendedContext ? extendedContextWindow : threshold;
-			if (contextWindowCap !== undefined && model.contextWindow !== null && model.contextWindow > contextWindowCap) {
-				model = applyModelOverride(model, { contextWindow: contextWindowCap });
+			if (threshold !== undefined && model.contextWindow !== null) {
+				const effectiveContextWindow = extendedContext
+					? Math.max(model.contextWindow, extendedContextWindow)
+					: Math.min(model.contextWindow, threshold);
+				if (effectiveContextWindow !== model.contextWindow) {
+					model = applyModelOverride(model, { contextWindow: effectiveContextWindow });
+				}
 			}
 			if (model.provider === "ollama-cloud" && model.omitMaxOutputTokens !== true) {
 				model = applyModelOverride(model, { omitMaxOutputTokens: true });

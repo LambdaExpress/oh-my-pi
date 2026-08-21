@@ -4027,7 +4027,7 @@ export class SettingsSelectorComponent implements Component {
 		if (path === "extendedContextWindow") {
 			const normalized = value.trim() ? normalizeExtendedContextWindow(value) : getDefault(path);
 			if (!normalized) {
-				throw new Error(t("Enter a positive token limit with a K or M suffix, such as 372K or 1M"));
+				throw new Error(t("Enter a positive context window with a K or M suffix, such as 372K or 1M"));
 			}
 			settings.set(path, normalized);
 		} else if (path === "compaction.thresholdPercent" && value === "default") {

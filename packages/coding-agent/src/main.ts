@@ -1375,7 +1375,7 @@ export async function runRootCommand(
 	}
 
 	// The registry composes policy-dependent metadata synchronously, including
-	// extended-context window caps, so it must receive the finalized settings.
+	// extended-context window policies, so it must receive the finalized settings.
 	const modelRegistry = logger.time(
 		"modelRegistry:init",
 		() => new ModelRegistry(authStorage, undefined, { settings: settingsInstance }),

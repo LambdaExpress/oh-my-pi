@@ -2305,8 +2305,8 @@ export const SETTINGS_SCHEMA = {
 	},
 
 	// Premium long-context tiers (OpenAI GPT-5.6 bills 2x input / 1.5x output
-	// above 272K input tokens). On caps affected models at the configured premium
-	// window; off caps them at the threshold before requests enter premium billing.
+	// above 272K input tokens). On uses the larger of the configured and advertised
+	// windows; off caps affected models before requests enter premium billing.
 	extendedContext: {
 		type: "boolean",
 		default: true,
@@ -2326,7 +2326,7 @@ export const SETTINGS_SCHEMA = {
 			group: "General",
 			label: "Extended Context Window",
 			description:
-				"Maximum premium context window while Extended Context is on; enter a positive K/M value such as 372K or 1M",
+				"Premium context window requested while Extended Context is on; models keep a larger advertised window; enter a positive K/M value such as 372K or 1M",
 		},
 	},
 
