@@ -49,7 +49,7 @@ export interface SSHHostInfo {
 
 const CONTROL_DIR = getSshControlDir();
 const HOST_INFO_DIR = getRemoteHostDir();
-const HOST_INFO_VERSION = 5;
+const HOST_INFO_VERSION = 6;
 
 const activeHosts = new Map<string, SSHConnectionTarget>();
 const pendingConnections = new Map<string, Promise<void>>();
@@ -220,7 +220,7 @@ async function runSshCaptureSync(
  * on this — call `ensureConnection` / `ensureHostInfo` instead.
  * @internal
  */
-export const _sshHelpersForTests = { runSshSync, runSshCaptureSync };
+export const _sshHelpersForTests = { runSshSync, runSshCaptureSync, probeHostInfo };
 
 function ensureSshBinary(): void {
 	if (!$which("ssh")) {
@@ -379,6 +379,9 @@ export const TRANSFER_PROBE_MARKER = "PI_TRANSFER_OK|";
 /** Marker for the Windows PowerShell capability probe. */
 export const POWERSHELL_PROBE_MARKER = "PI_POWERSHELL_OK|";
 
+/** Marker emitted only when the SSH login shell itself parses PowerShell. */
+export const POWERSHELL_LOGIN_PROBE_MARKER = "PI_POWERSHELL_LOGIN|";
+
 /** sh / bash / zsh, in the order we'll try as `transferShell` candidates. */
 const TRANSFER_SHELL_CANDIDATES = ["sh", "bash", "zsh"] as const;
 
@@ -478,6 +481,13 @@ async function probeWindowsPowerShell(host: SSHConnectionTarget): Promise<SSHPow
 	return undefined;
 }
 
+async function probeWindowsPowerShellLogin(host: SSHConnectionTarget): Promise<boolean> {
+	const command = `[Console]::Out.Write("${POWERSHELL_LOGIN_PROBE_MARKER}")`;
+	const probe = await runSshCaptureSync(await buildRemoteCommand(host, command), SSH_HELPER_TIMEOUT_MS, host);
+	if (probe.exitCode !== 0) return false;
+	return findProbeMarker(probe.stdout, probe.stderr, POWERSHELL_LOGIN_PROBE_MARKER) !== null;
+}
+
 async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 	const command = `echo "${HOST_PROBE_MARKER}$OSTYPE|$SHELL|$BASH_VERSION" 2>/dev/null || echo "${HOST_PROBE_MARKER}%OS%|%COMSPEC%|"`;
 	const result = await runSshCaptureSync(await buildRemoteCommand(host, command), SSH_HELPER_TIMEOUT_MS, host);
@@ -486,14 +496,16 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 		logger.debug("SSH host probe failed", { host: host.name, error: result.stderr });
 		const transferProbe = await probeTransferShell(host);
 		const powerShellCommand = transferProbe.shell ? undefined : await probeWindowsPowerShell(host);
+		const os = powerShellCommand
+			? "windows"
+			: transferProbe.shell
+				? (osFromUname(transferProbe.uname) ?? "unknown")
+				: "unknown";
+		const shell = os === "windows" && (await probeWindowsPowerShellLogin(host)) ? "powershell" : "unknown";
 		const fallback: SSHHostInfo = {
 			version: HOST_INFO_VERSION,
-			os: powerShellCommand
-				? "windows"
-				: transferProbe.shell
-					? (osFromUname(transferProbe.uname) ?? "unknown")
-					: "unknown",
-			shell: "unknown",
+			os,
+			shell,
 			transferShell: transferProbe.shell,
 			powerShellCommand,
 			compatShell: undefined,
@@ -535,9 +547,6 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 
 	// Reuse parseShell so probe-time and cached classification stay identical.
 	let shell = parseShell(shellLower) ?? "unknown";
-	if (shell === "unknown" && os === "windows" && !shellLower) {
-		shell = "cmd";
-	}
 
 	// For any non-Windows host (including `unknown`, which is often a misclassified
 	// POSIX remote with noisy login output) verify a working transfer shell by
@@ -562,6 +571,9 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 				os = "windows";
 			}
 		}
+	}
+	if (os === "windows" && shell === "unknown" && (await probeWindowsPowerShellLogin(host))) {
+		shell = "powershell";
 	}
 
 	const hasBash = !unexpandedPosixVars && (Boolean(bashVersion) || shell === "bash");

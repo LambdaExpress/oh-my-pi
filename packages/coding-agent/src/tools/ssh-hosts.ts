@@ -12,7 +12,7 @@ export function formatSshHostEntry(host: SSHHost): string {
 		if (info.compatEnabled) {
 			shell = `windows/${info.compatShell || "bash"}`;
 		} else {
-			shell = info.shell === "powershell" ? "windows/powershell" : "windows/cmd";
+			shell = `windows/${info.shell}`;
 		}
 	} else {
 		shell = `${info.os}/${info.shell}`;

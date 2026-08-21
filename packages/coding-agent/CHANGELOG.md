@@ -62,6 +62,7 @@
 ### Fixed
 
 - Fixed provider-native compaction failures that successfully fell back to a local summary still rendering as `remote-compacted`; persisted compaction metadata and the transcript divider now report the actual local method.
+- Fixed native PowerShell SSH login shells being reported as `windows/cmd` when the cross-shell probe returned literal `%COMSPEC%`; login-shell detection now uses a direct PowerShell marker, preserves genuinely unknown Windows shells, and refreshes stale host metadata.
 - Fixed queued magic-keyword prompts such as `orchestrate` interrupting one-at-a-time steering twice; hidden keyword/image companions and their user message now enter the Agent queue as one atomic delivery batch.
 - Fixed empty Enter aborting an active run when its only visible steering message was still waiting for a vision-model image description and had not entered the runnable Agent queue.
 - Fixed `display.collapseCompletedRuns` losing the original run anchor when an explicit user interrupt settled before its correction was queued, so the later completed continuation now collapses the whole request instead of leaving the older tool run permanently expanded.

@@ -1,9 +1,10 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { formatSshHostEntry } from "@oh-my-pi/pi-coding-agent/tools/ssh-hosts";
+import { ptree, removeWithRetries } from "@oh-my-pi/pi-utils";
 
 async function withLooseKey<T>(run: (keyPath: string) => Promise<T>): Promise<T> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ssh-key-"));
@@ -380,5 +381,74 @@ describe("supportsSshControlMaster", () => {
 	it("keeps OpenSSH connection multiplexing on Unix-like platforms", () => {
 		expect(connectionManager.supportsSshControlMaster("linux")).toBe(true);
 		expect(connectionManager.supportsSshControlMaster("darwin")).toBe(true);
+	});
+});
+
+describe("SSH login shell detection", () => {
+	it("distinguishes a PowerShell 7 login shell from a Windows host that only has pwsh installed", async () => {
+		const source = { provider: "test", providerName: "Test", path: "test://ssh", level: "session" as const };
+		const powerShellTarget = {
+			name: `powershell-login-${crypto.randomUUID()}`,
+			host: `powershell-login-${crypto.randomUUID()}.example`,
+			compat: false,
+			_source: source,
+		};
+		const unknownShellTarget = {
+			name: `unknown-login-${crypto.randomUUID()}`,
+			host: `unknown-login-${crypto.randomUUID()}.example`,
+			compat: false,
+			_source: source,
+		};
+		let loginShellIsPowerShell = true;
+		const execSpy = vi.spyOn(ptree, "exec").mockImplementation(async command => {
+			const remoteCommand = command.at(-1) ?? "";
+			if (remoteCommand.includes(connectionManager.HOST_PROBE_MARKER)) {
+				return {
+					exitCode: 0,
+					stdout: `${connectionManager.HOST_PROBE_MARKER}%OS%|%COMSPEC%|`,
+					stderr: "Out-File: Could not find a part of the path 'C:\\dev\\null'.",
+				} as never;
+			}
+			if (remoteCommand.includes(connectionManager.TRANSFER_PROBE_MARKER)) {
+				return { exitCode: 1, stdout: "", stderr: "not a POSIX login shell" } as never;
+			}
+			if (remoteCommand.includes("-EncodedCommand")) {
+				return {
+					exitCode: 0,
+					stdout: `${connectionManager.POWERSHELL_PROBE_MARKER}Win32NT`,
+					stderr: "",
+				} as never;
+			}
+			if (remoteCommand.includes("PI_POWERSHELL_LOGIN|")) {
+				return loginShellIsPowerShell
+					? ({ exitCode: 0, stdout: "PI_POWERSHELL_LOGIN|", stderr: "" } as never)
+					: ({ exitCode: 1, stdout: "", stderr: "not PowerShell syntax" } as never);
+			}
+			return { exitCode: 1, stdout: "", stderr: "unexpected probe" } as never;
+		});
+
+		try {
+			const info = await connectionManager._sshHelpersForTests.probeHostInfo(powerShellTarget);
+			expect(info).toMatchObject({
+				os: "windows",
+				shell: "powershell",
+				powerShellCommand: "pwsh",
+				compatEnabled: false,
+			});
+			expect(formatSshHostEntry(powerShellTarget)).toEndWith("| windows/powershell");
+
+			loginShellIsPowerShell = false;
+			const unknownShellInfo = await connectionManager._sshHelpersForTests.probeHostInfo(unknownShellTarget);
+			expect(unknownShellInfo).toMatchObject({
+				os: "windows",
+				shell: "unknown",
+				powerShellCommand: "pwsh",
+			});
+			expect(formatSshHostEntry(unknownShellTarget)).toEndWith("| windows/unknown");
+		} finally {
+			await connectionManager.invalidateSshTarget(powerShellTarget, { invalidateHostInfo: true });
+			await connectionManager.invalidateSshTarget(unknownShellTarget, { invalidateHostInfo: true });
+			execSpy.mockRestore();
+		}
 	});
 });
