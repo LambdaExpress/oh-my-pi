@@ -3018,13 +3018,11 @@ function createSkippedToolResult(
 		reason = "pending peer interrupt";
 		blocker = "interrupt";
 	}
+	const text = executionStarted
+		? `Interrupted due to ${reason} after execution had already started. Side effects may have occurred. Do not count this result as completed work; inspect the target state before retrying.`
+		: `Skipped due to ${reason}. Do not count this skipped result as completed work or verification. After the ${blocker} is handled on the next step, retry the skipped tool if it is still needed.`;
 	return {
-		content: [
-			{
-				type: "text",
-				text: `Skipped due to ${reason}. Do not count this skipped result as completed work or verification. After the ${blocker} is handled on the next step, retry the skipped tool if it is still needed.`,
-			},
-		],
+		content: [{ type: "text", text }],
 		details: executionStarted
 			? { __interrupted: true, source: "interrupt_skipped", execution: "started" }
 			: { __synthetic: true, source: "interrupt_skipped", executed: false },

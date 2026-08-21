@@ -120,8 +120,55 @@ pub fn compile_pattern(
 			Err(err) => return Err(anyhow!("Invalid pattern: {err}")),
 		}
 	};
+	if selector.is_none()
+		&& lang == SupportLang::CSharp
+		&& let Some(contextual) = compile_csharp_contextual_pattern(pattern, strictness)
+	{
+		compiled = contextual;
+	}
 	compiled.strictness = strictness.clone();
 	Ok(compiled)
+}
+
+/// C# does not accept a bare identifier or member declaration at
+/// compilation-unit scope. tree-sitter still produces an error node, so
+/// ast-grep considers the pattern compiled but it can never match the
+/// identifier/method node in a valid source file. Parse those two advertised
+/// fragment forms inside the smallest valid C# context.
+fn compile_csharp_contextual_pattern(
+	pattern: &str,
+	strictness: &MatchStrictness,
+) -> Option<Pattern> {
+	let trimmed = pattern.trim();
+	let (context, selector) = if is_csharp_identifier(trimmed) {
+		(format!("{trimmed}();"), "identifier")
+	} else if looks_like_csharp_method_declaration(trimmed) {
+		(format!("class __OmpPatternClass {{ {trimmed} }}"), "method_declaration")
+	} else {
+		return None;
+	};
+	let mut compiled = Pattern::contextual(&context, selector, SupportLang::CSharp).ok()?;
+	compiled.strictness = strictness.clone();
+	Some(compiled)
+}
+
+fn is_csharp_identifier(value: &str) -> bool {
+	let identifier = value.strip_prefix('@').unwrap_or(value);
+	let mut chars = identifier.chars();
+	chars
+		.next()
+		.is_some_and(|ch| ch == '_' || ch.is_alphabetic())
+		&& chars.all(|ch| ch == '_' || ch.is_alphanumeric())
+}
+
+fn looks_like_csharp_method_declaration(pattern: &str) -> bool {
+	let Some((prefix, _)) = pattern.split_once('(') else {
+		return false;
+	};
+	let prefix = prefix.trim();
+	(prefix.split_whitespace().count() >= 2)
+		&& !prefix.contains(['=', '.'])
+		&& (pattern.contains('{') || pattern.trim_end().ends_with(';') || pattern.contains("=>"))
 }
 
 /// Language-specific wrapper template used to turn a multi-node fragment into a
@@ -401,9 +448,59 @@ fn compile_rust_contextual_pattern(pattern: &str) -> Option<Pattern> {
 
 #[cfg(test)]
 mod tests {
-	use ast_grep_core::source::Edit;
+	use ast_grep_core::{MatchStrictness, source::Edit};
 
-	use super::{SupportLang, apply_edits, compile_search_patterns};
+	use super::{
+		SupportLang, apply_edits, collect_matches, compile_pattern, compile_search_patterns,
+	};
+
+	#[test]
+	fn compile_pattern_matches_csharp_bare_identifier() {
+		let pattern =
+			compile_pattern("GetCompanyFence", None, &MatchStrictness::Smart, SupportLang::CSharp)
+				.expect("C# identifier pattern should compile");
+		let source = r#"
+public class FacilityRepository
+{
+    public MobileFenceDTO GetCompanyFence(BaseDTO dto)
+    {
+        return new MobileFenceDTO();
+    }
+}
+"#;
+		let matches = collect_matches(source, SupportLang::CSharp, &[pattern]);
+
+		assert_eq!(matches.len(), 1);
+		assert_eq!(matches[0].text, "GetCompanyFence");
+	}
+
+	#[test]
+	fn compile_pattern_matches_csharp_method_declaration_fragment() {
+		let pattern = compile_pattern(
+			"public MobileFenceDTO GetCompanyFence(BaseDTO $DTO) { $$$BODY }",
+			None,
+			&MatchStrictness::Smart,
+			SupportLang::CSharp,
+		)
+		.expect("C# method pattern should compile");
+		let source = r#"
+public class FacilityRepository
+{
+    public MobileFenceDTO GetCompanyFence(BaseDTO dto)
+    {
+        return new MobileFenceDTO();
+    }
+}
+"#;
+		let matches = collect_matches(source, SupportLang::CSharp, &[pattern]);
+
+		assert_eq!(matches.len(), 1);
+		assert!(
+			matches[0]
+				.text
+				.starts_with("public MobileFenceDTO GetCompanyFence")
+		);
+	}
 
 	#[test]
 	fn compile_search_patterns_compiles_rust_patterns() {

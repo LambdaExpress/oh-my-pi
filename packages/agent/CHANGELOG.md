@@ -15,6 +15,7 @@
 - Exposed a shared structural predicate for replay-safe upstream stream interruptions, including wrapped refusal and sensitive-stop exclusions, so persisted session recovery and live transcript lifecycle handling use the same boundary semantics.
 - Fixed user aborts during tool execution so non-cooperative tools no longer keep the agent turn blocked after the abort signal fires, and late tool updates/results after abort are ignored.
 - Fixed tool abort settlement so each tool can declare a bounded cleanup window before the agent synthesizes an interrupted result.
+- Fixed interrupted tool results that had already entered execution incorrectly claiming the operation was skipped and safe to retry; they now warn that side effects may have occurred and require state inspection before retrying.
 - Fixed external cancellation after a completed tool execution to append an explicit aborted assistant boundary without issuing another provider request.
 ## [17.4.0] - 2026-08-20
 

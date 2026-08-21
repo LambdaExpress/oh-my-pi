@@ -1805,6 +1805,13 @@ describe("agentLoop with AgentMessage", () => {
 			execution: "started",
 		});
 		expect(toolEnd?.result.details).not.toHaveProperty("executed");
+		const content = toolEnd?.result.content[0];
+		expect(content?.type).toBe("text");
+		if (content?.type !== "text") throw new Error("interrupted tool result must be text");
+		expect(content.text).toContain("execution had already started");
+		expect(content.text).toContain("Side effects may have occurred");
+		expect(content.text).toContain("inspect the target state before retrying");
+		expect(content.text).not.toContain("retry the skipped tool");
 	});
 
 	it("keeps a completed error result instead of clobbering it into skipped when a steer aborts the signal (#4752)", async () => {
