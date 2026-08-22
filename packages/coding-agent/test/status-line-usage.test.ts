@@ -20,6 +20,7 @@ function makeComponent(
 	reports: unknown,
 	options: {
 		provider?: string;
+		modelId?: string;
 		activeIdentity?: { accountId?: string; email?: string; projectId?: string };
 		usingOAuth?: boolean;
 		usageStats?: {
@@ -32,9 +33,10 @@ function makeComponent(
 		};
 	} = {},
 ): StatusLineComponent {
+	const model = { contextWindow: 1000, provider: options.provider, id: options.modelId };
 	const component = new StatusLineComponent({
-		state: { messages: [], model: { contextWindow: 1000, provider: options.provider } },
-		model: { contextWindow: 1000, provider: options.provider },
+		state: { messages: [], model },
+		model,
 		sessionManager: {
 			getUsageStatistics: () => ({
 				input: 0,
@@ -183,6 +185,110 @@ describe("usage status-line segment", () => {
 		expect(content).not.toContain("98%");
 		expect(content).not.toContain("66%");
 		expect(content).not.toContain("other");
+	});
+
+	it("does not mix Spark's five-hour window into a standard Codex model", async () => {
+		const now = Date.now();
+		const component = makeComponent(
+			[
+				{
+					provider: "openai-codex",
+					metadata: { accountId: "active-account" },
+					limits: [
+						{
+							id: "openai-codex:secondary",
+							scope: { windowId: "7d" },
+							window: { resetsAt: now + 107 * 3_600_000 },
+							amount: { usedFraction: 0.49 },
+						},
+						{
+							id: "openai-codex:spark:primary",
+							scope: { windowId: "5h", tier: "spark", modelId: "GPT-5.3-Codex-Spark" },
+							window: { resetsAt: now + 112 * 60_000 },
+							amount: { usedFraction: 0.03 },
+						},
+						{
+							id: "openai-codex:spark:secondary",
+							scope: { windowId: "7d", tier: "spark", modelId: "GPT-5.3-Codex-Spark" },
+							window: { resetsAt: now + 108 * 3_600_000 },
+							amount: { usedFraction: 0.35 },
+						},
+					],
+				},
+			],
+			{
+				provider: "openai-codex",
+				modelId: "gpt-5.6-sol",
+				activeIdentity: { accountId: "active-account" },
+				usingOAuth: true,
+			},
+		);
+		component.updateSettings({
+			preset: "custom",
+			leftSegments: [],
+			rightSegments: ["cost"],
+			sessionAccent: false,
+		});
+
+		component.refreshUsageInBackground();
+		await flushUsageRefresh();
+		const content = stripVTControlCharacters(component.getTopBorder(200).content);
+
+		expect(content).toContain("4d 51%");
+		expect(content).not.toContain("2h 97%");
+		expect(content).not.toContain("4d 65%");
+	});
+
+	it("shows only Spark's independent windows for an active Spark model", async () => {
+		const now = Date.now();
+		const component = makeComponent(
+			[
+				{
+					provider: "openai-codex",
+					metadata: { accountId: "active-account" },
+					limits: [
+						{
+							id: "openai-codex:secondary",
+							scope: { windowId: "7d" },
+							window: { resetsAt: now + 107 * 3_600_000 },
+							amount: { usedFraction: 0.49 },
+						},
+						{
+							id: "openai-codex:spark:primary",
+							scope: { windowId: "5h", tier: "spark", modelId: "GPT-5.3-Codex-Spark" },
+							window: { resetsAt: now + 112 * 60_000 },
+							amount: { usedFraction: 0.03 },
+						},
+						{
+							id: "openai-codex:spark:secondary",
+							scope: { windowId: "7d", tier: "spark", modelId: "GPT-5.3-Codex-Spark" },
+							window: { resetsAt: now + 108 * 3_600_000 },
+							amount: { usedFraction: 0.35 },
+						},
+					],
+				},
+			],
+			{
+				provider: "openai-codex",
+				modelId: "gpt-5.3-codex-spark",
+				activeIdentity: { accountId: "active-account" },
+				usingOAuth: true,
+			},
+		);
+		component.updateSettings({
+			preset: "custom",
+			leftSegments: [],
+			rightSegments: ["cost"],
+			sessionAccent: false,
+		});
+
+		component.refreshUsageInBackground();
+		await flushUsageRefresh();
+		const content = stripVTControlCharacters(component.getTopBorder(200).content);
+
+		expect(content).toContain("2h 97%");
+		expect(content).toContain("5d 65%");
+		expect(content).not.toContain("4d 51%");
 	});
 
 	it("renders subscription cost compact usage labels from remaining reset time", async () => {

@@ -54,6 +54,11 @@ function normalizeCodexIdentityValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
 }
 
+function codexUsageScope(provider: string | undefined, modelId: string | undefined): "standard" | "spark" | undefined {
+	if (provider !== "openai-codex") return undefined;
+	return modelId?.toLowerCase().includes("-spark") ? "spark" : "standard";
+}
+
 /**
  * Fireworks are stateful, so their report match must be stricter than the
  * status display's fallback matching: every known credential identifier must
@@ -1322,13 +1327,17 @@ export class StatusLineComponent implements Component {
 		return this.#vibeWorkerTokenRate?.() ?? null;
 	}
 
-	#formatUsageContextKey(activeProvider: string | undefined, identity: OAuthAccountIdentity | undefined): string {
+	#formatUsageContextKey(
+		activeProvider: string | undefined,
+		identity: OAuthAccountIdentity | undefined,
+		usageScope?: "standard" | "spark",
+	): string {
 		if (!activeProvider) return "";
-		// orgId is part of the key: rotating between two same-email Anthropic
-		// subscriptions must invalidate the cached usage immediately instead of
-		// showing the previous org's quota for the rest of the cache TTL.
+		// orgId and Codex meter scope are part of the key: account rotation and
+		// standard↔Spark model switches must invalidate the cached usage immediately.
 		return [
 			activeProvider,
+			usageScope ?? "",
 			identity?.accountId ?? "",
 			identity?.email ?? "",
 			identity?.projectId ?? "",
@@ -1337,11 +1346,12 @@ export class StatusLineComponent implements Component {
 	}
 
 	#getUsageContextKey(session: AgentSession): string {
-		const activeProvider = session.state.model?.provider ?? session.model?.provider;
+		const activeModel = session.state.model ?? session.model;
+		const activeProvider = activeModel?.provider;
 		const identity = activeProvider
 			? session.modelRegistry?.authStorage?.getOAuthAccountIdentity(activeProvider, session.sessionId)
 			: undefined;
-		return this.#formatUsageContextKey(activeProvider, identity);
+		return this.#formatUsageContextKey(activeProvider, identity, codexUsageScope(activeProvider, activeModel?.id));
 	}
 
 	/**
@@ -1411,12 +1421,14 @@ export class StatusLineComponent implements Component {
 			return;
 		}
 		this.#latestAppliedUsageRefreshSequence = sequence;
-		const activeProvider = session.state.model?.provider ?? session.model?.provider;
+		const activeModel = session.state.model ?? session.model;
+		const activeProvider = activeModel?.provider;
 		const activeIdentity =
 			activeProvider && session.modelRegistry?.authStorage
 				? session.modelRegistry.authStorage.getOAuthAccountIdentity(activeProvider, session.sessionId)
 				: undefined;
-		const normalized = this.#normalizeUsageReports(reports, activeProvider, activeIdentity);
+		const activeCodexScope = codexUsageScope(activeProvider, activeModel?.id);
+		const normalized = this.#normalizeUsageReports(reports, activeProvider, activeIdentity, activeCodexScope);
 		const resetSnapshot =
 			activeProvider === "openai-codex" ? this.#normalizeCodexResetSnapshot(reports, activeIdentity) : null;
 		const usageChanged = this.#cachedUsage !== normalized;
@@ -1537,6 +1549,7 @@ export class StatusLineComponent implements Component {
 		reports: unknown,
 		activeProvider?: string,
 		activeIdentity?: OAuthAccountIdentity,
+		activeCodexScope?: "standard" | "spark",
 	): {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
@@ -1574,10 +1587,17 @@ export class StatusLineComponent implements Component {
 				}
 				const l = limit as {
 					id?: string;
-					scope?: { windowId?: string; tier?: string };
+					scope?: { windowId?: string; tier?: string; modelId?: string };
 					window?: { resetsAt?: number; durationMs?: number };
 					amount?: { usedFraction?: number };
 				};
+				if (activeProvider === "openai-codex" && activeCodexScope) {
+					const isSparkLimit =
+						l.scope?.tier?.toLowerCase() === "spark" ||
+						l.id?.toLowerCase().includes(":spark:") === true ||
+						l.scope?.modelId?.toLowerCase().includes("-spark") === true;
+					if ((activeCodexScope === "spark") !== isSparkLimit) continue;
+				}
 				const fraction = l.amount?.usedFraction;
 				if (typeof fraction !== "number") continue;
 				const windowId = l.scope?.windowId;
