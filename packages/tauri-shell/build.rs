@@ -16,6 +16,11 @@ fn main() {
 				"project_open",
 				"project_switch",
 				"app_info",
+				"window_minimize",
+				"window_is_maximized",
+				"window_start_dragging",
+				"window_toggle_maximize",
+				"window_close",
 			])),
 	)
 	.expect("failed to run tauri-build");

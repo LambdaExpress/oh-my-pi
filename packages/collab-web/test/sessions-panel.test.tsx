@@ -36,6 +36,7 @@ function renderPanel(snap: ControlSnapshot, activeSessionId: string | null = nul
 			onOpenSession={() => {}}
 			onNewSession={() => {}}
 			onDropSession={() => {}}
+			onCollapse={() => {}}
 			onLeave={() => {}}
 		/>,
 	);
@@ -54,6 +55,18 @@ describe("SessionsPanel project grouping", () => {
 		expect(groups[0]?.sessions.map(item => item.id)).toEqual(["windows-new", "windows-old"]);
 		expect(groups[1]?.path).toBe("/srv/project");
 		expect(groups[1]?.sessions.map(item => item.id)).toEqual(["posix"]);
+	});
+
+	it("merges Tauri verbatim paths with session paths and displays ordinary Windows paths", () => {
+		const groups = groupSessionsByProject(
+			[session("repo", "D:/project/oh-my-pi", "2026-08-10T12:00:00.000Z")],
+			[{ path: "\\\\?\\D:\\project\\oh-my-pi", name: "oh-my-pi", current: false }],
+		);
+
+		expect(groups).toHaveLength(1);
+		expect(groups[0]?.path).toBe("D:/project/oh-my-pi");
+		expect(groups[0]?.sessions.map(item => item.id)).toEqual(["repo"]);
+		expect(groups[0]?.desktopProject?.path).toBe("\\\\?\\D:\\project\\oh-my-pi");
 	});
 
 	it("sorts sessions newest first and projects by their latest activity", () => {
@@ -81,6 +94,7 @@ describe("SessionsPanel session actions", () => {
 
 		expect(html).toContain('aria-current="page" title="Open Active session"');
 		expect(html).not.toContain('aria-current="page" title="Open Other session"');
+		expect(html).toContain('aria-label="collapse sidebar"');
 	});
 
 	it("renders read-only session rows without resume, create, or drop controls", () => {

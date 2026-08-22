@@ -1,30 +1,27 @@
 import { ArrowUp, Folder, SendHorizontal, Square } from "lucide-react";
 import type { KeyboardEvent, ReactNode, RefObject } from "react";
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { GuestClient, GuestSnapshot } from "../../lib/client";
+import { desktopBridge } from "../../lib/desktop-bridge";
 import { shortenPath } from "../../lib/format";
-import { ModelPicker } from "./ModelPicker";
+import { ModelPicker, ThinkingPicker } from "./ModelPicker";
 
 export interface ComposerProps {
 	client: GuestClient;
 	snapshot: GuestSnapshot;
 }
 
+export interface NewSessionComposerProps {
+	cwd: string | undefined;
+	pending: boolean;
+	disabled: boolean;
+	onSubmit(prompt: string): void;
+}
+
 /** Textarea metrics: line-height 20px + 8px vertical padding × 2 (kept in sync with composer.css). */
 const LINE_PX = 20;
 const PAD_Y = 16;
 const MAX_ROWS = 8;
-
-const THINKING_LABELS: Readonly<Record<string, string>> = {
-	off: "Off",
-	auto: "Auto",
-	minimal: "Minimal",
-	low: "Low",
-	medium: "Medium",
-	high: "High",
-	xhigh: "Extra high",
-	max: "Max",
-};
 
 function autosize(el: HTMLTextAreaElement | null): void {
 	if (!el) return;
@@ -124,17 +121,132 @@ function AskEditor({ prefill, onSubmit }: AskEditorProps): ReactNode {
 }
 
 function Workspace({ cwd }: { cwd: string | undefined }): ReactNode {
+	const [desktopAvailable, setDesktopAvailable] = useState(desktopBridge.available);
+	useEffect(() => {
+		let active = true;
+		void desktopBridge
+			.listProjects()
+			.then(() => {
+				if (active) setDesktopAvailable(desktopBridge.available);
+			})
+			.catch(() => {
+				if (active) setDesktopAvailable(false);
+			});
+		return () => {
+			active = false;
+		};
+	}, []);
+
 	if (!cwd) return <span className="sh-workspace sh-workspace-empty">workspace unavailable</span>;
 
 	const normalized = cwd.replace(/[\\/]+$/, "");
 	const segments = normalized.split(/[\\/]/);
 	const project = segments[segments.length - 1] || cwd;
 	return (
-		<span className="sh-workspace" title={cwd}>
+		<button
+			type="button"
+			className="sh-workspace sh-workspace-button"
+			disabled={!desktopAvailable}
+			onClick={() => void desktopBridge.openProject().catch(() => {})}
+			title="select project folder"
+			aria-label={`select project folder (current: ${cwd})`}
+		>
 			<Folder size={13} aria-hidden="true" />
 			<span className="sh-workspace-project">{project}</span>
 			<span className="sh-workspace-path">{shortenPath(cwd)}</span>
+		</button>
+	);
+}
+
+function ContextGauge({ snapshot }: { snapshot: GuestSnapshot }): ReactNode {
+	const usage = snapshot.state?.contextUsage;
+	const percent =
+		usage?.percent ??
+		(usage?.tokens != null && usage.contextWindow !== null && usage.contextWindow > 0
+			? (usage.tokens / usage.contextWindow) * 100
+			: null);
+	if (percent === null || !Number.isFinite(percent)) return null;
+	const clamped = Math.min(100, Math.max(0, percent));
+	const rounded = Math.round(clamped);
+	return (
+		<span
+			className={clamped > 80 ? "sh-context-gauge sh-context-gauge-warn" : "sh-context-gauge"}
+			title={`context usage · ${rounded}%`}
+			aria-label={`context usage ${rounded}%`}
+		>
+			<svg viewBox="0 0 24 24" aria-hidden="true">
+				<circle className="sh-context-gauge-track" cx="12" cy="12" r="9" pathLength="100" />
+				<circle
+					className="sh-context-gauge-fill"
+					cx="12"
+					cy="12"
+					r="9"
+					pathLength="100"
+					strokeDasharray={`${clamped} 100`}
+				/>
+			</svg>
+			<span>{rounded}</span>
 		</span>
+	);
+}
+
+/** Composer shown on the control-room home before a concrete session exists. */
+export function NewSessionComposer({ cwd, pending, disabled, onSubmit }: NewSessionComposerProps): ReactNode {
+	const [text, setText] = useState("");
+	const taRef = useRef<HTMLTextAreaElement | null>(null);
+	const { composingRef, onCompositionStart, onCompositionEnd } = useCompositionGuard();
+	const unavailable = disabled || pending;
+	const canSend = !unavailable && text.trim().length > 0;
+
+	useLayoutEffect(() => {
+		autosize(taRef.current);
+	}, [text]);
+
+	const send = useCallback((): void => {
+		const prompt = text.trim();
+		if (!prompt || unavailable) return;
+		onSubmit(prompt);
+	}, [onSubmit, text, unavailable]);
+
+	const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>): void => {
+		if (!shouldSubmitOnEnter(event, composingRef.current)) return;
+		event.preventDefault();
+		send();
+	};
+
+	return (
+		<div className="sh-composer sh-new-session-composer">
+			<div className="sh-composer-card">
+				<textarea
+					ref={taRef}
+					className="sh-composer-input"
+					value={text}
+					onChange={event => setText(event.target.value)}
+					onKeyDown={onKeyDown}
+					onCompositionStart={onCompositionStart}
+					onCompositionEnd={onCompositionEnd}
+					placeholder={pending ? "starting session…" : "prompt the host agent…"}
+					disabled={unavailable}
+					rows={1}
+					spellCheck={false}
+					autoFocus={!unavailable}
+				/>
+				<div className="sh-composer-controls">
+					<Workspace cwd={cwd} />
+					<span className="sh-composer-control-spacer" />
+					<button
+						type="button"
+						className="sh-composer-send"
+						onClick={send}
+						disabled={!canSend}
+						title="start a new session and send prompt"
+						aria-label="start a new session and send prompt"
+					>
+						<ArrowUp size={14} />
+					</button>
+				</div>
+			</div>
+		</div>
 	);
 }
 
@@ -223,12 +335,13 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 						{busy && (
 							<button
 								type="button"
-								className="sh-btn sh-btn-stop"
+								className="sh-composer-send sh-composer-stop"
 								onClick={() => client.sendAbort()}
 								disabled={!live}
 								title="stop the current turn"
+								aria-label="stop the current turn"
 							>
-								<Square size={11} /> <span className="sh-btn-label">Stop</span>
+								<Square size={12} fill="currentColor" />
 							</button>
 						)}
 					</div>
@@ -262,20 +375,12 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 				<div className="sh-composer-controls">
 					<Workspace cwd={snapshot.state?.cwd} />
 					{thinkingLevels.length > 0 && configuredThinkingLevel && (
-						<select
-							className="sh-thinking-picker"
+						<ThinkingPicker
+							levels={thinkingLevels}
 							value={configuredThinkingLevel}
 							disabled={!canPrompt}
-							title="change thinking level"
-							aria-label="thinking level"
-							onChange={event => client.sendThinkingChange(event.target.value)}
-						>
-							{thinkingLevels.map(level => (
-								<option key={level} value={level}>
-									{THINKING_LABELS[level] ?? level}
-								</option>
-							))}
-						</select>
+							onChange={level => client.sendThinkingChange(level)}
+						/>
 					)}
 					<ModelPicker
 						snapshot={snapshot}
@@ -289,27 +394,30 @@ export function Composer({ client, snapshot }: ComposerProps): ReactNode {
 							<span className="sh-queued-label">queued </span>×{queued}
 						</span>
 					)}
-					{busy && !readOnly && (
+					<ContextGauge snapshot={snapshot} />
+					{busy && !readOnly ? (
 						<button
 							type="button"
-							className="sh-btn sh-btn-stop"
+							className="sh-composer-send sh-composer-stop"
 							onClick={() => client.sendAbort()}
 							disabled={!live}
 							title="stop the current turn"
+							aria-label="stop the current turn"
 						>
-							<Square size={11} /> <span className="sh-btn-label">Stop</span>
+							<Square size={12} fill="currentColor" />
+						</button>
+					) : (
+						<button
+							type="button"
+							className="sh-composer-send"
+							onClick={send}
+							disabled={!canSend}
+							title="send (Enter)"
+							aria-label="send prompt"
+						>
+							<ArrowUp size={14} />
 						</button>
 					)}
-					<button
-						type="button"
-						className="sh-composer-send"
-						onClick={send}
-						disabled={!canSend}
-						title="send (Enter)"
-						aria-label="send prompt"
-					>
-						<ArrowUp size={14} />
-					</button>
 				</div>
 			</div>
 		</div>

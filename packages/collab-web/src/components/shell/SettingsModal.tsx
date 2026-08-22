@@ -2,6 +2,7 @@ import {
 	ArrowLeft,
 	CircleGauge,
 	Folder,
+	Keyboard,
 	Monitor,
 	Moon,
 	Network,
@@ -26,7 +27,7 @@ export interface SettingsModalProps {
 	context?: string | null;
 }
 
-type SettingsSection = "general" | "appearance";
+type SettingsSection = "general" | "appearance" | "shortcuts";
 
 const THEME_OPTIONS: readonly {
 	preference: ThemePreference;
@@ -40,6 +41,23 @@ const THEME_OPTIONS: readonly {
 ];
 
 const UNAVAILABLE = "Not available";
+const MODIFIER_KEY = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
+const SHORTCUTS: readonly { action: string; description: string; keys: readonly string[] }[] = [
+	{
+		action: "New session",
+		description: "Create and open a session in the current project",
+		keys: [MODIFIER_KEY, "N"],
+	},
+	{ action: "Open project", description: "Choose another project folder", keys: [MODIFIER_KEY, "O"] },
+	{
+		action: "Toggle project sidebar",
+		description: "Collapse or restore project navigation",
+		keys: [MODIFIER_KEY, "B"],
+	},
+	{ action: "Focus prompt", description: "Move focus to the active Composer", keys: [MODIFIER_KEY, "K"] },
+	{ action: "Open settings", description: "Open or close this settings dialog", keys: [MODIFIER_KEY, ","] },
+	{ action: "Close overlay", description: "Close the active dialog, menu, or drawer", keys: ["Esc"] },
+];
 
 /**
  * Settings sheet. Theme is the only writable preference; session facts remain
@@ -100,15 +118,11 @@ export function SettingsModal({
 		}
 	};
 
-	const closeFromBackdrop = (): void => {
-		if (window.matchMedia("(max-width: 720px)").matches) onClose();
-	};
-
 	const access = readOnly == null ? UNAVAILABLE : readOnly ? "Read only" : "Read and write";
-	const activeLabel = section === "general" ? "General" : "Appearance";
+	const activeLabel = section === "general" ? "General" : section === "appearance" ? "Appearance" : "Shortcuts";
 
 	return (
-		<div className="sh-settings-backdrop" onClick={closeFromBackdrop}>
+		<div className="sh-settings-backdrop" onClick={onClose}>
 			<div
 				className="sh-settings-sheet"
 				role="dialog"
@@ -145,6 +159,16 @@ export function SettingsModal({
 						>
 							<Palette size={18} aria-hidden="true" />
 							<span>Appearance</span>
+						</button>
+						<button
+							type="button"
+							className={section === "shortcuts" ? "sh-settings-nav-item is-active" : "sh-settings-nav-item"}
+							aria-current={section === "shortcuts" ? "page" : undefined}
+							aria-controls="sh-settings-panel-shortcuts"
+							onClick={() => setSection("shortcuts")}
+						>
+							<Keyboard size={18} aria-hidden="true" />
+							<span>Keyboard shortcuts</span>
 						</button>
 					</nav>
 				</aside>
@@ -243,6 +267,37 @@ export function SettingsModal({
 										</label>
 									))}
 								</div>
+							</section>
+						)}
+
+						{section === "shortcuts" && (
+							<section
+								className="sh-settings-section"
+								id="sh-settings-panel-shortcuts"
+								aria-labelledby="sh-settings-shortcuts-title"
+							>
+								<div className="sh-settings-section-head">
+									<h2 id="sh-settings-shortcuts-title">Keyboard shortcuts</h2>
+									<p>Available throughout the desktop and control-room interface.</p>
+								</div>
+								<dl className="sh-settings-shortcuts">
+									{SHORTCUTS.map(shortcut => (
+										<div key={shortcut.action} className="sh-settings-shortcut-row">
+											<dt>
+												<strong>{shortcut.action}</strong>
+												<small>{shortcut.description}</small>
+											</dt>
+											<dd aria-label={shortcut.keys.join(" plus ")}>
+												{shortcut.keys.map((key, index) => (
+													<span key={key}>
+														{index > 0 && <span className="sh-settings-shortcut-plus">+</span>}
+														<kbd>{key}</kbd>
+													</span>
+												))}
+											</dd>
+										</div>
+									))}
+								</dl>
 							</section>
 						)}
 					</div>

@@ -201,6 +201,36 @@
           "markdownDescription": "Enables the project_switch command without any pre-configured scope."
         },
         {
+          "description": "Enables the window_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-window-close",
+          "markdownDescription": "Enables the window_close command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the window_is_maximized command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-window-is-maximized",
+          "markdownDescription": "Enables the window_is_maximized command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the window_minimize command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-window-minimize",
+          "markdownDescription": "Enables the window_minimize command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the window_start_dragging command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-window-start-dragging",
+          "markdownDescription": "Enables the window_start_dragging command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the window_toggle_maximize command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-window-toggle-maximize",
+          "markdownDescription": "Enables the window_toggle_maximize command without any pre-configured scope."
+        },
+        {
           "description": "Denies the app_info command without any pre-configured scope.",
           "type": "string",
           "const": "deny-app-info",
@@ -223,6 +253,36 @@
           "type": "string",
           "const": "deny-project-switch",
           "markdownDescription": "Denies the project_switch command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the window_close command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-window-close",
+          "markdownDescription": "Denies the window_close command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the window_is_maximized command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-window-is-maximized",
+          "markdownDescription": "Denies the window_is_maximized command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the window_minimize command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-window-minimize",
+          "markdownDescription": "Denies the window_minimize command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the window_start_dragging command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-window-start-dragging",
+          "markdownDescription": "Denies the window_start_dragging command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the window_toggle_maximize command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-window-toggle-maximize",
+          "markdownDescription": "Denies the window_toggle_maximize command without any pre-configured scope."
         },
         {
           "description": "Default core plugins set.\n#### This default permission set includes:\n\n- `core:path:default`\n- `core:event:default`\n- `core:window:default`\n- `core:webview:default`\n- `core:app:default`\n- `core:image:default`\n- `core:resources:default`\n- `core:menu:default`\n- `core:tray:default`",

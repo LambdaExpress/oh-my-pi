@@ -3,7 +3,7 @@ import type { KeyboardEvent } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { GuestSnapshot } from "../src/lib/client";
 import { GuestClient } from "../src/lib/client";
-import { Composer, shouldSubmitOnEnter } from "../src/components/shell/Composer";
+import { Composer, NewSessionComposer, shouldSubmitOnEnter } from "../src/components/shell/Composer";
 import { ModelPicker } from "../src/components/shell/ModelPicker";
 import { encodeBase64Url } from "../src/lib/link";
 
@@ -86,6 +86,18 @@ describe("Composer host UI requests", () => {
 });
 
 describe("Composer session metadata and controls", () => {
+	it("renders an enabled first-prompt composer before a session exists", () => {
+		const html = renderToStaticMarkup(
+			<NewSessionComposer cwd="D:/project/21cp" pending={false} disabled={false} onSubmit={() => {}} />,
+		);
+
+		expect(html).toContain('placeholder="prompt the host agent…"');
+		expect(html).toContain('aria-label="start a new session and send prompt"');
+		expect(html).toContain('class="sh-workspace-project">21cp');
+		expect(html).toContain('class="sh-composer-input" placeholder="prompt the host agent…"');
+		expect(html).toContain('class="sh-composer-send" disabled=""');
+	});
+
 	it("renders the real cwd as plain workspace metadata and keeps model selection in the bottom controls", () => {
 		const snap = snapshot(null);
 		snap.working = false;
@@ -94,15 +106,18 @@ describe("Composer session metadata and controls", () => {
 			queuedMessageCount: 0,
 			cwd: "/work/oh-my-pi",
 			model: { id: "sonnet", name: "Sonnet", provider: "anthropic", contextWindow: 200_000 },
+			contextUsage: { tokens: 80_000, contextWindow: 200_000, percent: 40 },
 			participants: [],
 		};
 
 		const html = renderToStaticMarkup(<Composer client={client} snapshot={snap} />);
 
 		expect(html).toContain('class="sh-composer-card"');
-		expect(html).toContain('class="sh-workspace" title="/work/oh-my-pi"');
+		expect(html).toContain('class="sh-workspace sh-workspace-button" disabled=""');
+		expect(html).toContain('title="select project folder"');
 		expect(html).toContain('class="sh-workspace-project">oh-my-pi');
 		expect(html).toContain('title="switch model"');
+		expect(html).toContain('aria-label="context usage 40%"');
 		expect(html).not.toContain("<select");
 	});
 
@@ -123,7 +138,11 @@ describe("Composer session metadata and controls", () => {
 
 		expect(html).toContain("queued");
 		expect(html).toContain("×2");
-		expect(html).toContain('title="stop the current turn"');
+		expect(html).toContain('class="sh-composer-send sh-composer-stop"');
+		expect(html).toContain('aria-label="stop the current turn"');
+		expect(html).not.toContain("sh-btn-stop");
+		expect(html).not.toContain(">Stop</span>");
+		expect(html).not.toContain('aria-label="send prompt"');
 	});
 
 	it("renders host-advertised thinking levels with the configured selector selected", () => {
@@ -143,8 +162,9 @@ describe("Composer session metadata and controls", () => {
 		const html = renderToStaticMarkup(<Composer client={client} snapshot={snap} />);
 
 		expect(html).toContain('title="change thinking level"');
-		expect(html).toContain('<option value="auto" selected="">Auto</option>');
-		expect(html).toContain('<option value="high">High</option>');
+		expect(html).toContain('aria-expanded="false"');
+		expect(html).toContain(">Auto</span>");
+		expect(html).not.toContain("<select");
 	});
 
 	it("hides unavailable thinking controls and disables them for read-only sessions", () => {
@@ -166,7 +186,7 @@ describe("Composer session metadata and controls", () => {
 		);
 		const readOnlyHtml = renderToStaticMarkup(<Composer client={client} snapshot={readOnly} />);
 		expect(readOnlyHtml).toContain('title="change thinking level"');
-		expect(readOnlyHtml).toContain('class="sh-thinking-picker" disabled=""');
+		expect(readOnlyHtml).toContain('class="sh-composer-picker-trigger" disabled=""');
 	});
 });
 

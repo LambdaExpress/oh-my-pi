@@ -5,10 +5,17 @@ export interface DesktopProject {
 }
 
 export interface DesktopBridge {
+	/** True when a Tauri invoke bridge is present, independent of project-command authorization. */
+	runtime: boolean;
 	available: boolean;
 	listProjects(): Promise<readonly DesktopProject[]>;
 	openProject(): Promise<void>;
 	switchProject(path: string): Promise<void>;
+	windowMinimize(): Promise<void>;
+	windowToggleMaximize(): Promise<boolean>;
+	windowIsMaximized(): Promise<boolean>;
+	windowStartDragging(): Promise<void>;
+	windowClose(): Promise<void>;
 }
 
 interface ProjectListResponse {
@@ -43,12 +50,22 @@ function basename(path: string): string {
 
 function browserBridge(): DesktopBridge {
 	return {
+		runtime: false,
 		available: false,
 		async listProjects() {
 			return [];
 		},
 		async openProject() {},
 		async switchProject(_path: string) {},
+		async windowMinimize() {},
+		async windowToggleMaximize() {
+			return false;
+		},
+		async windowIsMaximized() {
+			return false;
+		},
+		async windowStartDragging() {},
+		async windowClose() {},
 	};
 }
 
@@ -56,6 +73,7 @@ function tauriBridge(invoke: TauriInvoke): DesktopBridge {
 	let authorization: "unknown" | "authorized" | "denied" = "unknown";
 
 	return {
+		runtime: true,
 		get available() {
 			return authorization === "authorized";
 		},
@@ -100,6 +118,21 @@ function tauriBridge(invoke: TauriInvoke): DesktopBridge {
 				authorization = "denied";
 				throw error;
 			}
+		},
+		async windowMinimize() {
+			await invoke<void>("window_minimize");
+		},
+		async windowToggleMaximize() {
+			return await invoke<boolean>("window_toggle_maximize");
+		},
+		async windowIsMaximized() {
+			return await invoke<boolean>("window_is_maximized");
+		},
+		async windowStartDragging() {
+			await invoke<void>("window_start_dragging");
+		},
+		async windowClose() {
+			await invoke<void>("window_close");
 		},
 	};
 }

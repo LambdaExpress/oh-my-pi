@@ -305,81 +305,6 @@
 	min-height: 36px;
 }
 
-.sh-toasts {
-	position: fixed;
-	z-index: 60;
-	display: flex;
-	flex-direction: column;
-	right: 16px;
-	left: auto;
-	bottom: calc(16px + env(safe-area-inset-bottom, 0px));
-	width: min(360px, calc(100vw - 32px));
-	max-width: none;
-	gap: 8px;
-	margin-left: 0;
-}
-
-.sh-toast {
-	display: flex;
-	font-size: 12px;
-	color: #f9fafb;
-	align-items: center;
-	gap: 10px;
-	padding: 10px 10px 10px 12px;
-	background: #353536;
-	border: 1px solid var(--border-strong);
-	border-left-width: 2px;
-	border-radius: var(--radius-sm);
-	box-shadow: var(--shadow-pop);
-}
-
-/* Dark toast surface: the toast is a deep neutral in both themes, slightly
- * lighter when the app is in dark mode. Mirrors the tokens.css theme selectors. */
-[data-theme="dark"] .sh-toast {
-	background: #434446;
-}
-
-@media (prefers-color-scheme: dark) {
-	:root:not([data-theme]) .sh-toast {
-		background: #434446;
-	}
-}
-
-.sh-toast-info { border-left-color: var(--accent); }
-.sh-toast-warning { border-left-color: var(--warn); }
-.sh-toast-error { border-left-color: var(--err); }
-.sh-toast-msg { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-
-.sh-toast-icon {
-	flex: none;
-}
-
-.sh-toast-info .sh-toast-icon {
-	color: #679efe;
-}
-
-.sh-toast-warning .sh-toast-icon {
-	color: #f59e0b;
-}
-
-.sh-toast-error .sh-toast-icon {
-	color: #f25a5a;
-}
-
-.sh-toast-close {
-	flex: none;
-	display: inline-flex;
-	padding: 1px;
-	color: color-mix(in srgb, #f9fafb 65%, transparent);
-	background: none;
-	border: 0;
-	border-radius: var(--radius-sm);
-	width: 28px;
-	height: 28px;
-	align-items: center;
-	justify-content: center;
-}
-
 @media (max-width: 640px) {
 	.sh-banner {
 		top: 52px;
@@ -396,17 +321,6 @@
 		min-height: 44px;
 	}
 
-	.sh-toasts {
-		right: 12px;
-		bottom: calc(12px + env(safe-area-inset-bottom, 0px));
-		width: calc(100vw - 24px);
-	}
-
-	.sh-toast-close {
-		width: 44px;
-		height: 44px;
-		margin: -8px -8px -8px 0;
-	}
 }
 
 @media (prefers-reduced-motion: reduce) {

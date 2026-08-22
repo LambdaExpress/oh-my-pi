@@ -1,5 +1,5 @@
 import type { SessionSummary } from "@oh-my-pi/pi-wire";
-import { ChevronRight, FolderOpen, LogOut, Plus, Settings, Trash2 } from "lucide-react";
+import { ChevronRight, FolderOpen, LogOut, PanelLeftClose, Plus, Settings, Trash2 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import type { ControlSnapshot } from "../../lib/control-client";
 import { type DesktopProject, desktopBridge } from "../../lib/desktop-bridge";
@@ -13,6 +13,7 @@ export interface SessionsPanelProps {
 	onOpenSession(id: string): void;
 	onNewSession(): void;
 	onDropSession(id: string): void;
+	onCollapse(): void;
 	onLeave(): void;
 }
 
@@ -39,14 +40,16 @@ function sessionModifiedMs(s: SessionSummary): number {
 	return Number.isFinite(t) ? t : 0;
 }
 
-/** Normalizes grouping keys without changing the path displayed to the user. */
+/** Produces one user-facing path with forward slashes and no Win32 verbatim prefix. */
 function normalizeProjectPath(path: string): string {
-	const slashPath = path.trim().replaceAll("\\", "/");
+	let slashPath = path.trim().replaceAll("\\", "/");
+	slashPath = slashPath.replace(/^\/\/\?\/UNC\//i, "//");
+	slashPath = slashPath.replace(/^\/\/\?\//, "");
 	const normalized = slashPath.startsWith("//")
 		? `//${slashPath.slice(2).replace(/\/{2,}/g, "/")}`
 		: slashPath.replace(/\/{2,}/g, "/");
 	if (normalized === "/") return normalized;
-	return normalized.replace(/\/+$/, "") || path.trim();
+	return normalized.replace(/\/+$/, "") || slashPath;
 }
 
 function comparableProjectPath(path: string): string {
@@ -56,7 +59,7 @@ function comparableProjectPath(path: string): string {
 
 function projectName(path: string): string {
 	const normalized = normalizeProjectPath(path);
-	return normalized.split("/").filter(Boolean).pop() || normalized || "Workspace";
+	return normalized.split(/[\\/]/).filter(Boolean).pop() || normalized || "Workspace";
 }
 
 export function groupSessionsByProject(
@@ -74,16 +77,17 @@ export function groupSessionsByProject(
 
 	const currentProject = desktopProjects.find(project => project.current);
 	if (currentProject && groups.size > 0) {
+		const path = normalizeProjectPath(currentProject.path);
 		const currentKey = comparableProjectPath(currentProject.path);
 		const sessionsInCurrentCore = Array.from(groups.values()).flatMap(group => group.sessions);
 		groups.clear();
-		groups.set(currentKey, { path: currentProject.path, sessions: sessionsInCurrentCore });
+		groups.set(currentKey, { path, sessions: sessionsInCurrentCore });
 	}
 	for (const project of desktopProjects) {
 		const path = normalizeProjectPath(project.path);
 		const key = comparableProjectPath(path);
 		if (!groups.has(key)) {
-			groups.set(key, { path: project.path, sessions: [] });
+			groups.set(key, { path, sessions: [] });
 		}
 	}
 
@@ -95,7 +99,7 @@ export function groupSessionsByProject(
 			);
 			const modifiedMs = sortedSessions[0] ? sessionModifiedMs(sortedSessions[0]) : 0;
 			return {
-				path: desktopProject?.path ?? group.path,
+				path: group.path,
 				name: desktopProject?.name || projectName(group.path),
 				sessions: sortedSessions,
 				modifiedMs,
@@ -126,6 +130,7 @@ export function SessionsPanel({
 	onOpenSession,
 	onNewSession,
 	onDropSession,
+	onCollapse,
 	onLeave,
 }: SessionsPanelProps): ReactNode {
 	const { sessions, readOnly, phase } = snapshot;
@@ -197,6 +202,15 @@ export function SessionsPanel({
 						{phase}
 					</span>
 				</div>
+				<button
+					type="button"
+					className="sh-sessions-collapse"
+					onClick={onCollapse}
+					title="collapse sidebar"
+					aria-label="collapse sidebar"
+				>
+					<PanelLeftClose size={16} aria-hidden="true" />
+				</button>
 			</div>
 
 			{!readOnly && (

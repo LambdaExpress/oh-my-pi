@@ -145,3 +145,108 @@ describe("Transcript message Markdown", () => {
 		expect(countElements(html, ".tr-row--user .tr-md strong")).toBe(1);
 	});
 });
+
+describe("Transcript completed runs", () => {
+	it("collapses a normally completed run to its final answer and one expandable process control", () => {
+		const entries: SessionEntry[] = [
+			{
+				type: "custom_message",
+				id: "prompt",
+				parentId: null,
+				timestamp: "2026-08-22T00:00:00Z",
+				customType: "collab-prompt",
+				content: "Inspect the repository",
+				details: { from: "tester" },
+				display: true,
+			},
+			{
+				type: "message",
+				id: "process",
+				parentId: "prompt",
+				timestamp: "2026-08-22T00:00:01Z",
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "thinking", thinking: "private investigation details" },
+						{ type: "text", text: "I will inspect the files." },
+						{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "src" } },
+					],
+					model: "test/model",
+					usage: assistantUsage(),
+					stopReason: "toolUse",
+					timestamp: 2,
+				},
+			},
+			{
+				type: "message",
+				id: "result",
+				parentId: "process",
+				timestamp: "2026-08-22T00:00:02Z",
+				message: {
+					role: "toolResult",
+					toolCallId: "call-1",
+					toolName: "read",
+					content: [{ type: "text", text: "file contents" }],
+					isError: false,
+					timestamp: 3,
+				},
+			},
+			{
+				type: "message",
+				id: "answer",
+				parentId: "result",
+				timestamp: "2026-08-22T00:00:03Z",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "The repository is healthy." }],
+					model: "test/model",
+					usage: assistantUsage(),
+					stopReason: "stop",
+					timestamp: 4,
+				},
+			},
+		];
+
+		const html = renderTranscript({ entries, working: false });
+
+		expect(countElements(html, '.tr-run-toggle[aria-expanded="false"]')).toBe(1);
+		expect(countElements(html, '.tr-run-process[aria-hidden="true"]')).toBe(1);
+		expect(html).toContain("The repository is healthy.");
+		expect(html).toContain("I will inspect the files.");
+		expect(html).toContain("1 update");
+		expect(html).toContain("1 tool");
+	});
+
+	it("keeps failed runs expanded instead of hiding their diagnostics", () => {
+		const entries: SessionEntry[] = [
+			{
+				type: "message",
+				id: "prompt",
+				parentId: null,
+				timestamp: "2026-08-22T00:00:00Z",
+				message: { role: "user", content: "Fail visibly", timestamp: 1 },
+			},
+			{
+				type: "message",
+				id: "failure",
+				parentId: "prompt",
+				timestamp: "2026-08-22T00:00:01Z",
+				message: {
+					role: "assistant",
+					content: [{ type: "text", text: "Visible failure details" }],
+					model: "test/model",
+					usage: assistantUsage(),
+					stopReason: "error",
+					errorMessage: "provider failed",
+					timestamp: 2,
+				},
+			},
+		];
+
+		const html = renderTranscript({ entries, working: false });
+
+		expect(html).toContain("Visible failure details");
+		expect(html).toContain("provider failed");
+		expect(countElements(html, ".tr-run-toggle")).toBe(0);
+	});
+});

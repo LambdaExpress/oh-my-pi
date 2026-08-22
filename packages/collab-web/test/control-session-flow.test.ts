@@ -73,6 +73,21 @@ describe("App control-session coordination", () => {
 		expect(flow.pending).toBe(false);
 	});
 
+	it("carries the first prompt through the directed create reply", () => {
+		const control = makeControl("initial-prompt");
+		const flow = new ControlSessionFlow();
+		flow.activate(control.client);
+
+		expect(flow.startCreate(control.client, "inspect the current project")).toBe(true);
+		const accepted = flow.accept(control.client, {
+			op: "created",
+			id: "fresh-session",
+			link: `session-fresh.${SESSION_KEY}`,
+		});
+
+		expect(accepted?.initialPrompt).toBe("inspect the current project");
+	});
+
 	it("ignores unmatched directed replies until the authoritative reply opens its session id", () => {
 		const control = makeControl("match");
 		const flow = new ControlSessionFlow();

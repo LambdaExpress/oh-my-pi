@@ -4,6 +4,102 @@
 @import "./settings.css";
 @import "./connect.css";
 
+/* ---- Tauri custom window chrome ---- */
+.sh-desktop-frame {
+	display: grid;
+	grid-template-rows: 36px minmax(0, 1fr);
+	width: 100%;
+	height: 100%;
+	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
+	background: var(--bg);
+}
+
+.sh-desktop-titlebar {
+	position: relative;
+	z-index: 100;
+	display: flex;
+	align-items: stretch;
+	justify-content: space-between;
+	min-width: 0;
+	color: var(--fg-muted);
+	background: var(--bg-sidebar);
+	border-bottom: 1px solid var(--border);
+	user-select: none;
+}
+
+.sh-desktop-drag-region {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
+	flex: 1;
+	padding: 0 12px;
+}
+
+.sh-desktop-mark {
+	width: 14px;
+	height: 14px;
+	flex: none;
+	border-radius: 4px;
+	background: var(--brand-mark-gradient);
+	pointer-events: none;
+}
+
+.sh-desktop-title {
+	min-width: 0;
+	overflow: hidden;
+	font-size: 12px;
+	font-weight: 550;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	pointer-events: none;
+}
+
+.sh-desktop-window-controls {
+	display: flex;
+	align-items: stretch;
+	flex: none;
+}
+
+.sh-desktop-window-button {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 46px;
+	height: 35px;
+	padding: 0;
+	color: var(--fg-muted);
+	background: transparent;
+	border: 0;
+	border-radius: 0;
+	transition:
+		color var(--dur-fast) var(--ease),
+		background var(--dur-fast) var(--ease);
+}
+
+.sh-desktop-window-button:hover {
+	color: var(--fg);
+	background: var(--bg-hover);
+}
+
+.sh-desktop-window-close:hover {
+	color: white;
+	background: var(--window-close-hover);
+}
+
+.sh-desktop-content {
+	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
+	--viewport-height: 100%;
+}
+
+.sh-desktop-content > * {
+	height: 100%;
+}
+
 /* ---- app frame ---- */
 .sh-app {
 	width: 100%;
@@ -17,6 +113,7 @@
 	 * shrink and ellipsize instead of overflowing. */
 	grid-template-columns: minmax(0, 1fr);
 	height: var(--viewport-height, 100%);
+	animation: sh-app-in var(--dur-slow) var(--ease);
 }
 
 .sh-main {
@@ -63,6 +160,7 @@
 	overflow: hidden;
 	border-left: 1px solid var(--border);
 	background: var(--bg);
+	animation: sh-rail-in var(--dur-slow) var(--ease);
 }
 
 .sh-rail-backdrop {
@@ -146,7 +244,28 @@
 	transition:
 		background var(--dur-fast) var(--ease),
 		color var(--dur-fast) var(--ease),
-		border-color var(--dur-fast) var(--ease);
+		border-color var(--dur-fast) var(--ease),
+		transform var(--dur-fast) var(--ease);
+}
+
+@keyframes sh-app-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
+
+@keyframes sh-rail-in {
+	from {
+		opacity: 0;
+		transform: translateX(16px);
+	}
+	to {
+		opacity: 1;
+		transform: translateX(0);
+	}
 }
 
 .sh-btn:hover:not(:disabled) {
@@ -174,11 +293,6 @@
 	color: var(--accent-fg);
 	background: var(--accent-hover);
 	border-color: var(--accent-hover);
-}
-
-.sh-btn-stop {
-	color: var(--err);
-	border-color: var(--border-strong);
 }
 
 .sh-btn-icon {
@@ -216,7 +330,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-	.sh-theme-toggle {
+	.sh-theme-toggle,
+	.sh-desktop-window-button {
 		transition: none;
 	}
 }
@@ -264,66 +379,6 @@
 	min-width: 0;
 }
 
-.sh-gauge {
-	display: inline-flex;
-	align-items: center;
-	gap: 6px;
-}
-
-.sh-gauge-track {
-	width: 72px;
-	height: 4px;
-	background: var(--border-strong);
-	border-radius: var(--radius-sm);
-	overflow: hidden;
-}
-
-.sh-gauge-fill {
-	display: block;
-	height: 100%;
-	background: var(--accent);
-	border-radius: inherit;
-	transition: width var(--dur-fast) var(--ease);
-}
-
-.sh-gauge-warn .sh-gauge-fill {
-	background: var(--warn);
-}
-
-.sh-gauge-pct {
-	font: 400 11px / 1 var(--font-mono);
-	color: var(--fg-muted);
-}
-
-.sh-gauge-warn .sh-gauge-pct {
-	color: var(--warn);
-}
-
-.sh-avatars {
-	display: inline-flex;
-}
-
-.sh-avatar {
-	width: 20px;
-	height: 20px;
-	font: 600 10px / 18px var(--font-ui);
-	text-align: center;
-	color: var(--fg-muted);
-	background: var(--bg-raised);
-	border: 1px solid var(--border-strong);
-	border-radius: 50%;
-	margin-left: -4px;
-}
-
-.sh-avatar:first-child {
-	margin-left: 0;
-}
-
-.sh-avatar-host {
-	color: var(--accent);
-	border-color: var(--accent);
-}
-
 .sh-dot {
 	width: 8px;
 	height: 8px;
@@ -349,12 +404,6 @@
 		display: none;
 	}
 	.sh-chip-meta {
-		display: none;
-	}
-	.sh-gauge-track {
-		display: none;
-	}
-	.sh-btn-label {
 		display: none;
 	}
 }

@@ -8,6 +8,16 @@
 - Added a Composer model picker backed by the existing `model-list`/`model-change` frames, with the current model highlighted and all mutations disabled for read-only or unavailable sessions.
 - Added a Composer thinking-level selector backed by host-advertised model capabilities and the write-gated `thinking-change` frame, including Auto and every effort supported by the active model.
 - Added a control-room client and project/session sidebar for core-mode multi-session management, including serialized create/resume actions, authoritative active-session highlighting, accurate read-only summaries, and an ended-session recovery card that replaces the Composer.
+
+### Changed
+
+- Unified the Composer thinking and model pickers, moved context usage into a compact circular meter beside the send control, made the workspace chip open the desktop project picker, replaced the separate Stop action with an in-place red send/stop control, and removed participant initials, focus-ring highlighting, header context usage, and corner toast notifications.
+- Added desktop sidebar collapse/restore controls and normalized Tauri project paths to deduplicated `D:/...` display paths while preserving the original canonical path for project switching.
+- Changed the control-room home into a real Composer: its first prompt creates a session, enters it, and submits the preserved prompt as soon as the new room is live.
+- Completed turns now collapse intermediate thinking, tool calls, and progress text behind one expandable process summary while keeping the user prompt and final answer visible; abnormal runs stay expanded. Added motion-token-based transitions for transcript rows, process disclosure, session views, sidebars, Composer cards, model/thinking menus, and agent rails with reduced-motion support.
+- Added working keyboard shortcuts for new session, open project, project-sidebar toggle, Composer focus, and settings, with a reference panel in Settings. Settings now close when the desktop backdrop is clicked while preserving clicks inside the dialog.
+- Added Tauri-only custom window chrome with a unified draggable title bar and minimize, maximize/restore, and close-to-tray controls; ordinary browser sessions remain frameless.
+
 ## [17.3.8] - 2026-08-19
 
 ### Fixed

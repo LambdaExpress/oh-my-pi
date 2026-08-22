@@ -2,11 +2,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::path::Path;
-
-use omp_shell::project::{AppState, pick_project, save_window_state, setup_app, switch_project};
+use omp_shell::project::{AppState, save_window_state, setup_app};
 use tauri::Manager;
-use tauri_plugin_dialog::DialogExt;
 use tokio::sync::Mutex;
 
 /**
@@ -63,25 +60,6 @@ fn main() {
 	}
 	tauri::Builder::default()
 		.plugin(tauri_plugin_dialog::init())
-		.on_menu_event(|app, event| {
-			let id = event.id().as_ref();
-			if id == "open-project" {
-				pick_project(app);
-			} else if id == "about" {
-				let _ = app
-					.dialog()
-					.message(format!("omp shell v{}", env!("CARGO_PKG_VERSION")))
-					.show(|_| {});
-			} else if let Some(dir) = id.strip_prefix("recent:") {
-				if dir != "empty" {
-					let app = app.clone();
-					let dir = dir.to_string();
-					tauri::async_runtime::spawn(async move {
-						let _ = switch_project(&app, Path::new(&dir)).await;
-					});
-				}
-			}
-		})
 		.setup(|app| {
 			setup_app(app.handle())?;
 			Ok(())
@@ -90,7 +68,12 @@ fn main() {
 			omp_shell::project::project_list,
 			omp_shell::project::project_open,
 			omp_shell::project::project_switch,
-			omp_shell::project::app_info
+			omp_shell::project::app_info,
+			omp_shell::project::window_minimize,
+			omp_shell::project::window_is_maximized,
+			omp_shell::project::window_start_dragging,
+			omp_shell::project::window_toggle_maximize,
+			omp_shell::project::window_close
 		])
 		.build(tauri::generate_context!())
 		.expect("error while building omp shell")

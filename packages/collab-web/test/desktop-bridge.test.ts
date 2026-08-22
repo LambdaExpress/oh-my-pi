@@ -15,6 +15,7 @@ function respondingInvoke(response: unknown, calls: InvokeCall[]): TauriInvoke {
 
 describe("DesktopBridge browser fallback", () => {
 	it("imports without Tauri and exposes no desktop capability", async () => {
+		expect(desktopBridge.runtime).toBe(false);
 		expect(desktopBridge.available).toBe(false);
 		expect(await desktopBridge.listProjects()).toEqual([]);
 		await expect(desktopBridge.openProject()).resolves.toBeUndefined();
@@ -36,6 +37,7 @@ describe("DesktopBridge Tauri capability probe", () => {
 			),
 		);
 
+		expect(bridge.runtime).toBe(true);
 		expect(bridge.available).toBe(false);
 		expect(await bridge.listProjects()).toEqual([
 			{ path: "C:\\Work\\Current\\", name: "Current", current: true },
@@ -49,6 +51,29 @@ describe("DesktopBridge Tauri capability probe", () => {
 			{ command: "project_list", args: undefined },
 			{ command: "project_open", args: undefined },
 			{ command: "project_switch", args: { path: "/srv/other" } },
+		]);
+	});
+
+	it("routes custom window controls through dedicated Tauri commands", async () => {
+		const calls: InvokeCall[] = [];
+		const invoke: TauriInvoke = async <T>(command: string, args?: Record<string, unknown>): Promise<T> => {
+			calls.push({ command, args });
+			return (command === "window_is_maximized" || command === "window_toggle_maximize" ? true : undefined) as T;
+		};
+		const bridge = createDesktopBridge(invoke);
+
+		await bridge.windowMinimize();
+		expect(await bridge.windowIsMaximized()).toBe(true);
+		expect(await bridge.windowToggleMaximize()).toBe(true);
+		await bridge.windowStartDragging();
+		await bridge.windowClose();
+
+		expect(calls.map(call => call.command)).toEqual([
+			"window_minimize",
+			"window_is_maximized",
+			"window_toggle_maximize",
+			"window_start_dragging",
+			"window_close",
 		]);
 	});
 

@@ -78,6 +78,7 @@
 	transition:
 		border-color var(--dur-fast) var(--ease),
 		box-shadow var(--dur-fast) var(--ease);
+	animation: sh-composer-in var(--dur) var(--ease);
 }
 
 .sh-composer-card::before {
@@ -87,11 +88,6 @@
 	border-radius: inherit;
 	backdrop-filter: blur(12px);
 	z-index: -1;
-}
-
-.sh-composer-card:focus-within {
-	border-color: var(--accent);
-	box-shadow: var(--shadow-composer), 0 0 0 3px var(--ring);
 }
 
 .sh-composer-editor {
@@ -152,7 +148,18 @@
 	font: 400 12px / 20px var(--font-mono);
 	color: var(--fg-muted);
 	background: var(--bg-inset);
+	border: 0;
 	border-radius: var(--radius-sm);
+	text-align: left;
+}
+
+.sh-workspace-button:hover:not(:disabled) {
+	color: var(--fg);
+	background: var(--bg-hover);
+}
+
+.sh-workspace-button:disabled {
+	cursor: default;
 }
 
 .sh-workspace svg {
@@ -180,28 +187,6 @@
 
 .sh-workspace-empty {
 	color: var(--fg-faint);
-}
-
-.sh-thinking-picker {
-	flex: none;
-	max-width: 112px;
-	height: 28px;
-	padding: 0 22px 0 7px;
-	font: 500 12px / 28px var(--font-mono);
-	color: var(--fg-muted);
-	background-color: transparent;
-	border: 0;
-	border-radius: var(--radius-sm);
-}
-
-.sh-thinking-picker:hover:not(:disabled) {
-	color: var(--fg);
-	background-color: var(--bg-hover);
-}
-
-.sh-thinking-picker:disabled {
-	color: var(--fg-faint);
-	cursor: default;
 }
 
 .sh-composer-send {
@@ -236,6 +221,62 @@
 	background: var(--bg-hover);
 }
 
+.sh-composer-stop {
+	color: white;
+	background: var(--err);
+}
+
+.sh-composer-stop:hover:not(:disabled) {
+	background: color-mix(in srgb, var(--err) 82%, black);
+}
+
+.sh-composer-stop:disabled {
+	color: var(--fg-faint);
+	background: var(--bg-hover);
+}
+
+.sh-context-gauge {
+	position: relative;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	flex: none;
+	font: 600 8px / 1 var(--font-mono);
+	color: var(--fg-muted);
+}
+
+.sh-context-gauge svg {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	transform: rotate(-90deg);
+}
+
+.sh-context-gauge circle {
+	fill: none;
+	stroke-width: 2;
+}
+
+.sh-context-gauge-track {
+	stroke: var(--border-strong);
+}
+
+.sh-context-gauge-fill {
+	stroke: var(--accent);
+	stroke-linecap: round;
+}
+
+.sh-context-gauge-warn {
+	color: var(--warn);
+}
+
+.sh-context-gauge-warn .sh-context-gauge-fill {
+	stroke: var(--warn);
+}
+
 .sh-composer-submit {
 	display: inline-flex;
 	align-items: center;
@@ -263,13 +304,13 @@
 	color: var(--fg-faint);
 }
 
-/* ---- model picker ---- */
-.sh-model-picker {
+/* ---- composer pickers ---- */
+.sh-composer-picker {
 	position: relative;
 	min-width: 0;
 }
 
-.sh-model-picker-trigger {
+.sh-composer-picker-trigger {
 	display: inline-flex;
 	align-items: center;
 	gap: 4px;
@@ -286,20 +327,20 @@
 		color var(--dur-fast) var(--ease);
 }
 
-.sh-model-picker-trigger:hover,
-.sh-model-picker-trigger[aria-expanded="true"] {
+.sh-composer-picker-trigger:hover,
+.sh-composer-picker-trigger[aria-expanded="true"] {
 	color: var(--fg);
 	background: var(--bg-hover);
 }
 
-.sh-model-picker-name {
+.sh-composer-picker-name {
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-.sh-model-picker-menu {
+.sh-composer-picker-menu {
 	position: absolute;
 	left: 0;
 	bottom: calc(100% + 8px);
@@ -314,15 +355,17 @@
 	border: 1px solid var(--border-strong);
 	border-radius: var(--radius);
 	box-shadow: var(--shadow-pop);
+	transform-origin: bottom left;
+	animation: sh-picker-in var(--dur) var(--ease);
 }
 
-.sh-model-picker-empty {
+.sh-composer-picker-empty {
 	padding: 8px 10px;
 	font-size: 12px;
 	color: var(--fg-faint);
 }
 
-.sh-model-picker-item {
+.sh-composer-picker-item {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -335,13 +378,40 @@
 	border: 0;
 	border-radius: var(--radius);
 	text-align: left;
+	transition:
+		color var(--dur-fast) var(--ease),
+		background var(--dur-fast) var(--ease),
+		transform var(--dur-fast) var(--ease);
 }
 
-.sh-model-picker-item:hover {
+.sh-composer-picker-item:hover {
 	background: var(--bg-hover);
+	transform: translateX(2px);
 }
 
-.sh-model-picker-item-copy {
+@keyframes sh-composer-in {
+	from {
+		opacity: 0;
+		transform: translateY(8px) scale(0.99);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0) scale(1);
+	}
+}
+
+@keyframes sh-picker-in {
+	from {
+		opacity: 0;
+		transform: translateY(6px) scale(0.98);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0) scale(1);
+	}
+}
+
+.sh-composer-picker-item-copy {
 	display: flex;
 	align-items: baseline;
 	justify-content: space-between;
@@ -350,24 +420,24 @@
 	flex: 1;
 }
 
-.sh-model-picker-item-name {
+.sh-composer-picker-item-name {
 	min-width: 0;
 	overflow: hidden;
 	text-overflow: ellipsis;
 	white-space: nowrap;
 }
 
-.sh-model-picker-item-provider {
+.sh-composer-picker-item-meta {
 	flex: none;
 	font: 400 10px / 1.4 var(--font-mono);
 	color: var(--fg-faint);
 }
 
-.sh-model-picker-on {
+.sh-composer-picker-on {
 	color: var(--accent);
 }
 
-.sh-model-picker-on .sh-model-picker-item-provider {
+.sh-composer-picker-on .sh-composer-picker-item-meta {
 	color: var(--fg-muted);
 }
 
@@ -490,11 +560,7 @@
 		display: none;
 	}
 
-	.sh-thinking-picker {
-		min-height: 44px;
-	}
-
-	.sh-model-picker-trigger {
+	.sh-composer-picker-trigger {
 		max-width: 130px;
 		min-height: 44px;
 	}
@@ -509,12 +575,12 @@
 
 	.sh-composer-submit,
 	.sh-composer-controls .sh-btn,
-	.sh-model-picker-item,
+	.sh-composer-picker-item,
 	.sh-ask-option {
 		min-height: 44px;
 	}
 
-	.sh-model-picker-menu {
+	.sh-composer-picker-menu {
 		left: auto;
 		right: 0;
 		max-width: min(320px, calc(100vw - 48px));
@@ -526,7 +592,7 @@
 }
 
 @media (max-width: 480px) {
-	.sh-model-picker-menu {
+	.sh-composer-picker-menu {
 		position: fixed;
 		left: 12px;
 		right: 12px;

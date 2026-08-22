@@ -28,6 +28,7 @@
 	--accent-muted: #e4edfd;
 	--accent-fg: #ffffff;
 	--brand-mark-gradient: linear-gradient(135deg, #4176e6 0%, #679efe 100%);
+	--window-close-hover: #c42b1c;
 
 	/* semantic status */
 	--ok: #22c55e;

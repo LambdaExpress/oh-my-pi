@@ -1,8 +1,10 @@
-import { Menu, Plus } from "lucide-react";
+import { Menu } from "lucide-react";
 import type { KeyboardEvent, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import type { ControlClient, ControlSnapshot } from "../../lib/control-client";
+import { desktopBridge } from "../../lib/desktop-bridge";
 import { useControlSnapshot } from "../../lib/use-control";
+import { NewSessionComposer } from "../shell/Composer";
 import { SettingsModal } from "../shell/SettingsModal";
 import { SessionsPanel } from "./SessionsPanel";
 
@@ -15,7 +17,7 @@ export interface SessionsLayoutProps {
 	/** Active session view, or null for the empty state (no session open). */
 	content: ReactNode;
 	onOpenSession(id: string): void;
-	onNewSession(): void;
+	onNewSession(initialPrompt?: string): void;
 	onDropSession(id: string): void;
 	onLeave(): void;
 }
@@ -36,6 +38,7 @@ export function SessionsLayout({
 }: SessionsLayoutProps): ReactNode {
 	const snap = useControlSnapshot(client);
 	const [sidebarOpen, setSidebarOpen] = useState(false);
+	const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 	const [sidebarOverlay, setSidebarOverlay] = useState(() => window.matchMedia("(max-width: 900px)").matches);
 	const [settingsOpen, setSettingsOpen] = useState(false);
 	const sidebarRef = useRef<HTMLElement | null>(null);
@@ -45,9 +48,9 @@ export function SessionsLayout({
 		setSidebarOpen(false);
 		onOpenSession(id);
 	};
-	const newSession = (): void => {
+	const newSession = (initialPrompt?: string): void => {
 		setSidebarOpen(false);
-		onNewSession();
+		onNewSession(initialPrompt);
 	};
 
 	useEffect(() => {
@@ -58,7 +61,48 @@ export function SessionsLayout({
 	}, []);
 
 	useEffect(() => {
-		if (!sidebarOpen) return;
+		const handleShortcut = (event: globalThis.KeyboardEvent): void => {
+			if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+			const key = event.key.toLowerCase();
+			const settingsVisible = document.querySelector(".sh-settings-backdrop") !== null;
+			if (settingsVisible && key !== ",") return;
+			switch (key) {
+				case ",":
+					if (content !== null) return;
+					event.preventDefault();
+					setSettingsOpen(open => !open);
+					break;
+				case "n":
+					if (pending || snap.readOnly || snap.phase !== "live") return;
+					event.preventDefault();
+					setSidebarOpen(false);
+					onNewSession();
+					break;
+				case "o":
+					if (!desktopBridge.available) return;
+					event.preventDefault();
+					void desktopBridge.openProject().catch(() => {});
+					break;
+				case "b":
+					event.preventDefault();
+					if (sidebarOverlay) setSidebarOpen(open => !open);
+					else setSidebarCollapsed(collapsed => !collapsed);
+					break;
+				case "k": {
+					const composer = document.querySelector<HTMLTextAreaElement>(".sh-composer-input:not(:disabled)");
+					if (composer === null) return;
+					event.preventDefault();
+					composer.focus();
+					break;
+				}
+			}
+		};
+		document.addEventListener("keydown", handleShortcut);
+		return () => document.removeEventListener("keydown", handleShortcut);
+	}, [content, onNewSession, pending, sidebarOverlay, snap.phase, snap.readOnly]);
+
+	useEffect(() => {
+		if (!sidebarOpen || !sidebarOverlay) return;
 		const previousOverflow = document.body.style.overflow;
 		document.body.style.overflow = "hidden";
 		const focusFrame = requestAnimationFrame(() => {
@@ -76,7 +120,7 @@ export function SessionsLayout({
 			document.removeEventListener("keydown", closeOnEscape);
 			document.body.style.overflow = previousOverflow;
 		};
-	}, [sidebarOpen]);
+	}, [sidebarOpen, sidebarOverlay]);
 
 	const trapSidebarFocus = (event: KeyboardEvent<HTMLElement>): void => {
 		if (event.key !== "Tab") return;
@@ -94,7 +138,7 @@ export function SessionsLayout({
 	};
 
 	return (
-		<div className="sh-control">
+		<div className="sh-control" data-sidebar-collapsed={sidebarCollapsed ? "true" : undefined}>
 			{settingsOpen && (
 				<SettingsModal
 					onClose={() => setSettingsOpen(false)}
@@ -103,7 +147,7 @@ export function SessionsLayout({
 					connection={snap.phase}
 				/>
 			)}
-			{sidebarOpen && (
+			{sidebarOpen && sidebarOverlay && (
 				<button
 					type="button"
 					className="sh-sidebar-backdrop"
@@ -131,6 +175,11 @@ export function SessionsLayout({
 					onOpenSession={openSession}
 					onNewSession={newSession}
 					onDropSession={onDropSession}
+					onCollapse={() => {
+						if (sidebarOverlay) setSidebarOpen(false);
+						else setSidebarCollapsed(true);
+						requestAnimationFrame(() => sidebarTriggerRef.current?.focus());
+					}}
 					onLeave={onLeave}
 				/>
 			</aside>
@@ -139,7 +188,10 @@ export function SessionsLayout({
 					ref={sidebarTriggerRef}
 					type="button"
 					className="sh-sidebar-toggle"
-					onClick={() => setSidebarOpen(true)}
+					onClick={() => {
+						setSidebarCollapsed(false);
+						setSidebarOpen(true);
+					}}
 					aria-label="Show project navigation"
 				>
 					<Menu size={18} aria-hidden="true" />
@@ -159,7 +211,7 @@ function SessionsEmpty({
 }: {
 	snap: ControlSnapshot;
 	pending: boolean;
-	onNewSession(): void;
+	onNewSession(initialPrompt?: string): void;
 }): ReactNode {
 	const { readOnly, phase } = snap;
 	const unavailable = phase === "connecting" || phase === "waiting" || phase === "reconnecting" || phase === "ended";
@@ -183,15 +235,18 @@ function SessionsEmpty({
 		<div className="sh-sessions-empty">
 			<div className="sh-sessions-empty-stack">
 				<h1 className="sh-sessions-empty-title">{title}</h1>
-				<div className="sh-sessions-empty-composer" data-disabled={readOnly || unavailable ? "true" : undefined}>
-					<p>{hint}</p>
-					{!readOnly && !unavailable && (
-						<button type="button" className="sh-btn sh-btn-primary" onClick={onNewSession} disabled={pending}>
-							<Plus size={15} aria-hidden="true" />
-							{pending ? "Starting…" : "New session"}
-						</button>
-					)}
-				</div>
+				{readOnly || unavailable ? (
+					<div className="sh-sessions-empty-composer" data-disabled="true">
+						<p>{hint}</p>
+					</div>
+				) : (
+					<NewSessionComposer
+						cwd={snap.sessions[0]?.cwd}
+						pending={pending}
+						disabled={false}
+						onSubmit={onNewSession}
+					/>
+				)}
 			</div>
 		</div>
 	);

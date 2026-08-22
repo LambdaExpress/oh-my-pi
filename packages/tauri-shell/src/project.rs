@@ -1,11 +1,11 @@
-//! Project selection & switching: folder picker, menu rebuild, tray, window
-//! state, core lifecycle.
+//! Project selection & switching: folder picker, tray, window state and core
+//! lifecycle.
 
 use std::path::{Path, PathBuf};
 
 use tauri::{
 	AppHandle, Manager, State, Url,
-	menu::{IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu},
+	menu::{Menu, MenuItem},
 	tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
 };
 use tauri_plugin_dialog::DialogExt;
@@ -77,19 +77,15 @@ pub fn setup_app(app: &AppHandle) -> tauri::Result<()> {
 	let cfg = load_config(&config_path(app));
 	let omp = OmpCommand::resolve(&cfg);
 	let last_project = cfg.last_project.clone();
-	let recent = cfg.recent_projects.clone();
 
 	app.manage(Mutex::new(AppState { core: None, config: cfg, omp }));
-
-	rebuild_menu(app, &recent)?;
 
 	restore_window_state(app);
 
 	build_tray(app)?;
 
-	// Close-to-tray: the window hides instead of quitting; the only exits are
-	// File > Quit and the tray Quit item (both call `app.exit(0)`, which runs
-	// the `RunEvent::ExitRequested` core shutdown in main.rs).
+	// Close-to-tray: native and custom close requests hide the window. The tray
+	// Quit item calls `app.exit(0)` and runs the core shutdown in main.rs.
 	if let Some(win) = app.get_webview_window("main") {
 		let app = app.clone();
 		win.clone().on_window_event(move |event| {
@@ -158,13 +154,9 @@ pub async fn switch_project(app: &AppHandle, new_dir: &Path) -> Result<(), Strin
 	}
 	guard.config.record_project(&canonical_str);
 	let cfg_snapshot = guard.config.clone();
-	let recent = guard.config.recent_projects.clone();
 
 	if let Err(e) = save_config(&config_path(app), &cfg_snapshot) {
 		eprintln!("failed to save shell config: {e}");
-	}
-	if let Err(e) = rebuild_menu(app, &recent) {
-		eprintln!("failed to rebuild menu: {e}");
 	}
 
 	let dir_for_cb = canonical_str.clone();
@@ -270,6 +262,50 @@ pub fn app_info() -> AppInfo {
 		version:      env!("CARGO_PKG_VERSION").to_string(),
 		product_name: "omp shell".to_string(),
 	}
+}
+
+fn main_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
+	app.get_webview_window("main")
+		.ok_or_else(|| "main window is unavailable".to_string())
+}
+
+#[tauri::command]
+pub fn window_minimize(app: AppHandle) -> Result<(), String> {
+	main_window(&app)?
+		.minimize()
+		.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn window_is_maximized(app: AppHandle) -> Result<bool, String> {
+	main_window(&app)?
+		.is_maximized()
+		.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn window_start_dragging(app: AppHandle) -> Result<(), String> {
+	main_window(&app)?
+		.start_dragging()
+		.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn window_toggle_maximize(app: AppHandle) -> Result<bool, String> {
+	let window = main_window(&app)?;
+	if window.is_maximized().map_err(|error| error.to_string())? {
+		window.unmaximize().map_err(|error| error.to_string())?;
+	} else {
+		window.maximize().map_err(|error| error.to_string())?;
+	}
+	window.is_maximized().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn window_close(app: AppHandle) -> Result<(), String> {
+	main_window(&app)?
+		.close()
+		.map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
@@ -488,42 +524,5 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 			}
 		})
 		.build(app)?;
-	Ok(())
-}
-
-pub fn rebuild_menu(app: &AppHandle, recent: &[String]) -> tauri::Result<()> {
-	let open = MenuItem::with_id(app, "open-project", "Open Project…", true, Some("CmdOrCtrl+O"))?;
-
-	let recent_menu = if recent.is_empty() {
-		let empty = MenuItem::with_id(app, "recent:empty", "（empty）", false, None::<&str>)?;
-		Submenu::with_items(app, "Recent Projects", true, &[&empty])?
-	} else {
-		let items: Vec<MenuItem<tauri::Wry>> = recent
-			.iter()
-			.map(|p| {
-				let label = Path::new(p)
-					.file_name()
-					.map(|name| name.to_string_lossy().into_owned())
-					.unwrap_or_else(|| p.clone());
-				MenuItem::with_id(app, format!("recent:{p}"), label, true, None::<&str>)
-			})
-			.collect::<tauri::Result<_>>()?;
-		let item_refs: Vec<&dyn IsMenuItem<tauri::Wry>> = items
-			.iter()
-			.map(|item| item as &dyn IsMenuItem<tauri::Wry>)
-			.collect();
-		Submenu::with_items(app, "Recent Projects", true, &item_refs)?
-	};
-
-	let quit = PredefinedMenuItem::quit(app, Some("Quit"))?;
-	let file = Submenu::with_items(app, "File", true, &[
-		&open as &dyn IsMenuItem<tauri::Wry>,
-		&recent_menu as &dyn IsMenuItem<tauri::Wry>,
-		&quit as &dyn IsMenuItem<tauri::Wry>,
-	])?;
-	let about = MenuItem::with_id(app, "about", "About omp shell", true, None::<&str>)?;
-	let help = Submenu::with_items(app, "Help", true, &[&about])?;
-	let menu = Menu::with_items(app, &[&file, &help])?;
-	app.set_menu(menu)?;
 	Ok(())
 }

@@ -19,6 +19,7 @@
 	height: var(--viewport-height, 100%);
 	min-height: 0;
 	background: var(--bg);
+	transition: grid-template-columns var(--dur-slow) var(--ease);
 }
 
 .sh-sidebar {
@@ -28,6 +29,10 @@
 	overflow: hidden;
 	border-right: 1px solid var(--border);
 	background: var(--bg-sidebar);
+	transition:
+		opacity var(--dur) var(--ease),
+		transform var(--dur-slow) var(--ease),
+		visibility var(--dur-slow) step-end;
 }
 
 .sh-sidebar-backdrop,
@@ -49,6 +54,10 @@
 	min-height: 0;
 	display: flex;
 	flex-direction: column;
+}
+
+.sh-control-view > * {
+	animation: sh-control-view-in var(--dur-slow) var(--ease);
 }
 
 /* The nested Session app frame fills the right column without another control toolbar. */
@@ -93,6 +102,26 @@
 	align-items: baseline;
 	gap: 8px;
 	min-width: 0;
+	flex: 1;
+}
+
+.sh-sessions-collapse {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 32px;
+	height: 32px;
+	flex: none;
+	padding: 0;
+	color: var(--fg-muted);
+	background: transparent;
+	border: 0;
+	border-radius: var(--radius-sm);
+}
+
+.sh-sessions-collapse:hover {
+	color: var(--fg);
+	background: var(--bg-hover);
 }
 
 .sh-sessions-brand-name {
@@ -527,6 +556,54 @@
 	color: var(--fg-faint);
 }
 
+.sh-new-session-composer {
+	width: 100%;
+	max-width: none;
+	margin: 0;
+}
+
+@keyframes sh-control-view-in {
+	from {
+		opacity: 0;
+		transform: translateY(8px);
+	}
+	to {
+		opacity: 1;
+		transform: translateY(0);
+	}
+}
+
+@media (min-width: 901px) {
+	.sh-control[data-sidebar-collapsed="true"] {
+		grid-template-columns: 0 minmax(0, 1fr);
+	}
+
+	.sh-control[data-sidebar-collapsed="true"] .sh-sidebar {
+		opacity: 0;
+		transform: translateX(-16px);
+		visibility: hidden;
+		pointer-events: none;
+	}
+
+	.sh-control[data-sidebar-collapsed="true"] .sh-sidebar-toggle {
+		position: absolute;
+		top: 8px;
+		left: 8px;
+		z-index: 20;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 36px;
+		height: 36px;
+		padding: 0;
+		color: var(--fg-muted);
+		background: var(--bg-raised);
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		box-shadow: var(--shadow-pop);
+	}
+}
+
 @media (max-width: 900px) {
 	.sh-control {
 		position: relative;
@@ -634,9 +711,12 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+	.sh-control,
+	.sh-control-view > *,
 	.sh-sidebar,
 	.sh-project-disclosure svg {
 		transition: none;
+		animation: none;
 	}
 
 	.sh-sessions-state-streaming {

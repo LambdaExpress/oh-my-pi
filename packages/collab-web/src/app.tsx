@@ -9,9 +9,8 @@ import { Composer } from "./components/shell/Composer";
 import { ConnectScreen } from "./components/shell/ConnectScreen";
 import { HeaderBar } from "./components/shell/HeaderBar";
 import { SettingsModal } from "./components/shell/SettingsModal";
-import { Toasts } from "./components/shell/Toasts";
 import { Transcript } from "./components/transcript/Transcript";
-import { GuestClient, type GuestSnapshot, type Notice } from "./lib/client";
+import { GuestClient, type GuestSnapshot } from "./lib/client";
 import { ControlClient, type ControlSessionInfo } from "./lib/control-client";
 import { ControlSessionFlow } from "./lib/control-session-flow";
 import { fmtPercent, fmtTokens } from "./lib/format";
@@ -22,7 +21,6 @@ import "./components/shell/shell.css";
 
 const NAME_KEY = "omp.collab.name";
 const CONTROL_KEY = "omp.collab.control";
-const MAX_CONTROL_NOTICES = 50;
 
 /**
  * `control`: joined a core-mode control room (session sidebar). The control
@@ -73,31 +71,36 @@ function contextLabel(snapshot: GuestSnapshot): string | null {
 	return null;
 }
 
+function sendInitialPromptWhenLive(client: GuestClient, prompt: string): void {
+	let unsubscribe = (): void => {};
+	const deliver = (): void => {
+		const snapshot = client.getSnapshot();
+		if (snapshot.phase === "ended") {
+			unsubscribe();
+			return;
+		}
+		if (snapshot.phase !== "live") return;
+		unsubscribe();
+		if (!snapshot.readOnly) client.sendPrompt(prompt);
+	};
+	unsubscribe = client.subscribe(deliver);
+	deliver();
+}
+
 export function App(): ReactNode {
 	const [appState, setAppState] = useState<AppState>(null);
 	const [controlPending, setControlPending] = useState(false);
 	const [connectError, setConnectError] = useState<string | null>(null);
-	const [controlNotices, setControlNotices] = useState<Notice[]>([]);
 	const credsRef = useRef<Creds | null>(null);
 	const [controlFlow] = useState(() => new ControlSessionFlow());
-	const noticeSeqRef = useRef(0);
-
-	const pushNotice = useCallback((level: Notice["level"], message: string): void => {
-		setControlNotices(prev => {
-			const next = [...prev, { id: ++noticeSeqRef.current, level, message, at: Date.now() }];
-			if (next.length > MAX_CONTROL_NOTICES) next.splice(0, next.length - MAX_CONTROL_NOTICES);
-			return next;
-		});
-	}, []);
 
 	/** Open a session room from the control sidebar; the control client stays connected. */
 	const openSessionLink = useCallback(
-		(ctrl: ControlClient, link: string, sessionId: string): void => {
+		(ctrl: ControlClient, link: string, sessionId: string, initialPrompt?: string): void => {
 			let next: GuestClient;
 			try {
 				next = new GuestClient(link, storedName());
-			} catch (err) {
-				pushNotice("error", err instanceof Error ? err.message : String(err));
+			} catch {
 				return;
 			}
 			next.connect();
@@ -105,6 +108,7 @@ export function App(): ReactNode {
 				next.close();
 				return;
 			}
+			if (initialPrompt) sendInitialPromptWhenLive(next, initialPrompt);
 			credsRef.current = { link, name: storedName() };
 			window.location.hash = link;
 			setAppState(prev => {
@@ -113,7 +117,7 @@ export function App(): ReactNode {
 				return { kind: "control", client: ctrl, session: next, sessionId };
 			});
 		},
-		[controlFlow, pushNotice],
+		[controlFlow],
 	);
 
 	/** Directed `ctrl-session` reply: honored only when it matches a pending op. */
@@ -122,7 +126,7 @@ export function App(): ReactNode {
 			const accepted = controlFlow.accept(source, info);
 			if (!accepted) return;
 			setControlPending(false);
-			openSessionLink(source, accepted.link, accepted.id);
+			openSessionLink(source, accepted.link, accepted.id, accepted.initialPrompt);
 		},
 		[controlFlow, openSessionLink],
 	);
@@ -145,10 +149,9 @@ export function App(): ReactNode {
 					setConnectError(err instanceof Error ? err.message : String(err));
 					return;
 				}
-				ctrl.onError = message => {
+				ctrl.onError = () => {
 					// A failed op ends the pending create/resume round trip.
 					if (controlFlow.fail(ctrl)) setControlPending(false);
-					pushNotice("error", message);
 				};
 				ctrl.onSession = info => handleCtrlSession(ctrl, info);
 				ctrl.connect();
@@ -192,7 +195,7 @@ export function App(): ReactNode {
 				return { kind: "session", client: next };
 			});
 		},
-		[controlFlow, handleCtrlSession, pushNotice],
+		[controlFlow, handleCtrlSession],
 	);
 
 	const leave = useCallback((): void => {
@@ -261,8 +264,8 @@ export function App(): ReactNode {
 	}, [appState]);
 
 	const startCreate = useCallback(
-		(client: ControlClient): void => {
-			if (!controlFlow.startCreate(client)) return;
+		(client: ControlClient, initialPrompt?: string): void => {
+			if (!controlFlow.startCreate(client, initialPrompt)) return;
 			setControlPending(true);
 		},
 		[controlFlow],
@@ -277,57 +280,45 @@ export function App(): ReactNode {
 	);
 
 	const startDrop = useCallback((client: ControlClient, id: string): void => {
-		// The sidebar is authoritative: the entry disappears on the next
-		// ctrl-sessions broadcast; a ctrl-error surfaces as a toast.
+		// The sidebar is authoritative: the entry disappears on the next ctrl-sessions broadcast.
 		client.sendDrop(id);
 	}, []);
 
 	if (!appState) {
 		return (
-			<>
-				<ConnectScreen
-					defaultName={storedName()}
-					error={connectError}
-					savedControlLink={storedControlLink()}
-					onConnect={connect}
-				/>
-				<Toasts notices={controlNotices} />
-			</>
+			<ConnectScreen
+				defaultName={storedName()}
+				error={connectError}
+				savedControlLink={storedControlLink()}
+				onConnect={connect}
+			/>
 		);
 	}
 
 	if (appState.kind === "session") {
-		return (
-			<>
-				<Session client={appState.client} onLeave={leave} onRejoin={rejoin} />
-				<Toasts notices={controlNotices} />
-			</>
-		);
+		return <Session client={appState.client} onLeave={leave} onRejoin={rejoin} />;
 	}
 
 	return (
-		<>
-			<SessionsLayout
-				client={appState.client}
-				activeSessionId={appState.sessionId}
-				pending={controlPending}
-				content={
-					appState.session ? (
-						<Session
-							client={appState.session}
-							onLeave={backToSessions}
-							onRejoin={backToSessions}
-							onBack={backToSessions}
-						/>
-					) : null
-				}
-				onOpenSession={id => startResume(appState.client, id)}
-				onNewSession={() => startCreate(appState.client)}
-				onDropSession={id => startDrop(appState.client, id)}
-				onLeave={leave}
-			/>
-			<Toasts notices={controlNotices} />
-		</>
+		<SessionsLayout
+			client={appState.client}
+			activeSessionId={appState.sessionId}
+			pending={controlPending}
+			content={
+				appState.session ? (
+					<Session
+						client={appState.session}
+						onLeave={backToSessions}
+						onRejoin={backToSessions}
+						onBack={backToSessions}
+					/>
+				) : null
+			}
+			onOpenSession={id => startResume(appState.client, id)}
+			onNewSession={initialPrompt => startCreate(appState.client, initialPrompt)}
+			onDropSession={id => startDrop(appState.client, id)}
+			onLeave={leave}
+		/>
 	);
 }
 
@@ -399,6 +390,25 @@ function Session({ client, onLeave, onRejoin, onBack }: SessionProps): ReactNode
 		document.addEventListener("keydown", closeOnEscape);
 		return () => document.removeEventListener("keydown", closeOnEscape);
 	}, [closeRail, railOpen]);
+
+	useEffect(() => {
+		const handleShortcut = (event: globalThis.KeyboardEvent): void => {
+			if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+			const key = event.key.toLowerCase();
+			if (key === ",") {
+				event.preventDefault();
+				setSettingsOpen(open => !open);
+				return;
+			}
+			if (key !== "k" || document.querySelector(".sh-settings-backdrop") !== null) return;
+			const composer = document.querySelector<HTMLTextAreaElement>(".sh-composer-input:not(:disabled)");
+			if (composer === null) return;
+			event.preventDefault();
+			composer.focus();
+		};
+		document.addEventListener("keydown", handleShortcut);
+		return () => document.removeEventListener("keydown", handleShortcut);
+	}, []);
 
 	useEffect(() => {
 		if (!railOpen || !railOverlay) return;
@@ -534,7 +544,6 @@ function Session({ client, onLeave, onRejoin, onBack }: SessionProps): ReactNode
 			{snap.phase !== "ended" && (
 				<Banners phase={snap.phase} endedReason={snap.endedReason} onRejoin={onRejoin} onNewLink={onLeave} />
 			)}
-			<Toasts notices={snap.notices} />
 		</div>
 	);
 }

@@ -248,6 +248,65 @@
 	accent-color: var(--accent);
 }
 
+.sh-settings-shortcuts {
+	border-top: 1px solid var(--border);
+}
+
+.sh-settings-shortcut-row {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 24px;
+	min-height: 64px;
+	padding: 10px 4px;
+	border-bottom: 1px solid var(--border);
+}
+
+.sh-settings-shortcut-row dt strong,
+.sh-settings-shortcut-row dt small {
+	display: block;
+}
+
+.sh-settings-shortcut-row dt strong {
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--fg);
+}
+
+.sh-settings-shortcut-row dt small {
+	margin-top: 3px;
+	font-size: 11px;
+	line-height: 16px;
+	color: var(--fg-muted);
+}
+
+.sh-settings-shortcut-row dd,
+.sh-settings-shortcut-row dd > span {
+	display: inline-flex;
+	align-items: center;
+}
+
+.sh-settings-shortcut-row kbd {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-width: 28px;
+	height: 26px;
+	padding: 0 7px;
+	color: var(--fg);
+	background: var(--bg-raised);
+	border: 1px solid var(--border-strong);
+	border-bottom-width: 2px;
+	border-radius: var(--radius-sm);
+	font: 500 11px / 1 var(--font-mono);
+}
+
+.sh-settings-shortcut-plus {
+	padding: 0 5px;
+	color: var(--fg-faint);
+	font-size: 11px;
+}
+
 @media (max-width: 720px) {
 	.sh-settings-backdrop {
 		display: grid;
@@ -310,6 +369,10 @@
 	.sh-settings-themes {
 		grid-template-columns: minmax(0, 1fr);
 	}
+
+	.sh-settings-nav-item {
+		padding-inline: 8px;
+	}
 }
 
 @media (max-width: 480px) {
@@ -331,6 +394,16 @@
 	.sh-settings-metadata-row dd {
 		padding-left: 24px;
 		text-align: left;
+	}
+
+	.sh-settings-nav-item {
+		gap: 6px;
+		font-size: 11px;
+	}
+
+	.sh-settings-shortcut-row {
+		grid-template-columns: minmax(0, 1fr);
+		gap: 8px;
 	}
 }
 

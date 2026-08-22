@@ -1,7 +1,6 @@
 import type { AssistantMessage, ImageContent, SessionEntry, TextContent, ToolResultMessage } from "@oh-my-pi/pi-wire";
 import { ChevronRight } from "lucide-react";
-import type { ReactNode } from "react";
-import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, memo, type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ActiveTool } from "../../lib/client";
 import { fmtTokens } from "../../lib/format";
 import type { ToolRenderHost } from "../../tool-render";
@@ -104,6 +103,7 @@ function AssistantBody({
 	active,
 	pending,
 	host,
+	mode = "all",
 }: {
 	message: AssistantMessage;
 	results: ReadonlyMap<string, ToolResultMessage>;
@@ -111,8 +111,11 @@ function AssistantBody({
 	/** Still streaming — suppress stop-reason chips on the partial message. */
 	pending: boolean;
 	host?: ToolRenderHost;
+	mode?: "all" | "process" | "answer";
 }): ReactNode {
 	const blocks = message.content.map((block, i) => {
+		if (mode === "answer" && block.type !== "text") return null;
+		if (mode === "process" && block.type === "text") return null;
 		switch (block.type) {
 			case "thinking":
 				return <ThinkingBlock key={i} text={block.thinking} />;
@@ -143,7 +146,7 @@ function AssistantBody({
 		}
 	});
 	const stop = message.stopReason;
-	const failed = !pending && (stop === "error" || stop === "aborted");
+	const failed = mode !== "process" && !pending && (stop === "error" || stop === "aborted");
 	return (
 		<>
 			{blocks}
@@ -164,11 +167,12 @@ interface EntryRowProps {
 	results: ReadonlyMap<string, ToolResultMessage>;
 	active: ReadonlyMap<string, ActiveTool>;
 	host?: ToolRenderHost;
+	assistantMode?: "all" | "process" | "answer";
 }
 
 /** Re-render only when the entry itself or one of its tool pairings changed. */
 function entryRowEqual(prev: EntryRowProps, next: EntryRowProps): boolean {
-	if (prev.entry !== next.entry || prev.host !== next.host) return false;
+	if (prev.entry !== next.entry || prev.host !== next.host || prev.assistantMode !== next.assistantMode) return false;
 	const e = next.entry;
 	if (e.type !== "message" || e.message.role !== "assistant") return true;
 	for (const block of e.message.content) {
@@ -179,7 +183,7 @@ function entryRowEqual(prev: EntryRowProps, next: EntryRowProps): boolean {
 	return true;
 }
 
-const EntryRow = memo(function EntryRow({ entry, results, active, host }: EntryRowProps): ReactNode {
+const EntryRow = memo(function EntryRow({ entry, results, active, host, assistantMode }: EntryRowProps): ReactNode {
 	switch (entry.type) {
 		case "message": {
 			const msg = entry.message;
@@ -193,7 +197,14 @@ const EntryRow = memo(function EntryRow({ entry, results, active, host }: EntryR
 				case "assistant":
 					return (
 						<Row kind="assistant" speaker="agent" title={entry.timestamp}>
-							<AssistantBody message={msg} results={results} active={active} pending={false} host={host} />
+							<AssistantBody
+								message={msg}
+								results={results}
+								active={active}
+								pending={false}
+								host={host}
+								mode={assistantMode}
+							/>
 						</Row>
 					);
 				default:
@@ -258,6 +269,156 @@ const EntryRow = memo(function EntryRow({ entry, results, active, host }: EntryR
 	}
 }, entryRowEqual);
 
+interface CompletedRun {
+	id: string;
+	anchor: SessionEntry;
+	process: readonly SessionEntry[];
+	final: SessionEntry & { type: "message"; message: AssistantMessage };
+	after: readonly SessionEntry[];
+	finalHasProcess: boolean;
+	updates: number;
+	tools: number;
+}
+
+type TranscriptPart = { kind: "entry"; entry: SessionEntry } | { kind: "run"; run: CompletedRun };
+
+function startsUserRun(entry: SessionEntry): boolean {
+	if (entry.type === "custom_message") return entry.customType === "collab-prompt";
+	return entry.type === "message" && entry.message.role === "user" && entry.message.synthetic !== true;
+}
+
+function assistantEntry(entry: SessionEntry): entry is CompletedRun["final"] {
+	return entry.type === "message" && entry.message.role === "assistant";
+}
+
+function hasRenderableProcess(entries: readonly SessionEntry[]): boolean {
+	return entries.some(entry => {
+		if (entry.type === "message") return entry.message.role === "assistant" && entry.message.content.length > 0;
+		if (entry.type === "custom_message") return entry.display === true;
+		return true;
+	});
+}
+
+function completedRun(segment: readonly SessionEntry[], isActive: boolean): CompletedRun | null {
+	if (isActive || segment.length < 2) return null;
+	let finalIndex = -1;
+	for (let i = segment.length - 1; i > 0; i--) {
+		if (assistantEntry(segment[i]!)) {
+			finalIndex = i;
+			break;
+		}
+	}
+	if (finalIndex < 1) return null;
+	const final = segment[finalIndex]!;
+	if (!assistantEntry(final) || final.message.stopReason !== "stop") return null;
+	if (!final.message.content.some(block => block.type === "text" && block.text.length > 0)) return null;
+
+	const process = segment.slice(1, finalIndex);
+	const finalHasProcess = final.message.content.some(block => block.type !== "text");
+	if (!finalHasProcess && !hasRenderableProcess(process)) return null;
+
+	let updates = 0;
+	let tools = 0;
+	for (const entry of [...process, final]) {
+		if (!assistantEntry(entry)) continue;
+		if (entry !== final && entry.message.content.some(block => block.type !== "toolCall")) updates++;
+		for (const block of entry.message.content) {
+			if (block.type === "toolCall") tools++;
+		}
+	}
+
+	return {
+		id: segment[0]!.id,
+		anchor: segment[0]!,
+		process,
+		final,
+		after: segment.slice(finalIndex + 1),
+		finalHasProcess,
+		updates,
+		tools,
+	};
+}
+
+function transcriptParts(entries: readonly SessionEntry[], working: boolean): TranscriptPart[] {
+	const parts: TranscriptPart[] = [];
+	let index = 0;
+	while (index < entries.length) {
+		const anchor = entries[index]!;
+		if (!startsUserRun(anchor)) {
+			parts.push({ kind: "entry", entry: anchor });
+			index++;
+			continue;
+		}
+		let end = index + 1;
+		while (end < entries.length && !startsUserRun(entries[end]!)) end++;
+		const run = completedRun(entries.slice(index, end), working && end === entries.length);
+		if (run) parts.push({ kind: "run", run });
+		else {
+			for (let i = index; i < end; i++) parts.push({ kind: "entry", entry: entries[i]! });
+		}
+		index = end;
+	}
+	return parts;
+}
+
+function CompletedRunView({
+	run,
+	results,
+	active,
+	host,
+}: {
+	run: CompletedRun;
+	results: ReadonlyMap<string, ToolResultMessage>;
+	active: ReadonlyMap<string, ActiveTool>;
+	host?: ToolRenderHost;
+}): ReactNode {
+	const [open, setOpen] = useState(false);
+	const processId = useId();
+	const details = [
+		run.updates > 0 ? `${run.updates} update${run.updates === 1 ? "" : "s"}` : null,
+		run.tools > 0 ? `${run.tools} tool${run.tools === 1 ? "" : "s"}` : null,
+	]
+		.filter((value): value is string => value !== null)
+		.join(" · ");
+
+	return (
+		<>
+			<EntryRow entry={run.anchor} results={results} active={active} host={host} />
+			<button
+				type="button"
+				className="tr-run-toggle"
+				aria-expanded={open}
+				aria-controls={processId}
+				onClick={() => setOpen(value => !value)}
+			>
+				<ChevronRight aria-hidden size={13} className={`tr-chev${open ? " tr-chev--open" : ""}`} />
+				<span>{open ? "Hide process" : "Show process"}</span>
+				{details && <span className="tr-run-meta">{details}</span>}
+			</button>
+			<div
+				id={processId}
+				className="tr-run-process"
+				data-expanded={open ? "true" : "false"}
+				aria-hidden={!open}
+				inert={!open ? true : undefined}
+			>
+				<div className="tr-run-process-inner">
+					{run.process.map(entry => (
+						<EntryRow key={entry.id} entry={entry} results={results} active={active} host={host} />
+					))}
+					{run.finalHasProcess && (
+						<EntryRow entry={run.final} results={results} active={active} host={host} assistantMode="process" />
+					)}
+				</div>
+			</div>
+			<EntryRow entry={run.final} results={results} active={active} host={host} assistantMode="answer" />
+			{run.after.map(entry => (
+				<EntryRow key={entry.id} entry={entry} results={results} active={active} host={host} />
+			))}
+		</>
+	);
+}
+
 export function Transcript(props: TranscriptProps): ReactNode {
 	const { entries, stream, streamDone, activeTools, working, compact, host } = props;
 
@@ -270,6 +431,7 @@ export function Transcript(props: TranscriptProps): ReactNode {
 		}
 		return map;
 	}, [entries]);
+	const parts = useMemo(() => transcriptParts(entries, working), [entries, working]);
 
 	const rootRef = useRef<HTMLDivElement | null>(null);
 	const lockRef = useRef(true);
@@ -310,9 +472,21 @@ export function Transcript(props: TranscriptProps): ReactNode {
 			}}
 		>
 			{entries.length === 0 && stream === null && !working && <div className="tr-empty">no activity yet</div>}
-			{entries.map(entry => (
-				<EntryRow key={entry.id} entry={entry} results={results} active={activeTools} host={host} />
-			))}
+			{parts.map(part =>
+				part.kind === "run" ? (
+					<CompletedRunView
+						key={`run:${part.run.id}`}
+						run={part.run}
+						results={results}
+						active={activeTools}
+						host={host}
+					/>
+				) : (
+					<Fragment key={part.entry.id}>
+						<EntryRow entry={part.entry} results={results} active={activeTools} host={host} />
+					</Fragment>
+				),
+			)}
 			{stream !== null && (
 				<Row kind="assistant" speaker="agent">
 					<AssistantBody

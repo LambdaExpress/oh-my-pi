@@ -1,6 +1,12 @@
 import type { ControlClient, ControlSessionInfo } from "./control-client";
 
-type PendingSessionOp = { op: "created"; client: ControlClient } | { op: "resumed"; id: string; client: ControlClient };
+type PendingSessionOp =
+	| { op: "created"; client: ControlClient; initialPrompt?: string }
+	| { op: "resumed"; id: string; client: ControlClient };
+
+export interface AcceptedControlSession extends ControlSessionInfo {
+	initialPrompt?: string;
+}
 
 /**
  * Coordinates directed create/resume replies with the currently active
@@ -40,9 +46,9 @@ export class ControlSessionFlow {
 		this.#pending = null;
 	}
 
-	startCreate(client: ControlClient): boolean {
+	startCreate(client: ControlClient, initialPrompt?: string): boolean {
 		if (this.#activeClient !== client || this.#pending !== null) return false;
-		this.#pending = { op: "created", client };
+		this.#pending = { op: "created", client, initialPrompt };
 		client.sendCreate();
 		return true;
 	}
@@ -62,11 +68,11 @@ export class ControlSessionFlow {
 	}
 
 	/** Consume only the directed reply for the active client's pending request. */
-	accept(client: ControlClient, info: ControlSessionInfo): ControlSessionInfo | null {
+	accept(client: ControlClient, info: ControlSessionInfo): AcceptedControlSession | null {
 		const pending = this.#pending;
 		if (this.#activeClient !== client || pending?.client !== client || pending.op !== info.op) return null;
 		if (pending.op === "resumed" && pending.id !== info.id) return null;
 		this.#pending = null;
-		return info;
+		return pending.op === "created" ? { ...info, initialPrompt: pending.initialPrompt } : info;
 	}
 }

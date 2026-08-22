@@ -10,7 +10,12 @@
 				"allow-project-list",
 				"allow-project-open",
 				"allow-project-switch",
-				"allow-app-info"
+				"allow-app-info",
+				"allow-window-minimize",
+				"allow-window-is-maximized",
+				"allow-window-start-dragging",
+				"allow-window-toggle-maximize",
+				"allow-window-close"
 			]
 		},
 		{
@@ -24,7 +29,12 @@
 				"allow-project-list",
 				"allow-project-open",
 				"allow-project-switch",
-				"allow-app-info"
+				"allow-app-info",
+				"allow-window-minimize",
+				"allow-window-is-maximized",
+				"allow-window-start-dragging",
+				"allow-window-toggle-maximize",
+				"allow-window-close"
 			]
 		}
 	]
