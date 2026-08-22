@@ -2104,18 +2104,25 @@ export class EventController {
 			await this.#finishAgentEnd(event);
 			return;
 		}
-		// A user interrupt can settle before its correction is queued. Keep the
-		// original span anchor so a later lifecycle still collapses from the initial
-		// request; only the idle scrollback gate is finalized below.
+		// A user interrupt ends the current user-message span even when its
+		// correction was queued during abort cleanup. Park that interrupted span as
+		// its own collapse record so the correction's agent_start can replace the
+		// already-rendered tool history before opening a fresh live gate. Carrying
+		// the old anchor into the resumed lifecycle leaves the interrupted rows
+		// expanded until yet another submission and, on ConPTY, lets them escape
+		// into immutable native scrollback.
 		const isUserInterruptedRun = finalAssistant?.stopReason === "aborted" && isUserInterruptAbort(finalAssistant);
-		const continuesInterruptedRun =
-			isUserInterruptedRun || (finalAssistant !== undefined && isContinuableStreamInterruption(finalAssistant));
-		// With no correction already queued, the run may remain idle indefinitely.
-		// Finalize the old zero-row gate so stable rows can enter native scrollback;
-		// #handleAgentStart installs a new gate while retaining this run's anchor.
-		if (isUserInterruptedRun && this.ctx.session.queuedUserMessageCount === 0) {
+		if (isUserInterruptedRun) {
+			const interruptedCollapse = activeRun
+				? this.#buildPendingCollapse({ span: activeRun, endMessage: finalAssistant, endedAtMs: Date.now() })
+				: undefined;
+			this.#activeCompletedRun = undefined;
 			activeRun?.gate?.finalize();
+			await this.#finishAgentEnd(event);
+			if (interruptedCollapse) this.#pendingCompletedRunCollapses.push(interruptedCollapse);
+			return;
 		}
+		const continuesInterruptedRun = finalAssistant !== undefined && isContinuableStreamInterruption(finalAssistant);
 		const collapse = continuesInterruptedRun ? undefined : this.#takeCompletedRunCollapse(finalAssistant);
 		await this.#finishAgentEnd(event);
 		if (!collapse) {

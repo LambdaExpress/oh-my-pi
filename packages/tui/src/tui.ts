@@ -53,10 +53,14 @@ const SEGMENT_RESET = "\x1b[0m";
 /**
  * Per-line terminator written after every non-image content row. It closes both
  * SGR state and any in-flight OSC 8 hyperlink so styles/links cannot bleed
- * across lines in scrollback. Kept out of the diff/width cache because reset
- * bytes are deterministic write framing, not content.
+ * across lines in scrollback. OSC 8 uses ST rather than BEL: a destructive
+ * transcript replay can cross ConPTY write boundaries, and a detached BEL may
+ * otherwise be interpreted as a second completion notification. Kept out of
+ * the diff/width cache because reset bytes are deterministic write framing,
+ * not content.
  */
-const LINE_TERMINATOR = "\x1b[0m\x1b]8;;\x07";
+const LINE_TERMINATOR = "\x1b[0m\x1b]8;;\x1b\\";
+const OSC8_BEL_TERMINATOR_REGEX = /(\x1b\]8;[^\x07\x1b]*)\x07/g;
 const ERASE_LINE = "\x1b[2K";
 const ERASE_TO_END_OF_LINE = "\x1b[K";
 // Keep the common short-row path out of native width/truncation. Longer rows
@@ -3439,7 +3443,8 @@ export class TUI extends Container {
 	#terminalLine(line: string, screenRow = -1, frameRow = -1, committedTo = -1): string {
 		if (TERMINAL.isImageLine(line)) return this.#imageLineSequence(line, screenRow, frameRow, committedTo);
 		const coalesced = coalesceAdjacentSgr(line);
-		return coalesced + (line.includes("\x1b]8;") ? LINE_TERMINATOR : SEGMENT_RESET);
+		if (!line.includes("\x1b]8;")) return coalesced + SEGMENT_RESET;
+		return coalesced.replace(OSC8_BEL_TERMINATOR_REGEX, "$1\x1b\\") + LINE_TERMINATOR;
 	}
 
 	/**

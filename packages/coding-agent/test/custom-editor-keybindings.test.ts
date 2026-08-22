@@ -52,6 +52,19 @@ describe("CustomEditor keybindings", () => {
 		expect(onToggleToolActivity).toHaveBeenCalledTimes(1);
 	});
 
+	it("consumes Ctrl+T as the thinking toggle without editing the completed prompt", () => {
+		const editor = new CustomEditor(getEditorTheme());
+		const onToggleThinking = vi.fn();
+
+		editor.setText("draft");
+		editor.setActionKeys("app.thinking.toggle", ["ctrl+t"]);
+		editor.onToggleThinking = onToggleThinking;
+		editor.handleInput("\x14");
+
+		expect(onToggleThinking).toHaveBeenCalledTimes(1);
+		expect(editor.getText()).toBe("draft");
+	});
+
 	it("lets custom handlers keep precedence over the default retry chord", () => {
 		const editor = new CustomEditor(getEditorTheme());
 		const onRetry = vi.fn();

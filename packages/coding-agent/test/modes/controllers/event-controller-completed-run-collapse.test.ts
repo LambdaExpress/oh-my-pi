@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
@@ -332,11 +333,14 @@ describe("completed run collapse", () => {
 		);
 	});
 
-	it("keeps the original collapse span when a queued correction resumes a user interrupt", async () => {
-		const { controller, session, recordCompletedRunCollapse } = fixture();
+	it("collapses an Esc-interrupted span before its queued correction starts", async () => {
+		const { controller, session, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
 		const initial = { role: "user", content: "build it", timestamp: 24 } as AgentMessage;
 		const interrupted = assistant("", "aborted", 25);
-		interrupted.errorMessage = "Interrupted by user";
+		// Mirrors the screenshot session: localization changes the visible label,
+		// while the durable error flag still identifies Esc as a user interrupt.
+		interrupted.errorMessage = "操作已中止";
+		interrupted.errorId = AIError.create(AIError.Flag.UserInterrupt);
 		const correction = {
 			role: "user",
 			content: "correct it",
@@ -355,6 +359,15 @@ describe("completed run collapse", () => {
 
 		session.isStreaming = true;
 		await controller.handleEvent({ type: "agent_start" });
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		expect(recordCompletedRunCollapse).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				initialUserMessage: initial,
+				spanEndMessage: interrupted,
+			}),
+		);
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
 		session.queuedUserMessageCount = 0;
 		await controller.handleEvent({ type: "message_start", message: correction });
 		await controller.handleEvent({ type: "message_end", message: correction });
@@ -362,11 +375,10 @@ describe("completed run collapse", () => {
 		session.isStreaming = false;
 		await controller.handleEvent({ type: "agent_end", messages: [correction, final] });
 
-		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
 		await controller.handleEvent({ type: "agent_start" });
-		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
-		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(
-			expect.objectContaining({ initialUserMessage: initial, finalAssistantMessage: final }),
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(2);
+		expect(recordCompletedRunCollapse).toHaveBeenLastCalledWith(
+			expect.objectContaining({ initialUserMessage: correction, finalAssistantMessage: final }),
 		);
 	});
 
@@ -768,7 +780,7 @@ describe("completed run collapse", () => {
 		expect(resetDisplay).not.toHaveBeenCalled();
 	});
 
-	it("retains a manually interrupted tool run when its correction starts after agent_end", async () => {
+	it("collapses a manually interrupted tool run before a later correction starts", async () => {
 		const { controller, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
 		const initial = { role: "user", content: "open the pull request", timestamp: 90 } as AgentMessage;
 		const progress = assistant("merging the pull request", "toolUse", 91);
@@ -796,24 +808,34 @@ describe("completed run collapse", () => {
 			messages: [initial, progress, result, interrupted],
 		});
 
-		// Keep the interrupted work expanded until the user explicitly toggles it.
+		// The interrupted work remains readable while idle, then the correction's
+		// lifecycle commits it before rendering new work.
 		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
 		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
 		expect(resetDisplay).not.toHaveBeenCalled();
-		expect(controller.commitCompletedRunCollapses({ rebuild: false })).toBe(false);
 
 		await controller.handleEvent({ type: "agent_start" });
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		expect(recordCompletedRunCollapse).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				spanEndMessage: interrupted,
+			}),
+		);
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
 		await controller.handleEvent({ type: "message_start", message: correction });
 		await controller.handleEvent({ type: "message_end", message: correction });
 		await controller.handleEvent({ type: "message_end", message: final });
 		await controller.handleEvent({ type: "agent_end", messages: [correction, final] });
 		expect(controller.commitCompletedRunCollapses({ rebuild: false })).toBe(true);
-		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
-		const collapse = recordCompletedRunCollapse.mock.calls[0]![0] as CompletedRunCollapse;
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(2);
+		const collapse = recordCompletedRunCollapse.mock.calls[1]![0] as CompletedRunCollapse;
 		expect(collapse).toEqual(
 			expect.objectContaining({
-				firstMessage: initial,
-				initialUserMessage: initial,
+				firstMessage: correction,
+				initialUserMessage: correction,
 				finalAssistantMessage: final,
 			}),
 		);

@@ -29,6 +29,15 @@ class MutableLinesComponent implements Component {
 	}
 }
 
+class RecordingVirtualTerminal extends VirtualTerminal {
+	readonly writes: string[] = [];
+
+	override write(data: string): void {
+		this.writes.push(data);
+		super.write(data);
+	}
+}
+
 // Models a component that caches its rendered output and only refreshes it when
 // `invalidate()` fires — like a transcript block that freezes a snapshot. A
 // state change behind the cache is invisible until something invalidates it,
@@ -263,6 +272,29 @@ describe("TUI terminal-state regressions", () => {
 	});
 
 	describe("cursor + differential stability", () => {
+		it("keeps Ctrl+T-style transcript replays free of BEL notification bytes", async () => {
+			const term = new RecordingVirtualTerminal(120, 10);
+			const tui = new TUI(term);
+			const component = new MutableLinesComponent(["\x1b]8;;https://example.com\x07linked answer\x1b]8;;\x07"]);
+			tui.addChild(component);
+
+			try {
+				tui.start();
+				await settle(term);
+				term.writes.length = 0;
+
+				// Ctrl+T calls resetDisplay() after mutating thinking visibility.
+				tui.resetDisplay();
+				await settle(term);
+
+				const replay = term.writes.join("");
+				expect(replay).toContain("\x1b]8;;https://example.com\x1b\\");
+				expect(replay).not.toContain("\x07");
+			} finally {
+				tui.stop();
+			}
+		});
+
 		it("keeps stable output across repeated no-op renders", async () => {
 			const term = new VirtualTerminal(40, 10);
 			const tui = new TUI(term);

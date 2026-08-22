@@ -61,6 +61,7 @@
 
 ### Fixed
 
+- Fixed `Esc`-interrupted completed runs remaining expanded when an immediately queued correction started; the interrupted tool span now collapses independently before the correction opens a new live transcript gate.
 - Fixed core-mode sidebars advertising active sessions that had no persisted JSONL and therefore could not be resumed; only discoverable session files are now broadcast.
 - Fixed provider-native compaction failures that successfully fell back to a local summary still rendering as `remote-compacted`; persisted compaction metadata and the transcript divider now report the actual local method.
 - Fixed native PowerShell SSH login shells being reported as `windows/cmd` when the cross-shell probe returned literal `%COMSPEC%`; login-shell detection now uses a direct PowerShell marker, preserves genuinely unknown Windows shells, and refreshes stale host metadata.
