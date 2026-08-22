@@ -170,12 +170,10 @@ export class SessionRegistry {
 	async list(): Promise<SessionSummary[]> {
 		const infos = await listSessions(this.#sessionDir, new FileSessionStorage());
 		const summaries: SessionSummary[] = [];
-		const seen = new Set<string>();
 		for (const info of infos) {
 			const active = this.#active.get(info.id);
 			// Dropping sessions are invisible until the drop completes.
 			if (active && active.state === "dropping") continue;
-			seen.add(info.id);
 			const summary: SessionSummary = {
 				id: info.id,
 				title: info.title,
@@ -191,25 +189,6 @@ export class SessionRegistry {
 			// must be resumed through the control room first.
 			if (active) summary.link = active.collabHost.webLink;
 			summaries.push(summary);
-		}
-		// Live sessions with no JSONL yet (fresh `SessionManager.create` only
-		// persists on the first entry) must still appear in the list — the
-		// startup e2e contract shows the initial session in the sidebar before
-		// any prompt. Synthesize their summary from the managed entry.
-		for (const entry of this.#active.values()) {
-			if (entry.state === "dropping" || seen.has(entry.id)) continue;
-			summaries.push({
-				id: entry.id,
-				title: entry.sessionManager.getSessionName(),
-				cwd: entry.sessionManager.getCwd(),
-				createdAt: entry.createdAt,
-				modifiedAt: entry.createdAt,
-				messageCount: 0,
-				status: undefined,
-				running: true,
-				streaming: entry.streaming,
-				link: entry.collabHost.webLink,
-			});
 		}
 		summaries.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
 		return summaries;

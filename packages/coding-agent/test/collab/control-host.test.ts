@@ -333,6 +333,15 @@ describe("control room + session registry (multi-session core)", () => {
 		expect(initial.link).toBe(harness.initialHost.webLink);
 	});
 
+	it("omits active sessions that have no resumable session file", async () => {
+		harness = await setupHarness();
+		await fs.rm(path.join(harness.sessionDir, "initial.jsonl"));
+
+		const sessions = await harness.registry.list();
+
+		expect(sessions).toEqual([]);
+	});
+
 	it("creates a session through the control room and its link serves a live session room", async () => {
 		harness = await setupHarness();
 		const { created } = spyOnCreateAgentSession();
