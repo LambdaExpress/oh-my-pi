@@ -9,7 +9,7 @@
 ### Fixed
 
 - Added a test-only `closeModelCacheSharedDb()` export so callers can release the process-global shared model-cache SQLite handle before removing redirected agent temp dirs on Windows (EBUSY cleanup failures).
-- Fixed `opencode-go/deepseek-v4-flash` losing the `max` thinking effort after the model was routed through the OpenAI responses API — the model-defined `low`/`high`/`max` ladder now applies to Responses endpoints as well.
+- Fixed OpenCode Go DeepSeek V4 models losing the `max` thinking effort during startup or after Responses API routing: the bundled pre-discovery catalog and runtime derivation now both preserve the model-defined `low`/`high`/`max` ladder.
 ## [17.4.0] - 2026-08-20
 
 ### Added

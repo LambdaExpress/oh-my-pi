@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import { resolveProviderModels } from "@oh-my-pi/pi-catalog/model-manager";
+import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { PROVIDER_DESCRIPTORS } from "@oh-my-pi/pi-catalog/provider-models/descriptors";
 import {
 	MODELS_DEV_PROVIDER_DESCRIPTORS,
@@ -52,6 +55,16 @@ describe("OpenCode provider discovery", () => {
 			api: "openai-completions",
 			baseUrl: "https://opencode.ai/zen/go/v1",
 		});
+	});
+
+	test("bundles max-capable DeepSeek V4 metadata before async discovery", () => {
+		for (const id of ["deepseek-v4-flash", "deepseek-v4-pro"]) {
+			const model = getBundledModel("opencode-go", id);
+			if (!model) throw new Error(`Expected bundled opencode-go/${id}`);
+
+			expect(getSupportedEfforts(model)).toEqual([Effort.Low, Effort.High, Effort.Max]);
+			expect(clampThinkingLevelForModel(model, Effort.Max)).toBe(Effort.Max);
+		}
 	});
 
 	test("routes opencode-go muse-spark-1.2 to the responses API (#8957)", () => {
