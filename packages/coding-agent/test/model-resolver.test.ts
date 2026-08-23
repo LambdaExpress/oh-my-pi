@@ -1159,6 +1159,22 @@ describe("resolveCliModel", () => {
 		expect(result.model?.id).toBe("gpt-4o");
 	});
 
+	test("preserves max on a provider-qualified DeepSeek selector", () => {
+		const model = getBundledModel("opencode-go", "deepseek-v4-flash");
+		expect(model).toBeDefined();
+		const models = [model!];
+
+		const result = resolveCliModel({
+			cliModel: "opencode-go/deepseek-v4-flash:max",
+			modelRegistry: { getAll: () => models, getAvailable: () => models },
+		});
+
+		expect(result.error).toBeUndefined();
+		expect(result.model?.provider).toBe("opencode-go");
+		expect(result.model?.id).toBe("deepseek-v4-flash");
+		expect(result.thinkingLevel).toBe(Effort.Max);
+	});
+
 	test("prefers an authenticated provider for an unqualified exact model id", () => {
 		const availableModels = openaiGpt55Models.filter(model => model.provider === "openai-codex");
 		const registry = { getAll: () => openaiGpt55Models, getAvailable: () => openaiGpt55Models };
