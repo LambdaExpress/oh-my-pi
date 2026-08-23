@@ -64,10 +64,14 @@ const rustDir = path.join(repoRoot, "crates/pi-natives");
 const nativeDir = path.join(import.meta.dir, "../native");
 const packageJsonPath = path.join(import.meta.dir, "../package.json");
 
+const targetVariant = Bun.env.TARGET_VARIANT?.trim();
+if (targetVariant && targetVariant !== "baseline" && targetVariant !== "modern") {
+	throw new Error(`Unsupported TARGET_VARIANT: ${targetVariant}. Expected baseline or modern.`);
+}
 const localAddon = resolveLocalHostAddon({
 	platform: process.platform,
 	arch: process.arch,
-	avx2: detectHostAvx2Support(),
+	avx2: targetVariant ? targetVariant === "modern" : detectHostAvx2Support(),
 });
 const effectiveVariant = localAddon.x64Variant;
 const variantSuffix = effectiveVariant ? `-${effectiveVariant}` : "";

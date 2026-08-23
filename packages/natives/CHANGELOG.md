@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- Fixed local native builds ignoring an explicit `TARGET_VARIANT=baseline|modern`: the lower-level bindings build now honors the requested x64 ISA variant instead of re-detecting the host CPU and emitting a differently named addon.
 - Fixed `astEdit` dropping C# metavariable captures when rewriting bare object-initializer assignments, so replacement templates preserve expressions such as member access on both dry-run previews and applied edits.
 - Fixed C# `astMatch`/`ast_grep` treating bare identifiers and method-declaration fragments as successfully compiled patterns that could never match valid source; these fragments now compile in a valid C# context while preserving their intended node kind.
 - Fixed Windows Bazel native builds exceeding rustc environment and `CreateProcessW` limits on large dependency graphs by consolidating dependency search paths, parameterizing `process_wrapper`, and using a repository-local MSVC CMake override.
