@@ -110,18 +110,58 @@ async function installBinary(src: string, dest: string): Promise<void> {
 	try {
 		// Atomic rename - works even if dest is loaded on Linux/macOS (old inode stays valid)
 		await fs.rename(tempPath, dest);
-	} catch {
-		// On Windows, loaded DLLs cannot be overwritten via rename
-		// Try delete-then-rename as fallback
+	} catch (renameErr) {
+		if (process.platform === "win32") {
+			// Windows cannot replace or delete a mapped addon, but it can rename it.
+			// Keep the old mapping alive under a backup name, then install the new
+			// addon at the canonical path for subsequently started processes.
+			const previousPath = `${dest}.old.${Date.now()}.${process.pid}`;
+			try {
+				await fs.rename(dest, previousPath);
+			} catch (moveErr) {
+				await fs.unlink(tempPath).catch(() => {});
+				throw new Error(
+					`Cannot replace ${path.basename(dest)} (file may be in use): ${(moveErr as Error).message}`,
+					{ cause: renameErr },
+				);
+			}
+
+			try {
+				await fs.rename(tempPath, dest);
+			} catch (installErr) {
+				let rollbackError: unknown;
+				try {
+					await fs.rename(previousPath, dest);
+				} catch (error) {
+					rollbackError = error;
+				}
+				await fs.unlink(tempPath).catch(() => {});
+				const rollbackDetail = rollbackError
+					? `; failed to restore previous addon: ${(rollbackError as Error).message}`
+					: "";
+				throw new Error(
+					`Failed to install ${path.basename(dest)}: ${(installErr as Error).message}${rollbackDetail}`,
+					{ cause: installErr },
+				);
+			}
+
+			await fs.unlink(previousPath).catch(() => {});
+			if (fsSync.existsSync(previousPath)) {
+				console.warn(
+					`Previous native addon is still in use; kept as ${path.basename(previousPath)} (removed on the next build)`,
+				);
+			}
+			return;
+		}
+
+		// Non-Windows fallback for filesystems that do not replace destinations
+		// through rename even when the destination is not mapped.
 		try {
 			await fs.unlink(dest);
 		} catch (unlinkErr) {
 			if ((unlinkErr as NodeJS.ErrnoException).code !== "ENOENT") {
 				await fs.unlink(tempPath).catch(() => {});
-				const isWindows = process.platform === "win32";
-				throw new Error(
-					`Cannot replace ${path.basename(dest)}${isWindows ? " (file may be in use - close any running processes)" : ""}: ${(unlinkErr as Error).message}`,
-				);
+				throw new Error(`Cannot replace ${path.basename(dest)}: ${(unlinkErr as Error).message}`);
 			}
 		}
 		try {

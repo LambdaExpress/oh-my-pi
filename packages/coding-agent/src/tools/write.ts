@@ -77,7 +77,6 @@ import {
 	truncateToWidth,
 	wrapTextWithAnsi,
 } from "./render-utils";
-import type { ToolActivityContext, ToolActivitySummary } from "./renderers";
 import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-tool-issue";
 import { dispatchResolutionDevice, isResolutionDeviceName, renderResolutionDeviceCall } from "./resolve";
 import {
@@ -98,7 +97,6 @@ import {
 	renderXdevResult,
 	resolveXdevTool,
 	type XdevDispatch,
-	xdevActivitySummary,
 	xdevListing,
 } from "./xdev";
 
@@ -1612,24 +1610,6 @@ export interface WriteRenderContext {
 }
 
 export const writeToolRenderer = {
-	/** Compact one-line activity: device writes read as the mounted tool (`LSP · references foo`), file writes as `Write · <path>`. */
-	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
-		const writeArgs = (args ?? {}) as WriteRenderArgs;
-		const rawPath =
-			typeof writeArgs.file_path === "string"
-				? writeArgs.file_path
-				: typeof writeArgs.path === "string"
-					? writeArgs.path
-					: "";
-		if (!rawPath) return { label: "Write" };
-		const xdev = parseXdUrl(rawPath);
-		if (xdev?.name) {
-			const resolveMounted = (context.renderContext as WriteRenderContext | undefined)?.resolveXdevMounted;
-			return xdevActivitySummary(xdev.name, writeArgs.content, resolveMounted);
-		}
-		return { label: "Write", detail: shortenPath(rawPath) };
-	},
-
 	renderCall(
 		args: WriteRenderArgs,
 		options: RenderResultOptions & { renderContext?: WriteRenderContext },

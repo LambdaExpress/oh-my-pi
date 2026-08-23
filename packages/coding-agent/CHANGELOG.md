@@ -61,6 +61,8 @@
 
 ### Fixed
 
+- Restored the 17.4 annotated context gauge as the status-line default: the bar keeps usage coloring and compaction markers, while percentage/window numbers render in the context segment instead of being embedded in the line.
+- Restored the 17.4 full transcript presentation while a turn is running: assistant text and tool cards keep their normal semantic renderers instead of collapsing into per-block one-line dot summaries under viewport pressure.
 - Fixed `Esc`-interrupted completed runs remaining expanded when an immediately queued correction started; the interrupted tool span now collapses independently before the correction opens a new live transcript gate.
 - Fixed the subscription status line mixing GPT-5.3-Codex-Spark's independent five-hour quota with the standard Codex weekly quota; standard models and Spark now display only their own rate-limit windows, including immediately after an in-session model switch.
 - Fixed core-mode sidebars advertising active sessions that had no persisted JSONL and therefore could not be resumed; only discoverable session files are now broadcast.

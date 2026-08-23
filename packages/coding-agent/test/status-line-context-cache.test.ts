@@ -334,6 +334,29 @@ describe("StatusLineComponent context breakdown", () => {
 		expect(border).not.toContain(`${theme.getFgAnsi("border")}─`);
 	});
 
+	it("defaults to the 17.4 annotated gauge with context numbers in their segment", () => {
+		const { session } = makeSession({
+			messages: [userMessage("hi"), assistantMessage("done")],
+			usage: { tokens: 174_080, contextWindow: 272_000, percent: 64 },
+		});
+		expect(settings.get("statusLine.contextLine")).toBe("annotated");
+
+		const comp = new StatusLineComponent(session);
+		comp.updateSettings({
+			preset: "custom",
+			leftSegments: ["model"],
+			rightSegments: ["context_pct", "session_name"],
+			separator: "powerline-thin",
+			sessionAccent: false,
+		});
+		const plain = comp.getTopBorder(120).content.replaceAll(/\x1b\[[0-9;]*m/g, "");
+		expect(plain).toContain("64.0%/272K");
+		expect(plain).not.toContain("64%");
+		expect(plain.match(/272K/g)).toHaveLength(1);
+		expect(plain).toContain("╎");
+		expect(plain).toContain("┃");
+	});
+
 	it("loads embedded mode on the initial render and absorbs configured context segments", () => {
 		const { session } = makeSession({
 			messages: [userMessage("hi"), assistantMessage("done")],
@@ -534,6 +557,7 @@ describe("StatusLineComponent context breakdown", () => {
 		expect(gapped).toHaveLength(2);
 		expect(gapped[0]).toBe("");
 		expect(gapped[1]).toBe(lines[0]);
+		comp.dispose();
 	});
 
 	it("standalone bar yields to the autocomplete menu via the probe", () => {
@@ -548,6 +572,7 @@ describe("StatusLineComponent context breakdown", () => {
 		expect(comp.render(80)).toHaveLength(0);
 		menuOpen = false;
 		expect(comp.render(80)).toHaveLength(2); // spacer + bar return together
+		comp.dispose();
 	});
 
 	it("claude layout splits groups: left-only bottom bar, right group as top-rule chip", () => {

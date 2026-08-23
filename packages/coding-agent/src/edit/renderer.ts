@@ -29,7 +29,6 @@ import {
 	shortenPath,
 	truncateDiffByHunk,
 } from "../tools/render-utils";
-import type { ToolActivityContext, ToolActivitySummary } from "../tools/renderers";
 import {
 	fileHyperlink,
 	framedBlock,
@@ -863,19 +862,6 @@ function sliceCollapsedDiffRows(
 
 export const editToolRenderer = {
 	mergeCallAndResult: true,
-	/** Compact one-line activity: operation + target path instead of the payload's first line. */
-	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
-		const editArgs = (args ?? {}) as EditRenderArgs;
-		const editMode = (context.renderContext as EditRenderContext | undefined)?.editMode;
-		const facts = resolveEditCallFacts(editArgs, context.isPartial, editMode);
-		const label = getOperationTitle(facts.op);
-		if (!facts.rawPath) return { label };
-		let detail = formatEditTitlePath(facts.rawPath);
-		if (facts.rename) detail += ` → ${formatEditTitlePath(facts.rename)}`;
-		if (facts.fileCount > 1) detail += ` (+${facts.fileCount - 1} more)`;
-		return { label, detail };
-	},
-
 	renderCall(
 		args: EditRenderArgs,
 		options: RenderResultOptions & { renderContext?: EditRenderContext },

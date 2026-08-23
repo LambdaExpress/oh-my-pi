@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- Fixed local Windows native rebuilds failing with `EPERM` when a running workspace OMP process had the addon mapped. The bindings installer now moves the loaded addon aside, installs the new build at the canonical path, and defers cleanup of the mapped backup until a later build.
 - Fixed local native builds ignoring an explicit `TARGET_VARIANT=baseline|modern`: the lower-level bindings build now honors the requested x64 ISA variant instead of re-detecting the host CPU and emitting a differently named addon.
 - Fixed `astEdit` dropping C# metavariable captures when rewriting bare object-initializer assignments, so replacement templates preserve expressions such as member access on both dry-run previews and applied edits.
 - Fixed C# `astMatch`/`ast_grep` treating bare identifiers and method-declaration fragments as successfully compiled patterns that could never match valid source; these fragments now compile in a valid C# context while preserving their intended node kind.

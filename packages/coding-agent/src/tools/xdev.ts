@@ -42,7 +42,7 @@ import { resolveToolTier, type ToolTier } from "./approval";
 import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool } from "./index";
 import { replaceTabs } from "./render-utils";
-import type { ToolActivitySummary, ToolRenderer } from "./renderers";
+import type { ToolRenderer } from "./renderers";
 import { renderError, ToolAbortError, ToolError } from "./tool-errors";
 
 /**
@@ -502,37 +502,6 @@ function displayDeviceLabel(name: string, mounted?: { label?: string }): string 
 	if (parsed) return `${parsed.serverName}/${parsed.toolName}`;
 	return name;
 }
-/** Salient inner-arg keys for the compact activity line: the verb first, then its object. */
-const ACTIVITY_VERB_KEYS = ["action", "op", "command"] as const;
-const ACTIVITY_OBJECT_KEYS = ["query", "symbol", "path", "file", "pattern", "url", "name"] as const;
-
-/**
- * Compact `label · verb object` activity summary for a device write, so a
- * squeezed transcript row reads `LSP · references foo` instead of
- * `Write · xd://lsp`. Prose payloads (resolution devices, report_issue)
- * surface their first line instead.
- */
-export function xdevActivitySummary(
-	name: string,
-	content: unknown,
-	resolveMounted?: (name: string) => Tool | undefined,
-): ToolActivitySummary {
-	const mounted = resolveMounted?.(name);
-	const args = decodeInnerArgs(content);
-	const pick = (keys: readonly string[]): string | undefined => {
-		for (const key of keys) {
-			const value = args[key];
-			if (typeof value === "string" && value.length > 0) return value.split("\n", 1)[0];
-		}
-		return undefined;
-	};
-	let detail = [pick(ACTIVITY_VERB_KEYS), pick(ACTIVITY_OBJECT_KEYS)].filter(Boolean).join(" ");
-	if (!detail && typeof content === "string" && !content.trimStart().startsWith("{")) {
-		detail = content.trim().split("\n", 1)[0];
-	}
-	return { label: displayDeviceLabel(name, mounted), detail: detail || undefined };
-}
-
 /** Drop the streaming-decode bookkeeping key before showing inner args. */
 function displayDeviceArgs(args: Record<string, unknown>): Record<string, unknown> {
 	const { __partialJson: _partial, ...rest } = args;

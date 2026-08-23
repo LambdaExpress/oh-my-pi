@@ -784,7 +784,7 @@ export const SETTINGS_SCHEMA = {
 	"statusLine.contextLine": {
 		type: "enum",
 		values: CONTEXT_LINE_MODE_VALUES,
-		default: "embedded",
+		default: "annotated",
 		ui: {
 			tab: "appearance",
 			group: "Status Line",

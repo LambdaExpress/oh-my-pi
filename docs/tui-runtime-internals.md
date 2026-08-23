@@ -47,18 +47,9 @@ Finalizing a later block never bypasses an active predecessor. `peekFinalizedBat
 
 Every emitted transcript block owns one trailing separator row. This preserves spacing between a finalized user/tool block and the next active assistant/tool row without duplicating separators across batches.
 
-## Viewport allocation and tool collapse
+## Viewport tail
 
-The product root reserves chrome first, gives every active block one row, then allocates surplus to newer blocks. When active count exceeds available rows, it uses a bounded aggregate rather than committing or cancelling work.
-
-`ToolExecutionComponent` owns generic compact presentation:
-
-- three or more rows: full tool renderer;
-- two rows: semantic folded card;
-- one row: stable label/activity line with shared-clock pulse;
-- zero rows: finalized and hidden.
-
-Built-in and extension tools use the same wrapper. Renderers may provide semantic activity data; otherwise the wrapper derives command/path/input text and falls back to `tool · running`.
+The product root reserves chrome first, then gives the transcript the remaining rows. The transcript follows the 17.4 full-render policy: it walks blocks from newest to oldest until the visible tail is covered, and every included assistant or tool block uses its normal semantic renderer. Capacity pressure may move older finalized rows into terminal history or above the visible fold, but it never substitutes compact tool summaries or truncates each block to an independent row budget.
 
 ## Terminal write path
 

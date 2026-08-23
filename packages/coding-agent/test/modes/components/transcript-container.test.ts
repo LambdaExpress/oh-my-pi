@@ -5,7 +5,6 @@ import type { Component } from "@oh-my-pi/pi-tui";
 class Block implements Component {
 	#rows: string[];
 	#finalized: boolean;
-	allocations: number[] = [];
 
 	constructor(rows: string[], finalized: boolean) {
 		this.#rows = rows;
@@ -21,16 +20,10 @@ class Block implements Component {
 		return this.#finalized;
 	}
 
-	setTranscriptAllocation(rows: number): void {
-		this.allocations.push(rows);
-	}
-
 	render(): readonly string[] {
 		return this.#rows;
 	}
 }
-
-const frame = { tick: 0, now: 0 };
 
 describe("TranscriptContainer", () => {
 	it("keeps settled blocks live while the viewport has room", () => {
@@ -40,7 +33,7 @@ describe("TranscriptContainer", () => {
 
 		// Both fit: nothing retires, the settled block still renders live.
 		expect(transcript.peekFinalizedBatch(80, 10)).toBeUndefined();
-		expect(transcript.renderViewport(80, 10, frame)).toEqual(["settled", "", "streaming"]);
+		expect(transcript.renderViewport(80, 10)).toEqual(["settled", "", "streaming"]);
 	});
 
 	it("retires the settled prefix only under capacity pressure, in order", () => {
@@ -56,6 +49,22 @@ describe("TranscriptContainer", () => {
 		expect(transcript.peekFinalizedBatch(80, 3)?.rows).toEqual(["first final", ""]);
 	});
 
+	it("retires complete assistant text instead of reducing it to a tail fragment", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["assistant first", "assistant middle", "assistant last"], true));
+		transcript.addChild(new Block(["tool header", "tool detail", "tool body"], false));
+
+		// Under pressure the complete settled reply becomes immutable history.
+		// Only the still-mutating tool remains in the bounded viewport.
+		expect(transcript.peekFinalizedBatch(80, 2)?.rows).toEqual([
+			"assistant first",
+			"assistant middle",
+			"assistant last",
+			"",
+		]);
+		expect(transcript.renderViewport(80, 2)).toEqual(["tool detail", "tool body"]);
+	});
+
 	it("never retires a finalized successor past an active predecessor", () => {
 		const transcript = new TranscriptContainer();
 		const active = new Block(["active live"], false);
@@ -66,7 +75,7 @@ describe("TranscriptContainer", () => {
 		// Pressure exists but the prefix starts with an active block: no batch,
 		// and both blocks still render (clipped by the viewport).
 		expect(transcript.peekFinalizedBatch(80, 1)).toBeUndefined();
-		expect(transcript.renderViewport(80, 10, frame)).toEqual(["active live", "", "settled final"]);
+		expect(transcript.renderViewport(80, 10)).toEqual(["active live", "", "settled final"]);
 
 		active.finalize(["active final"]);
 		// Capacity 1 fits the remaining settled block, so only the first retires.
@@ -84,7 +93,7 @@ describe("TranscriptContainer", () => {
 		if (first === undefined) throw new Error("expected a batch under zero capacity");
 		transcript.acknowledgeFinalizedBatch(first.id);
 		// Committed blocks leave the live tail and never render again.
-		expect(transcript.renderViewport(80, 10, frame)).toEqual([]);
+		expect(transcript.renderViewport(80, 10)).toEqual([]);
 		expect(transcript.peekFinalizedBatch(80, 10)).toBeUndefined();
 	});
 
@@ -95,17 +104,18 @@ describe("TranscriptContainer", () => {
 
 		const batch = transcript.peekFinalizedBatch(80, 1);
 		expect(batch?.rows).toEqual(["old settled", ""]);
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["fresh live"]);
+		expect(transcript.renderViewport(80, 1)).toEqual(["fresh live"]);
 	});
 
-	it("assigns one row per live block until pressure requires aggregation", () => {
+	it("keeps full semantic block rendering instead of compacting each block", () => {
 		const transcript = new TranscriptContainer();
-		transcript.addChild(new Block(["first"], false));
-		transcript.addChild(new Block(["second"], false));
+		transcript.addChild(new Block(["first top", "first bottom"], false));
+		transcript.addChild(new Block(["second top", "second bottom"], false));
 
-		expect(transcript.renderViewport(80, 2, frame)).toEqual(["first", "second"]);
-		expect(transcript.canAdmit(2)).toBe(false);
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["1 more transcript blocks active"]);
+		// The visible tail is clipped as one full semantic render. It never turns
+		// the two blocks into per-block dot summaries or an aggregate placeholder.
+		expect(transcript.renderViewport(80, 3)).toEqual(["", "second top", "second bottom"]);
+		expect(transcript.renderViewport(80, 1)).toEqual(["second bottom"]);
 	});
 	it("does not report settled resume backlog as active", () => {
 		const transcript = new TranscriptContainer();
@@ -115,7 +125,7 @@ describe("TranscriptContainer", () => {
 
 		// The welcome header can consume the first history offer, leaving the
 		// settled transcript prefix live for one frame while it drains next.
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["current tool"]);
+		expect(transcript.renderViewport(80, 1)).toEqual(["current tool"]);
 	});
 
 	it("permits removing settled blocks until they are offered or committed", () => {
@@ -150,7 +160,7 @@ describe("TranscriptContainer", () => {
 
 		transcript.resetRetirement();
 		// Fits again after the reset: stays live until pressure returns.
-		expect(transcript.renderViewport(80, 10, frame)).toEqual(["final"]);
+		expect(transcript.renderViewport(80, 10)).toEqual(["final"]);
 		const replay = transcript.peekFinalizedBatch(80, 0);
 		expect(replay?.id).toBeGreaterThan(first.id);
 		expect(replay?.rows).toEqual(["final", ""]);
