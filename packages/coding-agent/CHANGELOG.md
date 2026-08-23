@@ -61,7 +61,7 @@
 
 ### Fixed
 
-- Restored the 17.4 annotated context-gauge layout as the status-line default while retaining the reset branch's fixed green/yellow/orange/red 35/60/75 percent tiers, token thresholds, and pulsing async-compaction icon; percentage/window numbers render in the context segment instead of being embedded in the line.
+- Restored the 17.4 annotated context-gauge layout as the status-line default while retaining the reset branch's fixed green/yellow/orange/red 35/60/75 percent tiers, token thresholds, and pulsing async-compaction indicators; the `󰕝` speculation marker now pulses while pre-compaction runs and adopts the gauge's `󰁨` threshold color once the result is armed, while percentage/window numbers render in the context segment instead of being embedded in the line.
 - Restored the 17.4 full transcript presentation while a turn is running: assistant text and tool cards keep their normal semantic renderers instead of collapsing into per-block one-line dot summaries under viewport pressure.
 - Fixed `display.collapseCompletedRuns` preventing completed assistant and tool blocks from entering terminal scrollback during a live run, which made full-render transcript rows disappear at the top instead of pushing older content upward.
 - Fixed `Esc`-interrupted completed runs remaining expanded when an immediately queued correction started; the interrupted tool span now collapses independently before the correction opens a new live transcript gate.

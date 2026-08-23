@@ -2268,11 +2268,19 @@ export class StatusLineComponent implements Component {
 
 		const speculationGlyph = theme.symbol("context.speculation");
 		const thresholdGlyph = theme.symbol("context.compaction");
-		const speculationColor = theme.getFgAnsi("muted");
+		const mutedColor = theme.getFgAnsi("muted");
 		const overflowColor = theme.getFgAnsi("error");
 		const rawAccentHex = accentHex ?? theme.getColorHex("borderAccent");
 		const dimmedAccentHex = adjustHsv(rawAccentHex, { s: 0.7, v: 0.75 });
 		const thresholdColor = getSessionAccentAnsi(dimmedAccentHex) ?? usedColor;
+		const speculationColor =
+			ctx.compactionSpeculation === "running"
+				? ctx.speculationBlinkOn
+					? thresholdColor
+					: mutedColor
+				: ctx.compactionSpeculation === "armed"
+					? thresholdColor
+					: mutedColor;
 
 		let out = "\x1b[49m";
 		let activeColor = "";

@@ -357,7 +357,7 @@ describe("StatusLineComponent context breakdown", () => {
 		expect(plain).toContain("┃");
 	});
 
-	it("keeps the fixed four-tier context color and pulses the auto icon every 600ms while speculation runs", async () => {
+	it("pulses both speculation indicators every 600ms and holds them highlighted when armed", async () => {
 		await setSymbolPreset("nerd");
 		vi.useFakeTimers();
 		const fake = makeSession({
@@ -380,22 +380,37 @@ describe("StatusLineComponent context breakdown", () => {
 		try {
 			const first = comp.getTopBorder(100).content;
 			const normalColor = theme.isLight ? "#1a7f37" : "#3fb950";
+			const thresholdColor = getSessionAccentAnsi(adjustHsv(theme.getColorHex("borderAccent"), { s: 0.7, v: 0.75 }));
 			expect(first).toContain(theme.fgHex(normalColor, "33.1%/272K"));
 			expect(first).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+			expect(first).toContain(`${thresholdColor}󰕝`);
+			expect(first).toContain(`${thresholdColor}󰁨`);
 
 			vi.advanceTimersByTime(599);
-			expect(comp.getTopBorder(100).content).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+			const beforePulse = comp.getTopBorder(100).content;
+			expect(beforePulse).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+			expect(beforePulse).toContain(`${thresholdColor}󰕝`);
 
 			vi.advanceTimersByTime(1);
-			expect(comp.getTopBorder(100).content).toContain(`${theme.getFgAnsi("muted")}${theme.icon.auto}`);
+			const mutedPulse = comp.getTopBorder(100).content;
+			expect(mutedPulse).toContain(`${theme.getFgAnsi("muted")}${theme.icon.auto}`);
+			expect(mutedPulse).toContain(`${theme.getFgAnsi("muted")}󰕝`);
+			expect(mutedPulse).toContain(`${thresholdColor}󰁨`);
 
 			vi.advanceTimersByTime(600);
-			expect(comp.getTopBorder(100).content).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+			const highlightedPulse = comp.getTopBorder(100).content;
+			expect(highlightedPulse).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+			expect(highlightedPulse).toContain(`${thresholdColor}󰕝`);
 
 			speculation.compactionSpeculation = "armed";
-			expect(comp.getTopBorder(100).content).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+			const armed = comp.getTopBorder(100).content;
+			expect(armed).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+			expect(armed).toContain(`${thresholdColor}󰕝`);
+			expect(armed).toContain(`${thresholdColor}󰁨`);
 			vi.advanceTimersByTime(1_200);
-			expect(comp.getTopBorder(100).content).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+			const armedAfterDelay = comp.getTopBorder(100).content;
+			expect(armedAfterDelay).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+			expect(armedAfterDelay).toContain(`${thresholdColor}󰕝`);
 		} finally {
 			comp.dispose();
 			vi.useRealTimers();
