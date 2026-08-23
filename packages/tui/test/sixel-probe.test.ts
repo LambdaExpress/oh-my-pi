@@ -36,13 +36,26 @@ function restoreEnv(name: string, value: string | undefined): void {
 	else Bun.env[name] = value;
 }
 
-function startProbe(terminal: VirtualTerminal): TUI {
+class SixelReportingTerminal extends VirtualTerminal {
+	readonly writes: string[] = [];
+
+	override write(data: string): void {
+		this.writes.push(data);
+		super.write(data);
+	}
+
+	enableInput(): void {}
+
+	onSixelSupportReport(_callback: (supported: boolean) => void): void {}
+}
+
+function startProbe(terminal: VirtualTerminal, deferInput = false): TUI {
 	setTerminalImageProtocol(null);
 	terminalInfo.imageProtocol = null;
 	Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
 	Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
 	const tui = new TUI(terminal);
-	tui.start();
+	tui.start({ deferInput });
 	return tui;
 }
 
@@ -116,6 +129,16 @@ describe("TUI SIXEL capability probe", () => {
 		} finally {
 			harness.dispose();
 		}
+	});
+
+	it("does not issue a competing probe after deferred input activation", () => {
+		const terminal = new SixelReportingTerminal(80, 24);
+		const tui = startProbe(terminal, true);
+
+		expect(terminal.writes).not.toContain("\x1b[?2;1;0S");
+		tui.enableInput();
+		expect(terminal.writes).not.toContain("\x1b[?2;1;0S");
+		tui.stop();
 	});
 
 	it("enables SIXEL when DA reply arrives split across chunks", () => {

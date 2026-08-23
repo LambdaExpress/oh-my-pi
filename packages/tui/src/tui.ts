@@ -1048,7 +1048,7 @@ export class TUI extends Container {
 		this.terminal.hideCursor();
 		this.#recordHardwareCursorHidden();
 		if (!this.#inputDeferred) {
-			this.#querySixelSupport();
+			if (!terminalReportsSixelSupport) this.#querySixelSupport();
 			this.#queryCellSize();
 		}
 		this.requestRender(true, { clearScrollback: options?.clearScrollback === true });
@@ -1211,7 +1211,7 @@ export class TUI extends Container {
 		if (!this.#inputDeferred || this.#stopped) return;
 		this.#inputDeferred = false;
 		this.terminal.enableInput?.();
-		this.#querySixelSupport();
+		if (this.terminal.onSixelSupportReport === undefined) this.#querySixelSupport();
 		this.#queryCellSize();
 	}
 

@@ -771,6 +771,17 @@ export class ProcessTerminal implements Terminal {
 		this.#privateModeCallbacks.push(callback);
 	}
 
+	onSixelSupportReport(callback: (supported: boolean) => void): void {
+		this.#sixelSupportCallbacks.push(callback);
+		if (this.#sixelSupported !== undefined) {
+			try {
+				callback(this.#sixelSupported);
+			} catch {
+				/* ignore callback errors */
+			}
+		}
+	}
+
 	start(
 		onInput: (data: string) => void,
 		onResize: () => void,
