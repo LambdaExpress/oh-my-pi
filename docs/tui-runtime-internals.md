@@ -43,7 +43,7 @@ Optimistic user submissions call `renderNow()` before agent dispatch so synchron
 - **settled** — finalized but still live: it re-renders at the current width every frame (so resizes reflow it) until capacity pressure retires it;
 - **committed** — acknowledged by the terminal writer and released from render caches.
 
-Finalizing a later block never bypasses an active predecessor. `peekFinalizedBatch(width, capacity)` retires the shortest settled prefix that lets the remaining live tail fit `capacity`, stops at the first active block, and reoffers the same id until `acknowledgeFinalizedBatch()` succeeds. While the screen has room nothing retires, so a submitted message is visible immediately and recent blocks keep reflowing on resize.
+Finalizing a later block never bypasses mutable content. `peekFinalizedBatch(width, capacity)` retires the shortest settled prefix that lets the remaining live tail fit `capacity`, stops at the first mutable content block, and reoffers the same id until `acknowledgeFinalizedBatch()` succeeds. Zero-row logical markers may explicitly permit successor retirement: the completed-run collapse anchor keeps its projection metadata without blocking finalized assistant/tool rows from entering scrollback. While the screen has room nothing retires, so a submitted message is visible immediately and recent blocks keep reflowing on resize.
 
 Every emitted transcript block owns one trailing separator row. This preserves spacing between a finalized user/tool block and the next active assistant/tool row without duplicating separators across batches.
 

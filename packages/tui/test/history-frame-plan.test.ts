@@ -117,6 +117,30 @@ class HeightReplayProvider implements TerminalFrameProvider {
 	}
 }
 
+class MultiBatchProvider implements TerminalFrameProvider {
+	#nextHistoryId = 1;
+	readonly acknowledged: number[] = [];
+
+	renderFrame(): TerminalFramePlan {
+		return {
+			history:
+				this.#nextHistoryId <= 4
+					? {
+							id: this.#nextHistoryId,
+							rows: [`history-${this.#nextHistoryId}-a`, `history-${this.#nextHistoryId}-b`, ""],
+						}
+					: undefined,
+			viewport: ["live-one", "live-two", "editor", "status"],
+		};
+	}
+
+	acknowledgeHistory(id: number): void {
+		if (id !== this.#nextHistoryId) return;
+		this.acknowledged.push(id);
+		this.#nextHistoryId++;
+	}
+}
+
 function plainBuffer(terminal: VirtualTerminal): string[] {
 	return terminal.getScrollBuffer().map(row => Bun.stripANSI(row).trimEnd());
 }
@@ -165,6 +189,37 @@ describe("terminal frame plans", () => {
 			"",
 			"",
 			"",
+		]);
+		tui.stop();
+	});
+
+	it("pushes every consecutive full-screen history batch into scrollback", async () => {
+		const terminal = new VirtualTerminal(40, 6);
+		const provider = new MultiBatchProvider();
+		const renderScheduler = new VirtualRenderScheduler();
+		const tui = new TUI(terminal, undefined, { renderScheduler });
+		tui.setFrameProvider(provider);
+		tui.start();
+		await renderScheduler.settle(terminal);
+
+		expect(provider.acknowledged).toEqual([1, 2, 3, 4]);
+		expect(plainBuffer(terminal)).toEqual([
+			"history-1-a",
+			"history-1-b",
+			"",
+			"history-2-a",
+			"history-2-b",
+			"",
+			"history-3-a",
+			"history-3-b",
+			"",
+			"history-4-a",
+			"history-4-b",
+			"",
+			"live-one",
+			"live-two",
+			"editor",
+			"status",
 		]);
 		tui.stop();
 	});

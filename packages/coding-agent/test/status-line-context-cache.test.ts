@@ -13,7 +13,7 @@
  * model's context window). A stable conversation must not re-query on every
  * redraw — that per-event recompute is what previously froze large sessions.
  */
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ContextUsage } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
@@ -355,6 +355,51 @@ describe("StatusLineComponent context breakdown", () => {
 		expect(plain.match(/272K/g)).toHaveLength(1);
 		expect(plain).toContain("╎");
 		expect(plain).toContain("┃");
+	});
+
+	it("keeps the 17.4 context color and pulses the auto icon every 600ms while speculation runs", async () => {
+		await setSymbolPreset("nerd");
+		vi.useFakeTimers();
+		const fake = makeSession({
+			messages: [userMessage("hi"), assistantMessage("done")],
+			usage: { tokens: 90_032, contextWindow: 272_000, percent: 33.1 },
+		});
+		const speculation = fake.session as AgentSession & {
+			compactionSpeculation: "idle" | "running" | "armed";
+		};
+		speculation.compactionSpeculation = "running";
+		const comp = new StatusLineComponent(fake.session);
+		comp.updateSettings({
+			preset: "custom",
+			leftSegments: ["model"],
+			rightSegments: ["context_pct"],
+			separator: "powerline-thin",
+			sessionAccent: false,
+		});
+
+		try {
+			const first = comp.getTopBorder(100).content;
+			expect(first).toContain(`${theme.getFgAnsi("statusLineContext")}33.1%/272K`);
+			expect(first).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+
+			vi.advanceTimersByTime(599);
+			expect(comp.getTopBorder(100).content).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+
+			vi.advanceTimersByTime(1);
+			expect(comp.getTopBorder(100).content).toContain(`${theme.getFgAnsi("muted")}${theme.icon.auto}`);
+
+			vi.advanceTimersByTime(600);
+			expect(comp.getTopBorder(100).content).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+
+			speculation.compactionSpeculation = "armed";
+			expect(comp.getTopBorder(100).content).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+			vi.advanceTimersByTime(1_200);
+			expect(comp.getTopBorder(100).content).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
+		} finally {
+			comp.dispose();
+			vi.useRealTimers();
+			await initTheme();
+		}
 	});
 
 	it("loads embedded mode on the initial render and absorbs configured context segments", () => {

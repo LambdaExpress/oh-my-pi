@@ -35,7 +35,6 @@ import {
 	readQueueChipText,
 	resolveAbortLabel,
 } from "../../session/messages";
-import { AUTO_THINKING } from "../../thinking";
 import { type ApprovalMode, resolveApproval } from "../../tools/approval";
 import { previewLine, TRUNCATE_LENGTHS } from "../../tools/render-utils";
 import { PROPOSE_DEVICE_NAME, writeDeviceDispatch } from "../../tools/resolve";
@@ -126,6 +125,10 @@ class CompletedRunGate extends Container {
 
 	isTranscriptBlockFinalized(): boolean {
 		return this.#finalized;
+	}
+
+	allowsTranscriptSuccessorRetirement(): boolean {
+		return true;
 	}
 
 	getTranscriptBlockSettledRows(): number {
@@ -397,7 +400,7 @@ export class EventController {
 				this.ctx.statusLine.invalidate();
 				this.ctx.ui.requestRender();
 			},
-			thinking_level_changed: async event => {
+			thinking_level_changed: async _event => {
 				this.ctx.statusLine.invalidate();
 				this.ctx.updateEditorBorderColor();
 				const hideThinking = this.ctx.effectiveHideThinkingBlock;
@@ -1113,8 +1116,8 @@ export class EventController {
 				const gate = new CompletedRunGate();
 				this.#activeCompletedRun.initialUserMessage = event.message;
 				this.#activeCompletedRun.gate = gate;
-				// The zero-row live gate keeps every intermediate loop below the
-				// native-scrollback seam until this run either collapses or fails.
+				// The zero-row gate anchors the eventual collapse projection but
+				// does not block finalized successors from entering scrollback.
 				this.ctx.chatContainer.addChild(gate);
 			}
 

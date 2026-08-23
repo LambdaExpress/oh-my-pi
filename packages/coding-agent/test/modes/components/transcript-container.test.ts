@@ -25,6 +25,16 @@ class Block implements Component {
 	}
 }
 
+class TransparentGate extends Block {
+	constructor() {
+		super([], false);
+	}
+
+	allowsTranscriptSuccessorRetirement(): boolean {
+		return true;
+	}
+}
+
 describe("TranscriptContainer", () => {
 	it("keeps settled blocks live while the viewport has room", () => {
 		const transcript = new TranscriptContainer();
@@ -80,6 +90,17 @@ describe("TranscriptContainer", () => {
 		active.finalize(["active final"]);
 		// Capacity 1 fits the remaining settled block, so only the first retires.
 		expect(transcript.peekFinalizedBatch(80, 1)?.rows).toEqual(["active final", ""]);
+	});
+
+	it("retires finalized content past a zero-row completed-run gate", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["user request"], true));
+		transcript.addChild(new TransparentGate());
+		transcript.addChild(new Block(["assistant explanation"], true));
+		transcript.addChild(new Block(["active tool"], false));
+
+		expect(transcript.peekFinalizedBatch(80, 1)?.rows).toEqual(["user request", "", "assistant explanation", ""]);
+		expect(transcript.renderViewport(80, 1)).toEqual(["active tool"]);
 	});
 
 	it("reoffers an unacknowledged batch and retires it exactly once", () => {

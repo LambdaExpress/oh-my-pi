@@ -185,11 +185,9 @@ export class FooterComponent implements Component {
 		const autoIndicator = this.#autoCompactEnabled && autoIcon ? ` ${autoIcon}` : "";
 		const contextPercentDisplay = `${formatContextUsage(contextPercentValue, contextWindow, contextTokens)}${autoIndicator}`;
 		if (contextUsage && contextPercentValue !== null) {
-			const color = getContextUsageThemeColor(
-				getContextUsageLevel(contextPercentValue, contextWindow),
-				theme.isLight,
-			);
-			contextPercentStr = theme.fgHex(color, contextPercentDisplay);
+			const color = getContextUsageThemeColor(getContextUsageLevel(contextPercentValue, contextWindow));
+			contextPercentStr =
+				color === "statusLineContext" ? contextPercentDisplay : theme.fg(color, contextPercentDisplay);
 		} else {
 			contextPercentStr = contextPercentDisplay;
 		}

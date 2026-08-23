@@ -4,6 +4,11 @@ import { isToolActivityComponent } from "./tool-activity";
 
 interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
+	/**
+	 * Zero-row ordering markers may let finalized successors retire while the
+	 * marker remains logically open. Real mutable content must never opt in.
+	 */
+	allowsTranscriptSuccessorRetirement?(): boolean;
 }
 
 /**
@@ -27,6 +32,11 @@ const EMPTY_ROWS: readonly string[] = [];
 function isFinalized(component: Component): boolean {
 	const block = component as Component & FinalizableBlock;
 	return block.isTranscriptBlockFinalized?.() ?? true;
+}
+
+function allowsSuccessorRetirement(component: Component): boolean {
+	const block = component as Component & FinalizableBlock;
+	return block.allowsTranscriptSuccessorRetirement?.() === true;
 }
 
 function isPlainBlank(line: string): boolean {
@@ -172,14 +182,23 @@ export class TranscriptContainer extends Container {
 		}
 		const overflowing = total > room || this.#liveCount() >= MAX_LIVE_BLOCKS;
 		if (!overflowing) return undefined;
-		// Retire the longest settled prefix needed to fit; commit order is
-		// absolute, so retirement stops at the first still-active block.
+		// Retire the longest settled prefix needed to fit. Real mutable content
+		// remains an absolute ordering barrier. A zero-row logical marker may
+		// explicitly permit finalized successors to cross it: the completed-run
+		// collapse anchor uses this to preserve its metadata without swallowing
+		// the live run above the terminal scrollback seam.
 		let end = this.#frontier;
 		let freed = 0;
 		let index = 0;
-		while (end < this.#entries.length && this.#entries[end]!.state === "settled") {
+		while (end < this.#entries.length) {
+			const entry = this.#entries[end]!;
+			const height = heights[index]!;
+			const settled = entry.state === "settled";
+			const transparentMarker =
+				entry.state === "active" && height === 0 && allowsSuccessorRetirement(entry.component);
+			if (!settled && !transparentMarker) break;
 			if (total - freed <= room && this.#liveCount() - (end - this.#frontier) < MAX_LIVE_BLOCKS) break;
-			freed += heights[index]! > 0 ? heights[index]! + 1 : 0;
+			freed += height > 0 ? height + 1 : 0;
 			end++;
 			index++;
 		}

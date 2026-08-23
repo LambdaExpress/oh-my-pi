@@ -605,7 +605,7 @@ const contextPctSegment: StatusLineSegment = {
 		const pct = ctx.contextPercent;
 		const window = ctx.contextWindow;
 
-		const color = getContextUsageThemeColor(getContextUsageLevel(pct ?? 0, window), theme.isLight);
+		const color = getContextUsageThemeColor(getContextUsageLevel(pct ?? 0, window));
 		// Async-compaction indicator: pulse the auto icon while a background
 		// speculation runs, hold it in accent once a result is armed.
 		let autoIcon = "";
@@ -618,10 +618,10 @@ const contextPctSegment: StatusLineSegment = {
 						: theme.fg("muted", theme.icon.auto)
 					: speculation === "armed"
 						? theme.fg("accent", theme.icon.auto)
-						: theme.fgHex(color, theme.icon.auto);
+						: theme.fg(color, theme.icon.auto);
 			autoIcon = ` ${themedIcon}`;
 		}
-		const text = theme.fgHex(color, formatContextUsage(pct, window, ctx.contextTokens));
+		const text = theme.fg(color, formatContextUsage(pct, window, ctx.contextTokens));
 		const content = withIcon(theme.icon.context, `${text}${autoIcon}`);
 
 		return { content, visible: true };
