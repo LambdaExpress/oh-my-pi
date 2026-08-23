@@ -357,7 +357,7 @@ describe("StatusLineComponent context breakdown", () => {
 		expect(plain).toContain("┃");
 	});
 
-	it("keeps the 17.4 context color and pulses the auto icon every 600ms while speculation runs", async () => {
+	it("keeps the fixed four-tier context color and pulses the auto icon every 600ms while speculation runs", async () => {
 		await setSymbolPreset("nerd");
 		vi.useFakeTimers();
 		const fake = makeSession({
@@ -379,7 +379,8 @@ describe("StatusLineComponent context breakdown", () => {
 
 		try {
 			const first = comp.getTopBorder(100).content;
-			expect(first).toContain(`${theme.getFgAnsi("statusLineContext")}33.1%/272K`);
+			const normalColor = theme.isLight ? "#1a7f37" : "#3fb950";
+			expect(first).toContain(theme.fgHex(normalColor, "33.1%/272K"));
 			expect(first).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
 
 			vi.advanceTimersByTime(599);
