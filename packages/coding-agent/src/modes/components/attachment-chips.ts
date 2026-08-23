@@ -23,6 +23,8 @@ const INNER_ROWS = 4;
 const CARD_COLS = INNER_COLS + 2;
 const CARD_GAP = 2;
 const RESET_FG = "\x1b[39m";
+const SAVE_CURSOR = "\x1b7";
+const RESTORE_CURSOR = "\x1b8";
 /** Symbol-keyed PNG conversion cache on the draft image (same pattern as the dimension
  *  probe cache): Kitty's `f=100` transmit accepts only PNG, so non-PNG attachments
  *  (pastes are usually re-encoded JPEG/WebP) convert before transmit — the same pipeline
@@ -69,10 +71,13 @@ export class AttachmentChipsBand implements Component {
 		const icon = theme.symbol(chip.kind === "image" ? "chip.image" : "chip.paste");
 		let bottomCaption: string;
 		let interior: string[];
+		let directPlacement = "";
 		if (chip.kind === "image") {
 			const dims = this.#imageDims(chip.image);
 			bottomCaption = dims ? `${dims.width}x${dims.height}` : "";
-			interior = this.#imageInterior(chip.image, dims);
+			const imageInterior = this.#imageInterior(chip.image, dims);
+			interior = imageInterior.rows;
+			directPlacement = imageInterior.directPlacement ?? "";
 		} else {
 			bottomCaption = chip.text.lineCount > 1 ? `+${chip.text.lineCount} lines` : `${chip.text.charCount} chars`;
 			interior = this.#textInterior(chip.text);
@@ -81,7 +86,7 @@ export class AttachmentChipsBand implements Component {
 		return [
 			this.#borderRow(sgr, `${icon} #${chip.n}`, "top"),
 			...interior.map(row => vertical + row + vertical),
-			this.#borderRow(sgr, bottomCaption, "bottom"),
+			this.#borderRow(sgr, bottomCaption, "bottom") + directPlacement,
 		];
 	}
 
@@ -110,10 +115,13 @@ export class AttachmentChipsBand implements Component {
 		return dims;
 	}
 
-	/** 12x4 thumbnail as Kitty Unicode-placeholder cell rows, centered; any other protocol (or a
-	 *  budget-suppressed image) falls back to a centered icon — direct placements, SIXEL, and
-	 *  iTerm2 output cursor-addressed sequences that cannot be composed into a border row. */
-	#imageInterior(image: ImageContent, dims: { width: number; height: number } | null): string[] {
+	/** 12x4 thumbnail as Kitty Unicode-placeholder cell rows or a SIXEL direct placement.
+	 *  The SIXEL sequence rides the completed bottom border row, then moves back into the card
+	 *  under a saved cursor; this preserves the composable six-row text layout. */
+	#imageInterior(
+		image: ImageContent,
+		dims: { width: number; height: number } | null,
+	): { rows: string[]; directPlacement?: string } {
 		if (dims && TERMINAL.imageProtocol === ImageProtocol.Kitty && getKittyGraphics().unicodePlaceholders) {
 			const display = this.#kittyDisplayImage(image);
 			if (display) {
@@ -135,14 +143,43 @@ export class AttachmentChipsBand implements Component {
 						},
 					);
 					if (result?.transmit) budget.enqueueTransmit(imageId, result.transmit);
-					if (result?.lines) return this.#centerGrid(result.lines);
+					if (result?.lines) return { rows: this.#centerGrid(result.lines) };
+				}
+			}
+		}
+		if (dims && TERMINAL.imageProtocol === ImageProtocol.Sixel) {
+			const imageId = this.budget.acquireId(
+				`chip:${image.mimeType}:${image.data.length}:${image.data.slice(0, 32)}`,
+			);
+			if (!this.budget.observe(imageId)) {
+				const result = renderImage(
+					image.data,
+					{ widthPx: dims.width, heightPx: dims.height },
+					{ maxWidthCells: INNER_COLS, maxHeightCells: INNER_ROWS },
+				);
+				if (result?.sequence) {
+					return {
+						rows: Array.from({ length: INNER_ROWS }, () => " ".repeat(INNER_COLS)),
+						directPlacement: this.#directPlacement(result.sequence, result.columns, result.rows),
+					};
 				}
 			}
 		}
 		const icon = theme.symbol("chip.image");
 		const pad = INNER_COLS - visibleWidth(icon);
 		const iconRow = " ".repeat(Math.floor(pad / 2)) + theme.fg("muted", icon) + " ".repeat(Math.ceil(pad / 2));
-		return [" ".repeat(INNER_COLS), iconRow, " ".repeat(INNER_COLS), " ".repeat(INNER_COLS)];
+		return { rows: [" ".repeat(INNER_COLS), iconRow, " ".repeat(INNER_COLS), " ".repeat(INNER_COLS)] };
+	}
+
+	/** Position a direct protocol image inside the card after its bottom border has been written. */
+	#directPlacement(sequence: string, columns: number, rows: number): string {
+		const fittedColumns = Math.max(1, Math.min(INNER_COLS, columns));
+		const fittedRows = Math.max(1, Math.min(INNER_ROWS, rows));
+		const leftPad = Math.floor((INNER_COLS - fittedColumns) / 2);
+		const topPad = Math.floor((INNER_ROWS - fittedRows) / 2);
+		const moveUp = INNER_ROWS - topPad;
+		const moveLeft = INNER_COLS + 1 - leftPad;
+		return `${SAVE_CURSOR}\x1b[${moveUp}A\x1b[${moveLeft}D${sequence}${RESTORE_CURSOR}`;
 	}
 
 	/** PNG form of `image` for the Kitty transmit; non-PNG sources convert asynchronously.

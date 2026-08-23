@@ -11,6 +11,7 @@ import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 // 2x2 red PNG — real header so the band's dimension probe decodes 2x2.
 const TINY_PNG =
 	"iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEklEQVR4nGP8z8DwnwEKmBhQAAA9+AQBHYLp7wAAAABJRU5ErkJggg==";
+const SIXEL_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==";
 
 function makeBand(): { editor: CustomEditor; band: AttachmentChipsBand } {
 	const editor = new CustomEditor(getEditorTheme());
@@ -143,6 +144,35 @@ describe("AttachmentChipsBand — Kitty placeholder thumbnails", () => {
 		} finally {
 			mutable.imageProtocol = originalProtocol;
 			setKittyGraphics({ unicodePlaceholders: false });
+			setCellDimensions(originalCellDims);
+		}
+	});
+});
+
+describe("AttachmentChipsBand — direct-placement thumbnails", () => {
+	it("places a SIXEL thumbnail inside the image card", () => {
+		const mutable = TERMINAL as unknown as { imageProtocol: ImageProtocol | null };
+		const originalProtocol = TERMINAL.imageProtocol;
+		const originalCellDims = { ...getCellDimensions() };
+		mutable.imageProtocol = ImageProtocol.Sixel;
+		setCellDimensions({ widthPx: 10, heightPx: 20 });
+		try {
+			const { editor, band } = makeBand();
+			editor.pendingImages.push({ type: "image", data: SIXEL_PNG, mimeType: "image/png" });
+			editor.insertAtom(chipLabel("image", 1), "[Image #1, 1x1]");
+
+			const rows = band.render(80);
+
+			expect(rows).toHaveLength(6);
+			expect(rows[5]).toContain("\x1bP");
+			expect(rows[5]).toContain("\x1b7\x1b[4A");
+			expect(rows[5]).toContain("\x1b8");
+			for (const row of rows.slice(0, -1)) {
+				expect(visibleWidth(row)).toBe(14);
+			}
+			expect(visibleWidth(rows[5]!.slice(0, rows[5]!.indexOf("\x1b7")))).toBe(14);
+		} finally {
+			mutable.imageProtocol = originalProtocol;
 			setCellDimensions(originalCellDims);
 		}
 	});
