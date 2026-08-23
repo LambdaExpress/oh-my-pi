@@ -5,6 +5,13 @@
 ### Fixed
 
 - Fixed the stats client build failing on Windows when the checkout path contains spaces (Bun Shell could not spawn with a space-containing working directory; the build now spawns through `Bun.spawnSync`).
+## [18.0.1] - 2026-08-23
+
+### Fixed
+
+- Fixed the Projects dashboard folder endpoint running unrelated dashboard aggregations when loading folder statistics.
+- Fixed stats sync crashing with a NOT NULL constraint error when legacy session files carry a partially-populated usage cost.
+
 ## [17.4.0] - 2026-08-20
 
 ### Changed

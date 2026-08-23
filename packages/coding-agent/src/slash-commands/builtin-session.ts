@@ -157,8 +157,9 @@ async function handleSessionPinCommand(
 export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "todo",
-		description: t("View or modify the agent's todo list"),
-		acpDescription: t("Manage todos"),
+		icon: "todo",
+		description: "View or modify the agent's todo list",
+		acpDescription: "Manage todos",
 		acpInputHint: "<subcommand>",
 		subcommands: [
 			{ name: "edit", description: t("Open todos in $EDITOR (Markdown round-trip)") },
@@ -196,8 +197,9 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "session",
-		description: t("Session management commands"),
-		acpDescription: t("Show or configure the current session"),
+		icon: "session",
+		description: "Session management commands",
+		acpDescription: "Show or configure the current session",
 		acpInputHint: "[info|delete|pin [account]]",
 		subcommands: [
 			{ name: "info", description: t("Show session info and stats") },
@@ -275,8 +277,9 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "jobs",
-		description: t("Show async background jobs status"),
-		acpDescription: t("Show background jobs"),
+		icon: "jobs",
+		description: "Show async background jobs status",
+		acpDescription: "Show background jobs",
 		getTuiAutocompleteDescription: runtime => {
 			const snapshot = runtime.ctx.session.getAsyncJobSnapshot({ recentLimit: 5 });
 			if (!snapshot || (snapshot.running.length === 0 && snapshot.recent.length === 0)) return t("Jobs: none");
@@ -321,8 +324,9 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "usage",
-		description: t("Show provider usage and limits"),
-		acpDescription: t("Show token usage"),
+		icon: "gauge",
+		description: "Show provider usage and limits",
+		acpDescription: "Show token usage",
 		acpInputHint: "[show|reset [account|active]]",
 		subcommands: [
 			{ name: "show", description: t("Show provider usage and limits") },
@@ -369,7 +373,8 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "stats",
-		description: t("Launch the local stats dashboard"),
+		icon: "stats",
+		description: "Launch the local stats dashboard",
 		inlineHint: "[--port <port>] [--host <host>]",
 		allowArgs: true,
 		handle: async (command, runtime) => {
@@ -388,8 +393,9 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "changelog",
-		description: t("Show changelog entries"),
-		acpDescription: t("Show changelog"),
+		icon: "news",
+		description: "Show changelog entries",
+		acpDescription: "Show changelog",
 		acpInputHint: "[full]",
 		subcommands: [{ name: "full", description: t("Show complete changelog") }],
 		allowArgs: true,
@@ -413,7 +419,8 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "hotkeys",
-		description: t("Show all keyboard shortcuts"),
+		icon: "keyboard",
+		description: "Show all keyboard shortcuts",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.handleHotkeysCommand();
 			runtime.ctx.editor.setText("");
@@ -421,8 +428,9 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "tools",
-		description: t("Show tools currently visible to the agent"),
-		acpDescription: t("Show available tools"),
+		icon: "tools",
+		description: "Show tools currently visible to the agent",
+		acpDescription: "Show available tools",
 		getTuiAutocompleteDescription: runtime => {
 			const active = runtime.ctx.session.getActiveToolNames().length;
 			const all = runtime.ctx.session.getAllToolNames().length;
@@ -449,8 +457,9 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "context",
-		description: t("Show estimated context usage breakdown"),
-		acpDescription: t("Show context usage"),
+		icon: "context",
+		description: "Show estimated context usage breakdown",
+		acpDescription: "Show context usage",
 		getTuiAutocompleteDescription: runtime => {
 			const usage = runtime.ctx.session.getContextUsage();
 			if (!usage) return t("Context: unavailable");
@@ -472,7 +481,8 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "extensions",
 		aliases: ["status"],
-		description: t("Open Extension Control Center dashboard"),
+		icon: "extension",
+		description: "Open Extension Control Center dashboard",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.showExtensionsDashboard();
 			runtime.ctx.editor.setText("");
@@ -480,7 +490,8 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "agents",
-		description: t("Open the agents hub (per-agent model, prewalk, and advisor)"),
+		icon: "agents",
+		description: "Open the agents hub (per-agent model, prewalk, and advisor)",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.showAgentsDashboard();
 			runtime.ctx.editor.setText("");
@@ -488,7 +499,8 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "branch",
-		description: t("Create a new branch from a previous message"),
+		icon: "branch",
+		description: "Create a new branch from a previous message",
 		handleTui: (_command, runtime) => {
 			if (settings.get("doubleEscapeAction") === "tree") {
 				runtime.ctx.showTreeSelector();
@@ -500,7 +512,8 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "fork",
-		description: t("Create a new fork from a previous message"),
+		icon: "branch",
+		description: "Create a new fork from a previous message",
 		handleTui: async (_command, runtime) => {
 			runtime.ctx.editor.setText("");
 			await runtime.ctx.handleForkCommand();
@@ -508,7 +521,8 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "tree",
-		description: t("Navigate session tree (switch branches)"),
+		icon: "tree",
+		description: "Navigate session tree (switch branches)",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.showTreeSelector();
 			runtime.ctx.editor.setText("");
@@ -516,7 +530,8 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "login",
-		description: t("Login with OAuth provider"),
+		icon: "signIn",
+		description: "Login with OAuth provider",
 		inlineHint: "[provider|redirect URL]",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
@@ -574,7 +589,8 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "logout",
-		description: t("Logout from OAuth provider"),
+		icon: "signOut",
+		description: "Logout from OAuth provider",
 		inlineHint: "[provider]",
 		allowArgs: true,
 		handleTui: (command, runtime) => {
@@ -596,8 +612,9 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "mcp",
-		description: t("Manage MCP servers (add, list, remove, test)"),
-		acpDescription: t("Manage MCP servers"),
+		icon: "mcp",
+		description: "Manage MCP servers (add, list, remove, test)",
+		acpDescription: "Manage MCP servers",
 		inlineHint: "<subcommand>",
 		subcommands: [
 			{

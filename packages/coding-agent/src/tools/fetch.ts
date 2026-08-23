@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import type { Database } from "bun:sqlite";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,6 +7,7 @@ import type { FetchImpl, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { htmlToMarkdown } from "@oh-my-pi/pi-natives";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { $which, ptree, truncate } from "@oh-my-pi/pi-utils";
+import { type ArchiveFormat, listArchiveRoot, sniffArchiveFormat } from "@oh-my-pi/pi-utils/ar";
 import type { Settings } from "../config/settings";
 import { readEditableNotebookText } from "../edit/notebook";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -20,7 +21,6 @@ import { webpExclusionForModel } from "../utils/image-loading";
 import { formatDimensionNote, resizeImage } from "../utils/image-resize";
 import { CONVERTIBLE_EXTENSIONS } from "../utils/markit";
 import { ensureTool } from "../utils/tools-manager";
-import { type ArchiveFormat, listArchiveRoot, sniffArchiveFormat } from "../utils/zip";
 import { extractWithParallel, findParallelApiKey, getParallelExtractContent } from "../web/parallel";
 import type { RenderResult, SpecialHandler } from "../web/scrapers/types";
 import { finalizeOutput, loadPage, looksLikeHtml, MAX_BYTES, MAX_OUTPUT_CHARS } from "../web/scrapers/types";
@@ -28,8 +28,8 @@ import { convertWithMarkit, fetchBinary } from "../web/scrapers/utils";
 import { applyListLimit } from "./list-limit";
 import { formatStyledArtifactReference, type OutputMeta } from "./output-meta";
 import { isReadableUrlPath, type LineRange, parseLineRanges } from "./path-utils";
-import { createMoreLinesHeadWindow, formatBytes, getDomain, replaceTabs } from "./render-utils";
-import { listTables, looksLikeSqlite, renderTableList } from "./sqlite-reader";
+import { createMoreLinesHeadWindow, formatBytes, formatExpandHint, getDomain, replaceTabs } from "./render-utils";
+import { listTables, looksLikeSqlite, openSqliteReadConnection, renderTableList } from "./sqlite-reader";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
@@ -886,8 +886,7 @@ async function renderSqlitePayload(bytes: Uint8Array): Promise<string> {
 	return withTempBinaryFile("omp-url-sqlite-", ".sqlite", bytes, async tempPath => {
 		let db: Database | null = null;
 		try {
-			db = new Database(tempPath, { readonly: true, strict: true });
-			db.run("PRAGMA busy_timeout = 3000");
+			db = await openSqliteReadConnection(tempPath);
 			const listLimit = applyListLimit(listTables(db), { limit: URL_SQLITE_LIST_LIMIT });
 			return renderTableList(listLimit.items);
 		} finally {

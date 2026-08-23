@@ -73,6 +73,7 @@ import { buildAvailableSlashCommands, toAcpAvailableCommands } from "../../slash
 import { DEFAULT_STT_MODEL_KEY, STT_MODEL_OPTIONS } from "../../stt/models";
 import { refreshAgentDiscovery } from "../../task";
 import { AUTO_THINKING, parseConfiguredThinkingLevel } from "../../thinking";
+import { OTHER_OPTION } from "../../tools/ask";
 import { normalizeLocalScheme } from "../../tools/path-utils";
 import { ToolError } from "../../tools/tool-errors";
 import {
@@ -165,6 +166,7 @@ function isPromptTurnInFlight(turn: PromptTurnState | undefined): turn is Prompt
 
 type ManagedSessionRecord = {
 	session: AgentSession;
+	setToolUIContext: ((uiContext: ExtensionUIContext, hasUI: boolean) => void) | undefined;
 	mcpManager: MCPManager | undefined;
 	// Ordered queue of MCP tool refreshes for this record. Rebuilt per
 	// `#configureMcpServers` call; drained on reconfigure so a stale in-flight
@@ -222,7 +224,22 @@ type MCPSourceMap = {
 	[name: string]: MCPSource;
 };
 
-type CreateAcpSession = (cwd: string) => Promise<AgentSession>;
+type AcpSessionHandle = {
+	session: AgentSession;
+	setToolUIContext: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
+};
+
+type CreateAcpSession = (
+	cwd: string,
+	options?: { interactivePrompts?: boolean },
+) => Promise<AgentSession | AcpSessionHandle>;
+
+function normalizeCreatedAcpSession(created: AgentSession | AcpSessionHandle): {
+	session: AgentSession;
+	setToolUIContext: AcpSessionHandle["setToolUIContext"] | undefined;
+} {
+	return "session" in created ? created : { session: created, setToolUIContext: undefined };
+}
 
 type AcpSpeechOption = {
 	value: string;
@@ -278,11 +295,7 @@ function buildAcpSpeechModelsCatalog(): Record<string, unknown> {
 }
 
 /**
- * Bridge a single ExtensionUIContext call to the ACP `unstable_createElicitation`
- * surface. Skills/extensions ask for one value at a time (a chosen option, a
- * confirmation, a piece of text), so every elicitation here uses a one-property
- * `value` schema; the caller narrows the resulting `ElicitationContentValue`
- * back to its concrete primitive type.
+ * Bridge an ExtensionUIContext form to ACP `unstable_createElicitation`.
  *
  * `dialogOptions.signal` short-circuits the elicitation if it is already
  * aborted and races the in-flight request against the abort event. The SDK
@@ -292,8 +305,8 @@ function buildAcpSpeechModelsCatalog(): Record<string, unknown> {
  * resolving the local promise unblocks the caller (matches the RPC mode
  * pattern in `requestRpcEditor`). The abort listener is removed once the
  * elicitation settles so that callers which reuse the same signal across many
- * elicitations (e.g. `ask` multi-select loops) don't accumulate listeners and
- * trip Node's `MaxListeners` warning.
+ * elicitations don't accumulate listeners and trip Node's `MaxListeners`
+ * warning.
  *
  * `dialogOptions.timeout` mirrors `RpcExtensionUIContext.#createDialogPromise`:
  * when the timer fires before the client responds, `onTimeout` is invoked and
@@ -301,14 +314,15 @@ function buildAcpSpeechModelsCatalog(): Record<string, unknown> {
  * arrive after abort/timeout — both rejections and successful `accept`s —
  * are dropped silently (no `logger.warn`) to keep operator logs clean.
  */
-async function elicitFromAcpClient(
+async function elicitFormFromAcpClient(
 	connection: AgentSideConnection,
 	sessionId: string,
-	method: "select" | "confirm" | "input" | "editor",
+	method: string,
 	message: string,
-	property: ElicitationPropertySchema,
+	properties: Record<string, ElicitationPropertySchema>,
+	required: string[] | undefined,
 	dialogOptions: ExtensionUIDialogOptions | undefined,
-): Promise<ElicitationContentValue | undefined> {
+): Promise<Record<string, ElicitationContentValue> | undefined> {
 	const signal = dialogOptions?.signal;
 	if (signal?.aborted) {
 		return undefined;
@@ -319,7 +333,7 @@ async function elicitFromAcpClient(
 	const finish = (value: CreateElicitationResponse | undefined) => {
 		if (settled) return;
 		settled = true;
-		if (timeoutId !== undefined) clearTimeout(timeoutId);
+		clearTimeout(timeoutId);
 		signal?.removeEventListener("abort", onAbort);
 		resolve(value);
 	};
@@ -350,8 +364,8 @@ async function elicitFromAcpClient(
 			message,
 			requestedSchema: {
 				type: "object",
-				properties: { value: property },
-				required: ["value"],
+				properties,
+				required,
 			},
 		})
 		.then(finish, error => {
@@ -364,7 +378,27 @@ async function elicitFromAcpClient(
 	if (!isAcceptedElicitation(response) || !response.content) {
 		return undefined;
 	}
-	return response.content.value;
+	return response.content;
+}
+
+async function elicitFromAcpClient(
+	connection: AgentSideConnection,
+	sessionId: string,
+	method: "select" | "confirm" | "input" | "editor",
+	message: string,
+	property: ElicitationPropertySchema,
+	dialogOptions: ExtensionUIDialogOptions | undefined,
+): Promise<ElicitationContentValue | undefined> {
+	const content = await elicitFormFromAcpClient(
+		connection,
+		sessionId,
+		method,
+		message,
+		{ value: property },
+		["value"],
+		dialogOptions,
+	);
+	return content?.value;
 }
 
 /** Narrows a `CreateElicitationResponse` to the accepted-with-content branch; the SDK's `action: string` catch-all arm otherwise defeats literal narrowing on `action !== "accept"`. */
@@ -436,6 +470,109 @@ export function createAcpExtensionUiContext(
 				dialogOptions,
 			);
 			return typeof value === "string" ? value : undefined;
+		},
+		askDialog: async (questions, dialogOptions) => {
+			if (!supportsForm) return undefined;
+			const properties: Record<string, ElicitationPropertySchema> = {};
+			for (const [index, question] of questions.entries()) {
+				const key = `q${index}`;
+				const entries = question.options.map(option => ({
+					const: option.label,
+					title: option.label,
+					...(option.description?.trim() ? { description: option.description.trim() } : {}),
+				}));
+				const description = question.header?.trim();
+				if (entries.length > 0) {
+					if (question.multi === true) {
+						properties[key] = {
+							type: "array",
+							title: question.question,
+							...(description ? { description } : {}),
+							items: { anyOf: entries },
+						};
+					} else {
+						const recommended = question.recommended;
+						properties[key] = {
+							type: "string",
+							title: question.question,
+							...(description ? { description } : {}),
+							oneOf: entries,
+							...(recommended !== undefined && recommended >= 0 && recommended < question.options.length
+								? { default: question.options[recommended].label }
+								: {}),
+						};
+					}
+				}
+				properties[`${key}__other`] = { type: "string", title: OTHER_OPTION };
+			}
+
+			let timedOut = false;
+			const content = await elicitFormFromAcpClient(
+				connection,
+				getSessionId(),
+				"askDialog",
+				questions.length === 1 ? questions[0].question : `Answer ${questions.length} questions`,
+				properties,
+				undefined,
+				{
+					...dialogOptions,
+					onTimeout: () => {
+						timedOut = true;
+						dialogOptions?.onTimeout?.();
+					},
+				},
+			);
+			if (timedOut) {
+				return {
+					kind: "submit",
+					results: questions.map(question => {
+						const labels = question.options.map(option => option.label);
+						const fallbackIndex = Math.min(
+							Math.max(question.recommended ?? 0, 0),
+							Math.max(labels.length - 1, 0),
+						);
+						const fallback = labels[fallbackIndex];
+						return {
+							id: question.id,
+							question: question.question,
+							options: labels,
+							multi: question.multi ?? false,
+							selectedOptions: fallback === undefined ? [] : [fallback],
+							customInput: undefined,
+							timedOut: true,
+						};
+					}),
+				};
+			}
+			if (!content) return undefined;
+
+			return {
+				kind: "submit",
+				results: questions.map((question, index) => {
+					const key = `q${index}`;
+					const otherKey = `${key}__other`;
+					const labels = question.options.map(option => option.label);
+					const otherValue = content[otherKey];
+					const customInput = typeof otherValue === "string" && otherValue.trim() ? otherValue.trim() : undefined;
+					const value = content[key];
+					const selectedOptions =
+						question.multi === true
+							? Array.isArray(value)
+								? value.filter(candidate => typeof candidate === "string" && labels.includes(candidate))
+								: []
+							: customInput === undefined && typeof value === "string" && labels.includes(value)
+								? [value]
+								: [];
+					return {
+						id: question.id,
+						question: question.question,
+						options: labels,
+						multi: question.multi ?? false,
+						selectedOptions,
+						customInput,
+					};
+				}),
+			};
 		},
 		notify: (message, type) => {
 			logger.debug("ACP extension notification", { message, type });
@@ -839,6 +976,16 @@ export class AcpAgent implements Agent {
 			output: output => this.#emitCommandOutput(record, output),
 			refreshCommands: () => this.#emitAvailableCommandsUpdate(record),
 			reloadPlugins: () => this.#reloadPluginState(record),
+			keepTurnOpenUntilIdle: async () => {
+				await record.session.waitForIdle();
+				// `AgentSession.#emit()` does not await listeners, so the retried
+				// turn's `agent_end` handler — which emits the trailing chunks and
+				// end-of-turn updates — can still be in flight once the session is
+				// idle. Drain the tracked handlers too, or the prompt response can
+				// overtake its own updates. Same pairing as the `!agentInvoked`
+				// path below.
+				await this.#waitForPromptEventHandlers(record);
+			},
 			notifyTitleChanged: async () => {
 				await this.#connection.sessionUpdate({
 					sessionId: record.session.sessionId,
@@ -855,7 +1002,18 @@ export class AcpAgent implements Agent {
 		});
 		if (builtinResult !== false) {
 			if ("prompt" in builtinResult) {
-				await record.session.prompt(builtinResult.prompt, { images });
+				const residualBaseline = new Set(record.extensionUserMessageTasks);
+				const residualAgentInvoked = await record.session.prompt(builtinResult.prompt, { images });
+				// A residual prompt can itself resolve locally (extension command,
+				// custom-TS command, file prompt template). No agent turn means no
+				// `agent_end`, so the prompt turn must be settled here — same pairing
+				// as the plain-prompt `!agentInvoked` path below — or the ACP
+				// `session/prompt` request never resolves (#9206).
+				if (!residualAgentInvoked) {
+					await this.#waitForExtensionUserMessages(record, residualBaseline);
+					await this.#waitForPromptEventHandlers(record);
+					this.#finishPrompt(record, { stopReason: "end_turn" });
+				}
 				return;
 			}
 			const promptTurn = record.promptTurn;
@@ -1070,14 +1228,18 @@ export class AcpAgent implements Agent {
 	}
 
 	async #createNewSessionRecord(cwd: string, mcpServers: McpServer[]): Promise<ManagedSessionRecord> {
-		const session = await this.#createSession(path.resolve(cwd));
+		const { session, setToolUIContext } = normalizeCreatedAcpSession(
+			await this.#createSession(path.resolve(cwd), {
+				interactivePrompts: this.#clientCapabilities?.elicitation?.form != null,
+			}),
+		);
 		try {
 			await session.sessionManager.ensureOnDisk();
 		} catch (error) {
 			await this.#disposeStandaloneSession(session);
 			throw error;
 		}
-		return await this.#registerPreparedSession(session, mcpServers);
+		return await this.#registerPreparedSession(session, mcpServers, setToolUIContext);
 	}
 
 	async #loadManagedSession(sessionId: string, cwd: string, mcpServers: McpServer[]): Promise<ManagedSessionRecord> {
@@ -1112,7 +1274,11 @@ export class AcpAgent implements Agent {
 
 	async #forkManagedSession(params: ForkSessionRequest): Promise<ManagedSessionRecord> {
 		const sourcePath = await this.#resolveForkSourceSessionPath(params.sessionId);
-		const session = await this.#createSession(path.resolve(params.cwd));
+		const { session, setToolUIContext } = normalizeCreatedAcpSession(
+			await this.#createSession(path.resolve(params.cwd), {
+				interactivePrompts: this.#clientCapabilities?.elicitation?.form != null,
+			}),
+		);
 		try {
 			const success = await session.switchSession(sourcePath);
 			if (!success) {
@@ -1126,7 +1292,7 @@ export class AcpAgent implements Agent {
 			await this.#disposeStandaloneSession(session);
 			throw error;
 		}
-		return await this.#registerPreparedSession(session, params.mcpServers ?? []);
+		return await this.#registerPreparedSession(session, params.mcpServers ?? [], setToolUIContext);
 	}
 
 	async #openStoredSession(
@@ -1135,7 +1301,11 @@ export class AcpAgent implements Agent {
 		mcpServers: McpServer[],
 		sessionId: string,
 	): Promise<ManagedSessionRecord> {
-		const session = await this.#createSession(path.resolve(cwd));
+		const { session, setToolUIContext } = normalizeCreatedAcpSession(
+			await this.#createSession(path.resolve(cwd), {
+				interactivePrompts: this.#clientCapabilities?.elicitation?.form != null,
+			}),
+		);
 		try {
 			const success = await session.switchSession(sessionPath);
 			if (!success) {
@@ -1145,11 +1315,15 @@ export class AcpAgent implements Agent {
 			await this.#disposeStandaloneSession(session);
 			throw error;
 		}
-		return await this.#registerPreparedSession(session, mcpServers);
+		return await this.#registerPreparedSession(session, mcpServers, setToolUIContext);
 	}
 
-	async #registerPreparedSession(session: AgentSession, mcpServers: McpServer[]): Promise<ManagedSessionRecord> {
-		const record = this.#createManagedSessionRecord(session);
+	async #registerPreparedSession(
+		session: AgentSession,
+		mcpServers: McpServer[],
+		setToolUIContext: ((uiContext: ExtensionUIContext, hasUI: boolean) => void) | undefined,
+	): Promise<ManagedSessionRecord> {
+		const record = this.#createManagedSessionRecord(session, setToolUIContext);
 		session.setClientBridge(createAcpClientBridge(this.#connection, session.sessionId, this.#clientCapabilities));
 		// `record.lifetimeUnsubscribe` is installed in `#scheduleBootstrapUpdates`
 		// before the response-delivery guard so immediate prompt events are not
@@ -1165,11 +1339,14 @@ export class AcpAgent implements Agent {
 		}
 	}
 
-	#createManagedSessionRecord(session: AgentSession): ManagedSessionRecord {
+	#createManagedSessionRecord(
+		session: AgentSession,
+		setToolUIContext: ((uiContext: ExtensionUIContext, hasUI: boolean) => void) | undefined = undefined,
+	): ManagedSessionRecord {
 		const lifetimeReady = Promise.withResolvers<void>();
-		void lifetimeReady.promise.catch(() => undefined);
 		return {
 			session,
+			setToolUIContext,
 			mcpManager: undefined,
 			mcpRefreshChain: undefined,
 			promptTurn: undefined,
@@ -2372,6 +2549,7 @@ export class AcpAgent implements Agent {
 			this.#clientCapabilities?.elicitation?.form != null ? uiContext : undefined,
 		);
 		if (this.#clientCapabilities?.elicitation?.form != null) {
+			record.setToolUIContext?.(uiContext, true);
 			record.session.setUsageFallbackConfirmer((confirmation, signal) => {
 				const reserve =
 					confirmation.remainingPercent === undefined

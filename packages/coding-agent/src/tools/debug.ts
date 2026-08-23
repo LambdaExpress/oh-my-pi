@@ -1365,7 +1365,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 					.done();
 			}
 			case "attach": {
-				if (params.pid === undefined && params.port === undefined) {
+				if (params.pid === undefined && params.port === undefined && !params.adapter) {
 					throw new ToolError("attach requires pid or port");
 				}
 				const workspaceCwd = this.session.cwd;

@@ -517,6 +517,10 @@ export class DapSessionManager {
 				timeoutMs,
 			);
 			session.needsConfigurationDone = session.capabilities.supportsConfigurationDoneRequest === true;
+			if (options.adapter.attachDefaults.skipAttachRequest === true) {
+				await this.#completeConfigurationHandshake(session, signal, timeoutMs);
+				return buildSummary(session);
+			}
 			const attachArguments: DapAttachArguments = {
 				...options.adapter.attachDefaults,
 				cwd: options.cwd,
@@ -1632,7 +1636,9 @@ export class DapSessionManager {
 		});
 		client.onEvent("initialized", () => {
 			session.initializedSeen = true;
-			session.status = session.configurationDoneSent ? session.status : "configuring";
+			if (!session.configurationDoneSent && session.status === "launching") {
+				session.status = "configuring";
+			}
 		});
 		client.onEvent("stopped", body => {
 			const stopped = body as DapStoppedEventBody;
@@ -1708,6 +1714,9 @@ export class DapSessionManager {
 		if (!session.needsConfigurationDone) {
 			if (session.parentSessionId) {
 				await this.#applyRootBreakpointsToSession(session, signal, timeoutMs);
+			}
+			if (session.status === "launching" || session.status === "configuring") {
+				session.status = "running";
 			}
 			return;
 		}

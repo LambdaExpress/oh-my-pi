@@ -1,3 +1,4 @@
+import * as nodePath from "node:path";
 import { MismatchError as HashlineMismatchError } from "@oh-my-pi/hashline";
 import hashlineGrammar from "@oh-my-pi/hashline/grammar.lark" with { type: "text" };
 import hashlineDescription from "@oh-my-pi/hashline/prompt.md" with { type: "text" };
@@ -13,15 +14,30 @@ import patchDescription from "../prompts/tools/patch.md" with { type: "text" };
 import replaceDescription from "../prompts/tools/replace.md" with { type: "text" };
 import type { ToolSession } from "../tools";
 import { truncateForPrompt } from "../tools/approval";
-import { findUniqueWorkspaceSuffix, isInternalUrlPath, pathTargetsSsh } from "../tools/path-utils";
+import {
+	findUniqueWorkspaceSuffix,
+	isInternalUrlPath,
+	pathTargetsSsh,
+	resolveFileWriteApprovalTier,
+} from "../tools/path-utils";
 import { resolvePlanPath, unwrapHashlineHeaderPath } from "../tools/plan-mode-guard";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
+import { type AppliedEditObserver, createEditBlackboxRecorder, introducedParseFailure } from "./blackbox";
 import { executeHashlineSingle, hashlineEditParamsSchema } from "./hashline";
 import { type ApplyPatchParams, applyPatchSchema, expandApplyPatchToEntries } from "./modes/apply-patch";
 import applyPatchGrammar from "./modes/apply-patch.lark" with { type: "text" };
 import { executePatchSingle, type PatchEditEntry, type PatchParams, patchEditSchema } from "./modes/patch";
 import { executeReplace, type ReplaceBatchParams, type ReplaceParams, replaceEditSchema } from "./modes/replace";
 import { type EditToolDetails, type EditToolPerFileResult, getLspBatchRequest, type LspBatchRequest } from "./renderer";
+import {
+	executeSloppy,
+	type SloppyParams,
+	type SloppySection,
+	sloppyEditSchema,
+	sloppyGrammar,
+	sloppyVariant,
+	splitSloppySections,
+} from "./sloppy";
 import { pruneOversizedEditSnapshots } from "./snapshot-details";
 import { EDIT_MODE_STRATEGIES } from "./streaming";
 
@@ -36,6 +52,7 @@ export * from "./modes/patch";
 export * from "./modes/replace";
 export * from "./normalize";
 export * from "./renderer";
+export * from "./sloppy";
 export * from "./snapshot-details";
 export * from "./streaming";
 
@@ -43,11 +60,12 @@ type TInput =
 	| typeof replaceEditSchema
 	| typeof patchEditSchema
 	| typeof hashlineEditParamsSchema
-	| typeof applyPatchSchema;
+	| typeof applyPatchSchema
+	| typeof sloppyEditSchema;
 
 type HashlineParams = typeof hashlineEditParamsSchema.infer;
 
-type EditParams = ReplaceParams | ReplaceBatchParams | PatchParams | HashlineParams | ApplyPatchParams;
+type EditParams = ReplaceParams | ReplaceBatchParams | PatchParams | HashlineParams | ApplyPatchParams | SloppyParams;
 
 type EditModeDefinition = {
 	description: (session: ToolSession) => string;
@@ -58,6 +76,7 @@ type EditModeDefinition = {
 		params: EditParams,
 		signal: AbortSignal | undefined,
 		batchRequest: LspBatchRequest | undefined,
+		onApplied: AppliedEditObserver | undefined,
 		onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 	) => Promise<AgentToolResult<EditToolDetails, TInput>>;
 };
@@ -368,73 +387,52 @@ async function executeSinglePathEntries(
 	};
 }
 
-function normalizeApprovalPaths(paths: readonly string[]): string[] {
-	const normalized: string[] = [];
-	for (const entry of paths) {
-		const path = unwrapHashlineHeaderPath(entry).trim();
-		if (path.length > 0 && !normalized.includes(path)) normalized.push(path);
-	}
-	return normalized;
-}
-
+/**
+ * Every target path a payload will touch, for approval tiering and display.
+ * Multi-file hashline / apply_patch / sloppy payloads report one entry per
+ * section so a mixed internal+workspace call cannot be under-classified.
+ */
 function extractApprovalPaths(args: unknown, mode: EditMode): string[] {
-	const strategyPaths = EDIT_MODE_STRATEGIES[mode].matcherPaths(args);
-	if (strategyPaths && strategyPaths.length > 0) return normalizeApprovalPaths(strategyPaths);
-
 	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
 	const input = typeof record.input === "string" ? record.input : undefined;
-	const paths: string[] = [];
-	if (input) {
-		for (const match of input.matchAll(/^\[([^#\r\n]+)(?:#[0-9a-fA-F]{4})?\]/gm)) {
-			if (match[1]) paths.push(match[1]);
-		}
-		for (const match of input.matchAll(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/gm)) {
-			if (match[1]) paths.push(match[1].trim());
-		}
+	if (input && mode === "sloppy") {
+		const sloppyPaths = splitSloppySections(input)
+			.map(section => section.path)
+			.filter(path => path.length > 0);
+		if (sloppyPaths.length > 0) return sloppyPaths;
+	}
+	if (input && mode === "hashline") {
+		const hashlinePaths = [...input.matchAll(/^\[([^#\r\n]+)(?:#[0-9a-fA-F]{4})?\]/gm)]
+			.map(match => match[1])
+			.filter((path): path is string => typeof path === "string" && path.length > 0);
+		if (hashlinePaths.length > 0) return hashlinePaths;
+	}
+	if (input && mode === "apply_patch") {
+		const applyPatchPaths = [...input.matchAll(/^\*\*\* (?:Add|Update|Delete) File:\s*(.+)$/gm)]
+			.map(match => match[1]?.trim())
+			.filter((path): path is string => typeof path === "string" && path.length > 0);
+		if (applyPatchPaths.length > 0) return applyPatchPaths;
 	}
 
 	const targetPath = record.path;
-	if (typeof targetPath === "string" && targetPath.length > 0) paths.push(targetPath);
-	const normalized = normalizeApprovalPaths(paths);
-	return normalized.length > 0 ? normalized : ["(unknown)"];
-}
-
-function approvalPayloadTargetsSsh(args: unknown): boolean {
-	if (typeof args === "string" && pathTargetsSsh(args)) return true;
-	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
-	return (
-		(typeof record.input === "string" && pathTargetsSsh(record.input)) ||
-		(typeof record.path === "string" && pathTargetsSsh(record.path))
-	);
-}
-
-function internalHandlerCanMutate(path: string): boolean {
-	try {
-		const parsed = parseInternalUrl(path);
-		const scheme = parsed.protocol.replace(/:$/, "").toLowerCase();
-		const handler = InternalUrlRouter.instance().getHandler(scheme);
-		return Boolean(handler?.write || handler?.delete || handler?.move);
-	} catch {
-		return true;
-	}
+	return typeof targetPath === "string" && targetPath.length > 0 ? [targetPath] : [];
 }
 
 export class EditTool implements AgentTool<TInput> {
 	readonly approval = (args: unknown) => {
-		const targetPaths = extractApprovalPaths(args, this.mode);
-		if (approvalPayloadTargetsSsh(args) || targetPaths.some(pathTargetsSsh)) return "exec";
-		for (const targetPath of targetPaths) {
-			const unwrappedPath = unwrapHashlineHeaderPath(targetPath);
-			if (!isInternalUrlPath(unwrappedPath)) return "write";
-			if (internalHandlerCanMutate(unwrappedPath)) return "write";
-		}
-		return "read";
+		// Internal-resource edits (memory://, skill://, local://, …) are read-tier,
+		// but a payload that also targets a real workspace file must stay write-tier
+		// so the always-ask prompt still fires — `executeSloppy` writes every section
+		// regardless of the first one's scheme (#9353 review).
+		const targets = extractApprovalPaths(args, this.mode);
+		return targets.length > 0 && targets.every(target => resolveFileWriteApprovalTier(target) === "read")
+			? "read"
+			: "write";
 	};
 	readonly formatApprovalDetails = (args: unknown): string[] => {
-		const targetPaths = extractApprovalPaths(args, this.mode);
-		if (targetPaths.length === 1) return [`File: ${truncateForPrompt(targetPaths[0])}`];
-		const renderedPaths = targetPaths.slice(0, 4).map(targetPath => truncateForPrompt(targetPath));
-		return [`Files: ${renderedPaths.join(", ")}${targetPaths.length > renderedPaths.length ? ", ..." : ""}`];
+		const targets = extractApprovalPaths(args, this.mode);
+		if (targets.length === 0) return ["File: (unknown)"];
+		return targets.map(target => `File: ${truncateForPrompt(target)}`);
 	};
 	readonly name = "edit";
 	readonly label = "Edit";
@@ -502,6 +500,7 @@ export class EditTool implements AgentTool<TInput> {
 	get customFormat(): { syntax: "lark"; definition: string } | undefined {
 		if (this.mode === "apply_patch") return { syntax: "lark", definition: applyPatchGrammar };
 		if (this.mode === "hashline") return { syntax: "lark", definition: hashlineGrammar };
+		if (this.mode === "sloppy") return { syntax: "lark", definition: sloppyGrammar };
 		return undefined;
 	}
 
@@ -554,11 +553,41 @@ export class EditTool implements AgentTool<TInput> {
 		context?: AgentToolContext,
 	): Promise<AgentToolResult<EditToolDetails, TInput>> {
 		const modeDefinition = this.#getModeDefinition();
-		return modeDefinition.execute(this, params, signal, getLspBatchRequest(context?.toolCall), onUpdate);
+		const record = createEditBlackboxRecorder(this.session, this.mode, params);
+		const brokenPaths: string[] = [];
+		const onApplied: AppliedEditObserver = async snapshot => {
+			// Diagnostic only: the edit has already committed, so a guard failure
+			// must never turn it into a reported edit failure.
+			try {
+				if (!introducedParseFailure(snapshot)) return;
+				brokenPaths.push(nodePath.relative(this.session.cwd, snapshot.path) || snapshot.path);
+				await record?.(snapshot);
+			} catch {
+				// Parse probing is best-effort; skip the warning rather than fail.
+			}
+		};
+		const result = await modeDefinition.execute(
+			this,
+			params,
+			signal,
+			getLspBatchRequest(context?.toolCall),
+			onApplied,
+			onUpdate,
+		);
+		if (brokenPaths.length > 0) {
+			result.content = [
+				...result.content,
+				{
+					type: "text",
+					text: `Warning: ${brokenPaths.join(", ")} no longer parses after this edit. The change was applied; re-read the edited region and fix the syntax, or revert if unintended.`,
+				},
+			];
+		}
+		return result;
 	}
 
 	#getModeDefinition(): EditModeDefinition {
-		return {
+		const definitions = {
 			patch: {
 				description: () => prompt.render(patchDescription),
 				parameters: patchEditSchema,
@@ -600,6 +629,7 @@ export class EditTool implements AgentTool<TInput> {
 					params: EditParams,
 					signal: AbortSignal | undefined,
 					batchRequest: LspBatchRequest | undefined,
+					onApplied: AppliedEditObserver | undefined,
 					onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
 					const { edits, path } = params as PatchParams;
@@ -622,6 +652,7 @@ export class EditTool implements AgentTool<TInput> {
 								allowCreateOverwrite: true,
 								writethrough: tool.#writethrough,
 								beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
+								onApplied,
 							}),
 					);
 					return executeSinglePathEntries(targetPath, runs, batchRequest, onUpdate, tool.session.cwd, signal);
@@ -643,6 +674,7 @@ export class EditTool implements AgentTool<TInput> {
 					params: EditParams,
 					signal: AbortSignal | undefined,
 					batchRequest: LspBatchRequest | undefined,
+					onApplied: AppliedEditObserver | undefined,
 					onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
 					const entries = expandApplyPatchToEntries(params as ApplyPatchParams);
@@ -673,6 +705,7 @@ export class EditTool implements AgentTool<TInput> {
 									fuzzyThreshold: tool.#fuzzyThreshold,
 									writethrough: tool.#writethrough,
 									beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
+									onApplied,
 								});
 							},
 						};
@@ -688,6 +721,7 @@ export class EditTool implements AgentTool<TInput> {
 					params: EditParams,
 					signal: AbortSignal | undefined,
 					batchRequest: LspBatchRequest | undefined,
+					onApplied: AppliedEditObserver | undefined,
 					_onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
 					const { input } = params as HashlineParams;
@@ -698,6 +732,42 @@ export class EditTool implements AgentTool<TInput> {
 						batchRequest,
 						writethrough: tool.#writethrough,
 						beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
+						onApplied,
+					});
+				},
+			},
+			sloppy: {
+				description: () => prompt.render(sloppyVariant.description),
+				parameters: sloppyEditSchema,
+				execute: async (
+					tool: EditTool,
+					params: EditParams,
+					signal: AbortSignal | undefined,
+					batchRequest: LspBatchRequest | undefined,
+					onApplied: AppliedEditObserver | undefined,
+					_onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
+				) => {
+					const { input } = params as SloppyParams;
+					// `[path]` headers open per-file sections; the first line MUST be one.
+					const sections = splitSloppySections(input);
+					if (sections.length === 0) {
+						throw new Error("Missing file header: start the payload with `§relative/path.ts`.");
+					}
+					const resolved: SloppySection[] = [];
+					for (const section of sections) {
+						resolved.push({
+							path: await resolveEditPath(tool.session, section.path, { mustExist: true, signal }),
+							body: section.body,
+						});
+					}
+					return executeSloppy({
+						session: tool.session,
+						sections: resolved,
+						signal,
+						batchRequest,
+						writethrough: tool.#writethrough,
+						beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
+						onApplied,
 					});
 				},
 			},
@@ -709,6 +779,7 @@ export class EditTool implements AgentTool<TInput> {
 					params: EditParams,
 					signal: AbortSignal | undefined,
 					batchRequest: LspBatchRequest | undefined,
+					onApplied: AppliedEditObserver | undefined,
 					onUpdate?: (partialResult: AgentToolResult<EditToolDetails, TInput>) => void,
 				) => {
 					// `edits` is the internal `ReplaceBatchParams` form only the Cursor
@@ -738,11 +809,13 @@ export class EditTool implements AgentTool<TInput> {
 								fuzzyThreshold: tool.#fuzzyThreshold,
 								writethrough: tool.#writethrough,
 								beginDeferredDiagnosticsForPath: p => tool.#deferredDiagnostics.begin(p),
+								onApplied,
 							}),
 					);
 					return executeSinglePathEntries(targetPath, runs, batchRequest, onUpdate, tool.session.cwd, signal);
 				},
 			},
-		}[this.mode];
+		};
+		return definitions[this.mode];
 	}
 }

@@ -43,7 +43,6 @@ describe("Tool image rendering", () => {
 			requestRender,
 			requestComponentRender: vi.fn(),
 			resetDisplay: vi.fn(),
-			refreshDisplay: vi.fn(),
 		});
 
 		component.updateResult({ content: [IMAGE] }, false);
@@ -60,7 +59,6 @@ describe("Tool image rendering", () => {
 				requestRender: vi.fn(),
 				requestComponentRender: vi.fn(),
 				resetDisplay: vi.fn(),
-				refreshDisplay: vi.fn(),
 			},
 		);
 

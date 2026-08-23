@@ -432,16 +432,9 @@ export class TodoCommandController {
 		const initialMarkdown =
 			current.length > 0 ? phasesToMarkdown(current) : "# Todos\n- [ ] (replace this with your tasks)\n";
 
-		const fileHandle = await this.#openTtyHandle();
 		this.ctx.ui.stop();
 		try {
-			const stdio: [number | "inherit", number | "inherit", number | "inherit"] = fileHandle
-				? [fileHandle.fd, fileHandle.fd, fileHandle.fd]
-				: ["inherit", "inherit", "inherit"];
-			const result = await openInEditor(editorCmd, initialMarkdown, {
-				extension: ".todo.md",
-				stdio,
-			});
+			const result = await openInEditor(editorCmd, initialMarkdown, { extension: ".todo.md" });
 			if (result === null) {
 				this.ctx.showWarning(t("Editor exited without saving; todos unchanged."));
 				return;
@@ -466,22 +459,8 @@ export class TodoCommandController {
 				}),
 			);
 		} finally {
-			if (fileHandle) {
-				await fileHandle.close().catch(() => {});
-			}
 			this.ctx.ui.start();
 			this.ctx.ui.requestRender();
-		}
-	}
-
-	async #openTtyHandle(): Promise<fs.FileHandle | null> {
-		const stdinPath = (process.stdin as unknown as { path?: string }).path;
-		const candidate = typeof stdinPath === "string" ? stdinPath : undefined;
-		if (!candidate) return null;
-		try {
-			return await fs.open(candidate, "r+");
-		} catch {
-			return null;
 		}
 	}
 

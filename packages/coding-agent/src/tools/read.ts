@@ -623,6 +623,10 @@ async function streamLinesFromFile(
 	};
 }
 
+const IMAGE_ATTACHMENT_URI_REGEX = /^attachment:\/\/[1-9]\d*$/;
+
+// Maximum image file size (20MB) - larger images will be rejected to prevent OOM during serialization
+const MAX_IMAGE_SIZE = MAX_IMAGE_INPUT_BYTES;
 const readSchema = type({
 	path: type("string").describe(
 		"Local path, internal URI (e.g. memory://, skill://), or URL. Inline selectors are supported.",
@@ -667,6 +671,44 @@ export interface ReadToolDetails {
 	displayReadTargets?: string[];
 }
 type ReadParams = ReadToolInput;
+
+/** Identical reads tolerated before the loop hint is appended. */
+const REPEAT_READ_HINT_THRESHOLD = 3;
+/** Per-session cap on tracked read keys; the map resets when exceeded. */
+const REPEAT_READ_TRACKER_CAP = 64;
+
+const kRepeatReadTracker = Symbol("read.repeatTracker");
+
+interface SessionWithRepeatReadTracker extends ToolSession {
+	[kRepeatReadTracker]?: Map<string, { hash: bigint; count: number }>;
+}
+
+/**
+ * Append a loop-breaking hint when the same read selector returns
+ * byte-identical output repeatedly. Weak models re-issue an unchanged read
+ * dozens of times (observed: 29 bare re-reads of one file, ~645k tokens);
+ * naming the repetition breaks the loop the same way the edit no-op guard
+ * does. Tracking is per session and resets whenever the output changes.
+ */
+function appendRepeatReadHint(session: ToolSession, path: string, result: AgentToolResult<ReadToolDetails>): void {
+	const block = result.content?.find(entry => entry.type === "text");
+	if (!block || typeof block.text !== "string" || block.text.length === 0 || result.isError) return;
+
+	const holder = session as SessionWithRepeatReadTracker;
+	holder[kRepeatReadTracker] ??= new Map();
+	const tracker = holder[kRepeatReadTracker];
+	if (tracker.size > REPEAT_READ_TRACKER_CAP) tracker.clear();
+
+	const hash = Bun.hash.xxHash64(block.text);
+	const entry = tracker.get(path);
+	if (!entry || entry.hash !== hash) {
+		tracker.set(path, { hash, count: 1 });
+		return;
+	}
+	entry.count++;
+	if (entry.count < REPEAT_READ_HINT_THRESHOLD) return;
+	block.text += `\n\n[You have received this identical output ${entry.count} times. Re-reading '${path}' will not change it — use a narrower selector (path:A-B), or proceed with the edit.]`;
+}
 
 /**
  * Read tool implementation.
@@ -1514,6 +1556,18 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		return { text: modelParts.join("\n"), displayText: displayParts.join("\n"), elidedRanges, elidedLines };
 	}
 	async execute(
+		toolCallId: string,
+		params: ReadParams,
+		signal?: AbortSignal,
+		onUpdate?: AgentToolUpdateCallback<ReadToolDetails>,
+		toolContext?: AgentToolContext,
+	): Promise<AgentToolResult<ReadToolDetails>> {
+		const result = await this.#executeInner(toolCallId, params, signal, onUpdate, toolContext);
+		appendRepeatReadHint(this.session, params.path, result);
+		return result;
+	}
+
+	async #executeInner(
 		_toolCallId: string,
 		params: ReadParams,
 		signal?: AbortSignal,
@@ -1523,6 +1577,18 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		let { path: readPath } = params;
 		if (readPath.startsWith("file://")) {
 			readPath = expandPath(readPath);
+		}
+
+		if (IMAGE_ATTACHMENT_URI_REGEX.test(readPath)) {
+			const attachments = this.session.getImageAttachments?.() ?? [];
+			const attachment = attachments.find(entry => entry.uri === readPath);
+			if (!attachment) {
+				const availableUris = attachments.map(entry => entry.uri).join(", ") || "none";
+				throw new ToolError(
+					`Could not resolve image attachment '${readPath}'. Available attachment URIs: ${availableUris}. Use one of the listed attachment URIs, or attach an image first when none are available.`,
+				);
+			}
+			readPath = attachment.sourcePath;
 		}
 
 		const conflictUri = parseConflictUri(readPath);
@@ -1675,6 +1741,14 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			isDirectory = stat.isDirectory();
 		} catch (error) {
 			if (isNotFoundError(error)) {
+				// A documented semicolon list is explicit user scope, while suffix
+				// matching is only fuzzy recovery. Fan the list out before a broad
+				// workspace scan, but only after literal/archive/sqlite resolution so
+				// real resources containing semicolons retain precedence.
+				if (readPath.includes(";")) {
+					const delimitedResult = await this.#tryReadDelimitedPaths(readPath, signal);
+					if (delimitedResult) return delimitedResult;
+				}
 				// Attempt unique suffix resolution before falling back to the approved-plan
 				// alias or fuzzy suggestions. Existing workspace files retain precedence.
 				if (!isRemoteMountPath(absolutePath)) {

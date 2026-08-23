@@ -7,9 +7,10 @@ import { StressRenderScheduler } from "../../tui/test/render-stress-scheduler";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 
 // Viewport-repaint seams of ToolExecutionComponent, driven through the public
-// custom-device renderer flags (`forceFirstResultViewportRepaint`,
-// `forceResultViewportRepaintOnSettle`). A synthetic mounted device exercises
-// the same contract as an xd:// renderer resolved into an AgentTool.
+// ToolRenderer flags (`forceFirstResultViewportRepaint`,
+// `forceResultViewportRepaintOnSettle`). The removed ssh tool was the last
+// built-in exercising them; custom/extension tool renderers remain consumers
+// of the contract, so a synthetic tool stands in.
 
 function toolResult(text: string) {
 	return { content: [{ type: "text", text }] };
@@ -17,7 +18,7 @@ function toolResult(text: string) {
 
 // The repaint flag stays armed for any streamed-args shape (raw JSON buffer
 // present), while the visible label upgrades to parsed chrome as soon as a
-// concrete field lands.
+// concrete field lands — mirroring how the removed ssh renderer behaved.
 function hasStreamedArgs(args: unknown): boolean {
 	return !!args && typeof args === "object" && "__partialJson" in args;
 }
@@ -26,8 +27,8 @@ function isPlaceholderArgs(args: unknown): boolean {
 	return hasStreamedArgs(args) && !(args && typeof args === "object" && "host" in args);
 }
 
-/** Synthetic mounted-device tool; cast is the test seam for the renderer contract. */
-function makeFakeMountedDevice(): AgentTool {
+/** Synthetic renderer-bearing tool; cast is the test seam for the renderer contract. */
+function makeFakeTool(): AgentTool {
 	const tool = {
 		name: "fake_device",
 		label: "Fake",
@@ -43,13 +44,10 @@ function makeFakeMountedDevice(): AgentTool {
 }
 
 class Footer implements Component {
-	constructor(
-		readonly rows: number,
-		readonly prefix = "editor",
-	) {}
+	constructor(readonly rows: number) {}
 	invalidate(): void {}
 	render(_width: number): string[] {
-		return Array.from({ length: this.rows }, (_, i) => `${this.prefix}-${i}`);
+		return Array.from({ length: this.rows }, (_, i) => `editor-${i}`);
 	}
 }
 
@@ -58,20 +56,6 @@ function plainBuffer(term: VirtualTerminal): string[] {
 		.getScrollBuffer()
 		.map(row => Bun.stripANSI(row).trimEnd())
 		.filter(Boolean);
-}
-
-function visibleRows(term: VirtualTerminal): string[] {
-	return term.getViewport().map(row => Bun.stripANSI(row).trimEnd());
-}
-
-function captureWrites(term: VirtualTerminal): string[] {
-	const writes: string[] = [];
-	const realWrite = term.write.bind(term);
-	vi.spyOn(term, "write").mockImplementation((data: string) => {
-		writes.push(data);
-		realWrite(data);
-	});
-	return writes;
 }
 
 async function drain(scheduler: StressRenderScheduler, term: VirtualTerminal): Promise<void> {
@@ -92,75 +76,66 @@ describe("ToolExecutionComponent custom-renderer repaint seams", () => {
 	});
 
 	function makeComponent(args: unknown) {
-		const resetDisplay = vi.fn();
-		const refreshDisplay = vi.fn();
-		const ui = { requestRender() {}, requestComponentRender() {}, resetDisplay, refreshDisplay } as unknown as TUI;
-		const component = new ToolExecutionComponent("fake_device", args, {}, makeFakeMountedDevice(), ui);
+		const requestRender = vi.fn();
+		const ui = { requestRender, requestComponentRender() {} } as unknown as TUI;
+		const component = new ToolExecutionComponent("fake_device", args, {}, makeFakeTool(), ui);
 		components.push(component);
-		resetDisplay.mockClear();
-		refreshDisplay.mockClear();
-		return { component, resetDisplay, refreshDisplay };
+		requestRender.mockClear();
+		return { component, requestRender };
 	}
 
 	it("forces a viewport repaint when a painted streamed placeholder receives its first result", () => {
-		const { component, resetDisplay, refreshDisplay } = makeComponent({ __partialJson: '{"host"' });
+		const { component, requestRender } = makeComponent({ __partialJson: '{"host"' });
 		// A paint has to land for the placeholder to actually reach the terminal.
 		component.render(80);
 
 		component.updateResult(toolResult("partial output"), true);
 
-		expect(refreshDisplay).toHaveBeenCalledTimes(1);
-		expect(refreshDisplay).toHaveBeenCalledWith("tool-result-topology-change");
-		expect(resetDisplay).not.toHaveBeenCalled();
+		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not repaint when the streamed placeholder never reaches the terminal", () => {
-		const { component, resetDisplay, refreshDisplay } = makeComponent({ __partialJson: '{"host"' });
-		// A topology repaint here would spend a refresh for a shape the user never saw.
+		const { component, requestRender } = makeComponent({ __partialJson: '{"host"' });
+		// The placeholder shape was built in memory but never painted — a
+		// requestRender here would wipe scrollback for a shape the user never saw.
 
 		component.updateResult(toolResult("partial output"), true);
 
-		expect(refreshDisplay).not.toHaveBeenCalled();
-		expect(resetDisplay).not.toHaveBeenCalled();
+		expect(requestRender).not.toHaveBeenCalled();
 	});
 
 	it("does not repaint complete args on the first result", () => {
-		const { component, resetDisplay, refreshDisplay } = makeComponent({ host: "router", command: "uptime" });
+		const { component, requestRender } = makeComponent({ host: "router", command: "uptime" });
 		component.render(80);
 
 		component.updateResult(toolResult("partial output"), true);
 
-		expect(refreshDisplay).not.toHaveBeenCalled();
-		expect(resetDisplay).not.toHaveBeenCalled();
+		expect(requestRender).not.toHaveBeenCalled();
 	});
 
 	it("forces a viewport repaint when a painted provisional partial result settles", () => {
-		const { component, resetDisplay, refreshDisplay } = makeComponent({ host: "router", command: "uptime" });
+		const { component, requestRender } = makeComponent({ host: "router", command: "uptime" });
 		component.updateResult(toolResult("partial output"), true);
 		component.render(80);
-		resetDisplay.mockClear();
-		refreshDisplay.mockClear();
+		requestRender.mockClear();
 
 		component.updateResult(toolResult("final output"), false);
 
-		expect(refreshDisplay).toHaveBeenCalledTimes(1);
-		expect(refreshDisplay).toHaveBeenCalledWith("tool-result-topology-change");
-		expect(resetDisplay).not.toHaveBeenCalled();
+		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not repaint when the provisional partial result never reaches the terminal", () => {
-		const { component, resetDisplay, refreshDisplay } = makeComponent({ host: "router", command: "uptime" });
+		const { component, requestRender } = makeComponent({ host: "router", command: "uptime" });
 		component.updateResult(toolResult("partial output"), true);
 		// No render() between the partial and the final update — the provisional
-		// frame never reached the terminal, so no topology repaint should fire.
+		// frame never reached the terminal, so no reset should fire.
 
 		component.updateResult(toolResult("final output"), false);
 
-		expect(refreshDisplay).not.toHaveBeenCalled();
-		expect(resetDisplay).not.toHaveBeenCalled();
+		expect(requestRender).not.toHaveBeenCalled();
 	});
 
-	it("preserves a scrolled streamed-placeholder viewport and shows the first result at bottom", async () => {
+	it("removes streamed placeholder rows from the terminal buffer when the first result arrives", async () => {
 		const term = new VirtualTerminal(90, 8, 1_000);
 		const scheduler = new StressRenderScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -168,13 +143,12 @@ describe("ToolExecutionComponent custom-renderer repaint seams", () => {
 			"fake_device",
 			{ __partialJson: '{"host"' },
 			{},
-			makeFakeMountedDevice(),
+			makeFakeTool(),
 			tui,
 		);
 		components.push(component);
-		tui.addChild(new Footer(16, "history"));
 		tui.addChild(component);
-		tui.addChild(new Footer(2));
+		tui.addChild(new Footer(5));
 
 		try {
 			tui.start();
@@ -190,38 +164,21 @@ describe("ToolExecutionComponent custom-renderer repaint seams", () => {
 			tui.requestRender();
 			await drain(scheduler, term);
 
-			term.scrollLines(-10);
-			await term.flush();
-			const before = term.getBufferPosition();
-			const anchoredRows = visibleRows(term);
-			expect(before.viewportY).toBeLessThan(before.baseY);
-			expect(before.viewportY).toBeGreaterThan(0);
-			const writes = captureWrites(term);
-
 			component.updateResult(toolResult("partial output"), true);
 			tui.requestRender();
 			await drain(scheduler, term);
 
-			const paint = writes.join("");
-			expect(paint).not.toContain("\x1b[3J");
-			expect(paint).not.toContain("\x1b[2J\x1b[H");
-			const after = term.getBufferPosition();
-			expect(after.viewportY).toBe(before.viewportY);
-			expect(after.viewportY).toBeLessThan(after.baseY);
-			expect(visibleRows(term)).toEqual(anchoredRows);
-
-			term.scrollLines(1_000_000);
-			await term.flush();
-			const currentRows = [...visibleRows(term), ...plainBuffer(term).slice(-term.rows)];
-			expect(currentRows.some(row => row.includes("FAKE: [router]"))).toBe(true);
-			expect(currentRows.some(row => row.includes("provisional partial output"))).toBe(true);
+			const rows = plainBuffer(term);
+			expect(rows.some(row => row.includes("FAKE: […]"))).toBe(false);
+			expect(rows.some(row => row.includes("FAKE: [router]"))).toBe(true);
+			expect(rows.some(row => row.includes("provisional partial output"))).toBe(true);
 		} finally {
 			tui.stop();
 			await term.flush();
 		}
 	});
 
-	it("preserves a scrolled partial-result viewport and shows the settled result at bottom", async () => {
+	it("removes provisional partial chrome from the terminal buffer when the result settles", async () => {
 		const term = new VirtualTerminal(90, 8, 1_000);
 		const scheduler = new StressRenderScheduler();
 		const tui = new TUI(term, undefined, { renderScheduler: scheduler });
@@ -229,13 +186,12 @@ describe("ToolExecutionComponent custom-renderer repaint seams", () => {
 			"fake_device",
 			{ host: "router", command: "uptime" },
 			{},
-			makeFakeMountedDevice(),
+			makeFakeTool(),
 			tui,
 		);
 		components.push(component);
-		tui.addChild(new Footer(16, "history"));
 		tui.addChild(component);
-		tui.addChild(new Footer(2));
+		tui.addChild(new Footer(5));
 
 		try {
 			tui.start();
@@ -247,31 +203,14 @@ describe("ToolExecutionComponent custom-renderer repaint seams", () => {
 			expect(partialRows.some(row => row.includes("FAKE: [router]"))).toBe(true);
 			expect(partialRows.some(row => row.includes("provisional partial output"))).toBe(true);
 
-			term.scrollLines(-10);
-			await term.flush();
-			const before = term.getBufferPosition();
-			const anchoredRows = visibleRows(term);
-			expect(before.viewportY).toBeLessThan(before.baseY);
-			expect(before.viewportY).toBeGreaterThan(0);
-			const writes = captureWrites(term);
-
 			component.updateResult(toolResult("final output"), false);
 			tui.requestRender();
 			await drain(scheduler, term);
 
-			const paint = writes.join("");
-			expect(paint).not.toContain("\x1b[3J");
-			expect(paint).not.toContain("\x1b[2J\x1b[H");
-			const after = term.getBufferPosition();
-			expect(after.viewportY).toBe(before.viewportY);
-			expect(after.viewportY).toBeLessThan(after.baseY);
-			expect(visibleRows(term)).toEqual(anchoredRows);
-
-			term.scrollLines(1_000_000);
-			await term.flush();
-			const currentRows = [...visibleRows(term), ...plainBuffer(term).slice(-term.rows)];
-			expect(currentRows.some(row => row.includes("FAKE: [router]"))).toBe(true);
-			expect(currentRows.some(row => row.includes("Output final output"))).toBe(true);
+			const rows = plainBuffer(term);
+			expect(rows.some(row => row.includes("provisional partial output"))).toBe(false);
+			expect(rows.filter(row => row.includes("FAKE: [router]"))).toHaveLength(1);
+			expect(rows.some(row => row.includes("Output final output"))).toBe(true);
 		} finally {
 			tui.stop();
 			await term.flush();

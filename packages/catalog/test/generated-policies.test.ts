@@ -91,6 +91,31 @@ describe("generated model policies", () => {
 		expect(models[3]?.priority).toBe(1);
 	});
 
+	it("preserves OpenRouter's mandatory provider-authored effort ladder", () => {
+		const models: ModelSpec<Api>[] = [
+			createSpec({
+				id: "mandatory-model",
+				api: "openrouter",
+				provider: "openrouter",
+				thinking: {
+					mode: "effort",
+					efforts: [Effort.Low, Effort.High, Effort.Max],
+					defaultLevel: Effort.Max,
+					requiresEffort: true,
+				},
+			}),
+		];
+
+		applyGeneratedModelPolicies(models);
+
+		expect(models[0]?.thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Low, Effort.High, Effort.Max],
+			defaultLevel: Effort.Max,
+			requiresEffort: true,
+		});
+	});
+
 	it("applies GPT-5.6 off and long-context pricing through request-model aliases", () => {
 		const models: ModelSpec<Api>[] = [
 			createSpec({ id: "gpt-5.6", api: "openai-responses", provider: "openai" }),

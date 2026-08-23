@@ -94,15 +94,15 @@ export function extractInternalUrlContext(textBeforeCursor: string): InternalUrl
 export async function getInternalUrlSuggestions(
 	textBeforeCursor: string,
 	cwd?: string,
-	getSshHosts?: () => Promise<ResolveContext["sshHosts"]>,
+	signal?: AbortSignal,
 ): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
+	if (signal?.aborted) return null;
 	const ctx = extractInternalUrlContext(textBeforeCursor);
 	if (!ctx) return null;
 
-	const sshHosts = ctx.scheme === "ssh" ? await getSshHosts?.() : undefined;
 	const candidates = await InternalUrlRouter.instance().complete(ctx.scheme, ctx.query, {
 		...(cwd === undefined ? {} : { cwd }),
-		...(sshHosts === undefined ? {} : { sshHosts }),
+		...(signal ? { signal } : {}),
 	});
 	if (!candidates || candidates.length === 0) return null;
 

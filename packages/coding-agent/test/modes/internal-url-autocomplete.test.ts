@@ -130,28 +130,6 @@ describe("internal-url-autocomplete", () => {
 			expect(spy.mock.calls[0]?.[1]).toEqual({ cwd: "/tmp/proj" });
 		});
 
-		it("uses the active session host snapshot for SSH completion", async () => {
-			const loadSpy = vi.spyOn(capability, "loadCapability");
-			const host: SSHHost = {
-				name: "ephemeral",
-				connectionId: "session-revision",
-				host: "192.0.2.90",
-				password: "autocomplete-password-sentinel",
-				_source: {
-					provider: "ssh-session",
-					providerName: "Session SSH",
-					path: "session://session-a/revision-a",
-					level: "session",
-				},
-			};
-			const suggestions = await getInternalUrlSuggestions("ssh://eph", "/tmp/proj", async () => [host]);
-			expect(suggestions?.items).toEqual([
-				expect.objectContaining({ value: "ssh://ephemeral", label: "ephemeral" }),
-			]);
-			expect(JSON.stringify(suggestions)).not.toContain("autocomplete-password-sentinel");
-			expect(loadSpy).not.toHaveBeenCalled();
-		});
-
 		it("percent-encodes a configured ssh host with reserved characters while matching a raw query", async () => {
 			const result: CapabilityResult<SSHHost> = {
 				items: [
@@ -260,23 +238,6 @@ describe("internal-url-autocomplete", () => {
 			const result = await provider.getSuggestions([line], 0, line.length);
 			const applied = provider.applyCompletion([line], 0, line.length, result!.items[0]!, result!.prefix);
 			expect(applied.lines[0]).toBe("look at skill://humanizer ");
-		});
-
-		it("threads the live session host getter through prompt autocomplete", async () => {
-			const host: SSHHost = {
-				name: "ephemeral",
-				host: "192.0.2.91",
-				_source: {
-					provider: "ssh-session",
-					providerName: "Session SSH",
-					path: "session://session-a/revision-a",
-					level: "session",
-				},
-			};
-			const provider = new PromptActionAutocompleteProvider([], process.cwd(), [], async () => [host]);
-			const line = "inspect ssh://eph";
-			const result = await provider.getSuggestions([line], 0, line.length);
-			expect(result?.items.map(item => item.value)).toEqual(["ssh://ephemeral"]);
 		});
 	});
 });

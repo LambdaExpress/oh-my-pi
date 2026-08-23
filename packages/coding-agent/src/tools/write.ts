@@ -13,7 +13,14 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { isEnoent, isRecord, prompt, untilAborted } from "@oh-my-pi/pi-utils";
-
+import {
+	type ArchiveMemberContent,
+	archiveFormatFromPath,
+	isWritableArchiveFormat,
+	parseArchivePathCandidates,
+	readArchiveEntries,
+	writeArchive,
+} from "@oh-my-pi/pi-utils/ar";
 import { canonicalSnapshotKey, getFileSnapshotStore } from "../edit/file-snapshot-store";
 import { normalizeToLF } from "../edit/normalize";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -28,13 +35,6 @@ import writeDescription from "../prompts/tools/write.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import { fileHyperlink, framedBlock, type OutputBlockSection, outputBlockContentWidth, renderStatusLine } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
-import {
-	type ArchiveMemberContent,
-	archiveFormatFromPath,
-	parseArchivePathCandidates,
-	readArchiveEntries,
-	writeArchive,
-} from "../utils/zip";
 import { routeWriteThroughBridge } from "./acp-bridge";
 import { resolveToolTier, truncateForPrompt } from "./approval";
 import { assertEditableFile } from "./auto-generated-guard";
@@ -51,10 +51,10 @@ import { invalidateFsScanAfterWrite } from "./fs-cache-invalidation";
 import { type OutputMeta, outputMeta } from "./output-meta";
 import {
 	formatPathRelativeToCwd,
-	isInternalUrlPath,
 	pathTargetsSsh,
 	peelWriteUrlSelector,
 	probeLiteralPathExists,
+	resolveFileWriteApprovalTier,
 	splitPathAndSel,
 } from "./path-utils";
 import { enforcePlanModeWrite, resolvePlanPath, unwrapHashlineHeaderPath } from "./plan-mode-guard";
@@ -77,6 +77,7 @@ import {
 	truncateToWidth,
 	wrapTextWithAnsi,
 } from "./render-utils";
+import type { ToolActivityContext, ToolActivitySummary } from "./renderers";
 import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-tool-issue";
 import { dispatchResolutionDevice, isResolutionDeviceName, renderResolutionDeviceCall } from "./resolve";
 import {
@@ -97,6 +98,7 @@ import {
 	renderXdevResult,
 	resolveXdevTool,
 	type XdevDispatch,
+	xdevActivitySummary,
 	xdevListing,
 } from "./xdev";
 
@@ -552,14 +554,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 		// gate them like the exec-tier `ssh` tool, ahead of the handler-write
 		// logic. Substring match also covers selector-suffixed targets.
 		if (pathTargetsSsh(path)) return "exec";
-		if (!isInternalUrlPath(path)) return "write";
-		// Internal URLs are usually session-local artifacts (read tier), but a
-		// scheme whose handler exposes a `write` hook mutates handler-owned user
-		// data (e.g. vault:// notes) and must take the write tier so always-ask
-		// mode actually prompts.
-		const match = /^([a-z][a-z0-9+.-]*):\/\//i.exec(path.trim());
-		const handler = match ? InternalUrlRouter.instance().getHandler(match[1]!.toLowerCase()) : undefined;
-		return handler?.write ? "write" : "read";
+		return resolveFileWriteApprovalTier(path);
 	};
 	readonly formatApprovalDetails = (args: unknown): string[] => {
 		const params = args as Partial<WriteParams>;
@@ -651,9 +646,12 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			? await fs.realpath(resolvedArchivePath.absolutePath).catch(() => resolvedArchivePath.absolutePath)
 			: resolvedArchivePath.absolutePath;
 		// A realpath swap can land on a name without an archive extension; a
-		// whole-archive rewrite then defaults to an uncompressed tar, matching the
-		// previous `isZip`/`isGzip`/else fallthrough.
-		const format = archiveFormatFromPath(finalPath) ?? "tar";
+		// whole-archive rewrite then defaults to an uncompressed tar.
+		const inferredFormat = archiveFormatFromPath(finalPath);
+		const format = inferredFormat ?? "tar";
+		if (!isWritableArchiveFormat(format)) {
+			throw new ToolError(`Writing entries inside ${format} archives is not supported (read-only format).`);
+		}
 		// Rewrites are whole-archive: write to a temp file and rename so a
 		// crash/disk-full mid-write can't destroy the original archive.
 		const tmpPath = `${finalPath}.tmp-${process.pid}`;
@@ -1404,10 +1402,9 @@ function normalizeDisplayText(text: unknown): string {
  * Minimum line-number gutter width for write previews. The streaming preview's
  * gutter must stay byte-stable as the line count grows: a width derived purely
  * from `String(totalLines).length` widens at the 10/100/1000-line crossings,
- * rewriting every already-rendered row — which forces the transcript's commit
- * audit to recommit the block's committed prefix (a full duplicate in native
- * scrollback). Reserving 3 digits keeps the gutter constant through 999 lines
- * and keeps the streamed rows byte-identical to the final result render.
+ * causing the live preview to jitter. Reserving 3 digits keeps the gutter
+ * constant through 999 lines and keeps the streamed rows aligned with the
+ * final result render.
  */
 const WRITE_GUTTER_MIN_WIDTH = 3;
 
@@ -1615,6 +1612,24 @@ export interface WriteRenderContext {
 }
 
 export const writeToolRenderer = {
+	/** Compact one-line activity: device writes read as the mounted tool (`LSP · references foo`), file writes as `Write · <path>`. */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const writeArgs = (args ?? {}) as WriteRenderArgs;
+		const rawPath =
+			typeof writeArgs.file_path === "string"
+				? writeArgs.file_path
+				: typeof writeArgs.path === "string"
+					? writeArgs.path
+					: "";
+		if (!rawPath) return { label: "Write" };
+		const xdev = parseXdUrl(rawPath);
+		if (xdev?.name) {
+			const resolveMounted = (context.renderContext as WriteRenderContext | undefined)?.resolveXdevMounted;
+			return xdevActivitySummary(xdev.name, writeArgs.content, resolveMounted);
+		}
+		return { label: "Write", detail: shortenPath(rawPath) };
+	},
+
 	renderCall(
 		args: WriteRenderArgs,
 		options: RenderResultOptions & { renderContext?: WriteRenderContext },
@@ -1629,12 +1644,6 @@ export const writeToolRenderer = {
 		const partialContent = extractPartialJsonString(args.__partialJson, "content");
 		const rawContent = partialContent ?? args.content;
 		const content = normalizeDisplayText(rawContent);
-		// Render once either streamed field arrives. The path can lag the content
-		// (DeepSeek-family models emit `content` before `path`), so the header
-		// holds the "…" placeholder until the path lands and then swaps it in.
-		// A half-typed "xd://" prefix alone still renders nothing — the xd branch
-		// below waits for the settled path — and with neither field present there
-		// is nothing to preview.
 		const hasPath = partialPath !== undefined || args.path !== undefined || args.file_path !== undefined;
 		const hasContent = partialContent !== undefined || args.content !== undefined;
 		if (!hasPath && !hasContent) return undefined;

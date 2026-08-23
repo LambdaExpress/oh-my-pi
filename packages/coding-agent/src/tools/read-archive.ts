@@ -2,12 +2,17 @@ import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { TextContent } from "@oh-my-pi/pi-ai";
 import { parseImageMetadata } from "@oh-my-pi/pi-utils";
+import {
+	type ArchiveReader,
+	formatArchiveEntryLines,
+	openArchive,
+	parseArchivePathCandidates,
+} from "@oh-my-pi/pi-utils/ar";
 import type { ToolSession } from "../sdk";
 import { truncateHead } from "../session/streaming-output";
-import { loadImageBytesInput, MAX_IMAGE_INPUT_BYTES, webpExclusionForModel } from "../utils/image-loading";
+import { MAX_IMAGE_INPUT_BYTES, loadImageBytesInput, webpExclusionForModel } from "../utils/image-loading";
 import { isInspectImageToolAvailable } from "../utils/inspect-image-mode";
 import { convertBufferWithMarkit } from "../utils/markit";
-import { type ArchiveReader, formatArchiveEntryLines, openArchive, parseArchivePathCandidates } from "../utils/zip";
 import { applyListLimit } from "./list-limit";
 import { resolveReadPath } from "./path-utils";
 import type { ReadToolDetails } from "./read";

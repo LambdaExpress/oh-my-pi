@@ -1,4 +1,5 @@
 import { loadNative } from "./loader-state.js";
+import { adaptDesktopSession } from "./desktop-adapter.js";
 
 /**
  * Native addon entrypoint.
@@ -18,18 +19,20 @@ const nativeBindings = loadNative();
 // classes
 export const AudioCapture = nativeBindings.AudioCapture;
 export const AudioPlayback = nativeBindings.AudioPlayback;
-export const DesktopSession = nativeBindings.DesktopSession;
+export const DesktopSession = adaptDesktopSession(nativeBindings.DesktopSession);
 export const FileLock = nativeBindings.FileLock;
+export const HighlightStream = nativeBindings.HighlightStream;
 export const LiveWebRtcPeer = nativeBindings.LiveWebRtcPeer;
 export const MacAppearanceObserver = nativeBindings.MacAppearanceObserver;
 export const MacOSPowerAssertion = nativeBindings.MacOSPowerAssertion;
 export const Process = nativeBindings.Process;
 export const PtySession = nativeBindings.PtySession;
 export const Shell = nativeBindings.Shell;
+export const TtyWriter = nativeBindings.TtyWriter;
 
 // functions
 export const __ompInstallTokioRuntime = nativeBindings.__ompInstallTokioRuntime;
-export const __piNativesV17_4_0 = nativeBindings.__piNativesV17_4_0;
+export const __piNativesV18_0_2 = nativeBindings.__piNativesV18_0_2;
 export const astEdit = nativeBindings.astEdit;
 export const astGrep = nativeBindings.astGrep;
 export const astMatch = nativeBindings.astMatch;
@@ -64,6 +67,11 @@ export const isoResolve = nativeBindings.isoResolve;
 export const isoStart = nativeBindings.isoStart;
 export const isoStop = nativeBindings.isoStop;
 export const listWorkspace = nativeBindings.listWorkspace;
+export const macOSAutocorrectWord = nativeBindings.macOSAutocorrectWord;
+export const macOSCheckSpelling = nativeBindings.macOSCheckSpelling;
+export const macOSCompleteWord = nativeBindings.macOSCompleteWord;
+export const macOSSpellCheckerAvailable = nativeBindings.macOSSpellCheckerAvailable;
+export const macOSSpellingGuesses = nativeBindings.macOSSpellingGuesses;
 export const matchesKey = nativeBindings.matchesKey;
 export const matchesKittySequence = nativeBindings.matchesKittySequence;
 export const matchesLegacySequence = nativeBindings.matchesLegacySequence;

@@ -15,6 +15,7 @@ import { IdleTimeout } from "../eval/idle-timeout";
 import { defaultEvalSessionId } from "../eval/session-id";
 import type { EvalCellResult, EvalDisplayOutput, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import evalDescription from "../prompts/tools/eval.md" with { type: "text" };
+import evalCodeModeDescription from "../prompts/tools/eval-code-mode.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, OutputSink, type OutputSummary, TailBuffer } from "../session/streaming-output";
 import { resolveSpawnPolicy } from "../task/spawn-policy";
 import { webpExclusionForModel } from "../utils/image-loading";
@@ -22,6 +23,7 @@ import { formatDimensionNote, resizeImage } from "../utils/image-resize";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { type EvalBackendsAllowance, resolveEvalBackends } from "./eval-backends";
+import { generateCodeModeDeclarations } from "./eval-format/code-mode-declarations";
 import { upsertStatusEvent } from "./eval-render";
 import { resolveOutputMaxColumns, resolveOutputSinkHeadBytes } from "./output-meta";
 import { ToolAbortError, ToolError } from "./tool-errors";
@@ -310,20 +312,50 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 	get summary(): string {
 		return summarizeEvalLanguages(this.#enabledLanguages());
 	}
+
+	supportsCodeModeTransport(): boolean {
+		return this.#enabledLanguages().includes("js");
+	}
 	readonly loadMode = "essential";
 	readonly label = "Eval";
 	get description(): string {
-		if (!this.session) return getEvalToolDescription();
-		const backends = resolveEvalBackends(this.session);
-		const sessionSpawns = this.session.getSessionSpawns?.() ?? "*";
-		return getEvalToolDescription({
-			py: backends.python,
-			js: backends.js,
-			rb: backends.ruby,
-			jl: backends.julia,
-			spawns: sessionSpawns,
-			autoBackgroundEnabled: this.session.settings.get("eval.autoBackground.enabled"),
-		});
+		let base: string;
+		if (!this.session) {
+			base = getEvalToolDescription();
+		} else {
+			const backends = resolveEvalBackends(this.session);
+			const sessionSpawns = this.session.getSessionSpawns?.() ?? "*";
+			base = getEvalToolDescription({
+				py: backends.python,
+				js: backends.js,
+				rb: backends.ruby,
+				jl: backends.julia,
+				spawns: sessionSpawns,
+				autoBackgroundEnabled: this.session.settings.get("eval.autoBackground.enabled"),
+			});
+		}
+		return this.#codeModeDescription(base) ?? base;
+	}
+
+	/**
+	 * Codex Code Mode advertisement, pulled from the session's applied direct
+	 * partition on every read so the declarations can never advertise a tool the
+	 * model can already call directly (a plan-mode transport `write`), nor drift
+	 * from the active model or tool registry.
+	 */
+	#codeModeDescription(baseDescription: string): string | undefined {
+		const session = this.session;
+		const directToolNames = session?.getCodeModeDirectToolNames?.();
+		if (!session || !directToolNames) return undefined;
+		const direct = new Set(directToolNames);
+		const declarations = generateCodeModeDeclarations(
+			(session.getEvalBridgeToolNames?.() ?? [...(session.toolRegistry?.keys() ?? [])]).flatMap(name => {
+				if (direct.has(name)) return [];
+				const tool = session.toolRegistry?.get(name);
+				return tool ? [{ name, parameters: (tool as { parameters?: unknown }).parameters }] : [];
+			}),
+		);
+		return prompt.render(evalCodeModeDescription, { baseDescription, declarations });
 	}
 	/** All reuse-chain examples; the `examples` getter filters by enabled languages. */
 	private static readonly ALL_EXAMPLES: readonly ToolExample<typeof evalSchema.infer>[] = [

@@ -12,8 +12,8 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { MAX_IMAGE_INPUT_BYTES } from "@oh-my-pi/pi-coding-agent/utils/image-loading";
-import { zip } from "@oh-my-pi/pi-coding-agent/utils/zip";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { writeArchive } from "@oh-my-pi/pi-utils/ar";
 
 const enc = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -49,7 +49,7 @@ function joinText(content: Array<{ type: string; text?: string }>): string {
 
 async function writeBundle(testDir: string, entries: Record<string, Uint8Array>): Promise<string> {
 	const bundlePath = path.join(testDir, "bundle.zip");
-	await Bun.write(bundlePath, zip(entries));
+	await writeArchive(bundlePath, "zip", Object.entries(entries));
 	return bundlePath;
 }
 

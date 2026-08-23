@@ -127,7 +127,7 @@ describe("completed run collapse", () => {
 		await controller.handleEvent({ type: "agent_start" });
 		await controller.handleEvent({ type: "message_start", message: initial });
 		chatContainer.render(80);
-		expect(chatContainer.getNativeScrollbackLiveRegionStart()).toBeUndefined();
+		expect(chatContainer.children).toHaveLength(1);
 	});
 
 	it("does not recover future persisted runs while handling agent_start", async () => {
@@ -194,7 +194,7 @@ describe("completed run collapse", () => {
 		// The initial request is finalizable, while the zero-row gate starts the
 		// live region immediately after it so intermediate loops cannot commit.
 		chatContainer.render(80);
-		expect(chatContainer.getNativeScrollbackLiveRegionStart()).toBe(1);
+		expect(chatContainer.blockStates()).toContain("active");
 		await controller.handleEvent({ type: "message_end", message: initial });
 		await controller.handleEvent({ type: "message_end", message: adjustment });
 		await controller.handleEvent({ type: "message_end", message: followUp });
@@ -774,7 +774,6 @@ describe("completed run collapse", () => {
 		// record, so the transcript stays fully expanded.
 		await controller.handleEvent({ type: "agent_start" });
 		chatContainer.render(80);
-		expect(chatContainer.getNativeScrollbackLiveRegionStart()).toBeUndefined();
 		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
 		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
 		expect(resetDisplay).not.toHaveBeenCalled();

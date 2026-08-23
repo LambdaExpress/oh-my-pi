@@ -336,7 +336,7 @@ describe("ssh:// edit targets", () => {
 		const signal = new AbortController().signal;
 
 		const replacePreview = await EDIT_MODE_STRATEGIES.replace.computeDiffPreview(
-			{ path: "ssh://icaro/tmp/a.ts", edits: [{ old_text: "old", new_text: "new" }] } as never,
+			{ path: "ssh://icaro/tmp/a.ts", old_string: "old", new_string: "new" } as never,
 			{
 				cwd: tmpDir,
 				signal,

@@ -57,8 +57,9 @@ function showCollabLink(ctx: InteractiveModeContext, host: CollabHost, heading: 
 export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "advisor",
-		description: t("Toggle the advisor (a second model that reviews each turn and injects notes)"),
-		acpDescription: t("Toggle advisor"),
+		icon: "advisor",
+		description: "Toggle the advisor (a second model that reviews each turn and injects notes)",
+		acpDescription: "Toggle advisor",
 		acpInputHint: "[on|off|status|dump [raw]|configure]",
 		subcommands: [
 			{ name: "on", description: t("Enable the advisor") },
@@ -181,7 +182,8 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "export",
-		description: t("Export session to HTML file"),
+		icon: "export",
+		description: "Export session to HTML file",
 		inlineHint: "[--themes] [path]",
 		allowArgs: true,
 		handle: async (command, runtime) => {
@@ -204,8 +206,9 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "dump",
-		description: t("Copy session transcript to clipboard (and write LLM request JSON to tmp)"),
-		acpDescription: t("Return full transcript as plain text, with LLM request JSON path"),
+		icon: "clipboard",
+		description: "Copy session transcript to clipboard (and write LLM request JSON to tmp)",
+		acpDescription: "Return full transcript as plain text, with LLM request JSON path",
 		allowArgs: true,
 		handle: async (_command, runtime) => {
 			const text = runtime.session.formatSessionAsText();
@@ -236,7 +239,8 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "share",
-		description: t("Share session via an encrypted link (share server or secret gist)"),
+		icon: "share",
+		description: "Share session via an encrypted link (share server or secret gist)",
 		handle: async (_command, runtime) => {
 			try {
 				const result = await shareSession(runtime.sessionManager, {
@@ -261,7 +265,8 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "collab",
-		description: t("Share this session live via a relay"),
+		icon: "broadcast",
+		description: "Share this session live via a relay",
 		inlineHint: "[start|view|stop|status] [relayUrl]",
 		subcommands: [
 			{ name: "view", description: t("Share a read-only link (guests can watch, not prompt)") },
@@ -354,7 +359,8 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "join",
-		description: t("Join a shared collab session"),
+		icon: "signIn",
+		description: "Join a shared collab session",
 		inlineHint: "<link>",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
@@ -382,7 +388,8 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "leave",
-		description: t("Leave the collab session"),
+		icon: "signOut",
+		description: "Leave the collab session",
 		getTuiAutocompleteDescription: runtime => {
 			if (runtime.ctx.collabHost) return t("Leave collab: hosting");
 			if (runtime.ctx.collabGuest) return t("Leave collab: guest");
@@ -405,7 +412,8 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "browser",
-		description: t("Toggle browser headless vs visible mode"),
+		icon: "globe",
+		description: "Toggle browser headless vs visible mode",
 		acpInputHint: "[headless|visible]",
 		subcommands: [
 			{ name: "headless", description: t("Switch to headless mode") },
@@ -485,7 +493,8 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 	},
 	{
 		name: "copy",
-		description: t("Pick text or code from the conversation to copy"),
+		icon: "copy",
+		description: "Pick text or code from the conversation to copy",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();

@@ -48,21 +48,11 @@ describe("ssh file-transfer backend guard", () => {
 			.mockRejectedValue(new Error("should-not-build-command"));
 		const target: SSHConnectionTarget = { name: "winbox", host: "winbox" };
 		await expect(readRemoteFile(target, "C:/x.txt", { maxBytes: 1024 })).rejects.toThrow(
-			/without a verified PowerShell transfer backend/,
+			/Windows host.*use `bash` with a remote SSH command/,
 		);
 		await expect(writeRemoteFile(target, "C:/x.txt", new Uint8Array([1]), {})).rejects.toThrow(
-			/without a verified PowerShell transfer backend/,
+			/Windows host.*use `bash` with a remote SSH command/,
 		);
-		await expect(deleteRemoteFile(target, "C:/x.txt", {})).rejects.toThrow(
-			/without a verified PowerShell transfer backend/,
-		);
-		await expect(moveRemoteFile(target, "C:/x.txt", "C:/y.txt", {})).rejects.toThrow(
-			/without a verified PowerShell transfer backend/,
-		);
-		await expect(statRemotePath(target, "C:/x.txt")).rejects.toThrow(
-			/without a verified PowerShell transfer backend/,
-		);
-		await expect(listRemoteDir(target, "C:/")).rejects.toThrow(/without a verified PowerShell transfer backend/);
 		// Prove the guard ran through the stubbed transport rather than failing early
 		// for an unrelated reason (e.g. a future import refactor bypassing the mocks).
 		expect(ensureConnectionSpy).toHaveBeenCalled();
@@ -137,9 +127,11 @@ describe("ssh file-transfer backend guard", () => {
 			compatEnabled: false,
 		});
 		const target: SSHConnectionTarget = { name: "noshell", host: "noshell" };
-		await expect(readRemoteFile(target, "/etc/hosts", { maxBytes: 1024 })).rejects.toThrow(/no verified POSIX shell/);
+		await expect(readRemoteFile(target, "/etc/hosts", { maxBytes: 1024 })).rejects.toThrow(
+			/no verified POSIX shell.*use `bash` with a remote SSH command/,
+		);
 		await expect(writeRemoteFile(target, "/tmp/x", new Uint8Array([1]), {})).rejects.toThrow(
-			/no verified POSIX shell/,
+			/no verified POSIX shell.*use `bash` with a remote SSH command/,
 		);
 		await expect(deleteRemoteFile(target, "/tmp/x", {})).rejects.toThrow(/no verified POSIX shell/);
 		await expect(moveRemoteFile(target, "/tmp/x", "/tmp/y", {})).rejects.toThrow(/no verified POSIX shell/);

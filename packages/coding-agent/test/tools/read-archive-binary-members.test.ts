@@ -9,8 +9,8 @@ import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
-import { type Unzipped, zip } from "@oh-my-pi/pi-coding-agent/utils/zip";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { type ArchiveMemberContent, writeArchive } from "@oh-my-pi/pi-utils/ar";
 
 const enc = (value: string): Uint8Array => new TextEncoder().encode(value);
 
@@ -40,8 +40,9 @@ function joinText(content: Array<{ type: string; text?: string }>): string {
 		.join("\n");
 }
 
-function makeXlsx(): Uint8Array {
-	return zip({
+async function makeXlsx(testDir: string): Promise<Uint8Array> {
+	const xlsxPath = path.join(testDir, "fixture.xlsx");
+	await writeArchive(xlsxPath, "zip", Object.entries({
 		"xl/workbook.xml": enc(
 			`<?xml version="1.0"?><workbook xmlns:r="r"><sheets><sheet name="People" sheetId="1" r:id="rId1"/></sheets></workbook>`,
 		),
@@ -51,12 +52,13 @@ function makeXlsx(): Uint8Array {
 		"xl/worksheets/sheet1.xml": enc(
 			`<?xml version="1.0"?><worksheet><sheetData><row><c t="inlineStr"><is><t>Name</t></is></c><c t="inlineStr"><is><t>Age</t></is></c></row><row><c t="inlineStr"><is><t>Alice</t></is></c><c><v>30</v></c></row></sheetData></worksheet>`,
 		),
-	});
+	}));
+	return Bun.file(xlsxPath).bytes();
 }
 
-async function writeBundle(testDir: string, entries: Unzipped): Promise<string> {
+async function writeBundle(testDir: string, entries: Record<string, ArchiveMemberContent>): Promise<string> {
 	const bundlePath = path.join(testDir, "bundle.zip");
-	await Bun.write(bundlePath, zip(entries));
+	await writeArchive(bundlePath, "zip", Object.entries(entries));
 	return bundlePath;
 }
 
@@ -85,7 +87,7 @@ describe("read archive binary members", () => {
 	});
 
 	it("converts an XLSX member to markdown", async () => {
-		const bundlePath = await writeBundle(testDir, { "people.xlsx": makeXlsx() });
+		const bundlePath = await writeBundle(testDir, { "people.xlsx": await makeXlsx(testDir) });
 		const tool = new ReadTool(makeSession(testDir));
 
 		const result = await tool.execute("call", { path: `${bundlePath}:people.xlsx` });
@@ -97,7 +99,7 @@ describe("read archive binary members", () => {
 	});
 
 	it("applies line selectors to converted XLSX markdown", async () => {
-		const bundlePath = await writeBundle(testDir, { "people.xlsx": makeXlsx() });
+		const bundlePath = await writeBundle(testDir, { "people.xlsx": await makeXlsx(testDir) });
 		const tool = new ReadTool(makeSession(testDir));
 
 		const result = await tool.execute("call", { path: `${bundlePath}:people.xlsx:1-4` });

@@ -1,9 +1,9 @@
-import { type AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
+import { type AgentMessage, type AgentToolResult, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
 import { PASTE_CODE_LOGIN_PROVIDERS } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthProvider } from "@oh-my-pi/pi-ai/oauth/types";
-import type { Component, OverlayHandle } from "@oh-my-pi/pi-tui";
+import type { Component, OverlayHandle, ResizeScrollbackMode } from "@oh-my-pi/pi-tui";
 import { Loader, Spacer, setTuiTight, Text } from "@oh-my-pi/pi-tui";
 import { getAgentDbPath, getAgentDir, getProjectDir, normalizePathForComparison } from "@oh-my-pi/pi-utils";
 import {
@@ -13,6 +13,7 @@ import {
 	resolveAdvisorConfigEditPath,
 	saveWatchdogConfigFile,
 } from "../../advisor";
+import { reset as resetCapabilities } from "../../capability";
 import {
 	formatModelSelectorValue,
 	resolveAdvisorRoleSelection,
@@ -29,7 +30,6 @@ import {
 	getPluginsCacheDir,
 	MarketplaceManager,
 } from "../../extensibility/plugins/marketplace";
-import { t } from "../../i18n";
 import {
 	getAvailableThemes,
 	getSymbolTheme,
@@ -50,8 +50,10 @@ import {
 	persistForeignSession,
 } from "../../session/foreign-session-import";
 import type { ForeignSessionInfo, ForeignSessionSource } from "../../session/foreign-session-store";
+import type { SessionEntry } from "../../session/session-entries";
 import type { SessionInfo } from "../../session/session-listing";
 import { SessionManager } from "../../session/session-manager";
+import { loadPinnedSessionIds } from "../../session/session-pins";
 import { FileSessionStorage } from "../../session/session-storage";
 import { type LogoutAccount, toLogoutAccounts } from "../../slash-commands/helpers/logout";
 import {
@@ -104,6 +106,8 @@ import { TreeSelectorComponent } from "../components/tree-selector";
 import { UserMessageSelectorComponent } from "../components/user-message-selector";
 import type { SessionObserverRegistry } from "../session-observer-registry";
 import { buildCopyTargets } from "../utils/copy-targets";
+
+const MANUAL_LOGIN_PROMPT = "Paste the authorization code (or full redirect URL), then press Enter:";
 
 export class SelectorController {
 	constructor(private ctx: InteractiveModeContext) {}
@@ -239,7 +243,7 @@ export class SelectorController {
 						clearPluginRootsAndCaches(projectPath ? [projectPath] : undefined);
 						await this.ctx.refreshSkillState();
 						await this.ctx.refreshSlashCommandState();
-						await this.ctx.session.refreshSshTools({ activateIfAvailable: true });
+						resetCapabilities();
 						this.ctx.ui.requestRender();
 					},
 					onCancel: () => {
@@ -314,14 +318,8 @@ export class SelectorController {
 					this.ctx.statusLine.invalidate();
 					this.ctx.showStatus(
 						count > 0
-							? t("Saved {scope} WATCHDOG.yml — {count} advisor{s} active.", {
-									scope,
-									count,
-									s: count === 1 ? "" : "s",
-								})
-							: t("Saved {scope} WATCHDOG.yml. Run /advisor on to activate the configured advisors.", {
-									scope,
-								}),
+							? `Saved ${scope} WATCHDOG.yml — ${count} advisor${count === 1 ? "" : "s"} active.`
+							: `Saved ${scope} WATCHDOG.yml. Run /advisor on to activate the configured advisors.`,
 					);
 					this.ctx.ui.requestRender();
 				},
@@ -476,22 +474,22 @@ export class SelectorController {
 				break;
 			case "personality":
 				void this.ctx.session.refreshBaseSystemPrompt().catch(err => {
-					this.ctx.showError(t("Failed to apply personality: {error}", { error: err }));
+					this.ctx.showError(`Failed to apply personality: ${err}`);
 				});
 				break;
 			case "tools.xdevDocs":
 				void this.ctx.session.refreshBaseSystemPrompt().catch(err => {
-					this.ctx.showError(t("Failed to apply xd:// prompt docs setting: {error}", { error: err }));
+					this.ctx.showError(`Failed to apply xd:// prompt docs setting: ${err}`);
 				});
 				break;
 			case "memory.backend":
 				void this.ctx.session.applyMemoryBackend().catch(err => {
-					this.ctx.showError(t("Failed to apply memory backend: {error}", { error: err }));
+					this.ctx.showError(`Failed to apply memory backend: ${err}`);
 				});
 				break;
 			case "inspect_image.mode":
 				void this.ctx.session.applyInspectImageModeChange().catch(err => {
-					this.ctx.showError(t("Failed to apply vision mode: {error}", { error: err }));
+					this.ctx.showError(`Failed to apply vision mode: ${err}`);
 				});
 				break;
 			case "externalThinking":
@@ -502,6 +500,12 @@ export class SelectorController {
 
 			case "autocompleteMaxVisible":
 				this.ctx.editor.setAutocompleteMaxVisible(typeof value === "number" ? value : Number(value));
+				break;
+			case "spelling.typoDetection":
+			case "spelling.autocomplete":
+			case "spelling.autocorrect":
+				this.ctx.syncEditorSpelling();
+				this.ctx.ui.requestRender();
 				break;
 
 			// Settings with UI side effects
@@ -518,7 +522,7 @@ export class SelectorController {
 				}
 				this.ctx.chatContainer.setToolActivityVisible(!hidden);
 				if (hidden) this.ctx.ui.clearInlineImages();
-				this.ctx.ui.resetDisplay();
+				this.ctx.ui.requestRender(true);
 				break;
 			}
 			case "terminal.showImages":
@@ -532,7 +536,7 @@ export class SelectorController {
 					}
 				}
 				if (!visible) this.ctx.ui.clearInlineImages();
-				this.ctx.ui.resetDisplay();
+				this.ctx.ui.requestRender(true);
 				break;
 			}
 			case "hideThinkingBlock":
@@ -542,10 +546,7 @@ export class SelectorController {
 						child.setHideThinkingBlock(this.ctx.effectiveHideThinkingBlock);
 					}
 				}
-				// Full clear + replay so blocks frozen in committed scrollback on
-				// ED3-risk terminals retire their stale snapshots too (see
-				// InputController.toggleThinkingBlockVisibility).
-				this.ctx.ui.resetDisplay();
+				this.ctx.ui.requestRender(true);
 				break;
 			case "proseOnlyThinking":
 				this.ctx.proseOnlyThinking = value as boolean;
@@ -554,7 +555,7 @@ export class SelectorController {
 						child.setProseOnlyThinking(value as boolean);
 					}
 				}
-				this.ctx.ui.resetDisplay();
+				this.ctx.ui.requestRender(true);
 				break;
 			case "omitThinking":
 				this.ctx.session.agent.hideThinkingSummary = value as boolean;
@@ -567,10 +568,9 @@ export class SelectorController {
 				this.ctx.ui.resetDisplay();
 				break;
 			case "display.collapseCompacted":
-			case "display.collapseCompletedRuns":
-				// These settings jointly choose the display transcript source and
-				// projection. Rebuild immediately so enabling completed-run collapse
-				// restores pre-compaction history for Alt+O.
+				// Rebuild swaps between the collapsed tail and the full inline
+				// history; full reset retires blocks already committed to native
+				// scrollback (mirrors cacheMissMarker).
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
 				break;
@@ -585,15 +585,14 @@ export class SelectorController {
 				this.ctx.ui.invalidate();
 				this.ctx.ui.requestRender();
 				break;
-
-			case "tui.scrollbackRebuild":
-				this.ctx.ui.setScrollbackRebuild(value as boolean);
+			case "tui.resizeScrollback":
+				this.ctx.ui.setResizeScrollback(value as ResizeScrollbackMode);
 				break;
 
 			case "tui.renderMermaid":
 				setMarkdownMermaidRendering(value as boolean);
 				this.ctx.session.refreshBaseSystemPrompt().catch(err => {
-					this.ctx.showError(t("Failed to apply Mermaid rendering setting: {error}", { error: err }));
+					this.ctx.showError(`Failed to apply Mermaid rendering setting: ${err}`);
 				});
 				this.ctx.rebuildChatFromMessages();
 				this.ctx.ui.resetDisplay();
@@ -605,12 +604,7 @@ export class SelectorController {
 					this.ctx.ui.requestRender();
 					this.ctx.ui.invalidate();
 					if (!result.success) {
-						this.ctx.showError(
-							t('Failed to load theme "{value}": {error}\nFell back to dark theme.', {
-								value,
-								error: result.error,
-							}),
-						);
+						this.ctx.showError(`Failed to load theme "${value}": ${result.error}\nFell back to dark theme.`);
 					}
 				});
 				break;
@@ -764,12 +758,7 @@ export class SelectorController {
 						this.ctx.statusLine.invalidate();
 						this.ctx.updateEditorBorderColor();
 						const roleSelectorHint = this.ctx.keybindings.getKeys("app.model.select")[0] ?? "Alt+M";
-						this.ctx.showStatus(
-							t("Session-only model: {selector}. Use {hint} or /model for roles.", {
-								selector,
-								hint: roleSelectorHint,
-							}),
-						);
+						this.ctx.showStatus(`Session-only model: ${selector}. Use ${roleSelectorHint} or /model for roles.`);
 					};
 					try {
 						if (overContext) {
@@ -866,9 +855,8 @@ export class SelectorController {
 					const targetScope = configuredStorage === "project" ? (scope ?? "project") : "global";
 					const selectorValue = selector ?? `${model.provider}/${model.id}`;
 					const scopeLabel =
-						configuredStorage === "project" ? `${targetScope === "project" ? t("Project") : t("Global")} ` : "";
-					const defaultStatusLabel =
-						configuredStorage === "project" ? `${scopeLabel}${t("default")}` : t("Default");
+						configuredStorage === "project" ? `${targetScope === "project" ? "Project" : "Global"} ` : "";
+					const defaultStatusLabel = configuredStorage === "project" ? `${scopeLabel}default` : "Default";
 					try {
 						if (role === "default") {
 							// `auto` on the default role configures the active session. Other roles
@@ -924,12 +912,7 @@ export class SelectorController {
 								this.ctx.statusLine.invalidate();
 								this.ctx.updateEditorBorderColor();
 							}
-							this.ctx.showStatus(
-								t("{label} model: {selector}", {
-									label: defaultStatusLabel,
-									selector: selector ?? model.id,
-								}),
-							);
+							this.ctx.showStatus(`${defaultStatusLabel} model: ${selector ?? model.id}`);
 						} else {
 							// Other roles (smol, slow, custom): update settings, not the current model.
 							const modelRoleValue = formatModelSelectorValue(selectorValue, thinkingLevel);
@@ -940,11 +923,7 @@ export class SelectorController {
 							}
 							const roleInfo = getRoleInfo(role, settings);
 							this.ctx.showStatus(
-								t("{scope}{role} model: {selector}", {
-									scope: scopeLabel,
-									role: roleInfo?.tag ?? roleInfo?.name ?? role,
-									selector: selector ?? model.id,
-								}),
+								`${scopeLabel}${roleInfo?.tag ?? roleInfo?.name ?? role} model: ${selector ?? model.id}`,
 							);
 						}
 					} catch (error) {
@@ -959,7 +938,7 @@ export class SelectorController {
 					const configuredStorage = this.ctx.settings.get("modelRoleStorage");
 					const targetScope = configuredStorage === "project" ? (scope ?? "project") : "global";
 					const scopeLabel =
-						configuredStorage === "project" ? `${targetScope === "project" ? t("Project") : t("Global")} ` : "";
+						configuredStorage === "project" ? `${targetScope === "project" ? "Project" : "Global"} ` : "";
 					try {
 						const previousEffectiveRoleValue =
 							role === "default" ? this.ctx.settings.getModelRole("default") : undefined;
@@ -970,10 +949,7 @@ export class SelectorController {
 						}
 						const roleInfo = getRoleInfo(role, settings);
 						this.ctx.showStatus(
-							t("{scope}{role} role cleared — auto-selection applies", {
-								scope: scopeLabel,
-								role: roleInfo?.tag ?? roleInfo?.name ?? role,
-							}),
+							`${scopeLabel}${roleInfo?.tag ?? roleInfo?.name ?? role} role cleared — auto-selection applies`,
 						);
 						// Clearing either persisted scope can also remove a captured
 						// runtime override. When that changes the effective default,
@@ -1048,11 +1024,8 @@ export class SelectorController {
 						const roleInfo = getRoleInfo(role, settings);
 						this.ctx.showStatus(
 							chain.length > 0
-								? t("{role} fallbacks: {chain}", {
-										role: roleInfo?.tag ?? roleInfo?.name ?? role,
-										chain: chain.join(" → "),
-									})
-								: t("{role} fallbacks cleared", { role: roleInfo?.tag ?? roleInfo?.name ?? role }),
+								? `${roleInfo?.tag ?? roleInfo?.name ?? role} fallbacks: ${chain.join(" → ")}`
+								: `${roleInfo?.tag ?? roleInfo?.name ?? role} fallbacks cleared`,
 						);
 					} catch (error) {
 						this.ctx.showError(error instanceof Error ? error.message : String(error));
@@ -1067,9 +1040,7 @@ export class SelectorController {
 					try {
 						this.ctx.settings.set("cycleOrder", order);
 						this.ctx.showStatus(
-							order.length > 0
-								? t("Quick-switch cycle: {cycle}", { cycle: order.join(" → ") })
-								: t("Quick-switch cycle cleared"),
+							order.length > 0 ? `Quick-switch cycle: ${order.join(" → ")}` : "Quick-switch cycle cleared",
 						);
 					} catch (error) {
 						this.ctx.showError(error instanceof Error ? error.message : String(error));
@@ -1123,13 +1094,13 @@ export class SelectorController {
 					onSelect: async (name, marketplace, scope) => {
 						done();
 						const pluginId = `${name}@${marketplace}`;
-						this.ctx.showStatus(t("Uninstalling {plugin}...", { plugin: pluginId }));
+						this.ctx.showStatus(`Uninstalling ${pluginId}...`);
 						this.ctx.ui.requestRender();
 						try {
 							await mgr.uninstallPlugin(pluginId, scope);
-							this.ctx.showStatus(t("Uninstalled {plugin}", { plugin: pluginId }));
+							this.ctx.showStatus(`Uninstalled ${pluginId}`);
 						} catch (err) {
-							this.ctx.showStatus(t("Uninstall failed: {error}", { error: err }));
+							this.ctx.showStatus(`Uninstall failed: ${err}`);
 						}
 						this.ctx.ui.requestRender();
 					},
@@ -1159,14 +1130,14 @@ export class SelectorController {
 			const selector = new PluginSelectorComponent(marketplaces.length, allPlugins, installedIds, {
 				onSelect: async (name, marketplace) => {
 					done();
-					this.ctx.showStatus(t("Installing {name} from {marketplace}...", { name, marketplace }));
+					this.ctx.showStatus(`Installing ${name} from ${marketplace}...`);
 					this.ctx.ui.requestRender();
 					try {
 						const force = installedIds.has(`${name}@${marketplace}`);
 						await mgr.installPlugin(name, marketplace, { force });
-						this.ctx.showStatus(t("Installed {name} from {marketplace}", { name, marketplace }));
+						this.ctx.showStatus(`Installed ${name} from ${marketplace}`);
 					} catch (err) {
-						this.ctx.showStatus(t("Install failed: {error}", { error: err }));
+						this.ctx.showStatus(`Install failed: ${err}`);
 					}
 					this.ctx.ui.requestRender();
 				},
@@ -1183,7 +1154,7 @@ export class SelectorController {
 		const userMessages = this.ctx.session.getUserMessagesForBranching();
 
 		if (userMessages.length === 0) {
-			this.ctx.showStatus(t("No messages to branch from"));
+			this.ctx.showStatus("No messages to branch from");
 			return;
 		}
 
@@ -1191,6 +1162,15 @@ export class SelectorController {
 			const selector = new UserMessageSelectorComponent(
 				userMessages.map(m => ({ id: m.entryId, text: m.text })),
 				async entryId => {
+					// Branching rewinds to a strict prefix of the rendered transcript:
+					// the selected user message and everything after it are dropped.
+					// Capture the boundary before branch() so the tail can be dropped
+					// in place when it never reached native scrollback.
+					const branchEntry = this.ctx.sessionManager.getEntry(entryId);
+					const branchMessage =
+						branchEntry?.type === "message" && branchEntry.message.role === "user"
+							? branchEntry.message
+							: undefined;
 					const result = await this.ctx.session.branch(entryId);
 					if (result.cancelled) {
 						// Hook cancelled the branch
@@ -1199,10 +1179,21 @@ export class SelectorController {
 						return;
 					}
 
-					await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+					// A leaf that moved past the branch point (e.g. a session_branch
+					// hook persisted entries) invalidates the prefix assumption.
+					// Root branches (parentId null) start a fresh session file and may
+					// leave pre-message components stale — always replay those.
+					const fastRewind =
+						branchMessage !== undefined &&
+						branchEntry?.parentId != null &&
+						this.ctx.sessionManager.getLeafId() === branchEntry.parentId &&
+						this.ctx.truncateTranscriptFromMessage(branchMessage);
+					if (!fastRewind) {
+						await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+					}
 					this.ctx.editor.setDraft(result.selectedText, result.selectedImages);
 					done();
-					this.ctx.showStatus(t("Branched to new session"));
+					this.ctx.showStatus("Branched to new session");
 				},
 				() => {
 					done();
@@ -1216,7 +1207,7 @@ export class SelectorController {
 	showCopySelector(): void {
 		const targets = buildCopyTargets(this.ctx.session);
 		if (targets.length === 0) {
-			this.ctx.showStatus(t("Nothing to copy yet."));
+			this.ctx.showStatus("Nothing to copy yet.");
 			return;
 		}
 
@@ -1230,17 +1221,16 @@ export class SelectorController {
 				done();
 				if (target.content === undefined) return;
 				void copyToClipboard(target.content);
-				this.ctx.showStatus(target.copyMessage ?? t("Copied to clipboard"));
+				this.ctx.showStatus(target.copyMessage ?? "Copied to clipboard");
 			},
 			onCancel: done,
 		});
 
 		overlayHandle = this.ctx.ui.showOverlay(selector, {
-			anchor: "top-left",
+			anchor: "bottom-center",
 			width: "100%",
 			maxHeight: "100%",
 			margin: 0,
-			fullscreen: true,
 		});
 		this.ctx.ui.setFocus(selector);
 		this.ctx.ui.requestRender();
@@ -1251,165 +1241,221 @@ export class SelectorController {
 		const realLeafId = this.ctx.sessionManager.getLeafId();
 
 		if (tree.length === 0) {
-			this.ctx.showStatus(t("No entries in session"));
+			this.ctx.showStatus("No entries in session");
 			return;
 		}
 
-		let overlayHandle: OverlayHandle | undefined;
-		const done = () => {
-			overlayHandle?.hide();
-			this.focusActiveEditorArea();
-			this.ctx.ui.requestRender();
-		};
-
-		const selector = new TreeSelectorComponent(
-			tree,
-			realLeafId,
-			this.ctx.ui.terminal.rows,
-			async (entryId, options) => {
-				// Selecting the current leaf is normally a no-op, except for an
-				// `ask` tool result that can be reopened and answered on a sibling branch.
-				if (entryId === realLeafId) {
-					const currentEntry = this.ctx.sessionManager.getEntry(entryId);
-					const currentIsAskResult =
-						currentEntry?.type === "message" &&
-						currentEntry.message.role === "toolResult" &&
-						currentEntry.message.toolName === "ask";
-					if (!currentIsAskResult) {
-						done();
-						this.ctx.showStatus(t("Already at this point"));
-						return;
-					}
-				}
-
-				done();
-
-				// Shift+Enter pre-answers "Summarize" and skips the prompt.
-				let wantsSummary = options.summarize;
-				let customInstructions: string | undefined;
-				const branchSummariesEnabled = settings.get("branchSummary.enabled");
-
-				while (!wantsSummary && branchSummariesEnabled) {
-					const summaryChoice = await this.ctx.showHookSelector(t("Summarize branch?"), [
-						"No summary",
-						"Summarize",
-						"Summarize with custom prompt",
-					]);
-
-					if (summaryChoice === undefined) {
-						this.showTreeSelector();
-						return;
-					}
-
-					wantsSummary = summaryChoice !== "No summary";
-					if (summaryChoice === "Summarize with custom prompt") {
-						customInstructions = await this.ctx.showHookEditor(t("Custom summarization instructions"));
-						if (customInstructions === undefined) {
-							wantsSummary = false;
-							continue;
-						}
-					}
-					break;
-				}
-
-				let summaryLoader: Loader | undefined;
-				const originalOnEscape = this.ctx.editor.onEscape;
-
-				if (wantsSummary) {
-					this.ctx.editor.onEscape = () => {
-						this.ctx.session.abortBranchSummary();
-					};
-					this.ctx.chatContainer.addChild(new Spacer(1));
-					summaryLoader = new Loader(
-						this.ctx.ui,
-						spinner => theme.fg("accent", spinner),
-						text => theme.fg("muted", text),
-						t("Summarizing branch... (esc to cancel)"),
-						getSymbolTheme().spinnerFrames,
-					);
-					this.ctx.statusContainer.addChild(summaryLoader);
-					this.ctx.ui.requestRender();
-				}
-
-				try {
-					let result = await this.ctx.session.navigateTree(entryId, {
-						summarize: wantsSummary,
-						customInstructions,
-						allowAskReopen: true,
-					});
-
-					// Selecting an `ask` toolResult doesn't land the leaf directly —
-					// re-open the picker with the original questions first, then
-					// complete the navigation as a new sibling branch (issue #5642).
-					if (result.reopenAsk) {
-						const reanswer = await this.#reanswerAsk(result.reopenAsk.questions);
-						if (!reanswer) {
-							this.ctx.showStatus(t("Re-answer cancelled"));
+		this.showSelector(done => {
+			const selector = new TreeSelectorComponent(
+				tree,
+				realLeafId,
+				this.ctx.ui.terminal.rows,
+				async (entryId, options) => {
+					// Selecting the current leaf is normally a no-op (already there) —
+					// unless it's an `ask` toolResult, in which case the re-answer flow
+					// must still be allowed to reopen the picker even though the leaf
+					// doesn't move (chatgpt-codex review on #5895).
+					if (entryId === realLeafId) {
+						const currentEntry = this.ctx.sessionManager.getEntry(entryId);
+						const currentIsAskResult =
+							currentEntry?.type === "message" &&
+							currentEntry.message.role === "toolResult" &&
+							currentEntry.message.toolName === "ask";
+						if (!currentIsAskResult) {
+							done();
+							this.ctx.showStatus("Already at this point");
 							return;
 						}
-						result = await this.ctx.session.navigateTree(entryId, {
+					}
+
+					// Ask about summarization
+					done(); // Close selector first
+
+					// Pure-rewind probe (before navigation mutates the leaf): when the
+					// target sits on the current leaf's path and no summary is added,
+					// the post-navigation transcript is a strict prefix of the rendered
+					// one and the tail can be dropped in place.
+					const treeRewind = this.#treeRewindBoundary(entryId, realLeafId);
+
+					// Loop until user makes a complete choice or cancels to tree.
+					// Shift+Enter in the tree selector pre-answers "Summarize" and
+					// skips the prompt entirely.
+					let wantsSummary = options.summarize;
+					let customInstructions: string | undefined;
+
+					const branchSummariesEnabled = settings.get("branchSummary.enabled");
+
+					while (!wantsSummary && branchSummariesEnabled) {
+						const summaryChoice = await this.ctx.showHookSelector("Summarize branch?", [
+							"No summary",
+							"Summarize",
+							"Summarize with custom prompt",
+						]);
+
+						if (summaryChoice === undefined) {
+							// User pressed escape - re-show tree selector
+							this.showTreeSelector();
+							return;
+						}
+
+						wantsSummary = summaryChoice !== "No summary";
+
+						if (summaryChoice === "Summarize with custom prompt") {
+							customInstructions = await this.ctx.showHookEditor("Custom summarization instructions");
+							if (customInstructions === undefined) {
+								// User cancelled - loop back to summary selector
+								continue;
+							}
+						}
+
+						// User made a complete choice
+						break;
+					}
+
+					// Set up escape handler and loader if summarizing
+					let summaryLoader: Loader | undefined;
+					const originalOnEscape = this.ctx.editor.onEscape;
+
+					if (wantsSummary) {
+						this.ctx.editor.onEscape = () => {
+							this.ctx.session.abortBranchSummary();
+						};
+						this.ctx.chatContainer.addChild(new Spacer(1));
+						summaryLoader = new Loader(
+							this.ctx.ui,
+							spinner => theme.fg("accent", spinner),
+							text => theme.fg("muted", text),
+							"Summarizing branch... (esc to cancel)",
+							getSymbolTheme().spinnerFrames,
+						);
+						this.ctx.statusContainer.addChild(summaryLoader);
+						this.ctx.ui.requestRender();
+					}
+
+					try {
+						let result = await this.ctx.session.navigateTree(entryId, {
 							summarize: wantsSummary,
 							customInstructions,
 							allowAskReopen: true,
-							reanswerAskResult: reanswer,
 						});
-					}
 
-					if (result.aborted) {
-						// Summarization aborted - re-show tree selector
-						this.ctx.showStatus(t("Branch summarization cancelled"));
-						this.showTreeSelector();
-						return;
-					}
-					if (result.cancelled) {
-						this.ctx.showStatus(t("Navigation cancelled"));
-						return;
-					}
+						// Selecting an `ask` toolResult doesn't land the leaf directly —
+						// re-open the picker with the original questions first, then
+						// complete the navigation as a new sibling branch (issue #5642).
+						if (result.reopenAsk) {
+							const reanswer = await this.#reanswerAsk(result.reopenAsk.questions);
+							if (!reanswer) {
+								this.ctx.showStatus("Re-answer cancelled");
+								return;
+							}
+							result = await this.ctx.session.navigateTree(entryId, {
+								summarize: wantsSummary,
+								customInstructions,
+								allowAskReopen: true,
+								reanswerAskResult: reanswer,
+							});
+						}
 
-					// Update UI — rebuild the display transcript for the new leaf (the
-					// context from navigateTree is the LLM context, not the transcript).
-					await this.ctx.renderInitialMessages({ clearTerminalHistory: true, recoverCompletedRuns: true });
-					await this.ctx.reloadTodos();
-					if (result.editorText && !this.ctx.editor.getText().trim()) {
-						this.ctx.editor.setDraft(result.editorText, result.editorImages);
-					}
-					this.ctx.showStatus(t("Navigated to selected point"));
+						if (result.aborted) {
+							// Summarization aborted - re-show tree selector
+							this.ctx.showStatus("Branch summarization cancelled");
+							this.showTreeSelector();
+							return;
+						}
+						if (result.cancelled) {
+							this.ctx.showStatus("Navigation cancelled");
+							return;
+						}
 
-					// Re-answering a past `ask` commits a new sibling answer but,
-					// unlike a live `ask`, leaves the agent idle. Resume it now —
-					// after the transcript rebuild above — so the model consumes the
-					// new answer without the resumed turn rendering against the stale
-					// pre-rebuild UI (issue #6483).
-					if (result.askReanswerCommitted) {
-						this.ctx.session.resumeAfterAskReanswer();
+						// Update UI — rebuild the display transcript for the new leaf (the
+						// context from navigateTree is the LLM context, not the transcript).
+						const fastRewind =
+							treeRewind !== undefined &&
+							!wantsSummary &&
+							!result.summaryEntry &&
+							!result.askReanswerCommitted &&
+							this.ctx.sessionManager.getLeafId() === treeRewind.expectedLeafId &&
+							this.ctx.truncateTranscriptFromMessage(treeRewind.message);
+						if (!fastRewind) {
+							await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+						}
+						await this.ctx.reloadTodos();
+						if (result.editorText && !this.ctx.editor.getText().trim()) {
+							this.ctx.editor.setDraft(result.editorText, result.editorImages);
+						}
+						this.ctx.showStatus("Navigated to selected point");
+
+						// Re-answering a past `ask` commits a new sibling answer but,
+						// unlike a live `ask`, leaves the agent idle. Resume it now —
+						// after the transcript rebuild above — so the model consumes the
+						// new answer without the resumed turn rendering against the stale
+						// pre-rebuild UI (issue #6483).
+						if (result.askReanswerCommitted) {
+							this.ctx.session.resumeAfterAskReanswer();
+						}
+					} catch (error) {
+						this.ctx.showError(error instanceof Error ? error.message : String(error));
+					} finally {
+						if (summaryLoader) {
+							summaryLoader.stop();
+							this.ctx.statusContainer.disposeChildren();
+						}
+						this.ctx.editor.onEscape = originalOnEscape;
 					}
-				} catch (error) {
-					this.ctx.showError(error instanceof Error ? error.message : String(error));
-				} finally {
-					if (summaryLoader) {
-						summaryLoader.stop();
-						this.ctx.statusContainer.disposeChildren();
-					}
-					this.ctx.editor.onEscape = originalOnEscape;
-				}
-			},
-			done,
-			(entryId, label) => {
-				this.ctx.sessionManager.appendLabelChange(entryId, label);
-				this.ctx.ui.requestRender();
-			},
-			settings.get("treeFilterMode"),
-		);
-		selector.setOnRequestRender(() => this.ctx.ui.requestRender());
-		overlayHandle = this.ctx.ui.showOverlay(selector, {
-			anchor: "top-left",
-			width: "100%",
-			maxHeight: "100%",
-			margin: 0,
-			fullscreen: true,
+				},
+				() => {
+					done();
+					this.ctx.ui.requestRender();
+				},
+				(entryId, label) => {
+					this.ctx.sessionManager.appendLabelChange(entryId, label);
+					this.ctx.ui.requestRender();
+				},
+				settings.get("treeFilterMode"),
+			);
+			return { component: selector, focus: selector };
 		});
-		this.ctx.ui.setFocus(selector);
-		this.ctx.ui.requestRender();
+	}
+
+	/**
+	 * First rendered message a pure tree rewind drops, plus the leaf id the
+	 * navigation is expected to land on. `targetId` must sit on the current
+	 * leaf's path; a user-message target rewinds PAST itself (navigateTree
+	 * moves the leaf to its parent and hands the text back as an editor
+	 * draft), every other target keeps the target as the new leaf. Returns
+	 * undefined when the navigation is not a pure rewind or the boundary entry
+	 * cannot anchor an in-place truncation (non-message boundary; custom
+	 * messages render unkeyed components).
+	 */
+	#treeRewindBoundary(
+		targetId: string,
+		leafId: string | null,
+	): { message: AgentMessage; expectedLeafId: string } | undefined {
+		if (!leafId) return undefined;
+		const target = this.ctx.sessionManager.getEntry(targetId);
+		if (!target) return undefined;
+		const rewindsPastTarget = target.type === "message" && target.message.role === "user";
+		if (!rewindsPastTarget && target.type === "custom_message") return undefined;
+		// Walk leaf → root: proves the target is on the current path and finds
+		// the first entry the rewind drops.
+		let firstDropped: SessionEntry | undefined;
+		let cursor = this.ctx.sessionManager.getEntry(leafId);
+		while (cursor && cursor.id !== targetId) {
+			firstDropped = cursor;
+			cursor = cursor.parentId ? this.ctx.sessionManager.getEntry(cursor.parentId) : undefined;
+		}
+		if (!cursor) return undefined;
+		const boundary = rewindsPastTarget ? target : firstDropped;
+		if (boundary?.type !== "message") return undefined;
+		// A root rewind (expected leaf null) empties the transcript but may leave
+		// components rendered before the first message stale — take the
+		// destructive replay instead.
+		const expectedLeafId = rewindsPastTarget ? target.parentId : targetId;
+		if (expectedLeafId === null) return undefined;
+		return {
+			message: boundary.message,
+			expectedLeafId,
+		};
 	}
 
 	/**
@@ -1422,7 +1468,7 @@ export class SelectorController {
 	async #reanswerAsk(questions: AskToolInput["questions"]): Promise<AgentToolResult<AskToolDetails> | undefined> {
 		const uiContext = this.ctx.getToolUIContext();
 		if (!uiContext) {
-			this.ctx.showError(t("Ask tool UI is not ready"));
+			this.ctx.showError("Ask tool UI is not ready");
 			return undefined;
 		}
 		const toolSession: ToolSession = {
@@ -1450,9 +1496,7 @@ export class SelectorController {
 		// user's intent to chat (roboomp review on #5895).
 		if (result.details?.chatRedirect) {
 			this.ctx.showError(
-				t(
-					"Chat about this isn't available when re-answering from the tree — pick an option or type a custom answer instead.",
-				),
+				"Chat about this isn't available when re-answering from the tree — pick an option or type a custom answer instead.",
 			);
 			return undefined;
 		}
@@ -1472,15 +1516,12 @@ export class SelectorController {
 				foreignSessions = await store.list();
 			} catch (error) {
 				this.ctx.showError(
-					t("Failed to list {source} sessions: {error}", {
-						source: sourceName,
-						error: error instanceof Error ? error.message : String(error),
-					}),
+					`Failed to list ${sourceName} sessions: ${error instanceof Error ? error.message : String(error)}`,
 				);
 				return;
 			}
 			if (foreignSessions.length === 0) {
-				this.ctx.showWarning(t("No {source} sessions found", { source: sourceName }));
+				this.ctx.showWarning(`No ${sourceName} sessions found`);
 				return;
 			}
 			const foreignByPath = new Map(foreignSessions.map(session => [session.path, session]));
@@ -1490,35 +1531,32 @@ export class SelectorController {
 					await this.ctx.settings.flush();
 				} catch (error) {
 					this.ctx.showError(
-						t("Failed to save pending settings: {error}", {
-							error: error instanceof Error ? error.message : String(error),
-						}),
+						`Failed to save pending settings: ${error instanceof Error ? error.message : String(error)}`,
 					);
 					return false;
 				}
 				const foreignSession = foreignByPath.get(session.path);
-				if (!foreignSession) {
-					throw new Error(t("Selected {source} session is no longer available", { source: sourceName }));
-				}
+				if (!foreignSession) throw new Error(`Selected ${sourceName} session is no longer available`);
 				const imported = await persistForeignSession(store, foreignSession, {
 					fallbackCwd: this.ctx.sessionManager.getCwd(),
 					suppressBreadcrumb: true,
 				});
 				const sessionFile = imported.getSessionFile();
-				if (!sessionFile) throw new Error(t("Failed to persist {source} session", { source: sourceName }));
+				if (!sessionFile) throw new Error(`Failed to persist ${sourceName} session`);
 				await imported.close();
 				return await this.handleResumeSession(sessionFile, { settingsFlushed: true });
 			};
 			selectorOptions = {
-				title: t("Import {source} Session", { source: sourceName }),
+				title: `Import ${sourceName} Session`,
 				scopeLabel: false,
 				showCwd: true,
 			};
 		} else {
-			sessions = await SessionManager.list(
-				this.ctx.sessionManager.getCwd(),
-				this.ctx.sessionManager.getSessionDir(),
-			);
+			const [loadedSessions, pinnedIds] = await Promise.all([
+				SessionManager.list(this.ctx.sessionManager.getCwd(), this.ctx.sessionManager.getSessionDir()),
+				loadPinnedSessionIds(),
+			]);
+			sessions = loadedSessions;
 			const historyStorage = this.ctx.historyStorage;
 			const historyMatcher = historyStorage
 				? (query: string) => historyStorage.matchingSessionIds(query)
@@ -1535,15 +1573,14 @@ export class SelectorController {
 						return true;
 					} catch (error) {
 						throw new Error(
-							t("Failed to delete session: {error}", {
-								error: error instanceof Error ? error.message : String(error),
-							}),
+							`Failed to delete session: ${error instanceof Error ? error.message : String(error)}`,
 							{ cause: error },
 						);
 					}
 				},
 				historyMatcher,
 				loadAllSessions: () => SessionManager.listAll(),
+				pinnedIds,
 			};
 		}
 
@@ -1639,11 +1676,7 @@ export class SelectorController {
 			try {
 				await this.ctx.settings.flush();
 			} catch (err) {
-				this.ctx.showError(
-					t("Failed to save pending settings: {error}", {
-						error: err instanceof Error ? err.message : String(err),
-					}),
-				);
+				this.ctx.showError(`Failed to save pending settings: ${err instanceof Error ? err.message : String(err)}`);
 				return false;
 			}
 		}
@@ -1662,18 +1695,16 @@ export class SelectorController {
 		this.ctx.updateEditorBorderColor();
 
 		// Clear and re-render the chat
-		await this.ctx.renderInitialMessages({ clearTerminalHistory: true, recoverCompletedRuns: true });
+		await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 		await this.ctx.reloadTodos();
-		this.ctx.showStatus(
-			movedProject ? t("Resumed session in {path}", { path: shortenPath(newCwd) }) : t("Resumed session"),
-		);
+		this.ctx.showStatus(movedProject ? `Resumed session in ${shortenPath(newCwd)}` : "Resumed session");
 		return true;
 	}
 
 	async handleSessionDeleteCommand(): Promise<void> {
 		const sessionFile = this.ctx.sessionManager.getSessionFile();
 		if (!sessionFile) {
-			this.ctx.showError(t("No session file to delete (in-memory session)"));
+			this.ctx.showError("No session file to delete (in-memory session)");
 			return;
 		}
 
@@ -1681,22 +1712,22 @@ export class SelectorController {
 		const storage = new FileSessionStorage();
 		const fileExists = await storage.exists(sessionFile);
 		if (!fileExists) {
-			this.ctx.showError(t("Session has not been saved yet"));
+			this.ctx.showError("Session has not been saved yet");
 			return;
 		}
 
 		const confirmed = await this.ctx.showHookConfirm(
-			t("Delete Session"),
-			t("This will permanently delete the current session.\nYou will be returned to the session selector."),
+			"Delete Session",
+			"This will permanently delete the current session.\nYou will be returned to the session selector.",
 		);
 
 		if (!confirmed) {
-			this.ctx.showStatus(t("Delete cancelled"));
+			this.ctx.showStatus("Delete cancelled");
 			return;
 		}
 
 		if (!(await this.#detachActiveSessionBeforeDeletion(sessionFile))) {
-			this.ctx.showStatus(t("Delete cancelled"));
+			this.ctx.showStatus("Delete cancelled");
 			return;
 		}
 
@@ -1704,7 +1735,7 @@ export class SelectorController {
 		await storage.deleteSessionWithArtifacts(sessionFile);
 
 		// Show session selector
-		this.ctx.showStatus(t("Session deleted"));
+		this.ctx.showStatus("Session deleted");
 		await this.showSessionSelector();
 	}
 
@@ -1716,7 +1747,7 @@ export class SelectorController {
 	 * credentials were stored.
 	 */
 	async #handleOAuthLogin(providerId: string): Promise<boolean> {
-		this.ctx.showStatus(t("Logging in to {provider}…", { provider: providerId }));
+		this.ctx.showStatus(`Logging in to ${providerId}…`);
 		const useManualInput = PASTE_CODE_LOGIN_PROVIDERS.has(providerId);
 		let restored = false;
 		const restoreEditor = () => {
@@ -1756,10 +1787,7 @@ export class SelectorController {
 				// the paste lands somewhere the OAuth flow consumes — the hidden
 				// editor's `/login <url>` path is unreachable while the dialog holds
 				// focus (#5339).
-				onManualCodeInput: useManualInput
-					? () =>
-							dialog.showManualInput(t("Paste the authorization code (or full redirect URL), then press Enter:"))
-					: undefined,
+				onManualCodeInput: useManualInput ? () => dialog.showManualInput(MANUAL_LOGIN_PROMPT) : undefined,
 			});
 			// Scope the post-login refresh to the just-authenticated provider with an
 			// `online` strategy: the default all-provider `online-if-uncached` reuses
@@ -1775,22 +1803,15 @@ export class SelectorController {
 			// immediately instead of silently replacing an existing registration.
 			const whoBase = identity?.type === "oauth" ? (identity.email ?? identity.accountId) : undefined;
 			const whoOrg = identity?.type === "oauth" ? (identity.orgName ?? identity.orgId) : undefined;
-			const who = whoBase
-				? ` ${t("as {who}{org}", { who: whoBase, org: whoOrg ? ` (${whoOrg})` : "" })}`
-				: whoOrg
-					? ` ${t("as {org}", { org: whoOrg })}`
-					: "";
+			const who = whoBase ? ` as ${whoBase}${whoOrg ? ` (${whoOrg})` : ""}` : whoOrg ? ` as ${whoOrg}` : "";
 			block.addChild(
 				new Text(
-					theme.fg(
-						"success",
-						`${theme.status.success} ${t("Successfully logged in to {provider}{who}", { provider: providerId, who })}`,
-					),
+					theme.fg("success", `${theme.status.success} Successfully logged in to ${providerId}${who}`),
 					1,
 					0,
 				),
 			);
-			block.addChild(new Text(theme.fg("dim", t("Credentials saved to {path}", { path: getAgentDbPath() })), 1, 0));
+			block.addChild(new Text(theme.fg("dim", `Credentials saved to ${getAgentDbPath()}`), 1, 0));
 			this.ctx.present(block);
 			return true;
 		} catch (error: unknown) {
@@ -1799,9 +1820,7 @@ export class SelectorController {
 				// surfaced "Login cancelled".
 				return false;
 			}
-			this.ctx.showError(
-				t("Login failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
-			);
+			this.ctx.showError(`Login failed: ${error instanceof Error ? error.message : String(error)}`);
 			return false;
 		} finally {
 			restoreEditor();
@@ -1813,12 +1832,7 @@ export class SelectorController {
 			const authStorage = this.ctx.session.modelRegistry.authStorage;
 			const removed = await authStorage.removeCredential(providerId, account.credentialId);
 			if (!removed) {
-				this.ctx.showError(
-					t("Logout skipped: {label} is no longer stored for {provider}.", {
-						label: account.label,
-						provider: providerId,
-					}),
-				);
+				this.ctx.showError(`Logout skipped: ${account.label} is no longer stored for ${providerId}.`);
 				return;
 			}
 
@@ -1833,39 +1847,22 @@ export class SelectorController {
 				new Text(
 					theme.fg(
 						"success",
-						`${theme.status.success} ${t("Successfully logged out {label} from {provider}", {
-							label: account.label,
-							provider: providerId,
-						})}`,
+						`${theme.status.success} Successfully logged out ${account.label} from ${providerId}`,
 					),
 					1,
 					0,
 				),
 			);
-			block.addChild(
-				new Text(theme.fg("dim", t("Credential removed from {path}", { path: getAgentDbPath() })), 1, 0),
-			);
+			block.addChild(new Text(theme.fg("dim", `Credential removed from ${getAgentDbPath()}`), 1, 0));
 			const remainingSource = authStorage.describeCredentialSource(providerId, this.ctx.session.sessionId);
 			if (remainingSource) {
 				block.addChild(
-					new Text(
-						theme.fg(
-							"warning",
-							t("{provider} is still authenticated via {source}", {
-								provider: providerId,
-								source: remainingSource,
-							}),
-						),
-						1,
-						0,
-					),
+					new Text(theme.fg("warning", `${providerId} is still authenticated via ${remainingSource}`), 1, 0),
 				);
 			}
 			this.ctx.present(block);
 		} catch (error: unknown) {
-			this.ctx.showError(
-				t("Logout failed: {error}", { error: error instanceof Error ? error.message : String(error) }),
-			);
+			this.ctx.showError(`Logout failed: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
@@ -1875,9 +1872,7 @@ export class SelectorController {
 			await authStorage.reload();
 		} catch (error: unknown) {
 			this.ctx.showError(
-				t("Could not load stored credentials: {error}", {
-					error: error instanceof Error ? error.message : String(error),
-				}),
+				`Could not load stored credentials: ${error instanceof Error ? error.message : String(error)}`,
 			);
 			return;
 		}
@@ -1888,12 +1883,8 @@ export class SelectorController {
 		});
 		if (accounts.length === 0) {
 			const source = authStorage.describeCredentialSource(providerId, this.ctx.session.sessionId);
-			const suffix = source
-				? ` ${t("Current auth comes from {source}; remove that source to log out.", { source })}`
-				: "";
-			this.ctx.showError(
-				t("Logout skipped: no stored credentials for {provider}.", { provider: providerId }) + suffix,
-			);
+			const suffix = source ? ` Current auth comes from ${source}; remove that source to log out.` : "";
+			this.ctx.showError(`Logout skipped: no stored credentials for ${providerId}.${suffix}`);
 			return;
 		}
 
@@ -1931,9 +1922,7 @@ export class SelectorController {
 				this.ctx.session.modelRegistry.authStorage.has(provider.id),
 			);
 			if (loggedInProviders.length === 0) {
-				this.ctx.showStatus(
-					t("No stored provider credentials to log out. Remove env or config auth at its source."),
-				);
+				this.ctx.showStatus("No stored provider credentials to log out. Remove env or config auth at its source.");
 				return;
 			}
 		}
@@ -1977,23 +1966,21 @@ export class SelectorController {
 	async showSessionPinSelector(): Promise<void> {
 		const session = this.ctx.session;
 		if (session.isStreaming) {
-			this.ctx.showStatus(t("Cannot pin an account while the session is streaming."));
+			this.ctx.showStatus("Cannot pin an account while the session is streaming.");
 			return;
 		}
-		this.ctx.showStatus(t("Loading provider accounts…"), { dim: true });
+		this.ctx.showStatus("Loading provider accounts…", { dim: true });
 		let accountList: SessionOAuthAccountList | undefined;
 		try {
 			accountList = await session.listCurrentProviderOAuthAccounts();
 		} catch (error) {
 			this.ctx.showError(
-				t("Could not load provider accounts: {error}", {
-					error: error instanceof Error ? error.message : String(error),
-				}),
+				`Could not load provider accounts: ${error instanceof Error ? error.message : String(error)}`,
 			);
 			return;
 		}
 		if (!accountList) {
-			this.ctx.showStatus(t("Select a model before pinning a provider account."));
+			this.ctx.showStatus("Select a model before pinning a provider account.");
 			return;
 		}
 		const provider = getOAuthProviders().find(candidate => candidate.id === accountList.provider);
@@ -2006,11 +1993,8 @@ export class SelectorController {
 			);
 			this.ctx.showStatus(
 				source
-					? t("No stored OAuth accounts for {provider}. Current auth comes from {source}.", {
-							provider: providerName,
-							source,
-						})
-					: t("No stored OAuth accounts for {provider}. Use /login to add one.", { provider: providerName }),
+					? `No stored OAuth accounts for ${providerName}. Current auth comes from ${source}.`
+					: `No stored OAuth accounts for ${providerName}. Use /login to add one.`,
 			);
 			return;
 		}
@@ -2022,15 +2006,10 @@ export class SelectorController {
 				account => {
 					done();
 					if (!session.pinCurrentProviderOAuthAccount(account.credentialId)) {
-						this.ctx.showWarning(t("{label} is no longer available to pin.", { label: account.label }));
+						this.ctx.showWarning(`${account.label} is no longer available to pin.`);
 						return;
 					}
-					this.ctx.showStatus(
-						t("Pinned {label} to this session for {provider}.", {
-							label: account.label,
-							provider: providerName,
-						}),
-					);
+					this.ctx.showStatus(`Pinned ${account.label} to this session for ${providerName}.`);
 					this.ctx.statusLine.invalidate();
 					this.ctx.ui.requestRender();
 				},
@@ -2045,28 +2024,24 @@ export class SelectorController {
 
 	async showResetUsageSelector(): Promise<void> {
 		const session = this.ctx.session;
-		this.ctx.showStatus(t("Checking saved rate-limit resets…"), { dim: true });
+		this.ctx.showStatus("Checking saved rate-limit resets…", { dim: true });
 		let statuses: ResetCreditAccountStatus[];
 		try {
 			statuses = await session.listResetCredits();
 		} catch (error) {
-			this.ctx.showError(
-				t("Could not load saved resets: {error}", {
-					error: error instanceof Error ? error.message : String(error),
-				}),
-			);
+			this.ctx.showError(`Could not load saved resets: ${error instanceof Error ? error.message : String(error)}`);
 			return;
 		}
 		const accounts = toResetUsageAccounts(statuses);
 		if (accounts.length === 0) {
-			this.ctx.showStatus(t("No Codex accounts found. Use /login to add one."));
+			this.ctx.showStatus("No Codex accounts found. Use /login to add one.");
 			return;
 		}
 		if (!accounts.some(account => account.availableCount > 0)) {
 			this.ctx.showStatus(
 				accounts.some(account => account.error)
-					? t("No saved resets available — some accounts couldn't be reached (try /login).")
-					: t("No saved rate-limit resets available to spend right now."),
+					? "No saved resets available — some accounts couldn't be reached (try /login)."
+					: "No saved rate-limit resets available to spend right now.",
 			);
 			return;
 		}
@@ -2087,16 +2062,13 @@ export class SelectorController {
 	}
 
 	async #redeemReset(account: ResetUsageAccount): Promise<void> {
-		this.ctx.showStatus(t("Spending 1 saved reset for {label}…", { label: account.label }), { dim: true });
+		this.ctx.showStatus(`Spending 1 saved reset for ${account.label}…`, { dim: true });
 		let outcome: ResetCreditRedeemOutcome;
 		try {
 			outcome = await this.ctx.session.redeemResetCredit(account.target);
 		} catch (error) {
 			this.ctx.showError(
-				t("Reset failed for {label}: {error}", {
-					label: account.label,
-					error: error instanceof Error ? error.message : String(error),
-				}),
+				`Reset failed for ${account.label}: ${error instanceof Error ? error.message : String(error)}`,
 			);
 			return;
 		}
@@ -2104,7 +2076,7 @@ export class SelectorController {
 		if (outcome.ok) {
 			this.ctx.showStatus(message);
 			// Refresh the status-line usage so the freshly-reset window shows.
-			this.ctx.statusLine.refreshUsage();
+			this.ctx.statusLine.invalidate();
 			this.ctx.ui.requestRender();
 		} else {
 			this.ctx.showWarning(message);
@@ -2159,7 +2131,6 @@ export class SelectorController {
 			proseOnlyThinking: () => this.ctx.proseOnlyThinking,
 			focusAgent: id => this.ctx.focusAgentSession(id),
 			sessionFile: this.ctx.sessionManager.getSessionFile() ?? null,
-			scopeId: this.ctx.sessionManager.getSessionId(),
 		});
 
 		const showReadyHub = () => {

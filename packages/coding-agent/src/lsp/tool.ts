@@ -360,8 +360,8 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							serverCwd = getExplicitFileClientCwd(file, resolved, serverConfig, this.session.cwd);
 						}
 						if (serverConfig.createClient) {
-							const linterClient = getLinterClient(serverName, serverConfig, serverCwd);
-							const diagnostics = await linterClient.lint(resolved);
+							const linterClient = getLinterClient(serverName, serverConfig, this.session.cwd);
+							const diagnostics = await linterClient.lint(resolved, signal);
 							allDiagnostics.push(...diagnostics);
 							succeededServers++;
 							totalServerSuccesses++;

@@ -50,7 +50,22 @@ import type {
 const JJ_REFRESH_TTL_MS = 5000;
 const WATCHER_FAILURE_POLL_TTL_MS = 5000;
 
-function normalizeCodexIdentityValue(value: unknown): string | undefined {
+/** A displayable limit after provider, account, model, and window filtering. */
+interface UsageWindowCandidate {
+	id?: string;
+	windowClass: "5h" | "7d" | "monthly";
+	fraction: number;
+	resetsAt?: number;
+}
+
+/** Limits sharing one model/tier scope, ranked as an indivisible display unit. */
+interface UsageScopeGroup {
+	priority: number;
+	tier?: string;
+	candidates: UsageWindowCandidate[];
+}
+
+function normalizeUsageScopeValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
 }
 
@@ -67,21 +82,21 @@ function codexUsageScope(provider: string | undefined, modelId: string | undefin
  */
 function codexReportMatchesExactIdentity(report: UsageReport, identity: OAuthAccountIdentity | undefined): boolean {
 	if (!identity) return false;
-	const accountId = normalizeCodexIdentityValue(identity.accountId);
-	const email = normalizeCodexIdentityValue(identity.email);
-	const projectId = normalizeCodexIdentityValue(identity.projectId);
-	const orgId = normalizeCodexIdentityValue(identity.orgId);
+	const accountId = normalizeUsageScopeValue(identity.accountId);
+	const email = normalizeUsageScopeValue(identity.email);
+	const projectId = normalizeUsageScopeValue(identity.projectId);
+	const orgId = normalizeUsageScopeValue(identity.orgId);
 	if (!accountId && !email && !projectId && !orgId) return false;
 
 	const metadata = report.metadata ?? {};
 	const reportAccountId =
-		normalizeCodexIdentityValue(metadata.accountId) ?? normalizeCodexIdentityValue(metadata.account_id);
+		normalizeUsageScopeValue(metadata.accountId) ?? normalizeUsageScopeValue(metadata.account_id);
 	const reportProjectId =
-		normalizeCodexIdentityValue(metadata.projectId) ?? normalizeCodexIdentityValue(metadata.project_id);
+		normalizeUsageScopeValue(metadata.projectId) ?? normalizeUsageScopeValue(metadata.project_id);
 	if (accountId && reportAccountId !== accountId) return false;
-	if (email && normalizeCodexIdentityValue(metadata.email) !== email) return false;
+	if (email && normalizeUsageScopeValue(metadata.email) !== email) return false;
 	if (projectId && reportProjectId !== projectId) return false;
-	if (orgId && normalizeCodexIdentityValue(metadata.orgId) !== orgId) return false;
+	if (orgId && normalizeUsageScopeValue(metadata.orgId) !== orgId) return false;
 	return true;
 }
 
@@ -395,7 +410,7 @@ export class StatusLineComponent implements Component {
 	#standalone: false | "full" | "left-only" = false;
 	#standaloneGap = false;
 	#autocompleteActiveProbe: (() => boolean) | undefined;
-	#widthEpochRevision = 0;
+	#renderRevision = 0;
 	#settings: StatusLineSettings = {};
 	#effectiveSettings: EffectiveStatusLineSettings | undefined;
 	#cachedBranch: string | null | undefined = undefined;
@@ -541,6 +556,7 @@ export class StatusLineComponent implements Component {
 			contextLine: settings.get("statusLine.contextLine"),
 		};
 	}
+
 	#gitEnabled(): boolean {
 		return settings.get("git.enabled");
 	}
@@ -856,7 +872,7 @@ export class StatusLineComponent implements Component {
 	}
 
 	invalidate(): void {
-		this.#widthEpochRevision++;
+		this.#renderRevision++;
 		// Generic repaint invalidation (theme change, message event, model
 		// switch, …). Must NOT abort or restart a live reftable HEAD/PR resolve:
 		// the render path self-invalidates via cwd/context cache-miss checks, so
@@ -1351,7 +1367,12 @@ export class StatusLineComponent implements Component {
 		const identity = activeProvider
 			? session.modelRegistry?.authStorage?.getOAuthAccountIdentity(activeProvider, session.sessionId)
 			: undefined;
-		return this.#formatUsageContextKey(activeProvider, identity, codexUsageScope(activeProvider, activeModel?.id));
+		// Model id is part of the invalidation key (but not the account-scoped
+		// fireworks key): normalized usage now selects a model-scoped window group,
+		// so switching models must drop the previous model's cached scope instead
+		// of showing it for the rest of the TTL.
+		const activeModelId = session.state.model?.id ?? session.model?.id ?? "";
+		return `${this.#formatUsageContextKey(activeProvider, identity)}\0${activeModelId}`;
 	}
 
 	/**
@@ -1421,14 +1442,17 @@ export class StatusLineComponent implements Component {
 			return;
 		}
 		this.#latestAppliedUsageRefreshSequence = sequence;
-		const activeModel = session.state.model ?? session.model;
-		const activeProvider = activeModel?.provider;
+		const activeProvider = session.state.model?.provider ?? session.model?.provider;
+		const activeModelId = session.state.model?.id ?? session.model?.id;
 		const activeIdentity =
 			activeProvider && session.modelRegistry?.authStorage
 				? session.modelRegistry.authStorage.getOAuthAccountIdentity(activeProvider, session.sessionId)
 				: undefined;
-		const activeCodexScope = codexUsageScope(activeProvider, activeModel?.id);
-		const normalized = this.#normalizeUsageReports(reports, activeProvider, activeIdentity, activeCodexScope);
+		const normalized = this.#normalizeUsageReports(reports, {
+			provider: activeProvider,
+			modelId: activeModelId,
+			identity: activeIdentity,
+		});
 		const resetSnapshot =
 			activeProvider === "openai-codex" ? this.#normalizeCodexResetSnapshot(reports, activeIdentity) : null;
 		const usageChanged = this.#cachedUsage !== normalized;
@@ -1547,9 +1571,7 @@ export class StatusLineComponent implements Component {
 
 	#normalizeUsageReports(
 		reports: unknown,
-		activeProvider?: string,
-		activeIdentity?: OAuthAccountIdentity,
-		activeCodexScope?: "standard" | "spark",
+		context: { provider?: string; modelId?: string; identity?: OAuthAccountIdentity },
 	): {
 		tier?: string;
 		fiveHour?: { percent: number; resetMinutes?: number };
@@ -1557,14 +1579,97 @@ export class StatusLineComponent implements Component {
 		monthly?: { percent: number; resetHours?: number };
 	} | null {
 		if (!Array.isArray(reports)) return null;
+		const now = Date.now();
+		const activeModelId = normalizeUsageScopeValue(context.modelId);
+		const scopeGroups = new Map<string, UsageScopeGroup>();
+		for (const report of reports) {
+			if (!report || typeof report !== "object") continue;
+			const provider = "provider" in report ? report.provider : undefined;
+			if (context.provider && provider !== context.provider) continue;
+			const limits = "limits" in report ? report.limits : undefined;
+			if (!Array.isArray(limits)) continue;
+			// fetchUsageReports supplies normalized rows; the guards above protect
+			// the unknown session boundary before the account matcher reads metadata.
+			const usageReport = report as UsageReport;
+			for (const limit of limits) {
+				if (
+					!limit ||
+					typeof limit !== "object" ||
+					!("scope" in limit) ||
+					!limit.scope ||
+					typeof limit.scope !== "object" ||
+					!("amount" in limit) ||
+					!limit.amount ||
+					typeof limit.amount !== "object"
+				) {
+					continue;
+				}
+				const scope = limit.scope;
+				const amount = limit.amount;
+				// The matcher only reads scope identity fields, whose object boundary
+				// is validated above; other required UsageLimit fields are irrelevant.
+				const usageLimit = limit as UsageLimit;
+				if (context.identity && !limitMatchesActiveAccount(usageReport, usageLimit, context.identity)) continue;
+
+				const fraction = "usedFraction" in amount ? amount.usedFraction : undefined;
+				if (typeof fraction !== "number") continue;
+				const window =
+					"window" in limit && limit.window && typeof limit.window === "object" ? limit.window : undefined;
+				const windowId = "windowId" in scope ? scope.windowId : undefined;
+				const durationValue = window && "durationMs" in window ? window.durationMs : undefined;
+				const durationMs = typeof durationValue === "number" ? durationValue : undefined;
+				const subscriptionWindow =
+					windowId === "5h" || windowId === "7d"
+						? windowId
+						: durationMs !== undefined && Math.abs(durationMs - 5 * 3_600_000) <= 60_000
+							? "5h"
+							: durationMs !== undefined && Math.abs(durationMs - 7 * 86_400_000) <= 60_000
+								? "7d"
+								: undefined;
+				const windowClass =
+					subscriptionWindow ??
+					((context.provider === "cursor" || context.provider === "opencode-go") &&
+					(windowId === "monthly" || windowId === "30d")
+						? "monthly"
+						: undefined);
+				if (!windowClass) continue;
+
+				const modelId = normalizeUsageScopeValue("modelId" in scope ? scope.modelId : undefined);
+				if (modelId && modelId !== activeModelId) continue;
+				const rawTier = "tier" in scope ? scope.tier : undefined;
+				const tier = typeof rawTier === "string" && rawTier.trim() ? rawTier.trim() : undefined;
+				const normalizedTier = normalizeUsageScopeValue(tier);
+				const scopeKey = `${modelId ?? ""}\0${normalizedTier ?? ""}`;
+				// Exact-model groups outrank provider-wide groups; within either
+				// specificity, untiered limits preserve the historical preference.
+				const priority = modelId ? (normalizedTier ? 1 : 0) : normalizedTier ? 3 : 2;
+				const id = "id" in limit && typeof limit.id === "string" ? limit.id : undefined;
+				const resetValue = window && "resetsAt" in window ? window.resetsAt : undefined;
+				const displayCandidate: UsageWindowCandidate = {
+					id,
+					windowClass,
+					fraction,
+					resetsAt: typeof resetValue === "number" ? resetValue : undefined,
+				};
+				const group = scopeGroups.get(scopeKey);
+				if (group) {
+					group.candidates.push(displayCandidate);
+				} else {
+					scopeGroups.set(scopeKey, { priority, tier, candidates: [displayCandidate] });
+				}
+			}
+		}
+
+		let selectedGroup: UsageScopeGroup | undefined;
+		for (const group of scopeGroups.values()) {
+			if (!selectedGroup || group.priority < selectedGroup.priority) selectedGroup = group;
+		}
+		if (!selectedGroup) return null;
+
 		let fiveHour: { percent: number; resetMinutes?: number } | undefined;
 		let sevenDay: { percent: number; resetHours?: number } | undefined;
 		let monthly: { percent: number; resetHours?: number } | undefined;
-		let fiveHourTier: string | undefined;
-		let sevenDayTier: string | undefined;
-		let monthlyTier: string | undefined;
 		let monthlyPriority = Number.POSITIVE_INFINITY;
-		const now = Date.now();
 		const cursorMonthlyPriority = (limitId: unknown): number => {
 			// When /auth/usage and /api/usage-summary are merged, prefer the personal
 			// dashboard rails over legacy per-model request fractions.
@@ -1573,99 +1678,41 @@ export class StatusLineComponent implements Component {
 			if (typeof limitId === "string" && limitId.startsWith("cursor:usd:individual-")) return 2;
 			return 3;
 		};
-		for (const report of reports) {
-			if (!report || typeof report !== "object") continue;
-			const provider = (report as { provider?: unknown }).provider;
-			if (activeProvider && provider !== activeProvider) continue;
-			const limits = report.limits;
-			if (!Array.isArray(limits)) continue;
-			const usageReport = report as UsageReport;
-			for (const limit of limits) {
-				if (!limit || typeof limit !== "object") continue;
-				if (activeIdentity && !limitMatchesActiveAccount(usageReport, limit as UsageLimit, activeIdentity)) {
-					continue;
-				}
-				const l = limit as {
-					id?: string;
-					scope?: { windowId?: string; tier?: string; modelId?: string };
-					window?: { resetsAt?: number; durationMs?: number };
-					amount?: { usedFraction?: number };
+		for (const candidate of selectedGroup.candidates) {
+			if (candidate.windowClass === "5h" && !fiveHour) {
+				fiveHour = {
+					percent: candidate.fraction * 100,
+					resetMinutes:
+						typeof candidate.resetsAt === "number"
+							? Math.max(0, Math.round((candidate.resetsAt - now) / 60_000))
+							: undefined,
 				};
-				if (activeProvider === "openai-codex" && activeCodexScope) {
-					const isSparkLimit =
-						l.scope?.tier?.toLowerCase() === "spark" ||
-						l.id?.toLowerCase().includes(":spark:") === true ||
-						l.scope?.modelId?.toLowerCase().includes("-spark") === true;
-					if ((activeCodexScope === "spark") !== isSparkLimit) continue;
-				}
-				const fraction = l.amount?.usedFraction;
-				if (typeof fraction !== "number") continue;
-				const windowId = l.scope?.windowId;
-				const tier = l.scope?.tier;
-				const resetsAt = l.window?.resetsAt;
-				// Canonical window ids win. Fall back to the reported span (same
-				// tolerance as the 5h priority-boost check) so providers that emit
-				// non-canonical ids, and cache rows written before a provider was
-				// canonicalized, still map onto the two subscription windows.
-				const durationMs = l.window?.durationMs;
-				const windowClass =
-					windowId === "5h" || windowId === "7d"
-						? windowId
-						: durationMs !== undefined && Math.abs(durationMs - 5 * 3_600_000) <= 60_000
-							? "5h"
-							: durationMs !== undefined && Math.abs(durationMs - 7 * 86_400_000) <= 60_000
-								? "7d"
-								: undefined;
-				// Accept tiered limits, but prefer untiered (backward compat with Anthropic).
-				// An untiered limit always replaces a tiered one; among same-tieredness, first wins.
-				if (windowClass === "5h" && (!fiveHour || (fiveHourTier !== undefined && !tier))) {
-					fiveHour = {
-						percent: fraction * 100,
-						resetMinutes:
-							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 60_000)) : undefined,
-					};
-					fiveHourTier = tier || undefined;
-				}
-				if (windowClass === "7d" && (!sevenDay || (sevenDayTier !== undefined && !tier))) {
-					sevenDay = {
-						percent: fraction * 100,
+			}
+			if (candidate.windowClass === "7d" && !sevenDay) {
+				sevenDay = {
+					percent: candidate.fraction * 100,
+					resetHours:
+						typeof candidate.resetsAt === "number"
+							? Math.max(0, Math.round((candidate.resetsAt - now) / 3_600_000))
+							: undefined,
+				};
+			}
+			if (candidate.windowClass === "monthly") {
+				const priority = cursorMonthlyPriority(candidate.id);
+				if (priority < monthlyPriority) {
+					monthly = {
+						percent: candidate.fraction * 100,
 						resetHours:
-							typeof resetsAt === "number" ? Math.max(0, Math.round((resetsAt - now) / 3_600_000)) : undefined,
+							typeof candidate.resetsAt === "number"
+								? Math.max(0, Math.round((candidate.resetsAt - now) / 3_600_000))
+								: undefined,
 					};
-					sevenDayTier = tier || undefined;
-				}
-				// Monthly rendering is gated to providers with a single monthly
-				// bucket (Cursor's priority selector picks its personal rail;
-				// OpenCode Go emits exactly one). Copilot also emits monthly
-				// windows, but its multi-bucket shape needs a dedicated selector
-				// before we surface `mo N%` for it.
-				if (
-					(activeProvider === "cursor" || activeProvider === "opencode-go") &&
-					(windowId === "monthly" || windowId === "30d")
-				) {
-					const priority = cursorMonthlyPriority(l.id);
-					const shouldReplace =
-						!monthly ||
-						priority < monthlyPriority ||
-						(priority === monthlyPriority && monthlyTier !== undefined && !tier);
-					if (shouldReplace) {
-						monthly = {
-							percent: fraction * 100,
-							resetHours:
-								typeof resetsAt === "number"
-									? Math.max(0, Math.round((resetsAt - now) / 3_600_000))
-									: undefined,
-						};
-						monthlyTier = tier || undefined;
-						monthlyPriority = priority;
-					}
+					monthlyPriority = priority;
 				}
 			}
 		}
 		if (!fiveHour && !sevenDay && !monthly) return null;
-		// Single compact label; prefer the five-hour tier if displayed windows ever disagree.
-		const effectiveTier = fiveHourTier ?? sevenDayTier ?? monthlyTier;
-		return { tier: effectiveTier, fiveHour, sevenDay, monthly };
+		return { tier: selectedGroup.tier, fiveHour, sevenDay, monthly };
 	}
 
 	/**
@@ -1968,8 +2015,7 @@ export class StatusLineComponent implements Component {
 			ctx.contextPercent !== undefined &&
 			ctx.contextWindow > 0 &&
 			(hasContextSegment(leftSegIds) || hasContextSegment(rightSegIds)) &&
-			hasNonContextSegment(leftSegIds) &&
-			hasNonContextSegment(rightSegIds);
+			(hasNonContextSegment(leftSegIds) || hasNonContextSegment(rightSegIds));
 		if (embedContext) {
 			removeContextSegments(leftParts, leftSegIds);
 			removeContextSegments(rightParts, rightSegIds);
@@ -2105,7 +2151,7 @@ export class StatusLineComponent implements Component {
 		const rightGroup = renderGroup(right, "right");
 		if (!leftGroup && !rightGroup) return "";
 
-		if (topFillWidth === 0 || left.length === 0 || right.length === 0) {
+		if (topFillWidth === 0 || (plain && (left.length === 0 || right.length === 0))) {
 			return leftGroup + (leftGroup && rightGroup ? " " : "") + rightGroup;
 		}
 
@@ -2114,6 +2160,10 @@ export class StatusLineComponent implements Component {
 			// Standalone composers: no gauge line between the groups, just air.
 			return leftGroup + padding(gapWidth) + rightGroup;
 		}
+		// Box layout: with one group absent (an unnamed session hides
+		// `session_name`, emptying the default preset's right group) the gauge
+		// runs to the border edge instead of disappearing, so embedded context
+		// labels don't fall back to a context chip until the session is titled.
 		return leftGroup + this.#buildContextGaugeFill(gapWidth, ctx, effectiveSettings, embedContext) + rightGroup;
 	}
 
@@ -2122,9 +2172,9 @@ export class StatusLineComponent implements Component {
 	 * by `statusLine.contextLine`:
 	 * - `off`: solid accent line (no context feedback).
 	 * - `percentage`: used portion in accent, remainder in the border color.
-	 * - `annotated` (default): percentage plus preset-aware markers where
+	 * - `annotated` : percentage plus preset-aware markers where
 	 *   speculative compaction starts and where auto-compaction fires.
-	 * - `embedded`: annotated markers plus percentage/window labels absorbed
+	 * - `embedded` (default): annotated markers plus percentage/window labels absorbed
 	 *   from configured context segments.
 	 */
 	#buildContextGaugeFill(
@@ -2140,7 +2190,7 @@ export class StatusLineComponent implements Component {
 			: undefined;
 		const usedColor = getSessionAccentAnsi(accentHex) ?? theme.getFgAnsi("borderAccent");
 		const horizontal = theme.boxRound.horizontal;
-		const mode = effectiveSettings.contextLine ?? "annotated";
+		const mode = effectiveSettings.contextLine ?? "embedded";
 		const pct = ctx.contextPercent;
 		if (mode === "off" || pct === null || pct === undefined) {
 			return `\x1b[49m${usedColor}${horizontal.repeat(gapWidth)}\x1b[39m`;
@@ -2276,7 +2326,7 @@ export class StatusLineComponent implements Component {
 		return {
 			content,
 			width: visibleWidth(content),
-			revision: this.#widthEpochRevision,
+			revision: this.#renderRevision,
 		};
 	}
 	/**
@@ -2307,7 +2357,7 @@ export class StatusLineComponent implements Component {
 		return {
 			content,
 			width: visibleWidth(content),
-			revision: this.#widthEpochRevision,
+			revision: this.#renderRevision,
 		};
 	}
 
@@ -2324,7 +2374,6 @@ export class StatusLineComponent implements Component {
 		}
 		return content;
 	}
-
 	/**
 	 * Status bar lines for a composer layout, rendered through the real
 	 * pipeline — the single source for the /settings appearance preview.

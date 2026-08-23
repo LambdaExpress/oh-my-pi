@@ -99,12 +99,10 @@ export class TanCommandController {
 		const parentPromptCacheKey = session.agent.promptCacheKey ?? parentSessionId;
 		const thinkingLevel = session.configuredThinkingLevel();
 		const systemPrompt = [...session.systemPrompt];
-		const toolNames = [...session.getEnabledToolNames()];
-		const mountedXdevToolNames = [...session.getMountedXdevToolNames()];
-		const preloadedExtensionPaths = session.extensionPaths ? [...session.extensionPaths] : undefined;
-		const preloadedCustomToolPaths = session.customToolPaths?.map(source =>
-			source.source ? { ...source, source: { ...source.source } } : { ...source },
-		);
+		const toolNames = session.getEnabledToolNames();
+		const mountedXdevToolNames = session.getMountedXdevToolNames();
+		const preloadedExtensionPaths = session.extensionPaths;
+		const preloadedCustomToolPaths = session.customToolPaths;
 		const modelRegistry = session.modelRegistry;
 		const ownerId = session.getAgentId() ?? MAIN_AGENT_ID;
 		const scopeId = session.getAgentScopeId();
@@ -201,7 +199,7 @@ export class TanCommandController {
 						clone.sessionManager?.appendSessionInit?.({
 							systemPrompt: clone.systemPrompt ? clone.systemPrompt.join("\n\n") : systemPrompt.join("\n\n"),
 							task: trimmedWork,
-							tools: actualToolNames,
+							tools: clone.getEnabledToolNames(),
 							mountedXdevTools: actualMountedXdevToolNames,
 						});
 						const abortClone = () => {

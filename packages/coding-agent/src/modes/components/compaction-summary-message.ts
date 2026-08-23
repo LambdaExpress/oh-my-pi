@@ -136,19 +136,19 @@ export class CompactionSummaryMessageComponent implements Component {
 	}
 
 	#detailMarkdown(): string {
-		const tokenStr =
-			this.message.tokensAfter !== undefined
-				? `${this.message.tokensBefore.toLocaleString()} to ${this.message.tokensAfter.toLocaleString()}`
-				: this.message.tokensBefore.toLocaleString();
+		const tokenLine =
+			this.message.tokensBefore > 0
+				? this.message.tokensAfter !== undefined
+					? `Compacted from ${this.message.tokensBefore.toLocaleString()} to ${this.message.tokensAfter.toLocaleString()} tokens`
+					: `Compacted from ${this.message.tokensBefore.toLocaleString()} tokens`
+				: this.message.tokensAfter !== undefined
+					? `Compacted to ${this.message.tokensAfter.toLocaleString()} tokens`
+					: "Compacted context";
 		const frameCount = this.message.images?.length ?? 0;
 		const frameNote =
-			frameCount > 0
-				? `\n\n${t("_{count} snapcompact frame{s} attached_", { count: frameCount, s: frameCount === 1 ? "" : "s" })}`
-				: "";
-		const warningNote = this.message.warning
-			? `\n\n${theme.icon.warning} ${t("**Warning:**")} ${this.message.warning}`
-			: "";
-		return `${t("**Compacted from {count} tokens**", { count: tokenStr })}${warningNote}\n\n${this.message.summary}${frameNote}`;
+			frameCount > 0 ? `\n\n_${frameCount} snapcompact frame${frameCount === 1 ? "" : "s"} attached_` : "";
+		const warningNote = this.message.warning ? `\n\n${theme.icon.warning} **Warning:** ${this.message.warning}` : "";
+		return `**${tokenLine}**${warningNote}\n\n${this.message.summary}${frameNote}`;
 	}
 }
 

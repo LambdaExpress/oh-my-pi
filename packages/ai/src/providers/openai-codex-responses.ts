@@ -2,6 +2,7 @@ import { scheduler } from "node:timers/promises";
 import { type } from "@oh-my-pi/omptype";
 import { calculateCost } from "@oh-my-pi/pi-catalog/models";
 import {
+	applyCodexResidencyHeader,
 	CODEX_BASE_URL,
 	CODEX_CLIENT_VERSION,
 	getCodexAccountId,
@@ -450,10 +451,9 @@ export interface OpenAICodexWebSocketDebugStats {
 }
 
 /**
- * Per-session transport state shared by BOTH transports: websocket turn
- * chaining (`previous_response_id` baseline), turn-state/models-etag headers,
- * websocket connection pooling, and debug stats. The name is historical — SSE-only
- * sessions use it too.
+ * Per-session transport state shared by both transports: WebSocket turn
+ * chaining, models-etag headers, connection pooling, and debug stats. The name
+ * is historical — SSE-only sessions use it too.
  */
 type CodexWebSocketSessionState = {
 	disableWebsocket: boolean;
@@ -461,7 +461,6 @@ type CodexWebSocketSessionState = {
 	lastResponseId?: string;
 	lastResponseItems?: InputItem[];
 	canAppend: boolean;
-	turnState?: string;
 	modelsEtag?: string;
 	connection?: CodexWebSocketConnection;
 	lastTransport?: CodexTransport;
@@ -470,6 +469,10 @@ type CodexWebSocketSessionState = {
 	prewarmed: boolean;
 	stats: OpenAICodexWebSocketDebugStats;
 };
+
+interface CodexTurnStateCell {
+	value?: string;
+}
 
 interface CodexProviderSessionState extends ProviderSessionState {
 	webSocketSessions: Map<string, CodexWebSocketSessionState>;
@@ -488,6 +491,7 @@ interface CodexMetadataSessionState {
 	turnStartedAtUnixMs?: number;
 	compactionOperationId?: string;
 	reuseTurnForNextRequest?: boolean;
+	turnStates: Map<string, CodexTurnStateCell>;
 }
 
 interface CodexCompatibilityIdentity {
@@ -495,12 +499,15 @@ interface CodexCompatibilityIdentity {
 	sessionId: string;
 	threadId: string;
 	windowId: string;
-	turnMetadataJson?: string;
+	/** Header projection: identity fields only, never the Code Mode snapshot. */
+	turnMetadataHeaderJson?: string;
 }
 
 interface CodexRequestMetadata extends CodexCompatibilityIdentity {
 	turnId: string;
+	/** Canonical body projection, including `tool_namespaces_info` when present. */
 	turnMetadataJson: string;
+	turnMetadataHeaderJson: string;
 	clientMetadata: Record<string, string>;
 }
 
@@ -517,10 +524,11 @@ const CODEX_RESERVED_METADATA_KEYS: Record<string, true> = {
 	[OPENAI_HEADERS.SUBAGENT]: true,
 	request_kind: true,
 	compaction: true,
-	// codex-rs reserves `code_mode_tool_names` for its Responses Lite Code Mode
-	// mapping (#35271); OMP never emits it, but callers must not smuggle it in
-	// as an extra either.
+	// codex-rs retired `code_mode_tool_names` in favor of `tool_namespaces_info`
+	// for its Responses Lite Code Mode mapping; both stay reserved so callers
+	// cannot smuggle them in as extras.
 	code_mode_tool_names: true,
+	tool_namespaces_info: true,
 	turn_started_at_unix_ms: true,
 	forked_from_thread_id: true,
 	parent_thread_id: true,
@@ -536,6 +544,7 @@ function createCodexMetadataSessionState(sessionId: string): CodexMetadataSessio
 		sessionId,
 		threadId: crypto.randomUUID(),
 		windowId: crypto.randomUUID(),
+		turnStates: new Map(),
 	};
 }
 
@@ -549,6 +558,33 @@ function getOrCreateCodexMetadataSessionState(
 	const created = createCodexMetadataSessionState(sessionId);
 	providerState.metadataSessions.set(sessionId, created);
 	return created;
+}
+
+function getOrCreateCodexTurnState(
+	session: CodexMetadataSessionState,
+	compatibilityKey: string | undefined,
+): CodexTurnStateCell {
+	if (!compatibilityKey) return {};
+	const existing = session.turnStates.get(compatibilityKey);
+	if (existing) return existing;
+	const created: CodexTurnStateCell = {};
+	session.turnStates.set(compatibilityKey, created);
+	return created;
+}
+
+/**
+ * Drop every compatibility-scoped sticky-routing token when a fresh logical
+ * turn begins, mirroring codex-rs's per-turn `OnceLock`. Standalone compaction
+ * owns a throwaway cell, so it never disturbs the live turn's tokens. Runs on
+ * every entry path that opens a turn — the normal stream (`createCodexRequestContext`)
+ * and the raw compaction routes (`createOpenAICodexCompatibilityMetadata`).
+ */
+function clearCodexTurnStatesForNewTurn(
+	session: CodexMetadataSessionState,
+	startNewTurn: boolean,
+	compaction: CodexCompactionRequestContext | undefined,
+): void {
+	if (startNewTurn && compaction?.phase !== "standalone_turn") session.turnStates.clear();
 }
 
 function createCodexCompatibilityIdentity(session: CodexMetadataSessionState): CodexCompatibilityIdentity {
@@ -598,6 +634,7 @@ function createCodexRequestMetadata(
 		clientMetadata?: Readonly<Record<string, string>>;
 		parentTurnId?: string;
 		compaction?: CodexCompactionRequestContext;
+		toolNamespacesInfo?: unknown;
 	},
 ): CodexRequestMetadata {
 	if (options.startNewTurn || !session.turnId) {
@@ -637,7 +674,17 @@ function createCodexRequestMetadata(
 		turnMetadata.turn_started_at_unix_ms = session.turnStartedAtUnixMs;
 	}
 	for (const key in extra) turnMetadata[key] = extra[key];
-	const turnMetadataJson = toAsciiJsonString(turnMetadata);
+	// The `x-codex-turn-metadata` header is capped at 100KB by the Codex
+	// backend, while `tool_namespaces_info` grows with the session's tool count
+	// (409 tools ~ 100KB on its own). The body's `client_metadata` is the
+	// canonical envelope, so the snapshot rides there only and the header keeps
+	// the fixed-size identity projection.
+	const turnMetadataHeaderJson = toAsciiJsonString(turnMetadata);
+	let turnMetadataJson = turnMetadataHeaderJson;
+	if (options.toolNamespacesInfo !== undefined) {
+		turnMetadata.tool_namespaces_info = options.toolNamespacesInfo;
+		turnMetadataJson = toAsciiJsonString(turnMetadata);
+	}
 	const clientMetadata: Record<string, string> = {
 		[OPENAI_HEADERS.INSTALLATION_ID]: identity.installationId,
 		session_id: identity.sessionId,
@@ -653,6 +700,7 @@ function createCodexRequestMetadata(
 		...identity,
 		turnId: session.turnId,
 		turnMetadataJson,
+		turnMetadataHeaderJson,
 		clientMetadata,
 	};
 }
@@ -661,8 +709,8 @@ function applyCodexCompatibilityHeaders(headers: Headers, metadata: CodexCompati
 	headers.set(OPENAI_HEADERS.SCOPED_SESSION_ID, metadata.sessionId);
 	headers.set(OPENAI_HEADERS.THREAD_ID, metadata.threadId);
 	headers.set(OPENAI_HEADERS.WINDOW_ID, metadata.windowId);
-	if (metadata.turnMetadataJson) {
-		headers.set(OPENAI_HEADERS.TURN_METADATA, metadata.turnMetadataJson);
+	if (metadata.turnMetadataHeaderJson) {
+		headers.set(OPENAI_HEADERS.TURN_METADATA, metadata.turnMetadataHeaderJson);
 	} else {
 		headers.delete(OPENAI_HEADERS.TURN_METADATA);
 	}
@@ -684,6 +732,7 @@ export function createOpenAICodexCompatibilityMetadata(
 		options.compaction,
 		options.startNewTurn,
 	);
+	clearCodexTurnStatesForNewTurn(session, startNewTurn, options.compaction);
 	const metadata = createCodexRequestMetadata(session, options.requestKind, {
 		startNewTurn,
 		turnStartedAtUnixMs: options.turnStartedAtUnixMs ?? (startNewTurn || !session.turnId ? Date.now() : undefined),
@@ -711,7 +760,6 @@ export function resetOpenAICodexHistoryAfterCompaction(options: OpenAICodexCompa
 	if (!isCodexProviderSessionState(providerState)) return;
 	for (const websocketState of providerState.webSocketSessions.values()) {
 		resetCodexWebSocketAppendState(websocketState);
-		if (options.compaction.phase !== "mid_turn") websocketState.turnState = undefined;
 	}
 	const sessionId = normalizeOpenAIPromptCacheKey(options.sessionId);
 	if (!sessionId) return;
@@ -733,6 +781,7 @@ interface CodexRequestContext {
 	providerSessionState?: CodexProviderSessionState;
 	isolatedTransportState?: CodexProviderSessionState;
 	websocketState?: CodexWebSocketSessionState;
+	turnState: CodexTurnStateCell;
 	responsesLite: boolean;
 	requestMetadata?: CodexRequestMetadata;
 	transformedBody: RequestBody;
@@ -1095,17 +1144,18 @@ function toCodexHeaders(value: unknown): Headers | undefined {
 }
 
 function updateCodexSessionMetadataFromHeaders(
+	turnState: CodexTurnStateCell | undefined,
 	state: CodexWebSocketSessionState | undefined,
 	headers: Headers | Record<string, string> | null | undefined,
 ): void {
-	if (!state || !headers) return;
+	if ((!turnState && !state) || !headers) return;
 	const resolvedHeaders = headers instanceof Headers ? headers : new Headers(headers);
-	const turnState = resolvedHeaders.get(X_CODEX_TURN_STATE_HEADER);
-	if (turnState && turnState.length > 0) {
-		state.turnState = turnState;
+	const responseTurnState = resolvedHeaders.get(X_CODEX_TURN_STATE_HEADER);
+	if (turnState && turnState.value === undefined && responseTurnState && responseTurnState.length > 0) {
+		turnState.value = responseTurnState;
 	}
 	const modelsEtag = resolvedHeaders.get(X_MODELS_ETAG_HEADER);
-	if (modelsEtag && modelsEtag.length > 0) {
+	if (state && modelsEtag && modelsEtag.length > 0) {
 		state.modelsEtag = modelsEtag;
 	}
 }
@@ -1429,7 +1479,6 @@ function createCodexRequestContext(
 			: sharedWebsocketState;
 	if (isolatedTransportState && websocketState && sharedWebsocketState) {
 		websocketState.disableWebsocket = sharedWebsocketState.disableWebsocket;
-		websocketState.turnState = sharedWebsocketState.turnState;
 		websocketState.modelsEtag = sharedWebsocketState.modelsEtag;
 	}
 	const metadataSessionId = transportSessionId ?? crypto.randomUUID();
@@ -1437,11 +1486,11 @@ function createCodexRequestContext(
 	const compaction = options?.codexCompaction;
 	const requestKind: OpenAICodexRequestKind = compaction ? "compaction" : "turn";
 	const startNewTurn = resolveCodexStartNewTurn(metadataSession, requestKind, compaction, contextOptions.startNewTurn);
-	if (websocketState && startNewTurn) {
-		// Codex scopes turn-state to one turn. Mid-turn compaction preserves it;
-		// a pre-turn or standalone compaction starts without it.
-		websocketState.turnState = undefined;
-	}
+	const standaloneCompaction = compaction?.phase === "standalone_turn";
+	clearCodexTurnStatesForNewTurn(metadataSession, startNewTurn, compaction);
+	// Standalone compaction owns a throwaway turn. Every live cell is isolated by
+	// the same credential/backend/model/Lite key as its transport session.
+	const turnState = standaloneCompaction ? {} : getOrCreateCodexTurnState(metadataSession, sessionKey);
 	const requestMetadata = createCodexRequestMetadata(metadataSession, requestKind, {
 		startNewTurn,
 		turnStartedAtUnixMs: compaction
@@ -1452,6 +1501,7 @@ function createCodexRequestContext(
 		clientMetadata: transformedBody.client_metadata,
 		parentTurnId: options?.parentTurnId,
 		compaction,
+		toolNamespacesInfo: options?.toolNamespacesInfo,
 	});
 	transformedBody.client_metadata = requestMetadata.clientMetadata;
 	return {
@@ -1464,6 +1514,7 @@ function createCodexRequestContext(
 		providerSessionState,
 		isolatedTransportState,
 		websocketState,
+		turnState,
 		responsesLite,
 		requestMetadata,
 		codexClientVersion,
@@ -1651,7 +1702,7 @@ async function* streamCodexCompactionEvents(
 ): AsyncGenerator<Record<string, unknown>> {
 	let completed = false;
 	const websocketState = requestContext.websocketState;
-	const previousTurnState = websocketState?.turnState;
+	const previousTurnState = requestContext.turnState.value;
 	const previousModelsEtag = websocketState?.modelsEtag;
 	try {
 		if (initial.transport === "websocket") {
@@ -1668,50 +1719,51 @@ async function* streamCodexCompactionEvents(
 				if (state) recordCodexWebSocketFailure(state, true);
 				const fallback = await openCodexSseTransport(model, requestContext, requestSetup, options, state);
 				if (state) state.lastTransport = fallback.transport;
-				yield* drainCodexCompactionEvents(fallback.eventStream, requestContext.websocketState);
+				yield* drainCodexCompactionEvents(fallback.eventStream, requestContext);
 				completed = true;
 				return;
 			}
 			// Apply metadata only once the WebSocket attempt succeeded: a discarded
 			// attempt must not leak its `x-codex-turn-state` into the session.
 			for (const event of bufferedEvents) {
-				applyCodexCompactionResponseMetadata(requestContext.websocketState, event);
+				applyCodexCompactionResponseMetadata(requestContext, event);
 				yield event;
 			}
 		} else {
-			yield* drainCodexCompactionEvents(initial.eventStream, requestContext.websocketState);
+			yield* drainCodexCompactionEvents(initial.eventStream, requestContext);
 		}
 		completed = true;
 	} finally {
 		if (!completed) {
 			requestSetup.requestAbortController.abort();
-			if (websocketState) {
-				websocketState.turnState = previousTurnState;
-				websocketState.modelsEtag = previousModelsEtag;
-			}
+			requestContext.turnState.value = previousTurnState;
+			if (websocketState) websocketState.modelsEtag = previousModelsEtag;
 		}
 	}
 }
 
 /**
- * Capture `x-codex-turn-state`/`x-models-etag` refreshes carried by a
- * `response.metadata` frame so a mid-turn compaction leaves the live session on
- * the latest turn state, matching the normal Codex stream processor.
+ * Capture `x-codex-turn-state`/`x-models-etag` response metadata after a
+ * compaction attempt succeeds.
  */
 function applyCodexCompactionResponseMetadata(
-	state: CodexWebSocketSessionState | undefined,
+	requestContext: CodexRequestContext,
 	event: Record<string, unknown>,
 ): void {
-	if (!state || event.type !== "response.metadata") return;
-	updateCodexSessionMetadataFromHeaders(state, toCodexHeaders(event.headers));
+	if (event.type !== "response.metadata") return;
+	updateCodexSessionMetadataFromHeaders(
+		requestContext.turnState,
+		requestContext.websocketState,
+		toCodexHeaders(event.headers),
+	);
 }
 
 async function* drainCodexCompactionEvents(
 	events: AsyncGenerator<Record<string, unknown>>,
-	state: CodexWebSocketSessionState | undefined,
+	requestContext: CodexRequestContext,
 ): AsyncGenerator<Record<string, unknown>> {
 	for await (const event of events) {
-		applyCodexCompactionResponseMetadata(state, event);
+		applyCodexCompactionResponseMetadata(requestContext, event);
 		yield event;
 	}
 }
@@ -1738,8 +1790,8 @@ async function openCodexWebSocketTransport(
 	if (requestContext.responsesLite) {
 		websocketClientMetadata[CODEX_WS_RESPONSES_LITE_CLIENT_METADATA_KEY] = "true";
 	}
-	if (websocketState.turnState) {
-		websocketClientMetadata[X_CODEX_TURN_STATE_HEADER] = websocketState.turnState;
+	if (requestContext.turnState.value) {
+		websocketClientMetadata[X_CODEX_TURN_STATE_HEADER] = requestContext.turnState.value;
 	}
 	let websocketRequest = {
 		type: "response.create",
@@ -1759,6 +1811,7 @@ async function openCodexWebSocketTransport(
 		requestContext.transportSessionId,
 		"websocket",
 		websocketState,
+		requestContext.turnState,
 		requestContext.responsesLite,
 		requestContext.requestMetadata,
 		await getCodexAttestationHeader(requestContext.accountId),
@@ -1787,6 +1840,7 @@ async function openCodexWebSocketTransport(
 		});
 	const websocketConnection = await getOrCreateCodexWebSocketConnection(
 		websocketState,
+		requestContext.turnState,
 		toWebSocketUrl(requestContext.url),
 		websocketHeaders,
 		model.provider,
@@ -1857,6 +1911,7 @@ async function openCodexSseTransport(
 				requestContext.transportSessionId,
 				wireBody,
 				state,
+				requestContext.turnState,
 				requestContext.responsesLite,
 				requestContext.codexClientVersion,
 				requestContext.requestMetadata,
@@ -1970,7 +2025,6 @@ async function handleCodexStreamFailure(context: CodexStreamFailureContext, erro
 	const { output } = context;
 	if (context.requestContext.websocketState) {
 		resetCodexWebSocketAppendState(context.requestContext.websocketState);
-		context.requestContext.websocketState.turnState = undefined;
 		context.requestContext.websocketState.modelsEtag = undefined;
 	}
 	const result = await AIError.finalize(error, {
@@ -2256,9 +2310,13 @@ class CodexStreamProcessor {
 			// The WebSocket transport has no per-response HTTP headers; codex-rs
 			// mirrors them into this event's `headers` and reads
 			// `x-codex-turn-state` from there (ResponsesStreamEvent::turn_state).
-			// Pick up the refresh so same-turn follow-ups echo the latest turn
-			// state on either transport.
-			updateCodexSessionMetadataFromHeaders(this.requestContext.websocketState, toCodexHeaders(rawEvent.headers));
+			// Capture only the first non-empty value so same-turn follow-ups keep
+			// the server's original sticky-routing token on either transport.
+			updateCodexSessionMetadataFromHeaders(
+				this.requestContext.turnState,
+				this.requestContext.websocketState,
+				toCodexHeaders(rawEvent.headers),
+			);
 			const moderation = asRecord(rawEvent.metadata)?.[CODEX_MODERATION_METADATA_KEY];
 			if (moderation !== undefined) {
 				try {
@@ -2527,7 +2585,6 @@ class CodexStreamProcessor {
 		const websocketState = this.requestContext.websocketState;
 		if (websocketState) {
 			resetCodexWebSocketAppendState(websocketState);
-			websocketState.turnState = undefined;
 			websocketState.modelsEtag = undefined;
 		}
 
@@ -2653,7 +2710,6 @@ class CodexStreamProcessor {
 
 		this.runtime.providerRetryAttempt += 1;
 		resetCodexWebSocketAppendState(websocketState);
-		websocketState.turnState = undefined;
 		websocketState.modelsEtag = undefined;
 		this.runtime.resetAccumulators();
 		this.runtime.sawTerminalEvent = false;
@@ -2737,7 +2793,6 @@ class CodexStreamProcessor {
 		const websocketState = this.requestContext.websocketState;
 		if (websocketState) {
 			resetCodexWebSocketAppendState(websocketState);
-			websocketState.turnState = undefined;
 			websocketState.modelsEtag = undefined;
 		}
 
@@ -2814,7 +2869,6 @@ class CodexStreamProcessor {
 		if (!this.runtime.sawTerminalEvent) {
 			if (this.requestContext.websocketState) {
 				resetCodexWebSocketAppendState(this.requestContext.websocketState);
-				this.requestContext.websocketState.turnState = undefined;
 				this.requestContext.websocketState.modelsEtag = undefined;
 			}
 			CODEX_DEBUG &&
@@ -2822,7 +2876,7 @@ class CodexStreamProcessor {
 					transport: this.runtime.transport,
 					terminalEventSeen: this.runtime.sawTerminalEvent,
 					unexpectedStreamEnd: true,
-					sentTurnStateHeader: Boolean(this.requestContext.websocketState?.turnState),
+					sentTurnStateHeader: Boolean(this.requestContext.turnState.value),
 					sentModelsEtagHeader: Boolean(this.requestContext.websocketState?.modelsEtag),
 				});
 			throw new CodexProviderStreamError("Codex stream ended before terminal completion event", false);
@@ -2911,6 +2965,7 @@ export const streamOpenAICodexResponses: StreamFunction<"openai-codex-responses"
 						url: "",
 						requestHeaders: {},
 						codexClientVersion: CODEX_CLIENT_VERSION,
+						turnState: {},
 						responsesLite: options?.responsesLite === true,
 						transformedBody: { model: model.id },
 						rawRequestDump: {
@@ -2974,6 +3029,7 @@ export async function prewarmOpenAICodexResponses(
 		transportSessionId ?? crypto.randomUUID(),
 		providerSessionState,
 	);
+	const turnState = getOrCreateCodexTurnState(metadataSession, sessionKey);
 	const codexClientVersion = CODEX_CLIENT_VERSION;
 	const requestIdentity = createCodexCompatibilityIdentity(metadataSession);
 	const attestation = await getCodexAttestationHeader(accountId);
@@ -2987,6 +3043,7 @@ export async function prewarmOpenAICodexResponses(
 		promptCacheKey,
 		"websocket",
 		state,
+		turnState,
 		responsesLite,
 		requestIdentity,
 		attestation,
@@ -2995,6 +3052,7 @@ export async function prewarmOpenAICodexResponses(
 		"prewarmCodex:establishWs",
 		getOrCreateCodexWebSocketConnection,
 		state,
+		turnState,
 		toWebSocketUrl(url),
 		headers,
 		model.provider,
@@ -3151,6 +3209,19 @@ export function getOpenAICodexTransportDetails(
 				? false
 				: options?.preferWebsockets === true || model.preferWebsockets === true;
 	const state = getCodexWebSocketStateForPublicSession(model, options);
+	const providerSessionState = getCodexProviderSessionState(options?.providerSessionState);
+	const sessionId = normalizeOpenAIPromptCacheKey(options?.sessionId);
+	let hasTurnState = false;
+	if (sessionId) {
+		const metadataSession = providerSessionState?.metadataSessions.get(sessionId);
+		if (metadataSession) {
+			for (const cell of metadataSession.turnStates.values()) {
+				if (cell.value === undefined) continue;
+				hasTurnState = true;
+				break;
+			}
+		}
+	}
 
 	return {
 		websocketPreferred,
@@ -3161,7 +3232,7 @@ export function getOpenAICodexTransportDetails(
 		canAppend: state?.canAppend ?? false,
 		prewarmed: state?.prewarmed ?? false,
 		hasSessionState: state !== undefined,
-		hasTurnState: state?.turnState !== undefined,
+		hasTurnState,
 		lastFallbackAt: state?.lastFallbackAt,
 	};
 }
@@ -3417,11 +3488,9 @@ function buildCodexChainedRequestBody(
 		// mutated or options changed — break the chain.
 		CODEX_DEBUG &&
 			logger.debug("[codex] codex append reset", {
-				hadTurnStateHeader: Boolean(state.turnState),
 				hadModelsEtagHeader: Boolean(state.modelsEtag),
 			});
 		resetCodexWebSocketAppendState(state);
-		state.turnState = undefined;
 		state.modelsEtag = undefined;
 	}
 	return requestBody;
@@ -4040,6 +4109,7 @@ class CodexWebSocketConnection {
 
 async function getOrCreateCodexWebSocketConnection(
 	state: CodexWebSocketSessionState,
+	turnState: CodexTurnStateCell,
 	url: string,
 	headers: Headers,
 	provider: string,
@@ -4086,7 +4156,7 @@ async function getOrCreateCodexWebSocketConnection(
 	logger.time("codexWs:newSocket");
 	state.connection = new CodexWebSocketConnection(url, headerRecord, {
 		onHandshakeHeaders: handshakeHeaders => {
-			updateCodexSessionMetadataFromHeaders(state, handshakeHeaders);
+			updateCodexSessionMetadataFromHeaders(turnState, state, handshakeHeaders);
 		},
 		proxy,
 	});
@@ -4120,6 +4190,7 @@ async function openCodexSseEventStream(
 	sessionId: string | undefined,
 	body: RequestBody,
 	state: CodexWebSocketSessionState | undefined,
+	turnState: CodexTurnStateCell,
 	responsesLite: boolean,
 	codexClientVersion: string,
 	requestMetadata: CodexRequestMetadata | undefined,
@@ -4137,6 +4208,7 @@ async function openCodexSseEventStream(
 		sessionId,
 		"sse",
 		state,
+		turnState,
 		responsesLite,
 		requestMetadata,
 		await getCodexAttestationHeader(accountId),
@@ -4223,7 +4295,7 @@ async function openCodexSseEventStream(
 	if (!response.ok) {
 		throw await CodexApiError.fromResponse(response);
 	}
-	updateCodexSessionMetadataFromHeaders(state, response.headers);
+	updateCodexSessionMetadataFromHeaders(turnState, state, response.headers);
 	if (!response.body) {
 		throw new CodexProviderStreamError("No response body", false);
 	}
@@ -4240,6 +4312,7 @@ function createCodexHeaders(
 	sessionId?: string,
 	transport: CodexTransport = "sse",
 	state?: CodexWebSocketSessionState,
+	turnState?: CodexTurnStateCell,
 	responsesLite = false,
 	requestMetadata?: CodexCompatibilityIdentity,
 	attestation?: string,
@@ -4248,6 +4321,12 @@ function createCodexHeaders(
 	headers.delete("x-api-key");
 	headers.set("Authorization", `Bearer ${accessToken}`);
 	if (accountId) headers.set(OPENAI_HEADERS.ACCOUNT_ID, accountId);
+	// Region-pinned enterprise workspaces answer 401 `Workspace is not authorized
+	// in this region.` when the request's egress region does not match them and
+	// the client did not declare the workspace's residency. The access token
+	// already carries it, so this needs no configuration. A caller-supplied
+	// header still wins: a proxy fronting Codex may want a different value.
+	applyCodexResidencyHeader(headers, accessToken);
 	if (attestation) {
 		headers.set(OPENAI_HEADERS.ATTESTATION, attestation);
 	} else {
@@ -4281,8 +4360,8 @@ function createCodexHeaders(
 		headers.delete(OPENAI_HEADERS.WINDOW_ID);
 		headers.delete(OPENAI_HEADERS.TURN_METADATA);
 	}
-	if (state?.turnState) {
-		headers.set(X_CODEX_TURN_STATE_HEADER, state.turnState);
+	if (turnState?.value) {
+		headers.set(X_CODEX_TURN_STATE_HEADER, turnState.value);
 	} else {
 		headers.delete(X_CODEX_TURN_STATE_HEADER);
 	}
@@ -4489,7 +4568,9 @@ function convertMessages(model: Model<"openai-codex-responses">, context: Contex
 
 function normalizeInputMessageContent(
 	model: Model<"openai-codex-responses">,
-	content: string | Array<{ type: "text"; text: string } | { type: "image"; mimeType: string; data: string }>,
+	content:
+		| string
+		| Array<{ type: "text"; text: string } | { type: "image"; mimeType: string; data: string; url?: string }>,
 ): ResponseInputContent[] {
 	// gpt-5.x codex rejects reserved Harmony control-token spellings in input
 	// data; escape the transport copy of untrusted user text so ordinary docs or

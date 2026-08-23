@@ -15,6 +15,7 @@ import { buildBedrockCompat } from "./compat/bedrock";
 import { buildDevinCompat } from "./compat/devin";
 import { buildOpenAICompat, buildOpenAIResponsesCompat, buildOpenRouterCompat } from "./compat/openai";
 import { bareModelId, parseOpenAIModel, semverGte } from "./identity/classify";
+import { isClaudeModelId } from "./identity/family";
 import { resolveModelThinking } from "./model-thinking";
 import { resolveModelTokenizer } from "./model-tokenizer";
 import type { Api, CompatOf, Model, ModelSpec, RemoteCompactionConfig } from "./types";
@@ -99,6 +100,7 @@ export function buildModel<TApi extends Api>(spec: ModelSpec<TApi>): Model<TApi>
 	return {
 		...spec,
 		name: cleanModelName(spec.name),
+		requiresGlyphTokenization: isClaudeModelId(spec.id),
 		tokenizer: spec.tokenizer ?? resolveModelTokenizer(spec.requestModelId ?? spec.id),
 		thinking: resolveModelThinking(spec, compat),
 		supportsComputerUse: supportsOpenAIGAComputerUse(spec, supportsComputerUseConfig),

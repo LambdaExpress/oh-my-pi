@@ -13,51 +13,13 @@ Read files, directories, archives, SQLite, images, documents, internal resources
 ## Source kinds
 - Parseable code, no selector → structural summary (declarations only, body elided). Footer names recovery selector — re-issue ONLY those ranges.
 - Directory → depth-limited dirent listing.
-{{#if IS_HL_MODE}}
-- File + selector → filename-only snapshot header + numbered lines: `[foo.ts#1A2B]` then `41:def alpha():`. Copy `[FILENAME#TAG]` for anchored edits; ops use bare line numbers. NEVER fabricate the tag.
-{{else}}
-{{#if IS_LINE_NUMBER_MODE}}
-- File + selector → numbered lines: `41|def alpha():`.
-{{/if}}
-{{/if}}
-
-# Documents & Notebooks
-
-PDF, DOCX, PPTX, XLSX, EPUB → extracted text. Notebooks (`.ipynb`) → editable `# %% [type] cell:N` text. `:raw` returns converted document text without line anchors.
-
-# Images
-
-{{#if INSPECT_IMAGE_ENABLED}}
-Image → metadata. Visual analysis: call `inspect_image` with the path and a question.
-{{else}}
-Image → decoded inline (PNG, JPEG, GIF, WEBP) for direct visual analysis.
-{{/if}}
-
-# Archives
-
-`.tar`, `.tar.gz`, `.tgz`, `.zip`, plus ZIP-based `.jar`, `.war`, `.ear`, `.apk`. `archive.ext:path/inside/archive` reads UTF-8 text members, inline images (PNG, JPEG, GIF, WEBP), and supported document members (`.pdf`, `.docx`, `.pptx`, `.xlsx`, `.epub`). Inner paths take normal selectors: `archive.zip:dir/file.ts:50-60`; archived PDF images use member handles: `archive.zip:report.pdf:image.png`.
-
-# SQLite
-
-For `.sqlite`, `.sqlite3`, `.db`, `.db3`:
-- `file.db` — tables with row counts
-- `file.db:table` — schema + sample rows
-- `file.db:table:key` — row by primary key
-- `file.db:table?limit=50&offset=100` — pagination
-- `file.db:table?where=status='active'&order=created:desc` — filter/order
-- `file.db?q=SELECT …` — read-only SELECT
-
-# URLs
-
-- Reader-mode default: HTML, GitHub issues/PRs, Stack Overflow, Wikipedia, Reddit, NPM, arXiv, RSS/Atom, JSON endpoints, PDFs → clean text/markdown.
-- `:raw` → untouched HTML; line selectors (`:50`, `:50-100`, `:50+150`) paginate the fetch.
-- Bare `host:port` collides with selector grammar — add a trailing slash: `https://example.com/:80`.
-
-# Internal URIs
-
-All URI schemes take the same line selectors. `artifact://<id>` recovers spilled output; large artifacts block unbounded `:raw`, so page with `artifact://<id>:N-M` / `artifact://<id>:raw:N-M` and use the reported artifact file path for search/copy workflows.
-
-`ssh://host/<absolute-path>` reads a remote text file (UTF-8, ≤1 MiB) or lists a directory one level deep, on a pre-configured SSH host or `~/.ssh/config` alias; `ssh://host/` lists the remote root and bare `ssh://` lists the configured hosts. Files are writable via `write`, editable via hashline `edit`, and searchable via `grep`; a directory only lists (`grep` refuses a directory, `write` refuses to overwrite one). A literal `:`, `?`, or `#` in the remote path must be percent-encoded (`%3A`/`%3F`/`%23`) — a trailing `:sel` is read as a line selector, and `?`/`#` start a URL query/fragment. Requires either a verified POSIX transfer shell (`sh`/`bash`/`zsh`) or a verified Windows PowerShell transfer backend (`pwsh`/`powershell`). Windows drive paths use URL form `ssh://host/C%3A/Users/name/file.txt`; the colon must be percent-encoded because trailing `:sel` is the read selector syntax. Cmd-only Windows hosts and non-POSIX remotes without a usable transfer backend are rejected.
+- SQLite (`.sqlite`, `.sqlite3`, `.db`, `.db3`): `file.db` (tables), `file.db:table` (schema+rows), `file.db:table:key` (by PK), `?limit=`/`?where=`/`?q=SELECT`.
+- Archives (`.zip` family incl. `.jar`/`.apk`/`.whl`, `.tar` incl. `.tar.{gz,bz2,xz,zst}`, `.rar`, `.7z`, `.iso`, `.cab`, `.deb`/`.rpm`/`.cpio`/`.ar`/`.a`, `.lzh`/`.arj`, `.asar`; single-stream `.gz`/`.bz2`/`.xz`/`.zst`): `archive.ext:path/inside/archive` reads a member.
+- Documents → extracted text. Notebooks → editable cells. Images → {{#if INSPECT_IMAGE_ENABLED}}metadata; call `inspect_image`{{else}}decoded inline{{/if}}. `:raw` bypasses converters.
+- URLs → reader-mode clean text/markdown; `:raw` → untouched HTML. Bare `host:port` needs trailing slash.
+- Internal URIs — all schemes take selectors. `artifact://<id>` recovers spilled output; page with `:N-M`/`:raw:N-M`.
+- `ssh://host/<path>` reads remote file/dir (UTF-8, ≤1 MiB); bare `ssh://` lists hosts; writable with `write` and searchable with `grep`.
+  Literal `:`, `?`, `#` → percent-encode (`%3A`/`%3F`/`%23`). Requires a verified POSIX shell on the remote host. For Windows or other unsupported hosts, use `bash` with a remote SSH command or mount with `sshfs`.
 
 <critical>
 Summary footer names elided ranges? Re-issue ONLY those ranges. NEVER guess `..`/`…` content.

@@ -20,23 +20,13 @@ function makeComponent(
 	reports: unknown,
 	options: {
 		provider?: string;
-		model?: { contextWindow: number; provider?: string; id?: string };
+		modelId?: string;
 		activeIdentity?: { accountId?: string; email?: string; projectId?: string };
-		usingOAuth?: boolean;
-		usageStats?: {
-			input: number;
-			output: number;
-			cacheRead: number;
-			cacheWrite: number;
-			premiumRequests: number;
-			cost: number;
-		};
 	} = {},
 ): StatusLineComponent {
-	const model = options.model ?? { contextWindow: 1000, provider: options.provider };
 	const component = new StatusLineComponent({
-		state: { messages: [], model },
-		model,
+		state: { messages: [], model: { id: options.modelId, contextWindow: 1000, provider: options.provider } },
+		model: { id: options.modelId, contextWindow: 1000, provider: options.provider },
 		sessionManager: {
 			getUsageStatistics: () => ({
 				input: 0,
@@ -49,12 +39,10 @@ function makeComponent(
 				orchestrationCacheRead: 0,
 				premiumRequests: 0,
 				cost: 0,
-				...options.usageStats,
 			}),
 		},
 		fetchUsageReports: async () => reports,
 		modelRegistry: {
-			isUsingOAuth: () => options.usingOAuth ?? false,
 			authStorage: {
 				getOAuthAccountIdentity: (provider: string) =>
 					provider === options.provider ? options.activeIdentity : undefined,
@@ -80,35 +68,6 @@ async function flushUsageRefresh(): Promise<void> {
 	await Promise.resolve();
 }
 
-function mixedCodexUsageReports(now: number): unknown[] {
-	return [
-		{
-			provider: "openai-codex",
-			metadata: { accountId: "active-account" },
-			limits: [
-				{
-					id: "openai-codex:secondary",
-					scope: { windowId: "7d" },
-					window: { resetsAt: now + 107 * 3_600_000 },
-					amount: { usedFraction: 0.49 },
-				},
-				{
-					id: "openai-codex:spark:primary",
-					scope: { windowId: "5h", tier: "spark", modelId: "GPT-5.3-Codex-Spark" },
-					window: { resetsAt: now + 112 * 60_000 },
-					amount: { usedFraction: 0.03 },
-				},
-				{
-					id: "openai-codex:spark:secondary",
-					scope: { windowId: "7d", tier: "spark", modelId: "GPT-5.3-Codex-Spark" },
-					window: { resetsAt: now + 108 * 3_600_000 },
-					amount: { usedFraction: 0.35 },
-				},
-			],
-		},
-	];
-}
-
 describe("usage status-line segment", () => {
 	it("renders untiered five-hour and seven-day limits", () => {
 		const result = renderSegment("usage", {
@@ -117,10 +76,12 @@ describe("usage status-line segment", () => {
 		const content = stripVTControlCharacters(result.content);
 
 		expect(result.visible).toBe(true);
+		expect(content).toContain("5h");
 		expect(content).toContain("24%");
 		expect(content).toContain("30m");
+		expect(content).toContain("7d");
 		expect(content).toContain("8%");
-		expect(content).toContain("6d");
+		expect(content).toContain("5d 21h");
 	});
 
 	it("renders tiered usage fetched from provider reports", async () => {
@@ -147,13 +108,55 @@ describe("usage status-line segment", () => {
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
 		expect(content).toContain("prolite");
-		expect(content).toContain("30m");
+		expect(content).toContain("5h");
 		expect(content).toContain("24%");
-		expect(content).toContain("6d");
+		expect(content).toContain("7d");
 		expect(content).toContain("8%");
 	});
 
-	it("prefers untiered windows and labels the displayed tiered window", async () => {
+	it("selects one coherent scope for the active model", async () => {
+		const reports = [
+			{
+				provider: "openai-codex",
+				limits: [
+					{
+						scope: { windowId: "5h", tier: "spark", modelId: "GPT-5.3-Codex-Spark" },
+						amount: { usedFraction: 0 },
+					},
+					{ scope: { windowId: "7d" }, amount: { usedFraction: 0.08 } },
+					{
+						scope: { windowId: "7d", tier: "spark", modelId: "GPT-5.3-Codex-Spark" },
+						amount: { usedFraction: 0 },
+					},
+				],
+			},
+		];
+		const component = makeComponent(reports, { provider: "openai-codex", modelId: "gpt-5.6-sol" });
+
+		component.refreshUsageInBackground();
+		await flushUsageRefresh();
+		const content = stripVTControlCharacters(component.getTopBorder(200).content);
+
+		expect(content).not.toContain("spark");
+		expect(content).not.toContain("5h");
+		expect(content).toContain("7d");
+		expect(content).toContain("8%");
+
+		const sparkComponent = makeComponent(reports, {
+			provider: "openai-codex",
+			modelId: "gpt-5.3-codex-spark",
+		});
+		sparkComponent.refreshUsageInBackground();
+		await flushUsageRefresh();
+		const sparkContent = stripVTControlCharacters(sparkComponent.getTopBorder(200).content);
+
+		expect(sparkContent).toContain("spark");
+		expect(sparkContent).toContain("5h");
+		expect(sparkContent).toContain("7d");
+		expect(sparkContent).not.toContain("8%");
+	});
+
+	it("keeps windows within the preferred untiered scope", async () => {
 		const component = makeComponent([
 			{
 				limits: [
@@ -168,12 +171,12 @@ describe("usage status-line segment", () => {
 		await flushUsageRefresh();
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
-		expect(content).toContain("prolite");
+		expect(content).not.toContain("prolite");
 		expect(content).not.toContain("stale");
 		expect(content).toContain("5h");
 		expect(content).toContain("24%");
-		expect(content).toContain("7d");
-		expect(content).toContain("8%");
+		expect(content).not.toContain("7d");
+		expect(content).not.toContain("8%");
 	});
 
 	it("scopes fetched usage reports to the active provider and account", async () => {
@@ -214,229 +217,6 @@ describe("usage status-line segment", () => {
 		expect(content).not.toContain("98%");
 		expect(content).not.toContain("66%");
 		expect(content).not.toContain("other");
-	});
-
-	it("switches between standard and Spark quota pools without mixing their windows", async () => {
-		const now = Date.now();
-		const model = { contextWindow: 1000, provider: "openai-codex", id: "gpt-5.6-sol" };
-		const component = makeComponent(mixedCodexUsageReports(now), {
-			provider: "openai-codex",
-			model,
-			activeIdentity: { accountId: "active-account" },
-			usingOAuth: true,
-		});
-		component.updateSettings({
-			preset: "custom",
-			leftSegments: [],
-			rightSegments: ["cost"],
-			sessionAccent: false,
-		});
-
-		component.refreshUsageInBackground();
-		await flushUsageRefresh();
-		const content = stripVTControlCharacters(component.getTopBorder(200).content);
-
-		expect(content).toContain("4d 51%");
-		expect(content).not.toContain("2h 97%");
-		expect(content).not.toContain("4d 65%");
-
-		model.id = "gpt-5.3-codex-spark";
-		component.refreshUsageInBackground();
-		await flushUsageRefresh();
-		const sparkContent = stripVTControlCharacters(component.getTopBorder(200).content);
-
-		expect(sparkContent).toContain("2h 97%");
-		expect(sparkContent).toContain("5d 65%");
-		expect(sparkContent).not.toContain("4d 51%");
-	});
-
-	it("renders subscription cost compact usage labels from remaining reset time", async () => {
-		const now = Date.now();
-		const component = makeComponent(
-			[
-				{
-					provider: "openai-codex",
-					metadata: { accountId: "active-account" },
-					limits: [
-						{
-							scope: { windowId: "5h", tier: "prolite" },
-							window: { resetsAt: now + 191 * 60_000 },
-							amount: { usedFraction: 0.24 },
-						},
-						{
-							scope: { windowId: "7d", tier: "prolite" },
-							window: { resetsAt: now + 121 * 3_600_000 },
-							amount: { usedFraction: 0.08 },
-						},
-					],
-				},
-			],
-			{
-				provider: "openai-codex",
-				activeIdentity: { accountId: "active-account" },
-				usingOAuth: true,
-				usageStats: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					cost: 12.34,
-					premiumRequests: 2,
-				},
-			},
-		);
-		component.updateSettings({
-			preset: "custom",
-			leftSegments: [],
-			rightSegments: ["cost"],
-			sessionAccent: false,
-		});
-
-		component.refreshUsageInBackground();
-		await flushUsageRefresh();
-		const content = stripVTControlCharacters(component.getTopBorder(200).content);
-
-		expect(content).toContain("3h");
-		expect(content).toContain("76%");
-		expect(content).toContain("5d");
-		expect(content).toContain("92%");
-		expect(content).not.toContain("5h");
-		expect(content).not.toContain("7d");
-		expect(content).not.toContain("24%");
-		expect(content).not.toContain("8%");
-		expect(content).not.toContain("prolite");
-		expect(content).not.toContain("(");
-		expect(content).not.toContain("(sub)");
-		expect(content).not.toContain("$12.34");
-		expect(content).not.toContain("★ 2");
-	});
-
-	it("renders subscription cost compact rounded labels with lower units only below thresholds", async () => {
-		const cases = [
-			{
-				resetMs: 60 * 60_000,
-				sevenDayResetMs: 24 * 3_600_000,
-				expectedFiveHour: "1h 76%",
-				expectedSevenDay: "1d 92%",
-			},
-			{
-				resetMs: 59 * 60_000,
-				sevenDayResetMs: 23 * 3_600_000,
-				expectedFiveHour: "59m 76%",
-				expectedSevenDay: "23h 92%",
-			},
-		] as const;
-
-		for (const testCase of cases) {
-			const now = Date.now();
-			const component = makeComponent(
-				[
-					{
-						provider: "openai-codex",
-						metadata: { accountId: "active-account" },
-						limits: [
-							{
-								scope: { windowId: "5h", tier: "prolite" },
-								window: { resetsAt: now + testCase.resetMs },
-								amount: { usedFraction: 0.24 },
-							},
-							{
-								scope: { windowId: "7d", tier: "prolite" },
-								window: { resetsAt: now + testCase.sevenDayResetMs },
-								amount: { usedFraction: 0.08 },
-							},
-						],
-					},
-				],
-				{
-					provider: "openai-codex",
-					activeIdentity: { accountId: "active-account" },
-					usingOAuth: true,
-					usageStats: {
-						input: 0,
-						output: 0,
-						cacheRead: 0,
-						cacheWrite: 0,
-						cost: 12.34,
-						premiumRequests: 2,
-					},
-				},
-			);
-			component.updateSettings({
-				preset: "custom",
-				leftSegments: [],
-				rightSegments: ["cost"],
-				sessionAccent: false,
-			});
-
-			component.refreshUsageInBackground();
-			await flushUsageRefresh();
-			const content = stripVTControlCharacters(component.getTopBorder(200).content);
-
-			expect(content).toContain(testCase.expectedFiveHour);
-			expect(content).toContain(testCase.expectedSevenDay);
-			expect(content).toContain("76%");
-			expect(content).toContain("92%");
-			expect(content).not.toContain("24%");
-			expect(content).not.toContain("8%");
-			expect(content).not.toContain("prolite");
-			expect(content).not.toContain("$12.34");
-			expect(content).not.toContain("★ 2");
-		}
-	});
-
-	it("falls back to fixed subscription cost compact labels when reset times are absent", async () => {
-		const component = makeComponent(
-			[
-				{
-					provider: "openai-codex",
-					metadata: { accountId: "active-account" },
-					limits: [
-						{
-							scope: { windowId: "5h", tier: "prolite" },
-							amount: { usedFraction: 0.24 },
-						},
-						{
-							scope: { windowId: "7d", tier: "prolite" },
-							amount: { usedFraction: 0.08 },
-						},
-					],
-				},
-			],
-			{
-				provider: "openai-codex",
-				activeIdentity: { accountId: "active-account" },
-				usingOAuth: true,
-				usageStats: {
-					input: 0,
-					output: 0,
-					cacheRead: 0,
-					cacheWrite: 0,
-					cost: 12.34,
-					premiumRequests: 2,
-				},
-			},
-		);
-		component.updateSettings({
-			preset: "custom",
-			leftSegments: [],
-			rightSegments: ["cost"],
-			sessionAccent: false,
-		});
-
-		component.refreshUsageInBackground();
-		await flushUsageRefresh();
-		const content = stripVTControlCharacters(component.getTopBorder(200).content);
-
-		expect(content).toContain("5h");
-		expect(content).toContain("76%");
-		expect(content).toContain("7d");
-		expect(content).toContain("92%");
-		expect(content).not.toContain("24%");
-		expect(content).not.toContain("8%");
-		expect(content).not.toContain("prolite");
-		expect(content).not.toContain("$12.34");
-		expect(content).not.toContain("★ 2");
 	});
 
 	it("invalidates cached usage when the active provider changes", async () => {
@@ -504,6 +284,77 @@ describe("usage status-line segment", () => {
 		expect(refreshed).toContain("24%");
 	});
 
+	it("invalidates cached usage when the active model changes within a provider", async () => {
+		const model = { id: "gpt-5.6-sol", contextWindow: 1000, provider: "openai-codex" };
+		const reports = [
+			{
+				provider: "openai-codex",
+				metadata: { accountId: "active-account" },
+				limits: [
+					{ scope: { windowId: "7d" }, amount: { usedFraction: 0.08 } },
+					{
+						scope: { windowId: "5h", tier: "spark", modelId: "GPT-5.3-Codex-Spark" },
+						amount: { usedFraction: 0.42 },
+					},
+					{
+						scope: { windowId: "7d", tier: "spark", modelId: "GPT-5.3-Codex-Spark" },
+						amount: { usedFraction: 0.11 },
+					},
+				],
+			},
+		];
+		const session = {
+			state: { messages: [], model },
+			model,
+			sessionManager: {
+				getUsageStatistics: () => ({
+					input: 0,
+					output: 0,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 0,
+					orchestrationInput: 0,
+					orchestrationOutput: 0,
+					orchestrationCacheRead: 0,
+					premiumRequests: 0,
+					cost: 0,
+				}),
+			},
+			fetchUsageReports: async () => reports,
+			modelRegistry: {
+				authStorage: {
+					getOAuthAccountIdentity: (requestedProvider: string) =>
+						requestedProvider === "openai-codex" ? { accountId: "active-account" } : undefined,
+				},
+			},
+			getAsyncJobSnapshot: () => ({ running: [] }),
+			getContextUsage: () => undefined,
+		} as unknown as ConstructorParameters<typeof StatusLineComponent>[0];
+		const component = new StatusLineComponent(session);
+		component.updateSettings({
+			preset: "custom",
+			leftSegments: [],
+			rightSegments: ["usage"],
+			sessionAccent: false,
+		});
+
+		component.refreshUsageInBackground();
+		await flushUsageRefresh();
+		const solContent = stripVTControlCharacters(component.getTopBorder(200).content);
+		expect(solContent).not.toContain("spark");
+		expect(solContent).not.toContain("5h");
+		expect(solContent).toContain("8%");
+
+		model.id = "gpt-5.3-codex-spark";
+		const immediate = stripVTControlCharacters(component.getTopBorder(200).content);
+		expect(immediate).not.toContain("8%");
+		await flushUsageRefresh();
+		const sparkContent = stripVTControlCharacters(component.getTopBorder(200).content);
+		expect(sparkContent).toContain("spark");
+		expect(sparkContent).toContain("5h");
+		expect(sparkContent).toContain("42%");
+	});
+
 	it("keeps active-provider rate-limit header reports with account metadata", async () => {
 		const component = makeComponent(
 			[
@@ -547,9 +398,9 @@ describe("usage status-line segment", () => {
 
 		expect(result.visible).toBe(true);
 		expect(content).toContain("prolite");
-		expect(content).toContain("2h");
+		expect(content).toContain("5h");
 		expect(content).toContain("50%");
-		expect(content).toContain("2d");
+		expect(content).toContain("7d");
 		expect(content).toContain("10%");
 	});
 
@@ -600,10 +451,11 @@ describe("usage status-line segment", () => {
 		const content = stripVTControlCharacters(result.content);
 
 		expect(result.visible).toBe(true);
-		expect(content).toContain("31d");
+		expect(content).toContain("mo");
 		// Match Cursor web dashboard flooring (1.88 → 1%), not Math.round → 2%.
 		expect(content).toContain("1%");
 		expect(content).not.toContain("2%");
+		expect(content).toContain("30d 23h");
 		expect(content).not.toContain("5h");
 		expect(content).not.toContain("7d");
 	});
@@ -630,7 +482,7 @@ describe("usage status-line segment", () => {
 		await flushUsageRefresh();
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
-		expect(content).toContain("31d");
+		expect(content).toContain("mo");
 		expect(content).toContain("13%");
 	});
 
@@ -700,11 +552,11 @@ describe("usage status-line segment", () => {
 		await flushUsageRefresh();
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
-		expect(content).toContain("2h");
+		expect(content).toContain("5h");
 		expect(content).toContain("12%");
-		expect(content).toContain("4d");
-		expect(content).toContain("8%");
 		expect(content).toContain("7d");
+		expect(content).toContain("8%");
+		expect(content).toContain("mo");
 		expect(content).toContain("42%");
 	});
 
@@ -765,9 +617,9 @@ describe("usage status-line segment", () => {
 		await flushUsageRefresh();
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
-		expect(content).toContain("30m");
+		expect(content).toContain("5h");
 		expect(content).toContain("24%");
-		expect(content).toContain("6d");
+		expect(content).toContain("7d");
 		expect(content).toContain("8%");
 	});
 
@@ -813,57 +665,5 @@ describe("usage status-line segment", () => {
 		expect(content).toContain("5h");
 		expect(content).toContain("24%");
 		expect(content).not.toContain("7d");
-	});
-});
-
-describe("cost status-line segment", () => {
-	it("keeps non-OAuth cost and premium request billing visible", () => {
-		const result = renderSegment("cost", {
-			usageStats: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				cost: 12.34,
-				premiumRequests: 2,
-			},
-			session: {
-				state: { model: { provider: "openai-codex" } },
-				modelRegistry: { isUsingOAuth: () => false },
-			},
-		} as unknown as SegmentContext);
-		const content = stripVTControlCharacters(result.content);
-
-		expect(result.visible).toBe(true);
-		expect(content).toContain("$12.34");
-		expect(content).toContain("★ 2");
-	});
-
-	it("shows days until reset for monthly usage in the compact cost segment", () => {
-		const result = renderSegment("cost", {
-			usage: { monthly: { percent: 27, resetHours: 437 } },
-			usageStats: {
-				input: 0,
-				output: 0,
-				cacheRead: 0,
-				cacheWrite: 0,
-				cost: 0,
-				premiumRequests: 0,
-			},
-			session: {
-				state: { model: { provider: "opencode-go" } },
-				modelRegistry: { isUsingOAuth: () => true },
-			},
-		} as unknown as SegmentContext);
-		const content = stripVTControlCharacters(result.content);
-
-		expect(result.visible).toBe(true);
-		// Remaining fraction, not used fraction: 100 - 27.
-		expect(content).toContain("73%");
-		// The monthly window (calendar/subscription month) has no fixed span,
-		// so the compact label is the days until the subscription-anniversary
-		// reset (437h → 18d) instead of a bare "mo".
-		expect(content).toContain("18d");
-		expect(content).not.toContain("mo");
 	});
 });

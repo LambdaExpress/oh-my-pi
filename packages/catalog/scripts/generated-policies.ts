@@ -214,6 +214,7 @@ export function rebakeModelThinking(model: ModelSpec<Api>): void {
 	) {
 		return;
 	}
+	if (model.provider === "openrouter" && model.thinking?.requiresEffort === true) return;
 	const requiresProviderAuthoredEffort =
 		model.provider === "umans" && (model.thinking?.requiresEffort === true || model.id === "umans-kimi-k2.7");
 	const thinking = resolveModelThinking({ ...model, thinking: undefined }, buildCompat(model));

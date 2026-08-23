@@ -10,6 +10,7 @@
 import { isDeepseekModelIdOrName } from "@oh-my-pi/pi-catalog/identity";
 
 import { createInbandScanner } from "../dialect/factory";
+import { QwenXmlInbandScanner } from "../dialect/qwen-xml";
 import { ThinkingInbandScanner } from "../dialect/thinking";
 import type { InbandScanEvent, InbandScanner } from "../dialect/types";
 
@@ -23,7 +24,7 @@ export interface HealedToolCall {
 	readonly arguments: string;
 }
 
-export type StreamMarkupHealingPattern = "kimi" | "dsml" | "thinking";
+export type StreamMarkupHealingPattern = "kimi" | "dsml" | "qwen" | "thinking";
 
 export interface StreamMarkupHealingOptions {
 	readonly pattern: StreamMarkupHealingPattern;
@@ -72,7 +73,9 @@ export class StreamMarkupHealing {
 				? createInbandScanner("kimi")
 				: options.pattern === "dsml"
 					? createInbandScanner("xml", { xmlTagset: "dsml" })
-					: undefined;
+					: options.pattern === "qwen"
+						? new QwenXmlInbandScanner()
+						: undefined;
 	}
 
 	get pattern(): StreamMarkupHealingPattern {
@@ -165,6 +168,10 @@ export class StreamMarkupHealing {
 		if (this.#sectionTerminated || !this.#toolScanner) return;
 		if (this.#pattern === "kimi") {
 			this.#sectionTerminated = text.includes(KIMI_SECTION_END);
+			return;
+		}
+		if (this.#pattern === "qwen") {
+			this.#sectionTerminated = text.includes("</tool_calls>");
 			return;
 		}
 		this.#sectionTerminated =

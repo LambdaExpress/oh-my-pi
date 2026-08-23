@@ -306,29 +306,29 @@ describe("SSH connection identities", () => {
 	});
 
 	it("settles an invalidated pending target without reviving it or deleting a replacement pending entry", async () => {
-		const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ssh-identity-race-"));
-		const fakeSsh = path.join(binDir, "ssh");
-		const releasePath = path.join(binDir, "release-old");
-		const logPath = path.join(binDir, "calls.log");
-		const originalPath = process.env.PATH;
-		const originalRelease = process.env.OMP_TEST_SSH_RELEASE;
-		const originalLog = process.env.OMP_TEST_SSH_LOG;
-		await Bun.write(
-			fakeSsh,
-			[
-				"#!/usr/bin/env bash",
-				'printf \'%s\\n\' "$*" >> "$OMP_TEST_SSH_LOG"',
-				'if [[ "$*" == *"old.example"* ]]; then',
-				'  while [[ ! -f "$OMP_TEST_SSH_RELEASE" ]]; do sleep 0.02; done',
-				"fi",
-				`printf '%s\\n' '${connectionManager.HOST_PROBE_MARKER}linux-gnu|/bin/bash|5.2'`,
-				`printf '%s\\n' '${connectionManager.TRANSFER_PROBE_MARKER}Linux'`,
-			].join("\n"),
-		);
-		await fs.chmod(fakeSsh, 0o755);
-		process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
-		process.env.OMP_TEST_SSH_RELEASE = releasePath;
-		process.env.OMP_TEST_SSH_LOG = logPath;
+		const releaseOldProbe = Promise.withResolvers<void>();
+		const execSpy = vi.spyOn(ptree, "exec").mockImplementation(async command => {
+			if (command.includes("old.example")) await releaseOldProbe.promise;
+			const remoteCommand = command.at(-1) ?? "";
+			if (command.includes("-O") && command.includes("check")) {
+				return { exitCode: 1, stdout: "", stderr: "no existing master" } as never;
+			}
+			if (remoteCommand.includes(connectionManager.HOST_PROBE_MARKER)) {
+				return {
+					exitCode: 0,
+					stdout: `${connectionManager.HOST_PROBE_MARKER}linux-gnu|/bin/bash|5.2`,
+					stderr: "",
+				} as never;
+			}
+			if (remoteCommand.includes(connectionManager.TRANSFER_PROBE_MARKER)) {
+				return {
+					exitCode: 0,
+					stdout: `${connectionManager.TRANSFER_PROBE_MARKER}Linux`,
+					stderr: "",
+				} as never;
+			}
+			return { exitCode: 0, stdout: "", stderr: "" } as never;
+		});
 		const oldTarget = {
 			name: "shared",
 			connectionId: `race-old-${crypto.randomUUID()}`,
@@ -350,7 +350,7 @@ describe("SSH connection identities", () => {
 			await newConnection;
 			expect(connectionManager._sshConnectionStateForTests.snapshot().activeKeys).toContain(newKey);
 
-			await Bun.write(releasePath, "release");
+			releaseOldProbe.resolve();
 			await oldConnection;
 			await invalidation;
 			const settled = connectionManager._sshConnectionStateForTests.snapshot();
@@ -359,16 +359,10 @@ describe("SSH connection identities", () => {
 			expect(settled.activeKeys).not.toContain(oldKey);
 			expect(settled.activeKeys).toContain(newKey);
 		} finally {
-			await Bun.write(releasePath, "release");
-			await connectionManager.invalidateSshTarget(oldTarget);
-			await connectionManager.invalidateSshTarget(newTarget);
-			if (originalPath === undefined) delete process.env.PATH;
-			else process.env.PATH = originalPath;
-			if (originalRelease === undefined) delete process.env.OMP_TEST_SSH_RELEASE;
-			else process.env.OMP_TEST_SSH_RELEASE = originalRelease;
-			if (originalLog === undefined) delete process.env.OMP_TEST_SSH_LOG;
-			else process.env.OMP_TEST_SSH_LOG = originalLog;
-			await removeWithRetries(binDir);
+			releaseOldProbe.resolve();
+			await connectionManager.invalidateSshTarget(oldTarget, { invalidateHostInfo: true });
+			await connectionManager.invalidateSshTarget(newTarget, { invalidateHostInfo: true });
+			execSpy.mockRestore();
 		}
 	});
 });

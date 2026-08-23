@@ -442,8 +442,8 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(lines.join("\n")).toContain("first answer");
 		expect(lines.join("\n")).toContain("queued follow-up");
 		// The summary is stable, but the gate must still keep the running follow-up
-		// and everything below it in the repaintable transcript suffix.
-		expect(mode.chatContainer.getNativeScrollbackLiveRegionStart()).toBe(summaryIndex + 1);
+		// and everything below it in the mutable transcript suffix.
+		expect(mode.chatContainer.blockStates()).toContain("active");
 	});
 
 	it("toggles a force-flushed interrupted run and its continuation together", () => {

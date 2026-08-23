@@ -45,6 +45,14 @@ const TEST_CODEX_COMPACTION: CodexCompactionContext = {
 	phase: "pre_turn",
 	strategy: "memento",
 };
+const CODEX_RESIDENCY_TOKEN = `header.${Buffer.from(
+	JSON.stringify({
+		"https://api.openai.com/auth": {
+			chatgpt_account_id: "acct-test",
+			chatgpt_data_residency: "us",
+		},
+	}),
+).toString("base64url")}.signature`;
 
 beforeEach(() => {
 	vi.spyOn(piUtils, "getInstallId").mockReturnValue(TEST_INSTALLATION_ID);
@@ -867,12 +875,15 @@ describe("requestCompactionV2Streaming", () => {
 			"instructions",
 		);
 		let betaFeaturesHeader: string | undefined;
+		let residencyHeader: string | undefined;
 		const fetchMock: FetchImpl = async (_input, init) => {
 			if (!init?.headers || init.headers instanceof Headers || Array.isArray(init.headers)) {
 				throw new Error("Expected V2 compaction to send headers as a plain object");
 			}
 			const rawBetaFeaturesHeader = init.headers["x-codex-beta-features"];
+			const rawResidencyHeader = init.headers["x-openai-internal-codex-residency"];
 			betaFeaturesHeader = typeof rawBetaFeaturesHeader === "string" ? rawBetaFeaturesHeader : undefined;
+			residencyHeader = typeof rawResidencyHeader === "string" ? rawResidencyHeader : undefined;
 			return sseResponse([
 				{
 					type: "response.output_item.done",
@@ -883,9 +894,10 @@ describe("requestCompactionV2Streaming", () => {
 			]);
 		};
 
-		await requestCompactionV2Streaming(model, "test-key", request, undefined, { fetch: fetchMock });
+		await requestCompactionV2Streaming(model, CODEX_RESIDENCY_TOKEN, request, undefined, { fetch: fetchMock });
 
 		expect(betaFeaturesHeader).toBe("remote_compaction_v2");
+		expect(residencyHeader).toBe("us");
 	});
 
 	test("retries transient V2 stream failures with a fresh request attempt", async () => {
@@ -1044,7 +1056,7 @@ describe("Responses Lite remote compaction", () => {
 
 		await requestOpenAiRemoteCompaction(
 			model,
-			"test-key",
+			CODEX_RESIDENCY_TOKEN,
 			[{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
 			"compact instructions",
 			undefined,
@@ -1057,6 +1069,7 @@ describe("Responses Lite remote compaction", () => {
 		);
 
 		expect(captured?.headers.get("x-openai-internal-codex-responses-lite")).toBe("true");
+		expect(captured?.headers.get("x-openai-internal-codex-residency")).toBe("us");
 		expect(captured?.body.reasoning).toEqual({ context: "all_turns" });
 		expect(captured?.body.include).toEqual(["reasoning.encrypted_content"]);
 		expect(captured?.body.instructions).toBeUndefined();
@@ -1095,13 +1108,14 @@ describe("Responses Lite remote compaction", () => {
 		};
 
 		expect(shouldUseCompactionV2Streaming(model)).toBe(true);
-		await requestCompactionV2Streaming(model, "test-key", request, undefined, {
+		await requestCompactionV2Streaming(model, CODEX_RESIDENCY_TOKEN, request, undefined, {
 			fetch: fetchMock,
 			providerSessionState: new Map<string, ProviderSessionState>(),
 			codexCompaction: TEST_CODEX_COMPACTION,
 		});
 
 		expect(captured?.headers.get("x-openai-internal-codex-responses-lite")).toBe("true");
+		expect(captured?.headers.get("x-openai-internal-codex-residency")).toBe("us");
 		expect(captured?.body.reasoning).toEqual({ context: "all_turns" });
 		expect(captured?.body.include).toEqual(["reasoning.encrypted_content"]);
 		expect(captured?.body.instructions).toBeUndefined();
@@ -1271,14 +1285,16 @@ describe("Responses Lite remote compaction", () => {
 		}
 	});
 
-	test("V2 compaction over WebSocket captures a refreshed mid-turn x-codex-turn-state", async () => {
+	test("V2 compaction over WebSocket keeps the first mid-turn x-codex-turn-state", async () => {
 		const midTurnCompaction = { ...TEST_CODEX_COMPACTION, phase: "mid_turn" as const };
 		const providerSessionState = new Map<string, ProviderSessionState>();
 		let responseCount = 0;
 		const webSocket = installCodexCompactionWebSocket({
 			respond: socket => {
 				responseCount += 1;
-				socket.emit({ type: "response.metadata", headers: { "x-codex-turn-state": "refreshed-turn-state" } });
+				// The handshake already seeded `compaction-state-0`; a later
+				// response value must not replace the turn's first sticky token.
+				socket.emit({ type: "response.metadata", headers: { "x-codex-turn-state": "later-turn-state" } });
 				for (const event of compactionV2Events(`enc-metadata-${responseCount}`)) socket.emit(event);
 			},
 		});
@@ -1305,7 +1321,7 @@ describe("Responses Lite remote compaction", () => {
 			const clientMetadata = isRecord(secondRequest?.client_metadata) ? secondRequest.client_metadata : undefined;
 			expect(webSocket.sockets).toHaveLength(1);
 			expect(webSocket.sockets[0]?.sent).toHaveLength(2);
-			expect(clientMetadata?.["x-codex-turn-state"]).toBe("refreshed-turn-state");
+			expect(clientMetadata?.["x-codex-turn-state"]).toBe("compaction-state-0");
 			expect(getOpenAICodexTransportDetails(model, { sessionId, providerSessionState })).toMatchObject({
 				hasTurnState: true,
 			});

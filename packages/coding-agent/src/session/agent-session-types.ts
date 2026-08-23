@@ -151,6 +151,8 @@ export interface InitialRetryFallbackState {
 /** Dependencies and initial state used to construct an AgentSession. */
 export interface AgentSessionConfig {
 	agent: Agent;
+	/** Shared with the provider stream wrapper: current Codex Code Mode tool exposure snapshot for turn metadata. */
+	codeModeState?: { namespacesInfo?: unknown };
 	sessionManager: SessionManager;
 	settings: Settings;
 	/** Re-runnable extension source paths used to build this session's extensions. */
@@ -216,6 +218,8 @@ export interface AgentSessionConfig {
 	setActiveToolNames?: (names: Iterable<string>) => void;
 	/** Registers the write transport when runtime xdev mounts first need it. */
 	ensureWriteRegistered?: () => Promise<boolean>;
+	/** Registers the hidden `goal` tool when goal mode is enabled at runtime. */
+	ensureGoalRegistered?: () => Promise<boolean>;
 	/** Current session pre-LLM message transform pipeline. */
 	transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => AgentMessage[] | Promise<AgentMessage[]>;
 	/** Provider request transform applied after message conversion. */

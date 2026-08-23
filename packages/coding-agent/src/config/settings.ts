@@ -572,6 +572,17 @@ export class Settings {
 		this.#fireEffectiveSettingChanged(path, this.get(path), prev);
 	}
 
+	/** Effective values of every setting that repartitions the Code Mode surface. */
+	#codeModeSignalSnapshot(): unknown[] {
+		return CODE_MODE_SIGNAL_PATHS.map(path => this.get(path));
+	}
+
+	/** Fires the Code Mode signal when a persisted-layer refresh changed the partition inputs. */
+	#fireCodeModeChangeIfNeeded(previous: unknown[]): void {
+		if (Bun.deepEquals(this.#codeModeSignalSnapshot(), previous)) return;
+		codeModeSignal.fire();
+	}
+
 	#fireEffectiveSettingChanged(path: SettingPath, value: unknown, prev: unknown): void {
 		if (Object.is(value, prev)) return;
 		if (path === "statusLine.sessionAccent") {
@@ -579,6 +590,9 @@ export class Settings {
 		}
 		if (path === "modelRoles") {
 			modelRolesSignal.fire();
+		}
+		if (CODE_MODE_SIGNAL_PATHS.includes(path)) {
+			codeModeSignal.fire();
 		}
 	}
 
@@ -677,6 +691,7 @@ export class Settings {
 				modelRoles: this.get("modelRoles"),
 				sessionAccent: this.get("statusLine.sessionAccent"),
 			};
+			const previousCodeModeValues = this.#codeModeSignalSnapshot();
 			const previousHookValues = new Map<SettingPath, unknown>();
 			for (const key of Object.keys(SETTING_HOOKS) as SettingPath[]) {
 				previousHookValues.set(key, this.get(key));
@@ -713,6 +728,7 @@ export class Settings {
 					previousSignaledValues.sessionAccent,
 				);
 			}
+			this.#fireCodeModeChangeIfNeeded(previousCodeModeValues);
 			for (const [key, previous] of previousHookValues) {
 				const next = this.get(key);
 				if (!Bun.deepEquals(next, previous)) {
@@ -741,12 +757,14 @@ export class Settings {
 		await this.flush();
 		this.#restoreRuntimeModelRoleOverrides();
 		const prevModelRoles = this.get("modelRoles");
+		const prevCodeModeValues = this.#codeModeSignalSnapshot();
 		this.#cwd = normalized;
 		if (this.#persist) {
 			this.#project = await this.#loadProjectSettings();
 		}
 		this.#rebuildMerged();
 		this.#fireEffectiveSettingChanged("modelRoles", this.get("modelRoles"), prevModelRoles);
+		this.#fireCodeModeChangeIfNeeded(prevCodeModeValues);
 		this.#fireAllHooks();
 	}
 
@@ -1587,6 +1605,30 @@ export class Settings {
 			todoObj.eager = todoObj.eager ? "always" : "default";
 		}
 
+		// features.unexpectedStopDetection (boolean) -> enum none|mechanical|smart.
+		// `true` reproduced the previous small-model-classified behavior, which is
+		// now "smart"; `false` maps to "none" so explicitly disabled configs remain
+		// off rather than inheriting the new "mechanical" default.
+		// Handles nested and quoted-dotted sources, like inspect_image above.
+		const featuresObj = isRecord(raw.features) ? (raw.features as Record<string, unknown>) : undefined;
+		const legacyUnexpectedStop =
+			typeof featuresObj?.unexpectedStopDetection === "boolean"
+				? featuresObj.unexpectedStopDetection
+				: typeof raw["features.unexpectedStopDetection"] === "boolean"
+					? (raw["features.unexpectedStopDetection"] as boolean)
+					: undefined;
+		if (legacyUnexpectedStop !== undefined) {
+			if (!featuresObj) {
+				raw.features = {};
+			}
+			const target = raw.features as Record<string, unknown>;
+			const current = target.unexpectedStopDetection;
+			const currentIsMode = typeof current === "string" && ["none", "mechanical", "smart"].includes(current);
+			if (!currentIsMode) {
+				target.unexpectedStopDetection = legacyUnexpectedStop ? "smart" : "none";
+			}
+			delete raw["features.unexpectedStopDetection"];
+		}
 		// task.isolation.mode: legacy values from before the pi-iso PAL refactor.
 		// `worktree` was git worktree → now lives under `rcopy`. `fuse-overlay`
 		// and `fuse-projfs` are now the platform-named `overlayfs` / `projfs`
@@ -1975,6 +2017,23 @@ export class Settings {
 			}
 			if (advisorObj) delete advisorObj.subagents;
 			delete raw["advisor.subagents"];
+		}
+
+		// Early per-agent toggles were persisted as booleans even though the
+		// runtime record contract is "on"/"off"/model pattern. Normalize each
+		// layer before merging so project-level false still overrides global true.
+		{
+			const taskObj = isRecord(raw.task) ? raw.task : undefined;
+			if (taskObj) {
+				for (const key of ["agentPrewalk", "agentAdvisor"]) {
+					const overrides = isRecord(taskObj[key]) ? taskObj[key] : undefined;
+					if (!overrides) continue;
+					for (const agentName in overrides) {
+						const value = overrides[agentName];
+						if (typeof value === "boolean") overrides[agentName] = value ? "on" : "off";
+					}
+				}
+			}
 		}
 
 		// v17 renames that used to nest under a boolean parent path:
@@ -2538,7 +2597,25 @@ const modelRolesSignal = new SettingSignal("modelRoles");
 /** Subscribe to model role changes. Returns an unsubscribe function. */
 export const onModelRolesChanged: (cb: () => void) => () => void = modelRolesSignal.on.bind(modelRolesSignal);
 
-/** Fires when an extended-context policy setting changes at runtime. */
+/** Fires when Code Mode activation or its direct keep-set changes at runtime. */
+const codeModeSignal = new SettingSignal("providers.openai-codex.codeMode");
+
+/**
+ * Settings whose effective value changes the Code Mode tool partition. `edit.mode`
+ * belongs here because it renames `EditTool` on the wire (`apply_patch` vs `edit`),
+ * which the namespace metadata is keyed by.
+ */
+const CODE_MODE_SIGNAL_PATHS: readonly SettingPath[] = [
+	"providers.openai-codex.codeMode",
+	"providers.openai-codex.codeModeDirectTools",
+	"eval.js",
+	"edit.mode",
+];
+
+/** Subscribe to Code Mode setting changes. Returns an unsubscribe function. */
+export const onCodeModeChanged = (cb: () => void) => codeModeSignal.on(cb);
+
+/** Fires when `extendedContext` changes at runtime. */
 const extendedContextSignal = new SettingSignal("extendedContext");
 
 /**

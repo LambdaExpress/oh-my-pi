@@ -682,10 +682,16 @@ guidelines on contributing.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+OMP is licensed under the [MIT License](LICENSE).
+
+Third-party and vendored code, including `crates/vendor/brush-core` and the
+third-party portions identified in `crates/pi-builtins/LICENSE`, remains under
+its respective upstream license. See `THIRD-PARTY-NOTICES.txt` and
+component-local notices for attribution and additional terms.
 
 © 2025 Mario Zechner  
-© 2025-2026 Can Bölük
+© 2025-2026 Can Bölük  
+© 2026 Stencil Labs, Inc.
 
 _made for terminals that stay open_
 

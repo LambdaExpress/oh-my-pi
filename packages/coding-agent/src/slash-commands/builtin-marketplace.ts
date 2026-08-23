@@ -43,8 +43,9 @@ export async function reloadTuiPluginState(ctx: InteractiveModeContext): Promise
 export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "marketplace",
-		description: t("Manage marketplace plugin sources and installed plugins"),
-		acpDescription: t("Manage plugins from marketplaces"),
+		icon: "cart",
+		description: "Manage marketplace plugin sources and installed plugins",
+		acpDescription: "Manage plugins from marketplaces",
 		acpInputHint: "<subcommand>",
 		subcommands: [
 			{ name: "add", description: t("Add a marketplace source"), usage: "<source>" },
@@ -451,8 +452,9 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 	},
 	{
 		name: "plugins",
-		description: t("View and manage installed plugins"),
-		acpDescription: t("Manage plugins"),
+		icon: "package",
+		description: "View and manage installed plugins",
+		acpDescription: "Manage plugins",
 		acpInputHint: "[list|enable|disable]",
 		subcommands: [
 			{ name: "list", description: t("List all installed plugins (npm + marketplace)") },
@@ -591,8 +593,9 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 	},
 	{
 		name: "reload-plugins",
-		description: t("Reload all plugins (skills, commands, hooks, tools, agents, MCP)"),
-		acpDescription: t("Reload all plugins"),
+		icon: "restart",
+		description: "Reload all plugins (skills, commands, hooks, tools, agents, MCP)",
+		acpDescription: "Reload all plugins",
 		handle: async (_command, runtime) => {
 			await runtime.reloadPlugins();
 			await runtime.output(t("Plugins reloaded."));

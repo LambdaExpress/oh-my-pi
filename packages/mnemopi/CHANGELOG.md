@@ -6,6 +6,13 @@
 
 - Fixed facts returned by recall being impossible to delete by their visible fact id; `forgetFact()` now deletes visible `facts` rows and invalidates recall caches.
 - Added a non-destructive fact-id visibility check so hosts can distinguish non-editable fact operations from genuinely missing memory ids.
+## [18.0.0] - 2026-08-22
+
+### Fixed
+
+- Fixed false-positive location extraction in episodic gists by properly enforcing capitalization constraints for proper nouns.
+- Improved episodic gist participant extraction with Unicode support to properly capture names in non-Latin scripts (e.g., Cyrillic, Greek).
+
 ## [17.3.8] - 2026-08-19
 
 ### Added

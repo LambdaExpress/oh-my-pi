@@ -189,7 +189,8 @@ export function formatTokenCount(value: number): string {
 export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "security",
-		description: t("Plan, run, inspect, import, and compare OMP-native security scans"),
+		icon: "shield",
+		description: "Plan, run, inspect, import, and compare OMP-native security scans",
 		allowArgs: true,
 		acpInputHint: "<plan|scan|status|cancel|scans|show|import|export|validate|compare|disposition>",
 		subcommands: [
@@ -209,7 +210,8 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "settings",
-		description: t("Open settings menu"),
+		icon: "settings",
+		description: "Open settings menu",
 		handleTui: (_command, runtime) => {
 			runtime.ctx.showSettingsSelector();
 			runtime.ctx.editor.setText("");
@@ -218,7 +220,8 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "setup",
 		aliases: ["providers"],
-		description: t("Open provider setup"),
+		icon: "gear",
+		description: "Open provider setup",
 		allowArgs: true,
 		subcommands: [{ name: "providers", description: t("Configure sign-in and web search providers") }],
 		handleTui: async (command, runtime) => {
@@ -234,7 +237,8 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "plan",
-		description: t("Toggle plan mode (agent plans before executing)"),
+		icon: "plan",
+		description: "Toggle plan mode (agent plans before executing)",
 		inlineHint: "[prompt]",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
@@ -254,7 +258,8 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "plan-review",
-		description: t("Re-open the plan review for the latest plan (plan mode only)"),
+		icon: "plan",
+		description: "Re-open the plan review for the latest plan (plan mode only)",
 		getTuiAutocompleteDescription: runtime =>
 			runtime.ctx.planModeEnabled ? t("Plan review: available") : t("Plan review: plan mode inactive"),
 		handleTui: async (_command, runtime) => {
@@ -264,7 +269,8 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "vibe",
-		description: t("Toggle vibe mode (direct persistent fast/good worker sessions; read-only toolset)"),
+		icon: "wave",
+		description: "Toggle vibe mode (direct persistent fast/good worker sessions; read-only toolset)",
 		inlineHint: "[prompt]",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
@@ -281,7 +287,8 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "goal",
-		description: t("Toggle goal mode (persistent autonomous objective for this session)"),
+		icon: "goal",
+		description: "Toggle goal mode (persistent autonomous objective for this session)",
 		subcommands: [
 			{ name: "set", description: t("Set or replace the goal"), usage: "<objective>" },
 			{ name: "show", description: t("Show current goal details") },
@@ -311,8 +318,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "guided-goal",
-		description: t("Have the agent interview you in chat, then set up goal mode"),
-		inlineHint: t("[rough objective]"),
+		icon: "compass",
+		description: "Have the agent interview you in chat, then set up goal mode",
+		inlineHint: "[rough objective]",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
 			await runWithDetachedModeDraft(command, runtime, () =>
@@ -322,9 +330,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "loop",
-		description: t(
+		icon: "loop",
+		description:
 			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Esc cancels the current iteration; /loop again to disable.",
-		),
 		inlineHint: "[count|duration] [prompt]",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
@@ -346,7 +354,8 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "queue",
-		description: t("Queue a message for after the agent yields"),
+		icon: "inbox",
+		description: "Queue a message for after the agent yields",
 		inlineHint: "<message>",
 		allowArgs: true,
 		handleTui: async (command, runtime) => {
@@ -356,8 +365,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "model",
 		aliases: ["models"],
-		description: t("Switch model for this session"),
-		acpDescription: t("Show current model selection"),
+		icon: "model",
+		description: "Switch model for this session",
+		acpDescription: "Show current model selection",
 		getTuiAutocompleteDescription: runtime => {
 			const model = runtime.ctx.session.model;
 			return model ? t("Model: {model}", { model: `${model.provider}/${model.id}` }) : t("Model: none selected");
@@ -404,7 +414,8 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "switch",
-		description: t("Switch model for this session (same as alt+p)"),
+		icon: "swap",
+		description: "Switch model for this session (same as alt+p)",
 		getTuiAutocompleteDescription: runtime => {
 			const model = runtime.ctx.session.model;
 			return model ? t("Model: {model}", { model: `${model.provider}/${model.id}` }) : t("Model: none selected");
@@ -416,8 +427,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "fast",
-		description: t("Toggle priority service tier (OpenAI service_tier=priority, Anthropic speed=fast)"),
-		acpDescription: t("Toggle fast mode"),
+		icon: "fast",
+		description: "Toggle priority service tier (OpenAI service_tier=priority, Anthropic speed=fast)",
+		acpDescription: "Toggle fast mode",
 		acpInputHint: "[on|off|status]",
 		subcommands: [
 			{ name: "on", description: t("Enable fast mode") },
@@ -488,8 +500,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "extended-context",
-		description: t("Toggle premium long-context windows"),
-		acpDescription: t("Toggle extended context"),
+		icon: "expand",
+		description: "Toggle premium long-context windows",
+		acpDescription: "Toggle extended context",
 		acpInputHint: "[on|off|status]",
 		subcommands: [
 			{ name: "on", description: t("Enable premium long-context windows") },
@@ -514,8 +527,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "computer",
-		description: t("Toggle the native computer-use tool for this session"),
-		acpDescription: t("Toggle computer use"),
+		icon: "computer",
+		description: "Toggle the native computer-use tool for this session",
+		acpDescription: "Toggle computer use",
 		acpInputHint: "[on|off|status]",
 		subcommands: [
 			{ name: "on", description: t("Enable computer use for this session") },
@@ -558,8 +572,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "vision",
-		description: t("Control the inspect_image vision-delegation tool for this session"),
-		acpDescription: t("Toggle vision delegation"),
+		icon: "eye",
+		description: "Control the inspect_image vision-delegation tool for this session",
+		acpDescription: "Toggle vision delegation",
 		acpInputHint: "[on|off|auto|status]",
 		subcommands: [
 			{ name: "on", description: t("Always expose inspect_image this session") },
@@ -600,8 +615,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	},
 	{
 		name: "prewalk",
-		description: t("Switch to a fast/cheap model at the next action (works even without --prewalk)"),
-		acpDescription: t("Prewalk at the next action"),
+		icon: "prewalk",
+		description: "Switch to a fast/cheap model at the next action (works even without --prewalk)",
+		acpDescription: "Prewalk at the next action",
 		handle: async (_command, runtime) => {
 			const rolePattern = expandRoleAlias("@smol", runtime.settings);
 			const resolved = resolveCliModel({

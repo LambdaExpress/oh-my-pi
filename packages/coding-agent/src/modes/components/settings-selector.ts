@@ -1190,8 +1190,6 @@ function translatedLabel(path: SettingPath, fallback: string): string {
 			return t("IME-Safe Prompt Layout");
 		case "tui.renderMermaid":
 			return t("Render Mermaid Diagrams");
-		case "tui.scrollbackRebuild":
-			return t("Rewrite Scrollback");
 		case "tui.textSizing":
 			return t("Large Headings (Kitty)");
 		case "tui.tight":
@@ -2073,10 +2071,6 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			return t("Move the prompt's bottom border to a separate row so macOS IME preedit cannot displace it");
 		case "tui.renderMermaid":
 			return t("Render Mermaid fenced code blocks as ASCII diagrams");
-		case "tui.scrollbackRebuild":
-			return t(
-				"Erase and replay terminal scrollback when a block's final form replaces its live preview. When off (default), stale preview copies remain in history and the final content is appended below.",
-			);
 		case "tui.textSizing":
 			return t(
 				"Render Markdown H1 headings at 2x scale using Kitty's OSC 66 text-sizing protocol. Only takes effect on Kitty terminals; ignored everywhere else. Off by default.",
@@ -4164,6 +4158,7 @@ export class SettingsSelectorComponent implements Component {
 		this.#pluginComponent = new PluginSettingsComponent(this.context.cwd, {
 			onClose: () => this.callbacks.onCancel(),
 			onPluginChanged: () => this.callbacks.onPluginsChanged?.(),
+			requestRender: this.context.requestRender,
 		});
 	}
 

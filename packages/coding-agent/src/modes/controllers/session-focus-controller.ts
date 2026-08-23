@@ -116,13 +116,7 @@ export class SessionFocusController {
 			// without replacing this session's existing expand/collapse choices.
 			this.ctx.recoverCompletedRunCollapses({ includeLatest: true });
 		}
-		await this.ctx.renderInitialMessages({
-			clearTerminalHistory: true,
-			// Focus swaps clear transcript-anchored controller state. Restore the
-			// unfinished run for both streaming and async-waiting sessions so later
-			// steer/follow-up messages retain the original collapse boundary.
-			recoverCompletedRunAnchor: true,
-		});
+		await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
 		// clearTransientSessionUi above wiped the pending bar; rebuild it for the
 		// newly attached view session so queued steer/follow-up chips survive a
 		// focus round-trip (focus → unfocus) instead of staying invisible.

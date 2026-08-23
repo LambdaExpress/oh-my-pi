@@ -103,11 +103,11 @@ Cut decision-free material: restated invariants, unaffected behavior, mechanical
 </directives>
 
 <caution>
-Approval execution modes:
+Review options:
 - **Approve and execute** — fresh context (session cleared).
 - **Approve and compact context** — discussion distilled, then executes here.
 - **Approve and keep context** — executes here with exploration history.
-- **Approve and execute in goal mode** — fresh context, then goal mode starts with the plan as the objective so execution continues autonomously until verified complete.
+- **Save and quit** — copies the plan to a chosen path, then starts a new session.
 
 All require self-contained file.
 </caution>

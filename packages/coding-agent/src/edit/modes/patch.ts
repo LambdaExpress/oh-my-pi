@@ -34,6 +34,7 @@ import {
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd } from "../../tools/path-utils";
 import { ToolError } from "../../tools/tool-errors";
+import type { AppliedEditObserver } from "../blackbox";
 import {
 	ApplyPatchError,
 	type DiffHunk,
@@ -1920,6 +1921,8 @@ export interface ExecutePatchSingleOptions {
 	allowCreateOverwrite?: boolean;
 	writethrough: WritethroughCallback;
 	beginDeferredDiagnosticsForPath: (path: string) => WritethroughDeferredHandle;
+	/** Observes a committed content transition before result snapshots are pruned. */
+	onApplied?: AppliedEditObserver;
 }
 
 class LocalEditFileSystem implements FileSystem {
@@ -2035,6 +2038,7 @@ export async function executePatchSingle(
 		allowCreateOverwrite,
 		writethrough,
 		beginDeferredDiagnosticsForPath,
+		onApplied,
 	} = options;
 	const { op: rawOp, rename, diff } = params;
 
@@ -2195,6 +2199,13 @@ export async function executePatchSingle(
 
 	const oldText = result.change.type !== "create" ? result.change.oldContent : undefined;
 	const newText = result.change.type !== "delete" ? result.change.newContent : undefined;
+	if (oldText !== undefined && newText !== undefined) {
+		await onApplied?.({
+			path: result.change.newPath ?? resolvedPath,
+			prev: oldText,
+			next: newText,
+		});
+	}
 
 	return {
 		content: [{ type: "text", text: resultText }],
