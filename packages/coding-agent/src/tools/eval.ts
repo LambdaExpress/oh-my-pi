@@ -604,7 +604,11 @@ export class EvalTool implements AgentTool<typeof evalSchema> {
 					throw error;
 				}
 			},
-			{ ownerId: session.getAgentId?.() ?? undefined },
+			{
+				input: params.code,
+				ownerId: session.getAgentId?.() ?? undefined,
+				scopeId: session.getAgentScopeId?.() ?? undefined,
+			},
 		);
 
 		if (startBackgrounded) {

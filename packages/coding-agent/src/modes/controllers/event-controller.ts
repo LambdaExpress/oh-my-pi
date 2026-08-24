@@ -18,6 +18,7 @@ import {
 	readArgsCollapseIntoGroup,
 	readArgsHaveTarget,
 } from "../../modes/components/read-tool-group";
+import { isActiveSshTransferJob, sshTransferJobDetails } from "../../modes/components/ssh-transfer-hud";
 import { TodoReminderComponent } from "../../modes/components/todo-reminder";
 import { ToolExecutionComponent, type ToolExecutionHandle } from "../../modes/components/tool-execution";
 import { TtsrNotificationComponent } from "../../modes/components/ttsr-notification";
@@ -172,7 +173,7 @@ export class EventController {
 	#lastVisibleBlockCount = 0;
 	#renderedCustomMessages = new Set<string>();
 	#lastIntent: string | undefined = undefined;
-	#backgroundTaskCallIds = new Set<string>();
+	#backgroundToolCallIds = new Set<string>();
 	/** Tool calls whose approval prompt drove the title into `attention`; cleared
 	 *  at their tool_execution_end so the title returns to `working`. */
 	#approvalAttentionToolCallIds = new Set<string>();
@@ -468,6 +469,27 @@ export class EventController {
 	async #handleAsyncJobUpdate(event: Extract<AgentSessionEvent, { type: "async_job_update" }>): Promise<void> {
 		if (event.job.type !== "ssh_transfer") return;
 		this.ctx.sshTransferHud.update(event.job);
+		const toolCallId = event.job.toolCallId;
+		const component = toolCallId ? this.ctx.pendingTools.get(toolCallId) : undefined;
+		const details = sshTransferJobDetails(event.job);
+		if (toolCallId && component instanceof ToolExecutionComponent && details) {
+			const isActive = isActiveSshTransferJob(event.job);
+			component.updateResult(
+				{
+					content: [{ type: "text", text: event.job.progress?.text ?? "" }],
+					details,
+					isError: !isActive && (event.job.status === "failed" || event.job.status === "cancelled"),
+				},
+				isActive,
+				toolCallId,
+			);
+			if (isActive) {
+				this.#backgroundToolCallIds.add(toolCallId);
+			} else {
+				this.ctx.pendingTools.delete(toolCallId);
+				this.#backgroundToolCallIds.delete(toolCallId);
+			}
+		}
 		this.#syncSshTransferHud();
 	}
 
@@ -828,7 +850,7 @@ export class EventController {
 		this.#syntheticFailureCards.clear();
 		this.#orphanedToolCompletions.clear();
 		this.#postToolAssistantComponents.clear();
-		this.#backgroundTaskCallIds.clear();
+		this.#backgroundToolCallIds.clear();
 		this.#approvalAttentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
@@ -1563,7 +1585,7 @@ export class EventController {
 					this.ctx.streamingMessage.stopReason === "aborted" && this.ctx.viewSession.isTtsrAbortPending;
 				if (supersededByRewind) {
 					for (const [toolCallId, component] of Array.from(this.ctx.pendingTools.entries())) {
-						if (this.#backgroundTaskCallIds.has(toolCallId)) continue;
+						if (this.#backgroundToolCallIds.has(toolCallId)) continue;
 						if (
 							!(component instanceof ToolExecutionComponent) &&
 							!(component instanceof ReadToolGroupComponent)
@@ -1758,7 +1780,7 @@ export class EventController {
 			// While the call is still executing — a mixed blocking+async task
 			// call whose jobs settle before its blocking subset — treat it as a
 			// partial frame: `tool_execution_end` still owns the terminal result.
-			const isTerminal = isFinalAsyncState && this.#backgroundTaskCallIds.has(event.toolCallId);
+			const isTerminal = isFinalAsyncState && this.#backgroundToolCallIds.has(event.toolCallId);
 			component.updateResult(
 				{ ...event.partialResult, isError: asyncState === "failed" },
 				!isTerminal,
@@ -1766,7 +1788,7 @@ export class EventController {
 			);
 			if (isTerminal) {
 				this.ctx.pendingTools.delete(event.toolCallId);
-				this.#backgroundTaskCallIds.delete(event.toolCallId);
+				this.#backgroundToolCallIds.delete(event.toolCallId);
 			}
 			this.ctx.ui.requestRender();
 		}
@@ -1888,16 +1910,18 @@ export class EventController {
 			if (component) {
 				const asyncState = (event.result.details as { async?: { state?: string } } | undefined)?.async?.state;
 				const isBackgroundRunning = asyncState === "running";
-				const isBackgroundTask = event.toolName === "task" && isBackgroundRunning;
-				const detachToTransferHud = event.toolName === "ssh_transfer" && isBackgroundRunning;
-				component.updateResult({ ...event.result, isError: event.isError }, isBackgroundTask, event.toolCallId);
-				if (isBackgroundTask) {
-					component.parkAsBackground();
-					this.#backgroundTaskCallIds.add(event.toolCallId);
+				const isBackgroundTool =
+					(event.toolName === "task" || event.toolName === "ssh_transfer") && isBackgroundRunning;
+				component.updateResult({ ...event.result, isError: event.isError }, isBackgroundTool, event.toolCallId);
+				if (isBackgroundTool) {
+					// Task cards may retire while their detached children run because their
+					// later completion is delivered separately. SSH cards repaint in place,
+					// so they must remain mutable until the transfer reaches a terminal state.
+					if (event.toolName === "task") component.parkAsBackground();
+					this.#backgroundToolCallIds.add(event.toolCallId);
 				} else {
 					this.ctx.pendingTools.delete(event.toolCallId);
-					this.#backgroundTaskCallIds.delete(event.toolCallId);
-					if (detachToTransferHud && component instanceof ToolExecutionComponent) component.seal();
+					this.#backgroundToolCallIds.delete(event.toolCallId);
 				}
 				if (component instanceof ToolExecutionComponent && component.isDisplaceableBlock()) {
 					if (event.toolName === "hub" && component.canBeDisplacedBy("hub")) {
@@ -2248,7 +2272,7 @@ export class EventController {
 		}
 		await this.ctx.flushPendingModelSwitch();
 		for (const toolCallId of Array.from(this.ctx.pendingTools.keys())) {
-			if (!this.#backgroundTaskCallIds.has(toolCallId)) {
+			if (!this.#backgroundToolCallIds.has(toolCallId)) {
 				// A foreground tool still pending at turn end never delivered a result;
 				// seal it so it freezes (and stops animating) rather than lingering in
 				// the transcript live region as a streaming preview until the next thaw.
@@ -2262,8 +2286,8 @@ export class EventController {
 				this.ctx.pendingTools.delete(toolCallId);
 			}
 		}
-		this.#backgroundTaskCallIds = new Set(
-			Array.from(this.#backgroundTaskCallIds).filter(toolCallId => this.ctx.pendingTools.has(toolCallId)),
+		this.#backgroundToolCallIds = new Set(
+			Array.from(this.#backgroundToolCallIds).filter(toolCallId => this.ctx.pendingTools.has(toolCallId)),
 		);
 		this.#approvalAttentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();

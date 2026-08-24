@@ -40,6 +40,7 @@ interface AppKeybindings {
 	"app.clipboard.copyLine": true;
 	"app.clipboard.copyPrompt": true;
 	"app.agents.hub": true;
+	"app.jobs.hub": true;
 	"app.session.new": true;
 	"app.session.tree": true;
 	"app.session.fork": true;
@@ -190,6 +191,10 @@ export const KEYBINDINGS = {
 	"app.agents.hub": {
 		defaultKeys: "alt+a",
 		description: "Open the agent hub",
+	},
+	"app.jobs.hub": {
+		defaultKeys: "alt+j",
+		description: "Open the background jobs hub",
 	},
 	"app.session.observe": {
 		defaultKeys: "ctrl+s",

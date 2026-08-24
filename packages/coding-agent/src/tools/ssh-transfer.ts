@@ -390,6 +390,7 @@ export class SshTransferTool implements AgentTool<typeof sshTransferSchema, SshT
 					}
 				},
 				{
+					input: `${params.op} ${localPath} ${remotePath}`,
 					toolCallId,
 					ownerId: this.session.getAgentId?.() ?? undefined,
 					scopeId: this.session.getAgentScopeId?.() ?? undefined,

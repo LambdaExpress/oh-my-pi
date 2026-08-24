@@ -42,7 +42,6 @@ import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/c
 import { buildHotkeysMarkdown } from "../../modes/utils/hotkeys-markdown";
 import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
 import { shouldCollapseCompactedHistoryForDisplay } from "../../modes/utils/transcript-render-helpers";
-import type { AsyncJobSnapshotItem } from "../../session/agent-session";
 import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
@@ -506,40 +505,7 @@ export class CommandController {
 	}
 
 	async handleJobsCommand(): Promise<void> {
-		const snapshot = this.ctx.session.getAsyncJobSnapshot({ recentLimit: 5 });
-		if (!snapshot) {
-			this.ctx.showWarning(t("Async background jobs are unavailable in this session."));
-			return;
-		}
-
-		const now = Date.now();
-		const lineWidth = Math.max(24, (this.ctx.ui.terminal.columns ?? 100) - 24);
-		let info = `${theme.bold(t("Background Jobs"))}\n\n`;
-		info += `${theme.fg("dim", t("Running:"))} ${snapshot.running.length}\n`;
-
-		if (snapshot.running.length === 0 && snapshot.recent.length === 0) {
-			info += `\n${theme.fg("dim", t("No async jobs yet."))}\n`;
-			this.ctx.presentCommandOutput([new Spacer(1), new Text(info, 1, 0)]);
-			return;
-		}
-
-		if (snapshot.running.length > 0) {
-			info += `\n${theme.bold(t("Running Jobs"))}\n`;
-			for (const job of snapshot.running) {
-				info += `${renderJobLine(job, now)}\n`;
-				info += `  ${theme.fg("dim", truncateJobLabel(job.label, lineWidth))}\n`;
-			}
-		}
-
-		if (snapshot.recent.length > 0) {
-			info += `\n${theme.bold(t("Recent Jobs"))}\n`;
-			for (const job of snapshot.recent) {
-				info += `${renderJobLine(job, now)}\n`;
-				info += `  ${theme.fg("dim", truncateJobLabel(job.label, lineWidth))}\n`;
-			}
-		}
-
-		this.ctx.presentCommandOutput([new Spacer(1), new Text(info.trimEnd(), 1, 0)]);
+		this.ctx.showBackgroundJobsHub();
 	}
 
 	async handleUsageCommand(reports?: UsageReport[] | null): Promise<void> {
@@ -1597,19 +1563,6 @@ export class CommandController {
 
 const BAR_WIDTH_MAX = 24;
 const COLUMN_WIDTH_MIN = 4;
-
-function renderJobLine(job: AsyncJobSnapshotItem, now: number): string {
-	const duration = formatDuration(Math.max(0, now - job.startTime));
-	const status = formatJobStatus(job.status);
-	return `${theme.fg("dim", job.id)} ${theme.fg("dim", `[${job.type}]`)} ${status} ${theme.fg("dim", `(${duration})`)}`;
-}
-
-function formatJobStatus(status: AsyncJobSnapshotItem["status"]): string {
-	if (status === "running") return theme.fg("warning", t("running"));
-	if (status === "completed") return theme.fg("success", t("completed"));
-	if (status === "cancelled") return theme.fg("dim", t("cancelled"));
-	return theme.fg("error", t("failed"));
-}
 
 function truncateJobLabel(label: string, maxWidth: number): string {
 	if (visibleWidth(label) <= maxWidth) return label;

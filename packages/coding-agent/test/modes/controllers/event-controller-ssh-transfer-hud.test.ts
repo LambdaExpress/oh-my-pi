@@ -9,22 +9,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { SshTransferHud } from "@oh-my-pi/pi-coding-agent/modes/components/ssh-transfer-hud";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
+import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AsyncJobSnapshotItem } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SshTransferToolDetails } from "@oh-my-pi/pi-coding-agent/tools/ssh-transfer";
 
-function transferDetails(status: SshTransferToolDetails["status"]): SshTransferToolDetails {
+function transferDetails(
+	status: SshTransferToolDetails["status"],
+	percent = status === "completed" ? 100 : 25,
+): SshTransferToolDetails {
+	const totalBytes = 1024 * 1024;
 	return {
 		operation: "upload",
 		host: "fixture",
 		localPath: "/tmp/blob.bin",
 		remotePath: "/srv/blob.bin",
 		status,
-		totalBytes: 1024 * 1024,
-		transferredBytes: status === "completed" ? 1024 * 1024 : 256 * 1024,
-		percent: status === "completed" ? 100 : 25,
+		totalBytes,
+		transferredBytes: (totalBytes * percent) / 100,
+		percent,
 		bytesPerSecond: 128 * 1024,
 		averageBytesPerSecond: 128 * 1024,
 		elapsedMs: 2_000,
@@ -38,7 +44,7 @@ function transferDetails(status: SshTransferToolDetails["status"]): SshTransferT
 
 function transferJob(
 	status: AsyncJobSnapshotItem["status"],
-	options: { settled?: boolean } = {},
+	options: { percent?: number; settled?: boolean } = {},
 ): AsyncJobSnapshotItem {
 	return {
 		id: "bg_1",
@@ -49,7 +55,9 @@ function transferJob(
 		toolCallId: "tool-1",
 		progress: {
 			text: "transfer progress",
-			details: { ...transferDetails(status === "running" ? "running" : "completed") },
+			details: {
+				...transferDetails(status === "running" ? "running" : "completed", options.percent),
+			},
 			updatedAt: 200,
 		},
 		...(options.settled ? { settledAt: 300 } : {}),
@@ -70,16 +78,22 @@ describe("EventController SSH transfer HUD persistence", () => {
 
 	function createFixture() {
 		const sshTransferHud = new SshTransferHud();
+		const chatContainer = new TranscriptContainer();
 		const ctx = {
 			isInitialized: true,
 			init: vi.fn(async () => {}),
-			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
+			ui: {
+				requestRender: vi.fn(),
+				requestComponentRender: vi.fn(),
+				refreshDisplay: vi.fn(),
+				resetDisplay: vi.fn(),
+			},
 			statusLine: { invalidate: vi.fn() },
 			updateEditorTopBorder: vi.fn(),
 			toolOutputExpanded: false,
 			transcriptMessageComponents: new WeakMap(),
 			pendingTools: new Map(),
-			chatContainer: { addChild: vi.fn() },
+			chatContainer,
 			sshTransferHud,
 			sshTransferContainer: { clear: vi.fn(), addChild: vi.fn() },
 			session: { getToolByName: () => undefined, hasBuiltInTool: () => true, isStreaming: true },
@@ -90,8 +104,69 @@ describe("EventController SSH transfer HUD persistence", () => {
 			addMessageToChat: vi.fn(),
 			optimisticCustomMessageSignature: undefined,
 		} as unknown as InteractiveModeContext;
-		return { controller: new EventController(ctx), sshTransferHud };
+		return { controller: new EventController(ctx), ctx, chatContainer, sshTransferHud };
 	}
+
+	it("repaints the original tool card while a background upload advances", async () => {
+		const { controller, ctx, chatContainer, sshTransferHud } = createFixture();
+		await controller.handleEvent({
+			type: "tool_execution_start",
+			toolCallId: "tool-1",
+			toolName: "ssh_transfer",
+			args: {
+				op: "upload",
+				host: "fixture",
+				local_path: "/tmp/blob.bin",
+				remote_path: "/srv/blob.bin",
+				async: true,
+			},
+		});
+		const component = ctx.pendingTools.get("tool-1");
+		expect(component).toBeInstanceOf(ToolExecutionComponent);
+		if (!(component instanceof ToolExecutionComponent)) throw new Error("SSH transfer card was not created");
+
+		try {
+			await controller.handleEvent({
+				type: "tool_execution_end",
+				toolCallId: "tool-1",
+				toolName: "ssh_transfer",
+				isError: false,
+				result: {
+					content: [{ type: "text", text: "started" }],
+					details: transferDetails("running", 0),
+				},
+			});
+			expect(ctx.pendingTools.get("tool-1")).toBe(component);
+			expect(component.isTranscriptBlockFinalized()).toBe(false);
+			expect(chatContainer.peekFinalizedBatch(100, 0)).toBeUndefined();
+
+			await controller.handleEvent({
+				type: "async_job_update",
+				job: transferJob("running", { percent: 75 }),
+			});
+			const running = chatContainer
+				.renderViewport(100, 30)
+				.map(line => Bun.stripANSI(line))
+				.join("\n");
+			expect(running).toContain("75.0%");
+			expect(running).not.toContain("0.0%");
+			expect(sshTransferHud.size).toBe(1);
+
+			await controller.handleEvent({
+				type: "async_job_update",
+				job: transferJob("completed", { percent: 100, settled: true }),
+			});
+			const completed = chatContainer
+				.renderViewport(100, 30)
+				.map(line => Bun.stripANSI(line))
+				.join("\n");
+			expect(completed).toContain("100.0%");
+			expect(completed).not.toContain("75.0%");
+			expect(ctx.pendingTools.has("tool-1")).toBe(false);
+		} finally {
+			component.seal();
+		}
+	});
 
 	it("clears a settled transfer from the HUD when hub wait consumed its delivery", async () => {
 		const { controller, sshTransferHud } = createFixture();

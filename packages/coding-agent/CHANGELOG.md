@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added a fullscreen `/jobs` hub, available with `Alt+J`, that aggregates live and completed Bash, Eval, Task, and SSH transfer jobs from every agent in the current session, with originating-agent identity, full input, elapsed time, transfer details, and live or terminal output.
 - Added Apple Silicon and Intel macOS binaries to fork code releases, enabling in-place upgrades through `omp update` on both architectures.
 - Added a configurable premium extended-context window in `/settings`; affected models use the larger of the configured and advertised windows, with compact `K`/`M` values such as `372K` and a `1M` default.
 - Added write-gated collab thinking controls, with model-supported selectors published in session state and authoritative changes broadcast to every guest.
@@ -62,6 +63,8 @@
 
 ### Fixed
 
+- Fixed SSH uploads refreshing progress only after the first chunk and at completion; POSIX and PowerShell targets now report remotely persisted bytes throughout the transfer, keeping both tool cards and the background jobs hub live.
+- Fixed background SSH transfers leaving their original tool card at 0% instead of repainting live progress and the terminal result.
 - Fixed fork bootstrap installs falling back to the upstream npm package when Bun was present, and made Windows installs take PATH precedence over older upstream installations immediately.
 - Fixed repeated `Ctrl+O` tool-output toggles leaving expanded rows in terminal scrollback after those rows moved outside the active viewport.
 - Fixed long model paragraphs containing ordinary prose or closed inline code being limited to one terminal screen while streaming; completed wrapped rows now enter native scrollback before the reply finishes.

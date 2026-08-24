@@ -11,11 +11,11 @@ import {
 import { Ellipsis, renderStatusLine, truncateToWidth } from "../../tui";
 import { theme } from "../theme/theme";
 
-function isActiveTransfer(job: AsyncJobSnapshotItem): boolean {
+export function isActiveSshTransferJob(job: AsyncJobSnapshotItem): boolean {
 	return job.status === "running" || (job.status === "cancelled" && job.settledAt === undefined);
 }
 
-function transferDetails(job: AsyncJobSnapshotItem): SshTransferToolDetails | undefined {
+export function sshTransferJobDetails(job: AsyncJobSnapshotItem): SshTransferToolDetails | undefined {
 	const details = job.progress?.details;
 	if (!isSshTransferToolDetails(details)) return undefined;
 	if (job.status !== "cancelled" || job.settledAt !== undefined) {
@@ -63,7 +63,7 @@ export class SshTransferHud implements Component {
 		let changed = false;
 		for (const jobId of jobIds) {
 			const job = this.#jobs.get(jobId);
-			if (!job || isActiveTransfer(job)) continue;
+			if (!job || isActiveSshTransferJob(job)) continue;
 			this.#jobs.delete(jobId);
 			changed = true;
 		}
@@ -86,7 +86,7 @@ export class SshTransferHud implements Component {
 		const jobs = [...this.#jobs.values()].sort((a, b) => a.startTime - b.startTime || a.id.localeCompare(b.id));
 		if (jobs.length === 0) return [];
 
-		const activeCount = jobs.filter(isActiveTransfer).length;
+		const activeCount = jobs.filter(isActiveSshTransferJob).length;
 		const header = renderStatusLine(
 			{
 				icon: activeCount > 0 ? "info" : "success",
@@ -98,10 +98,10 @@ export class SshTransferHud implements Component {
 		const lines: string[] = [header];
 		for (let index = 0; index < jobs.length; index++) {
 			const job = jobs[index]!;
-			const details = transferDetails(job);
+			const details = sshTransferJobDetails(job);
 			const branch = index === jobs.length - 1 ? theme.tree.last : theme.tree.branch;
 			const continuation = index === jobs.length - 1 ? "  " : theme.tree.vertical;
-			const status = isActiveTransfer(job)
+			const status = isActiveSshTransferJob(job)
 				? "running"
 				: job.status === "completed"
 					? "success"

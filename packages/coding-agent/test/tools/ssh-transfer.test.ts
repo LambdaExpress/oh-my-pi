@@ -100,10 +100,9 @@ describe("SshTransferTool", () => {
 
 	it("registers background transfers with owner, scope, tool call, and terminal progress", async () => {
 		const completions: string[] = [];
-		const manager = new AsyncJobManager({
-			onJobComplete: async (_jobId, text) => {
-				completions.push(text);
-			},
+		const manager = new AsyncJobManager({});
+		manager.registerDeliverySink("Main", async (_jobId, text) => {
+			completions.push(text);
 		});
 		const session = createSession(manager);
 		const tool = new SshTransferTool(session, [HOST.name], new Map([[HOST.name, HOST]]), "fixture");
@@ -130,6 +129,8 @@ describe("SshTransferTool", () => {
 		expect(job?.ownerId).toBe("Main");
 		expect(job?.scopeId).toBe("scope-1");
 		expect(job?.toolCallId).toBe("transfer-2");
+		expect(job?.progress?.text).toContain("50.0%");
+		expect(job?.progress?.details?.transferredBytes).toBe(512 * 1024);
 		expect(result.content[0]?.type === "text" ? result.content[0].text : "").toContain("delivered automatically");
 
 		execution.resolve(progress(1024 * 1024, 4_000));

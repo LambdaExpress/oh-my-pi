@@ -25,6 +25,12 @@ describe("KeybindingsManager.getDisplayString", () => {
 		expect(keybindings.getDisplayString("app.retry")).toBe("Alt+R");
 	});
 
+	it("defaults the background jobs hub to Alt+J", () => {
+		const keybindings = KeybindingsManager.inMemory();
+
+		expect(keybindings.getDisplayString("app.jobs.hub")).toBe("Alt+J");
+	});
+
 	it("defaults suspend to disabled while showing Ctrl+Z for editor undo", () => {
 		const keybindings = KeybindingsManager.inMemory();
 

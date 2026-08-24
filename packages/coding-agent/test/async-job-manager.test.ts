@@ -511,6 +511,11 @@ describe("AsyncJobManager", () => {
 			legacyId,
 		]);
 		expect(manager.getAllJobs({ scopeId: "scope-old" }).map(job => job.id)).toEqual([matchingId, otherOwnerId]);
+		expect(manager.getSessionScopeJobs("scope-old", "shared-owner").map(job => job.id)).toEqual([
+			matchingId,
+			otherOwnerId,
+			legacyId,
+		]);
 		expect(manager.getJob(matchingId)?.scopeId).toBe("scope-old");
 		expect(manager.cancel(matchingId, { ownerId: "shared-owner", scopeId: "scope-current" })).toBe(false);
 		expect(manager.cancel(matchingId, { ownerId: "other-owner", scopeId: "scope-old" })).toBe(false);
@@ -518,6 +523,45 @@ describe("AsyncJobManager", () => {
 
 		manager.cancelAll();
 		await manager.waitForAll();
+	});
+
+	test("retains bounded session history after live job ids expire", async () => {
+		const manager = new AsyncJobManager({
+			onJobComplete: async () => {},
+			retentionMs: 0,
+			maxRunningJobs: 200,
+		});
+		const jobId = manager.register("eval", "calculate totals", async () => "42", {
+			input: "display(calculateTotals())",
+			ownerId: "MetricsAgent",
+			scopeId: "session-1",
+		});
+		await manager.waitForAll();
+
+		expect(manager.getJob(jobId)).toBeUndefined();
+		expect(manager.getSessionScopeJobs("session-1", "Main")).toMatchObject([
+			{
+				id: jobId,
+				status: "completed",
+				input: "display(calculateTotals())",
+				ownerId: "MetricsAgent",
+				resultText: "42",
+			},
+		]);
+		for (let index = 0; index < 100; index++) {
+			manager.register("bash", `history-${index}`, async () => String(index), {
+				ownerId: "MetricsAgent",
+				scopeId: "session-1",
+			});
+		}
+		await manager.waitForAll();
+		const history = manager.getSessionScopeJobs("session-1", "Main");
+		expect(history).toHaveLength(100);
+		expect(history.some(job => job.id === jobId)).toBe(false);
+		expect(history.some(job => job.label === "history-99")).toBe(true);
+
+		await manager.retireScope("session-1");
+		expect(manager.getSessionScopeJobs("session-1", "Main")).toEqual([]);
 	});
 
 	test("retireScope fences synchronously, cancels and awaits only matching jobs", async () => {

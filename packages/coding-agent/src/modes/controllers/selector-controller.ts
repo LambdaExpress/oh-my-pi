@@ -31,6 +31,7 @@ import {
 	getPluginsCacheDir,
 	MarketplaceManager,
 } from "../../extensibility/plugins/marketplace";
+import { t } from "../../i18n";
 import {
 	getAvailableThemes,
 	getSymbolTheme,
@@ -86,6 +87,7 @@ import { type AdvisorConfigDeps, AdvisorConfigOverlayComponent } from "../compon
 import { AgentHubOverlayComponent } from "../components/agent-hub";
 import { AgentsHubComponent } from "../components/agents-hub";
 import { AssistantMessageComponent } from "../components/assistant-message";
+import { BackgroundJobsHubComponent } from "../components/background-jobs-hub";
 import { CopySelectorComponent } from "../components/copy-selector";
 import { ExtensionDashboard } from "../components/extensions";
 import { listLiveToolRecords, liveToolRecordFromSession } from "../components/extensions/live-tool-session";
@@ -2182,5 +2184,29 @@ export class SelectorController {
 		} else {
 			showReadyHub();
 		}
+	}
+
+	showBackgroundJobsHub(): void {
+		if (!this.ctx.session.getAsyncJobSnapshot({ recentLimit: 1, visibility: "session" })) {
+			this.ctx.showWarning(t("Async background jobs are unavailable in this session."));
+			return;
+		}
+		let overlayHandle: OverlayHandle | undefined;
+		let closed = false;
+		const done = () => {
+			if (closed) return;
+			closed = true;
+			hub.dispose();
+			overlayHandle?.hide();
+			this.focusActiveEditorArea();
+			this.ctx.ui.requestRender();
+		};
+		const hub = new BackgroundJobsHubComponent({
+			ui: this.ctx.ui,
+			getSnapshot: () => this.ctx.session.getAsyncJobSnapshot({ recentLimit: 100, visibility: "session" }),
+			onDone: done,
+			requestRender: () => this.ctx.ui.requestRender(),
+		});
+		overlayHandle = this.#showFullscreenMenu(hub);
 	}
 }

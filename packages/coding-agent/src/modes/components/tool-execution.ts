@@ -351,13 +351,13 @@ export class ToolExecutionComponent extends Container {
 	#snapshots?: SnapshotStore;
 	#clipboard?: Clipboard;
 	#isPartial = true;
-	// A background task whose call already returned; later async job frames are
+	// A background tool whose call already returned; later async job frames are
 	// partial updates, but the block is ready to retire as history.
 	#parkedBackground = false;
 	#resultVersion = 0;
 	// Post-finalize mutation counter (see FinalizableBlock.getTranscriptBlockVersion):
 	// a tool block can keep changing after isTranscriptBlockFinalized() first
-	// returns true — an async task's terminal result settlement, seal(), or an
+	// returns true — an async job's terminal result settlement, seal(), or an
 	// expansion toggle — and the transcript's width-epoch resolution and
 	// committed-render bypass must observe those mutations.
 	#blockVersion = 0;
@@ -861,7 +861,7 @@ export class ToolExecutionComponent extends Container {
 		if (!this.#toolActivityVisible) return true;
 		if (this.#sealed) return true;
 		if (this.#result === undefined) return false;
-		// A parked background task's call already returned; job frames that land
+		// A parked background tool's call already returned; job frames that land
 		// while it is still live keep updating it, but it must not gate history.
 		if (this.#parkedBackground) return true;
 		return !this.#isPartial;

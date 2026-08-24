@@ -594,6 +594,9 @@ export class InputController {
 		for (const key of hubKeys) {
 			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showAgentHub());
 		}
+		for (const key of this.ctx.keybindings.getKeys("app.jobs.hub")) {
+			this.ctx.editor.setCustomKeyHandler(key, () => this.ctx.showBackgroundJobsHub());
+		}
 
 		// Double-tap left arrow on an empty editor: opens the agent hub from the
 		// main session, or returns the focused subagent view to the main session.

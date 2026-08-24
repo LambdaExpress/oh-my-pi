@@ -81,6 +81,7 @@ async function createContext() {
 		"app.clipboard.pasteImage": ["ctrl+v"],
 		"app.tools.toggleVisibility": ["ctrl+shift+o"],
 		"app.tools.expand": ["ctrl+o"],
+		"app.jobs.hub": ["alt+j"],
 	};
 	const customHandlers = new Map<string, () => void>();
 	const setActionKeys = vi.fn();
@@ -94,6 +95,7 @@ async function createContext() {
 	const toggleCompletedRunCollapse = vi.fn();
 	const clearInlineImages = vi.fn();
 	const showModelSelector = vi.fn();
+	const showBackgroundJobsHub = vi.fn();
 	const requestRender = vi.fn();
 	const showError = vi.fn();
 	let focused: unknown;
@@ -233,6 +235,7 @@ async function createContext() {
 		showTreeSelector: vi.fn(),
 		showUserMessageSelector: vi.fn(),
 		showSessionSelector: vi.fn(),
+		showBackgroundJobsHub,
 		handleSTTToggle: vi.fn(),
 		showDebugSelector: vi.fn(),
 		showHistorySearch: vi.fn(),
@@ -267,6 +270,7 @@ async function createContext() {
 		spies: {
 			setActionKeys,
 			showModelSelector,
+			showBackgroundJobsHub,
 			prompt,
 			updatePendingMessagesDisplay,
 			requestRender,
@@ -290,6 +294,18 @@ async function createContext() {
 }
 
 describe("InputController keybinding setup", () => {
+	it("opens the background jobs hub through the configured shortcut", async () => {
+		const { InputController, ctx, customHandlers, setKeybinding, spies } = await createContext();
+		setKeybinding("app.jobs.hub", ["ctrl+shift+j"]);
+		const controller = new InputController(ctx);
+
+		controller.setupKeyHandlers();
+		customHandlers.get("ctrl+shift+j")?.();
+
+		expect(spies.showBackgroundJobsHub).toHaveBeenCalledTimes(1);
+		expect(customHandlers.has("alt+j")).toBe(false);
+	});
+
 	it("registers model selector and display reset actions separately", async () => {
 		const { InputController, ctx, editor, spies } = await createContext();
 		const controller = new InputController(ctx);

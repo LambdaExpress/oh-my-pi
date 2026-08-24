@@ -874,6 +874,7 @@ export class BashTool implements AgentTool<typeof bashSchemaBase | typeof bashSc
 				}
 			},
 			{
+				input: options.command,
 				ownerId: this.session.getAgentId?.() ?? undefined,
 				scopeId: this.session.getAgentScopeId?.() ?? undefined,
 				timeoutMs: options.timeoutMs,

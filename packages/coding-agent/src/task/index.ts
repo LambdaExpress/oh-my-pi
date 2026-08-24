@@ -1239,6 +1239,7 @@ export class TaskTool implements AgentTool<TaskToolSchemaInstance, TaskToolDetai
 				}
 			},
 			{
+				input: spawnParams.task,
 				id: agentId,
 				agentId,
 				queued: true,

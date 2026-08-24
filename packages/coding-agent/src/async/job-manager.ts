@@ -5,6 +5,7 @@ const DELIVERY_RETRY_MAX_MS = 30_000;
 const DELIVERY_RETRY_JITTER_MS = 200;
 const DEFAULT_RETENTION_MS = 5 * 60 * 1000;
 const DEFAULT_MAX_RUNNING_JOBS = 15;
+const DEFAULT_SESSION_HISTORY_LIMIT = 100;
 /** Abort reason used only when the owning session shuts down the entire manager. */
 export const ASYNC_JOB_MANAGER_SHUTDOWN_REASON = Symbol("AsyncJobManager shutdown");
 
@@ -40,7 +41,8 @@ export interface AsyncJobProgress {
 /** Kind of work a managed job runs; drives job-row badges and delivery labels. */
 export type AsyncJobType = "bash" | "task" | "ssh_transfer" | "eval";
 
-export interface AsyncJob {
+/** Immutable fields retained for session-wide job history after live-job eviction. */
+export interface AsyncJobRecord {
 	id: string;
 	type: AsyncJobType;
 	status: "running" | "completed" | "failed" | "cancelled";
@@ -48,15 +50,13 @@ export interface AsyncJob {
 	/** Absolute command deadline; absent when the job has no deadline. */
 	deadlineAt?: number;
 	label: string;
-	abortController: AbortController;
-	promise: Promise<void>;
+	/** Full command, code, or task input shown by job inspectors. */
+	input?: string;
 	resultText?: string;
 	errorText?: string;
 	toolCallId?: string;
 	progress?: AsyncJobProgress;
 	settledAt?: number;
-	/** Latest tool-render details reported by the running job. */
-	latestDetails?: Record<string, unknown>;
 	/**
 	 * Registry id of the agent that registered the job (e.g. "Main",
 	 * "AuthLoader"). Used by scoped cancel/list APIs so a subagent's teardown
@@ -78,6 +78,13 @@ export interface AsyncJob {
 	 * until the caller invokes `markRunning()` from the run context.
 	 */
 	queued?: boolean;
+}
+
+export interface AsyncJob extends AsyncJobRecord {
+	abortController: AbortController;
+	promise: Promise<void>;
+	/** Latest tool-render details reported by the running job. */
+	latestDetails?: Record<string, unknown>;
 }
 
 /** Delivery callback for a settled job's result text. */
@@ -125,6 +132,8 @@ export interface AsyncJobReapResult {
 export interface AsyncJobRegisterOptions {
 	id?: string;
 	toolCallId?: string;
+	/** Full command, code, or task input shown by job inspectors. */
+	input?: string;
 	/** Job deadline relative to registration; zero or undefined means no deadline. */
 	timeoutMs?: number;
 	/** Registry id of the agent that owns this job; used to scope cancelAll. */
@@ -174,6 +183,7 @@ export class AsyncJobManager {
 	readonly #suppressedDeliveries = new Set<string>();
 	readonly #watchedJobs = new Set<string>();
 	readonly #evictionTimers = new Map<string, NodeJS.Timeout>();
+	readonly #sessionHistory = new Map<string, AsyncJobRecord>();
 	readonly #pollEscalation = new Map<string | undefined, PollEscalationState>();
 	readonly #retiredScopes = new Set<string>();
 	readonly #scopeRetirements = new Map<string, Promise<void>>();
@@ -294,6 +304,7 @@ export class AsyncJobManager {
 			startTime,
 			...(timeoutMs !== undefined && timeoutMs > 0 ? { deadlineAt: startTime + timeoutMs } : {}),
 			label,
+			input: options?.input,
 			abortController,
 			promise: Promise.resolve(),
 			toolCallId: options?.toolCallId,
@@ -400,6 +411,23 @@ export class AsyncJobManager {
 		if (ownerFilter === undefined) return scoped;
 		const unscopedOwner = this.#filterJobs(this.#jobs.values(), ownerFilter).filter(job => job.scopeId === undefined);
 		return [...scoped, ...unscopedOwner];
+	}
+
+	/**
+	 * Session-wide job view used by interactive inspectors: every job carrying
+	 * the top-level scope plus legacy unscoped jobs owned by the current agent.
+	 */
+	getSessionScopeJobs(scopeId: string, unscopedOwnerId: string | undefined): AsyncJobRecord[] {
+		const scoped = this.#filterJobs(this.#jobs.values(), { scopeId });
+		const historicalScoped = [...this.#sessionHistory.values()].filter(job => job.scopeId === scopeId);
+		if (unscopedOwnerId === undefined) return [...scoped, ...historicalScoped];
+		const unscopedOwner = this.#filterJobs(this.#jobs.values(), { ownerId: unscopedOwnerId }).filter(
+			job => job.scopeId === undefined,
+		);
+		const historicalUnscopedOwner = [...this.#sessionHistory.values()].filter(
+			job => job.ownerId === unscopedOwnerId && job.scopeId === undefined,
+		);
+		return [...scoped, ...historicalScoped, ...unscopedOwner, ...historicalUnscopedOwner];
 	}
 
 	/** Session-owned settled jobs, most recent first. See {@link getSessionJobs}. */
@@ -671,6 +699,9 @@ export class AsyncJobManager {
 		for (const [jobId, job] of this.#jobs) {
 			if (job.scopeId === scopeId) this.#jobs.delete(jobId);
 		}
+		for (const [jobId, job] of this.#sessionHistory) {
+			if (job.scopeId === scopeId) this.#sessionHistory.delete(jobId);
+		}
 		for (const jobId of jobIds) {
 			const timer = this.#evictionTimers.get(jobId);
 			clearTimeout(timer);
@@ -695,7 +726,10 @@ export class AsyncJobManager {
 	 */
 	async retireUnscopedOwnerJobs(ownerId: string): Promise<number> {
 		const unscoped = this.#filterJobs(this.#jobs.values(), { ownerId }).filter(job => job.scopeId === undefined);
-		if (unscoped.length === 0) return 0;
+		const historicalUnscoped = [...this.#sessionHistory.values()].filter(
+			job => job.ownerId === ownerId && job.scopeId === undefined,
+		);
+		if (unscoped.length === 0 && historicalUnscoped.length === 0) return 0;
 		const jobIds = new Set(unscoped.map(job => job.id));
 		const inFlightDeliveries = this.#inFlightDeliveries.filter(
 			delivery => delivery.ownerId === ownerId && delivery.scopeId === undefined,
@@ -742,6 +776,9 @@ export class AsyncJobManager {
 		for (const job of unscoped) {
 			this.#jobs.delete(job.id);
 		}
+		for (const job of historicalUnscoped) {
+			this.#sessionHistory.delete(job.id);
+		}
 		for (const jobId of jobIds) {
 			const timer = this.#evictionTimers.get(jobId);
 			clearTimeout(timer);
@@ -749,7 +786,7 @@ export class AsyncJobManager {
 			this.#suppressedDeliveries.delete(jobId);
 			this.#watchedJobs.delete(jobId);
 		}
-		return unscoped.length;
+		return unscoped.length + historicalUnscoped.length;
 	}
 
 	/**
@@ -920,6 +957,7 @@ export class AsyncJobManager {
 		const drained = await this.drainDeliveries({ timeoutMs: Math.max(deadline - Date.now(), 0) });
 		this.#clearEvictionTimers();
 		this.#jobs.clear();
+		this.#sessionHistory.clear();
 		this.#deliveries.length = 0;
 		this.#notifyDeliveryQueueChanged();
 		this.#inFlightDeliveries.length = 0;
@@ -937,7 +975,7 @@ export class AsyncJobManager {
 			let candidate = 1;
 			while (true) {
 				const id = `bg_${candidate}`;
-				if (!this.#jobs.has(id)) {
+				if (!this.#jobs.has(id) && !this.#sessionHistory.has(id)) {
 					return id;
 				}
 				candidate += 1;
@@ -945,11 +983,11 @@ export class AsyncJobManager {
 		}
 
 		const base = preferredId.trim();
-		if (!this.#jobs.has(base)) return base;
+		if (!this.#jobs.has(base) && !this.#sessionHistory.has(base)) return base;
 
 		let suffix = 2;
 		let candidate = `${base}-${suffix}`;
-		while (this.#jobs.has(candidate)) {
+		while (this.#jobs.has(candidate) || this.#sessionHistory.has(candidate)) {
 			suffix += 1;
 			candidate = `${base}-${suffix}`;
 		}
@@ -957,11 +995,25 @@ export class AsyncJobManager {
 	}
 
 	#evictJob(jobId: string): boolean {
+		const job = this.#jobs.get(jobId);
 		clearTimeout(this.#evictionTimers.get(jobId));
 		this.#evictionTimers.delete(jobId);
 		this.#suppressedDeliveries.delete(jobId);
 		this.#watchedJobs.delete(jobId);
-		return this.#jobs.delete(jobId);
+		const deleted = this.#jobs.delete(jobId);
+		if (deleted && job?.settledAt !== undefined && !this.#disposed) this.#retainSessionHistory(job);
+		return deleted;
+	}
+
+	#retainSessionHistory(job: AsyncJob): void {
+		const { abortController: _abortController, promise: _promise, latestDetails: _latestDetails, ...record } = job;
+		this.#sessionHistory.set(job.id, record);
+		const bucket = [...this.#sessionHistory.values()].filter(candidate =>
+			job.scopeId !== undefined
+				? candidate.scopeId === job.scopeId
+				: candidate.scopeId === undefined && candidate.ownerId === job.ownerId,
+		);
+		for (const stale of bucket.slice(0, -DEFAULT_SESSION_HISTORY_LIMIT)) this.#sessionHistory.delete(stale.id);
 	}
 
 	#scheduleEviction(jobId: string): void {

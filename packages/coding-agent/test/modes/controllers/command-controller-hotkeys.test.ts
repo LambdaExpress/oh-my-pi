@@ -30,6 +30,7 @@ describe("buildHotkeysMarkdown", () => {
 			"app.clipboard.pasteImage": "Ctrl+V",
 			"app.stt.toggle": "Alt+H",
 			"app.live.toggle": "Ctrl+L",
+			"app.jobs.hub": "Alt+J",
 		};
 		const markdown = buildHotkeysMarkdown({
 			keybindings: {
@@ -47,6 +48,7 @@ describe("buildHotkeysMarkdown", () => {
 		expect(markdown).toContain("| `Alt+O` | Toggle completed run collapse |");
 		expect(markdown).toContain("| `Alt+L` | Reset terminal display |");
 		expect(markdown).toContain("| `Ctrl+L` | Start/stop live voice mode (/live) |");
+		expect(markdown).toContain("| `Alt+J` | Open the background jobs hub |");
 		expect(markdown).toContain("| `Ctrl+Shift+O` | Toggle tool activity visibility |");
 		expect(markdown).toContain("| `Alt+R` | Retry last failed assistant turn |");
 		expect(markdown).toContain("| `Alt+Shift+P` | Toggle plan mode |");

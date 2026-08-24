@@ -38,11 +38,9 @@ describe("ToolExecutionComponent SSH transfer repaint", () => {
 
 	it("replaces 25% with 75% and then the final frame without stale rows", () => {
 		vi.useFakeTimers();
-		const refreshDisplay = vi.fn();
 		const ui = {
 			requestRender() {},
 			requestComponentRender() {},
-			refreshDisplay,
 			resetDisplay() {},
 		} as unknown as TUI;
 		const component = new ToolExecutionComponent(
@@ -75,7 +73,6 @@ describe("ToolExecutionComponent SSH transfer repaint", () => {
 				.join("\n");
 			expect(final).toContain("100.0%");
 			expect(final).not.toContain("75.0%");
-			expect(refreshDisplay).toHaveBeenCalledWith("tool-result-topology-change");
 		} finally {
 			component.stopAnimation();
 		}

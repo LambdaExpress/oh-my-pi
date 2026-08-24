@@ -100,7 +100,13 @@ import {
 	withTimeout,
 } from "@oh-my-pi/pi-utils";
 import { type AdvisorConfig, type AdvisorRuntimeStatus, loadAdvisorTranscriptCosts } from "../advisor";
-import { ASYNC_JOB_MANAGER_SHUTDOWN_REASON, type AsyncJob, type AsyncJobFilter, AsyncJobManager } from "../async";
+import {
+	ASYNC_JOB_MANAGER_SHUTDOWN_REASON,
+	type AsyncJob,
+	type AsyncJobFilter,
+	AsyncJobManager,
+	type AsyncJobRecord,
+} from "../async";
 import { reset as resetCapabilities } from "../capability";
 import type { SSHHost } from "../capability/ssh";
 import { shouldEnableAppendOnlyContext } from "../config/append-only-context-mode";
@@ -401,16 +407,23 @@ function sameSshRemoteIdentity(left: SSHHost, right: SSHHost): boolean {
 		left.compat === right.compat
 	);
 }
-function snapshotAsyncJob(job: Readonly<AsyncJob>): AsyncJobSnapshotItem {
+function snapshotAsyncJob(job: Readonly<AsyncJobRecord>): AsyncJobSnapshotItem {
 	return {
 		id: job.id,
 		type: job.type,
 		status: job.status,
 		label: job.label,
+		...(job.input ? { input: job.input } : {}),
 		startTime: job.startTime,
+		...(job.deadlineAt !== undefined ? { deadlineAt: job.deadlineAt } : {}),
 		...(job.toolCallId ? { toolCallId: job.toolCallId } : {}),
 		...(job.progress ? { progress: job.progress } : {}),
 		...(job.settledAt !== undefined ? { settledAt: job.settledAt } : {}),
+		...(job.resultText !== undefined ? { resultText: job.resultText } : {}),
+		...(job.errorText !== undefined ? { errorText: job.errorText } : {}),
+		...(job.ownerId ? { ownerId: job.ownerId } : {}),
+		...(job.agentId ? { agentId: job.agentId } : {}),
+		...(job.queued ? { queued: true } : {}),
 	};
 }
 
@@ -2030,18 +2043,23 @@ export class AgentSession {
 		this.#planInternalAbortPending = false;
 	}
 
-	getAsyncJobSnapshot(options?: { recentLimit?: number }): AsyncJobSnapshot | null {
+	getAsyncJobSnapshot(options?: { recentLimit?: number; visibility?: "owner" | "session" }): AsyncJobSnapshot | null {
 		const manager = this.#asyncJobManager;
 		if (!manager) return null;
 		// Session-owned view: jobs of the session scope plus unscoped jobs of
 		// the owning agent (a job registered without an explicit scope belongs
 		// to its owner's top-level session).
-		const ownedJobs = manager.getSessionJobs(this.#agentId, this.#agentScopeId);
+		const ownedJobs =
+			options?.visibility === "session"
+				? manager.getSessionScopeJobs(this.#agentScopeId, this.#agentId)
+				: manager.getSessionJobs(this.#agentId, this.#agentScopeId);
 		const running = ownedJobs
 			.filter(job => job.status === "running" || (job.status === "cancelled" && job.settledAt === undefined))
 			.map(snapshotAsyncJob);
-		const recent = manager
-			.getSessionRecentJobs(this.#agentId, this.#agentScopeId, options?.recentLimit ?? 5)
+		const recent = ownedJobs
+			.filter(job => job.status !== "running" && !(job.status === "cancelled" && job.settledAt === undefined))
+			.sort((a, b) => b.startTime - a.startTime)
+			.slice(0, options?.recentLimit ?? 5)
 			.map(snapshotAsyncJob);
 		const delivery = manager.getSessionDeliveryState(this.#agentId, this.#agentScopeId);
 		return { running, recent, delivery };

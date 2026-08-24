@@ -66,7 +66,21 @@ export interface AgentSessionDisposeOptions {
 export type CommandMetadataChangedListener = () => void | Promise<void>;
 export type AsyncJobSnapshotItem = Pick<
 	AsyncJob,
-	"id" | "type" | "status" | "label" | "startTime" | "toolCallId" | "progress" | "settledAt"
+	| "id"
+	| "type"
+	| "status"
+	| "label"
+	| "input"
+	| "startTime"
+	| "deadlineAt"
+	| "toolCallId"
+	| "progress"
+	| "settledAt"
+	| "resultText"
+	| "errorText"
+	| "ownerId"
+	| "agentId"
+	| "queued"
 >;
 
 /** Snapshot of running, recent, and pending-delivery asynchronous jobs. */
