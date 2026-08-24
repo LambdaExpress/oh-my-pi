@@ -98,4 +98,48 @@ esac
 		expect(result.stdout).toContain("Downloading omp-linux-musl-x64...");
 		expect(await Bun.file(path.join(installDir, "omp")).text()).toContain("+code.7");
 	});
+
+	test("replaces an existing upstream omp with the fork binary even when native Bun is available", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-fork-bootstrap-"));
+		tempDirs.push(dir);
+		const binDir = path.join(dir, "bin");
+		await fs.mkdir(binDir);
+		await writeExecutable(binDir, "uname", '#!/bin/sh\n[ "$1" = "-s" ] && echo Linux || echo x86_64\n');
+		await writeExecutable(binDir, "ldd", "#!/bin/sh\necho 'glibc 2.39'\n");
+		await writeExecutable(binDir, "omp", "#!/bin/sh\necho omp/18.0.4\n");
+		await writeExecutable(
+			binDir,
+			"bun",
+			`#!/bin/sh
+case "$1" in
+  --version) echo 1.3.14 ;;
+  -e) echo x64 ;;
+  *) echo "installer unexpectedly used the upstream npm path" >&2; exit 99 ;;
+esac
+`,
+		);
+		await writeExecutable(
+			binDir,
+			"curl",
+			`#!/bin/sh
+case "$*" in
+  *api.github.com*) echo '[{"tag_name":"code-9","draft":false,"prerelease":false}]' ;;
+  *) while [ "$#" -gt 0 ]; do
+       [ "$1" = "-o" ] && { printf '#!/bin/sh\necho omp/18.0.4+code.9\n' > "$2"; exit 0; }
+       shift
+     done ;;
+esac
+`,
+		);
+		const env = { ...process.env, HOME: shellPath(dir) };
+
+		const result = await run(
+			["sh", "-c", 'PATH="$1:$PATH"; export PATH; exec sh "$2"', "sh", shellPath(binDir), "scripts/install.sh"],
+			env,
+		);
+
+		expect(result.exitCode, `${result.stderr}\n${result.stdout}`).toBe(0);
+		expect(result.stdout).toContain("Downloading omp-linux-x64...");
+		expect(await Bun.file(path.join(binDir, "omp")).text()).toContain("+code.9");
+	});
 });

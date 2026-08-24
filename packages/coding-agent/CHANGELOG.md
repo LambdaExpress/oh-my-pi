@@ -62,6 +62,7 @@
 
 ### Fixed
 
+- Fixed fork bootstrap installs falling back to the upstream npm package when Bun was present, and made Windows installs take PATH precedence over older upstream installations immediately.
 - Fixed repeated `Ctrl+O` tool-output toggles leaving expanded rows in terminal scrollback after those rows moved outside the active viewport.
 - Fixed long model paragraphs containing ordinary prose or closed inline code being limited to one terminal screen while streaming; completed wrapped rows now enter native scrollback before the reply finishes.
 - Fixed completed Web Search calls leaving a pending hourglass above a separate result; live and rebuilt transcripts now replace it with one card containing the original query and answer.

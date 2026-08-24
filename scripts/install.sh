@@ -2,7 +2,7 @@
 set -e
 
 # OMP Coding Agent Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/release/scripts/install.sh | sh
 #
 # Options:
 #   --source       Install via bun (installs bun if needed)
@@ -12,7 +12,18 @@ set -e
 
 REPO="LambdaExpress/oh-my-pi"
 PACKAGE="@oh-my-pi/pi-coding-agent"
-INSTALL_DIR="${PI_INSTALL_DIR:-$HOME/.local/bin}"
+if [ -n "${PI_INSTALL_DIR:-}" ]; then
+    INSTALL_DIR="$PI_INSTALL_DIR"
+else
+    INSTALL_DIR="$HOME/.local/bin"
+    EXISTING_OMP="$(command -v omp 2>/dev/null || true)"
+    case "$EXISTING_OMP" in
+        /*)
+            EXISTING_DIR="$(dirname "$EXISTING_OMP")"
+            if [ -w "$EXISTING_DIR" ]; then INSTALL_DIR="$EXISTING_DIR"; fi
+            ;;
+    esac
+fi
 MIN_BUN_VERSION="1.3.14"
 
 # Parse arguments
@@ -358,16 +369,9 @@ case "$MODE" in
         install_binary
         ;;
     *)
-        # Default: use bun only when it matches the host architecture, otherwise
-        # fall back to the prebuilt binary so Rosetta bun can't force an x86_64 build.
-        if has_bun && bun_arch_matches_host; then
-            require_bun_version
-            install_via_bun
-        else
-            if has_bun; then
-                echo "Detected bun with architecture '$(bun_arch)' on a '$(host_arch)' host; using the prebuilt binary instead."
-            fi
-            install_binary
-        fi
+        # The fork's update sequence exists only in code-N GitHub releases.
+        # Never let a pre-existing Bun installation route the bootstrap through
+        # the upstream npm package; source installs remain explicitly opt-in.
+        install_binary
         ;;
 esac

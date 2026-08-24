@@ -1,11 +1,11 @@
 # OMP Coding Agent Installer for Windows
-# Usage: irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/release/scripts/install.ps1 | iex
 #
 # Or with options:
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.ps1))) -Source
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.ps1))) -Binary
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.ps1))) -Source -Ref dev
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.ps1))) -Binary -Ref code-1
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/release/scripts/install.ps1))) -Source
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/release/scripts/install.ps1))) -Binary
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/release/scripts/install.ps1))) -Source -Ref dev
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/release/scripts/install.ps1))) -Binary -Ref code-1
 
 param(
     [switch]$Source,
@@ -321,21 +321,26 @@ function Install-Binary {
     Write-Host ""
     Write-Host "[OK] Installed omp to $OutPath" -ForegroundColor Green
 
-    # Add to PATH if not already there
+    # Put the fork first so a prior upstream/npm installation cannot keep
+    # winning command resolution. Also update this process because the script
+    # commonly runs through `irm ... | iex` in an already-open terminal.
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    $needsRestart = $UserPath -notlike "*$InstallDir*"
-    if ($needsRestart) {
-        Write-Host "Adding $InstallDir to PATH..."
-        [Environment]::SetEnvironmentVariable("Path", "$UserPath;$InstallDir", "User")
+    $NormalizedInstallDir = $InstallDir.TrimEnd("\")
+    $UserPathEntries = @($UserPath -split ";" | Where-Object {
+        $_ -and $_.TrimEnd("\") -ne $NormalizedInstallDir
+    })
+    $NewUserPath = (@($InstallDir) + $UserPathEntries) -join ";"
+    if ($NewUserPath -ne $UserPath) {
+        Write-Host "Putting $InstallDir first in PATH..."
+        [Environment]::SetEnvironmentVariable("Path", $NewUserPath, "User")
     }
+    $ProcessPathEntries = @($env:Path -split ";" | Where-Object {
+        $_ -and $_.TrimEnd("\") -ne $NormalizedInstallDir
+    })
+    $env:Path = (@($InstallDir) + $ProcessPathEntries) -join ";"
 
     Configure-BashShell
-
-    if ($needsRestart) {
-        Write-Host "Restart your terminal, then run 'omp' to get started!"
-    } else {
-        Write-Host "Run 'omp' to get started!"
-    }
+    Write-Host "Run 'omp' to get started!"
 }
 
 # Main logic
