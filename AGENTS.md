@@ -223,6 +223,12 @@ Running tests:
 
 ## Git, GitHub & Changelog
 
+### Branch Policy
+
+- `release` is publication-only. NEVER develop or create development commits there.
+- Development MUST target `dev`; only user-explicit release promotion may update `release`.
+- Before edits or state-changing Git commands, MUST verify the branch. On `release`, use a `dev` worktree.
+
 ## GitHub
 
 Unless user tells you exactly what to write:
