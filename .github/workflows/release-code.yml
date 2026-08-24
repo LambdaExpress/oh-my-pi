@@ -302,9 +302,14 @@ jobs:
               pattern: omp-code-*
               path: packages/coding-agent/binaries
               merge-multiple: true
-         - name: Generate checksums
+         - name: Generate release metadata
+           id: release
+           shell: bash
            run: |
-              bun run ci:release:checksums SHA256SUMS.txt \
+              set -euo pipefail
+              version="$(bun -e 'const manifest = await Bun.file("packages/coding-agent/package.json").json(); console.log(manifest.version)')"
+              echo "version=${version}" >> "$GITHUB_OUTPUT"
+              bun run ci:release:checksums --markdown release-notes.md \
                 packages/coding-agent/binaries/omp-* \
                 LICENSE \
                 THIRD-PARTY-NOTICES.txt
@@ -312,7 +317,8 @@ jobs:
            uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
            with:
               tag_name: ${{ needs.tag.outputs.tag }}
-              name: OMP code-${{ needs.tag.outputs.code }}
+              name: OMP v${{ steps.release.outputs.version }} Build ${{ needs.tag.outputs.code }}
+              body_path: release-notes.md
               generate_release_notes: true
               make_latest: true
               fail_on_unmatched_files: true
@@ -320,4 +326,3 @@ jobs:
                  packages/coding-agent/binaries/omp-*
                  LICENSE
                  THIRD-PARTY-NOTICES.txt
-                 SHA256SUMS.txt

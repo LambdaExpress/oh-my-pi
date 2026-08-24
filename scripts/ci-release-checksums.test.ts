@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { $ } from "bun";
-import { formatChecksums } from "./ci-release-checksums";
+import { formatChecksums, formatChecksumsMarkdown } from "./ci-release-checksums";
 
 const tempDirs: string[] = [];
 
@@ -41,5 +41,28 @@ describe("formatChecksums", () => {
 
 	it("returns an empty string for no entries", () => {
 		expect(formatChecksums([])).toBe("");
+	});
+
+	it("writes complete asset digests into GitHub Release body Markdown", async () => {
+		const dir = await mkdtemp(path.join(tmpdir(), "omp-release-checksums-markdown-"));
+		tempDirs.push(dir);
+		const assetPath = path.join(dir, "omp-windows-x64.exe");
+		const bodyPath = path.join(dir, "release-notes.md");
+		await writeFile(assetPath, "abc");
+
+		const result =
+			await $`bun ${path.join(import.meta.dir, "ci-release-checksums.ts")} --markdown ${bodyPath} ${assetPath}`
+				.quiet()
+				.nothrow();
+
+		expect(result.exitCode).toBe(0);
+		expect(await readFile(bodyPath, "utf8")).toBe(
+			formatChecksumsMarkdown([
+				{
+					name: "omp-windows-x64.exe",
+					sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+				},
+			]),
+		);
 	});
 });
