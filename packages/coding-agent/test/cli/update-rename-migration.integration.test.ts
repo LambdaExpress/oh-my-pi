@@ -77,6 +77,7 @@ async function verifyLauncher(binDir: string, expectedVersion: string): Promise<
 
 const RELEASE: ReleaseInfo = {
 	tag: `v${NEW_VERSION}`,
+	code: 0,
 	version: NEW_VERSION,
 	packages: { pkg: NEW_PKG, natives: "@oh-my-pi/pi-natives" },
 };

@@ -2,7 +2,7 @@
 set -e
 
 # OMP Coding Agent Installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/reset/scripts/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.sh | sh
 #
 # Options:
 #   --source       Install via bun (installs bun if needed)
@@ -61,13 +61,12 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Default to the reset branch: no arguments installs the fork's reset
-# branch from source.
+# Default to the latest fork release binary. Source installs follow `dev`.
 if [ -z "$MODE" ]; then
-    if [ -z "$REF" ]; then
-        REF="reset"
-    fi
-    MODE="source"
+    MODE="binary"
+fi
+if [ "$MODE" = "source" ] && [ -z "$REF" ]; then
+    REF="dev"
 fi
 
 # Check if bun is available
@@ -254,32 +253,50 @@ install_binary() {
             exit 1
         fi
     else
-        echo "Fetching latest release..."
-        RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/repos/${REPO}/releases/latest")
-        LATEST=$(echo "$RELEASE_JSON" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+        echo "Fetching latest code release..."
+        RELEASE_JSON=$(curl -fsSL --connect-timeout 10 --max-time 60 "https://api.github.com/repos/${REPO}/releases?per_page=100")
+        LATEST=$(printf '%s\n' "$RELEASE_JSON" \
+            | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"code-[0-9][0-9]*"' \
+            | sed -E 's/.*"(code-[0-9]+)"/\1/' \
+            | sort -t- -k2,2nr \
+            | sed -n '1p')
     fi
 
-    if [ -z "$LATEST" ]; then
-        echo "Failed to fetch release tag"
-        exit 1
-    fi
+    RELEASE_CODE="${LATEST#code-}"
+    case "$LATEST" in
+        code-*) ;;
+        *)
+            echo "Failed to find a valid code-N release tag"
+            exit 1
+            ;;
+    esac
+    case "$RELEASE_CODE" in
+        ""|0|*[!0-9]*)
+            echo "Failed to find a valid code-N release tag"
+            exit 1
+            ;;
+    esac
     echo "Using version: $LATEST"
 
     mkdir -p "$INSTALL_DIR"
     # Download binary
     BINARY_URL="https://github.com/${REPO}/releases/download/${LATEST}/${BINARY}"
     echo "Downloading ${BINARY}..."
-    curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$BINARY_URL" -o "${INSTALL_DIR}/omp"
-    chmod +x "${INSTALL_DIR}/omp"
+    TARGET_PATH="${INSTALL_DIR}/omp"
+    ATTEMPT="$(date +%s).$$"
+    NEW_PATH="${TARGET_PATH}.${ATTEMPT}.new"
+    BACKUP_PATH="${TARGET_PATH}.${ATTEMPT}.bak"
+    curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 "$BINARY_URL" -o "$NEW_PATH"
+    chmod +x "$NEW_PATH"
 
     # Verify the freshly installed binary can actually start before reporting
     # success. Bun's musl-target binaries link libstdc++/libgcc dynamically,
     # which stock Alpine/musl systems do not ship, so the download succeeds while
     # the binary exits 127 with relocation errors. Never claim success for a
     # binary that cannot run.
-    if ! SMOKE_OUTPUT="$("${INSTALL_DIR}/omp" --version 2>&1)"; then
+    if ! SMOKE_OUTPUT="$("$NEW_PATH" --version 2>&1)"; then
         echo ""
-        echo "✗ omp was downloaded to ${INSTALL_DIR}/omp but cannot start:"
+        echo "✗ Downloaded omp cannot start:"
         echo "$SMOKE_OUTPUT" | sed 's/^/    /'
         if [ "$PLATFORM" = "linux-musl" ]; then
             echo ""
@@ -290,11 +307,29 @@ install_binary() {
                 echo "    (install the libstdc++ and libgcc runtime packages for your distro)"
             fi
         fi
+        rm -f "$NEW_PATH"
+        exit 1
+    fi
+    if ! printf '%s\n' "$SMOKE_OUTPUT" | grep -q "+code\.${RELEASE_CODE}$"; then
+        echo "Downloaded omp reports an unexpected release code: $SMOKE_OUTPUT"
+        rm -f "$NEW_PATH"
         exit 1
     fi
 
+    HAD_BACKUP=0
+    if [ -e "$TARGET_PATH" ]; then
+        mv "$TARGET_PATH" "$BACKUP_PATH"
+        HAD_BACKUP=1
+    fi
+    if ! mv "$NEW_PATH" "$TARGET_PATH"; then
+        if [ "$HAD_BACKUP" -eq 1 ]; then mv "$BACKUP_PATH" "$TARGET_PATH"; fi
+        rm -f "$NEW_PATH"
+        exit 1
+    fi
+    if [ "$HAD_BACKUP" -eq 1 ]; then rm -f "$BACKUP_PATH"; fi
+
     echo ""
-    echo "✓ Installed omp to ${INSTALL_DIR}/omp"
+    echo "✓ Installed omp to $TARGET_PATH"
 
     # Check if in PATH
     case ":$PATH:" in

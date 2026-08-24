@@ -17,6 +17,7 @@ import { $ } from "bun";
 import { settings } from "../config/settings";
 import { t } from "../i18n";
 import { theme } from "../modes/theme/theme";
+import { parseReleaseCodeTag, RELEASE_CODE } from "../release-code";
 import {
 	isTimeoutError,
 	isUnsupportedProxyError,
@@ -24,7 +25,7 @@ import {
 	withTimeoutSignal,
 } from "../utils/fetch-timeout";
 
-const REPO = "can1357/oh-my-pi";
+const REPO = "LambdaExpress/oh-my-pi";
 const PACKAGE = "@oh-my-pi/pi-coding-agent";
 const HOMEBREW_FORMULA = "can1357/tap/omp";
 const MISE_TOOL = "github:can1357/oh-my-pi";
@@ -92,6 +93,8 @@ const CURRENT_PACKAGES: ReleasePackages = { pkg: PACKAGE, natives: NATIVES_PACKA
 
 export interface ReleaseInfo {
 	tag: string;
+	/** Monotonic fork release code parsed from `code-N`. */
+	code: number;
 	version: string;
 	/** Parsed `omp.dist` from the registry manifest; undefined when absent. */
 	dist?: ReleaseDist;
@@ -240,12 +243,11 @@ export function resolveReleaseBinaryAsset(
 }
 
 async function getReleaseBinaryAsset(
-	expectedVersion: string,
+	expectedTag: string,
 	binaryName: string,
 	fetchImpl: Fetch = fetch,
 	githubToken: string | undefined = $env.GITHUB_TOKEN || $env.GH_TOKEN,
 ): Promise<ReleaseBinaryAsset> {
-	const tag = `v${expectedVersion}`;
 	const headers: Record<string, string> = {
 		Accept: "application/vnd.github+json",
 		"X-GitHub-Api-Version": "2022-11-28",
@@ -254,7 +256,7 @@ async function getReleaseBinaryAsset(
 
 	let response: Response;
 	try {
-		response = await fetchImpl(`${GITHUB_API}/repos/${REPO}/releases/tags/${encodeURIComponent(tag)}`, {
+		response = await fetchImpl(`${GITHUB_API}/repos/${REPO}/releases/tags/${encodeURIComponent(expectedTag)}`, {
 			headers,
 			signal: withTimeoutSignal(RELEASE_METADATA_TIMEOUT_MS),
 		});
@@ -276,7 +278,7 @@ async function getReleaseBinaryAsset(
 		throw new Error(t("Failed to fetch GitHub release metadata: {reason}", { reason: response.statusText }));
 	}
 
-	return resolveReleaseBinaryAsset(await response.json(), tag, binaryName);
+	return resolveReleaseBinaryAsset(await response.json(), expectedTag, binaryName);
 }
 
 export interface VerifiedBinaryDownloadOptions {
@@ -366,6 +368,7 @@ export async function downloadVerifiedBinary(options: VerifiedBinaryDownloadOpti
 export interface InstalledVersionVerification {
 	ok: boolean;
 	actual?: string;
+	code?: number;
 	path?: string;
 }
 
@@ -375,7 +378,11 @@ export interface BinaryReplacementOptions {
 	tempPath: string;
 	backupPath: string;
 	expectedVersion: string;
-	verifyInstalledVersion: (expectedVersion: string) => Promise<InstalledVersionVerification>;
+	expectedReleaseCode?: number;
+	verifyInstalledVersion: (
+		expectedVersion: string,
+		expectedReleaseCode?: number,
+	) => Promise<InstalledVersionVerification>;
 }
 
 /**
@@ -767,24 +774,43 @@ async function resolveUpdateTarget(options: { allowPackageManagers: boolean }): 
 	throw new Error(t("Could not resolve {app} binary path in PATH", { app: APP_NAME }));
 }
 
-/** Bound on `omp.rename` hops so a broken pointer chain cannot loop forever. */
-const MAX_RENAME_HOPS = 3;
+/** Select the highest published `code-N` release, independent of API ordering. */
+export function resolveLatestCodeRelease(releases: unknown): { tag: string; code: number } {
+	if (!Array.isArray(releases)) throw new Error(t("Malformed GitHub releases response"));
+	let latest: { tag: string; code: number } | undefined;
+	for (const release of releases) {
+		if (!isRecord(release) || release.draft !== false || release.prerelease !== false) continue;
+		if (typeof release.tag_name !== "string") continue;
+		const code = parseReleaseCodeTag(release.tag_name);
+		if (code === undefined || (latest && code <= latest.code)) continue;
+		latest = { tag: release.tag_name, code };
+	}
+	if (!latest) throw new Error(t("No published code release is available yet"));
+	return latest;
+}
 
-async function fetchLatestManifest(
-	pkg: string,
-	timeoutMs: number,
-	channel: UpdateChannel,
-): Promise<{ version: string; manifest: Record<string, unknown> }> {
+/** Get the highest fork release code from GitHub Releases. */
+export async function getLatestRelease(
+	options: { timeoutMs?: number; channel?: UpdateChannel } = {},
+): Promise<ReleaseInfo> {
+	const timeoutMs = options.timeoutMs ?? RELEASE_METADATA_TIMEOUT_MS;
+	const headers: Record<string, string> = {
+		Accept: "application/vnd.github+json",
+		"X-GitHub-Api-Version": "2022-11-28",
+	};
+	const githubToken = $env.GITHUB_TOKEN || $env.GH_TOKEN;
+	if (githubToken) headers.Authorization = `Bearer ${githubToken}`;
+
 	let response: Response;
 	try {
-		response = await fetch(`${NPM_REGISTRY}${pkg}/${channel === "canary" ? "canary" : "latest"}`, {
+		response = await fetch(`${GITHUB_API}/repos/${REPO}/releases?per_page=100`, {
+			headers,
 			signal: withTimeoutSignal(timeoutMs),
 		});
 	} catch (err) {
 		if (isTimeoutError(err)) {
 			throw new Error(
-				t("Timed out fetching release info for {pkg} after {seconds}s", {
-					pkg,
+				t("Timed out fetching GitHub release metadata after {seconds}s", {
 					seconds: Math.round(timeoutMs / 1000),
 				}),
 				{ cause: err },
@@ -793,49 +819,24 @@ async function fetchLatestManifest(
 		if (isUnsupportedProxyError(err)) throw new Error(unsupportedProxyMessage(), { cause: err });
 		throw err;
 	}
+	if ((response.status === 403 && !githubToken) || response.status === 429) {
+		throw new Error(
+			t(
+				"GitHub API rate limit exceeded while fetching release metadata; retry later or set GITHUB_TOKEN or GH_TOKEN",
+			),
+		);
+	}
 	if (!response.ok) {
-		if (response.status === 404 && channel === "canary") {
-			throw new Error(`No canary release has been published for ${pkg} yet. Try \`${APP_NAME} update --stable\`.`);
-		}
-		throw new Error(`Failed to fetch release info for ${pkg}: ${response.statusText}`);
+		throw new Error(t("Failed to fetch GitHub release metadata: {reason}", { reason: response.statusText }));
 	}
-
-	const data: unknown = await response.json();
-	if (!isRecord(data) || typeof data.version !== "string") {
-		throw new Error(`Malformed npm registry response for ${pkg}: missing version`);
-	}
-	return { version: data.version, manifest: data };
-}
-
-/**
- * Get the latest release info from the npm registry, following `omp.rename`
- * pointers ({@link resolveReleaseRename}) when the package has moved to a new
- * npm name. Version, dist, and install names all come from the final manifest
- * in the chain. Uses npm instead of GitHub API to avoid unauthenticated rate
- * limiting.
- */
-export async function getLatestRelease(
-	options: { timeoutMs?: number; channel?: UpdateChannel } = {},
-): Promise<ReleaseInfo> {
-	const timeoutMs = options.timeoutMs ?? RELEASE_METADATA_TIMEOUT_MS;
-	const channel = options.channel ?? "stable";
-	const packages: ReleasePackages = { ...CURRENT_PACKAGES };
-	const visited = new Set([packages.pkg]);
-	let latest = await fetchLatestManifest(packages.pkg, timeoutMs, channel);
-	for (let hop = 0; hop < MAX_RENAME_HOPS; hop++) {
-		const rename = resolveReleaseRename(latest.manifest);
-		if (!rename || visited.has(rename.pkg)) break;
-		visited.add(rename.pkg);
-		packages.pkg = rename.pkg;
-		if (rename.natives) packages.natives = rename.natives;
-		latest = await fetchLatestManifest(packages.pkg, timeoutMs, channel);
-	}
+	const latest = resolveLatestCodeRelease(await response.json());
 
 	return {
-		tag: `v${latest.version}`,
-		version: latest.version,
-		dist: resolveReleaseDist(latest.manifest),
-		packages,
+		tag: latest.tag,
+		code: latest.code,
+		version: VERSION,
+		dist: "binary",
+		packages: { ...CURRENT_PACKAGES },
 	};
 }
 
@@ -1147,15 +1148,26 @@ function resolveOmpPath(): string | undefined {
 /**
  * Run a specific binary and check if it reports the expected version.
  */
-async function verifyBinaryAtPath(binaryPath: string, expectedVersion: string): Promise<InstalledVersionVerification> {
+async function verifyBinaryAtPath(
+	binaryPath: string,
+	expectedVersion: string,
+	expectedReleaseCode?: number,
+): Promise<InstalledVersionVerification> {
 	try {
 		const result = await $`${binaryPath} --version`.quiet().nothrow();
 		if (result.exitCode !== 0) return { ok: false, path: binaryPath };
 		const output = result.text().trim();
-		// Output format: "omp/X.Y.Z"
-		const match = output.match(/\/(\d+\.\d+\.\d+)/);
-		const actual = match?.[1];
-		return { ok: actual === expectedVersion, actual, path: binaryPath };
+		// Fork release output: "omp/X.Y.Z+code.N". Legacy callers that do not
+		// provide an expected code retain the upstream semantic-version check.
+		const actual = output.match(/\/(\d+\.\d+\.\d+)/)?.[1];
+		const codeText = output.match(/\+code\.(\d+)\b/)?.[1];
+		const code = parseReleaseCodeTag(codeText ? `code-${codeText}` : "");
+		return {
+			ok: actual === expectedVersion && (expectedReleaseCode === undefined || code === expectedReleaseCode),
+			actual,
+			code,
+			path: binaryPath,
+		};
 	} catch {
 		return { ok: false, path: binaryPath };
 	}
@@ -1164,24 +1176,35 @@ async function verifyBinaryAtPath(binaryPath: string, expectedVersion: string): 
 /**
  * Run the PATH-resolved omp binary and check if it reports the expected version.
  */
-async function verifyInstalledVersion(expectedVersion: string): Promise<InstalledVersionVerification> {
+async function verifyInstalledVersion(
+	expectedVersion: string,
+	expectedReleaseCode?: number,
+): Promise<InstalledVersionVerification> {
 	const ompPath = resolveOmpPath();
 	if (!ompPath) return { ok: false };
-	return await verifyBinaryAtPath(ompPath, expectedVersion);
+	return await verifyBinaryAtPath(ompPath, expectedVersion, expectedReleaseCode);
 }
 
-function printVerifiedVersion(expectedVersion: string): void {
+function formatExpectedRelease(expectedVersion: string, expectedReleaseCode?: number): string {
+	return expectedReleaseCode === undefined ? expectedVersion : `${expectedVersion}+code.${expectedReleaseCode}`;
+}
+
+function printVerifiedVersion(expectedVersion: string, expectedReleaseCode?: number): void {
 	const icon = theme?.status?.success ?? "✔";
-	console.log(chalk.green(`\n${icon} Updated to ${expectedVersion}`));
+	console.log(chalk.green(`\n${icon} Updated to ${formatExpectedRelease(expectedVersion, expectedReleaseCode)}`));
 }
 
-function formatVerificationFailure(result: InstalledVersionVerification, expectedVersion: string): string {
+function formatVerificationFailure(
+	result: InstalledVersionVerification,
+	expectedVersion: string,
+	expectedReleaseCode?: number,
+): string {
 	if (result.actual) {
 		return t("{app} at {path} still reports {actual} (expected {expected})", {
 			app: APP_NAME,
 			path: result.path,
-			actual: result.actual,
-			expected: expectedVersion,
+			actual: formatExpectedRelease(result.actual, result.code),
+			expected: formatExpectedRelease(expectedVersion, expectedReleaseCode),
 		});
 	}
 	return t("could not verify updated version{scope}", {
@@ -1192,18 +1215,26 @@ function formatVerificationFailure(result: InstalledVersionVerification, expecte
 /**
  * Print post-update verification result.
  */
-function printVerificationResult(result: InstalledVersionVerification, expectedVersion: string): void {
+function printVerificationResult(
+	result: InstalledVersionVerification,
+	expectedVersion: string,
+	expectedReleaseCode?: number,
+): void {
 	if (result.ok) {
-		printVerifiedVersion(expectedVersion);
+		printVerifiedVersion(expectedVersion, expectedReleaseCode);
 		return;
 	}
-	console.log(chalk.yellow(`\nWarning: ${formatVerificationFailure(result, expectedVersion)}`));
+	console.log(chalk.yellow(`\nWarning: ${formatVerificationFailure(result, expectedVersion, expectedReleaseCode)}`));
 	console.log(chalk.yellow(`You may need to reinstall: ${installerHint()}`));
 }
 
 /** Verify the PATH-resolved launcher and print the outcome. */
-async function printVerification(expectedVersion: string): Promise<void> {
-	printVerificationResult(await verifyInstalledVersion(expectedVersion), expectedVersion);
+async function printVerification(expectedVersion: string, expectedReleaseCode?: number): Promise<void> {
+	printVerificationResult(
+		await verifyInstalledVersion(expectedVersion, expectedReleaseCode),
+		expectedVersion,
+		expectedReleaseCode,
+	);
 }
 
 async function unlinkIfExists(filePath: string): Promise<void> {
@@ -1304,11 +1335,11 @@ export async function replaceBinaryForUpdate(options: BinaryReplacementOptions):
 		}
 		await fs.promises.rename(options.tempPath, options.targetPath);
 
-		const verification = await options.verifyInstalledVersion(options.expectedVersion);
+		const verification = await options.verifyInstalledVersion(options.expectedVersion, options.expectedReleaseCode);
 		if (!verification.ok) {
 			throw new Error(
 				t("{reason}; restored previous {app} binary", {
-					reason: formatVerificationFailure(verification, options.expectedVersion),
+					reason: formatVerificationFailure(verification, options.expectedVersion, options.expectedReleaseCode),
 					app: APP_NAME,
 				}),
 			);
@@ -1710,6 +1741,8 @@ export async function updateViaBinaryAt(
 	expectedVersion: string,
 	options: {
 		binaryName?: string;
+		releaseTag?: string;
+		expectedReleaseCode?: number;
 		fetchImpl?: Fetch;
 		githubToken?: string;
 		verifyInstalledVersion?: typeof verifyInstalledVersion;
@@ -1728,7 +1761,8 @@ export async function updateViaBinaryAt(
 	const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
 	const tempPath = `${targetPath}.${attempt}.new`;
 	const backupPath = `${targetPath}.${attempt}.bak`;
-	const asset = await getReleaseBinaryAsset(expectedVersion, binaryName, options.fetchImpl, options.githubToken);
+	const releaseTag = options.releaseTag ?? `v${expectedVersion}`;
+	const asset = await getReleaseBinaryAsset(releaseTag, binaryName, options.fetchImpl, options.githubToken);
 	console.log(chalk.dim(t("Downloading {binary}…", { binary: binaryName })));
 	await downloadVerifiedBinary({
 		url: asset.url,
@@ -1746,6 +1780,7 @@ export async function updateViaBinaryAt(
 			tempPath,
 			backupPath,
 			expectedVersion,
+			expectedReleaseCode: options.expectedReleaseCode,
 			verifyInstalledVersion: options.verifyInstalledVersion ?? verifyInstalledVersion,
 		});
 		// The launcher is no longer bun-managed: drop bun's metadata sidecar so
@@ -1761,7 +1796,7 @@ export async function updateViaBinaryAt(
 		// Reclaim backups from earlier updates whose owning process has since exited.
 		await sweepStaleUpdateArtifacts(targetPath);
 	});
-	printVerifiedVersion(expectedVersion);
+	printVerifiedVersion(expectedVersion, options.expectedReleaseCode);
 	console.log(chalk.dim(t("Restart {app} to use the new version", { app: APP_NAME })));
 }
 
@@ -1799,6 +1834,8 @@ export async function updateViaShimTakeover(
 	expectedVersion: string,
 	options: {
 		binaryName?: string;
+		releaseTag?: string;
+		expectedReleaseCode?: number;
 		fetchImpl?: Fetch;
 		githubToken?: string;
 		verifyBinary?: typeof verifyBinaryAtPath;
@@ -1809,7 +1846,8 @@ export async function updateViaShimTakeover(
 	const exePath = path.join(launcherDir, `${APP_NAME}.exe`);
 	const attempt = `${Date.now()}.${process.pid}.${updateAttemptSeq++}`;
 	const tempPath = `${exePath}.${attempt}.new`;
-	const asset = await getReleaseBinaryAsset(expectedVersion, binaryName, options.fetchImpl, options.githubToken);
+	const releaseTag = options.releaseTag ?? `v${expectedVersion}`;
+	const asset = await getReleaseBinaryAsset(releaseTag, binaryName, options.fetchImpl, options.githubToken);
 	console.log(chalk.dim(`Downloading ${binaryName}…`));
 	await downloadVerifiedBinary({
 		url: asset.url,
@@ -1857,7 +1895,7 @@ export async function updateViaShimTakeover(
 		// the update target was resolved, and the shim was just renamed away, so
 		// a PATH re-resolution here would test a file that no longer exists.
 		const verify = options.verifyBinary ?? verifyBinaryAtPath;
-		const verification = await verify(exePath, expectedVersion);
+		const verification = await verify(exePath, expectedVersion, options.expectedReleaseCode);
 		if (!verification.ok) {
 			for (const { launcher, backup } of retired) {
 				try {
@@ -1871,7 +1909,7 @@ export async function updateViaShimTakeover(
 			}
 			await unlinkIfExists(exePath);
 			throw new Error(
-				`${formatVerificationFailure(verification, expectedVersion)}; restored previous ${APP_NAME} launcher`,
+				`${formatVerificationFailure(verification, expectedVersion, options.expectedReleaseCode)}; restored previous ${APP_NAME} launcher`,
 			);
 		}
 		for (const { backup } of retired) {
@@ -1892,7 +1930,7 @@ export async function updateViaShimTakeover(
 			),
 		);
 	}
-	printVerifiedVersion(expectedVersion);
+	printVerifiedVersion(expectedVersion, options.expectedReleaseCode);
 	console.log(chalk.dim(`Restart ${APP_NAME} to use the new version`));
 }
 
@@ -1905,8 +1943,8 @@ export async function updateViaShimTakeover(
  */
 function installerHint(): string {
 	return process.platform === "win32"
-		? "& ([scriptblock]::Create((irm https://omp.sh/install.ps1))) -Binary"
-		: "curl -fsSL https://omp.sh/install | sh -s -- --binary";
+		? "& ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.ps1))) -Binary"
+		: "curl -fsSL https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.sh | sh -s -- --binary";
 }
 
 /** Persisted channel, or undefined when settings are unavailable (SDK/test embedding without `Settings.init()`). */
@@ -1935,10 +1973,9 @@ export async function runUpdateCommand(opts: {
 	check: boolean;
 	channel?: UpdateChannel;
 }): Promise<void> {
-	console.log(chalk.dim(`Current version: ${VERSION}`));
+	console.log(chalk.dim(`Current version: ${VERSION}+code.${RELEASE_CODE}`));
 	const persistedChannel = readPersistedChannel() ?? "stable";
 	const channel = opts.channel ?? persistedChannel;
-	const isChannelSwitch = opts.channel !== undefined && opts.channel !== persistedChannel;
 	if (channel === "canary") console.log(chalk.dim("Current channel: canary"));
 
 	// Check for updates
@@ -1950,24 +1987,18 @@ export async function runUpdateCommand(opts: {
 		process.exit(1);
 	}
 
-	const comparison = compareVersions(release.version, VERSION);
+	const comparison = release.code === RELEASE_CODE ? 0 : release.code > RELEASE_CODE ? 1 : -1;
 
-	if (comparison <= 0 && !opts.force && !isChannelSwitch) {
+	if (comparison <= 0 && !opts.force) {
 		const icon = theme?.status?.success ?? "✔";
 		console.log(chalk.green(`${icon} Already up to date`));
 		return;
 	}
 
-	if (isChannelSwitch) {
-		console.log(
-			chalk.yellow(
-				`Switching to ${channel} ${release.version}${comparison <= 0 ? ` (downgrade from ${VERSION})` : ""}`,
-			),
-		);
-	} else if (comparison > 0) {
-		console.log(chalk.cyan(`New version available: ${release.version}`));
+	if (comparison > 0) {
+		console.log(chalk.cyan(`New release available: code-${release.code}`));
 	} else {
-		console.log(chalk.yellow(t("Forcing reinstall of {version}", { version: release.version })));
+		console.log(chalk.yellow(t("Forcing reinstall of {version}", { version: `code-${release.code}` })));
 	}
 	if (release.packages.pkg !== PACKAGE) {
 		console.log(chalk.cyan(`The npm package moved to ${release.packages.pkg}; updating migrates this install.`));
@@ -2004,7 +2035,10 @@ export async function runUpdateCommand(opts: {
 				// skipped), so the launcher path is always known.
 				if (!target.path) throw new Error(`Could not resolve ${APP_NAME} launcher path in PATH`);
 				console.log(chalk.dim("This release ships as a standalone binary; replacing the script launcher."));
-				await updateViaShimTakeover(target.path, release.version);
+				await updateViaShimTakeover(target.path, release.version, {
+					releaseTag: release.tag,
+					expectedReleaseCode: release.code,
+				});
 				console.log(
 					chalk.yellow(
 						`This install is no longer managed by ${target.method}. Removing the old global package may delete this launcher; if it does, reinstall with: ${installerHint()}`,
@@ -2017,7 +2051,10 @@ export async function runUpdateCommand(opts: {
 			if (forceBinary && target.replacesSymlink) {
 				console.log(chalk.dim("Replacing the package-manager launcher with the standalone binary."));
 			}
-			await updateViaBinaryAt(target.path, release.version);
+			await updateViaBinaryAt(target.path, release.version, {
+				releaseTag: release.tag,
+				expectedReleaseCode: release.code,
+			});
 			if (forceBinary && target.replacesSymlink) {
 				console.log(
 					chalk.yellow(

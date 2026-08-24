@@ -1,0 +1,178 @@
+name: Release Code
+
+on:
+   push:
+      branches: [release]
+
+permissions:
+   contents: read
+
+env:
+   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+   tag:
+      name: Tag release code
+      runs-on: ubuntu-22.04
+      permissions:
+         contents: write
+      outputs:
+         code: ${{ steps.meta.outputs.code }}
+         tag: ${{ steps.meta.outputs.tag }}
+      steps:
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+           with:
+              fetch-depth: 0
+         - name: Create monotonic code tag
+           id: meta
+           shell: bash
+           env:
+              RELEASE_CODE: ${{ github.run_number }}
+           run: |
+              set -euo pipefail
+              tag="code-${RELEASE_CODE}"
+              existing="$(git rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null || true)"
+              if [ -n "$existing" ] && [ "$existing" != "$GITHUB_SHA" ]; then
+                echo "${tag} already points to ${existing}, not ${GITHUB_SHA}" >&2
+                exit 1
+              fi
+              if [ -z "$existing" ]; then
+                git -c user.name="github-actions[bot]" \
+                    -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                    tag -a "$tag" "$GITHUB_SHA" -m "Release code ${RELEASE_CODE}"
+                git push origin "refs/tags/${tag}"
+              fi
+              {
+                echo "code=${RELEASE_CODE}"
+                echo "tag=${tag}"
+              } >> "$GITHUB_OUTPUT"
+
+   build:
+      name: Build ${{ matrix.target_id }}
+      needs: [tag]
+      strategy:
+         fail-fast: false
+         matrix:
+            include:
+               - os: ubuntu-22.04
+                 target_id: linux-x64
+                 binary_path: packages/coding-agent/binaries/omp-linux-x64
+                 native_targets: linux-x64-baseline linux-x64-modern
+                 smoke: linux
+               - os: ubuntu-22.04
+                 target_id: linux-musl-x64
+                 binary_path: packages/coding-agent/binaries/omp-linux-musl-x64
+                 native_targets: linux-musl-x64-baseline
+                 smoke: musl
+               - os: ubuntu-24.04-arm
+                 target_id: linux-arm64
+                 binary_path: packages/coding-agent/binaries/omp-linux-arm64
+                 native_targets: linux-arm64
+                 smoke: linux
+               - os: ubuntu-24.04-arm
+                 target_id: linux-musl-arm64
+                 binary_path: packages/coding-agent/binaries/omp-linux-musl-arm64
+                 native_targets: linux-musl-arm64
+                 smoke: musl
+               - os: ubuntu-22.04
+                 target_id: win32-x64
+                 binary_path: packages/coding-agent/binaries/omp-windows-x64.exe
+                 native_targets: win32-x64-baseline
+                 smoke: cross
+      runs-on: ${{ matrix.os }}
+      permissions:
+         contents: read
+      steps:
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+           with:
+              bun-version: "1.4"
+         - uses: ./.github/actions/setup-system-deps
+         - name: Install dependencies
+           run: bun install --frozen-lockfile
+         - name: Build native addons
+           uses: ./.github/actions/bazel-natives
+           with:
+              targets: ${{ matrix.native_targets }}
+              cache-scope: code-${{ matrix.target_id }}
+         - name: Build release binary
+           env:
+              OMP_RELEASE_CODE: ${{ needs.tag.outputs.code }}
+              RELEASE_TARGETS: ${{ matrix.target_id }}
+           run: bun run ci:release:build-binaries
+         - name: Smoke Linux binary
+           if: matrix.smoke == 'linux'
+           shell: bash
+           env:
+              EXPECTED_CODE: ${{ needs.tag.outputs.code }}
+           run: |
+              set -euo pipefail
+              runtime_dir="$(mktemp -d)"
+              version="$(HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --version)"
+              case "$version" in
+                *"+code.${EXPECTED_CODE}") ;;
+                *) echo "unexpected version: $version" >&2; exit 1 ;;
+              esac
+              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --smoke-test
+         - name: Smoke musl binary on Alpine
+           if: matrix.smoke == 'musl'
+           shell: bash
+           env:
+              EXPECTED_CODE: ${{ needs.tag.outputs.code }}
+           run: |
+              set -euo pipefail
+              binary="$(realpath "${{ matrix.binary_path }}")"
+              docker run --rm -e EXPECTED_CODE -v "$binary:/usr/local/bin/omp:ro" alpine:3.22 sh -ec '
+                apk add --no-cache libstdc++ libgcc >/dev/null
+                version="$(omp --version)"
+                case "$version" in
+                  *"+code.${EXPECTED_CODE}") ;;
+                  *) echo "unexpected version: $version" >&2; exit 1 ;;
+                esac
+                runtime_dir="$(mktemp -d)"
+                HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" omp --smoke-test
+              '
+         - name: Upload binary
+           uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+           with:
+              name: omp-code-${{ matrix.target_id }}
+              path: ${{ matrix.binary_path }}
+              if-no-files-found: error
+              retention-days: 1
+
+   publish:
+      name: Publish code release
+      needs: [tag, build]
+      runs-on: ubuntu-22.04
+      permissions:
+         contents: write
+      steps:
+         - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+         - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+           with:
+              bun-version: "1.4"
+         - name: Download binaries
+           uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+           with:
+              pattern: omp-code-*
+              path: packages/coding-agent/binaries
+              merge-multiple: true
+         - name: Generate checksums
+           run: |
+              bun run ci:release:checksums SHA256SUMS.txt \
+                packages/coding-agent/binaries/omp-* \
+                LICENSE \
+                THIRD-PARTY-NOTICES.txt
+         - name: Create GitHub Release
+           uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+           with:
+              tag_name: ${{ needs.tag.outputs.tag }}
+              name: OMP code-${{ needs.tag.outputs.code }}
+              generate_release_notes: true
+              make_latest: true
+              fail_on_unmatched_files: true
+              files: |
+                 packages/coding-agent/binaries/omp-*
+                 LICENSE
+                 THIRD-PARTY-NOTICES.txt
+                 SHA256SUMS.txt

@@ -9,6 +9,7 @@ describe("Windows release binary target", () => {
 	it("builds the generic Windows release asset with the baseline runtime", async () => {
 		const result = await $`bun scripts/ci-release-build-binaries.ts --dry-run --targets win32-x64`
 			.cwd(repoRoot)
+			.env({ ...Bun.env, OMP_RELEASE_CODE: "42" })
 			.quiet()
 			.nothrow();
 		expect(result.exitCode).toBe(0);
@@ -19,6 +20,7 @@ describe("Windows release binary target", () => {
 			"DRY RUN Bun.build target=bun-windows-x64-baseline outfile=packages/coding-agent/binaries/omp-windows-x64.exe",
 		);
 		expect(output).toContain("external=fastembed,onnxruntime-node");
+		expect(output).toContain("releaseCode=42");
 		expect(output).not.toContain("bun-windows-x64-modern");
 	});
 

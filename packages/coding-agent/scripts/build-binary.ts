@@ -2,6 +2,7 @@
 
 import { createRequire } from "node:module";
 import * as path from "node:path";
+import { parseReleaseCode } from "../src/release-code";
 import { compileCodingAgent } from "./compile-binary";
 
 const packageDir = path.join(import.meta.dir, "..");
@@ -71,6 +72,11 @@ async function runCommand(
 }
 
 async function main(): Promise<void> {
+	const configuredReleaseCode = Bun.env.OMP_RELEASE_CODE;
+	if (configuredReleaseCode !== undefined && parseReleaseCode(configuredReleaseCode) === undefined) {
+		throw new Error(`OMP_RELEASE_CODE must be a non-negative safe integer, got: ${configuredReleaseCode}`);
+	}
+	const releaseCode = configuredReleaseCode ?? "0";
 	const crossBuild = resolveCrossBuild(Bun.env.CROSS_TARGET);
 	const shouldAdhocSign = process.platform === "darwin" && !crossBuild && Bun.env.BUN_NO_CODESIGN_MACHO_BINARY !== "1";
 	const outName = crossBuild ? `omp-${crossBuild.id}` : "omp";
@@ -97,6 +103,7 @@ async function main(): Promise<void> {
 				entrypoint: path.join(packageDir, "src", "cli.ts"),
 				outfile: outputPath,
 				transformersVersion,
+				releaseCode,
 				target: crossBuild?.target,
 				executablePath: Bun.env.BUN_COMPILE_EXECUTABLE_PATH || undefined,
 				skipBuiltinCodesign: shouldAdhocSign,

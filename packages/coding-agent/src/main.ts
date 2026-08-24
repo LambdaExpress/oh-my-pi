@@ -79,6 +79,7 @@ import { ensureTheme, initTheme, stopThemeWatcher } from "./modes/theme/theme";
 import type { SubmittedUserInput } from "./modes/types";
 import { createWarpEventBridgeExtension } from "./modes/warp-events";
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
+import { RELEASE_CODE } from "./release-code";
 import {
 	type CreateAgentSessionOptions,
 	type CreateAgentSessionResult,
@@ -128,14 +129,14 @@ export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string)
 	(parsedArgs.mode === "json" ? process.stderr : process.stdout).write(text);
 }
 
-async function checkForNewVersion(currentVersion: string): Promise<string | undefined> {
+async function checkForNewVersion(): Promise<string | undefined> {
 	if (!settings.get("startup.checkUpdate")) {
 		return;
 	}
 	try {
 		const channel = settings.get("update.channel");
 		const release = await getLatestRelease({ timeoutMs: 5_000, channel });
-		return Bun.semver.order(release.version, currentVersion) > 0 ? release.version : undefined;
+		return release.code > RELEASE_CODE ? `code-${release.code}` : undefined;
 	} catch {
 		return undefined;
 	}
@@ -2017,7 +2018,7 @@ export async function runRootCommand(
 				stopStartupWatchdog();
 				await runCoreMode(session, eventBus, { openBrowser: !parsedArgs.noOpen, sessionOptions });
 			} else if (isInteractive) {
-				const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
+				const versionCheckPromise = checkForNewVersion().catch(() => undefined);
 				const startupChangelog = await startupChangelogPromise;
 
 				const modelScopeNotification = buildModelScopeNotification(

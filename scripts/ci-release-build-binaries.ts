@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { COMPILED_EXTERNAL_DEPENDENCIES, compileCodingAgent } from "../packages/coding-agent/scripts/compile-binary";
+import { parseReleaseCode } from "../packages/coding-agent/src/release-code";
 
 interface BinaryTarget {
 	id: string;
@@ -28,6 +29,11 @@ if (
 const transformersVersion = transformersManifest.version;
 // Worker threads re-enter the binary's single CLI host entry.
 const isDryRun = process.argv.includes("--dry-run");
+const configuredReleaseCode = Bun.env.OMP_RELEASE_CODE;
+if (configuredReleaseCode !== undefined && parseReleaseCode(configuredReleaseCode) === undefined) {
+	throw new Error(`OMP_RELEASE_CODE must be a non-negative safe integer, got: ${configuredReleaseCode}`);
+}
+const releaseCode = configuredReleaseCode ?? "0";
 const targets: BinaryTarget[] = [
 	{
 		id: "darwin-arm64",
@@ -134,7 +140,7 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 	await embedNative(target);
 	if (isDryRun) {
 		console.log(
-			`DRY RUN Bun.build target=${target.target} outfile=${target.outfile} external=${COMPILED_EXTERNAL_DEPENDENCIES.join(",")}`,
+			`DRY RUN Bun.build target=${target.target} outfile=${target.outfile} releaseCode=${releaseCode} external=${COMPILED_EXTERNAL_DEPENDENCIES.join(",")}`,
 		);
 		return;
 	}
@@ -144,6 +150,7 @@ async function buildBinary(target: BinaryTarget): Promise<void> {
 		entrypoint,
 		outfile: path.join(repoRoot, target.outfile),
 		transformersVersion,
+		releaseCode,
 		target: target.target,
 		minifyIdentifiers: true,
 		skipBuiltinCodesign: shouldAdhocSignDarwinBinary(target),

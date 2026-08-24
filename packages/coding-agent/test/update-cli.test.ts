@@ -491,6 +491,7 @@ describe("update-cli npm rename contract", () => {
 describe("migrateRenamedInstall transaction", () => {
 	const release: ReleaseInfo = {
 		tag: "v999.1.0",
+		code: 0,
 		version: "999.1.0",
 		packages: { pkg: "@new/omp", natives: "@new/natives" },
 	};
@@ -747,7 +748,7 @@ describe("update-cli bun cache pruning", () => {
 describe("update-cli release binary integrity", () => {
 	const tag = "v17.1.2";
 	const binaryName = "omp-linux-x64";
-	const url = `https://github.com/can1357/oh-my-pi/releases/download/${tag}/${binaryName}`;
+	const url = `https://github.com/LambdaExpress/oh-my-pi/releases/download/${tag}/${binaryName}`;
 	const content = "verified binary";
 	const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
 
@@ -775,6 +776,52 @@ describe("update-cli release binary integrity", () => {
 			size: Buffer.byteLength(content),
 			digest,
 		});
+	});
+
+	it("downloads a code-tagged asset and verifies the embedded release code", async () => {
+		const dir = await makeTempDir();
+		const targetPath = path.join(dir, binaryName);
+		const codeTag = "code-42";
+		const codeUrl = `https://github.com/LambdaExpress/oh-my-pi/releases/download/${codeTag}/${binaryName}`;
+		const requests: string[] = [];
+		await Bun.write(targetPath, "old binary");
+
+		await updateViaBinaryAt(targetPath, "18.0.4", {
+			binaryName,
+			releaseTag: codeTag,
+			expectedReleaseCode: 42,
+			fetchImpl: async input => {
+				const requestUrl = String(input);
+				requests.push(requestUrl);
+				if (requestUrl.startsWith("https://api.github.com/")) {
+					return Response.json({
+						tag_name: codeTag,
+						draft: false,
+						prerelease: false,
+						assets: [
+							{
+								name: binaryName,
+								state: "uploaded",
+								size: Buffer.byteLength(content),
+								digest,
+								browser_download_url: codeUrl,
+							},
+						],
+					});
+				}
+				if (requestUrl === codeUrl) return new Response(content);
+				throw new Error(`Unexpected request: ${requestUrl}`);
+			},
+			verifyInstalledVersion: async (expectedVersion, expectedCode) => ({
+				ok: expectedVersion === "18.0.4" && expectedCode === 42,
+				actual: expectedVersion,
+				code: expectedCode,
+				path: targetPath,
+			}),
+		});
+
+		expect(await Bun.file(targetPath).text()).toBe(content);
+		expect(requests).toEqual(["https://api.github.com/repos/LambdaExpress/oh-my-pi/releases/tags/code-42", codeUrl]);
 	});
 
 	it("rejects missing and unsupported release asset digests", () => {
@@ -1155,7 +1202,7 @@ describe("update-cli binary-only release gating", () => {
 describe("update-cli script-shim takeover", () => {
 	const version = "18.0.0";
 	const binaryName = "omp-windows-x64.exe";
-	const url = `https://github.com/can1357/oh-my-pi/releases/download/v${version}/${binaryName}`;
+	const url = `https://github.com/LambdaExpress/oh-my-pi/releases/download/v${version}/${binaryName}`;
 
 	function makeFetch(content: string): (input: string | URL | Request) => Promise<Response> {
 		const digest = `sha256:${createHash("sha256").update(content).digest("hex")}`;
@@ -1323,7 +1370,7 @@ describe("update-cli script-shim takeover", () => {
 describe("update-cli concurrent binary updates", () => {
 	const version = "999.0.0";
 	const binaryName = "omp-linux-x64";
-	const url = `https://github.com/can1357/oh-my-pi/releases/download/v${version}/${binaryName}`;
+	const url = `https://github.com/LambdaExpress/oh-my-pi/releases/download/v${version}/${binaryName}`;
 	const payload = Buffer.alloc(2048, 0x41);
 	const digest = `sha256:${createHash("sha256").update(payload).digest("hex")}`;
 
@@ -1443,6 +1490,7 @@ describe("update-cli concurrent binary updates", () => {
 describe("update-cli manager update recovery", () => {
 	const release: ReleaseInfo = {
 		tag: "v18.0.1",
+		code: 0,
 		version: "18.0.1",
 		packages: { pkg: "@oh-my-pi/pi-coding-agent", natives: "@oh-my-pi/pi-natives" },
 	};

@@ -1,12 +1,11 @@
 # OMP Coding Agent Installer for Windows
-# Usage: irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/reset/scripts/install.ps1 | iex
+# Usage: irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.ps1 | iex
 #
 # Or with options:
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/reset/scripts/install.ps1))) -Source
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/reset/scripts/install.ps1))) -Binary
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/reset/scripts/install.ps1))) -Source -Ref v3.20.1
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/reset/scripts/install.ps1))) -Source -Ref reset
-#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/reset/scripts/install.ps1))) -Binary -Ref v3.20.1
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.ps1))) -Source
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.ps1))) -Binary
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.ps1))) -Source -Ref dev
+#   & ([scriptblock]::Create((irm https://raw.githubusercontent.com/LambdaExpress/oh-my-pi/dev/scripts/install.ps1))) -Binary -Ref code-1
 
 param(
     [switch]$Source,
@@ -238,17 +237,42 @@ function Install-ViaBun {
     Write-Host "Run 'omp' to get started!"
 }
 
+function Get-LatestCodeRelease {
+    $Releases = @(Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=100" -TimeoutSec 60)
+    $Candidates = @(
+        foreach ($Release in $Releases) {
+            if (-not $Release.draft -and -not $Release.prerelease -and $Release.tag_name -match '^code-([1-9][0-9]*)$') {
+                [PSCustomObject]@{
+                    Code = [long]$Matches[1]
+                    Release = $Release
+                }
+            }
+        }
+    )
+    $Latest = $Candidates | Sort-Object Code -Descending | Select-Object -First 1
+    if (-not $Latest) {
+        throw "No published code-N release is available yet"
+    }
+    return $Latest
+}
+
 function Install-Binary {
     if ($Ref) {
         Write-Host "Fetching release $Ref..."
+        if ($Ref -notmatch '^code-([1-9][0-9]*)$') {
+            throw "Binary release refs must use code-N tags"
+        }
+        $ReleaseCode = [long]$Matches[1]
         try {
             $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/tags/$Ref" -TimeoutSec 60
         } catch {
             throw "Release tag not found: $Ref`nFor branch/commit installs, use -Source with -Ref."
         }
     } else {
-        Write-Host "Fetching latest release..."
-        $Release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" -TimeoutSec 60
+        Write-Host "Fetching latest code release..."
+        $LatestCodeRelease = Get-LatestCodeRelease
+        $Release = $LatestCodeRelease.Release
+        $ReleaseCode = $LatestCodeRelease.Code
     }
 
     $Latest = $Release.tag_name
@@ -263,7 +287,36 @@ function Install-Binary {
     $BinaryUrl = "https://github.com/$Repo/releases/download/$Latest/$BinaryName"
     Write-Host "Downloading $BinaryName..."
     $OutPath = Join-Path $InstallDir "omp.exe"
-    Invoke-WebRequest -Uri $BinaryUrl -OutFile $OutPath -TimeoutSec 900
+    $Attempt = "$(Get-Date -UFormat %s).$PID"
+    $NewPath = "$OutPath.$Attempt.new.exe"
+    $BackupPath = "$OutPath.$Attempt.bak"
+    $BackupReady = $false
+    try {
+        Invoke-WebRequest -Uri $BinaryUrl -OutFile $NewPath -TimeoutSec 900
+        $VersionOutput = (& $NewPath --version 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            throw "Downloaded omp cannot start: $VersionOutput"
+        }
+        if ($VersionOutput -notmatch "\+code\.$ReleaseCode$") {
+            throw "Downloaded omp reports an unexpected release code: $VersionOutput"
+        }
+
+        if (Test-Path $OutPath) {
+            Move-Item -Path $OutPath -Destination $BackupPath
+            $BackupReady = $true
+        }
+        Move-Item -Path $NewPath -Destination $OutPath
+        if ($BackupReady) {
+            Remove-Item -Force $BackupPath -ErrorAction SilentlyContinue
+        }
+    } catch {
+        Remove-Item -Force $NewPath -ErrorAction SilentlyContinue
+        if ($BackupReady) {
+            Remove-Item -Force $OutPath -ErrorAction SilentlyContinue
+            Move-Item -Path $BackupPath -Destination $OutPath -ErrorAction SilentlyContinue
+        }
+        throw
+    }
 
     Write-Host ""
     Write-Host "[OK] Installed omp to $OutPath" -ForegroundColor Green
@@ -286,14 +339,17 @@ function Install-Binary {
 }
 
 # Main logic
-# Default to the reset branch: no arguments installs the fork's reset
-# branch from source.
+# Default to the latest fork release binary. Source installs follow `dev`.
 if (-not $Ref -and -not $Source -and -not $Binary) {
-    $Ref = "reset"
+    $Binary = $true
+}
+
+if ($Source -and -not $Ref) {
+    $Ref = "dev"
 }
 
 if ($Ref -and -not $Source -and -not $Binary) {
-    $Source = $true
+    $Binary = $true
 }
 
 if ($Source) {
