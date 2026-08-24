@@ -71,7 +71,7 @@ describe("write streaming preview honors Ctrl+O expansion", () => {
 			await themeModule.initTheme();
 			initialized = true;
 		}
-		const uiStub = { requestRender() {} } as unknown as TUI;
+		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
 		const headSentinel = "HEAD-不应显示";
 		const tailSentinel = "TAIL-保持可见";
 		const wrappedPayload = "数据片段".repeat(24);

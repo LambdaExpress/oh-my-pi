@@ -76,7 +76,7 @@ describe("write streaming preview incremental line tracking", () => {
 				expect(rendered).toContain(`${lineNum}`);
 				expect(rendered).toContain(visible[i]!);
 			}
-			if (start > 0) expect(rendered).toContain(`… (${start} earlier line${start === 1 ? "" : "s"})`);
+			if (start > 0) expect(rendered).toContain(`… ${start} earlier line${start === 1 ? "" : "s"}`);
 		}
 	});
 
@@ -110,7 +110,7 @@ describe("write streaming preview incremental line tracking", () => {
 		const text = stripAnsi(rendered.join("\n"));
 		expect(text).not.toContain("\r");
 		// 20 lines → window is lines 9..20.
-		expect(text).toContain("… (8 earlier lines)");
+		expect(text).toContain("… 8 earlier lines");
 		expect(hasLine(rendered, 8)).toBe(false);
 		expect(hasLine(rendered, 9)).toBe(true);
 		expect(hasLine(rendered, 20)).toBe(true);
@@ -124,7 +124,7 @@ describe("write streaming preview incremental line tracking", () => {
 		expect(total).toBe(14);
 		expect(start).toBe(2);
 		const text = stripAnsi(rendered.join("\n"));
-		expect(text).toContain("… (2 earlier lines)");
+		expect(text).toContain("… 2 earlier lines");
 		expect(hasLine(rendered, 13)).toBe(true);
 		expect(hasLine(rendered, 2)).toBe(false);
 	});

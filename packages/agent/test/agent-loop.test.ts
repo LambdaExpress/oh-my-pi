@@ -22,6 +22,11 @@ import type {
 import { ASIDE_MESSAGE_COMMIT, ASIDE_MESSAGE_DISCARD } from "@oh-my-pi/pi-agent-core/types";
 import type { AssistantMessage, AssistantMessageEvent, Context, Message, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { createMockModel, type MockResponse } from "@oh-my-pi/pi-ai/providers/mock";
+import {
+	clearStreamingPartialJson,
+	getStreamingPartialJson,
+	setStreamingPartialJson,
+} from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
@@ -5185,7 +5190,7 @@ describe("agentLoopContinue with AgentMessage", () => {
 });
 
 describe("agentLoop streaming snapshots", () => {
-	it("deep-clones tool-call arguments into message_update snapshots, copying only own enumerable properties", async () => {
+	it("deep-clones tool-call arguments and preserves streamed JSON in message_update snapshots", async () => {
 		const context: AgentContext = {
 			systemPrompt: ["You are helpful."],
 			messages: [],
@@ -5213,6 +5218,8 @@ describe("agentLoop streaming snapshots", () => {
 			nul: null,
 		});
 		const toolCall = { type: "toolCall" as const, id: "tc-clone", name: "noop", arguments: sourceArgs };
+		const partialJson = '{"content":"streamed before path';
+		setStreamingPartialJson(toolCall, partialJson);
 
 		// Turn 0 streams the tool call; the unknown tool produces an error result
 		// and the loop calls the model again — turn 1 returns plain text so the
@@ -5241,6 +5248,9 @@ describe("agentLoop streaming snapshots", () => {
 		for await (const event of stream) {
 			events.push(event);
 		}
+		// Provider-owned blocks continue mutating after each delta. Clearing the
+		// source must not erase metadata already captured in message_update.
+		clearStreamingPartialJson(toolCall);
 
 		const toolUpdate = events.find(
 			(e): e is Extract<AgentEvent, { type: "message_update" }> =>
@@ -5253,6 +5263,7 @@ describe("agentLoop streaming snapshots", () => {
 		const block = toolUpdate.message.content.find(c => c.type === "toolCall");
 		if (block?.type !== "toolCall") throw new Error("missing tool-call block");
 		const cloned: Record<string, unknown> = block.arguments;
+		expect(getStreamingPartialJson(block)).toBe(partialJson);
 
 		// Fresh top-level object, not the source reference.
 		expect(cloned).not.toBe(sourceArgs);

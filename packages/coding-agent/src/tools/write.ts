@@ -1556,7 +1556,9 @@ function formatStreamingContent(
 					visualWindow: expanded
 						? undefined
 						: createEarlierLinesTailWindow(uiTheme, {
-								max: WRITE_STREAMING_PREVIEW_LINES,
+								// `max` includes the earlier-lines marker; reserve one extra
+								// row so the body still retains its full 12-line live tail.
+								max: WRITE_STREAMING_PREVIEW_LINES + 1,
 								hiddenRows: hiddenVisualRows,
 								expandHint: false,
 								markerKey: "write-streaming-content",
