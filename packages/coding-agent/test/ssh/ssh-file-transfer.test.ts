@@ -164,6 +164,36 @@ describe("SSH file transfer core", () => {
 		expect(cleanup).toHaveBeenCalledTimes(2);
 	});
 
+	it("publishes intermediate upload bytes acknowledged by the remote stage", async () => {
+		const payload = binaryPayload(4);
+		const localPath = path.join(testDir, "upload-progress.bin");
+		await fs.writeFile(localPath, payload);
+		const progress: SshFileTransferProgress[] = [];
+		let now = 0;
+		vi.spyOn(Date, "now").mockImplementation(() => (now += 300));
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockImplementation(async (_host, command) => ({
+			args: [command.includes("OMP_TRANSFER_COMMITTED") ? "commit" : "stage"],
+		}));
+		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>(command: string[]) => {
+			if (command[1] === "commit") {
+				return createChild<In>({ stdout: [new TextEncoder().encode("OMP_TRANSFER_COMMITTED\n")] });
+			}
+			return createChild<In>({
+				stdout: [
+					new TextEncoder().encode(
+						"OMP_TRANSFER_PROGRESS 1\nOMP_TRANSFER_PROGRESS 2\nOMP_TRANSFER_PROGRESS 3\nOMP_TRANSFER_PROGRESS 4\n",
+					),
+				],
+			});
+		});
+
+		await executeSshFileTransfer(uploadPlan(localPath, payload.byteLength), {
+			onProgress: update => progress.push(update),
+		});
+
+		expect(progress.map(update => update.transferredBytes)).toEqual([0, 1, 2, 3, 4, 4]);
+	});
+
 	it("downloads irregular binary chunks through partial local writes", async () => {
 		const payload = binaryPayload(160 * 1024 + 19);
 		const localPath = path.join(testDir, "nested", "download.bin");

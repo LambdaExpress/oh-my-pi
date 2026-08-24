@@ -9,7 +9,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { commitStagedFileAtomic } from "@oh-my-pi/pi-natives";
-import { isEexist, ptree } from "@oh-my-pi/pi-utils";
+import { isEexist, ptree, readLines } from "@oh-my-pi/pi-utils";
 import {
 	buildPowerShellCommand,
 	buildRemoteCommandInvocation,
@@ -29,6 +29,7 @@ const SSH_TRANSFER_RECOVERY_MS = 20_000;
 const SSH_TRANSFER_STAGE_TERMINATE_MS = 2_000;
 const SSH_TRANSFER_PROGRESS_INTERVAL_MS = 250;
 const SSH_TRANSFER_COMMIT_MARKER = "OMP_TRANSFER_COMMITTED";
+const SSH_TRANSFER_PROGRESS_MARKER = "OMP_TRANSFER_PROGRESS ";
 
 type RemoteTransferMode =
 	| { kind: "posix"; shell: "sh" | "bash" | "zsh" }
@@ -892,6 +893,13 @@ class SshTransferProgressReporter {
 		}
 	}
 
+	setTransferredBytes(bytes: number): void {
+		if (!Number.isSafeInteger(bytes) || bytes <= this.#transferredBytes || bytes > this.#totalBytes) return;
+		this.#transferredBytes = bytes;
+		const now = Date.now();
+		if (now - this.#lastEmittedAt >= SSH_TRANSFER_PROGRESS_INTERVAL_MS) this.#emit(now);
+	}
+
 	finish(): SshFileTransferProgress {
 		this.#emit(Date.now());
 		return this.#lastProgress;
@@ -938,17 +946,37 @@ function buildPosixUploadStageScript(remotePath: string, artifacts: RemoteTransf
 parent=${parent}
 stage=${stage}
 proof=${proof}
+progress_pid=
+stop_transfer_progress() {
+	if [ -n "\${progress_pid:-}" ]; then
+		kill "$progress_pid" 2>/dev/null || true
+		wait "$progress_pid" 2>/dev/null || true
+		progress_pid=
+	fi
+}
 cleanup_transfer_stage() {
+	stop_transfer_progress
 	rm -f -- "$stage" "$proof"
 }
 trap 'cleanup_transfer_stage; exit 130' HUP INT TERM
 mkdir -p -- "$parent" || exit 1
 umask 077
 ( set -C; : > "$stage" ) || exit 1
+(
+	while :; do
+		size=$(wc -c < "$stage" 2>/dev/null) || size=0
+		printf '${SSH_TRANSFER_PROGRESS_MARKER}%s\\n' "$size"
+		sleep 0.25 || exit 0
+	done
+) &
+progress_pid=$!
 if ! cat > "$stage"; then
 	cleanup_transfer_stage
 	exit 1
 fi
+stop_transfer_progress
+size=$(wc -c < "$stage") || exit 1
+printf '${SSH_TRANSFER_PROGRESS_MARKER}%s\\n' "$size"
 trap - HUP INT TERM
 `;
 }
@@ -968,8 +996,22 @@ try {
 		[System.IO.FileAccess]::Write,
 		[System.IO.FileShare]::None
 	)
-	[Console]::OpenStandardInput().CopyTo($stream)
+	$inputStream = [Console]::OpenStandardInput()
+	$buffer = New-Object byte[] 65536
+	$total = [long]0
+	$progressClock = [System.Diagnostics.Stopwatch]::StartNew()
+	while (($read = $inputStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+		$stream.Write($buffer, 0, $read)
+		$total += $read
+		if ($progressClock.ElapsedMilliseconds -ge ${SSH_TRANSFER_PROGRESS_INTERVAL_MS}) {
+			[Console]::Out.WriteLine("${SSH_TRANSFER_PROGRESS_MARKER}$total")
+			[Console]::Out.Flush()
+			$progressClock.Restart()
+		}
+	}
 	$stream.Flush($true)
+	[Console]::Out.WriteLine("${SSH_TRANSFER_PROGRESS_MARKER}$total")
+	[Console]::Out.Flush()
 } catch {
 	if ($null -ne $stream) {
 		$stream.Dispose()
@@ -1033,7 +1075,7 @@ async function terminateTransferStageChild(child: TransferChildHandle): Promise<
 async function writeAllToSink(
 	sink: Bun.FileSink,
 	chunk: Uint8Array,
-	reporter: SshTransferProgressReporter,
+	onAccepted: (bytes: number) => void,
 	signal?: AbortSignal,
 ): Promise<void> {
 	let offset = 0;
@@ -1044,7 +1086,20 @@ async function writeAllToSink(
 			throw new Error("SSH transfer remote sink accepted zero bytes");
 		}
 		offset += accepted;
-		reporter.addAcceptedBytes(accepted);
+		onAccepted(accepted);
+	}
+}
+
+async function observeRemoteUploadProgress(
+	output: ReadableStream<Uint8Array>,
+	reporter: SshTransferProgressReporter,
+): Promise<void> {
+	const decoder = new TextDecoder();
+	for await (const line of readLines(output)) {
+		const text = decoder.decode(line).trim();
+		if (!text.startsWith(SSH_TRANSFER_PROGRESS_MARKER)) continue;
+		const bytes = Number(text.slice(SSH_TRANSFER_PROGRESS_MARKER.length));
+		reporter.setTransferredBytes(bytes);
 	}
 }
 
@@ -1084,30 +1139,39 @@ async function streamUploadStage(
 			signal,
 			env: invocation.env,
 		});
-		const drainStdout = new Response(child.stdout).arrayBuffer();
+		const remoteProgress = observeRemoteUploadProgress(child.stdout, reporter);
+		let sourceBytes = 0;
 		try {
 			const source = Bun.file(plan.localPath).stream();
 			for await (const chunk of source) {
 				signal?.throwIfAborted();
-				if (chunk.byteLength > reporter.remainingBytes) {
+				if (chunk.byteLength > plan.totalBytes - sourceBytes) {
 					throw new Error(`SSH transfer source grew after preflight: ${plan.localPath}`);
 				}
-				await writeAllToSink(child.stdin, chunk, reporter, signal);
+				await writeAllToSink(
+					child.stdin,
+					chunk,
+					accepted => {
+						sourceBytes += accepted;
+					},
+					signal,
+				);
 			}
 			await child.stdin.end();
-			await Promise.all([drainStdout, child.exitedCleanly]);
+			await Promise.all([remoteProgress, child.exitedCleanly]);
 		} catch (error) {
 			await terminateTransferStageChild(child);
-			await drainStdout.catch(() => undefined);
+			await remoteProgress.catch(() => undefined);
 			throw error;
 		}
+		if (sourceBytes !== plan.totalBytes) {
+			throw new Error(
+				`SSH transfer source size changed after preflight: expected ${plan.totalBytes} bytes, received ${sourceBytes}`,
+			);
+		}
+		if (reporter.transferredBytes !== plan.totalBytes) reporter.setTransferredBytes(sourceBytes);
 	} finally {
 		await invocation.cleanup?.();
-	}
-	if (reporter.transferredBytes !== plan.totalBytes) {
-		throw new Error(
-			`SSH transfer source size changed after preflight: expected ${plan.totalBytes} bytes, received ${reporter.transferredBytes}`,
-		);
 	}
 }
 
