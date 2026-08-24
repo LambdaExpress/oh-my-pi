@@ -13,15 +13,21 @@
  *    live region with a spinner that can never resolve.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { stripVTControlCharacters } from "node:util";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import type { RegisteredTool } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { wrapRegisteredTool } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
+import { customToolToDefinition } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import { webSearchCustomTool } from "@oh-my-pi/pi-coding-agent/web/search";
 
 const usage = {
 	input: 1,
@@ -44,12 +50,20 @@ const danglingAssistant = {
 	timestamp: Date.now(),
 } as unknown as AgentMessage;
 
-function createFixture(opts: { isStreaming: boolean }) {
+function createBridgedWebSearchTool() {
+	const definition = customToolToDefinition(webSearchCustomTool);
+	return wrapRegisteredTool(
+		{ definition, extensionPath: "<sdk>" } as RegisteredTool,
+		{ createContext: () => ({}) } as unknown as ExtensionRunner,
+	);
+}
+
+function createFixture(opts: { isStreaming: boolean; tools?: Record<string, unknown> }) {
 	const chatContainer = new TranscriptContainer();
 	const session = {
 		retryAttempt: 0,
-		getToolByName: () => undefined,
-		hasBuiltInTool: () => true,
+		getToolByName: (name: string) => opts.tools?.[name],
+		hasBuiltInTool: () => false,
 		sessionManager: { getCwd: () => process.cwd() },
 		isStreaming: opts.isStreaming,
 	};
@@ -142,5 +156,55 @@ describe("mid-turn transcript rebuild keeps in-flight tool calls", () => {
 		// stays empty so historical components never receive live events.
 		expect(component.isTranscriptBlockFinalized()).toBe(true);
 		expect(ctx.pendingTools.size).toBe(0);
+	});
+
+	it("rebuilds a persisted adapted Web Search call and result into one completed query-and-answer card", () => {
+		const toolCallId = "web-search-rebuild";
+		const query = "PERSISTED WEB SEARCH QUERY";
+		const answer = "PERSISTED WEB SEARCH ANSWER";
+		const assistant = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: toolCallId, name: "web_search", arguments: { query } }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			stopReason: "toolUse",
+			usage,
+			timestamp: Date.now(),
+		} as unknown as AgentMessage;
+		const result = {
+			role: "toolResult",
+			toolCallId,
+			toolName: "web_search",
+			content: [{ type: "text", text: answer }],
+			details: {
+				response: {
+					provider: "tavily",
+					answer,
+					sources: [{ title: "Persisted source", url: "https://example.com/persisted" }],
+				},
+			},
+			isError: false,
+			timestamp: Date.now(),
+		} as unknown as AgentMessage;
+		const { ctx, helpers, chatContainer } = createFixture({
+			isStreaming: false,
+			tools: { web_search: createBridgedWebSearchTool() },
+		});
+
+		helpers.renderSessionContext({ messages: [assistant, result] } as SessionContext);
+
+		const [component] = pendingComponents(chatContainer);
+		expect(component).toBeDefined();
+		created.push(component);
+		expect(component.isTranscriptBlockFinalized()).toBe(true);
+		expect(ctx.pendingTools.size).toBe(0);
+
+		const rebuilt = stripVTControlCharacters(chatContainer.render(100).join("\n"));
+		expect(rebuilt.match(/Web Search/g) ?? []).toHaveLength(1);
+		expect(rebuilt).not.toContain(theme.status.pending);
+		expect(rebuilt).toContain(`Query: ${query}`);
+		expect(rebuilt).toContain("Answer");
+		expect(rebuilt).toContain(answer);
 	});
 });

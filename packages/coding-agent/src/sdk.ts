@@ -1027,13 +1027,15 @@ export function customToolToDefinition(tool: CustomTool): ToolDefinition {
 		execute: (toolCallId, params, signal, onUpdate, ctx) =>
 			tool.execute(toolCallId, params, onUpdate, createCustomToolContext(ctx), signal),
 		onSession: tool.onSession ? (event, ctx) => tool.onSession?.(event, createCustomToolContext(ctx)) : undefined,
+		mergeCallAndResult: tool.mergeCallAndResult,
 		renderCall: tool.renderCall,
 		renderResult: tool.renderResult
-			? (result, options, theme): Component => {
+			? (result, options, theme, args): Component => {
 					const component = tool.renderResult?.(
 						result,
 						{ expanded: options.expanded, isPartial: options.isPartial, spinnerFrame: options.spinnerFrame },
 						theme,
+						args,
 					);
 					// Return empty component if undefined to match Component type requirement
 					return component ?? ({ render: () => [] } as unknown as Component);

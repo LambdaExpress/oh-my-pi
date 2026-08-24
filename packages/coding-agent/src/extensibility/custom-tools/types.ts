@@ -252,6 +252,8 @@ export interface CustomTool<TParams extends TSchema = TSchema, TDetails = any> {
 
 	/** Called on session lifecycle events - use to reconstruct state or cleanup resources */
 	onSession?: (event: CustomToolSessionEvent, ctx: CustomToolContext) => void | Promise<void>;
+	/** When true, the completed result replaces the pending call row instead of rendering as a separate row. */
+	mergeCallAndResult?: boolean;
 	/** Custom rendering for tool call display - return a Component */
 	renderCall?: (args: Static<TParams>, options: RenderResultOptions, theme: Theme) => Component;
 

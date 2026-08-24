@@ -641,6 +641,8 @@ export interface ToolDefinition<TParams extends TSchema = TSchema, TDetails = un
 	/** Called on session lifecycle events - use to reconstruct state or cleanup resources */
 	onSession?: (event: ToolSessionEvent, ctx: ExtensionContext) => void | Promise<void>;
 
+	/** When true, the completed result replaces the pending call row instead of rendering as a separate row. */
+	mergeCallAndResult?: boolean;
 	/** Custom rendering for tool call display */
 	renderCall?: (args: Static<TParams>, options: ToolRenderResultOptions, theme: Theme) => Component;
 

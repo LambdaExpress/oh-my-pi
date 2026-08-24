@@ -375,6 +375,8 @@ export const webSearchCustomTool: CustomTool<typeof webSearchSchema, SearchRende
 		});
 	},
 
+	mergeCallAndResult: true,
+
 	renderCall(args: SearchToolParams, options: RenderResultOptions, theme: Theme) {
 		return renderSearchCall(args, options, theme);
 	},

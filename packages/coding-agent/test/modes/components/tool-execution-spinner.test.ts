@@ -1,12 +1,25 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
+import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
+import type { RegisteredTool } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
+import { wrapRegisteredTool } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
 import {
 	SPINNER_RENDER_INTERVAL_MS,
 	stopSharedSpinnerTicker,
 	ToolExecutionComponent,
 } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { customToolToDefinition } from "@oh-my-pi/pi-coding-agent/sdk";
+import { webSearchCustomTool } from "@oh-my-pi/pi-coding-agent/web/search";
 import type { TUI } from "@oh-my-pi/pi-tui";
+
+function createBridgedWebSearchTool() {
+	const definition = customToolToDefinition(webSearchCustomTool);
+	return wrapRegisteredTool(
+		{ definition, extensionPath: "<sdk>" } as RegisteredTool,
+		{ createContext: () => ({}) } as unknown as ExtensionRunner,
+	);
+}
 
 // Contract under test: live tool previews that render a pending/running status
 // must keep the spinner glyph tied to the shared tool-frame ticker. This covers
@@ -161,6 +174,77 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			vi.advanceTimersByTime(500);
 			expect(requestRender).not.toHaveBeenCalled();
 			expect(requestComponentRender).not.toHaveBeenCalled();
+		} finally {
+			component.stopAnimation();
+		}
+	});
+
+	it("replaces an adapted Web Search pending preview with one completed query-and-answer card", () => {
+		const query = "ORIGINAL WEB SEARCH QUERY";
+		const answer = "FINAL WEB SEARCH ANSWER";
+		const component = new ToolExecutionComponent(
+			"web_search",
+			{ query },
+			{ useBuiltInRenderer: false },
+			createBridgedWebSearchTool(),
+			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+			process.cwd(),
+		);
+
+		try {
+			const pending = stripVTControlCharacters(component.render(100).join("\n"));
+			expect(pending).toContain(theme.status.pending);
+			expect(pending).toContain("Web Search");
+			expect(pending).toContain(query);
+
+			component.updateResult({
+				content: [{ type: "text", text: answer }],
+				details: {
+					response: {
+						provider: "tavily",
+						answer,
+						sources: [{ title: "Search source", url: "https://example.com/source" }],
+					},
+				},
+			});
+
+			const completed = stripVTControlCharacters(component.render(100).join("\n"));
+			expect(completed.match(/Web Search/g) ?? []).toHaveLength(1);
+			expect(completed).not.toContain(theme.status.pending);
+			expect(completed).toContain(`Query: ${query}`);
+			expect(completed).toContain("Answer");
+			expect(completed).toContain(answer);
+		} finally {
+			component.stopAnimation();
+		}
+	});
+
+	it("replaces an adapted Web Search pending preview with one terminal error card", () => {
+		const component = new ToolExecutionComponent(
+			"web_search",
+			{ query: "FAILING WEB SEARCH QUERY" },
+			{ useBuiltInRenderer: false },
+			createBridgedWebSearchTool(),
+			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
+			process.cwd(),
+		);
+
+		try {
+			expect(stripVTControlCharacters(component.render(100).join("\n"))).toContain(theme.status.pending);
+
+			component.updateResult({
+				content: [{ type: "text", text: "Provider unavailable" }],
+				details: {
+					response: { provider: "tavily", sources: [] },
+					error: "Provider unavailable",
+				},
+				isError: true,
+			});
+
+			const failed = stripVTControlCharacters(component.render(100).join("\n"));
+			expect(failed.match(/Web Search/g) ?? []).toHaveLength(1);
+			expect(failed).not.toContain(theme.status.pending);
+			expect(failed).toContain("Error: Provider unavailable");
 		} finally {
 			component.stopAnimation();
 		}
