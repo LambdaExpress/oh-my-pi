@@ -61,7 +61,7 @@
 
 ### Fixed
 
-- Fixed long plain-text model paragraphs being limited to one terminal screen while streaming; completed wrapped rows now enter native scrollback before the reply finishes.
+- Fixed long model paragraphs containing ordinary prose or closed inline code being limited to one terminal screen while streaming; completed wrapped rows now enter native scrollback before the reply finishes.
 - Fixed completed Web Search calls leaving a pending hourglass above a separate result; live and rebuilt transcripts now replace it with one card containing the original query and answer.
 - Fixed image attachment cards on SIXEL terminals rendering only an icon; attachments now use centered direct-placement SIXEL thumbnails while preserving the 12×4 bordered card layout.
 - Restored the 17.4 annotated context-gauge layout as the status-line default while retaining the reset branch's fixed green/yellow/orange/red 35/60/75 percent tiers, token thresholds, and pulsing async-compaction indicators; the `󰕝` speculation marker now pulses while pre-compaction runs and adopts the gauge's `󰁨` threshold color once the result is armed, while percentage/window numbers render in the context segment instead of being embedded in the line.
@@ -198,6 +198,51 @@
 - Fixed the `pwsh` tool spawning a visible console window for native executables on Windows by applying the existing no-console `windowsHide` policy to the PowerShell host process.
 - Fixed the `pwsh` tool prompt over-selecting PowerShell on Windows by making `bash` the default unless PowerShell-specific syntax or providers are required.
 ## [17.0.1] - 2026-07-16
+## [18.0.4] - 2026-08-24
+
+### Added
+
+- Added the `omp git` command (and `/git` slash command): an interactive, fullscreen repository TUI featuring a split/inline/hunk diff viewer with minimap scrollbar, syntax highlighting, a staging sidebar with line-level staging, commit composer with amend support, and author avatars. Supports keyboard navigation, full mouse interaction, and pinning views to specific commits via `omp git <revision>`.
+- Overhauled the `/extensions` Extension Control Center into a fullscreen alternate-screen dashboard with mouse support, tab navigation, unified inspector views across extension types, live MCP connection management, and expandable details (`Ctrl+O`).
+- Added support for live syntax highlighting in streaming markdown code blocks.
+- Added an immediately editable startup composer for interactive launches, preserving drafts typed while session initialization is in progress.
+
+### Changed
+
+- Improved streaming markdown and thinking block rendering performance on long sessions by batching token updates and eliminating redundant re-processing.
+- Optimized streaming edit verification and session restoration for large files and history-heavy sessions.
+
+### Fixed
+
+- Fixed invalid streamed edit patches occasionally reaching the edit tool instead of being stopped early.
+- Fixed `!` shell commands on zsh/fish by running them inside a real PTY, resolving terminal option errors and preserving ANSI color formatting.
+- Fixed transcript layout corruption and viewport compression caused by interrupted streams, empty blocks, or collapsed wrapped diff lines.
+- Fixed transcript scrollback loss where output below sticky cards (such as hub-wait or todo) failed to commit to terminal history.
+- Improved HTTP 413 error handling: accurately distinguish between true token-context overflows and provider byte/media budget limits, persist terminal errors across sessions, and enable proper fallback-chain model switching.
+- Fixed discovery-backed session models failing to restore when resuming sessions with `omp --resume` or `--continue`.
+- Fixed browser tool initial launch timeouts on slow or cold host environments.
+- Fixed eval runtime probes hanging on Windows due to inherited stdin handles.
+- Fixed Claude models replaying partial thinking blocks as conversation text when interrupted mid-turn.
+- Fixed image request failures with Kimi Code and Moonshot models by ensuring inline base64 image delivery.
+- Fixed SQLite WAL-mode databases without sidecars failing to open in the Read tool.
+- Fixed pasted image thumbnail rendering in the composer attachment preview.
+- Fixed Linux startup event loop delays caused by legacy extension cache fsync churn.
+- Fixed subagent advisors abandoning reviews on the final yield turn during session teardown.
+- Fixed `/todo` expand/collapse commands and corrected `/shake thinking` reporting.
+
+## [18.0.3] - 2026-08-23
+
+### Added
+
+- Added opt-in edit auto-repair (`edit.autoRepair.enabled`): when an edit breaks a file's AST parse, the smol model repairs the broken region in place — validated by re-parse, revert-rejected, and surfaced as a diff in the tool result — instead of only warning.
+
+### Fixed
+
+- Resolved cursor drift and text duplication caused by overlapping or out-of-bounds spelling ranges
+- Squeezed transcript tool rows no longer render as a bare unstyled `╭─ Hub` frame: a squeezed block keeps its real render whenever it fits the allocated rows, and blocks that genuinely overflow fold to a themed frame that names the tool's activity (e.g. `Hub · send → Main`).
+- Python/Ruby/Julia eval cells that hit their wall-clock timeout during a `parallel()`/`agent()`/`tool.*` fan-out no longer get their kernel force-killed (losing all session state): the timeout now aborts in-flight bridge calls so the runner unwinds as a clean KeyboardInterrupt and the kernel survives.
+- Multi-select ask options whose labels end in `(Recommended)` now show their checked state and avoid duplicate recommendation suffixes ([#9452](https://github.com/can1357/oh-my-pi/issues/9452)).
+
 ## [18.0.2] - 2026-08-23
 
 ### Added

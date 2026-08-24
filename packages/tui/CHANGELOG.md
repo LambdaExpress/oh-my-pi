@@ -13,7 +13,7 @@
 
 ### Fixed
 
-- Fixed growing plain-text Markdown paragraphs withholding every wrapped row from explicit terminal history until finalization.
+- Fixed growing Markdown paragraphs containing ordinary prose or closed inline code withholding every wrapped row from explicit terminal history until finalization.
 - Fixed Windows resize rebuilds moving the old viewport above the replayed welcome screen when AdaptDispatch promoted the page during a destructive clear.
 - Fixed full transcript replays re-emitting BEL-terminated OSC 8 hyperlinks, which could retrigger the terminal completion sound when `Ctrl+T` toggled thinking visibility; terminal output now uses the equivalent ST terminator.
 - Fixed deferred non-destructive transcript refreshes lacking an input-checkpoint replay path, which left stale live rows in native scrollback after the rendered frame had intentionally collapsed them.
@@ -24,6 +24,23 @@
 - Fixed editor caret movement entering image or paste placeholders; keyboard left/right, word, and vertical movement now treat matched placeholders as atomic tokens.
 - Fixed stable streaming rows vanishing at the native-scrollback seam; provider-declared prefixes now retire through explicit history batches and reproject across width changes without freezing mutable tool previews.
 - Fixed OSC 8 hyperlinks staying disabled in Windows Terminal when `tui.hyperlinks=auto`.
+## [18.0.4] - 2026-08-24
+
+### Changed
+
+- Significantly improved streaming Markdown rendering performance by caching unchanged rows, resuming boundary walks, and inspecting only text deltas for guard scans and OSC 8 normalization.
+
+### Fixed
+
+- Fixed TUI aborting when syntax highlighting fails during Markdown rendering by falling back to unhighlighted text.
+- Fixed Korean IME cursor drift in Orca by properly matching two-cell Hangul Compatibility Jamo rendering.
+
+## [18.0.3] - 2026-08-23
+
+### Fixed
+
+- Fixed inline images vanishing from the transcript and scrollback when the session exits: stop no longer deletes transmitted Kitty images from the terminal's graphics store.
+
 ## [18.0.2] - 2026-08-23
 
 ### Fixed

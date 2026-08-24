@@ -14,18 +14,21 @@ import { copyToClipboard } from "../../utils/clipboard";
 import { getEditorCommand, openInEditor } from "../../utils/external-editor";
 import type { InteractiveModeContext } from "../types";
 
-const USAGE_TEXT =
-	"Usage: /todo <verb> [args]\n" +
-	"  /todo                              Show current todos\n" +
-	"  /todo edit                         Open todos in $EDITOR\n" +
-	"  /todo copy                         Copy todos as Markdown to clipboard\n" +
-	"  /todo export [<path>]              Write todos to file (default: TODO.md)\n" +
-	"  /todo import [<path>]              Replace todos from file (default: TODO.md)\n" +
-	"  /todo append [<phase>] <task...>   Append a task; phase fuzzy-matched or auto-created\n" +
-	"  /todo start  <task>                Mark task in_progress (fuzzy content match)\n" +
-	"  /todo done   [<task|phase>]        Mark task/phase/all completed\n" +
-	"  /todo drop   [<task|phase>]        Mark task/phase/all abandoned\n" +
-	"  /todo rm     [<task|phase>]        Remove task/phase/all";
+const USAGE_TEXT = [
+	"Usage: /todo <verb> [args]",
+	"  /todo                              Show current todos",
+	"  /todo edit                         Open todos in $EDITOR",
+	"  /todo copy                         Copy todos as Markdown to clipboard",
+	"  /todo expand                       Show every phase and task in the HUD",
+	"  /todo collapse                     Restore the bounded HUD preview",
+	"  /todo export [<path>]              Write todos to file (default: TODO.md)",
+	"  /todo import [<path>]              Replace todos from file (default: TODO.md)",
+	"  /todo append [<phase>] <task...>   Append a task; phase fuzzy-matched or auto-created",
+	"  /todo start  <task>                Mark task in_progress (fuzzy content match)",
+	"  /todo done   [<task|phase>]        Mark task/phase/all completed",
+	"  /todo drop   [<task|phase>]        Mark task/phase/all abandoned",
+	"  /todo rm     [<task|phase>]        Remove task/phase/all",
+].join("\n");
 
 // =============================================================================
 // Argument tokenizer (respects double-quoted strings)
@@ -155,6 +158,12 @@ export class TodoCommandController {
 		const rest = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1).trim();
 
 		switch (verb) {
+			case "expand":
+				if (!this.ctx.todoExpanded) this.ctx.toggleTodoExpansion();
+				return;
+			case "collapse":
+				if (this.ctx.todoExpanded) this.ctx.toggleTodoExpansion();
+				return;
 			case "edit":
 				await this.#editInExternalEditor();
 				return;

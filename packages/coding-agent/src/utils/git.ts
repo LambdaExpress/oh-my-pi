@@ -100,10 +100,15 @@ export interface CommitAuthor {
 export interface CommitDetails {
 	readonly author: CommitAuthor;
 	readonly message: string;
+	/** Comma-free parent SHAs; empty for a root commit. */
+	readonly parents: readonly string[];
+	/** Full commit SHA. */
+	readonly sha: string;
 }
 
 export interface CommitOptions {
 	readonly allowEmpty?: boolean;
+	readonly amend?: boolean;
 	readonly author?: CommitAuthor;
 	readonly files?: readonly string[];
 	readonly signal?: AbortSignal;
@@ -1467,6 +1472,7 @@ export async function commit(cwd: string, message: string, options: CommitOption
 		if (options.author.date) args.push(`--date=${options.author.date}`);
 	}
 	if (options.allowEmpty) args.push("--allow-empty");
+	if (options.amend) args.push("--amend");
 	if (options.files?.length) args.push("--", ...options.files);
 	return runChecked(cwd, args, { signal: options.signal, stdin: message });
 }
@@ -1777,14 +1783,16 @@ export const show = Object.assign(
 
 /** Read commit message and author metadata for replay/rewrite flows. */
 export async function commitDetails(cwd: string, revision: string, signal?: AbortSignal): Promise<CommitDetails> {
-	const raw = await runText(cwd, ["show", "-s", "--format=%an%x00%ae%x00%aI%x00%B", revision], {
+	const raw = await runText(cwd, ["show", "-s", "--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%B", revision], {
 		readOnly: true,
 		signal,
 	});
-	const [name = "", email = "", date = "", ...messageParts] = raw.split("\0");
+	const [sha = "", parentsRaw = "", name = "", email = "", date = "", ...messageParts] = raw.split("\0");
 	return {
 		author: { date, email, name },
 		message: messageParts.join("\0").replace(/\n$/, ""),
+		parents: parentsRaw.split(" ").filter(Boolean),
+		sha,
 	};
 }
 

@@ -1,18 +1,21 @@
 import {
 	type Component,
 	Container,
+	isInsideTerminalMultiplexer,
 	ProcessTerminal,
 	type ResizeScrollbackMode,
 	Spacer,
+	sliceWithWidth,
 	type Terminal,
 	type TerminalFramePlan,
 	type TerminalFrameProvider,
 	TUI,
 	type TUIOptions,
 	type ViewportSize,
+	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { CustomEditor } from "./components/custom-editor";
-import { TranscriptContainer } from "./components/transcript-container";
+import { type AnimationFrame, TranscriptContainer } from "./components/transcript-container";
 import { type LspServerInfo, type RecentSession, WelcomeComponent } from "./components/welcome";
 import { getEditorTheme, initThemeSync, theme } from "./theme/theme";
 
@@ -130,6 +133,15 @@ export class Composer implements TerminalFrameProvider {
 	// The welcome header retires to terminal history exactly once, after the
 	// intro settles; until then it renders as mutable viewport chrome.
 	#headerRetired = false;
+	// Exact hard rows accepted into native history. Resize-alt paints reflow
+	// these rows rather than recomposing the header, because a wider terminal
+	// never joins hard tip wraps that were committed at the original width.
+	#retiredHeaderRows: readonly string[] | undefined;
+	// Hard-row prefix currently above the native viewport. The first resize
+	// frame may pull part of it down before the normal buffer is borrowed.
+	#retiredHeaderStart = 0;
+	#resizeRetiredHeaderStart: number | undefined;
+	#lastNormalRows = 0;
 	#lastInterruptAt = 0;
 	#started = false;
 	#stopped = false;
@@ -186,6 +198,11 @@ export class Composer implements TerminalFrameProvider {
 		if (!this.#started || this.#stopped) return { viewport: [] };
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
+		if (this.#resizeRetiredHeaderStart !== undefined) {
+			this.#retiredHeaderStart = this.#resizeRetiredHeaderStart;
+			this.#resizeRetiredHeaderStart = undefined;
+		}
+		this.#lastNormalRows = rows;
 		const roots = this.#runtimeMounted
 			? [...this.#runtimeChildren, this.#statusHost]
 			: [this.#header, this.#bootstrapInputGap, this.editor, this.#statusHost];
@@ -204,8 +221,14 @@ export class Composer implements TerminalFrameProvider {
 		const headerVisible = !this.#headerRetired && this.#offeredHistory?.source !== "header";
 		const headerRows = headerVisible ? this.#header.render(width) : [];
 		const before = [...headerRows, ...preRoots];
-		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - after.length));
+		const now = performance.now();
+		const frame: AnimationFrame = { now, tick: Math.floor(now / 80) };
+		const active = transcript.renderViewport(width, Math.max(0, rows - before.length - after.length), frame);
 		const composed = [...before, ...active, ...after];
+		if (history !== undefined && this.#offeredHistory?.source === "header") {
+			const visibleHeaderRows = Math.max(0, rows - composed.length);
+			this.#retiredHeaderStart = Math.max(0, history.rows.length - visibleHeaderRows);
+		}
 		return {
 			history,
 			viewport: composed.length <= rows ? composed : composed.slice(-rows),
@@ -216,8 +239,12 @@ export class Composer implements TerminalFrameProvider {
 	acknowledgeHistory(id: number): void {
 		const offered = this.#offeredHistory;
 		if (offered === undefined || offered.id !== id) return;
-		if (offered.source === "header") this.#headerRetired = true;
-		else offered.source.transcript.acknowledgeFinalizedBatch(offered.source.transcriptId);
+		if (offered.source === "header") {
+			this.#headerRetired = true;
+			this.#retiredHeaderRows = offered.rows;
+		} else {
+			offered.source.transcript.acknowledgeFinalizedBatch(offered.source.transcriptId);
+		}
 		this.#offeredHistory = undefined;
 	}
 
@@ -229,7 +256,17 @@ export class Composer implements TerminalFrameProvider {
 		const tail = this.#runtimeMounted
 			? this.#renderRoots([...this.#runtimeChildren, this.#statusHost], width)
 			: this.#renderRoots([this.#bootstrapInputGap, this.editor, this.#statusHost], width);
-		const rendered = [...this.#header.render(width), ...(this.#headerRetired ? [""] : []), ...tail];
+		let header: readonly string[];
+		if (this.#headerRetired) {
+			this.#resizeRetiredHeaderStart ??= Math.max(
+				0,
+				this.#retiredHeaderStart - Math.max(0, rows - this.#lastNormalRows),
+			);
+			header = this.#reflowRetiredHeader(width, this.#resizeRetiredHeaderStart);
+		} else {
+			header = this.#header.render(width);
+		}
+		const rendered = [...header, ...tail];
 		return rendered.length <= rows ? rendered : rendered.slice(rendered.length - rows);
 	}
 
@@ -237,6 +274,9 @@ export class Composer implements TerminalFrameProvider {
 	resetHistory(): void {
 		this.#offeredHistory = undefined;
 		this.#headerRetired = false;
+		this.#retiredHeaderRows = undefined;
+		this.#retiredHeaderStart = 0;
+		this.#resizeRetiredHeaderStart = undefined;
 		for (const child of this.#runtimeChildren) {
 			if (child instanceof TranscriptContainer) child.resetRetirement();
 		}
@@ -281,6 +321,30 @@ export class Composer implements TerminalFrameProvider {
 		const rows: string[] = [];
 		for (const root of roots) rows.push(...root.render(width));
 		return rows;
+	}
+
+	/** Reflow accepted hard rows exactly as the restored terminal buffer will. */
+	#reflowRetiredHeader(width: number, start: number): string[] {
+		const lines = this.#retiredHeaderRows;
+		if (!lines) return [];
+		if (isInsideTerminalMultiplexer()) return lines.slice(start);
+		const reflowed: string[] = [];
+		const columns = Math.max(1, width);
+		for (let index = start; index < lines.length; index++) {
+			const line = lines[index]!;
+			const lineWidth = visibleWidth(line);
+			if (lineWidth === 0) {
+				reflowed.push("");
+				continue;
+			}
+			for (let column = 0; column < lineWidth; ) {
+				let slice = sliceWithWidth(line, column, columns, true);
+				if (slice.width === 0) slice = sliceWithWidth(line, column, columns);
+				reflowed.push(slice.text);
+				column += Math.max(1, slice.width);
+			}
+		}
+		return reflowed;
 	}
 
 	/** Live editor whose draft survives startup and session adoption. */

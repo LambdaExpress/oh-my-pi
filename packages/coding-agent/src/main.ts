@@ -58,7 +58,7 @@ import { loadExtensions } from "./extensibility/extensions/loader";
 import { ExtensionRunner } from "./extensibility/extensions/runner";
 import type { ExtensionUIContext } from "./extensibility/extensions/types";
 import { scheduleMarketplaceAutoUpdate } from "./extensibility/plugins/marketplace-auto-update";
-import { setLocale, t } from "./i18n";
+import { t } from "./i18n";
 import { registerDaemonProjectPresence } from "./launch/presence";
 import { discoverStartupLspServers } from "./lsp/servers";
 import type { MCPManager } from "./mcp";
@@ -1698,7 +1698,6 @@ export async function runRootCommand(
 				// stays fixed inside resolveScopedModels).
 				scopedModels = await resolveScopedModels(parsedArgs, modelRegistry, settingsInstance);
 			}
-
 		}
 
 		// User declined the missing-directory move prompt — exit cleanly instead of

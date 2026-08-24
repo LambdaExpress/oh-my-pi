@@ -847,12 +847,15 @@ export interface TokenCost {
 }
 
 /**
- * Rates applied to the full request when its prompt exceeds `inputThreshold`.
- * Prompt input is the sum of uncached, cached-read, cache-write, and
- * provider-orchestration input tokens.
+ * Rates applied to the full request when its prompt exceeds `inputThreshold`,
+ * or reaches it when `inputThresholdInclusive` is true. Prompt input is the
+ * sum of uncached, cached-read, cache-write, and provider-orchestration input
+ * tokens.
  */
 export interface LongContextTokenCost extends TokenCost {
 	inputThreshold: number;
+	/** Whether the long-context tier starts exactly at `inputThreshold`. */
+	inputThresholdInclusive?: boolean;
 }
 
 /** Base token rates plus an optional long-context tier. */

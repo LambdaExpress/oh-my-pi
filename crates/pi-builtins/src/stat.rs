@@ -2995,6 +2995,12 @@ mod win_tests {
 		(code, capture.out(), capture.err())
 	}
 
+	fn tempdir() -> (tempfile::TempDir, PathBuf) {
+		let dir = tempfile::tempdir().unwrap();
+		let path = fs::canonicalize(dir.path()).unwrap();
+		(dir, path)
+	}
+
 	#[test]
 	fn reports_size_and_type_for_regular_file() {
 		let (_dir, root) = tempdir();

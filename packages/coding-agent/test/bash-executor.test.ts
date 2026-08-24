@@ -514,6 +514,59 @@ exit 64
 		}
 	});
 
+	it("runs zsh shortcut commands on a headless PTY with a color-capable TTY", async () => {
+		if (process.platform === "win32" || Bun.env.PI_NO_PTY === "1") {
+			return;
+		}
+		const zshPath = ["/bin/zsh", "/usr/bin/zsh", "/usr/local/bin/zsh", "/opt/homebrew/bin/zsh"].find(candidate =>
+			fs.existsSync(candidate),
+		);
+		if (!zshPath) {
+			return;
+		}
+
+		const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-zsh-pty-"));
+		fs.writeFileSync(path.join(shellDir, ".zshrc"), "alias pi_pty_alias='printf pty-alias-ok'\n");
+		Settings.instance.set("shellPath", zshPath);
+
+		vi.spyOn(Settings.prototype, "getShellConfig").mockReturnValue({
+			shell: zshPath,
+			args: ["-l", "-c"],
+			env: {
+				PATH: Bun.env.PATH ?? "",
+				HOME: shellDir,
+				SHELL_SESSIONS_DISABLE: "1",
+			},
+			prefix: undefined,
+		});
+
+		const rawChunks: string[] = [];
+		try {
+			const result = await executeBash(
+				"pi_pty_alias; [ -t 1 ] && printf ' is-tty'; printf ' \\033[31mred\\033[0m'",
+				{
+					cwd: tempDir,
+					timeout: 15000,
+					sessionKey: "zsh-pty",
+					useUserShell: true,
+					pty: { cols: 80, rows: 24, onChunk: chunk => rawChunks.push(chunk) },
+				},
+			);
+
+			expect(result.cancelled).toBe(false);
+			expect(result.exitCode).toBe(0);
+			// Interactive rc loaded (alias expanded) AND stdout was a real TTY.
+			expect(result.output).toContain("pty-alias-ok");
+			expect(result.output).toContain("is-tty");
+			// The captured output stays sanitized while raw ANSI reaches the
+			// renderer callback for vterm replay.
+			expect(result.output).not.toContain("\u001b[31m");
+			expect(rawChunks.join("")).toContain("\u001b[31mred\u001b[0m");
+		} finally {
+			removeSyncWithRetries(shellDir);
+		}
+	});
+
 	it("invokes onChunk with command output", async () => {
 		let seenChunk: string | null = null;
 		const result = await executeBash("echo hello", {

@@ -2149,6 +2149,13 @@ interface FinalizeRunArgs {
 	eventBus?: EventBus;
 	parentToolCallId?: string;
 	detached?: boolean;
+	/**
+	 * This finalize is a revival/wake or explicit follow-up turn, not the initial
+	 * run. Such turns only (re)write `<id>.md` when they produce a real `yield`
+	 * result, so a conversational hub wake (which never yields) cannot clobber the
+	 * completed run's artifact with a missing-yield warning body (issue #9518).
+	 */
+	followUpTurn?: boolean;
 	sessionFile?: string;
 	startTime: number;
 }
@@ -2210,11 +2217,17 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 		maxLines: MAX_OUTPUT_LINES,
 	});
 
-	// Write output artifact (input and jsonl already written in real-time)
-	// Compute output metadata for agent:// URL integration
+	// Write output artifact (input and jsonl already written in real-time).
+	// Compute output metadata for agent:// URL integration.
+	//
+	// A revival/follow-up turn only (re)writes <id>.md when it produced a real
+	// yield result. A subagent revived to answer a hub message never yields, so
+	// writing here would overwrite the completed run's authoritative artifact with
+	// a missing-yield warning body (issue #9518). The initial run is unaffected
+	// (followUpTurn is unset), preserving the documented missing-yield artifact.
 	let outputMeta: { lineCount: number; charCount: number } | undefined;
 	let outputPath: string | undefined;
-	if (args.artifactsDir) {
+	if (args.artifactsDir && (!args.followUpTurn || hasYield)) {
 		outputPath = path.join(args.artifactsDir, `${id}.md`);
 		try {
 			await Bun.write(outputPath, rawOutput);
@@ -2422,6 +2435,7 @@ export function attachIrcWakeTurnMonitor(session: AgentSession, options: IrcWake
 					eventBus: options.eventBus,
 					parentToolCallId: options.parentToolCallId,
 					detached: true,
+					followUpTurn: true,
 					sessionFile,
 					startTime: turnStartTime,
 				});
@@ -2461,6 +2475,15 @@ export async function finalizeSubagentLifecycle(args: {
 	const ownsRef = Boolean(ref && ref.session === args.session);
 	const cleanupDeadlineAt = args.cleanupDeadlineAt ?? Date.now() + 5000;
 	const disposeSession = async (): Promise<void> => {
+		// On a graceful finish (e.g. a `yield`) the advisor's review of the final
+		// turn was enqueued at turn end but may still be draining. Give it a
+		// chance to land in the transcript before the runtime is torn down —
+		// mirroring print mode's headless drain — bounded by the shared cleanup
+		// deadline. Hard aborts skip this to keep kill teardown fast.
+		if (!args.aborted) {
+			args.session.prepareForHeadlessAdvisorDrain();
+			await args.session.waitForAdvisorCatchup(Math.max(0, cleanupDeadlineAt - Date.now()));
+		}
 		const disposal = args.session.dispose();
 		const remainingMs = Math.max(0, cleanupDeadlineAt - Date.now());
 		try {
@@ -2570,7 +2593,11 @@ export interface FollowUpTurnOptions {
 	onProgress?: (progress: AgentProgress) => void;
 	eventBus?: EventBus;
 	parentToolCallId?: string;
-	/** When set, the turn's raw output is (re)written to `<artifactsDir>/<id>.md` so `agent://<id>` tracks the latest turn. */
+	/**
+	 * When set, a turn that produces a `yield` result (re)writes `<artifactsDir>/<id>.md`
+	 * so `agent://<id>` tracks the latest completion. A yield-less turn (e.g. a hub
+	 * wake answering a message) leaves the existing artifact intact (issue #9518).
+	 */
 	artifactsDir?: string;
 	/** Wall-clock cap in ms for this turn; 0 disables. */
 	maxRuntimeMs?: number;
@@ -2664,6 +2691,7 @@ export async function runSubagentFollowUpTurn(options: FollowUpTurnOptions): Pro
 		eventBus: options.eventBus,
 		parentToolCallId: options.parentToolCallId,
 		detached: true,
+		followUpTurn: true,
 		sessionFile,
 		startTime,
 	});

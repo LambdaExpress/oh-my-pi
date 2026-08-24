@@ -9,9 +9,10 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL } from "@oh-my-pi/pi-coding-agent/task";
-import type { TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/todo";
+import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-coding-agent/tools/todo";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { t } from "../src/i18n";
 
 function renderTodos(mode: InteractiveMode): string {
 	return Bun.stripANSI(mode.todoContainer.render(120).join("\n"));
@@ -157,7 +158,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 
 		vi.advanceTimersByTime(999);
 		expect(renderTodos(mode)).toContain("done task");
-		expect(renderTodos(mode)).toContain("TODO");
+		expect(renderTodos(mode)).toContain(t("Todos"));
 
 		vi.advanceTimersByTime(1);
 		expect(renderTodos(mode)).not.toContain("done task");
@@ -214,6 +215,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 			description: "Fix review comments",
 			status: "completed",
 			detached: true,
+			scopeId: session.sessionManager.getSessionId(),
 		});
 		vi.advanceTimersByTime(100);
 
@@ -287,10 +289,9 @@ describe("InteractiveMode todo HUD anchor", () => {
 
 		// Lightened: no boxed top/bottom rules.
 		expect(lines.some(line => line === "─".repeat(80))).toBe(false);
-		// The title remains a compact anchor; overall progress colors the tree
-		// spine and tail, not the title text.
-		const root = lines.find(line => line.includes("TODO"));
-		expect(root?.trim()).toBe("TODO");
+		// The title remains a compact anchor and reports the active stage.
+		const root = lines.find(line => line.includes(t("Todos")));
+		expect(root?.trim()).toBe(`${t("Todos")} · 1/2`);
 		// Active stage: highlighted header with its own task progress, expanded as a
 		// connector tree; the just-completed task stays as the lead row so progress
 		// is visible while the stage still has open work.
@@ -329,8 +330,8 @@ describe("InteractiveMode todo HUD anchor", () => {
 			.map(line => Bun.stripANSI(line));
 		// One stage still renders the compact title; progress belongs to the
 		// tree spine and tail.
-		const root = lines.find(line => line.includes("TODO"));
-		expect(root?.trim()).toBe("TODO");
+		const root = lines.find(line => line.includes(t("Todos")));
+		expect(root?.trim()).toBe(t("Todos"));
 		// The stage keeps its task progress; no roman numeral for a lone stage.
 		expect(lines.some(line => line.includes("Tasks") && line.includes("0/2"))).toBe(true);
 		expect(lines.some(line => line.includes("I. Tasks"))).toBe(false);
@@ -358,9 +359,36 @@ describe("InteractiveMode todo HUD anchor", () => {
 		expect(lines.some(line => line.includes("V. Five"))).toBe(true);
 		expect(lines.some(line => line.includes("Six"))).toBe(false);
 		expect(lines.some(line => line.includes("2 more stages"))).toBe(true);
-		// Hidden stages do not change the compact title.
-		const root = lines.find(line => line.includes("TODO"));
-		expect(root?.trim()).toBe("TODO");
+		// Hidden stages still count toward the title's stage progress.
+		const root = lines.find(line => line.includes(t("Todos")));
+		expect(root?.trim()).toBe(`${t("Todos")} · 1/7`);
+	});
+
+	it("expands and collapses the complete todo HUD through /todo", async () => {
+		mode.setTodos([
+			{
+				name: "Implementation",
+				tasks: Array.from(
+					{ length: 8 },
+					(_, index): TodoItem => ({
+						content: `Task ${index + 1}`,
+						status: index === 0 ? "in_progress" : "pending",
+					}),
+				),
+			},
+		]);
+
+		await mode.handleTodoCommand("expand");
+		await mode.handleTodoCommand("expand");
+
+		expect(renderTodos(mode)).toContain("Task 8");
+		expect(renderTodos(mode)).not.toContain("more todo");
+
+		await mode.handleTodoCommand("collapse");
+		await mode.handleTodoCommand("collapse");
+
+		expect(renderTodos(mode)).not.toContain("Task 8");
+		expect(renderTodos(mode)).toContain("3 more todos");
 	});
 
 	describe("compact todo for small terminal height (< 18 rows)", () => {

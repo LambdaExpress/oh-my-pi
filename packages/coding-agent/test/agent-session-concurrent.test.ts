@@ -83,7 +83,6 @@ describe("AgentSession concurrent prompt guard", () => {
 		AsyncJobManager.resetForTests();
 	});
 
-
 	it("continues a main session from session_stop feedback before settling", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({

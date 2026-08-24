@@ -310,6 +310,7 @@ export class SessionAdvisors {
 	#advisorRecorderClosed: Promise<void> = Promise.resolve();
 	#advisorAutoResumeSuppressed = false;
 	#preserveAdvisorAdvice = false;
+	#preserveTerminalYieldAdvice = false;
 	#advisorPrimaryTurnsCompleted = 0;
 	#advisorInterruptImmuneTurnStart: number | undefined;
 	#pendingAdvisorCardEvents = new Set<Promise<void>>();
@@ -1058,7 +1059,7 @@ export class SessionAdvisors {
 			// Key on the live agent-core loop, not session `isStreaming` (which also
 			// counts `#promptInFlightCount` during post-turn unwind). Only a running
 			// loop consumes a steer at its next boundary.
-			streaming: this.#host.agent.state.isStreaming,
+			streaming: this.#host.agent.state.isStreaming && !this.#preserveTerminalYieldAdvice,
 			aborting: this.#host.abortInProgress(),
 			terminalAnswerNoQueuedWork: this.#hasTerminalTextAnswerWithoutQueuedWork(),
 			interruptImmuneTurnActive: interrupting && this.#isAdvisorInterruptImmuneTurnActive(),
@@ -1244,10 +1245,13 @@ export class SessionAdvisors {
 				})
 			: AIError.classify(error, currentModel.api);
 		if (AIError.is(errorId, AIError.Flag.Abort) || AIError.is(errorId, AIError.Flag.UserInterrupt)) return false;
-		if (
-			AIError.is(errorId, AIError.Flag.ContextOverflow) ||
-			(assistantFailure && AIError.isContextOverflow(assistantFailure, currentModel.contextWindow ?? 0))
-		) {
+		// Text-ambiguous overflows waive the veto; usage-backed do not — see AIError.isTextAmbiguousContextOverflow (#9235).
+		const contextWindow = currentModel.contextWindow ?? 0;
+		const overflowVeto =
+			(AIError.is(errorId, AIError.Flag.ContextOverflow) ||
+				(assistantFailure !== undefined && AIError.isContextOverflow(assistantFailure, contextWindow))) &&
+			!AIError.isTextAmbiguousContextOverflow(errorId, assistantFailure, contextWindow);
+		if (overflowVeto) {
 			return false;
 		}
 
@@ -1571,6 +1575,19 @@ export class SessionAdvisors {
 	 */
 	prepareForHeadlessAdvisorDrain(): void {
 		this.#preserveAdvisorAdvice = true;
+	}
+
+	/** Preserve advisor output for a terminal yield whose loop is unwinding. */
+	prepareForTerminalYieldAdvisorDrain(): void {
+		this.#preserveAdvisorAdvice = true;
+		this.#preserveTerminalYieldAdvice = true;
+	}
+
+	/** Restore normal advisor routing when a kept-alive subagent starts new work. */
+	onPrimaryTurnStart(): void {
+		if (!this.#preserveTerminalYieldAdvice) return;
+		this.#preserveTerminalYieldAdvice = false;
+		this.#preserveAdvisorAdvice = false;
 	}
 
 	async #waitForPendingAdvisorCardEvents(timeoutMs: number): Promise<boolean> {

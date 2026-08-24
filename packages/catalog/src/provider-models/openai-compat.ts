@@ -1315,6 +1315,68 @@ export interface XaiModelManagerConfig {
 	fetch?: FetchImpl;
 }
 
+// xAI bills the whole request at 2x the base rates once the prompt reaches
+// 200K tokens, for every current Grok SKU that carries the two-tier card
+// (grok-4.3/4.5/4.6, every grok-4.20 variant, grok-build-0.1). Source:
+// docs.x.ai/developers/models. Computing the tier from the base keeps it in
+// lockstep with stencil.so price updates instead of a hand-maintained table.
+const XAI_LONG_CONTEXT_THRESHOLD = 200_000;
+const XAI_LONG_CONTEXT_MULTIPLIER = 2;
+
+// SuperGrok surfaces a few models under IDs that differ from their public
+// `xai` catalog equivalent, so the exact-ID price fallback misses them. Map
+// the OAuth ID to the paid ID it mirrors.
+const XAI_OAUTH_PRICE_ALIASES: Record<string, string> = {
+	"grok-4.20-multi-agent-0309": "grok-4.20-multi-agent-beta-latest",
+};
+
+function xaiHasLongContextTier(modelId: string): boolean {
+	return (
+		modelId === "grok-4.3" ||
+		modelId === "grok-4.5" ||
+		modelId === "grok-4.6" ||
+		modelId === "grok-build-0.1" ||
+		modelId.startsWith("grok-4.20")
+	);
+}
+
+function hasTokenPrice(cost: ModelSpec["cost"]): boolean {
+	return cost.input !== 0 || cost.output !== 0 || cost.cacheRead !== 0 || cost.cacheWrite !== 0;
+}
+
+function withXaiLongContextTier(model: ModelSpec): ModelSpec {
+	if (!xaiHasLongContextTier(model.id) || !hasTokenPrice(model.cost)) return model;
+	const longContext: LongContextTokenCost = {
+		inputThreshold: XAI_LONG_CONTEXT_THRESHOLD,
+		inputThresholdInclusive: true,
+		input: model.cost.input * XAI_LONG_CONTEXT_MULTIPLIER,
+		output: model.cost.output * XAI_LONG_CONTEXT_MULTIPLIER,
+		cacheRead: model.cost.cacheRead * XAI_LONG_CONTEXT_MULTIPLIER,
+		cacheWrite: model.cost.cacheWrite * XAI_LONG_CONTEXT_MULTIPLIER,
+	};
+	return { ...model, cost: { ...model.cost, longContext } };
+}
+
+/**
+ * Applies xAI's long-context rate card and mirrors exact public-model prices
+ * onto matching SuperGrok catalog rows.
+ */
+export function applyXaiCatalogPricing(models: readonly ModelSpec[]): ModelSpec[] {
+	const pricedModels = models.map(model => (model.provider === "xai" ? withXaiLongContextTier(model) : model));
+	const publicCosts = new Map(
+		pricedModels
+			.filter(model => model.provider === "xai" && hasTokenPrice(model.cost))
+			.map(model => [model.id, model.cost]),
+	);
+
+	return pricedModels.map(model => {
+		if (model.provider !== "xai-oauth" || hasTokenPrice(model.cost)) return model;
+		const alias = XAI_OAUTH_PRICE_ALIASES[model.id];
+		const publicCost = publicCosts.get(model.id) ?? (alias ? publicCosts.get(alias) : undefined);
+		return publicCost ? { ...model, cost: { ...publicCost } } : model;
+	});
+}
+
 export function xaiModelManagerOptions(config?: XaiModelManagerConfig): ModelManagerOptions<"openai-responses"> {
 	return {
 		...createOpenAICompatibleModelManagerOptions({

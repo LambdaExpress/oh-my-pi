@@ -148,6 +148,8 @@ function createAsyncSession(
 			onPrompt({ text, promptIndex: prompts.length, harness });
 		},
 		waitForIdle: async () => {},
+		prepareForHeadlessAdvisorDrain: () => {},
+		waitForAdvisorCatchup: async () => true,
 		getLastAssistantMessage: () => state.messages[state.messages.length - 1],
 		hasPendingAsyncWork: () => pendingAsync,
 		getAsyncJobSnapshot: () => ({ running: runningJobs, recent: [] }),

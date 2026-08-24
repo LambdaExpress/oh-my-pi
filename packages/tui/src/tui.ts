@@ -1380,7 +1380,11 @@ export class TUI extends Container {
 			this.#altPreviousLines = [];
 			this.#pendingAltExit = "";
 		}
-		this.#purgeInlineImages();
+		// Deliberately leave transmitted images in the terminal's graphics store:
+		// placeholder cells committed to native scrollback render only while their
+		// image data lives, so a delete-by-id here blanks every transcript image
+		// the instant the session exits. The terminal enforces its own store quota
+		// (and live-session ghosts are already bounded by the inline-image budget).
 		this.#clearSixelProbeState();
 		this.#stopped = true;
 		this.#watchdog.stop();

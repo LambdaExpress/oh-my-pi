@@ -12,7 +12,7 @@ import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
 import { outputMeta } from "../../tools/output-meta";
-import { enforcePlanModeWrite, resolvePlanPath } from "../../tools/plan-mode-guard";
+import { enforcePlanModeWrite } from "../../tools/plan-mode-guard";
 import type { AppliedEditObserver } from "../blackbox";
 import { generateDiffString, replaceText } from "../diff";
 import {
@@ -1191,7 +1191,6 @@ export async function executeReplace(
 	let finalContent: string;
 	let diagnostics: FileDiagnosticsResult | undefined;
 	let detailsPath: string;
-	const diffPath = target.kind === "internal" ? target.displayPath : path;
 	if (target.kind === "local") {
 		finalContent = await serializeEditFileText(target.absolutePath, path, restoredContent);
 		detailsPath = target.absolutePath;

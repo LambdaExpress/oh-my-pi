@@ -41,7 +41,7 @@ impl Win32Ax {
 		match handle {
 			AxHandle::Uia(element) => element,
 			#[cfg(test)]
-			_ => unreachable!("UI Automation backend received a non-UI-Automation handle"),
+			_ => panic!("UI Automation backend received a non-UI-Automation handle"),
 		}
 	}
 

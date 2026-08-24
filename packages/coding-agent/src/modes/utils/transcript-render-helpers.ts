@@ -7,7 +7,6 @@
 import { type AgentMessage, isContinuableStreamInterruption } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text, TruncatedText } from "@oh-my-pi/pi-tui";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
-import type { AsyncJobType } from "../../async";
 import { t } from "../../i18n";
 import type { DaemonSnapshot } from "../../launch/protocol";
 import {

@@ -1244,6 +1244,7 @@ fn ast_edit_blocking(
 #[cfg(test)]
 mod tests {
 	use std::{
+		collections::HashSet,
 		fs,
 		path::PathBuf,
 		time::{SystemTime, UNIX_EPOCH},
@@ -1416,9 +1417,9 @@ mod tests {
 		)
 		.expect("Emacs Lisp pattern should keep compiling directly");
 
-		assert_eq!(csharp.defined_vars(), ["VALUE"].into_iter().collect());
-		assert_eq!(typescript.defined_vars(), ["NAME", "VALUE"].into_iter().collect(),);
-		assert_eq!(emacs_lisp.defined_vars(), ["FORMAT", "ARG"].into_iter().collect(),);
+		assert_eq!(csharp.defined_vars(), HashSet::from(["VALUE"]));
+		assert_eq!(typescript.defined_vars(), HashSet::from(["NAME", "VALUE"]));
+		assert_eq!(emacs_lisp.defined_vars(), HashSet::from(["FORMAT", "ARG"]));
 	}
 
 	#[test]

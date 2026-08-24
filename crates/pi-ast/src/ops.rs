@@ -101,7 +101,12 @@ pub fn compile_pattern(
 	lang: SupportLang,
 ) -> Result<Pattern> {
 	let selector = selector.map(str::trim).filter(|s| !s.is_empty());
-	let mut compiled = if let Some(selector) = selector {
+	let mut compiled = if selector.is_none()
+		&& lang == SupportLang::CSharp
+		&& let Some(contextual) = compile_csharp_contextual_pattern(pattern, strictness)
+	{
+		contextual
+	} else if let Some(selector) = selector {
 		Pattern::contextual(pattern, selector, lang)
 			.map_err(|err| anyhow!("Invalid pattern: {err}"))?
 	} else {
@@ -120,12 +125,6 @@ pub fn compile_pattern(
 			Err(err) => return Err(anyhow!("Invalid pattern: {err}")),
 		}
 	};
-	if selector.is_none()
-		&& lang == SupportLang::CSharp
-		&& let Some(contextual) = compile_csharp_contextual_pattern(pattern, strictness)
-	{
-		compiled = contextual;
-	}
 	compiled.strictness = strictness.clone();
 	Ok(compiled)
 }

@@ -12,6 +12,7 @@ import * as path from "node:path";
 import { $flag, isBunTestRuntime, logger, Snowflake } from "@oh-my-pi/pi-utils";
 import { Settings } from "../../config/settings";
 import { BaseKernel, getRemainingTimeMs, type KernelRuntimeEnv, type KernelStartOptions } from "../kernel-base";
+import { type BackendProbeOptions, probeCandidates } from "../probe";
 import type { KernelDisplayOutput } from "../py/display";
 import { hostHasInheritableConsole, shouldDetachKernel, shouldHideKernelWindow } from "../py/spawn-options";
 import { stageRunnerScript } from "../runner-cache";
@@ -63,7 +64,11 @@ export interface RubyKernelAvailability {
 // not cached so installing Ruby mid-session is picked up on the next attempt.
 const availabilityCache = new Map<string, Promise<RubyKernelAvailability>>();
 
-export async function checkRubyKernelAvailability(cwd: string, interpreter?: string): Promise<RubyKernelAvailability> {
+export async function checkRubyKernelAvailability(
+	cwd: string,
+	interpreter?: string,
+	options?: BackendProbeOptions,
+): Promise<RubyKernelAvailability> {
 	if (isBunTestRuntime() || $flag("PI_RUBY_SKIP_CHECK")) {
 		return { ok: true };
 	}
@@ -71,16 +76,18 @@ export async function checkRubyKernelAvailability(cwd: string, interpreter?: str
 	const key = `${resolvedCwd}\0${interpreter ?? ""}`;
 	const cached = availabilityCache.get(key);
 	if (cached) return await cached;
-	const probe = probeRubyKernelAvailability(resolvedCwd, interpreter);
-	availabilityCache.set(key, probe);
-	const result = await probe;
-	if (!result.ok && availabilityCache.get(key) === probe) {
-		availabilityCache.delete(key);
-	}
+	// Probe controls belong to one caller. Do not share an in-flight promise:
+	// aborting one eval must not cancel a concurrent session's availability check.
+	const result = await probeRubyKernelAvailability(resolvedCwd, interpreter, options);
+	if (result.ok) availabilityCache.set(key, Promise.resolve(result));
 	return result;
 }
 
-async function probeRubyKernelAvailability(cwd: string, interpreter?: string): Promise<RubyKernelAvailability> {
+async function probeRubyKernelAvailability(
+	cwd: string,
+	interpreter?: string,
+	probeOpts?: BackendProbeOptions,
+): Promise<RubyKernelAvailability> {
 	try {
 		const settings = await Settings.init();
 		const { env } = settings.getShellConfig();
@@ -89,34 +96,25 @@ async function probeRubyKernelAvailability(cwd: string, interpreter?: string): P
 		if (runtimes.length === 0) {
 			return { ok: false, reason: "Ruby executable not found on PATH" };
 		}
-		const failures: string[] = [];
-		for (const runtime of runtimes) {
-			try {
-				// Bun Shell cannot spawn any external program when the working
-				// directory contains spaces on Windows ("Operation not permitted",
-				// Bun 1.3.14), which silently marks every Ruby installation
-				// unavailable for sessions rooted under e.g. "C:\Program Files\…".
-				// Probe through Bun.spawnSync, which resolves the same env/cwd
-				// without the Bun Shell limitation.
-				const probe = Bun.spawnSync({
-					cmd: [runtime.rubyPath, "-e", "exit 0"],
-					cwd,
-					env: runtime.env,
-					stdout: "pipe",
-					stderr: "pipe",
-				});
-				if (probe.exitCode === 0) {
-					return { ok: true, rubyPath: runtime.rubyPath, runtime };
-				}
-				failures.push(`${runtime.rubyPath} (exit code ${probe.exitCode})`);
-			} catch (err) {
-				failures.push(`${runtime.rubyPath} (${err instanceof Error ? err.message : String(err)})`);
-			}
+		const result = await probeCandidates(
+			runtimes.map(runtime => ({
+				command: [runtime.rubyPath, "-e", "exit 0"],
+				env: runtime.env,
+				label: runtime.rubyPath,
+			})),
+			{ cwd, signal: probeOpts?.signal, timeoutMs: probeOpts?.timeoutMs },
+		);
+		if (result.ok) {
+			const runtime = runtimes[result.index];
+			return { ok: true, rubyPath: runtime.rubyPath, runtime };
+		}
+		if (result.aborted) {
+			return { ok: false, rubyPath: runtimes[0].rubyPath, reason: "Ruby availability probe was cancelled." };
 		}
 		return {
 			ok: false,
 			rubyPath: runtimes[0].rubyPath,
-			reason: `No working Ruby interpreter found. Tried: ${failures.join("; ")}`,
+			reason: `No working Ruby interpreter found. Tried: ${result.failures.join("; ")}`,
 		};
 	} catch (err) {
 		return { ok: false, reason: err instanceof Error ? err.message : String(err) };

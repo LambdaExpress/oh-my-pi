@@ -8,7 +8,6 @@
  */
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { InternalUrlRouter } from "../internal-urls/router";
-import type { ResolveContext } from "../internal-urls/types";
 
 /** Upper bound on candidates surfaced in the dropdown. */
 const MAX_URL_SUGGESTIONS = 25;

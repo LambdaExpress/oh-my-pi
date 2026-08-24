@@ -4,8 +4,7 @@ import hashlineGrammar from "@oh-my-pi/hashline/grammar.lark" with { type: "text
 import hashlineDescription from "@oh-my-pi/hashline/prompt.md" with { type: "text" };
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
-import { isEnoent, isEnotdir, prompt } from "@oh-my-pi/pi-utils";
-import { InternalUrlRouter, parseInternalUrl } from "../internal-urls";
+import { isEnoent, isEnotdir, logger, prompt } from "@oh-my-pi/pi-utils";
 import { createLspWritethrough, flushLspWritethroughBatch, type WritethroughCallback, writethroughNoop } from "../lsp";
 import { DeferredDiagnostics } from "../lsp/deferred-diagnostics";
 import { getDiagnosticsLedger } from "../lsp/diagnostics-ledger";
@@ -22,7 +21,13 @@ import {
 } from "../tools/path-utils";
 import { resolvePlanPath, unwrapHashlineHeaderPath } from "../tools/plan-mode-guard";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
-import { type AppliedEditObserver, createEditBlackboxRecorder, introducedParseFailure } from "./blackbox";
+import { attemptEditAutoRepair, type EditAutoRepairOutcome } from "./auto-repair";
+import {
+	type AppliedEditObserver,
+	type AppliedEditSnapshot,
+	createEditBlackboxRecorder,
+	introducedParseFailure,
+} from "./blackbox";
 import { executeHashlineSingle, hashlineEditParamsSchema } from "./hashline";
 import { type ApplyPatchParams, applyPatchSchema, expandApplyPatchToEntries } from "./modes/apply-patch";
 import applyPatchGrammar from "./modes/apply-patch.lark" with { type: "text" };
@@ -554,13 +559,17 @@ export class EditTool implements AgentTool<TInput> {
 	): Promise<AgentToolResult<EditToolDetails, TInput>> {
 		const modeDefinition = this.#getModeDefinition();
 		const record = createEditBlackboxRecorder(this.session, this.mode, params);
-		const brokenPaths: string[] = [];
+		const parseFailures = new Map<string, AppliedEditSnapshot>();
 		const onApplied: AppliedEditObserver = async snapshot => {
 			// Diagnostic only: the edit has already committed, so a guard failure
 			// must never turn it into a reported edit failure.
 			try {
-				if (!introducedParseFailure(snapshot)) return;
-				brokenPaths.push(nodePath.relative(this.session.cwd, snapshot.path) || snapshot.path);
+				if (!introducedParseFailure(snapshot)) {
+					// A later operation in the same call restored the parse.
+					parseFailures.delete(snapshot.path);
+					return;
+				}
+				parseFailures.set(snapshot.path, snapshot);
 				await record?.(snapshot);
 			} catch {
 				// Parse probing is best-effort; skip the warning rather than fail.
@@ -574,14 +583,31 @@ export class EditTool implements AgentTool<TInput> {
 			onApplied,
 			onUpdate,
 		);
-		if (brokenPaths.length > 0) {
-			result.content = [
-				...result.content,
-				{
-					type: "text",
-					text: `Warning: ${brokenPaths.join(", ")} no longer parses after this edit. The change was applied; re-read the edited region and fix the syntax, or revert if unintended.`,
-				},
-			];
+		if (parseFailures.size > 0) {
+			const notes: string[] = [];
+			for (const snapshot of parseFailures.values()) {
+				const display = nodePath.relative(this.session.cwd, snapshot.path) || snapshot.path;
+				let repaired: EditAutoRepairOutcome | undefined;
+				try {
+					repaired = await attemptEditAutoRepair({
+						session: this.session,
+						snapshot,
+						writethrough: this.#writethrough,
+						signal,
+					});
+				} catch (error) {
+					logger.warn("Edit auto-repair failed", {
+						path: snapshot.path,
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+				notes.push(
+					repaired
+						? `Note: ${display} stopped parsing after this edit; an automatic syntax repair (${repaired.model}) was applied on top:\n${repaired.diff}\nReview the repaired region; adjust it if the repair guessed wrong.`
+						: `Warning: ${display} no longer parses after this edit. The change was applied; re-read the edited region and fix the syntax, or revert if unintended.`,
+				);
+			}
+			result.content = [...result.content, { type: "text", text: notes.join("\n\n") }];
 		}
 		return result;
 	}

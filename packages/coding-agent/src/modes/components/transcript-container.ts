@@ -2,6 +2,17 @@ import type { Component, HistoryBatch } from "@oh-my-pi/pi-tui";
 import { Container } from "@oh-my-pi/pi-tui";
 import { isToolActivityComponent } from "./tool-activity";
 
+/** Shared animation time supplied by the constrained transcript root. */
+export interface AnimationFrame {
+	readonly tick: number;
+	readonly now: number;
+}
+
+/** Lets an active block adapt its presentation to its allocated viewport rows. */
+export interface TranscriptPresentationTarget {
+	setTranscriptAllocation?(rows: number, frame: AnimationFrame): void;
+}
+
 interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
 	getTranscriptBlockSettledPrefix?(
@@ -118,7 +129,8 @@ function isPlainBlank(line: string): boolean {
 	return !/\S/.test(line);
 }
 
-function trimBlankEdges(rows: readonly string[]): readonly string[] {
+/** Strip leading/trailing all-blank rows; the viewport allocator measures blocks by this trimmed height. */
+export function trimBlankEdges(rows: readonly string[]): readonly string[] {
 	let start = 0;
 	let end = rows.length;
 	while (start < end && isPlainBlank(rows[start]!)) start++;
@@ -133,6 +145,7 @@ export class TranscriptContainer extends Container {
 	#nextBatchId = 1;
 	#offered: OfferedBatch | undefined;
 	#toolActivityVisible = true;
+	#lastFrame: AnimationFrame = { tick: 0, now: 0 };
 
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
@@ -184,6 +197,12 @@ export class TranscriptContainer extends Container {
 		return this.#entries.map(entry => entry.state);
 	}
 
+	/** Whether visible active capacity and live-block memory permit another admission. */
+	canAdmit(rows: number): boolean {
+		const active = this.#entries.filter(entry => entry.state === "active").length;
+		return Math.max(0, Math.trunc(rows)) > active && this.#liveCount() < MAX_LIVE_BLOCKS;
+	}
+
 	/** Rebuild retirement state before replaying the complete transcript history. */
 	resetRetirement(): void {
 		this.#frontier = 0;
@@ -205,35 +224,59 @@ export class TranscriptContainer extends Container {
 		return total;
 	}
 
-	/**
-	 * Render the bottom of the live transcript at full semantic fidelity.
-	 * Whole components always use their normal renderer; viewport pressure may
-	 * move older rows above the visible fold, but never substitutes compact tool
-	 * summaries or per-block tail fragments.
-	 */
-	renderViewport(width: number, rows: number): readonly string[] {
+	/** Render the live tail, constrained to the supplied transcript height. */
+	renderViewport(width: number, rows: number, frame: AnimationFrame = this.#lastFrame): readonly string[] {
+		this.#lastFrame = frame;
 		this.#syncEntries();
 		this.#settleFinalized();
 		const live = this.#liveRenderedEntries(width);
 		const capacity = Math.max(0, Math.trunc(rows));
 		if (live.length === 0 || capacity === 0) return EMPTY_ROWS;
 
-		// Match the 17.4 viewport-tail policy: walk newest to oldest and render
-		// only enough complete semantic blocks to cover the visible tail.
-		const collected: (readonly string[])[] = [];
+		// Full-height pass first: measure every live block whole. Empty blocks
+		// (hidden tool activity under display.hideToolActivity, content-less
+		// streaming blocks) occupy no viewport rows, so they are dropped here and
+		// never reach the pressure/emergency paths — otherwise they would reserve
+		// a base row (over-truncating real text) or emit a blank row per block.
+		const shown: RenderedEntry[] = [];
+		const blocks: (readonly string[])[] = [];
 		let total = 0;
-		for (let index = live.length - 1; index >= 0 && total < capacity; index--) {
-			const block = live[index]!.rows;
-			if (block.length === 0) continue;
-			if (collected.length > 0) total++;
-			collected.push(block);
-			total += block.length;
+		for (const entry of live) {
+			const rendered = entry.rows;
+			if (rendered.length === 0) continue;
+			total += rendered.length + (shown.length > 0 ? 1 : 0);
+			shown.push(entry);
+			blocks.push(rendered);
 		}
-		if (collected.length === 0) return EMPTY_ROWS;
+		if (shown.length === 0) return EMPTY_ROWS;
+		if (shown.length > capacity) return this.#renderEmergency(shown, width, capacity, frame);
+		if (total <= capacity) {
+			const output: string[] = [];
+			for (const rendered of blocks) {
+				if (output.length > 0) output.push("");
+				output.push(...rendered);
+			}
+			return output;
+		}
+
+		// Pressure: one row minimum per block, surplus to the newest blocks first,
+		// separators dropped. Tool blocks re-render compact below three rows; text
+		// blocks keep their latest rows visible.
+		const allocation: number[] = new Array(shown.length).fill(1);
+		let surplus = capacity - shown.length;
+		for (let index = shown.length - 1; index >= 0 && surplus > 0; index--) {
+			const extra = Math.min(Math.max(0, blocks[index]!.length - 1), surplus);
+			allocation[index] += extra;
+			surplus -= extra;
+		}
 		const output: string[] = [];
-		for (let index = collected.length - 1; index >= 0; index--) {
-			if (output.length > 0) output.push("");
-			output.push(...collected[index]!);
+		for (let index = 0; index < shown.length; index++) {
+			const allocated = allocation[index]!;
+			const shownEntry = shown[index]!;
+			this.#setAllocation(shownEntry.entry.component, allocated, frame);
+			const rendered = trimBlankEdges(shownEntry.entry.component.render(width)).slice(shownEntry.start);
+			if (rendered.length <= allocated) output.push(...rendered);
+			else output.push(...rendered.slice(rendered.length - allocated));
 		}
 		return output.length > capacity ? output.slice(output.length - capacity) : output;
 	}
@@ -320,6 +363,7 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		const rows: string[] = [];
 		for (const entry of this.#entries) {
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = trimBlankEdges(entry.component.render(width));
 			if (block.length === 0) continue;
 			if (rows.length > 0) rows.push("");
@@ -328,6 +372,33 @@ export class TranscriptContainer extends Container {
 		return rows;
 	}
 
+	#renderEmergency(
+		shown: readonly RenderedEntry[],
+		width: number,
+		rows: number,
+		frame: AnimationFrame,
+	): readonly string[] {
+		const output: string[] = [];
+		const hiddenCount = Math.max(0, shown.length - rows);
+		let hiddenActive = 0;
+		for (let index = 0; index < hiddenCount; index++) {
+			if (shown[index]!.entry.state === "active") hiddenActive++;
+		}
+		if (hiddenActive > 0) output.push(`${hiddenActive} more transcript blocks active`);
+		const visibleRows = rows - output.length;
+		const visible = visibleRows > 0 ? shown.slice(-visibleRows) : [];
+		// Callers pass only non-empty blocks; trim residual edge blanks so each
+		// block contributes its first real row instead of a reserved blank.
+		for (const renderedEntry of visible) {
+			this.#setAllocation(renderedEntry.entry.component, 1, frame);
+			output.push(trimBlankEdges(renderedEntry.entry.component.render(width)).slice(renderedEntry.start)[0] ?? "");
+		}
+		return output.slice(0, rows);
+	}
+
+	#setAllocation(component: Component, rows: number, frame: AnimationFrame): void {
+		(component as Component & TranscriptPresentationTarget).setTranscriptAllocation?.(rows, frame);
+	}
 	#settleFinalized(): void {
 		for (const entry of this.#entries) {
 			if (entry.state === "active" && isFinalized(entry.component)) entry.state = "settled";
@@ -343,6 +414,7 @@ export class TranscriptContainer extends Container {
 	#liveRenderedEntries(width: number): RenderedEntry[] {
 		const renderedEntries: RenderedEntry[] = [];
 		for (const entry of this.#liveEntries()) {
+			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const rendered = trimBlankEdges(entry.component.render(width));
 			const pending = this.#offered?.partial?.entry === entry ? this.#offered.partial.watermark : undefined;
 			const start = resolveSettledPrefix(entry, pending ?? entry.partial, width, rendered);

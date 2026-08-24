@@ -10,6 +10,11 @@ import { InternalUrlRouter, type LocalProtocolOptions } from "../internal-urls";
 import { ToolAbortError, ToolError } from "./tool-errors";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
+
+/** POSIX absolute, Windows drive, or UNC (`\\server\share` / `//server/share`). */
+export function isFilesystemSourcePath(value: string): boolean {
+	return path.posix.isAbsolute(value) || path.win32.isAbsolute(value);
+}
 // A single line-range chunk: `N`, `N-M`, `N+K`, or open-ended `N-`. `..` is
 // accepted everywhere `-` is, as a forgiving alias for Rust/Python-style ranges
 // (e.g. `2724..2727` == `2724-2727`, `2724..` == `2724-`); it is normalized to

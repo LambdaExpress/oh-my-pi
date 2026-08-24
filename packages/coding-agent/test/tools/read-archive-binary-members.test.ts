@@ -42,17 +42,21 @@ function joinText(content: Array<{ type: string; text?: string }>): string {
 
 async function makeXlsx(testDir: string): Promise<Uint8Array> {
 	const xlsxPath = path.join(testDir, "fixture.xlsx");
-	await writeArchive(xlsxPath, "zip", Object.entries({
-		"xl/workbook.xml": enc(
-			`<?xml version="1.0"?><workbook xmlns:r="r"><sheets><sheet name="People" sheetId="1" r:id="rId1"/></sheets></workbook>`,
-		),
-		"xl/_rels/workbook.xml.rels": enc(
-			`<?xml version="1.0"?><Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>`,
-		),
-		"xl/worksheets/sheet1.xml": enc(
-			`<?xml version="1.0"?><worksheet><sheetData><row><c t="inlineStr"><is><t>Name</t></is></c><c t="inlineStr"><is><t>Age</t></is></c></row><row><c t="inlineStr"><is><t>Alice</t></is></c><c><v>30</v></c></row></sheetData></worksheet>`,
-		),
-	}));
+	await writeArchive(
+		xlsxPath,
+		"zip",
+		Object.entries({
+			"xl/workbook.xml": enc(
+				`<?xml version="1.0"?><workbook xmlns:r="r"><sheets><sheet name="People" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+			),
+			"xl/_rels/workbook.xml.rels": enc(
+				`<?xml version="1.0"?><Relationships><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>`,
+			),
+			"xl/worksheets/sheet1.xml": enc(
+				`<?xml version="1.0"?><worksheet><sheetData><row><c t="inlineStr"><is><t>Name</t></is></c><c t="inlineStr"><is><t>Age</t></is></c></row><row><c t="inlineStr"><is><t>Alice</t></is></c><c><v>30</v></c></row></sheetData></worksheet>`,
+			),
+		}),
+	);
 	return Bun.file(xlsxPath).bytes();
 }
 

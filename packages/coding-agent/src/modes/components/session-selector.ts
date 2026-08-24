@@ -408,12 +408,7 @@ class SessionList implements Component {
 	}
 
 	/** Replace the visible dataset, e.g. when toggling folder/all-projects scope. */
-	setSessions(
-		sessions: SessionInfo[],
-		showCwd: boolean,
-		grouped = false,
-		pinnedIds?: ReadonlySet<string>,
-	): void {
+	setSessions(sessions: SessionInfo[], showCwd: boolean, grouped = false, pinnedIds?: ReadonlySet<string>): void {
 		this.#allSessions = sessions;
 		this.#showCwd = showCwd;
 		this.#grouped = grouped;

@@ -3,6 +3,7 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Effort } from "@oh-my-pi/pi-catalog/effort";
 import {
 	clampThinkingLevelForModel,
+	defaultSupportedEffort,
 	getSupportedEfforts,
 	mapEffortToAnthropicAdaptiveEffort,
 	mapEffortToGoogleThinkingLevel,
@@ -15,6 +16,7 @@ function createModel<TApi extends Api>(overrides: {
 	id: string;
 	api: TApi;
 	provider: Provider;
+	name?: string;
 	reasoning?: boolean;
 	baseUrl?: string;
 	compat?: ModelSpec<TApi>["compat"];
@@ -22,7 +24,7 @@ function createModel<TApi extends Api>(overrides: {
 }): Model<TApi> {
 	return buildModel({
 		id: overrides.id,
-		name: overrides.id,
+		name: overrides.name ?? overrides.id,
 		api: overrides.api,
 		provider: overrides.provider,
 		baseUrl: overrides.baseUrl ?? "",
@@ -431,6 +433,42 @@ describe("model thinking derivation", () => {
 		expect(clampThinkingLevelForModel(oxAlpha, Effort.XHigh)).toBe(Effort.High);
 		expect(clampThinkingLevelForModel(oxAlpha, Effort.Medium)).toBe(Effort.Low);
 
+		// Zen serves the same SKU under an unrelated aliased id; the stencil
+		// display name carries the signal and must normalize identically so
+		// `max` is reachable instead of clamping to rejected `xhigh`.
+		const zenAlias = createModel({
+			id: "x-preview-f-free",
+			name: "Ox Alpha Free (Unlimited)",
+			api: "openai-completions",
+			provider: "opencode-zen",
+			baseUrl: "https://opencode.ai/zen/v1",
+			thinking: staleThinking,
+		});
+		expect(zenAlias.thinking).toEqual({
+			mode: "effort",
+			efforts: [Effort.Low, Effort.High, Effort.Max],
+			requiresEffort: true,
+		});
+		expect(requireSupportedEffort(zenAlias, Effort.Max)).toBe(Effort.Max);
+		expect(clampThinkingLevelForModel(zenAlias, Effort.XHigh)).toBe(Effort.High);
+
+		// A zen id with no ox-alpha signal keeps its shipped ladder untouched.
+		const zenOther = createModel({
+			id: "hy3-preview-free",
+			api: "openai-completions",
+			provider: "opencode-zen",
+			baseUrl: "https://opencode.ai/zen/v1",
+			thinking: staleThinking,
+		});
+		expect(getSupportedEfforts(zenOther)).toEqual([
+			Effort.Minimal,
+			Effort.Low,
+			Effort.Medium,
+			Effort.High,
+			Effort.XHigh,
+		]);
+		expect(zenOther.thinking?.requiresEffort).toBeUndefined();
+
 		// Other hosts proxying an ox-alpha SKU expose their own vocabularies and
 		// must not inherit the gateway ladder.
 		const kiloOxAlpha = createModel({
@@ -448,6 +486,24 @@ describe("model thinking derivation", () => {
 			Effort.XHigh,
 		]);
 		expect(kiloOxAlpha.thinking?.requiresEffort).toBeUndefined();
+
+		// The name match needs a trailing boundary too: "Ox Alphabet" merely
+		// shares the prefix and must keep its shipped ladder.
+		const oxAlphabet = createModel({
+			id: "hy3-preview-free",
+			name: "Ox Alphabet",
+			api: "openai-completions",
+			provider: "opencode-zen",
+			baseUrl: "https://opencode.ai/zen/v1",
+			thinking: staleThinking,
+		});
+		expect(getSupportedEfforts(oxAlphabet)).toEqual([
+			Effort.Minimal,
+			Effort.Low,
+			Effort.Medium,
+			Effort.High,
+			Effort.XHigh,
+		]);
 	});
 
 	it("encodes the Gemini 3 Pro effort gap and mandatory reasoning in metadata", () => {
@@ -1153,6 +1209,47 @@ describe("Qwen 3.8 local template effort ladder", () => {
 		expect(clampThinkingLevelForModel(llamaCpp, Effort.High)).toBe(Effort.Medium);
 		expect(clampThinkingLevelForModel(llamaCpp, Effort.Minimal)).toBe(Effort.Low);
 		expect(minimumSupportedEffort(llamaCpp)).toBe(Effort.Low);
+	});
+
+	it("defaults an effort-less clamp to the tier routing to requestModelId, else the floor (issue #9478)", () => {
+		// A collapsed row whose default wire id is a non-floor tier clamps to the
+		// effort that routes there, not the numeric minimum.
+		const grok = buildModel({
+			id: "cursor-grok-4.6",
+			name: "Grok 4.6",
+			api: "cursor-agent",
+			provider: "cursor",
+			baseUrl: "https://api2.cursor.sh",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 200_000,
+			maxTokens: 64_000,
+			requestModelId: "cursor-grok-4.6-medium",
+			thinking: {
+				mode: "effort",
+				efforts: [Effort.Low, Effort.Medium, Effort.High, Effort.XHigh],
+				requiresEffort: true,
+				effortRouting: {
+					[Effort.Low]: "cursor-grok-4.6-low",
+					[Effort.Medium]: "cursor-grok-4.6-medium",
+					[Effort.High]: "cursor-grok-4.6-high",
+					[Effort.XHigh]: "cursor-grok-4.6-xhigh",
+				},
+			},
+		});
+		expect(defaultSupportedEffort(grok)).toBe(Effort.Medium);
+		expect(minimumSupportedEffort(grok)).toBe(Effort.Low);
+
+		// Families whose default already is the floor are unchanged.
+		const floorDefault = createModel({
+			id: "custom-reasoner",
+			api: "openai-codex-responses",
+			provider: "custom",
+			baseUrl: "https://example.com",
+			thinking: { mode: "effort", efforts: [Effort.Medium, Effort.High] },
+		});
+		expect(defaultSupportedEffort(floorDefault)).toBe(minimumSupportedEffort(floorDefault));
 	});
 
 	it("normalizes a stale cached generic ladder to the template ladder", () => {

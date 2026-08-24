@@ -10,7 +10,7 @@ import {
 } from "@oh-my-pi/pi-utils/ar";
 import type { ToolSession } from "../sdk";
 import { truncateHead } from "../session/streaming-output";
-import { MAX_IMAGE_INPUT_BYTES, loadImageBytesInput, webpExclusionForModel } from "../utils/image-loading";
+import { loadImageBytesInput, MAX_IMAGE_INPUT_BYTES, webpExclusionForModel } from "../utils/image-loading";
 import { isInspectImageToolAvailable } from "../utils/inspect-image-mode";
 import { convertBufferWithMarkit } from "../utils/markit";
 import { applyListLimit } from "./list-limit";

@@ -7,6 +7,21 @@
 - Classified `stream_interrupted: Upstream stream interrupted after output began` as a transient transport failure while keeping authenticated rejections non-retryable, allowing replay-safe interrupted turns to use the existing automatic retry path.
 - Fixed OpenAI-completions streams (OpenCode Go, DeepSeek, OpenRouter, most OpenAI-compatible gateways) not exposing streamed tool-call arguments to the TUI reveal path, so `write` previews snapped in fully at execution instead of streaming the payload. Structured `delta.tool_calls` now carry `kStreamingPartialJson`, and DSML/Kimi chat-template leaked calls are rebuilt incrementally (`toolCallStart`/`toolCallArgDelta`) so healed `write`/`edit`/`bash` previews stream line by line instead of landing once at envelope close.
 - Fixed locally observed OpenCode Go reset windows to follow the service's rolling 5-hour, Monday-UTC weekly, and subscription-day calendar-month boundaries instead of treating every limit as an independent fixed-duration rolling window.
+## [18.0.4] - 2026-08-24
+
+### Fixed
+
+- Fixed Cursor tool calls through OpenAI-compatible authentication gateways losing arguments when complete argument maps are sent without streaming deltas ([#9479](https://github.com/can1357/oh-my-pi/issues/9479)).
+- Fixed Cursor plan entitlement refusals repeatedly selecting ineligible accounts by scoping credential blocks to the requested model during rotation ([#9488](https://github.com/can1357/oh-my-pi/issues/9488)).
+- Improved HTTP 413 error classification to accurately distinguish between payload/media size limits and token context window overflows, preventing inappropriate token compaction attempts and routing to correct recovery/fallback strategies ([#9235](https://github.com/can1357/oh-my-pi/issues/9235)).
+- Fixed Cursor conversation rotation after aborts or mid-turn restarts to properly replay the last user message on a fresh conversation.
+
+## [18.0.3] - 2026-08-23
+
+### Fixed
+
+- Fixed a Fireworks-hosted model aborting mid-generation with an HTTP 400 `Floating point NaN (not-a-number) is detected in generation` killing the turn instead of retrying; this model-side numerical fault is now classified transient and retried, matching the existing treatment of Copilot fleet-skew 400s ([#9458](https://github.com/can1357/oh-my-pi/issues/9458)).
+
 ## [18.0.2] - 2026-08-23
 
 ### Fixed

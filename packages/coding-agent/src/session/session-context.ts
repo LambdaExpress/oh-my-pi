@@ -7,6 +7,7 @@ import {
 	createCustomMessage,
 	INTERRUPTED_THINKING_MESSAGE_TYPE,
 	isCustomMessageContent,
+	isEmptyErrorTurn,
 	normalizeCustomMessagePayload,
 	PREWALK_PLAN_MESSAGE_TYPE,
 } from "./messages";
@@ -377,7 +378,11 @@ export function buildSessionContext(
 		handleEntryResetTracking(entry);
 		if (entry.type === "message") {
 			if (modelEntriesToSkip.has(entry)) return;
-			if (!options?.transcript && entry.message.role === "assistant" && entry.message.retryRecovery) {
+			if (
+				!options?.transcript &&
+				entry.message.role === "assistant" &&
+				(entry.message.retryRecovery || isEmptyErrorTurn(entry.message))
+			) {
 				return;
 			}
 			pushMessage(entry.message);

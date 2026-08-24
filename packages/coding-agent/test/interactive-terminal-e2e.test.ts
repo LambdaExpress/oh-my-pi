@@ -241,7 +241,7 @@ describe("libkitty end-to-end", () => {
 		expect(markerTape()).toEqual([...markers]);
 	});
 
-	it("streams a growing plain-text paragraph into native history before finalize", async () => {
+	it("streams a growing paragraph with inline code into native history before finalize", async () => {
 		const width = 80;
 		term = new VirtualTerminal(width, 10);
 		const composer = new Composer({ terminal: term });
@@ -273,7 +273,7 @@ describe("libkitty end-to-end", () => {
 			timestamp: 1,
 		});
 		const markers = Array.from({ length: 36 }, (_, index) => `STREAMPARA${String(index).padStart(2, "0")}`);
-		let text = "";
+		let text = "The `Enter/Exit` setting remains available while the response continues.";
 
 		for (const marker of markers) {
 			text += `${text ? " " : ""}${marker} ordinary prose keeps growing without a Markdown block boundary`;
@@ -285,6 +285,10 @@ describe("libkitty end-to-end", () => {
 		const committedRows = plainRows(term.getScrollBuffer()).slice(0, term.getBufferPosition().baseY);
 		expect(committedRows.some(row => row.includes(markers[0]!))).toBe(true);
 		expect(plainRows(term.getViewport()).some(row => row.includes(markers.at(-1)!))).toBe(true);
+		const streamingRows = plainRows(term.getScrollBuffer());
+		for (const marker of markers) {
+			expect(streamingRows.filter(row => row.includes(marker))).toHaveLength(1);
+		}
 
 		assistant.updateContent(message(text), { transient: false });
 		assistant.markTranscriptBlockFinalized();

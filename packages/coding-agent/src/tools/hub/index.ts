@@ -32,6 +32,7 @@ import type { Theme } from "../../modes/theme/theme";
 import hubDescription from "../../prompts/tools/hub.md" with { type: "text" };
 import type { AgentRegistry } from "../../registry/agent-registry";
 import type { ToolSession } from "..";
+import type { ToolActivitySummary } from "../renderers";
 import {
 	buildJobResult,
 	executeCancel,
@@ -545,6 +546,19 @@ function toLaunchArgs(args: HubRenderArgs | undefined): LaunchRenderArgs {
 export const hubToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
+	/** Compact one-line activity: op plus its peer, process, or job target. */
+	activitySummary(args: unknown): ToolActivitySummary {
+		const hubArgs = (args ?? {}) as HubRenderArgs;
+		const op = hubArgs.op;
+		if (!op) return { label: "Hub" };
+		let detail = op;
+		if (op === "send" && (hubArgs.to || hubArgs.name)) detail = `send → ${hubArgs.to ?? hubArgs.name}`;
+		else if (op === "wait" && (hubArgs.from || hubArgs.name)) detail = `wait ${hubArgs.from ?? hubArgs.name}`;
+		else if ((op === "wait" || op === "cancel") && hubArgs.ids?.length) {
+			detail = `${op} ${hubArgs.ids.length} job${hubArgs.ids.length === 1 ? "" : "s"}`;
+		} else if (hubArgs.name) detail = `${op} ${hubArgs.name}`;
+		return { label: "Hub", detail };
+	},
 	// Only launch pending frames consume the spinner (broker RPC in flight);
 	// messaging/job pending frames are static, exactly as before the merge.
 	animatedPendingPreview: (args: unknown): boolean => isLaunchStyleArgs(args as HubRenderArgs | undefined),

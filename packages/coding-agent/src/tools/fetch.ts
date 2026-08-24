@@ -28,7 +28,7 @@ import { convertWithMarkit, fetchBinary } from "../web/scrapers/utils";
 import { applyListLimit } from "./list-limit";
 import { formatStyledArtifactReference, type OutputMeta } from "./output-meta";
 import { isReadableUrlPath, type LineRange, parseLineRanges } from "./path-utils";
-import { createMoreLinesHeadWindow, formatBytes, formatExpandHint, getDomain, replaceTabs } from "./render-utils";
+import { createMoreLinesHeadWindow, formatBytes, getDomain, replaceTabs } from "./render-utils";
 import { listTables, looksLikeSqlite, openSqliteReadConnection, renderTableList } from "./sqlite-reader";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";

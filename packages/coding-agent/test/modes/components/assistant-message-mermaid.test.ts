@@ -98,7 +98,6 @@ describe("AssistantMessageComponent mermaid markdown", () => {
 	});
 });
 
-
 describe("AssistantMessageComponent thinking renderers", () => {
 	it("renders all extension outputs below visible thinking blocks in registration order", () => {
 		const contexts: Array<{ contentIndex: number; thinkingIndex: number; text: string }> = [];

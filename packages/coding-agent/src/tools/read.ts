@@ -625,8 +625,6 @@ async function streamLinesFromFile(
 
 const IMAGE_ATTACHMENT_URI_REGEX = /^attachment:\/\/[1-9]\d*$/;
 
-// Maximum image file size (20MB) - larger images will be rejected to prevent OOM during serialization
-const MAX_IMAGE_SIZE = MAX_IMAGE_INPUT_BYTES;
 const readSchema = type({
 	path: type("string").describe(
 		"Local path, internal URI (e.g. memory://, skill://), or URL. Inline selectors are supported.",

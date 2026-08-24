@@ -588,9 +588,14 @@ function replyError(payload: RunErrorPayload): Error {
 	return err;
 }
 
-async function targetIdForTarget(target: Target): Promise<string> {
+function privateTargetId(target: Target): string | undefined {
 	const raw = target as unknown as { _targetId?: unknown };
-	if (typeof raw._targetId === "string") return raw._targetId;
+	return typeof raw._targetId === "string" ? raw._targetId : undefined;
+}
+
+async function targetIdForTarget(target: Target): Promise<string> {
+	const fastTargetId = privateTargetId(target);
+	if (fastTargetId) return fastTargetId;
 	const session = await target.createCDPSession();
 	try {
 		const info = (await session.send("Target.getTargetInfo")) as { targetInfo?: { targetId?: string } };
@@ -603,6 +608,26 @@ async function targetIdForTarget(target: Target): Promise<string> {
 
 async function targetIdForPage(page: Page): Promise<string> {
 	return await targetIdForTarget(page.target());
+}
+
+async function createTrackedHeadlessPage(browser: Browser, reportTarget: (targetId: string) => void): Promise<Page> {
+	const session = await browser.target().createCDPSession();
+	let targetId: string;
+	try {
+		({ targetId } = await session.send("Target.createTarget", { url: "about:blank" }));
+		reportTarget(targetId);
+	} finally {
+		await session.detach().catch(() => undefined);
+	}
+	const existing = browser.targets().find(target => privateTargetId(target) === targetId);
+	const target =
+		existing ??
+		(await browser.waitForTarget(candidate => privateTargetId(candidate) === targetId, {
+			timeout: BROWSER_PROTOCOL_TIMEOUT_MS,
+		}));
+	const page = await target.page();
+	if (!page) throw new ToolError(`Created headless target ${targetId} did not expose a page`);
+	return page;
 }
 
 async function collectObservationEntries(
@@ -1001,19 +1026,23 @@ export class WorkerCore {
 				defaultViewport: null,
 				protocolTimeout: BROWSER_PROTOCOL_TIMEOUT_MS,
 			});
+
+			// Realm setup is done: puppeteer loaded and browser connected. Sent before
+			// page acquisition so the supervisor's cold-start budget bounds only the
+			// realm setup; page creation and the first navigation run under the ready
+			// wait.
+			this.#transport.send({ type: "setup" });
 			if (payload.mode === "headless") {
-				this.#page = await this.#browser.newPage();
+				// Create the target directly so its id is reportable before
+				// Puppeteer waits for target/page initialization. If that wait
+				// wedges, the supervisor can still close the created target.
+				this.#page = await createTrackedHeadlessPage(this.#browser, targetId => {
+					this.#transport.send({ type: "page-created", targetId });
+				});
 				this.#observeDialogs();
 				await applyStealthPatches(this.#browser, this.#page, { browserSession: null, override: null });
 				await applyViewport(this.#page, payload.viewport);
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
-				if (payload.url) {
-					await this.#page.goto(payload.url, {
-						// Default to "load" because dev servers with HMR/WS never reach networkidle.
-						waitUntil: payload.waitUntil ?? "load",
-						timeout: payload.timeoutMs,
-					});
-				}
 			} else {
 				const target = await this.#findAttachedTarget(payload.targetId);
 				// Post-timeout recycle: unblock the target BEFORE adopting the page — an open
@@ -1026,17 +1055,24 @@ export class WorkerCore {
 				await this.#claimRelayTarget(page);
 				this.#observeDialogs();
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
-				if (payload.url) {
-					await this.#page.goto(payload.url, {
-						// Same default as the headless arm: dev servers with HMR/WS never reach networkidle.
-						waitUntil: payload.waitUntil ?? "load",
-						timeout: payload.timeoutMs,
-					});
-				}
+			}
+			if (payload.url) {
+				await this.#page.goto(payload.url, {
+					// Default to "load" because dev servers with HMR/WS never reach networkidle.
+					waitUntil: payload.waitUntil ?? "load",
+					timeout: payload.timeoutMs,
+				});
 			}
 			this.#targetId = await targetIdForPage(this.#page);
 			this.#transport.send({ type: "ready", info: await this.#currentReadyInfo() });
 		} catch (error) {
+			// A failed headless init leaves the worker's page orphaned in the shared
+			// browser (the supervisor retries with a fresh worker), so close it before
+			// reporting. Attach mode adopts an existing target — never close it.
+			const page = this.#page;
+			if (payload.mode === "headless" && page && !page.isClosed()) {
+				await page.close().catch(() => undefined);
+			}
 			this.#transport.send({ type: "init-failed", error: errorPayload(error) });
 		}
 	}

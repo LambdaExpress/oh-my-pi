@@ -2714,7 +2714,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const phaseTreeLines = renderTreeList(
 			{
 				items: phaseSlice,
-				expanded: true,
+				expanded,
 				renderItem: (phase, ctx) => renderPhase(phase, baseIdx + ctx.index + 1, baseIdx + ctx.index === activeIdx),
 				trailingSummary: hiddenStages > 0 ? theme.fg("muted", formatMoreItems(hiddenStages, "stage")) : undefined,
 			},
@@ -5756,6 +5756,9 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	showAgentsDashboard(): void {
 		void this.#selectorController.showAgentsDashboard();
+	}
+	showGitUi(revision?: string): void {
+		void this.#selectorController.showGitTui(revision);
 	}
 
 	showModelSelector(options?: { temporaryOnly?: boolean }): void {

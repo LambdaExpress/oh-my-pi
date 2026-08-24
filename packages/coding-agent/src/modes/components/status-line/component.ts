@@ -69,11 +69,6 @@ function normalizeUsageScopeValue(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim().toLowerCase() : undefined;
 }
 
-function codexUsageScope(provider: string | undefined, modelId: string | undefined): "standard" | "spark" | undefined {
-	if (provider !== "openai-codex") return undefined;
-	return modelId?.toLowerCase().includes("-spark") ? "spark" : "standard";
-}
-
 /**
  * Fireworks are stateful, so their report match must be stricter than the
  * status display's fallback matching: every known credential identifier must

@@ -12,6 +12,7 @@ import {
 	TERMINAL,
 	Text,
 	type TUI,
+	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
 import { getProjectDir, isRecord, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { EDIT_MODE_STRATEGIES, type EditMode, type PerFileDiffPreview } from "../../edit";
@@ -22,13 +23,19 @@ import { formatDefaultToolExecution } from "../../tools/default-renderer";
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../../tools/eval";
 import { isWaitingPollDetails } from "../../tools/hub";
 import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../../tools/render-utils";
-import { type FirstResultViewportRepaint, type ToolRenderer, toolRenderers } from "../../tools/renderers";
+import {
+	type FirstResultViewportRepaint,
+	type ToolActivitySummary,
+	type ToolRenderer,
+	toolRenderers,
+} from "../../tools/renderers";
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../../tools/todo";
 import type { XdevState } from "../../tools/xdev";
 import { isFramedBlockComponent, markFramedBlockComponent, renderStatusLine, WidthAwareText } from "../../tui";
 import { convertImageToPng } from "../../utils/image-loading";
 import { sanitizeWithOptionalSixelPassthrough } from "../../utils/sixel";
 import { renderDiff } from "./diff";
+import { type AnimationFrame, trimBlankEdges } from "./transcript-container";
 
 /**
  * Drop trailing removal/hunk-header lines that appear in a streaming diff
@@ -335,6 +342,8 @@ export class ToolExecutionComponent extends Container {
 	#toolLabel: string;
 	#args: any;
 	#expanded = false;
+	#allocation = Number.POSITIVE_INFINITY;
+	#presentationFrame: AnimationFrame = { tick: 0, now: 0 };
 	#toolActivityVisible = true;
 	#showImages: boolean;
 	#editFuzzyThreshold: number | undefined;
@@ -405,6 +414,9 @@ export class ToolExecutionComponent extends Container {
 	// while still in the mutable viewport. `hub` uses this for repeated all-running polls; `todo` uses
 	// it for per-turn state snapshots so only the latest list remains visible.
 	#displaceableByToolName: DisplaceableToolName | undefined;
+	// Execution start on the presentation clock (performance.now domain, the
+	// same domain as AnimationFrame.now supplied by the transcript allocator).
+	#executionStartedAtNow: number | undefined;
 	// Wall clock captured whenever a task card is rebuilt.
 	#taskRenderNowMs = Date.now();
 	// Set on each `render()` when the last painted pending shape must be
@@ -511,6 +523,7 @@ export class ToolExecutionComponent extends Container {
 	setExecutionStarted(_toolCallId?: string): void {
 		if (this.#executionStarted) return;
 		this.#executionStarted = true;
+		this.#executionStartedAtNow = performance.now();
 		this.#argsComplete = true;
 		this.#updateSpinnerAnimation();
 		this.#schedulePreviewDiff();
@@ -894,6 +907,17 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	/**
+	 * A live block torn down through the generic Container path (transcript
+	 * clear, session switch mid-run) must not leak its shared-ticker
+	 * registration: the dead component would keep the process-wide 80ms
+	 * interval alive and keep being repainted.
+	 */
+	override dispose(): void {
+		this.stopAnimation();
+		super.dispose();
+	}
+
+	/**
 	 * Stop spinner animation and cleanup resources.
 	 */
 	stopAnimation(): void {
@@ -915,6 +939,12 @@ export class ToolExecutionComponent extends Container {
 		if (this.#expanded !== expanded) this.#blockVersion++;
 		this.#expanded = expanded;
 		this.#updateDisplay();
+	}
+
+	/** Apply the transcript allocator's current viewport reservation. */
+	setTranscriptAllocation(rows: number, frame: AnimationFrame): void {
+		this.#allocation = Math.max(0, Math.trunc(rows));
+		this.#presentationFrame = frame;
 	}
 
 	setToolActivityVisible(visible: boolean): void {
@@ -980,13 +1010,76 @@ export class ToolExecutionComponent extends Container {
 	}
 
 	override render(width: number): readonly string[] {
-		if (!this.#toolActivityVisible) return [];
-		const lines = super.render(width);
+		if (!this.#toolActivityVisible || this.#allocation === 0) return [];
+		let lines = super.render(width);
+		if (this.#allocation < 3) {
+			// A squeezed allocation degrades only blocks that genuinely overflow it.
+			// The allocator measures blocks by trimmed height and never squeezes one
+			// below that, so inline tools whose real content is 1-2 rows (hub
+			// receipts, one-line results) keep that content instead of an equally
+			// tall but contentless frame.
+			const trimmed = trimBlankEdges(lines);
+			if (trimmed.length > this.#allocation) return this.#renderCompact(width);
+			lines = trimmed;
+		}
 		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
 		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
 		return lines;
 	}
 
+	#renderCompact(width: number): readonly string[] {
+		const summary = this.#activitySummary();
+		const detail = summary.detail ? theme.fg("muted", ` · ${summary.detail.replace(/\s+/g, " ")}`) : "";
+		// Elapsed ticks only while the call is genuinely running; a settled
+		// placeholder row must not read as live ("Todo · running 0s").
+		const elapsed =
+			this.#isRunning() && this.#executionStartedAtNow !== undefined
+				? theme.fg(
+						"dim",
+						` ${Math.max(0, Math.floor((this.#presentationFrame.now - this.#executionStartedAtNow) / 1000))}s`,
+					)
+				: "";
+		const text = truncateToWidth(
+			`${theme.fg("toolTitle", theme.bold(summary.label))}${detail}${elapsed}`,
+			Math.max(1, width - 4),
+		);
+		if (this.#allocation === 1) {
+			const glyph = this.#spinnerFrame === undefined ? "•" : (theme.spinnerFrames[this.#spinnerFrame] ?? "•");
+			const styledGlyph = theme.fg(this.#spinnerFrame === undefined ? "dim" : "muted", glyph);
+			return [truncateToWidth(`${styledGlyph} ${text}`, width)];
+		}
+		return [truncateToWidth(`${theme.fg("dim", "╭─")} ${text}`, width), theme.fg("dim", "╰")];
+	}
+
+	#activitySummary(): ToolActivitySummary {
+		this.#renderState.renderContext ??= this.#buildRenderContext();
+		const summary = this.#renderer?.activitySummary?.(this.#args, {
+			expanded: this.#expanded,
+			isPartial: this.#isPartial,
+			spinnerFrame: this.#spinnerFrame,
+			renderContext: this.#renderState.renderContext,
+		});
+		if (summary !== undefined) {
+			if (summary.detail) return summary;
+			// A detail-less custom summary (e.g. hub before its streamed args
+			// parse) must not fold to a bare `╭─ Label` frame under viewport
+			// pressure — keep the generic liveness hint for in-flight calls.
+			return this.#isRunning() ? { ...summary, detail: "running" } : summary;
+		}
+		if (isRecord(this.#args)) {
+			for (const key of ["command", "path", "input"] as const) {
+				const value = this.#args[key];
+				if (typeof value === "string" && value.length > 0) {
+					return { label: this.#toolLabel, detail: value.split("\n", 1)[0] };
+				}
+			}
+		}
+		return { label: this.#toolLabel, detail: this.#isRunning() ? "running" : undefined };
+	}
+	/** Still executing: no settled result yet and the turn has not sealed it. */
+	#isRunning(): boolean {
+		return !this.#sealed && (this.#result === undefined || this.#isPartial);
+	}
 	// Viewport-/settings-dependent image sizing folded into the memo key only when
 	// the last rebuild actually emitted images, so a terminal resize re-shapes an
 	// image-bearing result (to rescale it) without re-shaping every image-free

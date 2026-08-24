@@ -3651,6 +3651,17 @@ export const SETTINGS_SCHEMA = {
 			description: "Append full before/after source when an edit introduces an AST parse failure",
 		},
 	},
+	"edit.autoRepair.enabled": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "files",
+			group: "Editing",
+			label: "Auto-Repair Parse Regressions",
+			description:
+				"When an edit breaks a file's AST parse, ask the smol model to fix the broken region (validated by re-parse; falls back to a warning)",
+		},
+	},
 
 	readLineNumbers: {
 		type: "boolean",

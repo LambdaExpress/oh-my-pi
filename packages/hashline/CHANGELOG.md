@@ -9,6 +9,12 @@
 ### Fixed
 
 - Recovered a plus-prefixed `DEL` header after a trailing blank insert row as the next operation instead of inserting the header text into the target file.
+## [18.0.4] - 2026-08-24
+
+### Changed
+
+- Improved line-ending normalization performance by avoiding full scan-and-copy operations on files without carriage returns, eliminating stalls on large LF-only files.
+
 ## [17.4.0] - 2026-08-20
 
 ### Added

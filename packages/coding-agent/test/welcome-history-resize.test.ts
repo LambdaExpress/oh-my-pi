@@ -1,11 +1,14 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
 import { COMPOSER_DEFAULTS, Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { Component, RenderScheduler } from "@oh-my-pi/pi-tui";
+import { type Component, type RenderScheduler, visibleWidth } from "@oh-my-pi/pi-tui";
 import { VirtualRenderScheduler } from "../../tui/test/virtual-render-scheduler";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { setLocale } from "../src/i18n";
+import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
+
+withoutTerminalMultiplexer();
 
 class ResizeScheduler implements RenderScheduler {
 	#now = 0;
@@ -84,6 +87,19 @@ function expectOneExactEditor(rows: readonly string[], status: string): number {
 	return top;
 }
 
+function startRetiredWelcome(modelName: string): { composer: Composer; terminal: TrackingTerminal } {
+	const terminal = new TrackingTerminal(80, 12);
+	const composer = new Composer({
+		terminal,
+		tuiOptions: { renderScheduler: new ResizeScheduler() },
+		preferences: { ...COMPOSER_DEFAULTS, quiet: false, resizeScrollback: "preserve" },
+		welcome: { version: "test", modelName, providerName: "test-provider" },
+	});
+	composer.setRuntimeChildren([new TranscriptContainer(), new MutableComposerTail()]);
+	composer.start({ playWelcomeIntro: false });
+	return { composer, terminal };
+}
+
 beforeAll(async () => {
 	setLocale("en");
 	await initTheme();
@@ -93,8 +109,15 @@ afterAll(() => {
 	setLocale(null);
 });
 
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
 describe("composer welcome native-history resize", () => {
 	it("keeps one exact editor rectangle and retired welcome through repeated thinking and resize frames", async () => {
+		// Select the long auth-broker tip: it retires as three hard rows at
+		// width 80 and must not be recomposed into fewer rows after widening.
+		vi.spyOn(Math, "random").mockReturnValue(0.5);
 		const terminal = new TrackingTerminal(80, 12);
 		const scheduler = new ResizeScheduler();
 		const composer = new Composer({
@@ -194,6 +217,46 @@ describe("composer welcome native-history resize", () => {
 		expect(offered).toHaveLength(1);
 		expect(acknowledged).toHaveLength(1);
 		expect(terminal.writes.slice(writesAfterRetirement).some(write => write.includes("\x1b[3J"))).toBe(false);
+		composer.ui.stop();
+	});
+
+	it("preserves a wide glyph that straddles a retired-row resize boundary", () => {
+		vi.spyOn(Math, "random").mockReturnValue(0.5);
+		const { composer, terminal } = startRetiredWelcome("model-aaaa界-tail");
+		const accepted = plainBuffer(terminal).find(row => row.includes("界"));
+		expect(accepted).toBeDefined();
+		const glyphIndex = accepted!.indexOf("界");
+		const width = visibleWidth(accepted!.slice(0, glyphIndex)) + 1;
+		expect(width).toBeLessThan(80);
+
+		const resizeFrame = composer.renderResizeFrame({ columns: width, rows: 200 }).map(row => Bun.stripANSI(row));
+		expect(countRows(resizeFrame, "界")).toBe(1);
+
+		terminal.resize(width, 200);
+
+		const transient = terminal.getViewport().map(row => Bun.stripANSI(row));
+		expect(countRows(transient, "界")).toBe(1);
+		composer.ui.stop();
+	});
+	it("clips retired hard rows instead of reflowing them inside a multiplexer", () => {
+		vi.spyOn(Math, "random").mockReturnValue(0.5);
+		Bun.env.TMUX = "/tmp/tmux-test/default,1,0";
+		const marker = "MUX-SUFFIX";
+		const { composer, terminal } = startRetiredWelcome(`model-aaaa${marker}`);
+		const accepted = plainBuffer(terminal).find(row => row.includes(marker));
+		expect(accepted).toBeDefined();
+		expect(visibleWidth(accepted!)).toBeLessThanOrEqual(80);
+		const markerIndex = accepted!.indexOf(marker);
+		const width = visibleWidth(accepted!.slice(0, markerIndex)) - 1;
+		expect(width).toBeGreaterThan(1);
+
+		const resizeFrame = composer.renderResizeFrame({ columns: width, rows: 200 }).map(row => Bun.stripANSI(row));
+		expect(countRows(resizeFrame, marker)).toBe(1);
+
+		terminal.resize(width, 200);
+
+		const transient = terminal.getViewport().map(row => Bun.stripANSI(row));
+		expect(countRows(transient, marker)).toBe(0);
 		composer.ui.stop();
 	});
 	it("rebuilds retired transcript rows at the settled width by default", async () => {

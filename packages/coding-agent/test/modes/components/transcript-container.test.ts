@@ -5,6 +5,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 class Block implements Component {
 	#rows: string[];
 	#finalized: boolean;
+	allocations: number[] = [];
 
 	constructor(rows: string[], finalized: boolean) {
 		this.#rows = rows;
@@ -20,10 +21,16 @@ class Block implements Component {
 		return this.#finalized;
 	}
 
+	setTranscriptAllocation(rows: number): void {
+		this.allocations.push(rows);
+	}
+
 	render(): readonly string[] {
 		return this.#rows;
 	}
 }
+
+const frame = { tick: 0, now: 0 };
 
 class TransparentGate extends Block {
 	constructor() {
@@ -183,15 +190,14 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 1)).toEqual(["fresh live"]);
 	});
 
-	it("keeps full semantic block rendering instead of compacting each block", () => {
+	it("assigns one row per live block until pressure requires aggregation", () => {
 		const transcript = new TranscriptContainer();
-		transcript.addChild(new Block(["first top", "first bottom"], false));
-		transcript.addChild(new Block(["second top", "second bottom"], false));
+		transcript.addChild(new Block(["first"], false));
+		transcript.addChild(new Block(["second"], false));
 
-		// The visible tail is clipped as one full semantic render. It never turns
-		// the two blocks into per-block dot summaries or an aggregate placeholder.
-		expect(transcript.renderViewport(80, 3)).toEqual(["", "second top", "second bottom"]);
-		expect(transcript.renderViewport(80, 1)).toEqual(["second bottom"]);
+		expect(transcript.renderViewport(80, 2, frame)).toEqual(["first", "second"]);
+		expect(transcript.canAdmit(2)).toBe(false);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["1 more transcript blocks active"]);
 	});
 	it("does not report settled resume backlog as active", () => {
 		const transcript = new TranscriptContainer();
@@ -202,6 +208,33 @@ describe("TranscriptContainer", () => {
 		// The welcome header can consume the first history offer, leaving the
 		// settled transcript prefix live for one frame while it drains next.
 		expect(transcript.renderViewport(80, 1)).toEqual(["current tool"]);
+	});
+	it("excludes empty blocks so pressure never emits blank rows (issue 9483)", () => {
+		const transcript = new TranscriptContainer();
+		// Text blocks interleaved with empty (hidden tool-activity) blocks that
+		// render nothing but stay live until retired.
+		for (let i = 0; i < 6; i++) {
+			transcript.addChild(new Block([`t${i}a`, `t${i}b`, `t${i}c`], true));
+			for (let j = 0; j < 8; j++) transcript.addChild(new Block([], true));
+		}
+		// Emergency path: more non-empty blocks than rows. Every row carries real
+		// text — no block's tail is dropped as blank padding.
+		const out = transcript.renderViewport(80, 12, frame);
+		expect(out).toHaveLength(12);
+		expect(out.every(row => /\S/.test(row))).toBe(true);
+	});
+
+	it("empty blocks do not reserve capacity from real text under pressure (issue 9483)", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["A1", "A2", "A3", "A4"], true));
+		transcript.addChild(new Block([], true));
+		transcript.addChild(new Block(["B1", "B2", "B3", "B4"], true));
+		transcript.addChild(new Block([], true));
+		transcript.addChild(new Block(["C1", "C2", "C3", "C4"], true));
+		// Capacity 10 fits all real content once the two empty blocks stop
+		// stealing a base row each; the older block keeps its tail rows.
+		const out = transcript.renderViewport(80, 10, frame);
+		expect(out).toEqual(["A3", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4"]);
 	});
 
 	it("permits removing settled blocks until they are offered or committed", () => {
