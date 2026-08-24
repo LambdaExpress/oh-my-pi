@@ -159,7 +159,7 @@ describe("InteractiveMode completed-run collapse", () => {
 
 		expect(rebuild).toHaveBeenCalledTimes(2);
 		expect(refreshDisplay).toHaveBeenCalledTimes(2);
-		expect(refreshDisplay).toHaveBeenNthCalledWith(1, "completed-run-toggle-during-stream");
+		expect(refreshDisplay).toHaveBeenNthCalledWith(1);
 		expect(resetDisplay).not.toHaveBeenCalled();
 
 		agentState.isStreaming = false;

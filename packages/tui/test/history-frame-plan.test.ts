@@ -408,4 +408,24 @@ describe("terminal frame plans", () => {
 		expect(finalContents.some(row => row.includes("@20"))).toBe(false);
 		tui.stop();
 	});
+
+	it("does not reveal the previous application page after startup and resize", async () => {
+		const terminal = new AdaptDispatchEraseTerminal(30, 4);
+		terminal.write("PREVIOUS-APP-ONE\r\nPREVIOUS-APP-TWO\r\nPREVIOUS-APP-THREE\r\nPREVIOUS-APP-FOUR");
+		const provider = new WelcomeReplayProvider();
+		const renderScheduler = new VirtualRenderScheduler();
+		const tui = new TUI(terminal, undefined, { renderScheduler });
+		tui.setResizeScrollback("rebuild");
+		tui.setFrameProvider(provider);
+		tui.start({ clearScrollback: true });
+		await renderScheduler.settle(terminal);
+
+		terminal.resize(40, 10);
+		await renderScheduler.advance(terminal, 160);
+
+		const finalContents = plainBuffer(terminal).filter(Boolean);
+		expect(finalContents.some(row => row.includes("PREVIOUS-APP"))).toBe(false);
+		expect(finalContents.filter(row => row === "WELCOME-MARKER")).toHaveLength(1);
+		tui.stop();
+	});
 });
