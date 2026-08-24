@@ -5,6 +5,7 @@ import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
+import { BashExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/bash-execution";
 import { Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -376,5 +377,48 @@ describe("libkitty end-to-end", () => {
 		// from scrollback and viewport alike — while the live editor stays mounted.
 		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(THINK))).toBe(false);
 		expect(plainRows(term.getViewport()).some(row => row.includes("LIVE_EDITOR_DRAFT"))).toBe(true);
+	});
+
+	it("collapses tool output that expansion retired to native scrollback", async () => {
+		term = new VirtualTerminal(120, 32);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		const firstOutputMarker = "EXPANDED_TOOL_PREFIX_00";
+		const output = Array.from(
+			{ length: 80 },
+			(_, index) => `EXPANDED_TOOL_PREFIX_${String(index).padStart(2, "0")}`,
+		).join("\n");
+		const execution = new BashExecutionComponent("emit-many-lines", mode.ui);
+		execution.setComplete(0, false, { output });
+		mode.chatContainer.addChild(execution);
+		mode.ui.requestRender(true);
+		await term.waitForRender();
+
+		// The collapsed preview contains only the tail, so the first line starts hidden.
+		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(firstOutputMarker))).toBe(false);
+
+		// Ctrl+O expands the block beyond the viewport. Capacity pressure retires it
+		// into native scrollback, reproducing the boundary where a normal repaint can
+		// no longer rewrite its rows.
+		term.sendInput("\x0f");
+		const committedRows = () => {
+			const { baseY } = term.getBufferPosition();
+			return plainRows(term.getScrollBuffer()).slice(0, baseY);
+		};
+		for (let frame = 0; frame < 20 && !committedRows().some(row => row.includes(firstOutputMarker)); frame++) {
+			mode.ui.requestRender(true);
+			await term.waitForRender();
+		}
+		expect(committedRows().some(row => row.includes(firstOutputMarker))).toBe(true);
+
+		// A second Ctrl+O must collapse the complete transcript, including rows that
+		// left the active viewport during expansion.
+		term.sendInput("\x0f");
+		await term.waitForRender();
+		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(firstOutputMarker))).toBe(false);
 	});
 });

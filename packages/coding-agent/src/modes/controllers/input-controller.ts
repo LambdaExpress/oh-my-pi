@@ -2192,9 +2192,10 @@ export class InputController {
 				child.setExpanded(expanded);
 			}
 		}
-		// Toggling expansion mutates every live block; blocks already committed to
-		// terminal history stay at their committed presentation.
-		this.ctx.ui.requestRender(true);
+		// This is an explicit user display gesture: expansion can push a block into
+		// immutable native history, so both directions must replay the full transcript.
+		// A viewport repaint would leave those retired rows stuck expanded or collapsed.
+		this.ctx.ui.resetDisplay();
 	}
 
 	toggleThinkingBlockVisibility(): void {

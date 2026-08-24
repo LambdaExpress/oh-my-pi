@@ -13,29 +13,26 @@ afterAll(() => {
 });
 
 describe("InputController tool output expansion", () => {
-	it("expands children and forces a full repaint so every live block re-renders", () => {
+	it("expands children and replays native history so retired blocks also re-render", () => {
 		const expandable = { setExpanded: vi.fn() };
 		const inert = { render: vi.fn(() => []) };
-		const requestRender = vi.fn();
+		const resetDisplay = vi.fn();
 		const ctx = {
 			toolOutputExpanded: false,
 			chatContainer: { children: [expandable, inert] },
-			ui: { requestRender },
+			ui: { resetDisplay },
 		} as unknown as InteractiveModeContext;
 
 		new InputController(ctx).toggleToolOutputExpansion();
 
 		expect(ctx.toolOutputExpanded).toBe(true);
 		expect(expandable.setExpanded).toHaveBeenCalledWith(true);
-		// Expansion mutates every live block; the forced repaint re-renders them
-		// at their new heights in the same frame.
-		expect(requestRender).toHaveBeenCalledTimes(1);
-		expect(requestRender).toHaveBeenCalledWith(true);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
 	});
 
 	it("does not expand hidden tool activity and explains why", () => {
 		const expandable = { setExpanded: vi.fn() };
-		const requestRender = vi.fn();
+		const resetDisplay = vi.fn();
 		const showStatus = vi.fn();
 		const ctx = {
 			hideToolActivity: true,
@@ -43,14 +40,14 @@ describe("InputController tool output expansion", () => {
 			chatContainer: { children: [expandable] },
 			keybindings: { getDisplayString: vi.fn(() => "Alt+H") },
 			showStatus,
-			ui: { requestRender },
+			ui: { resetDisplay },
 		} as unknown as InteractiveModeContext;
 
 		new InputController(ctx).toggleToolOutputExpansion();
 
 		expect(ctx.toolOutputExpanded).toBe(false);
 		expect(expandable.setExpanded).not.toHaveBeenCalled();
-		expect(requestRender).not.toHaveBeenCalled();
+		expect(resetDisplay).not.toHaveBeenCalled();
 		expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("Alt+H"));
 		expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("/settings"));
 	});

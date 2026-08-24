@@ -61,6 +61,7 @@
 
 ### Fixed
 
+- Fixed repeated `Ctrl+O` tool-output toggles leaving expanded rows in terminal scrollback after those rows moved outside the active viewport.
 - Fixed long model paragraphs containing ordinary prose or closed inline code being limited to one terminal screen while streaming; completed wrapped rows now enter native scrollback before the reply finishes.
 - Fixed completed Web Search calls leaving a pending hourglass above a separate result; live and rebuilt transcripts now replace it with one card containing the original query and answer.
 - Fixed image attachment cards on SIXEL terminals rendering only an icon; attachments now use centered direct-placement SIXEL thumbnails while preserving the 12×4 bordered card layout.
