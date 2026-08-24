@@ -1003,6 +1003,7 @@ function listMayContinueAt(text: string, tailStart: number, listRaw: string): bo
 }
 
 const NO_BLOCK_BOUNDARY = { end: 0, count: 0 } as const;
+const PLAIN_PARAGRAPH_MARKUP = /[\t\r\n\\`*_[\]<>~&$]/;
 
 /**
  * Offset just past the last token in `tokens` that closes a block on a hard
@@ -1463,12 +1464,29 @@ interface StreamingHighlightCache extends RenderSignature {
 	stream: HighlightStreamSession;
 }
 
-interface SettledPrefixCursorMetadata {
+interface BlockSettledPrefixCursorMetadata {
+	kind: "block";
 	lineage: object;
 	text: string;
 	tokenCount: number;
 	tokens: readonly Token[];
 	projections: Map<string, number>;
+}
+
+interface PlainParagraphSettledPrefixCursorMetadata {
+	kind: "plainParagraph";
+	lineage: object;
+	text: string;
+	tokens: readonly Token[];
+	projections: Map<string, { rowCount: number; lines: readonly string[] }>;
+}
+
+type SettledPrefixCursorMetadata = BlockSettledPrefixCursorMetadata | PlainParagraphSettledPrefixCursorMetadata;
+
+interface PlainParagraphPrefixCandidate {
+	text: string;
+	tokens: readonly Token[];
+	rowCount: number;
 }
 
 /**
@@ -1517,6 +1535,7 @@ export class Markdown implements Component {
 	#settledPrefixCursors = new WeakMap<object, SettledPrefixCursorMetadata>();
 	#latestSettledPrefixCursor?: object;
 	#lastRenderSignature?: RenderSignature;
+	#plainParagraphPrefix?: PlainParagraphPrefixCandidate;
 	// True while #renderStreamingContentLines renders the frozen token range:
 	// frozen code blocks highlight even in transient mode so their bytes match
 	// the finalized render (they render once into the prefix line cache, so
@@ -1600,48 +1619,69 @@ export class Markdown implements Component {
 	getLastRenderSettledPrefix(): { rowCount: number; cursor: unknown } | undefined {
 		if (!this.transientRenderCache || this.#cachedText !== this.#text) return undefined;
 		const signature = this.#lastRenderSignature;
+		if (!signature) return undefined;
 		const stableText = this.#streamPrefixText;
 		const stableTokens = this.#streamPrefixTokens;
 		const cache = this.#streamPrefixLineCache;
-		if (
-			!signature ||
-			!stableText ||
-			!stableTokens ||
-			stableTokens.length === 0 ||
-			!cache ||
-			cache.text !== stableText ||
-			cache.tokenCount !== stableTokens.length ||
-			cache.nextTokenType !== this.#streamPrefixNextTokenType ||
-			this.#matchingStreamPrefixLineCache(stableText, stableText, signature) !== cache
-		) {
-			return undefined;
+		const hasStableBlocks =
+			stableText !== undefined &&
+			stableTokens !== undefined &&
+			stableTokens.length > 0 &&
+			cache !== undefined &&
+			cache.text === stableText &&
+			cache.tokenCount === stableTokens.length &&
+			cache.nextTokenType === this.#streamPrefixNextTokenType &&
+			this.#matchingStreamPrefixLineCache(stableText, stableText, signature) === cache;
+		if (hasStableBlocks) {
+			let cursor = this.#latestSettledPrefixCursor;
+			let metadata = cursor ? this.#settledPrefixCursors.get(cursor) : undefined;
+			if (
+				!cursor ||
+				metadata?.kind !== "block" ||
+				metadata.lineage !== this.#streamLineage ||
+				metadata.text !== stableText ||
+				metadata.tokenCount !== stableTokens.length
+			) {
+				cursor = Object.freeze({});
+				metadata = {
+					kind: "block",
+					lineage: this.#streamLineage,
+					text: stableText,
+					tokenCount: stableTokens.length,
+					tokens: stableTokens.slice(),
+					projections: new Map(),
+				};
+				this.#settledPrefixCursors.set(cursor, metadata);
+				this.#latestSettledPrefixCursor = cursor;
+			}
+			return {
+				rowCount: this.#paddingRowCount(signature.paddingY) + cache.lines.length,
+				cursor,
+			};
 		}
 
+		const plain = this.#plainParagraphPrefix;
+		if (plain === undefined || plain.text !== this.#text) return undefined;
 		let cursor = this.#latestSettledPrefixCursor;
 		let metadata = cursor ? this.#settledPrefixCursors.get(cursor) : undefined;
 		if (
 			!cursor ||
-			!metadata ||
+			metadata?.kind !== "plainParagraph" ||
 			metadata.lineage !== this.#streamLineage ||
-			metadata.text !== stableText ||
-			metadata.tokenCount !== stableTokens.length
+			metadata.text !== plain.text
 		) {
 			cursor = Object.freeze({});
 			metadata = {
+				kind: "plainParagraph",
 				lineage: this.#streamLineage,
-				text: stableText,
-				tokenCount: stableTokens.length,
-				tokens: stableTokens.slice(),
+				text: plain.text,
+				tokens: plain.tokens.slice(),
 				projections: new Map(),
 			};
 			this.#settledPrefixCursors.set(cursor, metadata);
 			this.#latestSettledPrefixCursor = cursor;
 		}
-
-		return {
-			rowCount: this.#paddingRowCount(signature.paddingY) + cache.lines.length,
-			cursor,
-		};
+		return { rowCount: plain.rowCount, cursor };
 	}
 
 	resolveLastRenderSettledPrefix(cursor: unknown, width: number): number | undefined {
@@ -1654,11 +1694,49 @@ export class Markdown implements Component {
 			return undefined;
 		}
 		const metadata = this.#settledPrefixCursors.get(cursor);
+		if (!metadata || metadata.lineage !== this.#streamLineage) return undefined;
+		const paddingX = this.#ignoreTight ? this.#paddingX : getPaddingX(this.#paddingX);
+		const signature =
+			this.#lastRenderSignature?.width === width
+				? this.#lastRenderSignature
+				: this.#renderSignature(width, paddingX);
+		if (metadata.kind === "plainParagraph") {
+			if (!this.#text.startsWith(metadata.text)) return undefined;
+			const projectionKey = this.#renderCacheKey("plain-paragraph-prefix", signature);
+			let projection = metadata.projections.get(projectionKey);
+			if (projection === undefined) {
+				const contentWidth = Math.max(1, width - paddingX * 2);
+				const previousSignature = this.#activeRenderSignature;
+				this.#activeRenderSignature = signature;
+				let contentLines: readonly string[];
+				try {
+					contentLines = this.#renderContentLines(
+						metadata.tokens,
+						0,
+						metadata.tokens.length,
+						contentWidth,
+						signature,
+					);
+				} finally {
+					this.#activeRenderSignature = previousSignature;
+				}
+				const padding = this.#renderEmptyPaddingLines(signature);
+				const lines = [...padding, ...contentLines.slice(0, -1)];
+				projection = { rowCount: lines.length, lines };
+				metadata.projections.set(projectionKey, projection);
+			}
+			if (projection.rowCount <= 0 || this.#cachedWidth !== width || this.#cachedLines === undefined) {
+				return undefined;
+			}
+			for (let index = 0; index < projection.lines.length; index++) {
+				if (this.#cachedLines[index] !== projection.lines[index]) return undefined;
+			}
+			return projection.rowCount;
+		}
+
 		const stableText = this.#streamPrefixText;
 		const stableTokens = this.#streamPrefixTokens;
 		if (
-			!metadata ||
-			metadata.lineage !== this.#streamLineage ||
 			!stableText ||
 			!stableTokens ||
 			!stableText.startsWith(metadata.text) ||
@@ -1666,12 +1744,6 @@ export class Markdown implements Component {
 		) {
 			return undefined;
 		}
-
-		const paddingX = this.#ignoreTight ? this.#paddingX : getPaddingX(this.#paddingX);
-		const signature =
-			this.#lastRenderSignature?.width === width
-				? this.#lastRenderSignature
-				: this.#renderSignature(width, paddingX);
 		const currentCache = this.#streamPrefixLineCache;
 		if (
 			metadata.text === stableText &&
@@ -1841,6 +1913,12 @@ export class Markdown implements Component {
 		} finally {
 			this.#activeRenderSignature = undefined;
 		}
+		this.#plainParagraphPrefix = this.#plainParagraphPrefixCandidate(
+			normalizedText,
+			tokens,
+			contentLines.length,
+			signature,
+		);
 		const emptyLines = this.#renderEmptyPaddingLines(signature);
 
 		// Combine top padding, content, and bottom padding
@@ -1860,6 +1938,29 @@ export class Markdown implements Component {
 			renderCache.set(cacheKey, result);
 		}
 		return result;
+	}
+
+	#plainParagraphPrefixCandidate(
+		text: string,
+		tokens: readonly Token[],
+		contentRowCount: number,
+		signature: RenderSignature,
+	): PlainParagraphPrefixCandidate | undefined {
+		if (!this.transientRenderCache || contentRowCount <= 1 || PLAIN_PARAGRAPH_MARKUP.test(text)) return undefined;
+		const paragraph = tokens.length === 1 ? tokens[0] : undefined;
+		if (
+			paragraph?.type !== "paragraph" ||
+			paragraph.raw !== text ||
+			paragraph.tokens?.length !== 1 ||
+			paragraph.tokens[0]?.type !== "text"
+		) {
+			return undefined;
+		}
+		return {
+			text,
+			tokens,
+			rowCount: this.#paddingRowCount(signature.paddingY) + contentRowCount - 1,
+		};
 	}
 
 	#renderSignature(width: number, paddingX: number): RenderSignature {

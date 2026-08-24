@@ -61,6 +61,7 @@
 
 ### Fixed
 
+- Fixed long plain-text model paragraphs being limited to one terminal screen while streaming; completed wrapped rows now enter native scrollback before the reply finishes.
 - Fixed completed Web Search calls leaving a pending hourglass above a separate result; live and rebuilt transcripts now replace it with one card containing the original query and answer.
 - Fixed image attachment cards on SIXEL terminals rendering only an icon; attachments now use centered direct-placement SIXEL thumbnails while preserving the 12×4 bordered card layout.
 - Restored the 17.4 annotated context-gauge layout as the status-line default while retaining the reset branch's fixed green/yellow/orange/red 35/60/75 percent tiers, token thresholds, and pulsing async-compaction indicators; the `󰕝` speculation marker now pulses while pre-compaction runs and adopts the gauge's `󰁨` threshold color once the result is armed, while percentage/window numbers render in the context segment instead of being embedded in the line.

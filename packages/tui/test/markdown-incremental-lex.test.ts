@@ -382,6 +382,28 @@ describe("Markdown settled render prefix cursor", () => {
 		expect(narrowLines.slice(0, narrowRowCount)).toEqual(renderCold(source, 20).slice(0, narrowRowCount));
 	});
 
+	it("offers completed physical rows from a growing plain-text paragraph", () => {
+		const initial = Array.from({ length: 24 }, (_, index) => `word${index}`).join(" ");
+		const markdown = new Markdown(initial, 0, 0, THEME);
+		markdown.transientRenderCache = true;
+
+		const initialLines = markdown.render(24);
+		const initialPrefix = requireSettledPrefix(markdown);
+		expect(initialPrefix.rowCount).toBe(initialLines.length - 1);
+
+		const grown = `${initial} followed by more ordinary words that keep the final physical row mutable`;
+		markdown.setText(grown);
+		const grownLines = markdown.render(24);
+		expect(grownLines.slice(0, initialPrefix.rowCount)).toEqual(initialLines.slice(0, initialPrefix.rowCount));
+		expect(markdown.resolveLastRenderSettledPrefix(initialPrefix.cursor, 24)).toBe(initialPrefix.rowCount);
+		expect(requireSettledPrefix(markdown).rowCount).toBeGreaterThan(initialPrefix.rowCount);
+
+		const narrowLines = markdown.render(16);
+		const narrowRowCount = markdown.resolveLastRenderSettledPrefix(initialPrefix.cursor, 16);
+		expect(narrowRowCount).toBeGreaterThan(initialPrefix.rowCount);
+		expect(narrowLines.slice(0, narrowRowCount)).toEqual(renderCold(grown, 16).slice(0, narrowRowCount));
+	});
+
 	it("invalidates an old cursor after a rewind even when the same source boundary is re-earned", () => {
 		const short = `${settledSource}short tail`;
 		const markdown = new Markdown(`${short} that first grows farther`, 0, 0, THEME);
@@ -395,7 +417,7 @@ describe("Markdown settled render prefix cursor", () => {
 		expect(requireSettledPrefix(markdown).cursor).not.toBe(oldPrefix.cursor);
 	});
 
-	it("offers no prefix before a hard block boundary or at an unsafe list boundary", () => {
+	it("offers no prefix for a short paragraph or at an unsafe list boundary", () => {
 		const growingParagraph = new Markdown("one paragraph is still growing", 0, 0, THEME);
 		growingParagraph.transientRenderCache = true;
 		growingParagraph.render(40);
@@ -405,6 +427,14 @@ describe("Markdown settled render prefix cursor", () => {
 		continuingList.transientRenderCache = true;
 		continuingList.render(40);
 		expect(continuingList.getLastRenderSettledPrefix()).toBeUndefined();
+	});
+
+	it("does not settle a long paragraph containing unresolved inline Markdown", () => {
+		const source = `${"ordinary words ".repeat(20)}*an emphasis span that is still open`;
+		const markdown = new Markdown(source, 0, 0, THEME);
+		markdown.transientRenderCache = true;
+		markdown.render(24);
+		expect(markdown.getLastRenderSettledPrefix()).toBeUndefined();
 	});
 
 	it("offers no prefix on CR and reference-definition fallback paths", () => {

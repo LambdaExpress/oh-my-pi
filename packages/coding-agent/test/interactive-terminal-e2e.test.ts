@@ -4,6 +4,7 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
@@ -238,6 +239,62 @@ describe("libkitty end-to-end", () => {
 		for (let frame = 0; frame < 2; frame++) mode.ui.renderNow();
 		await term.flush();
 		expect(markerTape()).toEqual([...markers]);
+	});
+
+	it("streams a growing plain-text paragraph into native history before finalize", async () => {
+		const width = 80;
+		term = new VirtualTerminal(width, 10);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		composer.setPreferences({ quiet: true });
+		composer.setHeaderExtras([], []);
+		const assistant = new AssistantMessageComponent();
+		mode.chatContainer.addChild(assistant);
+		const usage: Usage = {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const message = (text: string): AssistantMessage => ({
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage,
+			stopReason: "stop",
+			timestamp: 1,
+		});
+		const markers = Array.from({ length: 36 }, (_, index) => `STREAMPARA${String(index).padStart(2, "0")}`);
+		let text = "";
+
+		for (const marker of markers) {
+			text += `${text ? " " : ""}${marker} ordinary prose keeps growing without a Markdown block boundary`;
+			assistant.updateContent(message(text), { transient: true });
+			mode.ui.renderNow();
+			await term.flush();
+		}
+
+		const committedRows = plainRows(term.getScrollBuffer()).slice(0, term.getBufferPosition().baseY);
+		expect(committedRows.some(row => row.includes(markers[0]!))).toBe(true);
+		expect(plainRows(term.getViewport()).some(row => row.includes(markers.at(-1)!))).toBe(true);
+
+		assistant.updateContent(message(text), { transient: false });
+		assistant.markTranscriptBlockFinalized();
+		for (let frame = 0; frame < 2; frame++) mode.ui.renderNow();
+		await term.flush();
+
+		const finalRows = plainRows(term.getScrollBuffer());
+		for (const marker of markers) {
+			expect(finalRows.filter(row => row.includes(marker))).toHaveLength(1);
+		}
 	});
 
 	it("hides thinking already retired to native scrollback when Ctrl+T toggles", async () => {
