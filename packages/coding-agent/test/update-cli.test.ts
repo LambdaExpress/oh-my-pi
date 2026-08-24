@@ -23,6 +23,7 @@ import {
 	type ReleaseInfo,
 	type RenameMigrationSteps,
 	replaceBinaryForUpdate,
+	resolveBinaryName,
 	resolveBunGlobalNodeModulesDirFromLocations,
 	resolveReleaseBinaryAsset,
 	resolveReleaseDist,
@@ -1013,6 +1014,13 @@ describe("update-cli release binary integrity", () => {
 			}),
 		).rejects.toThrow("retry later or set GITHUB_TOKEN or GH_TOKEN");
 		expect(await Bun.file(targetPath).exists()).toBe(false);
+	});
+});
+
+describe("update release asset names", () => {
+	it("selects native Apple Silicon and Intel macOS release binaries", () => {
+		expect(resolveBinaryName("darwin", "arm64")).toBe("omp-darwin-arm64");
+		expect(resolveBinaryName("darwin", "x64")).toBe("omp-darwin-x64");
 	});
 });
 

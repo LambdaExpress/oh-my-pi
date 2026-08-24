@@ -59,47 +59,82 @@ jobs:
                  binary_path: packages/coding-agent/binaries/omp-linux-x64
                  native_targets: linux-x64-baseline linux-x64-modern
                  smoke: linux
+                 cache_scope: code-linux-x64
                - os: ubuntu-22.04
                  target_id: linux-musl-x64
                  binary_path: packages/coding-agent/binaries/omp-linux-musl-x64
                  native_targets: linux-musl-x64-baseline
                  smoke: musl
+                 cache_scope: code-linux-musl-x64
                - os: ubuntu-24.04-arm
                  target_id: linux-arm64
                  binary_path: packages/coding-agent/binaries/omp-linux-arm64
                  native_targets: linux-arm64
                  smoke: linux
+                 cache_scope: code-linux-arm64
                - os: ubuntu-24.04-arm
                  target_id: linux-musl-arm64
                  binary_path: packages/coding-agent/binaries/omp-linux-musl-arm64
                  native_targets: linux-musl-arm64
                  smoke: musl
+                 cache_scope: code-linux-musl-arm64
                - os: ubuntu-22.04
                  target_id: win32-x64
                  binary_path: packages/coding-agent/binaries/omp-windows-x64.exe
                  native_targets: win32-x64-baseline
                  smoke: cross
+                 cache_scope: code-win32-x64
+               - os: macos-15-intel
+                 target_id: darwin-x64
+                 binary_path: packages/coding-agent/binaries/omp-darwin-x64
+                 native_targets: darwin-x64-baseline
+                 smoke: darwin
+                 cache_scope: release-darwin-x64
+               - os: macos-14
+                 target_id: darwin-arm64
+                 binary_path: packages/coding-agent/binaries/omp-darwin-arm64
+                 native_targets: darwin-arm64
+                 smoke: darwin
+                 cache_scope: release-darwin-arm64
       runs-on: ${{ matrix.os }}
       permissions:
          contents: read
+      env:
+         MACOS_SIGNING: ${{ secrets.APPLE_CERTIFICATE_P12 != '' && secrets.APPLE_CERTIFICATE_PASSWORD != '' && secrets.APPLE_API_KEY_ID != '' && secrets.APPLE_API_ISSUER_ID != '' && secrets.APPLE_API_KEY != '' }}
       steps:
          - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
          - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
            with:
               bun-version: "1.4"
          - uses: ./.github/actions/setup-system-deps
+           if: runner.os == 'Linux'
+         - name: Cache Bun dependencies
+           if: runner.os == 'macOS'
+           uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+           with:
+              path: ~/.bun/install/cache
+              key: bun-${{ runner.os }}-${{ hashFiles('**/bun.lock') }}
          - name: Install dependencies
            run: bun install --frozen-lockfile
          - name: Build native addons
            uses: ./.github/actions/bazel-natives
            with:
               targets: ${{ matrix.native_targets }}
-              cache-scope: code-${{ matrix.target_id }}
+              cache-scope: ${{ matrix.cache_scope }}
          - name: Build release binary
            env:
               OMP_RELEASE_CODE: ${{ needs.tag.outputs.code }}
               RELEASE_TARGETS: ${{ matrix.target_id }}
            run: bun run ci:release:build-binaries
+         - name: Sign and notarize macOS binary
+           if: runner.os == 'macOS' && env.MACOS_SIGNING == 'true'
+           env:
+              APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+              APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+              APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+              APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+              APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+           run: bash scripts/ci-macos-sign.sh "${{ matrix.binary_path }}"
          - name: Smoke Linux binary
            if: matrix.smoke == 'linux'
            shell: bash
@@ -107,6 +142,21 @@ jobs:
               EXPECTED_CODE: ${{ needs.tag.outputs.code }}
            run: |
               set -euo pipefail
+              runtime_dir="$(mktemp -d)"
+              version="$(HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --version)"
+              case "$version" in
+                *"+code.${EXPECTED_CODE}") ;;
+                *) echo "unexpected version: $version" >&2; exit 1 ;;
+              esac
+              HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --smoke-test
+         - name: Smoke macOS binary
+           if: matrix.smoke == 'darwin'
+           shell: bash
+           env:
+              EXPECTED_CODE: ${{ needs.tag.outputs.code }}
+           run: |
+              set -euo pipefail
+              codesign --verify --strict --verbose=2 "${{ matrix.binary_path }}"
               runtime_dir="$(mktemp -d)"
               version="$(HOME="$runtime_dir/home" XDG_DATA_HOME="$runtime_dir/xdg" "${{ matrix.binary_path }}" --version)"
               case "$version" in

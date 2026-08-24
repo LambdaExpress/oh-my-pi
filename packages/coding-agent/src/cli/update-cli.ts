@@ -1098,17 +1098,12 @@ export function isMuslLinuxForTest(options: Required<MuslDetectionOptions>): boo
 	return isMuslLinux(options);
 }
 
-/**
- * Get the appropriate binary name for this platform.
- */
-function getBinaryName(): string {
-	const platform = process.platform;
-	const arch = process.arch;
-
+/** Resolve the release asset name for a supported runtime platform. */
+export function resolveBinaryName(platform: NodeJS.Platform, arch: NodeJS.Architecture, muslLinux = false): string {
 	let os: string;
 	switch (platform) {
 		case "linux":
-			os = isMuslLinux() ? "linux-musl" : "linux";
+			os = muslLinux ? "linux-musl" : "linux";
 			break;
 		case "darwin":
 			os = "darwin";
@@ -1136,6 +1131,11 @@ function getBinaryName(): string {
 		return `${APP_NAME}-${os}-${archName}.exe`;
 	}
 	return `${APP_NAME}-${os}-${archName}`;
+}
+
+/** Get the appropriate binary name for this platform. */
+function getBinaryName(): string {
+	return resolveBinaryName(process.platform, process.arch, isMuslLinux());
 }
 
 /**

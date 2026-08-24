@@ -39,3 +39,22 @@ describe("Windows release binary target", () => {
 		});
 	});
 });
+
+describe("macOS release binary targets", () => {
+	it("builds native Apple Silicon and Intel assets with the embedded release code", async () => {
+		const result = await $`bun scripts/ci-release-build-binaries.ts --dry-run --targets darwin-arm64,darwin-x64`
+			.cwd(repoRoot)
+			.env({ ...Bun.env, OMP_RELEASE_CODE: "42" })
+			.quiet()
+			.nothrow();
+		expect(result.exitCode).toBe(0);
+		const output = result.text();
+
+		expect(output).toContain(
+			"DRY RUN Bun.build target=bun-darwin-arm64 outfile=packages/coding-agent/binaries/omp-darwin-arm64 releaseCode=42",
+		);
+		expect(output).toContain(
+			"DRY RUN Bun.build target=bun-darwin-x64 outfile=packages/coding-agent/binaries/omp-darwin-x64 releaseCode=42",
+		);
+	});
+});

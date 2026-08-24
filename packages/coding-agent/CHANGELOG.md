@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added Apple Silicon and Intel macOS binaries to fork code releases, enabling in-place upgrades through `omp update` on both architectures.
 - Added a configurable premium extended-context window in `/settings`; affected models use the larger of the configured and advertised windows, with compact `K`/`M` values such as `372K` and a `1M` default.
 - Added write-gated collab thinking controls, with model-supported selectors published in session state and authoritative changes broadcast to every guest.
 - Added session-room model frames to the collab host: guests can request the available models (`model-list`, answered after background discovery settles) and switch the session model (`model-change`, write-gated with the RPC `set_model` lookup semantics); the new model reaches every guest through the existing `state` broadcast.
