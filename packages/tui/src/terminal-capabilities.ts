@@ -97,6 +97,8 @@ function hasSixelDcsStart(line: string): boolean {
 
 /** Terminal capability details used for rendering and protocol selection. */
 export class TerminalInfo {
+	readonly textSizing: boolean = false;
+
 	constructor(
 		public readonly id: TerminalId,
 		public readonly imageProtocol: ImageProtocol | null,

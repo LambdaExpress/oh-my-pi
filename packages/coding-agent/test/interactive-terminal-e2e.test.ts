@@ -10,8 +10,10 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import type { Component } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
+import { setLocale } from "../src/i18n";
 
 function plainRows(rows: readonly string[]): string[] {
 	return rows.map(row => Bun.stripANSI(row).trimEnd());
@@ -34,6 +36,7 @@ describe("libkitty end-to-end", () => {
 	});
 
 	beforeEach(async () => {
+		setLocale("en");
 		resetSettingsForTest();
 		tempDir = TempDir.createSync("@pi-libkitty-e2e-");
 		await Settings.init({ inMemory: true, cwd: tempDir.path() });
@@ -58,6 +61,7 @@ describe("libkitty end-to-end", () => {
 		authStorage?.close();
 		tempDir?.removeSync();
 		resetSettingsForTest();
+		setLocale(null);
 	});
 
 	it("paints the submitted user message before any model reply", async () => {
@@ -163,6 +167,77 @@ describe("libkitty end-to-end", () => {
 		term.sendInput("X");
 		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("MARKER_DRAFTX")));
 		expect(plainRows(term.getViewport()).filter(row => row.includes("MARKER_DRAFTX")).length).toBe(1);
+	});
+
+	it("keeps an active block's provider-settled prefix exact across native history", async () => {
+		const width = 120;
+		term = new VirtualTerminal(width, 12);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		// Keep the real InteractiveMode layout, but reserve exactly three rows
+		// for transcript content. The active four-row block must therefore move
+		// its declared T0 prefix to native history instead of merely clipping it.
+		composer.setPreferences({ quiet: true });
+		composer.setHeaderExtras([], []);
+		const chromeRows = composer.renderFrame({ columns: width, rows: 1_000 }).viewport.length;
+		const paddingRows = term.rows - chromeRows - 3;
+		expect(paddingRows).toBeGreaterThanOrEqual(0);
+		const paddingRender = Array.from({ length: paddingRows }, () => "");
+		const padding: Component = {
+			render: () => paddingRender,
+		};
+		mode.pendingMessagesContainer.addChild(padding);
+
+		const markers = [
+			"TRANSCRIPT_SEAM_S",
+			"TRANSCRIPT_SEAM_T0",
+			"TRANSCRIPT_SEAM_T1",
+			"TRANSCRIPT_SEAM_T2",
+			"TRANSCRIPT_SEAM_T3",
+		] as const;
+		const [S, T0, T1, T2, T3] = markers;
+		const stableRows: readonly string[] = [S];
+		const stableBlock = {
+			render: () => stableRows,
+			isTranscriptBlockFinalized: () => true,
+		};
+		let activeFinalized = false;
+		const settledCursor = { marker: T0 };
+		const activeRows: readonly string[] = [T0, T1, T2, T3];
+		const activeBlock = {
+			render: () => activeRows,
+			isTranscriptBlockFinalized: () => activeFinalized,
+			getTranscriptBlockSettledPrefix: (_renderWidth: number, rendered: readonly string[]) =>
+				rendered[0] === T0 ? { rowCount: 1, cursor: settledCursor } : undefined,
+			resolveTranscriptBlockSettledPrefix: (cursor: unknown, _renderWidth: number, rendered: readonly string[]) => {
+				if (cursor !== settledCursor) return undefined;
+				const index = rendered.indexOf(T0);
+				return index < 0 ? undefined : index + 1;
+			},
+		};
+		mode.chatContainer.addChild(stableBlock);
+		mode.chatContainer.addChild(activeBlock);
+
+		// History transport is synchronous; force enough discrete frames to
+		// acknowledge the empty header, S, and the partial T0 offer.
+		for (let frame = 0; frame < 4; frame++) mode.ui.renderNow();
+		await term.flush();
+		const markerTape = () =>
+			plainRows(term.getScrollBuffer())
+				.filter(row => markers.some(marker => row.includes(marker)))
+				.map(row => markers.find(marker => row.includes(marker))!);
+		expect(markerTape()).toEqual([...markers]);
+
+		// Final retirement must append only the uncommitted suffix. T0 is already
+		// immutable native history and must neither disappear nor be replayed.
+		activeFinalized = true;
+		for (let frame = 0; frame < 2; frame++) mode.ui.renderNow();
+		await term.flush();
+		expect(markerTape()).toEqual([...markers]);
 	});
 
 	it("hides thinking already retired to native scrollback when Ctrl+T toggles", async () => {

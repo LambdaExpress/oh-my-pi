@@ -30,8 +30,25 @@ import { type CacheInvalidation, CacheInvalidationMarkerComponent } from "./cach
  */
 const MAX_TRANSCRIPT_ERROR_LINES = 8;
 
+/** Opening or closing fence of a code block: ≥3 backticks/tildes plus info string. */
+const CODE_FENCE_LINE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
 type ThinkingContentBlock = Extract<AssistantMessage["content"][number], { type: "thinking" }>;
 type DisplayThinkingContentBlock = ThinkingContentBlock & { rawThinking?: string };
+type FastPathItem = {
+	md: Markdown;
+	contentIndex: number;
+	blockType: "text" | "thinking";
+	lastText: string;
+};
+type SettledPrefixSegment =
+	| { kind: "complete"; child: Markdown | Spacer }
+	| { kind: "streaming"; child: Markdown; cursor: unknown };
+interface SettledPrefixCursor {
+	items: FastPathItem[];
+	shapeKey: string;
+	segments: readonly SettledPrefixSegment[];
+}
 
 function resolveThinkingDisplay(block: ThinkingContentBlock, proseOnly: boolean): { text: string; visible: boolean } {
 	const rawThinking = (block as DisplayThinkingContentBlock).rawThinking;
@@ -50,11 +67,34 @@ function resolveThinkingDisplay(block: ThinkingContentBlock, proseOnly: boolean)
 /**
  * Whether `text` contains a ` ```mermaid ` fence (open or closed) outside
  * ordinary code fences. Mermaid defers native-scrollback settling wholesale
- * (see {@link AssistantMessageComponent.getTranscriptBlockSettledRows}): its
+ * (see {@link AssistantMessageComponent.getTranscriptBlockSettledPrefix}): its
  * ASCII rendering resolves asynchronously, so even a completed fence can
  * re-layout rows that already looked settled. Fence-aware so a mermaid
  * example inside a regular code block never triggers the deferral.
  */
+function containsMermaidFence(text: string): boolean {
+	let fence: string | null = null;
+	for (const line of text.split("\n")) {
+		const fenceMatch = CODE_FENCE_LINE.exec(line);
+		if (fence !== null) {
+			// Inside a code block: only a bare matching closing fence ends it.
+			if (
+				fenceMatch &&
+				fenceMatch[2]!.trim() === "" &&
+				fenceMatch[1]![0] === fence[0] &&
+				fenceMatch[1]!.length >= fence.length
+			) {
+				fence = null;
+			}
+			continue;
+		}
+		if (fenceMatch) {
+			if (/^mermaid\b/.test(fenceMatch[2]!.trim())) return true;
+			fence = fenceMatch[1]!;
+		}
+	}
+	return false;
+}
 
 /**
  * Frames for the streaming "thinking" pulse rendered in place of a hidden
@@ -164,6 +204,12 @@ export class AssistantMessageComponent extends Container {
 	#kittyConversionsInFlight = new Set<string>();
 	#transcriptBlockFinalized: boolean;
 	/**
+	 * True while rendered Markdown source contains a real Mermaid fence.
+	 * Mermaid's ASCII renderer resolves asynchronously and may re-layout rows
+	 * that otherwise look frozen, so no mid-stream prefix is offered.
+	 */
+	#containsMermaidSource = false;
+	/**
 
 	 * When true, the turn-ending `Error: …` line for `stopReason === "error"` is
 	 * suppressed because the same error is currently shown in the pinned banner
@@ -200,11 +246,15 @@ export class AssistantMessageComponent extends Container {
 	/** Whether the last updateContent carried an in-flight streaming partial; such
 	 *  renders bypass the markdown module LRU (see Markdown.transientRenderCache). */
 	#lastUpdateTransient = false;
+	/** Width of the most recent complete component render. Prefix methods only
+	 * inspect child renders from that same frame. */
+	#lastRenderWidth = 0;
 	// Fast-path state: reuse Markdown children when message shape is stable during streaming.
 	#fastPathKey: string | undefined;
-	#fastPathItems:
-		| Array<{ md: Markdown; contentIndex: number; blockType: "text" | "thinking"; lastText: string }>
-		| undefined;
+	#fastPathItems: FastPathItem[] | undefined;
+	/** Opaque block cursors and their exact fast-path child lineage. */
+	#settledPrefixCursors = new WeakMap<object, SettledPrefixCursor>();
+	#latestSettledPrefixCursor: object | undefined;
 	/** Live "thinking" pulse shown in place of a hidden thinking block while it
 	 *  streams; undefined when not animating. Driven by {@link #thinkingDotsTimer}. */
 	#thinkingDots: Text | undefined;
@@ -280,6 +330,13 @@ export class AssistantMessageComponent extends Container {
 		if (this.#lastMessage) {
 			this.updateContent(this.#lastMessage, { transient: this.#lastUpdateTransient });
 		}
+	}
+
+	override render(width: number): readonly string[] {
+		const renderWidth = Math.max(1, width);
+		const rendered = super.render(renderWidth);
+		this.#lastRenderWidth = renderWidth;
+		return rendered;
 	}
 
 	setHideThinkingBlock(hide: boolean): void {
@@ -413,6 +470,143 @@ export class AssistantMessageComponent extends Container {
 		return this.#transcriptBlockFinalized;
 	}
 
+	/**
+	 * Capture the logical settled prefix of an active streaming fast-path
+	 * render. Completed Markdown children and intervening spacers contribute in
+	 * full; only the last Markdown delegates its mutable boundary to Markdown's
+	 * source cursor. Any unrecognised child is an ordering barrier.
+	 */
+	getTranscriptBlockSettledPrefix(
+		width: number,
+		rendered: readonly string[],
+	): { rowCount: number; cursor: unknown } | undefined {
+		const renderWidth = Math.max(1, width);
+		const items = this.#fastPathItems;
+		const shapeKey = this.#fastPathKey;
+		if (
+			this.#transcriptBlockFinalized ||
+			!this.#lastUpdateTransient ||
+			this.#containsMermaidSource ||
+			this.#markerSlot.children.length > 0 ||
+			this.#lastRenderWidth !== renderWidth ||
+			!items ||
+			items.length === 0 ||
+			shapeKey === undefined ||
+			this.#lastMessage === undefined ||
+			this.#computeShapeKey(this.#lastMessage) !== shapeKey ||
+			!items[items.length - 1]!.md.transientRenderCache
+		) {
+			return undefined;
+		}
+
+		const segments: SettledPrefixSegment[] = [];
+		const streaming = items[items.length - 1]!.md;
+		let itemIndex = 0;
+		let rowCount = 0;
+		const capture = (): { rowCount: number; cursor: unknown } | undefined => {
+			const trimmedRowCount = Math.min(rowCount, rendered.length);
+			if (trimmedRowCount <= 0) return undefined;
+			let cursor = this.#latestSettledPrefixCursor;
+			let captured = cursor ? this.#settledPrefixCursors.get(cursor) : undefined;
+			if (
+				!cursor ||
+				!captured ||
+				captured.items !== items ||
+				captured.shapeKey !== shapeKey ||
+				captured.segments.length !== segments.length ||
+				!captured.segments.every((segment, index) => {
+					const candidate = segments[index]!;
+					if (segment.kind !== candidate.kind || segment.child !== candidate.child) return false;
+					return (
+						segment.kind !== "streaming" ||
+						(candidate.kind === "streaming" && segment.cursor === candidate.cursor)
+					);
+				})
+			) {
+				cursor = {};
+				captured = {
+					items,
+					shapeKey,
+					segments: segments.slice(),
+				};
+				this.#settledPrefixCursors.set(cursor, captured);
+				this.#latestSettledPrefixCursor = cursor;
+			}
+			return { rowCount: trimmedRowCount, cursor };
+		};
+
+		for (const child of this.#contentContainer.children) {
+			if (child === streaming) {
+				const prefix = streaming.getLastRenderSettledPrefix();
+				if (prefix !== undefined) {
+					segments.push({ kind: "streaming", child: streaming, cursor: prefix.cursor });
+					rowCount += prefix.rowCount;
+				}
+				return capture();
+			}
+			if (itemIndex < items.length - 1) {
+				const item = items[itemIndex]!;
+				const markdown = item.md;
+				if (markdown === child) {
+					itemIndex++;
+					segments.push({ kind: "complete", child: markdown });
+					rowCount += markdown.render(renderWidth).length;
+					continue;
+				}
+			}
+			if (child instanceof Spacer) {
+				segments.push({ kind: "complete", child });
+				rowCount += child.render(renderWidth).length;
+				continue;
+			}
+			return capture();
+		}
+		return capture();
+	}
+
+	/**
+	 * Project a previously captured logical prefix at the current render width.
+	 * Cursors are valid only for the same component, fast-path item array, shape,
+	 * and leading child identities. Markdown owns append/rewind validation for
+	 * the streaming child.
+	 */
+	resolveTranscriptBlockSettledPrefix(
+		cursor: unknown,
+		width: number,
+		rendered: readonly string[],
+	): number | undefined {
+		if (typeof cursor !== "object" || cursor === null) return undefined;
+		const captured = this.#settledPrefixCursors.get(cursor);
+		const renderWidth = Math.max(1, width);
+		if (
+			captured === undefined ||
+			this.#transcriptBlockFinalized ||
+			!this.#lastUpdateTransient ||
+			this.#containsMermaidSource ||
+			this.#markerSlot.children.length > 0 ||
+			this.#lastRenderWidth !== renderWidth ||
+			this.#fastPathItems !== captured.items ||
+			this.#fastPathKey !== captured.shapeKey ||
+			this.#lastMessage === undefined ||
+			this.#computeShapeKey(this.#lastMessage) !== captured.shapeKey
+		) {
+			return undefined;
+		}
+
+		let rowCount = 0;
+		for (let index = 0; index < captured.segments.length; index++) {
+			const segment = captured.segments[index]!;
+			if (this.#contentContainer.children[index] !== segment.child) return undefined;
+			if (segment.kind === "complete") {
+				rowCount += segment.child.render(renderWidth).length;
+				continue;
+			}
+			const resolved = segment.child.resolveLastRenderSettledPrefix(segment.cursor, renderWidth);
+			if (resolved === undefined) return undefined;
+			rowCount += resolved;
+		}
+		return Math.min(rowCount, rendered.length);
+	}
 
 	getTranscriptBlockVersion(): number {
 		return this.#blockVersion;
@@ -757,6 +951,17 @@ export class AssistantMessageComponent extends Container {
 			this.#thinkingRateLive = false;
 		}
 
+		// Mermaid ASCII rendering resolves asynchronously, so a fence anywhere
+		// in rendered Markdown source defers settling. Detect from source because
+		// the Markdown parser cannot identify the block reliably until it closes.
+		this.#containsMermaidSource = message.content.some(content => {
+			if (content.type === "text") return containsMermaidFence(content.text);
+			if (content.type === "thinking" && !this.hideThinkingBlock) {
+				const display = resolveThinkingDisplay(content, this.proseOnlyThinking);
+				return display.visible && containsMermaidFence(display.text);
+			}
+			return false;
+		});
 
 		// Fast path: reuse Markdown children when shape is stable during streaming
 		if (this.#tryFastPathUpdate(message, opts)) return;
@@ -768,9 +973,7 @@ export class AssistantMessageComponent extends Container {
 
 		// Determine if we should capture Markdown instances for next fast path
 		const shouldCapture = this.#canFastPath(message);
-		const captureItems:
-			| Array<{ md: Markdown; contentIndex: number; blockType: "text" | "thinking"; lastText: string }>
-			| undefined = shouldCapture ? [] : undefined;
+		const captureItems: FastPathItem[] | undefined = shouldCapture ? [] : undefined;
 
 		const hasVisibleContent = message.content.some(
 			c =>

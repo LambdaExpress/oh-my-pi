@@ -1,10 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import {
-	type Component,
-	type NativeScrollbackCommittedRows,
-	type NativeScrollbackCompaction,
-	TUI,
-} from "@oh-my-pi/pi-tui";
+import { TUI } from "@oh-my-pi/pi-tui";
 import { Image, ImageBudget } from "@oh-my-pi/pi-tui/components/image";
 import { Text } from "@oh-my-pi/pi-tui/components/text";
 import {
@@ -926,7 +921,6 @@ describe("TUI inline-image budget", () => {
 			setKittyGraphics(originalGraphics);
 		}
 	});
-
 });
 
 describe("kitty transmit / placement encoding", () => {

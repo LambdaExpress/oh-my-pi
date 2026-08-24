@@ -220,7 +220,6 @@ export interface OverlayFocusOwner {
 	ownsOverlayFocusTarget(component: Component): boolean;
 }
 
-
 function isOverlayFocusTarget(owner: Component, component: Component | null): boolean {
 	if (component === owner) return true;
 	if (!component) return false;
@@ -627,7 +626,6 @@ export function coalesceAdjacentSgr(line: string): string {
 	return out + line.slice(copiedUpto);
 }
 
-
 /**
  * TUI - Main class for managing terminal UI with differential rendering
  */
@@ -731,7 +729,6 @@ export class TUI extends Container {
 	// believes nothing changed.
 	#forceViewportRepaintOnNextRender = false;
 	#pendingDestructiveReplay = false;
-	#pendingDestructiveReplayReason: string | undefined;
 	// A scrollback divergence detected on a ConPTY host where ED3 would strand
 	// the reader's viewport at the buffer top (issues #1635/#1746). Consumed
 	// by the next destructive replay or by #rebuildScrollbackIfDirty at an
@@ -764,7 +761,6 @@ export class TUI extends Container {
 	// Holds an alternate-screen exit until its replacement full paint can emit it
 	// atomically. It must survive a deferred Ghostty image frame.
 	#pendingAltExit = "";
-
 
 	// Overlay stack for modal components rendered on top of base content
 	overlayStack: {
@@ -1456,7 +1452,6 @@ export class TUI extends Container {
 			(!this.#pendingScrollbackRebuild && !(includePendingDestructiveReplay && this.#pendingDestructiveReplay))
 		)
 			return false;
-		this.#pendingScrollbackRebuild = false;
 		this.resetDisplay();
 		return true;
 	}
@@ -1468,11 +1463,10 @@ export class TUI extends Container {
 	 * rows must be recomputed, but the user may be reading historical scrollback.
 	 * The next explicit destructive replay will repair any stale frozen history.
 	 */
-	refreshDisplay(reason?: string): void {
+	refreshDisplay(): void {
 		if (this.#stopped) return;
 		this.invalidate();
 		this.#pendingDestructiveReplay = true;
-		this.#pendingDestructiveReplayReason = reason;
 		this.requestRender(true);
 	}
 
@@ -1972,7 +1966,6 @@ export class TUI extends Container {
 		return markers;
 	}
 
-
 	/**
 	 * Rewrite a Kitty direct-placement line for the viewport row it is written
 	 * at, clipping to the visible slice (see {@link encodeKittyPlacementLine})
@@ -2112,7 +2105,11 @@ export class TUI extends Container {
 		} else {
 			this.#imageBudget.takePurgeIds();
 		}
-		if (destructiveReset) buffer += "\x1b[H\x1b[3J\x1b[2J";
+		if (destructiveReset) {
+			// Windows AdaptDispatch pushes the current non-empty page into
+			// scrollback on ED2, so ED2 must run before ED3 discards those rows.
+			buffer += "\x1b[2J\x1b[H\x1b[3J";
+		}
 		const diffable =
 			geometryStable &&
 			historyRows.length === 0 &&
@@ -2190,6 +2187,10 @@ export class TUI extends Container {
 		}
 		buffer += this.#paintEndSequence;
 		this.terminal.write(buffer);
+		if (destructiveReset) {
+			this.#pendingDestructiveReplay = false;
+			this.#pendingScrollbackRebuild = false;
+		}
 		if (target) this.#recordHardwareCursorState(target);
 		else this.#recordHardwareCursorHidden();
 		this.#providerWindow = prepared;
@@ -2555,7 +2556,6 @@ export class TUI extends Container {
 
 	#forgetHardwareCursorState(): void {
 		this.#hardwareCursorState = null;
-
 	}
 
 	/**
@@ -2638,5 +2638,4 @@ export class TUI extends Container {
 		this.#altPreviousLines = fitted;
 		this.#fullRedrawCount += 1;
 	}
-
 }

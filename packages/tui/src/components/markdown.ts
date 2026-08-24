@@ -1453,6 +1453,7 @@ interface RenderSignature {
 interface StreamPrefixLineCache extends RenderSignature {
 	text: string;
 	tokenCount: number;
+	nextTokenType?: string;
 	lines: readonly string[];
 }
 interface StreamingHighlightCache extends RenderSignature {
@@ -1460,6 +1461,14 @@ interface StreamingHighlightCache extends RenderSignature {
 	text: string;
 	lines: readonly string[];
 	stream: HighlightStreamSession;
+}
+
+interface SettledPrefixCursorMetadata {
+	lineage: object;
+	text: string;
+	tokenCount: number;
+	tokens: readonly Token[];
+	projections: Map<string, number>;
 }
 
 /**
@@ -1500,6 +1509,14 @@ export class Markdown implements Component {
 	#streamPrefixText?: string;
 	#streamPrefixTokens?: Token[];
 	#streamPrefixLineCache?: StreamPrefixLineCache;
+	#streamPrefixNextTokenType?: string;
+	// Settled-prefix cursors are deliberately opaque to callers. Their metadata
+	// names a logical source boundary within one append-only lineage; physical
+	// row projections are cached separately per render signature.
+	#streamLineage: object = {};
+	#settledPrefixCursors = new WeakMap<object, SettledPrefixCursorMetadata>();
+	#latestSettledPrefixCursor?: object;
+	#lastRenderSignature?: RenderSignature;
 	// True while #renderStreamingContentLines renders the frozen token range:
 	// frozen code blocks highlight even in transient mode so their bytes match
 	// the finalized render (they render once into the prefix line cache, so
@@ -1542,6 +1559,13 @@ export class Markdown implements Component {
 		// full lex + wrap runs per re-emit — one of the top CPU hotspots during
 		// streaming (issue #4353). Mirrors `Text.setText`'s guard.
 		if (text === this.#text) return false;
+		if (!text.startsWith(this.#text)) {
+			// Rewinds and wholesale rewrites begin a new logical source lineage.
+			// Even if a later render happens to re-earn the same textual boundary,
+			// a cursor issued for the abandoned lineage must not resolve.
+			this.#streamLineage = {};
+			this.#latestSettledPrefixCursor = undefined;
+		}
 		this.#text = text;
 		if (!text.trim()) {
 			// Blank replacement: render() early-returns before #lexTokens can see
@@ -1550,6 +1574,7 @@ export class Markdown implements Component {
 			this.#streamPrefixText = undefined;
 			this.#streamPrefixTokens = undefined;
 			this.#streamPrefixLineCache = undefined;
+			this.#streamPrefixNextTokenType = undefined;
 		}
 		this.invalidate();
 		return true;
@@ -1559,6 +1584,7 @@ export class Markdown implements Component {
 		this.#cachedText = undefined;
 		this.#cachedWidth = undefined;
 		this.#cachedLines = undefined;
+		this.#lastRenderSignature = undefined;
 	}
 	get transientRenderCache(): boolean {
 		return this.#transientRenderCache;
@@ -1569,6 +1595,129 @@ export class Markdown implements Component {
 		if (this.#transientRenderCache === next) return;
 		this.#transientRenderCache = next;
 		this.invalidate();
+	}
+
+	getLastRenderSettledPrefix(): { rowCount: number; cursor: unknown } | undefined {
+		if (!this.transientRenderCache || this.#cachedText !== this.#text) return undefined;
+		const signature = this.#lastRenderSignature;
+		const stableText = this.#streamPrefixText;
+		const stableTokens = this.#streamPrefixTokens;
+		const cache = this.#streamPrefixLineCache;
+		if (
+			!signature ||
+			!stableText ||
+			!stableTokens ||
+			stableTokens.length === 0 ||
+			!cache ||
+			cache.text !== stableText ||
+			cache.tokenCount !== stableTokens.length ||
+			cache.nextTokenType !== this.#streamPrefixNextTokenType ||
+			this.#matchingStreamPrefixLineCache(stableText, stableText, signature) !== cache
+		) {
+			return undefined;
+		}
+
+		let cursor = this.#latestSettledPrefixCursor;
+		let metadata = cursor ? this.#settledPrefixCursors.get(cursor) : undefined;
+		if (
+			!cursor ||
+			!metadata ||
+			metadata.lineage !== this.#streamLineage ||
+			metadata.text !== stableText ||
+			metadata.tokenCount !== stableTokens.length
+		) {
+			cursor = Object.freeze({});
+			metadata = {
+				lineage: this.#streamLineage,
+				text: stableText,
+				tokenCount: stableTokens.length,
+				tokens: stableTokens.slice(),
+				projections: new Map(),
+			};
+			this.#settledPrefixCursors.set(cursor, metadata);
+			this.#latestSettledPrefixCursor = cursor;
+		}
+
+		return {
+			rowCount: this.#paddingRowCount(signature.paddingY) + cache.lines.length,
+			cursor,
+		};
+	}
+
+	resolveLastRenderSettledPrefix(cursor: unknown, width: number): number | undefined {
+		if (
+			!this.transientRenderCache ||
+			this.#cachedText !== this.#text ||
+			(typeof cursor !== "object" && typeof cursor !== "function") ||
+			cursor === null
+		) {
+			return undefined;
+		}
+		const metadata = this.#settledPrefixCursors.get(cursor);
+		const stableText = this.#streamPrefixText;
+		const stableTokens = this.#streamPrefixTokens;
+		if (
+			!metadata ||
+			metadata.lineage !== this.#streamLineage ||
+			!stableText ||
+			!stableTokens ||
+			!stableText.startsWith(metadata.text) ||
+			stableTokens.length < metadata.tokenCount
+		) {
+			return undefined;
+		}
+
+		const paddingX = this.#ignoreTight ? this.#paddingX : getPaddingX(this.#paddingX);
+		const signature =
+			this.#lastRenderSignature?.width === width
+				? this.#lastRenderSignature
+				: this.#renderSignature(width, paddingX);
+		const currentCache = this.#streamPrefixLineCache;
+		if (
+			metadata.text === stableText &&
+			metadata.tokenCount === stableTokens.length &&
+			currentCache?.text === stableText &&
+			currentCache.tokenCount === stableTokens.length &&
+			currentCache.nextTokenType === this.#streamPrefixNextTokenType &&
+			this.#matchingStreamPrefixLineCache(stableText, stableText, signature) === currentCache
+		) {
+			return this.#paddingRowCount(signature.paddingY) + currentCache.lines.length;
+		}
+
+		const nextTokenType =
+			metadata.tokenCount < stableTokens.length
+				? stableTokens[metadata.tokenCount]?.type
+				: this.#streamPrefixNextTokenType;
+		const projectionKey = `${this.#renderCacheKey("", signature)}\x00${nextTokenType ?? ""}`;
+		const cachedProjection = metadata.projections.get(projectionKey);
+		if (cachedProjection !== undefined) return cachedProjection;
+
+		const contentWidth = Math.max(1, width - paddingX * 2);
+		const previousStableRender = this.#renderingStablePrefix;
+		const previousSignature = this.#activeRenderSignature;
+		this.#renderingStablePrefix = true;
+		this.#activeRenderSignature = signature;
+		let contentRowCount: number;
+		try {
+			contentRowCount = this.#renderContentLines(
+				metadata.tokens,
+				0,
+				metadata.tokenCount,
+				contentWidth,
+				signature,
+				nextTokenType,
+			).length;
+		} finally {
+			this.#renderingStablePrefix = previousStableRender;
+			this.#activeRenderSignature = previousSignature;
+		}
+		const rowCount = this.#paddingRowCount(signature.paddingY) + contentRowCount;
+		metadata.projections.set(projectionKey, rowCount);
+		return rowCount;
+	}
+
+	#paddingRowCount(paddingY: number): number {
+		return paddingY > 0 ? Math.ceil(paddingY) : 0;
 	}
 
 	// Lex `text` into block tokens, reusing the frozen stable prefix when the text
@@ -1602,6 +1751,7 @@ export class Markdown implements Component {
 			this.#streamPrefixText = undefined;
 			this.#streamPrefixTokens = undefined;
 			this.#streamPrefixLineCache = undefined;
+			this.#streamPrefixNextTokenType = undefined;
 		}
 		return tokens;
 	}
@@ -1623,6 +1773,7 @@ export class Markdown implements Component {
 			this.#streamPrefixText = undefined;
 			this.#streamPrefixTokens = undefined;
 			this.#streamPrefixLineCache = undefined;
+			this.#streamPrefixNextTokenType = undefined;
 		}
 	}
 
@@ -1652,6 +1803,7 @@ export class Markdown implements Component {
 			? replaceTabs(this.#text)
 			: repairOrphanClosingFence(replaceTabs(this.#text));
 		const signature = this.#renderSignature(width, paddingX);
+		this.#lastRenderSignature = signature;
 
 		// L2: module-level LRU — survives component disposal/recreation across
 		// session-tree navigations. Key encodes every dimension that affects the
@@ -1741,11 +1893,17 @@ export class Markdown implements Component {
 		const stableText = this.#streamPrefixText;
 		const stableTokenCount = this.#streamPrefixTokens?.length ?? 0;
 		if (stableText === undefined || stableTokenCount === 0 || !normalizedText.startsWith(stableText)) {
+			this.#streamPrefixNextTokenType = undefined;
 			return this.#renderContentLines(tokens, 0, tokens.length, contentWidth, signature);
 		}
+		this.#streamPrefixNextTokenType = tokens[stableTokenCount]?.type;
 
 		const contentLines: string[] = [];
-		const reusablePrefix = this.#matchingStreamPrefixLineCache(normalizedText, stableText, signature);
+		const matchingPrefix = this.#matchingStreamPrefixLineCache(normalizedText, stableText, signature);
+		const reusablePrefix =
+			matchingPrefix !== undefined && matchingPrefix.nextTokenType === tokens[matchingPrefix.tokenCount]?.type
+				? matchingPrefix
+				: undefined;
 		let renderedUntil = 0;
 		if (reusablePrefix && reusablePrefix.tokenCount <= stableTokenCount) {
 			contentLines.push(...reusablePrefix.lines);
@@ -1770,6 +1928,7 @@ export class Markdown implements Component {
 			...signature,
 			text: stableText,
 			tokenCount: stableTokenCount,
+			nextTokenType: this.#streamPrefixNextTokenType,
 			lines: contentLines.slice(),
 		};
 
@@ -1803,17 +1962,18 @@ export class Markdown implements Component {
 	}
 
 	#renderContentLines(
-		tokens: Token[],
+		tokens: readonly Token[],
 		start: number,
 		end: number,
 		contentWidth: number,
 		signature: RenderSignature,
+		endNextTokenType?: string,
 	): string[] {
 		const wrappedLines: RenderedLine[] = [];
 		for (let i = start; i < end; i++) {
 			const token = tokens[i];
-			const nextToken = tokens[i + 1];
-			const renderedTokenLines = this.#renderToken(token, contentWidth, nextToken?.type);
+			const nextTokenType = i === end - 1 && endNextTokenType !== undefined ? endNextTokenType : tokens[i + 1]?.type;
+			const renderedTokenLines = this.#renderToken(token, contentWidth, nextTokenType);
 			for (const renderedRow of renderedTokenLines) {
 				// Lists wrap while their structural prefixes are still available, so
 				// continuation rows retain the correct hanging indent. Re-wrapping the

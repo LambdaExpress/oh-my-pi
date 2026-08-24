@@ -178,7 +178,10 @@ import { SshTransferHud } from "./components/ssh-transfer-hud";
 import { StatusLineComponent } from "./components/status-line";
 import { stopSharedSpinnerTicker, type ToolExecutionHandle } from "./components/tool-execution";
 import { TranscriptContainer } from "./components/transcript-container";
-import type { LspServerInfo as WelcomeLspServerInfo, RecentSession as WelcomeRecentSession } from "./components/welcome";
+import type {
+	LspServerInfo as WelcomeLspServerInfo,
+	RecentSession as WelcomeRecentSession,
+} from "./components/welcome";
 import { Composer } from "./composer";
 import { writeComposerWelcomeCache } from "./composer-cache";
 import { BtwController } from "./controllers/btw-controller";
@@ -265,7 +268,7 @@ interface CompletedRunView {
  */
 class CompletedRunSummaryGate extends Container {
 	#gate: Component;
-	#summaryRows = 0;
+	readonly #summaryCursor = {};
 
 	constructor(summary: Component, gate: Component) {
 		super();
@@ -280,16 +283,21 @@ class CompletedRunSummaryGate extends Container {
 		return finalized ? finalized.call(this.#gate) : true;
 	}
 
-	getTranscriptBlockSettledRows(): number {
-		return this.#summaryRows;
+	getTranscriptBlockSettledPrefix(
+		_width: number,
+		rendered: readonly string[],
+	): { rowCount: number; cursor: unknown } | undefined {
+		if (rendered.length === 0) return undefined;
+		return { rowCount: 1, cursor: this.#summaryCursor };
 	}
 
-	override render(width: number): readonly string[] {
-		const lines = super.render(width);
-		// Completed-run summaries are one-line TruncatedText components. The gate
-		// renders zero rows, so this stable prefix ends immediately before it.
-		this.#summaryRows = lines.length > 0 ? 1 : 0;
-		return lines;
+	resolveTranscriptBlockSettledPrefix(
+		cursor: unknown,
+		_width: number,
+		rendered: readonly string[],
+	): number | undefined {
+		if (cursor !== this.#summaryCursor) return undefined;
+		return rendered.length > 0 ? 1 : 0;
 	}
 }
 const STILL_CLOSING_DELAY_MS = 3_000;
@@ -907,7 +915,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		// repaint it non-destructively; an idle Alt+O or the next input checkpoint
 		// still performs the clean scrollback rebuild.
 		if (this.viewSession.isStreaming) {
-			this.ui.refreshDisplay("completed-run-toggle-during-stream");
+			this.ui.refreshDisplay();
 		} else {
 			this.ui.resetDisplay();
 		}

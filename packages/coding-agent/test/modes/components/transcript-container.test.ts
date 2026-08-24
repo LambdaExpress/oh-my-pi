@@ -35,6 +35,61 @@ class TransparentGate extends Block {
 	}
 }
 
+class PrefixBlock extends Block {
+	readonly #cursor = {};
+
+	getTranscriptBlockSettledPrefix(
+		_width: number,
+		rendered: readonly string[],
+	): { rowCount: number; cursor: unknown } | undefined {
+		return rendered.length === 0 ? undefined : { rowCount: 1, cursor: this.#cursor };
+	}
+
+	resolveTranscriptBlockSettledPrefix(
+		cursor: unknown,
+		_width: number,
+		rendered: readonly string[],
+	): number | undefined {
+		return cursor === this.#cursor && rendered.length > 0 ? 1 : undefined;
+	}
+}
+
+class ReflowingPrefixBlock implements Component {
+	readonly #cursor = {};
+	#finalized = false;
+
+	finalize(): void {
+		this.#finalized = true;
+	}
+
+	isTranscriptBlockFinalized(): boolean {
+		return this.#finalized;
+	}
+
+	getTranscriptBlockSettledPrefix(
+		width: number,
+		_rendered: readonly string[],
+	): { rowCount: number; cursor: unknown } | undefined {
+		return {
+			rowCount: width <= 40 ? 2 : 1,
+			cursor: this.#cursor,
+		};
+	}
+
+	resolveTranscriptBlockSettledPrefix(
+		cursor: unknown,
+		width: number,
+		rendered: readonly string[],
+	): number | undefined {
+		if (cursor !== this.#cursor) return undefined;
+		return Math.min(width <= 40 ? 2 : 1, rendered.length);
+	}
+
+	render(width: number): readonly string[] {
+		return width <= 40 ? ["stable narrow 0", "stable narrow 1", "tail"] : ["stable wide", "tail"];
+	}
+}
+
 describe("TranscriptContainer", () => {
 	it("keeps settled blocks live while the viewport has room", () => {
 		const transcript = new TranscriptContainer();
@@ -185,5 +240,81 @@ describe("TranscriptContainer", () => {
 		const replay = transcript.peekFinalizedBatch(80, 0);
 		expect(replay?.id).toBeGreaterThan(first.id);
 		expect(replay?.rows).toEqual(["final", ""]);
+	});
+
+	it("retires an active block's declared stable prefix without dropping or duplicating tape rows", () => {
+		const transcript = new TranscriptContainer();
+		const settled = new Block(["S"], true);
+		const active = new PrefixBlock(["T0", "T1", "T2", "T3"], false);
+		transcript.addChild(settled);
+		transcript.addChild(active);
+
+		const first = transcript.peekFinalizedBatch(80, 3);
+		expect(first?.rows).toEqual(["S", "", "T0"]);
+		expect(transcript.peekFinalizedBatch(80, 50)).toBe(first);
+		expect(transcript.renderViewport(80, 3)).toEqual(["T1", "T2", "T3"]);
+
+		if (first === undefined) throw new Error("expected a partial history batch");
+		transcript.acknowledgeFinalizedBatch(first.id);
+		expect(transcript.canRemoveBlock(active)).toBe(false);
+		transcript.removeChild(active);
+		expect(transcript.blockStates()).toEqual(["committed", "active"]);
+
+		active.finalize(["T0", "T1", "T2", "T3"]);
+		const second = transcript.peekFinalizedBatch(80, 3);
+		expect(second?.rows).toEqual(["T1", "T2", "T3", ""]);
+
+		const tape = [...first.rows, ...(second?.rows ?? [])];
+		expect(tape).toEqual(["S", "", "T0", "T1", "T2", "T3", ""]);
+		for (const marker of ["S", "T0", "T1", "T2", "T3"]) {
+			expect(tape.filter(row => row === marker)).toHaveLength(1);
+		}
+	});
+
+	it("projects an acknowledged logical prefix through a preserve resize", () => {
+		const transcript = new TranscriptContainer();
+		const active = new ReflowingPrefixBlock();
+		transcript.addChild(active);
+
+		const first = transcript.peekFinalizedBatch(80, 1);
+		expect(first?.rows).toEqual(["stable wide"]);
+		// The pending offer and its acknowledged watermark both resolve the
+		// provider-owned cursor instead of reusing the one-row wide projection.
+		expect(transcript.renderViewport(40, 10)).toEqual(["tail"]);
+		if (first === undefined) throw new Error("expected a partial history batch");
+		transcript.acknowledgeFinalizedBatch(first.id);
+		expect(transcript.liveRowCount(40)).toBe(1);
+		expect(transcript.renderViewport(40, 10)).toEqual(["tail"]);
+
+		active.finalize();
+		expect(transcript.peekFinalizedBatch(40, 10)?.rows).toEqual(["tail", ""]);
+	});
+
+	it("clears an acknowledged partial watermark on destructive reset", () => {
+		const transcript = new TranscriptContainer();
+		const active = new PrefixBlock(["T0", "T1"], false);
+		transcript.addChild(active);
+
+		const partial = transcript.peekFinalizedBatch(80, 1);
+		if (partial === undefined) throw new Error("expected a partial history batch");
+		transcript.acknowledgeFinalizedBatch(partial.id);
+		expect(transcript.renderViewport(80, 10)).toEqual(["T1"]);
+		expect(transcript.canRemoveBlock(active)).toBe(false);
+
+		transcript.resetRetirement();
+		expect(transcript.renderViewport(80, 10)).toEqual(["T0", "T1"]);
+		expect(transcript.canRemoveBlock(active)).toBe(true);
+	});
+
+	it("keeps an undeclared active prefix behind the mutable barrier", () => {
+		const transcript = new TranscriptContainer();
+		const active = new Block(["T0", "T1", "T2", "T3"], false);
+		transcript.addChild(active);
+
+		expect(transcript.peekFinalizedBatch(80, 3)).toBeUndefined();
+		expect(transcript.renderViewport(80, 3)).toEqual(["T1", "T2", "T3"]);
+
+		active.finalize(["T0", "T1", "T2", "T3"]);
+		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual(["T0", "T1", "T2", "T3", ""]);
 	});
 });

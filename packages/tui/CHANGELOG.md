@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Fixed Windows resize rebuilds moving the old viewport above the replayed welcome screen when AdaptDispatch promoted the page during a destructive clear.
 - Fixed full transcript replays re-emitting BEL-terminated OSC 8 hyperlinks, which could retrigger the terminal completion sound when `Ctrl+T` toggled thinking visibility; terminal output now uses the equivalent ST terminator.
 - Fixed deferred non-destructive transcript refreshes lacking an input-checkpoint replay path, which left stale live rows in native scrollback after the rendered frame had intentionally collapsed them.
 - Fixed Windows Terminal inline images falling back to MIME placeholders when `ProcessTerminal` consumed the SIXEL-capable DA1 reply as an internal probe sentinel; the TUI now receives parsed SIXEL support directly from the terminal layer.
@@ -20,7 +21,7 @@
 - Fixed destructive Windows/ConPTY resize replays permanently dropping history above 512 KiB; large paints now retain every row and disable synchronized output so existing bounded writes remain responsive.
 - Fixed virtualized roots being mistaken for semantic frame shrink after native-scrollback compaction; the commit, viewport, and cursor ledgers now rebase the exact removed ranges before divergence auditing.
 - Fixed editor caret movement entering image or paste placeholders; keyboard left/right, word, and vertical movement now treat matched placeholders as atomic tokens.
-- Fixed live rows below a native-scrollback seam vanishing while streaming; scrolled-off live rows now enter history as frozen snapshots, with finalize-time repairs bounded so unchanged output does not repeat indefinitely.
+- Fixed stable streaming rows vanishing at the native-scrollback seam; provider-declared prefixes now retire through explicit history batches and reproject across width changes without freezing mutable tool previews.
 - Fixed OSC 8 hyperlinks staying disabled in Windows Terminal when `tui.hyperlinks=auto`.
 ## [18.0.2] - 2026-08-23
 

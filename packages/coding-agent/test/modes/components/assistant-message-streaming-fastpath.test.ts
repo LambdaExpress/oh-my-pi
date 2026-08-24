@@ -35,6 +35,16 @@ function teardownRender(m: AssistantMessage): string {
 	return fresh.render(W).join("\n");
 }
 
+function collectMarkdown(component: Container): Markdown[] {
+	const found: Markdown[] = [];
+	const walk = (node: Component): void => {
+		if (node instanceof Markdown) found.push(node);
+		if (node instanceof Container) for (const child of node.children) walk(child);
+	};
+	walk(component);
+	return found;
+}
+
 beforeAll(async () => {
 	await initTheme(false);
 });
@@ -130,16 +140,6 @@ Average Latency: 1,240 ms
 	// changes. Child identity is the load-bearing mechanism here: a kept
 	// instance is exactly a kept stale theme.
 	it("invalidate() rebuilds Markdown children instead of reusing fast-path state", () => {
-		const collectMarkdown = (component: Container): Markdown[] => {
-			const found: Markdown[] = [];
-			const walk = (node: Component): void => {
-				if (node instanceof Markdown) found.push(node);
-				if (node instanceof Container) for (const child of node.children) walk(child);
-			};
-			walk(component);
-			return found;
-		};
-
 		const reused = new AssistantMessageComponent();
 		reused.updateContent(msg([{ type: "text", text: "Hello **world**, part one." }]));
 		reused.updateContent(msg([{ type: "text", text: "Hello **world**, part one and two." }]));
@@ -233,5 +233,134 @@ Average Latency: 1,240 ms
 		component.updateContent(m);
 		const rendered = Bun.stripANSI(component.render(W).join("\n"));
 		expect(rendered).toContain("keep me");
+	});
+});
+
+describe("AssistantMessageComponent streaming settled prefix", () => {
+	it("combines completed Markdown, its Spacer, and the streaming Markdown cursor", () => {
+		const component = new AssistantMessageComponent();
+		component.updateContent(
+			msg([
+				{ type: "thinking", thinking: "Completed reasoning paragraph." },
+				{
+					type: "text",
+					text: "Frozen answer paragraph with enough words to be visibly distinct.\n\nMutable tail",
+				},
+			]),
+			{ transient: true },
+		);
+
+		const rendered = component.render(52);
+		const markdown = collectMarkdown(component);
+		expect(markdown).toHaveLength(2);
+		const streamingPrefix = markdown[1]!.getLastRenderSettledPrefix();
+		expect(streamingPrefix).toBeDefined();
+
+		const prefix = component.getTranscriptBlockSettledPrefix(52, rendered);
+		expect(prefix).toBeDefined();
+		expect(prefix!.rowCount).toBe(markdown[0]!.render(52).length + 1 + streamingPrefix!.rowCount);
+		expect(Bun.stripANSI(rendered.slice(0, prefix!.rowCount).join("\n"))).toContain("Completed reasoning paragraph.");
+		expect(Bun.stripANSI(rendered.slice(0, prefix!.rowCount).join("\n"))).toContain("Frozen answer paragraph");
+		expect(Bun.stripANSI(rendered.slice(0, prefix!.rowCount).join("\n"))).not.toContain("Mutable tail");
+	});
+
+	it("keeps settled rows monotonic while the mutable tail appends", () => {
+		const component = new AssistantMessageComponent();
+		const first = "Stable opening paragraph.\n\nMutable tail";
+		component.updateContent(msg([{ type: "text", text: first }]), { transient: true });
+		const firstRows = component.render(48);
+		const firstPrefix = component.getTranscriptBlockSettledPrefix(48, firstRows);
+		expect(firstPrefix).toBeDefined();
+
+		component.updateContent(msg([{ type: "text", text: `${first} keeps growing` }]), { transient: true });
+		const secondRows = component.render(48);
+		const secondPrefix = component.getTranscriptBlockSettledPrefix(48, secondRows);
+		expect(secondPrefix).toBeDefined();
+		expect(secondPrefix!.rowCount).toBeGreaterThanOrEqual(firstPrefix!.rowCount);
+		expect(component.resolveTranscriptBlockSettledPrefix(firstPrefix!.cursor, 48, secondRows)).toBe(
+			firstPrefix!.rowCount,
+		);
+
+		component.updateContent(msg([{ type: "text", text: `${first} keeps growing\n\nNewest mutable tail` }]), {
+			transient: true,
+		});
+		const thirdRows = component.render(48);
+		const thirdPrefix = component.getTranscriptBlockSettledPrefix(48, thirdRows);
+		expect(thirdPrefix).toBeDefined();
+		expect(thirdPrefix!.rowCount).toBeGreaterThanOrEqual(secondPrefix!.rowCount);
+	});
+
+	it("reprojects an old logical cursor at a different width", () => {
+		const component = new AssistantMessageComponent();
+		const stable =
+			"This completed paragraph is intentionally long so its settled logical boundary wraps onto many physical rows in a narrow terminal.";
+		component.updateContent(msg([{ type: "text", text: `${stable}\n\nMutable tail` }]), {
+			transient: true,
+		});
+
+		const wideRows = component.render(100);
+		const widePrefix = component.getTranscriptBlockSettledPrefix(100, wideRows);
+		expect(widePrefix).toBeDefined();
+
+		const narrowRows = component.render(28);
+		const narrowRowCount = component.resolveTranscriptBlockSettledPrefix(widePrefix!.cursor, 28, narrowRows);
+		expect(narrowRowCount).toBeDefined();
+		expect(narrowRowCount!).toBeGreaterThan(widePrefix!.rowCount);
+		expect(narrowRowCount!).toBeLessThanOrEqual(narrowRows.length);
+	});
+
+	it("gates real Mermaid source but not a Mermaid example inside an ordinary fence", () => {
+		const mermaid = new AssistantMessageComponent();
+		mermaid.updateContent(
+			msg([{ type: "text", text: "Stable prelude.\n\n```mermaid\nflowchart TD\n  A-->B\n```" }]),
+			{ transient: true },
+		);
+		const mermaidRows = mermaid.render(80);
+		expect(mermaid.getTranscriptBlockSettledPrefix(80, mermaidRows)).toBeUndefined();
+
+		const example = new AssistantMessageComponent();
+		example.updateContent(
+			msg([
+				{
+					type: "text",
+					text: "````text\n```mermaid\nflowchart TD\n  A-->B\n```\n````\n\nMutable tail",
+				},
+			]),
+			{ transient: true },
+		);
+		const exampleRows = example.render(80);
+		expect(example.getTranscriptBlockSettledPrefix(80, exampleRows)).toBeDefined();
+	});
+
+	it("invalidates old cursors after fast-path teardown and same-shape rewind", () => {
+		const initial = "Stable paragraph before the mutable tail.\n\nMutable tail";
+
+		const teardown = new AssistantMessageComponent();
+		teardown.updateContent(msg([{ type: "text", text: initial }]), { transient: true });
+		const beforeTeardownRows = teardown.render(60);
+		const beforeTeardown = teardown.getTranscriptBlockSettledPrefix(60, beforeTeardownRows);
+		expect(beforeTeardown).toBeDefined();
+		teardown.updateContent(
+			msg([
+				{ type: "redactedThinking", data: "opaque" },
+				{ type: "text", text: `${initial} appended` },
+			]),
+			{ transient: true },
+		);
+		const afterTeardownRows = teardown.render(60);
+		expect(
+			teardown.resolveTranscriptBlockSettledPrefix(beforeTeardown!.cursor, 60, afterTeardownRows),
+		).toBeUndefined();
+
+		const rewind = new AssistantMessageComponent();
+		rewind.updateContent(msg([{ type: "text", text: initial }]), { transient: true });
+		const beforeRewindRows = rewind.render(60);
+		const beforeRewind = rewind.getTranscriptBlockSettledPrefix(60, beforeRewindRows);
+		expect(beforeRewind).toBeDefined();
+		rewind.updateContent(msg([{ type: "text", text: "Rewritten stable paragraph.\n\nNew mutable tail" }]), {
+			transient: true,
+		});
+		const afterRewindRows = rewind.render(60);
+		expect(rewind.resolveTranscriptBlockSettledPrefix(beforeRewind!.cursor, 60, afterRewindRows)).toBeUndefined();
 	});
 });

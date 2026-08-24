@@ -4,6 +4,15 @@ import { isToolActivityComponent } from "./tool-activity";
 
 interface FinalizableBlock {
 	isTranscriptBlockFinalized?(): boolean;
+	getTranscriptBlockSettledPrefix?(
+		width: number,
+		rendered: readonly string[],
+	): { rowCount: number; cursor: unknown } | undefined;
+	resolveTranscriptBlockSettledPrefix?(
+		cursor: unknown,
+		width: number,
+		rendered: readonly string[],
+	): number | undefined;
 	/**
 	 * Zero-row ordering markers may let finalized successors retire while the
 	 * marker remains logically open. Real mutable content must never opt in.
@@ -24,6 +33,29 @@ type BlockState = "active" | "settled" | "committed";
 interface TranscriptEntry {
 	component: Component;
 	state: BlockState;
+	partial?: PartialWatermark;
+}
+
+interface PartialWatermark {
+	cursor: unknown;
+	width: number;
+	rowCount: number;
+}
+
+interface RenderedEntry {
+	entry: TranscriptEntry;
+	rendered: readonly string[];
+	start: number;
+	rows: readonly string[];
+}
+
+interface OfferedBatch {
+	batch: HistoryBatch;
+	end: number;
+	partial?: {
+		entry: TranscriptEntry;
+		watermark: PartialWatermark;
+	};
 }
 
 const MAX_LIVE_BLOCKS = 256;
@@ -37,6 +69,49 @@ function isFinalized(component: Component): boolean {
 function allowsSuccessorRetirement(component: Component): boolean {
 	const block = component as Component & FinalizableBlock;
 	return block.allowsTranscriptSuccessorRetirement?.() === true;
+}
+
+function validPrefixRowCount(rowCount: number | undefined, rendered: readonly string[]): number {
+	if (rowCount === undefined || !Number.isSafeInteger(rowCount)) return 0;
+	return rowCount >= 0 && rowCount <= rendered.length ? rowCount : 0;
+}
+
+function getSettledPrefix(
+	component: Component,
+	width: number,
+	rendered: readonly string[],
+): PartialWatermark | undefined {
+	const block = component as Component & FinalizableBlock;
+	if (block.getTranscriptBlockSettledPrefix === undefined) return undefined;
+	try {
+		const prefix = block.getTranscriptBlockSettledPrefix(width, rendered);
+		if (prefix === undefined) return undefined;
+		const rowCount = validPrefixRowCount(prefix.rowCount, rendered);
+		if (rowCount === 0) return undefined;
+		return { cursor: prefix.cursor, width, rowCount };
+	} catch {
+		return undefined;
+	}
+}
+
+function resolveSettledPrefix(
+	entry: TranscriptEntry,
+	watermark: PartialWatermark | undefined,
+	width: number,
+	rendered: readonly string[],
+): number {
+	if (watermark === undefined) return 0;
+	if (watermark.width === width) return validPrefixRowCount(watermark.rowCount, rendered);
+	const block = entry.component as Component & FinalizableBlock;
+	if (block.resolveTranscriptBlockSettledPrefix === undefined) return 0;
+	try {
+		return validPrefixRowCount(
+			block.resolveTranscriptBlockSettledPrefix(watermark.cursor, width, rendered),
+			rendered,
+		);
+	} catch {
+		return 0;
+	}
 }
 
 function isPlainBlank(line: string): boolean {
@@ -56,7 +131,7 @@ export class TranscriptContainer extends Container {
 	#entries: TranscriptEntry[] = [];
 	#frontier = 0;
 	#nextBatchId = 1;
-	#offered: { batch: HistoryBatch; end: number } | undefined;
+	#offered: OfferedBatch | undefined;
 	#toolActivityVisible = true;
 
 	override addChild(component: Component): void {
@@ -98,8 +173,10 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		const index = this.#entries.findIndex(entry => entry.component === component);
 		if (index < 0) return false;
-		if (this.#entries[index]!.state === "committed") return false;
-		return this.#offered === undefined || index >= this.#offered.end;
+		const entry = this.#entries[index]!;
+		if (entry.state === "committed" || entry.partial !== undefined) return false;
+		if (this.#offered === undefined) return true;
+		return index >= this.#offered.end && this.#offered.partial?.entry !== entry;
 	}
 	/** Lifecycle state per block in transcript order (diagnostics and tests). */
 	blockStates(): readonly BlockState[] {
@@ -112,6 +189,7 @@ export class TranscriptContainer extends Container {
 		this.#frontier = 0;
 		this.#offered = undefined;
 		for (const entry of this.#entries) {
+			entry.partial = undefined;
 			if (entry.state === "committed") entry.state = isFinalized(entry.component) ? "settled" : "active";
 		}
 	}
@@ -121,8 +199,8 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		this.#settleFinalized();
 		let total = 0;
-		for (const rendered of this.#liveBlocks(width)) {
-			if (rendered.length > 0) total += rendered.length + (total > 0 ? 1 : 0);
+		for (const rendered of this.#liveRenderedEntries(width)) {
+			if (rendered.rows.length > 0) total += rendered.rows.length + (total > 0 ? 1 : 0);
 		}
 		return total;
 	}
@@ -136,7 +214,7 @@ export class TranscriptContainer extends Container {
 	renderViewport(width: number, rows: number): readonly string[] {
 		this.#syncEntries();
 		this.#settleFinalized();
-		const live = this.#liveEntries();
+		const live = this.#liveRenderedEntries(width);
 		const capacity = Math.max(0, Math.trunc(rows));
 		if (live.length === 0 || capacity === 0) return EMPTY_ROWS;
 
@@ -145,7 +223,7 @@ export class TranscriptContainer extends Container {
 		const collected: (readonly string[])[] = [];
 		let total = 0;
 		for (let index = live.length - 1; index >= 0 && total < capacity; index--) {
-			const block = trimBlankEdges(live[index]!.component.render(width));
+			const block = live[index]!.rows;
 			if (block.length === 0) continue;
 			if (collected.length > 0) total++;
 			collected.push(block);
@@ -170,17 +248,11 @@ export class TranscriptContainer extends Container {
 		this.#settleFinalized();
 		if (this.#offered !== undefined) return this.#offered.batch;
 		const room = Math.max(0, Math.trunc(capacity));
-		const live = this.#liveEntries();
+		const live = this.#liveRenderedEntries(width);
 		if (live.length === 0) return undefined;
-		const heights: number[] = new Array(live.length);
-		let total = 0;
-		let visible = 0;
-		for (let index = 0; index < live.length; index++) {
-			const rendered = trimBlankEdges(live[index]!.component.render(width));
-			heights[index] = rendered.length;
-			if (rendered.length > 0) total += rendered.length + (visible++ > 0 ? 1 : 0);
-		}
-		const overflowing = total > room || this.#liveCount() >= MAX_LIVE_BLOCKS;
+		let total = this.#rowCount(live);
+		const completingPartial = live[0]!.entry.state === "settled" && live[0]!.entry.partial !== undefined;
+		const overflowing = completingPartial || total > room || this.#liveCount() >= MAX_LIVE_BLOCKS;
 		if (!overflowing) return undefined;
 		// Retire the longest settled prefix needed to fit. Real mutable content
 		// remains an absolute ordering barrier. A zero-row logical marker may
@@ -188,31 +260,42 @@ export class TranscriptContainer extends Container {
 		// collapse anchor uses this to preserve its metadata without swallowing
 		// the live run above the terminal scrollback seam.
 		let end = this.#frontier;
-		let freed = 0;
 		let index = 0;
+		let partial: OfferedBatch["partial"];
 		while (end < this.#entries.length) {
-			const entry = this.#entries[end]!;
-			const height = heights[index]!;
+			const rendered = live[index]!;
+			const entry = rendered.entry;
 			const settled = entry.state === "settled";
 			const transparentMarker =
-				entry.state === "active" && height === 0 && allowsSuccessorRetirement(entry.component);
-			if (!settled && !transparentMarker) break;
-			if (total - freed <= room && this.#liveCount() - (end - this.#frontier) < MAX_LIVE_BLOCKS) break;
-			freed += height > 0 ? height + 1 : 0;
-			end++;
-			index++;
+				entry.state === "active" && rendered.rows.length === 0 && allowsSuccessorRetirement(entry.component);
+			const closesPartial = settled && entry.partial !== undefined;
+			if (!closesPartial && total <= room && this.#liveCount() - (end - this.#frontier) < MAX_LIVE_BLOCKS) break;
+			if (settled || transparentMarker) {
+				end++;
+				index++;
+				total = this.#rowCount(live, index);
+				continue;
+			}
+
+			const watermark = getSettledPrefix(entry.component, width, rendered.rendered);
+			if (watermark !== undefined && watermark.rowCount > rendered.start) {
+				partial = { entry, watermark };
+			}
+			break;
 		}
-		if (end === this.#frontier) return undefined;
+		if (end === this.#frontier && partial === undefined) return undefined;
 		const rows: string[] = [];
 		for (let retire = this.#frontier; retire < end; retire++) {
-			const block = trimBlankEdges(this.#entries[retire]!.component.render(width));
-			if (block.length === 0) continue;
-			if (rows.length > 0) rows.push("");
-			rows.push(...block);
+			const rendered = live[retire - this.#frontier]!;
+			if (rendered.rows.length > 0) rows.push(...rendered.rows);
+			if (rendered.rendered.length > 0 || rendered.entry.partial !== undefined) rows.push("");
 		}
-		if (rows.length > 0) rows.push("");
+		if (partial !== undefined) {
+			const rendered = live[end - this.#frontier]!;
+			rows.push(...rendered.rendered.slice(rendered.start, partial.watermark.rowCount));
+		}
 		const batch: HistoryBatch = { id: this.#nextBatchId++, rows };
-		this.#offered = { batch, end };
+		this.#offered = { batch, end, partial };
 		return batch;
 	}
 
@@ -221,9 +304,14 @@ export class TranscriptContainer extends Container {
 		const offered = this.#offered;
 		if (offered === undefined || offered.batch.id !== id) return;
 		for (let index = this.#frontier; index < offered.end; index++) {
-			this.#entries[index]!.state = "committed";
+			const entry = this.#entries[index]!;
+			entry.state = "committed";
+			entry.partial = undefined;
 		}
 		this.#frontier = offered.end;
+		if (offered.partial !== undefined) {
+			offered.partial.entry.partial = offered.partial.watermark;
+		}
 		this.#offered = undefined;
 	}
 
@@ -246,16 +334,30 @@ export class TranscriptContainer extends Container {
 		}
 	}
 
-	/** Live entries: past the committed frontier and not in the offered batch. */
+	/** Live entries: past the committed frontier and not wholly in the offered batch. */
 	#liveEntries(): TranscriptEntry[] {
 		const start = this.#offered?.end ?? this.#frontier;
 		return this.#entries.slice(start);
 	}
 
-	*#liveBlocks(width: number): Generator<readonly string[]> {
+	#liveRenderedEntries(width: number): RenderedEntry[] {
+		const renderedEntries: RenderedEntry[] = [];
 		for (const entry of this.#liveEntries()) {
-			yield trimBlankEdges(entry.component.render(width));
+			const rendered = trimBlankEdges(entry.component.render(width));
+			const pending = this.#offered?.partial?.entry === entry ? this.#offered.partial.watermark : undefined;
+			const start = resolveSettledPrefix(entry, pending ?? entry.partial, width, rendered);
+			renderedEntries.push({ entry, rendered, start, rows: rendered.slice(start) });
 		}
+		return renderedEntries;
+	}
+
+	#rowCount(rendered: readonly RenderedEntry[], start = 0): number {
+		let total = 0;
+		for (let index = start; index < rendered.length; index++) {
+			const rows = rendered[index]!.rows;
+			if (rows.length > 0) total += rows.length + (total > 0 ? 1 : 0);
+		}
+		return total;
 	}
 
 	#liveCount(): number {

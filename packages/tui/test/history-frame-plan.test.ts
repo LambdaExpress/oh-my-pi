@@ -87,6 +87,54 @@ class WidthReplayProvider implements TerminalFrameProvider {
 	}
 }
 
+class WelcomeReplayProvider implements TerminalFrameProvider {
+	#nextHistoryId = 1;
+	#retired = false;
+
+	renderFrame(viewport: ViewportSize): TerminalFramePlan {
+		const width = viewport.columns;
+		return {
+			history: this.#retired ? undefined : { id: this.#nextHistoryId, rows: ["WELCOME-MARKER", `history@${width}`] },
+			viewport: [`OLD-VIEWPORT@${width}`],
+		};
+	}
+
+	acknowledgeHistory(id: number): void {
+		if (id !== this.#nextHistoryId) return;
+		this.#nextHistoryId++;
+		this.#retired = true;
+	}
+
+	resetHistory(): void {
+		this.#retired = false;
+	}
+}
+
+class AdaptDispatchEraseTerminal extends VirtualTerminal {
+	readonly writes: string[] = [];
+
+	override write(data: string): void {
+		this.writes.push(data);
+		const ed2 = "\x1b[2J";
+		let offset = 0;
+		let index = data.indexOf(ed2);
+		if (index < 0) {
+			super.write(data);
+			return;
+		}
+		while (index >= 0) {
+			super.write(data.slice(offset, index));
+			// AdaptDispatch promotes the non-empty page to scrollback while
+			// erasing it; line feeds model that Windows-only ED2 side effect.
+			super.write(`\x1b[${this.rows};1H${"\r\n".repeat(this.rows)}`);
+			super.write(ed2);
+			offset = index + ed2.length;
+			index = data.indexOf(ed2, offset);
+		}
+		super.write(data.slice(offset));
+	}
+}
+
 class HeightReplayProvider implements TerminalFrameProvider {
 	#nextHistoryId = 1;
 	#retired = false;
@@ -323,6 +371,41 @@ describe("terminal frame plans", () => {
 		expect(provider.resetCount).toBe(1);
 		expect(resized.some(row => row.includes("@20"))).toBe(false);
 		expect(resized).toEqual(["history-one@30", "history-two@30", "editor@30"]);
+		tui.stop();
+	});
+
+	it("keeps the replayed welcome screen above the old Windows viewport after a resize rebuild", async () => {
+		const terminal = new AdaptDispatchEraseTerminal(20, 3);
+		const provider = new WelcomeReplayProvider();
+		const renderScheduler = new VirtualRenderScheduler();
+		const tui = new TUI(terminal, undefined, { renderScheduler });
+		tui.setResizeScrollback("rebuild");
+		tui.setFrameProvider(provider);
+		tui.start();
+		await renderScheduler.settle(terminal);
+		terminal.writes.length = 0;
+
+		terminal.resize(30, 3);
+		await renderScheduler.advance(terminal, 160);
+
+		const destructiveTransaction = terminal.writes.find(
+			write => write.includes("\x1b[2J") && write.includes("\x1b[3J"),
+		);
+		expect(destructiveTransaction).toBeDefined();
+		expect(destructiveTransaction!.indexOf("\x1b[2J")).toBeLessThan(destructiveTransaction!.indexOf("\x1b[3J"));
+		const clearHistoryAt = destructiveTransaction!.indexOf("\x1b[3J");
+		const replayAt = destructiveTransaction!.indexOf("\x1b[1;1H", clearHistoryAt + 4);
+		expect(clearHistoryAt).toBeLessThan(replayAt);
+
+		const finalContents = plainBuffer(terminal).filter(Boolean);
+		const welcomeIndex = finalContents.indexOf("WELCOME-MARKER");
+		expect(welcomeIndex).toBe(0);
+		expect(
+			finalContents.slice(0, welcomeIndex).some(row => row.includes("OLD-VIEWPORT") || row.includes("@20")),
+		).toBe(false);
+		expect(finalContents.filter(row => row === "WELCOME-MARKER")).toHaveLength(1);
+		expect(finalContents).not.toContain("OLD-VIEWPORT@20");
+		expect(finalContents.some(row => row.includes("@20"))).toBe(false);
 		tui.stop();
 	});
 });

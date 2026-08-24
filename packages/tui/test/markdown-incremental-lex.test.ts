@@ -16,11 +16,17 @@ import { defaultMarkdownTheme } from "./test-themes.js";
 
 const THEME = defaultMarkdownTheme;
 
-function renderCold(text: string, width: number): readonly string[] {
+function renderCold(text: string, width: number, paddingY = 0): readonly string[] {
 	clearRenderCache();
-	const out = new Markdown(text, 0, 0, THEME).render(width);
+	const out = new Markdown(text, 0, paddingY, THEME).render(width);
 	clearRenderCache();
 	return out;
+}
+
+function requireSettledPrefix(markdown: Markdown): { rowCount: number; cursor: unknown } {
+	const prefix = markdown.getLastRenderSettledPrefix();
+	if (!prefix) throw new Error("expected a settled Markdown prefix");
+	return prefix;
 }
 
 /** Reveal `full` in `step`-char increments through ONE reused (streaming) instance
@@ -322,6 +328,94 @@ describe("Markdown incremental streaming lex (E2)", () => {
 			streaming.setText(doc.slice(0, len));
 			const streamLines = streaming.render(60);
 			expect(streamLines).toEqual(renderCold(doc.slice(0, len), 60));
+		}
+	});
+});
+
+describe("Markdown settled render prefix cursor", () => {
+	const settledSource =
+		"Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu wraps as settled prose.\n\n";
+
+	it("offers final-fidelity rows for an append-only stream and keeps the boundary stable as its tail grows", () => {
+		const initial = `${settledSource}Tail`;
+		const markdown = new Markdown(initial, 0, 1, THEME);
+		markdown.transientRenderCache = true;
+
+		const initialLines = markdown.render(42);
+		const initialPrefix = requireSettledPrefix(markdown);
+		expect(initialPrefix.rowCount).toBeGreaterThan(1);
+		expect(initialLines.slice(0, initialPrefix.rowCount)).toEqual(
+			renderCold(initial, 42, 1).slice(0, initialPrefix.rowCount),
+		);
+		const unpadded = new Markdown(initial, 0, 0, THEME);
+		unpadded.transientRenderCache = true;
+		unpadded.render(42);
+		expect(initialPrefix.rowCount).toBe(requireSettledPrefix(unpadded).rowCount + 1);
+
+		markdown.setText(`${initial} keeps growing without closing another block`);
+		const grownLines = markdown.render(42);
+		const grownPrefix = requireSettledPrefix(markdown);
+		expect(grownPrefix.cursor).toBe(initialPrefix.cursor);
+		expect(grownPrefix.rowCount).toBe(initialPrefix.rowCount);
+		expect(grownLines.slice(0, grownPrefix.rowCount)).toEqual(initialLines.slice(0, initialPrefix.rowCount));
+
+		markdown.setText(`${initial} keeps growing without closing another block\n\nNext volatile tail`);
+		markdown.render(42);
+		const advancedPrefix = requireSettledPrefix(markdown);
+		expect(advancedPrefix.cursor).not.toBe(initialPrefix.cursor);
+		expect(advancedPrefix.rowCount).toBeGreaterThan(initialPrefix.rowCount);
+		expect(markdown.resolveLastRenderSettledPrefix(initialPrefix.cursor, 42)).toBe(initialPrefix.rowCount);
+	});
+
+	it("reprojects one logical cursor to more physical rows at a narrower width", () => {
+		const source = `${settledSource}volatile tail`;
+		const markdown = new Markdown(source, 0, 0, THEME);
+		markdown.transientRenderCache = true;
+		markdown.render(48);
+		const prefix = requireSettledPrefix(markdown);
+
+		const narrowRowCount = markdown.resolveLastRenderSettledPrefix(prefix.cursor, 20);
+		expect(narrowRowCount).toBeGreaterThan(prefix.rowCount);
+
+		const narrowLines = markdown.render(20);
+		expect(markdown.resolveLastRenderSettledPrefix(prefix.cursor, 20)).toBe(narrowRowCount);
+		expect(narrowLines.slice(0, narrowRowCount)).toEqual(renderCold(source, 20).slice(0, narrowRowCount));
+	});
+
+	it("invalidates an old cursor after a rewind even when the same source boundary is re-earned", () => {
+		const short = `${settledSource}short tail`;
+		const markdown = new Markdown(`${short} that first grows farther`, 0, 0, THEME);
+		markdown.transientRenderCache = true;
+		markdown.render(42);
+		const oldPrefix = requireSettledPrefix(markdown);
+
+		markdown.setText(short);
+		markdown.render(42);
+		expect(markdown.resolveLastRenderSettledPrefix(oldPrefix.cursor, 42)).toBeUndefined();
+		expect(requireSettledPrefix(markdown).cursor).not.toBe(oldPrefix.cursor);
+	});
+
+	it("offers no prefix before a hard block boundary or at an unsafe list boundary", () => {
+		const growingParagraph = new Markdown("one paragraph is still growing", 0, 0, THEME);
+		growingParagraph.transientRenderCache = true;
+		growingParagraph.render(40);
+		expect(growingParagraph.getLastRenderSettledPrefix()).toBeUndefined();
+
+		const continuingList = new Markdown("- alpha\n- beta\n\n- gamma remains the same list", 0, 0, THEME);
+		continuingList.transientRenderCache = true;
+		continuingList.render(40);
+		expect(continuingList.getLastRenderSettledPrefix()).toBeUndefined();
+	});
+
+	it("offers no prefix on CR and reference-definition fallback paths", () => {
+		for (const source of [
+			"First paragraph.\r\n\r\nSecond paragraph remains volatile.",
+			"See [the docs][d].\n\nTail paragraph.\n\n[d]: https://example.com/docs\n\nmore",
+		]) {
+			const markdown = new Markdown(source, 0, 0, THEME);
+			markdown.transientRenderCache = true;
+			markdown.render(40);
+			expect(markdown.getLastRenderSettledPrefix()).toBeUndefined();
 		}
 	});
 });

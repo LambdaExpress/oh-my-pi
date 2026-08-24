@@ -131,10 +131,6 @@ class CompletedRunGate extends Container {
 		return true;
 	}
 
-	getTranscriptBlockSettledRows(): number {
-		return 0;
-	}
-
 	finalize(): void {
 		if (this.#finalized) return;
 		this.#finalized = true;
