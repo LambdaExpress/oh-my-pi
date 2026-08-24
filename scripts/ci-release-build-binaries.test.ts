@@ -2,10 +2,20 @@ import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { $ } from "bun";
 import { resolveCrossBuild } from "../packages/coding-agent/scripts/build-binary";
+import { prioritizeLargestIcoFrame } from "../packages/coding-agent/scripts/compile-binary";
 
 const repoRoot = path.join(import.meta.dir, "..");
 
 describe("Windows release binary target", () => {
+	it("keeps Explorer on the Tauri icon's 256px frame when Bun preserves its default icon group", async () => {
+		const source = await Bun.file(path.join(repoRoot, "packages", "tauri-shell", "icons", "icon.ico")).bytes();
+		const prioritized = prioritizeLargestIcoFrame(source);
+
+		expect(prioritized[6]).toBe(0);
+		expect(prioritized[7]).toBe(0);
+		expect(prioritized).toHaveLength(source.length);
+	});
+
 	it("builds the generic Windows release asset with the baseline runtime", async () => {
 		const result = await $`bun scripts/ci-release-build-binaries.ts --dry-run --targets win32-x64`
 			.cwd(repoRoot)

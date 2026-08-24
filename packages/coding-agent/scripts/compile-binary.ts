@@ -1,3 +1,6 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { generateCollabWebEmbed, resetCollabWebEmbed } from "./embed-collab-web";
 import { buildDocsIndexPayload } from "./generate-docs-index";
 import { createLegacyPiVirtualModulePlugin } from "./legacy-pi-virtual-module";
@@ -27,12 +30,68 @@ export interface CodingAgentCompileOptions {
 	readonly skipBuiltinCodesign?: boolean;
 }
 
+const ICO_HEADER_SIZE = 6;
+const ICO_DIRECTORY_ENTRY_SIZE = 16;
+
+/**
+ * Put the largest ICO frame first without moving its payload.
+ *
+ * Bun 1.3.14 keeps its original `IDI_MYICON` group after applying a custom
+ * Windows icon. That group points at icon resource 1, while Bun assigns custom
+ * icon resource IDs in ICO directory order. A conventional smallest-first ICO
+ * therefore makes Explorer upscale the 16px frame even though all larger
+ * frames are present. Keeping the 256px frame at ID 1 makes the surviving group
+ * resolve to the full-resolution Tauri icon.
+ */
+export function prioritizeLargestIcoFrame(source: Uint8Array): Uint8Array {
+	if (source.byteLength < ICO_HEADER_SIZE) throw new Error("Windows icon has a truncated ICO header");
+	const view = new DataView(source.buffer, source.byteOffset, source.byteLength);
+	const reserved = view.getUint16(0, true);
+	const type = view.getUint16(2, true);
+	const count = view.getUint16(4, true);
+	if (reserved !== 0 || type !== 1 || count === 0) throw new Error("Windows icon is not a valid ICO file");
+	if (ICO_HEADER_SIZE + count * ICO_DIRECTORY_ENTRY_SIZE > source.byteLength) {
+		throw new Error("Windows icon has a truncated ICO directory");
+	}
+
+	const entries = Array.from({ length: count }, (_, index) => {
+		const offset = ICO_HEADER_SIZE + index * ICO_DIRECTORY_ENTRY_SIZE;
+		const width = source[offset] || 256;
+		const height = source[offset + 1] || 256;
+		const bitCount = view.getUint16(offset + 6, true);
+		const dataSize = view.getUint32(offset + 8, true);
+		const dataOffset = view.getUint32(offset + 12, true);
+		if (dataOffset > source.byteLength || dataSize > source.byteLength - dataOffset) {
+			throw new Error("Windows icon contains an out-of-bounds ICO frame");
+		}
+		return { offset, width, height, bitCount };
+	}).sort((a, b) => b.width * b.height - a.width * a.height || b.bitCount - a.bitCount);
+
+	const output = source.slice();
+	for (const [index, entry] of entries.entries()) {
+		output.set(
+			source.subarray(entry.offset, entry.offset + ICO_DIRECTORY_ENTRY_SIZE),
+			ICO_HEADER_SIZE + index * ICO_DIRECTORY_ENTRY_SIZE,
+		);
+	}
+	return output;
+}
+
+async function createWindowsCompileIcon(repoRoot: string): Promise<string> {
+	const sourcePath = path.join(repoRoot, "packages", "tauri-shell", "icons", "icon.ico");
+	const tempPath = path.join(os.tmpdir(), `omp-windows-icon-${process.pid}-${Bun.randomUUIDv7()}.ico`);
+	await Bun.write(tempPath, prioritizeLargestIcoFrame(await Bun.file(sourcePath).bytes()));
+	return tempPath;
+}
+
 /**
  * Compile the coding-agent executable with its legacy Pi compatibility module
  * graph supplied by an in-memory build plugin rather than generated files.
  */
 export async function compileCodingAgent(options: CodingAgentCompileOptions): Promise<void> {
 	const previousCodesignSetting = Bun.env.BUN_NO_CODESIGN_MACHO_BINARY;
+	const isWindowsTarget = options.target?.startsWith("bun-windows-") ?? process.platform === "win32";
+	const windowsIconPath = isWindowsTarget ? await createWindowsCompileIcon(options.repoRoot) : undefined;
 	if (options.skipBuiltinCodesign) {
 		Bun.env.BUN_NO_CODESIGN_MACHO_BINARY = "1";
 	}
@@ -59,6 +118,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 					: options.target
 						? { target: options.target }
 						: {}),
+				...(windowsIconPath ? { windows: { icon: windowsIconPath } } : {}),
 				outfile: options.outfile,
 				autoloadBunfig: false,
 				autoloadDotenv: false,
@@ -71,11 +131,18 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 			throw new Error(`Coding-agent binary bundle failed:\n${output.logs.map(log => log.message).join("\n")}`);
 		}
 	} finally {
-		await resetCollabWebEmbed(options.repoRoot);
-		if (previousCodesignSetting === undefined) {
-			delete Bun.env.BUN_NO_CODESIGN_MACHO_BINARY;
-		} else {
-			Bun.env.BUN_NO_CODESIGN_MACHO_BINARY = previousCodesignSetting;
+		try {
+			await resetCollabWebEmbed(options.repoRoot);
+		} finally {
+			try {
+				if (windowsIconPath) await fs.rm(windowsIconPath, { force: true });
+			} finally {
+				if (previousCodesignSetting === undefined) {
+					delete Bun.env.BUN_NO_CODESIGN_MACHO_BINARY;
+				} else {
+					Bun.env.BUN_NO_CODESIGN_MACHO_BINARY = previousCodesignSetting;
+				}
+			}
 		}
 	}
 }
