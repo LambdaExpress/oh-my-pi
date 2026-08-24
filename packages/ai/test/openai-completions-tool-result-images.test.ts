@@ -547,4 +547,42 @@ describe("openai-completions convertMessages", () => {
 			},
 		]);
 	});
+
+	it("preserves image_url for OpenCode DeepSeek V4 Flash Vision Exp", () => {
+		const model = buildModel({
+			id: "deepseek-v4-flash-vision-exp",
+			name: "DeepSeek V4 Flash Vision Exp",
+			api: "openai-completions",
+			provider: "opencode-go",
+			baseUrl: "https://opencode.ai/zen/go/v1",
+			reasoning: true,
+			input: ["text", "image"],
+			cost: { input: 0.22, output: 0.66, cacheRead: 0.007, cacheWrite: 0 },
+			contextWindow: 1_000_000,
+			maxTokens: 384_000,
+		});
+		const context: Context = {
+			messages: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "Describe this image" },
+						{ type: "image", data: "ZmFrZQ==", mimeType: "image/png" },
+					],
+					timestamp: Date.now(),
+				},
+			],
+		};
+
+		const messages = convertMessages(model, context, compat);
+
+		expect(messages).toHaveLength(1);
+		expect(messages[0].content).toEqual([
+			{ type: "text", text: "Describe this image" },
+			{
+				type: "image_url",
+				image_url: { url: "data:image/png;base64,ZmFrZQ==" },
+			},
+		]);
+	});
 });
