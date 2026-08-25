@@ -3,7 +3,11 @@ import type { SkillsSettings } from "../config/settings";
 import type { LoadedCustomCommand } from "../extensibility/custom-commands";
 import type { ExtensionRunner } from "../extensibility/extensions";
 import { getSkillSlashCommandName, type Skill } from "../extensibility/skills";
-import { type FileSlashCommand, loadSlashCommands } from "../extensibility/slash-commands";
+import {
+	type FileSlashCommand,
+	getFileSlashCommandDisplayDescription,
+	loadSlashCommands,
+} from "../extensibility/slash-commands";
 import { t } from "../i18n";
 import { ACP_BUILTIN_RESERVED_NAMES, isAcpBuiltinShadowedName } from "./acp-builtins";
 import { BUILTIN_SLASH_COMMANDS_INTERNAL } from "./builtin-registry";
@@ -47,9 +51,12 @@ export async function buildAvailableSlashCommands(
 		appendCommand({
 			name: command.name,
 			aliases: command.aliases,
-			description: command.acpDescription ?? command.description,
+			description: t(command.acpDescription ?? command.description),
 			input: hint ? { hint } : undefined,
-			subcommands: command.subcommands,
+			subcommands: command.subcommands?.map(subcommand => ({
+				...subcommand,
+				description: t(subcommand.description),
+			})),
 			source: "builtin",
 		});
 	}
@@ -91,7 +98,11 @@ export async function buildAvailableSlashCommands(
 	const fileCommands = await loadFileCommands(session.sessionManager.getCwd());
 	session.setSlashCommands(fileCommands);
 	for (const command of fileCommands) {
-		appendCommand({ name: command.name, description: command.description, source: "file" });
+		appendCommand({
+			name: command.name,
+			description: getFileSlashCommandDisplayDescription(command),
+			source: "file",
+		});
 	}
 
 	return commands;

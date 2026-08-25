@@ -3,6 +3,7 @@ import { slashCommandCapability } from "../capability/slash-command";
 import { appendInlineArgsFallback, templateUsesInlineArgPlaceholders } from "../config/prompt-templates";
 import type { SlashCommand } from "../discovery";
 import { loadCapability } from "../discovery";
+import { t } from "../i18n";
 import { EMBEDDED_COMMAND_TEMPLATES } from "../task/commands";
 import { parseCommandArgs, substituteArgs } from "../utils/command-args";
 
@@ -30,6 +31,13 @@ export interface FileSlashCommand {
 	source: string; // e.g., "via Claude Code (User)"
 	/** Source metadata for display */
 	_source?: { providerName: string; level: "user" | "project" | "native" };
+}
+
+/** Localize first-party command metadata without rewriting user or plugin-authored descriptions. */
+export function getFileSlashCommandDisplayDescription(
+	command: Pick<FileSlashCommand, "description" | "source">,
+): string {
+	return command.source === "bundled" ? t(command.description) : command.description;
 }
 
 const EMBEDDED_SLASH_COMMANDS = EMBEDDED_COMMAND_TEMPLATES;

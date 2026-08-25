@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { setLocale } from "../src/i18n";
 
-// Builtin slash-command descriptions are localized at module load, so pin the
-// locale before importing the registry (import is deferred on purpose).
+// Some declarative subcommand descriptions are localized at module load, so
+// pin the locale before importing the registry (import is deferred on purpose).
 setLocale("en");
 const { buildAvailableSlashCommands } = await import("@oh-my-pi/pi-coding-agent/slash-commands/available-commands");
 
@@ -93,6 +93,35 @@ describe("buildAvailableSlashCommands", () => {
 
 		expect(loadedCommands).toEqual(fileCommands);
 		expect(commands.find(command => command.name === "notes")?.source).toBe("file");
+	});
+
+	test("localizes first-party metadata without rewriting user-authored command descriptions", async () => {
+		setLocale("zh-CN");
+		const fileCommands = [
+			{
+				name: "init",
+				description: "Generate AGENTS.md for current codebase",
+				content: "body",
+				source: "bundled",
+			},
+			{ name: "notes", description: "Open notes", content: "body", source: "project" },
+		];
+
+		const commands = await buildAvailableSlashCommands(
+			{
+				customCommands: [],
+				skills: [],
+				sessionManager: { getCwd: () => process.cwd() },
+				setSlashCommands() {},
+			} as never,
+			async () => fileCommands,
+		);
+		const byName = Object.fromEntries(commands.map(command => [command.name, command]));
+
+		expect(byName.pin.description).toBe("将会话固定到恢复列表顶部或取消固定");
+		expect(byName.shake.subcommands).toContainEqual({ name: "thinking", description: "移除所有思考块" });
+		expect(byName.init.description).toBe("为当前代码库生成 AGENTS.md");
+		expect(byName.notes.description).toBe("Open notes");
 	});
 
 	test("classifies MCP prompts by path and bundled custom commands as custom", async () => {

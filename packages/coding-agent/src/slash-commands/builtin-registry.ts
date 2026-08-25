@@ -72,13 +72,21 @@ function materializeTuiBuiltinSlashCommand(
 	cmd: BuiltinSlashCommand,
 	runtime?: TuiSlashCommandRuntime,
 ): TuiBuiltinSlashCommand {
-	const materialized: TuiBuiltinSlashCommand = { ...cmd };
-	if (cmd.subcommands) {
+	const subcommands = cmd.subcommands?.map(subcommand => ({
+		...subcommand,
+		description: t(subcommand.description),
+	}));
+	const materialized: TuiBuiltinSlashCommand = {
+		...cmd,
+		description: t(cmd.description),
+		subcommands,
+	};
+	if (subcommands) {
 		materialized.getArgumentCompletions =
 			cmd.name === "mcp" && runtime
-				? buildMcpArgumentCompletions(cmd.subcommands, runtime)
-				: buildArgumentCompletions(cmd.subcommands);
-		materialized.getInlineHint = buildSubcommandInlineHint(cmd.subcommands);
+				? buildMcpArgumentCompletions(subcommands, runtime)
+				: buildArgumentCompletions(subcommands);
+		materialized.getInlineHint = buildSubcommandInlineHint(subcommands);
 	} else if (cmd.name === "move") {
 		materialized.getArgumentCompletions = buildDirectoryArgumentCompletions();
 		if (cmd.inlineHint) materialized.getInlineHint = buildStaticInlineHint(cmd.inlineHint);
@@ -86,7 +94,10 @@ function materializeTuiBuiltinSlashCommand(
 		materialized.getInlineHint = buildStaticInlineHint(cmd.inlineHint);
 	}
 	if (runtime && cmd.getTuiAutocompleteDescription) {
-		materialized.getAutocompleteDescription = () => cmd.getTuiAutocompleteDescription?.(runtime);
+		materialized.getAutocompleteDescription = () =>
+			cmd.getTuiAutocompleteDescription?.(runtime) ?? t(cmd.description);
+	} else {
+		materialized.getAutocompleteDescription = () => t(cmd.description);
 	}
 	return materialized;
 }
