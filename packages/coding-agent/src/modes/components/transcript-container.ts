@@ -34,12 +34,28 @@ interface TranscriptEntry {
 	component: Component;
 	state: BlockState;
 	partial?: PartialWatermark;
+	snapshot?: SnapshotWatermark;
 }
 
 interface PartialWatermark {
 	cursor: unknown;
 	width: number;
 	rowCount: number;
+}
+
+/**
+ * Rows already written exactly as they appeared while a block was active.
+ * Unlike a semantic partial cursor, a visual snapshot may later diverge. Active
+ * blocks keep using its row count so growing output never disappears; once the
+ * block settles, a dirty snapshot replays the complete final block below the
+ * stale visual copy (duplication is preferable to content loss).
+ */
+interface SnapshotWatermark {
+	width: number;
+	rowCount: number;
+	prefix: readonly string[];
+	separator: boolean;
+	dirty: boolean;
 }
 
 interface RenderedEntry {
@@ -49,13 +65,14 @@ interface RenderedEntry {
 	rows: readonly string[];
 }
 
+type OfferedAction =
+	| { kind: "commit"; entry: TranscriptEntry }
+	| { kind: "partial"; entry: TranscriptEntry; watermark: PartialWatermark }
+	| { kind: "snapshot"; entry: TranscriptEntry; watermark: SnapshotWatermark };
+
 interface OfferedBatch {
 	batch: HistoryBatch;
-	end: number;
-	partial?: {
-		entry: TranscriptEntry;
-		watermark: PartialWatermark;
-	};
+	actions: readonly OfferedAction[];
 }
 
 const MAX_LIVE_BLOCKS = 256;
@@ -167,17 +184,17 @@ export class TranscriptContainer extends Container {
 
 	/** Whether a transient block may be discarded without leaving tape history. */
 	canRemoveBlock(component: Component): boolean {
-		// Active and settled blocks only live in the mutable viewport, so removing
-		// them leaves no trace. Committed blocks are immutable terminal history,
-		// and blocks inside the offered-but-unacknowledged batch are mid-write —
-		// removing one would desync the offer's entry range.
+		// An unsnapshotted active/settled block still lives only in the mutable
+		// viewport and can disappear without a trace. Semantic/visual prefixes,
+		// committed blocks, and offered actions already own terminal history and
+		// must remain in the transcript ledger.
 		this.#syncEntries();
 		const index = this.#entries.findIndex(entry => entry.component === component);
 		if (index < 0) return false;
 		const entry = this.#entries[index]!;
-		if (entry.state === "committed" || entry.partial !== undefined) return false;
+		if (entry.state === "committed" || entry.partial !== undefined || entry.snapshot !== undefined) return false;
 		if (this.#offered === undefined) return true;
-		return index >= this.#offered.end && this.#offered.partial?.entry !== entry;
+		return !this.#offered.actions.some(action => action.entry === entry);
 	}
 	/** Lifecycle state per block in transcript order (diagnostics and tests). */
 	blockStates(): readonly BlockState[] {
@@ -197,6 +214,7 @@ export class TranscriptContainer extends Container {
 		this.#offered = undefined;
 		for (const entry of this.#entries) {
 			entry.partial = undefined;
+			entry.snapshot = undefined;
 			if (entry.state === "committed") entry.state = isFinalized(entry.component) ? "settled" : "active";
 		}
 	}
@@ -258,51 +276,103 @@ export class TranscriptContainer extends Container {
 		const live = this.#liveRenderedEntries(width);
 		if (live.length === 0) return undefined;
 		let total = this.#rowCount(live);
-		const completingPartial = live[0]!.entry.state === "settled" && live[0]!.entry.partial !== undefined;
-		const overflowing = completingPartial || total > room || this.#liveCount() >= MAX_LIVE_BLOCKS;
+		const completingRetirement = live.some(
+			rendered =>
+				rendered.entry.state === "settled" &&
+				(rendered.entry.partial !== undefined || rendered.entry.snapshot !== undefined),
+		);
+		const overflowing = completingRetirement || total > room || this.#liveCount() >= MAX_LIVE_BLOCKS;
 		if (!overflowing) return undefined;
-		// Retire the longest settled prefix needed to fit. Real mutable content
-		// remains an absolute ordering barrier. A zero-row logical marker may
-		// explicitly permit finalized successors to cross it: the completed-run
-		// collapse anchor uses this to preserve its metadata without swallowing
-		// the live run above the terminal scrollback seam.
-		let end = this.#frontier;
+		// Retire exact settled blocks first. An active block may contribute either
+		// a provider-declared semantic prefix or, as a last resort, the exact rows
+		// that would otherwise be clipped from the top of the viewport. Once all
+		// current rows of an active block are on the visual tape, later blocks may
+		// drain too; the block remains active and any newly appended rows still
+		// render normally.
 		let index = 0;
-		let partial: OfferedBatch["partial"];
-		while (end < this.#entries.length) {
+		const actions: OfferedAction[] = [];
+		const rows: string[] = [];
+		while (index < live.length) {
 			const rendered = live[index]!;
 			const entry = rendered.entry;
 			const settled = entry.state === "settled";
 			const transparentMarker =
 				entry.state === "active" && rendered.rows.length === 0 && allowsSuccessorRetirement(entry.component);
-			const closesPartial = settled && entry.partial !== undefined;
-			if (!closesPartial && total <= room && this.#liveCount() - (end - this.#frontier) < MAX_LIVE_BLOCKS) break;
-			if (settled || transparentMarker) {
-				end++;
+			const closesWatermark = settled && (entry.partial !== undefined || entry.snapshot !== undefined);
+			if (!closesWatermark && total <= room && this.#liveCount() - actions.length < MAX_LIVE_BLOCKS) break;
+			if (settled) {
+				if (rendered.rows.length > 0) rows.push(...rendered.rows);
+				const snapshotAlreadySeparated =
+					entry.snapshot !== undefined &&
+					!entry.snapshot.dirty &&
+					entry.snapshot.separator &&
+					rendered.start === rendered.rendered.length;
+				if (!snapshotAlreadySeparated && (rendered.rendered.length > 0 || entry.partial || entry.snapshot)) {
+					rows.push("");
+				}
+				actions.push({ kind: "commit", entry });
+				index++;
+				total = this.#rowCount(live, index);
+				continue;
+			}
+			if (transparentMarker || rendered.rows.length === 0) {
 				index++;
 				total = this.#rowCount(live, index);
 				continue;
 			}
 
-			const watermark = getSettledPrefix(entry.component, width, rendered.rendered);
-			if (watermark !== undefined && watermark.rowCount > rendered.start) {
-				partial = { entry, watermark };
+			if (entry.snapshot === undefined) {
+				const watermark = getSettledPrefix(entry.component, width, rendered.rendered);
+				if (watermark !== undefined && watermark.rowCount > rendered.start) {
+					rows.push(...rendered.rendered.slice(rendered.start, watermark.rowCount));
+					actions.push({ kind: "partial", entry, watermark });
+					break;
+				}
 			}
+			// Keep exact retirement and provisional visual snapshots in separate
+			// terminal transactions. Exact semantic prefixes may share the batch;
+			// only the fallback snapshot waits for the next acknowledgement.
+			if (actions.length > 0) break;
+
+			const needed = Math.max(1, total - room);
+			const rowCount = Math.min(rendered.rendered.length, rendered.start + needed);
+			if (rowCount <= rendered.start) break;
+			rows.push(...rendered.rendered.slice(rendered.start, rowCount));
+			const previous = entry.snapshot;
+			let dirty = previous?.dirty ?? false;
+			let prefix: string[];
+			if (previous !== undefined && previous.width === width) {
+				prefix = Array.from(previous.prefix);
+				const comparable = Math.min(previous.rowCount, rendered.rendered.length);
+				for (let row = 0; row < comparable; row++) {
+					if (prefix[row] !== rendered.rendered[row]) {
+						dirty = true;
+						break;
+					}
+				}
+				if (
+					previous.rowCount > rendered.rendered.length ||
+					(previous.separator && rendered.rendered.length > previous.rowCount)
+				) {
+					dirty = true;
+				}
+				for (let row = prefix.length; row < rowCount; row++) prefix.push(rendered.rendered[row]!);
+			} else {
+				dirty ||= previous !== undefined;
+				prefix = rendered.rendered.slice(0, rowCount);
+			}
+			const separator = rowCount === rendered.rendered.length;
+			if (separator) rows.push("");
+			actions.push({
+				kind: "snapshot",
+				entry,
+				watermark: { width, rowCount, prefix, separator, dirty },
+			});
 			break;
 		}
-		if (end === this.#frontier && partial === undefined) return undefined;
-		const rows: string[] = [];
-		for (let retire = this.#frontier; retire < end; retire++) {
-			const rendered = live[retire - this.#frontier]!;
-			if (rendered.rows.length > 0) rows.push(...rendered.rows);
-			if (rendered.rendered.length > 0 || rendered.entry.partial !== undefined) rows.push("");
-		}
-		if (partial !== undefined) {
-			const rendered = live[end - this.#frontier]!;
-			rows.push(...rendered.rendered.slice(rendered.start, partial.watermark.rowCount));
-		}
+		if (actions.length === 0) return undefined;
 		const batch: HistoryBatch = { id: this.#nextBatchId++, rows };
-		this.#offered = { batch, end, partial };
+		this.#offered = { batch, actions };
 		return batch;
 	}
 
@@ -310,15 +380,21 @@ export class TranscriptContainer extends Container {
 	acknowledgeFinalizedBatch(id: number): void {
 		const offered = this.#offered;
 		if (offered === undefined || offered.batch.id !== id) return;
-		for (let index = this.#frontier; index < offered.end; index++) {
-			const entry = this.#entries[index]!;
-			entry.state = "committed";
-			entry.partial = undefined;
+		for (const action of offered.actions) {
+			if (action.kind === "commit") {
+				action.entry.state = "committed";
+				action.entry.partial = undefined;
+				action.entry.snapshot = undefined;
+			} else if (action.kind === "partial") {
+				action.entry.partial = action.watermark;
+				action.entry.snapshot = undefined;
+			} else {
+				action.entry.snapshot = action.watermark;
+				action.entry.partial = undefined;
+			}
 		}
-		this.#frontier = offered.end;
-		if (offered.partial !== undefined) {
-			offered.partial.entry.partial = offered.partial.watermark;
-		}
+		this.#frontier = this.#entries.findIndex(entry => entry.state !== "committed");
+		if (this.#frontier < 0) this.#frontier = this.#entries.length;
 		this.#offered = undefined;
 	}
 
@@ -341,21 +417,56 @@ export class TranscriptContainer extends Container {
 		}
 	}
 
-	/** Live entries: past the committed frontier and not wholly in the offered batch. */
+	/** Live entries, excluding settled blocks committed by the in-flight offer. */
 	#liveEntries(): TranscriptEntry[] {
-		const start = this.#offered?.end ?? this.#frontier;
-		return this.#entries.slice(start);
+		return this.#entries
+			.slice(this.#frontier)
+			.filter(
+				entry =>
+					entry.state !== "committed" &&
+					!this.#offered?.actions.some(action => action.kind === "commit" && action.entry === entry),
+			);
 	}
 
 	#liveRenderedEntries(width: number): RenderedEntry[] {
 		const renderedEntries: RenderedEntry[] = [];
 		for (const entry of this.#liveEntries()) {
 			const rendered = trimBlankEdges(entry.component.render(width));
-			const pending = this.#offered?.partial?.entry === entry ? this.#offered.partial.watermark : undefined;
-			const start = resolveSettledPrefix(entry, pending ?? entry.partial, width, rendered);
+			const offered = this.#offered?.actions.find(action => action.entry === entry);
+			const partial = offered?.kind === "partial" ? offered.watermark : entry.partial;
+			const snapshot = offered?.kind === "snapshot" ? offered.watermark : entry.snapshot;
+			const start = Math.max(
+				resolveSettledPrefix(entry, partial, width, rendered),
+				this.#resolveSnapshotStart(entry, snapshot, width, rendered),
+			);
 			renderedEntries.push({ entry, rendered, start, rows: rendered.slice(start) });
 		}
 		return renderedEntries;
+	}
+
+	#resolveSnapshotStart(
+		entry: TranscriptEntry,
+		snapshot: SnapshotWatermark | undefined,
+		width: number,
+		rendered: readonly string[],
+	): number {
+		if (snapshot === undefined) return 0;
+		if (snapshot.width !== width) {
+			snapshot.dirty = true;
+			return 0;
+		}
+		const comparable = Math.min(snapshot.rowCount, rendered.length);
+		for (let row = 0; row < comparable; row++) {
+			if (snapshot.prefix[row] !== rendered[row]) {
+				snapshot.dirty = true;
+				break;
+			}
+		}
+		if (snapshot.rowCount > rendered.length || (snapshot.separator && rendered.length > snapshot.rowCount)) {
+			snapshot.dirty = true;
+		}
+		if (entry.state === "settled" && snapshot.dirty) return 0;
+		return comparable;
 	}
 
 	#rowCount(rendered: readonly RenderedEntry[], start = 0): number {
@@ -368,7 +479,9 @@ export class TranscriptContainer extends Container {
 	}
 
 	#liveCount(): number {
-		return this.#entries.length - this.#frontier;
+		let count = 0;
+		for (const entry of this.#entries) if (entry.state !== "committed") count++;
+		return count;
 	}
 
 	#syncEntries(): void {

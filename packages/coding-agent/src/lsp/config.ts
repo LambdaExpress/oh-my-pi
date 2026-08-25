@@ -73,7 +73,9 @@ function normalizeServerConfig(name: string, config: RawServerConfig): ServerCon
 	const command = typeof config.command === "string" && config.command.length > 0 ? config.command : null;
 	const fileTypes =
 		normalizeStringArray(config.fileTypes) ?? normalizeExtensionToFileTypes(config.extensionToLanguage);
-	const rootMarkers = normalizeStringArray(config.rootMarkers) ?? (config.extensionToLanguage ? ["."] : null);
+	const extensionOnlyRootMarkers = name === "csharp-ls" ? ["*.sln", "*.csproj", ".git"] : ["."];
+	const rootMarkers =
+		normalizeStringArray(config.rootMarkers) ?? (config.extensionToLanguage ? extensionOnlyRootMarkers : null);
 	const languageId =
 		typeof config.languageId === "string" && config.languageId.length > 0 ? config.languageId : undefined;
 

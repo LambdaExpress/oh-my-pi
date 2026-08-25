@@ -76,6 +76,8 @@ interface RpcMessage {
 }
 
 interface FakeLspServer {
+	/** Process transport returned by the mocked spawn call. */
+	readonly proc: LspClient["proc"];
 	/** Parsed JSON-RPC messages the client wrote to the server, in arrival order. */
 	readonly received: RpcMessage[];
 	/** Server -> client: frame and enqueue a JSON-RPC message onto stdout. */
@@ -120,6 +122,7 @@ function installFakeLsp(handler: FakeLspHandler, options?: FakeLspOptions): Fake
 	let stdoutStopped = false;
 	let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
 	const { promise: exited, resolve: resolveExited } = Promise.withResolvers<number>();
+	let proc!: LspClient["proc"];
 
 	const frame = (message: RpcMessage): Uint8Array => {
 		const content = JSON.stringify(message);
@@ -133,6 +136,9 @@ function installFakeLsp(handler: FakeLspHandler, options?: FakeLspOptions): Fake
 	});
 
 	const server: FakeLspServer = {
+		get proc() {
+			return proc;
+		},
 		received,
 		send(message) {
 			if (controller && exitCode === null && !stdoutStopped) controller.enqueue(frame(message));
@@ -224,7 +230,7 @@ function installFakeLsp(handler: FakeLspHandler, options?: FakeLspOptions): Fake
 		});
 	};
 
-	const proc = {
+	proc = {
 		get exited() {
 			return exited;
 		},
@@ -2210,6 +2216,77 @@ describe("lsp regressions", () => {
 		}
 	}, 15_000);
 
+	it("uses a relative concrete file's nearest project root for semantic requests", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-relative-file-root-");
+		try {
+			const nestedPackage = path.join(tempDir.path(), "packages", "client");
+			const targetFile = path.join(nestedPackage, "src", "store.js");
+			await Bun.write(path.join(tempDir.path(), "package.json"), "{}\n");
+			await Bun.write(path.join(nestedPackage, "jsconfig.json"), "{}\n");
+			await Bun.write(targetFile, "export const target = 1;\n");
+
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: { capabilities: { referencesProvider: true } },
+					});
+					srv.send({
+						jsonrpc: "2.0",
+						method: "$/progress",
+						params: { token: "relative-file-project", value: { kind: "end" } },
+					});
+				} else if (message.method === "textDocument/references") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: [
+							{
+								uri: fileToUri(targetFile),
+								range: {
+									start: { line: 0, character: 0 },
+									end: { line: 0, character: 6 },
+								},
+							},
+						],
+					});
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+			const serverConfig: ServerConfig = {
+				command: "fake-lsp-relative-file",
+				fileTypes: [".js"],
+				rootMarkers: ["jsconfig.json", "package.json"],
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-lsp": serverConfig },
+				idleTimeoutMs: undefined,
+			});
+
+			await new LspTool(makeLspSession(tempDir.path())).execute("relative-file-root", {
+				action: "references",
+				file: path.join("packages", "client", "src", "store.js"),
+				line: 1,
+				symbol: "target",
+				timeout: 5,
+			});
+			const initialize = await server.waitFor(message => message.method === "initialize");
+
+			expect(initialize.params).toMatchObject({
+				rootUri: fileToUri(nestedPackage),
+				rootPath: nestedPackage,
+				workspaceFolders: [{ uri: fileToUri(nestedPackage), name: path.basename(nestedPackage) }],
+			});
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 15_000);
+
 	it("keeps relative diagnostics on the session workspace client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-relative-glob-root-");
 		try {
@@ -2701,7 +2778,7 @@ describe("lsp regressions", () => {
 
 			expect(config.servers["csharp-ls"]?.resolvedCommand).toBe(resolvedCsharpLs);
 			expect(getServersForFile(config, path.join(cwd, "Program.cs")).map(([name]) => name)).toEqual(["csharp-ls"]);
-			expect(config.servers["csharp-ls"]?.rootMarkers).toEqual(["."]);
+			expect(config.servers["csharp-ls"]?.rootMarkers).toEqual(["*.sln", "*.csproj", ".git"]);
 			expect(whichSpy).toHaveBeenCalledWith("csharp-ls");
 		} finally {
 			await preloadPluginRoots(path.join(tempDir.path(), "empty-home"), cwd);
@@ -4729,6 +4806,59 @@ describe("lsp regressions", () => {
 			}
 		});
 
+		it("file reload reconciles stale dependency overlays before notifying tsgo", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-reload-tsgo-overlay-");
+			try {
+				const mainFile = path.join(tempDir.path(), "main.ts");
+				const dependencyFile = path.join(tempDir.path(), "dependency.ts");
+				const oldDependency = "export function startCreate(): void {}\n";
+				const newDependency = "export function startCreate(initialPrompt?: string): void {}\n";
+				await Bun.write(mainFile, 'import { startCreate } from "./dependency";\nstartCreate("prompt");\n');
+				await Bun.write(dependencyFile, oldDependency);
+
+				const server = installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						srv.exit(0);
+					}
+				});
+				const config: ServerConfig = { command: "tsgo", fileTypes: [".ts"], rootMarkers: [] };
+				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({ servers: { tsgo: config }, idleTimeoutMs: undefined });
+
+				const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+				await lspClient.ensureFileOpen(client, dependencyFile);
+				await Bun.write(dependencyFile, newDependency);
+				const reloadCursor = server.received.length;
+
+				const result = await new LspTool(makeLspSession(tempDir.path())).execute("reload-tsgo-overlay", {
+					action: "reload",
+					file: "main.ts",
+				});
+				const reloadMessages = server.received.slice(reloadCursor);
+				const dependencyChange = reloadMessages.find(message => {
+					if (message.method !== "textDocument/didChange") return false;
+					const params = message.params as { textDocument?: { uri?: string } } | undefined;
+					return params?.textDocument?.uri === fileToUri(dependencyFile);
+				});
+				const changeIndex = reloadMessages.indexOf(dependencyChange!);
+				const reloadIndex = reloadMessages.findIndex(
+					message => message.method === "workspace/didChangeConfiguration",
+				);
+
+				expect(textResult(result)).toContain("Reloaded tsgo");
+				expect(dependencyChange?.params).toMatchObject({ contentChanges: [{ text: newDependency }] });
+				expect(changeIndex).toBeGreaterThanOrEqual(0);
+				expect(reloadIndex).toBeGreaterThan(changeIndex);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
 		it("workspace reload does not send rust-analyzer/reloadWorkspace to Roslyn (#8571)", async () => {
 			const tempDir = TempDir.createSync("@omp-lsp-reload-non-rust-");
 			try {
@@ -4829,6 +4959,40 @@ describe("lsp regressions", () => {
 		}, 15_000);
 	});
 	describe("reader exit ordering and initialization backoff (#7041)", () => {
+		it("retries jdtls once when the first initialization exits cleanly", async () => {
+			const first = installFakeLsp((message, server) => {
+				if (message.method === "initialize") server.exit(0);
+			});
+			const second = installFakeLsp((message, server) => {
+				if (message.method === "initialize") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "shutdown") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					server.exit(0);
+				}
+			});
+			const spawn = vi.spyOn(piUtils.ptree, "spawn");
+			spawn.mockReset();
+			spawn
+				.mockReturnValueOnce(first.proc as unknown as piUtils.ptree.ChildProcess<"pipe">)
+				.mockReturnValue(second.proc as unknown as piUtils.ptree.ChildProcess<"pipe">);
+			const tempDir = TempDir.createSync("@omp-lsp-jdtls-clean-exit-");
+			try {
+				const config: ServerConfig = { command: "jdtls", fileTypes: [".java"], rootMarkers: [] };
+
+				const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+
+				expect(client.status).toBe("ready");
+				expect(spawn).toHaveBeenCalledTimes(2);
+				expect(first.received.some(message => message.method === "initialize")).toBe(true);
+				expect(second.received.some(message => message.method === "initialize")).toBe(true);
+			} finally {
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		});
+
 		it("surfaces the process diagnostic when stdout closes before exit publication", async () => {
 			installFakeLsp(
 				(message, server) => {

@@ -34,7 +34,6 @@ import {
 	BATCH_DIAGNOSTICS_WAIT_TIMEOUT_MS,
 	formatLocationWithContext,
 	hasRustWorkspaceAncestor,
-	isOnlyQueriedDeclaration,
 	MAX_GLOB_DIAGNOSTIC_TARGETS,
 	normalizeLocationResult,
 	PROJECT_INDEXED_ACTIONS,
@@ -97,6 +96,7 @@ import {
 	formatLocation,
 	formatSymbolInformation,
 	formatWorkspaceEdit,
+	hasGlobPattern,
 	resolveDiagnosticTargets,
 	resolveSymbolPosition,
 	sortDiagnostics,
@@ -129,18 +129,23 @@ interface FileRenamePair {
 }
 
 /**
- * Keep relative tool paths in the session workspace, but let an explicit
- * absolute file select the nearest project recognized by this server.
+ * Keep glob queries in the session workspace, but let a concrete file select
+ * the nearest project recognized by this server. Relative paths are concrete
+ * files too: pinning them to the session root can route a monorepo child file
+ * through an unrelated sibling project's language-server installation.
  */
-function getExplicitFileClientCwd(
+function getFileClientCwd(
 	fileArgument: string,
 	resolvedFile: string,
 	serverConfig: ServerConfig,
 	sessionCwd: string,
 ): string {
-	if (!path.isAbsolute(fileArgument)) return sessionCwd;
+	if (hasGlobPattern(fileArgument)) return sessionCwd;
 	return findLspProjectRoot(resolvedFile, serverConfig.rootMarkers) ?? sessionCwd;
 }
+
+const CSHARP_LS_INDEXING_HINT =
+	"csharp-ls may not have indexed this project or the file may be outside its loaded MSBuild workspace. Retry after project load completes; if it persists, verify the initialized project root and csharp-ls logs.";
 
 /**
  * Enumerate the {oldUri, newUri} pairs needed for an LSP willRenameFiles/didRenameFiles request.
@@ -355,10 +360,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					totalServerAttempts++;
 					try {
 						throwIfAborted(signal);
-						let serverCwd = this.session.cwd;
-						if (file && file !== "*" && path.isAbsolute(file)) {
-							serverCwd = getExplicitFileClientCwd(file, resolved, serverConfig, this.session.cwd);
-						}
+						const serverCwd = getFileClientCwd(file, resolved, serverConfig, this.session.cwd);
 						if (serverConfig.createClient) {
 							const linterClient = getLinterClient(serverName, serverConfig, this.session.cwd);
 							const diagnostics = await linterClient.lint(resolved, signal);
@@ -1166,10 +1168,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 		}
 
 		const [serverName, serverConfig] = serverInfo;
-		let clientCwd = this.session.cwd;
-		if (resolvedFile && file && file !== "*" && path.isAbsolute(file)) {
-			clientCwd = getExplicitFileClientCwd(file, resolvedFile, serverConfig, this.session.cwd);
-		}
+		const serverCommand = path.basename(serverConfig.resolvedCommand ?? serverConfig.command).replace(/\.exe$/i, "");
+		const isCsharpLs = serverName === "csharp-ls" || serverCommand === "csharp-ls";
+		const clientCwd =
+			resolvedFile && file ? getFileClientCwd(file, resolvedFile, serverConfig, this.session.cwd) : this.session.cwd;
 
 		if (action === "reload") clearInitializationFailure(serverConfig, clientCwd);
 
@@ -1233,7 +1235,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				// =====================================================================
 
 				case "definition": {
-					const result = (await sendRequest(
+					let result = (await sendRequest(
 						client,
 						"textDocument/definition",
 						{
@@ -1243,7 +1245,22 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						signal,
 					)) as Location | Location[] | LocationLink | LocationLink[] | null;
 
-					const locations = normalizeLocationResult(result);
+					let locations = normalizeLocationResult(result);
+					if (locations.length === 0 && isProjectAwareLspServer(serverConfig)) {
+						await waitForProjectLoaded(client, signal);
+						throwIfAborted(signal);
+						await untilAborted(signal, () => Bun.sleep(REFERENCES_RETRY_DELAY_MS));
+						result = (await sendRequest(
+							client,
+							"textDocument/definition",
+							{
+								textDocument: { uri },
+								position,
+							},
+							signal,
+						)) as Location | Location[] | LocationLink | LocationLink[] | null;
+						locations = normalizeLocationResult(result);
+					}
 
 					if (locations.length === 0) {
 						output = "No definition found";
@@ -1308,25 +1325,46 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				}
 				case "references": {
 					let result: Location[] | null = null;
+					let previousResultSignature: string | undefined;
 					for (let attempt = 0; attempt <= REFERENCES_RETRY_COUNT; attempt++) {
-						result = (await sendRequest(
-							client,
-							"textDocument/references",
-							{
-								textDocument: { uri },
-								position,
-								context: { includeDeclaration: true },
-							},
-							signal,
-						)) as Location[] | null;
+						try {
+							result = (await sendRequest(
+								client,
+								"textDocument/references",
+								{
+									textDocument: { uri },
+									position,
+									context: { includeDeclaration: true },
+								},
+								signal,
+							)) as Location[] | null;
+						} catch (error) {
+							if (!(isCsharpLs && error instanceof Error && error.message.includes("AggregateException")))
+								throw error;
+							if (attempt === REFERENCES_RETRY_COUNT) {
+								throw new Error(`${error.message}. ${CSHARP_LS_INDEXING_HINT}`);
+							}
+							await waitForProjectLoaded(client, signal);
+							throwIfAborted(signal);
+							await untilAborted(signal, () => Bun.sleep(REFERENCES_RETRY_DELAY_MS));
+							continue;
+						}
 
 						const locations = result ?? [];
 						if (!isProjectAwareLspServer(serverConfig) || attempt === REFERENCES_RETRY_COUNT) {
 							break;
 						}
-						if (locations.length > 0 && !isOnlyQueriedDeclaration(locations, uri, position)) {
+						const resultSignature = locations
+							.map(location => {
+								const { start, end } = location.range;
+								return `${location.uri}:${start.line}:${start.character}:${end.line}:${end.character}`;
+							})
+							.sort()
+							.join("\n");
+						if (previousResultSignature === resultSignature) {
 							break;
 						}
+						previousResultSignature = resultSignature;
 
 						await waitForProjectLoaded(client, signal);
 						throwIfAborted(signal);
@@ -1334,8 +1372,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					}
 
 					if (!result || result.length === 0) {
-						output = "No references found";
-						useless = true;
+						if (isCsharpLs) {
+							output = `No references found. ${CSHARP_LS_INDEXING_HINT}`;
+						} else {
+							output = "No references found";
+							useless = true;
+						}
 					} else {
 						const contextualReferences = result.slice(0, REFERENCE_CONTEXT_LIMIT);
 						const plainReferences = result.slice(REFERENCE_CONTEXT_LIMIT);
@@ -1474,8 +1516,12 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					)) as (DocumentSymbol | SymbolInformation)[] | null;
 
 					if (!result || result.length === 0) {
-						output = "No symbols found";
-						useless = true;
+						if (isCsharpLs) {
+							output = `No symbols found. ${CSHARP_LS_INDEXING_HINT}`;
+						} else {
+							output = "No symbols found";
+							useless = true;
+						}
 					} else {
 						const relPath = formatPathRelativeToCwd(targetFile, this.session.cwd);
 						if ("selectionRange" in result[0]) {

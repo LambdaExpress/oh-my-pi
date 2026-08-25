@@ -869,6 +869,49 @@ describe("github tool", () => {
 		},
 	);
 
+	it.each([
+		"unexpected EOF",
+		"dial tcp 198.18.0.99:443: connectex: A connection attempt failed because the connected party did not properly respond after a period of time",
+	] as const)("readonly Actions API: retries one transient %s transport failure", async transportError => {
+		const waits: number[] = [];
+		const runSpy = vi
+			.spyOn(git.github, "run")
+			.mockResolvedValueOnce({
+				exitCode: 1,
+				stdout: "",
+				stderr: `Get "https://api.github.com/repos/owner/repo/actions/runs/42/jobs?page=1&per_page=100": ${transportError}`,
+			})
+			.mockResolvedValueOnce({ exitCode: 0, stdout: '{"jobs":[]}', stderr: "" });
+
+		const result = await git.github.json<{ jobs: unknown[] }>(
+			"/tmp/test",
+			["api", "--method", "GET", "/repos/owner/repo/actions/runs/42/jobs", "-F", "page=1"],
+			undefined,
+			{
+				retryWait: async delayMs => {
+					waits.push(delayMs);
+				},
+			},
+		);
+
+		expect(result).toEqual({ jobs: [] });
+		expect(runSpy).toHaveBeenCalledTimes(2);
+		expect(waits).toEqual([100]);
+	});
+
+	it("does not retry a mutating gh api request", async () => {
+		const runSpy = vi.spyOn(git.github, "run").mockResolvedValue({
+			exitCode: 1,
+			stdout: "",
+			stderr: 'Get "https://api.github.com/repos/owner/repo/issues": unexpected EOF',
+		});
+
+		await expect(
+			git.github.json("/tmp/test", ["api", "--method", "POST", "/repos/owner/repo/issues"]),
+		).rejects.toThrow("unexpected EOF");
+		expect(runSpy).toHaveBeenCalledTimes(1);
+	});
+
 	it("search_code: bounds repeated transient transport failures", async () => {
 		const waits: number[] = [];
 		const failure = {
