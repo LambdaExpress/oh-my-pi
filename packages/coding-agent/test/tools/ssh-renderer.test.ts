@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
 import { getThemeByName, highlightCode } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { streamTailUpdates, TailBuffer } from "@oh-my-pi/pi-coding-agent/session/streaming-output";
@@ -6,7 +7,7 @@ import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-man
 import * as sshExecutor from "@oh-my-pi/pi-coding-agent/ssh/ssh-executor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { type SSHToolDetails, SshTool, sshToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/ssh";
-import { renderXdevCall } from "@oh-my-pi/pi-coding-agent/tools/xdev";
+import { writeToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/write";
 
 const host: SSHHost = {
 	name: "remote",
@@ -115,7 +116,18 @@ describe("SSH command highlighting", () => {
 		const directLine = direct.render(200).find(line => Bun.stripANSI(line).includes(command));
 		expect(directLine).toContain(expected);
 
-		const mounted = renderXdevCall("ssh", partialJson, { expanded: true, isPartial: true }, uiTheme, () => tool);
+		const mounted = writeToolRenderer.renderCall(
+			{ path: "xd://ssh", content: partialJson },
+			{
+				expanded: true,
+				isPartial: true,
+				renderContext: { resolveXdevMounted: () => tool as unknown as AgentTool },
+			},
+			uiTheme,
+		);
+		const mountedText = Bun.stripANSI(mounted?.render(200).join("\n") ?? "");
+		expect(mountedText).toContain("SSH");
+		expect(mountedText).not.toContain("queued");
 		const mountedLine = mounted?.render(200).find(line => Bun.stripANSI(line).includes(command));
 		expect(mountedLine).toContain(expected);
 	});
@@ -132,7 +144,15 @@ describe("SSH command highlighting", () => {
 		for (const { language, command } of cases) {
 			const partialJson = `{"host":"remote","command":"${command}`;
 			const expected = highlightCode(command, language, uiTheme)[0];
-			const mounted = renderXdevCall("ssh", partialJson, { expanded: true, isPartial: true }, uiTheme, () => tool);
+			const mounted = writeToolRenderer.renderCall(
+				{ path: "xd://ssh", content: partialJson },
+				{
+					expanded: true,
+					isPartial: true,
+					renderContext: { resolveXdevMounted: () => tool as unknown as AgentTool },
+				},
+				uiTheme,
+			);
 			const commandLine = mounted?.render(200).find(line => Bun.stripANSI(line).includes(command));
 			expect(commandLine).toContain(expected);
 		}

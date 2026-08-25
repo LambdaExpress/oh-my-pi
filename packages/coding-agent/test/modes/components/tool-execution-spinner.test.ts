@@ -291,71 +291,42 @@ describe("ToolExecutionComponent live preview spinners", () => {
 		}
 	});
 
-	it("keeps the full tool renderer under transcript pressure", () => {
-		const component = new ToolExecutionComponent(
-			"bash",
-			{ command: "bun test packages/tui" },
-			{},
-			undefined,
-			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
-			process.cwd(),
-		);
+	it("keeps normal multi-line tool frames throughout a pressured live transcript", () => {
+		const ui = { requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI;
+		const transcript = new TranscriptContainer();
+		const components = ["alpha", "bravo", "charlie", "delta"].map(name => {
+			const component = new ToolExecutionComponent(
+				"bash",
+				{ command: `printf '${name}\\n'` },
+				{},
+				undefined,
+				ui,
+				process.cwd(),
+			);
+			transcript.addChild(component);
+			return component;
+		});
 		try {
-			const full = component.render(80);
-			const plain = stripVTControlCharacters(full.join("\n"));
-			expect(full.length).toBeGreaterThanOrEqual(3);
-			expect(plain).toContain("bun test packages/tui");
-			expect(plain).not.toContain("bash · bun test packages/tui");
-		} finally {
-			component.stopAnimation();
-		}
-	});
-	// Regression: a live hub call whose streamed args have not parsed yet
-	// (op still unknown) folded to a contentless `╭─ Hub` / `╰` frame under
-	// viewport pressure. A squeezed block keeps its real render whenever it
-	// fits the allocation; only genuinely overflowing blocks fold.
-	it("keeps the real render on squeezed hub blocks when it fits", () => {
-		const component = new ToolExecutionComponent(
-			"hub",
-			{},
-			{},
-			{ name: "hub", label: "Hub" } as never,
-			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
-			process.cwd(),
-		);
-		try {
-			component.setTranscriptAllocation(2, { tick: 0, now: 0 });
-			const pending = component.render(80).map(row => stripVTControlCharacters(row));
-			expect(pending).toHaveLength(1);
-			expect(pending[0]).toContain("Hub");
-			expect(pending[0]).not.toContain("╭");
+			// The first call remains active, so the finalized successors cannot retire
+			// past it. This is the exact long-running-task shape that previously made
+			// every tool card degrade to a one-line `bash · command` summary.
+			for (let index = 1; index < components.length; index++) {
+				components[index]!.updateResult(
+					{ content: [{ type: "text", text: `${index}: output line one\n${index}: output line two` }] },
+					false,
+				);
+			}
 
-			component.updateResult({ content: [{ type: "text", text: "done" }] }, false);
-			const settled = component.render(80).map(row => stripVTControlCharacters(row));
-			expect(settled.length).toBeLessThanOrEqual(2);
-			expect(settled.join("\n")).toContain("done");
+			const plain = transcript
+				.renderViewport(80, 10)
+				.map(row => stripVTControlCharacters(row))
+				.join("\n");
+			expect(plain).toContain("delta");
+			expect(plain).toContain("3: output line one");
+			expect(plain).toContain("3: output line two");
+			expect(plain).not.toMatch(/[•╭─]\s+bash\s+·/i);
 		} finally {
-			component.stopAnimation();
-		}
-	});
-
-	it("folds an overflowing squeezed hub block to a frame naming its op target", () => {
-		const component = new ToolExecutionComponent(
-			"hub",
-			{ op: "send", to: "Main", message: "hi" },
-			{},
-			{ name: "hub", label: "Hub" } as never,
-			{ requestRender: vi.fn(), requestComponentRender: vi.fn() } as unknown as TUI,
-			process.cwd(),
-		);
-		try {
-			component.updateResult({ content: [{ type: "text", text: "line1\nline2\nline3\nline4" }] }, false);
-			component.setTranscriptAllocation(1, { tick: 0, now: 0 });
-			const folded = component.render(80).map(row => stripVTControlCharacters(row));
-			expect(folded).toHaveLength(1);
-			expect(folded[0]).toContain("Hub · send → Main");
-		} finally {
-			component.stopAnimation();
+			for (const component of components) component.stopAnimation();
 		}
 	});
 

@@ -25,9 +25,9 @@
  * `read xd://<tool>` remains for on-demand re-fetch.
  *
  * Rendering: the write renderer draws NOTHING until the streamed `path` is
- * known and provably does not target `xd://`. Device writes then show as
- * queued/planning until `tool_execution_start`, and only then delegate to the
- * wrapped tool's own renderer with the decoded inner args.
+ * known and provably does not target `xd://`. Device writes normally show as
+ * queued/planning until `tool_execution_start`; renderers that can accurately
+ * represent the pre-execution state may opt into an earlier delegated preview.
  */
 import type { AgentToolContext, AgentToolResult, AgentToolUpdateCallback, ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import { type Tool as AiTool, jsonSchemaToTypeScript, toolWireSchema, validateToolArguments } from "@oh-my-pi/pi-ai";
@@ -485,12 +485,15 @@ export async function dispatchXdevTool(
 function resolveDeviceRenderer(
 	name: string,
 	mounted: Tool | undefined,
-): Pick<ToolRenderer, "renderCall" | "renderResult" | "mergeCallAndResult"> | undefined {
+): Pick<ToolRenderer, "renderCall" | "renderResult" | "mergeCallAndResult" | "renderCallBeforeExecution"> | undefined {
 	if (mounted && (mounted.renderCall || mounted.renderResult)) {
 		// A mounted AgentTool exposes the same renderCall/renderResult/mergeCallAndResult
 		// surface as a static ToolRenderer; only the parameter generics differ, so unify
 		// through a single cast rather than fabricating a per-field shape.
-		return mounted as unknown as Pick<ToolRenderer, "renderCall" | "renderResult" | "mergeCallAndResult">;
+		return mounted as unknown as Pick<
+			ToolRenderer,
+			"renderCall" | "renderResult" | "mergeCallAndResult" | "renderCallBeforeExecution"
+		>;
 	}
 	return rendererLookup?.(name);
 }
@@ -528,11 +531,10 @@ function renderQueuedXdevCall(
 /**
  * Streaming-safe call preview for an `xd://` write. Until the write actually
  * executes (`executionStarted` / `tool_execution_start`), show a queued/planning
- * card so Grok-style think-after-toolcall stalls do not look like a hung
- * inner tool. `argsComplete` alone is not enough: exclusive writes can sit
- * complete at `message_end` while an earlier call still runs. Once execution
- * starts, forward the decoded inner args to the mounted tool's renderer
- * (session instance first, then the static map). Returns `undefined` (render
+ * card unless the inner renderer explicitly supports the pre-execution state.
+ * `argsComplete` alone is not enough: exclusive writes can sit complete at
+ * `message_end` while an earlier call still runs. Renderer delegation resolves
+ * the session instance first, then the static map. Returns `undefined` (render
  * nothing) when no renderer produces output.
  */
 export function renderXdevCall(
@@ -544,10 +546,10 @@ export function renderXdevCall(
 ): Component | undefined {
 	const mounted = resolveMounted?.(name);
 	const args = decodeInnerArgs(content);
-	if (!options.executionStarted) {
+	const renderer = resolveDeviceRenderer(name, mounted);
+	if (!options.executionStarted && !renderer?.renderCallBeforeExecution) {
 		return renderQueuedXdevCall(displayDeviceLabel(name, mounted), args, options, theme);
 	}
-	const renderer = resolveDeviceRenderer(name, mounted);
 	if (renderer?.renderCall) {
 		return renderer.renderCall(args, options, theme);
 	}
