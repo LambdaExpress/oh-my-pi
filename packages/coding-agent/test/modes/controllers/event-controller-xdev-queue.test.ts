@@ -1,6 +1,8 @@
 /**
- * Exclusive `write xd://…` calls stay queued after `message_end` (which marks
- * every pending call args-complete) until that call's own `tool_execution_start`.
+ * Exclusive `write xd://…` calls normally stay queued after `message_end`
+ * (which marks every pending call args-complete) until that call's own
+ * `tool_execution_start`. Renderers that support a pre-execution preview keep
+ * their own tool frame throughout the same lifecycle.
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
@@ -91,7 +93,7 @@ function cardText(pendingTools: Map<string, ToolExecutionComponent>, id: string)
 	return Bun.stripANSI(component.render(120).join("\n"));
 }
 
-describe("EventController queues exclusive device writes until execution starts", () => {
+describe("EventController renders exclusive device writes before execution", () => {
 	afterEach(() => {
 		resetSettingsForTest();
 		vi.restoreAllMocks();
@@ -148,5 +150,26 @@ describe("EventController queues exclusive device writes until execution starts"
 		} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
 		expect(controller.hasToolExecutionStarted("write-2")).toBe(true);
 		expect(cardText(pendingTools, "write-2")).not.toContain("queued");
+	});
+
+	it("uses the SSH frame while device arguments stream", async () => {
+		await Settings.init({ inMemory: true, cwd: process.cwd() });
+		settings.set("display.smoothStreaming", false);
+
+		const command = 'if true; then echo "streamed"; fi';
+		const streaming = makeStreamingMessage([deviceWrite("write-ssh", "ssh", { host: "remote", command })]);
+		const { controller, pendingTools } = createFixture(streaming);
+
+		await controller.handleEvent({
+			type: "message_update",
+			message: streaming,
+			assistantMessageEvent: undefined as never,
+		} as Extract<AgentSessionEvent, { type: "message_update" }>);
+
+		const rendered = cardText(pendingTools, "write-ssh");
+		expect(rendered).toContain("SSH");
+		expect(rendered).toContain("[remote]");
+		expect(rendered).toContain(command);
+		expect(rendered).not.toContain("queued");
 	});
 });

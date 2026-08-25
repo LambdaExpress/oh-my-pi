@@ -806,6 +806,45 @@ describe("UiHelpers.renderSessionContext — mid-stream tool call rebuild", () =
 		const rendered = Bun.stripANSI(chatContainer.render(120).join("\n"));
 		expect(rendered).toContain("GROWN_TAIL_SENTINEL");
 	});
+
+	it("rebuilds a streamed xd://ssh call as the SSH frame", async () => {
+		await Settings.init({ inMemory: true });
+		const command = 'if true; then echo "rebuilt"; fi';
+		const streamedWriteArgs = JSON.stringify({
+			path: "xd://ssh",
+			content: JSON.stringify({ host: "remote", command }),
+		});
+		const transcript = transcriptWith([
+			{
+				role: "assistant",
+				content: [
+					{
+						type: "toolCall",
+						id: "ssh-mid",
+						name: "write",
+						arguments: { path: "xd://ssh", content: '{"host":"remote","command":"stale"}' },
+						[kStreamingPartialJson]: streamedWriteArgs,
+					},
+				],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet",
+				usage: emptyUsage,
+				stopReason: "toolUse",
+				timestamp: 1,
+			},
+		]);
+		const { ctx, chatContainer } = makeRenderCtx(transcript);
+
+		await new UiHelpers(ctx).renderInitialMessages();
+
+		const rendered = Bun.stripANSI(chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("SSH");
+		expect(rendered).toContain("[remote]");
+		expect(rendered).toContain(command);
+		expect(rendered).not.toContain("queued");
+		expect(rendered).not.toContain("stale");
+	});
 });
 
 describe("UiHelpers.renderInitialMessages — replay convergence (issue #7811)", () => {

@@ -17,7 +17,7 @@ import { $ } from "bun";
 import { settings } from "../config/settings";
 import { t } from "../i18n";
 import { theme } from "../modes/theme/theme";
-import { parseReleaseCodeTag, RELEASE_CODE } from "../release-code";
+import { formatVersionWithBuild, parseReleaseCodeTag, RELEASE_CODE } from "../release-code";
 import {
 	isTimeoutError,
 	isUnsupportedProxyError,
@@ -1186,12 +1186,18 @@ async function verifyInstalledVersion(
 }
 
 function formatExpectedRelease(expectedVersion: string, expectedReleaseCode?: number): string {
-	return expectedReleaseCode === undefined ? expectedVersion : `${expectedVersion}+code.${expectedReleaseCode}`;
+	return expectedReleaseCode === undefined
+		? `v${expectedVersion}`
+		: `v${formatVersionWithBuild(expectedVersion, expectedReleaseCode)}`;
+}
+
+function formatNamedRelease(expectedVersion: string, expectedReleaseCode?: number): string {
+	return `${APP_NAME} ${formatExpectedRelease(expectedVersion, expectedReleaseCode)}`;
 }
 
 function printVerifiedVersion(expectedVersion: string, expectedReleaseCode?: number): void {
 	const icon = theme?.status?.success ?? "✔";
-	console.log(chalk.green(`\n${icon} Updated to ${formatExpectedRelease(expectedVersion, expectedReleaseCode)}`));
+	console.log(chalk.green(`\n${icon} Updated to ${formatNamedRelease(expectedVersion, expectedReleaseCode)}`));
 }
 
 function formatVerificationFailure(
@@ -1508,7 +1514,7 @@ function packageManagerMigrationSteps(manager: "bun" | "npm", release: ReleaseIn
 			}
 			return agentExit;
 		},
-		verify: () => verifyInstalledVersion(release.version),
+		verify: () => verifyInstalledVersion(release.version, release.code),
 	};
 }
 
@@ -1548,10 +1554,10 @@ export async function migrateRenamedInstall(release: ReleaseInfo, steps: RenameM
 	}
 	if (!verification.ok) {
 		throw new Error(
-			`${formatVerificationFailure(verification, release.version)}; reinstall with: curl -fsSL https://omp.sh/install | sh`,
+			`${formatVerificationFailure(verification, release.version, release.code)}; reinstall with: curl -fsSL https://omp.sh/install | sh`,
 		);
 	}
-	printVerifiedVersion(release.version);
+	printVerifiedVersion(release.version, release.code);
 }
 
 /**
@@ -1572,7 +1578,7 @@ async function updateViaBun(release: ReleaseInfo): Promise<InstalledVersionVerif
 		if (result.exitCode !== 0) {
 			throw new Error(t("bun install failed with exit code {code}", { code: result.exitCode }));
 		}
-		verification = await verifyInstalledVersion(release.version);
+		verification = await verifyInstalledVersion(release.version, release.code);
 	}
 	try {
 		const pruneResult = await pruneBunCacheAfterGlobalInstall();
@@ -1597,7 +1603,7 @@ async function updateViaNpm(release: ReleaseInfo): Promise<InstalledVersionVerif
 		throw new Error(t("npm install failed with exit code {code}", { code: result.exitCode }));
 	}
 
-	return await verifyInstalledVersion(release.version);
+	return await verifyInstalledVersion(release.version, release.code);
 }
 /** Injectable steps for {@link updateViaManager}; mirrors {@link RenameMigrationSteps}. */
 export interface ManagerUpdateSteps {
@@ -1620,12 +1626,15 @@ function packageManagerUpdateSteps(manager: "bun" | "npm", release: ReleaseInfo)
 	return {
 		manager,
 		install: () => (manager === "bun" ? updateViaBun(release) : updateViaNpm(release)),
-		verify: () => verifyInstalledVersion(release.version),
+		verify: () => verifyInstalledVersion(release.version, release.code),
 		repair: async launcherPath => {
 			// npm's script shims outrank `.exe` in PowerShell and Git Bash, so
 			// they must be retired rather than merely shadowed.
-			if (isWindowsScriptLauncherPath(launcherPath)) await updateViaShimTakeover(launcherPath, release.version);
-			else await updateViaBinaryAt(launcherPath, release.version);
+			if (isWindowsScriptLauncherPath(launcherPath)) {
+				await updateViaShimTakeover(launcherPath, release.version, { expectedReleaseCode: release.code });
+			} else {
+				await updateViaBinaryAt(launcherPath, release.version, { expectedReleaseCode: release.code });
+			}
 		},
 	};
 }
@@ -1667,15 +1676,15 @@ export async function updateViaManager(
 	const launcherBroken = !result.ok && (result.path === undefined || result.actual === undefined);
 	if (!launcherBroken) {
 		if (installError) throw installError;
-		printVerificationResult(result, release.version);
+		printVerificationResult(result, release.version, release.code);
 		return;
 	}
 	if (!launcherPath) {
-		throw installError ?? new Error(formatVerificationFailure(result, release.version));
+		throw installError ?? new Error(formatVerificationFailure(result, release.version, release.code));
 	}
 	console.log(
 		chalk.yellow(
-			`\n${steps.manager} left no working ${APP_NAME} launcher (${formatVerificationFailure(result, release.version)}); installing the standalone binary at ${launcherPath}.`,
+			`\n${steps.manager} left no working ${APP_NAME} launcher (${formatVerificationFailure(result, release.version, release.code)}); installing the standalone binary at ${launcherPath}.`,
 		),
 	);
 	try {
@@ -1692,7 +1701,7 @@ export async function updateViaManager(
 	);
 }
 
-async function updateViaHomebrew(expectedVersion: string, force: boolean): Promise<void> {
+async function updateViaHomebrew(expectedVersion: string, force: boolean, expectedReleaseCode?: number): Promise<void> {
 	console.log(chalk.dim(t("Updating Homebrew formulae...")));
 	const update = await $`brew update`.nothrow();
 	if (update.exitCode !== 0) {
@@ -1706,10 +1715,10 @@ async function updateViaHomebrew(expectedVersion: string, force: boolean): Promi
 		throw new Error(t("brew {command} failed with exit code {code}", { command: args[0], code: result.exitCode }));
 	}
 
-	await printVerification(expectedVersion);
+	await printVerification(expectedVersion, expectedReleaseCode);
 }
 
-async function updateViaMise(expectedVersion: string, force: boolean): Promise<void> {
+async function updateViaMise(expectedVersion: string, force: boolean, expectedReleaseCode?: number): Promise<void> {
 	console.log(chalk.dim(t("Updating via mise...")));
 	const args = buildMiseUpgradeArgs();
 	const result = await $`mise ${args}`.nothrow();
@@ -1725,7 +1734,7 @@ async function updateViaMise(expectedVersion: string, force: boolean): Promise<v
 		}
 	}
 
-	await printVerification(expectedVersion);
+	await printVerification(expectedVersion, expectedReleaseCode);
 }
 
 // Monotonic within this process so two updates started in the same millisecond
@@ -1973,7 +1982,7 @@ export async function runUpdateCommand(opts: {
 	check: boolean;
 	channel?: UpdateChannel;
 }): Promise<void> {
-	console.log(chalk.dim(`Current version: ${VERSION}+code.${RELEASE_CODE}`));
+	console.log(chalk.dim(`Current version: ${formatNamedRelease(VERSION, RELEASE_CODE)}`));
 	const persistedChannel = readPersistedChannel() ?? "stable";
 	const channel = opts.channel ?? persistedChannel;
 	if (channel === "canary") console.log(chalk.dim("Current channel: canary"));
@@ -1996,9 +2005,13 @@ export async function runUpdateCommand(opts: {
 	}
 
 	if (comparison > 0) {
-		console.log(chalk.cyan(`New release available: code-${release.code}`));
+		console.log(chalk.cyan(`New version available: ${formatNamedRelease(release.version, release.code)}`));
 	} else {
-		console.log(chalk.yellow(t("Forcing reinstall of {version}", { version: `code-${release.code}` })));
+		console.log(
+			chalk.yellow(
+				t("Forcing reinstall of {version}", { version: formatNamedRelease(release.version, release.code) }),
+			),
+		);
 	}
 	if (release.packages.pkg !== PACKAGE) {
 		console.log(chalk.cyan(`The npm package moved to ${release.packages.pkg}; updating migrates this install.`));
@@ -2025,9 +2038,9 @@ export async function runUpdateCommand(opts: {
 			console.log(chalk.dim("Update the flake input or profile that provides omp, then rebuild."));
 			return;
 		} else if (target.method === "brew") {
-			await updateViaHomebrew(release.version, opts.force);
+			await updateViaHomebrew(release.version, opts.force, release.code);
 		} else if (target.method === "mise") {
-			await updateViaMise(release.version, opts.force);
+			await updateViaMise(release.version, opts.force, release.code);
 		} else if (target.method === "bun" || target.method === "npm") {
 			if (forceBinary) {
 				// Reachable in forced mode only through a Windows script

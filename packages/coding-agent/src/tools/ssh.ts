@@ -86,6 +86,7 @@ export class SshTool implements AgentTool<typeof sshSchema, SSHToolDetails> {
 	readonly concurrency = "exclusive" as const;
 	readonly strict = true;
 	readonly mergeCallAndResult = true;
+	readonly renderCallBeforeExecution = true;
 	readonly renderCall = (args: SshRenderArgs, options: RenderResultOptions, renderTheme: unknown): Component => {
 		const decoded = decodeSshRenderArgs(args);
 		return renderSshCall(
@@ -280,6 +281,7 @@ function renderSshCall(
 
 export const sshToolRenderer = {
 	animatedPendingPreview: true,
+	renderCallBeforeExecution: true,
 	renderCall(args: SshRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		return renderSshCall(decodeSshRenderArgs(args), options, uiTheme);
 	},

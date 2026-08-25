@@ -63,6 +63,7 @@
 
 ### Fixed
 
+- Fixed streamed `xd://ssh` calls showing a generic queued card before execution; SSH now keeps one tool frame from argument generation through completion and syntax-highlights Bash and PowerShell command previews.
 - Fixed SSH uploads refreshing progress only after the first chunk and at completion; POSIX and PowerShell targets now report remotely persisted bytes throughout the transfer, keeping both tool cards and the background jobs hub live.
 - Fixed background SSH transfers leaving their original tool card at 0% instead of repainting live progress and the terminal result.
 - Fixed fork bootstrap installs falling back to the upstream npm package when Bun was present, and made Windows installs take PATH precedence over older upstream installations immediately.

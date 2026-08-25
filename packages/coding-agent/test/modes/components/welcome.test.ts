@@ -58,6 +58,12 @@ describe("WelcomeComponent", () => {
 		expect(output).toContain(modelName);
 	});
 
+	it("renders the OMP version with its release build number", () => {
+		const output = Bun.stripANSI(new WelcomeComponent("18.0.4 Build 42", "model", "provider").render(80).join("\n"));
+
+		expect(output).toContain("omp v18.0.4 Build 42");
+	});
+
 	it("weights [NEW] tips above ordinary tips in selection", () => {
 		// Data-independent: tips.txt may legitimately carry zero "[NEW]" tips, so
 		// exercise the weighting contract on a synthetic list.

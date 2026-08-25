@@ -79,7 +79,7 @@ import { ensureTheme, initTheme, stopThemeWatcher } from "./modes/theme/theme";
 import type { SubmittedUserInput } from "./modes/types";
 import { createWarpEventBridgeExtension } from "./modes/warp-events";
 import { AgentLifecycleManager } from "./registry/agent-lifecycle";
-import { RELEASE_CODE } from "./release-code";
+import { formatVersionWithBuild, RELEASE_CODE } from "./release-code";
 import {
 	type CreateAgentSessionOptions,
 	type CreateAgentSessionResult,
@@ -136,7 +136,7 @@ async function checkForNewVersion(): Promise<string | undefined> {
 	try {
 		const channel = settings.get("update.channel");
 		const release = await getLatestRelease({ timeoutMs: 5_000, channel });
-		return release.code > RELEASE_CODE ? `code-${release.code}` : undefined;
+		return release.code > RELEASE_CODE ? formatVersionWithBuild(VERSION, release.code) : undefined;
 	} catch {
 		return undefined;
 	}
@@ -2044,7 +2044,7 @@ export async function runRootCommand(
 					logger.endTiming();
 					await runInteractiveMode(
 						session,
-						VERSION,
+						formatVersionWithBuild(VERSION, RELEASE_CODE),
 						startupChangelog,
 						notifs,
 						versionCheckPromise,

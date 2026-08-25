@@ -1,32 +1,52 @@
 import { describe, expect, test } from "bun:test";
 import { describeChunkFailure } from "./ci-test-ts.ts";
 
-// The two ways a chunk reaches SIGKILL are indistinguishable by exit code, so
-// these drive real subprocesses to produce a genuine 137 rather than asserting
-// against a hand-written constant.
-async function spawnExitCode(script: string): Promise<number> {
-	const proc = Bun.spawn(["sh", "-c", script], { stdout: "ignore", stderr: "ignore" });
+async function spawnBunExitCode(exitCode: number): Promise<number> {
+	const proc = Bun.spawn([process.execPath, "-e", `process.exit(${exitCode})`], {
+		stdout: "ignore",
+		stderr: "ignore",
+	});
+	return await proc.exited;
+}
+
+// POSIX reports SIGKILL as 128 + 9. Windows has no equivalent signal-exit
+// convention, so drive the same observable runner input through a real child.
+async function spawnUnownedSigkillExitCode(): Promise<number> {
+	if (process.platform === "win32") return await spawnBunExitCode(137);
+	const proc = Bun.spawn([process.execPath, "-e", 'process.kill(process.pid, "SIGKILL")'], {
+		stdout: "ignore",
+		stderr: "ignore",
+	});
 	return await proc.exited;
 }
 
 // Re-hosts the sequential runner's failure tail: spawn, watchdog, attribute.
 // `runTestCommand` itself is not injectable (it builds argv from the repo
-// layout), so the decision under test is driven directly.
-async function runWithWatchdog(script: string, timeoutMs: number): Promise<string> {
-	const proc = Bun.spawn(["sh", "-c", script], { stdout: "ignore", stderr: "ignore" });
-	let timedOut = false;
-	const killTimer = setTimeout(() => {
-		timedOut = true;
-		proc.kill("SIGKILL");
-	}, timeoutMs);
+// layout), so the decision under test is driven directly. A child-ready signal
+// deterministically triggers the same state change and kill as the watchdog.
+async function runWithWatchdog(): Promise<string> {
+	const proc = Bun.spawn(
+		[process.execPath, "-e", 'console.log("ready"); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)'],
+		{
+			stdout: "pipe",
+			stderr: "ignore",
+		},
+	);
+	const reader = proc.stdout.getReader();
+	const ready = await reader.read();
+	reader.releaseLock();
+	if (ready.done || !new TextDecoder().decode(ready.value).includes("ready")) {
+		throw new Error("Watchdog fixture child exited before becoming ready");
+	}
+	const timedOut = true;
+	proc.kill("SIGKILL");
 	const exitCode = await proc.exited;
-	clearTimeout(killTimer);
 	return describeChunkFailure(exitCode, timedOut);
 }
 
 describe("describeChunkFailure", () => {
-	test("a real SIGKILL that the watchdog did not cause is attributed to the OOM killer", async () => {
-		const exitCode = await spawnExitCode("kill -9 $$");
+	test("an exit 137 that the watchdog did not cause is attributed to the OOM killer", async () => {
+		const exitCode = await spawnUnownedSigkillExitCode();
 		expect(exitCode).toBe(137);
 
 		const message = describeChunkFailure(exitCode, false);
@@ -37,7 +57,7 @@ describe("describeChunkFailure", () => {
 	});
 
 	test("a watchdog kill is attributed to the watchdog, not to memory", async () => {
-		const message = await runWithWatchdog("sleep 30", 150);
+		const message = await runWithWatchdog();
 		expect(message).toContain("chunk watchdog");
 		expect(message).toContain("OMP_TEST_CHUNK_TIMEOUT");
 		expect(message).not.toContain("OOM killer");
@@ -50,7 +70,7 @@ describe("describeChunkFailure", () => {
 	});
 
 	test("an ordinary test failure keeps the plain wording", async () => {
-		const exitCode = await spawnExitCode("exit 1");
+		const exitCode = await spawnBunExitCode(1);
 		expect(exitCode).toBe(1);
 		expect(describeChunkFailure(exitCode, false)).toBe("failed with exit code 1");
 	});
