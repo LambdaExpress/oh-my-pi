@@ -302,6 +302,37 @@ describe("libkitty end-to-end", () => {
 		}
 	});
 
+	it("streams every row of an unfinished full-fidelity block into native history", async () => {
+		const width = 80;
+		term = new VirtualTerminal(width, 10);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		composer.setPreferences({ quiet: true });
+		composer.setHeaderExtras([], []);
+		const markers = Array.from({ length: 24 }, (_, index) => `ACTIVE-FULL-${String(index).padStart(2, "0")}`);
+		const streamedRows: string[] = [];
+		const block = {
+			render: () => streamedRows,
+			isTranscriptBlockFinalized: () => false,
+		};
+		mode.chatContainer.addChild(block);
+		for (const marker of markers) {
+			streamedRows.push(marker);
+			mode.ui.renderNow();
+		}
+		for (let frame = 0; frame < 2; frame++) mode.ui.renderNow();
+		await term.flush();
+
+		const rows = plainRows(term.getScrollBuffer());
+		for (const marker of markers) {
+			expect(rows.filter(row => row.includes(marker))).toHaveLength(1);
+		}
+	});
+
 	it("hides thinking already retired to native scrollback when Ctrl+T toggles", async () => {
 		const usage: Usage = {
 			input: 0,

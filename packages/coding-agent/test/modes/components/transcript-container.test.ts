@@ -130,20 +130,22 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 2)).toEqual(["tool detail", "tool body"]);
 	});
 
-	it("never retires a finalized successor past an active predecessor", () => {
+	it("snapshots an overflowing active predecessor before showing its finalized successor", () => {
 		const transcript = new TranscriptContainer();
 		const active = new Block(["active live"], false);
 		const settled = new Block(["settled final"], true);
 		transcript.addChild(active);
 		transcript.addChild(settled);
 
-		// Pressure exists but the prefix starts with an active block: no batch,
-		// and both blocks still render (clipped by the viewport).
-		expect(transcript.peekFinalizedBatch(80, 1)).toBeUndefined();
-		expect(transcript.renderViewport(80, 10)).toEqual(["active live", "", "settled final"]);
+		const snapshot = transcript.peekFinalizedBatch(80, 1);
+		expect(snapshot?.rows).toEqual(["active live", ""]);
+		if (!snapshot) throw new Error("expected active visual snapshot");
+		transcript.acknowledgeFinalizedBatch(snapshot.id);
+		expect(transcript.renderViewport(80, 1)).toEqual(["settled final"]);
 
 		active.finalize(["active final"]);
-		// Capacity 1 fits the remaining settled block, so only the first retires.
+		// The active block changed after its visual snapshot. Replay its complete
+		// final form rather than dropping the changed row behind the old watermark.
 		expect(transcript.peekFinalizedBatch(80, 1)?.rows).toEqual(["active final", ""]);
 	});
 
@@ -193,6 +195,22 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 3)).toEqual(["", "second top", "second bottom"]);
 		expect(transcript.renderViewport(80, 1)).toEqual(["second bottom"]);
 		expect(transcript.canAdmit(2)).toBe(false);
+	});
+	it("moves overflowing full-fidelity active rows into visual history instead of clipping them", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["ACTIVE-0", "ACTIVE-1", "ACTIVE-2"], false));
+		transcript.addChild(new Block(["SETTLED-0", "SETTLED-1", "SETTLED-2"], true));
+
+		const tape: string[] = [];
+		for (let frame = 0; frame < 8; frame++) {
+			const batch = transcript.peekFinalizedBatch(80, 2);
+			if (!batch) break;
+			tape.push(...batch.rows);
+			transcript.acknowledgeFinalizedBatch(batch.id);
+		}
+		tape.push(...transcript.renderViewport(80, 2));
+
+		expect(tape.filter(Boolean)).toEqual(["ACTIVE-0", "ACTIVE-1", "ACTIVE-2", "SETTLED-0", "SETTLED-1", "SETTLED-2"]);
 	});
 	it("does not report settled resume backlog as active", () => {
 		const transcript = new TranscriptContainer();
@@ -328,6 +346,26 @@ describe("TranscriptContainer", () => {
 		expect(transcript.peekFinalizedBatch(40, 10)?.rows).toEqual(["tail", ""]);
 	});
 
+	it("does not reuse a visual snapshot row count after width reflow", () => {
+		const transcript = new TranscriptContainer();
+		const active = {
+			render: (width: number): readonly string[] =>
+				width <= 40 ? ["narrow-0", "narrow-1", "narrow-2"] : ["wide-0", "wide-1"],
+			isTranscriptBlockFinalized: () => false,
+		};
+		transcript.addChild(active);
+
+		const wide = transcript.peekFinalizedBatch(80, 1);
+		expect(wide?.rows).toEqual(["wide-0"]);
+		if (!wide) throw new Error("expected wide visual snapshot");
+		transcript.acknowledgeFinalizedBatch(wide.id);
+
+		// The old one-row watermark belongs to the 80-column projection. At the
+		// new width, all three current rows must be eligible for display/retirement;
+		// reusing the old row count would silently hide narrow-0.
+		expect(transcript.renderViewport(40, 10)).toEqual(["narrow-0", "narrow-1", "narrow-2"]);
+	});
+
 	it("clears an acknowledged partial watermark on destructive reset", () => {
 		const transcript = new TranscriptContainer();
 		const active = new PrefixBlock(["T0", "T1"], false);
@@ -344,15 +382,18 @@ describe("TranscriptContainer", () => {
 		expect(transcript.canRemoveBlock(active)).toBe(true);
 	});
 
-	it("keeps an undeclared active prefix behind the mutable barrier", () => {
+	it("snapshots only the overflowing rows of an undeclared active block", () => {
 		const transcript = new TranscriptContainer();
 		const active = new Block(["T0", "T1", "T2", "T3"], false);
 		transcript.addChild(active);
 
-		expect(transcript.peekFinalizedBatch(80, 3)).toBeUndefined();
+		const snapshot = transcript.peekFinalizedBatch(80, 3);
+		expect(snapshot?.rows).toEqual(["T0"]);
+		if (!snapshot) throw new Error("expected overflowing visual row");
+		transcript.acknowledgeFinalizedBatch(snapshot.id);
 		expect(transcript.renderViewport(80, 3)).toEqual(["T1", "T2", "T3"]);
 
 		active.finalize(["T0", "T1", "T2", "T3"]);
-		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual(["T0", "T1", "T2", "T3", ""]);
+		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual(["T1", "T2", "T3", ""]);
 	});
 });
