@@ -2287,6 +2287,113 @@ describe("lsp regressions", () => {
 		}
 	}, 15_000);
 
+	it("maps workspace-relative root markers onto external worktrees for semantic requests", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-external-worktree-root-");
+		try {
+			const sessionCwd = path.join(tempDir.path(), "session");
+			const worktree = path.join(tempDir.path(), "services-cen21-worktree");
+			const solutionRoot = path.join(worktree, "21stCenturyServices");
+			const projectRoot = path.join(solutionRoot, "ROM.MessageQueue");
+			const targetFile = path.join(projectRoot, "RabbitMqQueueTopology.cs");
+			await fs.promises.mkdir(sessionCwd, { recursive: true });
+			await Bun.write(path.join(solutionRoot, "21stCenturyServices.sln"), "\n");
+			await Bun.write(path.join(projectRoot, "ROM.MessageQueue.csproj"), "<Project />\n");
+			await Bun.write(targetFile, "public sealed class RabbitMqQueueTopology {}\n");
+
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: { capabilities: { referencesProvider: true, documentSymbolProvider: true } },
+					});
+					srv.send({
+						jsonrpc: "2.0",
+						method: "$/progress",
+						params: { token: "external-csharp-project", value: { kind: "end" } },
+					});
+				} else if (message.method === "textDocument/references") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: [
+							{
+								uri: fileToUri(targetFile),
+								range: {
+									start: { line: 0, character: 0 },
+									end: { line: 0, character: 28 },
+								},
+							},
+						],
+					});
+				} else if (message.method === "textDocument/documentSymbol") {
+					srv.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: [
+							{
+								name: "RabbitMqQueueTopology",
+								kind: 5,
+								range: {
+									start: { line: 0, character: 0 },
+									end: { line: 0, character: 39 },
+								},
+								selectionRange: {
+									start: { line: 0, character: 21 },
+									end: { line: 0, character: 43 },
+								},
+							},
+						],
+					});
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+
+			const serverConfig: ServerConfig = {
+				command: "fake-csharp-ls",
+				fileTypes: [".cs"],
+				rootMarkers: [
+					"services/21stCenturyServices/21stCenturyServices.sln",
+					"services/21stCenturyServices/**/*.csproj",
+				],
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "csharp-ls": serverConfig },
+				idleTimeoutMs: undefined,
+			});
+
+			const tool = new LspTool(makeLspSession(sessionCwd));
+			const references = await tool.execute("external-worktree-references", {
+				action: "references",
+				file: targetFile,
+				line: 1,
+				symbol: "RabbitMqQueueTopology",
+				timeout: 5,
+			});
+			const symbols = await tool.execute("external-worktree-symbols", {
+				action: "symbols",
+				file: targetFile,
+				timeout: 5,
+			});
+			const initialize = await server.waitFor(message => message.method === "initialize");
+
+			expect(initialize.params).toMatchObject({
+				rootUri: fileToUri(solutionRoot),
+				rootPath: solutionRoot,
+				workspaceFolders: [{ uri: fileToUri(solutionRoot), name: path.basename(solutionRoot) }],
+			});
+			expect(server.received.filter(message => message.method === "initialize")).toHaveLength(1);
+			expect(textResult(references)).toContain("Found 1 reference(s)");
+			expect(textResult(symbols)).toContain("RabbitMqQueueTopology");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 15_000);
+
 	it("keeps relative diagnostics on the session workspace client", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-relative-glob-root-");
 		try {
