@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added a `Dev` build label to locally compiled Windows binaries and made startup update notifications treat those builds as updateable while `startup.checkUpdate` remains enabled.
 - Added a fullscreen `/jobs` hub, available with `Alt+J`, that aggregates live and completed Bash, Eval, Task, and SSH transfer jobs from every agent in the current session, with originating-agent identity, full input, elapsed time, transfer details, and live or terminal output.
 - Added Apple Silicon and Intel macOS binaries to fork code releases, enabling in-place upgrades through `omp update` on both architectures.
 - Added a configurable premium extended-context window in `/settings`; affected models use the larger of the configured and advertised windows, with compact `K`/`M` values such as `372K` and a `1M` default.

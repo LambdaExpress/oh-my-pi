@@ -258,45 +258,52 @@ try {
 		}
 		$ompBinaryPath = Get-OmpBinaryPath -RepoRoot $repoRoot
 		$env:PI_NATIVE_SOURCE_DIR = $nativeSourceDir
-		Invoke-Step "Building compiled omp with pi-natives $variant" {
-			$ompBackupPath = "$ompBinaryPath.$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()).$PID.bak"
-			if ($DryRun) {
-				Write-Host "DRY-RUN: hot-replace $ompBinaryPath (move aside, build, restore on failure)"
-				Invoke-NativeCommand bun --cwd=packages/coding-agent run build
-				return
-			}
-			# Hot-replace semantics (mirrors cli/update-cli.ts): Windows permits
-			# renaming a mapped executable; only overwriting or deleting it is
-			# blocked. Move the previous build aside so the compile can write
-			# the new exe even while the old one is still running.
-			Remove-StaleBinaryBackups -BinaryPath $ompBinaryPath
-			$binaryMovedAside = $false
-			if (Test-Path -LiteralPath $ompBinaryPath -PathType Leaf) {
-				Rename-Item -LiteralPath $ompBinaryPath -NewName ([IO.Path]::GetFileName($ompBackupPath))
-				$binaryMovedAside = $true
-			}
-			try {
-				Invoke-NativeCommand bun --cwd=packages/coding-agent run build
-			} catch {
-				# Roll back: remove any partial output from the failed compile,
-				# then restore the previous binary.
+		$previousReleaseCode = [Environment]::GetEnvironmentVariable("OMP_RELEASE_CODE", "Process")
+		try {
+			$env:OMP_RELEASE_CODE = "dev"
+			Invoke-Step "Building compiled omp with pi-natives $variant" {
+				$ompBackupPath = "$ompBinaryPath.$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()).$PID.bak"
+				if ($DryRun) {
+					Write-Host "DRY-RUN: OMP_RELEASE_CODE=$env:OMP_RELEASE_CODE"
+					Write-Host "DRY-RUN: hot-replace $ompBinaryPath (move aside, build, restore on failure)"
+					Invoke-NativeCommand bun --cwd=packages/coding-agent run build
+					return
+				}
+				# Hot-replace semantics (mirrors cli/update-cli.ts): Windows permits
+				# renaming a mapped executable; only overwriting or deleting it is
+				# blocked. Move the previous build aside so the compile can write
+				# the new exe even while the old one is still running.
+				Remove-StaleBinaryBackups -BinaryPath $ompBinaryPath
+				$binaryMovedAside = $false
 				if (Test-Path -LiteralPath $ompBinaryPath -PathType Leaf) {
-					Remove-Item -LiteralPath $ompBinaryPath -Force -ErrorAction SilentlyContinue
+					Rename-Item -LiteralPath $ompBinaryPath -NewName ([IO.Path]::GetFileName($ompBackupPath))
+					$binaryMovedAside = $true
 				}
-				if ($binaryMovedAside -and (Test-Path -LiteralPath $ompBackupPath -PathType Leaf)) {
-					Rename-Item -LiteralPath $ompBackupPath -NewName ([IO.Path]::GetFileName($ompBinaryPath))
+				try {
+					Invoke-NativeCommand bun --cwd=packages/coding-agent run build
+				} catch {
+					# Roll back: remove any partial output from the failed compile,
+					# then restore the previous binary.
+					if (Test-Path -LiteralPath $ompBinaryPath -PathType Leaf) {
+						Remove-Item -LiteralPath $ompBinaryPath -Force -ErrorAction SilentlyContinue
+					}
+					if ($binaryMovedAside -and (Test-Path -LiteralPath $ompBackupPath -PathType Leaf)) {
+						Rename-Item -LiteralPath $ompBackupPath -NewName ([IO.Path]::GetFileName($ompBinaryPath))
+					}
+					throw
 				}
-				throw
+				if ($binaryMovedAside) {
+					# The moved-aside exe may still be mapped by a running process,
+					# so deletion can fail until it exits; keep it for the next
+					# build's stale-backup sweep instead of failing a good build.
+					Remove-Item -LiteralPath $ompBackupPath -Force -ErrorAction SilentlyContinue
+					if (Test-Path -LiteralPath $ompBackupPath -PathType Leaf) {
+						Write-Host "==> Previous binary is still in use; kept as $ompBackupPath (removed on the next build)" -ForegroundColor DarkYellow
+					}
+				}
 			}
-			if ($binaryMovedAside) {
-				# The moved-aside exe may still be mapped by a running process,
-				# so deletion can fail until it exits; keep it for the next
-				# build's stale-backup sweep instead of failing a good build.
-				Remove-Item -LiteralPath $ompBackupPath -Force -ErrorAction SilentlyContinue
-				if (Test-Path -LiteralPath $ompBackupPath -PathType Leaf) {
-					Write-Host "==> Previous binary is still in use; kept as $ompBackupPath (removed on the next build)" -ForegroundColor DarkYellow
-				}
-			}
+		} finally {
+			Restore-ProcessEnvironmentVariable -Name "OMP_RELEASE_CODE" -Value $previousReleaseCode
 		}
 	} finally {
 		Restore-ProcessEnvironmentVariable -Name "PI_NATIVE_SOURCE_DIR" -Value $previousNativeSourceDir

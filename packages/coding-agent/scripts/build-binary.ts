@@ -2,7 +2,7 @@
 
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { parseReleaseCode } from "../src/release-code";
+import { isDevelopmentBuildCode, parseReleaseCode } from "../src/release-code";
 import { compileCodingAgent } from "./compile-binary";
 
 const packageDir = path.join(import.meta.dir, "..");
@@ -73,8 +73,12 @@ async function runCommand(
 
 async function main(): Promise<void> {
 	const configuredReleaseCode = Bun.env.OMP_RELEASE_CODE;
-	if (configuredReleaseCode !== undefined && parseReleaseCode(configuredReleaseCode) === undefined) {
-		throw new Error(`OMP_RELEASE_CODE must be a non-negative safe integer, got: ${configuredReleaseCode}`);
+	if (
+		configuredReleaseCode !== undefined &&
+		parseReleaseCode(configuredReleaseCode) === undefined &&
+		!isDevelopmentBuildCode(configuredReleaseCode)
+	) {
+		throw new Error(`OMP_RELEASE_CODE must be a non-negative safe integer or dev, got: ${configuredReleaseCode}`);
 	}
 	const releaseCode = configuredReleaseCode ?? "0";
 	const crossBuild = resolveCrossBuild(Bun.env.CROSS_TARGET);

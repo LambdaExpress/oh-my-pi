@@ -2,6 +2,18 @@ import { VERSION } from "@oh-my-pi/pi-utils/dirs";
 
 const RELEASE_CODE_VALUE = /^(?:0|[1-9]\d*)$/;
 const RELEASE_CODE_TAG = /^code-([1-9]\d*)$/;
+const DEV_BUILD_VALUE = "dev";
+
+/** Human-readable identifier used by locally compiled development binaries. */
+export const DEV_BUILD = "Dev" as const;
+
+/** A published numeric code or the local development build marker. */
+export type BuildIdentifier = number | typeof DEV_BUILD;
+
+/** Whether an environment value requests a local development build. */
+export function isDevelopmentBuildCode(value: string | undefined): boolean {
+	return value?.toLowerCase() === DEV_BUILD_VALUE;
+}
 
 /** Parse a non-negative release code without losing integer precision. */
 export function parseReleaseCode(value: string | undefined): number | undefined {
@@ -10,19 +22,39 @@ export function parseReleaseCode(value: string | undefined): number | undefined 
 	return Number.isSafeInteger(code) ? code : undefined;
 }
 
+/** Parse either a numeric release code or the local development marker. */
+export function parseBuildIdentifier(value: string | undefined): BuildIdentifier | undefined {
+	if (isDevelopmentBuildCode(value)) return DEV_BUILD;
+	return parseReleaseCode(value);
+}
+
 /** Parse the numeric code carried by a fork release tag (`code-N`). */
 export function parseReleaseCodeTag(tag: string): number | undefined {
 	const match = RELEASE_CODE_TAG.exec(tag);
 	return match ? parseReleaseCode(match[1]) : undefined;
 }
 
-/** Release code embedded by the release workflow; source builds use code 0. */
-export const RELEASE_CODE = parseReleaseCode(process.env.OMP_RELEASE_CODE) ?? 0;
+const configuredBuildCode = process.env.OMP_RELEASE_CODE;
+const parsedBuildIdentifier = parseBuildIdentifier(configuredBuildCode);
+
+/** Whether the embedded build is a locally compiled development binary. */
+export const IS_DEV_BUILD = parsedBuildIdentifier === DEV_BUILD;
+
+/** Release code embedded by the release workflow; non-release builds compare as code 0. */
+export const RELEASE_CODE = typeof parsedBuildIdentifier === "number" ? parsedBuildIdentifier : 0;
+
+/** Display identifier for the current build. */
+export const BUILD_IDENTIFIER: BuildIdentifier = parsedBuildIdentifier ?? 0;
 
 /** Format a human-readable version suffix shared by the TUI and update command. */
-export function formatVersionWithBuild(version: string, code: number): string {
+export function formatVersionWithBuild(version: string, code: BuildIdentifier): string {
 	return `${version} Build ${code}`;
 }
 
 /** CLI version keeps the upstream source version while exposing the fork release code. */
-export const CLI_VERSION = `${VERSION}+code.${RELEASE_CODE}`;
+export const CLI_VERSION = `${VERSION}+code.${IS_DEV_BUILD ? DEV_BUILD_VALUE : RELEASE_CODE}`;
+
+/** Development builds always have a newer published build available when metadata resolves. */
+export function isBuildUpdateAvailable(current: BuildIdentifier, latestCode: number): boolean {
+	return current === DEV_BUILD || latestCode > current;
+}

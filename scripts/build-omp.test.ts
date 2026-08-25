@@ -64,6 +64,7 @@ describe.skipIf(!pwsh)("build-omp.ps1", () => {
 		const command = [
 			'$metadata = [Environment]::GetEnvironmentVariable("OMP_TEST_CARGO_METADATA")',
 			"function global:cargo { Write-Output $metadata; $global:LASTEXITCODE = 0 }",
+			'function global:bun { Write-Output "OMP_RELEASE_CODE=$env:OMP_RELEASE_CODE"; $global:LASTEXITCODE = 0 }',
 			`& '${escapedScript}' -DryRun`,
 		].join("; ");
 		const proc = Bun.spawn([pwsh!, "-NoProfile", "-NonInteractive", "-Command", command], {
@@ -83,6 +84,7 @@ describe.skipIf(!pwsh)("build-omp.ps1", () => {
 
 		expect(exitCode, `${stdout}\n${stderr}`).toBe(0);
 		expect(stdout).toContain("Reusing up-to-date pi-natives modern");
+		expect(stdout).toContain("OMP_RELEASE_CODE=dev");
 		expect(stdout).not.toContain("Build failed");
 	});
 });

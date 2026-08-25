@@ -17,7 +17,7 @@ import { $ } from "bun";
 import { settings } from "../config/settings";
 import { t } from "../i18n";
 import { theme } from "../modes/theme/theme";
-import { formatVersionWithBuild, parseReleaseCodeTag, RELEASE_CODE } from "../release-code";
+import { BUILD_IDENTIFIER, formatVersionWithBuild, parseReleaseCodeTag, RELEASE_CODE } from "../release-code";
 import {
 	isTimeoutError,
 	isUnsupportedProxyError,
@@ -1982,7 +1982,7 @@ export async function runUpdateCommand(opts: {
 	check: boolean;
 	channel?: UpdateChannel;
 }): Promise<void> {
-	console.log(chalk.dim(`Current version: ${formatNamedRelease(VERSION, RELEASE_CODE)}`));
+	console.log(chalk.dim(`Current version: ${APP_NAME} v${formatVersionWithBuild(VERSION, BUILD_IDENTIFIER)}`));
 	const persistedChannel = readPersistedChannel() ?? "stable";
 	const channel = opts.channel ?? persistedChannel;
 	if (channel === "canary") console.log(chalk.dim("Current channel: canary"));
