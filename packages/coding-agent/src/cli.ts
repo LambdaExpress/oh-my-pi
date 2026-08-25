@@ -36,7 +36,7 @@ import { t } from "./i18n";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
 import { TERMINAL_OUTPUT_WORKER_ARG } from "./launch/terminal-output-worker-protocol";
 import { LSP_MUX_WORKER_ARG } from "./lsp/mux/protocol";
-import { CLI_VERSION, formatVersionWithBuild, RELEASE_CODE } from "./release-code";
+import { BUILD_IDENTIFIER, CLI_VERSION, formatVersionWithBuild } from "./release-code";
 import rootLicense from "./tools/browser/relay/extension-assets/LICENSE.txt" with { type: "text" };
 import thirdPartyNotices from "./tools/browser/relay/extension-assets/THIRD-PARTY-NOTICES.txt" with { type: "text" };
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
@@ -438,7 +438,7 @@ export async function runCli(argv: string[]): Promise<void> {
 		// keeps the TUI graph out of worker, subcommand, help, and version launches.
 		// Loading it statically would erase the measured cold-start improvement.
 		const { beginStartupComposer, stopPendingStartupComposer } = await import("./modes/startup-composer");
-		beginStartupComposer({ version: formatVersionWithBuild(VERSION, RELEASE_CODE) });
+		beginStartupComposer({ version: formatVersionWithBuild(VERSION, BUILD_IDENTIFIER) });
 		stopStartupComposer = stopPendingStartupComposer;
 	}
 
