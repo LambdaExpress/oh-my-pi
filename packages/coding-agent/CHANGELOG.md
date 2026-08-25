@@ -64,6 +64,7 @@
 
 ### Fixed
 
+- Fixed the slash-command autocomplete panel leaving static built-in and bundled command descriptions in English under the Simplified Chinese locale, including descriptions updated after changing the display language at runtime.
 - Fixed streamed `xd://ssh` calls showing a generic queued card before execution; SSH now keeps one tool frame from argument generation through completion and syntax-highlights Bash and PowerShell command previews.
 - Fixed SSH uploads refreshing progress only after the first chunk and at completion; POSIX and PowerShell targets now report remotely persisted bytes throughout the transfer, keeping both tool cards and the background jobs hub live.
 - Fixed background SSH transfers leaving their original tool card at 0% instead of repainting live progress and the terminal result.

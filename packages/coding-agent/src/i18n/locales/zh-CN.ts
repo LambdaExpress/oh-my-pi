@@ -1243,6 +1243,7 @@ export const zhCN: Record<string, string> = {
 	"Drive your own Chrome tabs through the omp browser relay. Install the extension once (`omp browser-relay install`); the relay server auto-starts when the browser tool needs it. Takes precedence over Browser CDP URL; set PI_BROWSER_RELAY=0 or PI_BROWSER_RELAY=1 to override.":
 		"通过 omp 浏览器中继驱动你自己的 Chrome 标签页。安装一次扩展（`omp browser-relay install`）；中继服务器会在浏览器工具需要时自动启动。优先于 Browser CDP URL；设置 PI_BROWSER_RELAY=0 或 PI_BROWSER_RELAY=1 可覆盖。",
 	Drop: "丢弃",
+	"Drop all thinking blocks": "移除所有思考块",
 	"Drop goal?": "丢弃目标？",
 	"Drop heavy content (tool results + large blocks) in place; recover via artifact":
 		"就地丢弃重型内容（工具结果 + 大块内容）；可通过产物恢复",
@@ -1614,6 +1615,7 @@ export const zhCN: Record<string, string> = {
 	"Gemini web_search model": "Gemini web_search 模型",
 	Gemma: "Gemma",
 	General: "常规",
+	"Generate AGENTS.md for current codebase": "为当前代码库生成 AGENTS.md",
 	"Generate Image": "生成图像",
 	"Generate a brief LLM recap of where things stand after the terminal has been idle":
 		"在终端空闲后，生成一份关于当前状况的简短 LLM 摘要",
@@ -2585,6 +2587,8 @@ export const zhCN: Record<string, string> = {
 	"Open provider setup": "打开提供商设置",
 	"Open settings menu": "打开设置菜单",
 	"Open the advisor configuration editor (TUI)": "打开顾问配置编辑器（TUI）",
+	"Open the agents hub (per-agent model, prewalk, and advisor)": "打开代理中心（为每个代理配置模型、Prewalk 和顾问）",
+	"Open the git UI (split diff viewer, staging, commit composer)": "打开 Git 界面（分栏差异查看、暂存与提交信息编辑）",
 	"Open todos in $EDITOR (Markdown round-trip)": "在 $EDITOR 中打开待办事项（Markdown 往返编辑）",
 	OpenAI: "OpenAI",
 	"OpenAI Responses and Codex response verbosity (low, medium, or high)":
@@ -2701,6 +2705,7 @@ export const zhCN: Record<string, string> = {
 	"Picks a shape tuned for the current model, falling back to its provider family.":
 		"选择针对当前模型调优的形状，并回退到其提供商家族。",
 	"Pin one with `/session pin <number|email|account id>`.": "使用 `/session pin <number|email|account id>` 固定一个。",
+	"Pin or unpin a session at the top of the resume list": "将会话固定到恢复列表顶部或取消固定",
 	"Pin the current provider to a stored OAuth account": "将当前提供商固定到已存储的 OAuth 账户",
 	"Pinned {label} to this session for {provider}.": "已将 {label} 固定到此会话（{provider}）。",
 	Pipe: "管道",
@@ -3623,6 +3628,7 @@ export const zhCN: Record<string, string> = {
 	"Suggests a todo list on the first message (reminder, not forced)": "在第一条消息时建议待办事项列表（提醒，非强制）",
 	"Summarize branch?": "是否总结分支？",
 	"Summarize in-place and keep the current session": "就地总结并保留当前会话",
+	"Summarize the session into a handoff document and compact in place": "将会话总结成交接文档，并就地压缩",
 	"Summarizing branch... (esc to cancel)": "正在总结分支…（按 Esc 取消）",
 	Summary: "摘要",
 	"Supersede Stale Reads": "取代过期读取",
@@ -3769,11 +3775,13 @@ export const zhCN: Record<string, string> = {
 	"Toggle advisor": "切换 advisor",
 	"Toggle browser headless vs visible mode": "切换浏览器无头模式与可见模式",
 	"Toggle computer use": "切换 computer use",
+	"Toggle extended context": "切换扩展上下文",
 	"Toggle fast mode": "切换快速模式",
 	"Toggle goal mode (persistent autonomous objective for this session)": "切换目标模式（本会话的持久自主目标）",
 	"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Esc cancels the current iteration; /loop again to disable.":
 		"切换循环模式。启用后，你发送的下一条提示会在每次让出后重新提交。Esc 取消当前迭代；再次输入 /loop 可禁用。",
 	"Toggle plan mode (agent plans before executing)": "切换计划模式（代理在执行前制定计划）",
+	"Toggle premium long-context windows": "切换高级长上下文窗口",
 	"Toggle priority service tier (OpenAI service_tier=priority, Anthropic speed=fast)":
 		"切换优先服务层级（OpenAI service_tier=priority，Anthropic speed=fast）",
 	"Toggle the advisor (a second model that reviews each turn and injects notes)":

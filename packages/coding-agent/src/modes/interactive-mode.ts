@@ -78,8 +78,11 @@ import type {
 } from "../extensibility/extensions";
 import type { CompactOptions } from "../extensibility/extensions/types";
 import type { Skill } from "../extensibility/skills";
-import type { FileSlashCommand } from "../extensibility/slash-commands";
-import { loadSlashCommands } from "../extensibility/slash-commands";
+import {
+	type FileSlashCommand,
+	getFileSlashCommandDisplayDescription,
+	loadSlashCommands,
+} from "../extensibility/slash-commands";
 import type { Goal, GoalModeState } from "../goals/state";
 import { t } from "../i18n";
 import { copyLocalArtifacts, resolveLocalUrlToPath } from "../internal-urls";
@@ -1607,8 +1610,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		const promptIcon = getSlashCommandTypeIcon("prompt");
 		const fileSlashCommands: SlashCommand[] = fileCommands.map(cmd => ({
 			name: cmd.name,
-			description: cmd.description,
+			description: getFileSlashCommandDisplayDescription(cmd),
 			icon: promptIcon,
+			...(cmd.source === "bundled"
+				? { getAutocompleteDescription: () => getFileSlashCommandDisplayDescription(cmd) }
+				: {}),
 		}));
 		// Surface discovered prompt templates in the picker. AgentSession.prompt() expands
 		// `expandSlashCommand` before `expandPromptTemplate`, and builtin command
