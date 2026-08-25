@@ -134,6 +134,7 @@ Run commands from the repository root unless `--cwd` is shown.
 - Rust uses edition 2024 and `nightly-2026-08-08`; Bazel is pinned to 9.2.0. Run Rust checks/tests through Bun scripts so workspace exclusions, doctests, and CI parity are preserved.
 - Python packages require Python 3.11 or newer. Their pytest suites are currently manual gates rather than GitHub Actions jobs, so run them explicitly for Python changes.
 - Develop normal changes on `dev`; do not create feature commits on `release`. `scripts/release.ts` implements the upstream `main`/`v*` release flow, while `.github/workflows/release-code.yml` implements this fork's `release`/`code-N` binary flow. Keep the two workflows separate.
+- Treat `release` as a transient transport branch: NEVER develop on it or leave the worktree there; switch to `release` only briefly for pull or push operations, then immediately switch back to the corresponding development branch. The current corresponding development branch is `dev`.
 - Never commit unless explicitly requested.
 
 Generated files must be changed through their source and generator:
