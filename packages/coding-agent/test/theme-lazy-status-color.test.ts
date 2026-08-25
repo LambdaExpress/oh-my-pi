@@ -84,7 +84,7 @@ describe("lazy status color re-resolves on theme switch", () => {
 				presented = component;
 			},
 		};
-		new UiHelpers(context as InteractiveModeContext).showNewVersionNotification("1.2.3");
+		new UiHelpers(context as InteractiveModeContext).showNewVersionNotification("18.0.4 Build 42");
 		const notification = presented;
 		if (!notification) throw new Error("Update notification was not presented");
 
@@ -125,6 +125,9 @@ describe("lazy status color re-resolves on theme switch", () => {
 			.split("\n")
 			.map(line => line.trim())
 			.filter(line => line === "Update Available" || line.startsWith("New version "));
-		expect(semanticLines).toEqual(["Update Available", "New version 1.2.3 is available. Run: omp update"]);
+		expect(semanticLines).toEqual([
+			"Update Available",
+			"New version omp v18.0.4 Build 42 is available. Run: omp update",
+		]);
 	});
 });

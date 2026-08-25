@@ -11,7 +11,8 @@ describe("runUpdateCommand fetch cancellation", () => {
 
 	it("checks release metadata with a timeout signal", async () => {
 		let requestSignal: AbortSignal | undefined;
-		vi.spyOn(console, "log").mockImplementation(() => {});
+		const logs: string[] = [];
+		vi.spyOn(console, "log").mockImplementation(message => logs.push(String(message)));
 		const fetchStub = Object.assign(
 			async (_input: FetchInput, init?: FetchInit) => {
 				requestSignal = init?.signal ?? undefined;
@@ -24,6 +25,10 @@ describe("runUpdateCommand fetch cancellation", () => {
 		await runUpdateCommand({ force: false, check: true });
 
 		expect(requestSignal).toBeInstanceOf(AbortSignal);
+		const output = Bun.stripANSI(logs.join("\n"));
+		expect(output).toMatch(/Current version: omp v\d+\.\d+\.\d+ Build \d+/);
+		expect(output).toContain("New version available: omp v");
+		expect(output).toContain("Build 999");
 	});
 });
 

@@ -19,5 +19,10 @@ export function parseReleaseCodeTag(tag: string): number | undefined {
 /** Release code embedded by the release workflow; source builds use code 0. */
 export const RELEASE_CODE = parseReleaseCode(process.env.OMP_RELEASE_CODE) ?? 0;
 
+/** Format a human-readable version suffix shared by the TUI and update command. */
+export function formatVersionWithBuild(version: string, code: number): string {
+	return `${version} Build ${code}`;
+}
+
 /** CLI version keeps the upstream source version while exposing the fork release code. */
 export const CLI_VERSION = `${VERSION}+code.${RELEASE_CODE}`;
