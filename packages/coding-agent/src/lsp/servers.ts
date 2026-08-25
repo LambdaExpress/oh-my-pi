@@ -207,14 +207,52 @@ export function getConfig(cwd: string): LspConfig {
 	return config;
 }
 
-/** Find the nearest marker-bearing ancestor for an LSP file. */
+/**
+ * Find the nearest marker-bearing ancestor for an LSP file.
+ *
+ * Project configs often store markers relative to the main checkout, such as
+ * `services/app/app.sln`. When a concrete file comes from an independent Git
+ * worktree, that prefix is no longer present even though the marker basename
+ * is still present at the corresponding worktree root. Preserve exact marker
+ * matching first, then fall back to the final path segment for path-qualified
+ * markers so external worktrees get their own language-server workspace.
+ */
 export function findLspProjectRoot(filePath: string, rootMarkers: string[]): string | null {
-	for (let dir = path.dirname(path.resolve(filePath)); ; ) {
-		if (hasRootMarkers(dir, rootMarkers)) return dir;
-		const parent = path.dirname(dir);
-		if (parent === dir) return null;
-		dir = parent;
+	const findRoot = (markers: string[]): string | null => {
+		for (let dir = path.dirname(path.resolve(filePath)); ; ) {
+			if (hasRootMarkers(dir, markers)) return dir;
+			const parent = path.dirname(dir);
+			if (parent === dir) return null;
+			dir = parent;
+		}
+	};
+
+	const exactRoot = findRoot(rootMarkers);
+	if (exactRoot) return exactRoot;
+
+	const fallbackMarkers = rootMarkers
+		.map(marker => {
+			const normalized = marker.replaceAll("\\", "/");
+			const separator = normalized.lastIndexOf("/");
+			if (separator < 0) return undefined;
+			const basename = normalized.slice(separator + 1);
+			if (!basename || basename === "." || basename === "..") return undefined;
+			return { basename, glob: basename.includes("*") };
+		})
+		.filter((marker): marker is { basename: string; glob: boolean } => marker !== undefined);
+
+	// Prefer explicit solution/config files over a broad `*.csproj` fallback.
+	// This matters when one config lists multiple projects: a target in the
+	// second worktree project must not stop at the first matching project file.
+	for (const glob of [false, true]) {
+		for (const { basename, glob: isGlob } of fallbackMarkers) {
+			if (isGlob !== glob) continue;
+			const fallbackRoot = findRoot([basename]);
+			if (fallbackRoot) return fallbackRoot;
+		}
 	}
+
+	return null;
 }
 
 function isCustomLinter(serverConfig: ServerConfig): boolean {
