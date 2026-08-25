@@ -2541,17 +2541,17 @@ export interface GhCommandOptions {
 	trimOutput?: boolean;
 }
 
-// Keep retries below one second total and only at the JSON boundary for the
-// idempotent search API. Mutating `gh` commands still execute exactly once.
+// Keep retries below one second total and only at the JSON boundary for
+// explicit idempotent GET requests. Mutating `gh` commands still execute once.
 const GH_READONLY_API_RETRY_DELAYS_MS = [100, 200] as const;
 const GH_TRANSIENT_TRANSPORT_ERROR =
-	/^Get "https:\/\/api\.github\.com\/[^"\r\n]+": (?:unexpected EOF|net\/http: TLS handshake timeout)$/;
+	/^Get "https:\/\/api\.github\.com\/[^"\r\n]+": (?:unexpected EOF|net\/http: TLS handshake timeout|dial tcp [^\r\n]+: connectex: [^\r\n]+)$/;
 
 function waitForGhRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
 	return scheduler.wait(delayMs, { signal });
 }
 
-function isReadonlyGhApiSearch(args: readonly string[]): boolean {
+function isReadonlyGhApiRequest(args: readonly string[]): boolean {
 	if (args[0] !== "api") return false;
 	let method: string | undefined;
 	let endpoint: string | undefined;
@@ -2575,7 +2575,7 @@ function isReadonlyGhApiSearch(args: readonly string[]): boolean {
 		}
 		if (!arg.startsWith("-") && endpoint === undefined) endpoint = arg;
 	}
-	return method === "GET" && endpoint?.startsWith("/search/") === true;
+	return method === "GET" && endpoint?.startsWith("/") === true;
 }
 
 async function runGhJsonCommand(
@@ -2584,7 +2584,7 @@ async function runGhJsonCommand(
 	signal?: AbortSignal,
 	options?: GhCommandOptions,
 ): Promise<GhCommandResult> {
-	const canRetry = isReadonlyGhApiSearch(args);
+	const canRetry = isReadonlyGhApiRequest(args);
 	const retryWait = options?.retryWait ?? waitForGhRetry;
 	for (let attempt = 0; ; attempt += 1) {
 		const result = await github.run(cwd, args, signal, options);

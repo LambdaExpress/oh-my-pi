@@ -8,6 +8,7 @@ import {
 	isRustAnalyzerClient,
 	type LspServerStatus,
 	notifySaved,
+	refreshFile,
 	sendNotification,
 	sendRequest,
 	setIdleTimeout,
@@ -18,6 +19,7 @@ import {
 import { getServersForFile, hasRootMarkers, type LspConfig, loadConfig } from "./config";
 import { MUX_RESTART_METHOD } from "./mux/protocol";
 import type { LspClient, ServerConfig } from "./types";
+import { uriToFile } from "./utils";
 
 /**
  * LSP actions that do not mutate the workspace or language-server state.
@@ -283,6 +285,13 @@ export function reloadConfigurationParams(config: ServerConfig): { settings: Rec
 
 export async function reloadServer(client: LspClient, serverName: string, signal?: AbortSignal): Promise<string> {
 	throwIfAborted(signal);
+	// Reconcile every open overlay with disk before asking the server to reload.
+	// A configuration notification alone does not invalidate tsgo/tsserver's
+	// cached dependency snapshots, so a target file can keep reporting errors
+	// from an exported signature that already changed on disk.
+	for (const uri of client.openFiles?.keys() ?? []) {
+		await refreshFile(client, uriToFile(uri), signal);
+	}
 	// rust-analyzer exposes a real reload request. Only rust-analyzer implements
 	// it, so gate the request on the binary (or registered name) rather than
 	// probing every server: some servers (Roslyn) crash the whole process on an

@@ -234,7 +234,11 @@ fn compact_bun_check_output(ctx: &MinimizerCtx<'_>, input: &str, exit_code: i32)
 	} else {
 		out.push_str("incomplete\n");
 	}
-	if root_checked {
+	// `bun run check` chains several Biome/package/type-check phases. A prior
+	// `Checked ... No fixes applied` line proves only that one phase completed;
+	// once the overall invocation contains a failure, attributing that success
+	// to "root biome" can contradict the diagnostic that stopped the chain.
+	if root_checked && exit_code == 0 && nonzero_exits.is_empty() && diagnostics.is_empty() {
 		out.push_str("root biome: ok\n");
 	}
 	if !packages.is_empty() {
@@ -693,6 +697,29 @@ mod tests {
 		assert!(
 			!out.text.contains("Exited with code 0"),
 			"zero exit noise must be stripped: {:?}",
+			out.text
+		);
+	}
+
+	#[test]
+	fn bun_check_failure_does_not_claim_root_biome_succeeded() {
+		let cfg = MinimizerConfig { enabled: true, ..Default::default() };
+		let bun_ctx = ctx("bun", Some("run"), "bun --cwd=packages/coding-agent run check", &cfg);
+		let input = concat!(
+			"$ biome check . && tsgo -p tsconfig.json --noEmit\n",
+			"Checked 1178 files in 287ms. No fixes applied.\n",
+			"test/modes/components/transcript-container.test.ts format ━━━━━━━━━━━━━\n",
+			"  × Formatter would have printed the following content:\n",
+			"Found 1 error.\n",
+		);
+
+		let out = filter(&bun_ctx, input, 1);
+
+		assert!(out.text.contains("failed"), "failed verdict must appear: {:?}", out.text);
+		assert!(out.text.contains("Found 1 error."), "Biome failure must survive: {:?}", out.text);
+		assert!(
+			!out.text.contains("root biome: ok"),
+			"failed chained checks must not claim root Biome succeeded: {:?}",
 			out.text
 		);
 	}

@@ -64,6 +64,9 @@
 
 ### Fixed
 
+- Fixed LSP monorepo routing for relative child-project files, stale dependency overlays after reload, unstable cold-start references/definitions, and opaque `csharp-ls` empty or `AggregateException` results.
+- Fixed GitHub Actions `run_watch` failing on transient jobs-API `unexpected EOF`, TLS handshake, and Windows `connectex` errors by retrying bounded explicit GET requests.
+- Fixed failing chained Bun/Biome checks being summarized with the contradictory `root biome: ok` status.
 - Fixed full-fidelity live transcript blocks dropping their overflowing top rows until the run completed; active tool frames and their finalized successors now stream every rendered row into native scrollback without compact summaries, and width changes never reuse an old visual row watermark.
 - Fixed the slash-command autocomplete panel leaving static built-in and bundled command descriptions in English under the Simplified Chinese locale, including descriptions updated after changing the display language at runtime.
 - Fixed streamed `xd://ssh` calls showing a generic queued card before execution; SSH now keeps one tool frame from argument generation through completion and syntax-highlights Bash and PowerShell command previews.

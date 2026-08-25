@@ -36,6 +36,7 @@ interface RpcMessage {
 	method?: string;
 	params?: unknown;
 	result?: unknown;
+	error?: { code: number; message: string };
 }
 
 interface FakeCsharpLs {
@@ -44,6 +45,8 @@ interface FakeCsharpLs {
 	readonly referencesRequests: RpcMessage[];
 	/** textDocument/rename requests in arrival order. */
 	readonly renameRequests: RpcMessage[];
+	/** textDocument/documentSymbol requests in arrival order. */
+	readonly symbolRequests: RpcMessage[];
 }
 
 /**
@@ -53,11 +56,17 @@ interface FakeCsharpLs {
  * immediate `$/progress` begin/end pair so the client's projectLoaded
  * promise settles without waiting out the 15s auto-resolve timeout.
  */
-function installFakeLsp(options: { referencesResult?: unknown; renameResult?: unknown }): FakeCsharpLs {
+function installFakeLsp(options: {
+	referencesResult?: unknown;
+	referencesError?: { code: number; message: string };
+	renameResult?: unknown;
+	symbolsResult?: unknown;
+}): FakeCsharpLs {
 	const encoder = new TextEncoder();
 	const received: RpcMessage[] = [];
 	const referencesRequests: RpcMessage[] = [];
 	const renameRequests: RpcMessage[] = [];
+	const symbolRequests: RpcMessage[] = [];
 	let exitCode: number | null = null;
 	let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
 	const { promise: exited, resolve: resolveExited } = Promise.withResolvers<number>();
@@ -93,10 +102,17 @@ function installFakeLsp(options: { referencesResult?: unknown; renameResult?: un
 			send({ jsonrpc: "2.0", method: "$/progress", params: { token: 1, value: { kind: "end" } } });
 		} else if (message.method === "textDocument/references" && message.id !== undefined) {
 			referencesRequests.push(message);
-			send({ jsonrpc: "2.0", id: message.id, result: options.referencesResult ?? null });
+			if (options.referencesError) {
+				send({ jsonrpc: "2.0", id: message.id, error: options.referencesError });
+			} else {
+				send({ jsonrpc: "2.0", id: message.id, result: options.referencesResult ?? null });
+			}
 		} else if (message.method === "textDocument/rename" && message.id !== undefined) {
 			renameRequests.push(message);
 			send({ jsonrpc: "2.0", id: message.id, result: options.renameResult ?? null });
+		} else if (message.method === "textDocument/documentSymbol" && message.id !== undefined) {
+			symbolRequests.push(message);
+			send({ jsonrpc: "2.0", id: message.id, result: options.symbolsResult ?? null });
 		} else if (message.method === "shutdown" && message.id !== undefined) {
 			send({ jsonrpc: "2.0", id: message.id, result: null });
 		} else if (message.method === "exit") {
@@ -149,7 +165,7 @@ function installFakeLsp(options: { referencesResult?: unknown; renameResult?: un
 	} as unknown as LspClient["proc"];
 
 	vi.spyOn(piUtils.ptree, "spawn").mockReturnValue(proc as unknown as piUtils.ptree.ChildProcess<"pipe">);
-	return { received, referencesRequests, renameRequests };
+	return { received, referencesRequests, renameRequests, symbolRequests };
 }
 
 function makeSession(cwd: string): ToolSession {
@@ -228,6 +244,58 @@ describe("lsp csharp-ls references", () => {
 			// routing failure masquerading as "no references".
 			expect(server.referencesRequests.length).toBeGreaterThan(0);
 			// The hint is actionable, so compaction must not elide the result.
+			expect(result.useless).toBeUndefined();
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("retries and explains csharp-ls AggregateException reference failures", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-csharp-ls-aggregate-");
+		try {
+			await writeCsFixture(tempDir.path(), "csharp-ls", "csharp-ls");
+			mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
+			const server = installFakeLsp({
+				referencesError: { code: -32_603, message: "Internal error: AggregateException" },
+			});
+
+			const result = await new LspTool(makeSession(tempDir.path())).execute("aggregate", {
+				action: "references",
+				file: "Inventory.cs",
+				line: 45,
+				symbol: "UploadInventoryData",
+				timeout: 60,
+			});
+
+			const text = textResult(result);
+			expect(text).toContain("AggregateException");
+			expect(text).toContain("may not have indexed this project");
+			expect(text).toContain("verify the initialized project root");
+			expect(server.referencesRequests).toHaveLength(3);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("explains empty csharp-ls document symbols as a possible indexing failure", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-csharp-ls-symbols-");
+		try {
+			await writeCsFixture(tempDir.path(), "csharp-ls", "csharp-ls");
+			mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
+			const server = installFakeLsp({ symbolsResult: [] });
+
+			const result = await new LspTool(makeSession(tempDir.path())).execute("symbols", {
+				action: "symbols",
+				file: "Inventory.cs",
+				timeout: 60,
+			});
+
+			const text = textResult(result);
+			expect(text).toContain("No symbols found");
+			expect(text).toContain("may not have indexed this project");
+			expect(server.symbolRequests).toHaveLength(1);
 			expect(result.useless).toBeUndefined();
 		} finally {
 			await lspClient.shutdownAll();
