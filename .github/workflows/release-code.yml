@@ -47,12 +47,14 @@ jobs:
                 echo "tag=${tag}"
               } >> "$GITHUB_OUTPUT"
 
-   # Linux release targets share most Bazel action outputs and the entire
-   # repository/toolchain cache with targets built on the same host image.
-   # Populate one cache per host OS/architecture, then fan binary compilation
-   # back out through artifacts. Serial target builds avoid concurrent rustc
-   # links exhausting hosted-runner memory while preserving one complete cache
-   # archive instead of one mostly-duplicate archive per shipping target.
+   # Linux release targets share most Bazel action outputs with targets built
+   # on the same host image. Populate one cache per host OS/architecture, then
+   # fan binary compilation back out through artifacts. The x64 host builds
+   # four targets, so persisting its downloaded repository/toolchain cache
+   # pushes the archive over the repository's GitHub cache quota; retain only
+   # its compilation outputs. Serial target builds avoid concurrent rustc links
+   # exhausting hosted-runner memory while preserving one action-cache archive
+   # instead of one mostly-duplicate archive per shipping target.
    build_linux_natives:
       name: Build Linux-hosted native addons (${{ matrix.host_group }})
       strategy:
@@ -62,10 +64,12 @@ jobs:
                - os: ubuntu-22.04
                  host_group: linux-x64
                  cache_scope: code-linux-host-x64
+                 persist_repository_cache: "false"
                  native_targets: linux-x64-baseline linux-x64-modern linux-musl-x64-baseline win32-x64-baseline
                - os: ubuntu-24.04-arm
                  host_group: linux-arm64
                  cache_scope: code-linux-host-arm64
+                 persist_repository_cache: "true"
                  native_targets: linux-arm64 linux-musl-arm64
       runs-on: ${{ matrix.os }}
       permissions:
@@ -80,6 +84,7 @@ jobs:
            uses: ./.github/actions/bazel-cache
            with:
               scope: ${{ matrix.cache_scope }}
+              persist-repository-cache: ${{ matrix.persist_repository_cache }}
          - name: Build native addon targets
            shell: bash
            env:
@@ -92,13 +97,11 @@ jobs:
               for target in "${targets[@]}"; do
                 bun scripts/bazel-natives.ts "$target" --dest "$RUNNER_TEMP/native-build/$target"
               done
-         - name: Save combined Bazel disk cache
+         - name: Save Bazel disk cache
            if: steps.cache.outputs.save-needed == 'true'
            uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
            with:
-              path: |
-                 ~/.cache/omp-bazel-disk
-                 ~/.cache/omp-bazel-repo
+              path: ${{ steps.cache.outputs.cache-paths }}
               key: ${{ steps.cache.outputs.cache-key }}
          - name: Upload native addon artifacts
            uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

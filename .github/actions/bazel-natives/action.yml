@@ -43,8 +43,5 @@ runs:
         if: steps.cache.outputs.save-needed == 'true'
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-           # Must mirror the restore path list in the bazel-cache action.
-           path: |
-              ~/.cache/omp-bazel-disk
-              ~/.cache/omp-bazel-repo
+           path: ${{ steps.cache.outputs.cache-paths }}
            key: ${{ steps.cache.outputs.cache-key }}
