@@ -3112,6 +3112,14 @@ describe("lsp regressions", () => {
 				messageBuffer: new Uint8Array(),
 				isReading: false,
 				status: "ready",
+				serverCapabilities: {
+					workspace: {
+						fileOperations: {
+							willRename: { filters: [] },
+							didRename: { filters: [] },
+						},
+					},
+				},
 				lastActivity: Date.now(),
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
@@ -3196,6 +3204,14 @@ describe("lsp regressions", () => {
 				messageBuffer: new Uint8Array(),
 				isReading: false,
 				status: "ready",
+				serverCapabilities: {
+					workspace: {
+						fileOperations: {
+							willRename: { filters: [] },
+							didRename: { filters: [] },
+						},
+					},
+				},
 				lastActivity: Date.now(),
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
@@ -3269,6 +3285,14 @@ describe("lsp regressions", () => {
 				messageBuffer: new Uint8Array(),
 				isReading: false,
 				status: "ready",
+				serverCapabilities: {
+					workspace: {
+						fileOperations: {
+							willRename: { filters: [] },
+							didRename: { filters: [] },
+						},
+					},
+				},
 				lastActivity: Date.now(),
 				writeQueue: Promise.resolve(),
 				activeProgressTokens: new Set(),
