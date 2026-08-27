@@ -3528,9 +3528,11 @@ describe("lsp regressions", () => {
 		}
 	});
 
-	it("request action forwards explicit JSON payload verbatim", async () => {
+	it("request action forwards explicit JSON payload verbatim, including null for concrete files", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-request-payload-");
 		try {
+			const filePath = path.join(tempDir.path(), "index.ts");
+			await Bun.write(filePath, "export const value = 1;\n");
 			const server: ServerConfig = { command: "test-lsp", fileTypes: ["ts"], rootMarkers: [] };
 			const client: LspClient = {
 				name: "test-lsp",
@@ -3559,6 +3561,7 @@ describe("lsp regressions", () => {
 				idleTimeoutMs: undefined,
 			});
 			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+			const ensureFileOpenSpy = vi.spyOn(lspClient, "ensureFileOpen").mockResolvedValue();
 
 			const captured: Array<{ method: string; params: unknown }> = [];
 			vi.spyOn(lspClient, "sendRequest").mockImplementation(async (_c, method, requestParams) => {
@@ -3580,6 +3583,19 @@ describe("lsp regressions", () => {
 				command: "_typescript.organizeImports",
 				arguments: ["a.ts"],
 			});
+
+			await tool.execute("request-null-payload", {
+				action: "request",
+				file: filePath,
+				query: "shutdown",
+				payload: "null",
+				timeout: 5,
+			});
+
+			expect(captured).toHaveLength(2);
+			expect(captured[1]).toEqual({ method: "shutdown", params: null });
+			expect(ensureFileOpenSpy).toHaveBeenCalledTimes(1);
+			expect(ensureFileOpenSpy.mock.calls[0]?.slice(0, 2)).toEqual([client, filePath]);
 		} finally {
 			vi.restoreAllMocks();
 			tempDir.removeSync();
