@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import {
+	readFilePathsFromClipboard,
 	readImageFromClipboard,
 	readMacFileUrlsFromClipboard,
 	readTextFromClipboard,
@@ -276,6 +277,37 @@ describe("readMacFileUrlsFromClipboard", () => {
 		spySpawn([], "", 127);
 
 		expect(await readMacFileUrlsFromClipboard()).toEqual([]);
+	});
+});
+
+describe("readFilePathsFromClipboard", () => {
+	it("returns an empty list off Windows without spawning PowerShell", async () => {
+		setPlatform("linux");
+		const spawnSpy = vi.spyOn(Bun, "spawn");
+
+		expect(await readFilePathsFromClipboard()).toEqual([]);
+		expect(spawnSpy).not.toHaveBeenCalled();
+	});
+
+	it("decodes Windows FileDropList paths without losing Unicode", async () => {
+		setPlatform("win32");
+		const paths = ["C:\\Users\\me\\Pictures\\screen shot.png", "D:\\图片\\参考.webp"];
+		const stdout = `${paths.map(value => Buffer.from(value, "utf8").toString("base64")).join("\n")}\n`;
+		const calls: SpawnCall[] = [];
+		spySpawn(calls, stdout);
+
+		expect(await readFilePathsFromClipboard()).toEqual(paths);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]?.cmd[0]).toBe("powershell.exe");
+		expect(calls[0]?.cmd).toContain("-Sta");
+		expect(calls[0]?.cmd.at(-1)).toContain("FileDropList");
+	});
+
+	it("returns an empty list when FileDropList cannot be read", async () => {
+		setPlatform("win32");
+		spySpawn([], "", 1);
+
+		expect(await readFilePathsFromClipboard()).toEqual([]);
 	});
 });
 

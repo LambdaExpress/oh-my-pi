@@ -25,6 +25,7 @@ import { parseQueueShorthand, splitQueuedMessages } from "../../modes/queue-inpu
 import { buildSkillCommandPrompt, isKnownSkillCommand } from "../../modes/skill-command";
 import type { InteractiveModeContext, SubmittedUserInput } from "../../modes/types";
 import manualContinuePrompt from "../../prompts/system/manual-continue.md" with { type: "text" };
+import { blobExtensionForImageMimeType } from "../../session/blob-store";
 import { USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeBuiltinSlashCommand, lookupBuiltinSlashCommand } from "../../slash-commands/builtin-registry";
 import { parseSlashCommand } from "../../slash-commands/helpers/parse";
@@ -35,6 +36,7 @@ import { shortenPath, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/rend
 import { vocalizer } from "../../tts/vocalizer";
 import {
 	copyToClipboard,
+	readFilePathsFromClipboard,
 	readImageFromClipboard,
 	readMacFileUrlsFromClipboard,
 	readTextFromClipboard,
@@ -179,10 +181,12 @@ export class InputController {
 		private clipboard: {
 			readImage: typeof readImageFromClipboard;
 			readText: typeof readTextFromClipboard;
+			readFilePaths?: typeof readFilePathsFromClipboard;
 			readMacFileUrls?: typeof readMacFileUrlsFromClipboard;
 		} = {
 			readImage: readImageFromClipboard,
 			readText: readTextFromClipboard,
+			readFilePaths: readFilePathsFromClipboard,
 			readMacFileUrls: readMacFileUrlsFromClipboard,
 		},
 	) {}
@@ -1917,15 +1921,33 @@ export class InputController {
 
 	async handleClipboardTextRawPaste(): Promise<void> {
 		try {
+			const filePaths = (await this.clipboard.readFilePaths?.()) ?? [];
+			if (filePaths.length > 0) {
+				this.ctx.editor.insertText(filePaths.join("\n"));
+				this.ctx.ui.requestRender();
+				return;
+			}
+
 			const text = await this.clipboard.readText();
 			if (text) {
 				this.ctx.editor.insertText(text);
 				this.ctx.ui.requestRender();
-			} else {
-				this.ctx.showStatus(t("No text in clipboard to paste raw"));
+				return;
 			}
+
+			const image = await this.clipboard.readImage();
+			if (!image) {
+				this.ctx.showStatus(t("Clipboard is empty"));
+				return;
+			}
+
+			const data = Buffer.from(image.data.buffer, image.data.byteOffset, image.data.byteLength);
+			const extension = blobExtensionForImageMimeType(image.mimeType);
+			const result = await this.ctx.sessionManager.putBlob(data, extension ? { extension } : undefined);
+			this.ctx.editor.insertText(result.displayPath);
+			this.ctx.ui.requestRender();
 		} catch {
-			this.ctx.showStatus(t("Failed to paste raw text from clipboard"));
+			this.ctx.showStatus(t("Failed to paste clipboard as a reference"));
 		}
 	}
 

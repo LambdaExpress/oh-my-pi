@@ -1504,7 +1504,7 @@ export const zhCN: Record<string, string> = {
 		"无法加载主题“{value}”：{error}\n已回退到深色主题。",
 	"Failed to load themes": "无法加载主题",
 	"Failed to open external editor: {error}": "无法打开外部编辑器：{error}",
-	"Failed to paste raw text from clipboard": "无法从剪贴板粘贴原始文本",
+	"Failed to paste clipboard as a reference": "无法将剪贴板内容粘贴为引用",
 	"Failed to persist {source} session": "无法持久化 {source} 会话",
 	"Failed to read clipboard": "无法读取剪贴板",
 	"Failed to read pasted image path": "无法读取粘贴的图像路径",
@@ -2666,6 +2666,7 @@ export const zhCN: Record<string, string> = {
 	"Paste the authorization code (or full redirect URL), then press Enter:":
 		"粘贴授权码（或完整重定向 URL），然后按 Enter：",
 	"Paste the authorization code (or full redirect URL):": "粘贴授权码（或完整重定向 URL）：",
+	"Paste clipboard as a literal path or text reference": "将剪贴板内容粘贴为原样路径或文本引用",
 	"Paste the returned code or redirect URL when prompted.": "出现提示时，粘贴返回的授权码或重定向 URL。",
 	"Pasted path is not a supported image": "粘贴的路径不是受支持的图片",
 	"Pasted {count} lines": "已粘贴 {count} 行",
