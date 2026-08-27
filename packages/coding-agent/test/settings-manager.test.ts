@@ -430,6 +430,12 @@ describe("Settings", () => {
 			expect(getDefault("images.visionApprovalTimeoutMs")).toBe(30_000);
 		});
 
+		it("skips pending operations on steering by default", () => {
+			const settings = Settings.isolated();
+			expect(settings.get("steeringSkipPendingOperations")).toBe(true);
+			expect(getDefault("steeringSkipPendingOperations")).toBe(true);
+		});
+
 		it("exposes all tool calling mode options", () => {
 			const values = getEnumValues("tools.format");
 			expect(values).toEqual([
@@ -1098,6 +1104,26 @@ describe("Settings", () => {
 		});
 	});
 	describe("migrations", () => {
+		it.each([
+			["immediate", true],
+			["wait", false],
+		] as const)("migrates interruptMode %s to the steering skip toggle", async (interruptMode, expected) => {
+			await writeSettings({ interruptMode });
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("steeringSkipPendingOperations")).toBe(expected);
+			expect(settings.isConfigured("steeringSkipPendingOperations")).toBe(true);
+		});
+
+		it("keeps the explicit steering skip toggle over legacy interruptMode", async () => {
+			await writeSettings({ interruptMode: "immediate", steeringSkipPendingOperations: false });
+
+			const settings = await Settings.init({ cwd: projectDir, agentDir });
+
+			expect(settings.get("steeringSkipPendingOperations")).toBe(false);
+		});
+
 		it("consolidates legacy Exa suite toggles onto exa.enabled", async () => {
 			await writeSettings({
 				exa: {

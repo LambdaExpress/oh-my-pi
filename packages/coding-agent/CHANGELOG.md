@@ -4,6 +4,8 @@
 
 ### Added
 
+- Added a discoverable `adb` tool for Android device commands, file and app operations, screenshots, and lifecycle management of existing Android Virtual Devices.
+- Added a `steeringSkipPendingOperations` interaction setting, enabled by default, that can let the model's current operations finish instead of skipping pending work when a steering message is sent.
 - Added a `Dev` build label to locally compiled Windows binaries and made startup update notifications treat those builds as updateable while `startup.checkUpdate` remains enabled.
 - Added a fullscreen `/jobs` hub, available with `Alt+J`, that aggregates live and completed Bash, Eval, Task, and SSH transfer jobs from every agent in the current session, with originating-agent identity, full input, elapsed time, transfer details, and live or terminal output.
 - Added Apple Silicon and Intel macOS binaries to fork code releases, enabling in-place upgrades through `omp update` on both architectures.
@@ -64,6 +66,9 @@
 
 ### Fixed
 
+- Fixed changes to `steeringSkipPendingOperations` made during an active run not reaching the running agent loop, which could still report `Skipped due to queued user message` after the setting was disabled.
+- Fixed approved-plan execution titles ignoring the active `TITLE_SYSTEM.md` language policy after creating a new session.
+- Restored `/tree` as a fullscreen mouse-enabled session tree and restored the goal-mode action and Chinese localization in Plan Review.
 - Fixed LSP monorepo routing for relative child-project files, stale dependency overlays after reload, unstable cold-start references/definitions, and opaque `csharp-ls` empty or `AggregateException` results.
 - Fixed GitHub Actions `run_watch` failing on transient jobs-API `unexpected EOF`, TLS handshake, and Windows `connectex` errors by retrying bounded explicit GET requests.
 - Fixed failing chained Bun/Biome checks being summarized with the contradictory `root biome: ok` status.

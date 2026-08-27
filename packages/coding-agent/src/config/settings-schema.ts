@@ -1996,15 +1996,15 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
-	interruptMode: {
-		type: "enum",
-		values: ["immediate", "wait"] as const,
-		default: "immediate",
+	steeringSkipPendingOperations: {
+		type: "boolean",
+		default: true,
 		ui: {
 			tab: "interaction",
 			group: "Input",
-			label: "Interrupt Mode",
-			description: "When steering messages interrupt tool execution",
+			label: "Skip Pending Operations on Steering",
+			description:
+				"When enabled, sending a steering message interrupts the current tool batch and skips operations that have not started. When disabled, current operations finish before the message is applied.",
 		},
 	},
 

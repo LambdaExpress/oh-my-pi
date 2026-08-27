@@ -547,6 +547,43 @@ describe("InteractiveMode plan review rendering", () => {
 		await expect(choice).resolves.toBeUndefined();
 	});
 
+	it("localizes the Plan Review title and every approval option", async () => {
+		setLocale("zh-CN");
+		let capturedOverlay: PlanReviewOverlay | undefined;
+		vi.spyOn(mode.ui, "showOverlay").mockImplementation(component => {
+			capturedOverlay = component as PlanReviewOverlay;
+			return { hide: vi.fn() } as never;
+		});
+
+		const choice = mode.showPlanReview("# Plan\n\n执行变更。", "Plan mode - next step", [
+			"Approve and execute",
+			"Approve and execute in goal mode",
+			"Approve and compact context",
+			"Approve and keep context",
+			"Refine plan",
+			"Save and quit",
+		]);
+
+		const overlay = capturedOverlay;
+		expect(overlay).toBeDefined();
+		const rendered = overlay!
+			.render(100)
+			.map(line => Bun.stripANSI(line))
+			.join("\n");
+		expect(rendered).toContain("计划审查");
+		expect(rendered).toContain("计划模式 - 下一步");
+		expect(rendered).toContain("批准并执行");
+		expect(rendered).toContain("批准并按目标模式执行");
+		expect(rendered).toContain("批准并压缩上下文");
+		expect(rendered).toContain("批准并保留上下文");
+		expect(rendered).toContain("优化计划");
+		expect(rendered).toContain("保存并退出");
+
+		overlay!.handleInput("\x1b[B");
+		overlay!.handleInput("\r");
+		await expect(choice).resolves.toBe("批准并按目标模式执行");
+	});
+
 	it("dismisses Plan Review and restores input when a provider error is pinned", async () => {
 		mode.ui.setFocus(mode.editor);
 		const choice = mode.showPlanReview("# Plan\n\nReady for approval.", "Plan mode - next step", ["Approve"]);
@@ -832,6 +869,7 @@ describe("InteractiveMode plan review rendering", () => {
 				"Approve and compact context",
 				"Approve and keep context",
 				"Refine plan",
+				"Save and quit",
 			],
 			expect.any(Object),
 			expect.any(Object),
@@ -939,6 +977,60 @@ describe("InteractiveMode plan review rendering", () => {
 		expect(goalState?.goal.status).toBe("active");
 		expect(goalState?.goal.objective).toContain("Run autonomously");
 		expect(goalState?.goal.objective).toContain(planFilePath);
+	});
+
+	it("accepts the localized approve-and-execute-in-goal-mode choice", async () => {
+		setLocale("zh-CN");
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# 计划\n\n自主执行。");
+
+		mode.planModeEnabled = true;
+		mode.planModePlanFilePath = planFilePath;
+		vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
+		vi.spyOn(mode, "showPlanReview").mockResolvedValue("批准并按目标模式执行");
+		const clear = vi.spyOn(mode, "handleClearCommand").mockResolvedValue();
+		const prompt = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "自主执行",
+		});
+
+		expect(clear).toHaveBeenCalledTimes(1);
+		expect(prompt).toHaveBeenCalledWith(expect.any(String), { synthetic: true });
+		expect(mode.goalModeEnabled).toBe(true);
+	});
+
+	it("starts a new session for the localized approve-and-execute choice", async () => {
+		setLocale("zh-CN");
+		const planFilePath = "local://PLAN.md";
+		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {
+			getArtifactsDir: () => session.sessionManager.getArtifactsDir(),
+			getSessionId: () => session.sessionManager.getSessionId(),
+		});
+		await Bun.write(resolvedPlanPath, "# 计划\n\n在新会话中执行。");
+		await mode.init({ suppressWelcomeIntro: true });
+		await mode.handlePlanModeCommand();
+		const oldSessionId = session.sessionId;
+		vi.spyOn(session, "getContextUsage").mockReturnValue(undefined);
+		vi.spyOn(mode, "showPlanReview").mockResolvedValue("批准并执行");
+		const prompt = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
+
+		await mode.handlePlanApproval({
+			planFilePath,
+			planExists: true,
+			title: "新会话执行",
+		});
+
+		expect(session.sessionId).not.toBe(oldSessionId);
+		expect(mode.planModeEnabled).toBe(false);
+		expect(session.getPlanModeState()).toBeUndefined();
+		expect(prompt).toHaveBeenCalledWith(expect.any(String), { synthetic: true });
 	});
 
 	it("approve-and-execute-in-goal-mode creates the goal after the real new-session reconciliation", async () => {
@@ -1121,6 +1213,7 @@ describe("InteractiveMode plan review rendering", () => {
 			"Plan mode - next step",
 			[
 				"Approve and execute",
+				"Approve and execute in goal mode",
 				"Approve and compact context",
 				"Approve and keep context",
 				"Refine plan",
@@ -1412,7 +1505,7 @@ describe("InteractiveMode plan review rendering", () => {
 
 		mode.planModeEnabled = true;
 		mode.planModePlanFilePath = planFilePath;
-		mode.titleSystemPrompt = "请生成中文标题";
+		session.setTitleSystemPrompt("请生成中文标题");
 		vi.spyOn(mode, "showPlanReview").mockResolvedValue("Approve and execute");
 		vi.spyOn(mode, "handleClearCommand").mockResolvedValue();
 		const promptSpy = vi.spyOn(session, "prompt").mockResolvedValue(undefined as never);
@@ -2356,6 +2449,12 @@ describe("InteractiveMode plan review rendering", () => {
 describe("AssistantMessageComponent aborted replay", () => {
 	beforeAll(() => {
 		initTheme();
+	});
+	beforeEach(() => {
+		setLocale("en");
+	});
+	afterEach(() => {
+		setLocale(null);
 	});
 
 	// ==========================================================================

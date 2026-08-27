@@ -1488,6 +1488,18 @@ export class Settings {
 			delete raw.queueMode;
 		}
 
+		// interruptMode (immediate|wait) -> steeringSkipPendingOperations
+		// (boolean). Preserve the old explicit behavior; the new setting wins when
+		// both are present. The core Agent keeps the enum because RPC clients still
+		// expose that lower-level protocol.
+		if (
+			typeof raw.steeringSkipPendingOperations !== "boolean" &&
+			(raw.interruptMode === "immediate" || raw.interruptMode === "wait")
+		) {
+			raw.steeringSkipPendingOperations = raw.interruptMode === "immediate";
+		}
+		delete raw.interruptMode;
+
 		// lastChangelogVersion moved out of config.yml into the
 		// <agentDir>/last-changelog-version marker file so version bumps no
 		// longer dirty user-tracked configs. Capture for marker seeding (see

@@ -98,6 +98,18 @@ describe("selector setting side effects", () => {
 		expect(invalidate).toHaveBeenCalledTimes(1);
 		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
+	it("updates the active agent interrupt mode when steering skipping changes", () => {
+		const setInterruptMode = vi.fn();
+		const controller = new SelectorController({
+			session: { setInterruptMode },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("steeringSkipPendingOperations", false);
+		controller.handleSettingChange("steeringSkipPendingOperations", true);
+
+		expect(setInterruptMode).toHaveBeenNthCalledWith(1, "wait");
+		expect(setInterruptMode).toHaveBeenNthCalledWith(2, "immediate");
+	});
 
 	for (const id of ["terminal.showImages", "showImages"]) {
 		for (const visible of [false, true]) {

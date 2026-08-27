@@ -778,8 +778,6 @@ function translatedLabel(path: SettingPath, fallback: string): string {
 			return t("Inspect Image");
 		case "inspect_image.timeoutMs":
 			return t("Inspect Image Timeout");
-		case "interruptMode":
-			return t("Interrupt Mode");
 		case "irc.timeoutMs":
 			return t("IRC Timeout");
 		case "julia.interpreter":
@@ -1054,6 +1052,8 @@ function translatedLabel(path: SettingPath, fallback: string): string {
 			return t("Transparent Status Line");
 		case "steeringMode":
 			return t("Steering Mode");
+		case "steeringSkipPendingOperations":
+			return t("Skip Pending Operations on Steering");
 		case "stt.enabled":
 			return t("Speech-to-Text");
 		case "stt.modelName":
@@ -1529,8 +1529,6 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			return t(
 				"Per-request timeout for the inspect_image vision-model call, in milliseconds. A stalled provider fails fast with a timeout error instead of blocking until manual abort. Set to 0 to disable the timeout.",
 			);
-		case "interruptMode":
-			return t("When steering messages interrupt tool execution");
 		case "irc.timeoutMs":
 			return t(
 				"Default timeout for hub message waits (and send await:true) in milliseconds; 0 disables the timeout",
@@ -1885,6 +1883,10 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			);
 		case "steeringMode":
 			return t("How to process queued messages while agent is working");
+		case "steeringSkipPendingOperations":
+			return t(
+				"When enabled, sending a steering message interrupts the current tool batch and skips operations that have not started. When disabled, current operations finish before the message is applied.",
+			);
 		case "stt.enabled":
 			return t("Enable speech-to-text input via microphone");
 		case "stt.modelName":

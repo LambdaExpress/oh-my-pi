@@ -70,6 +70,16 @@ describe("settings layout", () => {
 		});
 	});
 
+	it("exposes steering operation skipping as a boolean input setting", () => {
+		const def = getSettingsForTab("interaction").find(def => def.path === "steeringSkipPendingOperations");
+
+		expect(def).toMatchObject({
+			type: "boolean",
+			label: "Skip Pending Operations on Steering",
+			group: "Input",
+		});
+	});
+
 	it("exposes every accepted snapcompact shape in the settings submenu", () => {
 		const def = getSettingsForTab("context").find(def => def.path === "snapcompact.shape");
 

@@ -494,8 +494,8 @@ export class SelectorController {
 			case "followUpMode":
 				this.ctx.session.setFollowUpMode(value as "all" | "one-at-a-time");
 				break;
-			case "interruptMode":
-				this.ctx.session.setInterruptMode(value as "immediate" | "wait");
+			case "steeringSkipPendingOperations":
+				this.ctx.session.setInterruptMode(value === true ? "immediate" : "wait");
 				break;
 			case "thinkingLevel":
 			case "defaultThinkingLevel":
@@ -1276,176 +1276,191 @@ export class SelectorController {
 			return;
 		}
 
-		this.showSelector(done => {
-			const selector = new TreeSelectorComponent(
-				tree,
-				realLeafId,
-				this.ctx.ui.terminal.rows,
-				async (entryId, options) => {
-					// Selecting the current leaf is normally a no-op (already there) —
-					// unless it's an `ask` toolResult, in which case the re-answer flow
-					// must still be allowed to reopen the picker even though the leaf
-					// doesn't move (chatgpt-codex review on #5895).
-					if (entryId === realLeafId) {
-						const currentEntry = this.ctx.sessionManager.getEntry(entryId);
-						const currentIsAskResult =
-							currentEntry?.type === "message" &&
-							currentEntry.message.role === "toolResult" &&
-							currentEntry.message.toolName === "ask";
-						if (!currentIsAskResult) {
-							done();
-							this.ctx.showStatus("Already at this point");
+		let overlayHandle: OverlayHandle | undefined;
+		let closed = false;
+		const done = () => {
+			if (closed) return;
+			closed = true;
+			overlayHandle?.hide();
+			this.focusActiveEditorArea();
+			this.ctx.ui.requestRender();
+		};
+		const selector = new TreeSelectorComponent(
+			tree,
+			realLeafId,
+			this.ctx.ui.terminal.rows,
+			async (entryId, options) => {
+				// Selecting the current leaf is normally a no-op (already there) —
+				// unless it's an `ask` toolResult, in which case the re-answer flow
+				// must still be allowed to reopen the picker even though the leaf
+				// doesn't move (chatgpt-codex review on #5895).
+				if (entryId === realLeafId) {
+					const currentEntry = this.ctx.sessionManager.getEntry(entryId);
+					const currentIsAskResult =
+						currentEntry?.type === "message" &&
+						currentEntry.message.role === "toolResult" &&
+						currentEntry.message.toolName === "ask";
+					if (!currentIsAskResult) {
+						done();
+						this.ctx.showStatus("Already at this point");
+						return;
+					}
+				}
+
+				// Ask about summarization
+				done(); // Close selector first
+
+				// Pure-rewind probe (before navigation mutates the leaf): when the
+				// target sits on the current leaf's path and no summary is added,
+				// the post-navigation transcript is a strict prefix of the rendered
+				// one and the tail can be dropped in place.
+				const treeRewind = this.#treeRewindBoundary(entryId, realLeafId);
+
+				// Loop until user makes a complete choice or cancels to tree.
+				// Shift+Enter in the tree selector pre-answers "Summarize" and
+				// skips the prompt entirely.
+				let wantsSummary = options.summarize;
+				let customInstructions: string | undefined;
+
+				const branchSummariesEnabled = settings.get("branchSummary.enabled");
+
+				while (!wantsSummary && branchSummariesEnabled) {
+					const summaryChoice = await this.ctx.showHookSelector("Summarize branch?", [
+						"No summary",
+						"Summarize",
+						"Summarize with custom prompt",
+					]);
+
+					if (summaryChoice === undefined) {
+						// User pressed escape - re-show tree selector
+						this.showTreeSelector();
+						return;
+					}
+
+					wantsSummary = summaryChoice !== "No summary";
+
+					if (summaryChoice === "Summarize with custom prompt") {
+						customInstructions = await this.ctx.showHookEditor("Custom summarization instructions");
+						if (customInstructions === undefined) {
+							// User cancelled - loop back to summary selector
+							continue;
+						}
+					}
+
+					// User made a complete choice
+					break;
+				}
+
+				// Set up escape handler and loader if summarizing
+				let summaryLoader: Loader | undefined;
+				const originalOnEscape = this.ctx.editor.onEscape;
+
+				if (wantsSummary) {
+					this.ctx.editor.onEscape = () => {
+						this.ctx.session.abortBranchSummary();
+					};
+					this.ctx.chatContainer.addChild(new Spacer(1));
+					summaryLoader = new Loader(
+						this.ctx.ui,
+						spinner => theme.fg("accent", spinner),
+						text => theme.fg("muted", text),
+						"Summarizing branch... (esc to cancel)",
+						getSymbolTheme().spinnerFrames,
+					);
+					this.ctx.statusContainer.addChild(summaryLoader);
+					this.ctx.ui.requestRender();
+				}
+
+				try {
+					let result = await this.ctx.session.navigateTree(entryId, {
+						summarize: wantsSummary,
+						customInstructions,
+						allowAskReopen: true,
+					});
+
+					// Selecting an `ask` toolResult doesn't land the leaf directly —
+					// re-open the picker with the original questions first, then
+					// complete the navigation as a new sibling branch (issue #5642).
+					if (result.reopenAsk) {
+						const reanswer = await this.#reanswerAsk(result.reopenAsk.questions);
+						if (!reanswer) {
+							this.ctx.showStatus("Re-answer cancelled");
 							return;
 						}
-					}
-
-					// Ask about summarization
-					done(); // Close selector first
-
-					// Pure-rewind probe (before navigation mutates the leaf): when the
-					// target sits on the current leaf's path and no summary is added,
-					// the post-navigation transcript is a strict prefix of the rendered
-					// one and the tail can be dropped in place.
-					const treeRewind = this.#treeRewindBoundary(entryId, realLeafId);
-
-					// Loop until user makes a complete choice or cancels to tree.
-					// Shift+Enter in the tree selector pre-answers "Summarize" and
-					// skips the prompt entirely.
-					let wantsSummary = options.summarize;
-					let customInstructions: string | undefined;
-
-					const branchSummariesEnabled = settings.get("branchSummary.enabled");
-
-					while (!wantsSummary && branchSummariesEnabled) {
-						const summaryChoice = await this.ctx.showHookSelector("Summarize branch?", [
-							"No summary",
-							"Summarize",
-							"Summarize with custom prompt",
-						]);
-
-						if (summaryChoice === undefined) {
-							// User pressed escape - re-show tree selector
-							this.showTreeSelector();
-							return;
-						}
-
-						wantsSummary = summaryChoice !== "No summary";
-
-						if (summaryChoice === "Summarize with custom prompt") {
-							customInstructions = await this.ctx.showHookEditor("Custom summarization instructions");
-							if (customInstructions === undefined) {
-								// User cancelled - loop back to summary selector
-								continue;
-							}
-						}
-
-						// User made a complete choice
-						break;
-					}
-
-					// Set up escape handler and loader if summarizing
-					let summaryLoader: Loader | undefined;
-					const originalOnEscape = this.ctx.editor.onEscape;
-
-					if (wantsSummary) {
-						this.ctx.editor.onEscape = () => {
-							this.ctx.session.abortBranchSummary();
-						};
-						this.ctx.chatContainer.addChild(new Spacer(1));
-						summaryLoader = new Loader(
-							this.ctx.ui,
-							spinner => theme.fg("accent", spinner),
-							text => theme.fg("muted", text),
-							"Summarizing branch... (esc to cancel)",
-							getSymbolTheme().spinnerFrames,
-						);
-						this.ctx.statusContainer.addChild(summaryLoader);
-						this.ctx.ui.requestRender();
-					}
-
-					try {
-						let result = await this.ctx.session.navigateTree(entryId, {
+						result = await this.ctx.session.navigateTree(entryId, {
 							summarize: wantsSummary,
 							customInstructions,
 							allowAskReopen: true,
+							reanswerAskResult: reanswer,
 						});
-
-						// Selecting an `ask` toolResult doesn't land the leaf directly —
-						// re-open the picker with the original questions first, then
-						// complete the navigation as a new sibling branch (issue #5642).
-						if (result.reopenAsk) {
-							const reanswer = await this.#reanswerAsk(result.reopenAsk.questions);
-							if (!reanswer) {
-								this.ctx.showStatus("Re-answer cancelled");
-								return;
-							}
-							result = await this.ctx.session.navigateTree(entryId, {
-								summarize: wantsSummary,
-								customInstructions,
-								allowAskReopen: true,
-								reanswerAskResult: reanswer,
-							});
-						}
-
-						if (result.aborted) {
-							// Summarization aborted - re-show tree selector
-							this.ctx.showStatus("Branch summarization cancelled");
-							this.showTreeSelector();
-							return;
-						}
-						if (result.cancelled) {
-							this.ctx.showStatus("Navigation cancelled");
-							return;
-						}
-
-						// Update UI — rebuild the display transcript for the new leaf (the
-						// context from navigateTree is the LLM context, not the transcript).
-						const fastRewind =
-							treeRewind !== undefined &&
-							!wantsSummary &&
-							!result.summaryEntry &&
-							!result.askReanswerCommitted &&
-							this.ctx.sessionManager.getLeafId() === treeRewind.expectedLeafId &&
-							this.ctx.truncateTranscriptFromMessage(treeRewind.message);
-						if (!fastRewind) {
-							await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
-						}
-						await this.ctx.reloadTodos();
-						if (result.editorText && !this.ctx.editor.getText().trim()) {
-							this.ctx.editor.setDraft(result.editorText, result.editorImages);
-						}
-						this.ctx.showStatus("Navigated to selected point");
-
-						// Re-answering a past `ask` commits a new sibling answer but,
-						// unlike a live `ask`, leaves the agent idle. Resume it now —
-						// after the transcript rebuild above — so the model consumes the
-						// new answer without the resumed turn rendering against the stale
-						// pre-rebuild UI (issue #6483).
-						if (result.askReanswerCommitted) {
-							this.ctx.session.resumeAfterAskReanswer();
-						}
-					} catch (error) {
-						this.ctx.showError(error instanceof Error ? error.message : String(error));
-					} finally {
-						if (summaryLoader) {
-							summaryLoader.stop();
-							this.ctx.statusContainer.disposeChildren();
-						}
-						this.ctx.editor.onEscape = originalOnEscape;
 					}
-				},
-				() => {
-					done();
-					this.ctx.ui.requestRender();
-				},
-				(entryId, label) => {
-					this.ctx.sessionManager.appendLabelChange(entryId, label);
-					this.ctx.ui.requestRender();
-				},
-				settings.get("treeFilterMode"),
-			);
-			return { component: selector, focus: selector };
+
+					if (result.aborted) {
+						// Summarization aborted - re-show tree selector
+						this.ctx.showStatus("Branch summarization cancelled");
+						this.showTreeSelector();
+						return;
+					}
+					if (result.cancelled) {
+						this.ctx.showStatus("Navigation cancelled");
+						return;
+					}
+
+					// Update UI — rebuild the display transcript for the new leaf (the
+					// context from navigateTree is the LLM context, not the transcript).
+					const fastRewind =
+						treeRewind !== undefined &&
+						!wantsSummary &&
+						!result.summaryEntry &&
+						!result.askReanswerCommitted &&
+						this.ctx.sessionManager.getLeafId() === treeRewind.expectedLeafId &&
+						this.ctx.truncateTranscriptFromMessage(treeRewind.message);
+					if (!fastRewind) {
+						await this.ctx.renderInitialMessages({ clearTerminalHistory: true });
+					}
+					await this.ctx.reloadTodos();
+					if (result.editorText && !this.ctx.editor.getText().trim()) {
+						this.ctx.editor.setDraft(result.editorText, result.editorImages);
+					}
+					this.ctx.showStatus("Navigated to selected point");
+
+					// Re-answering a past `ask` commits a new sibling answer but,
+					// unlike a live `ask`, leaves the agent idle. Resume it now —
+					// after the transcript rebuild above — so the model consumes the
+					// new answer without the resumed turn rendering against the stale
+					// pre-rebuild UI (issue #6483).
+					if (result.askReanswerCommitted) {
+						this.ctx.session.resumeAfterAskReanswer();
+					}
+				} catch (error) {
+					this.ctx.showError(error instanceof Error ? error.message : String(error));
+				} finally {
+					if (summaryLoader) {
+						summaryLoader.stop();
+						this.ctx.statusContainer.disposeChildren();
+					}
+					this.ctx.editor.onEscape = originalOnEscape;
+				}
+			},
+			() => {
+				done();
+				this.ctx.ui.requestRender();
+			},
+			(entryId, label) => {
+				this.ctx.sessionManager.appendLabelChange(entryId, label);
+				this.ctx.ui.requestRender();
+			},
+			settings.get("treeFilterMode"),
+		);
+		overlayHandle = this.ctx.ui.showOverlay(selector, {
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
 		});
+		this.ctx.ui.setFocus(selector);
+		this.ctx.ui.requestRender();
 	}
 
 	/**
