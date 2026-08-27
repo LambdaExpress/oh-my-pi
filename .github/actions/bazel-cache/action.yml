@@ -10,9 +10,12 @@ description: >
    cache is hosted-only and its key carries a schema version (v1 was
    poisoned by a kata-produced export that silently missed every action).
 
-   The v3 key is <config hash>-<source hash>: config covers toolchain and
-   build settings, source covers crates/** + BUILD.bazel. Restores fall
-   back to the config-scoped prefix, then to a bare scope+os+arch prefix:
+   The default v3 key is <config hash>-<source hash>: config covers toolchain
+   and build settings, source covers crates/** + BUILD.bazel. Callers whose
+   repository/toolchain cache would exceed the GitHub quota can persist only
+   the action disk cache; that profile has a distinct key so it never collides
+   with a full-cache reservation. Restores fall back to the config-scoped
+   prefix, then to a bare scope+os+arch prefix:
    the config hash covers Cargo.toml/Cargo.lock, which every release
    version bump rewrites, so without the bare fallback each release built
    the darwin addons fully cold (~40-50 min on macos-15-intel; CI run
@@ -28,6 +31,10 @@ inputs:
    scope:
       description: Disk-cache key discriminator shared by compatible consumers
       required: true
+   persist-repository-cache:
+      description: Include downloaded repositories and toolchains in the GitHub cache archive
+      required: false
+      default: "true"
 
 outputs:
    rc:
@@ -36,6 +43,9 @@ outputs:
    cache-key:
       description: Exact GitHub cache key for a later explicit save
       value: ${{ steps.backend.outputs.cache-key }}
+   cache-paths:
+      description: Newline-separated paths that restore and save must share
+      value: ${{ steps.backend.outputs.cache-paths }}
    save-needed:
       description: Whether a disk-cache build can save a new exact-key archive
       value: ${{ steps.compose.outputs.save-needed }}
@@ -55,6 +65,14 @@ runs:
         run: |
            set -euo pipefail
            remote=false
+           case "${{ inputs.persist-repository-cache }}" in
+             true) profile="" ;;
+             false) profile="-action-only" ;;
+             *)
+               echo "::error::persist-repository-cache must be true or false"
+               exit 1
+               ;;
+           esac
            if [ -n "${BAZEL_REMOTE_USER:-}" ] || [ -n "${BAZEL_REMOTE_PASSWORD:-}" ]; then
              if [ -z "${BAZEL_REMOTE_USER:-}" ] || [ -z "${BAZEL_REMOTE_PASSWORD:-}" ]; then
                echo "::error::BAZEL_REMOTE_USER and BAZEL_REMOTE_PASSWORD must both be set"
@@ -62,14 +80,20 @@ runs:
              fi
              remote=true
            fi
-           key="bazel-disk-v3-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-$SOURCE_HASH"
-           prefix="bazel-disk-v3-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-"
-           bare_prefix="bazel-disk-v3-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-"
+           key="bazel-disk-v3${profile}-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-$SOURCE_HASH"
+           prefix="bazel-disk-v3${profile}-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-$CONFIG_HASH-"
+           bare_prefix="bazel-disk-v3${profile}-${{ inputs.scope }}-${{ runner.os }}-${{ runner.arch }}-"
            {
              echo "remote=$remote"
              echo "cache-key=$key"
              echo "cache-prefix=$prefix"
              echo "cache-bare-prefix=$bare_prefix"
+             echo "cache-paths<<EOF"
+             echo "$HOME/.cache/omp-bazel-disk"
+             if [ "${{ inputs.persist-repository-cache }}" = true ]; then
+               echo "$HOME/.cache/omp-bazel-repo"
+             fi
+             echo "EOF"
            } >> "$GITHUB_OUTPUT"
 
       - name: Restore bazel disk cache
@@ -77,14 +101,11 @@ runs:
         if: steps.backend.outputs.remote != 'true'
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
-           # Both caches ride one archive: the action cache AND the repository
-           # cache (downloads + extracted repo contents at repo/contents, which
-           # reproducible repo rules reuse across output bases). Without the
-           # repo half, every hosted job re-downloaded and re-extracted the
-           # rust/LLVM/zig toolchains. Save sites must list the same paths.
-           path: |
-              ~/.cache/omp-bazel-disk
-              ~/.cache/omp-bazel-repo
+           # Full-profile consumers restore both the action cache and downloaded
+           # repositories/toolchains. Action-only consumers restore just the
+           # expensive compilation outputs and recreate repositories locally.
+           # Save sites consume the same output so cache versions stay aligned.
+           path: ${{ steps.backend.outputs.cache-paths }}
            key: ${{ steps.backend.outputs.cache-key }}
            # Order matters: exact key, same-config prefix, then any archive for
            # this scope+os+arch. The bare fallback is what keeps release version
