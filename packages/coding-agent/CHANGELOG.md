@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added literal clipboard-reference paste: `Ctrl+Shift+V`/`Alt+Shift+V` inserts Windows Explorer `FileDropList` paths without image attachments, while bitmap-only clipboards are materialized into session blob paths.
 - Added a discoverable `adb` tool for Android device commands, file and app operations, screenshots, and lifecycle management of existing Android Virtual Devices.
 - Added a `steeringSkipPendingOperations` interaction setting, enabled by default, that can let the model's current operations finish instead of skipping pending work when a steering message is sent.
 - Added a `Dev` build label to locally compiled Windows binaries and made startup update notifications treat those builds as updateable while `startup.checkUpdate` remains enabled.

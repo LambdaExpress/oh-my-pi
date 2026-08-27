@@ -162,7 +162,7 @@ export const KEYBINDINGS = {
 	},
 	"app.clipboard.pasteTextRaw": {
 		defaultKeys: ["ctrl+shift+v", "alt+shift+v"],
-		description: "Paste text from clipboard as raw text (no collapse)",
+		description: "Paste clipboard as a literal path or text reference",
 	},
 	"app.clipboard.copyLine": {
 		defaultKeys: "alt+shift+l",

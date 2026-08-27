@@ -12,8 +12,8 @@ type SpawnCaptureOptions = { input?: string; timeoutMs?: number };
 /**
  * Run a subprocess and capture its stdout without blocking the event loop.
  *
- * `readTextFromClipboard`, `readMacFileUrlsFromClipboard`, and the Termux copy
- * path all shell out to CLI clipboard tools. The synchronous `execSync` API
+ * `readTextFromClipboard`, file-path reads, and the Termux copy path all shell
+ * out to CLI clipboard tools. The synchronous `execSync` API
  * parks the render loop until the child exits or the timeout fires, so a hung
  * clipboard daemon freezes the TUI for the full 2000ms budget (#4235). This
  * helper mirrors the previous semantics — capture stdout, throw on non-zero
@@ -85,6 +85,48 @@ export async function readMacFileUrlsFromClipboard(): Promise<string[]> {
 			.filter(line => line.length > 0);
 	} catch (error) {
 		logger.warn("clipboard: failed to read macOS file URLs", { error: String(error) });
+		return [];
+	}
+}
+
+// Windows Explorer stores copied files in the FileDropList clipboard format,
+// not as plain text. Emit one UTF-8/base64 path per line so PowerShell's output
+// encoding and path characters cannot corrupt the transport.
+const POWERSHELL_FILE_DROP_LIST_SCRIPT = `
+$ErrorActionPreference = 'Stop'
+$files = @(Get-Clipboard -Format FileDropList)
+foreach ($file in $files) {
+	$value = if ($file -is [System.IO.FileSystemInfo]) { $file.FullName } else { [string]$file }
+	[Console]::Out.WriteLine([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($value)))
+}
+`;
+
+/**
+ * Read file paths copied from Windows Explorer's FileDropList clipboard format.
+ *
+ * Returns an empty array off Windows, when the clipboard does not contain a
+ * file list, or when PowerShell cannot access it. Paths are returned verbatim;
+ * callers decide whether to attach the files or insert literal references.
+ */
+export async function readFilePathsFromClipboard(): Promise<string[]> {
+	if (process.platform !== "win32") return [];
+	try {
+		const stdout = await spawnCapture([
+			"powershell.exe",
+			"-NoProfile",
+			"-NonInteractive",
+			"-Sta",
+			"-Command",
+			POWERSHELL_FILE_DROP_LIST_SCRIPT,
+		]);
+		return stdout
+			.split(/\r?\n/)
+			.map(line => line.trim())
+			.filter(line => line.length > 0)
+			.map(encoded => Buffer.from(encoded, "base64").toString("utf8"))
+			.filter(filePath => filePath.length > 0);
+	} catch (error) {
+		logger.warn("clipboard: failed to read Windows FileDropList", { error: String(error) });
 		return [];
 	}
 }
