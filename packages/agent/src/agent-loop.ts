@@ -2274,6 +2274,7 @@ async function executeToolCalls(
 		hasSteeringMessages,
 		hasIrcInterrupts,
 		interruptMode = "immediate",
+		getInterruptMode,
 		getToolContext,
 		transformToolCallArguments,
 		resolveFallbackTool,
@@ -2309,7 +2310,7 @@ async function executeToolCalls(
 	const emittedToolResults: ToolResultMessage[] = [];
 	const toolCallInfos = toolCalls.map(call => ({ id: call.id, name: call.name }));
 	const batchId = `${assistantMessage.timestamp ?? Date.now()}_${toolCalls[0]?.id ?? "batch"}`;
-	const shouldInterruptImmediately = interruptMode !== "wait";
+	const shouldInterruptImmediately = (): boolean => (getInterruptMode?.() ?? interruptMode) !== "wait";
 	const steeringAbortController = new AbortController();
 	const ircAbortController = new AbortController();
 	// Cooperative channel: aborted when queued steering (or an interrupting
@@ -2379,7 +2380,7 @@ async function executeToolCalls(
 	const checkIrcInterrupts = async (): Promise<void> => {
 		// IRC only fires once: a peer interrupt already recorded on interruptState
 		// must not re-abort, and (unlike steering) never re-consumes a queue.
-		if (!shouldInterruptImmediately || signal?.aborted || interruptState.triggered) return;
+		if (!shouldInterruptImmediately() || signal?.aborted || interruptState.triggered) return;
 		if (hasIrcInterrupts && (await hasIrcInterrupts())) {
 			// Peer IRC hard-aborts interruptible waits only; foreground tools keep
 			// running (no partial side effects) but get the cooperative soft
@@ -2395,7 +2396,7 @@ async function executeToolCalls(
 		// `signal` (external/user abort) is checked separately from the internal
 		// abort controllers: once the run is externally aborted it is unwinding
 		// and the interrupt would be redundant.
-		if (!shouldInterruptImmediately || signal?.aborted) {
+		if (!shouldInterruptImmediately() || signal?.aborted) {
 			return;
 		}
 		// Mid-batch steering detection must be non-consuming. If a direct
@@ -2759,7 +2760,7 @@ async function executeToolCalls(
 	// dequeue below injects the message promptly. Gated on immediate-interrupt
 	// mode; checkSteering is idempotent (no-op once triggered).
 	const watchSteeringWhileRunning =
-		shouldInterruptImmediately && (hasSteeringMessages !== undefined || hasIrcInterrupts !== undefined);
+		shouldInterruptImmediately() && (hasSteeringMessages !== undefined || hasIrcInterrupts !== undefined);
 	const eventDrivenSteeringWatch =
 		watchSteeringWhileRunning && config.waitForSteeringMessages !== undefined && hasSteeringMessages !== undefined;
 	const steeringWatchAbortController = new AbortController();

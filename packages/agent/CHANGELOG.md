@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed active tool batches retaining a stale steering interrupt mode after `Agent.setInterruptMode()` changed it.
+
 ## [18.0.4] - 2026-08-24
 
 ### Changed

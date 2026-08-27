@@ -1846,7 +1846,6 @@ export const zhCN: Record<string, string> = {
 		"交互式插件选择器仅限 TUI。请传入明确的 name@marketplace 参数。",
 	"Interactive shell console": "交互式 shell 控制台",
 	"Interactive shell console for testing": "用于测试的交互式 shell 控制台",
-	"Interrupt Mode": "中断模式",
 	"Interrupt on prose and tool streams": "在文本流和工具流匹配时中断",
 	"Interrupt only on reply/thinking matches": "仅在回复/思考匹配时中断",
 	"Interrupt only on tool-call argument matches": "仅在工具调用参数匹配时中断",
@@ -3162,6 +3161,7 @@ export const zhCN: Record<string, string> = {
 	"Save & apply": "保存并应用",
 	"Save Handoff Docs": "保存交接文档",
 	"Save TTSR rule where?": "将 TTSR 规则保存到何处？",
+	"Save and quit": "保存并退出",
 	"Save generated handoff documents to markdown files for the auto-handoff flow":
 		"将生成的交接文档保存为 markdown 文件，用于自动交接流程",
 	"Save project role models in .omp/config.yml; missing project roles use global defaults":
@@ -3479,6 +3479,7 @@ export const zhCN: Record<string, string> = {
 	"Skill Commands": "技能命令",
 	Skills: "技能",
 	"Skip changelog updates": "跳过更新日志",
+	"Skip Pending Operations on Steering": "引导时跳过待处理操作",
 	"Skip sourcing snapshot from user shell": "跳过从用户 shell 获取快照",
 	"Skip welcome screen and startup status messages": "跳过欢迎界面和启动状态消息",
 	"Skipped existing: {count} (use --force to overwrite)": "已跳过现有内容：{count}（使用 --force 覆盖）",
@@ -4150,9 +4151,10 @@ export const zhCN: Record<string, string> = {
 		"当图片附加到不支持视觉的模型时，使用支持视觉的模型描述它。启用 images.visionApproval 可在视觉模型运行前要求审批；否则直接描述图片。",
 	"When an image is attached to a model without vision support, describe it with a vision-capable model. Enable images.visionApproval to require approval before the vision model runs; otherwise the image is described directly.":
 		"当图片附加到不支持视觉的模型时，使用支持视觉的模型描述它。启用 images.visionApproval 可在视觉模型运行前要求审批；否则直接描述图片。",
+	"When enabled, sending a steering message interrupts the current tool batch and skips operations that have not started. When disabled, current operations finish before the message is applied.":
+		"启用后，发送引导消息会中断当前工具批次，并跳过尚未开始的操作。禁用后，当前操作会先完成，再应用该消息。",
 	"When on, auto-run one private capture turn at stop (uses extra tokens). When off, only standing auto-learn guidance remains.":
 		"开启时，停止时会自动运行一轮私有捕获（消耗额外 token）。关闭时，仅保留常驻的自动学习指导。",
-	"When steering messages interrupt tool execution": "当引导消息中断工具执行时",
 	"When to interrupt mid-stream vs inject warning after completion": "何时在流式输出中途中断、何时在完成后注入警告",
 	"When to return to the primary model after a fallback": "回退后何时返回主模型",
 	"When xd:// Prompt Docs is Built-ins Only, inline dynamic devices whose names match these glob patterns (for example mcp__context_mode_*). Catalog Only ignores this setting.":

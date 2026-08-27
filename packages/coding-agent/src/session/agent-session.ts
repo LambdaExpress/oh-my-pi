@@ -7942,7 +7942,7 @@ export class AgentSession {
 	 */
 	setInterruptMode(mode: "immediate" | "wait"): void {
 		this.agent.setInterruptMode(mode);
-		this.settings.set("interruptMode", mode);
+		this.settings.set("steeringSkipPendingOperations", mode === "immediate");
 	}
 
 	/**

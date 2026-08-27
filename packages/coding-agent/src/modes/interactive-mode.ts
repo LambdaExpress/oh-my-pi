@@ -151,7 +151,6 @@ import { getSessionAccentAnsi, getSessionAccentHex } from "../utils/session-colo
 import { messageHasDisplayableThinking } from "../utils/thinking-display";
 import {
 	disposeTerminalTitleState,
-	generateSessionTitle,
 	popTerminalTitle,
 	pushTerminalTitle,
 	setSessionTerminalTitle,
@@ -809,7 +808,12 @@ export class InteractiveMode implements InteractiveModeContext {
 	#planReviewAnnotationStateBySubmission = new WeakMap<SubmittedUserInput, string>();
 	readonly lspServers: LspStartupServerInfo[] | undefined = undefined;
 	mcpManager?: MCPManager;
-	titleSystemPrompt?: string;
+	get titleSystemPrompt(): string | undefined {
+		return this.session.titleSystemPrompt;
+	}
+	set titleSystemPrompt(value: string | undefined) {
+		this.session.setTitleSystemPrompt(value);
+	}
 	readonly #toolUiContextSetter: (uiContext: ExtensionUIContext, hasUI: boolean) => void;
 
 	readonly #codexResetFireworksController: CodexResetFireworksController;
@@ -1575,7 +1579,6 @@ export class InteractiveMode implements InteractiveModeContext {
 		const titleSystemPromptSource = discoverTitleSystemPromptFile(basePath);
 		const resolved = await resolvePromptInput(titleSystemPromptSource, "title system prompt");
 		this.titleSystemPrompt = resolved;
-		this.session.setTitleSystemPrompt(resolved);
 	}
 
 	#rebuildSkillCommandsFromSession(): SlashCommand[] {
@@ -3531,8 +3534,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		const overlay = new PlanReviewOverlay(
 			planContent,
 			{
-				promptTitle: title,
-				options,
+				promptTitle: t(title),
+				options: options.map(option => t(option)),
 				disabledIndices: dialogOptions?.disabledIndices,
 				helpText: dialogOptions?.helpText,
 				initialIndex: dialogOptions?.initialIndex,
@@ -3793,15 +3796,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#scheduleApprovedPlanTitleRefresh(planContent: string, sessionId: string): void {
-		const refresh = generateSessionTitle(
-			planContent,
-			this.session.modelRegistry,
-			this.settings,
-			sessionId,
-			this.session.model,
-			provider => this.session.agent.metadataForProvider(provider),
-			this.titleSystemPrompt,
-		)
+		const refresh = this.session
+			.generateTitle(planContent)
 			.then(async title => {
 				if (!title) return;
 				if (this.sessionManager.getSessionId() !== sessionId) return;
@@ -4647,6 +4643,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const goalApproveLabel = t("Approve and execute in goal mode");
 		const compactLabel = t("Approve and compact context");
 		const refineLabel = t("Refine plan");
+		const saveAndQuitLabel = t(PLAN_SAVE_AND_QUIT_OPTION);
 		// Goal-mode execution needs goal mode enabled in settings and no paused
 		// goal left behind — `createGoal` rejects a session that already owns a
 		// non-terminal goal, and approval must not silently drop the operator's
@@ -4661,6 +4658,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			"Plan mode - next step",
 			[
 				"Approve and execute",
+				"Approve and execute in goal mode",
 				"Approve and compact context",
 				keepContextLabel,
 				"Refine plan",
@@ -4690,7 +4688,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.ui.requestRender();
 		};
 
-		if (choice === PLAN_SAVE_AND_QUIT_OPTION) {
+		if (choice === saveAndQuitLabel) {
 			closePlanReview();
 			try {
 				const latestPlanContent = editedContent ?? (await this.#readPlanFile(planFilePath));
@@ -4705,7 +4703,12 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 
-		if (choice === "Approve and execute" || choice === "Approve and compact context" || choice === keepContextLabel) {
+		if (
+			choice === approveLabel ||
+			choice === goalApproveLabel ||
+			choice === compactLabel ||
+			choice === keepContextLabel
+		) {
 			try {
 				// Prefer in-overlay edits (already in memory) over a disk re-read. The
 				// overlay mirrors edits as they happen, and approval awaits one final

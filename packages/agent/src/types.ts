@@ -153,6 +153,12 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * - "wait" = defer steering until the current turn completes
 	 */
 	interruptMode?: "immediate" | "wait";
+	/**
+	 * Resolves the current steering interrupt mode while a tool batch is running.
+	 * This lets long-lived Agent instances apply setInterruptMode() changes to
+	 * an already active loop without changing the static config contract.
+	 */
+	getInterruptMode?: () => "immediate" | "wait";
 
 	/**
 	 * Optional session identifier forwarded to LLM providers.

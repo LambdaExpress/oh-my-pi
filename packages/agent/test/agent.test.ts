@@ -19,6 +19,61 @@ describe("Agent", () => {
 		expect(agent.state.messages).not.toContainEqual(message);
 	});
 
+	it("applies interrupt mode changes during an active tool batch", async () => {
+		const toolSchema = type({ value: type("string") });
+		const executed: string[] = [];
+		const queuedMessage = { role: "user" as const, content: "wait for current work", timestamp: Date.now() };
+		let agent: Agent;
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			concurrency: "exclusive",
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				if (params.value === "first") {
+					agent.setInterruptMode("wait");
+					agent.steer(queuedMessage);
+				}
+				return {
+					content: [{ type: "text", text: `ok:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
+						{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+			streamFn: mock.stream,
+			interruptMode: "immediate",
+		});
+		const events: AgentEvent[] = [];
+		const unsubscribe = agent.subscribe(event => events.push(event));
+
+		await agent.prompt("start");
+		unsubscribe();
+
+		expect(executed).toEqual(["first", "second"]);
+		const secondResult = events.find(
+			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
+				event.type === "tool_execution_end" && event.toolCallId === "tool-2",
+		);
+		expect(secondResult?.isError).toBe(false);
+		expect(secondResult?.result.details).not.toMatchObject({ source: "interrupt_skipped" });
+		expect(mock.calls[1]?.context.messages).toContainEqual(queuedMessage);
+	});
+
 	it("logs every abort request with its reason and call stack", () => {
 		const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
 		const agent = new Agent();

@@ -1542,6 +1542,7 @@ export class Agent {
 			getModel: () => this.#state.model ?? model,
 			getReasoning: () => this.#state.thinkingLevel,
 			getDisableReasoning: () => this.#state.disableReasoning,
+			getInterruptMode: () => this.#interruptMode,
 			getServiceTier: this.#serviceTierResolver,
 			getSteeringMessages: async signal => {
 				if (skipInitialSteeringPoll) {

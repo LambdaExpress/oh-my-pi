@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { createTools, HIDDEN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { AdbTool, BUILTIN_TOOLS, createTools, HIDDEN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { BUILTIN_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/builtin-names";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
 
@@ -23,6 +27,33 @@ function createSettingsWithOverrides(overrides: Partial<Record<SettingPath, unkn
 		"bashInterceptor.enabled": true,
 		...overrides,
 	});
+}
+
+async function withAdbDiscovery<T>(available: boolean, run: () => Promise<T>): Promise<T> {
+	const tempRoot = await mkdtemp(join(tmpdir(), "omp-adb-registry-"));
+	const adbPath = join(tempRoot, process.platform === "win32" ? "adb.exe" : "adb");
+	if (available) await Bun.write(adbPath, "test adb executable");
+
+	const envNames = ["ANDROID_SDK_ROOT", "ANDROID_HOME", "LOCALAPPDATA"] as const;
+	const previousEnv = new Map(envNames.map(name => [name, Bun.env[name]]));
+	for (const name of envNames) delete Bun.env[name];
+
+	const realWhich = Bun.which.bind(Bun);
+	const whichSpy = vi.spyOn(Bun, "which").mockImplementation((command, options) => {
+		if (command === "adb" || command === "adb.exe") return available ? adbPath : null;
+		return realWhich(command, options);
+	});
+
+	try {
+		return await run();
+	} finally {
+		whichSpy.mockRestore();
+		for (const [name, value] of previousEnv) {
+			if (value === undefined) delete Bun.env[name];
+			else Bun.env[name] = value;
+		}
+		await rm(tempRoot, { recursive: true, force: true });
+	}
 }
 
 function createActiveGoalState() {
@@ -277,6 +308,63 @@ describe("createTools", () => {
 
 		const requestedTools = await createTools(createTestSession({ settings: session.settings }), ["bash", "read"]);
 		expect(requestedTools.map(t => t.name)).toEqual(["read"]);
+	});
+
+	it("registers discoverable ADB once and mounts it under xd:// by default", async () => {
+		await withAdbDiscovery(true, async () => {
+			const session = createTestSession();
+			const tools = await createTools(session);
+			const registeredAdb = session.toolRegistry?.get("adb");
+
+			expect(registeredAdb).toBeInstanceOf(AdbTool);
+			expect(session.xdev?.tools.get("adb")).toBe(registeredAdb);
+			expect(session.xdev?.mountedNames.has("adb")).toBe(true);
+			expect(tools.map(tool => tool.name)).toContain("write");
+			expect(tools.map(tool => tool.name)).not.toContain("adb");
+		});
+	});
+
+	it("keeps explicitly requested ADB as a top-level AdbTool", async () => {
+		await withAdbDiscovery(true, async () => {
+			const session = createTestSession();
+			const tools = await createTools(session, ["adb"]);
+
+			expect(tools).toHaveLength(1);
+			expect(tools[0]).toBeInstanceOf(AdbTool);
+			expect(tools[0]?.name).toBe("adb");
+			expect(session.toolRegistry?.get("adb")).toBe(tools[0]);
+			expect(session.xdev).toBeUndefined();
+		});
+	});
+
+	it("omits unavailable ADB without affecting other requested tools", async () => {
+		await withAdbDiscovery(false, async () => {
+			const session = createTestSession();
+			const tools = await createTools(session, ["adb", "read", "write"]);
+
+			expect(tools.map(tool => tool.name)).toEqual(["read", "write"]);
+			expect(session.toolRegistry?.has("adb")).toBe(false);
+			expect(session.xdev?.tools.has("adb")).toBe(false);
+		});
+	});
+
+	it("registers no ADB-prefixed session or transfer aliases", async () => {
+		await withAdbDiscovery(true, async () => {
+			const session = createTestSession();
+			const tools = await createTools(session);
+			const adbRegistryNames = [...(session.toolRegistry?.keys() ?? [])].filter(
+				name => name === "adb" || name.startsWith("adb_"),
+			);
+			const adbXdevNames = [...(session.xdev?.tools.keys() ?? [])].filter(
+				name => name === "adb" || name.startsWith("adb_"),
+			);
+
+			expect(BUILTIN_TOOL_NAMES.filter(name => name === "adb" || name.startsWith("adb_"))).toEqual(["adb"]);
+			expect(Object.keys(BUILTIN_TOOLS).filter(name => name === "adb" || name.startsWith("adb_"))).toEqual(["adb"]);
+			expect(adbRegistryNames).toEqual(["adb"]);
+			expect(adbXdevNames).toEqual(["adb"]);
+			expect(tools.map(tool => tool.name).filter(name => name === "adb" || name.startsWith("adb_"))).toEqual([]);
+		});
 	});
 
 	it("mounts discoverable SSH session configuration under xd:// by default", async () => {
