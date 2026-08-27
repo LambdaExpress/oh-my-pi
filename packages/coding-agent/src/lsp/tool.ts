@@ -19,10 +19,13 @@ import {
 	applyWorkspaceEditWithLsp,
 	clearInitializationFailure,
 	ensureFileOpen,
+	FileChangeType,
 	getActiveClients,
+	getLspClientKey,
 	getOrCreateClient,
 	isRustAnalyzerClient,
 	type LspServerStatus,
+	notifyClientWatchedFiles,
 	refreshFile,
 	sendNotification,
 	sendRequest,
@@ -186,6 +189,7 @@ async function enumerateRenamePairs(
  * LSP tool for language server protocol operations.
  */
 export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Theme> {
+	readonly #codeActionOnlyByTarget = new Map<string, CodeActionContext["only"]>();
 	readonly name = "lsp";
 	readonly approval = (args: unknown): ToolApprovalDecision => {
 		const rawAction = (args as Partial<LspParams>).action;
@@ -252,11 +256,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			// presence-on-PATH for a working server.
 			const startedClients = getActiveClients();
 			const startedByConfigName = new Map<string, LspServerStatus>();
-			// getActiveClients() reports `name = client.config.command` (the
-			// unresolved binary name from defaults.json), so match against
-			// `serverConfig.command`, not the resolved path.
 			for (const [name, serverConfig] of Object.entries(config.servers)) {
-				const matched = startedClients.find(c => c.name === serverConfig.command);
+				const expectedKey = getLspClientKey(serverConfig, this.session.cwd);
+				const matched = startedClients.find(c => c.clientKey === expectedKey);
 				if (matched) startedByConfigName.set(name, matched);
 			}
 
@@ -657,6 +659,7 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 					serverNotes.push(`  ${serverName}: ${msg}`);
 					continue;
 				}
+				if (!client.serverCapabilities?.workspace?.fileOperations?.willRename) continue;
 				try {
 					const result = (await sendRequest(
 						client,
@@ -833,6 +836,10 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 			await applyEditsThenRename(referenceEdits, source, dest);
 			summary.push(`  Renamed ${sourceLabel} → ${destLabel}`);
 
+			const watchedRenameChanges = pairs.flatMap(({ oldUri, newUri }) => [
+				{ filePath: uriToFile(oldUri), type: FileChangeType.Deleted },
+				{ filePath: uriToFile(newUri), type: FileChangeType.Created },
+			]);
 			for (const [serverName, serverConfig] of servers) {
 				try {
 					const client = await getOrCreateClient(serverConfig, this.session.cwd, undefined, signal);
@@ -842,7 +849,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 							client.openFiles.delete(oldUri);
 						}
 					}
-					await sendNotification(client, "workspace/didRenameFiles", lspParams, signal);
+					if (client.serverCapabilities?.workspace?.fileOperations?.didRename) {
+						await sendNotification(client, "workspace/didRenameFiles", lspParams, signal);
+					} else {
+						await notifyClientWatchedFiles(client, watchedRenameChanges, signal);
+					}
 				} catch (err) {
 					if (err instanceof ToolAbortError || signal?.aborted) {
 						throw err;
@@ -1418,9 +1429,11 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 
 				case "code_actions": {
 					const diagnostics = client.diagnostics.get(uri)?.diagnostics ?? [];
+					const contextKey = `${serverName}\0${uri}\0${position.line}:${position.character}`;
+					const only = apply === true ? this.#codeActionOnlyByTarget.get(contextKey) : query ? [query] : undefined;
 					const context: CodeActionContext = {
 						diagnostics,
-						only: !apply && query ? [query] : undefined,
+						only,
 						triggerKind: 1,
 					};
 
@@ -1434,6 +1447,9 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 						},
 						signal,
 					)) as (CodeAction | Command)[] | null;
+					if (apply !== true) {
+						this.#codeActionOnlyByTarget.set(contextKey, only);
+					}
 
 					if (!result || result.length === 0) {
 						output = "No code actions available";

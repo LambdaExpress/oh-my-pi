@@ -66,6 +66,7 @@
 
 ### Fixed
 
+- Restored LSP code-action context reuse, capability-aware file-rename notifications, and full-identity status matching that were lost during the LSP module split.
 - Fixed changes to `steeringSkipPendingOperations` made during an active run not reaching the running agent loop, which could still report `Skipped due to queued user message` after the setting was disabled.
 - Fixed approved-plan execution titles ignoring the active `TITLE_SYSTEM.md` language policy after creating a new session.
 - Restored `/tree` as a fullscreen mouse-enabled session tree and restored the goal-mode action and Chinese localization in Plan Review.
