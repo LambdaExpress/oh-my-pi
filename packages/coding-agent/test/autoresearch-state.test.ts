@@ -17,6 +17,7 @@ import type {
 } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -516,12 +517,14 @@ describe("autoresearch slash command", () => {
 	let dbOverride: TempDir | undefined;
 
 	beforeEach(() => {
+		setLocale("en");
 		dbOverride = TempDir.createSync("@pi-autoresearch-cmd-");
 		process.env.OMP_AUTORESEARCH_DB_DIR = dbOverride.path();
 		cleanups.push(dbOverride);
 	});
 
 	afterEach(() => {
+		setLocale(null);
 		delete process.env.OMP_AUTORESEARCH_DB_DIR;
 		closeAllAutoresearchStorages();
 		for (const dir of cleanups.splice(0)) {
