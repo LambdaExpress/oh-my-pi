@@ -395,6 +395,7 @@ function sameSshConnectionTarget(left: SSHHost, right: SSHHost): boolean {
 		left.port === right.port &&
 		left.keyPath === right.keyPath &&
 		left.password === right.password &&
+		left.proxyJump === right.proxyJump &&
 		left.compat === right.compat
 	);
 }
@@ -404,6 +405,7 @@ function sameSshRemoteIdentity(left: SSHHost, right: SSHHost): boolean {
 		left.host.trim().toLowerCase() === right.host.trim().toLowerCase() &&
 		left.username === right.username &&
 		(left.port ?? 22) === (right.port ?? 22) &&
+		left.proxyJump === right.proxyJump &&
 		left.compat === right.compat
 	);
 }
@@ -1851,9 +1853,9 @@ export class AgentSession {
 		for (const previousHost of previousHosts) {
 			const nextHost = nextByName.get(previousHost.name);
 			if (nextHost && sameSshConnectionTarget(previousHost, nextHost)) continue;
-			await invalidateSshTarget(previousHost, {
-				invalidateHostInfo: nextHost !== undefined && !sameSshRemoteIdentity(previousHost, nextHost),
-			});
+			const remoteIdentityChanged = nextHost !== undefined && !sameSshRemoteIdentity(previousHost, nextHost);
+			await invalidateSshTarget(previousHost, { invalidateHostInfo: remoteIdentityChanged });
+			if (remoteIdentityChanged) await invalidateSshTarget(nextHost, { invalidateHostInfo: true });
 		}
 		this.#effectiveSshHosts = nextHosts;
 

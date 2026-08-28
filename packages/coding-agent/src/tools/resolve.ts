@@ -312,7 +312,7 @@ export async function dispatchResolutionDevice(
 	}
 
 	const action: ResolveAction = device === RESOLVE_DEVICE_NAME ? "apply" : "discard";
-	const xdevBase: XdevDispatch = { tool: device, mode: "execute", args: { reason: body } };
+	const xdevBase: XdevDispatch = { tool: device, mode: "execute", args: { action, reason: body } };
 	const invoker = session.peekQueueInvoker?.() ?? session.peekPendingInvoker?.();
 	if (!invoker) {
 		session.clearPendingInvokers?.();
@@ -380,11 +380,12 @@ export const resolveRenderer = {
 		result: { content: Array<{ type: string; text?: string }>; details?: ResolveDetails; isError?: boolean },
 		_options: RenderResultOptions,
 		uiTheme: Theme,
+		args?: Partial<ResolveInvocation>,
 	): Component {
 		const details = result.details;
 		const label = replaceTabs(details?.label ?? "pending action");
-		const reason = replaceTabs(details?.reason?.trim() || "No reason provided");
-		const action = details?.action ?? "apply";
+		const reason = replaceTabs(details?.reason?.trim() || args?.reason?.trim() || "No reason provided");
+		const action = details?.action ?? args?.action ?? "apply";
 		const isApply = action === "apply" && !result.isError;
 		const isFailedApply = action === "apply" && result.isError;
 		const bgColor = result.isError ? "error" : isApply ? "success" : "warning";
@@ -401,7 +402,12 @@ export const resolveRenderer = {
 			? uiTheme.bold(`${uiTheme.format.bracketLeft}${sourceLabel}${uiTheme.format.bracketRight}`)
 			: undefined;
 		const headerLine = `${icon} ${uiTheme.bold(`${verb}:`)} ${summaryLabel}${sourceBadge ? ` ${sourceBadge}` : ""}`;
-		const lines = ["", headerLine, "", uiTheme.italic(reason), ""];
+		const errorText = result.isError
+			? replaceTabs(result.content.find(content => content.type === "text")?.text?.trim() || "Action failed")
+			: undefined;
+		const lines = ["", headerLine, "", uiTheme.italic(reason)];
+		if (errorText) lines.push("", uiTheme.fg("error", errorText));
+		lines.push("");
 
 		return {
 			render(width: number): readonly string[] {

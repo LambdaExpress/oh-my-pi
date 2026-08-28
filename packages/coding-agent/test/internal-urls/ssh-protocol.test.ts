@@ -98,6 +98,40 @@ describe("SshProtocolHandler", () => {
 		});
 	});
 
+	it("preserves a configured alias ProxyJump for remote reads, listings, and writes", async () => {
+		const proxyJump = "jump-user@bastion.example:2200,edge";
+		mockHosts([
+			{
+				_source: SOURCE,
+				name: "prod",
+				host: "10.0.0.5",
+				username: "root",
+				proxyJump,
+			},
+		]);
+		const statSpy = vi
+			.spyOn(fileTransfer, "statRemotePath")
+			.mockResolvedValueOnce("file")
+			.mockResolvedValueOnce("directory");
+		const readSpy = vi
+			.spyOn(fileTransfer, "readRemoteFile")
+			.mockResolvedValue({ bytes: new TextEncoder().encode("ok\n"), truncated: false });
+		const listSpy = vi
+			.spyOn(fileTransfer, "listRemoteDir")
+			.mockResolvedValue([{ name: "app.log", isDirectory: false }]);
+		const writeSpy = vi.spyOn(fileTransfer, "writeRemoteFile").mockResolvedValue(undefined);
+
+		await handler.resolve(parseInternalUrl("ssh://prod/etc/hosts"));
+		await handler.resolve(parseInternalUrl("ssh://prod/var/log"));
+		await handler.write(parseInternalUrl("ssh://prod/tmp/deploy.txt"), "ready\n");
+
+		expect(statSpy.mock.calls[0]?.[0]).toMatchObject({ name: "prod", proxyJump });
+		expect(readSpy.mock.calls[0]?.[0]).toMatchObject({ name: "prod", proxyJump });
+		expect(statSpy.mock.calls[1]?.[0]).toMatchObject({ name: "prod", proxyJump });
+		expect(listSpy.mock.calls[0]?.[0]).toMatchObject({ name: "prod", proxyJump });
+		expect(writeSpy.mock.calls[0]?.[0]).toMatchObject({ name: "prod", proxyJump });
+	});
+
 	it("uses session-provided aliases for transfers and host completion without exposing credentials in keys", async () => {
 		const sessionHost: SSHHost = {
 			_source: {

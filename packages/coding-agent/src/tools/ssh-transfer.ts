@@ -506,9 +506,21 @@ export const sshTransferToolRenderer = {
 								},
 					uiTheme,
 				);
-				const plainText = details
-					? formatSshTransferSummary(details, { width: Math.max(1, width - 4) })
-					: sanitizeText(result.content.find(item => item.type === "text")?.text ?? "");
+				let plainText: string;
+				if (details) {
+					plainText = formatSshTransferSummary(details, { width: Math.max(1, width - 4) });
+				} else {
+					const localPath = sanitizeTransferField(args?.local_path ?? "");
+					const remotePath = sanitizeTransferField(args?.remote_path ?? "");
+					const pathSummary =
+						localPath || remotePath
+							? operation === "Download"
+								? `[${host}]:${remotePath || "…"} → ${localPath || "…"}`
+								: `${localPath || "…"} → [${host}]:${remotePath || "…"}`
+							: "";
+					const output = sanitizeText(result.content.find(item => item.type === "text")?.text ?? "");
+					plainText = [pathSummary, output].filter(Boolean).join("\n");
+				}
 				const lines = plainText
 					.split("\n")
 					.map(line =>

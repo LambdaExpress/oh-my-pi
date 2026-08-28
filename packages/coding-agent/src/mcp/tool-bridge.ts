@@ -521,7 +521,15 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 	}
 
 	renderResult(result: CustomToolResult<MCPToolDetails>, options: RenderResultOptions, theme: Theme, args?: unknown) {
-		return renderMCPResult(result, options, theme, normalizeToolArgs(args));
+		return renderMCPResult(
+			{
+				...result,
+				details: result.details ?? { serverName: this.mcpServerName, mcpToolName: this.mcpToolName },
+			},
+			options,
+			theme,
+			normalizeToolArgs(args),
+		);
 	}
 
 	async execute(

@@ -5,10 +5,12 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async";
 import { reset as resetCapabilities } from "@oh-my-pi/pi-coding-agent/capability";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { parseInternalUrl, SshProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { addSSHHost } from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
 import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
+import * as fileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
 import { loadSshTool, loadSshTransferTool, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { type XdevState, xdevEntries } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import { getAgentDir, getSSHConfigPath, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
@@ -332,6 +334,94 @@ describe("AgentSession SSH transfer refresh", () => {
 				invalidateHostInfo: true,
 			});
 			expect(session.getToolByName("ssh_transfer")?.description).toContain("prod (203.0.113.10)");
+		} finally {
+			invalidateSpy.mockRestore();
+		}
+	});
+
+	it("rotates proxy jump connection and host-info identities across all session SSH consumers", async () => {
+		const tempDir = TempDir.createSync("@pi-ssh-proxy-jump-refresh-");
+		tempDirs.push(tempDir);
+		const cwd = tempDir.path();
+		const session = createSession(cwd);
+		const oldProxyJump = "jump-old.example:2201";
+		const newProxyJump = "ops@jump-new.example:2202,jump-edge.example";
+		const oldPassword = "old-target-password";
+		await session.mutateSessionSshConfig({
+			operation: "upsert",
+			name: "prod",
+			config: { host: "203.0.113.20", username: "deploy", password: oldPassword, proxyJump: oldProxyJump },
+		});
+		const oldSshTool = session.getToolByName("ssh");
+		const oldTransferTool = session.getToolByName("ssh_transfer");
+		const invalidateSpy = spyOn(connectionManager, "invalidateSshTarget").mockResolvedValue(undefined);
+		try {
+			await session.mutateSessionSshConfig({
+				operation: "upsert",
+				name: "prod",
+				config: { host: "203.0.113.20", username: "deploy", password: oldPassword, proxyJump: newProxyJump },
+			});
+
+			expect(invalidateSpy).toHaveBeenCalledTimes(2);
+			expect(invalidateSpy).toHaveBeenNthCalledWith(
+				1,
+				expect.objectContaining({ name: "prod", proxyJump: oldProxyJump }),
+				{ invalidateHostInfo: true },
+			);
+			expect(invalidateSpy).toHaveBeenNthCalledWith(
+				2,
+				expect.objectContaining({ name: "prod", proxyJump: newProxyJump }),
+				{ invalidateHostInfo: true },
+			);
+
+			const sshTool = session.getToolByName("ssh") as unknown as {
+				hostsByName: ReadonlyMap<string, { proxyJump?: string }>;
+			};
+			const transferTool = session.getToolByName("ssh_transfer") as unknown as {
+				hostsByName: ReadonlyMap<string, { proxyJump?: string }>;
+			};
+			expect(sshTool).not.toBe(oldSshTool);
+			expect(transferTool).not.toBe(oldTransferTool);
+			expect(sshTool.hostsByName.get("prod")?.proxyJump).toBe(newProxyJump);
+			expect(transferTool.hostsByName.get("prod")?.proxyJump).toBe(newProxyJump);
+
+			const refreshedHosts = await session.getSessionSshHosts();
+			const statSpy = spyOn(fileTransfer, "statRemotePath").mockResolvedValue("file");
+			const readSpy = spyOn(fileTransfer, "readRemoteFile").mockResolvedValue({
+				bytes: new TextEncoder().encode("through refreshed proxy jump\n"),
+				truncated: false,
+			});
+			try {
+				await new SshProtocolHandler().resolve(parseInternalUrl("ssh://prod/tmp/proxy-jump.txt"), {
+					cwd,
+					sshHosts: refreshedHosts,
+				});
+				expect(readSpy).toHaveBeenCalledWith(
+					expect.objectContaining({ name: "prod", proxyJump: newProxyJump }),
+					"/tmp/proxy-jump.txt",
+					expect.objectContaining({ maxBytes: 1024 * 1024 }),
+				);
+			} finally {
+				statSpy.mockRestore();
+				readSpy.mockRestore();
+			}
+
+			invalidateSpy.mockClear();
+			await session.mutateSessionSshConfig({
+				operation: "upsert",
+				name: "prod",
+				config: {
+					host: "203.0.113.20",
+					username: "deploy",
+					password: "rotated-target-password",
+					proxyJump: newProxyJump,
+				},
+			});
+			expect(invalidateSpy).toHaveBeenCalledTimes(1);
+			expect(invalidateSpy).toHaveBeenCalledWith(
+				expect.objectContaining({ name: "prod", password: oldPassword, proxyJump: newProxyJump }),
+				{ invalidateHostInfo: false },
+			);
 		} finally {
 			invalidateSpy.mockRestore();
 		}

@@ -9,7 +9,7 @@ import {
 	type SSHConnectionTarget,
 	supportsSshControlMaster,
 } from "./connection-manager";
-import { buildSshTarget, sanitizeHostName } from "./utils";
+import { assertProxyJumpPasswordCompatible, buildSshTarget, normalizeProxyJump, sanitizeHostName } from "./utils";
 
 const REMOTE_DIR = getRemoteDir();
 const mountedPaths = new Set<string>();
@@ -42,6 +42,9 @@ function getMountPath(host: SSHConnectionTarget): string {
 }
 
 function buildSshfsArgs(host: SSHConnectionTarget): string[] {
+	const proxyJump = host.proxyJump === undefined ? undefined : normalizeProxyJump(host.proxyJump);
+	assertProxyJumpPasswordCompatible(proxyJump, host.password);
+
 	const args = [
 		"-o",
 		"reconnect",
@@ -65,6 +68,11 @@ function buildSshfsArgs(host: SSHConnectionTarget): string[] {
 
 	if (host.keyPath) {
 		args.push("-o", `IdentityFile=${host.keyPath}`);
+	}
+
+	if (proxyJump) {
+		const escapedProxyJump = proxyJump.replaceAll("\\", "\\\\").replaceAll(",", "\\,");
+		args.push("-o", `ProxyJump=${escapedProxyJump}`);
 	}
 
 	return args;

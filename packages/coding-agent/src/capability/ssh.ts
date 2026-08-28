@@ -13,6 +13,7 @@ export interface SSHHostConfig {
 	host: string;
 	username?: string;
 	port?: number;
+	proxyJump?: string;
 	keyPath?: string;
 	password?: string;
 	description?: string;

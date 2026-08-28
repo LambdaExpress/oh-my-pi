@@ -26,6 +26,7 @@
 
 - Added streaming SSH file uploads and downloads with foreground/background progress, cancellation, and temporary-session host support.
 - Restored configured-host remote command execution as the discoverable `ssh` tool, mounted at `xd://ssh` by default and refreshed immediately when persistent or session SSH aliases change.
+- Added OpenSSH ProxyJump support for key- or agent-authenticated targets across persistent and session SSH aliases, remote commands, transfers, SSHFS mounts, and `ssh://` file access.
 
 - Added managed `omp worktree` background workspaces with add/list/switch/apply/remove/branch/snapshot restore flows, plus `/worktree` TUI and ACP quick actions.
 - Added a discoverable `worktree` tool so agents can list, create, enter, apply, remove, branch, and restore managed worktrees from tool calls.
@@ -67,6 +68,7 @@
 
 ### Fixed
 
+- Fixed aborted merged tool calls dropping their original operation or arguments, including `xd://` devices falling back to a generic `Write` error; the original call now remains visible with the cancellation appended to its output.
 - Restored LSP code-action context reuse, capability-aware file-rename notifications, and full-identity status matching that were lost during the LSP module split.
 - Fixed changes to `steeringSkipPendingOperations` made during an active run not reaching the running agent loop, which could still report `Skipped due to queued user message` after the setting was disabled.
 - Fixed approved-plan execution titles ignoring the active `TITLE_SYSTEM.md` language policy after creating a new session.
@@ -74,6 +76,7 @@
 - Fixed LSP monorepo routing for relative child-project files, stale dependency overlays after reload, unstable cold-start references/definitions, and opaque `csharp-ls` empty or `AggregateException` results.
 - Fixed GitHub Actions `run_watch` failing on transient jobs-API `unexpected EOF`, TLS handshake, and Windows `connectex` errors by retrying bounded explicit GET requests.
 - Fixed failing chained Bun/Biome checks being summarized with the contradictory `root biome: ok` status.
+- Fixed overflowing live tool frames rendering their already-scrolled prefix a second time when streamed arguments grew or completion changed ANSI state styling.
 - Fixed full-fidelity live transcript blocks dropping their overflowing top rows until the run completed; active tool frames and their finalized successors now stream every rendered row into native scrollback without compact summaries, and width changes never reuse an old visual row watermark.
 - Fixed the slash-command autocomplete panel leaving static built-in and bundled command descriptions in English under the Simplified Chinese locale, including descriptions updated after changing the display language at runtime.
 - Fixed streamed `xd://ssh` calls showing a generic queued card before execution; SSH now keeps one tool frame from argument generation through completion and syntax-highlights Bash and PowerShell command previews.

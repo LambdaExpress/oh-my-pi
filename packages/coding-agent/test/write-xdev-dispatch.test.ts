@@ -8,8 +8,12 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-queue";
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { adbToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/adb";
 import { requiresApproval, resolveApproval } from "@oh-my-pi/pi-coding-agent/tools/approval";
+import { browserToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/browser/render";
 import { githubToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/gh-renderer";
+import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
+import { sshToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/ssh";
 import { ToolError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { WriteTool, writeToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/write";
 import {
@@ -407,6 +411,296 @@ describe("read and write route xd:// device URLs", () => {
 		expect(rendered).toContain("GitHub Repo");
 		expect(rendered).toContain("gh: Not Found (HTTP 404)");
 		expect(rendered).not.toContain("Write");
+	});
+
+	it("keeps the mounted command frame when an xd:// write is aborted", async () => {
+		await themeModule.initTheme();
+		const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
+		if (!uiTheme) throw new Error("expected an initialized theme");
+
+		const sshDevice = {
+			name: "ssh",
+			label: "SSH",
+			description: "fixture",
+			parameters: type({ host: "string", command: "string" }),
+			...sshToolRenderer,
+			async execute() {
+				return { content: [{ type: "text", text: "complete" }] };
+			},
+		} as unknown as AgentTool;
+		const xdev = createTestXdevState([sshDevice]);
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+		const command = "uname -a";
+		const args = { path: "xd://ssh", content: JSON.stringify({ host: "macmini", command }) };
+		const abortController = new AbortController();
+		abortController.abort("Interrupted by user");
+		const result = write.createAbortedResult("write-xdev-aborted", args, abortController.signal);
+		if (!result) throw new Error("expected a shape-preserving aborted result");
+
+		expect(result.details).toMatchObject({
+			xdev: { tool: "ssh", mode: "execute", args: { host: "macmini", command } },
+		});
+		const component = writeToolRenderer.renderResult(
+			result,
+			{
+				expanded: false,
+				isPartial: false,
+				renderContext: { resolveXdevMounted: name => resolveMountedXdevTool(xdev, name) },
+			},
+			uiTheme,
+			args,
+		);
+		const rendered = Bun.stripANSI(component.render(120).join("\n"));
+		expect(rendered).toContain("SSH");
+		expect(rendered).toContain("[macmini]");
+		expect(rendered).toContain(command);
+		expect(rendered).toContain("Output");
+		expect(rendered).toContain("Aborted: Cancelled");
+		expect(rendered).not.toContain("Write");
+	});
+
+	it("preserves non-SSH mounted renderers and arguments when an xd:// write is aborted", async () => {
+		await themeModule.initTheme();
+		const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
+		if (!uiTheme) throw new Error("expected an initialized theme");
+
+		const fixtures = [
+			{
+				name: "github",
+				label: "GitHub",
+				renderer: githubToolRenderer,
+				args: { op: "repo_view", repo: "owner/project" },
+				expected: ["GitHub Repo", "owner/project"],
+			},
+			{
+				name: "adb",
+				label: "ADB",
+				renderer: adbToolRenderer,
+				args: { op: "shell", device: "emulator-5554", command: "getprop ro.product.model" },
+				expected: ["ADB", "shell", "emulator-5554", "getprop ro.product.model", "Output"],
+			},
+			{
+				name: "browser",
+				label: "Browser",
+				renderer: browserToolRenderer,
+				args: { action: "run", name: "docs", code: "return await tab.title();" },
+				expected: ['tab "docs"', "return await tab.title();"],
+			},
+			{
+				name: "ast_edit",
+				label: "AST Edit",
+				renderer: toolRenderers.ast_edit,
+				args: { ops: [{ pat: "legacy($A)", out: "modern($A)" }], paths: ["src"] },
+				expected: ["AST Edit", "legacy($A)"],
+			},
+			{
+				name: "ast_grep",
+				label: "AST Grep",
+				renderer: toolRenderers.ast_grep,
+				args: { pat: "legacy($A)", path: "src" },
+				expected: ["AST Grep", "legacy($A)"],
+			},
+			{
+				name: "debug",
+				label: "Debug",
+				renderer: toolRenderers.debug,
+				args: { action: "launch", program: "app" },
+				expected: ["Debug launch", "Aborted: Cancelled"],
+			},
+			{
+				name: "inspect_image",
+				label: "Inspect Image",
+				renderer: toolRenderers.inspect_image,
+				args: { path: "fixture.png", question: "What changed?" },
+				expected: ["Inspect", "fixture.png", "What changed?"],
+			},
+			{
+				name: "lsp",
+				label: "LSP",
+				renderer: toolRenderers.lsp,
+				args: { action: "diagnostics", file: "src/app.ts" },
+				expected: ["LSP", "src/app.ts"],
+			},
+			{
+				name: "recall",
+				label: "Recall",
+				renderer: toolRenderers.recall,
+				args: { query: "renderer audit" },
+				expected: ["Recall", "renderer audit"],
+			},
+			{
+				name: "reflect",
+				label: "Reflect",
+				renderer: toolRenderers.reflect,
+				args: { query: "renderer audit" },
+				expected: ["Reflect", "renderer audit"],
+			},
+			{
+				name: "retain",
+				label: "Retain",
+				renderer: toolRenderers.retain,
+				args: { items: [{ content: "renderer audit fact" }] },
+				expected: ["Retain", "renderer audit fact"],
+			},
+			{
+				name: "ssh_session",
+				label: "SSH Session",
+				renderer: toolRenderers.ssh_session,
+				args: { op: "list" },
+				expected: ["SSH Session", "list"],
+			},
+			{
+				name: "ssh_transfer",
+				label: "SSH Transfer",
+				renderer: toolRenderers.ssh_transfer,
+				args: {
+					op: "upload",
+					host: "macmini",
+					local_path: "fixture.bin",
+					remote_path: "/tmp/fixture.bin",
+				},
+				expected: ["SSH", "macmini", "fixture.bin"],
+			},
+		] as const;
+		const missing: string[] = [];
+
+		for (const fixture of fixtures) {
+			const device = {
+				name: fixture.name,
+				label: fixture.label,
+				description: "fixture",
+				parameters: type({}),
+				...fixture.renderer,
+				async execute() {
+					return { content: [{ type: "text", text: "complete" }] };
+				},
+			} as unknown as AgentTool;
+			const xdev = createTestXdevState([device]);
+			const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+			const outerArgs = { path: `xd://${fixture.name}`, content: JSON.stringify(fixture.args) };
+			const result = write.createAbortedResult(
+				`write-xdev-aborted-${fixture.name}`,
+				outerArgs,
+				AbortSignal.abort("Interrupted by user"),
+			);
+			if (!result) throw new Error(`expected a shape-preserving aborted result for ${fixture.name}`);
+
+			expect(result.details).toMatchObject({
+				xdev: { tool: fixture.name, mode: "execute", args: fixture.args },
+			});
+			const component = writeToolRenderer.renderResult(
+				result,
+				{
+					expanded: false,
+					isPartial: false,
+					renderContext: { resolveXdevMounted: name => resolveMountedXdevTool(xdev, name) },
+				},
+				uiTheme,
+				outerArgs,
+			);
+			const rendered = Bun.stripANSI(component.render(120).join("\n"));
+			for (const expected of fixture.expected) {
+				if (!rendered.includes(expected)) missing.push(`${fixture.name}: ${expected}`);
+			}
+			if (!rendered.includes("Aborted: Cancelled")) missing.push(`${fixture.name}: Aborted: Cancelled`);
+			if (rendered.includes("Write")) missing.push(`${fixture.name}: unexpected Write frame`);
+		}
+		expect(missing).toEqual([]);
+	});
+
+	it("preserves a mounted tool without a custom renderer when an xd:// write is aborted", async () => {
+		await themeModule.initTheme();
+		const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
+		if (!uiTheme) throw new Error("expected an initialized theme");
+
+		const weatherDevice: AgentTool = {
+			name: "weather",
+			label: "Weather",
+			description: "Gets the weather",
+			parameters: type({ query: "string" }),
+			async execute() {
+				return { content: [{ type: "text", text: "Tokyo: 22°C" }] };
+			},
+		};
+		const xdev = createTestXdevState([weatherDevice]);
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+		const outerArgs = { path: "xd://weather", content: JSON.stringify({ query: "Tokyo" }) };
+		const result = write.createAbortedResult(
+			"write-xdev-aborted-weather",
+			outerArgs,
+			AbortSignal.abort("Interrupted by user"),
+		);
+		if (!result) throw new Error("expected a shape-preserving aborted result for weather");
+
+		const component = writeToolRenderer.renderResult(
+			result,
+			{
+				expanded: false,
+				isPartial: false,
+				renderContext: { resolveXdevMounted: name => resolveMountedXdevTool(xdev, name) },
+			},
+			uiTheme,
+			outerArgs,
+		);
+		const rendered = Bun.stripANSI(component.render(80).join("\n"));
+		expect(rendered).toContain("Weather");
+		expect(rendered).toContain('query="Tokyo"');
+		expect(rendered).toContain("Aborted: Cancelled");
+		expect(rendered).not.toContain("Write");
+	});
+
+	it("preserves plain-text internal device calls when an xd:// write is aborted", async () => {
+		await themeModule.initTheme();
+		const uiTheme = (await themeModule.getThemeByName("dark")) ?? (await themeModule.getThemeByName("light"));
+		if (!uiTheme) throw new Error("expected an initialized theme");
+
+		const fixtures = [
+			{
+				path: "xd://resolve",
+				content: "Apply the audited rewrite",
+				expectedDetails: {
+					xdev: {
+						tool: "resolve",
+						mode: "execute",
+						args: { action: "apply", reason: "Apply the audited rewrite" },
+					},
+				},
+				expectedText: ["Apply the audited rewrite", "Aborted: Cancelled"],
+			},
+			{
+				path: "xd://report_issue",
+				content: "renderer-audit\n## Summary\nPreserve the report body",
+				expectedDetails: {
+					xdev: {
+						tool: "report_issue",
+						mode: "execute",
+						args: { report: "renderer-audit\n## Summary\nPreserve the report body" },
+					},
+				},
+				expectedText: ["report_issue", "renderer-audit", "Aborted: Cancelled"],
+			},
+		] as const;
+
+		for (const fixture of fixtures) {
+			const write = new WriteTool(xdevSession(process.cwd()));
+			const outerArgs = { path: fixture.path, content: fixture.content };
+			const result = write.createAbortedResult(
+				`write-aborted-${fixture.path}`,
+				outerArgs,
+				AbortSignal.abort("Interrupted by user"),
+			);
+			if (!result) throw new Error(`expected a shape-preserving aborted result for ${fixture.path}`);
+			expect(result.details).toMatchObject(fixture.expectedDetails);
+
+			const rendered = Bun.stripANSI(
+				writeToolRenderer
+					.renderResult(result, { expanded: false, isPartial: false }, uiTheme, outerArgs)
+					.render(120)
+					.join("\n"),
+			);
+			for (const expected of fixture.expectedText) expect(rendered).toContain(expected);
+			expect(rendered).not.toContain("Write");
+		}
 	});
 
 	it("keeps the generic custom-tool card when a mounted device has no renderer", async () => {

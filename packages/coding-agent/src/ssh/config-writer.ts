@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { isEnoent } from "@oh-my-pi/pi-utils";
 import type { SSHHostConfig } from "../capability/ssh";
+import { assertProxyJumpPasswordCompatible, normalizeProxyJump } from "./utils";
 
 export interface SSHConfigFile {
 	hosts?: Record<string, SSHHostConfig>;
@@ -69,6 +70,16 @@ export function validateHostName(name: string): string | undefined {
 	return undefined;
 }
 
+function normalizeHostConfig(hostConfig: SSHHostConfig): SSHHostConfig {
+	const normalized = { ...hostConfig };
+	if (hostConfig.proxyJump !== undefined) {
+		if (typeof hostConfig.proxyJump !== "string") throw new Error("Invalid SSH ProxyJump specification");
+		normalized.proxyJump = normalizeProxyJump(hostConfig.proxyJump);
+	}
+	assertProxyJumpPasswordCompatible(normalized.proxyJump, normalized.password);
+	return normalized;
+}
+
 /**
  * Add an SSH host to a config file.
  *
@@ -85,6 +96,7 @@ export async function addSSHHost(filePath: string, name: string, hostConfig: SSH
 	if (!hostConfig.host) {
 		throw new Error("Host address cannot be empty");
 	}
+	const normalizedHostConfig = normalizeHostConfig(hostConfig);
 
 	// Read existing config
 	const existing = await readSSHConfigFile(filePath);
@@ -99,7 +111,7 @@ export async function addSSHHost(filePath: string, name: string, hostConfig: SSH
 		...existing,
 		hosts: {
 			...existing.hosts,
-			[name]: hostConfig,
+			[name]: normalizedHostConfig,
 		},
 	};
 
@@ -124,6 +136,7 @@ export async function updateSSHHost(filePath: string, name: string, hostConfig: 
 	if (!hostConfig.host) {
 		throw new Error("Host address cannot be empty");
 	}
+	const normalizedHostConfig = normalizeHostConfig(hostConfig);
 
 	// Read existing config
 	const existing = await readSSHConfigFile(filePath);
@@ -133,7 +146,7 @@ export async function updateSSHHost(filePath: string, name: string, hostConfig: 
 		...existing,
 		hosts: {
 			...existing.hosts,
-			[name]: hostConfig,
+			[name]: normalizedHostConfig,
 		},
 	};
 

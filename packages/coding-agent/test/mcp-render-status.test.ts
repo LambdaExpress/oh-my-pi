@@ -133,6 +133,25 @@ describe("MCP tool rendering", () => {
 		expect(rendered).not.toContain(`${pendingIcon} sentry/search_events`);
 	}, 15_000);
 
+	it("keeps the MCP identity and arguments when an abort result has no details", async () => {
+		const uiTheme = await getRequiredTheme();
+		const rendered = Bun.stripANSI(
+			makeTool()
+				.renderResult(
+					{ content: [{ type: "text", text: "Aborted: Cancelled" }], isError: true },
+					{ expanded: false, isPartial: false },
+					uiTheme,
+					{ query: "level:error" },
+				)
+				.render(120)
+				.join("\n"),
+		);
+
+		expect(rendered).toContain("sentry/search_events");
+		expect(rendered).toContain('query="level:error"');
+		expect(rendered).toContain("Aborted: Cancelled");
+	}, 15_000);
+
 	it("strips the spill notice from the body and surfaces the artifact link as a styled warning", () => {
 		const meta: OutputMeta = {
 			truncation: {

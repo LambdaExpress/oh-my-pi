@@ -47,8 +47,115 @@ describe("buildRemoteCommand", () => {
 		expect(args).toContain("BatchMode=yes");
 		expect(args).not.toContain("BatchMode=no");
 		expect(args).not.toContain("NumberOfPasswordPrompts=1");
+		expect(args).not.toContain("-J");
 		expect(args.at(-2)).toBe("192.168.3.146");
 		expect(args.at(-1)).toBe("ls -la");
+	});
+
+	it("passes a chained ProxyJump specification as one Unix argv value", async () => {
+		const proxyJump = "jump-user@bastion.example:2222,relay@[2001:db8::1]:2200";
+		const args = await connectionManager.buildRemoteCommand(
+			{
+				name: "host",
+				host: "192.168.3.146",
+				proxyJump,
+			},
+			"ls -la",
+			{ platform: "linux" },
+		);
+
+		const proxyJumpFlag = args.indexOf("-J");
+		expect(args.slice(proxyJumpFlag, proxyJumpFlag + 2)).toEqual(["-J", proxyJump]);
+		expect(args.filter(arg => arg === "-J")).toHaveLength(1);
+		expect(args.filter(arg => arg === proxyJump)).toHaveLength(1);
+	});
+
+	it("trims only the outside of a valid ProxyJump specification", async () => {
+		const proxyJump = "jump-user@bastion.example:2222,relay@[2001:db8::1]:2200";
+		const args = await connectionManager.buildRemoteCommand(
+			{
+				name: "host",
+				host: "192.168.3.146",
+				proxyJump: `  ${proxyJump}\t`,
+			},
+			"ls -la",
+			{ platform: "linux" },
+		);
+
+		const proxyJumpFlag = args.indexOf("-J");
+		expect(args.slice(proxyJumpFlag, proxyJumpFlag + 2)).toEqual(["-J", proxyJump]);
+	});
+
+	it("rejects unsafe ProxyJump specifications and bad ports without echoing the payload", async () => {
+		const invalidProxyJumps = [
+			"bastion.example;payload-marker",
+			"bastion.example|payload-marker",
+			"bastion.example`payload-marker",
+			"bastion.example$payload-marker",
+			"bastion.example%payload-marker",
+			"bastion.example\\payload-marker",
+			"user@host@payload-marker",
+			"-oProxyCommand=payload-marker",
+			"good.example,,payload-marker",
+			"good.example,\npayload-marker",
+			"user@[127.0.0.1]:22",
+			"bastion.example:0",
+			"bastion.example:65536",
+			"bastion.example:not-a-port",
+		];
+
+		for (const proxyJump of invalidProxyJumps) {
+			const error = await connectionManager
+				.buildRemoteCommand(
+					{
+						name: "host",
+						host: "192.168.3.146",
+						proxyJump,
+					},
+					"true",
+					{ platform: "linux" },
+				)
+				.then(
+					() => undefined,
+					(error: unknown) => error,
+				);
+			if (!(error instanceof Error)) throw new Error("Expected ProxyJump validation to reject");
+			expect(error.message).toBe("Invalid SSH ProxyJump specification");
+			expect(error.message).not.toContain(proxyJump);
+		}
+	});
+
+	it("rejects empty ProxyJump specifications", async () => {
+		for (const proxyJump of ["", " \t "]) {
+			await expect(
+				connectionManager.buildRemoteCommand(
+					{
+						name: "host",
+						host: "192.168.3.146",
+						proxyJump,
+					},
+					"true",
+					{ platform: "linux" },
+				),
+			).rejects.toThrow("Invalid SSH ProxyJump specification");
+		}
+	});
+
+	it("rejects ProxyJump with target password authentication before creating an invocation", async () => {
+		await expect(
+			connectionManager.buildRemoteCommandInvocation(
+				{
+					name: "host",
+					host: "192.168.3.146",
+					proxyJump: "jump-user@bastion.example:2222",
+					password: "target-password",
+				},
+				"true",
+				{ platform: "linux" },
+			),
+		).rejects.toThrow(
+			"SSH ProxyJump cannot be used with password authentication; configure target authentication with a key or SSH agent instead",
+		);
 	});
 
 	it("uses one password prompt without putting the configured password in ssh argv", async () => {
@@ -87,8 +194,27 @@ describe("buildRemoteCommand", () => {
 		expect(args.some(arg => arg.startsWith("ControlPath="))).toBe(false);
 		expect(args).not.toContain("ControlPersist=3600");
 		expect(args).toContain("BatchMode=yes");
+		expect(args).not.toContain("-J");
 		expect(args.at(-2)).toBe("192.168.3.146");
 		expect(args.at(-1)).toBe("ls -la");
+	});
+
+	it("passes a chained ProxyJump specification as one Windows argv value", async () => {
+		const proxyJump = "jump-user@bastion.example:2222,relay@second.example:2200";
+		const args = await connectionManager.buildRemoteCommand(
+			{
+				name: "host",
+				host: "192.168.3.146",
+				proxyJump,
+			},
+			"ls -la",
+			{ platform: "win32" },
+		);
+
+		const proxyJumpFlag = args.indexOf("-J");
+		expect(args.slice(proxyJumpFlag, proxyJumpFlag + 2)).toEqual(["-J", proxyJump]);
+		expect(args.filter(arg => arg === "-J")).toHaveLength(1);
+		expect(args.filter(arg => arg === proxyJump)).toHaveLength(1);
 	});
 
 	it("skips Unix mode-bit key validation for Windows args", async () => {
@@ -238,6 +364,23 @@ describe("SSH connection identities", () => {
 		};
 		const second = { ...first, connectionId: "session-b/revision-1" };
 		expect(connectionManager.getSshConnectionKey(first)).not.toBe(connectionManager.getSshConnectionKey(second));
+		expect(connectionManager.getControlPath(first)).not.toBe(connectionManager.getControlPath(second));
+	});
+
+	it("separates connections, host info, and ControlMaster paths by ProxyJump", () => {
+		const first = {
+			name: "shared",
+			host: "192.0.2.100",
+			username: "deploy",
+			proxyJump: "jump-user@bastion.example:2222,relay@second.example:2200",
+		};
+		const second = {
+			...first,
+			proxyJump: "jump-user@other-bastion.example:2222,relay@second.example:2200",
+		};
+
+		expect(connectionManager.getSshConnectionKey(first)).not.toBe(connectionManager.getSshConnectionKey(second));
+		expect(connectionManager.getSshHostInfoKey(first)).not.toBe(connectionManager.getSshHostInfoKey(second));
 		expect(connectionManager.getControlPath(first)).not.toBe(connectionManager.getControlPath(second));
 	});
 

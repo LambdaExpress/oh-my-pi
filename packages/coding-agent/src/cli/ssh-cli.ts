@@ -8,6 +8,7 @@ import { getSSHConfigPath } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { SSHHostConfig } from "../capability/ssh";
 import { addSSHHost, readSSHConfigFile, removeSSHHost, type SSHConfigFile } from "../ssh/config-writer";
+import { assertProxyJumpPasswordCompatible, normalizeProxyJump } from "../ssh/utils";
 
 // =============================================================================
 // Types
@@ -25,6 +26,7 @@ export interface SSHCommandArgs {
 		port?: string;
 		key?: string;
 		password?: string;
+		proxyJump?: string;
 		desc?: string;
 		compat?: boolean;
 		scope?: "project" | "user";
@@ -63,7 +65,7 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 		process.stdout.write(chalk.red("Error: Host name required\n"));
 		process.stdout.write(
 			chalk.dim(
-				"Usage: omp ssh add <name> --host <address> [--user <user>] [--port <port>] [--key <path>] [--password <password>]\n",
+				"Usage: omp ssh add <name> --host <address> [--user <user>] [--port <port>] [--key <path>] [--password <password>] [--proxy-jump <jump>]\n",
 			),
 		);
 		process.exitCode = 1;
@@ -77,12 +79,22 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 		return;
 	}
 
+	let proxyJump: string | undefined;
+	try {
+		proxyJump = cmd.flags.proxyJump === undefined ? undefined : normalizeProxyJump(cmd.flags.proxyJump);
+		assertProxyJumpPasswordCompatible(proxyJump, password);
+	} catch (err) {
+		process.stdout.write(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}\n`));
+		process.exitCode = 1;
+		return;
+	}
+
 	const host = cmd.flags.host;
 	if (!host) {
 		process.stdout.write(chalk.red("Error: --host is required\n"));
 		process.stdout.write(
 			chalk.dim(
-				"Usage: omp ssh add <name> --host <address> [--user <user>] [--port <port>] [--key <path>] [--password <password>]\n",
+				"Usage: omp ssh add <name> --host <address> [--user <user>] [--port <port>] [--key <path>] [--password <password>] [--proxy-jump <jump>]\n",
 			),
 		);
 		process.exitCode = 1;
@@ -104,6 +116,7 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 	if (cmd.flags.port) hostConfig.port = Number.parseInt(cmd.flags.port, 10);
 	if (cmd.flags.key) hostConfig.keyPath = cmd.flags.key;
 	if (password) hostConfig.password = password;
+	if (proxyJump) hostConfig.proxyJump = proxyJump;
 	if (cmd.flags.desc) hostConfig.description = cmd.flags.desc;
 	if (cmd.flags.compat) hostConfig.compat = true;
 
@@ -196,6 +209,7 @@ function printHosts(hosts: Record<string, SSHHostConfig>): void {
 		if (config.port && config.port !== 22) parts.push(chalk.dim(`port:${config.port}`));
 		if (config.keyPath) parts.push(chalk.dim(config.keyPath));
 		if (config.password) parts.push(chalk.dim("password:********"));
+		if (config.proxyJump) parts.push(chalk.dim(`jump:${config.proxyJump}`));
 		if (config.description) parts.push(chalk.dim(`- ${config.description}`));
 		process.stdout.write(`  ${parts.join("  ")}\n`);
 	}

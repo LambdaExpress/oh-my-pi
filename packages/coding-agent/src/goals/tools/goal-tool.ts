@@ -188,7 +188,16 @@ export const goalToolRenderer = {
 		const description = describeOp(op);
 
 		if (result.isError) {
-			const header = renderStatusLine({ icon: "error", title: "Goal", description }, uiTheme);
+			const meta: string[] = [];
+			const trimmedObjective = args?.objective?.trim();
+			if (op === "create" && trimmedObjective) {
+				const objective = truncateToWidth(trimmedObjective, TRUNCATE_LENGTHS.TITLE);
+				meta.push(uiTheme.italic(uiTheme.fg("muted", `"${objective}"`)));
+			}
+			if (op === "create" && args?.token_budget !== undefined) {
+				meta.push(`budget ${formatNumber(args.token_budget)}`);
+			}
+			const header = renderStatusLine({ icon: "error", title: "Goal", description, meta }, uiTheme);
 			return framedBlock(uiTheme, width => ({
 				header,
 				sections: [{ lines: formatErrorDetail(fallbackText || "Goal tool failed", uiTheme).split("\n") }],

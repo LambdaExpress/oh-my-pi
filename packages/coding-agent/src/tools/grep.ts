@@ -32,6 +32,7 @@ import { isScoutSpawnable } from "../task/spawn-policy";
 import {
 	Ellipsis,
 	fileHyperlink,
+	framedBlock,
 	getTreeBranch,
 	getTreeContinuePrefix,
 	renderStatusLine,
@@ -68,7 +69,7 @@ import {
 	formatCodeFrameLine,
 	formatCount,
 	formatEmptyMessage,
-	formatErrorMessage,
+	formatErrorDetail,
 	formatMoreItems,
 	PREVIEW_LIMITS,
 	replaceTabs,
@@ -1815,7 +1816,29 @@ export const grepToolRenderer = {
 
 		if (result.isError || details?.error) {
 			const errorText = details?.error || result.content?.find(c => c.type === "text")?.text || "Unknown error";
-			return new Text(formatErrorMessage(errorText, uiTheme), 1, 0);
+			const paths = toPathList(args?.path ?? args?.paths);
+			const meta: string[] = [];
+			if (paths.length) meta.push(`in ${paths.join(", ")}`);
+			if (args?.case === false) meta.push("case:insensitive");
+			if (args?.gitignore === false) meta.push("gitignore:false");
+			if (args?.skip !== undefined && args.skip > 0) meta.push(`skip:${args.skip}`);
+			const header = renderStatusLine(
+				{
+					icon: "error",
+					title: "Grep",
+					titleColor: "toolTitle",
+					description: args?.pattern || "?",
+					meta,
+				},
+				uiTheme,
+			);
+			return framedBlock(uiTheme, width => ({
+				header,
+				sections: [{ lines: formatErrorDetail(errorText, uiTheme).split("\n") }],
+				state: "error",
+				borderColor: "error",
+				width,
+			}));
 		}
 
 		const hasDetailedData = details?.matchCount !== undefined || details?.fileCount !== undefined;

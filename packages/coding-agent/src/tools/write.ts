@@ -78,7 +78,13 @@ import {
 	wrapTextWithAnsi,
 } from "./render-utils";
 import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-tool-issue";
-import { dispatchResolutionDevice, isResolutionDeviceName, renderResolutionDeviceCall } from "./resolve";
+import {
+	dispatchResolutionDevice,
+	isResolutionDeviceName,
+	PROPOSE_DEVICE_NAME,
+	RESOLVE_DEVICE_NAME,
+	renderResolutionDeviceCall,
+} from "./resolve";
 import {
 	deleteRowByKey,
 	deleteRowByRowId,
@@ -571,6 +577,48 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 	matcherDigest(args: unknown): string | undefined {
 		const content = (args as Partial<WriteParams>).content;
 		return typeof content === "string" ? content : undefined;
+	}
+
+	createAbortedResult(
+		_toolCallId: string,
+		params: WriteParams,
+		signal: AbortSignal,
+	): AgentToolResult<WriteToolDetails> | undefined {
+		let targetName: string | null;
+		try {
+			targetName = parseXdUrl(peelWriteUrlSelector(unwrapHashlineHeaderPath(params.path)))?.name ?? null;
+		} catch {
+			return undefined;
+		}
+		if (!targetName) return undefined;
+
+		let args: unknown;
+		if (targetName === REPORT_ISSUE_DEVICE_NAME) {
+			args = { report: params.content.trim() };
+		} else if (isResolutionDeviceName(targetName)) {
+			const body = params.content.trim();
+			args =
+				targetName === PROPOSE_DEVICE_NAME
+					? { title: body }
+					: { action: targetName === RESOLVE_DEVICE_NAME ? "apply" : "discard", reason: body };
+		} else {
+			try {
+				args = JSON.parse(params.content);
+			} catch {
+				return undefined;
+			}
+		}
+		if (!isRecord(args)) return undefined;
+
+		// Keep the dispatch identity and inner arguments when the agent loop wins
+		// the abort race. Without this shape, write's merged result renderer falls
+		// back to a generic Write card and replaces the mounted tool's command.
+		const reason = signal.reason instanceof Error ? signal.reason.message : "Cancelled";
+		return {
+			content: [{ type: "text", text: `Aborted: ${reason}` }],
+			details: { xdev: { tool: targetName, mode: "execute", args } },
+			isError: true,
+		};
 	}
 
 	readonly #writethrough: WritethroughCallback;

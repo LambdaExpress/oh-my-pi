@@ -85,6 +85,9 @@ function renderMarkdownMCPResult(
 				lines.push(...tree.lines);
 				if (tree.truncated) lines.push(theme.fg("dim", "…"));
 				lines.push("");
+			} else if (isError && args && Object.keys(args).length > 0) {
+				const preview = formatArgsInline(args, Math.max(20, contentWidth - Bun.stringWidth(theme.tree.last) - 2));
+				if (preview) lines.push(` ${theme.fg("dim", theme.tree.last)} ${theme.fg("dim", preview)}`);
 			}
 
 			const rendered = markdown.render(Math.max(1, contentWidth));
@@ -158,6 +161,9 @@ export function renderMCPResult(
 					lines.push(theme.fg("dim", "…"));
 				}
 				lines.push(""); // Blank line before output
+			} else if (isError && args && typeof args === "object" && Object.keys(args).length > 0) {
+				const preview = formatArgsInline(args, Math.max(20, contentWidth - Bun.stringWidth(theme.tree.last) - 2));
+				if (preview) lines.push(` ${theme.fg("dim", theme.tree.last)} ${theme.fg("dim", preview)}`);
 			}
 
 			// Output section. The body and spill metadata are normalized before

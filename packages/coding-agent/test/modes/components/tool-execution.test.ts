@@ -137,6 +137,70 @@ describe("ToolExecutionComponent custom renderer failures", () => {
 	});
 });
 
+describe("ToolExecutionComponent merged abort rendering", () => {
+	beforeAll(async () => {
+		await Settings.init({ inMemory: true });
+		const loaded = await getThemeByName("dark");
+		if (!loaded) throw new Error("theme unavailable");
+		setThemeInstance(loaded);
+	});
+
+	it("keeps identifying call arguments above aborted output", () => {
+		const fixtures = [
+			{ name: "glob", args: { path: "src/audit-*.ts" }, expected: ["Glob", "src/audit-*.ts"] },
+			{
+				name: "grep",
+				args: { pattern: "renderer-audit-token", path: "src", case: true, gitignore: true },
+				expected: ["Grep", "renderer-audit-token", "in src"],
+			},
+			{
+				name: "todo",
+				args: { op: "append", phase: "Audit", items: ["renderer audit item"] },
+				expected: ["Todo", "append Audit 1 item"],
+			},
+			{
+				name: "goal",
+				args: { op: "create", objective: "Audit merged rendering", token_budget: 2048 },
+				expected: ["Goal", "set", "Audit merged rendering", "budget"],
+			},
+			{
+				name: "ask",
+				args: { question: "Which renderer?", options: ["Merged", "Separate"] },
+				expected: ["Ask", "Which renderer?", "Merged", "Separate"],
+			},
+			{
+				name: "web_search",
+				args: { query: "renderer abort behavior" },
+				expected: ["Web Search", "renderer abort behavior"],
+			},
+		] as const;
+		const ui: ToolExecutionUi = {
+			requestRender() {},
+			requestComponentRender(_component: Component) {},
+			resetDisplay() {},
+		};
+		const missing: string[] = [];
+
+		for (const fixture of fixtures) {
+			const component = new ToolExecutionComponent(
+				fixture.name,
+				fixture.args,
+				{ showImages: false },
+				undefined,
+				ui,
+				process.cwd(),
+			);
+			component.updateResult({ content: [{ type: "text", text: "Aborted: Cancelled" }], isError: true }, false);
+			const rendered = visibleText(component.render(120));
+			for (const expected of [...fixture.expected, "Aborted: Cancelled"]) {
+				if (!rendered.includes(expected)) missing.push(`${fixture.name}: ${expected}`);
+			}
+		}
+
+		expect(missing).toEqual([]);
+	});
+});
+
 describe("MCP result Markdown rendering", () => {
 	const details: MCPToolDetails = {
 		serverName: "context-mode",
