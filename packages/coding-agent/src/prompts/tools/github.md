@@ -10,11 +10,11 @@ Select via `op`.
 - `search_issues`/`search_prs`/`search_commits`/`search_repos`: `query` optional with `since`/`until`; omit for date-only filter. `search_code`: `query` required; rejects `since`/`until`.
 - `search_*`: `repo` defaults current checkout's `owner/repo`; search elsewhere with `repo:`/`org:`/`user:` in `query`. `search_repos`: ignores `repo`; scope via `org:`/`language:` in `query`.
 - `since`/`until`: relative `<n>` + `m`/`h`/`d`/`w`/`mo`/`y` (e.g. `3d`, `2w`), ISO date `YYYY-MM-DD`, or ISO datetime. `dateField: "updated"`: update time (issues/PRs), push time (repos), never creation.
-- `run_watch`: omit `run` → every run for current HEAD; `branch` defaults current. Fast-fails first job failure.
+- `run_watch`: omit `run` → every run for current HEAD; `branch` defaults current. Shows jobs, step progress, and recent available logs. Fast-fails first job failure.
 </instruction>
 
 <output>
-Concise summary per op. `run_watch` failures save full logs to a session artifact.
+- Concise summary per op. `run_watch` uses `tail` for recent job-log previews; failures save full logs to a session artifact.
 </output>
 
 <critical>

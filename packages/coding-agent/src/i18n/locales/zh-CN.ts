@@ -115,6 +115,7 @@ export const zhCN: Record<string, string> = {
 	"(cancelled)": "(已取消)",
 	"(cleared)": "(已清除)",
 	"(clipboard copy attempted; Alt+C retries)": "(已尝试复制到剪贴板；按 Alt+C 重试)",
+	"(ctrl+o to expand)": "（ctrl+o 展开）",
 	"(current)": "(当前)",
 	"(disabled)": "(已禁用)",
 	"(discovered servers)": "(发现的服务器)",
@@ -1805,6 +1806,8 @@ export const zhCN: Record<string, string> = {
 	"Inject MCP resource updates into the agent conversation": "将 MCP 资源更新注入代理对话",
 	"Inject one steering notice when a subagent crosses its soft request budget, asking it to wrap up before the 1.5x forced-yield stop.":
 		"当子代理超出其软请求预算时，注入一条引导通知，要求其在 1.5 倍强制让出停止前收尾。",
+	"Injecting rule: {name}": "正在注入规则：{name}",
+	"Injecting {count} rules:": "正在注入 {count} 条规则：",
 	"Inline Read Previews": "内联读取预览",
 	"Inline Tool Descriptors": "内联工具描述符",
 	"Inline built-in docs; fetch MCP and extension docs on demand.": "内联内置文档；按需获取 MCP 和扩展文档。",
@@ -2754,6 +2757,8 @@ export const zhCN: Record<string, string> = {
 	Powerline: "Powerline",
 	Pragmatic: "务实",
 	"Pre-built status line configurations": "预置的状态行配置",
+	"Prefer Record<K, V> for small static literals; use Set/Map for anything dynamic":
+		"小型静态字面量优先使用 Record<K, V>；动态场景使用 Set/Map",
 	"Prefer Task Delegation": "优先任务委派",
 	"Prefer concise responses": "偏好简洁回复",
 	"Prefer detailed responses": "偏好详细回复",
@@ -4872,6 +4877,7 @@ export const zhCN: Record<string, string> = {
 	"~5K tokens": "~5K tokens",
 	"~625 tokens": "~625 tokens",
 	"~7.5K tokens": "~7.5K tokens",
+	"… +{count} more (ctrl+o to expand)": "… 另有 {count} 条（ctrl+o 展开）",
 	"… +{count} more line{s} ({key} to expand)": "… +{count} 更多行（按 {key} 展开）",
 	"… {count} more lines": "… 还有 {count} 行",
 	"… {count} more lines (ctrl+o to expand)": "… 还有 {count} 行（ctrl+o 展开）",

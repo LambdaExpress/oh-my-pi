@@ -46,6 +46,7 @@
 
 ### Changed
 
+- GitHub Actions `run_watch` now shows the complete job set, per-job step progress and current step, plus recent available job-log lines while polling.
 - Localized the security subsystem end to end: error messages, `security://` resource output, and `/security` slash-command descriptions now route through the i18n `t()` framework with zh-CN translations. Security scan plans also accept an optional OAuth account, so native scans can run in key mode without a stored ChatGPT/Codex credential.
 - Provider-native (remote) compaction failures no longer block the session: when every compaction candidate fails remote compaction (V2 streaming and V1 fallback), auto-compaction and manual `/compact` now warn with a notice and produce a local summary instead of aborting.
 - Changed completed-run collapsing to retain the full persisted display transcript across compaction, so older requests remain reachable through terminal scrollback and Alt+O while provider context stays compacted.
@@ -68,6 +69,7 @@
 
 ### Fixed
 
+- Localized TTSR rule-injection notification titles and built-in rule summaries without changing the original rule text injected into the model context.
 - Fixed aborted merged tool calls dropping their original operation or arguments, including `xd://` devices falling back to a generic `Write` error; the original call now remains visible with the cancellation appended to its output.
 - Restored LSP code-action context reuse, capability-aware file-rename notifications, and full-identity status matching that were lost during the LSP module split.
 - Fixed changes to `steeringSkipPendingOperations` made during an active run not reaching the running agent loop, which could still report `Skipped due to queued user message` after the setting was disabled.

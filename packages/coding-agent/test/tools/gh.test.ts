@@ -2,19 +2,23 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:te
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ToolCall } from "@oh-my-pi/pi-ai";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { validateToolArguments } from "@oh-my-pi/pi-ai/utils/validation";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	buildSearchDateQualifier,
+	type GhToolDetails,
 	GithubTool,
 	getOrFetchPrDiff,
 	parsePrUnifiedDiff,
 	parseSearchDateBound,
 	resolveDefaultRepoMemoized,
 } from "@oh-my-pi/pi-coding-agent/tools/gh";
+import { githubToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/gh-renderer";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import * as git from "@oh-my-pi/pi-coding-agent/utils/git";
 import * as piUtils from "@oh-my-pi/pi-utils";
@@ -1558,6 +1562,103 @@ echo ok
 		expect(properties.op).toBeDefined();
 		expect(properties.interval).toBeUndefined();
 		expect(properties.grace).toBeUndefined();
+	});
+
+	it("streams the complete job list, step progress, and recent available logs", async () => {
+		vi.spyOn(git.github, "json")
+			.mockResolvedValueOnce({
+				id: 77,
+				name: "Release Code",
+				display_title: "Merge dev into release",
+				status: "in_progress",
+				conclusion: null,
+				head_branch: "release",
+				head_sha: "abcdef1234567890",
+				created_at: "2026-08-28T13:39:30Z",
+				updated_at: "2026-08-28T13:42:00Z",
+				html_url: "https://github.com/owner/repo/actions/runs/77",
+			})
+			.mockResolvedValueOnce({
+				total_count: 2,
+				jobs: [
+					{
+						id: 201,
+						name: "Build linux-arm64",
+						status: "completed",
+						conclusion: "success",
+						started_at: "2026-08-28T13:39:35Z",
+						completed_at: "2026-08-28T13:41:00Z",
+						steps: [
+							{ number: 1, name: "Set up job", status: "completed", conclusion: "success" },
+							{ number: 2, name: "Build native addon", status: "completed", conclusion: "success" },
+						],
+					},
+					{
+						id: 202,
+						name: "Build linux-x64",
+						status: "in_progress",
+						conclusion: null,
+						started_at: "2026-08-28T13:39:35Z",
+						steps: [
+							{ number: 1, name: "Set up job", status: "completed", conclusion: "success" },
+							{ number: 2, name: "Compile native addon", status: "in_progress", conclusion: null },
+							{ number: 3, name: "Upload artifact", status: "queued", conclusion: null },
+						],
+					},
+				],
+			});
+		const runSpy = vi.spyOn(git.github, "run").mockImplementation(async (_cwd, args) => {
+			const endpoint = args.find(arg => arg.includes("/actions/jobs/")) ?? "";
+			if (endpoint.includes("/201/logs")) {
+				return { exitCode: 0, stdout: "download dependencies\ncompile arm64\nupload arm64", stderr: "" };
+			}
+			return { exitCode: 1, stdout: "", stderr: "HTTP 404" };
+		});
+		const abort = new AbortController();
+		const updates: AgentToolResult<GhToolDetails>[] = [];
+		const tool = new GithubTool(createSession());
+		await tool
+			.execute(
+				"run-watch-progress",
+				{ op: "run_watch", repo: "owner/repo", run: "77", tail: 2 },
+				abort.signal,
+				update => {
+					updates.push(update);
+					abort.abort("captured progress update");
+				},
+			)
+			.catch(() => undefined);
+
+		const update = updates[0];
+		if (!update) throw new Error("expected a run_watch progress update");
+		const jobs = update.details?.watch?.run?.jobs;
+		expect(jobs?.map(job => job.name)).toEqual(["Build linux-arm64", "Build linux-x64"]);
+		expect(jobs?.[0]?.steps).toHaveLength(2);
+		expect(jobs?.[0]?.logTail).toBe("compile arm64\nupload arm64");
+		expect(jobs?.[1]?.steps.find(step => step.status === "in_progress")?.name).toBe("Compile native addon");
+		expect(jobs?.[1]?.logAvailable).toBe(false);
+		expect(runSpy).toHaveBeenCalledTimes(2);
+
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("expected dark theme");
+		const rendered = Bun.stripANSI(
+			githubToolRenderer
+				.renderResult(update, { expanded: false, isPartial: true }, theme, {
+					op: "run_watch",
+					run: "77",
+				})
+				.render(120)
+				.join("\n"),
+		);
+		expect(rendered).toContain("Build linux-arm64");
+		expect(rendered).toContain("Build linux-x64");
+		expect(rendered).toContain("1/2 jobs complete");
+		expect(rendered).toContain("1 running");
+		expect(rendered).toContain("1/3 steps");
+		expect(rendered).toContain("step 2/3 Compile native addon");
+		expect(rendered).toContain("live log unavailable; GitHub publishes it after the job completes");
+		expect(rendered).toContain("compile arm64");
+		expect(rendered).toContain("upload arm64");
 	});
 
 	it("tails failed job logs inline and saves the full failed-job logs as an artifact", async () => {

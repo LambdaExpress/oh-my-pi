@@ -1252,6 +1252,7 @@ describe("AgentSession TTSR resume gate", () => {
 		// project-relative path, never the absolute home path.
 		expect(text).toContain('reason="rule_violation"');
 		expect(text).toContain(`path="${expectedRel}"`);
+		expect(text).toContain(rule.content);
 		expect(text).not.toContain(ruleAbsPath);
 	});
 

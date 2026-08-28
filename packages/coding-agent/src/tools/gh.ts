@@ -87,7 +87,7 @@ const githubSchema = type({
 	"dateField?": type("'created' | 'updated'").describe("date field"),
 	"limit?": type("number").describe("max results"),
 	"run?": type("string").describe("actions run id or url"),
-	"tail?": type("number").describe("log lines per failed job"),
+	"tail?": type("number").describe("recent log lines per job"),
 });
 
 type GithubInput = typeof githubSchema.infer;
@@ -155,6 +155,17 @@ export interface GhRunWatchJobDetails {
 	conclusion?: string;
 	durationSeconds?: number;
 	url?: string;
+	steps: GhRunWatchStepDetails[];
+	logTail?: string;
+	logAvailable?: boolean;
+}
+
+export interface GhRunWatchStepDetails {
+	number: number;
+	name: string;
+	status?: string;
+	conclusion?: string;
+	durationSeconds?: number;
 }
 
 export interface GhRunWatchRunDetails {
