@@ -200,13 +200,30 @@ function getJobStateVisual(
 	};
 }
 
-function renderJobLine(job: GhRunWatchJobDetails, width: number, theme: Theme): string {
+function liveDurationSeconds(
+	durationSeconds: number | undefined,
+	status: string | undefined,
+	observedAtMs: number | undefined,
+	renderedAtMs: number,
+): number | undefined {
+	if (durationSeconds === undefined || status !== "in_progress" || observedAtMs === undefined) return durationSeconds;
+	return durationSeconds + Math.max(0, Math.floor((renderedAtMs - observedAtMs) / 1000));
+}
+
+function renderJobLine(
+	job: GhRunWatchJobDetails,
+	width: number,
+	theme: Theme,
+	observedAtMs: number | undefined,
+	renderedAtMs: number,
+): string {
 	const visual = getJobStateVisual(job, theme);
 	const prefix = theme.fg(visual.iconColor, `${visual.iconRaw} `);
 	const completedSteps = job.steps.filter(step => step.status === "completed").length;
 	const metaParts: string[] = [];
 	if (job.steps.length > 0) metaParts.push(`${completedSteps}/${job.steps.length} steps`);
-	if (job.durationSeconds !== undefined) metaParts.push(`${job.durationSeconds}s`);
+	const durationSeconds = liveDurationSeconds(job.durationSeconds, job.status, observedAtMs, renderedAtMs);
+	if (durationSeconds !== undefined) metaParts.push(`${durationSeconds}s`);
 	const styledMeta = metaParts.length > 0 ? theme.fg(visual.textColor, metaParts.join(theme.sep.dot)) : undefined;
 	const reservedWidth = visibleWidth(prefix) + (styledMeta ? 1 + visibleWidth(styledMeta) : 0);
 	const nameWidth = Math.max(8, width - reservedWidth);
@@ -219,12 +236,23 @@ function renderJobLine(job: GhRunWatchJobDetails, width: number, theme: Theme): 
 	return line;
 }
 
-function renderCurrentStepLine(job: GhRunWatchJobDetails, width: number, theme: Theme): string | undefined {
+function renderCurrentStepLine(
+	job: GhRunWatchJobDetails,
+	width: number,
+	theme: Theme,
+	observedAtMs: number | undefined,
+	renderedAtMs: number,
+): string | undefined {
 	const currentStepIndex = job.steps.findIndex(step => step.status === "in_progress");
 	const currentStep = job.steps[currentStepIndex];
 	if (!currentStep) return undefined;
-	const duration =
-		currentStep.durationSeconds !== undefined ? ` ${theme.sep.dot} ${currentStep.durationSeconds}s` : "";
+	const durationSeconds = liveDurationSeconds(
+		currentStep.durationSeconds,
+		currentStep.status,
+		observedAtMs,
+		renderedAtMs,
+	);
+	const duration = durationSeconds !== undefined ? ` ${theme.sep.dot} ${durationSeconds}s` : "";
 	const prefix = `  ${theme.status.enabled} step ${currentStepIndex + 1}/${job.steps.length} `;
 	const availableWidth = Math.max(8, width - visibleWidth(prefix) - visibleWidth(duration));
 	return theme.fg(
@@ -247,7 +275,13 @@ function renderRunProgressLine(run: GhRunWatchRunDetails, theme: Theme): string 
 	return theme.fg("dim", parts.join(theme.sep.dot));
 }
 
-function renderRunBlock(run: GhRunWatchRunDetails, width: number, theme: Theme): string[] {
+function renderRunBlock(
+	run: GhRunWatchRunDetails,
+	width: number,
+	theme: Theme,
+	observedAtMs: number | undefined,
+	renderedAtMs: number,
+): string[] {
 	const lines = [formatRunLine(run, theme)];
 	if (run.jobs.length === 0) {
 		lines.push(theme.fg("dim", "waiting for workflow jobs..."));
@@ -256,9 +290,9 @@ function renderRunBlock(run: GhRunWatchRunDetails, width: number, theme: Theme):
 
 	lines.push(renderRunProgressLine(run, theme));
 	for (const job of run.jobs) {
-		lines.push(renderJobLine(job, width, theme));
-		const currentStep = renderCurrentStepLine(job, width, theme);
-		if (currentStep) lines.push(currentStep);
+		lines.push(renderJobLine(job, width, theme, observedAtMs, renderedAtMs));
+		const stepLine = renderCurrentStepLine(job, width, theme, observedAtMs, renderedAtMs);
+		if (stepLine) lines.push(stepLine);
 	}
 	return lines;
 }
@@ -375,13 +409,14 @@ function buildWatchSections(
 	width: number,
 ): Array<{ label?: string; lines: string[] }> {
 	const main: string[] = [];
+	const renderedAtMs = Date.now();
 
 	if (watch.note) {
 		main.push(theme.fg("dim", replaceTabs(watch.note)));
 	}
 
 	if (watch.mode === "run" && watch.run) {
-		main.push(...renderRunBlock(watch.run, width, theme));
+		main.push(...renderRunBlock(watch.run, width, theme, watch.observedAtMs, renderedAtMs));
 	} else if (watch.mode === "commit") {
 		const runs = watch.runs ?? [];
 		if (runs.length === 0) {
@@ -391,7 +426,7 @@ function buildWatchSections(
 				if (index > 0) {
 					main.push("");
 				}
-				main.push(...renderRunBlock(run, width, theme));
+				main.push(...renderRunBlock(run, width, theme, watch.observedAtMs, renderedAtMs));
 			});
 		}
 	}
@@ -525,6 +560,7 @@ export const githubToolRenderer = {
 	// No animatedPendingPreview: renderCall materializes plain Text components
 	// once per display rebuild (no render closure), so a live spinner interval
 	// would request 30fps repaints while the visible glyph stays frozen.
+	animatedPartialResult: (args: unknown): boolean => (args as GithubToolRenderArgs | undefined)?.op === "run_watch",
 	renderCall(args: GithubToolRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		const op = typeof args.op === "string" && args.op.trim().length > 0 ? args.op.trim() : undefined;
 		if (op === "run_watch") {

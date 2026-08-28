@@ -192,6 +192,7 @@ export interface GhRunWatchFailedLogDetails {
 export interface GhRunWatchViewDetails {
 	mode: "run" | "commit";
 	state: "watching" | "completed";
+	observedAtMs?: number;
 	repo: string;
 	branch?: string;
 	headSha?: string;
