@@ -336,6 +336,15 @@ export interface GhActionsJobsResponse {
 	jobs?: GhActionsJobApi[];
 }
 
+export interface GhActionsJobStepApi {
+	name?: string | null;
+	status?: string | null;
+	conclusion?: string | null;
+	number?: number;
+	started_at?: string | null;
+	completed_at?: string | null;
+}
+
 export interface GhActionsJobApi {
 	id?: number;
 	name?: string | null;
@@ -344,6 +353,16 @@ export interface GhActionsJobApi {
 	started_at?: string | null;
 	completed_at?: string | null;
 	html_url?: string | null;
+	steps?: GhActionsJobStepApi[] | null;
+}
+
+export interface GhRunJobStepSnapshot {
+	number: number;
+	name: string;
+	status?: string;
+	conclusion?: string;
+	startedAt?: string;
+	completedAt?: string;
 }
 
 export interface GhRunJobSnapshot {
@@ -354,6 +373,9 @@ export interface GhRunJobSnapshot {
 	startedAt?: string;
 	completedAt?: string;
 	url?: string;
+	steps: GhRunJobStepSnapshot[];
+	logTail?: string;
+	logAvailable?: boolean;
 }
 
 export interface GhRunSnapshot {

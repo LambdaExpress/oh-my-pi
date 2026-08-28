@@ -203,17 +203,48 @@ function getJobStateVisual(
 function renderJobLine(job: GhRunWatchJobDetails, width: number, theme: Theme): string {
 	const visual = getJobStateVisual(job, theme);
 	const prefix = theme.fg(visual.iconColor, `${visual.iconRaw} `);
-	const durationLabel = job.durationSeconds !== undefined ? `${job.durationSeconds}s` : undefined;
-	const styledDuration = durationLabel ? theme.fg(visual.textColor, durationLabel) : undefined;
-	const reservedWidth = visibleWidth(prefix) + (styledDuration ? 1 + visibleWidth(styledDuration) : 0);
+	const completedSteps = job.steps.filter(step => step.status === "completed").length;
+	const metaParts: string[] = [];
+	if (job.steps.length > 0) metaParts.push(`${completedSteps}/${job.steps.length} steps`);
+	if (job.durationSeconds !== undefined) metaParts.push(`${job.durationSeconds}s`);
+	const styledMeta = metaParts.length > 0 ? theme.fg(visual.textColor, metaParts.join(theme.sep.dot)) : undefined;
+	const reservedWidth = visibleWidth(prefix) + (styledMeta ? 1 + visibleWidth(styledMeta) : 0);
 	const nameWidth = Math.max(8, width - reservedWidth);
 	const jobName = theme.fg(visual.textColor, truncateVisualWidth(replaceTabs(job.name), nameWidth));
 	let line = `${prefix}${jobName}`;
-	if (styledDuration) {
-		line += padding(Math.max(1, width - visibleWidth(line) - visibleWidth(styledDuration)));
-		line += styledDuration;
+	if (styledMeta) {
+		line += padding(Math.max(1, width - visibleWidth(line) - visibleWidth(styledMeta)));
+		line += styledMeta;
 	}
 	return line;
+}
+
+function renderCurrentStepLine(job: GhRunWatchJobDetails, width: number, theme: Theme): string | undefined {
+	const currentStepIndex = job.steps.findIndex(step => step.status === "in_progress");
+	const currentStep = job.steps[currentStepIndex];
+	if (!currentStep) return undefined;
+	const duration =
+		currentStep.durationSeconds !== undefined ? ` ${theme.sep.dot} ${currentStep.durationSeconds}s` : "";
+	const prefix = `  ${theme.status.enabled} step ${currentStepIndex + 1}/${job.steps.length} `;
+	const availableWidth = Math.max(8, width - visibleWidth(prefix) - visibleWidth(duration));
+	return theme.fg(
+		"warning",
+		`${prefix}${truncateVisualWidth(replaceTabs(currentStep.name), availableWidth)}${duration}`,
+	);
+}
+
+function renderRunProgressLine(run: GhRunWatchRunDetails, theme: Theme): string {
+	let completed = 0;
+	let running = 0;
+	for (const job of run.jobs) {
+		if (job.status === "completed") completed += 1;
+		if (job.status === "in_progress") running += 1;
+	}
+	const queued = Math.max(0, run.jobs.length - completed - running);
+	const parts = [`${completed}/${run.jobs.length} jobs complete`];
+	if (running > 0) parts.push(`${running} running`);
+	if (queued > 0) parts.push(`${queued} queued`);
+	return theme.fg("dim", parts.join(theme.sep.dot));
 }
 
 function renderRunBlock(run: GhRunWatchRunDetails, width: number, theme: Theme): string[] {
@@ -223,8 +254,77 @@ function renderRunBlock(run: GhRunWatchRunDetails, width: number, theme: Theme):
 		return lines;
 	}
 
+	lines.push(renderRunProgressLine(run, theme));
 	for (const job of run.jobs) {
 		lines.push(renderJobLine(job, width, theme));
+		const currentStep = renderCurrentStepLine(job, width, theme);
+		if (currentStep) lines.push(currentStep);
+	}
+	return lines;
+}
+
+function renderJobLogPreview(
+	job: GhRunWatchJobDetails,
+	run: GhRunWatchRunDetails,
+	width: number,
+	theme: Theme,
+	expanded: boolean,
+): string[] {
+	const context = `${getRunLabel(run)}  #${run.id}`;
+	const visual = getJobStateVisual(job, theme);
+	const lines = [
+		theme.fg(
+			visual.textColor,
+			`${theme.fg(visual.iconColor, visual.iconRaw)} ${replaceTabs(job.name)}  ${theme.fg("muted", context)}`,
+		),
+	];
+	if (!job.logTail) {
+		lines.push(theme.fg("dim", "  live log unavailable; GitHub publishes it after the job completes"));
+		return lines;
+	}
+
+	const logLines = replaceTabs(job.logTail)
+		.split("\n")
+		.filter(line => line.length > 0);
+	const previewLimit = expanded ? logLines.length : Math.min(PREVIEW_LIMITS.OUTPUT_COLLAPSED, logLines.length);
+	for (const line of logLines.slice(-previewLimit)) {
+		lines.push(theme.fg("dim", `  ${truncateVisualWidth(line, Math.max(8, width - 2))}`));
+	}
+	if (!expanded && logLines.length > previewLimit) {
+		const remaining = logLines.length - previewLimit;
+		lines.push(theme.fg("dim", `  … ${remaining} more log lines ${formatExpandHint(theme, false, true)}`));
+	}
+	return lines;
+}
+
+function renderRecentLogs(runs: GhRunWatchRunDetails[], width: number, theme: Theme, expanded: boolean): string[] {
+	const lines: string[] = [];
+	for (const run of runs) {
+		const selected: GhRunWatchJobDetails[] = [];
+		let activeLogAvailable = false;
+		for (const job of run.jobs) {
+			if (job.status !== "in_progress") continue;
+			selected.push(job);
+			if (job.logTail) activeLogAvailable = true;
+		}
+
+		if (expanded) {
+			for (const job of run.jobs) {
+				if (job.status !== "in_progress" && job.logTail) selected.push(job);
+			}
+		} else if (!activeLogAvailable) {
+			for (let index = run.jobs.length - 1; index >= 0; index -= 1) {
+				const job = run.jobs[index];
+				if (!job || job.status === "in_progress" || !job.logTail) continue;
+				selected.push(job);
+				break;
+			}
+		}
+
+		for (const job of selected) {
+			if (lines.length > 0) lines.push("");
+			lines.push(...renderJobLogPreview(job, run, width, theme, expanded));
+		}
 	}
 	return lines;
 }
@@ -299,6 +399,12 @@ function buildWatchSections(
 	const sections: Array<{ label?: string; lines: string[] }> = [];
 	if (main.length > 0) {
 		sections.push({ lines: main });
+	}
+
+	const runs = watch.mode === "run" && watch.run ? [watch.run] : (watch.runs ?? []);
+	const recentLogs = renderRecentLogs(runs, width, theme, options.expanded);
+	if (recentLogs.length > 0) {
+		sections.push({ label: "recent logs", lines: recentLogs });
 	}
 
 	const failed = renderFailedLogs(watch.failedLogs ?? [], width, theme, options.expanded);

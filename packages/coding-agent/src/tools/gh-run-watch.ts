@@ -6,6 +6,7 @@ import type {
 	GhRunWatchFailedLogDetails,
 	GhRunWatchJobDetails,
 	GhRunWatchRunDetails,
+	GhRunWatchStepDetails,
 	GhRunWatchViewDetails,
 	GhToolDetails,
 } from "./gh";
@@ -25,12 +26,14 @@ import {
 import { formatShortSha } from "./gh-format";
 import type {
 	GhActionsJobApi,
+	GhActionsJobStepApi,
 	GhActionsJobsResponse,
 	GhActionsRunApi,
 	GhActionsRunListResponse,
 	GhBranchApiResponse,
 	GhFailedJobLog,
 	GhRunJobSnapshot,
+	GhRunJobStepSnapshot,
 	GhRunReference,
 	GhRunSnapshot,
 	GithubInput,
@@ -45,6 +48,7 @@ export const RUN_WATCH_MAX_POLL_FAILURES = 5;
 export const RUN_WATCH_GRACE_DEFAULT = 5;
 export const RUN_WATCH_TAIL_DEFAULT = 15;
 export const RUN_WATCH_TAIL_MAX = 200;
+export const RUN_WATCH_LOG_REFRESH_MS = 15_000;
 
 export const RUN_JOBS_PAGE_SIZE = 100;
 
@@ -105,6 +109,24 @@ export function normalizeRunJob(job: GhActionsJobApi): GhRunJobSnapshot | null {
 		startedAt: normalizeOptionalString(job.started_at),
 		completedAt: normalizeOptionalString(job.completed_at),
 		url: normalizeOptionalString(job.html_url),
+		steps: (job.steps ?? [])
+			.map(step => normalizeRunJobStep(step))
+			.filter((step): step is GhRunJobStepSnapshot => step !== null),
+	};
+}
+
+function normalizeRunJobStep(step: GhActionsJobStepApi): GhRunJobStepSnapshot | null {
+	if (typeof step.number !== "number") {
+		return null;
+	}
+
+	return {
+		number: step.number,
+		name: normalizeOptionalString(step.name) ?? `step-${step.number}`,
+		status: normalizeOptionalString(step.status),
+		conclusion: normalizeOptionalString(step.conclusion),
+		startedAt: normalizeOptionalString(step.started_at),
+		completedAt: normalizeOptionalString(step.completed_at),
 	};
 }
 
@@ -219,6 +241,23 @@ export function getJobDurationSeconds(job: GhRunJobSnapshot, observedAtMs: numbe
 	return Math.max(0, Math.floor((completedAtMs - startedAtMs) / 1000));
 }
 
+function getStepDurationSeconds(step: GhRunJobStepSnapshot, observedAtMs: number): number | undefined {
+	const startedAtMs = parseTimestampMs(step.startedAt);
+	if (startedAtMs === undefined) return undefined;
+	const completedAtMs = parseTimestampMs(step.completedAt);
+	return Math.max(0, Math.round(((completedAtMs ?? observedAtMs) - startedAtMs) / 1000));
+}
+
+function buildRunWatchStepDetails(step: GhRunJobStepSnapshot, observedAtMs: number): GhRunWatchStepDetails {
+	return {
+		number: step.number,
+		name: step.name,
+		status: step.status,
+		conclusion: step.conclusion,
+		durationSeconds: getStepDurationSeconds(step, observedAtMs),
+	};
+}
+
 export function buildRunWatchJobDetails(job: GhRunJobSnapshot, observedAtMs: number): GhRunWatchJobDetails {
 	return {
 		id: job.id,
@@ -227,6 +266,9 @@ export function buildRunWatchJobDetails(job: GhRunJobSnapshot, observedAtMs: num
 		conclusion: job.conclusion,
 		durationSeconds: getJobDurationSeconds(job, observedAtMs),
 		url: job.url,
+		steps: job.steps.map(step => buildRunWatchStepDetails(step, observedAtMs)),
+		logTail: job.logTail,
+		logAvailable: job.logAvailable,
 	};
 }
 
@@ -262,7 +304,14 @@ export function renderJobsSection(jobs: GhRunJobSnapshot[]): string[] {
 
 	const lines: string[] = [`## Jobs (${jobs.length})`, ""];
 	for (const job of jobs) {
-		lines.push(`- [${formatJobState(job)}] ${job.name}`);
+		const completedSteps = job.steps.filter(step => step.status === "completed").length;
+		const stepProgress = job.steps.length > 0 ? ` (${completedSteps}/${job.steps.length} steps)` : "";
+		lines.push(`- [${formatJobState(job)}] ${job.name}${stepProgress}`);
+		const currentStepIndex = job.steps.findIndex(step => step.status === "in_progress");
+		const currentStep = job.steps[currentStepIndex];
+		if (currentStep) {
+			lines.push(`  Current: step ${currentStepIndex + 1}/${job.steps.length} - ${currentStep.name}`);
+		}
 		if (job.startedAt) {
 			pushLine(lines, "  Started", job.startedAt);
 		}
@@ -275,6 +324,36 @@ export function renderJobsSection(jobs: GhRunJobSnapshot[]): string[] {
 	}
 
 	return lines;
+}
+
+function pushRecentLog(lines: string[], job: GhRunJobSnapshot): void {
+	lines.push(`### ${job.name}`);
+	if (!job.logTail) {
+		lines.push("GitHub has not published this job's log yet.", "");
+		return;
+	}
+	lines.push("```text", job.logTail, "```", "");
+}
+
+function renderRecentJobLogs(jobs: GhRunJobSnapshot[]): string[] {
+	const activeJobs = jobs.filter(job => job.status === "in_progress");
+	const lines: string[] = [];
+	let activeLogAvailable = false;
+	for (const job of activeJobs) {
+		if (job.logTail) activeLogAvailable = true;
+		pushRecentLog(lines, job);
+	}
+
+	if (!activeLogAvailable) {
+		for (let index = jobs.length - 1; index >= 0; index -= 1) {
+			const job = jobs[index];
+			if (!job || job.status === "in_progress" || !job.logTail) continue;
+			pushRecentLog(lines, job);
+			break;
+		}
+	}
+
+	return lines.length > 0 ? ["## Recent Logs", "", ...lines] : [];
 }
 
 export function renderFailedJobLogs(
@@ -328,6 +407,10 @@ export function renderRunSection(run: GhRunSnapshot): string[] {
 	pushLine(lines, "URL", run.url);
 	lines.push("");
 	lines.push(...renderJobsSection(run.jobs));
+	const recentLogs = renderRecentJobLogs(run.jobs);
+	if (recentLogs.length > 0) {
+		lines.push("", ...recentLogs);
+	}
 	return lines;
 }
 
@@ -712,6 +795,89 @@ export function tailLogLines(log: string, tail: number): string | undefined {
 	return lines.slice(-tail).join("\n").trimEnd();
 }
 
+interface GhRecentJobLogCacheEntry {
+	tail?: string;
+	available: boolean;
+	fetchedAtMs: number;
+	completed: boolean;
+}
+
+async function fetchRecentJobLog(
+	cwd: string,
+	repo: string,
+	job: GhRunJobSnapshot,
+	tail: number,
+	signal?: AbortSignal,
+): Promise<GhRecentJobLogCacheEntry> {
+	const fetchedAtMs = Date.now();
+	try {
+		const result = await git.github.run(cwd, ["api", `/repos/${repo}/actions/jobs/${job.id}/logs`], signal);
+		const fullLog = result.exitCode === 0 ? normalizeBlock(result.stdout) : undefined;
+		return {
+			tail: fullLog ? tailLogLines(fullLog, tail) : undefined,
+			available: Boolean(fullLog),
+			fetchedAtMs,
+			completed: job.status === "completed",
+		};
+	} catch {
+		throwIfAborted(signal);
+		return {
+			available: false,
+			fetchedAtMs,
+			completed: job.status === "completed",
+		};
+	}
+}
+
+async function attachRecentJobLogs(
+	cwd: string,
+	repo: string,
+	runs: GhRunSnapshot[],
+	tail: number,
+	cache: Map<number, GhRecentJobLogCacheEntry>,
+	signal?: AbortSignal,
+): Promise<GhRunSnapshot[]> {
+	const observedAtMs = Date.now();
+	const jobs: GhRunJobSnapshot[] = [];
+	for (const run of runs) {
+		let latestCompleted: GhRunJobSnapshot | undefined;
+		let latestCompletedAtMs = Number.NEGATIVE_INFINITY;
+		for (const job of run.jobs) {
+			if (job.status === "in_progress") {
+				jobs.push(job);
+				continue;
+			}
+			if (job.status !== "completed" || isFailedJob(job)) continue;
+			const completedAtMs = parseTimestampMs(job.completedAt) ?? Number.NEGATIVE_INFINITY;
+			if (!latestCompleted || completedAtMs >= latestCompletedAtMs) {
+				latestCompleted = job;
+				latestCompletedAtMs = completedAtMs;
+			}
+		}
+		if (latestCompleted) jobs.push(latestCompleted);
+	}
+	await Promise.all(
+		jobs.map(async job => {
+			if ((!job.startedAt && job.status !== "in_progress") || isFailedJob(job)) return;
+			const completed = job.status === "completed";
+			const cached = cache.get(job.id);
+			const completedLogIsFinal = completed && cached?.completed === true && cached.available;
+			const activeLogIsFresh =
+				!completed && cached !== undefined && observedAtMs - cached.fetchedAtMs < RUN_WATCH_LOG_REFRESH_MS;
+			if (completedLogIsFinal || activeLogIsFresh) return;
+			cache.set(job.id, await fetchRecentJobLog(cwd, repo, job, tail, signal));
+		}),
+	);
+
+	return runs.map(run => ({
+		...run,
+		jobs: run.jobs.map(job => {
+			const log = cache.get(job.id);
+			return log ? { ...job, logTail: log.tail, logAvailable: log.available } : job;
+		}),
+	}));
+}
+
 export async function fetchFailedJobLogs(
 	cwd: string,
 	repo: string,
@@ -748,6 +914,7 @@ export async function executeRunWatch(
 	const repo = await resolveGitHubRepo(session.cwd, explicitRepo, runReference.repo, signal);
 	const graceSeconds = RUN_WATCH_GRACE_DEFAULT;
 	const tail = resolveTailLimit(params.tail);
+	const recentJobLogCache = new Map<number, GhRecentJobLogCacheEntry>();
 	const watchStartMs = Date.now();
 	// Fast polls for the first minute for snappy feedback, then back off:
 	// every commit-watch poll is one runs-list call plus one jobs call per
@@ -779,6 +946,8 @@ export async function executeRunWatch(
 				await handlePollError(err);
 				continue;
 			}
+			const runsWithLogs = await attachRecentJobLogs(session.cwd, repo, [run], tail, recentJobLogCache, signal);
+			run = runsWithLogs[0] ?? run;
 			consecutivePollFailures = 0;
 			const details = buildRunWatchDetails(repo, run, {
 				state: "watching",
@@ -900,6 +1069,7 @@ export async function executeRunWatch(
 			await handlePollError(err);
 			continue;
 		}
+		runs = await attachRecentJobLogs(session.cwd, repo, runs, tail, recentJobLogCache, signal);
 		consecutivePollFailures = 0;
 		if (runs.length > 0) everSawRuns = true;
 		const details = buildCommitRunWatchDetails(repo, headSha, branch, runs, {

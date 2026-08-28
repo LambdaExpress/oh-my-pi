@@ -1,9 +1,16 @@
 import { Box, Container, Spacer, Text } from "@oh-my-pi/pi-tui";
-import type { Rule } from "../../capability/rule";
+import { BUILTIN_DEFAULTS_PROVIDER_ID, type Rule } from "../../capability/rule";
+import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
 
 /** Collapsed view shows at most this many rules before eliding the rest. */
 const MAX_COLLAPSED_RULES = 4;
+
+function displayRuleDescription(rule: Rule): string | undefined {
+	const description = (rule.description || rule.content)?.trim();
+	if (!description) return undefined;
+	return rule._source.provider === BUILTIN_DEFAULTS_PROVIDER_ID ? t(description) : description;
+}
 
 /**
  * Component that renders a TTSR (Time Traveling Stream Rules) notification.
@@ -77,10 +84,10 @@ export class TtsrNotificationComponent extends Container {
 	}
 
 	#rebuildSingle(rule: Rule): void {
-		const header = `${theme.icon.warning} Injecting rule: ${theme.bold(rule.name)}  ${theme.icon.rewind}`;
+		const header = `${theme.icon.warning} ${t("Injecting rule: {name}", { name: theme.bold(rule.name) })}  ${theme.icon.rewind}`;
 		this.#box.addChild(new Text(header, 0, 0));
 
-		const desc = (rule.description || rule.content)?.trim();
+		const desc = displayRuleDescription(rule);
 		if (!desc) return;
 
 		let displayText = desc;
@@ -96,19 +103,19 @@ export class TtsrNotificationComponent extends Container {
 		this.#box.addChild(new Spacer(1));
 		this.#box.addChild(new Text(theme.italic(displayText), 0, 0));
 		if (truncated) {
-			this.#box.addChild(new Text(theme.italic(" (ctrl+o to expand)"), 0, 0));
+			this.#box.addChild(new Text(theme.italic(` ${t("(ctrl+o to expand)")}`), 0, 0));
 		}
 	}
 
 	#rebuildMulti(): void {
-		const header = `${theme.icon.warning} Injecting ${this.#rules.length} rules:  ${theme.icon.rewind}`;
+		const header = `${theme.icon.warning} ${t("Injecting {count} rules:", { count: this.#rules.length })}  ${theme.icon.rewind}`;
 		this.#box.addChild(new Text(header, 0, 0));
 		this.#box.addChild(new Spacer(1));
 
 		const visible = this.#expanded ? this.#rules : this.#rules.slice(0, MAX_COLLAPSED_RULES);
 		let elidedDetail = false;
 		for (const rule of visible) {
-			const desc = (rule.description || rule.content)?.trim();
+			const desc = displayRuleDescription(rule);
 			let line = theme.bold(rule.name);
 			if (desc) {
 				let displayText = desc;
@@ -127,9 +134,9 @@ export class TtsrNotificationComponent extends Container {
 
 		const hidden = this.#rules.length - visible.length;
 		if (hidden > 0) {
-			this.#box.addChild(new Text(theme.italic(`… +${hidden} more (ctrl+o to expand)`), 0, 0));
+			this.#box.addChild(new Text(theme.italic(t("… +{count} more (ctrl+o to expand)", { count: hidden })), 0, 0));
 		} else if (elidedDetail) {
-			this.#box.addChild(new Text(theme.italic(" (ctrl+o to expand)"), 0, 0));
+			this.#box.addChild(new Text(theme.italic(` ${t("(ctrl+o to expand)")}`), 0, 0));
 		}
 	}
 }
