@@ -1661,6 +1661,61 @@ echo ok
 		expect(rendered).toContain("upload arm64");
 	});
 
+	it("advances running job and step durations between API polls", async () => {
+		const theme = await getThemeByName("dark");
+		if (!theme) throw new Error("expected dark theme");
+		const observedAtMs = Date.parse("2026-08-28T13:42:00Z");
+		const nowSpy = vi.spyOn(Date, "now").mockReturnValue(observedAtMs);
+		const options = { expanded: false, isPartial: true, spinnerFrame: 0 };
+		const component = githubToolRenderer.renderResult(
+			{
+				content: [],
+				details: {
+					watch: {
+						mode: "run",
+						state: "watching",
+						repo: "owner/repo",
+						observedAtMs,
+						run: {
+							id: 77,
+							status: "in_progress",
+							jobs: [
+								{
+									id: 202,
+									name: "Build linux-x64",
+									status: "in_progress",
+									durationSeconds: 145,
+									steps: [
+										{
+											number: 1,
+											name: "Compile native addon",
+											status: "in_progress",
+											durationSeconds: 42,
+										},
+									],
+								},
+							],
+						},
+					},
+				},
+			},
+			options,
+			theme,
+			{ op: "run_watch", run: "77" },
+		);
+
+		const initial = Bun.stripANSI(component.render(120).join("\n"));
+		expect(initial).toContain("0/1 steps · 145s");
+		expect(initial).toMatch(/step 1\/1 Compile native addon\s+·\s+42s/);
+
+		nowSpy.mockReturnValue(observedAtMs + 2_000);
+		options.spinnerFrame = 1;
+		const advanced = Bun.stripANSI(component.render(120).join("\n"));
+		expect(advanced).toContain("0/1 steps · 147s");
+		expect(advanced).toMatch(/step 1\/1 Compile native addon\s+·\s+44s/);
+		expect(githubToolRenderer.animatedPartialResult?.({ op: "run_watch" })).toBe(true);
+	});
+
 	it("tails failed job logs inline and saves the full failed-job logs as an artifact", async () => {
 		const artifactsDir = await fs.mkdtemp(path.join(os.tmpdir(), "gh-run-watch-artifacts-"));
 		vi.spyOn(git.github, "json")

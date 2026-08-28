@@ -594,6 +594,7 @@ export function buildRunWatchDetails(
 		watch: {
 			mode: "run",
 			state: options?.state ?? "completed",
+			observedAtMs,
 			repo,
 			branch: run.branch,
 			headSha: run.headSha,
@@ -643,6 +644,7 @@ export function buildCommitRunWatchDetails(
 		watch: {
 			mode: "commit",
 			state: options?.state ?? "completed",
+			observedAtMs,
 			repo,
 			branch,
 			headSha,
