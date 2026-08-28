@@ -22,6 +22,7 @@
 | `password` | `string \| null` | No | Literal SSH password. `null` clears it during update. |
 | `description` | `string \| null` | No | Human-readable alias description. `null` clears it during update. |
 | `compat` | `boolean \| null` | No | Windows compatibility-shell preference. `null` clears it during update. |
+| `proxy_jump` | `string \| null` | No | Comma-separated OpenSSH `[user@]host[:port]` hops; IPv6 literals must use bracket notation. `null` clears it during update. |
 
 `create` rejects `null` configurable fields. `update` preserves omitted fields and requires at least one configurable field. `list` and `delete` reject configurable fields.
 
@@ -47,6 +48,9 @@
 - Share snapshots, HTML exports, and debug report bundles omit `ssh_config_change` entries or replace matching password text before leaving the local session store. This SSH-specific handling is always enabled, independent of general share-secret settings.
 - Password authentication uses the existing SSH askpass path. The password enters the child-process environment and askpass input; it does not enter SSH arguments, ControlMaster paths, scripts, canonical resource keys, hashline snapshot keys, logs, errors, or artifact metadata.
 - `key_path` accepts a filesystem path only. Inline private-key or certificate content is unsupported. Existing private-key existence and permission checks still apply.
+- `proxy_jump` uses strict comma-separated `[user@]host[:port]` grammar, with bracket notation for IPv6 hosts. Only outer whitespace is trimmed; embedded whitespace, empty hops, invalid ports, and SSH options are rejected.
+- `proxy_jump` is passed to OpenSSH as one `-J` argument. Jump-host authentication comes from the local OpenSSH config, agent, and keys; session aliases do not store separate jump-host credentials.
+- `proxy_jump` cannot be combined with the target alias `password`. Configure target authentication with a key or SSH agent.
 
 ## Branches, forks, deletion, and collaboration
 - Branches and forks inherit the SSH configuration visible at their branch point. Later mutations affect only descendants of the new entry.
@@ -64,7 +68,8 @@
 
 ## Errors
 - Invalid or missing alias names fail before mutation.
-- Empty `host`, `username`, `key_path`, `password`, or `description` strings are rejected when supplied.
+- Empty `host`, `username`, `key_path`, `password`, `description`, or `proxy_jump` strings are rejected when supplied.
+- Invalid ProxyJump hop syntax and ProxyJump plus target-password combinations are rejected.
 - Ports outside `1..65535` or non-integer ports are rejected.
 - `create` fails when the session branch already defines the alias.
 - `update` and `delete` fail when the alias exists only in persistent configuration or does not exist.

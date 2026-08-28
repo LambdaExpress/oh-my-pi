@@ -46,6 +46,7 @@ export const zhCN: Record<string, string> = {
 	"  Key:  {value}": "  密钥:  {value}",
 	"  Password: ********": "  密码: ********",
 	"  Port: {value}": "  端口: {value}",
+	"  Proxy jump: {value}": "  代理跳转: {value}",
 	"  Run {cmd} in a few seconds.": "  几秒后运行 {cmd}。",
 	"  Run {cmd} to test the connection.": "  运行 {cmd} 以测试连接。",
 	"  Server: {name} v{version}": "  服务器: {name} v{version}",
@@ -1863,6 +1864,7 @@ export const zhCN: Record<string, string> = {
 	"Invalid GitHub release metadata": "无效的 GitHub 发布元数据",
 	"Invalid OAuth URLs. Please check:\n  Authorization URL: {authUrl}\n  Token URL: {tokenUrl}":
 		"无效的 OAuth URL。请检查：\n  授权 URL：{authUrl}\n  令牌 URL：{tokenUrl}",
+	"Invalid SSH ProxyJump specification": "无效的 SSH ProxyJump 规范",
 	"Invalid URL format (must start with http:// or https://)": "无效的 URL 格式（必须以 http:// 或 https:// 开头）",
 	"Invalid array JSON: {value}": "无效的数组 JSON：{value}",
 	"Invalid boolean value: {value}. Use true/false, yes/no, on/off, or 1/0":
@@ -2210,6 +2212,7 @@ export const zhCN: Record<string, string> = {
 	"Missing value for --limit.": "缺少 --limit 的值。",
 	"Missing value for --password.": "缺少 --password 的值。",
 	"Missing value for --port.": "缺少 --port 的值。",
+	"Missing value for --proxy-jump.": "缺少 --proxy-jump 的值。",
 	"Missing value for --token.": "缺少 --token 的值。",
 	"Missing value for --url.": "缺少 --url 的值。",
 	"Missing value for --user.": "缺少 --user 的值。",
@@ -2598,6 +2601,7 @@ export const zhCN: Record<string, string> = {
 	"OpenCode Project Commands": "OpenCode 项目命令",
 	"OpenCode User Commands": "OpenCode 用户命令",
 	"OpenRouter Routing": "OpenRouter 路由",
+	"OpenSSH ProxyJump specification": "OpenSSH ProxyJump 规范",
 	"Operate on local plugin directory": "操作本地插件目录",
 	"Operation aborted": "操作已中止",
 	"Optional LLM API key for Mnemopi remote mode": "Mnemopi 远程模式的可选 LLM API 密钥",
@@ -3149,6 +3153,8 @@ export const zhCN: Record<string, string> = {
 	"SARIF artifact URI must resolve to a repository file: {uri}": "SARIF 工件 URI 必须解析为仓库文件：{uri}",
 	"SARIF artifact uses an unknown URI base: {uriBaseId}": "SARIF 工件使用了未知的 URI 基址：{uriBaseId}",
 	"SSH Host Management": "SSH 主机管理",
+	"SSH ProxyJump cannot be used with password authentication; configure target authentication with a key or SSH agent instead":
+		"SSH ProxyJump 不能与密码认证同时使用；请改用密钥或 SSH 代理配置目标认证",
 	"SSH action": "SSH 操作",
 	"SSH password": "SSH 密码",
 	"SSH transfer": "SSH 传输",
@@ -3982,8 +3988,8 @@ export const zhCN: Record<string, string> = {
 		"用法：/security <plan|scan|status|cancel|scans|cloud|show|import|export|validate|compare|disposition>",
 	"Usage: /security cloud <scans|start|status|pull>": "用法：/security cloud <scans|start|status|pull>",
 	"Usage: /session [info|delete|pin [account]]": "用法：/session [info|delete|pin [account]]",
-	"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]":
-		"用法：/ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
+	"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--proxy-jump <spec>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]":
+		"用法：/ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--proxy-jump <spec>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
 	"Usage: /tan <work>": "用法：/tan <work>",
 	"Usage: /todo <verb> [args]\n  /todo                              Show current todos\n  /todo edit                         Open todos in $EDITOR\n  /todo copy                         Copy todos as Markdown to clipboard\n  /todo export [<path>]              Write todos to file (default: TODO.md)\n  /todo import [<path>]              Replace todos from file (default: TODO.md)\n  /todo append [<phase>] <task...>   Append a task; phase fuzzy-matched or auto-created\n  /todo start  <task>                Mark task in_progress (fuzzy content match)\n  /todo done   [<task|phase>]        Mark task/phase/all completed\n  /todo drop   [<task|phase>]        Mark task/phase/all abandoned\n  /todo rm     [<task|phase>]        Remove task/phase/all":
 		"用法：/todo <verb> [args]\n  /todo                              显示当前待办事项\n  /todo edit                         在 $EDITOR 中打开待办事项\n  /todo copy                         将待办事项以 Markdown 格式复制到剪贴板\n  /todo export [<path>]              将待办事项写入文件（默认：TODO.md）\n  /todo import [<path>]              从文件替换待办事项（默认：TODO.md）\n  /todo append [<phase>] <task...>   追加任务；阶段模糊匹配或自动创建\n  /todo start  <task>                将任务标记为进行中（按内容模糊匹配）\n  /todo done   [<task|phase>]        将任务/阶段/全部标记为已完成\n  /todo drop   [<task|phase>]        将任务/阶段/全部标记为已放弃\n  /todo rm     [<task|phase>]        移除任务/阶段/全部",

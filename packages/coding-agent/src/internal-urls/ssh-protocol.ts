@@ -255,6 +255,7 @@ async function resolveTarget(
 			host: match.host,
 			username: match.username,
 			port: match.port,
+			proxyJump: match.proxyJump,
 			keyPath: match.keyPath,
 			password: match.password,
 			compat: match.compat,

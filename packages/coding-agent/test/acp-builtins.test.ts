@@ -1150,6 +1150,75 @@ describe("wave 5 — adapters and polish", () => {
 		}
 	});
 
+	it("/ssh add --proxy-jump: saves the complete jump specification as one trimmed string", async () => {
+		const spy = spyOn(sshConfigWriter, "addSSHHost").mockResolvedValue(undefined);
+		try {
+			const { runtime } = createRuntime();
+			const result = await executeAcpBuiltinSlashCommand(
+				'/ssh add foo --host x --proxy-jump "  jump-user@bastion.example:2222,relay.example  "',
+				runtime,
+			);
+			expect(result).toEqual({ consumed: true });
+			expect(spy).toHaveBeenCalledTimes(1);
+			const [, name, hostConfig] = spy.mock.calls[0]!;
+			expect(name).toBe("foo");
+			expect(hostConfig).toEqual({
+				host: "x",
+				proxyJump: "jump-user@bastion.example:2222,relay.example",
+			});
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("/ssh add foo --host x --proxy-jump: rejects the missing jump specification without writing", async () => {
+		const spy = spyOn(sshConfigWriter, "addSSHHost").mockResolvedValue(undefined);
+		try {
+			const { output, runtime } = createRuntime();
+			const result = await executeAcpBuiltinSlashCommand("/ssh add foo --host x --proxy-jump", runtime);
+			expect(result).toEqual({ consumed: true });
+			expect(output[0]).toContain("Missing value for --proxy-jump.");
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it.each([
+		["an option-like token", "-oProxyCommand=calc"],
+		["an out-of-range jump port", "relay.example:70000"],
+	])("/ssh add rejects %s in --proxy-jump without writing", async (_case, proxyJump) => {
+		const spy = spyOn(sshConfigWriter, "addSSHHost").mockResolvedValue(undefined);
+		try {
+			const { output, runtime } = createRuntime();
+			const result = await executeAcpBuiltinSlashCommand(`/ssh add foo --host x --proxy-jump ${proxyJump}`, runtime);
+			expect(result).toEqual({ consumed: true });
+			expect(output[0]).toContain("Invalid SSH ProxyJump specification");
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	it("/ssh add rejects password authentication with --proxy-jump without writing", async () => {
+		const spy = spyOn(sshConfigWriter, "addSSHHost").mockResolvedValue(undefined);
+		try {
+			const { output, runtime } = createRuntime();
+			const result = await executeAcpBuiltinSlashCommand(
+				"/ssh add foo --host x --proxy-jump bastion.example --password target-secret",
+				runtime,
+			);
+			expect(result).toEqual({ consumed: true });
+			expect(output[0]).toContain(
+				"SSH ProxyJump cannot be used with password authentication; configure target authentication with a key or SSH agent instead",
+			);
+			expect(output.join("\n")).not.toContain("target-secret");
+			expect(spy).not.toHaveBeenCalled();
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
 	// /model with unknown id
 	it("/model gpt-fake-9000: returns unknown-model message", async () => {
 		const { output, runtime } = createRuntime();

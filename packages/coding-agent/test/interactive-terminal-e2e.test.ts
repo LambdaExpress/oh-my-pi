@@ -302,7 +302,7 @@ describe("libkitty end-to-end", () => {
 		}
 	});
 
-	it("streams every row of an unfinished full-fidelity block into native history", async () => {
+	it("keeps overflowing active rows exact when settlement changes their ANSI styling", async () => {
 		const width = 80;
 		term = new VirtualTerminal(width, 10);
 		const composer = new Composer({ terminal: term });
@@ -315,9 +315,11 @@ describe("libkitty end-to-end", () => {
 		composer.setHeaderExtras([], []);
 		const markers = Array.from({ length: 24 }, (_, index) => `ACTIVE-FULL-${String(index).padStart(2, "0")}`);
 		const streamedRows: string[] = [];
+		let finalized = false;
+		let background = 44;
 		const block = {
-			render: () => streamedRows,
-			isTranscriptBlockFinalized: () => false,
+			render: () => streamedRows.map(row => `\x1b[${background}m${row}\x1b[0m`),
+			isTranscriptBlockFinalized: () => finalized,
 		};
 		mode.chatContainer.addChild(block);
 		for (const marker of markers) {
@@ -330,6 +332,18 @@ describe("libkitty end-to-end", () => {
 		const rows = plainRows(term.getScrollBuffer());
 		for (const marker of markers) {
 			expect(rows.filter(row => row.includes(marker))).toHaveLength(1);
+		}
+
+		// Tool frames change from their active background to a terminal success or
+		// error background. Native history already owns the streamed prefix, so the
+		// settlement frame must not replay those unchanged visible rows.
+		background = 41;
+		finalized = true;
+		for (let frame = 0; frame < 2; frame++) mode.ui.renderNow();
+		await term.flush();
+		const settledRows = plainRows(term.getScrollBuffer());
+		for (const marker of markers) {
+			expect(settledRows.filter(row => row.includes(marker))).toHaveLength(1);
 		}
 	});
 

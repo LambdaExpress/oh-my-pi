@@ -1,6 +1,7 @@
 import { getSSHConfigPath } from "@oh-my-pi/pi-utils";
 import type { SSHHostConfig } from "../../capability/ssh";
 import { addSSHHost, readSSHConfigFile, removeSSHHost } from "../../ssh/config-writer";
+import { assertProxyJumpPasswordCompatible, normalizeProxyJump } from "../../ssh/utils";
 import { parseCommandArgs } from "../../utils/command-args";
 import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime } from "../types";
 import { commandConsumed, errorMessage, parseNamedScopeArgs, parseSubcommand, usage } from "./parse";
@@ -12,6 +13,7 @@ interface ParsedSshAddArgs {
 	username?: string;
 	port?: number;
 	keyPath?: string;
+	proxyJump?: string;
 	password?: string;
 	scopeWasExplicit?: boolean;
 	error?: string;
@@ -20,7 +22,7 @@ interface ParsedSshAddArgs {
 type SshAddOptionParser = (parsed: ParsedSshAddArgs, value: string | undefined) => string | undefined;
 
 const SSH_ADD_USAGE =
-	"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--scope project|user]";
+	"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--proxy-jump <spec>] [--password <password>] [--scope project|user]";
 
 const SSH_ADD_OPTION_PARSERS = new Map<string, SshAddOptionParser>([
 	[
@@ -66,6 +68,15 @@ const SSH_ADD_OPTION_PARSERS = new Map<string, SshAddOptionParser>([
 		},
 	],
 	[
+		"--proxy-jump",
+		(parsed, value) => {
+			const proxyJump = value?.trim();
+			if (!proxyJump) return "Missing value for --proxy-jump.";
+			parsed.proxyJump = proxyJump;
+			return undefined;
+		},
+	],
+	[
 		"--password",
 		(parsed, value) => {
 			if (!value) return "Missing value for --password.";
@@ -105,7 +116,7 @@ function parseSshAddArgs(rest: string): ParsedSshAddArgs {
 
 const SSH_HELP_TEXT = [
 	"SSH host management (ACP mode)",
-	"  /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--scope project|user]",
+	"  /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--proxy-jump <spec>] [--password <password>] [--scope project|user]",
 	"  /ssh list                                       List configured SSH hosts",
 	"  /ssh remove <name> [--scope project|user]       Remove an SSH host",
 	"  /ssh help                                        Show this help",
@@ -119,17 +130,38 @@ async function handleListCommand(runtime: SlashCommandRuntime): Promise<SlashCom
 			readSSHConfigFile(userPath),
 			readSSHConfigFile(projectPath),
 		]);
-		const entries: Array<{ name: string; host: string; user?: string; port?: number; scope: string }> = [];
+		const entries: Array<{
+			name: string;
+			host: string;
+			user?: string;
+			port?: number;
+			proxyJump?: string;
+			scope: string;
+		}> = [];
 		// Capability loader resolves project before user, so list project hosts
 		// first and let the user-scope loop skip duplicates. Otherwise a host
 		// shared between scopes shows up under "user" when the project entry
 		// is the one actually in effect.
 		for (const [name, config] of Object.entries(projectConfig.hosts ?? {})) {
-			entries.push({ name, host: config.host, user: config.username, port: config.port, scope: "project" });
+			entries.push({
+				name,
+				host: config.host,
+				user: config.username,
+				port: config.port,
+				proxyJump: config.proxyJump,
+				scope: "project",
+			});
 		}
 		for (const [name, config] of Object.entries(userConfig.hosts ?? {})) {
 			if (!entries.some(entry => entry.name === name)) {
-				entries.push({ name, host: config.host, user: config.username, port: config.port, scope: "user" });
+				entries.push({
+					name,
+					host: config.host,
+					user: config.username,
+					port: config.port,
+					proxyJump: config.proxyJump,
+					scope: "user",
+				});
 			}
 		}
 		if (entries.length === 0) {
@@ -138,7 +170,10 @@ async function handleListCommand(runtime: SlashCommandRuntime): Promise<SlashCom
 		}
 		await runtime.output(
 			entries
-				.map(entry => `${entry.name} | ${entry.host} | ${entry.user ?? "-"} | ${entry.port ?? 22} [${entry.scope}]`)
+				.map(
+					entry =>
+						`${entry.name} | ${entry.host} | ${entry.user ?? "-"} | ${entry.port ?? 22} | proxy-jump=${entry.proxyJump ?? "-"} [${entry.scope}]`,
+				)
 				.join("\n"),
 		);
 		return commandConsumed();
@@ -168,10 +203,18 @@ async function handleAddCommand(rest: string, runtime: SlashCommandRuntime): Pro
 	if (parsed.error) return usage(parsed.error, runtime);
 	if (!parsed.name) return usage("Host name required. Usage: /ssh add <name> --host <host> ...", runtime);
 	if (!parsed.host) return usage("--host is required. Usage: /ssh add <name> --host <host> ...", runtime);
+	let proxyJump: string | undefined;
+	try {
+		proxyJump = parsed.proxyJump === undefined ? undefined : normalizeProxyJump(parsed.proxyJump);
+		assertProxyJumpPasswordCompatible(proxyJump, parsed.password);
+	} catch (err) {
+		return usage(errorMessage(err), runtime);
+	}
 	const hostConfig: SSHHostConfig = { host: parsed.host };
 	if (parsed.username) hostConfig.username = parsed.username;
 	if (parsed.port) hostConfig.port = parsed.port;
 	if (parsed.keyPath) hostConfig.keyPath = parsed.keyPath;
+	if (proxyJump) hostConfig.proxyJump = proxyJump;
 	if (parsed.password) hostConfig.password = parsed.password;
 	const scope = parsed.scopeWasExplicit ? parsed.scope : parsed.password ? "user" : parsed.scope;
 	try {

@@ -149,6 +149,23 @@ describe("TranscriptContainer", () => {
 		expect(transcript.peekFinalizedBatch(80, 1)?.rows).toEqual(["active final", ""]);
 	});
 
+	it("does not replay snapshotted text when settlement restyles and extends it", () => {
+		const transcript = new TranscriptContainer();
+		const active = new Block(["\x1b[44mcommand\x1b[0m", "\x1b[44mbody\x1b[0m"], false);
+		transcript.addChild(active);
+
+		const first = transcript.peekFinalizedBatch(80, 0);
+		expect(first?.rows).toEqual(["\x1b[44mcommand\x1b[0m", "\x1b[44mbody\x1b[0m", ""]);
+		if (!first) throw new Error("expected active visual snapshot");
+		transcript.acknowledgeFinalizedBatch(first.id);
+
+		active.finalize(["\x1b[41mcommand\x1b[0m", "\x1b[41mbody\x1b[0m", "\x1b[41mtail\x1b[0m"]);
+		const second = transcript.peekFinalizedBatch(80, 0);
+		expect(second).toBeDefined();
+		const tape = [...first.rows, ...(second?.rows ?? [])].map(row => Bun.stripANSI(row)).filter(Boolean);
+		expect(tape).toEqual(["command", "body", "tail"]);
+	});
+
 	it("retires finalized content past a zero-row completed-run gate", () => {
 		const transcript = new TranscriptContainer();
 		transcript.addChild(new Block(["user request"], true));

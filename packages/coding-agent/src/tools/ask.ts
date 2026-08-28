@@ -1345,9 +1345,10 @@ export const askToolRenderer = {
 	},
 
 	renderResult(
-		result: { content: Array<{ type: string; text?: string }>; details?: AskToolDetails },
+		result: { content: Array<{ type: string; text?: string }>; details?: AskToolDetails; isError?: boolean },
 		_options: RenderResultOptions,
 		uiTheme: Theme,
+		args?: AskRenderArgs,
 	): Component {
 		const { details } = result;
 		const mdTheme = getMarkdownTheme();
@@ -1358,6 +1359,58 @@ export const askToolRenderer = {
 		if (!details) {
 			const txt = result.content[0];
 			const fallback = txt?.type === "text" && txt.text ? txt.text : "";
+			if (result.isError && args) {
+				const questions = normalizeRenderQuestions(args.questions);
+				if (questions && questions.length > 0) {
+					const header = renderStatusLine(
+						{ icon: "error", title: "Ask", meta: [`${questions.length} questions`] },
+						uiTheme,
+					);
+					return framedBlock(uiTheme, width => ({
+						header,
+						sections: [
+							...questions.map(question => ({
+								label: uiTheme.fg("dim", `[${question.id}]`),
+								lines: question.options?.length
+									? [
+											...md(question.question, width),
+											...renderQuestionOptionLines(uiTheme, mdTheme, question.options, question.multi),
+										]
+									: md(question.question, width),
+							})),
+							...(fallback ? [{ label: "Output", lines: [uiTheme.fg("error", fallback)] }] : []),
+						],
+						state: "error",
+						borderColor: "error",
+						width,
+					}));
+				}
+				const question = args.question;
+				if (typeof question === "string" && question) {
+					const meta: string[] = [];
+					if (args.multi) meta.push("multi");
+					const questionOptions = normalizeRenderOptions(args.options);
+					if (questionOptions?.length) meta.push(`options:${questionOptions.length}`);
+					const header = renderStatusLine({ icon: "error", title: "Ask", meta }, uiTheme);
+					return framedBlock(uiTheme, width => ({
+						header,
+						sections: [
+							{
+								lines: questionOptions?.length
+									? [
+											...md(question, width),
+											...renderQuestionOptionLines(uiTheme, mdTheme, questionOptions, args.multi),
+										]
+									: md(question, width),
+							},
+							...(fallback ? [{ label: "Output", lines: [uiTheme.fg("error", fallback)] }] : []),
+						],
+						state: "error",
+						borderColor: "error",
+						width,
+					}));
+				}
+			}
 			const header = renderStatusLine({ icon: "warning", title: "Ask" }, uiTheme);
 			const body = fallback ? `\n${uiTheme.fg("dim", fallback)}` : "";
 			return new Text(`${header}${body}`, 0, 0);

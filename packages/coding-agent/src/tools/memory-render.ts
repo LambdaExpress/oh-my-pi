@@ -65,7 +65,13 @@ function queryHeader(
 	return renderStatusLine({ icon, iconOverride, title, description, meta }, theme);
 }
 
-function retainComponent(contents: string[], header: string, getExpanded: () => boolean, theme: Theme): Component {
+function retainComponent(
+	contents: string[],
+	header: string,
+	getExpanded: () => boolean,
+	theme: Theme,
+	trailingLine?: string,
+): Component {
 	return createCachedComponent(getExpanded, (width, expanded) => {
 		const lines = [header];
 		const limit = expanded ? contents.length : PREVIEW_LIMITS.COLLAPSED_ITEMS;
@@ -80,6 +86,7 @@ function retainComponent(contents: string[], header: string, getExpanded: () => 
 		if (remaining > 0) {
 			lines.push(`  ${theme.fg("dim", `… ${remaining} more`)} ${formatExpandHint(theme, expanded, true)}`);
 		}
+		if (trailingLine) lines.push(trailingLine);
 		return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
 	});
 }
@@ -99,7 +106,9 @@ export const retainToolRenderer = {
 		args?: RetainRenderArgs,
 	): Component {
 		if (result.isError) {
-			return new Text(formatErrorMessage(resultText(result) || "Retain failed", theme), 0, 0);
+			const header = renderStatusLine({ icon: "error", title: "Retain" }, theme);
+			const error = formatErrorMessage(resultText(result) || "Retain failed", theme);
+			return retainComponent(retainContents(args), header, () => options.expanded, theme, error);
 		}
 		const contents = retainContents(args);
 		// `summary` is the tool's own "N memories stored/queued." line; drop the
@@ -130,7 +139,9 @@ export const recallToolRenderer = {
 		args?: QueryRenderArgs,
 	): Component {
 		if (result.isError) {
-			return new Text(formatErrorMessage(resultText(result) || "Recall failed", theme), 0, 0);
+			const header = queryHeader("Recall", args?.query, "error", theme);
+			const error = formatErrorMessage(resultText(result) || "Recall failed", theme);
+			return new Text(`${header}\n${error}`, 0, 0);
 		}
 		const text = resultText(result);
 		const match = text.match(/^Found (\d+) relevant/);
@@ -177,7 +188,9 @@ export const reflectToolRenderer = {
 		args?: QueryRenderArgs,
 	): Component {
 		if (result.isError) {
-			return new Text(formatErrorMessage(resultText(result) || "Reflect failed", theme), 0, 0);
+			const header = queryHeader("Reflect", args?.query, "error", theme);
+			const error = formatErrorMessage(resultText(result) || "Reflect failed", theme);
+			return new Text(`${header}\n${error}`, 0, 0);
 		}
 		const header = queryHeader(
 			"Reflect",

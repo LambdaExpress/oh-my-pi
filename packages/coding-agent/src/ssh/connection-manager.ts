@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { $which, getRemoteHostDir, getSshControlDir, isEnoent, logger, postmortem, ptree } from "@oh-my-pi/pi-utils";
 import { prepareSshPasswordAuthEnv } from "./password-auth";
-import { buildSshTarget } from "./utils";
+import { assertProxyJumpPasswordCompatible, buildSshTarget, normalizeProxyJump } from "./utils";
 
 export interface SSHConnectionTarget {
 	name: string;
@@ -10,6 +10,7 @@ export interface SSHConnectionTarget {
 	host: string;
 	username?: string;
 	port?: number;
+	proxyJump?: string;
 	keyPath?: string;
 	password?: string;
 	compat?: boolean;
@@ -168,6 +169,7 @@ export function getSshConnectionKey(host: SSHConnectionTarget): string {
 		host.port ?? 22,
 		host.keyPath ?? "",
 		host.compat ?? false,
+		...(host.proxyJump ? ["proxy-jump", host.proxyJump] : []),
 	]);
 }
 
@@ -178,6 +180,7 @@ export function getSshHostInfoKey(host: SSHConnectionTarget): string {
 		host.username ?? "",
 		host.port ?? 22,
 		host.compat ?? false,
+		...(host.proxyJump ? ["proxy-jump", host.proxyJump] : []),
 	]);
 }
 
@@ -299,6 +302,9 @@ async function validateKeyPermissions(keyPath?: string, platform: SshPlatform = 
 }
 
 function buildCommonArgs(host: SSHConnectionTarget, options?: SSHArgsOptions): string[] {
+	const proxyJump = host.proxyJump === undefined ? undefined : normalizeProxyJump(host.proxyJump);
+	assertProxyJumpPasswordCompatible(proxyJump, host.password);
+
 	const args = options?.allowStdin ? [] : ["-n"];
 
 	if (supportsSshControlMaster(options?.platform)) {
@@ -312,6 +318,9 @@ function buildCommonArgs(host: SSHConnectionTarget, options?: SSHArgsOptions): s
 	}
 	args.push("-o", "StrictHostKeyChecking=accept-new");
 
+	if (proxyJump !== undefined) {
+		args.push("-J", proxyJump);
+	}
 	if (host.port) {
 		args.push("-p", String(host.port));
 	}

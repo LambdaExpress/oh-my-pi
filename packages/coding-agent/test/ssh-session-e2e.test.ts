@@ -111,7 +111,8 @@ describe("session SSH fake-binary smoke", () => {
 							(previous.host !== next.host ||
 								previous.username !== next.username ||
 								previous.port !== next.port ||
-								previous.compat !== next.compat);
+								previous.compat !== next.compat ||
+								previous.proxyJump !== next.proxyJump);
 						await invalidateSshTarget(previous, { invalidateHostInfo: remoteChanged });
 						if (remoteChanged && next) await invalidateSshTarget(next, { invalidateHostInfo: true });
 					}

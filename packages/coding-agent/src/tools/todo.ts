@@ -1120,6 +1120,20 @@ export function setActiveTodoDescriptionsProvider(provider: () => readonly strin
 	activeTodoDescriptionsProvider = provider;
 }
 
+function todoCallMeta(args: TodoRenderArgs): string[] {
+	const opsList = normalizeTodoArg(args);
+	if (opsList.length === 0) return ["update"];
+	return opsList.map(entry => {
+		const parts = [forDisplay(entry.op ?? "update")];
+		if (entry.task) parts.push(forDisplay(entry.task));
+		if (entry.phase) parts.push(forDisplay(entry.phase));
+		if (Array.isArray(entry.items) && entry.items.length) {
+			parts.push(`${entry.items.length} item${entry.items.length === 1 ? "" : "s"}`);
+		}
+		return parts.join(" ");
+	});
+}
+
 export const todoToolRenderer = {
 	renderCall(args: TodoRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		// `args` is the raw partially-parsed JSON from the streaming tool-call
@@ -1128,21 +1142,9 @@ export const todoToolRenderer = {
 		// `{ ops: "[" }` shape before fields stream. `normalizeTodoArg` guards
 		// both the new single-op and legacy batch shapes so a malformed delta
 		// never breaks the TUI render loop (#2005).
-		const opsList = normalizeTodoArg(args);
 		// Model-authored, partially-streamed strings going straight into a header:
 		// `renderStatusLine` only flattens CR/LF and leaves the rest to the caller.
-		const ops =
-			opsList.length === 0
-				? ["update"]
-				: opsList.map(e => {
-						const parts = [forDisplay(e.op ?? "update")];
-						if (e.task) parts.push(forDisplay(e.task));
-						if (e.phase) parts.push(forDisplay(e.phase));
-						if (Array.isArray(e.items) && e.items.length) {
-							parts.push(`${e.items.length} item${e.items.length === 1 ? "" : "s"}`);
-						}
-						return parts.join(" ");
-					});
+		const ops = todoCallMeta(args);
 		// No body worth boxing while the call streams — a lone status line reads
 		// cleaner than an empty frame. The container renders it without chrome.
 		const header = renderStatusLine(
@@ -1160,7 +1162,7 @@ export const todoToolRenderer = {
 	): Component {
 		if (result.isError) {
 			const errorText = result.content?.find(content => content.type === "text")?.text ?? "Todo operation failed";
-			const header = renderStatusLine({ icon: "error", title: "Todo" }, uiTheme);
+			const header = renderStatusLine({ icon: "error", title: "Todo", meta: todoCallMeta(args ?? {}) }, uiTheme);
 			return framedBlock(uiTheme, width => ({
 				header,
 				sections: [{ lines: formatErrorDetail(errorText, uiTheme).split("\n") }],

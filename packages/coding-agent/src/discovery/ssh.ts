@@ -10,6 +10,7 @@ import { registerProvider } from "../capability";
 import { readFile } from "../capability/fs";
 import { type SSHHost, sshCapability } from "../capability/ssh";
 import type { LoadContext, LoadResult, SourceMeta } from "../capability/types";
+import { assertProxyJumpPasswordCompatible, normalizeProxyJump } from "../ssh/utils";
 import { expandTilde } from "../tools/path-utils";
 import { createSourceMeta, expandEnvVarsDeep } from "./helpers";
 
@@ -27,6 +28,7 @@ interface SSHConfigFile {
 			key?: string;
 			keyPath?: string;
 			password?: string;
+			proxyJump?: unknown;
 			description?: string;
 		}
 	>;
@@ -78,6 +80,26 @@ function normalizeHost(
 		warnings.push(`Invalid password for SSH entry ${name}: expected non-empty string`);
 	}
 
+	let proxyJump: string | undefined;
+	if (raw.proxyJump !== undefined) {
+		if (typeof raw.proxyJump !== "string") {
+			warnings.push(`Invalid proxyJump for SSH entry ${name}: expected a string`);
+			return null;
+		}
+		try {
+			proxyJump = normalizeProxyJump(raw.proxyJump);
+		} catch {
+			warnings.push(`Invalid proxyJump for SSH entry ${name}: expected a valid OpenSSH jump specification`);
+			return null;
+		}
+	}
+	try {
+		assertProxyJumpPasswordCompatible(proxyJump, password);
+	} catch {
+		warnings.push(`Invalid SSH entry ${name}: proxyJump cannot be combined with target password authentication`);
+		return null;
+	}
+
 	return {
 		name,
 		host: raw.host,
@@ -85,6 +107,7 @@ function normalizeHost(
 		port,
 		keyPath,
 		password,
+		proxyJump,
 		description: raw.description,
 		compat,
 		_source: source,

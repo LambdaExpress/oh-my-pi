@@ -9,9 +9,12 @@ description: "Use when changing completed-run collapse, queued follow-up, compac
 2. Before rebuilding a projection at that boundary, await `AgentSession.waitForMessagePersistence(finalAssistant)` because display listeners see `message_end` before JSONL persistence.
 3. Split only when the final assistant belongs to the current lifecycle and satisfies `isCollapsibleRunFinalAssistant`. Preserve aborted, errored, tool-use, force-flush, and cross-lifecycle continuation spans.
 4. During transcript rebuild, a recovered collapse summary and an active `CompletedRunGate` may share one user-message anchor. Render both in one transcript block: summary first, gate second. Report the summary rows through `getTranscriptBlockSettledRows()` while the gate remains unfinalized.
-5. Verify both contracts:
+5. For native-history visual snapshots, reconcile same-width settlement against the ANSI-stripped visible-text common prefix and resume at the first divergence. Never replay the whole block merely because streamed arguments grew, an early separator became stale, or pending/success/error ANSI styling changed. Width changes still require full replay because row boundaries changed.
+6. Verify both contracts:
    - same-lifecycle queued follow-up immediately records/rebuilds the preceding run after persistence;
-   - compaction rebuild shows `※ collapsed` while `TranscriptContainer.getNativeScrollbackLiveRegionStart()` remains immediately after the stable summary.
-6. Run the focused suites:
+   - compaction rebuild shows `※ collapsed` while `TranscriptContainer.getNativeScrollbackLiveRegionStart()` remains immediately after the stable summary;
+   - overflowing active tool rows remain unique after settlement styling changes.
+7. Run the focused suites:
    - `bun --cwd=packages/coding-agent test test/modes/controllers/event-controller-completed-run-collapse.test.ts`
    - `bun --cwd=packages/coding-agent test test/interactive-mode-completed-run-collapse.test.ts test/compaction-lifecycle.test.ts`
+   - `bun --cwd=packages/coding-agent test test/modes/components/transcript-container.test.ts test/interactive-terminal-e2e.test.ts`

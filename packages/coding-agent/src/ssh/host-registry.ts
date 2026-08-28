@@ -16,6 +16,7 @@ function connectionId(sourcePath: string, host: Omit<SSHHost, "_source" | "conne
 		host.port ?? 22,
 		host.keyPath ?? "",
 		host.compat ?? false,
+		...(host.proxyJump ? ["proxy-jump", host.proxyJump] : []),
 	]);
 	return new Bun.CryptoHasher("sha256").update(identity).digest("hex").slice(0, 24);
 }

@@ -46,9 +46,10 @@ interface PartialWatermark {
 /**
  * Rows already written exactly as they appeared while a block was active.
  * Unlike a semantic partial cursor, a visual snapshot may later diverge. Active
- * blocks keep using its row count so growing output never disappears; once the
- * block settles, a dirty snapshot replays the complete final block below the
- * stale visual copy (duplication is preferable to content loss).
+ * blocks keep using its row count so growing output never disappears. Once the
+ * block settles, rendering resumes at the first visible-text divergence. This
+ * preserves changed suffixes without duplicating the unchanged prefix already
+ * in terminal history; width changes still replay the complete final block.
  */
 interface SnapshotWatermark {
 	width: number;
@@ -345,7 +346,9 @@ export class TranscriptContainer extends Container {
 				prefix = Array.from(previous.prefix);
 				const comparable = Math.min(previous.rowCount, rendered.rendered.length);
 				for (let row = 0; row < comparable; row++) {
-					if (prefix[row] !== rendered.rendered[row]) {
+					const previousRow = prefix[row]!;
+					const currentRow = rendered.rendered[row]!;
+					if (previousRow !== currentRow && Bun.stripANSI(previousRow) !== Bun.stripANSI(currentRow)) {
 						dirty = true;
 						break;
 					}
@@ -456,17 +459,20 @@ export class TranscriptContainer extends Container {
 			return 0;
 		}
 		const comparable = Math.min(snapshot.rowCount, rendered.length);
+		let settledStart = comparable;
 		for (let row = 0; row < comparable; row++) {
-			if (snapshot.prefix[row] !== rendered[row]) {
+			const previousRow = snapshot.prefix[row]!;
+			const currentRow = rendered[row]!;
+			if (previousRow !== currentRow && Bun.stripANSI(previousRow) !== Bun.stripANSI(currentRow)) {
 				snapshot.dirty = true;
+				settledStart = row;
 				break;
 			}
 		}
 		if (snapshot.rowCount > rendered.length || (snapshot.separator && rendered.length > snapshot.rowCount)) {
 			snapshot.dirty = true;
 		}
-		if (entry.state === "settled" && snapshot.dirty) return 0;
-		return comparable;
+		return entry.state === "settled" ? settledStart : comparable;
 	}
 
 	#rowCount(rendered: readonly RenderedEntry[], start = 0): number {

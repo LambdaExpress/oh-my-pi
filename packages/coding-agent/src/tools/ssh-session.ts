@@ -8,6 +8,7 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import sshSessionDescription from "../prompts/tools/ssh-session.md" with { type: "text" };
 import { validateHostName } from "../ssh/config-writer";
+import { assertProxyJumpPasswordCompatible, normalizeProxyJump } from "../ssh/utils";
 import { Ellipsis, renderStatusLine, truncateToWidth } from "../tui";
 import type { ToolSession } from ".";
 import { replaceTabs } from "./render-utils";
@@ -23,11 +24,21 @@ const sshSessionSchema = type({
 	"description?": type("string | null").describe("alias description; null clears it during update"),
 	"port?": type("number | null").describe("SSH port from 1 through 65535; null clears it during update"),
 	"compat?": type("boolean | null").describe("compatibility mode; null clears it during update"),
+	"proxy_jump?": type("string | null").describe("OpenSSH jump specification; null clears it during update"),
 });
 
 export type SshSessionParams = typeof sshSessionSchema.infer;
 
-const MUTABLE_FIELDS = ["host", "username", "key_path", "password", "description", "port", "compat"] as const;
+const MUTABLE_FIELDS = [
+	"host",
+	"username",
+	"key_path",
+	"password",
+	"description",
+	"port",
+	"compat",
+	"proxy_jump",
+] as const;
 type MutableField = (typeof MUTABLE_FIELDS)[number];
 
 export interface SshSessionHostView {
@@ -38,6 +49,7 @@ export interface SshSessionHostView {
 	keyPath?: string;
 	description?: string;
 	compat?: boolean;
+	proxyJump?: string;
 	hasPassword: boolean;
 }
 
@@ -110,6 +122,12 @@ function normalizeConfig(params: SshSessionParams, base?: SSHHostConfig): SSHHos
 		if (compat === null) delete config.compat;
 		else if (compat !== undefined) config.compat = compat;
 	}
+	if (hasField(params, "proxy_jump")) {
+		const proxyJump = params.proxy_jump;
+		if (proxyJump === null) delete config.proxyJump;
+		else if (proxyJump !== undefined) config.proxyJump = normalizeProxyJump(proxyJump);
+	}
+	assertProxyJumpPasswordCompatible(config.proxyJump, config.password);
 	return config;
 }
 
@@ -122,13 +140,15 @@ function hostView(name: string, config: SSHHostConfig): SshSessionHostView {
 		...(config.keyPath === undefined ? {} : { keyPath: config.keyPath }),
 		...(config.description === undefined ? {} : { description: config.description }),
 		...(config.compat === undefined ? {} : { compat: config.compat }),
+		...(config.proxyJump === undefined ? {} : { proxyJump: config.proxyJump }),
 		hasPassword: config.password !== undefined,
 	};
 }
 
 function formatHost(view: SshSessionHostView): string {
 	const target = `${view.username ? `${view.username}@` : ""}${view.host}${view.port ? `:${view.port}` : ""}`;
-	return `${view.name}: ${target}${view.hasPassword ? " (password configured)" : ""}`;
+	const via = view.proxyJump ? ` via ${view.proxyJump}` : "";
+	return `${view.name}: ${target}${via}${view.hasPassword ? " (password configured)" : ""}`;
 }
 
 function formatSafeArgumentLines(params: Partial<SshSessionParams>): string[] {
@@ -141,6 +161,7 @@ function formatSafeArgumentLines(params: Partial<SshSessionParams>): string[] {
 		["description", params.description],
 		["port", params.port],
 		["compat", params.compat],
+		["proxy_jump", params.proxy_jump],
 	] as const) {
 		if (value !== undefined) lines.push(`${field}: ${value === null ? "(clear)" : String(value)}`);
 	}
@@ -261,19 +282,27 @@ export const sshSessionToolRenderer = {
 		result: { content: Array<{ type: string; text?: string }>; details?: SshSessionToolDetails; isError?: boolean },
 		_options: RenderResultOptions,
 		uiTheme: Theme,
+		args?: Partial<SshSessionParams>,
 	): Component {
 		const details = result.details;
-		const op = details?.op ?? "operation";
+		const op = details?.op ?? args?.op ?? "operation";
+		const name = typeof args?.name === "string" ? replaceTabs(args.name) : undefined;
 		const description = result.isError
-			? "failed"
+			? name
+				? `${op} ${name}`
+				: op
 			: details?.hosts
 				? `${details.hosts.length} host${details.hosts.length === 1 ? "" : "s"}`
 				: details?.host
 					? formatHost(details.host)
 					: op;
-		const meta = details?.changedFields?.map(field =>
-			uiTheme.fg("muted", field === "password" ? `hasPassword: ${details.host?.hasPassword === true}` : field),
-		);
+		const meta = result.isError
+			? formatSafeArgumentLines(args ?? {})
+					.slice(name ? 2 : 1)
+					.map(line => uiTheme.fg("muted", truncateToWidth(replaceTabs(line), 72, Ellipsis.Omit)))
+			: details?.changedFields?.map(field =>
+					uiTheme.fg("muted", field === "password" ? `hasPassword: ${details.host?.hasPassword === true}` : field),
+				);
 		const text = renderStatusLine(
 			{
 				icon: result.isError ? "error" : "success",
@@ -283,6 +312,7 @@ export const sshSessionToolRenderer = {
 			},
 			uiTheme,
 		);
-		return new Text(text, 0, 0);
+		const output = result.content.find(content => content.type === "text")?.text;
+		return new Text(result.isError && output ? `${text}\n${uiTheme.fg("error", replaceTabs(output))}` : text, 0, 0);
 	},
 };

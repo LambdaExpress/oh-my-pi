@@ -61,7 +61,7 @@ export class SSHCommandController {
 			t("Manage SSH host configurations for remote command execution."),
 			"",
 			theme.fg("accent", t("Commands:")),
-			"  /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
+			"  /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--proxy-jump <spec>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
 			t("  /ssh list             List all configured SSH hosts"),
 			t("  /ssh remove <name> [--scope project|user]    Remove an SSH host (default: project)"),
 			t("  /ssh help             Show this help message"),
@@ -80,7 +80,7 @@ export class SSHCommandController {
 		if (!rest) {
 			this.ctx.showError(
 				t(
-					"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
+					"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--proxy-jump <spec>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
 				),
 			);
 			return;
@@ -90,7 +90,7 @@ export class SSHCommandController {
 		if (tokens.length === 0) {
 			this.ctx.showError(
 				t(
-					"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
+					"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--proxy-jump <spec>] [--password <password>] [--desc <description>] [--compat] [--scope project|user]",
 				),
 			);
 			return;
@@ -103,6 +103,7 @@ export class SSHCommandController {
 		let username: string | undefined;
 		let port: number | undefined;
 		let keyPath: string | undefined;
+		let proxyJump: string | undefined;
 		let password: string | undefined;
 		let description: string | undefined;
 		let compat = false;
@@ -157,6 +158,16 @@ export class SSHCommandController {
 					return;
 				}
 				keyPath = value;
+				i += 2;
+				continue;
+			}
+			if (argToken === "--proxy-jump") {
+				const value = tokens[i + 1]?.trim();
+				if (!value) {
+					this.ctx.showError(t("Missing value for --proxy-jump."));
+					return;
+				}
+				proxyJump = value;
 				i += 2;
 				continue;
 			}
@@ -222,6 +233,7 @@ export class SSHCommandController {
 			if (username) hostConfig.username = username;
 			if (port) hostConfig.port = port;
 			if (keyPath) hostConfig.keyPath = keyPath;
+			if (proxyJump) hostConfig.proxyJump = proxyJump;
 			if (password) hostConfig.password = password;
 			if (description) hostConfig.description = description;
 			if (compat) hostConfig.compat = true;
@@ -239,6 +251,7 @@ export class SSHCommandController {
 			if (username) lines.push(t("  User: {value}", { value: username }));
 			if (port) lines.push(t("  Port: {value}", { value: port }));
 			if (keyPath) lines.push(t("  Key:  {value}", { value: keyPath }));
+			if (proxyJump) lines.push(t("  Proxy jump: {value}", { value: proxyJump }));
 			if (password) lines.push(t("  Password: ********"));
 			if (description) lines.push(t("  Desc: {value}", { value: description }));
 			if (compat) lines.push(t("  Compat: true"));
@@ -340,6 +353,7 @@ export class SSHCommandController {
 							host: host.host,
 							username: host.username,
 							port: host.port,
+							proxyJump: host.proxyJump,
 							password: host.password,
 						});
 						lines.push(`  ${theme.fg("accent", host.name)} ${details}`);
@@ -359,11 +373,18 @@ export class SSHCommandController {
 	/**
 	 * Format host details (host, user, port) for display
 	 */
-	#formatHostDetails(config: { host?: string; username?: string; port?: number; password?: string }): string {
+	#formatHostDetails(config: {
+		host?: string;
+		username?: string;
+		port?: number;
+		proxyJump?: string;
+		password?: string;
+	}): string {
 		const parts: string[] = [];
 		if (config.host) parts.push(config.host);
 		if (config.username) parts.push(`user=${config.username}`);
 		if (config.port && config.port !== 22) parts.push(`port=${config.port}`);
+		if (config.proxyJump) parts.push(`proxy-jump=${config.proxyJump}`);
 		if (config.password) parts.push("password=********");
 		return theme.fg("dim", parts.length > 0 ? `[${parts.join(", ")}]` : "");
 	}

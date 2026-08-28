@@ -612,7 +612,15 @@ export const astEditToolRenderer = {
 
 		if (result.isError) {
 			const errorText = result.content?.find(c => c.type === "text")?.text || "Unknown error";
-			const header = renderStatusLine({ icon: "error", title: "AST Edit" }, uiTheme);
+			const rewriteCount = args?.ops?.length ?? 0;
+			const description =
+				rewriteCount === 1
+					? patternPreview(args?.ops?.[0]?.pat)
+					: rewriteCount
+						? `${rewriteCount} rewrites`
+						: undefined;
+			const meta = args?.paths?.length ? [`in ${args.paths.join(", ")}`] : undefined;
+			const header = renderStatusLine({ icon: "error", title: "AST Edit", description, meta }, uiTheme);
 			return framedBlock(uiTheme, width => ({
 				header,
 				sections: [{ lines: formatErrorDetail(errorText, uiTheme).split("\n") }],
