@@ -3,6 +3,7 @@ import * as path from "node:path";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ExtensionContext, ExtensionFactory } from "../extensibility/extensions";
+import { t } from "../i18n";
 import * as git from "../utils/git";
 import commandResumeTemplate from "./command-resume.md" with { type: "text" };
 import { createDashboardController } from "./dashboard";
@@ -124,17 +125,17 @@ export const createAutoresearchExtension: ExtensionFactory = api => {
 	api.registerTool(createUpdateNotesTool({ dashboard, getRuntime, pi: api }));
 
 	api.registerCommand("autoresearch", {
-		description: "Toggle builtin autoresearch mode, or pass off / clear, or a goal message.",
+		description: t("Toggle builtin autoresearch mode, or pass off / clear, or a goal message."),
 		getArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
 			if (argumentPrefix.includes(" ")) return null;
 			const normalized = argumentPrefix.trim().toLowerCase();
 			if (normalized.length === 0) return null;
 			const completions: AutocompleteItem[] = [
-				{ label: "off", value: "off", description: "Leave autoresearch mode" },
+				{ label: "off", value: "off", description: t("Leave autoresearch mode") },
 				{
 					label: "clear",
 					value: "clear",
-					description: "Reset worktree to baseline and close the active session",
+					description: t("Reset worktree to baseline and close the active session"),
 				},
 			];
 			const filtered = completions.filter(item => item.label.startsWith(normalized));
@@ -149,7 +150,7 @@ export const createAutoresearchExtension: ExtensionFactory = api => {
 				dashboard.updateWidget(ctx, runtime);
 				const experimentTools = new Set(EXPERIMENT_TOOL_NAMES);
 				await api.setActiveTools(api.getActiveTools().filter(name => !experimentTools.has(name)));
-				ctx.ui.notify("Autoresearch mode disabled", "info");
+				ctx.ui.notify(t("Autoresearch mode disabled"), "info");
 				return;
 			}
 
@@ -158,7 +159,7 @@ export const createAutoresearchExtension: ExtensionFactory = api => {
 				dashboard.updateWidget(ctx, runtime);
 				const experimentTools = new Set(EXPERIMENT_TOOL_NAMES);
 				await api.setActiveTools(api.getActiveTools().filter(name => !experimentTools.has(name)));
-				ctx.ui.notify("Autoresearch mode disabled", "info");
+				ctx.ui.notify(t("Autoresearch mode disabled"), "info");
 				return;
 			}
 
@@ -220,17 +221,17 @@ export const createAutoresearchExtension: ExtensionFactory = api => {
 			if (goalArg !== null) {
 				api.sendUserMessage(goalArg);
 			} else {
-				ctx.ui.notify("Autoresearch enabled—describe what to optimize in your next message.", "info");
+				ctx.ui.notify(t("Autoresearch enabled—describe what to optimize in your next message."), "info");
 			}
 		},
 	});
 
 	api.registerShortcut("ctrl+x", {
-		description: "Toggle autoresearch dashboard",
+		description: t("Toggle autoresearch dashboard"),
 		handler(ctx): void {
 			const runtime = getRuntime(ctx);
 			if (runtime.state.results.length === 0 && !runtime.runningExperiment) {
-				ctx.ui.notify("No autoresearch results yet", "info");
+				ctx.ui.notify(t("No autoresearch results yet"), "info");
 				return;
 			}
 			runtime.dashboardExpanded = !runtime.dashboardExpanded;
@@ -239,7 +240,7 @@ export const createAutoresearchExtension: ExtensionFactory = api => {
 	});
 
 	api.registerShortcut("ctrl+shift+x", {
-		description: "Show autoresearch dashboard overlay",
+		description: t("Show autoresearch dashboard overlay"),
 		handler(ctx): Promise<void> {
 			return dashboard.showOverlay(ctx, getRuntime(ctx));
 		},

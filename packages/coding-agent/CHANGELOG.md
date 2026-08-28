@@ -46,6 +46,7 @@
 
 ### Changed
 
+- Localized the autoresearch dashboard, slash-command descriptions, and notifications for zh-CN.
 - GitHub Actions `run_watch` now shows the complete job set, per-job step progress and current step, plus recent available job-log lines while polling.
 - Localized the security subsystem end to end: error messages, `security://` resource output, and `/security` slash-command descriptions now route through the i18n `t()` framework with zh-CN translations. Security scan plans also accept an optional OAuth account, so native scans can run in key mode without a stored ChatGPT/Codex credential.
 - Provider-native (remote) compaction failures no longer block the session: when every compaction candidate fails remote compaction (V2 streaming and V1 fallback), auto-compaction and manual `/compact` now warn with a notice and produce a local summary instead of aborting.
