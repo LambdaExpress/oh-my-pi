@@ -14,15 +14,7 @@ import type { Theme } from "../modes/theme/theme";
 import globDescription from "../prompts/tools/glob.md" with { type: "text" };
 import { type TruncationResult, truncateHead } from "../session/streaming-output";
 import { isScoutSpawnable } from "../task/spawn-policy";
-import {
-	Ellipsis,
-	fileHyperlink,
-	framedBlock,
-	renderFileList,
-	renderStatusLine,
-	renderTreeList,
-	truncateToWidth,
-} from "../tui";
+import { Ellipsis, fileHyperlink, renderFileList, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
 import type { ToolSession } from ".";
 import { applyListLimit } from "./list-limit";
 import { formatFullOutputReference, type OutputMeta } from "./output-meta";
@@ -42,7 +34,7 @@ import {
 	createCachedComponent,
 	formatCount,
 	formatEmptyMessage,
-	formatErrorDetail,
+	formatErrorMessage,
 	PREVIEW_LIMITS,
 } from "./render-utils";
 import { ToolAbortError, ToolError, throwIfAborted } from "./tool-errors";
@@ -639,24 +631,7 @@ export const globToolRenderer = {
 
 		if (result.isError || details?.error) {
 			const errorText = details?.error || result.content?.find(c => c.type === "text")?.text || "Unknown error";
-			const meta = args?.limit !== undefined ? [`limit:${args.limit}`] : undefined;
-			const header = renderStatusLine(
-				{
-					icon: "error",
-					title: "Glob",
-					titleColor: "toolTitle",
-					description: formatGlobRenderPaths(args) || "*",
-					meta,
-				},
-				uiTheme,
-			);
-			return framedBlock(uiTheme, width => ({
-				header,
-				sections: [{ lines: formatErrorDetail(errorText, uiTheme).split("\n") }],
-				state: "error",
-				borderColor: "error",
-				width,
-			}));
+			return new Text(formatErrorMessage(errorText, uiTheme), 1, 0);
 		}
 
 		const hasDetailedData = details?.fileCount !== undefined;

@@ -70,6 +70,7 @@
 
 ### Fixed
 
+- Restored single-line error rendering for Grep, Glob, and AST Grep instead of wrapping search failures in red framed cards.
 - Kept running GitHub Actions job and step timers advancing locally between `run_watch` API polls.
 - Localized TTSR rule-injection notification titles and built-in rule summaries without changing the original rule text injected into the model context.
 - Fixed aborted merged tool calls dropping their original operation or arguments, including `xd://` devices falling back to a generic `Write` error; the original call now remains visible with the cancellation appended to its output.

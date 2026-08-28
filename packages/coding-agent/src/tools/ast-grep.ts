@@ -12,7 +12,7 @@ import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import astGrepDescription from "../prompts/tools/ast-grep.md" with { type: "text" };
 import { isScoutSpawnable } from "../task/spawn-policy";
-import { Ellipsis, fileHyperlink, framedBlock, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
+import { Ellipsis, fileHyperlink, renderStatusLine, renderTreeList, truncateToWidth } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import type { ToolSession } from ".";
 import { materializeReadUrlToFile, parseReadUrlTarget } from "./fetch";
@@ -28,7 +28,7 @@ import {
 	formatCodeFrameLine,
 	formatCount,
 	formatEmptyMessage,
-	formatErrorDetail,
+	formatErrorMessage,
 	formatParseErrors,
 	formatParseErrorsCountLabel,
 	PREVIEW_LIMITS,
@@ -429,18 +429,7 @@ export const astGrepToolRenderer = {
 
 		if (result.isError) {
 			const errorText = result.content?.find(c => c.type === "text")?.text || "Unknown error";
-			const meta: string[] = [];
-			const scopePaths = toPathList(args?.path ?? args?.paths);
-			if (scopePaths.length) meta.push(`in ${scopePaths.join(", ")}`);
-			if (args?.skip !== undefined && args.skip > 0) meta.push(`skip:${args.skip}`);
-			const header = renderStatusLine({ icon: "error", title: "AST Grep", description: args?.pat, meta }, uiTheme);
-			return framedBlock(uiTheme, width => ({
-				header,
-				sections: [{ lines: formatErrorDetail(errorText, uiTheme).split("\n") }],
-				state: "error",
-				borderColor: "error",
-				width,
-			}));
+			return new Text(formatErrorMessage(errorText, uiTheme), 0, 0);
 		}
 
 		const matchCount = details?.matchCount ?? 0;

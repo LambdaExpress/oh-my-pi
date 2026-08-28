@@ -4,6 +4,26 @@ import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { globToolRenderer } from "../../src/tools/glob";
 
 describe("globToolRenderer", () => {
+	it("renders failures as one red error line without a frame", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const errorText = "Glob timed out after 5s";
+
+		const renderedLines = globToolRenderer
+			.renderResult(
+				{ content: [{ type: "text", text: errorText }], isError: true } as never,
+				{ expanded: false, isPartial: false },
+				uiTheme,
+				{ paths: "src/**", limit: 100 },
+			)
+			.render(240);
+
+		expect(renderedLines).toHaveLength(1);
+		expect(renderedLines[0]).toContain(uiTheme.fg("error", `Error: ${errorText}`));
+		expect(sanitizeText(renderedLines[0]!)).not.toContain("Glob:");
+	});
+
 	it("indents inline glob output and avoids accent-colored success headers", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();
