@@ -18,6 +18,7 @@ function createSpec<TApi extends Api>(overrides: {
 	priority?: number;
 	applyPatchToolType?: "freeform" | "function";
 	cost?: ModelSpec<TApi>["cost"];
+	compat?: ModelSpec<TApi>["compat"];
 	thinking?: ModelSpec<TApi>["thinking"];
 }): ModelSpec<TApi> {
 	return {
@@ -27,6 +28,7 @@ function createSpec<TApi extends Api>(overrides: {
 		provider: overrides.provider,
 		baseUrl: "https://example.com",
 		reasoning: overrides.reasoning ?? true,
+		compat: overrides.compat,
 		thinking: overrides.thinking,
 		input: ["text"],
 		cost: overrides.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -114,6 +116,34 @@ describe("generated model policies", () => {
 			defaultLevel: Effort.Max,
 			requiresEffort: true,
 		});
+	});
+
+	it("preserves generic chat-template provider-authored effort mappings", () => {
+		const thinking = {
+			mode: "effort" as const,
+			efforts: [Effort.Minimal, Effort.Low, Effort.Medium, Effort.High, Effort.XHigh, Effort.Max],
+			effortMap: {
+				[Effort.Minimal]: "low",
+				[Effort.Low]: "low",
+				[Effort.Medium]: "high",
+				[Effort.High]: "high",
+				[Effort.XHigh]: "max",
+				[Effort.Max]: "max",
+			},
+		};
+		const models: ModelSpec<Api>[] = [
+			createSpec({
+				id: "deepseek-flash-v4",
+				api: "openai-completions",
+				provider: "yolo-auto",
+				compat: { thinkingFormat: "chat-template", supportsReasoningEffort: true },
+				thinking,
+			}),
+		];
+
+		applyGeneratedModelPolicies(models);
+
+		expect(models[0]?.thinking).toEqual(thinking);
 	});
 
 	it("applies GPT-5.6 off and long-context pricing through request-model aliases", () => {
@@ -310,6 +340,39 @@ describe("generated model policies", () => {
 			// Thinking can no longer be disabled.
 			expect(model.thinking?.requiresEffort).toBe(true);
 			// Default effort is `max` per the GLM-5.3 API spec.
+			expect(model.thinking?.defaultLevel).toBe(Effort.Max);
+		}
+	});
+
+	it("pins zai glm-5.3-flash to the 1M tier and restores its native image input", () => {
+		const models = [
+			createSpec({
+				id: "glm-5.3-flash",
+				api: "anthropic-messages",
+				provider: "zai",
+				contextWindow: 200_000,
+				maxTokens: 8192,
+			}),
+			createSpec({
+				id: "glm-5.3-flash",
+				api: "openai-completions",
+				provider: "zhipu-coding-plan",
+				contextWindow: 200_000,
+				maxTokens: 8192,
+			}),
+		];
+
+		applyGeneratedModelPolicies(models);
+
+		for (const model of models) {
+			expect(model.contextWindow).toBe(1_000_000);
+			expect(model.maxTokens).toBe(131_072);
+			// Natively multimodal despite the missing `v` marker; upstream
+			// metadata reports the flash SKU as text-only.
+			expect(model.input).toEqual(["text", "image"]);
+			// Same mandatory low/high/max ladder as the GLM-5.3 base line.
+			expect(model.thinking?.efforts).toEqual([Effort.Low, Effort.High, Effort.Max]);
+			expect(model.thinking?.requiresEffort).toBe(true);
 			expect(model.thinking?.defaultLevel).toBe(Effort.Max);
 		}
 	});

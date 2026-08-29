@@ -1,6 +1,6 @@
 import { scheduler } from "node:timers/promises";
 import type { AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
-import * as git from "../utils/git";
+import { github } from "../utils/github";
 import type { ToolSession } from ".";
 import type {
 	GhRunWatchFailedLogDetails,
@@ -12,9 +12,12 @@ import type {
 } from "./gh";
 import {
 	buildTextResult,
+	formatRepoRef,
+	ghApiHostArgs,
 	githubRepoSlugEquals,
 	normalizeBlock,
 	normalizeOptionalString,
+	parseRepoRef,
 	pushLine,
 	requireCurrentGitBranch,
 	requireCurrentGitHead,
@@ -64,7 +67,7 @@ export function resolveTailLimit(value: number | undefined): number {
 	return Math.min(Math.floor(value), RUN_WATCH_TAIL_MAX);
 }
 
-export const RUN_URL_PATTERN = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/actions\/runs\/(\d+)(?:\/.*)?$/;
+export const RUN_URL_PATTERN = /^https:\/\/([^/]+)\/([^/]+\/[^/]+)\/actions\/runs\/(\d+)(?:\/.*)?$/;
 export const RUN_SUCCESS_CONCLUSIONS = new Set(["success", "neutral", "skipped"]);
 export const RUN_FAILURE_CONCLUSIONS = new Set([
 	"failure",
@@ -91,8 +94,8 @@ export function parseRunReference(value: string | undefined): GhRunReference {
 	}
 
 	return {
-		repo: match[1],
-		runId: Number(match[2]),
+		repo: formatRepoRef(match[1], match[2]),
+		runId: Number(match[3]),
 	};
 }
 
@@ -662,9 +665,10 @@ export async function resolveGitHubBranchHead(
 	branch: string,
 	signal?: AbortSignal,
 ): Promise<string> {
-	const response = await git.github.json<GhBranchApiResponse>(
+	const ref = parseRepoRef(repo);
+	const response = await github.json<GhBranchApiResponse>(
 		cwd,
-		["api", "--method", "GET", `/repos/${repo}/branches/${encodeURIComponent(branch)}`],
+		["api", ...ghApiHostArgs(ref), "--method", "GET", `/repos/${ref.slug}/branches/${encodeURIComponent(branch)}`],
 		signal,
 		{ repoProvided: true },
 	);
@@ -683,13 +687,15 @@ export async function fetchRunsForCommit(
 	// whose `head_branch` is not the local checkout — e.g. tag-push triggered
 	// release workflows (`head_branch=v1.2.3`) or PR-triggered runs
 	// (`head_branch=<pr head>`). See coding-agent issue tracker for details.
-	const response = await git.github.json<GhActionsRunListResponse>(
+	const ref = parseRepoRef(repo);
+	const response = await github.json<GhActionsRunListResponse>(
 		cwd,
 		[
 			"api",
+			...ghApiHostArgs(ref),
 			"--method",
 			"GET",
-			`/repos/${repo}/actions/runs`,
+			`/repos/${ref.slug}/actions/runs`,
 			"-F",
 			`head_sha=${headSha}`,
 			"-F",
@@ -727,17 +733,19 @@ export async function fetchRunJobs(
 	runId: number,
 	signal?: AbortSignal,
 ): Promise<GhRunJobSnapshot[]> {
+	const ref = parseRepoRef(repo);
 	const jobs: GhRunJobSnapshot[] = [];
 	let page = 1;
 
 	while (true) {
-		const response = await git.github.json<GhActionsJobsResponse>(
+		const response = await github.json<GhActionsJobsResponse>(
 			cwd,
 			[
 				"api",
+				...ghApiHostArgs(ref),
 				"--method",
 				"GET",
-				`/repos/${repo}/actions/runs/${runId}/jobs`,
+				`/repos/${ref.slug}/actions/runs/${runId}/jobs`,
 				"-F",
 				`per_page=${RUN_JOBS_PAGE_SIZE}`,
 				"-F",
@@ -772,10 +780,11 @@ export async function fetchRunSnapshot(
 	runId: number,
 	signal?: AbortSignal,
 ): Promise<GhRunSnapshot> {
+	const ref = parseRepoRef(repo);
 	const [run, jobs] = await Promise.all([
-		git.github.json<GhActionsRunApi>(
+		github.json<GhActionsRunApi>(
 			cwd,
-			["api", "--method", "GET", `/repos/${repo}/actions/runs/${runId}`],
+			["api", ...ghApiHostArgs(ref), "--method", "GET", `/repos/${ref.slug}/actions/runs/${runId}`],
 			signal,
 			{
 				repoProvided: true,
@@ -813,7 +822,12 @@ async function fetchRecentJobLog(
 ): Promise<GhRecentJobLogCacheEntry> {
 	const fetchedAtMs = Date.now();
 	try {
-		const result = await git.github.run(cwd, ["api", `/repos/${repo}/actions/jobs/${job.id}/logs`], signal);
+		const ref = parseRepoRef(repo);
+		const result = await github.run(
+			cwd,
+			["api", ...ghApiHostArgs(ref), `/repos/${ref.slug}/actions/jobs/${job.id}/logs`],
+			signal,
+		);
 		const fullLog = result.exitCode === 0 ? normalizeBlock(result.stdout) : undefined;
 		return {
 			tail: fullLog ? tailLogLines(fullLog, tail) : undefined,
@@ -887,9 +901,14 @@ export async function fetchFailedJobLogs(
 	tail: number,
 	signal?: AbortSignal,
 ): Promise<GhFailedJobLog[]> {
+	const ref = parseRepoRef(repo);
 	return Promise.all(
 		failedJobs.map(async entry => {
-			const result = await git.github.run(cwd, ["api", `/repos/${repo}/actions/jobs/${entry.job.id}/logs`], signal);
+			const result = await github.run(
+				cwd,
+				["api", ...ghApiHostArgs(ref), `/repos/${ref.slug}/actions/jobs/${entry.job.id}/logs`],
+				signal,
+			);
 			const fullLog = result.exitCode === 0 ? normalizeBlock(result.stdout) : undefined;
 			const logTail = fullLog ? tailLogLines(fullLog, tail) : undefined;
 			return {

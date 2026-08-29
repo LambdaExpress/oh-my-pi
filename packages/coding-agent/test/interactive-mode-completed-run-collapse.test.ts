@@ -564,7 +564,8 @@ describe("InteractiveMode completed-run collapse", () => {
 		const e2eMode = new InteractiveMode(e2eSession, "test");
 		// InteractiveMode only subscribes the event controller in `init()` (the
 		// interactive startup path); the test harness drives the session directly,
-		// so wire the controller up manually.
+		// so skip full terminal startup and wire the controller up manually.
+		e2eMode.isInitialized = true;
 		e2eMode.eventController.subscribeToAgent();
 		const recordCompletedRunCollapse = e2eMode.recordCompletedRunCollapse.bind(e2eMode);
 		const collapsesCommitted = Promise.withResolvers<void>();
@@ -657,6 +658,8 @@ describe("InteractiveMode completed-run collapse", () => {
 			modelRegistry,
 		});
 		const e2eMode = new InteractiveMode(e2eSession, "test");
+		// The harness exercises the event controller without starting a terminal UI.
+		e2eMode.isInitialized = true;
 		e2eMode.eventController.subscribeToAgent();
 		const firstStart = Promise.withResolvers<void>();
 		e2eSession.subscribe(event => {

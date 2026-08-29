@@ -1,8 +1,12 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import type { ScopedModel } from "@oh-my-pi/pi-coding-agent/config/model-resolver";
 import { buildModelScopeNotification } from "@oh-my-pi/pi-coding-agent/main";
+import { setLocale } from "../src/i18n";
+
+beforeEach(() => setLocale("en"));
+afterEach(() => setLocale(null));
 
 function scopedModel(id: string): ScopedModel {
 	return {

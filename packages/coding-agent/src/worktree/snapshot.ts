@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import * as git from "../utils/git";
+import type { VcsGitRepo } from "@oh-my-pi/pi-natives";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { copyRelativePath, resolveInside } from "./include";
 import { managedSnapshotDir } from "./metadata";
 import { submoduleRecordsByPath } from "./submodules";
@@ -70,7 +71,33 @@ async function existingPaths(root: string, relativePaths: readonly string[]): Pr
 
 function joinPatchParts(parts: readonly string[]): string {
 	const patchParts = parts.filter(part => part.trim().length > 0);
-	return patchParts.length === 0 ? "" : git.patch.join(patchParts);
+	return patchParts.length === 0 ? "" : vcs.joinPatches(patchParts);
+}
+
+async function trackedFilesWithoutSubmodules(
+	repo: VcsGitRepo,
+	submodulePaths: readonly string[],
+	baseSha: string,
+	headSha: string,
+): Promise<string[] | undefined> {
+	if (submodulePaths.length === 0) return undefined;
+	const excluded = new Set(submodulePaths);
+	const [basePaths, headPaths, indexPaths] = await Promise.all([
+		repo.lsTree(baseSha, []),
+		repo.lsTree(headSha, []),
+		repo.lsFiles(false, false),
+	]);
+	return uniqueSorted([...basePaths, ...headPaths, ...indexPaths]).filter(relativePath => !excluded.has(relativePath));
+}
+
+async function diffTreeOrEmpty(repo: VcsGitRepo, base: string, head: string, files?: string[]): Promise<string> {
+	if (files?.length === 0) return "";
+	try {
+		return await repo.diffText({ base, head, binary: true, files });
+	} catch (error) {
+		if (vcs.isVcsError(error)) return "";
+		throw error;
+	}
 }
 
 async function captureRepoChanges(
@@ -79,18 +106,19 @@ async function captureRepoChanges(
 	fallbackHeadSha: string,
 	includeCopied: readonly string[],
 	ignoreSubmodules: boolean,
+	submodulePaths?: readonly string[],
 ): Promise<Omit<ManagedWorktreeSubmoduleChanges, "path">> {
-	const headSha = (await git.head.sha(repoRoot)) ?? fallbackHeadSha;
-	const ignoreSubmodulesOption = ignoreSubmodules ? "all" : undefined;
+	const repo = vcs.requireGit(repoRoot);
+	const headSha = (await repo.headSha()) ?? fallbackHeadSha;
+	const excludedPaths = ignoreSubmodules ? (submodulePaths ?? (await repo.submodulePaths())) : [];
+	const files = ignoreSubmodules
+		? await trackedFilesWithoutSubmodules(repo, excludedPaths, baseSha, headSha)
+		: undefined;
 	const [committedPatch, stagedPatch, unstagedPatch, untrackedPaths, includedIgnoredPaths] = await Promise.all([
-		git.diff.tree(repoRoot, baseSha, headSha, {
-			allowFailure: true,
-			binary: true,
-			ignoreSubmodules: ignoreSubmodulesOption,
-		}),
-		git.diff(repoRoot, { binary: true, cached: true, ignoreSubmodules: ignoreSubmodulesOption }),
-		git.diff(repoRoot, { binary: true, ignoreSubmodules: ignoreSubmodulesOption }),
-		git.ls.untracked(repoRoot),
+		diffTreeOrEmpty(repo, baseSha, headSha, files),
+		files?.length === 0 ? "" : repo.diffText({ binary: true, cached: true, files }),
+		files?.length === 0 ? "" : repo.diffText({ binary: true, files }),
+		repo.lsFiles(true, true),
 		existingPaths(repoRoot, includeCopied),
 	]);
 	return {
@@ -108,6 +136,7 @@ export async function captureManagedWorktreeChanges(record: ManagedWorktreeRecor
 		record.headSha,
 		record.includeCopied,
 		record.recurseSubmodules,
+		record.submodules.filter(submodule => submodule.parentPath === null).map(submodule => submodule.path),
 	);
 	const submodules: ManagedWorktreeSubmoduleChanges[] = [];
 	if (record.recurseSubmodules) {
@@ -123,6 +152,9 @@ export async function captureManagedWorktreeChanges(record: ManagedWorktreeRecor
 				submodule.headSha,
 				submodule.includeCopied,
 				true,
+				record.submodules
+					.filter(candidate => candidate.parentPath === submodule.path)
+					.map(candidate => candidate.path.slice(submodule.path.length + 1)),
 			);
 			submodules.push({ path: submodule.path, ...changes });
 		}
@@ -231,7 +263,7 @@ async function restoreRepoSnapshot(
 	},
 ): Promise<void> {
 	const rootPatch = await Bun.file(resolveInside(snapshotPath, files.rootPatch)).text();
-	if (rootPatch.trim()) await git.patch.applyText(targetRoot, rootPatch);
+	if (rootPatch.trim()) await vcs.requireGit(targetRoot).applyPatch(rootPatch, {});
 	const untrackedPaths = await readManifest(resolveInside(snapshotPath, files.untrackedManifest));
 	const includedIgnoredPaths = await readManifest(resolveInside(snapshotPath, files.includedManifest));
 	await restoreSnapshotFiles(snapshotPath, targetRoot, untrackedPaths, "untracked");

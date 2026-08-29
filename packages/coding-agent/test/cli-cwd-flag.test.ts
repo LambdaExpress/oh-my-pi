@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -80,4 +80,40 @@ describe("parseArgs — --cwd flag", () => {
 			expect(process.cwd()).toBe(targetDir);
 		},
 	);
+	it("reports a clean error when the cwd change is denied", async () => {
+		const launchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cwd-denied-launch-"));
+		setProjectDir(launchDir);
+		const targetDir = path.join(launchDir, "blocked");
+		const parsed = parseArgs(["--cwd", targetDir]);
+		const chdir = vi.spyOn(process, "chdir").mockImplementation(() => {
+			throw new Error("operation not permitted");
+		});
+
+		try {
+			await expect(applyStartupCwd(parsed)).rejects.toThrow(
+				`Cannot change working directory to ${targetDir}: operation not permitted`,
+			);
+		} finally {
+			chdir.mockRestore();
+		}
+		expect(getProjectDir()).toBe(launchDir);
+	});
+
+	it("appends the macOS permission hint only for permission errors", async () => {
+		const launchDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-cwd-hint-launch-"));
+		setProjectDir(launchDir);
+		const targetDir = path.join(launchDir, "blocked");
+		const parsed = parseArgs(["--cwd", targetDir]);
+		const chdir = vi.spyOn(process, "chdir").mockImplementation(() => {
+			throw Object.assign(new Error("operation not permitted"), { code: "EACCES" });
+		});
+
+		try {
+			await expect(applyStartupCwd(parsed)).rejects.toThrow(
+				/operation not permitted\. On macOS, grant omp Files & Folders/,
+			);
+		} finally {
+			chdir.mockRestore();
+		}
+	});
 });

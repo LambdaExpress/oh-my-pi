@@ -17,10 +17,12 @@ describe("InputController tool output expansion", () => {
 		const expandable = { setExpanded: vi.fn() };
 		const inert = { render: vi.fn(() => []) };
 		const resetDisplay = vi.fn();
+		const showStatus = vi.fn();
 		const ctx = {
 			toolOutputExpanded: false,
 			chatContainer: { children: [expandable, inert] },
 			ui: { resetDisplay },
+			showStatus,
 		} as unknown as InteractiveModeContext;
 
 		new InputController(ctx).toggleToolOutputExpansion();
@@ -28,6 +30,8 @@ describe("InputController tool output expansion", () => {
 		expect(ctx.toolOutputExpanded).toBe(true);
 		expect(expandable.setExpanded).toHaveBeenCalledWith(true);
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
+		expect(expandable.setExpanded.mock.invocationCallOrder[0]).toBeLessThan(resetDisplay.mock.invocationCallOrder[0]);
+		expect(showStatus).toHaveBeenCalledWith("Tool output expansion: enabled");
 	});
 
 	it("does not expand hidden tool activity and explains why", () => {

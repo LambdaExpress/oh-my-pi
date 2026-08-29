@@ -13,17 +13,21 @@
  *     sharing an email address.
  */
 
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
 import { renderUsageReports } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { setLocale } from "../src/i18n";
 
 const HOUR = 3_600_000;
 
 beforeAll(async () => {
+	setLocale("en");
 	await initTheme();
 });
+
+afterAll(() => setLocale(null));
 
 function limit(label: string, windowId: string, durationMs: number, frac: number, notes?: string[]) {
 	return {

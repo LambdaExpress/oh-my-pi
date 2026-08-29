@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { abortOnGitFailure, CommitAbortedError, pushOrAbort } from "../src/commit/execute";
-import * as git from "../src/utils/git";
 
 const tempDirs: string[] = [];
+const GIT_NULL_DEVICE = process.platform === "win32" ? "NUL" : os.devNull;
 
 async function mkTempDir(prefix: string): Promise<string> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -15,7 +16,12 @@ async function mkTempDir(prefix: string): Promise<string> {
 }
 
 async function runGit(cwd: string, args: string[]): Promise<void> {
-	const env = { ...process.env, HOME: cwd, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+	const env = {
+		...process.env,
+		HOME: cwd,
+		GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE,
+		GIT_CONFIG_SYSTEM: GIT_NULL_DEVICE,
+	};
 	const proc = Bun.spawn(["git", "-C", cwd, ...args], { env, stdout: "ignore", stderr: "pipe" });
 	const code = await proc.exited;
 	if (code !== 0) {
@@ -34,7 +40,12 @@ async function initRepoWithCommit(dir: string): Promise<void> {
 }
 
 async function revParse(cwd: string, rev: string): Promise<string> {
-	const env = { ...process.env, HOME: cwd, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+	const env = {
+		...process.env,
+		HOME: cwd,
+		GIT_CONFIG_GLOBAL: GIT_NULL_DEVICE,
+		GIT_CONFIG_SYSTEM: GIT_NULL_DEVICE,
+	};
 	const proc = Bun.spawn(["git", "-C", cwd, "rev-parse", rev], { env, stdout: "pipe", stderr: "ignore" });
 	const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
 	if (code !== 0) throw new Error(`git rev-parse ${rev} failed`);
@@ -50,27 +61,45 @@ describe("abortOnGitFailure (issue #7834)", () => {
 	it("surfaces a refusing hook's message and aborts with a sentinel instead of the raw error", async () => {
 		const dir = await mkTempDir("omp-commit-hook-");
 		await initRepoWithCommit(dir);
+		const runner = path.join(dir, "hook-runner.ts");
+		await fs.writeFile(runner, 'process.stderr.write("policy: this change is not allowed\\n"); process.exit(1);\n');
 		const hook = path.join(dir, ".git", "hooks", "pre-commit");
-		await fs.writeFile(hook, '#!/bin/sh\necho "policy: this change is not allowed" >&2\nexit 1\n');
-		await fs.chmod(hook, 0o755);
+		// Git hooks are extensionless but may declare their interpreter with a
+		// shebang. The native VCS adapter must preserve that Git behavior on Windows.
+		let executable = process.execPath;
+		if (process.platform === "win32") {
+			// gitoxide follows Git's 100-byte shebang probe. Keep the interpreter
+			// path short even when Bun is installed under the long WinGet package root.
+			executable = path.join(dir, "bun.exe");
+			try {
+				await fs.link(process.execPath, executable);
+			} catch {
+				await fs.copyFile(process.execPath, executable);
+			}
+		}
+		executable = executable.replaceAll("\\", "/");
+		const script = `#!${executable}\n${await fs.readFile(runner, "utf8")}`;
+		await fs.writeFile(hook, script);
+		if (process.platform !== "win32") await fs.chmod(hook, 0o755);
 		await fs.appendFile(path.join(dir, "a.txt"), "two\n");
 		await runGit(dir, ["add", "-A"]);
 
-		// A refused commit yields a GitCommandError from the central git wrapper;
+		// A refused commit yields a VcsError from the native adapter;
 		// this is the input both commit routes hand to abortOnGitFailure.
 		let commitError: unknown;
 		try {
-			await git.commit(dir, "feat: x");
+			await vcs.requireGit(dir).commitCreate("feat: x", {});
 		} catch (error) {
 			commitError = error;
 		}
-		expect(commitError).toBeInstanceOf(git.GitCommandError);
+		expect(vcs.isVcsError(commitError)).toBe(true);
+		if (!vcs.isVcsError(commitError)) throw new Error("expected refusing hook to yield a VcsError");
 
 		const stderrSpy = vi.spyOn(process.stderr, "write").mockReturnValue(true);
 		expect(() =>
 			abortOnGitFailure(
 				"Commit 1 of 2 failed",
-				commitError as git.GitCommandError,
+				commitError,
 				"0 of 2 commits created; 1 file(s) remain staged. No changes were lost.",
 			),
 		).toThrow(CommitAbortedError);

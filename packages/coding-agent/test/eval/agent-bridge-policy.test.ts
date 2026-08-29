@@ -1437,7 +1437,9 @@ describe("runEvalAgent isolation", () => {
 		expect(persistedPath).toBeDefined();
 		const contents = await fs.readFile(persistedPath!, "utf-8");
 		expect(contents).toBe(nestedPatch);
-		await fs.rm(path.dirname(persistedPath!), { recursive: true, force: true });
+		const nativePersistedPath =
+			process.platform === "win32" ? persistedPath!.replace(/^\/\/\.\/(?=[A-Za-z]:\/)/, "") : persistedPath!;
+		await fs.rm(path.dirname(nativePersistedPath), { recursive: true, force: true });
 	});
 
 	it("throws schema calls when nested patch application reports a warning", async () => {

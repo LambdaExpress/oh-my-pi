@@ -127,15 +127,28 @@ export class Composer implements TerminalFrameProvider {
 		| {
 				id: number;
 				rows: readonly string[];
-				source: "header" | { transcript: TranscriptContainer; transcriptId: number };
+				kind: "append" | "replay";
+				source:
+					| "header"
+					| {
+							transcript: TranscriptContainer;
+							transcriptId?: number;
+							header: "none" | "replay";
+							/** Recomposed header rows to accept as the new retired-header bytes. */
+							headerRows?: readonly string[];
+					  };
 		  }
 		| undefined;
+	#historyReplayRequested = false;
+	#headerReplayPending = false;
+	#historyFlush = false;
 	// The welcome header retires to terminal history exactly once, after the
 	// intro settles; until then it renders as mutable viewport chrome.
 	#headerRetired = false;
-	// Exact hard rows accepted into native history. Resize-alt paints reflow
-	// these rows rather than recomposing the header, because a wider terminal
-	// never joins hard tip wraps that were committed at the original width.
+	// Exact hard rows accepted into native history. Transient resize-alt
+	// paints reflow these rows to match the terminal's own rewrap of history
+	// it still holds; a settled replay owns every byte it emits, so it
+	// recomposes the header at the replay width and refreshes these rows.
 	#retiredHeaderRows: readonly string[] | undefined;
 	// Hard-row prefix currently above the native viewport. The first resize
 	// frame may pull part of it down before the normal buffer is borrowed.
@@ -233,7 +246,7 @@ export class Composer implements TerminalFrameProvider {
 		};
 	}
 
-	/** Retire an accepted terminal history batch (header, then transcript prefixes). */
+	/** Acknowledges one accepted header, replay, or transcript batch. */
 	acknowledgeHistory(id: number): void {
 		const offered = this.#offeredHistory;
 		if (offered === undefined || offered.id !== id) return;
@@ -241,9 +254,16 @@ export class Composer implements TerminalFrameProvider {
 			this.#headerRetired = true;
 			this.#retiredHeaderRows = offered.rows;
 		} else {
-			offered.source.transcript.acknowledgeFinalizedBatch(offered.source.transcriptId);
+			if (offered.source.transcriptId !== undefined) {
+				offered.source.transcript.acknowledgeFinalizedBatch(offered.source.transcriptId);
+			}
+			if (offered.source.header === "replay") {
+				this.#headerReplayPending = false;
+				if (offered.source.headerRows !== undefined) this.#retiredHeaderRows = offered.source.headerRows;
+			}
 		}
 		this.#offeredHistory = undefined;
+		if (this.#historyReplayRequested) this.#startHistoryReplay();
 	}
 
 	/** Render the semantic transcript tail while the terminal borrows its resize buffer. */
@@ -252,7 +272,7 @@ export class Composer implements TerminalFrameProvider {
 		const width = Math.max(1, viewport.columns);
 		const rows = Math.max(0, viewport.rows);
 		const tail = this.#runtimeMounted
-			? this.#renderRoots([...this.#runtimeChildren, this.#statusHost], width)
+			? this.#renderResizeTail(width, rows)
 			: this.#renderRoots([this.#bootstrapInputGap, this.editor, this.#statusHost], width);
 		let header: readonly string[];
 		if (this.#headerRetired) {
@@ -268,57 +288,138 @@ export class Composer implements TerminalFrameProvider {
 		return rendered.length <= rows ? rendered : rendered.slice(rendered.length - rows);
 	}
 
-	/** Re-offer the complete finalized prefix after a display reset or resize replay. */
-	resetHistory(): void {
-		this.#offeredHistory = undefined;
-		this.#headerRetired = false;
-		this.#retiredHeaderRows = undefined;
-		this.#retiredHeaderStart = 0;
-		this.#resizeRetiredHeaderStart = undefined;
+	/** Replays committed presentation without changing logical retirement state. */
+	beginHistoryReplay(): void {
+		if (this.#offeredHistory !== undefined) {
+			this.#historyReplayRequested = true;
+			return;
+		}
+		this.#startHistoryReplay();
+	}
+
+	/** Forces every currently eligible finalized prefix to retire before stop. */
+	beginHistoryFlush(): void {
+		this.#historyFlush = true;
+		// A pending replay would re-render and re-stream the entire committed
+		// ledger during shutdown; the terminal already holds that history, so
+		// flush emits only genuinely un-retired rows. An already offered batch
+		// stays valid and is accepted by the flush loop.
+		this.#historyReplayRequested = false;
+		this.#headerReplayPending = false;
 		for (const child of this.#runtimeChildren) {
-			if (child instanceof TranscriptContainer) child.resetRetirement();
+			if (child instanceof TranscriptContainer) child.cancelReplay();
 		}
 	}
 
-	/** Header retires first, then finalized transcript prefixes, one batch at a time. */
+	#startHistoryReplay(): void {
+		this.#headerReplayPending = this.#headerRetired && (this.#retiredHeaderRows?.length ?? 0) > 0;
+		this.#historyReplayRequested = false;
+		for (const child of this.#runtimeChildren) {
+			if (child instanceof TranscriptContainer) child.beginReplay();
+		}
+	}
+
+	/** Header retires first; replay coalesces it with the complete transcript ledger. */
 	#offerHistory(
 		transcript: TranscriptContainer,
 		width: number,
 		rows: number,
 		chromeRows: number,
-	): { id: number; rows: readonly string[] } | undefined {
+	): { id: number; rows: readonly string[]; kind: "append" | "replay" } | undefined {
 		if (this.#offeredHistory !== undefined) {
-			return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
+			return {
+				id: this.#offeredHistory.id,
+				rows: this.#offeredHistory.rows,
+				kind: this.#offeredHistory.kind,
+			};
+		}
+		if (this.#headerReplayPending) {
+			const transcriptReplay = transcript.peekReplayBatch(width);
+			// A replay follows a scrollback clear, so the header recomposes at
+			// the new width exactly like transcript entries do. An empty
+			// recompose (welcome unmounted after retirement) falls back to the
+			// committed rows, hard-wrapped the way the terminal would.
+			const recomposed = this.#header.render(width);
+			const headerRows = recomposed.length > 0 ? [...recomposed, ""] : this.#reflowRetiredHeader(width, 0);
+			this.#offeredHistory = {
+				id: this.#nextHistoryId++,
+				rows: [...headerRows, ...(transcriptReplay?.rows ?? [])],
+				kind: "replay",
+				source: {
+					transcript,
+					transcriptId: transcriptReplay?.id,
+					header: "replay",
+					headerRows,
+				},
+			};
+			return {
+				id: this.#offeredHistory.id,
+				rows: this.#offeredHistory.rows,
+				kind: this.#offeredHistory.kind,
+			};
 		}
 		if (!this.#headerRetired) {
 			const welcome = this.#welcome;
 			if (welcome !== undefined && !welcome.isTranscriptBlockFinalized()) return undefined;
 			// The header stays live viewport chrome until the screen fills; then it
 			// retires first so transcript prefixes can follow in order.
-			const headerRows = this.#header.render(width).length;
-			const liveRows = transcript.liveRowCount(width);
-			if (headerRows + chromeRows + liveRows <= rows) return undefined;
-			this.#offeredHistory = {
-				id: this.#nextHistoryId++,
-				rows: [...this.#header.render(width), ""],
-				source: "header",
-			};
-			return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
+			const renderedHeader = this.#header.render(width);
+			if (renderedHeader.length > 0) {
+				const liveRows = transcript.liveRowCount(width);
+				if (!this.#historyFlush && renderedHeader.length + chromeRows + liveRows <= rows) return undefined;
+				this.#offeredHistory = {
+					id: this.#nextHistoryId++,
+					rows: [...renderedHeader, ""],
+					kind: "append",
+					source: "header",
+				};
+				return {
+					id: this.#offeredHistory.id,
+					rows: this.#offeredHistory.rows,
+					kind: this.#offeredHistory.kind,
+				};
+			}
+			this.#headerRetired = true;
+			this.#retiredHeaderRows = [];
 		}
-		const batch = transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
+		const batch = this.#historyFlush
+			? transcript.peekFlushBatch(width)
+			: transcript.peekFinalizedBatch(width, Math.max(0, rows - chromeRows));
 		if (batch === undefined) return undefined;
 		this.#offeredHistory = {
 			id: this.#nextHistoryId++,
 			rows: batch.rows,
-			source: { transcript, transcriptId: batch.id },
+			kind: batch.kind ?? "append",
+			source: { transcript, transcriptId: batch.id, header: "none" },
 		};
-		return { id: this.#offeredHistory.id, rows: this.#offeredHistory.rows };
+		return {
+			id: this.#offeredHistory.id,
+			rows: this.#offeredHistory.rows,
+			kind: this.#offeredHistory.kind,
+		};
 	}
 
 	#renderRoots(roots: readonly Component[], width: number): string[] {
 		const rows: string[] = [];
 		for (const root of roots) rows.push(...root.render(width));
 		return rows;
+	}
+	/**
+	 * Mounted-runtime rows for the transient resize buffer. Only the trailing
+	 * viewport can survive the caller's bottom slice, so the transcript renders
+	 * a bounded tail instead of the full committed ledger, and the chrome above
+	 * it renders only when that tail underfills the screen.
+	 */
+	#renderResizeTail(width: number, rows: number): string[] {
+		const roots = [...this.#runtimeChildren, this.#statusHost];
+		const transcriptIndex = roots.findIndex(root => root instanceof TranscriptContainer);
+		if (transcriptIndex < 0) return this.#renderRoots(roots, width);
+		const transcript = roots[transcriptIndex] as TranscriptContainer;
+		const after = this.#renderRoots(roots.slice(transcriptIndex + 1), width);
+		const transcriptRows = transcript.renderTail(width, Math.max(0, rows - after.length));
+		const pre =
+			transcriptRows.length + after.length >= rows ? [] : this.#renderRoots(roots.slice(0, transcriptIndex), width);
+		return [...pre, ...transcriptRows, ...after];
 	}
 
 	/** Reflow accepted hard rows exactly as the restored terminal buffer will. */
@@ -476,9 +577,9 @@ export class Composer implements TerminalFrameProvider {
 	/** Stop a composer that has not transferred terminal ownership. */
 	stop(): void {
 		if (!this.#started || this.#stopped || this.#transferred) return;
-		this.#stopped = true;
 		this.#welcome?.stopIntro();
 		this.ui.stop();
+		this.#stopped = true;
 	}
 
 	#applyWelcomeUpdate(update: ComposerWelcomeUpdate): void {
@@ -523,9 +624,9 @@ export class Composer implements TerminalFrameProvider {
 	#requestExit(code: number): void {
 		// Remains live after transfer until InteractiveMode installs its configured handlers.
 		if (this.#stopped) return;
-		this.#stopped = true;
 		this.#welcome?.stopIntro();
 		if (this.#started) this.ui.stop();
+		this.#stopped = true;
 		this.#exit(code);
 	}
 }

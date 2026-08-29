@@ -778,6 +778,7 @@ async function resolveInternalSearchInputs(opts: {
 	localProtocolOptions?: LocalProtocolOptions;
 	skills?: ResolveContext["skills"];
 	sshHosts?: ResolveContext["sshHosts"];
+	sessionFile?: string;
 }): Promise<InternalSearchInputResolution> {
 	const internalRouter = InternalUrlRouter.instance();
 	const paths = opts.resolvedPaths.slice();
@@ -790,6 +791,7 @@ async function resolveInternalSearchInputs(opts: {
 		cwd: opts.cwd,
 		settings: opts.settings,
 		signal: opts.signal,
+		sessionFile: opts.sessionFile,
 		localProtocolOptions: opts.localProtocolOptions,
 		skills: opts.skills,
 		sshHosts: opts.sshHosts,
@@ -1004,6 +1006,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					localProtocolOptions: this.session.localProtocolOptions,
 					skills: this.session.skills,
 					sshHosts,
+					sessionFile: this.session.getSessionFile() ?? undefined,
 				});
 				const searchablePaths = internalResolution.paths;
 				const { virtualResources, virtualPathSet, virtualInputIndexes } = internalResolution;
@@ -1042,16 +1045,17 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 						rawPaths: searchablePaths,
 						cwd: this.session.cwd,
 						internalUrlAction: "search",
-						trackImmutableSources: true,
-						surfaceExactFilePaths: true,
-						fanOutFileTargets: true,
-						multipathStatHint: " (`path` list entries must each exist relative to cwd)",
 						settings: this.session.settings,
 						signal,
 						localProtocolOptions: this.session.localProtocolOptions,
 						skills: this.session.skills,
 						sshHosts,
+						sessionFile: this.session.getSessionFile() ?? undefined,
 						resolveExternalUrl: materializeExternalUrlForSearch,
+						trackImmutableSources: true,
+						surfaceExactFilePaths: true,
+						fanOutFileTargets: true,
+						multipathStatHint: " (`path` list entries must each exist relative to cwd)",
 					});
 					searchPath = scope.searchPath;
 					isDirectory = scope.isDirectory;

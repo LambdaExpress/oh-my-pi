@@ -450,6 +450,10 @@ describe("openai-completions convertMessages", () => {
 			{ id: "deepseek-chat", provider: "deepseek", baseUrl: "https://api.deepseek.com" },
 			{ id: "deepseek-reasoner", provider: "deepseek", baseUrl: "https://api.deepseek.com" },
 			{ id: "deepseek-ai/DeepSeek-V4-Pro", provider: "custom-proxy", baseUrl: "https://llm-proxy.example.com/v1" },
+			// `vision` inside `revision` is a substring, not a multimodal token.
+			{ id: "deepseek-r1-revision-0528", provider: "custom-proxy", baseUrl: "https://llm-proxy.example.com/v1" },
+			// `vision` inside `provisioned` is a substring, not a multimodal token.
+			{ id: "deepseek-v4-provisioned", provider: "custom-proxy", baseUrl: "https://llm-proxy.example.com/v1" },
 		];
 
 		const baseModel = getBundledModel("openai", "gpt-4o-mini") as Model<"openai-completions">;

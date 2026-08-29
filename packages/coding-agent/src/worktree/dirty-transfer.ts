@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import * as git from "../utils/git";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { copyIncludedIgnoredFiles, copyRelativePath, resolveInside } from "./include";
 import type { ManagedWorktreeSubmoduleRecord } from "./types";
 
@@ -29,36 +29,53 @@ function uniqueSorted(paths: readonly string[]): string[] {
 	return [...new Set(paths)].sort((left, right) => left.localeCompare(right));
 }
 
-async function trackedDirtyPaths(repoRoot: string, options: DirtyTransferOptions = {}): Promise<string[]> {
-	const ignoreSubmodules = options.ignoreSubmodules ? "all" : undefined;
-	const [staged, unstaged] = await Promise.all([
-		git.diff.changedFiles(repoRoot, { cached: true, ignoreSubmodules }),
-		git.diff.changedFiles(repoRoot, { ignoreSubmodules }),
-	]);
-	return uniqueSorted([...staged, ...unstaged]);
+async function trackedDirtyPaths(repoRoot: string, excluded: ReadonlySet<string>): Promise<string[]> {
+	const repo = vcs.requireGit(repoRoot);
+	const [staged, unstaged] = await Promise.all([repo.changedFiles({ cached: true }), repo.changedFiles({})]);
+	return uniqueSorted([...staged, ...unstaged].filter(relativePath => !excluded.has(relativePath)));
+}
+
+function childSubmodulePaths(
+	parentPath: string | null,
+	submodules: readonly ManagedWorktreeSubmoduleRecord[],
+): string[] {
+	return submodules
+		.filter(submodule => submodule.parentPath === parentPath)
+		.map(submodule => (parentPath === null ? submodule.path : submodule.path.slice(parentPath.length + 1)));
 }
 
 async function applyTrackedDirtyState(
 	sourceRepoRoot: string,
 	targetRepoRoot: string,
 	options: DirtyTransferOptions = {},
+	excludedSubmodulePaths?: readonly string[],
 ): Promise<string[]> {
-	const ignoreSubmodules = options.ignoreSubmodules ? "all" : undefined;
+	const sourceRepo = vcs.requireGit(sourceRepoRoot);
+	const targetRepo = vcs.requireGit(targetRepoRoot);
+	const submodulePaths = options.ignoreSubmodules
+		? (excludedSubmodulePaths ?? (await sourceRepo.submodulePaths()))
+		: [];
+	const excluded = new Set(submodulePaths);
+	const files = options.ignoreSubmodules
+		? uniqueSorted([...(await sourceRepo.lsTree("HEAD", [])), ...(await sourceRepo.lsFiles(false, false))]).filter(
+				relativePath => !excluded.has(relativePath),
+			)
+		: undefined;
 	const [stagedPatch, unstagedPatch, paths] = await Promise.all([
-		git.diff(sourceRepoRoot, { binary: true, cached: true, ignoreSubmodules }),
-		git.diff(sourceRepoRoot, { binary: true, ignoreSubmodules }),
-		trackedDirtyPaths(sourceRepoRoot, options),
+		files?.length === 0 ? "" : sourceRepo.diffText({ binary: true, cached: true, files }),
+		files?.length === 0 ? "" : sourceRepo.diffText({ binary: true, files }),
+		trackedDirtyPaths(sourceRepoRoot, excluded),
 	]);
 	if (stagedPatch.trim()) {
-		await git.patch.applyText(targetRepoRoot, stagedPatch);
-		await git.patch.applyText(targetRepoRoot, stagedPatch, { cached: true });
+		await targetRepo.applyPatch(stagedPatch, {});
+		await targetRepo.applyPatch(stagedPatch, { cached: true });
 	}
-	if (unstagedPatch.trim()) await git.patch.applyText(targetRepoRoot, unstagedPatch);
+	if (unstagedPatch.trim()) await targetRepo.applyPatch(unstagedPatch, {});
 	return paths;
 }
 
 async function copyUntrackedFiles(sourceRepoRoot: string, targetRepoRoot: string): Promise<string[]> {
-	const untrackedPaths = uniqueSorted(await git.ls.untracked(sourceRepoRoot));
+	const untrackedPaths = uniqueSorted(await vcs.requireGit(sourceRepoRoot).lsFiles(true, true));
 	for (const relativePath of untrackedPaths) {
 		await copyRelativePath(sourceRepoRoot, targetRepoRoot, relativePath);
 	}
@@ -84,8 +101,9 @@ async function copyRepoDirtyState(
 	targetRepoRoot: string,
 	repoPath: string,
 	options: DirtyTransferOptions = {},
+	excludedSubmodulePaths: readonly string[] = [],
 ): Promise<DirtyTransferRepoResult> {
-	const trackedPaths = await applyTrackedDirtyState(sourceRepoRoot, targetRepoRoot, options);
+	const trackedPaths = await applyTrackedDirtyState(sourceRepoRoot, targetRepoRoot, options, excludedSubmodulePaths);
 	const untrackedPaths = await copyUntrackedFiles(sourceRepoRoot, targetRepoRoot);
 	const includeResult = await copyIncludedIgnoredFiles(sourceRepoRoot, targetRepoRoot);
 	return {
@@ -98,17 +116,17 @@ async function copyRepoDirtyState(
 }
 
 async function initializedSubmoduleSource(submodule: ManagedWorktreeSubmoduleRecord): Promise<string | null> {
-	const sourceRoot = await git.repo.root(submodule.sourceRepoRoot);
+	const sourceRoot = vcs.git(submodule.sourceRepoRoot)?.info().repoRoot ?? null;
 	if (sourceRoot === null) return null;
 	if (path.resolve(sourceRoot) !== path.resolve(submodule.sourceRepoRoot)) return null;
 	return sourceRoot;
 }
 
 async function prepareTargetSubmoduleHead(submodule: ManagedWorktreeSubmoduleRecord): Promise<void> {
-	const sourceHead = await git.head.sha(submodule.sourceRepoRoot);
+	const sourceHead = await vcs.requireGit(submodule.sourceRepoRoot).headSha();
 	if (!sourceHead || sourceHead === submodule.baseSha) return;
 	try {
-		await git.checkout(submodule.worktreeRoot, sourceHead);
+		await vcs.requireGit(submodule.worktreeRoot).checkout(sourceHead);
 	} catch {
 		throw new Error(
 			`Could not check out source submodule HEAD ${sourceHead} in managed submodule ${submodule.path}.`,
@@ -134,7 +152,13 @@ async function copySubmoduleDirtyStates(
 		}
 		await prepareTargetSubmoduleHead(submodule);
 		results.push(
-			await copyRepoDirtyState(sourceRoot, submodule.worktreeRoot, submodule.path, { ignoreSubmodules: true }),
+			await copyRepoDirtyState(
+				sourceRoot,
+				submodule.worktreeRoot,
+				submodule.path,
+				{ ignoreSubmodules: true },
+				childSubmodulePaths(submodule.path, submodules),
+			),
 		);
 	}
 	return results;
@@ -148,7 +172,7 @@ async function cleanRepoDirtyState(
 	const warnings = [...result.warnings];
 	if (result.trackedPaths.length > 0) {
 		try {
-			await git.restore(sourceRepoRoot, {
+			await vcs.requireGit(sourceRepoRoot).restore({
 				files: result.trackedPaths,
 				source: baseSha,
 				staged: true,
@@ -174,9 +198,15 @@ export async function copyDirtyStateToWorktree(
 	_baseSha: string,
 	options: DirtyTransferOptions = {},
 ): Promise<DirtyTransferResult> {
-	const rootResult = await copyRepoDirtyState(sourceRepoRoot, targetRepoRoot, "", {
-		ignoreSubmodules: options.ignoreSubmodules,
-	});
+	const rootResult = await copyRepoDirtyState(
+		sourceRepoRoot,
+		targetRepoRoot,
+		"",
+		{
+			ignoreSubmodules: options.ignoreSubmodules,
+		},
+		childSubmodulePaths(null, options.submodules ?? []),
+	);
 	const submodules = await copySubmoduleDirtyStates(options.submodules ?? []);
 	return {
 		trackedPaths: rootResult.trackedPaths,
@@ -193,9 +223,15 @@ export async function moveDirtyStateToWorktree(
 	baseSha: string,
 	options: DirtyTransferOptions = {},
 ): Promise<DirtyTransferResult> {
-	const rootResult = await copyRepoDirtyState(sourceRepoRoot, targetRepoRoot, "", {
-		ignoreSubmodules: options.ignoreSubmodules,
-	});
+	const rootResult = await copyRepoDirtyState(
+		sourceRepoRoot,
+		targetRepoRoot,
+		"",
+		{
+			ignoreSubmodules: options.ignoreSubmodules,
+		},
+		childSubmodulePaths(null, options.submodules ?? []),
+	);
 	const submodules = await copySubmoduleDirtyStates(options.submodules ?? []);
 	const rootWarnings = await cleanRepoDirtyState(sourceRepoRoot, baseSha, rootResult);
 	const submoduleWarnings: string[] = [];

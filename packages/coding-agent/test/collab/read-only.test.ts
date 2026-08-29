@@ -37,26 +37,30 @@ function makeHostContext(): HostHarness {
 	const prompts: { from?: string }[] = [];
 	const aborts = { count: 0 };
 	const promptWaiters: ((details: { from?: string }) => void)[] = [];
+	const sessionManager = {
+		getSessionId: () => "sess-1",
+		getCwd: () => "/tmp",
+		snapshotForReplication: () => ({
+			header: { type: "session", id: "sess-1", timestamp: new Date().toISOString(), cwd: "/tmp" },
+			entries: [],
+		}),
+		onEntryAppended: undefined,
+	};
 	const ctx = {
 		settings: { get: () => "" },
-		sessionManager: {
-			getSessionId: () => "sess-1",
-			getCwd: () => "/tmp",
-			snapshotForReplication: () => ({
-				header: { type: "session", id: "sess-1", timestamp: new Date().toISOString(), cwd: "/tmp" },
-				entries: [],
-			}),
-			onEntryAppended: undefined,
-		},
+		sessionManager,
 		session: {
 			isStreaming: false,
+			isAborting: false,
 			queuedMessageCount: 0,
 			sessionName: "test",
 			model: undefined,
 			thinkingLevel: undefined,
+			configuredThinkingLevel: () => undefined,
+			getAvailableThinkingLevels: () => [],
 			// host.ts scopes agent snapshots/control to `getAgentScopeId()`;
 			// the harness session is the "sess-1" tree.
-			getAgentScopeId: () => "sess-1",
+			getAgentScopeId: () => sessionManager.getSessionId(),
 			subscribe: () => () => {},
 			emitNotice: () => {},
 			promptCustomMessage: (message: { details?: { from?: string } }) => {

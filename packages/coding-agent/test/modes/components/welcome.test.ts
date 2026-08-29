@@ -42,7 +42,7 @@ describe("WelcomeComponent", () => {
 		expect(welcomeRegular.tip).toBeDefined();
 	});
 
-	it("keeps the right column and full model name when both fit", () => {
+	it("keeps the right column and truncates a long model name with three dots", () => {
 		const modelName = "GPT-5.6 Sol via Grimoire Router";
 		const welcome = new WelcomeComponent(
 			"1.0.0",
@@ -55,7 +55,8 @@ describe("WelcomeComponent", () => {
 		const output = Bun.stripANSI(welcome.render(100).join("\n"));
 		expect(output).toContain("LSP Servers");
 		expect(output).toContain("Recent sessions");
-		expect(output).toContain(modelName);
+		expect(output).toContain("GPT-5.6 Sol via Grimoir...");
+		expect(output).not.toContain(modelName);
 	});
 
 	it("renders the OMP version with its release build number", () => {
@@ -100,7 +101,7 @@ describe("WelcomeComponent", () => {
 		const plain = output.replace(/\x1b\[[0-9;]*m/g, "");
 
 		expect(plain).not.toContain(modelName);
-		expect(plain).toMatch(/DeepSeek V4 [^│]*…/);
+		expect(plain).toMatch(/DeepSeek V4 [^│]*\.\.\./);
 		expect(plain).toContain("Recent sessions");
 	});
 });

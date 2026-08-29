@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import * as compactionModule from "@oh-my-pi/pi-agent-core/compaction";
 import type { Message } from "@oh-my-pi/pi-ai";
@@ -10,6 +10,7 @@ import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { CompactionMethod } from "@oh-my-pi/pi-coding-agent/session/compaction-methods";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import * as snapcompact from "@oh-my-pi/snapcompact";
+import { setLocale } from "../src/i18n";
 
 const UNRENDERABLE_SNAPCOMPACT_TEXT = "\uE000\uE001\uE002\uE003\uE004\uE005\uE006\uE007\uE008\uE009";
 
@@ -17,6 +18,7 @@ interface Harness {
 	session: AgentSession;
 	sessionManager: SessionManager;
 	notices: string[];
+	failures: Array<{ action: string; errorMessage: string }>;
 	awaitCompactionEnd: () => Promise<{ action: string; errorMessage?: string }>;
 	triggerThreshold: () => void;
 }
@@ -68,8 +70,12 @@ async function createHarness(modelRegistry: ModelRegistry, options: HarnessOptio
 	});
 	const end = Promise.withResolvers<{ action: string; errorMessage?: string }>();
 	const notices: string[] = [];
+	const failures: Array<{ action: string; errorMessage: string }> = [];
 	session.subscribe(event => {
 		if (event.type === "notice" && event.source === "compaction") notices.push(event.message);
+		if (event.type === "auto_compaction_end" && event.errorMessage) {
+			failures.push({ action: event.action, errorMessage: event.errorMessage });
+		}
 		if (
 			event.type === "auto_compaction_end" &&
 			!event.aborted &&
@@ -111,7 +117,7 @@ async function createHarness(modelRegistry: ModelRegistry, options: HarnessOptio
 		session.agent.emitExternalEvent({ type: "agent_end", messages: [assistantMsg] });
 	};
 
-	return { session, sessionManager, notices, awaitCompactionEnd: () => end.promise, triggerThreshold };
+	return { session, sessionManager, notices, failures, awaitCompactionEnd: () => end.promise, triggerThreshold };
 }
 
 describe("AgentSession auto-snapcompact local-blocker fallback", () => {
@@ -126,10 +132,18 @@ describe("AgentSession auto-snapcompact local-blocker fallback", () => {
 		modelRegistry = new ModelRegistry(authStorage);
 	});
 
+	beforeEach(() => {
+		setLocale("en");
+	});
+
 	afterEach(async () => {
-		await session?.dispose();
-		vi.restoreAllMocks();
-		session = undefined;
+		try {
+			await session?.dispose();
+		} finally {
+			setLocale(null);
+			vi.restoreAllMocks();
+			session = undefined;
+		}
 	});
 
 	afterAll(() => {
@@ -239,7 +253,12 @@ describe("AgentSession auto-snapcompact local-blocker fallback", () => {
 		expect(result).toEqual({ action: "context-full", errorMessage: undefined });
 		expect(snapcompact.compact).toHaveBeenCalled();
 		expect(compactionModule.compact).toHaveBeenCalled();
-		expect(harness.notices).toContain("snapcompact failed locally; using context-full auto-compaction instead.");
+		expect(harness.failures).toEqual([
+			{
+				action: "snapcompact",
+				errorMessage: "Auto-compaction failed: rasterizer exploded; trying the next preferred compaction method.",
+			},
+		]);
 		expect(harness.sessionManager.getBranch().find(entry => entry.type === "compaction")).toMatchObject({
 			type: "compaction",
 			summary: "compacted",

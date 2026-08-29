@@ -40,20 +40,6 @@ for (const file of ["LICENSE", "THIRD-PARTY-NOTICES.txt"]) {
 	await Bun.write(path.join(distExtension, file), Bun.file(path.join(repoRoot, file)));
 }
 
-// Bun.spawnSync instead of Bun Shell: Bun Shell cannot spawn when the explicit
-// working directory contains spaces on Windows ("Operation not permitted").
-const zip = Bun.spawnSync({
-	cmd: ["zip", "-qr", "../omp-browser-relay-extension.zip", "."],
-	cwd: distExtension,
-	stdout: "pipe",
-	stderr: "pipe",
-});
-if (zip.exitCode !== 0) {
-	console.error("zip failed:", zip.stderr.toString());
-	process.exit(1);
-}
-
-await fs.rm(assetsDir, { recursive: true, force: true });
 const embeddedAssets = [
 	["background.js", "background.js.txt"],
 	["manifest.json", "manifest.json.txt"],
@@ -62,6 +48,27 @@ const embeddedAssets = [
 	["LICENSE", "LICENSE.txt"],
 	["THIRD-PARTY-NOTICES.txt", "THIRD-PARTY-NOTICES.txt"],
 ] as const;
+const archivePath = path.join(dist, "omp-browser-relay-extension.zip");
+const archiveEntries = embeddedAssets.map(([source]) => source);
+// Windows ships bsdtar but not Info-ZIP. Both commands receive the explicit
+// file list so the archive has root entries rather than a platform-specific
+// leading directory. Bun.spawnSync avoids Bun Shell's space-in-cwd failure.
+const archiveCommand =
+	process.platform === "win32"
+		? ["tar", "-a", "-cf", archivePath, ...archiveEntries]
+		: ["zip", "-q", archivePath, ...archiveEntries];
+const archive = Bun.spawnSync({
+	cmd: archiveCommand,
+	cwd: distExtension,
+	stdout: "pipe",
+	stderr: "pipe",
+});
+if (archive.exitCode !== 0) {
+	console.error(`${archiveCommand[0]} failed:`, archive.stderr.toString());
+	process.exit(1);
+}
+
+await fs.rm(assetsDir, { recursive: true, force: true });
 for (const [source, destination] of embeddedAssets) {
 	await Bun.write(path.join(assetsDir, destination), Bun.file(path.join(distExtension, source)));
 }

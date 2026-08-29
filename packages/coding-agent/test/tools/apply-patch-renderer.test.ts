@@ -95,6 +95,7 @@ describe("apply_patch rendering", () => {
 		} satisfies AgentTool;
 		const sessionTools = new SessionTools(
 			{
+				agent: { state: { tools: [editTool] } },
 				model: () => undefined,
 			} as unknown as SessionToolsHost,
 			{

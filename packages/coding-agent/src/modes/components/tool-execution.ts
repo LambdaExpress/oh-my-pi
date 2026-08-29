@@ -151,6 +151,28 @@ function getArgsWithStreamedTextInput(args: unknown): unknown {
 
 type ToolRendererStage = "call" | "result";
 
+type ToolExecutionResult = {
+	content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
+	isError?: boolean;
+	details?: any;
+};
+
+/**
+ * The agent loop's fallback for a tool abandoned by its AbortSignal has one
+ * deliberately minimal shape: one exact `aborted` text block, an empty details
+ * object, and an error flag on the emitted event. Keep this discriminator
+ * narrow: ordinary renderer errors (including messages that merely mention an
+ * abort) must retain their normal merged, result-only presentation.
+ */
+function isSignalAbortResult(result: ToolExecutionResult | undefined, isPartial: boolean): boolean {
+	if (isPartial || result?.isError !== true || result.content.length !== 1) return false;
+	const [block] = result.content;
+	if (block?.type !== "text" || block.text !== "aborted") return false;
+	if (!isRecord(result.details)) return false;
+	for (const _key in result.details) return false;
+	return true;
+}
+
 class SafeToolRendererComponent implements Component {
 	#toolName: string;
 	#stage: ToolRendererStage;
@@ -233,15 +255,7 @@ export interface ToolExecutionOptions {
 
 export interface ToolExecutionHandle extends Component {
 	updateArgs(args: any, toolCallId?: string): void;
-	updateResult(
-		result: {
-			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-			details?: any;
-			isError?: boolean;
-		},
-		isPartial?: boolean,
-		toolCallId?: string,
-	): void;
+	updateResult(result: ToolExecutionResult, isPartial?: boolean, toolCallId?: string): void;
 	setArgsComplete(toolCallId?: string): void;
 	setExecutionStarted(toolCallId?: string): void;
 	setExpanded(expanded: boolean): void;
@@ -371,11 +385,7 @@ export class ToolExecutionComponent extends Container {
 	#renderer?: ToolRenderer;
 	#ui: ToolExecutionUi;
 	#cwd: string;
-	#result?: {
-		content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-		isError?: boolean;
-		details?: any;
-	};
+	#result?: ToolExecutionResult;
 	// Edit preview state
 	#editMode?: EditMode;
 	#editDiffPreview?: PerFileDiffPreview[];
@@ -642,15 +652,7 @@ export class ToolExecutionComponent extends Container {
 		}
 	}
 
-	updateResult(
-		result: {
-			content: Array<{ type: string; text?: string; data?: string; mimeType?: string }>;
-			details?: any;
-			isError?: boolean;
-		},
-		isPartial = false,
-		_toolCallId?: string,
-	): void {
+	updateResult(result: ToolExecutionResult, isPartial = false, _toolCallId?: string): void {
 		const hadNoResult = this.#result === undefined;
 		const wasPartialResult = this.#result !== undefined && this.#isPartial;
 		const firstResultRepaintShapePainted = this.#firstResultViewportRepaintShapePainted;
@@ -1021,6 +1023,7 @@ export class ToolExecutionComponent extends Container {
 		// (steering/peer interrupt aborted a still-pending call) never ran, so it
 		// gets the neutral pending tint rather than the error tint (#7199).
 		const benignSkip = this.#isBenignSkip();
+		const signalAbort = isSignalAbortResult(this.#result, this.#isPartial);
 		const stateBgKey =
 			this.#isPartial || benignSkip ? "toolPendingBg" : this.#result?.isError ? "toolErrorBg" : "toolSuccessBg";
 		const stateBgFn = (t: string) => theme.bg(stateBgKey, t);
@@ -1044,10 +1047,10 @@ export class ToolExecutionComponent extends Container {
 			this.#renderState.renderContext = this.#buildRenderContext();
 
 			// Render call component. The fallback label only stands in for a
-			// missing `renderCall`; when the call is intentionally suppressed
-			// (mergeCallAndResult once a result exists) we render nothing here so
-			// the result component isn't preceded by a redundant tool-name line.
-			const shouldRenderCall = !this.#result || !mergeCallAndResult;
+			// missing `renderCall`; a merged renderer normally suppresses the call
+			// once a result exists. The generic signal-abort result is the exception:
+			// it has no argument-bearing details for renderResult to reconstruct.
+			const shouldRenderCall = !this.#result || !mergeCallAndResult || signalAbort;
 			if (shouldRenderCall) {
 				if (tool.renderCall) {
 					try {
@@ -1203,7 +1206,7 @@ export class ToolExecutionComponent extends Container {
 				const renderContext = this.#buildRenderContext();
 				this.#renderState.renderContext = renderContext;
 
-				const shouldRenderCall = !this.#result || !renderer.mergeCallAndResult;
+				const shouldRenderCall = !this.#result || !renderer.mergeCallAndResult || signalAbort;
 				if (shouldRenderCall) {
 					// Render call component
 					try {

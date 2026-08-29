@@ -52,8 +52,9 @@ describe("SessionManager workspace directories", () => {
 		const session = SessionManager.inMemory();
 		await session.setAdditionalDirectories(["/some/other", session.getCwd()]);
 		// cwd is filtered out of the additional set.
-		expect(session.getAdditionalDirectories()).toEqual(["/some/other"]);
-		expect([session.getCwd(), ...session.getAdditionalDirectories()]).toEqual([session.getCwd(), "/some/other"]);
+		const additional = path.resolve("/some/other");
+		expect(session.getAdditionalDirectories()).toEqual([additional]);
+		expect([session.getCwd(), ...session.getAdditionalDirectories()]).toEqual([session.getCwd(), additional]);
 	});
 
 	it("addWorkspaceDirectory rejects the cwd itself", async () => {

@@ -8,6 +8,7 @@ import {
 import type { PlanModeState } from "@oh-my-pi/pi-coding-agent/plan-mode/state";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { PlanProposalHandler } from "@oh-my-pi/pi-coding-agent/tools/resolve";
+import { setLocale } from "../src/i18n";
 
 function makeAssistantMessage(text: string): AssistantMessage {
 	const timestamp = Date.now();
@@ -151,6 +152,7 @@ describe("print mode working indicator", () => {
 	let stdoutEvents: Array<"write" | "flush">;
 
 	beforeEach(() => {
+		setLocale("en");
 		stderrOutput = [];
 		stdoutOutput = [];
 		stdoutEvents = [];
@@ -174,6 +176,7 @@ describe("print mode working indicator", () => {
 	});
 
 	afterEach(() => {
+		setLocale(null);
 		vi.restoreAllMocks();
 	});
 
@@ -260,6 +263,7 @@ describe("print mode working indicator", () => {
 		await run;
 
 		expect(stderrOutput.join("")).toBe("Working...\n");
+		expect(stdoutOutput.join("")).toBe("final answer\n");
 	});
 
 	it("flushes late JSON advisor events after catch-up before disposing", async () => {

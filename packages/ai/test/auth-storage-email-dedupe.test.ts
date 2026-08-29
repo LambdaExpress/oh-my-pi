@@ -121,6 +121,19 @@ function readTableSql(dbPath: string, tableName: string): string | null {
 	}
 }
 
+function readDataVersion(db: Database): number {
+	const stmt = db.prepare("PRAGMA data_version");
+	try {
+		const row = stmt.get();
+		if (!row || typeof row !== "object" || !("data_version" in row) || typeof row.data_version !== "number") {
+			throw new Error("PRAGMA data_version returned no numeric value");
+		}
+		return row.data_version;
+	} finally {
+		stmt.finalize();
+	}
+}
+
 describe("AuthStorage openai-codex email dedupe", () => {
 	let tempDir = "";
 	let dbPath = "";
@@ -504,7 +517,7 @@ describe("AuthStorage openai-codex email dedupe", () => {
 		// underivable NULL identity_key row) must not move it.
 		const observer = new Database(reopenDbPath, { readonly: true });
 		try {
-			const before = (observer.prepare("PRAGMA data_version").get() as { data_version: number }).data_version;
+			const before = readDataVersion(observer);
 			const reopened = await SqliteAuthCredentialStore.open(reopenDbPath);
 			try {
 				expect(reopened.listAuthCredentials("openai")).toHaveLength(1);
@@ -512,7 +525,7 @@ describe("AuthStorage openai-codex email dedupe", () => {
 			} finally {
 				reopened.close();
 			}
-			const after = (observer.prepare("PRAGMA data_version").get() as { data_version: number }).data_version;
+			const after = readDataVersion(observer);
 			expect(after).toBe(before);
 		} finally {
 			observer.close();

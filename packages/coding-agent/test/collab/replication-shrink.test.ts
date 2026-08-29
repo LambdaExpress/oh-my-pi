@@ -150,14 +150,15 @@ interface HostHarness {
 
 function makeHostContext(snapshot: OversizedSnapshot): HostHarness {
 	const statusMessages: string[] = [];
+	const sessionManager = {
+		getSessionId: () => snapshot.header.id,
+		getCwd: () => snapshot.header.cwd,
+		snapshotForReplication: () => snapshot,
+		onEntryAppended: undefined,
+	};
 	const ctx = {
 		settings: { get: () => "" },
-		sessionManager: {
-			getSessionId: () => snapshot.header.id,
-			getCwd: () => snapshot.header.cwd,
-			snapshotForReplication: () => snapshot,
-			onEntryAppended: undefined,
-		},
+		sessionManager,
 		session: {
 			isStreaming: false,
 			isAborting: false,
@@ -165,8 +166,10 @@ function makeHostContext(snapshot: OversizedSnapshot): HostHarness {
 			sessionName: "big",
 			model: undefined,
 			thinkingLevel: undefined,
+			configuredThinkingLevel: () => undefined,
+			getAvailableThinkingLevels: () => [],
 			// host.ts scopes agent snapshots to `getAgentScopeId()`.
-			getAgentScopeId: () => snapshot.header.id,
+			getAgentScopeId: () => sessionManager.getSessionId(),
 			subscribe: () => () => {},
 			emitNotice: () => {},
 			promptCustomMessage: () => Promise.resolve(),

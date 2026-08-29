@@ -203,16 +203,23 @@ export class StreamMarkupHealing {
 					if (event.delta.length > 0) out.push({ type: "thinking", thinking: event.delta });
 					break;
 				case "toolStart":
-					out.push({ type: "toolCallStart", call: { id: event.id, name: event.name } });
+					// Qwen's self-closing element is parsed atomically only after the
+					// entire section closes, so a start immediately followed by toolEnd
+					// provides no streaming value. Keep that grammar on the one-shot path.
+					if (this.#pattern !== "qwen") {
+						out.push({ type: "toolCallStart", call: { id: event.id, name: event.name } });
+					}
 					break;
 				case "toolArgDelta":
-					out.push({
-						type: "toolCallArgDelta",
-						call: { id: event.id, name: event.name },
-						key: event.key,
-						delta: event.delta,
-						isString: event.isString,
-					});
+					if (this.#pattern !== "qwen") {
+						out.push({
+							type: "toolCallArgDelta",
+							call: { id: event.id, name: event.name },
+							key: event.key,
+							delta: event.delta,
+							isString: event.isString,
+						});
+					}
 					break;
 				case "toolEnd":
 					out.push({

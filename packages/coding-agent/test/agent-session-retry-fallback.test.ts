@@ -29,6 +29,7 @@ import type { ServingModel } from "@oh-my-pi/pi-coding-agent/session/retry-fallb
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 type AutoRetryStartEvent = Extract<AgentSessionEvent, { type: "auto_retry_start" }>;
 type AutoRetryEndEvent = Extract<AgentSessionEvent, { type: "auto_retry_end" }>;
@@ -179,6 +180,7 @@ describe("AgentSession retry fallback", () => {
 	});
 
 	beforeEach(() => {
+		setLocale("en");
 		// Reset to the shared registry (a few tests reassign it to a scoped
 		// instance) and clear cooldown suppressions left by fallback-path tests
 		// (default 5-minute suppression) so state never leaks between tests.
@@ -187,11 +189,15 @@ describe("AgentSession retry fallback", () => {
 	});
 
 	afterEach(async () => {
-		if (session) {
-			await session.dispose();
-			session = undefined;
+		try {
+			if (session) {
+				await session.dispose();
+				session = undefined;
+			}
+		} finally {
+			setLocale(null);
+			vi.restoreAllMocks();
 		}
-		vi.restoreAllMocks();
 	});
 
 	it("advances through a role-keyed fallback chain across retries", async () => {
@@ -1808,7 +1814,6 @@ describe("AgentSession retry fallback", () => {
 				advisorFailed.resolve();
 			}
 		});
-
 		session.setAdvisorEnabled(true);
 		await session.prompt("Complete one primary turn");
 		await session.waitForIdle();

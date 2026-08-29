@@ -340,6 +340,28 @@ describe("AsyncJobManager", () => {
 		expect(manager.getAllJobs()).toHaveLength(0);
 	});
 
+	test("starts queued deliveries while an earlier sink receipt is pending", async () => {
+		const releaseDeliveries = Promise.withResolvers<void>();
+		const bothStarted = Promise.withResolvers<void>();
+		const started: string[] = [];
+		const manager = new AsyncJobManager({});
+		manager.registerDeliverySink("Main", async jobId => {
+			started.push(jobId);
+			if (started.length === 2) bothStarted.resolve();
+			await releaseDeliveries.promise;
+		});
+
+		const firstId = manager.register("task", "first", async () => "first result", { ownerId: "Main" });
+		const secondId = manager.register("task", "second", async () => "second result", { ownerId: "Main" });
+		await manager.waitForAll();
+
+		await bothStarted.promise;
+		expect(started).toEqual([firstId, secondId]);
+
+		releaseDeliveries.resolve();
+		expect(await manager.drainDeliveries({ timeoutMs: 200 })).toBe(true);
+	});
+
 	test("scoped delivery drain returns once matching owner deliveries finish", async () => {
 		let mainJobId = "";
 		let releaseMainDelivery = (): void => {};
@@ -658,12 +680,19 @@ describe("AsyncJobManager", () => {
 	test("retireScope drops queued and suppressed completions without touching another scope", async () => {
 		const blockerStarted = Promise.withResolvers<void>();
 		const blockerReleased = Promise.withResolvers<void>();
+		const queuedDeliveryStarted = Promise.withResolvers<void>();
+		const queuedDeliveryReleased = Promise.withResolvers<void>();
 		const completions: string[] = [];
 		let blockerId = "";
 		const onJobComplete = async (jobId: string): Promise<void> => {
 			if (jobId === blockerId) {
 				blockerStarted.resolve();
 				await blockerReleased.promise;
+			}
+			if (jobId === "queued-old") {
+				queuedDeliveryStarted.resolve();
+				await queuedDeliveryReleased.promise;
+				throw new Error("keep old completion queued for retirement");
 			}
 			completions.push(jobId);
 		};
@@ -677,6 +706,7 @@ describe("AsyncJobManager", () => {
 		await blockerStarted.promise;
 
 		const queuedDeliveryId = manager.register("task", "old completion", async () => "old result", {
+			id: "queued-old",
 			ownerId: "shared-owner",
 			scopeId: "scope-old",
 		});
@@ -688,6 +718,9 @@ describe("AsyncJobManager", () => {
 		manager.acknowledgeDeliveries([suppressedCompletionId]);
 		manager.watchJobs([suppressedCompletionId]);
 		await Promise.all([manager.getJob(queuedDeliveryId)?.promise, manager.getJob(suppressedCompletionId)?.promise]);
+		await queuedDeliveryStarted.promise;
+		queuedDeliveryReleased.resolve();
+		while (!manager.hasPendingDeliveries({ scopeId: "scope-old" })) await scheduler.yield();
 		expect(manager.hasPendingDeliveries({ scopeId: "scope-old" })).toBe(true);
 
 		await manager.retireScope("scope-old");

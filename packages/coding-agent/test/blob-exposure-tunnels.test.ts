@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as piUtils from "@oh-my-pi/pi-utils";
 import {
 	type ActiveExposure,
 	type ExposureConfig,
@@ -18,6 +19,9 @@ const originalPath = process.env.PATH;
 let fakeBinDir = "";
 let invocationSequence = 0;
 const activeExposures: ActiveExposure[] = [];
+const fakeBinaries: Record<string, string> = {};
+let restoreWhich: (() => void) | undefined;
+let restoreSpawn: (() => void) | undefined;
 
 interface FakeInvocation {
 	argsFile: string;
@@ -25,6 +29,12 @@ interface FakeInvocation {
 	signalsFile: string;
 	restartMarker?: string;
 }
+
+type BunSpawnOptions = Bun.SpawnOptions.SpawnOptions<
+	Bun.SpawnOptions.Writable,
+	Bun.SpawnOptions.Readable,
+	Bun.SpawnOptions.Readable
+>;
 
 function exposure(kind: ExposureConfig["kind"], overrides: Partial<ExposureConfig> = {}): ExposureConfig {
 	return {
@@ -89,6 +99,11 @@ async function waitForSignal(invocation: FakeInvocation): Promise<void> {
 }
 
 async function stopAndObserve(exposure: ActiveExposure, invocation: FakeInvocation): Promise<void> {
+	if (process.platform === "win32") {
+		exposure.stop();
+		await exposure.exited;
+		return;
+	}
 	const signalObserved = waitForSignal(invocation);
 	exposure.stop();
 	await Promise.all([exposure.exited, signalObserved]);
@@ -97,36 +112,75 @@ async function stopAndObserve(exposure: ActiveExposure, invocation: FakeInvocati
 
 beforeAll(() => {
 	fakeBinDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-blob-tunnels-"));
-	const target = path.join(fakeBinDir, "fake-tunnel");
-	fs.writeFileSync(
-		target,
-		`#!/bin/sh\n` +
-			`: > "$OMP_FAKE_TUNNEL_ARGS"\n` +
-			`for arg do printf '%s\\n' "$arg" >> "$OMP_FAKE_TUNNEL_ARGS"; done\n` +
-			`printf 'run\\n' >> "$OMP_FAKE_TUNNEL_RUNS"\n` +
-			`trap 'printf "SIGINT\\n" >> "$OMP_FAKE_TUNNEL_SIGNALS"; exit 0' INT\n` +
-			`trap 'printf "SIGTERM\\n" >> "$OMP_FAKE_TUNNEL_SIGNALS"; exit 0' TERM\n` +
-			`if [ -n "$OMP_FAKE_TUNNEL_OUTPUT" ]; then printf '%s\\n' "$OMP_FAKE_TUNNEL_OUTPUT"; fi\n` +
-			`if [ -n "$OMP_FAKE_TUNNEL_RESTART_MARKER" ]; then\n` +
-			`  if [ ! -e "$OMP_FAKE_TUNNEL_RESTART_MARKER" ]; then\n` +
-			`    printf 'first\\n' > "$OMP_FAKE_TUNNEL_RESTART_MARKER"\n` +
-			`    exit 23\n` +
-			`  fi\n` +
-			`  printf 'restarted\\n' >> "$OMP_FAKE_TUNNEL_RESTART_MARKER"\n` +
-			`fi\n` +
-			`if [ -n "$OMP_FAKE_TUNNEL_EXIT_CODE" ]; then exit "$OMP_FAKE_TUNNEL_EXIT_CODE"; fi\n` +
-			`while :; do /bin/sleep 1; done\n`,
-	);
-	fs.chmodSync(target, 0o755);
+	const windows = process.platform === "win32";
+	const target = path.join(fakeBinDir, windows ? "fake-tunnel.cmd" : "fake-tunnel");
+	if (windows) {
+		const runner = path.join(fakeBinDir, "fake-tunnel-runner.ts");
+		fs.writeFileSync(
+			runner,
+			`import * as fs from "node:fs";\n` +
+				`const env = process.env;\n` +
+				`const args = process.argv.slice(2);\n` +
+				`fs.writeFileSync(env.OMP_FAKE_TUNNEL_ARGS!, args.length ? args.join("\\n") + "\\n" : "");\n` +
+				`fs.appendFileSync(env.OMP_FAKE_TUNNEL_RUNS!, "run\\n");\n` +
+				`if (env.OMP_FAKE_TUNNEL_OUTPUT) process.stdout.write(env.OMP_FAKE_TUNNEL_OUTPUT + "\\n");\n` +
+				`if (env.OMP_FAKE_TUNNEL_RESTART_MARKER) {\n` +
+				`if (!fs.existsSync(env.OMP_FAKE_TUNNEL_RESTART_MARKER)) {\n` +
+				`fs.writeFileSync(env.OMP_FAKE_TUNNEL_RESTART_MARKER, "first\\n");\n` +
+				`process.exit(23);\n` +
+				`}\n` +
+				`fs.appendFileSync(env.OMP_FAKE_TUNNEL_RESTART_MARKER, "restarted\\n");\n` +
+				`}\n` +
+				`if (env.OMP_FAKE_TUNNEL_EXIT_CODE) process.exit(Number(env.OMP_FAKE_TUNNEL_EXIT_CODE));\n` +
+				`await new Promise<void>(() => {});\n`,
+		);
+		fs.writeFileSync(target, "@echo off\r\n");
+		const realSpawn = Bun.spawn.bind(Bun);
+		const spawnSpy = vi.spyOn(Bun, "spawn");
+		spawnSpy.mockImplementation(((cmd: string[], options?: BunSpawnOptions) => {
+			const isFake = Object.values(fakeBinaries).some(binary => path.resolve(binary) === path.resolve(cmd[0]!));
+			return isFake ? realSpawn([process.execPath, runner, ...cmd.slice(1)], options) : realSpawn(cmd, options);
+		}) as typeof Bun.spawn);
+		restoreSpawn = () => spawnSpy.mockRestore();
+	} else {
+		fs.writeFileSync(
+			target,
+			`#!/bin/sh\n` +
+				`: > "$OMP_FAKE_TUNNEL_ARGS"\n` +
+				`for arg do printf '%s\\n' "$arg" >> "$OMP_FAKE_TUNNEL_ARGS"; done\n` +
+				`printf 'run\\n' >> "$OMP_FAKE_TUNNEL_RUNS"\n` +
+				`trap 'printf "SIGINT\\n" >> "$OMP_FAKE_TUNNEL_SIGNALS"; exit 0' INT\n` +
+				`trap 'printf "SIGTERM\\n" >> "$OMP_FAKE_TUNNEL_SIGNALS"; exit 0' TERM\n` +
+				`if [ -n "$OMP_FAKE_TUNNEL_OUTPUT" ]; then printf '%s\\n' "$OMP_FAKE_TUNNEL_OUTPUT"; fi\n` +
+				`if [ -n "$OMP_FAKE_TUNNEL_RESTART_MARKER" ]; then\n` +
+				`  if [ ! -e "$OMP_FAKE_TUNNEL_RESTART_MARKER" ]; then\n` +
+				`    printf 'first\\n' > "$OMP_FAKE_TUNNEL_RESTART_MARKER"\n` +
+				`    exit 23\n` +
+				`  fi\n` +
+				`  printf 'restarted\\n' >> "$OMP_FAKE_TUNNEL_RESTART_MARKER"\n` +
+				`fi\n` +
+				`if [ -n "$OMP_FAKE_TUNNEL_EXIT_CODE" ]; then exit "$OMP_FAKE_TUNNEL_EXIT_CODE"; fi\n` +
+				`while :; do /bin/sleep 1; done\n`,
+		);
+		fs.chmodSync(target, 0o755);
+	}
 	for (const name of ["ssh", "devtunnel", "zrok", "bore", "cloudflared"]) {
-		fs.symlinkSync(target, path.join(fakeBinDir, name));
+		const binary = path.join(fakeBinDir, windows ? `${name}.cmd` : name);
+		if (windows) fs.copyFileSync(target, binary);
+		else fs.symlinkSync(target, binary);
+		fakeBinaries[name] = binary;
 	}
 	process.env.PATH = fakeBinDir;
+	const whichSpy = vi
+		.spyOn(piUtils, "$which")
+		.mockImplementation(name => (process.env.PATH === fakeBinDir ? (fakeBinaries[name] ?? null) : null));
+	restoreWhich = () => whichSpy.mockRestore();
 });
 
 afterAll(async () => {
 	for (const active of activeExposures) active.stop();
 	await Promise.all(activeExposures.map(active => active.exited));
+	restoreSpawn?.();
 	if (originalPath === undefined) delete process.env.PATH;
 	else process.env.PATH = originalPath;
 	delete process.env.OMP_FAKE_TUNNEL_ARGS;
@@ -135,6 +189,7 @@ afterAll(async () => {
 	delete process.env.OMP_FAKE_TUNNEL_OUTPUT;
 	delete process.env.OMP_FAKE_TUNNEL_EXIT_CODE;
 	delete process.env.OMP_FAKE_TUNNEL_RESTART_MARKER;
+	restoreWhich?.();
 	fs.rmSync(fakeBinDir, { recursive: true, force: true });
 });
 

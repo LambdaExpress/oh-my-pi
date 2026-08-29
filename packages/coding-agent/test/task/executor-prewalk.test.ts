@@ -43,6 +43,7 @@ function yieldEmittingSession(
 		sessionManager: { appendSessionInit: () => {} },
 		getActiveToolNames: () => activeTools,
 		getEnabledToolNames: () => activeTools,
+		getMountedXdevToolNames: () => [],
 		getAllToolNames: () => activeTools,
 		setActiveToolsByName: async (toolNames: string[]) => {
 			activeTools = toolNames;

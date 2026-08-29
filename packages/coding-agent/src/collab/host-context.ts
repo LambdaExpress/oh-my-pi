@@ -18,6 +18,7 @@ export interface CollabHostContext {
 	sessionManager: SessionManager;
 	settings: Settings;
 	eventBus?: EventBus;
+	subagentEventBus?: EventBus;
 	statusLine: {
 		setCollabStatus(status: CollabStatus | null): void;
 		invalidate(): void;

@@ -82,7 +82,7 @@ describe("SessionManager.forkFrom", () => {
 		expect(forked.getSessionFile()).toBe(cloneFile);
 		expect(await Bun.file(cloneFile).exists()).toBe(false);
 		const registry = new AgentRegistry();
-		await registerPersistedSubagents(registry, sourceFile, "parent-scope");
+		await registerPersistedSubagents(registry, sourceFile, { scopeId: "parent-scope" });
 		expect(registry.get("Tan-deferred")).toBeUndefined();
 		forked.appendSessionInit({
 			systemPrompt: "system prompt",
@@ -92,7 +92,7 @@ describe("SessionManager.forkFrom", () => {
 		expect(await Bun.file(cloneFile).exists()).toBe(false);
 		await forked.materializeDeferredSession();
 		expect(await Bun.file(cloneFile).exists()).toBe(true);
-		await registerPersistedSubagents(registry, sourceFile, "parent-scope");
+		await registerPersistedSubagents(registry, sourceFile, { scopeId: "parent-scope" });
 		expect(registry.get("Tan-deferred")?.status).toBe("parked");
 
 		const cloneEntries = await loadEntriesFromFile(cloneFile);

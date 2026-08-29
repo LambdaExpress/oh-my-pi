@@ -85,8 +85,6 @@ describe("EventController SSH transfer HUD persistence", () => {
 			ui: {
 				requestRender: vi.fn(),
 				requestComponentRender: vi.fn(),
-				refreshDisplay: vi.fn(),
-				resetDisplay: vi.fn(),
 			},
 			statusLine: { invalidate: vi.fn() },
 			updateEditorTopBorder: vi.fn(),
@@ -138,14 +136,19 @@ describe("EventController SSH transfer HUD persistence", () => {
 			});
 			expect(ctx.pendingTools.get("tool-1")).toBe(component);
 			expect(component.isTranscriptBlockFinalized()).toBe(false);
-			expect(chatContainer.peekFinalizedBatch(100, 0)).toBeUndefined();
+			const offered = chatContainer.peekFinalizedBatch(100, 0);
+			expect(offered).toBeDefined();
+			expect(Bun.stripANSI(offered?.rows.join("\n") ?? "")).toContain("blob.bin");
 
 			await controller.handleEvent({
 				type: "async_job_update",
 				job: transferJob("running", { percent: 75 }),
 			});
-			const running = chatContainer
-				.renderViewport(100, 30)
+			// An offered history batch is excluded from the live viewport in the
+			// same frame. Inspect the original card directly to prove the async
+			// update still repaints that component after its prefix was offered.
+			const running = component
+				.render(100)
 				.map(line => Bun.stripANSI(line))
 				.join("\n");
 			expect(running).toContain("75.0%");
@@ -156,8 +159,8 @@ describe("EventController SSH transfer HUD persistence", () => {
 				type: "async_job_update",
 				job: transferJob("completed", { percent: 100, settled: true }),
 			});
-			const completed = chatContainer
-				.renderViewport(100, 30)
+			const completed = component
+				.render(100)
 				.map(line => Bun.stripANSI(line))
 				.join("\n");
 			expect(completed).toContain("100.0%");

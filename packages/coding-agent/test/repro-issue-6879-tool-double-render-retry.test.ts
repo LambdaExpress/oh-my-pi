@@ -103,6 +103,8 @@ describe("issue #6879 — tool output appears twice after a superseded turn", ()
 		// sessions, so provenance-gated rendering must treat it as one here.
 		vi.spyOn(session, "hasBuiltInTool").mockReturnValue(true);
 		mode = new InteractiveMode(session, "test");
+		// Tests drive EventController directly; skip full terminal startup.
+		mode.isInitialized = true;
 		mode.ui.requestRender = vi.fn();
 		Object.defineProperty(session, "isStreaming", { configurable: true, get: () => true });
 	});

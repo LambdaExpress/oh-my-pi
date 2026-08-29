@@ -91,6 +91,8 @@ export interface XdevDispatch {
 	mode: "help" | "execute";
 	/** Validated inner args, kept for renderer delegation on result rebuilds. */
 	args?: Record<string, unknown>;
+	/** The transport synthesized this result after execution was aborted. */
+	aborted?: true;
 	/**
 	 * Approval tier of the wrapped tool for {@link args} (`read` = no workspace
 	 * mutation). Absent for `help` dispatches and calls whose tier could not be
@@ -576,13 +578,19 @@ export function renderXdevResult(
 	const innerResult = { content: result.content, details: dispatch.inner, isError: result.isError };
 	if (renderer?.renderResult) {
 		const parts: Component[] = [];
+		const rendered = renderer.renderResult(innerResult, options, theme, dispatch.args ?? {});
 		// Emulate the unmerged call+result topology inside the write block for
-		// renderers that expect a separate call header.
-		if (!renderer.mergeCallAndResult && renderer.renderCall) {
+		// renderers that expect a separate call header. A merged renderer can also
+		// degrade an abort to plain result text; restore its mounted call in that
+		// narrow case so transport cancellation cannot erase the tool identity and
+		// arguments that were visible while the call was running.
+		if (
+			renderer.renderCall &&
+			(!renderer.mergeCallAndResult || (dispatch.aborted === true && rendered instanceof Text))
+		) {
 			const call = renderer.renderCall(dispatch.args ?? {}, { ...options, isPartial: false }, theme);
 			if (call) parts.push(call);
 		}
-		const rendered = renderer.renderResult(innerResult, options, theme, dispatch.args ?? {});
 		if (rendered) parts.push(rendered);
 		if (parts.length === 1) return parts[0];
 		if (parts.length > 1) {

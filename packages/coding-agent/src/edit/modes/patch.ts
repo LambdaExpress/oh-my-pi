@@ -31,7 +31,6 @@ import {
 	invalidateFsScanAfterRename,
 	invalidateFsScanAfterWrite,
 } from "../../tools/fs-cache-invalidation";
-import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd } from "../../tools/path-utils";
 import { ToolError } from "../../tools/tool-errors";
 import type { AppliedEditObserver } from "../blackbox";
@@ -55,7 +54,7 @@ import {
 } from "../normalize";
 import { readEditFileText, serializeEditFileText } from "../read-file";
 import type { EditToolDetails, LspBatchRequest } from "../renderer";
-import { pruneOversizedEditSnapshots } from "../snapshot-details";
+import { createEditResult, type EditPreviewSource, toEditToolResult } from "../result";
 import {
 	createInternalUrlEditFileSystem,
 	type EditTarget,
@@ -2157,6 +2156,7 @@ export async function executePatchSingle(
 		diff: "",
 		firstChangedLine: undefined,
 	};
+	let previewSource: EditPreviewSource | undefined;
 	if (
 		result.change.type === "update" &&
 		result.change.oldContent !== undefined &&
@@ -2167,24 +2167,13 @@ export async function executePatchSingle(
 		diffResult = generateUnifiedDiffString(normalizedOld, normalizedNew, undefined, {
 			path: detailsPath,
 		});
+		previewSource = { before: normalizedOld, after: normalizedNew, path: detailsPath };
 	} else if (result.change.type === "create" && result.change.newContent !== undefined) {
 		// The result is authoritative for rendering, so emit the added-content
 		// diff here rather than relying on the call-phase streaming preview.
 		const normalizedNew = normalizeToLF(stripBom(result.change.newContent).text);
 		diffResult = generateUnifiedDiffString("", normalizedNew, undefined, { path: detailsPath });
-	}
-
-	let resultText: string;
-	switch (result.change.type) {
-		case "create":
-			resultText = `Created ${path}`;
-			break;
-		case "delete":
-			resultText = `Deleted ${path}`;
-			break;
-		case "update":
-			resultText = effectiveRename ? `Updated and moved ${path} to ${effectiveRename}` : `Updated ${path}`;
-			break;
+		previewSource = { before: "", after: normalizedNew, path: detailsPath };
 	}
 
 	let diagnostics = localFileSystem?.getDiagnostics();
@@ -2193,10 +2182,6 @@ export async function executePatchSingle(
 		diagnostics ??= flushedDiagnostics;
 	}
 	const mergedDiagnostics = mergeDiagnosticsWithWarnings(diagnostics, result.warnings ?? []);
-	const meta = outputMeta()
-		.diagnostics(mergedDiagnostics?.summary ?? "", mergedDiagnostics?.messages ?? [])
-		.get();
-
 	const oldText = result.change.type !== "create" ? result.change.oldContent : undefined;
 	const newText = result.change.type !== "delete" ? result.change.newContent : undefined;
 	if (oldText !== undefined && newText !== undefined) {
@@ -2207,19 +2192,21 @@ export async function executePatchSingle(
 		});
 	}
 
-	return {
-		content: [{ type: "text", text: resultText }],
-		details: pruneOversizedEditSnapshots({
-			diff: diffResult.diff,
-			path: detailsPath,
-			firstChangedLine: diffResult.firstChangedLine,
-			diagnostics: mergedDiagnostics,
-			op,
-			move: effectiveRename,
-			sourcePath,
-			meta,
-			oldText,
-			newText,
-		}),
-	};
+	const editResult = createEditResult({
+		displayPath: path,
+		// For moves, anchor the diff to the destination so clients open the
+		// file that still exists while retaining the source in structured details.
+		resultPath: detailsPath,
+		diff: diffResult.diff,
+		firstChangedLine: diffResult.firstChangedLine,
+		diagnostics: mergedDiagnostics,
+		op,
+		move: effectiveRename,
+		sourcePath,
+		oldText,
+		newText,
+		warnings: result.warnings,
+		previewSource,
+	});
+	return toEditToolResult(editResult);
 }

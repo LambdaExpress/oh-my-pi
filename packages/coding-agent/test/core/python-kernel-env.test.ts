@@ -57,10 +57,13 @@ describe("enumeratePythonRuntimes", () => {
 		vi.restoreAllMocks();
 	});
 
-	const managedDir = path.join(path.sep, "fake", ".omp", "python-env");
+	const fixtureRoot = path.join(os.tmpdir(), "omp-python-runtime-fixtures");
+	const workDir = path.join(fixtureRoot, "work");
+	const systemBin = path.join(fixtureRoot, "system-bin");
+	const managedDir = path.join(fixtureRoot, ".omp", "python-env");
 	const managedBin = path.join(managedDir, process.platform === "win32" ? "Scripts" : "bin");
 	const managedPy = path.join(managedBin, process.platform === "win32" ? "python.exe" : "python");
-	const systemPy = path.join(path.sep, "usr", "bin", "python3");
+	const systemPy = path.join(systemBin, process.platform === "win32" ? "python.exe" : "python3");
 
 	it("enumerates the managed env AND the system interpreter so a broken managed env can fall through", () => {
 		vi.spyOn(piUtils, "getPythonEnvDir").mockReturnValue(managedDir);
@@ -68,8 +71,8 @@ describe("enumeratePythonRuntimes", () => {
 		// Only the managed interpreter physically exists; no project/active venv.
 		vi.spyOn(fs, "existsSync").mockImplementation(candidate => candidate === managedPy);
 
-		const runtimes = enumeratePythonRuntimes(path.join(path.sep, "work"), {
-			PATH: path.join(path.sep, "usr", "bin"),
+		const runtimes = enumeratePythonRuntimes(workDir, {
+			PATH: systemBin,
 		});
 
 		expect(runtimes.map(r => r.pythonPath)).toEqual([managedPy, systemPy]);
@@ -77,12 +80,12 @@ describe("enumeratePythonRuntimes", () => {
 		const [managed, system] = runtimes;
 		expect(managed.venvPath).toBe(managedDir);
 		expect(managed.env.VIRTUAL_ENV).toBe(managedDir);
-		expect(managed.env.PATH).toBe(`${managedBin}${path.delimiter}${path.join(path.sep, "usr", "bin")}`);
+		expect(managed.env.PATH).toBe(`${managedBin}${path.delimiter}${systemBin}`);
 
 		// The system candidate must not inherit the managed env's VIRTUAL_ENV/PATH mutation.
 		expect(system.venvPath).toBeUndefined();
 		expect(system.env.VIRTUAL_ENV).toBeUndefined();
-		expect(system.env.PATH).toBe(path.join(path.sep, "usr", "bin"));
+		expect(system.env.PATH).toBe(systemBin);
 	});
 
 	it("falls back to the system interpreter when no managed env or venv exists", () => {
@@ -90,64 +93,80 @@ describe("enumeratePythonRuntimes", () => {
 		vi.spyOn(piUtils, "$which").mockImplementation(bin => (bin === "python" ? systemPy : null));
 		vi.spyOn(fs, "existsSync").mockReturnValue(false);
 
-		const runtimes = enumeratePythonRuntimes(path.join(path.sep, "work"), {
-			PATH: path.join(path.sep, "usr", "bin"),
+		const runtimes = enumeratePythonRuntimes(workDir, {
+			PATH: systemBin,
 		});
 
 		expect(runtimes.map(r => r.pythonPath)).toEqual([systemPy]);
-		expect(resolvePythonRuntime(path.join(path.sep, "work"), {}).pythonPath).toBe(systemPy);
+		expect(resolvePythonRuntime(workDir, {}).pythonPath).toBe(systemPy);
 	});
 
 	it("resolves an explicit interpreter without falling through to discovery", () => {
 		vi.spyOn(piUtils, "getPythonEnvDir").mockReturnValue(managedDir);
 		vi.spyOn(piUtils, "$which").mockImplementation(bin => (bin === "python" ? systemPy : null));
 		vi.spyOn(fs, "existsSync").mockReturnValue(false);
-		const explicitPy = path.join(path.sep, "custom", "python3.13");
+		const explicitPy = path.join(fixtureRoot, "custom", process.platform === "win32" ? "python.exe" : "python3.13");
 
-		const runtime = resolveExplicitPythonRuntime(explicitPy, path.join(path.sep, "work"), {
-			PATH: path.join(path.sep, "usr", "bin"),
+		const runtime = resolveExplicitPythonRuntime(explicitPy, workDir, {
+			PATH: systemBin,
 		});
 
 		expect(runtime.pythonPath).toBe(explicitPy);
 		expect(runtime.venvPath).toBeUndefined();
-		expect(runtime.env.PATH).toBe(path.join(path.sep, "usr", "bin"));
+		expect(runtime.env.PATH).toBe(systemBin);
 	});
 
 	it("sets venv env vars for an explicit interpreter inside a virtualenv", () => {
-		const venvDir = path.join(path.sep, "work", ".venv");
+		const venvDir = path.join(workDir, ".venv");
 		const binDir = path.join(venvDir, process.platform === "win32" ? "Scripts" : "bin");
 		const explicitPy = path.join(binDir, process.platform === "win32" ? "python.exe" : "python");
 		vi.spyOn(fs, "existsSync").mockImplementation(candidate => candidate === path.join(venvDir, "pyvenv.cfg"));
 
-		const runtime = resolveExplicitPythonRuntime(explicitPy, path.join(path.sep, "work"), {
-			PATH: path.join(path.sep, "usr", "bin"),
+		const runtime = resolveExplicitPythonRuntime(explicitPy, workDir, {
+			PATH: systemBin,
 		});
 
 		expect(runtime.venvPath).toBe(venvDir);
 		expect(runtime.env.VIRTUAL_ENV).toBe(venvDir);
-		expect(runtime.env.PATH).toBe(`${binDir}${path.delimiter}${path.join(path.sep, "usr", "bin")}`);
+		expect(runtime.env.PATH).toBe(`${binDir}${path.delimiter}${systemBin}`);
 	});
 
 	it("expands a home-relative explicit interpreter instead of resolving against cwd", () => {
-		const home = path.join(path.sep, "home", "tester");
+		const home = path.join(fixtureRoot, "home", "tester");
 		vi.spyOn(os, "homedir").mockReturnValue(home);
 		vi.spyOn(fs, "existsSync").mockReturnValue(false);
 
-		const runtime = resolveExplicitPythonRuntime("~/venvs/py/bin/python", path.join(path.sep, "work"), {});
+		const homeRelative = [
+			"~",
+			"venvs",
+			"py",
+			process.platform === "win32" ? "Scripts" : "bin",
+			process.platform === "win32" ? "python.exe" : "python",
+		].join("/");
+		const runtime = resolveExplicitPythonRuntime(homeRelative, workDir, {});
 
-		expect(runtime.pythonPath).toBe(path.join(home, "venvs", "py", "bin", "python"));
+		expect(runtime.pythonPath).toBe(
+			path.join(
+				home,
+				"venvs",
+				"py",
+				process.platform === "win32" ? "Scripts" : "bin",
+				process.platform === "win32" ? "python.exe" : "python",
+			),
+		);
 	});
 
 	it("resolves a relative explicit interpreter against cwd", () => {
 		vi.spyOn(fs, "existsSync").mockReturnValue(false);
 
-		const runtime = resolveExplicitPythonRuntime(
-			path.join(".venv", "bin", "python"),
-			path.join(path.sep, "work"),
-			{},
+		const relativeInterpreter = path.join(
+			".venv",
+			process.platform === "win32" ? "Scripts" : "bin",
+			process.platform === "win32" ? "python.exe" : "python",
 		);
+		const runtime = resolveExplicitPythonRuntime(relativeInterpreter, workDir, {});
 
-		expect(runtime.pythonPath).toBe(path.join(path.sep, "work", ".venv", "bin", "python"));
+		expect(runtime.pythonPath).toBe(path.join(workDir, relativeInterpreter));
 	});
 
 	it("throws from resolvePythonRuntime when no interpreter can be found", () => {
@@ -155,7 +174,7 @@ describe("enumeratePythonRuntimes", () => {
 		vi.spyOn(piUtils, "$which").mockReturnValue(null);
 		vi.spyOn(fs, "existsSync").mockReturnValue(false);
 
-		expect(enumeratePythonRuntimes(path.join(path.sep, "work"), {})).toEqual([]);
-		expect(() => resolvePythonRuntime(path.join(path.sep, "work"), {})).toThrow("Python executable not found");
+		expect(enumeratePythonRuntimes(workDir, {})).toEqual([]);
+		expect(() => resolvePythonRuntime(workDir, {})).toThrow("Python executable not found");
 	});
 });

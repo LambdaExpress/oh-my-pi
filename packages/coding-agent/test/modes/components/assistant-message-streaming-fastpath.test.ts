@@ -236,131 +236,144 @@ Average Latency: 1,240 ms
 	});
 });
 
-describe("AssistantMessageComponent streaming settled prefix", () => {
-	it("combines completed Markdown, its Spacer, and the streaming Markdown cursor", () => {
+describe("AssistantMessageComponent streaming stable rows", () => {
+	it("publishes only the frozen semantic prefix of leading transient thinking", () => {
 		const component = new AssistantMessageComponent();
 		component.updateContent(
-			msg([
-				{ type: "thinking", thinking: "Completed reasoning paragraph." },
-				{
-					type: "text",
-					text: "Frozen answer paragraph with enough words to be visibly distinct.\n\nMutable tail",
-				},
-			]),
+			msg([{ type: "thinking", thinking: "Completed reasoning paragraph.\n\nMutable thinking tail" }]),
 			{ transient: true },
 		);
 
 		const rendered = component.render(52);
-		const markdown = collectMarkdown(component);
-		expect(markdown).toHaveLength(2);
-		const streamingPrefix = markdown[1]!.getLastRenderSettledPrefix();
-		expect(streamingPrefix).toBeDefined();
+		expect(component.transcriptBlockMode).toBe("appendOnly");
+		const stable = component.getTranscriptStableRows();
+		expect(stable).toHaveLength(1);
+		const stableRendered = component.renderTranscriptStableRows(stable.length, 52);
+		expect(stableRendered.length).toBeGreaterThan(0);
+		expect([...rendered.slice(0, stableRendered.length)]).toEqual([...stableRendered]);
+		expect(Bun.stripANSI(stableRendered.join("\n"))).toContain("Completed reasoning paragraph.");
+		expect(Bun.stripANSI(stableRendered.join("\n"))).not.toContain("Mutable thinking tail");
 
-		const prefix = component.getTranscriptBlockSettledPrefix(52, rendered);
-		expect(prefix).toBeDefined();
-		expect(prefix!.rowCount).toBe(markdown[0]!.render(52).length + 1 + streamingPrefix!.rowCount);
-		expect(Bun.stripANSI(rendered.slice(0, prefix!.rowCount).join("\n"))).toContain("Completed reasoning paragraph.");
-		expect(Bun.stripANSI(rendered.slice(0, prefix!.rowCount).join("\n"))).toContain("Frozen answer paragraph");
-		expect(Bun.stripANSI(rendered.slice(0, prefix!.rowCount).join("\n"))).not.toContain("Mutable tail");
-	});
-
-	it("keeps settled rows monotonic while the mutable tail appends", () => {
-		const component = new AssistantMessageComponent();
-		const first = "Stable opening paragraph.\n\nMutable tail";
-		component.updateContent(msg([{ type: "text", text: first }]), { transient: true });
-		const firstRows = component.render(48);
-		const firstPrefix = component.getTranscriptBlockSettledPrefix(48, firstRows);
-		expect(firstPrefix).toBeDefined();
-
-		component.updateContent(msg([{ type: "text", text: `${first} keeps growing` }]), { transient: true });
-		const secondRows = component.render(48);
-		const secondPrefix = component.getTranscriptBlockSettledPrefix(48, secondRows);
-		expect(secondPrefix).toBeDefined();
-		expect(secondPrefix!.rowCount).toBeGreaterThanOrEqual(firstPrefix!.rowCount);
-		expect(component.resolveTranscriptBlockSettledPrefix(firstPrefix!.cursor, 48, secondRows)).toBe(
-			firstPrefix!.rowCount,
-		);
-
-		component.updateContent(msg([{ type: "text", text: `${first} keeps growing\n\nNewest mutable tail` }]), {
+		const textOnly = new AssistantMessageComponent();
+		textOnly.updateContent(msg([{ type: "text", text: "Completed answer paragraph.\n\nMutable answer tail" }]), {
 			transient: true,
 		});
-		const thirdRows = component.render(48);
-		const thirdPrefix = component.getTranscriptBlockSettledPrefix(48, thirdRows);
-		expect(thirdPrefix).toBeDefined();
-		expect(thirdPrefix!.rowCount).toBeGreaterThanOrEqual(secondPrefix!.rowCount);
+		textOnly.render(52);
+		expect(textOnly.getTranscriptStableRows()).toEqual([]);
 	});
 
-	it("reprojects an old logical cursor at a different width", () => {
+	it("keeps stable identities and their rendered prefix monotonic as thinking grows", () => {
+		const component = new AssistantMessageComponent();
+		const opening = "Stable opening reasoning paragraph.";
+		const first = `${opening}\n\nSecond reasoning paragraph`;
+		component.updateContent(msg([{ type: "thinking", thinking: first }]), { transient: true });
+		component.render(48);
+		const firstStable = [...component.getTranscriptStableRows()];
+		const firstRendered = [...component.renderTranscriptStableRows(firstStable.length, 48)];
+		expect(firstStable.length).toBeGreaterThan(0);
+
+		component.updateContent(
+			msg([
+				{
+					type: "thinking",
+					thinking: `${first} now complete.\n\nNewest mutable thinking tail`,
+				},
+			]),
+			{ transient: true },
+		);
+		const live = component.render(48);
+		const secondStable = [...component.getTranscriptStableRows()];
+		const secondRendered = [...component.renderTranscriptStableRows(secondStable.length, 48)];
+
+		expect(secondStable.length).toBeGreaterThan(firstStable.length);
+		expect(secondStable.slice(0, firstStable.length)).toEqual(firstStable);
+		for (let index = 0; index < firstStable.length; index++) {
+			expect(secondStable[index]).toBe(firstStable[index]);
+		}
+		expect(secondRendered.length).toBeGreaterThan(firstRendered.length);
+		expect(secondRendered.slice(0, firstRendered.length)).toEqual(firstRendered);
+		expect(live.slice(0, secondRendered.length)).toEqual(secondRendered);
+	});
+
+	it("reflows the same semantic stable count at a narrower width", () => {
 		const component = new AssistantMessageComponent();
 		const stable =
-			"This completed paragraph is intentionally long so its settled logical boundary wraps onto many physical rows in a narrow terminal.";
-		component.updateContent(msg([{ type: "text", text: `${stable}\n\nMutable tail` }]), {
+			"This completed reasoning paragraph is intentionally long so one semantic stable snapshot wraps onto many physical rows in a narrow terminal.";
+		component.updateContent(msg([{ type: "thinking", thinking: `${stable}\n\nMutable thinking tail` }]), {
 			transient: true,
 		});
+		component.render(100);
 
-		const wideRows = component.render(100);
-		const widePrefix = component.getTranscriptBlockSettledPrefix(100, wideRows);
-		expect(widePrefix).toBeDefined();
+		const semanticRows = [...component.getTranscriptStableRows()];
+		expect(semanticRows.length).toBeGreaterThan(0);
+		const wideRows = component.renderTranscriptStableRows(semanticRows.length, 100);
+		const narrowRows = component.renderTranscriptStableRows(semanticRows.length, 28);
 
-		const narrowRows = component.render(28);
-		const narrowRowCount = component.resolveTranscriptBlockSettledPrefix(widePrefix!.cursor, 28, narrowRows);
-		expect(narrowRowCount).toBeDefined();
-		expect(narrowRowCount!).toBeGreaterThan(widePrefix!.rowCount);
-		expect(narrowRowCount!).toBeLessThanOrEqual(narrowRows.length);
+		expect(narrowRows.length).toBeGreaterThan(wideRows.length);
+		expect(component.getTranscriptStableRows()).toEqual(semanticRows);
+		expect(Bun.stripANSI(narrowRows.join("\n")).replace(/\s+/g, " ")).toContain("semantic stable snapshot");
 	});
 
 	it("gates real Mermaid source but not a Mermaid example inside an ordinary fence", () => {
 		const mermaid = new AssistantMessageComponent();
 		mermaid.updateContent(
-			msg([{ type: "text", text: "Stable prelude.\n\n```mermaid\nflowchart TD\n  A-->B\n```" }]),
+			msg([
+				{
+					type: "thinking",
+					thinking: "Stable prelude.\n\n```mermaid\nflowchart TD\n  A-->B\n```\n\nMutable thinking tail",
+				},
+			]),
 			{ transient: true },
 		);
-		const mermaidRows = mermaid.render(80);
-		expect(mermaid.getTranscriptBlockSettledPrefix(80, mermaidRows)).toBeUndefined();
+		mermaid.render(80);
+		expect(mermaid.getTranscriptStableRows()).toEqual([]);
 
 		const example = new AssistantMessageComponent();
 		example.updateContent(
 			msg([
 				{
-					type: "text",
-					text: "````text\n```mermaid\nflowchart TD\n  A-->B\n```\n````\n\nMutable tail",
+					type: "thinking",
+					thinking: "````text\n```mermaid\nflowchart TD\n  A-->B\n```\n````\n\nMutable thinking tail",
 				},
 			]),
 			{ transient: true },
 		);
-		const exampleRows = example.render(80);
-		expect(example.getTranscriptBlockSettledPrefix(80, exampleRows)).toBeDefined();
+		const exampleLive = example.render(80);
+		const exampleStable = example.getTranscriptStableRows();
+		expect(exampleStable.length).toBeGreaterThan(0);
+		const exampleRows = example.renderTranscriptStableRows(exampleStable.length, 80);
+		expect([...exampleLive.slice(0, exampleRows.length)]).toEqual([...exampleRows]);
 	});
 
-	it("invalidates old cursors after fast-path teardown and same-shape rewind", () => {
-		const initial = "Stable paragraph before the mutable tail.\n\nMutable tail";
+	it("never retracts published stable rows after fast-path teardown or a same-shape rewind", () => {
+		const component = new AssistantMessageComponent();
+		const initial = "Stable reasoning before the mutable tail.\n\nMutable thinking tail";
+		component.updateContent(msg([{ type: "thinking", thinking: initial }]), { transient: true });
+		component.render(60);
+		const published = [...component.getTranscriptStableRows()];
+		const publishedRender = [...component.renderTranscriptStableRows(published.length, 60)];
+		expect(published.length).toBeGreaterThan(0);
 
-		const teardown = new AssistantMessageComponent();
-		teardown.updateContent(msg([{ type: "text", text: initial }]), { transient: true });
-		const beforeTeardownRows = teardown.render(60);
-		const beforeTeardown = teardown.getTranscriptBlockSettledPrefix(60, beforeTeardownRows);
-		expect(beforeTeardown).toBeDefined();
-		teardown.updateContent(
+		component.updateContent(
 			msg([
 				{ type: "redactedThinking", data: "opaque" },
-				{ type: "text", text: `${initial} appended` },
+				{ type: "thinking", thinking: initial },
 			]),
 			{ transient: true },
 		);
-		const afterTeardownRows = teardown.render(60);
-		expect(
-			teardown.resolveTranscriptBlockSettledPrefix(beforeTeardown!.cursor, 60, afterTeardownRows),
-		).toBeUndefined();
+		component.render(60);
+		expect(component.getTranscriptStableRows()).toEqual(published);
+		expect(component.renderTranscriptStableRows(published.length, 60)).toEqual(publishedRender);
 
-		const rewind = new AssistantMessageComponent();
-		rewind.updateContent(msg([{ type: "text", text: initial }]), { transient: true });
-		const beforeRewindRows = rewind.render(60);
-		const beforeRewind = rewind.getTranscriptBlockSettledPrefix(60, beforeRewindRows);
-		expect(beforeRewind).toBeDefined();
-		rewind.updateContent(msg([{ type: "text", text: "Rewritten stable paragraph.\n\nNew mutable tail" }]), {
-			transient: true,
-		});
-		const afterRewindRows = rewind.render(60);
-		expect(rewind.resolveTranscriptBlockSettledPrefix(beforeRewind!.cursor, 60, afterRewindRows)).toBeUndefined();
+		component.updateContent(
+			msg([
+				{ type: "redactedThinking", data: "opaque" },
+				{ type: "thinking", thinking: "Rewritten stable reasoning.\n\nNew mutable thinking tail" },
+			]),
+			{ transient: true },
+		);
+		component.render(60);
+		expect(component.getTranscriptStableRows()).toEqual(published);
+		expect(component.renderTranscriptStableRows(published.length, 60)).toEqual(publishedRender);
 	});
 });

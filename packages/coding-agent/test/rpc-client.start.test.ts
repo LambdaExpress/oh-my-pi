@@ -1,6 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as path from "node:path";
 import { RpcClient } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
+import { setLocale } from "../src/i18n";
+
+beforeEach(() => setLocale("en"));
+afterEach(() => setLocale(null));
 
 describe("RpcClient.start", () => {
 	test("rejects when RPC process exits immediately", async () => {
@@ -13,5 +17,28 @@ describe("RpcClient.start", () => {
 		});
 
 		await expect(client.start()).rejects.toThrow(/Unknown provider.*__missing_provider__/);
+	});
+	test("launcher builder receives the complete agent argv", async () => {
+		let received: string[] | undefined;
+		using client = new RpcClient({
+			command: args => {
+				received = args;
+				return [process.execPath, "-e", "process.exit(1)"];
+			},
+			provider: "openrouter",
+			model: "example/model",
+			args: ["--no-session"],
+		});
+
+		await expect(client.start()).rejects.toThrow(/exited with code 1/);
+		expect(received).toEqual([
+			"--mode",
+			"rpc",
+			"--provider",
+			"openrouter",
+			"--model",
+			"example/model",
+			"--no-session",
+		]);
 	});
 });

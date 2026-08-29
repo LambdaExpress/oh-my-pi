@@ -1,8 +1,9 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { getWorktreeDir, hashPath } from "@oh-my-pi/pi-utils";
-import * as git from "../utils/git";
+import { withRepoLock } from "../utils/repo-lock";
 import { copyDirtyStateToWorktree, moveDirtyStateToWorktree } from "./dirty-transfer";
 import { isSafeRelativePath } from "./include";
 import {
@@ -127,17 +128,14 @@ export function localCwdForRecord(record: ManagedWorktreeRecord): string {
 }
 
 async function resolveRepositoryRoots(cwd: string): Promise<{ repoRoot: string; primaryRoot: string }> {
-	const repoRoot = await git.repo.root(cwd);
-	if (!repoRoot)
-		throw new Error("Current directory is not inside a Git repository; cannot create a managed worktree.");
-	const primaryRoot = (await git.repo.primaryRoot(cwd)) ?? repoRoot;
-	return { repoRoot, primaryRoot };
+	const repo = vcs.git(cwd);
+	if (!repo) throw new Error("Current directory is not inside a Git repository; cannot create a managed worktree.");
+	return { repoRoot: repo.info().repoRoot, primaryRoot: repo.primaryRoot() };
 }
 
 async function resolveOptionalRepositoryRoots(cwd: string): Promise<{ repoRoot: string; primaryRoot: string } | null> {
-	const repoRoot = await git.repo.root(cwd);
-	if (!repoRoot) return null;
-	return { repoRoot, primaryRoot: (await git.repo.primaryRoot(cwd)) ?? repoRoot };
+	const repo = vcs.git(cwd);
+	return repo ? { repoRoot: repo.info().repoRoot, primaryRoot: repo.primaryRoot() } : null;
 }
 
 async function createPathCandidate(primaryRoot: string, name: string): Promise<{ id: string; worktreeRoot: string }> {
@@ -162,19 +160,48 @@ async function removeEmptyParents(worktreeRoot: string): Promise<void> {
 
 async function rollbackCreatedWorktree(primaryRoot: string, worktreeRoot: string, id: string): Promise<void> {
 	try {
-		await git.worktree.tryRemove(primaryRoot, worktreeRoot, { force: true });
+		await vcs.requireGit(primaryRoot).worktreeRemove(worktreeRoot, true);
 	} catch {
 		/* best effort rollback */
 	}
 	await Promise.all([deleteManagedWorktreeRecord(id), removeEmptyParents(worktreeRoot)]);
 }
 
-async function localCheckoutIsDirty(repoRoot: string, options: { ignoreSubmodules?: boolean } = {}): Promise<boolean> {
-	const summary = await git.status.summary(repoRoot, {
-		ignoreSubmodules: options.ignoreSubmodules ? "all" : undefined,
-	});
-	if (!summary) throw new Error("Could not read the local checkout status.");
+async function localCheckoutIsDirty(
+	repoRoot: string,
+	options: { ignoreSubmodules?: boolean; submodulePaths?: readonly string[] } = {},
+): Promise<boolean> {
+	const repo = vcs.requireGit(repoRoot);
+	if (options.ignoreSubmodules) {
+		const [status, submodulePaths] = await Promise.all([
+			repo.statusPorcelain({ untracked: "normal", nulTerminated: true }),
+			options.submodulePaths ?? repo.submodulePaths(),
+		]);
+		const excluded = new Set(submodulePaths);
+		const entries = status.split("\0");
+		for (let index = 0; index < entries.length; index++) {
+			const entry = entries[index];
+			if (entry.length < 4) continue;
+			const statusCode = entry.slice(0, 2);
+			const relativePath = entry.slice(3);
+			const renamedOrCopied = statusCode.includes("R") || statusCode.includes("C");
+			const sourcePath = renamedOrCopied ? entries[index + 1] : undefined;
+			if (!excluded.has(relativePath) || (sourcePath !== undefined && !excluded.has(sourcePath))) return true;
+			if (renamedOrCopied) index++;
+		}
+		return false;
+	}
+	const summary = await repo.statusSummary();
 	return summary.staged > 0 || summary.unstaged > 0 || summary.untracked > 0;
+}
+
+function childSubmodulePaths(
+	parentPath: string | null,
+	submodules: readonly ManagedWorktreeSubmoduleRecord[],
+): string[] {
+	return submodules
+		.filter(submodule => submodule.parentPath === parentPath)
+		.map(submodule => (parentPath === null ? submodule.path : submodule.path.slice(parentPath.length + 1)));
 }
 
 function submoduleChangesHaveContent(changes: ManagedWorktreeSubmoduleChanges): boolean {
@@ -236,28 +263,52 @@ async function copyChangedFiles(
 }
 
 async function requireSubmoduleRepoRoot(repoRoot: string, submodulePath: string): Promise<void> {
-	const resolvedRoot = await git.repo.root(repoRoot);
+	const resolvedRoot = vcs.git(repoRoot)?.info().repoRoot ?? null;
 	if (resolvedRoot === null || path.resolve(resolvedRoot) !== path.resolve(repoRoot)) {
 		throw new Error(`Managed submodule directory is missing: ${submodulePath}`);
 	}
 }
 
 async function managedSourceIsDirty(record: ManagedWorktreeRecord): Promise<boolean> {
-	if (await localCheckoutIsDirty(record.sourceRepoRoot, { ignoreSubmodules: record.recurseSubmodules })) return true;
+	if (
+		await localCheckoutIsDirty(record.sourceRepoRoot, {
+			ignoreSubmodules: record.recurseSubmodules,
+			submodulePaths: childSubmodulePaths(null, record.submodules),
+		})
+	)
+		return true;
 	if (!record.recurseSubmodules) return false;
 	for (const submodule of record.submodules) {
-		const sourceRoot = await git.repo.root(submodule.sourceRepoRoot);
+		const sourceRoot = vcs.git(submodule.sourceRepoRoot)?.info().repoRoot ?? null;
 		if (sourceRoot === null || path.resolve(sourceRoot) !== path.resolve(submodule.sourceRepoRoot)) continue;
-		if (await localCheckoutIsDirty(submodule.sourceRepoRoot, { ignoreSubmodules: true })) return true;
+		if (
+			await localCheckoutIsDirty(submodule.sourceRepoRoot, {
+				ignoreSubmodules: true,
+				submodulePaths: childSubmodulePaths(submodule.path, record.submodules),
+			})
+		)
+			return true;
 	}
 	return false;
 }
 
 async function managedWorktreeIsDirty(record: ManagedWorktreeRecord): Promise<boolean> {
-	if (await localCheckoutIsDirty(record.worktreeRoot, { ignoreSubmodules: record.recurseSubmodules })) return true;
+	if (
+		await localCheckoutIsDirty(record.worktreeRoot, {
+			ignoreSubmodules: record.recurseSubmodules,
+			submodulePaths: childSubmodulePaths(null, record.submodules),
+		})
+	)
+		return true;
 	if (!record.recurseSubmodules) return false;
 	for (const submodule of record.submodules) {
-		if (await localCheckoutIsDirty(submodule.worktreeRoot, { ignoreSubmodules: true })) return true;
+		if (
+			await localCheckoutIsDirty(submodule.worktreeRoot, {
+				ignoreSubmodules: true,
+				submodulePaths: childSubmodulePaths(submodule.path, record.submodules),
+			})
+		)
+			return true;
 	}
 	return false;
 }
@@ -317,7 +368,7 @@ export async function addManagedWorktree(options: AddManagedWorktreeOptions): Pr
 	const cwd = path.resolve(options.cwd);
 	const { repoRoot, primaryRoot } = await resolveRepositoryRoots(cwd);
 	const baseRef = options.baseRef ?? "HEAD";
-	const baseSha = await git.ref.resolve(repoRoot, baseRef);
+	const baseSha = await vcs.requireGit(repoRoot).resolveRef(baseRef);
 	if (!baseSha) throw new Error(`Could not resolve managed worktree base: ${baseRef}`);
 	const displayName =
 		(options.name ?? path.basename(repoRoot)).trim() || path.basename(repoRoot) || SAFE_NAME_FALLBACK;
@@ -358,7 +409,7 @@ export async function addManagedWorktree(options: AddManagedWorktreeOptions): Pr
 	};
 	await writeManagedWorktreeRecord(record);
 	try {
-		await git.withRepoLock(primaryRoot, () => git.worktree.add(primaryRoot, worktreeRoot, baseSha, { detach: true }));
+		await withRepoLock(primaryRoot, () => vcs.requireGit(primaryRoot).worktreeAdd(worktreeRoot, baseSha, true));
 	} catch (err) {
 		await rollbackCreatedWorktree(primaryRoot, worktreeRoot, id);
 		throw err;
@@ -371,7 +422,7 @@ export async function addManagedWorktree(options: AddManagedWorktreeOptions): Pr
 		const transfer = await transferDirtyState(record, options.dirtyPolicy);
 		record = {
 			...record,
-			headSha: (await git.head.sha(worktreeRoot)) ?? baseSha,
+			headSha: (await vcs.requireGit(worktreeRoot).headSha()) ?? baseSha,
 			state: "ready",
 			includeCopied: transfer.includeCopied,
 			submodules: transfer.submodules,
@@ -457,7 +508,7 @@ export async function removeManagedWorktree(
 		await writeManagedWorktreeRecord(orphaned);
 		return orphaned;
 	}
-	return git.withRepoLock(record.primaryRoot, async () => {
+	return withRepoLock(record.primaryRoot, async () => {
 		const changes = await captureManagedWorktreeChanges(record);
 		if (record.appliedAt === null && hasChanges(changes)) {
 			const captured = recordWithCapturedHeads(record, changes);
@@ -470,11 +521,11 @@ export async function removeManagedWorktree(
 				lastUsedAt: nowIso(),
 			};
 			await writeManagedWorktreeRecord(snapshotted);
-			await git.worktree.remove(record.primaryRoot, record.worktreeRoot, { force: true });
+			await vcs.requireGit(record.primaryRoot).worktreeRemove(record.worktreeRoot, true);
 			await removeEmptyParents(record.worktreeRoot);
 			return snapshotted;
 		}
-		await git.worktree.remove(record.primaryRoot, record.worktreeRoot, { force: true });
+		await vcs.requireGit(record.primaryRoot).worktreeRemove(record.worktreeRoot, true);
 		await Promise.all([deleteManagedWorktreeRecord(record.id), removeEmptyParents(record.worktreeRoot)]);
 		return null;
 	});
@@ -488,7 +539,12 @@ export async function mergeManagedWorktree(options: MergeManagedWorktreeOptions)
 	if (pathWithin(record.worktreeRoot, repoRoot)) {
 		throw new Error("Switch back to the local checkout before applying a managed worktree.");
 	}
-	if (await localCheckoutIsDirty(repoRoot, { ignoreSubmodules: record.recurseSubmodules })) {
+	if (
+		await localCheckoutIsDirty(repoRoot, {
+			ignoreSubmodules: record.recurseSubmodules,
+			submodulePaths: childSubmodulePaths(null, record.submodules),
+		})
+	) {
 		throw new Error("The local checkout has uncommitted changes. Handle them before applying the managed worktree.");
 	}
 	if (!(await pathExists(record.worktreeRoot)))
@@ -500,13 +556,18 @@ export async function mergeManagedWorktree(options: MergeManagedWorktreeOptions)
 	for (const submoduleChanges of changedSubmodules) {
 		const localSubmoduleRoot = path.join(repoRoot, submoduleChanges.path);
 		await requireSubmoduleRepoRoot(localSubmoduleRoot, submoduleChanges.path);
-		if (await localCheckoutIsDirty(localSubmoduleRoot, { ignoreSubmodules: true })) {
+		if (
+			await localCheckoutIsDirty(localSubmoduleRoot, {
+				ignoreSubmodules: true,
+				submodulePaths: childSubmodulePaths(submoduleChanges.path, record.submodules),
+			})
+		) {
 			throw new Error(
 				`The local submodule has uncommitted changes. Handle them before applying the managed worktree: ${submoduleChanges.path}`,
 			);
 		}
 	}
-	if (changes.rootPatch.trim() && !(await git.patch.canApplyText(repoRoot, changes.rootPatch))) {
+	if (changes.rootPatch.trim() && !(await vcs.requireGit(repoRoot).canApplyPatch(changes.rootPatch, {}))) {
 		throw new Error(
 			"Managed worktree changes cannot be applied cleanly. Keep the managed worktree and resolve the conflict manually.",
 		);
@@ -514,7 +575,9 @@ export async function mergeManagedWorktree(options: MergeManagedWorktreeOptions)
 	for (const submoduleChanges of changedSubmodules) {
 		if (
 			submoduleChanges.rootPatch.trim() &&
-			!(await git.patch.canApplyText(path.join(repoRoot, submoduleChanges.path), submoduleChanges.rootPatch))
+			!(await vcs
+				.requireGit(path.join(repoRoot, submoduleChanges.path))
+				.canApplyPatch(submoduleChanges.rootPatch, {}))
 		) {
 			throw new Error(
 				"Managed worktree changes cannot be applied cleanly. Keep the managed worktree and resolve the conflict manually.",
@@ -532,11 +595,12 @@ export async function mergeManagedWorktree(options: MergeManagedWorktreeOptions)
 				throw new Error(`Local path already exists; cannot apply untracked file: ${displayPath}`);
 		}
 	}
-	if (changes.rootPatch.trim()) await git.patch.applyText(repoRoot, changes.rootPatch);
+	if (changes.rootPatch.trim()) await vcs.requireGit(repoRoot).applyPatch(changes.rootPatch, {});
 	await copyChangedFiles(record.worktreeRoot, repoRoot, changedFilePaths(changes));
 	for (const submoduleChanges of changedSubmodules) {
 		const localSubmoduleRoot = path.join(repoRoot, submoduleChanges.path);
-		if (submoduleChanges.rootPatch.trim()) await git.patch.applyText(localSubmoduleRoot, submoduleChanges.rootPatch);
+		if (submoduleChanges.rootPatch.trim())
+			await vcs.requireGit(localSubmoduleRoot).applyPatch(submoduleChanges.rootPatch, {});
 		const managedSubmodule = submodulesByPath.get(submoduleChanges.path);
 		if (!managedSubmodule) throw new Error(`Managed submodule directory is missing: ${submoduleChanges.path}`);
 		await copyChangedFiles(managedSubmodule.worktreeRoot, localSubmoduleRoot, changedFilePaths(submoduleChanges));
@@ -559,14 +623,14 @@ export async function branchManagedWorktree(options: BranchManagedWorktreeOption
 		throw new Error(`Managed worktree is already on branch ${record.branch ?? "HEAD"}.`);
 	if (!(await pathExists(record.worktreeRoot)))
 		throw new Error("Managed worktree directory is missing; cannot create a branch.");
-	return git.withRepoLock(record.primaryRoot, async () => {
-		await git.branch.checkoutNew(record.worktreeRoot, options.branch);
+	return withRepoLock(record.primaryRoot, async () => {
+		await vcs.requireGit(record.worktreeRoot).checkoutNewBranch(options.branch);
 		const submodules = record.recurseSubmodules ? await refreshManagedSubmoduleHeads(record) : record.submodules;
 		const updated: ManagedWorktreeRecord = {
 			...record,
 			branch: options.branch,
 			detached: false,
-			headSha: (await git.head.sha(record.worktreeRoot)) ?? record.headSha,
+			headSha: (await vcs.requireGit(record.worktreeRoot).headSha()) ?? record.headSha,
 			submodules,
 			updatedAt: nowIso(),
 			lastUsedAt: nowIso(),
@@ -584,8 +648,8 @@ export async function restoreManagedWorktree(options: RestoreManagedWorktreeOpti
 		throw new Error("Managed worktree snapshot is missing; cannot restore it.");
 	const restoredName = safeManagedWorktreeName(record.name);
 	const { worktreeRoot } = await createPathCandidate(record.primaryRoot, restoredName);
-	await git.withRepoLock(record.primaryRoot, () =>
-		git.worktree.add(record.primaryRoot, worktreeRoot, record.baseSha, { detach: true }),
+	await withRepoLock(record.primaryRoot, () =>
+		vcs.requireGit(record.primaryRoot).worktreeAdd(worktreeRoot, record.baseSha, true),
 	);
 	let submodules = record.submodules;
 	try {
@@ -618,7 +682,7 @@ export async function restoreManagedWorktree(options: RestoreManagedWorktreeOpti
 		state: "ready",
 		detached: true,
 		branch: null,
-		headSha: (await git.head.sha(worktreeRoot)) ?? record.baseSha,
+		headSha: (await vcs.requireGit(worktreeRoot).headSha()) ?? record.baseSha,
 		submodules: record.recurseSubmodules
 			? await refreshManagedSubmoduleHeads({ ...record, worktreeRoot, submodules })
 			: submodules,

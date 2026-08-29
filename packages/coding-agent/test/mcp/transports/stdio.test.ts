@@ -51,9 +51,10 @@ describe("resolveStdioSpawnCommand", () => {
 					},
 				),
 			).resolves.toEqual({
-				cmd: ["cmd.exe", "/d", "/s", "/c", commandPath, "--stdio", "two words", ""],
+				cmd: ["cmd.exe", "/d", "/e:ON", "/v:OFF", "/c", `""${commandPath}" --stdio "two words" """`],
 				windowsHide: true,
 				detached: false,
+				windowsVerbatimArguments: true,
 			});
 		} finally {
 			await fs.rm(cwd, { recursive: true, force: true });
@@ -78,9 +79,10 @@ describe("resolveStdioSpawnCommand", () => {
 					},
 				),
 			).resolves.toEqual({
-				cmd: ["cmd.exe", "/d", "/s", "/c", commandPath, "--stdio", "two words"],
+				cmd: ["cmd.exe", "/d", "/e:ON", "/v:OFF", "/c", `""${commandPath}" --stdio "two words""`],
 				windowsHide: true,
 				detached: false,
+				windowsVerbatimArguments: true,
 			});
 		} finally {
 			await fs.rm(cwd, { recursive: true, force: true });
@@ -100,7 +102,27 @@ describe("resolveStdioSpawnCommand", () => {
 				},
 			),
 		).resolves.toEqual({
-			cmd: ["cmd.exe", "/d", "/s", "/c", "npx", "--yes", "@modelcontextprotocol/server", "two words"],
+			cmd: ["cmd.exe", "/d", "/e:ON", "/v:OFF", "/c", '""npx" --yes @modelcontextprotocol/server "two words""'],
+			windowsHide: true,
+			detached: false,
+			windowsVerbatimArguments: true,
+		});
+	});
+
+	it("direct-spawns unresolved explicit Windows paths so the caller receives ENOENT", async () => {
+		const command = path.join(process.cwd(), "missing", "mcp-server");
+		await expect(
+			resolveStdioSpawnCommand(
+				{ command, args: ["--stdio"] },
+				{
+					cwd: process.cwd(),
+					env: {},
+					platform: "win32",
+					hostHasInheritableConsole: false,
+				},
+			),
+		).resolves.toEqual({
+			cmd: [command, "--stdio"],
 			windowsHide: true,
 			detached: false,
 		});
@@ -452,7 +474,7 @@ describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
 	}, 8000);
 
 	it("never attempts a process-group signal when the transport did not spawn detached", async () => {
-		const proc = Bun.spawn(["bun", "-e", "await Bun.sleep(60_000)"], {
+		const proc = Bun.spawn([process.execPath, "-e", "await Bun.sleep(60_000)"], {
 			stdin: "ignore",
 			stdout: "ignore",
 			stderr: "ignore",
@@ -481,7 +503,7 @@ describe.skipIf(process.platform === "win32")("terminateStdioProcess", () => {
 describe.skipIf(process.platform === "win32")("StdioTransport.close teardown", () => {
 	it("closes a well-behaved child promptly without escalating to SIGKILL", async () => {
 		const transport = new StdioTransport({
-			command: "bun",
+			command: process.execPath,
 			args: ["-e", "await Bun.sleep(60_000)"],
 		});
 		try {
@@ -507,7 +529,11 @@ describe.skipIf(process.platform === "win32")("StdioTransport request ids", () =
 	}`;
 
 	async function observeIds(requestIdFormat: "string" | "number" | undefined, methods: string[]) {
-		const transport = new StdioTransport({ command: "bun", args: ["-e", ECHO_OBSERVED_ID], requestIdFormat });
+		const transport = new StdioTransport({
+			command: process.execPath,
+			args: ["-e", ECHO_OBSERVED_ID],
+			requestIdFormat,
+		});
 		try {
 			await transport.connect();
 			const observed: { idType: string; id: unknown }[] = [];

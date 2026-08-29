@@ -4,7 +4,7 @@
  * as `queueChipText` on the queued custom message; the session derives
  * `queuedMessageCount` from the agent-core queue for host and guest UI state.
  */
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import {
@@ -16,6 +16,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { setLocale } from "../../src/i18n";
 
 interface RelayData {
 	role: "host" | "guest";
@@ -89,17 +90,18 @@ interface StreamingHostHarness {
 function makeStreamingHostContext(): StreamingHostHarness {
 	const prompts: CapturedPrompt[] = [];
 	const promptWaiters: ((prompt: CapturedPrompt) => void)[] = [];
+	const sessionManager = {
+		getSessionId: () => "sess-1",
+		getCwd: () => "/tmp",
+		snapshotForReplication: () => ({
+			header: { type: "session", id: "sess-1", timestamp: new Date().toISOString(), cwd: "/tmp" },
+			entries: [],
+		}),
+		onEntryAppended: undefined,
+	};
 	const ctx = {
 		settings: { get: () => "" },
-		sessionManager: {
-			getSessionId: () => "sess-1",
-			getCwd: () => "/tmp",
-			snapshotForReplication: () => ({
-				header: { type: "session", id: "sess-1", timestamp: new Date().toISOString(), cwd: "/tmp" },
-				entries: [],
-			}),
-			onEntryAppended: undefined,
-		},
+		sessionManager,
 		session: {
 			isStreaming: true,
 			get queuedMessageCount(): number {
@@ -109,8 +111,10 @@ function makeStreamingHostContext(): StreamingHostHarness {
 			sessionName: "test",
 			model: undefined,
 			thinkingLevel: undefined,
+			configuredThinkingLevel: () => undefined,
+			getAvailableThinkingLevels: () => [],
 			// host.ts scopes agent snapshots to `getAgentScopeId()`.
-			getAgentScopeId: () => "sess-1",
+			getAgentScopeId: () => sessionManager.getSessionId(),
 			subscribe: () => () => {},
 			emitNotice: () => {},
 			promptCustomMessage: (message: CapturedPrompt, options?: CapturedPrompt["options"]) => {
@@ -175,8 +179,11 @@ async function joinAsGuest(link: string, name: string): Promise<TestGuest> {
 
 const cleanups: (() => void | Promise<void>)[] = [];
 
+beforeEach(() => setLocale("en"));
+
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+	setLocale(null);
 });
 
 describe("collab mid-turn guest prompts", () => {

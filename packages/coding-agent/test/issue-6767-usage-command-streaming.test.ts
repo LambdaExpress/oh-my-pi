@@ -13,6 +13,7 @@ import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storag
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Text } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const usageReports: UsageReport[] = [
 	{
@@ -44,6 +45,7 @@ describe("issue #6767 /usage output during streaming", () => {
 	});
 
 	beforeEach(async () => {
+		setLocale("en");
 		vi.spyOn(process.stdout, "write").mockReturnValue(true);
 		vi.spyOn(process.stdin, "resume").mockReturnValue(process.stdin);
 		vi.spyOn(process.stdin, "pause").mockReturnValue(process.stdin);
@@ -73,6 +75,7 @@ describe("issue #6767 /usage output during streaming", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		mode?.stop();
 		HistoryStorage.resetInstance();
 		vi.restoreAllMocks();
@@ -85,8 +88,18 @@ describe("issue #6767 /usage output during streaming", () => {
 	it("defers the usage panel until the active turn ends, mounting it once", async () => {
 		const streamedReply = new Text("agent is streaming", 0, 0);
 		mode.chatContainer.addChild(streamedReply);
+		const usageFetchStarted = Promise.withResolvers<void>();
+		const usageFetch = Promise.withResolvers<UsageReport[]>();
+		vi.spyOn(session, "fetchUsageReports").mockImplementation(async () => {
+			usageFetchStarted.resolve();
+			return usageFetch.promise;
+		});
 
-		await mode.handleUsageCommand(usageReports);
+		const usageCommand = mode.handleUsageCommand();
+		await usageFetchStarted.promise;
+		expect(mode.chatContainer.children).toEqual([streamedReply]);
+		usageFetch.resolve(usageReports);
+		await usageCommand;
 
 		// Mid-stream: the finalized panel must NOT mount above the growing live
 		// block (that is what duplicates in native scrollback — issue #6767).

@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, spyOn, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { AgentBusyError } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
@@ -40,12 +41,14 @@ import type {
 	Validator,
 } from "@oh-my-pi/pi-utils/acp";
 import {
+	RequestError,
 	zForkSessionResponse,
 	zLoadSessionResponse,
 	zNewSessionResponse,
 	zPromptResponse,
 	zSessionNotification,
 } from "@oh-my-pi/pi-utils/acp";
+import { setLocale } from "../src/i18n";
 import { TOOL_NAME as DELAYED_MCP_TOOL_NAME } from "./fixtures/delayed-tool-mcp";
 
 /** Validates an ACP wire payload against the in-house protocol schemas. */
@@ -143,11 +146,13 @@ class FakeAgentSession {
 	async refreshSkills(): Promise<void> {
 		this.refreshSkillsCalls++;
 	}
+	async refreshSshTools(_options?: { activateIfAvailable?: boolean }): Promise<void> {}
 	planModeState: PlanModeState | undefined;
 	waitForIdleCalls = 0;
 	waitForIdleBlocker: (() => Promise<void>) | undefined;
 	asyncJobDrain: ((options?: { timeoutMs?: number }) => Promise<boolean>) | undefined;
 	usageFallbackConfirmer: ((confirmation: UsageFallbackConfirmation) => Promise<boolean>) | undefined;
+	visionFallbackUIContext: Pick<ExtensionUIContext, "confirm"> | undefined;
 	retryResult = false;
 	retryCalls = 0;
 	#listeners = new Set<(event: AgentSessionEvent) => void>();
@@ -205,6 +210,9 @@ class FakeAgentSession {
 		confirmer: ((confirmation: UsageFallbackConfirmation) => Promise<boolean>) | undefined,
 	): void {
 		this.usageFallbackConfirmer = confirmer;
+	}
+	setVisionFallbackUIContext(uiContext: Pick<ExtensionUIContext, "confirm"> | undefined): void {
+		this.visionFallbackUIContext = uiContext;
 	}
 
 	async setModel(model: Model): Promise<void> {
@@ -463,8 +471,13 @@ const cleanupRoots: string[] = [];
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
 const fallbackAgentDir = path.join(getConfigRootDir(), "agent");
 
+beforeEach(() => {
+	setLocale("en");
+});
+
 afterEach(async () => {
 	vi.useRealTimers();
+	setLocale(null);
 	if (originalAgentDir) {
 		setAgentDir(originalAgentDir);
 	} else {
@@ -484,6 +497,8 @@ async function createHarness(
 		clientCapabilities?: ClientCapabilities;
 		/** Runs before a notification is recorded, so a test can delay one delivery. */
 		sessionUpdateHook?: (notification: SessionNotification) => Promise<void> | void;
+		/** Runs after a notification is recorded, so a test can await its delivery without polling. */
+		sessionUpdateObserver?: (notification: SessionNotification) => void;
 	} = {},
 ): Promise<AgentHarness> {
 	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-acp-test-"));
@@ -508,6 +523,7 @@ async function createHarness(
 			// microtask before the push and perturb ordering-sensitive tests.
 			if (options.sessionUpdateHook) await options.sessionUpdateHook(notification);
 			updates.push(notification);
+			options.sessionUpdateObserver?.(notification);
 		},
 		unstable_createElicitation: options.elicitationHandler
 			? async (req: CreateElicitationRequest) => options.elicitationHandler!(req)
@@ -812,20 +828,25 @@ describe("ACP agent", () => {
 	it("pushes config_option_update when thinking level changes internally", async () => {
 		// Internal callers (slash commands, model auto-adjust, extension UI) call
 		// AgentSession.setThinkingLevel directly without going through the ACP
-		// setSessionConfigOption surface. Once the session-lifetime subscription
-		// is installed (after the 50ms bootstrap guard so the response has
-		// reached the client first), those changes must surface to clients as
+		// setSessionConfigOption surface. Once the 50ms bootstrap guard has passed
+		// and the response has reached the client, those changes must surface as
 		// `config_option_update` so TORTAS-style fleet views stay in sync.
-		const harness = await createHarness();
+		const delivered = Promise.withResolvers<SessionNotification>();
+		const harness = await createHarness({
+			sessionUpdateObserver: notification => {
+				if (notification.update.sessionUpdate === "config_option_update") delivered.resolve(notification);
+			},
+		});
 		vi.useFakeTimers();
 		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
 		const session = harness.findSession(created.sessionId)!;
-		// Advance past the 50ms bootstrap timer so the lifetime subscription is
-		// installed before we drive an internal thinking-level change.
+		// Advance past the guard so lifetime config events are allowed before we
+		// drive an internal thinking-level change.
 		await advanceBootstrapGuard();
 
 		const updatesBefore = harness.updates.length;
 		session.setThinkingLevel("high");
+		await delivered.promise;
 
 		const pushedAfter = harness.updates.slice(updatesBefore);
 		const configUpdates = pushedAfter.filter(
@@ -862,14 +883,19 @@ describe("ACP agent", () => {
 		// session` race that `#scheduleBootstrapUpdates` already guards).
 		// The fake harness lets us simulate that pre-bootstrap window by
 		// driving the change before advancing past the 50ms guard.
-		const harness = await createHarness();
+		const delivered = Promise.withResolvers<SessionNotification>();
+		const harness = await createHarness({
+			sessionUpdateObserver: notification => {
+				if (notification.update.sessionUpdate === "config_option_update") delivered.resolve(notification);
+			},
+		});
 		vi.useFakeTimers();
 		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
 		const session = harness.findSession(created.sessionId)!;
 
 		const updatesBefore = harness.updates.length;
-		// Synchronously after `newSession` returns, the bootstrap timer has
-		// not fired yet, so the lifetime subscription is not installed.
+		// Synchronously after `newSession` returns, the bootstrap timer has not
+		// fired yet, so the installed lifetime subscription suppresses config events.
 		session.setThinkingLevel("high");
 
 		const beforeBootstrap = harness.updates
@@ -885,6 +911,7 @@ describe("ACP agent", () => {
 		await advanceBootstrapGuard();
 		const baseline = harness.updates.length;
 		session.setThinkingLevel("medium");
+		await delivered.promise;
 		const afterBootstrap = harness.updates
 			.slice(baseline)
 			.filter(
@@ -2461,6 +2488,33 @@ describe("ACP agent", () => {
 		await Bun.sleep(0);
 	});
 
+	it("maps agent-busy rejections to a typed session_busy error instead of internalError", async () => {
+		const harness = await createHarness();
+		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
+		const session = harness.findSession(created.sessionId)!;
+		// Autonomous turns stream without an owning ACP promptTurn, so prompt()'s
+		// implicit-cancel guard never fires. Mirror AgentSession's contract: a
+		// bare prompt while streaming throws AgentBusyError.
+		session.isStreaming = true;
+		session.prompt = async (): Promise<boolean> => {
+			if (session.isStreaming) throw new AgentBusyError();
+			return true;
+		};
+
+		const error = await harness.agent
+			.prompt({
+				sessionId: created.sessionId,
+				prompt: [{ type: "text", text: "ping during autonomous turn" }],
+			} as PromptRequest)
+			.catch((reason: unknown) => reason);
+
+		expect(error).toBeInstanceOf(RequestError);
+		const requestError = error as RequestError;
+		expect(requestError.code).toBe(-32003);
+		expect(requestError.message).toContain("already processing");
+		expect(requestError.data).toEqual({ reason: "session_busy", hint: "steer|followUp|wait" });
+	});
+
 	it("keeps closeSession gated while cancel cleanup is pending", async () => {
 		const harness = await createHarness();
 		const created = await harness.agent.newSession({ cwd: harness.cwdA, mcpServers: [] });
@@ -2633,6 +2687,9 @@ describe("ACP agent", () => {
 			expect.objectContaining({ askDialog: expect.any(Function) }),
 			true,
 		);
+		expect(harness.findSession(session.sessionId)?.visionFallbackUIContext).toEqual(
+			expect.objectContaining({ confirm: expect.any(Function) }),
+		);
 
 		await harness.agent.dispose();
 	});
@@ -2648,6 +2705,7 @@ describe("ACP agent", () => {
 		expect(harness.sessionFactoryOptions).toEqual([{ interactivePrompts: false }]);
 		expect(harness.setToolUIContextSpies).toHaveLength(1);
 		expect(harness.setToolUIContextSpies[0]).not.toHaveBeenCalled();
+		expect(harness.findSession(session.sessionId)?.visionFallbackUIContext).toBeUndefined();
 
 		await harness.agent.dispose();
 	});

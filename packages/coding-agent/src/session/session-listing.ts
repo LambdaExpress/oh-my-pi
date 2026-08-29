@@ -558,7 +558,10 @@ export async function recoverOrphanedBackups(sessionDir: string, storage: Sessio
 		if (dotIdx <= 0) continue;
 		const primaryName = trimmed.slice(0, dotIdx);
 		if (!primaryName.endsWith(".jsonl")) continue;
-		const primaryPath = path.join(sessionDir, primaryName);
+		// Derive the primary from the storage-returned key instead of rebuilding
+		// it with the host OS separator. Remote and in-memory storage keys may use
+		// POSIX separators while the caller runs on Windows.
+		const primaryPath = backup.slice(0, backup.length - (name.length - primaryName.length));
 		let mtimeMs = 0;
 		try {
 			mtimeMs = storage.statSync(backup).mtimeMs;

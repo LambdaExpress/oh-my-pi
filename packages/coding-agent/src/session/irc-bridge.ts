@@ -28,6 +28,7 @@ export class IrcBridge {
 	readonly #host: IrcBridgeHost;
 	#interrupts: CustomMessage[] = [];
 	#asides: CustomMessage[] = [];
+	readonly #autoReplies = new Set<Promise<void>>();
 
 	constructor(host: IrcBridgeHost) {
 		this.#host = host;
@@ -41,6 +42,13 @@ export class IrcBridge {
 	/** Whether any undelivered IRC record remains queued. */
 	hasPending(): boolean {
 		return this.#interrupts.length > 0 || this.#asides.length > 0;
+	}
+
+	/** Waits until every side-channel auto-reply started so far has finished. */
+	async waitForAutoReplies(): Promise<void> {
+		while (this.#autoReplies.size > 0) {
+			await Promise.all(this.#autoReplies);
+		}
 	}
 
 	/** Takes every queued IRC record in interrupt-before-aside order. */
@@ -149,7 +157,7 @@ export class IrcBridge {
 			} else {
 				this.#interrupts.push(record);
 			}
-			if (autoReply) void this.#runAutoReply(msg);
+			if (autoReply) this.#startAutoReply(msg);
 			return "injected";
 		}
 		if (this.#host.planModeEnabled()) {
@@ -161,7 +169,7 @@ export class IrcBridge {
 				record.details,
 				record.attribution ?? "agent",
 			);
-			if (autoReply) void this.#runAutoReply(msg);
+			if (autoReply) this.#startAutoReply(msg);
 			return "injected";
 		}
 		this.#host.wakeForIrc([record]);
@@ -179,6 +187,12 @@ export class IrcBridge {
 			this.#host.agent.emitExternalEvent({ type: "message_start", message: record });
 			this.#host.agent.emitExternalEvent({ type: "message_end", message: record });
 		}
+	}
+
+	#startAutoReply(msg: IrcMessage): void {
+		const running = this.#runAutoReply(msg);
+		this.#autoReplies.add(running);
+		void running.finally(() => this.#autoReplies.delete(running));
 	}
 
 	async #runAutoReply(msg: IrcMessage): Promise<void> {

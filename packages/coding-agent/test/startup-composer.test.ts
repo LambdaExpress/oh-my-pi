@@ -14,6 +14,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/modes/startup-composer";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
+import { setLocale } from "../src/i18n";
 import { createTestSession } from "./utilities";
 
 class CountingTerminal extends VirtualTerminal {
@@ -59,6 +60,7 @@ describe("Composer prepaint", () => {
 
 	let config: ComposerPreferences;
 	beforeEach(async () => {
+		setLocale("en");
 		resetSettingsForTest();
 		await initTheme();
 		settings = await Settings.init({ inMemory: true });
@@ -79,6 +81,7 @@ describe("Composer prepaint", () => {
 	afterEach(() => {
 		stopPendingStartupComposer();
 		resetSettingsForTest();
+		setLocale(null);
 	});
 
 	it("keeps one live editor and terminal across handoff", () => {

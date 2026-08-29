@@ -40,34 +40,31 @@ async function makeTempDir(): Promise<string> {
 	return dir;
 }
 
-async function createFakeBiomeCommand(
+async function createFakeBiomeConfig(
 	tempDir: string,
 	expectedInput: string,
 	formattedOutput: string,
-): Promise<string> {
-	const command = path.join(tempDir, "biome");
-	const expectedInputPath = path.join(tempDir, "expected-input.ts");
+): Promise<ServerConfig> {
+	const runner = path.join(tempDir, "fake-biome.ts");
 	const formattedOutputPath = path.join(tempDir, "formatted-output.ts");
-	await Bun.write(expectedInputPath, expectedInput);
 	await Bun.write(formattedOutputPath, formattedOutput);
 	await Bun.write(
-		command,
-		`#!/bin/sh
-test "$1" = "format" || exit 7
-test "$2" = "--write" || exit 8
-test "$3" = "${path.join(tempDir, "example.ts")}" || exit 10
-cmp -s "$3" "${expectedInputPath}" || exit 9
-cp "${formattedOutputPath}" "$3"
-exit 0
+		runner,
+		`const [, , operation, writeFlag, target] = Bun.argv;
+if (operation !== "format") process.exit(7);
+if (writeFlag !== "--write") process.exit(8);
+if (target !== ${JSON.stringify(path.join(tempDir, "example.ts"))}) process.exit(10);
+if (await Bun.file(target).text() !== ${JSON.stringify(expectedInput)}) process.exit(9);
+await Bun.write(target, await Bun.file(${JSON.stringify(formattedOutputPath)}).text());
 `,
 	);
-	await fs.chmod(command, 0o755);
-	return command;
+	return biomeConfig(process.execPath, [runner]);
 }
 
-function biomeConfig(command: string): ServerConfig {
+function biomeConfig(command: string, args?: string[]): ServerConfig {
 	return {
 		command: "biome",
+		args,
 		fileTypes: [".ts"],
 		rootMarkers: [],
 		resolvedCommand: command,
@@ -81,8 +78,8 @@ describe("BiomeClient format", () => {
 		const unformatted = "export const value:number=1\n";
 		const formatted = "export const value: number = 1;\n";
 		await Bun.write(targetFile, "export const stale = true;\n");
-		const command = await createFakeBiomeCommand(tempDir, unformatted, formatted);
-		const result = await new BiomeClient(biomeConfig(command), tempDir).format(targetFile, unformatted);
+		const config = await createFakeBiomeConfig(tempDir, unformatted, formatted);
+		const result = await new BiomeClient(config, tempDir).format(targetFile, unformatted);
 
 		expect(result).toBe(formatted);
 		expect(await Bun.file(targetFile).text()).toBe(formatted);
@@ -119,13 +116,12 @@ describe("BiomeClient format", () => {
 
 	test("returns the original content when Biome fails", async () => {
 		const tempDir = await makeTempDir();
-		const command = path.join(tempDir, "biome-failure");
-		await Bun.write(command, "#!/bin/sh\ncat >/dev/null\nexit 1\n");
-		await fs.chmod(command, 0o755);
+		const runner = path.join(tempDir, "biome-failure.ts");
+		await Bun.write(runner, "process.exit(1);\n");
 		const targetFile = path.join(tempDir, "example.ts");
 		const content = "export const value = 1;\n";
 
-		const result = await new BiomeClient(biomeConfig(command), tempDir).format(targetFile, content);
+		const result = await new BiomeClient(biomeConfig(process.execPath, [runner]), tempDir).format(targetFile, content);
 
 		expect(result).toBe(content);
 	});
@@ -134,15 +130,17 @@ describe("BiomeClient format", () => {
 describe("BiomeClient lint", () => {
 	test("cancels a hung Biome process when diagnostics are aborted", async () => {
 		const tempDir = await makeTempDir();
-		const command = path.join(tempDir, "biome-hang");
-		await Bun.write(command, "#!/bin/sh\nwhile :; do :; done\n");
-		await fs.chmod(command, 0o755);
+		const runner = path.join(tempDir, "biome-hang.ts");
+		await Bun.write(runner, "Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 60_000);\n");
 		const targetFile = path.join(tempDir, "example.ts");
 		const started = Date.now();
 
 		let rejected = false;
 		try {
-			await new BiomeClient(biomeConfig(command), tempDir).lint(targetFile, AbortSignal.timeout(50));
+			await new BiomeClient(biomeConfig(process.execPath, [runner]), tempDir).lint(
+				targetFile,
+				AbortSignal.timeout(50),
+			);
 		} catch {
 			rejected = true;
 		}

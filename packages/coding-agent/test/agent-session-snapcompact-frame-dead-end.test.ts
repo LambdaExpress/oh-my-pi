@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Agent, RESCUE_SHAKE_CONFIG } from "@oh-my-pi/pi-agent-core";
@@ -14,6 +14,7 @@ import type { CompactionEntry } from "@oh-my-pi/pi-coding-agent/session/session-
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
+import { setLocale } from "../src/i18n";
 
 /**
  * Regression test for the snapcompact frame dead-end.
@@ -42,6 +43,10 @@ describe("AgentSession snapcompact frame dead-end rescue", () => {
 		authStorage = await AuthStorage.create(":memory:");
 		authStorage.setRuntimeApiKey("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage);
+	});
+
+	beforeEach(() => {
+		setLocale("en");
 	});
 
 	const NOTICE_SOURCE = "compaction";
@@ -198,6 +203,7 @@ describe("AgentSession snapcompact frame dead-end rescue", () => {
 			await session?.dispose();
 		} finally {
 			await tempDir?.remove();
+			setLocale(null);
 			vi.restoreAllMocks();
 		}
 	});

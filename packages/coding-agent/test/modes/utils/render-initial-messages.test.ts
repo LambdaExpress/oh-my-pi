@@ -265,18 +265,18 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 		});
 	});
 
-	it("keeps pre-compaction display history when completed runs are collapsed", () => {
+	it("keeps pre-compaction display history when completed runs are collapsed", async () => {
 		Settings.instance.set("display.collapseCompacted", true);
 		Settings.instance.set("display.collapseCompletedRuns", true);
 		const { ctx, transcriptSpy } = makeCtx();
 
-		new UiHelpers(ctx).renderInitialMessages();
+		await new UiHelpers(ctx).renderInitialMessages();
 
 		const [transcriptOptions] = transcriptSpy.mock.calls[0] ?? [];
 		expect(transcriptOptions?.collapseCompactedHistory).toBe(false);
 	});
 
-	it("keeps pre-compaction display history visible when collapsing is disabled", () => {
+	it("keeps pre-compaction display history visible when collapsing is disabled", async () => {
 		Settings.instance.set("display.collapseCompacted", false);
 		const compactionSummary = createCompactionSummaryMessage(
 			"Earlier work was summarized for the provider.",
@@ -297,7 +297,7 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 		);
 		const { ctx, chatContainer } = makeRenderCtx(buildTranscriptSessionContext);
 
-		new UiHelpers(ctx).renderInitialMessages();
+		await new UiHelpers(ctx).renderInitialMessages();
 
 		const rendered = Bun.stripANSI(chatContainer.render(100).join("\n"));
 		expect(rendered).toContain("pre-compaction user request must remain scrollable");
@@ -312,7 +312,7 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 		const { ctx } = makeRenderCtx(transcript, true, false, new Map(), true);
 		ctx.settings = Settings.isolated({ "display.collapseCompletedRuns": true });
 		ctx.recoverCompletedRunCollapses = vi.fn();
-		ctx.eventController = { restoreCompletedRunAnchor: vi.fn() } as never;
+		ctx.eventController = { restoreCompletedRunAnchor: vi.fn(), inheritTurnStart: vi.fn() } as never;
 
 		await new UiHelpers(ctx).renderInitialMessages({ recoverCompletedRunAnchor: true });
 

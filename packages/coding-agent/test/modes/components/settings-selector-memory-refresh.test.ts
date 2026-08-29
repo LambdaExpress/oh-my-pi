@@ -3,6 +3,7 @@ import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-ag
 import { loadHindsightConfig } from "@oh-my-pi/pi-coding-agent/hindsight/config";
 import { SettingsSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/settings-selector";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { setLocale } from "../../../src/i18n";
 
 beforeAll(async () => {
 	await initTheme();
@@ -11,6 +12,7 @@ beforeAll(async () => {
 let geometryStub: { restore(): void } | undefined;
 
 beforeEach(async () => {
+	setLocale("en");
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	geometryStub = stubStdoutGeometry(120);
@@ -18,6 +20,7 @@ beforeEach(async () => {
 
 afterEach(() => {
 	resetSettingsForTest();
+	setLocale(null);
 	geometryStub?.restore();
 	geometryStub = undefined;
 });

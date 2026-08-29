@@ -192,7 +192,7 @@ describe("readToolRenderer hyperlinks", () => {
 		const expandedText = Bun.stripANSI(expanded.join("\n"));
 		const expandedPreview = framedSectionContentRows(expanded, "Content Preview");
 		expect(visiblePreviewRows(expandedPreview)).toHaveLength(12);
-		expect(expandedText).toContain(previewTail);
+		expect(expandedPreview.join("").replace(/\s+/g, "")).toContain(previewTail);
 		expect(expandedText).not.toContain(hiddenTail);
 		expect(expandedText.toLowerCase()).not.toContain("ctrl+o");
 		expect(hiddenPreviewRows(expandedPreview)).toBe(collapsedHiddenRows - 9);

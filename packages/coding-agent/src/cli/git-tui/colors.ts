@@ -84,9 +84,10 @@ export function chipFill(label: string, hex: string): string {
  * Selection-row background: a canvas-adjacent surface (canvas nudged toward
  * the text color) so every theme foreground stays readable on it — unlike
  * `selectedBg`, which some themes define as a saturated color.
+ * `dim` renders a fainter band for cursors in unfocused panes.
  */
-export function selectionBgAnsi(): string {
-	return bgAnsi(mixHex(canvasHex(), textHex(), 0.14));
+export function selectionBgAnsi(dim = false): string {
+	return bgAnsi(mixHex(canvasHex(), textHex(), dim ? 0.08 : 0.14));
 }
 
 /** Tinted chip: faint fill of a theme color with the full color as label. */
