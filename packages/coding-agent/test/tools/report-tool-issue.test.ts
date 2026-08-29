@@ -428,6 +428,36 @@ Read returns \`ENOENT\` for \`dotnet-tools.json:raw\`.
 		});
 	});
 
+	it.each([
+		["<github>", "github"],
+		["<read>", "read"],
+		["<mcp.foo-bar>", "mcp.foo-bar"],
+	] as const)("normalizes an angle-bracketed tool name %s", async (input, expected) => {
+		await dispatchReportIssueDevice(session(), reproducibleReport(input), {
+			directory: issueDir,
+			now: () => new Date("2026-08-29T10:00:00.000Z"),
+			createId: () => "bracketed",
+		});
+
+		const files = await fs.readdir(issueDir);
+		expect(files).toHaveLength(1);
+		expect(files[0]).toContain(`-${expected}-bracketed.md`);
+		const saved = await Bun.file(path.join(issueDir, files[0]!)).text();
+		expect(saved).toContain(`# Tool Issue: ${expected}`);
+	});
+
+	it.each(["<>", "<<github>>", "<github", "github>", "<git hub>"])(
+		"rejects a malformed angle-bracketed tool name %s",
+		async tool => {
+			await expect(
+				dispatchReportIssueDevice(session(), reproducibleReport(tool), {
+					directory: issueDir,
+				}),
+			).rejects.toThrow(reportIssueDeviceUsage());
+			expect(await fs.readdir(issueDir)).toEqual([]);
+		},
+	);
+
 	it("allocates a distinct file for each concurrent report", async () => {
 		await Promise.all([
 			dispatchReportIssueDevice(session(), reproducibleReport("read"), { directory: issueDir }),
