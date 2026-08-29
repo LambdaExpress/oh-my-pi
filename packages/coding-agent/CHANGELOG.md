@@ -70,6 +70,7 @@
 
 ### Fixed
 
+- Fixed `xd://report_issue` rejecting valid tool names wrapped in template-style angle brackets, such as `<github>`; one surrounding pair is now normalized before validation.
 - Fixed global `--profile` loading the default agent `.env` before profile selection after CLI localization made the command registry import settings eagerly.
 - Fixed the CLI-backed Biome linter and formatter ignoring configured command arguments.
 - Fixed missing explicit-path MCP commands on Windows reporting only `Transport closed` instead of the actionable spawn error.

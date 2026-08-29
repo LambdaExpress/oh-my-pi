@@ -99,7 +99,8 @@ function parseReportIssueBody(text: string): { tool: string; report: string } {
 	if (firstNewline <= 0) {
 		throw new ToolError(`Invalid report format. ${reportIssueDeviceUsage()}`);
 	}
-	const tool = body.slice(0, firstNewline).trim();
+	const rawTool = body.slice(0, firstNewline).trim();
+	const tool = rawTool.startsWith("<") && rawTool.endsWith(">") ? rawTool.slice(1, -1).trim() : rawTool;
 	const report = body.slice(firstNewline + 1).trim();
 	if (!/^[a-zA-Z0-9_.-]+$/.test(tool) || report.length === 0) {
 		throw new ToolError(`Invalid report format. ${reportIssueDeviceUsage()}`);
