@@ -19,18 +19,17 @@ describe("print-mode SSH transfer fixed point", () => {
 		const deliveries: string[] = [];
 		let secondRegistered = false;
 		const secondStarted = Promise.withResolvers<void>();
-		const manager = new AsyncJobManager({
-			onJobComplete: async (jobId, text) => {
-				deliveries.push(`${jobId}:${text}`);
-				if (!secondRegistered) {
-					secondRegistered = true;
-					secondStarted.resolve();
-					manager.register("ssh_transfer", "second", async () => second.promise, {
-						ownerId: "Main",
-						scopeId: "scope-1",
-					});
-				}
-			},
+		const manager = new AsyncJobManager({});
+		manager.registerDeliverySink("Main", async (jobId, text) => {
+			deliveries.push(`${jobId}:${text}`);
+			if (!secondRegistered) {
+				secondRegistered = true;
+				manager.register("ssh_transfer", "second", async () => second.promise, {
+					ownerId: "Main",
+					scopeId: "scope-1",
+				});
+				secondStarted.resolve();
+			}
 		});
 		manager.register("ssh_transfer", "first", async () => first.promise, {
 			ownerId: "Main",
@@ -41,7 +40,6 @@ describe("print-mode SSH transfer fixed point", () => {
 		const waiting = waitForPrintSshTransfers(printSession(manager, waitForIdle)).then(() => {
 			settled = true;
 		});
-		await Promise.resolve();
 		expect(settled).toBe(false);
 
 		first.resolve("first done");
@@ -58,7 +56,8 @@ describe("print-mode SSH transfer fixed point", () => {
 	it("does not wait for Bash jobs or SSH transfers in another scope", async () => {
 		const bash = Promise.withResolvers<string>();
 		const otherScope = Promise.withResolvers<string>();
-		const manager = new AsyncJobManager({ onJobComplete: async () => {} });
+		const manager = new AsyncJobManager({});
+		manager.registerDeliverySink("Main", async () => {});
 		manager.register("bash", "bash", async () => bash.promise, { ownerId: "Main", scopeId: "scope-1" });
 		manager.register("ssh_transfer", "other", async () => otherScope.promise, {
 			ownerId: "Main",

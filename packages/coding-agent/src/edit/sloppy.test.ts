@@ -2210,8 +2210,9 @@ describe("executeSloppy multi-file", () => {
 			expect(await Bun.file(dir.join("b.ts")).text()).toBe("const beta = 20;\n");
 			expect(result.details?.perFileResults).toHaveLength(2);
 			const text = result.content?.find(entry => entry.type === "text")?.text ?? "";
-			expect(text).toContain("a.ts");
-			expect(text).toContain("b.ts");
+			expect(text).toContain("[a.ts]\n1:const alpha = 10;");
+			expect(text).toContain("\n\n[b.ts]\n1:const beta = 20;");
+			expect(text).not.toMatch(/^\[[^\]\n]+#[0-9A-F]{4}\]/);
 		} finally {
 			await dir.remove();
 		}
@@ -2269,6 +2270,26 @@ describe("directional selection markers", () => {
 	test("throws error on unmatched closing selection marker", () => {
 		const content = "const value = oldValue;\nreport(value);\n";
 		const input = operation("const value = oldValue⟫;\nreport(value);", "nextValue");
+		expect(() => variant.apply(content, input, context)).toThrow(
+			/unmatched closing selection marker ⟫; add opening ⟪/,
+		);
+	});
+
+	test("repairs a stray ⟫ typed in place of the │ divider", () => {
+		const content = "const value = oldValue;\nreport(value);\n";
+		const notes: string[] = [];
+		const input = inlineOperation("const value = ⟪oldValue⟫newValue⟫;\nreport(value)");
+
+		expect(variant.apply(content, input, { path: "src/example.ts", notes })).toBe(
+			"const value = newValue;\nreport(value);\n",
+		);
+		expect(notes.join("\n")).toMatch(/⟪old⟫new⟫ was read as ⟪old│new⟫/);
+	});
+
+	test("keeps the unmatched-close error when a stray ⟫ follows a proper selection", () => {
+		const content = "const value = oldValue;\nreport(value);\n";
+		const input = inlineOperation("const value = ⟪oldValue│newValue⟫;⟫\nreport(value)");
+
 		expect(() => variant.apply(content, input, context)).toThrow(
 			/unmatched closing selection marker ⟫; add opening ⟪/,
 		);

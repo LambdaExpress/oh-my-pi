@@ -32,7 +32,6 @@ import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cl
 import { extractProfileFlags } from "./cli/profile-bootstrap";
 import { startJsEvalProcess } from "./eval/js/process-entry";
 import type { WorkerInbound as JsWorkerInbound, WorkerOutbound as JsWorkerOutbound } from "./eval/js/worker-protocol";
-import { t } from "./i18n";
 import { DAEMON_BROKER_WORKER_ARG } from "./launch/protocol";
 import { TERMINAL_OUTPUT_WORKER_ARG } from "./launch/terminal-output-worker-protocol";
 import { LSP_MUX_WORKER_ARG } from "./lsp/mux/protocol";
@@ -72,10 +71,11 @@ function formatLicenseOutput(): string {
 
 async function showHelp(config: CliConfig<CommandMetadata>): Promise<void> {
 	// Root help historically loads the selected profile's environment. The
-	// lazily loaded help module imports it statically after profile bootstrap.
-	const [{ renderRootHelp }, { getExtraHelpText }] = await Promise.all([
+	// lazily loaded help/i18n modules import settings and env state after profile bootstrap.
+	const [{ renderRootHelp }, { getExtraHelpText }, { t }] = await Promise.all([
 		import("@oh-my-pi/pi-utils/cli"),
 		import("./cli/help-extra"),
+		import("./i18n"),
 	]);
 	renderRootHelp(config, t);
 	const extra = getExtraHelpText();
@@ -443,13 +443,14 @@ export async function runCli(argv: string[]): Promise<void> {
 	}
 
 	try {
-		const [{ run }, { commands, resolveCliArgv }] = await Promise.all([
+		const [{ run }, { commands, resolveCliArgv }, { t }] = await Promise.all([
 			import("@oh-my-pi/pi-utils/cli"),
 			import("./cli-commands"),
+			import("./i18n"),
 		]);
 		// --help and --version are handled by run() directly; --license returned above.
 		// Everything else that isn't a known subcommand routes to "launch".
-		const resolved = resolveCliArgv(resolvedArgv);
+		const resolved = resolveCliArgv(resolvedArgv, t);
 		if ("error" in resolved) {
 			process.stderr.write(`error: ${resolved.error}\n`);
 			process.exitCode = 1;

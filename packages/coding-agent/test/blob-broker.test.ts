@@ -1,10 +1,11 @@
-import { afterAll, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AssistantMessage, AssistantMessageEvent, Context, Model } from "@oh-my-pi/pi-ai";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { getProjectDir } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { LocalBlobBackend } from "../src/blob-broker/broker";
 import { contextHasImageUrls, supportsRemoteImageUrls } from "../src/blob-broker/context-images";
@@ -16,6 +17,16 @@ import { BlobStore as SessionBlobStore } from "../src/session/blob-store";
 
 const PNG_B64 = Buffer.from("blob-broker-test-bytes-1").toString("base64");
 const OTHER_B64 = Buffer.from("blob-broker-test-bytes-2").toString("base64");
+
+type BunSpawnOptions = Bun.SpawnOptions.SpawnOptions<
+	Bun.SpawnOptions.Writable,
+	Bun.SpawnOptions.Readable,
+	Bun.SpawnOptions.Readable
+>;
+
+function commandTemplateArg(value: string): string {
+	return `"${value.replaceAll("\\", "/").replaceAll('"', '\\"')}"`;
+}
 
 function makeModel(api: string, provider: string): Model {
 	return buildModel({
@@ -344,25 +355,78 @@ describe("uploaders", () => {
 	});
 
 	it("runs a command uploader end to end against a stub binary", async () => {
-		const stub = path.join(os.tmpdir(), `omp-test-uploader-${process.pid}.sh`);
-		await Bun.write(
-			stub,
-			`#!/bin/sh\ntest -s "$2" || exit 3\necho "uploaded $2"\necho "https://files.example/abc.$3"\n`,
-		);
-		await fs.promises.chmod(stub, 0o755);
+		const windows = process.platform === "win32";
+		const stub = path.join(os.tmpdir(), `omp-test-uploader-${process.pid}${windows ? ".cmd" : ".sh"}`);
+		let restoreSpawn: (() => void) | undefined;
+		if (windows) {
+			const runner = path.join(os.tmpdir(), `omp-test-uploader-runner-${process.pid}.ts`);
+			await Bun.write(stub, "@echo off\r\n");
+			await Bun.write(
+				runner,
+				[
+					'import * as fs from "node:fs";',
+					"const [, file, extension] = process.argv.slice(2);",
+					"if (!file || !extension || fs.statSync(file).size === 0) process.exit(3);",
+					'process.stdout.write("uploaded " + file + "\\nhttps://files.example/abc." + extension + "\\n");',
+				].join("\n"),
+			);
+			const realSpawn = Bun.spawn.bind(Bun);
+			const spawnSpy = vi.spyOn(Bun, "spawn").mockImplementation(((argv: string[], options?: BunSpawnOptions) => {
+				return path.resolve(argv[0] ?? "") === path.resolve(stub)
+					? realSpawn([process.execPath, runner, ...argv.slice(1)], options)
+					: realSpawn(argv, options);
+			}) as typeof Bun.spawn);
+			restoreSpawn = () => spawnSpy.mockRestore();
+			cleanups.push(() => void fs.promises.rm(runner, { force: true }));
+		} else {
+			await Bun.write(
+				stub,
+				`#!/bin/sh\ntest -s "$2" || exit 3\necho "uploaded $2"\necho "https://files.example/abc.$3"\n`,
+			);
+			await fs.promises.chmod(stub, 0o755);
+		}
 		cleanups.push(() => void fs.promises.rm(stub, { force: true }));
 
-		const uploader = createCommandUploader(`${stub} --x {file} {ext}`);
-		const publication = await uploader.upload({
-			bytes: new Uint8Array(Buffer.from("payload")),
-			mimeType: "image/png",
-			extension: "png",
+		const uploader = createCommandUploader(`${commandTemplateArg(stub)} --x {file} {ext}`);
+		try {
+			const publication = await uploader.upload({
+				bytes: new Uint8Array(Buffer.from("payload")),
+				mimeType: "image/png",
+				extension: "png",
+			});
+			expect(publication).toEqual({
+				url: "https://files.example/abc.png",
+				destination: "command",
+				bytes: 7,
+			});
+		} finally {
+			restoreSpawn?.();
+		}
+	});
+
+	it("rejects command uploads when the project directory becomes inaccessible", async () => {
+		const projectDir = getProjectDir();
+		const accessSync = fs.accessSync;
+		const access = vi.spyOn(fs, "accessSync").mockImplementation((target, mode) => {
+			if (target === projectDir) {
+				throw Object.assign(new Error("operation not permitted"), { code: "EACCES" });
+			}
+			return accessSync(target, mode);
 		});
-		expect(publication).toEqual({
-			url: "https://files.example/abc.png",
-			destination: "command",
-			bytes: 7,
-		});
+		const uploader = createCommandUploader(
+			`${process.execPath} -e "console.log('https://files.example/' + process.cwd())" {file}`,
+		);
+		try {
+			await expect(
+				uploader.upload({
+					bytes: new Uint8Array(Buffer.from("payload")),
+					mimeType: "image/png",
+					extension: "png",
+				}),
+			).rejects.toThrow(`Project directory is not accessible: ${projectDir}`);
+		} finally {
+			access.mockRestore();
+		}
 	});
 });
 

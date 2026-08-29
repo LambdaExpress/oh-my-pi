@@ -29,26 +29,21 @@ function makeAssistantMessage(overrides: Partial<AssistantMessage> = {}): Assist
 
 function createFixture(opts: {
 	streamingMessage: AssistantMessage;
-	needsFinalScrollbackReset: boolean;
 	isTtsrAbortPending?: boolean;
 	retryAttempt?: number;
 }) {
 	const updateContent = vi.fn();
 	const setComplete = vi.fn();
 	const markTranscriptBlockFinalized = vi.fn();
-	const needsFinalScrollbackReset = vi.fn(() => opts.needsFinalScrollbackReset);
 	const setHideThinkingBlock = vi.fn();
 	const streamingComponent = {
 		updateContent,
 		setComplete,
 		markTranscriptBlockFinalized,
-		needsFinalScrollbackReset,
 		setHideThinkingBlock,
 	};
 	const requestRender = vi.fn();
 	const requestComponentRender = vi.fn();
-	const refreshDisplay = vi.fn();
-	const resetDisplay = vi.fn();
 	const addChild = vi.fn();
 
 	const sessionMock = {
@@ -59,7 +54,7 @@ function createFixture(opts: {
 		isInitialized: true,
 		init: vi.fn(async () => {}),
 		settings,
-		ui: { requestRender, requestComponentRender, refreshDisplay, resetDisplay },
+		ui: { requestRender, requestComponentRender },
 		statusLine: { invalidate: vi.fn() },
 		updateEditorTopBorder: vi.fn(),
 		updateEditorBorderColor: vi.fn(),
@@ -82,8 +77,6 @@ function createFixture(opts: {
 		ctx,
 		streamingComponent,
 		requestRender,
-		refreshDisplay,
-		resetDisplay,
 		addChild,
 	};
 }
@@ -109,38 +102,17 @@ describe("EventController message_end final refresh", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("uses a non-destructive final refresh when the assistant component needs final scrollback reset", async () => {
+	it("requests a render after finalizing the assistant component", async () => {
 		const message = makeAssistantMessage();
-		const { controller, streamingComponent, requestRender, refreshDisplay, resetDisplay } = createFixture({
-			streamingMessage: message,
-			needsFinalScrollbackReset: true,
-		});
+		const { controller, streamingComponent, requestRender } = createFixture({ streamingMessage: message });
 
 		await dispatchMessageEnd(controller, message);
 
 		expect(streamingComponent.markTranscriptBlockFinalized).toHaveBeenCalledTimes(1);
-		expect(refreshDisplay).toHaveBeenCalledTimes(1);
-		expect(refreshDisplay).toHaveBeenCalledWith("assistant-final-scrollback-reset");
-		expect(resetDisplay).not.toHaveBeenCalled();
-		expect(requestRender).not.toHaveBeenCalled();
+		expect(requestRender).toHaveBeenCalledWith();
 	});
 
-	it("uses the ordinary render path when no final scrollback reset is needed", async () => {
-		const message = makeAssistantMessage();
-		const { controller, streamingComponent, requestRender, refreshDisplay, resetDisplay } = createFixture({
-			streamingMessage: message,
-			needsFinalScrollbackReset: false,
-		});
-
-		await dispatchMessageEnd(controller, message);
-
-		expect(streamingComponent.markTranscriptBlockFinalized).toHaveBeenCalledTimes(1);
-		expect(requestRender).toHaveBeenCalled();
-		expect(refreshDisplay).not.toHaveBeenCalled();
-		expect(resetDisplay).not.toHaveBeenCalled();
-	});
-
-	it("keeps the final-refresh path non-destructive after adding a billed usage row", async () => {
+	it("requests a render after adding a billed usage row", async () => {
 		settings.set("display.showTokenUsage", true);
 		const message = makeAssistantMessage({
 			usage: {
@@ -154,17 +126,11 @@ describe("EventController message_end final refresh", () => {
 			duration: 1200,
 			ttft: 150,
 		});
-		const { controller, requestRender, refreshDisplay, resetDisplay, addChild } = createFixture({
-			streamingMessage: message,
-			needsFinalScrollbackReset: true,
-		});
+		const { controller, requestRender, addChild } = createFixture({ streamingMessage: message });
 
 		await dispatchMessageEnd(controller, message);
 
 		expect(addChild).toHaveBeenCalledTimes(1);
-		expect(refreshDisplay).toHaveBeenCalledTimes(1);
-		expect(refreshDisplay).toHaveBeenCalledWith("assistant-final-scrollback-reset");
-		expect(resetDisplay).not.toHaveBeenCalled();
-		expect(requestRender).not.toHaveBeenCalled();
+		expect(requestRender).toHaveBeenCalledWith();
 	});
 });

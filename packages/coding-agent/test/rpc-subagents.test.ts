@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
-import { RpcClient } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
+import { type RpcAgentProcess, RpcClient } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
 import {
 	handleRpcSessionChange,
 	type RpcSessionChangeCommand,
@@ -11,7 +11,13 @@ import {
 	type RpcSessionChangeSession,
 } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-mode";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
-import type { RpcSubagentFrame } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
+import type {
+	RpcCommand,
+	RpcReadyFrame,
+	RpcResponse,
+	RpcSessionEventFrame,
+	RpcSubagentFrame,
+} from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
 import {
 	type AgentProgress,
 	type SubagentEventPayload,
@@ -85,8 +91,8 @@ function createSessionChangeSession(options: SessionChangeStubOptions): RpcSessi
 
 describe("RPC subagent registry", () => {
 	test("defaults subagent frame emission to off while tracking snapshots", () => {
-		const eventBus = new EventBus();
 		const frames: RpcSubagentFrame[] = [];
+		const eventBus = new EventBus();
 		const registry = new RpcSubagentRegistry(eventBus, frame => frames.push(frame));
 		const lifecycle: SubagentLifecyclePayload = {
 			id: "SubagentA",
@@ -130,8 +136,8 @@ describe("RPC subagent registry", () => {
 	});
 
 	test("emits progress frames after explicit progress subscription and snapshots tracked subagents", () => {
-		const eventBus = new EventBus();
 		const frames: RpcSubagentFrame[] = [];
+		const eventBus = new EventBus();
 		const registry = new RpcSubagentRegistry(eventBus, frame => frames.push(frame));
 		registry.setSubscriptionLevel("progress");
 		const lifecycle: SubagentLifecyclePayload = {
@@ -300,8 +306,8 @@ describe("RPC subagent registry", () => {
 	});
 
 	test("gates raw subagent events behind the events subscription level", () => {
-		const eventBus = new EventBus();
 		const frames: RpcSubagentFrame[] = [];
+		const eventBus = new EventBus();
 		const registry = new RpcSubagentRegistry(eventBus, frame => frames.push(frame));
 		const eventPayload: SubagentEventPayload = {
 			id: "SubagentA",
@@ -361,89 +367,258 @@ describe("readRpcSubagentTranscript", () => {
 	});
 });
 
+function createSubagentRpcProcess(scopeId: string): RpcAgentProcess {
+	const encoder = new TextEncoder();
+	const decoder = new TextDecoder();
+	const exit = Promise.withResolvers<number>();
+	let stdoutController!: ReadableStreamDefaultController<Uint8Array>;
+	let closed = false;
+	const stdout = new ReadableStream<Uint8Array>({
+		start(controller) {
+			stdoutController = controller;
+		},
+	});
+	const output = (frame: RpcReadyFrame | RpcResponse | RpcSessionEventFrame): void => {
+		if (!closed) stdoutController.enqueue(encoder.encode(`${JSON.stringify(frame)}\n`));
+	};
+
+	queueMicrotask(() => {
+		output({
+			type: "ready",
+			protocolVersion: 1,
+			supportedProtocolVersions: [1, 2],
+			maxFrameBytes: 1024 * 1024,
+			maxReassembledFrameBytes: 64 * 1024 * 1024,
+		});
+	});
+
+	return {
+		stdin: {
+			write(data) {
+				const command = JSON.parse(typeof data === "string" ? data : decoder.decode(data)) as RpcCommand;
+				switch (command.type) {
+					case "negotiate_protocol":
+						output({
+							id: command.id,
+							type: "response",
+							command: "negotiate_protocol",
+							success: true,
+							data: { protocolVersion: 2 },
+						});
+						break;
+					case "set_subagent_subscription":
+						output({
+							id: command.id,
+							type: "response",
+							command: "set_subagent_subscription",
+							success: true,
+							data: { level: command.level },
+						});
+						break;
+					case "get_subagents":
+						output({
+							id: command.id,
+							type: "response",
+							command: "get_subagents",
+							success: true,
+							data: {
+								subagents: [
+									{
+										id: "SubagentA",
+										index: 0,
+										agent: "task",
+										agentSource: "bundled",
+										status: "running",
+										lastUpdate: 1,
+									},
+								],
+							},
+						});
+						break;
+					case "get_subagent_messages":
+						output({
+							id: command.id,
+							type: "response",
+							command: "get_subagent_messages",
+							success: true,
+							data: {
+								sessionFile: command.sessionFile ?? "/tmp/subagent.jsonl",
+								fromByte: command.fromByte ?? 0,
+								nextByte: 0,
+								reset: false,
+								entries: [],
+								messages: [],
+							},
+						});
+						break;
+					case "prompt": {
+						output({ id: command.id, type: "response", command: "prompt", success: true });
+						output({ type: "notice", level: "info", message: "subagent test" });
+						output({
+							type: "subagent_lifecycle",
+							payload: {
+								id: "SubagentA",
+								index: 0,
+								agent: "task",
+								agentSource: "bundled",
+								scopeId,
+								status: "started",
+								sessionFile: "/tmp/subagent.jsonl",
+							},
+						});
+						output({
+							type: "subagent_progress",
+							payload: {
+								index: 0,
+								agent: "task",
+								agentSource: "bundled",
+								task: "Do work",
+								assignment: "Implement work",
+								scopeId,
+								sessionFile: "/tmp/subagent.jsonl",
+								progress: createProgress(),
+							},
+						});
+						output({
+							type: "subagent_event",
+							payload: { id: "SubagentA", event: { type: "agent_start" } },
+						});
+						output({ type: "agent_end", messages: [] });
+						break;
+					}
+					default:
+						output({
+							id: command.id,
+							type: "response",
+							command: command.type,
+							success: false,
+							error: `Unexpected command: ${command.type}`,
+						});
+				}
+			},
+		},
+		stdout,
+		peekStderr: () => "",
+		kill() {
+			if (closed) return;
+			closed = true;
+			stdoutController.close();
+			exit.resolve(0);
+		},
+		exited: exit.promise,
+	};
+}
+
 describe("RpcClient subagent frames", () => {
 	test("dispatches subagent frames and session-specific events", async () => {
-		const scriptPath = path.join(os.tmpdir(), `omp-rpc-subagent-client-${Date.now()}.js`);
-		tempPaths.push(scriptPath);
-		await Bun.write(
-			scriptPath,
-			`
-let buffer = "";
-function write(frame) {
-	process.stdout.write(JSON.stringify(frame) + "\\n");
-}
-const progress = {
-	index: 0,
-	id: "SubagentA",
-	agent: "task",
-	agentSource: "bundled",
-	status: "running",
-	task: "Do work",
-	assignment: "Implement work",
-	recentTools: [],
-	recentOutput: [],
-	toolCount: 0,
-	tokens: 0,
-	cost: 0,
-	durationMs: 0
-};
-write({ type: "ready" });
-process.stdin.on("data", chunk => {
-	buffer += chunk.toString("utf8");
-	let index = buffer.indexOf("\\n");
-	while (index !== -1) {
-		const line = buffer.slice(0, index).trim();
-		buffer = buffer.slice(index + 1);
-		if (line) handle(JSON.parse(line));
-		index = buffer.indexOf("\\n");
-	}
-});
-function handle(frame) {
-	if (frame.type === "set_subagent_subscription") {
-		write({ id: frame.id, type: "response", command: "set_subagent_subscription", success: true, data: { level: frame.level } });
-		return;
-	}
-	if (frame.type === "get_subagents") {
-		write({ id: frame.id, type: "response", command: "get_subagents", success: true, data: { subagents: [{ id: "SubagentA", index: 0, agent: "task", agentSource: "bundled", status: "running", lastUpdate: 1 }] } });
-		return;
-	}
-	if (frame.type === "get_subagent_messages") {
-		write({ id: frame.id, type: "response", command: "get_subagent_messages", success: true, data: { sessionFile: frame.sessionFile || "/tmp/subagent.jsonl", fromByte: frame.fromByte || 0, nextByte: 0, reset: false, entries: [], messages: [] } });
-		return;
-	}
-	if (frame.type === "prompt") {
-		write({ id: frame.id, type: "response", command: "prompt", success: true });
-		write({ type: "notice", level: "info", message: "subagent test" });
-		write({ type: "subagent_lifecycle", payload: { id: "SubagentA", index: 0, agent: "task", agentSource: "bundled", status: "started", sessionFile: "/tmp/subagent.jsonl" } });
-		write({ type: "subagent_progress", payload: { index: 0, agent: "task", agentSource: "bundled", task: "Do work", assignment: "Implement work", sessionFile: "/tmp/subagent.jsonl", progress } });
-		write({ type: "subagent_event", payload: { id: "SubagentA", event: { type: "agent_start" } } });
-		write({ type: "agent_end", messages: [] });
-	}
-}
-`,
-		);
-
-		using client = new RpcClient({ cliPath: scriptPath });
-		const lifecycleIds: string[] = [];
-		const progressTasks: string[] = [];
-		const rawEventTypes: string[] = [];
-		const sessionEventTypes: string[] = [];
-		client.onSubagentLifecycle(payload => lifecycleIds.push(payload.id));
-		client.onSubagentProgress(payload => progressTasks.push(payload.task));
-		client.onSubagentEvent(payload => rawEventTypes.push(payload.event.type));
-		client.onSessionEvent(event => sessionEventTypes.push(event.type));
+		const sessionScopeId = crypto.randomUUID();
+		using client = new RpcClient({ spawn: () => createSubagentRpcProcess(sessionScopeId) });
+		const lifecycle = Promise.withResolvers<SubagentLifecyclePayload>();
+		const progress = Promise.withResolvers<SubagentProgressPayload>();
+		const rawEvent = Promise.withResolvers<SubagentEventPayload>();
+		const notice = Promise.withResolvers<string>();
+		const agentEnd = Promise.withResolvers<void>();
+		client.onSubagentLifecycle(lifecycle.resolve);
+		client.onSubagentProgress(progress.resolve);
+		client.onSubagentEvent(rawEvent.resolve);
+		client.onSessionEvent(event => {
+			if (event.type === "notice") notice.resolve(event.message);
+		});
+		client.onEvent(event => {
+			if (event.type === "agent_end") agentEnd.resolve();
+		});
 
 		await client.start();
 		await expect(client.setSubagentSubscription("events")).resolves.toBe("events");
-		await client.promptAndWait("Trigger subagent frames");
+		const prompt = client.prompt("Trigger subagent frames");
+		const [, lifecyclePayload, progressPayload, rawEventPayload, noticeMessage] = await Promise.all([
+			prompt,
+			lifecycle.promise,
+			progress.promise,
+			rawEvent.promise,
+			notice.promise,
+			agentEnd.promise,
+		]);
 		expect(await client.getSubagents()).toHaveLength(1);
 		expect(await client.getSubagentMessages({ sessionFile: "/tmp/subagent.jsonl" })).toMatchObject({
 			sessionFile: "/tmp/subagent.jsonl",
 		});
 
-		expect(lifecycleIds).toEqual(["SubagentA"]);
-		expect(progressTasks).toEqual(["Do work"]);
-		expect(rawEventTypes).toEqual(["agent_start"]);
-		expect(sessionEventTypes).toContain("notice");
+		expect(lifecyclePayload).toMatchObject({ id: "SubagentA", scopeId: sessionScopeId });
+		expect(progressPayload).toMatchObject({ task: "Do work", scopeId: sessionScopeId });
+		expect(rawEventPayload).toMatchObject({ id: "SubagentA", event: { type: "agent_start" } });
+		expect(noticeMessage).toBe("subagent test");
+	});
+
+	test("forwards nested subagent frames published on the shared observability bus", () => {
+		const scopeId = crypto.randomUUID();
+		const frames: RpcSubagentFrame[] = [];
+		const eventBus = new EventBus();
+		const registry = new RpcSubagentRegistry(eventBus, frame => frames.push(frame));
+		registry.setSubscriptionLevel("events");
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "Kid",
+			agent: "task",
+			agentSource: "bundled",
+			scopeId,
+			status: "started",
+			parentToolCallId: "call-1",
+			index: 1,
+		} satisfies SubagentLifecyclePayload);
+		eventBus.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "Kid.Grandkid",
+			agent: "task",
+			agentSource: "bundled",
+			scopeId,
+			status: "started",
+			parentToolCallId: "call-2",
+			index: 2,
+		} satisfies SubagentLifecyclePayload);
+		eventBus.emit(TASK_SUBAGENT_EVENT_CHANNEL, {
+			id: "Kid.Grandkid",
+			event: { type: "agent_start" },
+		} satisfies SubagentEventPayload);
+		expect(frames.map(frame => frame.type)).toEqual(["subagent_lifecycle", "subagent_lifecycle", "subagent_event"]);
+		const grandkidLifecycle = frames[1];
+		const grandkidEvent = frames[2];
+		expect(grandkidLifecycle?.type).toBe("subagent_lifecycle");
+		expect(grandkidEvent?.type).toBe("subagent_event");
+		if (grandkidLifecycle?.type !== "subagent_lifecycle" || grandkidEvent?.type !== "subagent_event") {
+			throw new Error("Expected grandchild lifecycle and event frames");
+		}
+		expect(grandkidLifecycle.payload.id).toBe("Kid.Grandkid");
+		expect(grandkidLifecycle.payload.scopeId).toBe(scopeId);
+		expect(grandkidEvent.payload.id).toBe("Kid.Grandkid");
+		registry.dispose();
+	});
+
+	test("scopes observability to each root session — another tree's bus stays invisible", () => {
+		const scopeA = crypto.randomUUID();
+		const scopeB = crypto.randomUUID();
+		const busA = new EventBus();
+		const busB = new EventBus();
+		const framesA: RpcSubagentFrame[] = [];
+		const framesB: RpcSubagentFrame[] = [];
+		const registryA = new RpcSubagentRegistry(busA, frame => framesA.push(frame));
+		const registryB = new RpcSubagentRegistry(busB, frame => framesB.push(frame));
+		registryA.setSubscriptionLevel("events");
+		registryB.setSubscriptionLevel("events");
+		busB.emit(TASK_SUBAGENT_LIFECYCLE_CHANNEL, {
+			id: "Kid",
+			agent: "task",
+			agentSource: "bundled",
+			scopeId: scopeB,
+			status: "started",
+			index: 1,
+		} satisfies SubagentLifecyclePayload);
+		expect(framesA).toEqual([]);
+		expect(framesB).toHaveLength(1);
+		const treeBFrame = framesB[0];
+		expect(treeBFrame?.type).toBe("subagent_lifecycle");
+		if (treeBFrame?.type !== "subagent_lifecycle") throw new Error("Expected tree B lifecycle frame");
+		expect(treeBFrame.payload.scopeId).toBe(scopeB);
+		expect(treeBFrame.payload.scopeId).not.toBe(scopeA);
+		registryA.dispose();
+		registryB.dispose();
 	});
 });

@@ -156,7 +156,10 @@ describe("tiny title generator routing", () => {
 		);
 
 		expect(title).toBe("Local Title");
-		expect(local).toHaveBeenCalledWith("lfm2-350m", "Investigate routing", { systemPrompt: customPrompt });
+		expect(local).toHaveBeenCalledTimes(1);
+		const options = local.mock.calls[0]?.[2];
+		expect(options?.systemPrompt).toStartWith(customPrompt);
+		expect(options?.systemPrompt).toContain("Never title assistant progress");
 		expect(online).not.toHaveBeenCalled();
 	});
 

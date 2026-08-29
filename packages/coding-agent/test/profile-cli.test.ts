@@ -17,6 +17,7 @@ import {
 import { Snowflake } from "@oh-my-pi/pi-utils/snowflake";
 import { runCli } from "../src/cli";
 import * as profileAliasCli from "../src/cli/profile-alias";
+import { setLocale } from "../src/i18n";
 
 const repoRoot = path.resolve(import.meta.dir, "..", "..", "..");
 const cliEntry = path.join(repoRoot, "packages", "coding-agent", "src", "cli.ts");
@@ -37,6 +38,17 @@ async function readStream(stream: ReadableStream<Uint8Array>): Promise<string> {
 	}
 }
 
+function isolatedHomeEnv(home: string): NodeJS.ProcessEnv {
+	if (process.platform !== "win32") return { HOME: home };
+	const root = path.parse(home).root;
+	return {
+		HOME: home,
+		USERPROFILE: home,
+		HOMEDRIVE: root.replace(/[\\/]$/, ""),
+		HOMEPATH: home.slice(root.length - 1),
+	};
+}
+
 describe("global --profile flag", () => {
 	let configDir = "";
 	let originalProfile: string | undefined;
@@ -47,6 +59,7 @@ describe("global --profile flag", () => {
 	let originalConfigDir: string | undefined;
 
 	beforeEach(() => {
+		setLocale("en");
 		originalProfile = getActiveProfile();
 		originalAgentDir = getAgentDir();
 		originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
@@ -59,6 +72,7 @@ describe("global --profile flag", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		vi.restoreAllMocks();
 		setProfile(undefined);
 		if (originalConfigDir === undefined) {
@@ -242,7 +256,7 @@ describe("global --profile flag", () => {
 
 			const childEnv: Record<string, string | undefined> = {
 				...process.env,
-				HOME: home,
+				...isolatedHomeEnv(home),
 				PI_CONFIG_DIR: configDir,
 				PI_NO_TITLE: "1",
 				NO_COLOR: "1",
@@ -295,7 +309,7 @@ describe("global --profile flag", () => {
 
 			const childEnv: Record<string, string | undefined> = {
 				...process.env,
-				HOME: home,
+				...isolatedHomeEnv(home),
 				PI_CONFIG_DIR: ".omp-profile-cli-env-bad",
 				OMP_PROFILE: "..",
 				NO_COLOR: "1",

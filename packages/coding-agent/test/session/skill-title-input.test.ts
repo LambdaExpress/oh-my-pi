@@ -49,7 +49,7 @@ describe("titleTextFromSkillPrompt", () => {
 });
 
 describe("replan title envelope", () => {
-	it("puts skill args in the user turn and keeps assistant text", () => {
+	it("puts skill args in the user turn", () => {
 		const text = titleTextFromSkillPrompt({
 			role: "custom",
 			customType: "skill-prompt",
@@ -59,13 +59,9 @@ describe("replan title envelope", () => {
 				args: "issues/07-manual-llm.md 创建临时工作树实现",
 			},
 		});
-		const context = formatTitleConversationContext([
-			{ role: "user", text },
-			{ role: "assistant", text: "先读 implement 技能、ticket 07" },
-		]);
+		const context = formatTitleConversationContext([{ text }]);
 
 		expect(context).toContain("07-manual-llm.md");
-		expect(context).toContain("ticket 07");
 		expect(context).not.toContain("SKILL.md");
 	});
 });

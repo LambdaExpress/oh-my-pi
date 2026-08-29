@@ -16,7 +16,7 @@ function makeCaptureFetch(): { fetch: FetchImpl; body: () => Record<string, unkn
 			JSON.stringify({
 				id: "msg_test",
 				model: "claude-haiku-4-5",
-				content: [],
+				content: [{ type: "server_tool_use", name: "web_search", input: { query: "fixture search" } }],
 				usage: { input_tokens: 1, output_tokens: 2 },
 			}),
 			{ status: 200, headers: { "Content-Type": "application/json" } },

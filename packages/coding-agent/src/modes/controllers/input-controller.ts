@@ -6,6 +6,7 @@ import { isEnoent, logger, sanitizeText } from "@oh-my-pi/pi-utils";
 import { isSettingsInitialized, settings } from "../../config/settings";
 import { t } from "../../i18n";
 import { resolveLocalRoot } from "../../internal-urls";
+import { AskDialogComponent } from "../../modes/components/ask-dialog";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { extractImagePathFromText } from "../../modes/components/custom-editor";
 import { ReadToolGroupComponent } from "../../modes/components/read-tool-group";
@@ -338,6 +339,13 @@ export class InputController {
 				if (this.ctx.ui.hasOverlay()) return undefined;
 				if (this.ctx.ui.getFocused() instanceof TreeSelectorComponent && matchesKey(data, "ctrl+o"))
 					return undefined;
+				const focused = this.ctx.ui.getFocused();
+				// A truncated ask question lives in the editor slot, not chat
+				// transcript, so expand it in-place instead of (or before)
+				// toggling tool-output previews.
+				if (focused instanceof AskDialogComponent && focused.toggleQuestionExpansion()) {
+					return { consume: true };
+				}
 				this.toggleToolOutputExpansion();
 				return { consume: true };
 			});
@@ -2183,6 +2191,7 @@ export class InputController {
 			return;
 		}
 		this.setToolsExpanded(!this.ctx.toolOutputExpanded);
+		this.ctx.showStatus(`Tool output expansion: ${this.ctx.toolOutputExpanded ? "enabled" : "disabled"}`);
 	}
 
 	toggleToolActivityVisibility(): void {

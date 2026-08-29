@@ -3,8 +3,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { astGrepToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/ast-grep";
+import { removeWithRetries, sanitizeText } from "@oh-my-pi/pi-utils";
 
 function createTestSession(cwd = "/tmp/test", overrides: Partial<ToolSession> = {}): ToolSession {
 	return {
@@ -16,6 +18,28 @@ function createTestSession(cwd = "/tmp/test", overrides: Partial<ToolSession> = 
 		...overrides,
 	};
 }
+
+describe("astGrepToolRenderer", () => {
+	it("renders failures as one red error line without a frame", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const errorText = "AST pattern failed";
+
+		const renderedLines = astGrepToolRenderer
+			.renderResult(
+				{ content: [{ type: "text", text: errorText }], isError: true } as never,
+				{ expanded: false, isPartial: false },
+				uiTheme,
+				{ pat: "call($A)", path: "src" },
+			)
+			.render(240);
+
+		expect(renderedLines).toHaveLength(1);
+		expect(renderedLines[0]).toContain(uiTheme.fg("error", `Error: ${errorText}`));
+		expect(sanitizeText(renderedLines[0]!)).not.toContain("AST Grep:");
+	});
+});
 
 describe("ast_grep parse errors", () => {
 	it("reports parse errors for the searched file", async () => {

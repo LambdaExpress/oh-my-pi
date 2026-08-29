@@ -44,7 +44,7 @@ const OTHER_AGENT_ID = "other-session-agent";
  * state fields #buildState reads, and no-op lifecycle hooks. `model` stays
  * undefined — collab tests never need an LLM.
  */
-function makeSessionDouble(scopeId: string, sessionManager: SessionManager): AgentSession {
+function makeSessionDouble(sessionManager: SessionManager): AgentSession {
 	return {
 		sessionManager,
 		settings: { get: () => "" } as unknown as Settings,
@@ -54,7 +54,9 @@ function makeSessionDouble(scopeId: string, sessionManager: SessionManager): Age
 		sessionName: undefined,
 		model: undefined,
 		thinkingLevel: undefined,
-		getAgentScopeId: () => scopeId,
+		configuredThinkingLevel: () => undefined,
+		getAvailableThinkingLevels: () => [],
+		getAgentScopeId: () => sessionManager.getSessionId(),
 		getContextUsage: () => undefined,
 		subscribe: () => () => {},
 		emitNotice: () => {},
@@ -221,7 +223,7 @@ async function setupHarness(): Promise<Harness> {
 	});
 
 	const initialManager = makeSessionManagerDouble(INITIAL_SESSION_ID, initialSessionFile, INITIAL_SESSION_CWD);
-	const initialSession = makeSessionDouble(INITIAL_SESSION_ID, initialManager);
+	const initialSession = makeSessionDouble(initialManager);
 	const initialBus = new EventBus();
 	const initialHost = new CollabHost(makeHostContext(initialSession, initialManager, initialBus));
 	await initialHost.start(server.relayUrl, server.webLinkBase);
@@ -275,7 +277,7 @@ function spyOnCreateAgentSession(): { created: Array<{ id: string; session: Agen
 		if (!options) throw new Error("test spy: expected registry-injected options");
 		const manager = options.sessionManager;
 		if (!manager) throw new Error("test spy: expected a registry-injected sessionManager");
-		const session = makeSessionDouble(manager.getSessionId(), manager);
+		const session = makeSessionDouble(manager);
 		created.push({ id: manager.getSessionId(), session });
 		return {
 			session,

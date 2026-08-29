@@ -40,7 +40,7 @@ class MutableFrameProvider implements TerminalFrameProvider {
 		this.#nextHistoryId++;
 	}
 
-	resetHistory(): void {
+	beginHistoryReplay(): void {
 		this.#historyPending = true;
 	}
 }
@@ -180,7 +180,7 @@ describe("explicit scrollback replay checkpoints", () => {
 			tui.resetDisplay();
 
 			const output = writes.join("");
-			expect(output).toContain("\x1b[H\x1b[3J");
+			expect(output).toContain("\x1b[H\x1b[2J\x1b[3J");
 			expect(plainBuffer(term)).toEqual(rows("tail", 160));
 		} finally {
 			tui.stop();
@@ -205,7 +205,7 @@ describe("explicit scrollback replay checkpoints", () => {
 
 			writes.length = 0;
 			tui.resetDisplay();
-			expect(writes.join("")).toContain("\x1b[H\x1b[3J");
+			expect(writes.join("")).toContain("\x1b[H\x1b[2J\x1b[3J");
 			expect(plainBuffer(term)).toEqual(rows("tail", 160));
 
 			writes.length = 0;

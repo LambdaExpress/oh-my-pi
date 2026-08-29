@@ -11,6 +11,7 @@ import textwrap
 import threading
 import time
 import unittest
+from pathlib import Path
 
 from omp_rpc import (
     AgentEndEvent,
@@ -1193,7 +1194,7 @@ class RpcClientTests(unittest.TestCase):
             self.assertEqual(stats.tokens.total, 15)
 
             exported = client.export_html("/tmp/custom.html")
-            self.assertEqual(str(exported), "/tmp/custom.html")
+            self.assertEqual(exported, Path("/tmp/custom.html"))
 
             new_session = client.new_session()
             switched = client.switch_session("/tmp/session.jsonl")

@@ -145,7 +145,7 @@ describe("ToolExecutionComponent merged abort rendering", () => {
 		setThemeInstance(loaded);
 	});
 
-	it("keeps identifying call arguments above aborted output", () => {
+	it("keeps identifying call arguments above generic signal-abort output", () => {
 		const fixtures = [
 			{ name: "glob", args: { path: "src/audit-*.ts" }, expected: ["Glob", "src/audit-*.ts"] },
 			{
@@ -190,14 +190,144 @@ describe("ToolExecutionComponent merged abort rendering", () => {
 				ui,
 				process.cwd(),
 			);
-			component.updateResult({ content: [{ type: "text", text: "Aborted: Cancelled" }], isError: true }, false);
+			component.updateResult({ content: [{ type: "text", text: "aborted" }], details: {}, isError: true }, false);
 			const rendered = visibleText(component.render(120));
-			for (const expected of [...fixture.expected, "Aborted: Cancelled"]) {
+			for (const expected of [...fixture.expected, "aborted"]) {
 				if (!rendered.includes(expected)) missing.push(`${fixture.name}: ${expected}`);
 			}
 		}
 
 		expect(missing).toEqual([]);
+	});
+
+	it("preserves generic signal-abort arguments for a custom merged renderer", () => {
+		const tool: AgentTool & { mergeCallAndResult: true } = {
+			name: "custom_lookup",
+			label: "Custom Lookup",
+			description: "looks up a custom target",
+			parameters: { type: "object", additionalProperties: true },
+			mergeCallAndResult: true,
+			renderCall(args) {
+				const target =
+					args && typeof args === "object" && "target" in args && typeof args.target === "string"
+						? args.target
+						: "";
+				return new Text(`Custom Lookup ${target}`, 0, 0);
+			},
+			renderResult(result) {
+				return new Text(result.content.find(block => block.type === "text")?.text ?? "", 0, 0);
+			},
+			async execute() {
+				return { content: [{ type: "text", text: "ok" }] };
+			},
+		};
+		const ui: ToolExecutionUi = {
+			requestRender() {},
+			requestComponentRender(_component: Component) {},
+			resetDisplay() {},
+		};
+		const component = new ToolExecutionComponent(
+			"custom_lookup",
+			{ target: "renderer-target" },
+			{ showImages: false },
+			tool,
+			ui,
+			process.cwd(),
+		);
+		component.updateResult({ content: [{ type: "text", text: "aborted" }], details: {}, isError: true }, false);
+
+		const rendered = visibleText(component.render(120));
+		expect(rendered).toContain("Custom Lookup renderer-target");
+		expect(rendered).toContain("aborted");
+	});
+
+	it("leaves normal merged success and direct errors result-only", () => {
+		const ui: ToolExecutionUi = {
+			requestRender() {},
+			requestComponentRender(_component: Component) {},
+			resetDisplay() {},
+		};
+		const success = new ToolExecutionComponent(
+			"glob",
+			{ path: "src/audit-*.ts" },
+			{ showImages: false },
+			undefined,
+			ui,
+			process.cwd(),
+		);
+		success.updateResult(
+			{
+				content: [{ type: "text", text: "src/audit-result.ts" }],
+				details: { fileCount: 1, files: ["src/audit-result.ts"] },
+			},
+			false,
+		);
+		const successRendered = visibleText(success.render(120));
+		expect(successRendered.match(/src\/audit-\*\.ts/g)).toHaveLength(1);
+		expect(successRendered).toContain("src/audit-result.ts");
+
+		for (const fixture of [
+			{ name: "glob", args: { path: "src/direct-error-*.ts" } },
+			{ name: "grep", args: { pattern: "direct-error-token", path: "src" } },
+		]) {
+			const component = new ToolExecutionComponent(
+				fixture.name,
+				fixture.args,
+				{ showImages: false },
+				undefined,
+				ui,
+				process.cwd(),
+			);
+			component.updateResult(
+				{
+					content: [{ type: "text", text: "ordinary direct failure: Aborted: Signal" }],
+					details: {},
+					isError: true,
+				},
+				false,
+			);
+			const rendered = visibleText(component.render(120));
+			expect(rendered.split("\n").filter(line => line.trim().length > 0)).toHaveLength(1);
+			expect(rendered).toContain("ordinary direct failure: Aborted: Signal");
+			expect(rendered).not.toContain(fixture.name === "glob" ? "direct-error-*" : "direct-error-token");
+		}
+	});
+
+	it("keeps an xd-mounted abort in its delegated renderer", () => {
+		const ui: ToolExecutionUi = {
+			requestRender() {},
+			requestComponentRender(_component: Component) {},
+			resetDisplay() {},
+		};
+		const component = new ToolExecutionComponent(
+			"write",
+			{ path: "xd://glob", content: JSON.stringify({ path: "src/mounted-*.ts" }) },
+			{ showImages: false },
+			undefined,
+			ui,
+			process.cwd(),
+		);
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "Aborted: Cancelled" }],
+				details: {
+					xdev: {
+						tool: "glob",
+						mode: "execute",
+						args: { path: "src/mounted-*.ts" },
+						aborted: true,
+					},
+				},
+				isError: true,
+			},
+			false,
+		);
+
+		const rendered = visibleText(component.render(120));
+		expect(rendered).toContain("Glob");
+		expect(rendered).toContain("src/mounted-*.ts");
+		expect(rendered).toContain("Aborted: Cancelled");
+		expect(rendered).not.toContain("Write");
 	});
 });
 

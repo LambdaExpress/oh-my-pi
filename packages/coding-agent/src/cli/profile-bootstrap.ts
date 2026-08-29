@@ -33,7 +33,7 @@
  * them also activates (`omp --print --profile work`).
  */
 
-import { isSubcommand, LAUNCH_FLAG_COMMANDS } from "../cli-commands";
+import { isSubcommand, LAUNCH_FLAG_COMMANDS } from "./command-routing";
 import {
 	EXTENSION_SHADOWABLE_STRING_FLAGS,
 	isUnknownLongValueCandidate,

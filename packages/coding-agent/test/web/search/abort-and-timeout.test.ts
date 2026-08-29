@@ -29,6 +29,11 @@ import {
 	type SearchResponse,
 } from "@oh-my-pi/pi-coding-agent/web/search/types";
 
+const ANTHROPIC_SEARCH_RESPONSE = JSON.stringify({
+	content: [{ type: "server_tool_use", name: "web_search", input: { query: "ping" } }],
+	usage: {},
+});
+
 const FAKE_SESSION = {} as ToolSession;
 const fakeStorage = {
 	listAuthCredentials: () => [],
@@ -74,7 +79,7 @@ describe("Anthropic provider hard-timeout wiring", () => {
 		let capturedSignal: AbortSignal | null | undefined;
 		const fetchMock: FetchImpl = async (_input, init) => {
 			capturedSignal = init?.signal;
-			return new Response(JSON.stringify({ content: [{ type: "text", text: "ok" }], usage: {} }), {
+			return new Response(ANTHROPIC_SEARCH_RESPONSE, {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
 			});
@@ -96,7 +101,7 @@ describe("Anthropic provider hard-timeout wiring", () => {
 		let capturedSignal: AbortSignal | null | undefined;
 		const fetchMock: FetchImpl = async (_input, init) => {
 			capturedSignal = init?.signal;
-			return new Response(JSON.stringify({ content: [{ type: "text", text: "ok" }], usage: {} }), {
+			return new Response(ANTHROPIC_SEARCH_RESPONSE, {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
 			});
@@ -116,7 +121,7 @@ describe("Anthropic provider hard-timeout wiring", () => {
 		let capturedUrl: string | undefined;
 		const fetchMock: FetchImpl = async input => {
 			capturedUrl = String(input);
-			return new Response(JSON.stringify({ content: [{ type: "text", text: "ok" }], usage: {} }), {
+			return new Response(ANTHROPIC_SEARCH_RESPONSE, {
 				status: 200,
 				headers: { "Content-Type": "application/json" },
 			});

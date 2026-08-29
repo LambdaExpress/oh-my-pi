@@ -334,6 +334,14 @@ export async function resolveStdioSpawnCommand(
 	const npmShimCommand = await resolveWindowsNpmShimCommand(resolvedCommand, args, options.cwd, windowsHide);
 	if (npmShimCommand) return npmShimCommand;
 
+	// An explicit path that did not resolve must stay a direct spawn. Routing it
+	// through cmd.exe turns the actionable ENOENT into a later "Transport closed"
+	// after cmd exits, hiding the broken path from startup diagnostics. Bare
+	// commands still use cmd.exe below so Windows can apply PATHEXT itself.
+	if (resolved === null && hasPathSegment(config.command)) {
+		return { cmd: [config.command, ...args], windowsHide, detached: false };
+	}
+
 	// Direct-spawn only when we resolved to a concrete file AND its extension
 	// is not a batch script. Everything else (resolved .cmd/.bat, or an
 	// unresolved extensionless command) goes through cmd.exe so PATHEXT runs.

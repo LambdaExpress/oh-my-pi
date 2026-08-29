@@ -1,7 +1,7 @@
 import { decodeJwt } from "@oh-my-pi/pi-ai/registry/oauth/openai-codex";
+import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { t } from "../i18n";
 import type { AuthStorage } from "../session/auth-storage";
-import * as git from "../utils/git";
 import { resolveExactSecurityOAuthAccess } from "./auth";
 import {
 	createSecurityEvidenceId,
@@ -582,7 +582,8 @@ async function assertCloudRepositoryMatchesStore(
 	store: SecurityStore,
 	signal?: AbortSignal,
 ): Promise<void> {
-	const origin = await git.remote.url(store.repositoryRoot, "origin", signal);
+	const repo = vcs.git(store.repositoryRoot);
+	const origin = repo ? await repo.remoteUrl("origin", signal).catch(() => null) : null;
 	if (!origin) {
 		throw new Error(
 			t(

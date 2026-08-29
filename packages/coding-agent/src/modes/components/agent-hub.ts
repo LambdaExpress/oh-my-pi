@@ -264,7 +264,8 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 
 		this.persistedSubagentsReady = this.#remote
 			? Promise.resolve()
-			: registerPersistedSubagents(this.#registry, deps.sessionFile, deps.scopeId, {
+			: registerPersistedSubagents(this.#registry, deps.sessionFile, {
+					scopeId: deps.scopeId,
 					shouldContinue: () => !this.#disposed,
 				})
 					.then(() => {

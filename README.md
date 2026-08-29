@@ -209,6 +209,18 @@ omp completions fish > ~/.config/fish/completions/omp.fish
 - `web_search` / `github` / `ssh`：联网检索、GitHub 操作和远程主机执行。
 - `retain` / `recall` / `reflect` / `learn`：可选的长期记忆与 managed skills。
 
+## 官方 18.0.9 架构
+
+当前 fork 采用官方 18.0.9 / `main` 的分层架构，同时在这些边界上保留 fork 扩展：
+
+- **入口层**：同一 Agent/Session 引擎服务交互式 TUI、`omp -p`、TypeScript SDK、NDJSON RPC 与 ACP；编辑器能力通过 ACP 的文件、终端和权限接口接入。
+- **代理层**：`packages/agent` 维护模型无关的循环和工具执行，`packages/coding-agent` 负责会话、转录、工具编排与产品界面；`task`、`hub`、advisor 和隔离工作区共享统一的代理生命周期。
+- **终端层**：`packages/tui` 只负责终端生命周期、输入和差分绘制，coding-agent 负责语义转录。活动、已稳定和已提交块按显式生命周期进入原生 scrollback；fork 继续维护 completed-run collapse、全局转录重放和 resize rebuild。
+- **原生层**：`packages/natives` 通过 N-API 聚合 `pi-natives`、`pi-shell`、`pi-ast`、`pi-iso`、`pi-voice` 与 `pi-walker`。搜索、AST、语法高亮、PTY、嵌入式 shell 和工作区扫描在进程内运行；Windows 继续提供 PowerShell 语法高亮及原生路径、进程和终端适配。
+- **工具层**：常用文件、搜索、运行时和代码智能工具直接暴露；低频能力通过 `xd://` 按需发现。fork 保留 SSH 会话与传输、GitHub Actions run-watch、安全扫描，以及 xdev 中止后原调用形态和输出卡片的恢复。
+
+架构细节见 [coding-agent 开发指南](packages/coding-agent/DEVELOPMENT.md)、[TUI runtime internals](docs/tui-runtime-internals.md) 和 [TUI core renderer](docs/tui-core-renderer.md)。
+
 ## 自定义模型供应商
 
 在 `~/.omp/agent/models.yml` 中声明兼容供应商：

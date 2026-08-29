@@ -61,12 +61,13 @@ async function runBiome(
 	args: string[],
 	cwd: string,
 	resolvedCommand?: string,
+	commandArgs: string[] = [],
 	signal?: AbortSignal,
 ): Promise<{ stdout: string; stderr: string; success: boolean }> {
 	const command = resolvedCommand ?? "biome";
 
 	try {
-		const proc = Bun.spawn([command, ...args], {
+		const proc = Bun.spawn([command, ...commandArgs, ...args], {
 			cwd,
 			stdout: "pipe",
 			stderr: "pipe",
@@ -119,7 +120,12 @@ export class BiomeClient implements LinterClient {
 		// format, regardless of what is currently on disk.
 		await Bun.write(filePath, content);
 
-		const result = await runBiome(["format", "--write", filePath], this.cwd, this.config.resolvedCommand);
+		const result = await runBiome(
+			["format", "--write", filePath],
+			this.cwd,
+			this.config.resolvedCommand,
+			this.config.args,
+		);
 
 		if (result.success) {
 			return await Bun.file(filePath).text();
@@ -135,6 +141,7 @@ export class BiomeClient implements LinterClient {
 			["lint", "--reporter=json", filePath],
 			this.cwd,
 			this.config.resolvedCommand,
+			this.config.args,
 			signal,
 		);
 

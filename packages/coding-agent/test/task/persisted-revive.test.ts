@@ -31,6 +31,7 @@ function createRef(sessionFile: string): AgentRef {
 		displayName: "Persisted Restricted",
 		kind: "sub",
 		parentId: "Main",
+		scopeId: "persisted-root-scope",
 		status: "parked",
 		session: null,
 		sessionFile,
@@ -73,6 +74,7 @@ async function createPersistedSession(
 		| { restrictToolNames?: boolean; tools?: string[]; mountedXdevTools?: string[] },
 	modelRole?: string,
 	advisor?: string,
+	contract?: { tools?: string[]; readOnly?: boolean },
 ): Promise<string> {
 	const options =
 		typeof restrictToolNamesOrOptions === "object"
@@ -84,12 +86,13 @@ async function createPersistedSession(
 	manager.appendSessionInit({
 		systemPrompt: "persisted prompt",
 		task: "persisted task",
-		tools: options.tools ?? ["read", "yield"],
+		tools: options.tools ?? contract?.tools ?? ["read", "yield"],
 		mountedXdevTools: options.mountedXdevTools,
 		restrictToolNames: options.restrictToolNames,
 		modelRole,
 		resolvedModel: modelRole ? "anthropic/claude-sonnet-4-5" : undefined,
 		advisor,
+		readOnly: contract?.readOnly,
 	});
 	manager.appendMessage({
 		role: "assistant",
@@ -184,6 +187,7 @@ describe("persisted subagent revival", () => {
 		await reviver(ref);
 
 		expect(capturedOptions?.restrictToolNames).toBe(true);
+		expect(capturedOptions?.agentScopeId).toBe(ref.scopeId);
 		expect(capturedOptions?.enableMCP).toBe(false);
 		expect(capturedOptions?.enableLsp).toBe(false);
 		expect(capturedOptions?.enableIrc).toBe(false);
@@ -194,6 +198,50 @@ describe("persisted subagent revival", () => {
 		expect(hostileMcpGetTools).not.toHaveBeenCalled();
 		expect(attemptedDiscovery).toEqual([]);
 		expect(presentations).toEqual([{ tools: ["read", "yield"], mountedXdevTools: [] }]);
+	});
+
+	it("strips synthetic write from legacy read-only cold revival", async () => {
+		const cwd = makeTempDir("@pi-read-only-revive-");
+		const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, {
+			tools: ["read", "write", "yield"],
+			readOnly: true,
+		});
+		const presentations: Array<{ tools: string[]; mountedXdevTools: string[] }> = [];
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession(presentations).session } as CreateAgentSessionResult;
+		});
+
+		const ref = createRef(sessionFile);
+		const reviver = await createFactory(cwd)(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+
+		expect(capturedOptions?.toolNames).toEqual(["read", "yield"]);
+		expect(presentations).toEqual([{ tools: ["read", "yield"], mountedXdevTools: [] }]);
+	});
+
+	it("preserves explicitly writable cold-revival contracts", async () => {
+		const cwd = makeTempDir("@pi-write-revive-");
+		const sessionFile = await createPersistedSession(cwd, undefined, undefined, undefined, {
+			tools: ["read", "write", "yield"],
+			readOnly: false,
+		});
+		const presentations: Array<{ tools: string[]; mountedXdevTools: string[] }> = [];
+		let capturedOptions: CreateAgentSessionOptions | undefined;
+		vi.spyOn(sdkModule, "createAgentSession").mockImplementation(async options => {
+			capturedOptions = options;
+			return { session: createRevivedSession(presentations).session } as CreateAgentSessionResult;
+		});
+
+		const ref = createRef(sessionFile);
+		const reviver = await createFactory(cwd)(ref);
+		if (!reviver) throw new Error("Expected a persisted reviver");
+		await reviver(ref);
+
+		expect(capturedOptions?.toolNames).toEqual(["read", "write", "yield"]);
+		expect(presentations).toEqual([{ tools: ["read", "write", "yield"], mountedXdevTools: [] }]);
 	});
 
 	it("preserves normal revival capability wiring for contracts without the marker", async () => {
@@ -368,6 +416,7 @@ describe("persisted subagent revival", () => {
 			id: ref.id,
 			displayName: ref.displayName,
 			kind: "sub",
+			scopeId: ref.scopeId,
 			session: null,
 			sessionFile,
 			status: "parked",
@@ -393,12 +442,13 @@ describe("persisted subagent revival", () => {
 
 		expect(frames[0]).toMatchObject({
 			type: "subagent_lifecycle",
-			payload: { id: ref.id, status: "started" },
+			payload: { id: ref.id, scopeId: ref.scopeId, status: "started" },
 		});
 		const last = frames.at(-1);
 		expect(last?.type).toBe("subagent_lifecycle");
 		if (last?.type !== "subagent_lifecycle") throw new Error("expected terminal lifecycle frame");
 		expect(last.payload.id).toBe(ref.id);
+		expect(last.payload.scopeId).toBe(ref.scopeId);
 		expect(last.payload.status).not.toBe("started");
 		rpcRegistry.dispose();
 		AgentLifecycleManager.resetGlobalForTests();
@@ -422,6 +472,7 @@ describe("persisted subagent revival", () => {
 			id: ref.id,
 			displayName: ref.displayName,
 			kind: "sub",
+			scopeId: ref.scopeId,
 			session: null,
 			sessionFile,
 			status: "parked",

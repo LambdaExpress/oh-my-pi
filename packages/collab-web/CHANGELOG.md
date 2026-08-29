@@ -17,6 +17,12 @@
 - Completed turns now collapse intermediate thinking, tool calls, and progress text behind one expandable process summary while keeping the user prompt and final answer visible; abnormal runs stay expanded. Added motion-token-based transitions for transcript rows, process disclosure, session views, sidebars, Composer cards, model/thinking menus, and agent rails with reduced-motion support.
 - Added working keyboard shortcuts for new session, open project, project-sidebar toggle, Composer focus, and settings, with a reference panel in Settings. Settings now close when the desktop backdrop is clicked while preserving clicks inside the dialog.
 - Added Tauri-only custom window chrome with a unified draggable title bar and minimize, maximize/restore, and close-to-tray controls; ordinary browser sessions remain frameless.
+## [18.0.8] - 2026-08-27
+
+### Added
+
+- Transcript Markdown now renders LaTeX: `$…$` and `\(…\)` inline, `$$…$$` and `\[…\]` in display mode, plus own-line `$$`/`\[` blocks. Currency ("$5 and $10"), escaped dollars, and code spans stay literal, and half-streamed delimiters stay visible until the equation closes.
+- Note: parity with the TUI covers these delimited forms only. Bare `\begin{…}…\end{…}` environments without `$$`/`\[` fences remain literal here (the TUI typesets them); web support is a follow-up.
 
 ## [17.3.8] - 2026-08-19
 

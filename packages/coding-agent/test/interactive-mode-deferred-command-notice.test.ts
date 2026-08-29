@@ -41,6 +41,11 @@ async function createHarness(): Promise<Harness> {
 		state: { model: undefined },
 		model: undefined,
 		thinkingLevel: undefined,
+		getAsyncJobSnapshot: () => ({
+			running: [],
+			recent: [],
+			delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+		}),
 		get isStreaming() {
 			return streaming;
 		},

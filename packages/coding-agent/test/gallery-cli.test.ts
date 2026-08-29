@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
 	GALLERY_STATES,
 	parseGalleryStates,
@@ -9,12 +9,16 @@ import type { GalleryFixture } from "@oh-my-pi/pi-coding-agent/cli/gallery-fixtu
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
+import { setLocale } from "../src/i18n";
 
 beforeAll(async () => {
+	setLocale("en");
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	await initTheme(false, undefined, undefined, "dark", "light");
 });
+
+afterAll(() => setLocale(null));
 
 describe("gallery harness", () => {
 	it("accepts displayed gallery state labels and legacy tokens", () => {

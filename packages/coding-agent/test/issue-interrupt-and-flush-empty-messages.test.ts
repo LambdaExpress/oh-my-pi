@@ -149,7 +149,7 @@ describe("empty submit with queued messages", () => {
 		await ctx.editor.onSubmit?.("");
 
 		expect(prompt).not.toHaveBeenCalled();
-		expect(abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+		expect(abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
 		expect(ctx.editor.pendingImages).toEqual([]);
 	});
 });

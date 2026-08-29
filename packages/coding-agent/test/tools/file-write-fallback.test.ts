@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -18,6 +18,10 @@ function fsError(code: string, message = `${code}: simulated`): NodeJS.ErrnoExce
 	error.code = code;
 	return error;
 }
+
+// These fixtures rely on POSIX mode bits producing a real kernel denial. Windows
+// does not enforce chmod that way, and a privileged POSIX user bypasses the bits.
+const skipRealKernelPermissionTests = process.platform === "win32" || process.getuid?.() === 0;
 
 describe("isPermissionDeniedError", () => {
 	it("is true for EPERM, EACCES, and EROFS error codes", () => {
@@ -53,6 +57,16 @@ describe("isPermissionDeniedError", () => {
 
 describe("writeFileWithFallback", () => {
 	const disposers: Array<() => void> = [];
+	// The production seam canonicalizes before invoking a handler. Keep this
+	// synthetic fixture platform-native rather than assuming POSIX root syntax.
+	let deniedPath = "";
+	beforeAll(async () => {
+		deniedPath = path.join(
+			await fs.realpath(os.tmpdir()),
+			`file-write-fallback-synthetic-${process.pid}`,
+			"path.txt",
+		);
+	});
 	afterEach(() => {
 		for (const dispose of disposers.splice(0)) dispose();
 	});
@@ -75,9 +89,9 @@ describe("writeFileWithFallback", () => {
 			}),
 		);
 
-		await writeFileWithFallback("/denied/path.txt", "payload", denyingFile(fsError("EACCES")) as never);
+		await writeFileWithFallback(deniedPath, "payload", denyingFile(fsError("EACCES")) as never);
 
-		expect(seen).toEqual([{ dst: "/denied/path.txt", content: "payload" }]);
+		expect(seen).toEqual([{ dst: deniedPath, content: "payload" }]);
 	});
 
 	it("names the session that issued the write, and reports none outside a tool call", async () => {
@@ -94,11 +108,11 @@ describe("writeFileWithFallback", () => {
 		);
 
 		await withFileMutationSession("session-a", () =>
-			writeFileWithFallback("/denied/path.txt", "payload", denyingFile(fsError("EACCES")) as never),
+			writeFileWithFallback(deniedPath, "payload", denyingFile(fsError("EACCES")) as never),
 		);
 		// No scope: an external `applyPatch` caller is not attributable to a session,
 		// and inventing one would be worse than saying so.
-		await writeFileWithFallback("/denied/path.txt", "payload", denyingFile(fsError("EACCES")) as never);
+		await writeFileWithFallback(deniedPath, "payload", denyingFile(fsError("EACCES")) as never);
 
 		expect(seen).toEqual(["session-a", undefined]);
 	});
@@ -113,7 +127,7 @@ describe("writeFileWithFallback", () => {
 		);
 
 		await expect(
-			writeFileWithFallback("/denied/path.txt", "payload", denyingFile(fsError("EISDIR")) as never),
+			writeFileWithFallback(deniedPath, "payload", denyingFile(fsError("EISDIR")) as never),
 		).rejects.toMatchObject({ code: "EISDIR" });
 		expect(called).toBe(false);
 	});
@@ -153,9 +167,7 @@ describe("writeFileWithFallback", () => {
 		const cause = fsError("EACCES");
 		disposers.push(addFileWriteFallback(async () => false));
 
-		await expect(writeFileWithFallback("/denied/path.txt", "payload", denyingFile(cause) as never)).rejects.toBe(
-			cause,
-		);
+		await expect(writeFileWithFallback(deniedPath, "payload", denyingFile(cause) as never)).rejects.toBe(cause);
 	});
 
 	it("rethrows the ORIGINAL error when every handler throws", async () => {
@@ -166,9 +178,7 @@ describe("writeFileWithFallback", () => {
 			}),
 		);
 
-		await expect(writeFileWithFallback("/denied/path.txt", "payload", denyingFile(cause) as never)).rejects.toBe(
-			cause,
-		);
+		await expect(writeFileWithFallback(deniedPath, "payload", denyingFile(cause) as never)).rejects.toBe(cause);
 	});
 
 	it("falls through a throwing handler to the next registered handler", async () => {
@@ -185,7 +195,7 @@ describe("writeFileWithFallback", () => {
 			}),
 		);
 
-		await writeFileWithFallback("/denied/path.txt", "payload", denyingFile(fsError("EACCES")) as never);
+		await writeFileWithFallback(deniedPath, "payload", denyingFile(fsError("EACCES")) as never);
 
 		expect(secondCalled).toBe(true);
 	});
@@ -211,7 +221,7 @@ describe("writeFileWithFallback", () => {
 			}),
 		);
 
-		await writeFileWithFallback("/denied/path.txt", "payload", denyingFile(fsError("EACCES")) as never);
+		await writeFileWithFallback(deniedPath, "payload", denyingFile(fsError("EACCES")) as never);
 
 		expect(order).toEqual(["first", "second"]);
 	});
@@ -227,21 +237,20 @@ describe("writeFileWithFallback", () => {
 		});
 		disposers.push(dispose);
 
-		await writeFileWithFallback("/denied/path.txt", "payload", denyingFile(fsError("EACCES")) as never);
+		await writeFileWithFallback(deniedPath, "payload", denyingFile(fsError("EACCES")) as never);
 		expect(calls).toBe(1);
 
 		dispose();
 
 		await expect(
-			writeFileWithFallback("/denied/path.txt", "payload", denyingFile(fsError("EACCES")) as never),
+			writeFileWithFallback(deniedPath, "payload", denyingFile(fsError("EACCES")) as never),
 		).rejects.toMatchObject({ code: "EACCES" });
 		expect(calls).toBe(1);
 	});
 
-	// A privileged user is not constrained by mode bits, so `chmod 0o500` denies
-	// nothing and every expectation here would fail for a reason unrelated to this
-	// seam. Root is real for a Docker-based local run and for a self-hosted runner.
-	describe.skipIf(process.getuid?.() === 0)("against real kernel permissions", () => {
+	// A privileged user is not constrained by mode bits, and Windows chmod does not
+	// enforce POSIX write bits, so neither environment can produce this real denial.
+	describe.skipIf(skipRealKernelPermissionTests)("against real kernel permissions", () => {
 		let root = "";
 
 		beforeEach(async () => {
@@ -456,7 +465,7 @@ describe("writeFileWithFallback", () => {
 
 	// `apply_patch` creates a missing parent before writing, so a denial there used
 	// to throw before the write — and therefore before the seam — was ever reached.
-	describe.skipIf(process.getuid?.() === 0)("apply_patch into a denied new directory", () => {
+	describe.skipIf(skipRealKernelPermissionTests)("apply_patch into a denied new directory", () => {
 		let root = "";
 		let locked = "";
 
@@ -573,7 +582,7 @@ describe("deleteFileWithFallback", () => {
 		expect(writeCalled).toBe(false);
 	});
 
-	describe.skipIf(process.getuid?.() === 0)("against real kernel permissions", () => {
+	describe.skipIf(skipRealKernelPermissionTests)("against real kernel permissions", () => {
 		let root = "";
 		let locked = "";
 

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -12,6 +12,7 @@ import { SKILL_PROMPT_MESSAGE_TYPE } from "@oh-my-pi/pi-coding-agent/session/mes
 import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
 import { Container, replaceTabs, type TUI } from "@oh-my-pi/pi-tui";
 import { removeWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../../../src/i18n";
 
 const usage: Usage = {
 	input: 0,
@@ -108,8 +109,11 @@ afterEach(() => {
 });
 
 beforeAll(async () => {
+	setLocale("en");
 	await initTheme();
 });
+
+afterAll(() => setLocale(null));
 async function drainBtwRequest(): Promise<void> {
 	await Promise.resolve();
 	await Promise.resolve();
@@ -453,7 +457,7 @@ describe("BtwController", () => {
 		await drainBtwRequest();
 
 		expect(await controller.handleBranch()).toBe(true);
-		expect(ctx.handleBtwBranch).toHaveBeenCalledWith("Question?", assistantMessage, "leaf-1", "session-1");
+		expect(ctx.handleBtwBranch).toHaveBeenCalledWith("Question?", assistantMessage, "leaf-1", "session-1", undefined);
 	});
 
 	it("keeps a pending branch visible and refuses to dismiss it", async () => {
@@ -507,7 +511,7 @@ describe("BtwController", () => {
 			if (typeof prelude?.content !== "string") {
 				throw new Error("Expected skill prelude content to be a string");
 			}
-			expect(prelude.content).toContain('The user has invoked the "reviewer" skill');
+			expect(prelude.content).toContain('[IMPORTANT: User invoked the "reviewer" skill; follow its instructions.');
 			expect(prelude.content).toContain("User: why did this fail? focus on auth");
 		} finally {
 			await removeWithRetries(dir);
@@ -548,6 +552,7 @@ describe("BtwController", () => {
 			},
 			"leaf-1",
 			"session-1",
+			undefined,
 		);
 	});
 
@@ -639,6 +644,7 @@ describe("BtwController", () => {
 			},
 			"leaf-1",
 			"session-1",
+			undefined,
 		);
 	});
 

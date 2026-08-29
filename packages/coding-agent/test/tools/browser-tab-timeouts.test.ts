@@ -34,7 +34,7 @@ class HandleWorkerTransport implements Transport {
 	}
 }
 
-async function createHandleWorker(handle: ElementHandle): Promise<HandleWorkerTransport> {
+async function createHandleWorker(createHandle: () => ElementHandle): Promise<HandleWorkerTransport> {
 	let page: Record<string, unknown>;
 	const target = {
 		_targetId: "target-handle-timeout",
@@ -42,7 +42,7 @@ async function createHandleWorker(handle: ElementHandle): Promise<HandleWorkerTr
 	};
 	const locator = {
 		setTimeout: () => locator,
-		waitHandle: async () => handle,
+		waitHandle: async () => createHandle(),
 	};
 	page = {
 		target: () => target,
@@ -56,7 +56,7 @@ async function createHandleWorker(handle: ElementHandle): Promise<HandleWorkerTr
 		removeAllListeners() {},
 		mainFrame: () => undefined,
 		setRequestInterception: async () => {},
-		evaluateHandle: async () => ({ asElement: () => handle, dispose: async () => {} }),
+		evaluateHandle: async () => ({ asElement: () => createHandle(), dispose: async () => {} }),
 		locator: () => locator,
 	};
 	const browser = {
@@ -77,16 +77,16 @@ async function createHandleWorker(handle: ElementHandle): Promise<HandleWorkerTr
 		},
 	});
 	await transport.ready.promise;
-	core.cacheElement(82, handle);
+	core.cacheElement(82, createHandle());
 	return transport;
 }
 
 async function runHandleCode(
-	handle: ElementHandle,
+	createHandle: () => ElementHandle,
 	code: string,
 	timeoutMs: number,
 ): Promise<Extract<WorkerOutbound, { type: "result" }>> {
-	const transport = await createHandleWorker(handle);
+	const transport = await createHandleWorker(createHandle);
 	transport.deliver({
 		type: "run",
 		id: "run-handle-timeout",
@@ -138,14 +138,20 @@ describe("browser direct handle action deadlines", () => {
 	it("attributes never-settling click/type/fill actions to the handle source before the cell deadline", async () => {
 		const stalled = Promise.withResolvers<void>();
 		const node = { isConnected: true, value: "old", focus() {} };
-		const handle = {
-			click: () => stalled.promise,
-			type: () => stalled.promise,
-			evaluate: async (fn: (element: typeof node) => unknown) => fn(node),
-			dispose: async () => {},
-		} as unknown as ElementHandle;
+		const createHandle = (): ElementHandle => {
+			const keyboard = { type: () => stalled.promise };
+			return {
+				click: () => stalled.promise,
+				type: () => stalled.promise,
+				evaluate: async (fn: (element: typeof node) => unknown) => fn(node),
+				frame: { page: () => ({ keyboard }) },
+				dispose: async () => {},
+			} as unknown as ElementHandle;
+		};
+		const cellTimeoutMs = 1_100;
+		const actionTimeoutMs = resolveOpTimeouts(cellTimeoutMs).actionOpMs;
 		const result = await runHandleCode(
-			handle,
+			createHandle,
 			`const messages = [];
 			for (const [getHandle, action] of [
 				[() => tab.id(82), handle => handle.click()],
@@ -156,29 +162,31 @@ describe("browser direct handle action deadlines", () => {
 				catch (error) { messages.push(error.message); }
 			}
 			return messages;`,
-			100,
+			cellTimeoutMs,
 		);
 
+		expect(actionTimeoutMs).toBeLessThan(cellTimeoutMs);
 		expect(result.ok).toBe(true);
 		if (!result.ok) throw new Error(result.error.message);
 		expect(result.payload.returnValue).toEqual([
-			"tab.id(82).click() timed out after 1ms",
-			'tab.ref("e5").type() timed out after 1ms',
-			'tab.waitFor("#button").fill() timed out after 1ms',
+			`tab.id(82).click() timed out after ${actionTimeoutMs}ms`,
+			`tab.ref("e5").type() timed out after ${actionTimeoutMs}ms`,
+			`tab.waitFor("#button").fill() timed out after ${actionTimeoutMs}ms`,
 		]);
 	});
 
 	it("removes a caught handle action from active in-flight diagnostics", async () => {
 		const stalled = Promise.withResolvers<void>();
 		const node = { isConnected: true };
-		const handle = {
-			click: () => stalled.promise,
-			type: async () => {},
-			evaluate: async (fn: (element: typeof node) => unknown) => fn(node),
-			dispose: async () => {},
-		} as unknown as ElementHandle;
+		const createHandle = (): ElementHandle =>
+			({
+				click: () => stalled.promise,
+				type: async () => {},
+				evaluate: async (fn: (element: typeof node) => unknown) => fn(node),
+				dispose: async () => {},
+			}) as unknown as ElementHandle;
 		const result = await runHandleCode(
-			handle,
+			createHandle,
 			`try { await (await tab.id(82)).click(); } catch {}
 			await wait(10_000);`,
 			50,
@@ -200,25 +208,37 @@ describe("browser direct handle action deadlines", () => {
 				this.focused = true;
 			},
 		};
-		let handle: ElementHandle;
-		handle = {
-			click: async function (this: ElementHandle, ...args: unknown[]) {
-				calls.push({ method: "click", thisOk: this === handle, args });
-			},
-			type: async function (this: ElementHandle, ...args: unknown[]) {
-				calls.push({ method: "type", thisOk: this === handle, args });
-				if (typeof args[0] === "string") node.value += args[0];
-			},
-			evaluate: async (fn: (element: typeof node) => unknown) => fn(node),
-			dispose: async () => {},
-		} as unknown as ElementHandle;
+		const createHandle = (): ElementHandle => {
+			let handle: ElementHandle;
+			type Keyboard = { type(...args: unknown[]): Promise<void> };
+			const keyboard: Keyboard = {
+				async type(this: Keyboard, ...args: unknown[]) {
+					calls.push({ method: "type", thisOk: this === keyboard, args });
+					if (typeof args[0] === "string") node.value += args[0];
+				},
+			};
+			handle = {
+				click: async function (this: ElementHandle, ...args: unknown[]) {
+					calls.push({ method: "click", thisOk: this === handle, args });
+				},
+				type: async () => {},
+				evaluate: async (fn: (element: typeof node) => unknown) => fn(node),
+				frame: { page: () => ({ keyboard }) },
+				dispose: async () => {},
+			} as unknown as ElementHandle;
+			return handle;
+		};
+		// Use the normal browser-run budget here. The contract under test is that prompt
+		// actions do not trip their guard at all; a tiny synthetic budget makes that
+		// assertion depend on how long the host scheduler pauses this test process.
+		const cellTimeoutMs = 30_000;
 		const result = await runHandleCode(
-			handle,
+			createHandle,
 			`await (await tab.id(82)).click({ button: "right", clickCount: 2 });
 			await (await tab.ref("e5")).type("abc", { delay: 7 });
 			await (await tab.waitFor("#button")).fill("fresh");
 			return "done";`,
-			1_100,
+			cellTimeoutMs,
 		);
 
 		expect(result.ok).toBe(true);
@@ -226,8 +246,16 @@ describe("browser direct handle action deadlines", () => {
 		expect(result.payload.returnValue).toBe("done");
 		expect(calls).toEqual([
 			{ method: "click", thisOk: true, args: [{ button: "right", clickCount: 2 }] },
-			{ method: "type", thisOk: true, args: ["abc", { delay: 7 }] },
-			{ method: "type", thisOk: true, args: ["fresh", { delay: 0 }] },
+			..."abc".split("").map(character => ({
+				method: "type",
+				thisOk: true,
+				args: [character, { delay: 7 }],
+			})),
+			..."fresh".split("").map(character => ({
+				method: "type",
+				thisOk: true,
+				args: [character, { delay: 0 }],
+			})),
 		]);
 		expect(node.focused).toBe(true);
 		expect(node.value).toBe("fresh");

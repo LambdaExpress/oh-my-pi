@@ -44,7 +44,10 @@ describe("/fast targets the current model's service-tier family", () => {
 		return createSessionForModel(model);
 	}
 
-	async function createSessionForModel(model: Model<Api>): Promise<AgentSession> {
+	async function createSessionForModel(
+		model: Model<Api>,
+		settings: Settings = Settings.isolated(),
+	): Promise<AgentSession> {
 		const agent = new Agent({
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
 		});
@@ -52,7 +55,7 @@ describe("/fast targets the current model's service-tier family", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings: Settings.isolated(),
+			settings,
 			modelRegistry,
 		});
 		session.subscribe(() => {});
@@ -117,6 +120,7 @@ describe("/fast targets the current model's service-tier family", () => {
 	});
 
 	it("leaves Fireworks models on the dedicated Fireworks tier control", async () => {
+		const settings = Settings.isolated({ "providers.fireworksTier": "priority" });
 		const session = await createSessionForModel(
 			buildModel({
 				id: "gpt-oss-120b",
@@ -130,11 +134,12 @@ describe("/fast targets the current model's service-tier family", () => {
 				contextWindow: 128_000,
 				maxTokens: 64_000,
 			}),
+			settings,
 		);
 		expect(session.setFastMode(true)).toBe(false);
 		expect(session.serviceTierByFamily).toEqual({});
 		expect(session.isFastModeEnabled()).toBe(false);
-		expect(session.isFastModeActive()).toBe(false);
+		expect(session.isFastModeActive()).toBe(true);
 	});
 
 	it("clears only the current model's family when disabled", async () => {

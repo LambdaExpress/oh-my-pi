@@ -114,7 +114,7 @@ import {
 import type { CompactMode } from "../session/compact-modes";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
 import { HistoryStorage } from "../session/history-storage";
-import type { CustomMessage } from "../session/messages";
+import { type CustomMessage, USER_INTERRUPT_LABEL } from "../session/messages";
 import type { SessionContext } from "../session/session-context";
 import { getRecentSessions, type RecentSessionInfo } from "../session/session-listing";
 import type { SessionManager } from "../session/session-manager";
@@ -211,7 +211,7 @@ import {
 	parseLoopLimitArgs,
 } from "./loop-limit";
 import { OAuthManualInputManager } from "./oauth-manual-input";
-import { countRunningSubagentBadgeAgents, getRunningSubagentBadgeRegistry } from "./running-subagent-badge";
+import { getRunningSubagentBadgeAgentIds, getRunningSubagentBadgeRegistry } from "./running-subagent-badge";
 import {
 	type ObservableSession,
 	type SessionObserverChangeKind,
@@ -300,6 +300,10 @@ class CompletedRunSummaryGate extends Container {
 	): number | undefined {
 		if (cursor !== this.#summaryCursor) return undefined;
 		return rendered.length > 0 ? 1 : 0;
+	}
+
+	allowsTranscriptSuccessorRetirement(): boolean {
+		return true;
 	}
 }
 const STILL_CLOSING_DELAY_MS = 3_000;
@@ -688,6 +692,13 @@ export class InteractiveMode implements InteractiveModeContext {
 	#nextAppearanceRequestToken = 1;
 	#appearanceRefreshRequest: { token: TerminalAppearanceRequestToken; deadline: number } | undefined;
 	todoPhases: TodoPhase[] = [];
+	/**
+	 * Session that owns the plan currently in {@link todoPhases}. Subagent
+	 * reconciliation persists to this session, not blindly to `viewSession`,
+	 * which flips to the destination before `reloadTodos` refreshes during
+	 * focus attach.
+	 */
+	#todoPhasesOwner?: AgentSession;
 	hideThinkingBlock = false;
 	#sessionsWithDisplayableThinkingContent = new WeakSet<AgentSession>();
 	/** Whether the visible session has produced thinking content the user can reveal. */
@@ -965,6 +976,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	#resizeHandler?: () => void;
 	#observerRegistry: SessionObserverRegistry;
 	#eventBus?: EventBus;
+	#subagentEventBus?: EventBus;
 	#eventBusUnsubscribers: Array<() => void> = [];
 	#observerUiSyncTimer?: NodeJS.Timeout;
 	#observerUiSyncNeedsTodoReconcile = false;
@@ -976,6 +988,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	#mcpFailedServers = new Map<string, { error: string; sourcePath?: string }>();
 	readonly #chatHost: ChatBlockHost = { requestRender: () => this.ui.requestRender() };
 
+	/** Root-scoped bus carrying this session tree's `task:subagent:*` frames. */
+	get subagentEventBus(): EventBus | undefined {
+		return this.#subagentEventBus;
+	}
+
 	constructor(
 		session: AgentSession,
 		version: string,
@@ -985,6 +1002,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		mcpManager?: MCPManager,
 		eventBus?: EventBus,
 		composer?: Composer,
+		subagentEventBus?: EventBus,
 	) {
 		this.session = session;
 		this.sessionManager = session.sessionManager;
@@ -1035,6 +1053,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			new MCPCommandController(this).handleMCPAuthChallenge(serverName, challenge),
 		);
 		this.#eventBus = eventBus;
+		this.#subagentEventBus = subagentEventBus;
 
 		if (eventBus) {
 			this.#eventBusUnsubscribers.push(
@@ -1364,7 +1383,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#eventBusUnsubscribers.push(this.session.onSessionScopeChange(() => this.resetObserverRegistry()));
 		this.resetObserverRegistry();
 		if (this.#eventBus) {
-			this.#observerRegistry.subscribeToEventBus(this.#eventBus);
+			this.#observerRegistry.subscribeToEventBus(this.#eventBus, this.#subagentEventBus ?? this.#eventBus);
 		}
 		this.syncRunningSubagentBadge();
 		this.#observerRegistry.onChange(kind => {
@@ -1608,7 +1627,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		const basePath = cwd ?? this.sessionManager.getCwd();
 		// Session construction already ran slash-command discovery for this cwd;
 		// init passes that result through instead of re-walking the providers.
-		const fileCommands = preloaded ? [...preloaded] : await loadSlashCommands({ cwd: basePath });
+		const fileCommands = preloaded
+			? [...preloaded]
+			: await loadSlashCommands({
+					cwd: basePath,
+					extensionRoots: this.session.effectiveExtensionRoots,
+				});
 		this.fileSlashCommands = new Set(fileCommands.map(cmd => cmd.name));
 		const promptIcon = getSlashCommandTypeIcon("prompt");
 		const fileSlashCommands: SlashCommand[] = fileCommands.map(cmd => ({
@@ -1691,29 +1715,85 @@ export class InteractiveMode implements InteractiveModeContext {
 	 * a session from another project). The SessionManager's cwd MUST already
 	 * reflect `newCwd` before this is called.
 	 */
-	async applyCwdChange(newCwd: string): Promise<void> {
-		setProjectDir(newCwd);
-		// Re-scope project settings (`.claude/settings.yml` etc.) to the new
-		// directory in place so the active session and every settings reader pick
-		// up the destination project's configuration.
-		if (isSettingsInitialized()) {
-			await settings.reloadForCwd(newCwd);
-			// Reapply provider preferences from the newly-loaded settings so the
-			// module-level search/image provider state reflects the destination
-			// project's configuration. Without this, the previous project's
-			// exclusions leak and newly-excluded providers are still used.
-			applyProviderGlobalsFromSettings(settings);
+	async applyCwdChange(newCwd: string): Promise<boolean> {
+		const previousCwd = getProjectDir();
+		try {
+			setProjectDir(newCwd);
+		} catch (error) {
+			this.showError(
+				`Cannot change working directory to ${newCwd}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return false;
 		}
-		// Re-warm plugin roots, capabilities, slash commands, and the ssh tool so
-		// the next prompt sees everything scoped to the new project directory.
-		clearClaudePluginRootsCache();
-		await this.refreshTitleSystemPrompt(newCwd);
-		resetCapabilities();
-		await this.refreshSkillState();
-		await this.refreshSlashCommandState(newCwd);
-		await this.session.refreshSshTools({ activateIfAvailable: true });
+		// Everything after chdir is a rescope of cwd-derived state. If any of it
+		// fails, undo the chdir so `false` reliably means "nothing committed";
+		// callers roll back their own session/manager state on false.
+		try {
+			// Re-scope project settings (`.claude/settings.yml` etc.) to the new
+			// directory in place so the active session and every settings reader pick
+			// up the destination project's configuration.
+			if (isSettingsInitialized()) {
+				await settings.reloadForCwd(newCwd);
+				// Reapply provider preferences from the newly-loaded settings so the
+				// module-level search/image provider state reflects the destination
+				// project's configuration. Without this, the previous project's
+				// exclusions leak and newly-excluded providers are still used.
+				applyProviderGlobalsFromSettings(settings);
+			}
+			// Re-warm plugin roots, capabilities, slash commands, and the ssh tool so
+			// the next prompt sees everything scoped to the new project directory.
+			clearClaudePluginRootsCache();
+			await this.refreshTitleSystemPrompt(newCwd);
+			resetCapabilities();
+			await this.refreshSkillState();
+			await this.refreshSlashCommandState(newCwd);
+			await this.session.refreshSshTools({ activateIfAvailable: true });
+		} catch (error) {
+			// Undo the whole transition: the process cwd, Settings scope, and
+			// cwd-derived caches (provider globals, plugin roots, capabilities,
+			// skills, slash commands) must all return to the source project so a
+			// `false` result reliably means nothing was committed.
+			this.sessionManager.setCwdWithoutRelocation(previousCwd);
+			try {
+				setProjectDir(previousCwd);
+				if (isSettingsInitialized()) {
+					await settings.reloadForCwd(previousCwd);
+					applyProviderGlobalsFromSettings(settings);
+				}
+				clearClaudePluginRootsCache();
+				await this.refreshTitleSystemPrompt(previousCwd);
+				resetCapabilities();
+				await this.refreshSkillState();
+				await this.refreshSlashCommandState(previousCwd);
+			} catch (restoreError) {
+				const actual = this.sessionManager.getCwd();
+				try {
+					setProjectDir(actual);
+					if (isSettingsInitialized()) {
+						await settings.reloadForCwd(actual);
+						applyProviderGlobalsFromSettings(settings);
+					}
+					clearClaudePluginRootsCache();
+					await this.refreshTitleSystemPrompt(actual);
+					resetCapabilities();
+					await this.refreshSkillState();
+					await this.refreshSlashCommandState(actual);
+				} catch {}
+				this.showError(
+					`Failed to switch to ${newCwd} (${error instanceof Error ? error.message : String(error)}), and restoring the previous workspace failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`,
+				);
+				throw new Error(
+					`Failed to restore workspace after failed switch to ${newCwd}: ${restoreError instanceof Error ? restoreError.message : String(restoreError)} (workspace may be inconsistent at ${actual})`,
+				);
+			}
+			this.showError(
+				`Cannot change working directory to ${newCwd}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+			return false;
+		}
 		setSessionTerminalTitle(this.sessionManager.getSessionName(), this.sessionManager.getCwd());
 		this.statusLine.applyCwdChange();
+		return true;
 	}
 
 	async getUserInput(): Promise<SubmittedUserInput> {
@@ -1811,6 +1891,19 @@ export class InteractiveMode implements InteractiveModeContext {
 			clearTimeout(this.#goalContinuationTimer);
 			this.#goalContinuationTimer = undefined;
 		}
+	}
+
+	cancelGoalContinuation(): void {
+		this.#cancelGoalContinuation();
+	}
+
+	disableGoalMode(message = "Goal mode disabled."): void {
+		const was = this.goalModeEnabled;
+		this.goalModeEnabled = false;
+		this.goalModePaused = false;
+		this.#cancelGoalContinuation();
+		this.#updateGoalModeStatus();
+		if (was) this.showStatus(message);
 	}
 
 	#isAutoSubmitBlocked(): boolean {
@@ -2309,8 +2402,8 @@ export class InteractiveMode implements InteractiveModeContext {
 				this.syncRunningSubagentBadge();
 			});
 		}
-		const count = countRunningSubagentBadgeAgents(registry);
-		this.statusLine.setSubagentCount(count);
+		const agentIds = getRunningSubagentBadgeAgentIds(registry);
+		this.statusLine.setRunningSubagents(agentIds);
 		if (options.requestRender !== false) this.ui.requestRender();
 	}
 
@@ -2528,8 +2621,17 @@ export class InteractiveMode implements InteractiveModeContext {
 			}),
 		}));
 		if (!mutated) return;
-		this.session.setTodoPhases(next);
-		this.setTodos(next);
+		// Persist into the session that owns the snapshot we derived `next` from,
+		// not `viewSession`: the two diverge mid focus-attach, and writing to the
+		// destination there would clobber its canonical plan. Leaving the owner
+		// bound (rather than routing through `setTodos`, which rebinds it to
+		// `viewSession`) keeps a follow-up reconcile in the same window correct.
+		const owner = this.#todoPhasesOwner ?? this.session;
+		owner.setTodoPhases(next);
+		this.todoPhases = next;
+		this.#syncTodoAutoClearTimer();
+		this.#renderTodoList();
+		this.ui.requestRender();
 	}
 
 	#cancelTodoAutoClearTimer(): void {
@@ -2818,8 +2920,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.subagentContainer.addChild(new Text(lines.join("\n"), 1, 0));
 	}
 
-	async #loadTodoList(): Promise<void> {
-		this.todoPhases = this.session.getTodoPhases();
+	async #loadTodoList(source: AgentSession = this.session): Promise<void> {
+		this.todoPhases = source.getTodoPhases();
+		this.#todoPhasesOwner = source;
 		this.#syncTodoAutoClearTimer();
 		this.#renderTodoList();
 	}
@@ -3320,11 +3423,34 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 	}
 
-	async #exitPlanMode(options?: { silent?: boolean; paused?: boolean; deferModelRestore?: boolean }): Promise<void> {
+	async #exitPlanMode(options?: {
+		silent?: boolean;
+		paused?: boolean;
+		deferModelRestore?: boolean;
+		interruptActiveTurn?: boolean;
+	}): Promise<void> {
 		if (!this.planModeEnabled) {
 			return;
 		}
+		// A mid-turn exit must interrupt the currently streaming turn.
+		// The plan-mode prompt instructs the model to keep planning until it
+		// writes to `xd://propose`, so the live turn must be aborted inside
+		// `runModeExitTeardown` to avoid restarting on the stale toolset.
+		if (options?.interruptActiveTurn && this.session.isStreaming) {
+			await this.session.runModeExitTeardown(async () => {
+				await this.session.abort({ reason: USER_INTERRUPT_LABEL });
+				await this.#tearDownPlanMode(options);
+			});
+			return;
+		}
+		await this.#tearDownPlanMode(options);
+	}
 
+	async #tearDownPlanMode(options?: {
+		silent?: boolean;
+		paused?: boolean;
+		deferModelRestore?: boolean;
+	}): Promise<void> {
 		const planModeState = this.session.getPlanModeState();
 		const planModeTools = this.session.getEnabledToolNames();
 		const planModeMountedTools = this.session.getMountedXdevToolNames();
@@ -4036,7 +4162,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				);
 				if (!confirmed) return false;
 			}
-			await this.#exitPlanMode({ paused: true });
+			await this.#exitPlanMode({ paused: true, interruptActiveTurn: true });
 			return false;
 		}
 		if (this.planModePaused && !initialPrompt) {
@@ -6026,13 +6152,14 @@ export class InteractiveMode implements InteractiveModeContext {
 				},
 			];
 		}
+		this.#todoPhasesOwner = this.viewSession;
 		this.#syncTodoAutoClearTimer();
 		this.#renderTodoList();
 		this.ui.requestRender();
 	}
 
-	async reloadTodos(): Promise<void> {
-		await this.#loadTodoList();
+	async reloadTodos(source: AgentSession = this.session): Promise<void> {
+		await this.#loadTodoList(source);
 		this.ui.requestRender();
 	}
 

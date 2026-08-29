@@ -215,7 +215,6 @@ describe("SelectorController.showTreeSelector re-answering the active ask leaf",
 		expect(resumeAfterAskReanswer).not.toHaveBeenCalled();
 		expect(ctx.renderInitialMessages).toHaveBeenCalledWith({
 			clearTerminalHistory: true,
-			recoverCompletedRuns: true,
 		});
 	});
 });

@@ -19,6 +19,7 @@ import { AuthStorage } from "@oh-my-pi/pi-ai";
 import { runModelsListing } from "@oh-my-pi/pi-coding-agent/cli/models-cli";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { getProjectAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 let tmp: TempDir;
 let extPath: string;
@@ -31,6 +32,7 @@ let shutdownExtPath: string;
 let shutdownPath: string;
 
 beforeAll(async () => {
+	setLocale("en");
 	tmp = await TempDir.create("@issue-905-");
 	extPath = tmp.join("ext.ts");
 	dbPath = tmp.join("auth.db");
@@ -132,6 +134,7 @@ export default function () {}
 });
 
 afterAll(async () => {
+	setLocale(null);
 	await tmp.remove();
 });
 

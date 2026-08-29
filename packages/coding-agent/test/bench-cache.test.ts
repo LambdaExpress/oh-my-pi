@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -12,7 +12,12 @@ import type {
 	Model,
 	SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai";
-import { type BenchModelRegistry, runBenchCommand } from "@oh-my-pi/pi-coding-agent/cli/bench-cli";
+import { runBenchCommand } from "@oh-my-pi/pi-coding-agent/cli/bench-cli";
+import type { BenchModelRegistry } from "@oh-my-pi/pi-coding-agent/cli/bench-runtime";
+import { setLocale } from "../src/i18n";
+
+beforeEach(() => setLocale("en"));
+afterEach(() => setLocale(null));
 
 const model = {
 	provider: "openai",

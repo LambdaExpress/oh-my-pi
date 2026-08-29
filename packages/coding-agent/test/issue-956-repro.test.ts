@@ -7,6 +7,7 @@ import * as mcpConfigWriter from "@oh-my-pi/pi-coding-agent/mcp/config-writer";
 import { MCPCommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/mcp-command-controller";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { getConfigRootDir, getProjectDir, removeWithRetries, setAgentDir, setProjectDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const originalProjectDir = getProjectDir();
 const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -26,6 +27,7 @@ describe("interactive /mcp test", () => {
 	});
 
 	beforeEach(async () => {
+		setLocale("en");
 		projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-issue-956-project-"));
 		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-issue-956-agent-"));
 		setProjectDir(projectDir);
@@ -50,6 +52,7 @@ describe("interactive /mcp test", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		setProjectDir(originalProjectDir);

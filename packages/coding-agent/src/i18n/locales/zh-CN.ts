@@ -3652,6 +3652,7 @@ export const zhCN: Record<string, string> = {
 	"Suspend is not supported on this platform": "此平台不支持挂起",
 	"Sweep unreferenced blobs": "清除未被引用的 blob",
 	"Switch Model": "切换模型",
+	"Switch Task Model": "切换任务模型",
 	"Switch between the project and user WATCHDOG.yml. Currently editing the {scope}-level file.":
 		"在项目级与用户级 WATCHDOG.yml 之间切换。当前正在编辑 {scope} 级文件。",
 	"Switch from the active model to a fast/cheap model at the first edit/write after the plan's todo list exists (default off; see prewalk.enabled)":
@@ -3692,6 +3693,8 @@ export const zhCN: Record<string, string> = {
 	'Target model for prewalk (default the "smol" role)': 'prewalk 的目标模型（默认为 "smol" 角色）',
 	"Target shell": "目标 shell",
 	Task: "任务",
+	"Task subagent switch — spawned task agents use this model (session-only)":
+		"任务子代理切换 — 派生的任务代理使用此模型（仅限本次会话）",
 	Tasks: "任务",
 	Temperature: "温度",
 	"Templates:": "模板：",
@@ -4636,6 +4639,7 @@ export const zhCN: Record<string, string> = {
 	selected: "已选",
 	"sending request": "正在发送请求",
 	"service tier: {tier}": "服务层级: {tier}",
+	"session model": "会话模型",
 	"session not started": "会话未开始",
 	"setting:": "设置:",
 	settled: "已解决",
@@ -4691,6 +4695,7 @@ export const zhCN: Record<string, string> = {
 	"subscribed ({count} URI{s})": "已订阅（{count} URI）",
 	success: "成功",
 	"systemPrompt preview:": "systemPrompt 预览：",
+	"task model": "任务模型",
 	"the answer is not ready": "答案尚未就绪",
 	"the answer is unavailable": "答案不可用",
 	"the current model": "当前模型",
@@ -4888,6 +4893,8 @@ export const zhCN: Record<string, string> = {
 	"←/→ choose · Enter open · Esc cancel": "←/→ 选择 · Enter 打开 · Esc 取消",
 	"←/→ save scope · Enter choose · Esc cancel": "←/→ 保存范围 · Enter 选择 · Esc 取消",
 	"←/→ thinking level · Enter apply · Esc keep": "←/→ 思考级别 · Enter 应用 · Esc 保留",
+	"↑/↓ models · Enter use for Task subagents · type to search · Esc close":
+		"↑/↓ 模型 · Enter 用于任务子代理 · 输入搜索 · Esc 关闭",
 	"↑/↓ models · Enter use for this session · type to search · @ quick roles · Esc close":
 		"↑/↓ 模型 · Enter 本次会话使用 · 输入搜索 · @ 快捷角色 · Esc 关闭",
 	"↑/↓ models · ← providers": "↑/↓ 模型 · ← 提供商",

@@ -11,7 +11,6 @@ import type { FileDiagnosticsResult, WritethroughCallback, WritethroughDeferredH
 import type { ToolSession } from "../../tools";
 import { routeWriteThroughBridge } from "../../tools/acp-bridge";
 import { invalidateFsScanAfterWrite } from "../../tools/fs-cache-invalidation";
-import { outputMeta } from "../../tools/output-meta";
 import { enforcePlanModeWrite } from "../../tools/plan-mode-guard";
 import type { AppliedEditObserver } from "../blackbox";
 import { generateDiffString, replaceText } from "../diff";
@@ -26,7 +25,7 @@ import {
 } from "../normalize";
 import { serializeEditFileText } from "../read-file";
 import type { EditToolDetails, LspBatchRequest } from "../renderer";
-import { pruneOversizedEditSnapshots } from "../snapshot-details";
+import { createEditResult, toEditToolResult } from "../result";
 import { readEditTargetText, resolveEditTarget } from "../target";
 
 export interface FuzzyMatch {
@@ -1221,25 +1220,14 @@ export async function executeReplace(
 
 	const diffResult = generateDiffString(normalizedContent, result.content, undefined, { path });
 	await onApplied?.({ path: detailsPath, prev: rawContent, next: finalContent });
-	const resultText =
-		result.count > 1
-			? `Successfully replaced ${result.count} occurrences in ${path}.`
-			: `Successfully replaced text in ${path}.`;
-
-	const meta = outputMeta()
-		.diagnostics(diagnostics?.summary ?? "", diagnostics?.messages ?? [])
-		.get();
-
-	return {
-		content: [{ type: "text", text: resultText }],
-		details: pruneOversizedEditSnapshots({
-			diff: diffResult.diff,
-			path: detailsPath,
-			firstChangedLine: diffResult.firstChangedLine,
-			diagnostics,
-			meta,
-			oldText: rawContent,
-			newText: finalContent,
-		}),
-	};
+	const editResult = createEditResult({
+		displayPath: path,
+		resultPath: detailsPath,
+		diff: diffResult.diff,
+		firstChangedLine: diffResult.firstChangedLine,
+		diagnostics,
+		oldText: rawContent,
+		newText: finalContent,
+	});
+	return toEditToolResult(editResult);
 }

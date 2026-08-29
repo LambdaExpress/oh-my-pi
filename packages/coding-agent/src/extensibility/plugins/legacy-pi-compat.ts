@@ -2073,13 +2073,13 @@ function escapeRegExp(value: string): string {
 // reloads install supplemental hooks only for modules added to the graph since
 // the previous load.
 const extensionGraphHookModules = new Map<string, Set<string>>();
-const extensionGraphCacheBustResolvedImportModules = new Map<string, Set<string>>();
 const commonJsModuleSources = new Map<string, string>();
 const commonJsFallbackModulePaths = new Map<string, string>();
 const extensionSynchronousSpecifierTargets = new Map<string, Map<string, string>>();
 const synchronousModuleSources = new Map<string, string>();
 const commonJsGraphModulePaths = new Set<string>();
 const COMMONJS_REQUIRE_GLOBAL = "__ompLegacyPiRequireGraphModule";
+const legacyPiModuleRequire = createRequire(import.meta.url);
 const commonJsModuleDefinitions = new Map<string, { source: string; filename: string; dirname: string }>();
 const commonJsModuleCache = new Map<
 	string,
@@ -2178,13 +2178,6 @@ export function ensureGraphCommonJsRequireRegistered(): void {
 
 ensureGraphCommonJsRequireRegistered();
 
-let legacyPiLoadTag = 0;
-
-function nextLegacyPiLoadTag(): string {
-	legacyPiLoadTag = Math.max(legacyPiLoadTag + 1, Date.now());
-	return String(legacyPiLoadTag);
-}
-
 /** Resolve symlinks in a path, falling back to the input if realpath fails. */
 async function realpathOrSelf(p: string): Promise<string> {
 	const cached = realpathCache.get(p);
@@ -2205,7 +2198,6 @@ async function realpathOrSelfUncached(p: string): Promise<string> {
 
 interface ExtensionModuleGraph {
 	readonly modules: Map<string, string>;
-	readonly cacheBustResolvedImportModules: Set<string>;
 	readonly commonJsPaths: Set<string>;
 	readonly synchronousSourcePaths: Set<string>;
 }
@@ -2217,29 +2209,26 @@ interface ExtensionModuleGraph {
  * graph-owned recursively because compiled Bun cannot resolve runtime
  * `node_modules` from those modules. Graph-owned CommonJS modules also own
  * their relative and bare CommonJS descendants, which are evaluated by the
- * synchronous bridge. Resolved ESM imports inside third-party dependencies
- * omit the reload tag so their importer paths stay query-free.
+ * synchronous bridge. This complete path set is also the reload invalidation
+ * boundary; host modules outside it keep their process-level cache entries.
  */
 async function collectExtensionModules(entryRealPath: string): Promise<ExtensionModuleGraph> {
 	const modules = new Map<string, string>();
 	const commonJsPaths = new Set<string>();
 	const synchronousSourcePaths = new Set<string>();
-	const queuedCacheBustResolvedImports = new Map<string, boolean>([[entryRealPath, true]]);
 	const queuedModuleKinds = new Map<string, ExtensionModuleKind>([[entryRealPath, "esm"]]);
 	const queuedEsmBranchPaths = new Set<string>();
 	const queue: Array<{
 		file: string;
-		cacheBustResolvedImports: boolean;
 		moduleKind?: ExtensionModuleKind;
 		esmBranch?: boolean;
-	}> = [{ file: entryRealPath, cacheBustResolvedImports: true, moduleKind: "esm" }];
+	}> = [{ file: entryRealPath, moduleKind: "esm" }];
 	while (queue.length > 0) {
 		const item = queue.pop();
 		if (!item) {
 			continue;
 		}
 		const file = item.file;
-		const cacheBustResolvedImports = queuedCacheBustResolvedImports.get(file) ?? item.cacheBustResolvedImports;
 		const inheritedModuleKind = queuedModuleKinds.get(file) ?? item.moduleKind;
 		const esmBranch = queuedEsmBranchPaths.has(file) || item.esmBranch === true;
 		if (modules.has(file)) {
@@ -2268,7 +2257,6 @@ async function collectExtensionModules(entryRealPath: string): Promise<Extension
 			const specifier = reference.specifier;
 			try {
 				let resolved: string | null = null;
-				let nextCacheBustResolvedImports = cacheBustResolvedImports;
 				let resolvedModuleKind: ExtensionModuleKind | undefined;
 				let resolvedEsmBranch = false;
 				let requiresNativeAddonRewrite = false;
@@ -2364,7 +2352,6 @@ async function collectExtensionModules(entryRealPath: string): Promise<Extension
 						resolvedModuleKind = isCommonJsEntry ? "commonjs" : "esm";
 						resolvedEsmBranch = selectedEsmBranch && !isCommonJsEntry;
 					}
-					nextCacheBustResolvedImports = false;
 				}
 				if (
 					resolved &&
@@ -2376,9 +2363,6 @@ async function collectExtensionModules(entryRealPath: string): Promise<Extension
 					synchronousSourcePaths.add(resolved);
 				}
 				if (resolved) {
-					const queuedCacheBust = queuedCacheBustResolvedImports.get(resolved) ?? false;
-					const mergedCacheBust = queuedCacheBust || nextCacheBustResolvedImports;
-					queuedCacheBustResolvedImports.set(resolved, mergedCacheBust);
 					const queuedModuleKind = queuedModuleKinds.get(resolved);
 					const mergedEsmBranch = queuedEsmBranchPaths.has(resolved) || resolvedEsmBranch;
 					const mergedModuleKind =
@@ -2400,7 +2384,6 @@ async function collectExtensionModules(entryRealPath: string): Promise<Extension
 					if (!modules.has(resolved)) {
 						queue.push({
 							file: resolved,
-							cacheBustResolvedImports: mergedCacheBust,
 							moduleKind: mergedModuleKind,
 							esmBranch: resolvedEsmBranch,
 						});
@@ -2422,11 +2405,6 @@ async function collectExtensionModules(entryRealPath: string): Promise<Extension
 		modules,
 		commonJsPaths,
 		synchronousSourcePaths,
-		cacheBustResolvedImportModules: new Set(
-			[...queuedCacheBustResolvedImports]
-				.filter(([modulePath, enabled]) => enabled && modules.has(modulePath))
-				.map(([modulePath]) => modulePath),
-		),
 	};
 }
 
@@ -2599,7 +2577,6 @@ async function installExtensionGraphHook(
 	modules: Map<string, string>,
 	commonJsPaths: Set<string>,
 	synchronousSourcePaths: ReadonlySet<string>,
-	cacheBustResolvedImportModules: ReadonlySet<string>,
 ): Promise<{ asyncModules: Map<string, string> }> {
 	const asyncModules = new Map<string, string>();
 	for (const [modulePath, source] of modules) {
@@ -2611,15 +2588,13 @@ async function installExtensionGraphHook(
 
 	if (asyncModules.size > 0) {
 		const alternation = [...asyncModules.keys()].map(escapeRegExp).join("|");
-		const filter = new RegExp(`^(?:${alternation})(?:\\?mtime=\\d+)?$`);
+		const filter = new RegExp(`^(?:${alternation})$`);
 		const hookId = Bun.hash(`${entryRealPath}\0async\0${[...asyncModules.keys()].join("\0")}`).toString(36);
 		Bun.plugin({
 			name: `omp:legacy-pi-ext:${hookId}`,
 			setup(build) {
 				build.onLoad({ filter, namespace: "file" }, args => {
-					const queryIndex = args.path.indexOf("?mtime=");
-					const sourcePath = queryIndex >= 0 ? args.path.slice(0, queryIndex) : args.path;
-					const mtimeTag = queryIndex >= 0 ? args.path.slice(queryIndex + "?mtime=".length) : null;
+					const sourcePath = args.path;
 					// A later reload can upgrade this module to synchronous loading (a
 					// new `require()` edge reaches it) without re-registering hooks:
 					// this filter keeps matching and `require()` rejects async onLoad
@@ -2630,18 +2605,18 @@ async function installExtensionGraphHook(
 						return { contents: synchronousSource, loader: getLoader(sourcePath) };
 					}
 					const cached = asyncModules.get(sourcePath);
-					const resolvedImportMtimeTag = cacheBustResolvedImportModules.has(sourcePath) ? mtimeTag : null;
 					return (async () => {
 						let raw: string;
 						if (cached !== undefined) {
-							// consume-once: preserves ?mtime edit-pickup for re-imports
+							// Consume the graph-walk snapshot only for the initial import.
+							// Lazy imports and reloads must read their current on-disk bytes.
 							asyncModules.delete(sourcePath);
 							raw = cached;
 						} else {
 							raw = await Bun.file(sourcePath).text();
 						}
 						return {
-							contents: await rewriteLegacyExtensionSource(raw, sourcePath, mtimeTag, resolvedImportMtimeTag),
+							contents: await rewriteLegacyExtensionSource(raw, sourcePath),
 							loader: getLoader(sourcePath),
 						};
 					})();
@@ -2652,14 +2627,13 @@ async function installExtensionGraphHook(
 
 	if (commonJsPaths.size > 0) {
 		const alternation = [...commonJsPaths].map(escapeRegExp).join("|");
-		const filter = new RegExp(`^(?:${alternation})(?:\\?mtime=\\d+)?$`);
+		const filter = new RegExp(`^(?:${alternation})$`);
 		const hookId = Bun.hash(`${entryRealPath}\0commonjs\0${[...commonJsPaths].join("\0")}`).toString(36);
 		Bun.plugin({
 			name: `omp:legacy-pi-ext:${hookId}`,
 			setup(build) {
 				build.onLoad({ filter, namespace: "file" }, args => {
-					const queryIndex = args.path.indexOf("?mtime=");
-					const sourcePath = queryIndex >= 0 ? args.path.slice(0, queryIndex) : args.path;
+					const sourcePath = args.path;
 					let source = commonJsModuleSources.get(sourcePath);
 					if (source === undefined) {
 						const targetPath = commonJsFallbackModulePaths.get(sourcePath) ?? sourcePath;
@@ -2674,14 +2648,13 @@ async function installExtensionGraphHook(
 
 	if (synchronousSourcePaths.size > 0) {
 		const alternation = [...synchronousSourcePaths].map(escapeRegExp).join("|");
-		const filter = new RegExp(`^(?:${alternation})(?:\\?mtime=\\d+)?$`);
+		const filter = new RegExp(`^(?:${alternation})$`);
 		const hookId = Bun.hash(`${entryRealPath}\0sync-source\0${[...synchronousSourcePaths].join("\0")}`).toString(36);
 		Bun.plugin({
 			name: `omp:legacy-pi-ext:${hookId}`,
 			setup(build) {
 				build.onLoad({ filter, namespace: "file" }, args => {
-					const queryIndex = args.path.indexOf("?mtime=");
-					const sourcePath = queryIndex >= 0 ? args.path.slice(0, queryIndex) : args.path;
+					const sourcePath = args.path;
 					const source = synchronousModuleSources.get(sourcePath);
 					if (source === undefined) {
 						throw new Error(`Missing pre-rewritten synchronous extension source: ${sourcePath}`);
@@ -2706,17 +2679,8 @@ async function ensureExtensionGraphHook(entryRealPath: string): Promise<{ clear(
 	const {
 		modules: currentModules,
 		commonJsPaths,
-		cacheBustResolvedImportModules: discoveredCacheBustModules,
 		synchronousSourcePaths,
 	} = await collectExtensionModules(entryRealPath);
-	let cacheBustResolvedImportModules = extensionGraphCacheBustResolvedImportModules.get(entryRealPath);
-	if (!cacheBustResolvedImportModules) {
-		cacheBustResolvedImportModules = new Set<string>();
-		extensionGraphCacheBustResolvedImportModules.set(entryRealPath, cacheBustResolvedImportModules);
-	}
-	for (const modulePath of discoveredCacheBustModules) {
-		cacheBustResolvedImportModules.add(modulePath);
-	}
 	for (const [modulePath, source] of currentModules) {
 		if (commonJsPaths.has(modulePath)) {
 			commonJsModuleSources.set(modulePath, await prepareCommonJsDefaultModule(modulePath, source));
@@ -2763,7 +2727,6 @@ async function ensureExtensionGraphHook(entryRealPath: string): Promise<{ clear(
 			pendingModules,
 			pendingCommonJsPaths,
 			pendingSynchronousSourcePaths,
-			cacheBustResolvedImportModules,
 		));
 		for (const modulePath of pendingModules.keys()) {
 			hookedModules.add(modulePath);
@@ -2779,6 +2742,21 @@ async function ensureExtensionGraphHook(entryRealPath: string): Promise<{ clear(
 			}
 		},
 	};
+}
+
+/**
+ * Evict the previous extension graph from Bun's ESM/CommonJS registries before
+ * the next in-place load. Bun exposes both registries through `require.cache`;
+ * deleting only the entry leaves its already-evaluated children reachable, so
+ * walk every source discovered for this entry. Host modules are outside this
+ * exact graph and retain their normal process cache.
+ */
+function invalidateExtensionModuleGraph(entryRealPath: string, modulePaths: Iterable<string>): void {
+	for (const modulePath of modulePaths) {
+		delete legacyPiModuleRequire.cache[modulePath];
+		commonJsModuleCache.delete(modulePath);
+	}
+	delete legacyPiModuleRequire.cache[entryRealPath];
 }
 
 /**
@@ -2798,17 +2776,18 @@ export async function loadLegacyPiModule(resolvedPath: string): Promise<unknown>
 	// actually hands the hook.
 	const entryRealPath = await realpathOrSelf(path.resolve(resolvedPath));
 	await ensureLegacyPiOverridesReady();
+	const isReload = extensionGraphHookModules.has(entryRealPath);
 	const pendingSources = await ensureExtensionGraphHook(entryRealPath);
+	const hookedModules = extensionGraphHookModules.get(entryRealPath);
+	if (!hookedModules) {
+		throw new Error(`Missing legacy extension graph: ${entryRealPath}`);
+	}
+	if (isReload) {
+		invalidateExtensionModuleGraph(entryRealPath, hookedModules);
+	}
 	try {
 		// Dynamic import is required: legacy extension entry paths are user/plugin supplied at runtime.
-		// On POSIX, use the raw filesystem path so Bun keys the `?mtime`
-		// suffix as part of the module identity; Bun ignores query strings on
-		// `file://` specifiers, which would serve stale edited source.
-		const entrySpecifier =
-			process.platform === "win32" || isBundledVirtualSpecifier(entryRealPath)
-				? toImportSpecifier(entryRealPath)
-				: entryRealPath;
-		return await import(`${entrySpecifier}?mtime=${nextLegacyPiLoadTag()}`);
+		return await import(toImportSpecifier(entryRealPath));
 	} finally {
 		// Drop whatever the initial import didn't consume: graph modules only
 		// reached by lazy dynamic imports must be read from disk at their actual

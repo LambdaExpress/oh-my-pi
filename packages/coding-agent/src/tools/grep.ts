@@ -32,7 +32,6 @@ import { isScoutSpawnable } from "../task/spawn-policy";
 import {
 	Ellipsis,
 	fileHyperlink,
-	framedBlock,
 	getTreeBranch,
 	getTreeContinuePrefix,
 	renderStatusLine,
@@ -69,7 +68,7 @@ import {
 	formatCodeFrameLine,
 	formatCount,
 	formatEmptyMessage,
-	formatErrorDetail,
+	formatErrorMessage,
 	formatMoreItems,
 	PREVIEW_LIMITS,
 	replaceTabs,
@@ -779,6 +778,7 @@ async function resolveInternalSearchInputs(opts: {
 	localProtocolOptions?: LocalProtocolOptions;
 	skills?: ResolveContext["skills"];
 	sshHosts?: ResolveContext["sshHosts"];
+	sessionFile?: string;
 }): Promise<InternalSearchInputResolution> {
 	const internalRouter = InternalUrlRouter.instance();
 	const paths = opts.resolvedPaths.slice();
@@ -791,6 +791,7 @@ async function resolveInternalSearchInputs(opts: {
 		cwd: opts.cwd,
 		settings: opts.settings,
 		signal: opts.signal,
+		sessionFile: opts.sessionFile,
 		localProtocolOptions: opts.localProtocolOptions,
 		skills: opts.skills,
 		sshHosts: opts.sshHosts,
@@ -1005,6 +1006,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					localProtocolOptions: this.session.localProtocolOptions,
 					skills: this.session.skills,
 					sshHosts,
+					sessionFile: this.session.getSessionFile() ?? undefined,
 				});
 				const searchablePaths = internalResolution.paths;
 				const { virtualResources, virtualPathSet, virtualInputIndexes } = internalResolution;
@@ -1043,16 +1045,17 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 						rawPaths: searchablePaths,
 						cwd: this.session.cwd,
 						internalUrlAction: "search",
-						trackImmutableSources: true,
-						surfaceExactFilePaths: true,
-						fanOutFileTargets: true,
-						multipathStatHint: " (`path` list entries must each exist relative to cwd)",
 						settings: this.session.settings,
 						signal,
 						localProtocolOptions: this.session.localProtocolOptions,
 						skills: this.session.skills,
 						sshHosts,
+						sessionFile: this.session.getSessionFile() ?? undefined,
 						resolveExternalUrl: materializeExternalUrlForSearch,
+						trackImmutableSources: true,
+						surfaceExactFilePaths: true,
+						fanOutFileTargets: true,
+						multipathStatHint: " (`path` list entries must each exist relative to cwd)",
 					});
 					searchPath = scope.searchPath;
 					isDirectory = scope.isDirectory;
@@ -1816,29 +1819,7 @@ export const grepToolRenderer = {
 
 		if (result.isError || details?.error) {
 			const errorText = details?.error || result.content?.find(c => c.type === "text")?.text || "Unknown error";
-			const paths = toPathList(args?.path ?? args?.paths);
-			const meta: string[] = [];
-			if (paths.length) meta.push(`in ${paths.join(", ")}`);
-			if (args?.case === false) meta.push("case:insensitive");
-			if (args?.gitignore === false) meta.push("gitignore:false");
-			if (args?.skip !== undefined && args.skip > 0) meta.push(`skip:${args.skip}`);
-			const header = renderStatusLine(
-				{
-					icon: "error",
-					title: "Grep",
-					titleColor: "toolTitle",
-					description: args?.pattern || "?",
-					meta,
-				},
-				uiTheme,
-			);
-			return framedBlock(uiTheme, width => ({
-				header,
-				sections: [{ lines: formatErrorDetail(errorText, uiTheme).split("\n") }],
-				state: "error",
-				borderColor: "error",
-				width,
-			}));
+			return new Text(formatErrorMessage(errorText, uiTheme), 1, 0);
 		}
 
 		const hasDetailedData = details?.matchCount !== undefined || details?.fileCount !== undefined;

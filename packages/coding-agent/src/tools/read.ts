@@ -37,7 +37,6 @@ import { InternalUrlRouter, resolveLocalUrlToFile, resolveLocalUrlToPath } from 
 import { type ResolvedArtifactFile, resolveArtifactFile } from "../internal-urls/artifact-protocol";
 import { parseInternalUrl } from "../internal-urls/parse";
 import type { InternalUrl } from "../internal-urls/types";
-import { isMarkdownPath } from "../modes/theme/theme";
 import readDescription from "../prompts/tools/read.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
 import {
@@ -52,7 +51,12 @@ import {
 import { buildLineEntriesWithBlockContext, type LineEntry, lineEntriesToPlainText } from "../utils/block-context";
 import { isCpuProfilePath, renderCpuProfile } from "../utils/cpuprofile";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
-import { loadImageInput, MAX_IMAGE_INPUT_BYTES, webpExclusionForModel } from "../utils/image-loading";
+import {
+	loadImageInput,
+	loadSvgImageInput,
+	MAX_IMAGE_INPUT_BYTES,
+	webpExclusionForModel,
+} from "../utils/image-loading";
 import { isInspectImageToolAvailable } from "../utils/inspect-image-mode";
 import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "../utils/markit";
 import { isSampleProfilePath, renderSampleProfile } from "../utils/sample-profile";
@@ -102,6 +106,7 @@ import {
 	hashlineHeaderContext,
 	hashlineHeaderContextForText,
 	lineNumbersFromSpans,
+	markMarkdownContentType,
 	prependHashlineHeader,
 	prependSuffixResolutionNotice,
 	RANGE_LEADING_CONTEXT_LINES,
@@ -900,12 +905,11 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	}
 
 	/**
-	/**
-	 * Build content blocks for an on-disk image file: an `inspect_image`
-	 * metadata note when inspection is active, otherwise the decoded image
-	 * block. Shared by the plain-file read path and the `local://` image fast
-	 * path so both honor the effective inspect_image state, the size cap, and
-	 * auto-resize identically. Too-large / unsupported images surface as {@link ToolError}.
+	 * Build content blocks for a vision-ready image: an `inspect_image` metadata
+	 * note when inspection is active, otherwise the decoded image block. Shared
+	 * by the plain-file read path, `local://` image fast path, and explicit SVG
+	 * rasterization so all honor inspect_image state, size caps, and auto-resize
+	 * identically. Too-large / unsupported images surface as {@link ToolError}.
 	 */
 	async #loadImageContent(options: {
 		readPath: string;
@@ -913,25 +917,35 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		mimeType: string;
 		imageMetadata: ImageMetadata | null;
 		fileSize: number;
+		imageKind?: "svg";
+		inspectPath?: string;
 	}): Promise<{ content: Array<TextContent | ImageContent>; details: ReadToolDetails; sourcePath: string }> {
-		const { readPath, absolutePath, mimeType, imageMetadata, fileSize } = options;
+		const { readPath, absolutePath, mimeType, imageMetadata, fileSize, imageKind, inspectPath } = options;
 		const { content, sourcePath } = await buildReadImageContent({
 			inspectImageActive: this.syncInspectImageState(),
 			mimeType,
 			imageMetadata,
 			fileSize,
-			inspectHintPath: formatPathRelativeToCwd(absolutePath, this.session.cwd),
+			inspectHintPath: inspectPath ?? formatPathRelativeToCwd(absolutePath, this.session.cwd),
 			sourcePath: absolutePath,
-			load: () =>
-				loadImageInput({
+			load: async () => {
+				const imageLoadOptions = {
 					path: readPath,
 					cwd: this.session.cwd,
 					autoResize: this.#autoResizeImages,
 					maxBytes: MAX_IMAGE_INPUT_BYTES,
 					resolvedPath: absolutePath,
-					detectedMimeType: mimeType,
 					excludeWebP: webpExclusionForModel(this.session.getActiveModel?.()),
-				}),
+				};
+				if (imageKind === "svg") {
+					const imageInput = await loadSvgImageInput(imageLoadOptions);
+					if (!imageInput) {
+						throw new ToolError("The ':img' selector only supports .svg and .svgz files.");
+					}
+					return imageInput;
+				}
+				return loadImageInput({ ...imageLoadOptions, detectedMimeType: mimeType });
+			},
 		});
 		return { content, details: {}, sourcePath };
 	}
@@ -952,9 +966,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			snapshot?: HashlineSnapshotTarget;
 		},
 	): AgentToolResult<ReadToolDetails> {
+		if (!options.snapshot) {
+			return buildInMemoryTextResult(this.session, text, offset, limit, options);
+		}
 		const displayMode = resolveFileDisplayMode(this.session, { raw: options.raw, immutable: options.immutable });
 		const details = options.details ?? {};
-		const allLines = text.split("\n");
+		const allLines = options.raw === true ? text.split("\n") : splitAddressableFileLines(text);
 		const totalLines = allLines.length;
 		details.totalLines = totalLines;
 		// User-requested 0-indexed range start. Lines BEFORE this are leading
@@ -1052,6 +1069,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		const buildLineEntries = (endLineDisplay: number): LineEntry[] =>
 			buildLineEntriesWithBlockContext(allLines, [{ startLine: startLineDisplay, endLine: endLineDisplay }], {
 				path: blockContextPath,
+				text,
 			});
 
 		let outputText: string;
@@ -1151,9 +1169,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			snapshot?: HashlineSnapshotTarget;
 		},
 	): AgentToolResult<ReadToolDetails> {
+		if (!options.snapshot) {
+			return buildInMemoryMultiRangeResult(this.session, text, ranges, options);
+		}
 		const displayMode = resolveFileDisplayMode(this.session, { raw: options.raw, immutable: options.immutable });
 		const details = options.details ?? {};
-		const allLines = text.split("\n");
+		const allLines = options.raw === true ? text.split("\n") : splitAddressableFileLines(text);
 		const totalLines = allLines.length;
 		details.totalLines = totalLines;
 		const shouldAddHashLines = displayMode.hashLines;
@@ -1197,6 +1218,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		} else if (visibleSpans.length > 0) {
 			const entries = buildLineEntriesWithBlockContext(allLines, visibleSpans, {
 				path: options.sourcePath ?? options.snapshot?.displayPath,
+				text,
 			});
 			if (shouldAddHashLines) seenLines = lineNumbersFromEntries(entries);
 			const firstLine = entries.find(entry => entry.kind === "line");
@@ -1257,8 +1279,12 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (bridgePromise !== undefined) {
 			try {
 				const bridgeText = await bridgePromise;
-				const bridgeResult = this.#buildInMemoryMultiRangeResult(bridgeText, ranges, {
-					details: this.#markMarkdownContentType({ resolvedPath: absolutePath, suffixResolution }, absolutePath),
+				const bridgeResult = buildInMemoryMultiRangeResult(this.session, bridgeText, ranges, {
+					details: markMarkdownContentType(
+						this.session,
+						{ resolvedPath: absolutePath, suffixResolution },
+						absolutePath,
+					),
 					sourcePath: absolutePath,
 					entityLabel: "file",
 					raw: rawSelector,
@@ -1401,20 +1427,6 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			outputText = outputText ? `${outputText}\n${notices.join("\n")}` : notices.join("\n");
 		}
 		return { outputText, columnTruncated, displayContent };
-	}
-
-	/**
-	 * Tag Markdown reads for the TUI's formatted preview, gated on the opt-in
-	 * `read.renderMarkdown` setting. Off by default; when disabled, no local
-	 * read is tagged `text/markdown`, so the renderer output is identical to
-	 * the pre-setting behavior. Internal-URL reads keep their protocol-supplied
-	 * `contentType` and render as Markdown regardless of the setting.
-	 */
-	#markMarkdownContentType(details: ReadToolDetails, filePath: string): ReadToolDetails {
-		if (!details.contentType && this.session.settings.get("read.renderMarkdown") && isMarkdownPath(filePath)) {
-			details.contentType = "text/markdown";
-		}
-		return details;
 	}
 
 	async #trySummarizeText(
@@ -1650,11 +1662,15 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			const parsed = parseSel(internalTarget.sel);
 			if (internalTarget.sel !== undefined && parsed.kind === "none") {
 				throw new ToolError(
-					`Invalid selector ':${internalTarget.sel}' on '${internalTarget.path}'. Use :N, :N-M, :N+K, :N- (open-ended), a comma-separated list of ranges, :raw, or a range combined with raw (e.g. :raw:50-100).`,
+					`Invalid selector ':${internalTarget.sel}' on '${internalTarget.path}'. Use :N, :N-M, :N+K, :N- (open-ended), a comma-separated list of ranges, :raw, :img for SVG rendering, or a range combined with raw (e.g. :raw:50-100).`,
 				);
 			}
 			const urlMeta = parseInternalUrl(internalTarget.path);
 			const scheme = urlMeta.protocol.replace(/:$/, "").toLowerCase();
+			const imageSelectorMessage = "The ':img' selector only supports local .svg and .svgz files.";
+			if (parsed.kind === "image" && scheme !== "local") {
+				throw new ToolError(imageSelectorMessage);
+			}
 			if (scheme === "local") {
 				const localFile = await resolveLocalUrlToFile(urlMeta, {
 					cwd: this.session.cwd,
@@ -1669,6 +1685,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					// cannot shadow the URL's selector semantics during filesystem routing.
 					promotedSelector = internalTarget.sel;
 				} else {
+					if (parsed.kind === "image") throw new ToolError(imageSelectorMessage);
 					return this.#handleInternalUrl(internalTarget.path, parsed, signal);
 				}
 			} else {
@@ -1858,7 +1875,17 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			| { result: TruncationResult; options: { direction: "head"; startLine?: number; totalFileLines?: number } }
 			| undefined;
 
-		if (mimeType) {
+		if (parsed.kind === "image") {
+			({ content, details, sourcePath } = await this.#loadImageContent({
+				readPath: localReadPath,
+				absolutePath,
+				mimeType: "image/svg+xml",
+				imageMetadata: null,
+				fileSize,
+				imageKind: "svg",
+				inspectPath: `${resolvedDisplayPath}:img`,
+			}));
+		} else if (mimeType) {
 			({ content, details, sourcePath } = await this.#loadImageContent({
 				readPath,
 				absolutePath,
@@ -2019,8 +2046,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					if (bridgePromise !== undefined) {
 						try {
 							const bridgeText = await bridgePromise;
-							const bridgeResult = this.#buildInMemoryTextResult(bridgeText, offset, limit, {
-								details: this.#markMarkdownContentType(
+							const bridgeResult = buildInMemoryTextResult(this.session, bridgeText, offset, limit, {
+								details: markMarkdownContentType(
+									this.session,
 									{ resolvedPath: absolutePath, suffixResolution },
 									absolutePath,
 								),
@@ -2344,7 +2372,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		}
 
 		details.fileSize = fileSize;
-		this.#markMarkdownContentType(details, absolutePath);
+		markMarkdownContentType(this.session, details, absolutePath);
 		if (suffixResolution) {
 			details.suffixResolution = suffixResolution;
 			// Inline resolution notice into first text block so the model sees the actual path
@@ -2690,6 +2718,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			cwd: this.session.cwd,
 			settings: this.session.settings,
 			signal,
+			sessionFile: this.session.getSessionFile() ?? undefined,
 			localProtocolOptions: this.session.localProtocolOptions,
 			skills: this.session.skills,
 			sshHosts,

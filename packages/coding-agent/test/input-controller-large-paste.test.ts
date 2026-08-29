@@ -6,12 +6,15 @@ import { removeWithRetries } from "@oh-my-pi/pi-utils";
  * Below the threshold (or when disabled) the editor keeps its default collapse-to-`[Paste]`-marker behavior.
  */
 
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { setLocale } from "../src/i18n";
+
+beforeEach(() => setLocale("en"));
 
 function createContext(options?: { threshold?: number; choice?: string; artifactsDir?: string }) {
 	const insertTextAttachment = vi.fn();
@@ -42,6 +45,7 @@ function createContext(options?: { threshold?: number; choice?: string; artifact
 }
 
 afterEach(() => {
+	setLocale(null);
 	vi.restoreAllMocks();
 });
 

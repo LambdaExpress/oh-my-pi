@@ -10,7 +10,7 @@ import { formatFullOutputReference, formatStyledTruncationWarning, stripOutputNo
 import { isReadableUrlPath, splitInternalUrlSel, splitPathAndSel } from "./path-utils";
 import type { ReadToolDetails } from "./read";
 import { isRawSelector, parseSel } from "./read-selector";
-import { formatBytes, replaceTabs, shortenPath, wrapBrackets } from "./render-utils";
+import { formatBytes, PREVIEW_LIMITS, replaceTabs, shortenPath, wrapBrackets } from "./render-utils";
 
 // =============================================================================
 // TUI Renderer
@@ -270,6 +270,7 @@ export const readToolRenderer = {
 								expanded,
 								codeStartLine: details?.displayContent?.startLine,
 								codeLineNumbers: details?.displayContent?.lineNumbers,
+								codeMaxVisualRows: PREVIEW_LIMITS.EXPANDED_LINES,
 								width,
 							},
 							uiTheme,

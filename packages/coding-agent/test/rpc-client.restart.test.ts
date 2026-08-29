@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
-import { RpcClient } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { type RpcAgentProcess, RpcClient } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-client";
+import type { RpcCommand, RpcReadyFrame, RpcResponse } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 const MOCK_AGENT = path.join(import.meta.dir, "fixtures", "mock-rpc-agent.ts");
@@ -12,6 +14,166 @@ function isProcessAlive(pid: number): boolean {
 	} catch {
 		return false;
 	}
+}
+
+function createPagingProcess(mode: "busy" | "stale"): RpcAgentProcess {
+	const encoder = new TextEncoder();
+	const decoder = new TextDecoder();
+	const exit = Promise.withResolvers<number>();
+	let stdoutController!: ReadableStreamDefaultController<Uint8Array>;
+	let closed = false;
+	const stdout = new ReadableStream<Uint8Array>({
+		start(controller) {
+			stdoutController = controller;
+		},
+	});
+	const output = (frame: RpcReadyFrame | RpcResponse): void => {
+		if (!closed) stdoutController.enqueue(encoder.encode(`${JSON.stringify(frame)}\n`));
+	};
+	const snapshotMessage: AgentMessage = {
+		role: "user",
+		content: [{ type: "text", text: "streaming snapshot" }],
+		timestamp: 3,
+	};
+	const firstPageMessage: AgentMessage = { role: "user", content: "first", timestamp: 1 };
+
+	queueMicrotask(() => {
+		output({
+			type: "ready",
+			protocolVersion: 1,
+			supportedProtocolVersions: [1, 2],
+			maxFrameBytes: 1024 * 1024,
+			maxReassembledFrameBytes: 64 * 1024 * 1024,
+		});
+	});
+
+	return {
+		stdin: {
+			write(data) {
+				const command = JSON.parse(typeof data === "string" ? data : decoder.decode(data)) as RpcCommand;
+				if (command.type === "negotiate_protocol") {
+					output({
+						id: command.id,
+						type: "response",
+						command: "negotiate_protocol",
+						success: true,
+						data: { protocolVersion: 2 },
+					});
+				} else if (command.type === "get_messages_page") {
+					if (mode === "busy" || command.cursor !== undefined) {
+						output({
+							id: command.id,
+							type: "response",
+							command: "get_messages_page",
+							success: false,
+							error:
+								mode === "busy"
+									? "Cannot page messages while the session is changing"
+									: "RPC message cursor is stale",
+							code: mode === "busy" ? "session_busy" : "stale_cursor",
+						});
+					} else {
+						output({
+							id: command.id,
+							type: "response",
+							command: "get_messages_page",
+							success: true,
+							data: {
+								messages: [firstPageMessage],
+								nextCursor: "second-page",
+								totalMessages: 2,
+							},
+						});
+					}
+				} else if (command.type === "get_messages") {
+					output({
+						id: command.id,
+						type: "response",
+						command: "get_messages",
+						success: true,
+						data: {
+							messages: [snapshotMessage],
+						},
+					});
+				} else {
+					output({
+						id: command.id,
+						type: "response",
+						command: command.type,
+						success: false,
+						error: `Unexpected command: ${command.type}`,
+					});
+				}
+			},
+		},
+		stdout,
+		peekStderr: () => "",
+		kill() {
+			if (closed) return;
+			closed = true;
+			stdoutController.close();
+			exit.resolve(0);
+		},
+		exited: exit.promise,
+	};
+}
+
+function createExitOnCommandProcess(): RpcAgentProcess {
+	const encoder = new TextEncoder();
+	const decoder = new TextDecoder();
+	const exit = Promise.withResolvers<number>();
+	let stdoutController!: ReadableStreamDefaultController<Uint8Array>;
+	let closed = false;
+	const stdout = new ReadableStream<Uint8Array>({
+		start(controller) {
+			stdoutController = controller;
+		},
+	});
+	const output = (frame: RpcReadyFrame | RpcResponse): void => {
+		if (!closed) stdoutController.enqueue(encoder.encode(`${JSON.stringify(frame)}\n`));
+	};
+	queueMicrotask(() => {
+		output({
+			type: "ready",
+			protocolVersion: 1,
+			supportedProtocolVersions: [1, 2],
+			maxFrameBytes: 1024 * 1024,
+			maxReassembledFrameBytes: 64 * 1024 * 1024,
+		});
+	});
+
+	return {
+		stdin: {
+			write(data) {
+				const command = JSON.parse(typeof data === "string" ? data : decoder.decode(data)) as RpcCommand;
+				if (command.type === "negotiate_protocol") {
+					output({
+						id: command.id,
+						type: "response",
+						command: "negotiate_protocol",
+						success: true,
+						data: { protocolVersion: 2 },
+					});
+					return;
+				}
+				queueMicrotask(() => {
+					if (closed) return;
+					closed = true;
+					stdoutController.close();
+					exit.resolve(23);
+				});
+			},
+		},
+		stdout,
+		peekStderr: () => "fixture worker failed",
+		kill() {
+			if (closed) return;
+			closed = true;
+			stdoutController.close();
+			exit.resolve(0);
+		},
+		exited: exit.promise,
+	};
 }
 
 describe("RpcClient lifecycle (issue #4079 B)", () => {
@@ -45,33 +207,37 @@ describe("RpcClient lifecycle (issue #4079 B)", () => {
 
 	test("preserves getMessages snapshot behavior while a v2 page walk is unavailable", async () => {
 		using client = new RpcClient({
-			cliPath: MOCK_AGENT,
-			env: { MOCK_RPC_V2: "1", MOCK_RPC_PAGE_BUSY: "1" },
+			spawn: () => createPagingProcess("busy"),
 		});
 
 		await client.start();
-		await expect(client.getMessagesPage()).rejects.toThrow("Cannot page messages while the session is changing");
+		await expect(client.getMessagesPage()).rejects.toMatchObject({
+			command: "get_messages_page",
+			code: "session_busy",
+			message: "Cannot page messages while the session is changing",
+		});
 		expect((await client.getMessages()) as unknown).toEqual([
-			{ role: "assistant", content: [{ type: "text", text: "streaming snapshot" }], timestamp: 3 },
+			{ role: "user", content: [{ type: "text", text: "streaming snapshot" }], timestamp: 3 },
 		]);
 	}, 20_000);
 
 	test("discards partial pages and falls back to get_messages when a cursor goes stale mid-walk", async () => {
 		using client = new RpcClient({
-			cliPath: MOCK_AGENT,
-			env: { MOCK_RPC_V2: "1", MOCK_RPC_PAGE_STALE: "1" },
+			spawn: () => createPagingProcess("stale"),
 		});
 
 		await client.start();
 		// Direct page walks stay strict: the stale cursor is surfaced to the caller.
 		const firstPage = await client.getMessagesPage();
 		expect(firstPage.nextCursor).toBe("second-page");
-		await expect(client.getMessagesPage({ cursor: firstPage.nextCursor })).rejects.toThrow(
-			"RPC message cursor is stale",
-		);
+		await expect(client.getMessagesPage({ cursor: firstPage.nextCursor })).rejects.toMatchObject({
+			command: "get_messages_page",
+			code: "stale_cursor",
+			message: "RPC message cursor is stale",
+		});
 		// The high-level drain discards the partial first page and takes the legacy snapshot.
 		expect((await client.getMessages()) as unknown).toEqual([
-			{ role: "assistant", content: [{ type: "text", text: "streaming snapshot" }], timestamp: 3 },
+			{ role: "user", content: [{ type: "text", text: "streaming snapshot" }], timestamp: 3 },
 		]);
 	}, 20_000);
 
@@ -181,11 +347,7 @@ describe("RpcClient lifecycle (issue #4079 B)", () => {
 
 	test("reports exit code and stderr when a ready worker exits", async () => {
 		using client = new RpcClient({
-			cliPath: MOCK_AGENT,
-			env: {
-				MOCK_RPC_EXIT_ON_COMMAND: "23",
-				MOCK_RPC_EXIT_STDERR: "fixture worker failed",
-			},
+			spawn: () => createExitOnCommandProcess(),
 		});
 		await client.start();
 

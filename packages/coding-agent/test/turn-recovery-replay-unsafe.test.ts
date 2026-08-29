@@ -60,7 +60,7 @@ function createHost(
 		}
 	}
 	return {
-		agent: (options.messages ? { state: { messages: options.messages } } : undefined) as never,
+		agent: { state: { messages: options.messages ?? [] } } as never,
 		sessionManager: {
 			getLastModelChangeRole: () => options.lastModelChangeRole,
 		} as never,
@@ -584,9 +584,9 @@ describe("TurnRecovery replay-unsafe output classification", () => {
 			expect(recoveryFor(message, [syntheticResult("call-1")]).isRetryableError(message)).toBe(false);
 		});
 
-		it("keeps a non-refusal error with an unexecuted tool call non-retriable", () => {
+		it("retries a non-refusal transient error whose tool call provably never executed", () => {
 			const message = makeMessage([toolCall("call-1")], model);
-			expect(recoveryFor(message, [syntheticResult("call-1")]).isRetryableError(message)).toBe(false);
+			expect(recoveryFor(message, [syntheticResult("call-1")]).isRetryableError(message)).toBe(true);
 		});
 	});
 

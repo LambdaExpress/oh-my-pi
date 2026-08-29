@@ -10,6 +10,7 @@
  */
 import type { CommandEntry } from "@oh-my-pi/pi-utils/cli";
 import * as commandHelp from "./cli/command-help";
+import { commandIdentity, isSubcommand, LAUNCH_FLAG_COMMANDS } from "./cli/command-routing";
 import {
 	EXTENSION_SHADOWABLE_STRING_FLAGS,
 	flagConsumesValue,
@@ -18,238 +19,235 @@ import {
 	VALUELESS_FLAGS,
 } from "./cli/flag-tables";
 import { launchHelp } from "./commands/launch-help";
-import { t } from "./i18n";
+
+export { isSubcommand, LAUNCH_FLAG_COMMANDS } from "./cli/command-routing";
+
+type Translate = (key: string) => string;
+
+const identityTranslate: Translate = key => key;
 
 export const commands: CommandEntry[] = [
-	{ name: "launch", load: () => import("./commands/launch").then(m => m.default), help: launchHelp },
+	{ ...commandIdentity("launch"), load: () => import("./commands/launch").then(m => m.default), help: launchHelp },
 	{
-		name: "acp",
+		...commandIdentity("acp"),
 		load: () => import("./commands/acp").then(m => m.default),
 		help: commandHelp.acpHelp,
 	},
 	{
-		name: "auth-broker",
+		...commandIdentity("auth-broker"),
 		load: () => import("./commands/auth-broker").then(m => m.default),
 		help: commandHelp.authBrokerHelp,
 	},
 	{
-		name: "auth-gateway",
+		...commandIdentity("auth-gateway"),
 		load: () => import("./commands/auth-gateway").then(m => m.default),
 		help: commandHelp.authGatewayHelp,
 	},
 	{
-		name: "agents",
+		...commandIdentity("agents"),
 		load: () => import("./commands/agents").then(m => m.default),
 		help: commandHelp.agentsHelp,
 	},
 	{
-		name: "bench",
+		...commandIdentity("bench"),
 		load: () => import("./commands/bench").then(m => m.default),
 		help: commandHelp.benchHelp,
 	},
 	{
-		name: "browser-relay",
+		...commandIdentity("browser-relay"),
 		load: () => import("./commands/browser-relay").then(m => m.default),
 		help: commandHelp.browserRelayHelp,
 	},
 	{
-		name: "cleanse",
+		...commandIdentity("cleanse"),
 		load: () => import("./commands/cleanse").then(m => m.default),
 		help: commandHelp.cleanseHelp,
 	},
 	{
-		name: "commit",
+		...commandIdentity("commit"),
 		load: () => import("./commands/commit").then(m => m.default),
 		help: commandHelp.commitHelp,
 	},
 	{
-		name: "completions",
+		...commandIdentity("completions"),
 		load: () => import("./commands/completions").then(m => m.default),
 		help: commandHelp.completionsHelp,
 	},
 	{
-		name: "__complete",
+		...commandIdentity("__complete"),
 		load: () => import("./commands/complete").then(m => m.default),
 		help: commandHelp.completeHelp,
 	},
 	{
-		name: "compress",
+		...commandIdentity("compress"),
 		load: () => import("./commands/compress").then(m => m.default),
 		help: commandHelp.compressHelp,
 	},
 	{
-		name: "config",
+		...commandIdentity("config"),
 		load: () => import("./commands/config").then(m => m.default),
 		help: commandHelp.configHelp,
 	},
 	{
-		name: "dry-balance",
+		...commandIdentity("dry-balance"),
 		load: () => import("./commands/dry-balance").then(m => m.default),
 		help: commandHelp.dryBalanceHelp,
 	},
 	{
-		name: "gc",
+		...commandIdentity("gc"),
 		load: () => import("./commands/gc").then(m => m.default),
 		help: commandHelp.gcHelp,
 	},
 	{
-		name: "grep",
+		...commandIdentity("grep"),
 		load: () => import("./commands/grep").then(m => m.default),
 		help: commandHelp.grepHelp,
 	},
 	{
-		name: "gallery",
+		...commandIdentity("gallery"),
 		load: () => import("./commands/gallery").then(m => m.default),
 		help: commandHelp.galleryHelp,
 	},
 	{
-		name: "git",
+		...commandIdentity("git"),
 		load: () => import("./commands/git").then(m => m.default),
 		help: commandHelp.gitHelp,
 	},
 	{
-		name: "grievances",
+		...commandIdentity("grievances"),
 		load: () => import("./commands/grievances").then(m => m.default),
 		help: commandHelp.grievancesHelp,
 	},
 	{
-		name: "images",
+		...commandIdentity("images"),
 		load: () => import("./commands/images").then(m => m.default),
-		aliases: ["img"],
 		help: commandHelp.imagesHelp,
 	},
 	{
-		name: "install",
+		...commandIdentity("if-bench"),
+		load: () => import("./commands/if-bench").then(m => m.default),
+		help: commandHelp.ifBenchHelp,
+	},
+	{
+		...commandIdentity("install"),
 		load: () => import("./commands/install").then(m => m.default),
 		help: commandHelp.installHelp,
 	},
 	{
-		name: "join",
+		...commandIdentity("join"),
 		load: () => import("./commands/join").then(m => m.default),
 		help: commandHelp.joinHelp,
 	},
 	{
-		name: "models",
+		...commandIdentity("models"),
 		load: () => import("./commands/models").then(m => m.default),
 		help: commandHelp.modelsHelp,
 	},
 	{
-		name: "plugin",
+		...commandIdentity("plugin"),
 		load: () => import("./commands/plugin").then(m => m.default),
 		help: commandHelp.pluginHelp,
 	},
 	{
-		name: "ps",
+		...commandIdentity("ps"),
 		load: () => import("./commands/ps").then(m => m.default),
 		help: commandHelp.psHelp,
 	},
 	{
-		name: "say",
+		...commandIdentity("say"),
 		load: () => import("./commands/say").then(m => m.default),
 		help: commandHelp.sayHelp,
 	},
 	{
-		name: "share",
+		...commandIdentity("share"),
 		load: () => import("./commands/share").then(m => m.default),
 		help: commandHelp.shareHelp,
 	},
 	{
-		name: "setup",
+		...commandIdentity("setup"),
 		load: () => import("./commands/setup").then(m => m.default),
 		help: commandHelp.setupHelp,
 	},
 	{
-		name: "shell",
+		...commandIdentity("shell"),
 		load: () => import("./commands/shell").then(m => m.default),
 		help: commandHelp.shellHelp,
 	},
 	{
-		name: "read",
+		...commandIdentity("read"),
 		load: () => import("./commands/read").then(m => m.default),
 		help: commandHelp.readHelp,
 	},
 	{
-		name: "render",
+		...commandIdentity("render"),
 		load: () => import("./commands/render").then(m => m.default),
 		help: commandHelp.renderHelp,
 	},
 	{
-		name: "ssh",
+		...commandIdentity("ssh"),
 		load: () => import("./commands/ssh").then(m => m.default),
 		help: commandHelp.sshHelp,
 	},
 	{
-		name: "stats",
+		...commandIdentity("stats"),
 		load: () => import("./commands/stats").then(m => m.default),
 		help: commandHelp.statsHelp,
 	},
 	{
-		name: "update",
+		...commandIdentity("update"),
 		load: () => import("./commands/update").then(m => m.default),
 		help: commandHelp.updateHelp,
 	},
 	{
-		name: "usage",
+		...commandIdentity("usage"),
 		load: () => import("./commands/usage").then(m => m.default),
 		help: commandHelp.usageHelp,
 	},
 	{
-		name: "tiny-models",
+		...commandIdentity("tiny-models"),
 		load: () => import("./commands/tiny-models").then(m => m.default),
 		help: commandHelp.tinyModelsHelp,
 	},
 	{
-		name: "token",
+		...commandIdentity("token"),
 		load: () => import("./commands/token").then(m => m.default),
 		help: commandHelp.tokenHelp,
 	},
 	{
-		name: "ttsr",
+		...commandIdentity("ttsr"),
 		load: () => import("./commands/ttsr").then(m => m.default),
 		help: commandHelp.ttsrHelp,
 	},
 	{
-		name: "worktree",
+		...commandIdentity("worktree"),
 		load: () => import("./commands/worktree").then(m => m.default),
-		aliases: ["wt"],
 		help: commandHelp.worktreeHelp,
 	},
 	{
-		name: "search",
+		...commandIdentity("search"),
 		load: () => import("./commands/web-search").then(m => m.default),
-		aliases: ["q"],
 		help: commandHelp.searchHelp,
 	},
 ];
 
 const RESERVED_TOP_LEVEL_WORDS: Record<string, string> = {
-	extensions: t(
+	extensions:
 		'`omp extensions` is not a management command. Use `omp plugin list` / `omp plugin install`, or run `omp launch extensions` if you meant to send "extensions" as a prompt.',
-	),
-	list: t(
-		'`omp list` is not a top-level command. Use `omp plugin list` to list installed plugins, or run `omp launch list` if you meant to send "list" as a prompt.',
-	),
-	remove: t(
+	list: '`omp list` is not a top-level command. Use `omp plugin list` to list installed plugins, or run `omp launch list` if you meant to send "list" as a prompt.',
+	remove:
 		'`omp remove` is not a top-level command. Use `omp plugin uninstall <name>` to remove a plugin, or run `omp launch remove` if you meant to send "remove" as a prompt.',
-	),
-	uninstall: t(
+	uninstall:
 		'`omp uninstall` is not a top-level command. Use `omp plugin uninstall <name@marketplace>` to remove a plugin, or run `omp launch uninstall` if you meant to send "uninstall" as a prompt.',
-	),
-	marketplace: t(
+	marketplace:
 		'`omp marketplace` is not a top-level command. Use `omp plugin marketplace <add|remove|update|list>` to manage marketplaces, or run `omp launch marketplace` if you meant to send "marketplace" as a prompt.',
-	),
-	discover: t(
+	discover:
 		'`omp discover` is not a top-level command. Use `omp plugin discover [marketplace]` to browse available plugins, or run `omp launch discover` if you meant to send "discover" as a prompt.',
-	),
-	upgrade: t(
+	upgrade:
 		'`omp upgrade` is not a top-level command. Use `omp plugin upgrade [name@marketplace]` to upgrade plugins, or run `omp launch upgrade` if you meant to send "upgrade" as a prompt.',
-	),
-	enable: t(
+	enable:
 		'`omp enable` is not a top-level command. Use `omp plugin enable <name@marketplace>` to enable a plugin, or run `omp launch enable` if you meant to send "enable" as a prompt.',
-	),
-	disable: t(
+	disable:
 		'`omp disable` is not a top-level command. Use `omp plugin disable <name@marketplace>` to disable a plugin, or run `omp launch disable` if you meant to send "disable" as a prompt.',
-	),
 };
 
 // Sub-actions that make `omp marketplace <sub>` unambiguously a management
@@ -271,11 +269,15 @@ const MARKETPLACE_SUBCOMMANDS: Record<string, true> = { add: true, remove: true,
  * Flags (`-…`) and `@file` arguments in the verb slot are never management
  * commands; those fall through to the default `launch` command.
  */
-export function reservedTopLevelWordMessage(argv: readonly string[]): string | undefined {
+export function reservedTopLevelWordMessage(
+	argv: readonly string[],
+	translate: Translate = identityTranslate,
+): string | undefined {
 	const first = argv[0];
 	if (!first || first.startsWith("-") || first.startsWith("@")) return undefined;
-	const hint = RESERVED_TOP_LEVEL_WORDS[first];
-	if (!hint) return undefined;
+	const hintKey = RESERVED_TOP_LEVEL_WORDS[first];
+	if (!hintKey) return undefined;
+	const hint = translate(hintKey);
 	const second = argv[1];
 	if (second === undefined) return hint;
 	if (first === "marketplace" && MARKETPLACE_SUBCOMMANDS[second]) return hint;
@@ -284,17 +286,6 @@ export function reservedTopLevelWordMessage(argv: readonly string[]): string | u
 		if (!arg.startsWith("-") && arg.includes("@")) return hint;
 	}
 	return undefined;
-}
-
-/**
- * Return true when `first` matches a registered subcommand name or alias.
- *
- * Flags (`-…`) and `@file` arguments are never subcommands; for those the CLI
- * runner skips ahead to the default `launch` command.
- */
-export function isSubcommand(first: string | undefined): boolean {
-	if (!first || first.startsWith("-") || first.startsWith("@")) return false;
-	return commands.some(entry => entry.name === first || entry.aliases?.includes(first));
 }
 
 export type ResolvedCliArgv = { argv: string[] } | { error: string };
@@ -315,14 +306,6 @@ function leadingSubcommandIndex(argv: string[]): number {
 	}
 	return -1;
 }
-
-/**
- * Subcommands that share the launch flag surface, so leading global flags
- * (`--cwd`, `--model`, `--approval-mode`, …) placed before them are meaningful
- * and must be forwarded ({@link resolveCliArgv}, #2970). Every other subcommand
- * parses only its own flags.
- */
-export const LAUNCH_FLAG_COMMANDS: Record<string, true> = { launch: true, acp: true };
 
 /** Whether `arg` names a flag from the launch surface (bare or `--flag=value`). */
 function isLaunchGlobalFlag(arg: string): boolean {
@@ -365,9 +348,9 @@ function stripLaunchGlobalFlags(leading: readonly string[]): string[] {
  * launch-global flags are forwarded to launch-shaped commands but stripped for
  * other subcommands that cannot parse them (#8891).
  */
-export function resolveCliArgv(argv: string[]): ResolvedCliArgv {
+export function resolveCliArgv(argv: string[], translate: Translate = identityTranslate): ResolvedCliArgv {
 	const first = argv[0];
-	const reservedMessage = reservedTopLevelWordMessage(argv);
+	const reservedMessage = reservedTopLevelWordMessage(argv, translate);
 	if (reservedMessage) return { error: reservedMessage };
 	if (first === "--help" || first === "-h" || first === "--version" || first === "-v" || first === "help") {
 		return { argv };

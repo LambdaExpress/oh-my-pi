@@ -71,9 +71,9 @@ describe("musl release artifacts", () => {
 			"curl",
 			`#!/bin/sh
 case "$*" in
-  *api.github.com*) echo '[{"tag_name":"code-7","draft":false,"prerelease":false}]' ;;
+  *api.github.com*) echo '[{"tag_name":"code-7","draft":false,"prerelease":false,"mentions_count":0}]' ;;
   *) while [ "$#" -gt 0 ]; do
-       [ "$1" = "-o" ] && { printf '#!/bin/sh\necho omp/18.0.4+code.7\n' > "$2"; exit 0; }
+       [ "$1" = "-o" ] && { printf '%s\n' '#!/bin/sh' 'echo omp/18.0.4+code.7' > "$2"; exit 0; }
        shift
      done ;;
 esac
@@ -95,6 +95,7 @@ esac
 		);
 
 		expect(result.exitCode, `${result.stderr}\n${result.stdout}`).toBe(0);
+		expect(result.stdout).toContain("Using version: code-7");
 		expect(result.stdout).toContain("Downloading omp-linux-musl-x64...");
 		expect(await Bun.file(path.join(installDir, "omp")).text()).toContain("+code.7");
 	});

@@ -5,6 +5,12 @@
 ### Fixed
 
 - Fixed the stats client build failing on Windows when the checkout path contains spaces (Bun Shell could not spawn with a space-containing working directory; the build now spawns through `Bun.spawnSync`).
+## [18.0.9] - 2026-08-28
+
+### Fixed
+
+- Fixed inconsistent model colors between the Model Preference chart and Model Statistics table.
+
 ## [18.0.4] - 2026-08-24
 
 ### Fixed

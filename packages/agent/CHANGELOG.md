@@ -5,6 +5,23 @@
 ### Fixed
 
 - Fixed active tool batches retaining a stale steering interrupt mode after `Agent.setInterruptMode()` changed it.
+## [18.0.9] - 2026-08-28
+
+### Fixed
+
+- Fixed `/shake elide` handling of mixed tool results so images are preserved and token savings are reported accurately.
+
+## [18.0.7] - 2026-08-26
+
+### Fixed
+
+- Fixed Codex remote compaction to preserve images returned by image-reading tools, preventing them from being replayed as incorrect synthetic user messages.
+
+## [18.0.5] - 2026-08-25
+
+### Fixed
+
+- Corrected remote compaction summaries so they accurately report the number of input tokens processed.
 
 ## [18.0.4] - 2026-08-24
 

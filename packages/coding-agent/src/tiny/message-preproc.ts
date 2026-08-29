@@ -106,7 +106,7 @@ export function preprocessTinyMessage(message: string): string {
  *  ends so ordinary user text merely containing a chat snippet never matches. */
 const CHAT_CONTEXT_ENVELOPE = /^\s*<chat>[\s\S]*<\/chat>\s*$/;
 /** Structural tags emitted by {@link formatTitleConversationContext}. */
-const CHAT_SCAFFOLD_TAG = /<\/?(?:chat|user|assistant|think)>/g;
+const CHAT_SCAFFOLD_TAG = /<\/?(?:chat|user)>/g;
 
 /** True when `message` is a preformatted replan context from
  *  {@link formatTitleConversationContext} — already cleaned per turn and
@@ -116,8 +116,8 @@ export function isPreformattedChatContext(message: string): boolean {
 	return CHAT_CONTEXT_ENVELOPE.test(message);
 }
 
-/** Drop the `<chat>`/`<user>`/`<assistant>`/`<think>` scaffolding, keeping turn
- *  text. Used for token-level signal checks on preformatted contexts. */
+/** Drop the `<chat>`/`<user>` scaffolding, keeping turn text. Used for
+ *  token-level signal checks on preformatted contexts. */
 export function stripChatScaffolding(message: string): string {
 	return message.replace(CHAT_SCAFFOLD_TAG, " ");
 }
@@ -129,26 +129,20 @@ export function formatTitleUserMessage(message: string): string {
 	return `<user>\n${preprocessTinyMessage(message)}\n</user>`;
 }
 
-/** One recent conversation turn supplied to title refresh after replanning. */
+/** One recent user-authored turn supplied to title refresh after replanning. */
 export interface TitleConversationTurn {
-	role: "user" | "assistant";
 	text?: string;
-	thinking?: string;
 }
 
-/** Format preprocessed recent context for title generation after a todo replan. */
+/** Format preprocessed recent user context for title generation after a todo replan. */
 export function formatTitleConversationContext(turns: readonly TitleConversationTurn[]): string {
 	const formattedTurns: string[] = [];
 	for (const turn of turns) {
-		const sections: string[] = [];
 		// Clean raw content before adding structural tags so paired-tag stripping
-		// cannot consume the `<user>`/`<assistant>` scaffolding added below.
+		// cannot consume the `<user>` scaffolding added below.
 		const text = cleanTinyMessage(turn.text ?? "").trim();
-		if (text) sections.push(text);
-		const thinking = turn.role === "assistant" ? cleanTinyMessage(turn.thinking ?? "").trim() : "";
-		if (thinking) sections.push(`<think>\n${thinking}\n</think>`);
-		if (sections.length === 0) continue;
-		formattedTurns.push(`<${turn.role}>\n${sections.join("\n\n")}\n</${turn.role}>`);
+		if (!text) continue;
+		formattedTurns.push(`<user>\n${text}\n</user>`);
 	}
 	if (formattedTurns.length === 0) return "";
 	return truncateTinyMessage(`<chat>\n${formattedTurns.join("\n\n")}\n</chat>`);

@@ -24,6 +24,26 @@ afterAll(() => {
 });
 
 describe("grepToolRenderer", () => {
+	it("renders failures as one red error line without a frame", async () => {
+		const theme = await getThemeByName("dark");
+		expect(theme).toBeDefined();
+		const uiTheme = theme!;
+		const errorText = "Grep timed out after 30s";
+
+		const renderedLines = grepToolRenderer
+			.renderResult(
+				{ content: [{ type: "text", text: errorText }], isError: true } as never,
+				{ expanded: false, isPartial: false },
+				uiTheme,
+				{ pattern: "needle", path: "src" },
+			)
+			.render(240);
+
+		expect(renderedLines).toHaveLength(1);
+		expect(renderedLines[0]).toContain(uiTheme.fg("error", `Error: ${errorText}`));
+		expect(sanitizeText(renderedLines[0]!)).not.toContain("Grep:");
+	});
+
 	it("indents inline grep output and avoids accent-colored success headers", async () => {
 		const theme = await getThemeByName("dark");
 		expect(theme).toBeDefined();

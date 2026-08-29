@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -11,6 +11,12 @@ import {
 } from "../src/blob-broker/uploader-runtime";
 import { createLegacyUploader } from "../src/blob-broker/uploaders-legacy";
 import { createSelfHostedUploader } from "../src/blob-broker/uploaders-self-hosted";
+
+type BunSpawnOptions = Bun.SpawnOptions.SpawnOptions<
+	Bun.SpawnOptions.Writable,
+	Bun.SpawnOptions.Readable,
+	Bun.SpawnOptions.Readable
+>;
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const request: BlobUploadRequest = {
@@ -77,12 +83,37 @@ describe("self-hosted uploader wire contracts", () => {
 
 	it("does not corrupt FTP command stdin or mis-map the remote path to its public URL", async () => {
 		const temp = fs.mkdtempSync(path.join(os.tmpdir(), "omp-ftp-uploader-"));
+		let restoreSpawn: (() => void) | undefined;
 		try {
-			const executable = path.join(temp, "fake-curl");
+			const windows = process.platform === "win32";
+			const executable = path.join(temp, windows ? "fake-curl.cmd" : "fake-curl");
+			const runner = path.join(temp, "fake-curl.ts");
 			const argsFile = path.join(temp, "args");
 			const bodyFile = path.join(temp, "body");
-			fs.writeFileSync(executable, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\ncat > '${bodyFile}'\n`);
-			fs.chmodSync(executable, 0o755);
+			if (windows) {
+				// Bun cannot directly execute a .cmd through CreateProcess. Keep the
+				// fixture's argv/stdin behavior in a TS runner and redirect only this
+				// fake through process.execPath, matching the production spawn seam.
+				fs.writeFileSync(executable, "@echo off\r\n");
+				fs.writeFileSync(
+					runner,
+					[
+						'import * as fs from "node:fs";',
+						`fs.writeFileSync(${JSON.stringify(argsFile)}, process.argv.slice(2).join("\\n") + "\\n");`,
+						`await Bun.write(${JSON.stringify(bodyFile)}, await new Response(Bun.stdin.stream()).arrayBuffer());`,
+					].join("\n"),
+				);
+				const realSpawn = Bun.spawn.bind(Bun);
+				const spawnSpy = vi.spyOn(Bun, "spawn").mockImplementation(((argv: string[], options?: BunSpawnOptions) => {
+					return path.resolve(argv[0] ?? "") === path.resolve(executable)
+						? realSpawn([process.execPath, runner, ...argv.slice(1)], options)
+						: realSpawn(argv, options);
+				}) as typeof Bun.spawn);
+				restoreSpawn = () => spawnSpy.mockRestore();
+			} else {
+				fs.writeFileSync(executable, `#!/bin/sh\nprintf '%s\\n' "$@" > '${argsFile}'\ncat > '${bodyFile}'\n`);
+				fs.chmodSync(executable, 0o755);
+			}
 			const uploader = requiredUploader(
 				createSelfHostedUploader(
 					"ftp",
@@ -119,6 +150,7 @@ describe("self-hosted uploader wire contracts", () => {
 				"ftp://upload.test:2121/folder/sub/a%20b.png",
 			]);
 		} finally {
+			restoreSpawn?.();
 			fs.rmSync(temp, { recursive: true, force: true });
 		}
 	});

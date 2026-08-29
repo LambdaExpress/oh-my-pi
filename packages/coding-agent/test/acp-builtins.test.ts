@@ -14,7 +14,7 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeAcpBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/acp-builtins";
 import * as sshConfigWriter from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
-import { removeWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
+import { getProjectDir, removeWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
 import { setLocale } from "../src/i18n";
 
 beforeEach(() => {
@@ -53,7 +53,12 @@ interface FakeAcpBuiltinSession {
 	markMovedFromEmptySessionFile(sessionFile: string): void;
 	fork(): Promise<boolean>;
 	handoff(instr?: string): Promise<{ document: string; savedPath?: string } | undefined>;
+	dispose(): Promise<void>;
 	exportToHtml(outputPath?: string): Promise<string>;
+	effectiveExtensionRoots: unknown;
+	setTitleSystemPrompt(prompt: string | undefined): void;
+	setSlashCommands(commands: unknown[]): void;
+	refreshSkills(): Promise<void>;
 	getTodoPhases(): Array<{ name: string; tasks: Array<{ content: string; status: string }> }>;
 	setTodoPhases(phases: Array<{ name: string; tasks: Array<{ content: string; status: string }> }>): void;
 	refreshBaseSystemPrompt(): Promise<void>;
@@ -84,6 +89,9 @@ interface FakeAcpBuiltinSessionManager {
 	appendCustomEntry(customType: string, data?: unknown): string;
 	flush(): Promise<void>;
 	moveTo(newCwd: string): Promise<void>;
+	captureState(): { cwd: string; sessionDir: string };
+	restoreState(snapshot: { cwd: string }): void;
+	rollbackMove(snapshot: { cwd: string; sessionDir: string }): Promise<void>;
 	setSessionFile(sessionFile: string): Promise<void>;
 	dropSession(sessionPath: string): Promise<void>;
 	getCwd(): string;
@@ -104,6 +112,11 @@ function createRuntime() {
 		_todoPhases: [],
 		_switchedTo: undefined,
 		_movedFromEmptySessionFile: undefined,
+		dispose: async () => {},
+		effectiveExtensionRoots: undefined,
+		setTitleSystemPrompt: (_prompt: string | undefined) => {},
+		setSlashCommands: (_commands: unknown[]) => {},
+		refreshSkills: async () => {},
 		toggleFastMode() {
 			this.fastMode = !this.fastMode;
 			return this.fastMode;
@@ -207,6 +220,17 @@ function createRuntime() {
 		async moveTo(newCwd: string) {
 			this._cwd = newCwd;
 			this._movedTo = newCwd;
+		},
+		captureState() {
+			return { cwd: this._cwd, sessionDir: "/tmp/fake-sessions", movedTo: this._movedTo };
+		},
+		restoreState(snapshot: { cwd: string }) {
+			this._cwd = snapshot.cwd;
+			this._movedTo = snapshot.cwd;
+		},
+		async rollbackMove(snapshot: { cwd: string; sessionDir: string }) {
+			await this.moveTo(snapshot.cwd);
+			this.restoreState(snapshot);
 		},
 		async setSessionFile(sessionFile: string) {
 			this._sessionFile = path.resolve(sessionFile);
@@ -1323,6 +1347,27 @@ describe("wave 5 — adapters and polish", () => {
 });
 
 describe("/move preflight flush", () => {
+	it("disposes the session when headless workspace rollback cannot recover", async () => {
+		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-acp-move-fatal-"));
+		const originalProjectDir = getProjectDir();
+		const { output, runtime, session } = createRuntime();
+		const dispose = spyOn(session, "dispose");
+		const reloadForCwd = spyOn(runtime.settings, "reloadForCwd").mockRejectedValue(
+			new Error("workspace reload failed"),
+		);
+		try {
+			const result = await executeAcpBuiltinSlashCommand(`/move ${targetDir}`, runtime);
+
+			expect(result).toEqual({ consumed: true });
+			expect(dispose).toHaveBeenCalledTimes(1);
+			expect(output.some(text => text.includes("failed to re-align workspace"))).toBe(true);
+		} finally {
+			reloadForCwd.mockRestore();
+			dispose.mockRestore();
+			setProjectDir(originalProjectDir);
+			await fs.rm(targetDir, { recursive: true, force: true });
+		}
+	});
 	it("aborts text-mode /move when pending settings flush fails", async () => {
 		const targetDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-acp-move-"));
 		try {
@@ -1355,6 +1400,9 @@ describe("/move preflight flush", () => {
 			expect(flushed).toBe(true);
 			expect(fakeSessionManager!._movedTo).toBe(targetDir);
 			expect(output[0]).toContain("Moved to");
+			// The success path must chdir the process and project-dir cache to the
+			// target; otherwise bash tools and discovery run in the wrong project.
+			expect(getProjectDir()).toBe(path.resolve(targetDir));
 		} finally {
 			setProjectDir(originalProjectDir);
 			await fs.rm(targetDir, { recursive: true, force: true });

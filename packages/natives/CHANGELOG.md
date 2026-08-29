@@ -14,6 +14,8 @@
 
 ### Fixed
 
+- Fixed native Git commits failing to run extensionless shebang hooks on Windows.
+- Fixed native Git staging, checkout conflict checks, patch application, cherry-pick, and stash restoration bypassing repository clean/smudge filters, including `core.autocrlf` conversion on Windows.
 - Fixed local Windows native rebuilds failing with `EPERM` when a running workspace OMP process had the addon mapped. The bindings installer now moves the loaded addon aside, installs the new build at the canonical path, and defers cleanup of the mapped backup until a later build.
 - Fixed local native builds ignoring an explicit `TARGET_VARIANT=baseline|modern`: the lower-level bindings build now honors the requested x64 ISA variant instead of re-detecting the host CPU and emitting a differently named addon.
 - Fixed `astEdit` dropping C# metavariable captures when rewriting bare object-initializer assignments, so replacement templates preserve expressions such as member access on both dry-run previews and applied edits.
@@ -21,6 +23,41 @@
 - Fixed Windows Bazel native builds exceeding rustc environment and `CreateProcessW` limits on large dependency graphs by consolidating dependency search paths, parameterizing `process_wrapper`, and using a repository-local MSVC CMake override.
 - Fixed compiled-binary native embedding accepting stale `pi_natives.*.node` artifacts whose version sentinel does not match the current `@oh-my-pi/pi-natives` package version. `gen:native` now validates the sentinel before archiving and can read native artifacts from an explicit `PI_NATIVE_SOURCE_DIR`, preventing local Windows builds from producing an `omp` binary that only starts while another install keeps a correct cached addon locked.
 - Fixed Windows AVX2 detection preferring Windows PowerShell 5.1, whose .NET runtime lacks `System.Runtime.Intrinsics.X86.Avx2`; the loader now tries `pwsh` first so AVX2-capable Windows hosts select the `modern` native addon by default.
+## [18.0.9] - 2026-08-28
+
+### Breaking Changes
+
+- Replaced the Git-specific `watchHead` and `headWatchTarget` API with the backend-neutral `watch` and `VcsRepo.watchTarget` APIs.
+
+### Added
+
+- Added portable repository discovery and read operations through `VcsRepo`, `repo()`, and `require()`, with support for Git and Jujutsu and explicit capability checks for staged and revision diffs.
+- Added the `Vcs*` API for repository operations across Git and Jujutsu, including repository discovery, refs and status, diffs, staging, commits, branches, worktrees, patch application, stash, cherry-pick, and CLI-backed push, fetch, and clone operations with cancellation support.
+
+### Fixed
+
+- Fixed Git intent-to-add files so they appear correctly as unstaged additions in `statusPorcelain` and are handled correctly when staging or applying patches.
+
+## [18.0.8] - 2026-08-27
+
+### Fixed
+
+- Large session histories no longer leave macOS Terminal unresponsive during repaint.
+- Bounded the interactive PTY reader→JS queue (64 × ≤64 KiB) and forward chunks through a separate `call_async` pump so a fast child plus a stalled JS consumer cannot accumulate unbounded output in-process, without freezing PTY input/resize/kill. After a finite child exit, wait until accepted output reaches `on_chunk`; only a permanently open slave skips that wait. Cancel, timeout, and that stuck-open path abort the pump before `start()` resolves. Same defect class as the non-PTY bash bridge (#4078).
+
+## [18.0.6] - 2026-08-26
+
+### Fixed
+
+- Improved TypeScript and TSX syntax highlighting, including correct handling of type annotations and template literals.
+
+## [18.0.5] - 2026-08-25
+
+### Added
+
+- Added asynchronous, size-bounded SVG-to-PNG rasterization for terminal media previews.
+- Added the `DiffStream` API for processing text and byte input incrementally, opening files asynchronously, reporting stable-prefix progress, generating exact unified diffs, and warming syntax grammars asynchronously.
+
 ## [18.0.3] - 2026-08-23
 
 ### Fixed

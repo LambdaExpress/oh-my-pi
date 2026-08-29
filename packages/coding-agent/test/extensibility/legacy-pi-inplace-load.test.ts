@@ -181,6 +181,7 @@ describe("legacy-pi in-place module loading (issue #1674)", () => {
 				'import { readFileSync } from "node:fs";',
 				'import { fileURLToPath } from "node:url";',
 				'import * as path from "node:path";',
+				"export const entryUrl = import.meta.url;",
 				"export const entryPath = fileURLToPath(import.meta.url);",
 				"const here = path.dirname(entryPath);",
 				`export const version = ${JSON.stringify(version)};`,
@@ -188,15 +189,22 @@ describe("legacy-pi in-place module loading (issue #1674)", () => {
 				"export default function (pi) { void pi; }",
 			].join("\n");
 		const dir = await writePackage({
-			"package.json": JSON.stringify({ name: "mtime-reload-ext", version: "1.0.0" }),
+			"package.json": JSON.stringify({ name: "registry-reload-ext", version: "1.0.0" }),
 			"marker.txt": "asset-ok",
 			"index.ts": entrySource("v1"),
 		});
 		const entry = path.join(dir, "index.ts");
 		const expectedEntryPath = await fs.realpath(entry);
+		const expectedEntryUrl = url.pathToFileURL(expectedEntryPath).href;
 
-		const first = (await loadLegacyPiModule(entry)) as { version: string; entryPath: string; asset: string };
+		const first = (await loadLegacyPiModule(entry)) as {
+			version: string;
+			entryUrl: string;
+			entryPath: string;
+			asset: string;
+		};
 		expect(first.version).toBe("v1");
+		expect(first.entryUrl).toBe(expectedEntryUrl);
 		expect(first.entryPath).toBe(expectedEntryPath);
 		expect(first.asset).toBe("asset-ok");
 
@@ -205,11 +213,36 @@ describe("legacy-pi in-place module loading (issue #1674)", () => {
 		const bumpedMtime = new Date(Math.ceil(firstStat.mtimeMs) + 2_000);
 		await fs.utimes(entry, bumpedMtime, bumpedMtime);
 
-		const second = (await loadLegacyPiModule(entry)) as { version: string; entryPath: string; asset: string };
+		const second = (await loadLegacyPiModule(entry)) as {
+			version: string;
+			entryUrl: string;
+			entryPath: string;
+			asset: string;
+		};
 		expect(second.version).toBe("v2");
+		expect(second.entryUrl).toBe(expectedEntryUrl);
 		expect(second.entryPath).toBe(expectedEntryPath);
 		expect(second.entryPath.includes("?")).toBe(false);
 		expect(second.asset).toBe("asset-ok");
+	});
+
+	it("retains normal ESM caching within one extension load", async () => {
+		const dir = await writePackage({
+			"package.json": JSON.stringify({ name: "first-load-cache-ext", version: "1.0.0", type: "module" }),
+			"shared.js": "export const shared = {};\n",
+			"left.js": 'export { shared as left } from "./shared.js";\n',
+			"right.js": 'export { shared as right } from "./shared.js";\n',
+			"index.js": [
+				'import { left } from "./left.js";',
+				'import { right } from "./right.js";',
+				"export const sameInstance = left === right;",
+				"export default function (pi) { void pi; }",
+			].join("\n"),
+		});
+
+		const mod = (await loadLegacyPiModule(path.join(dir, "index.js"))) as { sameInstance: boolean };
+
+		expect(mod.sameInstance).toBe(true);
 	});
 
 	it("reloads an edited relative helper module on same-process re-import", async () => {
