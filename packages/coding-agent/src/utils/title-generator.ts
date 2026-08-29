@@ -155,6 +155,7 @@ export async function generateSessionTitle(
 	}
 
 	const titleSystemPrompt = customSystemPrompt?.trim() || undefined;
+	const localSystemPrompt = titleSystemPrompt ? `${titleSystemPrompt}\n\n${TITLE_MARKER_INSTRUCTION}` : undefined;
 	const tinyModel = settings.get("providers.tinyModel");
 	if (tinyModel === ONLINE_TINY_TITLE_MODEL_KEY) {
 		return generateTitleOnline(
@@ -189,10 +190,10 @@ export async function generateSessionTitle(
 			localTitle = await tinyTitleClient.generate(
 				tinyModel,
 				firstMessage,
-				titleSystemPrompt ? { signal, systemPrompt: titleSystemPrompt } : { signal },
+				localSystemPrompt ? { signal, systemPrompt: localSystemPrompt } : { signal },
 			);
-		} else if (titleSystemPrompt) {
-			localTitle = await tinyTitleClient.generate(tinyModel, firstMessage, { systemPrompt: titleSystemPrompt });
+		} else if (localSystemPrompt) {
+			localTitle = await tinyTitleClient.generate(tinyModel, firstMessage, { systemPrompt: localSystemPrompt });
 		} else {
 			localTitle = await tinyTitleClient.generate(tinyModel, firstMessage);
 		}

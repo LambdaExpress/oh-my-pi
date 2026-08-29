@@ -303,9 +303,24 @@ describe("buildReplanTitleContext", () => {
 		const context = buildReplanTitleContext([skill, settledAssistant("先读 implement 技能、ticket 07")]);
 
 		expect(context).toContain("07-manual-llm.md");
-		expect(context).toContain("ticket 07");
+		expect(context).not.toContain("ticket 07");
 		expect(context).not.toContain("Use this skill.");
 		expect(context).not.toContain("IMPORTANT");
+	});
+
+	it("keeps the user goal when assistant progress and thinking fill the recent message tail", () => {
+		const assistant = settledAssistant("Todo ledger empty target done was incorrectly completed");
+		assistant.content.push({ type: "thinking", thinking: "The todo defect should drive the replan title." });
+		const context = buildReplanTitleContext([
+			userMessage("merge upstream main, resolve conflicts, test, commit, and push", 1),
+			...Array.from({ length: 8 }, () => assistant),
+		]);
+
+		expect(context).toBe(
+			"<chat>\n<user>\nmerge upstream main, resolve conflicts, test, commit, and push\n</user>\n</chat>",
+		);
+		expect(context).not.toContain("Todo ledger");
+		expect(context).not.toContain("todo defect");
 	});
 
 	it("does not feed an autoloaded skill prompt into title context", () => {

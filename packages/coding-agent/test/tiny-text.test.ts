@@ -87,13 +87,13 @@ describe("formatTitleUserMessage", () => {
 });
 
 describe("formatTitleConversationContext", () => {
-	it("uses compact chat and think tags after cleaning each turn", () => {
+	it("uses compact user tags after cleaning each turn", () => {
 		const formatted = formatTitleConversationContext([
-			{ role: "user", text: "fix this <tool>noisy output</tool>" },
-			{ role: "assistant", text: "Checking", thinking: "inspect the logs" },
+			{ text: "fix this <tool>noisy output</tool>" },
+			{ text: "then run the parser tests" },
 		]);
 		expect(formatted).toBe(
-			"<chat>\n<user>\nfix this\n</user>\n\n<assistant>\nChecking\n\n<think>\ninspect the logs\n</think>\n</assistant>\n</chat>",
+			"<chat>\n<user>\nfix this\n</user>\n\n<user>\nthen run the parser tests\n</user>\n</chat>",
 		);
 	});
 });

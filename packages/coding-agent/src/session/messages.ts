@@ -113,7 +113,7 @@ export function dedupeEphemeralReply(text: string): string {
 	return result;
 }
 
-/** Builds the recent user/assistant context supplied to title regeneration. */
+/** Builds recent user-authored context supplied to title regeneration. */
 export function buildReplanTitleContext(messages: AgentMessage[]): string {
 	const turns: TitleConversationTurn[] = [];
 	for (let i = messages.length - 1; i >= 0 && turns.length < REPLAN_TITLE_CONTEXT_TURN_LIMIT; i--) {
@@ -153,28 +153,19 @@ function textFromContent(content: unknown): string {
 	return parts.join("\n\n");
 }
 
-function thinkingFromContent(content: unknown): string {
-	if (!Array.isArray(content)) return "";
-	const parts: string[] = [];
-	for (const block of content) {
-		if (!isRecord(block) || block.type !== "thinking" || typeof block.thinking !== "string") continue;
-		const thinking = block.thinking.trim();
-		if (thinking) parts.push(thinking);
-	}
-	return parts.join("\n\n");
-}
-
 function titleConversationTurnFromMessage(message: AgentMessage): TitleConversationTurn | undefined {
 	if (message.role === "custom") {
 		const text = titleTextFromSkillPrompt(message);
 		if (!text) return undefined;
-		return { role: "user", text };
+		return { text };
 	}
-	if (message.role !== "user" && message.role !== "assistant") return undefined;
+	// A replan may follow dozens of assistant progress, reasoning, and tool
+	// messages. Letting those displace the operator's request makes the title
+	// describe an incidental implementation detail instead of the session goal.
+	if (message.role !== "user" || message.attribution === "agent") return undefined;
 	const text = textFromContent(message.content);
-	const thinking = message.role === "assistant" ? thinkingFromContent(message.content) : undefined;
-	if (!text && !thinking) return undefined;
-	return { role: message.role, ...(text ? { text } : {}), ...(thinking ? { thinking } : {}) };
+	if (!text) return undefined;
+	return { text };
 }
 
 function normalizeProviderReplayValue(value: unknown): unknown {

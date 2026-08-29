@@ -70,6 +70,7 @@
 
 ### Fixed
 
+- Fixed Todo replan title refreshes drifting to incidental assistant reasoning, progress, and tool failures; regenerated titles now use only recent user-authored requests.
 - Restored single-line error rendering for Grep, Glob, and AST Grep instead of wrapping search failures in red framed cards.
 - Kept running GitHub Actions job and step timers advancing locally between `run_watch` API polls.
 - Localized TTSR rule-injection notification titles and built-in rule summaries without changing the original rule text injected into the model context.

@@ -287,7 +287,7 @@ describe("AgentSession eager todo enforcement", () => {
 		expect(session.getTodoPhases()[0]?.tasks[0]?.content).toBe("List all git worktrees in the current repository");
 	});
 
-	it("refreshes an auto title on todo init from recent user, assistant, and thinking context", async () => {
+	it("refreshes an auto title on todo init from user-authored context only", async () => {
 		await recreateSession({ "title.refreshOnReplan": true });
 		await session.setSessionName("Old auto title", "auto");
 		const priorUser: AgentMessage = {
@@ -323,9 +323,9 @@ describe("AgentSession eager todo enforcement", () => {
 		const request = completeSimpleMock.mock.calls[0]?.[1] as { messages?: Array<{ content?: string }> } | undefined;
 		const titleInput = request?.messages?.[0]?.content;
 		expect(titleInput).toContain("fix parser recovery");
-		expect(titleInput).toContain("I found the parser recovery path.");
-		expect(titleInput).toContain("The recovery heuristic should drive the replan title.");
 		expect(titleInput).toContain("replan parser diagnostics");
+		expect(titleInput).not.toContain("I found the parser recovery path.");
+		expect(titleInput).not.toContain("The recovery heuristic should drive the replan title.");
 	});
 
 	it("forwards the configured title system prompt to the replan refresh path", async () => {
@@ -363,6 +363,7 @@ describe("AgentSession eager todo enforcement", () => {
 		const request = completeSimpleMock.mock.calls[0]?.[1] as { systemPrompt?: string[] } | undefined;
 		expect(request?.systemPrompt?.[0]).toBe(customPrompt);
 		expect(request?.systemPrompt?.[1]).toContain("<title>");
+		expect(request?.systemPrompt?.[1]).toContain("Never title assistant progress");
 		expect(session.sessionManager.getSessionName()).toBe("plan/parser-diagnostics");
 	});
 
