@@ -69,7 +69,7 @@ export interface LimitsMeta {
 	matchLimit?: { reached: number; suggestion: number };
 	resultLimit?: { reached: number; suggestion: number };
 	headLimit?: { reached: number; suggestion: number };
-	columnTruncated?: { maxColumn: number };
+	columnTruncated?: { maxColumn: number; artifactId?: string };
 }
 
 /**
@@ -207,7 +207,7 @@ export class OutputMetaBuilder {
 		// notice rather than a "Showing lines X-Y … limit" range. This runs even
 		// when the output is otherwise complete (`truncated === false`).
 		if (summary.columnMax != null && summary.columnMax > 0 && (summary.columnTruncatedLines ?? 0) > 0) {
-			this.columnTruncated(summary.columnMax);
+			this.columnTruncated(summary.columnMax, summary.artifactId);
 		}
 		if (!summary.truncated) return this;
 
@@ -363,9 +363,10 @@ export class OutputMetaBuilder {
 	}
 
 	/** Add column truncation notice. No-op if maxColumn <= 0. */
-	columnTruncated(maxColumn: number): this {
+	columnTruncated(maxColumn: number, artifactId?: string): this {
 		if (maxColumn <= 0) return this;
-		this.#meta.limits = { ...this.#meta.limits, columnTruncated: { maxColumn } };
+		const columnTruncated: LimitsMeta["columnTruncated"] = artifactId ? { maxColumn, artifactId } : { maxColumn };
+		this.#meta.limits = { ...this.#meta.limits, columnTruncated };
 		return this;
 	}
 
@@ -547,7 +548,9 @@ export function formatOutputNotice(meta: OutputMeta | undefined): string {
 		parts.push(`${l.reached} results limit reached. Use limit=${l.suggestion} for more`);
 	}
 	if (meta.limits?.columnTruncated) {
-		parts.push(`Some lines truncated to ${meta.limits.columnTruncated.maxColumn} chars`);
+		const l = meta.limits.columnTruncated;
+		const artifactReference = l.artifactId ? `. ${formatFullOutputReference(l.artifactId)}` : "";
+		parts.push(`Some lines truncated to ${l.maxColumn} chars${artifactReference}`);
 	}
 
 	// Diagnostics

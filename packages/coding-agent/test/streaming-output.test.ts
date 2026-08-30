@@ -800,10 +800,40 @@ describe("OutputSink maxColumns (per-line cap)", () => {
 		expect(meta?.limits?.columnTruncated).toEqual({ maxColumn: 8 });
 
 		const notice = formatOutputNotice(meta);
-		expect(notice).toContain("Some lines truncated to 8 chars");
+		expect(notice).toBe("\n\n[Some lines truncated to 8 chars]");
 		expect(notice).not.toContain("Showing lines");
 		expect(notice).not.toContain("limit");
 		expect(notice).not.toContain("artifact://");
+	});
+
+	test("column-cap-only metadata retains its full-output artifact", async () => {
+		const dir = await createTempDir();
+		const artifactPath = path.join(dir, "column-capped.log");
+		const input = `prefix\n${"x".repeat(50)}\nsuffix\n`;
+		const sink = new OutputSink({
+			artifactPath,
+			artifactId: "column-capped",
+			maxColumns: 8,
+			spillThreshold: 100_000,
+		});
+		await sink.push(input);
+		const dumped = await sink.dump();
+
+		expect(dumped.truncated).toBe(false);
+		expect(dumped.artifactId).toBe("column-capped");
+		expect(await Bun.file(artifactPath).text()).toBe(input);
+
+		const meta = outputMeta().truncationFromSummary(dumped, { direction: "tail" }).get();
+		expect(meta?.truncation).toBeUndefined();
+		expect(meta?.limits?.columnTruncated).toEqual({
+			maxColumn: 8,
+			artifactId: "column-capped",
+		});
+
+		const notice = formatOutputNotice(meta);
+		expect(notice).toContain("Some lines truncated to 8 chars. Read artifact://column-capped for full output");
+		expect(notice).not.toContain("Showing lines");
+		expect(notice).not.toContain("limit");
 	});
 
 	test("persists per-line state across chunk boundaries", async () => {
