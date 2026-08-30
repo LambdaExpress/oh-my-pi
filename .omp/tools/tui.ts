@@ -19,14 +19,14 @@
  * child and its terminal are torn down on `stop` or shutdown.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import * as net from "node:net";
 import { inflateSync } from "node:zlib";
 import type * as CanvasModule from "@napi-rs/canvas";
 import type * as KittyVt from "kitty-vt-wasm";
 import type { Color, KittyEvent, KittyTerminal } from "kitty-vt-wasm";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 
 /** Minimal slice of the host schema builder (`omp.zod`) this tool uses. */
 interface Schema {
@@ -99,13 +99,45 @@ export interface TuiParams {
 /** Lazily loaded kitty-vt-wasm module: a missing install degrades `start`, not module load. */
 let vtApi: Promise<typeof KittyVt> | null = null;
 
+/**
+ * Bun standalone executables do not resolve bare packages imported by an
+ * external TypeScript module. Find kitty's concrete entry on disk so the
+ * compiled omp host can import it.
+ */
+function resolveKittyVtEntry(): string {
+	let directory = import.meta.dir;
+	for (;;) {
+		const candidate = join(directory, "node_modules", "kitty-vt-wasm", "dist", "index.js");
+		try {
+			return realpathSync(candidate);
+		} catch (error) {
+			if (
+				typeof error !== "object" ||
+				error === null ||
+				!("code" in error) ||
+				error.code !== "ENOENT"
+			) {
+				throw error;
+			}
+		}
+		const parent = resolve(directory, "..");
+		if (parent === directory) break;
+		directory = parent;
+	}
+	throw new Error("kitty-vt-wasm is not installed; run `bun install` in .omp/tools");
+}
+
+async function importKittyVt(): Promise<typeof KittyVt> {
+	const entry = resolveKittyVtEntry();
+	// Runtime-selected absolute import is required by Bun's compiled-host boundary.
+	return import(entry);
+}
+
 function loadVt() {
 	// Lazy import: a missing optional install must degrade `start`, not fail tool load.
-	vtApi ??= import("kitty-vt-wasm").catch((error) => {
+	vtApi ??= importKittyVt().catch((error) => {
 		vtApi = null;
-		throw new Error(
-			`screen emulation needs kitty-vt-wasm — run \`bun install\` in .omp/tools (${error})`,
-		);
+		throw new Error(`screen emulation needs kitty-vt-wasm (${error})`);
 	});
 	return vtApi;
 }
@@ -948,6 +980,13 @@ function unescapeBytes(text: string): Buffer {
 
 // ─── Tool ────────────────────────────────────────────────────────────────────
 
+function bunExecutable(): string {
+	const fromPath = Bun.which("bun");
+	if (fromPath) return fromPath;
+	if (/^bun(?:\.exe)?$/i.test(basename(process.execPath))) return process.execPath;
+	throw new Error("start with `file` needs Bun on PATH when omp runs as a compiled executable");
+}
+
 const factory = (omp: ToolHost) => {
 	const startSession = async (params: TuiParams): Promise<string> => {
 		const name = params.name ?? "main";
@@ -961,7 +1000,7 @@ const factory = (omp: ToolHost) => {
 		const file = params.bin ? undefined : (params.file ?? "packages/coding-agent/src/cli.ts");
 		const target = file ?? params.bin ?? "";
 		const command = file
-			? [process.execPath, resolve(omp.cwd, file), ...(params.args ?? [])]
+			? [bunExecutable(), resolve(omp.cwd, file), ...(params.args ?? [])]
 			: [target, ...(params.args ?? [])];
 
 		const rows = params.rows ?? 30;
