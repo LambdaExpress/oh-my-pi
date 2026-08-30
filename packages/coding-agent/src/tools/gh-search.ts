@@ -490,17 +490,29 @@ export async function executeSearchCommits(
 	const limit = resolveSearchLimit(params.limit);
 	const dateField = resolveSearchDateField("commits", params.dateField);
 	const dateQualifier = buildSearchDateQualifier(dateField, params.since, params.until);
-	const displayQuery = composeSearchQuery([params.query, dateQualifier]);
-	const repo = await resolveSearchRepoScope(session.cwd, normalizeOptionalString(params.repo), displayQuery, signal);
+	const displayQuery = [normalizeOptionalString(params.query), dateQualifier]
+		.filter((part): part is string => part !== undefined)
+		.join(" ");
+	const repo = await resolveSearchRepoScope(
+		session.cwd,
+		normalizeOptionalString(params.repo),
+		displayQuery || undefined,
+		signal,
+	);
 	const scope = searchScope(repo);
 	const apiQuery = composeSearchQuery([displayQuery, scope.qualifier]);
 	const args = buildGhApiSearchArgs("commits", apiQuery, limit, { host: scope.host });
 
 	const response = await github.json<GhApiSearchResponse<GhApiSearchCommitItem>>(session.cwd, args, signal);
 	const items = (response.items ?? []).map(apiCommitToSearchResult);
-	return buildTextResult(formatSearchCommitsResults(displayQuery, repo, items), undefined, undefined, {
-		useless: items.length === 0,
-	});
+	return buildTextResult(
+		formatSearchCommitsResults(displayQuery || "(repository scope only)", repo, items),
+		undefined,
+		undefined,
+		{
+			useless: items.length === 0,
+		},
+	);
 }
 
 export async function executeSearchRepos(

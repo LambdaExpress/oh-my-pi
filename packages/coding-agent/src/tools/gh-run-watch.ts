@@ -25,6 +25,7 @@ import {
 	resolveGitHubRepo,
 	saveArtifactText,
 	tryResolveCurrentRepoFresh,
+	tryResolveGitHubBranchRepo,
 } from "./gh-common";
 import { formatShortSha } from "./gh-format";
 import type {
@@ -932,7 +933,11 @@ export async function executeRunWatch(
 	const branchInput = normalizeOptionalString(params.branch);
 	const explicitRepo = normalizeOptionalString(params.repo);
 	const runReference = parseRunReference(params.run);
-	const repo = await resolveGitHubRepo(session.cwd, explicitRepo, runReference.repo, signal);
+	const branchRepo =
+		explicitRepo === undefined && runReference.repo === undefined
+			? await tryResolveGitHubBranchRepo(session.cwd, branchInput, signal)
+			: undefined;
+	const repo = await resolveGitHubRepo(session.cwd, explicitRepo, runReference.repo ?? branchRepo, signal);
 	const graceSeconds = RUN_WATCH_GRACE_DEFAULT;
 	const tail = resolveTailLimit(params.tail);
 	const recentJobLogCache = new Map<number, GhRecentJobLogCacheEntry>();
@@ -1059,17 +1064,19 @@ export async function executeRunWatch(
 		headSha = await resolveGitHubBranchHead(session.cwd, repo, branch, signal);
 	} else {
 		// No branch/run selector — derive the commit from the current checkout,
-		// but only when cwd actually points at `repo`. Otherwise we'd watch an
-		// unrelated commit SHA against the explicit repo and silently stream a
-		// confident wrong-repo status (issue #1949). GitHub `owner/repo` slugs
-		// are case-insensitive — `gh repo view` returns the canonical casing
-		// while callers may pass any casing — so the equality check normalizes
-		// both sides before deciding the cwd is a different repo (PR #1951).
-		const cwdRepo = await tryResolveCurrentRepoFresh(session.cwd, signal);
-		if (!githubRepoSlugEquals(cwdRepo, repo)) {
-			throw new ToolError(
-				`Cannot infer the watched commit for ${repo}: current checkout is ${cwdRepo ?? "not a GitHub repository"}. Pass \`branch\` or \`run\` to scope the watch.`,
-			);
+		// but only when cwd actually points at `repo`. A repository resolved
+		// from the current branch's own remote already establishes that link;
+		// otherwise revalidate cwd before trusting its HEAD. This keeps an
+		// explicit repo from silently watching an unrelated local commit
+		// (issue #1949). GitHub slugs are case-insensitive, so normalize both
+		// sides when checking an explicit/default repo (PR #1951).
+		if (branchRepo === undefined) {
+			const cwdRepo = await tryResolveCurrentRepoFresh(session.cwd, signal);
+			if (!githubRepoSlugEquals(cwdRepo, repo)) {
+				throw new ToolError(
+					`Cannot infer the watched commit for ${repo}: current checkout is ${cwdRepo ?? "not a GitHub repository"}. Pass \`branch\` or \`run\` to scope the watch.`,
+				);
+			}
 		}
 		branch = await requireCurrentGitBranch(session.cwd, signal);
 		headSha = await requireCurrentGitHead(session.cwd, signal);

@@ -778,6 +778,45 @@ describe("github tool", () => {
 		expect(args).toContain("q=refactor committer-date:>=2026-05-01 repo:owner/repo");
 	});
 
+	it("search_commits: accepts an explicit repo as the only query qualifier", async () => {
+		const spy = vi.spyOn(github, "json").mockResolvedValue({ items: [] });
+		const tool = new GithubTool(createSession("C:/workspace"));
+		const result = await tool.execute("search-commits", {
+			op: "search_commits",
+			repo: "Jalen-Brunson/ComfyUI-MiniMax-H3-PDD-Acc",
+			limit: 10,
+		});
+
+		const args = spy.mock.calls[0]?.[1];
+		expect(args?.slice(0, 4)).toEqual(["api", "-X", "GET", "/search/commits"]);
+		expect(args).toContain("q=repo:Jalen-Brunson/ComfyUI-MiniMax-H3-PDD-Acc");
+		const text = result.content[0]?.type === "text" ? result.content[0].text : "";
+		expect(text).toContain("Query: (repository scope only)");
+		expect(text).toContain("Repository: Jalen-Brunson/ComfyUI-MiniMax-H3-PDD-Acc");
+	});
+
+	it("search_commits: accepts the resolved current repository as the only query qualifier", async () => {
+		const textSpy = vi.spyOn(github, "text").mockResolvedValue("https://github.com/acme/widgets\n");
+		const jsonSpy = vi.spyOn(github, "json").mockResolvedValue({ items: [] });
+		const tool = new GithubTool(createSession(`/tmp/gh-current-repo-only-commit-search-${Date.now()}`));
+
+		await tool.execute("search-commits", { op: "search_commits" });
+
+		expect(textSpy).toHaveBeenCalled();
+		const args = jsonSpy.mock.calls[0]?.[1];
+		expect(args).toContain("q=repo:acme/widgets");
+	});
+
+	it("search_commits: still requires text, dates, or a resolvable repository", async () => {
+		const textSpy = vi.spyOn(github, "text").mockRejectedValue(new Error("not a git repository"));
+		const jsonSpy = vi.spyOn(github, "json");
+		const tool = new GithubTool(createSession(`/tmp/gh-empty-commit-search-${Date.now()}`));
+
+		await expect(tool.execute("search-commits", { op: "search_commits" })).rejects.toThrow(/query is required/);
+		expect(textSpy).toHaveBeenCalled();
+		expect(jsonSpy).not.toHaveBeenCalled();
+	});
+
 	it("search_repos: maps dateField=updated to the `pushed:` qualifier", async () => {
 		const spy = vi.spyOn(github, "json").mockResolvedValue({ items: [] });
 		const tool = new GithubTool(createSession());
@@ -1565,6 +1604,57 @@ echo ok
 		} finally {
 			await removeWithRetries(artifactsDir);
 		}
+	});
+
+	it("uses the target branch remote when the checkout's base repository is a different remote", async () => {
+		const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "gh-run-watch-branch-remote-"));
+		runGit(repoRoot, ["init", "-b", "dev"]);
+		runGit(repoRoot, ["remote", "add", "upstream", "https://github.com/oh-my-pi/oh-my-pi"]);
+		runGit(repoRoot, ["remote", "add", "origin", "https://github.com/LambdaExpress/oh-my-pi"]);
+		runGit(repoRoot, ["config", "branch.release.remote", "origin"]);
+
+		const abort = new AbortController();
+		const textSpy = vi.spyOn(github, "text").mockResolvedValue("https://github.com/oh-my-pi/oh-my-pi\n");
+		const jsonSpy = vi.spyOn(github, "json").mockImplementation((async () => {
+			abort.abort();
+			return { commit: { sha: "0aa1623350e003d2cf78441c74221f3720c7b9b3" } };
+		}) as unknown as typeof github.json);
+
+		try {
+			const tool = new GithubTool(createSession(repoRoot));
+			await tool
+				.execute("run-watch", { op: "run_watch", branch: "release", tail: 120 }, abort.signal)
+				.catch(() => {});
+
+			expect(textSpy).not.toHaveBeenCalled();
+			const firstArgs = jsonSpy.mock.calls[0]?.[1] as string[];
+			expect(firstArgs).toContain("/repos/LambdaExpress/oh-my-pi/branches/release");
+			expect(firstArgs.some(arg => arg.includes("/repos/oh-my-pi/oh-my-pi/"))).toBe(false);
+		} finally {
+			await removeWithRetries(repoRoot);
+		}
+	});
+
+	it("uses the current branch remote when `branch` is omitted", async () => {
+		vi.spyOn(vcs, "git").mockReturnValue({
+			currentBranch: async () => "release",
+			configGet: async (key: string) => (key === "branch.release.remote" ? "origin" : null),
+			remoteUrl: async () => "https://github.com/LambdaExpress/oh-my-pi",
+			headSha: async () => "0aa1623350e003d2cf78441c74221f3720c7b9b3",
+		} as unknown as VcsGitRepo);
+		const textSpy = vi.spyOn(github, "text").mockResolvedValue("https://github.com/oh-my-pi/oh-my-pi\n");
+		const abort = new AbortController();
+		const jsonSpy = vi.spyOn(github, "json").mockImplementation((async () => {
+			abort.abort();
+			return { workflow_runs: [] };
+		}) as unknown as typeof github.json);
+
+		const tool = new GithubTool(createSession("/tmp/gh-run-watch-current-branch-remote"));
+		await tool.execute("run-watch", { op: "run_watch" }, abort.signal).catch(() => {});
+
+		expect(textSpy).not.toHaveBeenCalled();
+		const firstArgs = jsonSpy.mock.calls[0]?.[1] as string[];
+		expect(firstArgs).toContain("/repos/LambdaExpress/oh-my-pi/actions/runs");
 	});
 
 	it("honors the explicit `repo` argument and does not fall back to the cwd repo (issue #1949)", async () => {
