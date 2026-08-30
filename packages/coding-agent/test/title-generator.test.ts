@@ -577,6 +577,57 @@ describe("title generator", () => {
 		expect(mockComplete).toHaveBeenCalled();
 		expect(mockComplete.mock.calls[0]?.[0]).toBe(smolModel);
 	});
+
+	it("falls back to the current model when the online title model returns a provider error", async () => {
+		const titleModel = getModelOrThrow("claude-haiku-4-5");
+		const currentModel = getModelOrThrow("claude-sonnet-4-5");
+		const settings = {
+			get(path: string) {
+				if (path === "providers.tinyModel") return "online";
+				return undefined;
+			},
+			getModelRole(role: string) {
+				return role === "tiny" ? `${titleModel.provider}/${titleModel.id}` : undefined;
+			},
+			getStorage() {
+				return undefined;
+			},
+		} as never;
+		const registry = {
+			getAvailable: () => [titleModel, currentModel],
+			getApiKey: async () => "test-key",
+			getApiKeyForProvider: async () => "test-key",
+			authStorage: { rotateSessionCredential: async () => false },
+			resolver: () => async () => "test-key",
+		} as never;
+		const completeSimpleMock = vi.spyOn(ai, "completeSimple").mockImplementation(async model => {
+			if (model === titleModel) {
+				return {
+					stopReason: "error",
+					errorMessage: "You have hit your usage limit.",
+					content: [],
+				} as never;
+			}
+			return {
+				stopReason: "stop",
+				content: [{ type: "text", text: "<title>Fix WSL SSH Access</title>" }],
+			} as never;
+		});
+		vi.spyOn(logger, "warn").mockImplementation(() => {});
+
+		const title = await generateSessionTitle(
+			"Why can I not access local WSL through the SSH tool?",
+			registry,
+			settings,
+			"session-1",
+			currentModel,
+		);
+
+		expect(title).toBe("Fix WSL SSH Access");
+		const attemptedModels = completeSimpleMock.mock.calls.map(call => call[0]);
+		expect(attemptedModels.slice(0, -1).every(model => model === titleModel)).toBe(true);
+		expect(attemptedModels.at(-1)).toBe(currentModel);
+	});
 });
 
 // The terminal title runtime is a module-global. `emitTerminalTitle()` composes
