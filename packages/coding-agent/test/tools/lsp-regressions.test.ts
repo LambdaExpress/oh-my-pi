@@ -2334,6 +2334,101 @@ describe("lsp regressions", () => {
 		}
 	}, 15_000);
 
+	it("isolates absolute JavaScript references in a sibling worktree from the session repository client", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-sibling-js-worktree-");
+		try {
+			const sessionRepository = path.join(tempDir.path(), "main-repository");
+			const siblingWorktree = path.join(tempDir.path(), "sibling-worktree");
+			const targetFile = path.join(siblingWorktree, "src", "store.js");
+			await Bun.write(path.join(sessionRepository, "package.json"), "{}\n");
+			await Bun.write(path.join(siblingWorktree, "jsconfig.json"), "{}\n");
+			await Bun.write(targetFile, "export const target = 1;\n");
+
+			const installReferenceServer = (): FakeLspServer =>
+				installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						srv.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							result: { capabilities: { referencesProvider: true } },
+						});
+						srv.send({
+							jsonrpc: "2.0",
+							method: "$/progress",
+							params: { token: "sibling-js-worktree", value: { kind: "end" } },
+						});
+					} else if (message.method === "textDocument/references") {
+						srv.send({
+							jsonrpc: "2.0",
+							id: message.id,
+							result: [
+								{
+									uri: fileToUri(targetFile),
+									range: {
+										start: { line: 0, character: 13 },
+										end: { line: 0, character: 19 },
+									},
+								},
+							],
+						});
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						srv.exit(0);
+					}
+				});
+			const serverConfig: ServerConfig = {
+				command: "fake-lsp-sibling-js-worktree",
+				fileTypes: [".js"],
+				rootMarkers: ["jsconfig.json", "package.json"],
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { "fake-lsp": serverConfig },
+				idleTimeoutMs: undefined,
+			});
+
+			const sessionServer = installReferenceServer();
+			const sessionClient = await lspClient.getOrCreateClient(serverConfig, sessionRepository, 1_000);
+			await sessionServer.waitFor(message => message.method === "initialize");
+			const sessionCursor = sessionServer.received.length;
+
+			const worktreeServer = installReferenceServer();
+			const worktreeCursor = worktreeServer.received.length;
+			const result = await new LspTool(makeLspSession(sessionRepository)).execute("sibling-worktree-references", {
+				action: "references",
+				file: targetFile,
+				line: 1,
+				symbol: "target",
+				timeout: 5,
+			});
+			const worktreeInitialize = await worktreeServer.waitFor(message => message.method === "initialize");
+			const worktreeClient = await lspClient.getActiveOrPendingClient(serverConfig, siblingWorktree);
+			const expectedRootUri = fileToUri(siblingWorktree);
+			const sessionReferences = sessionServer.received
+				.slice(sessionCursor)
+				.filter(message => message.method === "textDocument/references");
+			const worktreeReferenceUris = worktreeServer.received
+				.slice(worktreeCursor)
+				.filter(message => message.method === "textDocument/references")
+				.map(message => (message.params as { textDocument?: { uri?: string } } | undefined)?.textDocument?.uri);
+
+			expect(worktreeInitialize.params).toMatchObject({
+				rootUri: expectedRootUri,
+				rootPath: siblingWorktree,
+				workspaceFolders: [{ uri: expectedRootUri, name: path.basename(siblingWorktree) }],
+			});
+			expect(worktreeClient).toBeDefined();
+			expect(worktreeClient).not.toBe(sessionClient);
+			expect(sessionReferences).toHaveLength(0);
+			// Project-aware references retry once to confirm that the result signature is stable.
+			expect(worktreeReferenceUris).toEqual([fileToUri(targetFile), fileToUri(targetFile)]);
+			expect(textResult(result)).toContain("Found 1 reference(s)");
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}, 15_000);
+
 	it("maps workspace-relative root markers onto external worktrees for semantic requests", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-external-worktree-root-");
 		try {
