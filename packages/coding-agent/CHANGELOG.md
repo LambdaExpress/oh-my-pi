@@ -27,6 +27,7 @@
 - Added streaming SSH file uploads and downloads with foreground/background progress, cancellation, and temporary-session host support.
 - Restored configured-host remote command execution as the discoverable `ssh` tool, mounted at `xd://ssh` by default and refreshed immediately when persistent or session SSH aliases change.
 - Added OpenSSH ProxyJump support for key- or agent-authenticated targets across persistent and session SSH aliases, remote commands, transfers, SSHFS mounts, and `ssh://` file access.
+- Added auto-discovered local WSL targets to SSH commands and file transfers without requiring SSH configuration or `sshd`, and detected WSL endpoints reached through SSH as POSIX hosts.
 
 - Added managed `omp worktree` background workspaces with add/list/switch/apply/remove/branch/snapshot restore flows, plus `/worktree` TUI and ACP quick actions.
 - Added a discoverable `worktree` tool so agents can list, create, enter, apply, remove, branch, and restore managed worktrees from tool calls.
@@ -70,6 +71,13 @@
 
 ### Fixed
 
+- Fixed completed-run collapsing treating advisor cards and earlier model replies as hidden processing, so Alt+O and resumed sessions preserve both model replies with the advisor note between them.
+- Fixed automatic session titles remaining empty when the configured online title model is unavailable by retrying once with the active session model.
+- Fixed absolute Glob patterns skipping regular `.git` files used by linked worktrees while retaining `.git` directory pruning.
+- Fixed native linked-worktree metadata using Windows backslashes, which made Git report the worktree's `.git` file as the worktree path.
+- Fixed GitHub Actions `run_watch` choosing the wrong repository for a branch in multi-remote checkouts, and allowed repository-scoped commit searches without a text query.
+- Fixed conflict IDs drifting after an earlier conflict changed later line numbers, and made bulk conflict write failures report the affected file and stage without mutating conflict history.
+- Fixed column-truncated PowerShell output omitting the `artifact://` recovery link for the complete output.
 - Fixed `xd://report_issue` rejecting valid tool names wrapped in template-style angle brackets, such as `<github>`; one surrounding pair is now normalized before validation.
 - Fixed global `--profile` loading the default agent `.env` before profile selection after CLI localization made the command registry import settings eagerly.
 - Fixed the CLI-backed Biome linter and formatter ignoring configured command arguments.
