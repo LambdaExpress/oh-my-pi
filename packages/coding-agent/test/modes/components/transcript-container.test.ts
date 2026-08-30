@@ -1,6 +1,4 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import {
 	TranscriptContainer,
 	type TranscriptStableRow,
@@ -165,26 +163,6 @@ class ReflowingAppendBlock implements Component {
 		return [...this.renderTranscriptStableRows(1, width), this.#finalized ? "final" : "partial"];
 	}
 }
-const finalAnswer: AssistantMessage = {
-	role: "assistant",
-	content: [
-		{ type: "thinking", thinking: "Reasoning first" },
-		{ type: "text", text: "## Implemented" },
-	],
-	api: "openai-codex-responses",
-	provider: "openai-codex",
-	model: "gpt-5.6-sol",
-	stopReason: "stop",
-	usage: {
-		input: 0,
-		output: 0,
-		cacheRead: 0,
-		cacheWrite: 0,
-		totalTokens: 0,
-		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-	},
-	timestamp: 1,
-};
 
 const frame = { tick: 0, now: 0 };
 
@@ -417,13 +395,17 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 1)).toEqual(["fresh live"]);
 	});
 
-	it("allocates one row per live block before distributing surplus", () => {
+	it("keeps full semantic block rendering instead of compacting each block", () => {
 		const transcript = new TranscriptContainer();
-		transcript.addChild(new Block(["first top", "first bottom"], false));
-		transcript.addChild(new Block(["second top", "second bottom"], false));
+		const first = new Block(["first top", "first bottom"], false);
+		const second = new Block(["second top", "second bottom"], false);
+		transcript.addChild(first);
+		transcript.addChild(second);
 
-		expect(transcript.renderViewport(80, 3, frame)).toEqual(["first bottom", "second top", "second bottom"]);
-		expect(transcript.renderViewport(80, 1, frame)).toEqual(["1 more transcript blocks active"]);
+		expect(transcript.renderViewport(80, 3, frame)).toEqual(["", "second top", "second bottom"]);
+		expect(transcript.renderViewport(80, 1, frame)).toEqual(["second bottom"]);
+		expect(first.allocations.at(-1)).toBe(Number.MAX_SAFE_INTEGER);
+		expect(second.allocations.at(-1)).toBe(Number.MAX_SAFE_INTEGER);
 		expect(transcript.canAdmit(2)).toBe(false);
 	});
 	it("moves overflowing full-fidelity active rows into visual history instead of clipping them", () => {
@@ -460,10 +442,9 @@ describe("TranscriptContainer", () => {
 			transcript.addChild(new Block([`t${i}a`, `t${i}b`, `t${i}c`], true));
 			for (let j = 0; j < 8; j++) transcript.addChild(new Block([], true));
 		}
-		// Empty blocks consume no rows, including in the emergency path.
+		// Empty blocks add neither rows nor separators to the semantic tail.
 		const out = transcript.renderViewport(80, 12, frame);
-		expect(out).toHaveLength(12);
-		expect(out.every(row => /\S/.test(row))).toBe(true);
+		expect(out).toEqual(["", "t3a", "t3b", "t3c", "", "t4a", "t4b", "t4c", "", "t5a", "t5b", "t5c"]);
 	});
 
 	it("empty blocks do not reserve capacity from real text under pressure (issue 9483)", () => {
@@ -474,36 +455,40 @@ describe("TranscriptContainer", () => {
 		transcript.addChild(new Block([], true));
 		transcript.addChild(new Block(["C1", "C2", "C3", "C4"], true));
 		const out = transcript.renderViewport(80, 10, frame);
-		expect(out).toEqual(["A3", "A4", "B1", "B2", "B3", "B4", "C1", "C2", "C3", "C4"]);
+		expect(out).toEqual(["", "B1", "B2", "B3", "B4", "", "C1", "C2", "C3", "C4"]);
 	});
 
-	it("keeps a completed assistant answer visible behind an active prefix", () => {
-		const transcript = new TranscriptContainer();
-		transcript.addChild(new Block(["stale active"], false));
-		transcript.addChild(new AssistantMessageComponent(finalAnswer));
-		transcript.addChild(new Block(["continued turn"], false));
-		transcript.addChild(new Block(["task running"], false));
-
-		expect(transcript.peekFinalizedBatch(80, 3)).toBeUndefined();
-		const rows = transcript.renderViewport(80, 3, frame);
-		expect(rows[0]).toBe("2 more transcript blocks active");
-		expect(Bun.stripANSI(rows[1] ?? "").trim()).toBe("Implemented");
-		expect(rows[2]).toBe("task running");
-	});
-
-	it("gives surplus rows to assistant text before a growing tool card (issue 9718)", () => {
+	it("keeps a completed tool full before the next user message moves its predecessor into history", () => {
 		const transcript = new TranscriptContainer();
 		const assistant = new Block(["A1", "A2", "A3", "A4"], false);
-		const tool = new ToolBlock(["T1", "T2", "T3", "T4"], false);
+		const tool = new ToolBlock(["T1", "T2", "T3"], true);
 		transcript.addChild(assistant);
 		transcript.addChild(tool);
-		// Capacity 5 cannot fit both blocks in full. Surplus (3 rows) goes to the
-		// assistant block first; the tool card collapses to its one-row minimum
-		// instead of clipping already-visible assistant text.
-		const out = transcript.renderViewport(80, 5, frame);
-		expect(out).toEqual(["A1", "A2", "A3", "A4", "T4"]);
-		expect(assistant.allocations.at(-1)).toBe(4);
-		expect(tool.allocations.at(-1)).toBe(1);
+
+		// The active predecessor keeps the completed tool live. Global tail
+		// clipping preserves all three adjacent tool rows instead of compacting it.
+		expect(transcript.peekFinalizedBatch(80, 5)).toBeUndefined();
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["A4", "", "T1", "T2", "T3"]);
+
+		assistant.finalize(["A1", "A2", "A3", "A4"]);
+		transcript.addChild(new Block(["NEXT"], false));
+		const retired = transcript.peekFinalizedBatch(80, 5);
+		expect(retired?.rows).toEqual(["A1", "A2", "A3", "A4", ""]);
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["T1", "T2", "T3", "", "NEXT"]);
+		if (!retired) throw new Error("expected finalized predecessor retirement");
+		transcript.acknowledgeFinalizedBatch(retired.id);
+		expect([...retired.rows, ...transcript.renderViewport(80, 5, frame)]).toEqual([
+			"A1",
+			"A2",
+			"A3",
+			"A4",
+			"",
+			"T1",
+			"T2",
+			"T3",
+			"",
+			"NEXT",
+		]);
 	});
 
 	it("permits removing settled blocks until they are offered or committed", () => {
@@ -690,5 +675,47 @@ describe("TranscriptContainer", () => {
 
 		active.finalize(["T0", "T1", "T2", "T3"]);
 		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual(["T1", "T2", "T3", ""]);
+	});
+
+	it("snapshots the overflow of a unique non-tool append-only active block", () => {
+		const transcript = new TranscriptContainer();
+		const active = new AppendBlock(["P0", "P1", "P2"], [], false);
+		transcript.addChild(active);
+
+		const snapshot = transcript.peekFinalizedBatch(80, 1);
+		expect(snapshot?.rows).toEqual(["P0", "P1"]);
+		if (!snapshot) throw new Error("expected unique active overflow snapshot");
+		transcript.acknowledgeFinalizedBatch(snapshot.id);
+		expect(transcript.renderViewport(80, 1)).toEqual(["P2"]);
+	});
+
+	it("snapshots an overflowing tool past a transparent active gate without expanding at the next boundary", () => {
+		const transcript = new TranscriptContainer();
+		const gate = new TransparentGate();
+		transcript.addChild(gate);
+		transcript.addChild(new ToolBlock(["T0", "T1", "T2"], false));
+
+		const snapshot = transcript.peekFinalizedBatch(80, 1);
+		expect(snapshot?.rows).toEqual(["T0", "T1"]);
+		expect(transcript.renderViewport(80, 1)).toEqual(["T2"]);
+		if (!snapshot) throw new Error("expected overflowing visual rows past transparent gate");
+		transcript.acknowledgeFinalizedBatch(snapshot.id);
+		expect([...snapshot.rows, ...transcript.renderViewport(80, 1)]).toEqual(["T0", "T1", "T2"]);
+
+		// The next user boundary closes the old run anchor and installs a fresh
+		// zero-row anchor. The active tool must retain the same one-row live tail.
+		gate.finalize([]);
+		transcript.addChild(new TransparentGate());
+		expect(transcript.peekFinalizedBatch(80, 1)).toBeUndefined();
+		expect([...snapshot.rows, ...transcript.renderViewport(80, 1)]).toEqual(["T0", "T1", "T2"]);
+	});
+
+	it("does not snapshot past an ordinary zero-row active predecessor", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block([], false));
+		transcript.addChild(new ToolBlock(["T0", "T1", "T2"], false));
+
+		expect(transcript.peekFinalizedBatch(80, 1)).toBeUndefined();
+		expect(transcript.renderViewport(80, 1)).toEqual(["T2"]);
 	});
 });

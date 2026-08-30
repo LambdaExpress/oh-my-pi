@@ -10,7 +10,7 @@ import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { CompletedRunCollapse } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
+import { type CustomMessage, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { setLocale } from "../src/i18n";
@@ -266,6 +266,84 @@ describe("InteractiveMode completed-run collapse", () => {
 		rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
 		expect(rendered).toContain("※ collapsed: 1 agent text segment · 1 tool call");
 		expect(resetDisplay).toHaveBeenCalledTimes(2);
+	});
+
+	it("recovers one completed collapse across a persisted advisor continuation", () => {
+		const initial = { role: "user", content: "build it with advisor review", timestamp: 1 } as const;
+		const preAdvisorWork = assistant(
+			[
+				{ type: "text", text: "processing before advisor" },
+				{ type: "toolCall", id: "advisor-pre", name: "read", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const preAdvisorResult = {
+			role: "toolResult",
+			toolCallId: "advisor-pre",
+			toolName: "read",
+			content: [{ type: "text", text: "pre-advisor tool data" }],
+			timestamp: 3,
+		} as ToolResultMessage;
+		const firstReply = assistant([{ type: "text", text: "first completed reply" }], "stop", 4);
+		const advisor: CustomMessage<{
+			notes: Array<{ note: string; severity: string; advisor: string }>;
+		}> = {
+			role: "custom",
+			customType: "advisor",
+			content: '<advisory severity="concern">advisor continuation note</advisory>',
+			details: {
+				notes: [{ note: "advisor continuation note", severity: "concern", advisor: "Architecture" }],
+			},
+			display: true,
+			attribution: "agent",
+			timestamp: 5,
+		};
+		const postAdvisorWork = assistant(
+			[
+				{ type: "text", text: "processing after advisor" },
+				{ type: "toolCall", id: "advisor-post", name: "read", arguments: {} },
+			],
+			"toolUse",
+			6,
+		);
+		const postAdvisorResult = {
+			role: "toolResult",
+			toolCallId: "advisor-post",
+			toolName: "read",
+			content: [{ type: "text", text: "post-advisor tool data" }],
+			timestamp: 7,
+		} as ToolResultMessage;
+		const secondReply = assistant([{ type: "text", text: "second completed reply" }], "stop", 8);
+		session.sessionManager.appendMessage(initial);
+		session.sessionManager.appendMessage(preAdvisorWork);
+		session.sessionManager.appendMessage(preAdvisorResult);
+		session.sessionManager.appendMessage(firstReply);
+		session.sessionManager.appendMessage(advisor);
+		session.sessionManager.appendMessage(postAdvisorWork);
+		session.sessionManager.appendMessage(postAdvisorResult);
+		session.sessionManager.appendMessage(secondReply);
+
+		// No in-memory collapse record exists: initial rendering must derive one
+		// span for the original request and its advisor-triggered continuation.
+		mode.renderInitialMessages({ recoverCompletedRuns: true });
+
+		let rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("※ collapsed:");
+		expect(rendered).not.toContain("processing before advisor");
+		expect(rendered).not.toContain("processing after advisor");
+		const firstReplyIndex = rendered.indexOf("first completed reply");
+		const advisorIndex = rendered.indexOf("advisor continuation note");
+		const secondReplyIndex = rendered.indexOf("second completed reply");
+		expect(firstReplyIndex).toBeGreaterThan(-1);
+		expect(advisorIndex).toBeGreaterThan(firstReplyIndex);
+		expect(secondReplyIndex).toBeGreaterThan(advisorIndex);
+
+		mode.toggleCompletedRunCollapse();
+		rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("processing before advisor");
+		expect(rendered).toContain("processing after advisor");
+		expect(rendered).not.toContain("※ collapsed:");
 	});
 
 	it("recovers and toggles a completed run after a persisted upstream stream interruption", () => {

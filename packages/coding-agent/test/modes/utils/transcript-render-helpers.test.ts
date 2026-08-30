@@ -354,6 +354,130 @@ describe("completed-run collapse projection", () => {
 		expect(final.content).toHaveLength(2);
 	});
 
+	it("derives one advisor continuation collapse and preserves its natural replies in projection", () => {
+		const initial = { role: "user", content: "review and finish the change", timestamp: 1 } as const;
+		const beforeAdvisor = assistant(
+			[
+				{ type: "text", text: "checking the current implementation" },
+				{ type: "toolCall", id: "before-advisor", name: "read", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const beforeAdvisorResult = {
+			role: "toolResult",
+			toolCallId: "before-advisor",
+			toolName: "read",
+			content: [{ type: "text", text: "implementation details" }],
+			timestamp: 3,
+		} as AgentMessage;
+		const firstReply = assistant([{ type: "text", text: "The initial change is complete." }], "stop", 4);
+		const advisor = {
+			role: "custom",
+			customType: "advisor",
+			content: "Please address the remaining edge case.",
+			display: true,
+			attribution: "agent",
+			timestamp: 5,
+		} as AgentMessage;
+		const afterAdvisor = assistant(
+			[
+				{ type: "text", text: "checking the advisor feedback" },
+				{ type: "toolCall", id: "after-advisor", name: "grep", arguments: {} },
+			],
+			"toolUse",
+			6,
+		);
+		const afterAdvisorResult = {
+			role: "toolResult",
+			toolCallId: "after-advisor",
+			toolName: "grep",
+			content: [{ type: "text", text: "edge-case location" }],
+			timestamp: 7,
+		} as AgentMessage;
+		const final = assistant([{ type: "text", text: "The advisor follow-up is complete." }], "stop", 8);
+		const messages = [
+			initial,
+			beforeAdvisor,
+			beforeAdvisorResult,
+			firstReply,
+			advisor,
+			afterAdvisor,
+			afterAdvisorResult,
+			final,
+		] as AgentMessage[];
+		const originalMessages = structuredClone(messages);
+		const context = { messages, models: {}, injectedTtsrRules: [], mode: "none" };
+
+		const collapses = deriveCompletedRunCollapses(messages, { includeLatest: true });
+		expect(collapses).toHaveLength(1);
+		expect(collapses[0]).toEqual(
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: final,
+			}),
+		);
+
+		const projection = collapseCompletedRuns(context, collapses);
+
+		expect(projection.context.messages).toEqual([initial, firstReply, advisor, final]);
+		expect(projection.context.messages).not.toContain(beforeAdvisor);
+		expect(projection.context.messages).not.toContain(beforeAdvisorResult);
+		expect(projection.context.messages).not.toContain(afterAdvisor);
+		expect(projection.context.messages).not.toContain(afterAdvisorResult);
+		expect(projection.summaries).toEqual([
+			{ afterMessage: initial, agentTextSegments: 2, toolCalls: 2, durationMs: 7 },
+		]);
+		expect(messages).toEqual(originalMessages);
+	});
+
+	it("keeps an unfinished advisor continuation anchored to the original request", () => {
+		const initial = { role: "user", content: "review and finish the change", timestamp: 1 } as const;
+		const processing = assistant(
+			[
+				{ type: "text", text: "checking the current implementation" },
+				{ type: "toolCall", id: "before-advisor", name: "read", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const processingResult = {
+			role: "toolResult",
+			toolCallId: "before-advisor",
+			toolName: "read",
+			content: [{ type: "text", text: "implementation details" }],
+			timestamp: 3,
+		} as AgentMessage;
+		const firstReply = assistant([{ type: "text", text: "The initial change is complete." }], "stop", 4);
+		const advisor = {
+			role: "custom",
+			customType: "advisor",
+			content: "Please address the remaining edge case.",
+			display: true,
+			attribution: "agent",
+			timestamp: 5,
+		} as AgentMessage;
+		const continuation = assistant(
+			[
+				{ type: "text", text: "checking the advisor feedback" },
+				{ type: "toolCall", id: "after-advisor", name: "grep", arguments: {} },
+			],
+			"toolUse",
+			6,
+		);
+		const throughAdvisor = [initial, processing, processingResult, firstReply, advisor] as AgentMessage[];
+		const throughToolUse = [...throughAdvisor, continuation];
+
+		for (const messages of [throughAdvisor, throughToolUse]) {
+			expect(deriveCompletedRunCollapses(messages, { includeLatest: true })).toEqual([]);
+			expect(deriveCompletedRunAnchor(messages)).toEqual({
+				initialUserMessage: initial,
+				messages,
+			});
+		}
+	});
+
 	it("renders the recap-style English summary as one line with singular counts", () => {
 		const request = { role: "user", content: "build it", timestamp: 1 } as const;
 		const component = createCompletedRunSummary(
