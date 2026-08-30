@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -66,6 +66,44 @@ const TWO_BLOCKS = [
 	"=======",
 	"b-theirs",
 	">>>>>>> B",
+	"tail",
+	"",
+].join("\n");
+
+const SHIFTED_DUPLICATE_BLOCKS = [
+	"<<<<<<< A",
+	"a-ours-1",
+	"a-ours-2",
+	"a-ours-3",
+	"a-ours-4",
+	"a-ours-5",
+	"a-ours-6",
+	"a-ours-7",
+	"=======",
+	"a-theirs-1",
+	"a-theirs-2",
+	"a-theirs-3",
+	"a-theirs-4",
+	"a-theirs-5",
+	"a-theirs-6",
+	"a-theirs-7",
+	">>>>>>> A",
+	"between-a-and-duplicates",
+	"<<<<<<< DUP",
+	"duplicate-ours",
+	"=======",
+	"duplicate-theirs",
+	">>>>>>> DUP",
+	"gap-1",
+	"gap-2",
+	"gap-3",
+	"gap-4",
+	"gap-5",
+	"<<<<<<< DUP",
+	"duplicate-ours",
+	"=======",
+	"duplicate-theirs",
+	">>>>>>> DUP",
 	"tail",
 	"",
 ].join("\n");
@@ -448,6 +486,56 @@ describe("write resolves conflicts via conflict://N", () => {
 		expect(session.conflictHistory?.get(1)).toBeDefined();
 	});
 
+	it("keeps shifted duplicate blocks on their original ids after resolving the top block and re-reading", async () => {
+		const filePath = path.join(tempDir, "shifted-duplicates.ts");
+		await Bun.write(filePath, SHIFTED_DUPLICATE_BLOCKS);
+		const session = createTestSession(tempDir);
+		const read = await getTool(session, "read");
+		const write = await getTool(session, "write");
+
+		await read.execute("read-shifted-duplicates", { path: "shifted-duplicates.ts:conflicts" });
+		expect(session.conflictHistory?.entries().map(entry => entry.id)).toEqual([1, 2, 3]);
+
+		await write.execute("resolve-shifted-duplicates-top", {
+			path: "conflict://1",
+			content: "@ours",
+		});
+		await read.execute("reread-shifted-duplicates", { path: "shifted-duplicates.ts:conflicts" });
+
+		const remaining = session.conflictHistory?.entries() ?? [];
+		expect(remaining.map(entry => entry.id)).toEqual([2, 3]);
+		expect(remaining.map(entry => entry.startLine)).toEqual([9, 19]);
+		expect(remaining.map(entry => entry.oursLines)).toEqual([["duplicate-ours"], ["duplicate-ours"]]);
+		expect(session.conflictHistory?.get(4)).toBeUndefined();
+
+		await write.execute("resolve-shifted-duplicates-original-ids", {
+			path: "conflict://*",
+			content: "2: @ours\n3: @theirs",
+		});
+		expect(await Bun.file(filePath).text()).toBe(
+			[
+				"a-ours-1",
+				"a-ours-2",
+				"a-ours-3",
+				"a-ours-4",
+				"a-ours-5",
+				"a-ours-6",
+				"a-ours-7",
+				"between-a-and-duplicates",
+				"duplicate-ours",
+				"gap-1",
+				"gap-2",
+				"gap-3",
+				"gap-4",
+				"gap-5",
+				"duplicate-theirs",
+				"tail",
+				"",
+			].join("\n"),
+		);
+		expect(session.conflictHistory?.entries()).toHaveLength(0);
+	});
+
 	it("rejects directives referencing unknown ids", async () => {
 		const filePath = path.join(tempDir, "directives-bad.ts");
 		await Bun.write(filePath, TWO_WAY);
@@ -456,11 +544,14 @@ describe("write resolves conflicts via conflict://N", () => {
 		const write = await getTool(session, "write");
 
 		await read.execute("read-directives-bad", { path: "directives-bad.ts" });
+		const beforeHistory = session.conflictHistory?.entries() ?? [];
 		const promise = write.execute("write-directives-bad", {
 			path: "conflict://*",
 			content: "1: @ours\n7: @theirs",
 		});
 		await expect(promise).rejects.toThrow(/unknown conflict id\(s\) #7/);
+		expect(await Bun.file(filePath).text()).toBe(TWO_WAY);
+		expect(session.conflictHistory?.entries()).toEqual(beforeHistory);
 	});
 
 	it("rejects a per-id block that mixes directives with literal content instead of leaking it", async () => {
@@ -697,6 +788,32 @@ describe("write resolves conflicts via conflict://N", () => {
 		expect(await Bun.file(fileB).text()).toBe("line 1\nnewApi(x)\nline N\n");
 		// History cleared after bulk resolve.
 		expect(session.conflictHistory?.entries()).toHaveLength(0);
+	});
+
+	it("maps a bulk write-stage open failure to a path-specific ToolError without committing state", async () => {
+		const filePath = path.join(tempDir, "bulk-open-error.ts");
+		await Bun.write(filePath, TWO_WAY);
+		const session = createTestSession(tempDir);
+		const read = await getTool(session, "read");
+		const write = await getTool(session, "write");
+
+		await read.execute("read-bulk-open-error", { path: "bulk-open-error.ts:conflicts" });
+		const beforeHistory = session.conflictHistory?.entries() ?? [];
+		const openError = Object.assign(new Error("Failed to open destination"), { code: "EUNKNOWN" });
+		const writeSpy = spyOn(Bun, "write").mockRejectedValueOnce(openError);
+		try {
+			await expect(
+				write.execute("write-bulk-open-error", {
+					path: "conflict://*",
+					content: "@ours",
+				}),
+			).rejects.toThrow(/bulk-open-error\.ts.*write stage.*EUNKNOWN.*Failed to open destination/);
+		} finally {
+			writeSpy.mockRestore();
+		}
+
+		expect(await Bun.file(filePath).text()).toBe(TWO_WAY);
+		expect(session.conflictHistory?.entries()).toEqual(beforeHistory);
 	});
 
 	it("`write conflict://*` errors when no conflicts are registered", async () => {
