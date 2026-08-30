@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
 import { formatSshHostEntry } from "@oh-my-pi/pi-coding-agent/tools/ssh-hosts";
-import { ptree, removeWithRetries } from "@oh-my-pi/pi-utils";
+import { getRemoteHostDir, ptree, removeWithRetries } from "@oh-my-pi/pi-utils";
 
 async function withLooseKey<T>(run: (keyPath: string) => Promise<T>): Promise<T> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-ssh-key-"));
@@ -466,7 +466,7 @@ describe("SSH connection identities", () => {
 			if (remoteCommand.includes(connectionManager.TRANSFER_PROBE_MARKER)) {
 				return {
 					exitCode: 0,
-					stdout: `${connectionManager.TRANSFER_PROBE_MARKER}Linux`,
+					stdout: `${connectionManager.TRANSFER_PROBE_MARKER}Linux|6.8.0-generic|0|0`,
 					stderr: "",
 				} as never;
 			}
@@ -586,6 +586,232 @@ describe("SSH login shell detection", () => {
 			await connectionManager.invalidateSshTarget(powerShellTarget, { invalidateHostInfo: true });
 			await connectionManager.invalidateSshTarget(unknownShellTarget, { invalidateHostInfo: true });
 			execSpy.mockRestore();
+		}
+	});
+});
+
+describe("SSH WSL host detection", () => {
+	it("uses WSL transfer-probe evidence for bash, zsh, and sh login shells without an extra SSH call", async () => {
+		const source = { provider: "test", providerName: "Test", path: "test://ssh", level: "session" as const };
+		const cases = [
+			{ shell: "bash", bashVersion: "5.2", transferPayload: "Linux|6.8.0-generic|1|0" },
+			{ shell: "zsh", bashVersion: "", transferPayload: "Linux|6.8.0-generic|0|1" },
+			{
+				shell: "sh",
+				bashVersion: "",
+				transferPayload: "Linux|5.15.153.1-microsoft-standard-WSL2|0|0",
+			},
+		] as const;
+		const targets = cases.map(testCase => ({
+			name: `wsl-${testCase.shell}-${crypto.randomUUID()}`,
+			host: `wsl-${testCase.shell}-${crypto.randomUUID()}.example`,
+			compat: true,
+			_source: source,
+		}));
+		const caseByHost = new Map(targets.map((target, index) => [target.host, cases[index]]));
+		const transferCommands: string[] = [];
+		const execSpy = vi.spyOn(ptree, "exec").mockImplementation(async command => {
+			const remoteCommand = command.at(-1) ?? "";
+			const testCase = caseByHost.get(command.at(-2) ?? "");
+			if (remoteCommand.includes(connectionManager.HOST_PROBE_MARKER) && testCase) {
+				return {
+					exitCode: 0,
+					stdout: `${connectionManager.HOST_PROBE_MARKER}linux-gnu|/bin/${testCase.shell}|${testCase.bashVersion}`,
+					stderr: "",
+				} as never;
+			}
+			if (remoteCommand.includes(connectionManager.TRANSFER_PROBE_MARKER) && testCase) {
+				transferCommands.push(remoteCommand);
+				return {
+					exitCode: 0,
+					stdout: `${connectionManager.TRANSFER_PROBE_MARKER}${testCase.transferPayload}`,
+					stderr: "",
+				} as never;
+			}
+			return { exitCode: 0, stdout: "", stderr: "" } as never;
+		});
+
+		try {
+			for (let index = 0; index < targets.length; index++) {
+				const target = targets[index]!;
+				const testCase = cases[index]!;
+				const info = await connectionManager._sshHelpersForTests.probeHostInfo(target);
+				expect(info).toMatchObject({
+					version: 7,
+					os: "wsl",
+					shell: testCase.shell,
+					transferShell: "sh",
+					compatEnabled: false,
+				});
+				expect(formatSshHostEntry(target)).toEndWith(`| wsl/${testCase.shell}`);
+			}
+			expect(execSpy).toHaveBeenCalledTimes(cases.length * 2);
+			expect(transferCommands).toHaveLength(cases.length);
+			for (const command of transferCommands) {
+				expect(command).toContain("uname -s");
+				expect(command).toContain("uname -r");
+				expect(command).toContain(`\${WSL_DISTRO_NAME-}`);
+				expect(command).toContain(`\${WSL_INTEROP-}`);
+				expect(command).not.toContain("wsl.exe");
+			}
+		} finally {
+			for (const target of targets) {
+				await connectionManager.invalidateSshTarget(target, { invalidateHostInfo: true });
+			}
+			execSpy.mockRestore();
+		}
+	});
+
+	it("recovers WSL from the transfer probe when the host marker is missing", async () => {
+		const target = {
+			name: `wsl-markerless-${crypto.randomUUID()}`,
+			host: `wsl-markerless-${crypto.randomUUID()}.example`,
+			compat: false,
+		};
+		const execSpy = vi.spyOn(ptree, "exec").mockImplementation(async command => {
+			const remoteCommand = command.at(-1) ?? "";
+			if (remoteCommand.includes(connectionManager.HOST_PROBE_MARKER)) {
+				return {
+					exitCode: 0,
+					stdout: "Welcome to Microsoft Linux\nLast login: today",
+					stderr: "profile startup noise",
+				} as never;
+			}
+			if (remoteCommand.includes(connectionManager.TRANSFER_PROBE_MARKER)) {
+				return {
+					exitCode: 0,
+					stdout: "transfer startup noise",
+					stderr: `profile warning\n${connectionManager.TRANSFER_PROBE_MARKER}Linux|6.8.0-generic|0|1\nLinux|6.8.0-generic|0|0`,
+				} as never;
+			}
+			return { exitCode: 0, stdout: "", stderr: "" } as never;
+		});
+
+		try {
+			const info = await connectionManager._sshHelpersForTests.probeHostInfo(target);
+			expect(info).toMatchObject({
+				version: 7,
+				os: "wsl",
+				shell: "unknown",
+				transferShell: "sh",
+				compatEnabled: false,
+			});
+			expect(execSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			await connectionManager.invalidateSshTarget(target, { invalidateHostInfo: true });
+			execSpy.mockRestore();
+		}
+	});
+
+	it("keeps Microsoft startup noise, noncanonical kernels, and non-1 flags as ordinary Linux", async () => {
+		const target = {
+			name: `linux-microsoft-noise-${crypto.randomUUID()}`,
+			host: `linux-microsoft-noise-${crypto.randomUUID()}.example`,
+			compat: false,
+		};
+		const execSpy = vi.spyOn(ptree, "exec").mockImplementation(async command => {
+			const remoteCommand = command.at(-1) ?? "";
+			if (remoteCommand.includes(connectionManager.HOST_PROBE_MARKER)) {
+				return {
+					exitCode: 0,
+					stdout: `${connectionManager.HOST_PROBE_MARKER}linux-gnu|/bin/bash|5.2`,
+					stderr: "",
+				} as never;
+			}
+			if (remoteCommand.includes(connectionManager.TRANSFER_PROBE_MARKER)) {
+				return {
+					exitCode: 0,
+					stdout: `Welcome to Microsoft developer tools\n${connectionManager.TRANSFER_PROBE_MARKER}Linux|6.8.0-microsoft-hardened|true|01\nLinux|x|1|1`,
+					stderr: "",
+				} as never;
+			}
+			return { exitCode: 0, stdout: "", stderr: "" } as never;
+		});
+
+		try {
+			const info = await connectionManager._sshHelpersForTests.probeHostInfo(target);
+			expect(info).toMatchObject({
+				version: 7,
+				os: "linux",
+				shell: "bash",
+				transferShell: "sh",
+				compatEnabled: false,
+			});
+			expect(execSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			await connectionManager.invalidateSshTarget(target, { invalidateHostInfo: true });
+			execSpy.mockRestore();
+		}
+	});
+
+	it("refreshes a v6 Linux cache to persisted v7 WSL info on the first ensure", async () => {
+		const target = {
+			name: `wsl-cache-${crypto.randomUUID()}`,
+			connectionId: `wsl-cache-${crypto.randomUUID()}`,
+			host: `wsl-cache-${crypto.randomUUID()}.example`,
+			compat: false,
+		};
+		const infoPath = path.join(getRemoteHostDir(), `${connectionManager.getSshHostInfoKey(target)}.json`);
+		await Bun.write(
+			infoPath,
+			JSON.stringify({
+				version: 6,
+				os: "linux",
+				shell: "bash",
+				transferShell: "sh",
+				compatEnabled: false,
+			}),
+			{ createPath: true },
+		);
+		const probeCommands: string[] = [];
+		const execSpy = vi.spyOn(ptree, "exec").mockImplementation(async command => {
+			const remoteCommand = command.at(-1) ?? "";
+			if (command.includes("-O") && command.includes("check")) {
+				return { exitCode: 0, stdout: "", stderr: "" } as never;
+			}
+			if (remoteCommand.includes(connectionManager.HOST_PROBE_MARKER)) {
+				probeCommands.push(remoteCommand);
+				return {
+					exitCode: 0,
+					stdout: `${connectionManager.HOST_PROBE_MARKER}linux-gnu|/bin/bash|5.2`,
+					stderr: "",
+				} as never;
+			}
+			if (remoteCommand.includes(connectionManager.TRANSFER_PROBE_MARKER)) {
+				probeCommands.push(remoteCommand);
+				return {
+					exitCode: 0,
+					stdout: `${connectionManager.TRANSFER_PROBE_MARKER}Linux|4.4.0-19041-Microsoft|0|0`,
+					stderr: "",
+				} as never;
+			}
+			return { exitCode: 0, stdout: "", stderr: "" } as never;
+		});
+
+		try {
+			const info = await connectionManager.ensureHostInfo(target);
+			expect(info).toMatchObject({
+				version: 7,
+				os: "wsl",
+				shell: "bash",
+				transferShell: "sh",
+				compatEnabled: false,
+			});
+			expect(probeCommands).toHaveLength(2);
+			const persisted = JSON.parse(await fs.readFile(infoPath, "utf-8"));
+			expect(persisted).toMatchObject({
+				version: 7,
+				os: "wsl",
+				shell: "bash",
+				transferShell: "sh",
+				compatEnabled: false,
+			});
+			expect(await connectionManager.ensureHostInfo(target)).toEqual(info);
+			expect(probeCommands).toHaveLength(2);
+		} finally {
+			await connectionManager.invalidateSshTarget(target, { invalidateHostInfo: true });
+			execSpy.mockRestore();
+			await fs.rm(infoPath, { force: true });
 		}
 	});
 });

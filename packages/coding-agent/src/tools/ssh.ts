@@ -3,12 +3,11 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import type { ToolExample } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
-import type { SSHHost } from "../capability/ssh";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { highlightCode, type Theme } from "../modes/theme/theme";
 import sshDescriptionBase from "../prompts/tools/ssh.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, streamTailUpdates, TailBuffer } from "../session/streaming-output";
-import type { SSHHostInfo } from "../ssh/connection-manager";
+import type { SSHConnectionTarget, SSHHostInfo } from "../ssh/connection-manager";
 import { ensureHostInfo, getCachedHostInfoSync } from "../ssh/connection-manager";
 import { executeSSH } from "../ssh/ssh-executor";
 import { renderStatusLine } from "../tui";
@@ -23,7 +22,7 @@ import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
 
 const sshSchema = type({
-	host: type("string").describe("configured SSH host name"),
+	host: type("string").describe("available SSH or local WSL target name"),
 	command: type("string").describe("remote command"),
 	"cwd?": type("string").describe("absolute remote working directory; omit unless required"),
 	"timeout?": type("number").describe("timeout in seconds; defaults to 60"),
@@ -79,7 +78,7 @@ function buildRemoteCommand(command: string, cwd: string | undefined, info: SSHH
 export class SshTool implements AgentTool<typeof sshSchema, SSHToolDetails> {
 	readonly name = "ssh";
 	readonly approval = "exec" as const;
-	readonly summary = "Execute commands on configured SSH hosts";
+	readonly summary = "Execute commands on SSH hosts and local WSL distributions";
 	readonly loadMode = "discoverable" as const;
 	readonly label = "SSH";
 	readonly parameters = sshSchema;
@@ -124,7 +123,7 @@ export class SshTool implements AgentTool<typeof sshSchema, SSHToolDetails> {
 	constructor(
 		private readonly session: ToolSession,
 		private readonly hostNames: string[],
-		private readonly hostsByName: Map<string, SSHHost>,
+		private readonly hostsByName: Map<string, SSHConnectionTarget>,
 		readonly description: string,
 	) {
 		this.#allowedHosts = new Set(hostNames);

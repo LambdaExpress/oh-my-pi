@@ -6,6 +6,7 @@ import {
 	buildRemoteCommandInvocation,
 	ensureConnection,
 	ensureHostInfo,
+	isLocalWslTarget,
 	type SSHConnectionTarget,
 } from "./connection-manager";
 import { hasSshfs, mountRemote } from "./sshfs-mount";
@@ -62,7 +63,7 @@ export async function executeSSH(
 	options?: SSHExecutorOptions,
 ): Promise<SSHResult> {
 	await ensureConnection(host);
-	if (hasSshfs()) {
+	if (!isLocalWslTarget(host) && hasSshfs()) {
 		try {
 			await mountRemote(host, options?.remotePath ?? "/");
 		} catch (error) {
@@ -82,7 +83,7 @@ export async function executeSSH(
 
 	const invocation = await buildRemoteCommandInvocation(host, resolvedCommand);
 	try {
-		using child = ptree.spawn(["ssh", ...invocation.args], {
+		using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 			signal: options?.signal,
 			timeout: options?.timeout,
 			stdin: "pipe",

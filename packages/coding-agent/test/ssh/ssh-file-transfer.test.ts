@@ -456,4 +456,39 @@ describe("SSH file transfer core", () => {
 		expect(commands).toHaveLength(2);
 		expect(commands.every(command => !command.includes(".omp-transfer-") && !command.includes("mkdir"))).toBe(true);
 	});
+
+	it("uses the Linux atomic exchange strategy for WSL without a launcher", async () => {
+		vi.spyOn(connectionManager, "ensureHostInfo").mockResolvedValue({
+			version: 7,
+			os: "wsl",
+			shell: "bash",
+			transferShell: "bash",
+			compatEnabled: false,
+		});
+		const localPath = path.join(testDir, "upload.bin");
+		await fs.writeFile(localPath, new Uint8Array([1, 2, 3, 4]));
+		const commands: string[] = [];
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockImplementation(async (_host, command) => {
+			commands.push(command);
+			return { args: [`probe-${commands.length}`] };
+		});
+		let spawnIndex = 0;
+		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
+			const stdout = spawnIndex++ === 0 ? new TextEncoder().encode("file") : new TextEncoder().encode("exchange");
+			return createChild<In>({ stdout: [stdout] });
+		});
+
+		const plan = await prepareSshFileTransfer({
+			operation: "upload",
+			target,
+			localPath,
+			remotePath: "/tmp/output.bin",
+			overwrite: true,
+		});
+
+		expect(plan.commitStrategy).toBe("remote-linux-exchange");
+		expect(commands).toHaveLength(2);
+		expect(commands[1]).toContain("renameat2");
+		expect(commands.every(command => !command.includes("wsl.exe"))).toBe(true);
+	});
 });

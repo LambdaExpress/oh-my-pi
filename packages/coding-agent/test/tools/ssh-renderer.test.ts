@@ -7,6 +7,7 @@ import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-man
 import * as sshExecutor from "@oh-my-pi/pi-coding-agent/ssh/ssh-executor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { type SSHToolDetails, SshTool, sshToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/ssh";
+import { formatSshHostEntry } from "@oh-my-pi/pi-coding-agent/tools/ssh-hosts";
 import { writeToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/write";
 
 const host: SSHHost = {
@@ -67,6 +68,60 @@ describe("SSH command highlighting", () => {
 		expect(updates.length).toBeGreaterThanOrEqual(2);
 		expect(updates.every(details => details.commandLanguage === "powershell")).toBe(true);
 		expect(result.details?.commandLanguage).toBe("powershell");
+	});
+
+	it.each(["bash", "zsh", "sh"] as const)("displays cached WSL %s host info", shell => {
+		vi.spyOn(connectionManager, "getCachedHostInfoSync").mockReturnValue({
+			version: 7,
+			os: "wsl",
+			shell,
+			transferShell: shell,
+			compatEnabled: false,
+		});
+
+		expect(formatSshHostEntry(host)).toEndWith(`| wsl/${shell}`);
+	});
+
+	it("executes WSL cwd commands directly as POSIX shell commands", async () => {
+		vi.spyOn(connectionManager, "ensureHostInfo").mockResolvedValue({
+			version: 7,
+			os: "wsl",
+			shell: "bash",
+			transferShell: "bash",
+			compatEnabled: false,
+		});
+		const execute = vi.spyOn(sshExecutor, "executeSSH").mockImplementation(async (_target, _command, options) => {
+			options?.onChunk?.("/srv/app\n");
+			return {
+				output: "/srv/app\n",
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+				totalLines: 1,
+				totalBytes: 9,
+				outputLines: 1,
+				outputBytes: 9,
+			};
+		});
+		const updates: SSHToolDetails[] = [];
+
+		const result = await createTool().execute(
+			"call-wsl",
+			{ host: "remote", command: "pwd", cwd: "/srv/app" },
+			undefined,
+			update => {
+				updates.push(update.details ?? {});
+			},
+		);
+
+		expect(execute).toHaveBeenCalledTimes(1);
+		const [, command, options] = execute.mock.calls[0]!;
+		expect(command).toBe("cd -- '/srv/app' && pwd");
+		expect(command).not.toContain("wsl.exe");
+		expect(options?.compatEnabled).toBe(false);
+		expect(updates.length).toBeGreaterThanOrEqual(2);
+		expect(updates.every(details => details.commandLanguage === "bash")).toBe(true);
+		expect(result.details?.commandLanguage).toBe("bash");
 	});
 
 	it("renders detected Bash and PowerShell commands with the shared syntax highlighter", async () => {
