@@ -2433,7 +2433,12 @@ export class InteractiveMode implements InteractiveModeContext {
 				}
 			}
 		}
-		this.chatContainer.clear();
+		const preserveRetirement = options.reuseSettledComponents === true;
+		if (preserveRetirement) {
+			this.chatContainer.beginRetirementPreservingRebuild(this.ui.terminal.columns);
+		} else {
+			this.chatContainer.clear();
+		}
 		// Completed-run collapse owns display projection and needs the full
 		// persisted transcript so Alt+O can expand pre-compaction runs.
 		const context = this.viewSession.buildTranscriptSessionContext({
@@ -2532,6 +2537,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// post-streaming and cannot duplicate.
 		this.#replayOptimisticUserMessage();
 		this.eventController.restoreAsyncJobHud();
+		if (preserveRetirement && !this.chatContainer.finishRetirementPreservingRebuild()) {
+			this.ui.resetDisplay();
+		}
 	}
 
 	#replayOptimisticUserMessage(): void {

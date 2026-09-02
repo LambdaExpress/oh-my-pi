@@ -1702,8 +1702,16 @@ export class EventController {
 					}
 				}
 			}
+			const trailingToolCallId = this.ctx.streamingMessage.content.findLast(
+				content => content.type === "toolCall",
+			)?.id;
 			for (const [toolCallId, segment] of timeline.afterToolCalls) {
-				this.#upsertPostToolAssistantSegment(toolCallId, segment);
+				const component = this.#upsertPostToolAssistantSegment(toolCallId, segment);
+				// Once a later tool-call block exists, the provider has closed this
+				// preceding text segment. Leaving it active creates multiple mutable
+				// transcript blocks, which prevents the current tail from spilling into
+				// native scrollback and clips its head until message_end.
+				if (toolCallId !== trailingToolCallId) component?.markTranscriptBlockFinalized();
 			}
 
 			// Update working message with intent from streamed tool arguments

@@ -85,6 +85,11 @@ interface SnapshotWatermark {
 	separator: boolean;
 }
 
+interface RetirementPreservingRebuild {
+	entries: readonly TranscriptEntry[];
+	width: number;
+}
+
 type RetirementPolicy = "pressure" | "flush";
 type Offered =
 	| { batch: HistoryBatch; kind: "append"; entry: number; emittedEnd: number }
@@ -137,6 +142,14 @@ function isStablePrefix(prefix: readonly TranscriptStableRow[], rows: readonly T
 	return true;
 }
 
+function hasSameVisibleRows(left: readonly string[], right: readonly string[]): boolean {
+	if (left.length !== right.length) return false;
+	for (let index = 0; index < left.length; index++) {
+		if (Bun.stripANSI(left[index]!) !== Bun.stripANSI(right[index]!)) return false;
+	}
+	return true;
+}
+
 /** Strip leading/trailing all-blank rows; the viewport allocator measures blocks by this trimmed height. */
 export function trimBlankEdges(rows: readonly string[]): readonly string[] {
 	let start = 0;
@@ -156,6 +169,7 @@ export class TranscriptContainer extends Container {
 	#replayRequested = false;
 	#toolActivityVisible = true;
 	#lastFrame: AnimationFrame = { tick: 0, now: 0 };
+	#retirementPreservingRebuild: RetirementPreservingRebuild | undefined;
 
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
@@ -187,6 +201,85 @@ export class TranscriptContainer extends Container {
 		this.#offered = undefined;
 		this.#replayPending = false;
 		this.#replayRequested = false;
+		this.#retirementPreservingRebuild = undefined;
+	}
+
+	/**
+	 * Clear the component tree for a rebuild that should retain the same visible
+	 * history. {@link finishRetirementPreservingRebuild} transfers acknowledged
+	 * native-scrollback ownership to equivalent rebuilt blocks.
+	 */
+	beginRetirementPreservingRebuild(width: number): void {
+		this.#syncEntries();
+		const entries = this.#entries.slice();
+		super.clear();
+		this.#entries = [];
+		this.#frontier = 0;
+		this.#offered = undefined;
+		this.#replayPending = false;
+		this.#replayRequested = false;
+		this.#retirementPreservingRebuild = { entries, width: Math.max(1, Math.trunc(width)) };
+	}
+
+	/**
+	 * Reconcile rebuilt blocks with the rows already owned by native scrollback.
+	 * Returns false when any retired block changed shape; callers must then erase
+	 * and replay the logical transcript instead of appending across the mismatch.
+	 */
+	finishRetirementPreservingRebuild(): boolean {
+		const rebuild = this.#retirementPreservingRebuild;
+		if (!rebuild) return true;
+		this.#retirementPreservingRebuild = undefined;
+		let preserved = true;
+		for (let index = 0; index < rebuild.entries.length; index++) {
+			const previous = rebuild.entries[index]!;
+			if (
+				previous.state !== "committed" &&
+				previous.emitted === 0 &&
+				previous.snapshot === undefined &&
+				previous.partial === undefined
+			)
+				continue;
+			const current = this.#entries[index];
+			if (!current) {
+				preserved = false;
+				break;
+			}
+			if (previous.component === current.component) {
+				this.#entries[index] = previous;
+				continue;
+			}
+			this.#setAllocation(previous.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			this.#setAllocation(current.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+			const previousRows = trimBlankEdges(previous.component.render(rebuild.width));
+			const currentRows = trimBlankEdges(current.component.render(rebuild.width));
+			if (!isFinalized(current.component) || !hasSameVisibleRows(previousRows, currentRows)) {
+				preserved = false;
+				break;
+			}
+			if (previous.state === "committed") {
+				this.#entries[index] = { ...current, state: "committed" };
+				continue;
+			}
+			const retired = this.#retiredPrefixLength(previous, rebuild.width, previousRows);
+			if (retired <= 0 || retired > currentRows.length) {
+				preserved = false;
+				break;
+			}
+			this.#entries[index] = {
+				...current,
+				state: previous.state,
+				snapshot: {
+					width: rebuild.width,
+					rowCount: retired,
+					prefix: currentRows.slice(0, retired),
+					separator: previous.snapshot?.separator === true,
+				},
+			};
+		}
+		this.#frontier = this.#entries.findIndex(entry => entry.state !== "committed");
+		if (this.#frontier < 0) this.#frontier = this.#entries.length;
+		return preserved;
 	}
 
 	setToolActivityVisible(visible: boolean): void {
