@@ -35,6 +35,8 @@ export interface CopyTarget {
 	/** Stable id (e.g. "msg:1", "msg:1:code:0", "msg:1:quote:0", "msg:1:all", "cmd:1"). */
 	id: string;
 	label: string;
+	/** Newest-first user turn containing this root target. Children inherit it in the picker. */
+	userTurn?: number;
 	/** Dim annotation: line/block counts, language, or tool name. */
 	hint?: string;
 	/** Full text rendered in the preview pane. */
@@ -233,14 +235,14 @@ function blockSummaryHint(text: string, codeCount: number, quoteCount: number): 
 /** Build the target node for one assistant message: a leaf when it has no
  * drillable blocks, otherwise a group exposing the full message plus each
  * fenced code block and `>`-quoted block (de-prefixed) as a child target. */
-function messageTarget(text: string, rank: number): CopyTarget {
+function messageTarget(text: string, rank: number, userTurn: number): CopyTarget {
 	const id = `msg:${rank}`;
 	const label = firstLine(text);
 	const blocks = extractBlocks(text);
 	const messageCopy = rank === 1 ? "Copied last message to clipboard" : "Copied message to clipboard";
 
 	if (blocks.length === 0) {
-		return { id, label, hint: pluralLines(text), preview: text, content: text, copyMessage: messageCopy };
+		return { id, label, userTurn, hint: pluralLines(text), preview: text, content: text, copyMessage: messageCopy };
 	}
 
 	// The message node itself copies the full message; each block is a child
@@ -299,7 +301,7 @@ function messageTarget(text: string, rank: number): CopyTarget {
 	}
 
 	const hint = blockSummaryHint(text, codeBlocks.length, quoteBlocks.length);
-	return { id, label, hint, preview: text, content: text, copyMessage: messageCopy, children };
+	return { id, label, userTurn, hint, preview: text, content: text, copyMessage: messageCopy, children };
 }
 
 function commandTitle(command: LastCommand): string {
@@ -308,11 +310,12 @@ function commandTitle(command: LastCommand): string {
 	return "Eval code";
 }
 
-function commandTarget(command: LastCommand, rank: number): CopyTarget {
+function commandTarget(command: LastCommand, rank: number, userTurn: number): CopyTarget {
 	const title = commandTitle(command);
 	return {
 		id: `cmd:${rank}`,
 		label: firstLine(command.code) || title,
+		userTurn,
 		hint: `${command.kind} · ${pluralLines(command.code)}`,
 		preview: command.code,
 		language: command.language,
@@ -321,27 +324,47 @@ function commandTarget(command: LastCommand, rank: number): CopyTarget {
 	};
 }
 
+/** Whether this message starts a user-authored prompt-to-completion turn. */
+function startsUserTurn(message: AgentMessage): boolean {
+	if (message.role === "user") return message.attribution !== "agent";
+	return message.role === "custom" && message.attribution === "user" && message.display !== false;
+}
+
 /**
  * Assemble the unified `/copy` target tree: recent assistant messages
  * (most recent first, each drillable into its code blocks), runnable command
  * targets interleaved after the assistant message that issued them, and a
- * fresh-handoff fallback when no assistant message exists yet.
+ * fresh-handoff fallback when no assistant message exists yet. Root targets
+ * share a `userTurn` while they belong to the same user prompt, even when tool
+ * calls split the model output across multiple assistant messages.
  */
 export function buildCopyTargets(source: CopySource): CopyTarget[] {
 	const targets: CopyTarget[] = [];
 	const pendingCommands: LastCommand[] = [];
 	let messageRank = 0;
 	let commandRank = 0;
+	let userTurn = 1;
+	let hasCurrentTurn = false;
 
 	const appendCommands = (commands: readonly LastCommand[]) => {
 		for (const command of commands) {
 			commandRank += 1;
-			targets.push(commandTarget(command, commandRank));
+			targets.push(commandTarget(command, commandRank, userTurn));
+			hasCurrentTurn = true;
 		}
 	};
 
 	for (let i = source.messages.length - 1; i >= 0 && messageRank < MAX_MESSAGES; i--) {
 		const msg = source.messages[i];
+		if (startsUserTurn(msg)) {
+			appendCommands(pendingCommands);
+			pendingCommands.length = 0;
+			if (hasCurrentTurn) {
+				userTurn += 1;
+				hasCurrentTurn = false;
+			}
+			continue;
+		}
 		if (msg.role !== "assistant") continue;
 
 		const toolCalls = msg.content.filter((c): c is ToolCall => c.type === "toolCall");
@@ -358,12 +381,14 @@ export function buildCopyTargets(source: CopySource): CopyTarget[] {
 		}
 
 		messageRank += 1;
-		targets.push(messageTarget(text, messageRank));
+		targets.push(messageTarget(text, messageRank, userTurn));
+		hasCurrentTurn = true;
 		appendCommands(pendingCommands);
 		appendCommands(commands);
 		pendingCommands.length = 0;
 	}
 
+	appendCommands(pendingCommands);
 	if (messageRank === 0) {
 		const handoff = source.getLastVisibleHandoffText();
 		if (handoff) {
@@ -376,7 +401,6 @@ export function buildCopyTargets(source: CopySource): CopyTarget[] {
 				copyMessage: "Copied handoff context to clipboard",
 			});
 		}
-		appendCommands(pendingCommands);
 	}
 
 	return targets;

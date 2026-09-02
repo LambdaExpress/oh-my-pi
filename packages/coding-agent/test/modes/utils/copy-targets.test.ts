@@ -25,6 +25,10 @@ function assistantText(text: string): AgentMessage {
 	return { role: "assistant", content: [{ type: "text", text }] } as unknown as AgentMessage;
 }
 
+function userText(text: string, attribution: "user" | "agent" = "user"): AgentMessage {
+	return { role: "user", content: [{ type: "text", text }], attribution } as unknown as AgentMessage;
+}
+
 function assistantCalls(toolCalls: Array<{ name: string; arguments: Record<string, unknown> }>): AgentMessage {
 	return {
 		role: "assistant",
@@ -221,5 +225,44 @@ describe("buildCopyTargets", () => {
 		expect(cmd?.content).toBe("bun check");
 		expect(cmd?.language).toBe("bash");
 		expect(byId(targets, "cmd:2")?.content).toBe("echo old");
+	});
+
+	it("groups every model output between user messages into one user turn", () => {
+		const targets = buildCopyTargets(
+			source({
+				messages: [
+					userText("first prompt"),
+					assistantText("first opening"),
+					assistantText("first final"),
+					userText("second prompt"),
+					assistantText("second opening"),
+					assistantCalls([{ name: "bash", arguments: { command: "bun check" } }]),
+					assistantText("second final"),
+				] as unknown as AgentMessage[],
+			}),
+		);
+
+		expect(targets.map(target => [target.id, target.userTurn])).toEqual([
+			["msg:1", 1],
+			["msg:2", 1],
+			["cmd:1", 1],
+			["msg:3", 2],
+			["msg:4", 2],
+		]);
+	});
+
+	it("does not split a user turn on agent-attributed synthetic input", () => {
+		const targets = buildCopyTargets(
+			source({
+				messages: [
+					userText("prompt"),
+					assistantText("opening"),
+					userText("hidden continuation", "agent"),
+					assistantText("final"),
+				] as unknown as AgentMessage[],
+			}),
+		);
+
+		expect(targets.map(target => target.userTurn)).toEqual([1, 1]);
 	});
 });

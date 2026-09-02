@@ -159,6 +159,47 @@ describe("SelectorController.showTreeSelector", () => {
 	});
 });
 
+describe("SelectorController.showCopySelector", () => {
+	it("opens the copy picker as a fullscreen top-left overlay and focuses it", () => {
+		const message = {
+			role: "assistant",
+			content: [{ type: "text", text: "Copy this response" }],
+		} as unknown as AgentMessage;
+		const overlayHandle = { hide: vi.fn() };
+		const showOverlay = vi.fn((_component: Component, _options: OverlayOptions) => overlayHandle);
+		const setFocus = vi.fn();
+		const requestRender = vi.fn();
+		const ctx = {
+			session: {
+				messages: [message],
+				getLastVisibleHandoffText: () => undefined,
+			},
+			ui: {
+				showOverlay,
+				setFocus,
+				requestRender,
+			},
+			showStatus: vi.fn(),
+		} as unknown as InteractiveModeContext;
+
+		new SelectorController(ctx).showCopySelector();
+
+		expect(showOverlay).toHaveBeenCalledTimes(1);
+		const overlayCall = showOverlay.mock.calls[0];
+		expect(overlayCall).toBeDefined();
+		const [selector, options] = overlayCall!;
+		expect(options).toEqual({
+			anchor: "top-left",
+			width: "100%",
+			maxHeight: "100%",
+			margin: 0,
+			fullscreen: true,
+		});
+		expect(setFocus).toHaveBeenCalledWith(selector);
+		expect(requestRender).toHaveBeenCalled();
+	});
+});
+
 describe("SelectorController session replacement overlay", () => {
 	it("keeps the fullscreen selector visible until the resumed transcript is ready", async () => {
 		const session: SessionInfo = {

@@ -32,6 +32,7 @@ function makeRoots(): CopyTarget[] {
 		{
 			id: "msg:1",
 			label: "Newest message",
+			userTurn: 1,
 			hint: "5 lines · 2 code",
 			preview: "newest-preview-text",
 			content: "FULL_MESSAGE",
@@ -60,6 +61,7 @@ function makeRoots(): CopyTarget[] {
 		{
 			id: "msg:2",
 			label: "Older message",
+			userTurn: 1,
 			hint: "3 lines",
 			preview: "older-text",
 			content: "OLDER",
@@ -102,6 +104,16 @@ describe("CopySelectorComponent", () => {
 		expect(out).toContain("Block 2");
 		expect(out).toContain("Older message");
 		expect(out).toMatch(/[├└]/);
+	});
+
+	it("wraps all outputs from one user turn in one divided frame", () => {
+		const out = render(new CopySelectorComponent(makeRoots(), { onPick: vi.fn(), onCancel: vi.fn() }));
+
+		expect(out).toMatch(/│ ╭─+╮ │/);
+		expect(out).toMatch(/│ ├─+┤ │/);
+		expect(out).toMatch(/│ ╰─+╯ │/);
+		expect(out.match(/│ ╭─+╮ │/g)).toHaveLength(1);
+		expect(out.match(/│ ╰─+╯ │/g)).toHaveLength(1);
 	});
 
 	it("renders human-readable keybinding hints in the footer", () => {
