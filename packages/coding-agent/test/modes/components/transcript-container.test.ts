@@ -718,4 +718,51 @@ describe("TranscriptContainer", () => {
 		expect(transcript.peekFinalizedBatch(80, 1)).toBeUndefined();
 		expect(transcript.renderViewport(80, 1)).toEqual(["T2"]);
 	});
+
+	it("preserves committed ownership across an equivalent transcript rebuild", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["settled history"], true));
+		const committed = transcript.peekFinalizedBatch(80, 0);
+		if (!committed) throw new Error("expected committed history batch");
+		transcript.acknowledgeFinalizedBatch(committed.id);
+
+		transcript.beginRetirementPreservingRebuild(80);
+		transcript.addChild(new Block(["settled history"], true));
+
+		expect(transcript.finishRetirementPreservingRebuild()).toBe(true);
+		expect(transcript.blockStates()).toEqual(["committed"]);
+		expect(transcript.renderViewport(80, 10)).toEqual([]);
+		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
+	});
+
+	it("preserves an active visual watermark when the rebuild reuses its component", () => {
+		const transcript = new TranscriptContainer();
+		const active = new ToolBlock(["T0", "T1", "T2"], false);
+		transcript.addChild(active);
+		const snapshot = transcript.peekFinalizedBatch(80, 2);
+		if (!snapshot) throw new Error("expected active visual snapshot");
+		transcript.acknowledgeFinalizedBatch(snapshot.id);
+
+		transcript.beginRetirementPreservingRebuild(80);
+		transcript.addChild(active);
+
+		expect(transcript.finishRetirementPreservingRebuild()).toBe(true);
+		expect(transcript.renderViewport(80, 2)).toEqual(["T1", "T2"]);
+		active.finalize(["T0", "T1", "T2"]);
+		expect(transcript.peekFinalizedBatch(80, 0)?.rows).toEqual(["T1", "T2", ""]);
+	});
+
+	it("rejects retirement preservation when rebuilt visible rows differ", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new Block(["old history"], true));
+		const committed = transcript.peekFinalizedBatch(80, 0);
+		if (!committed) throw new Error("expected committed history batch");
+		transcript.acknowledgeFinalizedBatch(committed.id);
+
+		transcript.beginRetirementPreservingRebuild(80);
+		transcript.addChild(new Block(["new history"], true));
+
+		expect(transcript.finishRetirementPreservingRebuild()).toBe(false);
+		expect(transcript.renderViewport(80, 10)).toEqual(["new history"]);
+	});
 });

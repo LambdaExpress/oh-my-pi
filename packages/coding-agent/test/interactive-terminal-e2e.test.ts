@@ -6,12 +6,13 @@ import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
 import { BashExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/bash-execution";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
 import { Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
+import type { CompactionSummaryMessage, CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -256,6 +257,148 @@ describe("libkitty end-to-end", () => {
 		expect(markerTape()).toEqual([...markers]);
 	});
 
+	it("keeps every line of an overflowing multiline tool call reachable", async () => {
+		term = new VirtualTerminal(100, 14);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		composer.setPreferences({ quiet: true });
+		composer.setHeaderExtras([], []);
+		const markers = Array.from({ length: 30 }, (_, index) => `MULTILINE_SCRIPT_${String(index).padStart(2, "0")}`);
+		const call = new ToolExecutionComponent(
+			"pwsh",
+			{ script: markers.map(marker => `Write-Output '${marker}'`).join("\n") },
+			{},
+			undefined,
+			mode.ui,
+			process.cwd(),
+		);
+		call.setArgsComplete();
+		call.setExecutionStarted();
+		mode.chatContainer.addChild(call);
+
+		for (let frame = 0; frame < 60; frame++) {
+			mode.ui.renderNow();
+			await term.flush();
+		}
+		const collapsedRows = plainRows(term.getScrollBuffer());
+		expect(collapsedRows.some(row => row.includes(markers[0]!))).toBe(false);
+		expect(collapsedRows.some(row => row.includes(markers.at(-1)!))).toBe(true);
+		expect(collapsedRows.some(row => row.includes("earlier lines") && row.includes("Ctrl+O"))).toBe(true);
+
+		term.sendInput("\x0f");
+		await term.waitForRender();
+		for (let frame = 0; frame < 60; frame++) {
+			mode.ui.renderNow();
+			await term.flush();
+		}
+		const rows = plainRows(term.getScrollBuffer());
+		for (const marker of markers) {
+			expect(
+				rows.filter(row => row.includes(marker)),
+				marker,
+			).toHaveLength(1);
+		}
+	});
+
+	it("does not append the committed transcript again when compaction adds a summary", async () => {
+		term = new VirtualTerminal(80, 12);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		session.settings.set("display.collapseCompacted", false);
+
+		const usage: Usage = {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const assistantMarkers = Array.from(
+			{ length: 24 },
+			(_, index) => `COMPACTION_ASSISTANT_${String(index).padStart(2, "0")}`,
+		);
+		const toolCommandMarker = "COMPACTION_TOOL_COMMAND";
+		const toolOutputMarker = "COMPACTION_TOOL_OUTPUT";
+		const user = { role: "user", content: "COMPACTION_USER", timestamp: 1 } as const;
+		const assistantMessage: AssistantMessage = {
+			role: "assistant",
+			content: [
+				{ type: "text", text: assistantMarkers.join("\n") },
+				{ type: "toolCall", id: "compaction-call", name: "bash", arguments: { command: toolCommandMarker } },
+			],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage,
+			stopReason: "toolUse",
+			timestamp: 2,
+		};
+		const toolResult: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "compaction-call",
+			toolName: "bash",
+			content: [{ type: "text", text: toolOutputMarker }],
+			isError: false,
+			timestamp: 3,
+		};
+		for (const message of [user, assistantMessage, toolResult]) session.sessionManager.appendMessage(message);
+
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		mode.rebuildChatFromMessages();
+		mode.ui.requestRender(true);
+		const committedRows = () => {
+			const { baseY } = term.getBufferPosition();
+			return plainRows(term.getScrollBuffer()).slice(0, baseY);
+		};
+		for (let frame = 0; frame < 40 && !committedRows().some(row => row.includes(assistantMarkers[0]!)); frame++) {
+			mode.ui.renderNow();
+			await term.flush();
+		}
+		expect(committedRows().some(row => row.includes(assistantMarkers[0]!))).toBe(true);
+
+		const summary: CompactionSummaryMessage = {
+			role: "compactionSummary",
+			summary: "Earlier work was compacted.",
+			method: "soft",
+			tokensBefore: 237_000,
+			tokensAfter: 86_000,
+			timestamp: 4,
+		};
+		const firstKeptEntryId = session.sessionManager.getLeafId();
+		if (!firstKeptEntryId) throw new Error("expected compaction anchor");
+		session.sessionManager.appendCompaction(summary.summary, undefined, firstKeptEntryId, summary.tokensBefore, {
+			method: "soft",
+			tokensAfter: summary.tokensAfter,
+		});
+		mode.rebuildChatFromMessages({ reuseSettledComponents: true });
+		mode.ui.requestRender();
+		for (let frame = 0; frame < 40; frame++) {
+			mode.ui.renderNow();
+			await term.flush();
+		}
+
+		const rows = plainRows(term.getScrollBuffer());
+		for (const marker of ["COMPACTION_USER", ...assistantMarkers]) {
+			expect(
+				rows.filter(row => row.trim() === marker),
+				marker,
+			).toHaveLength(1);
+		}
+		for (const marker of [toolCommandMarker, toolOutputMarker]) {
+			expect(
+				rows.filter(row => row.includes(marker)),
+				marker,
+			).toHaveLength(1);
+		}
+		expect(rows.filter(row => row.includes("locally-compacted"))).toHaveLength(1);
+	});
+
 	it("keeps a completed tool fully expanded across the next-user boundary", async () => {
 		const width = 120;
 		term = new VirtualTerminal(width, 12);
@@ -397,6 +540,90 @@ describe("libkitty end-to-end", () => {
 		const finalRows = plainRows(term.getScrollBuffer());
 		for (const marker of markers) {
 			expect(finalRows.filter(row => row.includes(marker))).toHaveLength(1);
+		}
+	});
+
+	it("keeps post-tool streaming text complete before message end", async () => {
+		const width = 80;
+		term = new VirtualTerminal(width, 12);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		composer.setPreferences({ quiet: true });
+		composer.setHeaderExtras([], []);
+		const usage: Usage = {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const message = (content: AssistantMessage["content"]): AssistantMessage => ({
+			role: "assistant",
+			content,
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage,
+			stopReason: "toolUse",
+			timestamp: 1,
+		});
+		const firstCall = {
+			type: "toolCall" as const,
+			id: "stream-tool-1",
+			name: "bash",
+			arguments: { command: "true" },
+		};
+		const secondCall = {
+			type: "toolCall" as const,
+			id: "stream-tool-2",
+			name: "bash",
+			arguments: { command: "true" },
+		};
+		const progress = { type: "text" as const, text: "INTERMEDIATE_PROGRESS" };
+		const markers = Array.from({ length: 24 }, (_, index) => `POST_TOOL_STREAM_${String(index).padStart(2, "0")}`);
+		const tail = { type: "text" as const, text: markers.map(marker => `- ${marker}`).join("\n") };
+		const firstSnapshot = message([firstCall, progress]);
+		const secondSnapshot = message([firstCall, progress, secondCall, tail]);
+
+		await mode.eventController.handleEvent({ type: "message_start", message: message([]) });
+		await mode.eventController.handleEvent({
+			type: "message_update",
+			message: firstSnapshot,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: progress.text, partial: firstSnapshot },
+		});
+		await mode.eventController.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: firstCall.id,
+			toolName: firstCall.name,
+			result: { content: [{ type: "text", text: "first done" }], details: {} },
+			isError: false,
+		});
+		await mode.eventController.handleEvent({
+			type: "message_update",
+			message: secondSnapshot,
+			assistantMessageEvent: { type: "text_delta", contentIndex: 3, delta: tail.text, partial: secondSnapshot },
+		});
+		await mode.eventController.handleEvent({
+			type: "tool_execution_end",
+			toolCallId: secondCall.id,
+			toolName: secondCall.name,
+			result: { content: [{ type: "text", text: "second done" }], details: {} },
+			isError: false,
+		});
+		for (let frame = 0; frame < 20; frame++) mode.ui.renderNow();
+		await term.flush();
+
+		const rows = plainRows(term.getScrollBuffer());
+		for (const marker of markers) {
+			expect(
+				rows.filter(row => row.includes(marker)),
+				marker,
+			).toHaveLength(1);
 		}
 	});
 

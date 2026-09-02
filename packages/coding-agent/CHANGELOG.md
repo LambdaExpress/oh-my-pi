@@ -71,6 +71,7 @@
 
 ### Fixed
 
+- Fixed native-scrollback transcript rebuilds duplicating history after compaction and multi-tool replies clipping streamed text until message completion.
 - Fixed completed mid-stream Bash and Python shortcuts remaining pinned above the editor instead of joining the transcript before subsequent assistant output.
 - Fixed LSP startup and status on Windows by selecting executable package binaries, rejecting stale cached paths, and resolving concrete files from their nearest project root across sibling repositories and worktrees.
 - Fixed long-running MCP tool calls timing out after 30 seconds and added one reconnect retry when a server returns a transient connection failure such as `fetch failed`.
