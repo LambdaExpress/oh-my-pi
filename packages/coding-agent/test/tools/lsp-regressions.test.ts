@@ -2921,12 +2921,77 @@ describe("lsp regressions", () => {
 			await Bun.write(path.join(tempDir.path(), "package.json"), "{}");
 			const binDir = path.join(tempDir.path(), "node_modules", ".bin");
 			await fs.promises.mkdir(binDir, { recursive: true });
+			// Bun can leave an extensionless package-bin entry beside the executable.
+			// Direct process spawn must choose the executable just as PATHEXT lookup does.
+			await Bun.write(path.join(binDir, "typescript-language-server"), "#!/usr/bin/env node\n");
 			const localTsServer = path.join(binDir, "typescript-language-server.exe");
 			await Bun.write(localTsServer, "");
 
 			const config = loadConfig(tempDir.path());
 			expect(config.servers["typescript-language-server"]?.resolvedCommand).toBe(localTsServer);
 			expect(whichSpy).not.toHaveBeenCalledWith("typescript-language-server");
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("does not publish a cached LSP executable that no longer exists", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-stale-command-");
+		const staleCommand = path.join(tempDir.path(), "deleted", "basedpyright-langserver.exe");
+		vi.spyOn(piUtils, "$which").mockReturnValue(staleCommand);
+		try {
+			await Bun.write(path.join(tempDir.path(), "pyrightconfig.json"), "{}");
+			await Bun.write(
+				path.join(tempDir.path(), ".lsp.json"),
+				JSON.stringify({ servers: { basedpyright: { command: staleCommand } } }),
+			);
+
+			const config = loadConfig(tempDir.path());
+			expect(config.servers.basedpyright).toBeUndefined();
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
+	it("bypasses the broken Windows tsgo package-bin shim for the native executable", async () => {
+		if (process.platform !== "win32") return;
+
+		const tempDir = TempDir.createSync("@omp-lsp-win32-tsgo-native-");
+		const whichSpy = vi.spyOn(Bun, "which").mockReturnValue(null);
+		try {
+			await Bun.write(path.join(tempDir.path(), "package.json"), "{}");
+			const binDir = path.join(tempDir.path(), "node_modules", ".bin");
+			await fs.promises.mkdir(binDir, { recursive: true });
+			await Bun.write(path.join(binDir, "tsgo"), "#!/usr/bin/env node\n");
+			await Bun.write(path.join(binDir, "tsgo.exe"), "broken package shim");
+			const nativeTsgo = path.join(
+				tempDir.path(),
+				"node_modules",
+				"@typescript",
+				`native-preview-${process.platform}-${process.arch}`,
+				"lib",
+				"tsgo.exe",
+			);
+			await Bun.write(nativeTsgo, "native executable");
+			await Bun.write(
+				path.join(tempDir.path(), ".lsp.json"),
+				JSON.stringify({
+					servers: {
+						tsgo: {
+							command: "tsgo",
+							args: ["--lsp", "--stdio"],
+							fileTypes: [".ts"],
+							rootMarkers: ["package.json"],
+						},
+					},
+				}),
+			);
+
+			const config = loadConfig(tempDir.path());
+			expect(config.servers.tsgo?.resolvedCommand).toBe(nativeTsgo);
+			expect(whichSpy).not.toHaveBeenCalledWith("tsgo");
 		} finally {
 			vi.restoreAllMocks();
 			tempDir.removeSync();
@@ -3026,12 +3091,15 @@ describe("lsp regressions", () => {
 		await Bun.write(specPath, "---- MODULE Spec ----\n====\n");
 
 		const resolvedTlapmLsp = path.join(tempDir.path(), "bin", "tlapm_lsp");
+		await Bun.write(resolvedTlapmLsp, "");
 		const whichSpy = vi
 			.spyOn(piUtils, "$which")
 			.mockImplementation(command => (command === "tlapm_lsp" ? resolvedTlapmLsp : null));
 		const existsSpy = vi
 			.spyOn(fs, "existsSync")
-			.mockImplementation(candidate => typeof candidate === "string" && candidate === specPath);
+			.mockImplementation(
+				candidate => typeof candidate === "string" && (candidate === specPath || candidate === resolvedTlapmLsp),
+			);
 
 		try {
 			const config = loadConfig(tempDir.path());
@@ -3118,6 +3186,7 @@ describe("lsp regressions", () => {
 		);
 
 		const resolvedCsharpLs = path.join(tempDir.path(), "bin", "csharp-ls");
+		await Bun.write(resolvedCsharpLs, "");
 		const whichSpy = vi
 			.spyOn(piUtils, "$which")
 			.mockImplementation(command => (command === "csharp-ls" ? resolvedCsharpLs : null));
@@ -6167,6 +6236,7 @@ describe("ty python lsp", () => {
 	it("auto-detects ty when its binary and Python root markers are present", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-ty-detect-");
 		const resolvedTy = path.join(tempDir.path(), "bin", "ty");
+		await Bun.write(resolvedTy, "");
 		const whichSpy = vi
 			.spyOn(piUtils, "$which")
 			.mockImplementation(command => (command === "ty" ? resolvedTy : null));
@@ -6186,6 +6256,7 @@ describe("ty python lsp", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-ty-ruff-");
 		const resolvedTy = path.join(tempDir.path(), "bin", "ty");
 		const resolvedRuff = path.join(tempDir.path(), "bin", "ruff");
+		await Promise.all([Bun.write(resolvedTy, ""), Bun.write(resolvedRuff, "")]);
 		vi.spyOn(piUtils, "$which").mockImplementation(command =>
 			command === "ty" ? resolvedTy : command === "ruff" ? resolvedRuff : null,
 		);

@@ -1238,20 +1238,6 @@ export class UiHelpers {
 		}
 	}
 
-	/** Move pending bash components from pending area to chat */
-	flushPendingBashComponents(): void {
-		for (const component of this.ctx.pendingBashComponents) {
-			this.ctx.pendingMessagesContainer.removeChild(component);
-			this.ctx.chatContainer.addChild(component);
-		}
-		this.ctx.pendingBashComponents = [];
-		for (const component of this.ctx.pendingPythonComponents) {
-			this.ctx.pendingMessagesContainer.removeChild(component);
-			this.ctx.chatContainer.addChild(component);
-		}
-		this.ctx.pendingPythonComponents = [];
-	}
-
 	findLastAssistantMessage(): AssistantMessage | undefined {
 		for (let i = this.ctx.viewSession.messages.length - 1; i >= 0; i--) {
 			const message = this.ctx.viewSession.messages[i];

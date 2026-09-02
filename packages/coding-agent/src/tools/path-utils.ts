@@ -917,11 +917,11 @@ async function tryDelimitedPathSplit(
  * Split a semicolon-joined list of internal URLs (`ssh://h/a;ssh://h/b`) into
  * its entries, or return `null` when the entry is not such a list.
  *
- * A `;` is a split point only when the next non-space text starts a
- * `scheme://` prefix, and every resulting segment must itself be a valid
- * internal URL. A literal `;` inside an ssh:// path (a legal POSIX filename)
- * is therefore never a split point — `ssh://h/a;b` stays a single remote
- * path — while `ssh://h/a;ssh://h/b` fans out into two entries.
+ * A `;` is a split point only when the next non-space text starts another
+ * `scheme://` prefix or an absolute Windows path. A literal `;` inside an
+ * ssh:// path (a legal POSIX filename) is therefore never a split point —
+ * `ssh://h/a;b` stays a single remote path — while both
+ * `ssh://h/a;ssh://h/b` and `skill://docs;C:\\repo\\README.md` fan out.
  */
 function splitInternalUrlDelimitedList(entry: string): string[] | null {
 	const parts: string[] = [];
@@ -942,14 +942,21 @@ function splitInternalUrlDelimitedList(entry: string): string[] | null {
 			continue;
 		}
 		if (braceDepth !== 0 || ch !== ";") continue;
-		if (!INTERNAL_URL_SCHEME_RE.test(entry.slice(i + 1).trimStart())) continue;
+		const remainder = entry.slice(i + 1).trimStart();
+		if (!INTERNAL_URL_SCHEME_RE.test(remainder) && !path.win32.isAbsolute(remainder)) continue;
 		parts.push(entry.slice(start, i));
 		start = i + 1;
 	}
 	parts.push(entry.slice(start));
 	if (parts.length < 2) return null;
 	const segments = parts.map(normalizePathLikeInput).filter(part => part.length > 0);
-	if (segments.length < 2 || !segments.every(isInternalUrlPath)) return null;
+	if (
+		segments.length < 2 ||
+		!isInternalUrlPath(segments[0]) ||
+		!segments.slice(1).every(segment => isInternalUrlPath(segment) || path.win32.isAbsolute(segment))
+	) {
+		return null;
+	}
 	return segments;
 }
 

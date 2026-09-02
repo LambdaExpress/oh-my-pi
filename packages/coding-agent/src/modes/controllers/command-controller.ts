@@ -1275,42 +1275,34 @@ export class CommandController {
 			return;
 		}
 
-		this.ctx.bashComponent = new BashExecutionComponent(command, this.ctx.ui, excludeFromContext);
+		const component = new BashExecutionComponent(command, this.ctx.ui, excludeFromContext);
+		this.ctx.bashComponent = component;
 
 		if (isDeferred) {
-			this.ctx.pendingMessagesContainer.addChild(this.ctx.bashComponent);
-			this.ctx.pendingBashComponents.push(this.ctx.bashComponent);
+			this.ctx.pendingMessagesContainer.addChild(component);
+			this.ctx.pendingBashComponents.push(component);
 		} else {
-			this.ctx.present(this.ctx.bashComponent);
+			this.ctx.present(component);
 		}
 		this.ctx.ui.requestRender();
 
 		try {
-			const result = await this.ctx.session.executeBash(
-				command,
-				chunk => {
-					if (this.ctx.bashComponent) {
-						this.ctx.bashComponent.appendOutput(chunk);
-					}
+			const result = await this.ctx.session.executeBash(command, chunk => component.appendOutput(chunk), {
+				excludeFromContext,
+				useUserShell: true,
+				// User-shell zsh/fish `!` commands run on a headless PTY; raw
+				// bytes render through the component's vterm replay (color-safe).
+				pty: {
+					...bashPtyViewport(this.ctx.ui),
+					onChunk: chunk => component.appendPtyChunk(chunk),
 				},
-				{
-					excludeFromContext,
-					useUserShell: true,
-					// User-shell zsh/fish `!` commands run on a headless PTY; raw
-					// bytes render through the component's vterm replay (color-safe).
-					pty: {
-						...bashPtyViewport(this.ctx.ui),
-						onChunk: chunk => this.ctx.bashComponent?.appendPtyChunk(chunk),
-					},
-				},
-			);
-			if (this.ctx.bashComponent) {
-				const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
-				this.ctx.bashComponent.setComplete(result.exitCode, result.cancelled, {
-					output: result.output,
-					truncation: meta?.truncation,
-				});
-			}
+			});
+			const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
+			component.setComplete(result.exitCode, result.cancelled, {
+				output: result.output,
+				truncation: meta?.truncation,
+			});
+			this.ctx.completePendingLocalExecution(component);
 			try {
 				if (shouldPersistCwd) await this.#applyBashResultCwd(result);
 			} catch (error) {
@@ -1321,9 +1313,8 @@ export class CommandController {
 				);
 			}
 		} catch (error) {
-			if (this.ctx.bashComponent) {
-				this.ctx.bashComponent.setComplete(undefined, false);
-			}
+			component.setComplete(undefined, false);
+			this.ctx.completePendingLocalExecution(component);
 			this.ctx.showError(
 				t("Bash command failed: {error}", {
 					error: error instanceof Error ? error.message : t("Unknown error"),
@@ -1331,7 +1322,7 @@ export class CommandController {
 			);
 		}
 
-		this.ctx.bashComponent = undefined;
+		if (this.ctx.bashComponent === component) this.ctx.bashComponent = undefined;
 		this.ctx.ui.requestRender();
 	}
 
@@ -1374,38 +1365,31 @@ export class CommandController {
 
 	async handlePythonCommand(code: string, excludeFromContext = false): Promise<void> {
 		const isDeferred = this.ctx.session.isStreaming;
-		this.ctx.pythonComponent = new EvalExecutionComponent(code, this.ctx.ui, excludeFromContext);
+		const component = new EvalExecutionComponent(code, this.ctx.ui, excludeFromContext);
+		this.ctx.pythonComponent = component;
 
 		if (isDeferred) {
-			this.ctx.pendingMessagesContainer.addChild(this.ctx.pythonComponent);
-			this.ctx.pendingPythonComponents.push(this.ctx.pythonComponent);
+			this.ctx.pendingMessagesContainer.addChild(component);
+			this.ctx.pendingPythonComponents.push(component);
 		} else {
-			this.ctx.present(this.ctx.pythonComponent);
+			this.ctx.present(component);
 		}
 		this.ctx.ui.requestRender();
 
 		try {
-			const result = await this.ctx.session.executePython(
-				code,
-				chunk => {
-					if (this.ctx.pythonComponent) {
-						this.ctx.pythonComponent.appendOutput(chunk);
-					}
-				},
-				{ excludeFromContext },
-			);
+			const result = await this.ctx.session.executePython(code, chunk => component.appendOutput(chunk), {
+				excludeFromContext,
+			});
 
-			if (this.ctx.pythonComponent) {
-				const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
-				this.ctx.pythonComponent.setComplete(result.exitCode, result.cancelled, {
-					output: result.output,
-					truncation: meta?.truncation,
-				});
-			}
+			const meta = outputMeta().truncationFromSummary(result, { direction: "tail" }).get();
+			component.setComplete(result.exitCode, result.cancelled, {
+				output: result.output,
+				truncation: meta?.truncation,
+			});
+			this.ctx.completePendingLocalExecution(component);
 		} catch (error) {
-			if (this.ctx.pythonComponent) {
-				this.ctx.pythonComponent.setComplete(undefined, false);
-			}
+			component.setComplete(undefined, false);
+			this.ctx.completePendingLocalExecution(component);
 			this.ctx.showError(
 				t("Python execution failed: {error}", {
 					error: error instanceof Error ? error.message : t("Unknown error"),
@@ -1413,7 +1397,7 @@ export class CommandController {
 			);
 		}
 
-		this.ctx.pythonComponent = undefined;
+		if (this.ctx.pythonComponent === component) this.ctx.pythonComponent = undefined;
 		this.ctx.ui.requestRender();
 	}
 

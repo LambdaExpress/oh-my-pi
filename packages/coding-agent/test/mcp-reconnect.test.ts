@@ -224,6 +224,62 @@ describe("MCPTool.execute retry on connection error", () => {
 		expect(result.content[0]).toEqual({ type: "text", text: "ok" });
 	});
 
+	it("retries when an MCP error result reports a connection failure", async () => {
+		let oldCalls = 0;
+		let newCalls = 0;
+		const oldTransport = mockTransport(async () => {
+			oldCalls++;
+			return toolCallResult("fetch failed", true);
+		});
+		const newTransport = mockTransport(async () => {
+			newCalls++;
+			return toolCallResult("downloaded");
+		});
+		const newConn = makeConnection(newTransport, "test-server-result-retry");
+		const tool = new MCPTool(
+			makeConnection(oldTransport),
+			{ ...TOOL_DEF, annotations: { readOnlyHint: true } },
+			async () => newConn,
+		);
+
+		const result = await tool.execute("call-result-retry", {}, noop, noCtx);
+
+		expect(oldCalls).toBe(1);
+		expect(newCalls).toBe(1);
+		expect(result.details?.isError).toBeFalsy();
+		expect(result.content[0]).toEqual({ type: "text", text: "downloaded" });
+	});
+
+	it("does not replay an unannotated mutating tool after an MCP error result", async () => {
+		const oldTransport = mockTransport(async () => toolCallResult("fetch failed", true));
+		const reconnect = vi.fn(async () =>
+			makeConnection(mockTransport(async () => toolCallResult("unexpected retry"))),
+		);
+		const tool = new MCPTool(makeConnection(oldTransport), TOOL_DEF, reconnect);
+
+		const result = await tool.execute("call-result-no-retry", {}, noop, noCtx);
+
+		expect(reconnect).not.toHaveBeenCalled();
+		expect(result.details?.isError).toBe(true);
+		expect(result.content[0]).toEqual({ type: "text", text: "Error: fetch failed" });
+	});
+
+	it("retries Jira attachment downloads without server annotations", async () => {
+		const oldTransport = mockTransport(async () => toolCallResult("fetch failed", true));
+		const newTransport = mockTransport(async () => toolCallResult("downloaded"));
+		const reconnect = vi.fn(async () => makeConnection(newTransport));
+		const tool = new MCPTool(
+			makeConnection(oldTransport),
+			{ ...TOOL_DEF, name: "downloadJiraAttachment" },
+			reconnect,
+		);
+
+		const result = await tool.execute("jira-download-retry", {}, noop, noCtx);
+
+		expect(reconnect).toHaveBeenCalledTimes(1);
+		expect(result.content[0]).toEqual({ type: "text", text: "downloaded" });
+	});
+
 	it("reuses refreshed connection on later call", async () => {
 		let oldCalls = 0;
 		let newCalls = 0;

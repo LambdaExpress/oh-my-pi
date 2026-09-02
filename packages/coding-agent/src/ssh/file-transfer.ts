@@ -963,6 +963,7 @@ mkdir -p -- "$parent" || exit 1
 umask 077
 ( set -C; : > "$stage" ) || exit 1
 (
+	trap - HUP INT TERM
 	while :; do
 		size=$(wc -c < "$stage" 2>/dev/null) || size=0
 		printf '${SSH_TRANSFER_PROGRESS_MARKER}%s\\n' "$size"

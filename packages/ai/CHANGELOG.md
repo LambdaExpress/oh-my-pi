@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Preserved numeric, string, and array validation refinements when JSON Schema is rendered as TypeScript tool documentation.
 - Fixed Qwen XML tool-call healing emitting a redundant incremental start immediately before an atomic completed call, preserving the one-shot event order for self-closing Qwen tool elements.
 - Fixed OpenCode Go `deepseek-v4-flash-vision-exp` image prompts being replaced with the non-vision placeholder before the request reached the model.
 - Classified `stream_interrupted: Upstream stream interrupted after output began` as a transient transport failure while keeping authenticated rejections non-retryable, allowing replay-safe interrupted turns to use the existing automatic retry path.

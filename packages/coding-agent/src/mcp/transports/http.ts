@@ -19,7 +19,13 @@ import type {
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
 import { RequestIdAllocator } from "../request-id";
-import { createMCPTimeout, getNeverAbortSignal, isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
+import {
+	createMCPTimeout,
+	getNeverAbortSignal,
+	isMCPTimeoutEnabled,
+	resolveMCPRequestTimeoutMs,
+	resolveMCPTimeoutMs,
+} from "../timeout";
 import { type MCPFetchInit, mcpFetch, withoutHeader } from "./header-policy";
 
 const HTTP_SSE_CONNECT_TIMEOUT_MS = 1_000;
@@ -436,7 +442,7 @@ export class HttpTransport implements MCPTransport {
 			generated["Mcp-Session-Id"] = this.#sessionId;
 		}
 
-		const timeout = resolveMCPTimeoutMs(this.config.timeout);
+		const timeout = resolveMCPRequestTimeoutMs(method, this.config.timeout);
 		const operation = createMCPTimeout(timeout, this.#operationSignal(options?.signal));
 
 		try {
@@ -469,7 +475,7 @@ export class HttpTransport implements MCPTransport {
 
 			// Handle SSE response
 			if (contentType.includes("text/event-stream")) {
-				return this.#parseSSEResponse<T>(response, id, options);
+				return this.#parseSSEResponse<T>(response, id, timeout, options);
 			}
 
 			// Handle JSON response
@@ -490,12 +496,16 @@ export class HttpTransport implements MCPTransport {
 		}
 	}
 
-	#parseSSEResponse<T>(response: Response, expectedId: string | number, options?: MCPRequestOptions): Promise<T> {
+	#parseSSEResponse<T>(
+		response: Response,
+		expectedId: string | number,
+		timeout: number,
+		options?: MCPRequestOptions,
+	): Promise<T> {
 		if (!response.body) {
 			throw new Error("No response body");
 		}
 
-		const timeout = resolveMCPTimeoutMs(this.config.timeout);
 		const operation = createMCPTimeout(timeout, this.#operationSignal(options?.signal));
 		const signal = operation.signal ?? getNeverAbortSignal();
 

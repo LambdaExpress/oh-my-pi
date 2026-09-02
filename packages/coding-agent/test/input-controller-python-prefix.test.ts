@@ -61,7 +61,6 @@ function createContext() {
 		onInputCallback,
 		startPendingSubmission,
 		updatePendingMessagesDisplay: vi.fn(),
-		flushPendingBashComponents: vi.fn(),
 		updateEditorBorderColor: vi.fn(),
 		showError: vi.fn(),
 		showWarning: vi.fn(),

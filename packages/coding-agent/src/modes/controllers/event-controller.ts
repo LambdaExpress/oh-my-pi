@@ -61,6 +61,7 @@ import { StreamingRevealController } from "./streaming-reveal";
 import { streamingStringKeysForTool, ToolArgsRevealController } from "./tool-args-reveal";
 
 type AgentSessionEventKind = AgentSessionEvent["type"];
+type AssistantContent = AssistantMessage["content"];
 
 const IRC_MESSAGE_VISIBLE_TTL_MS = 10_000;
 /**
@@ -91,6 +92,103 @@ function exposesRawPartialJson(toolName: string, rawInput: boolean, tool: unknow
 	if (RAW_PARTIAL_JSON_RENDERERS[toolName]) return true;
 	if (tool === null || typeof tool !== "object" || !("renderCall" in tool)) return false;
 	return typeof tool.renderCall === "function";
+}
+
+/** Return only assistant content appended after a cumulative streaming snapshot. */
+function assistantContentAfterPrefix(
+	message: AssistantMessage,
+	prefix: AssistantContent | undefined,
+): AssistantMessage {
+	if (!prefix || prefix.length === 0) return message;
+	const content: AssistantContent = [];
+	for (let index = 0; index < message.content.length; index++) {
+		const current = message.content[index]!;
+		const previous = prefix[index];
+		if (!previous) {
+			content.push(current);
+			continue;
+		}
+		if (current.type !== previous.type) {
+			content.push(current);
+			continue;
+		}
+		if (current.type === "text" && previous.type === "text") {
+			if (!current.text.startsWith(previous.text)) {
+				content.push(current);
+				continue;
+			}
+			const text = current.text.slice(previous.text.length);
+			if (text) content.push({ ...current, text });
+			continue;
+		}
+		if (current.type === "thinking" && previous.type === "thinking") {
+			if (!current.thinking.startsWith(previous.thinking)) {
+				content.push(current);
+				continue;
+			}
+			const thinking = current.thinking.slice(previous.thinking.length);
+			if (thinking) content.push({ ...current, thinking });
+			continue;
+		}
+		if (current.type === "toolCall" && previous.type === "toolCall" && current.id === previous.id) {
+			// The existing tool card continues to consume cumulative argument updates.
+			continue;
+		}
+		if (
+			current.type === "image" &&
+			previous.type === "image" &&
+			current.data === previous.data &&
+			current.mimeType === previous.mimeType
+		) {
+			continue;
+		}
+		content.push(current);
+	}
+	return { ...message, content };
+}
+
+/** Snapshot mutable streaming blocks without copying image data or tool arguments. */
+function snapshotAssistantContent(content: AssistantContent): AssistantContent {
+	return content.map(block => ({ ...block }));
+}
+
+/**
+ * Seal only complete text at a local-execution boundary. The provider can be
+ * between tokens when the command finishes; moving that partial token into a
+ * separate component would render it as two lines around the execution block.
+ */
+function assistantDisplayPrefixAtBoundary(
+	message: AssistantMessage,
+	previousPrefix: AssistantContent | undefined,
+): AssistantContent {
+	const prefix = snapshotAssistantContent(message.content);
+	const index = prefix.length - 1;
+	if (index < 0) return prefix;
+	const block = prefix[index]!;
+	const previous = previousPrefix?.[index];
+	const text = block.type === "text" ? block.text : block.type === "thinking" ? block.thinking : undefined;
+	if (text === undefined) return prefix;
+	const previousLength =
+		block.type === "text" && previous?.type === "text"
+			? previous.text.length
+			: block.type === "thinking" && previous?.type === "thinking"
+				? previous.thinking.length
+				: 0;
+	let boundary = text.lastIndexOf("\n");
+	if (boundary >= previousLength) {
+		boundary += 1;
+	} else {
+		boundary = previousLength;
+		for (let offset = text.length - 1; offset >= previousLength; offset--) {
+			if (/\s/u.test(text[offset]!)) {
+				boundary = offset + 1;
+				break;
+			}
+		}
+	}
+	if (block.type === "text") prefix[index] = { ...block, text: text.slice(0, boundary) };
+	else if (block.type === "thinking") prefix[index] = { ...block, thinking: text.slice(0, boundary) };
+	return prefix;
 }
 function readPersistedJobIds(details: unknown): string[] {
 	if (details === null || typeof details !== "object" || !("jobs" in details) || !Array.isArray(details.jobs)) {
@@ -176,6 +274,8 @@ export class EventController {
 	// emits one read per completion — does not break it, so a run of consecutive
 	// reads collapses into one group even across completion boundaries.
 	#lastVisibleBlockCount = 0;
+	/** Cumulative assistant content already sealed above a completed local execution. */
+	#assistantDisplayPrefix: AssistantContent | undefined;
 	#renderedCustomMessages = new Set<string>();
 	#lastIntent: string | undefined = undefined;
 	#backgroundToolCallIds = new Set<string>();
@@ -429,6 +529,62 @@ export class EventController {
 			},
 			goal_updated: async () => {},
 		} satisfies AgentSessionEventHandlers;
+	}
+
+	/**
+	 * Move one completed local execution out of the anchored HUD. If an assistant
+	 * message is already streaming, seal its current prefix and continue future
+	 * cumulative deltas in a fresh component below the execution block.
+	 */
+	completePendingLocalExecution(component: Component): void {
+		const bashComponents: readonly Component[] = this.ctx.pendingBashComponents;
+		const pythonComponents: readonly Component[] = this.ctx.pendingPythonComponents;
+		const bashIndex = bashComponents.indexOf(component);
+		const pythonIndex = pythonComponents.indexOf(component);
+		if (bashIndex < 0 && pythonIndex < 0) return;
+
+		this.ctx.pendingMessagesContainer.removeChild(component);
+		if (bashIndex >= 0) this.ctx.pendingBashComponents.splice(bashIndex, 1);
+		if (pythonIndex >= 0) this.ctx.pendingPythonComponents.splice(pythonIndex, 1);
+
+		const streamingComponent = this.ctx.streamingComponent;
+		const streamingMessage = this.ctx.streamingMessage;
+		if (!streamingComponent || !streamingMessage) {
+			this.ctx.chatContainer.addChild(component);
+			this.ctx.ui.requestRender();
+			return;
+		}
+
+		this.#streamingReveal.stop();
+		const boundaryPrefix = assistantDisplayPrefixAtBoundary(streamingMessage, this.#assistantDisplayPrefix);
+		const currentDisplay = assistantContentAfterPrefix(
+			{ ...streamingMessage, content: boundaryPrefix },
+			this.#assistantDisplayPrefix,
+		);
+		const currentTimeline = splitAssistantMessageToolTimeline(currentDisplay);
+		streamingComponent.updateContent(currentTimeline.beforeTools);
+		if (
+			!assistantHasVisibleContent(currentTimeline.beforeTools) &&
+			this.ctx.chatContainer.canRemoveBlock(streamingComponent)
+		) {
+			this.ctx.chatContainer.removeChild(streamingComponent);
+		} else {
+			streamingComponent.markTranscriptBlockFinalized();
+		}
+		for (const [toolCallId, segment] of currentTimeline.afterToolCalls) {
+			this.#upsertPostToolAssistantSegment(toolCallId, segment)?.markTranscriptBlockFinalized();
+		}
+
+		this.ctx.chatContainer.addChild(component);
+		this.#assistantDisplayPrefix = boundaryPrefix;
+		const continuation = createAssistantMessageComponent(this.ctx);
+		this.ctx.streamingComponent = continuation;
+		this.ctx.chatContainer.addChild(continuation);
+		this.#streamingReveal.begin(
+			continuation,
+			assistantContentAfterPrefix(streamingMessage, this.#assistantDisplayPrefix),
+		);
+		this.ctx.ui.requestRender();
 	}
 
 	dispose(): void {
@@ -1230,6 +1386,7 @@ export class EventController {
 				abandoned.markTranscriptBlockFinalized();
 			}
 			this.#lastVisibleBlockCount = 0;
+			this.#assistantDisplayPrefix = undefined;
 			this.#streamedToolCallIdByIndex.clear();
 			this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
 			this.ctx.streamingMessage = event.message;
@@ -1422,7 +1579,8 @@ export class EventController {
 				this.#streamingReveal.resyncVisibility();
 			}
 			this.ctx.streamingMessage = event.message;
-			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
+			const displayMessage = assistantContentAfterPrefix(this.ctx.streamingMessage, this.#assistantDisplayPrefix);
+			const timeline = splitAssistantMessageToolTimeline(displayMessage);
 			this.#streamingReveal.setTarget(timeline.beforeTools);
 
 			const visibleBlockCount = this.ctx.streamingMessage.content.filter(
@@ -1444,7 +1602,7 @@ export class EventController {
 			// stream (a big write/edit/eval) sits below a still-live block and
 			// can never reach native scrollback: the head of the preview is
 			// neither committed nor on screen and the transcript reads as cut.
-			if (this.ctx.streamingMessage.content.some(content => content.type === "toolCall")) {
+			if (displayMessage.content.some(content => content.type === "toolCall")) {
 				this.ctx.streamingComponent.markTranscriptBlockFinalized();
 			}
 			for (let contentIndex = 0; contentIndex < this.ctx.streamingMessage.content.length; contentIndex++) {
@@ -1615,7 +1773,7 @@ export class EventController {
 				errorMessage = resolveAbortLabel(this.ctx.streamingMessage, this.ctx.viewSession.retryAttempt);
 				this.ctx.streamingMessage.errorMessage = errorMessage;
 			}
-			const displayMessage: AssistantMessage = silentlyAborted
+			const completeDisplayMessage: AssistantMessage = silentlyAborted
 				? {
 						// Silence the streaming render by downgrading stopReason to "stop" for
 						// display only — does NOT mutate the persisted message's stopReason
@@ -1624,6 +1782,7 @@ export class EventController {
 						stopReason: "stop",
 					}
 				: this.ctx.streamingMessage;
+			const displayMessage = assistantContentAfterPrefix(completeDisplayMessage, this.#assistantDisplayPrefix);
 			const displayTimeline = splitAssistantMessageToolTimeline(displayMessage);
 			this.ctx.streamingComponent.updateContent(displayTimeline.beforeTools);
 
@@ -1715,11 +1874,12 @@ export class EventController {
 					);
 				}
 			}
-			if (displayMessage === event.message) {
+			if (completeDisplayMessage === event.message) {
 				this.ctx.transcriptMessageComponents.set(event.message, this.ctx.streamingComponent);
 			}
 			this.ctx.streamingComponent = undefined;
 			this.ctx.streamingMessage = undefined;
+			this.#assistantDisplayPrefix = undefined;
 			// Pin a turn-ending provider error above the editor so it survives
 			// transcript scroll and suppress its duplicate inline row. Empty-output
 			// errors are known intermediate attempts: hide them entirely while

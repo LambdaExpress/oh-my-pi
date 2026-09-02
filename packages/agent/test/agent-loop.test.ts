@@ -1655,7 +1655,7 @@ describe("agentLoop with AgentMessage", () => {
 		).toBe(true);
 	});
 
-	it("should skip remaining tool calls with system advisory wording when advisor steering is queued", async () => {
+	it("should force advisor steering through wait mode without changing user steering policy", async () => {
 		const toolSchema = type({ value: "string" });
 		const executed: string[] = [];
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
@@ -1700,12 +1700,12 @@ describe("agentLoop with AgentMessage", () => {
 		const config: AgentLoopConfig = {
 			model: mock.model,
 			convertToLlm: identityConverter,
-			interruptMode: "immediate",
+			interruptMode: "wait",
 			hasSteeringMessages: () => {
 				if (executed.length < 1 || advisorDelivered) {
 					return { queued: false };
 				}
-				return { queued: true, source: "system" };
+				return { queued: true, source: "system", interruptImmediately: true };
 			},
 			getSteeringMessages: async () => {
 				if (executed.length >= 1 && !advisorDelivered) {

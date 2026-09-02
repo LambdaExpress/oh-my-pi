@@ -4,9 +4,8 @@
  * This is a *display* conversion, not a faithful TS codegen: it surfaces the
  * shape (objects, arrays, unions, enums, records) and property descriptions so
  * a model — or a human reading `/dump` — can grasp a tool's parameters at a
- * glance, far more legibly than raw JSON Schema. Refinement keywords
- * (min/max/pattern/format) are intentionally dropped; only type structure,
- * literal enums/consts, and descriptions survive.
+ * glance, far more legibly than raw JSON Schema. Type structure,
+ * literal enums/consts, descriptions, and validation refinements survive.
  */
 
 import { isJsonObject } from "./types";
@@ -71,6 +70,33 @@ function emitDescription(lines: string[], description: string, ctx: Ctx, pad: st
 	lines.push(`${pad} */`);
 }
 
+const REFINEMENT_LABELS: ReadonlyArray<readonly [string, string]> = [
+	["minimum", "minimum"],
+	["maximum", "maximum"],
+	["exclusiveMinimum", "exclusive minimum"],
+	["exclusiveMaximum", "exclusive maximum"],
+	["multipleOf", "multiple of"],
+	["minLength", "minimum length"],
+	["maxLength", "maximum length"],
+	["pattern", "pattern"],
+	["format", "format"],
+	["minItems", "minimum items"],
+	["maxItems", "maximum items"],
+	["uniqueItems", "unique items"],
+] as const;
+
+function propertyComment(node: Record<string, unknown>): string | undefined {
+	const parts: string[] = [];
+	for (const [key, label] of REFINEMENT_LABELS) {
+		if (!Object.hasOwn(node, key)) continue;
+		parts.push(`${label}: ${literal(node[key])}`);
+	}
+	const constraints = parts.length > 0 ? `Constraints: ${parts.join("; ")}.` : undefined;
+	const description =
+		typeof node.description === "string" && node.description.length > 0 ? node.description : undefined;
+	return description && constraints ? `${description}\n\n${constraints}` : (description ?? constraints);
+}
+
 function convertArray(node: Record<string, unknown>, ctx: Ctx, pad: string): string {
 	const prefixItems = node.prefixItems;
 	if (Array.isArray(prefixItems)) {
@@ -99,13 +125,9 @@ function convertObject(node: Record<string, unknown>, ctx: Ctx, pad: string): st
 		const delimiter = ctx.harmony ? "," : ";";
 		for (const key in properties) {
 			const value = properties[key];
-			if (
-				ctx.comments &&
-				isJsonObject(value) &&
-				typeof value.description === "string" &&
-				value.description.length > 0
-			) {
-				emitDescription(body, value.description, ctx, childPad);
+			if (ctx.comments && isJsonObject(value)) {
+				const comment = propertyComment(value);
+				if (comment) emitDescription(body, comment, ctx, childPad);
 			}
 			const optional = required.has(key) ? "" : "?";
 			const name = SAFE_KEY.test(key) ? key : JSON.stringify(key);

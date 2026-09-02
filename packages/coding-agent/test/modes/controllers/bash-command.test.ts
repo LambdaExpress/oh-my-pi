@@ -58,6 +58,7 @@ function createCwdContext(sourceDir: string, isStreaming = false) {
 		pendingBashComponents: [],
 		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 		present,
+		completePendingLocalExecution: vi.fn(),
 		showError: vi.fn(),
 		showWarning: vi.fn(),
 		applyCwdChange: vi.fn(async (cwd: string) => {
@@ -101,6 +102,7 @@ describe("bash shortcut command", () => {
 			pendingBashComponents: [],
 			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 			present: vi.fn(),
+			completePendingLocalExecution: vi.fn(),
 			showError: vi.fn(),
 			applyCwdChange: vi.fn(async () => {}),
 			updateEditorBorderColor: vi.fn(),
@@ -273,6 +275,7 @@ describe("bash shortcut command", () => {
 			expect(ctx.applyCwdChange).not.toHaveBeenCalled();
 			expect(pendingMessagesContainer.children).toHaveLength(1);
 			expect(ctx.pendingBashComponents).toHaveLength(1);
+			expect(ctx.completePendingLocalExecution).toHaveBeenCalledWith(pendingMessagesContainer.children[0]);
 			expect(ctx.showWarning).not.toHaveBeenCalled();
 		} finally {
 			await fs.rm(sourceDir, { recursive: true, force: true });

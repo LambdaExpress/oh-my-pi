@@ -11,7 +11,7 @@ import type {
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
 import { RequestIdAllocator } from "../request-id";
-import { createMCPTimeout, getNeverAbortSignal, resolveMCPTimeoutMs } from "../timeout";
+import { createMCPTimeout, getNeverAbortSignal, resolveMCPRequestTimeoutMs, resolveMCPTimeoutMs } from "../timeout";
 import { type MCPFetchInit, mcpFetch } from "./header-policy";
 
 interface MCPTimeoutOperation {
@@ -211,7 +211,7 @@ export class LegacySseTransport implements MCPTransport {
 			method,
 			params: params ?? {},
 		};
-		const timeout = resolveMCPTimeoutMs(this.#config.timeout);
+		const timeout = resolveMCPRequestTimeoutMs(method, this.#config.timeout);
 		const operation = createMCPTimeout(timeout, options?.signal);
 		const deferred = Promise.withResolvers<unknown>();
 		// Observe the response promise synchronously so a stream-close rejection

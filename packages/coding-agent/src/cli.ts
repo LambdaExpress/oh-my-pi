@@ -28,6 +28,7 @@ import { interceptUnhandledRejections } from "@oh-my-pi/pi-utils/postmortem";
 import { setProcessName } from "@oh-my-pi/pi-utils/process-name";
 import { declareWorkerHostEntry, installWorkerInbox, isWorkerHostSelector } from "@oh-my-pi/pi-utils/worker-host";
 import { BLOB_BROKER_WORKER_ARG } from "./blob-broker/protocol";
+import { bootstrapHerdrGraphics } from "./cli/herdr-graphics-bootstrap";
 import { installProfileAlias, resolveProfileAliasCommandFromProcess } from "./cli/profile-alias";
 import { extractProfileFlags } from "./cli/profile-bootstrap";
 import { startJsEvalProcess } from "./eval/js/process-entry";
@@ -408,6 +409,14 @@ export async function runCli(argv: string[]): Promise<void> {
 	// poison `workerHostEntry()` for the whole test process, forcing eval/stats/
 	// browser workers onto the same-realm inline fallback.
 	if (isProcessEntry) declareWorkerHostEntry();
+
+	// Herdr keeps Kitty rendering opt-in. Resolve that explicit host setting
+	// before any TUI module snapshots terminal capabilities; inherited
+	// WT_SESSION alone identifies the outer Windows Terminal, not the active
+	// Herdr graphics layer.
+	if (isProcessEntry && process.env.HERDR_ENV === "1") {
+		await bootstrapHerdrGraphics();
+	}
 
 	// `PI_PROXY` must reach the bare global `fetch` before any provider call:
 	// OAuth refresh/login and usage probes never pass through

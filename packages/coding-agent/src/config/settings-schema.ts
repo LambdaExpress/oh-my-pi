@@ -2014,7 +2014,7 @@ export const SETTINGS_SCHEMA = {
 			group: "Input",
 			label: "Skip Pending Operations on Steering",
 			description:
-				"When enabled, sending a steering message interrupts the current tool batch and skips operations that have not started. When disabled, current operations finish before the message is applied.",
+				"When enabled, ordinary steering messages interrupt the current tool batch and skip operations that have not started. When disabled, current operations finish before the message is applied. Interrupting advisor messages keep their existing delivery behavior.",
 		},
 	},
 

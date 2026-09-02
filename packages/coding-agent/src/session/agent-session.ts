@@ -520,6 +520,7 @@ type QueuedMessageDelivery = "steer" | "followUp";
 
 type QueuedMessagePreparation = {
 	deliverAs: QueuedMessageDelivery;
+	interruptImmediately: boolean;
 	readyMessages?: AgentMessage[];
 	restorableMessage?: AgentMessage;
 	visible: boolean;
@@ -6852,6 +6853,7 @@ export class AgentSession {
 		this.#advisors.autoResumeSuppressed = false;
 		const preparation: QueuedMessagePreparation = {
 			deliverAs: mode,
+			interruptImmediately: false,
 			visible: false,
 			displayableCount: 0,
 			abortController: new AbortController(),
@@ -6938,11 +6940,16 @@ export class AgentSession {
 		}
 	}
 
-	#enqueuePreparedQueuedMessageBatch(deliverAs: QueuedMessageDelivery, messages: readonly AgentMessage[]): void {
+	#enqueuePreparedQueuedMessageBatch(
+		deliverAs: QueuedMessageDelivery,
+		messages: readonly AgentMessage[],
+		interruptImmediately = false,
+	): void {
 		const readyMessages = [...messages];
 		const restorableMessage = readyMessages.findLast(isUserQueuedMessage);
 		this.#queuedMessagePreparations.push({
 			deliverAs,
+			interruptImmediately,
 			readyMessages,
 			restorableMessage,
 			visible: true,
@@ -6960,7 +6967,9 @@ export class AgentSession {
 			if (preparation.deliverAs === "followUp") {
 				this.agent.followUpBatch(preparation.readyMessages!);
 			} else {
-				this.agent.steerBatch(preparation.readyMessages!);
+				this.agent.steerBatch(preparation.readyMessages!, {
+					interruptImmediately: preparation.interruptImmediately,
+				});
 			}
 			delivered = true;
 		}
@@ -7219,6 +7228,7 @@ export class AgentSession {
 			deliverAs?: "steer" | "followUp" | "nextTurn";
 			queueChipText?: string;
 			acceptTerminalEmptyStop?: boolean;
+			interruptImmediately?: boolean;
 		},
 	): Promise<boolean> {
 		const normalizedPayload = normalizeCustomMessagePayload<T>(message);
@@ -7246,9 +7256,11 @@ export class AgentSession {
 				this.#queueHiddenNextTurnMessage(normalizedAppMessage, options?.triggerTurn ?? false);
 				return false;
 			}
-			this.#enqueuePreparedQueuedMessageBatch(options?.deliverAs === "followUp" ? "followUp" : "steer", [
-				normalizedAppMessage,
-			]);
+			this.#enqueuePreparedQueuedMessageBatch(
+				options?.deliverAs === "followUp" ? "followUp" : "steer",
+				[normalizedAppMessage],
+				options?.interruptImmediately === true,
+			);
 			return false;
 		}
 

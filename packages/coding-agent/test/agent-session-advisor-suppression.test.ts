@@ -17,7 +17,7 @@
  *     (which converts to `developer`) would send an invalid provider tail, so the
  *     follow-up stays queued for the next explicit resume rather than auto-running.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import { Agent, type AgentMessage, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { ToolCall } from "@oh-my-pi/pi-ai";
@@ -408,6 +408,7 @@ describe("AgentSession advisor auto-resume suppression", () => {
 
 	it("steers a late advisor blocker after a terminal answer so the primary corrects it", async () => {
 		const { session, mock } = await createCompletedAdvisorSession("blocker");
+		const sendCustomMessage = vi.spyOn(session, "sendCustomMessage");
 
 		await session.prompt("read five fixture files and answer with exactly one line");
 		await session.waitForIdle();
@@ -421,6 +422,15 @@ describe("AgentSession advisor auto-resume suppression", () => {
 		await session.waitForIdle();
 
 		expect(mock.calls.length).toBe(2);
+		expect(sendCustomMessage).toHaveBeenCalledWith(
+			expect.objectContaining({ customType: "advisor" }),
+			expect.objectContaining({
+				deliverAs: "steer",
+				triggerTurn: true,
+				interruptImmediately: true,
+			}),
+		);
+		sendCustomMessage.mockRestore();
 	});
 
 	it("preserves another late advisor concern after an existing advisor card", async () => {

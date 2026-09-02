@@ -104,6 +104,7 @@ function harness(
 		emulatorPath?: string | null;
 		devices?: AdbDevice[];
 		commandResult?: AdbCommandResult;
+		commandResults?: AdbCommandResult[];
 		binaryResult?: AdbBinaryResult;
 	} = {},
 ): Harness {
@@ -177,7 +178,7 @@ function harness(
 		},
 		async executeAdb(args: readonly string[], commandOptions?: AdbCommandOptions) {
 			adbCalls.push({ args: [...args], options: commandOptions });
-			return nextCommandResult;
+			return options.commandResults?.shift() ?? nextCommandResult;
 		},
 		async executeAdbBinary(args: readonly string[], commandOptions?: AdbCommandOptions) {
 			binaryCalls.push({ args: [...args], options: commandOptions });
@@ -458,6 +459,33 @@ describe("AdbTool argv and command behavior", () => {
 			if (context) expect(message).toContain(context);
 			expect(message).toContain("permission denied from adb");
 		}
+	});
+
+	it("retries a transient UIAutomator idle timeout and fails truthfully when it persists", async () => {
+		vi.spyOn(Bun, "sleep").mockResolvedValue(undefined);
+		const idleTimeout = commandResult("ERROR: could not get idle state.\n");
+		const recovered = harness({
+			commandResults: [idleTimeout, commandResult("UI hierarchy dumped to: /sdcard/window.xml\n")],
+		});
+		const recoveredResult = await recovered.tool.execute("uiautomator-recovers", {
+			op: "shell",
+			device: SERIAL,
+			command: "uiautomator dump /sdcard/window.xml",
+			timeout: 30,
+		});
+		expect(text(recoveredResult)).toContain("UI hierarchy dumped");
+		expect(recovered.adbCalls).toHaveLength(2);
+
+		const persistent = harness({ commandResults: [idleTimeout, idleTimeout] });
+		await expect(
+			persistent.tool.execute("uiautomator-still-busy", {
+				op: "shell",
+				device: SERIAL,
+				command: "uiautomator dump /sdcard/window.xml",
+				timeout: 30,
+			}),
+		).rejects.toThrow(/UI hierarchy.*never became idle/i);
+		expect(persistent.adbCalls).toHaveLength(2);
 	});
 
 	it("uses a finite logcat dump by default and only follows when requested", async () => {

@@ -4166,8 +4166,8 @@ export const zhCN: Record<string, string> = {
 		"当图片附加到不支持视觉的模型时，使用支持视觉的模型描述它。启用 images.visionApproval 可在视觉模型运行前要求审批；否则直接描述图片。",
 	"When an image is attached to a model without vision support, describe it with a vision-capable model. Enable images.visionApproval to require approval before the vision model runs; otherwise the image is described directly.":
 		"当图片附加到不支持视觉的模型时，使用支持视觉的模型描述它。启用 images.visionApproval 可在视觉模型运行前要求审批；否则直接描述图片。",
-	"When enabled, sending a steering message interrupts the current tool batch and skips operations that have not started. When disabled, current operations finish before the message is applied.":
-		"启用后，发送引导消息会中断当前工具批次，并跳过尚未开始的操作。禁用后，当前操作会先完成，再应用该消息。",
+	"When enabled, ordinary steering messages interrupt the current tool batch and skip operations that have not started. When disabled, current operations finish before the message is applied. Interrupting advisor messages keep their existing delivery behavior.":
+		"启用后，普通引导消息会中断当前工具批次，并跳过尚未开始的操作。禁用后，当前操作会先完成，再应用该消息。具有中断语义的顾问消息保持原有投递行为。",
 	"When on, auto-run one private capture turn at stop (uses extra tokens). When off, only standing auto-learn guidance remains.":
 		"开启时，停止时会自动运行一轮私有捕获（消耗额外 token）。关闭时，仅保留常驻的自动学习指导。",
 	"When to interrupt mid-stream vs inject warning after completion": "何时在流式输出中途中断、何时在完成后注入警告",

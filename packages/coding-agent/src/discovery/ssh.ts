@@ -16,6 +16,8 @@ import { createSourceMeta, expandEnvVarsDeep } from "./helpers";
 
 const PROVIDER_ID = "ssh-json";
 const DISPLAY_NAME = "SSH Config";
+const OPENSSH_PROVIDER_ID = "ssh-openssh";
+const OPENSSH_DISPLAY_NAME = "OpenSSH Config";
 
 interface SSHConfigFile {
 	hosts?: Record<
@@ -32,6 +34,118 @@ interface SSHConfigFile {
 			description?: string;
 		}
 	>;
+}
+
+interface OpenSshBlock {
+	patterns: string[];
+	options: Map<string, string>;
+}
+
+function stripOpenSshComment(line: string): string {
+	let quote: '"' | "'" | undefined;
+	for (let index = 0; index < line.length; index++) {
+		const char = line[index];
+		if (char === '"' || char === "'") {
+			quote = quote === char ? undefined : quote || char;
+		} else if (char === "#" && quote === undefined) {
+			return line.slice(0, index);
+		}
+	}
+	return line;
+}
+
+function splitOpenSshWords(value: string): string[] {
+	return [...value.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map(match => match[1] ?? match[2] ?? match[3] ?? "");
+}
+
+function openSshPatternMatches(pattern: string, host: string): boolean {
+	try {
+		return new Bun.Glob(pattern.toLowerCase()).match(host.toLowerCase());
+	} catch {
+		return false;
+	}
+}
+
+function openSshBlockMatches(patterns: readonly string[], host: string): boolean {
+	let positiveMatch = false;
+	for (const rawPattern of patterns) {
+		const negated = rawPattern.startsWith("!");
+		const pattern = negated ? rawPattern.slice(1) : rawPattern;
+		if (!pattern || !openSshPatternMatches(pattern, host)) continue;
+		if (negated) return false;
+		positiveMatch = true;
+	}
+	return positiveMatch;
+}
+
+/** Parse concrete aliases and effective connection fields from an OpenSSH config. */
+export function parseOpenSshConfig(content: string, home: string, filePath: string): SSHHost[] {
+	const blocks: OpenSshBlock[] = [{ patterns: ["*"], options: new Map() }];
+	let current = blocks[0]!;
+	for (const rawLine of content.split(/\r?\n/)) {
+		const line = stripOpenSshComment(rawLine).trim();
+		if (!line) continue;
+		const separator = line.search(/[\s=]/);
+		const key = (separator < 0 ? line : line.slice(0, separator)).toLowerCase();
+		const value = separator < 0 ? "" : line.slice(separator).replace(/^[\s=]+/, "");
+		if (key === "host") {
+			const patterns = splitOpenSshWords(value);
+			current = { patterns, options: new Map() };
+			blocks.push(current);
+			continue;
+		}
+		if (key === "match") {
+			current = { patterns: [], options: new Map() };
+			continue;
+		}
+		if (value && !current.options.has(key)) current.options.set(key, splitOpenSshWords(value)[0] ?? value);
+	}
+
+	const aliases: string[] = [];
+	const seen = new Set<string>();
+	for (const block of blocks) {
+		for (const rawPattern of block.patterns) {
+			const alias = rawPattern.startsWith("!") ? rawPattern.slice(1) : rawPattern;
+			if (!alias || /[*?[\]]/.test(alias) || alias.startsWith("-") || seen.has(alias.toLowerCase())) continue;
+			seen.add(alias.toLowerCase());
+			aliases.push(alias);
+		}
+	}
+
+	const source = createSourceMeta(OPENSSH_PROVIDER_ID, filePath, "user");
+	return aliases.map(name => {
+		const options = new Map<string, string>();
+		for (const block of blocks) {
+			if (!openSshBlockMatches(block.patterns, name)) continue;
+			for (const [key, value] of block.options) {
+				if (!options.has(key)) options.set(key, value);
+			}
+		}
+		const parsedPort = parsePort(options.get("port"));
+		let proxyJump: string | undefined;
+		const rawProxyJump = options.get("proxyjump");
+		if (rawProxyJump && rawProxyJump.toLowerCase() !== "none") {
+			try {
+				proxyJump = normalizeProxyJump(rawProxyJump);
+			} catch {}
+		}
+		return {
+			name,
+			host: options.get("hostname") ?? name,
+			username: options.get("user"),
+			port: parsedPort && parsedPort >= 1 && parsedPort <= 65_535 ? parsedPort : undefined,
+			keyPath: options.get("identityfile") ? expandTilde(options.get("identityfile")!, home) : undefined,
+			proxyJump,
+			description: `OpenSSH alias from ${filePath}`,
+			_source: source,
+		};
+	});
+}
+
+async function loadOpenSsh(ctx: LoadContext): Promise<LoadResult<SSHHost>> {
+	const filePath = path.join(ctx.home, ".ssh", "config");
+	const content = await readFile(filePath);
+	return { items: content === null ? [] : parseOpenSshConfig(content, ctx.home, filePath) };
 }
 
 function parsePort(value: number | string | undefined): number | undefined {
@@ -180,4 +294,12 @@ registerProvider(sshCapability.id, {
 	description: "Load SSH hosts from managed omp paths and legacy ssh.json/.ssh.json files",
 	priority: 5,
 	load,
+});
+
+registerProvider(sshCapability.id, {
+	id: OPENSSH_PROVIDER_ID,
+	displayName: OPENSSH_DISPLAY_NAME,
+	description: "Load concrete aliases from the user's OpenSSH config",
+	priority: 10,
+	load: loadOpenSsh,
 });

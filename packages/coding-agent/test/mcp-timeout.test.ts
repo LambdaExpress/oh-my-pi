@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { createMCPTimeout, isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "@oh-my-pi/pi-coding-agent/mcp/timeout";
+import {
+	createMCPTimeout,
+	isMCPTimeoutEnabled,
+	resolveMCPRequestTimeoutMs,
+	resolveMCPTimeoutMs,
+} from "@oh-my-pi/pi-coding-agent/mcp/timeout";
 import { logger } from "@oh-my-pi/pi-utils";
 
 const ORIGINAL_TIMEOUT = process.env.OMP_MCP_TIMEOUT_MS;
@@ -17,12 +22,15 @@ describe("MCP timeout configuration", () => {
 		delete process.env.OMP_MCP_TIMEOUT_MS;
 
 		expect(resolveMCPTimeoutMs()).toBe(30_000);
+		expect(resolveMCPRequestTimeoutMs("tools/list")).toBe(30_000);
+		expect(resolveMCPRequestTimeoutMs("tools/call")).toBe(300_000);
 	});
 
 	test("uses per-server timeout when env override is unset", () => {
 		delete process.env.OMP_MCP_TIMEOUT_MS;
 
 		expect(resolveMCPTimeoutMs(120_000)).toBe(120_000);
+		expect(resolveMCPRequestTimeoutMs("tools/call", 120_000)).toBe(120_000);
 	});
 
 	test("allows the env override to disable MCP client-side timeouts", () => {
@@ -37,6 +45,7 @@ describe("MCP timeout configuration", () => {
 		process.env.OMP_MCP_TIMEOUT_MS = "180000";
 
 		expect(resolveMCPTimeoutMs(30_000)).toBe(180_000);
+		expect(resolveMCPRequestTimeoutMs("tools/call", 30_000)).toBe(180_000);
 	});
 
 	test("rejects negative env values and warns, falling back to the default", () => {

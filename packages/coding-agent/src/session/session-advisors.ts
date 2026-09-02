@@ -227,6 +227,7 @@ export interface AdvisorMessageDeliveryOptions {
 	deliverAs?: "steer" | "followUp" | "nextTurn";
 	queueChipText?: string;
 	acceptTerminalEmptyStop?: boolean;
+	interruptImmediately?: boolean;
 }
 
 /** Session capabilities borrowed by the advisor controller. */
@@ -1195,7 +1196,7 @@ export class SessionAdvisors {
 		void this.#host
 			.sendCustomMessage(
 				{ customType: "advisor", content, display: true, attribution: "agent", details },
-				{ deliverAs: "steer", triggerTurn: true },
+				{ deliverAs: "steer", triggerTurn: true, interruptImmediately: true },
 			)
 			.catch(err => logger.debug("advisor delivery failed", { err: String(err) }));
 	}

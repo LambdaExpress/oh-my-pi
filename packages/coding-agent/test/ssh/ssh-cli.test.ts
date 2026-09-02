@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as path from "node:path";
 import { runSSHCommand, type SSHCommandArgs } from "@oh-my-pi/pi-coding-agent/cli/ssh-cli";
 import SSH from "@oh-my-pi/pi-coding-agent/commands/ssh";
+import { parseOpenSshConfig } from "@oh-my-pi/pi-coding-agent/discovery/ssh";
 import type { SSHConfigFile } from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
 import * as sshConfigWriter from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
 import { getSSHConfigPath } from "@oh-my-pi/pi-utils";
@@ -54,6 +56,33 @@ async function run(cmd: SSHCommandArgs): Promise<void> {
 }
 
 describe("SSH command flag parsing", () => {
+	it("parses all concrete aliases from an OpenSSH Host block", () => {
+		const hosts = parseOpenSshConfig(
+			`Host *
+  ServerAliveInterval 30
+
+Host mac-mini macmini
+  HostName 172.27.2.7
+  User qingdaochengande
+  Port 22
+  IdentityFile ~/.ssh/id_ed25519_macmini
+`,
+			"C:/Users/example",
+			"C:/Users/example/.ssh/config",
+		);
+
+		expect(hosts.map(host => host.name)).toEqual(["mac-mini", "macmini"]);
+		for (const host of hosts) {
+			expect(host).toMatchObject({
+				host: "172.27.2.7",
+				username: "qingdaochengande",
+				port: 22,
+			});
+			expect(path.normalize(host.keyPath!)).toBe(path.join("C:/Users/example", ".ssh/id_ed25519_macmini"));
+			expect(host._source).toMatchObject({ provider: "ssh-openssh", level: "user" });
+		}
+	});
+
 	it("parses --proxy-jump and rejects the camelCase spelling", async () => {
 		const command = new SSH(["add", "relay", "--host", "target", "--proxy-jump", "user@jump:2222"], TEST_CONFIG);
 		const parsed = await command.parse(SSH);

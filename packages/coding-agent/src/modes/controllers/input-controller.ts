@@ -1024,8 +1024,6 @@ export class InputController {
 			}
 
 			// Normal message submission
-			// First, move any pending bash components to chat
-			this.ctx.flushPendingBashComponents();
 			// Commit the previous request's completed-run projection before a
 			// deferred ConPTY scrollback replay. With both features enabled, doing
 			// this at agent_start would replay the expanded history here and then

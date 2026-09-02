@@ -289,20 +289,40 @@ function getMcpAuthChallenge(result: MCPToolCallResult): MCPAuthChallenge | unde
 	return wwwAuthenticate.length > 0 ? { wwwAuthenticate } : undefined;
 }
 
+function getRetriableToolResultError(result: MCPToolCallResult): Error | undefined {
+	if (!result.isError) return undefined;
+	const message = result.content
+		.filter((item): item is Extract<MCPContent, { type: "text" }> => item.type === "text")
+		.map(item => item.text)
+		.join("\n");
+	if (!message) return undefined;
+	const error = new Error(message);
+	return isRetriableConnectionError(error) ? error : undefined;
+}
+
+function isReplaySafeAfterResultError(tool: MCPToolDefinition): boolean {
+	return (
+		tool.annotations?.readOnlyHint === true ||
+		tool.annotations?.idempotentHint === true ||
+		tool.name === "downloadJiraAttachment"
+	);
+}
+
 async function callToolWithAuthRetry(
 	connection: MCPServerConnection,
-	toolName: string,
+	tool: MCPToolDefinition,
 	args: MCPToolArgs,
 	reconnect: MCPReconnect | undefined,
 	signal?: AbortSignal,
 ): Promise<MCPToolCallAttempt> {
-	const result = await callTool(connection, toolName, args, { signal });
+	const result = await callTool(connection, tool.name, args, { signal });
 	const authChallenge = getMcpAuthChallenge(result);
-	if (!authChallenge || !reconnect) return { connection, result };
+	const retriableResultError = isReplaySafeAfterResultError(tool) ? getRetriableToolResultError(result) : undefined;
+	if ((!authChallenge && !retriableResultError) || !reconnect) return { connection, result };
 
 	let newConnection: MCPServerConnection | null;
 	try {
-		newConnection = await reconnectWithAbort(reconnect, signal, { authChallenge });
+		newConnection = await reconnectWithAbort(reconnect, signal, authChallenge ? { authChallenge } : undefined);
 	} catch (error) {
 		rethrowIfAborted(error, signal);
 		return { connection, error };
@@ -312,7 +332,7 @@ async function callToolWithAuthRetry(
 	try {
 		return {
 			connection: newConnection,
-			result: await callTool(newConnection, toolName, args, { signal }),
+			result: await callTool(newConnection, tool.name, args, { signal }),
 		};
 	} catch (error) {
 		rethrowIfAborted(error, signal);
@@ -545,7 +565,7 @@ export class MCPTool implements CustomTool<TSchema, MCPToolDetails> {
 		const providerName = this.connection._source?.providerName;
 
 		try {
-			const attempt = await callToolWithAuthRetry(this.connection, this.tool.name, args, this.reconnect, signal);
+			const attempt = await callToolWithAuthRetry(this.connection, this.tool, args, this.reconnect, signal);
 			if (attempt.error !== undefined) {
 				return buildErrorResult(attempt.error, this.connection.name, this.tool.name, provider, providerName);
 			}
@@ -668,7 +688,7 @@ export class DeferredMCPTool implements CustomTool<TSchema, MCPToolDetails> {
 			const connection = await untilAborted(signal, () => this.getConnection());
 			throwIfAborted(signal);
 			try {
-				const attempt = await callToolWithAuthRetry(connection, this.tool.name, args, this.reconnect, signal);
+				const attempt = await callToolWithAuthRetry(connection, this.tool, args, this.reconnect, signal);
 				if (attempt.error !== undefined) {
 					return buildErrorResult(
 						attempt.error,

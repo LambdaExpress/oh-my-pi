@@ -1,5 +1,8 @@
 import { afterAll, afterEach, describe, expect, it, vi } from "bun:test";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { PythonResult } from "@oh-my-pi/pi-coding-agent/eval/py/executor";
+import type { BashResult } from "@oh-my-pi/pi-coding-agent/exec/bash-executor";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
@@ -49,6 +52,8 @@ async function createHarness(): Promise<Harness> {
 		get isStreaming() {
 			return streaming;
 		},
+		executeBash: vi.fn(),
+		executePython: vi.fn(),
 	} as unknown as AgentSession;
 	const mode = new InteractiveMode(session, "test");
 	harness = {
@@ -71,6 +76,26 @@ function transcriptRowCount(mode: InteractiveMode): number {
 
 function transcriptText(mode: InteractiveMode): string {
 	return mode.chatContainer.render(120).join("\n");
+}
+
+function assistantMessage(text: string): AssistantMessage {
+	return {
+		role: "assistant",
+		content: text ? [{ type: "text", text }] : [],
+		api: "anthropic-messages",
+		provider: "anthropic",
+		model: "test-model",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
 }
 
 afterEach(() => {
@@ -141,6 +166,170 @@ describe("InteractiveMode deferred command preview", () => {
 
 		expect(noticeText(mode)).toBe("");
 		expect(transcriptText(mode)).toContain("usage panel");
+	});
+
+	it("unpins a completed bash result before later streamed text", async () => {
+		const { mode, setStreaming } = await createHarness();
+		setStreaming(true);
+		mode.isInitialized = true;
+		settings.override("display.smoothStreaming", false);
+		const started = assistantMessage("");
+		await mode.eventController.handleEvent({ type: "message_start", message: started });
+		const before = assistantMessage("BEFORE_LOCAL_EXECUTION\nPARTIAL_");
+		await mode.eventController.handleEvent({
+			type: "message_update",
+			message: before,
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 0,
+				delta: "BEFORE_LOCAL_EXECUTION\nPARTIAL_",
+				partial: before,
+			},
+		});
+		const execution = Promise.withResolvers<BashResult>();
+		vi.spyOn(mode.session, "executeBash").mockReturnValueOnce(execution.promise);
+		const command = mode.handleBashCommand("printf bash-result");
+		await Promise.resolve();
+		const bash = mode.pendingBashComponents[0]!;
+		expect(mode.pendingMessagesContainer.children).toContain(bash);
+
+		execution.resolve({
+			output: "bash-result",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			totalLines: 1,
+			totalBytes: 11,
+			outputLines: 1,
+			outputBytes: 11,
+		});
+		await command;
+		const after = assistantMessage("BEFORE_LOCAL_EXECUTION\nPARTIAL_AFTER_LOCAL_EXECUTION");
+		await mode.eventController.handleEvent({
+			type: "message_update",
+			message: after,
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 0,
+				delta: "AFTER_LOCAL_EXECUTION",
+				partial: after,
+			},
+		});
+
+		const transcript = Bun.stripANSI(transcriptText(mode));
+		expect(mode.pendingMessagesContainer.children).not.toContain(bash);
+		expect(mode.pendingBashComponents).toHaveLength(0);
+		expect(transcript.indexOf("BEFORE_LOCAL_EXECUTION")).toBeLessThan(transcript.indexOf("bash-result"));
+		expect(transcript.indexOf("bash-result")).toBeLessThan(transcript.indexOf("PARTIAL_AFTER_LOCAL_EXECUTION"));
+		expect(transcript.split("\n").map(line => line.trim())).not.toContain("PARTIAL_");
+
+		setStreaming(false);
+		await mode.eventController.handleEvent({ type: "message_end", message: after });
+	});
+
+	it("unpins a completed Python result before later streamed text", async () => {
+		const { mode, setStreaming } = await createHarness();
+		setStreaming(true);
+		mode.isInitialized = true;
+		settings.override("display.smoothStreaming", false);
+		const started = assistantMessage("");
+		await mode.eventController.handleEvent({ type: "message_start", message: started });
+		const before = assistantMessage("BEFORE_PYTHON_EXECUTION\n");
+		await mode.eventController.handleEvent({
+			type: "message_update",
+			message: before,
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 0,
+				delta: "BEFORE_PYTHON_EXECUTION\n",
+				partial: before,
+			},
+		});
+		const execution = Promise.withResolvers<PythonResult>();
+		vi.spyOn(mode.session, "executePython").mockReturnValueOnce(execution.promise);
+		const command = mode.handlePythonCommand("print('python-result')");
+		await Promise.resolve();
+		const python = mode.pendingPythonComponents[0]!;
+		expect(mode.pendingMessagesContainer.children).toContain(python);
+
+		execution.resolve({
+			output: "python-result",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			totalLines: 1,
+			totalBytes: 13,
+			outputLines: 1,
+			outputBytes: 13,
+			displayOutputs: [],
+			stdinRequested: false,
+		});
+		await command;
+		const after = assistantMessage("BEFORE_PYTHON_EXECUTION\nAFTER_PYTHON_EXECUTION");
+		await mode.eventController.handleEvent({
+			type: "message_update",
+			message: after,
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 0,
+				delta: "AFTER_PYTHON_EXECUTION",
+				partial: after,
+			},
+		});
+
+		const transcript = transcriptText(mode);
+		expect(mode.pendingMessagesContainer.children).not.toContain(python);
+		expect(mode.pendingPythonComponents).toHaveLength(0);
+		expect(transcript.indexOf("BEFORE_PYTHON_EXECUTION")).toBeLessThan(transcript.indexOf("python-result"));
+		expect(transcript.indexOf("python-result")).toBeLessThan(transcript.indexOf("AFTER_PYTHON_EXECUTION"));
+
+		setStreaming(false);
+		await mode.eventController.handleEvent({ type: "message_end", message: after });
+	});
+
+	it("keeps a still-running local command pinned when the agent turn settles", async () => {
+		const { mode, setStreaming } = await createHarness();
+		setStreaming(true);
+		mode.isInitialized = true;
+		settings.override("display.smoothStreaming", false);
+		const message = assistantMessage("TURN_FINISHED\n");
+		await mode.eventController.handleEvent({ type: "message_start", message: assistantMessage("") });
+		await mode.eventController.handleEvent({
+			type: "message_update",
+			message,
+			assistantMessageEvent: {
+				type: "text_delta",
+				contentIndex: 0,
+				delta: "TURN_FINISHED\n",
+				partial: message,
+			},
+		});
+		const execution = Promise.withResolvers<BashResult>();
+		vi.spyOn(mode.session, "executeBash").mockReturnValueOnce(execution.promise);
+		const command = mode.handleBashCommand("printf late-result");
+		await Promise.resolve();
+		const bash = mode.pendingBashComponents[0]!;
+
+		setStreaming(false);
+		await mode.eventController.handleEvent({ type: "message_end", message });
+		mode.flushPendingCommandOutput();
+		expect(mode.pendingMessagesContainer.children).toContain(bash);
+		expect(mode.pendingBashComponents).toContain(bash);
+
+		execution.resolve({
+			output: "late-result",
+			exitCode: 0,
+			cancelled: false,
+			truncated: false,
+			totalLines: 1,
+			totalBytes: 11,
+			outputLines: 1,
+			outputBytes: 11,
+		});
+		await command;
+		expect(mode.pendingMessagesContainer.children).not.toContain(bash);
+		expect(mode.pendingBashComponents).not.toContain(bash);
+		expect(transcriptText(mode)).toContain("late-result");
 	});
 
 	it("shows no preview when the agent is idle, since output mounts immediately", async () => {

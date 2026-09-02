@@ -1,6 +1,7 @@
 import { logger } from "@oh-my-pi/pi-utils";
 
 const DEFAULT_MCP_TIMEOUT_MS = 30_000;
+const DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS = 300_000;
 const MCP_TIMEOUT_ENV = "OMP_MCP_TIMEOUT_MS";
 
 let neverAbortController: AbortController | undefined;
@@ -15,6 +16,13 @@ export function resolveMCPTimeoutMs(configTimeout?: number): number {
 		});
 	}
 	return configTimeout ?? DEFAULT_MCP_TIMEOUT_MS;
+}
+
+/** Tool execution may legitimately stream or download for much longer than discovery requests. */
+export function resolveMCPRequestTimeoutMs(method: string, configTimeout?: number): number {
+	const raw = Bun.env[MCP_TIMEOUT_ENV]?.trim();
+	if (raw || configTimeout !== undefined || method !== "tools/call") return resolveMCPTimeoutMs(configTimeout);
+	return DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS;
 }
 
 export function isMCPTimeoutEnabled(timeoutMs: number): boolean {

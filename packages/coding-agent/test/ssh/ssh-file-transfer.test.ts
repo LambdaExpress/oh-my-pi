@@ -194,6 +194,26 @@ describe("SSH file transfer core", () => {
 		expect(progress.map(update => update.transferredBytes)).toEqual([0, 1, 2, 3, 4, 4]);
 	});
 
+	it("prevents the POSIX progress watcher from inheriting stage cleanup traps", async () => {
+		const payload = binaryPayload(4);
+		const localPath = path.join(testDir, "upload-zsh-progress.bin");
+		await fs.writeFile(localPath, payload);
+		const commands: string[] = [];
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockImplementation(async (_host, command) => {
+			commands.push(command);
+			return { args: [command.includes("OMP_TRANSFER_COMMITTED") ? "commit" : "stage"] };
+		});
+		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>(command: string[]) =>
+			command[1] === "commit"
+				? createChild<In>({ stdout: [new TextEncoder().encode("OMP_TRANSFER_COMMITTED\n")] })
+				: createChild<In>(),
+		);
+
+		await executeSshFileTransfer(uploadPlan(localPath, payload.byteLength));
+
+		expect(commands[0]).toContain("(\n\ttrap - HUP INT TERM\n\twhile :; do");
+	});
+
 	it("downloads irregular binary chunks through partial local writes", async () => {
 		const payload = binaryPayload(160 * 1024 + 19);
 		const localPath = path.join(testDir, "nested", "download.bin");
