@@ -34,9 +34,10 @@ export interface CompletedRunCollapse {
 	/** Initial user request that remains visible after collapse. */
 	initialUserMessage: Extract<AgentMessage, { role: "user" }>;
 	/**
-	 * Naturally completed assistant answer that remains visible after collapse.
-	 * Absent when the run was interrupted (e.g. by a force-flushed follow-up)
-	 * and therefore has no natural final reply.
+	 * Terminal assistant message that remains visible after collapse: either the
+	 * natural final answer or an error following completed activity. Absent when
+	 * the run was interrupted (e.g. by a force-flushed follow-up) and therefore
+	 * has no terminal assistant message to preserve.
 	 */
 	finalAssistantMessage?: AssistantAgentMessage;
 	/**
@@ -134,9 +135,51 @@ export function isCollapsibleRunFinalAssistant(message: AgentMessage | undefined
 }
 
 /**
+ * A natural final answer is always a valid completed-run endpoint. A terminal
+ * provider error qualifies only when collapsing would hide earlier assistant
+ * text or tool calls; immediate failures remain visible without a 0/0 summary.
+ */
+export function isCollapsibleCompletedRun(
+	messages: readonly AgentMessage[],
+	initialUserMessage: Extract<AgentMessage, { role: "user" }>,
+	finalAssistantMessage: AgentMessage | undefined,
+): finalAssistantMessage is AssistantAgentMessage {
+	if (finalAssistantMessage?.role !== "assistant") return false;
+	if (finalAssistantMessage.stopReason === "stop") {
+		return isCollapsibleRunFinalAssistant(finalAssistantMessage);
+	}
+	if (
+		finalAssistantMessage.stopReason !== "error" ||
+		isContinuableStreamInterruption(finalAssistantMessage) ||
+		finalAssistantMessage.content.some(content => content.type === "toolCall")
+	) {
+		return false;
+	}
+
+	const start = findMessageIndex(messages, initialUserMessage, 0);
+	const end = findMessageIndex(messages, finalAssistantMessage, Math.max(0, start));
+	if (start < 0 || end <= start) return false;
+	for (let index = start + 1; index < end; index++) {
+		const message = messages[index];
+		if (message?.role !== "assistant") continue;
+		if (
+			message.content.some(
+				content =>
+					content.type === "toolCall" || (content.type === "text" && Boolean(canonicalizeMessage(content.text))),
+			)
+		) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
  * Reconstruct collapsible request spans from the persisted transcript. A request
  * survives aborted turns and compaction dividers until a qualifying final answer
- * appears; a terminal error starts a fresh request at the next user message.
+ * appears. A terminal error with prior activity becomes its own completed span
+ * when the next user message arrives; an immediate failure only starts a fresh
+ * request.
  */
 export function deriveCompletedRunCollapses(
 	messages: readonly AgentMessage[],
@@ -171,7 +214,7 @@ function deriveCompletedRunState(
 	const collapses: Array<CompletedRunCollapse & { answerIndex: number }> = [];
 	let initialUserMessage: Extract<AgentMessage, { role: "user" }> | undefined;
 	let initialUserIndex = -1;
-	let terminalError = false;
+	let terminalError: { message: AssistantAgentMessage; index: number } | undefined;
 	let lastUserIndex = -1;
 
 	for (let index = 0; index < messages.length; index++) {
@@ -179,9 +222,22 @@ function deriveCompletedRunState(
 		if (isNonSyntheticUserMessage(message)) {
 			lastUserIndex = index;
 			if (!initialUserMessage || terminalError) {
+				if (
+					initialUserMessage &&
+					terminalError &&
+					isCollapsibleCompletedRun(messages, initialUserMessage, terminalError.message)
+				) {
+					collapses.push({
+						firstMessage: initialUserMessage,
+						initialUserMessage,
+						finalAssistantMessage: terminalError.message,
+						durationMs: Math.max(0, terminalError.message.timestamp - initialUserMessage.timestamp),
+						answerIndex: terminalError.index,
+					});
+				}
 				initialUserMessage = message;
 				initialUserIndex = index;
-				terminalError = false;
+				terminalError = undefined;
 			}
 			continue;
 		}
@@ -191,9 +247,9 @@ function deriveCompletedRunState(
 		// Legacy sessions can lack stopDetails on transient provider failures even
 		// though the agent loop auto-resumed immediately; a following assistant
 		// message proves that the original request is still in progress.
-		if (terminalError) terminalError = false;
+		if (terminalError) terminalError = undefined;
 		if (message.stopReason === "error" && !isContinuableStreamInterruption(message)) {
-			terminalError = true;
+			terminalError = { message, index };
 			continue;
 		}
 		if (!isCollapsibleRunFinalAssistant(message)) continue;
@@ -212,21 +268,35 @@ function deriveCompletedRunState(
 		});
 		initialUserMessage = undefined;
 		initialUserIndex = -1;
-		terminalError = false;
+		terminalError = undefined;
+	}
+
+	if (
+		initialUserMessage &&
+		terminalError &&
+		isCollapsibleCompletedRun(messages, initialUserMessage, terminalError.message)
+	) {
+		collapses.push({
+			firstMessage: initialUserMessage,
+			initialUserMessage,
+			finalAssistantMessage: terminalError.message,
+			durationMs: Math.max(0, terminalError.message.timestamp - initialUserMessage.timestamp),
+			answerIndex: terminalError.index,
+		});
 	}
 
 	const completed = collapses
 		.filter(collapse => options.includeLatest || collapse.answerIndex < lastUserIndex)
 		.map(({ answerIndex: _, ...collapse }) => collapse);
 	const anchor =
-		initialUserMessage && initialUserIndex >= 0 && !terminalError
+		initialUserMessage && initialUserIndex >= 0 && terminalError === undefined
 			? { initialUserMessage, messages: messages.slice(initialUserIndex) }
 			: undefined;
 	return { collapses: completed, anchor };
 }
 
 /**
- * Display-only projection for naturally completed agent runs. Session history,
+ * Display-only projection for terminally settled agent runs. Session history,
  * exports, provider context, and persisted JSONL retain every original message.
  */
 export function collapseCompletedRuns(

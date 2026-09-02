@@ -52,7 +52,7 @@ import {
 	assistantUsageIsBilled,
 	type CompletedRunCollapse,
 	deriveCompletedRunAnchor,
-	isCollapsibleRunFinalAssistant,
+	isCollapsibleCompletedRun,
 	isSameTranscriptMessage,
 	splitAssistantMessageToolTimeline,
 } from "../utils/transcript-render-helpers";
@@ -1274,14 +1274,19 @@ export class EventController {
 			// agent-core emits no second agent_start between the naturally completed
 			// answer and this user message. Treat the user message itself as the run
 			// boundary: commit the completed span now, then open a fresh live gate for
-			// the follow-up below. Aborts, errors, and tool-use turns do not satisfy
-			// isCollapsibleRunFinalAssistant and therefore retain their original span.
+			// the follow-up below. Aborts, tool-use turns, and immediate errors retain
+			// their original span; terminal errors after visible activity may collapse
+			// while preserving the error message.
 			if (!event.message.synthetic && this.#activeCompletedRun?.initialUserMessage) {
 				const finalAssistant = this.#activeCompletedRun.messages.findLast(
 					(message): message is Extract<AgentMessage, { role: "assistant" }> => message.role === "assistant",
 				);
 				if (
-					isCollapsibleRunFinalAssistant(finalAssistant) &&
+					isCollapsibleCompletedRun(
+						this.#activeCompletedRun.messages,
+						this.#activeCompletedRun.initialUserMessage,
+						finalAssistant,
+					) &&
 					this.#activeCompletedRun.lastAssistantLifecycleVersion === this.#activeCompletedRun.lifecycleVersion
 				) {
 					await this.ctx.viewSession.waitForMessagePersistence(finalAssistant);
@@ -2437,7 +2442,7 @@ export class EventController {
 		}
 		const initialUserMessage = active.initialUserMessage;
 		if (
-			!isCollapsibleRunFinalAssistant(finalAssistant) ||
+			!isCollapsibleCompletedRun(active.messages, initialUserMessage, finalAssistant) ||
 			!active.messages.some(message => isSameTranscriptMessage(message, initialUserMessage)) ||
 			!active.messages.some(message => isSameTranscriptMessage(message, finalAssistant))
 		) {
