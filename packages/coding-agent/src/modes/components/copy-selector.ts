@@ -37,11 +37,15 @@ export interface CopySelectorCallbacks {
 interface FlatNode {
 	target: CopyTarget;
 	depth: number;
+	/** User prompt whose complete model output contains this node. */
+	userTurn?: number;
 	/** Last among its siblings (drives └─ vs ├─). */
 	isLast: boolean;
 	/** Per-ancestor flag: does ancestor at that level have a following sibling? */
 	ancestorHasNext: boolean[];
 }
+
+type TreeEntry = { kind: "node"; node: FlatNode; nodeIndex: number } | { kind: "top" | "divider" | "bottom" };
 
 /** Render one tree connector as exactly three cells (e.g. "├─ ", "└─ ", "|--"). */
 function connectorCells(symbol: string): string {
@@ -88,15 +92,34 @@ export class CopySelectorComponent implements Component {
 
 	#flatten(): FlatNode[] {
 		const out: FlatNode[] = [];
-		const walk = (nodes: CopyTarget[], depth: number, ancestorHasNext: boolean[]) => {
+		const walk = (nodes: CopyTarget[], depth: number, ancestorHasNext: boolean[], inheritedUserTurn?: number) => {
 			nodes.forEach((target, i) => {
 				const isLast = i === nodes.length - 1;
-				out.push({ target, depth, isLast, ancestorHasNext });
-				if (target.children?.length) walk(target.children, depth + 1, [...ancestorHasNext, !isLast]);
+				const userTurn = target.userTurn ?? inheritedUserTurn;
+				out.push({ target, depth, userTurn, isLast, ancestorHasNext });
+				if (target.children?.length) {
+					walk(target.children, depth + 1, [...ancestorHasNext, !isLast], userTurn);
+				}
 			});
 		};
 		walk(this.#roots, 0, []);
 		return out;
+	}
+
+	#treeEntries(flat: readonly FlatNode[]): TreeEntry[] {
+		const entries: TreeEntry[] = [];
+		for (let i = 0; i < flat.length; i++) {
+			const node = flat[i]!;
+			const previous = flat[i - 1];
+			const next = flat[i + 1];
+			if (node.userTurn !== undefined) {
+				if (previous?.userTurn !== node.userTurn) entries.push({ kind: "top" });
+				else if (node.depth === 0) entries.push({ kind: "divider" });
+			}
+			entries.push({ kind: "node", node, nodeIndex: i });
+			if (node.userTurn !== undefined && next?.userTurn !== node.userTurn) entries.push({ kind: "bottom" });
+		}
+		return entries;
 	}
 
 	#cursorIndex(flat: readonly FlatNode[]): number {
@@ -171,22 +194,39 @@ export class CopySelectorComponent implements Component {
 
 	#renderTree(width: number, flat: FlatNode[], cursorIdx: number, rows: number): string[] {
 		const inner = Math.max(0, width - 4);
-		const start = Math.max(0, Math.min(cursorIdx - Math.floor(rows / 2), Math.max(0, flat.length - rows)));
+		const entries = this.#treeEntries(flat);
+		const cursorEntryIdx = Math.max(
+			0,
+			entries.findIndex(entry => entry.kind === "node" && entry.nodeIndex === cursorIdx),
+		);
+		const start = Math.max(0, Math.min(cursorEntryIdx - Math.floor(rows / 2), Math.max(0, entries.length - rows)));
 		const out: string[] = [];
 		this.#hitRows = [];
 
 		for (let r = 0; r < rows; r++) {
 			const i = start + r;
-			const node = flat[i];
-			this.#hitRows[r] = node ? i : undefined;
-			if (!node) {
+			const entry = entries[i];
+			if (!entry) {
 				out.push(row("", width));
 				continue;
 			}
+			if (entry.kind !== "node") {
+				const border =
+					entry.kind === "top"
+						? topBorder(inner, "")
+						: entry.kind === "divider"
+							? divider(inner)
+							: bottomBorder(inner);
+				out.push(row(border, width));
+				continue;
+			}
 
+			const node = entry.node;
+			this.#hitRows[r] = entry.nodeIndex;
 			const target = node.target;
-			const isSelected = i === cursorIdx;
-			const isHovered = i === this.#hoveredIndex && !isSelected;
+			const isSelected = entry.nodeIndex === cursorIdx;
+			const isHovered = entry.nodeIndex === this.#hoveredIndex && !isSelected;
+			const contentWidth = node.userTurn === undefined ? inner : Math.max(0, inner - 4);
 
 			let prefix = "";
 			for (let l = 0; l < node.depth - 1; l++) prefix += gutterCells(node.ancestorHasNext[l]!);
@@ -196,14 +236,16 @@ export class CopySelectorComponent implements Component {
 			const hint = target.hint ?? "";
 			const hintWidth = hint ? visibleWidth(hint) + 2 : 0;
 			const used = visibleWidth(cursor) + visibleWidth(prefix);
-			const labelPlain = truncateToWidth(target.label, Math.max(1, inner - used - hintWidth));
+			const labelPlain = truncateToWidth(target.label, Math.max(1, contentWidth - used - hintWidth));
 			const left = isSelected
 				? theme.fg("accent", cursor) + theme.fg("dim", prefix) + theme.bold(theme.fg("accent", labelPlain))
 				: cursor + theme.fg("dim", prefix) + labelPlain;
-			const gap = Math.max(1, inner - used - visibleWidth(labelPlain) - visibleWidth(hint));
+			const gap = Math.max(1, contentWidth - used - visibleWidth(labelPlain) - visibleWidth(hint));
 			const content = left + padding(gap) + (hint ? theme.fg("dim", hint) : "");
-			out.push(row(isHovered ? theme.bg("selectedBg", fit(content, inner)) : content, width));
+			const highlighted = isHovered ? theme.bg("selectedBg", fit(content, contentWidth)) : content;
+			out.push(row(node.userTurn === undefined ? highlighted : row(highlighted, inner), width));
 		}
+		this.#treeRows = Math.max(1, this.#hitRows.filter(index => index !== undefined).length);
 		return out;
 	}
 
@@ -256,8 +298,7 @@ export class CopySelectorComponent implements Component {
 		const previewTarget =
 			this.#hoveredIndex !== null && flat[this.#hoveredIndex] ? flat[this.#hoveredIndex]!.target : selected;
 		const available = Math.max(MIN_TREE_ROWS + 1, height - CHROME_ROWS);
-		const treeRows = Math.max(1, Math.min(flat.length, Math.floor(available / 2)));
-		this.#treeRows = treeRows;
+		const treeRows = Math.max(1, Math.min(this.#treeEntries(flat).length, Math.floor(available / 2)));
 		const previewRows = Math.max(1, available - treeRows);
 
 		const footer = [

@@ -47,6 +47,7 @@
 
 ### Changed
 
+- Grouped every model output produced for one user prompt inside a single divided frame in the `/copy` picker.
 - Localized the autoresearch dashboard, slash-command descriptions, and notifications for zh-CN.
 - GitHub Actions `run_watch` now shows the complete job set, per-job step progress and current step, plus recent available job-log lines while polling.
 - Localized the security subsystem end to end: error messages, `security://` resource output, and `/security` slash-command descriptions now route through the i18n `t()` framework with zh-CN translations. Security scan plans also accept an optional OAuth account, so native scans can run in key mode without a stored ChatGPT/Codex credential.
@@ -71,6 +72,7 @@
 
 ### Fixed
 
+- Restored `/copy` as a fullscreen picker with mouse wheel, hover, and click controls.
 - Fixed native-scrollback transcript rebuilds duplicating history after compaction and multi-tool replies clipping streamed text until message completion.
 - Fixed completed mid-stream Bash and Python shortcuts remaining pinned above the editor instead of joining the transcript before subsequent assistant output.
 - Fixed LSP startup and status on Windows by selecting executable package binaries, rejecting stale cached paths, and resolving concrete files from their nearest project root across sibling repositories and worktrees.
