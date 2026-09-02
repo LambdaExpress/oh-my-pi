@@ -230,6 +230,45 @@ describe("completed-run collapse projection", () => {
 		});
 	});
 
+	it("collapses completed activity before a terminal provider error while preserving the error", () => {
+		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
+		const progress = assistant(
+			[
+				{ type: "text", text: "working before the provider failed" },
+				{ type: "toolCall", id: "tc", name: "pwsh", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const result = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "pwsh",
+			content: [{ type: "text", text: "pane created" }],
+			timestamp: 3,
+		} as AgentMessage;
+		const errored = assistant([], "error", 4);
+		errored.errorMessage = "unknown certificate verification error";
+		const continuation = { role: "user", content: "continue", timestamp: 5 } as const;
+		const messages = [initial, progress, result, errored, continuation] as AgentMessage[];
+
+		const collapses = deriveCompletedRunCollapses(messages, { includeLatest: false });
+		expect(collapses).toEqual([
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: errored,
+			}),
+		]);
+
+		const context = { messages, models: {}, injectedTtsrRules: [], mode: "none" };
+		const projection = collapseCompletedRuns(context, collapses);
+		expect(projection.context.messages).toEqual([initial, errored, continuation]);
+		expect(projection.summaries).toEqual([
+			{ afterMessage: initial, agentTextSegments: 1, toolCalls: 1, durationMs: 3 },
+		]);
+	});
+
 	it.each([
 		["refusal", "stream_interrupted_after_content"],
 		["sensitive", "stream_interrupted_after_content"],

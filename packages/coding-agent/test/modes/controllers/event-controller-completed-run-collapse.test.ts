@@ -589,6 +589,52 @@ describe("completed run collapse", () => {
 		expect(resetDisplay).not.toHaveBeenCalled();
 	});
 
+	it("parks a terminal provider error after completed activity and collapses it on the next run", async () => {
+		const {
+			controller,
+			recordCompletedRunCollapse,
+			rebuildChatFromMessages,
+			resetDisplay,
+			waitForMessagePersistence,
+		} = fixture();
+		const initial = { role: "user", content: "build it", timestamp: 76 } as AgentMessage;
+		const progress = assistant("working before the provider failed", "toolUse", 77);
+		progress.content.push({ type: "toolCall", id: "tc", name: "pwsh", arguments: {} });
+		const result = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "pwsh",
+			content: [{ type: "text", text: "pane created" }],
+			timestamp: 78,
+		} as AgentMessage;
+		const errored = assistant("", "error", 79);
+		errored.errorMessage = "unknown certificate verification error";
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: initial });
+		await controller.handleEvent({ type: "message_end", message: initial });
+		await controller.handleEvent({ type: "message_end", message: progress });
+		await controller.handleEvent({ type: "message_end", message: result });
+		await controller.handleEvent({ type: "message_end", message: errored });
+		await controller.handleEvent({ type: "agent_end", messages: [initial, progress, result, errored] });
+
+		expect(waitForMessagePersistence).toHaveBeenCalledWith(errored);
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+
+		await controller.handleEvent({ type: "agent_start" });
+
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		expect(recordCompletedRunCollapse.mock.calls[0]![0]).toEqual(
+			expect.objectContaining({
+				firstMessage: initial,
+				initialUserMessage: initial,
+				finalAssistantMessage: errored,
+			}),
+		);
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
+	});
+
 	it("keeps one live collapse span across an upstream stream interruption and manual continuation", async () => {
 		const { controller, recordCompletedRunCollapse } = fixture();
 		const initial = { role: "user", content: "build it", timestamp: 76 } as AgentMessage;

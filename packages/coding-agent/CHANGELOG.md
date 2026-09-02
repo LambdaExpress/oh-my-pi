@@ -72,6 +72,7 @@
 
 ### Fixed
 
+- Fixed completed-run collapsing leaving all prior agent text and tool calls expanded when a run ended with a terminal provider error.
 - Restored `/copy` as a fullscreen picker with mouse wheel, hover, and click controls.
 - Fixed native-scrollback transcript rebuilds duplicating history after compaction and multi-tool replies clipping streamed text until message completion.
 - Fixed completed mid-stream Bash and Python shortcuts remaining pinned above the editor instead of joining the transcript before subsequent assistant output.
