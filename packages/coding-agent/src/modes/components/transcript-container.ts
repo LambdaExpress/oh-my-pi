@@ -43,8 +43,6 @@ interface FinalizableBlock {
 	): number | undefined;
 	/** Zero-row ordering markers may let finalized successors retire while marker remains open. */
 	allowsTranscriptSuccessorRetirement?(): boolean;
-	/** Render the row that must remain represented under emergency viewport pressure. */
-	renderTranscriptBlockEmergencyRow?(width: number): string | undefined;
 }
 
 /**
@@ -312,59 +310,16 @@ export class TranscriptContainer extends Container {
 		this.#settleFinalized();
 		const live = this.#liveEntries();
 		const capacity = Math.max(0, Math.trunc(rows));
-		if (live.length === 0 || capacity === 0) return EMPTY_ROWS;
+		if (live.length === 0) return EMPTY_ROWS;
 
-		const shown: Array<{ entry: TranscriptEntry; index: number }> = [];
-		const blocks: (readonly string[])[] = [];
-		let total = 0;
+		const output: string[] = [];
 		for (const candidate of live) {
 			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, frame);
 			const rendered = this.#renderEntry(candidate.entry, width);
 			const block = rendered.slice(this.#projectedPrefixLength(candidate.entry, candidate.index, width, rendered));
 			if (block.length === 0) continue;
-			total += block.length + (shown.length > 0 ? 1 : 0);
-			shown.push(candidate);
-			blocks.push(block);
-		}
-		if (shown.length === 0) return EMPTY_ROWS;
-		if (shown.length > capacity) return this.#renderEmergency(shown, width, capacity, frame);
-		if (total <= capacity) {
-			const output: string[] = [];
-			for (const rendered of blocks) {
-				if (output.length > 0) output.push("");
-				output.push(...rendered);
-			}
-			return output;
-		}
-
-		const allocation: number[] = new Array(shown.length).fill(1);
-		let surplus = capacity - shown.length;
-		// Surplus rows favor ordinary transcript blocks over dynamic tool-activity
-		// cards (newest-first within each class), so a growing tool card collapses to
-		// its compact form instead of clipping already-visible assistant text (#9718).
-		const order: number[] = [];
-		for (let index = shown.length - 1; index >= 0; index--) {
-			if (!isToolActivityComponent(shown[index]!.entry.component)) order.push(index);
-		}
-		for (let index = shown.length - 1; index >= 0; index--) {
-			if (isToolActivityComponent(shown[index]!.entry.component)) order.push(index);
-		}
-		for (const index of order) {
-			if (surplus <= 0) break;
-			const extra = Math.min(Math.max(0, blocks[index]!.length - 1), surplus);
-			allocation[index] += extra;
-			surplus -= extra;
-		}
-		const output: string[] = [];
-		for (let index = 0; index < shown.length; index++) {
-			const candidate = shown[index]!;
-			const allocated = allocation[index]!;
-			this.#setAllocation(candidate.entry.component, allocated, frame);
-			const rendered = this.#renderEntry(candidate.entry, width);
-			const start = this.#projectedPrefixLength(candidate.entry, candidate.index, width, rendered);
-			const visible = rendered.slice(start);
-			if (visible.length <= allocated) output.push(...visible);
-			else output.push(...visible.slice(visible.length - allocated));
+			if (output.length > 0) output.push("");
+			output.push(...block);
 		}
 		return output.length > capacity ? output.slice(output.length - capacity) : output;
 	}
@@ -537,20 +492,30 @@ export class TranscriptContainer extends Container {
 		}
 
 		if (policy === "pressure" && total > room) {
-			const activeCount = live.reduce((count, { entry }) => count + (entry.state === "active" ? 1 : 0), 0);
+			// A transparent zero-row ordering gate cannot later contribute visible
+			// content. Any other active zero-row predecessor remains a hard barrier.
+			const activeCount = live.reduce(
+				(count, { entry }, index) =>
+					count +
+					(entry.state === "active" && (rendered[index]!.length > 0 || !allowsSuccessorRetirement(entry.component))
+						? 1
+						: 0),
+				0,
+			);
+			const visibleCount = rendered.filter(rows => rows.length > 0).length;
 			const candidate = live.find(({ entry }, index) => {
 				if (
 					activeCount !== 1 ||
 					entry.state !== "active" ||
-					entry.mode !== "mutable" ||
-					!isToolActivityComponent(entry.component)
+					entry.stableFrozen ||
+					(!isToolActivityComponent(entry.component) && visibleCount !== 1)
 				)
 					return false;
 				return rendered[index]!.length > 0;
 			});
 			if (candidate !== undefined) {
 				const full = this.#renderEntry(candidate.entry, width);
-				const start = this.#snapshotStart(candidate.entry.snapshot, candidate.entry.state, width, full);
+				const start = this.#retiredPrefixLength(candidate.entry, width, full);
 				const rowCount = Math.min(full.length, start + Math.max(1, total - room));
 				if (rowCount > start) {
 					const prefix =
@@ -811,66 +776,6 @@ export class TranscriptContainer extends Container {
 		this.#replayPending =
 			this.#entries.some(entry => entry.state === "committed") || (head?.mode === "appendOnly" && head.emitted > 0);
 		this.#replayRequested = false;
-	}
-
-	#renderEmergency(
-		shown: readonly { entry: TranscriptEntry; index: number }[],
-		width: number,
-		rows: number,
-		frame: AnimationFrame,
-	): readonly string[] {
-		let visibleRows = rows;
-		let visible: { entry: TranscriptEntry; index: number }[] = [];
-		let emergencyCandidate: { entry: TranscriptEntry; index: number } | undefined;
-		let emergencyRow: string | undefined;
-		let hiddenActive = 0;
-		for (let attempt = 0; attempt < 2; attempt++) {
-			visible = visibleRows > 0 ? shown.slice(-visibleRows) : [];
-			emergencyCandidate = undefined;
-			emergencyRow = undefined;
-			const visibleStart = shown.length - visibleRows;
-			for (let index = visibleStart - 1; index >= 0; index--) {
-				const candidate = shown[index]!;
-				const block = candidate.entry.component as Component & FinalizableBlock;
-				const row =
-					candidate.entry.state === "settled" ? block.renderTranscriptBlockEmergencyRow?.(width) : undefined;
-				if (row === undefined) continue;
-				emergencyCandidate = candidate;
-				emergencyRow = row;
-				visible = [candidate, ...visible.slice(1)];
-				break;
-			}
-
-			let activeTotal = 0;
-			for (const candidate of shown) {
-				if (candidate.entry.state === "active") activeTotal++;
-			}
-			hiddenActive = activeTotal;
-			for (const candidate of visible) {
-				if (candidate.entry.state === "active") hiddenActive--;
-			}
-			// The summary row itself represents the newest active block when no
-			// active row fits beside it; report only the additional backlog.
-			if (hiddenActive === activeTotal && hiddenActive > 0) hiddenActive--;
-			if (attempt === 0 && hiddenActive > 0) {
-				visibleRows = Math.max(0, rows - 1);
-				continue;
-			}
-			break;
-		}
-
-		const output = hiddenActive > 0 ? [`${hiddenActive} more transcript blocks active`] : [];
-		for (const candidate of visible) {
-			if (candidate === emergencyCandidate) {
-				output.push(emergencyRow ?? "");
-				continue;
-			}
-			this.#setAllocation(candidate.entry.component, 1, frame);
-			const rendered = this.#renderEntry(candidate.entry, width);
-			const start = this.#projectedPrefixLength(candidate.entry, candidate.index, width, rendered);
-			output.push(rendered[start] ?? "");
-		}
-		return output.slice(0, rows);
 	}
 
 	#projectedPrefixLength(entry: TranscriptEntry, index: number, width: number, rendered: readonly string[]): number {

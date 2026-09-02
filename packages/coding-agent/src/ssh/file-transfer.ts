@@ -126,7 +126,7 @@ async function runRemotePowerShellBytes(
 		? { stdin: opts.stdin, signal, env: invocation.env }
 		: { signal, env: invocation.env };
 	try {
-		using child = ptree.spawn(["ssh", ...invocation.args], spawnOptions);
+		using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], spawnOptions);
 		const raw = await child.bytes();
 		await child.exitedCleanly;
 		return raw;
@@ -198,7 +198,7 @@ export async function readRemoteFile(
 		const command = `head -c ${opts.maxBytes + 1} ${quotePosixPath(remotePath)}`;
 		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
 		try {
-			using child = ptree.spawn(["ssh", ...invocation.args], {
+			using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 				signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 				env: invocation.env,
 			});
@@ -289,7 +289,7 @@ export async function writeRemoteFile(
 			allowStdin: true,
 		});
 		try {
-			using child = ptree.spawn(["ssh", ...invocation.args], {
+			using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 				stdin: content,
 				signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 				env: invocation.env,
@@ -374,7 +374,7 @@ export async function deleteRemoteFile(
 			`else echo 'ssh://: file does not exist' >&2; exit 1; fi`;
 		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
 		try {
-			using child = ptree.spawn(["ssh", ...invocation.args], {
+			using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 				signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 				env: invocation.env,
 			});
@@ -424,7 +424,7 @@ export async function moveRemoteFile(
 			`else echo 'ssh://: source does not exist' >&2; exit 1; fi`;
 		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
 		try {
-			using child = ptree.spawn(["ssh", ...invocation.args], {
+			using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 				signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 				env: invocation.env,
 			});
@@ -474,7 +474,7 @@ export async function statRemotePath(
 		const command = `if [ -d ${p} ]; then echo directory; elif [ -f ${p} ]; then echo file; elif [ -e ${p} ]; then echo other; else echo missing; fi`;
 		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
 		try {
-			using child = ptree.spawn(["ssh", ...invocation.args], {
+			using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 				signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 				env: invocation.env,
 			});
@@ -529,7 +529,7 @@ export async function listRemoteDir(
 		const command = `LC_ALL=C ls -1Ap -- ${quotePosixPath(remotePath)}`;
 		const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(mode.shell, command));
 		try {
-			using child = ptree.spawn(["ssh", ...invocation.args], {
+			using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 				signal: ptree.combineSignals(opts.signal, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 				env: invocation.env,
 			});
@@ -573,7 +573,7 @@ async function runRemotePosixText(
 ): Promise<string> {
 	const invocation = await buildRemoteCommandInvocation(target, wrapInPosixShell(shell, command));
 	try {
-		using child = ptree.spawn(["ssh", ...invocation.args], {
+		using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 			signal: ptree.combineSignals(options.signal, options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
 			env: invocation.env,
 		});
@@ -751,7 +751,7 @@ async function probeRemotePosixCommitStrategy(
 ): Promise<SshTransferCommitStrategy> {
 	const hostInfo = await ensureHostInfo(target);
 	const probe =
-		hostInfo.os === "linux"
+		hostInfo.os === "linux" || hostInfo.os === "wsl"
 			? `python3 -c ${quotePosixPath(
 					"import ctypes, errno; c=ctypes.CDLL(None,use_errno=True); f=getattr(c,'renameat2'); r=f(-100,b'/__omp_transfer_probe_a__',-100,b'/__omp_transfer_probe_b__',2); e=ctypes.get_errno(); raise SystemExit(0 if r == 0 or e not in (errno.ENOSYS, errno.EINVAL) else 1)",
 				)} >/dev/null 2>&1`
@@ -963,6 +963,7 @@ mkdir -p -- "$parent" || exit 1
 umask 077
 ( set -C; : > "$stage" ) || exit 1
 (
+	trap - HUP INT TERM
 	while :; do
 		size=$(wc -c < "$stage" 2>/dev/null) || size=0
 		printf '${SSH_TRANSFER_PROGRESS_MARKER}%s\\n' "$size"
@@ -1134,7 +1135,7 @@ async function streamUploadStage(
 			: buildPowerShellCommand(mode.executable, buildPowerShellUploadStageScript(plan.remotePath, artifacts));
 	const invocation = await buildRemoteCommandInvocation(plan.target, command, { allowStdin: true });
 	try {
-		using child = ptree.spawn(["ssh", ...invocation.args], {
+		using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 			stdin: "pipe",
 			signal,
 			env: invocation.env,
@@ -1189,7 +1190,7 @@ async function streamDownloadStage(
 	try {
 		const file = await fs.open(stagePath, "wx", 0o600);
 		try {
-			using child = ptree.spawn(["ssh", ...invocation.args], {
+			using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 				signal,
 				env: invocation.env,
 			});
@@ -1592,7 +1593,7 @@ async function runUploadCommitAttempt(
 		(mode.kind === "powershell" ? SSH_TRANSFER_COMMIT_POWERSHELL_TIMEOUT_MS : SSH_TRANSFER_COMMIT_POSIX_TIMEOUT_MS);
 	let markerSeen = false;
 	try {
-		using child = ptree.spawn(["ssh", ...invocation.args], {
+		using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 			stdin: "pipe",
 			signal: ptree.combineSignals(commitTimeoutMs - 1_000),
 			env: invocation.env,
@@ -1679,7 +1680,7 @@ async function cleanupRemoteTransferArtifacts(
 ): Promise<void> {
 	const invocation = await buildRemoteCommandInvocation(target, buildRemoteArtifactCleanupCommand(mode, artifacts));
 	try {
-		using child = ptree.spawn(["ssh", ...invocation.args], {
+		using child = ptree.spawn([invocation.executable ?? "ssh", ...invocation.args], {
 			signal: ptree.combineSignals(timeoutMs),
 			env: invocation.env,
 		});

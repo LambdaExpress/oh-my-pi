@@ -15,6 +15,7 @@ import {
 	resolveAbortLabel,
 	shouldRenderAbortReason,
 } from "../../session/messages";
+import { isAdvisorCard } from "../../session/queued-messages";
 import type { SessionContext } from "../../session/session-context";
 import { createIrcMessageCard } from "../../tools/hub";
 import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
@@ -154,6 +155,15 @@ export function deriveCompletedRunAnchor(messages: readonly AgentMessage[]): Com
 	return deriveCompletedRunState(messages, { includeLatest: true }).anchor;
 }
 
+function hasAdvisorContinuationAfter(messages: readonly AgentMessage[], finalAssistantIndex: number): boolean {
+	for (let index = finalAssistantIndex + 1; index < messages.length; index++) {
+		const message = messages[index]!;
+		if (isAdvisorCard(message)) return true;
+		if (message.role === "assistant" || isNonSyntheticUserMessage(message)) return false;
+	}
+	return false;
+}
+
 function deriveCompletedRunState(
 	messages: readonly AgentMessage[],
 	options: DeriveCompletedRunCollapsesOptions,
@@ -187,6 +197,11 @@ function deriveCompletedRunState(
 			continue;
 		}
 		if (!isCollapsibleRunFinalAssistant(message)) continue;
+		// An advisor card turns the preceding natural answer into a provisional
+		// final. Keep the original request open until the advisor-triggered
+		// assistant flow reaches its own natural answer; repeated advisor cards
+		// can therefore extend the same recovered collapse span.
+		if (hasAdvisorContinuationAfter(messages, index)) continue;
 
 		collapses.push({
 			firstMessage: initialUserMessage,
@@ -295,9 +310,25 @@ export function collapseCompletedRuns(
 			continue;
 		}
 
+		const preservedBoundaryIndexes = new Set<number>([span.request]);
+		for (let index = span.start; index <= span.answer; index++) {
+			const message = boundaryMessages[index];
+			if (!message || !isAdvisorCard(message)) continue;
+			for (let previousIndex = index - 1; previousIndex >= span.start; previousIndex--) {
+				if (!isCollapsibleRunFinalAssistant(boundaryMessages[previousIndex])) continue;
+				preservedBoundaryIndexes.add(previousIndex);
+				break;
+			}
+			preservedBoundaryIndexes.add(index);
+		}
+		if (span.keepAnswer && finalMessage.role === "assistant") {
+			preservedBoundaryIndexes.add(span.answer);
+		}
+
 		let agentTextSegments = 0;
 		let toolCalls = 0;
 		for (let index = span.start; index < span.answer; index++) {
+			if (preservedBoundaryIndexes.has(index)) continue;
 			const message = boundaryMessages[index];
 			if (message?.role !== "assistant") continue;
 			for (const content of message.content) {
@@ -306,25 +337,26 @@ export function collapseCompletedRuns(
 			}
 		}
 
-		const visibleRequestIndex = boundaryIndexBySourceIndex.findIndex(
-			(boundaryIndex, index) => index >= visibleStart && index <= visibleEnd && boundaryIndex === span.request,
-		);
-		push(
-			requestMessage,
-			visibleRequestIndex >= 0 ? (sessionContext.cacheMissExplainedAt?.[visibleRequestIndex] ?? false) : false,
-		);
-		if (span.keepAnswer && finalMessage.role === "assistant") {
-			const textContent = finalMessage.content.filter(
+		for (let boundaryIndex = span.start; boundaryIndex <= span.answer; boundaryIndex++) {
+			if (!preservedBoundaryIndexes.has(boundaryIndex)) continue;
+			const message = boundaryMessages[boundaryIndex]!;
+			const visibleSourceIndex = boundaryIndexBySourceIndex.findIndex(
+				(candidateBoundaryIndex, index) =>
+					index >= visibleStart && index <= visibleEnd && candidateBoundaryIndex === boundaryIndex,
+			);
+			if (message.role !== "assistant") {
+				push(
+					message,
+					visibleSourceIndex >= 0 ? (sessionContext.cacheMissExplainedAt?.[visibleSourceIndex] ?? false) : false,
+				);
+				continue;
+			}
+			const textContent = message.content.filter(
 				content => content.type === "text" && canonicalizeMessage(content.text),
 			);
-			const visibleAnswerIndex = boundaryIndexBySourceIndex.findIndex(
-				(boundaryIndex, index) => index >= visibleStart && index <= visibleEnd && boundaryIndex === span.answer,
-			);
 			push(
-				textContent.length === finalMessage.content.length
-					? finalMessage
-					: { ...finalMessage, content: textContent },
-				visibleAnswerIndex >= 0 ? (sessionContext.cacheMissExplainedAt?.[visibleAnswerIndex] ?? false) : false,
+				textContent.length === message.content.length ? message : { ...message, content: textContent },
+				visibleSourceIndex >= 0 ? (sessionContext.cacheMissExplainedAt?.[visibleSourceIndex] ?? false) : false,
 			);
 		}
 		summaries.push({ afterMessage: requestMessage, agentTextSegments, toolCalls, durationMs: span.durationMs });

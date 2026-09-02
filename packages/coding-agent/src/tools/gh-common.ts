@@ -105,6 +105,35 @@ export function repoFromUrl(value: string | undefined): string | undefined {
 	return host === defaultGhHost() ? slug : formatRepoRef(host, slug);
 }
 
+/**
+ * Best-effort resolution of the GitHub repository a local branch pushes to.
+ * Missing branch metadata, the local `.` remote, and non-HTTP remote URLs all
+ * deliberately fall through to the caller's normal repository resolution.
+ */
+export async function tryResolveGitHubBranchRepo(
+	cwd: string,
+	branch: string | undefined,
+	signal?: AbortSignal,
+): Promise<string | undefined> {
+	const repository = vcs.git(cwd);
+	if (!repository) return undefined;
+
+	try {
+		const targetBranch =
+			normalizeOptionalString(branch) ?? normalizeOptionalString(await repository.currentBranch(signal));
+		if (!targetBranch) return undefined;
+
+		const configPrefix = `branch.${targetBranch}.`;
+		const pushRemote = normalizeOptionalString(await repository.configGet(`${configPrefix}pushRemote`, signal));
+		const remote = pushRemote ?? normalizeOptionalString(await repository.configGet(`${configPrefix}remote`, signal));
+		if (!remote || remote === ".") return undefined;
+
+		return repoFromUrl((await repository.remoteUrl(remote, signal)) ?? undefined);
+	} catch {
+		return undefined;
+	}
+}
+
 export const PR_URL_PATTERN = /^https:\/\/([^/]+)\/([^/]+\/[^/]+)\/pull\/(\d+)(?:\/.*)?$/;
 export const ISSUE_URL_PATTERN = /^https:\/\/([^/]+)\/([^/]+\/[^/]+)\/issues\/(\d+)(?:\/.*)?$/;
 

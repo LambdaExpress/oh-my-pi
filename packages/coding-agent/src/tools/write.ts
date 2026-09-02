@@ -310,6 +310,15 @@ function resolveBulkDirectives(raw: string, stripped: string): Map<number, strin
 	return rawResult ?? parseBulkDirectives(stripped);
 }
 
+function describeConflictFileFailure(stage: "read" | "write", displayPath: string, error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	const code =
+		typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+			? ` (${error.code})`
+			: "";
+	return `${stage} stage for '${displayPath}' failed${code}: ${message}`;
+}
+
 const writeSchema = type({
 	path: type("string").describe("file path"),
 	content: type("string").describe("file content"),
@@ -1048,6 +1057,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			let text: string;
 			const resolvedEntries: ConflictEntry[] = [];
 			const staleEntries: ConflictEntry[] = [];
+			let fileEchoTrimmed = 0;
 			let failure: string | undefined;
 			try {
 				text = await Bun.file(absolutePath).text();
@@ -1055,7 +1065,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				failedFiles.push({
 					displayPath: sample.displayPath,
 					count: fileEntries.length,
-					error: error instanceof Error ? error.message : String(error),
+					error: describeConflictFileFailure("read", sample.displayPath, error),
 				});
 				continue;
 			}
@@ -1064,7 +1074,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 					const expanded = expandContentTokens(contentFor(entry), entry);
 					const splice = spliceConflict(text, entry, expanded);
 					text = splice.text;
-					totalEchoTrimmed += splice.trimmedLeading + splice.trimmedTrailing;
+					fileEchoTrimmed += splice.trimmedLeading + splice.trimmedTrailing;
 					resolvedEntries.push(entry);
 				} catch (error) {
 					// A locate-miss for a region an earlier entry already spliced
@@ -1087,7 +1097,16 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				continue;
 			}
 
-			await writethroughNoop(absolutePath, text, signal);
+			try {
+				await writethroughNoop(absolutePath, text, signal);
+			} catch (error) {
+				failedFiles.push({
+					displayPath: sample.displayPath,
+					count: fileEntries.length,
+					error: describeConflictFileFailure("write", sample.displayPath, error),
+				});
+				continue;
+			}
 			invalidateFsScanAfterWrite(absolutePath);
 			this.session.bumpFileMutationVersion?.(absolutePath);
 			this.session.fileSnapshotStore?.invalidate(absolutePath);
@@ -1096,6 +1115,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			const header = maybeWriteSnapshotHeader(this.session, absolutePath, text);
 			succeededFiles.push({ displayPath: sample.displayPath, count: resolvedEntries.length, header });
 			totalResolvedIds += resolvedEntries.length;
+			totalEchoTrimmed += fileEchoTrimmed;
 		}
 
 		const summaryLines: string[] = [];

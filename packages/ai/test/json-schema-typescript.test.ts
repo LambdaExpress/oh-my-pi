@@ -18,6 +18,21 @@ describe("jsonSchemaToTypeScript", () => {
 		expect(ts).toContain("limit?: number;");
 	});
 
+	it("surfaces validation refinements in property comments", () => {
+		const ts = jsonSchemaToTypeScript({
+			type: "object",
+			properties: {
+				first: { type: "integer", minimum: 1, maximum: 50, default: 10 },
+				query: { type: "string", description: "search query", minLength: 1, pattern: "^[a-z]+$" },
+			},
+		});
+
+		expect(ts).toContain("/** Constraints: minimum: 1; maximum: 50. */");
+		expect(ts).toContain("first?: number;");
+		expect(ts).toContain("* search query");
+		expect(ts).toContain('* Constraints: minimum length: 1; pattern: "^[a-z]+$".');
+	});
+
 	it("renders the harmony style with line comments, comma delimiters, and no indentation", () => {
 		const ts = jsonSchemaToTypeScript(
 			{

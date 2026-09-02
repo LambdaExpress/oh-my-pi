@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import { Agent } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
@@ -11,6 +11,7 @@ import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mod
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import type { CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
@@ -25,6 +26,19 @@ function dump(label: string, rows: readonly string[]): void {
 	console.log(`==== ${label} ====`);
 	for (const [i, row] of rows.entries()) console.log(String(i).padStart(3), JSON.stringify(row));
 }
+
+type FinalizableTestComponent = Component & {
+	isTranscriptBlockFinalized(): boolean;
+};
+
+type TransparentTestComponent = FinalizableTestComponent & {
+	allowsTranscriptSuccessorRetirement(): boolean;
+};
+
+type AllocatedToolTestComponent = FinalizableTestComponent & {
+	setTranscriptAllocation(rows: number): void;
+	setToolActivityVisible(): void;
+};
 
 describe("libkitty end-to-end", () => {
 	let tempDir: TempDir;
@@ -240,6 +254,90 @@ describe("libkitty end-to-end", () => {
 		for (let frame = 0; frame < 2; frame++) mode.ui.renderNow();
 		await term.flush();
 		expect(markerTape()).toEqual([...markers]);
+	});
+
+	it("keeps a completed tool fully expanded across the next-user boundary", async () => {
+		const width = 120;
+		term = new VirtualTerminal(width, 12);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		composer.setPreferences({ quiet: true });
+		composer.setHeaderExtras([], []);
+		const chromeRows = composer.renderFrame({ columns: width, rows: 1_000 }).viewport.length;
+		const paddingRows = term.rows - chromeRows - 5;
+		expect(paddingRows).toBeGreaterThanOrEqual(0);
+		mode.pendingMessagesContainer.addChild({
+			render: () => Array.from({ length: paddingRows }, () => ""),
+		});
+
+		const assistantRows = ["BOUNDARY-A1", "BOUNDARY-A2", "BOUNDARY-A3", "BOUNDARY-A4"] as const;
+		const markers = ["FULL-TOOL-T1", "FULL-TOOL-T2", "FULL-TOOL-T3"] as const;
+		let gateFinalized = false;
+		let assistantFinalized = false;
+		let toolAllocation = Number.MAX_SAFE_INTEGER;
+		const gate: TransparentTestComponent = {
+			render: () => [],
+			isTranscriptBlockFinalized: () => gateFinalized,
+			allowsTranscriptSuccessorRetirement: () => true,
+		};
+		const assistant: FinalizableTestComponent = {
+			render: () => assistantRows,
+			isTranscriptBlockFinalized: () => assistantFinalized,
+		};
+		const tool: AllocatedToolTestComponent = {
+			render: () => (toolAllocation < markers.length ? [markers.at(-1)!] : markers),
+			isTranscriptBlockFinalized: () => true,
+			setTranscriptAllocation: (rows: number) => {
+				toolAllocation = rows;
+			},
+			setToolActivityVisible: () => {},
+		};
+		mode.chatContainer.addChild(gate);
+		mode.chatContainer.addChild(assistant);
+		mode.chatContainer.addChild(tool);
+
+		mode.ui.renderNow();
+		await term.flush();
+		const markerTape = () =>
+			plainRows(term.getScrollBuffer())
+				.filter(row => markers.some(marker => row.includes(marker)))
+				.map(row => markers.find(marker => row.includes(marker))!);
+		expect(markerTape()).toEqual([...markers]);
+		expect(
+			plainRows(term.getViewport())
+				.filter(row => markers.some(marker => row.includes(marker)))
+				.map(row => markers.find(marker => row.includes(marker))!),
+		).toEqual([...markers]);
+		expect(toolAllocation).toBe(Number.MAX_SAFE_INTEGER);
+
+		// The next user boundary closes the old transparent anchor, settles the
+		// predecessor, appends the user row, and installs a fresh live anchor.
+		gateFinalized = true;
+		assistantFinalized = true;
+		const nextUser: FinalizableTestComponent = {
+			render: () => ["BOUNDARY-NEXT-USER"],
+			isTranscriptBlockFinalized: () => false,
+		};
+		const nextGate: TransparentTestComponent = {
+			render: () => [],
+			isTranscriptBlockFinalized: () => false,
+			allowsTranscriptSuccessorRetirement: () => true,
+		};
+		mode.chatContainer.addChild(nextUser);
+		mode.chatContainer.addChild(nextGate);
+		mode.ui.renderNow();
+		await term.flush();
+		expect(markerTape()).toEqual([...markers]);
+		expect(
+			plainRows(term.getViewport())
+				.filter(row => markers.some(marker => row.includes(marker)))
+				.map(row => markers.find(marker => row.includes(marker))!),
+		).toEqual([...markers]);
+		expect(toolAllocation).toBe(Number.MAX_SAFE_INTEGER);
 	});
 
 	it("streams a growing paragraph with inline code into native history before finalize", async () => {
@@ -465,5 +563,169 @@ describe("libkitty end-to-end", () => {
 		term.sendInput("\x0f");
 		await term.waitForRender();
 		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(firstOutputMarker))).toBe(false);
+	});
+
+	it("preserves the advisor handoff order when Alt+O rebuilds retired history", async () => {
+		term = new VirtualTerminal(120, 12);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		session.settings.set("display.collapseCompletedRuns", true);
+
+		const usage: Usage = {
+			input: 1,
+			output: 1,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 2,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const hiddenMarker = "ADVISOR_PRE_HIDDEN_MARKER";
+		const firstReplyMarker = "ADVISOR_FIRST_REPLY_MARKER";
+		const advisorNoteMarker = "ADVISOR_NOTE_MARKER";
+		const secondReplyMarker = "ADVISOR_SECOND_REPLY_MARKER";
+		const draftMarker = "ADVISOR_DRAFT_MARKER";
+		const initial = { role: "user", content: "Review the implementation.", timestamp: 1 } as const;
+		const preAdvisorWork: AssistantMessage = {
+			role: "assistant",
+			content: [
+				{
+					type: "text",
+					text: Array.from({ length: 48 }, (_, index) =>
+						index === 0 ? hiddenMarker : `Pre-advisor processing row ${String(index).padStart(2, "0")}.`,
+					).join("\n"),
+				},
+				{
+					type: "toolCall",
+					id: "advisor-pre-call",
+					name: "bash",
+					arguments: { command: "inspect-before-advisor" },
+				},
+			],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage,
+			stopReason: "toolUse",
+			timestamp: 2,
+		};
+		const preAdvisorResult: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "advisor-pre-call",
+			toolName: "bash",
+			content: [{ type: "text", text: "Pre-advisor tool result." }],
+			isError: false,
+			timestamp: 3,
+		};
+		const firstReply: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: firstReplyMarker }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage,
+			stopReason: "stop",
+			timestamp: 4,
+		};
+		const advisorCard: CustomMessage = {
+			role: "custom",
+			customType: "advisor",
+			content: `<advisory severity="concern">${advisorNoteMarker}</advisory>`,
+			details: { notes: [{ note: advisorNoteMarker, severity: "concern", advisor: "Architecture" }] },
+			display: true,
+			attribution: "agent",
+			timestamp: 5,
+		};
+		const postAdvisorWork: AssistantMessage = {
+			role: "assistant",
+			content: [
+				{ type: "text", text: "Applying the advisor feedback." },
+				{ type: "toolCall", id: "advisor-post-call", name: "bash", arguments: { command: "apply-advice" } },
+			],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage,
+			stopReason: "toolUse",
+			timestamp: 6,
+		};
+		const postAdvisorResult: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "advisor-post-call",
+			toolName: "bash",
+			content: [{ type: "text", text: "Advisor feedback applied." }],
+			isError: false,
+			timestamp: 7,
+		};
+		const secondReply: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: secondReplyMarker }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage,
+			stopReason: "stop",
+			timestamp: 8,
+		};
+
+		for (const message of [
+			initial,
+			preAdvisorWork,
+			preAdvisorResult,
+			firstReply,
+			advisorCard,
+			postAdvisorWork,
+			postAdvisorResult,
+			secondReply,
+		]) {
+			session.sessionManager.appendMessage(message);
+		}
+		mode.recordCompletedRunCollapse({
+			firstMessage: initial,
+			initialUserMessage: initial,
+			finalAssistantMessage: secondReply,
+			durationMs: 7_000,
+		});
+
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		mode.rebuildChatFromMessages();
+		mode.ui.requestRender(true);
+		await term.waitForRender(() => plainRows(term.getScrollBuffer()).some(row => row.includes("※ collapsed:")));
+		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(hiddenMarker))).toBe(false);
+
+		// Raw Alt+O expands the completed span through the mounted editor. Drive
+		// finalized transcript frames until its oldest hidden row reaches native
+		// scrollback rather than remaining repaintable in the viewport.
+		term.sendInput("\x1bo");
+		const committedRows = () => {
+			const { baseY } = term.getBufferPosition();
+			return plainRows(term.getScrollBuffer()).slice(0, baseY);
+		};
+		for (let frame = 0; frame < 40 && !committedRows().some(row => row.includes(hiddenMarker)); frame++) {
+			mode.ui.requestRender(true);
+			await term.waitForRender();
+		}
+		expect(committedRows().filter(row => row.includes(hiddenMarker))).toHaveLength(1);
+
+		term.sendInput(draftMarker);
+		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes(draftMarker)));
+
+		// Collapsing uses resetDisplay(), which must replace the complete terminal
+		// tape while preserving the still-mounted editor and the advisor handoff.
+		term.sendInput("\x1bo");
+		await term.waitForRender(() => {
+			const rows = plainRows(term.getScrollBuffer());
+			return !rows.some(row => row.includes(hiddenMarker)) && rows.some(row => row.includes(draftMarker));
+		});
+
+		const rows = plainRows(term.getScrollBuffer());
+		expect(rows.some(row => row.includes(hiddenMarker))).toBe(false);
+		const firstReplyRow = rows.findIndex(row => row.includes(firstReplyMarker));
+		const advisorNoteRow = rows.findIndex(row => row.includes(advisorNoteMarker));
+		const secondReplyRow = rows.findIndex(row => row.includes(secondReplyMarker));
+		expect(firstReplyRow).toBeGreaterThanOrEqual(0);
+		expect(advisorNoteRow).toBeGreaterThan(firstReplyRow);
+		expect(secondReplyRow).toBeGreaterThan(advisorNoteRow);
+		expect(rows.some(row => row.includes(draftMarker))).toBe(true);
 	});
 });

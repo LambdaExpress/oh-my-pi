@@ -113,6 +113,7 @@ process.stdin.on("data", () => process.stdout.write("AFTER-SNAPSHOT\\n"));
 			if (followed.op !== "logs") throw new Error("unexpected follow result");
 			expect(followed.timedOut).toBeFalse();
 			expect(followed.text).toContain("AFTER-SNAPSHOT");
+			expect(followed.text).not.toContain("READY");
 		} finally {
 			releaseRender.resolve();
 			await client.request({ op: "stop", name: "cursor", timeoutMs: 2_000 }).catch(() => undefined);

@@ -194,6 +194,26 @@ describe("SSH file transfer core", () => {
 		expect(progress.map(update => update.transferredBytes)).toEqual([0, 1, 2, 3, 4, 4]);
 	});
 
+	it("prevents the POSIX progress watcher from inheriting stage cleanup traps", async () => {
+		const payload = binaryPayload(4);
+		const localPath = path.join(testDir, "upload-zsh-progress.bin");
+		await fs.writeFile(localPath, payload);
+		const commands: string[] = [];
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockImplementation(async (_host, command) => {
+			commands.push(command);
+			return { args: [command.includes("OMP_TRANSFER_COMMITTED") ? "commit" : "stage"] };
+		});
+		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>(command: string[]) =>
+			command[1] === "commit"
+				? createChild<In>({ stdout: [new TextEncoder().encode("OMP_TRANSFER_COMMITTED\n")] })
+				: createChild<In>(),
+		);
+
+		await executeSshFileTransfer(uploadPlan(localPath, payload.byteLength));
+
+		expect(commands[0]).toContain("(\n\ttrap - HUP INT TERM\n\twhile :; do");
+	});
+
 	it("downloads irregular binary chunks through partial local writes", async () => {
 		const payload = binaryPayload(160 * 1024 + 19);
 		const localPath = path.join(testDir, "nested", "download.bin");
@@ -455,5 +475,40 @@ describe("SSH file transfer core", () => {
 		expect(plan).toMatchObject({ totalBytes: 4, commitStrategy: "remote-linux-exchange" });
 		expect(commands).toHaveLength(2);
 		expect(commands.every(command => !command.includes(".omp-transfer-") && !command.includes("mkdir"))).toBe(true);
+	});
+
+	it("uses the Linux atomic exchange strategy for WSL without a launcher", async () => {
+		vi.spyOn(connectionManager, "ensureHostInfo").mockResolvedValue({
+			version: 7,
+			os: "wsl",
+			shell: "bash",
+			transferShell: "bash",
+			compatEnabled: false,
+		});
+		const localPath = path.join(testDir, "upload.bin");
+		await fs.writeFile(localPath, new Uint8Array([1, 2, 3, 4]));
+		const commands: string[] = [];
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockImplementation(async (_host, command) => {
+			commands.push(command);
+			return { args: [`probe-${commands.length}`] };
+		});
+		let spawnIndex = 0;
+		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
+			const stdout = spawnIndex++ === 0 ? new TextEncoder().encode("file") : new TextEncoder().encode("exchange");
+			return createChild<In>({ stdout: [stdout] });
+		});
+
+		const plan = await prepareSshFileTransfer({
+			operation: "upload",
+			target,
+			localPath,
+			remotePath: "/tmp/output.bin",
+			overwrite: true,
+		});
+
+		expect(plan.commitStrategy).toBe("remote-linux-exchange");
+		expect(commands).toHaveLength(2);
+		expect(commands[1]).toContain("renameat2");
+		expect(commands.every(command => !command.includes("wsl.exe"))).toBe(true);
 	});
 });

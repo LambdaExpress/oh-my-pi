@@ -11,6 +11,7 @@ import {
 	getHostInfo,
 	getSshHostInfoKey,
 	HOST_PROBE_MARKER,
+	osFromTransferProbe,
 	osFromUname,
 	parseHostInfo,
 	type SSHConnectionTarget,
@@ -112,30 +113,56 @@ describe("extractProbePayload (host probe framing)", () => {
 
 describe("findProbeMarker (transfer-shell probe recovery)", () => {
 	it("returns the tail after the marker when it appears in stdout", () => {
-		// Happy path: `sh -lc 'printf "PI_TRANSFER_OK|"; uname -s'` lands in
-		// stdout. The tail is the uname output the caller uses to refine OS.
-		const stdout = `${TRANSFER_PROBE_MARKER}Linux\n`;
-		expect(findProbeMarker(stdout, "", TRANSFER_PROBE_MARKER)).toBe("Linux\n");
+		const stdout = `${TRANSFER_PROBE_MARKER}Linux|6.8.0-generic|0|0\n`;
+		expect(findProbeMarker(stdout, "", TRANSFER_PROBE_MARKER)).toBe("Linux|6.8.0-generic|0|0\n");
 	});
 
 	it("falls back to stderr when a broken dotfile swaps fd 1/2", () => {
 		// Some remotes have dotfiles that redirect every shell write to stderr.
 		// The transfer probe must still recognize the marker so ssh:// doesn't
 		// refuse a POSIX-capable host (#3722 review).
-		const stderr = `dotfile noise\n${TRANSFER_PROBE_MARKER}Darwin\n`;
-		expect(findProbeMarker("", stderr, TRANSFER_PROBE_MARKER)).toBe("Darwin\n");
+		const stderr = `dotfile noise\n${TRANSFER_PROBE_MARKER}Darwin|24.6.0|0|0\n`;
+		expect(findProbeMarker("", stderr, TRANSFER_PROBE_MARKER)).toBe("Darwin|24.6.0|0|0\n");
 	});
 
 	it("prefers stdout over stderr when the marker is in both", () => {
 		// Order matters: stdout is the canonical path, stderr is the rescue.
 		// A reordering bug would silently use stale stderr fragments first.
-		const stdout = `${TRANSFER_PROBE_MARKER}Linux`;
+		const stdout = `${TRANSFER_PROBE_MARKER}Linux|6.8.0-generic|0|0`;
 		const stderr = `${TRANSFER_PROBE_MARKER}stale`;
-		expect(findProbeMarker(stdout, stderr, TRANSFER_PROBE_MARKER)).toBe("Linux");
+		expect(findProbeMarker(stdout, stderr, TRANSFER_PROBE_MARKER)).toBe("Linux|6.8.0-generic|0|0");
 	});
 
 	it("returns null when the marker is in neither stream", () => {
 		expect(findProbeMarker("noise", "more noise", TRANSFER_PROBE_MARKER)).toBeNull();
+	});
+});
+
+describe("osFromTransferProbe (WSL recovery)", () => {
+	it("recognizes either WSL environment flag only when its field is exactly 1", () => {
+		expect(osFromTransferProbe("Linux|6.8.0-generic|1|0")).toBe("wsl");
+		expect(osFromTransferProbe("Linux|6.8.0-generic|0|1")).toBe("wsl");
+		expect(osFromTransferProbe("Linux|6.8.0-generic|true|01")).toBe("linux");
+		expect(osFromTransferProbe("Linux|6.8.0-generic| 1|1 ")).toBe("linux");
+	});
+
+	it("recognizes canonical WSL1 and WSL2 kernel release suffixes", () => {
+		expect(osFromTransferProbe("Linux|4.4.0-19041-Microsoft|0|0")).toBe("wsl");
+		expect(osFromTransferProbe("Linux|4.19.128-microsoft-standard|0|0")).toBe("wsl");
+		expect(osFromTransferProbe("Linux|5.15.153.1-microsoft-standard-WSL2|0|0")).toBe("wsl");
+	});
+
+	it("does not mistake Microsoft noise or noncanonical kernels for WSL", () => {
+		expect(osFromTransferProbe("Microsoft Linux banner|6.8.0-generic|0|0")).toBe("linux");
+		expect(osFromTransferProbe("Linux|6.8.0-microsoft-hardened|0|0")).toBe("linux");
+		expect(osFromTransferProbe("GNU/Linux|5.15.153.1-microsoft-standard-WSL2|0|0")).toBe("linux");
+		expect(osFromTransferProbe("Linux|6.8.0-generic|0|0\nWelcome to Microsoft WSL\nLinux|x|1|1")).toBe("linux");
+	});
+
+	it("keeps ordinary Linux, macOS, and Windows uname classifications", () => {
+		expect(osFromTransferProbe("Linux|6.8.0-generic|0|0")).toBe("linux");
+		expect(osFromTransferProbe("Darwin|24.6.0|0|0")).toBe("macos");
+		expect(osFromTransferProbe("MINGW64_NT-10.0|3.5.4|0|0")).toBe("windows");
 	});
 });
 
@@ -162,6 +189,23 @@ describe("osFromUname (transfer-shell probe OS recovery)", () => {
 });
 
 describe("parseHostInfo transferShell handling", () => {
+	it("round-trips WSL host info", () => {
+		const parsed = parseHostInfo({
+			version: 7,
+			os: "wsl",
+			shell: "zsh",
+			transferShell: "sh",
+			compatEnabled: false,
+		});
+		expect(parsed).toMatchObject({
+			version: 7,
+			os: "wsl",
+			shell: "zsh",
+			transferShell: "sh",
+			compatEnabled: false,
+		});
+	});
+
 	it("round-trips a verified transferShell value", () => {
 		// Cache writers persist `transferShell` so callers don't re-probe
 		// every session; parseHostInfo must thread it back through (#3719).

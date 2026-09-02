@@ -13,6 +13,7 @@
 
 ### Fixed
 
+- Fixed terminal resize feedback loops in Herdr and Warp-class hosts after the explicit-history renderer rewrite dropped their in-place resize path. Resize notifications now stay on the normal screen, coalesce through one quiet window, and produce one settled repaint instead of repeatedly toggling the alternate screen and flashing long transcripts.
 - Fixed growing Markdown paragraphs containing ordinary prose or closed inline code withholding every wrapped row from explicit terminal history until finalization.
 - Fixed Windows resize rebuilds moving the old viewport above the replayed welcome screen when AdaptDispatch promoted the page during a destructive clear.
 - Fixed full transcript replays re-emitting BEL-terminated OSC 8 hyperlinks, which could retrigger the terminal completion sound when `Ctrl+T` toggled thinking visibility; terminal output now uses the equivalent ST terminator.

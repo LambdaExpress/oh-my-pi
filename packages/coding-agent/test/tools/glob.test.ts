@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { FileType } from "@oh-my-pi/pi-natives";
 import { Settings } from "../../src/config/settings";
@@ -39,6 +41,30 @@ async function expectRootSearchRejected(searchPath: string): Promise<void> {
 describe("GlobTool.execute", () => {
 	test.each(["/", "//"])("rejects bare root search path %s", async searchPath => {
 		await expectRootSearchRejected(searchPath);
+	});
+
+	test("matches a linked-worktree .git file while pruning repository .git directories", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "glob-git-file-"));
+		try {
+			const worktree = path.join(root, "linked-worktree");
+			const repository = path.join(root, "repository");
+			await fs.mkdir(worktree);
+			await fs.mkdir(path.join(repository, ".git"), { recursive: true });
+			await fs.writeFile(path.join(worktree, ".git"), "gitdir: ../repository/.git/worktrees/linked-worktree\n");
+			await fs.writeFile(path.join(worktree, ".hidden"), "ordinary hidden file\n");
+			await fs.writeFile(path.join(repository, ".git", "config"), "[core]\n");
+
+			const tool = new GlobTool(createSession(root));
+			const result = await tool.execute("glob-linked-worktree-git-file", {
+				path: path.join(root, "*", ".git"),
+				hidden: true,
+				gitignore: false,
+			});
+
+			expect(result.details?.files).toEqual(["linked-worktree/.git"]);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
 	});
 
 	test("rejects a caller abort during preparation without launching a native scan", async () => {

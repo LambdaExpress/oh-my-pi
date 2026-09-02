@@ -201,6 +201,21 @@ describe("GrepTool internal URL resolution", () => {
 		expect(getResultText(findResult)).toContain("guide.md");
 	});
 
+	it("splits a skill URL followed by an absolute Windows path", async () => {
+		await registerSkillDirectory();
+		const windowsPath = path.join(tmpDir, "missing", "AGENTS.md");
+		const tool = new GrepTool(createSession({ hasEditTool: true }));
+
+		const result = await tool.execute("mixed-skill-windows", {
+			pattern: "deep needle",
+			path: `skill://demo;${windowsPath}`,
+		});
+		const text = getResultText(result);
+		expect(text).toContain("deep needle");
+		expect(text).toContain("Skipped missing paths:");
+		expect(text).not.toContain("Unknown skill:");
+	});
+
 	it("resolves artifact:// URL to backing file and greps it", async () => {
 		const content = "line one\nfound the needle here\nline three\n";
 		await Bun.write(path.join(artifactsDir, "5.bash.log"), content);

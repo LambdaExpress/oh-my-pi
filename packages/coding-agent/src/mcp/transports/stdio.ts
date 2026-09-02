@@ -21,7 +21,7 @@ import type {
 } from "../../mcp/types";
 import { toJsonRpcError } from "../../mcp/types";
 import { RequestIdAllocator } from "../request-id";
-import { isMCPTimeoutEnabled, resolveMCPTimeoutMs } from "../timeout";
+import { isMCPTimeoutEnabled, resolveMCPRequestTimeoutMs } from "../timeout";
 
 /** Subprocess argv and platform-derived spawn flags for an MCP stdio server. */
 export interface StdioSpawnCommand {
@@ -751,7 +751,7 @@ export class StdioTransport implements MCPTransport {
 			params: params ?? {},
 		};
 
-		const timeout = resolveMCPTimeoutMs(this.config.timeout);
+		const timeout = resolveMCPRequestTimeoutMs(method, this.config.timeout);
 		const signal = options?.signal;
 
 		if (signal?.aborted) {

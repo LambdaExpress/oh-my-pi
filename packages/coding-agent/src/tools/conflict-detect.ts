@@ -190,25 +190,81 @@ export interface ConflictEntry extends ConflictBlock {
 export class ConflictHistory {
 	#nextId = 1;
 	#entries = new Map<number, ConflictEntry>();
+	#registrationPasses = new Map<string, { lastStartLine: number; claimedIds: Set<number> }>();
 
 	/**
 	 * Register a conflict block. Returns the (possibly pre-existing) entry
-	 * — if the same `absolutePath`+`startLine` was registered before, the
-	 * earlier id is reused so a re-read does not inflate the counter or
-	 * orphan the prior id. The recorded region is overwritten on re-read
-	 * so the splice always reflects the current marker positions on disk.
+	 * when its recorded marker content identifies an earlier block. Content
+	 * identity takes precedence over position: resolving an earlier block can
+	 * move a later block onto another entry's old start line, and position alone
+	 * must never transfer that id to the wrong block.
+	 *
+	 * A read registers blocks synchronously in ascending line order. Matching ids
+	 * are claimed for that pass so byte-identical blocks remain distinct; a
+	 * non-increasing line number or the next microtask starts a fresh pass. The
+	 * closest unclaimed content match preserves their order after line shifts,
+	 * while an equal-distance match is deliberately left unmatched rather than
+	 * guessing between two logical blocks.
 	 */
 	register(input: Omit<ConflictEntry, "id">): ConflictEntry {
-		for (const existing of this.#entries.values()) {
-			if (existing.absolutePath === input.absolutePath && existing.startLine === input.startLine) {
-				const merged: ConflictEntry = { ...input, id: existing.id };
-				this.#entries.set(existing.id, merged);
-				return merged;
-			}
+		let pass = this.#registrationPasses.get(input.absolutePath);
+		if (!pass || input.startLine <= pass.lastStartLine) {
+			pass = { lastStartLine: input.startLine, claimedIds: new Set() };
+			this.#registrationPasses.set(input.absolutePath, pass);
+		} else {
+			pass.lastStartLine = input.startLine;
 		}
+		const activePass = pass;
+		queueMicrotask(() => {
+			if (this.#registrationPasses.get(input.absolutePath) === activePass) {
+				this.#registrationPasses.delete(input.absolutePath);
+			}
+		});
+
+		const pathEntries = [...this.#entries.values()].filter(entry => entry.absolutePath === input.absolutePath);
+		const availableMatches = pathEntries.filter(
+			entry => !pass.claimedIds.has(entry.id) && conflictRegionsEqual(entry, input),
+		);
+		let existing: ConflictEntry | undefined;
+		const exactMatches = availableMatches.filter(entry => entry.startLine === input.startLine);
+		if (exactMatches.length > 0) {
+			existing = exactMatches.reduce((earliest, entry) => (entry.id < earliest.id ? entry : earliest));
+			// Two records for identical content at one line can only be stale
+			// duplicates: a file cannot contain two marker blocks at one position.
+			for (const duplicate of exactMatches) {
+				if (duplicate.id !== existing.id) this.#entries.delete(duplicate.id);
+			}
+		} else if (availableMatches.length > 0) {
+			let closestDistance = Number.POSITIVE_INFINITY;
+			let closest: ConflictEntry[] = [];
+			for (const candidate of availableMatches) {
+				const distance = Math.abs(candidate.startLine - input.startLine);
+				if (distance < closestDistance) {
+					closestDistance = distance;
+					closest = [candidate];
+				} else if (distance === closestDistance) {
+					closest.push(candidate);
+				}
+			}
+			if (closest.length === 1) existing = closest[0];
+		} else if (pathEntries.length === 1 && pathEntries[0]?.startLine === input.startLine) {
+			// Preserve the established single-block contract: a block edited in
+			// place keeps its id. With multiple registered blocks, position alone
+			// is ambiguous and intentionally cannot establish identity.
+			existing = pathEntries[0];
+		}
+
+		if (existing) {
+			const merged: ConflictEntry = { ...input, id: existing.id };
+			this.#entries.set(existing.id, merged);
+			pass.claimedIds.add(existing.id);
+			return merged;
+		}
+
 		const id = this.#nextId++;
 		const entry: ConflictEntry = { ...input, id };
 		this.#entries.set(id, entry);
+		pass.claimedIds.add(id);
 		return entry;
 	}
 

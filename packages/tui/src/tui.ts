@@ -277,7 +277,21 @@ export interface RenderRequestOptions {
  */
 export type ResizeScrollbackMode = "append" | "rebuild" | "preserve";
 
-/** Type guard to check if a component implements Focusable */
+/**
+ * Hosts whose alternate-screen transitions can themselves emit resize events
+ * must keep resize handling on the normal screen. Otherwise each borrow feeds
+ * another resize back into the renderer and the loop is amplified by slow
+ * transcript frames. The explicit override preserves the documented escape
+ * hatch for diagnosing host-specific behavior.
+ */
+function resizeRepaintsInPlace(env: NodeJS.ProcessEnv = Bun.env): boolean {
+	const override = env.PI_TUI_RESIZE_IN_PLACE;
+	if (override === "0" || override === "false") return false;
+	if (override === "1" || override === "true") return true;
+	return env.HERDR_ENV === "1" || env.TERM_PROGRAM?.toLowerCase() === "warpterminal";
+}
+
+/** Type guard to check if component implements Focusable */
 export function isFocusable(component: Component | null): component is Component & Focusable {
 	return component !== null && "focused" in component;
 }
@@ -824,6 +838,10 @@ export class TUI extends Container {
 	#altEnterWidth = 0;
 	#altEnterHeight = 0;
 	#resizeAltActive = false;
+	// True while an in-place host is inside the resize quiet window. The native
+	// terminal keeps displaying its reflowed normal buffer; application paints
+	// are held until one settled anchor probe can produce the final frame.
+	#resizeInPlaceActive = false;
 	#resizeSettleTimer: RenderTimer | undefined;
 	#suppressResizeUntil = 0;
 	#resizeScrollbackMode: ResizeScrollbackMode = TUI.#initialResizeScrollbackMode();
@@ -1127,10 +1145,23 @@ export class TUI extends Container {
 		this.terminal.start(
 			data => this.#handleInput(data),
 			() => {
+				if (this.#altActive) {
+					// The modal already owns the alternate screen. Coalesce resize
+					// paints through the ordinary scheduler instead of bypassing its
+					// frame-cost backpressure for every host notification.
+					this.requestRender();
+					return;
+				}
+				const inPlace = resizeRepaintsInPlace();
 				if (this.#resizeProbe) {
 					// The anchor being probed is already stale; restart the transaction.
 					this.#cancelResizeProbe();
-					this.#beginResizeAltPaint(true);
+					if (inPlace) this.#beginResizeInPlacePaint(true);
+					else this.#beginResizeAltPaint(true);
+					return;
+				}
+				if (inPlace) {
+					this.#beginResizeInPlacePaint();
 					return;
 				}
 				if (this.#renderScheduler.now() < this.#suppressResizeUntil) {
@@ -1158,6 +1189,39 @@ export class TUI extends Container {
 		}
 		this.requestRender(true, { clearScrollback: options?.clearScrollback === true });
 	}
+
+	#recordResizeGeometry(): void {
+		const burstLastHeight = this.#resizeBurstLastHeight ?? this.#previousHeight;
+		if (this.terminal.rows > burstLastHeight) this.#resizeBurstGrew = true;
+		this.#resizeBurstLastHeight = this.terminal.rows;
+		this.#resizeBurstPull += Math.max(0, this.terminal.rows - burstLastHeight);
+		this.#geometryEpoch++;
+	}
+
+	/**
+	 * Debounce resize on hosts that cannot safely borrow the alternate screen.
+	 * Their normal buffer already reflows at the new geometry, so leave it
+	 * visible during the drag and suppress application paints. Once the host is
+	 * quiet, recover the parked cursor anchor and emit one authoritative frame.
+	 */
+	#beginResizeInPlacePaint(restartingProbe = false): void {
+		this.#recordResizeGeometry();
+		if (!this.#resizeInPlaceActive) {
+			this.#resizeInPlaceActive = true;
+			if (!restartingProbe) {
+				this.#resizeProbeWindow = this.#providerWindow;
+				this.#resizeProbeOffset = this.#parkedViewportOffset;
+			}
+		}
+		this.#resizeSettleTimer?.cancel();
+		this.#resizeSettleTimer = this.#renderScheduler.scheduleRender(() => {
+			this.#resizeSettleTimer = undefined;
+			if (this.#stopped || !this.#resizeInPlaceActive) return;
+			this.#resizeInPlaceActive = false;
+			this.#beginResizeAnchorProbe();
+		}, TUI.#RESIZE_VIEWPORT_SETTLE_MS);
+	}
+
 	/**
 	 * Borrow the alternate buffer for stable, history-free resize repainting.
 	 * `restartingProbe` marks a transaction restarted by a SIGWINCH that
@@ -1170,11 +1234,7 @@ export class TUI extends Container {
 			this.requestRender(true);
 			return;
 		}
-		const burstLastHeight = this.#resizeBurstLastHeight ?? this.#previousHeight;
-		if (this.terminal.rows > burstLastHeight) this.#resizeBurstGrew = true;
-		this.#resizeBurstLastHeight = this.terminal.rows;
-		this.#resizeBurstPull += Math.max(0, this.terminal.rows - burstLastHeight);
-		this.#geometryEpoch++;
+		this.#recordResizeGeometry();
 		if (!this.#resizeAltActive) {
 			this.#resizeAltActive = true;
 			setAltScreenActive(true);
@@ -1641,6 +1701,7 @@ export class TUI extends Container {
 		this.#resizeSettleTimer?.cancel();
 		this.#resizeSettleTimer = undefined;
 		this.#cancelResizeProbe();
+		this.#resizeInPlaceActive = false;
 		if (this.#resizeAltActive) {
 			this.#resizeAltActive = false;
 			this.terminal.write(`${this.#keyboardEnhancementExit()}\x1b[?1049l`);
@@ -2610,6 +2671,12 @@ export class TUI extends Container {
 		if (this.#stopped) return;
 		const width = this.terminal.columns;
 		const height = this.terminal.rows;
+		if (this.#resizeInPlaceActive) {
+			// The host is still producing resize notifications. Its normal buffer
+			// remains visible and reflows natively; one settled frame follows the
+			// quiet window instead of rendering every intermediate geometry.
+			return;
+		}
 		if (this.#resizeAltActive) {
 			this.#renderResizeAltFrame(width, height);
 			return;

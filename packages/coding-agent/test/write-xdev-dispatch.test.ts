@@ -56,6 +56,28 @@ function createTestXdevState(tools: Tool[], builtInNames: Iterable<string> = too
 }
 
 describe("read and write route xd:// device URLs", () => {
+	it("documents validation refinements from mounted tool schemas", () => {
+		const limitedDevice = {
+			name: "mcp__atlassian_getteamworkgraphcontext",
+			label: "Atlassian graph context",
+			description: "Gets graph context.",
+			parameters: {
+				type: "object",
+				properties: {
+					first: { type: "number", description: "Max related items", maximum: 50 },
+				},
+			},
+			async execute() {
+				return { content: [{ type: "text" as const, text: "ok" }] };
+			},
+		} as unknown as Tool;
+		const docs = xdevDocs(createTestXdevState([limitedDevice]), limitedDevice.name);
+
+		expect(docs).toContain("* Max related items");
+		expect(docs).toContain("* Constraints: maximum: 50.");
+		expect(docs).toContain("first?: number;");
+	});
+
 	it("lists, documents, and dispatches an ast_edit device", async () => {
 		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "write-xdev-"));
 		try {

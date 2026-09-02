@@ -4,11 +4,10 @@ import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallb
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
-import type { SSHHost } from "../capability/ssh";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { Theme } from "../modes/theme/theme";
 import sshTransferDescriptionBase from "../prompts/tools/ssh-transfer.md" with { type: "text" };
-import { ensureHostInfo } from "../ssh/connection-manager";
+import { ensureHostInfo, type SSHConnectionTarget } from "../ssh/connection-manager";
 import {
 	executeSshFileTransfer,
 	prepareSshFileTransfer,
@@ -29,7 +28,7 @@ import { ToolError } from "./tool-errors";
 
 const sshTransferSchema = type({
 	op: type("'upload' | 'download'").describe("transfer operation"),
-	host: type("string").describe("configured SSH host name"),
+	host: type("string").describe("available SSH or local WSL target name"),
 	local_path: type("string").describe("local file path"),
 	remote_path: type("string").describe("absolute remote file path"),
 	"overwrite?": type("boolean").describe("replace an existing file; defaults to false"),
@@ -242,7 +241,7 @@ export class SshTransferTool implements AgentTool<typeof sshTransferSchema, SshT
 	constructor(
 		private readonly session: ToolSession,
 		readonly hostNames: string[],
-		readonly hostsByName: Map<string, SSHHost>,
+		readonly hostsByName: Map<string, SSHConnectionTarget>,
 		readonly description: string,
 	) {
 		this.#allowedHosts = new Set(hostNames);

@@ -248,6 +248,82 @@ describe("AgentSession concurrent prompt guard", () => {
 		expect(session.isStreaming).toBe(false);
 	});
 
+	async function verifyAdvisorSteeringImmediate(skipPending: boolean): Promise<void> {
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const executed: string[] = [];
+		const toolSchema = type({ value: "string" });
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Records one value",
+			parameters: toolSchema,
+			concurrency: "exclusive",
+			async execute(_toolCallId, params) {
+				executed.push(params.value);
+				if (params.value === "first") {
+					await session.sendCustomMessage(
+						{
+							customType: "advisor",
+							content: '<advisory severity="blocker">stop before second</advisory>',
+							display: true,
+							attribution: "agent",
+							details: { notes: [{ note: "stop before second", severity: "blocker" }] },
+						},
+						{ deliverAs: "steer", interruptImmediately: true },
+					);
+				}
+				return {
+					content: [{ type: "text", text: `ok:${params.value}` }],
+					details: { value: params.value },
+				};
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
+						{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [tool] },
+			streamFn: mock.stream,
+			convertToLlm,
+			interruptMode: skipPending ? "immediate" : "wait",
+		});
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			steeringSkipPendingOperations: skipPending,
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry: sharedModelRegistry,
+		});
+
+		await session.prompt("start");
+
+		expect(executed).toEqual(["first"]);
+		expect(
+			mock.calls[1]?.context.messages.some(message =>
+				typeof message.content === "string"
+					? message.content.includes("stop before second")
+					: message.content.some(block => block.type === "text" && block.text.includes("stop before second")),
+			),
+		).toBe(true);
+	}
+
+	it.each([false, true] as const)(
+		"keeps advisor steering immediate when operation skipping is %s",
+		verifyAdvisorSteeringImmediate,
+	);
+
 	it("uses non-empty session_stop reason when additional context is empty", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({

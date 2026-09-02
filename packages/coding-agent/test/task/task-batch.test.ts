@@ -522,6 +522,72 @@ describe("task.batch spawning", () => {
 		expect(capturedContext).toBe("Shared notes.");
 	});
 
+	it("preserves failed task wall time and TLS attribution through async delivery", async () => {
+		mockDiscovery();
+		const tlsError =
+			'[openai-codex/gpt-5.6-sol] ERR_TLS_CERT_ALTNAME_INVALID fetching "https://chatgpt.com/backend-api/codex/responses". For more information, pass `verbose: true` in the second argument to fetch()';
+		let now = 1_700_000_000_000;
+		const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+		try {
+			vi.spyOn(executorModule, "runSubprocess").mockImplementation(async options => {
+				now += 5_000;
+				return makeResult(options.id ?? "?", {
+					exitCode: 1,
+					output: "",
+					stderr: tlsError,
+					durationMs: 5_000,
+				});
+			});
+
+			const delivered = Promise.withResolvers<string>();
+			const manager = new AsyncJobManager({
+				onJobComplete: (_jobId, text) => delivered.resolve(text),
+			});
+			managers.push(manager);
+			const tool = await TaskTool.create(
+				createSession({ manager, settings: { "async.enabled": true, "task.batch": true } }),
+			);
+			const updates: Array<{
+				totalDurationMs: number;
+				progress?: Array<{ id: string; status: string; durationMs: number }>;
+			}> = [];
+
+			const result = await tool.execute(
+				"tc-failed-duration",
+				{
+					context: "Reproduce the provider failure.",
+					tasks: [{ name: "TlsFailure", task: "Call the configured model." }],
+				} as TaskParams,
+				undefined,
+				update => {
+					if (!update.details) return;
+					updates.push({
+						totalDurationMs: update.details.totalDurationMs,
+						progress: update.details.progress?.map(progress => ({
+							id: progress.id,
+							status: progress.status,
+							durationMs: progress.durationMs,
+						})),
+					});
+				},
+			);
+
+			const job = manager.getJob(result.details!.async!.jobId)!;
+			await job.promise;
+			const deliveryText = await delivered.promise;
+			const final = updates.at(-1);
+
+			expect(final?.progress).toEqual([{ id: "TlsFailure", status: "failed", durationMs: 5_000 }]);
+			expect(final?.totalDurationMs).toBe(5_000);
+			expect(job.errorText).toContain(tlsError);
+			expect(deliveryText).toContain(tlsError);
+			expect(deliveryText).toContain('duration="5.0s"');
+			expect(deliveryText).not.toContain("2h10m");
+		} finally {
+			nowSpy.mockRestore();
+		}
+	});
+
 	it("accepts the flat single-spawn form at runtime under batch mode", async () => {
 		// Internal callers (e.g. the commit flow) and stale transcripts use the
 		// flat shape directly; the wire schema is batch-only but runtime is not.

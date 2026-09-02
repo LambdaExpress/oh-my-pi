@@ -216,7 +216,6 @@ function createContext(): {
 		cancelPendingSubmission,
 		ensureLoadingAnimation,
 		finishPendingSubmission: vi.fn(),
-		flushPendingBashComponents: vi.fn(),
 		markPendingSubmissionStarted: vi.fn(() => true),
 		startPendingSubmission,
 		updatePendingMessagesDisplay,

@@ -317,7 +317,8 @@ export interface InteractiveModeContext {
 	updatePendingMessagesDisplay(): void;
 	queueCompactionMessage(text: string, mode: "steer" | "followUp", images?: ImageContent[]): void;
 	flushCompactionQueue(options?: { willRetry?: boolean }): Promise<void>;
-	flushPendingBashComponents(): void;
+	/** Move a completed local Bash/Python execution out of the anchored live area. */
+	completePendingLocalExecution(component: Component): void;
 	flushPendingModelSwitch(): Promise<void>;
 	setWorkingMessage(message?: string): void;
 	applyPendingWorkingMessage(): void;

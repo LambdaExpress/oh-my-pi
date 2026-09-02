@@ -139,6 +139,8 @@ export interface SteeringQueueState {
 	queued: boolean;
 	/** Best-effort origin used only to word synthetic skipped-tool results. */
 	source?: SteeringInterruptSource;
+	/** Per-steer override: interrupt even when the agent-wide mode is "wait". */
+	interruptImmediately?: boolean;
 }
 
 /**
@@ -251,12 +253,13 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	/**
 	 * Peeks whether steering messages are queued, without consuming them.
 	 *
-	 * Called after each tool execution (unless interruptMode is "wait") to decide
-	 * whether to skip the remaining tool calls in the batch. The queue keeps
-	 * owning its messages until the loop reaches the next injection boundary and
-	 * dequeues via {@link getSteeringMessages} — so callers can still cancel or
-	 * restore queued messages while in-flight tools settle, and an external
-	 * abort in that window leaves the queue intact for a post-abort continue.
+	 * Called after each tool execution to decide whether to skip the remaining
+	 * tool calls in the batch. In "wait" mode only a queue state carrying
+	 * `interruptImmediately: true` interrupts. The queue keeps owning its messages
+	 * until the loop reaches the next injection boundary and dequeues via
+	 * {@link getSteeringMessages} — so callers can still cancel or restore queued
+	 * messages while in-flight tools settle, and an external abort in that window
+	 * leaves the queue intact for a post-abort continue.
 	 *
 	 * Returning `true` is treated as user-originated steering for compatibility.
 	 * Return a {@link SteeringQueueState} when the queue can distinguish system
@@ -274,6 +277,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 * {@link getSteeringMessages}.
 	 */
 	waitForSteeringMessages?: (signal?: AbortSignal) => Promise<void>;
+
+	/**
+	 * Wakes the in-flight tool watcher only for steering carrying the per-message
+	 * immediate override. Hosts that support such messages must provide this so
+	 * they can interrupt a long-running interruptible tool while the global mode
+	 * is "wait", without waking continuously for ordinary queued steering.
+	 */
+	waitForImmediateSteeringMessages?: (signal?: AbortSignal) => Promise<void>;
 
 	/**
 	 * Peeks whether IRC messages should interrupt an interruptible waiting tool.

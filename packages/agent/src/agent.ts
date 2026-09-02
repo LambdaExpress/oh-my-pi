@@ -95,6 +95,15 @@ export class AgentBusyError extends Error {
 		this.name = "AgentBusyError";
 	}
 }
+
+export interface SteerOptions {
+	/**
+	 * Interrupt the active tool batch even when the agent-wide interrupt mode is
+	 * "wait". Message delivery order remains unchanged.
+	 */
+	interruptImmediately?: boolean;
+}
+
 export interface AgentOptions {
 	initialState?: Partial<AgentState>;
 
@@ -393,6 +402,8 @@ export class Agent {
 	/** Messages enqueued together must remain one delivery unit even when the
 	 * queue policy otherwise consumes one user submission per turn. */
 	#queuedMessageBatch = new WeakMap<AgentMessage, AgentMessage>();
+	/** Per-message overrides for queued steering; delivery order remains FIFO. */
+	#immediateSteeringMessages = new Set<AgentMessage>();
 	#steeringWaiters = new Set<() => void>();
 
 	#steeringMode: "all" | "one-at-a-time";
@@ -993,6 +1004,9 @@ export class Agent {
 	}
 
 	replaceQueues(steering: AgentMessage[], followUp: AgentMessage[]) {
+		this.#immediateSteeringMessages = new Set(
+			steering.filter(message => this.#immediateSteeringMessages.has(message)),
+		);
 		this.#steeringQueue = steering.slice();
 		this.#followUpQueue = followUp.slice();
 		this.#notifySteeringWaiters();
@@ -1014,22 +1028,26 @@ export class Agent {
 	 * Queue a steering message to interrupt the agent mid-run.
 	 * Delivered after current tool execution, skips remaining tools.
 	 */
-	steer(m: AgentMessage) {
+	steer(m: AgentMessage, options?: SteerOptions) {
 		this.#queuedMessageBatch.delete(m);
 		this.#steeringQueue.push(m);
+		if (options?.interruptImmediately) this.#immediateSteeringMessages.add(m);
 		this.#notifySteeringWaiters();
 	}
 
-	/** Queue hidden companions and their user steer as one interruption unit. */
-	steerBatch(messages: readonly AgentMessage[]) {
+	/** Queue messages as one interruption unit. */
+	steerBatch(messages: readonly AgentMessage[], options?: SteerOptions) {
 		if (messages.length === 0) return;
 		if (messages.length === 1) {
-			this.steer(messages[0]!);
+			this.steer(messages[0]!, options);
 			return;
 		}
 		const batch = messages[0]!;
 		for (const message of messages) this.#queuedMessageBatch.set(message, batch);
 		this.#steeringQueue.push(...messages);
+		if (options?.interruptImmediately) {
+			for (const message of messages) this.#immediateSteeringMessages.add(message);
+		}
 		this.#notifySteeringWaiters();
 	}
 
@@ -1056,6 +1074,7 @@ export class Agent {
 
 	clearSteeringQueue() {
 		this.#steeringQueue = [];
+		this.#immediateSteeringMessages.clear();
 		this.#notifySteeringWaiters();
 	}
 
@@ -1074,6 +1093,7 @@ export class Agent {
 
 	clearAllQueues() {
 		this.#steeringQueue = [];
+		this.#immediateSteeringMessages.clear();
 		this.#followUpQueue = [];
 		this.#notifySteeringWaiters();
 		this.clearDeferredToolDirectives();
@@ -1101,21 +1121,29 @@ export class Agent {
 		return this.#abortController?.signal.aborted === true && this.#state.isStreaming;
 	}
 
+	#nextSteeringMessageCount(): number {
+		if (this.#steeringQueue.length === 0) return 0;
+		if (this.#steeringMode === "all") return this.#steeringQueue.length;
+		const batch = this.#queuedMessageBatch.get(this.#steeringQueue[0]!);
+		let count = 1;
+		while (batch && this.#queuedMessageBatch.get(this.#steeringQueue[count]!) === batch) count++;
+		return count;
+	}
+
 	#dequeueSteeringMessages(): AgentMessage[] {
 		if (this.#steeringMode === "one-at-a-time") {
 			if (this.#steeringQueue.length > 0) {
-				const first = this.#steeringQueue[0];
-				const batch = this.#queuedMessageBatch.get(first!);
-				let count = 1;
-				while (batch && this.#queuedMessageBatch.get(this.#steeringQueue[count]!) === batch) count++;
+				const count = this.#nextSteeringMessageCount();
 				const messages = this.#steeringQueue.slice(0, count);
 				this.#steeringQueue = this.#steeringQueue.slice(count);
+				for (const message of messages) this.#immediateSteeringMessages.delete(message);
 				return messages;
 			}
 			return [];
 		}
 		const steering = this.#steeringQueue.slice();
 		this.#steeringQueue = [];
+		this.#immediateSteeringMessages.clear();
 		return steering;
 	}
 
@@ -1142,7 +1170,9 @@ export class Agent {
 	 * Used by dequeue keybinding.
 	 */
 	popLastSteer(): AgentMessage | undefined {
-		return this.#steeringQueue.pop();
+		const message = this.#steeringQueue.pop();
+		if (message) this.#immediateSteeringMessages.delete(message);
+		return message;
 	}
 
 	/**
@@ -1176,14 +1206,23 @@ export class Agent {
 		return this.#runningPrompt ?? Promise.resolve();
 	}
 
+	#hasImmediateSteeringReady(): boolean {
+		const count = this.#nextSteeringMessageCount();
+		for (let i = 0; i < count; i++) {
+			if (this.#immediateSteeringMessages.has(this.#steeringQueue[i]!)) return true;
+		}
+		return false;
+	}
+
 	/**
 	 * Wait for a steering message without consuming the steering queue.
 	 *
 	 * The signal releases the waiter when the prompt ends, so an in-flight
 	 * tool watcher never survives the tool batch that owns it.
 	 */
-	#waitForSteeringMessages(signal?: AbortSignal): Promise<void> {
-		if (this.#steeringQueue.length > 0 || signal?.aborted) return Promise.resolve();
+	#waitForSteeringMessages(signal?: AbortSignal, immediateOnly = false): Promise<void> {
+		const queued = immediateOnly ? this.#hasImmediateSteeringReady() : this.#steeringQueue.length > 0;
+		if (queued || signal?.aborted) return Promise.resolve();
 		const { promise, resolve } = Promise.withResolvers<void>();
 		const onAbort = (): void => resolve();
 		this.#steeringWaiters.add(resolve);
@@ -1206,6 +1245,7 @@ export class Agent {
 		this.#state.pendingToolCalls.clear();
 		this.#state.error = undefined;
 		this.#steeringQueue = [];
+		this.#immediateSteeringMessages.clear();
 		this.#followUpQueue = [];
 		this.#notifySteeringWaiters();
 		this.clearDeferredToolDirectives();
@@ -1555,24 +1595,34 @@ export class Agent {
 				if (this.#steeringQueue.length === 0) {
 					return { queued: false };
 				}
-				const messageCount = this.#steeringMode === "one-at-a-time" ? 1 : this.#steeringQueue.length;
+				const messageCount = this.#nextSteeringMessageCount();
+				let interruptImmediately = false;
+				let hasUserSteering = false;
 				let hasAgentSteering = false;
 				for (let i = 0; i < messageCount; i++) {
 					const message = this.#steeringQueue[i];
+					if (this.#immediateSteeringMessages.has(message!)) interruptImmediately = true;
 					const role = "role" in message ? message.role : undefined;
 					const attribution = "attribution" in message ? message.attribution : undefined;
 					if (attribution === "user") {
-						return { queued: true, source: "user" };
+						hasUserSteering = true;
+						continue;
 					}
 					if (role !== "user") continue;
 					if (attribution !== "agent") {
-						return { queued: true, source: "user" };
+						hasUserSteering = true;
+						continue;
 					}
 					hasAgentSteering = true;
 				}
-				return { queued: true, source: hasAgentSteering ? "agent" : "system" };
+				return {
+					queued: true,
+					source: hasUserSteering ? "user" : hasAgentSteering ? "agent" : "system",
+					interruptImmediately,
+				};
 			},
 			waitForSteeringMessages: signal => this.#waitForSteeringMessages(signal),
+			waitForImmediateSteeringMessages: signal => this.#waitForSteeringMessages(signal, true),
 			hasIrcInterrupts: this.hasIrcInterrupts,
 			getFollowUpMessages: signal => this.#dequeueFollowUpMessagesAfterHooks(signal),
 			getAsideMessages: async () => (await this.#asideMessageProvider?.()) ?? [],

@@ -1,6 +1,7 @@
 //! In-process local Git mutations.
 
 use std::{
+	borrow::Cow,
 	collections::{BTreeMap, BTreeSet},
 	ffi::OsStr,
 	fs,
@@ -475,8 +476,9 @@ impl GitRepo {
 		let name = worktree_admin_name(&self.info().common_dir, path);
 		let admin = self.info().common_dir.join("worktrees").join(&name);
 		fs::create_dir_all(&admin)?;
-		fs::write(path.join(".git"), format!("gitdir: {}\n", admin.display()))?;
-		fs::write(admin.join("gitdir"), format!("{}\n", path.join(".git").display()))?;
+		let git_entry = path.join(".git");
+		fs::write(&git_entry, format!("gitdir: {}\n", git_metadata_path(&admin)))?;
+		fs::write(admin.join("gitdir"), format!("{}\n", git_metadata_path(&git_entry)))?;
 		fs::write(admin.join("commondir"), "../..\n")?;
 		let head = if detach {
 			id.to_hex().to_string()
@@ -1284,6 +1286,18 @@ fn set_config_file(path: &Path, key: &str, value: &str) -> Result<()> {
 	Ok(())
 }
 
+fn git_metadata_path(path: &Path) -> Cow<'_, str> {
+	let value = path.to_string_lossy();
+	#[cfg(windows)]
+	{
+		Cow::Owned(value.replace('\\', "/"))
+	}
+	#[cfg(not(windows))]
+	{
+		value
+	}
+}
+
 fn worktree_admin_name(common: &Path, path: &Path) -> String {
 	let base = path
 		.file_name()
@@ -1622,13 +1636,12 @@ mod tests {
 	#[test]
 	fn mutate_worktree_and_detach() {
 		let (temp, repo) = fixture();
-		let linked = temp.path().join("../linked-mut");
-		let _ = fs::remove_dir_all(&linked);
+		let linked_parent = tempfile::tempdir().unwrap();
+		let linked = linked_parent.path().join("linked-mut");
 		repo.worktree_add(&linked, "main", true).unwrap();
-		assert!(
-			git(temp.path(), &["worktree", "list", "--porcelain"])
-				.contains(linked.to_string_lossy().as_ref())
-		);
+		let listed = git(temp.path(), &["worktree", "list", "--porcelain"]);
+		let expected = format!("worktree {}", linked.to_string_lossy().replace('\\', "/"));
+		assert!(listed.lines().any(|line| line == expected), "{listed}");
 		assert!(repo.worktree_remove(&linked, true).unwrap());
 
 		let linked = temp.path().join("../linked-detach");

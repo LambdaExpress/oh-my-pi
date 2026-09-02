@@ -221,10 +221,10 @@ class DaemonLog {
 		return text;
 	}
 
-	read(head: boolean, lines: number, cursor: number, grep?: string): Promise<DaemonLogRead> {
+	read(head: boolean, lines: number, cursor: number, grep?: string, sinceBytes?: number): Promise<DaemonLogRead> {
 		const snapshot = this.#queue.then(async () => {
 			await this.#writer.flush();
-			return DaemonLog.readFiles(this.#path, this.#previousPath, head, lines, cursor, grep);
+			return DaemonLog.readFiles(this.#path, this.#previousPath, head, lines, cursor, grep, sinceBytes);
 		});
 		// Appends that arrive after this call queue behind the file snapshot, so its
 		// cursor can never include bytes that its terminal replay did not read. A read
@@ -250,12 +250,21 @@ class DaemonLog {
 		lines: number,
 		cursor: number,
 		grep?: string,
+		sinceBytes?: number,
 	): Promise<DaemonLogRead> {
-		const [previous, current] = await Promise.all([fileTextSlice(previousPath, head), fileTextSlice(logPath, head)]);
+		const sliceHead = sinceBytes === undefined ? head : false;
+		const [previous, current] = await Promise.all([
+			fileTextSlice(previousPath, sliceHead),
+			fileTextSlice(logPath, sliceHead),
+		]);
 		const combined = `${previous}${previous && current && !previous.endsWith("\n") ? "\n" : ""}${current}`;
+		const bounded =
+			sinceBytes === undefined
+				? combined
+				: truncateTailBytes(combined, Math.max(0, Math.min(LOG_READ_BYTES, sinceBytes))).text;
 		const terminalOutput = head
-			? truncateHeadBytes(combined, LOG_READ_BYTES).text
-			: truncateTailBytes(combined, LOG_READ_BYTES).text;
+			? truncateHeadBytes(bounded, LOG_READ_BYTES).text
+			: truncateTailBytes(bounded, LOG_READ_BYTES).text;
 		let text = sanitizeText(terminalOutput);
 		if (grep) {
 			let pattern: RegExp;
@@ -1025,15 +1034,19 @@ class DaemonBroker {
 			timedOut = !changed;
 		}
 		const lines = Math.max(1, Math.min(1_000, Math.floor(operation.lines)));
+		const outputCursor = record.snapshot.outputBytes;
+		const sinceBytes =
+			operation.follow && operation.cursor !== undefined ? Math.max(0, outputCursor - operation.cursor) : undefined;
 		const output = record.log
-			? await record.log.read(operation.head, lines, record.snapshot.outputBytes, operation.grep)
+			? await record.log.read(operation.head, lines, outputCursor, operation.grep, sinceBytes)
 			: await DaemonLog.readFiles(
 					path.join(record.dir, LOG_FILE),
 					path.join(record.dir, PREVIOUS_LOG_FILE),
 					operation.head,
 					lines,
-					record.snapshot.outputBytes,
+					outputCursor,
 					operation.grep,
+					sinceBytes,
 				);
 		const terminalOutput = record.spec.pty && operation.grep === undefined ? output.terminalOutput : undefined;
 		const terminalRows =

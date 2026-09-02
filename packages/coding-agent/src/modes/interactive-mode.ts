@@ -5500,8 +5500,8 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#uiHelpers.flushCompactionQueue(options);
 	}
 
-	flushPendingBashComponents(): void {
-		this.#uiHelpers.flushPendingBashComponents();
+	completePendingLocalExecution(component: Component): void {
+		this.#eventController.completePendingLocalExecution(component);
 	}
 
 	isKnownSlashCommand(text: string): boolean {

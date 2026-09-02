@@ -121,7 +121,10 @@ describe("BiomeClient format", () => {
 		const targetFile = path.join(tempDir, "example.ts");
 		const content = "export const value = 1;\n";
 
-		const result = await new BiomeClient(biomeConfig(process.execPath, [runner]), tempDir).format(targetFile, content);
+		const result = await new BiomeClient(biomeConfig(process.execPath, [runner]), tempDir).format(
+			targetFile,
+			content,
+		);
 
 		expect(result).toBe(content);
 	});

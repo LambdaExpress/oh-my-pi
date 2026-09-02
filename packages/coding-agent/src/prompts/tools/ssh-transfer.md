@@ -1,4 +1,4 @@
-Transfers one file between the local filesystem and an SSH host.
+Transfers one file between the local filesystem and an SSH host or local WSL distribution.
 
 - You MUST use this for local ↔ remote file content.
 - You NEVER embed file bytes or base64 in `ssh` commands.
@@ -9,6 +9,7 @@ Transfers one file between the local filesystem and an SSH host.
 - Set `async: true` for background transfer and live progress.
 - Background completion arrives automatically; use `job` only to inspect or cancel.
 - Persistent hosts and `ssh_session` aliases are both supported.
+- Auto-discovered `wsl` and `wsl:<distribution>` targets require no SSH config or `sshd`.
 
 <critical>
 You MUST use `ssh_transfer` for local ↔ remote files.

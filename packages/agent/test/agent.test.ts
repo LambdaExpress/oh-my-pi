@@ -19,6 +19,19 @@ describe("Agent", () => {
 		expect(agent.state.messages).not.toContainEqual(message);
 	});
 
+	it("preserves FIFO order when later steering carries an immediate override", () => {
+		const agent = new Agent();
+		const ordinary = { role: "user" as const, content: "first", timestamp: Date.now() };
+		const immediate = { role: "user" as const, content: "second", timestamp: Date.now() + 1 };
+
+		agent.steer(ordinary);
+		agent.steer(immediate, { interruptImmediately: true });
+		expect(agent.peekSteeringQueue()).toEqual([ordinary, immediate]);
+
+		agent.replaceQueues([ordinary, immediate], []);
+		expect(agent.peekSteeringQueue()).toEqual([ordinary, immediate]);
+	});
+
 	it("applies interrupt mode changes during an active tool batch", async () => {
 		const toolSchema = type({ value: type("string") });
 		const executed: string[] = [];
@@ -72,6 +85,79 @@ describe("Agent", () => {
 		expect(secondResult?.isError).toBe(false);
 		expect(secondResult?.result.details).not.toMatchObject({ source: "interrupt_skipped" });
 		expect(mock.calls[1]?.context.messages).toContainEqual(queuedMessage);
+	});
+
+	it("wakes an interruptible tool when an all-mode batch contains later force-immediate steering", async () => {
+		const toolStarted = Promise.withResolvers<void>();
+		let observedAbort = false;
+		const toolSchema = type({});
+		const tool: AgentTool<typeof toolSchema, Record<string, never>> = {
+			name: "wait",
+			label: "Wait",
+			description: "Wait until force-immediate steering arrives",
+			parameters: toolSchema,
+			interruptible: true,
+			async execute(_toolCallId, _params, signal) {
+				if (!signal) throw new Error("missing interruptible tool signal");
+				toolStarted.resolve();
+				const interrupted = Promise.withResolvers<void>();
+				if (signal.aborted) {
+					interrupted.resolve();
+				} else {
+					signal.addEventListener("abort", () => interrupted.resolve(), { once: true });
+				}
+				await Promise.race([
+					interrupted.promise,
+					Bun.sleep(1000).then(() => {
+						throw new Error("force-immediate steering did not wake the tool");
+					}),
+				]);
+				observedAbort = signal.aborted;
+				return { content: [{ type: "text", text: "interrupted" }], details: {} };
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "tool-1", name: "wait", arguments: {} }] },
+				{ content: ["done"] },
+			],
+		});
+		const agent = new Agent({
+			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
+			streamFn: mock.stream,
+			interruptMode: "wait",
+			steeringMode: "all",
+		});
+		const run = agent.prompt("start");
+		await toolStarted.promise;
+		agent.steer({
+			role: "user",
+			content: "ordinary steering",
+			attribution: "user",
+			timestamp: Date.now(),
+		});
+		agent.steer(
+			{
+				role: "custom",
+				customType: "urgent-system-message",
+				content: "interrupt now",
+				display: true,
+				attribution: "agent",
+				timestamp: Date.now(),
+			},
+			{ interruptImmediately: true },
+		);
+		await run;
+
+		expect(observedAbort).toBe(true);
+		expect(
+			agent.state.messages.some(
+				message =>
+					message.role === "custom" &&
+					message.customType === "urgent-system-message" &&
+					message.content === "interrupt now",
+			),
+		).toBe(true);
 	});
 
 	it("logs every abort request with its reason and call stack", () => {

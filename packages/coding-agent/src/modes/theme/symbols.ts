@@ -774,8 +774,8 @@ const NERD_SYMBOLS: SymbolMap = {
 	"icon.cost": "\uf155",
 	// pick: 󰙺 (nf-md-currency_usd_off)
 	"icon.subscription": "\u{f067a}",
-	// pick:  (nf-cod-eye)
-	"icon.advisor": "\uea70",
+	// pick: 󰳣 (nf-md-account-tie)
+	"icon.advisor": "\u{f0ce3}",
 	// pick:  | alt: ◷ ◴
 	"icon.time": "\uf017",
 	// pick:  | alt: π ∏ ∑

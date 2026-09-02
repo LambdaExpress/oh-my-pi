@@ -8,6 +8,10 @@ export interface SSHConnectionTarget {
 	name: string;
 	connectionId?: string;
 	host: string;
+	/** Omitted for OpenSSH targets; `wsl` identifies an auto-discovered local distribution. */
+	transport?: "ssh" | "wsl";
+	/** Explicit local WSL distribution; omitted to use the Windows default distribution. */
+	distribution?: string;
 	username?: string;
 	port?: number;
 	proxyJump?: string;
@@ -16,7 +20,11 @@ export interface SSHConnectionTarget {
 	compat?: boolean;
 }
 
-export type SSHHostOs = "windows" | "linux" | "macos" | "unknown";
+export function isLocalWslTarget(host: SSHConnectionTarget): boolean {
+	return host.transport === "wsl";
+}
+
+export type SSHHostOs = "windows" | "linux" | "wsl" | "macos" | "unknown";
 export type SSHHostShell = "cmd" | "powershell" | "bash" | "zsh" | "sh" | "unknown";
 export type SSHPowerShellCommand = "pwsh" | "powershell";
 export type SshPlatform = typeof process.platform;
@@ -149,7 +157,14 @@ const { dir: CONTROL_DIR, shared: CONTROL_DIR_SHARED } = resolveSshControlDir({
 });
 const CONTROL_PATH = path.join(CONTROL_DIR, CONTROL_SOCKET_BASENAME);
 const HOST_INFO_DIR = getRemoteHostDir();
-const HOST_INFO_VERSION = 6;
+const HOST_INFO_VERSION = 7;
+const LOCAL_WSL_HOST_INFO: SSHHostInfo = {
+	version: HOST_INFO_VERSION,
+	os: "wsl",
+	shell: "sh",
+	transferShell: "sh",
+	compatEnabled: false,
+};
 
 const activeHosts = new Map<string, SSHConnectionTarget>();
 const pendingConnections = new Map<string, Promise<void>>();
@@ -160,6 +175,9 @@ function identityDigest(parts: readonly (string | number | boolean)[]): string {
 }
 
 export function getSshConnectionKey(host: SSHConnectionTarget): string {
+	if (isLocalWslTarget(host)) {
+		return identityDigest(["local-wsl-connection-v1", host.distribution ?? "default"]);
+	}
 	return identityDigest([
 		"connection-v1",
 		host.connectionId ?? "",
@@ -174,6 +192,9 @@ export function getSshConnectionKey(host: SSHConnectionTarget): string {
 }
 
 export function getSshHostInfoKey(host: SSHConnectionTarget): string {
+	if (isLocalWslTarget(host)) {
+		return identityDigest(["local-wsl-host-info-v1", host.distribution ?? "default"]);
+	}
 	return identityDigest([
 		"host-info-v1",
 		host.host.trim().toLowerCase(),
@@ -399,6 +420,12 @@ function ensureSshBinary(): void {
 	}
 }
 
+function ensureWslBinary(): void {
+	if (!$which("wsl.exe")) {
+		throw new Error("wsl.exe not found on PATH");
+	}
+}
+
 function parseOs(value: unknown): SSHHostOs | null {
 	if (typeof value !== "string") return null;
 	const normalized = value.trim().toLowerCase();
@@ -407,6 +434,8 @@ function parseOs(value: unknown): SSHHostOs | null {
 			return "windows";
 		case "linux":
 			return "linux";
+		case "wsl":
+			return "wsl";
 		case "macos":
 		case "darwin":
 			return "macos";
@@ -607,7 +636,7 @@ export function findProbeMarker(stdout: string, stderr: string, marker: string):
 	return null;
 }
 
-/** Classify a POSIX-ish `uname -s` payload from the transfer-shell probe. */
+/** Classify a POSIX-ish `uname -s` payload. */
 export function osFromUname(value: string): SSHHostOs | undefined {
 	const uname = value.toLowerCase();
 	if (uname.includes("darwin")) return "macos";
@@ -618,20 +647,38 @@ export function osFromUname(value: string): SSHHostOs | undefined {
 	return undefined;
 }
 
+/**
+ * Classify the first payload line emitted by the transfer-shell probe.
+ *
+ * WSL exports either `WSL_DISTRO_NAME` or `WSL_INTEROP` in normal sessions,
+ * but callers can scrub the environment. In that case only the canonical
+ * Microsoft kernel suffixes count as WSL evidence; arbitrary banners and
+ * downstream kernels such as `microsoft-hardened` must remain generic Linux.
+ */
+export function osFromTransferProbe(value: string): SSHHostOs | undefined {
+	const [firstLine = ""] = value.split(/\r?\n/, 1);
+	const [sysname = "", kernelRelease = "", distroFlag = "", interopFlag = ""] = firstLine.split("|");
+	const wslEnvironment = distroFlag === "1" || interopFlag === "1";
+	const wslKernel = sysname === "Linux" && /(?:-Microsoft|-microsoft-standard(?:-WSL2)?)$/.test(kernelRelease);
+	if (wslEnvironment || wslKernel) return "wsl";
+	return osFromUname(sysname);
+}
+
 async function probeTransferShell(
 	host: SSHConnectionTarget,
-): Promise<{ shell: SSHHostInfo["transferShell"]; uname: string }> {
+): Promise<{ shell: SSHHostInfo["transferShell"]; payload: string }> {
 	for (const candidate of TRANSFER_SHELL_CANDIDATES) {
-		// `printf` is POSIX and emits no trailing newline, so we can pin the
-		// marker right against the uname output and split on it cleanly.
-		const remote = `${candidate} -lc 'printf "${TRANSFER_PROBE_MARKER}"; uname -s 2>/dev/null || true'`;
+		// Test whether the variables are nonempty rather than interpolating their untrusted
+		// values. The first payload line is self-contained so later startup
+		// noise cannot influence platform classification.
+		const remote = `${candidate} -lc 'wsl_distro=0; [ -n "\${WSL_DISTRO_NAME-}" ] && wsl_distro=1; wsl_interop=0; [ -n "\${WSL_INTEROP-}" ] && wsl_interop=1; printf "${TRANSFER_PROBE_MARKER}%s|%s|%s|%s\\n" "$(uname -s 2>/dev/null)" "$(uname -r 2>/dev/null)" "$wsl_distro" "$wsl_interop"'`;
 		const probe = await runSshCaptureSync(await buildRemoteCommand(host, remote), SSH_HELPER_TIMEOUT_MS, host);
 		if (probe.exitCode !== 0) continue;
 		const tail = findProbeMarker(probe.stdout, probe.stderr, TRANSFER_PROBE_MARKER);
 		if (tail === null) continue;
-		return { shell: candidate, uname: tail.trim() };
+		return { shell: candidate, payload: tail };
 	}
-	return { shell: undefined, uname: "" };
+	return { shell: undefined, payload: "" };
 }
 
 async function probeWindowsPowerShell(host: SSHConnectionTarget): Promise<SSHPowerShellCommand | undefined> {
@@ -670,7 +717,7 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 		const os = powerShellCommand
 			? "windows"
 			: transferProbe.shell
-				? (osFromUname(transferProbe.uname) ?? "unknown")
+				? (osFromTransferProbe(transferProbe.payload) ?? "unknown")
 				: "unknown";
 		const shell = os === "windows" && (await probeWindowsPowerShellLogin(host)) ? "powershell" : "unknown";
 		const fallback: SSHHostInfo = {
@@ -731,10 +778,14 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 	} else {
 		const probe = await probeTransferShell(host);
 		transferShell = probe.shell;
-		// `uname -s` from the same probe lets us recover the OS when the first
-		// probe couldn't classify it (e.g. the remote silently nuked `$OSTYPE`).
-		if (transferShell && os === "unknown") {
-			os = osFromUname(probe.uname) ?? os;
+		// Platform evidence from the same probe lets us recover an unknown OS,
+		// while WSL evidence deliberately refines the host marker's generic
+		// Linux classification without another SSH round-trip.
+		if (transferShell) {
+			const transferOs = osFromTransferProbe(probe.payload);
+			if (transferOs === "wsl" || os === "unknown") {
+				os = transferOs ?? os;
+			}
 		}
 		if (!transferShell) {
 			powerShellCommand = await probeWindowsPowerShell(host);
@@ -790,6 +841,7 @@ async function probeHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
 }
 
 export async function getHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo | undefined> {
+	if (isLocalWslTarget(host)) return LOCAL_WSL_HOST_INFO;
 	const key = getSshHostInfoKey(host);
 	const cached = hostInfoCache.get(key);
 	if (cached) {
@@ -808,6 +860,7 @@ export async function getHostInfo(host: SSHConnectionTarget): Promise<SSHHostInf
  * remote host — callers get `undefined` when nothing is cached yet.
  */
 export function getCachedHostInfoSync(host: SSHConnectionTarget): SSHHostInfo | undefined {
+	if (isLocalWslTarget(host)) return LOCAL_WSL_HOST_INFO;
 	const key = getSshHostInfoKey(host);
 	const cached = hostInfoCache.get(key);
 	if (cached) {
@@ -829,6 +882,7 @@ export function getCachedHostInfoSync(host: SSHConnectionTarget): SSHHostInfo | 
 }
 
 export async function ensureHostInfo(host: SSHConnectionTarget): Promise<SSHHostInfo> {
+	if (isLocalWslTarget(host)) return LOCAL_WSL_HOST_INFO;
 	const key = getSshHostInfoKey(host);
 	const cached = hostInfoCache.get(key);
 	if (cached) {
@@ -849,11 +903,16 @@ export async function buildRemoteCommand(
 	command: string,
 	options?: SSHArgsOptions,
 ): Promise<string[]> {
+	if (isLocalWslTarget(host)) {
+		return [...(host.distribution ? ["--distribution", host.distribution] : []), "--exec", "sh", "-lc", command];
+	}
 	await validateKeyPermissions(host.keyPath, options?.platform);
 	return [...buildCommonArgs(host, options), buildSshTarget(host.username, host.host), command];
 }
 
 export interface SSHCommandInvocation {
+	/** Process executable. Omitted only by test doubles for the default `ssh` transport. */
+	executable?: string;
 	args: string[];
 	env?: Record<string, string>;
 	cleanup?: () => Promise<void>;
@@ -865,8 +924,12 @@ export async function buildRemoteCommandInvocation(
 	options?: SSHArgsOptions,
 ): Promise<SSHCommandInvocation> {
 	const args = await buildRemoteCommand(host, command, options);
+	if (isLocalWslTarget(host)) {
+		return { executable: "wsl.exe", args };
+	}
 	const auth = await prepareSshPasswordAuthEnv(host.password, options?.platform);
 	return {
+		executable: "ssh",
 		args,
 		env: auth.env,
 		cleanup: auth.cleanup,
@@ -876,6 +939,10 @@ export async function buildRemoteCommandInvocation(
 let registered = false;
 
 export async function ensureConnection(host: SSHConnectionTarget): Promise<void> {
+	if (isLocalWslTarget(host)) {
+		ensureWslBinary();
+		return;
+	}
 	const connectionKey = getSshConnectionKey(host);
 	const infoKey = getSshHostInfoKey(host);
 	const pending = pendingConnections.get(connectionKey);
@@ -944,6 +1011,7 @@ export async function invalidateSshTarget(
 	host: SSHConnectionTarget,
 	options: InvalidateSshTargetOptions = {},
 ): Promise<void> {
+	if (isLocalWslTarget(host)) return;
 	const connectionKey = getSshConnectionKey(host);
 	const pending = pendingConnections.get(connectionKey);
 	if (pending) {
@@ -967,6 +1035,7 @@ export async function invalidateSshTarget(
 }
 
 async function closeConnectionInternal(host: SSHConnectionTarget): Promise<void> {
+	if (isLocalWslTarget(host)) return;
 	if (!supportsSshControlMaster()) return;
 	const target = buildSshTarget(host.username, host.host);
 	await runSshSync(["-O", "exit", ...buildCommonArgs(host), target], SSH_HELPER_TIMEOUT_MS, host);

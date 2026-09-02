@@ -261,19 +261,33 @@ const LOCAL_BIN_PATHS: Array<{ markers: string[]; binDir: string }> = [
 const WINDOWS_LOCAL_EXECUTABLE_EXTENSIONS = [".exe", ".cmd", ".bat"] as const;
 
 function resolveLocalCommand(basePath: string): string | null {
-	if (fs.existsSync(basePath)) return basePath;
-	if (process.platform !== "win32") return null;
-
-	// Package managers write Windows launchers with executable suffixes in node_modules/.bin.
-	for (const extension of WINDOWS_LOCAL_EXECUTABLE_EXTENSIONS) {
-		const candidate = `${basePath}${extension}`;
-		if (fs.existsSync(candidate)) return candidate;
+	if (process.platform === "win32") {
+		// Prefer a real Windows launcher over the extensionless package-manager shim.
+		// Bun may install both `tool` and `tool.exe`; spawning the extensionless file
+		// directly bypasses PATHEXT and can hand an ESM package bin script to Node,
+		// while `tool.exe` is the working launcher selected by a shell.
+		for (const extension of WINDOWS_LOCAL_EXECUTABLE_EXTENSIONS) {
+			const candidate = `${basePath}${extension}`;
+			if (fs.existsSync(candidate)) return candidate;
+		}
 	}
+	if (fs.existsSync(basePath)) return basePath;
 
 	return null;
 }
 
 function resolveCommandFromLocalRoot(command: string, cwd: string): string | null {
+	if (process.platform === "win32" && command === "tsgo") {
+		const nativeTypescriptGo = path.join(
+			cwd,
+			"node_modules",
+			"@typescript",
+			`native-preview-${process.platform}-${process.arch}`,
+			"lib",
+			"tsgo.exe",
+		);
+		if (fs.existsSync(nativeTypescriptGo)) return nativeTypescriptGo;
+	}
 	for (const { markers, binDir } of LOCAL_BIN_PATHS) {
 		if (!hasRootMarkers(cwd, markers)) continue;
 		const resolved = resolveLocalCommand(path.join(cwd, binDir, command));
@@ -307,8 +321,10 @@ export function resolveCommand(command: string, cwd: string, options?: ResolveCo
 		if (resolved) return resolved;
 	}
 
-	if (!options) return $which(command);
-	return $which(command, { cache: options.cache, PATH: options.PATH });
+	const resolved = options ? $which(command, { cache: options.cache, PATH: options.PATH }) : $which(command);
+	// `$which` intentionally caches positive lookups. LSP status must not keep
+	// advertising a binary that was removed after that cache entry was created.
+	return resolved && fs.existsSync(resolved) ? resolved : null;
 }
 
 interface ConfigSource {

@@ -6,6 +6,7 @@ import * as path from "node:path";
 
 import { type Api, type AssistantMessage, completeSimple, type Model, retryTransientCompletion } from "@oh-my-pi/pi-ai";
 import { StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
+import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
 import { isConPTYHosted, writeThroughActiveTerminal } from "@oh-my-pi/pi-tui";
 import { isTerminalHeadless, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
@@ -240,6 +241,55 @@ export async function generateTitleOnline(
 	// markers work uniformly everywhere.
 	const systemPrompt = titleSystemPrompt ? [titleSystemPrompt, TITLE_MARKER_INSTRUCTION] : [TITLE_SYSTEM_PROMPT];
 	const userMessage = formatTitleUserMessage(firstMessage);
+	const attempt = await generateTitleOnlineWithModel({
+		firstMessage,
+		model,
+		registry,
+		sessionId,
+		metadataResolver,
+		signal,
+		systemPrompt,
+		userMessage,
+	});
+	if (attempt.kind === "title") return attempt.title;
+	if (attempt.kind === "declined") return null;
+	if (!currentModel || signal?.aborted || modelsAreEqual(model, currentModel)) return null;
+
+	logger.warn("title-generator: primary model failed; retrying with current model", {
+		sessionId,
+		reason: attempt.reason,
+		fromModel: `${model.provider}/${model.id}`,
+		toModel: `${currentModel.provider}/${currentModel.id}`,
+	});
+	const fallback = await generateTitleOnlineWithModel({
+		firstMessage,
+		model: currentModel,
+		registry,
+		sessionId,
+		metadataResolver,
+		signal,
+		systemPrompt,
+		userMessage,
+	});
+	return fallback.kind === "title" ? fallback.title : null;
+}
+
+type OnlineTitleAttempt =
+	| { kind: "title"; title: string }
+	| { kind: "declined" }
+	| { kind: "failed"; reason: "missing-api-key" | "provider-response-error" | "exception" };
+
+async function generateTitleOnlineWithModel(options: {
+	firstMessage: string;
+	model: Model<Api>;
+	registry: ModelRegistry;
+	sessionId?: string;
+	metadataResolver?: (provider: string) => Record<string, unknown> | undefined;
+	signal?: AbortSignal;
+	systemPrompt: string[];
+	userMessage: string;
+}): Promise<OnlineTitleAttempt> {
+	const { firstMessage, model, registry, sessionId, metadataResolver, signal, systemPrompt, userMessage } = options;
 	const modelName = `${model.provider}/${model.id}`;
 	const modelContext = {
 		sessionId,
@@ -253,7 +303,7 @@ export async function generateTitleOnline(
 		const apiKey = await registry.getApiKey(model, sessionId);
 		if (!apiKey) {
 			logger.warn("title-generator: no API key", { ...modelContext, reason: "missing-api-key" });
-			return null;
+			return { kind: "failed", reason: "missing-api-key" };
 		}
 		// Resolve metadata after getApiKey so the session-sticky credential for this
 		// request is already recorded; metadataResolver can then return the correct
@@ -296,7 +346,7 @@ export async function generateTitleOnline(
 				stopReason: response.stopReason,
 				errorMessage: response.errorMessage,
 			});
-			return null;
+			return { kind: "failed", reason: "provider-response-error" };
 		}
 
 		const title = normalizeGeneratedTitle(extractGeneratedTitle(response.content), firstMessage);
@@ -308,7 +358,7 @@ export async function generateTitleOnline(
 				usage: response.usage,
 				stopReason: response.stopReason,
 			});
-			return null;
+			return { kind: "declined" };
 		}
 
 		logger.debug("title-generator: success", {
@@ -318,14 +368,14 @@ export async function generateTitleOnline(
 			stopReason: response.stopReason,
 		});
 
-		return title;
+		return { kind: "title", title };
 	} catch (err) {
 		logger.warn("title-generator: error", {
 			...modelContext,
 			reason: "exception",
 			error: err instanceof Error ? err.message : String(err),
 		});
-		return null;
+		return { kind: "failed", reason: "exception" };
 	}
 }
 

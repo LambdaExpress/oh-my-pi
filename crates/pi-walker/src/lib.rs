@@ -1581,7 +1581,7 @@ fn walk_parallel_dir<'scope, E, S, H>(
 		if !context.options.include_hidden && is_hidden_name(name) {
 			continue;
 		}
-		if (context.options.skip_git && is_git_name(name))
+		if (context.options.skip_git && entry.file_type == FileType::Dir && is_git_name(name))
 			|| (context.options.skip_node_modules && is_node_modules_name(name))
 		{
 			continue;
@@ -2707,7 +2707,7 @@ impl<H> WalkContext<'_, H> {
 			if !self.options.include_hidden && is_hidden_name(name) {
 				continue;
 			}
-			if (self.options.skip_git && is_git_name(name))
+			if (self.options.skip_git && entry.file_type == FileType::Dir && is_git_name(name))
 				|| (self.options.skip_node_modules && is_node_modules_name(name))
 			{
 				continue;

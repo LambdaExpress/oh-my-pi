@@ -53,7 +53,6 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 	const requestRender = vi.fn();
 	const showError = vi.fn();
 	const addToHistory = vi.fn();
-	const flushPendingBashComponents = vi.fn();
 
 	const editor: FakeEditor = {
 		pendingImages: [] as ImageContent[],
@@ -147,7 +146,6 @@ function createContext(sessionOverride?: InteractiveModeContext["session"]) {
 		// No input waiter: the state under test.
 		onInputCallback: undefined,
 		updatePendingMessagesDisplay,
-		flushPendingBashComponents,
 		showError,
 		isBashMode: false,
 		isPythonMode: false,

@@ -56,6 +56,9 @@ const linesField = type("1 <= number.integer <= 10000").describe("maximum recent
 const coordinateField = type("number.integer >= 0").describe("non-negative screen coordinate");
 const durationField = type("1 <= number.integer <= 60000").describe("swipe duration in milliseconds");
 const nonEmptyString = type("string > 0");
+const UIAUTOMATOR_DUMP_COMMAND = /^\s*uiautomator\s+dump(?:\s|$)/;
+const UIAUTOMATOR_IDLE_TIMEOUT = /ERROR:\s*could not get idle state\./i;
+const UIAUTOMATOR_RETRY_DELAY_MS = 500;
 
 const devicesSchema = type({ op: "'devices'", "+": "reject" });
 const avdsSchema = type({ op: "'avds'", "+": "reject" });
@@ -694,7 +697,27 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 			device: selected,
 			...extraDetails,
 		};
-		const result = await this.#runText(buildArgs(selected), details, timeoutMs, signal, onUpdate);
+		const args = buildArgs(selected);
+		const startedAt = Date.now();
+		let result = await this.#runText(args, details, timeoutMs, signal, onUpdate);
+		if (
+			params.op === "shell" &&
+			UIAUTOMATOR_DUMP_COMMAND.test(params.command) &&
+			UIAUTOMATOR_IDLE_TIMEOUT.test(result.output)
+		) {
+			const remainingBeforeDelay = timeoutMs - (Date.now() - startedAt);
+			if (remainingBeforeDelay > UIAUTOMATOR_RETRY_DELAY_MS) {
+				await Bun.sleep(UIAUTOMATOR_RETRY_DELAY_MS);
+				signal?.throwIfAborted();
+				const remaining = Math.max(1, timeoutMs - (Date.now() - startedAt));
+				result = await this.#runText(args, details, remaining, signal, onUpdate);
+			}
+			if (UIAUTOMATOR_IDLE_TIMEOUT.test(result.output)) {
+				throw new ToolError(
+					`ADB shell failed${operationContext(details)}: Android's UI hierarchy never became idle. Pause continuously updating UI or animations, then retry uiautomator dump.${outputContext(result.output, result.artifactId)}`,
+				);
+			}
+		}
 		return toolResult(details)
 			.text(result.output || "(no output)")
 			.truncationFromSummary(result, { direction: "tail" })
