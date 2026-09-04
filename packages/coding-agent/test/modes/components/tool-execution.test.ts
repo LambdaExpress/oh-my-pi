@@ -200,6 +200,23 @@ describe("ToolExecutionComponent merged abort rendering", () => {
 		expect(missing).toEqual([]);
 	});
 
+	it("renders an abandoned PowerShell call as one frame with abort in its output", () => {
+		const script = "Write-Output 'abort-card-sentinel'";
+		const args = { script };
+		const ui: ToolExecutionUi = {
+			requestRender() {},
+			requestComponentRender(_component: Component) {},
+			resetDisplay() {},
+		};
+		const component = new ToolExecutionComponent("pwsh", args, { showImages: false }, undefined, ui, process.cwd());
+		component.updateResult({ content: [{ type: "text", text: "aborted" }], details: {}, isError: true }, false);
+
+		const rendered = visibleText(component.render(120));
+		expect(rendered.match(/abort-card-sentinel/g)).toHaveLength(1);
+		expect(rendered).toContain("Output");
+		expect(rendered).toContain("aborted");
+	});
+
 	it("preserves generic signal-abort arguments for a custom merged renderer", () => {
 		const tool: AgentTool & { mergeCallAndResult: true } = {
 			name: "custom_lookup",

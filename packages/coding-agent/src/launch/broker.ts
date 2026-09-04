@@ -1165,6 +1165,14 @@ class DaemonBroker {
 		}
 		record.snapshot.state = "stopping";
 		this.#persist(record);
+		if (record.spec.gracefulStdinClose && record.input) {
+			try {
+				await record.input.end();
+			} catch {
+				// The process may have exited between refresh and stdin close.
+			}
+			if (await this.#waitUntil(record, () => terminalState(record.snapshot.state), timeoutMs)) return;
+		}
 		const processRef = record.snapshot.pid === undefined ? null : Process.fromPid(record.snapshot.pid);
 		if (processRef) await processRef.terminate({ group: true, gracefulMs: timeoutMs, timeoutMs: timeoutMs + 1_000 });
 		else record.pty?.kill();

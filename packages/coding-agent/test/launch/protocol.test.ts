@@ -3,6 +3,7 @@ import {
 	type DaemonOperation,
 	parseDaemonRpcResult,
 	parseDaemonSnapshot,
+	parseDaemonSpec,
 	parseDaemonWireRequest,
 } from "../../src/launch/protocol";
 
@@ -59,6 +60,23 @@ describe("launch logs protocol", () => {
 });
 
 describe("launch logs compatibility", () => {
+	it("preserves cooperative stdin shutdown for internal daemons", () => {
+		const spec = parseDaemonSpec({
+			name: "browser",
+			application: "bun",
+			args: [],
+			env: {},
+			cwd: ".",
+			pty: false,
+			restart: "no",
+			persist: false,
+			detached: false,
+			gracefulStdinClose: true,
+		});
+
+		expect(spec.gracefulStdinClose).toBe(true);
+	});
+
 	it("preserves the rendered-row request for upgraded brokers", () => {
 		const request = parseDaemonWireRequest({
 			id: "request-1",

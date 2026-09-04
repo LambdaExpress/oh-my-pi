@@ -67,6 +67,15 @@ export const MUX_PING_RESULT = "pong";
  */
 export const MUX_RESTART_METHOD = "omp/muxRestartServer";
 
+/** Final notification carrying the real server failure before the mux closes a bound link. */
+export const MUX_SERVER_EXIT_METHOD = "omp/muxServerExit";
+
+/** Exit metadata retained across the server-process → mux-socket boundary. */
+export interface MuxServerExitParams {
+	exitCode: number;
+	stderr: string;
+}
+
 /** Handshake parameters identifying a reusable server process. */
 export interface MuxConnectParams {
 	/** Executable to spawn (the client's `resolvedCommand ?? command`). */

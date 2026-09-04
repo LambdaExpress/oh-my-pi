@@ -23,7 +23,7 @@ import { truncateForPrompt } from "./approval";
 import { isInternalUrlPath, resolveToCwd } from "./path-utils";
 import { enforcePlanModeWrite } from "./plan-mode-guard";
 import { formatDuration, replaceTabs, shortenPath } from "./render-utils";
-import { formatSshHostsDescription, loadSshHosts } from "./ssh-hosts";
+import { formatSshHostsDescription, getOpenSshConfigFingerprint, loadSshHosts } from "./ssh-hosts";
 import { ToolError } from "./tool-errors";
 
 const sshTransferSchema = type({
@@ -237,15 +237,58 @@ export class SshTransferTool implements AgentTool<typeof sshTransferSchema, SshT
 	readonly #allowedHosts: Set<string>;
 	readonly #asyncEnabled: boolean;
 	readonly #lastSnapshots = new Map<string, SshTransferToolDetails>();
+	readonly #baseDescription: string;
+	#openSshConfigFingerprint: string | undefined;
+	#refreshPromise: Promise<void> | undefined;
+	readonly hostNames: string[];
+	readonly hostsByName: Map<string, SSHConnectionTarget>;
+	description: string;
 
 	constructor(
 		private readonly session: ToolSession,
-		readonly hostNames: string[],
-		readonly hostsByName: Map<string, SSHConnectionTarget>,
-		readonly description: string,
+		hostNames: string[],
+		hostsByName: Map<string, SSHConnectionTarget>,
+		description: string,
+		openSshConfigFingerprint?: string,
 	) {
+		this.hostNames = hostNames;
+		this.hostsByName = hostsByName;
+		this.description = description;
+		this.#baseDescription = prompt.render(sshTransferDescriptionBase);
+		this.#openSshConfigFingerprint = openSshConfigFingerprint;
 		this.#allowedHosts = new Set(hostNames);
 		this.#asyncEnabled = session.settings.get("async.enabled");
+	}
+
+	async #refreshHostsIfChanged(): Promise<void> {
+		// Directly constructed tools (for example SDK embedders/tests) do not
+		// carry discovery state and intentionally retain their supplied snapshot.
+		if (this.#openSshConfigFingerprint === undefined) return;
+		if (this.#refreshPromise) return this.#refreshPromise;
+
+		const refresh = (async () => {
+			const currentFingerprint = await getOpenSshConfigFingerprint();
+			if (currentFingerprint === this.#openSshConfigFingerprint) return;
+
+			const loaded = await loadSshHosts(this.session);
+			this.hostNames.splice(0, this.hostNames.length, ...loaded.hostNames);
+			this.hostsByName.clear();
+			for (const [name, host] of loaded.hostsByName) this.hostsByName.set(name, host);
+			this.#allowedHosts.clear();
+			for (const name of loaded.hostNames) this.#allowedHosts.add(name);
+			this.#openSshConfigFingerprint = loaded.openSshConfigFingerprint;
+			const hosts = loaded.hostNames.flatMap(name => {
+				const host = loaded.hostsByName.get(name);
+				return host ? [host] : [];
+			});
+			this.description = formatSshHostsDescription(this.#baseDescription, hosts);
+		})();
+		this.#refreshPromise = refresh;
+		try {
+			await refresh;
+		} finally {
+			if (this.#refreshPromise === refresh) this.#refreshPromise = undefined;
+		}
 	}
 
 	createAbortedResult(toolCallId: string, params: SshTransferParams): AgentToolResult<SshTransferToolDetails> {
@@ -280,6 +323,7 @@ export class SshTransferTool implements AgentTool<typeof sshTransferSchema, SshT
 		const asyncRequested = params.async === true;
 		const localInput = params.local_path.trim();
 		const remotePath = params.remote_path.trim();
+		await this.#refreshHostsIfChanged();
 		if (!this.#allowedHosts.has(params.host)) {
 			throw new ToolError(`Unknown SSH host: ${params.host}. Available hosts: ${this.hostNames.join(", ")}`);
 		}
@@ -547,12 +591,12 @@ export const sshTransferToolRenderer = {
 };
 
 export async function loadSshTransferTool(session: ToolSession): Promise<SshTransferTool | null> {
-	const { hostNames, hostsByName } = await loadSshHosts(session);
+	const { hostNames, hostsByName, openSshConfigFingerprint } = await loadSshHosts(session);
 	if (hostNames.length === 0) return null;
 	const descriptionHosts = hostNames.flatMap(name => {
 		const host = hostsByName.get(name);
 		return host ? [host] : [];
 	});
 	const description = formatSshHostsDescription(prompt.render(sshTransferDescriptionBase), descriptionHosts);
-	return new SshTransferTool(session, hostNames, hostsByName, description);
+	return new SshTransferTool(session, hostNames, hostsByName, description, openSshConfigFingerprint);
 }

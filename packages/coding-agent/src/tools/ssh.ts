@@ -16,7 +16,7 @@ import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { formatStyledTruncationWarning, type OutputMeta, stripOutputNotice } from "./output-meta";
 import { capPreviewLines, extractPartialJsonString, replaceTabs } from "./render-utils";
-import { formatSshHostsDescription, loadSshHosts } from "./ssh-hosts";
+import { formatSshHostsDescription, getOpenSshConfigFingerprint, loadSshHosts } from "./ssh-hosts";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
@@ -119,18 +119,67 @@ export class SshTool implements AgentTool<typeof sshSchema, SSHToolDetails> {
 	];
 	readonly #allowedHosts: Set<string>;
 	readonly #commandLanguagesByHost = new Map<string, SshCommandLanguage>();
+	readonly #baseDescription: string;
+	#openSshConfigFingerprint: string | undefined;
+	#refreshPromise: Promise<void> | undefined;
+	readonly hostNames: string[];
+	readonly hostsByName: Map<string, SSHConnectionTarget>;
+	description: string;
 
 	constructor(
 		private readonly session: ToolSession,
-		private readonly hostNames: string[],
-		private readonly hostsByName: Map<string, SSHConnectionTarget>,
-		readonly description: string,
+		hostNames: string[],
+		hostsByName: Map<string, SSHConnectionTarget>,
+		description: string,
+		openSshConfigFingerprint?: string,
 	) {
+		this.hostNames = hostNames;
+		this.hostsByName = hostsByName;
+		this.description = description;
+		this.#baseDescription = prompt.render(sshDescriptionBase);
+		this.#openSshConfigFingerprint = openSshConfigFingerprint;
 		this.#allowedHosts = new Set(hostNames);
 		for (const [name, host] of hostsByName) {
 			const cached = getCachedHostInfoSync(host);
 			const commandLanguage = cached ? getSshCommandLanguage(cached) : undefined;
 			if (commandLanguage) this.#commandLanguagesByHost.set(name, commandLanguage);
+		}
+	}
+
+	async #refreshHostsIfChanged(): Promise<void> {
+		// Tools built directly by embedders/tests do not carry a discovery
+		// fingerprint and intentionally retain their supplied snapshot.
+		if (this.#openSshConfigFingerprint === undefined) return;
+		if (this.#refreshPromise) return this.#refreshPromise;
+
+		const refresh = (async () => {
+			const currentFingerprint = await getOpenSshConfigFingerprint();
+			if (currentFingerprint === this.#openSshConfigFingerprint) return;
+
+			const loaded = await loadSshHosts(this.session);
+			this.hostNames.splice(0, this.hostNames.length, ...loaded.hostNames);
+			this.hostsByName.clear();
+			for (const [name, host] of loaded.hostsByName) this.hostsByName.set(name, host);
+			this.#allowedHosts.clear();
+			for (const name of loaded.hostNames) this.#allowedHosts.add(name);
+			this.#commandLanguagesByHost.clear();
+			for (const [name, host] of loaded.hostsByName) {
+				const cached = getCachedHostInfoSync(host);
+				const commandLanguage = cached ? getSshCommandLanguage(cached) : undefined;
+				if (commandLanguage) this.#commandLanguagesByHost.set(name, commandLanguage);
+			}
+			this.#openSshConfigFingerprint = loaded.openSshConfigFingerprint;
+			const hosts = loaded.hostNames.flatMap(name => {
+				const host = loaded.hostsByName.get(name);
+				return host ? [host] : [];
+			});
+			this.description = formatSshHostsDescription(this.#baseDescription, hosts);
+		})();
+		this.#refreshPromise = refresh;
+		try {
+			await refresh;
+		} finally {
+			if (this.#refreshPromise === refresh) this.#refreshPromise = undefined;
 		}
 	}
 
@@ -141,6 +190,7 @@ export class SshTool implements AgentTool<typeof sshSchema, SSHToolDetails> {
 		onUpdate?: AgentToolUpdateCallback<SSHToolDetails>,
 		_ctx?: AgentToolContext,
 	): Promise<AgentToolResult<SSHToolDetails>> {
+		await this.#refreshHostsIfChanged();
 		if (!this.#allowedHosts.has(host)) {
 			throw new ToolError(`Unknown SSH host: ${host}. Available hosts: ${this.hostNames.join(", ")}`);
 		}
@@ -186,7 +236,7 @@ export class SshTool implements AgentTool<typeof sshSchema, SSHToolDetails> {
 }
 
 export async function loadSshTool(session: ToolSession): Promise<SshTool | null> {
-	const { hostNames, hostsByName } = await loadSshHosts(session);
+	const { hostNames, hostsByName, openSshConfigFingerprint } = await loadSshHosts(session);
 	if (hostNames.length === 0) return null;
 	const hosts = hostNames.flatMap(name => {
 		const host = hostsByName.get(name);
@@ -197,6 +247,7 @@ export async function loadSshTool(session: ToolSession): Promise<SshTool | null>
 		hostNames,
 		hostsByName,
 		formatSshHostsDescription(prompt.render(sshDescriptionBase), hosts),
+		openSshConfigFingerprint,
 	);
 }
 

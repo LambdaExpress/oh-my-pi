@@ -39,6 +39,7 @@ import { LSP_MUX_WORKER_ARG } from "./lsp/mux/protocol";
 import { BUILD_IDENTIFIER, CLI_VERSION, formatVersionWithBuild } from "./release-code";
 import rootLicense from "./tools/browser/relay/extension-assets/LICENSE.txt" with { type: "text" };
 import thirdPartyNotices from "./tools/browser/relay/extension-assets/THIRD-PARTY-NOTICES.txt" with { type: "text" };
+import { SHARED_BROWSER_WORKER_ARG } from "./tools/browser/shared-worker-protocol";
 import { COMPUTER_WORKER_ARG } from "./tools/computer/protocol";
 import { smokeTestComputerWorker } from "./tools/computer/supervisor";
 import { startComputerWorker } from "./tools/computer/worker-entry";
@@ -232,6 +233,11 @@ async function runWorkerEntrypoint(arg: string | undefined): Promise<boolean> {
 	if (arg === LSP_MUX_WORKER_ARG) {
 		const { startLspMuxFromEnvironment } = await import("./lsp/mux/server");
 		await startLspMuxFromEnvironment();
+		return true;
+	}
+	if (arg === SHARED_BROWSER_WORKER_ARG) {
+		const { runSharedBrowserWorker } = await import("./tools/browser/shared-worker");
+		await runSharedBrowserWorker();
 		return true;
 	}
 	if (arg === BLOB_BROKER_WORKER_ARG) {

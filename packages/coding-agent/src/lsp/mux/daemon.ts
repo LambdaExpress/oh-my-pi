@@ -121,13 +121,14 @@ function requestOnSocket(
 function socketTransport(socket: net.Socket, leftover: Buffer, pid: number | undefined): LspTransport {
 	const exited = Promise.withResolvers<number>();
 	let exitCode: number | null = null;
+	let stderr = "";
 	let needDrain = false;
 	socket.on("error", () => {
 		// "close" always follows; swallowing here prevents an unhandled error event.
 	});
 	socket.once("close", () => {
-		exitCode = 0;
-		exited.resolve(0);
+		exitCode ??= 0;
+		exited.resolve(exitCode);
 	});
 	const stdout = new ReadableStream<Uint8Array>({
 		start(controller) {
@@ -175,7 +176,11 @@ function socketTransport(socket: net.Socket, leftover: Buffer, pid: number | und
 			socket.destroy();
 		},
 		peekStderr() {
-			return "";
+			return stderr;
+		},
+		recordExit(code, detail) {
+			exitCode = code;
+			stderr = detail;
 		},
 	};
 }

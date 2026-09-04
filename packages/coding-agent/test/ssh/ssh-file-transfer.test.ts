@@ -400,6 +400,45 @@ describe("SSH file transfer core", () => {
 		expect(commands.every(command => !command.includes("cannot determine SSH transfer commit state"))).toBe(true);
 	});
 
+	it("commits a POSIX upload when wc reports a BSD-style leading space", async () => {
+		const localPath = path.join(testDir, "upload-bsd-wc.bin");
+		const payload = new Uint8Array([1, 2, 3]);
+		await fs.writeFile(localPath, payload);
+		const commands: string[] = [];
+		let commitAttempts = 0;
+		let recoveryAttempts = 0;
+		vi.spyOn(connectionManager, "buildRemoteCommandInvocation").mockImplementation(async (_host, command) => {
+			commands.push(command);
+			return { args: [`invocation-${commands.length}`] };
+		});
+		vi.spyOn(ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
+			const script = commands.at(-1) ?? "";
+			if (!script.includes("OMP_TRANSFER_COMMITTED")) return createChild<In>();
+			if (script.includes("cannot determine SSH transfer commit state")) {
+				recoveryAttempts++;
+				return createChild<In>({ exitError: new Error("recovery should not be needed") });
+			}
+
+			commitAttempts++;
+			// A macOS/BSD wc emits a leading blank before the byte count. Model the
+			// remote commit gate rather than merely asserting generated script text.
+			const wcOutput = " 3\n";
+			const normalized = script.includes("tr -d");
+			const comparedSize = normalized ? wcOutput.replace(/\s/g, "") : wcOutput.trimEnd();
+			if (comparedSize !== String(payload.byteLength)) {
+				return createChild<In>({ exitError: new Error("staged transfer size does not match preflight") });
+			}
+			return createChild<In>({ stdout: [new TextEncoder().encode("OMP_TRANSFER_COMMITTED\n")] });
+		});
+
+		await expect(executeSshFileTransfer(uploadPlan(localPath, payload.byteLength))).resolves.toMatchObject({
+			transferredBytes: payload.byteLength,
+			totalBytes: payload.byteLength,
+		});
+		expect(commitAttempts).toBe(1);
+		expect(recoveryAttempts).toBe(0);
+	});
+
 	it("confirms a committed upload whose proof was already cleaned", async () => {
 		const localPath = path.join(testDir, "upload.bin");
 		await fs.writeFile(localPath, new Uint8Array([1, 2, 3]));

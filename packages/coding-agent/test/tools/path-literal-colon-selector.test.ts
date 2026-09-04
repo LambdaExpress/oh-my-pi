@@ -400,6 +400,33 @@ describe("literal colon filename resolution (issue #4618)", () => {
 			expect(rangedOutput).not.toContain("three");
 			expect(rangedOutput).not.toContain("four");
 		});
+
+		it.skipIf(process.platform !== "win32")(
+			"searches a late range in an oversized physical file selected by an absolute Windows path",
+			async () => {
+				const absolute = path.win32.resolve(tmpDir, "oversized-range.txt");
+				const filler = "filler text keeps this physical file beyond the native grep window ";
+				const lines = Array.from({ length: 65_000 }, (_, index) => {
+					if (index === 100) return "early-outside-needle";
+					if (index === 60_000) return "late-in-range-needle";
+					return `${filler}${String(index).padStart(5, "0")}`;
+				});
+				await fs.writeFile(absolute, `${lines.join("\n")}\n`);
+				const fileSize = (await fs.stat(absolute)).size;
+				expect(fileSize).toBeGreaterThan(4 * 1024 * 1024);
+
+				const tool = new GrepTool(createSession());
+				const result = await tool.execute("grep-oversized-late-range", {
+					pattern: "needle",
+					path: `${absolute}:60000-60020`,
+				});
+				const output = getText(result);
+
+				expect(output).toContain("late-in-range-needle");
+				expect(output).not.toContain("early-outside-needle");
+				expect(output).not.toContain("Searched only the first 4MB");
+			},
+		);
 	});
 });
 

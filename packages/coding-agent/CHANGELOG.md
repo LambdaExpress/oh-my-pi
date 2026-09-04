@@ -72,6 +72,13 @@
 
 ### Fixed
 
+- Fixed ranged searches of oversized Windows files, automatic SSH host refresh after external OpenSSH config edits, and macOS SSH uploads rejected by padded `wc -c` output.
+- Fixed OpenAI Responses idle stream timeouts after visible output by continuing the interrupted response instead of stopping without an automatic retry.
+- Fixed aborted PowerShell calls rendering separate call and error frames instead of one command frame with the abort in its output.
+- Fixed shared LSP transports discarding the server's real exit diagnostics and skipping the bounded clean-exit initialization retry.
+- Fixed project TUI pixel screenshots missing `@napi-rs/canvas` after a standard root workspace install.
+- Made local `xd://report_issue` files synchronously durable before reporting a successful save.
+- Fixed broker-owned Chromium exiting immediately on Windows by supervising its DevTools endpoint and cooperatively cleaning the exact OMP browser profile.
 - Fixed completed-run collapsing leaving all prior agent text and tool calls expanded when a run ended with a terminal provider error.
 - Restored `/copy` as a fullscreen picker with mouse wheel, hover, and click controls.
 - Fixed native-scrollback transcript rebuilds duplicating history after compaction and multi-tool replies clipping streamed text until message completion.

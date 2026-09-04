@@ -1,3 +1,7 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { invalidate as invalidateFs } from "../capability/fs";
 import { getCachedHostInfoSync, isLocalWslTarget, type SSHConnectionTarget } from "../ssh/connection-manager";
 import { loadEffectiveSshHosts } from "../ssh/host-registry";
 import { discoverLocalWslTargets } from "../ssh/wsl";
@@ -33,13 +37,40 @@ export interface LoadSshHostsOptions {
 	discoverLocalWslTargets?: () => Promise<readonly SSHConnectionTarget[]>;
 }
 
+/**
+ * Return a cheap identity for the user's OpenSSH config.
+ *
+ * This is intentionally separate from capability discovery: SSH tools are
+ * long-lived snapshots, while the config is user-editable outside the
+ * session. Callers can check this identity before deciding whether to reload
+ * the snapshot. Include enough stat data to notice replacements as well as
+ * in-place edits without reading the file on every tool call.
+ */
+export async function getOpenSshConfigFingerprint(home = os.homedir()): Promise<string> {
+	const filePath = path.join(home, ".ssh", "config");
+	try {
+		const stats = await fs.stat(filePath);
+		if (!stats.isFile()) return "missing";
+		return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`;
+	} catch {
+		return "missing";
+	}
+}
+
 export async function loadSshHosts(
 	session: ToolSession,
 	options: LoadSshHostsOptions = {},
 ): Promise<{
 	hostNames: string[];
 	hostsByName: Map<string, SSHConnectionTarget>;
+	openSshConfigFingerprint: string;
 }> {
+	// The capability filesystem cache is useful for ordinary discovery, but the
+	// OpenSSH config is explicitly mutable outside omp. Invalidate only this
+	// source at the snapshot refresh boundary; do not reset unrelated
+	// capability/file caches.
+	const openSshConfigPath = path.join(os.homedir(), ".ssh", "config");
+	invalidateFs(openSshConfigPath);
 	const hosts = session.getSessionSshHosts
 		? await session.getSessionSshHosts()
 		: await loadEffectiveSshHosts(session.cwd);
@@ -49,5 +80,9 @@ export async function loadSshHosts(
 	for (const target of localWslTargets) {
 		if (!hostsByName.has(target.name)) hostsByName.set(target.name, target);
 	}
-	return { hostNames: [...hostsByName.keys()].sort(), hostsByName };
+	return {
+		hostNames: [...hostsByName.keys()].sort(),
+		hostsByName,
+		openSshConfigFingerprint: await getOpenSshConfigFingerprint(),
+	};
 }

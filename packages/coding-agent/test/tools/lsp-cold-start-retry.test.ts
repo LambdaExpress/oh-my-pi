@@ -50,7 +50,10 @@ type TestStdin = "pipe" | "ignore" | Buffer | Uint8Array | null;
 
 // In-memory LSP transport fake, mirroring the pattern in lsp-regressions.test.ts:
 // replaces the real subprocess (`ptree.spawn`) with an in-process JSON-RPC peer.
-function createFakeLspProcess(handler: FakeLspHandler): {
+function createFakeLspProcess(
+	handler: FakeLspHandler,
+	options: { sharedMux?: boolean } = {},
+): {
 	server: FakeLspServer;
 	proc: LspClient["proc"];
 } {
@@ -124,6 +127,7 @@ function createFakeLspProcess(handler: FakeLspHandler): {
 			end: async () => 0,
 		},
 		stdout,
+		sharedMux: options.sharedMux,
 		peekStderr: () => "",
 		kill() {
 			server.exit(0);
@@ -139,13 +143,16 @@ function installFakeLsp(handler: FakeLspHandler): FakeLspServer {
 	return server;
 }
 
-function installFakeLspSequence(handlers: FakeLspHandler[]): { spawnCount: () => number } {
+function installFakeLspSequence(
+	handlers: FakeLspHandler[],
+	options: { sharedMux?: boolean } = {},
+): { spawnCount: () => number } {
 	let spawnCount = 0;
 	vi.spyOn(piUtils.ptree, "spawn").mockImplementation(<In extends TestStdin>() => {
 		const handler = handlers[Math.min(spawnCount, handlers.length - 1)];
 		if (!handler) throw new Error("Fake LSP sequence requires at least one handler");
 		spawnCount++;
-		const created = createFakeLspProcess(handler);
+		const created = createFakeLspProcess(handler, options);
 		return created.proc as unknown as piUtils.ptree.ChildProcess<In>;
 	});
 	return { spawnCount: () => spawnCount };
@@ -189,7 +196,10 @@ describe("lsp cold-start retries", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("rebuilds once when the first initialize exits cleanly without a response", async () => {
+	it.each([
+		["private", false],
+		["shared", true],
+	] as const)("rebuilds a %s transport once when the first initialize exits cleanly", async (_kind, sharedMux) => {
 		const tempDir = TempDir.createSync("@omp-lsp-clean-exit-retry-");
 		try {
 			const sourcePath = path.join(tempDir.path(), "src", "main.ts");
@@ -201,23 +211,26 @@ describe("lsp cold-start retries", () => {
 			};
 
 			let referenceRequests = 0;
-			const installation = installFakeLspSequence([
-				(message, server) => {
-					if (message.method === "initialize") server.exit(0);
-				},
-				(message, server) => {
-					if (message.method === "initialize") {
-						answerInitialize(message, server);
-					} else if (message.method === "textDocument/references") {
-						referenceRequests++;
-						server.send({ jsonrpc: "2.0", id: message.id, result: [reference, reference] });
-					} else if (message.method === "shutdown") {
-						server.send({ jsonrpc: "2.0", id: message.id, result: null });
-					} else if (message.method === "exit") {
-						server.exit(0);
-					}
-				},
-			]);
+			const installation = installFakeLspSequence(
+				[
+					(message, server) => {
+						if (message.method === "initialize") server.exit(0);
+					},
+					(message, server) => {
+						if (message.method === "initialize") {
+							answerInitialize(message, server);
+						} else if (message.method === "textDocument/references") {
+							referenceRequests++;
+							server.send({ jsonrpc: "2.0", id: message.id, result: [reference, reference] });
+						} else if (message.method === "shutdown") {
+							server.send({ jsonrpc: "2.0", id: message.id, result: null });
+						} else if (message.method === "exit") {
+							server.exit(0);
+						}
+					},
+				],
+				{ sharedMux },
+			);
 
 			const config = tsServerConfig();
 			mockTsConfig(config);

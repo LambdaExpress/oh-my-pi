@@ -499,7 +499,7 @@ export async function launchHeadlessBrowser(opts: LaunchHeadlessOptions): Promis
 	}
 }
 
-/** Fully resolved executable and argv for a broker-spawned shared Chromium. */
+/** Fully resolved executable and argv for a worker-supervised shared Chromium. */
 export interface SharedBrowserLaunchSpec {
 	executablePath: string;
 	args: string[];
@@ -507,7 +507,7 @@ export interface SharedBrowserLaunchSpec {
 
 /**
  * Resolve the executable and complete argv for a shared Chromium the daemon
- * broker spawns directly (no puppeteer inside the broker). Mirrors
+ * worker spawns directly (no puppeteer inside the broker). Mirrors
  * `launchHeadlessBrowser` flag assembly — puppeteer's default args minus the
  * stealth-suppressed set — suppresses Puppeteer's unowned startup window, and
  * exposes CDP on an ephemeral port. Returns null when no executable resolves;

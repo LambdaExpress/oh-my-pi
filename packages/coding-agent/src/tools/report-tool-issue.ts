@@ -133,12 +133,12 @@ function metadataValue(value: string): string {
 	return value.replace(/\s+/g, " ").trim();
 }
 
-async function writeReportIssueFile(
+function writeReportIssueFile(
 	session: ToolSession,
 	tool: string,
 	report: string,
 	options: ReportIssueDispatchOptions,
-): Promise<string> {
+): string {
 	const directory = options.directory ?? REPORT_ISSUE_DIRECTORY;
 	const createdAt = options.now?.() ?? new Date();
 	const canonicalTool = tool.startsWith("proxy_") ? tool.slice("proxy_".length) : tool;
@@ -157,8 +157,14 @@ async function writeReportIssueFile(
 	if (sessionFile) metadata.push(`- Session file: ${metadataValue(sessionFile)}`);
 	const content = `# Tool Issue: ${canonicalTool}\n\n${metadata.join("\n")}\n\n${report}\n`;
 	try {
-		await fs.promises.mkdir(directory, { recursive: true });
-		await fs.promises.writeFile(issuePath, content, { encoding: "utf8", flag: "wx" });
+		fs.mkdirSync(directory, { recursive: true });
+		const descriptor = fs.openSync(issuePath, "wx");
+		try {
+			fs.writeFileSync(descriptor, content, { encoding: "utf8" });
+			fs.fsyncSync(descriptor);
+		} finally {
+			fs.closeSync(descriptor);
+		}
 		return issuePath;
 	} catch (error) {
 		logger.error("Failed to write local tool issue", { directory, error });
@@ -588,7 +594,7 @@ export async function dispatchReportIssueDevice(
 		};
 	}
 	const { tool, report } = parseReportIssueBody(trimmed);
-	const issuePath = await writeReportIssueFile(session, tool, report, options);
+	const issuePath = writeReportIssueFile(session, tool, report, options);
 	return {
 		result: { content: [{ type: "text", text: `Saved issue report to ${issuePath}` }] },
 		xdev: { tool: REPORT_ISSUE_DEVICE_NAME, mode: "execute", args: { report: trimmed, path: issuePath } },

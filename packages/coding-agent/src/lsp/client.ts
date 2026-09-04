@@ -5,6 +5,7 @@ import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
 import { applyWorkspaceEdit, type ExecutedWorkspaceChange } from "./edits";
 import { getLspmuxCommand, isLspmuxSupported } from "./lspmux";
 import { connectSharedLspTransport } from "./mux/daemon";
+import { MUX_SERVER_EXIT_METHOD, type MuxServerExitParams } from "./mux/protocol";
 import type {
 	LspClient,
 	LspJsonRpcId,
@@ -41,7 +42,8 @@ const openFileContents = new WeakMap<OpenFile, string>();
 /** Negative cache of recent init failures so a broken server fails fast instead of re-spawning per call. */
 const INIT_FAILURE_BACKOFF_MS = 3 * 60 * 1000;
 const initFailures = new Map<string, { at: number; message: string }>();
-const READER_EXIT_GRACE_MS = 100;
+const READER_EXIT_GRACE_MS = 250;
+const EXIT_STDERR_DRAIN_MS = 250;
 const CLEAN_INITIALIZATION_EXIT_RETRY_COUNT = 1;
 
 class LspServerExitError extends Error {
@@ -434,7 +436,12 @@ async function startMessageReader(client: LspClient): Promise<void> {
 							await handleServerRequest(client, message as LspJsonRpcRequest);
 						} else {
 							// Server notification
-							if (message.method === "textDocument/publishDiagnostics" && message.params) {
+							if (message.method === MUX_SERVER_EXIT_METHOD && message.params) {
+								const params = message.params as MuxServerExitParams;
+								if (typeof params.exitCode === "number" && typeof params.stderr === "string") {
+									client.proc.recordExit?.(params.exitCode, params.stderr);
+								}
+							} else if (message.method === "textDocument/publishDiagnostics" && message.params) {
 								const params = message.params as PublishDiagnosticsParams;
 								client.diagnostics.set(params.uri, {
 									diagnostics: params.diagnostics,
@@ -1129,7 +1136,8 @@ export async function getOrCreateClient(
 
 			let initializationExit: LspServerExitError | undefined;
 			// Register crash recovery - remove client on process exit
-			proc.exited.then(exitCode => {
+			proc.exited.then(async exitCode => {
+				await proc.waitForStderrDrain?.(EXIT_STDERR_DRAIN_MS);
 				const wasConnecting = client.status === "connecting";
 				if (clients.get(key) === client) clients.delete(key);
 				client.resolveProjectLoaded();
@@ -1207,9 +1215,8 @@ export async function getOrCreateClient(
 				const message =
 					initializationError instanceof Error ? initializationError.message : String(initializationError);
 				const cleanInitializationExit = isCleanInitializationExit(initializationError);
-				const cleanPrivateInitializationExit = cleanInitializationExit && !proc.sharedMux;
 				if (
-					cleanPrivateInitializationExit &&
+					cleanInitializationExit &&
 					cleanInitializationExitRetries < CLEAN_INITIALIZATION_EXIT_RETRY_COUNT &&
 					!invalidatedClientKeys.has(key) &&
 					!signal?.aborted
@@ -1222,11 +1229,11 @@ export async function getOrCreateClient(
 				// caller-shortened deadline (warmup/writethrough) and caller-signal
 				// aborts are transient — the server may simply be slow or the user may
 				// have cancelled, so a later call with a fresh deadline should retry.
-				// A private code-0 initialization exit is transient too, even if the
+				// A clean code-0 initialization exit is transient too, even if the
 				// bounded replacement also exits; surface the concrete failure without
 				// poisoning the next independent request with a stale negative cache.
 				if (
-					!cleanPrivateInitializationExit &&
+					!cleanInitializationExit &&
 					!invalidatedClientKeys.has(key) &&
 					!signal?.aborted &&
 					!(initTimeoutMs !== undefined && message.includes("timed out"))

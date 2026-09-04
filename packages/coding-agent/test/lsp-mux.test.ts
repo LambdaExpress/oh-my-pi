@@ -8,8 +8,10 @@ import {
 	MUX_CONNECT_METHOD,
 	MUX_PING_METHOD,
 	MUX_RESTART_METHOD,
+	MUX_SERVER_EXIT_METHOD,
 	type MuxConnectParams,
 	type MuxConnectResult,
+	type MuxServerExitParams,
 } from "../src/lsp/mux/protocol";
 import { LspMuxServer } from "../src/lsp/mux/server";
 
@@ -193,7 +195,10 @@ describe("LspMuxServer", () => {
 
 	beforeEach(async () => {
 		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-lsp-mux-test-"));
-		socketPath = path.join(tmpDir, "mux.sock");
+		socketPath =
+			process.platform === "win32"
+				? `\\\\.\\pipe\\omp-lsp-mux-test-${Bun.hash.wyhash(tmpDir).toString(16)}`
+				: path.join(tmpDir, "mux.sock");
 		connectParams = { command: process.execPath, args: ["run", fixturePath], cwd: tmpDir };
 		server = new LspMuxServer();
 		await server.listen(socketPath);
@@ -211,6 +216,22 @@ describe("LspMuxServer", () => {
 		const connected = await client.request<MuxConnectResult>(MUX_CONNECT_METHOD, connectParams);
 		return { client, connected };
 	}
+
+	it("forwards the real server exit diagnostic before closing the link", async () => {
+		connectParams = {
+			command: process.execPath,
+			args: ["-e", 'process.stderr.write("missing rust-analyzer component\\n"); process.exit(0);'],
+			cwd: tmpDir,
+		};
+		const { client } = await link();
+
+		const exited = await client.nextNotification<MuxServerExitParams>(MUX_SERVER_EXIT_METHOD);
+		expect(exited).toEqual({
+			exitCode: 0,
+			stderr: "missing rust-analyzer component\n",
+		});
+		await client.waitForClose();
+	}, 10_000);
 
 	it.skipIf(process.platform === "win32")(
 		"spawns one server per concurrent link",

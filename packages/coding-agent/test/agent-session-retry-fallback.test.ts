@@ -10,6 +10,7 @@ import {
 	type Model,
 	type ModelUsageHealth,
 	type ProviderSessionState,
+	type TextContent,
 } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -144,6 +145,32 @@ function recoveredTextStream(model: Model<Api>, text: string): AssistantMessageE
 		stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial });
 		stream.push({ type: "text_end", contentIndex: 0, content: text, partial });
 		stream.push({ type: "done", reason: "stop", message: partial });
+	});
+	return stream;
+}
+
+/** A stream that exposes visible text before a transient idle-timeout error. */
+function interruptedTextStream(model: Model<Api>, text: string, errorMessage: string): AssistantMessageEventStream {
+	const stream = new AssistantMessageEventStream();
+	queueMicrotask(() => {
+		const textBlock: TextContent = { type: "text", text };
+		const partial: AssistantMessage = {
+			role: "assistant",
+			content: [textBlock],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: emptyUsage(),
+			stopReason: "error",
+			errorMessage,
+			errorId: AIError.create(AIError.Flag.Transient, AIError.Flag.Timeout),
+			timestamp: Date.now(),
+		};
+		stream.push({ type: "start", partial });
+		stream.push({ type: "text_start", contentIndex: 0, partial });
+		stream.push({ type: "text_delta", contentIndex: 0, delta: text, partial });
+		stream.push({ type: "text_end", contentIndex: 0, content: text, partial });
+		stream.push({ type: "error", reason: "error", error: partial });
 	});
 	return stream;
 }
@@ -3434,6 +3461,72 @@ describe("AgentSession retry fallback", () => {
 		const lastAssistant = getLastAssistantMessage(session);
 		expect(lastAssistant.stopReason).toBe("stop");
 		expect(lastAssistant.content).toContainEqual({ type: "text", text: "Recovered after stream stall" });
+	});
+
+	it("continues after an OpenAI Responses idle timeout follows visible text", async () => {
+		const model = getBundledModel("openai", "gpt-4o-mini");
+		if (!model) {
+			throw new Error("Expected bundled OpenAI test model to exist");
+		}
+
+		const stallMessage = "OpenAI responses stream stalled while waiting for the next event";
+		let calls = 0;
+		const requestedContexts: string[] = [];
+		const agent = new Agent({
+			getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
+			initialState: {
+				model,
+				systemPrompt: ["Test"],
+				tools: [],
+				messages: [],
+			},
+			streamFn: (requestedModel, context) => {
+				calls++;
+				requestedContexts.push(JSON.stringify(context.messages));
+				return calls === 1
+					? interruptedTextStream(requestedModel, "partial response", stallMessage)
+					: recoveredTextStream(requestedModel, "recovered after idle timeout");
+			},
+		});
+
+		const settings = Settings.isolated({
+			"compaction.enabled": false,
+			"retry.baseDelayMs": 5,
+			"retry.maxRetries": 1,
+			"retry.modelFallback": false,
+		});
+		settings.setModelRole("default", `${model.provider}/${model.id}`);
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings,
+			modelRegistry,
+		});
+		const waitSpy = vi.spyOn(scheduler, "wait").mockResolvedValue(undefined);
+		const { retryStartEvents, retryEndEvents } = trackRetryEvents(session);
+
+		await session.prompt("Continue after an interrupted response");
+		await session.waitForIdle();
+
+		expect(calls).toBe(2);
+		expect(requestedContexts[1]).toContain("partial response");
+		expect(requestedContexts[1]).toContain(
+			"Continue from the existing response without repeating text already present",
+		);
+		expect(retryStartEvents).toHaveLength(1);
+		expect(retryStartEvents[0]).toMatchObject({
+			attempt: 1,
+			maxAttempts: 1,
+			errorMessage: stallMessage,
+		});
+		expect(waitSpy).toHaveBeenCalledWith(expect.any(Number), { signal: expect.any(AbortSignal) });
+		expect(retryStartEvents[0]?.delayMs).toBeGreaterThanOrEqual(0);
+		expect(retryStartEvents[0]?.delayMs).toBeLessThanOrEqual(5);
+		expect(retryEndEvents).toContainEqual(expect.objectContaining({ success: true, attempt: 1 }));
+		expect(getLastAssistantMessage(session).content).toContainEqual({
+			type: "text",
+			text: "recovered after idle timeout",
+		});
 	});
 
 	it("auto-retries OpenAI processing-request transient errors", async () => {

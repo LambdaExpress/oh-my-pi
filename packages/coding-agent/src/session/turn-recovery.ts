@@ -29,6 +29,7 @@ import { formatModelStringWithRouting, resolveModelOverride } from "../config/mo
 import type { Settings } from "../config/settings";
 import type { RetryErrorUpdate } from "../extensibility/shared-events";
 import emptyStopRetryTemplate from "../prompts/system/empty-stop-retry.md" with { type: "text" };
+import streamInterruptionRetryTemplate from "../prompts/system/stream-interruption-retry.md" with { type: "text" };
 import thinkingLoopRedirectTemplate from "../prompts/system/thinking-loop-redirect.md" with { type: "text" };
 import unexpectedStopRetryTemplate from "../prompts/system/unexpected-stop-retry.md" with { type: "text" };
 import {
@@ -1119,7 +1120,9 @@ export class TurnRecovery {
 		const replaySafeUnexecutedTools =
 			(this.isClassifierRefusal(message) || AIError.is(id, AIError.Flag.MalformedFunctionCall)) &&
 			this.#unexecutedToolCallsReplaySafe(message);
-		if (this.#hasReplayUnsafeOutput(message) && !replaySafeUnexecutedTools) return false;
+		const resolvedInterruptedStream = this.classifyResolvedInterruptedToolTurn(message) === "stream-stall";
+		if (this.#hasReplayUnsafeOutput(message) && !replaySafeUnexecutedTools && !resolvedInterruptedStream)
+			return false;
 		if (AIError.is(id, AIError.Flag.AccountPolicy) || this.isClassifierRefusal(message)) return true;
 		return AIError.retriable(id);
 	}
@@ -1179,10 +1182,10 @@ export class TurnRecovery {
 
 	/**
 	 * Classify a reasonless abort, idle stream stall, HTTP/2 stream reset, or
-	 * premature stream close whose emitted tool calls all have results. The failed
-	 * assistant/tool-result pair stays in context so continuation cannot replay
-	 * completed side effects; synthetic results tell the next turn that an
-	 * unexecuted call must be reissued.
+	 * premature stream close whose emitted tool calls all have results, or whose
+	 * committed text can be continued safely. The failed assistant/tool-result
+	 * pair stays in context so continuation cannot replay completed side effects;
+	 * synthetic results tell the next turn that an unexecuted call must be reissued.
 	 */
 	classifyResolvedInterruptedToolTurn(message: AssistantMessage): "reasonless-abort" | "stream-stall" | undefined {
 		const id = this.#classifyRetryMessage(message);
@@ -1196,7 +1199,12 @@ export class TurnRecovery {
 			((message.stopReason === "aborted" && AIError.is(id, AIError.Flag.Abort)) || genericAbort);
 		const errorMessage = message.errorMessage ?? "";
 		const streamStall =
-			message.stopReason === "error" && STREAM_STALL_ERROR_RE.test(errorMessage) && AIError.retriable(id);
+			message.stopReason === "error" &&
+			STREAM_STALL_ERROR_RE.test(errorMessage) &&
+			AIError.retriable(id) &&
+			!this.#host.abortInProgress() &&
+			!this.#host.isDisposed() &&
+			!this.#host.streamingEditAbortTriggered();
 		const transportReset =
 			message.stopReason === "error" &&
 			HTTP2_STREAM_RESET_ERROR_RE.test(errorMessage) &&
@@ -1218,18 +1226,31 @@ export class TurnRecovery {
 		if (!reasonlessAbort && !streamStall && !transportReset && !prematureClose) return undefined;
 		if (reasonlessAbort && genericAbort) message.errorId = AIError.create(AIError.Flag.Abort);
 
-		// Idle stall and HTTP/2 RST both close the Cursor Connect stream:
-		// the lazy watchdog aborts the request signal, and cursor.ts then
-		// calls `h2Request.close()`. There is no in-flight server exec to
-		// race, so unmarked MCP/todo blocks can continue once every emitted
-		// call has a matching result. A reasonless abort ends the turn and
-		// the agent loop pairs leftover calls with `executed: false`.
+		// A resolved interrupted tool turn keeps its assistant/result pair so
+		// continuation cannot replay completed local work. A reasonless abort ends
+		// the turn and the agent loop pairs leftover calls with `executed: false`.
 		const resolvedToolCallIds: string[] = [];
 		for (const block of message.content) {
 			if (block.type !== "toolCall") continue;
 			resolvedToolCallIds.push(block.id);
 		}
-		if (resolvedToolCallIds.length === 0) return undefined;
+		if (resolvedToolCallIds.length === 0) {
+			// A Responses stream can die after committing ordinary assistant text but
+			// before producing a tool call. Keep that partial assistant turn and ask
+			// the next request to continue it; deleting it would replay the user's
+			// request and duplicate the already-rendered text. Images and server tools
+			// remain fail-closed because preserving them can duplicate side effects or
+			// provider-managed work.
+			const hasCommittedText =
+				this.#host.textOutputCommitted() &&
+				message.content.some(block => block.type === "text" && hasNonWhitespace(block.text));
+			const hasUnreplayableOutput = message.content.some(
+				block => block.type === "image" || block.type === "anthropicServerTool",
+			);
+			return hasCommittedText && !hasUnreplayableOutput && (streamStall || transportReset || prematureClose)
+				? "stream-stall"
+				: undefined;
+		}
 
 		const messages = this.#host.agent.state.messages;
 		let assistantIndex = -1;
@@ -2244,6 +2265,19 @@ export class TurnRecovery {
 		// synthetic results and cannot repeat a side effect.
 		if (!preserveFailedTurn) {
 			this.removeAssistantMessageFromActiveContext(message, "auto-retry");
+		} else if (this.#host.agent.state.messages.at(-1)?.role === "assistant") {
+			const tail = this.#host.agent.state.messages.at(-1);
+			if (tail && tail.role === "assistant" && this.#isSameAssistantMessage(tail, message)) {
+				this.#host.agent.appendMessage({
+					// Use a synthetic user turn so the continuation survives both the
+					// coding-agent converter and Agent's provider-neutral default converter.
+					role: "user",
+					content: [{ type: "text", text: prompt.render(streamInterruptionRetryTemplate) }],
+					attribution: "agent",
+					synthetic: true,
+					timestamp: Date.now(),
+				});
+			}
 		}
 
 		// A thinking/response loop retried into identical context loops again. Inject a

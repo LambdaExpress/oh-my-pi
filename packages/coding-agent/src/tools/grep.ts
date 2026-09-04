@@ -1,3 +1,4 @@
+import { createReadStream } from "node:fs";
 import { mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -73,7 +74,7 @@ import {
 	PREVIEW_LIMITS,
 	replaceTabs,
 } from "./render-utils";
-import { ToolError } from "./tool-errors";
+import { ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 
 const searchPathEntry = type("string").describe(
@@ -210,14 +211,18 @@ function mergeRangesInto(map: Map<string, LineRange[]>, absKey: string, ranges: 
 	// Concat-without-merge is correct: `isLineInRanges` scans linearly, so
 	// duplicates/overlaps only cost a few extra comparisons per match. Windows
 	// native results may vary in slash style and drive/path casing.
-	const normalizedAbsKey = path.normalize(path.resolve(absKey));
-	const key = process.platform === "win32" ? normalizedAbsKey.toLowerCase() : normalizedAbsKey;
+	const key = normalizeAbsolutePathKey(absKey);
 	const existing = map.get(key);
 	if (existing) {
 		existing.push(...ranges);
 	} else {
 		map.set(key, [...ranges]);
 	}
+}
+
+function normalizeAbsolutePathKey(filePath: string): string {
+	const normalizedAbsPath = path.normalize(path.resolve(filePath));
+	return process.platform === "win32" ? normalizedAbsPath.toLowerCase() : normalizedAbsPath;
 }
 
 function matchAbsolutePath(matchPath: string, searchPath: string): string {
@@ -543,6 +548,181 @@ async function nativeChunkedLineIndexes(
 	await flush();
 	indexes.sort((a, b) => a - b);
 	return indexes;
+}
+
+/**
+ * Search an explicitly selected oversized physical file without reading the
+ * whole file into JS memory. The native grep binding intentionally rejects
+ * files over 4 MiB, so stream the file into the same line-boundary chunks used
+ * for oversized virtual resources and run native grep on each bounded scratch
+ * file. Results are rebased to the source line numbers before the existing
+ * range/context/output pipeline handles them.
+ */
+async function nativeChunkedPhysicalFile(
+	filePath: string,
+	pattern: string,
+	ignoreCase: boolean,
+	multiline: boolean,
+	ranges: readonly LineRange[],
+	contextBefore: number,
+	contextAfter: number,
+	maxCount: number,
+	signal: AbortSignal | undefined,
+): Promise<GrepResult> {
+	if (multiline) {
+		// Chunking a multiline regex can miss a match that crosses a chunk
+		// boundary. Match the established oversized-virtual behavior instead:
+		// only this explicitly ranged file is materialized, then the virtual
+		// search path applies JS multiline matching and rebuilds ranges/context.
+		throwIfAborted(signal);
+		const content = await Bun.file(filePath).text();
+		throwIfAborted(signal);
+		return searchVirtualResources(
+			[{ path: "", content, ranges }],
+			pattern,
+			ignoreCase,
+			true,
+			contextBefore,
+			contextAfter,
+			maxCount,
+			signal,
+		);
+	}
+
+	const dir = await mkdtemp(path.join(tmpdir(), "omp-search-physical-"));
+	const matches: GrepMatch[] = [];
+	let totalMatches = 0;
+	let limitReached = false;
+	let chunkStartLine = 0;
+	let chunkBytes = 0;
+	let chunkLines: string[] = [];
+	let chunkSeq = 0;
+	let lineNumber = 0;
+	let oversizedLineRegex: RegExp | undefined;
+
+	const pushMatch = (match: GrepMatch, sourceLineOffset: number): void => {
+		const absoluteLineNumber = sourceLineOffset + match.lineNumber;
+		if (!lineAllowed(absoluteLineNumber, ranges)) return;
+		totalMatches++;
+		if (matches.length >= maxCount) {
+			limitReached = true;
+			return;
+		}
+		const shiftContext = (
+			context: NonNullable<GrepMatch["contextBefore"]> | undefined,
+		): NonNullable<GrepMatch["contextBefore"]> | undefined => {
+			if (!context) return undefined;
+			const shifted = context
+				.map(line => ({ ...line, lineNumber: sourceLineOffset + line.lineNumber }))
+				.filter(line => lineAllowed(line.lineNumber, ranges));
+			return shifted.length > 0 ? shifted : undefined;
+		};
+		matches.push({
+			...match,
+			// An explicit file search has an empty relative path in native grep.
+			path: "",
+			lineNumber: absoluteLineNumber,
+			contextBefore: shiftContext(match.contextBefore),
+			contextAfter: shiftContext(match.contextAfter),
+		});
+	};
+
+	const flush = async (): Promise<void> => {
+		if (chunkLines.length === 0) return;
+		const scratch = path.resolve(dir, `${chunkSeq++}`);
+		const sourceLineOffset = chunkStartLine;
+		const lines = chunkLines;
+		chunkLines = [];
+		chunkBytes = 0;
+		await writeFile(scratch, lines.join("\n"));
+		const probe = await grep(
+			{
+				pattern,
+				path: scratch,
+				ignoreCase,
+				multiline,
+				hidden: true,
+				gitignore: false,
+				maxCount: Math.max(lines.length, 1),
+				contextBefore,
+				contextAfter,
+				maxColumns: DEFAULT_MAX_COLUMN,
+				mode: GrepOutputMode.Content,
+				signal,
+				timeoutMs: SEARCH_GREP_TIMEOUT_MS,
+			},
+			undefined,
+		);
+		for (const match of probe.matches) pushMatch(match, sourceLineOffset);
+	};
+
+	const appendLine = async (line: string): Promise<void> => {
+		const currentLine = lineNumber++;
+		const normalizedLine = normalizeSearchLine(line);
+		const lineBytes = Buffer.byteLength(normalizedLine, "utf8") + 1;
+		if (lineBytes > NATIVE_GREP_MAX_FILE_BYTES) {
+			await flush();
+			if (!oversizedLineRegex) {
+				try {
+					oversizedLineRegex = new RegExp(pattern, `${ignoreCase ? "i" : ""}${multiline ? "m" : ""}`);
+				} catch (err) {
+					const message = err instanceof Error ? err.message : String(err);
+					throw new ToolError(`Invalid regex: ${message.replace(/^Invalid regular expression:\s*/i, "")}`);
+				}
+			}
+			oversizedLineRegex.lastIndex = 0;
+			if (oversizedLineRegex.test(normalizedLine) && lineAllowed(currentLine + 1, ranges)) {
+				totalMatches++;
+				if (matches.length < maxCount) {
+					const { text, wasTruncated } = truncateLine(normalizedLine, DEFAULT_MAX_COLUMN);
+					const match: GrepMatch = {
+						path: "",
+						lineNumber: currentLine + 1,
+						line: text,
+					};
+					if (wasTruncated) match.truncated = true;
+					matches.push(match);
+				} else {
+					limitReached = true;
+				}
+			}
+			chunkStartLine = lineNumber;
+			return;
+		}
+		if (chunkLines.length > 0 && chunkBytes + lineBytes > NATIVE_GREP_MAX_FILE_BYTES) {
+			await flush();
+			chunkStartLine = currentLine;
+		}
+		if (chunkLines.length === 0) chunkStartLine = currentLine;
+		chunkLines.push(normalizedLine);
+		chunkBytes += lineBytes;
+	};
+
+	try {
+		const stream = createReadStream(filePath, { highWaterMark: 64 * 1024 });
+		const decoder = new TextDecoder("utf-8");
+		let pending = "";
+		for await (const bytes of stream) {
+			throwIfAborted(signal);
+			pending += decoder.decode(bytes as Buffer, { stream: true });
+			const lines = pending.split("\n");
+			pending = lines.pop() ?? "";
+			for (const line of lines) await appendLine(line);
+		}
+		pending += decoder.decode();
+		if (pending.length > 0) await appendLine(pending);
+		await flush();
+	} finally {
+		await rm(dir, { recursive: true, force: true }).catch(() => {});
+	}
+
+	return {
+		matches,
+		totalMatches,
+		filesWithMatches: matches.length > 0 ? 1 : 0,
+		filesSearched: 1,
+		limitReached,
+	};
 }
 
 function makeContextLine(lines: readonly string[], lineIndex: number): { lineNumber: number; line: string } {
@@ -1011,6 +1191,7 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 				const searchablePaths = internalResolution.paths;
 				const { virtualResources, virtualPathSet, virtualInputIndexes } = internalResolution;
 				const rangesByAbsPath = new Map<string, LineRange[]>();
+				const fullySearchedOversizedPaths = new Set<string>();
 
 				if (
 					archiveUnreadable.length > 0 &&
@@ -1115,6 +1296,13 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					exactFilePaths = undefined;
 					missingPaths = [];
 				}
+				const oversizedRangedPathKeys = new Set<string>();
+				for (const absPath of rangesByAbsPath.keys()) {
+					const stats = await stat(absPath).catch(() => null);
+					if (stats?.isFile() && stats.size > NATIVE_GREP_MAX_FILE_BYTES) {
+						oversizedRangedPathKeys.add(absPath);
+					}
+				}
 				if (
 					missingPaths.length > 0 &&
 					missingPaths.length === searchablePaths.length &&
@@ -1174,26 +1362,43 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 									}))
 								: (multiTargets ?? []);
 							for (const target of targets) {
-								const targetResult = await grep(
-									{
-										pattern: normalizedPattern,
-										path: target.basePath,
-										glob: target.glob,
-										ignoreCase,
-										multiline: effectiveMultiline,
-										hidden: true,
-										gitignore: useGitignore,
-										maxCount: nativeMaxCount,
-										contextBefore: normalizedContextBefore,
-										contextAfter: normalizedContextAfter,
-										maxColumns: DEFAULT_MAX_COLUMN,
-										mode: effectiveOutputMode,
-										maxCountPerFile: nativeMaxCountPerFile,
-										signal,
-										timeoutMs: SEARCH_GREP_TIMEOUT_MS,
-									},
-									undefined,
-								);
+								const targetKey = normalizeAbsolutePathKey(target.basePath);
+								const targetRanges = oversizedRangedPathKeys.has(targetKey)
+									? rangesByAbsPath.get(targetKey)
+									: undefined;
+								const targetResult = targetRanges
+									? await nativeChunkedPhysicalFile(
+											target.basePath,
+											normalizedPattern,
+											ignoreCase,
+											effectiveMultiline,
+											targetRanges,
+											normalizedContextBefore,
+											normalizedContextAfter,
+											perFileMatchCap + 1,
+											signal,
+										)
+									: await grep(
+											{
+												pattern: normalizedPattern,
+												path: target.basePath,
+												glob: target.glob,
+												ignoreCase,
+												multiline: effectiveMultiline,
+												hidden: true,
+												gitignore: useGitignore,
+												maxCount: nativeMaxCount,
+												contextBefore: normalizedContextBefore,
+												contextAfter: normalizedContextAfter,
+												maxColumns: DEFAULT_MAX_COLUMN,
+												mode: effectiveOutputMode,
+												maxCountPerFile: nativeMaxCountPerFile,
+												signal,
+												timeoutMs: SEARCH_GREP_TIMEOUT_MS,
+											},
+											undefined,
+										);
+								if (targetRanges) fullySearchedOversizedPaths.add(targetKey);
 								skippedOversizedCount += targetResult.skippedOversized ?? 0;
 								limitReached = limitReached || Boolean(targetResult.limitReached);
 								totalMatches += targetResult.totalMatches;
@@ -1221,26 +1426,43 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 								limitReached,
 							};
 						} else {
-							result = await grep(
-								{
-									pattern: normalizedPattern,
-									path: searchPath,
-									glob: globFilter,
-									ignoreCase,
-									multiline: effectiveMultiline,
-									hidden: true,
-									gitignore: useGitignore,
-									maxCount: nativeMaxCount,
-									contextBefore: normalizedContextBefore,
-									contextAfter: normalizedContextAfter,
-									maxColumns: DEFAULT_MAX_COLUMN,
-									mode: effectiveOutputMode,
-									maxCountPerFile: nativeMaxCountPerFile,
-									signal,
-									timeoutMs: SEARCH_GREP_TIMEOUT_MS,
-								},
-								undefined,
-							);
+							const searchPathKey = normalizeAbsolutePathKey(searchPath);
+							const searchRanges = oversizedRangedPathKeys.has(searchPathKey)
+								? rangesByAbsPath.get(searchPathKey)
+								: undefined;
+							result = searchRanges
+								? await nativeChunkedPhysicalFile(
+										searchPath,
+										normalizedPattern,
+										ignoreCase,
+										effectiveMultiline,
+										searchRanges,
+										normalizedContextBefore,
+										normalizedContextAfter,
+										perFileMatchCap + 1,
+										signal,
+									)
+								: await grep(
+										{
+											pattern: normalizedPattern,
+											path: searchPath,
+											glob: globFilter,
+											ignoreCase,
+											multiline: effectiveMultiline,
+											hidden: true,
+											gitignore: useGitignore,
+											maxCount: nativeMaxCount,
+											contextBefore: normalizedContextBefore,
+											contextAfter: normalizedContextAfter,
+											maxColumns: DEFAULT_MAX_COLUMN,
+											mode: effectiveOutputMode,
+											maxCountPerFile: nativeMaxCountPerFile,
+											signal,
+											timeoutMs: SEARCH_GREP_TIMEOUT_MS,
+										},
+										undefined,
+									);
+							if (searchRanges) fullySearchedOversizedPaths.add(searchPathKey);
 							skippedOversizedCount = result.skippedOversized ?? 0;
 						}
 					}
@@ -1408,7 +1630,11 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 						explicitFileTargets.map(async target => {
 							try {
 								const st = await stat(target);
-								if (st.isFile() && st.size > NATIVE_GREP_MAX_FILE_BYTES) {
+								if (
+									st.isFile() &&
+									st.size > NATIVE_GREP_MAX_FILE_BYTES &&
+									!fullySearchedOversizedPaths.has(normalizeAbsolutePathKey(target))
+								) {
 									oversized.push(path.relative(this.session.cwd, target) || target);
 								}
 							} catch {

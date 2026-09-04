@@ -1304,6 +1304,7 @@ if [ ! -f "$stage" ] || [ -L "$stage" ]; then
 	exit 1
 fi
 actual_size=$(LC_ALL=C wc -c < "$stage") || exit 1
+actual_size=$(printf '%s' "$actual_size" | tr -d '[:space:]') || exit 1
 if [ "$actual_size" != ${plan.totalBytes} ]; then
 	printf '%s\\n' 'staged transfer size does not match preflight' >&2
 	rm -f -- "$stage"
@@ -1511,6 +1512,7 @@ if [ -e "$stage" ] && [ -e "$proof" ] && [ "$stage" -ef "$proof" ]; then
 fi
 if [ ! -e "$stage" ] && [ ! -L "$stage" ] && [ ! -e "$proof" ] && [ ! -L "$proof" ] && [ -f "$destination" ] && [ ! -L "$destination" ]; then
 	actual_size=$(LC_ALL=C wc -c < "$destination") || exit 1
+	actual_size=$(printf '%s' "$actual_size" | tr -d '[:space:]') || exit 1
 	if [ "$actual_size" = ${plan.totalBytes} ]; then
 		rm -f -- "$backup"
 		printf '%s\\n' '${SSH_TRANSFER_COMMIT_MARKER}'

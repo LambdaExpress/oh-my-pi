@@ -53,6 +53,15 @@ describe("ptree stderr capture", () => {
 		expect(result.stderr).toEndWith(STDERR_TAIL);
 	});
 
+	it("lets startup diagnostics await stderr delivered after a clean exit", async () => {
+		using child = spawn(stderrFixture(STDERR_LIMIT * 4));
+		await child.exited;
+		await child.waitForStderrDrain(1_000);
+
+		expect(child.peekStderr()).toHaveLength(STDERR_LIMIT);
+		expect(child.peekStderr()).toEndWith(STDERR_TAIL);
+	});
+
 	it("preserves the live stream and retained stderr for explicit spawn capture", async () => {
 		const size = STDERR_LIMIT * 4;
 		using child = spawn(stderrFixture(size, 0, "spawn-ok"), { stderr: "full" });
