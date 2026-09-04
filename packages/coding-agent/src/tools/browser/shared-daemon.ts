@@ -15,9 +15,15 @@ import { daemonClientForProject } from "../../launch/client";
 import { describeQuietly, stopQuietly, waitReady } from "../../launch/ensure";
 import { daemonRuntimeDir } from "../../launch/paths";
 import type { DaemonSnapshot } from "../../launch/protocol";
+import { resolveWorkerSpawnCmd, workerEnvFromParent } from "../../subprocess/worker-client";
 import { throwIfAborted } from "../tool-errors";
 import { probeCdpStatus } from "./attach";
 import { resolveSharedBrowserLaunchSpec } from "./launch";
+import {
+	SHARED_BROWSER_WORKER_ARG,
+	SHARED_BROWSER_WORKER_CONFIG_ENV,
+	type SharedBrowserWorkerConfig,
+} from "./shared-worker-protocol";
 
 /** Chrome prints this on stderr once the CDP listener is up; the broker's ready probe captures the line. */
 const READY_LOG_PATTERN = String.raw`DevTools listening on ws://\S+`;
@@ -80,6 +86,16 @@ export async function ensureSharedBrowser(opts: {
 		viewport: opts.viewport,
 	});
 	if (!launch) return null;
+	const worker = resolveWorkerSpawnCmd(SHARED_BROWSER_WORKER_ARG);
+	const workerConfig: SharedBrowserWorkerConfig = {
+		...launch,
+		cwd: client.projectDir,
+		userDataDir,
+		headless: opts.headless,
+	};
+	const workerEnv = workerEnvFromParent({
+		[SHARED_BROWSER_WORKER_CONFIG_ENV]: JSON.stringify(workerConfig),
+	});
 	await fs.mkdir(userDataDir, { recursive: true });
 	for (let attempt = 0; attempt < ENSURE_ATTEMPTS; attempt++) {
 		throwIfAborted(opts.signal);
@@ -102,15 +118,16 @@ export async function ensureSharedBrowser(opts: {
 					op: "start",
 					spec: {
 						name,
-						application: launch.executablePath,
-						args: launch.args,
-						env: {},
-						cwd: client.projectDir,
+						application: worker.cmd[0]!,
+						args: worker.cmd.slice(1),
+						env: workerEnv,
+						cwd: worker.cwd ?? client.projectDir,
 						pty: false,
 						ready: { log: READY_LOG_PATTERN, timeoutMs: READY_TIMEOUT_MS },
 						restart: "no",
 						persist: false,
 						detached: false,
+						gracefulStdinClose: true,
 					},
 				},
 				opts.signal,

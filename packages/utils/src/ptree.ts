@@ -328,6 +328,28 @@ export class ChildProcess<In extends InMask = InMask> {
 		return this.#stderrTail;
 	}
 
+	/**
+	 * Wait for the eager stderr reader to reach EOF.
+	 *
+	 * `proc.exited` can settle before the final pipe chunks are delivered,
+	 * especially for clean, short-lived Windows shims. Callers that report
+	 * startup failures can use a bounded wait so the actionable diagnostic is
+	 * available without hanging on a descendant that inherited the pipe.
+	 */
+	async waitForStderrDrain(timeoutMs?: number): Promise<void> {
+		if (timeoutMs === undefined) {
+			await this.#stderrDone;
+			return;
+		}
+		const timeout = Promise.withResolvers<void>();
+		const timer = setTimeout(timeout.resolve, Math.max(0, timeoutMs));
+		try {
+			await Promise.race([this.#stderrDone, timeout.promise]);
+		} finally {
+			clearTimeout(timer);
+		}
+	}
+
 	nothrow(): this {
 		this.#nothrow = true;
 		return this;

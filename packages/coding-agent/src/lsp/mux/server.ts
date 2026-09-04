@@ -11,8 +11,10 @@ import {
 	MUX_PING_METHOD,
 	MUX_PING_RESULT,
 	MUX_RESTART_METHOD,
+	MUX_SERVER_EXIT_METHOD,
 	type MuxConnectParams,
 	type MuxConnectResult,
+	type MuxServerExitParams,
 	muxServerKey,
 } from "./protocol";
 
@@ -444,8 +446,14 @@ export class LspMuxServer {
 		this.#servers.add(server);
 		void this.#readServer(server);
 		server.proc.exited.then(
-			() => this.#serverExited(server),
-			() => this.#serverExited(server),
+			async exitCode => {
+				await server.proc.waitForStderrDrain(250);
+				this.#serverExited(server, exitCode);
+			},
+			async () => {
+				await server.proc.waitForStderrDrain(250);
+				this.#serverExited(server, server.proc.exitCode ?? -1);
+			},
 		);
 		return server;
 	}
@@ -669,12 +677,16 @@ export class LspMuxServer {
 		if (this.#sessions.size === 0) this.#armMuxIdle();
 	}
 
-	#serverExited(server: ServerInstance): void {
+	#serverExited(server: ServerInstance, exitCode = server.proc.exitCode ?? -1): void {
 		server.stopping = true;
 		this.#servers.delete(server);
 		if (server.lingerTimer) clearTimeout(server.lingerTimer);
 		server.pending.clear();
-		for (const session of [...server.sessions]) session.socket.destroy();
+		const params: MuxServerExitParams = { exitCode, stderr: server.proc.peekStderr() };
+		for (const session of [...server.sessions]) {
+			this.#sendSession(session, { jsonrpc: "2.0", method: MUX_SERVER_EXIT_METHOD, params });
+			session.socket.end();
+		}
 		server.sessions.clear();
 	}
 

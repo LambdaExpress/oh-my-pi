@@ -57,6 +57,11 @@ export type ToolRenderer = {
 	) => Component;
 	mergeCallAndResult?: boolean;
 	/**
+	 * Whether `renderResult` preserves the call arguments when the agent loop
+	 * supplies its minimal signal-abort result.
+	 */
+	rendersSignalAbortInResult?: boolean;
+	/**
 	 * Whether an xd:// dispatch may use this renderer before its wrapped tool
 	 * receives `tool_execution_start`. The call renderer must represent a queued
 	 * state correctly when `options.executionStarted` is false.

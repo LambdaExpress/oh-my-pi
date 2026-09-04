@@ -43,6 +43,8 @@ export interface DaemonSpec {
 	restart: DaemonRestartPolicy;
 	persist: boolean;
 	detached: boolean;
+	/** Close stdin and wait for a cooperative cleanup before force-terminating this daemon. */
+	gracefulStdinClose?: boolean;
 }
 
 /** Serializable daemon state visible to every client in one broker scope. */
@@ -246,6 +248,10 @@ function readySpec(value: unknown): DaemonReadySpec {
 export function parseDaemonSpec(value: unknown): DaemonSpec {
 	const source = record(value, "daemon spec");
 	const detached = source.detached === undefined ? false : booleanValue(source.detached, "spec.detached");
+	const gracefulStdinClose =
+		source.gracefulStdinClose === undefined
+			? undefined
+			: booleanValue(source.gracefulStdinClose, "spec.gracefulStdinClose");
 	return {
 		name: stringValue(source.name, "spec.name"),
 		application: stringValue(source.application, "spec.application"),
@@ -257,6 +263,7 @@ export function parseDaemonSpec(value: unknown): DaemonSpec {
 		restart: restartPolicy(source.restart),
 		persist: booleanValue(source.persist, "spec.persist") || detached,
 		detached,
+		gracefulStdinClose,
 	};
 }
 

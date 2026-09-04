@@ -1781,6 +1781,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			});
 		},
 		mergeCallAndResult: true,
+		rendersSignalAbortInResult: true,
 		inline: true,
 	};
 }

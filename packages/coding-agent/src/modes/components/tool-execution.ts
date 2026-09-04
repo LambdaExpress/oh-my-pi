@@ -1206,7 +1206,10 @@ export class ToolExecutionComponent extends Container {
 				const renderContext = this.#buildRenderContext();
 				this.#renderState.renderContext = renderContext;
 
-				const shouldRenderCall = !this.#result || !renderer.mergeCallAndResult || signalAbort;
+				const shouldRenderCall =
+					!this.#result ||
+					!renderer.mergeCallAndResult ||
+					(signalAbort && renderer.rendersSignalAbortInResult !== true);
 				if (shouldRenderCall) {
 					// Render call component
 					try {

@@ -13,7 +13,8 @@
   "workspaces": {
     "packages": [
       "packages/*",
-      "python/robomp/web"
+      "python/robomp/web",
+      ".omp/tools"
     ],
     "catalog": {
       "@babel/generator": "^7.29.7",

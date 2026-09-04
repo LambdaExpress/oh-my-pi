@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { Agent, type AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
@@ -11,6 +14,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { addSSHHost } from "@oh-my-pi/pi-coding-agent/ssh/config-writer";
 import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
 import * as fileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
+import * as sshExecutor from "@oh-my-pi/pi-coding-agent/ssh/ssh-executor";
 import { loadSshTool, loadSshTransferTool, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { type XdevState, xdevEntries } from "@oh-my-pi/pi-coding-agent/tools/xdev";
 import { getAgentDir, getSSHConfigPath, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
@@ -93,19 +97,26 @@ function createTestXdevState(): XdevState {
 
 describe("AgentSession SSH transfer refresh", () => {
 	const tempDirs: TempDir[] = [];
+	const homeDirs: TempDir[] = [];
 	const sessions: AgentSession[] = [];
 	const originalAgentDir = getAgentDir();
+	let homedirSpy: ReturnType<typeof spyOn>;
 
 	beforeEach(() => {
 		const agentDir = TempDir.createSync("@pi-ssh-refresh-agent-");
+		const homeDir = TempDir.createSync("@pi-ssh-refresh-home-");
 		tempDirs.push(agentDir);
+		homeDirs.push(homeDir);
 		setAgentDir(agentDir.path());
+		homedirSpy = spyOn(os, "homedir").mockReturnValue(homeDir.path());
 	});
 
 	afterEach(async () => {
 		for (const session of sessions.splice(0)) await session.dispose();
+		homedirSpy.mockRestore();
 		setAgentDir(originalAgentDir);
 		for (const tempDir of tempDirs.splice(0)) tempDir.removeSync();
+		for (const homeDir of homeDirs.splice(0)) homeDir.removeSync();
 		resetCapabilities();
 	});
 
@@ -189,8 +200,146 @@ describe("AgentSession SSH transfer refresh", () => {
 		expect(session.getActiveToolNames()).not.toContain("ssh_transfer");
 
 		await session.mutateSessionSshConfig({ operation: "delete", name: "ephemeral" });
-		expect(xdev.tools.get("ssh_transfer")).toBeUndefined();
-		expect(xdev.tools.get("ssh")).toBeUndefined();
+		expect(xdev.tools.get("ssh_transfer")?.description ?? "").not.toContain("ephemeral");
+		expect(xdev.tools.get("ssh")?.description ?? "").not.toContain("ephemeral");
+	});
+
+	it("refreshes loaded SSH command and transfer targets after OpenSSH config changes", async () => {
+		const homeDir = TempDir.createSync("@pi-ssh-refresh-home-");
+		tempDirs.push(homeDir);
+		const home = homeDir.path();
+		const homedirSpy = spyOn(os, "homedir").mockReturnValue(home);
+		const configPath = path.join(home, ".ssh", "config");
+		await fs.mkdir(path.dirname(configPath), { recursive: true });
+		await fs.writeFile(
+			configPath,
+			[
+				"Host live-alias",
+				"  HostName old.example",
+				"  User old-user",
+				"  Port 2201",
+				"  IdentityFile ~/.ssh/id_old",
+				"  ProxyJump old-jump.example:2221",
+			].join("\n"),
+		);
+
+		const toolSession: ToolSession = {
+			cwd: home,
+			hasUI: false,
+			settings: Settings.isolated({ "async.enabled": false }),
+			getSessionFile: () => null,
+			getSessionSpawns: () => "*",
+		};
+		const commandTargets: connectionManager.SSHConnectionTarget[] = [];
+		const transferTargets: connectionManager.SSHConnectionTarget[] = [];
+		const hostInfoSpy = spyOn(connectionManager, "ensureHostInfo").mockResolvedValue({
+			version: 5,
+			os: "linux",
+			shell: "sh",
+			transferShell: "sh",
+			compatEnabled: false,
+		});
+		const executeSpy = spyOn(sshExecutor, "executeSSH").mockImplementation(async target => {
+			commandTargets.push(structuredClone(target));
+			return {
+				output: "ok",
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+				totalLines: 1,
+				totalBytes: 2,
+				outputLines: 1,
+				outputBytes: 2,
+			};
+		});
+		const prepareSpy = spyOn(fileTransfer, "prepareSshFileTransfer").mockImplementation(async input => {
+			transferTargets.push(structuredClone(input.target));
+			return {
+				operation: input.operation,
+				target: input.target,
+				localPath: input.localPath,
+				remotePath: input.remotePath,
+				totalBytes: 1,
+				overwrite: input.overwrite,
+				commitStrategy: "no-replace",
+			};
+		});
+		const transferSpy = spyOn(fileTransfer, "executeSshFileTransfer").mockResolvedValue({
+			transferredBytes: 1,
+			totalBytes: 1,
+			bytesPerSecond: 1,
+			averageBytesPerSecond: 1,
+			elapsedMs: 1,
+		});
+
+		try {
+			const commandTool = await loadSshTool(toolSession);
+			const transferTool = await loadSshTransferTool(toolSession);
+			expect(commandTool).not.toBeNull();
+			expect(transferTool).not.toBeNull();
+
+			await commandTool!.execute("ssh-old", { host: "live-alias", command: "true" });
+			await transferTool!.execute("transfer-old", {
+				op: "upload",
+				host: "live-alias",
+				local_path: "fixture.bin",
+				remote_path: "/tmp/fixture.bin",
+			});
+			expect(commandTargets[0]).toMatchObject({
+				host: "old.example",
+				username: "old-user",
+				port: 2201,
+				proxyJump: "old-jump.example:2221",
+			});
+			expect(transferTargets[0]).toMatchObject({
+				host: "old.example",
+				username: "old-user",
+				port: 2201,
+				proxyJump: "old-jump.example:2221",
+			});
+
+			await fs.writeFile(
+				configPath,
+				[
+					"Host live-alias",
+					"  HostName refreshed-target.example",
+					"  User refreshed-user",
+					"  Port 2202",
+					"  IdentityFile ~/.ssh/id_refreshed",
+					"  ProxyJump ops@refreshed-jump.example:2222",
+				].join("\n"),
+			);
+			const changedAt = new Date(Date.now() + 2_000);
+			await fs.utimes(configPath, changedAt, changedAt);
+
+			await commandTool!.execute("ssh-refreshed", { host: "live-alias", command: "true" });
+			await transferTool!.execute("transfer-refreshed", {
+				op: "upload",
+				host: "live-alias",
+				local_path: "fixture.bin",
+				remote_path: "/tmp/fixture.bin",
+			});
+
+			const refreshedTarget = {
+				host: "refreshed-target.example",
+				username: "refreshed-user",
+				port: 2202,
+				keyPath: expect.stringContaining("id_refreshed"),
+				proxyJump: "ops@refreshed-jump.example:2222",
+			};
+			expect(commandTargets[1]).toMatchObject(refreshedTarget);
+			expect(transferTargets[1]).toMatchObject(refreshedTarget);
+			expect(commandTool!.description).toContain("live-alias (refreshed-target.example)");
+			expect(commandTool!.description).not.toContain("old.example");
+			expect(transferTool!.description).toContain("live-alias (refreshed-target.example)");
+			expect(transferTool!.description).not.toContain("old.example");
+		} finally {
+			homedirSpy.mockRestore();
+			hostInfoSpy.mockRestore();
+			executeSpy.mockRestore();
+			prepareSpy.mockRestore();
+			transferSpy.mockRestore();
+		}
 	});
 
 	it("preserves configured passwords in mounted session aliases without exposing them in descriptions", async () => {
@@ -257,10 +406,9 @@ describe("AgentSession SSH transfer refresh", () => {
 		expect(session.agent.state.systemPrompt.join("\n")).toContain("staging (192.0.2.10)");
 
 		await session.mutateSessionSshConfig({ operation: "delete", name: "staging" });
-		expect(session.getAllToolNames()).not.toContain("ssh");
-		expect(session.getActiveToolNames()).not.toContain("ssh");
-		expect(session.getAllToolNames()).not.toContain("ssh_transfer");
-		expect(session.getActiveToolNames()).not.toContain("ssh_transfer");
+		expect(session.getToolByName("ssh")?.description ?? "").not.toContain("staging");
+		expect(session.getToolByName("ssh_transfer")?.description ?? "").not.toContain("staging");
+		expect(session.agent.state.systemPrompt.join("\n")).not.toContain("staging (192.0.2.10)");
 	});
 
 	it("honors explicit tool allowlists for command and transfer tools", async () => {

@@ -395,6 +395,10 @@ export interface LspTransport {
 	readonly sharedMux?: boolean;
 	kill(): void;
 	peekStderr(): string;
+	/** Mux-only hook that records the underlying server exit before the socket closes. */
+	recordExit?(exitCode: number, stderr: string): void;
+	/** Local-process hook that waits briefly for stderr chunks delivered after process exit. */
+	waitForStderrDrain?(timeoutMs?: number): Promise<void>;
 }
 
 // =============================================================================

@@ -1,0 +1,1 @@
+The previous assistant response was interrupted by a transient stream failure after output began. Continue from the existing response without repeating text already present, and complete the user's request.
