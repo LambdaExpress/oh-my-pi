@@ -16,7 +16,6 @@ import {
 	fetchWithRetry,
 	getInstallId,
 	logger,
-	parseStreamingJson,
 	readSseJson,
 	structuredCloneJSON,
 	USER_AGENT,
@@ -120,6 +119,7 @@ import {
 	isOpenAIResponsesProgressEvent,
 	mapOpenAIResponsesStopReason,
 	normalizeOpenAIPromptCacheKey,
+	parseFinalResponsesToolCallArguments,
 	populateResponsesUsageFromResponse,
 	promoteResponsesToolUseStopReason,
 	type SequentialCutoffSummaryState,
@@ -2416,7 +2416,7 @@ class CodexStreamProcessor {
 				type: "toolCall",
 				id: encodeResponsesToolCallId(item.call_id, item.id),
 				name: item.name,
-				arguments: parseStreamingJson(item.arguments || "{}"),
+				arguments: parseFinalResponsesToolCallArguments(item.arguments || "{}", this.model.provider),
 			};
 			if (block?.type === "toolCall") {
 				// Persist the authoritative final args on the stored block; the throttled
@@ -2530,7 +2530,7 @@ class CodexStreamProcessor {
 			"reason" in incompleteDetails &&
 			incompleteDetails.reason === "max_output_tokens" &&
 			hasExecutableIncompleteResponsesToolCalls(output);
-		finalizePendingResponsesToolCalls(output);
+		finalizePendingResponsesToolCalls(output, model.provider);
 
 		calculateCost(model, output.usage);
 		applyCodexServiceTierPricing(model, output.usage, serviceTier, runtime.requestBodyForState.service_tier);

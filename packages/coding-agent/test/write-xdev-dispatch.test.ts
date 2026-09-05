@@ -161,6 +161,95 @@ describe("read and write route xd:// device URLs", () => {
 		expect(result.details?.xdev).toMatchObject({ tool: "peek", mode: "execute", tier: "read" });
 	});
 
+	it("preserves the directory-check report command through mounted SSH dispatch", async () => {
+		let captured: { host: string; command: string; timeout?: number } | undefined;
+		const sshSchema = type({
+			host: "string",
+			command: "string",
+			"timeout?": "number",
+		});
+		const sshDevice: AgentTool<typeof sshSchema> = {
+			name: "ssh",
+			label: "SSH",
+			description: "Fake mounted SSH executor",
+			parameters: sshSchema,
+			async execute(_toolCallId, args) {
+				captured = args;
+				return {
+					content: [{ type: "text", text: "fake ssh complete" }],
+					details: { transport: "fake-mounted-ssh" },
+				};
+			},
+		};
+		const xdev = createTestXdevState([sshDevice]);
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+		const input = {
+			host: "directory-report-host",
+			command: String.raw`for d in /etc /var/log; do printf '%s\n' "$d" | sed 's#^#directory: #' >> /tmp/directory-check-report.txt; done`,
+			timeout: 37,
+		};
+
+		const result = await write.execute("write-xdev-directory-report", {
+			path: "xd://ssh",
+			content: JSON.stringify(input),
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(captured).toEqual(input);
+		expect(captured?.command).toBe(input.command);
+		expect([...Buffer.from(captured?.command ?? "")]).toEqual([...Buffer.from(input.command)]);
+		expect(result.details?.xdev).toMatchObject({
+			tool: "ssh",
+			mode: "execute",
+			args: input,
+		});
+	});
+
+	it("preserves the Docker/1Panel report command through mounted SSH dispatch", async () => {
+		let captured: { host: string; command: string; timeout?: number } | undefined;
+		const sshSchema = type({
+			host: "string",
+			command: "string",
+			"timeout?": "number",
+		});
+		const sshDevice: AgentTool<typeof sshSchema> = {
+			name: "ssh",
+			label: "SSH",
+			description: "Fake mounted SSH executor",
+			parameters: sshSchema,
+			async execute(_toolCallId, args) {
+				captured = args;
+				return {
+					content: [{ type: "text", text: "fake ssh complete" }],
+					details: { transport: "fake-mounted-ssh" },
+				};
+			},
+		};
+		const xdev = createTestXdevState([sshDevice]);
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+		const input = {
+			host: "docker-1panel-report-host",
+			command:
+				"systemctl is-active --quiet docker 2>/dev/null && command -v docker | sed 's#^#docker: #' >> /tmp/1panel-docker-report.txt && ps -ef | sed -n '1,5p' >> /tmp/1panel-docker-report.txt && ss -lntp 2>/dev/null | sed -n '1,5p' >> /tmp/1panel-docker-report.txt",
+			timeout: 43,
+		};
+
+		const result = await write.execute("write-xdev-docker-1panel-report", {
+			path: "xd://ssh",
+			content: JSON.stringify(input),
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(captured).toEqual(input);
+		expect(captured?.command).toBe(input.command);
+		expect([...Buffer.from(captured?.command ?? "")]).toEqual([...Buffer.from(input.command)]);
+		expect(result.details?.xdev).toMatchObject({
+			tool: "ssh",
+			mode: "execute",
+			args: input,
+		});
+	});
+
 	it("resolves device dispatches against the device's user policy, falling back to write's", async () => {
 		// Like the pi-knowledge plugin in #7923: the mounted device declares no
 		// approval, so it defaults to exec tier — but a device-scoped user policy

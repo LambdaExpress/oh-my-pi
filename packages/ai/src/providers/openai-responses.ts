@@ -91,6 +91,7 @@ import {
 	isOpenAIResponsesProgressEvent,
 	isOpenRouterAnthropicModel,
 	isStrictToolsDisabledForScope,
+	isValidFinalResponsesToolCallArguments,
 	type OpenAIPromptCacheOptions,
 	type OpenAIStrictToolsScope,
 	type OpenAIStrictToolsState,
@@ -181,7 +182,7 @@ function isOpenAIResponsesReplayUnsafeEvent(event: ResponseStreamEvent): boolean
 		case "response.reasoning_summary_part.done":
 			return true;
 		case "response.output_item.done":
-			return true;
+			return event.item.type !== "function_call" || isValidFinalResponsesToolCallArguments(event.item.arguments);
 		default:
 			return false;
 	}

@@ -28,7 +28,7 @@ import {
 	isRecord,
 	logger,
 	parseImageMetadata,
-	parseStreamingJson,
+	parseJsonWithRepair,
 	parseStreamingJsonThrottled,
 	stringifyJson,
 	structuredCloneJSON,
@@ -2680,15 +2680,43 @@ export function accumulateToolCallArgumentsDelta(
 	stream.push({ type: "toolcall_delta", contentIndex, delta, partial: output });
 }
 
+function parseCompleteResponsesToolCallArguments(args: string): ToolCall["arguments"] {
+	return parseJsonWithRepair<ToolCall["arguments"]>(args);
+}
+
+/** Whether a function-call argument string passes the authoritative final parser. */
+export function isValidFinalResponsesToolCallArguments(args: unknown): boolean {
+	if (typeof args !== "string") return false;
+	try {
+		parseCompleteResponsesToolCallArguments(args);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function parseFinalResponsesToolCallArguments(args: string, provider?: string): ToolCall["arguments"] {
+	try {
+		return parseCompleteResponsesToolCallArguments(args);
+	} catch (cause) {
+		const message = cause instanceof Error ? cause.message : String(cause);
+		throw new AIError.ProviderResponseError(`Invalid final Responses function-call arguments: ${message}`, {
+			provider,
+			kind: "incomplete-stream",
+			cause,
+		});
+	}
+}
+
 /**
  * Finalize streamed function-call arguments from the authoritative `.done`
  * payload. The caller owns the `argumentsDone` flag (generic Responses sets it;
  * Codex's block shape has no such field), so this only rewrites `arguments` and
  * drops the transient accumulation fields.
  */
-export function finalizeToolCallArgumentsDone(block: ResponsesToolCallBlock, args: string): void {
+export function finalizeToolCallArgumentsDone(block: ResponsesToolCallBlock, args: string, provider?: string): void {
 	block[kStreamingPartialJson] = args;
-	block.arguments = parseStreamingJson(block[kStreamingPartialJson]);
+	block.arguments = parseFinalResponsesToolCallArguments(block[kStreamingPartialJson], provider);
 	clearStreamingPartialJson(block);
 }
 
@@ -3161,7 +3189,7 @@ export async function processResponsesStream<TApi extends Api>(
 		} else if (event.type === "response.function_call_arguments.done") {
 			const entry = lookupOpenFunctionCallItem(event);
 			if (entry?.item.type === "function_call" && entry.block.type === "toolCall") {
-				finalizeToolCallArgumentsDone(entry.block, event.arguments);
+				finalizeToolCallArgumentsDone(entry.block, event.arguments, model.provider);
 				entry.block[kStreamingArgumentsDone] = true;
 			}
 		} else if (event.type === "response.custom_tool_call_input.delta") {
@@ -3226,10 +3254,10 @@ export async function processResponsesStream<TApi extends Api>(
 				const args = block?.[kStreamingArgumentsDone]
 					? block.arguments
 					: item.arguments
-						? parseStreamingJson(item.arguments)
+						? parseFinalResponsesToolCallArguments(item.arguments, model.provider)
 						: block?.[kStreamingPartialJson]
-							? parseStreamingJson(block[kStreamingPartialJson])
-							: parseStreamingJson("{}");
+							? parseFinalResponsesToolCallArguments(block[kStreamingPartialJson], model.provider)
+							: parseFinalResponsesToolCallArguments("{}", model.provider);
 				const toolCall: ToolCall = {
 					type: "toolCall",
 					id: encodeResponsesToolCallId(item.call_id, item.id),
@@ -3311,7 +3339,7 @@ export async function processResponsesStream<TApi extends Api>(
 				response?.status === "incomplete" &&
 				response.incomplete_details?.reason === "max_output_tokens" &&
 				hasExecutableIncompleteResponsesToolCalls(output);
-			finalizePendingResponsesToolCalls(output);
+			finalizePendingResponsesToolCalls(output, model.provider);
 			if (response?.id) {
 				output.responseId = response.id;
 			}
@@ -3449,7 +3477,7 @@ export function hasExecutableIncompleteResponsesToolCalls(output: AssistantMessa
  * and the Codex decoder. Closed blocks already cleared these fields, so walking
  * the full content list leaves them untouched.
  */
-export function finalizePendingResponsesToolCalls(output: AssistantMessage): void {
+export function finalizePendingResponsesToolCalls(output: AssistantMessage, provider?: string): void {
 	for (const block of output.content) {
 		if (block.type !== "toolCall") continue;
 		const pending = block as ToolCall & {
@@ -3461,7 +3489,7 @@ export function finalizePendingResponsesToolCalls(output: AssistantMessage): voi
 			pending.arguments =
 				pending.customWireName !== undefined
 					? { input: pending[kStreamingPartialJson] }
-					: parseStreamingJson(pending[kStreamingPartialJson]);
+					: parseFinalResponsesToolCallArguments(pending[kStreamingPartialJson], provider);
 		}
 		clearStreamingPartialJson(pending);
 	}
