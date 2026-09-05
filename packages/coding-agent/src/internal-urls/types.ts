@@ -5,8 +5,9 @@
  * providing access to agent outputs and server resources without exposing filesystem paths.
  */
 
-import type { SSHHost } from "../capability/ssh";
+import type { Rule } from "../capability/rule";
 import type { Skill } from "../extensibility/skills";
+import type { SSHHost } from "../ssh/host-registry";
 import type { LocalProtocolOptions } from "./local-protocol";
 
 /**
@@ -118,6 +119,15 @@ export interface ResolveContext {
 	skills?: readonly Skill[];
 	/** Effective SSH hosts for the calling session. */
 	sshHosts?: readonly SSHHost[];
+	/**
+	 * Calling session's agent-scoped applicable rule set (rulebook + always-apply
+	 * + triggered TTSR rules, already bucketed by `agents` frontmatter). Prefer
+	 * this over the process-global snapshot — the global one reflects only the
+	 * top-level session, so a subagent-only rule is unresolvable through it
+	 * even though the subagent's own system prompt tells it to read
+	 * `rule://<name>`.
+	 */
+	rules?: readonly Rule[];
 	/** Session-bound `xd://` documentation resolver. */
 	xd?: {
 		read(name: string | null): Promise<string>;

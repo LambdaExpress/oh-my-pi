@@ -1,269 +1,310 @@
+/**
+ * Contract tests for the transcript-based `/copy` picker: Enter copies the
+ * outlined turn's text, Right descends into its inner blocks (fenced code,
+ * commands, tool output) and Enter copies the outlined block verbatim,
+ * Left/Esc ascend before Esc cancels, and turns without prose fall back to
+ * their blocks.
+ */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
-import { stripVTControlCharacters } from "node:util";
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { KeybindingsManager } from "@oh-my-pi/pi-coding-agent/config/keybindings";
+import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { CopySelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/copy-selector";
-import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { CopyTarget } from "@oh-my-pi/pi-coding-agent/modes/utils/copy-targets";
-import { setKeybindings } from "@oh-my-pi/pi-tui";
+import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
+import { setKeybindings, type TUI } from "@oh-my-pi/pi-tui";
 import { setLocale } from "../../../src/i18n";
 
 const UP = "\x1b[A";
-const DOWN = "\x1b[B";
-const ENTER = "\n";
-const CANCEL = "\x07"; // ctrl+g, remapped to tui.select.cancel below
+const LEFT = "\x1b[D";
+const RIGHT = "\x1b[C";
+const ENTER = "\r";
+const ESC = "\x1b";
 
-function leftClick(row1Based: number, col1Based = 4): string {
-	return `\x1b[<0;${col1Based};${row1Based}M`;
+const CODE = "const answer = 42;\nconsole.log(answer);";
+const LINK = "https://github.com/can1357/oh-my-pi/pull/10503";
+const ASSISTANT_TEXT = `Here is the fix:\n\`\`\`ts\n${CODE}\n\`\`\`\nDone. See [the PR](${LINK}).`;
+
+function entry(id: string, parentId: string | null, message: AgentMessage): SessionMessageEntry {
+	return { type: "message", id, parentId, timestamp: "2024-01-01T00:00:00Z", message };
 }
 
-function hover(row1Based: number, col1Based = 6): string {
-	return `\x1b[<35;${col1Based};${row1Based}M`;
-}
-
-function wheel(direction: "up" | "down", row1Based = 2): string {
-	return `\x1b[<${direction === "down" ? 65 : 64};1;${row1Based}M`;
-}
-
-let darkTheme = await getThemeByName("dark");
-
-// Flatten order (always expanded): msg:1, Block 1, Block 2, msg:2.
-function makeRoots(): CopyTarget[] {
+/** user → assistant(text + code fence + bash call) → bash result. */
+function makeEntries(): SessionMessageEntry[] {
 	return [
-		{
-			id: "msg:1",
-			label: "Newest message",
-			userTurn: 1,
-			hint: "5 lines · 2 code",
-			preview: "newest-preview-text",
-			content: "FULL_MESSAGE",
-			copyMessage: "Copied last message to clipboard",
-			children: [
-				{
-					id: "msg:1:code:0",
-					label: "Block 1",
-					hint: "ts",
-					language: "ts",
-					preview: "alpha()",
-					content: "BLOCK0",
-					copyMessage: "Copied block 1",
-				},
-				{
-					id: "msg:1:code:1",
-					label: "Block 2",
-					hint: "py",
-					language: "python",
-					preview: "beta()",
-					content: "BLOCK1",
-					copyMessage: "Copied block 2",
-				},
+		entry("u1", null, { role: "user", content: "fix the logging", timestamp: 1 } as AgentMessage),
+		entry("a1", "u1", {
+			role: "assistant",
+			content: [
+				{ type: "text", text: ASSISTANT_TEXT },
+				{ type: "toolCall", id: "call-1", name: "bash", arguments: { command: "bun test" } },
 			],
-		},
-		{
-			id: "msg:2",
-			label: "Older message",
-			userTurn: 1,
-			hint: "3 lines",
-			preview: "older-text",
-			content: "OLDER",
-			copyMessage: "Copied message",
-		},
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			stopReason: "stop",
+			usage: {
+				input: 10,
+				output: 5,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 15,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: 2,
+		} as unknown as AgentMessage),
+		entry("t1", "a1", {
+			role: "toolResult",
+			toolCallId: "call-1",
+			toolName: "bash",
+			content: [{ type: "text", text: "12 pass" }],
+			isError: false,
+			timestamp: 3,
+		} as unknown as AgentMessage),
 	];
 }
 
-function render(component: CopySelectorComponent): string {
-	return stripVTControlCharacters(component.render(80).join("\n"));
+function makeSelector(
+	picks: Array<{ content: string; label: string }>,
+	onCancel = () => {},
+	opens?: Array<{ href: string; label: string }>,
+): CopySelectorComponent {
+	return new CopySelectorComponent(makeEntries(), {
+		ui: { requestRender: () => {}, requestComponentRender: () => {} } as unknown as TUI,
+		cwd: "/tmp",
+		requestRender: () => {},
+		onPick: (content, label) => picks.push({ content, label }),
+		onOpen: opens ? (href, label) => opens.push({ href, label }) : undefined,
+		onCancel,
+	});
 }
 
 describe("CopySelectorComponent", () => {
 	beforeAll(async () => {
-		darkTheme = await getThemeByName("dark");
-		if (!darkTheme) throw new Error("Failed to load dark theme");
+		await initTheme();
 	});
-
-	beforeEach(() => {
-		setLocale("en");
-		setThemeInstance(darkTheme!);
-		setKeybindings(KeybindingsManager.inMemory({ "tui.select.cancel": "ctrl+g" }));
+	beforeEach(async () => {
+		await Settings.init({ inMemory: true, cwd: process.cwd() });
+		setKeybindings(KeybindingsManager.inMemory());
 	});
-
 	afterEach(() => {
 		setLocale(null);
 		setKeybindings(KeybindingsManager.inMemory());
-		vi.restoreAllMocks();
+		resetSettingsForTest();
 	});
 
-	it("renders an outlined tree with code blocks nested under their message", () => {
-		const out = render(new CopySelectorComponent(makeRoots(), { onPick: vi.fn(), onCancel: vi.fn() }));
-		expect(out).toContain(theme.boxRound.topLeft);
-		expect(out).toContain("│");
-		expect(out).toContain("Copy to clipboard");
-		// Messages and their nested blocks are all visible (always expanded),
-		// connected with /tree-style branch glyphs.
-		expect(out).toContain("Newest message");
-		expect(out).toContain("Block 1");
-		expect(out).toContain("Block 2");
-		expect(out).toContain("Older message");
-		expect(out).toMatch(/[├└]/);
+	it("copies the outlined turn's prose on Enter", () => {
+		const picks: Array<{ content: string; label: string }> = [];
+		const selector = makeSelector(picks);
+		selector.render(100);
+
+		selector.handleInput(ENTER);
+		selector.dispose();
+
+		// The newest item is the assistant turn (bash result folded into it);
+		// its item-level copy is the assistant prose, not tool noise.
+		expect(picks).toEqual([{ content: ASSISTANT_TEXT, label: "assistant message" }]);
 	});
 
-	it("wraps all outputs from one user turn in one divided frame", () => {
-		const out = render(new CopySelectorComponent(makeRoots(), { onPick: vi.fn(), onCancel: vi.fn() }));
+	it("descends into inner blocks with Right and copies the block verbatim", () => {
+		const picks: Array<{ content: string; label: string }> = [];
+		const selector = makeSelector(picks);
+		selector.render(100);
 
-		expect(out).toMatch(/│ ╭─+╮ │/);
-		expect(out).toMatch(/│ ├─+┤ │/);
-		expect(out).toMatch(/│ ╰─+╯ │/);
-		expect(out.match(/│ ╭─+╮ │/g)).toHaveLength(1);
-		expect(out.match(/│ ╰─+╯ │/g)).toHaveLength(1);
+		selector.handleInput(RIGHT);
+		selector.handleInput(ENTER);
+		selector.dispose();
+
+		// First block of the turn is the fenced code — copied without fences.
+		expect(picks).toEqual([{ content: CODE, label: "ts code" }]);
 	});
 
-	it("renders human-readable keybinding hints in the footer", () => {
-		const out = render(new CopySelectorComponent(makeRoots(), { onPick: vi.fn(), onCancel: vi.fn() }));
+	it("steps through command and tool-output blocks of the same turn", () => {
+		const picks: Array<{ content: string; label: string }> = [];
+		const selector = makeSelector(picks);
+		selector.render(100);
 
-		expect(out).toContain("Enter copy");
-		expect(out).toContain("Ctrl+G quit");
+		selector.handleInput(RIGHT);
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\x1b[B");
+		selector.handleInput(ENTER);
+		selector.handleInput(RIGHT);
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\x1b[B");
+		selector.handleInput("\x1b[B");
+		selector.handleInput(ENTER);
+		selector.dispose();
+
+		// Block order within the turn: code fence, link, bash command, bash result.
+		expect(picks).toEqual([
+			{ content: "bun test", label: "bash command" },
+			{ content: "12 pass", label: "bash result" },
+		]);
 	});
 
-	it("copies the message node itself on Enter", () => {
-		const onPick = vi.fn();
-		const component = new CopySelectorComponent(makeRoots(), { onPick, onCancel: vi.fn() });
+	it("lists the turn's links as blocks after code and commands; Enter copies the URL, o opens it", () => {
+		const picks: Array<{ content: string; label: string }> = [];
+		const opens: Array<{ href: string; label: string }> = [];
+		const selector = makeSelector(picks, () => {}, opens);
+		selector.render(100);
 
-		component.handleInput(ENTER); // cursor starts on the message node
+		selector.handleInput(RIGHT);
+		// Blocks: ts code, link, bash command, bash result — the link follows the message's own blocks.
+		selector.handleInput("\x1b[B");
+		selector.handleInput(ENTER);
+		selector.handleInput("o");
+		// o on a non-link block is ignored.
+		selector.handleInput("\x1b[B");
+		selector.handleInput("o");
+		const rows = selector.render(100);
+		selector.dispose();
 
-		expect(onPick).toHaveBeenCalledTimes(1);
-		expect(onPick.mock.calls[0]![0].content).toBe("FULL_MESSAGE");
+		expect(picks).toEqual([{ content: LINK, label: `link${theme.sep.dot}the PR` }]);
+		expect(opens).toEqual([{ href: LINK, label: `link${theme.sep.dot}the PR` }]);
+		expect(rows.join("\n")).not.toContain("o open");
 	});
 
-	it("navigates into a nested code block and copies it", () => {
-		const onPick = vi.fn();
-		const component = new CopySelectorComponent(makeRoots(), { onPick, onCancel: vi.fn() });
+	it("advertises o open only while a link block is outlined and an opener exists", () => {
+		const opens: Array<{ href: string; label: string }> = [];
+		const withOpener = makeSelector([], () => {}, opens);
+		withOpener.render(100);
+		withOpener.handleInput(RIGHT);
+		withOpener.handleInput("\x1b[B");
+		expect(withOpener.render(100).join("\n")).toContain("o open");
+		withOpener.dispose();
 
-		component.handleInput(DOWN); // onto "Block 1"
-		component.handleInput(ENTER);
-
-		expect(onPick).toHaveBeenCalledTimes(1);
-		expect(onPick.mock.calls[0]![0].content).toBe("BLOCK0");
+		const withoutOpener = makeSelector([]);
+		withoutOpener.render(100);
+		withoutOpener.handleInput(RIGHT);
+		withoutOpener.handleInput("\x1b[B");
+		withoutOpener.handleInput("o");
+		expect(withoutOpener.render(100).join("\n")).not.toContain("o open");
+		withoutOpener.dispose();
 	});
 
-	it("traverses past nested blocks to the older message, with the preview tracking the cursor", () => {
-		const component = new CopySelectorComponent(makeRoots(), { onPick: vi.fn(), onCancel: vi.fn() });
+	/** SGR left-press at a 0-based (row, col) of the rendered frame. */
+	const click = (row: number, col: number) => `\x1b[<0;${col + 1};${row + 1}M`;
 
-		component.handleInput(DOWN); // Block 1
-		expect(render(component)).toContain("alpha()");
+	/** Locate `needle` in the rendered frame: 0-based row and the visible column where it starts. */
+	function locate(lines: readonly string[], needle: string): { row: number; col: number } {
+		for (let row = 0; row < lines.length; row++) {
+			const plain = Bun.stripANSI(lines[row]!);
+			const at = plain.indexOf(needle);
+			if (at !== -1) return { row, col: at };
+		}
+		throw new Error(`"${needle}" not rendered`);
+	}
 
-		component.handleInput(DOWN); // Block 2
-		component.handleInput(DOWN); // Older message
-		expect(render(component)).toContain("older-text");
+	it("renders clickable controls on every block caption; a left click on ⧉ copy copies that block", () => {
+		const picks: Array<{ content: string; label: string }> = [];
+		const opens: Array<{ href: string; label: string }> = [];
+		const selector = makeSelector(picks, () => {}, opens);
+		selector.render(100);
+		selector.handleInput(RIGHT);
+		const frame = selector.render(100);
+		const plain = frame.map(line => Bun.stripANSI(line));
 
-		component.handleInput(UP); // back onto Block 2
-		expect(render(component)).toContain("beta()");
+		// The bash command is block 3 of 4 and is not the outlined block; its own control still targets it.
+		const captionRow = plain.findIndex(line => line.includes("3/4 · bash command"));
+		expect(captionRow).toBeGreaterThan(0);
+		const copyCol = plain[captionRow]!.indexOf(`${theme.cmd.copy} copy`);
+		expect(copyCol).toBeGreaterThan(0);
+		selector.handleInput(click(captionRow, copyCol + 1));
+		selector.dispose();
+
+		expect(picks).toEqual([{ content: "bun test", label: "bash command" }]);
+		expect(opens).toEqual([]);
 	});
 
-	it("moves the copy cursor with the wheel and copies the new target on Enter", () => {
-		const onPick = vi.fn();
-		const component = new CopySelectorComponent(makeRoots(), { onPick, onCancel: vi.fn() });
+	it("a left click on ↗ open opens that link; non-link captions render no open control", () => {
+		const picks: Array<{ content: string; label: string }> = [];
+		const opens: Array<{ href: string; label: string }> = [];
+		const selector = makeSelector(picks, () => {}, opens);
+		selector.render(100);
+		selector.handleInput(RIGHT);
+		const frame = selector.render(100);
+		const plain = frame.map(line => Bun.stripANSI(line));
 
-		component.render(80);
-		component.handleInput(wheel("down"));
-		expect(render(component)).toContain("alpha()");
+		const linkRow = plain.findIndex(line => line.includes("2/4 · link · the PR"));
+		const codeRow = plain.findIndex(line => line.includes("1/4 · ts code"));
+		expect(plain[linkRow]).toContain(`${theme.cmd.share} open`);
+		expect(plain[codeRow]).not.toContain(`${theme.cmd.share} open`);
 
-		component.handleInput(ENTER);
+		const openCol = plain[linkRow]!.indexOf(`${theme.cmd.share} open`);
+		selector.handleInput(click(linkRow, openCol + 2));
+		// Clicks beside a control (the summary text, or the gap) do nothing.
+		selector.handleInput(click(linkRow, 4));
+		selector.handleInput(click(linkRow + 1, openCol));
+		selector.dispose();
 
-		expect(onPick).toHaveBeenCalledTimes(1);
-		expect(onPick.mock.calls[0]![0].content).toBe("BLOCK0");
+		expect(opens).toEqual([{ href: LINK, label: `link${theme.sep.dot}the PR` }]);
+		expect(picks).toEqual([]);
 	});
 
-	it("copies the target under a left click", () => {
-		const onPick = vi.fn();
-		const component = new CopySelectorComponent(makeRoots(), { onPick, onCancel: vi.fn() });
+	it("click positions follow the scroll offset", () => {
+		const picks: Array<{ content: string; label: string }> = [];
+		const selector = makeSelector(picks);
+		selector.render(100);
+		selector.handleInput(RIGHT);
+		// Scroll the view down by one wheel notch (3 lines) and re-render so the map reflects it.
+		selector.handleInput("\x1b[<65;1;10M");
+		const frame = selector.render(100);
+		const { row, col } = locate(frame, `${theme.cmd.copy} copy`);
+		selector.handleInput(click(row, col));
+		selector.dispose();
 
-		const lines = component.render(80);
-		const block2Row = lines.findIndex(line => stripVTControlCharacters(line).includes("Block 2"));
-		expect(block2Row).toBeGreaterThanOrEqual(0);
-
-		component.handleInput(leftClick(block2Row + 1));
-
-		expect(onPick).toHaveBeenCalledTimes(1);
-		expect(onPick.mock.calls[0]![0].content).toBe("BLOCK1");
+		expect(picks).toEqual([{ content: CODE, label: "ts code" }]);
 	});
 
-	it("highlights a hovered target without changing Enter selection", () => {
-		const onPick = vi.fn();
-		const component = new CopySelectorComponent(makeRoots(), { onPick, onCancel: vi.fn() });
-		const selectedBg = theme.getBgAnsi("selectedBg");
-
-		const initialOutput = render(component);
-		expect(initialOutput).toContain("newest-preview-text");
-		expect(initialOutput).not.toContain("alpha()");
-
-		const initialLines = component.render(80);
-		const block1Row = initialLines.findIndex(line => stripVTControlCharacters(line).includes("Block 1"));
-		expect(block1Row).toBeGreaterThanOrEqual(0);
-		expect(initialLines[block1Row]!).not.toContain(selectedBg);
-
-		component.handleInput(hover(block1Row + 1));
-
-		const hoveredLines = component.render(80);
-		expect(hoveredLines[block1Row]!).toContain(selectedBg);
-		expect(stripVTControlCharacters(hoveredLines.join("\n"))).toContain("alpha()");
-		expect(onPick).not.toHaveBeenCalled();
-
-		component.handleInput(ENTER);
-
-		expect(onPick).toHaveBeenCalledTimes(1);
-		expect(onPick.mock.calls[0]![0].content).toBe("FULL_MESSAGE");
-	});
-
-	it("clears hover preview when the pointer leaves the tree", () => {
-		const component = new CopySelectorComponent(makeRoots(), { onPick: vi.fn(), onCancel: vi.fn() });
-
-		const lines = component.render(80);
-		const block1Row = lines.findIndex(line => stripVTControlCharacters(line).includes("Block 1"));
-		const previewRow = lines.findIndex(line => stripVTControlCharacters(line).includes("Preview"));
-		expect(block1Row).toBeGreaterThanOrEqual(0);
-		expect(previewRow).toBeGreaterThanOrEqual(0);
-
-		component.handleInput(hover(block1Row + 1));
-		expect(render(component)).toContain("alpha()");
-
-		component.handleInput(hover(previewRow + 1));
-
-		const afterPointerLeave = render(component);
-		expect(afterPointerLeave).toContain("newest-preview-text");
-		expect(afterPointerLeave).not.toContain("alpha()");
-	});
-
-	it("ignores clicks outside the copy tree", () => {
-		const onPick = vi.fn();
-		const component = new CopySelectorComponent(makeRoots(), { onPick, onCancel: vi.fn() });
-
-		const lines = component.render(80);
-		const previewRow = lines.findIndex(line => stripVTControlCharacters(line).includes("Preview"));
-		expect(previewRow).toBeGreaterThanOrEqual(0);
-
-		component.handleInput(leftClick(previewRow + 1));
-
-		expect(onPick).not.toHaveBeenCalled();
-	});
-
-	it("drops cached preview content when invalidated", () => {
-		const roots = makeRoots();
-		const component = new CopySelectorComponent(roots, { onPick: vi.fn(), onCancel: vi.fn() });
-
-		expect(render(component)).toContain("newest-preview-text");
-
-		roots[0]!.preview = "updated-preview-text";
-		component.invalidate();
-
-		expect(render(component)).toContain("updated-preview-text");
-		expect(render(component)).not.toContain("newest-preview-text");
-	});
-
-	it("quits on the cancel key", () => {
+	it("Esc ascends from the block view before it cancels the picker", () => {
+		const picks: Array<{ content: string; label: string }> = [];
 		const onCancel = vi.fn();
-		const component = new CopySelectorComponent(makeRoots(), { onPick: vi.fn(), onCancel });
+		const selector = makeSelector(picks, onCancel);
+		selector.render(100);
 
-		component.handleInput(CANCEL);
+		selector.handleInput(RIGHT);
+		selector.handleInput(ESC);
+		expect(onCancel).not.toHaveBeenCalled();
+		selector.handleInput(ENTER);
+		selector.handleInput(ESC);
+		selector.dispose();
 
+		// Post-ascend Enter copies the whole turn again; the second Esc cancels.
+		expect(picks).toEqual([{ content: ASSISTANT_TEXT, label: "assistant message" }]);
 		expect(onCancel).toHaveBeenCalledTimes(1);
+	});
+
+	it("Left/Up navigate: user prompt copies its raw text", () => {
+		const picks: Array<{ content: string; label: string }> = [];
+		const selector = makeSelector(picks);
+		selector.render(100);
+
+		selector.handleInput(UP);
+		selector.handleInput(ENTER);
+		selector.dispose();
+
+		expect(picks).toEqual([{ content: "fix the logging", label: "user message" }]);
+	});
+
+	it("renders the descended block stack with captions and dotted outline", () => {
+		const selector = makeSelector([]);
+		const itemView = selector.render(100).map(line => Bun.stripANSI(line));
+		// The outline advertises the descent affordance before Right is pressed.
+		expect(itemView.join("\n")).toContain("4 blocks →");
+		selector.handleInput(RIGHT);
+		const lines = selector.render(100).map(line => Bun.stripANSI(line));
+		selector.handleInput(LEFT);
+		selector.dispose();
+
+		const joined = lines.join("\n");
+		expect(joined).toContain("1/4 · ts code");
+		expect(joined).toContain("2/4 · link · the PR");
+		expect(joined).toContain(LINK);
+		expect(joined).toContain("3/4 · bash command");
+		expect(joined).toContain("4/4 · bash result");
+		// The selected block sits inside the dotted outline; the rest are plain.
+		const boxed = lines.filter(line => line.startsWith("┆")).join("\n");
+		expect(boxed).toContain("const answer = 42;");
+		expect(boxed).not.toContain("bun test");
 	});
 });

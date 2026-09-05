@@ -17,6 +17,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ContextUsage } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { StatusLineComponent } from "@oh-my-pi/pi-coding-agent/modes/components/status-line";
+import { colorToAnsi } from "@oh-my-pi/pi-coding-agent/modes/theme/color";
 import { initTheme, setSymbolPreset, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { getSessionAccentAnsi } from "@oh-my-pi/pi-coding-agent/utils/session-color";
@@ -379,9 +380,9 @@ describe("StatusLineComponent context breakdown", () => {
 
 		try {
 			const first = comp.getTopBorder(100).content;
-			const normalColor = theme.isLight ? "#1a7f37" : "#3fb950";
+			const normalColor = colorToAnsi(theme.isLight ? "#1a7f37" : "#3fb950", theme.getColorMode());
 			const thresholdColor = getSessionAccentAnsi(adjustHsv(theme.getColorHex("borderAccent"), { s: 0.7, v: 0.75 }));
-			expect(first).toContain(theme.fgHex(normalColor, "33.1%/272K"));
+			expect(first).toContain(`${normalColor}33.1%/272K\x1b[39m`);
 			expect(first).toContain(`${theme.getFgAnsi("accent")}${theme.icon.auto}`);
 			expect(first).toContain(`${thresholdColor}󰕝`);
 			expect(first).toContain(`${thresholdColor}󰁨`);
@@ -647,7 +648,7 @@ describe("StatusLineComponent context breakdown", () => {
 		const comp = new StatusLineComponent(session);
 		expect(comp.render(80)).toHaveLength(0); // box mode: main status lives in the editor border
 
-		comp.setComposerStyle({ bottomBar: "full", bottomBarGap: false });
+		comp.setComposerStyle({ statusAttachment: "none", bottomBar: "full", bottomBarGap: false });
 		const lines = comp.render(80);
 		expect(lines).toHaveLength(1);
 		// Plain bar: transparent background, no powerline caps or bg fill.
@@ -656,7 +657,7 @@ describe("StatusLineComponent context breakdown", () => {
 
 		// Styles without bottom chrome (rule/field/rail) request a spacer row so
 		// the bar doesn't sit flush against the last input row.
-		comp.setComposerStyle({ bottomBar: "full", bottomBarGap: true });
+		comp.setComposerStyle({ statusAttachment: "none", bottomBar: "full", bottomBarGap: true });
 		const gapped = comp.render(80);
 		expect(gapped).toHaveLength(2);
 		expect(gapped[0]).toBe("");
@@ -670,7 +671,7 @@ describe("StatusLineComponent context breakdown", () => {
 			usage: { tokens: 1000, contextWindow: 100_000, percent: 1 },
 		});
 		const comp = new StatusLineComponent(session);
-		comp.setComposerStyle({ bottomBar: "full", bottomBarGap: true });
+		comp.setComposerStyle({ statusAttachment: "none", bottomBar: "full", bottomBarGap: true });
 		let menuOpen = true;
 		comp.setAutocompleteActiveProbe(() => menuOpen);
 		expect(comp.render(80)).toHaveLength(0);
@@ -692,7 +693,7 @@ describe("StatusLineComponent context breakdown", () => {
 			separator: "none",
 			sessionAccent: false,
 		});
-		comp.setComposerStyle({ bottomBar: "left", bottomBarGap: false });
+		comp.setComposerStyle({ statusAttachment: "top-rule-chip", bottomBar: "left", bottomBarGap: false });
 
 		const bottom = comp.render(80);
 		expect(bottom).toHaveLength(1);

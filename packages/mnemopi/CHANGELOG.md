@@ -6,6 +6,12 @@
 
 - Fixed facts returned by recall being impossible to delete by their visible fact id; `forgetFact()` now deletes visible `facts` rows and invalidates recall caches.
 - Added a non-destructive fact-id visibility check so hosts can distinguish non-editable fact operations from genuinely missing memory ids.
+## [18.0.11] - 2026-08-29
+
+### Fixed
+
+- Fixed working-memory recall returning too few or no results after matching memories were invalidated.
+
 ## [18.0.9] - 2026-08-28
 
 ### Fixed

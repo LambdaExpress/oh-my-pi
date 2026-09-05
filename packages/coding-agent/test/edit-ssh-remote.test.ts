@@ -2,162 +2,331 @@ import { afterEach, beforeEach, describe, expect, it, spyOn, vi } from "bun:test
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as capability from "@oh-my-pi/pi-coding-agent/capability";
+import { EditSession, type EditVirtualResource } from "@oh-my-pi/pi-natives";
 import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
-import type { CapabilityResult, SourceMeta } from "@oh-my-pi/pi-coding-agent/capability/types";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { EditTool, getEditStore, type EditToolDetails } from "@oh-my-pi/pi-coding-agent/edit";
 import {
-	DEFAULT_FUZZY_THRESHOLD,
-	EDIT_MODE_STRATEGIES,
-	EditTool,
-	executePatchSingle,
-	executeReplace,
-} from "@oh-my-pi/pi-coding-agent/edit";
-import type { WritethroughCallback } from "@oh-my-pi/pi-coding-agent/lsp";
+	canonicalSshResourceKey,
+	InternalUrlRouter,
+	type InternalResource,
+	type InternalUrl,
+	type ProtocolHandler,
+	type ResolveContext,
+	type WriteContext,
+} from "@oh-my-pi/pi-coding-agent/internal-urls";
+import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
 import type { ClientBridge } from "@oh-my-pi/pi-coding-agent/session/client-bridge";
-import type { RemotePathKind } from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
-import * as fileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
-const SOURCE: SourceMeta = {
-	provider: "ssh-json",
-	providerName: "SSH Config",
-	path: "/test/ssh.json",
-	level: "user",
-};
+type Mutation = { op: "write"; key: string; content: string } | { op: "delete"; key: string };
 
-const noopBeginDeferred = (_path: string) => ({
-	onDeferredDiagnostics: () => {},
-	signal: new AbortController().signal,
-	finalize: () => {},
-});
+class FakeSshProtocolHandler implements ProtocolHandler {
+	readonly scheme = "ssh";
+	readonly immutable = false;
+	readonly files: Map<string, string>;
+	readonly mutations: Mutation[] = [];
+	readonly moves: Array<{ from: string; to: string; content: string | undefined }> = [];
+	readonly contexts: Array<ResolveContext | WriteContext | undefined> = [];
+	readonly canonicalKeys: string[] = [];
 
-function createSession(cwd: string, bridge?: ClientBridge, sshHosts?: readonly SSHHost[]): ToolSession {
+	constructor(files: Readonly<Record<string, string>>) {
+		this.files = new Map(Object.entries(files));
+	}
+
+	canonicalKey(url: InternalUrl): string {
+		const key = canonicalSshResourceKey(url);
+		this.canonicalKeys.push(key);
+		return key;
+	}
+
+	async stat(url: InternalUrl, context?: ResolveContext): Promise<"file" | "missing"> {
+		this.contexts.push(context);
+		return this.files.has(this.canonicalKey(url)) ? "file" : "missing";
+	}
+
+	async resolve(url: InternalUrl, context?: ResolveContext): Promise<InternalResource> {
+		this.contexts.push(context);
+		const key = this.canonicalKey(url);
+		const content = this.files.get(key);
+		if (content === undefined) throw new Error(`File not found: ${key}`);
+		return {
+			url: key,
+			content,
+			contentType: "text/plain",
+			size: Buffer.byteLength(content),
+		};
+	}
+
+	async write(url: InternalUrl, content: string, context?: WriteContext): Promise<void> {
+		this.contexts.push(context);
+		const key = this.canonicalKey(url);
+		this.files.set(key, content);
+		this.mutations.push({ op: "write", key, content });
+	}
+
+	async delete(url: InternalUrl, context?: WriteContext): Promise<void> {
+		this.contexts.push(context);
+		const key = this.canonicalKey(url);
+		if (!this.files.delete(key)) throw new Error(`File not found: ${key}`);
+		this.mutations.push({ op: "delete", key });
+	}
+
+	async move(
+		fromUrl: InternalUrl,
+		toUrl: InternalUrl,
+		content: string | undefined,
+		context?: WriteContext,
+	): Promise<void> {
+		const from = this.canonicalKey(fromUrl);
+		const to = this.canonicalKey(toUrl);
+		this.moves.push({ from, to, content });
+		const persisted = content ?? this.files.get(from);
+		if (persisted === undefined) throw new Error(`File not found: ${from}`);
+		await this.write(toUrl, persisted, context);
+		await this.delete(fromUrl, context);
+	}
+}
+
+interface SessionOptions {
+	bridge?: ClientBridge;
+	sshHosts?: readonly SSHHost[];
+	enableLsp?: boolean;
+}
+
+function createSession(cwd: string, options: SessionOptions = {}): ToolSession {
 	const getArtifactsDir = () => path.join(cwd, "artifacts");
 	const getSessionId = () => "session-a";
 	return {
 		cwd,
 		hasUI: false,
-		enableLsp: false,
+		enableLsp: options.enableLsp ?? false,
 		getSessionFile: () => path.join(cwd, "session.jsonl"),
 		getSessionSpawns: () => "*",
 		getArtifactsDir,
 		getSessionId,
 		localProtocolOptions: { getArtifactsDir, getSessionId },
 		allocateOutputArtifact: async () => ({ id: "artifact-1", path: path.join(cwd, "artifact-1.log") }),
-		settings: Settings.isolated(),
-		getClientBridge: bridge ? () => bridge : undefined,
-		getSessionSshHosts: sshHosts ? async () => sshHosts : undefined,
-	};
+		settings: Settings.isolated({
+			"edit.enforceSeenLines": false,
+			"lsp.diagnosticsOnEdit": true,
+			"lsp.formatOnWrite": true,
+		}),
+		getClientBridge: options.bridge ? () => options.bridge : undefined,
+		getSessionSshHosts: options.sshHosts ? async () => options.sshHosts : undefined,
+	} as ToolSession;
+}
+
+function installRemoteStore(files: Readonly<Record<string, string>>): FakeSshProtocolHandler {
+	const handler = new FakeSshProtocolHandler(files);
+	InternalUrlRouter.instance().register(handler);
+	return handler;
 }
 
 function makeBridge() {
-	const bridge: ClientBridge = {
-		capabilities: { writeTextFile: true },
-		writeTextFile: async () => {},
+	const write = vi.fn(async () => {});
+	return {
+		bridge: {
+			capabilities: { writeTextFile: true },
+			writeTextFile: write,
+		},
+		write,
 	};
-	return { bridge, spy: spyOn(bridge, "writeTextFile") };
 }
 
-function makeWritethroughMock(): { writethrough: WritethroughCallback; calledWith: string[] } {
-	const calledWith: string[] = [];
-	const writethrough: WritethroughCallback = async (dst, content) => {
-		calledWith.push(dst);
-		await Bun.write(dst, content);
-		return undefined;
-	};
-	return { writethrough, calledWith };
+function details(result: { details?: unknown }): EditToolDetails {
+	return result.details as EditToolDetails;
 }
 
-function mockHosts(): void {
-	const result: CapabilityResult<unknown> = {
-		items: [],
-		all: [],
-		warnings: [],
-		providers: [SOURCE.provider],
-	};
-	vi.spyOn(capability, "loadCapability").mockResolvedValue(result);
-}
+const SOURCE = "ssh://icaro/tmp/a.ts";
+const DESTINATION = "ssh://icaro/tmp/b.ts";
 
-function installRemoteStore(files: Map<string, string>) {
-	const encoder = new TextEncoder();
-	const decoder = new TextDecoder();
-	mockHosts();
-	const statSpy = vi.spyOn(fileTransfer, "statRemotePath").mockImplementation(async (_target, remotePath) => {
-		return (files.has(remotePath) ? "file" : "missing") as RemotePathKind;
-	});
-	const readSpy = vi.spyOn(fileTransfer, "readRemoteFile").mockImplementation(async (_target, remotePath) => {
-		const content = files.get(remotePath);
-		if (content === undefined) throw new Error(`head: cannot open '${remotePath}': No such file or directory`);
-		return { bytes: encoder.encode(content), truncated: false };
-	});
-	const writeSpy = vi.spyOn(fileTransfer, "writeRemoteFile").mockImplementation(async (_target, remotePath, bytes) => {
-		files.set(remotePath, decoder.decode(bytes));
-	});
-	const deleteSpy = vi.spyOn(fileTransfer, "deleteRemoteFile").mockImplementation(async (_target, remotePath) => {
-		files.delete(remotePath);
-	});
-	const moveSpy = vi.spyOn(fileTransfer, "moveRemoteFile").mockImplementation(async (_target, fromPath, toPath) => {
-		const content = files.get(fromPath);
-		if (content === undefined) throw new Error(`mv: cannot stat '${fromPath}': No such file or directory`);
-		files.set(toPath, content);
-		files.delete(fromPath);
-	});
-	return { statSpy, readSpy, writeSpy, deleteSpy, moveSpy };
-}
+let tmpDir: string;
 
-describe("ssh:// edit targets", () => {
-	let tmpDir: string;
-	let previousEditVariant: string | undefined;
+beforeEach(async () => {
+	resetSettingsForTest();
+	InternalUrlRouter.resetForTests();
+	tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-edit-ssh-"));
+	await Settings.init({ inMemory: true, cwd: tmpDir });
+});
 
-	beforeEach(async () => {
-		resetSettingsForTest();
-		tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-edit-ssh-"));
-		await Settings.init({ inMemory: true, cwd: tmpDir });
-		previousEditVariant = Bun.env.PI_EDIT_VARIANT;
-	});
+afterEach(async () => {
+	vi.restoreAllMocks();
+	InternalUrlRouter.resetForTests();
+	resetSettingsForTest();
+	await removeWithRetries(tmpDir);
+});
 
-	afterEach(async () => {
-		if (previousEditVariant === undefined) {
-			delete Bun.env.PI_EDIT_VARIANT;
-		} else {
-			Bun.env.PI_EDIT_VARIANT = previousEditVariant;
-		}
-		vi.restoreAllMocks();
-		resetSettingsForTest();
-		await removeWithRetries(tmpDir);
+describe("EditTool ssh:// targets", () => {
+	it("preloads and replaces a remote resource without local ACP or LSP routing", async () => {
+		const handler = installRemoteStore({ [SOURCE]: "hello old\n" });
+		const { bridge, write: bridgeWrite } = makeBridge();
+		const getServers = spyOn(lspConfig, "getServersForFile").mockImplementation(() => {
+			throw new Error("remote edits must not consult local LSP routing");
+		});
+		const preload = spyOn(EditSession.prototype, "preloadVirtualResource");
+
+		const result = await new EditTool(createSession(tmpDir, { bridge, enableLsp: true }), "replace").execute(
+			"replace",
+			{
+				path: SOURCE,
+				old_string: "old",
+				new_string: "new",
+			},
+		);
+
+		expect(result.isError).not.toBe(true);
+		expect(handler.files.get(SOURCE)).toBe("hello new\n");
+		expect(details(result)).toMatchObject({
+			path: SOURCE,
+			oldText: "hello old\n",
+			newText: "hello new\n",
+		});
+		expect(preload).toHaveBeenCalledWith({
+			canonicalUrl: SOURCE,
+			displayUrl: SOURCE,
+			content: "hello old\n",
+		} satisfies EditVirtualResource);
+		expect(bridgeWrite).not.toHaveBeenCalled();
+		expect(getServers).not.toHaveBeenCalled();
 	});
 
-	it("patch updates a remote UTF-8 text file without ACP or LSP writethrough", async () => {
-		const files = new Map([["/tmp/a.ts", "old\n"]]);
-		installRemoteStore(files);
-		const { bridge, spy: bridgeSpy } = makeBridge();
-		const { writethrough, calledWith } = makeWritethroughMock();
-		const result = await executePatchSingle({
-			session: createSession(tmpDir, bridge),
-			path: "ssh://icaro/tmp/a.ts",
-			params: { op: "update", diff: "@@\n-old\n+new" },
-			allowFuzzy: false,
-			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-			writethrough,
-			beginDeferredDiagnosticsForPath: noopBeginDeferred,
+	it("applies patch mode through the remote protocol handler", async () => {
+		const handler = installRemoteStore({ [SOURCE]: "old\n" });
+
+		const result = await new EditTool(createSession(tmpDir), "patch").execute("patch", {
+			path: SOURCE,
+			edits: [{ op: "update", diff: "@@\n-old\n+new" }],
 		});
 
-		expect(files.get("/tmp/a.ts")).toBe("new\n");
-		expect(result.details?.path).toBe("ssh://icaro/tmp/a.ts");
-		expect(result.details?.oldText).toBe("old\n");
-		expect(result.details?.newText).toBe("new\n");
-		expect(result.details?.diff).toContain("-1|old");
-		expect(result.details?.diff).toContain("+1|new");
-		expect(bridgeSpy).not.toHaveBeenCalled();
-		expect(calledWith).toEqual([]);
+		expect(result.isError).not.toBe(true);
+		expect(handler.files.get(SOURCE)).toBe("new\n");
+		expect(details(result).diff).toContain("+1|new");
+		expect(handler.mutations).toEqual([{ op: "write", key: SOURCE, content: "new\n" }]);
 	});
 
-	it("uses a session alias for remote reads and writes without exposing its password", async () => {
+	it("applies a key-oriented hashline update to a remote resource", async () => {
+		const handler = installRemoteStore({ [SOURCE]: "one\ntwo\n" });
+		const session = createSession(tmpDir);
+		const tag = getEditStore(session).recordSnapshotForKey(SOURCE, "one\ntwo\n", [1, 2]);
+
+		const result = await new EditTool(session, "hashline").execute("hashline", {
+			input: `[${SOURCE}#${tag}]\nPUT 2.=2:\n+TWO`,
+		});
+
+		expect(result.isError).not.toBe(true);
+		expect(handler.files.get(SOURCE)).toBe("one\nTWO\n");
+		expect(result.content.map(part => (part.type === "text" ? part.text : "")).join("\n")).toContain(`[${SOURCE}#`);
+	});
+
+	it("REM deletes the remote resource and invalidates its retained snapshot", async () => {
+		const original = "alpha\nbeta\n";
+		const handler = installRemoteStore({ [SOURCE]: original });
+		const session = createSession(tmpDir);
+		const tag = getEditStore(session).recordSnapshotForKey(SOURCE, original, [1, 2]);
+
+		const removed = await new EditTool(session, "hashline").execute("remove", {
+			input: `[${SOURCE}#${tag}]\nREM`,
+		});
+		expect(removed.isError).not.toBe(true);
+		expect(handler.files.has(SOURCE)).toBe(false);
+		expect(handler.mutations).toEqual([{ op: "delete", key: SOURCE }]);
+
+		handler.files.set(SOURCE, `inserted\n${original}`);
+		handler.mutations.length = 0;
+		const stale = await new EditTool(session, "hashline").execute("stale-after-remove", {
+			input: `[${SOURCE}#${tag}]\nPUT 2.=2:\n+BETA`,
+		});
+		expect(stale.isError).toBe(true);
+		expect(handler.files.get(SOURCE)).toBe(`inserted\n${original}`);
+		expect(handler.mutations).toEqual([]);
+	});
+
+	it("MV writes the edited destination before deleting the source", async () => {
+		const handler = installRemoteStore({ [SOURCE]: "old\n" });
+		const session = createSession(tmpDir);
+		const tag = getEditStore(session).recordSnapshotForKey(SOURCE, "old\n", [1]);
+
+		const result = await new EditTool(session, "hashline").execute("move", {
+			input: `[${SOURCE}#${tag}]\nPUT 1.=1:\n+new\nMV ${DESTINATION}`,
+		});
+
+		expect(result.isError).not.toBe(true);
+		expect(handler.files.has(SOURCE)).toBe(false);
+		expect(handler.files.get(DESTINATION)).toBe("new\n");
+		expect(handler.moves).toEqual([{ from: SOURCE, to: DESTINATION, content: "new\n" }]);
+		expect(handler.mutations).toEqual([
+			{ op: "write", key: DESTINATION, content: "new\n" },
+			{ op: "delete", key: SOURCE },
+		]);
+		expect(details(result)).toMatchObject({ path: DESTINATION, sourcePath: SOURCE, move: DESTINATION });
+	});
+
+	it("emits a final remote preview from the EditTool argument stream", async () => {
+		installRemoteStore({ [SOURCE]: "old\n" });
+		const tool = new EditTool(createSession(tmpDir), "replace");
+		const finalPreview = Promise.withResolvers<{
+			files: Array<{ path: string; diff?: string }>;
+			streaming: boolean;
+		}>();
+		const args = { path: SOURCE, old_string: "old", new_string: "new" };
+		const stream = tool.openArgStream({
+			toolCallId: "preview",
+			toolName: "edit",
+			emit: update => {
+				if (update && typeof update === "object" && "streaming" in update && update.streaming === false) {
+					finalPreview.resolve(update as never);
+				}
+			},
+		});
+		stream.push(JSON.stringify(args));
+		stream.end(args);
+
+		const preview = await finalPreview.promise;
+		const result = await tool.execute("preview", args);
+		expect(result.isError).not.toBe(true);
+		expect(preview.streaming).toBe(false);
+		expect(preview.files[0]).toMatchObject({ path: SOURCE });
+		expect(preview.files[0]?.diff).toContain("+1|new");
+	});
+
+	it("rejects cross-authority and remote-to-local moves before any mutation", async () => {
+		for (const [name, destination] of [
+			["cross-authority", "ssh://other/tmp/b.ts"],
+			["remote-to-local", path.join(tmpDir, "local.ts")],
+		] as const) {
+			const safe = "ssh://icaro/tmp/safe.ts";
+			const handler = installRemoteStore({ [safe]: "safe old\n", [SOURCE]: "old\n" });
+			const input = [
+				"*** Begin Patch",
+				`*** Update File: ${safe}`,
+				"@@",
+				"-safe old",
+				"+safe new",
+				`*** Update File: ${SOURCE}`,
+				`*** Move to: ${destination}`,
+				"@@",
+				"-old",
+				"+new",
+				"*** End Patch",
+			].join("\n");
+
+			const result = await new EditTool(createSession(tmpDir), "apply_patch").execute(name, { input });
+
+			expect(result.isError).toBe(true);
+			expect(handler.files.get(safe)).toBe("safe old\n");
+			expect(handler.files.get(SOURCE)).toBe("old\n");
+			expect(handler.mutations).toEqual([]);
+			expect(handler.moves).toEqual([]);
+			expect(await Bun.file(path.join(tmpDir, "local.ts")).exists()).toBe(false);
+		}
+	});
+
+	it("keeps session-alias credentials out of canonical keys and tool output", async () => {
 		const password = "edit-session-password-sentinel";
 		const host: SSHHost = {
-			name: "ephemeral",
+			name: "icaro",
 			connectionId: "session-revision",
 			host: "192.0.2.70",
 			username: "deploy",
@@ -165,227 +334,22 @@ describe("ssh:// edit targets", () => {
 			_source: {
 				provider: "ssh-session",
 				providerName: "Session SSH",
-				level: "session",
+				level: "user",
 				path: "session://session-a/revision-a",
 			},
 		};
-		const files = new Map([["/tmp/a.ts", "old\n"]]);
-		const { statSpy, readSpy, writeSpy } = installRemoteStore(files);
-		const { writethrough } = makeWritethroughMock();
-		const result = await executePatchSingle({
-			session: createSession(tmpDir, undefined, [host]),
-			path: "ssh://ephemeral/tmp/a.ts",
-			params: { op: "update", diff: "@@\n-old\n+new" },
-			allowFuzzy: false,
-			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-			writethrough,
-			beginDeferredDiagnosticsForPath: noopBeginDeferred,
+		const handler = installRemoteStore({ [SOURCE]: "old\n" });
+
+		const result = await new EditTool(createSession(tmpDir, { sshHosts: [host] }), "replace").execute("alias", {
+			path: SOURCE,
+			old_string: "old",
+			new_string: "new",
 		});
-		for (const spy of [statSpy, readSpy, writeSpy]) {
-			expect(spy.mock.calls[0]?.[0]).toMatchObject({ password, connectionId: "session-revision" });
-		}
-		expect(files.get("/tmp/a.ts")).toBe("new\n");
+
+		expect(result.isError).not.toBe(true);
+		expect(handler.contexts.some(context => context?.sshHosts?.[0]?.password === password)).toBe(true);
+		expect(handler.canonicalKeys).not.toHaveLength(0);
+		expect(handler.canonicalKeys.every(key => key === SOURCE && !key.includes(password))).toBe(true);
 		expect(JSON.stringify(result)).not.toContain(password);
-	});
-	it("patch deletes a remote file through the protocol handler", async () => {
-		const files = new Map([["/tmp/a.ts", "delete me\n"]]);
-		const { deleteSpy } = installRemoteStore(files);
-		const { writethrough, calledWith } = makeWritethroughMock();
-		const result = await executePatchSingle({
-			session: createSession(tmpDir),
-			path: "ssh://icaro/tmp/a.ts",
-			params: { op: "delete" },
-			allowFuzzy: false,
-			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-			writethrough,
-			beginDeferredDiagnosticsForPath: noopBeginDeferred,
-		});
-
-		expect(files.has("/tmp/a.ts")).toBe(false);
-		expect(deleteSpy).toHaveBeenCalledTimes(1);
-		expect(result.details?.op).toBe("delete");
-		expect(result.details?.path).toBe("ssh://icaro/tmp/a.ts");
-		expect(result.details?.oldText).toBe("delete me\n");
-		expect(result.details?.newText).toBeUndefined();
-		expect(calledWith).toEqual([]);
-	});
-
-	it("patch moves a remote file with final content through the SSH move hook", async () => {
-		const files = new Map([["/tmp/a.ts", "old\n"]]);
-		const { writeSpy, deleteSpy, moveSpy } = installRemoteStore(files);
-		const { writethrough } = makeWritethroughMock();
-		const result = await executePatchSingle({
-			session: createSession(tmpDir),
-			path: "ssh://icaro/tmp/a.ts",
-			params: { op: "update", rename: "ssh://icaro/tmp/b.ts", diff: "@@\n-old\n+new" },
-			allowFuzzy: false,
-			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-			writethrough,
-			beginDeferredDiagnosticsForPath: noopBeginDeferred,
-		});
-
-		expect(files.get("/tmp/b.ts")).toBe("new\n");
-		expect(files.has("/tmp/a.ts")).toBe(false);
-		expect(writeSpy.mock.calls[0]?.[1]).toBe("/tmp/b.ts");
-		expect(deleteSpy.mock.calls[0]?.[1]).toBe("/tmp/a.ts");
-		expect(moveSpy).not.toHaveBeenCalled();
-		expect(result.details?.path).toBe("ssh://icaro/tmp/b.ts");
-		expect(result.details?.sourcePath).toBe("ssh://icaro/tmp/a.ts");
-		expect(result.details?.move).toBe("ssh://icaro/tmp/b.ts");
-	});
-
-	it("rejects cross-authority remote moves without writing the destination", async () => {
-		const files = new Map([["/tmp/a.ts", "old\n"]]);
-		const { writeSpy } = installRemoteStore(files);
-		const { writethrough } = makeWritethroughMock();
-		await expect(
-			executePatchSingle({
-				session: createSession(tmpDir),
-				path: "ssh://icaro/tmp/a.ts",
-				params: { op: "update", rename: "ssh://other/tmp/b.ts", diff: "@@\n-old\n+new" },
-				allowFuzzy: false,
-				fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-				writethrough,
-				beginDeferredDiagnosticsForPath: noopBeginDeferred,
-			}),
-		).rejects.toThrow(/same SSH authority/);
-		expect(files.has("/tmp/b.ts")).toBe(false);
-		expect(writeSpy).not.toHaveBeenCalled();
-	});
-
-	it("replace edits a remote file without ACP or LSP writethrough", async () => {
-		const files = new Map([["/tmp/a.ts", "hello old\n"]]);
-		installRemoteStore(files);
-		const { bridge, spy: bridgeSpy } = makeBridge();
-		const { writethrough, calledWith } = makeWritethroughMock();
-		const result = await executeReplace({
-			session: createSession(tmpDir, bridge),
-			path: "ssh://icaro/tmp/a.ts",
-			params: { old_string: "old", new_string: "new", replace_all: false },
-			allowFuzzy: false,
-			fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-			writethrough,
-			beginDeferredDiagnosticsForPath: noopBeginDeferred,
-		});
-
-		expect(files.get("/tmp/a.ts")).toBe("hello new\n");
-		expect(result.details?.path).toBe("ssh://icaro/tmp/a.ts");
-		expect(result.details?.oldText).toBe("hello old\n");
-		expect(result.details?.newText).toBe("hello new\n");
-		expect(result.details?.diff).toContain("-1|hello old");
-		expect(result.details?.diff).toContain("+1|hello new");
-		expect(bridgeSpy).not.toHaveBeenCalled();
-		expect(calledWith).toEqual([]);
-	});
-
-	it("apply_patch applies local and remote files and isolates remote failures", async () => {
-		Bun.env.PI_EDIT_VARIANT = "apply_patch";
-		const localPath = path.join(tmpDir, "local.txt");
-		await Bun.write(localPath, "local old\n");
-		const files = new Map([["/tmp/remote.txt", "remote old\n"]]);
-		installRemoteStore(files);
-		const tool = new EditTool(createSession(tmpDir));
-
-		const mixed = await tool.execute("call-1", {
-			input: [
-				"*** Begin Patch",
-				"*** Update File: local.txt",
-				"@@",
-				"-local old",
-				"+local new",
-				"*** Update File: ssh://icaro/tmp/remote.txt",
-				"@@",
-				"-remote old",
-				"+remote new",
-				"*** End Patch",
-			].join("\n"),
-		} as never);
-		expect(await Bun.file(localPath).text()).toBe("local new\n");
-		expect(files.get("/tmp/remote.txt")).toBe("remote new\n");
-		expect(mixed.details?.perFileResults).toHaveLength(2);
-		expect(mixed.details?.perFileResults?.map(result => result.path)).toEqual([
-			localPath,
-			"ssh://icaro/tmp/remote.txt",
-		]);
-
-		await Bun.write(localPath, "again old\n");
-		const failed = await tool.execute("call-2", {
-			input: [
-				"*** Begin Patch",
-				"*** Update File: local.txt",
-				"@@",
-				"-again old",
-				"+again new",
-				"*** Update File: ssh://icaro/tmp/missing.txt",
-				"@@",
-				"-missing old",
-				"+missing new",
-				"*** End Patch",
-			].join("\n"),
-		} as never);
-		expect(await Bun.file(localPath).text()).toBe("again new\n");
-		expect(failed.details?.perFileResults).toHaveLength(2);
-		expect(failed.details?.perFileResults?.[0]?.isError).toBeUndefined();
-		expect(failed.details?.perFileResults?.[1]?.isError).toBe(true);
-		expect(failed.isError).toBe(true);
-	});
-
-	it("final previews read remote content while streaming previews stay syntax-only", async () => {
-		const files = new Map([["/tmp/a.ts", "old\n"]]);
-		const { readSpy } = installRemoteStore(files);
-		const signal = new AbortController().signal;
-
-		const replacePreview = await EDIT_MODE_STRATEGIES.replace.computeDiffPreview(
-			{ path: "ssh://icaro/tmp/a.ts", old_string: "old", new_string: "new" } as never,
-			{
-				cwd: tmpDir,
-				signal,
-				snapshots: undefined,
-				allowFuzzy: false,
-				fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-				isStreaming: false,
-			} as never,
-		);
-		expect(replacePreview?.[0]?.diff).toContain("+1|new");
-
-		readSpy.mockClear();
-		const streamingPreview = await EDIT_MODE_STRATEGIES.apply_patch.computeDiffPreview(
-			{
-				input: `${["*** Begin Patch", "*** Update File: ssh://icaro/tmp/a.ts", "@@", "-old", "+new"].join("\n")}\n`,
-			} as never,
-			{
-				cwd: tmpDir,
-				signal,
-				snapshots: undefined,
-				allowFuzzy: false,
-				fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-				isStreaming: true,
-			} as never,
-		);
-		expect(streamingPreview?.[0]?.diff).toContain("+new");
-		expect(readSpy).not.toHaveBeenCalled();
-
-		const finalPreview = await EDIT_MODE_STRATEGIES.apply_patch.computeDiffPreview(
-			{
-				input: [
-					"*** Begin Patch",
-					"*** Update File: ssh://icaro/tmp/a.ts",
-					"@@",
-					"-old",
-					"+new",
-					"*** End Patch",
-				].join("\n"),
-			} as never,
-			{
-				cwd: tmpDir,
-				signal,
-				snapshots: undefined,
-				allowFuzzy: false,
-				fuzzyThreshold: DEFAULT_FUZZY_THRESHOLD,
-				isStreaming: false,
-			} as never,
-		);
-		expect(finalPreview?.[0]?.diff).toContain("+1|new");
-		expect(readSpy).toHaveBeenCalled();
 	});
 });

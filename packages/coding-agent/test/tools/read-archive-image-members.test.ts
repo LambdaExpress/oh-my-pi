@@ -1,8 +1,8 @@
 /**
  * Archive member image reads through the `read` tool: PNG/JPEG/WebP members
- * decode into inline image blocks (or an `inspect_image` metadata note when
- * inspection is active), while oversized image members and non-image binaries
- * keep the status-quo opaque notice.
+ * decode into inline image blocks for image-capable models, while text-only
+ * models receive metadata plus an executable question hint. Oversized image
+ * members and non-image binaries keep the status-quo opaque notice.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
@@ -23,7 +23,7 @@ const TINY_PNG = Buffer.from(
 	"base64",
 );
 
-function makeSession(testDir: string, options: { inspectImage?: boolean } = {}): ToolSession {
+function makeSession(testDir: string, options: { imageInput?: "text" | "image" } = {}): ToolSession {
 	const sessionFile = path.join(testDir, "session.jsonl");
 	const artifactsDir = sessionFile.slice(0, -6);
 	return {
@@ -32,11 +32,8 @@ function makeSession(testDir: string, options: { inspectImage?: boolean } = {}):
 		getSessionFile: () => sessionFile,
 		getArtifactsDir: () => artifactsDir,
 		getSessionSpawns: () => null,
-		// `isToolActive` drives the effective inspect_image state: restricted
-		// slates (false) keep inlining images; granted slates (true) reduce
-		// image reads to metadata plus an inspect_image suggestion.
-		isToolActive: () => options.inspectImage === true,
-		settings: Settings.isolated({ "images.autoResize": false, "inspect_image.enabled": false }),
+		getActiveModel: () => ({ input: [options.imageInput ?? "image"] }),
+		settings: Settings.isolated({ "images.autoResize": false }),
 	} as unknown as ToolSession;
 }
 
@@ -64,9 +61,9 @@ describe("read archive image members", () => {
 		await removeWithRetries(testDir);
 	});
 
-	it("decodes a PNG member into an inline image block", async () => {
+	it("decodes a PNG member directly for an image-capable active model", async () => {
 		const bundlePath = await writeBundle(testDir, { "clifford.png": TINY_PNG });
-		const tool = new ReadTool(makeSession(testDir));
+		const tool = new ReadTool(makeSession(testDir, { imageInput: "image" }));
 
 		const result = await tool.execute("call", { path: `${bundlePath}:clifford.png` });
 
@@ -103,9 +100,9 @@ describe("read archive image members", () => {
 		);
 	});
 
-	it("returns an inspect_image metadata note instead of an image block when inspection is active", async () => {
+	it("returns metadata and an executable question hint for a text-only active model", async () => {
 		const bundlePath = await writeBundle(testDir, { "clifford.png": TINY_PNG });
-		const tool = new ReadTool(makeSession(testDir, { inspectImage: true }));
+		const tool = new ReadTool(makeSession(testDir, { imageInput: "text" }));
 
 		const result = await tool.execute("call", { path: `${bundlePath}:clifford.png` });
 		const text = joinText(result.content);
@@ -114,8 +111,7 @@ describe("read archive image members", () => {
 		expect(text).toContain("Image metadata:");
 		expect(text).toContain("- MIME: image/png");
 		expect(text).toContain("- Dimensions: 1x1");
-		expect(text).toContain('inspect_image with path="');
-		expect(text).toContain(`${bundlePath}:clifford.png`);
+		expect(text).toContain(`read \`${bundlePath}:clifford.png?q=<question>\``);
 		expect(text).not.toContain("Cannot read binary archive entry");
 	});
 

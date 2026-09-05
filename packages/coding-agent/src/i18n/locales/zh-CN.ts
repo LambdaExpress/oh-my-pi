@@ -4535,7 +4535,7 @@ export const zhCN: Record<string, string> = {
 	"native image input": "原生图像输入",
 	navigate: "导航",
 	never: "从不",
-	"new": "新建",
+	new: "新建",
 	"new session": "新建会话",
 	no: "否",
 	"no OAuth access resolved": "未解析到 OAuth 访问凭据",

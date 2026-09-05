@@ -545,7 +545,7 @@ describe("AdbTool screenshots", () => {
 		expect(path.extname(screenshotPath!)).toBe(".png");
 		expect(path.dirname(screenshotPath!)).not.toBe(cwd);
 		expect(await fs.readFile(screenshotPath!)).toEqual(Buffer.from(PNG));
-		expect([...PNG.slice(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+		expect(Array.from(PNG.subarray(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 		expect(PNG).toContain(0);
 		expect(PNG.some(byte => byte > 0x7f)).toBe(true);
 		expect(image).toEqual({ type: "image", data: Buffer.from(PNG).toString("base64"), mimeType: "image/png" });

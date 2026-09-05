@@ -4,15 +4,13 @@ import {
 	formatModelString,
 	getModelMatchPreferences,
 	resolveCliModel,
+	type ResolveCliModelResult,
 } from "../config/model-resolver";
 import type { SettingPath, Settings } from "../config/settings";
 import { t } from "../i18n";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
-import type { ComputerTool } from "../tools/computer";
-import { computerExposureMode } from "../tools/computer/exposure";
-import type { InspectImageMode } from "../utils/inspect-image-mode";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSecurityCommand } from "./helpers/security";
 import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
@@ -20,6 +18,27 @@ import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } fro
 export function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.statusLine.invalidate();
 	ctx.ui.requestRender();
+}
+
+/**
+ * Resolve a `/model` / `/switch` selector the way `omp bench` and `--model`
+ * do: exact `provider/id`, fuzzy ids (`opus`), role aliases (`@smol`, `smol`),
+ * and `:level` thinking suffixes. Unqualified selectors prefer the session's
+ * `--models` scope, else the authenticated set, before the full catalog.
+ */
+function resolveSessionModelSelector(
+	selector: string,
+	session: AgentSession,
+	settings: Settings,
+): ResolveCliModelResult {
+	const scoped = session.scopedModels.map(entry => entry.model);
+	return resolveCliModel({
+		cliModel: selector,
+		modelRegistry: session.modelRegistry,
+		availableModels: scoped.length > 0 ? scoped : undefined,
+		settings,
+		preferences: getModelMatchPreferences(settings),
+	});
 }
 
 async function runWithDetachedModeDraft(
@@ -88,91 +107,41 @@ function applyExtendedContextCommand(settings: Settings, args: string): string |
 }
 
 /** Detailed, session-effective `/computer status` diagnostics. */
-async function formatComputerUseStatus(session: AgentSession): Promise<string> {
+function formatComputerUseStatus(session: AgentSession): string {
 	const enabled = session.settings.get("computer.enabled");
-	const active = session.getEnabledToolNames().includes("computer");
-	const model = session.model;
-	const modelName = model ? formatModelString(model) : "none";
-	const exposure = !enabled
-		? t("not exposed (disabled)")
-		: !active
-			? t("not exposed (tool inactive)")
-			: computerExposureMode(model);
+	const active = session.getEvalPreludes().some(definition => definition.name === "computer");
 	const configured = {
 		display: session.settings.get("computer.display"),
 		maxWidth: session.settings.get("computer.maxWidth"),
 		maxHeight: session.settings.get("computer.maxHeight"),
 	};
-	const computerTool = active
-		? (session.getToolByName("computer") as Pick<ComputerTool, "capabilities"> | undefined)
-		: undefined;
-	const capabilities = await computerTool?.capabilities();
-	const capabilityStatus = capabilities
-		? [
-				`backend=${capabilities.backend}${capabilities.displayServer ? `/${capabilities.displayServer}` : ""}`,
-				`capture=${capabilities.capture} (${capabilities.capturePermission})`,
-				`input=${capabilities.input} (${capabilities.inputPermission})`,
-				`ax=${capabilities.ax} (${capabilities.axPermission})`,
-				`backgroundWindowInput=${capabilities.backgroundWindowInput}`,
-				`deliveryModes=${capabilities.deliveryModes.join(",") || "none"}`,
-			].join(", ")
-		: t("session not started");
 	return [
-		t("Computer use: {status}", { status: enabled ? "enabled" : "disabled" }),
-		t("tool: {status}", { status: active ? "active" : "inactive" }),
-		t("exposure: {exposure}", { exposure }),
-		t("model: {model}", { model: modelName }),
-		t("configured: display={display}, maxWidth={maxWidth}, maxHeight={maxHeight}", {
-			display: configured.display,
-			maxWidth: configured.maxWidth,
-			maxHeight: configured.maxHeight,
-		}),
-		t("capabilities: {status}", { status: capabilityStatus }),
+		`Computer use: ${enabled ? "enabled" : "disabled"}`,
+		`prelude: ${active ? "active" : "inactive"}`,
+		`configured: display=${configured.display}, maxWidth=${configured.maxWidth}, maxHeight=${configured.maxHeight}`,
 	].join(" · ");
 }
 
 /**
- * Apply a session-scoped computer-use toggle: flip the active tool slate first
- * (so a failed enable never leaves a stale settings override), then record the
- * runtime override — never `settings.set`, which would persist to settings.json.
- * Returns the operator feedback line.
+ * Apply a session-scoped computer-use toggle and rebuild the current prompt.
+ * The override is never persisted to settings.json.
  */
 async function applyComputerUseToggle(session: AgentSession, enable: boolean): Promise<string> {
-	const applied = await session.setComputerToolEnabled(enable);
-	if (enable && !applied) {
-		return t("Computer use is unavailable in this session.");
-	}
+	const previous = session.settings.get("computer.enabled");
 	session.settings.override("computer.enabled", enable);
-	return enable
-		? t("Computer use enabled for this session. {status}", { status: await formatComputerUseStatus(session) })
-		: t("Computer use disabled for this session.");
-}
-
-/** Session-effective `/vision status` line. */
-function formatVisionStatus(session: AgentSession): string {
-	const { mode, active, model } = session.inspectImageState();
-	const override = session.getInspectImageModeOverride();
-	const modelObj = session.model;
-	const capability = modelObj
-		? modelObj.input.includes("image")
-			? t("native image input")
-			: t("no native image input")
-		: t("no active model");
-	return [
-		t("inspect_image: {status}", { status: active ? "active" : "inactive" }),
-		t("mode: {mode}{override}", { mode, override: override ? t(" (session override)") : "" }),
-		...(override ? [t("configured: {mode}", { mode: session.settings.get("inspect_image.mode") })] : []),
-		t("model: {model} ({capability})", { model: model ?? "none", capability }),
-	].join(" · ");
-}
-
-/** Applies a `/vision` mode for this session and returns the operator feedback line. */
-async function applyVisionMode(session: AgentSession, mode: InspectImageMode): Promise<string> {
-	const applied = await session.setInspectImageMode(mode);
-	if (!applied) {
-		return t("inspect_image is unavailable in this session.");
+	if (enable && !session.getEvalPreludes().some(definition => definition.name === "computer")) {
+		session.settings.override("computer.enabled", previous);
+		return "Computer use is unavailable in this session.";
 	}
-	return t("Vision mode: {mode}. {status}", { mode, status: formatVisionStatus(session) });
+	try {
+		await session.refreshBaseSystemPrompt();
+	} catch (error) {
+		session.settings.override("computer.enabled", previous);
+		throw error;
+	}
+	return enable
+		? `Computer use enabled for this session. ${formatComputerUseStatus(session)}`
+		: "Computer use disabled for this session.";
 }
 
 const AUTOCOMPLETE_DETAIL_LIMIT = 48;
@@ -374,23 +343,19 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 		handle: async (command, runtime) => {
 			if (command.args) {
-				const modelId = command.args.trim();
-				const availableModels = runtime.session.getAvailableModels?.() ?? [];
-				const match = availableModels.find(
-					model => model.id === modelId || `${model.provider}/${model.id}` === modelId,
-				);
+				const selector = command.args.trim();
+				const resolved = resolveSessionModelSelector(selector, runtime.session, runtime.settings);
+				const match = resolved.model;
 				if (!match) {
 					return usage(
-						t(
-							"Unknown model: {model}. Use ACP `session/setModel` for picker-driven selection or list available models with /model.",
-							{ model: modelId },
-						),
+						`Unknown model: ${selector}. Use ACP \`session/setModel\` for picker-driven selection or list available models with /model.`,
 						runtime,
 					);
 				}
 				try {
 					await runtime.session.setModel(match);
-					await runtime.output(t("Model set to {model}.", { model: `${match.provider}/${match.id}` }));
+					if (resolved.thinkingLevel !== undefined) runtime.session.setThinkingLevel(resolved.thinkingLevel);
+					await runtime.output(`Model set to ${match.provider}/${match.id}.`);
 					await runtime.notifyTitleChanged?.();
 					await runtime.notifyConfigChanged?.();
 					return commandConsumed();
@@ -415,14 +380,50 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "switch",
 		icon: "swap",
-		description: "Switch model for this session (same as alt+p)",
+		description: "Switch model for this session (same as alt+p); accepts fuzzy ids, provider/id, @role, :level",
+		acpDescription: "Switch model for this session only",
+		acpInputHint: "[model]",
+		inlineHint: "[model]",
+		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
 			const model = runtime.ctx.session.model;
 			return model ? t("Model: {model}", { model: `${model.provider}/${model.id}` }) : t("Model: none selected");
 		},
-		handleTui: (_command, runtime) => {
-			runtime.ctx.showModelSelector({ temporaryOnly: true });
+		handle: async (command, runtime) => {
+			const selector = command.args.trim();
+			if (!selector) {
+				const model = runtime.session.model;
+				await runtime.output(
+					model ? `Current model: ${model.provider}/${model.id}` : "No model is currently selected.",
+				);
+				return commandConsumed();
+			}
+			const resolved = resolveSessionModelSelector(selector, runtime.session, runtime.settings);
+			if (!resolved.model) return usage(`Unknown model: ${selector}`, runtime);
+			try {
+				await runtime.session.setModelTemporary(resolved.model, resolved.thinkingLevel);
+				await runtime.output(`Session-only model: ${formatModelString(resolved.model)}.`);
+				await runtime.notifyTitleChanged?.();
+				await runtime.notifyConfigChanged?.();
+				return commandConsumed();
+			} catch (err) {
+				return usage(`Failed to switch model: ${errorMessage(err)}`, runtime);
+			}
+		},
+		handleTui: async (command, runtime) => {
 			runtime.ctx.editor.setText("");
+			const selector = command.args.trim();
+			if (!selector) {
+				runtime.ctx.showModelSelector({ temporaryOnly: true });
+				return;
+			}
+			const resolved = resolveSessionModelSelector(selector, runtime.ctx.session, runtime.ctx.settings);
+			if (!resolved.model) {
+				runtime.ctx.showError(`Unknown model: ${selector}`);
+				return;
+			}
+			if (resolved.warning) runtime.ctx.showStatus(resolved.warning);
+			await runtime.ctx.switchSessionModel(resolved.model, resolved.thinkingLevel);
 		},
 	},
 	{
@@ -499,6 +500,62 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "skillful",
+		icon: "compass",
+		description: "Toggle listing available skills in the system prompt (session only)",
+		acpDescription: "Toggle skill listing",
+		acpInputHint: "[on|off|status]",
+		subcommands: [
+			{ name: "on", description: "List skills in the prompt for this session" },
+			{ name: "off", description: "Omit the skills listing for this session" },
+			{ name: "status", description: "Show skill listing status" },
+		],
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime =>
+			`Skill listing: ${runtime.ctx.session.settings.get("skillful") ? "on" : "off"}`,
+		handle: async (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (arg === "status") {
+				await runtime.output(
+					`Skill listing: ${runtime.session.settings.get("skillful") ? "on" : "off"} (session override; default from the skillful setting).`,
+				);
+				return commandConsumed();
+			}
+			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
+				const enabled =
+					arg === "on"
+						? await runtime.session.setSkillful(true)
+						: arg === "off"
+							? await runtime.session.setSkillful(false)
+							: await runtime.session.toggleSkillful();
+				await runtime.output(`Skill listing ${enabled ? "enabled" : "disabled"} for this session.`);
+				return commandConsumed();
+			}
+			return usage("Usage: /skillful [on|off|status]", runtime);
+		},
+		handleTui: async (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (arg === "status") {
+				runtime.ctx.showStatus(`Skill listing: ${runtime.ctx.session.settings.get("skillful") ? "on" : "off"}.`);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
+				const enabled =
+					arg === "on"
+						? await runtime.ctx.session.setSkillful(true)
+						: arg === "off"
+							? await runtime.ctx.session.setSkillful(false)
+							: await runtime.ctx.session.toggleSkillful();
+				runtime.ctx.showStatus(`Skill listing ${enabled ? "enabled" : "disabled"} for this session.`);
+				runtime.ctx.editor.setText("");
+				return;
+			}
+			runtime.ctx.showStatus("Usage: /skillful [on|off|status]");
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "extended-context",
 		icon: "expand",
 		description: "Toggle premium long-context windows",
@@ -528,7 +585,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "computer",
 		icon: "computer",
-		description: "Toggle the native computer-use tool for this session",
+		description: "Toggle the native computer-use eval prelude for this session",
 		acpDescription: "Toggle computer use",
 		acpInputHint: "[on|off|status]",
 		subcommands: [
@@ -542,7 +599,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
-				await runtime.output(await formatComputerUseStatus(runtime.session));
+				await runtime.output(formatComputerUseStatus(runtime.session));
 				return commandConsumed();
 			}
 			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
@@ -555,7 +612,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		handleTui: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
-				runtime.ctx.showStatus(await formatComputerUseStatus(runtime.ctx.session));
+				runtime.ctx.showStatus(formatComputerUseStatus(runtime.ctx.session));
 				runtime.ctx.editor.setText("");
 				return;
 			}
@@ -567,49 +624,6 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				return;
 			}
 			runtime.ctx.showStatus(t("Usage: /computer [on|off|status]"));
-			runtime.ctx.editor.setText("");
-		},
-	},
-	{
-		name: "vision",
-		icon: "eye",
-		description: "Control the inspect_image vision-delegation tool for this session",
-		acpDescription: "Toggle vision delegation",
-		acpInputHint: "[on|off|auto|status]",
-		subcommands: [
-			{ name: "on", description: t("Always expose inspect_image this session") },
-			{ name: "off", description: t("Never expose inspect_image this session") },
-			{ name: "auto", description: t("Follow inspect_image.mode (auto hides it for vision-capable models)") },
-			{ name: "status", description: t("Show inspect_image status") },
-		],
-		allowArgs: true,
-		getTuiAutocompleteDescription: runtime =>
-			t("Vision: {mode}", { mode: runtime.ctx.session.inspectImageState().mode }),
-		handle: async (command, runtime) => {
-			const arg = command.args.trim().toLowerCase();
-			if (arg === "status") {
-				await runtime.output(formatVisionStatus(runtime.session));
-				return commandConsumed();
-			}
-			if (arg === "on" || arg === "off" || arg === "auto") {
-				await runtime.output(await applyVisionMode(runtime.session, arg));
-				return commandConsumed();
-			}
-			return usage(t("Usage: /vision [on|off|auto|status]"), runtime);
-		},
-		handleTui: async (command, runtime) => {
-			const arg = command.args.trim().toLowerCase();
-			if (arg === "status") {
-				runtime.ctx.showStatus(formatVisionStatus(runtime.ctx.session));
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			if (arg === "on" || arg === "off" || arg === "auto") {
-				runtime.ctx.showStatus(await applyVisionMode(runtime.ctx.session, arg));
-				runtime.ctx.editor.setText("");
-				return;
-			}
-			runtime.ctx.showStatus(t("Usage: /vision [on|off|auto|status]"));
 			runtime.ctx.editor.setText("");
 		},
 	},

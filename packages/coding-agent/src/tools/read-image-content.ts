@@ -1,39 +1,64 @@
-import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
+import type { completeSimple, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import type { ImageMetadata } from "@oh-my-pi/pi-utils";
-import { ImageInputTooLargeError, type LoadedImageInput, MAX_IMAGE_INPUT_BYTES } from "../utils/image-loading";
+import type { ToolSession } from "../sdk";
+import {
+	ImageInputTooLargeError,
+	type LoadedImageInput,
+	MAX_IMAGE_INPUT_BYTES,
+	webpExclusionForModel,
+} from "../utils/image-loading";
+import { askImageQuestion, resolveImageQuestionModel } from "../utils/image-question";
 import { formatBytes } from "./render-utils";
 import { ToolError } from "./tool-errors";
 
 export interface ReadImageContentOptions {
-	/** Effective `inspect_image` state: a metadata note replaces the image block when active. */
-	inspectImageActive: boolean;
+	/** Session that supplies the active model and delegated image-question model. */
+	session: ToolSession;
 	/** MIME type detected for the image. */
 	mimeType: string;
-	/** Detected image metadata (dimensions etc.), used for the inspect_image note. */
+	/** Detected image metadata (dimensions etc.), used for the text-model note. */
 	imageMetadata: ImageMetadata | null;
-	/** Raw byte size of the image; feeds the size cap and the inspect_image note. */
+	/** Raw byte size of the image; feeds the size cap and metadata note. */
 	fileSize: number;
-	/** Path embedded in the inspect_image suggestion (cwd-relative for files, member read path for archive entries). */
-	inspectHintPath: string;
-	/** Path attached as the result's sourcePath when inspection is active (no image input is loaded then). */
+	/** Base read target embedded in the `?q=` suggestion. */
+	questionPath: string;
+	/** Explicit question delegated to a vision model, when present. */
+	question?: string;
+	/** Path attached as the result's sourcePath. */
 	sourcePath: string;
 	/** Loads the image input through the caller's channel (file-backed or bytes-backed). */
-	load: () => Promise<LoadedImageInput | null>;
+	load: (excludeWebP: boolean | undefined) => Promise<LoadedImageInput | null>;
+	/** Completion implementation override used by tests. */
+	completeImageRequest?: typeof completeSimple;
+	/** Cancels delegated image questions with the parent read call. */
+	signal?: AbortSignal;
 }
 
 /**
- * Build content blocks for an image read: an `inspect_image` metadata note when
- * inspection is active, otherwise the decoded image block. Shared by the
- * plain-file, `local://`, PDF-member, and archive-member read paths so they all
- * honor the effective inspect_image state, the size cap, and auto-resize
- * identically. Too-large / unsupported images surface as {@link ToolError}.
+ * Build content blocks for an image read. Text-only active models receive
+ * metadata and an executable `?q=` follow-up; image-capable models receive the
+ * decoded image directly; explicit questions are delegated to a configured
+ * vision model and returned as text. Too-large and unsupported images surface
+ * as {@link ToolError}.
  */
 export async function buildReadImageContent(options: ReadImageContentOptions): Promise<{
 	content: Array<TextContent | ImageContent>;
 	sourcePath: string;
 }> {
-	const { inspectImageActive, mimeType, imageMetadata, fileSize, inspectHintPath, sourcePath, load } = options;
-	if (inspectImageActive) {
+	const {
+		session,
+		mimeType,
+		imageMetadata,
+		fileSize,
+		questionPath,
+		question,
+		sourcePath,
+		load,
+		completeImageRequest,
+		signal,
+	} = options;
+	const activeModelSupportsImages = session.getActiveModel?.()?.input.includes("image") ?? true;
+	if (!question && !activeModelSupportsImages) {
 		const outputMime = imageMetadata?.mimeType ?? mimeType;
 		const metadataLines = [
 			"Image metadata:",
@@ -49,7 +74,7 @@ export async function buildReadImageContent(options: ReadImageContentOptions): P
 					? "- Alpha: no"
 					: "- Alpha: unknown",
 			"",
-			`If you want to analyze the image, call inspect_image with path="${inspectHintPath}" and a question describing what to inspect and the desired output format.`,
+			`To analyze the image, read \`${questionPath}?q=<question>\` — the question is answered by a vision model and returned as text.`,
 		];
 		return { content: [{ type: "text", text: metadataLines.join("\n") }], sourcePath };
 	}
@@ -60,9 +85,14 @@ export async function buildReadImageContent(options: ReadImageContentOptions): P
 		throw new ToolError(`Image file too large: ${sizeStr} exceeds ${maxStr} limit.`);
 	}
 	try {
-		const imageInput = await load();
+		const resolved = question ? resolveImageQuestionModel(session) : undefined;
+		const imageInput = await load(webpExclusionForModel(resolved?.model ?? session.getActiveModel?.()));
 		if (!imageInput) {
 			throw new ToolError(`Read image file [${mimeType}] failed: unsupported image format.`);
+		}
+		if (question && resolved) {
+			const answer = await askImageQuestion(session, resolved, imageInput, question, signal, completeImageRequest);
+			return { content: [{ type: "text", text: answer.text }], sourcePath: imageInput.resolvedPath };
 		}
 		return {
 			content: [

@@ -15,7 +15,6 @@
  * Host resolution flows through the shared registry so command and ssh:// tools
  * observe the same session and persistent aliases.
  */
-import type { SSHHost } from "../capability/ssh";
 import type { SSHConnectionTarget } from "../ssh/connection-manager";
 import {
 	deleteRemoteFile,
@@ -27,7 +26,7 @@ import {
 	statRemotePath,
 	writeRemoteFile,
 } from "../ssh/file-transfer";
-import { loadEffectiveSshHosts } from "../ssh/host-registry";
+import { loadEffectiveSshHosts, type SSHHost } from "../ssh/host-registry";
 import { isMarkdownPath } from "../utils/lang-from-path";
 import type {
 	InternalResource,
@@ -109,9 +108,7 @@ export function canonicalSshResourceKey(url: InternalUrl): string {
 }
 
 /** Load caller-scoped effective SSH hosts, with a persistent-only fallback for direct consumers. */
-async function loadConfiguredHosts(
-	context?: Pick<ResolveContext, "cwd" | "sshHosts"> | Pick<WriteContext, "cwd" | "sshHosts">,
-): Promise<readonly SSHHost[]> {
+async function loadConfiguredHosts(context?: Pick<ResolveContext, "cwd" | "sshHosts">): Promise<readonly SSHHost[]> {
 	return context?.sshHosts ?? loadEffectiveSshHosts(context?.cwd);
 }
 
@@ -145,7 +142,7 @@ function formatHostIndex(hosts: readonly SSHHost[]): string {
  */
 async function resolveTarget(
 	url: InternalUrl,
-	context?: Pick<ResolveContext, "cwd" | "sshHosts"> | Pick<WriteContext, "cwd" | "sshHosts">,
+	context?: Pick<ResolveContext, "cwd" | "sshHosts">,
 ): Promise<SSHConnectionTarget> {
 	// `parseInternalUrl` falls back to a lenient regex parse when WHATWG `new URL`
 	// rejects the input. For ssh:// that only happens on a malformed authority — an

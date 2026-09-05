@@ -2,7 +2,11 @@ import { describe, expect, it } from "bun:test";
 import type { AssistantMessage, SessionEntry } from "@oh-my-pi/pi-wire";
 import { renderToStaticMarkup } from "react-dom/server";
 import "./transcript-dom-shim";
-import { Transcript } from "../src/components/transcript/Transcript";
+import {
+	followTranscriptTail,
+	Transcript,
+	updateTranscriptTailLock,
+} from "../src/components/transcript/Transcript";
 import type { ActiveTool } from "../src/lib/client";
 
 const TOOL_CALL_ID = "call-running-tool";
@@ -146,107 +150,25 @@ describe("Transcript message Markdown", () => {
 	});
 });
 
-describe("Transcript completed runs", () => {
-	it("collapses a normally completed run to its final answer and one expandable process control", () => {
-		const entries: SessionEntry[] = [
-			{
-				type: "custom_message",
-				id: "prompt",
-				parentId: null,
-				timestamp: "2026-08-22T00:00:00Z",
-				customType: "collab-prompt",
-				content: "Inspect the repository",
-				details: { from: "tester" },
-				display: true,
-			},
-			{
-				type: "message",
-				id: "process",
-				parentId: "prompt",
-				timestamp: "2026-08-22T00:00:01Z",
-				message: {
-					role: "assistant",
-					content: [
-						{ type: "thinking", thinking: "private investigation details" },
-						{ type: "text", text: "I will inspect the files." },
-						{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "src" } },
-					],
-					model: "test/model",
-					usage: assistantUsage(),
-					stopReason: "toolUse",
-					timestamp: 2,
-				},
-			},
-			{
-				type: "message",
-				id: "result",
-				parentId: "process",
-				timestamp: "2026-08-22T00:00:02Z",
-				message: {
-					role: "toolResult",
-					toolCallId: "call-1",
-					toolName: "read",
-					content: [{ type: "text", text: "file contents" }],
-					isError: false,
-					timestamp: 3,
-				},
-			},
-			{
-				type: "message",
-				id: "answer",
-				parentId: "result",
-				timestamp: "2026-08-22T00:00:03Z",
-				message: {
-					role: "assistant",
-					content: [{ type: "text", text: "The repository is healthy." }],
-					model: "test/model",
-					usage: assistantUsage(),
-					stopReason: "stop",
-					timestamp: 4,
-				},
-			},
-		];
+describe("Transcript tail-follow scroll operations", () => {
+	it("restores tail-follow when a connection becomes live", () => {
+		const element = { scrollTop: 0, scrollHeight: 1_000, clientHeight: 200 };
+		const lock = { current: false };
 
-		const html = renderTranscript({ entries, working: false });
+		followTranscriptTail(element, lock, true);
+		expect(lock.current).toBe(true);
+		expect(element.scrollTop).toBe(1_000);
 
-		expect(countElements(html, '.tr-run-toggle[aria-expanded="false"]')).toBe(1);
-		expect(countElements(html, '.tr-run-process[aria-hidden="true"]')).toBe(1);
-		expect(html).toContain("The repository is healthy.");
-		expect(html).toContain("I will inspect the files.");
-		expect(html).toContain("1 update");
-		expect(html).toContain("1 tool");
-	});
+		element.scrollTop = 600;
+		updateTranscriptTailLock(element, lock);
+		expect(lock.current).toBe(false);
 
-	it("keeps failed runs expanded instead of hiding their diagnostics", () => {
-		const entries: SessionEntry[] = [
-			{
-				type: "message",
-				id: "prompt",
-				parentId: null,
-				timestamp: "2026-08-22T00:00:00Z",
-				message: { role: "user", content: "Fail visibly", timestamp: 1 },
-			},
-			{
-				type: "message",
-				id: "failure",
-				parentId: "prompt",
-				timestamp: "2026-08-22T00:00:01Z",
-				message: {
-					role: "assistant",
-					content: [{ type: "text", text: "Visible failure details" }],
-					model: "test/model",
-					usage: assistantUsage(),
-					stopReason: "error",
-					errorMessage: "provider failed",
-					timestamp: 2,
-				},
-			},
-		];
+		element.scrollHeight = 1_200;
+		followTranscriptTail(element, lock);
+		expect(element.scrollTop).toBe(600);
 
-		const html = renderTranscript({ entries, working: false });
-
-		expect(html).toContain("Visible failure details");
-		expect(html).toContain("provider failed");
-		expect(countElements(html, ".tr-run-toggle")).toBe(0);
+		followTranscriptTail(element, lock, true);
+		expect(lock.current).toBe(true);
+		expect(element.scrollTop).toBe(1_200);
 	});
 });

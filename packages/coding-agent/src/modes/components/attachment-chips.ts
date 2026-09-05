@@ -11,6 +11,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
+import { fileHyperlink } from "../../tui/hyperlink";
 import { convertImageToPng } from "../../utils/image-loading";
 import { attachmentSgr } from "../composer-attachments";
 import { cachedImageDimensions, setCachedImageDimensions } from "../image-references";
@@ -37,7 +38,7 @@ interface ImageContentWithPng extends ImageContent {
 
 /**
  * The composer attachment band: one rounded card per staged attachment, rendered directly above
- * the prompt box. Image cards show a live thumbnail (Kitty Unicode placeholders — the only
+ * the prompt box. Image and video cards show a live thumbnail (Kitty Unicode placeholders — the only
  * protocol whose output is plain text cells and therefore composable inside a border row) with
  * the pixel dimensions as the bottom caption; text-paste cards show the leading snippet with a
  * `+N lines` / `N chars` caption. The top caption is the same `<icon> #N` token that sits in
@@ -68,14 +69,16 @@ export class AttachmentChipsBand implements Component {
 
 	#card(chip: ComposerChipDescriptor): string[] {
 		const sgr = attachmentSgr(chip.kind, chip.n);
-		const icon = theme.symbol(chip.kind === "image" ? "chip.image" : "chip.paste");
+		const icon = theme.symbol(
+			chip.kind === "paste" ? "chip.paste" : chip.kind === "video" ? "chip.video" : "chip.image",
+		);
 		let bottomCaption: string;
 		let interior: string[];
 		let directPlacement = "";
-		if (chip.kind === "image") {
+		if (chip.kind !== "paste") {
 			const dims = this.#imageDims(chip.image);
 			bottomCaption = dims ? `${dims.width}x${dims.height}` : "";
-			const imageInterior = this.#imageInterior(chip.image, dims);
+			const imageInterior = this.#imageInterior(chip.image, dims, chip.kind);
 			interior = imageInterior.rows;
 			directPlacement = imageInterior.directPlacement ?? "";
 		} else {
@@ -83,8 +86,10 @@ export class AttachmentChipsBand implements Component {
 			interior = this.#textInterior(chip.text);
 		}
 		const vertical = `${sgr}${theme.symbol("boxRound.vertical")}${RESET_FG}`;
+		const title =
+			chip.kind === "paste" || !chip.link ? `${icon} #${chip.n}` : fileHyperlink(chip.link, `${icon} #${chip.n}`);
 		return [
-			this.#borderRow(sgr, `${icon} #${chip.n}`, "top"),
+			this.#borderRow(sgr, title, "top"),
 			...interior.map(row => vertical + row + vertical),
 			this.#borderRow(sgr, bottomCaption, "bottom") + directPlacement,
 		];
@@ -115,12 +120,13 @@ export class AttachmentChipsBand implements Component {
 		return dims;
 	}
 
-	/** 12x4 thumbnail as Kitty Unicode-placeholder cell rows or a SIXEL direct placement.
-	 *  The SIXEL sequence rides the completed bottom border row, then moves back into the card
-	 *  under a saved cursor; this preserves the composable six-row text layout. */
+	/** 12x4 thumbnail as Kitty Unicode-placeholder cell rows, centered; any other protocol (or a
+	 *  budget-suppressed image) falls back to a centered icon — direct placements, SIXEL, and
+	 *  iTerm2 output cursor-addressed sequences that cannot be composed into a border row. */
 	#imageInterior(
 		image: ImageContent,
 		dims: { width: number; height: number } | null,
+		kind: "image" | "video",
 	): { rows: string[]; directPlacement?: string } {
 		if (dims && TERMINAL.imageProtocol === ImageProtocol.Kitty && getKittyGraphics().unicodePlaceholders) {
 			const display = this.#kittyDisplayImage(image);
@@ -165,7 +171,7 @@ export class AttachmentChipsBand implements Component {
 				}
 			}
 		}
-		const icon = theme.symbol("chip.image");
+		const icon = theme.symbol(kind === "video" ? "chip.video" : "chip.image");
 		const pad = INNER_COLS - visibleWidth(icon);
 		const iconRow = " ".repeat(Math.floor(pad / 2)) + theme.fg("muted", icon) + " ".repeat(Math.ceil(pad / 2));
 		return { rows: [" ".repeat(INNER_COLS), iconRow, " ".repeat(INNER_COLS), " ".repeat(INNER_COLS)] };

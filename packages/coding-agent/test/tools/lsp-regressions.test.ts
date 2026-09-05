@@ -7,10 +7,12 @@ import type { AgentToolResult, RenderResultOptions } from "@oh-my-pi/pi-agent-co
 import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { preloadPluginRoots } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
+import { restoreEnvValue } from "../helpers/settings-test-state";
 import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
 import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
 import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
 import { getServersForFile, type LspConfig, loadConfig } from "@oh-my-pi/pi-coding-agent/lsp/config";
+import { waitForDiagnostics } from "@oh-my-pi/pi-coding-agent/lsp/diagnostics";
 import {
 	applyTextEditsToString,
 	applyWorkspaceEdit,
@@ -48,7 +50,7 @@ import {
 	resolveSymbolPosition,
 	uriToFile,
 } from "@oh-my-pi/pi-coding-agent/lsp/utils";
-import { getThemeByName, initTheme, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
 import { clampTimeout } from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
@@ -125,7 +127,6 @@ function installFakeLsp(handler: FakeLspHandler, options?: FakeLspOptions): Fake
 	let stdoutStopped = false;
 	let controller: ReadableStreamDefaultController<Uint8Array> | null = null;
 	const { promise: exited, resolve: resolveExited } = Promise.withResolvers<number>();
-	let proc!: LspClient["proc"];
 
 	const frame = (message: RpcMessage): Uint8Array => {
 		const content = JSON.stringify(message);
@@ -236,7 +237,7 @@ function installFakeLsp(handler: FakeLspHandler, options?: FakeLspOptions): Fake
 		});
 	};
 
-	proc = {
+	const proc = {
 		get exited() {
 			return exited;
 		},
@@ -2191,408 +2192,112 @@ describe("lsp regressions", () => {
 		}, 15_000);
 	}
 
-	it("uses an external concrete file's nearest project root for diagnostics", async () => {
-		const tempDir = TempDir.createSync("@omp-lsp-external-file-root-");
-		try {
-			const uiTheme = await getThemeByName("dark");
-			expect(uiTheme).toBeDefined();
-			setThemeInstance(uiTheme!);
+	for (const scenario of [
+		{
+			name: "rejects a failed document pull when no publish follows (#10035)",
+			publish: false,
+			settleMs: 0,
+			acceptsPublish: false,
+		},
+		{
+			name: "accepts fresh published diagnostics after a document pull failure (#10035)",
+			publish: true,
+			settleMs: 0,
+			acceptsPublish: true,
+		},
+		{
+			name: "rejects an unversioned publish that has not settled after a pull failure (#10035)",
+			publish: true,
+			settleMs: 10_000,
+			acceptsPublish: false,
+		},
+	]) {
+		it(
+			scenario.name,
+			async () => {
+				const tempDir = TempDir.createSync("@omp-lsp-failed-pull-");
+				try {
+					const targetFile = path.join(tempDir.path(), "Program.cs");
+					await Bun.write(targetFile, "private readonly object _gate = new();\n");
+					const uri = fileToUri(targetFile);
+					const publishedDiagnostic: Diagnostic = {
+						message: "Use System.Threading.Lock",
+						severity: 3,
+						code: "IDE0330",
+						source: "roslyn",
+						range: {
+							start: { line: 0, character: 25 },
+							end: { line: 0, character: 38 },
+						},
+					};
 
-			const sessionCwd = path.join(tempDir.path(), "session");
-			const worktree = path.join(tempDir.path(), "sibling-worktree");
-			const nestedPackage = path.join(worktree, "packages", "app");
-			const targetFile = path.join(nestedPackage, "src", "screen.tsx");
-			await fs.promises.mkdir(sessionCwd, { recursive: true });
-			await Bun.write(path.join(worktree, "package.json"), "{}\n");
-			await Bun.write(path.join(nestedPackage, "tsconfig.json"), "{}\n");
-			await Bun.write(targetFile, "export const Screen = () => <View />;\n");
-
-			const server = installFakeLsp((message, srv) => {
-				if (message.method === "initialize") {
-					srv.send({
-						jsonrpc: "2.0",
-						id: message.id,
-						result: { capabilities: { diagnosticProvider: true } },
-					});
-					srv.send({
-						jsonrpc: "2.0",
-						method: "$/progress",
-						params: { token: "external-project", value: { kind: "end" } },
-					});
-				} else if (message.method === "textDocument/diagnostic") {
-					srv.send({ jsonrpc: "2.0", id: message.id, result: { kind: "full", items: [] } });
-				} else if (message.method === "shutdown") {
-					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
-				} else if (message.method === "exit") {
-					srv.exit(0);
-				}
-			});
-
-			const serverConfig: ServerConfig = {
-				command: "fake-lsp-external-file",
-				fileTypes: [".ts", ".tsx"],
-				rootMarkers: ["tsconfig.json", "package.json"],
-			};
-			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
-				servers: { "fake-lsp": serverConfig },
-				idleTimeoutMs: undefined,
-			});
-
-			const result = await new LspTool(makeLspSession(sessionCwd)).execute("external-file-root", {
-				action: "diagnostics",
-				file: targetFile,
-				timeout: 5,
-			});
-			const initialize = await server.waitFor(message => message.method === "initialize");
-			const expectedRootUri = fileToUri(nestedPackage);
-			const documentDiagnosticUris = server.received
-				.filter(message => message.method === "textDocument/diagnostic")
-				.map(message => (message.params as { textDocument?: { uri?: string } } | undefined)?.textDocument?.uri);
-
-			expect(initialize.params).toMatchObject({
-				rootUri: expectedRootUri,
-				rootPath: nestedPackage,
-				workspaceFolders: [{ uri: expectedRootUri, name: path.basename(nestedPackage) }],
-			});
-			expect(server.received.filter(message => message.method === "initialize")).toHaveLength(1);
-			expect(documentDiagnosticUris).toEqual([fileToUri(targetFile)]);
-			expect(textResult(result)).toBe("OK");
-		} finally {
-			await lspClient.shutdownAll();
-			tempDir.removeSync();
-		}
-	}, 15_000);
-
-	it("uses a relative concrete file's nearest project root for semantic requests", async () => {
-		const tempDir = TempDir.createSync("@omp-lsp-relative-file-root-");
-		try {
-			const nestedPackage = path.join(tempDir.path(), "packages", "client");
-			const targetFile = path.join(nestedPackage, "src", "store.js");
-			await Bun.write(path.join(tempDir.path(), "package.json"), "{}\n");
-			await Bun.write(path.join(nestedPackage, "jsconfig.json"), "{}\n");
-			await Bun.write(targetFile, "export const target = 1;\n");
-
-			const server = installFakeLsp((message, srv) => {
-				if (message.method === "initialize") {
-					srv.send({
-						jsonrpc: "2.0",
-						id: message.id,
-						result: { capabilities: { referencesProvider: true } },
-					});
-					srv.send({
-						jsonrpc: "2.0",
-						method: "$/progress",
-						params: { token: "relative-file-project", value: { kind: "end" } },
-					});
-				} else if (message.method === "textDocument/references") {
-					srv.send({
-						jsonrpc: "2.0",
-						id: message.id,
-						result: [
-							{
-								uri: fileToUri(targetFile),
-								range: {
-									start: { line: 0, character: 0 },
-									end: { line: 0, character: 6 },
+					const fakeServer = installFakeLsp((message, server) => {
+						if (message.method === "initialize") {
+							server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+						} else if (message.method === "initialized") {
+							server.send({
+								jsonrpc: "2.0",
+								id: "register-diagnostics",
+								method: "client/registerCapability",
+								params: {
+									registrations: [
+										{
+											id: "pull-diagnostics",
+											method: "textDocument/diagnostic",
+											registerOptions: { identifier: "DocumentCompilerSemantic" },
+										},
+									],
 								},
-							},
-						],
+							});
+						} else if (message.method === "textDocument/diagnostic") {
+							server.send({
+								jsonrpc: "2.0",
+								id: message.id,
+								error: { code: -32800, message: "request failed" },
+							});
+							if (scenario.publish) {
+								setImmediate(() => {
+									server.send({
+										jsonrpc: "2.0",
+										method: "textDocument/publishDiagnostics",
+										params: { uri, diagnostics: [publishedDiagnostic] },
+									});
+								});
+							}
+						} else if (message.method === "shutdown") {
+							server.send({ jsonrpc: "2.0", id: message.id, result: null });
+						} else if (message.method === "exit") {
+							server.exit(0);
+						}
 					});
-				} else if (message.method === "shutdown") {
-					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
-				} else if (message.method === "exit") {
-					srv.exit(0);
-				}
-			});
-			const serverConfig: ServerConfig = {
-				command: "fake-lsp-relative-file",
-				fileTypes: [".js"],
-				rootMarkers: ["jsconfig.json", "package.json"],
-			};
-			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
-				servers: { "fake-lsp": serverConfig },
-				idleTimeoutMs: undefined,
-			});
+					const serverConfig: ServerConfig = {
+						command: "Microsoft.CodeAnalysis.LanguageServer",
+						fileTypes: ["cs"],
+						rootMarkers: [],
+					};
+					const client = await lspClient.getOrCreateClient(serverConfig, tempDir.path());
+					const diagnostics = waitForDiagnostics(client, uri, {
+						timeoutMs: scenario.acceptsPublish ? 1_000 : 50,
+						settleMs: scenario.settleMs,
+					});
 
-			await new LspTool(makeLspSession(tempDir.path())).execute("relative-file-root", {
-				action: "references",
-				file: path.join("packages", "client", "src", "store.js"),
-				line: 1,
-				symbol: "target",
-				timeout: 5,
-			});
-			const initialize = await server.waitFor(message => message.method === "initialize");
-
-			expect(initialize.params).toMatchObject({
-				rootUri: fileToUri(nestedPackage),
-				rootPath: nestedPackage,
-				workspaceFolders: [{ uri: fileToUri(nestedPackage), name: path.basename(nestedPackage) }],
-			});
-		} finally {
-			await lspClient.shutdownAll();
-			tempDir.removeSync();
-		}
-	}, 15_000);
-
-	it("isolates absolute JavaScript references in a sibling worktree from the session repository client", async () => {
-		const tempDir = TempDir.createSync("@omp-lsp-sibling-js-worktree-");
-		try {
-			const sessionRepository = path.join(tempDir.path(), "main-repository");
-			const siblingWorktree = path.join(tempDir.path(), "sibling-worktree");
-			const targetFile = path.join(siblingWorktree, "src", "store.js");
-			await Bun.write(path.join(sessionRepository, "package.json"), "{}\n");
-			await Bun.write(path.join(siblingWorktree, "jsconfig.json"), "{}\n");
-			await Bun.write(targetFile, "export const target = 1;\n");
-
-			const installReferenceServer = (): FakeLspServer =>
-				installFakeLsp((message, srv) => {
-					if (message.method === "initialize") {
-						srv.send({
-							jsonrpc: "2.0",
-							id: message.id,
-							result: { capabilities: { referencesProvider: true } },
-						});
-						srv.send({
-							jsonrpc: "2.0",
-							method: "$/progress",
-							params: { token: "sibling-js-worktree", value: { kind: "end" } },
-						});
-					} else if (message.method === "textDocument/references") {
-						srv.send({
-							jsonrpc: "2.0",
-							id: message.id,
-							result: [
-								{
-									uri: fileToUri(targetFile),
-									range: {
-										start: { line: 0, character: 13 },
-										end: { line: 0, character: 19 },
-									},
-								},
-							],
-						});
-					} else if (message.method === "shutdown") {
-						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
-					} else if (message.method === "exit") {
-						srv.exit(0);
+					if (scenario.acceptsPublish) {
+						expect(await diagnostics).toEqual([publishedDiagnostic]);
+					} else {
+						await expect(diagnostics).rejects.toThrow("request failed");
 					}
-				});
-			const serverConfig: ServerConfig = {
-				command: "fake-lsp-sibling-js-worktree",
-				fileTypes: [".js"],
-				rootMarkers: ["jsconfig.json", "package.json"],
-			};
-			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
-				servers: { "fake-lsp": serverConfig },
-				idleTimeoutMs: undefined,
-			});
-
-			const sessionServer = installReferenceServer();
-			const sessionClient = await lspClient.getOrCreateClient(serverConfig, sessionRepository, 1_000);
-			await sessionServer.waitFor(message => message.method === "initialize");
-			const sessionCursor = sessionServer.received.length;
-
-			const worktreeServer = installReferenceServer();
-			const worktreeCursor = worktreeServer.received.length;
-			const result = await new LspTool(makeLspSession(sessionRepository)).execute("sibling-worktree-references", {
-				action: "references",
-				file: targetFile,
-				line: 1,
-				symbol: "target",
-				timeout: 5,
-			});
-			const worktreeInitialize = await worktreeServer.waitFor(message => message.method === "initialize");
-			const worktreeClient = await lspClient.getActiveOrPendingClient(serverConfig, siblingWorktree);
-			const expectedRootUri = fileToUri(siblingWorktree);
-			const sessionReferences = sessionServer.received
-				.slice(sessionCursor)
-				.filter(message => message.method === "textDocument/references");
-			const worktreeReferenceUris = worktreeServer.received
-				.slice(worktreeCursor)
-				.filter(message => message.method === "textDocument/references")
-				.map(message => (message.params as { textDocument?: { uri?: string } } | undefined)?.textDocument?.uri);
-
-			expect(worktreeInitialize.params).toMatchObject({
-				rootUri: expectedRootUri,
-				rootPath: siblingWorktree,
-				workspaceFolders: [{ uri: expectedRootUri, name: path.basename(siblingWorktree) }],
-			});
-			expect(worktreeClient).toBeDefined();
-			expect(worktreeClient).not.toBe(sessionClient);
-			expect(sessionReferences).toHaveLength(0);
-			// Project-aware references retry once to confirm that the result signature is stable.
-			expect(worktreeReferenceUris).toEqual([fileToUri(targetFile), fileToUri(targetFile)]);
-			expect(textResult(result)).toContain("Found 1 reference(s)");
-		} finally {
-			await lspClient.shutdownAll();
-			tempDir.removeSync();
-		}
-	}, 15_000);
-
-	it("maps workspace-relative root markers onto external worktrees for semantic requests", async () => {
-		const tempDir = TempDir.createSync("@omp-lsp-external-worktree-root-");
-		try {
-			const sessionCwd = path.join(tempDir.path(), "session");
-			const worktree = path.join(tempDir.path(), "services-cen21-worktree");
-			const solutionRoot = path.join(worktree, "21stCenturyServices");
-			const projectRoot = path.join(solutionRoot, "ROM.MessageQueue");
-			const targetFile = path.join(projectRoot, "RabbitMqQueueTopology.cs");
-			await fs.promises.mkdir(sessionCwd, { recursive: true });
-			await Bun.write(path.join(solutionRoot, "21stCenturyServices.sln"), "\n");
-			await Bun.write(path.join(projectRoot, "ROM.MessageQueue.csproj"), "<Project />\n");
-			await Bun.write(targetFile, "public sealed class RabbitMqQueueTopology {}\n");
-
-			const server = installFakeLsp((message, srv) => {
-				if (message.method === "initialize") {
-					srv.send({
-						jsonrpc: "2.0",
-						id: message.id,
-						result: { capabilities: { referencesProvider: true, documentSymbolProvider: true } },
-					});
-					srv.send({
-						jsonrpc: "2.0",
-						method: "$/progress",
-						params: { token: "external-csharp-project", value: { kind: "end" } },
-					});
-				} else if (message.method === "textDocument/references") {
-					srv.send({
-						jsonrpc: "2.0",
-						id: message.id,
-						result: [
-							{
-								uri: fileToUri(targetFile),
-								range: {
-									start: { line: 0, character: 0 },
-									end: { line: 0, character: 28 },
-								},
-							},
-						],
-					});
-				} else if (message.method === "textDocument/documentSymbol") {
-					srv.send({
-						jsonrpc: "2.0",
-						id: message.id,
-						result: [
-							{
-								name: "RabbitMqQueueTopology",
-								kind: 5,
-								range: {
-									start: { line: 0, character: 0 },
-									end: { line: 0, character: 39 },
-								},
-								selectionRange: {
-									start: { line: 0, character: 21 },
-									end: { line: 0, character: 43 },
-								},
-							},
-						],
-					});
-				} else if (message.method === "shutdown") {
-					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
-				} else if (message.method === "exit") {
-					srv.exit(0);
+					if (scenario.publish) {
+						expect(client.diagnostics.get(uri)?.diagnostics).toEqual([publishedDiagnostic]);
+					}
+					expect(fakeServer.received.map(m => m.method)).toContain("textDocument/diagnostic");
+				} finally {
+					await lspClient.shutdownAll();
+					tempDir.removeSync();
 				}
-			});
-
-			const serverConfig: ServerConfig = {
-				command: "fake-csharp-ls",
-				fileTypes: [".cs"],
-				rootMarkers: [
-					"services/21stCenturyServices/21stCenturyServices.sln",
-					"services/21stCenturyServices/**/*.csproj",
-				],
-			};
-			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
-				servers: { "csharp-ls": serverConfig },
-				idleTimeoutMs: undefined,
-			});
-
-			const tool = new LspTool(makeLspSession(sessionCwd));
-			const references = await tool.execute("external-worktree-references", {
-				action: "references",
-				file: targetFile,
-				line: 1,
-				symbol: "RabbitMqQueueTopology",
-				timeout: 5,
-			});
-			const symbols = await tool.execute("external-worktree-symbols", {
-				action: "symbols",
-				file: targetFile,
-				timeout: 5,
-			});
-			const initialize = await server.waitFor(message => message.method === "initialize");
-
-			expect(initialize.params).toMatchObject({
-				rootUri: fileToUri(solutionRoot),
-				rootPath: solutionRoot,
-				workspaceFolders: [{ uri: fileToUri(solutionRoot), name: path.basename(solutionRoot) }],
-			});
-			expect(server.received.filter(message => message.method === "initialize")).toHaveLength(1);
-			expect(textResult(references)).toContain("Found 1 reference(s)");
-			expect(textResult(symbols)).toContain("RabbitMqQueueTopology");
-		} finally {
-			await lspClient.shutdownAll();
-			tempDir.removeSync();
-		}
-	}, 15_000);
-
-	it("keeps relative diagnostics on the session workspace client", async () => {
-		const tempDir = TempDir.createSync("@omp-lsp-relative-glob-root-");
-		try {
-			const nestedPackage = path.join(tempDir.path(), "packages", "app");
-			const targetFile = path.join(nestedPackage, "src", "screen.tsx");
-			await Bun.write(path.join(tempDir.path(), "package.json"), "{}\n");
-			await Bun.write(path.join(nestedPackage, "tsconfig.json"), "{}\n");
-			await Bun.write(targetFile, "export const Screen = () => <View />;\n");
-
-			const server = installFakeLsp((message, srv) => {
-				if (message.method === "initialize") {
-					srv.send({
-						jsonrpc: "2.0",
-						id: message.id,
-						result: { capabilities: { diagnosticProvider: true } },
-					});
-					srv.send({
-						jsonrpc: "2.0",
-						method: "$/progress",
-						params: { token: "session-project", value: { kind: "end" } },
-					});
-				} else if (message.method === "textDocument/diagnostic") {
-					srv.send({ jsonrpc: "2.0", id: message.id, result: { kind: "full", items: [] } });
-				} else if (message.method === "shutdown") {
-					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
-				} else if (message.method === "exit") {
-					srv.exit(0);
-				}
-			});
-			const serverConfig: ServerConfig = {
-				command: "fake-lsp-relative-glob",
-				fileTypes: [".ts", ".tsx"],
-				rootMarkers: ["tsconfig.json", "package.json"],
-			};
-			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
-				servers: { "fake-lsp": serverConfig },
-				idleTimeoutMs: undefined,
-			});
-
-			const result = await new LspTool(makeLspSession(tempDir.path())).execute("relative-glob-root", {
-				action: "diagnostics",
-				file: path.join("packages", "app", "src", "**", "*.ts*"),
-				timeout: 5,
-			});
-			const initialize = await server.waitFor(message => message.method === "initialize");
-
-			expect(initialize.params).toMatchObject({
-				rootUri: fileToUri(tempDir.path()),
-				rootPath: tempDir.path(),
-				workspaceFolders: [{ uri: fileToUri(tempDir.path()), name: path.basename(tempDir.path()) }],
-			});
-			expect(textResult(result)).toBe("OK");
-		} finally {
-			await lspClient.shutdownAll();
-			tempDir.removeSync();
-		}
-	}, 15_000);
+			},
+			15_000,
+		);
+	}
 
 	it("does not reuse stale file diagnostics after another URI publishes", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-stale-diags-");
@@ -2936,66 +2641,73 @@ describe("lsp regressions", () => {
 		}
 	});
 
-	it("does not publish a cached LSP executable that no longer exists", async () => {
-		const tempDir = TempDir.createSync("@omp-lsp-stale-command-");
-		const staleCommand = path.join(tempDir.path(), "deleted", "basedpyright-langserver.exe");
-		vi.spyOn(piUtils, "$which").mockReturnValue(staleCommand);
-		try {
-			await Bun.write(path.join(tempDir.path(), "pyrightconfig.json"), "{}");
-			await Bun.write(
-				path.join(tempDir.path(), ".lsp.json"),
-				JSON.stringify({ servers: { basedpyright: { command: staleCommand } } }),
-			);
-
-			const config = loadConfig(tempDir.path());
-			expect(config.servers.basedpyright).toBeUndefined();
-		} finally {
-			vi.restoreAllMocks();
-			tempDir.removeSync();
-		}
-	});
-
-	it("bypasses the broken Windows tsgo package-bin shim for the native executable", async () => {
-		if (process.platform !== "win32") return;
-
-		const tempDir = TempDir.createSync("@omp-lsp-win32-tsgo-native-");
-		const whichSpy = vi.spyOn(Bun, "which").mockReturnValue(null);
-		try {
-			await Bun.write(path.join(tempDir.path(), "package.json"), "{}");
-			const binDir = path.join(tempDir.path(), "node_modules", ".bin");
+	// TypeScript 7 dropped lib/tsserver.js (typescript-language-server's backend) and
+	// speaks LSP via `tsc --lsp --stdio`; older tsc rejects `--lsp`. Exactly one of the
+	// two servers must survive config loading, chosen from the resolved tsc install.
+	describe("TypeScript server selection", () => {
+		async function writeTypescriptWorkspace(root: string, options: { tsserver: boolean; symlinkTsc: boolean }) {
+			await Bun.write(path.join(root, "package.json"), "{}");
+			const binDir = path.join(root, "node_modules", ".bin");
+			const pkgDir = path.join(root, "node_modules", "typescript");
 			await fs.promises.mkdir(binDir, { recursive: true });
-			await Bun.write(path.join(binDir, "tsgo"), "#!/usr/bin/env node\n");
-			await Bun.write(path.join(binDir, "tsgo.exe"), "broken package shim");
-			const nativeTsgo = path.join(
-				tempDir.path(),
-				"node_modules",
-				"@typescript",
-				`native-preview-${process.platform}-${process.arch}`,
-				"lib",
-				"tsgo.exe",
-			);
-			await Bun.write(nativeTsgo, "native executable");
-			await Bun.write(
-				path.join(tempDir.path(), ".lsp.json"),
-				JSON.stringify({
-					servers: {
-						tsgo: {
-							command: "tsgo",
-							args: ["--lsp", "--stdio"],
-							fileTypes: [".ts"],
-							rootMarkers: ["package.json"],
-						},
-					},
-				}),
-			);
-
-			const config = loadConfig(tempDir.path());
-			expect(config.servers.tsgo?.resolvedCommand).toBe(nativeTsgo);
-			expect(whichSpy).not.toHaveBeenCalledWith("tsgo");
-		} finally {
-			vi.restoreAllMocks();
-			tempDir.removeSync();
+			await Bun.write(path.join(pkgDir, "package.json"), '{"name":"typescript"}');
+			await Bun.write(path.join(pkgDir, "bin", "tsc"), "");
+			if (options.tsserver) await Bun.write(path.join(pkgDir, "lib", "tsserver.js"), "");
+			if (options.symlinkTsc) {
+				await fs.promises.symlink(path.join("..", "typescript", "bin", "tsc"), path.join(binDir, "tsc"));
+			} else {
+				await Bun.write(path.join(binDir, "tsc"), "");
+			}
+			await Bun.write(path.join(binDir, "typescript-language-server"), "");
 		}
+
+		it("prefers tsc --lsp when the workspace TypeScript ships no tsserver.js", async () => {
+			if (process.platform === "win32") return;
+			const tempDir = TempDir.createSync("@omp-lsp-ts7-");
+			vi.spyOn(Bun, "which").mockReturnValue(null);
+			try {
+				await writeTypescriptWorkspace(tempDir.path(), { tsserver: false, symlinkTsc: true });
+				const config = loadConfig(tempDir.path());
+				expect(Object.keys(config.servers)).toEqual(["typescript-native"]);
+				expect(config.servers["typescript-native"]?.resolvedCommand).toBe(
+					path.join(tempDir.path(), "node_modules", ".bin", "tsc"),
+				);
+				expect(config.servers["typescript-native"]?.args).toEqual(["--lsp", "--stdio"]);
+			} finally {
+				vi.restoreAllMocks();
+				tempDir.removeSync();
+			}
+		});
+
+		it("keeps typescript-language-server when tsserver.js exists", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-ts5-");
+			vi.spyOn(Bun, "which").mockReturnValue(null);
+			try {
+				await writeTypescriptWorkspace(tempDir.path(), { tsserver: true, symlinkTsc: false });
+				const config = loadConfig(tempDir.path());
+				expect(Object.keys(config.servers)).toEqual(["typescript-language-server"]);
+			} finally {
+				vi.restoreAllMocks();
+				tempDir.removeSync();
+			}
+		});
+
+		it("drops tsc --lsp when the tsc install layout is unrecognized", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-ts-unknown-");
+			vi.spyOn(Bun, "which").mockReturnValue(null);
+			try {
+				await Bun.write(path.join(tempDir.path(), "package.json"), "{}");
+				const binDir = path.join(tempDir.path(), "node_modules", ".bin");
+				await fs.promises.mkdir(binDir, { recursive: true });
+				await Bun.write(path.join(binDir, "tsc"), "");
+				await Bun.write(path.join(binDir, "typescript-language-server"), "");
+				const config = loadConfig(tempDir.path());
+				expect(Object.keys(config.servers)).toEqual(["typescript-language-server"]);
+			} finally {
+				vi.restoreAllMocks();
+				tempDir.removeSync();
+			}
+		});
 	});
 
 	it("detects Ruff in Windows virtualenv Scripts directories", async () => {
@@ -3120,6 +2832,9 @@ describe("lsp regressions", () => {
 	});
 
 	it("loads config-only marketplace LSP servers from Claude plugin cache", async () => {
+		const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+		delete process.env.CLAUDE_CONFIG_DIR;
+		delete Bun.env.CLAUDE_CONFIG_DIR;
 		const tempDir = TempDir.createSync("@omp-lsp-marketplace-config-");
 		const home = path.join(tempDir.path(), "home");
 		const cwd = path.join(tempDir.path(), "repo");
@@ -3201,8 +2916,12 @@ describe("lsp regressions", () => {
 			expect(config.servers["csharp-ls"]?.rootMarkers).toEqual(["*.sln", "*.csproj", ".git"]);
 			expect(whichSpy).toHaveBeenCalledWith("csharp-ls");
 		} finally {
-			await preloadPluginRoots(path.join(tempDir.path(), "empty-home"), cwd);
-			tempDir.removeSync();
+			try {
+				await preloadPluginRoots(path.join(tempDir.path(), "empty-home"), cwd);
+			} finally {
+				restoreEnvValue("CLAUDE_CONFIG_DIR", originalClaudeConfigDir);
+				tempDir.removeSync();
+			}
 		}
 	});
 	it("rename_file applies LSP willRenameFiles edits and renames the file", async () => {

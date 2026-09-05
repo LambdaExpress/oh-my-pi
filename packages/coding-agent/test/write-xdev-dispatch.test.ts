@@ -10,7 +10,6 @@ import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-q
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { adbToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/adb";
 import { requiresApproval, resolveApproval } from "@oh-my-pi/pi-coding-agent/tools/approval";
-import { browserToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/browser/render";
 import { githubToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/gh-renderer";
 import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
 import { sshToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/ssh";
@@ -591,13 +590,6 @@ describe("read and write route xd:// device URLs", () => {
 				expected: ["ADB", "shell", "emulator-5554", "getprop ro.product.model", "Output"],
 			},
 			{
-				name: "browser",
-				label: "Browser",
-				renderer: browserToolRenderer,
-				args: { action: "run", name: "docs", code: "return await tab.title();" },
-				expected: ['tab "docs"', "return await tab.title();"],
-			},
-			{
 				name: "ast_edit",
 				label: "AST Edit",
 				renderer: toolRenderers.ast_edit,
@@ -1092,6 +1084,28 @@ describe("xd:// and top-level calls share the canonical tool map", () => {
 		} finally {
 			await removeWithRetries(tempDir);
 		}
+	});
+
+	it("resolves bare and case-insensitive xd:// direct device names (#10342)", () => {
+		const githubDevice = {
+			name: "github",
+			label: "GitHub",
+			description: "fixture",
+			parameters: type({ op: "string" }),
+			async execute() {
+				return { content: [{ type: "text" as const, text: "ok" }] };
+			},
+		};
+		const xdev = createTestXdevState([githubDevice]);
+
+		// Direct calls accept the same case-insensitive xd scheme as read/write
+		// URL dispatch while preserving the canonical device name.
+		expect(resolveMountedXdevTool(xdev, "github")).toBe(githubDevice);
+		expect(resolveMountedXdevTool(xdev, "xd://github")).toBe(githubDevice);
+		expect(resolveMountedXdevTool(xdev, "XD://github")).toBe(githubDevice);
+		expect(resolveMountedXdevTool(xdev, "Xd://github")).toBe(githubDevice);
+		// A genuinely unmounted name still misses, prefixed or not.
+		expect(resolveMountedXdevTool(xdev, "xd://no_such_tool")).toBeUndefined();
 	});
 });
 

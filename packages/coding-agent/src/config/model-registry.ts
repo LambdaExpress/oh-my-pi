@@ -16,6 +16,8 @@ import type {
 } from "@oh-my-pi/pi-ai/types";
 import type { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { collapseBuiltVariants } from "@oh-my-pi/pi-catalog/compat/collapse";
+import { applyCatalogMetrics, CatalogMetricsIndex } from "@oh-my-pi/pi-catalog/identity/metrics";
 import { readModelCache, writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import {
 	createModelManager,
@@ -36,8 +38,6 @@ import {
 	resolveOllamaModelCacheProviderId,
 } from "@oh-my-pi/pi-catalog/provider-models";
 import { toModelSpec } from "@oh-my-pi/pi-catalog/provider-models/bundled-references";
-import { OPENAI_GPT_56_LONG_CONTEXT_COSTS } from "@oh-my-pi/pi-catalog/provider-models/openai-compat";
-import { collapseBuiltModelVariants } from "@oh-my-pi/pi-catalog/variant-collapse";
 import { getAgentDir, isBunTestRuntime, logger, wrapFetchForExtraCa } from "@oh-my-pi/pi-utils";
 import { resolveProviderModelReference } from "../config/model-resolver";
 import { generateCodexAttestation } from "../live/attestation";
@@ -73,6 +73,7 @@ import {
 	ensureLlamaCppV1BaseUrl,
 	getImplicitOllamaBaseUrl,
 	getOllamaContextLengthOverride,
+	normalizeBareDiscoveryBaseUrl,
 	normalizeLiteLLMDiscoveryBaseUrl,
 	normalizeLlamaCppBaseUrl,
 } from "./model-discovery";
@@ -146,15 +147,16 @@ const ADDITIVE_MODELS_DEV_CATALOG_PROVIDER_ID_LOOKUP: Readonly<Record<string, tr
 );
 
 /**
- * Bedrock guardrail fields to spread onto a model spec, dropping keys that a
- * provider override left unset so an override never clobbers an existing value
- * with `undefined`.
+ * Bedrock provider-scoped fields to spread onto a model spec, dropping keys
+ * that a provider override left unset so an override never clobbers an
+ * existing value with `undefined`.
  */
-function guardrailOverrideFields(override: ProviderOverride): Partial<ModelSpec<Api>> {
+function bedrockProviderFields(override: ProviderOverride): Partial<ModelSpec<Api>> {
 	const fields: Partial<ModelSpec<Api>> = {};
 	if (override.guardrailIdentifier !== undefined) fields.guardrailIdentifier = override.guardrailIdentifier;
 	if (override.guardrailVersion !== undefined) fields.guardrailVersion = override.guardrailVersion;
 	if (override.guardrailTrace !== undefined) fields.guardrailTrace = override.guardrailTrace;
+	if (override.requestMetadata !== undefined) fields.requestMetadata = override.requestMetadata;
 	return fields;
 }
 
@@ -214,6 +216,10 @@ function getExtendedContextWindowFromSettings(settingsInstance?: Settings): numb
 // completeness. The separators cover canonical ids, names, routed ids, and
 // generated effort/pro aliases (for example `openai/gpt-5.6-sol-pro`).
 const GPT_56_LONG_CONTEXT_MODEL_PATTERN = /\bgpt[-_. ]5[.]6[-_. ](?:luna|sol|terra)(?=$|[^a-z0-9])/iu;
+// Canonical tier prices now live in the catalog rules. Relay providers do not
+// inherit first-party OpenAI pricing, but still need the same threshold for
+// context-window policy when their catalogs omit long-context metadata.
+const GPT_56_LONG_CONTEXT_INPUT_THRESHOLD = 272_000;
 
 function isGpt56LongContextModel(model: Model<Api>): boolean {
 	return [model.id, model.requestModelId, model.name].some(
@@ -244,6 +250,7 @@ export class ModelRegistry {
 	#cachedAuthoritativeProviders: Set<string> = new Set();
 	#runtimeDiscoveredModels: Model<Api>[] = [];
 	#runtimeAuthoritativeProviders: Set<string> = new Set();
+	#catalogMetrics = new CatalogMetricsIndex();
 	#internedStaticModels: Map<string, Model<Api>> = new Map();
 	#providerLookupSnapshots: Map<string, Model<Api>[]> = new Map();
 	#customProviderApiKeys: Map<string, string> = new Map();
@@ -265,6 +272,10 @@ export class ModelRegistry {
 	#cacheDbPath?: string;
 	#suppressedSelectors: Map<string, number> = new Map();
 	#backgroundRefresh?: Promise<void>;
+	/** Whether the first background discovery has settled; latches once so a late-armed waiter still resolves. */
+	#initialRefreshSettled = false;
+	/** Waiter armed before the initial background refresh starts (CLI kicks it off after the session is built, #10048). */
+	#initialRefreshWaiters = new Set<() => void>();
 	#credentialScopedCacheHydration?: Promise<void>;
 	#configuredDiscoveryInFlight: Map<DiscoveryProviderConfig, Map<ModelRefreshStrategy, Promise<Model<Api>[]>>> =
 		new Map();
@@ -290,6 +301,19 @@ export class ModelRegistry {
 	#ignoreLocalModelConfig: boolean;
 	#fetch: FetchImpl;
 	#settings: Settings | undefined;
+
+	#captureCatalogMetrics(models: readonly Model<Api>[], replace: boolean): void {
+		if (replace) {
+			const incoming = new CatalogMetricsIndex(models);
+			if (!incoming.isEmpty) this.#catalogMetrics = incoming;
+			return;
+		}
+		this.#catalogMetrics.add(models);
+	}
+
+	#withCatalogMetrics(models: Model<Api>[]): Model<Api>[] {
+		return applyCatalogMetrics(models, this.#catalogMetrics);
+	}
 
 	#resolveCommandBackedApiKey(provider: string, options?: { forceCommandRefresh?: boolean }): CommandApiKeyResolution {
 		const keyConfig = this.#customProviderApiKeys.get(provider);
@@ -464,6 +488,7 @@ export class ModelRegistry {
 				if (this.#backgroundRefresh === refreshPromise) {
 					this.#backgroundRefresh = undefined;
 				}
+				this.#markInitialRefreshSettled();
 			});
 		this.#backgroundRefresh = refreshPromise;
 	}
@@ -488,6 +513,42 @@ export class ModelRegistry {
 		if (this.#backgroundRefresh) {
 			await this.#backgroundRefresh;
 		}
+	}
+
+	/**
+	 * Resolve once the initial background discovery has settled, arming a waiter
+	 * even when the refresh has not started yet. In the CLI path
+	 * {@link refreshInBackground} runs right after the session is constructed
+	 * (`main.ts`), so a consumer created in the constructor cannot rely on an
+	 * in-flight snapshot — it must observe the settle whenever it happens.
+	 * Resolves immediately once any background refresh has completed; never
+	 * rejects (discovery errors are swallowed by `refreshInBackground`). Stays
+	 * pending when no background refresh is ever started (e.g. an embedder that
+	 * manages discovery itself), which leaves startup suppression in place.
+	 * An optional abort signal releases a waiter when its owning session is
+	 * disposed before an embedder starts discovery.
+	 */
+	awaitInitialBackgroundRefresh(signal?: AbortSignal): Promise<void> {
+		if (this.#initialRefreshSettled) return Promise.resolve();
+		if (signal?.aborted) return Promise.resolve();
+		const { promise, resolve } = Promise.withResolvers<void>();
+		const settle = () => {
+			signal?.removeEventListener("abort", settle);
+			this.#initialRefreshWaiters.delete(settle);
+			resolve();
+		};
+		this.#initialRefreshWaiters.add(settle);
+		signal?.addEventListener("abort", settle, { once: true });
+		// Close the race with a refresh or abort settling between the guards
+		// above and listener registration.
+		if (this.#initialRefreshSettled || signal?.aborted) settle();
+		return promise;
+	}
+
+	#markInitialRefreshSettled(): void {
+		if (this.#initialRefreshSettled) return;
+		this.#initialRefreshSettled = true;
+		for (const settle of this.#initialRefreshWaiters) settle();
 	}
 
 	async refreshProvider(providerId: string, strategy: ModelRefreshStrategy = "online"): Promise<void> {
@@ -626,7 +687,7 @@ export class ModelRegistry {
 			this.#unprojectedModels = this.#unprojectedModels.map(candidate =>
 				candidate.provider === unprojected.provider && candidate.id === unprojected.id ? patchedBase : candidate,
 			);
-			this.#models = this.#applyRuntimeModelModifiers(this.#unprojectedModels);
+			this.#models = this.#withCatalogMetrics(this.#applyRuntimeModelModifiers(this.#unprojectedModels));
 			return resolveProviderModelReference(current.provider, current.id, this.#models) ?? patchedBase;
 		}
 		const patched = applyModelPatch(current, patch, "merge");
@@ -784,7 +845,17 @@ export class ModelRegistry {
 			const credential = this.authStorage.getOAuthCredential(providerName);
 			if (!credential) continue;
 			try {
-				projected = modifyModels(structuredClone(projected), credential);
+				// Live command-backed headers are a Proxy, which structuredClone
+				// rejects. Materialize only header-bearing models before cloning so
+				// modifier hooks still get an isolated, mutable catalog snapshot.
+				let cloneableModels = projected;
+				for (let index = 0; index < projected.length; index += 1) {
+					const model = projected[index]!;
+					if (!model.headers) continue;
+					if (cloneableModels === projected) cloneableModels = [...projected];
+					cloneableModels[index] = { ...model, headers: { ...model.headers } };
+				}
+				projected = modifyModels(structuredClone(cloneableModels), credential);
 			} catch (error) {
 				this.#warnModelModifierFailure(providerName, error instanceof Error ? error.message : String(error));
 			}
@@ -822,16 +893,9 @@ export class ModelRegistry {
 		resolvedDefaults = this.#mergeResolvedModels(resolvedDefaults, select(this.#runtimeDiscoveredModels));
 		const withConfigModels = this.#mergeCustomModels(resolvedDefaults, select(this.#customModelOverlays));
 		const combined = this.#mergeCustomModels(withConfigModels, select(this.#runtimeModelOverlays));
-		// Apply after custom/runtime models are merged too: replacement rows may
-		// omit the bundled long-context pricing metadata while retaining a
-		// premium-capable model identity.
-		const withContextPolicies = this.#applyContextWindowPolicies(combined);
-		const withModelOverrides = this.#applyModelOverrides(
-			collapseBuiltModelVariants(withContextPolicies),
-			this.#modelOverrides,
-		);
-		const withProviderGuardrails = this.#applyProviderGuardrailOverrides(withModelOverrides);
-		return this.#applyLlamaCppModelFixups(this.#applyRuntimeProviderOverrides(withProviderGuardrails));
+		const withModelOverrides = this.#applyModelOverrides(collapseBuiltVariants(combined), this.#modelOverrides);
+		const withProviderBedrock = this.#applyProviderBedrockOverrides(withModelOverrides);
+		return this.#applyLlamaCppModelFixups(this.#applyRuntimeProviderOverrides(withProviderBedrock));
 	}
 
 	#composeStaticModels(providerFilter?: ReadonlySet<string>): Model<Api>[] {
@@ -839,7 +903,7 @@ export class ModelRegistry {
 		// before narrowing a lazy lookup, matching getAll() followed by filtering.
 		const projectFullCatalog = providerFilter !== undefined && this.#runtimeModelModifiers.size > 0;
 		const unprojected = this.#composeUnprojectedStaticModels(projectFullCatalog ? undefined : providerFilter);
-		const projected = this.#applyRuntimeModelModifiers(unprojected);
+		const projected = this.#withCatalogMetrics(this.#applyRuntimeModelModifiers(unprojected));
 		const selected = projectFullCatalog ? projected.filter(model => providerFilter.has(model.provider)) : projected;
 		return this.#internStaticModels(selected);
 	}
@@ -847,7 +911,9 @@ export class ModelRegistry {
 	#ensureFullSnapshot(): Model<Api>[] {
 		if (!this.#hasFullSnapshot) {
 			this.#unprojectedModels = this.#composeUnprojectedStaticModels();
-			this.#models = this.#internStaticModels(this.#applyRuntimeModelModifiers(this.#unprojectedModels));
+			this.#models = this.#internStaticModels(
+				this.#withCatalogMetrics(this.#applyRuntimeModelModifiers(this.#unprojectedModels)),
+			);
 			this.#hasFullSnapshot = true;
 			this.#providerLookupSnapshots.clear();
 		}
@@ -1316,6 +1382,7 @@ export class ModelRegistry {
 				providerConfig.compat ||
 				providerConfig.disableStrictTools ||
 				providerConfig.guardrailIdentifier ||
+				providerConfig.requestMetadata ||
 				providerConfig.remoteCompaction ||
 				providerConfig.transport
 			) {
@@ -1324,7 +1391,10 @@ export class ModelRegistry {
 					baseUrl:
 						providerConfig.discovery?.type === "litellm"
 							? normalizeLiteLLMDiscoveryBaseUrl(providerConfig.baseUrl)
-							: providerConfig.baseUrl,
+							: providerConfig.discovery?.type === "openai-models-list" &&
+								  providerConfig.discovery.injectV1 === false
+								? normalizeBareDiscoveryBaseUrl(providerConfig.baseUrl)
+								: providerConfig.baseUrl,
 					headers: providerConfig.headers,
 					apiKey: providerConfig.apiKey,
 					authHeader: providerConfig.authHeader,
@@ -1334,6 +1404,7 @@ export class ModelRegistry {
 					guardrailIdentifier: providerConfig.guardrailIdentifier,
 					guardrailVersion: providerConfig.guardrailVersion,
 					guardrailTrace: providerConfig.guardrailTrace,
+					requestMetadata: providerConfig.requestMetadata,
 				});
 			}
 
@@ -1415,6 +1486,7 @@ export class ModelRegistry {
 			configuredDiscoveriesPromise,
 			this.#discoverBuiltInProviderModels(strategy, providerFilter),
 		]);
+		this.#captureCatalogMetrics(builtInDiscovery.models, providerFilter === undefined);
 		const currentDiscoverableProviders = new Set(this.#discoverableProviders);
 		const configuredDiscovered = configuredDiscoveryResults
 			.filter(result => currentDiscoverableProviders.has(result.provider))
@@ -1463,16 +1535,12 @@ export class ModelRegistry {
 		const resolved = this.#mergeResolvedModels(baseModels, discoveredModels);
 		const withConfigModels = this.#mergeCustomModels(resolved, this.#customModelOverlays);
 		const combined = this.#mergeCustomModels(withConfigModels, this.#runtimeModelOverlays);
-		const withContextPolicies = this.#applyContextWindowPolicies(combined);
-		const withModelOverrides = this.#applyModelOverrides(
-			collapseBuiltModelVariants(withContextPolicies),
-			this.#modelOverrides,
-		);
-		const withProviderGuardrails = this.#applyProviderGuardrailOverrides(withModelOverrides);
+		const withModelOverrides = this.#applyModelOverrides(collapseBuiltVariants(combined), this.#modelOverrides);
+		const withProviderBedrock = this.#applyProviderBedrockOverrides(withModelOverrides);
 		this.#unprojectedModels = this.#applyLlamaCppModelFixups(
-			this.#applyRuntimeProviderOverrides(withProviderGuardrails),
+			this.#applyRuntimeProviderOverrides(withProviderBedrock),
 		);
-		this.#models = this.#applyRuntimeModelModifiers(this.#unprojectedModels);
+		this.#models = this.#withCatalogMetrics(this.#applyRuntimeModelModifiers(this.#unprojectedModels));
 	}
 
 	/**
@@ -1509,7 +1577,12 @@ export class ModelRegistry {
 			// context-v3 invalidates rows cached before server-advertised input
 			// modalities were parsed from `/v1/models`; warm v2 rows pinned
 			// vision-capable ids at `input: ["text"]` until a forced refresh.
-			return `${providerConfig.provider}:openai-models-list-context-v3`;
+			// `injectV1: false` additionally splits off its own namespace: rows
+			// cached from the `/v1`-injected URL can hold a different (smaller)
+			// model set and must never satisfy a bare provider's cache read.
+			return providerConfig.discovery.injectV1 === false
+				? `${providerConfig.provider}:openai-models-list-bare-context-v3`
+				: `${providerConfig.provider}:openai-models-list-context-v3`;
 		}
 		if (providerConfig.discovery.type === "litellm") {
 			// rich-v4 invalidates rows whose `compatConfig` retained a colliding
@@ -2023,20 +2096,21 @@ export class ModelRegistry {
 		return buildModel(this.#applyProviderTransportOverride(toModelSpec(model), override));
 	}
 
-	#applyProviderGuardrailOverrides(models: Model<Api>[]): Model<Api>[] {
+	#applyProviderBedrockOverrides(models: Model<Api>[]): Model<Api>[] {
 		if (this.#providerOverrides.size === 0) return models;
 		return models.map(model => {
 			const override = this.#providerOverrides.get(model.provider);
 			if (!override) return model;
-			const guardrailFields = guardrailOverrideFields(override);
+			const bedrockFields = bedrockProviderFields(override);
 			if (
-				guardrailFields.guardrailIdentifier === undefined &&
-				guardrailFields.guardrailVersion === undefined &&
-				guardrailFields.guardrailTrace === undefined
+				bedrockFields.guardrailIdentifier === undefined &&
+				bedrockFields.guardrailVersion === undefined &&
+				bedrockFields.guardrailTrace === undefined &&
+				bedrockFields.requestMetadata === undefined
 			) {
 				return model;
 			}
-			return buildModel({ ...toModelSpec(model), ...guardrailFields } as ModelSpec<Api>);
+			return buildModel({ ...toModelSpec(model), ...bedrockFields } as ModelSpec<Api>);
 		});
 	}
 
@@ -2094,7 +2168,7 @@ export class ModelRegistry {
 				model.provider === "xai-oauth"
 					? undefined
 					: (model.cost.longContext?.inputThreshold ??
-						(isGpt56LongContextModel(model) ? OPENAI_GPT_56_LONG_CONTEXT_COSTS.sol.inputThreshold : undefined));
+						(isGpt56LongContextModel(model) ? GPT_56_LONG_CONTEXT_INPUT_THRESHOLD : undefined));
 			if (threshold !== undefined && model.contextWindow !== null) {
 				const effectiveContextWindow = extendedContext
 					? Math.max(model.contextWindow, extendedContextWindow)
@@ -2316,6 +2390,17 @@ export class ModelRegistry {
 
 	getProviderDiscoveryState(provider: string): ProviderDiscoveryState | undefined {
 		return this.#providerDiscoveryStates.get(provider);
+	}
+
+	/**
+	 * Whether a config-declared discovery provider has not yet produced a
+	 * catalog in this process. A cold discovery cache (e.g. after `omp update`
+	 * bumps the cache namespace) leaves the provider in its initial `idle`
+	 * state with no models, so a selector the provider will supply looks
+	 * unknown until background discovery lands (#10048).
+	 */
+	isProviderDiscoveryPending(provider: string): boolean {
+		return this.#providerDiscoveryStates.get(provider)?.status === "idle";
 	}
 
 	/**
@@ -2648,9 +2733,9 @@ export class ModelRegistry {
 						return this.#applyProviderTransportOverrideToModel(model, runtimeTransportOverride);
 					})
 				: nextModels;
-			this.#unprojectedModels = this.#applyProviderGuardrailOverrides(nextModelsWithTransport);
+			this.#unprojectedModels = this.#applyProviderBedrockOverrides(nextModelsWithTransport);
 
-			this.#models = this.#applyRuntimeModelModifiers(this.#unprojectedModels);
+			this.#models = this.#withCatalogMetrics(this.#applyRuntimeModelModifiers(this.#unprojectedModels));
 			this.#invalidateProviderModelCache(providerName);
 			if (!config.fetchDynamicModels) return;
 		}
@@ -2727,7 +2812,7 @@ export class ModelRegistry {
 						return this.#applyProviderTransportOverrideToModel(model, transportOverride);
 					}),
 				);
-				this.#models = this.#applyRuntimeModelModifiers(this.#unprojectedModels);
+				this.#models = this.#withCatalogMetrics(this.#applyRuntimeModelModifiers(this.#unprojectedModels));
 			}
 			this.#invalidateProviderModelCache(providerName);
 		}

@@ -14,6 +14,7 @@ import { applyEmojiCompletion, getEmojiSuggestions, isEmojiPrefix, tryEmojiInlin
 import { getGithubRefContext, getGithubRefSuggestions } from "./github-ref-autocomplete";
 import {
 	applyInternalUrlCompletion,
+	extractInternalUrlContext,
 	getInternalUrlSuggestions,
 	isInternalUrlPrefix,
 } from "./internal-url-autocomplete";
@@ -135,17 +136,29 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 	#baseProvider: CombinedAutocompleteProvider;
 	#actions: PromptActionDefinition[];
 	#basePath: string;
+	#getSshHosts?: () => Promise<ResolveContext["sshHosts"]>;
 
 	constructor(
 		commands: SlashCommand[],
 		basePath: string,
 		actions: PromptActionDefinition[],
 		commandUsage?: (name: string) => number,
+		getSshHosts?: () => Promise<ResolveContext["sshHosts"]>,
 	) {
 		this.#commands = commands;
 		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath, { commandUsage });
 		this.#basePath = basePath;
 		this.#actions = actions;
+		this.#getSshHosts = getSshHosts;
+	}
+
+	async #getInternalUrlSuggestions(
+		textBeforeCursor: string,
+		signal?: AbortSignal,
+	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
+		const context = extractInternalUrlContext(textBeforeCursor);
+		const sshHosts = context?.scheme === "ssh" ? await this.#getSshHosts?.() : undefined;
+		return getInternalUrlSuggestions(textBeforeCursor, this.#basePath, signal, sshHosts);
 	}
 
 	async getSuggestions(
@@ -175,7 +188,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 				// tokens such as `#copy` literal.
 				const githubRefSuggestions = getGithubRefSuggestions(textBeforeCursor);
 				if (githubRefSuggestions) return githubRefSuggestions;
-				return getInternalUrlSuggestions(textBeforeCursor, this.#basePath, signal);
+				return this.#getInternalUrlSuggestions(textBeforeCursor, signal);
 			}
 		}
 
@@ -205,7 +218,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 			}
 		}
 
-		const urlSuggestions = await getInternalUrlSuggestions(textBeforeCursor, this.#basePath, signal);
+		const urlSuggestions = await this.#getInternalUrlSuggestions(textBeforeCursor, signal);
 		if (urlSuggestions) return urlSuggestions;
 
 		if (!isSettingsInitialized() || settings.get("emojiAutocomplete")) {
@@ -302,33 +315,39 @@ export function createPromptActionAutocompleteProvider(
 		},
 		{
 			id: "cursor-message-end",
-			label: t("Move cursor to end of message"),
-			description: t("Current message"),
+			label: "Move cursor to message end",
+			description: "Current message",
 			keywords: ["move", "cursor", "message", "end", "prompt", "last", "bottom"],
 			execute: options.moveCursorToMessageEnd,
 		},
 		{
 			id: "cursor-message-start",
-			label: t("Move cursor to beginning of message"),
-			description: t("Current message"),
+			label: "Move cursor to message start",
+			description: "Current message",
 			keywords: ["move", "cursor", "message", "start", "beginning", "prompt", "first", "top"],
 			execute: options.moveCursorToMessageStart,
 		},
 		{
 			id: "cursor-line-start",
-			label: t("Move cursor to beginning of line"),
+			label: "Move cursor to line start",
 			description: formatKeyHints(editorKeybindings.getKeys("tui.editor.cursorLineStart")),
 			keywords: ["move", "cursor", "line", "start", "beginning", "home"],
 			execute: options.moveCursorToLineStart,
 		},
 		{
 			id: "cursor-line-end",
-			label: t("Move cursor to end of line"),
+			label: "Move cursor to line end",
 			description: formatKeyHints(editorKeybindings.getKeys("tui.editor.cursorLineEnd")),
 			keywords: ["move", "cursor", "line", "end"],
 			execute: options.moveCursorToLineEnd,
 		},
 	];
 
-	return new PromptActionAutocompleteProvider(options.commands, options.basePath, actions, options.commandUsage);
+	return new PromptActionAutocompleteProvider(
+		options.commands,
+		options.basePath,
+		actions,
+		options.commandUsage,
+		options.getSshHosts,
+	);
 }

@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, spyOn, vi } from "bun:test
 import type { Api, Model } from "@oh-my-pi/pi-ai";
 import * as ai from "@oh-my-pi/pi-ai";
 import { type GeneratedProvider, getBundledModel } from "@oh-my-pi/pi-catalog/models";
+import { DEFAULT_TINY_TITLE_LOCAL_MODEL_KEY } from "@oh-my-pi/pi-coding-agent/tiny/models";
+import { tinyTitleClient } from "@oh-my-pi/pi-coding-agent/tiny/title-client";
 import {
 	disposeTerminalTitleState,
 	generateSessionTitle,
@@ -48,6 +50,13 @@ function createRegistry(model: Model<Api>) {
 		authStorage: { rotateSessionCredential: async () => false },
 		resolver: () => async () => "test-key",
 	} as never;
+}
+
+function mockOnlineTitle(title: string | null) {
+	return vi.spyOn(ai, "completeSimple").mockResolvedValue({
+		stopReason: "stop",
+		content: title ? [{ type: "text", text: `<title>${title}</title>` }] : [{ type: "text", text: "" }],
+	} as never);
 }
 
 afterEach(() => {
@@ -164,6 +173,112 @@ describe("title generator", () => {
 		expect(request?.systemPrompt).toHaveLength(2);
 		expect(request?.systemPrompt?.[0]).toBe(customPrompt);
 		expect(request?.systemPrompt?.[1]).toContain("<title>");
+	});
+
+	describe("tiny model routing", () => {
+		it("uses only the online title path when the tiny model is online", async () => {
+			const model = getModelOrThrow("claude-sonnet-4-5");
+			const local = vi.spyOn(tinyTitleClient, "generate").mockResolvedValue("Local Title");
+			const online = mockOnlineTitle("Online Title");
+
+			const title = await generateSessionTitle(
+				"Investigate routing",
+				createRegistry(model),
+				createSettings(model, "online"),
+			);
+
+			expect(title).toBe("Online Title");
+			expect(local).not.toHaveBeenCalled();
+			expect(online).toHaveBeenCalledTimes(1);
+		});
+
+		it("uses only the local client for the configured local tiny model", async () => {
+			const model = getModelOrThrow("claude-sonnet-4-5");
+			const local = vi.spyOn(tinyTitleClient, "generate").mockResolvedValue("Local Title");
+			const online = mockOnlineTitle("Online Title");
+
+			const title = await generateSessionTitle(
+				"Investigate routing",
+				createRegistry(model),
+				createSettings(model, DEFAULT_TINY_TITLE_LOCAL_MODEL_KEY),
+			);
+
+			expect(title).toBe("Local Title");
+			expect(local).toHaveBeenCalledWith(DEFAULT_TINY_TITLE_LOCAL_MODEL_KEY, "Investigate routing");
+			expect(online).not.toHaveBeenCalled();
+		});
+
+		it("appends the marker instruction to the custom local system prompt", async () => {
+			const model = getModelOrThrow("claude-sonnet-4-5");
+			const customPrompt = "Generate lowercase colon-delimited session names.";
+			const local = vi.spyOn(tinyTitleClient, "generate").mockResolvedValue("Local Title");
+			const online = mockOnlineTitle("Online Title");
+
+			const title = await generateSessionTitle(
+				"Investigate routing",
+				createRegistry(model),
+				createSettings(model, DEFAULT_TINY_TITLE_LOCAL_MODEL_KEY),
+				undefined,
+				undefined,
+				undefined,
+				customPrompt,
+			);
+
+			expect(title).toBe("Local Title");
+			expect(local).toHaveBeenCalledTimes(1);
+			const options = local.mock.calls[0]?.[2];
+			expect(options?.systemPrompt).toStartWith(`${customPrompt}\n\n`);
+			expect(options?.systemPrompt).toContain("<title>");
+			expect(online).not.toHaveBeenCalled();
+		});
+
+		it("does not fall back online when the local client returns null", async () => {
+			const model = getModelOrThrow("claude-sonnet-4-5");
+			const local = vi.spyOn(tinyTitleClient, "generate").mockResolvedValue(null);
+			const online = mockOnlineTitle("Billed Online Title");
+
+			const title = await generateSessionTitle(
+				"Investigate fallback",
+				createRegistry(model),
+				createSettings(model, DEFAULT_TINY_TITLE_LOCAL_MODEL_KEY),
+			);
+
+			expect(title).toBeNull();
+			expect(local).toHaveBeenCalledTimes(1);
+			expect(online).not.toHaveBeenCalled();
+		});
+
+		it("does not fall back online when the local client throws", async () => {
+			const model = getModelOrThrow("claude-sonnet-4-5");
+			const local = vi.spyOn(tinyTitleClient, "generate").mockRejectedValue(new Error("worker crashed"));
+			const online = mockOnlineTitle("Billed Online Title");
+
+			const title = await generateSessionTitle(
+				"Investigate crash",
+				createRegistry(model),
+				createSettings(model, DEFAULT_TINY_TITLE_LOCAL_MODEL_KEY),
+			);
+
+			expect(title).toBeNull();
+			expect(local).toHaveBeenCalledTimes(1);
+			expect(online).not.toHaveBeenCalled();
+		});
+
+		it("does not use either title path for an unknown tiny model key", async () => {
+			const model = getModelOrThrow("claude-sonnet-4-5");
+			const local = vi.spyOn(tinyTitleClient, "generate").mockResolvedValue("Late Local");
+			const online = mockOnlineTitle("Billed Online Title");
+
+			const title = await generateSessionTitle(
+				"Investigate unknown",
+				createRegistry(model),
+				createSettings(model, "ollama:gpt-oss"),
+			);
+
+			expect(title).toBeNull();
+			expect(local).not.toHaveBeenCalled();
+			expect(online).not.toHaveBeenCalled();
+		});
 	});
 
 	it('unwraps a JSON {"title": ...} response into the bare title', async () => {

@@ -8,6 +8,7 @@
  */
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { InternalUrlRouter } from "../internal-urls/router";
+import type { ResolveContext } from "../internal-urls/types";
 
 /** Upper bound on candidates surfaced in the dropdown. */
 const MAX_URL_SUGGESTIONS = 25;
@@ -94,6 +95,7 @@ export async function getInternalUrlSuggestions(
 	textBeforeCursor: string,
 	cwd?: string,
 	signal?: AbortSignal,
+	sshHosts?: ResolveContext["sshHosts"],
 ): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
 	if (signal?.aborted) return null;
 	const ctx = extractInternalUrlContext(textBeforeCursor);
@@ -102,6 +104,7 @@ export async function getInternalUrlSuggestions(
 	const candidates = await InternalUrlRouter.instance().complete(ctx.scheme, ctx.query, {
 		...(cwd === undefined ? {} : { cwd }),
 		...(signal ? { signal } : {}),
+		...(sshHosts?.length ? { sshHosts } : {}),
 	});
 	if (!candidates || candidates.length === 0) return null;
 

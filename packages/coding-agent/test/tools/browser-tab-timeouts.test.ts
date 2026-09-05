@@ -35,7 +35,6 @@ class HandleWorkerTransport implements Transport {
 }
 
 async function createHandleWorker(createHandle: () => ElementHandle): Promise<HandleWorkerTransport> {
-	let page: Record<string, unknown>;
 	const target = {
 		_targetId: "target-handle-timeout",
 		page: async () => page,
@@ -44,7 +43,7 @@ async function createHandleWorker(createHandle: () => ElementHandle): Promise<Ha
 		setTimeout: () => locator,
 		waitHandle: async () => createHandle(),
 	};
-	page = {
+	const page: Record<string, unknown> = {
 		target: () => target,
 		url: () => "data:text/html,handle-timeout",
 		title: async () => "Handle timeout fixture",
@@ -209,7 +208,6 @@ describe("browser direct handle action deadlines", () => {
 			},
 		};
 		const createHandle = (): ElementHandle => {
-			let handle: ElementHandle;
 			type Keyboard = { type(...args: unknown[]): Promise<void> };
 			const keyboard: Keyboard = {
 				async type(this: Keyboard, ...args: unknown[]) {
@@ -217,7 +215,7 @@ describe("browser direct handle action deadlines", () => {
 					if (typeof args[0] === "string") node.value += args[0];
 				},
 			};
-			handle = {
+			const handle: ElementHandle = {
 				click: async function (this: ElementHandle, ...args: unknown[]) {
 					calls.push({ method: "click", thisOk: this === handle, args });
 				},
