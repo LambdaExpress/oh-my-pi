@@ -42,7 +42,7 @@ function sessionAccentAnsi(ctx: SegmentContext): string | undefined {
 /**
  * `theme.fg` for accent-role text: the hash-derived session accent when
  * enabled, else the given theme color. Callers route only the parts that
- * should carry the session identity color through this (pi icon, model name,
+ * should carry the session identity color through this (pi icon,
  * PR link, mode badges, session title) — status colors stay `theme.fg`.
  */
 function accentFg(ctx: SegmentContext, color: ThemeColor, text: string): string {
@@ -298,7 +298,7 @@ const modelSegment: StatusLineSegment = {
 
 		// `statusLineModel` is aliased to `accent` in many themes, so the badge
 		// uses status colors to stay visibly distinct from the model name color.
-		let content = accentFg(ctx, "statusLineModel", withIcon(modelIcon, modelName));
+		let content = theme.fg("statusLineModel", withIcon(modelIcon, modelName));
 		// Advisor symbol, colored by the worst status in the roster:
 		// success = all running, warning = quota-exhausted, error = failed,
 		// dim = everything paused/no-model. Per-advisor detail lives in
@@ -322,7 +322,7 @@ const modelSegment: StatusLineSegment = {
 			if (advisorIcon) content += theme.fg(badgeColor, ` ${advisorIcon}`);
 		}
 		if (tail) {
-			content += accentFg(ctx, "statusLineModel", tail);
+			content += theme.fg("statusLineModel", tail);
 		}
 
 		return { content, visible: true };

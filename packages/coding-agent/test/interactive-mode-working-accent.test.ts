@@ -7,6 +7,7 @@ import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-sessi
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { executeBuiltinSlashCommand } from "@oh-my-pi/pi-coding-agent/slash-commands/builtin-registry";
 import * as sessionColor from "@oh-my-pi/pi-coding-agent/utils/session-color";
+import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { adjustHsv, TempDir } from "@oh-my-pi/pi-utils";
 import { setLocale } from "../src/i18n";
 
@@ -195,6 +196,68 @@ describe("InteractiveMode working-message session accent cache", () => {
 });
 
 describe("InteractiveMode working activity", () => {
+	it("keeps elapsed time advancing across intent changes and resets it for the next run", async () => {
+		const { mode } = await createHarness("Timed session");
+		vi.useFakeTimers();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
+		mode.statusLine.resetActiveTime();
+		mode.statusLine.markActivityStart();
+		mode.ensureLoadingAnimation();
+
+		try {
+			clock.mockReturnValue(69_900);
+			vi.advanceTimersByTime(200);
+			expect(stripVTControlCharacters(renderLoader(mode))).toContain("(59s)");
+
+			mode.setWorkingMessage("Inspecting existing patch convention");
+			expect(stripVTControlCharacters(renderLoader(mode))).toContain("Inspecting existing patch convention (59s)");
+
+			clock.mockReturnValue(70_100);
+			vi.advanceTimersByTime(200);
+			expect(stripVTControlCharacters(renderLoader(mode))).toContain("(1m 0s)");
+			mode.setWorkingMessage();
+			expect(stripVTControlCharacters(renderLoader(mode))).toContain("(1m 0s)");
+
+			mode.statusLine.markActivityEnd();
+			mode.statusContainer.disposeChildren();
+			mode.loadingAnimation = undefined;
+			clock.mockReturnValue(200_000);
+			mode.statusLine.markActivityStart();
+			mode.ensureLoadingAnimation();
+			expect(stripVTControlCharacters(renderLoader(mode))).toContain("(0s)");
+		} finally {
+			mode.loadingAnimation?.stop();
+			mode.statusLine.markActivityEnd();
+		}
+	});
+
+	it("wraps a pending intent with its live hour timer within the terminal width", async () => {
+		const { mode } = await createHarness("Wrapped timer session");
+		vi.useFakeTimers();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
+		mode.statusLine.resetActiveTime();
+		mode.statusLine.markActivityStart();
+		mode.setWorkingMessage("Inspecting existing patch convention");
+		mode.ensureLoadingAnimation();
+
+		try {
+			clock.mockReturnValue(10_000 + 3_599_900);
+			vi.advanceTimersByTime(200);
+			expect(stripVTControlCharacters(renderLoader(mode))).toContain("(59m 59s)");
+
+			clock.mockReturnValue(10_000 + 3_600_100);
+			vi.advanceTimersByTime(200);
+			const lines = mode.statusContainer.render(32).map(stripVTControlCharacters);
+			expect(lines.map(line => line.trim()).join(" ")).toContain("Inspecting existing patch convention (1h 0m 0s)");
+			for (const line of lines) {
+				expect(visibleWidth(line)).toBeLessThanOrEqual(32);
+			}
+		} finally {
+			mode.loadingAnimation?.stop();
+			mode.statusLine.markActivityEnd();
+		}
+	});
+
 	it("preserves the active loader when blank /rename reports usage", async () => {
 		const { mode } = await createHarness("Active rename session");
 		mode.ensureLoadingAnimation();

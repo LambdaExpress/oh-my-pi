@@ -844,7 +844,7 @@ export const SETTINGS_SCHEMA = {
 	},
 	"statusLine.compactThinkingLevel": {
 		type: "boolean",
-		default: true,
+		default: false,
 		ui: {
 			tab: "appearance",
 			group: "Status Line",

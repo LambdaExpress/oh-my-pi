@@ -5589,6 +5589,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		return this.#cacheWorkingMessageAccent(key, main && dim ? { main, dim } : undefined);
 	}
 
+	#workingMessageWithElapsed(message: string): string {
+		const totalSeconds = Math.floor(this.statusLine.getCurrentActivityMs() / 1_000);
+		const hours = Math.floor(totalSeconds / 3_600);
+		const minutes = Math.floor((totalSeconds % 3_600) / 60);
+		const seconds = totalSeconds % 60;
+		const elapsed =
+			hours > 0 ? `${hours}h ${minutes}m ${seconds}s` : minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
+		return `${message} (${elapsed})`;
+	}
+
 	ensureLoadingAnimation(): void {
 		if (!this.loadingAnimation) {
 			this.#clearWorkingMessageAccentCache();
@@ -5608,7 +5618,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					return accent ? `${accent.dim}${spinner}\x1b[39m` : theme.fg("muted", spinner);
 				},
 				messageColorFn,
-				DEFAULT_WORKING_MESSAGE,
+				() => this.#workingMessageWithElapsed(DEFAULT_WORKING_MESSAGE),
 				// The brand spinner lives in the status line while working; this row
 				// leads with the interrupt affordance instead of a second spinner.
 				// The leading space nudges the row one column right of the flush-left
@@ -5638,14 +5648,11 @@ export class InteractiveMode implements InteractiveModeContext {
 	setWorkingMessage(message?: string): void {
 		if (message === undefined) {
 			this.#pendingWorkingMessage = undefined;
-			if (this.loadingAnimation) {
-				this.loadingAnimation.setMessage(DEFAULT_WORKING_MESSAGE);
-			}
-			return;
 		}
 
 		if (this.loadingAnimation) {
-			this.loadingAnimation.setMessage(message);
+			const text = message ?? DEFAULT_WORKING_MESSAGE;
+			this.loadingAnimation.setMessage(() => this.#workingMessageWithElapsed(text));
 			return;
 		}
 

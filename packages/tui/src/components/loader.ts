@@ -142,7 +142,7 @@ export class Loader extends Text {
 		this.#trailer = trailer;
 	}
 
-	setMessage(message: string) {
+	setMessage(message: string | (() => string)) {
 		if (message === this.message) {
 			return;
 		}

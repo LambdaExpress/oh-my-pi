@@ -6,6 +6,7 @@
 	"author": "Stencil Labs, Inc.",
 	"workspaces": {
 		"packages": [
+			".omp/tools",
 			"packages/*",
 			"python/robomp/web"
 		],
@@ -207,6 +208,7 @@
 	"packageManager": "bun@1.4.0",
 	"patchedDependencies": {
 		"@ark/schema@0.56.2": "patches/@ark%2Fschema@0.56.2.patch",
+		"@napi-rs/canvas@1.0.8": "patches/canvas@1.0.8.patch",
 		"puppeteer-core@25.3.0": "patches/puppeteer-core@25.3.0.patch"
 	}
 }

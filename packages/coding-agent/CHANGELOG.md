@@ -73,12 +73,15 @@
 
 ### Fixed
 
+- Restored live elapsed time beside the working message, preserving the timer across tool intent changes and resetting it for each new run.
+- Restored the status line's separate model icon and thinking-level suffix by default, with model and reasoning text retaining their theme color when the session is renamed.
 - Recovered a plus-prefixed `CUT` header after a trailing blank insert row as the next operation instead of inserting the header text into the target file.
 - Fixed ranged searches of oversized Windows files, automatic SSH host refresh after external OpenSSH config edits, and macOS SSH uploads rejected by padded `wc -c` output.
 - Fixed OpenAI Responses idle stream timeouts after visible output by continuing the interrupted response instead of stopping without an automatic retry.
 - Fixed aborted PowerShell calls rendering separate call and error frames instead of one command frame with the abort in its output.
 - Fixed shared LSP transports discarding the server's real exit diagnostics and skipping the bounded clean-exit initialization retry.
 - Fixed project TUI pixel screenshots missing `@napi-rs/canvas` after a standard root workspace install.
+- Fixed project TUI PNG screenshots failing in compiled Windows builds.
 - Made local `xd://report_issue` files synchronously durable before reporting a successful save.
 - Fixed broker-owned Chromium exiting immediately on Windows by supervising its DevTools endpoint and cooperatively cleaning the exact OMP browser profile.
 - Fixed completed-run collapsing leaving all prior agent text and tool calls expanded when a run ended with a terminal provider error.
