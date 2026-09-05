@@ -73,6 +73,10 @@
 
 ### Fixed
 
+- Fixed image-question reads losing usable local images or metadata when the configured vision service is unavailable.
+- Fixed cold Rust reference queries reporting an empty result while rust-analyzer is still indexing.
+- Fixed project TUI screenshots displaying missing-glyph boxes for Windows Chinese text, symbols, and Nerd Font icons.
+- Fixed project TUI startup and quit-key requests timing out during debug-server replacement or application exit.
 - Restored live elapsed time beside the working message, preserving the timer across tool intent changes and resetting it for each new run.
 - Restored the status line's separate model icon and thinking-level suffix by default, with model and reasoning text retaining their theme color when the session is renamed.
 - Recovered a plus-prefixed `CUT` header after a trailing blank insert row as the next operation instead of inserting the header text into the target file.

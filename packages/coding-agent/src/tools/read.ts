@@ -41,14 +41,11 @@ import { buildLineEntriesWithBlockContext, type LineEntry, lineEntriesToPlainTex
 import { isCpuProfilePath, renderCpuProfile } from "../utils/cpuprofile";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import {
-	ImageInputTooLargeError,
-	InvalidImageDataError,
 	loadImageInput,
 	loadSvgImageInput,
 	MAX_IMAGE_INPUT_BYTES,
 	webpExclusionForModel,
 } from "../utils/image-loading";
-import { askImageQuestion, resolveImageQuestionModel } from "../utils/image-question";
 import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "../utils/markit";
 import { isSampleProfilePath, renderSampleProfile } from "../utils/sample-profile";
 
@@ -102,6 +99,7 @@ import {
 	READ_CHUNK_SIZE,
 	readHashlineHeaderContext,
 } from "./read-format";
+import { buildReadImageContent } from "./read-image-content";
 import {
 	findSuffixMatchCached,
 	isNotFoundError,
@@ -1071,84 +1069,40 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	}): Promise<{ content: Array<TextContent | ImageContent>; details: ReadToolDetails; sourcePath: string }> {
 		const { readPath, absolutePath, mimeType, imageMetadata, fileSize, imageKind, question, questionPath, signal } =
 			options;
-		if (!question && !(this.session.getActiveModel?.()?.input.includes("image") ?? true)) {
-			const outputMime = imageMetadata?.mimeType ?? mimeType;
-			const imageQuestionPath = questionPath ?? formatPathRelativeToCwd(absolutePath, this.session.cwd);
-			const metadataLines = [
-				"Image metadata:",
-				`- MIME: ${outputMime}`,
-				`- Bytes: ${fileSize} (${formatBytes(fileSize)})`,
-				imageMetadata?.width !== undefined && imageMetadata.height !== undefined
-					? `- Dimensions: ${imageMetadata.width}x${imageMetadata.height}`
-					: "- Dimensions: unknown",
-				imageMetadata?.channels !== undefined ? `- Channels: ${imageMetadata.channels}` : "- Channels: unknown",
-				imageMetadata?.hasAlpha === true
-					? "- Alpha: yes"
-					: imageMetadata?.hasAlpha === false
-						? "- Alpha: no"
-						: "- Alpha: unknown",
-				"",
-				`To analyze the image, read \`${imageQuestionPath}?q=<question>\` — the question is answered by a vision model and returned as text.`,
-			];
-			return { content: [{ type: "text", text: metadataLines.join("\n") }], details: {}, sourcePath: absolutePath };
-		}
-		if (fileSize > MAX_IMAGE_SIZE) {
-			const sizeStr = formatBytes(fileSize);
-			const maxStr = formatBytes(MAX_IMAGE_SIZE);
-			throw new ToolError(`Image file too large: ${sizeStr} exceeds ${maxStr} limit.`);
-		}
-		try {
-			const resolved = question ? resolveImageQuestionModel(this.session) : undefined;
-			const imageLoadOptions = {
-				path: readPath,
-				cwd: this.session.cwd,
-				autoResize: this.#autoResizeImages,
-				maxBytes: MAX_IMAGE_SIZE,
-				resolvedPath: absolutePath,
-				excludeWebP: webpExclusionForModel(resolved?.model ?? this.session.getActiveModel?.()),
-			};
-			const imageInput =
-				imageKind === "svg"
-					? await loadSvgImageInput(imageLoadOptions)
-					: await loadImageInput({ ...imageLoadOptions, detectedMimeType: mimeType });
-			if (!imageInput) {
-				throw new ToolError(
-					imageKind === "svg"
-						? "The ':img' selector only supports .svg and .svgz files."
-						: `Read image file [${mimeType}] failed: unsupported image format.`,
-				);
-			}
-			if (question && resolved) {
-				const answer = await askImageQuestion(
-					this.session,
-					resolved,
-					imageInput,
-					question,
-					signal,
-					this.completeImageRequest,
-				);
-				return {
-					content: [{ type: "text", text: answer.text }],
-					details: { resolvedPath: absolutePath, contentType: imageInput.mimeType },
-					sourcePath: imageInput.resolvedPath,
+		const { content, sourcePath, contentType } = await buildReadImageContent({
+			session: this.session,
+			mimeType,
+			imageMetadata,
+			fileSize,
+			questionPath: questionPath ?? formatPathRelativeToCwd(absolutePath, this.session.cwd),
+			question,
+			sourcePath: absolutePath,
+			completeImageRequest: this.completeImageRequest,
+			signal,
+			load: async excludeWebP => {
+				const imageLoadOptions = {
+					path: readPath,
+					cwd: this.session.cwd,
+					autoResize: this.#autoResizeImages,
+					maxBytes: MAX_IMAGE_SIZE,
+					resolvedPath: absolutePath,
+					excludeWebP,
 				};
-			}
-			return {
-				content: [
-					{ type: "text", text: imageInput.textNote },
-					{ type: "image", data: imageInput.data, mimeType: imageInput.mimeType },
-				],
-				details: {},
-				sourcePath: imageInput.resolvedPath,
-			};
-		} catch (error) {
-			// Both surface as an actionable tool error so the model can fix the input
-			// instead of the corrupt/oversized payload entering the transcript.
-			if (error instanceof ImageInputTooLargeError || error instanceof InvalidImageDataError) {
-				throw new ToolError(error.message);
-			}
-			throw error;
-		}
+				const imageInput =
+					imageKind === "svg"
+						? await loadSvgImageInput(imageLoadOptions)
+						: await loadImageInput({ ...imageLoadOptions, detectedMimeType: mimeType });
+				if (!imageInput && imageKind === "svg") {
+					throw new ToolError("The ':img' selector only supports .svg and .svgz files.");
+				}
+				return imageInput;
+			},
+		});
+		return {
+			content,
+			details: contentType ? { resolvedPath: absolutePath, contentType } : {},
+			sourcePath,
+		};
 	}
 
 	#buildInMemoryTextResult(

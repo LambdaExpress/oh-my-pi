@@ -9,6 +9,8 @@ import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ImageAttachmentEntry, ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { MAX_IMAGE_INPUT_BYTES } from "@oh-my-pi/pi-coding-agent/utils/image-loading";
 import { removeSyncWithRetries } from "@oh-my-pi/pi-utils";
 import { writeArchive } from "@oh-my-pi/pi-utils/ar";
 
@@ -126,6 +128,18 @@ function createCompleteSimpleForbiddenStub(): CompleteSimpleStub {
 	return { calls, fn };
 }
 
+function createCompleteSimpleProviderFailureStub(throwError = false): CompleteSimpleStub {
+	const stub = createCompleteSimpleSuccessStub("");
+	const errorMessage =
+		"401 Insufficient balance. Manage your billing here: https://opencode.ai/workspace/private-workspace/billing\nInsufficient balance (type=CreditsError)";
+	const fn: typeof completeSimple = async (model, context, options) => {
+		const response = await stub.fn(model, context, options);
+		if (throwError) throw new Error(errorMessage);
+		return { ...response, stopReason: "error", errorMessage };
+	};
+	return { calls: stub.calls, fn };
+}
+
 function createCompleteSimpleHangingStub(): CompleteSimpleStub {
 	const calls: unknown[][] = [];
 	const fn = (async (...args: unknown[]) => {
@@ -210,6 +224,109 @@ describe("read image questions", () => {
 		expect(parts[1]).toEqual({ type: "text", text: "What text is visible?" });
 	});
 
+	it("returns the local PNG without private billing details when the vision provider fails", async () => {
+		const stub = createCompleteSimpleProviderFailureStub();
+		const tool = new ReadTool(createSession(testDir, visionModel), stub.fn);
+
+		const result = await tool.execute("call", { path: `${imagePath}?q=What is visible?` });
+
+		expect(result.content.find(entry => entry.type === "image")).toEqual({
+			type: "image",
+			data: TINY_PNG_BASE64,
+			mimeType: "image/png",
+		});
+		expect(textOf(result)).toContain("No image analysis was obtained");
+		expect(textOf(result)).not.toContain("opencode.ai");
+		expect(textOf(result)).not.toContain("private-workspace");
+		expect(stub.calls).toHaveLength(1);
+	});
+
+	it("returns metadata, not pixels, to a text model after a thrown provider failure without retrying", async () => {
+		const stub = createCompleteSimpleProviderFailureStub(true);
+		const session = createSession(testDir, visionModel, "test-key", Settings.isolated(), {
+			activeModel: textOnlyModel,
+			availableModels: [textOnlyModel, visionModel, reasoningVisionModel],
+		});
+
+		const result = await new ReadTool(session, stub.fn).execute("call", {
+			path: `${imagePath}?q=What is visible?`,
+		});
+
+		expect(result.content.some(entry => entry.type === "image")).toBe(false);
+		expect(textOf(result)).toContain("Dimensions: 1x1");
+		expect(textOf(result)).toContain("MIME: image/png");
+		expect(textOf(result)).toContain("No image analysis was obtained");
+		expect(textOf(result)).toContain("screen.png?q=<question>");
+		expect(textOf(result)).not.toContain("private-workspace");
+		expect(stub.calls).toHaveLength(1);
+	});
+
+	it("still loads a local image when the model registry is unavailable", async () => {
+		const stub = createCompleteSimpleForbiddenStub();
+		const session = createSession(testDir, visionModel);
+		session.modelRegistry = undefined;
+
+		const result = await new ReadTool(session, stub.fn).execute("call", {
+			path: `${imagePath}?q=What is visible?`,
+		});
+
+		expect(result.content.find(entry => entry.type === "image")?.data).toBe(TINY_PNG_BASE64);
+		expect(textOf(result)).toContain("No image analysis was obtained");
+		expect(stub.calls).toHaveLength(0);
+	});
+
+	it("returns local metadata when no question model is available", async () => {
+		const stub = createCompleteSimpleForbiddenStub();
+		const session = createSession(testDir, visionModel, "test-key", Settings.isolated(), {
+			activeModel: textOnlyModel,
+			availableModels: [],
+		});
+
+		const result = await new ReadTool(session, stub.fn).execute("call", {
+			path: `${imagePath}?q=What is visible?`,
+		});
+
+		expect(result.content.some(entry => entry.type === "image")).toBe(false);
+		expect(textOf(result)).toContain("Dimensions: 1x1");
+		expect(textOf(result)).toContain("No image analysis was obtained");
+		expect(stub.calls).toHaveLength(0);
+	});
+
+	it("returns the local image without submitting when vision credentials are unavailable", async () => {
+		const stub = createCompleteSimpleForbiddenStub();
+		const session = createSession(testDir, visionModel);
+		session.modelRegistry!.getApiKey = async () => undefined;
+
+		const result = await new ReadTool(session, stub.fn).execute("call", {
+			path: `${imagePath}?q=What is visible?`,
+		});
+
+		expect(result.content.find(entry => entry.type === "image")?.data).toBe(TINY_PNG_BASE64);
+		expect(textOf(result)).toContain("No image analysis was obtained");
+		expect(stub.calls).toHaveLength(0);
+	});
+
+	it("converts a failed question's WebP locally for an active model that cannot decode WebP", async () => {
+		const webpPath = path.join(testDir, "screen.webp");
+		const webp = await new Bun.Image(Buffer.from(TINY_PNG_BASE64, "base64")).webp().bytes();
+		await Bun.write(webpPath, webp);
+		const stub = createCompleteSimpleProviderFailureStub();
+		const session = createSession(testDir, visionModel, "test-key", Settings.isolated(), {
+			activeModel: { ...visionModel, imageInputDecoder: "stb" },
+		});
+
+		const result = await new ReadTool(session, stub.fn).execute("call", {
+			path: `${webpPath}?q=What is visible?`,
+		});
+
+		const image = result.content.find(entry => entry.type === "image");
+		expect(image?.mimeType).toBe("image/png");
+		expect((await new Bun.Image(Buffer.from(image!.data, "base64")).metadata()).format).toBe("png");
+		const request = stub.calls[0]?.[1] as { messages: Array<{ content: ImageContent[] }> };
+		expect(request.messages[0]?.content[0]?.mimeType).toBe("image/webp");
+		expect(stub.calls).toHaveLength(1);
+	});
+
 	it("answers questions about image members inside archives", async () => {
 		const bundlePath = path.join(testDir, "images.zip");
 		await writeArchive(bundlePath, "zip", Object.entries({ "screen.png": Buffer.from(TINY_PNG_BASE64, "base64") }));
@@ -221,6 +338,21 @@ describe("read image questions", () => {
 		});
 
 		expect(result.content).toEqual([{ type: "text", text: "Archived image" }]);
+		expect(stub.calls).toHaveLength(1);
+	});
+
+	it("returns an archive member image when its delegated question fails", async () => {
+		const bundlePath = path.join(testDir, "failed-question.zip");
+		await writeArchive(bundlePath, "zip", Object.entries({ "screen.png": Buffer.from(TINY_PNG_BASE64, "base64") }));
+		const stub = createCompleteSimpleProviderFailureStub();
+
+		const result = await new ReadTool(createSession(testDir, visionModel), stub.fn).execute("call", {
+			path: `${bundlePath}:screen.png?q=Describe the archived image`,
+		});
+
+		expect(result.content.find(entry => entry.type === "image")?.data).toBe(TINY_PNG_BASE64);
+		expect(textOf(result)).toContain("No image analysis was obtained");
+		expect(textOf(result)).not.toContain("private-workspace");
 		expect(stub.calls).toHaveLength(1);
 	});
 
@@ -236,6 +368,25 @@ describe("read image questions", () => {
 		});
 
 		expect(result.content).toEqual([{ type: "text", text: "Attached image" }]);
+		expect(stub.calls).toHaveLength(1);
+	});
+
+	it("keeps the attachment URL actionable in a text-only failure fallback", async () => {
+		const image: ImageContent = { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" };
+		const stub = createCompleteSimpleProviderFailureStub();
+		const session = createSession(testDir, visionModel, "test-key", Settings.isolated(), {
+			activeModel: textOnlyModel,
+			imageAttachments: [{ label: "Image #1", uri: "attachment://1", image, sourcePath: imagePath }],
+		});
+
+		const result = await new ReadTool(session, stub.fn).execute("call", {
+			path: "attachment://1?q=Describe the attachment",
+		});
+
+		expect(result.content.some(entry => entry.type === "image")).toBe(false);
+		expect(textOf(result)).toContain("Dimensions: 1x1");
+		expect(textOf(result)).toContain("attachment://1?q=<question>");
+		expect(textOf(result)).toContain("No image analysis was obtained");
 		expect(stub.calls).toHaveLength(1);
 	});
 
@@ -303,6 +454,78 @@ describe("read image questions", () => {
 		await expect(tool.execute("call", { path: `${imagePath}?q=What is visible?` })).rejects.toThrow(
 			/Image submission is disabled/,
 		);
+		expect(stub.calls).toHaveLength(0);
+	});
+
+	it("keeps image blocking a hard failure even when no model can be resolved", async () => {
+		const stub = createCompleteSimpleForbiddenStub();
+		const settings = Settings.isolated({ "images.blockImages": true });
+		const session = createSession(testDir, visionModel, "test-key", settings, { availableModels: [] });
+
+		await expect(
+			new ReadTool(session, stub.fn).execute("call", { path: `${imagePath}?q=What is visible?` }),
+		).rejects.toThrow(/Image submission is disabled/);
+		expect(stub.calls).toHaveLength(0);
+	});
+
+	it("does not turn a provider cancellation into a successful image fallback", async () => {
+		const stub = createCompleteSimpleSuccessStub("");
+		const complete: typeof completeSimple = async (model, context, options) => ({
+			...(await stub.fn(model, context, options)),
+			stopReason: "aborted",
+		});
+
+		await expect(
+			new ReadTool(createSession(testDir, visionModel), complete).execute("call", {
+				path: `${imagePath}?q=What is visible?`,
+			}),
+		).rejects.toBeInstanceOf(ToolAbortError);
+		expect(stub.calls).toHaveLength(1);
+	});
+
+	it("honors parent cancellation even when the provider returns a billing error", async () => {
+		const controller = new AbortController();
+		const stub = createCompleteSimpleProviderFailureStub();
+		const complete: typeof completeSimple = async (model, context, options) => {
+			const response = await stub.fn(model, context, options);
+			controller.abort();
+			return response;
+		};
+
+		await expect(
+			new ReadTool(createSession(testDir, visionModel), complete).execute(
+				"call",
+				{ path: `${imagePath}?q=What is visible?` },
+				controller.signal,
+			),
+		).rejects.toBeInstanceOf(ToolAbortError);
+		expect(stub.calls).toHaveLength(1);
+	});
+
+	it("rejects corrupt input instead of falling back when the model registry is unavailable", async () => {
+		const corruptPath = path.join(testDir, "corrupt.png");
+		await Bun.write(corruptPath, Buffer.from(TINY_PNG_BASE64, "base64").subarray(0, 33));
+		const stub = createCompleteSimpleForbiddenStub();
+		const session = createSession(testDir, visionModel);
+		session.modelRegistry = undefined;
+
+		await expect(
+			new ReadTool(session, stub.fn).execute("call", { path: `${corruptPath}?q=What is visible?` }),
+		).rejects.toThrow(/not a decodable/);
+		expect(stub.calls).toHaveLength(0);
+	});
+
+	it("rejects oversized input before attempting an image question or fallback", async () => {
+		const oversizedPath = path.join(testDir, "oversized.png");
+		await Bun.write(oversizedPath, Buffer.from(TINY_PNG_BASE64, "base64"));
+		await fs.promises.truncate(oversizedPath, MAX_IMAGE_INPUT_BYTES + 1);
+		const stub = createCompleteSimpleForbiddenStub();
+
+		await expect(
+			new ReadTool(createSession(testDir, visionModel), stub.fn).execute("call", {
+				path: `${oversizedPath}?q=What is visible?`,
+			}),
+		).rejects.toThrow(/Image file too large/);
 		expect(stub.calls).toHaveLength(0);
 	});
 

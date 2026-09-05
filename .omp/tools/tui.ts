@@ -50,10 +50,7 @@ interface ToolUpdate {
 	details?: Record<string, unknown>;
 }
 interface ToolResult {
-	content: (
-		| { type: "text"; text: string }
-		| { type: "image"; data: string; mimeType: string }
-	)[];
+	content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
 	details?: Record<string, unknown>;
 }
 
@@ -111,12 +108,7 @@ function resolveKittyVtEntry(): string {
 		try {
 			return realpathSync(candidate);
 		} catch (error) {
-			if (
-				typeof error !== "object" ||
-				error === null ||
-				!("code" in error) ||
-				error.code !== "ENOENT"
-			) {
+			if (typeof error !== "object" || error === null || !("code" in error) || error.code !== "ENOENT") {
 				throw error;
 			}
 		}
@@ -135,7 +127,7 @@ async function importKittyVt(): Promise<typeof KittyVt> {
 
 function loadVt() {
 	// Lazy import: a missing optional install must degrade `start`, not fail tool load.
-	vtApi ??= importKittyVt().catch((error) => {
+	vtApi ??= importKittyVt().catch(error => {
 		vtApi = null;
 		throw new Error(`screen emulation needs kitty-vt-wasm (${error})`);
 	});
@@ -188,8 +180,8 @@ interface StoredImage {
 // ─── PNG rasterizer ──────────────────────────────────────────────────────────
 //
 // `shot` rasterizes the emulator grid with @napi-rs/canvas (prebuilt Skia):
-// real system fonts with an explicit fallback stack (Menlo → nerd font →
-// braille → CJK → emoji), so icons, spinners, and wide text render as a
+// real system fonts with an explicit fallback stack (monospace → nerd font →
+// symbols → CJK → emoji), so icons, spinners, and wide text render as a
 // terminal would. Powerline separators (U+E0B0–E0B3) are drawn as vector
 // paths because font metrics leave gaps at cell edges. Imported lazily so a
 // missing install degrades only `shot`, not the tool.
@@ -213,7 +205,7 @@ let canvasApi: {
 
 /**
  * Loads @napi-rs/canvas and builds the fallback font stack from the fonts
- * actually installed: Menlo, first nerd font, braille, CJK, emoji.
+ * actually installed: monospace, first nerd font, symbols, CJK, emoji.
  */
 async function loadCanvas() {
 	if (canvasApi) return canvasApi;
@@ -222,22 +214,44 @@ async function loadCanvas() {
 		// Lazy import: a missing optional install must degrade `shot`, not fail tool load.
 		mod = await import("@napi-rs/canvas");
 	} catch (error) {
-		throw new Error(
-			`shot needs @napi-rs/canvas — run \`bun install\` in .omp/tools (${error})`,
-		);
+		throw new Error(`shot needs @napi-rs/canvas — run \`bun install\` in .omp/tools (${error})`);
 	}
-	const families = mod.GlobalFonts.families.map((entry) => entry.family);
-	const stack = ["Menlo"];
+	const families = mod.GlobalFonts.families.map(entry => entry.family);
+	const stack: string[] = [];
+	for (const wanted of [
+		"Menlo",
+		"Cascadia Mono",
+		"Consolas",
+		"DejaVu Sans Mono",
+		"Liberation Mono",
+		"Ubuntu Mono",
+		"Courier New",
+	]) {
+		if (families.includes(wanted)) {
+			stack.push(wanted);
+			break;
+		}
+	}
 	const nerd =
-		families.find((family) => /nerd font mono/i.test(family)) ??
-		families.find((family) => /nerd font/i.test(family));
+		families.find(family => /nerd font mono|\bNFM$/i.test(family)) ??
+		families.find(family => /nerd font|\bNF[MP]?$/i.test(family));
 	if (nerd) stack.push(nerd);
 	for (const wanted of [
 		"Apple Braille",
+		"Segoe UI Symbol",
+		"DejaVu Sans",
+		"Noto Sans Symbols",
+		"Noto Sans Symbols 2",
 		"PingFang SC",
 		"Hiragino Sans",
 		"Noto Sans CJK SC",
+		"Noto Sans SC",
+		"Microsoft YaHei",
+		"Microsoft JhengHei",
+		"SimHei",
+		"SimSun",
 		"Apple Color Emoji",
+		"Segoe UI Emoji",
 		"Noto Color Emoji",
 	]) {
 		if (families.includes(wanted)) stack.push(wanted);
@@ -245,7 +259,7 @@ async function loadCanvas() {
 	canvasApi = {
 		create: mod.createCanvas,
 		load: mod.loadImage,
-		stack: stack.map((family) => `"${family}"`).join(", "),
+		stack: [...stack.map(family => JSON.stringify(family)), "monospace"].join(", "),
 	};
 	return canvasApi;
 }
@@ -304,10 +318,10 @@ export class Screen {
 			scrollback: 2000,
 		});
 		const screen = new Screen(term);
-		term.onOutput = (bytes) => screen.onReply?.(bytes);
+		term.onOutput = bytes => screen.onReply?.(bytes);
 		// Image transmissions are kept for `shot`; the handler also keeps
 		// core logs and other host events off the host's stderr.
-		term.onEvent = (event) => {
+		term.onEvent = event => {
 			if (event.type === "graphics_command") screen.#graphics(event);
 		};
 		return screen;
@@ -334,10 +348,7 @@ export class Screen {
 		if (cmd.payload) pending.chunks.push(Buffer.from(cmd.payload, "base64"));
 		if (cmd.more) return;
 		this.#pending = null;
-		let bytes: Buffer =
-			pending.chunks.length === 1
-				? pending.chunks[0]
-				: Buffer.concat(pending.chunks);
+		let bytes: Buffer = pending.chunks.length === 1 ? pending.chunks[0] : Buffer.concat(pending.chunks);
 		if (pending.compressed) {
 			try {
 				bytes = inflateSync(bytes);
@@ -393,8 +404,7 @@ export class Screen {
 		}
 		const channels = image.format === 24 ? 3 : 4;
 		const { width, height } = image;
-		if (!width || !height || image.bytes.length < width * height * channels)
-			return null;
+		if (!width || !height || image.bytes.length < width * height * channels) return null;
 		const off = create(width, height);
 		const ctx = off.getContext("2d");
 		const data = ctx.createImageData(width, height);
@@ -421,13 +431,10 @@ export class Screen {
 		if (history > 0) {
 			const total = term.scrollbackLength;
 			for (let i = Math.max(0, total - history); i < total; i++) {
-				out.push(
-					`┆${(term.scrollbackLine(i) ?? "").replace(PLACEHOLDER_RE, "▒")}`,
-				);
+				out.push(`┆${(term.scrollbackLine(i) ?? "").replace(PLACEHOLDER_RE, "▒")}`);
 			}
 		}
-		for (let y = 0; y < term.rows; y++)
-			out.push(`│${term.line(y).replace(PLACEHOLDER_RE, "▒")}`);
+		for (let y = 0; y < term.rows; y++) out.push(`│${term.line(y).replace(PLACEHOLDER_RE, "▒")}`);
 		return out.join("\n");
 	}
 
@@ -492,11 +499,7 @@ export class Screen {
 					// Image placeholder: fg encodes the image id, combining
 					// diacritics the tile row/col; omitted diacritics continue
 					// the previous cell's run (kitty spec).
-					const id = cell.fg
-						? "rgb" in cell.fg
-							? cell.fg.rgb
-							: cell.fg.index
-						: 0;
+					const id = cell.fg ? ("rgb" in cell.fg ? cell.fg.rgb : cell.fg.index) : 0;
 					const row = rowcolIndex.get(cell.combining[0]?.codePointAt(0) ?? -1);
 					const col = rowcolIndex.get(cell.combining[1]?.codePointAt(0) ?? -1);
 					const prev = holders.at(-1);
@@ -526,11 +529,8 @@ export class Screen {
 		}
 		// Decode every image referenced by a placement or placeholder cell.
 		const placements = term.graphicsPlacements();
-		const drawable = new Map<
-			number,
-			CanvasModule.Image | CanvasModule.Canvas
-		>();
-		const wanted = new Set(holders.map((holder) => holder.id));
+		const drawable = new Map<number, CanvasModule.Image | CanvasModule.Canvas>();
+		const wanted = new Set(holders.map(holder => holder.id));
 		for (const placement of placements) {
 			if (!placement.unicodePlacement) wanted.add(placement.imageId);
 		}
@@ -540,9 +540,7 @@ export class Screen {
 			const image = await this.#decodeImage(create, load, stored);
 			if (image) drawable.set(id, image);
 		}
-		const direct = placements
-			.filter((placement) => !placement.unicodePlacement)
-			.sort((a, b) => a.zIndex - b.zIndex);
+		const direct = placements.filter(placement => !placement.unicodePlacement).sort((a, b) => a.zIndex - b.zIndex);
 		const drawDirect = (placement: (typeof direct)[number]) => {
 			const image = drawable.get(placement.imageId);
 			if (!image) return;
@@ -550,29 +548,11 @@ export class Screen {
 			// assumes 10x20px cells when sizing them.
 			const spanCols = placement.numCols || Math.ceil(image.width / 10);
 			const spanRows = placement.numRows || Math.ceil(image.height / 20);
-			ctx.drawImage(
-				image,
-				placement.col * CW,
-				placement.row * CH,
-				spanCols * CW,
-				spanRows * CH,
-			);
+			ctx.drawImage(image, placement.col * CW, placement.row * CH, spanCols * CW, spanRows * CH);
 		};
 		// kitty z-order: negative z-index draws under text, the rest above.
-		for (const placement of direct)
-			if (placement.zIndex < 0) drawDirect(placement);
-		for (const {
-			px,
-			py,
-			ch,
-			fg,
-			deco,
-			bold,
-			italic,
-			underline,
-			strike,
-			span,
-		} of cells) {
+		for (const placement of direct) if (placement.zIndex < 0) drawDirect(placement);
+		for (const { px, py, ch, fg, deco, bold, italic, underline, strike, span } of cells) {
 			if (underline) {
 				// Coarse style fidelity: double gets two bars; straight,
 				// curly, dotted, and dashed all render as one.
@@ -611,22 +591,15 @@ export class Screen {
 				}
 				continue;
 			}
-			ctx.font =
-				`${italic ? "italic " : ""}${bold ? "bold " : ""}` +
-				`${FONT_PX}px ${stack}`;
-			ctx.fillText(ch, px, py + BASELINE);
+			ctx.font = `${italic ? "italic " : ""}${bold ? "bold " : ""}` + `${FONT_PX}px ${stack}`;
+			ctx.fillText(ch, px, py + BASELINE, span * CW);
 		}
-		for (const placement of direct)
-			if (placement.zIndex >= 0) drawDirect(placement);
+		for (const placement of direct) if (placement.zIndex >= 0) drawDirect(placement);
 		// Placeholder tiles: scale each image to its virtual grid (or the max
 		// extent seen) and draw the cell's slice.
 		const grids = new Map<number, { cols: number; rows: number }>();
 		for (const placement of placements) {
-			if (
-				placement.unicodePlacement &&
-				placement.numCols &&
-				placement.numRows
-			) {
+			if (placement.unicodePlacement && placement.numCols && placement.numRows) {
 				grids.set(placement.imageId, {
 					cols: placement.numCols,
 					rows: placement.numRows,
@@ -645,17 +618,7 @@ export class Screen {
 			if (!image || !grid) continue;
 			const sw = image.width / grid.cols;
 			const sh = image.height / grid.rows;
-			ctx.drawImage(
-				image,
-				holder.col * sw,
-				holder.row * sh,
-				sw,
-				sh,
-				holder.px,
-				holder.py,
-				CW,
-				CH,
-			);
+			ctx.drawImage(image, holder.col * sw, holder.row * sh, sw, sh, holder.px, holder.py, CW, CH);
 		}
 		const cursor = term.cursor;
 		if (cursor.visible) {
@@ -700,6 +663,7 @@ interface Session {
 	dir: string;
 	screen: Screen;
 	sock: net.Socket | null;
+	socketError: Error | null;
 	sockBuf: string;
 	waiters: Waiter[];
 	raw: Buffer[];
@@ -708,6 +672,9 @@ interface Session {
 }
 
 const sessions = new Map<string, Session>();
+
+/** EOF/reset is retryable during startup, unlike a timeout or malformed reply. */
+class DebugSocketClosedError extends Error {}
 
 /** Appends one PTY chunk to the session's capped raw capture. */
 function capture(session: Session, chunk: Uint8Array) {
@@ -722,49 +689,93 @@ function capture(session: Session, chunk: Uint8Array) {
 	}
 }
 
-function connectSocket(
-	session: Session,
-	path: string,
-	timeoutMs: number,
-): Promise<boolean> {
+/** A FIFO protocol cannot recover its response order after a lost request. */
+function disconnectSocket(session: Session, sock: net.Socket, error: Error): void {
+	if (session.sock !== sock) return;
+	session.sock = null;
+	session.socketError = error;
+	session.sockBuf = "";
+	for (const waiter of session.waiters.splice(0)) {
+		clearTimeout(waiter.timer);
+		waiter.reject(error);
+	}
+	sock.destroy();
+}
+
+async function connectSocket(session: Session, path: string, timeoutMs: number): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
-	const { promise, resolve } = Promise.withResolvers<boolean>();
-	const attempt = () => {
+	do {
+		const connected = Promise.withResolvers<boolean>();
 		const sock = net.createConnection(path);
-		sock.on("connect", () => {
-			sock.setEncoding("utf8");
-			sock.on("data", (data: string) => {
-				session.sockBuf += data;
-				for (;;) {
-					const index = session.sockBuf.indexOf("\n");
-					if (index < 0) return;
-					const line = session.sockBuf.slice(0, index);
-					session.sockBuf = session.sockBuf.slice(index + 1);
-					const waiter = session.waiters.shift();
-					if (!waiter) continue;
-					clearTimeout(waiter.timer);
-					try {
-						waiter.resolve(JSON.parse(line));
-					} catch (error) {
-						waiter.reject(new Error(`bad response line: ${error}`));
+		const timer = setTimeout(
+			() => {
+				sock.destroy();
+				connected.resolve(false);
+			},
+			Math.max(0, deadline - Date.now()),
+		);
+		sock.setEncoding("utf8");
+		sock.on("data", (data: string) => {
+			if (session.sock !== sock) return;
+			session.sockBuf += data;
+			for (;;) {
+				const index = session.sockBuf.indexOf("\n");
+				if (index < 0) return;
+				const line = session.sockBuf.slice(0, index);
+				session.sockBuf = session.sockBuf.slice(index + 1);
+				const waiter = session.waiters[0];
+				if (!waiter) continue;
+				let response: Record<string, unknown>;
+				try {
+					const parsed: unknown = JSON.parse(line);
+					if (
+						typeof parsed !== "object" ||
+						parsed === null ||
+						Array.isArray(parsed) ||
+						typeof field(parsed, "ok") !== "boolean"
+					) {
+						throw new Error("expected a debug response object");
 					}
+					response = parsed as Record<string, unknown>;
+				} catch (error) {
+					disconnectSocket(session, sock, new Error(`bad response line: ${error}`));
+					return;
 				}
-			});
-			sock.on("close", () => {
-				if (session.sock === sock) session.sock = null;
-			});
-			sock.on("error", () => {});
+				session.waiters.shift();
+				clearTimeout(waiter.timer);
+				waiter.resolve(response);
+			}
+		});
+		sock.once("connect", () => {
 			session.sock = sock;
-			resolve(true);
+			session.socketError = null;
+			connected.resolve(true);
 		});
-		sock.on("error", () => {
+		sock.on("error", error => {
+			const code = (error as NodeJS.ErrnoException).code;
+			const failure =
+				code === "ECONNRESET" || code === "EPIPE"
+					? new DebugSocketClosedError(`debug socket closed for session "${session.name}": ${error.message}`)
+					: new Error(`debug socket error: ${error.message}`);
+			disconnectSocket(session, sock, failure);
 			sock.destroy();
-			if (Date.now() >= deadline || session.exit !== null) resolve(false);
-			else setTimeout(attempt, 150);
+			connected.resolve(false);
 		});
-	};
-	attempt();
-	return promise;
+		sock.on("close", () => {
+			disconnectSocket(
+				session,
+				sock,
+				new DebugSocketClosedError(`debug socket closed for session "${session.name}"`),
+			);
+			connected.resolve(false);
+		});
+		const ready = await connected.promise;
+		clearTimeout(timer);
+		if (ready) return true;
+		if (session.exit !== null || Date.now() >= deadline) return false;
+		await sleep(Math.min(150, Math.max(0, deadline - Date.now())));
+	} while (session.exit === null && Date.now() < deadline);
+	return false;
 }
 
 /** Sends one debug request and awaits its response line. */
@@ -776,22 +787,46 @@ function request(
 	const sock = session.sock;
 	if (!sock) {
 		return Promise.reject(
-			new Error(
-				`session "${session.name}" has no debug socket — the app is not an ` +
-					"omp-tui host (or exited). screen/raw/send/resize/stop still work.",
-			),
+			session.socketError instanceof DebugSocketClosedError
+				? session.socketError
+				: new Error(
+						`session "${session.name}" has no debug socket — the app is not an ` +
+							"omp-tui host (or exited). screen/raw/send/resize/stop still work.",
+					),
 		);
 	}
-	const { promise, resolve, reject } =
-		Promise.withResolvers<Record<string, unknown>>();
+	const { promise, resolve, reject } = Promise.withResolvers<Record<string, unknown>>();
 	const timer = setTimeout(() => {
-		const index = session.waiters.findIndex((waiter) => waiter.timer === timer);
-		if (index >= 0) session.waiters.splice(index, 1);
-		reject(new Error(`debug request timed out: ${JSON.stringify(body)}`));
+		disconnectSocket(session, sock, new Error(`debug request timed out: ${JSON.stringify(body)}`));
 	}, timeoutMs);
 	session.waiters.push({ resolve, reject, timer });
-	sock.write(`${JSON.stringify(body)}\n`);
+	try {
+		sock.write(`${JSON.stringify(body)}\n`);
+	} catch (error) {
+		disconnectSocket(session, sock, new Error(`debug request failed: ${error}`));
+	}
 	return promise;
+}
+
+/** A process can exit inside an input callback before the server can reply. */
+async function requestInput(session: Session, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+	if (session.exit !== null) throw new Error(`application already exited (exit ${session.exit}); input was not sent`);
+	if (!session.sock) return request(session, body);
+	try {
+		return await request(session, body);
+	} catch (error) {
+		if (!(error instanceof DebugSocketClosedError)) throw error;
+		// Windows can deliver pipe EOF before the child-exit notification.
+		// Observe the actual exit, bounded by the same shutdown grace as stop.
+		const exit = session.exit ?? (await Promise.race([session.proc.exited, sleep(2_000)]));
+		if (exit === null) throw error;
+		if (exit !== 0) throw new Error(`application exited (exit ${exit}) before acknowledging input`);
+		return { ok: true, exit, acknowledged: false };
+	}
+}
+
+function inputNote(response: Record<string, unknown>, acknowledged: string): string {
+	return response.acknowledged === false ? "application exited (exit 0); input was not acknowledged" : acknowledged;
 }
 
 function need(session: string | undefined): Session {
@@ -812,7 +847,7 @@ function sleep(ms: number): Promise<null> {
 
 async function stopSession(session: Session): Promise<number | null> {
 	try {
-		if (session.sock) {
+		if (session.sock && session.exit === null) {
 			await request(session, { op: "quit" }, 2_000);
 		} else if (session.exit === null) {
 			// Non-omp-tui apps have no debug socket; Ctrl-C is the
@@ -827,7 +862,7 @@ async function stopSession(session: Session): Promise<number | null> {
 		session.proc.kill("SIGKILL");
 		await session.proc.exited.catch(() => {});
 	}
-	session.sock?.destroy();
+	if (session.sock) disconnectSocket(session, session.sock, new Error(`session "${session.name}" stopped`));
 	session.proc.terminal.close();
 	session.screen.dispose();
 	rmSync(session.dir, { recursive: true, force: true });
@@ -859,18 +894,14 @@ function screenshotText(response: Record<string, unknown>): string {
 		`── viewport (window_top=${response.window_top}` +
 		`${response.alt_screen ? ", alt screen" : ""}` +
 		`${response.cursor ? `, cursor=${JSON.stringify(response.cursor)}` : ""}) ──`;
-	return `${header}\n${lines.map((line) => `│${line}`).join("\n")}`;
+	return `${header}\n${lines.map(line => `│${line}`).join("\n")}`;
 }
 
 /**
  * After-input screenshot: the renderer's viewport when a debug socket exists
  * (and answers), else the emulator's screen.
  */
-async function settled(
-	session: Session,
-	note: string,
-	waitMs = 180,
-): Promise<string> {
+async function settled(session: Session, note: string, waitMs = 180): Promise<string> {
 	await sleep(waitMs);
 	if (session.sock) {
 		try {
@@ -898,9 +929,7 @@ function renderTree(node: unknown, depth: number, out: string[]) {
 	out.push(
 		"  ".repeat(depth) +
 			`${field(node, "kind")}${typeof id === "string" ? `#${id}` : ""}` +
-			(Array.isArray(rect)
-				? ` [${rect[0]},${rect[1]} ${rect[2]}x${rect[3]}]`
-				: "") +
+			(Array.isArray(rect) ? ` [${rect[0]},${rect[1]} ${rect[2]}x${rect[3]}]` : "") +
 			(flags ? `  ${flags}` : ""),
 	);
 	const children = field(node, "children");
@@ -940,8 +969,7 @@ function visible(bytes: Buffer): string {
 		if (byte === 0x1b) out += "\\e";
 		else if (byte === 0x0a) out += "\n";
 		else if (byte === 0x0d) out += "\\r";
-		else if (byte < 0x20 || byte === 0x7f)
-			out += `\\x${byte.toString(16).padStart(2, "0")}`;
+		else if (byte < 0x20 || byte === 0x7f) out += `\\x${byte.toString(16).padStart(2, "0")}`;
 		else out += String.fromCharCode(byte);
 	}
 	return out;
@@ -1006,7 +1034,7 @@ const factory = (omp: ToolHost) => {
 		const rows = params.rows ?? 30;
 		const cols = params.cols ?? 100;
 		const dir = mkdtempSync(join(tmpdir(), `omp-tui-${name}-`));
-		const sockPath = join(dir, "debug.sock");
+		const sockPath = process.platform === "win32" ? `\\\\.\\pipe\\${basename(dir)}` : join(dir, "debug.sock");
 		const screen = await Screen.create(cols, rows);
 		// The PTY data callback closes over `session`; Bun.spawn returns
 		// synchronously and the callback fires on the event loop, so the
@@ -1047,7 +1075,7 @@ const factory = (omp: ToolHost) => {
 		}
 		// Route the core's query replies (DA, DECRQSS, OSC color queries) back
 		// to the child: capability probes resolve as on a real terminal.
-		screen.onReply = (bytes) => proc.terminal.write(bytes);
+		screen.onReply = bytes => proc.terminal.write(bytes);
 		session = {
 			name,
 			target,
@@ -1057,47 +1085,71 @@ const factory = (omp: ToolHost) => {
 			dir,
 			screen,
 			sock: null,
+			socketError: null,
 			sockBuf: "",
 			waiters: [],
 			raw: [],
 			rawBytes: 0,
 			exit: null,
 		};
-		proc.exited.then((code) => {
+		proc.exited.then(code => {
 			session.exit = code;
+			// ConPTY exit can precede (or omit) pipe EOF. Process termination
+			// must settle pending requests even when no socket event arrives.
+			if (session.sock) {
+				disconnectSocket(session, session.sock, new DebugSocketClosedError(`application exited (exit ${code})`));
+			}
 		});
 		sessions.set(name, session);
 
 		const deadline = Date.now() + (params.timeout ?? 15) * 1000;
-		const connected = await connectSocket(
-			session,
-			sockPath,
-			(params.timeout ?? 15) * 1000,
-		);
+		const connected = await connectSocket(session, sockPath, (params.timeout ?? 15) * 1000);
 		if (session.exit !== null) {
 			const tail = visible(Buffer.concat(session.raw)).slice(-3000);
 			await stopSession(session).catch(() => {});
 			throw new Error(
-				`"${target}" exited immediately (code ${session.exit}).\n` +
-					`terminal tail: ${tail || "(empty)"}`,
+				`"${target}" exited immediately (code ${session.exit}).\n` + `terminal tail: ${tail || "(empty)"}`,
 			);
 		}
 		let text = `session "${name}": ${target} pid=${proc.pid} pty=${cols}x${rows}`;
 		if (connected) {
-			// The socket binds at terminal entry, before the first frame
-			// paints; retry until the snapshot exists so `start` reliably
-			// returns the opening screenshot.
-			let shot = await request(session, { op: "text" });
-			while (
-				shot.ok === false &&
-				String(shot.error ?? "").includes("no frame painted yet") &&
-				session.exit === null &&
-				Date.now() < deadline
-			) {
-				await sleep(50);
-				shot = await request(session, { op: "text" });
+			// Transport connection is not protocol readiness: startup may still
+			// be busy before accepting requests or painting its first frame.
+			// Connection, protocol response and first paint share the caller's
+			// deadline, rather than a separate 10-second request timer.
+			try {
+				for (;;) {
+					const remaining = deadline - Date.now();
+					if (remaining <= 0) throw new Error("no frame painted before the startup deadline");
+					let shot: Record<string, unknown>;
+					try {
+						shot = await request(session, { op: "text" }, remaining);
+					} catch (error) {
+						if (!(error instanceof DebugSocketClosedError)) throw error;
+						// TUI.start can replace an earlier startup debug server.
+						// Only EOF/reset permits a new handshake, on the same
+						// deadline; bad replies and request timeouts stay failures.
+						if (session.exit !== null)
+							throw new Error(`application exited (exit ${session.exit}) during startup`);
+						const reconnected = await connectSocket(session, sockPath, Math.max(0, deadline - Date.now()));
+						if (session.exit !== null)
+							throw new Error(`application exited (exit ${session.exit}) during startup`);
+						if (!reconnected) throw error;
+						continue;
+					}
+					if (shot.ok) {
+						text += `\n${screenshotText(shot)}`;
+						break;
+					}
+					if (shot.error !== "no frame painted yet") throw new Error(String(shot.error));
+					await sleep(Math.min(50, Math.max(0, deadline - Date.now())));
+				}
+			} catch (error) {
+				throw new Error(
+					`session "${name}" started (pid=${proc.pid}), but debug protocol readiness failed: ${error}. ` +
+						"`screen`/`raw`/`stop` remain available.",
+				);
 			}
-			text += `\n${screenshotText(shot)}`;
 		} else {
 			text +=
 				"\n(no debug socket: app is not an omp-tui host; `send` injects " +
@@ -1114,7 +1166,7 @@ const factory = (omp: ToolHost) => {
 			"Run and debug omp/pi-tui apps headlessly on a real PTY plus the " +
 			"OMP_TUI_DEBUG socket. Start defaults to omp itself " +
 			"(packages/coding-agent/src/cli.ts); override with file (a TS/JS entry, e.g. " +
-			"file: \"packages/tui/examples/debug-demo.ts\") or bin (an executable name/path), plus optional rows/cols and args. Any omp/pi-tui app serves " +
+			'file: "packages/tui/examples/debug-demo.ts") or bin (an executable name/path), plus optional rows/cols and args. Any omp/pi-tui app serves ' +
 			"OMP_TUI_DEBUG. Ops: text (viewport screenshot as plain text), screen " +
 			"(plain-text screen from kitty's real terminal core — works for any app, no " +
 			"debug socket needed; peek=N prepends N scrollback lines), frame (full " +
@@ -1137,62 +1189,29 @@ const factory = (omp: ToolHost) => {
 				.describe(
 					"operation: start | stop | list | text | screen | shot | frame | tree | values | info | keys | type | paste | mouse | send | resize | raw",
 				),
-			name: omp.zod
-				.string()
-				.optional()
-				.describe("session name (default: main)"),
+			name: omp.zod.string().optional().describe("session name (default: main)"),
 			file: omp.zod
 				.string()
 				.optional()
-				.describe("start: TS/JS entry path relative to cwd (default: packages/coding-agent/src/cli.ts — omp itself)"),
-			bin: omp.zod
-				.string()
-				.optional()
-				.describe("start: executable name or path"),
-			args: omp.zod
-				.array(omp.zod.string())
-				.optional()
-				.describe("start: program argv"),
-			rows: omp.zod
-				.number()
-				.optional()
-				.describe("start/resize: pty rows (default 30)"),
-			cols: omp.zod
-				.number()
-				.optional()
-				.describe("start/resize: pty cols (default 100)"),
-			keys: omp.zod
-				.string()
-				.optional()
-				.describe("keys: spec, e.g. \"tab tab enter C-c pgdn 'hello'\""),
-			text: omp.zod
-				.string()
-				.optional()
-				.describe("type/paste/send: payload text"),
+				.describe(
+					"start: TS/JS entry path relative to cwd (default: packages/coding-agent/src/cli.ts — omp itself)",
+				),
+			bin: omp.zod.string().optional().describe("start: executable name or path"),
+			args: omp.zod.array(omp.zod.string()).optional().describe("start: program argv"),
+			rows: omp.zod.number().optional().describe("start/resize: pty rows (default 30)"),
+			cols: omp.zod.number().optional().describe("start/resize: pty cols (default 100)"),
+			keys: omp.zod.string().optional().describe("keys: spec, e.g. \"tab tab enter C-c pgdn 'hello'\""),
+			text: omp.zod.string().optional().describe("type/paste/send: payload text"),
 			x: omp.zod.number().optional().describe("mouse: zero-based column"),
 			y: omp.zod.number().optional().describe("mouse: zero-based viewport row"),
-			action: omp.zod
-				.string()
-				.optional()
-				.describe("mouse: gesture (default click)"),
+			action: omp.zod.string().optional().describe("mouse: gesture (default click)"),
 			peek: omp.zod
 				.number()
 				.optional()
-				.describe(
-					"screen: scrollback lines to include; raw: tail bytes (default 2000)",
-				),
-			clear: omp.zod
-				.boolean()
-				.optional()
-				.describe("raw: reset capture after reading"),
-			quiet: omp.zod
-				.boolean()
-				.optional()
-				.describe("input ops: skip the after-screenshot"),
-			timeout: omp.zod
-				.number()
-				.optional()
-				.describe("start: socket wait seconds (default 15)"),
+				.describe("screen: scrollback lines to include; raw: tail bytes (default 2000)"),
+			clear: omp.zod.boolean().optional().describe("raw: reset capture after reading"),
+			quiet: omp.zod.boolean().optional().describe("input ops: skip the after-screenshot"),
+			timeout: omp.zod.number().optional().describe("start: socket wait seconds (default 15)"),
 		}),
 
 		async execute(
@@ -1200,10 +1219,7 @@ const factory = (omp: ToolHost) => {
 			params: TuiParams,
 			_onUpdate?: (update: ToolUpdate) => void,
 		): Promise<ToolResult> {
-			const reply = (
-				text: string,
-				details?: Record<string, unknown>,
-			): ToolResult => ({
+			const reply = (text: string, details?: Record<string, unknown>): ToolResult => ({
 				content: [{ type: "text", text }],
 				details,
 			});
@@ -1213,7 +1229,7 @@ const factory = (omp: ToolHost) => {
 					return reply(await startSession(params));
 				case "list": {
 					const rows = [...sessions.values()].map(
-						(session) =>
+						session =>
 							`${session.name}: ${session.target} pid=${session.proc.pid} ` +
 							`${session.cols}x${session.rows} ` +
 							`${session.exit === null ? "running" : `exited(${session.exit})`}` +
@@ -1228,8 +1244,7 @@ const factory = (omp: ToolHost) => {
 				}
 				case "text": {
 					const session = need(params.name);
-					if (!session.sock)
-						return reply(session.screen.snapshot(params.peek ?? 0));
+					if (!session.sock) return reply(session.screen.snapshot(params.peek ?? 0));
 					const response = await request(session, { op: "text" });
 					return reply(screenshotText(response), response);
 				}
@@ -1238,10 +1253,7 @@ const factory = (omp: ToolHost) => {
 				}
 				case "shot": {
 					const session = need(params.name);
-					const png = join(
-						tmpdir(),
-						`omp-tui-${session.name}-${Date.now()}.png`,
-					);
+					const png = join(tmpdir(), `omp-tui-${session.name}-${Date.now()}.png`);
 					const bytes = await session.screen.png();
 					writeFileSync(png, bytes);
 					return {
@@ -1258,7 +1270,7 @@ const factory = (omp: ToolHost) => {
 				case "frame": {
 					const response = await request(need(params.name), { op: "frame" });
 					const lines = stringLines(response.lines);
-					return reply(lines.map((line) => `│${line}`).join("\n"), response);
+					return reply(lines.map(line => `│${line}`).join("\n"), response);
 				}
 				case "tree": {
 					const response = await request(need(params.name), { op: "tree" });
@@ -1285,67 +1297,53 @@ const factory = (omp: ToolHost) => {
 				case "keys": {
 					if (!params.keys) throw new Error("keys op needs `keys`");
 					const session = need(params.name);
-					const response = await request(session, {
+					const response = await requestInput(session, {
 						op: "keys",
 						keys: params.keys,
 					});
 					if (!response.ok) throw new Error(String(response.error));
-					const note = `injected ${response.injected} events`;
-					return reply(
-						params.quiet ? note : await settled(session, note),
-						response,
-					);
+					const note = inputNote(response, `injected ${response.injected} events`);
+					return reply(params.quiet ? note : await settled(session, note), response);
 				}
 				case "type": {
-					if (params.text === undefined)
-						throw new Error("type op needs `text`");
+					if (params.text === undefined) throw new Error("type op needs `text`");
 					const session = need(params.name);
-					const response = await request(session, {
+					const response = await requestInput(session, {
 						op: "bytes",
 						data: params.text,
 					});
 					if (!response.ok) throw new Error(String(response.error));
-					const note = `typed ${params.text.length} chars`;
-					return reply(
-						params.quiet ? note : await settled(session, note),
-						response,
-					);
+					const note = inputNote(response, `typed ${params.text.length} chars`);
+					return reply(params.quiet ? note : await settled(session, note), response);
 				}
 				case "paste": {
-					if (params.text === undefined)
-						throw new Error("paste op needs `text`");
+					if (params.text === undefined) throw new Error("paste op needs `text`");
 					const session = need(params.name);
-					const response = await request(session, {
+					const response = await requestInput(session, {
 						op: "paste",
 						text: params.text,
 					});
 					if (!response.ok) throw new Error(String(response.error));
-					return reply(
-						params.quiet ? "pasted" : await settled(session, "pasted"),
-						response,
-					);
+					const note = inputNote(response, "pasted");
+					return reply(params.quiet ? note : await settled(session, note), response);
 				}
 				case "mouse": {
 					if (params.x === undefined || params.y === undefined) {
 						throw new Error("mouse op needs `x` and `y`");
 					}
 					const session = need(params.name);
-					const response = await request(session, {
+					const response = await requestInput(session, {
 						op: "mouse",
 						x: params.x,
 						y: params.y,
 						action: params.action ?? "click",
 					});
 					if (!response.ok) throw new Error(String(response.error));
-					const note = `mouse ${params.action ?? "click"} at ${params.x},${params.y}`;
-					return reply(
-						params.quiet ? note : await settled(session, note),
-						response,
-					);
+					const note = inputNote(response, `mouse ${params.action ?? "click"} at ${params.x},${params.y}`);
+					return reply(params.quiet ? note : await settled(session, note), response);
 				}
 				case "send": {
-					if (params.text === undefined)
-						throw new Error("send op needs `text`");
+					if (params.text === undefined) throw new Error("send op needs `text`");
 					const session = need(params.name);
 					const bytes = unescapeBytes(params.text);
 					session.proc.terminal.write(bytes);
@@ -1377,10 +1375,7 @@ const factory = (omp: ToolHost) => {
 					}
 					const peek = params.peek ?? 2000;
 					const tail = peek > 0 ? visible(blob.subarray(-peek)) : "";
-					return reply(
-						`${JSON.stringify(stats)}${tail ? `\n── tail ──\n${tail}` : ""}`,
-						{ stats },
-					);
+					return reply(`${JSON.stringify(stats)}${tail ? `\n── tail ──\n${tail}` : ""}`, { stats });
 				}
 				default:
 					throw new Error(`unknown op ${JSON.stringify(params.op)}`);
