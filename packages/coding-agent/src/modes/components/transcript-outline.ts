@@ -141,7 +141,8 @@ export function outlineRows(rows: readonly string[], innerWidth: number, style: 
 /**
  * Compose one column: gutter-prefixed rows for `childRows[from, to)` with a
  * dotted outline around `targets[selected]`. `header` rows, when given, lead
- * the column.
+ * the column. `onTarget` reports each target's non-blank core in output rows,
+ * including its outline when selected and excluding leading/trailing spacers.
  */
 export function composeOutlineColumn(
 	childRows: readonly (readonly string[])[],
@@ -152,13 +153,16 @@ export function composeOutlineColumn(
 	columnWidth: number,
 	header: string[] | undefined,
 	style: OutlineStyle = {},
+	onTarget?: (target: OutlineTarget, start: number, end: number) => void,
 ): ComposedColumn {
 	const inner = Math.max(10, columnWidth - 4);
 	const lines: string[] = header ? [...header] : [];
 	let selStart = -1;
 	let selEnd = -1;
 	const target = selected >= 0 ? targets[selected] : undefined;
+	let targetIndex = 0;
 	for (let index = from; index < to; index++) {
+		while (onTarget && targetIndex < targets.length && targets[targetIndex]!.end <= index) targetIndex++;
 		if (target && index === target.start && target.end <= to) {
 			const segment: string[] = [];
 			for (let child = target.start; child < target.end; child++) segment.push(...childRows[child]!);
@@ -171,8 +175,26 @@ export function composeOutlineColumn(
 			selStart = lines.length;
 			lines.push(...outlineRows(segment.slice(head, tail), inner, style));
 			selEnd = lines.length;
+			if (head < tail) onTarget?.(target, selStart, selEnd);
 			for (let row = tail; row < segment.length; row++) lines.push("");
 			index = target.end - 1;
+			continue;
+		}
+		const hitTarget = onTarget ? targets[targetIndex] : undefined;
+		if (hitTarget && index === hitTarget.start && hitTarget.end <= to) {
+			let start = -1;
+			let end = -1;
+			for (let child = hitTarget.start; child < hitTarget.end; child++) {
+				for (const row of childRows[child]!) {
+					lines.push(row ? `  ${row}` : row);
+					if (/\S/.test(row)) {
+						if (start < 0) start = lines.length - 1;
+						end = lines.length;
+					}
+				}
+			}
+			if (start >= 0) onTarget!(hitTarget, start, end);
+			index = hitTarget.end - 1;
 			continue;
 		}
 		for (const row of childRows[index]!) lines.push(row ? `  ${row}` : row);

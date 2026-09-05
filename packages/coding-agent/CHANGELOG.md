@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added mouse hover outlines and click-to-rewind in the fullscreen rewind selector, including alternate branch columns.
 - Added literal clipboard-reference paste: `Ctrl+Shift+V`/`Alt+Shift+V` inserts Windows Explorer `FileDropList` paths without image attachments, while bitmap-only clipboards are materialized into session blob paths.
 - Added a discoverable `adb` tool for Android device commands, file and app operations, screenshots, and lifecycle management of existing Android Virtual Devices.
 - Added a `steeringSkipPendingOperations` interaction setting, enabled by default, that can let the model's current operations finish instead of skipping pending work when a steering message is sent.

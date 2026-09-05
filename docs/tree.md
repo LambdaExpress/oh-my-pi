@@ -28,7 +28,11 @@ Any of the following opens the same selector:
 - `/tree`
 - configured keybinding for the `app.session.tree` action
 
-Double-escape on an empty editor opens the fullscreen transcript rewind selector instead (see `doubleEscapeAction`): it replays the transcript, outlines the block the rewind would land on, and rewinds via `branch()` for user prompts or `navigateTree()` for anything else.
+By default, double-escape on an empty editor opens the fullscreen transcript rewind selector (also available through `/rewind` or `/branch`). Set `doubleEscapeAction` to `tree` to open the session tree instead.
+
+In the rewind selector, move the mouse over a message region to preview the rewind point with the existing dotted outline, then left-click to navigate there. This also works in visible alternate-branch columns. Hovering does not navigate or recenter the viewport; the mouse wheel scrolls the transcript. Headers, gaps between regions, and the scrollbar do not select a rewind point. Keyboard navigation remains available.
+
+Rewind uses `navigateTree()` within the current session and keeps the old path as a branch. Selecting a user message returns its text and image attachments to the editor and moves to the point before that message.
 
 ## Tree UI model
 

@@ -20,7 +20,8 @@
  * Keys: Up/Down step through rendered items in transcript order (within the
  * active column when a strip is open), Left/Right slide between branch
  * variants at a fork and jump between user turns elsewhere, Enter rewinds to
- * the outlined item, Esc cancels.
+ * the outlined item, Esc cancels. Mouse hover moves the same outline without
+ * moving the viewport; a left click rewinds to the item under the pointer.
  */
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import {
@@ -90,6 +91,15 @@ interface SiblingColumn {
 	label: string;
 }
 
+/** Rendered content coordinates, before the vertical viewport crop. */
+interface RewindHitTarget {
+	target: OutlineTarget;
+	start: number;
+	end: number;
+	left: number;
+	right: number;
+}
+
 /** Rows the frame chrome occupies: top rule, header, rule, footer hint, bottom rule. */
 const CHROME_ROWS = 5;
 /** Blank columns between branch-strip columns. */
@@ -109,6 +119,11 @@ export class RewindSelectorComponent implements Component {
 	#siblingVisible: boolean[] | undefined;
 	#scrollToSelection = true;
 	#expanded = false;
+	#hoveredTarget: OutlineTarget | undefined;
+	#hitTargets: RewindHitTarget[] = [];
+	#viewportTop = 0;
+	#viewportHeight = 0;
+	#renderedScrollOffset = 0;
 
 	// Branch strip: present when the selected turn has sibling branches.
 	// Column 0 is the current path; siblings follow in tree order.
@@ -199,6 +214,7 @@ export class RewindSelectorComponent implements Component {
 
 	/** The target the dotted outline currently rests on. */
 	#outlinedTarget(): OutlineTarget | undefined {
+		if (this.#hoveredTarget) return this.#hoveredTarget;
 		if (this.#activeVariant > 0) {
 			return this.#stripColumns()[this.#activeVariant - 1]?.targets[this.#siblingSelected];
 		}
@@ -242,12 +258,43 @@ export class RewindSelectorComponent implements Component {
 		if (data.startsWith("\x1b[<")) {
 			routeSgrMouseInput(data, event => {
 				if (event.wheel !== null) {
+					this.#hoveredTarget = undefined;
+					this.#scrollToSelection = false;
 					this.#scrollView.scroll(event.wheel * 3);
 					this.deps.requestRender();
+				} else if (event.motion || event.leftClick) {
+					const row = event.row - this.#viewportTop;
+					const contentRow = row + this.#renderedScrollOffset;
+					const target =
+						row >= 0 && row < this.#viewportHeight
+							? this.#hitTargets.find(
+									hit =>
+										contentRow >= hit.start &&
+										contentRow < hit.end &&
+										event.col >= hit.left &&
+										event.col < hit.right,
+								)?.target
+							: undefined;
+					if (event.leftClick) {
+						if (target) this.deps.onSelect(target.entryId);
+					} else if (target !== this.#hoveredTarget) {
+						this.#hoveredTarget = target;
+						this.#scrollToSelection = false;
+						this.deps.requestRender();
+					}
 				}
 				return true;
 			});
 			return;
+		}
+		if (matchesKey(data, "enter") || matchesKey(data, "return") || data === "\n") {
+			const target = this.#outlinedTarget();
+			if (target) this.deps.onSelect(target.entryId);
+			return;
+		}
+		if (this.#hoveredTarget) {
+			this.#hoveredTarget = undefined;
+			this.deps.requestRender();
 		}
 		if (matchesSelectCancel(data) || matchesKey(data, "escape")) {
 			this.deps.onCancel();
@@ -283,11 +330,6 @@ export class RewindSelectorComponent implements Component {
 			} else if (this.#activeVariant === 0) {
 				this.#move(1, target => target.isUserTurn);
 			}
-			return;
-		}
-		if (matchesKey(data, "enter") || matchesKey(data, "return") || data === "\n") {
-			const target = this.#outlinedTarget();
-			if (target) this.deps.onSelect(target.entryId);
 			return;
 		}
 		// Page/home/end/shift+arrow scrolling without moving the selection.
@@ -344,6 +386,7 @@ export class RewindSelectorComponent implements Component {
 	// ========================================================================
 
 	render(width: number): readonly string[] {
+		this.#hitTargets.length = 0;
 		const termHeight = process.stdout.rows || 40;
 		// ScrollView reserves the last column for the scrollbar; the outline
 		// consumes two columns each side ("┆ " / " ┆"), unselected rows a
@@ -376,13 +419,22 @@ export class RewindSelectorComponent implements Component {
 						0,
 						children.length,
 						this.#targets,
-						this.#selected,
+						this.#hoveredTarget ? this.#targets.indexOf(this.#hoveredTarget) : this.#selected,
 						contentWidth,
 						undefined,
+						{},
+						(target, start, end) => this.#hitTargets.push({ target, start, end, left: 0, right: contentWidth }),
 					);
 		const lines = composed.lines;
 
 		const viewportHeight = Math.max(3, termHeight - CHROME_ROWS);
+		// Moving the outline to a shorter column can shrink the document by
+		// two rows. Keep the visible tail padded while hovering so ScrollView
+		// does not clamp upward and move the clicked region out from under it.
+		if (this.#hoveredTarget) {
+			const visibleEnd = this.#renderedScrollOffset + viewportHeight;
+			while (lines.length < visibleEnd) lines.push("");
+		}
 		this.#scrollView.setLines(lines);
 		this.#scrollView.setHeight(viewportHeight);
 		if (this.#scrollToSelection && composed.selStart >= 0) {
@@ -400,10 +452,18 @@ export class RewindSelectorComponent implements Component {
 			` ${theme.icon.rewind} ${theme.bold("Rewind")}${theme.sep.dot}${theme.fg("dim", "pick the point to continue from")}`,
 		);
 		output.push(...this.#border.render(width));
+		this.#viewportTop = output.length;
+		this.#viewportHeight = viewportHeight;
 		output.push(...this.#scrollView.render(width));
+		this.#renderedScrollOffset = this.#scrollView.getScrollOffset();
 		const position = this.#targets.length > 0 ? `${this.#selected + 1}/${this.#targets.length}  ` : "";
 		const lateral = columns.length > 0 ? "←/→ branches" : "←/→ user turns";
-		output.push(` ${theme.fg("dim", `${position}↑/↓ step  ${lateral}  enter rewind  ctrl+o expand  esc cancel`)}`);
+		output.push(
+			truncateToWidth(
+				` ${theme.fg("dim", `${position}↑/↓ step  ${lateral}  hover outline  click/enter rewind  ctrl+o expand  esc cancel`)}`,
+				width,
+			),
+		);
 		output.push(...this.#border.render(width));
 		return output;
 	}
@@ -417,29 +477,67 @@ export class RewindSelectorComponent implements Component {
 		const colWidth = Math.max(24, Math.floor((contentWidth - STRIP_GAP) / 2));
 		const colInner = Math.max(10, colWidth - 4);
 		const count = columns.length + 1;
+		const hoveredMain = this.#hoveredTarget ? this.#targets.indexOf(this.#hoveredTarget) : -1;
 
-		// Shared history above the fork, full width, never outlined.
-		const prefix = composeOutlineColumn(mainRows, 0, anchor.start, [], -1, contentWidth, undefined);
-
-		// Column 0: the current path from the fork down, re-rendered at column width.
-		const suffixRows: (readonly string[])[] = [];
-		for (let index = anchor.start; index < this.#builder.container.children.length; index++) {
-			suffixRows.push(stripPromptZones(this.#builder.container.children[index]!.render(colInner)));
+		// Hover can outline shared history without changing the fork or camera.
+		const prefix = composeOutlineColumn(
+			mainRows,
+			0,
+			anchor.start,
+			this.#targets,
+			hoveredMain,
+			contentWidth,
+			undefined,
+			{},
+			(target, start, end) => this.#hitTargets.push({ target, start, end, left: 0, right: contentWidth }),
+		);
+		const lines = prefix.lines;
+		const stride = colWidth + STRIP_GAP;
+		const totalWidth = count * colWidth + (count - 1) * STRIP_GAP;
+		const cameraAt = (position: number) =>
+			Math.max(
+				0,
+				Math.min(position * stride - (contentWidth - colWidth) / 2, Math.max(0, totalWidth - contentWidth)),
+			);
+		const camera = Math.round(cameraAt(this.#slidePosition(Date.now())));
+		if (count > 2) {
+			const settled = cameraAt(this.#activeVariant);
+			lines.push(
+				positionRail(
+					count,
+					this.#activeVariant,
+					settled > 0.5,
+					settled + contentWidth < totalWidth - 0.5,
+					contentWidth,
+				),
+				"",
+			);
 		}
-		const suffixTargets = this.#targets.slice(this.#selected).map(target => ({
-			...target,
-			start: target.start - anchor.start,
-			end: target.end - anchor.start,
-		}));
+		const stripTop = lines.length;
+		const recordHit = (column: number, target: OutlineTarget, start: number, end: number) => {
+			const left = Math.max(0, column * stride - camera);
+			const right = Math.min(contentWidth, column * stride - camera + colWidth);
+			if (left < right) {
+				this.#hitTargets.push({ target, start: stripTop + start, end: stripTop + end, left, right });
+			}
+		};
+
+		// The full-width prefix is already composed; reuse its row array for
+		// the narrow suffix so hit targets retain their original identity.
+		for (let index = anchor.start; index < this.#builder.container.children.length; index++) {
+			mainRows[index] = stripPromptZones(this.#builder.container.children[index]!.render(colInner));
+		}
 		const composedColumns: ComposedColumn[] = [
 			composeOutlineColumn(
-				suffixRows,
-				0,
-				suffixRows.length,
-				suffixTargets,
-				this.#activeVariant === 0 ? 0 : -1,
+				mainRows,
+				anchor.start,
+				mainRows.length,
+				this.#targets,
+				this.#hoveredTarget ? hoveredMain : this.#activeVariant === 0 ? this.#selected : -1,
 				colWidth,
 				this.#columnHeader(0, count, "current", colWidth),
+				{},
+				(target, start, end) => recordHit(0, target, start, end),
 			),
 		];
 		for (let index = 0; index < columns.length; index++) {
@@ -454,43 +552,20 @@ export class RewindSelectorComponent implements Component {
 					0,
 					rows.length,
 					column.targets,
-					this.#activeVariant === index + 1 ? this.#siblingSelected : -1,
+					this.#hoveredTarget
+						? column.targets.indexOf(this.#hoveredTarget)
+						: this.#activeVariant === index + 1
+							? this.#siblingSelected
+							: -1,
 					colWidth,
 					this.#columnHeader(index + 1, count, column.label, colWidth),
+					{},
+					(target, start, end) => recordHit(index + 1, target, start, end),
 				),
 			);
 		}
-
-		// Camera over the strip: keep the active (possibly mid-slide) column centered.
-		const stride = colWidth + STRIP_GAP;
-		const totalWidth = count * colWidth + (count - 1) * STRIP_GAP;
-		const cameraAt = (position: number) =>
-			Math.max(
-				0,
-				Math.min(position * stride - (contentWidth - colWidth) / 2, Math.max(0, totalWidth - contentWidth)),
-			);
-		const position = this.#slidePosition(Date.now());
-		const camera = cameraAt(position);
 
 		const height = Math.max(...composedColumns.map(column => column.lines.length));
-		const lines = prefix.lines;
-		// With more branches than the window fits, a dot rail tracks the active
-		// column and dim ellipses flag content beyond the visible edge.
-		// Edge markers follow the slide's destination, not the eased camera,
-		// so they flip in step with the dot rail.
-		if (count > 2) {
-			const settled = cameraAt(this.#activeVariant);
-			lines.push(
-				positionRail(
-					count,
-					this.#activeVariant,
-					settled > 0.5,
-					settled + contentWidth < totalWidth - 0.5,
-					contentWidth,
-				),
-				"",
-			);
-		}
 		const active = composedColumns[this.#activeVariant]!;
 		const selStart = active.selStart >= 0 ? lines.length + active.selStart : -1;
 		const selEnd = active.selEnd >= 0 ? lines.length + active.selEnd : -1;
