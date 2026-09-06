@@ -6,6 +6,10 @@
 
 - Fixed PowerShell memory URLs resolving against another session after the calling session exits.
 
+### Changed
+
+- Clarified task effort guidance to use `lo`/`med`/`hi` and avoid invalid model reasoning-effort values such as `high`.
+
 ## [18.1.12] - 2026-09-06
 
 - Fixed edit and write results to report the formatted bytes actually committed by LSP writethrough.
