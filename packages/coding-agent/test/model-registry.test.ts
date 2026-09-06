@@ -1711,6 +1711,64 @@ describe("ModelRegistry", () => {
 		});
 	});
 	describe("extended context", () => {
+		test("toggles bundled Astra between its default and maximum windows without discovery", async () => {
+			const testSettings = Settings.isolated();
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(872_000);
+			expect(registry.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+		});
+
+		test("preserves an explicit Astra context override when extended context is enabled", () => {
+			writeRawModelsJson({
+				"openai-codex": { modelOverrides: { "gpt-6-astra": { contextWindow: 400_000 } } },
+			});
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+				settings: Settings.isolated({ extendedContext: true }),
+			});
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(400_000);
+		});
+
+		test("restores a discovered maximum from cache ahead of the Astra fallback on each toggle", async () => {
+			const testSettings = Settings.isolated();
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			const astra = registry.find("openai-codex", "gpt-6-astra");
+			const legacy = registry.find("openai-codex", "gpt-5.5");
+			if (!astra || !legacy) throw new Error("Expected bundled Codex models");
+			writeModelCache(
+				"openai-codex",
+				Date.now(),
+				[
+					{ ...astra, maxContextWindow: 640_000 },
+					{ ...legacy, maxContextWindow: 128_000 },
+				],
+				true,
+				"",
+				path.join(tempDir, "models.db"),
+			);
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(640_000);
+			// An advertised maximum smaller than the current window cannot shrink it.
+			expect(registry.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(640_000);
+		});
+
 		test("off caps billable premium models without shrinking subscription estimates", async () => {
 			await Settings.init({ inMemory: true, overrides: { extendedContext: false } });
 			const registry = new ModelRegistry(authStorage, modelsJsonPath);
@@ -1751,8 +1809,8 @@ describe("ModelRegistry", () => {
 			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(2_000_000);
 		});
 
-		test("configured models keep larger windows while GPT-5.6 expands without pricing metadata", async () => {
-			await Settings.init({ inMemory: true, overrides: { extendedContextWindow: "352K" } });
+		test("explicit custom model windows survive extended-context policy toggles", async () => {
+			const testSettings = Settings.isolated({ extendedContext: false, extendedContextWindow: "352K" });
 			writeRawModelsJson({
 				"relay-provider": {
 					baseUrl: "https://relay.example.com/v1",
@@ -1760,30 +1818,21 @@ describe("ModelRegistry", () => {
 					api: "openai-responses",
 					models: [
 						{
-							id: "deepseek-v3",
-							name: "DeepSeek V3",
-							reasoning: false,
-							input: ["text"],
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-							contextWindow: 1_000_000,
-							maxTokens: 128_000,
-						},
-						{
 							id: "openai/gpt-5.6-sol",
-							name: "GPT-5.6 Sol",
-							reasoning: true,
-							input: ["text"],
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 							contextWindow: 272_000,
-							maxTokens: 128_000,
 						},
 					],
 				},
 			});
 
-			const registry = new ModelRegistry(authStorage, modelsJsonPath);
-			expect(registry.find("relay-provider", "deepseek-v3")?.contextWindow).toBe(1_000_000);
-			expect(registry.find("relay-provider", "openai/gpt-5.6-sol")?.contextWindow).toBe(352_000);
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("relay-provider", "openai/gpt-5.6-sol")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("relay-provider", "openai/gpt-5.6-sol")?.contextWindow).toBe(272_000);
 		});
 	});
 	describe("bundled Anthropic catalog availability", () => {

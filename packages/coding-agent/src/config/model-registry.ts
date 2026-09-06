@@ -17,6 +17,7 @@ import type {
 import type { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { collapseBuiltVariants } from "@oh-my-pi/pi-catalog/compat/collapse";
+import { resolveMaxContextWindow } from "@oh-my-pi/pi-catalog/compat/context-window";
 import { applyCatalogMetrics, CatalogMetricsIndex } from "@oh-my-pi/pi-catalog/identity/metrics";
 import { readModelCache, writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import {
@@ -187,8 +188,9 @@ function getDisabledProviderIdsFromSettings(settingsInstance?: Settings): Set<st
 }
 
 /**
- * Whether premium long-context windows are enabled. Defaults to true when no
- * settings source is available (SDK embedding, early boot).
+ * Whether extended context windows are enabled: advertised maximum windows
+ * plus premium long-context tiers. Defaults to true when no settings source
+ * is available (SDK embedding, early boot).
  */
 function isExtendedContextEnabledFromSettings(settingsInstance?: Settings): boolean {
 	try {
@@ -2158,9 +2160,9 @@ export class ModelRegistry {
 		const extendedContext = isExtendedContextEnabledFromSettings(this.#settings);
 		const extendedContextWindow = getExtendedContextWindowFromSettings(this.#settings);
 		return models.map(model => {
-			// Premium long-context models keep the larger of the configured and
-			// catalog-advertised windows while enabled. While disabled, cap them at
-			// the standard-pricing threshold so compaction runs before premium billing.
+			// Extended context uses live maximum windows or catalog-rule fallbacks.
+			// Only premium long-context models also use the configured window as a
+			// floor. While disabled, cap them at the standard-pricing threshold.
 			// xai-oauth prices are API-equivalent estimates for subscription-backed
 			// SuperGrok requests and must not constrain their runtime context window.
 			// Explicit per-model overrides reapply later and win over this policy.
@@ -2169,10 +2171,19 @@ export class ModelRegistry {
 					? undefined
 					: (model.cost.longContext?.inputThreshold ??
 						(isGpt56LongContextModel(model) ? GPT_56_LONG_CONTEXT_INPUT_THRESHOLD : undefined));
-			if (threshold !== undefined && model.contextWindow !== null) {
-				const effectiveContextWindow = extendedContext
-					? Math.max(model.contextWindow, extendedContextWindow)
-					: Math.min(model.contextWindow, threshold);
+			if (model.contextWindow !== null) {
+				let effectiveContextWindow = model.contextWindow;
+				if (extendedContext) {
+					const maximum = resolveMaxContextWindow(model);
+					if (maximum !== undefined) {
+						effectiveContextWindow = Math.max(effectiveContextWindow, maximum);
+					}
+					if (threshold !== undefined) {
+						effectiveContextWindow = Math.max(effectiveContextWindow, extendedContextWindow);
+					}
+				} else if (threshold !== undefined) {
+					effectiveContextWindow = Math.min(effectiveContextWindow, threshold);
+				}
 				if (effectiveContextWindow !== model.contextWindow) {
 					model = applyModelOverride(model, { contextWindow: effectiveContextWindow });
 				}

@@ -1403,10 +1403,11 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (!this.#deferredDiagnostics || batchRequest?.flush === false) {
 				this.session.bumpFileMutationVersion?.(absolutePath);
 			}
-			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, cleanContent);
+			const finalContent = diagnostics.finalContent;
+			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, finalContent);
 
-			const header = maybeWriteSnapshotHeader(this.session, absolutePath, cleanContent);
-			const writeLine = `Successfully wrote ${cleanContent.length} bytes to ${displayPath}`;
+			const header = maybeWriteSnapshotHeader(this.session, absolutePath, finalContent);
+			const writeLine = `Successfully wrote ${finalContent.length} bytes to ${displayPath}`;
 			let resultText = header ? `${header}\n${writeLine}` : writeLine;
 			if (stripped) {
 				resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
@@ -1414,7 +1415,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			if (madeExecutable) {
 				resultText += `\n${EXECUTABLE_NOTICE}`;
 			}
-			if (!diagnostics) {
+			if (!diagnostics.diagnostics) {
 				return {
 					content: [{ type: "text", text: resultText }],
 					details: { resolvedPath: absolutePath, madeExecutable: madeExecutable || undefined },
@@ -1425,10 +1426,10 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				content: [{ type: "text", text: resultText }],
 				details: {
 					resolvedPath: absolutePath,
-					diagnostics,
+					diagnostics: diagnostics.diagnostics,
 					madeExecutable: madeExecutable || undefined,
 					meta: outputMeta()
-						.diagnostics(diagnostics.summary, diagnostics.messages ?? [])
+						.diagnostics(diagnostics.diagnostics.summary, diagnostics.diagnostics.messages ?? [])
 						.get(),
 				},
 			};

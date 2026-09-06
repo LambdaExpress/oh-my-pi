@@ -50,10 +50,10 @@ import {
 	appendOutlineEntries,
 	type ComposedColumn,
 	composeOutlineColumn,
+	OutlineRowCache,
 	type OutlineTarget,
 	outlineVisibility,
 	positionRail,
-	stripPromptZones,
 	userMessageHasText,
 	userMessageText,
 } from "./transcript-outline";
@@ -124,6 +124,7 @@ export class RewindSelectorComponent implements Component {
 	#viewportTop = 0;
 	#viewportHeight = 0;
 	#renderedScrollOffset = 0;
+	#rowCache = new OutlineRowCache();
 
 	// Branch strip: present when the selected turn has sibling branches.
 	// Column 0 is the current path; siblings follow in tree order.
@@ -258,10 +259,12 @@ export class RewindSelectorComponent implements Component {
 		if (data.startsWith("\x1b[<")) {
 			routeSgrMouseInput(data, event => {
 				if (event.wheel !== null) {
+					const hadHover = this.#hoveredTarget !== undefined;
 					this.#hoveredTarget = undefined;
 					this.#scrollToSelection = false;
+					const before = this.#scrollView.getScrollOffset();
 					this.#scrollView.scroll(event.wheel * 3);
-					this.deps.requestRender();
+					if (hadHover || this.#scrollView.getScrollOffset() !== before) this.deps.requestRender();
 				} else if (event.motion || event.leftClick) {
 					const row = event.row - this.#viewportTop;
 					const contentRow = row + this.#renderedScrollOffset;
@@ -394,7 +397,7 @@ export class RewindSelectorComponent implements Component {
 		const contentWidth = Math.max(1, width - 1);
 		const children = this.#builder.container.children;
 		const mainInner = Math.max(10, contentWidth - 4);
-		const childRows = children.map(child => stripPromptZones(child.render(mainInner)));
+		const childRows = this.#rowCache.rows(children, mainInner);
 
 		this.#mainVisible = outlineVisibility(childRows, this.#targets);
 		if (!this.#isMainSelectable(this.#selected)) {
@@ -524,8 +527,9 @@ export class RewindSelectorComponent implements Component {
 
 		// The full-width prefix is already composed; reuse its row array for
 		// the narrow suffix so hit targets retain their original identity.
-		for (let index = anchor.start; index < this.#builder.container.children.length; index++) {
-			mainRows[index] = stripPromptZones(this.#builder.container.children[index]!.render(colInner));
+		const suffixRows = this.#rowCache.rows(this.#builder.container.children.slice(anchor.start), colInner);
+		for (let index = 0; index < suffixRows.length; index++) {
+			mainRows[anchor.start + index] = suffixRows[index]!;
 		}
 		const composedColumns: ComposedColumn[] = [
 			composeOutlineColumn(
@@ -542,7 +546,7 @@ export class RewindSelectorComponent implements Component {
 		];
 		for (let index = 0; index < columns.length; index++) {
 			const column = columns[index]!;
-			const rows = column.builder.container.children.map(child => stripPromptZones(child.render(colInner)));
+			const rows = this.#rowCache.rows(column.builder.container.children, colInner);
 			if (this.#activeVariant === index + 1) {
 				this.#siblingVisible = outlineVisibility(rows, column.targets);
 			}

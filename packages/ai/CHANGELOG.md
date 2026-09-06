@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [18.1.12] - 2026-09-06
+
+### Added
+
+- Added Muse Code subscription sign-in, credential refresh, inference, and quota reporting in `/usage`, with durable rate-limit backoff so quota refresh recovers instead of repeatedly retrying.
+
+## [18.1.11] - 2026-09-05
+
 ### Fixed
 
 - Fixed malformed final OpenAI Responses function-call arguments reaching nested XD dispatch instead of using the replay-safe stream retry.
@@ -11,6 +19,7 @@
 - Classified `stream_interrupted: Upstream stream interrupted after output began` as a transient transport failure while keeping authenticated rejections non-retryable, allowing replay-safe interrupted turns to use the existing automatic retry path.
 - Fixed OpenAI-completions streams (OpenCode Go, DeepSeek, OpenRouter, most OpenAI-compatible gateways) not exposing streamed tool-call arguments to the TUI reveal path, so `write` previews snapped in fully at execution instead of streaming the payload. Structured `delta.tool_calls` now carry `kStreamingPartialJson`, and DSML/Kimi chat-template leaked calls are rebuilt incrementally (`toolCallStart`/`toolCallArgDelta`) so healed `write`/`edit`/`bash` previews stream line by line instead of landing once at envelope close.
 - Fixed locally observed OpenCode Go reset windows to follow the service's rolling 5-hour, Monday-UTC weekly, and subscription-day calendar-month boundaries instead of treating every limit as an independent fixed-duration rolling window.
+- Fixed OpenCode Go usage polls (`GET /zen/go/v1/usage`) missing `x-opencode-session` and omp's `User-Agent`: background polls now attribute with the stable install id so the requests OpenCode flags as `Bun fetch` carry the required session header.
 - GitHub Copilot sign-in now requests only basic profile access, restoring login for Enterprise organizations that reject repository, gist, and Codespaces permissions ([#10656](https://github.com/can1357/oh-my-pi/issues/10656)).
 
 ## [18.1.9] - 2026-09-04
@@ -38,8 +47,6 @@
 ### Fixed
 
 - Fixed DeepSeek-family Responses replay (e.g. opencode-go) rejecting a resumed thinking-mode turn with `400 The reasoning_text in the thinking mode must be passed back to the API` when compaction dropped the turn's reasoning; a non-empty placeholder is now synthesized instead of an empty `reasoning_text` ([#10690](https://github.com/can1357/oh-my-pi/issues/10690)).
-### Fixed
-
 - Fixed pi-native streams treating a connection that closed before its terminal event as a successful empty response; incomplete streams and namespaced gateway 5xx failures now remain retryable.
 
 ## [18.1.6] - 2026-09-03

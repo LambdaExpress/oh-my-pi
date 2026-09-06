@@ -1299,6 +1299,7 @@ export const zhCN: Record<string, string> = {
 	"Enable for known prefix-cache providers (recommended)": "为已知前缀缓存提供商启用（推荐）",
 	"Enable hidden notices for standalone ultrathink, orchestrate, and workflowz keywords":
 		"为独立的 ultrathink、orchestrate 和 workflowz 关键字启用隐藏提示",
+	"Enable larger context windows": "启用更大的上下文窗口",
 	"Enable or disable this marketplace plugin": "启用或禁用此市场插件",
 	"Enable or disable this plugin": "启用或禁用此插件",
 	"Enable per-session goal mode and the hidden goal tool": "启用每会话目标模式和隐藏的目标工具",
@@ -3792,6 +3793,7 @@ export const zhCN: Record<string, string> = {
 	"Toggle browser headless vs visible mode": "切换浏览器无头模式与可见模式",
 	"Toggle computer use": "切换 computer use",
 	"Toggle extended context": "切换扩展上下文",
+	"Toggle extended context windows": "切换扩展上下文窗口",
 	"Toggle fast mode": "切换快速模式",
 	"Toggle goal mode (persistent autonomous objective for this session)": "切换目标模式（本会话的持久自主目标）",
 	"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Esc cancels the current iteration; /loop again to disable.":
@@ -4034,8 +4036,11 @@ export const zhCN: Record<string, string> = {
 	"Use blue instead of green for diff additions": "diff 新增内容使用蓝色而非绿色",
 	"Use cmux WKWebView surfaces for browser automation when a cmux socket is available. Set PI_BROWSER_CMUX=0 or PI_BROWSER_CMUX=1 to override.":
 		"当 cmux socket 可用时，使用 cmux WKWebView 界面进行浏览器自动化。设置 PI_BROWSER_CMUX=0 或 PI_BROWSER_CMUX=1 可覆盖此设置。",
+	"Use default or standard-pricing context windows": "使用默认或标准计价的上下文窗口",
 	"Use either --url or -- <command...>, not both.": "只能使用 --url 或 -- <command...>，不能同时使用。",
 	"Use generic XML in-band tool calls.": "使用通用 XML 带内工具调用。",
+	"Use larger context windows where supported; may incur premium pricing. Off keeps default or standard-pricing windows":
+		"在支持的模型上使用更大的上下文窗口，可能产生额外费用。关闭后保留默认或标准计价的窗口",
 	"Use legacy deterministic pipeline": "使用旧版确定性流水线",
 	"Use model/provider default websocket behavior": "使用模型/提供商默认的 WebSocket 行为",
 	"Use native tool calls unless the model is known not to support them.": "除非已知模型不支持，否则使用原生工具调用。",

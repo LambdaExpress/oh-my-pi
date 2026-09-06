@@ -231,6 +231,9 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 						settings: this.session.settings,
 						signal,
 						sessionFile: this.session.getSessionFile() ?? undefined,
+						sessionId:
+							this.session.sessionManager?.getSessionId?.() ?? this.session.getSessionId?.() ?? undefined,
+						agentRegistry: this.session.agentRegistry,
 						localProtocolOptions: this.session.localProtocolOptions,
 						skills: this.session.skills,
 						rules: this.session.activeRules,
@@ -249,6 +252,8 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 					settings: this.session.settings,
 					signal,
 					sessionFile: this.session.getSessionFile() ?? undefined,
+					sessionId: this.session.sessionManager?.getSessionId?.() ?? this.session.getSessionId?.() ?? undefined,
+					agentRegistry: this.session.agentRegistry,
 					localProtocolOptions: this.session.localProtocolOptions,
 					skills: this.session.skills,
 					rules: this.session.activeRules,

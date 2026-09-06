@@ -3147,12 +3147,14 @@ const CODE_MODE_SIGNAL_PATHS: readonly SettingPath[] = [
 /** Subscribe to Code Mode setting changes. Returns an unsubscribe function. */
 export const onCodeModeChanged = (cb: () => void) => codeModeSignal.on(cb);
 
-/** Fires when `extendedContext` changes at runtime. */
+/** Fires when `extendedContext` or `extendedContextWindow` changes at runtime. */
 const extendedContextSignal = new SettingSignal("extendedContext");
 
 /**
  * Subscribe to extended-context policy changes. Sessions re-derive their
- * model's effective context window from the enabled state and configured cap.
+ * model's effective context window from the enabled state, advertised maximum,
+ * and configured premium window. While off, the registry restores default
+ * windows and caps premium models at the standard-pricing threshold.
  * Returns an unsubscribe function.
  */
 export const onExtendedContextChanged = (cb: () => void) => extendedContextSignal.on(cb);

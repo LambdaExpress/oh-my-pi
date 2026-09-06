@@ -80,7 +80,7 @@ function formatFastModeStatus(session: AgentSession): string {
 	return session.isFastModeEnabled() ? "on" : "off";
 }
 
-/** `/extended-context status` label for the premium long-context window setting. */
+/** `/extended-context status` label for the extended-context setting. */
 function formatExtendedContextStatus(settings: Settings): string {
 	return settings.get("extendedContext") ? "on" : "off";
 }
@@ -558,12 +558,12 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "extended-context",
 		icon: "expand",
-		description: "Toggle premium long-context windows",
+		description: "Toggle extended context windows",
 		acpDescription: "Toggle extended context",
 		acpInputHint: "[on|off|status]",
 		subcommands: [
-			{ name: "on", description: t("Enable premium long-context windows") },
-			{ name: "off", description: t("Use standard-pricing context windows") },
+			{ name: "on", description: t("Enable larger context windows") },
+			{ name: "off", description: t("Use default or standard-pricing context windows") },
 			{ name: "status", description: t("Show extended context status") },
 		],
 		allowArgs: true,

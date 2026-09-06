@@ -16,6 +16,7 @@ import {
 	applyInternalUrlCompletion,
 	extractInternalUrlContext,
 	getInternalUrlSuggestions,
+	type InternalUrlCallerContext,
 	isInternalUrlPrefix,
 } from "./internal-url-autocomplete";
 
@@ -37,6 +38,8 @@ interface PromptActionAutocompleteOptions {
 	basePath: string;
 	/** Usage count per command name for frequency-ranked slash completions. */
 	commandUsage?: (name: string) => number;
+	/** Read the receiving session at lookup time, following focus and session replacement. */
+	internalUrlCaller?: () => InternalUrlCallerContext;
 	keybindings: KeybindingsManager;
 	getSshHosts?: () => Promise<ResolveContext["sshHosts"]>;
 	copyCurrentLine: () => void;
@@ -135,7 +138,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 	#commands: SlashCommand[];
 	#baseProvider: CombinedAutocompleteProvider;
 	#actions: PromptActionDefinition[];
-	#basePath: string;
+	#internalUrlCaller: () => InternalUrlCallerContext;
 	#getSshHosts?: () => Promise<ResolveContext["sshHosts"]>;
 
 	constructor(
@@ -143,11 +146,12 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 		basePath: string,
 		actions: PromptActionDefinition[],
 		commandUsage?: (name: string) => number,
+		internalUrlCaller?: () => InternalUrlCallerContext,
 		getSshHosts?: () => Promise<ResolveContext["sshHosts"]>,
 	) {
 		this.#commands = commands;
 		this.#baseProvider = new CombinedAutocompleteProvider(commands, basePath, { commandUsage });
-		this.#basePath = basePath;
+		this.#internalUrlCaller = internalUrlCaller ?? (() => ({ cwd: basePath }));
 		this.#actions = actions;
 		this.#getSshHosts = getSshHosts;
 	}
@@ -158,7 +162,7 @@ export class PromptActionAutocompleteProvider implements AutocompleteProvider {
 	): Promise<{ items: AutocompleteItem[]; prefix: string } | null> {
 		const context = extractInternalUrlContext(textBeforeCursor);
 		const sshHosts = context?.scheme === "ssh" ? await this.#getSshHosts?.() : undefined;
-		return getInternalUrlSuggestions(textBeforeCursor, this.#basePath, signal, sshHosts);
+		return getInternalUrlSuggestions(textBeforeCursor, undefined, signal, this.#internalUrlCaller, sshHosts);
 	}
 
 	async getSuggestions(
@@ -348,6 +352,7 @@ export function createPromptActionAutocompleteProvider(
 		options.basePath,
 		actions,
 		options.commandUsage,
+		options.internalUrlCaller,
 		options.getSshHosts,
 	);
 }
