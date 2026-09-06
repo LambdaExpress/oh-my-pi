@@ -26,6 +26,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { Container } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { setLocale } from "../src/i18n";
+import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
 
 beforeEach(() => {
 	// Pending-bar labels (Steering/After yield) localize; pin English so
@@ -941,35 +942,18 @@ describe("UiHelpers / InputController against derived queued custom display", ()
 	});
 });
 
-function createEventControllerFixture(opts?: { optimisticSkillMessagePending?: boolean }) {
-	const updatePendingMessagesDisplay = vi.fn();
-	const addMessageToChat = vi.fn();
-	const reconcileOptimisticSkillMessage = vi.fn();
-	const requestRender = vi.fn();
-	let ctx!: InteractiveModeContext & { optimisticCustomMessageSignature: string | undefined };
-	const clearOptimisticCustomMessage = vi.fn(() => {
+function createEventControllerFixture() {
+	const clearOptimisticCustomMessage = vi.fn();
+	const ctx = createInteractiveModeContext({
+		optimisticCustomMessageSignature: undefined,
+		clearOptimisticCustomMessage,
+	});
+	clearOptimisticCustomMessage.mockImplementation(() => {
 		ctx.optimisticCustomMessageSignature = undefined;
 	});
-	ctx = {
-		isInitialized: true,
-		init: vi.fn(async () => {}),
-		ui: { requestRender },
-		statusLine: { invalidate: vi.fn() },
-		updateEditorTopBorder: vi.fn(),
-		addMessageToChat,
-		updatePendingMessagesDisplay,
-		clearOptimisticCustomMessage,
-		optimisticCustomMessageSignature: undefined,
-		transcriptMessageComponents: new WeakMap(),
-		pendingTools: new Map(),
-		session: {},
-		optimisticSkillMessagePending: opts?.optimisticSkillMessagePending ?? false,
-		reconcileOptimisticSkillMessage,
-		get viewSession() {
-			return (this as typeof ctx).session;
-		},
-	} as unknown as InteractiveModeContext & { optimisticCustomMessageSignature: string | undefined };
-
+	const updatePendingMessagesDisplay = vi.spyOn(ctx, "updatePendingMessagesDisplay");
+	const addMessageToChat = vi.spyOn(ctx, "addMessageToChat");
+	const requestRender = vi.spyOn(ctx.ui, "requestRender");
 	const controller = new EventController(ctx);
 	return {
 		controller,

@@ -2,11 +2,19 @@
 Execution does not block — you receive IDs immediately.{{else}}Delegate work to ONE background subagent per call.
 Execution does not block — you receive an ID immediately.{{/if}}{{#if hasBlockingAgents}}
 Agents marked BLOCKING run inline — results return in this call; non-blocking items in the same batch still spawn as background jobs.{{/if}}{{else}}{{#if batchEnabled}}Run subagents synchronously by passing items in a `tasks[]` batch. Execution blocks until all work finishes.{{else}}Run ONE subagent synchronously. Execution blocks until work finishes.{{/if}}{{/if}}
+{{#if effortEnabled}}
+
+<critical>
+- `effort` MUST be exactly `"lo"`, `"med"`, or `"hi"`. NEVER use `"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`.
+- High-complexity task? Use `"effort": "hi"`. Task effort uses its own three-tier enum, not model reasoning-effort values.
+</critical>
+{{/if}}
 {{#if asyncEnabled}}
 
 # Async Job Contract
 - Results auto-deliver. A settled `hub jobs`/`hub wait` snapshot is the delivery; no duplicate `async-result` follows.
 - Job IDs are process-local and expire roughly five minutes after settlement. Afterward, use the agent ID with `hub send`, `agent://<id>`, or `history://<id>`.
+- With `outputSchema`, a result's parsed payload — when present — is served at `agent://<id>` (fields via `agent://<id>?q=.<field>`) regardless of validity; a schema-violating (invalid) result also previews the payload inline in the auto-delivered follow-up.
 - `completed` means successful yield/job exit, not artifact acceptance. Verify claimed changes.
 {{/if}}
 
@@ -27,7 +35,9 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
     Omitting `agent` selects the spawn-policy default (`{{defaultAgent}}`). Use it only when that agent fits the task.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
     NEVER pass the spawn-policy default explicitly. Only omit it after checking the available agents below.
   - `task`: Complete, self-contained instructions. One-liners or missing acceptance criteria are PROHIBITED.
-{{#if effortEnabled}}  - `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
+{{#if evalToolsEnabled}}  - `tools`: Names of eval-defined tools (`@tool` in Python, `tool(fn, {…})` in JS) to expose to this subagent; each runs inside your kernel when the subagent calls it.
+{{/if}}
+{{#if effortEnabled}}  - `effort`: Optional per-task complexity tier: low → `"lo"`, moderate → `"med"`, high → `"hi"`. Omit to keep the agent's default.
 {{/if}}
   - `outputSchema`: Invocation-specific JSON Schema. Omit unless this call needs a custom contract; omission inherits the selected agent or parent-session schema. NEVER use `false`, which rejects every output.
   - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.
@@ -44,7 +54,9 @@ Agents marked BLOCKING run inline — results return in this call; non-blocking 
   Omitting `agent` selects the spawn-policy default (`{{defaultAgent}}`). Use it only when that agent fits the task.{{#if allowedAgentsText}} Current spawn policy allows: {{allowedAgentsText}}.{{/if}}
   NEVER pass the spawn-policy default explicitly. Only omit it after checking the available agents below.
 - `task`: Complete, self-contained instructions. One-liners or missing acceptance criteria are PROHIBITED.
-{{#if effortEnabled}}- `effort`: Scale w/ complexity of this task: `"lo"`|`"med"`|`"hi"`
+{{#if evalToolsEnabled}}- `tools`: Names of eval-defined tools (`@tool` in Python, `tool(fn, {…})` in JS) to expose to this subagent; each runs inside your kernel when the subagent calls it.
+{{/if}}
+{{#if effortEnabled}}- `effort`: Optional task complexity tier: low → `"lo"`, moderate → `"med"`, high → `"hi"`. Omit to keep the agent's default.
 {{/if}}
 - `outputSchema`: Invocation-specific JSON Schema. Omit unless this call needs a custom contract; omission inherits the selected agent or parent-session schema. NEVER use `false`, which rejects every output.
 - `schemaMode`: `"permissive"` (default) accepts a retry-exhausted invalid result with a warning; `"strict"` fails it.

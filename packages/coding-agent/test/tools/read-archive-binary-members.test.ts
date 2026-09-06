@@ -29,7 +29,8 @@ function makeSession(testDir: string): ToolSession {
 		getSessionFile: () => sessionFile,
 		getArtifactsDir: () => artifactsDir,
 		getSessionSpawns: () => null,
-		settings: Settings.isolated({ "images.autoResize": false, "inspect_image.enabled": false }),
+		getActiveModel: () => ({ input: ["image"] }),
+		settings: Settings.isolated({ "images.autoResize": false }),
 	} as unknown as ToolSession;
 }
 

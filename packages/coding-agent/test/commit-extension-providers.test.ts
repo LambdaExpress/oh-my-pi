@@ -65,7 +65,7 @@ afterEach(async () => {
 	// The commit pipeline opens agent.db through the AgentStorage singleton and
 	// the shared model cache at the redirected agent dir; release both SQLite
 	// handles before removing the temp trees (EBUSY on Windows).
-	AgentStorage.resetInstance();
+	AgentStorage.close();
 	closeModelCacheSharedDb();
 	await tmp.remove();
 	await agentTmp.remove();

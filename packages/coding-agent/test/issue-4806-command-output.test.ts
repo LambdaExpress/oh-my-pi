@@ -58,7 +58,7 @@ describe("issue #4806 command output during streaming", () => {
 	afterEach(async () => {
 		setLocale(null);
 		mode?.stop();
-		HistoryStorage.resetInstance();
+		HistoryStorage.close();
 		vi.restoreAllMocks();
 		await session?.dispose();
 		authStorage?.close();

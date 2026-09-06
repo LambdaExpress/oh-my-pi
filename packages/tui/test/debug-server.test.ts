@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { createConnection, type Socket } from "node:net";
+import * as os from "node:os";
+import * as path from "node:path";
 import { type Component, Input, Text, TUI, type TuiDebugTreeNode } from "../src";
 import { VirtualTerminal } from "./virtual-terminal";
 
@@ -29,6 +31,14 @@ class DebugClient {
 			const pending = this.#pending;
 			this.#pending = undefined;
 			pending?.resolve(JSON.parse(line) as DebugReply);
+		});
+		socket.on("close", () => {
+			this.#pending?.reject(new Error("debug socket closed before replying"));
+			this.#pending = undefined;
+		});
+		socket.on("error", error => {
+			this.#pending?.reject(error);
+			this.#pending = undefined;
 		});
 	}
 
@@ -88,7 +98,9 @@ async function paintedText(client: DebugClient): Promise<DebugReply> {
 
 test("OMP_TUI_DEBUG drives and inspects a live TUI", async () => {
 	const previousDebugPath = process.env.OMP_TUI_DEBUG;
-	const socketPath = `/tmp/pi-tui-${process.pid}-${Bun.randomUUIDv7().slice(0, 8)}.sock`;
+	const socketName = `pi-tui-${process.pid}-${Bun.randomUUIDv7().slice(0, 8)}`;
+	const socketPath =
+		process.platform === "win32" ? `\\\\.\\pipe\\${socketName}` : path.join(os.tmpdir(), `${socketName}.sock`);
 	process.env.OMP_TUI_DEBUG = socketPath;
 	const terminal = new VirtualTerminal(50, 12);
 	const tui = new TUI(terminal);
@@ -136,6 +148,20 @@ test("OMP_TUI_DEBUG drives and inspects a live TUI", async () => {
 		expect(await client.request({ op: "mouse", x: 1, y: 1 })).toEqual({ ok: true });
 		const valuesAfterRawInput = await client.request({ op: "values" });
 		expect(JSON.stringify(valuesAfterRawInput.values)).toContain("Xhello! pasted");
+
+		tui.addInputListener(data => {
+			if (data === "x") {
+				tui.stop();
+				throw new Error("input handler failed");
+			}
+			return { consume: true };
+		});
+		// A failing handler may also stop the TUI. Its error must reach the
+		// caller before EOF, rather than becoming a successful quit or a hang.
+		expect(await client.request({ op: "keys", keys: "x" })).toEqual({
+			ok: false,
+			error: "input handler failed",
+		});
 	} finally {
 		client?.close();
 		tui.stop();

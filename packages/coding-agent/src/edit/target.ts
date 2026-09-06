@@ -9,10 +9,9 @@ import {
 	type WriteContext,
 } from "../internal-urls";
 import type { ToolSession } from "../tools";
-import { assertEditableFile, assertEditableFileContent } from "../tools/auto-generated-guard";
+import { assertEditableFile } from "../tools/auto-generated-guard";
 import { isInternalUrlPath, peelWholeFileUrlSelector, resolveToCwd } from "../tools/path-utils";
 import { enforcePlanModeWrite, resolvePlanPath, unwrapHashlineHeaderPath } from "../tools/plan-mode-guard";
-import { readEditFileText } from "./read-file";
 
 export type EditTargetOperation = "create" | "delete" | "update";
 
@@ -32,6 +31,7 @@ export type EditTarget =
 			handler: MutableEditProtocolHandler;
 			canonicalPath: string;
 			displayPath: string;
+			observedKind?: "file" | "missing";
 	  };
 
 type InternalEditTarget = Extract<EditTarget, { kind: "internal" }>;
@@ -40,7 +40,7 @@ export interface EditTargetContext {
 	cwd: string;
 	signal?: AbortSignal;
 	localProtocolOptions?: LocalProtocolOptions;
-	sshHosts?: ResolveContext["sshHosts"];
+	sshHosts?: WriteContext["sshHosts"];
 }
 
 export interface ResolveEditTargetOptions {
@@ -49,6 +49,8 @@ export interface ResolveEditTargetOptions {
 	signal?: AbortSignal;
 	assertLocalEditable?: boolean;
 	enforcePlanMode?: boolean;
+	allowMissing?: boolean;
+	context?: EditTargetContext;
 }
 
 export interface PreviewEditTargetOptions {
@@ -74,8 +76,32 @@ export type MutableEditProtocolHandler = ProtocolHandler &
 		move?: NonNullable<ProtocolHandler["move"]>;
 	};
 
+export interface EditVirtualResourceInput {
+	canonicalUrl: string;
+	displayUrl: string;
+	content?: string;
+}
+
+export interface ResolvedEditVirtualResource {
+	target: InternalEditTarget;
+	resource: EditVirtualResourceInput;
+}
+
+export interface InternalEditWriteRequest {
+	op: string;
+	content?: string;
+	moveTo?: string;
+}
+
 const LOCAL_BACKED_INTERNAL_SCHEMES = new Set(["local", "vault"]);
 const encoder = new TextEncoder();
+
+export function isHostBackedEditTargetPath(requestedPath: string): boolean {
+	const unwrappedPath = unwrapHashlineHeaderPath(requestedPath);
+	if (!isInternalUrlPath(unwrappedPath)) return false;
+	const url = parseInternalUrl(peelWholeFileUrlSelector(unwrappedPath, "edit"));
+	return !LOCAL_BACKED_INTERNAL_SCHEMES.has(normalizeScheme(url));
+}
 
 async function contextFromSession(session: ToolSession, signal?: AbortSignal): Promise<EditTargetContext> {
 	return {
@@ -149,7 +175,19 @@ function tryParseInternalEditTarget(
 	const unwrappedPath = unwrapHashlineHeaderPath(requestedPath);
 	if (!isInternalUrlPath(unwrappedPath)) return undefined;
 	const wholeFilePath = peelWholeFileUrlSelector(unwrappedPath, "edit");
+	const authority = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i.exec(wholeFilePath)?.[1] ?? "";
+	const userInfo = authority.includes("@") ? authority.slice(0, authority.lastIndexOf("@")) : "";
+	if (userInfo.includes(":")) {
+		throw new Error(
+			"Internal edit resource URLs must not contain passwords; configure credentials on the host alias instead",
+		);
+	}
 	const url = parseInternalUrl(wholeFilePath);
+	if (url.password) {
+		throw new Error(
+			"Internal edit resource URLs must not contain passwords; configure credentials on the host alias instead",
+		);
+	}
 	const scheme = normalizeScheme(url);
 	if (LOCAL_BACKED_INTERNAL_SCHEMES.has(scheme)) return undefined;
 	const handler = mutableHandlerForTarget(scheme, op, move, wholeFilePath);
@@ -161,7 +199,7 @@ function tryParseInternalEditTarget(
 		url,
 		handler,
 		canonicalPath,
-		displayPath: canonicalPath,
+		displayPath: url.href,
 	};
 }
 
@@ -174,13 +212,17 @@ function classifyRemoteKind(kind: "directory" | "file" | "missing" | "other", di
 async function readInternalTargetText(
 	target: Extract<EditTarget, { kind: "internal" }>,
 	context: EditTargetContext,
+	knownKind?: "file",
 ): Promise<string> {
-	const kind = await target.handler.stat(target.url, resolveContext(context));
-	classifyRemoteKind(kind, target.displayPath);
+	if (!knownKind) {
+		const kind = await target.handler.stat(target.url, resolveContext(context));
+		classifyRemoteKind(kind, target.displayPath);
+	}
 	const resource = await target.handler.resolve(target.url, resolveContext(context));
 	if (resource.isDirectory) throw new Error(`Cannot edit remote directory: ${target.displayPath}`);
 	if (resource.immutable) throw new Error(`Cannot edit immutable remote resource: ${target.displayPath}`);
-	assertEditableFileContent(resource.content, target.displayPath);
+	// EditSession applies the native auto-generated-file guard when this content
+	// is preloaded as a virtual resource.
 	return resource.content;
 }
 
@@ -188,13 +230,12 @@ async function preflightInternalTarget(
 	target: Extract<EditTarget, { kind: "internal" }>,
 	context: EditTargetContext,
 	op: EditTargetOperation,
-): Promise<void> {
+	allowMissing: boolean,
+): Promise<"file" | "missing"> {
 	const kind = await target.handler.stat(target.url, resolveContext(context));
-	if (op === "create" && kind === "missing") return;
+	if (kind === "missing" && (op === "create" || allowMissing)) return "missing";
 	classifyRemoteKind(kind, target.displayPath);
-	if (op === "create") {
-		await readInternalTargetText(target, context);
-	}
+	return "file";
 }
 
 export async function resolveEditTarget(
@@ -203,14 +244,19 @@ export async function resolveEditTarget(
 	options: ResolveEditTargetOptions = {},
 ): Promise<EditTarget> {
 	const op = options.op ?? "update";
+	const internalTarget = tryParseInternalEditTarget(path, op, Boolean(options.move));
 	if (options.enforcePlanMode !== false) {
 		enforcePlanModeWrite(session, path, { op, move: options.move });
 	}
 
-	const internalTarget = tryParseInternalEditTarget(path, op, Boolean(options.move));
 	if (internalTarget) {
-		await preflightInternalTarget(internalTarget, await contextFromSession(session, options.signal), op);
-		return internalTarget;
+		const observedKind = await preflightInternalTarget(
+			internalTarget,
+			options.context ?? (await contextFromSession(session, options.signal)),
+			op,
+			options.allowMissing ?? false,
+		);
+		return { ...internalTarget, observedKind };
 	}
 
 	const absolutePath = resolvePlanPath(session, path);
@@ -234,8 +280,8 @@ export async function resolveEditTargetForPreview(
 	const op = options.op ?? "update";
 	const internalTarget = tryParseInternalEditTarget(path, op, Boolean(options.move));
 	if (internalTarget) {
-		await preflightInternalTarget(internalTarget, { cwd, signal: options.signal }, op);
-		return internalTarget;
+		const observedKind = await preflightInternalTarget(internalTarget, { cwd, signal: options.signal }, op, false);
+		return { ...internalTarget, observedKind };
 	}
 	const absolutePath = resolveToCwd(path, cwd);
 	return {
@@ -251,12 +297,84 @@ export async function readEditTargetText(target: EditTarget, context: EditTarget
 	if (target.kind === "internal") {
 		return readInternalTargetText(target, context);
 	}
-	return readEditFileText(target.absolutePath, target.requestedPath);
+	try {
+		return await Bun.file(target.absolutePath).text();
+	} catch (error) {
+		if (isEnoent(error)) throw new Error(`File not found: ${target.requestedPath}`);
+		throw error;
+	}
 }
 
 export async function readEditPreviewFileText(path: string, cwd: string, signal?: AbortSignal): Promise<string> {
 	const target = await resolveEditTargetForPreview(cwd, path, { signal });
 	return readEditTargetText(target, { cwd, signal });
+}
+
+export async function resolveEditVirtualResource(
+	session: ToolSession,
+	path: string,
+	options: ResolveEditTargetOptions = {},
+): Promise<ResolvedEditVirtualResource | undefined> {
+	const context = options.context ?? (await contextFromSession(session, options.signal));
+	const target = await resolveEditTarget(session, path, {
+		...options,
+		allowMissing: true,
+		context,
+	});
+	if (target.kind === "local") return undefined;
+	const content =
+		target.observedKind === "missing" ? undefined : await readInternalTargetText(target, context, "file");
+	return {
+		target,
+		resource: {
+			canonicalUrl: target.canonicalPath,
+			displayUrl: target.displayPath,
+			content,
+		},
+	};
+}
+
+function protocolAuthority(target: InternalEditTarget): string {
+	const match = /^([a-z][a-z0-9+.-]*):\/\/([^/?#]*)/i.exec(target.canonicalPath);
+	if (!match) throw new Error(`Invalid canonical internal edit URL: ${target.displayPath}`);
+	return `${match[1].toLowerCase()}://${match[2]}`;
+}
+
+export async function applyInternalEditWrite(
+	source: InternalEditTarget,
+	request: InternalEditWriteRequest,
+	context: EditTargetContext,
+	destination?: InternalEditTarget,
+): Promise<string> {
+	if (request.op === "delete") {
+		if (!source.handler.delete) throw new Error(`Cannot delete internal URL: ${source.displayPath}`);
+		await source.handler.delete(source.url, writeContext(context));
+		return "";
+	}
+	if (request.op === "move") {
+		if (!destination || !request.moveTo) {
+			throw new Error(`Internal edit move is missing a resolved destination: ${source.displayPath}`);
+		}
+		if (
+			source.handler !== destination.handler ||
+			source.scheme !== destination.scheme ||
+			protocolAuthority(source) !== protocolAuthority(destination)
+		) {
+			throw new Error("Remote move destination must use the same protocol authority as the source");
+		}
+		if (!source.handler.move) throw new Error(`Cannot move internal URL: ${source.displayPath}`);
+		await source.handler.move(source.url, destination.url, request.content, writeContext(context));
+		return request.content ?? "";
+	}
+	if (request.op !== "create" && request.op !== "update") {
+		throw new Error(`Unsupported internal edit operation: ${request.op}`);
+	}
+	if (request.content === undefined) {
+		throw new Error(`Internal edit ${request.op} is missing content: ${source.displayPath}`);
+	}
+	if (!source.handler.write) throw new Error(`Cannot write internal URL: ${source.displayPath}`);
+	await source.handler.write(source.url, request.content, writeContext(context));
+	return request.content;
 }
 
 export function createInternalUrlEditFileSystem(

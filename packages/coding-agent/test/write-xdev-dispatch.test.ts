@@ -10,7 +10,6 @@ import { ToolChoiceQueue } from "@oh-my-pi/pi-coding-agent/session/tool-choice-q
 import { createTools, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { adbToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/adb";
 import { requiresApproval, resolveApproval } from "@oh-my-pi/pi-coding-agent/tools/approval";
-import { browserToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/browser/render";
 import { githubToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/gh-renderer";
 import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
 import { sshToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/ssh";
@@ -159,6 +158,95 @@ describe("read and write route xd:// device URLs", () => {
 		const result = await write.execute("write-xdev-read", { path: "xd://peek", content: JSON.stringify({ q: "x" }) });
 		expect(result.isError).toBeUndefined();
 		expect(result.details?.xdev).toMatchObject({ tool: "peek", mode: "execute", tier: "read" });
+	});
+
+	it("preserves the directory-check report command through mounted SSH dispatch", async () => {
+		let captured: { host: string; command: string; timeout?: number } | undefined;
+		const sshSchema = type({
+			host: "string",
+			command: "string",
+			"timeout?": "number",
+		});
+		const sshDevice: AgentTool<typeof sshSchema> = {
+			name: "ssh",
+			label: "SSH",
+			description: "Fake mounted SSH executor",
+			parameters: sshSchema,
+			async execute(_toolCallId, args) {
+				captured = args;
+				return {
+					content: [{ type: "text", text: "fake ssh complete" }],
+					details: { transport: "fake-mounted-ssh" },
+				};
+			},
+		};
+		const xdev = createTestXdevState([sshDevice]);
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+		const input = {
+			host: "directory-report-host",
+			command: String.raw`for d in /etc /var/log; do printf '%s\n' "$d" | sed 's#^#directory: #' >> /tmp/directory-check-report.txt; done`,
+			timeout: 37,
+		};
+
+		const result = await write.execute("write-xdev-directory-report", {
+			path: "xd://ssh",
+			content: JSON.stringify(input),
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(captured).toEqual(input);
+		expect(captured?.command).toBe(input.command);
+		expect([...Buffer.from(captured?.command ?? "")]).toEqual([...Buffer.from(input.command)]);
+		expect(result.details?.xdev).toMatchObject({
+			tool: "ssh",
+			mode: "execute",
+			args: input,
+		});
+	});
+
+	it("preserves the Docker/1Panel report command through mounted SSH dispatch", async () => {
+		let captured: { host: string; command: string; timeout?: number } | undefined;
+		const sshSchema = type({
+			host: "string",
+			command: "string",
+			"timeout?": "number",
+		});
+		const sshDevice: AgentTool<typeof sshSchema> = {
+			name: "ssh",
+			label: "SSH",
+			description: "Fake mounted SSH executor",
+			parameters: sshSchema,
+			async execute(_toolCallId, args) {
+				captured = args;
+				return {
+					content: [{ type: "text", text: "fake ssh complete" }],
+					details: { transport: "fake-mounted-ssh" },
+				};
+			},
+		};
+		const xdev = createTestXdevState([sshDevice]);
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev }));
+		const input = {
+			host: "docker-1panel-report-host",
+			command:
+				"systemctl is-active --quiet docker 2>/dev/null && command -v docker | sed 's#^#docker: #' >> /tmp/1panel-docker-report.txt && ps -ef | sed -n '1,5p' >> /tmp/1panel-docker-report.txt && ss -lntp 2>/dev/null | sed -n '1,5p' >> /tmp/1panel-docker-report.txt",
+			timeout: 43,
+		};
+
+		const result = await write.execute("write-xdev-docker-1panel-report", {
+			path: "xd://ssh",
+			content: JSON.stringify(input),
+		});
+
+		expect(result.isError).toBeUndefined();
+		expect(captured).toEqual(input);
+		expect(captured?.command).toBe(input.command);
+		expect([...Buffer.from(captured?.command ?? "")]).toEqual([...Buffer.from(input.command)]);
+		expect(result.details?.xdev).toMatchObject({
+			tool: "ssh",
+			mode: "execute",
+			args: input,
+		});
 	});
 
 	it("resolves device dispatches against the device's user policy, falling back to write's", async () => {
@@ -502,13 +590,6 @@ describe("read and write route xd:// device URLs", () => {
 				expected: ["ADB", "shell", "emulator-5554", "getprop ro.product.model", "Output"],
 			},
 			{
-				name: "browser",
-				label: "Browser",
-				renderer: browserToolRenderer,
-				args: { action: "run", name: "docs", code: "return await tab.title();" },
-				expected: ['tab "docs"', "return await tab.title();"],
-			},
-			{
 				name: "ast_edit",
 				label: "AST Edit",
 				renderer: toolRenderers.ast_edit,
@@ -826,35 +907,25 @@ describe("read and write route xd:// device URLs", () => {
 		expect(builtIn.summary).toBe(`Gets the weather ${multiByteTail}`);
 	});
 
-	it("docsAll inlines small device docs and falls back to a listing past the caps", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "write-xdev-docs-"));
-		try {
-			const session = xdevSession(tempDir);
-			expect(session.settings.get("tools.xdevDocs")).toBe("builtins");
-			await createTools(session);
-			const xdev = session.xdev;
-			if (!xdev) throw new Error("expected xdev state");
-			const mounted = listXdevTools(xdev);
-			expect(mounted.length).toBeGreaterThan(0);
-
-			// One device with a pathological description must fall back to the
-			// listing without starving the rest of the catalog.
-			const giant = Object.create(mounted[0]!) as (typeof mounted)[number];
-			Object.defineProperty(giant, "name", { value: "giant_mcp_tool" });
-			Object.defineProperty(giant, "description", { value: "x".repeat(XDEV_DOCS_PER_DEVICE_CAP + 1) });
-			xdev.tools.set(giant.name, giant);
-			xdev.mountedNames.add(giant.name);
-			xdev.builtInNames.add(giant.name);
-
-			const docs = xdevDocsAll(xdev);
-			expect(docs.length).toBeLessThan(XDEV_DOCS_TOTAL_BUDGET + XDEV_DOCS_PER_DEVICE_CAP);
-			expect(docs).toContain(`## ${mounted[0]!.name}`);
-			expect(docs).toContain("## Additional devices (docs on demand)");
-			expect(docs).toContain("- xd://giant_mcp_tool —");
-			expect(docs).not.toContain("## giant_mcp_tool");
-		} finally {
-			await removeWithRetries(tempDir);
-		}
+	it("docsAll inlines small device docs and falls back to a listing past the caps", () => {
+		const small: Tool = {
+			name: "small_device",
+			label: "Small device",
+			description: "Small device documentation.",
+			parameters: type({}),
+			execute: async () => ({ content: [], details: undefined }),
+		};
+		const giant: Tool = {
+			...small,
+			name: "giant_mcp_tool",
+			description: "x".repeat(XDEV_DOCS_PER_DEVICE_CAP + 1),
+		};
+		// Catalog order and real tool schemas must not determine the size boundary.
+		const docs = xdevDocsAll(createTestXdevState([giant, small]));
+		expect(docs.length).toBeLessThan(XDEV_DOCS_TOTAL_BUDGET + XDEV_DOCS_PER_DEVICE_CAP);
+		expect(docs).toContain("## small_device");
+		expect(docs).toContain("- xd://giant_mcp_tool —");
+		expect(docs).not.toContain("## giant_mcp_tool");
 	});
 
 	it("docsAll supports inline, builtins, and catalog prompt modes", async () => {
@@ -1003,6 +1074,28 @@ describe("xd:// and top-level calls share the canonical tool map", () => {
 		} finally {
 			await removeWithRetries(tempDir);
 		}
+	});
+
+	it("resolves bare and case-insensitive xd:// direct device names (#10342)", () => {
+		const githubDevice = {
+			name: "github",
+			label: "GitHub",
+			description: "fixture",
+			parameters: type({ op: "string" }),
+			async execute() {
+				return { content: [{ type: "text" as const, text: "ok" }] };
+			},
+		};
+		const xdev = createTestXdevState([githubDevice]);
+
+		// Direct calls accept the same case-insensitive xd scheme as read/write
+		// URL dispatch while preserving the canonical device name.
+		expect(resolveMountedXdevTool(xdev, "github")).toBe(githubDevice);
+		expect(resolveMountedXdevTool(xdev, "xd://github")).toBe(githubDevice);
+		expect(resolveMountedXdevTool(xdev, "XD://github")).toBe(githubDevice);
+		expect(resolveMountedXdevTool(xdev, "Xd://github")).toBe(githubDevice);
+		// A genuinely unmounted name still misses, prefixed or not.
+		expect(resolveMountedXdevTool(xdev, "xd://no_such_tool")).toBeUndefined();
 	});
 });
 

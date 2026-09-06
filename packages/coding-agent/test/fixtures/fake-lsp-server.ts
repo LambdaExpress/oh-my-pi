@@ -110,6 +110,10 @@ async function handleRequest(message: JsonRpcMessage): Promise<void> {
 		case "test/echo":
 			respond(id, message.params);
 			break;
+		case "test/serverStatus":
+			send({ jsonrpc: "2.0", method: "experimental/serverStatus", params: message.params });
+			respond(id, null);
+			break;
 		case "test/serverRequest": {
 			const params = message.params as { method: string; params: unknown };
 			const response = await requestClient(params.method, params.params);

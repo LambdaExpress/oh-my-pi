@@ -265,6 +265,10 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 		const internalUrlOptions: InternalUrlExpansionOptions = {
 			skills: this.#session.skills ?? [],
 			internalRouter: InternalUrlRouter.instance(),
+			cwd: this.#session.cwd,
+			sessionFile: this.#session.getSessionFile() ?? undefined,
+			sessionId: this.#session.sessionManager?.getSessionId?.() ?? this.#session.getSessionId?.() ?? undefined,
+			agentRegistry: this.#session.agentRegistry,
 			localOptions: {
 				getArtifactsDir: this.#session.getArtifactsDir,
 				getSessionId: this.#session.getSessionId,

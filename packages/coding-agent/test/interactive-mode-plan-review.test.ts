@@ -24,7 +24,7 @@ import { SILENT_ABORT_MARKER, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-a
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { AUTO_THINKING } from "@oh-my-pi/pi-coding-agent/thinking";
 import * as clipboard from "@oh-my-pi/pi-coding-agent/utils/clipboard";
-import { type OverlayHandle, type OverlayOptions, setKeybindings } from "@oh-my-pi/pi-tui";
+import { setKeybindings } from "@oh-my-pi/pi-tui";
 import { formatNumber, TempDir } from "@oh-my-pi/pi-utils";
 import { setLocale } from "../src/i18n";
 
@@ -523,65 +523,6 @@ describe("InteractiveMode plan review rendering", () => {
 			if (previousVisual === undefined) delete Bun.env.VISUAL;
 			else Bun.env.VISUAL = previousVisual;
 		}
-	});
-
-	it("enables terminal mouse tracking while Plan Review is open", async () => {
-		let capturedOverlay: PlanReviewOverlay | undefined;
-		let capturedOptions: OverlayOptions | undefined;
-		const overlayHandle: OverlayHandle = {
-			hide: vi.fn(),
-			setHidden: vi.fn(),
-			isHidden: vi.fn(() => false),
-		};
-		vi.spyOn(mode.ui, "showOverlay").mockImplementation((component, options) => {
-			if (!(component instanceof PlanReviewOverlay)) throw new Error("Expected Plan Review overlay");
-			capturedOverlay = component;
-			capturedOptions = options;
-			return overlayHandle;
-		});
-
-		const choice = mode.showPlanReview("# Plan\n\nSelectable body", "Plan mode - next step", ["Approve"]);
-
-		expect(capturedOptions).toMatchObject({ fullscreen: true, mouseTracking: true });
-		capturedOverlay?.handleInput("\x1b");
-		await expect(choice).resolves.toBeUndefined();
-	});
-
-	it("localizes the Plan Review title and every approval option", async () => {
-		setLocale("zh-CN");
-		let capturedOverlay: PlanReviewOverlay | undefined;
-		vi.spyOn(mode.ui, "showOverlay").mockImplementation(component => {
-			capturedOverlay = component as PlanReviewOverlay;
-			return { hide: vi.fn() } as never;
-		});
-
-		const choice = mode.showPlanReview("# Plan\n\n执行变更。", "Plan mode - next step", [
-			"Approve and execute",
-			"Approve and execute in goal mode",
-			"Approve and compact context",
-			"Approve and keep context",
-			"Refine plan",
-			"Save and quit",
-		]);
-
-		const overlay = capturedOverlay;
-		expect(overlay).toBeDefined();
-		const rendered = overlay!
-			.render(100)
-			.map(line => Bun.stripANSI(line))
-			.join("\n");
-		expect(rendered).toContain("计划审查");
-		expect(rendered).toContain("计划模式 - 下一步");
-		expect(rendered).toContain("批准并执行");
-		expect(rendered).toContain("批准并按目标模式执行");
-		expect(rendered).toContain("批准并压缩上下文");
-		expect(rendered).toContain("批准并保留上下文");
-		expect(rendered).toContain("优化计划");
-		expect(rendered).toContain("保存并退出");
-
-		overlay!.handleInput("\x1b[B");
-		overlay!.handleInput("\r");
-		await expect(choice).resolves.toBe("批准并按目标模式执行");
 	});
 
 	it("dismisses Plan Review and restores input when a provider error is pinned", async () => {

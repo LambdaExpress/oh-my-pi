@@ -69,6 +69,7 @@ function isBookkeepingEntry(entry: SessionEntry): boolean {
 		case "label":
 		case "custom":
 		case "model_change":
+		case "model_usage":
 		case "thinking_level_change":
 		case "service_tier_change":
 		case "title_change":
@@ -92,12 +93,10 @@ interface AdvisorTreeDisplay {
 }
 
 /**
- * Collapse a raw advisor field (a `WATCHDOG.yml`-supplied name or severity) to
- * a single safe line: strip ANSI/control characters via the shared sanitizer,
- * then fold the tab/newline it intentionally preserves into spaces so the value
- * cannot split or misalign a session-tree row.
+ * Collapse untrusted session metadata to one safe tree-row field: strip
+ * ANSI/control characters, then fold preserved tabs/newlines into spaces.
  */
-function sanitizeAdvisorField(value: string): string {
+function sanitizeTreeField(value: string): string {
 	return sanitizeText(value)
 		.replace(/[\n\t]/g, " ")
 		.trim();
@@ -118,11 +117,11 @@ function advisorTreeDisplay(details: unknown): AdvisorTreeDisplay {
 		if (!isRecord(note)) continue;
 		if (typeof note.note === "string") notes.push(note.note);
 		if (typeof note.advisor === "string") {
-			const name = sanitizeAdvisorField(note.advisor);
+			const name = sanitizeTreeField(note.advisor);
 			if (name && name !== "default" && !advisors.includes(name)) advisors.push(name);
 		}
 		if (typeof note.severity === "string") {
-			const severity = sanitizeAdvisorField(note.severity);
+			const severity = sanitizeTreeField(note.severity);
 			if (severity && !severities.includes(severity)) severities.push(severity);
 		}
 	}
@@ -493,6 +492,15 @@ class TreeList implements Component {
 			case "model_change":
 				parts.push("model", entry.model);
 				break;
+			case "model_usage":
+				parts.push(
+					"model usage",
+					sanitizeTreeField(entry.purpose),
+					sanitizeTreeField(entry.role ?? ""),
+					sanitizeTreeField(entry.provider),
+					sanitizeTreeField(entry.model),
+				);
+				break;
 			case "thinking_level_change":
 				parts.push("thinking", entry.thinkingLevel ?? ThinkingLevel.Off);
 				break;
@@ -824,6 +832,14 @@ class TreeList implements Component {
 			case "model_change":
 				result = theme.fg("dim", `[model: ${entry.model}]`);
 				break;
+			case "model_usage": {
+				const purpose = sanitizeTreeField(entry.purpose);
+				const role = sanitizeTreeField(entry.role ?? "");
+				const provider = sanitizeTreeField(entry.provider);
+				const model = sanitizeTreeField(entry.model);
+				result = theme.fg("dim", `[model usage: ${purpose} ${role ? `${role} ` : ""}${provider}/${model}]`);
+				break;
+			}
 			case "thinking_level_change":
 				result = theme.fg("dim", `[thinking: ${entry.thinkingLevel ?? ThinkingLevel.Off}]`);
 				break;

@@ -2,8 +2,9 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { type Type, type } from "@oh-my-pi/omptype";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
+import { EditTool, hashlineEditParamsSchema } from "@oh-my-pi/pi-coding-agent/edit";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { type EditMode, type EditModeSessionLike, resolveEditMode } from "@oh-my-pi/pi-coding-agent/utils/edit-mode";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -48,30 +49,32 @@ describe("resolveEditMode", () => {
 		restoreEnv();
 	});
 
-	test("falls back from hashline to sloppy for Kimi models", () => {
+	test("falls back from hashline to replace for Kimi models", () => {
 		delete Bun.env.PI_EDIT_VARIANT;
 
-		expect(resolveEditMode(createSession({ activeModel: "openrouter/moonshotai/Kimi-K2-Instruct" }))).toBe("sloppy");
+		expect(resolveEditMode(createSession({ activeModel: "openrouter/moonshotai/Kimi-K2-Instruct" }))).toBe("replace");
 	});
 
-	test("falls back from hashline to sloppy for MiMo models", () => {
+	test("falls back from hashline to replace for MiMo models", () => {
 		delete Bun.env.PI_EDIT_VARIANT;
 
-		expect(resolveEditMode(createSession({ activeModel: "xiaomi/MiMo-V2.5-Pro" }))).toBe("sloppy");
+		expect(resolveEditMode(createSession({ activeModel: "xiaomi/MiMo-V2.5-Pro" }))).toBe("replace");
 	});
 
-	test("falls back from hashline to sloppy for DeepSeek V4 Flash models", () => {
+	test("falls back from hashline to replace for DeepSeek models", () => {
 		delete Bun.env.PI_EDIT_VARIANT;
 
 		expect(resolveEditMode(createSession({ activeModel: "tensormesh/deepseek-ai/DeepSeek-V4-Flash" }))).toBe(
-			"sloppy",
+			"replace",
 		);
+		expect(resolveEditMode(createSession({ activeModel: "deepseek/deepseek-chat" }))).toBe("replace");
+		expect(resolveEditMode(createSession({ activeModel: "deepseek/deepseek-reasoner" }))).toBe("replace");
 	});
 
-	test("falls back from hashline to sloppy for Step 3.7 Flash models", () => {
+	test("falls back from hashline to replace for Step 3.7 Flash models", () => {
 		delete Bun.env.PI_EDIT_VARIANT;
 
-		expect(resolveEditMode(createSession({ activeModel: "kilo/stepfun/step-3.7-flash:free" }))).toBe("sloppy");
+		expect(resolveEditMode(createSession({ activeModel: "kilo/stepfun/step-3.7-flash:free" }))).toBe("replace");
 	});
 
 	test("does not exclude non-Kimi Moonshot models", () => {
@@ -115,6 +118,46 @@ describe("resolveEditMode", () => {
 		expect(resolveEditMode(createSession({ activeModel: "openrouter/moonshotai/Kimi-K2-Instruct" }))).toBe(
 			"hashline",
 		);
+	});
+});
+
+describe("hashlineEditParamsSchema", () => {
+	const input = "[x.ts]\nPUT <1:\n+x";
+
+	function arkSafeParse<S extends Type>(schema: S, data: unknown) {
+		const result = schema(data);
+		if (result instanceof type.errors) {
+			return { success: false as const, data: undefined, error: result };
+		}
+		return { success: true as const, data: result as S["infer"], error: undefined };
+	}
+
+	test("declares only input as the model-facing field", () => {
+		const jsonSchema = hashlineEditParamsSchema.toJsonSchema() as {
+			properties?: Record<string, unknown>;
+			required?: string[];
+		};
+
+		expect(Object.keys(jsonSchema.properties ?? {})).toEqual(["input"]);
+		expect(jsonSchema.required).toEqual(["input"]);
+	});
+
+	test("tolerates provider extra fields without declaring path", () => {
+		const result = arkSafeParse(hashlineEditParamsSchema, { path: "x.ts", input });
+
+		expect(result.success).toBe(true);
+	});
+
+	test("rejects _input as an alias for input", () => {
+		const result = arkSafeParse(hashlineEditParamsSchema, { _input: input });
+
+		expect(result.success).toBe(false);
+	});
+
+	test("still requires input", () => {
+		const result = arkSafeParse(hashlineEditParamsSchema, { path: "x.ts" });
+
+		expect(result.success).toBe(false);
 	});
 });
 

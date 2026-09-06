@@ -272,10 +272,7 @@ interface TabApi {
 	scroll(deltaX: number, deltaY: number): Promise<void>;
 	drag(from: DragTarget, to: DragTarget): Promise<void>;
 	waitFor(selector: string, opts?: { timeout?: number }): Promise<ActionableHandle>;
-	evaluate<TResult, TArgs extends unknown[]>(
-		fn: string | ((...args: TArgs) => TResult | Promise<TResult>),
-		...args: TArgs
-	): Promise<TResult>;
+	evaluate<R, TArgs extends unknown[]>(fn: string | ((...args: TArgs) => R | Promise<R>), ...args: TArgs): Promise<R>;
 	scrollIntoView(selector: string): Promise<void>;
 	select(selector: string, ...values: string[]): Promise<string[]>;
 	uploadFile(selector: string, ...filePaths: string[]): Promise<void>;
@@ -1148,7 +1145,7 @@ export class WorkerCore {
 	async #init(payload: WorkerInitPayload): Promise<void> {
 		try {
 			this.#mode = payload.mode;
-			this.#activatePageBeforeRun = payload.activatePageBeforeRun ?? false;
+			this.#activatePageBeforeRun = payload.mode === "attach" && payload.activatePageBeforeRun === true;
 			this.#activateForScreenshot = payload.mode === "headless" || payload.activateForScreenshot !== false;
 			this.#userDriven = payload.mode === "attach" && payload.userDriven === true;
 			const puppeteer = await this.#loadPuppeteer(payload.safeDir);
@@ -1172,7 +1169,7 @@ export class WorkerCore {
 				});
 				this.#observeDialogs();
 				await applyStealthPatches(this.#browser, this.#page, { browserSession: null, override: null });
-				await applyViewport(this.#page, payload.viewport);
+				if (payload.emulateViewport !== false) await applyViewport(this.#page, payload.viewport);
 				if (payload.dialogs) this.#applyDialogPolicy(payload.dialogs);
 			} else {
 				const target = await this.#findAttachedTarget(payload.targetId);

@@ -325,6 +325,8 @@ describe("LspMuxServer", () => {
 				version: 1,
 				diagnostics: [{ message: "fake", severity: 2, range: expect.any(Object) }],
 			});
+			await first.client.request("test/serverStatus", { health: "ok", quiescent: false });
+			await first.client.nextNotification("experimental/serverStatus");
 
 			first.client.destroy();
 			await pollUntil(() => Promise.resolve(server.sessionCount === 0), "first session close");
@@ -338,6 +340,12 @@ describe("LspMuxServer", () => {
 			expect(replay).toMatchObject({
 				uri,
 				diagnostics: [{ message: "fake", severity: 2, range: expect.any(Object) }],
+			});
+			expect(
+				await second.client.nextNotification<{ health: string; quiescent: boolean }>("experimental/serverStatus"),
+			).toEqual({
+				health: "ok",
+				quiescent: false,
 			});
 		},
 		10_000,

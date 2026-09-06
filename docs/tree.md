@@ -27,8 +27,12 @@ Any of the following opens the same selector:
 
 - `/tree`
 - configured keybinding for the `app.session.tree` action
-- double-escape on empty editor when `doubleEscapeAction = "tree"` (default)
-- `/branch` when `doubleEscapeAction = "tree"` (routes to tree selector instead of user-only branch picker)
+
+By default, double-escape on an empty editor opens the fullscreen transcript rewind selector (also available through `/rewind` or `/branch`). Set `doubleEscapeAction` to `tree` to open the session tree instead.
+
+In the rewind selector, move the mouse over a message region to preview the rewind point with the existing dotted outline, then left-click to navigate there. This also works in visible alternate-branch columns. Hovering does not navigate or recenter the viewport; the mouse wheel scrolls the transcript. Headers, gaps between regions, and the scrollbar do not select a rewind point. Keyboard navigation remains available.
+
+Rewind uses `navigateTree()` within the current session and keeps the old path as a branch. Selecting a user message returns its text and image attachments to the editor and moves to the point before that message.
 
 ## Tree UI model
 
@@ -216,7 +220,7 @@ Label edits in tree UI call `appendLabelChange(targetId, label)`.
 | Operation | Scope                                            | Result                                                                                                                                                   |
 | --------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/tree`   | Current session file                             | Moves leaf to selected point (same file)                                                                                                                 |
-| `/branch` | Usually current session file -> new session file | By default branches from selected **user** message into a new session file; if `doubleEscapeAction = "tree"`, `/branch` opens tree navigation UI instead |
+| `/branch` | Usually current session file -> new session file | Opens the transcript rewind selector; a **user** message target branches into a new session file, any other target repositions the leaf in place |
 | `/fork`   | Whole current session                            | Duplicates session into a new persisted session file                                                                                                     |
 | `/resume` | Session list                                     | Switches to another session file                                                                                                                         |
 

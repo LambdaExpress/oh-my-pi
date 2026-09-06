@@ -74,6 +74,86 @@ function createTruncatedReasoningPartDoneResponse(): Response {
 	});
 }
 
+const malformedNestedWriteArguments = `{"i":"Running SSH inspection","path":"xd://ssh","content":"{\\"host\\":\\"172.27.0.52\\",\\"command\\":\\"printf '%s\\\\n' '-- home --'; ls -la /home/shinetech\\",\\"timeout\\":45}}]}] trailing assistant text`;
+
+function createMalformedFinalWriteResponse(): Response {
+	return createSseResponse([
+		{ type: "response.created", response: { id: "resp_corrupted", status: "in_progress" } },
+		{
+			type: "response.output_item.added",
+			output_index: 0,
+			item: {
+				type: "function_call",
+				id: "fc_corrupted",
+				call_id: "call_corrupted",
+				name: "write",
+				arguments: "",
+				status: "in_progress",
+			},
+		},
+		{
+			type: "response.output_item.done",
+			output_index: 0,
+			item: {
+				type: "function_call",
+				id: "fc_corrupted",
+				call_id: "call_corrupted",
+				name: "write",
+				arguments: malformedNestedWriteArguments,
+				status: "completed",
+			},
+		},
+		{ type: "response.completed", response: { id: "resp_corrupted", status: "completed" } },
+	]);
+}
+
+function createCompletedWriteResponse(args: Record<string, unknown>): Response {
+	const argumentsJson = JSON.stringify(args);
+	return createSseResponse([
+		{ type: "response.created", response: { id: "resp_write_recovered", status: "in_progress" } },
+		{
+			type: "response.output_item.added",
+			output_index: 0,
+			item: {
+				type: "function_call",
+				id: "fc_write_recovered",
+				call_id: "call_write_recovered",
+				name: "write",
+				arguments: "",
+				status: "in_progress",
+			},
+		},
+		{
+			type: "response.function_call_arguments.delta",
+			output_index: 0,
+			item_id: "fc_write_recovered",
+			delta: argumentsJson,
+		},
+		{
+			type: "response.function_call_arguments.done",
+			output_index: 0,
+			item_id: "fc_write_recovered",
+			arguments: argumentsJson,
+		},
+		{
+			type: "response.output_item.done",
+			output_index: 0,
+			item: {
+				type: "function_call",
+				id: "fc_write_recovered",
+				call_id: "call_write_recovered",
+				name: "write",
+				arguments: argumentsJson,
+				status: "completed",
+			},
+		},
+		{
+			type: "response.completed",
+			response: { id: "resp_write_recovered", status: "completed" },
+		},
+	]);
+}
+
 function createCompletedToolResponse(responseId = "resp_retry"): Response {
 	const argumentsJson = JSON.stringify({ path: "README.md" });
 	return createSseResponse([
@@ -258,6 +338,54 @@ async function collectEvents(stream: AssistantMessageEventStream): Promise<Assis
 }
 
 describe("OpenAI Responses transient stream retry", () => {
+	it("retries malformed final nested write arguments without forwarding the corrupted call", async () => {
+		const recoveredArguments = {
+			i: "Running SSH inspection",
+			path: "xd://ssh",
+			content: JSON.stringify({
+				host: "172.27.0.52",
+				command: "printf '%s\\n' '-- home --'; ls -la /home/shinetech",
+				timeout: 45,
+			}),
+		};
+		const sentRequests: Array<Record<string, unknown>> = [];
+		let attempt = 0;
+		const fetchMock = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+			sentRequests.push(parseBody(init));
+			attempt++;
+			return attempt === 1 ? createMalformedFinalWriteResponse() : createCompletedWriteResponse(recoveredArguments);
+		}) as FetchImpl;
+
+		const responseStream = streamOpenAIResponses(model, context, {
+			apiKey: "test-key",
+			fetch: fetchMock,
+			providerRetryWait: async () => {},
+		});
+		const events = await collectEvents(responseStream);
+		const result = await responseStream.result();
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(sentRequests[1]).toEqual(sentRequests[0]);
+		expect(result.stopReason).toBe("toolUse");
+		expect(JSON.parse(JSON.stringify(result.content))).toEqual([
+			{
+				type: "toolCall",
+				id: "call_write_recovered|fc_write_recovered",
+				name: "write",
+				arguments: recoveredArguments,
+			},
+		]);
+		expect(events.map(event => event.type)).toEqual([
+			"start",
+			"toolcall_start",
+			"toolcall_delta",
+			"toolcall_end",
+			"done",
+		]);
+		expect(JSON.stringify(events)).not.toContain("call_corrupted");
+		expect(JSON.stringify(result.providerPayload)).not.toContain("call_corrupted");
+	});
+
 	it("retries a truncated pending tool call with a fresh request and clean state", async () => {
 		const sentRequests: Array<Record<string, unknown>> = [];
 		let attempt = 0;

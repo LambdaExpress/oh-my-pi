@@ -5,6 +5,7 @@ import { type Component, padding, truncateToWidth, visibleWidth } from "@oh-my-p
 import { formatNumber, getProjectDir } from "@oh-my-pi/pi-utils";
 import { settings } from "../../config/settings";
 import { t } from "../../i18n";
+import { colorToAnsi } from "../../modes/theme/color";
 import { theme } from "../../modes/theme/theme";
 import type { AgentSession } from "../../session/agent-session";
 import { shortenPath } from "../../tools/render-utils";
@@ -245,7 +246,7 @@ export class FooterComponent implements Component {
 				getContextUsageLevel(contextPercentValue, contextWindow),
 				theme.isLight,
 			);
-			contextPercentStr = theme.fgHex(color, contextPercentDisplay);
+			contextPercentStr = `${colorToAnsi(color, theme.getColorMode())}${contextPercentDisplay}\x1b[39m`;
 		} else {
 			contextPercentStr = contextPercentDisplay;
 		}

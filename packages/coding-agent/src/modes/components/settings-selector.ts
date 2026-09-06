@@ -690,14 +690,10 @@ function translatedLabel(path: SettingPath, fallback: string): string {
 			return t("Emoji Autocomplete");
 		case "error.notify":
 			return t("Error Notification");
-		case "eval.jl":
-			return t("Julia Eval Backend");
 		case "eval.js":
 			return t("JavaScript Eval Backend");
 		case "eval.py":
 			return t("Python Eval Backend");
-		case "eval.rb":
-			return t("Ruby Eval Backend");
 		case "exa.searchDelayMs":
 			return t("Exa Search Delay");
 		case "exa.enabled":
@@ -764,6 +760,8 @@ function translatedLabel(path: SettingPath, fallback: string): string {
 			return t("Block Images");
 		case "images.describeForTextModels":
 			return t("Describe Images for Text Models");
+		case "images.questionTimeoutMs":
+			return t("Image Question Timeout");
 		case "images.visionApproval":
 			return t("Require Vision Approval");
 		case "images.visionApprovalTimeoutMs":
@@ -774,14 +772,10 @@ function translatedLabel(path: SettingPath, fallback: string): string {
 			return t("Include Workspace Tree");
 		case "inlineToolDescriptors":
 			return t("Inline Tool Descriptors");
-		case "inspect_image.mode":
-			return t("Inspect Image");
-		case "inspect_image.timeoutMs":
-			return t("Inspect Image Timeout");
+		case "isolation.backend":
+			return t("Isolation Backend");
 		case "irc.timeoutMs":
 			return t("IRC Timeout");
-		case "julia.interpreter":
-			return t("Julia Interpreter");
 		case "launch.enabled":
 			return t("Launch");
 		case "live.voice":
@@ -990,8 +984,6 @@ function translatedLabel(path: SettingPath, fallback: string): string {
 			return t("Reserve Margin");
 		case "retry.usageReservePolicy":
 			return t("Reserve Policy");
-		case "ruby.interpreter":
-			return t("Ruby Interpreter");
 		case "searxng.endpoint":
 			return t("SearXNG Endpoint");
 		case "secrets.enabled":
@@ -1076,10 +1068,10 @@ function translatedLabel(path: SettingPath, fallback: string): string {
 			return t("Apply Isolated Changes");
 		case "task.isolation.commits":
 			return t("Isolation Commit Style");
+		case "task.isolation.enabled":
+			return t("Isolate Subagents");
 		case "task.isolation.merge":
 			return t("Isolation Merge Strategy");
-		case "task.isolation.mode":
-			return t("Isolation Mode");
 		case "task.maxConcurrency":
 			return t("Max Concurrent Tasks");
 		case "task.maxEffort":
@@ -1413,8 +1405,6 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			return t("Suggest emojis from `:name:` shortcodes and expand text emoticons like `:D` or `:-)`");
 		case "error.notify":
 			return t("Notify when the agent stops with an error");
-		case "eval.jl":
-			return t("Allow the eval tool to dispatch Julia cells to the persistent Julia kernel");
 		case "eval.js":
 			return t("Allow the eval tool to dispatch JavaScript cells to the in-process runtime");
 		case "eval.py":
@@ -1503,6 +1493,10 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			return t(
 				"When an image is attached to a model without vision support, describe it with a vision-capable model. Enable images.visionApproval to require approval before the vision model runs; otherwise the image is described directly.",
 			);
+		case "images.questionTimeoutMs":
+			return t(
+				"Per-request timeout for the vision-model call behind read's ?q= image questions, in milliseconds. A stalled provider fails fast with a timeout error instead of blocking until manual abort. Set to 0 to disable the timeout.",
+			);
 		case "images.visionApproval":
 			return t(
 				"Ask for approval before a vision-capable model describes attached images for text-only models. When off (default), the description is generated directly without prompting. Requires images.describeForTextModels to be enabled.",
@@ -1521,21 +1515,11 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			return t(
 				"Render full tool descriptors in the system prompt and strip top-level/nested descriptions from provider tool schemas so descriptor text is sent once. Auto enables this for Gemini models and disables it otherwise",
 			);
-		case "inspect_image.mode":
-			return t(
-				"Controls the inspect_image tool, which delegates image understanding to a vision-capable model. 'auto' exposes it only when the active model lacks native image input; 'on' always exposes it; 'off' never does.",
-			);
-		case "inspect_image.timeoutMs":
-			return t(
-				"Per-request timeout for the inspect_image vision-model call, in milliseconds. A stalled provider fails fast with a timeout error instead of blocking until manual abort. Set to 0 to disable the timeout.",
-			);
+		case "isolation.backend":
+			return t("Backend used for subagent isolation and worktree cloning");
 		case "irc.timeoutMs":
 			return t(
 				"Default timeout for hub message waits (and send await:true) in milliseconds; 0 disables the timeout",
-			);
-		case "julia.interpreter":
-			return t(
-				"Optional path to an exact Julia executable. When set, automatic Julia runtime discovery is skipped.",
 			);
 		case "launch.enabled":
 			return t("Enable the launch tool for supervising shared long-running project processes");
@@ -1801,8 +1785,6 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			);
 		case "retry.usageReservePolicy":
 			return t("What to do when every same-provider coding-plan account is inside the reserve margin.");
-		case "ruby.interpreter":
-			return t("Optional path to an exact Ruby executable. When set, automatic Ruby runtime discovery is skipped.");
 		case "searxng.endpoint":
 			return t("Base URL of a self-hosted SearXNG instance used for web search");
 		case "secrets.enabled":
@@ -1923,6 +1905,8 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			);
 		case "task.isolation.commits":
 			return t("Commit message style for nested repo changes (generic or AI-generated)");
+		case "task.isolation.enabled":
+			return t("Run subagents in an isolated copy of the checkout and integrate their changes afterwards");
 		case "task.isolation.merge":
 			return t("How isolated task changes are integrated (patch apply or branch merge)");
 		case "task.maxConcurrency":
@@ -2286,6 +2270,14 @@ function translatedOptions(path: SettingPath, options: ReadonlyArray<SubmenuOpti
 				{ value: "120000", label: t("2 minutes") },
 				{ value: "300000", label: t("5 minutes") },
 			];
+		case "images.questionTimeoutMs":
+			return [
+				{ value: "0", label: t("Disabled") },
+				{ value: "60000", label: t("1 minute") },
+				{ value: "120000", label: t("2 minutes") },
+				{ value: "180000", label: t("3 minutes") },
+				{ value: "300000", label: t("5 minutes") },
+			];
 		case "inlineToolDescriptors":
 			return [
 				{
@@ -2295,20 +2287,6 @@ function translatedOptions(path: SettingPath, options: ReadonlyArray<SubmenuOpti
 				},
 				{ value: "on", label: t("On"), description: t("Always inline descriptors in the system prompt") },
 				{ value: "off", label: t("Off"), description: t("Keep descriptors in provider tool schemas only") },
-			];
-		case "inspect_image.mode":
-			return [
-				{ value: "auto", label: t("Auto (only for models without vision)") },
-				{ value: "on", label: t("On") },
-				{ value: "off", label: t("Off") },
-			];
-		case "inspect_image.timeoutMs":
-			return [
-				{ value: "0", label: t("Disabled") },
-				{ value: "60000", label: t("1 minute") },
-				{ value: "120000", label: t("2 minutes") },
-				{ value: "180000", label: t("3 minutes") },
-				{ value: "300000", label: t("5 minutes") },
 			];
 		case "irc.timeoutMs":
 			return [
@@ -2843,9 +2821,8 @@ function translatedOptions(path: SettingPath, options: ReadonlyArray<SubmenuOpti
 				{ value: "patch", label: t("Patch"), description: t("Combine diffs and git apply") },
 				{ value: "branch", label: t("Branch"), description: t("Commit per task, merge with --no-ff") },
 			];
-		case "task.isolation.mode":
+		case "isolation.backend":
 			return [
-				{ value: "none", label: t("None"), description: t("No isolation") },
 				{ value: "auto", label: t("Auto"), description: t("Let the PAL pick the best available backend") },
 				{ value: "apfs", label: t("APFS"), description: t("macOS clonefile reflink (APFS)") },
 				{ value: "btrfs", label: t("btrfs"), description: t("btrfs subvolume snapshot") },
@@ -3884,7 +3861,7 @@ export class SettingsSelectorComponent implements Component {
 			onPreview = value => shapePreview.setValue(value);
 			footer = shapePreview;
 		} else if (def.path === "composer.shape") {
-			const shapePreview = new ComposerShapePreview(String(currentValue ?? "box"), {
+			const shapePreview = new ComposerShapePreview(String(currentValue ?? "band"), {
 				requestRender: this.context.requestRender,
 				status: this.context.composerPreviewStatus,
 			});

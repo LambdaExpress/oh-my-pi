@@ -34,6 +34,13 @@ export interface IrcMessage {
 	replyTo?: string;
 	/** Immutable top-level session scope that produced this message. */
 	scopeId?: string;
+	/**
+	 * Automated wake-turn relay of a woken subagent's stop output (task executor
+	 * `relayWakeTurnOutput`). Relays are answers, never wake sources: the
+	 * recipient's own wake-turn relay must skip them or two idle peers
+	 * ping-pong forever.
+	 */
+	wakeRelay?: boolean;
 }
 
 export interface IrcDeliveryReceipt {
@@ -86,6 +93,8 @@ export class IrcBus {
 	readonly #mailboxes = new Map<string, IrcMessage[]>();
 	readonly #waiters = new Map<string, IrcWaiter[]>();
 	readonly #retiredScopes = new Set<string>();
+	/** Timestamp of the latest successful send per `from` → `to`; see {@link sentSince}. */
+	readonly #lastSent = new Map<string, Map<string, number>>();
 
 	constructor(registry: AgentRegistry = AgentRegistry.global(), lifecycle?: AgentLifecycleManager) {
 		this.#registry = registry;
@@ -106,7 +115,7 @@ export class IrcBus {
 			else this.#mailboxes.delete(agentId);
 		}
 		for (const waiters of this.#waiters.values()) {
-			for (const waiter of [...waiters]) {
+			for (const waiter of Array.from(waiters)) {
 				if (waiter.scopeId === scopeId) waiter.cancel();
 			}
 		}
@@ -141,13 +150,32 @@ export class IrcBus {
 		opts?: { expectsReply?: boolean; suppressRelay?: boolean },
 	): Promise<IrcDeliveryReceipt> {
 		const message: IrcMessage = { ...msg, id: Snowflake.next(), ts: Date.now() };
-		if (message.scopeId && this.#retiredScopes.has(message.scopeId)) {
-			return { to: message.to, outcome: "failed", error: "The sender session has ended." };
+		const receipt = await this.#deliver(message, opts);
+		if (receipt.outcome !== "failed") {
+			let sent = this.#lastSent.get(message.from);
+			if (!sent) {
+				sent = new Map();
+				this.#lastSent.set(message.from, sent);
+			}
+			sent.set(message.to, message.ts);
 		}
-		const senderRef = this.#registry.get(message.from);
-		if (message.scopeId && senderRef?.scopeId !== message.scopeId) {
-			return { to: message.to, outcome: "failed", error: `Agent "${message.from}" is outside the active session.` };
-		}
+		return receipt;
+	}
+
+	/**
+	 * Whether `from` successfully sent `to` anything at or after `sinceTs`.
+	 * The wake-turn relay uses it to skip agents that already answered their
+	 * waker themselves.
+	 */
+	sentSince(from: string, to: string, sinceTs: number): boolean {
+		const ts = this.#lastSent.get(from)?.get(to);
+		return ts !== undefined && ts >= sinceTs;
+	}
+
+	async #deliver(
+		message: IrcMessage,
+		opts?: { expectsReply?: boolean; suppressRelay?: boolean },
+	): Promise<IrcDeliveryReceipt> {
 		const ref = this.#registry.get(message.to);
 		if (!ref) {
 			return {
@@ -378,7 +406,7 @@ export class IrcBus {
 					settle({ kind: "abort", error: new IrcAwaitTargetStopped(target) });
 					return;
 				}
-				void session.waitForIrcAutoReplies().then(() => {
+				void session.waitForIrcReplies().then(() => {
 					if (!active || registry.get(target)?.session !== session) return;
 					settle({ kind: "abort", error: new IrcAwaitTargetStopped(target) });
 				});

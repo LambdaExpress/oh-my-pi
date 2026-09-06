@@ -1,12 +1,12 @@
 import * as path from "node:path";
+import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
+import { getEditStore } from "../edit/store";
 import {
 	formatHashlineHeader,
 	formatNumberedLine,
 	formatNumberedLines,
 	splitAddressableFileLines,
-} from "@oh-my-pi/hashline";
-import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import { canonicalSnapshotKey, getFileSnapshotStore, recordSeenLines } from "../edit/file-snapshot-store";
+} from "./hashline-format";
 import { normalizeToLF } from "../edit/normalize";
 import { isMarkdownPath } from "../modes/theme/theme";
 import type { ToolSession } from "../sdk";
@@ -21,6 +21,7 @@ import { buildLineEntriesWithBlockContext, type LineEntry, lineEntriesToPlainTex
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import { formatPathRelativeToCwd, type LineRange } from "./path-utils";
 import type { ReadToolDetails } from "./read";
+import { isRawSelector, type ParsedSelector, resolveTailSelector, selToOffsetLimit } from "./read-selector";
 import { formatBytes, shortenPath } from "./render-utils";
 import { ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -60,7 +61,7 @@ function recordFullHashlineContext(
 ): HashlineHeaderContext | undefined {
 	if (!absolutePath || !path.isAbsolute(absolutePath)) return undefined;
 	const normalized = normalizeToLF(fullText);
-	const tag = getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalized);
+	const tag = getEditStore(session).recordSnapshot(absolutePath, normalized);
 	return {
 		header: formatReadHashlineHeader(displayPath, tag),
 		tag,
@@ -213,7 +214,7 @@ function recordInMemorySeenLines(
 	seenLines: readonly number[] | undefined,
 ): void {
 	if (!absolutePath || !path.isAbsolute(absolutePath) || !seenLines || seenLines.length === 0) return;
-	getFileSnapshotStore(session).record(canonicalSnapshotKey(absolutePath), normalizeToLF(fullText), seenLines);
+	getEditStore(session).recordSnapshot(absolutePath, normalizeToLF(fullText), [...seenLines]);
 }
 
 function lineNumbersFromEntries(entries: readonly LineEntry[]): number[] {
@@ -292,21 +293,47 @@ function expandRangeWithContext(
 	};
 }
 
+/** Options shared by the in-memory text builders; `raw` flips the line split to verbatim `\n` segments. */
+export interface InMemoryTextOptions {
+	details?: ReadToolDetails;
+	sourcePath?: string;
+	sourceUrl?: string;
+	sourceInternal?: string;
+	entityLabel: string;
+	ignoreResultLimits?: boolean;
+	raw?: boolean;
+	immutable?: boolean;
+}
+
+/**
+ * Render any read selector against in-memory text. Pins `:-N` tails to the
+ * text's own line count (raw mode addresses `\n` segments verbatim; otherwise
+ * the hashline-addressable split), then dispatches multi-range selectors to
+ * {@link buildInMemoryMultiRangeResult} and everything else to
+ * {@link buildInMemoryTextResult}. Raw mode is derived from the selector.
+ */
+export function buildInMemorySelectorResult(
+	session: ToolSession,
+	text: string,
+	parsed: ParsedSelector,
+	options: Omit<InMemoryTextOptions, "raw">,
+): AgentToolResult<ReadToolDetails> {
+	const raw = isRawSelector(parsed);
+	const totalLines = raw ? text.split("\n").length : splitAddressableFileLines(text).length;
+	const sel = resolveTailSelector(parsed, totalLines);
+	if (sel.kind === "lines" && sel.ranges.length > 1) {
+		return buildInMemoryMultiRangeResult(session, text, sel.ranges, { ...options, raw });
+	}
+	const { offset, limit } = selToOffsetLimit(sel);
+	return buildInMemoryTextResult(session, text, offset, limit, { ...options, raw });
+}
+
 export function buildInMemoryTextResult(
 	session: ToolSession,
 	text: string,
 	offset: number | undefined,
 	limit: number | undefined,
-	options: {
-		details?: ReadToolDetails;
-		sourcePath?: string;
-		sourceUrl?: string;
-		sourceInternal?: string;
-		entityLabel: string;
-		ignoreResultLimits?: boolean;
-		raw?: boolean;
-		immutable?: boolean;
-	},
+	options: InMemoryTextOptions,
 ): AgentToolResult<ReadToolDetails> {
 	const displayMode = resolveFileDisplayMode(session, { raw: options.raw, immutable: options.immutable });
 	const details = options.details ?? {};
@@ -473,7 +500,7 @@ export function buildInMemoryTextResult(
 	}
 
 	if (hashContext?.tag && options.sourcePath && seenLines) {
-		recordSeenLines(session, options.sourcePath, hashContext.tag, seenLines);
+		getEditStore(session).recordSeenLines(options.sourcePath, hashContext.tag, seenLines);
 	}
 	if (options.raw === true && options.sourcePath && options.immutable !== true && rawSeenLines) {
 		recordInMemorySeenLines(session, options.sourcePath, text, rawSeenLines);
@@ -496,15 +523,7 @@ export function buildInMemoryMultiRangeResult(
 	session: ToolSession,
 	text: string,
 	ranges: readonly LineRange[],
-	options: {
-		details?: ReadToolDetails;
-		sourcePath?: string;
-		sourceUrl?: string;
-		sourceInternal?: string;
-		entityLabel: string;
-		raw?: boolean;
-		immutable?: boolean;
-	},
+	options: Omit<InMemoryTextOptions, "ignoreResultLimits">,
 ): AgentToolResult<ReadToolDetails> {
 	const displayMode = resolveFileDisplayMode(session, { raw: options.raw, immutable: options.immutable });
 	const details = options.details ?? {};
@@ -571,7 +590,7 @@ export function buildInMemoryMultiRangeResult(
 	const finalText =
 		notices.length > 0 ? (outputText ? `${outputText}\n${notices.join("\n")}` : notices.join("\n")) : outputText;
 	if (hashContext?.tag && options.sourcePath && seenLines) {
-		recordSeenLines(session, options.sourcePath, hashContext.tag, seenLines);
+		getEditStore(session).recordSeenLines(options.sourcePath, hashContext.tag, seenLines);
 	}
 	if (options.raw === true && options.sourcePath && options.immutable !== true && visibleSpans.length > 0) {
 		recordInMemorySeenLines(session, options.sourcePath, text, lineNumbersFromSpans(visibleSpans));

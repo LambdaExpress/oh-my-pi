@@ -409,7 +409,9 @@ export async function addManagedWorktree(options: AddManagedWorktreeOptions): Pr
 	};
 	await writeManagedWorktreeRecord(record);
 	try {
-		await withRepoLock(primaryRoot, () => vcs.requireGit(primaryRoot).worktreeAdd(worktreeRoot, baseSha, true));
+		await withRepoLock(primaryRoot, () =>
+			vcs.requireGit(primaryRoot).worktreeAdd(worktreeRoot, baseSha, { detach: true, clone: false }),
+		);
 	} catch (err) {
 		await rollbackCreatedWorktree(primaryRoot, worktreeRoot, id);
 		throw err;
@@ -649,7 +651,7 @@ export async function restoreManagedWorktree(options: RestoreManagedWorktreeOpti
 	const restoredName = safeManagedWorktreeName(record.name);
 	const { worktreeRoot } = await createPathCandidate(record.primaryRoot, restoredName);
 	await withRepoLock(record.primaryRoot, () =>
-		vcs.requireGit(record.primaryRoot).worktreeAdd(worktreeRoot, record.baseSha, true),
+		vcs.requireGit(record.primaryRoot).worktreeAdd(worktreeRoot, record.baseSha, { detach: true, clone: false }),
 	);
 	let submodules = record.submodules;
 	try {

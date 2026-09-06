@@ -212,6 +212,7 @@ export class TuiDebugServer {
 	readonly #path: string;
 	#server: Server | undefined;
 	#sockets = new Set<Socket>();
+	#dispatching: Socket | undefined;
 
 	constructor(tui: TUI, path: string) {
 		this.#tui = tui;
@@ -241,8 +242,12 @@ export class TuiDebugServer {
 	stop(): void {
 		const server = this.#server;
 		this.#server = undefined;
-		for (const socket of this.#sockets) socket.destroy();
-		this.#sockets.clear();
+		// An injected key can synchronously stop the TUI. Keep that request's
+		// socket writable until its response is queued, and drain all already
+		// queued replies before closing the other connections.
+		for (const socket of this.#sockets) {
+			if (socket !== this.#dispatching) socket.end();
+		}
 		try {
 			server?.close();
 		} catch {
@@ -266,6 +271,7 @@ export class TuiDebugServer {
 				const line = buffer.slice(0, newline).replace(/\r$/, "");
 				buffer = buffer.slice(newline + 1);
 				if (line.length > 0) this.#handleLine(socket, line);
+				if (this.#server === undefined) break;
 				newline = buffer.indexOf("\n");
 			}
 		});
@@ -287,6 +293,7 @@ export class TuiDebugServer {
 			return;
 		}
 		try {
+			this.#dispatching = socket;
 			const response = this.#dispatch(request);
 			if (request.op === "quit" && response.ok) {
 				this.#write(socket, response, () => {
@@ -298,6 +305,8 @@ export class TuiDebugServer {
 			this.#write(socket, response);
 		} catch (error) {
 			this.#write(socket, { ok: false, error: errorMessage(error) });
+		} finally {
+			this.#dispatching = undefined;
 		}
 	}
 
@@ -309,7 +318,8 @@ export class TuiDebugServer {
 			line = JSON.stringify({ ok: false, error: errorMessage(error) });
 		}
 		try {
-			socket.write(`${line}\n`, flushed);
+			if (this.#server === undefined) socket.end(`${line}\n`, flushed);
+			else socket.write(`${line}\n`, flushed);
 		} catch {
 			// Broken clients cannot affect the TUI.
 		}

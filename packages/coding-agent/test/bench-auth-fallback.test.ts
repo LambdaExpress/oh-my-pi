@@ -28,14 +28,18 @@ afterEach(() => {
 });
 
 function fakeModel(provider: string, id: string): Model<Api> {
-	return {
+	return buildModel({
 		provider,
 		id,
 		name: id,
 		api: "openai-completions",
+		baseUrl: "https://example.test/v1",
+		reasoning: false,
+		input: ["text"],
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		maxTokens: 4096,
 		contextWindow: 128_000,
-	} as unknown as Model<Api>;
+	});
 }
 
 function fakeStream(): AssistantMessageEventStream {

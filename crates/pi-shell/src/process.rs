@@ -1875,6 +1875,10 @@ fn prune_exited(spawned: &mut Vec<SpawnedProcess>) {
 /// still counts as alive.
 #[cfg(unix)]
 #[must_use]
+#[allow(
+	clippy::missing_const_for_fn,
+	reason = "calls non-const platform_process_group_alive on unix"
+)]
 fn process_group_alive(pgid: i32) -> bool {
 	if pgid <= 0 {
 		return false;

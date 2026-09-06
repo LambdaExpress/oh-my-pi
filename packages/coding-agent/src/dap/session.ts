@@ -395,7 +395,7 @@ function buildSummary(session: DapSession): DapSessionSummary {
 		exitCode: session.exitCode,
 		needsConfigurationDone: session.needsConfigurationDone && !session.configurationDoneSent,
 		parentSessionId: session.parentSessionId,
-		childSessionIds: session.childSessionIds.size > 0 ? [...session.childSessionIds] : undefined,
+		childSessionIds: session.childSessionIds.size > 0 ? Array.from(session.childSessionIds) : undefined,
 	};
 }
 
@@ -443,7 +443,7 @@ export class DapSessionManager {
 			session.needsConfigurationDone = session.capabilities.supportsConfigurationDoneRequest === true;
 			const launchArguments: DapLaunchArguments = {
 				...options.adapter.launchDefaults,
-				...(options.extraLaunchArguments ?? {}),
+				...options.extraLaunchArguments,
 				program: options.program,
 				cwd: options.cwd,
 				...(options.args !== undefined ? { args: options.args } : {}),
@@ -658,7 +658,7 @@ export class DapSessionManager {
 		const session = this.#touchActiveSession();
 		const sourcePath = normalizePath(file);
 		const root = this.#getRootSession(session);
-		const current = [...(root.breakpoints.get(sourcePath) ?? [])].filter(entry => entry.line !== line);
+		const current = Array.from(root.breakpoints.get(sourcePath) ?? []).filter(entry => entry.line !== line);
 		current.push({ verified: false, line, condition });
 		current.sort((left, right) => left.line - right.line);
 		const args = {
@@ -692,7 +692,7 @@ export class DapSessionManager {
 		const session = this.#touchActiveSession();
 		const sourcePath = normalizePath(file);
 		const root = this.#getRootSession(session);
-		const current = [...(root.breakpoints.get(sourcePath) ?? [])].filter(entry => entry.line !== line);
+		const current = Array.from(root.breakpoints.get(sourcePath) ?? []).filter(entry => entry.line !== line);
 		const args = {
 			source: { path: sourcePath, name: path.basename(sourcePath) },
 			breakpoints: current.map<DapSourceBreakpoint>(entry => ({
@@ -1361,7 +1361,7 @@ export class DapSessionManager {
 	async #terminateSessionTree(session: DapSession, signal?: AbortSignal, timeoutMs: number = 30_000): Promise<void> {
 		session.status = "terminated";
 		try {
-			for (const childId of [...session.childSessionIds]) {
+			for (const childId of Array.from(session.childSessionIds)) {
 				const child = this.#sessions.get(childId);
 				if (child) {
 					await this.#terminateSessionTree(child, signal, timeoutMs);
@@ -1542,12 +1542,12 @@ export class DapSessionManager {
 	}
 
 	async #ensureLaunchSlot(): Promise<void> {
-		for (const session of [...this.#sessions.values()]) {
+		for (const session of Array.from(this.#sessions.values())) {
 			if (session.status === "terminated" || !session.client.isAlive()) {
 				this.#disposeSession(session);
 			}
 		}
-		const root = [...this.#sessions.values()].find(session => !session.parentSessionId);
+		const root = Array.from(this.#sessions.values()).find(session => !session.parentSessionId);
 		if (!root) return;
 		throw new Error(`Debug session ${root.id} is still active. Terminate it before launching another.`);
 	}
@@ -2457,7 +2457,7 @@ export class DapSessionManager {
 		session.status = "terminated";
 		this.#settleTerminalExecution(session, "session_disposed");
 		this.#reactivateAfterTermination(session);
-		for (const childId of [...session.childSessionIds]) {
+		for (const childId of Array.from(session.childSessionIds)) {
 			const child = this.#sessions.get(childId);
 			if (child) this.#disposeSession(child);
 		}

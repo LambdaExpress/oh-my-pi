@@ -219,7 +219,7 @@ export function getConfig(cwd: string): LspConfig {
  */
 export function findLspProjectRoot(filePath: string, rootMarkers: string[]): string | null {
 	const findRoot = (markers: string[]): string | null => {
-		for (let dir = path.dirname(path.resolve(filePath)); ; ) {
+		for (let dir = path.dirname(path.resolve(filePath)); ;) {
 			if (hasRootMarkers(dir, markers)) return dir;
 			const parent = path.dirname(dir);
 			if (parent === dir) return null;

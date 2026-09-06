@@ -144,7 +144,6 @@ describe("AgentSession SSH transfer refresh", () => {
 				messages: [],
 			},
 		});
-		let session!: AgentSession;
 		const reloadSshTool =
 			options.reloadSshTool ??
 			(async () => {
@@ -157,7 +156,7 @@ describe("AgentSession SSH transfer refresh", () => {
 				if (options.requestedToolNames && !options.requestedToolNames.has("ssh_transfer")) return null;
 				return loadSshTransferTool(toolSession);
 			});
-		session = new AgentSession({
+		const session = new AgentSession({
 			agent,
 			sessionManager,
 			settings,

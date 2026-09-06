@@ -167,6 +167,9 @@ function stopIdleChecker(): void {
 // =============================================================================
 
 const CLIENT_CAPABILITIES = {
+	experimental: {
+		serverStatusNotification: true,
+	},
 	textDocument: {
 		synchronization: {
 			didSave: true,
@@ -452,6 +455,7 @@ async function startMessageReader(client: LspClient): Promise<void> {
 								const params = message.params as { token: string | number; value?: { kind?: string } };
 								if (params.value?.kind === "begin") {
 									client.activeProgressTokens.add(params.token);
+									rustAnalyzerReadyClients.delete(client);
 									// A fresh loading cycle after the previous one settled: re-arm the
 									// project-loaded promise so waitForProjectLoaded covers this cycle
 									// too (on-demand project loads, post-reload reloads).
@@ -461,6 +465,12 @@ async function startMessageReader(client: LspClient): Promise<void> {
 									if (client.activeProgressTokens.size === 0) {
 										client.resolveProjectLoaded();
 									}
+								}
+							} else if (message.method === "experimental/serverStatus" && message.params) {
+								const params = message.params as { quiescent?: unknown };
+								if (typeof params.quiescent === "boolean") {
+									rustAnalyzerQuiescence.set(client, params.quiescent);
+									if (!params.quiescent) rustAnalyzerReadyClients.delete(client);
 								}
 							}
 						}
@@ -628,7 +638,7 @@ async function reconcileExecutedChanges(
 	);
 
 	for (const activeClient of activeClients) {
-		for (const uri of [...activeClient.openFiles.keys()]) {
+		for (const uri of Array.from(activeClient.openFiles.keys())) {
 			let deleted = false;
 			for (const root of deletedRoots) {
 				if (uriIsWithin(uri, root)) {
@@ -827,6 +837,7 @@ const RUST_ANALYZER_WORKSPACE_READY_POLL_MS = 100;
 const RUST_ANALYZER_WORKSPACE_READY_SETTLE_MS = 2_000;
 const RUST_ANALYZER_STATUS_REQUEST_TIMEOUT_MS = 1_000;
 const rustAnalyzerReadyClients = new WeakSet<LspClient>();
+const rustAnalyzerQuiescence = new WeakMap<LspClient, boolean>();
 
 function commandBasename(command: string): string {
 	const slash = command.lastIndexOf("/");
@@ -853,7 +864,7 @@ function isRustAnalyzerStatusTimeout(err: unknown): boolean {
 }
 
 async function waitForRustAnalyzerWorkspace(client: LspClient, signal?: AbortSignal): Promise<void> {
-	if (rustAnalyzerReadyClients.has(client)) {
+	if (rustAnalyzerReadyClients.has(client) && client.activeProgressTokens.size === 0) {
 		return;
 	}
 	const timings = client.config.workspaceReadyTimings;
@@ -869,21 +880,33 @@ async function waitForRustAnalyzerWorkspace(client: LspClient, signal?: AbortSig
 		try {
 			status = await sendRequest(client, "rust-analyzer/analyzerStatus", {}, signal, statusRequestTimeoutMs);
 		} catch (err) {
-			if (!isRustAnalyzerStatusTimeout(err) || Date.now() >= deadline) {
+			throwIfAborted(signal);
+			if (!isRustAnalyzerStatusTimeout(err)) {
+				if (rustAnalyzerQuiescence.get(client) === false || client.activeProgressTokens.size > 0) {
+					throw new Error("rust-analyzer indexing is incomplete; retry after background loading finishes.");
+				}
 				return;
 			}
-			await Bun.sleep(pollMs);
+			if (Date.now() >= deadline) {
+				throw new Error("rust-analyzer indexing readiness could not be confirmed; retry after loading finishes.");
+			}
+			await untilAborted(signal, () => Bun.sleep(pollMs));
 			continue;
 		}
 		const ready = typeof status === "string" && !status.startsWith("No workspaces");
-		if (ready && Date.now() - started >= settleMs) {
+		if (
+			ready &&
+			rustAnalyzerQuiescence.get(client) !== false &&
+			client.activeProgressTokens.size === 0 &&
+			Date.now() - started >= settleMs
+		) {
 			rustAnalyzerReadyClients.add(client);
 			return;
 		}
 		if (Date.now() >= deadline) {
-			return;
+			throw new Error("rust-analyzer indexing is incomplete; retry after background loading finishes.");
 		}
-		await Bun.sleep(pollMs);
+		await untilAborted(signal, () => Bun.sleep(pollMs));
 	}
 }
 

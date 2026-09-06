@@ -28,6 +28,8 @@ import {
 	setStreamingPartialJson,
 } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
+import { buildModel } from "@oh-my-pi/pi-catalog/build";
+import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { createAssistantMessage, createUserMessage } from "./helpers";
@@ -49,6 +51,8 @@ declare module "@oh-my-pi/pi-agent-core/types" {
 function identityConverter(messages: AgentMessage[]): Message[] {
 	return messages.filter(m => m.role === "user" || m.role === "assistant" || m.role === "toolResult") as Message[];
 }
+
+const harmonyMitigationModel = buildModel({ ...getBundledModel("openai-codex", "gpt-5.4") });
 
 describe("agentLoop with AgentMessage", () => {
 	it("should emit events with AgentMessage types", async () => {
@@ -194,7 +198,7 @@ describe("agentLoop with AgentMessage", () => {
 			provider: "openai-codex",
 			responses: [{ content: [leak] }, { content: ["clean retry response"] }],
 		});
-		const config: AgentLoopConfig = { model: mock.model, convertToLlm: identityConverter };
+		const config: AgentLoopConfig = { model: harmonyMitigationModel, convertToLlm: identityConverter };
 
 		const events: AgentEvent[] = [];
 		const stream = agentLoop([createUserMessage("Hello")], context, config, undefined, mock.stream);
@@ -248,6 +252,49 @@ describe("agentLoop with AgentMessage", () => {
 		// retried — a hard-abort would have left `executed` empty and consumed the
 		// "done" response as a clean retry instead.
 		expect(executed).toEqual([leakyArg]);
+		expect(mock.calls).toHaveLength(2);
+	});
+
+	it("dispatches a tool call appended by transformAssistantMessage on a stop turn", async () => {
+		// In-text edit recovery (coding-agent) rewrites a text-only `stop` turn into
+		// a synthetic tool call inside this hook; the loop must scan tool calls
+		// AFTER the transform so the appended call is validated and executed.
+		const toolSchema = type({ input: "string" });
+		const executed: string[] = [];
+		const tool: AgentTool<typeof toolSchema, { input: string }> = {
+			name: "edit",
+			label: "Edit",
+			description: "Edit tool",
+			parameters: toolSchema,
+			async execute(_toolCallId, params) {
+				executed.push(params.input);
+				return { content: [{ type: "text", text: "ok" }], details: { input: params.input } };
+			},
+		};
+		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
+		const mock = createMockModel({
+			responses: [{ content: ["stray payload turn"], stopReason: "stop" }, { content: ["done"] }],
+		});
+		const config: AgentLoopConfig = {
+			model: mock.model,
+			convertToLlm: identityConverter,
+			transformAssistantMessage: message => {
+				const stray = message.content.some(block => block.type === "text" && block.text.includes("stray payload"));
+				if (!stray || message.content.some(block => block.type === "toolCall")) return;
+				message.content.push({
+					type: "toolCall",
+					id: "recovered-1",
+					name: "edit",
+					arguments: { input: "payload" },
+				});
+			},
+		};
+		const messages = await agentLoop([createUserMessage("go")], context, config, undefined, mock.stream).result();
+
+		expect(executed).toEqual(["payload"]);
+		const toolResult = messages.find(m => m.role === "toolResult") as ToolResultMessage | undefined;
+		expect(toolResult?.toolCallId).toBe("recovered-1");
+		// The paired result went back to the provider for a second turn.
 		expect(mock.calls).toHaveLength(2);
 	});
 
@@ -1238,6 +1285,59 @@ describe("agentLoop with AgentMessage", () => {
 		}
 	});
 
+	it("normalizes trailing periods from intent at extraction site", async () => {
+		const context: AgentContext = {
+			systemPrompt: ["test"],
+			messages: [],
+			tools: [
+				{
+					name: "echo",
+					label: "echo",
+					description: "echoes value",
+					parameters: type({ value: "string" }),
+					execute: async (_toolCallId, params: { value: string }) => ({
+						content: [{ type: "text", text: params.value }],
+					}),
+				},
+			],
+		};
+		const mock = createMockModel({
+			responses: [
+				{
+					content: [
+						{
+							type: "toolCall",
+							id: "tool-1",
+							name: "echo",
+							arguments: { value: "hello", [INTENT_FIELD]: "Reading model role settings." },
+						},
+					],
+				},
+				{ content: ["done"] },
+			],
+		});
+		const config: AgentLoopConfig = {
+			model: mock.model,
+			convertToLlm: identityConverter,
+			intentTracing: true,
+		};
+
+		const stream = agentLoop([createUserMessage("run")], context, config, undefined, mock.stream);
+		for await (const _ of stream) {
+			// drain
+		}
+		const messages = await stream.result();
+		const assistantWithToolCall = messages.find(
+			message => message.role === "assistant" && message.content.some(content => content.type === "toolCall"),
+		) as AssistantMessage | undefined;
+		const tracedToolCall = assistantWithToolCall?.content.find(content => content.type === "toolCall");
+
+		expect(tracedToolCall?.type).toBe("toolCall");
+		if (tracedToolCall?.type === "toolCall") {
+			expect(tracedToolCall.intent).toBe("Reading model role settings");
+		}
+	});
+
 	it("runs shared tools in parallel and emits completion-ordered results", async () => {
 		const toolSchema = type({ value: "string" });
 		const startTimes: Record<string, number> = {};
@@ -1489,7 +1589,7 @@ describe("agentLoop with AgentMessage", () => {
 		expect(assistantEnd.message.content.some(block => block.type === "toolCall")).toBe(false);
 	});
 
-	it("should skip remaining tool calls when steering is queued", async () => {
+	it("should skip remaining interruptible waits when steering is queued", async () => {
 		const toolSchema = type({ value: "string" });
 		const executed: string[] = [];
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
@@ -1498,6 +1598,7 @@ describe("agentLoop with AgentMessage", () => {
 			description: "Echo tool",
 			parameters: toolSchema,
 			concurrency: "exclusive",
+			interruptible: true,
 			async execute(_toolCallId, params) {
 				executed.push(params.value);
 				return {
@@ -1546,7 +1647,7 @@ describe("agentLoop with AgentMessage", () => {
 			events.push(event);
 		}
 
-		// Only the first tool should execute; the second is skipped after steering is queued.
+		// Only the first wait should execute; the second is skipped after steering is queued.
 		expect(executed).toEqual(["first"]);
 
 		const toolEnds = events.filter(
@@ -1587,13 +1688,16 @@ describe("agentLoop with AgentMessage", () => {
 		expect(sawInterruptInContext).toBe(true);
 	});
 
-	it("should finish pending tool calls before applying steering in wait mode", async () => {
+	it("runs already-emitted non-interruptible tools when steering is queued and injects the steer after the batch (#10439)", async () => {
+		// A user message typed while the model streams an `edit`/`write` must not
+		// throw the finished call away: the generation cost is sunk, the tool is
+		// cheap, and a skip only makes the model re-emit the same call.
 		const toolSchema = type({ value: "string" });
 		const executed: string[] = [];
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
-			name: "echo",
-			label: "Echo",
-			description: "Echo tool",
+			name: "write",
+			label: "Write",
+			description: "Non-interruptible side effect",
 			parameters: toolSchema,
 			concurrency: "exclusive",
 			async execute(_toolCallId, params) {
@@ -1606,14 +1710,15 @@ describe("agentLoop with AgentMessage", () => {
 		};
 
 		const context: AgentContext = { systemPrompt: [""], messages: [], tools: [tool] };
-		const queuedUserMessage = createUserMessage("wait for current work");
+		const queuedUserMessage = createUserMessage("interrupt");
 		let queuedDelivered = false;
+
 		const mock = createMockModel({
 			responses: [
 				{
 					content: [
-						{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
-						{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
+						{ type: "toolCall", id: "tool-1", name: "write", arguments: { value: "first" } },
+						{ type: "toolCall", id: "tool-2", name: "write", arguments: { value: "second" } },
 					],
 				},
 				{ content: ["done"] },
@@ -1623,39 +1728,45 @@ describe("agentLoop with AgentMessage", () => {
 		const config: AgentLoopConfig = {
 			model: mock.model,
 			convertToLlm: identityConverter,
-			interruptMode: "wait",
-			hasSteeringMessages: () => executed.length >= 1 && !queuedDelivered,
+			interruptMode: "immediate",
+			// Steering is already queued when the batch starts — the streaming
+			// case: nothing has executed yet and the first record is at risk.
+			hasSteeringMessages: () => mock.calls.length >= 1 && !queuedDelivered,
 			getSteeringMessages: async () => {
-				if (executed.length >= 1 && !queuedDelivered) {
-					queuedDelivered = true;
-					return [queuedUserMessage];
-				}
-				return [];
+				if (mock.calls.length < 1 || queuedDelivered) return [];
+				queuedDelivered = true;
+				return [queuedUserMessage];
 			},
 		};
 
 		const events: AgentEvent[] = [];
-		const stream = agentLoop([createUserMessage("start")], context, config, undefined, mock.stream);
-		for await (const event of stream) events.push(event);
+		for await (const event of agentLoop([createUserMessage("start")], context, config, undefined, mock.stream)) {
+			events.push(event);
+		}
 
 		expect(executed).toEqual(["first", "second"]);
 		const toolEnds = events.filter(
 			(e): e is Extract<AgentEvent, { type: "tool_execution_end" }> => e.type === "tool_execution_end",
 		);
-		expect(toolEnds).toHaveLength(2);
-		expect(toolEnds.every(event => !event.isError)).toBe(true);
-		expect(toolEnds.every(event => event.result.details?.__synthetic !== true)).toBe(true);
-		expect(
-			mock.calls[1]?.context.messages.some(
-				message =>
-					message.role === "user" &&
-					typeof message.content === "string" &&
-					message.content === "wait for current work",
-			),
-		).toBe(true);
+		expect(toolEnds.map(e => e.isError)).toEqual([false, false]);
+
+		// The steer still lands at the batch boundary, after both results.
+		const eventSequence = events.flatMap(event => {
+			if (event.type !== "message_start") return [];
+			if (event.message.role === "toolResult") return [`tool:${event.message.toolCallId}`];
+			if (event.message.role === "user" && typeof event.message.content === "string") {
+				return [event.message.content];
+			}
+			return [];
+		});
+		expect(eventSequence.indexOf("tool:tool-2")).toBeLessThan(eventSequence.indexOf("interrupt"));
+		const sawInterruptInContext = mock.calls[1]?.context.messages.some(
+			m => m.role === "user" && typeof m.content === "string" && m.content === "interrupt",
+		);
+		expect(sawInterruptInContext).toBe(true);
 	});
 
-	it("should force advisor steering through wait mode without changing user steering policy", async () => {
+	it("should skip remaining interruptible waits with system advisory wording when advisor steering is queued", async () => {
 		const toolSchema = type({ value: "string" });
 		const executed: string[] = [];
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
@@ -1664,6 +1775,7 @@ describe("agentLoop with AgentMessage", () => {
 			description: "Echo tool",
 			parameters: toolSchema,
 			concurrency: "exclusive",
+			interruptible: true,
 			async execute(_toolCallId, params) {
 				executed.push(params.value);
 				return {
@@ -2705,20 +2817,25 @@ describe("agentLoop with AgentMessage", () => {
 		let executeSettled = false;
 		let lateUpdate: AgentToolUpdateCallback<ToolDetails, typeof toolSchema> | undefined;
 		const hookCalls: Array<{ toolCallId: string; code: string; aborted: boolean }> = [];
+		const createAbortedResult: NonNullable<AgentTool<typeof toolSchema, ToolDetails>["createAbortedResult"]> = (
+			toolCallId,
+			params,
+			signal,
+		) => {
+			hookCalls.push({ toolCallId, code: params.code, aborted: signal.aborted });
+			return {
+				content: [{ type: "text", text: `hook aborted ${params.code}` }],
+				details: { phase: "hook", code: params.code, aborted: signal.aborted },
+				isError: true,
+			};
+		};
 
 		const tool: AgentTool<typeof toolSchema, ToolDetails> = {
 			name: "hooked",
 			label: "Hooked",
 			description: "Non-cooperative tool that supplies a renderer-specific abort result",
 			parameters: toolSchema,
-			createAbortedResult(toolCallId, params, signal) {
-				hookCalls.push({ toolCallId, code: params.code, aborted: signal.aborted });
-				return {
-					content: [{ type: "text", text: `hook aborted ${params.code}` }],
-					details: { phase: "hook", code: params.code, aborted: signal.aborted },
-					isError: true,
-				};
-			},
+			createAbortedResult,
 			async execute(_toolCallId, _params, _signal, onUpdate) {
 				lateUpdate = onUpdate;
 				executeStarted.resolve();
@@ -2805,6 +2922,7 @@ describe("agentLoop with AgentMessage", () => {
 			description: "Echo tool",
 			parameters: toolSchema,
 			concurrency: "exclusive",
+			interruptible: true,
 			async execute(_toolCallId, params) {
 				executed.push(params.value);
 				return {
@@ -3270,6 +3388,7 @@ describe("agentLoop event-driven steering watch", () => {
 			description: "Echo tool",
 			parameters: toolSchema,
 			concurrency: "exclusive",
+			interruptible: true,
 			async execute(_toolCallId, params) {
 				executed.push(params.value);
 				// Make a steer available and wake the watcher, the way a real queue
@@ -4167,13 +4286,13 @@ describe("agentLoop pre-model-call gate", () => {
 			provider: "openai-codex",
 			responses: [{ content: ["Some prose. analysis to=functions.edit code"] }],
 		});
-		const retryModel = { ...mock.model, id: "retry-model" };
+		const retryModel = { ...harmonyMitigationModel, id: "retry-model" };
 		let gateCalls = 0;
 		let turnEndCalls = 0;
 		let rejectedToolChoices = 0;
 		const config: AgentLoopConfig = {
-			model: mock.model,
-			getModel: () => (gateCalls === 0 ? mock.model : retryModel),
+			model: harmonyMitigationModel,
+			getModel: () => (gateCalls === 0 ? harmonyMitigationModel : retryModel),
 			convertToLlm: identityConverter,
 			beforeModelCall: () => (++gateCalls > 1 ? { stop: true, reason: "over budget" } : undefined),
 			onTurnEnd: () => {
@@ -4214,7 +4333,7 @@ describe("agentLoop pre-model-call gate", () => {
 		const controller = new AbortController();
 		let gateCalls = 0;
 		const config: AgentLoopConfig = {
-			model: mock.model,
+			model: harmonyMitigationModel,
 			convertToLlm: identityConverter,
 			beforeModelCall: async (_context, signal) => {
 				if (++gateCalls === 1) return undefined;

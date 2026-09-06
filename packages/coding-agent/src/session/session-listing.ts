@@ -1,7 +1,7 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@oh-my-pi/pi-ai";
-import { getAgentDir as getDefaultAgentDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
+import { getSessionsDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { t } from "../i18n";
 import { computeDefaultSessionDir } from "./session-paths";
@@ -311,7 +311,12 @@ async function readSessionListSlices(
 	withStatus: boolean,
 ): Promise<[string, string]> {
 	let prefixBytes = Math.min(SESSION_LIST_PREFIX_BYTES, size);
-	let [content, suffix] = await storage.readTextSlices(file, prefixBytes, withStatus ? SESSION_LIST_SUFFIX_BYTES : 0);
+	const [initialContent, suffix] = await storage.readTextSlices(
+		file,
+		prefixBytes,
+		withStatus ? SESSION_LIST_SUFFIX_BYTES : 0,
+	);
+	let content = initialContent;
 	while (prefixBytes < size && !extractFirstDisplayMessageFromPrefix(content)) {
 		prefixBytes = Math.min(size, prefixBytes * 4);
 		[content] = await storage.readTextSlices(file, prefixBytes, 0);
@@ -526,7 +531,12 @@ async function collectSessionsFromFiles(
 					)
 				).flat();
 
-	sessions.sort((a, b) => b.modified.getTime() - a.modified.getTime());
+	sessions.sort(
+		(a, b) =>
+			b.modified.getTime() - a.modified.getTime() ||
+			b.created.getTime() - a.created.getTime() ||
+			b.path.localeCompare(a.path),
+	);
 	return sessions;
 }
 
@@ -634,8 +644,10 @@ export function listSessionsReadOnly(sessionDir: string, storage: SessionStorage
 }
 
 /** List all sessions across all project directories (newest first). */
-export async function listAllSessions(storage: SessionStorage = new FileSessionStorage()): Promise<SessionInfo[]> {
-	const sessionsRoot = path.join(getDefaultAgentDir(), "sessions");
+export async function listAllSessions(
+	storage: SessionStorage = new FileSessionStorage(),
+	sessionsRoot: string = getSessionsDir(),
+): Promise<SessionInfo[]> {
 	try {
 		const files = await Array.fromAsync(new Bun.Glob("*/*.jsonl").scan(sessionsRoot), name =>
 			path.join(sessionsRoot, name),

@@ -493,6 +493,90 @@ describe("lsp cold-start retries", () => {
 		}
 	});
 
+	it.each([true, false])(
+		"does not present incomplete Rust indexing as an empty reference set (finishes: %s)",
+		async finishes => {
+			const tempDir = TempDir.createSync("@omp-lsp-rust-indexing-");
+			try {
+				const sourcePath = path.join(tempDir.path(), "src", "main.rs");
+				await Bun.write(
+					path.join(tempDir.path(), "Cargo.toml"),
+					'[package]\nname = "fixture"\nversion = "0.0.0"\n',
+				);
+				await Bun.write(sourcePath, "fn greet() {}\nfn main() { greet(); }\n");
+				const uri = fileToUri(sourcePath);
+				const locations = [0, 1].map(line => ({
+					uri,
+					range: {
+						start: { line, character: line === 0 ? 3 : 12 },
+						end: { line, character: line === 0 ? 8 : 17 },
+					},
+				}));
+				let indexed = false;
+				let statusRequests = 0;
+				let prematureReferences = 0;
+				const server = installFakeLsp((message, srv) => {
+					if (message.method === "initialize") {
+						answerInitialize(message, srv);
+						srv.send({
+							jsonrpc: "2.0",
+							method: "experimental/serverStatus",
+							params: { health: "ok", quiescent: false },
+						});
+					} else if (message.method === "rust-analyzer/analyzerStatus") {
+						statusRequests++;
+						if (finishes && statusRequests === 2) {
+							indexed = true;
+							srv.send({
+								jsonrpc: "2.0",
+								method: "experimental/serverStatus",
+								params: { health: "ok", quiescent: true },
+							});
+						}
+						srv.send({ jsonrpc: "2.0", id: message.id, result: "Workspaces:\nLoaded 1 package." });
+					} else if (message.method === "textDocument/references") {
+						if (!indexed) prematureReferences++;
+						srv.send({ jsonrpc: "2.0", id: message.id, result: indexed ? locations : [] });
+					} else if (message.method === "shutdown") {
+						srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						srv.exit(0);
+					}
+				});
+				const config: ServerConfig = {
+					command: "rust-analyzer",
+					resolvedCommand: process.execPath,
+					fileTypes: ["rs"],
+					rootMarkers: [],
+					workspaceReadyTimings: { timeoutMs: 100, pollMs: 1, settleMs: 0, statusRequestTimeoutMs: 20 },
+				};
+				mockTsConfig(config);
+				const tool = new LspTool(makeLspSession(tempDir.path()));
+				const params = { action: "references" as const, file: sourcePath, line: 1, symbol: "greet", timeout: 5 };
+				if (finishes) {
+					expect(textResult(await tool.execute("rust-cold-index", params))).toContain("Found 2 reference(s)");
+					indexed = false;
+					statusRequests = 0;
+					server.send({
+						jsonrpc: "2.0",
+						method: "experimental/serverStatus",
+						params: { health: "ok", quiescent: false },
+					});
+					expect(textResult(await tool.execute("rust-reload-index", params))).toContain("Found 2 reference(s)");
+				} else {
+					const result = await tool.execute("rust-incomplete-index", params);
+					expect(result.details?.success).toBe(false);
+					expect(result.useless).not.toBe(true);
+					expect(textResult(result)).toContain("indexing is incomplete");
+				}
+				expect(prematureReferences).toBe(0);
+			} finally {
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
+		},
+	);
+
 	// Integration test for the reader's $/progress handling: the begin frame is
 	// enqueued on a fake transport stream and consumed by the client's message
 	// reader on a later event-loop turn, so the wait below uses short real-clock

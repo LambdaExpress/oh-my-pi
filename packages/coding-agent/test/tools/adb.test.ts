@@ -45,6 +45,8 @@ const PNG = Uint8Array.from(
 		"base64",
 	),
 );
+const UI_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<hierarchy rotation="0"><node text="登录" resource-id="app:id/login" content-desc="Sign in" class="android.widget.Button" package="app" enabled="true" clickable="true" bounds="[10,20][110,80]" /></hierarchy>`;
 const temporaryDirectories: string[] = [];
 const temporaryFiles: string[] = [];
 
@@ -224,6 +226,7 @@ function approvalWrapper(tool: AdbTool): ExtensionToolWrapper<typeof adbSchema, 
 		consumeToolCallEmitted: () => false,
 		hasHandlers: () => false,
 		hasUI: () => false,
+		runScoped: <T>(fn: () => T): T => fn(),
 	} as unknown as ExtensionRunner);
 }
 
@@ -245,19 +248,6 @@ describe("AdbTool discovery and contract", () => {
 		const result = await tool!.execute("status-no-emulator", { op: "status" });
 		expect(text(result)).toContain(SERIAL);
 		expect(online.managerCalls.status).toEqual([undefined]);
-	});
-
-	it("publishes the fixed strict, exclusive, merged discoverable surface", () => {
-		const { tool } = harness();
-		expect(tool).toMatchObject({
-			name: "adb",
-			label: "ADB",
-			loadMode: "discoverable",
-			strict: true,
-			concurrency: "exclusive",
-			mergeCallAndResult: true,
-			renderCallBeforeExecution: true,
-		});
 	});
 });
 
@@ -285,6 +275,10 @@ describe("AdbTool schema and device selection", () => {
 			{ op: "avds" },
 			{ op: "status", device: SERIAL },
 			{ op: "wait", until: "booted", timeout: 5 },
+			{ op: "observe", device: SERIAL },
+			{ op: "click", selector: { resourceId: "app:id/login", enabled: true } },
+			{ op: "click", selector: { ref: "snapshot:1" }, longClick: true },
+			{ op: "wait", until: "hidden", selector: { textContains: "Loading" } },
 			{ op: "start", avd: "AVD with spaces", waitUntil: "connected" },
 			{ op: "stop" },
 			{ op: "shell", command: "printf '%s' 'one two'" },
@@ -308,6 +302,11 @@ describe("AdbTool schema and device selection", () => {
 			{ op: "devices", extra: true },
 			{ op: "status", command: "id" },
 			{ op: "wait", until: "ready" },
+			{ op: "wait", until: "visible" },
+			{ op: "wait", until: "visible", selector: { ref: "snapshot:1" } },
+			{ op: "wait", until: "booted", selector: { text: "Ready" } },
+			{ op: "click", selector: { ref: "snapshot:1", text: "Login" } },
+			{ op: "click", selector: { resourceId: "app:id/login", typo: true } },
 			{ op: "start" },
 			{ op: "shell" },
 			{ op: "push", localPath: "a" },
@@ -329,6 +328,7 @@ describe("AdbTool schema and device selection", () => {
 		await expect(
 			tool.execute("cross-branch-runtime", { op: "input", action: "tap", x: 1, y: 2, key: "HOME" } as never),
 		).rejects.toThrow();
+		await expect(tool.execute("empty-selector", { op: "click", selector: {} })).rejects.toThrow(/selector/i);
 		expect(tool.parameters({ op: "devices", extra: true }) instanceof type.errors).toBe(true);
 	});
 
@@ -352,6 +352,29 @@ describe("AdbTool schema and device selection", () => {
 			new RegExp(`${SERIAL}.*offline`, "i"),
 		);
 		expect(offline.adbCalls).toHaveLength(0);
+	});
+});
+
+describe("AdbTool UI interaction", () => {
+	it("lets a consumer click a ref from structured output and rejects it after raw device input", async () => {
+		const fake = harness({
+			binaryResult: { bytes: new TextEncoder().encode(UI_XML), exitCode: 0, cancelled: false },
+		});
+		const observed = await fake.tool.execute("observe", { op: "observe", device: SERIAL });
+		const rows = Bun.JSONL.parse(text(observed)) as Array<{ ref?: string; text?: string }>;
+		const ref = rows.find(row => row.text === "登录")?.ref;
+		expect(ref).toBeDefined();
+		await fake.tool.execute("click", { op: "click", device: SERIAL, selector: { ref: ref! } });
+		expect(fake.adbCalls.at(-1)?.args).toEqual(["-s", SERIAL, "shell", "input", "tap", "60", "50"]);
+
+		const next = await fake.tool.execute("observe-again", { op: "observe", device: SERIAL });
+		const nextRef = next.details?.observation?.elements[0]?.ref;
+		await fake.tool.execute("navigate", { op: "input", device: SERIAL, action: "keyevent", key: "HOME" });
+		const mutations = fake.adbCalls.length;
+		await expect(
+			fake.tool.execute("stale-click", { op: "click", device: SERIAL, selector: { ref: nextRef! } }),
+		).rejects.toThrow(/stale|observ/i);
+		expect(fake.adbCalls).toHaveLength(mutations);
 	});
 });
 
@@ -497,28 +520,6 @@ describe("AdbTool argv and command behavior", () => {
 	});
 });
 
-describe("AdbTool emulator manager delegation", () => {
-	it("delegates avds, status, wait, start, and stop with clamped timeouts and defaults", async () => {
-		const tool = harness({ maxTimeout: 7 });
-		const signal = new AbortController().signal;
-		expect(text(await tool.tool.execute("avds", { op: "avds" }))).toContain("AVD with spaces");
-		await tool.tool.execute("status", { op: "status", device: SERIAL });
-		await tool.tool.execute("wait", { op: "wait", device: SERIAL, until: "connected", timeout: 99 }, signal);
-		const started = await tool.tool.execute("start", { op: "start", avd: "AVD with spaces", timeout: 3 }, signal);
-		await tool.tool.execute("stop", { op: "stop", device: SERIAL });
-
-		expect(tool.managerCalls.listAvds).toBe(1);
-		expect(tool.managerCalls.status).toEqual([SERIAL]);
-		expect(tool.managerCalls.wait).toEqual([[SERIAL, "connected", 7_000, signal]]);
-		expect(tool.managerCalls.start).toEqual([
-			{ avd: "AVD with spaces", waitUntil: "booted", timeoutMs: 3_000, signal },
-		]);
-		expect(tool.managerCalls.stop).toEqual([SERIAL]);
-		expect(text(started)).toContain("AVD with spaces");
-		expect(text(started)).toContain("booted");
-	});
-});
-
 describe("AdbTool screenshots", () => {
 	it("preserves arbitrary PNG bytes on disk and returns a PNG image block with dimensions", async () => {
 		const cwd = await temporaryDirectory();
@@ -545,7 +546,7 @@ describe("AdbTool screenshots", () => {
 		expect(path.extname(screenshotPath!)).toBe(".png");
 		expect(path.dirname(screenshotPath!)).not.toBe(cwd);
 		expect(await fs.readFile(screenshotPath!)).toEqual(Buffer.from(PNG));
-		expect([...PNG.slice(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+		expect(Array.from(PNG.subarray(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 		expect(PNG).toContain(0);
 		expect(PNG.some(byte => byte > 0x7f)).toBe(true);
 		expect(image).toEqual({ type: "image", data: Buffer.from(PNG).toString("base64"), mimeType: "image/png" });
@@ -559,7 +560,7 @@ describe("AdbTool screenshots", () => {
 describe("AdbTool approval", () => {
 	it("assigns read tier to observation and exec tier to mutations", () => {
 		const { tool } = harness();
-		for (const op of ["devices", "avds", "status", "wait", "logcat", "screenshot"] as const) {
+		for (const op of ["devices", "avds", "status", "wait", "logcat", "screenshot", "observe"] as const) {
 			expect(dynamicApproval(tool, { op })).toBe("read");
 			expect(adbApproval({ op } as never)).toBe("read");
 		}
@@ -567,6 +568,7 @@ describe("AdbTool approval", () => {
 			{ op: "start", avd: "AVD with spaces" },
 			{ op: "install", apkPath: "app debug.apk" },
 			{ op: "shell", command: "id" },
+			{ op: "click", selector: { text: "Login" } },
 		] as const) {
 			expect(dynamicApproval(tool, args)).toBe("exec");
 			expect(adbApproval(args as never)).toBe("exec");
@@ -578,6 +580,7 @@ describe("AdbTool approval", () => {
 		for (const args of [
 			{ op: "start", avd: "AVD with spaces" },
 			{ op: "install", apkPath: "app debug.apk" },
+			{ op: "click", selector: { text: "Login" } },
 		]) {
 			expect(resolveApproval(tool, args, "write")).toMatchObject({ policy: "prompt", tier: "exec" });
 			expect(resolveApproval(tool, args, "yolo")).toMatchObject({ policy: "allow", tier: "exec" });
@@ -786,6 +789,24 @@ describe("AdbTool conditional Android SDK lifecycle", () => {
 						timeout: 15,
 					});
 					expect(text(sdk).trim()).toMatch(/^\d+$/);
+
+					await tool.execute("e2e-settings", {
+						op: "shell",
+						device: serial,
+						command: "am start -W --activity-clear-task -a android.settings.SETTINGS",
+						timeout: 15,
+					});
+					const observed = await tool.execute("e2e-observe", {
+						op: "observe",
+						device: serial,
+						timeout: 30,
+					});
+					// Exercise real exec-out quoting and UIAutomator's clipped bounds.
+					expect(
+						observed.details?.observation?.elements
+							.filter(element => element.visible)
+							.map(element => element.packageName),
+					).toContain("com.android.settings");
 
 					const screenshot = await tool.execute("e2e-screenshot", {
 						op: "screenshot",

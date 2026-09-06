@@ -7,8 +7,6 @@ import { formatDuration, logger, prompt, sanitizeText } from "@oh-my-pi/pi-utils
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { extractTextContent } from "../../commit/utils";
 import { settings } from "../../config/settings";
-import { getEditClipboard } from "../../edit/edit-clipboard";
-import { getFileSnapshotStore } from "../../edit/file-snapshot-store";
 import { t } from "../../i18n";
 import { AssistantMessageComponent } from "../../modes/components/assistant-message";
 import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
@@ -20,7 +18,11 @@ import {
 } from "../../modes/components/read-tool-group";
 import { isActiveSshTransferJob, sshTransferJobDetails } from "../../modes/components/ssh-transfer-hud";
 import { TodoReminderComponent } from "../../modes/components/todo-reminder";
-import { ToolExecutionComponent, type ToolExecutionHandle } from "../../modes/components/tool-execution";
+import {
+	ToolExecutionComponent,
+	type ToolExecutionHandle,
+	toolRenderName,
+} from "../../modes/components/tool-execution";
 import { TtsrNotificationComponent } from "../../modes/components/ttsr-notification";
 import { createUsageRowBlock, turnElapsedMs } from "../../modes/components/usage-row";
 import { getSymbolTheme, theme } from "../../modes/theme/theme";
@@ -45,8 +47,11 @@ import { SpeechEnhancer } from "../../tts/speech-enhancer";
 import { vocalizer } from "../../tts/vocalizer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { setTerminalTitleState } from "../../utils/title-generator";
-import { interruptHint } from "../shared";
-import { createAssistantMessageComponent } from "../utils/interactive-context-helpers";
+import {
+	assistantMessageLinkTargets,
+	createAssistantMessageComponent,
+	refreshAssistantMessageLinkTargets,
+} from "../utils/interactive-context-helpers";
 import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
@@ -283,6 +288,7 @@ export class EventController {
 	 *  at their tool_execution_end so the title returns to `working`. */
 	#approvalAttentionToolCallIds = new Set<string>();
 	#approvalPreviewGates = new Map<string, ApprovalPreviewGate>();
+	#pendingStreamPreviews = new Map<string, unknown>();
 	#detachToolApprovalPreviewWaiter: (() => void) | undefined;
 	#readToolCallArgs = new Map<string, Record<string, unknown>>();
 	#readToolCallAssistantComponents = new Map<string, AssistantMessageComponent>();
@@ -305,6 +311,12 @@ export class EventController {
 	// retracted card below the rewind's fresh blocks (#6879).
 	#retractedToolCallIds = new Set<string>();
 	#executionStartedCallIds = new Set<string>();
+	// Settled tool cards from the turn that just ended, keyed by call id. A
+	// repeated toolCallId in the next run can only be a tool-replay retry
+	// (AgentSession.retry re-executing a stripped failed batch);
+	// #handleToolExecutionStart evicts the stale aborted card so the fresh
+	// execution replaces it in the transcript instead of stacking a duplicate.
+	#priorTurnToolComponents = new Map<string, Component>();
 	// Cards settled by a synthetic aborted/error `tool_execution_end` (agent-loop
 	// emits one per never-run call on a terminal error/abort). They stay visible
 	// for a genuinely terminal failure, but if an auto-retry then supersedes the
@@ -482,6 +494,14 @@ export class EventController {
 			message_end: e => this.#handleMessageEnd(e),
 			tool_execution_start: e => this.#handleToolExecutionStart(e),
 			tool_execution_update: e => this.#handleToolExecutionUpdate(e),
+			tool_stream_update: async event => {
+				const component = this.ctx.pendingTools.get(event.toolCallId);
+				if (component?.updateStreamPreview) {
+					component.updateStreamPreview(event.update);
+				} else {
+					this.#pendingStreamPreviews.set(event.toolCallId, event.update);
+				}
+			},
 			tool_execution_end: e => this.#handleToolExecutionEnd(e),
 			async_job_update: e => this.#handleAsyncJobUpdate(e),
 			auto_compaction_start: e => this.#handleAutoCompactionStart(e),
@@ -499,7 +519,16 @@ export class EventController {
 				this.ctx.statusLine.invalidate();
 				this.ctx.ui.requestRender();
 			},
+			// Header rebuild is owned by InteractiveMode's own session
+			// subscription (mirrors model_changed); nothing to do here.
+			config_warnings_changed: async () => {},
 			advisor_cost_changed: async () => {
+				this.ctx.statusLine.invalidate();
+				this.ctx.ui.requestRender();
+			},
+			advisor_yielded: async () => {
+				// The advisor finished reviewing the yielded primary turn (no more
+				// comments coming) — repaint so the closed-eye state lands.
 				this.ctx.statusLine.invalidate();
 				this.ctx.ui.requestRender();
 			},
@@ -580,10 +609,10 @@ export class EventController {
 		const continuation = createAssistantMessageComponent(this.ctx);
 		this.ctx.streamingComponent = continuation;
 		this.ctx.chatContainer.addChild(continuation);
-		this.#streamingReveal.begin(
-			continuation,
+		const continuationTimeline = splitAssistantMessageToolTimeline(
 			assistantContentAfterPrefix(streamingMessage, this.#assistantDisplayPrefix),
 		);
+		this.#streamingReveal.begin(continuation, continuationTimeline.beforeTools, continuationTimeline.hasToolCalls);
 		this.ctx.ui.requestRender();
 	}
 
@@ -682,6 +711,20 @@ export class EventController {
 		this.#backgroundToolCallIds = new Set(
 			Array.from(this.#backgroundToolCallIds).filter(toolCallId => this.ctx.pendingTools.has(toolCallId)),
 		);
+		this.#finalizeAbandonedPostToolSegments();
+	}
+	/**
+	 * Finalize post-tool assistant segments whose `message_end` never fired (a
+	 * mid-stream throw or dropped agent_end). They are created unfinalized at
+	 * `message_update` and finalized only at `message_end`, so a dropped end
+	 * leaves one permanently active block — and one unfinalized block at the
+	 * transcript frontier blocks history retirement, degrading every later
+	 * block to its one-line live allocation. Idempotent for settled segments.
+	 */
+	#finalizeAbandonedPostToolSegments(): void {
+		for (const component of this.#postToolAssistantComponents.values()) {
+			component.markTranscriptBlockFinalized();
+		}
 	}
 	#approvalPreviewGate(toolCallId: string): ApprovalPreviewGate {
 		let gate = this.#approvalPreviewGates.get(toolCallId);
@@ -835,14 +878,16 @@ export class EventController {
 	#upsertPostToolAssistantSegment(
 		toolCallId: string,
 		segment: AssistantMessage | undefined,
+		linkTargets?: ReadonlyMap<string, string>,
 	): AssistantMessageComponent | undefined {
 		if (!segment || !assistantHasVisibleContent(segment)) return undefined;
 		const existing = this.#postToolAssistantComponents.get(toolCallId);
 		if (existing) {
+			if (linkTargets) existing.setLinkTargets(linkTargets);
 			existing.updateContent(segment);
 			return existing;
 		}
-		const component = createAssistantMessageComponent(this.ctx);
+		const component = createAssistantMessageComponent(this.ctx, undefined, linkTargets);
 		component.updateContent(segment);
 		this.#postToolAssistantComponents.set(toolCallId, component);
 		if (!this.#insertAfterTranscriptComponent(this.#toolTimelineComponents.get(toolCallId), component)) {
@@ -856,10 +901,13 @@ export class EventController {
 		// Streamed JSON can deliver non-string `i` (object, number, boolean) before
 		// schema validation; `?.` only guards null/undefined, so guard the type too.
 		if (typeof intent !== "string") return;
-		const trimmed = intent.trim();
+		const trimmed = intent
+			.trim()
+			.replace(/\s*\.+$/, "")
+			.trim();
 		if (!trimmed || trimmed === this.#lastIntent) return;
 		this.#lastIntent = trimmed;
-		this.ctx.setWorkingMessage(`${trimmed}${interruptHint()}`);
+		this.ctx.setWorkingMessage(trimmed);
 	}
 
 	subscribeToAgent(): void {
@@ -1023,6 +1071,7 @@ export class EventController {
 		this.#lastIntent = undefined;
 		this.#toolTimelineComponents.clear();
 		this.#streamedToolCallIdByIndex.clear();
+		this.#pendingStreamPreviews.clear();
 		this.#retractedToolCallIds.clear();
 		this.#executionStartedCallIds.clear();
 		this.#syntheticFailureCards.clear();
@@ -1193,6 +1242,7 @@ export class EventController {
 		this.#sealAbandonedForegroundTools();
 		this.#toolTimelineComponents.clear();
 		this.#streamedToolCallIdByIndex.clear();
+		this.#pendingStreamPreviews.clear();
 		this.#retractedToolCallIds.clear();
 		this.#executionStartedCallIds.clear();
 		this.#syntheticFailureCards.clear();
@@ -1390,16 +1440,16 @@ export class EventController {
 				}
 				abandoned.markTranscriptBlockFinalized();
 			}
+			this.#finalizeAbandonedPostToolSegments();
 			this.#lastVisibleBlockCount = 0;
 			this.#assistantDisplayPrefix = undefined;
 			this.#streamedToolCallIdByIndex.clear();
 			this.ctx.streamingComponent = createAssistantMessageComponent(this.ctx);
 			this.ctx.streamingMessage = event.message;
+			this.ctx.streamingComponent.pickReactionTarget(this.ctx.chatContainer.children);
 			this.ctx.chatContainer.addChild(this.ctx.streamingComponent);
-			this.#streamingReveal.begin(
-				this.ctx.streamingComponent,
-				splitAssistantMessageToolTimeline(this.ctx.streamingMessage).beforeTools,
-			);
+			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
+			this.#streamingReveal.begin(this.ctx.streamingComponent, timeline.beforeTools, timeline.hasToolCalls);
 			this.ctx.ui.requestRender();
 		}
 	}
@@ -1527,6 +1577,19 @@ export class EventController {
 		if (turnStartedAt !== undefined) this.#turnStartedAt = turnStartedAt;
 	}
 
+	/**
+	 * Re-register parked background task cards after a transcript rebuild so a
+	 * detached task's replayed and live progress frames keep routing to the
+	 * preserved component. Focus attach clears {@link #backgroundToolCallIds}
+	 * via {@link resetTranscriptAnchors} before the rebuild repopulates it.
+	 * Ids whose component did not survive into `pendingTools` are skipped.
+	 */
+	markBackgroundTaskCalls(toolCallIds: Iterable<string>): void {
+		for (const toolCallId of toolCallIds) {
+			if (this.ctx.pendingTools.has(toolCallId)) this.#backgroundToolCallIds.add(toolCallId);
+		}
+	}
+
 	async #handleNotice(event: Extract<AgentSessionEvent, { type: "notice" }>): Promise<void> {
 		const message = event.source ? `${event.source}: ${event.message}` : event.message;
 		if (event.level === "error") {
@@ -1584,9 +1647,8 @@ export class EventController {
 				this.#streamingReveal.resyncVisibility();
 			}
 			this.ctx.streamingMessage = event.message;
-			const displayMessage = assistantContentAfterPrefix(this.ctx.streamingMessage, this.#assistantDisplayPrefix);
-			const timeline = splitAssistantMessageToolTimeline(displayMessage);
-			this.#streamingReveal.setTarget(timeline.beforeTools);
+			const timeline = splitAssistantMessageToolTimeline(this.ctx.streamingMessage);
+			this.#streamingReveal.setTarget(timeline.beforeTools, timeline.hasToolCalls);
 
 			const visibleBlockCount = this.ctx.streamingMessage.content.filter(
 				content =>
@@ -1607,7 +1669,12 @@ export class EventController {
 			// stream (a big write/edit/eval) sits below a still-live block and
 			// can never reach native scrollback: the head of the preview is
 			// neither committed nor on screen and the transcript reads as cut.
-			if (displayMessage.content.some(content => content.type === "toolCall")) {
+			if (
+				this.ctx.streamingMessage.content.some(content => content.type === "toolCall") &&
+				!this.ctx.streamingComponent.isTranscriptBlockFinalized()
+			) {
+				const linkTargets = await refreshAssistantMessageLinkTargets(this.ctx, [timeline.beforeTools]);
+				this.ctx.streamingComponent.setLinkTargets(assistantMessageLinkTargets(timeline.beforeTools, linkTargets));
 				this.ctx.streamingComponent.markTranscriptBlockFinalized();
 			}
 			for (let contentIndex = 0; contentIndex < this.ctx.streamingMessage.content.length; contentIndex++) {
@@ -1621,7 +1688,9 @@ export class EventController {
 					this.#migrateStreamedToolCallId(priorId, content.id);
 				}
 				this.#streamedToolCallIdByIndex.set(contentIndex, content.id);
-				if (content.name === "read") {
+				const tool = this.ctx.viewSession.getToolByName(content.name);
+				const renderToolName = toolRenderName(content.name, tool);
+				if (renderToolName === "read") {
 					if (!readArgsHaveTarget(content.arguments)) {
 						// Args still streaming — defer until path is parseable so we can route to the
 						// read group (files + xd:// devices) vs ToolExecutionComponent (other internal URLs).
@@ -1629,7 +1698,7 @@ export class EventController {
 						continue;
 					}
 					if (readArgsCollapseIntoGroup(content.arguments)) {
-						if (!this.ctx.pendingTools.has(content.id)) this.#resolveDisplaceablePoll(content.name);
+						if (!this.ctx.pendingTools.has(content.id)) this.#resolveDisplaceablePoll(renderToolName);
 						this.#trackReadToolCall(content.id, content.arguments);
 						const component = this.ctx.pendingTools.get(content.id);
 						if (component) {
@@ -1654,12 +1723,11 @@ export class EventController {
 				let renderArgs: Record<string, unknown>;
 				const partialJson = getStreamingPartialJson(content);
 				const rawInput = content.customWireName !== undefined;
-				const tool = this.ctx.viewSession.getToolByName(content.name);
 				if (partialJson) {
 					renderArgs = this.#toolArgsReveal.setTarget(content.id, partialJson, {
 						rawInput,
-						exposeRawPartialJson: exposesRawPartialJson(content.name, rawInput, tool),
-						streamingStringKeys: streamingStringKeysForTool(content.name, rawInput),
+						exposeRawPartialJson: exposesRawPartialJson(renderToolName, rawInput, tool),
+						streamingStringKeys: streamingStringKeysForTool(renderToolName, rawInput),
 					});
 				} else {
 					this.#toolArgsReveal.finish(content.id);
@@ -1673,24 +1741,25 @@ export class EventController {
 				// check the next cumulative update would recreate a card for a call
 				// that already finished, permanently pending.
 				if (!this.ctx.pendingTools.has(content.id) && !this.#toolTimelineComponents.has(content.id)) {
-					this.#resolveDisplaceablePoll(content.name);
+					this.#resolveDisplaceablePoll(renderToolName);
 					this.#resetReadGroup();
 					const component = new ToolExecutionComponent(
-						content.name,
+						renderToolName,
 						renderArgs,
 						{
-							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(content.name),
-							snapshots: getFileSnapshotStore(this.ctx.viewSession),
-							clipboard: getEditClipboard(this.ctx.viewSession),
+							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
 							showImages: settings.get("terminal.showImages"),
-							editFuzzyThreshold: settings.get("edit.fuzzyThreshold"),
-							editAllowFuzzy: settings.get("edit.fuzzyMatch"),
 						},
 						tool,
 						this.ctx.ui,
 						this.ctx.sessionManager.getCwd(),
 						content.id,
 					);
+					const pendingPreview = this.#pendingStreamPreviews.get(content.id);
+					if (pendingPreview !== undefined) {
+						component.updateStreamPreview(pendingPreview);
+						this.#pendingStreamPreviews.delete(content.id);
+					}
 					component.setExpanded(this.ctx.toolOutputExpanded);
 					this.ctx.chatContainer.addChild(component);
 					this.ctx.pendingTools.set(content.id, component);
@@ -1797,6 +1866,12 @@ export class EventController {
 				: this.ctx.streamingMessage;
 			const displayMessage = assistantContentAfterPrefix(completeDisplayMessage, this.#assistantDisplayPrefix);
 			const displayTimeline = splitAssistantMessageToolTimeline(displayMessage);
+			const linkTargets = await refreshAssistantMessageLinkTargets(this.ctx, [displayMessage]);
+			if (!this.ctx.streamingComponent.isTranscriptBlockFinalized()) {
+				this.ctx.streamingComponent.setLinkTargets(
+					assistantMessageLinkTargets(displayTimeline.beforeTools, linkTargets),
+				);
+			}
 			this.ctx.streamingComponent.updateContent(displayTimeline.beforeTools);
 
 			if (this.ctx.streamingMessage.stopReason !== "aborted" && this.ctx.streamingMessage.stopReason !== "error") {
@@ -1853,7 +1928,11 @@ export class EventController {
 			this.ctx.streamingComponent.markTranscriptBlockFinalized();
 			let lastPostToolAssistantComponent: AssistantMessageComponent | undefined;
 			for (const [toolCallId, segment] of displayTimeline.afterToolCalls) {
-				const component = this.#upsertPostToolAssistantSegment(toolCallId, segment);
+				const component = this.#upsertPostToolAssistantSegment(
+					toolCallId,
+					segment,
+					assistantMessageLinkTargets(segment, linkTargets),
+				);
 				component?.markTranscriptBlockFinalized();
 				if (component) lastPostToolAssistantComponent = component;
 			}
@@ -1918,13 +1997,23 @@ export class EventController {
 		if (this.#retractedToolCallIds.has(event.toolCallId)) return;
 		this.#ensureWorkingLoaderWhileStreaming();
 		this.#updateWorkingMessageFromIntent(event.intent);
-		if (event.toolName === "ask" || this.#toolWillPromptForApproval(event.toolName, event.args)) {
+		const tool = this.ctx.viewSession.getToolByName(event.toolName);
+		const renderToolName = toolRenderName(event.toolName, tool);
+		if (renderToolName === "ask" || this.#toolWillPromptForApproval(renderToolName, event.args)) {
 			this.#approvalAttentionToolCallIds.add(event.toolCallId);
 			setTerminalTitleState("attention");
 		}
-		this.#resolveDisplaceablePoll(event.toolName);
+		this.#resolveDisplaceablePoll(renderToolName);
 		if (!this.ctx.pendingTools.has(event.toolCallId)) {
-			if (event.toolName === "read" && readArgsCollapseIntoGroup(event.args)) {
+			const stale = this.#priorTurnToolComponents.get(event.toolCallId);
+			if (stale) {
+				this.#priorTurnToolComponents.delete(event.toolCallId);
+				// Never evict a shared read-group card: it may still carry sibling reads.
+				if (stale instanceof ToolExecutionComponent && this.ctx.chatContainer.children.includes(stale)) {
+					this.ctx.chatContainer.removeChild(stale);
+				}
+			}
+			if (renderToolName === "read" && readArgsCollapseIntoGroup(event.args)) {
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				const component = this.ctx.pendingTools.get(event.toolCallId);
 				if (component) {
@@ -1941,14 +2030,11 @@ export class EventController {
 			}
 
 			this.#resetReadGroup();
-			const tool = this.ctx.viewSession.getToolByName(event.toolName);
 			const component = new ToolExecutionComponent(
-				event.toolName,
+				renderToolName,
 				event.args,
 				{
-					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(event.toolName),
-					snapshots: getFileSnapshotStore(this.ctx.viewSession),
-					clipboard: getEditClipboard(this.ctx.viewSession),
+					useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
 					showImages: settings.get("terminal.showImages"),
 				},
 				tool,
@@ -1956,6 +2042,11 @@ export class EventController {
 				this.ctx.sessionManager.getCwd(),
 				event.toolCallId,
 			);
+			const pendingPreview = this.#pendingStreamPreviews.get(event.toolCallId);
+			if (pendingPreview !== undefined) {
+				component.updateStreamPreview(pendingPreview);
+				this.#pendingStreamPreviews.delete(event.toolCallId);
+			}
 			component.setArgsComplete(event.toolCallId);
 			component.setExecutionStarted(event.toolCallId);
 			this.#executionStartedCallIds.add(event.toolCallId);
@@ -2516,8 +2607,10 @@ export class EventController {
 		this.#approvalAttentionToolCallIds.clear();
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
+		this.#priorTurnToolComponents = new Map(this.#toolTimelineComponents);
 		this.#toolTimelineComponents.clear();
 		this.#streamedToolCallIdByIndex.clear();
+		this.#pendingStreamPreviews.clear();
 		this.#retractedToolCallIds.clear();
 		this.#executionStartedCallIds.clear();
 		this.#syntheticFailureCards.clear();
@@ -2530,6 +2623,9 @@ export class EventController {
 		this.#resolveDisplaceableTodo();
 		this.ctx.flushPendingCommandOutput();
 		this.#lastAssistantComponent = undefined;
+		// When the interrupted/failed turn died on a tool call, this replaces the
+		// torn-down "Working…" row with the "F5 to Retry" affordance.
+		this.ctx.syncRetryHintRow();
 		this.ctx.ui.requestRender();
 		this.#scheduleIdleCompaction();
 		this.#scheduleIdleRecap();

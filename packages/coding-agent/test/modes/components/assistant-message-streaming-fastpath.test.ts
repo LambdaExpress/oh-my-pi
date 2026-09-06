@@ -250,7 +250,7 @@ describe("AssistantMessageComponent streaming stable rows", () => {
 		expect(stable).toHaveLength(1);
 		const stableRendered = component.renderTranscriptStableRows(stable.length, 52);
 		expect(stableRendered.length).toBeGreaterThan(0);
-		expect([...rendered.slice(0, stableRendered.length)]).toEqual([...stableRendered]);
+		expect(rendered.slice(0, stableRendered.length)).toEqual([...stableRendered]);
 		expect(Bun.stripANSI(stableRendered.join("\n"))).toContain("Completed reasoning paragraph.");
 		expect(Bun.stripANSI(stableRendered.join("\n"))).not.toContain("Mutable thinking tail");
 
@@ -342,7 +342,7 @@ describe("AssistantMessageComponent streaming stable rows", () => {
 		const exampleStable = example.getTranscriptStableRows();
 		expect(exampleStable.length).toBeGreaterThan(0);
 		const exampleRows = example.renderTranscriptStableRows(exampleStable.length, 80);
-		expect([...exampleLive.slice(0, exampleRows.length)]).toEqual([...exampleRows]);
+		expect(exampleLive.slice(0, exampleRows.length)).toEqual([...exampleRows]);
 	});
 
 	it("never retracts published stable rows after fast-path teardown or a same-shape rewind", () => {

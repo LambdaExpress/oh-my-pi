@@ -2,6 +2,7 @@ import type { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Effort } from "@oh-my-pi/pi-ai";
 import { colorLuma, logger, relativeLuminance } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import type { SessionAccentTheme } from "../../utils/session-color";
 import { bgAnsi, colorToAnsi, fgAnsi, resolveToHex } from "./color";
 import { type ColorMode, isValidThemeColor, type ThemeBg, type ThemeColor } from "./schema";
 import {
@@ -275,6 +276,19 @@ export class Theme {
 	getAccentColorHex(): string {
 		return this.getColorHex("accent");
 	}
+	/**
+	 * Theme-derived inputs for `getSessionAccentHex`: the accent hex whose
+	 * OKLCH weight session accents adopt, the major colors they must not
+	 * hue-collide with, and the light-theme surface luminance to contrast
+	 * against.
+	 */
+	get sessionAccentInputs(): SessionAccentTheme {
+		return {
+			accentHex: this.getAccentColorHex(),
+			colorHexes: this.getMajorThemeColorHexes(),
+			surfaceLuminance: this.accentSurfaceLuminance,
+		};
+	}
 
 	fg(color: ThemeColor, text: string): string {
 		const ansi = this.#fgColors[color];
@@ -282,15 +296,12 @@ export class Theme {
 		return `${ansi}${text}\x1b[39m`; // Reset only foreground color
 	}
 
-	/**
-	 * Foreground-color `text` with a raw color value (hex or 256-index),
-	 * bypassing the theme's named color slots. Used by fixed semantic palettes
-	 * that must not vary with the active theme — e.g. the context gauge's alert
-	 * colors, which stay distinguishable under every theme (see
-	 * `context-thresholds.ts`).
-	 */
-	fgHex(color: string, text: string): string {
-		return `${fgAnsi(color, this.mode)}${text}\x1b[39m`;
+	/** Apply a foreground, replacing terminal-default tokens with the theme's contrast-safe fallback. */
+	fgResolved(color: ThemeColor, text: string): string {
+		const ansi = this.#fgColors[color];
+		if (!ansi) throw new Error(`Unknown theme color: ${color}`);
+		const resolved = ansi === "\x1b[39m" ? colorToAnsi(this.getColorHex(color), this.mode) : ansi;
+		return `${resolved}${text.replace(FOREGROUND_RESET_PATTERN, `$&${resolved}`)}\x1b[39m`;
 	}
 
 	bg(color: ThemeBg, text: string): string {
@@ -512,6 +523,17 @@ export class Theme {
 		};
 	}
 
+	/**
+	 * Dotted rules/verticals for transient selection outlines. Corners come from
+	 * {@link boxRound} — Unicode has no rounded dotted corner glyphs.
+	 */
+	get boxDotted() {
+		return {
+			horizontal: this.#symbols["boxDotted.horizontal"],
+			vertical: this.#symbols["boxDotted.vertical"],
+		};
+	}
+
 	get boxSharp() {
 		return {
 			topLeft: this.#symbols["boxSharp.topLeft"],
@@ -536,6 +558,7 @@ export class Theme {
 			powerlineRight: this.#symbols["sep.powerlineRight"],
 			powerlineThinLeft: this.#symbols["sep.powerlineThinLeft"],
 			powerlineThinRight: this.#symbols["sep.powerlineThinRight"],
+			powerlineCapLeft: this.#symbols["sep.powerlineCapLeft"],
 			block: this.#symbols["sep.block"],
 			space: this.#symbols["sep.space"],
 			asciiLeft: this.#symbols["sep.asciiLeft"],
@@ -567,8 +590,10 @@ export class Theme {
 			cost: this.#symbols["icon.cost"],
 			subscription: this.#symbols["icon.subscription"],
 			advisor: this.#symbols["icon.advisor"],
+			advisorClosed: this.#symbols["icon.advisorClosed"],
 			time: this.#symbols["icon.time"],
-			pi: this.#symbols["icon.pi"],
+			omp: this.#symbols["icon.omp"],
+			esc: this.#symbols["icon.esc"],
 			ghost: this.#symbols["icon.ghost"],
 			agents: this.#symbols["icon.agents"],
 			job: this.#symbols["icon.job"],

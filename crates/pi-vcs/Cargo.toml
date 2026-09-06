@@ -10,9 +10,10 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
-gix.workspace = true
-gix-command.workspace = true
+gix = { workspace = true, features = ["command"] }
+gix-utils = { version = "0.3.6", default-features = false }
 jj-lib.workspace = true
+pi-iso.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

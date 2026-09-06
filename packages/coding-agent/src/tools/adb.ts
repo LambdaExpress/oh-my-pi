@@ -28,10 +28,13 @@ import {
 	type EmulatorStopResult,
 	type EmulatorWaitUntil,
 } from "../adb/emulator-manager";
+import { AdbUiAutomation } from "../adb/ui-automation";
+import type { AdbUiClickResult, AdbUiObservation, AdbUiWaitUntil } from "../adb/ui-types";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { decodeStreamedToolArgs } from "../modes/controllers/tool-args-reveal";
 import type { Theme } from "../modes/theme/theme";
 import adbDescription from "../prompts/tools/adb.md" with { type: "text" };
-import { DEFAULT_MAX_BYTES, streamTailUpdates, TailBuffer } from "../session/streaming-output";
+import { DEFAULT_MAX_BYTES, OutputSink, streamTailUpdates, TailBuffer } from "../session/streaming-output";
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import type { ToolSession } from ".";
@@ -45,7 +48,7 @@ import {
 	resolveOutputSinkTailBytes,
 	stripOutputNotice,
 } from "./output-meta";
-import { capPreviewLines, extractPartialJsonString, replaceTabs } from "./render-utils";
+import { capPreviewLines, replaceTabs } from "./render-utils";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
@@ -60,6 +63,44 @@ const UIAUTOMATOR_DUMP_COMMAND = /^\s*uiautomator\s+dump(?:\s|$)/;
 const UIAUTOMATOR_IDLE_TIMEOUT = /ERROR:\s*could not get idle state\./i;
 const UIAUTOMATOR_RETRY_DELAY_MS = 500;
 
+const uiSelectorSchema = type({
+	"text?": "string",
+	"textContains?": nonEmptyString,
+	"resourceId?": nonEmptyString,
+	"description?": "string",
+	"className?": nonEmptyString,
+	"packageName?": nonEmptyString,
+	"enabled?": "boolean",
+	"checked?": "boolean",
+	"focused?": "boolean",
+	"selected?": "boolean",
+	"+": "reject",
+}).describe("non-empty AND selector; exact strings except textContains (substring)");
+const uiTargetSchema = uiSelectorSchema.or(
+	type({ ref: nonEmptyString.describe("element ref from the latest observation on this device"), "+": "reject" }),
+);
+const observeSchema = type({
+	op: "'observe'",
+	"device?": deviceField,
+	"timeout?": timeoutField,
+	"+": "reject",
+});
+const clickSchema = type({
+	op: "'click'",
+	"device?": deviceField,
+	selector: uiTargetSchema,
+	"longClick?": "boolean",
+	"timeout?": timeoutField,
+	"+": "reject",
+});
+const uiWaitSchema = type({
+	op: "'wait'",
+	"device?": deviceField,
+	until: "'visible' | 'hidden' | 'enabled' | 'disabled'",
+	selector: uiSelectorSchema,
+	"timeout?": timeoutField,
+	"+": "reject",
+});
 const devicesSchema = type({ op: "'devices'", "+": "reject" });
 const avdsSchema = type({ op: "'avds'", "+": "reject" });
 const statusSchema = type({ op: "'status'", "device?": deviceField, "+": "reject" });
@@ -172,9 +213,12 @@ const keyeventSchema = type({
 });
 
 export const adbSchema = devicesSchema
+	.or(observeSchema)
+	.or(clickSchema)
 	.or(avdsSchema)
 	.or(statusSchema)
 	.or(waitSchema)
+	.or(uiWaitSchema)
 	.or(startSchema)
 	.or(stopSchema)
 	.or(shellSchema)
@@ -198,7 +242,7 @@ export interface AdbToolDetails {
 	op: AdbOperation;
 	serial?: string;
 	avd?: string;
-	state?: EmulatorWaitUntil;
+	state?: EmulatorWaitUntil | AdbUiWaitUntil;
 	path?: string;
 	bytes?: number;
 	mimeType?: "image/png";
@@ -211,6 +255,8 @@ export interface AdbToolDetails {
 	remotePath?: string;
 	package?: string;
 	activity?: string;
+	observation?: AdbUiObservation;
+	click?: AdbUiClickResult;
 	meta?: OutputMeta;
 }
 export type AdbDetails = AdbToolDetails;
@@ -231,6 +277,7 @@ const READ_OPERATIONS: Partial<Record<AdbOperation, true>> = {
 	wait: true,
 	logcat: true,
 	screenshot: true,
+	observe: true,
 };
 const PNG_SIGNATURE = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
 const DEFAULT_LOGCAT_LINES = 200;
@@ -238,7 +285,9 @@ const ALLOWED_FIELDS_BY_OPERATION: Record<AdbOperation, readonly string[]> = {
 	devices: ["op"],
 	avds: ["op"],
 	status: ["op", "device"],
-	wait: ["op", "device", "until", "timeout"],
+	observe: ["op", "device", "timeout"],
+	click: ["op", "device", "selector", "longClick", "timeout"],
+	wait: ["op", "device", "until", "selector", "timeout"],
 	start: ["op", "avd", "waitUntil", "timeout"],
 	stop: ["op", "device"],
 	shell: ["op", "device", "command", "timeout"],
@@ -287,6 +336,8 @@ export function formatApprovalDetails(args: unknown): string[] {
 		["package", "Package"],
 		["activity", "Activity"],
 		["action", "Input action"],
+		["selector", "Selector"],
+		["longClick", "Long click"],
 		["x", "X"],
 		["y", "Y"],
 		["x1", "X1"],
@@ -299,7 +350,10 @@ export function formatApprovalDetails(args: unknown): string[] {
 		["timeout", "Timeout seconds"],
 	];
 	for (const [key, label] of labels) {
-		if (params[key] !== undefined) lines.push(`${label}: ${promptValue(params[key])}`);
+		if (params[key] !== undefined) {
+			const value = key === "selector" ? JSON.stringify(params[key]) : params[key];
+			lines.push(`${label}: ${promptValue(value)}`);
+		}
 	}
 	return lines;
 }
@@ -335,6 +389,9 @@ function validateParams(params: AdbToolParams): void {
 	if ("device" in params && params.device !== undefined) ensureNonEmpty(params.device, "device serial");
 	if ("timeout" in params && params.timeout !== undefined) {
 		ensureFinite(params.timeout, "timeout", Number.MIN_VALUE, Number.MAX_VALUE);
+	}
+	if ("selector" in params && Object.keys(params.selector).length === 0) {
+		throw new ToolError("ADB selector must contain at least one element attribute or ref.");
 	}
 	switch (params.op) {
 		case "start":
@@ -430,7 +487,8 @@ function hasPngSignature(bytes: Uint8Array): boolean {
 export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 	readonly name = "adb";
 	readonly label = "ADB";
-	readonly summary = "Control Android devices, apps, files, input, screenshots, and AVDs";
+	readonly summary =
+		"Observe Android UI, click elements, wait for UI state, and manage devices, apps, files, and AVDs";
 	readonly loadMode = "discoverable" as const;
 	readonly parameters = adbSchema;
 	readonly strict = true;
@@ -450,6 +508,7 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 	): Component => adbToolRenderer.renderResult(result, options, renderTheme as Theme, args);
 
 	readonly #dependencies: AdbToolDependencies;
+	readonly #ui: AdbUiAutomation;
 
 	constructor(
 		private readonly session: ToolSession,
@@ -464,6 +523,11 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 			emulatorManager:
 				dependencies.emulatorManager ?? new EmulatorManager({ resolveExecutable, executeAdb: textExecutor }),
 		};
+		this.#ui = new AdbUiAutomation({
+			runBinary: (args, timeoutMs, signal) =>
+				this.#runBinary(args, { op: "observe", serial: args[1] }, timeoutMs, signal),
+			runText: (args, timeoutMs, signal) => this.#runText(args, { op: "click", serial: args[1] }, timeoutMs, signal),
+		});
 	}
 
 	static createIf(session: ToolSession, dependencies: Partial<AdbToolDependencies> = {}): AdbTool | null {
@@ -490,6 +554,9 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 				: clampTimeout("adb", undefined, this.session.settings.get("tools.maxTimeout"));
 		const timeoutMs = timeoutSec * 1000;
 
+		if (params.op === "observe" || params.op === "click" || (params.op === "wait" && "selector" in params)) {
+			return this.#uiOperation(params, timeoutMs, signal);
+		}
 		switch (params.op) {
 			case "devices": {
 				const details: AdbToolDetails = { op: params.op };
@@ -536,6 +603,7 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 					.done();
 			}
 			case "start": {
+				this.#ui.invalidate();
 				const result = await this.#runManager(params.op, { avd: params.avd }, signal, () =>
 					this.#dependencies.emulatorManager.start({
 						avd: params.avd,
@@ -547,6 +615,7 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 				return this.#startResult(result);
 			}
 			case "stop": {
+				this.#ui.invalidate(params.device);
 				const result = await this.#runManager(
 					params.op,
 					params.device ? { serial: params.device } : {},
@@ -657,6 +726,73 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 		}
 	}
 
+	async #uiOperation(
+		params: Extract<AdbToolParams, { op: "observe" | "click" } | { op: "wait"; selector: unknown }>,
+		timeoutMs: number,
+		signal?: AbortSignal,
+	): Promise<AgentToolResult<AdbToolDetails>> {
+		const deadline = performance.now() + timeoutMs;
+		const device = await this.#runManager(params.op, { serial: params.device }, signal, () =>
+			this.#dependencies.emulatorManager.wait(params.device, "connected", timeoutMs, signal),
+		);
+		const remaining = deadline - performance.now();
+		if (remaining <= 0)
+			throw new ToolError(`ADB ${params.op} timed out for serial ${JSON.stringify(device.serial)}.`);
+		const details: AdbToolDetails = { op: params.op, serial: device.serial, avd: device.avdName, device };
+		return this.#runManager(params.op, details, signal, async () => {
+			if (params.op === "click") {
+				const click = await this.#ui.click(
+					device.serial,
+					params.selector,
+					params.longClick ?? false,
+					remaining,
+					signal,
+				);
+				details.click = click;
+				return toolResult(details)
+					.text(
+						`${params.longClick ? "Long-clicked" : "Clicked"} ${click.element.ref} at (${click.x}, ${click.y}). Observe or wait for the expected UI state to verify the effect.`,
+					)
+					.done();
+			}
+			let observation: AdbUiObservation;
+			if (params.op === "wait") {
+				const result = await this.#ui.wait(device.serial, params.selector, params.until, remaining, signal);
+				observation = result.observation;
+				details.state = result.until;
+			} else {
+				observation = await this.#ui.observe(device.serial, remaining, signal);
+			}
+			details.observation = observation;
+			return this.#observationResult(details, observation);
+		});
+	}
+
+	async #observationResult(
+		details: AdbToolDetails,
+		observation: AdbUiObservation,
+	): Promise<AgentToolResult<AdbToolDetails>> {
+		const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("adb")) ?? {};
+		const sink = new OutputSink({
+			artifactPath,
+			artifactId,
+			spillThreshold: resolveOutputSinkSpillThreshold(this.session.settings),
+			tailBytes: resolveOutputSinkTailBytes(this.session.settings),
+			headBytes: resolveOutputSinkHeadBytes(this.session.settings),
+			maxColumns: resolveOutputMaxColumns(this.session.settings),
+		});
+		try {
+			sink.push(
+				`${JSON.stringify({ serial: observation.serial, snapshot: observation.snapshot, rotation: observation.rotation, elements: observation.elements.length, until: details.state })}\n`,
+			);
+			for (const element of observation.elements) sink.push(`${JSON.stringify(element)}\n`);
+			const result = await sink.dump();
+			return toolResult(details).text(result.output).truncationFromSummary(result, { direction: "tail" }).done();
+		} finally {
+			await sink.dispose();
+		}
+	}
+
 	#startResult(result: EmulatorStartResult): AgentToolResult<AdbToolDetails> {
 		const reused = result.reused ? "reused" : `started${result.pid === undefined ? "" : ` (pid ${result.pid})`}`;
 		return toolResult<AdbToolDetails>({
@@ -676,7 +812,10 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 	}
 
 	async #deviceText(
-		params: Exclude<AdbToolParams, { op: "devices" | "avds" | "status" | "wait" | "start" | "stop" | "screenshot" }>,
+		params: Exclude<
+			AdbToolParams,
+			{ op: "devices" | "avds" | "status" | "wait" | "start" | "stop" | "screenshot" | "observe" | "click" }
+		>,
 		timeoutMs: number,
 		signal: AbortSignal | undefined,
 		onUpdate: AgentToolUpdateCallback<AdbToolDetails> | undefined,
@@ -697,6 +836,7 @@ export class AdbTool implements AgentTool<typeof adbSchema, AdbToolDetails> {
 			device: selected,
 			...extraDetails,
 		};
+		if (!READ_OPERATIONS[params.op]) this.#ui.invalidate(selected.serial);
 		const args = buildArgs(selected);
 		const startedAt = Date.now();
 		let result = await this.#runText(args, details, timeoutMs, signal, onUpdate);
@@ -904,6 +1044,8 @@ interface AdbRenderArgs extends Record<string, unknown> {
 	filter?: string;
 	lines?: number;
 	follow?: boolean;
+	selector?: unknown;
+	longClick?: boolean;
 	__partialJson?: string;
 }
 
@@ -940,6 +1082,8 @@ function renderArgumentLines(args: AdbRenderArgs | undefined, details?: AdbToolD
 		["filter", args?.filter],
 		["lines", args?.lines],
 		["follow", args?.follow],
+		["selector", args?.selector === undefined ? undefined : JSON.stringify(args.selector)],
+		["longClick", args?.longClick],
 	];
 	for (const [label, value] of fields) {
 		if (value !== undefined) lines.push(`${label}: ${replaceTabs(String(value))}`);
@@ -959,22 +1103,7 @@ function hasStreamedRenderArgs(args: unknown): boolean {
 function decodeAdbRenderArgs(args: AdbRenderArgs): AdbRenderArgs {
 	const partialJson = args.__partialJson;
 	if (!partialJson) return args;
-	return {
-		...args,
-		op: extractPartialJsonString(partialJson, "op") ?? args.op,
-		device: extractPartialJsonString(partialJson, "device") ?? args.device,
-		avd: extractPartialJsonString(partialJson, "avd") ?? args.avd,
-		until: extractPartialJsonString(partialJson, "until") ?? args.until,
-		waitUntil: extractPartialJsonString(partialJson, "waitUntil") ?? args.waitUntil,
-		command: extractPartialJsonString(partialJson, "command") ?? args.command,
-		action: extractPartialJsonString(partialJson, "action") ?? args.action,
-		package: extractPartialJsonString(partialJson, "package") ?? args.package,
-		activity: extractPartialJsonString(partialJson, "activity") ?? args.activity,
-		localPath: extractPartialJsonString(partialJson, "localPath") ?? args.localPath,
-		remotePath: extractPartialJsonString(partialJson, "remotePath") ?? args.remotePath,
-		apkPath: extractPartialJsonString(partialJson, "apkPath") ?? args.apkPath,
-		filter: extractPartialJsonString(partialJson, "filter") ?? args.filter,
-	};
+	return decodeStreamedToolArgs(partialJson, { rawInput: false, fullArgs: args });
 }
 
 function renderAdbCall(args: AdbRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {

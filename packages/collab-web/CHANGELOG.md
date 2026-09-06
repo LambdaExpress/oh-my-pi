@@ -17,6 +17,12 @@
 - Completed turns now collapse intermediate thinking, tool calls, and progress text behind one expandable process summary while keeping the user prompt and final answer visible; abnormal runs stay expanded. Added motion-token-based transitions for transcript rows, process disclosure, session views, sidebars, Composer cards, model/thinking menus, and agent rails with reduced-motion support.
 - Added working keyboard shortcuts for new session, open project, project-sidebar toggle, Composer focus, and settings, with a reference panel in Settings. Settings now close when the desktop backdrop is clicked while preserving clicks inside the dialog.
 - Added Tauri-only custom window chrome with a unified draggable title bar and minimize, maximize/restore, and close-to-tray controls; ordinary browser sessions remain frameless.
+## [18.1.3] - 2026-09-02
+
+### Fixed
+
+- The guest transcript now returns to the latest message after an initial connection or reconnect.
+
 ## [18.0.8] - 2026-08-27
 
 ### Added

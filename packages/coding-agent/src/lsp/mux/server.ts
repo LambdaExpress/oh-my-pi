@@ -88,6 +88,7 @@ class ServerInstance {
 	readonly diagnostics = new Map<string, DiagnosticsParams>();
 	readonly registrations: RegistrationBatch[] = [];
 	readonly progress = new Map<string | number, ProgressParams>();
+	serverStatus: LspJsonRpcNotification | undefined;
 	readonly pending = new Map<LspJsonRpcId, ForwardedRequest>();
 	readonly initializeWaiters = new Map<Session, LspJsonRpcId>();
 	writeQueue: Promise<void> = Promise.resolve();
@@ -226,7 +227,7 @@ export class LspMuxServer {
 	async #performShutdown(): Promise<void> {
 		this.#shuttingDown = true;
 		clearTimeout(this.#idleTimer);
-		for (const session of [...this.#sessions]) session.socket.destroy();
+		for (const session of Array.from(this.#sessions)) session.socket.destroy();
 		await Promise.all([...this.#servers].map(server => this.#stopServer(server)));
 		const listener = this.#netServer;
 		this.#netServer = undefined;
@@ -507,6 +508,8 @@ export class LspMuxServer {
 				if (params.value?.kind === "begin") server.progress.set(params.token, cloneParams(params));
 				else if (params.value?.kind === "end") server.progress.delete(params.token);
 			}
+		} else if (message.method === "experimental/serverStatus") {
+			server.serverStatus = { jsonrpc: "2.0", method: message.method, params: cloneParams(message.params) };
 		}
 		for (const session of server.sessions) if (session.initialized) this.#sendSession(session, message);
 	}
@@ -624,6 +627,7 @@ export class LspMuxServer {
 		for (const params of server.progress.values()) {
 			this.#sendSession(session, { jsonrpc: "2.0", method: "$/progress", params: cloneParams(params) });
 		}
+		if (server.serverStatus) this.#sendSession(session, server.serverStatus);
 	}
 
 	#sendSession(session: Session, message: RpcMessage): void {
@@ -683,7 +687,7 @@ export class LspMuxServer {
 		if (server.lingerTimer) clearTimeout(server.lingerTimer);
 		server.pending.clear();
 		const params: MuxServerExitParams = { exitCode, stderr: server.proc.peekStderr() };
-		for (const session of [...server.sessions]) {
+		for (const session of Array.from(server.sessions)) {
 			this.#sendSession(session, { jsonrpc: "2.0", method: MUX_SERVER_EXIT_METHOD, params });
 			session.socket.end();
 		}

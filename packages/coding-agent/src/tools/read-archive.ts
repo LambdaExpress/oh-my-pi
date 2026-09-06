@@ -1,6 +1,6 @@
 import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
-import type { TextContent } from "@oh-my-pi/pi-ai";
+import type { completeSimple, TextContent } from "@oh-my-pi/pi-ai";
 import { parseImageMetadata } from "@oh-my-pi/pi-utils";
 import {
 	type ArchiveReader,
@@ -10,15 +10,13 @@ import {
 } from "@oh-my-pi/pi-utils/ar";
 import type { ToolSession } from "../sdk";
 import { truncateHead } from "../session/streaming-output";
-import { loadImageBytesInput, MAX_IMAGE_INPUT_BYTES, webpExclusionForModel } from "../utils/image-loading";
-import { isInspectImageToolAvailable } from "../utils/inspect-image-mode";
+import { loadImageBytesInput, MAX_IMAGE_INPUT_BYTES } from "../utils/image-loading";
 import { convertBufferWithMarkit } from "../utils/markit";
 import { applyListLimit } from "./list-limit";
 import { resolveReadPath } from "./path-utils";
 import type { ReadToolDetails } from "./read";
 import {
-	buildInMemoryMultiRangeResult,
-	buildInMemoryTextResult,
+	buildInMemorySelectorResult,
 	decodeUtf8Text,
 	markMarkdownContentType,
 	prependSuffixResolutionNotice,
@@ -30,7 +28,7 @@ import {
 	isRemoteMountPath,
 	type SuffixMatchCache,
 } from "./read-path-resolution";
-import { isMultiRange, isRawSelector, type ParsedSelector, parseSel, selToOffsetLimit } from "./read-selector";
+import { isMultiRange, type ParsedSelector, parseSel, resolveTailSelector, selToOffsetLimit } from "./read-selector";
 import { formatBytes } from "./render-utils";
 import { ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -101,16 +99,16 @@ async function readArchiveDirectory(
 	archive: ArchiveReader,
 	archivePath: string,
 	subPath: string,
-	offset: number | undefined,
-	limit: number | undefined,
+	sel: ParsedSelector,
 	details: ReadToolDetails,
 	signal?: AbortSignal,
 ): Promise<AgentToolResult<ReadToolDetails>> {
 	const DEFAULT_LIMIT = 500;
-	const effectiveLimit = limit ?? DEFAULT_LIMIT;
 	const allEntries = archive.listDirectory(subPath);
-	// `offset` is 1-indexed (line-selector semantics): `a.zip:dir:50` starts
-	// the listing at the 50th entry instead of being silently ignored.
+	// Selectors address entries with line semantics: `a.zip:dir:50` starts the
+	// listing at the 50th entry, `a.zip:dir:-20` lists the last 20.
+	const { offset, limit } = selToOffsetLimit(resolveTailSelector(sel, allEntries.length));
+	const effectiveLimit = limit ?? DEFAULT_LIMIT;
 	const entries = offset !== undefined && offset > 1 ? allEntries.slice(offset - 1) : allEntries;
 
 	const listLimit = applyListLimit(entries, { limit: effectiveLimit });
@@ -141,6 +139,7 @@ export async function readArchive(
 	parsedSel: ParsedSelector,
 	resolvedArchivePath: ResolvedArchiveReadPath,
 	signal?: AbortSignal,
+	imageQuestion: { question?: string; completeImageRequest?: typeof completeSimple } = {},
 ): Promise<AgentToolResult<ReadToolDetails>> {
 	throwIfAborted(signal);
 	const archive = await openArchive(resolvedArchivePath.absolutePath);
@@ -174,37 +173,37 @@ export async function readArchive(
 	}
 
 	if (node.isDirectory) {
+		if (imageQuestion.question !== undefined) {
+			throw new ToolError(
+				"The ?q= selector only supports images (raster files, archive image members, .svg:img, attachment://N, local:// images, PDF page screenshots).",
+			);
+		}
 		if (isMultiRange(sel)) {
 			throw new ToolError("Multi-range line selectors are not supported for archive directory listings.");
 		}
-		const { offset, limit } = selToOffsetLimit(sel);
-		return readArchiveDirectory(
-			archive,
-			resolvedArchivePath.absolutePath,
-			archiveSubPath,
-			offset,
-			limit,
-			details,
-			signal,
-		);
+		return readArchiveDirectory(archive, resolvedArchivePath.absolutePath, archiveSubPath, sel, details, signal);
 	}
 
 	const entry = await archive.readFile(archiveSubPath);
 	const imageMetadata = parseImageMetadata(entry.bytes);
 	const mimeType = imageMetadata?.mimeType;
 	if (mimeType) {
-		const inspectImageActive = isInspectImageToolAvailable(session);
-		// Oversized members keep the status-quo opaque notice; the cheap
-		// inspect_image metadata note still applies when inspection is active.
-		if (inspectImageActive || entry.size <= MAX_IMAGE_INPUT_BYTES) {
+		const activeModelSupportsImages = session.getActiveModel?.()?.input.includes("image") ?? true;
+		// Text-only models can receive metadata without loading oversized bytes.
+		// Image-capable models preserve the existing opaque result for oversized
+		// members, while explicit questions surface the normal image size error.
+		if (imageQuestion.question !== undefined || !activeModelSupportsImages || entry.size <= MAX_IMAGE_INPUT_BYTES) {
 			const { content, sourcePath } = await buildReadImageContent({
-				inspectImageActive,
+				session,
 				mimeType,
 				imageMetadata,
 				fileSize: entry.size,
-				inspectHintPath: readPath,
+				questionPath: readPath,
+				question: imageQuestion.question,
 				sourcePath: resolvedArchivePath.absolutePath,
-				load: () =>
+				completeImageRequest: imageQuestion.completeImageRequest,
+				signal,
+				load: excludeWebP =>
 					loadImageBytesInput({
 						label: entry.path,
 						uri: resolvedArchivePath.absolutePath,
@@ -212,7 +211,7 @@ export async function readArchive(
 						mimeType,
 						autoResize: session.settings.get("images.autoResize"),
 						maxBytes: MAX_IMAGE_INPUT_BYTES,
-						excludeWebP: webpExclusionForModel(session.getActiveModel?.()),
+						excludeWebP,
 						textNotePrefix: `Read image archive entry [${entry.path}]`,
 					}),
 			});
@@ -226,33 +225,22 @@ export async function readArchive(
 			return toolResult<ReadToolDetails>(details).content(content).sourcePath(sourcePath).done();
 		}
 	}
+	if (imageQuestion.question !== undefined) {
+		throw new ToolError(
+			"The ?q= selector only supports images (raster files, archive image members, .svg:img, attachment://N, local:// images, PDF page screenshots).",
+		);
+	}
 
 	const ext = path.extname(entry.path).toLowerCase();
 	if (ARCHIVE_CONVERTIBLE_EXTENSIONS[ext] === true) {
 		const result = await convertBufferWithMarkit(entry.bytes, ext, signal);
 		if (result.ok) {
-			const raw = isRawSelector(sel);
-			return isMultiRange(sel) && sel.kind === "lines"
-				? buildInMemoryMultiRangeResult(session, result.content, sel.ranges, {
-						details,
-						sourcePath: resolvedArchivePath.absolutePath,
-						entityLabel: "archive document",
-						raw,
-						immutable: true,
-					})
-				: buildInMemoryTextResult(
-						session,
-						result.content,
-						selToOffsetLimit(sel).offset,
-						selToOffsetLimit(sel).limit,
-						{
-							details,
-							sourcePath: resolvedArchivePath.absolutePath,
-							entityLabel: "archive document",
-							raw,
-							immutable: true,
-						},
-					);
+			return buildInMemorySelectorResult(session, result.content, sel, {
+				details,
+				sourcePath: resolvedArchivePath.absolutePath,
+				entityLabel: "archive document",
+				immutable: true,
+			});
 		}
 		return toolResult<ReadToolDetails>(details)
 			.text(`[Cannot read archive document '${entry.path}': ${result.error || "conversion failed"}]`)
@@ -276,23 +264,12 @@ export async function readArchive(
 	// Archive members are immutable: there is no edit path for bytes inside
 	// an archive, and a hashline tag keyed to the archive file would invite
 	// (and fail) edits while clobbering sibling members' snapshots.
-	const raw = isRawSelector(sel);
-	const result =
-		isMultiRange(sel) && sel.kind === "lines"
-			? buildInMemoryMultiRangeResult(session, text, sel.ranges, {
-					details,
-					sourcePath: resolvedArchivePath.absolutePath,
-					entityLabel: "archive entry",
-					raw,
-					immutable: true,
-				})
-			: buildInMemoryTextResult(session, text, selToOffsetLimit(sel).offset, selToOffsetLimit(sel).limit, {
-					details,
-					sourcePath: resolvedArchivePath.absolutePath,
-					entityLabel: "archive entry",
-					raw,
-					immutable: true,
-				});
+	const result = buildInMemorySelectorResult(session, text, sel, {
+		details,
+		sourcePath: resolvedArchivePath.absolutePath,
+		entityLabel: "archive entry",
+		immutable: true,
+	});
 	const firstText = result.content.find((content): content is TextContent => content.type === "text");
 	if (firstText) {
 		firstText.text = prependSuffixResolutionNotice(firstText.text, resolvedArchivePath.suffixResolution);

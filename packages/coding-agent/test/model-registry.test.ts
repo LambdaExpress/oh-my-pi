@@ -736,6 +736,51 @@ describe("ModelRegistry", () => {
 			expect(getReplayUnsignedThinking(registry.find("anthropic", "claude-sonnet-5"))).toBe(false);
 		});
 
+		test("catalog metrics enrich models discovered through a custom provider", async () => {
+			// Metrics only fill unscored models, so the id must be absent from the
+			// bundled catalog — otherwise a regen that scores it silently wins here.
+			writeRawModelsJson({
+				cliproxy: {
+					baseUrl: "https://proxy.example/v1",
+					apiKey: "TEST_KEY",
+					api: "openai-responses",
+					discovery: { type: "openai-models-list" },
+					models: [],
+				},
+			});
+			const fetchMock: FetchImpl = async input => {
+				const url = String(input);
+				if (url === "https://catalog.stencil.so/models.json.zstd") {
+					return Response.json({
+						openai: {
+							id: "openai",
+							name: "OpenAI",
+							models: {
+								"gpt-5.7-sol": {
+									id: "gpt-5.7-sol",
+									name: "GPT-5.7 Sol",
+									tool_call: true,
+									int: 60.9,
+									tps: 70.4,
+								},
+							},
+						},
+					});
+				}
+				if (url === "https://proxy.example/v1/models") {
+					return Response.json({ data: [{ id: "gpt-5.7-sol" }] });
+				}
+				throw new Error(`Unexpected URL: ${url}`);
+			};
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { fetch: fetchMock });
+
+			await registry.refresh("online");
+
+			const model = registry.find("cliproxy", "gpt-5.7-sol");
+			expect(model?.int).toBe(60.9);
+			expect(model?.tps).toBe(70.4);
+		});
+
 		test("custom Responses providers can disable original image detail", () => {
 			const model = customResponsesCompat.find("cc-switch", "gpt-5.5");
 			const compat = getOpenAICompat(model);
@@ -1666,6 +1711,64 @@ describe("ModelRegistry", () => {
 		});
 	});
 	describe("extended context", () => {
+		test("toggles bundled Astra between its default and maximum windows without discovery", async () => {
+			const testSettings = Settings.isolated();
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(872_000);
+			expect(registry.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+		});
+
+		test("preserves an explicit Astra context override when extended context is enabled", () => {
+			writeRawModelsJson({
+				"openai-codex": { modelOverrides: { "gpt-6-astra": { contextWindow: 400_000 } } },
+			});
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, {
+				settings: Settings.isolated({ extendedContext: true }),
+			});
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(400_000);
+		});
+
+		test("restores a discovered maximum from cache ahead of the Astra fallback on each toggle", async () => {
+			const testSettings = Settings.isolated();
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			const astra = registry.find("openai-codex", "gpt-6-astra");
+			const legacy = registry.find("openai-codex", "gpt-5.5");
+			if (!astra || !legacy) throw new Error("Expected bundled Codex models");
+			writeModelCache(
+				"openai-codex",
+				Date.now(),
+				[
+					{ ...astra, maxContextWindow: 640_000 },
+					{ ...legacy, maxContextWindow: 128_000 },
+				],
+				true,
+				"",
+				path.join(tempDir, "models.db"),
+			);
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(640_000);
+			// An advertised maximum smaller than the current window cannot shrink it.
+			expect(registry.find("openai-codex", "gpt-5.5")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("openai-codex", "gpt-6-astra")?.contextWindow).toBe(640_000);
+		});
+
 		test("off caps billable premium models without shrinking subscription estimates", async () => {
 			await Settings.init({ inMemory: true, overrides: { extendedContext: false } });
 			const registry = new ModelRegistry(authStorage, modelsJsonPath);
@@ -1706,8 +1809,8 @@ describe("ModelRegistry", () => {
 			expect(registry.find("openai-codex", "gpt-5.6-terra")?.contextWindow).toBe(2_000_000);
 		});
 
-		test("configured models keep larger windows while GPT-5.6 expands without pricing metadata", async () => {
-			await Settings.init({ inMemory: true, overrides: { extendedContextWindow: "352K" } });
+		test("explicit custom model windows survive extended-context policy toggles", async () => {
+			const testSettings = Settings.isolated({ extendedContext: false, extendedContextWindow: "352K" });
 			writeRawModelsJson({
 				"relay-provider": {
 					baseUrl: "https://relay.example.com/v1",
@@ -1715,30 +1818,21 @@ describe("ModelRegistry", () => {
 					api: "openai-responses",
 					models: [
 						{
-							id: "deepseek-v3",
-							name: "DeepSeek V3",
-							reasoning: false,
-							input: ["text"],
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-							contextWindow: 1_000_000,
-							maxTokens: 128_000,
-						},
-						{
 							id: "openai/gpt-5.6-sol",
-							name: "GPT-5.6 Sol",
-							reasoning: true,
-							input: ["text"],
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 							contextWindow: 272_000,
-							maxTokens: 128_000,
 						},
 					],
 				},
 			});
 
-			const registry = new ModelRegistry(authStorage, modelsJsonPath);
-			expect(registry.find("relay-provider", "deepseek-v3")?.contextWindow).toBe(1_000_000);
-			expect(registry.find("relay-provider", "openai/gpt-5.6-sol")?.contextWindow).toBe(352_000);
+			const registry = new ModelRegistry(authStorage, modelsJsonPath, { settings: testSettings });
+			testSettings.set("extendedContext", true);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("relay-provider", "openai/gpt-5.6-sol")?.contextWindow).toBe(272_000);
+
+			testSettings.set("extendedContext", false);
+			await registry.reapplyModelPolicies();
+			expect(registry.find("relay-provider", "openai/gpt-5.6-sol")?.contextWindow).toBe(272_000);
 		});
 	});
 	describe("bundled Anthropic catalog availability", () => {
@@ -1848,6 +1942,7 @@ describe("ModelRegistry", () => {
 						guardrailIdentifier: "arn:aws:bedrock:eu-west-2:123456789012:guardrail/abcd1234",
 						guardrailVersion: "1",
 						guardrailTrace: "enabled",
+						requestMetadata: { team: "growth", environment: "prod" },
 					},
 					"custom-bedrock": {
 						baseUrl: "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -1856,6 +1951,7 @@ describe("ModelRegistry", () => {
 						guardrailIdentifier: "arn:aws:bedrock:eu-west-2:123456789012:guardrail/abcd1234",
 						guardrailVersion: "1",
 						guardrailTrace: "enabled",
+						requestMetadata: { team: "growth", environment: "prod" },
 						models: [
 							{
 								id: "custom-bedrock-model",
@@ -1879,6 +1975,7 @@ describe("ModelRegistry", () => {
 				expect(model.guardrailIdentifier).toBe("arn:aws:bedrock:eu-west-2:123456789012:guardrail/abcd1234");
 				expect(model.guardrailVersion).toBe("1");
 				expect(model.guardrailTrace).toBe("enabled");
+				expect(model.requestMetadata).toEqual({ team: "growth", environment: "prod" });
 			}
 		});
 
@@ -1888,6 +1985,7 @@ describe("ModelRegistry", () => {
 			expect(model?.guardrailIdentifier).toBe("arn:aws:bedrock:eu-west-2:123456789012:guardrail/abcd1234");
 			expect(model?.guardrailVersion).toBe("1");
 			expect(model?.guardrailTrace).toBe("enabled");
+			expect(model?.requestMetadata).toEqual({ team: "growth", environment: "prod" });
 		});
 
 		test("guardrail fields are absent on built-in bedrock models without override", () => {
@@ -1897,6 +1995,7 @@ describe("ModelRegistry", () => {
 				expect(model.guardrailIdentifier).toBeUndefined();
 				expect(model.guardrailVersion).toBeUndefined();
 				expect(model.guardrailTrace).toBeUndefined();
+				expect(model.requestMetadata).toBeUndefined();
 			}
 		});
 

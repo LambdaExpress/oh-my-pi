@@ -1,6 +1,15 @@
-import { type SSHHost, sshCapability } from "../capability/ssh";
+import { type SSHHost as CapabilitySSHHost, sshCapability } from "../capability/ssh";
 import { loadCapability } from "../discovery";
 import type { SessionSshConfig } from "../session/session-ssh-config";
+
+type SSHHostSource = Omit<CapabilitySSHHost["_source"], "level"> & {
+	level: CapabilitySSHHost["_source"]["level"] | "session";
+};
+
+/** Effective host entry from either persistent capability discovery or the active session. */
+export type SSHHost = Omit<CapabilitySSHHost, "_source"> & {
+	_source: SSHHostSource;
+};
 
 export interface SessionSshHosts {
 	sessionId: string;
@@ -47,7 +56,7 @@ export async function loadEffectiveSshHosts(cwd?: string, sessionHosts?: Session
 		}
 	}
 
-	const persistent = await loadCapability<SSHHost>(sshCapability.id, cwd ? { cwd } : {});
+	const persistent = await loadCapability<CapabilitySSHHost>(sshCapability.id, cwd ? { cwd } : {});
 	for (const rawHost of persistent.items) {
 		if (seen.has(rawHost.name)) continue;
 		const host = withConnectionId(rawHost);
