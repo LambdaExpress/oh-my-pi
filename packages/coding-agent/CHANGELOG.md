@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added structured Android UI observations, element-reference and selector-based clicks, long-clicks, and element-state waits to `adb`.
 - Added mouse hover outlines and click-to-rewind in the fullscreen rewind selector, including alternate branch columns.
 - Added literal clipboard-reference paste: `Ctrl+Shift+V`/`Alt+Shift+V` inserts Windows Explorer `FileDropList` paths without image attachments, while bitmap-only clipboards are materialized into session blob paths.
 - Added a discoverable `adb` tool for Android device commands, file and app operations, screenshots, and lifecycle management of existing Android Virtual Devices.
@@ -74,6 +75,7 @@
 
 ### Fixed
 
+- Fixed project TUI session teardown crashing OMP on delayed terminal output or closing another agent's terminals.
 - Fixed image-question reads losing usable local images or metadata when the configured vision service is unavailable.
 - Fixed cold Rust reference queries reporting an empty result while rust-analyzer is still indexing.
 - Fixed project TUI screenshots displaying missing-glyph boxes for Windows Chinese text, symbols, and Nerd Font icons.

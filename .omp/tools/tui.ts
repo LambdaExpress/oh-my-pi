@@ -380,6 +380,11 @@ export class Screen {
 
 	/** Frees the native terminal. */
 	dispose() {
+		this.onReply = null;
+		this.#term.onOutput = undefined;
+		this.#term.onEvent = undefined;
+		this.#images.clear();
+		this.#pending = null;
 		this.#term.dispose();
 	}
 
@@ -669,15 +674,18 @@ interface Session {
 	raw: Buffer[];
 	rawBytes: number;
 	exit: number | null;
+	closed: boolean;
+	stopping?: Promise<number | null>;
 }
-
-const sessions = new Map<string, Session>();
 
 /** EOF/reset is retryable during startup, unlike a timeout or malformed reply. */
 class DebugSocketClosedError extends Error {}
 
 /** Appends one PTY chunk to the session's capped raw capture. */
 function capture(session: Session, chunk: Uint8Array) {
+	// ConPTY can deliver queued data after close() and process exit. Detach
+	// that producer at the session boundary before freeing the native screen.
+	if (session.closed) return;
 	session.screen.feed(chunk);
 	const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
 	session.raw.push(bytes);
@@ -829,45 +837,28 @@ function inputNote(response: Record<string, unknown>, acknowledged: string): str
 	return response.acknowledged === false ? "application exited (exit 0); input was not acknowledged" : acknowledged;
 }
 
-function need(session: string | undefined): Session {
-	const name = session ?? "main";
-	const found = sessions.get(name);
-	if (!found) {
-		const names = [...sessions.keys()].join(", ") || "none";
-		throw new Error(`no session "${name}" (running: ${names})`);
-	}
-	return found;
-}
-
 function sleep(ms: number): Promise<null> {
 	const { promise, resolve } = Promise.withResolvers<null>();
 	setTimeout(() => resolve(null), ms);
 	return promise;
 }
 
-async function stopSession(session: Session): Promise<number | null> {
-	try {
-		if (session.sock && session.exit === null) {
-			await request(session, { op: "quit" }, 2_000);
-		} else if (session.exit === null) {
-			// Non-omp-tui apps have no debug socket; Ctrl-C is the
-			// conventional quit chord.
-			session.proc.terminal.write("\x03");
-		}
-	} catch {
-		// Fall through to signals.
-	}
-	const exited = await Promise.race([session.proc.exited, sleep(2_000)]);
-	if (exited === null) {
-		session.proc.kill("SIGKILL");
-		await session.proc.exited.catch(() => {});
-	}
+function disposeSession(session: Session): void {
+	if (session.closed) return;
+	session.closed = true;
+	session.screen.onReply = null;
 	if (session.sock) disconnectSocket(session, session.sock, new Error(`session "${session.name}" stopped`));
-	session.proc.terminal.close();
-	session.screen.dispose();
-	rmSync(session.dir, { recursive: true, force: true });
-	sessions.delete(session.name);
-	return exited ?? -9;
+	try {
+		session.proc.terminal.close();
+	} finally {
+		try {
+			session.screen.dispose();
+		} finally {
+			session.raw = [];
+			session.rawBytes = 0;
+			rmSync(session.dir, { recursive: true, force: true });
+		}
+	}
 }
 
 // ─── Response narrowing ──────────────────────────────────────────────────────
@@ -1016,7 +1007,47 @@ function bunExecutable(): string {
 }
 
 const factory = (omp: ToolHost) => {
+	// The module is shared by parent/child agents; terminal ownership is not.
+	const sessions = new Map<string, Session>();
+	let shuttingDown = false;
+
+	function need(session: string | undefined): Session {
+		const name = session ?? "main";
+		const found = sessions.get(name);
+		if (!found || found.closed) {
+			const names = [...sessions.keys()].join(", ") || "none";
+			throw new Error(`no session "${name}" (running: ${names})`);
+		}
+		return found;
+	}
+
+	function stopSession(session: Session): Promise<number | null> {
+		return (session.stopping ??= (async () => {
+			try {
+				try {
+					if (session.sock && session.exit === null) {
+						await request(session, { op: "quit" }, 2_000);
+					} else if (session.exit === null) {
+						session.proc.terminal.write("\x03");
+					}
+				} catch {
+					// Fall through to signals.
+				}
+				const exited = await Promise.race([session.proc.exited, sleep(2_000)]);
+				if (exited === null) {
+					session.proc.kill("SIGKILL");
+					await session.proc.exited.catch(() => {});
+				}
+				return exited ?? -9;
+			} finally {
+				if (sessions.get(session.name) === session) sessions.delete(session.name);
+				disposeSession(session);
+			}
+		})());
+	}
+
 	const startSession = async (params: TuiParams): Promise<string> => {
+		if (shuttingDown) throw new Error("TUI tool is shutting down; cannot start a new terminal");
 		const name = params.name ?? "main";
 		if (sessions.has(name)) {
 			throw new Error(`session "${name}" already running; stop it first`);
@@ -1036,6 +1067,11 @@ const factory = (omp: ToolHost) => {
 		const dir = mkdtempSync(join(tmpdir(), `omp-tui-${name}-`));
 		const sockPath = process.platform === "win32" ? `\\\\.\\pipe\\${basename(dir)}` : join(dir, "debug.sock");
 		const screen = await Screen.create(cols, rows);
+		if (shuttingDown) {
+			screen.dispose();
+			rmSync(dir, { recursive: true, force: true });
+			throw new Error("TUI tool shut down while creating the terminal");
+		}
 		// The PTY data callback closes over `session`; Bun.spawn returns
 		// synchronously and the callback fires on the event loop, so the
 		// binding is assigned before the first chunk can arrive.
@@ -1054,7 +1090,7 @@ const factory = (omp: ToolHost) => {
 					cols,
 					rows,
 					data(_terminal, chunk) {
-						capture(session, chunk);
+						if (session) capture(session, chunk);
 					},
 				},
 			});
@@ -1091,6 +1127,7 @@ const factory = (omp: ToolHost) => {
 			raw: [],
 			rawBytes: 0,
 			exit: null,
+			closed: false,
 		};
 		proc.exited.then(code => {
 			session.exit = code;
@@ -1382,19 +1419,12 @@ const factory = (omp: ToolHost) => {
 			}
 		},
 
-		onSession(event: { reason?: string }) {
+		async onSession(event: { reason?: string }) {
 			if (event.reason === "shutdown") {
-				for (const session of sessions.values()) {
-					try {
-						session.proc.kill("SIGKILL");
-						session.proc.terminal.close();
-						session.screen.dispose();
-						rmSync(session.dir, { recursive: true, force: true });
-					} catch {
-						// Best-effort teardown.
-					}
-				}
+				shuttingDown = true;
+				const owned = [...sessions.values()];
 				sessions.clear();
+				await Promise.allSettled(owned.map(stopSession));
 			}
 		},
 	};

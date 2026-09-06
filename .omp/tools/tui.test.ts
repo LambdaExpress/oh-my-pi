@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -19,39 +19,36 @@ const schema: TestSchema = {
 	},
 };
 
+function testTool() {
+	return createTool({
+		cwd: path.resolve(import.meta.dir, "../.."),
+		zod: {
+			object: () => schema,
+			string: () => schema,
+			boolean: () => schema,
+			number: () => schema,
+			array: () => schema,
+		},
+	});
+}
+
 type Execute = (params: TuiParams) => Promise<{
 	content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
 	details?: Record<string, unknown>;
 }>;
 
-async function withChild(source: string, run: (execute: Execute) => Promise<void>): Promise<void> {
+async function withChild(
+	source: string,
+	run: (execute: Execute, shutdown: () => Promise<void>) => Promise<void>,
+): Promise<void> {
 	const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "omp-tui-lifecycle-"));
 	const name = path.basename(directory);
 	const file = path.join(directory, "child.ts");
-	const tool = createTool({
-		cwd: path.resolve(import.meta.dir, "../.."),
-		zod: {
-			object() {
-				return schema;
-			},
-			string() {
-				return schema;
-			},
-			boolean() {
-				return schema;
-			},
-			number() {
-				return schema;
-			},
-			array() {
-				return schema;
-			},
-		},
-	});
+	const tool = testTool();
 	const execute: Execute = params => tool.execute("lifecycle-test", { name, file, ...params });
 	try {
 		await Bun.write(file, source);
-		await run(execute);
+		await run(execute, () => tool.onSession({ reason: "shutdown" }));
 	} finally {
 		await execute({ op: "stop" }).catch(() => {});
 		await fs.promises.rm(directory, { recursive: true, force: true });
@@ -111,6 +108,75 @@ test("start waits for a painted protocol response before text queries can use th
 		},
 	);
 }, 5_000);
+
+test("a sibling tool shutdown cannot dispose another owner's terminal", async () => {
+	await withChild(
+		debugHost('if (request.op === "text") reply({ ok: true, lines: ["owner still running"], window_top: 0 });'),
+		async execute => {
+			await execute({ op: "start", timeout: 3 });
+			await testTool().onSession({ reason: "shutdown" });
+			const result = await execute({ op: "text" });
+			expect(result.content[0]).toMatchObject({
+				type: "text",
+				text: expect.stringContaining("owner still running"),
+			});
+		},
+	);
+}, 5_000);
+
+test("concurrent stop and owner shutdown release the same terminal once", async () => {
+	await withChild(
+		debugHost('if (request.op === "text") reply({ ok: true, lines: ["ready"], window_top: 0 });'),
+		async (execute, shutdown) => {
+			await execute({ op: "start", timeout: 3 });
+			const [first, second] = await Promise.all([execute({ op: "stop" }), execute({ op: "stop" }), shutdown()]);
+			for (const result of [first, second]) {
+				expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("(exit 0)") });
+			}
+			await expect(execute({ op: "screen" })).rejects.toThrow(/no session/);
+			await expect(execute({ op: "start" })).rejects.toThrow(/shutting down/);
+		},
+	);
+}, 5_000);
+
+test("queued PTY output after stop cannot reach disposed or replacement terminals", async () => {
+	type DataCallback = (terminal: unknown, chunk: Uint8Array) => void;
+	const callbacks: DataCallback[] = [];
+	const spawn = new Proxy(Bun.spawn, {
+		apply(original, receiver, args) {
+			const options = (Array.isArray(args[0]) ? args[1] : args[0]) as {
+				terminal?: { data?: DataCallback };
+			};
+			if (options?.terminal?.data) callbacks.push(options.terminal.data);
+			return Reflect.apply(original, receiver, args);
+		},
+	});
+	const spy = vi.spyOn(Bun, "spawn").mockImplementation(spawn);
+	try {
+		await withChild(
+			debugHost(
+				'if (request.op === "text") reply({ ok: true, lines: ["ready"], window_top: 0 });',
+				'process.stdout.write("fresh terminal\\r\\n");',
+			),
+			async execute => {
+				await execute({ op: "start", timeout: 3 });
+				const lateOutput = callbacks.at(-1)!;
+				await execute({ op: "stop" });
+				lateOutput(undefined, Buffer.from("OLD SESSION OUTPUT\r\n\x1b[6n"));
+				await execute({ op: "start", timeout: 3 });
+				lateOutput(undefined, Buffer.from("OLD SESSION OUTPUT\r\n"));
+				const result = await execute({ op: "screen" });
+				expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining("fresh terminal") });
+				expect(result.content[0]).toMatchObject({
+					type: "text",
+					text: expect.not.stringContaining("OLD SESSION OUTPUT"),
+				});
+			},
+		);
+	} finally {
+		spy.mockRestore();
+	}
+}, 8_000);
 
 test("start reconnects when the startup debug server is replaced before its first response", async () => {
 	await withChild(

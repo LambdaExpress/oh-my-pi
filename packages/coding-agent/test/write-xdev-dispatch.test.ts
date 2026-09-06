@@ -907,35 +907,25 @@ describe("read and write route xd:// device URLs", () => {
 		expect(builtIn.summary).toBe(`Gets the weather ${multiByteTail}`);
 	});
 
-	it("docsAll inlines small device docs and falls back to a listing past the caps", async () => {
-		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "write-xdev-docs-"));
-		try {
-			const session = xdevSession(tempDir);
-			expect(session.settings.get("tools.xdevDocs")).toBe("builtins");
-			await createTools(session);
-			const xdev = session.xdev;
-			if (!xdev) throw new Error("expected xdev state");
-			const mounted = listXdevTools(xdev);
-			expect(mounted.length).toBeGreaterThan(0);
-
-			// One device with a pathological description must fall back to the
-			// listing without starving the rest of the catalog.
-			const giant = Object.create(mounted[0]!) as (typeof mounted)[number];
-			Object.defineProperty(giant, "name", { value: "giant_mcp_tool" });
-			Object.defineProperty(giant, "description", { value: "x".repeat(XDEV_DOCS_PER_DEVICE_CAP + 1) });
-			xdev.tools.set(giant.name, giant);
-			xdev.mountedNames.add(giant.name);
-			xdev.builtInNames.add(giant.name);
-
-			const docs = xdevDocsAll(xdev);
-			expect(docs.length).toBeLessThan(XDEV_DOCS_TOTAL_BUDGET + XDEV_DOCS_PER_DEVICE_CAP);
-			expect(docs).toContain(`## ${mounted[0]!.name}`);
-			expect(docs).toContain("## Additional devices (docs on demand)");
-			expect(docs).toContain("- xd://giant_mcp_tool —");
-			expect(docs).not.toContain("## giant_mcp_tool");
-		} finally {
-			await removeWithRetries(tempDir);
-		}
+	it("docsAll inlines small device docs and falls back to a listing past the caps", () => {
+		const small: Tool = {
+			name: "small_device",
+			label: "Small device",
+			description: "Small device documentation.",
+			parameters: type({}),
+			execute: async () => ({ content: [], details: undefined }),
+		};
+		const giant: Tool = {
+			...small,
+			name: "giant_mcp_tool",
+			description: "x".repeat(XDEV_DOCS_PER_DEVICE_CAP + 1),
+		};
+		// Catalog order and real tool schemas must not determine the size boundary.
+		const docs = xdevDocsAll(createTestXdevState([giant, small]));
+		expect(docs.length).toBeLessThan(XDEV_DOCS_TOTAL_BUDGET + XDEV_DOCS_PER_DEVICE_CAP);
+		expect(docs).toContain("## small_device");
+		expect(docs).toContain("- xd://giant_mcp_tool —");
+		expect(docs).not.toContain("## giant_mcp_tool");
 	});
 
 	it("docsAll supports inline, builtins, and catalog prompt modes", async () => {
