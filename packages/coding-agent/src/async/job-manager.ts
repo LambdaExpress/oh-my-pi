@@ -118,7 +118,7 @@ export interface AsyncJobRecord {
 	 * supply an id (e.g. legacy tests, SDK consumers without an agent context).
 	 */
 	ownerId?: string;
-	/** Top-level Main session UUID inherited unchanged by child agents. */
+	/** Top-level runtime scope inherited unchanged by child agents. */
 	scopeId?: string;
 	/**
 	 * Registry id of the subagent this job runs (task/tan/vibe jobs). Lets
@@ -225,7 +225,7 @@ export interface AsyncJobRegisterOptions {
 	timeoutMs?: number;
 	/** Registry id of the agent that owns this job; used to scope cancelAll. */
 	ownerId?: string;
-	/** Top-level Main session UUID inherited unchanged by child agents. */
+	/** Top-level runtime scope inherited unchanged by child agents. */
 	scopeId?: string;
 	/** Registry id of the subagent this job runs; see {@link AsyncJob.agentId}. */
 	agentId?: string;

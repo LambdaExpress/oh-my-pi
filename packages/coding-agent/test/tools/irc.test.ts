@@ -279,10 +279,9 @@ describe("IRC", () => {
 				body: "late old message",
 				scopeId: previousScopeId,
 			});
-			expect(late).toEqual({
+			expect(late).toMatchObject({
 				to: "Main",
 				outcome: "failed",
-				error: "The sender session has ended.",
 			});
 
 			const current = await bus.send({

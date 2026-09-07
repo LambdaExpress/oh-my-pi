@@ -74,7 +74,7 @@ export interface AgentRef {
 	displayName: string;
 	kind: AgentKind;
 	parentId?: string;
-	/** Top-level Main session UUID shared by this agent tree. */
+	/** Runtime scope shared by this agent tree, independent of the persisted session ID. */
 	scopeId?: string;
 	status: AgentStatus;
 	/** Null exactly when parked/aborted. */

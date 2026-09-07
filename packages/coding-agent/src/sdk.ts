@@ -616,8 +616,8 @@ export interface CreateAgentSessionOptions {
 	/** Optional shared agent registry for IRC routing. Default: AgentRegistry.global(). */
 	agentRegistry?: AgentRegistry;
 	/**
-	 * Immutable top-level session scope inherited by subagents. Top-level callers
-	 * omit this so the current SessionManager ID becomes the scope.
+	 * Runtime scope inherited by subagents. Top-level callers omit this to
+	 * allocate a fresh scope independent of the persisted SessionManager ID.
 	 */
 	agentScopeId?: string;
 	/**
@@ -1811,7 +1811,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 	let session!: AgentSession;
 	let hasSession = false;
 	let hasRegistered = false;
-	const initialAgentScopeId = options.agentScopeId ?? sessionManager.getSessionId();
+	const initialAgentScopeId = options.agentScopeId ?? Bun.randomUUIDv7();
 	const currentAgentScopeId = (): string => (hasSession ? session.getAgentScopeId() : initialAgentScopeId);
 	const restrictToolNames = options.restrictToolNames === true;
 	const enableLsp = options.enableLsp ?? !restrictToolNames;

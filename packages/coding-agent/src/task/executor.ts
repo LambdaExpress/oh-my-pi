@@ -408,7 +408,7 @@ export interface ExecutorOptions {
 	description?: string;
 	index: number;
 	id: string;
-	/** Top-level Main session UUID captured at the parent task invocation boundary. */
+	/** Top-level runtime scope captured at the parent task invocation boundary. */
 	scopeId?: string;
 	parentToolCallId?: string;
 	/**
@@ -2438,7 +2438,7 @@ async function finalizeRunResult(args: FinalizeRunArgs): Promise<SingleResult> {
 export interface IrcWakeTurnMonitorOptions {
 	/** Registry id of the kept-alive subagent whose autonomous IRC wake turns are monitored. */
 	id: string;
-	/** Top-level Main session UUID retained across live and cold revival. */
+	/** Top-level runtime scope retained across live and cold revival. */
 	scopeId?: string;
 	index?: number;
 	agent: AgentDefinition;

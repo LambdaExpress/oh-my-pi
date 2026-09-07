@@ -13,6 +13,7 @@ import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/
 import { SessionObserverRegistry } from "@oh-my-pi/pi-coding-agent/modes/session-observer-registry";
 import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { visitEntriesFromFileStream } from "@oh-my-pi/pi-coding-agent/session/session-loader";
@@ -632,7 +633,11 @@ describe("Agent hub Enter activation", () => {
 				focusedIds.push(id);
 				focusResolved.resolve();
 			},
-			session: { getToolByName: () => undefined, extensionRunner: undefined },
+			session: {
+				getToolByName: () => undefined,
+				getAgentScopeId: () => "test-scope",
+				extensionRunner: undefined,
+			},
 			sessionManager: { getCwd: () => TEST_CWD, getSessionFile: () => null, getSessionId: () => "test-session" },
 			hideThinkingBlock: false,
 		};
@@ -689,7 +694,11 @@ describe("Agent hub double-← gating", () => {
 			},
 			collabGuest: { agentRegistry: agents, hubRemote: undefined },
 			focusAgentSession: async () => {},
-			session: { getToolByName: () => undefined, extensionRunner: undefined },
+			session: {
+				getToolByName: () => undefined,
+				getAgentScopeId: () => "test-scope",
+				extensionRunner: undefined,
+			},
 			sessionManager: {
 				getCwd: () => TEST_CWD,
 				getSessionFile: () => sessionFile,
@@ -823,6 +832,7 @@ describe("Agent hub data refresh coalescing", () => {
 		vi.useRealTimers();
 		vi.restoreAllMocks();
 		IrcBus.resetGlobalForTests();
+		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
 	});
 

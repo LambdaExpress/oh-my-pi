@@ -311,7 +311,7 @@ interface SyncSpawnRef {
 
 /** Non-positional execution state shared by the sync and detached spawn paths. */
 interface SpawnExecutionOptions {
-	/** Top-level Main session UUID shared by the whole child tree. */
+	/** Top-level runtime scope shared by the whole child tree. */
 	scopeId?: string;
 	/** IRC-visible peers pre-allocated for the same batch. */
 	ircPeerIds?: readonly string[];

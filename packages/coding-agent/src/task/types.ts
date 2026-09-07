@@ -70,7 +70,7 @@ export interface SubagentProgressPayload {
 	agent: string;
 	agentSource: AgentSource;
 	task: string;
-	/** Top-level Main session UUID captured when this subagent was spawned. */
+	/** Top-level runtime scope captured when this subagent was spawned. */
 	scopeId?: string;
 	parentToolCallId?: string;
 	assignment?: string;
@@ -91,7 +91,7 @@ export interface SubagentLifecyclePayload {
 	id: string;
 	agent: string;
 	agentSource: AgentSource;
-	/** Top-level Main session UUID captured when this subagent was spawned. */
+	/** Top-level runtime scope captured when this subagent was spawned. */
 	scopeId?: string;
 	description?: string;
 	status: "started" | "completed" | "failed" | "aborted";

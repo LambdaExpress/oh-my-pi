@@ -224,7 +224,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 			description: "Fix review comments",
 			status: "completed",
 			detached: true,
-			scopeId: session.sessionManager.getSessionId(),
+			scopeId: session.getAgentScopeId(),
 		});
 		vi.advanceTimersByTime(100);
 
@@ -387,7 +387,7 @@ describe("InteractiveMode todo HUD persistence", () => {
 			description: "Fix review comments",
 			status: "completed",
 			detached: true,
-			scopeId: session.sessionManager.getSessionId(),
+			scopeId: session.getAgentScopeId(),
 		});
 		vi.advanceTimersByTime(100);
 
