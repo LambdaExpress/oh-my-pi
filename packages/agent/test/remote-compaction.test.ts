@@ -8,6 +8,7 @@ import {
 	NativeCompactionError,
 	prepareCompaction,
 	type SessionEntry,
+	shouldUseProviderNativeCompaction,
 } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	buildCompactionV2Request,
@@ -18,7 +19,6 @@ import {
 	requestOpenAiRemoteCompaction,
 	requestRemoteCompaction,
 	shouldUseCompactionV2Streaming,
-	shouldUseOpenAiRemoteCompaction,
 	trimRemoteCompactionInputToContextWindow,
 } from "@oh-my-pi/pi-agent-core/compaction/openai";
 import * as ai from "@oh-my-pi/pi-ai";
@@ -833,7 +833,7 @@ describe("requestCompactionV2Streaming", () => {
 			remoteCompaction: {
 				enabled: true,
 				v2StreamingEnabled: true,
-				v2Endpoint: "https://compact.example/v1/responses",
+				v2Endpoint: "https://api.openai.com/v1/responses",
 				model: "gpt-5-compact",
 			},
 		});
@@ -854,7 +854,7 @@ describe("requestCompactionV2Streaming", () => {
 		let legacySessionHeader: string | undefined;
 		let betaFeaturesHeader: string | undefined;
 		const fetchMock: FetchImpl = async (input, init) => {
-			expect(String(input)).toBe("https://compact.example/v1/responses");
+			expect(String(input)).toBe("https://api.openai.com/v1/responses");
 			if (!init?.headers || init.headers instanceof Headers || Array.isArray(init.headers)) {
 				throw new Error("Expected V2 compaction to send headers as a plain object");
 			}
@@ -925,7 +925,7 @@ describe("requestCompactionV2Streaming", () => {
 				enabled: true,
 				api: "openai-codex-responses",
 				v2StreamingEnabled: true,
-				v2Endpoint: "https://compact.example/v1/responses",
+				v2Endpoint: "https://api.openai.com/v1/responses",
 			},
 		});
 		const request = buildCompactionV2Request(
@@ -970,7 +970,7 @@ describe("requestCompactionV2Streaming", () => {
 			remoteCompaction: {
 				enabled: true,
 				v2StreamingEnabled: true,
-				v2Endpoint: "https://compact.example/v1/responses",
+				v2Endpoint: "https://api.openai.com/v1/responses",
 			},
 		});
 		const request = buildCompactionV2Request(
@@ -1007,7 +1007,7 @@ describe("requestCompactionV2Streaming", () => {
 			remoteCompaction: {
 				enabled: true,
 				v2StreamingEnabled: true,
-				v2Endpoint: "https://compact.example/v1/responses",
+				v2Endpoint: "https://api.openai.com/v1/responses",
 			},
 		});
 		const request = buildCompactionV2Request(
@@ -1042,7 +1042,7 @@ describe("Responses Lite remote compaction", () => {
 			name: "GPT-5.6 Terra",
 			api: "openai-codex-responses",
 			provider: "openai-codex",
-			baseUrl: "https://chatgpt.example/backend-api",
+			baseUrl: "https://chatgpt.com/backend-api",
 			reasoning: true,
 			preferWebsockets: false,
 			input: ["text", "image"],
@@ -1088,8 +1088,12 @@ describe("Responses Lite remote compaction", () => {
 
 	function captureStreamLite(init: RequestInit | undefined): CapturedLiteExchange {
 		if (!init?.headers) throw new Error("Expected local compaction request headers");
+		const body =
+			init.body instanceof Uint8Array
+				? new TextDecoder().decode(Bun.zstdDecompressSync(init.body))
+				: String(init.body);
 		return {
-			body: JSON.parse(String(init.body)) as CapturedLiteRequest,
+			body: JSON.parse(body) as CapturedLiteRequest,
 			headers: new Headers(init.headers),
 		};
 	}
@@ -1694,7 +1698,7 @@ describe("Responses Lite remote compaction", () => {
 	});
 });
 
-test("uses configured OpenAI-compatible compaction for custom providers", async () => {
+test("serializes an explicitly requested custom compaction endpoint", async () => {
 	const model = makeOpenAiModel({
 		provider: "cliproxy-codex",
 		baseUrl: "http://127.0.0.1:8317/v1",
@@ -1716,7 +1720,6 @@ test("uses configured OpenAI-compatible compaction for custom providers", async 
 		);
 	};
 
-	expect(shouldUseOpenAiRemoteCompaction(model)).toBe(true);
 	await requestOpenAiRemoteCompaction(
 		model,
 		"test-key",
@@ -1763,7 +1766,6 @@ test("uses Azure request shape for Azure Responses remote compaction", async () 
 		});
 	};
 
-	expect(shouldUseOpenAiRemoteCompaction(model)).toBe(true);
 	await requestOpenAiRemoteCompaction(
 		model,
 		"azure-key",
@@ -1948,6 +1950,62 @@ describe("compact() remote compaction failure handling", () => {
 		};
 	}
 
+	test.each([
+		{
+			name: "OpenAI provider with a proxy base URL",
+			model: makeOpenAiModel({ baseUrl: "https://proxy.example/v1" }),
+		},
+		{
+			name: "Codex provider with a proxy base URL",
+			model: buildModel({
+				...makeOpenAiModel(),
+				api: "openai-codex-responses",
+				provider: "openai-codex",
+				baseUrl: "https://proxy.example/backend-api",
+			}),
+		},
+		{
+			name: "custom provider explicitly opting into native compaction",
+			model: makeOpenAiModel({ provider: "custom", baseUrl: "https://proxy.example/v1" }),
+		},
+		{
+			name: "Azure Responses",
+			model: makeAzureModel(),
+		},
+		{
+			name: "lookalike OpenAI host",
+			model: makeOpenAiModel({ baseUrl: "https://api.openai.com.proxy.example/v1" }),
+		},
+		{
+			name: "official model with third-party compaction endpoints",
+			model: makeOpenAiModel({
+				remoteCompaction: {
+					endpoint: "https://proxy.example/v1/responses/compact",
+					v2Endpoint: "https://proxy.example/v1/responses",
+				},
+			}),
+		},
+	])("skips native compaction for $name", async ({ model }) => {
+		model.remoteCompaction = { ...model.remoteCompaction, enabled: true, v2StreamingEnabled: true };
+		const preparation = makePreparation();
+		preparation.settings.remoteStreamingV2Enabled = true;
+		const requestedUrls: string[] = [];
+		const result = await compact(preparation, model, "test-key", undefined, undefined, {
+			fetch: async input => {
+				requestedUrls.push(String(input));
+				return Response.json({
+					output: [{ type: "compaction_summary", summary: "unexpected native summary" }],
+				});
+			},
+			completeImpl: async () => localSummaryMessage("portable local summary"),
+		});
+
+		expect(requestedUrls).toEqual([]);
+		expect(result.summary).toContain("portable local summary");
+		expect(result.preserveData?.openaiRemoteCompaction).toBeUndefined();
+		expect(shouldUseProviderNativeCompaction(model, preparation.settings)).toBe(false);
+	});
+
 	test("forceLocal skips every provider-native compaction endpoint", async () => {
 		const preparation = makePreparation();
 		preparation.settings = { ...preparation.settings, remoteStreamingV2Enabled: true };
@@ -2023,7 +2081,7 @@ describe("compact() remote compaction failure handling", () => {
 			remoteCompaction: {
 				enabled: true,
 				v2StreamingEnabled: true,
-				v2Endpoint: "https://compact.example/v1/responses",
+				v2Endpoint: "https://api.openai.com/v1/responses",
 			},
 		});
 		let requestBody: { input: Array<Record<string, unknown>>; reasoning?: Record<string, unknown> } | undefined;
@@ -2113,7 +2171,7 @@ describe("compact() remote compaction failure handling", () => {
 			remoteCompaction: {
 				enabled: true,
 				v2StreamingEnabled: true,
-				v2Endpoint: "https://compact.example/v1/responses",
+				v2Endpoint: "https://api.openai.com/v1/responses",
 			},
 		});
 		let requestInput: Array<Record<string, unknown>> = [];
@@ -2152,7 +2210,7 @@ describe("compact() remote compaction failure handling", () => {
 			remoteCompaction: {
 				enabled: true,
 				v2StreamingEnabled: true,
-				v2Endpoint: "https://compact.example/v1/responses",
+				v2Endpoint: "https://api.openai.com/v1/responses",
 			},
 		});
 		// Produce a real V2 preserve payload (opaque placeholder summary, provider "openai").

@@ -25,6 +25,7 @@ use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 use grep_searcher::{
 	BinaryDetection, Encoding, Searcher, SearcherBuilder, Sink, SinkContext, SinkFinish, SinkMatch,
 };
+use uucore::fs::FileInformation;
 use crate::host::{Host, StreamWriter, Utility};
 
 use ignore::{
@@ -519,6 +520,7 @@ struct SearchOptions {
 	no_messages:         bool,
 	replacement:         Option<Vec<u8>>,
 	json:                bool,
+	output_file:         Option<FileInformation>,
 }
 
 struct SearchOutcome {
@@ -1049,6 +1051,7 @@ fn search_options(cli: &Rg) -> SearchOptions {
 			.as_ref()
 			.map(|replacement| replacement.as_encoded_bytes().to_vec()),
 		json: cli.json,
+		output_file: None,
 	}
 }
 
@@ -1318,26 +1321,35 @@ fn process_file<M: Matcher, W: Write>(
 	matcher: &M,
 	searcher: &mut Searcher,
 	path: &Path,
+	explicit: bool,
 	display: Option<&[u8]>,
 	opts: &SearchOptions,
 	stats: &mut Stats,
 	out: &mut W,
 ) -> io::Result<SearchOutcome> {
-	let result = if cli.search_zip && !cli.no_search_zip {
-		let builder = DecompressionReaderBuilder::new();
-		if builder.get_matcher().has_command(path) {
-			builder
-				.build(path)
-				.map_err(|error| io::Error::other(error.to_string()))
-				.and_then(|reader| process_reader(matcher, searcher, reader, display, opts, stats, out))
-		} else {
-			File::open(path)
-				.and_then(|file| process_reader(matcher, searcher, file, display, opts, stats, out))
+	let result = (|| {
+		let file = File::open(path)?;
+		if let Some(output) = &opts.output_file
+			&& FileInformation::from_file(&file)? == *output
+		{
+			return if explicit {
+				Err(io::Error::other("input is also the output"))
+			} else {
+				Ok(false)
+			};
 		}
-	} else {
-		File::open(path)
-			.and_then(|file| process_reader(matcher, searcher, file, display, opts, stats, out))
-	};
+		if cli.search_zip && !cli.no_search_zip {
+			let builder = DecompressionReaderBuilder::new();
+			if builder.get_matcher().has_command(path) {
+				return builder
+					.build(path)
+					.map_err(|error| io::Error::other(error.to_string()))
+					.and_then(|reader| process_reader(matcher, searcher, reader, display, opts, stats, out));
+			}
+		}
+		// Search the checked handle, not a reopened path that could name a different file.
+		process_reader(matcher, searcher, file, display, opts, stats, out)
+	})();
 	match result {
 		Ok(any_match) => Ok(SearchOutcome { any_match, had_error: false }),
 		Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Err(error),
@@ -1409,7 +1421,7 @@ fn search_collected_files<M: Matcher, W: Write>(
 		let display_path = display_path(operand, root, &path);
 		let display_bytes = display_path.as_os_str().as_encoded_bytes().to_vec();
 		let display = (show_names || opts.json).then_some(display_bytes.as_slice());
-		let outcome = process_file(host, cli, matcher, searcher, &path, display, opts, stats, out)?;
+		let outcome = process_file(host, cli, matcher, searcher, &path, false, display, opts, stats, out)?;
 		any_match |= outcome.any_match;
 		had_error |= outcome.had_error;
 		if host.is_cancelled() {
@@ -1480,7 +1492,7 @@ fn search_dir<M: Matcher, W: Write>(
 			let display_path = display_path(operand, root, path);
 			let display_bytes = display_path.as_os_str().as_encoded_bytes().to_vec();
 			let display = (show_names || opts.json).then_some(display_bytes.as_slice());
-			let outcome = process_file(host, cli, matcher, searcher, path, display, opts, stats, out)?;
+			let outcome = process_file(host, cli, matcher, searcher, path, false, display, opts, stats, out)?;
 			any_match.set(any_match.get() || outcome.any_match);
 			had_error.set(had_error.get() || outcome.had_error);
 			Ok(if opts.quiet && any_match.get() {
@@ -1715,6 +1727,20 @@ fn execute_search<M: Matcher, W: Write>(
 		}
 		processed_operand = true;
 		if operand.as_os_str() == OsStr::new("-") {
+			if let Some(output) = &opts.output_file {
+				let error = match host.stdin_file_identity() {
+					Ok(Some(input)) if input == *output => Some(io::Error::other("input is also the output")),
+					Err(error) => Some(error),
+					_ => None,
+				};
+				if let Some(error) = error {
+					had_error = true;
+					if !opts.no_messages {
+						let _ = writeln!(host.stderr, "rg: <stdin>: {error}");
+					}
+					continue;
+				}
+			}
 			let display = show_names.then_some(b"<stdin>".as_slice());
 			match process_reader(
 				matcher,
@@ -1781,6 +1807,7 @@ fn execute_search<M: Matcher, W: Write>(
 					matcher,
 					&mut explicit_searcher,
 					&resolved,
+					true,
 					display,
 					opts,
 					&mut stats,
@@ -1913,6 +1940,15 @@ impl Utility for Rg {
 	if patterns.is_empty() {
 		return 1;
 	}
+	opts.output_file = match host.stdout_file_identity() {
+		Ok(identity) => identity,
+		Err(error) => {
+			if !opts.no_messages {
+				let _ = writeln!(host.stderr, "rg: stdout: {error}");
+			}
+			return 2;
+		},
+	};
 	let matcher = match build_matcher(host, &patterns, &cli) {
 		Ok(matcher) => matcher,
 		Err(error) => {

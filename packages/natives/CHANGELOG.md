@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- Fixed embedded `rg` recursively reading its own redirected output and growing files without bound, including hard-link and symlink aliases.
 - Fixed native Git commits failing to run extensionless shebang hooks on Windows.
 - Fixed native Git staging, checkout conflict checks, patch application, cherry-pick, and stash restoration bypassing repository clean/smudge filters, including `core.autocrlf` conversion on Windows.
 - Fixed local Windows native rebuilds failing with `EPERM` when a running workspace OMP process had the addon mapped. The bindings installer now moves the loaded addon aside, installs the new build at the canonical path, and defers cleanup of the mapped backup until a later build.

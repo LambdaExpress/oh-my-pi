@@ -30,7 +30,6 @@ import {
 } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { transformMessages } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import type {
-	Api,
 	AssistantMessage,
 	CodexCompactionContext,
 	FetchImpl,
@@ -55,6 +54,7 @@ import {
 } from "@oh-my-pi/pi-catalog/wire/codex";
 import { $env, isRecord, logger, prompt, stringifyJson, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { Tokenizer } from "../tokenizer";
+import { isOfficialOpenAiCompactionEndpoint } from "./compaction-v2-streaming";
 import contextWindowTruncatedOutputPrompt from "./prompts/context-window-truncated-output.md" with { type: "text" };
 
 export * from "./compaction-v2-streaming";
@@ -282,15 +282,9 @@ export interface RemoteCompactionResponse {
 // OpenAI provider gating + endpoint resolution
 // ============================================================================
 
-function isOpenAiRemoteCompactionApi(api: Api | undefined): boolean {
-	return api === "openai-responses" || api === "azure-openai-responses" || api === "openai-codex-responses";
-}
-
 export function shouldUseOpenAiRemoteCompaction(model: Model): boolean {
 	if (model.remoteCompaction?.enabled === false) return false;
-	if (model.provider === "openai" || model.provider === "openai-codex") return true;
-	if (model.remoteCompaction?.enabled !== true) return false;
-	return isOpenAiRemoteCompactionApi(model.remoteCompaction.api ?? model.api);
+	return isOfficialOpenAiCompactionEndpoint(model, model.remoteCompaction?.endpoint);
 }
 
 function resolveOpenAiCompactEndpoint(model: Model): string {
