@@ -399,6 +399,12 @@ export async function runCli(argv: string[]): Promise<void> {
 		return;
 	}
 
+	// Subprocess workers can spawn nested workers (the activity loader starts
+	// stats parsers), so register the host before dispatching their selector.
+	// Profile bootstrap must still precede this declaration. Imported CLI
+	// modules and worker threads must not change their realm's host entry.
+	if (isProcessEntry && Bun.isMainThread) declareWorkerHostEntry();
+
 	// Worker-thread entry dispatch must run before the first `await`: the
 	// stats sync worker's buffering onmessage handler is installed in the
 	// synchronous prefix of `runWorkerEntrypoint`, and Bun flushes the
@@ -412,17 +418,6 @@ export async function runCli(argv: string[]): Promise<void> {
 		}
 		return;
 	}
-
-	// Declare this module as the worker-host entry now that the active profile
-	// is resolved. The worker-host module is side-effect-free; importing
-	// `@oh-my-pi/pi-utils/env` here would snapshot the wrong agent `.env`.
-	// Gated on `isProcessEntry`: only the real CLI process entry is a valid
-	// worker host. Worker-thread re-entry already returned above at the
-	// `__omp_worker_` dispatch, and importers (`runCli` in profile-CLI tests,
-	// SDK embedding) have `import.meta.main === false` — declaring there would
-	// poison `workerHostEntry()` for the whole test process, forcing eval/stats/
-	// browser workers onto the same-realm inline fallback.
-	if (isProcessEntry) declareWorkerHostEntry();
 
 	// Herdr keeps Kitty rendering opt-in. Resolve that explicit host setting
 	// before any TUI module snapshots terminal capabilities; inherited

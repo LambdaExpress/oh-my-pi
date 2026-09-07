@@ -8,7 +8,7 @@
 import { resolveUsedFraction, type UsageLimit, type UsageReport } from "@oh-my-pi/pi-ai";
 import type { DailyActivityPoint } from "@oh-my-pi/omp-stats/shared-types";
 import { type Component, matchesKey, routeSgrMouseInput, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
-import { colorLuma, formatDuration, hexToRgb, rgbToHex } from "@oh-my-pi/pi-utils";
+import { colorLuma, formatDuration, hexToRgb, logger, rgbToHex } from "@oh-my-pi/pi-utils";
 import { formatProviderName } from "../../slash-commands/helpers/format";
 import { colorToAnsi } from "../theme/color";
 import { theme } from "../theme/theme";
@@ -48,9 +48,11 @@ export interface ProviderCard {
 	accounts: number;
 	/** Window rows sorted most-pressing first. */
 	windows: CardWindowRow[];
+	/** Total saved resets across accounts; undefined when no account reports them. */
+	savedResets: number | undefined;
 	/** True when every account reports no limits (e.g. enterprise plans). */
 	unlimited: boolean;
-	/** True when nothing is used anywhere (or there are no limits): collapses to a tick. */
+	/** True when nothing is used and there is no reset allowance to display. */
 	idle: boolean;
 }
 
@@ -131,7 +133,8 @@ function aggregateRowStatus(windows: CardWindowRow[]): UsageLimit["status"] {
  * quota bucket (label + window), each bucket showing the mean used fraction
  * across accounts (matching the classic report's aggregate "% free") with the
  * most-used account's reset countdown. Cards sort most-pressing first so
- * what's burning is on top-left; fully idle providers collapse into a tick.
+ * what's burning is on top-left; idle providers without reset allowances
+ * collapse into a tick.
  */
 export function buildProviderCards(reports: UsageReport[], nowMs: number): ProviderCard[] {
 	const grouped = new Map<string, UsageReport[]>();
@@ -144,7 +147,11 @@ export function buildProviderCards(reports: UsageReport[], nowMs: number): Provi
 	const cards: ProviderCard[] = [];
 	for (const [provider, providerReports] of grouped) {
 		const buckets = new Map<string, { label: string; limits: UsageLimit[] }>();
+		let savedResets: number | undefined;
 		for (const report of providerReports) {
+			if (report.resetCredits) {
+				savedResets = (savedResets ?? 0) + report.resetCredits.availableCount;
+			}
 			for (const limit of report.limits) {
 				const label = formatLimitTitle(limit);
 				const key = `${label}|${limit.window?.id ?? limit.scope.windowId ?? "default"}`;
@@ -187,8 +194,11 @@ export function buildProviderCards(reports: UsageReport[], nowMs: number): Provi
 			name: formatProviderName(provider),
 			accounts: providerReports.length,
 			windows,
+			savedResets,
 			unlimited: windows.length === 0,
-			idle: windows.every(window => window.fraction !== undefined && window.fraction < IDLE_FRACTION),
+			idle:
+				savedResets === undefined &&
+				windows.every(window => window.fraction !== undefined && window.fraction < IDLE_FRACTION),
 		});
 	}
 
@@ -296,8 +306,9 @@ export interface UsageDashboardOptions {
 	/**
 	 * Stream daily activity into the heatmap: push cached DB rows immediately,
 	 * then push again after an incremental session sync. Resolves when the sync
-	 * settles; rejection renders as a dim unavailable note. `signal` aborts when
-	 * the dashboard closes so an in-flight sync can stop early.
+	 * settles; rejection preserves cached activity with a warning, or shows an
+	 * unavailable note if no data loaded. `signal` aborts when the dashboard
+	 * closes so an in-flight sync can stop early.
 	 */
 	loadActivity: (push: (points: DailyActivityPoint[]) => void, signal: AbortSignal) => Promise<void>;
 	requestRender: () => void;
@@ -336,8 +347,9 @@ export class UsageDashboardComponent implements Component {
 				this.#activity = points;
 				this.#options.requestRender();
 			}, this.#closeController.signal);
-		} catch {
+		} catch (error) {
 			this.#activityError = true;
+			logger.warn("Usage history load failed", { error: String(error) });
 		} finally {
 			this.#syncing = false;
 			if (!this.#closed) this.#options.requestRender();
@@ -385,6 +397,14 @@ export class UsageDashboardComponent implements Component {
 		const titlePad = Math.max(0, width - 2 - visibleWidth(title) - visibleWidth(accountsText));
 		lines.push(`${this.#statusIcon(cardStatus)} ${title}${" ".repeat(titlePad)}${accountsText}`);
 
+		if (card.savedResets !== undefined) {
+			lines.push(
+				truncateToWidth(
+					`  ${theme.fg("accent", `${card.savedResets} saved reset${card.savedResets === 1 ? "" : "s"}`)}`,
+					width,
+				),
+			);
+		}
 		if (card.unlimited) {
 			lines.push(`  ${theme.fg("dim", "no limits")}`);
 			return lines;
@@ -444,8 +464,8 @@ export class UsageDashboardComponent implements Component {
 			}
 			if (start + columns < active.length) lines.push("");
 		}
-		// Untouched providers collapse into a single tick line: their windows
-		// are all at 100% free (or have no limits), so per-window bars are noise.
+		// Untouched providers without reset allowances collapse into one tick:
+		// all windows are at 100% free (or absent), so per-window bars are noise.
 		if (idle.length > 0) {
 			if (active.length > 0) lines.push("");
 			const names = idle.map(card => card.name).join(" · ");
@@ -482,11 +502,14 @@ export class UsageDashboardComponent implements Component {
 
 	#renderHeatmap(innerWidth: number): string[] {
 		const summary: string[] = [];
-		if (this.#activityError) {
-			return [theme.fg("dim", "Usage history unavailable (stats database could not be read).")];
-		}
 		const points = this.#activity;
-		if (!points) return [theme.fg("dim", "Loading usage history…")];
+		if (!points) {
+			return [theme.fg("dim", this.#activityError ? "Usage history unavailable." : "Loading usage history…")];
+		}
+		if (this.#activityError) {
+			summary.push(theme.fg("dim", "Usage history refresh failed; showing cached activity."));
+			summary.push("");
+		}
 
 		const labelWidth = 2;
 		const weeks = Math.max(4, Math.min(53, Math.floor((innerWidth - labelWidth) / 2)));

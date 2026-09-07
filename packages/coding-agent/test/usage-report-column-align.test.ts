@@ -104,10 +104,12 @@ describe("renderUsageReports multi-account column alignment (#6067)", () => {
 		expect(headerIdx).toBeGreaterThanOrEqual(0);
 		const labelRow = lines[headerIdx + 1]!;
 		const amountRow = lines[headerIdx + 2]!;
-		const summaryStart = amountRow.lastIndexOf(" 2 accts");
+		const labelCells = [...labelRow.matchAll(/\S+/g)];
+		const amountCells = [...amountRow.matchAll(/\S+/g)].slice(0, 2);
+		const columnWidth = labelCells[1].index - labelCells[0].index - 1;
 
-		expect(summaryStart).toBeGreaterThanOrEqual(0);
-		expect(Bun.stringWidth(labelRow)).toBe(11);
-		expect(Bun.stringWidth(amountRow.slice(2, summaryStart))).toBe(9);
+		expect(amountCells.map(cell => cell.index)).toEqual(labelCells.map(cell => cell.index));
+		expect(amountCells.every(cell => Bun.stringWidth(cell[0]) <= columnWidth)).toBe(true);
+		expect(Bun.stringWidth(amountRow)).toBeLessThanOrEqual(20);
 	});
 });

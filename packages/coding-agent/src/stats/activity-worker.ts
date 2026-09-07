@@ -5,7 +5,7 @@
  * `/usage` heatmap load so the synchronous SQLite work never runs on the TUI
  * thread; the parent SIGKILLs the child once `done` arrives.
  */
-import { syncAllSessions } from "@oh-my-pi/omp-stats/aggregator";
+import { smokeTestSyncWorker, syncAllSessions } from "@oh-my-pi/omp-stats/aggregator";
 import { getDailyActivity } from "@oh-my-pi/omp-stats/db";
 import type { StatsActivityTransport, StatsActivityWorkerInbound } from "./activity-protocol";
 
@@ -33,7 +33,17 @@ export function startStatsActivityWorker(transport: StatsActivityTransport): voi
 	transport.onMessage(message => {
 		switch (message.type) {
 			case "ping":
-				transport.send({ type: "pong", id: message.id });
+				// Probe the nested parser too: a cached DB read does not exercise
+				// the worker-host path needed to refresh activity in compiled builds.
+				void smokeTestSyncWorker().then(
+					() => transport.send({ type: "pong", id: message.id }),
+					error =>
+						transport.send({
+							type: "error",
+							id: message.id,
+							error: error instanceof Error ? error.message : String(error),
+						}),
+				);
 				return;
 			case "load":
 				void handleLoad(transport, message);
