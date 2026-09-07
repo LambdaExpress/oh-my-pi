@@ -320,7 +320,7 @@ export interface AgentSessionConfig {
 	agentId?: string;
 	/** Whether this is a top-level or subagent session. */
 	agentKind?: "main" | "sub";
-	/** Immutable top-level session scope inherited by subagents. */
+	/** Runtime scope inherited by subagents, independent of the persisted session ID. */
 	agentScopeId?: string;
 	/** Synchronously fence a retiring scope before asynchronous cleanup begins. */
 	fenceAgentScope?: (scopeId: string) => void;

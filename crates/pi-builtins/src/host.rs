@@ -42,6 +42,7 @@ use std::{
 };
 
 use parking_lot::Mutex;
+use uucore::fs::FileInformation;
 
 use brush_core::{
 	Error, ExecutionContext, ExecutionResult, ShellExtensions,
@@ -214,6 +215,11 @@ impl openfiles::Stream for SigpipeGuard {
 	fn try_borrow_as_fd(&self) -> Result<std::os::fd::BorrowedFd<'_>, Error> {
 		self.inner.try_borrow_as_fd()
 	}
+
+	#[cfg(windows)]
+	fn try_borrow_as_handle(&self) -> Result<std::os::windows::io::BorrowedHandle<'_>, Error> {
+		self.inner.try_borrow_as_handle()
+	}
 }
 
 struct CancelOnDrop(Arc<AtomicBool>);
@@ -322,6 +328,16 @@ impl Host {
 	/// Duplicates stdout, for utilities that hand a writer to a helper thread.
 	pub fn stdout_clone(&self) -> OpenFile {
 		self.stdout.clone()
+	}
+
+	/// Identifies redirected output without inspecting the host process's stdout.
+	pub fn stdout_file_identity(&self) -> io::Result<Option<FileInformation>> {
+		regular_file_identity(&self.stdout)
+	}
+
+	/// Identifies redirected input; pipes and memory streams have no file identity.
+	pub fn stdin_file_identity(&self) -> io::Result<Option<FileInformation>> {
+		regular_file_identity(&self.stdin.file)
 	}
 
 	/// Duplicates stderr as a raw [`OpenFile`], for utilities that hand a
@@ -529,6 +545,39 @@ pub(crate) fn is_regular_file(file: &OpenFile) -> bool {
 			_ => false,
 		}
 	}
+}
+
+/// Identifies a regular file through its live descriptor, including stream guards.
+/// The caller must keep the original stream open while comparing the identity.
+fn regular_file_identity(file: &OpenFile) -> io::Result<Option<FileInformation>> {
+	#[cfg(unix)]
+	let native = match file.try_borrow_as_fd() {
+		Ok(fd) => std::fs::File::from(fd.try_clone_to_owned()?),
+		Err(_) => return Ok(None),
+	};
+	#[cfg(windows)]
+	let native = match file.try_borrow_as_handle() {
+		Ok(handle) => {
+			use std::os::windows::io::AsRawHandle;
+			use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_DISK, GetFileType};
+
+			// SAFETY: the borrowed handle remains owned by the live OpenFile.
+			if unsafe { GetFileType(handle.as_raw_handle().cast()) } != FILE_TYPE_DISK {
+				return Ok(None);
+			}
+			std::fs::File::from(handle.try_clone_to_owned()?)
+		},
+		Err(_) => return Ok(None),
+	};
+	#[cfg(not(any(unix, windows)))]
+	let native = match file {
+		OpenFile::File(file) => file.try_clone()?,
+		_ => return Ok(None),
+	};
+	if !native.metadata()?.is_file() {
+		return Ok(None);
+	}
+	FileInformation::from_file(&native).map(Some)
 }
 
 /// Whether two open files refer to the same non-seekable destination — the

@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed OpenAI native compaction being attempted on proxies and other non-official routes, including explicitly enabled V1 and V2 endpoints.
 - Fixed per-message immediate steering being suppressed by the agent-wide wait mode, including event-driven interruption of long-running interruptible tools.
 - Fixed active tool batches retaining a stale steering interrupt mode after `Agent.setInterruptMode()` changed it.
 ## [18.1.10] - 2026-09-04

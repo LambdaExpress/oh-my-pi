@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,12 +6,14 @@ import { type } from "@oh-my-pi/omptype";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { IrcBus } from "@oh-my-pi/pi-coding-agent/irc/bus";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import { createAgentSession, type ExtensionFactory } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { removeSyncWithRetries, Snowflake } from "@oh-my-pi/pi-utils";
+import * as advisorModule from "../src/advisor";
 
 describe("AsyncJobManager singleton across concurrent top-level sessions", () => {
 	const tempDirs: string[] = [];
@@ -280,6 +282,143 @@ describe("AsyncJobManager singleton across concurrent top-level sessions", () =>
 			expect(manager.getJob(descendantJobId)).toBeUndefined();
 			expect(primary.yieldQueue.has()).toBe(false);
 			await descendantAborted.promise;
+		} finally {
+			await primary.dispose();
+		}
+	}, 60000);
+
+	it("resumes a retired conversation without reopening its old agent and job scope", async () => {
+		const primary = await spawnTopLevelSession();
+		const manager = AsyncJobManager.instance();
+		if (!manager) throw new Error("Expected primary session to own the async job manager");
+		const registry = AgentRegistry.global();
+		const bus = IrcBus.global();
+		const oldScopeId = primary.getAgentScopeId();
+		const oldSessionId = primary.sessionManager.getSessionId();
+		const oldFile = primary.sessionFile!;
+		const message = { role: "user" as const, content: "Remember this conversation", timestamp: Date.now() };
+		primary.sessionManager.appendMessage(message);
+
+		try {
+			await primary.sessionManager.ensureOnDisk();
+			expect(await primary.newSession()).toBe(true);
+			const newFile = primary.sessionFile!;
+			expect(await primary.switchSession(oldFile)).toBe(true);
+			expect(primary.sessionManager.getSessionId()).toBe(oldSessionId);
+			expect(primary.messages).toContainEqual(message);
+
+			const resumedScopeId = primary.getAgentScopeId();
+			expect(resumedScopeId).not.toBe(oldScopeId);
+			expect(() =>
+				registry.register({
+					id: "LateResumePeer",
+					displayName: "Late resume peer",
+					kind: "sub",
+					scopeId: oldScopeId,
+					session: null,
+				}),
+			).toThrow(/retired scope/);
+			expect(() =>
+				manager.register("task", "late old work", async () => "stale", {
+					ownerId: "Main",
+					scopeId: oldScopeId,
+				}),
+			).toThrow(/scope is retired/);
+			expect(
+				(await bus.send({ from: "LateResumePeer", to: "Main", body: "stale", scopeId: oldScopeId })).outcome,
+			).toBe("failed");
+
+			// Reloads and a round trip must preserve the resumed runtime, so its
+			// still-live peers remain able to reach Main.
+			await primary.reload();
+			expect(await primary.switchSession(newFile)).toBe(true);
+			expect(await primary.switchSession(oldFile)).toBe(true);
+			const reply = bus.wait("Main", { from: "ResumePeer" }, 1_000, undefined, { scopeId: resumedScopeId });
+			expect(
+				(await bus.send({ from: "ResumePeer", to: "Main", body: "resumed reply", scopeId: resumedScopeId }))
+					.outcome,
+			).toBe("injected");
+			expect((await reply)?.body).toBe("resumed reply");
+
+			const jobId = manager.register("task", "resumed work", async () => "resumed result", {
+				ownerId: "Main",
+				scopeId: primary.getAgentScopeId(),
+			});
+			await manager.waitForAll();
+			expect(manager.getJob(jobId)?.resultText).toBe("resumed result");
+
+			// Retiring a resumed generation must not prevent another resume, or
+			// allow delayed callbacks from that generation to mutate Main.
+			expect(await primary.newSession()).toBe(true);
+			expect(await primary.switchSession(oldFile)).toBe(true);
+			registry.updateScope("Main", oldScopeId, resumedScopeId);
+			expect(primary.messages).toContainEqual(message);
+			const nextScopeId = primary.getAgentScopeId();
+			const nextReply = bus.wait("Main", { from: "ResumePeer" }, 1_000, undefined, { scopeId: nextScopeId });
+			expect(
+				(await bus.send({ from: "ResumePeer", to: "Main", body: "second resume", scopeId: nextScopeId })).outcome,
+			).toBe("injected");
+			expect((await nextReply)?.body).toBe("second resume");
+			expect(() =>
+				manager.register("task", "late resumed work", async () => "stale", {
+					ownerId: "Main",
+					scopeId: resumedScopeId,
+				}),
+			).toThrow(/scope is retired/);
+		} finally {
+			await primary.dispose();
+		}
+	}, 60000);
+
+	it("keeps both the source and fork resumable after retiring the fork's runtime", async () => {
+		const primary = await spawnTopLevelSession();
+		try {
+			const sourceMessage = { role: "user" as const, content: "Source conversation", timestamp: Date.now() };
+			primary.sessionManager.appendMessage(sourceMessage);
+			await primary.sessionManager.ensureOnDisk();
+			const sourceFile = primary.sessionFile!;
+			expect(await primary.fork()).toBe(true);
+			const forkFile = primary.sessionFile!;
+			const forkMessage = { role: "user" as const, content: "Fork-only conversation", timestamp: Date.now() };
+			primary.sessionManager.appendMessage(forkMessage);
+
+			expect(await primary.newSession()).toBe(true);
+			expect(await primary.switchSession(sourceFile)).toBe(true);
+			expect(primary.messages).toContainEqual(sourceMessage);
+			expect(primary.messages).not.toContainEqual(forkMessage);
+			expect(await primary.switchSession(forkFile)).toBe(true);
+			expect(primary.messages).toContainEqual(sourceMessage);
+			expect(primary.messages).toContainEqual(forkMessage);
+		} finally {
+			await primary.dispose();
+		}
+	}, 60000);
+
+	it("restores the active runtime scope when resume fails after rebinding Main", async () => {
+		const primary = await spawnTopLevelSession();
+		try {
+			await primary.sessionManager.ensureOnDisk();
+			const oldFile = primary.sessionFile!;
+			expect(await primary.newSession()).toBe(true);
+			const activeFile = primary.sessionFile;
+			const activeScopeId = primary.getAgentScopeId();
+			const message = { role: "user" as const, content: "Keep the current conversation", timestamp: Date.now() };
+			primary.sessionManager.appendMessage(message);
+			primary.agent.appendMessage(message);
+			using costRestore = spyOn(advisorModule, "loadAdvisorTranscriptCosts");
+			costRestore.mockRejectedValueOnce(new Error("advisor transcript unavailable"));
+
+			await expect(primary.switchSession(oldFile)).rejects.toThrow("advisor transcript unavailable");
+			expect(primary.sessionFile).toBe(activeFile);
+			expect(primary.messages).toContainEqual(message);
+			const bus = IrcBus.global();
+			const reply = bus.wait("Main", { from: "ActivePeer" }, 1_000, undefined, { scopeId: activeScopeId });
+			expect(
+				(await bus.send({ from: "ActivePeer", to: "Main", body: "still active", scopeId: activeScopeId })).outcome,
+			).toBe("injected");
+			expect((await reply)?.body).toBe("still active");
+			expect(primary.getAgentScopeId()).toBe(activeScopeId);
+			expect(await primary.switchSession(oldFile)).toBe(true);
 		} finally {
 			await primary.dispose();
 		}

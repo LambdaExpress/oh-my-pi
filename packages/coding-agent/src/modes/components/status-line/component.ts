@@ -1822,7 +1822,7 @@ export class StatusLineComponent implements Component {
 					percent: candidate.fraction * 100,
 					resetHours:
 						typeof candidate.resetsAt === "number"
-							? Math.max(0, Math.round((candidate.resetsAt - now) / 3_600_000))
+							? Math.max(0, (candidate.resetsAt - now) / 3_600_000)
 							: undefined,
 				};
 			}
@@ -1833,7 +1833,7 @@ export class StatusLineComponent implements Component {
 						percent: candidate.fraction * 100,
 						resetHours:
 							typeof candidate.resetsAt === "number"
-								? Math.max(0, Math.round((candidate.resetsAt - now) / 3_600_000))
+								? Math.max(0, (candidate.resetsAt - now) / 3_600_000)
 								: undefined,
 					};
 					monthlyPriority = priority;

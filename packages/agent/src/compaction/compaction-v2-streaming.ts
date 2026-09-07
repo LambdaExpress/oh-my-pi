@@ -23,6 +23,7 @@ import {
 	parseAzureDeploymentNameMap,
 	resolveOpenAIRequestSetup,
 } from "@oh-my-pi/pi-ai/providers/openai-shared";
+import { isOfficialCodexApiUrl, isOfficialOpenAIApiUrl } from "@oh-my-pi/pi-ai/stream";
 import { captureOpenAIHttpError } from "@oh-my-pi/pi-ai/utils/openai-http";
 import {
 	applyCodexResidencyHeader,
@@ -93,12 +94,24 @@ export interface CompactionV2Response {
 // Endpoint Resolution
 // ============================================================================
 
+/** Require both the active model route and any compact endpoint override to be first-party. */
+export function isOfficialOpenAiCompactionEndpoint(model: Model, endpoint?: string): boolean {
+	const isOfficialUrl =
+		model.provider === "openai"
+			? isOfficialOpenAIApiUrl
+			: model.provider === "openai-codex"
+				? isOfficialCodexApiUrl
+				: undefined;
+	return isOfficialUrl !== undefined && isOfficialUrl(model.baseUrl) && isOfficialUrl(endpoint);
+}
+
 /** Resolve the streaming Responses endpoint for a V2-capable model. */
 export function getCompactionV2Endpoint(model: Model): string | undefined {
 	if (model.remoteCompaction?.enabled === false) return undefined;
 	if (!isOpenAiV2CompatibleModel(model)) return undefined;
 
 	const configuredEndpoint = model.remoteCompaction?.v2Endpoint ?? model.remoteCompaction?.streamingEndpoint;
+	if (!isOfficialOpenAiCompactionEndpoint(model, configuredEndpoint)) return undefined;
 	if (configuredEndpoint && configuredEndpoint.length > 0) return configuredEndpoint;
 
 	const api = compactionV2Api(model);

@@ -96,7 +96,7 @@ export interface StructuredSubagentRequest {
 	identity?: StructuredSubagentIdentity;
 	index?: number;
 	parentToolCallId?: string;
-	/** Top-level Main session UUID shared across nested child sessions. */
+	/** Top-level runtime scope shared across nested child sessions. */
 	scopeId?: string;
 	/** IRC-visible peer ids inherited from the spawning branch and batch. */
 	ircPeerIds?: readonly string[];

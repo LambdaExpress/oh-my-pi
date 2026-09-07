@@ -304,7 +304,7 @@ export interface ToolSession {
 	getMnemopiSessionState?: () => MnemopiSessionState | undefined;
 	/** Agent identity used for IRC routing. Returns the registry id (e.g. "Main", "AuthLoader"). */
 	getAgentId?: () => string | null;
-	/** Top-level Main session UUID shared unchanged by this agent tree. */
+	/** Top-level runtime scope shared unchanged by this agent tree. */
 	getAgentScopeId?: () => string | null;
 	/** Current conversation branch's IRC-visible peer ids. Undefined falls back to session-file scoping. */
 	getIrcPeerIds?: () => ReadonlySet<string> | null;

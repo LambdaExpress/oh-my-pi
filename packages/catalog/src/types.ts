@@ -993,7 +993,7 @@ export type CompatOf<TApi extends Api> = TApi extends "openrouter"
 
 /** Provider-native compaction endpoint configuration for one model. */
 export interface RemoteCompactionConfig<TApi extends Api = Api> {
-	/** Enables provider-native compaction for providers not enabled by built-in policy. */
+	/** Controls provider-native compaction on eligible official OpenAI routes; cannot opt third-party routes in. */
 	enabled?: boolean;
 	/** Adapter family used by the configured compaction endpoint. */
 	api?: TApi;

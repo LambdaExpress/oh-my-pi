@@ -3810,8 +3810,8 @@ mod tests {
 	/// ripgrep's ignore/hidden/binary filters, and keeps `-h` as help.
 	#[tokio::test(flavor = "multi_thread")]
 	async fn rg_builtin_uses_ripgrep_defaults() {
-		let tmp = std::env::temp_dir().join(format!("pi-rg-defaults-{}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&tmp);
+		let dir = tempfile::tempdir().expect("temp dir");
+		let tmp = dir.path();
 		std::fs::create_dir_all(tmp.join("sub")).expect("sub dir");
 		std::fs::create_dir_all(tmp.join(".git")).expect("git dir");
 		std::fs::write(tmp.join("data.txt"), "alpha\nneedle\n").expect("data");
@@ -3840,7 +3840,10 @@ mod tests {
 		assert_eq!(exit_code(&exec), 0, "rg recursive search should match");
 		let out = read("rg.txt");
 		assert!(out.contains("data.txt:needle"), "rg missed visible file: {out:?}");
-		assert!(out.contains("sub/nested.txt:needle"), "rg missed nested file: {out:?}");
+		assert!(
+			out.contains(&format!("sub{}nested.txt:needle", std::path::MAIN_SEPARATOR)),
+			"rg missed nested file: {out:?}"
+		);
 		assert!(!out.contains(".hidden.txt"), "rg searched hidden file by default: {out:?}");
 		assert!(!out.contains("ignored.log"), "rg ignored .gitignore by default: {out:?}");
 		assert!(!out.contains("binary.bin"), "rg printed binary file by default: {out:?}");
@@ -3867,12 +3870,181 @@ mod tests {
 			.await
 			.expect("rg help");
 		assert_eq!(exit_code(&help), 0, "rg -h should be help, not no-filename");
-		assert!(
-			read("help.txt").contains("ripgrep recursively searches"),
-			"help text should describe ripgrep"
-		);
+	}
 
-		let _ = std::fs::remove_dir_all(&tmp);
+	/// Recursive searches silently skip every name for stdout's file, including
+	/// hard links, in both the streaming walk and the reverse-sorted walk.
+	#[tokio::test(flavor = "multi_thread")]
+	async fn rg_builtin_recursive_search_skips_stdout_file_and_hard_links() {
+		let dir = tempfile::tempdir().expect("temp dir");
+		let root = std::fs::canonicalize(dir.path()).expect("canonical temp dir");
+		std::fs::write(root.join("z-data.txt"), "needle source\n").expect("source");
+		std::fs::write(root.join("output.txt"), "needle seed\n").expect("output seed");
+		std::fs::hard_link(root.join("output.txt"), root.join("alias.txt")).expect("hard link");
+
+		let config = ShellConfig { session_env: None, snapshot_path: None, minimizer: None };
+		let mut session = create_session(&config).await.expect("create_session");
+		session
+			.shell
+			.set_working_dir(root.to_str().expect("utf8 temp path"))
+			.expect("cwd");
+		let mut params = session.shell.default_exec_params();
+		params.set_fd(OpenFiles::STDIN_FD, null_file().expect("null stdin"));
+		params.set_fd(OpenFiles::STDOUT_FD, null_file().expect("null stdout"));
+		params.set_fd(OpenFiles::STDERR_FD, null_file().expect("null stderr"));
+		let si = SourceInfo::from("pi-natives:test");
+
+		// A matching append seed exposes self-reads regardless of traversal order
+		// or buffering. One match per file bounds output even without the guard.
+		for command in [
+			"rg --line-buffered -m1 needle >> output.txt 2> error.txt",
+			"rg --sortr path --line-buffered -m1 needle . >> output.txt 2> error.txt",
+		] {
+			std::fs::write(root.join("output.txt"), "needle seed\n").expect("reset output");
+			let exec = session
+				.shell
+				.run_string(command, &si, &params)
+				.await
+				.expect("rg recursive");
+			let err = std::fs::read_to_string(root.join("error.txt")).expect("stderr");
+			assert_eq!(exit_code(&exec), 0, "{command}: {err}");
+			assert_eq!(err, "", "{command}");
+			assert_eq!(
+				std::fs::read_to_string(root.join("output.txt")).expect("output"),
+				"needle seed\nz-data.txt:needle source\n",
+				"{command}"
+			);
+		}
+	}
+
+	/// Explicit operands must reject stdout's file by identity, including a
+	/// different path spelling, a hard link, and redirected stdin.
+	#[tokio::test(flavor = "multi_thread")]
+	async fn rg_builtin_rejects_stdout_as_explicit_input() {
+		let dir = tempfile::tempdir().expect("temp dir");
+		let root = std::fs::canonicalize(dir.path()).expect("canonical temp dir");
+		std::fs::write(root.join("output.txt"), "needle seed\n").expect("output seed");
+		std::fs::hard_link(root.join("output.txt"), root.join("alias.txt")).expect("hard link");
+		std::fs::write(root.join("other.txt"), "needle seed\n").expect("other file");
+
+		let config = ShellConfig { session_env: None, snapshot_path: None, minimizer: None };
+		let mut session = create_session(&config).await.expect("create_session");
+		session
+			.shell
+			.set_working_dir(root.to_str().expect("utf8 temp path"))
+			.expect("cwd");
+		let mut params = session.shell.default_exec_params();
+		params.set_fd(OpenFiles::STDIN_FD, null_file().expect("null stdin"));
+		params.set_fd(OpenFiles::STDOUT_FD, null_file().expect("null stdout"));
+		params.set_fd(OpenFiles::STDERR_FD, null_file().expect("null stderr"));
+		let si = SourceInfo::from("pi-natives:test");
+
+		// Append keeps the matching input intact; -m1 bounds a missing guard.
+		for input in ["output.txt", "./output.txt", "alias.txt", "- < output.txt"] {
+			std::fs::write(root.join("output.txt"), "needle seed\n").expect("reset output");
+			let command = format!("rg --line-buffered -m1 needle {input} >> output.txt 2> error.txt");
+			let exec = session
+				.shell
+				.run_string(&command, &si, &params)
+				.await
+				.expect("rg same-file input");
+			let err = std::fs::read_to_string(root.join("error.txt")).expect("stderr");
+			assert_eq!(exit_code(&exec), 2, "{command}: {err}");
+			assert!(err.contains("input is also the output"), "{command}: {err}");
+			assert_eq!(
+				std::fs::read_to_string(root.join("output.txt")).expect("output"),
+				"needle seed\n",
+				"{command} must not append any matches"
+			);
+		}
+
+		// Equal contents do not make separate files the same input/output.
+		let exec = session
+			.shell
+			.run_string(
+				"rg --line-buffered -m1 needle other.txt >> output.txt 2> error.txt",
+				&si,
+				&params,
+			)
+			.await
+			.expect("rg distinct file");
+		assert_eq!(exit_code(&exec), 0);
+		assert_eq!(std::fs::read_to_string(root.join("error.txt")).expect("stderr"), "");
+		assert_eq!(
+			std::fs::read_to_string(root.join("output.txt")).expect("output"),
+			"needle seed\nneedle seed\n"
+		);
+	}
+
+	/// Following a symlink must not reintroduce stdout as a recursive input;
+	/// naming that symlink explicitly must report the same-file error.
+	#[cfg(any(unix, windows))]
+	#[tokio::test(flavor = "multi_thread")]
+	async fn rg_builtin_protects_stdout_through_symlinks() {
+		let dir = tempfile::tempdir().expect("temp dir");
+		let root = std::fs::canonicalize(dir.path()).expect("canonical temp dir");
+		std::fs::write(root.join("z-data.txt"), "needle source\n").expect("source");
+		std::fs::write(root.join("output.txt"), "needle seed\n").expect("output seed");
+		#[cfg(unix)]
+		std::os::unix::fs::symlink("output.txt", root.join("link.txt")).expect("symlink");
+		#[cfg(windows)]
+		if let Err(err) = std::os::windows::fs::symlink_file("output.txt", root.join("link.txt")) {
+			// Windows may require Developer Mode or the symlink privilege.
+			if err.raw_os_error() == Some(1314) {
+				return;
+			}
+			panic!("create symlink: {err}");
+		}
+
+		let config = ShellConfig { session_env: None, snapshot_path: None, minimizer: None };
+		let mut session = create_session(&config).await.expect("create_session");
+		session
+			.shell
+			.set_working_dir(root.to_str().expect("utf8 temp path"))
+			.expect("cwd");
+		let mut params = session.shell.default_exec_params();
+		params.set_fd(OpenFiles::STDIN_FD, null_file().expect("null stdin"));
+		params.set_fd(OpenFiles::STDOUT_FD, null_file().expect("null stdout"));
+		params.set_fd(OpenFiles::STDERR_FD, null_file().expect("null stderr"));
+		let si = SourceInfo::from("pi-natives:test");
+
+		// The matching seed plus -m1 makes all three paths bounded pre-fix.
+		for (command, expected_code, expected_output) in [
+			(
+				"rg -L --line-buffered -m1 needle >> output.txt 2> error.txt",
+				0,
+				"needle seed\nz-data.txt:needle source\n",
+			),
+			(
+				"rg -L --sortr path --line-buffered -m1 needle . >> output.txt 2> error.txt",
+				0,
+				"needle seed\nz-data.txt:needle source\n",
+			),
+			(
+				"rg -L --line-buffered -m1 needle link.txt >> output.txt 2> error.txt",
+				2,
+				"needle seed\n",
+			),
+		] {
+			std::fs::write(root.join("output.txt"), "needle seed\n").expect("reset output");
+			let exec = session
+				.shell
+				.run_string(command, &si, &params)
+				.await
+				.expect("rg symlink");
+			let err = std::fs::read_to_string(root.join("error.txt")).expect("stderr");
+			assert_eq!(exit_code(&exec), expected_code, "{command}: {err}");
+			if expected_code == 0 {
+				assert_eq!(err, "", "{command}");
+			} else {
+				assert!(err.contains("input is also the output"), "{command}: {err}");
+			}
+			assert_eq!(
+				std::fs::read_to_string(root.join("output.txt")).expect("output"),
+				expected_output,
+				"{command}"
+			);
+		}
 	}
 
 	/// `fd` recurses from the shell working directory, respects hidden and
@@ -3996,9 +4168,8 @@ mod tests {
 	/// (`-f -`) must not consume the implicit search path decision.
 	#[tokio::test(flavor = "multi_thread")]
 	async fn rg_builtin_defaults_to_cwd_unless_stdin_is_pipeline() {
-		let tmp = std::env::temp_dir().join(format!("pi-rg-stdin-{}", std::process::id()));
-		let _ = std::fs::remove_dir_all(&tmp);
-		std::fs::create_dir_all(&tmp).expect("temp dir");
+		let dir = tempfile::tempdir().expect("temp dir");
+		let tmp = dir.path();
 		std::fs::write(tmp.join("data.txt"), "from-cwd\nfrom-pattern\n").expect("data");
 		let tmp_str = tmp.to_str().expect("utf8");
 
@@ -4041,8 +4212,6 @@ mod tests {
 		let files = read("files.txt");
 		assert!(files.contains("data.txt"), "--files should list cwd files: {files:?}");
 		assert!(!files.contains("not-a-path"), "--files must not read piped stdin: {files:?}");
-
-		let _ = std::fs::remove_dir_all(&tmp);
 	}
 
 	/// `grep -q` must suppress all stdout and drive the exit status (0 on match,

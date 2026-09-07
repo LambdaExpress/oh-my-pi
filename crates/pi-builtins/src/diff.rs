@@ -1168,10 +1168,10 @@ mod tests {
 	fn missing_operand_file_is_trouble() {
 		let dir = tempfile::tempdir().unwrap();
 		fs::write(dir.path().join("a.txt"), "x\n").unwrap();
-		assert_eq!(
-			run_in(dir.path(), "", &["a.txt", "nope.txt"]),
-			(2, String::new(), "diff: nope.txt: No such file or directory\n".to_string())
-		);
+		let (code, stdout, stderr) = run_in(dir.path(), "", &["a.txt", "nope.txt"]);
+		assert_eq!((code, stdout.as_str()), (2, ""));
+		assert!(stderr.starts_with("diff: nope.txt: "), "stderr: {stderr}");
+		assert_eq!(stderr.lines().count(), 1, "stderr: {stderr}");
 	}
 
 	#[test]
@@ -1217,10 +1217,12 @@ mod tests {
 		fs::write(b.join("common.txt"), "same\n").unwrap();
 		fs::write(a.join("sub/inner.txt"), "old\n").unwrap();
 		fs::write(b.join("sub/inner.txt"), "new\n").unwrap();
-		assert_eq!(
-			run_in(dir.path(), "", &["a", "b"]),
-			(0, "Common subdirectories: a/sub and b/sub\n".to_string(), String::new())
-		);
+		let (code, stdout, stderr) = run_in(dir.path(), "", &["a", "b"]);
+		assert_eq!((code, stderr.as_str()), (0, ""));
+		let subdirectories = stdout.trim_end().strip_prefix("Common subdirectories: ").unwrap();
+		let (left, right) = subdirectories.split_once(" and ").unwrap();
+		assert_eq!(Path::new(left), Path::new("a/sub"));
+		assert_eq!(Path::new(right), Path::new("b/sub"));
 	}
 
 	#[test]
@@ -1240,10 +1242,12 @@ mod tests {
 		assert_eq!(stderr, "");
 		assert!(stdout.contains("Only in a: only.txt\n"), "got: {stdout}");
 		assert!(stdout.contains("Only in b: other.txt\n"), "got: {stdout}");
-		assert!(
-			stdout.contains("diff -r a/sub/inner.txt b/sub/inner.txt\n1c1\n< old\n---\n> new\n"),
-			"got: {stdout}"
-		);
+		let (_, comparison) = stdout.split_once("diff -r ").unwrap();
+		let (paths, hunk) = comparison.split_once('\n').unwrap();
+		let (left, right) = paths.split_once(' ').unwrap();
+		assert_eq!(Path::new(left), Path::new("a/sub/inner.txt"));
+		assert_eq!(Path::new(right), Path::new("b/sub/inner.txt"));
+		assert_eq!(hunk, "1c1\n< old\n---\n> new\n");
 		assert!(!stdout.contains("common.txt"), "got: {stdout}");
 	}
 
@@ -1263,7 +1267,12 @@ mod tests {
 		let (code, stdout, stderr) =
 			run_in(dir.path(), "", &["-r", "-x", "*.log", "-x", ".git", "a", "b"]);
 		assert_eq!((code, stderr.as_str()), (1, ""));
-		assert!(stdout.contains("diff -r a/keep.txt b/keep.txt\n1c1\n< old\n---\n> new\n"), "got: {stdout}");
+		let comparison = stdout.strip_prefix("diff -r ").unwrap();
+		let (paths, hunk) = comparison.split_once('\n').unwrap();
+		let (left, right) = paths.split_once(' ').unwrap();
+		assert_eq!(Path::new(left), Path::new("a/keep.txt"));
+		assert_eq!(Path::new(right), Path::new("b/keep.txt"));
+		assert_eq!(hunk, "1c1\n< old\n---\n> new\n");
 		assert!(!stdout.contains(".git"), "got: {stdout}");
 		assert!(!stdout.contains(".log"), "got: {stdout}");
 	}

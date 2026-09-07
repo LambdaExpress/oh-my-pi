@@ -22,6 +22,12 @@ pub trait Stream: std::io::Read + std::io::Write + Send + Sync {
 	/// is not supported or if it fails.
 	#[cfg(unix)]
 	fn try_borrow_as_fd(&self) -> Result<std::os::fd::BorrowedFd<'_>, error::Error>;
+
+	/// Borrows the underlying Windows handle, when this stream wraps one.
+	#[cfg(windows)]
+	fn try_borrow_as_handle(&self) -> Result<std::os::windows::io::BorrowedHandle<'_>, error::Error> {
+		Err(error::ErrorKind::CannotConvertToNativeFd.into())
+	}
 }
 
 /// Represents a file open in a shell context.
@@ -162,6 +168,26 @@ impl OpenFile {
 			Self::PipeReader(r) => Ok(r.as_fd()),
 			Self::PipeWriter(w) => Ok(w.as_fd()),
 			Self::Stream(s) => s.try_borrow_as_fd(),
+		}
+	}
+
+	/// Borrows the open file as a Windows handle.
+	///
+	/// # Errors
+	///
+	/// Returns an error when a custom stream has no underlying handle.
+	#[cfg(windows)]
+	pub fn try_borrow_as_handle(&self) -> Result<std::os::windows::io::BorrowedHandle<'_>, error::Error> {
+		use std::os::windows::io::AsHandle as _;
+
+		match self {
+			Self::Stdin(f) => Ok(f.as_handle()),
+			Self::Stdout(f) => Ok(f.as_handle()),
+			Self::Stderr(f) => Ok(f.as_handle()),
+			Self::File(f) => Ok(f.as_handle()),
+			Self::PipeReader(r) => Ok(r.as_handle()),
+			Self::PipeWriter(w) => Ok(w.as_handle()),
+			Self::Stream(s) => s.try_borrow_as_handle(),
 		}
 	}
 

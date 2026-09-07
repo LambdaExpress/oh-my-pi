@@ -146,6 +146,13 @@ Must define at least one of:
 It supports `enabled`, `api`, `endpoint`, `model`, `v2StreamingEnabled`,
 `v2Endpoint`, and `streamingEndpoint`.
 
+Native compaction is restricted to official OpenAI and OpenAI Codex routes.
+Both the model's base URL and any compaction endpoint override must be official.
+Setting `enabled: true` does not enable native compaction for proxies, Azure,
+or custom providers; those routes use the next configured compaction method.
+Explicit generic summarizers configured through `compaction.remoteEndpoint`
+are unaffected.
+
 ### Model value checks
 
 - `id` required

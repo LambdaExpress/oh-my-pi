@@ -129,7 +129,7 @@ function isLeakedThinkingHealExempt(model: Model<Api>): boolean {
 }
 
 /** Strict official-OpenAI endpoint check; missing baseUrl defaults to `api.openai.com`. */
-function isOfficialOpenAIApiUrl(baseUrl: string | undefined): boolean {
+export function isOfficialOpenAIApiUrl(baseUrl: string | undefined): boolean {
 	if (!baseUrl) return true;
 	try {
 		return new URL(baseUrl).hostname === "api.openai.com";

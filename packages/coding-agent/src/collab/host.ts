@@ -651,11 +651,8 @@ export class CollabHost {
 				.filter((ref): ref is AgentRef & { kind: "main" | "sub" } => ref.kind !== "advisor")
 				// Multi-session core mode registers every session's agents in the same
 				// process-wide AgentRegistry; each CollabHost must only mirror its own
-				// session's tree. Scope key: AgentRef.scopeId is set to
-				// `options.agentScopeId ?? sessionManager.getSessionId()` at registration
-				// (sdk.ts), AgentSession.getAgentScopeId() returns that same value, and
-				// subagents inherit it via executor's agentScopeId — so equality with the
-				// host session's scope id selects exactly this session's agents.
+				// session's tree. Subagents inherit the host's runtime scope, which is
+				// independent of its persisted session ID and renewed after retirement.
 				.filter(ref => ref.scopeId === this.#ctx.session.getAgentScopeId())
 				.map(ref => ({
 					id: ref.id,

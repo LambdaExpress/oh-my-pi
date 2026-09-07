@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed resuming previous sessions after `/new` without restarting OMP.
+- Fixed weekly and monthly usage reset countdowns to show minutes near reset instead of `0h`.
 - Fixed PowerShell memory URLs resolving against another session after the calling session exits.
 
 ### Changed

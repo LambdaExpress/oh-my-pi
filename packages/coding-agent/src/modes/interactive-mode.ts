@@ -6051,7 +6051,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	resetObserverRegistry(): void {
-		this.#observerRegistry.resetSessions(this.sessionManager.getSessionId());
+		this.#observerRegistry.resetSessions(this.session.getAgentScopeId());
 		this.#observerRegistry.setMainSession(this.sessionManager.getSessionFile() ?? undefined);
 	}
 

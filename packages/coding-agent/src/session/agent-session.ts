@@ -775,6 +775,8 @@ export class AgentSession {
 	#agentId: string | undefined;
 	#agentKind: "main" | "sub" = "main";
 	#agentScopeId: string;
+	/** Live runtime scopes by persisted session ID; retirement removes the mapping, never the fence. */
+	readonly #agentScopes = new Map<string, string>();
 	#fenceAgentScope: ((scopeId: string) => void) | undefined;
 	#releaseAgentScope: ((scopeId: string) => Promise<void>) | undefined;
 	#activateAgentScope: ((scopeId: string, previousScopeId: string) => void) | undefined;
@@ -1712,7 +1714,8 @@ export class AgentSession {
 		this.#loopGuards = new LoopGuards(streamGuardsHost);
 		this.#agentId = config.agentId;
 		this.#agentKind = config.agentKind ?? "main";
-		this.#agentScopeId = config.agentScopeId ?? this.sessionManager.getSessionId();
+		this.#agentScopeId = config.agentScopeId ?? Bun.randomUUIDv7();
+		this.#agentScopes.set(this.sessionManager.getSessionId(), this.#agentScopeId);
 		this.#fenceAgentScope = config.fenceAgentScope;
 		this.#releaseAgentScope = config.releaseAgentScope;
 		this.#activateAgentScope = config.activateAgentScope;
@@ -5763,7 +5766,7 @@ export class AgentSession {
 		return this.#activeProviderSessionId();
 	}
 
-	/** Top-level session scope shared by this session and every descendant agent. */
+	/** Runtime scope shared by this session and its descendants, independent of the persisted session ID. */
 	getAgentScopeId(): string {
 		return this.#agentScopeId;
 	}
@@ -5776,10 +5779,12 @@ export class AgentSession {
 
 	#activateCurrentAgentScope(previousScopeId: string): void {
 		if (this.#agentKind !== "main") return;
-		const scopeId = this.sessionManager.getSessionId();
+		const sessionId = this.sessionManager.getSessionId();
+		const scopeId = this.#agentScopes.get(sessionId) ?? Bun.randomUUIDv7();
+		this.#activateAgentScope?.(scopeId, previousScopeId);
+		this.#agentScopes.set(sessionId, scopeId);
 		this.#agentScopeId = scopeId;
 		this.#bindAsyncJobChangesForCurrentScope();
-		this.#activateAgentScope?.(scopeId, previousScopeId);
 		for (const listener of this.#sessionScopeListeners) {
 			try {
 				listener(scopeId);
@@ -8272,6 +8277,7 @@ export class AgentSession {
 		if (this.#agentKind === "main") {
 			this.#irc.retireScope(previousScopeId);
 			this.#fenceAgentScope?.(previousScopeId);
+			this.#agentScopes.delete(this.sessionManager.getSessionId());
 			await this.#asyncJobManager?.retireScope(previousScopeId);
 			// The session-owned view (getSessionJobs) also covers unscoped jobs
 			// of this agent; retire those rows with the scoped half so the
@@ -8452,6 +8458,11 @@ export class AgentSession {
 			if (!forkResult) {
 				this.#bash.finishSessionTransition(bashTransition, false);
 				return false;
+			}
+			if (this.#agentKind === "main") {
+				// Fork keeps the live agent tree but transfers its ownership to the copy.
+				this.#agentScopes.delete(previousSessionId);
+				this.#agentScopes.set(this.sessionManager.getSessionId(), this.#agentScopeId);
 			}
 			this.#bash.markSessionTransition(bashTransition);
 			this.#bash.finishSessionTransition(bashTransition, true);
@@ -9444,6 +9455,7 @@ export class AgentSession {
 		},
 	): Promise<boolean> {
 		const previousSessionFile = this.sessionManager.getSessionFile();
+		const previousScopeId = this.#agentScopeId;
 		const switchingToDifferentSession = previousSessionFile
 			? path.resolve(previousSessionFile) !== path.resolve(sessionPath)
 			: true;
@@ -9673,7 +9685,7 @@ export class AgentSession {
 			if (switchingToDifferentSession || didReloadConversationChange) {
 				this.#clearSessionScopedToolState();
 			}
-			this.#activateCurrentAgentScope(previousSessionState.sessionId);
+			this.#activateCurrentAgentScope(previousScopeId);
 			this.#reconnectToAgent();
 			try {
 				await this.#sessionSwitchReconciler?.();
@@ -9713,6 +9725,9 @@ export class AgentSession {
 			return true;
 		} catch (error) {
 			this.sessionManager.restoreState(previousSessionState);
+			if (this.#agentScopeId !== previousScopeId) {
+				this.#activateCurrentAgentScope(this.#agentScopeId);
+			}
 			this.#restoreSessionSshConfigs();
 			try {
 				await this.refreshSshTools({ activateIfAvailable: true });
