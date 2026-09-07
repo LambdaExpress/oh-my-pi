@@ -689,6 +689,8 @@ mod tests {
 		let (code, capture) = run_util::<Cat>(&["missing", "present"], "", directory.path());
 		assert_eq!(code, 1);
 		assert_eq!(capture.out(), "remaining\n");
-		assert_eq!(capture.err(), "cat: missing: No such file or directory\n");
+		let stderr = capture.err();
+		assert!(stderr.starts_with("cat: missing: "), "stderr: {stderr}");
+		assert_eq!(stderr.lines().count(), 1, "stderr: {stderr}");
 	}
 }

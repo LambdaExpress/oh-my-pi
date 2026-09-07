@@ -626,11 +626,10 @@ function formatCompactUsageWindowLabel(
 	if (value === undefined) return fallback;
 	const unitMs = unit === "m" ? 60_000 : 3_600_000;
 	const elapsed = fetchedAt > 0 ? Math.max(0, Date.now() - fetchedAt) / unitMs : 0;
-	const remaining = Math.max(0, Math.round(value - elapsed));
-	if (unit === "m") {
-		return remaining < 60 ? `${remaining}m` : `${Math.round(remaining / 60)}h`;
-	}
-	return remaining < 24 ? `${remaining}h` : `${Math.round(remaining / 24)}d`;
+	const minutes = Math.max(0, Math.round((value - elapsed) * (unit === "m" ? 1 : 60)));
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.round(minutes / 60);
+	return unit === "m" || hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`;
 }
 
 function renderCompactUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
@@ -891,7 +890,10 @@ function formatUsageReset(value: number, unit: "m" | "h"): string {
 		const mins = value % 60;
 		return mins > 0 ? `${hours}h ${mins}m` : `${hours}h`;
 	}
-	// total hours (7d window: max 168)
+	// Preserve minute precision near reset; longer windows retain compact hour/day formatting.
+	const minutes = Math.round(value * 60);
+	if (minutes < 60) return `${minutes}m`;
+	value = Math.round(value);
 	if (value < 24) return `${value}h`;
 	const days = Math.floor(value / 24);
 	const hours = value % 24;

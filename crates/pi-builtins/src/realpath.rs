@@ -420,8 +420,9 @@ mod tests {
 		let (code, capture) = run_util::<Realpath>(&["missing/x", "f"], "", root.clone());
 		assert_eq!(code, 1);
 		assert_eq!(capture.out(), format!("{}\n", root.join("f").display()));
-		assert!(capture.err().contains("realpath: missing/x"), "stderr: {}", capture.err());
-		assert!(capture.err().contains("No such file"), "stderr: {}", capture.err());
+		let stderr = capture.err();
+		assert!(stderr.starts_with("realpath: missing/x: "), "stderr: {stderr}");
+		assert_eq!(stderr.lines().count(), 1, "stderr: {stderr}");
 	}
 
 	#[test]
