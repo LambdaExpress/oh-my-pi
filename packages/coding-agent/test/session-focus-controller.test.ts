@@ -163,7 +163,7 @@ async function flushAsync(): Promise<void> {
 }
 
 describe("SessionFocusController", () => {
-	it("focusAgent retargets subscription, transcript anchors, and status line onto the worker session", async () => {
+	it("focusAgent preserves the latest completed worker result for inspection", async () => {
 		const h = makeHarness();
 		const worker = makeSessionStub();
 		registerSub(h.registry, "Worker", worker.session, MAIN_AGENT_ID);
@@ -178,7 +178,7 @@ describe("SessionFocusController", () => {
 		expect(h.counts.renderInitialMessages()).toEqual([
 			{ clearTerminalHistory: true, recoverCompletedRunAnchor: true },
 		]);
-		expect(h.counts.recoverCompletedRunCollapses()).toEqual([{ includeLatest: true }]);
+		expect(h.counts.recoverCompletedRunCollapses()).toEqual([{ includeLatest: false }]);
 		expect(h.reloadTodoSessions).toEqual([worker.session]);
 		expect(h.setSessionCalls).toEqual([[worker.session, "Worker"]]);
 

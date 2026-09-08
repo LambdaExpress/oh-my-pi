@@ -18,7 +18,6 @@ import {
 import { isAdvisorCard } from "../../session/queued-messages";
 import type { SessionContext } from "../../session/session-context";
 import { createIrcMessageCard } from "../../tools/hub";
-import { replaceTabs, TRUNCATE_LENGTHS, truncateToWidth } from "../../tools/render-utils";
 import { formatSshTransferSummary, isSshTransferToolDetails } from "../../tools/ssh-transfer";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import { ToolActivityContainer } from "../components/tool-activity";
@@ -712,20 +711,12 @@ export function normalizeToolArgs(args: unknown): Record<string, unknown> {
 	return args && typeof args === "object" && !Array.isArray(args) ? (args as Record<string, unknown>) : {};
 }
 
-export type AssistantErrorPresentation =
-	| { kind: "none" }
-	| { kind: "full"; text: string; isError: true }
-	| { kind: "compact-recovered"; text: string; isError: false };
-
-function sanitizeRecoveredRetryNote(note: string): string {
-	const normalized = replaceTabs(note).replace(/\s+/g, " ").trim();
-	return truncateToWidth(normalized || "retried", TRUNCATE_LENGTHS.CONTENT);
-}
+export type AssistantErrorPresentation = { kind: "none" } | { kind: "full"; text: string; isError: true };
 
 /**
  * Resolve the turn-ending assistant error presentation, if any.
- * Silent and user-interrupt aborts yield no label. Recovered retry attempts
- * render a compact note; attempts superseded by an exhausted budget are hidden
+ * Silent and user-interrupt aborts yield no label. Successful retries preserve
+ * the original error; attempts superseded by an exhausted budget are hidden
  * while the final terminal error keeps its full presentation.
  */
 export function resolveAssistantErrorPresentation(
@@ -733,13 +724,6 @@ export function resolveAssistantErrorPresentation(
 	retryAttempt = 0,
 ): AssistantErrorPresentation {
 	if (message.retryRecovery?.status === "superseded") return { kind: "none" };
-	if (message.retryRecovery?.status === "recovered") {
-		return {
-			kind: "compact-recovered",
-			text: sanitizeRecoveredRetryNote(message.retryRecovery.note),
-			isError: false,
-		};
-	}
 	if (message.stopReason === "aborted") {
 		if (!shouldRenderAbortReason(message)) return { kind: "none" };
 		return { kind: "full", text: resolveAbortLabel(message, retryAttempt), isError: true };

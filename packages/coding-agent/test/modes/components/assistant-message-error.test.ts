@@ -108,6 +108,33 @@ describe("AssistantMessageComponent error rendering", () => {
 		const lines = renderLines(erroredMessage("overloaded_error: Overloaded"));
 		expect(lines.some(line => line.includes("Error: overloaded_error: Overloaded"))).toBe(true);
 	});
+
+	it("retains original error details after successful retry and transcript rebuild", () => {
+		const message = erroredMessage("503 service unavailable: overloaded_error\nrequest_id:\tretry-request-42");
+		const retryRecovery: AssistantMessage["retryRecovery"] = {
+			kind: "auto-retry",
+			status: "recovered",
+			attempt: 1,
+			recoveredAt: "2026-09-08T00:00:00.000Z",
+			recovery: "plain",
+			note: "error; retried",
+		};
+		const component = new AssistantMessageComponent(message);
+		try {
+			component.setErrorPinned(true);
+			component.applyRetryRecovery(retryRecovery);
+			const live = Bun.stripANSI(component.render(RENDER_WIDTH).join("\n"));
+			const rebuilt = renderLines({ ...message, retryRecovery }).join("\n");
+			for (const rendered of [live, rebuilt]) {
+				expect(rendered).toContain("503 service unavailable: overloaded_error");
+				expect(rendered).toContain("retry-request-42");
+				expect(rendered).not.toContain("\t");
+				expect(rendered).not.toContain(retryRecovery.note);
+			}
+		} finally {
+			component.dispose();
+		}
+	});
 });
 
 describe("AssistantMessageComponent hidden thinking rendering", () => {

@@ -936,7 +936,6 @@ export class AssistantMessageComponent extends Container {
 		}
 		if (this.#toolImagesByCallId.size > 0) return false;
 		const errorPresentation = resolveAssistantErrorPresentation(message);
-		if (errorPresentation.kind === "compact-recovered") return false;
 		if (
 			errorPresentation.kind === "full" &&
 			!(message.stopReason === "error" && this.#errorPinned && !this.#errorExpanded)
@@ -1155,10 +1154,7 @@ export class AssistantMessageComponent extends Container {
 		this.#renderToolImages();
 		const errorPresentation = resolveAssistantErrorPresentation(message);
 		const hasToolCalls = message.content.some(c => c.type === "toolCall");
-		if (errorPresentation.kind === "compact-recovered") {
-			this.#contentContainer.addChild(new Spacer(1));
-			this.#contentContainer.addChild(new Text(theme.fg("dim", errorPresentation.text), 1, 0));
-		} else if (!hasToolCalls && errorPresentation.kind === "full") {
+		if (!hasToolCalls && errorPresentation.kind === "full") {
 			if (message.stopReason === "aborted") {
 				this.#contentContainer.addChild(new Spacer(1));
 				this.#contentContainer.addChild(new Text(theme.fg("error", errorPresentation.text), 1, 0));
