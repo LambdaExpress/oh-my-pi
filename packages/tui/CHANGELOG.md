@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- Fixed debug-server mouse click actions delivering concatenated SGR press and release reports that standard mouse handlers could not parse.
 - Fixed debug input requests losing their acknowledgement when an input handler stops the TUI.
 - Fixed terminal resize feedback loops in Herdr and Warp-class hosts after the explicit-history renderer rewrite dropped their in-place resize path. Resize notifications now stay on the normal screen, coalesce through one quiet window, and produce one settled repaint instead of repeatedly toggling the alternate screen and flashing long transcripts.
 - Fixed growing Markdown paragraphs containing ordinary prose or closed inline code withholding every wrapped row from explicit terminal history until finalization.

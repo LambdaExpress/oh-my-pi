@@ -3,6 +3,7 @@ import { createConnection, type Socket } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type Component, Input, Text, TUI, type TuiDebugTreeNode } from "../src";
+import { routeSgrMouseInput, type SgrMouseEvent } from "../src/mouse";
 import { VirtualTerminal } from "./virtual-terminal";
 
 interface DebugReply {
@@ -148,6 +149,26 @@ test("OMP_TUI_DEBUG drives and inspects a live TUI", async () => {
 		expect(await client.request({ op: "mouse", x: 1, y: 1 })).toEqual({ ok: true });
 		const valuesAfterRawInput = await client.request({ op: "values" });
 		expect(JSON.stringify(valuesAfterRawInput.values)).toContain("Xhello! pasted");
+
+		const mouseEvents: SgrMouseEvent[] = [];
+		const removeMouseListener = tui.addInputListener(data => {
+			routeSgrMouseInput(data, event => {
+				mouseEvents.push(event);
+			});
+		});
+		for (const [action, button] of [
+			["click", 0],
+			["right-click", 2],
+			["middle-click", 1],
+		] as const) {
+			mouseEvents.length = 0;
+			await client.request({ op: "mouse", x: 4, y: 2, action });
+			expect(mouseEvents).toMatchObject([
+				{ button, col: 4, row: 2, release: false },
+				{ button, col: 4, row: 2, release: true },
+			]);
+		}
+		removeMouseListener();
 
 		tui.addInputListener(data => {
 			if (data === "x") {

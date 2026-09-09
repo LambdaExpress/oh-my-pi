@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed Windows Git worktree registrations writing backslash-only pointers, which could make `git worktree remove` reject the reported worktree path.
 - Preserved original error details after successful automatic retries, including in resumed sessions.
 - Fixed `/usage show` hiding saved Codex reset counts in the overview.
 - Fixed usage history refresh in compiled builds and kept cached activity visible when a refresh fails.

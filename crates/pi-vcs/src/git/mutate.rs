@@ -1616,8 +1616,12 @@ fn register_worktree(path: &Path, common: &Path, head: &str) -> Result<PathBuf> 
 	let name = worktree_admin_name(common, path);
 	let admin = common.join("worktrees").join(name);
 	fs::create_dir_all(&admin)?;
-	fs::write(path.join(".git"), format!("gitdir: {}\n", admin.display()))?;
-	fs::write(admin.join("gitdir"), format!("{}\n", path.join(".git").display()))?;
+	// Git's worktree pointer files use slash-separated paths even on Windows.
+	// `Path::display()` emits backslashes there; Git then treats the backlink
+	// as the worktree directory itself and cannot validate `worktree remove`.
+	let gitdir = |value: &Path| value.to_string_lossy().replace('\\', "/");
+	fs::write(path.join(".git"), format!("gitdir: {}\n", gitdir(&admin)))?;
+	fs::write(admin.join("gitdir"), format!("{}\n", gitdir(&path.join(".git"))))?;
 	fs::write(admin.join("commondir"), "../..\n")?;
 	fs::write(admin.join("HEAD"), format!("{head}\n"))?;
 	Ok(admin)
@@ -2464,6 +2468,14 @@ mod tests {
 				.starts_with("gitdir: ")
 		);
 		let linked_repo = GitRepo::require(&linked).unwrap();
+		assert!(
+			!fs::read_to_string(linked.join(".git"))
+				.unwrap()
+				.contains('\\')
+				&& !fs::read_to_string(&linked_repo.info().git_dir.join("gitdir"))
+					.unwrap_or_default()
+					.contains('\\')
+		);
 		assert_eq!(
 			fs::read_to_string(&linked_repo.info().head_path).unwrap(),
 			"ref: refs/heads/target\n"
