@@ -153,9 +153,20 @@ function parseDeviceArgs(
 	try {
 		parsed = JSON.parse(content);
 	} catch (error) {
-		throw new ToolError(
-			`${XD_URL_PREFIX}${device.name} expects a JSON args object as content (${error instanceof Error ? error.message : String(error)}). Write \`?\` for docs.`,
-		);
+		const end = findJsonObjectEnd(content);
+		const suffix = end === undefined ? "" : content.slice(end).trim();
+		if (end === undefined || suffix.length === 0 || !/^[}\],]+$/.test(suffix)) {
+			throw new ToolError(
+				`${XD_URL_PREFIX}${device.name} expects a JSON args object as content (${error instanceof Error ? error.message : String(error)}). Write \`?\` for docs.`,
+			);
+		}
+		try {
+			parsed = JSON.parse(content.slice(0, end));
+		} catch {
+			throw new ToolError(
+				`${XD_URL_PREFIX}${device.name} expects a JSON args object as content (${error instanceof Error ? error.message : String(error)}). Write \`?\` for docs.`,
+			);
+		}
 	}
 	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
 		throw new ToolError(
@@ -177,6 +188,27 @@ function parseDeviceArgs(
 		const message = error instanceof Error ? error.message : String(error);
 		throw new ToolError(`Invalid args for ${XD_URL_PREFIX}${device.name}: ${message}\n\n${docs()}`);
 	}
+}
+
+/** Locate the first complete JSON object without interpreting its contents. */
+function findJsonObjectEnd(content: string): number | undefined {
+	if (content[0] !== "{") return undefined;
+	let depth = 0;
+	let quoted = false;
+	let escaped = false;
+	for (let index = 0; index < content.length; index++) {
+		const char = content[index]!;
+		if (quoted) {
+			if (escaped) escaped = false;
+			else if (char === "\\") escaped = true;
+			else if (char === '"') quoted = false;
+			continue;
+		}
+		if (char === '"') quoted = true;
+		else if (char === "{") depth++;
+		else if (char === "}" && --depth === 0) return index + 1;
+	}
+	return undefined;
 }
 
 /** One-line catalog summary for a mounted tool: `summary`, else first description line. */

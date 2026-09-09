@@ -204,6 +204,47 @@ describe("read and write route xd:// device URLs", () => {
 		});
 	});
 
+	it("recovers parallel-call closing delimiters without changing SSH arguments", async () => {
+		let captured: Record<string, unknown> | undefined;
+		const sshDevice = {
+			name: "ssh",
+			label: "SSH",
+			description: "Fake SSH executor",
+			parameters: type({ host: "string", command: "string", "timeout?": "number" }),
+			async execute(_id: string, args: Record<string, unknown>) {
+				captured = args;
+				return { content: [{ type: "text" as const, text: "ok" }] };
+			},
+		} as unknown as Tool;
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev: createTestXdevState([sshDevice]) }));
+		const inner = { host: "server", command: `printf '%s\\n' "x"; echo "$HOME"`, timeout: 30 };
+		const result = await write.execute("write-xdev-recovered", {
+			path: "xd://ssh",
+			content: `${JSON.stringify(inner)}]}`,
+		});
+		expect(result.isError).toBeUndefined();
+		expect(captured).toEqual(inner);
+	});
+
+	it("rejects textual garbage after a mounted SSH argument object", async () => {
+		const sshDevice = {
+			name: "ssh",
+			label: "SSH",
+			description: "Fake SSH executor",
+			parameters: type({ host: "string", command: "string" }),
+			async execute() {
+				throw new Error("must not execute");
+			},
+		} as unknown as Tool;
+		const write = new WriteTool(xdevSession(process.cwd(), { xdev: createTestXdevState([sshDevice]) }));
+		const result = await write.execute("write-xdev-reject", {
+			path: "xd://ssh",
+			content: `${JSON.stringify({ host: "server", command: "pwd" })}] trailing text`,
+		});
+		expect(result.isError).toBe(true);
+		expect(result.content[0]?.type === "text" && result.content[0].text).toContain("expects a JSON args object");
+	});
+
 	it("preserves the Docker/1Panel report command through mounted SSH dispatch", async () => {
 		let captured: { host: string; command: string; timeout?: number } | undefined;
 		const sshSchema = type({
