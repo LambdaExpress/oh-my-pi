@@ -137,6 +137,10 @@ export class SessionFocusController {
 			recoverCompletedRunAnchor: true,
 		});
 		if (generation !== this.#attachGeneration) return false;
+		// clearTransientSessionUi above wiped the pending bar; rebuild it for the
+		// newly attached view session so queued steer/follow-up chips survive a
+		// focus round-trip instead of staying invisible.
+		this.ctx.updatePendingMessagesDisplay();
 		// Partial tool results are display events, not persisted messages. Replay
 		// each target's latest snapshot after rebuilding so focus navigation does
 		// not collapse a live task board back to its bare call arguments (#10446).

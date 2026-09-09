@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import * as url from "node:url";
 import { buildWorkItems } from "./work-items";
 import type { StatusResponse } from "./types";
 
 // Read from test/fixtures/status-contract.json relative to src/
 const status = await Bun.file(
-  url.fileURLToPath(new URL("../test/fixtures/status-contract.json", import.meta.url))
+  new URL("../test/fixtures/status-contract.json", import.meta.url)
 ).json() as StatusResponse;
 
 describe("buildWorkItems contract validation", () => {

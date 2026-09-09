@@ -91,6 +91,7 @@ function fixture(
 		replaceOptimisticUserMessage: vi.fn(),
 		editor: { setText: vi.fn(), getText: () => "" },
 		updatePendingMessagesDisplay: vi.fn(),
+		syncRetryHintRow: vi.fn(),
 		setWorkingMessage: vi.fn(),
 		showPinnedError: vi.fn(),
 		noteDisplayableThinkingContent: vi.fn(() => false),

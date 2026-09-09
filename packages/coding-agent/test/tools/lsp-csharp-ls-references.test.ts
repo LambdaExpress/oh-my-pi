@@ -209,7 +209,10 @@ async function writeCsFixture(
 	);
 }
 
-function mockWhich(commands: Record<string, string>): void {
+async function mockWhich(commands: Record<string, string>): Promise<void> {
+	// Exercise the real resolver: cached PATH hits must still exist on disk.
+	// The transport is faked separately, so these fixture binaries are never executed.
+	await Promise.all(Object.values(commands).map(commandPath => Bun.write(commandPath, "")));
 	vi.spyOn(piUtils, "$which").mockImplementation(command => commands[command] ?? null);
 }
 
@@ -222,7 +225,7 @@ describe("lsp csharp-ls references", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-csharp-ls-");
 		try {
 			await writeCsFixture(tempDir.path(), "csharp-ls", "csharp-ls");
-			mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
+			await mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
 			const server = installFakeLsp({ referencesResult: [] });
 
 			const tool = new LspTool(makeSession(tempDir.path()));
@@ -255,7 +258,7 @@ describe("lsp csharp-ls references", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-csharp-ls-aggregate-");
 		try {
 			await writeCsFixture(tempDir.path(), "csharp-ls", "csharp-ls");
-			mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
+			await mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
 			const server = installFakeLsp({
 				referencesError: { code: -32_603, message: "Internal error: AggregateException" },
 			});
@@ -283,7 +286,7 @@ describe("lsp csharp-ls references", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-csharp-ls-symbols-");
 		try {
 			await writeCsFixture(tempDir.path(), "csharp-ls", "csharp-ls");
-			mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
+			await mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
 			const server = installFakeLsp({ symbolsResult: [] });
 
 			const result = await new LspTool(makeSession(tempDir.path())).execute("symbols", {
@@ -307,7 +310,7 @@ describe("lsp csharp-ls references", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-fake-ts-");
 		try {
 			await writeCsFixture(tempDir.path(), "fake-ts", "fake-ts");
-			mockWhich({ "fake-ts": path.join(tempDir.path(), "bin", "fake-ts") });
+			await mockWhich({ "fake-ts": path.join(tempDir.path(), "bin", "fake-ts") });
 			installFakeLsp({ referencesResult: [] });
 
 			const tool = new LspTool(makeSession(tempDir.path()));
@@ -331,7 +334,7 @@ describe("lsp csharp-ls references", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-csharp-ls-found-");
 		try {
 			await writeCsFixture(tempDir.path(), "csharp-ls", "csharp-ls");
-			mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
+			await mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
 			const uri = `file:///${tempDir.path().replace(/\\/g, "/")}/Inventory.cs`;
 			installFakeLsp({
 				referencesResult: [
@@ -369,7 +372,7 @@ describe("lsp csharp-ls references", () => {
 			await Bun.write(path.join(sessionRoot, "Inventory.csproj"), '<Project Sdk="Microsoft.NET.Sdk" />\n');
 			await Bun.write(path.join(targetRoot, "Inventory.csproj"), '<Project Sdk="Microsoft.NET.Sdk" />\n');
 			await Bun.write(targetFile, inventorySource());
-			mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
+			await mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
 
 			const targetUri = fileToUri(targetFile);
 			const oldName = "UploadInventoryData";
@@ -424,7 +427,7 @@ describe("lsp csharp-ls references", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-csharp-ls-null-rename-");
 		try {
 			await writeCsFixture(tempDir.path(), "csharp-ls", "csharp-ls");
-			mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
+			await mockWhich({ "csharp-ls": path.join(tempDir.path(), "bin", "csharp-ls") });
 			installFakeLsp({ renameResult: null });
 
 			const result = await new LspTool(makeSession(tempDir.path())).execute("null-rename", {
