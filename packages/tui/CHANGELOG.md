@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- Fixed debug-server mouse click actions delivering concatenated SGR press and release reports that standard mouse handlers could not parse.
 - Fixed debug input requests losing their acknowledgement when an input handler stops the TUI.
 - Fixed terminal resize feedback loops in Herdr and Warp-class hosts after the explicit-history renderer rewrite dropped their in-place resize path. Resize notifications now stay on the normal screen, coalesce through one quiet window, and produce one settled repaint instead of repeatedly toggling the alternate screen and flashing long transcripts.
 - Fixed growing Markdown paragraphs containing ordinary prose or closed inline code withholding every wrapped row from explicit terminal history until finalization.
@@ -27,6 +28,18 @@
 - Fixed editor caret movement entering image or paste placeholders; keyboard left/right, word, and vertical movement now treat matched placeholders as atomic tokens.
 - Fixed stable streaming rows vanishing at the native-scrollback seam; provider-declared prefixes now retire through explicit history batches and reproject across width changes without freezing mutable tool previews.
 - Fixed OSC 8 hyperlinks staying disabled in Windows Terminal when `tui.hyperlinks=auto`.
+## [18.1.14] - 2026-09-07
+
+### Fixed
+
+- `extractMarkdownLinks()` now returns one-row visible labels for formatted and multiline links ([#11086](https://github.com/can1357/oh-my-pi/pull/11086) by [@mustafaabidali](https://github.com/mustafaabidali)).
+
+## [18.1.13] - 2026-09-07
+
+### Fixed
+
+- Fixed notifications never arriving in a Herdr pane. Herdr multiplexes panes like tmux but swallows bare OSC 9 / OSC 99 and has no passthrough envelope, so a backgrounded pane got no signal at all; delivery now goes through `herdr notification show` (a waiting question or an error rings `request`, a settled turn rings `done`), and the in-band write stays as the fallback when the pane id or the `herdr` binary is missing.
+
 ## [18.1.12] - 2026-09-06
 
 ### Fixed

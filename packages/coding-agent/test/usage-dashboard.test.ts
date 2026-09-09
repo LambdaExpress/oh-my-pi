@@ -1,7 +1,16 @@
-import { describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it } from "bun:test";
 import type { DailyActivityPoint } from "@oh-my-pi/omp-stats/shared-types";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
-import { buildHeatmapLayout, buildProviderCards } from "@oh-my-pi/pi-coding-agent/modes/components/usage-dashboard";
+import {
+	buildHeatmapLayout,
+	buildProviderCards,
+	UsageDashboardComponent,
+} from "@oh-my-pi/pi-coding-agent/modes/components/usage-dashboard";
+import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+
+beforeAll(async () => {
+	await initTheme();
+});
 
 function day(day: string, cost: number, requests = 1): DailyActivityPoint {
 	return { day, cost, requests, totalTokens: 0 };
@@ -106,5 +115,92 @@ describe("buildProviderCards", () => {
 		expect(idle.sort()).toEqual(["cursor", "ollama-cloud"]);
 		const unlimited = cards.find(card => card.provider === "ollama-cloud");
 		expect(unlimited?.unlimited).toBe(true);
+	});
+});
+
+describe("usage dashboard saved resets", () => {
+	function renderOverview(reports: UsageReport[]): string {
+		const dashboard = new UsageDashboardComponent({
+			reports,
+			renderDetail: () => "",
+			loadActivity: async push => push([]),
+			requestRender: () => {},
+			onClose: () => {},
+		});
+		try {
+			return Bun.stripANSI(dashboard.render(100).join("\n"));
+		} finally {
+			dashboard.dispose();
+		}
+	}
+
+	it("shows the total saved resets across accounts alongside quota usage", () => {
+		const reports = [
+			{
+				...report("openai-codex", "a@x.test", [limit("openai-codex", "a", "5h", "5 hours", 0.4, "ok")]),
+				resetCredits: { availableCount: 2 },
+			},
+			{
+				...report("openai-codex", "b@x.test", [limit("openai-codex", "b", "5h", "5 hours", 0.6, "ok")]),
+				resetCredits: { availableCount: 3 },
+			},
+		];
+		const output = renderOverview(reports);
+		expect(output).toMatch(/5 saved resets/);
+		expect(output).toContain("50%");
+	});
+
+	it("keeps saved resets visible when quota windows are untouched", () => {
+		const output = renderOverview([
+			{
+				...report("openai-codex", "a@x.test", [limit("openai-codex", "a", "5h", "5 hours", 0, "ok")]),
+				resetCredits: { availableCount: 1 },
+			},
+		]);
+		expect(output).toMatch(/1 saved reset\b/);
+		expect(output).toContain("100%");
+	});
+
+	it("distinguishes a reported zero from an unreported reset allowance", () => {
+		const emptyReport = report("openai-codex", "a@x.test", []);
+		expect(renderOverview([{ ...emptyReport, resetCredits: { availableCount: 0 } }])).toMatch(/0 saved resets/);
+		expect(renderOverview([emptyReport])).not.toMatch(/saved resets?/);
+	});
+});
+
+describe("usage dashboard activity", () => {
+	it("keeps loaded activity visible when the background refresh fails", async () => {
+		const refresh = Promise.withResolvers<void>();
+		const renderedFailure = Promise.withResolvers<void>();
+		let refreshing = true;
+		const today = new Date();
+		const date = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+		const dashboard = new UsageDashboardComponent({
+			reports: [],
+			renderDetail: () => "",
+			loadActivity: async push => {
+				push([day(date, 12, 3)]);
+				await refresh.promise;
+			},
+			requestRender: () => {
+				if (!refreshing) renderedFailure.resolve();
+			},
+			onClose: () => {},
+		});
+		try {
+			const initial = Bun.stripANSI(dashboard.render(100).join("\n"));
+			expect(initial).toContain("$12");
+			expect(initial).toContain("3 requests");
+			refreshing = false;
+			refresh.reject(new Error("Session parser worker failed"));
+			await renderedFailure.promise;
+			const output = Bun.stripANSI(dashboard.render(100).join("\n"));
+			expect(output).toContain("$12");
+			expect(output).toContain("3 requests");
+			expect(output).toContain("cached");
+			expect(output).not.toContain("syncing");
+		} finally {
+			dashboard.dispose();
+		}
 	});
 });

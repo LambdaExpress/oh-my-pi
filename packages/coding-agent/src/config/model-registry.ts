@@ -17,7 +17,11 @@ import type {
 import type { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { collapseBuiltVariants } from "@oh-my-pi/pi-catalog/compat/collapse";
-import { resolveMaxContextWindow } from "@oh-my-pi/pi-catalog/compat/context-window";
+import {
+	clampCodexContextWindow,
+	clampsContextOverride,
+	resolveMaxContextWindow,
+} from "@oh-my-pi/pi-catalog/compat/context-window";
 import { applyCatalogMetrics, CatalogMetricsIndex } from "@oh-my-pi/pi-catalog/identity/metrics";
 import { readModelCache, writeModelCache } from "@oh-my-pi/pi-catalog/model-cache";
 import {
@@ -189,14 +193,16 @@ function getDisabledProviderIdsFromSettings(settingsInstance?: Settings): Set<st
 
 /**
  * Whether extended context windows are enabled: advertised maximum windows
- * plus premium long-context tiers. Defaults to true when no settings source
- * is available (SDK embedding, early boot).
+ * plus premium long-context tiers. Matches the schema default (`false`) when
+ * no settings source is available (SDK embedding without settings, early
+ * boot): callers get default windows until they opt in, never silently
+ * elevated ones.
  */
 function isExtendedContextEnabledFromSettings(settingsInstance?: Settings): boolean {
 	try {
 		return (settingsInstance ?? settings).get("extendedContext");
 	} catch {
-		return true;
+		return false;
 	}
 }
 
@@ -958,10 +964,15 @@ export class ModelRegistry {
 	/** Merge custom models with built-in, replacing by provider+id match */
 	#mergeCustomModels(builtInModels: Model<Api>[], customModels: CustomModelOverlay[]): Model<Api>[] {
 		return mergeByModelKey(builtInModels, customModels, (existingModel, customModel) => {
-			if (!existingModel) return finalizeCustomModel(customModel, { useDefaults: true });
+			if (!existingModel) {
+				const model = finalizeCustomModel(customModel, { useDefaults: true });
+				if (customModel.contextWindow === undefined || !clampsContextOverride(model)) return model;
+				const contextWindow = clampCodexContextWindow(model, customModel.contextWindow);
+				return contextWindow === model.contextWindow ? model : applyModelOverride(model, { contextWindow });
+			}
 			// Same-id custom definitions replace bundled transport behavior, so the
 			// patch is applied with the `replace` transport policy.
-			return applyModelPatch(
+			return this.#applyModelOverrideWithClamp(
 				{
 					...existingModel,
 					id: customModel.id,
@@ -2023,7 +2034,7 @@ export class ModelRegistry {
 		return models.map(model => {
 			const override = resolveModelOverrideWithAliases(overrides, model, hasLiveModel);
 			if (!override) return model;
-			return applyModelOverride(model, override);
+			return this.#applyModelOverrideWithClamp(model, override);
 		});
 	}
 
@@ -2153,9 +2164,31 @@ export class ModelRegistry {
 			if (!providerOverrides) return model;
 			const override = resolveModelOverrideWithAliases(providerOverrides, model, hasLiveModel);
 			if (!override) return model;
-			return applyModelOverride(model, override);
+			return this.#applyModelOverrideWithClamp(model, override);
 		});
 	}
+
+	/**
+	 * Applies a model patch, clamping KDL-governed
+	 * (`clamp-context-override`) context windows to the server-honored maximum
+	 * instead of widening without bound — mirroring openai/codex
+	 * `with_config_overrides`. `model` is the pre-override row, so the ceiling
+	 * never shrinks the request below the window that already works. Shared by
+	 * cache overrides, custom definitions, and configured window expansion so
+	 * an inflated intermediate row cannot become the next pass's working floor.
+	 */
+	#applyModelOverrideWithClamp(
+		model: Model<Api>,
+		override: ModelPatch,
+		transport: "merge" | "replace" = "merge",
+	): Model<Api> {
+		if (override.contextWindow !== undefined && clampsContextOverride(model)) {
+			const contextWindow = clampCodexContextWindow(model, override.contextWindow);
+			if (contextWindow !== override.contextWindow) override = { ...override, contextWindow };
+		}
+		return applyModelPatch(model, override, transport);
+	}
+
 	#applyContextWindowPolicies(models: Model<Api>[]): Model<Api>[] {
 		const extendedContext = isExtendedContextEnabledFromSettings(this.#settings);
 		const extendedContextWindow = getExtendedContextWindowFromSettings(this.#settings);
@@ -2165,7 +2198,8 @@ export class ModelRegistry {
 			// floor. While disabled, cap them at the standard-pricing threshold.
 			// xai-oauth prices are API-equivalent estimates for subscription-backed
 			// SuperGrok requests and must not constrain their runtime context window.
-			// Explicit per-model overrides reapply later and win over this policy.
+			// Explicit per-model overrides reapply later and win over this policy;
+			// both configured windows and overrides honor KDL-governed ceilings.
 			const threshold =
 				model.provider === "xai-oauth"
 					? undefined
@@ -2185,7 +2219,7 @@ export class ModelRegistry {
 					effectiveContextWindow = Math.min(effectiveContextWindow, threshold);
 				}
 				if (effectiveContextWindow !== model.contextWindow) {
-					model = applyModelOverride(model, { contextWindow: effectiveContextWindow });
+					model = this.#applyModelOverrideWithClamp(model, { contextWindow: effectiveContextWindow });
 				}
 			}
 			if (model.provider === "ollama-cloud" && model.omitMaxOutputTokens !== true) {
@@ -2202,9 +2236,9 @@ export class ModelRegistry {
 			}
 			const overrides = this.#modelOverrides.get(model.provider)?.get(model.id);
 			if (!overrides) {
-				return applyModelOverride(model, { contextWindow: 1_000_000 });
+				return this.#applyModelOverrideWithClamp(model, { contextWindow: 1_000_000 });
 			}
-			return applyModelOverride(model, {
+			return this.#applyModelOverrideWithClamp(model, {
 				contextWindow: overrides.contextWindow ?? 1_000_000,
 				...overrides,
 			});

@@ -219,7 +219,7 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
 	});
 
-	it("automatically collapses the latest completed run when a session is resumed", () => {
+	it("automatically collapses the latest completed run when a session is resumed", async () => {
 		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
 		const loop = assistant(
 			[
@@ -244,7 +244,7 @@ describe("InteractiveMode completed-run collapse", () => {
 
 		// There is no in-memory collapse record, matching a freshly resumed TUI.
 		const resetDisplay = vi.spyOn(mode.ui, "resetDisplay").mockImplementation(() => {});
-		mode.renderInitialMessages({ recoverCompletedRuns: true });
+		await mode.renderInitialMessages({ recoverCompletedRuns: true });
 
 		let rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
 		expect(rendered).toContain("※ collapsed: 1 agent text segment · 1 tool call");
@@ -268,7 +268,7 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(resetDisplay).toHaveBeenCalledTimes(2);
 	});
 
-	it("recovers one completed collapse across a persisted advisor continuation", () => {
+	it("recovers one completed collapse across a persisted advisor continuation", async () => {
 		const initial = { role: "user", content: "build it with advisor review", timestamp: 1 } as const;
 		const preAdvisorWork = assistant(
 			[
@@ -326,7 +326,7 @@ describe("InteractiveMode completed-run collapse", () => {
 
 		// No in-memory collapse record exists: initial rendering must derive one
 		// span for the original request and its advisor-triggered continuation.
-		mode.renderInitialMessages({ recoverCompletedRuns: true });
+		await mode.renderInitialMessages({ recoverCompletedRuns: true });
 
 		let rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
 		expect(rendered).toContain("※ collapsed:");
@@ -346,7 +346,7 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(rendered).not.toContain("※ collapsed:");
 	});
 
-	it("recovers and toggles a completed run after a persisted upstream stream interruption", () => {
+	it("recovers and toggles a completed run after a persisted upstream stream interruption", async () => {
 		const initial = { role: "user", content: "original request", timestamp: 1 } as const;
 		const loop = assistant(
 			[
@@ -380,7 +380,7 @@ describe("InteractiveMode completed-run collapse", () => {
 		session.sessionManager.appendMessage(continuation);
 		session.sessionManager.appendMessage(final);
 
-		mode.renderInitialMessages({ recoverCompletedRuns: true });
+		await mode.renderInitialMessages({ recoverCompletedRuns: true });
 
 		let rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
 		expect(rendered).toContain("original request");
@@ -402,7 +402,7 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(rendered).not.toContain("work before upstream disconnect");
 	});
 
-	it("recovers a manually interrupted tool run with its later completed correction", () => {
+	it("recovers a manually interrupted tool run with its later completed correction", async () => {
 		const initialA = { role: "user", content: "open the pull request", timestamp: 1 } as const;
 		const progressA = assistant(
 			[
@@ -427,7 +427,7 @@ describe("InteractiveMode completed-run collapse", () => {
 			session.sessionManager.appendMessage(message);
 		}
 
-		mode.renderInitialMessages({ recoverCompletedRuns: true });
+		await mode.renderInitialMessages({ recoverCompletedRuns: true });
 
 		let rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
 		expect(rendered.match(/※ collapsed:/g)).toHaveLength(1);
@@ -452,7 +452,7 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(buildTranscriptSessionContext.mock.calls[0]?.[0]).toEqual({ collapseCompactedHistory: false });
 	});
 
-	it("keeps a pre-compaction completed run visible and expandable", () => {
+	it("keeps a pre-compaction completed run visible and expandable", async () => {
 		Settings.instance.set("display.collapseCompacted", true);
 		const initial = { role: "user", content: "old request before compaction", timestamp: 1 } as const;
 		const loop = assistant([{ type: "text", text: "old intermediate work" }], "toolUse", 2);
@@ -466,7 +466,7 @@ describe("InteractiveMode completed-run collapse", () => {
 
 		const compactedTail = session.buildTranscriptSessionContext({ collapseCompactedHistory: true });
 		expect(compactedTail.messages).not.toContain(initial);
-		mode.renderInitialMessages({ recoverCompletedRuns: true });
+		await mode.renderInitialMessages({ recoverCompletedRuns: true });
 
 		let rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
 		expect(rendered).toContain("old request before compaction");

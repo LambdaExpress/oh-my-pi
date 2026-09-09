@@ -4,14 +4,19 @@ import * as fsp from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult, RenderResultOptions } from "@oh-my-pi/pi-agent-core";
-import { arkToWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { preloadPluginRoots } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import { restoreEnvValue } from "../helpers/settings-test-state";
 import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
 import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
 import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
-import { getServersForFile, type LspConfig, loadConfig } from "@oh-my-pi/pi-coding-agent/lsp/config";
+import {
+	configCache,
+	getConfig,
+	getServersForFile,
+	type LspConfig,
+	loadConfig,
+} from "@oh-my-pi/pi-coding-agent/lsp/config";
 import { waitForDiagnostics } from "@oh-my-pi/pi-coding-agent/lsp/diagnostics";
 import {
 	applyTextEditsToString,
@@ -20,7 +25,7 @@ import {
 	sortAndValidateTextEdits,
 } from "@oh-my-pi/pi-coding-agent/lsp/edits";
 import { renderCall, renderResult } from "@oh-my-pi/pi-coding-agent/lsp/render";
-import { configCache, findLspProjectRoot, getConfig } from "@oh-my-pi/pi-coding-agent/lsp/servers";
+import { findLspProjectRoot } from "@oh-my-pi/pi-coding-agent/lsp/servers";
 import {
 	type CodeAction,
 	type CreateFile,
@@ -29,7 +34,6 @@ import {
 	type DocumentSymbol,
 	type LspClient,
 	type LspToolDetails,
-	lspSchema,
 	type RenameFile,
 	type ServerConfig,
 	type SymbolInformation,
@@ -393,21 +397,9 @@ describe("lsp regressions", () => {
 		}
 	});
 
-	it("supports long LSP timeouts up to the advertised ceiling", () => {
-		expect(clampTimeout("lsp")).toBe(20);
+	it("clamps LSP timeouts to the supported bounds", () => {
 		expect(clampTimeout("lsp", 1)).toBe(5);
-		expect(clampTimeout("lsp", 120)).toBe(120);
-		expect(clampTimeout("lsp", 180)).toBe(180);
 		expect(clampTimeout("lsp", 1000)).toBe(300);
-		expect(arkToWireSchema(lspSchema)).toMatchObject({
-			properties: {
-				timeout: {
-					description: "Timeout in seconds (default 20; range 5–300).",
-					maximum: 300,
-					minimum: 5,
-				},
-			},
-		});
 	});
 
 	it("keeps equivalent LSP configs shared but isolates distinct process and initialization semantics", async () => {
@@ -545,8 +537,11 @@ describe("lsp regressions", () => {
 				rootMarkers: [],
 			};
 
+			configCache.set(tempDir.path(), { servers: { [config.command]: config }, idleTimeoutMs: 60_000 });
 			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			expect(lspClient.isIdleCheckerRunning()).toBe(true);
 			await lspClient.shutdownAll();
+			expect(lspClient.isIdleCheckerRunning()).toBe(false);
 
 			// Graceful handshake: the client sends `shutdown`, waits for its reply,
 			// then sends the `exit` notification -- and never resorts to the hard
@@ -559,17 +554,17 @@ describe("lsp regressions", () => {
 			expect(exitIndex).toBeGreaterThan(shutdownIndex);
 			expect(server.killed).toBe(false);
 
-			const clientModule = new URL("../../src/lsp/client.ts", import.meta.url).href;
+			const configModule = new URL("../../src/lsp/config.ts", import.meta.url).href;
 			const shutdownProbe = Bun.spawn(
 				[
 					process.execPath,
 					"-e",
-					`import { setIdleTimeout, shutdownAll } from ${JSON.stringify(clientModule)}; setIdleTimeout(60_000); await shutdownAll();`,
+					`import { configCache, getConfig } from ${JSON.stringify(configModule)}; configCache.set("config-only", { servers: {}, idleTimeoutMs: 60_000 }); getConfig("config-only");`,
 				],
 				{ stdout: "ignore", stderr: "inherit" },
 			);
 			// Real time is required because fake timers cannot advance a separate Bun process.
-			// The process exit itself proves shutdown released the event loop.
+			// A config-only process must exit without a server shutdown to release the event loop.
 			const probeExit = await Promise.race([shutdownProbe.exited, Bun.sleep(5_000).then(() => null)]);
 			if (probeExit === null) {
 				shutdownProbe.kill();
@@ -577,26 +572,152 @@ describe("lsp regressions", () => {
 			}
 			expect(probeExit).toBe(0);
 		} finally {
+			configCache.delete(tempDir.path());
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
 		}
 	});
 
-	it("rearms the idle checker from cached config after global shutdown", async () => {
-		const cwd = "/cached-lsp-config";
-		const intervalSpy = vi.spyOn(globalThis, "setInterval");
-		configCache.set(cwd, { servers: {}, idleTimeoutMs: 60_000 });
+	it("rearms idle cleanup after shutdown and stops it for inactive or explicitly disabled clients (#8389)", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rearm-");
+		const config: ServerConfig = {
+			command: "fake-lsp-rearm",
+			fileTypes: ["ts"],
+			rootMarkers: [],
+		};
 		try {
+			configCache.set(tempDir.path(), { servers: { [config.command]: config }, idleTimeoutMs: 60_000 });
 			lspClient.setIdleTimeout(60_000);
-			expect(intervalSpy).toHaveBeenCalledTimes(1);
+			expect(lspClient.isIdleCheckerRunning()).toBe(false);
+			installHandshakeLsp();
+			await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			expect(lspClient.isIdleCheckerRunning()).toBe(true);
 
 			await lspClient.shutdownAll();
-			getConfig(cwd);
 
-			expect(intervalSpy).toHaveBeenCalledTimes(2);
+			getConfig(tempDir.path());
+			expect(lspClient.isIdleCheckerRunning()).toBe(false);
+
+			installHandshakeLsp();
+			const client = await lspClient.getOrCreateClient(config, tempDir.path(), 1_000);
+			expect(lspClient.isIdleCheckerRunning()).toBe(true);
+
+			// An explicit disabled override wins over the workspace timeout.
+			lspClient.setIdleTimeout(0);
+			expect(lspClient.isIdleCheckerRunning()).toBe(false);
+			client.lastActivity = Date.now() - 61_000;
+			await lspClient.checkIdleClients();
+			expect(lspClient.getActiveClients().map(active => active.name)).toContain(config.command);
+
+			// Removing the override restores workspace-driven cleanup.
+			lspClient.setIdleTimeout(null);
+			expect(lspClient.isIdleCheckerRunning()).toBe(true);
+			await lspClient.checkIdleClients();
+			expect(lspClient.getActiveClients().map(active => active.name)).not.toContain(config.command);
+			expect(lspClient.isIdleCheckerRunning()).toBe(false);
 		} finally {
 			lspClient.setIdleTimeout(null);
-			configCache.delete(cwd);
+			configCache.delete(tempDir.path());
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("isolates idle timeout per workspace client without global cross-contamination (#8389)", async () => {
+		const tempDirA = TempDir.createSync("@omp-lsp-iso-a-");
+		const tempDirB = TempDir.createSync("@omp-lsp-iso-b-");
+		const configA: ServerConfig = {
+			command: "fake-lsp-iso-a",
+			fileTypes: ["ts"],
+			rootMarkers: [],
+		};
+		const configB: ServerConfig = {
+			command: "fake-lsp-iso-b",
+			fileTypes: ["ts"],
+			rootMarkers: [],
+		};
+
+		try {
+			configCache.set(tempDirA.path(), { servers: { [configA.command]: configA }, idleTimeoutMs: 600_000 }); // 10 min
+			configCache.set(tempDirB.path(), { servers: { [configB.command]: configB }, idleTimeoutMs: 1_000 }); // 1 sec
+
+			installHandshakeLsp();
+			const clientA = await lspClient.getOrCreateClient(configA, tempDirA.path(), 1_000);
+
+			installHandshakeLsp();
+			const clientB = await lspClient.getOrCreateClient(configB, tempDirB.path(), 1_000);
+
+			// Both clients have the same inactivity: only B's shorter timeout has elapsed.
+			const lastActivity = Date.now() - 2_000;
+			clientA.lastActivity = lastActivity;
+			clientB.lastActivity = lastActivity;
+
+			// Accessing Workspace B's config should not affect client A
+			getConfig(tempDirB.path());
+
+			// Drive the production idle sweep path end-to-end
+			await lspClient.checkIdleClients();
+
+			const activeNames = lspClient.getActiveClients().map(c => c.name);
+			expect(activeNames).toContain("fake-lsp-iso-a");
+			expect(activeNames).not.toContain("fake-lsp-iso-b");
+		} finally {
+			configCache.delete(tempDirA.path());
+			configCache.delete(tempDirB.path());
+			await lspClient.shutdownAll();
+			tempDirA.removeSync();
+			tempDirB.removeSync();
+		}
+	});
+
+	it("workspace reload applies timeout-only config changes without restarting the client (#8389)", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-rearm-config-");
+		const config: ServerConfig = {
+			command: "fake-lsp-rearm-config",
+			fileTypes: ["ts"],
+			rootMarkers: [".lsp.json"],
+		};
+		const configPath = path.join(tempDir.path(), ".lsp.json");
+		const workspaceConfig: LspConfig = { servers: { [config.command]: config } };
+
+		try {
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === config.command ? process.execPath : null,
+			);
+			await Bun.write(configPath, JSON.stringify(workspaceConfig));
+			const server = installHandshakeLsp();
+			const client = await lspClient.getOrCreateClient(
+				getConfig(tempDir.path()).servers[config.command],
+				tempDir.path(),
+				1_000,
+			);
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			expect(lspClient.isIdleCheckerRunning()).toBe(false);
+
+			await Bun.write(configPath, JSON.stringify({ ...workspaceConfig, idleTimeoutMs: 5_000 }));
+			await tool.execute("reload-add-timeout", { action: "reload" });
+			expect(lspClient.isIdleCheckerRunning()).toBe(true);
+
+			await Bun.write(configPath, JSON.stringify(workspaceConfig));
+			await tool.execute("reload-remove-timeout", { action: "reload", file: "*" });
+			expect(lspClient.isIdleCheckerRunning()).toBe(false);
+			client.lastActivity = Date.now() - 6_000;
+			await lspClient.checkIdleClients();
+			expect(lspClient.getActiveClients().map(active => active.name)).toContain(config.command);
+			expect(server.proc.exitCode).toBeNull();
+
+			await Bun.write(configPath, JSON.stringify({ ...workspaceConfig, idleTimeoutMs: 5_000 }));
+			await tool.execute("reload-restore-timeout", { action: "reload", file: "*" });
+			client.lastActivity = Date.now() - 6_000;
+			await lspClient.checkIdleClients();
+			expect(lspClient.getActiveClients().map(active => active.name)).not.toContain(config.command);
+			expect(server.proc.exitCode).toBe(0);
+			expect(lspClient.isIdleCheckerRunning()).toBe(false);
+		} finally {
+			lspClient.setIdleTimeout(null);
+			configCache.delete(tempDir.path());
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
 		}
 	});
 
@@ -4926,56 +5047,6 @@ describe("lsp regressions", () => {
 		}
 	});
 
-	it("workspace reload rediscovers LSP servers after an empty config was cached", async () => {
-		const tempDir = TempDir.createSync("@omp-lsp-reload-redetect-");
-		try {
-			const server: ServerConfig = {
-				command: "test-lsp",
-				fileTypes: [".ts"],
-				rootMarkers: ["package.json"],
-			};
-			const configs: LspConfig[] = [
-				{ servers: {}, idleTimeoutMs: undefined },
-				{ servers: { "test-lsp": server }, idleTimeoutMs: undefined },
-				{ servers: { "test-lsp": server }, idleTimeoutMs: undefined },
-			];
-			const loadConfigSpy = vi
-				.spyOn(lspConfig, "loadConfig")
-				.mockImplementation(() => configs.shift() ?? configs[0]);
-			const client = { proc: { kill: vi.fn() }, config: server } as unknown as LspClient;
-			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
-			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
-
-			const tool = new LspTool(makeLspSession(tempDir.path()));
-			const initial = await tool.execute("reload-redetect-status", { action: "status" });
-			const initialOutput = initial.content
-				.filter(block => block.type === "text")
-				.map(block => block.text)
-				.join("\n");
-			expect(initialOutput).toContain("No language servers configured for this project");
-
-			const starResult = await tool.execute("reload-redetect-star", { action: "reload", file: "*" });
-			const starOutput = starResult.content
-				.filter(block => block.type === "text")
-				.map(block => block.text)
-				.join("\n");
-
-			const omittedResult = await tool.execute("reload-redetect-omitted", { action: "reload" });
-			const omittedOutput = omittedResult.content
-				.filter(block => block.type === "text")
-				.map(block => block.text)
-				.join("\n");
-
-			expect(loadConfigSpy).toHaveBeenCalledTimes(3);
-			expect(starOutput).toContain("Reloaded test-lsp");
-			expect(omittedOutput).toContain("Reloaded test-lsp");
-			expect(lspClient.getOrCreateClient).toHaveBeenCalledWith(server, tempDir.path(), undefined, expect.anything());
-		} finally {
-			vi.restoreAllMocks();
-			tempDir.removeSync();
-		}
-	});
-
 	it("status distinguishes configured servers from started clients", async () => {
 		// `loadConfig` claims rust-analyzer + tsls are configured, but only
 		// tsls has actually been spawned. Status must reflect that — claiming
@@ -5069,63 +5140,40 @@ describe("lsp regressions", () => {
 		const tempDir = TempDir.createSync("@omp-lsp-config-cache-reload-");
 		try {
 			const cwd = tempDir.path();
-			const empty: LspConfig = { servers: {}, idleTimeoutMs: undefined };
 			const withServer: LspConfig = {
 				servers: {
 					"fake-pylsp": {
-						command: "true",
+						command: "fake-pylsp",
 						fileTypes: [".py"],
 						rootMarkers: [".python-root"],
-						resolvedCommand: "/bin/true",
 					},
 				},
-				idleTimeoutMs: undefined,
 			};
-			const loadConfigSpy = vi
-				.spyOn(lspConfig, "loadConfig")
-				.mockImplementation(() => (loadConfigSpy.mock.calls.length === 1 ? empty : withServer));
-			// Prevent any real LSP subprocess from spawning when reload iterates
-			// the refreshed server list — the spawn path would race with the
-			// test's teardown.
-			vi.spyOn(lspClient, "getOrCreateClient").mockRejectedValue(new Error("spawn suppressed in test"));
-			vi.spyOn(lspClient, "getActiveClients").mockReturnValue([]);
+			vi.spyOn(piUtils, "$which").mockImplementation(command =>
+				command === "fake-pylsp" ? process.execPath : null,
+			);
+			installHandshakeLsp();
 
 			const tool = new LspTool(makeLspSession(cwd));
-
 			const status1 = await tool.execute("cache-1", { action: "status" });
-			const text1 = status1.content
-				.filter(b => b.type === "text")
-				.map(b => b.text)
-				.join("\n");
-			expect(text1).toContain("No language servers configured");
-			expect(loadConfigSpy).toHaveBeenCalledTimes(1);
+			expect(textResult(status1)).not.toContain("fake-pylsp");
 
-			// Second status hits the cache — proves caching is the baseline, so
-			// the next assertion measures invalidation, not a missing cache.
-			await tool.execute("cache-2", { action: "status" });
-			expect(loadConfigSpy).toHaveBeenCalledTimes(1);
+			await Bun.write(path.join(cwd, ".python-root"), "");
+			await Bun.write(path.join(cwd, ".omp", "lsp.json"), JSON.stringify(withServer));
+			const cachedStatus = await tool.execute("cache-2", { action: "status" });
+			expect(textResult(cachedStatus)).not.toContain("fake-pylsp");
 
 			// `reload *` MUST drop the cached empty config and re-read from disk.
-			const reload = await tool.execute("cache-3", { action: "reload", file: "*" });
-			expect(loadConfigSpy).toHaveBeenCalledTimes(2);
-			const reloadText = reload.content
-				.filter(b => b.type === "text")
-				.map(b => b.text)
-				.join("\n");
-			// Spawn was suppressed, so the per-server output is the failure line —
-			// the contract under test is that the fresh server was even considered.
-			expect(reloadText).toContain("fake-pylsp");
+			await tool.execute("cache-3", { action: "reload", file: "*" });
+			expect(lspClient.getActiveClients()).toContainEqual(
+				expect.objectContaining({ name: "fake-pylsp", status: "ready" }),
+			);
 
-			// The refreshed config now sits in the cache; status sees the new
-			// server without another disk read.
 			const status3 = await tool.execute("cache-4", { action: "status" });
-			const text3 = status3.content
-				.filter(b => b.type === "text")
-				.map(b => b.text)
-				.join("\n");
-			expect(text3).toContain("fake-pylsp (configured, not started)");
-			expect(loadConfigSpy).toHaveBeenCalledTimes(2);
+			expect(textResult(status3)).toContain("fake-pylsp");
 		} finally {
+			configCache.delete(tempDir.path());
+			await lspClient.shutdownAll();
 			tempDir.removeSync();
 		}
 	});

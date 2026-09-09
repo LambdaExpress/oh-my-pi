@@ -127,13 +127,20 @@ export class SessionFocusController {
 			// A just-finished run can still be parked only in EventController when
 			// focus clears its transcript anchors. Merge persisted completions back
 			// without replacing this session's existing expand/collapse choices.
-			this.ctx.recoverCompletedRunCollapses({ includeLatest: true });
+			// Do not claim the latest completed run here: switching focus is not
+			// resuming a session, and the focused subagent's Submit Result must
+			// remain visible while the user inspects its output.
+			this.ctx.recoverCompletedRunCollapses({ includeLatest: false });
 		}
 		await this.ctx.renderInitialMessages({
 			clearTerminalHistory: true,
 			recoverCompletedRunAnchor: true,
 		});
 		if (generation !== this.#attachGeneration) return false;
+		// clearTransientSessionUi above wiped the pending bar; rebuild it for the
+		// newly attached view session so queued steer/follow-up chips survive a
+		// focus round-trip instead of staying invisible.
+		this.ctx.updatePendingMessagesDisplay();
 		// Partial tool results are display events, not persisted messages. Replay
 		// each target's latest snapshot after rebuilding so focus navigation does
 		// not collapse a live task board back to its bare call arguments (#10446).

@@ -180,27 +180,27 @@ function parseKeyTokens(source: string): { sequences: string[]; events: number }
 	return { sequences, events };
 }
 
-function mouseSequence(x: number, y: number, action: string): string {
+function mouseSequence(x: number, y: number, action: string): string[] {
 	if (!Number.isInteger(x) || !Number.isInteger(y) || x < 0 || y < 0)
 		throw new Error("mouse coordinates must be non-negative integers");
 	const at = (button: number, release = false): string => `\x1b[<${button};${x + 1};${y + 1}${release ? "m" : "M"}`;
 	switch (action) {
 		case "click":
-			return at(0) + at(0, true);
+			return [at(0), at(0, true)];
 		case "right-click":
-			return at(2) + at(2, true);
+			return [at(2), at(2, true)];
 		case "middle-click":
-			return at(1) + at(1, true);
+			return [at(1), at(1, true)];
 		case "move":
-			return at(35);
+			return [at(35)];
 		case "drag":
-			return at(32);
+			return [at(32)];
 		case "release":
-			return at(0, true);
+			return [at(0, true)];
 		case "wheel-up":
-			return at(64);
+			return [at(64)];
 		case "wheel-down":
-			return at(65);
+			return [at(65)];
 		default:
 			throw new Error(`unknown mouse action ${action}`);
 	}
@@ -378,7 +378,9 @@ export class TuiDebugServer {
 					throw new Error("mouse x and y must be numbers");
 				const action = request.action === undefined ? "click" : request.action;
 				if (typeof action !== "string") throw new Error("mouse action must be a string");
-				this.#tui.injectDebugInput(mouseSequence(request.x, request.y, action));
+				for (const sequence of mouseSequence(request.x, request.y, action)) {
+					this.#tui.injectDebugInput(sequence);
+				}
 				return { ok: true };
 			}
 			case "quit":

@@ -894,14 +894,6 @@ export class MCPCommandController {
 		const resolvedClientSecret = clientSecret.trim() || undefined;
 
 		const manualInput = this.ctx.oauthManualInput;
-		if (manualInput.hasPending()) {
-			const pendingProvider = manualInput.pendingProviderId ?? "another provider";
-			throw new Error(
-				t("OAuth login already in progress for {provider}. Complete or cancel it before starting MCP OAuth.", {
-					provider: pendingProvider,
-				}),
-			);
-		}
 		let manualInputClaim: { promise: Promise<string>; clear: (reason?: string) => void } | undefined;
 		const oauthTimeout = new AbortController();
 		// Esc, external aborts, and a replacement MCP flow route through here;
@@ -926,12 +918,16 @@ export class MCPCommandController {
 			externalSignal?.addEventListener("abort", onExternalAbort, { once: true });
 		}
 		try {
-			if (manualInput.hasPending()) {
+			if (manualInput.hasPending() && manualInput.pendingProviderId !== MCP_MANUAL_INPUT_PROVIDER_ID) {
 				const pendingProvider = manualInput.pendingProviderId ?? "another provider";
 				throw new Error(
 					`OAuth login already in progress for ${pendingProvider}. Complete or cancel it before starting MCP OAuth.`,
 				);
 			}
+			// A superseded MCP flow may have already released its coordinator while
+			// its manual-input rejection is still settling. Clear that stale claim so
+			// the replacement flow can register its own input handler.
+			if (manualInput.hasPending()) manualInput.clear("MCP OAuth input superseded by a new login");
 			// Create OAuth flow
 			const flow = new MCPOAuthFlow(
 				{
