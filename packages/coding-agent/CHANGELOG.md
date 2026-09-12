@@ -4,6 +4,8 @@
 
 ### Fixed
 
+- Fixed a subagent's `yield` result being dropped from its transcript when the run aborted on submit, which hid the answer behind a "no result on this branch" row.
+- Finished subagent views no longer elide the final `yield` call: transcripts written before the fix still render the call and its arguments instead of the placeholder.
 - Fixed Windows Git worktree registrations writing backslash-only pointers, which could make `git worktree remove` reject the reported worktree path.
 - Preserved original error details after successful automatic retries, including in resumed sessions.
 - Fixed `/usage show` hiding saved Codex reset counts in the overview.

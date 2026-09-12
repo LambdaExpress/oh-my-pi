@@ -510,6 +510,12 @@ type MessageEndPersistenceSlot = {
 	release: () => void;
 };
 
+/** Transcript an awaited `message_end` was captured against; see {@link AgentSession.#isSamePersistenceTarget}. */
+type PersistenceTarget = {
+	sessionId: string;
+	sessionFile: string | undefined;
+};
+
 type PostPromptSkipReason = "aborted" | "stale-generation";
 
 type AgentContinueSkipReason =
@@ -2937,12 +2943,44 @@ export class AgentSession {
 		};
 	}
 
-	#persistMessageEnd(message: AgentMessage, promptGeneration: number): void {
-		// Session transitions bump the prompt generation before replacing the
-		// transcript. A message_end handler may still be awaiting an extension at
-		// that boundary; never let its delayed persistence append the previous
-		// conversation to the replacement session.
-		if (this.#promptGeneration !== promptGeneration) return;
+	/**
+	 * Identity of the transcript this session currently appends to. Captured when
+	 * a `message_end` arrives and re-checked when its (possibly awaited)
+	 * persistence finally runs.
+	 */
+	#persistenceTarget(): PersistenceTarget {
+		return {
+			sessionId: this.sessionManager.getSessionId(),
+			sessionFile: this.sessionManager.getSessionFile(),
+		};
+	}
+
+	/**
+	 * Whether an awaited `message_end` may still append to the transcript it was
+	 * captured against. Session replacement (`/new`, session switch, `/move`)
+	 * repoints the target before it swaps the transcript, so a handler delayed by
+	 * an extension must not append the previous conversation into the
+	 * replacement session.
+	 *
+	 * Keyed on transcript identity rather than `#promptGeneration`: that counter
+	 * also advances on a plain in-session `abort()`, and the abort a run performs
+	 * on itself — a subagent's terminal `yield`, an interrupt landing while a
+	 * result is emitted — arrives while that result's own `message_end` is in
+	 * flight. Dropping it there erased the message from disk while the UI kept
+	 * showing it: a completed subagent transcript lost its `yield` result, so the
+	 * reloaded view rendered the call as elided and hid the subagent's answer.
+	 */
+	#isSamePersistenceTarget(captured: PersistenceTarget): boolean {
+		const current = this.#persistenceTarget();
+		if (captured.sessionId !== current.sessionId) return false;
+		// A draft (non-persisted) session materializes its file mid-turn; that is
+		// the same transcript gaining a destination, not a replacement.
+		if (captured.sessionFile === undefined || current.sessionFile === undefined) return true;
+		return captured.sessionFile === current.sessionFile;
+	}
+
+	#persistMessageEnd(message: AgentMessage, persistenceTarget: PersistenceTarget): void {
+		if (!this.#isSamePersistenceTarget(persistenceTarget)) return;
 		if (message.role === "hookMessage" || message.role === "custom") {
 			// One-run instructions must not return from persisted history: prewalk
 			// nudges are consumed once, and Vibe context is rebuilt only while active.
@@ -3114,6 +3152,7 @@ export class AgentSession {
 		const event = redactSshSessionAgentEvent(rawEvent);
 		this.#trackToolExecutionDisplay(event);
 		const eventPromptGeneration = this.#promptGeneration;
+		const eventPersistenceTarget = this.#persistenceTarget();
 		// A fresh run supersedes the previously settled (and pruned) refusal
 		// turn: state-based lookups take over again.
 		if (event.type === "agent_start") {
@@ -3270,10 +3309,10 @@ export class AgentSession {
 					try {
 						if (messageEndPersistence) {
 							await messageEndPersistence.persist(() =>
-								this.#persistMessageEnd(event.message, eventPromptGeneration),
+								this.#persistMessageEnd(event.message, eventPersistenceTarget),
 							);
 						} else {
-							this.#persistMessageEnd(event.message, eventPromptGeneration);
+							this.#persistMessageEnd(event.message, eventPersistenceTarget);
 						}
 					} catch (persistenceError) {
 						logger.warn("Failed to persist message after session event emission failed", {
@@ -3369,9 +3408,9 @@ export class AgentSession {
 		// Handle session persistence
 		if (event.type === "message_end") {
 			if (messageEndPersistence) {
-				await messageEndPersistence.persist(() => this.#persistMessageEnd(event.message, eventPromptGeneration));
+				await messageEndPersistence.persist(() => this.#persistMessageEnd(event.message, eventPersistenceTarget));
 			} else {
-				this.#persistMessageEnd(event.message, eventPromptGeneration);
+				this.#persistMessageEnd(event.message, eventPersistenceTarget);
 			}
 			if (this.#promptGeneration !== eventPromptGeneration) return;
 			if (interruptedThinkingMessage) {

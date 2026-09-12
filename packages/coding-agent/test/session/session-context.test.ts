@@ -161,6 +161,93 @@ describe("buildSessionContext dangling toolCalls", () => {
 	});
 });
 
+// A finished subagent run: the terminal `yield` is the last call, and the
+// result the parent received was never persisted on the path (the run aborts
+// itself on submit, so the result can race that abort).
+const resultlessYieldEntries = [
+	{
+		type: "message",
+		id: "m1",
+		parentId: null,
+		timestamp,
+		message: { role: "user", content: [{ type: "text", text: "audit the branch" }], timestamp: 1 },
+	},
+	{
+		type: "message",
+		id: "m2",
+		parentId: "m1",
+		timestamp,
+		message: {
+			role: "assistant",
+			content: [
+				{ type: "toolCall", id: "call-1", name: "yield", arguments: { data: { report: "no hazard found" } } },
+			],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: 2,
+		},
+	},
+] satisfies SessionEntry[];
+
+describe("buildSessionContext resultless terminal yield", () => {
+	it("keeps the subagent's final yield call in the display transcript", () => {
+		const context = buildSessionContext(resultlessYieldEntries, undefined, undefined, { transcript: true });
+
+		expect(danglingCallIds(context.messages)).toEqual(["call-1"]);
+		const assistant = context.messages.find(message => message.role === "assistant");
+		// The reply IS the call's arguments — no elision row may stand in for it.
+		expect((assistant as AgentMessage & StrippedToolCallsMarker).strippedToolCalls).toBeUndefined();
+	});
+
+	it("still strips a resultless yield from the LLM context", () => {
+		const context = buildSessionContext(resultlessYieldEntries);
+
+		expect(danglingCallIds(context.messages)).toEqual([]);
+		expect(context.messages.some(message => message.role === "assistant")).toBe(false);
+	});
+
+	it("keeps the yield while still stripping its unanswered siblings", () => {
+		const siblings: SessionEntry[] = [
+			resultlessYieldEntries[0],
+			{
+				type: "message",
+				id: "m2",
+				parentId: "m1",
+				timestamp,
+				message: {
+					role: "assistant",
+					content: [
+						{ type: "toolCall", id: "call-0", name: "bash", arguments: { command: "ls" } },
+						{ type: "toolCall", id: "call-1", name: "yield", arguments: { data: { report: "done" } } },
+					],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-sonnet-4-5",
+					usage: assistantUsage,
+					stopReason: "toolUse",
+					timestamp: 2,
+				},
+			},
+		];
+
+		const context = buildSessionContext(siblings, undefined, undefined, { transcript: true });
+
+		expect(danglingCallIds(context.messages)).toEqual(["call-1"]);
+		const assistant = context.messages.find(message => message.role === "assistant");
+		expect((assistant as AgentMessage & StrippedToolCallsMarker).strippedToolCalls).toBe(1);
+	});
+});
+
 const assistantUsage: AssistantMessage["usage"] = {
 	input: 0,
 	output: 0,

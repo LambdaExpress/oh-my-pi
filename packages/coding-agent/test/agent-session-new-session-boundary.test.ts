@@ -161,6 +161,51 @@ describe("AgentSession.newSession boundary", () => {
 		}
 	});
 
+	it("persists a delayed message whose turn an in-session abort superseded", async () => {
+		const reached = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const { agent, session, sessionManager } = await createHarness({
+			extension: {
+				name: "block-result-persistence",
+				register: pi => {
+					pi.on("message_end", async () => {
+						reached.resolve();
+						await release.promise;
+					});
+				},
+			},
+		});
+		const message: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "subagent delivered answer" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "test-model",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: Date.now(),
+		};
+
+		agent.emitExternalEvent({ type: "message_end", message });
+		await reached.promise;
+
+		// A run that aborts itself (a terminal `yield`, a subagent's terminate)
+		// raises no session boundary: the delayed message still belongs here.
+		await session.abort();
+		release.resolve();
+		await session.settleInFlightMessagePersistence();
+		await sessionManager.flush();
+
+		expect(JSON.stringify(sessionManager.getEntries())).toContain("subagent delivered answer");
+	});
+
 	it("reports the replacement identity to session_switch extensions before /new returns", async () => {
 		let reported:
 			| {
