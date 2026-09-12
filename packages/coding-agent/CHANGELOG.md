@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fixed attached images being silently dropped on models whose endpoint strips image parts: the vision-model description now follows the wire predicate instead of `model.input` alone.
 - Fixed a subagent's `yield` result being dropped from its transcript when the run aborted on submit, which hid the answer behind a "no result on this branch" row.
 - Finished subagent views no longer elide the final `yield` call: transcripts written before the fix still render the call and its arguments instead of the placeholder.
 - Fixed Windows Git worktree registrations writing backslash-only pointers, which could make `git worktree remove` reject the reported worktree path.

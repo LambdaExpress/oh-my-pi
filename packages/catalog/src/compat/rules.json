@@ -4573,7 +4573,20 @@
 				}
 			},
 			{
-				"source": "classes/deepseek.kdl:76",
+				"source": "classes/deepseek.kdl:80",
+				"class": "deepseek",
+				"models": [
+					{
+						"kind": "exact",
+						"value": "deepseek-flash"
+					}
+				],
+				"wire": {
+					"stripImageInput": false
+				}
+			},
+			{
+				"source": "classes/deepseek.kdl:83",
 				"class": "deepseek",
 				"providers": [
 					"ollama-cloud",

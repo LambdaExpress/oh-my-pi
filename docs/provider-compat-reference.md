@@ -118,6 +118,7 @@ Types: `OpenAICompat` / `ResolvedOpenAISharedCompat` in `packages/catalog/src/ty
 | `toolStrictMode` | `"all_strict"` for Cerebras; `"mixed"` default | `all_strict` forces `strict: true` on all tools, `none` omits it, `mixed` honors per-tool `strict` |
 | `vercelGatewayRouting` / `isVercelGatewayHost` | Vercel AI Gateway hosts (also present on the Responses view) | Routing under `providerOptions.gateway` |
 | `dropThinkingWhenReasoningEffort` | Fireworks | Deletes the `thinking` block when `reasoning_effort` is present (Fireworks rejects both together) |
+| `stripImageInput` | `true` for DeepSeek-class ids except the `ocr`/`vision` token ids and the exact `deepseek-flash` id (`classes/deepseek.kdl`) | Replaces image parts with the `[image omitted: model does not support vision]` placeholder before encoding (`vision-guard.ts`) |
 | `extraBody` | unset (used by DeepSeek reasoning policy) | Arbitrary JSON merged into the request body (`applyOpenAIExtraBody`) |
 | `whenThinking` | OpenCode gateways, direct DeepSeek reasoning, explicit overrides | Pre-built complete alternate `ResolvedOpenAICompat`, pointer-swapped in when thinking is active (chat-completions view only; OpenRouter's merged compat inherits it) |
 

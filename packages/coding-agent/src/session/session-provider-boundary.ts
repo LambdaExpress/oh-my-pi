@@ -3,6 +3,7 @@
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionPreparation } from "@oh-my-pi/pi-agent-core/compaction";
 import type { AssistantMessage, ImageContent, Message, Model, SimpleStreamOptions, TextContent } from "@oh-my-pi/pi-ai";
+import { modelCarriesImageInput } from "@oh-my-pi/pi-ai/providers/vision-guard";
 import { isRecord, logger } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import type { ModelRegistry } from "../config/model-registry";
@@ -23,6 +24,18 @@ import type { BuildSessionContextOptions, SessionContext } from "./session-conte
 import type { SessionManager } from "./session-manager";
 
 type NormalizableContentBlock = AssistantMessage["content"][number] | TextContent | ImageContent;
+
+/**
+ * Whether an attached image has to be described by a vision model before the turn
+ * runs: the model's transport would drop it, so the fallback supplies the content.
+ * Decided by the wire predicate rather than `model.input` alone, so a model whose
+ * endpoint strips image parts cannot silently lose the attachment.
+ */
+export function needsImageDescriptionForModel(model: Model, settings: Settings): boolean {
+	if (modelCarriesImageInput(model)) return false;
+	if (settings.get("images.blockImages")) return false;
+	return settings.get("images.describeForTextModels");
+}
 
 /** Capabilities borrowed from the owning AgentSession. */
 export interface SessionProviderBoundaryHost {
@@ -222,19 +235,14 @@ export class SessionProviderBoundary {
 		return normalizeModelContextImages(images, { model: this.#host.model() });
 	}
 
-	/** Builds a hidden vision-model description for attachments sent to a text-only model. */
+	/** Builds a hidden vision-model description for attachments the model cannot receive. */
 	async buildImageDescriptionNotice(
 		normalizedImages: ImageContent[],
 		signal?: AbortSignal,
 		onVisionApproved?: () => void,
 	): Promise<CustomMessage | undefined> {
 		const model = this.#host.model();
-		const shouldDescribe =
-			!!model &&
-			!model.input.includes("image") &&
-			!this.#host.settings.get("images.blockImages") &&
-			this.#host.settings.get("images.describeForTextModels");
-		if (!shouldDescribe || !model) return undefined;
+		if (!model || !needsImageDescriptionForModel(model, this.#host.settings)) return undefined;
 
 		let blocks: TextContent[];
 		const visionApprovalRequired = this.#host.settings.get("images.visionApproval") === true;

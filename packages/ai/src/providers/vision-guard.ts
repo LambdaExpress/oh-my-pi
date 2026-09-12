@@ -1,4 +1,4 @@
-import type { ImageContent, Model, TextContent } from "../types";
+import type { Api, ImageContent, Model, TextContent } from "../types";
 
 export const NON_VISION_IMAGE_PLACEHOLDER = "[image omitted: model does not support vision]";
 export function partitionVisionContent(
@@ -39,4 +39,20 @@ export function isOpenAICompletionsVisionSupported(model: Model<"openai-completi
 	if (!model.input.includes("image")) return false;
 	if (model.compat.stripImageInput) return false;
 	return true;
+}
+
+/**
+ * Whether this model's transport actually puts image parts on the wire.
+ *
+ * `model.input` declares what the model can consume; a per-endpoint wire guard can
+ * still drop image parts (the chat-completions encoder honors
+ * `compat.stripImageInput`, e.g. for DeepSeek-family ids). Callers that decide
+ * whether to compensate for a dropped image MUST use this instead of `model.input`
+ * alone — otherwise a model declaring vision whose endpoint strips images silently
+ * loses the attachment.
+ */
+export function modelCarriesImageInput(model: Model<Api>): boolean {
+	if (!model.input.includes("image")) return false;
+	if (model.api !== "openai-completions") return true;
+	return (model.compat as { stripImageInput?: boolean } | undefined)?.stripImageInput !== true;
 }
