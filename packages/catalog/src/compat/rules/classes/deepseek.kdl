@@ -73,6 +73,13 @@ class "deepseek" {
 	models token="vision" {
 		strip-image-input #false
 	}
+	// Reviewed exception: DeepSeek-V4.1-Flash ships under the canonical id
+	// `deepseek-flash` and accepts `image_url` parts (Vision ✓ in Models &
+	// Pricing, verified against api.deepseek.com). The class default predates
+	// that release; the retired v4-flash ids remain text-only.
+	models "deepseek-flash" {
+		strip-image-input #false
+	}
 	on "ollama-cloud" "nvidia" "deepseek" "fireworks" "nanogpt" "opencode-go" "openrouter" {
 		stream-markup-healing-pattern "dsml"
 	}

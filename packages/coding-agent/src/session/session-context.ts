@@ -28,6 +28,12 @@ const LEGACY_SNAPCOMPACT_ARCHIVE_TEXT_GUARD = 250_000;
 const LEGACY_SNAPCOMPACT_TRUNCATED_CHARS_GUARD = 1_000_000;
 const SUPERSEDED_COMPACTION_SUMMARY = "[Superseded compaction summary elided after a newer compaction]";
 const SUPERSEDED_COMPACTION_SHORT_SUMMARY = "Superseded compaction elided";
+/**
+ * Tool a subagent ends its run with. Submitting it aborts the run, and a run
+ * that aborts can lose the result on disk (older transcripts, interrupt races),
+ * leaving the call unanswered on the resolved path.
+ */
+const TERMINAL_YIELD_TOOL_NAME = "yield";
 
 function hasLegacySnapcompactFrames(archive: snapcompact.Archive): boolean {
 	return archive.frames.some(frame => frame.font === undefined && frame.variant === undefined);
@@ -571,19 +577,31 @@ export function buildSessionContext(
 		for (const message of messages) {
 			if (message.role === "toolResult") pairedToolResultIds.add(message.toolCallId);
 		}
+		// A resultless `yield` is a legitimate ending, not a dangling call: the
+		// subagent's reply IS the call's arguments, and the parent received it
+		// through the job channel. Older transcripts lost the paired result (the
+		// run aborts itself on submit, so the result can race that abort), and
+		// stripping the call there erased the subagent's whole answer behind a
+		// "no result on this branch" row. The display transcript keeps it. The
+		// LLM context must still drop it: replaying an unanswered tool_use makes
+		// `transformMessages` fabricate a result, the rewind/restore loop this
+		// pass exists to prevent.
+		const keepResultlessYield = options?.transcript === true;
 		for (let i = messages.length - 1; i >= 0; i--) {
 			const message = messages[i];
 			if (message.role !== "assistant") continue;
-			let strippedToolCalls = 0;
+			const strippedCallIds = new Set<string>();
 			for (const block of message.content) {
-				if (block.type === "toolCall" && !pairedToolResultIds.has(block.id)) strippedToolCalls++;
+				if (block.type !== "toolCall") continue;
+				if (pairedToolResultIds.has(block.id)) continue;
+				if (keepResultlessYield && block.name === TERMINAL_YIELD_TOOL_NAME) continue;
+				strippedCallIds.add(block.id);
 			}
-			if (strippedToolCalls === 0) continue;
+			if (strippedCallIds.size === 0) continue;
 			const normalized = message.content
 				.filter(
 					block =>
-						!(block.type === "toolCall" && !pairedToolResultIds.has(block.id)) &&
-						block.type !== "redactedThinking",
+						block.type !== "redactedThinking" && !(block.type === "toolCall" && strippedCallIds.has(block.id)),
 				)
 				.map(block =>
 					block.type === "thinking" && block.thinkingSignature
@@ -598,7 +616,7 @@ export function buildSessionContext(
 					// Display transcript: keep the turn (even content-less) and mark
 					// how many calls were dropped so the TUI renders a placeholder
 					// row instead of silently erasing the turn's activity.
-					(rewritten as AgentMessage & StrippedToolCallsMarker).strippedToolCalls = strippedToolCalls;
+					(rewritten as AgentMessage & StrippedToolCallsMarker).strippedToolCalls = strippedCallIds.size;
 				}
 				messages[i] = rewritten;
 			}

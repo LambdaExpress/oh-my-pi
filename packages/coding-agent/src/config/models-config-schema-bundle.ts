@@ -57,6 +57,11 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"alwaysSendMaxTokens?": "boolean",
 		"strictResponsesPairing?": "boolean",
 		"supportsImageDetailOriginal?": "boolean",
+		// Wire-level image gating: `true` sends the "[image omitted: model does not
+		// support vision]" placeholder instead of image parts. The catalog sets it
+		// per class (DeepSeek-family ids by default); user config may override it
+		// per provider or model for proxies that reject `image_url`.
+		"stripImageInput?": "boolean",
 		// anthropic-messages compat flags (same `compat` slot, per-api interpretation)
 		"supportsContextManagement?": "boolean",
 		"supportsEagerToolInputStreaming?": "boolean",

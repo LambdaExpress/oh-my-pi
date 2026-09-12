@@ -551,6 +551,9 @@ Request shaping:
 - `supportsLongPromptCacheRetention` — host honors `prompt_cache_retention: "24h"` on the Responses API. Default: auto (api.openai.com).
 - `supportsImageDetailOriginal` — allow the Responses API's nonstandard `detail: "original"` image
   mode where the endpoint supports it.
+- `stripImageInput` — send the `[image omitted: model does not support vision]` placeholder instead of
+  image parts, for endpoints that reject `image_url` with a 400. Default: auto (the catalog strips
+  images for text-only DeepSeek-family ids).
 - `extraBody` — extra top-level fields merged into every request body (gateway hints, controller selectors, etc.).
 
 Reasoning / thinking:

@@ -10,6 +10,7 @@
 
 - Added a test-only `closeModelCacheSharedDb()` export so callers can release the process-global shared model-cache SQLite handle before removing redirected agent temp dirs on Windows (EBUSY cleanup failures).
 - Fixed OpenCode Go DeepSeek V4 models losing the `max` thinking effort during startup or after Responses API routing: the bundled pre-discovery catalog and runtime derivation now both preserve the model-defined `low`/`high`/`max` ladder.
+- Fixed DeepSeek V4.1 Flash (`deepseek-flash`) dropping image parts as a text-only id; the canonical id now carries vision while the retired `deepseek-v4-flash` ids keep the placeholder.
 ## [18.1.14] - 2026-09-07
 
 ### Fixed
