@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added Command Code subscription quota reporting, so `/usage` and the status line show the five-hour and weekly credit windows (with reset countdowns) instead of a spend estimate for `commandcode` models.
+
 ## [18.1.14] - 2026-09-07
 
 ### Fixed
