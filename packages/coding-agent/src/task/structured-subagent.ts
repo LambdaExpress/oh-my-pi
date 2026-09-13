@@ -581,6 +581,22 @@ function attachStructuredOutputMetadata(result: SingleResult, schema: Structured
 		return;
 	}
 	if (result.structuredOutput) return;
+	// A failed run that produced no model output has no payload to validate:
+	// the failure came from the transport/provider layer, not the schema.
+	// Reporting it as a schema violation would blame the wrong layer, and an
+	// own `data` key holding the empty string would also make the executor
+	// publish a bogus `<id>.json` sidecar that answers `agent://<id>?q=.<field>`
+	// with `""`. `unavailable` + no `data` keeps the provider error readable
+	// while leaving consumers with nothing to parse.
+	if (result.exitCode !== 0 && result.output.trim().length === 0) {
+		result.structuredOutput = {
+			source: schema.source,
+			mode: schema.mode,
+			status: "unavailable",
+			...(result.error ? { error: result.error } : {}),
+		};
+		return;
+	}
 	let fallbackData: unknown = result.output;
 	try {
 		fallbackData = JSON.parse(result.output);

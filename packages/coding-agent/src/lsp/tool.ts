@@ -66,6 +66,7 @@ import {
 	getLspServersForFile,
 	isMethodNotFoundError,
 	isProjectAwareLspServer,
+	isTypeScriptNoProjectError,
 	LSP_READONLY_ACTIONS,
 	reloadServer,
 } from "./servers";
@@ -151,6 +152,15 @@ function getFileClientCwd(
 
 const CSHARP_LS_INDEXING_HINT =
 	"csharp-ls may not have indexed this project or the file may be outside its loaded MSBuild workspace. Retry after project load completes; if it persists, verify the initialized project root and csharp-ls logs.";
+
+/**
+ * tsserver's "No Project." only says that the queried file is not part of any
+ * open project; the raw server dump names no cause and no remedy. Spell out the
+ * two conditions the server cannot report and the knobs that actually change
+ * them, without inventing switches the server does not support.
+ */
+const TYPESCRIPT_NO_PROJECT_HINT =
+	"The TypeScript server has no project open for this file, or the project's language service is disabled (a JavaScript project can exceed the server's non-TS file-size budget). Check that tsconfig.json/jsconfig.json include covers the file and that exclude keeps large vendored JavaScript (for example public/fontawesome/js) out so the project stays under that budget, then retry. Server-specific options can be passed through .lsp.json initOptions; typescript-language-server supports maxTsServerMemory, tsserver.path and tsserver.fallbackPath.";
 
 /**
  * Enumerate the {oldUri, newUri} pairs needed for an LSP willRenameFiles/didRenameFiles request.
@@ -1704,8 +1714,13 @@ export class LspTool implements AgentTool<typeof lspSchema, LspToolDetails, Them
 				throw new ToolAbortError();
 			}
 			const errorMessage = err instanceof Error ? err.message : String(err);
+			// Keep the original server dump (name, code, message) for debugging,
+			// then append the only actionable reading of tsserver's "No Project.".
+			const noProjectHint = isTypeScriptNoProjectError(serverName, serverConfig, err)
+				? `\n[${serverName}] ${TYPESCRIPT_NO_PROJECT_HINT}`
+				: "";
 			return {
-				content: [{ type: "text", text: `LSP error: ${errorMessage}` }],
+				content: [{ type: "text", text: `LSP error: ${errorMessage}${noProjectHint}` }],
 				details: { serverName, action, success: false, request: params },
 			};
 		}

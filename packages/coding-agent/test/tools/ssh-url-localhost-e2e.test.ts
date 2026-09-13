@@ -211,8 +211,8 @@ describe.skipIf(!SSH_OK)("ssh:// through the real read/grep/write tools (localho
 		expect(full).toContain("alpha");
 		expect(full).toContain("beta");
 		expect(full).toContain("gamma");
-		// `:1-1` plus the 3-line trailing context window covers lines 1-4; the
-		// line-10 OMEGALINE marker proves the bounded range actually sliced.
+		// `:1-1` returns exactly line 1; the line-10 OMEGALINE marker proves the
+		// bounded range actually sliced.
 		const range = textOf(await tool.execute("r-range", { path: `ssh://localhost${TMP}/range.txt:1-1` }));
 		expect(range).toContain("ALPHALINE");
 		expect(range).not.toContain("OMEGALINE");

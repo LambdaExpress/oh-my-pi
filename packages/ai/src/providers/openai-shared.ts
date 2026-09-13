@@ -522,22 +522,26 @@ export function getOpenAIStrictToolsScope(
 	};
 }
 
+/** Stable key for the provider/baseUrl/model endpoint a compat fallback applies to. */
+export function getOpenAIEndpointScopeKey(scope: OpenAIStrictToolsScope | undefined): string | undefined {
+	if (!scope) return undefined;
+	return `${scope.provider}:${scope.baseUrl ?? ""}:${scope.modelId}`;
+}
+
 export function isStrictToolsDisabledForScope(
 	state: OpenAIStrictToolsState | undefined,
 	scope: OpenAIStrictToolsScope | undefined,
 ): boolean {
-	if (!scope) return false;
-	return (
-		state?.strictTools.disabledModelScopes.has(`${scope.provider}:${scope.baseUrl ?? ""}:${scope.modelId}`) ?? false
-	);
+	const key = getOpenAIEndpointScopeKey(scope);
+	return key !== undefined && (state?.strictTools.disabledModelScopes.has(key) ?? false);
 }
 
 export function disableStrictToolsForScope(
 	state: OpenAIStrictToolsState | undefined,
 	scope: OpenAIStrictToolsScope | undefined,
 ): void {
-	if (!scope) return;
-	state?.strictTools.disabledModelScopes.add(`${scope.provider}:${scope.baseUrl ?? ""}:${scope.modelId}`);
+	const key = getOpenAIEndpointScopeKey(scope);
+	if (key !== undefined) state?.strictTools.disabledModelScopes.add(key);
 }
 
 /**

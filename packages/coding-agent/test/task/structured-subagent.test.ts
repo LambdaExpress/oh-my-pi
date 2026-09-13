@@ -654,9 +654,39 @@ describe("structured subagent primitive", () => {
 
 		expect(settled.result.exitCode).toBe(1);
 		expect(settled.result.structuredOutput?.status).toBe("invalid");
+		// A failing run that did produce output keeps its parsed payload: the
+		// no-output "unavailable" path must not swallow real non-conforming
+		// results (nor their recoverable data).
+		expect(Object.hasOwn(settled.result.structuredOutput ?? {}, "data")).toBe(true);
+		expect(settled.result.structuredOutput?.data).toEqual({ ok: true });
 		expect(artifactsDirsFromRegistry()).toContain(settled.artifactsDir);
 		await expect(fs.stat(artifactsDir ?? "")).resolves.toBeDefined();
 		await fs.rm(settled.artifactsDir, { recursive: true, force: true });
+	});
+
+	it("reports a failed run with no model output as unavailable metadata, not a schema violation", async () => {
+		// Regression: a queued subagent job that died before emitting anything
+		// (e.g. a provider HTTP 400) had the empty string fabricated into
+		// `{ status: "invalid", data: "" }`, so the delivered job metadata told
+		// the parent the output failed the schema and masked the real transport
+		// error behind a schema complaint. No model output means no payload to
+		// validate: the run is "unavailable" and carries no `data` key — which
+		// also keeps the executor from serializing a bogus empty `<id>.json`
+		// sidecar that would answer `agent://<id>?q=.<field>` with `""`.
+		mockDiscovery();
+		vi.spyOn(executorModule, "runSubprocess").mockImplementation(async () => ({
+			...result(),
+			exitCode: 1,
+			output: "  \n\t ",
+			error: "400 Bad Request: messages[1].content must be a string",
+		}));
+
+		const settled = await runStructuredSubagent(request());
+		const structured = settled.result.structuredOutput;
+
+		expect(structured?.status).toBe("unavailable");
+		expect(Object.hasOwn(structured ?? {}, "data")).toBe(false);
+		expect(structured?.error).toContain("400 Bad Request: messages[1].content must be a string");
 	});
 
 	it("retains isolated failure artifacts needed for recovery", async () => {

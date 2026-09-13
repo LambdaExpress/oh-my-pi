@@ -154,16 +154,17 @@ describe("read tool large artifact handling", () => {
 		expect(formatTruncationMetaNotice(truncation)).toContain(`Use :${truncation.nextOffset} to continue`);
 	});
 
-	it("reports an oversized selected line instead of sending a looping continuation selector", async () => {
+	it("byte-caps an oversized requested artifact line without a looping continuation selector", async () => {
 		await Bun.write(path.join(artifactDir, "0.mcp.log"), oversizedSelectedLineArtifact());
 
 		const result = await tool.execute("call-oversized-selected", { path: "artifact://0:2-2" });
 		const output = getTextOutput(result);
 
-		expect(output).toContain("leading-context");
-		expect(output).toContain("Line 2 is 68.4KB");
-		expect(output).toContain("50.0KB read budget");
-		expect(output).toContain("artifact://0:raw:2-2");
+		// `:2-2` selects line 2 alone; line 1 is not pulled in as context, so the
+		// oversized requested line itself is what the read byte-caps.
+		expect(output).toContain("oversized-");
+		expect(output).not.toContain("leading-context");
+		expect(output).not.toContain("trailing-one");
 		const truncation = result.details?.meta?.truncation;
 		expect(truncation?.totalBytes).toBeGreaterThan(70_000);
 		expect(truncation?.nextOffset).toBeUndefined();
@@ -199,9 +200,9 @@ describe("read tool large artifact handling", () => {
 	it("tails an artifact with :-N by counting lines first, then streaming only that window", async () => {
 		const output = getTextOutput(await tool.execute("call-tail", { path: "artifact://0:-3" }));
 
-		// One leading context line joins the requested 398-400 window.
+		// Exactly the requested 398-400 window, with no leading context.
 		expect(output).not.toContain("line-396");
-		expect(output).toContain("line-397");
+		expect(output).not.toContain("line-397");
 		expect(output).toContain("line-398");
 		expect(output).toContain("line-400");
 

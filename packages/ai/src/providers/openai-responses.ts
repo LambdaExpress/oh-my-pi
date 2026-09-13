@@ -86,6 +86,7 @@ import {
 	createOpenAIStrictToolsState,
 	disableStrictToolsForScope,
 	getJuiceValue,
+	getOpenAIEndpointScopeKey,
 	getOpenAIPromptCacheKey,
 	getOpenAIResponsesRoutingSessionId,
 	getOpenAIStrictToolsScope,
@@ -202,6 +203,8 @@ function isRetryableOpenAIResponsesStreamFailure(error: unknown): boolean {
 interface OpenAIResponsesProviderSessionState
 	extends ProviderSessionState, OpenAIStrictToolsState, OpenAIReasoningEffortFallbackState {
 	nativeHistoryReplayWarmed: boolean;
+	/** Endpoint scopes that rejected replayed encrypted reasoning with HTTP 400; their requests omit it. */
+	encryptedReasoningRejectedScopes: Set<string>;
 	/** Stateful `previous_response_id` chain baselines, keyed by baseUrl/model/session. */
 	chains: Map<string, OpenAIResponsesChainState>;
 	/** `configuration_update` effort baselines, keyed by baseUrl/model/session. */
@@ -235,10 +238,12 @@ function createOpenAIResponsesProviderSessionState(): OpenAIResponsesProviderSes
 		...strictToolsState,
 		...reasoningEffortFallbackState,
 		nativeHistoryReplayWarmed: false,
+		encryptedReasoningRejectedScopes: new Set(),
 		chains: new Map(),
 		effortControls: new Map(),
 		close: () => {
 			state.nativeHistoryReplayWarmed = false;
+			state.encryptedReasoningRejectedScopes.clear();
 			state.chains.clear();
 			state.effortControls.clear();
 			clearOpenAIStrictToolsState(state);
@@ -259,6 +264,22 @@ function getOpenAIResponsesProviderSessionState(
 	const created = createOpenAIResponsesProviderSessionState();
 	providerSessionState.set(key, created);
 	return created;
+}
+
+function isEncryptedReasoningDisabledForScope(
+	state: OpenAIResponsesProviderSessionState | undefined,
+	scope: OpenAIStrictToolsScope | undefined,
+): boolean {
+	const key = getOpenAIEndpointScopeKey(scope);
+	return key !== undefined && (state?.encryptedReasoningRejectedScopes.has(key) ?? false);
+}
+
+function disableEncryptedReasoningForScope(
+	state: OpenAIResponsesProviderSessionState | undefined,
+	scope: OpenAIStrictToolsScope | undefined,
+): void {
+	const key = getOpenAIEndpointScopeKey(scope);
+	if (key !== undefined) state?.encryptedReasoningRejectedScopes.add(key);
 }
 
 function isOpenAIResponsesStatefulEnabled(
@@ -464,7 +485,8 @@ const streamOpenAIResponsesOnce = (
 			});
 			const premiumRequestsTotal = copilotPremiumRequests;
 			const providerSessionState = getOpenAIResponsesProviderSessionState(model, options?.providerSessionState);
-			const strictToolsScope = getOpenAIStrictToolsScope(model, baseUrl);
+			// Scope key for endpoint-scoped compat fallbacks (strict tools, encrypted reasoning replay).
+			const endpointScope = getOpenAIStrictToolsScope(model, baseUrl);
 			const promptCacheBreakpointPolicy =
 				resolveCacheRetention(options?.cacheRetention) !== "none" && options?.promptCache?.mode === "explicit"
 					? (options.promptCache.breakpoint ?? "latest-stable-message")
@@ -480,7 +502,7 @@ const streamOpenAIResponsesOnce = (
 				context,
 				options,
 				providerSessionState,
-				strictToolsScope,
+				endpointScope,
 				false,
 				chainState?.canAppend ? chainState.lastParams?.input : undefined,
 			);
@@ -584,8 +606,17 @@ const streamOpenAIResponsesOnce = (
 				}
 			};
 			let strictRetryAvailable = true;
+			let encryptedReasoningRetryAvailable = true;
 			let activeStrictToolsApplied = builtParams.strictToolsApplied;
 			let forceDisableStrictTools = false;
+			let forceDisableEncryptedReasoning = false;
+			// Rebuild options for a fallback retry, carrying forward every compat
+			// feature an earlier fallback already disabled so one retry cannot
+			// silently re-enable another.
+			const buildFallbackOptions = (): OpenAIResponsesOptions | undefined =>
+				forceDisableEncryptedReasoning
+					? { ...options, includeEncryptedReasoning: false, filterReasoningHistory: true }
+					: options;
 			const openResponsesStreamWithFallbacks = async (): Promise<AsyncIterable<ResponseStreamEvent>> => {
 				let openaiStream: AsyncIterable<ResponseStreamEvent>;
 				while (true) {
@@ -633,6 +664,49 @@ const streamOpenAIResponsesOnce = (
 							};
 							continue;
 						}
+						const canRetryWithoutEncryptedReasoning =
+							encryptedReasoningRetryAvailable &&
+							!requestSignal.aborted &&
+							AIError.isInvalidEncryptedContentError(error, capturedErrorResponse);
+						if (canRetryWithoutEncryptedReasoning) {
+							// The endpoint rejected the replayed reasoning ciphertext.
+							// Rebuild without the `include` request and without
+							// reasoning items (filterReasoningHistory), remember the
+							// rejection for this session, and retry exactly once.
+							encryptedReasoningRetryAvailable = false;
+							forceDisableEncryptedReasoning = true;
+							disableEncryptedReasoningForScope(providerSessionState, endpointScope);
+							const fallbackBuilt = buildParams(
+								model,
+								context,
+								buildFallbackOptions(),
+								providerSessionState,
+								endpointScope,
+								forceDisableStrictTools,
+								chainState?.canAppend ? chainState.lastParams?.input : undefined,
+							);
+							const fallbackParams = fallbackBuilt.params;
+							if (chainState && !chainState.disabled) fallbackParams.store = true;
+							let fallbackChained: OpenAIResponsesChainedParams =
+								chainState && !chainState.disabled
+									? buildOpenAIResponsesChainedParams(
+											fallbackParams,
+											fallbackBuilt.trailingScaffoldingItems,
+											chainState,
+										)
+									: { params: fallbackParams };
+							sentPreviousResponseId = fallbackChained.previousResponseId;
+							fallbackChained = {
+								...fallbackChained,
+								params: await applyPayloadReplacement(fallbackChained.params),
+							};
+							chained = fallbackChained;
+							activeRawRequestDump.body = chained.params;
+							activeParams = fallbackParams;
+							activeTrailingScaffoldingItems = fallbackBuilt.trailingScaffoldingItems;
+							activeStrictToolsApplied = fallbackBuilt.strictToolsApplied;
+							continue;
+						}
 						const compiledGrammarTooLarge =
 							model.compat.retryWithoutStrictOnGrammarError &&
 							isCompiledGrammarTooLargeStrictError(error, capturedErrorResponse);
@@ -648,13 +722,13 @@ const streamOpenAIResponsesOnce = (
 						if (canRetryWithoutStrictTools) {
 							strictRetryAvailable = false;
 							forceDisableStrictTools = true;
-							disableStrictToolsForScope(providerSessionState, strictToolsScope);
+							disableStrictToolsForScope(providerSessionState, endpointScope);
 							const fallbackBuilt = buildParams(
 								model,
 								context,
-								options,
+								buildFallbackOptions(),
 								providerSessionState,
-								strictToolsScope,
+								endpointScope,
 								true,
 								chainState?.canAppend ? chainState.lastParams?.input : undefined,
 							);
@@ -707,9 +781,9 @@ const streamOpenAIResponsesOnce = (
 						const currentBuilt = buildParams(
 							model,
 							context,
-							options,
+							buildFallbackOptions(),
 							providerSessionState,
-							strictToolsScope,
+							endpointScope,
 							forceDisableStrictTools,
 						);
 						const currentParams = currentBuilt.params;
@@ -1130,18 +1204,24 @@ export function buildParams(
 	context: Context,
 	options: OpenAIResponsesOptions | undefined,
 	providerSessionState: OpenAIResponsesProviderSessionState | undefined,
-	strictToolsScope?: OpenAIStrictToolsScope,
+	endpointScope?: OpenAIStrictToolsScope,
 	disableStrictToolsOverride = false,
 	statefulCacheBaseline?: ResponseInput,
 ): { params: OpenAIResponsesSamplingParams; trailingScaffoldingItems: number; strictToolsApplied: boolean } {
+	// An endpoint that rejected replayed encrypted reasoning keeps both the
+	// `include` request and the reasoning items out of later turns, so the
+	// session does not pay the same 400 round-trip on every request.
+	const encryptedReasoningDisabled = isEncryptedReasoningDisabledForScope(providerSessionState, endpointScope);
+	const includeEncryptedReasoning = encryptedReasoningDisabled ? false : options?.includeEncryptedReasoning;
+	const filterReasoningHistory = encryptedReasoningDisabled ? true : options?.filterReasoningHistory;
 	const policy = resolveOpenAICompatPolicy(model, {
 		endpoint: "responses",
 		reasoning: options?.reasoning,
 		disableReasoning: options?.disableReasoning,
 		toolChoice: options?.toolChoice,
 		strictResponsesPairing: options?.strictResponsesPairing,
-		includeEncryptedReasoning: options?.includeEncryptedReasoning,
-		filterReasoningHistory: options?.filterReasoningHistory,
+		includeEncryptedReasoning,
+		filterReasoningHistory,
 		omitReasoningEffort: options?.omitReasoningEffort,
 	});
 	const strictResponsesPairing = policy.tools.strictResponsesPairing;
@@ -1230,7 +1310,7 @@ export function buildParams(
 	let strictToolsApplied = false;
 	if (context.tools) {
 		const disableStrictTools =
-			disableStrictToolsOverride || isStrictToolsDisabledForScope(providerSessionState, strictToolsScope);
+			disableStrictToolsOverride || isStrictToolsDisabledForScope(providerSessionState, endpointScope);
 		const strictMode = !disableStrictTools && model.compat.supportsStrictMode !== false;
 		params.tools = convertTools(context.tools, strictMode, model);
 		strictToolsApplied = params.tools.some(t => (t as { strict?: boolean }).strict === true);
@@ -1279,8 +1359,8 @@ export function buildParams(
 		disableReasoning: options?.disableReasoning,
 		toolChoice: params.tool_choice,
 		strictResponsesPairing: options?.strictResponsesPairing,
-		includeEncryptedReasoning: options?.includeEncryptedReasoning,
-		filterReasoningHistory: options?.filterReasoningHistory,
+		includeEncryptedReasoning,
+		filterReasoningHistory,
 		omitReasoningEffort: options?.omitReasoningEffort,
 	});
 	applyResponsesCompatPolicy(params, reasoningPolicy, {

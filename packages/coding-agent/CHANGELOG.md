@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- `write` reports the real UTF-8 byte count in its progress and success messages instead of the JavaScript character count, so non-ASCII content no longer understates the written size.
+- Fixed mixed line endings being rewritten across a whole file: a patch or edit now keeps every untouched line's original terminator, only new lines adopt the surrounding style.
+- Fixed `bash` failing with `command not found` on Windows when a relative executable path (`./tool.exe`) is combined with a different working directory; relative program paths now resolve against the shell's working directory.
+- Fixed `lsp` returning a raw `No Project.` server dump for TypeScript projects whose language service is disabled: the error now names the cause and the concrete fixes (`tsconfig.json`/`jsconfig.json` `include`/`exclude`, `.lsp.json` `initOptions`).
+- Fixed `debug` reporting `js-debug-adapter` as available when its server script was not runnable, and adapter readiness failures now include the adapter's stderr.
+- Failed subagent jobs with no model output are reported as unavailable instead of a fabricated schema violation with an empty payload.
+- Explicit `read` line selectors (`:N`, `:N-M`, `:N+K`, `:-N`, multi-range) now return exactly the requested lines: no leading/trailing context and no growth to the enclosing bracket/tree-sitter block. Only an unranged read may surface block boundaries.
 - Fixed attached images being silently dropped on models whose endpoint strips image parts: the vision-model description now follows the wire predicate instead of `model.input` alone.
 - Fixed a subagent's `yield` result being dropped from its transcript when the run aborted on submit, which hid the answer behind a "no result on this branch" row.
 - Finished subagent views no longer elide the final `yield` call: transcripts written before the fix still render the call and its arguments instead of the placeholder.

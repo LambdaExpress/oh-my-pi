@@ -217,9 +217,9 @@ describe("read summary", () => {
 		expect(linesFirstText).toContain("delta");
 		expect(linesFirstText).not.toMatch(/^\s*\d+[a-z]{2}\|/m);
 		expect(linesFirstText).not.toMatch(/^\s*\d+\|/m);
-		// Note: explicit ranges expand with surrounding context lines, so we don't
-		// assert on what is excluded — only that the requested range is present
-		// verbatim with no anchor or line-number prefixes.
+		// Raw explicit ranges are exact: nothing outside 2-4 is emitted.
+		expect(linesFirstText).not.toContain("alpha");
+		expect(linesFirstText).not.toContain("epsilon");
 
 		const rawFirst = await tool.execute("read-summary-compound-raw-lines", { path: `${fixture}:raw:2-4` });
 		const rawFirstText = textOutput(rawFirst);

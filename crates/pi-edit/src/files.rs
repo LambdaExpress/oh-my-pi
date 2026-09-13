@@ -19,27 +19,36 @@ use crate::{
 	error::{EditError, EditResult},
 	notebook,
 	path_policy::{PathPolicy, VirtualResource, VirtualResources, canonical_key},
-	text::{LineEnding, detect_line_ending, normalize_to_lf, restore_line_endings, strip_bom},
+	text::{
+		LineEnding, LineTerminator, detect_line_ending, normalize_to_lf, restore_line_endings,
+		restore_line_endings_preserving, scan_line_terminators, strip_bom,
+	},
 };
 
 /// One target file as read from disk plus its normalized editable form.
 #[derive(Debug)]
 pub struct FileRead {
-	pub resolved:    Resolved,
+	pub resolved:      Resolved,
 	/// Snapshot-store key.
-	pub canonical:   PathBuf,
+	pub canonical:     PathBuf,
 	/// Bytes as read (notebook JSON for `.ipynb`).
-	pub raw:         String,
-	pub bom:         &'static str,
-	pub ending:      LineEnding,
+	pub raw:           String,
+	pub bom:           &'static str,
+	/// Detected first style: the terminator for uniform files, and the
+	/// fallback for added lines with no original reference.
+	pub ending:        LineEnding,
+	/// Per-line terminators, kept only when the file mixes ending styles.
+	pub mixed_endings: Option<Vec<LineTerminator>>,
 	/// LF-normalized, BOM-stripped editable text (notebook cell projection).
-	pub text:        String,
-	pub is_notebook: bool,
+	pub text:          String,
+	pub is_notebook:   bool,
 }
 
 impl FileRead {
 	/// Encode LF-normalized post-edit text back to the bytes this file
-	/// persists with: BOM and line endings restored, notebooks re-serialized.
+	/// persists with: BOM restored, notebooks re-serialized, and line
+	/// endings taken from the original bytes. A mixed-ending file keeps
+	/// each untouched line's own terminator.
 	pub fn persist(&self, after_lf: &str) -> EditResult<String> {
 		if self.is_notebook {
 			return notebook::serialize_edited_notebook_text(
@@ -49,9 +58,15 @@ impl FileRead {
 			)
 			.map_err(|err| EditError::apply(err.to_string()));
 		}
-		let mut out = String::with_capacity(self.bom.len() + after_lf.len());
+		let body = match &self.mixed_endings {
+			Some(terminators) => {
+				restore_line_endings_preserving(after_lf, &self.text, terminators, self.ending)
+			},
+			None => restore_line_endings(after_lf, self.ending),
+		};
+		let mut out = String::with_capacity(self.bom.len() + body.len());
 		out.push_str(self.bom);
-		out.push_str(&restore_line_endings(after_lf, self.ending));
+		out.push_str(&body);
 		Ok(out)
 	}
 }
@@ -163,10 +178,11 @@ impl FileCache {
 			let (bom, body) = strip_bom(&raw);
 			(bom, normalize_to_lf(body).into_owned())
 		};
-		let ending = if is_notebook {
-			LineEnding::Lf
+		let (ending, mixed_endings) = if is_notebook {
+			(LineEnding::Lf, None)
 		} else {
-			detect_line_ending(strip_bom(&raw).1)
+			let body = strip_bom(&raw).1;
+			(detect_line_ending(body), scan_line_terminators(body))
 		};
 		let read = Arc::new(FileRead {
 			canonical: resolved.absolute.clone(),
@@ -174,6 +190,7 @@ impl FileCache {
 			raw,
 			bom,
 			ending,
+			mixed_endings,
 			text,
 			is_notebook,
 		});
@@ -217,10 +234,11 @@ impl FileCache {
 			let (bom, body) = strip_bom(&raw);
 			(bom, normalize_to_lf(body).into_owned())
 		};
-		let ending = if is_notebook {
-			LineEnding::Lf
+		let (ending, mixed_endings) = if is_notebook {
+			(LineEnding::Lf, None)
 		} else {
-			detect_line_ending(strip_bom(&raw).1)
+			let body = strip_bom(&raw).1;
+			(detect_line_ending(body), scan_line_terminators(body))
 		};
 		let read = Arc::new(FileRead {
 			canonical: canonical_key(&resolved.absolute),
@@ -228,6 +246,7 @@ impl FileCache {
 			raw,
 			bom,
 			ending,
+			mixed_endings,
 			text,
 			is_notebook,
 		});

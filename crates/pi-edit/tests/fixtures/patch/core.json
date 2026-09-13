@@ -79,6 +79,12 @@
    "expect": {"files":{"nonewline.txt":"foo\nbaz"}}
   },
   {
+   "name": "preserves mixed line endings outside the edited line",
+   "files": {"mixed.txt":"one\r\ntwo\r\nthree\nfour\r\n"},
+   "args": {"path":"mixed.txt","edits":[{"op":"update","diff":"@@\n-three\n+THREE"}]},
+   "expect": {"files":{"mixed.txt":"one\r\ntwo\r\nTHREE\nfour\r\n"}}
+  },
+  {
    "name": "rejects out-of-range line hints for insertions",
    "files": {"line-hint.txt":"a\nb\n"},
    "args": {"path":"line-hint.txt","edits":[{"op":"update","diff":"@@ -999,0 +999,1 @@\n+tail"}]},

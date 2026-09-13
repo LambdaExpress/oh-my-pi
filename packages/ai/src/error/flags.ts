@@ -1,5 +1,7 @@
+import { extractHttpStatusFromError, isRecord } from "@oh-my-pi/pi-utils";
 import { isUnexpectedSocketCloseMessage } from "@oh-my-pi/pi-utils/fetch-retry";
 import type { Api, AssistantMessage } from "../types";
+import type { CapturedHttpErrorResponse } from "../utils/http-inspector";
 import { AwsCredentialsError } from "./aws";
 import {
 	AnthropicConnectionError,
@@ -682,6 +684,52 @@ export function isGrammarError(error: unknown): boolean {
  */
 export function isFastModeUnsupported(error: unknown): boolean {
 	return is(classify(error), Flag.FastModeUnsupported);
+}
+
+// Responses-family endpoints (and proxies in front of them) that cannot honor
+// replayed `reasoning.encrypted_content` reject the payload with HTTP 400
+// `invalid_request_error` — as `code: "invalid_encrypted_content"`, as
+// `param: "input[3].encrypted_content"`, or as prose naming the field. The
+// provider heals these by rebuilding the request without encrypted reasoning
+// and retrying exactly once; classification stays out of `classify` so 4xx
+// retry semantics are untouched.
+const INVALID_ENCRYPTED_CONTENT_PATTERN = /invalid[_ -]?encrypted[_ -]?content/i;
+const ENCRYPTED_CONTENT_FIELD_PATTERN = /encrypted[_ -]?content/i;
+const ENCRYPTED_CONTENT_REJECTION_PATTERN =
+	/invalid|unsupported|not (?:supported|allowed|recognized|accepted)|unknown|unrecognized|unexpected/i;
+
+function capturedErrorStringField(
+	captured: CapturedHttpErrorResponse | undefined,
+	field: "code" | "param",
+): string | undefined {
+	const body = isRecord(captured?.bodyJson) ? captured.bodyJson : undefined;
+	const nested = isRecord(body?.error) ? body.error : undefined;
+	if (typeof nested?.[field] === "string") return nested[field];
+	return typeof body?.[field] === "string" ? body[field] : undefined;
+}
+
+/**
+ * HTTP 400 rejecting replayed encrypted reasoning content: the reported code or
+ * parameter names `encrypted_content`, or the message pairs the field with an
+ * invalid/unsupported verdict. Only 400 matches — 422 keeps its existing
+ * request-validation handling.
+ */
+export function isInvalidEncryptedContentError(error: unknown, captured?: CapturedHttpErrorResponse): boolean {
+	const status = extractHttpStatusFromError(error) ?? captured?.status;
+	if (status !== 400) return false;
+	const code = capturedErrorStringField(captured, "code") ?? "";
+	const param = capturedErrorStringField(captured, "param") ?? "";
+	if (INVALID_ENCRYPTED_CONTENT_PATTERN.test(code) || INVALID_ENCRYPTED_CONTENT_PATTERN.test(param)) return true;
+	const messageParts = [
+		error instanceof Error ? error.message : undefined,
+		captured?.bodyText,
+		capturedErrorStringField(captured, "code"),
+	]
+		.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+		.join("\n");
+	if (INVALID_ENCRYPTED_CONTENT_PATTERN.test(messageParts)) return true;
+	if (ENCRYPTED_CONTENT_FIELD_PATTERN.test(param)) return true;
+	return ENCRYPTED_CONTENT_FIELD_PATTERN.test(messageParts) && ENCRYPTED_CONTENT_REJECTION_PATTERN.test(messageParts);
 }
 
 const CLINE_PASS_SURFACE_GATE_PATTERN = /only available via cline product surfaces/i;

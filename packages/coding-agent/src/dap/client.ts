@@ -57,6 +57,13 @@ function toErrorMessage(value: unknown): string {
 	return String(value);
 }
 
+/** Append adapter stderr to a readiness failure so a silent-exit adapter reports
+ *  why it could not start instead of only that it never became reachable. */
+function withAdapterStderr(message: string, proc: { peekStderr(): string }): string {
+	const stderr = proc.peekStderr().trim();
+	return stderr ? `${message}: ${stderr}` : message;
+}
+
 /** Explicit negative DAP response. Transport and timeout failures remain ordinary errors. */
 export class DapRequestRejectedError extends Error {
 	readonly command: string;
@@ -333,7 +340,8 @@ export class DapClient {
 		// adapter process is orphaned.
 		const { promise: timeoutPromise, reject: rejectTimeout } = Promise.withResolvers<never>();
 		const connectTimeout = setTimeout(
-			() => rejectTimeout(new Error(`${adapter.name} did not connect within ${timeoutMs}ms`)),
+			() =>
+				rejectTimeout(new Error(withAdapterStderr(`${adapter.name} did not connect within ${timeoutMs}ms`, proc))),
 			timeoutMs,
 		);
 		try {
@@ -785,13 +793,13 @@ async function isUnixSocketReady(socketPath: string): Promise<boolean> {
 async function waitForCondition(
 	check: () => boolean | Promise<boolean>,
 	timeoutMs: number,
-	proc: { exitCode: number | null },
+	proc: { exitCode: number | null; peekStderr(): string },
 ): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (await check()) return;
 		if (proc.exitCode !== null) {
-			throw new Error("Adapter process exited before socket was ready");
+			throw new Error(withAdapterStderr("Adapter process exited before socket was ready", proc));
 		}
 		await Bun.sleep(50);
 	}
@@ -859,12 +867,12 @@ async function waitForTcpTransport(
 	host: string,
 	port: number,
 	timeoutMs: number,
-	proc: { exitCode: number | null },
+	proc: { exitCode: number | null; peekStderr(): string },
 ): Promise<SocketTransport> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
 		if (proc.exitCode !== null) {
-			throw new Error(`Adapter process exited before TCP port ${host}:${port} was ready`);
+			throw new Error(withAdapterStderr(`Adapter process exited before TCP port ${host}:${port} was ready`, proc));
 		}
 		try {
 			return await connectTcpSocket(host, port);

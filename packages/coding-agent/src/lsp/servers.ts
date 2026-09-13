@@ -292,6 +292,34 @@ export function isMethodNotFoundError(err: unknown): boolean {
 }
 
 /**
+ * True when an LSP error is the TypeScript server's "No Project." failure.
+ *
+ * tsserver raises it when the queried file has no ScriptInfo in the server or
+ * when the project that owns the file has its language service disabled — a
+ * JavaScript project over the server's non-TS file-size budget, for example.
+ * typescript-language-server 6.x does not forward `projectLanguageServiceState`,
+ * so the raw message is the only signal OMP can match on. Match on message text
+ * alone is too broad (any server can say "no project"), so the server identity
+ * must look like tsserver underneath: the packaged names, or a command basename
+ * of `typescript-language-server`/`tsc`/`tsgo`.
+ */
+export function isTypeScriptNoProjectError(serverName: string, serverConfig: ServerConfig, err: unknown): boolean {
+	if (!(err instanceof Error)) return false;
+	const commandPath = serverConfig.resolvedCommand ?? serverConfig.command;
+	const command = path.basename(commandPath).replace(/\.(?:exe|cmd|bat)$/i, "");
+	const isTypeScriptServer =
+		serverName === "typescript-language-server" ||
+		serverName === "typescript-native" ||
+		command === "typescript-language-server" ||
+		command === "tsc" ||
+		command === "tsgo";
+	if (!isTypeScriptServer) return false;
+	// tsserver sends `No Project.` embedded in a server stack dump; match the
+	// phrase while tolerating case and inner whitespace.
+	return /\bno\s+project\b/i.test(err.message);
+}
+
+/**
  * Build the params for the generic `workspace/didChangeConfiguration` reload.
  *
  * The handshake in `client.ts` pushes `{ settings: config.settings ?? {} }` right

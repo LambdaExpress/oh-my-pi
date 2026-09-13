@@ -32,8 +32,8 @@ export function isMultiRange(parsed: ParsedSelector): boolean {
  * Pin a `:-N` tail selector to absolute lines against a source of `totalLines`
  * lines; every other selector passes through unchanged. The last N lines become
  * one inclusive range clamped to the source (`totalLines - N + 1` .. `totalLines`),
- * so downstream slicing, context expansion, and out-of-bounds reporting behave
- * exactly as for an explicit `:N-M`.
+ * so downstream slicing and out-of-bounds reporting behave exactly as for an
+ * explicit `:N-M`.
  */
 export function resolveTailSelector(parsed: ParsedSelector, totalLines: number): ResolvedSelector {
 	if (parsed.kind !== "tail") return parsed;

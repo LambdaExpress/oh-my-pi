@@ -66,15 +66,44 @@ describe("read tool raw range exactness", () => {
 		expect(result.details?.totalLines).toBe(60);
 	});
 
-	it("keeps context padding for numbered range reads", async () => {
-		// Numbered mode intentionally pads (leading anchor buffer + trailing
-		// disambiguation lines) — line numbers make the padding self-describing.
+	it("returns exactly the requested numbered range", async () => {
+		// Explicit numeric selectors are exact: `:31-31` must not pad with
+		// leading/trailing context the caller never asked for.
 		const result = await tool.execute("call-numbered", { path: `${filePath}:31-31` });
 		const output = getTextOutput(result);
 
 		expect(output).toContain("L31");
-		expect(output).toContain("L30");
-		expect(output).toContain("L32");
+		expect(output).not.toContain("L30");
+		expect(output).not.toContain("L32");
+	});
+
+	it("returns exactly the requested range inside a bracket block", async () => {
+		// Regression: an explicit `:N-M` used to grow to the enclosing
+		// bracket/tree-sitter block, leaking the `function` header and closing
+		// brace (plus an elision) that the caller never requested.
+		const blockFile = path.join(testDir, "block.txt");
+		await Bun.write(
+			blockFile,
+			[
+				"function outer() {",
+				"  const one = 1;",
+				"  const two = 2;",
+				"  const three = 3;",
+				"  return one + two + three;",
+				"}",
+				"after();",
+			].join("\n"),
+		);
+
+		const result = await tool.execute("call-block-range", { path: `${blockFile}:2-3` });
+		const output = getTextOutput(result);
+
+		expect(output).toContain("const one = 1;");
+		expect(output).toContain("const two = 2;");
+		expect(output).not.toContain("function outer() {");
+		expect(output).not.toContain("const three");
+		expect(output).not.toContain("after();");
+		expect(output).not.toContain("…");
 	});
 
 	it("keeps the continuation when the byte budget stops inside requested buffered content", async () => {
@@ -99,7 +128,7 @@ describe("read tool raw range exactness", () => {
 		expect(formatTruncationMetaNotice(truncation)).toContain(`Use :${truncation.nextOffset} to continue`);
 	});
 
-	it("reports an oversized selected line from a buffered local file with a safe raw recovery selector", async () => {
+	it("byte-caps a requested oversized line without padding in context", async () => {
 		const bufferedFile = path.join(testDir, "buffered-oversized.txt");
 		await Bun.write(
 			bufferedFile,
@@ -109,11 +138,11 @@ describe("read tool raw range exactness", () => {
 		const result = await tool.execute("call-buffered-oversized-selected", { path: `${bufferedFile}:2-2` });
 		const output = getTextOutput(result);
 
-		expect(output).toContain("leading-context");
-		expect(output).toContain("Line 2 is 68.4KB");
-		expect(output).toContain("50.0KB read budget");
-		expect(output).toContain(":raw:2-2");
+		// `:2-2` selects line 2 alone; line 1 is not pulled in as context, so the
+		// oversized requested line itself is what exceeds the byte budget.
+		expect(output).not.toContain("leading-context");
 		const truncation = result.details?.meta?.truncation;
+		expect(truncation?.partialLine).toBe(true);
 		expect(truncation?.totalBytes).toBeGreaterThan(70_000);
 		expect(truncation?.nextOffset).toBeUndefined();
 		if (!truncation) throw new Error("expected truncation metadata");

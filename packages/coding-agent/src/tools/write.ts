@@ -421,7 +421,12 @@ function emitWriteProgress(
 	resolvedPath?: string,
 ): void {
 	onUpdate?.({
-		content: [{ type: "text", text: `Writing ${content.length} bytes to ${shortenPath(displayPath)}...` }],
+		content: [
+			{
+				type: "text",
+				text: `Writing ${Buffer.byteLength(content, "utf-8")} bytes to ${shortenPath(displayPath)}...`,
+			},
+		],
 		details: resolvedPath ? { resolvedPath } : {},
 	});
 }
@@ -757,7 +762,9 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			resolvedArchivePath.archiveSubPath
 		}`;
 		return {
-			content: [{ type: "text", text: `Successfully wrote ${content.length} bytes to ${outputPath}` }],
+			content: [
+				{ type: "text", text: `Successfully wrote ${Buffer.byteLength(content, "utf-8")} bytes to ${outputPath}` },
+			],
 			details: { resolvedPath: resolvedArchivePath.absolutePath },
 		};
 	}
@@ -1277,7 +1284,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 						},
 					});
 					if (xdResult) return xdResult;
-					let resultText = `Successfully wrote ${cleanContent.length} bytes to ${path}`;
+					let resultText = `Successfully wrote ${Buffer.byteLength(cleanContent, "utf-8")} bytes to ${path}`;
 					if (stripped) {
 						resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
 					}
@@ -1377,7 +1384,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 				// hands back a tag that matches what's actually on disk.
 				const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, bridgeWrite.text);
 				const header = maybeWriteSnapshotHeader(this.session, absolutePath, bridgeWrite.text);
-				const writeLine = `Successfully wrote ${cleanContent.length} bytes to ${displayPath}`;
+				const writeLine = `Successfully wrote ${Buffer.byteLength(cleanContent, "utf-8")} bytes to ${displayPath}`;
 				let resultText = header ? `${header}\n${writeLine}` : writeLine;
 				if (stripped) {
 					resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;
@@ -1407,7 +1414,7 @@ export class WriteTool implements AgentTool<typeof writeSchema, WriteToolDetails
 			const madeExecutable = await maybeMarkExecutableForShebang(absolutePath, finalContent);
 
 			const header = maybeWriteSnapshotHeader(this.session, absolutePath, finalContent);
-			const writeLine = `Successfully wrote ${finalContent.length} bytes to ${displayPath}`;
+			const writeLine = `Successfully wrote ${Buffer.byteLength(finalContent, "utf-8")} bytes to ${displayPath}`;
 			let resultText = header ? `${header}\n${writeLine}` : writeLine;
 			if (stripped) {
 				resultText += `\nNote: auto-stripped hashline display prefixes from content before writing.`;

@@ -259,40 +259,6 @@ export function formatSummaryElisionFooter(
 }
 export const READ_CHUNK_SIZE = 8 * 1024;
 
-/**
- * Context lines added around an explicit range read. Anchor-stale failures
- * cluster on edits whose anchors land just outside the most recent read
- * window, but the data (`scripts/session-stats/analyze_selector_reads.py`)
- * shows most follow-up reads are disjoint hops, not adjacent extensions —
- * so symmetric padding rarely pays for itself.
- *
- * Leading=1 catches accidental single-line reads where the anchor is the
- * line immediately above the requested start. Trailing=3 buffers the
- * common case where the agent asks for a narrow range and then needs the
- * next few lines to disambiguate an anchor.
- */
-export const RANGE_LEADING_CONTEXT_LINES = 1;
-export const RANGE_TRAILING_CONTEXT_LINES = 3;
-
-/**
- * Expand a [start, end) range with leading/trailing context lines on the
- * sides where the user actually constrained the range. A start of 0 (no
- * explicit offset) does not get leading context — that's already an
- * open-ended read from the top.
- */
-function expandRangeWithContext(
-	requestedStart: number,
-	requestedEnd: number,
-	totalLines: number,
-	expandStart: boolean,
-	expandEnd: boolean,
-): { startLine: number; endLine: number } {
-	return {
-		startLine: expandStart ? Math.max(0, requestedStart - RANGE_LEADING_CONTEXT_LINES) : requestedStart,
-		endLine: expandEnd ? Math.min(totalLines, requestedEnd + RANGE_TRAILING_CONTEXT_LINES) : requestedEnd,
-	};
-}
-
 /** Options shared by the in-memory text builders; `raw` flips the line split to verbatim `\n` segments. */
 export interface InMemoryTextOptions {
 	details?: ReadToolDetails;
@@ -340,26 +306,14 @@ export function buildInMemoryTextResult(
 	const allLines = options.raw === true ? text.split("\n") : splitAddressableFileLines(text);
 	const totalLines = allLines.length;
 	details.totalLines = totalLines;
-	// User-requested 0-indexed range start. Lines BEFORE this are leading
-	// context (added below if offset is explicit).
+	// Explicit numeric selectors (`:N`, `:N-M`, `:N+K`, `:-N`) address an exact
+	// line set: the returned window is `[startLine, endLine)` with no
+	// leading/trailing context padding. A `none` selector leaves both bounds
+	// undefined and renders the whole text.
 	const requestedStart = offset ? Math.max(0, offset - 1) : 0;
 	const ignoreResultLimits = options.ignoreResultLimits ?? false;
-	const requestedEnd = limit !== undefined ? Math.min(requestedStart + limit, allLines.length) : allLines.length;
-	// Expand only on sides the user actually constrained: leading context
-	// when offset>1, trailing context when a finite limit was set. Raw mode
-	// never expands — without line numbers the padding is indistinguishable
-	// from requested content, so `raw:31-31` must return line 31 and nothing
-	// else (verbatim-extraction contract).
-	const rawDisplay = options.raw === true;
-	const expanded = expandRangeWithContext(
-		requestedStart,
-		requestedEnd,
-		allLines.length,
-		!rawDisplay && offset !== undefined && offset > 1,
-		!rawDisplay && limit !== undefined,
-	);
-	const startLine = expanded.startLine;
-	const endLineExpanded = expanded.endLine;
+	const startLine = requestedStart;
+	const endLine = limit !== undefined ? Math.min(requestedStart + limit, allLines.length) : allLines.length;
 	const startLineDisplay = startLine + 1;
 
 	const resultBuilder = toolResult(details);
@@ -385,7 +339,6 @@ export function buildInMemoryTextResult(
 			.done();
 	}
 
-	const endLine = endLineExpanded;
 	const selectedContent = allLines.slice(startLine, endLine).join("\n");
 	const userLimitedLines = limit !== undefined ? endLine - startLine : undefined;
 	const truncation = ignoreResultLimits ? noTruncResult(selectedContent) : truncateHead(selectedContent);
@@ -431,10 +384,15 @@ export function buildInMemoryTextResult(
 		return prependHashlineHeader(formatted, hashContext);
 	};
 	const buildLineEntries = (endLineDisplay: number): LineEntry[] =>
-		buildLineEntriesWithBlockContext(allLines, [{ startLine: startLineDisplay, endLine: endLineDisplay }], {
-			path: options.sourcePath,
-			text,
-		});
+		buildLineEntriesWithBlockContext(
+			allLines,
+			[{ startLine: startLineDisplay, endLine: endLineDisplay }],
+			{
+				path: options.sourcePath,
+				text,
+			},
+			{ blockContext: offset === undefined },
+		);
 
 	let outputText: string;
 	let truncationInfo:
@@ -517,7 +475,8 @@ export function buildInMemoryTextResult(
  * formatted block with its own anchors / line numbers, blocks are joined
  * with an elision separator, and ranges past EOF surface as `[…]` notices
  * so the model can correct the next call. No leading/trailing context is
- * added — multi-range callers always specify exact bounds.
+ * added and no block boundaries are pulled in — multi-range callers always
+ * specify exact bounds.
  */
 export function buildInMemoryMultiRangeResult(
 	session: ToolSession,
@@ -568,7 +527,15 @@ export function buildInMemoryMultiRangeResult(
 	if (options.raw === true) {
 		outputText = rawParts.length > 0 ? rawParts.join("\n\n…\n\n") : "";
 	} else if (visibleSpans.length > 0) {
-		const entries = buildLineEntriesWithBlockContext(allLines, visibleSpans, { path: options.sourcePath, text });
+		const entries = buildLineEntriesWithBlockContext(
+			allLines,
+			visibleSpans,
+			{
+				path: options.sourcePath,
+				text,
+			},
+			{ blockContext: false },
+		);
 		if (shouldAddHashLines) seenLines = lineNumbersFromEntries(entries);
 		const firstLine = entries.find(entry => entry.kind === "line");
 		if (firstLine?.kind === "line") {

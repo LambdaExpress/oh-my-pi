@@ -302,6 +302,10 @@ export function findBlockContextLines(
  * lines, in source order, with `{ kind: "ellipsis" }` markers inserted across
  * non-contiguous gaps. `options.lineText` lets callers substitute display text
  * (e.g. column-truncated lines) for a given line number.
+ *
+ * `options.blockContext: false` emits exactly the visible spans — explicit
+ * numeric selectors (`:N`, `:N-M`, `:N+K`, `:-N`, multi-range) promise the
+ * requested line set and must never grow to an enclosing block.
  */
 export function buildLineEntriesWithBlockContext(
 	fullLines: readonly string[],
@@ -309,13 +313,14 @@ export function buildLineEntriesWithBlockContext(
 	source: BlockContextSource = {},
 	options: {
 		lineText?: (lineNumber: number, sourceText: string, context: boolean) => string;
+		blockContext?: boolean;
 	} = {},
 ): LineEntry[] {
 	const spans = normalizeLineSpans(visibleSpans, fullLines.length);
 	const visible = visibleLineNumbers(spans);
-	const context = findBlockContextLines(fullLines, visible, source);
+	const context = options.blockContext === false ? undefined : findBlockContextLines(fullLines, visible, source);
 	const allLines = new Set<number>(visible);
-	for (const lineNumber of context.keys()) allLines.add(lineNumber);
+	if (context) for (const lineNumber of context.keys()) allLines.add(lineNumber);
 
 	const sorted = [...allLines].sort((left, right) => left - right);
 	const entries: LineEntry[] = [];
@@ -325,7 +330,7 @@ export function buildLineEntriesWithBlockContext(
 			entries.push({ kind: "ellipsis" });
 		}
 		const sourceText = fullLines[lineNumber - 1] ?? "";
-		const isContext = context.has(lineNumber);
+		const isContext = context?.has(lineNumber) ?? false;
 		entries.push({
 			kind: "line",
 			lineNumber,

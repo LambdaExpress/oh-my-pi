@@ -6,6 +6,10 @@
 
 - Added Command Code subscription quota reporting, so `/usage` and the status line show the five-hour and weekly credit windows (with reset countdowns) instead of a spend estimate for `commandcode` models.
 
+### Fixed
+
+- Fixed OpenAI Responses providers rejecting replayed encrypted reasoning with `400 invalid_encrypted_content`: the request retries once without encrypted reasoning and stops requesting it for the rest of the session, instead of failing the turn.
+
 ## [18.1.14] - 2026-09-07
 
 ### Fixed

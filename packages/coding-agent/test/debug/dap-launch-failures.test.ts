@@ -693,6 +693,55 @@ describe("DAP TCP transport resilience", () => {
 		}
 	}, 20_000);
 
+	function createExitedTcpProc(stderr: string): DapClientState["proc"] {
+		return {
+			pid: 12_345,
+			exited: Promise.resolve(1),
+			exitCode: 1,
+			stdin: { write: () => 0, flush: () => 0 },
+			stdout: new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.close();
+				},
+			}),
+			stderr: new ReadableStream<Uint8Array>(),
+			peekStderr: () => stderr,
+			kill: () => true,
+		} as unknown as DapClientState["proc"];
+	}
+
+	it("includes the adapter stderr when the TCP server exits before its port is ready", async () => {
+		const stderr = "Error: Cannot find module 'dapDebugServer.js'";
+		spyOn(piUtils.ptree, "spawn").mockReturnValue(createExitedTcpProc(stderr));
+
+		const failure = await DapClient.spawn({
+			adapter: TCP_ADAPTER,
+			cwd: process.cwd(),
+			socketReadyTimeoutMs: 100,
+		}).then(
+			() => undefined,
+			(error: Error) => error,
+		);
+
+		expect(failure?.message).toContain("Adapter process exited before TCP port");
+		expect(failure?.message).toContain(stderr);
+	});
+
+	it("keeps the original readiness message when the adapter wrote no stderr", async () => {
+		spyOn(piUtils.ptree, "spawn").mockReturnValue(createExitedTcpProc(""));
+
+		const failure = await DapClient.spawn({
+			adapter: TCP_ADAPTER,
+			cwd: process.cwd(),
+			socketReadyTimeoutMs: 100,
+		}).then(
+			() => undefined,
+			(error: Error) => error,
+		);
+
+		expect(failure?.message).toMatch(/^Adapter process exited before TCP port 127\.0\.0\.1:\d+ was ready$/);
+	});
+
 	// Deterministic gate contract: the client must not open its first connect
 	// until the adapter's stdout mentions the reserved port. Driven with a
 	// synthetic stdout stream — no subprocess, no wall-clock dependence.

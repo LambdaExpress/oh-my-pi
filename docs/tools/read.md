@@ -96,7 +96,7 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
    - binary-file notice unless `:raw` was explicit
    - structural summary for parseable code/prose
    - streamed text/line-range read
-10. Local text reads are streamed by `streamLinesFromFile()` rather than loading the whole file. A single bounded non-raw text range adds `1` leading and `3` trailing context lines on constrained sides; raw and multi-range reads remain exact.
+10. Local text reads are streamed by `streamLinesFromFile()` rather than loading the whole file. Explicit numeric selectors (`:N`, `:N-M`, `:N+K`, `:-N`, multi-range) return exactly the requested line set; only an unranged read may surface an enclosing block's boundary lines.
 11. Hashline-eligible local reads record a file snapshot into the session snapshot store for later hashline edit verification/recovery. Files over the snapshot byte cap are not snapshotted.
 12. If suffix resolution happened, the first text block is prefixed with `[Path '...' not found; resolved to '...' via suffix match]`.
 
@@ -110,7 +110,7 @@ Literal filesystem paths take precedence over selector interpretation, so an exi
   - When an elided block sits between matching brace lines, `#renderSummary()` may merge them into one anchored line rather than emitting separate opener/closer lines.
 - Explicit selector or summarization miss: streamed text read.
   - Default open-ended limit is `read.defaultLimit = 300`, clamped to `[1, DEFAULT_MAX_LINES]`.
-  - Single bounded non-raw text ranges add `RANGE_LEADING_CONTEXT_LINES = 1` / `RANGE_TRAILING_CONTEXT_LINES = 3` on constrained sides. Raw and multi-range reads are exact; directory listing selectors slice rendered entries without context.
+  - Explicit numeric selectors return exactly the requested lines — no leading/trailing context and no growth to an enclosing block. Directory listing selectors slice rendered entries without context.
   - Non-raw output uses `resolveFileDisplayMode()`:
     - hashline numbered output when edit mode is hashline, read is not raw, source is mutable, and the edit tool exists
     - otherwise optional line numbers when `readLineNumbers === true`
@@ -276,7 +276,7 @@ Notes: ...
   - `DEFAULT_MAX_LINES = 3000`
   - `DEFAULT_MAX_BYTES = 50 * 1024`
 - Local text open-ended default line limit: `read.defaultLimit` (default `300`), clamped to `[1, DEFAULT_MAX_LINES]`.
-- Single bounded non-raw text ranges add `1` leading and `3` trailing context lines on constrained sides. Raw and multi-range reads are exact.
+- Explicit numeric selectors return exactly the requested lines; only an unranged read may surface an enclosing block's boundary lines.
 - File streaming chunk size: `8 * 1024` bytes (`READ_CHUNK_SIZE`).
 - Local streamed byte budget for line reads: `max(DEFAULT_MAX_BYTES, maxLinesToCollect * 512)`.
 - Structural summaries only run when file size `<= 2 MiB` and line count `<= 20_000`.

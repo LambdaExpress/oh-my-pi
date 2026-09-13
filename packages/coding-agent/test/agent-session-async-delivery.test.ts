@@ -253,6 +253,50 @@ describe("AgentSession owner-routed async delivery", () => {
 		expect(message?.content).toContain("subagent yielded no data");
 	});
 
+	it("delivers a failed job with no model output as unavailable, not as a schema violation", () => {
+		// Regression: a task job whose subagent died before emitting anything
+		// (e.g. a provider HTTP 400) was delivered with `status: "invalid"`
+		// plus an empty-string payload, so the parent read a schema complaint
+		// instead of the transport error. With no payload there is no schema
+		// verdict to report: the delivery must say the structured output is
+		// unavailable, keep the provider error, and not advertise an
+		// `agent://` pointer to data that was never produced.
+		const job: AsyncJob = {
+			id: "SchemaProbe",
+			type: "task",
+			status: "failed",
+			startTime: Date.now(),
+			label: "SchemaProbe",
+			abortController: new AbortController(),
+			promise: Promise.resolve(),
+			resultText: "Background task SchemaProbe failed.",
+			structured: {
+				source: "agent",
+				mode: "permissive",
+				status: "unavailable",
+				error: "400 Bad Request: messages[1].content must be a string",
+			},
+		};
+		const entry: AsyncResultEntry = {
+			jobId: "SchemaProbe",
+			result: "Background task SchemaProbe failed.",
+			job,
+			durationMs: 1000,
+			epoch: 0,
+		};
+		const message = buildAsyncResultBatchMessage([entry]);
+		expect(message?.content).toContain("schema unavailable");
+		expect(message?.content).toContain("400 Bad Request: messages[1].content must be a string");
+		expect(message?.content).not.toContain("schema invalid");
+		expect(message?.content).not.toContain("agent://SchemaProbe");
+		expect(message?.details?.jobs[0]?.schema).toEqual({
+			source: "agent",
+			mode: "permissive",
+			status: "unavailable",
+			error: "400 Bad Request: messages[1].content must be a string",
+		});
+	});
+
 	it("routes an advisor-owned launch completion through the session", async () => {
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
 		const mock = createMockModel({ handler: () => ({ content: ["Done"] }) });

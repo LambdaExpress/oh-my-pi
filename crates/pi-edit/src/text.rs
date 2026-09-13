@@ -22,6 +22,34 @@ impl LineEnding {
 			Self::CrLf => "\r\n",
 		}
 	}
+
+	/// The exact terminator for this style.
+	const fn terminator(self) -> LineTerminator {
+		match self {
+			Self::Lf => LineTerminator::Lf,
+			Self::CrLf => LineTerminator::CrLf,
+		}
+	}
+}
+
+/// One original line terminator, kept byte-exact so a mixed-ending file's
+/// untouched lines survive an edit unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineTerminator {
+	Lf,
+	CrLf,
+	Cr,
+}
+
+impl LineTerminator {
+	/// The raw bytes of this terminator.
+	pub const fn as_str(self) -> &'static str {
+		match self {
+			Self::Lf => "\n",
+			Self::CrLf => "\r\n",
+			Self::Cr => "\r",
+		}
+	}
 }
 
 /// Detect the first line ending style in `content`; LF when neither is present.
@@ -61,6 +89,114 @@ pub fn restore_line_endings(text: &str, ending: LineEnding) -> String {
 		LineEnding::Lf => text.to_owned(),
 		LineEnding::CrLf => text.replace('\n', "\r\n"),
 	}
+}
+
+/// Per-line terminators of `content`, or `None` when every line uses one style
+/// (callers then keep the whole-text [`restore_line_endings`] fast path).
+///
+/// Holds one entry per `\n` of <code>[normalize_to_lf](content)</code>, in
+/// order.
+pub fn scan_line_terminators(content: &str) -> Option<Vec<LineTerminator>> {
+	if !content.contains('\r') {
+		return None;
+	}
+	let crlf = content.matches("\r\n").count();
+	let lone_lf = content.matches('\n').count() - crlf;
+	let lone_cr = content.matches('\r').count() - crlf;
+	let styles = u8::from(lone_lf > 0) + u8::from(lone_cr > 0) + u8::from(crlf > 0);
+	if styles < 2 {
+		return None;
+	}
+	let bytes = content.as_bytes();
+	let mut terminators = Vec::with_capacity(bytes.len() / 32 + 1);
+	let mut index = 0;
+	while index < bytes.len() {
+		match bytes[index] {
+			b'\r' if bytes.get(index + 1) == Some(&b'\n') => {
+				terminators.push(LineTerminator::CrLf);
+				index += 2;
+			},
+			b'\r' => {
+				terminators.push(LineTerminator::Cr);
+				index += 1;
+			},
+			b'\n' => {
+				terminators.push(LineTerminator::Lf);
+				index += 1;
+			},
+			_ => index += 1,
+		}
+	}
+	Some(terminators)
+}
+
+/// Terminator for a line that has no original terminator of its own: the
+/// nearest preceding original line's, else the following one's, else
+/// `default`.
+fn borrowed_terminator(
+	terminators: &[LineTerminator],
+	position: usize,
+	default: LineEnding,
+) -> LineTerminator {
+	if let Some(preceding) = position.checked_sub(1)
+		&& let Some(terminator) = terminators.get(preceding)
+	{
+		return *terminator;
+	}
+	terminators
+		.get(position)
+		.copied()
+		.unwrap_or_else(|| default.terminator())
+}
+
+/// Re-encode `after_lf` while keeping every unchanged line's original
+/// terminator bytes.
+///
+/// `original_lf` is the pre-edit LF-normalized text and `terminators` is
+/// <code>[scan_line_terminators](original)</code>'s result. Unchanged lines
+/// reuse their own terminator; added and replaced lines borrow the nearest
+/// preceding original line's (for a replacement, the line it replaces), then
+/// the following original line's, and finally `default`.
+pub fn restore_line_endings_preserving(
+	after_lf: &str,
+	original_lf: &str,
+	terminators: &[LineTerminator],
+	default: LineEnding,
+) -> String {
+	let new_tokens = pi_diff::line_tokens_str(after_lf);
+	let runs = pi_diff::line_runs_str(original_lf, after_lf);
+	let mut out = String::with_capacity(after_lf.len() + after_lf.matches('\n').count());
+	let mut old_pos = 0usize;
+	let mut new_pos = 0usize;
+	for run in &runs {
+		let count = run.count as usize;
+		if run.removed {
+			old_pos += count;
+			continue;
+		}
+		for offset in 0..count {
+			let token = new_tokens[new_pos + offset];
+			let Some(body) = token.strip_suffix('\n') else {
+				out.push_str(token);
+				continue;
+			};
+			out.push_str(body);
+			let position = old_pos + offset;
+			let terminator = if run.added {
+				borrowed_terminator(terminators, old_pos, default)
+			} else if let Some(original) = terminators.get(position) {
+				*original
+			} else {
+				borrowed_terminator(terminators, position, default)
+			};
+			out.push_str(terminator.as_str());
+		}
+		new_pos += count;
+		if !run.added {
+			old_pos += count;
+		}
+	}
+	out
 }
 
 /// UTF-8 byte order mark as a string.
@@ -452,6 +588,70 @@ mod tests {
 		assert_eq!(normalize_to_lf("a\r\nb\rc\n"), "a\nb\nc\n");
 		assert_eq!(restore_line_endings("a\nb", LineEnding::CrLf), "a\r\nb");
 		assert_eq!(strip_bom("\u{FEFF}x"), (BOM, "x"));
+	}
+
+	#[test]
+	fn uniform_line_endings_skip_per_line_scanning() {
+		assert_eq!(scan_line_terminators("a\nb\n"), None);
+		assert_eq!(scan_line_terminators("a\r\nb\r\n"), None);
+		assert_eq!(scan_line_terminators("a\rb\r"), None);
+		assert_eq!(scan_line_terminators("no terminators"), None);
+		assert_eq!(
+			scan_line_terminators("a\r\nb\n"),
+			Some(vec![LineTerminator::CrLf, LineTerminator::Lf])
+		);
+		assert_eq!(
+			scan_line_terminators("a\rb\r\n"),
+			Some(vec![LineTerminator::Cr, LineTerminator::CrLf])
+		);
+	}
+
+	#[test]
+	fn mixed_line_endings_survive_an_edit_byte_exactly() {
+		let raw = "one\r\ntwo\r\nthree\nfour\r\n";
+		let terminators = scan_line_terminators(raw).expect("mixed endings");
+		let original_lf = normalize_to_lf(raw);
+
+		assert_eq!(
+			restore_line_endings_preserving(
+				"one\ntwo\nTHREE\nfour\n",
+				&original_lf,
+				&terminators,
+				LineEnding::CrLf,
+			),
+			"one\r\ntwo\r\nTHREE\nfour\r\n",
+			"replacing the lone-LF line keeps every other terminator untouched"
+		);
+		assert_eq!(
+			restore_line_endings_preserving(
+				"one\nTWO\nthree\nfour\n",
+				&original_lf,
+				&terminators,
+				LineEnding::CrLf,
+			),
+			"one\r\nTWO\r\nthree\nfour\r\n",
+			"replacing a CRLF line reuses that line's own terminator"
+		);
+		assert_eq!(
+			restore_line_endings_preserving(
+				"NEW\none\ntwo\nthree\nfour\n",
+				&original_lf,
+				&terminators,
+				LineEnding::CrLf,
+			),
+			"NEW\r\none\r\ntwo\r\nthree\nfour\r\n",
+			"a line inserted at the start borrows the following line's terminator"
+		);
+		assert_eq!(
+			restore_line_endings_preserving(
+				"one\ntwo\nthree\nfour\nTAIL\n",
+				&original_lf,
+				&terminators,
+				LineEnding::CrLf,
+			),
+			"one\r\ntwo\r\nthree\nfour\r\nTAIL\r\n",
+			"a line appended at the end borrows the preceding line's terminator"
+		);
 	}
 
 	#[test]
