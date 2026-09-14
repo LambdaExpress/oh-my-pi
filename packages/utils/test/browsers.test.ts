@@ -31,27 +31,45 @@ describe("Chrome-for-Testing layout goldens", () => {
 		{
 			platform: BrowserPlatform.LINUX,
 			url: `https://storage.googleapis.com/chrome-for-testing-public/${BUILD_ID}/linux64/chrome-linux64.zip`,
-			executable: `/cache/chrome/linux-${BUILD_ID}/chrome-linux64/chrome`,
+			executable: path.join("/cache", "chrome", `linux-${BUILD_ID}`, "chrome-linux64", "chrome"),
 		},
 		{
 			platform: BrowserPlatform.MAC,
 			url: `https://storage.googleapis.com/chrome-for-testing-public/${BUILD_ID}/mac-x64/chrome-mac-x64.zip`,
-			executable: `/cache/chrome/mac-${BUILD_ID}/chrome-mac-x64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,
+			executable: path.join(
+				"/cache",
+				"chrome",
+				`mac-${BUILD_ID}`,
+				"chrome-mac-x64",
+				"Google Chrome for Testing.app",
+				"Contents",
+				"MacOS",
+				"Google Chrome for Testing",
+			),
 		},
 		{
 			platform: BrowserPlatform.MAC_ARM,
 			url: `https://storage.googleapis.com/chrome-for-testing-public/${BUILD_ID}/mac-arm64/chrome-mac-arm64.zip`,
-			executable: `/cache/chrome/mac_arm-${BUILD_ID}/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing`,
+			executable: path.join(
+				"/cache",
+				"chrome",
+				`mac_arm-${BUILD_ID}`,
+				"chrome-mac-arm64",
+				"Google Chrome for Testing.app",
+				"Contents",
+				"MacOS",
+				"Google Chrome for Testing",
+			),
 		},
 		{
 			platform: BrowserPlatform.WIN32,
 			url: `https://storage.googleapis.com/chrome-for-testing-public/${BUILD_ID}/win32/chrome-win32.zip`,
-			executable: `/cache/chrome/win32-${BUILD_ID}/chrome-win32/chrome.exe`,
+			executable: path.join("/cache", "chrome", `win32-${BUILD_ID}`, "chrome-win32", "chrome.exe"),
 		},
 		{
 			platform: BrowserPlatform.WIN64,
 			url: `https://storage.googleapis.com/chrome-for-testing-public/${BUILD_ID}/win64/chrome-win64.zip`,
-			executable: `/cache/chrome/win64-${BUILD_ID}/chrome-win64/chrome.exe`,
+			executable: path.join("/cache", "chrome", `win64-${BUILD_ID}`, "chrome-win64", "chrome.exe"),
 		},
 	] as const;
 

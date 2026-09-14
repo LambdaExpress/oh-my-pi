@@ -77,7 +77,11 @@ class "deepseek" {
 	// `deepseek-flash` and accepts `image_url` parts (Vision ✓ in Models &
 	// Pricing, verified against api.deepseek.com). The class default predates
 	// that release; the retired v4-flash ids remain text-only.
-	models "deepseek-flash" {
+	// priority=-1 only because host carve-outs for the same lane
+	// (providers/opencode-go.kdl, providers/openrouter.kdl) are supersets that
+	// also declare the image modality, so the deployment contract has to win;
+	// this rule stays the baseline on every host without one.
+	models "deepseek-flash" priority=-1 {
 		strip-image-input #false
 	}
 	on "ollama-cloud" "nvidia" "deepseek" "fireworks" "nanogpt" "opencode-go" "openrouter" {

@@ -2236,12 +2236,16 @@ export class MCPCommandController {
 		try {
 			this.#showMessage(["", theme.fg("muted", t("Reloading MCP servers and runtime tools...")), ""].join("\n"));
 			await this.reloadServers();
-			const connectedCount = this.ctx.mcpManager?.getConnectedServers().length ?? 0;
+			const manager = this.ctx.mcpManager;
+			const connectedCount = manager?.getConnectedServers().length ?? 0;
+			const connectingCount =
+				manager?.getAllServerNames().filter(name => manager.getConnectionStatus(name) === "connecting").length ?? 0;
 			this.#showMessage(
 				[
 					"",
 					theme.fg("success", `${theme.icon.loop} ${t("MCP reload complete")}`),
 					t("  Connected servers: {count}", { count: connectedCount }),
+					t("  Connecting servers: {count}", { count: connectingCount }),
 					"",
 				].join("\n"),
 			);

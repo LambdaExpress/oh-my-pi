@@ -12,14 +12,13 @@ function stderrFixture(size: number, exitCode = 0, stdout = ""): string[] {
 	// Omit the stdout write when empty: Bun on Windows throws
 	// EINVAL (ftruncate) on an empty `Bun.stdout.write("")`, which would
 	// crash the fixture child before it exercises stderr capture.
+	const stdoutLine = stdout.length > 0 ? `await Bun.stdout.write(${JSON.stringify(stdout)});` : null;
 	const script = [
-		stdout ? `await Bun.stdout.write(${JSON.stringify(stdout)});` : "",
+		stdoutLine,
 		`await Bun.stderr.write(${JSON.stringify(STDERR_HEAD)} + "x".repeat(${fillLength}) + ${JSON.stringify(STDERR_TAIL)});`,
 		`process.exitCode = ${exitCode};`,
-	]
-		.filter(Boolean)
-		.join("\n");
-	return ["bun", "-e", script];
+	].filter(line => line !== null);
+	return ["bun", "-e", script.join("\n")];
 }
 
 describe("ptree stderr capture", () => {

@@ -78,6 +78,8 @@ describe("InputController.handleCtrlZ", () => {
 		setPlatform("linux");
 		const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
 		const onceSpy = spyOnProcessOnce();
+		const intervalSpy = vi.spyOn(globalThis, "setInterval");
+		const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
 		const { ctx, ui, showError } = createCtx();
 
 		const controller = new InputController(ctx);
@@ -97,10 +99,15 @@ describe("InputController.handleCtrlZ", () => {
 		expect(ui.start).not.toHaveBeenCalled();
 		expect(showError).not.toHaveBeenCalled();
 
-		// Simulating the kernel-delivered SIGCONT drives the TUI back up.
+		// Simulating the kernel-delivered SIGCONT releases the referenced
+		// suspend handle before bringing the TUI back up.
+		expect(intervalSpy).toHaveBeenCalledTimes(1);
+		const suspendKeepalive = intervalSpy.mock.results[0]?.value;
+		expect(clearIntervalSpy).not.toHaveBeenCalled();
 		sigcontListener = onceSpy.mock.calls.find(([sig]) => sig === "SIGCONT")?.[1];
 		expect(sigcontListener).toBeDefined();
 		sigcontListener?.();
+		expect(clearIntervalSpy).toHaveBeenCalledWith(suspendKeepalive);
 		expect(ui.start).toHaveBeenCalledTimes(1);
 		expect(ui.requestRender).toHaveBeenCalledWith(true);
 	});
@@ -112,6 +119,8 @@ describe("InputController.handleCtrlZ", () => {
 		});
 		const onceSpy = spyOnProcessOnce();
 		const removeSpy = vi.spyOn(process, "removeListener");
+		const intervalSpy = vi.spyOn(globalThis, "setInterval");
+		const clearIntervalSpy = vi.spyOn(globalThis, "clearInterval");
 		const { ctx, ui, showError, showStatus } = createCtx();
 
 		const controller = new InputController(ctx);
@@ -126,6 +135,8 @@ describe("InputController.handleCtrlZ", () => {
 		sigcontListener = onceSpy.mock.calls.find(([sig]) => sig === "SIGCONT")?.[1];
 		expect(sigcontListener).toBeDefined();
 		expect(removeSpy).toHaveBeenCalledWith("SIGCONT", sigcontListener);
+		expect(intervalSpy).toHaveBeenCalledTimes(1);
+		expect(clearIntervalSpy).toHaveBeenCalledWith(intervalSpy.mock.results[0]?.value);
 
 		expect(killSpy).toHaveBeenCalledTimes(1);
 		expect(ui.stop).toHaveBeenCalledTimes(1);

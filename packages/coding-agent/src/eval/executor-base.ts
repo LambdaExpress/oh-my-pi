@@ -12,6 +12,7 @@ import { EVAL_TIMEOUT_PAUSE_OP, EVAL_TIMEOUT_RESUME_OP, isEvalTimeoutControlEven
 import type { JsStatusEvent } from "./js/shared/types";
 import type { KernelDisplayOutput } from "./py/display";
 import { registerPyToolBridge } from "./py/tool-bridge";
+import { getActiveEvalShadowCell } from "./speculation/runtime-context";
 
 /**
  * Constructor for a language executor's cancellation error. Each backend
@@ -505,6 +506,7 @@ export async function executeWithKernelBase<
 					signal: options.signal,
 					shieldedSignal: abortShield.signal,
 					emitStatus,
+					shadowCell: getActiveEvalShadowCell(),
 					abortRequested: () => {
 						return abortShield.abortRequested;
 					},
@@ -529,7 +531,9 @@ export async function executeWithKernelBase<
 			const timedOut = result.timedOut || abortShield.timedOut;
 			const annotation = timedOut
 				? formatKernelTimeoutAnnotation(executionTimeoutMs ?? options?.idleTimeoutMs, result.kernelKilled ?? false)
-				: undefined;
+				: result.kernelKilled && !abortShield.abortRequested
+					? "Kernel died during execution; completion is uncertain. The cell was not replayed; check for partial side effects before retrying."
+					: undefined;
 			const dumped = await sink.dump(annotation);
 			return {
 				exitCode: undefined,

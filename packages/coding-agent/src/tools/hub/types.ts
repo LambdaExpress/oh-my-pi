@@ -8,6 +8,7 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { AsyncJobProgress, AsyncJobType } from "../../async";
 import type { IrcDeliveryReceipt, IrcMessage } from "../../irc/bus";
 import type { StructuredSubagentOutput } from "../../task/types";
+import type { ConfiguredThinkingLevel } from "../../thinking";
 import type { LaunchParams, LaunchToolDetails } from "./launch";
 
 /**
@@ -66,6 +67,12 @@ export interface JobSnapshot {
 	deadlineAt?: number;
 	/** Effective task model selector, including an explicit reasoning suffix when configured. */
 	resolvedModel?: string;
+	/** Provider/id including routing, with no added thinking suffix. */
+	resolvedModelIdentity?: string;
+	/** Explicit thinking metadata, independent of the model identity. */
+	resolvedThinkingLevel?: ConfiguredThinkingLevel;
+	/** True when the task progress reports an attached live advisor. */
+	advisor?: boolean;
 	resultText?: string;
 	errorText?: string;
 	toolCallId?: string;

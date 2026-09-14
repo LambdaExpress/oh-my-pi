@@ -50,6 +50,9 @@ function fixture(
 	const session = {
 		isStreaming: false,
 		queuedUserMessageCount: 0,
+		// The merged controller seeds held tool completions from the agent on
+		// agent_start and anchor resets; these tests run without pending results.
+		agent: { getPendingToolResults: () => [] },
 		waitForMessagePersistence,
 		// Set by the Enter force-flush path (input-controller) before aborting the
 		// active run; survives the queue drain so the interrupted run's span can be

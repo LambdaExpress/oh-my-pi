@@ -804,3 +804,52 @@ describe("TranscriptContainer", () => {
 		expect(transcript.renderViewport(80, 10)).toEqual(["new history"]);
 	});
 });
+
+describe("TranscriptContainer viewport click spans", () => {
+	it("maps uncapped viewport rows to their blocks, skipping separators", () => {
+		const transcript = new TranscriptContainer();
+		const first = new Block(["a1", "a2"], false);
+		const second = new Block(["b1"], false);
+		transcript.addChild(first);
+		transcript.addChild(second);
+
+		expect(transcript.renderViewport(80, 10, frame)).toEqual(["a1", "a2", "", "b1"]);
+		expect(transcript.getLastViewportSpans()).toEqual([
+			{ component: first, start: 0, end: 2 },
+			{ component: second, start: 3, end: 4 },
+		]);
+	});
+
+	it("maps tail-clipped rows to their surviving blocks", () => {
+		const transcript = new TranscriptContainer();
+		const first = new Block(["a1", "a2", "a3", "a4"], false);
+		const second = new Block(["b1", "b2", "b3", "b4"], false);
+		transcript.addChild(first);
+		transcript.addChild(second);
+
+		// Global tail clipping drops the first block entirely along with its
+		// leading separator row, so only the second block keeps a span.
+		expect(transcript.renderViewport(80, 5, frame)).toEqual(["", "b1", "b2", "b3", "b4"]);
+		expect(transcript.getLastViewportSpans()).toEqual([{ component: second, start: 1, end: 5 }]);
+	});
+
+	// Removed: the "N more transcript blocks active" emergency summary row no longer
+	// exists. Fork commit d1854122ce ("preserve complete transcript handoffs") deleted
+	// the allocation/emergency-summary machinery from renderViewport in favour of global
+	// tail clipping, which keeps only the tail rows of the deepest blocks.
+
+	it("clears spans when the tail is empty or cleared", () => {
+		const transcript = new TranscriptContainer();
+		const block = new Block(["a1"], false);
+		transcript.addChild(block);
+		transcript.renderViewport(80, 10, frame);
+		expect(transcript.getLastViewportSpans()).toHaveLength(1);
+
+		expect(transcript.renderViewport(80, 0, frame)).toEqual([]);
+		expect(transcript.getLastViewportSpans()).toEqual([]);
+
+		transcript.renderViewport(80, 10, frame);
+		transcript.clear();
+		expect(transcript.getLastViewportSpans()).toEqual([]);
+	});
+});

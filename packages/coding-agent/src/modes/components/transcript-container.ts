@@ -170,6 +170,13 @@ export function trimBlankEdges(rows: readonly string[]): readonly string[] {
 	return start === 0 && end === rows.length ? rows : rows.slice(start, end);
 }
 
+/** One live block's row span in the last `renderViewport` output (half-open `[start, end)`). */
+export interface TranscriptViewportSpan {
+	component: Component;
+	start: number;
+	end: number;
+}
+
 /** Owns transcript order, live capacity, and ordered immutable retirement. */
 export class TranscriptContainer extends Container {
 	#entries: TranscriptEntry[] = [];
@@ -187,6 +194,8 @@ export class TranscriptContainer extends Container {
 	// retirement: everything behind it stays live and degrades to one-line
 	// allocations. Logs once per pinned episode after a grace period.
 	#pinnedFrontier: { index: number; since: number; logged: boolean } | undefined;
+	/** Block spans of the last `renderViewport` output, for click hit-testing. */
+	#lastViewportSpans: TranscriptViewportSpan[] = [];
 
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
@@ -222,6 +231,7 @@ export class TranscriptContainer extends Container {
 		this.#replayPending = false;
 		this.#replayRequested = false;
 		this.#retirementPreservingRebuild = undefined;
+		this.#lastViewportSpans = [];
 	}
 
 	/**
@@ -444,6 +454,29 @@ export class TranscriptContainer extends Container {
 		return total;
 	}
 
+	/** Block spans of the last `renderViewport` output, in output coordinates. Empty when the tail is empty. */
+	getLastViewportSpans(): readonly TranscriptViewportSpan[] {
+		return this.#lastViewportSpans;
+	}
+
+	/** Collapse a per-line owner list into run-length block spans, clamped to `length`. */
+	#commitViewportSpans(owners: readonly (Component | undefined)[], length: number = owners.length): void {
+		const spans: TranscriptViewportSpan[] = [];
+		let index = 0;
+		while (index < length) {
+			const component = owners[index];
+			if (component === undefined) {
+				index++;
+				continue;
+			}
+			let end = index + 1;
+			while (end < length && owners[end] === component) end++;
+			spans.push({ component, start: index, end });
+			index = end;
+		}
+		this.#lastViewportSpans = spans;
+	}
+
 	/** Render the live tail, constrained to the supplied transcript height. */
 	renderViewport(width: number, rows: number, frame: AnimationFrame = this.#lastFrame): readonly string[] {
 		this.#lastFrame = frame;
@@ -451,18 +484,30 @@ export class TranscriptContainer extends Container {
 		this.#settleFinalized();
 		const live = this.#liveEntries();
 		const capacity = Math.max(0, Math.trunc(rows));
-		if (live.length === 0) return EMPTY_ROWS;
+		if (live.length === 0) {
+			this.#lastViewportSpans = [];
+			return EMPTY_ROWS;
+		}
 
 		const output: string[] = [];
+		const owners: (Component | undefined)[] = [];
 		for (const candidate of live) {
 			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, frame);
 			const rendered = this.#renderEntry(candidate.entry, width);
 			const block = rendered.slice(this.#projectedPrefixLength(candidate.entry, candidate.index, width, rendered));
 			if (block.length === 0) continue;
-			if (output.length > 0) output.push("");
-			output.push(...block);
+			if (output.length > 0) {
+				output.push("");
+				owners.push(undefined);
+			}
+			for (const line of block) {
+				output.push(line);
+				owners.push(candidate.entry.component);
+			}
 		}
-		return output.length > capacity ? output.slice(output.length - capacity) : output;
+		const drop = Math.max(0, output.length - capacity);
+		this.#commitViewportSpans(owners.slice(drop), output.length - drop);
+		return drop > 0 ? output.slice(drop) : output;
 	}
 
 	/** Offers stable-head emission or the shortest finalized prefix needed under pressure. */

@@ -2,7 +2,7 @@ import type { PresetDef, StatusLinePreset } from "./types";
 
 export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 	default: {
-		leftSegments: ["provider", "model", "mode", "collab", "path", "git", "pr", "context_pct", "cost"],
+		leftSegments: ["provider", "vim", "model", "mode", "collab", "path", "git", "pr", "context_pct", "cost"],
 		rightSegments: ["session_name"],
 		separator: "powerline-thin",
 		segmentOptions: {
@@ -13,7 +13,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 	},
 
 	minimal: {
-		leftSegments: ["path", "git"],
+		leftSegments: ["vim", "path", "git"],
 		rightSegments: ["session_name", "mode", "context_pct"],
 		separator: "slash",
 		segmentOptions: {
@@ -23,7 +23,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 	},
 
 	compact: {
-		leftSegments: ["provider", "model", "mode", "git", "pr"],
+		leftSegments: ["provider", "vim", "model", "mode", "git", "pr"],
 		rightSegments: ["session_name", "cost", "context_pct"],
 		separator: "powerline-thin",
 		segmentOptions: {
@@ -33,7 +33,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 	},
 
 	full: {
-		leftSegments: ["hostname", "provider", "model", "mode", "path", "git", "pr", "subagents"],
+		leftSegments: ["vim", "hostname", "provider", "model", "mode", "path", "git", "pr", "subagents"],
 		rightSegments: [
 			"session_name",
 			"cache_hit",
@@ -57,7 +57,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 
 	nerd: {
 		// Full preset with all Nerd Font icons
-		leftSegments: ["hostname", "provider", "model", "mode", "path", "git", "pr", "session", "subagents"],
+		leftSegments: ["vim", "hostname", "provider", "model", "mode", "path", "git", "pr", "session", "subagents"],
 		rightSegments: [
 			"session_name",
 			"token_in",
@@ -82,7 +82,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 
 	ascii: {
 		// No Nerd Font dependencies
-		leftSegments: ["provider", "model", "mode", "path", "git", "pr"],
+		leftSegments: ["provider", "vim", "model", "mode", "path", "git", "pr"],
 		rightSegments: ["session_name", "token_total", "cost", "context_pct"],
 		separator: "ascii",
 		segmentOptions: {
@@ -94,7 +94,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 
 	custom: {
 		// User-defined - these are just defaults that get overridden
-		leftSegments: ["provider", "model", "mode", "path", "git", "pr"],
+		leftSegments: ["provider", "vim", "model", "mode", "path", "git", "pr"],
 		rightSegments: ["session_name", "token_total", "cost", "context_pct"],
 		separator: "powerline-thin",
 		segmentOptions: {},
