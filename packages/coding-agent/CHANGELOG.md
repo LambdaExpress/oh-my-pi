@@ -26,6 +26,7 @@
 ### Changed
 
 - Clarified task effort guidance to use `lo`/`med`/`hi` and avoid invalid model reasoning-effort values such as `high`.
+- Documented browser execution realms: direct helpers evaluate in the page's main world, while `tab.run`'s raw Puppeteer `page` defaults to the isolated world — use the `world=main` directive to reach page globals; `addScriptTag` scripts run in the main world, and page console/pageerror events are not delivered.
 
 ## [18.1.19] - 2026-09-12
 
