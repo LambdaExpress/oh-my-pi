@@ -310,6 +310,9 @@ export class WorkerCore {
 			initialCwd: snapshot.cwd,
 			sessionId: snapshot.sessionId,
 			localRoots: snapshot.localRoots,
+			// Only the dedicated subprocess owns its module resolver; a Worker thread
+			// shares the host process, where the patch would change extension loading.
+			patchGlobalResolver: this.#options.mode === "isolated" && this.#options.chdir !== undefined,
 		});
 		return this.#runtime;
 	}

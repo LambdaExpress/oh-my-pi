@@ -149,6 +149,43 @@ function readManifest(pkgDir: string): Record<string, unknown> | null {
 	}
 }
 
+/**
+ * Resolve a relative or absolute file request the way a CommonJS `require`
+ * would from `fromFileOrDir`: a directory target is resolved through its own
+ * `exports`/`main`/`index`, a file target through the runtime extension probes.
+ * Returns an absolute file path, or `null` when nothing matches.
+ *
+ * Callers that must not depend on the host runtime's resolver — code running
+ * inside a compiled binary, where Bun cannot resolve on-disk packages
+ * (Bun #1763 / #25500) — use this to produce the absolute path themselves.
+ */
+export function resolveFileRequest(fromFileOrDir: string, request: string): string | null {
+	const start = path.resolve(fromFileOrDir);
+	const baseDir = path.extname(start) ? path.dirname(start) : start;
+	const target = path.isAbsolute(request) ? path.normalize(request) : path.resolve(baseDir, request);
+	let isDirectory = false;
+	try {
+		isDirectory = fs.statSync(target).isDirectory();
+	} catch {
+		isDirectory = false;
+	}
+	if (!isDirectory) return resolveFileTarget(path.dirname(target), path.basename(target));
+	const manifest = readManifest(target);
+	if (manifest) {
+		const { exports } = manifest;
+		if (typeof exports === "string" || isRecord(exports)) {
+			const map = typeof exports === "string" ? { ".": exports } : exports;
+			const entry = resolveExportsEntry(target, map, undefined);
+			if (entry) return entry;
+		}
+		if (typeof manifest.main === "string") {
+			const entry = resolveFileTarget(target, manifest.main);
+			if (entry) return entry;
+		}
+	}
+	return resolveFileTarget(target, "index");
+}
+
 interface ModuleResolver {
 	_resolveFilename(request: string, parent: unknown, isMain: boolean, options?: unknown): string;
 }

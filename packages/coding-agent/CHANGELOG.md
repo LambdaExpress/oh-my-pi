@@ -8,6 +8,7 @@
 - Fixed mixed line endings being rewritten across a whole file: a patch or edit now keeps every untouched line's original terminator, only new lines adopt the surrounding style.
 - Fixed `bash` failing with `command not found` on Windows when a relative executable path (`./tool.exe`) is combined with a different working directory; relative program paths now resolve against the shell's working directory.
 - Fixed `lsp` returning a raw `No Project.` server dump for TypeScript projects whose language service is disabled: the error now names the cause and the concrete fixes (`tsconfig.json`/`jsconfig.json` `include`/`exclude`, `.lsp.json` `initOptions`).
+- Fixed JavaScript Eval failing to load packages installed in the session's `node_modules` inside compiled builds: `import()`, `require()` and `createRequire()` now resolve against the on-disk package roots, so CommonJS packages load together with their own dependencies instead of failing with `Cannot find module` or `exports is not defined`.
 - Fixed `debug` reporting `js-debug-adapter` as available when its server script was not runnable, and adapter readiness failures now include the adapter's stderr.
 - Failed subagent jobs with no model output are reported as unavailable instead of a fabricated schema violation with an empty payload.
 - Explicit `read` line selectors (`:N`, `:N-M`, `:N+K`, `:-N`, multi-range) now return exactly the requested lines: no leading/trailing context and no growth to the enclosing bracket/tree-sitter block. Only an unranged read may surface block boundaries.
@@ -25,6 +26,7 @@
 ### Changed
 
 - Clarified task effort guidance to use `lo`/`med`/`hi` and avoid invalid model reasoning-effort values such as `high`.
+
 ## [18.1.19] - 2026-09-12
 
 - Fixed `--mode json` returning exit 0 on a turn-fatal provider/auth/network error ([#11498](https://github.com/can1357/oh-my-pi/issues/11498)).

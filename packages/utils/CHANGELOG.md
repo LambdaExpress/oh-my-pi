@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `resolveFileRequest()`: resolves a relative or absolute file request against the on-disk package graph (`exports`, `main`, extension and `index` probing), the primitive callers need when the host runtime cannot resolve packages itself — for example inside a compiled binary.
+
 ## [18.1.19] - 2026-09-12
 
 ### Added

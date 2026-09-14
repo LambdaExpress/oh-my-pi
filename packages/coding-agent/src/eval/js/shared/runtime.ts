@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Console } from "node:console";
 import * as fs from "node:fs";
-import { createRequire } from "node:module";
 import * as path from "node:path";
 import { Writable } from "node:stream";
 import * as util from "node:util";
@@ -77,6 +76,13 @@ export interface RuntimeOptions {
 	 * `{ local: "/…/artifacts/local" }`). Stable for the worker's lifetime.
 	 */
 	localRoots?: Record<string, string>;
+	/**
+	 * Install the process-wide runtime module resolver. Only the dedicated eval
+	 * subprocess may pass this: that patch is what makes on-disk packages
+	 * resolvable inside a compiled binary, and it must never leak into a host
+	 * process that shares the worker's thread.
+	 */
+	patchGlobalResolver?: boolean;
 }
 
 // Strict base64: characters from the standard alphabet plus optional `=` padding, and a
@@ -356,7 +362,9 @@ export class JsRuntime {
 		this.#session = { cwd: opts.initialCwd, sessionId: opts.sessionId };
 		this.sessionId = opts.sessionId;
 		this.#env = new Map();
-		this.#moduleLoader = new LocalModuleLoader(this.sessionId);
+		this.#moduleLoader = new LocalModuleLoader(this.sessionId, {
+			patchGlobalResolver: opts.patchGlobalResolver ?? false,
+		});
 		this.#localRoots = opts.localRoots ?? {};
 		this.helpers = createHelpers({
 			cwd: () => this.#activeCwd(),
@@ -679,7 +687,7 @@ export class JsRuntime {
 			// `process` object. Subsetting it caused segfaults in workers that share state with
 			// puppeteer/worker_threads internals.
 			require: this.#buildDynamicRequire(),
-			createRequire,
+			createRequire: (base: string | URL) => this.#moduleLoader.createRequireFor(base),
 			fs,
 		};
 
@@ -715,6 +723,7 @@ export class JsRuntime {
 		if (this.#disposed) return;
 		this.#disposed = true;
 		RUN_HOOK_RESOLVERS.delete(this.#runHookResolver);
+		this.#moduleLoader.dispose();
 		for (const key of this.#ownedGlobalKeys) releaseGlobalKey(key, this.#globalOwner);
 		this.#ownedGlobalKeys.clear();
 		this.#reservedGlobalKeys.clear();
