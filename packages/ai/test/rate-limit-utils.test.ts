@@ -728,6 +728,17 @@ describe("calculateRateLimitBackoffMs", () => {
 	it("returns a short backoff for CONCURRENT_LIMIT", () => {
 		expect(calculateRateLimitBackoffMs("CONCURRENT_LIMIT")).toBe(5_000);
 	});
+
+	it("draws hint-less RATE_LIMIT_EXCEEDED retries from a 1–10s band", () => {
+		// The floor exists to clear a short upstream window; provider `retry-after`
+		// hints, not this floor, own the genuinely long waits. The draw must stay
+		// inside the band and vary per attempt, so a fleet does not re-hit the
+		// upstream on one identical schedule.
+		const samples = Array.from({ length: 100 }, () => calculateRateLimitBackoffMs("RATE_LIMIT_EXCEEDED"));
+		expect(Math.min(...samples)).toBeGreaterThanOrEqual(1_000);
+		expect(Math.max(...samples)).toBeLessThanOrEqual(10_000);
+		expect(new Set(samples).size).toBeGreaterThan(1);
+	});
 });
 
 describe("is402BillingCapBody", () => {

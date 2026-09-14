@@ -15,7 +15,15 @@ export type RateLimitReason =
 	| "UNKNOWN";
 
 const QUOTA_EXHAUSTED_BACKOFF_MS = 30 * 60 * 1000; // 30 min
-const RATE_LIMIT_EXCEEDED_BACKOFF_MS = 30 * 1000; // 30s
+// Transient throttle floor, not a window estimate: a hint-less 429 is usually a
+// short upstream window (per-second capacity, burst caps), while a genuinely
+// long window arrives as a provider `retry-after` hint — which overrides this
+// floor — or escalates into the QUOTA_EXHAUSTED lane. The value is drawn per
+// attempt from a 1–10s band: a flat floor both stalls a burst cap it could have
+// cleared sooner and re-hits a shared upstream on every client's identical
+// schedule.
+const RATE_LIMIT_EXCEEDED_BACKOFF_MIN_MS = 1 * 1000;
+const RATE_LIMIT_EXCEEDED_BACKOFF_RANGE_MS = 9 * 1000;
 const CONCURRENT_LIMIT_BACKOFF_MS = 5 * 1000; // 5s
 const MODEL_CAPACITY_BASE_MS = 45 * 1000; // 45s base
 const MODEL_CAPACITY_JITTER_MS = 30 * 1000; // ±15s
@@ -292,7 +300,7 @@ export function calculateRateLimitBackoffMs(reason: RateLimitReason): number {
 		case "QUOTA_EXHAUSTED":
 			return QUOTA_EXHAUSTED_BACKOFF_MS;
 		case "RATE_LIMIT_EXCEEDED":
-			return RATE_LIMIT_EXCEEDED_BACKOFF_MS;
+			return RATE_LIMIT_EXCEEDED_BACKOFF_MIN_MS + Math.random() * RATE_LIMIT_EXCEEDED_BACKOFF_RANGE_MS;
 		case "CONCURRENT_LIMIT":
 			return CONCURRENT_LIMIT_BACKOFF_MS;
 		case "MODEL_CAPACITY_EXHAUSTED":

@@ -6,6 +6,10 @@
 
 - Added Command Code subscription quota reporting, so `/usage` and the status line show the five-hour and weekly credit windows (with reset countdowns) instead of a spend estimate for `commandcode` models.
 
+### Changed
+
+- Transient rate-limit failures (a 429 without a provider `retry-after` hint) now wait a random 1–10 seconds instead of a flat 30 before retrying, so a throttled turn recovers in seconds; provider-directed waits and longer quota windows are unaffected.
+
 ### Fixed
 
 - Fixed OpenAI Responses providers rejecting replayed encrypted reasoning with `400 invalid_encrypted_content`: the request retries once without encrypted reasoning and stops requesting it for the rest of the session, instead of failing the turn.

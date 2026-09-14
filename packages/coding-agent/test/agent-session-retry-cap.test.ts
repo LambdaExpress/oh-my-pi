@@ -1619,8 +1619,10 @@ describe("AgentSession retry delay cap", () => {
 		await session.waitForIdle();
 
 		expect(retryStartEvents).toHaveLength(1);
-		expect(retryStartEvents[0].delayMs).toBe(30_000);
-		expect(waitSpy.mock.calls.some(call => call[0] === 30_000)).toBe(true);
+		const delayMs = retryStartEvents[0].delayMs;
+		expect(delayMs).toBeGreaterThanOrEqual(1_000);
+		expect(delayMs).toBeLessThanOrEqual(10_000);
+		expect(waitSpy.mock.calls.some(call => call[0] === delayMs)).toBe(true);
 		expect(lastAssistant(session).content).toContainEqual({
 			type: "text",
 			text: "recovered after rate-limit window",
