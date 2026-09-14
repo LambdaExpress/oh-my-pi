@@ -155,12 +155,16 @@ const CSHARP_LS_INDEXING_HINT =
 
 /**
  * tsserver's "No Project." only says that the queried file is not part of any
- * open project; the raw server dump names no cause and no remedy. Spell out the
- * two conditions the server cannot report and the knobs that actually change
- * them, without inventing switches the server does not support.
+ * open project; the raw server dump names no cause and no remedy. The usual
+ * cause in a JavaScript tree is tsserver's program budget: a project whose
+ * non-TypeScript files exceed `maxProgramSizeForNonTsFiles` (20 MB) is not
+ * loaded at all, so semantic requests fail while syntax-only actions still
+ * work. Spell out that budget, the two conditions the server cannot report,
+ * and the knobs that actually change them, without inventing switches the
+ * server does not support.
  */
 const TYPESCRIPT_NO_PROJECT_HINT =
-	"The TypeScript server has no project open for this file, or the project's language service is disabled (a JavaScript project can exceed the server's non-TS file-size budget). Check that tsconfig.json/jsconfig.json include covers the file and that exclude keeps large vendored JavaScript (for example public/fontawesome/js) out so the project stays under that budget, then retry. Server-specific options can be passed through .lsp.json initOptions; typescript-language-server supports maxTsServerMemory, tsserver.path and tsserver.fallbackPath.";
+	'The TypeScript server has no project open for this file, or the project\'s language service is disabled. tsserver refuses to load a project whose non-TypeScript files exceed its 20 MB program budget, which is the usual cause in a JavaScript tree: semantic requests then fail with "No Project." while syntax-only actions still work. Keep large vendored JavaScript (for example public/fontawesome/js or built bundles) out of the project with tsconfig.json/jsconfig.json include/exclude, or set compilerOptions.disableSizeLimit to lift the budget, then retry. Server-specific options can be passed through .lsp.json initOptions; typescript-language-server supports maxTsServerMemory, tsserver.path and tsserver.fallbackPath.';
 
 /**
  * Enumerate the {oldUri, newUri} pairs needed for an LSP willRenameFiles/didRenameFiles request.
