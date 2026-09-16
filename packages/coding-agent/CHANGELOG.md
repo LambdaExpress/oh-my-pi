@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- `/tan` and tangential background dispatches no longer abort before running when the parent session enables a tool a headless clone cannot host (`ask` is built only for sessions that can prompt the user): the clone now requests the tools it can actually build and logs the ones it leaves behind, instead of failing every dispatch with `Tan capability reconstruction failed: missing enabled tools: ask`.
 - `write` reports the real UTF-8 byte count in its progress and success messages instead of the JavaScript character count, so non-ASCII content no longer understates the written size.
 - Fixed mixed line endings being rewritten across a whole file: a patch or edit now keeps every untouched line's original terminator, only new lines adopt the surrounding style.
 - Fixed `bash` failing with `command not found` on Windows when a relative executable path (`./tool.exe`) is combined with a different working directory; relative program paths now resolve against the shell's working directory.

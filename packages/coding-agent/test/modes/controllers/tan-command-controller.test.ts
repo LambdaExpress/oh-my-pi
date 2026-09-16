@@ -530,6 +530,31 @@ describe("TanCommandController", () => {
 		expect(appendSessionInit).toHaveBeenCalledWith(expect.objectContaining({ tools: enabledToolNames }));
 	});
 
+	it("dispatches when the parent enables a tool the headless clone cannot host", async () => {
+		// `ask` is built only for sessions that can prompt the user, so a headless
+		// tan never carries it. Demanding an exact match with the parent's full set
+		// failed every dispatch from a normal interactive session.
+		const harness = createContext({ enabledToolNames: ["ask", "read", "bash"] });
+		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);
+		const { clone } = createCloneStub({ enabledToolNames: ["read", "bash"] });
+		vi.spyOn(sdkModule, "createAgentSession").mockResolvedValue({
+			session: clone,
+		} as unknown as CreateAgentSessionResult);
+		const controller = new TanCommandController(harness.ctx);
+
+		await controller.start("check the deploy");
+		const run = harness.capturedRun;
+		if (!run) throw new Error("run function was not captured");
+		const result = await run({
+			jobId: "job-123",
+			signal: new AbortController().signal,
+			reportProgress: async () => {},
+		});
+
+		expect(result).toBe("done");
+		expect(clone.setActiveToolPresentation).toHaveBeenCalledWith(["read", "bash"], []);
+	});
+
 	it("isolates the fork: clears inherited todos, injects the fork notice, and re-injects after compaction", async () => {
 		const harness = createContext();
 		vi.spyOn(SessionManager, "forkFrom").mockResolvedValue(harness.cloneManager);

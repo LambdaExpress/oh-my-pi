@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
-import { prompt, Snowflake } from "@oh-my-pi/pi-utils";
+import { logger, prompt, Snowflake } from "@oh-my-pi/pi-utils";
 import { t } from "../../i18n";
 import backgroundTanDispatchPrompt from "../../prompts/system/background-tan-dispatch.md" with { type: "text" };
 import tanContextSwitchPrompt from "../../prompts/system/tan-context-switch.md" with { type: "text" };
@@ -203,12 +203,25 @@ export class TanCommandController {
 							localProtocolOptions,
 						});
 						clone = created.session;
-						await clone.setActiveToolPresentation(toolNames, mountedXdevToolNames);
+						// A background tan is headless, so tools that need to prompt the user
+						// never enter its registry (`ask` is built only for sessions that can
+						// prompt). The clone reports exactly what it built for the requested
+						// names, so request that subset and keep the exactness check over it:
+						// an interactive parent normally enables `ask`, and demanding an exact
+						// match with the full parent set failed every dispatch.
+						const hostableToolNames = new Set(clone.getEnabledToolNames());
+						const requestedToolNames = toolNames.filter(name => hostableToolNames.has(name));
+						const requestedMountedToolNames = mountedXdevToolNames.filter(name => hostableToolNames.has(name));
+						const unhostableToolNames = toolNames.filter(name => !hostableToolNames.has(name));
+						if (unhostableToolNames.length > 0) {
+							logger.warn("Tan clone cannot host every parent tool", { unhostableToolNames });
+						}
+						await clone.setActiveToolPresentation(requestedToolNames, requestedMountedToolNames);
 						const actualToolNames = clone.getEnabledToolNames();
 						const actualMountedXdevToolNames = clone.getMountedXdevToolNames();
 						assertExactToolPresentation(
-							toolNames,
-							mountedXdevToolNames,
+							requestedToolNames,
+							requestedMountedToolNames,
 							actualToolNames,
 							actualMountedXdevToolNames,
 						);
