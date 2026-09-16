@@ -12,6 +12,7 @@ import type { DaemonSnapshot } from "../../launch/protocol";
 import {
 	type CustomMessage,
 	type FileMentionMessage,
+	isUserTurnInitiator,
 	resolveAbortLabel,
 	shouldRenderAbortReason,
 } from "../../session/messages";
@@ -27,11 +28,19 @@ import { theme } from "../theme/theme";
 type CustomOrHookMessage = Extract<AgentMessage, { role: "custom" | "hookMessage" }>;
 type AssistantAgentMessage = Extract<AgentMessage, { role: "assistant" }>;
 
+/**
+ * A user-attributed request that can anchor a completed run: a plain user
+ * message, or a custom prompt the user invoked directly (`/skill:`, a
+ * writable-collab prompt). Agent redirects, reminders, and auto-continues are
+ * not run initiators.
+ */
+export type CompletedRunRequest = Extract<AgentMessage, { role: "user" }> | CustomMessage;
+
 export interface CompletedRunCollapse {
 	/** First message emitted by the run, including any hidden/user-attributed prelude. */
 	firstMessage: AgentMessage;
-	/** Initial user request that remains visible after collapse. */
-	initialUserMessage: Extract<AgentMessage, { role: "user" }>;
+	/** Initial user-attributed request that remains visible after collapse. */
+	initialUserMessage: CompletedRunRequest;
 	/**
 	 * Terminal assistant message that remains visible after collapse: either the
 	 * natural final answer or an error following completed activity. Absent when
@@ -50,7 +59,7 @@ export interface CompletedRunCollapse {
 
 export interface CompletedRunSummary {
 	/** Preserved request after which the summary row is inserted. */
-	afterMessage: Extract<AgentMessage, { role: "user" }>;
+	afterMessage: CompletedRunRequest;
 	/** Non-empty assistant text blocks hidden by the projection. */
 	agentTextSegments: number;
 	/** Assistant tool-call blocks hidden by the projection. */
@@ -71,7 +80,7 @@ export interface DeriveCompletedRunCollapsesOptions {
 
 export interface CompletedRunAnchor {
 	/** Original request that the next continuation still belongs to. */
-	initialUserMessage: Extract<AgentMessage, { role: "user" }>;
+	initialUserMessage: CompletedRunRequest;
 	/** Persisted messages already emitted for the unfinished request. */
 	messages: AgentMessage[];
 }
@@ -122,6 +131,17 @@ function isNonSyntheticUserMessage(message: AgentMessage): message is Extract<Ag
 	return message.role === "user" && message.synthetic !== true;
 }
 
+/**
+ * Whether `message` starts a user-attributed turn whose completed run the
+ * transcript may collapse. A directly-invoked custom prompt counts because the
+ * transcript renders it as the request row (see {@link isUserTurnInitiator}).
+ */
+export function isCompletedRunRequest(message: AgentMessage | undefined): message is CompletedRunRequest {
+	if (message?.role === "user") return message.synthetic !== true;
+	if (message?.role !== "custom") return false;
+	return isUserTurnInitiator(message);
+}
+
 export function isCollapsibleRunFinalAssistant(message: AgentMessage | undefined): message is AssistantAgentMessage {
 	return (
 		message?.role === "assistant" &&
@@ -140,7 +160,7 @@ export function isCollapsibleRunFinalAssistant(message: AgentMessage | undefined
  */
 export function isCollapsibleCompletedRun(
 	messages: readonly AgentMessage[],
-	initialUserMessage: Extract<AgentMessage, { role: "user" }>,
+	initialUserMessage: CompletedRunRequest,
 	finalAssistantMessage: AgentMessage | undefined,
 ): finalAssistantMessage is AssistantAgentMessage {
 	if (finalAssistantMessage?.role !== "assistant") return false;
@@ -211,14 +231,14 @@ function deriveCompletedRunState(
 	options: DeriveCompletedRunCollapsesOptions,
 ): { collapses: CompletedRunCollapse[]; anchor?: CompletedRunAnchor } {
 	const collapses: Array<CompletedRunCollapse & { answerIndex: number }> = [];
-	let initialUserMessage: Extract<AgentMessage, { role: "user" }> | undefined;
+	let initialUserMessage: CompletedRunRequest | undefined;
 	let initialUserIndex = -1;
 	let terminalError: { message: AssistantAgentMessage; index: number } | undefined;
 	let lastUserIndex = -1;
 
 	for (let index = 0; index < messages.length; index++) {
 		const message = messages[index]!;
-		if (isNonSyntheticUserMessage(message)) {
+		if (isCompletedRunRequest(message)) {
 			lastUserIndex = index;
 			if (!initialUserMessage || terminalError) {
 				if (
@@ -374,7 +394,7 @@ export function collapseCompletedRuns(
 		}
 		const requestMessage = boundaryMessages[span.request];
 		const finalMessage = boundaryMessages[span.answer];
-		if (requestMessage?.role !== "user" || !finalMessage) {
+		if (!isCompletedRunRequest(requestMessage) || !finalMessage) {
 			sourceIndex = visibleEnd + 1;
 			continue;
 		}

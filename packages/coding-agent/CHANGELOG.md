@@ -27,6 +27,7 @@
 - Fixed resuming previous sessions after `/new` without restarting OMP.
 - Fixed weekly and monthly usage reset countdowns to show minutes near reset instead of `0h`.
 - Fixed PowerShell memory URLs resolving against another session after the calling session exits.
+- Fixed `display.collapseCompletedRuns` never collapsing a run started by a directly invoked `/skill:` prompt (or another user-invoked custom prompt): those runs now anchor on the invoked prompt, so they collapse with a summary and `Alt+O` toggles them like any user-started run.
 
 ### Changed
 

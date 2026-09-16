@@ -56,6 +56,7 @@ import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
 	type CompletedRunCollapse,
+	type CompletedRunRequest,
 	deriveCompletedRunAnchor,
 	isCollapsibleCompletedRun,
 	isSameTranscriptMessage,
@@ -249,7 +250,7 @@ interface ActiveCompletedRun {
 	/** Lifecycle that emitted the most recent assistant message in `messages`. */
 	lastAssistantLifecycleVersion?: number;
 	messages: AgentMessage[];
-	initialUserMessage?: Extract<AgentMessage, { role: "user" }>;
+	initialUserMessage?: CompletedRunRequest;
 	gate?: CompletedRunGate;
 }
 
@@ -1321,11 +1322,22 @@ export class EventController {
 	async #handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
 		if (event.message.role === "hookMessage" || event.message.role === "custom") {
+			// A directly-invoked `/skill:` or writable-collab custom prompt initiates a
+			// user-attributed turn, so it anchors the completed run exactly like a user
+			// message: the span it starts has to collapse once it settles.
+			const request =
+				event.message.role === "custom" && isUserTurnInitiator(event.message) ? event.message : undefined;
 			if (
 				event.message.role === "custom" &&
 				this.ctx.optimisticCustomMessageSignature === customSubmissionSignature(event.message)
 			) {
 				this.ctx.clearOptimisticCustomMessage();
+				if (!request) return;
+				// The optimistic row already is this request's transcript row (custom
+				// prompts persist before their `message_start`), so the boundary close
+				// repaints it from the transcript whenever that rebuilds.
+				if (this.#activeCompletedRun?.initialUserMessage) await this.#closeCompletedRunAtRequest();
+				this.#attachCompletedRunGate(request);
 				return;
 			}
 			const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
@@ -1338,11 +1350,15 @@ export class EventController {
 				this.ctx.sshTransferHud.markPersisted(readPersistedJobIds(event.message.details));
 				this.#syncSshTransferHud();
 			}
-			// A directly-invoked `/skill:` or writable-collab custom prompt is the
-			// run's initiating message (user attribution): seed the prompt→yield
-			// delta from it, the same as a user message.
-			if (event.message.role === "custom" && isUserTurnInitiator(event.message)) {
+			// Seed the prompt→yield delta from the run's initiating prompt, the same as
+			// a user message, and treat it as the completed-run boundary: a queued
+			// `/skill:` prompt drains inside the current lifecycle, so no second
+			// agent_start marks where the preceding span ended.
+			if (request) {
 				this.#turnStartedAt = event.message.timestamp;
+				// Only an open anchored span needs the boundary commit; the common case
+				// stays synchronous so later fire-and-forget events cannot reorder rows.
+				if (this.#activeCompletedRun?.initialUserMessage) await this.#closeCompletedRunAtRequest();
 			}
 			if (
 				event.message.role === "custom" &&
@@ -1353,6 +1369,7 @@ export class EventController {
 			} else {
 				this.ctx.addMessageToChat(event.message);
 			}
+			if (request) this.#attachCompletedRunGate(request);
 			// Queued custom-message chips are derived from the agent queue; refresh the
 			// pending bar when the queued custom is consumed so the chip disappears
 			// immediately.
@@ -1366,35 +1383,9 @@ export class EventController {
 			// agent-core emits no second agent_start between the naturally completed
 			// answer and this user message. Treat the user message itself as the run
 			// boundary: commit the completed span now, then open a fresh live gate for
-			// the follow-up below. Aborts, tool-use turns, and immediate errors retain
-			// their original span; terminal errors after visible activity may collapse
-			// while preserving the error message.
+			// the follow-up below.
 			if (!event.message.synthetic && this.#activeCompletedRun?.initialUserMessage) {
-				const finalAssistant = this.#activeCompletedRun.messages.findLast(
-					(message): message is Extract<AgentMessage, { role: "assistant" }> => message.role === "assistant",
-				);
-				if (
-					isCollapsibleCompletedRun(
-						this.#activeCompletedRun.messages,
-						this.#activeCompletedRun.initialUserMessage,
-						finalAssistant,
-					) &&
-					this.#activeCompletedRun.lastAssistantLifecycleVersion === this.#activeCompletedRun.lifecycleVersion
-				) {
-					await this.ctx.viewSession.waitForMessagePersistence(finalAssistant);
-					const previousLifecycleVersion = this.#activeCompletedRun.lifecycleVersion;
-					const collapse = this.#takeCompletedRunCollapse(finalAssistant);
-					if (collapse) {
-						this.ctx.recordCompletedRunCollapse(collapse);
-						this.ctx.rebuildChatFromMessages();
-						this.ctx.ui.resetDisplay();
-						this.#activeCompletedRun = {
-							lifecycleVersion: previousLifecycleVersion + 1,
-							messages: [],
-							startedAtMs: Date.now(),
-						};
-					}
-				}
+				await this.#closeCompletedRunAtRequest();
 			}
 			// Only genuinely user-attributed prompts anchor the delta; a mid-run
 			// agent-attributed `user` message (advisor tool-loop redirect) must not.
@@ -1433,14 +1424,7 @@ export class EventController {
 				// links via the synchronous putBlobSync fallback, so no await is needed here.
 				this.ctx.addMessageToChat(event.message);
 			}
-			if (!event.message.synthetic && this.#activeCompletedRun && !this.#activeCompletedRun.initialUserMessage) {
-				const gate = new CompletedRunGate();
-				this.#activeCompletedRun.initialUserMessage = event.message;
-				this.#activeCompletedRun.gate = gate;
-				// The zero-row gate anchors the eventual collapse projection but
-				// does not block finalized successors from entering scrollback.
-				this.ctx.chatContainer.addChild(gate);
-			}
+			if (!event.message.synthetic) this.#attachCompletedRunGate(event.message);
 
 			// Clear the editor only when the submission did not originate from a
 			// local submission (optimistic or queued-while-streaming). Both local
@@ -2634,6 +2618,58 @@ export class EventController {
 			this.ctx.recordCompletedRunCollapse(collapse);
 		}
 		return true;
+	}
+
+	/**
+	 * Close the active run's span when a user-attributed request arrives while the
+	 * current lifecycle is still open: a queued follow-up (Ctrl+Up, a steered
+	 * prompt, an invoked `/skill:` prompt) drains before `agent_end`, so no second
+	 * `agent_start` marks the preceding span's end — the request itself is the
+	 * boundary. Aborts, tool-use turns, and immediate errors retain their original
+	 * span; a terminal error after visible activity may collapse while preserving
+	 * the error message.
+	 */
+	async #closeCompletedRunAtRequest(): Promise<void> {
+		if (!this.#activeCompletedRun?.initialUserMessage) return;
+		const finalAssistant = this.#activeCompletedRun.messages.findLast(
+			(message): message is Extract<AgentMessage, { role: "assistant" }> => message.role === "assistant",
+		);
+		if (
+			!isCollapsibleCompletedRun(
+				this.#activeCompletedRun.messages,
+				this.#activeCompletedRun.initialUserMessage,
+				finalAssistant,
+			) ||
+			this.#activeCompletedRun.lastAssistantLifecycleVersion !== this.#activeCompletedRun.lifecycleVersion
+		) {
+			return;
+		}
+		await this.ctx.viewSession.waitForMessagePersistence(finalAssistant);
+		const previousLifecycleVersion = this.#activeCompletedRun.lifecycleVersion;
+		const collapse = this.#takeCompletedRunCollapse(finalAssistant);
+		if (!collapse) return;
+		this.ctx.recordCompletedRunCollapse(collapse);
+		this.ctx.rebuildChatFromMessages();
+		this.ctx.ui.resetDisplay();
+		this.#activeCompletedRun = {
+			lifecycleVersion: previousLifecycleVersion + 1,
+			messages: [],
+			startedAtMs: Date.now(),
+		};
+	}
+
+	/**
+	 * Anchor the active run to its initiating user-attributed request and open the
+	 * zero-row live gate the eventual collapse projection replaces. The gate starts
+	 * the live region after the request without blocking finalized successors from
+	 * entering scrollback, so it is installed only while the run has no anchor yet.
+	 */
+	#attachCompletedRunGate(request: CompletedRunRequest): void {
+		if (!this.#activeCompletedRun || this.#activeCompletedRun.initialUserMessage) return;
+		const gate = new CompletedRunGate();
+		this.#activeCompletedRun.initialUserMessage = request;
+		this.#activeCompletedRun.gate = gate;
+		this.ctx.chatContainer.addChild(gate);
 	}
 
 	async #finishAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
