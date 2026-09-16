@@ -2,6 +2,7 @@ import { Box, Container, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { BUILTIN_DEFAULTS_PROVIDER_ID, type Rule } from "../../capability/rule";
 import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
+import { truncateToWidth } from "../../tools/render-utils";
 
 /** Collapsed view shows at most this many rules before eliding the rest. */
 const MAX_COLLAPSED_RULES = 4;
@@ -24,6 +25,8 @@ export class TtsrNotificationComponent extends Container {
 	#expanded = false;
 	#rules: Rule[];
 	#toolActivityVisible = true;
+	// `display.foldToolRows`: one `Inject:` row instead of the yellow banner.
+	#toolRowsFolded = false;
 
 	constructor(rules: Rule[]) {
 		super();
@@ -45,8 +48,21 @@ export class TtsrNotificationComponent extends Container {
 		this.invalidate();
 	}
 
+	/**
+	 * Fold the whole notice into one activity row (`display.foldToolRows`):
+	 * `Inject: <rules>` in place of the banner, so an injection reads like every
+	 * other row in a folded transcript. Unfolding restores the banner with its
+	 * descriptions.
+	 */
+	setToolRowsFolded(folded: boolean): void {
+		if (this.#toolRowsFolded === folded) return;
+		this.#toolRowsFolded = folded;
+		this.invalidate();
+	}
+
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible) return [];
+		if (this.#toolRowsFolded) return [this.#foldedRow(width)];
 		return super.render(width);
 	}
 
@@ -70,6 +86,28 @@ export class TtsrNotificationComponent extends Container {
 
 	isExpanded(): boolean {
 		return this.#expanded;
+	}
+
+	/**
+	 * One row for the whole notice: rule name(s), plus the description when a
+	 * single rule was injected. Warning-colored so an injection still stands out
+	 * in a long run of folded activity rows.
+	 */
+	#foldedRow(width: number): string {
+		const label = theme.fg("warning", theme.bold(t("Inject")));
+		const rules = this.#rules;
+		let detail: string;
+		if (rules.length === 1) {
+			const rule = rules[0]!;
+			const description = displayRuleDescription(rule)?.replace(/\s+/g, " ").trim();
+			detail = description ? `${rule.name} — ${description}` : rule.name;
+		} else {
+			detail = t("{count} rules · {names}", {
+				count: rules.length,
+				names: rules.map(rule => rule.name).join(", "),
+			});
+		}
+		return truncateToWidth(` ${label}${theme.fg("dim", ":")} ${theme.fg("muted", detail)}`, width);
 	}
 
 	#rebuild(): void {

@@ -6,8 +6,8 @@ import { t } from "../../i18n";
 import { InternalUrlRouter, XD_URL_PREFIX } from "../../internal-urls";
 import { getLanguageFromPath, theme } from "../../modes/theme/theme";
 import { parseLineRanges, selectorLineRanges, splitPathAndSel } from "../../tools/path-utils";
-import { PREVIEW_LIMITS, shortenPath } from "../../tools/render-utils";
-import { fileHyperlink, renderCodeCell, tryResolveInternalUrlSync } from "../../tui";
+import { PREVIEW_LIMITS, shortenPath, truncateToWidth } from "../../tools/render-utils";
+import { fileHyperlink, renderCodeCell, tryResolveInternalUrlSync, WidthAwareText } from "../../tui";
 import { canonicalizeMessage } from "../../utils/thinking-display";
 import type { ToolExecutionHandle } from "./tool-execution";
 import { formatUsageRow } from "./usage-row";
@@ -311,6 +311,8 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#text: Text;
 	#expanded = false;
 	#toolActivityVisible = true;
+	// `display.foldToolRows`: one activity row instead of per-file previews.
+	#toolRowsFolded = false;
 	#showContentPreview: boolean;
 	// A read group accretes entries across multiple assistant completions for as
 	// long as the run of reads is uninterrupted. It remains active while its
@@ -498,12 +500,30 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		super.invalidate();
 	}
 
+	/**
+	 * Fold the whole group into one activity row (`display.foldToolRows`):
+	 * `Read: <targets>`, dropping the per-file code previews and usage rows
+	 * while the fold is on. Unfolding rebuilds the full presentation from the
+	 * entries, which keep accumulating regardless of the fold state.
+	 */
+	setToolRowsFolded(folded: boolean): void {
+		if (this.#toolRowsFolded === folded) return;
+		this.#toolRowsFolded = folded;
+		this.#blockVersion++;
+		this.#updateDisplay();
+	}
+
 	getComponent(): Component {
 		return this;
 	}
 
 	#updateDisplay(): void {
 		const entries = [...this.#entries.values()];
+		if (this.#toolRowsFolded) {
+			this.clear();
+			this.addChild(new WidthAwareText(width => this.#foldedRow(width), 0, 0));
+			return;
+		}
 		const displayTargets = this.#displayTargetsForEntries(entries);
 		const displayRows = this.#buildSummaryRows(displayTargets);
 
@@ -694,6 +714,24 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 			line: firstSelectorLineForTargets(row.targets),
 			linkPath: linkPathForTargets(row.targets),
 		});
+	}
+
+	/**
+	 * One row for the whole group: the settled glyph is omitted (matches the
+	 * folded tool rows), pending/error states keep theirs, and the targets are
+	 * joined rather than nested so the row never wraps.
+	 */
+	#foldedRow(width: number): string {
+		const targets = this.#displayTargetsForEntries([...this.#entries.values()]);
+		const rows = this.#buildSummaryRows(targets);
+		const status = this.#statusForTargets(targets);
+		const statusPrefix = status === "success" ? "" : `${this.#formatStatus(status)} `;
+		const label = theme.fg("toolTitle", theme.bold("Read"));
+		if (rows.length === 0) return ` ${statusPrefix}${label}`;
+		const targetsDisplay = rows
+			.map(row => theme.fg("accent", shortenPath(row.targetPath)))
+			.join(theme.fg("dim", ", "));
+		return truncateToWidth(` ${statusPrefix}${label}${theme.fg("dim", ":")} ${targetsDisplay}`, width);
 	}
 
 	#statusForTargets(targets: ReadDisplayTarget[]): ReadEntry["status"] {

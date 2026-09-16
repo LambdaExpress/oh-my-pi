@@ -114,4 +114,21 @@ describe("LateDiagnosticsMessageComponent", () => {
 		component.setToolActivityVisible(true);
 		expect(plain(component)).toContain("Late diagnostics");
 	});
+
+	it("folds the report into one row while folded", () => {
+		const component = new LateDiagnosticsMessageComponent([
+			{
+				path: "/abs/src/foo.ts",
+				summary: "1 error(s)",
+				errored: true,
+				messages: ["src/foo.ts:1:1 [error] [typescript] bad (2322)"],
+			},
+			{ path: "/abs/src/bar.ts", summary: "2 error(s)", errored: true, messages: ["src/bar.ts:2:1 bad"] },
+		]);
+
+		component.setToolRowsFolded(true);
+
+		const rows = component.render(120).map(line => stripVTControlCharacters(line).trim());
+		expect(rows).toEqual(["Late diagnostics: 2 files · 1 error(s)"]);
+	});
 });

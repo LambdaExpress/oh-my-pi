@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added an opt-in `display.foldToolRows` transcript mode that draws each activity row — every tool call (full cards, grouped reads, subagent tasks, custom/extension/MCP tools), TTSR rule injections (`Inject: ts-set-map — …`), todo reminders, and late LSP diagnostics — as one line: `Eval: raw point-by-point inspection`, `Edit: ~/project/README.md +6 -5`, `Write: src/app.ts +42`, `Bash: bun test`. A `write xd://<device>` dispatch folds as the device operation it ran (`ADB: shell logcat -d`, `ADB: pull /sdcard/shot.png`, `atlassian/downloadJiraAttachment: CEN21-7022`) instead of restating the device URL. File targets keep their accent color, edits show `+N -M` and writes `+N` in the diff-added/removed colors, and every other tool falls back to the call's target (command, path, pattern, query). Consecutive folded rows drop the blank row the transcript normally puts between blocks, so a long tool run reads as one compact list while model replies keep their spacing. Fold and unfold the whole transcript with `app.tools.foldRows` (`Alt+Shift+O` by default) or from `/settings`, and the state survives restarts.
+
 ### Fixed
 
 - `write` reports the real UTF-8 byte count in its progress and success messages instead of the JavaScript character count, so non-ASCII content no longer understates the written size.

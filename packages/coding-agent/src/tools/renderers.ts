@@ -44,6 +44,30 @@ import { setXdevRendererLookup } from "./xdev";
  */
 export type FirstResultViewportRepaint = boolean | ((args: unknown, options: RenderResultOptions) => boolean);
 
+/** Semantic activity text consumed by the folded (one-line) tool row. */
+export interface ToolActivitySummary {
+	label: string;
+	/**
+	 * Appended after `label: `. Accepts theme-styled text; renderers must run
+	 * model-controlled values through the shared display sanitizers first
+	 * (same duty `renderCall` carries).
+	 */
+	detail?: string;
+}
+
+/** Live execution fields a renderer may consult while describing its activity. */
+export interface ToolActivityContext {
+	readonly expanded: boolean;
+	readonly isPartial: boolean;
+	readonly spinnerFrame?: number;
+	/** Tool-specific render context (same shape `renderCall` receives), when available. */
+	readonly renderContext?: Record<string, unknown>;
+	/** Result snapshot once the call returned, including partial streaming updates. */
+	readonly result?: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean };
+	/** Active theme, so summaries can style path/stats fragments. */
+	readonly theme: Theme;
+}
+
 export type ToolRenderer = {
 	renderCall: (args: unknown, options: RenderResultOptions, theme: Theme) => Component;
 	renderResult: (
@@ -53,6 +77,11 @@ export type ToolRenderer = {
 		args?: unknown,
 	) => Component;
 	mergeCallAndResult?: boolean;
+	/**
+	 * Describes current activity without coupling a renderer to terminal layout.
+	 * Consumed by the folded transcript row (`display.foldToolRows`).
+	 */
+	activitySummary?: (args: unknown, context: ToolActivityContext) => ToolActivitySummary;
 	/**
 	 * Whether `renderResult` preserves the call arguments when the agent loop
 	 * supplies its minimal signal-abort result.

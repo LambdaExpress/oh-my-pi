@@ -20,6 +20,7 @@ import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 import { parseConfiguredThinkingLevel } from "../thinking";
 import { markFramedBlockComponent, outputBlockContentWidth, renderCodeCell } from "../tui";
 import { formatEvalCodeForDisplay } from "./eval-format";
+import type { ToolActivityContext, ToolActivitySummary } from "./renderers";
 import {
 	JSON_TREE_MAX_DEPTH_COLLAPSED,
 	JSON_TREE_MAX_DEPTH_EXPANDED,
@@ -41,6 +42,7 @@ import {
 	isFeedModelBadgeEnabled,
 	previewWindowRows,
 	replaceTabs,
+	sanitizeDisplayWarning,
 	shortenPath,
 	truncateToWidth,
 	wrapBrackets,
@@ -537,6 +539,21 @@ function formatCellOutputLines(
 export const evalToolRenderer = {
 	animatedPendingPreview: true,
 	animatedPartialResult: true,
+	/**
+	 * Folded row reads as the cell's title (what the call is for), falling back
+	 * to the language it runs — never the code body, which is what the fold
+	 * exists to hide.
+	 */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const cells = getRenderCells((args ?? {}) as EvalRenderArgs);
+		for (const cell of cells) {
+			if (!cell.title) continue;
+			const title = sanitizeDisplayWarning(cell.title);
+			if (title.length > 0) return { label: "Eval", detail: context.theme.fg("muted", title) };
+		}
+		const language = cells[0]?.language === "js" ? "javascript" : "python";
+		return { label: "Eval", detail: context.theme.fg("muted", `running ${language}`) };
+	},
 	renderCall(args: EvalRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		const cells = getRenderCells(args);
 

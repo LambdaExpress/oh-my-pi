@@ -105,6 +105,7 @@ export class ChatTranscriptBuilder {
 
 	constructor(private readonly deps: ChatTranscriptBuilderDeps) {
 		this.container.setToolActivityVisible(!settings.get("display.hideToolActivity"));
+		this.container.setToolRowsFolded(settings.get("display.foldToolRows"));
 	}
 
 	/** Whether the transcript currently holds any rendered rows. */

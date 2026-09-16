@@ -44,8 +44,10 @@ import {
 	formatMeta,
 	formatTitle,
 	sanitizeCarriageReturns,
+	sanitizeDisplayWarning,
 	TRUNCATE_LENGTHS,
 } from "./render-utils";
+import type { ToolActivityContext, ToolActivitySummary } from "./renderers";
 import { ToolAbortError } from "./tool-errors";
 
 // =============================================================================
@@ -1467,6 +1469,17 @@ function renderAnswerOptionLines(
 
 export const askToolRenderer = {
 	mergeCallAndResult: true,
+	/**
+	 * Folded row: the question the dialog is asking (the option list is the
+	 * card's body). Reads `Ask` alone only when the args carry no question yet.
+	 */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const questions = normalizeRenderQuestions((args as AskRenderArgs | undefined)?.questions);
+		const first = questions?.[0]?.question;
+		if (!first) return { label: "Ask", detail: context.theme.fg("muted", "waiting for the question") };
+		const detail = questions.length > 1 ? `${first} (+${questions.length - 1} more)` : first;
+		return { label: "Ask", detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
+	},
 	renderCall(args: AskRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const label = formatTitle("Ask", uiTheme);
 		const mdTheme = getMarkdownTheme();

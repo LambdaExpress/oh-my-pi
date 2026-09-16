@@ -42,6 +42,7 @@ type ConfigurableEditorAction = Extract<
 	| "app.tools.expand"
 	| "app.completedRuns.toggle"
 	| "app.tools.toggleVisibility"
+	| "app.tools.foldRows"
 	| "app.thinking.toggle"
 	| "app.editor.external"
 	| "app.history.search"
@@ -66,6 +67,7 @@ const DEFAULT_ACTION_KEYS: Record<ConfigurableEditorAction, KeyId[]> = {
 	"app.tools.expand": ["ctrl+o"],
 	"app.completedRuns.toggle": ["alt+o"],
 	"app.tools.toggleVisibility": ["ctrl+shift+o"],
+	"app.tools.foldRows": ["alt+shift+o"],
 	"app.thinking.toggle": ["ctrl+t"],
 	"app.editor.external": ["ctrl+g"],
 	"app.history.search": ["ctrl+r"],
@@ -760,6 +762,7 @@ export class CustomEditor extends Editor {
 	onExpandTools?: () => void;
 	onToggleCompletedRuns?: () => void;
 	onToggleToolActivity?: () => void;
+	onToggleToolRowsFolded?: () => void;
 	onToggleThinking?: () => void;
 	onExternalEditor?: () => void;
 	onHistorySearch?: () => void;
@@ -1142,6 +1145,11 @@ export class CustomEditor extends Editor {
 			// Intercept configured tool activity visibility toggle
 			if (this.#matchesAction(canonical, "app.tools.toggleVisibility") && this.onToggleToolActivity) {
 				this.onToggleToolActivity();
+				return;
+			}
+			// Intercept configured tool-row fold toggle
+			if (this.#matchesAction(canonical, "app.tools.foldRows") && this.onToggleToolRowsFolded) {
+				this.onToggleToolRowsFolded();
 				return;
 			}
 

@@ -1,7 +1,7 @@
 import type { Component, HistoryBatch } from "@oh-my-pi/pi-tui";
 import { Container } from "@oh-my-pi/pi-tui";
 import { logger } from "@oh-my-pi/pi-utils";
-import { isToolActivityComponent } from "./tool-activity";
+import { isToolActivityComponent, isToolRowsFoldComponent } from "./tool-activity";
 
 /** Shared animation time supplied by the constrained transcript root. */
 export interface AnimationFrame {
@@ -186,6 +186,16 @@ export class TranscriptContainer extends Container {
 	#replayPending = false;
 	#replayRequested = false;
 	#toolActivityVisible = true;
+	#toolRowsFolded = false;
+	// Tail of the immutable terminal tape: the block whose rows were written
+	// last, and whether a separator blank already follows them. Separators are
+	// only ever written by the block that FOLLOWS, because a run of folded tool
+	// rows is open-ended — the next row of the run may arrive long after this one
+	// retires, and a trailing blank written now could not be taken back.
+	#tapeTail: { component: Component | undefined; separated: boolean } = {
+		component: undefined,
+		separated: false,
+	};
 	#lastFrame: AnimationFrame = { tick: 0, now: 0 };
 	#retirementPreservingRebuild: RetirementPreservingRebuild | undefined;
 	// Start rows from the last full render(), keyed by child component (transcript deep-links).
@@ -199,6 +209,7 @@ export class TranscriptContainer extends Container {
 
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
+		if (isToolRowsFoldComponent(component)) component.setToolRowsFolded(this.#toolRowsFolded);
 		super.addChild(component);
 		this.#entries.push({
 			component,
@@ -232,6 +243,7 @@ export class TranscriptContainer extends Container {
 		this.#replayRequested = false;
 		this.#retirementPreservingRebuild = undefined;
 		this.#lastViewportSpans = [];
+		this.#tapeTail = { component: undefined, separated: false };
 	}
 
 	/**
@@ -319,6 +331,20 @@ export class TranscriptContainer extends Container {
 		this.#toolActivityVisible = visible;
 		for (const child of this.children) {
 			if (isToolActivityComponent(child)) child.setToolActivityVisible(visible);
+		}
+		this.invalidate();
+	}
+
+	/**
+	 * Fold every tool row into its one-line activity summary (or restore the
+	 * full cards). Children keep their own copy so blocks mounting later —
+	 * live streaming, transcript rebuilds — land in the same presentation.
+	 */
+	setToolRowsFolded(folded: boolean): void {
+		if (this.#toolRowsFolded === folded) return;
+		this.#toolRowsFolded = folded;
+		for (const child of this.children) {
+			if (isToolRowsFoldComponent(child)) child.setToolRowsFolded(folded);
 		}
 		this.invalidate();
 	}
@@ -491,12 +517,20 @@ export class TranscriptContainer extends Container {
 
 		const output: string[] = [];
 		const owners: (Component | undefined)[] = [];
+		// The first live block separates from the tape's last block when that
+		// boundary is not a folded run (the tape never writes a trailing blank
+		// after a folded row, so the decision lands here).
+		let previous: Component | undefined = this.#tapeTail.separated ? undefined : this.#tapeTail.component;
 		for (const candidate of live) {
 			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, frame);
 			const rendered = this.#renderEntry(candidate.entry, width);
 			const block = rendered.slice(this.#projectedPrefixLength(candidate.entry, candidate.index, width, rendered));
 			if (block.length === 0) continue;
-			if (output.length > 0) {
+			if (
+				previous !== undefined &&
+				previous !== candidate.entry.component &&
+				this.#keepsBlankBetween(previous, candidate.entry.component)
+			) {
 				output.push("");
 				owners.push(undefined);
 			}
@@ -504,6 +538,7 @@ export class TranscriptContainer extends Container {
 				output.push(line);
 				owners.push(candidate.entry.component);
 			}
+			previous = candidate.entry.component;
 		}
 		const drop = Math.max(0, output.length - capacity);
 		this.#commitViewportSpans(owners.slice(drop), output.length - drop);
@@ -547,6 +582,7 @@ export class TranscriptContainer extends Container {
 			const before = this.#renderStablePrefix(entry, entry.emitted, width);
 			const after = this.#renderStablePrefix(entry, offered.emittedEnd, width);
 			rows = after.slice(before.length);
+			this.#recordTapeTail(entry.component, rows);
 		} else if (offered.kind === "snapshot") {
 			const entry = this.#entries[offered.entry];
 			if (entry === undefined) return undefined;
@@ -563,13 +599,15 @@ export class TranscriptContainer extends Container {
 				width,
 				rowCount,
 				prefix,
-				separator: rowCount > start && rowCount === rendered.length,
+				separator: rowCount > start && rowCount === rendered.length && !this.#isFoldedToolRow(entry.component),
 			};
 			const rerendered = Array.from(rendered.slice(start, rowCount));
 			if (watermark.separator) rerendered.push("");
 			offered.watermark = watermark;
+			this.#recordTapeTail(entry.component, rerendered);
 			rows = rerendered;
 		} else if (offered.kind === "commit") {
+			const lastCommitted = offered.entries.at(-1);
 			const rerendered = Array.from(this.#renderSelection(offered.entries, width, offered.partial === undefined));
 			if (offered.partial !== undefined) {
 				const entry = this.#entries[offered.partial.entry];
@@ -579,10 +617,19 @@ export class TranscriptContainer extends Container {
 					const end = this.#resolvePartial(offered.partial.watermark, entry, width, rendered);
 					const prefix = rendered.slice(this.#retiredPrefixLength(entry, width, rendered), end);
 					if (prefix.length > 0) {
-						if (rerendered.length > 0) rerendered.push("");
+						const last = lastCommitted === undefined ? undefined : this.#entries[lastCommitted]?.component;
+						if (rerendered.length > 0 && this.#keepsBlankBetween(last, entry.component)) rerendered.push("");
 						rerendered.push(...prefix);
 					}
+					this.#recordTapeTail(entry.component, rerendered);
+				} else {
+					this.#recordTapeTail(undefined, rerendered);
 				}
+			} else {
+				this.#recordTapeTail(
+					lastCommitted === undefined ? undefined : this.#entries[lastCommitted]?.component,
+					rerendered,
+				);
 			}
 			rows = rerendered;
 		} else {
@@ -649,6 +696,7 @@ export class TranscriptContainer extends Container {
 				kind: "append",
 			};
 			this.#offered = { batch, kind: "append", entry: this.#frontier, emittedEnd };
+			this.#recordTapeTail(head.component, batch.rows);
 			this.#pinnedFrontier = undefined;
 			return batch;
 		}
@@ -692,7 +740,10 @@ export class TranscriptContainer extends Container {
 							partial.rowCount,
 						);
 						if (prefix.length > 0) {
-							if (rows.length > 0) rows.push("");
+							const lastCommitted = this.#entries[commitEntries[commitEntries.length - 1]!]?.component;
+							if (rows.length > 0 && this.#keepsBlankBetween(lastCommitted, next.entry.component)) {
+								rows.push("");
+							}
 							rows.push(...prefix);
 						}
 						const batch: HistoryBatch = { id: this.#nextBatchId++, rows, kind: "append" };
@@ -702,6 +753,7 @@ export class TranscriptContainer extends Container {
 							kind: "commit",
 							partial: { entry: next.index, watermark: partial },
 						};
+						this.#recordTapeTail(next.entry.component, rows);
 						this.#pinnedFrontier = undefined;
 						return batch;
 					}
@@ -713,6 +765,7 @@ export class TranscriptContainer extends Container {
 				kind: "append",
 			};
 			this.#offered = { batch, entries: commitEntries, kind: "commit" };
+			this.#recordTapeTail(this.#entries[commitEntries.at(-1)!]?.component, batch.rows);
 			this.#pinnedFrontier = undefined;
 			return batch;
 		}
@@ -736,6 +789,7 @@ export class TranscriptContainer extends Container {
 						kind: "commit",
 						partial: { entry: candidate.index, watermark },
 					};
+					this.#recordTapeTail(candidate.entry.component, rows);
 					this.#pinnedFrontier = undefined;
 					return batch;
 				}
@@ -777,12 +831,15 @@ export class TranscriptContainer extends Container {
 						width,
 						rowCount,
 						prefix,
-						separator: rowCount === full.length,
+						// Trailing blanks are deferred past a folded row: its run may
+						// continue with the next block.
+						separator: rowCount === full.length && !this.#isFoldedToolRow(candidate.entry.component),
 					};
 					const rows = Array.from(full.slice(start, rowCount));
 					if (watermark.separator) rows.push("");
 					const batch: HistoryBatch = { id: this.#nextBatchId++, rows, kind: "append" };
 					this.#offered = { batch, entry: candidate.index, kind: "snapshot", watermark };
+					this.#recordTapeTail(candidate.entry.component, rows);
 					this.#pinnedFrontier = undefined;
 					return batch;
 				}
@@ -841,13 +898,15 @@ export class TranscriptContainer extends Container {
 		const cap = Math.max(0, Math.trunc(maxRows));
 		if (cap === 0) return EMPTY_ROWS;
 		const rows: string[] = [];
+		let next: Component | undefined;
 		for (let index = this.#entries.length - 1; index >= 0; index--) {
 			const entry = this.#entries[index]!;
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = trimBlankEdges(entry.component.render(width));
 			if (block.length === 0) continue;
-			if (rows.length > 0) rows.unshift("");
+			if (rows.length > 0 && this.#keepsBlankBetween(entry.component, next)) rows.unshift("");
 			rows.unshift(...block);
+			next = entry.component;
 			if (rows.length >= cap) break;
 		}
 		return rows.length > cap ? rows.slice(rows.length - cap) : rows;
@@ -858,13 +917,15 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		this.#childStartRows.clear();
 		const rows: string[] = [];
+		let previous: Component | undefined;
 		for (const entry of this.#entries) {
 			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			const block = this.#renderEntry(entry, width);
 			if (block.length === 0) continue;
-			if (rows.length > 0) rows.push("");
+			if (rows.length > 0 && this.#keepsBlankBetween(previous, entry.component)) rows.push("");
 			this.#childStartRows.set(entry.component, rows.length);
 			rows.push(...block);
+			previous = entry.component;
 		}
 		return rows;
 	}
@@ -1008,6 +1069,10 @@ export class TranscriptContainer extends Container {
 	#renderSelection(indices: readonly number[], width: number, trailingBlank: boolean): readonly string[] {
 		const rows: string[] = [];
 		let terminalAlreadySeparated = false;
+		// The batch continues the terminal tape, so its first block separates from
+		// whatever the tape wrote last — unless that was this same block's own
+		// emitted prefix, which continues without a gap.
+		let previous: Component | undefined = this.#tapeTail.separated ? undefined : this.#tapeTail.component;
 		for (const index of indices) {
 			const entry = this.#entries[index];
 			if (entry === undefined) continue;
@@ -1018,11 +1083,28 @@ export class TranscriptContainer extends Container {
 				terminalAlreadySeparated = entry.snapshot?.separator === true;
 				continue;
 			}
-			if (rows.length > 0) rows.push("");
+			if (
+				previous !== undefined &&
+				previous !== entry.component &&
+				this.#keepsBlankBetween(previous, entry.component)
+			) {
+				rows.push("");
+			}
 			rows.push(...block);
+			previous = entry.component;
 			terminalAlreadySeparated = false;
 		}
-		if (trailingBlank && !terminalAlreadySeparated && (rows.length > 0 || indices.length > 0)) rows.push("");
+		// A trailing blank is written only when the block that follows can no
+		// longer join the run: a folded tool row defers the whole decision to
+		// whatever follows it.
+		if (
+			trailingBlank &&
+			!terminalAlreadySeparated &&
+			(rows.length > 0 || indices.length > 0) &&
+			!this.#batchesEndWithFoldedRow(previous)
+		) {
+			rows.push("");
+		}
 		return rows;
 	}
 
@@ -1031,13 +1113,19 @@ export class TranscriptContainer extends Container {
 		for (let index = 0; index < this.#entries.length; index++) {
 			if (this.#entries[index]!.state === "committed") committed.push(index);
 		}
-		const rows = Array.from(this.#renderSelection(committed, width, true));
 		const head = this.#entries.find(entry => entry.state !== "committed");
+		// The replay replaces the whole tape: whatever the terminal held before is
+		// gone, so the tail starts over with the rows this replay writes.
+		this.#tapeTail = { component: undefined, separated: false };
+		const rows = Array.from(this.#renderSelection(committed, width, true));
+		let tail = committed.length > 0 ? this.#entries[committed.at(-1)!]?.component : undefined;
 		if (head?.mode === "appendOnly" && head.emitted > 0) {
 			this.#setAllocation(head.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			this.#renderEntry(head, width);
 			rows.push(...this.#renderStablePrefix(head, head.emitted, width));
+			tail = head.component;
 		}
+		this.#recordTapeTail(tail, rows);
 		return rows;
 	}
 
@@ -1079,6 +1167,47 @@ export class TranscriptContainer extends Container {
 	#setAllocation(component: Component, rows: number, frame: AnimationFrame): void {
 		(component as Component & TranscriptPresentationTarget).setTranscriptAllocation?.(rows, frame);
 	}
+
+	/** A tool block currently presented as its folded one-line row. */
+	#isFoldedToolRow(component: Component): boolean {
+		return this.#toolRowsFolded && isToolRowsFoldComponent(component);
+	}
+
+	/**
+	 * Whether a blank row still separates two consecutive blocks. A run of
+	 * folded tool rows drops it — that spacing is exactly what the fold exists
+	 * to remove — while every boundary touching prose, a user message, or a
+	 * full card keeps the transcript's standard block gap. A neighbour the
+	 * caller cannot name (the ends of the transcript, a batch whose successor is
+	 * unknown) keeps its blank, so those callers never change shape.
+	 */
+	#keepsBlankBetween(previous: Component | undefined, next: Component | undefined): boolean {
+		if (previous === undefined || next === undefined) return true;
+		return !(this.#isFoldedToolRow(previous) && this.#isFoldedToolRow(next));
+	}
+
+	/** The block presented right after `index`, or undefined when it is last. */
+	#successorComponent(index: number): Component | undefined {
+		return this.#entries[index + 1]?.component;
+	}
+
+	/**
+	 * Record the block and separator state the terminal holds after a batch.
+	 * `component` is the block whose rows were written last; `separated` is
+	 * whether a blank row already follows it.
+	 */
+	#recordTapeTail(component: Component | undefined, rows: readonly string[]): void {
+		this.#tapeTail = {
+			component: component ?? this.#tapeTail.component,
+			separated: rows.at(-1) === "",
+		};
+	}
+
+	/** A batch only end-runs a folded row when that row is its last visible block. */
+	#batchesEndWithFoldedRow(last: Component | undefined): boolean {
+		return last !== undefined && this.#isFoldedToolRow(last);
+	}
+
 	#settleFinalized(): void {
 		for (const entry of this.#entries) {
 			if (entry.state === "active" && isFinalized(entry.component)) entry.state = "settled";

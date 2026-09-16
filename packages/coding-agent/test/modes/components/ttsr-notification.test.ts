@@ -62,3 +62,38 @@ describe("TtsrNotificationComponent localization", () => {
 		expect(rendered).toContain("Avoid any in TypeScript");
 	});
 });
+
+describe("TtsrNotificationComponent folding", () => {
+	beforeEach(() => {
+		setLocale("en");
+		if (!darkTheme) throw new Error("Failed to load dark theme");
+		setThemeInstance(darkTheme);
+	});
+
+	afterEach(() => {
+		setLocale(null);
+	});
+
+	it("folds an injected rule into one row instead of the banner", () => {
+		const component = new TtsrNotificationComponent([builtinRule("ts-no-tiny-functions", "Inline tiny wrappers.")]);
+		expect(component.render(120).length).toBeGreaterThan(1);
+
+		component.setToolRowsFolded(true);
+
+		expect(component.render(120).map(line => stripVTControlCharacters(line).trim())).toEqual([
+			"Inject: ts-no-tiny-functions — Inline tiny wrappers.",
+		]);
+	});
+
+	it("summarizes several injected rules on one row", () => {
+		const component = new TtsrNotificationComponent([builtinRule("ts-set-map"), builtinRule("ts-no-any")]);
+		component.addRules([builtinRule("ts-no-tiny-functions")]);
+		component.setToolRowsFolded(true);
+
+		const rows = component.render(200);
+		expect(rows).toHaveLength(1);
+		const row = stripVTControlCharacters(rows[0]!).trim();
+		expect(row).toStartWith("Inject: 3 rules · ");
+		expect(row).toContain("ts-no-any");
+	});
+});

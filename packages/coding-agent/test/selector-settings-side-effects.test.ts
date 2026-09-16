@@ -226,6 +226,27 @@ describe("selector setting side effects", () => {
 		});
 	}
 
+	for (const folded of [true, false]) {
+		it(`folds every tool row when display.foldToolRows=${folded} changes in /settings`, () => {
+			const setToolRowsFolded = vi.fn();
+			const resetDisplay = vi.fn();
+			const ctx = {
+				foldToolRows: !folded,
+				chatContainer: { setToolRowsFolded },
+				ui: { resetDisplay },
+			};
+			const controller = new SelectorController(ctx as unknown as InteractiveModeContext);
+
+			controller.handleSettingChange("display.foldToolRows", folded);
+
+			expect(ctx.foldToolRows).toBe(folded);
+			expect(setToolRowsFolded).toHaveBeenCalledWith(folded);
+			// Rows already retired to native scrollback must replay under the new fold.
+			expect(setToolRowsFolded.mock.invocationCallOrder[0]).toBeLessThan(resetDisplay.mock.invocationCallOrder[0]);
+			expect(resetDisplay).toHaveBeenCalledTimes(1);
+		});
+	}
+
 	for (const enabled of [false, true]) {
 		it(`rebuilds the transcript when display.showTokenUsage=${enabled} changes in /settings`, () => {
 			const rebuildChatFromMessages = vi.fn();

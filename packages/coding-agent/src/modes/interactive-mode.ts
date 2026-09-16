@@ -793,6 +793,7 @@ export class InteractiveMode implements InteractiveModeContext {
 	isBashMode = false;
 	toolOutputExpanded = false;
 	hideToolActivity = false;
+	foldToolRows = false;
 	todoExpanded = false;
 	planModeEnabled = false;
 	planModePaused = false;
@@ -1375,6 +1376,8 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		this.hideToolActivity = settings.get("display.hideToolActivity");
 		this.chatContainer.setToolActivityVisible(!this.hideToolActivity);
+		this.foldToolRows = settings.get("display.foldToolRows");
+		this.chatContainer.setToolRowsFolded(this.foldToolRows);
 		this.hideThinkingBlock = settings.get("hideThinkingBlock");
 		this.proseOnlyThinking = settings.get("proseOnlyThinking");
 

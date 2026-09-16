@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
 import { TodoReminderComponent } from "@oh-my-pi/pi-coding-agent/modes/components/todo-reminder";
@@ -7,13 +7,19 @@ import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/
 import { TtsrNotificationComponent } from "@oh-my-pi/pi-coding-agent/modes/components/ttsr-notification";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import { Text } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../../../src/i18n";
 
 const darkTheme = await getThemeByName("dark");
 
 describe("tool activity visibility", () => {
 	beforeEach(() => {
+		setLocale("en");
 		if (!darkTheme) throw new Error("Failed to load dark theme");
 		setThemeInstance(darkTheme);
+	});
+
+	afterEach(() => {
+		setLocale(null);
 	});
 
 	it("applies visibility to mounted and subsequently added activity blocks", () => {
@@ -64,5 +70,15 @@ describe("tool activity visibility", () => {
 		wrapper.setExpanded(true);
 		wrapper.setExpanded(false);
 		expect(states).toEqual([true, false]);
+	});
+
+	it("folds activity panels into one row through the transcript fold", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(new TodoReminderComponent([{ content: "finish the task", status: "in_progress" }], 1, 3));
+
+		transcript.setToolRowsFolded(true);
+
+		const rows = stripVTControlCharacters(transcript.render(120).join("\n")).split("\n").filter(Boolean);
+		expect(rows).toEqual([" Reminder: finish the task"]);
 	});
 });

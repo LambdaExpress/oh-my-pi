@@ -8,8 +8,18 @@ export function isToolActivityComponent(component: Component): component is Comp
 	return typeof (component as Partial<ToolActivityComponent>).setToolActivityVisible === "function";
 }
 
+export interface ToolRowsFoldComponent {
+	/** Render this tool row as its one-line activity summary (or the full card). */
+	setToolRowsFolded(folded: boolean): void;
+}
+
+export function isToolRowsFoldComponent(component: Component): component is Component & ToolRowsFoldComponent {
+	return typeof (component as Partial<ToolRowsFoldComponent>).setToolRowsFolded === "function";
+}
+
 export class ToolActivityContainer extends Container implements ToolActivityComponent {
 	#visible = true;
+	#folded = false;
 
 	constructor(component: Component | Component[]) {
 		super();
@@ -23,6 +33,15 @@ export class ToolActivityContainer extends Container implements ToolActivityComp
 	setToolActivityVisible(visible: boolean): void {
 		if (this.#visible === visible) return;
 		this.#visible = visible;
+		this.invalidate();
+	}
+
+	setToolRowsFolded(folded: boolean): void {
+		if (this.#folded === folded) return;
+		this.#folded = folded;
+		for (const child of this.children) {
+			if (isToolRowsFoldComponent(child)) child.setToolRowsFolded(folded);
+		}
 		this.invalidate();
 	}
 

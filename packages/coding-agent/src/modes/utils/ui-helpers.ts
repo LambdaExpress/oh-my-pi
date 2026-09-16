@@ -952,6 +952,7 @@ export class UiHelpers {
 		const visibleChatContainer = this.ctx.chatContainer;
 		const stagedChatContainer = new TranscriptContainer();
 		stagedChatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
+		stagedChatContainer.setToolRowsFolded(this.ctx.foldToolRows);
 		const preservedChatChildren = options.preserveExistingChat ? [...visibleChatContainer.children] : undefined;
 		const previousTranscriptMessageComponents = this.ctx.transcriptMessageComponents;
 		const previousPendingTools = this.ctx.pendingTools;
@@ -1026,6 +1027,12 @@ export class UiHelpers {
 			const replayedChatChildren = [...stagedChatContainer.children];
 			stagedChatContainer.clear();
 			this.ctx.chatContainer = visibleChatContainer;
+			// The visible container kept the flags it had when the replay started;
+			// a fold or visibility toggle that landed mid-replay reached only the
+			// staged container. Re-apply the live state before its children are
+			// handed back, or every replayed tool row would restore the stale one.
+			visibleChatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
+			visibleChatContainer.setToolRowsFolded(this.ctx.foldToolRows);
 			if (preservedChatChildren) {
 				visibleChatContainer.clear();
 			} else {

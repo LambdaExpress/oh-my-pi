@@ -2,6 +2,7 @@ import { Box, Container, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { t } from "../../i18n";
 import { theme } from "../../modes/theme/theme";
 import type { TodoItem } from "../../tools/todo";
+import { truncateToWidth } from "../../tools/render-utils";
 
 /**
  * Component that renders a todo completion reminder notification, committed into
@@ -12,6 +13,8 @@ import type { TodoItem } from "../../tools/todo";
 export class TodoReminderComponent extends Container {
 	#box: Box;
 	#toolActivityVisible = true;
+	// `display.foldToolRows`: one `Reminder:` row instead of the yellow panel.
+	#toolRowsFolded = false;
 
 	constructor(
 		private readonly todos: TodoItem[],
@@ -35,9 +38,32 @@ export class TodoReminderComponent extends Container {
 		this.invalidate();
 	}
 
+	/**
+	 * Fold the reminder into one activity row (`display.foldToolRows`), matching
+	 * how every other transcript activity row reads while the transcript is
+	 * folded. Unfolding restores the full task list.
+	 */
+	setToolRowsFolded(folded: boolean): void {
+		if (this.#toolRowsFolded === folded) return;
+		this.#toolRowsFolded = folded;
+		this.invalidate();
+	}
+
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible) return [];
+		if (this.#toolRowsFolded) return [this.#foldedRow(width)];
 		return super.render(width);
+	}
+
+	/** `Reminder: <first task> (+N more)`, truncated to the row's width. */
+	#foldedRow(width: number): string {
+		const label = theme.fg("warning", theme.bold(t("Reminder")));
+		const count = this.todos.length;
+		const first = this.todos[0]?.content?.replace(/\s+/g, " ").trim();
+		const detail = first
+			? `${theme.fg("muted", first)}${count > 1 ? theme.fg("dim", ` (+${count - 1} more)`) : ""}`
+			: theme.fg("muted", t("{count} incomplete {label}", { count, label: count === 1 ? t("todo") : t("todos") }));
+		return truncateToWidth(` ${label}${theme.fg("dim", ":")} ${detail}`, width);
 	}
 
 	#rebuild(): void {

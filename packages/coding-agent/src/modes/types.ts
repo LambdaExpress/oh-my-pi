@@ -222,6 +222,8 @@ export interface InteractiveModeContext {
 	isBashMode: boolean;
 	toolOutputExpanded: boolean;
 	hideToolActivity: boolean;
+	/** `display.foldToolRows`: every tool row renders as its one-line summary. */
+	foldToolRows: boolean;
 	todoExpanded: boolean;
 	planModeEnabled: boolean;
 	vibeModeEnabled: boolean;

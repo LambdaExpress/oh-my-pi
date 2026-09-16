@@ -11,6 +11,7 @@ import type { FileDiagnosticsResult } from "../lsp";
 import { renderDiff as renderDiffColored } from "../modes/components/diff";
 import { getLanguageFromPath, type Theme } from "../modes/theme/theme";
 import type { OutputMeta } from "../tools/output-meta";
+import type { ToolActivityContext, ToolActivitySummary } from "../tools/renderers";
 import {
 	cachedRenderedString,
 	createRenderedStringCache,
@@ -792,6 +793,44 @@ function formatDiffStatsSuffix(diff: string, uiTheme: Theme): string {
 	].filter(value => value !== undefined);
 	return ` ${uiTheme.fg("dim", uiTheme.format.bracketLeft)}${stats.join(uiTheme.fg("dim", "/"))}${uiTheme.fg("dim", uiTheme.format.bracketRight)}`;
 }
+
+/**
+ * Diff texts a folded edit row can size itself from: every file of a settled
+ * multi-file result, the settled single-file diff, or whichever streaming
+ * preview has arrived before the result does.
+ */
+function editFoldDiffs(context: ToolActivityContext): string[] {
+	const details = context.result?.details as EditToolDetails | undefined;
+	const perFile = details?.perFileResults;
+	if (perFile && perFile.length > 0) {
+		return perFile.map(file => file.diff).filter(diff => typeof diff === "string" && diff.length > 0);
+	}
+	if (details?.diff) return [details.diff];
+	const renderContext = context.renderContext as EditRenderContext | undefined;
+	if (renderContext?.perFileDiffPreview?.length) {
+		return renderContext.perFileDiffPreview
+			.map(preview => preview.diff)
+			.filter((diff): diff is string => typeof diff === "string" && diff.length > 0);
+	}
+	const preview = renderContext?.editDiffPreview;
+	return preview && "diff" in preview && preview.diff ? [preview.diff] : [];
+}
+
+/** `+N -M` (added green, removed red) summed over an edit's diffs, or empty. */
+function editFoldStats(context: ToolActivityContext): string {
+	let added = 0;
+	let removed = 0;
+	for (const diff of editFoldDiffs(context)) {
+		const stats = getDiffStats(diff);
+		added += stats.added;
+		removed += stats.removed;
+	}
+	const parts: string[] = [];
+	if (added > 0) parts.push(context.theme.fg("toolDiffAdded", `+${added}`));
+	if (removed > 0) parts.push(context.theme.fg("toolDiffRemoved", `-${removed}`));
+	return parts.length > 0 ? ` ${parts.join(" ")}` : "";
+}
+
 function renderDiffSection(
 	diff: string,
 	rawPath: string,
@@ -898,6 +937,26 @@ function sliceCollapsedDiffRows(
 
 export const editToolRenderer = {
 	mergeCallAndResult: true,
+	/**
+	 * Folded row: operation, target path, and the change's `+N -M` totals. The
+	 * diff itself is the fold's whole point, so the row carries only its size —
+	 * from the settled result when there is one, else from the streaming preview.
+	 * Paths keep the accent color every card header gives a file target, so a
+	 * folded edit still reads as a file operation at a glance.
+	 */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const editArgs = (args ?? {}) as EditRenderArgs;
+		const editMode = (context.renderContext as EditRenderContext | undefined)?.editMode;
+		const facts = resolveEditCallFacts(editArgs, context.isPartial, editMode);
+		const label = facts.rename ? "Move" : getOperationTitle(facts.op);
+		if (!facts.rawPath) return { label };
+		const { theme } = context;
+		let detail = theme.fg("accent", formatEditTitlePath(facts.rawPath));
+		if (facts.rename) detail += ` ${theme.fg("dim", "→")} ${theme.fg("accent", formatEditTitlePath(facts.rename))}`;
+		if (facts.fileCount > 1) detail += theme.fg("dim", ` (+${facts.fileCount - 1} more)`);
+		detail += editFoldStats(context);
+		return { label, detail };
+	},
 	renderCall(
 		args: EditRenderArgs,
 		options: RenderResultOptions & { renderContext?: EditRenderContext },

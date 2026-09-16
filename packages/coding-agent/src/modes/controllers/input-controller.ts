@@ -594,6 +594,8 @@ export class InputController {
 			this.ctx.keybindings.getKeys("app.tools.toggleVisibility"),
 		);
 		this.ctx.editor.onToggleToolActivity = () => this.toggleToolActivityVisibility();
+		this.ctx.editor.setActionKeys("app.tools.foldRows", this.ctx.keybindings.getKeys("app.tools.foldRows"));
+		this.ctx.editor.onToggleToolRowsFolded = () => this.toggleToolRowsFolded();
 		this.ctx.editor.setActionKeys("app.message.dequeue", this.ctx.keybindings.getKeys("app.message.dequeue"));
 		this.ctx.editor.onDequeue = () => this.handleDequeue();
 		this.ctx.editor.setActionKeys("app.retry", this.ctx.keybindings.getKeys("app.retry"));
@@ -2449,6 +2451,31 @@ export class InputController {
 		// immutable native history, so both directions must replay the full transcript.
 		// A viewport repaint would leave those retired rows stuck expanded or collapsed.
 		this.ctx.ui.resetDisplay();
+	}
+
+	/**
+	 * Fold every tool row into its one-line activity summary, or restore the
+	 * full cards. The folded state persists through `display.foldToolRows` so a
+	 * session that prefers a scannable transcript keeps it across restarts.
+	 */
+	toggleToolRowsFolded(): void {
+		if (this.ctx.hideToolActivity) {
+			const visibilityKey = this.ctx.keybindings.getDisplayString("app.tools.toggleVisibility");
+			const visibilityHint = visibilityKey ? `${visibilityKey} or /settings` : "/settings";
+			this.ctx.showStatus(
+				t("Tool activity is hidden — show it with {hint} before folding", { hint: visibilityHint }),
+			);
+			return;
+		}
+		const folded = !this.ctx.foldToolRows;
+		this.ctx.foldToolRows = folded;
+		this.ctx.settings.set("display.foldToolRows", folded);
+		this.ctx.chatContainer.setToolRowsFolded(folded);
+		// Folded rows replace card bodies that may already sit in immutable
+		// native history, so the whole transcript must be replayed — a viewport
+		// repaint would leave those retired cards unfolded.
+		this.ctx.ui.resetDisplay();
+		this.ctx.showStatus(t("Tool rows: {state}", { state: folded ? t("folded") : t("expanded") }));
 	}
 
 	toggleThinkingBlockVisibility(): void {

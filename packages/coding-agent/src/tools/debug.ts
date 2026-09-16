@@ -56,10 +56,12 @@ import {
 	formatStatusIcon,
 	PREVIEW_LIMITS,
 	replaceTabs,
+	sanitizeDisplayWarning,
 	shortenPath,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "./render-utils";
+import type { ToolActivityContext, ToolActivitySummary } from "./renderers";
 import { ToolError, throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
@@ -1066,6 +1068,11 @@ function styleDebugLines(lines: readonly string[], theme: Theme, isError = false
 
 export const debugToolRenderer = {
 	animatedPartialResult: true,
+	/** Folded row: the debugger action plus its target, same text as the call header. */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const detail = summarizeDebugCall((args ?? {}) as DebugRenderArgs);
+		return { label: "Debug", detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
+	},
 	renderCall(args: DebugRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
 		const text = renderStatusLine({ icon: "pending", title: "Debug", description: summarizeDebugCall(args) }, theme);
 		return new Text(text, 0, 0);

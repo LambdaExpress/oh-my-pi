@@ -84,6 +84,7 @@ import {
 	truncateToWidth,
 	wrapTextWithAnsi,
 } from "./render-utils";
+import type { ToolActivityContext, ToolActivitySummary } from "./renderers";
 import { dispatchReportIssueDevice, REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-tool-issue";
 import {
 	dispatchResolutionDevice,
@@ -110,6 +111,7 @@ import {
 	renderXdevResult,
 	resolveXdevTool,
 	type XdevDispatch,
+	xdevActivitySummary,
 	xdevListing,
 } from "./xdev";
 
@@ -1775,6 +1777,36 @@ export interface WriteRenderContext {
 }
 
 export const writeToolRenderer = {
+	/**
+	 * Folded row: `Write: <path>` for a file, the target in the same accent color
+	 * the card header gives it. A `xd://<device>` dispatch instead reads as the
+	 * device's own operation (`ADB: shell logcat -d`), because restating the
+	 * device URL would say nothing about what ran.
+	 * The written line count rides the row in the diff-added color, matching how
+	 * a folded edit shows `+N`.
+	 */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const writeArgs = (args ?? {}) as WriteRenderArgs;
+		const rawPath =
+			typeof writeArgs.file_path === "string"
+				? writeArgs.file_path
+				: typeof writeArgs.path === "string"
+					? writeArgs.path
+					: "";
+		if (rawPath.length === 0) return { label: "Write" };
+		const device = parseXdUrl(rawPath);
+		if (device?.name) {
+			const resolveMounted = (context.renderContext as WriteRenderContext | undefined)?.resolveXdevMounted;
+			return xdevActivitySummary(device.name, writeArgs.content, context.theme, resolveMounted);
+		}
+		// Same count the card header reports, so a folded write still says how
+		// much it wrote.
+		const lines = countLines(normalizeDisplayText(writeArgs.content));
+		const detail = `${context.theme.fg("accent", shortenPath(rawPath))}${
+			lines > 0 ? ` ${context.theme.fg("toolDiffAdded", `+${lines}`)}` : ""
+		}`;
+		return { label: "Write", detail };
+	},
 	renderCall(
 		args: WriteRenderArgs,
 		options: RenderResultOptions & WriteStreamingPreviewStateCarrier & { renderContext?: WriteRenderContext },

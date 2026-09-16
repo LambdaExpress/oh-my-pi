@@ -1405,6 +1405,18 @@ export const SETTINGS_SCHEMA = {
 		},
 	},
 
+	"display.foldToolRows": {
+		type: "boolean",
+		default: false,
+		ui: {
+			tab: "appearance",
+			group: "Display",
+			label: "Fold Tool Rows",
+			description:
+				"Draw every tool call as a one-line summary (label, target, status) instead of its full card; the fold toggle key flips it mid-session",
+		},
+	},
+
 	"display.showTokenUsage": {
 		type: "boolean",
 		default: false,

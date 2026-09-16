@@ -625,6 +625,15 @@ export class SelectorController {
 				this.ctx.ui.resetDisplay();
 				break;
 			}
+			case "display.foldToolRows": {
+				const folded = value as boolean;
+				this.ctx.foldToolRows = folded;
+				this.ctx.chatContainer.setToolRowsFolded(folded);
+				// Match the shortcut path: folded rows replace cards already retired
+				// to native scrollback, so the transcript has to be replayed.
+				this.ctx.ui.resetDisplay();
+				break;
+			}
 			case "terminal.showImages":
 			case "showImages": {
 				const visible = value as boolean;
