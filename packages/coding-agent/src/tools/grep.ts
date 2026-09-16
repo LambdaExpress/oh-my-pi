@@ -44,6 +44,7 @@ import {
 } from "../tui";
 import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import type { ToolSession } from ".";
+import { getExperimentalContextSession } from "./context-notes";
 import { materializeReadUrlToFile, parseReadUrlTarget } from "./fetch";
 import { createFileRecorder, formatResultPath } from "./file-recorder";
 import { classifyGroupedLines, formatGroupedFiles, groupLineIndicesByBlank } from "./grouped-file-output";
@@ -965,6 +966,8 @@ async function resolveInternalSearchInputs(opts: {
 	rules?: ResolveContext["rules"];
 	sshHosts?: WriteContext["sshHosts"];
 	sessionFile?: string;
+	experimentalContextManagement: boolean;
+	getSessionBranch: ResolveContext["getSessionBranch"];
 	sessionId?: string;
 	agentRegistry?: ResolveContext["agentRegistry"];
 }): Promise<InternalSearchInputResolution> {
@@ -986,6 +989,8 @@ async function resolveInternalSearchInputs(opts: {
 		skills: opts.skills,
 		rules: opts.rules,
 		sshHosts: opts.sshHosts,
+		experimentalContextManagement: opts.experimentalContextManagement,
+		getSessionBranch: opts.getSessionBranch,
 		skipDirectoryListing: true,
 		// Try path-only first so large artifacts (and any other handler that
 		// separates path from content) resolve without materializing bytes.
@@ -1200,6 +1205,9 @@ export class GrepTool implements AgentTool<typeof searchSchema, GrepToolDetails>
 					rules: this.session.activeRules,
 					sshHosts,
 					sessionFile: this.session.getSessionFile() ?? undefined,
+					experimentalContextManagement:
+						this.session.settings.get("compaction.experimentalContextManagement") === true,
+					getSessionBranch: () => getExperimentalContextSession(this.session).getBranch(),
 					sessionId: this.session.sessionManager?.getSessionId?.() ?? this.session.getSessionId?.() ?? undefined,
 					agentRegistry: this.session.agentRegistry,
 				});

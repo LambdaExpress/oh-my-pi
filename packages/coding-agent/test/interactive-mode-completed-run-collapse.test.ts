@@ -268,6 +268,62 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(resetDisplay).toHaveBeenCalledTimes(2);
 	});
 
+	it("recovers a completed run anchored by a user-invoked skill prompt", async () => {
+		const skillPrompt: CustomMessage<{ name: string }> = {
+			role: "custom",
+			customType: "skill-prompt",
+			content: "build the report",
+			display: true,
+			details: { name: "report" },
+			attribution: "user",
+			timestamp: 1,
+		};
+		const loop = assistant(
+			[
+				{ type: "text", text: "drafting the report" },
+				{ type: "toolCall", id: "tc", name: "write", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const result = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "write",
+			content: [{ type: "text", text: "written" }],
+			timestamp: 3,
+		} as ToolResultMessage;
+		const final = assistant([{ type: "text", text: "report ready" }], "stop", 4);
+		session.sessionManager.appendCustomMessageEntry(
+			skillPrompt.customType,
+			skillPrompt.content,
+			skillPrompt.display,
+			skillPrompt.details,
+			skillPrompt.attribution,
+			skillPrompt.timestamp,
+		);
+		session.sessionManager.appendMessage(loop);
+		session.sessionManager.appendMessage(result);
+		session.sessionManager.appendMessage(final);
+
+		// The invoked prompt is the run's anchor: the resumed TUI must recover the
+		// collapse it starts and keep Alt+O working for it.
+		vi.spyOn(mode.ui, "resetDisplay").mockImplementation(() => {});
+		await mode.renderInitialMessages({ recoverCompletedRuns: true });
+
+		const rendered = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(rendered).toContain("※ collapsed: 1 agent text segment · 1 tool call");
+		expect(rendered).not.toContain("drafting the report");
+		expect(rendered).toContain("report ready");
+
+		mode.toggleCompletedRunCollapse();
+		mode.chatContainer.clear();
+		mode.renderSessionContext(session.buildTranscriptSessionContext({ collapseCompactedHistory: false }));
+		const expanded = Bun.stripANSI(mode.chatContainer.render(120).join("\n"));
+		expect(expanded).toContain("drafting the report");
+		expect(expanded).not.toContain("※ collapsed:");
+	});
+
 	it("recovers one completed collapse across a persisted advisor continuation", async () => {
 		const initial = { role: "user", content: "build it with advisor review", timestamp: 1 } as const;
 		const preAdvisorWork = assistant(

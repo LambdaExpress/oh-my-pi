@@ -88,7 +88,7 @@ describe("read tool multi-range selector", () => {
 		expect(text).toContain("…");
 	});
 
-	it("includes the matching closing bracket line outside a forward range", async () => {
+	it("does not add the enclosing block to an explicit forward range", async () => {
 		const filePath = path.join(tmpDir, "brackets.ts");
 		await fs.writeFile(
 			filePath,
@@ -108,13 +108,13 @@ describe("read tool multi-range selector", () => {
 		const text = textOutput(await tool.execute("call-bracket-close", { path: `${filePath}:1-1` }));
 
 		expect(text).toContain("function outer() {");
-		expect(text).toContain("…");
-		expect(text).toContain("}");
-		expect(text).not.toContain("const four");
-		expect(text).not.toContain("return one + two");
+		// The matching `}` and the elided body must stay out of the window.
+		expect(text).not.toContain("}");
+		expect(text).not.toContain("…");
+		expect(text).not.toContain("const one");
 	});
 
-	it("includes the matching opening bracket line outside a reverse range", async () => {
+	it("does not add the enclosing block to an explicit reverse range", async () => {
 		const filePath = path.join(tmpDir, "brackets.ts");
 		await fs.writeFile(
 			filePath,
@@ -133,13 +133,14 @@ describe("read tool multi-range selector", () => {
 		const tool = new ReadTool(createSession(tmpDir));
 		const text = textOutput(await tool.execute("call-bracket-open", { path: `${filePath}:7-7` }));
 
-		expect(text.indexOf("function outer() {")).toBeLessThan(text.indexOf("}"));
-		expect(text).toContain("…");
+		expect(text).toContain("}");
+		// The opener and the elided body must stay out of the window.
+		expect(text).not.toContain("function outer() {");
+		expect(text).not.toContain("…");
 		expect(text).not.toContain("const one = 1");
-		expect(text).not.toContain("const four = 4");
 	});
 
-	it("uses tree-sitter syntactic spans for indentation languages (Python)", async () => {
+	it("does not extend an explicit range to a tree-sitter syntactic span", async () => {
 		const filePath = path.join(tmpDir, "module.py");
 		await fs.writeFile(
 			filePath,
@@ -158,15 +159,13 @@ describe("read tool multi-range selector", () => {
 		);
 
 		const tool = new ReadTool(createSession(tmpDir));
-		// Read only the `def` header (expands by a few trailing context lines).
-		// Python has no closing delimiter, so a bracket scan would surface
-		// nothing; tree-sitter surfaces the def's last body line (9) as the
-		// block boundary, behind an ellipsis for the skipped middle.
+		// Reading only the `def` header must not surface the body's last line
+		// as a block boundary behind an ellipsis.
 		const text = textOutput(await tool.execute("call-py-def", { path: `${filePath}:1-1` }));
 
 		expect(text).toContain("def greet(name):");
-		expect(text).toContain("…");
-		expect(text).toContain("return a + b + c + d + e + f + g + len(name)");
+		expect(text).not.toContain("…");
+		expect(text).not.toContain("return a + b + c + d + e + f + g + len(name)");
 		expect(text).not.toContain("trailing = 1");
 	});
 
@@ -181,7 +180,9 @@ describe("read tool multi-range selector", () => {
 
 		// All lines from the merged range present
 		for (const i of [3, 4, 5, 6, 7, 8, 9]) {
-			expect(text).toContain(`line ${i}\n`);
+			// Each line renders with its hashline prefix; assert on the
+			// prefixed form so the check does not depend on a trailing newline.
+			expect(text).toContain(`${i}:line ${i}`);
 		}
 		// No separator because ranges merged into one contiguous block
 		expect(text).not.toContain("…");

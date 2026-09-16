@@ -195,7 +195,7 @@ function resolveJsDebugServerPath(cwd: string): string | null {
 		path.join(os.homedir(), ".local", "opt", "js-debug", "src", "dapDebugServer.js"),
 	];
 	for (const candidate of candidates) {
-		if (fs.existsSync(candidate)) return candidate;
+		if (fs.statSync(candidate, { throwIfNoEntry: false })?.isFile()) return candidate;
 	}
 	return null;
 }
@@ -216,12 +216,12 @@ function resolveDefaultJsDebugAdapter(
 		PATH: process.env.PATH,
 		localRoots,
 	});
-	const resolvedCommand = nodeCommand ?? process.execPath;
+	if (!nodeCommand) return null;
 	return {
 		name: adapterName,
-		command: nodeCommand ? "node" : "bun",
+		command: "node",
 		args: [serverPath, DAP_PORT_ARGUMENT, "127.0.0.1"],
-		resolvedCommand,
+		resolvedCommand: nodeCommand,
 		languages: config.languages ?? [],
 		fileTypes: config.fileTypes ?? [],
 		rootMarkers: config.rootMarkers ?? [],

@@ -15,10 +15,12 @@ import {
 	formatMoreItems,
 	formatStatusIcon,
 	replaceTabs,
+	sanitizeDisplayWarning,
 	shortenPath,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "../tools/render-utils";
+import type { ToolActivityContext, ToolActivitySummary } from "../tools/renderers";
 import { renderStatusLine } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import type { LspParams, LspToolDetails } from "./types";
@@ -661,6 +663,17 @@ function severityToColor(severity: string): "error" | "warning" | "accent" | "di
 }
 
 export const lspToolRenderer = {
+	/** Folded row: operation plus its target (`references src/app.ts:42`). */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const lspArgs = (args ?? {}) as LspParams;
+		const action = (lspArgs.action ?? "request").replace(/_/g, " ");
+		const target =
+			typeof lspArgs.file === "string"
+				? `${shortenPath(lspArgs.file)}${lspArgs.line !== undefined ? `:${lspArgs.line}` : ""}`
+				: (lspArgs.query ?? lspArgs.symbol);
+		const detail = target ? `${action} ${target}` : action;
+		return { label: "LSP", detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
+	},
 	renderCall,
 	renderResult,
 	mergeCallAndResult: true,

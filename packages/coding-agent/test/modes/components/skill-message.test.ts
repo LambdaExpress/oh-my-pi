@@ -45,11 +45,12 @@ describe("SkillMessageComponent", () => {
 		);
 		const text = strip(component.render(80));
 
-		// New look: an icon-tagged "skill" header with the name and a single meta line.
-		expect(text).toContain("skill");
+		// The injected prompt carries the shared `Inject` label: an icon-tagged
+		// header with the skill name and a single meta line.
+		expect(text).toContain("Inject");
 		expect(text).toContain("atomic-commit");
-		expect(text).toContain("skill atomic-commit");
-		expect(text).not.toContain("skill  atomic-commit");
+		expect(text).toContain("Inject atomic-commit");
+		expect(text).not.toContain("Inject  atomic-commit");
 		expect(text).toContain("88 lines");
 
 		// The card is drawn with an outline.
@@ -96,5 +97,17 @@ describe("SkillMessageComponent", () => {
 		const text = strip(expanded.render(80));
 		expect(text).toContain("prompt");
 		expect(text).toContain(body);
+	});
+
+	it("folds the injected prompt into one Inject row", () => {
+		const component = new SkillMessageComponent(
+			makeMessage({ name: "atomic-commit", path: skillPath, lineCount: 88, args: "stage all\nthen split" }),
+		);
+		component.setToolRowsFolded(true);
+
+		expect(strip(component.render(80)).trim()).toBe("Inject: atomic-commit — stage all then split");
+
+		component.setToolRowsFolded(false);
+		expect(strip(component.render(80))).toContain(uiTheme.boxRound.topLeft);
 	});
 });

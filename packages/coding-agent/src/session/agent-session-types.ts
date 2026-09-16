@@ -41,6 +41,7 @@ import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { Tool } from "../tools";
 import type { XdevState } from "../tools/xdev";
+import type { BuildSystemPromptResult } from "../system-prompt";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { SessionManager } from "./session-manager";
 
@@ -286,10 +287,7 @@ export interface AgentSessionConfig {
 	/** Current session message-to-LLM conversion pipeline. */
 	convertToLlm?: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	/** System prompt builder that can consider tool availability. */
-	rebuildSystemPrompt?: (
-		toolNames: string[],
-		tools: Map<string, AgentTool>,
-	) => Promise<{ systemPrompt: string[]; xdevCatalogNames?: readonly string[] }>;
+	rebuildSystemPrompt?: (toolNames: string[], tools: Map<string, AgentTool>) => Promise<BuildSystemPromptResult>;
 	/** Local calendar date provider used by prompt-cache invalidation. */
 	getLocalCalendarDate?: () => string;
 	/** Rebuilds the SSH command tool from current capability discovery results. */
@@ -367,12 +365,16 @@ export interface AgentSessionConfig {
 	advisorWatchdogPrompt?: string;
 	/** Shared advisor instructions loaded from WATCHDOG.yml. */
 	advisorSharedInstructions?: string;
+	/** Shared advisor max notes per update loaded from WATCHDOG.yml. */
+	advisorSharedMaxNotesPerUpdate?: number;
 	/** Project context rendered for advisor sessions. */
 	advisorContextPrompt?: string;
 	/** Memory backend developer instructions rendered for advisor sessions. */
 	advisorMemoryPrompt?: string;
 	/** Advisors discovered from WATCHDOG.yml. */
 	advisorConfigs?: AdvisorConfig[];
+	/** Config problems collected during WATCHDOG.yml discovery. */
+	advisorConfigWarnings?: string[];
 	/** Strip tool descriptions from provider-bound side-request tool specs. */
 	pruneToolDescriptions?: boolean;
 	/** Disconnect the MCP manager owned by this session during disposal. */

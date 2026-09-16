@@ -7,6 +7,7 @@ import type { Goal, GoalModeState } from "../goals/state";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { TodoItem } from "../tools/todo";
 import type { AsyncJobSnapshotItem } from "./agent-session-types";
+import type { ContextInjectionItem } from "./context-injection";
 import type { CustomMessage } from "./messages";
 
 /** Session-specific events that extend the core AgentEvent. */
@@ -53,6 +54,7 @@ export type AgentSessionEvent =
 	| { type: "advisor_cost_changed" }
 	| { type: "advisor_yielded" }
 	| { type: "ttsr_triggered"; rules: Rule[] }
+	| { type: "context_injected"; items: ContextInjectionItem[] }
 	| { type: "todo_reminder"; todos: TodoItem[]; attempt: number; maxAttempts: number }
 	| { type: "todo_auto_clear" }
 	| { type: "irc_message"; message: CustomMessage }

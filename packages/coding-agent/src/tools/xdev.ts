@@ -42,8 +42,8 @@ import { truncateHeadBytes } from "../session/streaming-output";
 import { resolveToolTier, type ToolTier } from "./approval";
 import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool } from "./index";
-import { replaceTabs } from "./render-utils";
-import type { ToolRenderer } from "./renderers";
+import { replaceTabs, sanitizeDisplayWarning } from "./render-utils";
+import type { ToolActivitySummary, ToolRenderer } from "./renderers";
 import { renderError, ToolAbortError, ToolError } from "./tool-errors";
 
 /**
@@ -300,23 +300,29 @@ export function resolveXdevTool(state: XdevState, name: string): Tool | undefine
 }
 
 /**
- * Resolve a mounted tool for top-level fallback execution.
- *
- * A model may reach a mounted device by emitting a direct tool call instead of
- * a `write`; the fallback in `sdk.ts` routes that here. Names arrive both bare
- * (`github`) and carrying the very `xd://` prefix the device docs advertise
- * (`xd://github`) — strip it so both spellings resolve to the same device.
+ * Resolve a mounted tool by name. Presentation-only: `xd://` docs and renderer
+ * lookup ask for names they already hold in canonical form.
  */
 export function resolveMountedXdevTool(state: XdevState, name: string): Tool | undefined {
 	const canonicalName = stripXdUrlPrefix(name);
 	return state.mountedNames.has(canonicalName) ? state.tools.get(canonicalName) : undefined;
 }
 
-/** Resolve a mounted tool with its execution-only permission decorator. */
+/**
+ * Resolve a mounted tool with its execution-only permission decorator.
+ *
+ * Mounted-only, matching {@link resolveMountedXdevTool}, and a published export
+ * under `@oh-my-pi/pi-coding-agent/tools/xdev`, so its semantics must not
+ * drift. `sdk.ts` composes this with the calling agent's advertised tools to
+ * recover a Claude Code-spelled MCP name: the union has to be resolved in one
+ * pass for the ambiguity rule to hold, so that composition lives with the
+ * caller that knows both presentation sets rather than here.
+ */
 export function resolveMountedXdevExecutable(state: XdevState, name: string): Tool | undefined {
 	const tool = resolveMountedXdevTool(state, name);
 	return tool && state.decorateExecution ? state.decorateExecution(tool) : tool;
 }
+
 /** Mounted tools in presentation order, resolved from the canonical map. */
 export function listXdevTools(state: XdevState): Tool[] {
 	return [...state.mountedNames].flatMap(name => {
@@ -541,6 +547,95 @@ function displayDeviceLabel(name: string, mounted?: { label?: string }): string 
 	if (parsed) return `${parsed.serverName}/${parsed.toolName}`;
 	return name;
 }
+
+/** The device operation's verb, then the subject it acts on. */
+const DEVICE_ACTIVITY_VERB_KEYS = ["op", "action", "method"] as const;
+const DEVICE_ACTIVITY_OBJECT_KEYS = [
+	"command",
+	"package",
+	"activity",
+	"filter",
+	"selector",
+	"query",
+	"symbol",
+	"path",
+	"file",
+	"pattern",
+	"url",
+	"name",
+	"text",
+	"input",
+] as const;
+/** Object keys naming a file or URL, which the folded row paints in accent. */
+const DEVICE_ACTIVITY_TARGET_KEYS: Record<string, true> = { path: true, file: true, url: true };
+
+/**
+ * Last-resort subject for a payload none of the known keys name — the first
+ * string argument, else the first coordinate pair. Keeps an unknown device call
+ * from folding to a bare label while the verb stays off the row.
+ */
+function firstDeviceScalar(args: Record<string, unknown>, skipKey?: string): string | undefined {
+	const numbers: string[] = [];
+	for (const [key, value] of Object.entries(args)) {
+		// The verb is already on the row; repeating it would read as a stutter.
+		if (key === "__partialJson" || key === skipKey) continue;
+		if (typeof value === "string") {
+			const line = sanitizeDisplayWarning(value.split("\n", 1)[0] ?? "");
+			if (line.length > 0) return line;
+		} else if (typeof value === "number" && Number.isFinite(value)) {
+			numbers.push(String(value));
+			if (numbers.length === 2) return numbers.join(" ");
+		}
+	}
+	return numbers[0];
+}
+
+/**
+ * Compact activity text for a `write xd://<device>` dispatch, so its folded row
+ * reads `ADB: shell logcat -d` instead of restating the device URL. The verb and
+ * subject come from the inner args (possibly still streaming); prose payloads —
+ * resolution devices, report-issue — surface their first line.
+ */
+export function xdevActivitySummary(
+	name: string,
+	content: unknown,
+	theme: Theme,
+	resolveMounted?: (name: string) => Tool | undefined,
+): ToolActivitySummary {
+	const args = decodeInnerArgs(content);
+	const pick = (keys: readonly string[]): { key: string; value: string } | undefined => {
+		for (const key of keys) {
+			const value = args[key];
+			if (typeof value !== "string" || value.length === 0) continue;
+			const line = sanitizeDisplayWarning(value.split("\n", 1)[0] ?? "");
+			if (line.length > 0) return { key, value: line };
+		}
+		return undefined;
+	};
+	const verb = pick(DEVICE_ACTIVITY_VERB_KEYS);
+	const object = pick(DEVICE_ACTIVITY_OBJECT_KEYS);
+	const trimmed = typeof content === "string" ? content.trim() : "";
+	let subject = object?.value;
+	if (subject === undefined) {
+		if (trimmed.startsWith("{")) {
+			// No known subject key: name whatever the payload leads with, so a tap
+			// still shows its coordinates and an MCP call its id.
+			subject = firstDeviceScalar(args, verb?.key);
+		} else if (typeof content === "string") {
+			// Empty, `?`, and `help` request the device's docs instead of executing.
+			subject = HELP_CONTENT_RE.test(trimmed) ? "docs" : sanitizeDisplayWarning(trimmed.split("\n", 1)[0] ?? "");
+		}
+	}
+	const label = displayDeviceLabel(name, resolveMounted?.(name));
+	// Style the parts after they are joined so the verb stays muted while a path
+	// or URL subject keeps the accent color every card header gives one.
+	const verbText = verb ? theme.fg("muted", verb.value) : "";
+	const isTarget = object !== undefined && DEVICE_ACTIVITY_TARGET_KEYS[object.key] === true;
+	const subjectText = subject ? theme.fg(isTarget ? "accent" : "muted", subject) : "";
+	const detail = [verbText, subjectText].filter(part => part.length > 0).join(" ");
+	return detail.length > 0 ? { label, detail } : { label };
+}
+
 /** Drop the streaming-decode bookkeeping key before showing inner args. */
 function displayDeviceArgs(args: Record<string, unknown>): Record<string, unknown> {
 	const { __partialJson: _partial, ...rest } = args;

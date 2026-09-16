@@ -3,6 +3,7 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
 import { setLocale } from "../../../src/i18n";
 import { initTheme } from "../../../src/modes/theme/theme";
+import type { CustomMessage } from "../../../src/session/messages";
 import {
 	assistantUsageIsBilled,
 	collapseCompletedRuns,
@@ -69,6 +70,51 @@ describe("assistantUsageIsBilled", () => {
 });
 
 describe("completed-run collapse projection", () => {
+	it("anchors a completed run started by a user-invoked prompt", () => {
+		const skillPrompt: CustomMessage = {
+			role: "custom",
+			customType: "skill-prompt",
+			content: "build the report",
+			display: true,
+			attribution: "user",
+			timestamp: 1,
+		};
+		const loop = assistant(
+			[
+				{ type: "text", text: "drafting the report" },
+				{ type: "toolCall", id: "tc", name: "write", arguments: {} },
+			],
+			"toolUse",
+			2,
+		);
+		const result = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "write",
+			content: [{ type: "text", text: "written" }],
+			timestamp: 3,
+		} as AgentMessage;
+		const final = assistant([{ type: "text", text: "report ready" }], "stop", 4);
+		const next = { role: "user", content: "next request", timestamp: 5 } as const;
+		const messages = [skillPrompt, loop, result, final, next] as AgentMessage[];
+
+		const collapses = deriveCompletedRunCollapses(messages, { includeLatest: false });
+		expect(collapses).toEqual([
+			expect.objectContaining({
+				firstMessage: skillPrompt,
+				initialUserMessage: skillPrompt,
+				finalAssistantMessage: final,
+			}),
+		]);
+
+		const context = { messages, models: {}, injectedTtsrRules: [], mode: "none" };
+		const projection = collapseCompletedRuns(context, collapses);
+		expect(projection.context.messages).toEqual([skillPrompt, final, next]);
+		expect(projection.summaries).toEqual([
+			{ afterMessage: skillPrompt, agentTextSegments: 1, toolCalls: 1, durationMs: 3 },
+		]);
+	});
+
 	it("keeps the initial request across a manual interrupt and later successful continuation", () => {
 		const initial = { role: "user", content: "build it", timestamp: 1 } as const;
 		const interrupted = assistant([{ type: "text", text: "partial work" }], "aborted", 2);

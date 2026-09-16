@@ -1,6 +1,5 @@
 import * as path from "node:path";
 import {
-	expandRoleAlias,
 	formatModelString,
 	getModelMatchPreferences,
 	resolveCliModel,
@@ -8,6 +7,7 @@ import {
 } from "../config/model-resolver";
 import type { SettingPath, Settings } from "../config/settings";
 import { t } from "../i18n";
+import { describeLoopCondition } from "../modes/loop-condition";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
 import type { InteractiveModeContext } from "../modes/types";
 import type { AgentSession } from "../session/agent-session";
@@ -301,15 +301,17 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		name: "loop",
 		icon: "loop",
 		description:
-			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Esc cancels the current iteration; /loop again to disable.",
-		inlineHint: "[count|duration] [prompt]",
+			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Bound it with a count/duration, or gate it with `--until '<cmd>'` / `--while '<cmd>'` — the command's exit status decides whether the next iteration runs. Esc cancels the current iteration; /loop again to disable.",
+		inlineHint: "[count|duration] [--while|--until '<cmd>'] [prompt]",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
+			const bounds = [
+				runtime.ctx.loopLimit ? describeLoopLimitRuntime(runtime.ctx.loopLimit) : undefined,
+				runtime.ctx.loopCondition ? describeLoopCondition(runtime.ctx.loopCondition) : undefined,
+			].filter((part): part is string => part !== undefined);
 			if (!runtime.ctx.loopModeEnabled) return t("Loop: off");
 			if (runtime.ctx.loopModePaused) return t("Loop: paused");
-			if (runtime.ctx.loopLimit) {
-				return t("Loop: on ({detail})", { detail: describeLoopLimitRuntime(runtime.ctx.loopLimit) });
-			}
+			if (bounds.length > 0) return t("Loop: on ({detail})", { detail: bounds.join(", ") });
 			if (runtime.ctx.loopPrompt) return t("Loop: on (repeating prompt)");
 			return t("Loop: on (waiting for next prompt)");
 		},
@@ -630,29 +632,64 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 	{
 		name: "prewalk",
 		icon: "prewalk",
-		description: "Switch to a fast/cheap model at the next action (works even without --prewalk)",
-		acpDescription: "Prewalk at the next action",
-		handle: async (_command, runtime) => {
-			const rolePattern = expandRoleAlias("@smol", runtime.settings);
-			const resolved = resolveCliModel({
-				cliModel: rolePattern,
-				modelRegistry: runtime.session.modelRegistry,
-				preferences: getModelMatchPreferences(runtime.settings),
-			});
-			if (resolved.error || !resolved.model) {
-				return usage(resolved.error ?? t('Model "{model}" not found', { model: rolePattern }), runtime);
+		description: "Arm or restart a one-shot model handoff",
+		allowArgs: true,
+		acpDescription: "Arm or restart prewalk",
+		acpInputHint: "[restart]",
+		subcommands: [{ name: "restart", description: t("Return to @default and re-arm the handoff to @smol") }],
+		handle: async (command, runtime) => {
+			const arg = command.args.trim().toLowerCase();
+			if (arg && arg !== "restart") return usage(t("Usage: /prewalk [restart]"), runtime);
+			const target = resolveSessionModelSelector("@smol", runtime.session, runtime.settings);
+			if (target.error || !target.model) {
+				return usage(target.error ?? t('Model "{model}" not found', { model: "@smol" }), runtime);
 			}
-			if (!runtime.session.modelRegistry.hasConfiguredAuth(resolved.model)) {
+			if (!runtime.session.modelRegistry.hasConfiguredAuth(target.model)) {
 				return usage(
-					t("No API key for {model}", { model: `${resolved.model.provider}/${resolved.model.id}` }),
+					t("No API key for {model}", { model: `${target.model.provider}/${target.model.id}` }),
 					runtime,
 				);
 			}
-			const armed = runtime.session.armPrewalk(resolved.model, resolved.thinkingLevel);
+			if (arg === "restart") {
+				const source = resolveSessionModelSelector("@default", runtime.session, runtime.settings);
+				if (source.error || !source.model) {
+					return usage(source.error ?? t('Model "{model}" not found', { model: "@default" }), runtime);
+				}
+				if (!runtime.session.modelRegistry.hasConfiguredAuth(source.model)) {
+					return usage(
+						t("No API key for {model}", { model: `${source.model.provider}/${source.model.id}` }),
+						runtime,
+					);
+				}
+				const result = await runtime.session.restartPrewalk(
+					source.model,
+					source.thinkingLevel,
+					target.model,
+					target.thinkingLevel,
+				);
+				if (result === "rejected") return commandConsumed();
+				const restartSource = `${source.model.provider}/${source.model.id}`;
+				await runtime.output(
+					result === "armed"
+						? t(
+								"Prewalk restarted: using @default ({source}) for planning, then switching to @smol ({target}) at the next edit/write (todo-gated).",
+								{
+									source: restartSource,
+									target: `${target.model.provider}/${target.model.id}`,
+								},
+							)
+						: t(
+								"Prewalk reset: using @default ({source}); @smol resolves to the same model and thinking level, so no handoff was armed.",
+								{ source: restartSource },
+							),
+				);
+				return commandConsumed();
+			}
+			const armed = runtime.session.armPrewalk(target.model, target.thinkingLevel);
 			if (armed) {
 				await runtime.output(
 					t("Prewalk on: switching to {model} at the next edit/write (todo-gated).", {
-						model: `${resolved.model.provider}/${resolved.model.id}`,
+						model: `${target.model.provider}/${target.model.id}`,
 					}),
 				);
 			}

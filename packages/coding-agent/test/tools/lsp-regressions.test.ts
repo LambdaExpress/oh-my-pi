@@ -5966,6 +5966,154 @@ describe("lsp regressions", () => {
 	});
 });
 
+/**
+ * tsserver answers file-specific requests with `<semantic> TypeScript Server
+ * Error` + `No Project.` when the queried file has no ScriptInfo in the server
+ * or when its project's language service is disabled (a JavaScript project over
+ * the non-TS file-size budget, for example). The server dump that OMP forwarded
+ * verbatim told users nothing they could act on, so a matched failure must keep
+ * the dump and add the condition plus the real remedies.
+ */
+describe("lsp typescript no project hint", () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	/**
+	 * Route one mocked server to a JavaScript fixture and run `references` so
+	 * the server answers with the configured JSON-RPC error.
+	 */
+	async function referencesError(options: {
+		serverName: string;
+		command: string;
+		message: string;
+	}): Promise<{ text: string; requestCount: number }> {
+		const tempDir = TempDir.createSync("@omp-lsp-ts-no-project-");
+		try {
+			await Bun.write(
+				path.join(tempDir.path(), "widget.js"),
+				"export function renderWidget() {}\nrenderWidget();\n",
+			);
+			const server = installFakeLsp((message, srv) => {
+				if (message.method === "initialize") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					// Settle the client's projectLoaded promise so the request does
+					// not wait out the auto-resolve timeout.
+					srv.send({
+						jsonrpc: "2.0",
+						method: "$/progress",
+						params: { token: "ts", value: { kind: "begin" } },
+					});
+					srv.send({ jsonrpc: "2.0", method: "$/progress", params: { token: "ts", value: { kind: "end" } } });
+				} else if (message.method === "textDocument/references") {
+					srv.send({ jsonrpc: "2.0", id: message.id, error: { code: 1, message: options.message } });
+				} else if (message.method === "shutdown") {
+					srv.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					srv.exit(0);
+				}
+			});
+
+			const serverConfig: ServerConfig = {
+				command: options.command,
+				resolvedCommand: options.command,
+				fileTypes: [".js"],
+				rootMarkers: [],
+			};
+			vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+				servers: { [options.serverName]: serverConfig },
+				idleTimeoutMs: undefined,
+			});
+			vi.spyOn(lspConfig, "getServersForFile").mockReturnValue([[options.serverName, serverConfig]]);
+
+			const result = await new LspTool(makeLspSession(tempDir.path())).execute("no-project", {
+				action: "references",
+				file: "widget.js",
+				line: 1,
+				symbol: "renderWidget",
+				timeout: 20,
+			});
+			return {
+				text: textResult(result),
+				requestCount: server.received.filter(message => message.method === "textDocument/references").length,
+			};
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	}
+
+	it("explains the tsserver No Project failure while keeping the server dump", async () => {
+		const { text, requestCount } = await referencesError({
+			serverName: "typescript-language-server",
+			command: "typescript-language-server",
+			message:
+				"<semantic> TypeScript Server Error (5.9.3)\nNo Project.\n    at ProjectService.getDefaultProjectForFile (tsserver.js:1:1)",
+		});
+
+		// Original information survives: error prefix, JSON-RPC code, server text.
+		expect(text).toContain("LSP error: LSP error 1: <semantic> TypeScript Server Error (5.9.3)");
+		expect(text).toContain("No Project.");
+		expect(text).toContain("at ProjectService.getDefaultProjectForFile");
+		// The failing server is named next to the explanation.
+		expect(text).toContain("[typescript-language-server]");
+		// Actionable reading: the two server-side conditions and the real remedies.
+		expect(text).toContain("has no project open for this file");
+		expect(text).toContain("language service is disabled");
+		expect(text).toContain("tsconfig.json/jsconfig.json include");
+		expect(text).toContain("public/fontawesome/js");
+		expect(text).toContain(".lsp.json initOptions");
+		expect(text).toContain("maxTsServerMemory");
+		expect(text).toContain("tsserver.path");
+		// Never advertise configuration the server does not have.
+		expect(text).not.toContain("disableSizeLimit");
+		expect(requestCount).toBeGreaterThan(0);
+	});
+
+	it("matches the phrase case-insensitively with collapsed whitespace", async () => {
+		const { text } = await referencesError({
+			serverName: "typescript-language-server",
+			command: "typescript-language-server",
+			message: "TypeScript Server Error\nno   PROJECT\n",
+		});
+
+		expect(text).toContain("no   PROJECT");
+		expect(text).toContain("has no project open for this file");
+	});
+
+	it("leaves unrelated TypeScript server errors unchanged", async () => {
+		const { text } = await referencesError({
+			serverName: "typescript-language-server",
+			command: "typescript-language-server",
+			message: "Some unrelated server failure",
+		});
+
+		expect(text).toBe("LSP error: LSP error 1: Some unrelated server failure");
+		expect(text).not.toContain("tsconfig.json");
+	});
+
+	it("leaves the same error from a non-TypeScript server unchanged", async () => {
+		const { text } = await referencesError({
+			serverName: "csharp-ls",
+			command: "csharp-ls",
+			message: "No Project.",
+		});
+
+		expect(text).toBe("LSP error: LSP error 1: No Project.");
+		expect(text).not.toContain("tsconfig.json");
+	});
+});
+
+describe("clangd CUDA defaults", () => {
+	it("registers CUDA sources and headers", () => {
+		const config = { servers: DEFAULTS as unknown as Record<string, ServerConfig> };
+		for (const file of ["kernel.cu", "kernel.cuh"]) {
+			const names = getServersForFile(config, file).map(([name]) => name);
+			expect(names).toContain("clangd");
+		}
+	});
+});
+
 describe("expert elixir lsp", () => {
 	it("registers expert for .ex while keeping elixirls primary", () => {
 		const config = { servers: DEFAULTS as unknown as Record<string, ServerConfig> };

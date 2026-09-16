@@ -1118,6 +1118,8 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const artifacts = ref.history;
 		if (artifacts?.outputPath) addWrapped(`${t("Output")} ${shortenPath(artifacts.outputPath)}`);
 		if (artifacts?.patchPath) addWrapped(`${t("Patch")} ${shortenPath(artifacts.patchPath)}`);
+		for (const nestedPath of artifacts?.nestedPatchPaths ?? [])
+			addWrapped(`${t("Nested patch")} ${shortenPath(nestedPath)}`);
 		if (artifacts?.branchName) addWrapped(`${t("Worktree branch")} ${artifacts.branchName}`);
 
 		if (lines.length < rows) add();

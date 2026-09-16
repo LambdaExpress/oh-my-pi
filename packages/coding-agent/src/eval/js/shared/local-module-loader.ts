@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
-import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as vm from "node:vm";
+import { KernelModuleResolution } from "./module-resolution";
 import { collectModuleSourceSpecifiers, stripTypeScriptSyntax } from "./rewrite-imports";
 
 interface LocalModuleEntry {
@@ -16,10 +16,13 @@ interface LocalModuleEntry {
 export type LocalImportResolution = { mode: "local"; value: unknown } | { mode: "external"; target: string };
 
 const LOCAL_MODULE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".ts", ".tsx", ".mts"]);
+/** `node_modules` path segment in either separator spelling — resolution results mix `/` and `\` on Windows. */
+const NODE_MODULES_SEGMENT_RE = /(?:^|[\\/])node_modules(?:[\\/]|$)/;
 
 export class LocalModuleLoader {
 	#context: vm.Context;
 	#sessionTag: string;
+	#resolution: KernelModuleResolution;
 	#moduleMtimes = new Map<string, number>();
 	#moduleDeps = new Map<string, Set<string>>();
 	#moduleParents = new Map<string, Set<string>>();
@@ -31,9 +34,10 @@ export class LocalModuleLoader {
 	#modulePaths = new WeakMap<vm.Module, string>();
 	#linkChain: Promise<void> = Promise.resolve();
 
-	constructor(sessionId: string) {
+	constructor(sessionId: string, options: { patchGlobalResolver?: boolean } = {}) {
 		this.#context = vm.createContext(globalThis);
 		this.#sessionTag = Bun.hash(sessionId).toString(16);
+		this.#resolution = new KernelModuleResolution({ patchGlobalResolver: options.patchGlobalResolver ?? false });
 	}
 
 	async resolveForRun(cwd: string, source: string): Promise<LocalImportResolution> {
@@ -49,13 +53,22 @@ export class LocalModuleLoader {
 	}
 
 	requireForFile(moduleUrlOrPath: string | undefined, cwd: string): NodeJS.Require {
-		const basePath = this.filenameForUrl(moduleUrlOrPath) ?? path.join(cwd, "[eval]");
-		let cached = this.#requireCache.get(basePath);
-		if (!cached) {
-			cached = buildRequire(basePath);
-			this.#requireCache.set(basePath, cached);
-		}
-		return cached;
+		return this.createRequireFor(this.filenameForUrl(moduleUrlOrPath) ?? path.join(cwd, "[eval]"));
+	}
+
+	/** `createRequire`-compatible factory for an arbitrary base path or `file://` URL. */
+	createRequireFor(basePathOrUrl: string | URL): NodeJS.Require {
+		const key = String(basePathOrUrl);
+		const cached = this.#requireCache.get(key);
+		if (cached) return cached;
+		const created = this.#resolution.createRequire(basePathOrUrl);
+		this.#requireCache.set(key, created);
+		return created;
+	}
+
+	/** Drop the resolver roots this kernel registered (worker teardown). */
+	dispose(): void {
+		this.#resolution.dispose();
 	}
 
 	filenameForUrl(moduleUrlOrPath: string | undefined): string | null {
@@ -70,12 +83,47 @@ export class LocalModuleLoader {
 	}
 
 	async #resolveFromBase(baseDir: string, source: string): Promise<LocalImportResolution> {
-		const resolved = resolveImportSpecifier(baseDir, source);
+		const resolved = this.#resolveImportSpecifier(baseDir, source);
 		if (isLocalPathSpecifier(source) && isManagedLocalModulePath(resolved)) {
 			const module = await this.#loadLocalModule(resolved);
 			return { mode: "local", value: module.namespace };
 		}
-		return { mode: "external", target: normalizeImportTarget(resolved) };
+		const target = normalizeImportTarget(resolved);
+		this.#registerTargetRoots(target);
+		return { mode: "external", target };
+	}
+
+	/**
+	 * Register the `node_modules` roots above an already-normalized import target.
+	 * Packages loaded from disk run their own `require("dep")` through the stock
+	 * resolver, which a compiled binary cannot satisfy (oven-sh/bun#25500).
+	 */
+	#registerTargetRoots(target: string): void {
+		if (target.startsWith("file://")) this.#resolution.registerFor(fileURLToPath(target));
+		else if (path.isAbsolute(target)) this.#resolution.registerFor(target);
+	}
+
+	/**
+	 * Resolve an import specifier against `baseDir`.
+	 *
+	 * `Bun.resolveSync` covers the source-checkout case; inside a compiled binary
+	 * it cannot resolve on-disk packages at all (oven-sh/bun#25500), so bare
+	 * specifiers fall back to the kernel's own `node_modules` walk and file
+	 * specifiers to the same probing `require` uses. Specifiers that resolve
+	 * nowhere are returned verbatim so the eventual `import` reports the loader's
+	 * own error instead of a synthesized path.
+	 */
+	#resolveImportSpecifier(baseDir: string, source: string): string {
+		if (/^[a-z][a-z0-9+.-]*:/i.test(source)) return source;
+		this.#resolution.registerFor(baseDir);
+		try {
+			return Bun.resolveSync(source, baseDir);
+		} catch {
+			const fallback = isLocalPathSpecifier(source)
+				? this.#resolution.resolveFile(baseDir, source)
+				: this.#resolution.resolveBare(baseDir, source);
+			return fallback ?? source;
+		}
 	}
 
 	async #ensureLocalModule(modulePath: string): Promise<LocalModuleEntry> {
@@ -104,7 +152,7 @@ export class LocalModuleLoader {
 		const moduleDir = path.dirname(modulePath);
 		const localDeps = new Set<string>();
 		for (const specifier of await collectModuleSourceSpecifiers(stripped)) {
-			const resolved = resolveImportSpecifier(moduleDir, specifier);
+			const resolved = this.#resolveImportSpecifier(moduleDir, specifier);
 			if (isLocalPathSpecifier(specifier) && isManagedLocalModulePath(resolved)) {
 				localDeps.add(resolved);
 			}
@@ -191,7 +239,7 @@ export class LocalModuleLoader {
 		if (referrerPath === undefined) {
 			throw new Error(`local module loader: unknown referrer while linking "${specifier}"`);
 		}
-		const resolved = resolveImportSpecifier(path.dirname(referrerPath), specifier);
+		const resolved = this.#resolveImportSpecifier(path.dirname(referrerPath), specifier);
 		if (isLocalPathSpecifier(specifier) && isManagedLocalModulePath(resolved)) {
 			return (await this.#ensureLocalModule(resolved)).module;
 		}
@@ -201,7 +249,7 @@ export class LocalModuleLoader {
 	// Resolver for runtime `import()` inside evaluated module code: the result must be a
 	// fully linked+evaluated module, so local targets are loaded as graph roots.
 	async #resolveDynamicImport(referrerPath: string, specifier: string): Promise<vm.Module> {
-		const resolved = resolveImportSpecifier(path.dirname(referrerPath), specifier);
+		const resolved = this.#resolveImportSpecifier(path.dirname(referrerPath), specifier);
 		if (isLocalPathSpecifier(specifier) && isManagedLocalModulePath(resolved)) {
 			return await this.#loadLocalModule(resolved);
 		}
@@ -231,7 +279,10 @@ export class LocalModuleLoader {
 		const existing = this.#externalModules.get(target);
 		if (existing) return await existing;
 		const loadPromise = (async () => {
-			const namespace = await import(target);
+			this.#registerTargetRoots(target);
+			const loaded = await import(target);
+			const namespace =
+				target === "node:module" || target === "module" ? this.#resolution.shimNodeModule(loaded) : loaded;
 			const exportNames = Object.keys(namespace);
 			const module = new vm.SyntheticModule(
 				exportNames,
@@ -305,11 +356,6 @@ export class LocalModuleLoader {
 	}
 }
 
-function buildRequire(fromPath: string): NodeJS.Require {
-	const basePath = path.extname(fromPath) ? fromPath : path.join(fromPath, "[eval]");
-	return createRequire(pathToFileURL(basePath).href);
-}
-
 function buildModuleSource(source: string, modulePath: string): string {
 	const moduleDir = path.dirname(modulePath);
 	return [
@@ -318,15 +364,6 @@ function buildModuleSource(source: string, modulePath: string): string {
 		`const __dirname = ${JSON.stringify(moduleDir)};`,
 		source,
 	].join("\n");
-}
-
-function resolveImportSpecifier(cwd: string, source: string): string {
-	if (/^[a-z][a-z0-9+.-]*:/i.test(source)) return source;
-	try {
-		return Bun.resolveSync(source, cwd);
-	} catch {
-		return source;
-	}
 }
 
 function isLocalPathSpecifier(source: string): boolean {
@@ -354,7 +391,7 @@ function isManagedLocalModulePath(target: string): boolean {
 	return (
 		path.isAbsolute(target) &&
 		LOCAL_MODULE_EXTENSIONS.has(path.extname(target)) &&
-		!target.includes(`${path.sep}node_modules${path.sep}`)
+		!NODE_MODULES_SEGMENT_RE.test(target)
 	);
 }
 

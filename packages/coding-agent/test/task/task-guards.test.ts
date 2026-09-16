@@ -9,6 +9,7 @@ import { formatResultOutputFallback } from "@oh-my-pi/pi-coding-agent/task";
 import { runSubprocess } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import { createSessionDefaults } from "../helpers/session-defaults";
 
 /**
  * Contract: runaway-subagent guards.
@@ -76,6 +77,7 @@ function createFakeSession(config: FakeSessionConfig = {}): FakeSessionHandle {
 	if (!config.hang) releaseHang();
 
 	const session: Partial<AgentSession> = {
+		...createSessionDefaults(),
 		state: { messages: [] } as never,
 		agent: { state: { systemPrompt: ["test"] } } as never,
 		extensionRunner: undefined as never,
@@ -83,7 +85,6 @@ function createFakeSession(config: FakeSessionConfig = {}): FakeSessionHandle {
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
 		getMountedXdevToolNames: () => [],
-		setActiveToolsByName: async (_names: string[]) => {},
 		subscribe: (listener: (event: AgentSessionEvent) => void) => {
 			if (config.events?.length) {
 				const events = config.events;
@@ -100,8 +101,6 @@ function createFakeSession(config: FakeSessionConfig = {}): FakeSessionHandle {
 		waitForIdle: async () => {
 			await hang;
 		},
-		prepareForHeadlessAdvisorDrain: () => {},
-		waitForAdvisorCatchup: async () => true,
 		sendUserMessage: async (content, options) => {
 			steerCalls.push({ content: String(content), options });
 		},
@@ -110,9 +109,6 @@ function createFakeSession(config: FakeSessionConfig = {}): FakeSessionHandle {
 			abortCount += 1;
 			releaseHang();
 		},
-		dispose: async () => {},
-		setIrcWakeTurnObserver: () => {},
-		subscribeRunState: () => () => {},
 	};
 	return {
 		session: session as AgentSession,

@@ -15,6 +15,7 @@ import {
 	type ProtocolHandler,
 } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
+import type { SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import * as sshFileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
@@ -214,6 +215,38 @@ describe("GrepTool internal URL resolution", () => {
 		expect(text).toContain("deep needle");
 		expect(text).toContain("Skipped missing paths:");
 		expect(text).not.toContain("Unknown skill:");
+	});
+
+	it("greps the caller-bound full current branch without materializing a session file", async () => {
+		const settings = Settings.isolated({ "grep.contextBefore": 0, "grep.contextAfter": 0 });
+		settings.set("compaction.experimentalContextManagement", true);
+		const branch = [
+			{
+				type: "message",
+				id: "compacted-source",
+				parentId: null,
+				timestamp: new Date().toISOString(),
+				message: { role: "user", content: "searchable pre-compaction needle", timestamp: 1 },
+			},
+		] as unknown as SessionEntry[];
+		const manager = {
+			getBranch: () => branch,
+			getSessionId: () => "grep-current-session",
+		} as unknown as NonNullable<ToolSession["sessionManager"]>;
+		const tool = new GrepTool(
+			createSession({
+				settings,
+				getSessionId: () => "grep-current-session",
+				sessionManager: manager,
+			}),
+		);
+
+		const result = await tool.execute("current-history-search", {
+			pattern: "pre-compaction needle",
+			path: "history://current/full",
+		});
+
+		expect(getResultText(result)).toContain("searchable pre-compaction needle");
 	});
 
 	it("resolves artifact:// URL to backing file and greps it", async () => {

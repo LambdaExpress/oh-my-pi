@@ -20,8 +20,10 @@ import {
 	formatExpandHint,
 	PREVIEW_LIMITS,
 	replaceTabs,
+	sanitizeDisplayWarning,
 	type ToolUIStatus,
 } from "./render-utils";
+import type { ToolActivityContext, ToolActivitySummary } from "./renderers";
 
 // Each stored memory renders as `<bullet> <content>`; the bullet glyph comes
 // from the active theme (`•` by default, a nerd-font dot under nerd themes).
@@ -94,6 +96,14 @@ function retainComponent(
 export const retainToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
+	/** Folded row: the memory being stored, plus how many more ride along. */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const contents = retainContents((args ?? {}) as RetainRenderArgs);
+		const first = contents[0];
+		if (!first) return { label: "Retain" };
+		const detail = contents.length > 1 ? `${first} (+${contents.length - 1} more)` : first;
+		return { label: "Retain", detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
+	},
 	renderCall(args: RetainRenderArgs, options: RenderResultOptions, theme: Theme): Component {
 		const contents = retainContents(args);
 		const header = renderStatusLine({ icon: "pending", title: "Retain" }, theme);

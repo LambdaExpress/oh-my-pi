@@ -12,7 +12,15 @@ import type { ToolSession } from "../sdk";
 import type { SessionEntry } from "../session/session-entries";
 import { framedBlock, renderStatusLine, renderTreeList } from "../tui";
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
-import { formatErrorDetail, formatMoreItems, PREVIEW_LIMITS, pluralize, replaceTabs } from "./render-utils";
+import {
+	formatErrorDetail,
+	formatMoreItems,
+	PREVIEW_LIMITS,
+	pluralize,
+	replaceTabs,
+	sanitizeDisplayWarning,
+} from "./render-utils";
+import type { ToolActivityContext, ToolActivitySummary } from "./renderers";
 
 // =============================================================================
 // Types
@@ -1135,6 +1143,24 @@ function todoCallMeta(args: TodoRenderArgs): string[] {
 }
 
 export const todoToolRenderer = {
+	/**
+	 * Folded row: the operation the call applies, plus list progress once a
+	 * snapshot exists. The plan itself is the card's body, so the fold keeps
+	 * only the shape a scanner needs.
+	 */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const tasks = ((context.result?.details as TodoToolDetails | undefined)?.phases ?? []).flatMap(
+			phase => phase.tasks,
+		);
+		const parts = todoCallMeta((args ?? {}) as TodoRenderArgs);
+		if (tasks.length > 0) {
+			const completed = tasks.filter(task => task.status === "completed").length;
+			parts.push(`${completed}/${tasks.length} done`);
+		}
+		const detail = parts.join(context.theme.sep.dot);
+		return { label: "Todo", detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
+	},
+
 	renderCall(args: TodoRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		// `args` is the raw partially-parsed JSON from the streaming tool-call
 		// delta and may not satisfy `TodoRenderArgs` at runtime:

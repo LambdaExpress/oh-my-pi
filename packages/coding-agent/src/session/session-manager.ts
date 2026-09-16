@@ -24,6 +24,12 @@ import { ArtifactManager } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore } from "./blob-store";
 import type { CompactionMethod } from "./compaction-methods";
 import {
+	CONTEXT_INJECTION_ENTRY_TYPE,
+	type ContextInjectionDetails,
+	type ContextInjectionItem,
+	normalizeContextInjectionItems,
+} from "./context-injection";
+import {
 	type BashExecutionMessage,
 	type CustomMessage,
 	type FileMentionMessage,
@@ -490,6 +496,7 @@ export class SessionManager {
 	#sessionId = "";
 	#sessionName: string | undefined;
 	#titleSource: SessionTitleSource | undefined;
+	#titleRevision = 0;
 	#sessionFile: string | undefined;
 	#header!: SessionHeader;
 	#titleUpdatedAt = "";
@@ -2218,6 +2225,16 @@ export class SessionManager {
 		return this.#titleSource;
 	}
 
+	/** Tracks user rename requests; background title updates do not invalidate them. */
+	get titleRevision(): number {
+		return this.#titleRevision;
+	}
+
+	/** Invalidate older generated renames before starting a new request. */
+	reserveTitleRevision(): number {
+		return ++this.#titleRevision;
+	}
+
 	getSessionName(): string | undefined {
 		return this.#sessionName;
 	}
@@ -2253,6 +2270,7 @@ export class SessionManager {
 		const timestamp = nowIso();
 		this.#sessionName = title;
 		this.#titleSource = source;
+		if (source === "user") this.#titleRevision++;
 		this.#titleUpdatedAt = timestamp;
 		this.#header.title = title;
 		this.#header.titleSource = source;
@@ -2425,6 +2443,7 @@ export class SessionManager {
 		spawns?: string;
 		readSummarize?: boolean;
 		advisor?: string;
+		isolated?: boolean;
 	}): string {
 		const entry: SessionInitEntry = { type: "session_init", ...this.#freshEntryFields(), ...init };
 		this.#recordEntry(entry);
@@ -2568,6 +2587,18 @@ export class SessionManager {
 			for (const name of entry.injectedRules) names.add(name);
 		}
 		return [...names];
+	}
+
+	/**
+	 * Append a context injection record: what the harness pushed into the model
+	 * context (instruction files, rules, skill index, memory) and how big each
+	 * source was. Persisted as a `custom` entry, so it stays out of the LLM
+	 * context and only feeds the transcript's `Inject` notice.
+	 */
+	appendContextInjection(items: readonly ContextInjectionItem[]): string {
+		return this.appendCustomEntry(CONTEXT_INJECTION_ENTRY_TYPE, {
+			items: normalizeContextInjectionItems(items),
+		} satisfies ContextInjectionDetails);
 	}
 
 	/** Append a credential pin recording which OAuth account served `provider`. */
@@ -3022,6 +3053,7 @@ export class SessionManager {
 			spawns?: string;
 			readSummarize?: boolean;
 			advisor?: string;
+			isolated?: boolean;
 		} | null;
 	} | null> {
 		let header: SessionHeader | undefined;
@@ -3040,6 +3072,7 @@ export class SessionManager {
 			spawns?: string;
 			readSummarize?: boolean;
 			advisor?: string;
+			isolated?: boolean;
 		} | null = null;
 		const visit = (entry: FileEntry): void => {
 			if (entry.type === "session") {
@@ -3062,6 +3095,7 @@ export class SessionManager {
 					readSummarize: entry.readSummarize,
 					spawns: entry.spawns,
 					advisor: entry.advisor,
+					isolated: entry.isolated,
 				};
 			}
 		};

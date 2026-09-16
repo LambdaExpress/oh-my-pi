@@ -1,6 +1,6 @@
 import { Container, Text } from "@oh-my-pi/pi-tui";
 import { t } from "../../i18n";
-import { formatDiagnostics } from "../../tools/render-utils";
+import { formatDiagnostics, truncateToWidth } from "../../tools/render-utils";
 import { getLanguageFromPath, theme } from "../theme/theme";
 
 /** One file's worth of late LSP diagnostics, as carried on the transcript message. */
@@ -19,6 +19,8 @@ export interface LateDiagnosticsFile {
 export class LateDiagnosticsMessageComponent extends Container {
 	#expanded = false;
 	#toolActivityVisible = true;
+	// `display.foldToolRows`: one `Late diagnostics:` row instead of the tree.
+	#toolRowsFolded = false;
 	constructor(private readonly files: LateDiagnosticsFile[]) {
 		super();
 		this.#rebuild();
@@ -36,9 +38,34 @@ export class LateDiagnosticsMessageComponent extends Container {
 		this.invalidate();
 	}
 
+	/**
+	 * Fold the report into one activity row (`display.foldToolRows`): file count
+	 * plus the first file's summary, in place of the per-file tree. Unfolding
+	 * restores the full report.
+	 */
+	setToolRowsFolded(folded: boolean): void {
+		if (this.#toolRowsFolded === folded) return;
+		this.#toolRowsFolded = folded;
+		this.invalidate();
+	}
+
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible) return [];
+		if (this.#toolRowsFolded) return [this.#foldedRow(width)];
 		return super.render(width);
+	}
+
+	/** `Late diagnostics: 2 files · <first file>` on one truncated row. */
+	#foldedRow(width: number): string {
+		const label = theme.fg("warning", theme.bold(t("Late diagnostics")));
+		const count = this.files.length;
+		const first = this.files.find(file => file.summary?.trim() || file.path);
+		const head = first?.summary?.replace(/\s+/g, " ").trim() || first?.path;
+		const countText = count === 1 ? t("1 file") : t("{count} files", { count });
+		const detail = head
+			? `${theme.fg("muted", countText)}${theme.fg("dim", " · ")}${theme.fg("accent", head)}`
+			: theme.fg("muted", countText);
+		return truncateToWidth(` ${label}${theme.fg("dim", ":")} ${detail}`, width);
 	}
 
 	override invalidate(): void {

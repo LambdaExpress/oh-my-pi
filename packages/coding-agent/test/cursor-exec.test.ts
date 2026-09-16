@@ -1777,8 +1777,8 @@ describe("CursorExecHandlers Pi frame translation", () => {
 	it("composes pi_read's offset/limit onto the path as the read tool's range selector", async () => {
 		// `read` takes no range kwargs, so a dropped offset/limit silently returns
 		// the whole file. `offset` is a 1-indexed start and `limit` a line count,
-		// which is exactly the `:N+K` selector — `raw`, since a plain range pads
-		// with context lines the frame never asked for.
+		// which is exactly the `:N+K` selector — `raw`, so the frame receives the
+		// requested lines verbatim with no line-number prefixes.
 		const { handlers, calls } = recordingHandlers("read");
 
 		await handlers.piRead({ toolCallId: "c1", args: { path: "a.ts", offset: 5, limit: 20 } } as never);
@@ -1838,11 +1838,10 @@ describe("CursorExecHandlers Pi frame translation", () => {
 	});
 
 	it("returns exactly the lines a pi_read range asked for", async () => {
-		// Producer/consumer contract against the real `ReadTool`: a plain `:N+K`
-		// selector deliberately pads with one leading and three trailing context
-		// lines, so offset 5/limit 20 would hand Cursor lines 4-27 for a request
-		// that named 5-24. The frame has no way to tell the padding apart from
-		// content it asked for.
+		// Producer/consumer contract against the real `ReadTool`: the frame
+		// forwards `:raw:N+K` so the payload is the verbatim requested lines with
+		// no line-number decorations, and offset 5/limit 20 hands Cursor exactly
+		// lines 5-24.
 		const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "cursor-piread-range-"));
 		try {
 			await Bun.write(

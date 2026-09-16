@@ -7,8 +7,10 @@ import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { AsyncJobSnapshotItem } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { setLocale } from "../src/i18n";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
+import { StatusLineTestComponents } from "./helpers/status-line";
 
 let settingsState: SettingsTestState | undefined;
+const statusLines = new StatusLineTestComponents();
 
 beforeEach(async () => {
 	setLocale("en");
@@ -18,6 +20,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+	statusLines.dispose();
 	restoreSettingsTestState(settingsState);
 	settingsState = undefined;
 	setLocale(null);
@@ -72,7 +75,7 @@ function makeComponent(running: AsyncJobSnapshotItem[]): StatusLineComponent {
 		},
 		getContextUsage: () => undefined,
 	} as unknown as ConstructorParameters<typeof StatusLineComponent>[0];
-	const component = new StatusLineComponent(session);
+	const component = statusLines.track(new StatusLineComponent(session));
 	component.updateSettings({
 		preset: "custom",
 		leftSegments: [],

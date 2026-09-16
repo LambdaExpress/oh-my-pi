@@ -135,8 +135,24 @@ describe("selector setting side effects", () => {
 		controller.handleSettingChange("steeringSkipPendingOperations", false);
 		controller.handleSettingChange("steeringSkipPendingOperations", true);
 
-		expect(setInterruptMode).toHaveBeenNthCalledWith(1, "wait");
-		expect(setInterruptMode).toHaveBeenNthCalledWith(2, "immediate");
+		expect(setInterruptMode).toHaveBeenNthCalledWith(1, "wait", true);
+		expect(setInterruptMode).toHaveBeenNthCalledWith(2, "immediate", true);
+	});
+
+	it("re-enables live advisor runtime to rebuild when advisor.maxNotesPerUpdate changes in /settings", () => {
+		const setAdvisorEnabled = vi.fn();
+		const isAdvisorEnabled = vi.fn().mockReturnValue(true);
+		const requestRender = vi.fn();
+		const controller = new SelectorController({
+			session: { setAdvisorEnabled, isAdvisorEnabled },
+			ui: { requestRender },
+		} as unknown as InteractiveModeContext);
+
+		controller.handleSettingChange("advisor.maxNotesPerUpdate", 3);
+
+		expect(isAdvisorEnabled).toHaveBeenCalledTimes(1);
+		expect(setAdvisorEnabled).toHaveBeenCalledWith(true);
+		expect(requestRender).toHaveBeenCalledTimes(1);
 	});
 
 	for (const id of ["terminal.showImages", "showImages"]) {
@@ -183,12 +199,12 @@ describe("selector setting side effects", () => {
 			const assistant = Object.create(AssistantMessageComponent.prototype) as AssistantMessageComponent;
 			assistant.setToolResultImagesVisible = setToolResultImagesVisible;
 			const clearInlineImages = vi.fn();
-			const requestRender = vi.fn();
+			const resetDisplay = vi.fn();
 			const ctx = {
 				hideToolActivity: !hidden,
 				toolOutputExpanded: true,
 				chatContainer: { children: [tool, readGroup, assistant], setToolActivityVisible },
-				ui: { clearInlineImages, requestRender },
+				ui: { clearInlineImages, resetDisplay },
 			};
 			const controller = new SelectorController(ctx as unknown as InteractiveModeContext);
 
@@ -201,12 +217,33 @@ describe("selector setting side effects", () => {
 			expect(setReadExpanded).toHaveBeenCalledTimes(hidden ? 0 : 1);
 			expect(ctx.toolOutputExpanded).toBe(hidden);
 			expect(clearInlineImages).toHaveBeenCalledTimes(hidden ? 1 : 0);
-			expect(requestRender).toHaveBeenCalledTimes(1);
+			expect(resetDisplay).toHaveBeenCalledTimes(1);
 			if (hidden) {
 				expect(clearInlineImages.mock.invocationCallOrder[0]).toBeLessThan(
-					requestRender.mock.invocationCallOrder[0],
+					resetDisplay.mock.invocationCallOrder[0],
 				);
 			}
+		});
+	}
+
+	for (const folded of [true, false]) {
+		it(`folds every tool row when display.foldToolRows=${folded} changes in /settings`, () => {
+			const setToolRowsFolded = vi.fn();
+			const resetDisplay = vi.fn();
+			const ctx = {
+				foldToolRows: !folded,
+				chatContainer: { setToolRowsFolded },
+				ui: { resetDisplay },
+			};
+			const controller = new SelectorController(ctx as unknown as InteractiveModeContext);
+
+			controller.handleSettingChange("display.foldToolRows", folded);
+
+			expect(ctx.foldToolRows).toBe(folded);
+			expect(setToolRowsFolded).toHaveBeenCalledWith(folded);
+			// Rows already retired to native scrollback must replay under the new fold.
+			expect(setToolRowsFolded.mock.invocationCallOrder[0]).toBeLessThan(resetDisplay.mock.invocationCallOrder[0]);
+			expect(resetDisplay).toHaveBeenCalledTimes(1);
 		});
 	}
 

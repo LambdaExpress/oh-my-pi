@@ -418,12 +418,12 @@ fn pure_format_input_and_streaming_contracts_cover_uncaptured_cases() {
 	assert_eq!(
 		detect_line_ending("a\r\nb\nc"),
 		LineEnding::CrLf,
-		"preserves the first newline style when restoring mixed-ending files"
+		"reports the first newline style as the no-reference fallback for new lines"
 	);
 	assert_eq!(
 		detect_line_ending("a\nb\r\nc"),
 		LineEnding::Lf,
-		"preserves the first newline style when restoring mixed-ending files"
+		"reports the first newline style as the no-reference fallback for new lines"
 	);
 
 	let section =

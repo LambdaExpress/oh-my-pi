@@ -5,6 +5,7 @@ import * as path from "node:path";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import {
 	getAdapterConfigs,
+	getAvailableAdapters,
 	type LaunchAdapterSelection,
 	resolveAdapter,
 	selectLaunchAdapter,
@@ -59,6 +60,19 @@ function requireSelectedAdapter(selection: LaunchAdapterSelection): DapResolvedA
 		throw new Error(`Expected an available adapter, received '${selection.kind}'`);
 	}
 	return selection.adapter;
+}
+
+function withEnv(overrides: Record<string, string>, run: () => void): void {
+	const saved = Object.keys(overrides).map(key => [key, process.env[key]] as const);
+	Object.assign(process.env, overrides);
+	try {
+		run();
+	} finally {
+		for (const [key, value] of saved) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
 }
 
 afterEach(async () => {
@@ -336,5 +350,38 @@ describe("DAP adapter configuration", () => {
 		await writeExecutable(command);
 		const selected = requireSelectedAdapter(selectLaunchAdapter(program, cwd));
 		expect(selected.resolvedCommand).toBe(command);
+	});
+});
+
+describe("DAP JavaScript debug adapter availability", () => {
+	it("treats a JS_DEBUG_DAP_SERVER directory as unavailable", async () => {
+		const cwd = await makeTempDir("omp-dap-js-debug-dir-");
+		const fakeHome = await makeTempDir("omp-dap-js-debug-home-");
+		const serverDir = path.join(cwd, "js-debug");
+		await fs.mkdir(serverDir, { recursive: true });
+
+		withEnv(
+			{
+				JS_DEBUG_DAP_SERVER: serverDir,
+				HOME: fakeHome,
+				USERPROFILE: fakeHome,
+				XDG_DATA_HOME: path.join(fakeHome, "share"),
+			},
+			() => {
+				expect(resolveAdapter("js-debug-adapter", cwd)).toBeNull();
+				expect(getAvailableAdapters(cwd).some(adapter => adapter.name === "js-debug-adapter")).toBe(false);
+			},
+		);
+	});
+
+	it("stays unavailable instead of falling back to the running runtime when node is missing", async () => {
+		const cwd = await makeTempDir("omp-dap-js-debug-node-");
+		const serverPath = path.join(cwd, "dapDebugServer.js");
+		await fs.writeFile(serverPath, "// js-debug server\n");
+
+		withEnv({ JS_DEBUG_DAP_SERVER: serverPath, PATH: "" }, () => {
+			expect(resolveAdapter("js-debug-adapter", cwd)).toBeNull();
+			expect(getAvailableAdapters(cwd).some(adapter => adapter.name === "js-debug-adapter")).toBe(false);
+		});
 	});
 });

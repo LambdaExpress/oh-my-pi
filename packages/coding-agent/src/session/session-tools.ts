@@ -14,7 +14,7 @@ import type { ExtensionRunner, SourceInfo, ToolInfo } from "../extensibility/ext
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
 import { type LocalProtocolOptions, stripXdUrlPrefix, XD_URL_PREFIX } from "../internal-urls";
-import { deduplicateMCPToolsByName } from "../mcp/tool-bridge";
+import { deduplicateMCPToolsByName, resolveMCPToolAlias } from "../mcp/tool-bridge";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
 import { MEMORY_BACKEND_TOOL_NAMES } from "../memory-backend/tool-names";
 import type { MemoryBackendStartOptions } from "../memory-backend/types";
@@ -27,6 +27,7 @@ import { isFilesystemSourcePath } from "../tools/path-utils";
 import { supportsExternalThinking } from "../tools/think";
 import { ToolAbortError, ToolError } from "../tools/tool-errors";
 import { isMountableUnderXdev, listXdevTools, type XdevState, xdevDocsFor, xdevEntries } from "../tools/xdev";
+import type { BuildSystemPromptResult } from "../system-prompt";
 import { type EditMode, resolveEditMode } from "../utils/edit-mode";
 import {
 	extractPermissionLocations,
@@ -37,6 +38,7 @@ import {
 } from "./acp-permission-gate";
 import type { ClientBridge, ClientBridgePermissionOutcome } from "./client-bridge";
 import { buildToolNamespacesInfo, resolveCodeMode, type ToolNamespacesInfo } from "./code-mode";
+import type { ContextInjectionItem } from "./context-injection";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
@@ -61,6 +63,12 @@ export interface SessionToolsHost {
 	clearMemoryPromotionSnapshot(): void;
 	captureMemoryPromotionSnapshot(prompt: string[]): void;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
+	/**
+	 * Record and surface a context-injection set (journal entry + transcript
+	 * notice). The session owns deduplication: a rebuild that re-injects the
+	 * same set is dropped, including after a resume.
+	 */
+	recordContextInjection(items: readonly ContextInjectionItem[]): void;
 	notifyCommandMetadataChanged(): void;
 	localProtocolOptions(): LocalProtocolOptions;
 	/** Publishes the current Codex Code Mode tool exposure snapshot for turn metadata; undefined clears it. */
@@ -87,7 +95,7 @@ interface SessionToolsOptions {
 		toolNames: string[],
 		tools: Map<string, AgentTool>,
 		options?: { directToolNames?: readonly string[] },
-	) => Promise<{ systemPrompt: string[]; xdevCatalogNames?: readonly string[] }>;
+	) => Promise<BuildSystemPromptResult>;
 	getMcpServerInstructions?: () => Map<string, string> | undefined;
 	xdev?: XdevState;
 	setActiveToolNames?: (names: Iterable<string>) => void;
@@ -243,6 +251,23 @@ export class SessionTools {
 	#promptModelKey: string | undefined;
 	#rebuildSystemPrompt: SessionToolsOptions["rebuildSystemPrompt"];
 	#getMcpServerInstructions: SessionToolsOptions["getMcpServerInstructions"];
+	/**
+	 * Session-lifetime factory shared by every custom-tool wrapper. Defining it
+	 * outside the refresh frame prevents wrappers from retaining rollback maps
+	 * from earlier MCP generations through a shared lexical environment.
+	 */
+	readonly #getCustomToolContext = (): CustomToolContext => ({
+		sessionManager: this.#host.sessionManager,
+		modelRegistry: this.#host.modelRegistry,
+		model: this.#host.model(),
+		isIdle: () => !this.#host.isStreaming(),
+		hasQueuedMessages: () => this.#host.queuedMessageCount() > 0,
+		abort: () => {
+			this.#host.agent.abort();
+		},
+		settings: this.#host.settings,
+		localProtocolOptions: this.#host.localProtocolOptions(),
+	});
 	#setActiveToolNames: SessionToolsOptions["setActiveToolNames"];
 	#ensureWriteRegistered: SessionToolsOptions["ensureWriteRegistered"];
 	#isDeviceOnlyWrite: SessionToolsOptions["isDeviceOnlyWrite"];
@@ -456,9 +481,23 @@ export class SessionTools {
 		return this.#toolRegistry.has("edit");
 	}
 
-	/** Looks up a registered tool by its canonical name or `xd://` alias. */
+	/**
+	 * Looks up a registered tool by its canonical name or `xd://` alias.
+	 *
+	 * An unmatched `mcp__` name is retried under its canonical registry keys: the
+	 * identity prompt primes the Claude Code spelling `mcp__<server>__<tool>`
+	 * while `createMCPToolName` mints a single separator, so the doubled form is
+	 * a dead end for a tool the session does expose. That retry goes through the
+	 * shared {@link resolveMCPToolAlias}, so an alias two registered tools both
+	 * answer resolves to nothing here exactly as it does at dispatch — this
+	 * method is public and also picks transcript renderers, so a first-match
+	 * shortcut could render or return the wrong tool.
+	 */
 	getToolByName(name: string): AgentTool | undefined {
-		return this.#toolRegistry.get(name) ?? this.#toolRegistry.get(stripXdUrlPrefix(name));
+		const bareName = stripXdUrlPrefix(name);
+		const direct = this.#toolRegistry.get(name) ?? this.#toolRegistry.get(bareName);
+		if (direct) return direct;
+		return resolveMCPToolAlias(bareName, candidate => this.#toolRegistry.get(candidate));
 	}
 
 	/** Looks up an enabled tool through the same ACP permission gate as direct calls. */
@@ -1073,6 +1112,7 @@ export class SessionTools {
 					rebuiltSystemPrompt = built.systemPrompt;
 					rebuiltSignature = signature;
 					rebuiltXdevCatalogNames = built.xdevCatalogNames;
+					this.#recordPromptInjections(built.injections);
 				}
 			}
 			signal?.throwIfAborted();
@@ -1515,6 +1555,16 @@ export class SessionTools {
 		return this.runToolRegistryMutation(() => this.#refreshBaseSystemPrompt());
 	}
 
+	/**
+	 * Hand the prompt build's context inventory to the session, which journals it
+	 * once per distinct set and surfaces it as a transcript notice. Builds that
+	 * injected nothing (a custom prompt with no discovery) stay silent.
+	 */
+	#recordPromptInjections(injections: readonly ContextInjectionItem[] | undefined): void {
+		if (!injections || injections.length === 0) return;
+		this.#host.recordContextInjection(injections);
+	}
+
 	async #refreshBaseSystemPrompt(): Promise<void> {
 		if (this.#host.isDisposed() || !this.#rebuildSystemPrompt) return;
 		const activeToolNames = this.getActiveToolNames();
@@ -1528,6 +1578,7 @@ export class SessionTools {
 		if (this.#host.isDisposed()) return;
 		this.#baseSystemPrompt = built.systemPrompt;
 		this.#basePromptXdevNames = new Set(built.xdevCatalogNames);
+		this.#recordPromptInjections(built.injections);
 		this.#host.clearMemoryPromotionSnapshot();
 		if (
 			previousBaseSystemPrompt.length !== this.#baseSystemPrompt.length ||
@@ -1693,22 +1744,11 @@ export class SessionTools {
 			this.#mcpManagerToolNames = previousMcpManagerToolNames;
 		};
 
-		const getCustomToolContext = (): CustomToolContext => ({
-			sessionManager: this.#host.sessionManager,
-			modelRegistry: this.#host.modelRegistry,
-			model: this.#host.model(),
-			isIdle: () => !this.#host.isStreaming(),
-			hasQueuedMessages: () => this.#host.queuedMessageCount() > 0,
-			abort: () => {
-				this.#host.agent.abort();
-			},
-			settings: this.#host.settings,
-			localProtocolOptions: this.#host.localProtocolOptions(),
-		});
-
 		const extensionRunner = this.#host.extensionRunner();
 		const managerTools = deduplicateMCPToolsByName(mcpTools).map(customTool => {
-			const wrapped = wrapToolWithMetaNotice(CustomToolAdapter.wrap(customTool, getCustomToolContext) as AgentTool);
+			const wrapped = wrapToolWithMetaNotice(
+				CustomToolAdapter.wrap(customTool, this.#getCustomToolContext) as AgentTool,
+			);
 			return (extensionRunner ? new ExtensionToolWrapper(wrapped, extensionRunner) : wrapped) as AgentTool;
 		});
 		const managerToolSet = new Set(managerTools);
@@ -1737,7 +1777,13 @@ export class SessionTools {
 		];
 		try {
 			await this.#applyActiveToolsByName(nextActive);
-			if (this.#host.isDisposed()) restorePreviousMcpTools();
+			if (this.#host.isDisposed()) {
+				restorePreviousMcpTools();
+			} else {
+				// The settled mutation promise may retain this async frame; drop
+				// rollback references as soon as the new generation commits.
+				previousMcpTools.clear();
+			}
 		} catch (error) {
 			restorePreviousMcpTools();
 			throw error;

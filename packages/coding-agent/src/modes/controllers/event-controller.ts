@@ -17,6 +17,7 @@ import {
 	readArgsHaveTarget,
 } from "../../modes/components/read-tool-group";
 import { isActiveSshTransferJob, sshTransferJobDetails } from "../../modes/components/ssh-transfer-hud";
+import { InjectNoticeComponent } from "../../modes/components/inject-notice";
 import { TodoReminderComponent } from "../../modes/components/todo-reminder";
 import {
 	ToolExecutionComponent,
@@ -56,6 +57,7 @@ import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
 	type CompletedRunCollapse,
+	type CompletedRunRequest,
 	deriveCompletedRunAnchor,
 	isCollapsibleCompletedRun,
 	isSameTranscriptMessage,
@@ -249,7 +251,7 @@ interface ActiveCompletedRun {
 	/** Lifecycle that emitted the most recent assistant message in `messages`. */
 	lastAssistantLifecycleVersion?: number;
 	messages: AgentMessage[];
-	initialUserMessage?: Extract<AgentMessage, { role: "user" }>;
+	initialUserMessage?: CompletedRunRequest;
 	gate?: CompletedRunGate;
 }
 
@@ -373,6 +375,9 @@ export class EventController {
 	// Most recent TTSR notification block. A new ttsr_triggered event merges its
 	// rules into this block while it is still the (live-region) transcript tail.
 	#lastTtsrNotification: TtsrNotificationComponent | undefined = undefined;
+	// Most recent context-injection notice. A later `context_injected` event
+	// merges its sources into this block while it is still the transcript tail.
+	#lastInjectNotice: InjectNoticeComponent | undefined = undefined;
 	#streamingReveal: StreamingRevealController;
 	#toolArgsReveal: ToolArgsRevealController;
 	#prevHideThinking = false;
@@ -511,6 +516,7 @@ export class EventController {
 			retry_fallback_applied: e => this.#handleRetryFallbackApplied(e),
 			retry_fallback_succeeded: e => this.#handleRetryFallbackSucceeded(e),
 			ttsr_triggered: e => this.#handleTtsrTriggered(e),
+			context_injected: e => this.#handleContextInjected(e),
 			todo_reminder: e => this.#handleTodoReminder(e),
 			todo_auto_clear: e => this.#handleTodoAutoClear(e),
 			irc_message: e => this.#handleIrcMessage(e),
@@ -614,6 +620,15 @@ export class EventController {
 		);
 		this.#streamingReveal.begin(continuation, continuationTimeline.beforeTools, continuationTimeline.hasToolCalls);
 		this.ctx.ui.requestRender();
+	}
+
+	/** Rearm idle compaction after a live idle setting changes. */
+	refreshIdleCompactionTimer(): void {
+		if (this.ctx.viewSession.isStreaming) {
+			this.#cancelIdleCompaction();
+			return;
+		}
+		this.#scheduleIdleCompaction();
 	}
 
 	dispose(): void {
@@ -780,6 +795,11 @@ export class EventController {
 		}
 	}
 
+	inheritReadToolAssistant(toolCallId: string, component: AssistantMessageComponent | undefined): void {
+		if (component) this.#readToolCallAssistantComponents.set(toolCallId, component);
+		else this.#readToolCallAssistantComponents.delete(toolCallId);
+	}
+
 	#clearReadToolCall(toolCallId: string): void {
 		this.#readToolCallArgs.delete(toolCallId);
 		this.#readToolCallAssistantComponents.delete(toolCallId);
@@ -879,16 +899,19 @@ export class EventController {
 		toolCallId: string,
 		segment: AssistantMessage | undefined,
 		linkTargets?: ReadonlyMap<string, string>,
+		opts?: { transient?: boolean },
 	): AssistantMessageComponent | undefined {
 		if (!segment || !assistantHasVisibleContent(segment)) return undefined;
 		const existing = this.#postToolAssistantComponents.get(toolCallId);
 		if (existing) {
 			if (linkTargets) existing.setLinkTargets(linkTargets);
-			existing.updateContent(segment);
+			// Closed segments may already be committed to append-only terminal history.
+			if (existing.isTranscriptBlockFinalized()) return existing;
+			existing.updateContent(segment, opts);
 			return existing;
 		}
 		const component = createAssistantMessageComponent(this.ctx, undefined, linkTargets);
-		component.updateContent(segment);
+		component.updateContent(segment, opts);
 		this.#postToolAssistantComponents.set(toolCallId, component);
 		if (!this.#insertAfterTranscriptComponent(this.#toolTimelineComponents.get(toolCallId), component)) {
 			this.ctx.chatContainer.addChild(component);
@@ -1098,8 +1121,33 @@ export class EventController {
 		this.#displaceablePollComponent = undefined;
 		this.#displaceableTodoComponent = undefined;
 		this.#lastTtsrNotification = undefined;
+		this.#lastInjectNotice = undefined;
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
+		this.#seedHeldCompletionsFromPendingResults();
+	}
+
+	/** Restore display state without replaying completion notifications or persistence. */
+	#seedHeldCompletionsFromPendingResults(): void {
+		const pending = this.ctx.viewSession.agent.getPendingToolResults();
+		for (const result of pending) {
+			this.#orphanedToolCompletions.set(result.toolCallId, {
+				type: "tool_execution_end",
+				toolCallId: result.toolCallId,
+				toolName: result.toolName,
+				result: { content: result.content, details: result.details },
+				isError: result.isError,
+			});
+		}
+	}
+
+	/** Settle replay-created cards without waiting for another streaming update. */
+	restorePendingToolResults(): void {
+		this.#seedHeldCompletionsFromPendingResults();
+		for (const [toolCallId, component] of this.ctx.pendingTools) {
+			this.#toolTimelineComponents.set(toolCallId, component);
+			this.#settleHeldCompletionIfPresent(toolCallId, component);
+		}
 	}
 
 	async handleEvent(event: AgentSessionEvent): Promise<void> {
@@ -1252,6 +1300,7 @@ export class EventController {
 		this.#readToolCallArgs.clear();
 		this.#readToolCallAssistantComponents.clear();
 		this.#resetReadGroup();
+		this.#seedHeldCompletionsFromPendingResults();
 		this.#resolveDisplaceableTodo();
 		this.#lastAssistantComponent = undefined;
 		// Restore terminal errors in transcript history when their banner clears.
@@ -1279,11 +1328,22 @@ export class EventController {
 	async #handleMessageStart(event: Extract<AgentSessionEvent, { type: "message_start" }>): Promise<void> {
 		this.#ensureWorkingLoaderWhileStreaming();
 		if (event.message.role === "hookMessage" || event.message.role === "custom") {
+			// A directly-invoked `/skill:` or writable-collab custom prompt initiates a
+			// user-attributed turn, so it anchors the completed run exactly like a user
+			// message: the span it starts has to collapse once it settles.
+			const request =
+				event.message.role === "custom" && isUserTurnInitiator(event.message) ? event.message : undefined;
 			if (
 				event.message.role === "custom" &&
 				this.ctx.optimisticCustomMessageSignature === customSubmissionSignature(event.message)
 			) {
 				this.ctx.clearOptimisticCustomMessage();
+				if (!request) return;
+				// The optimistic row already is this request's transcript row (custom
+				// prompts persist before their `message_start`), so the boundary close
+				// repaints it from the transcript whenever that rebuilds.
+				if (this.#activeCompletedRun?.initialUserMessage) await this.#closeCompletedRunAtRequest();
+				this.#attachCompletedRunGate(request);
 				return;
 			}
 			const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
@@ -1296,11 +1356,15 @@ export class EventController {
 				this.ctx.sshTransferHud.markPersisted(readPersistedJobIds(event.message.details));
 				this.#syncSshTransferHud();
 			}
-			// A directly-invoked `/skill:` or writable-collab custom prompt is the
-			// run's initiating message (user attribution): seed the prompt→yield
-			// delta from it, the same as a user message.
-			if (event.message.role === "custom" && isUserTurnInitiator(event.message)) {
+			// Seed the prompt→yield delta from the run's initiating prompt, the same as
+			// a user message, and treat it as the completed-run boundary: a queued
+			// `/skill:` prompt drains inside the current lifecycle, so no second
+			// agent_start marks where the preceding span ended.
+			if (request) {
 				this.#turnStartedAt = event.message.timestamp;
+				// Only an open anchored span needs the boundary commit; the common case
+				// stays synchronous so later fire-and-forget events cannot reorder rows.
+				if (this.#activeCompletedRun?.initialUserMessage) await this.#closeCompletedRunAtRequest();
 			}
 			if (
 				event.message.role === "custom" &&
@@ -1311,6 +1375,7 @@ export class EventController {
 			} else {
 				this.ctx.addMessageToChat(event.message);
 			}
+			if (request) this.#attachCompletedRunGate(request);
 			// Queued custom-message chips are derived from the agent queue; refresh the
 			// pending bar when the queued custom is consumed so the chip disappears
 			// immediately.
@@ -1324,35 +1389,9 @@ export class EventController {
 			// agent-core emits no second agent_start between the naturally completed
 			// answer and this user message. Treat the user message itself as the run
 			// boundary: commit the completed span now, then open a fresh live gate for
-			// the follow-up below. Aborts, tool-use turns, and immediate errors retain
-			// their original span; terminal errors after visible activity may collapse
-			// while preserving the error message.
+			// the follow-up below.
 			if (!event.message.synthetic && this.#activeCompletedRun?.initialUserMessage) {
-				const finalAssistant = this.#activeCompletedRun.messages.findLast(
-					(message): message is Extract<AgentMessage, { role: "assistant" }> => message.role === "assistant",
-				);
-				if (
-					isCollapsibleCompletedRun(
-						this.#activeCompletedRun.messages,
-						this.#activeCompletedRun.initialUserMessage,
-						finalAssistant,
-					) &&
-					this.#activeCompletedRun.lastAssistantLifecycleVersion === this.#activeCompletedRun.lifecycleVersion
-				) {
-					await this.ctx.viewSession.waitForMessagePersistence(finalAssistant);
-					const previousLifecycleVersion = this.#activeCompletedRun.lifecycleVersion;
-					const collapse = this.#takeCompletedRunCollapse(finalAssistant);
-					if (collapse) {
-						this.ctx.recordCompletedRunCollapse(collapse);
-						this.ctx.rebuildChatFromMessages();
-						this.ctx.ui.resetDisplay();
-						this.#activeCompletedRun = {
-							lifecycleVersion: previousLifecycleVersion + 1,
-							messages: [],
-							startedAtMs: Date.now(),
-						};
-					}
-				}
+				await this.#closeCompletedRunAtRequest();
 			}
 			// Only genuinely user-attributed prompts anchor the delta; a mid-run
 			// agent-attributed `user` message (advisor tool-loop redirect) must not.
@@ -1391,14 +1430,7 @@ export class EventController {
 				// links via the synchronous putBlobSync fallback, so no await is needed here.
 				this.ctx.addMessageToChat(event.message);
 			}
-			if (!event.message.synthetic && this.#activeCompletedRun && !this.#activeCompletedRun.initialUserMessage) {
-				const gate = new CompletedRunGate();
-				this.#activeCompletedRun.initialUserMessage = event.message;
-				this.#activeCompletedRun.gate = gate;
-				// The zero-row gate anchors the eventual collapse projection but
-				// does not block finalized successors from entering scrollback.
-				this.ctx.chatContainer.addChild(gate);
-			}
+			if (!event.message.synthetic) this.#attachCompletedRunGate(event.message);
 
 			// Clear the editor only when the submission did not originate from a
 			// local submission (optimistic or queued-while-streaming). Both local
@@ -1698,16 +1730,19 @@ export class EventController {
 						continue;
 					}
 					if (readArgsCollapseIntoGroup(content.arguments)) {
-						if (!this.ctx.pendingTools.has(content.id)) this.#resolveDisplaceablePoll(renderToolName);
-						this.#trackReadToolCall(content.id, content.arguments);
-						const component = this.ctx.pendingTools.get(content.id);
-						if (component) {
-							component.updateArgs(content.arguments, content.id);
-						} else {
+						const existing = this.ctx.pendingTools.get(content.id);
+						if (existing) {
+							this.#trackReadToolCall(content.id, content.arguments);
+							existing.updateArgs(content.arguments, content.id);
+						} else if (!this.#toolTimelineComponents.has(content.id)) {
+							// A completed read remains in the timeline after leaving pendingTools.
+							this.#resolveDisplaceablePoll(renderToolName);
+							this.#trackReadToolCall(content.id, content.arguments);
 							const group = this.#getReadGroup();
 							group.updateArgs(content.arguments, content.id);
 							this.ctx.pendingTools.set(content.id, group);
 							this.#toolTimelineComponents.set(content.id, group);
+							this.#settleHeldCompletionIfPresent(content.id, group);
 						}
 						continue;
 					}
@@ -1776,16 +1811,21 @@ export class EventController {
 					}
 				}
 			}
-			const trailingToolCallId = this.ctx.streamingMessage.content.findLast(
-				content => content.type === "toolCall",
-			)?.id;
 			for (const [toolCallId, segment] of timeline.afterToolCalls) {
-				const component = this.#upsertPostToolAssistantSegment(toolCallId, segment);
+				if (this.#postToolAssistantComponents.get(toolCallId)?.isTranscriptBlockFinalized()) continue;
+				const closed = toolCallId !== timeline.lastToolCallId;
+				const linkTargets = closed ? await refreshAssistantMessageLinkTargets(this.ctx, [segment]) : undefined;
+				const component = this.#upsertPostToolAssistantSegment(
+					toolCallId,
+					segment,
+					linkTargets ? assistantMessageLinkTargets(segment, linkTargets) : undefined,
+					closed ? undefined : { transient: true },
+				);
 				// Once a later tool-call block exists, the provider has closed this
 				// preceding text segment. Leaving it active creates multiple mutable
 				// transcript blocks, which prevents the current tail from spilling into
 				// native scrollback and clips its head until message_end.
-				if (toolCallId !== trailingToolCallId) component?.markTranscriptBlockFinalized();
+				if (closed) component?.markTranscriptBlockFinalized();
 			}
 
 			// Update working message with intent from streamed tool arguments
@@ -2015,14 +2055,12 @@ export class EventController {
 			}
 			if (renderToolName === "read" && readArgsCollapseIntoGroup(event.args)) {
 				this.#trackReadToolCall(event.toolCallId, event.args);
-				const component = this.ctx.pendingTools.get(event.toolCallId);
-				if (component) {
-					component.updateArgs(event.args, event.toolCallId);
-				} else {
+				if (!this.#toolTimelineComponents.has(event.toolCallId)) {
 					const group = this.#getReadGroup();
 					group.updateArgs(event.args, event.toolCallId);
 					this.ctx.pendingTools.set(event.toolCallId, group);
 					this.#toolTimelineComponents.set(event.toolCallId, group);
+					this.#settleHeldCompletionIfPresent(event.toolCallId, group);
 				}
 				this.#startToolApprovalPreview(event.toolCallId);
 				this.ctx.ui.requestRender();
@@ -2150,8 +2188,10 @@ export class EventController {
 		component: ToolExecutionHandle,
 		event: Extract<AgentSessionEvent, { type: "tool_execution_end" }>,
 	): void {
+		if (event.toolName === "read") this.#inlineReadToolImages(event.toolCallId, event.result);
 		component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
 		this.ctx.pendingTools.delete(event.toolCallId);
+		if (event.toolName === "read") this.#clearReadToolCall(event.toolCallId);
 		if (
 			component instanceof ToolExecutionComponent &&
 			component.isDisplaceableBlock() &&
@@ -2220,31 +2260,26 @@ export class EventController {
 				this.#clearReadToolCall(event.toolCallId);
 				this.ctx.ui.requestRender();
 			} else {
-				let component = this.ctx.pendingTools.get(event.toolCallId);
+				const component = this.ctx.pendingTools.get(event.toolCallId);
 				if (!component) {
 					// A persisted result can win a mid-stream transcript rebuild
 					// before this live completion handler runs. Rebuild removes the
 					// pending handle and replay owns the completed card, but the
 					// original timeline entry remains as proof that a card already
 					// existed. Do not create a fallback read group beside replay
-					// (#6879); the fallback is only for a completion that genuinely
-					// outran every streamed card.
+					// (#6879). A completion that outran every streamed card is held
+					// and settled when the card is created, matching non-read tools.
 					if (this.#toolTimelineComponents.has(event.toolCallId)) {
 						this.#clearReadToolCall(event.toolCallId);
 						return;
 					}
-					const group = this.#getReadGroup();
-					const args = this.#readToolCallArgs.get(event.toolCallId);
-					if (args) {
-						group.updateArgs(args, event.toolCallId);
-					}
-					component = group;
-					this.ctx.pendingTools.set(event.toolCallId, group);
+					this.#orphanedToolCompletions.set(event.toolCallId, event);
+				} else {
+					component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
+					this.ctx.pendingTools.delete(event.toolCallId);
+					this.#clearReadToolCall(event.toolCallId);
+					this.ctx.ui.requestRender();
 				}
-				component.updateResult({ ...event.result, isError: event.isError }, false, event.toolCallId);
-				this.ctx.pendingTools.delete(event.toolCallId);
-				this.#clearReadToolCall(event.toolCallId);
-				this.ctx.ui.requestRender();
 			}
 		} else {
 			const component = this.ctx.pendingTools.get(event.toolCallId);
@@ -2589,6 +2624,58 @@ export class EventController {
 			this.ctx.recordCompletedRunCollapse(collapse);
 		}
 		return true;
+	}
+
+	/**
+	 * Close the active run's span when a user-attributed request arrives while the
+	 * current lifecycle is still open: a queued follow-up (Ctrl+Up, a steered
+	 * prompt, an invoked `/skill:` prompt) drains before `agent_end`, so no second
+	 * `agent_start` marks the preceding span's end — the request itself is the
+	 * boundary. Aborts, tool-use turns, and immediate errors retain their original
+	 * span; a terminal error after visible activity may collapse while preserving
+	 * the error message.
+	 */
+	async #closeCompletedRunAtRequest(): Promise<void> {
+		if (!this.#activeCompletedRun?.initialUserMessage) return;
+		const finalAssistant = this.#activeCompletedRun.messages.findLast(
+			(message): message is Extract<AgentMessage, { role: "assistant" }> => message.role === "assistant",
+		);
+		if (
+			!isCollapsibleCompletedRun(
+				this.#activeCompletedRun.messages,
+				this.#activeCompletedRun.initialUserMessage,
+				finalAssistant,
+			) ||
+			this.#activeCompletedRun.lastAssistantLifecycleVersion !== this.#activeCompletedRun.lifecycleVersion
+		) {
+			return;
+		}
+		await this.ctx.viewSession.waitForMessagePersistence(finalAssistant);
+		const previousLifecycleVersion = this.#activeCompletedRun.lifecycleVersion;
+		const collapse = this.#takeCompletedRunCollapse(finalAssistant);
+		if (!collapse) return;
+		this.ctx.recordCompletedRunCollapse(collapse);
+		this.ctx.rebuildChatFromMessages();
+		this.ctx.ui.resetDisplay();
+		this.#activeCompletedRun = {
+			lifecycleVersion: previousLifecycleVersion + 1,
+			messages: [],
+			startedAtMs: Date.now(),
+		};
+	}
+
+	/**
+	 * Anchor the active run to its initiating user-attributed request and open the
+	 * zero-row live gate the eventual collapse projection replaces. The gate starts
+	 * the live region after the request without blocking finalized successors from
+	 * entering scrollback, so it is installed only while the run has no anchor yet.
+	 */
+	#attachCompletedRunGate(request: CompletedRunRequest): void {
+		if (!this.#activeCompletedRun || this.#activeCompletedRun.initialUserMessage) return;
+		const gate = new CompletedRunGate();
+		this.#activeCompletedRun.initialUserMessage = request;
+		this.#activeCompletedRun.gate = gate;
+		this.ctx.chatContainer.addChild(gate);
 	}
 
 	async #finishAgentEnd(event: Extract<AgentSessionEvent, { type: "agent_end" }>): Promise<void> {
@@ -2937,6 +3024,26 @@ export class EventController {
 		component.setExpanded(this.ctx.toolOutputExpanded);
 		this.ctx.present(component);
 		this.#lastTtsrNotification = component;
+	}
+
+	async #handleContextInjected(event: Extract<AgentSessionEvent, { type: "context_injected" }>): Promise<void> {
+		// Same merge rule as TTSR notifications: fold a later injection set into
+		// the previous block only while it is still the live tail — committed rows
+		// are immutable visual history and a grown block would shift them.
+		const previous = this.#lastInjectNotice;
+		if (
+			previous &&
+			this.ctx.chatContainer.children.at(-1) === previous &&
+			this.ctx.chatContainer.canRemoveBlock(previous)
+		) {
+			previous.addItems(event.items);
+			this.ctx.ui.requestRender();
+			return;
+		}
+		const component = new InjectNoticeComponent(event.items);
+		component.setExpanded(this.ctx.toolOutputExpanded);
+		this.ctx.present(component);
+		this.#lastInjectNotice = component;
 	}
 
 	async #handleTodoReminder(event: Extract<AgentSessionEvent, { type: "todo_reminder" }>): Promise<void> {

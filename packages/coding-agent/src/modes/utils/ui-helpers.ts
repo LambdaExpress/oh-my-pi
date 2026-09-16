@@ -31,6 +31,7 @@ import {
 	readArgsCollapseIntoGroup,
 } from "../../modes/components/read-tool-group";
 import { SkillMessageComponent } from "../../modes/components/skill-message";
+import { InjectNoticeComponent } from "../../modes/components/inject-notice";
 import { StrippedToolCallsPlaceholder } from "../../modes/components/stripped-tool-calls-placeholder";
 import { ToolActivityContainer } from "../../modes/components/tool-activity";
 import {
@@ -51,6 +52,7 @@ import type {
 	RenderInitialMessagesOptions,
 	RenderSessionContextOptions,
 } from "../../modes/types";
+import { CONTEXT_INJECTION_MESSAGE_TYPE, contextInjectionItemsFromMessage } from "../../session/context-injection";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
@@ -231,6 +233,14 @@ export class UiHelpers {
 					}
 					if (message.customType === SKILL_PROMPT_MESSAGE_TYPE) {
 						const component = new SkillMessageComponent(message as CustomMessage<SkillPromptDetails>);
+						component.setExpanded(this.ctx.toolOutputExpanded);
+						this.ctx.chatContainer.addChild(component);
+						break;
+					}
+					if (message.customType === CONTEXT_INJECTION_MESSAGE_TYPE) {
+						const items = contextInjectionItemsFromMessage(message);
+						if (items.length === 0) break;
+						const component = new InjectNoticeComponent(items);
 						component.setExpanded(this.ctx.toolOutputExpanded);
 						this.ctx.chatContainer.addChild(component);
 						break;
@@ -580,6 +590,9 @@ export class UiHelpers {
 							this.ctx.pendingTools.set(content.id, readGroup);
 							if (assistantComponent) {
 								readToolCallAssistantComponents.set(content.id, assistantComponent);
+								if (this.ctx.viewSession.isStreaming) {
+									this.ctx.eventController?.inheritReadToolAssistant(content.id, assistantComponent);
+								}
 							}
 						} else {
 							const normalizedArgs = normalizeToolArgs(content.arguments);
@@ -664,6 +677,9 @@ export class UiHelpers {
 					(!pendingReadComponent || pendingReadComponent instanceof ReadToolGroupComponent);
 				if (isReadGroupResult) {
 					const assistantComponent = readToolCallAssistantComponents.get(message.toolCallId);
+					if (this.ctx.viewSession.isStreaming) {
+						this.ctx.eventController?.inheritReadToolAssistant(message.toolCallId, undefined);
+					}
 					const images: ImageContent[] = message.content.filter(
 						(content): content is ImageContent => content.type === "image",
 					);
@@ -671,6 +687,10 @@ export class UiHelpers {
 						assistantComponent.setToolResultImages(message.toolCallId, images);
 						const hasText = message.content.some(c => c.type === "text");
 						if (!hasText && settings.get("terminal.showImages")) {
+							if (pendingReadComponent) {
+								pendingReadComponent.updateResult(message, false, message.toolCallId);
+								this.ctx.pendingTools.delete(message.toolCallId);
+							}
 							readToolCallArgs.delete(message.toolCallId);
 							readToolCallAssistantComponents.delete(message.toolCallId);
 							continue;
@@ -942,6 +962,7 @@ export class UiHelpers {
 		const visibleChatContainer = this.ctx.chatContainer;
 		const stagedChatContainer = new TranscriptContainer();
 		stagedChatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
+		stagedChatContainer.setToolRowsFolded(this.ctx.foldToolRows);
 		const preservedChatChildren = options.preserveExistingChat ? [...visibleChatContainer.children] : undefined;
 		const previousTranscriptMessageComponents = this.ctx.transcriptMessageComponents;
 		const previousPendingTools = this.ctx.pendingTools;
@@ -1016,6 +1037,12 @@ export class UiHelpers {
 			const replayedChatChildren = [...stagedChatContainer.children];
 			stagedChatContainer.clear();
 			this.ctx.chatContainer = visibleChatContainer;
+			// The visible container kept the flags it had when the replay started;
+			// a fold or visibility toggle that landed mid-replay reached only the
+			// staged container. Re-apply the live state before its children are
+			// handed back, or every replayed tool row would restore the stale one.
+			visibleChatContainer.setToolActivityVisible(!this.ctx.hideToolActivity);
+			visibleChatContainer.setToolRowsFolded(this.ctx.foldToolRows);
 			if (preservedChatChildren) {
 				visibleChatContainer.clear();
 			} else {
@@ -1066,7 +1093,8 @@ export class UiHelpers {
 	}
 
 	clearEditor(): void {
-		this.ctx.editor.clearDraft();
+		if (this.ctx.settings.get("composer.recallClearedDrafts")) this.ctx.editor.clearDraftForRecall();
+		else this.ctx.editor.clearDraft();
 		this.ctx.ui.requestRender();
 	}
 

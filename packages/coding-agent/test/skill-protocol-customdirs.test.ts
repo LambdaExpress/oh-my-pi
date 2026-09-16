@@ -114,9 +114,9 @@ describe("skill:// resolution honors skills.customDirectories (#7190)", () => {
 		const result = await new ReadTool(session).execute("read-skill-tail", { path: "skill://tail-skill:-4" });
 		const text = result.content.flatMap(block => (block.type === "text" ? [block.text] : [])).join("\n");
 
-		// Last 4 body lines plus one leading context line; nothing earlier.
+		// Exactly the last 4 body lines; nothing earlier.
 		expect(text).not.toContain("body-line-25");
-		expect(text).toContain("body-line-26");
+		expect(text).not.toContain("body-line-26");
 		expect(text).toContain("body-line-27");
 		expect(text).toContain("body-line-30");
 		expect(text).not.toContain("tail-skill skill.");

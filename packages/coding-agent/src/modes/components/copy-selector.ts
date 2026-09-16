@@ -154,6 +154,11 @@ export class CopySelectorComponent implements Component {
 			requestRender: this.deps.requestRender,
 		});
 		builder.setExpanded(this.#expanded);
+		// `/copy` copies the rows it renders, so the copy outline always carries
+		// tool bodies: the folded presentation is a live-transcript scanning aid,
+		// not a content filter. (Ctrl+O inside the picker still toggles how much
+		// of each body is included.)
+		builder.container.setToolRowsFolded(false);
 		this.#targets = appendOutlineEntries(builder, entries);
 		return builder;
 	}

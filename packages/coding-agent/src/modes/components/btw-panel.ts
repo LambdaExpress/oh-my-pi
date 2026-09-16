@@ -2,6 +2,7 @@ import { type Component, Markdown, Spacer, Text, type TUI } from "@oh-my-pi/pi-t
 import { t } from "../../i18n";
 import { replaceTabs } from "../../tools/render-utils";
 import { getMarkdownTheme, theme } from "../theme/theme";
+import { sanitizeErrorLine } from "./error-block";
 import { OverlayPanel } from "./overlay-box";
 
 type BtwPanelState = "running" | "complete" | "branching" | "aborted" | "error";
@@ -10,6 +11,7 @@ interface BtwPanelComponentOptions {
 	question: string;
 	tui: TUI;
 	canBranch?: () => boolean;
+	canFollowUp?: () => boolean;
 }
 
 class BtwFooter implements Component {
@@ -34,6 +36,7 @@ class BtwFooter implements Component {
 export class BtwPanelComponent extends OverlayPanel {
 	#tui: TUI;
 	#canBranch: (() => boolean) | undefined;
+	#canFollowUp: (() => boolean) | undefined;
 	#state: BtwPanelState = "running";
 	#answer = "";
 	#errorMessage: string | undefined;
@@ -44,6 +47,7 @@ export class BtwPanelComponent extends OverlayPanel {
 		super(`/btw ${replaceTabs(options.question)}`);
 		this.#tui = options.tui;
 		this.#canBranch = options.canBranch;
+		this.#canFollowUp = options.canFollowUp;
 		this.#rebuild();
 	}
 
@@ -123,26 +127,27 @@ export class BtwPanelComponent extends OverlayPanel {
 	#footerLine(): string {
 		switch (this.#state) {
 			case "running":
-				return theme.fg("muted", t("Esc cancel /btw"));
+				return theme.fg("muted", t("Esc to cancel"));
 			case "complete": {
-				if (!this.isCopyable()) return theme.fg("muted", t("Esc dismiss"));
-				const actions = [t("c copy")];
-				if (this.#canBranch?.() ?? this.isBranchable()) actions.push(t("b branch to chat"));
-				actions.push(t("Esc dismiss"));
+				const actions: string[] = [];
+				if (this.isCopyable()) actions.push(t("c to copy"));
+				if (this.#canFollowUp?.()) actions.push(t("f to follow up"));
+				if (this.#canBranch?.() ?? this.isBranchable()) actions.push(t("b to branch"));
+				actions.push(t("Esc to close"));
 				return theme.fg("muted", actions.join(" · "));
 			}
 			case "branching":
 				return theme.fg("muted", `${theme.status.pending} ${t("Branching to chat…")}`);
 			case "aborted":
-				return theme.fg("warning", `${theme.status.warning} ${t("Cancelled · Esc dismiss")}`);
+				return theme.fg("warning", `${theme.status.warning} ${t("Cancelled · Esc to close")}`);
 			case "error":
-				return theme.fg("error", `${theme.status.error} ${t("Error · Esc dismiss")}`);
+				return theme.fg("error", `${theme.status.error} ${t("Error · Esc to close")}`);
 		}
 	}
 
 	#buildBody(): Component {
 		if (this.#state === "error") {
-			return new Text(theme.fg("error", replaceTabs(this.#errorMessage ?? t("Unknown error"))), 0, 0);
+			return new Text(theme.fg("error", sanitizeErrorLine(this.#errorMessage ?? t("Unknown error"))), 0, 0);
 		}
 		const text = this.#visibleAnswer;
 		if (!text) {

@@ -16,12 +16,24 @@ import { getProjectDir, isRecord, logger, sanitizeText } from "@oh-my-pi/pi-util
 import { type PerFileDiffPreview, renderStreamingFallback } from "../../edit/renderer";
 import type { Theme } from "../../modes/theme/theme";
 import { getThemeEpoch, theme } from "../../modes/theme/theme";
+import { taskCardAgentIds } from "../../task/render";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../../tools/eval";
 import { isWaitingPollDetails } from "../../tools/hub";
-import { formatStatusIcon, replaceTabs, resolveImageOptions } from "../../tools/render-utils";
-import { type FirstResultViewportRepaint, type ToolRenderer, toolRenderers } from "../../tools/renderers";
+import {
+	formatStatusIcon,
+	replaceTabs,
+	resolveImageOptions,
+	sanitizeDisplayWarning,
+	truncateToWidth,
+} from "../../tools/render-utils";
+import {
+	type FirstResultViewportRepaint,
+	type ToolActivitySummary,
+	type ToolRenderer,
+	toolRenderers,
+} from "../../tools/renderers";
 import { TODO_STRIKE_TOTAL_FRAMES, type TodoToolDetails } from "../../tools/todo";
 import type { XdevState } from "../../tools/xdev";
 import type { EditMode } from "../../utils/edit-mode";
@@ -73,6 +85,46 @@ function displaceableToolName(
 
 function isEditLikeToolName(toolName: string): boolean {
 	return toolName === "edit" || toolName === "apply_patch";
+}
+
+/**
+ * Argument keys the folded row falls back to when a tool brings no renderer
+ * summary: the first one that names the call's subject. Ordered most-specific
+ * first so a `grep` folds to its pattern rather than its search root.
+ */
+const ACTIVITY_DETAIL_ARG_KEYS = [
+	"command",
+	"script",
+	"pattern",
+	"query",
+	"op",
+	"action",
+	"name",
+	"program",
+	"symbol",
+	"objective",
+	"input",
+] as const;
+
+/**
+ * Filesystem or URL targets: the generic folded row paints these in the accent
+ * color every card header uses for a path, so a folded read/write/glob still
+ * reads as one, instead of the muted prose color.
+ */
+const ACTIVITY_PATH_ARG_KEYS = ["path", "file_path", "url"] as const;
+
+/** First non-empty string argument naming this call, for the generic folded row. */
+function genericActivityDetail(args: unknown): { detail: string; isTarget: boolean } | undefined {
+	if (!isRecord(args)) return undefined;
+	for (const key of ACTIVITY_PATH_ARG_KEYS) {
+		const value = args[key];
+		if (typeof value === "string" && value.trim().length > 0) return { detail: value, isTarget: true };
+	}
+	for (const key of ACTIVITY_DETAIL_ARG_KEYS) {
+		const value = args[key];
+		if (typeof value === "string" && value.trim().length > 0) return { detail: value, isTarget: false };
+	}
+	return undefined;
 }
 
 function resolveEditModeForTool(toolName: string, tool: AgentTool | undefined): EditMode | undefined {
@@ -286,6 +338,10 @@ export class ToolExecutionComponent extends Container {
 	#args: any;
 	#expanded = false;
 	#toolActivityVisible = true;
+	// `display.foldToolRows`: render one activity row instead of the card.
+	#toolRowsFolded = false;
+	// Memoized folded-row summary, keyed by the inputs its renderers read.
+	#foldedSummaryCache?: { key: string; summary: ToolActivitySummary };
 	#showImages: boolean;
 	#isPartial = true;
 	// A background tool whose call already returned; later async job frames are
@@ -707,6 +763,16 @@ export class ToolExecutionComponent extends Container {
 		return !this.#isPartial;
 	}
 
+	/**
+	 * Subagent ids visible on this card for click-to-focus hit-testing. Empty
+	 * unless this is a task card whose details already name spawned agents.
+	 * Callers intersect with the live registry, which decides focusability.
+	 */
+	getClickFocusAgentIds(): string[] {
+		if (this.#toolName !== "task") return [];
+		return taskCardAgentIds(this.#result?.details);
+	}
+
 	getTranscriptBlockVersion(): number {
 		return this.#blockVersion;
 	}
@@ -782,6 +848,20 @@ export class ToolExecutionComponent extends Container {
 		super.invalidate();
 	}
 
+	/**
+	 * Fold this call into its one-line activity row (`display.foldToolRows`).
+	 * The row is painted straight from the call's args/result snapshot instead
+	 * of the display tree, so folding and unfolding never re-shapes the card's
+	 * children — the memoized `#rebuildDisplay` output stays valid for the next
+	 * unfold.
+	 */
+	setToolRowsFolded(folded: boolean): void {
+		if (this.#toolRowsFolded === folded) return;
+		this.#toolRowsFolded = folded;
+		this.#blockVersion++;
+		super.invalidate();
+	}
+
 	setShowImages(show: boolean): void {
 		this.#showImages = show;
 		this.#updateDisplay();
@@ -841,10 +921,83 @@ export class ToolExecutionComponent extends Container {
 
 	override render(width: number): readonly string[] {
 		if (!this.#toolActivityVisible) return [];
+		if (this.#toolRowsFolded) return this.#renderFoldedRow(width);
 		const lines = super.render(width);
 		this.#firstResultViewportRepaintShapePainted = this.#needsFirstResultViewportRepaintAtRender();
 		this.#partialResultShapePainted = this.#result !== undefined && this.#isPartial;
 		return lines;
+	}
+
+	/** Still executing: no settled result yet and the turn has not sealed it. */
+	#isRunning(): boolean {
+		return !this.#sealed && (this.#result === undefined || this.#isPartial);
+	}
+
+	/**
+	 * One-line row for `display.foldToolRows`: `Label: detail`, prefixed by the
+	 * shared status glyph while the call is live or failed. The full card's
+	 * display tree is never consulted, so a fold costs one row no matter how
+	 * tall the card would have been.
+	 */
+	#renderFoldedRow(width: number): readonly string[] {
+		// The rows `#resetDisplayForResultTopologyChange` protects belong to the
+		// card; a folded row replaces them with a stable single row.
+		this.#firstResultViewportRepaintShapePainted = false;
+		this.#partialResultShapePainted = false;
+		const summary = this.#foldedSummary();
+		const failed = this.#result?.isError === true && !this.#isBenignSkip();
+		const glyph = failed
+			? `${formatStatusIcon("error", theme)} `
+			: this.#isRunning() && this.#spinnerFrame !== undefined
+				? `${formatStatusIcon("running", theme, this.#spinnerFrame)} `
+				: "";
+		const label = theme.fg(failed ? "error" : "toolTitle", theme.bold(summary.label));
+		const detail = summary.detail ? `${theme.fg("dim", ":")} ${summary.detail}` : "";
+		return [truncateToWidth(` ${glyph}${label}${detail}`, width)];
+	}
+
+	/** Folded-row summary, recomputed only when its inputs change. */
+	#foldedSummary(): ToolActivitySummary {
+		const key = `${this.#resultVersion}|${this.#displayInputVersion}|${getThemeEpoch()}`;
+		const cached = this.#foldedSummaryCache;
+		if (cached?.key === key) return cached.summary;
+		const summary = this.#resolveActivitySummary();
+		this.#foldedSummaryCache = { key, summary };
+		return summary;
+	}
+
+	/**
+	 * Renderer-provided activity text when the tool has one, otherwise the
+	 * generic `label: first naming argument` fallback every tool (custom,
+	 * extension, MCP, xdev) folds through. Both halves are collapsed to a single
+	 * display row; the label is sanitized here because extension and MCP labels
+	 * are server-controlled. Renderer details arrive already styled and are
+	 * expected to sanitize their own model-controlled values, exactly like
+	 * `renderCall`.
+	 */
+	#resolveActivitySummary(): ToolActivitySummary {
+		this.#renderState.renderContext ??= this.#buildRenderContext();
+		const summary = this.#renderer?.activitySummary?.(this.#args, {
+			expanded: this.#expanded,
+			isPartial: this.#isPartial,
+			spinnerFrame: this.#spinnerFrame,
+			renderContext: this.#renderState.renderContext,
+			result: this.#result,
+			theme,
+		});
+		const fallbackLabel = sanitizeDisplayWarning(this.#toolLabel);
+		if (summary) {
+			const label = sanitizeDisplayWarning(summary.label);
+			return { label: label.length > 0 ? label : fallbackLabel, detail: summary.detail };
+		}
+		const detail = genericActivityDetail(this.#args);
+		return {
+			label: fallbackLabel,
+			detail:
+				detail !== undefined
+					? theme.fg(detail.isTarget ? "accent" : "muted", sanitizeDisplayWarning(detail.detail))
+					: undefined,
+		};
 	}
 	// Viewport-/settings-dependent image sizing folded into the memo key only when
 	// the last rebuild actually emitted images, so a terminal resize re-shapes an

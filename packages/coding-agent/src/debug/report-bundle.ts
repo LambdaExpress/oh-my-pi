@@ -92,7 +92,7 @@ export async function createReportBundle(options: ReportBundleOptions): Promise<
 	const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
 	const outputPath = path.join(reportsDir, `omp-report-${timestamp}.tar.gz`);
 
-	const data: Record<string, string> = {};
+	const data: Record<string, string | Uint8Array> = {};
 	const files: string[] = [];
 
 	// Collect system info
@@ -171,7 +171,7 @@ export async function createReportBundle(options: ReportBundleOptions): Promise<
 
 	const sessionEntryGroups: SessionEntry[][] = [];
 	for (const [archivePath, content] of Object.entries(data)) {
-		if (!archivePath.endsWith(".jsonl")) continue;
+		if (!archivePath.endsWith(".jsonl") || typeof content !== "string") continue;
 		const entries = parseSessionContent(content).entries.filter(
 			(entry): entry is SessionEntry => entry.type !== "session",
 		);
@@ -180,7 +180,10 @@ export async function createReportBundle(options: ReportBundleOptions): Promise<
 	const sshRedactor = createSessionSshExternalRedactor(sessionEntryGroups);
 	if (sshRedactor.hasSecrets()) {
 		for (const archivePath of Object.keys(data)) {
-			data[archivePath] = sshRedactor.redact(data[archivePath]);
+			const content = data[archivePath];
+			// Binary entries (heap snapshots, profiles) carry no session text.
+			if (typeof content !== "string") continue;
+			data[archivePath] = sshRedactor.redact(content);
 		}
 	}
 
@@ -192,7 +195,7 @@ export async function createReportBundle(options: ReportBundleOptions): Promise<
 
 /** Recursively add every file under a directory to the archive. */
 async function addDirectoryToArchive(
-	data: Record<string, string>,
+	data: Record<string, string | Uint8Array>,
 	files: string[],
 	dirPath: string,
 	archivePrefix: string,

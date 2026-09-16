@@ -427,7 +427,15 @@ impl<'a, SE: extensions::ShellExtensions> SimpleCommand<'a, SE> {
 				Err(ErrorKind::CommandNotFound(self.command_name).into())
 			}
 		} else {
-			let command_name = PathBuf::from(self.command_name.clone());
+			// The name is path-qualified, so it is not subject to executable search;
+			// resolve it against the shell's working directory before spawning.
+			// `current_dir` only sets the child's working directory: on Windows,
+			// `CreateProcessW` resolves a relative executable path against the
+			// *calling* process's working directory, so an unresolved `./tool` would
+			// be looked up under the embedding process's cwd and reported as not
+			// found. Resolving here keeps the behavior consistent across platforms
+			// (Unix would otherwise resolve it in the child, after its chdir).
+			let command_name = self.shell.absolute_path(Path::new(&self.command_name));
 			self.execute_via_external(command_name.as_path())
 		}
 	}

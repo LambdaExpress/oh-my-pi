@@ -662,6 +662,8 @@ function translatedLabel(path: SettingPath, fallback: string): string {
 			return t("Collapse Compacted History");
 		case "display.collapseCompletedRuns":
 			return t("Collapse Completed Runs");
+		case "display.foldToolRows":
+			return t("Fold Tool Rows");
 		case "display.hideToolActivity":
 			return t("Hide Tool Activity");
 		case "display.language":
@@ -1379,6 +1381,10 @@ function translatedDescription(path: SettingPath, fallback: string): string {
 			);
 		case "display.hideToolActivity":
 			return t("Hide model-initiated tool calls and results from the transcript");
+		case "display.foldToolRows":
+			return t(
+				"Draw each tool call as a one-line summary — name, target, status — instead of its full card, so long transcripts stay scannable; the fold toggle key flips it mid-session",
+			);
 		case "display.language":
 			return t("Language for user-facing interface text (English fallback for untranslated strings)");
 		case "display.shimmer":

@@ -15,7 +15,15 @@ export type RateLimitReason =
 	| "UNKNOWN";
 
 const QUOTA_EXHAUSTED_BACKOFF_MS = 30 * 60 * 1000; // 30 min
-const RATE_LIMIT_EXCEEDED_BACKOFF_MS = 30 * 1000; // 30s
+// Transient throttle floor, not a window estimate: a hint-less 429 is usually a
+// short upstream window (per-second capacity, burst caps), while a genuinely
+// long window arrives as a provider `retry-after` hint — which overrides this
+// floor — or escalates into the QUOTA_EXHAUSTED lane. The value is drawn per
+// attempt from a 1–10s band: a flat floor both stalls a burst cap it could have
+// cleared sooner and re-hits a shared upstream on every client's identical
+// schedule.
+const RATE_LIMIT_EXCEEDED_BACKOFF_MIN_MS = 1 * 1000;
+const RATE_LIMIT_EXCEEDED_BACKOFF_RANGE_MS = 9 * 1000;
 const CONCURRENT_LIMIT_BACKOFF_MS = 5 * 1000; // 5s
 const MODEL_CAPACITY_BASE_MS = 45 * 1000; // 45s base
 const MODEL_CAPACITY_JITTER_MS = 30 * 1000; // ±15s
@@ -30,6 +38,13 @@ const INSUFFICIENT_BALANCE_PATTERN = /insufficient.?balance/i;
 // "credits exhausted". Account-local, so rotate to a sibling credential.
 const CREDITS_EXHAUSTED_PATTERN =
 	/\b(?:exceed\w*|insufficient|not enough)\b[^\n]{0,40}\bcredits?\b|\bcredits?\b[^\n]{0,40}\b(?:exhausted|depleted)\b/i;
+// Anthropic subscription entitlement wall: "Usage credits are required for this
+// model" with `error_code: credits_required`. The account cannot serve the model
+// at all, so rotate to a sibling rather than backing off on this one. Bounded to
+// the documented sentence and the exact code: bare "usage credits" also appears
+// in unrelated diagnostics ("Failed to fetch usage credits from billing
+// service"), which must not rotate a healthy credential.
+const ANTHROPIC_CREDITS_REQUIRED_PATTERN = /\busage credits are required\b|\bcredits_required\b/i;
 const SPEND_LIMIT_PATTERN = /spend.?limit/i;
 const SUBSCRIPTION_CAP_PATTERN =
 	/\b(?:subscription|plan|membership)\b[^\n]{0,80}\b(?:rate.?limits?|quota|cap)\b|\b(?:rate.?limits?|quota|cap)\b[^\n]{0,80}\b(?:subscription|plan|membership)\b/i;
@@ -234,6 +249,10 @@ export function parseRateLimitReason(errorMessage: string): RateLimitReason {
 		return "QUOTA_EXHAUSTED";
 	}
 
+	if (ANTHROPIC_CREDITS_REQUIRED_PATTERN.test(errorMessage)) {
+		return "QUOTA_EXHAUSTED";
+	}
+
 	if (
 		lower.includes("per minute") ||
 		lower.includes("rate limit") ||
@@ -253,6 +272,7 @@ export function parseRateLimitReason(errorMessage: string): RateLimitReason {
 		lower.includes("out of credits") ||
 		lower.includes("spending-limit") ||
 		lower.includes("spending limit") ||
+		lower.includes("access_terminated_error") ||
 		INSUFFICIENT_BALANCE_PATTERN.test(errorMessage) ||
 		CREDITS_EXHAUSTED_PATTERN.test(errorMessage)
 	) {
@@ -280,7 +300,7 @@ export function calculateRateLimitBackoffMs(reason: RateLimitReason): number {
 		case "QUOTA_EXHAUSTED":
 			return QUOTA_EXHAUSTED_BACKOFF_MS;
 		case "RATE_LIMIT_EXCEEDED":
-			return RATE_LIMIT_EXCEEDED_BACKOFF_MS;
+			return RATE_LIMIT_EXCEEDED_BACKOFF_MIN_MS + Math.random() * RATE_LIMIT_EXCEEDED_BACKOFF_RANGE_MS;
 		case "CONCURRENT_LIMIT":
 			return CONCURRENT_LIMIT_BACKOFF_MS;
 		case "MODEL_CAPACITY_EXHAUSTED":
@@ -294,7 +314,7 @@ export function calculateRateLimitBackoffMs(reason: RateLimitReason): number {
 
 /** Detect usage/quota limit errors in error messages (persistent, requires credential switch). */
 const USAGE_LIMIT_PATTERN =
-	/usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?(?:exceeded|reached|insufficient)|额度不足|额度耗尽|resource.?exhausted|exhausted your capacity|quota will reset|insufficient.?(?:balance|quota)|balance.?exhausted|run out of credits|out of credits|spending[- _]?limit|personal-team-blocked|clinepass limit|free limit reached on model/i;
+	/usage.?limit|usage_limit_reached|usage_not_included|limit_reached|quota.?(?:exceeded|reached|insufficient)|额度不足|额度耗尽|resource.?exhausted|exhausted your capacity|quota will reset|insufficient.?(?:balance|quota)|balance.?exhausted|run out of credits|out of credits|spending[- _]?limit|personal-team-blocked|clinepass limit|free limit reached on model|access_terminated_error/i;
 
 /**
  * HTTP status codes that, absent richer body classification, represent an
@@ -397,6 +417,7 @@ export function matchesUsageLimitText(errorMessage: string): boolean {
 	if (isDashScopeTokenLimitText(errorMessage)) return false;
 	return (
 		USAGE_LIMIT_PATTERN.test(errorMessage) ||
+		ANTHROPIC_CREDITS_REQUIRED_PATTERN.test(errorMessage) ||
 		CREDITS_EXHAUSTED_PATTERN.test(errorMessage) ||
 		(CN_QUOTA_EXHAUSTED_PATTERN.test(errorMessage) && !CN_TRANSIENT_CAP_PATTERN.test(errorMessage)) ||
 		SPEND_LIMIT_PATTERN.test(errorMessage) ||

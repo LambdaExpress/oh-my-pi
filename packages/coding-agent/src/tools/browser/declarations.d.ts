@@ -39,6 +39,8 @@ interface BrowserOpenOptions {
 	wait_until?: BrowserWaitUntil;
 	/** Automatic JavaScript-dialog policy. */
 	dialogs?: "accept" | "dismiss";
+	/** Keep the tab live across turn settle and idle close (default false). */
+	persist?: boolean;
 	/** Whole-operation timeout in seconds. */
 	timeout?: number;
 }
@@ -250,7 +252,7 @@ interface BrowserTabHelpers {
 	scroll(deltaX: number, deltaY: number): Promise<void>;
 	/** Drag from one selector or point to another. */
 	drag(from: BrowserDragTarget, to: BrowserDragTarget): Promise<void>;
-	/** Evaluate a function or source string in the page. */
+	/** Evaluate a function or source string in the page's main world (the app's own `window` globals are visible). */
 	evaluate<R, TArgs extends unknown[]>(fn: string | ((...args: TArgs) => R | Promise<R>), ...args: TArgs): Promise<R>;
 	/** Scroll the matching element into view. */
 	scrollIntoView(selector: string): Promise<void>;
@@ -326,7 +328,14 @@ interface BrowserTabRealm extends BrowserTabHelpers {
 interface BrowserRunScope {
 	/** Full tab helper for the current run realm. */
 	readonly tab: BrowserTabRealm;
-	/** Raw Puppeteer page object. */
+	/**
+	 * Raw Puppeteer page object. Its `evaluate`/`evaluateHandle`/`$eval`/`$$eval`/`waitForFunction`
+	 * and element-handle evaluation default to Puppeteer's isolated (utility) world, which cannot see
+	 * the page's own `window` globals: select the main world with a `//!world=main` directive (or its
+	 * block-comment spelling) as the first comment of the function body or string expression, or call
+	 * `page.mainFrame().mainRealm().evaluate(fn)`. Page console and pageerror events are not
+	 * delivered to `page.on(...)` in this build.
+	 */
 	readonly page: unknown;
 	/** Raw Puppeteer browser object. */
 	readonly browser: unknown;

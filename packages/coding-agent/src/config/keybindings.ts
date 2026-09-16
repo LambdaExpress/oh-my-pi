@@ -32,6 +32,7 @@ interface AppKeybindings {
 	"app.tools.expand": true;
 	"app.completedRuns.toggle": true;
 	"app.tools.toggleVisibility": true;
+	"app.tools.foldRows": true;
 	"app.editor.external": true;
 	"app.message.followUp": true;
 	"app.retry": true;
@@ -135,6 +136,10 @@ export const KEYBINDINGS = {
 	"app.tools.toggleVisibility": {
 		defaultKeys: "ctrl+shift+o",
 		description: "Show or hide tool activity",
+	},
+	"app.tools.foldRows": {
+		defaultKeys: "alt+shift+o",
+		description: "Fold tool rows into one-line summaries",
 	},
 	"app.editor.external": {
 		defaultKeys: "ctrl+g",

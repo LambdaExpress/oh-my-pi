@@ -50,6 +50,9 @@ function fixture(
 	const session = {
 		isStreaming: false,
 		queuedUserMessageCount: 0,
+		// The merged controller seeds held tool completions from the agent on
+		// agent_start and anchor resets; these tests run without pending results.
+		agent: { getPendingToolResults: () => [] },
 		waitForMessagePersistence,
 		// Set by the Enter force-flush path (input-controller) before aborting the
 		// active run; survives the queue drain so the interrupted run's span can be
@@ -885,5 +888,53 @@ describe("completed run collapse", () => {
 				finalAssistantMessage: final,
 			}),
 		);
+	});
+
+	it("anchors and collapses a run started by a user-invoked skill prompt", async () => {
+		const { controller, recordCompletedRunCollapse, rebuildChatFromMessages, resetDisplay } = fixture();
+		const skillPrompt = {
+			role: "custom",
+			customType: "skill-prompt",
+			content: "build the report",
+			display: true,
+			attribution: "user",
+			timestamp: 100,
+		} as AgentMessage;
+		const loop = assistant("drafting the report", "toolUse", 101);
+		loop.content.push({ type: "toolCall", id: "tc", name: "write", arguments: {} });
+		const result = {
+			role: "toolResult",
+			toolCallId: "tc",
+			toolName: "write",
+			content: [{ type: "text", text: "written" }],
+			timestamp: 102,
+		} as AgentMessage;
+		const final = assistant("report ready", "stop", 103);
+
+		await controller.handleEvent({ type: "agent_start" });
+		await controller.handleEvent({ type: "message_start", message: skillPrompt });
+		// No user message starts this run: the invoked prompt itself is the anchor,
+		// so the live gate has to open right after it.
+		expect(controller.activeCompletedRunGate?.afterMessage).toBe(skillPrompt);
+		await controller.handleEvent({ type: "message_end", message: skillPrompt });
+		await controller.handleEvent({ type: "message_end", message: loop });
+		await controller.handleEvent({ type: "message_end", message: result });
+		await controller.handleEvent({ type: "message_end", message: final });
+		await controller.handleEvent({ type: "agent_end", messages: [skillPrompt, loop, result, final] });
+		// Parked until the next content, exactly like a user-started run.
+		expect(recordCompletedRunCollapse).not.toHaveBeenCalled();
+		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
+
+		await controller.handleEvent({ type: "agent_start" });
+		expect(recordCompletedRunCollapse).toHaveBeenCalledTimes(1);
+		expect(recordCompletedRunCollapse).toHaveBeenCalledWith(
+			expect.objectContaining({
+				firstMessage: skillPrompt,
+				initialUserMessage: skillPrompt,
+				finalAssistantMessage: final,
+			}),
+		);
+		expect(rebuildChatFromMessages).toHaveBeenCalledTimes(1);
+		expect(resetDisplay).toHaveBeenCalledTimes(1);
 	});
 });

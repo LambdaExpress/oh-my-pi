@@ -14,7 +14,7 @@ import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { CompactionSummaryMessage, CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import type { Component } from "@oh-my-pi/pi-tui";
+import { Text, type Component } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { setLocale } from "../src/i18n";
@@ -954,5 +954,229 @@ describe("libkitty end-to-end", () => {
 		expect(advisorNoteRow).toBeGreaterThan(firstReplyRow);
 		expect(secondReplyRow).toBeGreaterThan(advisorNoteRow);
 		expect(rows.some(row => row.includes(draftMarker))).toBe(true);
+	});
+
+	it("hides tool activity already retired to native scrollback when the real shortcut toggles", async () => {
+		const usage: Usage = {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		};
+		const TOOL_MARKER = "RETIRED_TOOL_ACTIVITY_MARKER";
+		const callId = "retired-tool-call";
+		const toolCall: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "toolCall", id: callId, name: "bash", arguments: { command: `printf ${TOOL_MARKER}` } }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage,
+			stopReason: "toolUse",
+			timestamp: 1,
+		};
+		const toolResult: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: callId,
+			toolName: "bash",
+			content: [{ type: "text", text: TOOL_MARKER }],
+			isError: false,
+			timestamp: 2,
+		};
+		const assistantText = (text: string): AssistantMessage => ({
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage,
+			stopReason: "stop",
+			timestamp: 3,
+		});
+
+		term = new VirtualTerminal(120, 10);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		mode.keybindings.setUserBindings({ "app.tools.toggleVisibility": "alt+o" });
+		mode.editor.setActionKeys("app.tools.toggleVisibility", mode.keybindings.getKeys("app.tools.toggleVisibility"));
+		mode.renderSessionContext({
+			messages: [
+				toolCall,
+				toolResult,
+				{
+					role: "assistant",
+					content: [
+						{
+							type: "toolCall",
+							id: "folded-read-call",
+							name: "grep",
+							arguments: { pattern: "SECOND_TOOL_MARKER" },
+						},
+					],
+					api: "anthropic-messages",
+					provider: "anthropic",
+					model: "claude-sonnet",
+					usage,
+					stopReason: "toolUse",
+					timestamp: 2,
+				} satisfies AssistantMessage,
+				{
+					role: "toolResult",
+					toolCallId: "folded-read-call",
+					toolName: "grep",
+					content: [{ type: "text", text: "contents" }],
+					isError: false,
+					timestamp: 3,
+				} satisfies ToolResultMessage,
+				...Array.from({ length: 12 }, (_, i) =>
+					assistantText(`Filler answer number ${i} occupying a transcript row.`),
+				),
+			],
+			models: {},
+			injectedTtsrRules: [],
+			mode: "none",
+		});
+
+		const committedRows = () => {
+			const { baseY } = term.getBufferPosition();
+			return plainRows(term.getScrollBuffer()).slice(0, baseY);
+		};
+		for (let i = 0; i < 20 && !committedRows().some(row => row.includes(TOOL_MARKER)); i++) {
+			mode.ui.requestRender(true);
+			await term.waitForRender();
+		}
+		expect(committedRows().some(row => row.includes(TOOL_MARKER))).toBe(true);
+
+		term.sendInput("LIVE_EDITOR_DRAFT");
+		await term.waitForRender(() => plainRows(term.getViewport()).some(row => row.includes("LIVE_EDITOR_DRAFT")));
+
+		// Alt+O is the configured app.tools.toggleVisibility binding from this test's keybinding manager.
+		term.sendInput("\x1bo");
+		await term.waitForRender(() => !plainRows(term.getScrollBuffer()).some(row => row.includes(TOOL_MARKER)));
+		expect(mode.hideToolActivity).toBe(true);
+		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(TOOL_MARKER))).toBe(false);
+		expect(plainRows(term.getViewport()).some(row => row.includes("LIVE_EDITOR_DRAFT"))).toBe(true);
+	});
+
+	it("keeps a run of folded tool rows tight across scrollback retirement", async () => {
+		Settings.instance.set("display.foldToolRows", true);
+		term = new VirtualTerminal(120, 12);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		const settleFrames = async (count: number): Promise<void> => {
+			for (let frame = 0; frame < count; frame++) {
+				mode.ui.requestRender(true);
+				await term.waitForRender();
+			}
+		};
+		const foldedRow = (name: string, args: Record<string, string>): ToolExecutionComponent => {
+			const card = new ToolExecutionComponent(name, args, {}, undefined, mode.ui, process.cwd());
+			card.updateResult({ content: [{ type: "text", text: "ok" }] });
+			return card;
+		};
+		// Interior blanks a folded run must never show: a blank row whose
+		// neighbours are both tool rows.
+		const interiorBlanks = (): string[] => {
+			const rows = plainRows(term.getScrollBuffer());
+			const hits: string[] = [];
+			for (let i = 1; i < rows.length - 1; i++) {
+				if (rows[i] !== "") continue;
+				if (
+					/\b(bash|read|grep|write):\s/i.test(rows[i - 1]!) &&
+					/\b(bash|read|grep|write):\s/i.test(rows[i + 1]!)
+				) {
+					hits.push(`${rows[i - 1]!} | ${rows[i + 1]!}`);
+				}
+			}
+			return hits;
+		};
+
+		// Overflow first, then let each folded row retire on its own: a batch that
+		// used to write a trailing blank before its successor existed.
+		for (let i = 0; i < 14; i++) mode.chatContainer.addChild(new Text(`filler line ${i}`, 1, 0));
+		await settleFrames(10);
+		const cards: ReadonlyArray<readonly [string, Record<string, string>]> = [
+			["bash", { command: "one" }],
+			["edit", { file_path: "src/a.ts" }],
+			["bash", { command: "boom" }],
+			["write", { file_path: "src/b.ts" }],
+			["read", { path: "src/c.ts" }],
+			["edit", { file_path: "src/d.ts" }],
+			["bash", { command: "two" }],
+			["grep", { pattern: "three" }],
+		];
+		for (const [name, args] of cards) {
+			mode.chatContainer.addChild(foldedRow(name, args));
+			await settleFrames(10);
+		}
+
+		expect(interiorBlanks()).toEqual([]);
+		term.resize(100, 12);
+		await settleFrames(12);
+		expect(interiorBlanks()).toEqual([]);
+	}, 30_000);
+
+	it("folds tool rows in native scrollback and tightens the run when the real shortcut toggles", async () => {
+		const bodyMarker = "FOLDED_BODY_OUTPUT_MARKER";
+		const commandMarker = "printf FOLDED_COMMAND_MARKER";
+		const secondMarker = "SECOND_TOOL_MARKER";
+		term = new VirtualTerminal(120, 12);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		// Two settled tool rows plus a prose row, mounted the way the live event
+		// path mounts them, so the fold exercises the real viewport and native
+		// scrollback rather than a synthetic component tree.
+		const bash = new ToolExecutionComponent(
+			"bash",
+			{ command: commandMarker },
+			{},
+			undefined,
+			mode.ui,
+			process.cwd(),
+		);
+		bash.updateResult({ content: [{ type: "text", text: bodyMarker }] });
+		const grep = new ToolExecutionComponent("grep", { pattern: secondMarker }, {}, undefined, mode.ui, process.cwd());
+		grep.updateResult({ content: [{ type: "text", text: "hit" }] });
+		mode.chatContainer.addChild(bash);
+		mode.chatContainer.addChild(grep);
+		mode.chatContainer.addChild(new Text("assistant reply", 1, 0));
+
+		for (let frame = 0; frame < 30; frame++) {
+			if (plainRows(term.getScrollBuffer()).some(row => row.includes(bodyMarker))) break;
+			mode.ui.requestRender(true);
+			await term.waitForRender();
+		}
+		expect(plainRows(term.getScrollBuffer()).some(row => row.includes(bodyMarker))).toBe(true);
+
+		// ESC + uppercase O is Alt+Shift+O, the default app.tools.foldRows binding.
+		term.sendInput("\x1bO");
+		await term.waitForRender(() => !plainRows(term.getScrollBuffer()).some(row => row.includes(bodyMarker)));
+
+		expect(mode.foldToolRows).toBe(true);
+		const buffer = plainRows(term.getScrollBuffer()).map(row => row.trimEnd());
+		const bashRow = buffer.findIndex(row => row.includes(commandMarker));
+		expect(bashRow).toBeGreaterThanOrEqual(0);
+		// The harness session registers no tools, so the label falls back to the
+		// wire name instead of the tool's display label.
+		expect(buffer[bashRow]!.toLowerCase()).toContain("bash:");
+		// Consecutive folded rows form one tight run; the reply after the run keeps
+		// the transcript's block gap.
+		expect(buffer[bashRow + 1]).toContain(secondMarker);
+		expect(buffer[bashRow + 2]).toBe("");
+		expect(buffer[bashRow + 3]).toContain("assistant reply");
 	});
 });

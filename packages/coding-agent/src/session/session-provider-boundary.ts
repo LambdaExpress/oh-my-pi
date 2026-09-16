@@ -2,6 +2,7 @@
 
 import type { Agent, AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionPreparation } from "@oh-my-pi/pi-agent-core/compaction";
+import { sendsImageInputOnWire } from "@oh-my-pi/pi-ai/providers/vision-guard";
 import type { AssistantMessage, ImageContent, Message, Model, SimpleStreamOptions, TextContent } from "@oh-my-pi/pi-ai";
 import { modelCarriesImageInput } from "@oh-my-pi/pi-ai/providers/vision-guard";
 import { isRecord, logger } from "@oh-my-pi/pi-utils";
@@ -32,7 +33,10 @@ type NormalizableContentBlock = AssistantMessage["content"][number] | TextConten
  * endpoint strips image parts cannot silently lose the attachment.
  */
 export function needsImageDescriptionForModel(model: Model, settings: Settings): boolean {
-	if (modelCarriesImageInput(model)) return false;
+	// The image is only carried when both guards agree it is: the transport-level
+	// wire predicate and the `compat.stripImageInput` guard each drop image parts
+	// independently, so either one rejecting the attachment needs a description.
+	if (sendsImageInputOnWire(model) && modelCarriesImageInput(model)) return false;
 	if (settings.get("images.blockImages")) return false;
 	return settings.get("images.describeForTextModels");
 }
