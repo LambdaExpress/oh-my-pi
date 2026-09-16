@@ -31,6 +31,7 @@ import {
 	readArgsCollapseIntoGroup,
 } from "../../modes/components/read-tool-group";
 import { SkillMessageComponent } from "../../modes/components/skill-message";
+import { InjectNoticeComponent } from "../../modes/components/inject-notice";
 import { StrippedToolCallsPlaceholder } from "../../modes/components/stripped-tool-calls-placeholder";
 import { ToolActivityContainer } from "../../modes/components/tool-activity";
 import {
@@ -51,6 +52,7 @@ import type {
 	RenderInitialMessagesOptions,
 	RenderSessionContextOptions,
 } from "../../modes/types";
+import { CONTEXT_INJECTION_MESSAGE_TYPE, contextInjectionItemsFromMessage } from "../../session/context-injection";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
@@ -231,6 +233,14 @@ export class UiHelpers {
 					}
 					if (message.customType === SKILL_PROMPT_MESSAGE_TYPE) {
 						const component = new SkillMessageComponent(message as CustomMessage<SkillPromptDetails>);
+						component.setExpanded(this.ctx.toolOutputExpanded);
+						this.ctx.chatContainer.addChild(component);
+						break;
+					}
+					if (message.customType === CONTEXT_INJECTION_MESSAGE_TYPE) {
+						const items = contextInjectionItemsFromMessage(message);
+						if (items.length === 0) break;
+						const component = new InjectNoticeComponent(items);
 						component.setExpanded(this.ctx.toolOutputExpanded);
 						this.ctx.chatContainer.addChild(component);
 						break;

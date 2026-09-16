@@ -61,6 +61,13 @@ describe("TtsrNotificationComponent localization", () => {
 		expect(rendered).toContain("小型静态字面量优先使用 Record<K, V>；动态场景使用 Set/Map");
 		expect(rendered).toContain("Avoid any in TypeScript");
 	});
+
+	it("labels the folded single row as TTSR", () => {
+		const component = new TtsrNotificationComponent([builtinRule("ts-set-map")]);
+		component.setToolRowsFolded(true);
+
+		expect(plain(component).trim()).toStartWith("TTSR: ts-set-map — ");
+	});
 });
 
 describe("TtsrNotificationComponent folding", () => {
@@ -81,7 +88,7 @@ describe("TtsrNotificationComponent folding", () => {
 		component.setToolRowsFolded(true);
 
 		expect(component.render(120).map(line => stripVTControlCharacters(line).trim())).toEqual([
-			"Inject: ts-no-tiny-functions — Inline tiny wrappers.",
+			"TTSR: ts-no-tiny-functions — Inline tiny wrappers.",
 		]);
 	});
 
@@ -93,7 +100,7 @@ describe("TtsrNotificationComponent folding", () => {
 		const rows = component.render(200);
 		expect(rows).toHaveLength(1);
 		const row = stripVTControlCharacters(rows[0]!).trim();
-		expect(row).toStartWith("Inject: 3 rules · ");
+		expect(row).toStartWith("TTSR: 3 rules · ");
 		expect(row).toContain("ts-no-any");
 	});
 });

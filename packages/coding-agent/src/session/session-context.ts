@@ -21,6 +21,12 @@ import {
 	VIBE_MODE_CONTEXT_MESSAGE_TYPE,
 } from "./messages";
 import { CONTEXT_NOTES_ENTRY_TYPE, getContextNotes, renderContextNotes } from "./context-notes";
+import {
+	CONTEXT_INJECTION_ENTRY_TYPE,
+	type ContextInjectionDetails,
+	createContextInjectionMessage,
+	normalizeContextInjectionItems,
+} from "./context-injection";
 import { type CompactionEntry, EPHEMERAL_MODEL_CHANGE_ROLE, type SessionEntry } from "./session-entries";
 
 // #4470 crash artifacts had legacy frames (no shape metadata) with 17 frames,
@@ -456,6 +462,15 @@ export function buildSessionContext(
 			);
 		} else if (entry.type === "branch_summary" && entry.summary) {
 			pushMessage(createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp));
+		} else if (options?.transcript && entry.type === "custom" && entry.customType === CONTEXT_INJECTION_ENTRY_TYPE) {
+			// Display-only replay of a context injection record: the harness pushed
+			// this content into the model context. The record itself is a `custom`
+			// entry, so it stays out of the LLM context — the notice exists only in
+			// the display transcript, which is why this branch is gated on
+			// `transcript`.
+			const details = entry.data as ContextInjectionDetails | undefined;
+			const items = normalizeContextInjectionItems(details?.items ?? []);
+			if (items.length > 0) pushMessage(createContextInjectionMessage(items, entry.timestamp));
 		}
 	};
 

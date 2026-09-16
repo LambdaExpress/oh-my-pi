@@ -18,6 +18,7 @@ import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
+import { CONTEXT_INJECTION_MESSAGE_TYPE, contextInjectionItemsFromMessage } from "../../session/context-injection";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
@@ -55,6 +56,7 @@ import { CustomMessageComponent } from "./custom-message";
 import { EvalExecutionComponent } from "./eval-execution";
 import { type LateDiagnosticsFile, LateDiagnosticsMessageComponent } from "./late-diagnostics-message";
 import { groupedReadUsageCallIds, ReadToolGroupComponent, readArgsCollapseIntoGroup } from "./read-tool-group";
+import { InjectNoticeComponent } from "./inject-notice";
 import { SkillMessageComponent } from "./skill-message";
 import { ToolExecutionComponent } from "./tool-execution";
 import { TranscriptContainer } from "./transcript-container";
@@ -548,6 +550,14 @@ export class ChatTranscriptBuilder {
 		}
 		if (message.customType === SKILL_PROMPT_MESSAGE_TYPE) {
 			const component = new SkillMessageComponent(message as CustomMessage<SkillPromptDetails>);
+			this.#trackExpandable(component);
+			this.container.addChild(component);
+			return;
+		}
+		if (message.customType === CONTEXT_INJECTION_MESSAGE_TYPE) {
+			const items = contextInjectionItemsFromMessage(message);
+			if (items.length === 0) return;
+			const component = new InjectNoticeComponent(items);
 			this.#trackExpandable(component);
 			this.container.addChild(component);
 			return;

@@ -20,7 +20,11 @@ description: 在 oh-my-pi (omp) 的 coding-agent 里新增或调整「全局转�
 
 ## 要折叠哪些行
 
-折叠模式要覆盖**所有活动行**，不只是工具卡片：`ToolExecutionComponent`、`ReadToolGroupComponent`、`TtsrNotificationComponent`（`Inject: <rule> — <desc>`）、`TodoReminderComponent`（`Reminder: <task> (+N more)`）、`LateDiagnosticsMessageComponent`（`Late diagnostics: 2 files · <summary>`）。判定方式：凡是实现了 `setToolActivityVisible` 的组件都得考虑给它一个 `setToolRowsFolded`，否则折叠后的记录里会残留大块横幅。
+折叠模式要覆盖**所有活动行**，不只是工具卡片：`ToolExecutionComponent`、`ReadToolGroupComponent`、`TtsrNotificationComponent`（`TTSR: <rule> — <desc>`）、`InjectNoticeComponent`（`Inject: AGENTS.md ×2 · Skills`，来源清单 + 正文预览，ctrl+o 展开）、`SkillMessageComponent`（`Inject: <skill> — <args>`）、`TodoReminderComponent`（`Reminder: <task> (+N more)`）、`LateDiagnosticsMessageComponent`（`Late diagnostics: 2 files · <summary>`）。判定方式：凡是实现了 `setToolActivityVisible` 的组件都得考虑给它一个 `setToolRowsFolded`，否则折叠后的记录里会残留大块横幅。
+
+## 上下文注入通知（`Inject`）
+
+`src/session/context-injection.ts` 定义注入记录：`ContextInjectionItem { kind; label; detail?; count?; preview? }`，`normalizeContextInjectionItems` 会去空、去重（kind+label+detail）并按 `MAX_CONTEXT_INJECTION_ITEMS`/`MAX_CONTEXT_INJECTION_PREVIEW_CHARS` 截断。产注入的来源有三处：`buildSystemPrompt` 收集 context file / always-apply 规则 / rulebook / skill 索引；`sdk.ts` 的 `rebuildSystemPrompt` 追加 memory 指令与 MCP server 指令；`agent-session.ts` 的 `contextNotesInjections` 追加非空 context notes。`session-tools.ts` 把 `built.injections` 交给 `AgentSession#recordContextInjection`，后者按 `contextInjectionSignature` 与分支上最新一条记录比对，只在集合变化时写 `custom` 日志条目（**custom 条目按 `CustomEntry` 契约不进 LLM context**）并发 `context_injected` 事件。首屏提示词由 `sdk.ts` 在 session 构造前构建，必须在构造完成后补一次 `recordContextInjection`，否则首条记录缺失。渲染侧：实时走 `event-controller` 的 `#handleContextInjected`（与上一条 notice 合并）；重放靠 `session-context.ts` 在 `transcript` 分支把记录合成为自定义消息，再由 `chat-transcript-builder`/`ui-helpers` 渲染成 `InjectNoticeComponent` —— 只写日志不合成消息，重放（resize、折叠开关）会丢掉整块通知。
 
 ## 单行摘要文案
 

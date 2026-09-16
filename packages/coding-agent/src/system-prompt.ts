@@ -34,6 +34,7 @@ import friendlyPersonality from "./prompts/system/personalities/friendly.md" wit
 import pragmaticPersonality from "./prompts/system/personalities/pragmatic.md" with { type: "text" };
 import projectPromptTemplate from "./prompts/system/project-prompt.md" with { type: "text" };
 import systemPromptTemplate from "./prompts/system/system-prompt.md" with { type: "text" };
+import { type ContextInjectionItem, formatInjectionSize } from "./session/context-injection";
 import { normalizeConcurrencyLimit } from "./task/parallel";
 import { type ActiveRepoContext, resolveActiveRepoContext } from "./utils/active-repo-context";
 import { normalizePromptPath } from "./utils/prompt-path";
@@ -143,8 +144,56 @@ function dedupeAlwaysApplyRules(
 function dedupePromptSource(source: string | null | undefined, otherSources: Array<string | null | undefined>): string {
 	const resolvedSource = firstNonEmpty(source);
 	if (!resolvedSource) return "";
-
 	return otherSources.some(otherSource => promptSourceContainsRule(otherSource, resolvedSource)) ? "" : resolvedSource;
+}
+
+/**
+ * Inventory the content this build pushes into the model's context beyond the
+ * tool contract: instruction files, always-apply rules, the rulebook's
+ * descriptions, and the skill index. Grouped sources (rulebook, skills) carry a
+ * count plus a preview of the rendered list instead of one item per entry; the
+ * per-entry detail is what keeps a monorepo's several `AGENTS.md` files distinct.
+ */
+function collectPromptInjections(input: {
+	contextFiles: ReadonlyArray<{ path: string; content: string }>;
+	alwaysApplyRules: readonly AlwaysApplyRule[];
+	rules: ReadonlyArray<{ name: string; description?: string; path: string }>;
+	skills: readonly Skill[];
+}): ContextInjectionItem[] {
+	const items: ContextInjectionItem[] = [];
+	for (const file of input.contextFiles) {
+		items.push({
+			kind: "context-file",
+			label: path.basename(file.path),
+			detail: `${formatInjectionSize(file.content)} · ${normalizePromptPath(file.path)}`,
+			preview: file.content,
+		});
+	}
+	for (const rule of input.alwaysApplyRules) {
+		items.push({
+			kind: "rule",
+			label: rule.name,
+			detail: `${formatInjectionSize(rule.content)} · always-apply`,
+			preview: rule.content,
+		});
+	}
+	if (input.rules.length > 0) {
+		items.push({
+			kind: "rulebook",
+			label: "Rulebook",
+			count: input.rules.length,
+			preview: input.rules.map(rule => `${rule.name} — ${rule.description ?? ""}`.trimEnd()).join("\n"),
+		});
+	}
+	if (input.skills.length > 0) {
+		items.push({
+			kind: "skill",
+			label: "Skills",
+			count: input.skills.length,
+			preview: input.skills.map(skill => `${skill.name} — ${skill.description ?? ""}`.trimEnd()).join("\n"),
+		});
+	}
+	return items;
 }
 
 function firstNonEmpty(...values: (string | undefined | null)[]): string | null {
@@ -683,6 +732,14 @@ export interface BuildSystemPromptResult {
 	 * a catalog the prompt already carries (issue #7139).
 	 */
 	xdevCatalogNames?: readonly string[];
+	/**
+	 * Sources this build pushed into the model's context: instruction files
+	 * (`AGENTS.md` and friends), always-apply rules, rulebook descriptions, and the
+	 * skill index. The session records the inventory once per distinct set so the
+	 * transcript can show what was injected. Absent when the caller replaces the
+	 * prompt wholesale (custom prompt functions) and provenance is unknown.
+	 */
+	injections?: readonly ContextInjectionItem[];
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -1051,5 +1108,15 @@ export async function buildSystemPrompt(options: BuildSystemPromptOptions = {}):
 	// default template; a resolved custom prompt uses a template that omits it.
 	const xdevCatalogNames =
 		!resolvedCustomPrompt && xdevTools.length > 0 ? xdevTools.map(mounted => mounted.name) : undefined;
-	return { systemPrompt, xdevCatalogNames };
+	const injections = collectPromptInjections({
+		contextFiles,
+		alwaysApplyRules: injectedAlwaysApplyRules,
+		rules: rules ?? [],
+		skills: filteredSkills,
+	});
+	return {
+		systemPrompt,
+		xdevCatalogNames,
+		...(injections.length > 0 ? { injections } : {}),
+	};
 }

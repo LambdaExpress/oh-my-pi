@@ -24,6 +24,12 @@ import { ArtifactManager } from "./artifacts";
 import { type BlobPutOptions, type BlobPutResult, BlobStore } from "./blob-store";
 import type { CompactionMethod } from "./compaction-methods";
 import {
+	CONTEXT_INJECTION_ENTRY_TYPE,
+	type ContextInjectionDetails,
+	type ContextInjectionItem,
+	normalizeContextInjectionItems,
+} from "./context-injection";
+import {
 	type BashExecutionMessage,
 	type CustomMessage,
 	type FileMentionMessage,
@@ -2581,6 +2587,18 @@ export class SessionManager {
 			for (const name of entry.injectedRules) names.add(name);
 		}
 		return [...names];
+	}
+
+	/**
+	 * Append a context injection record: what the harness pushed into the model
+	 * context (instruction files, rules, skill index, memory) and how big each
+	 * source was. Persisted as a `custom` entry, so it stays out of the LLM
+	 * context and only feeds the transcript's `Inject` notice.
+	 */
+	appendContextInjection(items: readonly ContextInjectionItem[]): string {
+		return this.appendCustomEntry(CONTEXT_INJECTION_ENTRY_TYPE, {
+			items: normalizeContextInjectionItems(items),
+		} satisfies ContextInjectionDetails);
 	}
 
 	/** Append a credential pin recording which OAuth account served `provider`. */

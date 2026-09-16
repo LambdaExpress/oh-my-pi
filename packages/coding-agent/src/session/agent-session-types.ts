@@ -41,6 +41,7 @@ import type { SecretObfuscator } from "../secrets/obfuscator";
 import type { ConfiguredThinkingLevel } from "../thinking";
 import type { Tool } from "../tools";
 import type { XdevState } from "../tools/xdev";
+import type { BuildSystemPromptResult } from "../system-prompt";
 import type { CodexAutoRedeemCoordinator } from "./codex-auto-reset";
 import type { SessionManager } from "./session-manager";
 
@@ -286,10 +287,7 @@ export interface AgentSessionConfig {
 	/** Current session message-to-LLM conversion pipeline. */
 	convertToLlm?: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	/** System prompt builder that can consider tool availability. */
-	rebuildSystemPrompt?: (
-		toolNames: string[],
-		tools: Map<string, AgentTool>,
-	) => Promise<{ systemPrompt: string[]; xdevCatalogNames?: readonly string[] }>;
+	rebuildSystemPrompt?: (toolNames: string[], tools: Map<string, AgentTool>) => Promise<BuildSystemPromptResult>;
 	/** Local calendar date provider used by prompt-cache invalidation. */
 	getLocalCalendarDate?: () => string;
 	/** Rebuilds the SSH command tool from current capability discovery results. */

@@ -174,6 +174,7 @@ import { AgentSession, type InitialRetryFallbackState, type PlanYolo, type Prewa
 import { discoverAuthStorage as discoverAuthStorageFromConfig } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
 import { DateCwdReminderInjector } from "./session/date-cwd-reminder";
+import { type ContextInjectionItem, formatInjectionSize } from "./session/context-injection";
 import { createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
 import { recoverInlineSloppyEdit } from "./session/inline-edit-recovery";
 import {
@@ -3417,8 +3418,32 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				activeRepoContext,
 			});
 
+			// Content this build pushes into context on top of the prompt template's
+			// own blocks: the memory backend's developer instructions and any
+			// connected MCP server's (server-controlled) instructions. Auto-learn and
+			// MCP route scaffolding is deliberately left out — it documents the
+			// harness's own tools rather than injecting project or third-party text.
+			const injectionExtras: ContextInjectionItem[] = [];
+			if (memoryInstructions) {
+				injectionExtras.push({
+					kind: "memory",
+					label: "Memory",
+					detail: formatInjectionSize(memoryInstructions),
+					preview: memoryInstructions,
+				});
+			}
+			for (const [serverName, serverText] of serverInstructions ?? []) {
+				injectionExtras.push({
+					kind: "guidance",
+					label: `MCP ${serverName}`,
+					detail: `${formatInjectionSize(serverText)} · server instructions`,
+					preview: serverText,
+				});
+			}
+
 			if (options.systemPrompt === undefined) {
-				return defaultPrompt;
+				const injections: ContextInjectionItem[] = [...(defaultPrompt.injections ?? []), ...injectionExtras];
+				return injections.length > 0 ? { ...defaultPrompt, injections } : defaultPrompt;
 			}
 			const customPrompt =
 				typeof options.systemPrompt === "function"
@@ -3572,7 +3597,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		}
 
 		setSessionActiveToolNames(initialToolNames);
-		const { systemPrompt } = await logger.time(
+		const { systemPrompt, injections: initialPromptInjections } = await logger.time(
 			"buildSystemPrompt",
 			rebuildSystemPrompt,
 			initialToolNames,
@@ -4140,6 +4165,12 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 		});
 		hasSession = true;
 		toolSession.getSessionSshHosts = () => session.getSessionSshHosts();
+		// The initial prompt is built before the session exists, so its context
+		// inventory is recorded here instead of inside SessionTools (which only
+		// sees later rebuilds). Deduplication lives on the session.
+		if (initialPromptInjections && initialPromptInjections.length > 0) {
+			session.recordContextInjection(initialPromptInjections);
+		}
 		await session.refreshSshTools({ activateIfAvailable: true });
 		// Backfill the resumed advisor spend without blocking startup: the scan
 		// runs after the session is live, so `--resume` no longer scales with the

@@ -17,6 +17,7 @@ import {
 	readArgsHaveTarget,
 } from "../../modes/components/read-tool-group";
 import { isActiveSshTransferJob, sshTransferJobDetails } from "../../modes/components/ssh-transfer-hud";
+import { InjectNoticeComponent } from "../../modes/components/inject-notice";
 import { TodoReminderComponent } from "../../modes/components/todo-reminder";
 import {
 	ToolExecutionComponent,
@@ -374,6 +375,9 @@ export class EventController {
 	// Most recent TTSR notification block. A new ttsr_triggered event merges its
 	// rules into this block while it is still the (live-region) transcript tail.
 	#lastTtsrNotification: TtsrNotificationComponent | undefined = undefined;
+	// Most recent context-injection notice. A later `context_injected` event
+	// merges its sources into this block while it is still the transcript tail.
+	#lastInjectNotice: InjectNoticeComponent | undefined = undefined;
 	#streamingReveal: StreamingRevealController;
 	#toolArgsReveal: ToolArgsRevealController;
 	#prevHideThinking = false;
@@ -512,6 +516,7 @@ export class EventController {
 			retry_fallback_applied: e => this.#handleRetryFallbackApplied(e),
 			retry_fallback_succeeded: e => this.#handleRetryFallbackSucceeded(e),
 			ttsr_triggered: e => this.#handleTtsrTriggered(e),
+			context_injected: e => this.#handleContextInjected(e),
 			todo_reminder: e => this.#handleTodoReminder(e),
 			todo_auto_clear: e => this.#handleTodoAutoClear(e),
 			irc_message: e => this.#handleIrcMessage(e),
@@ -1116,6 +1121,7 @@ export class EventController {
 		this.#displaceablePollComponent = undefined;
 		this.#displaceableTodoComponent = undefined;
 		this.#lastTtsrNotification = undefined;
+		this.#lastInjectNotice = undefined;
 		this.#streamingReveal.stop();
 		this.#toolArgsReveal.stop();
 		this.#seedHeldCompletionsFromPendingResults();
@@ -3018,6 +3024,26 @@ export class EventController {
 		component.setExpanded(this.ctx.toolOutputExpanded);
 		this.ctx.present(component);
 		this.#lastTtsrNotification = component;
+	}
+
+	async #handleContextInjected(event: Extract<AgentSessionEvent, { type: "context_injected" }>): Promise<void> {
+		// Same merge rule as TTSR notifications: fold a later injection set into
+		// the previous block only while it is still the live tail — committed rows
+		// are immutable visual history and a grown block would shift them.
+		const previous = this.#lastInjectNotice;
+		if (
+			previous &&
+			this.ctx.chatContainer.children.at(-1) === previous &&
+			this.ctx.chatContainer.canRemoveBlock(previous)
+		) {
+			previous.addItems(event.items);
+			this.ctx.ui.requestRender();
+			return;
+		}
+		const component = new InjectNoticeComponent(event.items);
+		component.setExpanded(this.ctx.toolOutputExpanded);
+		this.ctx.present(component);
+		this.#lastInjectNotice = component;
 	}
 
 	async #handleTodoReminder(event: Extract<AgentSessionEvent, { type: "todo_reminder" }>): Promise<void> {

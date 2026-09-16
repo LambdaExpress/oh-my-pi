@@ -320,6 +320,15 @@ import {
 	LAUNCH_COMPLETION_MESSAGE_TYPE,
 	type LaunchCompletionEntry,
 } from "./launch-completion";
+import { getContextNotes } from "./context-notes";
+import {
+	CONTEXT_INJECTION_ENTRY_TYPE,
+	type ContextInjectionItem,
+	contextInjectionItemsFromData,
+	contextInjectionSignature,
+	formatInjectionSize,
+	normalizeContextInjectionItems,
+} from "./context-injection";
 import {
 	type BashExecutionMessage,
 	buildReplanTitleContext,
@@ -371,7 +380,7 @@ import {
 import type { BuildSessionContextOptions, SessionContext } from "./session-context";
 import { getRestorableSessionModels } from "./session-context";
 import { formatSessionDumpText } from "./session-dump-format";
-import type { BranchSummaryEntry, NewSessionOptions } from "./session-entries";
+import type { BranchSummaryEntry, NewSessionOptions, SessionEntry } from "./session-entries";
 import { SessionHandoff, type SessionHandoffHost } from "./session-handoff";
 import {
 	COMPACTION_CHECK_NONE,
@@ -622,6 +631,27 @@ function cloneMessageEndNotification(message: AgentMessage): AgentMessage {
 
 const INTERRUPTED_THINKING_MIN_CHARS = 60;
 const SESSION_CWD_CHANGE_REJECTED = Symbol("sessionCwdChangeRejected");
+
+/**
+ * The context notebook is injected into the model context on every rebuild
+ * (`buildSessionContext`), so a non-empty revision belongs in the injection
+ * record even though no prompt block carries it.
+ */
+function contextNotesInjections(entries: readonly SessionEntry[]): ContextInjectionItem[] {
+	const notes = getContextNotes(entries);
+	if (!notes || notes.text.length === 0) return [];
+	return [{ kind: "notes", label: "Context notes", detail: formatInjectionSize(notes.text), preview: notes.text }];
+}
+
+/** Signature of the newest context-injection record on the branch; `""` when none. */
+function recordedInjectionSignature(entries: readonly SessionEntry[]): string {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (entry.type !== "custom" || entry.customType !== CONTEXT_INJECTION_ENTRY_TYPE) continue;
+		return contextInjectionSignature(contextInjectionItemsFromData(entry.data));
+	}
+	return "";
+}
 
 /**
  * Translate a `power.sleepPrevention` mode into `PowerAssertion.start` options,
@@ -1749,6 +1779,7 @@ export class AgentSession {
 			clearMemoryPromotionSnapshot: () => this.#memory.clearPromotionSnapshot(),
 			captureMemoryPromotionSnapshot: prompt => this.#memory.capturePromotionSnapshot(prompt),
 			emitNotice: (level, message, source) => this.emitNotice(level, message, source),
+			recordContextInjection: items => this.recordContextInjection(items),
 			notifyCommandMetadataChanged: () => this.#notifyCommandMetadataChanged(),
 			localProtocolOptions: () => this.#localProtocolOptions(),
 		};
@@ -2660,6 +2691,22 @@ export class AgentSession {
 	 */
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void {
 		this.#emit({ type: "notice", level, message, source });
+	}
+
+	/**
+	 * Journal and surface one context-injection set: the instruction files,
+	 * rules, skill index, and notes the harness keeps in the model's context.
+	 * Rebuilds that re-inject the same set stay silent — the comparison runs
+	 * against the newest record on the branch, so a resume or branch switch
+	 * dedupes with the same rule the in-process path uses.
+	 */
+	recordContextInjection(items: readonly ContextInjectionItem[]): void {
+		const branch = this.sessionManager.getBranch();
+		const normalized = normalizeContextInjectionItems([...items, ...contextNotesInjections(branch)]);
+		if (normalized.length === 0) return;
+		if (contextInjectionSignature(normalized) === recordedInjectionSignature(branch)) return;
+		this.sessionManager.appendContextInjection(normalized);
+		void this.#emitSessionEvent({ type: "context_injected", items: normalized }).catch(() => {});
 	}
 
 	#recordToolExecutionStart(event: Extract<AgentEvent, { type: "tool_execution_start" }>): void {

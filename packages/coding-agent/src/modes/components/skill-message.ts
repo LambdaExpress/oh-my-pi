@@ -4,13 +4,15 @@ import { Box, Container, Markdown, Spacer, Text } from "@oh-my-pi/pi-tui";
 import { t } from "../../i18n";
 import { getMarkdownTheme, theme } from "../../modes/theme/theme";
 import type { CustomMessage, SkillPromptDetails } from "../../session/messages";
-import { shortenPath } from "../../tools/render-utils";
+import { shortenPath, truncateToWidth } from "../../tools/render-utils";
 import { fileHyperlink } from "../../tui";
 
 export class SkillMessageComponent extends Container {
 	#box: Box;
 	#contentComponent?: Component;
 	#expanded = false;
+	// `display.foldToolRows`: one `Inject:` row instead of the skill box.
+	#toolRowsFolded = false;
 
 	constructor(private readonly message: CustomMessage<SkillPromptDetails>) {
 		super();
@@ -25,6 +27,36 @@ export class SkillMessageComponent extends Container {
 			this.#expanded = expanded;
 			this.#rebuild();
 		}
+	}
+
+	/**
+	 * Fold the injected skill prompt into one activity row (`Inject: <name>`),
+	 * the same shape a context-injection notice takes, so a skill the agent
+	 * loaded mid-run reads like every other folded row. Unfolding restores the
+	 * box with the prompt body.
+	 */
+	setToolRowsFolded(folded: boolean): void {
+		if (this.#toolRowsFolded === folded) return;
+		this.#toolRowsFolded = folded;
+		this.invalidate();
+	}
+
+	override render(width: number): readonly string[] {
+		if (this.#toolRowsFolded) return [this.#foldedRow(width)];
+		return super.render(width);
+	}
+
+	/** `Inject: <skill name> — <args>` for the folded transcript. */
+	#foldedRow(width: number): string {
+		const label = theme.fg("accent", theme.bold(t("Inject")));
+		const details = this.message.details;
+		const name = details?.name?.trim() || t("unknown");
+		const args = details?.args?.replace(/\s+/g, " ").trim();
+		return truncateToWidth(
+			` ${label}${theme.fg("dim", ":")} ${theme.fg("muted", theme.bold(name))}` +
+				(args ? ` ${theme.fg("muted", `— ${args}`)}` : ""),
+			width,
+		);
 	}
 
 	override invalidate(): void {
@@ -49,8 +81,10 @@ export class SkillMessageComponent extends Container {
 		// Collapse args to one line: a stray newline/tab in user-supplied args would split the header.
 		const args = details?.args?.replace(/\s+/g, " ").trim() ?? "";
 
-		// Header: icon-tag + skill name, with the invocation args trailing dimmed.
-		const tag = theme.fg("customMessageLabel", theme.bold(`${theme.icon.extensionSkill} ${t("skill")}`));
+		// Header: injection tag + skill name, with the invocation args trailing dimmed.
+		// The skill prompt is context the harness injects, so it carries the same
+		// `Inject` label the folded row and the context-injection notice use.
+		const tag = theme.fg("customMessageLabel", theme.bold(`${theme.icon.extensionSkill} ${t("Inject")}`));
 		let header = `${tag} ${theme.fg("customMessageText", theme.bold(name))}`;
 		if (args) {
 			header += ` ${theme.fg("dim", args)}`;

@@ -25,7 +25,7 @@ export class TtsrNotificationComponent extends Container {
 	#expanded = false;
 	#rules: Rule[];
 	#toolActivityVisible = true;
-	// `display.foldToolRows`: one `Inject:` row instead of the yellow banner.
+	// `display.foldToolRows`: one `TTSR:` row instead of the yellow banner.
 	#toolRowsFolded = false;
 
 	constructor(rules: Rule[]) {
@@ -50,7 +50,7 @@ export class TtsrNotificationComponent extends Container {
 
 	/**
 	 * Fold the whole notice into one activity row (`display.foldToolRows`):
-	 * `Inject: <rules>` in place of the banner, so an injection reads like every
+	 * `TTSR: <rules>` in place of the banner, so an injection reads like every
 	 * other row in a folded transcript. Unfolding restores the banner with its
 	 * descriptions.
 	 */
@@ -94,7 +94,7 @@ export class TtsrNotificationComponent extends Container {
 	 * in a long run of folded activity rows.
 	 */
 	#foldedRow(width: number): string {
-		const label = theme.fg("warning", theme.bold(t("Inject")));
+		const label = theme.fg("warning", theme.bold(t("TTSR")));
 		const rules = this.#rules;
 		let detail: string;
 		if (rules.length === 1) {

@@ -27,6 +27,7 @@ import { isFilesystemSourcePath } from "../tools/path-utils";
 import { supportsExternalThinking } from "../tools/think";
 import { ToolAbortError, ToolError } from "../tools/tool-errors";
 import { isMountableUnderXdev, listXdevTools, type XdevState, xdevDocsFor, xdevEntries } from "../tools/xdev";
+import type { BuildSystemPromptResult } from "../system-prompt";
 import { type EditMode, resolveEditMode } from "../utils/edit-mode";
 import {
 	extractPermissionLocations,
@@ -37,6 +38,7 @@ import {
 } from "./acp-permission-gate";
 import type { ClientBridge, ClientBridgePermissionOutcome } from "./client-bridge";
 import { buildToolNamespacesInfo, resolveCodeMode, type ToolNamespacesInfo } from "./code-mode";
+import type { ContextInjectionItem } from "./context-injection";
 import type { CustomMessage } from "./messages";
 import type { SessionManager } from "./session-manager";
 
@@ -61,6 +63,12 @@ export interface SessionToolsHost {
 	clearMemoryPromotionSnapshot(): void;
 	captureMemoryPromotionSnapshot(prompt: string[]): void;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
+	/**
+	 * Record and surface a context-injection set (journal entry + transcript
+	 * notice). The session owns deduplication: a rebuild that re-injects the
+	 * same set is dropped, including after a resume.
+	 */
+	recordContextInjection(items: readonly ContextInjectionItem[]): void;
 	notifyCommandMetadataChanged(): void;
 	localProtocolOptions(): LocalProtocolOptions;
 	/** Publishes the current Codex Code Mode tool exposure snapshot for turn metadata; undefined clears it. */
@@ -87,7 +95,7 @@ interface SessionToolsOptions {
 		toolNames: string[],
 		tools: Map<string, AgentTool>,
 		options?: { directToolNames?: readonly string[] },
-	) => Promise<{ systemPrompt: string[]; xdevCatalogNames?: readonly string[] }>;
+	) => Promise<BuildSystemPromptResult>;
 	getMcpServerInstructions?: () => Map<string, string> | undefined;
 	xdev?: XdevState;
 	setActiveToolNames?: (names: Iterable<string>) => void;
@@ -1104,6 +1112,7 @@ export class SessionTools {
 					rebuiltSystemPrompt = built.systemPrompt;
 					rebuiltSignature = signature;
 					rebuiltXdevCatalogNames = built.xdevCatalogNames;
+					this.#recordPromptInjections(built.injections);
 				}
 			}
 			signal?.throwIfAborted();
@@ -1546,6 +1555,16 @@ export class SessionTools {
 		return this.runToolRegistryMutation(() => this.#refreshBaseSystemPrompt());
 	}
 
+	/**
+	 * Hand the prompt build's context inventory to the session, which journals it
+	 * once per distinct set and surfaces it as a transcript notice. Builds that
+	 * injected nothing (a custom prompt with no discovery) stay silent.
+	 */
+	#recordPromptInjections(injections: readonly ContextInjectionItem[] | undefined): void {
+		if (!injections || injections.length === 0) return;
+		this.#host.recordContextInjection(injections);
+	}
+
 	async #refreshBaseSystemPrompt(): Promise<void> {
 		if (this.#host.isDisposed() || !this.#rebuildSystemPrompt) return;
 		const activeToolNames = this.getActiveToolNames();
@@ -1559,6 +1578,7 @@ export class SessionTools {
 		if (this.#host.isDisposed()) return;
 		this.#baseSystemPrompt = built.systemPrompt;
 		this.#basePromptXdevNames = new Set(built.xdevCatalogNames);
+		this.#recordPromptInjections(built.injections);
 		this.#host.clearMemoryPromotionSnapshot();
 		if (
 			previousBaseSystemPrompt.length !== this.#baseSystemPrompt.length ||
