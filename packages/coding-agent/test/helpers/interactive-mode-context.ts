@@ -261,6 +261,8 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		todoPhases: [],
 		init: vi.fn(async () => {}),
 		present: vi.fn(mount),
+		presentInjectNotice: vi.fn(),
+		flushDeferredInjectNotice: vi.fn(),
 		presentCommandOutput: vi.fn(mount),
 		flushPendingCommandOutput: vi.fn(),
 		showStatus: vi.fn(),

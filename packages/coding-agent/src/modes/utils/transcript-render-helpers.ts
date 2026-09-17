@@ -462,6 +462,14 @@ export function collapseCompletedRuns(
 	};
 }
 
+/**
+ * Projection components the completed-run collapse inserts behind a request
+ * whose span it hides. Callers consult this set to keep rows that belong to
+ * the hidden span — such as the run's context-injection notice — out of the
+ * replay, instead of letting them resurface under the summary row.
+ */
+export const collapsedRunProjections = new WeakSet<Component>();
+
 /** Render one static row describing the completed-run content hidden above it. */
 export function createCompletedRunSummary(summary: CompletedRunSummary, toggleKey: string | undefined): Component {
 	const textSegments = t("{count} agent text segment{s}", {

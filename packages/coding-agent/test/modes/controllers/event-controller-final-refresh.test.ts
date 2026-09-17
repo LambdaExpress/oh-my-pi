@@ -34,11 +34,14 @@ function createFixture(opts: {
 }) {
 	const updateContent = vi.fn();
 	const setComplete = vi.fn();
+	const setLinkTargets = vi.fn();
 	const markTranscriptBlockFinalized = vi.fn();
 	const setHideThinkingBlock = vi.fn();
 	const streamingComponent = {
 		updateContent,
 		setComplete,
+		setLinkTargets,
+		isTranscriptBlockFinalized: vi.fn(() => false),
 		markTranscriptBlockFinalized,
 		setHideThinkingBlock,
 	};

@@ -21,6 +21,7 @@ import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
 import type { AgentSession } from "../session/agent-session";
 import type { CompactMode } from "../session/compact-modes";
+import type { ContextInjectionItem } from "../session/context-injection";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
 import type { HistoryStorage } from "../session/history-storage";
 import type { CustomMessage } from "../session/messages";
@@ -317,6 +318,21 @@ export interface InteractiveModeContext {
 	 * runs) so their timers/subscriptions start.
 	 */
 	present(content: Component | readonly Component[]): void;
+	/**
+	 * Surface one context-injection notice at the transcript tail. A notice that
+	 * arrives before the transcript's first user message belongs to session
+	 * startup — the initial context assembly of a fresh launch, `/new`, or a
+	 * resume — and is held back until the user submits their first prompt, so an
+	 * empty transcript does not open with an `Inject` block.
+	 */
+	presentInjectNotice(items: readonly ContextInjectionItem[]): void;
+	/**
+	 * Publish the injection notice held for the transcript's first user message.
+	 * Called once the run gate is in place behind that message, so the notice
+	 * lands inside the run's span and a completed-run collapse hides it with the
+	 * rest of the span.
+	 */
+	flushDeferredInjectNotice(): void;
 	/**
 	 * Mount command output immediately while idle, or defer it until the active
 	 * agent turn ends so a growing live block cannot push duplicate rows into

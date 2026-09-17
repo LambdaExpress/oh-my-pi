@@ -18,7 +18,11 @@ import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
-import { CONTEXT_INJECTION_MESSAGE_TYPE, contextInjectionItemsFromMessage } from "../../session/context-injection";
+import {
+	type ContextInjectionItem,
+	CONTEXT_INJECTION_MESSAGE_TYPE,
+	contextInjectionItemsFromMessage,
+} from "../../session/context-injection";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
@@ -104,6 +108,8 @@ export class ChatTranscriptBuilder {
 	#expandables: Array<{ setExpanded(expanded: boolean): void }> = [];
 	#expanded = false;
 	#entryComponents = new Map<string, Component[]>();
+	/** Startup injection notice held until the transcript's first user message. */
+	#deferredInjectNotice: InjectNoticeComponent | undefined;
 
 	constructor(private readonly deps: ChatTranscriptBuilderDeps) {
 		this.container.setToolActivityVisible(!settings.get("display.hideToolActivity"));
@@ -168,6 +174,7 @@ export class ChatTranscriptBuilder {
 		this.#todoSnapshot = null;
 		this.#expandables = [];
 		this.#entryComponents.clear();
+		this.#deferredInjectNotice = undefined;
 		this.container.dispose();
 		this.container.clear();
 	}
@@ -186,6 +193,34 @@ export class ChatTranscriptBuilder {
 	#trackExpandable(component: { setExpanded(expanded: boolean): void }): void {
 		component.setExpanded(this.#expanded);
 		this.#expandables.push(component);
+	}
+
+	/**
+	 * Hold a startup injection notice until the transcript's first user message
+	 * gives it a home; returns whether the set was held instead of rendered.
+	 * Session startup (a fresh launch, `/new`, or a resume) assembles the
+	 * initial context before the user has submitted anything, so its notice must
+	 * not open an empty transcript with an `Inject` block.
+	 */
+	#deferInjectNotice(items: readonly ContextInjectionItem[]): boolean {
+		if (this.container.children.some(child => child instanceof UserMessageComponent)) return false;
+		const pending = this.#deferredInjectNotice;
+		if (pending) {
+			pending.addItems(items);
+			return true;
+		}
+		const component = new InjectNoticeComponent(items);
+		this.#trackExpandable(component);
+		this.#deferredInjectNotice = component;
+		return true;
+	}
+
+	/** Attach the held startup notice below the user message that just landed. */
+	#flushDeferredInjectNotice(): void {
+		const pending = this.#deferredInjectNotice;
+		if (!pending) return;
+		this.#deferredInjectNotice = undefined;
+		this.container.addChild(pending);
 	}
 
 	/** A `hub` wait showing all-running is displaced by the next `hub` call. */
@@ -317,6 +352,7 @@ export class ChatTranscriptBuilder {
 						this.container.addChild(new UserMessageComponent(textContent, false));
 					}
 				}
+				if (message.role === "user") this.#flushDeferredInjectNotice();
 				break;
 			}
 			case "bashExecution": {
@@ -557,6 +593,7 @@ export class ChatTranscriptBuilder {
 		if (message.customType === CONTEXT_INJECTION_MESSAGE_TYPE) {
 			const items = contextInjectionItemsFromMessage(message);
 			if (items.length === 0) return;
+			if (this.#deferInjectNotice(items)) return;
 			const component = new InjectNoticeComponent(items);
 			this.#trackExpandable(component);
 			this.container.addChild(component);

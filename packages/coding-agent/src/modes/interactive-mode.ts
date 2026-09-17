@@ -115,6 +115,7 @@ import {
 	SHUTDOWN_CONSOLIDATE_BUDGET_MS,
 } from "../session/agent-session";
 import type { CompactMode } from "../session/compact-modes";
+import type { ContextInjectionItem } from "../session/context-injection";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
 import { HistoryStorage } from "../session/history-storage";
 import { type CustomMessage, USER_INTERRUPT_LABEL } from "../session/messages";
@@ -273,6 +274,7 @@ import type {
 } from "./types";
 import { customSubmissionSignature, userSubmissionSignature } from "./types";
 import {
+	collapsedRunProjections,
 	type CompletedRunCollapse,
 	collapseCompletedRuns,
 	createCompletedRunSummary,
@@ -5837,6 +5839,16 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.ui.requestRender();
 	}
 
+	/** See {@link InteractiveModeContext.presentInjectNotice}. */
+	presentInjectNotice(items: readonly ContextInjectionItem[]): void {
+		this.#uiHelpers.presentInjectNotice(items);
+	}
+
+	/** See {@link InteractiveModeContext.flushDeferredInjectNotice}. */
+	flushDeferredInjectNotice(): void {
+		this.#uiHelpers.flushDeferredInjectNotice();
+	}
+
 	/**
 	 * Defer transcript command panels while the agent is streaming, then mount
 	 * them at the next settle, terminal or not. A non-terminal settle is only a
@@ -5935,6 +5947,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	resetTranscript(): void {
 		this.transcriptMessageComponents = new WeakMap<AgentMessage, Component>();
+		this.#uiHelpers.resetInjectNotices();
 		this.chatContainer.dispose();
 		this.chatContainer.clear();
 	}
@@ -6272,7 +6285,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (!matchingSummary) return matchingGate?.component;
 			summaryIndex++;
 			const summaryComponent = createCompletedRunSummary(matchingSummary, toggleKey);
-			return matchingGate ? new CompletedRunSummaryGate(summaryComponent, matchingGate.component) : summaryComponent;
+			const projectionComponent = matchingGate
+				? new CompletedRunSummaryGate(summaryComponent, matchingGate.component)
+				: summaryComponent;
+			// The replay uses this mark to keep rows of the hidden span, like the
+			// run's injection notice, out of the collapsed transcript.
+			collapsedRunProjections.add(projectionComponent);
+			return projectionComponent;
 		};
 		return { context: projection.context, insertAfterMessage };
 	}
