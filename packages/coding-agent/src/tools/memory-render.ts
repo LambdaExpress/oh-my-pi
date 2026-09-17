@@ -1,6 +1,6 @@
 /**
  * Inline TUI renderers for the long-term memory tools (`retain`, `recall`,
- * `reflect`).
+ * `reflect`, `learn`).
  *
  * These keep the transcript terse — one status line plus, for `retain`, one
  * `Remember: …` line per stored item — instead of the generic JSON arg tree,
@@ -49,7 +49,7 @@ function retainContents(args: RetainRenderArgs | undefined): string[] {
 	return contents;
 }
 
-function resultText(result: { content?: Array<{ type: string; text?: string }> }): string {
+export function resultText(result: { content?: Array<{ type: string; text?: string }> }): string {
 	return (result.content?.find(c => c.type === "text")?.text ?? "").trim();
 }
 
@@ -230,5 +230,96 @@ export const reflectToolRenderer = {
 				return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
 			},
 		);
+	},
+};
+
+interface LearnRenderArgs {
+	memory?: string;
+	context?: string;
+	skill?: { action?: string; name?: string; scope?: string };
+}
+
+/** First line of the lesson; the folded row shows it instead of the bare tool name. */
+function lessonHeadline(args: LearnRenderArgs | undefined): string | undefined {
+	const [headline] = replaceTabs((args?.memory ?? "").trim()).split("\n");
+	const line = (headline ?? "").trim();
+	return line.length > 0 ? line : undefined;
+}
+
+/** Body rows: the lesson itself, then its optional source context as a dim tail. */
+function lessonRows(args: LearnRenderArgs | undefined, theme: Theme): string[] {
+	const lesson = replaceTabs((args?.memory ?? "").trim());
+	const rows = lesson.length > 0 ? lesson.split("\n").map(line => line.trimEnd()) : [];
+	const source = replaceTabs((args?.context ?? "").trim());
+	if (source.length > 0) rows.push(`${theme.fg("dim", "context: ")}${theme.fg("muted", source)}`);
+	return rows;
+}
+
+function learnComponent(
+	rows: readonly string[],
+	header: string,
+	getExpanded: () => boolean,
+	theme: Theme,
+	trailingLine?: string,
+): Component {
+	return createCachedComponent(getExpanded, (width, expanded) => {
+		const lines = [header];
+		const limit = expanded ? PREVIEW_LIMITS.OUTPUT_EXPANDED : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
+		const shown = rows.slice(0, limit);
+		const contentWidth = Math.max(8, width - 2);
+		for (const row of shown) {
+			lines.push(`  ${theme.fg("toolOutput", truncateToWidth(row, contentWidth, Ellipsis.Unicode))}`);
+		}
+		const remaining = rows.length - shown.length;
+		if (remaining > 0) {
+			lines.push(`  ${theme.fg("dim", `… ${remaining} more lines`)} ${formatExpandHint(theme, expanded, true)}`);
+		}
+		if (trailingLine) lines.push(trailingLine);
+		return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
+	});
+}
+
+/**
+ * Renderer for the orchestrating `learn` tool. The generic card buried the
+ * lesson — the one thing the call is about — inside escaped JSON strings, so
+ * this reuses the memory-tool shape: a status line carrying the backend's own
+ * outcome (stored / queued / managed-skill write) plus the lesson body.
+ */
+export const learnToolRenderer = {
+	inline: true,
+	mergeCallAndResult: true,
+	/** Folded row: `Learn: <lesson headline>`, so one-line mode still says what was remembered. */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const headline = lessonHeadline((args ?? {}) as LearnRenderArgs);
+		if (headline === undefined) return { label: "Learn" };
+		return { label: "Learn", detail: context.theme.fg("muted", sanitizeDisplayWarning(headline)) };
+	},
+	renderCall(args: LearnRenderArgs, options: RenderResultOptions, theme: Theme): Component {
+		const header = renderStatusLine({ icon: "pending", title: "Learn" }, theme);
+		return learnComponent(lessonRows(args, theme), header, () => options.expanded, theme);
+	},
+	renderResult(
+		result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
+		options: RenderResultOptions,
+		theme: Theme,
+		args?: LearnRenderArgs,
+	): Component {
+		if (result.isError) {
+			const header = renderStatusLine({ icon: "error", title: "Learn" }, theme);
+			const error = formatErrorMessage(resultText(result) || "Learn failed", theme);
+			return learnComponent(lessonRows(args, theme), header, () => options.expanded, theme, error);
+		}
+		// The tool's own outcome ("Lesson stored", "Created project managed skill …")
+		// reads as the header's meta segment; the trailing period is dropped.
+		const summary = resultText(result).replace(/\.$/, "");
+		const header = renderStatusLine(
+			{
+				iconOverride: theme.styledSymbol("tool.memory", "accent"),
+				title: "Learn",
+				meta: summary ? [summary] : undefined,
+			},
+			theme,
+		);
+		return learnComponent(lessonRows(args, theme), header, () => options.expanded, theme);
 	},
 };

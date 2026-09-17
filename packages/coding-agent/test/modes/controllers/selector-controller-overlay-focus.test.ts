@@ -164,16 +164,46 @@ describe("SelectorController.showCopySelector", () => {
 		const message = {
 			role: "assistant",
 			content: [{ type: "text", text: "Copy this response" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet-4-5",
+			stopReason: "stop",
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			timestamp: 1,
 		} as unknown as AgentMessage;
+		const entry = {
+			type: "message",
+			id: "m1",
+			parentId: null,
+			timestamp: new Date(0).toISOString(),
+			message,
+		} as unknown as SessionEntry;
 		const overlayHandle = { hide: vi.fn() };
 		const showOverlay = vi.fn((_component: Component, _options: OverlayOptions) => overlayHandle);
 		const setFocus = vi.fn();
 		const requestRender = vi.fn();
 		const ctx = {
+			sessionManager: {
+				getBranch: () => [entry],
+				getCwd: () => process.cwd(),
+			},
 			session: {
 				messages: [message],
 				getLastVisibleHandoffText: () => undefined,
+				getToolByName: () => undefined,
+				hasBuiltInTool: () => true,
+				extensionRunner: undefined,
 			},
+			viewSession: {},
+			effectiveHideThinkingBlock: false,
+			proseOnlyThinking: false,
 			ui: {
 				showOverlay,
 				setFocus,

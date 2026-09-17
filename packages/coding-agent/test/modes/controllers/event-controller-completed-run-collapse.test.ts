@@ -88,6 +88,8 @@ function fixture(
 			chatContainer.addChild(component);
 			return [component];
 		}),
+		presentInjectNotice: vi.fn(),
+		flushDeferredInjectNotice: vi.fn(),
 		locallySubmittedUserSignatures: new Set(),
 		optimisticUserMessageSignature: undefined,
 		clearOptimisticUserMessage: vi.fn(),

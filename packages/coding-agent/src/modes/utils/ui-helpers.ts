@@ -52,7 +52,11 @@ import type {
 	RenderInitialMessagesOptions,
 	RenderSessionContextOptions,
 } from "../../modes/types";
-import { CONTEXT_INJECTION_MESSAGE_TYPE, contextInjectionItemsFromMessage } from "../../session/context-injection";
+import {
+	type ContextInjectionItem,
+	CONTEXT_INJECTION_MESSAGE_TYPE,
+	contextInjectionItemsFromMessage,
+} from "../../session/context-injection";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
@@ -77,6 +81,7 @@ import {
 	buildFileMentionBlock,
 	buildIrcMessageCard,
 	buildLaunchCompletionBlock,
+	collapsedRunProjections,
 	normalizeToolArgs,
 	resolveAssistantErrorPresentation,
 	shouldCollapseCompactedHistoryForDisplay,
@@ -138,6 +143,17 @@ function imageLinksForMessage(
 export class UiHelpers {
 	constructor(private ctx: InteractiveModeContext) {}
 
+	/**
+	 * Injection notice that arrived before the transcript's first user message.
+	 * Session startup (a fresh launch, `/new`, or `--resume`) assembles the
+	 * initial context before the user has submitted anything, so its notice is
+	 * held here and attached below the first user message instead of opening an
+	 * empty transcript with an `Inject` block.
+	 */
+	#deferredInjectNotice: InjectNoticeComponent | undefined;
+	/** Live-tail notice: a later injection set merges into it while it is still last. */
+	#lastInjectNotice: InjectNoticeComponent | undefined;
+
 	/** Extract text content from a user message */
 	getUserMessageText(message: Message): string {
 		if (message.role !== "user") return "";
@@ -146,6 +162,84 @@ export class UiHelpers {
 				? [{ type: "text", text: message.content }]
 				: message.content.filter((content): content is TextBlock => content.type === "text");
 		return textBlocks.map(block => block.text).join("");
+	}
+
+	/**
+	 * Surface one context-injection notice. Notices recorded before the user has
+	 * sent anything are startup context, not a reaction to something the user
+	 * did — hold them until the first user message lands (see
+	 * {@link #deferredInjectNotice}). Notices that arrive during an active
+	 * conversation merge into the previous block only while that block is still
+	 * the live tail; committed rows are immutable visual history and a grown
+	 * block would shift them.
+	 */
+	presentInjectNotice(items: readonly ContextInjectionItem[]): void {
+		if (items.length === 0) return;
+		// A completed-run collapse may fold rows, but the user's own message
+		// component stays mounted, so the container is the authoritative record
+		// of "the user has spoken here".
+		const transcriptShowsUserMessage = this.ctx.chatContainer.children.some(
+			child => child instanceof UserMessageComponent,
+		);
+		if (!transcriptShowsUserMessage) {
+			this.#deferInjectNotice(items);
+			return;
+		}
+		// The request can already be on screen from its optimistic render while
+		// the held notice still waits for `message_start` to publish it behind
+		// the run gate. Fold this set into the held notice so the pending flush
+		// stays a single row instead of leaving a stray duplicate above the gate.
+		const pending = this.#deferredInjectNotice;
+		if (pending) {
+			pending.addItems(items);
+			return;
+		}
+		const previous = this.#lastInjectNotice;
+		if (
+			previous &&
+			this.ctx.chatContainer.children.at(-1) === previous &&
+			this.ctx.chatContainer.canRemoveBlock(previous)
+		) {
+			previous.addItems(items);
+			this.ctx.ui.requestRender();
+			return;
+		}
+		const component = new InjectNoticeComponent(items);
+		component.setExpanded(this.ctx.toolOutputExpanded);
+		this.ctx.present(component);
+		this.#lastInjectNotice = component;
+	}
+
+	/** Fold another startup notice into the held one (deduped by source). */
+	#deferInjectNotice(items: readonly ContextInjectionItem[]): void {
+		const pending = this.#deferredInjectNotice;
+		if (pending) {
+			pending.addItems(items);
+			return;
+		}
+		const component = new InjectNoticeComponent(items);
+		component.setExpanded(this.ctx.toolOutputExpanded);
+		this.#deferredInjectNotice = component;
+	}
+
+	/**
+	 * Attach the held startup notice below the user message that just landed.
+	 * Callers run after the run's gate/collapse projection was inserted behind
+	 * that message, so the notice reads as part of the run it opened.
+	 */
+	flushDeferredInjectNotice(): void {
+		const pending = this.#deferredInjectNotice;
+		if (!pending) return;
+		this.#deferredInjectNotice = undefined;
+		pending.setExpanded(this.ctx.toolOutputExpanded);
+		this.ctx.present(pending);
+		this.#lastInjectNotice = pending;
+	}
+
+	/** Drop held notice state; the transcript it belonged to is being discarded. */
+	resetInjectNotices(): void {
+		this.#deferredInjectNotice = undefined;
+		this.#lastInjectNotice = undefined;
 	}
 
 	/**
@@ -240,9 +334,7 @@ export class UiHelpers {
 					if (message.customType === CONTEXT_INJECTION_MESSAGE_TYPE) {
 						const items = contextInjectionItemsFromMessage(message);
 						if (items.length === 0) break;
-						const component = new InjectNoticeComponent(items);
-						component.setExpanded(this.ctx.toolOutputExpanded);
-						this.ctx.chatContainer.addChild(component);
+						this.presentInjectNotice(items);
 						break;
 					}
 					if (
@@ -394,6 +486,10 @@ export class UiHelpers {
 		sessionContext: SessionContext,
 		options: RenderSessionContextOptions = {},
 	): Generator<void, void, void> {
+		// The container is rebuilt from the journal below, so held notices from
+		// the previous transcript are stale: the entries being replayed re-derive
+		// them (deferred again if they still precede the first user message).
+		this.resetInjectNotices();
 		// Preserved: message_start handler owns this lifecycle (see #783)
 		this.ctx.pendingTools.clear();
 		const activeToolExecutionUpdates = this.ctx.viewSession.activeToolExecutionUpdates?.() ?? [];
@@ -791,6 +887,14 @@ export class UiHelpers {
 			}
 			const inserted = options.insertAfterMessage?.(message);
 			if (inserted) this.ctx.chatContainer.addChild(inserted);
+			if (message.role === "user") {
+				// The startup notice belongs to the span this request opened. The
+				// projection insert above is either the run's live gate (notice goes
+				// behind it, so the collapse will take it) or the collapsed run's
+				// summary (the notice belongs to the hidden span and stays out).
+				if (inserted && collapsedRunProjections.has(inserted)) this.resetInjectNotices();
+				else this.flushDeferredInjectNotice();
+			}
 		}
 		flushPendingUsage();
 
@@ -954,6 +1058,13 @@ export class UiHelpers {
 			),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
 		});
+		if (options.recoverCompletedRuns || options.recoverCompletedRunAnchor) {
+			// Focus reattachment and `/tree` switches also clear EventController's
+			// transcript anchors. Restore the unfinished request independently of
+			// the completed-run projections, so a continuation still collapses the
+			// whole run.
+			this.ctx.eventController.restoreCompletedRunAnchor(context.messages);
+		}
 		let replayEntryCount = this.ctx.viewSession.sessionManager.getEntries().length;
 
 		// Build against a detached container. Incremental construction still yields

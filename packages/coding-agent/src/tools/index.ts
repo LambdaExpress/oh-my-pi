@@ -31,6 +31,7 @@ import type { UsageStatistics } from "../session/session-entries";
 import type { SessionManager } from "../session/session-manager";
 import type { SessionSshConfig, SessionSshConfigMutation } from "../session/session-ssh-config";
 import type { ToolChoiceQueue } from "../session/tool-choice-queue";
+import type { SSHConnectionTarget } from "../ssh/connection-manager";
 import type { SSHHost } from "../ssh/host-registry";
 import { TaskTool } from "../task";
 import type { AgentOutputManager } from "../task/output-manager";
@@ -296,6 +297,14 @@ export interface ToolSession {
 	getSessionSshConfigs?: () => ReadonlyMap<string, SessionSshConfig>;
 	/** Load the effective SSH hosts for the active session and persistent scopes. */
 	getSessionSshHosts?: () => Promise<readonly SSHHost[]>;
+	/**
+	 * Discover this host's local SSH-over-WSL targets (defaults to the
+	 * platform probe). Like {@link getSessionSshHosts} this is a session-scoped
+	 * capability: it keeps tool mounting and host lists testable, and lets an
+	 * embedded host pin the platform instead of inheriting the machine's WSL
+	 * inventory.
+	 */
+	discoverLocalWslTargets?: () => Promise<readonly SSHConnectionTarget[]>;
 	/** Append and apply one SSH configuration mutation to the active session branch. */
 	mutateSessionSshConfig?: (mutation: SessionSshConfigMutation) => Promise<void>;
 	/** Move the current session to a new working directory and refresh cwd-scoped state. */

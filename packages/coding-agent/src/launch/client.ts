@@ -42,6 +42,15 @@ export interface DaemonBrokerClientOptions {
 	runtimeDir?: string;
 	/** Last-client shutdown grace override in milliseconds. */
 	idleGraceMs?: number;
+	/**
+	 * Spawn the broker outside the caller's process group/job so it outlives the
+	 * process that happened to start it. Machine-global scopes are leased by every
+	 * omp process on the host, so their broker must not die with its spawner: a
+	 * Windows job object kills a non-detached child (and every daemon it manages)
+	 * on that exit, tearing the shared singleton down under the remaining
+	 * consumers. POSIX spawns every broker detached already.
+	 */
+	outliveSpawner?: boolean;
 }
 
 export interface DaemonCompletionUnregisterOptions {
@@ -139,6 +148,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 	readonly #token: string;
 	readonly #seenCompletionIds = new Set<string>();
 	readonly #idleGraceMs: number | undefined;
+	readonly #outliveSpawner: boolean;
 	readonly #pending = new Map<string, PendingRequest>();
 	readonly #completionSinks = new Map<string, (notification: DaemonCompletionNotification) => Promise<void> | void>();
 	readonly #completionUnsubscribes = new Set<string>();
@@ -158,6 +168,7 @@ class SocketDaemonClient implements DaemonBrokerClient {
 		this.#endpoint = daemonBrokerEndpoint(projectDir, runtimeDir);
 		this.#token = token;
 		this.#idleGraceMs = options.idleGraceMs;
+		this.#outliveSpawner = options.outliveSpawner ?? false;
 	}
 
 	async request(operation: DaemonOperation, signal?: AbortSignal): Promise<DaemonRpcResult> {
@@ -318,7 +329,10 @@ class SocketDaemonClient implements DaemonBrokerClient {
 			stdin: "ignore",
 			stdout: "ignore",
 			stderr: "ignore",
-			...BROKER_SPAWN_OPTIONS,
+			// A broker that must outlive its spawner escapes the spawner's job
+			// object instead of inheriting its console; `windowsHide` keeps a
+			// detached Windows child from surfacing a conhost window of its own.
+			...(this.#outliveSpawner ? { detached: true, windowsHide: true } : BROKER_SPAWN_OPTIONS),
 		});
 		child.unref();
 	}
@@ -491,6 +505,7 @@ export async function daemonClientForGlobal(service: string): Promise<DaemonBrok
 	return sharedDaemonClient(`global:${canonical}`, () =>
 		createDaemonBrokerClient(canonical, {
 			runtimeDir: canonical,
+			outliveSpawner: true,
 		}),
 	);
 }

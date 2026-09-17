@@ -5,11 +5,10 @@ describe("eval tool description", () => {
 	it("routes routine tool calls away from eval orchestration", () => {
 		const description = getEvalToolDescription({ py: false, js: true, spawns: "reviewer" });
 
-		expect(description).toContain("Call session tools directly by default.");
-		expect(description).toContain(
-			"NEVER enter eval merely to wrap, batch, or parallelize independent tool/subagent calls",
-		);
-		expect(description).toContain("Use eval orchestration only for complex, value-dependent workflows");
+		// The long-form prohibition lives in the system prompt (see system-prompt-inventory.test.ts);
+		// the tool description carries the compressed gate.
+		expect(description).toContain("Default → direct tools/`task` batch.");
+		expect(description).toContain("Complex value-dependent workflow → eval orchestration.");
 	});
 
 	it("advertises the first allowed spawn as the agent() default", () => {
@@ -27,7 +26,7 @@ describe("eval tool description", () => {
 		);
 		expect(description).not.toContain('schemaMode?="permissive"');
 		expect(description).toContain(
-			"JS: ONE trailing object — agent(prompt, { agent, label, schema, schemaMode, isolated, apply, merge, handle })",
+			"JS: ONE trailing object — agent(prompt, { agent, label, schema, schemaMode, isolated, apply, merge, tools })",
 		);
 	});
 
@@ -42,7 +41,7 @@ describe("eval tool description", () => {
 		expect(javascript).toContain('schemaMode?="permissive"');
 		expect(javascript).not.toContain('schema_mode?="permissive"');
 		expect(javascript).toContain(
-			"JS: ONE trailing object — agent(prompt, { agent, label, schema, schemaMode, isolated, apply, merge, handle })",
+			"JS: ONE trailing object — agent(prompt, { agent, label, schema, schemaMode, isolated, apply, merge, tools })",
 		);
 	});
 

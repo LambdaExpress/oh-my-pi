@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { createLocalWslTargets } from "@oh-my-pi/pi-coding-agent/ssh/wsl";
 import { AdbTool, BUILTIN_TOOLS, createTools, HIDDEN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BUILTIN_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/builtin-names";
 
@@ -16,6 +17,11 @@ function createTestSession(overrides: Partial<ToolSession> = {}): ToolSession {
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
 		getSessionSshHosts: async () => [],
+		// The real probe spawns `wsl.exe`, so its result follows the machine's
+		// WSL inventory (empty on Linux/macOS, populated on Windows hosts with
+		// distributions) — and `ssh` mounts iff *any* host exists. Pin it empty
+		// so mounting assertions describe the code, not the test machine.
+		discoverLocalWslTargets: async () => [],
 		settings: Settings.isolated(),
 		...overrides,
 	};
@@ -395,6 +401,8 @@ describe("createTools", () => {
 
 		expect(tools.map(tool => tool.name)).not.toContain("ssh_session");
 		expect(session.xdev?.tools.get("ssh_session")?.name).toBe("ssh_session");
+		// Command execution mounts only with hosts to run on; this session has no
+		// configured hosts and no discoverable WSL targets, so the device is absent.
 		expect(session.xdev?.tools.get("ssh")).toBeUndefined();
 	});
 
@@ -416,6 +424,20 @@ describe("createTools", () => {
 
 		expect(tools.map(tool => tool.name)).not.toContain("ssh");
 		expect(session.xdev?.tools.get("ssh")?.description).toContain("prod (192.0.2.10)");
+	});
+
+	it("mounts locally discovered WSL distributions as SSH hosts under xd://", async () => {
+		const session = createTestSession({
+			discoverLocalWslTargets: async () => createLocalWslTargets(["Ubuntu-24.04"]),
+		});
+		const tools = await createTools(session);
+
+		expect(tools.map(tool => tool.name)).not.toContain("ssh");
+		const description = session.xdev?.tools.get("ssh")?.description;
+		// A local WSL distribution is a usable host on its own, so the device
+		// mounts and advertises it without any configured SSH host.
+		expect(description).toContain("wsl (local default distribution)");
+		expect(description).toContain("wsl:Ubuntu-24.04 (local Ubuntu-24.04)");
 	});
 
 	it("keeps SSH session configuration top-level when xd:// is disabled", async () => {

@@ -1493,7 +1493,9 @@ export class SelectorController {
 			return;
 		}
 		const overlayHandle = this.ctx.ui.showOverlay(selector, {
-			anchor: "bottom-center",
+			// Fullscreen picker: anchor at the top-left so the layout starts on
+			// the first row instead of centering a fixed-height panel.
+			anchor: "top-left",
 			width: "100%",
 			maxHeight: "100%",
 			margin: 0,

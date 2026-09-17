@@ -76,7 +76,12 @@ export async function loadSshHosts(
 		: await loadEffectiveSshHosts(session.cwd);
 	const hostsByName = new Map<string, SSHConnectionTarget>();
 	for (const host of hosts) hostsByName.set(host.name, host);
-	const localWslTargets = await (options.discoverLocalWslTargets ?? discoverLocalWslTargets)();
+	// The session owns its platform capability (`ssh` mounts when *any* host
+	// exists, so real WSL discovery decides whether a Windows session sees the
+	// device); an explicit option is the tighter seam for direct callers.
+	const discoverWsl: () => Promise<readonly SSHConnectionTarget[]> =
+		session.discoverLocalWslTargets ?? options.discoverLocalWslTargets ?? discoverLocalWslTargets;
+	const localWslTargets = await discoverWsl();
 	for (const target of localWslTargets) {
 		if (!hostsByName.has(target.name)) hostsByName.set(target.name, target);
 	}
