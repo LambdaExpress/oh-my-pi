@@ -29,11 +29,24 @@
 - Fixed weekly and monthly usage reset countdowns to show minutes near reset instead of `0h`.
 - Fixed PowerShell memory URLs resolving against another session after the calling session exits.
 - Fixed `display.collapseCompletedRuns` never collapsing a run started by a directly invoked `/skill:` prompt (or another user-invoked custom prompt): those runs now anchor on the invoked prompt, so they collapse with a summary and `Alt+O` toggles them like any user-started run.
+- Fixed the `Inject` notice surviving a completed run's collapse: it now lands with the run it opened, hides with the collapsed span, and returns when `Alt+O` expands it again.
+- Fixed `learn` rendering as a bare `Learn` row with the lesson buried in JSON: the card now shows the lesson body (and its optional source context) under the status line, and folded one-line mode reads `Learn: <first line of the lesson>`.
+- Fixed the `/copy` picker anchoring at the bottom center instead of the top-left fullscreen overlay it renders as.
+- Fixed focus reattachment (stepping into a subagent's transcript and back) losing the unfinished request's collapse anchor, which broke `Alt+O` collapsing for the continued run.
+- Fixed background SSH transfers rendering as a generic `Background job completed` row; the delivered `async-result` message carries the transfer details again, so the row keeps its transfer summary (`Download [host] · 128.0KB/s`).
+- Fixed `edit` dropping `ssh://` payloads to the write approval tier (a merge resolution had lost the ssh short-circuit), which let an ssh-backed edit skip the exec-gated approval prompt.
+- Fixed the `eval` tool description printing the combined Python + JavaScript `agent()` signature with `schemaMode` instead of Python's `schema_mode`, which told Python cells to pass an invalid keyword.
+- Fixed `read` losing structural summaries for selector-capable internal URLs (`ssh://`, `memory://`, and friends): a selector-less read elides bodies with the `…Nln elided` footer again instead of returning the raw body.
+- Fixed the collapsed `read` preview of a long URL no longer folding by rendered rows (a merge had dropped the `visualWindow` descriptor), which expanded a 3-row preview into dozens of rows.
+- Fixed remote SQLite reads over HTTP degrading to `method: "binary"` on Windows, where a just-closed temporary database stays locked for about 1.5s and the cleanup's EBUSY rejected the sqlite renderer.
+- Fixed the machine-global browser relay broker exiting together with the omp process that spawned it on Windows, tearing down the relay while another consumer still held its lease.
 
 ### Changed
 
 - Clarified task effort guidance to use `lo`/`med`/`hi` and avoid invalid model reasoning-effort values such as `high`.
 - Documented browser execution realms: direct helpers evaluate in the page's main world, while `tab.run`'s raw Puppeteer `page` defaults to the isolated world — use the `world=main` directive to reach page globals; `addScriptTag` scripts run in the main world, and page console/pageerror events are not delivered.
+- The `Inject` notice waits for your first message: a fresh launch, `/new`, or a resume no longer opens the transcript with an `Inject` block, and the notice lands right below your first prompt instead.
+- Folded `Ask` rows show both halves of the exchange once the dialog settles: `Ask: <question> → <answer>`, with a long question clipped so the picked option or typed input stays visible.
 
 ## [18.1.19] - 2026-09-12
 
