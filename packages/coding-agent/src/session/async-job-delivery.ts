@@ -46,6 +46,13 @@ type AsyncResultJobDetails = {
 	type?: AsyncJobType;
 	label?: string;
 	durationMs?: number;
+	/**
+	 * Terminal progress payload of an `ssh_transfer` job, in the shape the
+	 * transcript's SSH row reads (`progress.details`). It renders its transfer
+	 * summary from persisted details, so the delivery message has to carry
+	 * them; no other job type renders from this field.
+	 */
+	progress?: { details?: unknown };
 	/** Full structured payload (source/mode/status/data/error), when the job used an output schema. */
 	schema?: StructuredSubagentOutput;
 };
@@ -90,6 +97,10 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 			type: entry.job?.type,
 			label: entry.job?.label,
 			durationMs: entry.durationMs,
+			progress:
+				entry.job?.type === "ssh_transfer" && entry.job.progress
+					? { details: entry.job.progress.details }
+					: undefined,
 			structured,
 			structuredJson,
 			hasStructuredData,
@@ -104,6 +115,7 @@ export function buildAsyncResultBatchMessage(entries: AsyncResultEntry[]): Custo
 			type: job.type,
 			label: job.label,
 			durationMs: job.durationMs,
+			...(job.progress !== undefined ? { progress: job.progress } : {}),
 			...(job.structured ? { schema: job.structured } : {}),
 		})),
 	};
