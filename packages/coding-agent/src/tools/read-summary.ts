@@ -4,7 +4,7 @@ import { LRUCache } from "@oh-my-pi/pi-utils/lru";
 import { isMarkdownPath } from "../modes/theme/theme";
 import type { ClientBridge } from "../session/client-bridge";
 import type { ToolSession } from "../sdk";
-import { resolveFileDisplayMode } from "../utils/file-display-mode";
+import { type FileDisplayMode, resolveFileDisplayMode } from "../utils/file-display-mode";
 import {
 	canMergeBracePair,
 	countTextLines,
@@ -113,13 +113,15 @@ export async function trySummarize(
 export function renderSummary(
 	session: ToolSession,
 	summary: SummaryResult,
+	/** Override for callers that already resolved the mode (e.g. immutable internal resources). */
+	displayModeOverride?: FileDisplayMode,
 ): {
 	text: string;
 	displayText: string;
 	elidedRanges: ElidedRange[];
 	elidedLines: number;
 } {
-	const displayMode = resolveFileDisplayMode(session);
+	const displayMode = displayModeOverride ?? resolveFileDisplayMode(session);
 	const shouldAddHashLines = displayMode.hashLines;
 	const shouldAddLineNumbers = shouldAddHashLines ? false : displayMode.lineNumbers;
 

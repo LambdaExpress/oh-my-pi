@@ -30,7 +30,7 @@ import { getEditStore } from "../edit/store";
 import { InternalUrlRouter, resolveLocalUrlToFile, resolveLocalUrlToPath } from "../internal-urls";
 import { type ResolvedArtifactFile, resolveArtifactFile } from "../internal-urls/artifact-protocol";
 import { parseInternalUrl } from "../internal-urls/parse";
-import type { InternalUrl, ResolveContext, WriteContext } from "../internal-urls/types";
+import type { InternalResource, InternalUrl, ResolveContext, WriteContext } from "../internal-urls/types";
 import { getExperimentalContextSession } from "./context-notes";
 import readDescription from "../prompts/tools/read.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
@@ -157,6 +157,27 @@ export { readToolRenderer } from "./read-renderer";
 const MAX_PROFILE_SUMMARY_BYTES = 32 * 1024 * 1024;
 const MAX_ARTIFACT_RAW_INLINE_BYTES = DEFAULT_MAX_BYTES;
 export const SNAPSHOT_MAX_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Internal URL schemes whose elided ranges are recoverable with a follow-up
+ * `:start-end` read, so a bare read may return a structural summary instead of
+ * the whole resource. `ssh://` and `memory://` resolve to in-memory text with
+ * no local file behind them; `local://` and friends normally surface a
+ * `sourcePath` and take the regular file path.
+ */
+const INTERNAL_SUMMARY_SELECTOR_SCHEMES: Record<string, true> = {
+	agent: true,
+	artifact: true,
+	issue: true,
+	local: true,
+	memory: true,
+	omp: true,
+	pr: true,
+	rule: true,
+	skill: true,
+	ssh: true,
+	vault: true,
+};
 
 /** LF byte, scanned natively to find line boundaries in a buffered file. */
 const LF_BYTE = 0x0a;
@@ -2915,6 +2936,78 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 	}
 
 	/**
+	 * Structural summary for a selector-capable in-memory internal URL resource.
+	 *
+	 * A bare `ssh://host/file.ts` (or `memory://`, `skill://`, …) resolves to
+	 * text with no local file behind it, so the whole remote file would land in
+	 * context. Summarizing it keeps the shape and elides bodies the model can
+	 * recover with a follow-up `:start-end` read — the footer names those ranges.
+	 * Returns null for anything that must stay verbatim: an explicit selector,
+	 * a directory listing, JSON, a scheme whose elisions are not re-readable,
+	 * prose unless `read.summarize.prose` opts in, or an unusable summary.
+	 */
+	async #summarizeInternalResource(
+		url: string,
+		resource: InternalResource,
+		scheme: string,
+		parsedSel: ParsedSelector,
+		snapshot: HashlineSnapshotTarget | undefined,
+		signal?: AbortSignal,
+	): Promise<AgentToolResult<ReadToolDetails> | null> {
+		if (parsedSel.kind !== "none" || INTERNAL_SUMMARY_SELECTOR_SCHEMES[scheme] !== true) return null;
+		if (resource.isDirectory === true || resource.contentType === "application/json") return null;
+		const parserPath = resource.sourcePath ?? url;
+		if (!this.session.settings.get("read.summarize.enabled")) return null;
+		if (!this.session.settings.get("read.summarize.prose") && isProseSummaryPath(parserPath)) return null;
+		const summary = await trySummarize(
+			this.session,
+			// Identity for the parse memo and the ACP bridge lookup: the real file
+			// when the resource has one, else the ssh snapshot key, else the URL.
+			resource.sourcePath ?? snapshot?.key ?? url,
+			resource.size ?? Buffer.byteLength(resource.content, "utf-8"),
+			signal,
+			resource.content,
+			parserPath,
+		);
+		if (!summary) return null;
+		const displayMode = resolveFileDisplayMode(this.session, { immutable: resource.immutable });
+		const renderedSummary = renderSummary(this.session, summary, displayMode);
+		const footer = formatSummaryElisionFooter(url, renderedSummary.elidedRanges, renderedSummary.elidedLines);
+		const hashContext =
+			displayMode.hashLines && (snapshot || resource.sourcePath)
+				? recordFullHashlineContext(
+						this.session,
+						resource.sourcePath,
+						resource.sourcePath ? formatPathRelativeToCwd(resource.sourcePath, this.session.cwd) : "",
+						resource.content,
+						snapshot,
+					)
+				: undefined;
+		const bodyText = footer ? `${renderedSummary.text}\n\n${footer}` : renderedSummary.text;
+		const modelText = prependHashlineHeader(bodyText, hashContext);
+		if (hashContext?.tag && hashContext.snapshotKey) {
+			getEditStore(this.session).recordSeenLinesFromBodyForKey(
+				hashContext.snapshotKey,
+				hashContext.tag,
+				renderedSummary.text,
+			);
+		}
+
+		const resultBuilder = toolResult<ReadToolDetails>({
+			resolvedPath: resource.sourcePath,
+			contentType: resource.contentType,
+			displayContent: { text: renderedSummary.displayText, startLine: 1 },
+			summary: {
+				lines: countTextLines(renderedSummary.text),
+				elidedSpans: renderedSummary.elidedRanges.length,
+				elidedLines: renderedSummary.elidedLines,
+			},
+		}).text(modelText);
+		if (resource.sourcePath) resultBuilder.sourcePath(resource.sourcePath);
+		return resultBuilder.sourceInternal(url).done();
+	}
+
+	/**
 	 * Handle internal URLs (agent://, artifact://, memory://, skill://, rule://, local://, mcp://).
 	 * Supports pagination via offset/limit but rejects them when query extraction is used.
 	 */
@@ -3000,6 +3093,9 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		if (hasExtraction) {
 			return toolResult(details).text(resource.content).sourceInternal(url).done();
 		}
+
+		const internalSummary = await this.#summarizeInternalResource(url, resource, scheme, parsedSel, snapshot, signal);
+		if (internalSummary) return internalSummary;
 
 		const options = {
 			details,

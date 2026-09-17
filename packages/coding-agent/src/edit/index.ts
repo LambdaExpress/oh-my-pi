@@ -49,7 +49,7 @@ import {
 	invalidateFsScanAfterWrite,
 } from "../tools/fs-cache-invalidation";
 import { outputMeta } from "../tools/output-meta";
-import { resolveFileWriteApprovalTier } from "../tools/path-utils";
+import { pathTargetsSsh, resolveFileWriteApprovalTier } from "../tools/path-utils";
 import { planLocalProtocolOptions } from "../tools/plan-mode-guard";
 import { ToolError } from "../tools/tool-errors";
 import { type EditMode, normalizeEditMode, resolveEditMode } from "../utils/edit-mode";
@@ -354,6 +354,24 @@ function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
 	return true;
 }
 
+/**
+ * True when an edit payload names `ssh://` anywhere in its raw form.
+ *
+ * Mirrors the write tool's fail-closed substring scan of the untrusted args:
+ * `#inspect` reports only the sections the native parser can attribute, so a
+ * payload carrying an `ssh://` target in a form it cannot parse (or one whose
+ * section header is a selector-suffixed URL) would otherwise reach the write
+ * tier. Over-matching a literal `ssh://` only over-prompts.
+ */
+function approvalPayloadTargetsSsh(args: unknown): boolean {
+	if (typeof args === "string" && pathTargetsSsh(args)) return true;
+	const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+	return (
+		(typeof record.input === "string" && pathTargetsSsh(record.input)) ||
+		(typeof record.path === "string" && pathTargetsSsh(record.path))
+	);
+}
+
 export class EditTool implements AgentTool<TInput> {
 	readonly name = "edit";
 	readonly label = "Edit";
@@ -428,6 +446,15 @@ export class EditTool implements AgentTool<TInput> {
 
 	readonly approval = (args: unknown) => {
 		const targets = this.#inspect(args).paths;
+		// Remote SSH edits open an outbound connection and run a remote shell to
+		// move the file (same tier as the exec-gated `ssh` tool and `write`), so
+		// they must not be classified by the internal-resource read/write split
+		// below. The payload is scanned before the parsed targets: `#inspect`
+		// only reports sections it can attribute, and a payload it cannot parse
+		// (or whose section names a `ssh://` selector) must still fail closed at
+		// exec. A `ssh://` entry riding along with a workspace path stays exec —
+		// every section of a multi-section payload is written.
+		if (approvalPayloadTargetsSsh(args) || targets.some(pathTargetsSsh)) return "exec";
 		return targets.length > 0 && targets.every(target => resolveFileWriteApprovalTier(target) === "read")
 			? "read"
 			: "write";

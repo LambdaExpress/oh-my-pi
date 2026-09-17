@@ -6,7 +6,7 @@ import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { type FetchImpl, getEnvApiKey, type ImageContent, type TextContent } from "@oh-my-pi/pi-ai";
 import { htmlToMarkdown, notebookToEditableText } from "@oh-my-pi/pi-natives";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
-import { $which, ptree, truncate } from "@oh-my-pi/pi-utils";
+import { $which, ptree, removeWithRetries, truncate } from "@oh-my-pi/pi-utils";
 import { type ArchiveFormat, listArchiveRoot, sniffArchiveFormat } from "@oh-my-pi/pi-utils/ar";
 import type { Settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
@@ -30,7 +30,7 @@ import { applyListLimit } from "./list-limit";
 import { formatStyledArtifactReference, type OutputMeta } from "./output-meta";
 import { isReadableUrlPath, type LineRange, parseLineRanges, parseTailCount } from "./path-utils";
 import type { ParsedSelector } from "./read-selector";
-import { formatBytes, formatExpandHint, getDomain, sanitizeDisplayLines } from "./render-utils";
+import { createMoreLinesHeadWindow, formatBytes, getDomain, sanitizeDisplayLines } from "./render-utils";
 import { listTables, looksLikeSqlite, openSqliteReadConnection, renderTableList } from "./sqlite-reader";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -885,7 +885,10 @@ async function withTempBinaryFile<T>(
 		await Bun.write(tempPath, bytes);
 		return await readTempFile(tempPath);
 	} finally {
-		await fs.rm(tempDir, { recursive: true, force: true });
+		// Windows keeps a just-closed SQLite handle locked for up to ~1.5s, so a
+		// single-shot `fs.rm` throws EBUSY here and rejects the whole render
+		// (the sqlite/notebook payload then degrades to a plain binary notice).
+		await removeWithRetries(tempDir);
 	}
 }
 
@@ -1873,32 +1876,26 @@ export function renderReadUrlResult(
 		metadataLines.push(`${uiTheme.fg("muted", "Notes:")} ${details.notes.join("; ")}`);
 	}
 
+	const contentPreviewLines =
+		contentLines.length > 0
+			? contentLines
+					.flatMap(line => sanitizeDisplayLines(line))
+					.map(line => line.trimEnd())
+					.map(line => uiTheme.fg("dim", line))
+			: [uiTheme.fg("dim", "(no content)")];
 	const outputBlock = new CachedOutputBlock();
-	let lastExpanded: boolean | undefined;
-	let contentPreviewLines: string[] | undefined;
-
 	return markFramedBlockComponent({
 		render: (width: number) => {
 			const { expanded } = options;
-
-			if (contentPreviewLines === undefined || lastExpanded !== expanded) {
-				const previewLimit = expanded ? 12 : 3;
-				const previewList = applyListLimit(contentLines, { headLimit: previewLimit });
-				const previewLines = previewList.items
-					.flatMap(line => sanitizeDisplayLines(line))
-					.map(line => line.trimEnd());
-				const remaining = Math.max(0, contentLines.length - previewList.items.length);
-				contentPreviewLines =
-					previewLines.length > 0
-						? previewLines.map(line => uiTheme.fg("dim", line))
-						: [uiTheme.fg("dim", "(no content)")];
-				if (remaining > 0) {
-					const hint = formatExpandHint(uiTheme, expanded, true);
-					contentPreviewLines.push(uiTheme.fg("muted", `… ${remaining} more lines${hint ? ` ${hint}` : ""}`));
-				}
-				lastExpanded = expanded;
-				outputBlock.invalidate();
-			}
+			// The preview budget is a count of *rendered* rows, not logical lines:
+			// one long line must still fold to the configured height instead of
+			// wrapping into dozens of rows. The block re-wraps at the live width,
+			// so folding is reevaluated after every resize.
+			const contentVisualWindow = createMoreLinesHeadWindow(uiTheme, {
+				maxContentRows: expanded ? 12 : 3,
+				expandHint: !expanded,
+				markerKey: "read-url-content-preview",
+			});
 
 			return outputBlock.render(
 				{
@@ -1906,7 +1903,11 @@ export function renderReadUrlResult(
 					state: truncated ? "warning" : "success",
 					sections: [
 						{ label: uiTheme.fg("toolTitle", "Metadata"), lines: metadataLines },
-						{ label: uiTheme.fg("toolTitle", "Content Preview"), lines: contentPreviewLines },
+						{
+							label: uiTheme.fg("toolTitle", "Content Preview"),
+							lines: contentPreviewLines,
+							visualWindow: contentVisualWindow,
+						},
 					],
 					width,
 					applyBg: false,
@@ -1914,10 +1915,6 @@ export function renderReadUrlResult(
 				uiTheme,
 			);
 		},
-		invalidate: () => {
-			outputBlock.invalidate();
-			contentPreviewLines = undefined;
-			lastExpanded = undefined;
-		},
+		invalidate: () => outputBlock.invalidate(),
 	});
 }
