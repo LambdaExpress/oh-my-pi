@@ -209,6 +209,10 @@ try {
 				await stopConsumer(first);
 				// The global broker's real idle clock must pass while the second client remains connected.
 				await Bun.sleep(500);
+				// The relay belongs to the machine-global broker, so that broker has to
+				// outlive whichever client happened to spawn it: on Windows a job object
+				// kills a non-detached child with its parent, which used to stop the
+				// relay here even though the second consumer still held its lease.
 				expect(await probeRelayServer(cdpUrl)).toBeTrue();
 
 				await stopConsumer(second);

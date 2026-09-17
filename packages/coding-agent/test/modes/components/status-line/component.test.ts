@@ -330,10 +330,14 @@ describe("StatusLineComponent", () => {
 		vi.useFakeTimers();
 		const waiters: Array<() => void> = [];
 		const report = makeOpenCodeGoUsageReport();
+		// The compact countdown labels are the `cost` segment's rendering of a
+		// usage report — the shape the default status line shows. The `usage`
+		// segment keeps fixed window labels plus a precise reset suffix.
 		const statusLine = makeUsageOnlyStatusLine(
 			async () => report,
 			() => waiters.shift()?.(),
 			"opencode-go",
+			"cost",
 		);
 
 		try {
@@ -344,13 +348,15 @@ describe("StatusLineComponent", () => {
 
 			const rendered = Bun.stripANSI(statusLine.getTopBorder(160).content);
 			expect(rendered).not.toContain("OpenCode Go");
-			expect(rendered).toContain("5h 25%");
+			// The compact segment reports what is left in each window, so the
+			// fixture's 25% used reads as 75% remaining.
+			expect(rendered).toContain("5h 75%");
 			expect(rendered).toContain("6d 50%");
-			expect(rendered).toContain("31d 75%");
+			expect(rendered).toContain("31d 25%");
 
 			vi.advanceTimersByTime(4 * 60 * 60_000 + 13 * 60_000);
 			const later = Bun.stripANSI(statusLine.getTopBorder(160).content);
-			expect(later).toContain("30m 25%");
+			expect(later).toContain("30m 75%");
 		} finally {
 			statusLine.dispose();
 			vi.useRealTimers();

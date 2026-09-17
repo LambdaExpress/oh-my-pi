@@ -15,6 +15,13 @@ const ONE_PX_PNG = Buffer.from(
 	"base64",
 );
 
+// The literal `doc.pdf:` fixture below competes with the PDF image-listing
+// selector, so the file name must contain `:` — which NTFS forbids. The
+// competing selector routing itself is covered on every platform by the
+// rendering test above; only the literal-file precedence needs a POSIX
+// filesystem.
+const posixIt = it.skipIf(process.platform === "win32");
+
 function makeSession(cwd: string): ToolSession {
 	return {
 		cwd,
@@ -74,12 +81,14 @@ describe("read PDF page screenshots", () => {
 		expect(tool.approval({ path: `${pdfPath}:2-2` })).toBe("read");
 	});
 
-	it("preserves a literal filename that looks like a PDF image listing", async () => {
+	posixIt("preserves a literal filename that looks like a PDF image listing", async () => {
 		const literalPath = `${pdfPath}:`;
 		await fs.writeFile(literalPath, "literal colon path wins\n");
 
 		const result = await new ReadTool(makeSession(testDir)).execute("read-literal", { path: literalPath });
 		expect(textOf(result)).toContain("literal colon path wins");
+		// Read as literal text, not re-routed to the PDF page-screenshot renderer.
+		expect(result.content.some(entry => entry.type === "image")).toBe(false);
 	});
 
 	it("routes PDF line selectors through normal document conversion", async () => {

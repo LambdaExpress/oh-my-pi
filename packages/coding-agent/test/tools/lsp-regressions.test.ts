@@ -6062,11 +6062,18 @@ describe("lsp typescript no project hint", () => {
 		expect(text).toContain("language service is disabled");
 		expect(text).toContain("tsconfig.json/jsconfig.json include");
 		expect(text).toContain("public/fontawesome/js");
+		// Project-side remedy: `compilerOptions.disableSizeLimit` is a real
+		// tsconfig editor-support option, not a server switch.
+		expect(text).toContain("compilerOptions.disableSizeLimit");
 		expect(text).toContain(".lsp.json initOptions");
 		expect(text).toContain("maxTsServerMemory");
 		expect(text).toContain("tsserver.path");
-		// Never advertise configuration the server does not have.
-		expect(text).not.toContain("disableSizeLimit");
+		// Never advertise .lsp.json initOptions the server does not have: the
+		// hint closes with exactly the switches typescript-language-server
+		// accepts, so no invented option can ride along with the supported ones.
+		expect(text.slice(text.indexOf(".lsp.json initOptions"))).toBe(
+			".lsp.json initOptions; typescript-language-server supports maxTsServerMemory, tsserver.path and tsserver.fallbackPath.",
+		);
 		expect(requestCount).toBeGreaterThan(0);
 	});
 

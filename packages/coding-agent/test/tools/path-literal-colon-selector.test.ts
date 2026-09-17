@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import * as nodeFs from "node:fs";
 import * as fs from "node:fs/promises";
@@ -151,15 +152,21 @@ describe("literal colon filename resolution (issue #4618)", () => {
 	});
 
 	describe("read tool", () => {
-		it("reports a unique suffix candidate as a suggestion without reading it", async () => {
+		// A unique workspace suffix match is read in place of the missing authored
+		// path (docs/tools/read.md: suffix resolution), and the result must name
+		// both paths so the substitution is never silent.
+		it("reads a unique workspace suffix candidate and discloses the correction", async () => {
 			const candidateDir = path.join(tmpDir, "fixtures");
 			await fs.mkdir(candidateDir, { recursive: true });
 			await Bun.write(path.join(candidateDir, ".lsp.json"), "fixture-only content\n");
 
 			const tool = new ReadTool(createSession());
-			await expect(tool.execute("read-missing-with-suggestion", { path: ".lsp.json" })).rejects.toThrow(
-				"Path '.lsp.json' not found.\nDid you mean 'fixtures/.lsp.json'?",
-			);
+			const result = await tool.execute("read-missing-with-suggestion", { path: ".lsp.json" });
+			const output = getText(result);
+
+			expect(output).toContain("fixture-only content");
+			expect(output).toContain("[Path '.lsp.json' not found; resolved to 'fixtures/.lsp.json' via suffix match]");
+			expect(result.details?.suffixResolution).toEqual({ from: ".lsp.json", to: "fixtures/.lsp.json" });
 		});
 
 		it("omits suffix suggestions when multiple candidates are ambiguous", async () => {
@@ -185,28 +192,41 @@ describe("literal colon filename resolution (issue #4618)", () => {
 			expect(output).toContain("exact content");
 			expect(output).not.toContain("nested content");
 		});
-		it("suggests a nested archive without opening it", async () => {
+		it("opens a suffix-matched nested archive and discloses the correction", async () => {
 			const candidateDir = path.join(tmpDir, "fixtures");
 			await fs.mkdir(candidateDir, { recursive: true });
 			await Bun.write(path.join(candidateDir, "bundle.zip"), EMPTY_ZIP_EOCD);
 
 			const tool = new ReadTool(createSession());
-			await expect(tool.execute("read-missing-archive", { path: "bundle.zip" })).rejects.toThrow(
-				"Path 'bundle.zip' not found.\nDid you mean 'fixtures/bundle.zip'?",
-			);
+			const result = await tool.execute("read-missing-archive", { path: "bundle.zip" });
+			const output = getText(result);
+
+			// Archive listing output (not raw bytes) proves the resolved archive was
+			// opened as an archive; the notice reports the substituted path.
+			expect(output).toContain("(empty archive directory)");
+			expect(output).toContain("[Path 'bundle.zip' not found; resolved to 'fixtures/bundle.zip' via suffix match]");
+			expect(result.details?.suffixResolution).toEqual({ from: "bundle.zip", to: "fixtures/bundle.zip" });
+			expect(result.details?.resolvedPath).toBe(path.join(candidateDir, "bundle.zip"));
 		});
 
-		it("suggests a nested SQLite database without opening it", async () => {
+		it("opens a suffix-matched SQLite database and discloses the correction", async () => {
 			const candidateDir = path.join(tmpDir, "fixtures");
 			await fs.mkdir(candidateDir, { recursive: true });
-			const header = new Uint8Array(4096);
-			header.set(Buffer.from("SQLite format 3\0", "utf-8"), 0);
-			await Bun.write(path.join(candidateDir, "data.db"), header);
+			const candidateDb = path.join(candidateDir, "data.db");
+			const db = new Database(candidateDb);
+			db.exec("CREATE TABLE widgets (id INTEGER PRIMARY KEY, label TEXT)");
+			db.close();
 
 			const tool = new ReadTool(createSession());
-			await expect(tool.execute("read-missing-sqlite", { path: "data.db" })).rejects.toThrow(
-				"Path 'data.db' not found.\nDid you mean 'fixtures/data.db'?",
-			);
+			const result = await tool.execute("read-missing-sqlite", { path: "data.db" });
+			const output = getText(result);
+
+			// The table list (not the raw header bytes) proves the resolved file was
+			// opened as a database; the notice reports the substituted path.
+			expect(output).toContain("widgets (0 rows)");
+			expect(output).toContain("[Path 'data.db' not found; resolved to 'fixtures/data.db' via suffix match]");
+			expect(result.details?.suffixResolution).toEqual({ from: "data.db", to: "fixtures/data.db" });
+			expect(result.details?.resolvedPath).toBe(candidateDb);
 		});
 
 		posixIt("reads a literal file whose name ends in a selector-shaped suffix", async () => {

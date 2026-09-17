@@ -78,7 +78,16 @@ describe("AssistantMessageComponent transcript lifecycle", () => {
 		);
 		const live = Bun.stripANSI(transcript.renderViewport(80, 20, { now: 1, tick: 1 }).join("\n"));
 		expect(live).toContain("Revised opening paragraph");
-		expect(transcript.peekFinalizedBatch(80, 0)).toBeUndefined();
+		// Without viewport pressure an unfinalized block is never offered for
+		// retirement, so a later revision stays fully recoverable.
+		expect(transcript.peekFinalizedBatch(80, 20)).toBeUndefined();
+		// With no spare rows the container retires the block's current rows into
+		// scrollback; what it retires must be the revised render, because rows
+		// written to terminal history cannot be retracted.
+		const pressured = transcript.peekFinalizedBatch(80, 0);
+		const pressuredRows = Bun.stripANSI(pressured?.rows.join("\n") ?? "");
+		expect(pressuredRows).toContain("Revised opening paragraph");
+		expect(pressuredRows).not.toContain("First completed paragraph");
 
 		component.markTranscriptBlockFinalized();
 		const batch = transcript.peekFlushBatch(80);

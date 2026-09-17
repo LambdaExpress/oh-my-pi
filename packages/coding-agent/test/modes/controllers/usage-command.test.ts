@@ -1,14 +1,25 @@
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
 import { renderUsageReports } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { setLocale } from "../../../src/i18n";
 
 describe("renderUsageReports content", () => {
 	beforeAll(async () => {
 		const darkTheme = await getThemeByName("dark");
 		if (!darkTheme) throw new Error("Expected dark theme");
 		setThemeInstance(darkTheme);
+	});
+
+	// The assertions read English labels; the process locale follows the host
+	// system language, so pin it instead of leaking zh-CN (or any other) copy.
+	beforeEach(() => {
+		setLocale("en");
+	});
+
+	afterEach(() => {
+		setLocale(null);
 	});
 
 	it("renders bars and free percentage for limits that only report remainingFraction", () => {

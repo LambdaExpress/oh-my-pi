@@ -19,7 +19,7 @@ import {
 } from "@oh-my-pi/pi-coding-agent/tools/browser/registry";
 import { acquireTab } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
-import type { Browser, HTTPRequest, Page, Target } from "puppeteer-core";
+import type { Browser, Page, Target } from "puppeteer-core";
 import { chromiumAvailable } from "./chromium-probe";
 
 const CHROMIUM_AVAILABLE = await chromiumAvailable();
@@ -294,27 +294,34 @@ describe("pickElectronTarget", () => {
 	test.skipIf(!CHROMIUM_AVAILABLE)(
 		"does not retry an attached navigation failure as worker startup",
 		async () => {
-			// An earlier form raced a real navigation timeout against a hanging
-			// local server, but Puppeteer installs its timeout watcher before
-			// Page.navigate: under load the timeout could win before Chrome
-			// dispatched any HTTP request, and the request-count assertion read 0.
-			// Abort the navigation via request interception on the exact page
-			// attach adopts instead — the navigation fails deterministically on
-			// its first request, and a wrongly retried worker startup would
-			// navigate again and read 2.
+			// The navigation must fail inside Chrome; this process may only count
+			// it. Two earlier forms relied on this process instead: a hanging
+			// server raced Puppeteer's navigation timeout (the watcher installs
+			// before Page.navigate, so the request count could still read 0), and
+			// aborting the navigation through request interception left the
+			// failure to a CDP Fetch round trip answered before the 15s deadline —
+			// a busy runner reports Puppeteer's bare "Navigation timeout of 15000
+			// ms exceeded" instead, and interception only covers whichever page
+			// object attach happens to adopt.
+			// Redirecting the document request to a loopback port nothing listens
+			// on fails it inside Chrome (net::ERR_CONNECTION_REFUSED) however
+			// loaded the runner is; the server counts navigation attempts, so a
+			// wrongly retried worker startup reads 2. Port 9 cannot serve as that
+			// dead endpoint: Chrome's blocked-port list rejects it with
+			// net::ERR_UNSAFE_PORT before any request is made.
 			const launched = sharedHeadless;
 			if (!launched || !("browser" in launched)) throw new Error("Expected a shared Puppeteer browser");
 			const endpoint = new URL(launched.browser.wsEndpoint());
-			const targetPage = (await launched.browser.pages())[0];
-			if (!targetPage) throw new Error("Expected the launched browser to expose a page target");
-
-			let requestCount = 0;
-			const onRequest = (request: HTTPRequest) => {
-				requestCount++;
-				void request.abort("failed");
-			};
-			await targetPage.setRequestInterception(true);
-			targetPage.on("request", onRequest);
+			const deadPort = await findFreeCdpPort();
+			let navigationRequests = 0;
+			const redirect = Bun.serve({
+				hostname: "127.0.0.1",
+				port: 0,
+				fetch() {
+					navigationRequests++;
+					return Response.redirect(`http://127.0.0.1:${deadPort}/refused`, 302);
+				},
+			});
 			let attached: BrowserHandle | undefined;
 
 			let attempted = false;
@@ -326,18 +333,14 @@ describe("pickElectronTarget", () => {
 				attempted = true;
 				await expect(
 					acquireTab(`attach-failure-${process.pid}-${Math.random().toString(36).slice(2)}`, attached, {
-						// Loopback keeps a hypothetical interception miss local and
-						// loud (instant connection refusal, count 0) instead of
-						// wandering into DNS or a proxy.
-						url: "http://127.0.0.1:9/aborted-by-interception",
+						url: `http://127.0.0.1:${redirect.port}/aborted-navigation`,
 						waitUntil: "domcontentloaded",
 						timeoutMs: 15_000,
 					}),
-				).rejects.toThrow(/net::ERR_FAILED/);
-				expect(requestCount).toBe(1);
+				).rejects.toThrow(/net::ERR_CONNECTION_REFUSED/);
+				expect(navigationRequests).toBe(1);
 			} finally {
-				targetPage.off("request", onRequest);
-				await targetPage.setRequestInterception(false);
+				await redirect.stop(true);
 				if (attached && !attempted) await releaseBrowser(attached, { kill: false });
 			}
 		},

@@ -17,6 +17,20 @@ describe("SearXNG web search provider", () => {
 		delete process.env.SEARXNG_BASIC_PASSWORD;
 	});
 
+	/**
+	 * Close the SQLite store a test opened under `agentDir`, then delete it.
+	 *
+	 * `Settings.init({ agentDir })` opens a SQLite-backed AgentStorage at
+	 * `<agentDir>/agent.db`. While that handle is live, Windows fails the removal
+	 * with EBUSY on *every* retry, so `removeWithRetries` exhausts its 2s window
+	 * and throws. Resetting the settings singleton releases the store (and any
+	 * debounced config write) first; a removal failure still throws.
+	 */
+	async function disposeAgentDir(agentDir: string): Promise<void> {
+		resetSettingsForTest();
+		await removeWithRetries(agentDir);
+	}
+
 	it("sends RFC 7617 Basic auth when username and password are configured", async () => {
 		process.env.SEARXNG_ENDPOINT = "https://searx.example.org/";
 		process.env.SEARXNG_BASIC_USERNAME = "alice";
@@ -160,7 +174,7 @@ describe("SearXNG web search provider", () => {
 			expect(response.answer).toBe("Forty-two\n\nLegacy answer\n\nHallo\nGuten Tag");
 			expect(response.sources[0]?.snippet).toBe("Fallback snippet");
 		} finally {
-			await removeWithRetries(agentDir);
+			await disposeAgentDir(agentDir);
 		}
 	});
 
@@ -196,7 +210,7 @@ describe("SearXNG web search provider", () => {
 				`Basic ${Buffer.from("alice:s3cret", "utf-8").toString("base64")}`,
 			);
 		} finally {
-			await removeWithRetries(agentDir);
+			await disposeAgentDir(agentDir);
 		}
 	});
 
@@ -380,7 +394,7 @@ describe("SearXNG web search provider", () => {
 			const searchUrl = requested.find(url => url.pathname === "/search");
 			expect(searchUrl?.searchParams.get("engines")).toBe("duckduckgo,brave,unknown");
 		} finally {
-			await removeWithRetries(agentDir);
+			await disposeAgentDir(agentDir);
 		}
 	});
 
@@ -413,7 +427,7 @@ describe("SearXNG web search provider", () => {
 			const searchUrl = requested.find(url => url.pathname === "/search");
 			expect(searchUrl?.searchParams.get("engines")).toBe("ddg,brave");
 		} finally {
-			await removeWithRetries(agentDir);
+			await disposeAgentDir(agentDir);
 		}
 	});
 

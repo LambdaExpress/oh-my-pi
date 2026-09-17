@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolContext } from "@oh-my-pi/pi-agent-core";
+import { closeModelCacheSharedDb } from "@oh-my-pi/pi-catalog/model-cache";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
@@ -64,18 +65,15 @@ describe("tools.approvalMode setting", () => {
 
 	afterAll(async () => {
 		await session.dispose();
-		// Windows can briefly hold tempdir handles after session.dispose(); retry a few times.
-		for (let attempt = 0; attempt < 5; attempt++) {
-			try {
-				removeSyncWithRetries(tempDir);
-				break;
-			} catch (err) {
-				const code = (err as NodeJS.ErrnoException).code;
-				if (code !== "EBUSY" && code !== "ENOTEMPTY" && code !== "EPERM") throw err;
-				if (attempt === 4) break; // best-effort: OS will reclaim
-				await Bun.sleep(50 * (attempt + 1));
-			}
-		}
+		// createAgentSession leaves two process-lifetime SQLite handles inside agentDir:
+		// the discovered auth store's `agent.db` and the shared model cache's `models.db`.
+		// dispose() closes neither, and while they are live Windows rejects the removal
+		// with EBUSY on every attempt — so a bare retry loop just burns its whole window
+		// (~2s per attempt) and overran this hook's 5s budget. Release both, then remove;
+		// a failure here must fail the run rather than leak the temp dir silently.
+		session.modelRegistry.authStorage.close();
+		closeModelCacheSharedDb();
+		removeSyncWithRetries(tempDir);
 	});
 
 	function approvalSettings(extraSettings: Record<string, unknown> = {}): Settings {
