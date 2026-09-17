@@ -1467,18 +1467,74 @@ function renderAnswerOptionLines(
 	return out;
 }
 
+/**
+ * Folded-row answer summary: what the user picked or typed, so the one-line row
+ * reports the outcome instead of restating the question above it. Undefined
+ * while the dialog is unanswered (or was dismissed), letting the caller fall
+ * back to the question text.
+ */
+function askFoldedAnswer(details: AskToolDetails | undefined): string | undefined {
+	if (!details) return undefined;
+	if (details.chatRedirect) return "chat redirect";
+	// Timeout auto-selection picked a default the user never chose; say that
+	// instead of presenting it as their answer.
+	if (details.timedOut) return "auto-selected after timeout";
+	const rawResults = details.results;
+	const entries = Array.isArray(rawResults) && rawResults.length > 0 ? rawResults : [details];
+	const answers: string[] = [];
+	for (const entry of entries) {
+		const custom = typeof entry.customInput === "string" ? entry.customInput.trim() : "";
+		if (custom.length > 0) {
+			answers.push(custom);
+			continue;
+		}
+		const selected = (Array.isArray(entry.selectedOptions) ? entry.selectedOptions : []).filter(
+			option => typeof option === "string" && option.trim().length > 0,
+		);
+		if (selected.length > 0) answers.push(selected.join(", "));
+	}
+	if (answers.length === 0) return undefined;
+	const [first, ...rest] = answers;
+	return rest.length > 0 ? `${first} (+${rest.length} more)` : first;
+}
+
 export const askToolRenderer = {
 	mergeCallAndResult: true,
 	/**
-	 * Folded row: the question the dialog is asking (the option list is the
-	 * card's body). Reads `Ask` alone only when the args carry no question yet.
+	 * Folded row: `Ask: <question>` while the dialog is open, `Ask: <question> →
+	 * <answer>` once it settled (typed text wins over picked options). Both
+	 * halves of the exchange stay on the row; the question is clipped so a long
+	 * prompt cannot push the answer off a narrow terminal. Reads `Ask` alone
+	 * only when the args carry no question yet.
 	 */
 	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
 		const questions = normalizeRenderQuestions((args as AskRenderArgs | undefined)?.questions);
 		const first = questions?.[0]?.question;
-		if (!first) return { label: "Ask", detail: context.theme.fg("muted", "waiting for the question") };
-		const detail = questions.length > 1 ? `${first} (+${questions.length - 1} more)` : first;
-		return { label: "Ask", detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
+		const question =
+			first !== undefined
+				? questions!.length > 1
+					? `${first} (+${questions!.length - 1} more)`
+					: first
+				: undefined;
+		const answer = askFoldedAnswer(context.result?.details as AskToolDetails | undefined);
+		if (answer !== undefined) {
+			const questionPart =
+				question !== undefined
+					? `${context.theme.fg(
+							"dim",
+							truncateToWidth(sanitizeDisplayWarning(question), TRUNCATE_LENGTHS.TITLE, Ellipsis.Unicode),
+						)} ${context.theme.fg("dim", "→")} `
+					: "";
+			const answerPart = context.theme.fg(
+				"muted",
+				truncateToWidth(sanitizeDisplayWarning(answer), TRUNCATE_LENGTHS.TITLE, Ellipsis.Unicode),
+			);
+			return { label: "Ask", detail: `${questionPart}${answerPart}` };
+		}
+		if (question === undefined) {
+			return { label: "Ask", detail: context.theme.fg("muted", "waiting for the question") };
+		}
+		return { label: "Ask", detail: context.theme.fg("muted", sanitizeDisplayWarning(question)) };
 	},
 	renderCall(args: AskRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const label = formatTitle("Ask", uiTheme);

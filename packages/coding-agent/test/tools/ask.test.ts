@@ -2225,3 +2225,73 @@ describe("AskTool carriage-return sanitization", () => {
 		expect(result.content[0].text).not.toContain("\r");
 	});
 });
+
+describe("askToolRenderer folded row", () => {
+	const args = {
+		questions: [
+			{ id: "q1", question: "Which screen is blank?", options: [{ label: "Picture" }, { label: "Shipment" }] },
+		],
+	};
+
+	function summary(details: unknown, callArgs: unknown = args): { label: string; detail?: string } {
+		return askToolRenderer.activitySummary!(callArgs, {
+			expanded: false,
+			isPartial: false,
+			result: { content: [{ type: "text", text: "answered" }], details },
+			theme,
+		});
+	}
+
+	it("keeps the question and the picked option on the settled row", () => {
+		const row = summary({ question: "Which screen is blank?", options: ["Picture"], selectedOptions: ["Picture"] });
+
+		expect(row.label).toBe("Ask");
+		const detail = stripVTControlCharacters(row.detail ?? "");
+		expect(detail).toContain("Which screen is blank?");
+		expect(detail).toContain("→");
+		expect(detail).toContain("Picture");
+	});
+
+	it("prefers typed input over picked options", () => {
+		const row = summary({ selectedOptions: ["Picture"], customInput: "neither, it is the Yard screen" });
+
+		expect(stripVTControlCharacters(row.detail ?? "")).toContain("neither, it is the Yard screen");
+		// The unselected option label stays out of the row.
+		expect(stripVTControlCharacters(row.detail ?? "")).not.toContain("Picture");
+	});
+
+	it("clips a long question so the answer survives on the row", () => {
+		const row = summary({ selectedOptions: ["Picture"] }, { questions: [{ id: "q1", question: "Q".repeat(200) }] });
+
+		const detail = stripVTControlCharacters(row.detail ?? "").trimEnd();
+		expect(detail).toContain("…");
+		expect(detail.endsWith("Picture")).toBe(true);
+	});
+
+	it("lists the first answer of a multi-question dialog with the remainder counted", () => {
+		const row = summary({
+			results: [
+				{ id: "q1", question: "Q1?", options: ["A"], multi: false, selectedOptions: ["A"] },
+				{ id: "q2", question: "Q2?", options: ["B"], multi: false, selectedOptions: ["B"] },
+			],
+		});
+
+		const detail = stripVTControlCharacters(row.detail ?? "");
+		expect(detail).toContain("A");
+		expect(detail).toContain("(+1 more)");
+	});
+
+	it("labels a timeout auto-selection as not being the user's answer", () => {
+		const row = summary({ selectedOptions: ["Picture"], timedOut: true });
+
+		const detail = stripVTControlCharacters(row.detail ?? "");
+		expect(detail).toContain("auto-selected after timeout");
+		expect(detail).not.toContain("Picture");
+	});
+
+	it("keeps showing the question while the dialog is unanswered", () => {
+		const row = askToolRenderer.activitySummary!(args, { expanded: false, isPartial: true, theme });
+
+		expect(stripVTControlCharacters(row.detail ?? "")).toContain("Which screen is blank?");
+	});
+});

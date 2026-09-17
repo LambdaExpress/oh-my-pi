@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import {
+	learnToolRenderer,
 	recallToolRenderer,
 	reflectToolRenderer,
 	retainToolRenderer,
@@ -137,5 +138,60 @@ describe("reflectToolRenderer", () => {
 		expect(rendered[0]).toContain("what do you know");
 		expect(rendered.some(line => line.includes("Line one."))).toBe(true);
 		expect(rendered.some(line => line.includes("Line three."))).toBe(true);
+	});
+});
+
+describe("learnToolRenderer", () => {
+	const lesson = {
+		memory: "Terminal IME fails when the terminal process predates ctfmon.\nRestart the terminal to recover.",
+		context: "IME diagnosis",
+	};
+
+	it("renders the lesson body and the backend's own outcome", async () => {
+		const uiTheme = await theme();
+		const rendered = lines(
+			learnToolRenderer.renderResult(
+				{ content: [{ type: "text", text: "Lesson stored." }] } as never,
+				{ expanded: false, isPartial: false },
+				uiTheme,
+				lesson,
+			),
+		);
+
+		expect(rendered[0]).toContain("Learn");
+		expect(rendered[0]).toContain("Lesson stored");
+		const body = rendered.join("\n");
+		expect(body).toContain("Terminal IME fails when the terminal process predates ctfmon.");
+		expect(body).toContain("Restart the terminal to recover.");
+		expect(body).toContain("context: IME diagnosis");
+	});
+
+	it("folds the lesson headline into the one-line activity row", async () => {
+		const uiTheme = await theme();
+		const summary = learnToolRenderer.activitySummary(lesson, { theme: uiTheme } as never);
+
+		expect(summary.label).toBe("Learn");
+		expect(summary.detail).toBeDefined();
+		expect(sanitizeText(summary.detail!)).toContain("Terminal IME fails when the terminal process predates ctfmon.");
+		// A folded row is one row: the body's second line must not leak in.
+		expect(sanitizeText(summary.detail!)).not.toContain("Restart the terminal");
+	});
+
+	it("surfaces a rejected write as an error line under the header", async () => {
+		const uiTheme = await theme();
+		const rendered = lines(
+			learnToolRenderer.renderResult(
+				{
+					content: [{ type: "text", text: 'Did not create managed skill "x": an authored skill claims it.' }],
+					isError: true,
+				} as never,
+				{ expanded: false, isPartial: false },
+				uiTheme,
+				{ memory: "lesson" },
+			),
+		);
+
+		expect(rendered.join("\n")).toContain("Error");
+		expect(rendered.join("\n")).toContain("an authored skill claims it");
 	});
 });
