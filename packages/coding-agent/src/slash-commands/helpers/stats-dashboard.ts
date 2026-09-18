@@ -1,5 +1,6 @@
 import * as stats from "@oh-my-pi/omp-stats";
 import * as openUtils from "../../utils/open";
+import { t } from "../../i18n";
 
 export const DEFAULT_STATS_DASHBOARD_PORT = 3847;
 
@@ -24,10 +25,10 @@ let activeStatsServer: StatsDashboardServer | undefined;
 const STATS_DASHBOARD_USAGE = "Usage: /stats [--port <port>] [--host <host>]";
 
 function parsePort(value: string | undefined): number | string {
-	if (!value) return `Missing port. ${STATS_DASHBOARD_USAGE}`;
-	if (!/^\d+$/.test(value)) return `Invalid port: ${value}`;
+	if (!value) return t("Missing port. {usage}", { usage: t(STATS_DASHBOARD_USAGE) });
+	if (!/^\d+$/.test(value)) return t("Invalid port: {value}", { value });
 	const port = Number(value);
-	if (!Number.isInteger(port) || port < 0 || port > 65_535) return `Invalid port: ${value}`;
+	if (!Number.isInteger(port) || port < 0 || port > 65_535) return t("Invalid port: {value}", { value });
 	return port;
 }
 
@@ -52,17 +53,19 @@ export function parseStatsDashboardArgs(args: string): StatsDashboardArgs | { er
 		}
 		if (token === "--host") {
 			const value = tokens[++i];
-			if (!value) return { error: `Missing host. ${STATS_DASHBOARD_USAGE}` };
+			if (!value) return { error: t("Missing host. {usage}", { usage: t(STATS_DASHBOARD_USAGE) }) };
 			host = value;
 			continue;
 		}
 		if (token.startsWith("--host=")) {
 			const value = token.slice("--host=".length);
-			if (!value) return { error: `Missing host. ${STATS_DASHBOARD_USAGE}` };
+			if (!value) return { error: t("Missing host. {usage}", { usage: t(STATS_DASHBOARD_USAGE) }) };
 			host = value;
 			continue;
 		}
-		return { error: `Unknown option: ${token}. ${STATS_DASHBOARD_USAGE}` };
+		return {
+			error: t("Unknown option: {option}. {usage}", { option: token, usage: t(STATS_DASHBOARD_USAGE) }),
+		};
 	}
 
 	return { port, host };
@@ -83,12 +86,21 @@ export async function launchStatsDashboard(args: StatsDashboardArgs): Promise<St
 	openUtils.openPath(url);
 
 	const serverLine = requestedAddressIgnored
-		? `Dashboard already running at: ${url} (requested ${args.host}:${args.port} ignored)`
-		: `Dashboard available at: ${url}`;
+		? t("Dashboard already running at: {url} (requested {host}:{port} ignored)", {
+				url,
+				host: args.host,
+				port: args.port,
+			})
+		: t("Dashboard available at: {url}", { url });
 
 	return {
 		url,
-		message: `Synced ${processed} new entries from ${files} files (${total} total)\n${serverLine}`,
+		message: t("Synced {count} new entries from {files} files ({total} total)\n{serverLine}", {
+			count: processed,
+			files,
+			total,
+			serverLine,
+		}),
 	};
 }
 

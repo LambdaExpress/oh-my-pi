@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { GrepOutputMode, grep } from "@oh-my-pi/pi-natives";
 import { APP_NAME } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { t } from "../i18n";
 import { expandPath } from "../tools/path-utils";
 
 export interface GrepCommandArgs {
@@ -70,15 +71,22 @@ export function parseGrepArgs(args: string[]): GrepCommandArgs | undefined {
 
 export async function runGrepCommand(cmd: GrepCommandArgs): Promise<void> {
 	if (!cmd.pattern) {
-		console.error(chalk.red("Error: Pattern is required"));
+		console.error(chalk.red(t("Error: Pattern is required")));
 		process.exit(1);
 	}
 
 	const searchPath = path.resolve(expandPath(cmd.path));
-	console.log(chalk.dim(`Searching in: ${searchPath}`));
-	console.log(chalk.dim(`Pattern: ${cmd.pattern}`));
+	console.log(chalk.dim(t("Searching in: {path}", { path: searchPath })));
+	console.log(chalk.dim(t("Pattern: {pattern}", { pattern: cmd.pattern })));
 	console.log(
-		chalk.dim(`Mode: ${cmd.mode}, Limit: ${cmd.limit}, Context: ${cmd.context}, Gitignore: ${cmd.gitignore}`),
+		chalk.dim(
+			t("Mode: {mode}, Limit: {limit}, Context: {context}, Gitignore: {gitignore}", {
+				mode: cmd.mode,
+				limit: cmd.limit,
+				context: cmd.context,
+				gitignore: cmd.gitignore,
+			}),
+		),
 	);
 
 	console.log("");
@@ -95,11 +103,11 @@ export async function runGrepCommand(cmd: GrepCommandArgs): Promise<void> {
 			gitignore: cmd.gitignore,
 		});
 
-		console.log(chalk.green(`Total matches: ${result.totalMatches}`));
-		console.log(chalk.green(`Files with matches: ${result.filesWithMatches}`));
-		console.log(chalk.green(`Files searched: ${result.filesSearched}`));
+		console.log(chalk.green(t("Total matches: {count}", { count: result.totalMatches })));
+		console.log(chalk.green(t("Files with matches: {count}", { count: result.filesWithMatches })));
+		console.log(chalk.green(t("Files searched: {count}", { count: result.filesSearched })));
 		if (result.limitReached) {
-			console.log(chalk.yellow(`Limit reached: true`));
+			console.log(chalk.yellow(t("Limit reached: true")));
 		}
 		console.log("");
 
@@ -120,40 +128,40 @@ export async function runGrepCommand(cmd: GrepCommandArgs): Promise<void> {
 				}
 				console.log("");
 			} else if (cmd.mode === GrepOutputMode.Count) {
-				console.log(`${chalk.cyan(displayPath)}: ${match.matchCount ?? 0} matches`);
+				console.log(`${chalk.cyan(displayPath)}: ${t("{count} matches", { count: match.matchCount ?? 0 })}`);
 			} else {
 				console.log(chalk.cyan(displayPath));
 			}
 		}
 	} catch (err) {
-		console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
+		console.error(chalk.red(t("Error: {error}", { error: err instanceof Error ? err.message : String(err) })));
 		process.exit(1);
 	}
 }
 
 export function printGrepHelp(): void {
-	console.log(`${chalk.bold(`${APP_NAME} grep`)} - Test grep tool
+	console.log(`${chalk.bold(`${APP_NAME} grep`)} - ${t("Test grep tool")}
 
-${chalk.bold("Usage:")}
+${chalk.bold(t("Usage:"))}
   ${APP_NAME} grep <pattern> [path] [options]
 
-${chalk.bold("Arguments:")}
-  pattern   Regex pattern to search for
-  path      Directory or file to search (default: .)
+${chalk.bold(t("Arguments:"))}
+  pattern   ${t("Regex pattern to search for")}
+  path      ${t("Directory or file to search (default: .)")}
 
-${chalk.bold("Options:")}
-  -g, --glob <pattern>  Filter files by glob pattern
-  -l, --limit <n>       Max matches (default: 20)
-  -C, --context <n>     Context lines (default: 2)
-  -f, --files           Output file names only
-  -c, --count           Output match counts per file
-  -h, --help            Show this help
-  --no-gitignore        Include files excluded by .gitignore
+${chalk.bold(t("Options:"))}
+  -g, --glob <pattern>  ${t("Filter files by glob pattern")}
+  -l, --limit <n>       ${t("Max matches (default: 20)")}
+  -C, --context <n>     ${t("Context lines (default: 2)")}
+  -f, --files           ${t("Output file names only")}
+  -c, --count           ${t("Output match counts per file")}
+  -h, --help            ${t("Show this help")}
+  --no-gitignore        ${t("Include files excluded by .gitignore")}
 
-${chalk.bold("Environment:")}
-  PI_WALK_WORKERS=N    Set filesystem walker workers (default 4, 0 = auto)
+${chalk.bold(t("Environment:"))}
+  PI_WALK_WORKERS=N    ${t("Set filesystem walker workers (default 4, 0 = auto)")}
 
-${chalk.bold("Examples:")}
+${chalk.bold(t("Examples:"))}
   ${APP_NAME} grep "import" src/
   ${APP_NAME} grep "TODO" . --glob "*.ts"
   ${APP_NAME} grep "function" --files

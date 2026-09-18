@@ -92,7 +92,9 @@ export class CommandController {
 	): Promise<void> {
 		if (initialError !== undefined) {
 			this.ctx.showError(
-				`Failed to switch workspace: ${initialError instanceof Error ? initialError.message : String(initialError)}`,
+				t("Failed to switch workspace: {error}", {
+					error: initialError instanceof Error ? initialError.message : String(initialError),
+				}),
 			);
 		}
 
@@ -106,13 +108,19 @@ export class CommandController {
 			} catch {}
 			if (!realigned) {
 				this.ctx.showError(
-					`Failed to roll back move: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)} (failed to re-align workspace to ${actual})`,
+					t("Failed to roll back move: {error} (failed to re-align workspace to {path})", {
+						error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+						path: actual,
+					}),
 				);
 				await this.ctx.shutdown();
 				return;
 			}
 			this.ctx.showError(
-				`Failed to roll back move: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)} (workspace remains at ${actual})`,
+				t("Failed to roll back move: {error} (workspace remains at {path})", {
+					error: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+					path: actual,
+				}),
 			);
 			return;
 		}
@@ -129,11 +137,15 @@ export class CommandController {
 			realigned = await this.ctx.applyCwdChange(actual);
 		} catch {}
 		if (!realigned) {
-			this.ctx.showError(`Failed to restore source workspace after rollback: workspace remains at ${actual}`);
+			this.ctx.showError(
+				t("Failed to restore source workspace after rollback: workspace remains at {path}", { path: actual }),
+			);
 			await this.ctx.shutdown();
 			return;
 		}
-		this.ctx.showError(`Failed to restore source workspace after rollback: workspace remains at ${actual}`);
+		this.ctx.showError(
+			t("Failed to restore source workspace after rollback: workspace remains at {path}", { path: actual }),
+		);
 	}
 
 	openInBrowser(urlOrPath: string): void {
@@ -162,7 +174,7 @@ export class CommandController {
 	async handleTraceCommand(): Promise<void> {
 		const sessionFile = this.ctx.session.sessionFile;
 		if (!sessionFile) {
-			this.ctx.showWarning("No session file yet — send a message first.");
+			this.ctx.showWarning(t("No session file yet — send a message first."));
 			return;
 		}
 		try {
@@ -172,9 +184,13 @@ export class CommandController {
 			const { hostname, port } = await startServer();
 			const url = `${formatStatsDashboardUrl(hostname, port)}/#/traces?s=${encodeURIComponent(sessionFile)}`;
 			this.openInBrowser(url);
-			this.ctx.showStatus(`Trace: ${url}`);
+			this.ctx.showStatus(t("Trace: {url}", { url }));
 		} catch (error: unknown) {
-			this.ctx.showError(`Failed to open trace: ${error instanceof Error ? error.message : "Unknown error"}`);
+			this.ctx.showError(
+				t("Failed to open trace: {error}", {
+					error: error instanceof Error ? error.message : t("Unknown error"),
+				}),
+			);
 		}
 	}
 
@@ -330,7 +346,7 @@ export class CommandController {
 			restoreEditor();
 
 			const lines = [t("Share URL: {url}", { url: result.url })];
-			if (result.gistUrl) lines.push(`Gist: ${result.gistUrl}`);
+			if (result.gistUrl) lines.push(t("Gist: {url}", { url: result.gistUrl }));
 			if (result.truncated) lines.push(t("Note: large content was trimmed to fit the share size limit."));
 			this.ctx.showStatus(lines.join("\n"));
 			this.openInBrowser(result.url);
@@ -355,9 +371,9 @@ export class CommandController {
 		const normalizedPremiumRequests = Math.round((premiumRequests + Number.EPSILON) * 100) / 100;
 
 		let info = "";
-		info += `${theme.fg("dim", "File:")} ${stats.sessionFile ?? "In-memory"}\n`;
-		info += `${theme.fg("dim", "ID:")} ${stats.sessionId}\n`;
-		info += `\n${theme.bold("Provider")}\n`;
+		info += `${theme.fg("dim", t("File:"))} ${stats.sessionFile ?? t("In-memory")}\n`;
+		info += `${theme.fg("dim", t("ID:"))} ${stats.sessionId}\n`;
+		info += `\n${theme.bold(t("Provider"))}\n`;
 		const model = this.ctx.session.model;
 		if (!model) {
 			info += `${theme.fg("dim", t("No model selected"))}\n`;
@@ -385,7 +401,7 @@ export class CommandController {
 					.map(
 						([id, count]) => `${replaceTabs(sanitizeText(id))}${count > 1 ? theme.fg("dim", ` ×${count}`) : ""}`,
 					);
-				info += `${theme.fg("dim", "Served:")} ${routed.join(", ")}\n`;
+				info += `${theme.fg("dim", t("Served:"))} ${routed.join(", ")}\n`;
 			}
 		}
 		info += `\n`;
@@ -416,7 +432,7 @@ export class CommandController {
 		info += `${theme.fg("dim", t("Total:"))} ${stats.tokens.total.toLocaleString()}\n`;
 
 		if (stats.cost > 0 || normalizedPremiumRequests > 0 || stats.credits !== undefined) {
-			info += `\n${theme.bold("Cost")}\n`;
+			info += `\n${theme.bold(t("Cost"))}\n`;
 			if (stats.cost > 0) {
 				info += `${theme.fg("dim", t("Total:"))} ${stats.cost.toFixed(4)}\n`;
 			}
@@ -424,9 +440,9 @@ export class CommandController {
 				info += `${theme.fg("dim", t("Premium Requests:"))} ${normalizedPremiumRequests.toLocaleString()}\n`;
 			}
 			if (stats.credits !== undefined) {
-				info += `${theme.fg("dim", "Credits:")} ${formatCreditValue(stats.credits.cost)}\n`;
-				info += `${theme.fg("dim", "Committed Credits:")} ${formatCreditValue(stats.credits.committedCost)}\n`;
-				info += `${theme.fg("dim", "Committed ACU:")} ${formatCreditValue(stats.credits.acuCost)}\n`;
+				info += `${theme.fg("dim", t("Credits:"))} ${formatCreditValue(stats.credits.cost)}\n`;
+				info += `${theme.fg("dim", t("Committed Credits:"))} ${formatCreditValue(stats.credits.committedCost)}\n`;
+				info += `${theme.fg("dim", t("Committed ACU:"))} ${formatCreditValue(stats.credits.acuCost)}\n`;
 			}
 		}
 
@@ -737,12 +753,18 @@ export class CommandController {
 					session: this.ctx.session,
 				});
 				if (!payload) {
-					this.ctx.showWarning(`Memory queue is not available for the ${backend.id} backend.`);
+					this.ctx.showWarning(
+						t("Memory queue is not available for the {backend} backend.", { backend: backend.id }),
+					);
 					return;
 				}
-				showMarkdownPanel(this.ctx, "Memory Queue", payload);
+				showMarkdownPanel(this.ctx, t("Memory Queue"), payload);
 			} catch (error) {
-				this.ctx.showError(`Memory queue failed: ${error instanceof Error ? error.message : String(error)}`);
+				this.ctx.showError(
+					t("Memory queue failed: {error}", {
+						error: error instanceof Error ? error.message : String(error),
+					}),
+				);
 			}
 			return;
 		}
@@ -750,9 +772,13 @@ export class CommandController {
 		if (action === "sync") {
 			try {
 				await backend.enqueue(agentDir, this.ctx.sessionManager.getCwd(), this.ctx.session);
-				this.ctx.showStatus("Memory consolidation ran.");
+				this.ctx.showStatus(t("Memory consolidation ran."));
 			} catch (error) {
-				this.ctx.showError(`Memory sync failed: ${error instanceof Error ? error.message : String(error)}`);
+				this.ctx.showError(
+					t("Memory sync failed: {error}", {
+						error: error instanceof Error ? error.message : String(error),
+					}),
+				);
 			}
 			return;
 		}
@@ -786,7 +812,7 @@ export class CommandController {
 			return;
 		}
 
-		this.ctx.showError("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync|mm ...>");
+		this.ctx.showError(t("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync|mm ...>"));
 	}
 
 	async #handleMentalModelsSubcommand(argumentText: string): Promise<void> {
@@ -865,8 +891,10 @@ export class CommandController {
 				this.ctx.showError(t("Mental model not found: {id}", { id }));
 				return;
 			}
-			const tags = model.tags && model.tags.length > 0 ? `\n_tags: ${model.tags.join(", ")}_` : "";
-			const refreshed = model.last_refreshed_at ? `\n_last refreshed: ${model.last_refreshed_at}_` : "";
+			const tags = model.tags && model.tags.length > 0 ? t("\n_tags: {tags}_", { tags: model.tags.join(", ") }) : "";
+			const refreshed = model.last_refreshed_at
+				? t("\n_last refreshed: {date}_", { date: model.last_refreshed_at })
+				: "";
 			const sourceQuery = model.source_query ? `\n\n**${t("Source query:")}** ${model.source_query}` : "";
 			const content = (model.content ?? `_(${t("empty — background reflect may still be running")})_`).trim();
 			showMarkdownPanel(
@@ -929,7 +957,7 @@ export class CommandController {
 						);
 					}
 				}
-				const skippedSuffix = skipped > 0 ? `; skipped ${skipped} curated model(s)` : "";
+				const skippedSuffix = skipped > 0 ? t("; skipped {count} curated model(s)", { count: skipped }) : "";
 				this.ctx.showStatus(
 					t("Refresh queued for {queued}/{total} auto-refresh model(s){suffix}.", {
 						queued,
@@ -1277,7 +1305,11 @@ export class CommandController {
 		if (moved) {
 			this.ctx.present([
 				new Spacer(1),
-				new Text(`${theme.fg("accent", `${theme.status.success} Moved to ${resolvedPath}`)}`, 1, 1),
+				new Text(
+					`${theme.fg("accent", `${theme.status.success} ${t("Moved to {path}", { path: resolvedPath })}`)}`,
+					1,
+					1,
+				),
 			]);
 		}
 	}
@@ -1289,7 +1321,7 @@ export class CommandController {
 	 */
 	async handleWorktreeCommand(branch?: string): Promise<void> {
 		if (this.ctx.session.isStreaming) {
-			this.ctx.showWarning("Wait for the current response to finish or abort it before creating a worktree.");
+			this.ctx.showWarning(t("Wait for the current response to finish or abort it before creating a worktree."));
 			return;
 		}
 		await this.#withSessionMove(async () => {
@@ -1300,7 +1332,7 @@ export class CommandController {
 				this.ctx.ui,
 				spinner => theme.fg("accent", spinner),
 				text => theme.fg("muted", text),
-				`Creating worktree on ${branchName}…`,
+				t("Creating worktree on {branch}…", { branch: branchName }),
 				getSymbolTheme().spinnerFrames,
 			);
 			this.ctx.statusContainer.addChild(loader);
@@ -1309,7 +1341,11 @@ export class CommandController {
 			try {
 				worktree = await createSessionWorktree(cwd, this.ctx.settings, branchName);
 			} catch (err) {
-				this.ctx.showError(`Worktree creation failed: ${err instanceof Error ? err.message : String(err)}`);
+				this.ctx.showError(
+					t("Worktree creation failed: {error}", {
+						error: err instanceof Error ? err.message : String(err),
+					}),
+				);
 				return false;
 			} finally {
 				loader.stop();
@@ -1324,7 +1360,11 @@ export class CommandController {
 			if (!(await this.#relocateSession(worktree.path))) return false;
 			const cleanup = await cleanSourceCheckoutIfConfigured(cwd, this.ctx.settings);
 			if (cleanup.errorMessage !== undefined) {
-				this.ctx.showWarning(`Worktree created, but cleaning source checkout failed: ${cleanup.errorMessage}`);
+				this.ctx.showWarning(
+					t("Worktree created, but cleaning source checkout failed: {error}", {
+						error: cleanup.errorMessage,
+					}),
+				);
 			}
 			this.ctx.present([
 				new Spacer(1),
@@ -1343,7 +1383,11 @@ export class CommandController {
 		try {
 			await this.ctx.settings.flush();
 		} catch (err) {
-			this.ctx.showError(`Failed to save pending settings: ${err instanceof Error ? err.message : String(err)}`);
+			this.ctx.showError(
+				t("Failed to save pending settings: {error}", {
+					error: err instanceof Error ? err.message : String(err),
+				}),
+			);
 			return false;
 		}
 
@@ -1358,7 +1402,7 @@ export class CommandController {
 		try {
 			await this.ctx.session.moveSession(resolvedPath);
 		} catch (err) {
-			this.ctx.showError(`Move failed: ${err instanceof Error ? err.message : String(err)}`);
+			this.ctx.showError(t("Move failed: {error}", { error: err instanceof Error ? err.message : String(err) }));
 			return false;
 		}
 		let applied = false;
@@ -1684,7 +1728,7 @@ export class CommandController {
 			return;
 		}
 		if (this.ctx.session.isCompacting) {
-			this.ctx.showWarning("Wait for context compaction to finish or cancel it before handing off.");
+			this.ctx.showWarning(t("Wait for context compaction to finish or cancel it before handing off."));
 			return;
 		}
 

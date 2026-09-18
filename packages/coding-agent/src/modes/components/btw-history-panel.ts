@@ -10,6 +10,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
+import { t } from "../../i18n";
 import {
 	type BtwHistoryRecord,
 	type BtwHistoryTurn,
@@ -168,7 +169,7 @@ export class BtwHistoryPanel implements Component, Focusable {
 
 	#openComposer(record: BtwHistoryRecord): void {
 		const input = new Input();
-		input.prompt = theme.fg("accent", "Follow up: ");
+		input.prompt = theme.fg("accent", t("Follow up: "));
 		const composer: FollowUpComposer = { recordId: record.id, input, abortController: new AbortController() };
 		input.onEscape = () => {
 			composer.abortController.abort();
@@ -186,16 +187,16 @@ export class BtwHistoryPanel implements Component, Focusable {
 		if (this.#followUpPending || this.#composer !== composer) return;
 		const question = value.trim();
 		if (!question) {
-			composer.notice = "Enter a follow-up question.";
+			composer.notice = t("Enter a follow-up question.");
 			return;
 		}
 		const record = this.#records.find(record => record.id === composer.recordId);
 		if (!record || !this.#canFollowUp(record)) {
-			composer.notice = "A BTW request is busy. Try again when it finishes.";
+			composer.notice = t("A BTW request is busy. Try again when it finishes.");
 			return;
 		}
 		this.#followUpPending = true;
-		composer.notice = "Starting follow-up…";
+		composer.notice = t("Starting follow-up…");
 		this.#options.requestRender();
 		try {
 			const accepted = await this.#options.onFollowUp!(record, question, composer.abortController.signal);
@@ -206,11 +207,11 @@ export class BtwHistoryPanel implements Component, Focusable {
 				this.#focus = "answer";
 				this.#followLatest = true;
 			} else {
-				composer.notice = "Follow-up was not started. Your draft is kept; Enter to retry.";
+				composer.notice = t("Follow-up was not started. Your draft is kept; Enter to retry.");
 			}
 		} catch {
 			if (this.#composer === composer) {
-				composer.notice = "Could not start the follow-up. Your draft is kept; Enter to retry.";
+				composer.notice = t("Could not start the follow-up. Your draft is kept; Enter to retry.");
 			}
 		} finally {
 			this.#followUpPending = false;
@@ -275,7 +276,7 @@ export class BtwHistoryPanel implements Component, Focusable {
 		const rowSpan = width < 36 && height >= 2 ? 2 : 1;
 		this.#listHeight = Math.max(1, Math.floor(height / rowSpan));
 		if (this.#records.length === 0) {
-			return new Text(theme.fg("muted", "No side questions yet.\n\nUse /btw QUESTION to start one."), 0, 0)
+			return new Text(theme.fg("muted", t("No side questions yet.\n\nUse /btw QUESTION to start one.")), 0, 0)
 				.render(width)
 				.slice(0, height);
 		}
@@ -335,26 +336,26 @@ export class BtwHistoryPanel implements Component, Focusable {
 		const status = STATUS[turn.status];
 		const lines = [
 			...wrapTextWithAnsi(
-				theme.fg(status.color, `${status.label} · ${this.#dateFormat.format(turn.createdAt)}`),
+				theme.fg(status.color, `${t(status.label)} · ${this.#dateFormat.format(turn.createdAt)}`),
 				width,
 			),
 			"",
-			theme.bold(theme.fg("accent", "Question")),
+			theme.bold(theme.fg("accent", t("Question"))),
 			...question.render(width),
 			"",
-			theme.bold(theme.fg("accent", "Answer")),
+			theme.bold(theme.fg("accent", t("Answer"))),
 		];
 		if (turn.answer.trim()) lines.push(...answer.render(width));
 		else
 			lines.push(
 				...wrapTextWithAnsi(
-					theme.fg("dim", turn.status === "running" ? "Waiting for response…" : "No answer text."),
+					theme.fg("dim", turn.status === "running" ? t("Waiting for response…") : t("No answer text.")),
 					width,
 				),
 			);
 		if (turn.error) lines.push("", ...wrapTextWithAnsi(theme.fg("error", sanitizeErrorLine(turn.error)), width));
 		if (turn.status === "interrupted")
-			lines.push("", ...wrapTextWithAnsi(theme.fg("muted", "Not resumed in this view."), width));
+			lines.push("", ...wrapTextWithAnsi(theme.fg("muted", t("Not resumed in this view.")), width));
 		return {
 			turn: {
 				question: turn.question,
@@ -388,7 +389,10 @@ export class BtwHistoryPanel implements Component, Focusable {
 				this.#turns.length = turns.length;
 			} else {
 				lines.push(
-					...wrapTextWithAnsi(theme.fg("muted", "No side questions yet. Use /btw QUESTION to start one."), inner),
+					...wrapTextWithAnsi(
+						theme.fg("muted", t("No side questions yet. Use /btw QUESTION to start one.")),
+						inner,
+					),
 				);
 			}
 			this.#detailRecord = record;
@@ -401,7 +405,7 @@ export class BtwHistoryPanel implements Component, Focusable {
 	}
 
 	#focusLabel(focus: "list" | "answer"): string {
-		const label = focus === "list" ? `History (${this.#records.length})` : "Details";
+		const label = focus === "list" ? t("History ({count})", { count: this.#records.length }) : t("Details");
 		return this.#focus === focus
 			? theme.bold(theme.fg("accent", `${theme.nav.cursor} ${label}`))
 			: theme.fg("muted", `  ${label}`);
@@ -433,7 +437,10 @@ export class BtwHistoryPanel implements Component, Focusable {
 			const availableRows = Math.max(1, height - chrome - 1);
 			if (availableRows >= 2) {
 				composerLines.push(
-					theme.fg("dim", truncateToWidth(`Topic: ${sanitizeDisplayLine(record?.question ?? "")}`, inner)),
+					theme.fg(
+						"dim",
+						truncateToWidth(t("Topic: {topic}", { topic: sanitizeDisplayLine(record?.question ?? "") }), inner),
+					),
 				);
 			}
 			if (composer.notice && availableRows >= 3) {
@@ -464,7 +471,7 @@ export class BtwHistoryPanel implements Component, Focusable {
 		}
 		const lines: string[] = [];
 		if (framed) {
-			lines.push(topBorder(width, "BTW history"));
+			lines.push(topBorder(width, t("BTW history")));
 			lines.push(
 				wide
 					? splitRow(this.#focusLabel("list"), this.#focusLabel("answer"), width, listWidth)

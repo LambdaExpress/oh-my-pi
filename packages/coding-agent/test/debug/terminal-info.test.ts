@@ -1,10 +1,15 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import {
 	collectTerminalState,
 	formatTerminalState,
 	type TerminalStateInfo,
 } from "@oh-my-pi/pi-coding-agent/debug/terminal-info";
 import { TERMINAL } from "@oh-my-pi/pi-tui";
+import { setLocale } from "../../src/i18n";
+
+// The panel text is localized; pin English so the assertions below stay deterministic.
+beforeAll(() => setLocale("en"));
+afterAll(() => setLocale(null));
 
 const sample: TerminalStateInfo = {
 	detectedId: "kitty",

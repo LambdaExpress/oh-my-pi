@@ -767,7 +767,7 @@ export class InputController {
 		// what the click displayed.
 		const nextId = pickRecentFocusableAgentId(scoped, this.ctx.focusedAgentId);
 		if (nextId === undefined) {
-			this.ctx.showStatus("That subagent is gone — open the hub for live agents");
+			this.ctx.showStatus(t("That subagent is gone — open the hub for live agents"));
 			return;
 		}
 		this.#focusResolvedAgent(nextId);
@@ -2265,7 +2265,7 @@ export class InputController {
 				error: error instanceof Error ? error.message : String(error),
 			});
 			this.ctx.editor.insertTextAttachment(text);
-			this.ctx.showError("Failed to save paste to a file — attached as a text chip instead");
+			this.ctx.showError(t("Failed to save paste to a file — attached as a text chip instead"));
 		}
 	}
 
@@ -2404,14 +2404,18 @@ export class InputController {
 	toggleToolOutputExpansion(): void {
 		if (this.ctx.hideToolActivity) {
 			const visibilityKey = this.ctx.keybindings.getDisplayString("app.tools.toggleVisibility");
-			const visibilityHint = visibilityKey ? `${visibilityKey} or /settings` : "/settings";
+			const visibilityHint = visibilityKey ? t("{key} or /settings", { key: visibilityKey }) : "/settings";
 			this.ctx.showStatus(
 				t("Tool activity is hidden — show it with {hint} before expanding", { hint: visibilityHint }),
 			);
 			return;
 		}
 		this.setToolsExpanded(!this.ctx.toolOutputExpanded);
-		this.ctx.showStatus(`Tool output expansion: ${this.ctx.toolOutputExpanded ? "enabled" : "disabled"}`);
+		this.ctx.showStatus(
+			t("Tool output expansion: {state}", {
+				state: this.ctx.toolOutputExpanded ? t("enabled") : t("disabled"),
+			}),
+		);
 	}
 
 	toggleToolActivityVisibility(): void {
@@ -2437,7 +2441,9 @@ export class InputController {
 		if (this.ctx.hideToolActivity) this.ctx.ui.clearInlineImages();
 		// A viewport-only repaint leaves tool rows already retired to terminal history unchanged.
 		this.ctx.ui.resetDisplay();
-		this.ctx.showStatus(`Tool activity: ${this.ctx.hideToolActivity ? "hidden" : "visible"}`);
+		this.ctx.showStatus(
+			t("Tool activity: {state}", { state: this.ctx.hideToolActivity ? t("hidden") : t("visible") }),
+		);
 	}
 
 	setToolsExpanded(expanded: boolean): void {
@@ -2461,7 +2467,7 @@ export class InputController {
 	toggleToolRowsFolded(): void {
 		if (this.ctx.hideToolActivity) {
 			const visibilityKey = this.ctx.keybindings.getDisplayString("app.tools.toggleVisibility");
-			const visibilityHint = visibilityKey ? `${visibilityKey} or /settings` : "/settings";
+			const visibilityHint = visibilityKey ? t("{key} or /settings", { key: visibilityKey }) : "/settings";
 			this.ctx.showStatus(
 				t("Tool activity is hidden — show it with {hint} before folding", { hint: visibilityHint }),
 			);

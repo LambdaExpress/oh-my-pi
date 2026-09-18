@@ -12,6 +12,7 @@ import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { shareHelp as commandHelp } from "../cli/command-help";
 import { Settings } from "../config/settings";
 import { shareSession } from "../export/share";
+import { t } from "../i18n";
 import { buildSecretObfuscator } from "../secrets";
 import { resolveResumableSession } from "../session/session-listing";
 import { SessionManager } from "../session/session-manager";
@@ -39,7 +40,7 @@ export default class Share extends Command {
 		if (!sessionArg.includes("/") && !sessionArg.includes("\\") && !sessionArg.endsWith(".jsonl")) {
 			const match = await resolveResumableSession(sessionArg, process.cwd());
 			if (!match) {
-				process.stderr.write(`Session "${sessionArg}" not found.\n`);
+				process.stderr.write(`${t('Session "{session}" not found.', { session: sessionArg })}\n`);
 				process.exitCode = 1;
 				return;
 			}
@@ -63,9 +64,9 @@ export default class Share extends Command {
 			store: flags.gist ? "gist" : settings.get("share.store"),
 			obfuscator,
 		});
-		const lines = [`Share URL: ${result.url}`];
-		if (result.gistUrl) lines.push(`Gist: ${result.gistUrl}`);
-		if (result.truncated) lines.push("Note: large content was trimmed to fit the share size limit.");
+		const lines = [t("Share URL: {url}", { url: result.url })];
+		if (result.gistUrl) lines.push(t("Gist: {url}", { url: result.gistUrl }));
+		if (result.truncated) lines.push(t("Note: large content was trimmed to fit the share size limit."));
 		console.log(lines.join("\n"));
 	}
 }

@@ -10,6 +10,7 @@ import { CleanseBoardModel, type CleanseStatusBoard } from "../../cleanse/board"
 import type { CleanseCheckerDescriptor } from "../../cleanse/checkers";
 import type { CleanseAgentOutcome, CleanseAssignment, CleanseCheckResult, CleanseRunStatus } from "../../cleanse/types";
 import { SPINNER_FRAMES } from "../../cli/live-board";
+import { t } from "../../i18n";
 import type { AgentProgress } from "../../task/types";
 import { replaceTabs } from "../../tools/render-utils";
 import { theme } from "../theme/theme";
@@ -150,17 +151,17 @@ export class CleansePanelComponent extends OverlayPanel implements CleanseStatus
 	#footerLine(): string {
 		switch (this.#outcome) {
 			case undefined:
-				return theme.fg("muted", "Esc cancel /cleanse");
+				return theme.fg("muted", t("Esc cancel /cleanse"));
 			case "clean":
-				return theme.fg("success", `${theme.status.success} Clean · Esc dismiss`);
+				return theme.fg("success", `${theme.status.success} ${t("Clean · Esc dismiss")}`);
 			case "unresolved":
-				return theme.fg("warning", `${theme.status.warning} Diagnostics remain · Esc dismiss`);
+				return theme.fg("warning", `${theme.status.warning} ${t("Diagnostics remain · Esc dismiss")}`);
 			case "unsupported":
-				return theme.fg("warning", `${theme.status.warning} No runnable checker · Esc dismiss`);
+				return theme.fg("warning", `${theme.status.warning} ${t("No runnable checker · Esc dismiss")}`);
 			case "cancelled":
-				return theme.fg("warning", `${theme.status.warning} Cancelled · Esc dismiss`);
+				return theme.fg("warning", `${theme.status.warning} ${t("Cancelled · Esc dismiss")}`);
 			case "error":
-				return theme.fg("error", `${theme.status.error} Error · Esc dismiss`);
+				return theme.fg("error", `${theme.status.error} ${t("Error · Esc dismiss")}`);
 		}
 	}
 }

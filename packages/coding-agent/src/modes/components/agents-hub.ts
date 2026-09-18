@@ -497,7 +497,7 @@ export class AgentsHubComponent implements Component {
 			case "model": {
 				const patterns = this.#effectiveModelPatterns(agent);
 				const resolved = this.#resolvePatterns(patterns);
-				const base = agent.overrideModel ?? (patterns.length > 0 ? patterns.join(",") : "session model");
+				const base = agent.overrideModel ?? (patterns.length > 0 ? patterns.join(",") : t("session model"));
 				return `${agent.name} model: ${base}${resolved ? ` → ${resolved}` : ""}`;
 			}
 			case "prewalk": {
@@ -1286,7 +1286,7 @@ export class AgentsHubComponent implements Component {
 			if (prewalk) badges.push(theme.fg("dim", `pre:${prewalk}`));
 			const advisor = this.#effectiveAdvisorPattern(agent);
 			if (advisor) badges.push(theme.fg("dim", `adv:${advisor}`));
-			const sourceTag = theme.fg("dim", SOURCE_LABEL[agent.source].toLowerCase());
+			const sourceTag = theme.fg("dim", t(SOURCE_LABEL[agent.source]).toLowerCase());
 			let line = ` ${cursor} ${dot} ${nameStyled}  ${sourceTag}`;
 			const right = badges.join("  ");
 			const rightWidth = visibleWidth(right);

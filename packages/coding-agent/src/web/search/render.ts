@@ -7,6 +7,7 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Markdown, Text } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
+import { t } from "../../i18n";
 import { getMarkdownTheme, type Theme } from "../../modes/theme/theme";
 import {
 	formatAge,
@@ -34,10 +35,10 @@ function renderFallbackText(contentText: string, expanded: boolean, theme: Theme
 
 	const headerIcon = formatStatusIcon("warning", theme);
 	const expandHint = formatExpandHint(theme, expanded, remaining > 0);
-	let text = `${headerIcon} ${theme.fg("dim", "Response")}${expandHint}`;
+	let text = `${headerIcon} ${theme.fg("dim", t("Response"))}${expandHint}`;
 
 	if (displayLines.length === 0) {
-		text += `\n ${theme.fg("dim", theme.tree.last)} ${theme.fg("muted", "No response data")}`;
+		text += `\n ${theme.fg("dim", theme.tree.last)} ${theme.fg("muted", t("No response data"))}`;
 		return new Text(text, 0, 0);
 	}
 
@@ -70,13 +71,13 @@ function renderSearchErrorPanel(
 	const header = renderStatusLine(
 		{
 			icon: "error",
-			title: "Web Search",
+			title: t("Web Search"),
 			description: queryPreview,
 			meta: providerLabel ? [providerLabel] : undefined,
 		},
 		theme,
 	);
-	const body = theme.fg("error", `Error: ${replaceTabs(message)}`);
+	const body = theme.fg("error", t("Error: {message}", { message: replaceTabs(message) }));
 	const outputBlock = new CachedOutputBlock();
 	return markFramedBlockComponent({
 		render(width: number): readonly string[] {
@@ -107,7 +108,7 @@ export function renderSearchResult(
 		const errorProviderLabel =
 			errorProvider && errorProvider !== "none" ? getSearchProviderLabel(errorProvider) : undefined;
 		return renderSearchErrorPanel(
-			details?.error || rawText || "Search failed",
+			details?.error || rawText || t("Search failed"),
 			errorProviderLabel,
 			args?.query,
 			theme,
@@ -130,7 +131,7 @@ export function renderSearchResult(
 	const answerText = typeof response.answer === "string" ? response.answer.trim() : "";
 	const contentText = answerText || rawText;
 
-	const providerLabel = provider !== "none" ? getSearchProviderLabel(provider) : "None";
+	const providerLabel = provider !== "none" ? getSearchProviderLabel(provider) : t("None");
 	const queryPreview = args?.query
 		? truncateToWidth(args.query, 80)
 		: searchQueries[0]
@@ -141,13 +142,13 @@ export function renderSearchResult(
 		success
 			? {
 					iconOverride: theme.styledSymbol("tool.webSearch", "accent"),
-					title: "Web Search",
+					title: t("Web Search"),
 					description: providerLabel,
 					meta: [formatCount("source", sourceCount)],
 				}
 			: {
 					icon: "warning",
-					title: "Web Search",
+					title: t("Web Search"),
 					description: providerLabel,
 					meta: [formatCount("source", sourceCount)],
 				},
@@ -158,13 +159,21 @@ export function renderSearchResult(
 		response.authMode === "oauth" ? "OAuth" : response.authMode === "api_key" ? "API" : response.authMode;
 	let providerInfo = response.model ? `${response.model} @ ${providerLabel}` : providerLabel;
 	if (authShort) providerInfo += ` (${authShort})`;
-	const metaLines: string[] = [`${theme.fg("muted", "Provider:")} ${theme.fg("text", providerInfo)}`];
+	const metaLines: string[] = [`${theme.fg("muted", t("Provider:"))} ${theme.fg("text", providerInfo)}`];
 	if (response.usage) {
 		const usageParts: string[] = [];
-		if (response.usage.inputTokens !== undefined) usageParts.push(`in ${response.usage.inputTokens}`);
-		if (response.usage.outputTokens !== undefined) usageParts.push(`out ${response.usage.outputTokens}`);
-		if (response.usage.totalTokens !== undefined) usageParts.push(`total ${response.usage.totalTokens}`);
-		if (response.usage.searchRequests !== undefined) usageParts.push(`search ${response.usage.searchRequests}`);
+		if (response.usage.inputTokens !== undefined) {
+			usageParts.push(t("in {count}", { count: response.usage.inputTokens }));
+		}
+		if (response.usage.outputTokens !== undefined) {
+			usageParts.push(t("out {count}", { count: response.usage.outputTokens }));
+		}
+		if (response.usage.totalTokens !== undefined) {
+			usageParts.push(t("total {count}", { count: response.usage.totalTokens }));
+		}
+		if (response.usage.searchRequests !== undefined) {
+			usageParts.push(t("search {count}", { count: response.usage.searchRequests }));
+		}
 		if (usageParts.length > 0)
 			metaLines.push(`${theme.fg("muted", "Usage:")} ${theme.fg("text", usageParts.join(theme.sep.dot))}`);
 	}
@@ -182,7 +191,7 @@ export function renderSearchResult(
 			const renderedAnswer = answerMarkdown ? answerMarkdown.render(answerWidth) : [];
 			let answerLines: readonly string[];
 			if (renderedAnswer.length === 0) {
-				answerLines = [theme.fg("muted", "No answer text returned")];
+				answerLines = [theme.fg("muted", t("No answer text returned"))];
 			} else if (args?.maxAnswerLines !== undefined && !expanded) {
 				// CLI compact mode (`omp q`) caps the answer; the TUI passes no cap and shows it in full.
 				// `renderedAnswer` is the Markdown component's shared cache — slice copies before appending.
@@ -208,7 +217,7 @@ export function renderSearchResult(
 								? src.title
 								: typeof src.url === "string" && src.url.trim()
 									? src.url
-									: "Untitled";
+									: t("Untitled");
 						const url = typeof src.url === "string" ? src.url : "";
 						const domain = url ? getDomain(url) : "";
 						const age =
@@ -238,19 +247,19 @@ export function renderSearchResult(
 						...(queryPreview
 							? [
 									{
-										lines: [`${theme.fg("muted", "Query:")} ${theme.fg("text", queryPreview)}`],
+										lines: [`${theme.fg("muted", t("Query:"))} ${theme.fg("text", queryPreview)}`],
 									},
 								]
 							: []),
 						{
-							label: theme.fg("toolTitle", "Answer"),
+							label: theme.fg("toolTitle", t("Answer")),
 							lines: answerLines,
 						},
 						{
-							label: theme.fg("toolTitle", "Sources"),
-							lines: sourceTree.length > 0 ? sourceTree : [theme.fg("muted", "No sources returned")],
+							label: theme.fg("toolTitle", t("Sources")),
+							lines: sourceTree.length > 0 ? sourceTree : [theme.fg("muted", t("No sources returned"))],
 						},
-						{ label: theme.fg("toolTitle", "Metadata"), lines: metaLines },
+						{ label: theme.fg("toolTitle", t("Metadata")), lines: metaLines },
 					],
 					width,
 				},
@@ -270,7 +279,7 @@ export function renderSearchCall(
 	theme: Theme,
 ): Component {
 	const query = truncateToWidth(args.query ?? "", 80);
-	const text = renderStatusLine({ icon: "pending", title: "Web Search", description: query }, theme);
+	const text = renderStatusLine({ icon: "pending", title: t("Web Search"), description: query }, theme);
 	return new Text(text, 0, 0);
 }
 

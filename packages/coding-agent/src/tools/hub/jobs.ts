@@ -9,6 +9,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { AsyncJob, AsyncJobManager, AsyncJobProgress, AsyncJobType } from "../../async";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
+import { t } from "../../i18n";
 import { shimmerEnabled, shimmerText } from "../../modes/theme/shimmer";
 import type { Theme } from "../../modes/theme/theme";
 import { renderStructuredJson } from "../../session/async-job-delivery";
@@ -587,23 +588,28 @@ function flattenStructuredPreview(text: string): string {
 }
 
 function describeTarget(args: JobRenderArgs | undefined): string {
-	if (args?.list) return "background jobs";
+	if (args?.list) return t("background jobs");
 	const poll = args?.poll ?? [];
 	const cancel = args?.cancel ?? [];
 	const parts: string[] = [];
 	if (cancel.length > 0) {
-		parts.push(cancel.length === 1 ? `cancel ${cancel[0]}` : `cancel ${cancel.length} jobs`);
+		parts.push(
+			cancel.length === 1 ? t("cancel {id}", { id: cancel[0] }) : t("cancel {count} jobs", { count: cancel.length }),
+		);
 	}
 	if (poll.length > 0) {
-		parts.push(poll.length === 1 ? `poll ${poll[0]}` : `poll ${poll.length} jobs`);
+		parts.push(poll.length === 1 ? t("poll {id}", { id: poll[0] }) : t("poll {count} jobs", { count: poll.length }));
 	}
-	if (parts.length === 0) return "all running jobs";
+	if (parts.length === 0) return t("all running jobs");
 	return parts.join(", ");
 }
 
 /** Pending-call frame for job ops (wait/cancel/jobs). */
 export function jobsRenderCall(args: HubRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
-	const text = renderStatusLine({ icon: "pending", title: describeTarget(toJobRenderArgs(args)) || "Job" }, uiTheme);
+	const text = renderStatusLine(
+		{ icon: "pending", title: describeTarget(toJobRenderArgs(args)) || t("Job") },
+		uiTheme,
+	);
 	return new Text(text, 0, 0);
 }
 
@@ -619,8 +625,8 @@ export function jobsRenderResult(
 	const agents = result.details?.agents ?? [];
 
 	if (jobs.length === 0 && agents.length === 0) {
-		const fallback = result.content?.find(c => c.type === "text")?.text || "No jobs to process";
-		const header = renderStatusLine({ icon: "warning", title: describeTarget(args) || "Job" }, uiTheme);
+		const fallback = result.content?.find(c => c.type === "text")?.text || t("No jobs to process");
+		const header = renderStatusLine({ icon: "warning", title: describeTarget(args) || t("Job") }, uiTheme);
 		return new Text([header, formatEmptyMessage(fallback, uiTheme)].join("\n"), 0, 0);
 	}
 
@@ -645,26 +651,31 @@ export function jobsRenderResult(
 	// The title already carries the running count, so meta lists only the
 	// settled categories — "waiting on 19 of 19 · 19 running" read awkward.
 	const meta: string[] = [];
-	if (counts.completed > 0) meta.push(uiTheme.fg("success", `${counts.completed} done`));
-	if (counts.failed > 0) meta.push(uiTheme.fg("error", `${counts.failed} failed`));
-	if (counts.cancelled > 0) meta.push(uiTheme.fg("warning", `${counts.cancelled} cancelled`));
-	if (counts.cancelling > 0) meta.push(uiTheme.fg("warning", `${counts.cancelling} cleaning up`));
+	if (counts.completed > 0) meta.push(uiTheme.fg("success", t("{count} done", { count: counts.completed })));
+	if (counts.failed > 0) meta.push(uiTheme.fg("error", t("{count} failed", { count: counts.failed })));
+	if (counts.cancelled > 0) meta.push(uiTheme.fg("warning", t("{count} cancelled", { count: counts.cancelled })));
+	if (counts.cancelling > 0) meta.push(uiTheme.fg("warning", t("{count} cleaning up", { count: counts.cancelling })));
 	if (agents.length > 0 && jobs.length > 0) {
-		meta.push(uiTheme.fg("accent", `${agents.length} agent${agents.length === 1 ? "" : "s"}`));
+		meta.push(
+			uiTheme.fg("accent", t("{count} agent{s}", { count: agents.length, s: agents.length === 1 ? "" : "s" })),
+		);
 	}
 
 	const activeCount = counts.running + counts.cancelling;
 	const headerIcon: ToolUIStatus =
 		counts.failed > 0 ? "warning" : activeCount > 0 || agents.length > 0 ? "info" : "success";
-	const jobsNoun = jobs.length === 1 ? "job" : "jobs";
+	const jobPlural = jobs.length === 1 ? "" : "s";
 	const description =
 		jobs.length === 0
-			? `${agents.length} running agent${agents.length === 1 ? "" : "s"} — no jobs`
+			? t("{count} running agent{s} — no jobs", {
+					count: agents.length,
+					s: agents.length === 1 ? "" : "s",
+				})
 			: activeCount > 0
 				? activeCount === jobs.length
-					? `waiting on ${jobs.length} ${jobsNoun}`
-					: `waiting on ${activeCount} of ${jobs.length} ${jobsNoun}`
-				: `${jobs.length} ${jobsNoun} settled`;
+					? t("waiting on {count} job{s}", { count: jobs.length, s: jobPlural })
+					: t("waiting on {active} of {total} jobs", { active: activeCount, total: jobs.length })
+				: t("{count} job{s} settled", { count: jobs.length, s: jobPlural });
 
 	const header = renderStatusLine(
 		{
@@ -736,7 +747,7 @@ export function jobsRenderResult(
 							Math.max(0, rowWidth - visibleWidth(`${icon} ${typeBadge} ${durationSuffix}`)),
 							Ellipsis.Unicode,
 						);
-						const rawLabelLines = (job.label || "(no label)").split(/\r?\n/);
+						const rawLabelLines = (job.label || t("(no label)")).split(/\r?\n/);
 						const maxLabelLines = expanded ? LABEL_LINES_EXPANDED : LABEL_LINES_COLLAPSED;
 						const visibleLabelLines = rawLabelLines
 							.slice(0, maxLabelLines)
@@ -761,7 +772,7 @@ export function jobsRenderResult(
 									)
 								: "";
 						const modelLead = modelBadge ? `${modelBadge} ` : "";
-						const headRaw = cancelling ? `${displayId} · cleanup in progress` : displayId;
+						const headRaw = cancelling ? t("{id} · cleanup in progress", { id: displayId }) : displayId;
 						// Running rows in a live block shimmer their label; once the block
 						// stops animating (sealed, or a settled snapshot — spinnerFrame
 						// cleared) they render static so scrollback never keeps a mid-sweep
@@ -827,8 +838,8 @@ export function jobsRenderResult(
 										? formatStatusIcon("running", uiTheme, options.spinnerFrame)
 										: formatStatusIcon("warning", uiTheme);
 									const badge = agent.live
-										? formatBadge("agent", "accent", uiTheme)
-										: formatBadge("agent · no turn", "warning", uiTheme);
+										? formatBadge(t("agent"), "accent", uiTheme)
+										: formatBadge(t("agent · no turn"), "warning", uiTheme);
 									const id = truncateToWidth(
 										replaceTabs(agent.id).replace(/\s+/g, " "),
 										Math.max(0, rowWidth - visibleWidth(`${icon}  ${badge}`)),

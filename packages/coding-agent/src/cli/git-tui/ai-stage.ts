@@ -24,6 +24,7 @@ import type { FileDiff } from "../../commit/types";
 import { ModelRegistry } from "../../config/model-registry";
 import { resolveRoleSelection } from "../../config/model-resolver";
 import { Settings } from "../../config/settings";
+import { t } from "../../i18n";
 import filesPromptTemplate from "../../prompts/system/git-ai-stage-files.md" with { type: "text" };
 import hunkPromptTemplate from "../../prompts/system/git-ai-stage-hunk.md" with { type: "text" };
 import { discoverAuthStorage, loadCliExtensionProviders } from "../../sdk";
@@ -75,9 +76,9 @@ export async function aiStage(options: AiStageOptions): Promise<AiStageOutcome> 
 	const repo = vcs.requireGit(cwd);
 	const untracked = options.files.filter(file => file.kind === "untracked");
 	const tracked = options.files.filter(file => file.kind !== "untracked" && file.kind !== "conflicted");
-	if (tracked.length === 0 && untracked.length === 0) throw new Error("No unstaged changes to filter");
+	if (tracked.length === 0 && untracked.length === 0) throw new Error(t("No unstaged changes to filter"));
 
-	onProgress?.("Resolving model…");
+	onProgress?.(t("Resolving model…"));
 	const settings = await Settings.init({ cwd });
 	const authStorage = await discoverAuthStorage();
 	try {
@@ -85,10 +86,10 @@ export async function aiStage(options: AiStageOptions): Promise<AiStageOutcome> 
 		await registry.refresh();
 		await loadCliExtensionProviders(registry, settings, cwd);
 		const model = resolveRoleSelection(["tiny", "smol"], settings, registry.getAvailable())?.model;
-		if (!model) throw new Error("No tiny/smol model available for AI staging");
+		if (!model) throw new Error(t("No tiny/smol model available for AI staging"));
 		const sessionId = Bun.randomUUIDv7();
 		if (!(await registry.getApiKey(model, sessionId)))
-			throw new Error(`No API key for ${model.provider}/${model.id}`);
+			throw new Error(t("No API key for {model}", { model: `${model.provider}/${model.id}` }));
 		const complete = createCompleter(model, registry.resolver(model, sessionId), sessionId, signal);
 
 		const rawDiff = tracked.length > 0 ? await repo.diffText({ files: tracked.map(file => file.path) }, signal) : "";
@@ -107,7 +108,7 @@ export async function aiStage(options: AiStageOptions): Promise<AiStageOutcome> 
 
 		// File pass: one completion sees the whole (batched) list, so files are
 		// picked as a coherent set instead of N independent coin flips.
-		onProgress?.(`Choosing files… (${candidates.length} changed)`);
+		onProgress?.(t("Choosing files… ({count} changed)", { count: candidates.length }));
 		const batches: Candidate[][] = [];
 		for (let start = 0; start < candidates.length; start += FILE_BATCH) {
 			batches.push(candidates.slice(start, start + FILE_BATCH));
@@ -127,7 +128,7 @@ export async function aiStage(options: AiStageOptions): Promise<AiStageOutcome> 
 				}),
 			)
 		).flat();
-		onProgress?.(`Picked ${picked.length}/${candidates.length} files`);
+		onProgress?.(t("Picked {picked}/{total} files", { picked: picked.length, total: candidates.length }));
 		// Zero picks usually means the request is about change content ("comment
 		// edits"), which paths alone cannot answer — advance everything and let
 		// the hunk pass decide. A non-authoritative file scope must never stage
@@ -165,7 +166,7 @@ export async function aiStage(options: AiStageOptions): Promise<AiStageOutcome> 
 					changed: bound(job.changed, HUNK_CHARS),
 				}),
 			);
-			onProgress?.(`Choosing hunks… ${++hunksJudged}/${jobs.length}`);
+			onProgress?.(t("Choosing hunks… {judged}/{total}", { judged: ++hunksJudged, total: jobs.length }));
 			return parseVerdict(reply);
 		});
 
@@ -201,7 +202,7 @@ export async function aiStage(options: AiStageOptions): Promise<AiStageOutcome> 
 		const untrackedAccepted = fileScopeAuthoritative
 			? matched.filter(candidate => !candidate.diff).map(candidate => candidate.file.path)
 			: [];
-		if (selections.length > 0 || untrackedAccepted.length > 0) onProgress?.("Staging…");
+		if (selections.length > 0 || untrackedAccepted.length > 0) onProgress?.(t("Staging…"));
 		if (selections.length > 0) await repo.stageHunks(selections, rawDiff || null, signal);
 		if (untrackedAccepted.length > 0) await repo.stageFiles(untrackedAccepted, signal);
 
@@ -235,7 +236,9 @@ function createCompleter(
 			{ signal },
 		);
 		if (response.stopReason === "error") {
-			throw new Error(`AI staging request failed: ${response.errorMessage ?? "unknown error"}`);
+			throw new Error(
+				t("AI staging request failed: {error}", { error: response.errorMessage ?? t("unknown error") }),
+			);
 		}
 		return extractText(response.content);
 	};

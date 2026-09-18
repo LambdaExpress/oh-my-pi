@@ -145,7 +145,9 @@ export class PrewalkCoordinator {
 		this.#clearPrewalkState();
 		this.#host.emitNotice(
 			"info",
-			`Prewalk: target ${prewalk.target.provider}/${prewalk.target.id} already matches the active model and thinking level; nothing to switch.`,
+			t("Prewalk: target {model} already matches the active model and thinking level; nothing to switch.", {
+				model: `${prewalk.target.provider}/${prewalk.target.id}`,
+			}),
 			"prewalk",
 		);
 	}
@@ -384,7 +386,7 @@ export class PrewalkCoordinator {
 			});
 			if (autosavedPlan) {
 				const displayPath = truncateToWidth(replaceTabs(shortenPath(autosavedPlan)), TRUNCATE_LENGTHS.CONTENT);
-				this.#host.emitNotice("info", `Plan autosaved to ${displayPath}.`, "plan-yolo");
+				this.#host.emitNotice("info", t("Plan autosaved to {path}.", { path: displayPath }), "plan-yolo");
 			}
 		} catch (error) {
 			logger.warn("Failed to autosave approved plan", { error });
@@ -398,7 +400,7 @@ export class PrewalkCoordinator {
 			);
 			this.#host.emitNotice(
 				"warning",
-				`Plan autosave failed: ${detail} Continuing with implementation.`,
+				t("Plan autosave failed: {detail} Continuing with implementation.", { detail }),
 				"plan-yolo",
 			);
 		}

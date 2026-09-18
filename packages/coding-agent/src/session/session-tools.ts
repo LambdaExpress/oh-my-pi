@@ -14,6 +14,7 @@ import type { ExtensionRunner, SourceInfo, ToolInfo } from "../extensibility/ext
 import { ExtensionToolWrapper } from "../extensibility/extensions/wrapper";
 import { loadSkills, type Skill, type SkillWarning, setActiveSkills } from "../extensibility/skills";
 import { type LocalProtocolOptions, stripXdUrlPrefix, XD_URL_PREFIX } from "../internal-urls";
+import { t } from "../i18n";
 import { deduplicateMCPToolsByName, resolveMCPToolAlias } from "../mcp/tool-bridge";
 import { resolveMemoryBackend } from "../memory-backend/resolve";
 import { MEMORY_BACKEND_TOOL_NAMES } from "../memory-backend/tool-names";
@@ -862,7 +863,7 @@ export class SessionTools {
 									permissionIntent.paths,
 								),
 							},
-							PERMISSION_OPTIONS,
+							PERMISSION_OPTIONS.map(option => ({ ...option, name: t(option.name) })),
 							signal,
 						).then(outcome => ({ kind: "permission" as const, outcome }));
 						raced = await Promise.race([permissionPromise, abortPromise]);

@@ -6,6 +6,7 @@ import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import { type AuthBrokerServerHandle, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
 import { runAuthBrokerCommand } from "@oh-my-pi/pi-coding-agent/cli/auth-broker-cli";
 import { getAgentDbPath, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const TEAM_ORG = "org-team-1111";
 
@@ -37,6 +38,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 	const savedEnv: Record<string, string | undefined> = {};
 
 	beforeEach(async () => {
+		setLocale("en"); // Assertions below match English CLI output.
 		savedEnv.OMP_AUTH_BROKER_URL = process.env.OMP_AUTH_BROKER_URL;
 		savedEnv.OMP_AUTH_BROKER_TOKEN = process.env.OMP_AUTH_BROKER_TOKEN;
 		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-migrate-client-"));
@@ -57,6 +59,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		await handle?.close();
 		brokerStorage?.close();
 		brokerStore?.close();

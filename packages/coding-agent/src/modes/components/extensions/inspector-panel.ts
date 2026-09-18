@@ -7,6 +7,7 @@
  */
 import * as os from "node:os";
 import { type Component, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
+import { t } from "../../../i18n";
 import { theme } from "../../../modes/theme/theme";
 import { expandKeyHint, PREVIEW_LIMITS, replaceTabs, shortenPath } from "../../../tools/render-utils";
 import {
@@ -105,7 +106,7 @@ export class InspectorPanel implements Component {
 
 	render(width: number): readonly string[] {
 		if (!this.#extension) {
-			return [theme.fg("muted", "Select an extension"), theme.fg("dim", "to view details")];
+			return [theme.fg("muted", t("Select an extension")), theme.fg("dim", t("to view details"))];
 		}
 		this.#width = width;
 		this.#toolFrame = snapshotToolRuntimeSource(this.#toolSource);
@@ -189,7 +190,7 @@ export class InspectorPanel implements Component {
 		const config: string[] = [];
 
 		if (snap && snap.tools.length > 0) {
-			contents.push(theme.fg("muted", "Tools"));
+			contents.push(theme.fg("muted", t("Tools")));
 			contents.push(this.#rule());
 			const { shown, hidden } = visibleMcpTools(snap.tools, this.#expanded ? snap.tools.length : MCP_TOOL_BUDGET);
 			let collapsedArgs = false;
@@ -205,21 +206,23 @@ export class InspectorPanel implements Component {
 					this.#pushParams(contents, params, width, "    ");
 				} else if (params.length > 0) {
 					collapsedArgs = true;
-					contents.push(`    ${theme.fg("dim", `${params.length} args`)}`);
+					contents.push(`    ${theme.fg("dim", t("{count} args", { count: params.length }))}`);
 				}
 				contents.push("");
 			}
 			if (hidden > 0) {
-				contents.push(theme.fg("dim", `  … ${hidden} more (${expandKeyHint()} to expand)`));
+				contents.push(
+					theme.fg("dim", t("  … {count} more ({key} to expand)", { count: hidden, key: expandKeyHint() })),
+				);
 				contents.push("");
 			} else if (collapsedArgs) {
-				contents.push(theme.fg("dim", `  … args (${expandKeyHint()} to expand)`));
+				contents.push(theme.fg("dim", t("  … args ({key} to expand)", { key: expandKeyHint() })));
 				contents.push("");
 			}
 		}
 
 		if (snap && snap.resources.length > 0) {
-			contents.push(theme.fg("muted", "Resources"));
+			contents.push(theme.fg("muted", t("Resources")));
 			contents.push(this.#rule());
 			const { shown, hidden } = visibleMcpTools(
 				snap.resources,
@@ -229,13 +232,15 @@ export class InspectorPanel implements Component {
 				contents.push(`  ${theme.fg("accent", resource.name)}`);
 			}
 			if (hidden > 0) {
-				contents.push(theme.fg("dim", `  … ${hidden} more (${expandKeyHint()} to expand)`));
+				contents.push(
+					theme.fg("dim", t("  … {count} more ({key} to expand)", { count: hidden, key: expandKeyHint() })),
+				);
 			}
 			contents.push("");
 		}
 
 		if (snap && snap.prompts.length > 0) {
-			contents.push(theme.fg("muted", "Prompts"));
+			contents.push(theme.fg("muted", t("Prompts")));
 			contents.push(this.#rule());
 			const { shown, hidden } = visibleMcpTools(
 				snap.prompts,
@@ -245,17 +250,19 @@ export class InspectorPanel implements Component {
 				contents.push(`  ${theme.fg("accent", prompt.name)}`);
 			}
 			if (hidden > 0) {
-				contents.push(theme.fg("dim", `  … ${hidden} more (${expandKeyHint()} to expand)`));
+				contents.push(
+					theme.fg("dim", t("  … {count} more ({key} to expand)", { count: hidden, key: expandKeyHint() })),
+				);
 			}
 			contents.push("");
 		}
 
 		if (snap?.command)
-			this.#pushLabeled(config, "Command", shortenPath(snap.command, os.homedir()), width, "success");
-		if (snap?.url) this.#pushLabeled(config, "URL", snap.url, width, "success");
-		if (snap?.args && snap.args.length > 0) this.#pushLabeled(config, "Args", snap.args.join(" "), width, "dim");
+			this.#pushLabeled(config, t("Command"), shortenPath(snap.command, os.homedir()), width, "success");
+		if (snap?.url) this.#pushLabeled(config, t("URL"), snap.url, width, "success");
+		if (snap?.args && snap.args.length > 0) this.#pushLabeled(config, t("Args"), snap.args.join(" "), width, "dim");
 		if (snap && snap.envCount > 0) {
-			this.#pushLabeled(config, "Env vars", `${snap.envCount} defined`, width, "dim");
+			this.#pushLabeled(config, t("Env vars"), t("{count} defined", { count: snap.envCount }), width, "dim");
 		}
 		if (config.length > 0) config.push("");
 
@@ -297,7 +304,7 @@ export class InspectorPanel implements Component {
 				surface.push("");
 			}
 			if (collapsedArgs) {
-				surface.push(theme.fg("dim", `  … args (${expandKeyHint()} to expand)`));
+				surface.push(theme.fg("dim", t("  … args ({key} to expand)", { key: expandKeyHint() })));
 				surface.push("");
 			}
 			return { description: data.description, surface, contents: [], config: [] };
@@ -305,7 +312,7 @@ export class InspectorPanel implements Component {
 		if (lives.length === 0 && data.params.length === 0) {
 			return { description: data.description, surface: [], contents: [], config: [] };
 		}
-		surface.push(theme.fg("muted", "Arguments"));
+		surface.push(theme.fg("muted", t("Arguments")));
 		surface.push(this.#rule());
 		this.#pushParams(surface, data.params, width, "  ");
 		surface.push("");
@@ -322,9 +329,9 @@ export class InspectorPanel implements Component {
 		const width = this.#width;
 		const data = ruleInspectorData(ext);
 		const surface: string[] = [];
-		surface.push(theme.fg("muted", "Applies"));
+		surface.push(theme.fg("muted", t("Applies")));
 		surface.push(this.#rule());
-		if (data.alwaysApply) surface.push(`  ${theme.fg("accent", "always")}`);
+		if (data.alwaysApply) surface.push(`  ${theme.fg("accent", t("always"))}`);
 		if (data.globs) this.#pushLabeled(surface, "globs", data.globs.join(", "), width);
 		if (data.condition) this.#pushLabeledList(surface, "condition", data.condition, width);
 		if (data.astCondition) this.#pushLabeledList(surface, "ast", data.astCondition, width);
@@ -332,14 +339,14 @@ export class InspectorPanel implements Component {
 		if (data.agents) this.#pushLabeledList(surface, "agents", data.agents, width);
 		if (data.interruptMode) this.#pushLabeled(surface, "interrupt", data.interruptMode, width, "dim");
 		if (!data.alwaysApply && !data.globs && !data.condition && !data.astCondition && !data.agents) {
-			surface.push(theme.fg("dim", "  (no apply conditions)"));
+			surface.push(theme.fg("dim", t("  (no apply conditions)")));
 		}
 		surface.push("");
 		return {
 			description: data.description,
 			surface,
 			contents: [],
-			preview: { heading: "Rule", text: data.content },
+			preview: { heading: t("Rule"), text: data.content },
 			config: [],
 		};
 	}
@@ -351,14 +358,14 @@ export class InspectorPanel implements Component {
 		if (data.hidden) {
 			this.#pushWrapped(
 				runtimeExtra,
-				`${theme.fg("warning", "hidden")}    omitted from the system-prompt skill list`,
+				`${theme.fg("warning", t("hidden"))}    ${t("omitted from the system-prompt skill list")}`,
 				width,
 				"  ",
 			);
 			runtimeExtra.push(this.#rule());
 		}
 		const surface: string[] = [];
-		if (data.alwaysApply) surface.push(`  ${theme.fg("accent", "always apply")}`);
+		if (data.alwaysApply) surface.push(`  ${theme.fg("accent", t("always apply"))}`);
 		if (data.globs) this.#pushLabeled(surface, "globs", data.globs.join(", "), width);
 		if (surface.length > 0) surface.push("");
 		return {
@@ -366,7 +373,7 @@ export class InspectorPanel implements Component {
 			runtimeExtra: runtimeExtra.length > 0 ? runtimeExtra : undefined,
 			surface,
 			contents: [],
-			preview: { heading: "Instruction", text: data.content },
+			preview: { heading: t("Instruction"), text: data.content },
 			config: [],
 		};
 	}
@@ -374,17 +381,17 @@ export class InspectorPanel implements Component {
 	#commandKind(ext: Extension): KindView {
 		const data = commandInspectorData(ext);
 		const surface: string[] = [];
-		surface.push(theme.fg("muted", "Invocation"));
+		surface.push(theme.fg("muted", t("Invocation")));
 		surface.push(this.#rule());
 		surface.push(`  ${theme.fg("accent", `/${sanitizeDisplayText(ext.name)}`)}`);
 		if (data.argumentHint) this.#pushLabeled(surface, "hint", data.argumentHint, this.#width, "dim");
-		if (data.usesArguments) surface.push(`  ${theme.fg("dim", "accepts $ARGUMENTS")}`);
+		if (data.usesArguments) surface.push(`  ${theme.fg("dim", t("accepts $ARGUMENTS"))}`);
 		surface.push("");
 		return {
 			description: data.description,
 			surface,
 			contents: [],
-			preview: { heading: "Template", text: data.body },
+			preview: { heading: t("Template"), text: data.body },
 			config: [],
 		};
 	}
@@ -392,7 +399,7 @@ export class InspectorPanel implements Component {
 	#hookKind(ext: Extension): KindView {
 		const data = hookInspectorData(ext);
 		const surface: string[] = [];
-		surface.push(theme.fg("muted", "Hook"));
+		surface.push(theme.fg("muted", t("Hook")));
 		surface.push(this.#rule());
 		if (data.hookType) this.#pushLabeled(surface, "when", data.hookType, this.#width);
 		if (data.tool) this.#pushLabeled(surface, "tool", data.tool, this.#width);
@@ -406,7 +413,7 @@ export class InspectorPanel implements Component {
 			description: ext.description,
 			surface: [],
 			contents: [],
-			preview: { heading: "Prompt", text: data.content },
+			preview: { heading: t("Prompt"), text: data.content },
 			config: [],
 		};
 	}
@@ -417,7 +424,7 @@ export class InspectorPanel implements Component {
 			description: ext.description,
 			surface: [],
 			contents: [],
-			preview: { heading: "Preview", text: data.content },
+			preview: { heading: t("Preview"), text: data.content },
 			config: [],
 		};
 	}
@@ -426,7 +433,7 @@ export class InspectorPanel implements Component {
 		const data = instructionInspectorData(ext);
 		const surface: string[] = [];
 		if (data.applyTo) {
-			surface.push(theme.fg("muted", "Applies"));
+			surface.push(theme.fg("muted", t("Applies")));
 			surface.push(this.#rule());
 			this.#pushLabeled(surface, "files", data.applyTo, this.#width);
 			surface.push("");
@@ -435,7 +442,7 @@ export class InspectorPanel implements Component {
 			description: ext.description,
 			surface,
 			contents: [],
-			preview: { heading: "Instruction", text: data.content },
+			preview: { heading: t("Instruction"), text: data.content },
 			config: [],
 		};
 	}
@@ -443,7 +450,7 @@ export class InspectorPanel implements Component {
 	#fallbackKind(ext: Extension): KindView {
 		const surface: string[] = [];
 		if (ext.trigger) {
-			surface.push(theme.fg("muted", "Trigger"));
+			surface.push(theme.fg("muted", t("Trigger")));
 			surface.push(this.#rule());
 			surface.push(`  ${theme.fg("accent", ext.trigger)}`);
 			surface.push("");
@@ -495,15 +502,22 @@ export class InspectorPanel implements Component {
 		} else {
 			lines.push(...wrapped.slice(0, MCP_INLINE_DESC_LINES));
 			lines.push(
-				theme.fg("dim", `  … ${wrapped.length - MCP_INLINE_DESC_LINES} more (${expandKeyHint()} to expand)`),
+				theme.fg(
+					"dim",
+					t("  … {count} more ({key} to expand)", {
+						count: wrapped.length - MCP_INLINE_DESC_LINES,
+						key: expandKeyHint(),
+					}),
+				),
 			);
 		}
 		lines.push("");
 	}
 
 	#pushOrigin(lines: string[], ext: Extension, width: number): void {
-		lines.push(theme.fg("muted", "Origin:"));
-		const levelLabel = ext.source.level === "user" ? "User" : ext.source.level === "project" ? "Project" : "Native";
+		lines.push(theme.fg("muted", t("Origin:")));
+		const levelLabel =
+			ext.source.level === "user" ? t("User") : ext.source.level === "project" ? t("Project") : t("Native");
 		this.#pushWrapped(
 			lines,
 			theme.italic(`via ${sanitizeDisplayText(ext.source.providerName)} (${levelLabel})`),
@@ -543,9 +557,14 @@ export class InspectorPanel implements Component {
 		const hidden = items.length - shown.length;
 		const indent = "             ";
 		if (hidden > 0) {
-			this.#pushLabeled(lines, label, `${items.length} patterns`, width, "dim");
+			this.#pushLabeled(lines, label, t("{count} patterns", { count: items.length }), width, "dim");
 			for (const item of shown) this.#pushWrapped(lines, item, width, indent);
-			lines.push(theme.fg("dim", `${indent}… ${hidden} more (${expandKeyHint()} to expand)`));
+			lines.push(
+				theme.fg(
+					"dim",
+					`${indent}${t("… {count} more ({key} to expand)", { count: hidden, key: expandKeyHint() })}`,
+				),
+			);
 			return;
 		}
 		this.#pushLabeled(lines, label, shown[0] ?? "", width);
@@ -554,7 +573,7 @@ export class InspectorPanel implements Component {
 
 	#pushParams(lines: string[], params: ToolParamView[], width: number, indent: string): void {
 		if (params.length === 0) {
-			lines.push(`${indent}${theme.fg("dim", "(no arguments)")}`);
+			lines.push(`${indent}${theme.fg("dim", t("(no arguments)"))}`);
 			return;
 		}
 		for (const param of params) {
@@ -568,7 +587,7 @@ export class InspectorPanel implements Component {
 
 	#pushPreview(lines: string[], text: string, width: number, budget: number): void {
 		if (!text) {
-			lines.push(theme.fg("dim", "  (empty)"));
+			lines.push(theme.fg("dim", t("  (empty)")));
 			return;
 		}
 		const wrapped: string[] = [];
@@ -584,7 +603,15 @@ export class InspectorPanel implements Component {
 		}
 		const shownBudget = Math.max(1, budget - 1);
 		lines.push(...wrapped.slice(0, shownBudget));
-		lines.push(theme.fg("dim", `  … ${wrapped.length - shownBudget} more (${expandKeyHint()} to expand)`));
+		lines.push(
+			theme.fg(
+				"dim",
+				t("  … {count} more ({key} to expand)", {
+					count: wrapped.length - shownBudget,
+					key: expandKeyHint(),
+				}),
+			),
+		);
 	}
 
 	#highlightMarkdown(line: string): string {

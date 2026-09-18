@@ -1,4 +1,5 @@
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { t } from "../i18n";
 import type { CommitCommandArgs } from "./types";
 
 const FLAG_ALIASES = new Map<string, string>([
@@ -36,7 +37,7 @@ export function parseCommitArgs(args: string[]): CommitCommandArgs | undefined {
 			case "--context": {
 				const value = args[i + 1];
 				if (!value || value.startsWith("-")) {
-					process.stderr.write(`${chalk.red("Error: --context requires a value")}\n`);
+					process.stderr.write(`${chalk.red(t("Error: --context requires a value"))}\n`);
 					process.exit(1);
 				}
 				result.context = value;
@@ -46,7 +47,7 @@ export function parseCommitArgs(args: string[]): CommitCommandArgs | undefined {
 			case "--model": {
 				const value = args[i + 1];
 				if (!value || value.startsWith("-")) {
-					process.stderr.write(`${chalk.red("Error: --model requires a value")}\n`);
+					process.stderr.write(`${chalk.red(t("Error: --model requires a value"))}\n`);
 					process.exit(1);
 				}
 				result.model = value;
@@ -58,7 +59,7 @@ export function parseCommitArgs(args: string[]): CommitCommandArgs | undefined {
 				break;
 			default:
 				if (flag.startsWith("-")) {
-					process.stderr.write(`${chalk.red(`Error: Unknown flag ${flag}`)}\n`);
+					process.stderr.write(`${chalk.red(t("Error: Unknown flag {flag}", { flag }))}\n`);
 					process.exit(1);
 				}
 		}
@@ -69,17 +70,17 @@ export function parseCommitArgs(args: string[]): CommitCommandArgs | undefined {
 
 export function printCommitHelp(): void {
 	const lines = [
-		"Usage:",
-		"  omp commit [options]",
+		t("Usage:"),
+		t("  omp commit [options]"),
 		"",
-		"Options:",
-		"  --push           Push after committing",
-		"  --dry-run        Preview without committing",
-		"  --no-changelog   Skip changelog updates",
-		"  --legacy         Use legacy deterministic pipeline",
-		"  --context, -c    Additional context for the model",
-		"  --model, -m      Override model selection",
-		"  --help, -h       Show this help message",
+		t("Options:"),
+		t("  --push           Push after committing"),
+		t("  --dry-run        Preview without committing"),
+		t("  --no-changelog   Skip changelog updates"),
+		t("  --legacy         Use legacy deterministic pipeline"),
+		t("  --context, -c    Additional context for the model"),
+		t("  --model, -m      Override model selection"),
+		t("  --help, -h       Show this help message"),
 	];
 	process.stdout.write(`${lines.join("\n")}\n`);
 }

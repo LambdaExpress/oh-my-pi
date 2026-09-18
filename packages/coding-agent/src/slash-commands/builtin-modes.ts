@@ -116,9 +116,13 @@ function formatComputerUseStatus(session: AgentSession): string {
 		maxHeight: session.settings.get("computer.maxHeight"),
 	};
 	return [
-		`Computer use: ${enabled ? "enabled" : "disabled"}`,
-		`prelude: ${active ? "active" : "inactive"}`,
-		`configured: display=${configured.display}, maxWidth=${configured.maxWidth}, maxHeight=${configured.maxHeight}`,
+		t("Computer use: {status}", { status: enabled ? "enabled" : "disabled" }),
+		t("prelude: {status}", { status: active ? "active" : "inactive" }),
+		t("configured: display={display}, maxWidth={maxWidth}, maxHeight={maxHeight}", {
+			display: configured.display,
+			maxWidth: configured.maxWidth,
+			maxHeight: configured.maxHeight,
+		}),
 	].join(" · ");
 }
 
@@ -131,7 +135,7 @@ async function applyComputerUseToggle(session: AgentSession, enable: boolean): P
 	session.settings.override("computer.enabled", enable);
 	if (enable && !session.getEvalPreludes().some(definition => definition.name === "computer")) {
 		session.settings.override("computer.enabled", previous);
-		return "Computer use is unavailable in this session.";
+		return t("Computer use is unavailable in this session.");
 	}
 	try {
 		await session.refreshBaseSystemPrompt();
@@ -140,8 +144,8 @@ async function applyComputerUseToggle(session: AgentSession, enable: boolean): P
 		throw error;
 	}
 	return enable
-		? `Computer use enabled for this session. ${formatComputerUseStatus(session)}`
-		: "Computer use disabled for this session.";
+		? t("Computer use enabled for this session. {status}", { status: formatComputerUseStatus(session) })
+		: t("Computer use disabled for this session.");
 }
 
 const AUTOCOMPLETE_DETAIL_LIMIT = 48;
@@ -163,17 +167,17 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		acpInputHint: "<plan|scan|status|cancel|scans|show|import|export|validate|compare|disposition>",
 		subcommands: [
-			{ name: "plan", description: t("Create an immutable security scan plan") },
-			{ name: "scan", description: t("Start a planned or newly planned native scan") },
-			{ name: "status", description: t("Show native scan operation status") },
-			{ name: "cancel", description: t("Cancel a running native scan") },
-			{ name: "scans", description: t("List stored project security scans") },
-			{ name: "show", description: t("Render a scan or security:// resource") },
-			{ name: "import", description: t("Import SARIF or a Codex Security bundle") },
-			{ name: "export", description: t("Export a canonical bundle, SARIF, or report") },
-			{ name: "validate", description: t("Validate one finding with OMP-native tools") },
-			{ name: "compare", description: t("Compare finding lineage across two scans") },
-			{ name: "disposition", description: t("Set a finding disposition with rationale") },
+			{ name: "plan", description: "Create an immutable security scan plan" },
+			{ name: "scan", description: "Start a planned or newly planned native scan" },
+			{ name: "status", description: "Show native scan operation status" },
+			{ name: "cancel", description: "Cancel a running native scan" },
+			{ name: "scans", description: "List stored project security scans" },
+			{ name: "show", description: "Render a scan or security:// resource" },
+			{ name: "import", description: "Import SARIF or a Codex Security bundle" },
+			{ name: "export", description: "Export a canonical bundle, SARIF, or report" },
+			{ name: "validate", description: "Validate one finding with OMP-native tools" },
+			{ name: "compare", description: "Compare finding lineage across two scans" },
+			{ name: "disposition", description: "Set a finding disposition with rationale" },
 		],
 		handle: handleSecurityCommand,
 	},
@@ -192,7 +196,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "gear",
 		description: "Open provider setup",
 		allowArgs: true,
-		subcommands: [{ name: "providers", description: t("Configure sign-in and web search providers") }],
+		subcommands: [{ name: "providers", description: "Configure sign-in and web search providers" }],
 		handleTui: async (command, runtime) => {
 			const args = command.args.trim().toLowerCase();
 			const opensProviders = args === "" || args === "providers";
@@ -259,12 +263,12 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "goal",
 		description: "Toggle goal mode (persistent autonomous objective for this session)",
 		subcommands: [
-			{ name: "set", description: t("Set or replace the goal"), usage: "<objective>" },
-			{ name: "show", description: t("Show current goal details") },
-			{ name: "pause", description: t("Pause the current goal") },
-			{ name: "resume", description: t("Resume a paused goal") },
-			{ name: "drop", description: t("Drop the current goal") },
-			{ name: "budget", description: t("Adjust the token budget"), usage: "<N|off>" },
+			{ name: "set", description: "Set or replace the goal", usage: "<objective>" },
+			{ name: "show", description: "Show current goal details" },
+			{ name: "pause", description: "Pause the current goal" },
+			{ name: "resume", description: "Resume a paused goal" },
+			{ name: "drop", description: "Drop the current goal" },
+			{ name: "budget", description: "Adjust the token budget", usage: "<N|off>" },
 		],
 		inlineHint: "[objective]",
 		allowArgs: true,
@@ -350,14 +354,17 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				const match = resolved.model;
 				if (!match) {
 					return usage(
-						`Unknown model: ${selector}. Use ACP \`session/setModel\` for picker-driven selection or list available models with /model.`,
+						t(
+							"Unknown model: {model}. Use ACP `session/setModel` for picker-driven selection or list available models with /model.",
+							{ model: selector },
+						),
 						runtime,
 					);
 				}
 				try {
 					await runtime.session.setModel(match);
 					if (resolved.thinkingLevel !== undefined) runtime.session.setThinkingLevel(resolved.thinkingLevel);
-					await runtime.output(`Model set to ${match.provider}/${match.id}.`);
+					await runtime.output(t("Model set to {model}.", { model: `${match.provider}/${match.id}` }));
 					await runtime.notifyTitleChanged?.();
 					await runtime.notifyConfigChanged?.();
 					return commandConsumed();
@@ -396,20 +403,22 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			if (!selector) {
 				const model = runtime.session.model;
 				await runtime.output(
-					model ? `Current model: ${model.provider}/${model.id}` : "No model is currently selected.",
+					model
+						? t("Current model: {model}", { model: `${model.provider}/${model.id}` })
+						: t("No model is currently selected."),
 				);
 				return commandConsumed();
 			}
 			const resolved = resolveSessionModelSelector(selector, runtime.session, runtime.settings);
-			if (!resolved.model) return usage(`Unknown model: ${selector}`, runtime);
+			if (!resolved.model) return usage(t("Unknown model: {model}", { model: selector }), runtime);
 			try {
 				await runtime.session.setModelTemporary(resolved.model, resolved.thinkingLevel);
-				await runtime.output(`Session-only model: ${formatModelString(resolved.model)}.`);
+				await runtime.output(t("Session-only model: {model}.", { model: formatModelString(resolved.model) }));
 				await runtime.notifyTitleChanged?.();
 				await runtime.notifyConfigChanged?.();
 				return commandConsumed();
 			} catch (err) {
-				return usage(`Failed to switch model: ${errorMessage(err)}`, runtime);
+				return usage(t("Failed to switch model: {error}", { error: errorMessage(err) }), runtime);
 			}
 		},
 		handleTui: async (command, runtime) => {
@@ -421,7 +430,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			}
 			const resolved = resolveSessionModelSelector(selector, runtime.ctx.session, runtime.ctx.settings);
 			if (!resolved.model) {
-				runtime.ctx.showError(`Unknown model: ${selector}`);
+				runtime.ctx.showError(t("Unknown model: {model}", { model: selector }));
 				return;
 			}
 			if (resolved.warning) runtime.ctx.showStatus(resolved.warning);
@@ -435,9 +444,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Toggle fast mode",
 		acpInputHint: "[on|off|status]",
 		subcommands: [
-			{ name: "on", description: t("Enable fast mode") },
-			{ name: "off", description: t("Disable fast mode") },
-			{ name: "status", description: t("Show fast mode status") },
+			{ name: "on", description: "Enable fast mode" },
+			{ name: "off", description: "Disable fast mode" },
+			{ name: "status", description: "Show fast mode status" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
@@ -514,12 +523,14 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
-			`Skill listing: ${runtime.ctx.session.settings.get("skillful") ? "on" : "off"}`,
+			t("Skill listing: {status}", { status: runtime.ctx.session.settings.get("skillful") ? "on" : "off" }),
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
 				await runtime.output(
-					`Skill listing: ${runtime.session.settings.get("skillful") ? "on" : "off"} (session override; default from the skillful setting).`,
+					t("Skill listing: {status} (session override; default from the skillful setting).", {
+						status: runtime.session.settings.get("skillful") ? "on" : "off",
+					}),
 				);
 				return commandConsumed();
 			}
@@ -530,15 +541,21 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 						: arg === "off"
 							? await runtime.session.setSkillful(false)
 							: await runtime.session.toggleSkillful();
-				await runtime.output(`Skill listing ${enabled ? "enabled" : "disabled"} for this session.`);
+				await runtime.output(
+					t("Skill listing {status} for this session.", { status: enabled ? "enabled" : "disabled" }),
+				);
 				return commandConsumed();
 			}
-			return usage("Usage: /skillful [on|off|status]", runtime);
+			return usage(t("Usage: /skillful [on|off|status]"), runtime);
 		},
 		handleTui: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
-				runtime.ctx.showStatus(`Skill listing: ${runtime.ctx.session.settings.get("skillful") ? "on" : "off"}.`);
+				runtime.ctx.showStatus(
+					t("Skill listing: {status}.", {
+						status: runtime.ctx.session.settings.get("skillful") ? "on" : "off",
+					}),
+				);
 				runtime.ctx.editor.setText("");
 				return;
 			}
@@ -549,11 +566,13 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 						: arg === "off"
 							? await runtime.ctx.session.setSkillful(false)
 							: await runtime.ctx.session.toggleSkillful();
-				runtime.ctx.showStatus(`Skill listing ${enabled ? "enabled" : "disabled"} for this session.`);
+				runtime.ctx.showStatus(
+					t("Skill listing {status} for this session.", { status: enabled ? "enabled" : "disabled" }),
+				);
 				runtime.ctx.editor.setText("");
 				return;
 			}
-			runtime.ctx.showStatus("Usage: /skillful [on|off|status]");
+			runtime.ctx.showStatus(t("Usage: /skillful [on|off|status]"));
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -564,9 +583,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Toggle extended context",
 		acpInputHint: "[on|off|status]",
 		subcommands: [
-			{ name: "on", description: t("Enable larger context windows") },
-			{ name: "off", description: t("Use default or standard-pricing context windows") },
-			{ name: "status", description: t("Show extended context status") },
+			{ name: "on", description: "Enable larger context windows" },
+			{ name: "off", description: "Use default or standard-pricing context windows" },
+			{ name: "status", description: "Show extended context status" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
@@ -591,9 +610,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Toggle computer use",
 		acpInputHint: "[on|off|status]",
 		subcommands: [
-			{ name: "on", description: t("Enable computer use for this session") },
-			{ name: "off", description: t("Disable computer use for this session") },
-			{ name: "status", description: t("Show computer use status") },
+			{ name: "on", description: "Enable computer use for this session" },
+			{ name: "off", description: "Disable computer use for this session" },
+			{ name: "status", description: "Show computer use status" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
@@ -636,7 +655,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		acpDescription: "Arm or restart prewalk",
 		acpInputHint: "[restart]",
-		subcommands: [{ name: "restart", description: t("Return to @default and re-arm the handoff to @smol") }],
+		subcommands: [{ name: "restart", description: "Return to @default and re-arm the handoff to @smol" }],
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg && arg !== "restart") return usage(t("Usage: /prewalk [restart]"), runtime);

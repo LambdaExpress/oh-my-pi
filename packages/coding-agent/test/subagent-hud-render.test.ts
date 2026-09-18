@@ -714,13 +714,7 @@ describe("InteractiveMode subagent observer UI sync", () => {
 		for (let index = 0; index < 6; index++) {
 			eventBus.emit(
 				TASK_SUBAGENT_PROGRESS_CHANNEL,
-				makeProgressPayload(
-					`BurstAgent${index}`,
-					index,
-					`Burst job ${index}`,
-					true,
-					session.getAgentScopeId(),
-				),
+				makeProgressPayload(`BurstAgent${index}`, index, `Burst job ${index}`, true, session.getAgentScopeId()),
 			);
 		}
 

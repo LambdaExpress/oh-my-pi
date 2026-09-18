@@ -35,7 +35,7 @@ import type {
 } from "./types";
 
 function formatFreshSessionResult(result: FreshSessionResult): string {
-	const stateLabel = result.closedProviderSessions === 1 ? "provider state" : "provider states";
+	const stateLabel = t(result.closedProviderSessions === 1 ? "provider state" : "provider states");
 	return t("Fresh provider session started ({count} {stateLabel} pruned).", {
 		count: result.closedProviderSessions,
 		stateLabel,
@@ -78,7 +78,7 @@ function parseShakeMode(args: string): ShakeMode | { error: string } {
 	if (verb === "" || verb === "elide") return "elide";
 	if (verb === "images") return "images";
 	if (verb === "thinking") return "thinking";
-	return { error: `Unknown /shake mode "${verb}". Use elide, images, or thinking.` };
+	return { error: t('Unknown /shake mode "{verb}". Use elide, images, or thinking.', { verb }) };
 }
 
 /** Format the session's workspace directories (cwd + additional) for display. */
@@ -111,13 +111,13 @@ async function relocateHeadlessSession(
 	try {
 		await runtime.settings.flush();
 	} catch (err) {
-		return usage(`Failed to save pending settings: ${errorMessage(err)}`, runtime);
+		return usage(t("Failed to save pending settings: {error}", { error: errorMessage(err) }), runtime);
 	}
 	const previousState = runtime.sessionManager.captureState();
 	try {
 		await runtime.session.moveSession(resolvedPath);
 	} catch (err) {
-		return usage(`Move failed: ${errorMessage(err)}`, runtime);
+		return usage(t("Move failed: {error}", { error: errorMessage(err) }), runtime);
 	}
 	try {
 		setProjectDir(resolvedPath);
@@ -133,16 +133,22 @@ async function relocateHeadlessSession(
 			} catch {}
 			if (!realigned) {
 				return fatalMoveFailure(
-					`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; process remains at source while session is at ${actual})`,
+					t(
+						"Move failed and rollback failed: {error} (failed to re-align workspace to {path}; process remains at source while session is at {path})",
+						{ error: errorMessage(rollbackError), path: actual },
+					),
 					runtime,
 				);
 			}
 			return usage(
-				`Move failed and rollback failed: ${errorMessage(rollbackError)} (workspace remains at ${actual})`,
+				t("Move failed and rollback failed: {error} (workspace remains at {path})", {
+					error: errorMessage(rollbackError),
+					path: actual,
+				}),
 				runtime,
 			);
 		}
-		return usage(`Move failed: ${errorMessage(err)}`, runtime);
+		return usage(t("Move failed: {error}", { error: errorMessage(err) }), runtime);
 	}
 	try {
 		await rescopeHeadlessToCwd(runtime, resolvedPath);
@@ -159,16 +165,22 @@ async function relocateHeadlessSession(
 			} catch {}
 			if (!realigned) {
 				return fatalMoveFailure(
-					`Move failed and rollback failed: ${errorMessage(rollbackError)} (failed to re-align workspace to ${actual}; process remains at source while session is at ${actual})`,
+					t(
+						"Move failed and rollback failed: {error} (failed to re-align workspace to {path}; process remains at source while session is at {path})",
+						{ error: errorMessage(rollbackError), path: actual },
+					),
 					runtime,
 				);
 			}
 			return usage(
-				`Move failed and rollback failed: ${errorMessage(rollbackError)} (workspace remains at ${actual})`,
+				t("Move failed and rollback failed: {error} (workspace remains at {path})", {
+					error: errorMessage(rollbackError),
+					path: actual,
+				}),
 				runtime,
 			);
 		}
-		return usage(`Move failed: ${errorMessage(err)}`, runtime);
+		return usage(t("Move failed: {error}", { error: errorMessage(err) }), runtime);
 	}
 	await runtime.notifyConfigChanged?.();
 	await runtime.notifyTitleChanged?.();
@@ -185,12 +197,12 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		subcommands: [
 			{
 				name: "add",
-				description: t("Add an SSH host"),
+				description: "Add an SSH host",
 				usage: "<name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--scope project|user]",
 			},
-			{ name: "list", description: t("List all configured SSH hosts") },
-			{ name: "remove", description: t("Remove an SSH host"), usage: "<name> [--scope project|user]" },
-			{ name: "help", description: t("Show help message") },
+			{ name: "list", description: "List all configured SSH hosts" },
+			{ name: "remove", description: "Remove an SSH host", usage: "<name> [--scope project|user]" },
+			{ name: "help", description: "Show help message" },
 		],
 		allowArgs: true,
 		handle: handleSshAcp,
@@ -288,16 +300,22 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 					// Compaction precondition failures (no model, already compacted, too
 					// small) and provider errors propagate as plain Errors; surface them
 					// via runtime.output so they don't fail the ACP prompt turn.
-					await runtime.output(`Compaction failed: ${errorMessage(err)}`);
+					await runtime.output(t("Compaction failed: {error}", { error: errorMessage(err) }));
 					return;
 				}
 				const after = runtime.session.getContextUsage?.();
 				const afterTokens = after?.tokens;
 				if (beforeTokens != null && afterTokens != null) {
 					const saved = beforeTokens - afterTokens;
-					await runtime.output(`Compaction complete. Tokens: ${beforeTokens} -> ${afterTokens} (saved ${saved}).`);
+					await runtime.output(
+						t("Compaction complete. Tokens: {before} -> {after} (saved {saved}).", {
+							before: beforeTokens,
+							after: afterTokens,
+							saved,
+						}),
+					);
 				} else {
-					await runtime.output("Compaction complete.");
+					await runtime.output(t("Compaction complete."));
 				}
 			};
 			// Provider-backed: background-dispatch under RPC so the serialized command
@@ -358,10 +376,10 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			if (runtime.session.isStreaming) {
-				return usage("Wait for the current response to finish or abort it before handing off.", runtime);
+				return usage(t("Wait for the current response to finish or abort it before handing off."), runtime);
 			}
 			if (runtime.session.isGeneratingHandoff) {
-				return usage("Handoff generation is already in progress.", runtime);
+				return usage(t("Handoff generation is already in progress."), runtime);
 			}
 			const runHandoff = async (): Promise<void> => {
 				let result: HandoffResult | undefined;
@@ -385,23 +403,23 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 					// and is surfaced verbatim behind the same "<verb> failed:" prefix
 					// `/compact` uses.
 					if (message === "Handoff cancelled") {
-						await runtime.output("Handoff cancelled.");
+						await runtime.output(t("Handoff cancelled."));
 						return;
 					}
 					// Persist the real failure so it stays debuggable after the client
 					// message scrolls away (same rationale as the TUI path, #7993).
 					logger.error("Handoff failed", { error: message });
-					await runtime.output(`Handoff failed: ${message}`);
+					await runtime.output(t("Handoff failed: {error}", { error: message }));
 					return;
 				}
 				if (!result) {
-					await runtime.output("Handoff cancelled.");
+					await runtime.output(t("Handoff cancelled."));
 					return;
 				}
 				// `savedPath` is deliberately not reported: `SessionHandoff` only writes
 				// the document to disk when `options.autoTriggered` is set, which the
 				// user-invoked path never passes.
-				await runtime.output("Context handed off and compacted in place.");
+				await runtime.output(t("Context handed off and compacted in place."));
 			};
 			if (runtime.runCommandInBackground) {
 				runtime.runCommandInBackground(runHandoff);
@@ -464,17 +482,17 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 					{ allowGlobalFallback: true },
 				);
 				if (!match) {
-					return usage(`Session "${sessionArg}" not found.`, runtime);
+					return usage(t('Session "{id}" not found.', { id: sessionArg }), runtime);
 				}
 				sessionId = match.session.id;
 			} else {
 				sessionId = runtime.sessionManager.getSessionId();
 				if (!sessionId) {
-					return usage("No active session to pin.", runtime);
+					return usage(t("No active session to pin."), runtime);
 				}
 			}
 			const pinned = await toggleSessionPin(sessionId);
-			await runtime.output(pinned ? "Session pinned to the top of the resume list." : "Session unpinned.");
+			await runtime.output(pinned ? t("Session pinned to the top of the resume list.") : t("Session unpinned."));
 			return commandConsumed();
 		},
 	},
@@ -532,13 +550,13 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		description: "Retry the last failed agent turn",
 		handle: async (_command, runtime) => {
 			if (runtime.session.isStreaming) {
-				return usage("Wait for the current response to finish or abort it before retrying.", runtime);
+				return usage(t("Wait for the current response to finish or abort it before retrying."), runtime);
 			}
 			const didRetry = await runtime.session.retry();
 			if (!didRetry) {
-				return usage("Nothing to retry.", runtime);
+				return usage(t("Nothing to retry."), runtime);
 			}
-			await runtime.output("Retrying the last failed turn.");
+			await runtime.output(t("Retrying the last failed turn."));
 			// `AgentSession.retry()` only schedules the continuation as a
 			// post-prompt task; it returns before the retried turn streams. Hosts
 			// whose prompt turn owns the event subscription (ACP) must stay open
@@ -590,12 +608,12 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			{ name: "mm show", description: "Show one mental model (id required)" },
 			{
 				name: "mm refresh",
-				description: t("Refresh auto-refresh models bank-wide, or one model by id"),
+				description: "Refresh auto-refresh models bank-wide, or one model by id",
 			},
-			{ name: "mm history", description: t("Diff the change history of a mental model") },
-			{ name: "mm seed", description: t("Create any built-in mental models that are missing") },
-			{ name: "mm delete", description: t("Delete a mental model from the bank (id required)") },
-			{ name: "mm reload", description: t("Re-pull the cached <mental_models> block") },
+			{ name: "mm history", description: "Diff the change history of a mental model" },
+			{ name: "mm seed", description: "Create any built-in mental models that are missing" },
+			{ name: "mm delete", description: "Delete a mental model from the bank (id required)" },
+			{ name: "mm reload", description: "Re-pull the cached <mental_models> block" },
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
@@ -630,12 +648,14 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 						cwd: runtime.cwd,
 						session: runtime.session,
 					});
-					await runtime.output(payload ?? `Memory queue is not available for the ${backend.id} backend.`);
+					await runtime.output(
+						payload ?? t("Memory queue is not available for the {id} backend.", { id: backend.id }),
+					);
 					return commandConsumed();
 				}
 				case "sync": {
 					await backend.enqueue(runtime.settings.getAgentDir(), runtime.cwd, runtime.session);
-					await runtime.output("Memory consolidation ran.");
+					await runtime.output(t("Memory consolidation ran."));
 					return commandConsumed();
 				}
 				case "stats":
@@ -653,7 +673,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 						runtime,
 					);
 				default:
-					return usage("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync>", runtime);
+					return usage(t("Usage: /memory <view|stats|diagnose|clear|reset|enqueue|rebuild|queue|sync>"), runtime);
 			}
 		},
 		handleTui: async (command, runtime) => {
@@ -733,7 +753,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			)
 				return;
 			if (!title) {
-				runtime.ctx.showStatus("Could not generate a session title. Use /rename <title> to set one.");
+				runtime.ctx.showStatus(t("Could not generate a session title. Use /rename <title> to set one."));
 				return;
 			}
 			await runtime.ctx.handleRenameCommand(title);
@@ -760,7 +780,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 			}
 			const failure = await relocateHeadlessSession(runtime, resolvedPath);
 			if (failure) return failure;
-			await runtime.output(`Moved to ${runtime.sessionManager.getCwd()}.`);
+			await runtime.output(t("Moved to {path}.", { path: runtime.sessionManager.getCwd() }));
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
@@ -778,21 +798,23 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 		inlineHint: "[<branch>]",
 		allowArgs: true,
 		handle: async (command, runtime) => {
-			if (runtime.session.isStreaming) return usage("Cannot create a worktree while streaming.", runtime);
+			if (runtime.session.isStreaming) return usage(t("Cannot create a worktree while streaming."), runtime);
 			const branch = command.args.trim() || defaultSessionWorktreeBranch();
 			const sourceCwd = runtime.sessionManager.getCwd();
 			let worktree: SessionWorktree;
 			try {
 				worktree = await createSessionWorktree(sourceCwd, runtime.settings, branch);
 			} catch (err) {
-				return usage(`Worktree creation failed: ${errorMessage(err)}`, runtime);
+				return usage(t("Worktree creation failed: {error}", { error: errorMessage(err) }), runtime);
 			}
 			const failure = await relocateHeadlessSession(runtime, worktree.path);
 			if (failure) return failure;
 			const cleanup = await cleanSourceCheckoutIfConfigured(sourceCwd, runtime.settings);
 			if (cleanup.errorMessage !== undefined) {
 				await runtime.output(
-					`Warning: Worktree created, but cleaning source checkout failed: ${cleanup.errorMessage}`,
+					t("Warning: Worktree created, but cleaning source checkout failed: {error}", {
+						error: cleanup.errorMessage,
+					}),
 				);
 			}
 			await runtime.output(formatSessionWorktreeSummary(worktree, cleanup.cleaned));
@@ -867,8 +889,8 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "dirs",
-		description: t("List this session's workspace directories"),
-		acpDescription: t("List this session's workspace directories"),
+		description: "List this session's workspace directories",
+		acpDescription: "List this session's workspace directories",
 		handle: async (_command, runtime) => {
 			await runtime.output(formatWorkspaceDirectories(runtime));
 			return commandConsumed();
@@ -876,7 +898,7 @@ export const BUILTIN_LIFECYCLE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> =
 	},
 	{
 		name: "exit",
-		description: t("Exit the application"),
+		description: "Exit the application",
 		handleTui: shutdownHandlerTui,
 	},
 	{

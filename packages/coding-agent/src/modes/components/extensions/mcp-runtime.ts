@@ -8,6 +8,7 @@
 import type { MCPServer } from "../../../capability/mcp";
 import type { SourceMeta } from "../../../capability/types";
 import type { CustomTool } from "../../../extensibility/custom-tools/types";
+import { t } from "../../../i18n";
 import { type LoadMCPConfigsOptions, loadAllMCPConfigs } from "../../../mcp/config";
 import type { MCPLoadResult, MCPManager } from "../../../mcp/manager";
 import type { McpConnectionStatusEvent } from "../../../mcp/startup-events";
@@ -273,18 +274,30 @@ export function snapshotMcpRuntime(
 export function formatMcpListHint(snapshot: MCPRuntimeSnapshot): string {
 	switch (snapshot.health) {
 		case "inactive":
-			return "inactive";
+			return t("inactive");
 		case "connecting":
-			return "connecting…";
+			return t("connecting…");
 		case "disconnected":
-			return "unavailable";
+			return t("unavailable");
 		case "connected": {
-			const parts = [`${snapshot.tools.length} tool${snapshot.tools.length === 1 ? "" : "s"}`];
+			const parts = [
+				t("{count} tool{s}", { count: snapshot.tools.length, s: snapshot.tools.length === 1 ? "" : "s" }),
+			];
 			if (snapshot.resources.length > 0) {
-				parts.push(`${snapshot.resources.length} resource${snapshot.resources.length === 1 ? "" : "s"}`);
+				parts.push(
+					t("{count} resource{s}", {
+						count: snapshot.resources.length,
+						s: snapshot.resources.length === 1 ? "" : "s",
+					}),
+				);
 			}
 			if (snapshot.prompts.length > 0) {
-				parts.push(`${snapshot.prompts.length} prompt${snapshot.prompts.length === 1 ? "" : "s"}`);
+				parts.push(
+					t("{count} prompt{s}", {
+						count: snapshot.prompts.length,
+						s: snapshot.prompts.length === 1 ? "" : "s",
+					}),
+				);
 			}
 			return parts.join(" · ");
 		}
@@ -294,13 +307,13 @@ export function formatMcpListHint(snapshot: MCPRuntimeSnapshot): string {
 export function formatMcpHealthLabel(health: MCPConnectionHealth): string {
 	switch (health) {
 		case "connected":
-			return "Connected";
+			return t("Connected");
 		case "connecting":
-			return "Connecting";
+			return t("Connecting");
 		case "disconnected":
-			return "Not connected";
+			return t("Not connected");
 		case "inactive":
-			return "Inactive";
+			return t("Inactive");
 	}
 }
 

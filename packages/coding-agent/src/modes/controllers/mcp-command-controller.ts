@@ -1694,7 +1694,7 @@ export class MCPCommandController {
 		let settled = false;
 		const handleEscape = (): void => {
 			if (settled) {
-				this.ctx.showStatus(`MCP test for "${name}" already finished`);
+				this.ctx.showStatus(t('MCP test for "{name}" already finished', { name }));
 				return;
 			}
 			abortController.abort();
@@ -1714,7 +1714,7 @@ export class MCPCommandController {
 		let hintBlock: MutableHintBlock | undefined;
 		// Outcome-branched settled text: a cancelled or failed test must not
 		// read as if it completed.
-		let settleNote = `Tested connection to "${name}".`;
+		let settleNote = t('Tested connection to "{name}".', { name });
 		// Cancellation can land while later awaits (auth prepareConfig, connect)
 		// are still unwinding. Drop the esc affordance the moment it happens —
 		// the dispatcher already consumed the ownership — but claim no outcome:
@@ -1723,7 +1723,7 @@ export class MCPCommandController {
 		// #syncManagerConnection does not stop it).
 		abortController.signal.addEventListener("abort", () => {
 			if (settled || !hintShown) return;
-			hintText?.setText(theme.fg("muted", `Testing connection to "${name}"...`));
+			hintText?.setText(theme.fg("muted", t('Testing connection to "{name}"...', { name })));
 			this.ctx.ui.requestRender();
 		});
 		try {
@@ -1750,7 +1750,7 @@ export class MCPCommandController {
 			const { config } = found;
 			if (config.enabled === false) {
 				this.ctx.mcpTestEscapeHandlers.delete(handleEscape);
-				this.ctx.showError(`Server "${name}" is disabled. Run /mcp enable ${name} first.`);
+				this.ctx.showError(t('Server "{name}" is disabled. Run /mcp enable {name} first.', { name }));
 				return;
 			}
 
@@ -1759,13 +1759,17 @@ export class MCPCommandController {
 			// is already gone.
 			if (abortController.signal.aborted) {
 				this.ctx.mcpTestEscapeHandlers.delete(handleEscape);
-				this.ctx.showStatus(`Cancelled MCP test for "${name}"`);
+				this.ctx.showStatus(t('Cancelled MCP test for "{name}"', { name }));
 				return;
 			}
 
 			hintBlock = new MutableHintBlock();
 			hintBlock.addChild(new DynamicBorder());
-			const text = new Text(theme.fg("muted", `Testing connection to "${name}"... (esc to cancel)`), 1, 1);
+			const text = new Text(
+				theme.fg("muted", t('Testing connection to "{name}"... (esc to cancel)', { name })),
+				1,
+				1,
+			);
 			hintBlock.addChild(text);
 			hintBlock.addChild(new DynamicBorder());
 			this.ctx.presentCommandOutput(hintBlock);
@@ -1813,8 +1817,8 @@ export class MCPCommandController {
 			this.#showMessage(lines.join("\n"));
 		} catch (error) {
 			if (abortController.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
-				settleNote = `Cancelled connection test for "${name}".`;
-				this.ctx.showStatus(`Cancelled MCP test for "${name}"`);
+				settleNote = t('Cancelled connection test for "{name}".', { name });
+				this.ctx.showStatus(t('Cancelled MCP test for "{name}"', { name }));
 				return;
 			}
 
@@ -1834,8 +1838,10 @@ export class MCPCommandController {
 				helpText = `\n\n${t("Tip: Check your authentication credentials.")}`;
 			}
 
-			settleNote = `Connection test for "${name}" failed.`;
-			this.ctx.showError(`Failed to connect to "${name}": ${errorMsg}${helpText}`);
+			settleNote = t('Connection test for "{name}" failed.', { name });
+			this.ctx.showError(
+				t('Failed to connect to "{name}": {error}{help}', { name, error: errorMsg, help: helpText }),
+			);
 		} finally {
 			settled = true;
 			if (hintShown) {

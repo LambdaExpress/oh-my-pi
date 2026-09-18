@@ -23,6 +23,7 @@ import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { getWorktreesDir, isEnoent } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { Settings } from "../config/settings";
+import { t } from "../i18n";
 import { hasLiveIsolationOwner, ISOLATION_OWNER_FILE, readRetainedMountBackend } from "../task/isolation-ownership";
 import { formatIsolationBackend, parseIsolationBackend } from "../task/worktree";
 
@@ -96,7 +97,7 @@ export async function stopRetainedMount(dir: string): Promise<boolean> {
 
 export async function addWorktree(options: AddWorktreeOptions): Promise<void> {
 	if (options.branch && options.forceBranch) {
-		throw new Error("fatal: options '-b' and '-B' cannot be used together");
+		throw new Error(t("fatal: options '-b' and '-B' cannot be used together"));
 	}
 	const cwd = path.resolve(options.cwd ?? process.cwd());
 	const repository = vcs.requireGit(cwd);
@@ -104,7 +105,7 @@ export async function addWorktree(options: AddWorktreeOptions): Promise<void> {
 	try {
 		const stat = await fs.stat(worktreePath);
 		const nonEmpty = !stat.isDirectory() || (await fs.readdir(worktreePath)).length > 0;
-		if (nonEmpty) throw new Error(`fatal: '${options.path}' already exists`);
+		if (nonEmpty) throw new Error(t("fatal: '{path}' already exists", { path: options.path }));
 	} catch (error) {
 		if (!isEnoent(error)) throw error;
 	}
@@ -115,7 +116,7 @@ export async function addWorktree(options: AddWorktreeOptions): Promise<void> {
 	let createdBranch: string | undefined;
 	if (options.branch || options.forceBranch) {
 		const branch = options.branch ?? options.forceBranch;
-		if (!branch) throw new Error("branch name is required");
+		if (!branch) throw new Error(t("branch name is required"));
 		await repository.createBranch(branch, options.commit ?? "HEAD", Boolean(options.forceBranch));
 		ref = branch;
 		createdBranch = branch;
@@ -139,11 +140,11 @@ export async function addWorktree(options: AddWorktreeOptions): Promise<void> {
 	const subject = commit.message.split("\n", 1)[0];
 	if (!options.quiet) {
 		const preparation = createdBranch
-			? `new branch '${createdBranch}'`
+			? t("new branch '{branch}'", { branch: createdBranch })
 			: detach
-				? `detached HEAD ${shortSha}`
-				: `checking out '${ref}'`;
-		console.log(`Preparing worktree (${preparation})`);
+				? t("detached HEAD {sha}", { sha: shortSha })
+				: t("checking out '{ref}'", { ref });
+		console.log(t("Preparing worktree ({preparation})", { preparation }));
 	}
 	const result = await repository.worktreeAdd(worktreePath, ref, {
 		detach,
@@ -151,13 +152,20 @@ export async function addWorktree(options: AddWorktreeOptions): Promise<void> {
 		backend: parseIsolationBackend(settings.get("isolation.backend")),
 	});
 	if (!options.quiet) {
-		console.log(`HEAD is now at ${shortSha} ${subject}`);
+		console.log(t("HEAD is now at {sha} {subject}", { sha: shortSha, subject }));
 		if (result.clonedWith != null) {
-			console.log(`Cloned from ${repository.info().repoRoot} via ${formatIsolationBackend(result.clonedWith)}`);
+			console.log(
+				t("Cloned from {repo} via {backend}", {
+					repo: repository.info().repoRoot,
+					backend: formatIsolationBackend(result.clonedWith),
+				}),
+			);
 		}
 	}
 	if (result.cloneError) {
-		console.error(chalk.dim(`warning: worktree clone fell back to plain checkout: ${result.cloneError}`));
+		console.error(
+			chalk.dim(t("warning: worktree clone fell back to plain checkout: {error}", { error: result.cloneError })),
+		);
 	}
 }
 
@@ -168,20 +176,24 @@ export async function listWorktrees(options: ListWorktreesOptions): Promise<void
 		return;
 	}
 	if (entries.length === 0) {
-		console.log(chalk.dim(`No agent-managed worktrees found under ${getWorktreesDir()}.`));
+		console.log(chalk.dim(t("No agent-managed worktrees found under {dir}.", { dir: getWorktreesDir() })));
 		return;
 	}
 	let live = 0;
 	let orphaned = 0;
 	for (const entry of entries) {
-		const tag = entry.orphanReason ? chalk.yellow("orphaned") : chalk.green("live    ");
+		const tag = entry.orphanReason ? chalk.yellow(t("orphaned")) : chalk.green(t("live").padEnd(8));
 		const detail = formatEntryDetail(entry);
 		console.log(`${tag}  ${entry.path}`);
 		if (detail) console.log(`          ${chalk.dim(detail)}`);
 		if (entry.orphanReason) orphaned += 1;
 		else live += 1;
 	}
-	console.log(chalk.dim(`\n${live} live · ${orphaned} orphaned · ${entries.length} total`));
+	console.log(
+		chalk.dim(
+			`\n${t("{live} live · {orphaned} orphaned · {total} total", { live, orphaned, total: entries.length })}`,
+		),
+	);
 }
 
 export async function clearWorktrees(options: ClearWorktreesOptions): Promise<{ removed: number; failed: number }> {
@@ -192,7 +204,7 @@ export async function clearWorktrees(options: ClearWorktreesOptions): Promise<{ 
 		if (options.json) {
 			console.log(JSON.stringify({ removed: 0, kept: entries.length }));
 		} else {
-			console.log(chalk.dim(options.all ? "No worktrees to remove." : "No orphaned worktrees to remove."));
+			console.log(chalk.dim(t(options.all ? "No worktrees to remove." : "No orphaned worktrees to remove.")));
 		}
 		return { removed: 0, failed: 0 };
 	}
@@ -202,9 +214,16 @@ export async function clearWorktrees(options: ClearWorktreesOptions): Promise<{ 
 			console.log(JSON.stringify({ wouldRemove: targets.map(t => t.path) }, null, 2));
 		} else {
 			for (const target of targets) {
-				console.log(`${chalk.yellow("would remove")}  ${target.path}`);
+				console.log(`${chalk.yellow(t("would remove"))}  ${target.path}`);
 			}
-			console.log(chalk.dim(`\n${targets.length} dir${targets.length === 1 ? "" : "s"} would be removed.`));
+			console.log(
+				chalk.dim(
+					`\n${t("{count} dir{s} would be removed.", {
+						count: targets.length,
+						s: targets.length === 1 ? "" : "s",
+					})}`,
+				),
+			);
 		}
 		return { removed: 0, failed: 0 };
 	}
@@ -252,13 +271,15 @@ export async function clearWorktrees(options: ClearWorktreesOptions): Promise<{ 
 
 	for (const result of results) {
 		if (result.ok) {
-			console.log(`${chalk.green("removed")}  ${result.path}`);
+			console.log(`${chalk.green(t("removed"))}  ${result.path}`);
 		} else {
-			console.log(`${chalk.red("failed ")}  ${result.path}`);
+			console.log(`${chalk.red(t("failed").padEnd(7))}  ${result.path}`);
 			if (result.error) console.log(`          ${chalk.dim(result.error)}`);
 		}
 	}
-	console.log(chalk.dim(`\n${succeeded} removed${failed > 0 ? ` · ${chalk.red(`${failed} failed`)}` : ""}`));
+	const removedLabel = t("{count} removed", { count: succeeded });
+	const failedSuffix = failed > 0 ? ` · ${chalk.red(t("{count} failed", { count: failed }))}` : "";
+	console.log(chalk.dim(`\n${removedLabel}${failedSuffix}`));
 	return { removed: succeeded, failed };
 }
 
@@ -310,7 +331,7 @@ async function scanWorktrees(): Promise<WorktreeEntry[]> {
 			entries.push({
 				path: dir,
 				kind: children.length === 0 ? "empty" : "stray",
-				orphanReason: children.length === 0 ? "empty directory" : "no recognizable worktree contents",
+				orphanReason: children.length === 0 ? t("empty directory") : t("no recognizable worktree contents"),
 			});
 		}
 	}
@@ -345,7 +366,7 @@ async function classifyDir(dir: string): Promise<WorktreeEntry | null> {
 		kind: "task-isolation",
 		// Only after confirming no live owner is the "no live task" claim true.
 		// A running subagent's sandbox stays live so `clear` won't delete it.
-		orphanReason: live ? undefined : "task-isolation leftover (no live task owns it)",
+		orphanReason: live ? undefined : t("task-isolation leftover (no live task owns it)"),
 	};
 }
 
@@ -357,13 +378,15 @@ async function classifyPrCheckout(dir: string, gitEntry: string): Promise<Worktr
 		return {
 			path: dir,
 			kind: "pr-checkout",
-			orphanReason: `cannot read .git file: ${err instanceof Error ? err.message : String(err)}`,
+			orphanReason: t("cannot read .git file: {error}", {
+				error: err instanceof Error ? err.message : String(err),
+			}),
 		};
 	}
 	const match = /^gitdir:\s*(.+?)\s*$/m.exec(contents);
 	const parentGitDir = match?.[1];
 	if (!parentGitDir) {
-		return { path: dir, kind: "pr-checkout", orphanReason: "malformed .git file (no gitdir line)" };
+		return { path: dir, kind: "pr-checkout", orphanReason: t("malformed .git file (no gitdir line)") };
 	}
 	// parentGitDir is `<parent-repo>/.git/worktrees/<name>`; back out the repo root.
 	const parentRepo = path.dirname(path.dirname(path.dirname(parentGitDir)));
@@ -376,7 +399,7 @@ async function classifyPrCheckout(dir: string, gitEntry: string): Promise<Worktr
 			kind: "pr-checkout",
 			parentRepo,
 			branch,
-			orphanReason: "parent repo no longer tracks this worktree",
+			orphanReason: t("parent repo no longer tracks this worktree"),
 		};
 	}
 	const parentRepoStat = await fs.stat(parentRepo).catch(() => null);
@@ -386,7 +409,7 @@ async function classifyPrCheckout(dir: string, gitEntry: string): Promise<Worktr
 			kind: "pr-checkout",
 			parentRepo,
 			branch,
-			orphanReason: "parent repo missing",
+			orphanReason: t("parent repo missing"),
 		};
 	}
 	return { path: dir, kind: "pr-checkout", parentRepo, branch };
@@ -405,15 +428,15 @@ async function readWorktreeBranch(headFile: string): Promise<string | undefined>
 function formatEntryDetail(entry: WorktreeEntry): string {
 	const parts: string[] = [];
 	if (entry.kind === "pr-checkout") {
-		const repo = entry.parentRepo ? path.basename(entry.parentRepo) : "unknown repo";
-		const branch = entry.branch ?? "unknown branch";
+		const repo = entry.parentRepo ? path.basename(entry.parentRepo) : t("unknown repo");
+		const branch = entry.branch ?? t("unknown branch");
 		parts.push(`${repo} · ${branch}`);
 	} else if (entry.kind === "task-isolation") {
-		parts.push("task-isolation sandbox");
+		parts.push(t("task-isolation sandbox"));
 	} else if (entry.kind === "empty") {
-		parts.push("legacy project shell");
+		parts.push(t("legacy project shell"));
 	} else {
-		parts.push("unrecognized contents");
+		parts.push(t("unrecognized contents"));
 	}
 	if (entry.orphanReason) parts.push(entry.orphanReason);
 	return parts.join(" — ");

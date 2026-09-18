@@ -18,6 +18,7 @@ import {
 	isEnoent,
 } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { t } from "../i18n";
 import { createDaemonBrokerClient, type DaemonBrokerClient } from "../launch/client";
 import { canonicalProjectDir, daemonRuntimeDir, readDaemonScopeMeta } from "../launch/paths";
 import { readLiveDaemonBrokerPid } from "../launch/presence";
@@ -335,9 +336,11 @@ export function tableCells(row: PsDaemonRow): string[] {
 export function scopeHeader(scope: PsScope): string {
 	const label =
 		scope.kind === "global"
-			? `global ${chalk.bold(scope.service ?? path.basename(scope.runtimeDir))}`
-			: `project ${chalk.bold(scope.projectDir ?? path.basename(scope.runtimeDir))}`;
+			? t("global {name}", { name: chalk.bold(scope.service ?? path.basename(scope.runtimeDir)) })
+			: t("project {path}", { path: chalk.bold(scope.projectDir ?? path.basename(scope.runtimeDir)) });
 	const broker =
-		scope.brokerPid !== undefined ? chalk.green(`broker pid ${scope.brokerPid}`) : chalk.dim("broker not running");
+		scope.brokerPid !== undefined
+			? chalk.green(t("broker pid {pid}", { pid: scope.brokerPid }))
+			: chalk.dim(t("broker not running"));
 	return `${label} ${chalk.dim("—")} ${broker}`;
 }

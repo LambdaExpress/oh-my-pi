@@ -10,6 +10,7 @@ import { $which, ptree, removeWithRetries, truncate } from "@oh-my-pi/pi-utils";
 import { type ArchiveFormat, listArchiveRoot, sniffArchiveFormat } from "@oh-my-pi/pi-utils/ar";
 import type { Settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import { type Theme, theme } from "../modes/theme/theme";
 import type { ToolSession } from "../sdk";
 import type { AgentStorage } from "../session/agent-storage";
@@ -30,7 +31,13 @@ import { applyListLimit } from "./list-limit";
 import { formatStyledArtifactReference, type OutputMeta } from "./output-meta";
 import { isReadableUrlPath, type LineRange, parseLineRanges, parseTailCount } from "./path-utils";
 import type { ParsedSelector } from "./read-selector";
-import { createMoreLinesHeadWindow, formatBytes, getDomain, sanitizeDisplayLines } from "./render-utils";
+import {
+	createMoreLinesHeadWindow,
+	formatBytes,
+	formatCountLabel,
+	getDomain,
+	sanitizeDisplayLines,
+} from "./render-utils";
 import { listTables, looksLikeSqlite, openSqliteReadConnection, renderTableList } from "./sqlite-reader";
 import { ToolAbortError, ToolError } from "./tool-errors";
 import { toolResult } from "./tool-result";
@@ -1806,7 +1813,7 @@ export function renderReadUrlCall(
 	const description = formatReadUrlDescription(url);
 	const meta: string[] = [];
 	if (args.raw) meta.push("raw");
-	const text = renderStatusLine({ icon: "pending", title: "Read", description, meta }, uiTheme);
+	const text = renderStatusLine({ icon: "pending", title: t("Read"), description, meta }, uiTheme);
 	return new Text(text, 0, 0);
 }
 
@@ -1820,10 +1827,10 @@ export function renderReadUrlResult(
 
 	if (result.isError || !details) {
 		const rawErrorText = result.content?.find(c => c.type === "text")?.text ?? "";
-		const errorText = (rawErrorText || "No response data").replace(/^Error:\s*/, "");
+		const errorText = (rawErrorText || t("No response data")).replace(/^Error:\s*/, "");
 		const urlText = details?.finalUrl ?? details?.url ?? "";
 		const description = urlText ? formatReadUrlDescription(urlText) : undefined;
-		const header = renderStatusLine({ icon: "error", title: "Read", description }, uiTheme);
+		const header = renderStatusLine({ icon: "error", title: t("Read"), description }, uiTheme);
 		const errorLines = sanitizeDisplayLines(errorText).map(line => uiTheme.fg("error", line));
 		const outputBlock = new CachedOutputBlock();
 		return markFramedBlockComponent({
@@ -1842,7 +1849,7 @@ export function renderReadUrlResult(
 	const header = renderStatusLine(
 		{
 			icon: truncated ? "warning" : "success",
-			title: "Read",
+			title: t("Read"),
 			description,
 		},
 		uiTheme,
@@ -1857,23 +1864,23 @@ export function renderReadUrlResult(
 	const contentLines = contentBody.split("\n").filter(l => l.trim());
 
 	const metadataLines: string[] = [
-		`${uiTheme.fg("muted", "Content-Type:")} ${details.contentType || "unknown"}`,
-		`${uiTheme.fg("muted", "Method:")} ${details.method}`,
+		`${uiTheme.fg("muted", t("Content-Type:"))} ${details.contentType || "unknown"}`,
+		`${uiTheme.fg("muted", t("Method:"))} ${details.method}`,
 	];
 	if (hasRedirect) {
 		metadataLines.push(
-			`${uiTheme.fg("muted", "Final URL:")} ${formatReadUrlMetadataValue(details.finalUrl, uiTheme)}`,
+			`${uiTheme.fg("muted", t("Final URL:"))} ${formatReadUrlMetadataValue(details.finalUrl, uiTheme)}`,
 		);
 	}
-	const lineLabel = `${lineCount} line${lineCount === 1 ? "" : "s"}`;
-	metadataLines.push(`${uiTheme.fg("muted", "Lines:")} ${lineLabel}`);
-	metadataLines.push(`${uiTheme.fg("muted", "Chars:")} ${charCount}`);
+	const lineLabel = formatCountLabel("line", lineCount);
+	metadataLines.push(`${uiTheme.fg("muted", t("Lines:"))} ${lineLabel}`);
+	metadataLines.push(`${uiTheme.fg("muted", t("Chars:"))} ${charCount}`);
 	if (truncated) {
-		metadataLines.push(uiTheme.fg("warning", `${uiTheme.status.warning} Output truncated`));
+		metadataLines.push(uiTheme.fg("warning", `${uiTheme.status.warning} ${t("Output truncated")}`));
 		if (truncation?.artifactId) metadataLines.push(formatStyledArtifactReference(truncation.artifactId, uiTheme));
 	}
 	if (hasNotes) {
-		metadataLines.push(`${uiTheme.fg("muted", "Notes:")} ${details.notes.join("; ")}`);
+		metadataLines.push(`${uiTheme.fg("muted", t("Notes:"))} ${details.notes.join("; ")}`);
 	}
 
 	const contentPreviewLines =
@@ -1882,7 +1889,7 @@ export function renderReadUrlResult(
 					.flatMap(line => sanitizeDisplayLines(line))
 					.map(line => line.trimEnd())
 					.map(line => uiTheme.fg("dim", line))
-			: [uiTheme.fg("dim", "(no content)")];
+			: [uiTheme.fg("dim", t("(no content)"))];
 	const outputBlock = new CachedOutputBlock();
 	return markFramedBlockComponent({
 		render: (width: number) => {
@@ -1902,9 +1909,9 @@ export function renderReadUrlResult(
 					header,
 					state: truncated ? "warning" : "success",
 					sections: [
-						{ label: uiTheme.fg("toolTitle", "Metadata"), lines: metadataLines },
+						{ label: uiTheme.fg("toolTitle", t("Metadata")), lines: metadataLines },
 						{
-							label: uiTheme.fg("toolTitle", "Content Preview"),
+							label: uiTheme.fg("toolTitle", t("Content Preview")),
 							lines: contentPreviewLines,
 							visualWindow: contentVisualWindow,
 						},

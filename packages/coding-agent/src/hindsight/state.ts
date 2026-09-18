@@ -1,4 +1,5 @@
 import { logger } from "@oh-my-pi/pi-utils";
+import { t } from "../i18n";
 import type { AgentSession } from "../session/agent-session";
 import { type BankScope, ensureBankExists } from "./bank";
 import type { HindsightApi, MemoryItemInput } from "./client";
@@ -178,12 +179,11 @@ export class HindsightRetainQueue {
 	}
 
 	#notifyRetainFailure(count: number, errorText: string): void {
-		const noun = count === 1 ? "memory" : "memories";
-		this.#state.session.emitNotice(
-			"warning",
-			`Memory retention failed for ${count} ${noun}: ${errorText}`,
-			"Hindsight",
-		);
+		const message =
+			count === 1
+				? t("Memory retention failed for 1 memory: {error}", { error: errorText })
+				: t("Memory retention failed for {count} memories: {error}", { count, error: errorText });
+		this.#state.session.emitNotice("warning", message, "Hindsight");
 	}
 }
 

@@ -54,7 +54,7 @@ export class LoginDialogComponent extends OverlayPanel {
 		const reject = this.#inputRejecter;
 		this.#clearInputHandlers();
 		reject?.(new Error("Login cancelled"));
-		this.onComplete(false, "Login cancelled");
+		this.onComplete(false, t("Login cancelled"));
 	}
 
 	/**

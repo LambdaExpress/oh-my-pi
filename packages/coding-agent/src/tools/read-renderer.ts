@@ -2,6 +2,7 @@ import * as path from "node:path";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import { getLanguageFromPath, type Theme } from "../modes/theme/theme";
 import { fileHyperlink, renderCodeCell, renderMarkdownCell, renderStatusLine, tryResolveInternalUrlSync } from "../tui";
 import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
@@ -98,7 +99,7 @@ export const readToolRenderer = {
 			pathDisplay += `:${startLine}${endLine ? `-${endLine}` : ""}`;
 		}
 
-		const text = renderStatusLine({ icon: "pending", title: "Read", description: pathDisplay }, uiTheme);
+		const text = renderStatusLine({ icon: "pending", title: t("Read"), description: pathDisplay }, uiTheme);
 		return new Text(text, 0, 0);
 	},
 
@@ -125,13 +126,13 @@ export const readToolRenderer = {
 
 		if (result.isError) {
 			const rawErrorText = result.content?.find(c => c.type === "text")?.text ?? "";
-			const errorText = (rawErrorText || "Unknown error").replace(/^Error:\s*/, "");
+			const errorText = (rawErrorText || t("Unknown error")).replace(/^Error:\s*/, "");
 			const rawPath =
 				typeof args?.file_path === "string" ? args.file_path : typeof args?.path === "string" ? args.path : "";
 			const filePath =
 				formatReadPathLink(rawPath, { offset: args?.offset, sourcePath: readSourceFsPath(result.details) }) ||
 				shortenPath(rawPath);
-			let title = filePath ? `Read ${filePath}` : "Read";
+			let title = filePath ? t("Read {path}", { path: filePath }) : t("Read");
 			if (args?.offset !== undefined || args?.limit !== undefined) {
 				const startLine = args.offset ?? 1;
 				const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
@@ -163,11 +164,15 @@ export const readToolRenderer = {
 		const truncation = details?.meta?.truncation;
 		const fallback = details?.truncation;
 		if (details?.resolvedPath) {
-			warningLines.push(uiTheme.fg("dim", wrapBrackets(`Resolved path: ${details.resolvedPath}`, uiTheme)));
+			warningLines.push(
+				uiTheme.fg("dim", wrapBrackets(t("Resolved path: {path}", { path: details.resolvedPath }), uiTheme)),
+			);
 		}
 		if (truncation) {
 			if (fallback?.firstLineExceedsLimit) {
-				let warning = `First line exceeds ${formatBytes(fallback.outputBytes ?? fallback.totalBytes)} limit`;
+				let warning = t("First line exceeds {size} limit", {
+					size: formatBytes(fallback.outputBytes ?? fallback.totalBytes),
+				});
 				if (truncation.artifactId) {
 					warning += `. ${formatFullOutputReference(truncation.artifactId)}`;
 				}
@@ -186,9 +191,15 @@ export const readToolRenderer = {
 				suffixResolution: suffix,
 				fallbackLabel: "image",
 			});
-			const correction = suffix ? ` ${uiTheme.fg("dim", `(corrected from ${shortenPath(suffix.from)})`)}` : "";
+			const correction = suffix
+				? ` ${uiTheme.fg("dim", t("(corrected from {path})", { path: shortenPath(suffix.from) }))}`
+				: "";
 			const header = renderStatusLine(
-				{ icon: suffix ? "warning" : "success", title: "Read", description: `${displayPath}${correction}` },
+				{
+					icon: suffix ? "warning" : "success",
+					title: t("Read"),
+					description: `${displayPath}${correction}`,
+				},
 				uiTheme,
 			);
 			const detailLines = contentText
@@ -204,8 +215,8 @@ export const readToolRenderer = {
 							state: "success",
 							sections: [
 								{
-									label: uiTheme.fg("toolTitle", "Details"),
-									lines: lines.length > 0 ? lines : [uiTheme.fg("dim", "(image)")],
+									label: uiTheme.fg("toolTitle", t("Details")),
+									lines: lines.length > 0 ? lines : [uiTheme.fg("dim", t("(image)"))],
 								},
 							],
 							width,
@@ -227,19 +238,24 @@ export const readToolRenderer = {
 			suffixResolution: suffix,
 			offset: args?.offset,
 		});
-		const correction = suffix ? ` ${uiTheme.fg("dim", `(corrected from ${shortenPath(suffix.from)})`)}` : "";
-		let title = displayPath ? `Read ${displayPath}${correction}` : "Read";
+		const correction = suffix
+			? ` ${uiTheme.fg("dim", t("(corrected from {path})", { path: shortenPath(suffix.from) }))}`
+			: "";
+		let title = displayPath ? `${t("Read {path}", { path: displayPath })}${correction}` : t("Read");
 		if (args?.offset !== undefined || args?.limit !== undefined) {
 			const startLine = args.offset ?? 1;
 			const endLine = args.limit !== undefined ? startLine + args.limit - 1 : "";
 			title += `:${startLine}${endLine ? `-${endLine}` : ""}`;
 		}
 		if (details?.summary) {
-			title += ` (summary: ${details.summary.elidedSpans} elided span${details.summary.elidedSpans === 1 ? "" : "s"})`;
+			title += t(" (summary: {count} elided span{s})", {
+				count: details.summary.elidedSpans,
+				s: details.summary.elidedSpans === 1 ? "" : "s",
+			});
 		}
 		if (details?.conflictCount && details.conflictCount > 0) {
 			const n = details.conflictCount;
-			title += ` ${uiTheme.fg("warning", `(⚠ ${n} conflict${n === 1 ? "" : "s"})`)}`;
+			title += ` ${uiTheme.fg("warning", t("(⚠ {count} conflict{s})", { count: n, s: n === 1 ? "" : "s" }))}`;
 		}
 		const rawRequested = args?.raw === true || isRawSelector(parseSel(renderPath.sel));
 		const isMarkdown = details?.contentType === "text/markdown" && !rawRequested;

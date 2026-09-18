@@ -13,6 +13,7 @@
 import { formatDuration, formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { createLiveBoard, type LiveBoardOutput } from "../cli/live-board";
+import { t } from "../i18n";
 import type { AgentProgress } from "../task/types";
 import type { CleanseCheckerDescriptor } from "./checkers";
 import type { CleanseAgentOutcome, CleanseAssignment, CleanseCheckResult } from "./types";
@@ -79,7 +80,10 @@ export class CleanseBoardModel {
 	checkerFinished(check: CleanseCheckResult, durationMs: number): string {
 		this.#checkers.delete(check.id);
 		const count = check.diagnostics.length;
-		const verdict = count === 0 ? chalk.green("clean") : chalk.yellow(`${count} issue${count === 1 ? "" : "s"}`);
+		const verdict =
+			count === 0
+				? chalk.green(t("clean"))
+				: chalk.yellow(t("{count} issue{s}", { count, s: count === 1 ? "" : "s" }));
 		const glyph = count === 0 ? chalk.green("✓") : chalk.yellow("●");
 		return `${glyph} ${check.label} ${verdict} ${chalk.dim(`· ${formatDuration(durationMs)}`)}`;
 	}
@@ -187,7 +191,7 @@ export function createCleanseStatusBoard(
 				if (outcome.success) {
 					output.write(`[done] ${outcome.name}${outcome.resolvedModel ? ` (${outcome.resolvedModel})` : ""}\n`);
 				} else {
-					errors.write(`[fail] ${outcome.name}: ${oneLine(outcome.error ?? "subagent failed", ERROR_WIDTH)}\n`);
+					errors.write(`[fail] ${outcome.name}: ${oneLine(outcome.error ?? t("subagent failed"), ERROR_WIDTH)}\n`);
 				}
 				return;
 			}
@@ -214,18 +218,18 @@ function renderWaveHeader(
 		cost += entry.cost;
 	}
 	const parts = [`${done}/${total}`];
-	if (running > 0) parts.push(`${running} running`);
+	if (running > 0) parts.push(t("{count} running", { count: running }));
 	if (tokens > 0) parts.push(`${formatNumber(tokens)} tok`);
 	if (cost > 0) parts.push(formatCost(cost));
 	parts.push(formatDuration(Date.now() - startedAt));
-	return `${chalk.cyan(spinner)} Repairing [${bar}] ${parts.join(chalk.dim(" · "))}`;
+	return `${chalk.cyan(spinner)} ${t("Repairing [{bar}] {parts}", { bar, parts: parts.join(chalk.dim(" · ")) })}`;
 }
 
 function renderAgentRow(spinner: string, agentName: string, agent: RunningAgent): string {
 	const label = agentName.replace(/^Cleanse/, "");
 	const meta: string[] = [];
 	const toolCount = agent.progress?.toolCount ?? 0;
-	if (toolCount > 0) meta.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
+	if (toolCount > 0) meta.push(t("{count} tool{s}", { count: toolCount, s: toolCount === 1 ? "" : "s" }));
 	meta.push(formatDuration(Date.now() - agent.startedAt));
 	return (
 		`${chalk.yellow(spinner)} ${chalk.bold(label)} ${compactFiles(agent.assignment)} ` +
@@ -241,11 +245,11 @@ function renderOutcomeLine(
 ): string {
 	const files = compactFiles(assignment);
 	if (!outcome.success) {
-		return `${chalk.red("✗")} ${outcome.name} ${files} ${chalk.red(oneLine(outcome.error ?? "subagent failed", ERROR_WIDTH))}`;
+		return `${chalk.red("✗")} ${outcome.name} ${files} ${chalk.red(oneLine(outcome.error ?? t("subagent failed"), ERROR_WIDTH))}`;
 	}
 	const meta: string[] = [];
 	const toolCount = agent?.progress?.toolCount ?? 0;
-	if (toolCount > 0) meta.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
+	if (toolCount > 0) meta.push(t("{count} tool{s}", { count: toolCount, s: toolCount === 1 ? "" : "s" }));
 	if (total && total.tokens > 0) meta.push(`${formatNumber(total.tokens)} tok`);
 	if (agent) meta.push(formatDuration(Date.now() - agent.startedAt));
 	const suffix = meta.length > 0 ? ` ${chalk.dim(`· ${meta.join(" · ")}`)}` : "";
@@ -254,9 +258,14 @@ function renderOutcomeLine(
 
 /** Latest human-readable activity for a repair agent row. */
 function agentActivity(progress: AgentProgress | undefined): string {
-	if (!progress) return chalk.dim("starting");
+	if (!progress) return chalk.dim(t("starting"));
 	if (progress.retryState) {
-		return chalk.yellow(`rate-limited · retry ${progress.retryState.attempt}/${progress.retryState.maxAttempts}`);
+		return chalk.yellow(
+			t("rate-limited · retry {attempt}/{max}", {
+				attempt: progress.retryState.attempt,
+				max: progress.retryState.maxAttempts,
+			}),
+		);
 	}
 	const intent = oneLine(progress.lastIntent ?? "", ACTIVITY_WIDTH);
 	if (progress.currentTool) {
@@ -264,7 +273,7 @@ function agentActivity(progress: AgentProgress | undefined): string {
 		const tool = chalk.dim(args ? `${progress.currentTool} ${args}` : progress.currentTool);
 		return intent ? `${intent} ${tool}` : tool;
 	}
-	return intent || chalk.dim("thinking");
+	return intent || chalk.dim(t("thinking"));
 }
 
 function compactFiles(assignment: CleanseAssignment): string {

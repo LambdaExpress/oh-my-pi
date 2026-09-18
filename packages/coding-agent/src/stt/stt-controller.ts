@@ -1,6 +1,7 @@
 import { AudioCapture } from "@oh-my-pi/pi-natives";
 import { logger } from "@oh-my-pi/pi-utils";
 import { settings } from "../config/settings";
+import { t } from "../i18n";
 import { type SttStreamHandle, sttClient } from "./asr-client";
 import { downloadSttModel, isSttModelCached } from "./downloader";
 import { resolveSttModelSpec } from "./models";
@@ -78,7 +79,7 @@ export class STTController {
 					await this.#stop(options);
 					break;
 				case "transcribing":
-					options.showStatus("Transcription in progress...");
+					options.showStatus(t("Transcription in progress..."));
 					break;
 			}
 			if (this.#stopAfterStart && this.#state === "recording") {
@@ -116,13 +117,15 @@ export class STTController {
 			if (await isSttModelCached(modelKey)) {
 				this.#warmModel(modelKey);
 			} else {
-				await downloadSttModel(modelKey, p => status(`Downloading speech model ${p.label} (${p.percent}%)`));
+				await downloadSttModel(modelKey, p =>
+					status(t("Downloading speech model {label} ({percent}%)", { label: p.label, percent: p.percent })),
+				);
 			}
 			if (wroteStatus) options.showStatus("");
 			this.#resolvedModelKey = modelKey;
 			return true;
 		} catch (err) {
-			const msg = err instanceof Error ? err.message : "Failed to setup STT dependencies";
+			const msg = err instanceof Error ? err.message : t("Failed to setup STT dependencies");
 			options.showWarning(msg);
 			logger.error("STT dependency setup failed", { error: msg });
 			return false;
@@ -222,7 +225,7 @@ export class STTController {
 		} catch (err) {
 			stream.cancel();
 			this.#cleanupStream();
-			const msg = err instanceof Error ? err.message : "Failed to start microphone capture";
+			const msg = err instanceof Error ? err.message : t("Failed to start microphone capture");
 			options.showWarning(msg);
 			logger.error("STT recording failed to start", { error: msg });
 			return;
@@ -257,7 +260,7 @@ export class STTController {
 		} catch (err) {
 			failed = true;
 			if (!this.#disposed) {
-				const msg = err instanceof Error ? err.message : "Transcription failed";
+				const msg = err instanceof Error ? err.message : t("Transcription failed");
 				options.showWarning(msg);
 				logger.error("STT live transcription failed", { error: msg });
 			}
@@ -275,7 +278,7 @@ export class STTController {
 			this.#streamEditor?.clearVolatileText();
 		}
 		options.requestRender?.();
-		if (!failed) options.showStatus(this.#streamCommitted ? "" : "No speech detected.");
+		if (!failed) options.showStatus(this.#streamCommitted ? "" : t("No speech detected."));
 
 		if (this.#streamCommitted && !failed && this.#streamEditor) {
 			const trigger = settings.get("stt.submitTrigger");

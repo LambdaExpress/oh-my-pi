@@ -118,13 +118,13 @@ function sentinelsFromFile(file: string, size: number): LocalTranscriptSentinel[
 function statusBadge(status: AgentStatus): string {
 	switch (status) {
 		case "running":
-			return theme.fg("success", "running");
+			return theme.fg("success", t("running"));
 		case "idle":
-			return theme.fg("accent", "idle");
+			return theme.fg("accent", t("idle"));
 		case "parked":
-			return theme.fg("muted", "parked");
+			return theme.fg("muted", t("parked"));
 		case "aborted":
-			return theme.fg("error", "aborted");
+			return theme.fg("error", t("aborted"));
 	}
 }
 

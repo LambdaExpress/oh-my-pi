@@ -1,5 +1,6 @@
 import { editInspect } from "@oh-my-pi/pi-natives";
 import { isRecord, stringProperty } from "@oh-my-pi/pi-utils";
+import { t } from "../i18n";
 import { resolveToCwd } from "../tools/path-utils";
 import type { ClientBridgePermissionOption } from "./client-bridge";
 
@@ -58,7 +59,7 @@ export function getPermissionIntent(
 		const filePath = stringProperty(input, "path");
 		return {
 			toolName,
-			title: filePath ? `Delete ${filePath}` : toolName,
+			title: filePath ? t("Delete {path}", { path: filePath }) : toolName,
 			paths: filePath ? [filePath] : undefined,
 			cacheKey: toolName,
 		};
@@ -67,10 +68,16 @@ export function getPermissionIntent(
 		const from = stringProperty(input, "oldPath") ?? stringProperty(input, "path") ?? stringProperty(input, "from");
 		const to =
 			stringProperty(input, "newPath") ?? stringProperty(input, "to") ?? stringProperty(input, "destination");
-		if (from && to) return { toolName, title: `Move ${from} to ${to}`, paths: [from, to], cacheKey: toolName };
+		if (from && to)
+			return {
+				toolName,
+				title: t("Move {from} to {to}", { from, to }),
+				paths: [from, to],
+				cacheKey: toolName,
+			};
 		return {
 			toolName,
-			title: from ? `Move ${from}` : toolName,
+			title: from ? t("Move {path}", { path: from }) : toolName,
 			paths: from ? [from] : undefined,
 			cacheKey: toolName,
 		};
@@ -81,7 +88,7 @@ export function getPermissionIntent(
 		if (intent.kind === "delete") {
 			return {
 				toolName,
-				title: `Delete ${intent.paths[0] ?? "edit target"}`,
+				title: t("Delete {path}", { path: intent.paths[0] ?? t("edit target") }),
 				paths: intent.paths,
 				cacheKey: "edit:delete",
 			};
@@ -90,7 +97,10 @@ export function getPermissionIntent(
 		const to = intent.paths[1];
 		return {
 			toolName,
-			title: from && to ? `Move ${from} to ${to}` : `Move ${from ?? to ?? "edit target"}`,
+			title:
+				from && to
+					? t("Move {from} to {to}", { from, to })
+					: t("Move {path}", { path: from ?? to ?? t("edit target") }),
 			paths: intent.paths,
 			cacheKey: "edit:move",
 		};

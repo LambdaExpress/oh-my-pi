@@ -35,6 +35,7 @@ import { type GeneratedProvider, getBundledModels } from "@oh-my-pi/pi-catalog/m
 import { getConfigRootDir, isEnoent, logger, VERSION } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { ModelRegistry } from "../config/model-registry";
+import { t } from "../i18n";
 import { type AuthBrokerClientConfig, resolveAuthBrokerConfig } from "../session/auth-broker-config";
 
 export type AuthGatewayAction = "serve" | "token" | "status" | "check";
@@ -223,13 +224,13 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 		resolveModel: (id: string) => modelById.get(id),
 		listModels: () => modelById.values(),
 	});
-	process.stdout.write(`auth-gateway listening on ${handle.url}\n`);
+	process.stdout.write(`${t("auth-gateway listening on {url}", { url: handle.url })}\n`);
 	if (gatewayToken) {
-		process.stdout.write(`bearer token: ${getTokenFilePath()} (chmod 0600)\n`);
+		process.stdout.write(`${t("bearer token: {path} (chmod 0600)", { path: getTokenFilePath() })}\n`);
 	} else {
-		process.stdout.write(`auth: disabled (--no-auth) — any client can call this gateway\n`);
+		process.stdout.write(`${t("auth: disabled (--no-auth) — any client can call this gateway")}\n`);
 	}
-	process.stdout.write(`upstream broker: ${brokerConfig.url}\n`);
+	process.stdout.write(`${t("upstream broker: {url}", { url: brokerConfig.url })}\n`);
 
 	// `serve` is long-lived: rebuild the catalog periodically so models
 	// discovered after boot become routable without a restart. A failed refresh
@@ -254,7 +255,7 @@ async function runServe(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 	const stop = async (signal: NodeJS.Signals): Promise<void> => {
 		if (shutdownStarted) return;
 		shutdownStarted = true;
-		process.stdout.write(`\nReceived ${signal}, shutting down...\n`);
+		process.stdout.write(`\n${t("Received {signal}, shutting down...", { signal })}\n`);
 		clearInterval(catalogRefresh);
 		let closeError: unknown;
 		try {
@@ -323,9 +324,12 @@ async function runStatus(flags: AuthGatewayCommandArgs["flags"]): Promise<void> 
 		if (flags.json) {
 			process.stdout.write(`${JSON.stringify(status)}\n`);
 		} else {
-			process.stdout.write(`${chalk.yellow("No broker configured.")} Set OMP_AUTH_BROKER_URL.\n`);
+			process.stdout.write(`${chalk.yellow(t("No broker configured."))} ${t("Set OMP_AUTH_BROKER_URL.")}\n`);
 			process.stdout.write(
-				`token: ${status.tokenPresent ? chalk.green("present") : chalk.red("missing")} at ${status.tokenFile}\n`,
+				`${t("token: {state} at {path}", {
+					state: status.tokenPresent ? chalk.green(t("present")) : chalk.red(t("missing")),
+					path: status.tokenFile,
+				})}\n`,
 			);
 		}
 		process.exitCode = 1;
@@ -348,16 +352,22 @@ async function runStatus(flags: AuthGatewayCommandArgs["flags"]): Promise<void> 
 		if (flags.json) {
 			process.stdout.write(`${JSON.stringify(status)}\n`);
 		} else {
-			const brokerLine = `upstream broker: ${brokerConfig.url} (${snapshot.credentials.length} credential${
-				snapshot.credentials.length === 1 ? "" : "s"
-			})`;
-			process.stdout.write(`${tokenPresent ? chalk.green("ready") : chalk.yellow("not ready")} ${brokerLine}\n`);
+			const brokerLine = t("upstream broker: {url} ({count} credentials)", {
+				url: brokerConfig.url,
+				count: snapshot.credentials.length,
+			});
 			process.stdout.write(
-				`token: ${tokenPresent ? chalk.green("present") : chalk.red("missing")} at ${status.tokenFile}\n`,
+				`${tokenPresent ? chalk.green(t("ready")) : chalk.yellow(t("not ready"))} ${brokerLine}\n`,
+			);
+			process.stdout.write(
+				`${t("token: {state} at {path}", {
+					state: tokenPresent ? chalk.green(t("present")) : chalk.red(t("missing")),
+					path: status.tokenFile,
+				})}\n`,
 			);
 			if (!tokenPresent) {
 				process.stdout.write(
-					"Run `omp auth-gateway token` or `omp auth-gateway serve` to create a bearer token.\n",
+					`${t("Run `omp auth-gateway token` or `omp auth-gateway serve` to create a bearer token.")}\n`,
 				);
 			}
 		}
@@ -377,9 +387,14 @@ async function runStatus(flags: AuthGatewayCommandArgs["flags"]): Promise<void> 
 		if (flags.json) {
 			process.stdout.write(`${JSON.stringify(status)}\n`);
 		} else {
-			process.stdout.write(`${chalk.red("FAILED")} upstream broker: ${brokerConfig.url}: ${message}\n`);
 			process.stdout.write(
-				`token: ${status.tokenPresent ? chalk.green("present") : chalk.red("missing")} at ${status.tokenFile}\n`,
+				`${chalk.red(t("FAILED"))} ${t("upstream broker: {url}", { url: brokerConfig.url })}: ${message}\n`,
+			);
+			process.stdout.write(
+				`${t("token: {state} at {path}", {
+					state: status.tokenPresent ? chalk.green(t("present")) : chalk.red(t("missing")),
+					path: status.tokenFile,
+				})}\n`,
 			);
 		}
 		process.exitCode = 1;
@@ -624,7 +639,9 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 				grouped.set(row.provider, list);
 			}
 			const providers = [...grouped.keys()].sort();
-			process.stdout.write(`broker: ${brokerConfig.url}${flags.strict ? chalk.dim(" [strict]") : ""}\n`);
+			process.stdout.write(
+				`${t("broker: {url}", { url: brokerConfig.url })}${flags.strict ? chalk.dim(t(" [strict]")) : ""}\n`,
+			);
 			for (const provider of providers) {
 				const rows = grouped.get(provider) ?? [];
 				process.stdout.write(`\n${chalk.bold(provider)} (${rows.length})\n`);
@@ -636,15 +653,19 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 								? chalk.red("FAIL    ")
 								: chalk.yellow("unknown ");
 					const base =
-						row.email ?? row.accountId ?? (row.type === "api_key" ? "(api key)" : "(no identity on credential)");
+						row.email ??
+						row.accountId ??
+						(row.type === "api_key" ? t("(api key)") : t("(no identity on credential)"));
 					// Two subscriptions (orgs) can share one email — without the org a
 					// failed row can't say which subscription needs re-login.
 					const org = row.orgName ?? row.orgId;
 					const identity = org && org !== base ? `${base} (${org})` : base;
-					const remote = row.remoteRefresh ? chalk.dim(" [remote-refresh]") : "";
+					const remote = row.remoteRefresh ? chalk.dim(t(" [remote-refresh]")) : "";
 					const reasonParts: string[] = [];
 					if (row.reason) reasonParts.push(row.reason);
-					if (row.completion?.reason) reasonParts.push(`chat: ${row.completion.reason}`);
+					if (row.completion?.reason) {
+						reasonParts.push(t("chat: {reason}", { reason: row.completion.reason }));
+					}
 					const reason = reasonParts.length > 0 ? chalk.dim(` — ${reasonParts.join("; ")}`) : "";
 					const chat = formatCompletionStatus(row.completion);
 					process.stdout.write(
@@ -657,12 +678,12 @@ async function runCheck(flags: AuthGatewayCommandArgs["flags"]): Promise<void> {
 			const passing = results.filter(row => row.ok === true).length;
 			const chatFailed = flags.strict ? results.filter(row => row.completion?.ok === false).length : 0;
 			const summaryParts = [
-				chalk.green(`${passing} ok`),
-				chalk.red(`${failed} failed`),
-				chalk.yellow(`${unverifiable} unverifiable`),
+				chalk.green(t("{count} ok", { count: passing })),
+				chalk.red(t("{count} failed", { count: failed })),
+				chalk.yellow(t("{count} unverifiable", { count: unverifiable })),
 			];
-			if (flags.strict) summaryParts.push(chalk.red(`${chatFailed} chat-failed`));
-			summaryParts.push(`${results.length} total`);
+			if (flags.strict) summaryParts.push(chalk.red(t("{count} chat-failed", { count: chatFailed })));
+			summaryParts.push(t("{count} total", { count: results.length }));
 			process.stdout.write(`\n${summaryParts.join(", ")}\n`);
 			if (failed > 0 || chatFailed > 0) process.exitCode = 1;
 		}

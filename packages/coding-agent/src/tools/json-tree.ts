@@ -2,6 +2,7 @@
  * JSON tree rendering utilities shared across tool renderers.
  */
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
+import { t } from "../i18n";
 import type { Theme } from "../modes/theme/theme";
 import { truncateToWidth } from "./render-utils";
 
@@ -39,10 +40,10 @@ export function formatScalar(value: unknown, maxLen: number): string {
 		const truncated = truncateToWidth(escaped, maxLen);
 		return `"${truncated}"`;
 	}
-	if (Array.isArray(value)) return `[${value.length} items]`;
+	if (Array.isArray(value)) return `[${t("{count} items", { count: value.length })}]`;
 	if (typeof value === "object") {
 		const keys = Object.keys(value);
-		return `{${keys.length} keys}`;
+		return `{${t("{count} keys", { count: keys.length })}}`;
 	}
 	return String(value);
 }
@@ -137,7 +138,7 @@ export function renderJsonTreeLines(
 		try {
 			// Handle scalars
 			if (val === null || val === undefined || typeof val !== "object") {
-				const label = key ? theme.fg("muted", key) : theme.fg("muted", "value");
+				const label = key ? theme.fg("muted", key) : theme.fg("muted", t("value"));
 
 				// Special handling for multiline strings
 				if (typeof val === "string" && val.includes("\n")) {
@@ -163,7 +164,7 @@ export function renderJsonTreeLines(
 					if (strLines.length > maxStrLines) {
 						truncated = true;
 						pushLine(
-							`${continuePrefix}   ${theme.fg("dim", ` …(${strLines.length - maxStrLines} more lines)"`)}`,
+							`${continuePrefix}   ${theme.fg("dim", `${t(" …({count} more lines)", { count: strLines.length - maxStrLines })}"`)}`,
 						);
 					} else {
 						// Add closing quote to last line - need to modify the last pushed line
@@ -180,7 +181,7 @@ export function renderJsonTreeLines(
 
 			// Handle arrays
 			if (Array.isArray(val)) {
-				const header = key ? theme.fg("muted", key) : theme.fg("muted", "array");
+				const header = key ? theme.fg("muted", key) : theme.fg("muted", t("array"));
 				pushLine(`${prefix}${iconArray} ${header}`);
 				if (val.length === 0) {
 					pushLine(
@@ -207,7 +208,7 @@ export function renderJsonTreeLines(
 			// Handle objects
 			if (!isRecord(val)) return;
 
-			const header = key ? theme.fg("muted", key) : theme.fg("muted", "object");
+			const header = key ? theme.fg("muted", key) : theme.fg("muted", t("object"));
 			pushLine(`${prefix}${iconObject} ${header}`);
 			if (depth >= maxDepth) {
 				pushLine(`${buildTreePrefix(theme, ancestors)}${theme.fg("dim", theme.tree.last)} ${theme.fg("dim", "…")}`);

@@ -22,6 +22,7 @@ import type {
 	WireModel,
 	SessionEntry as WireSessionEntry,
 } from "@oh-my-pi/pi-wire";
+import { t } from "../i18n";
 import { AgentLifecycleManager } from "../registry/agent-lifecycle";
 import { type AgentRef, AgentRegistry } from "../registry/agent-registry";
 import type { AgentSessionEvent } from "../session/agent-session";
@@ -246,10 +247,12 @@ export class CollabHost {
 				return;
 			}
 			if (willReconnect) {
-				this.#ctx.showStatus(`Collab relay connection lost (${reason}), reconnecting…`, { dim: true });
+				this.#ctx.showStatus(t("Collab relay connection lost ({reason}), reconnecting…", { reason }), {
+					dim: true,
+				});
 			} else {
 				void this.#teardown();
-				this.#ctx.session.emitNotice("warning", `Collab ended: ${reason}`, "collab");
+				this.#ctx.session.emitNotice("warning", t("Collab ended: {reason}", { reason }), "collab");
 			}
 		};
 		socket.connect();
@@ -332,7 +335,7 @@ export class CollabHost {
 		if (this.#stopped || !this.#socket) return;
 		if (this.#ctx.sessionManager.getSessionId() !== this.#sessionId) {
 			void this.stop("session switched");
-			this.#ctx.session.emitNotice("warning", "Collab ended: session switched", "collab");
+			this.#ctx.session.emitNotice("warning", t("Collab ended: session switched"), "collab");
 			return;
 		}
 		this.#socket.send(frame);
@@ -382,13 +385,19 @@ export class CollabHost {
 
 	/** Reject a mutating frame from a read-only peer with a targeted error. */
 	#rejectReadOnly(action: string, fromPeer: number): void {
-		this.#socket?.send({ t: "error", message: `${action} is disabled on a read-only link` }, fromPeer);
+		this.#socket?.send({ t: "error", message: t("{action} is disabled on a read-only link", { action }) }, fromPeer);
 	}
 
 	#handleHello(name: string, proto: number, writeToken: string | undefined, fromPeer: number): void {
 		if (proto !== COLLAB_PROTO) {
 			this.#socket?.send(
-				{ t: "error", message: `protocol mismatch: host speaks v${COLLAB_PROTO}, guest sent v${proto}` },
+				{
+					t: "error",
+					message: t("protocol mismatch: host speaks v{host}, guest sent v{guest}", {
+						host: COLLAB_PROTO,
+						guest: proto,
+					}),
+				},
 				fromPeer,
 			);
 			return;
@@ -432,7 +441,10 @@ export class CollabHost {
 		}
 		this.#ctx.session.emitNotice(
 			"info",
-			`${cleanName} joined the collab session${canWrite ? "" : " (read-only)"}`,
+			t("{name} joined the collab session{readOnly}", {
+				name: cleanName,
+				readOnly: canWrite ? "" : t(" (read-only)"),
+			}),
 			"collab",
 		);
 		this.#updateStatusSegment();
@@ -477,7 +489,7 @@ export class CollabHost {
 	#handleUiResponse(reqId: number, value: CollabUiResponseValue, fromPeer: number): void {
 		const peer = this.#peers.get(fromPeer);
 		if (!peer?.canWrite) {
-			this.#rejectReadOnly("responding to ask", fromPeer);
+			this.#rejectReadOnly(t("responding to ask"), fromPeer);
 			return;
 		}
 		const pending = this.#pendingUi.get(reqId);
@@ -494,7 +506,7 @@ export class CollabHost {
 	#handlePrompt(text: string, images: ImageContent[] | undefined, fromPeer: number): void {
 		const peer = this.#peers.get(fromPeer);
 		if (!peer?.canWrite) {
-			this.#rejectReadOnly("prompting", fromPeer);
+			this.#rejectReadOnly(t("prompting"), fromPeer);
 			return;
 		}
 		const name = peer.name;
@@ -526,13 +538,13 @@ export class CollabHost {
 	#handleAbort(fromPeer: number): void {
 		const peer = this.#peers.get(fromPeer);
 		if (!peer?.canWrite) {
-			this.#rejectReadOnly("interrupting", fromPeer);
+			this.#rejectReadOnly(t("interrupting"), fromPeer);
 			return;
 		}
 		const name = peer.name;
 		void this.#ctx.session
 			.abort({ reason: USER_INTERRUPT_LABEL })
-			.then(() => this.#ctx.session.emitNotice("info", `${name} interrupted`, "collab"))
+			.then(() => this.#ctx.session.emitNotice("info", t("{name} interrupted", { name }), "collab"))
 			.catch(err => logger.warn("collab guest abort failed", { error: String(err) }));
 	}
 
@@ -553,7 +565,7 @@ export class CollabHost {
 	 */
 	async #handleModelChange(provider: string, id: string, fromPeer: number): Promise<void> {
 		if (!this.#peers.get(fromPeer)?.canWrite) {
-			this.#rejectReadOnly("changing the model", fromPeer);
+			this.#rejectReadOnly(t("changing the model"), fromPeer);
 			return;
 		}
 		let model = this.#ctx.session.getAvailableModels().find(m => m.provider === provider && m.id === id);
@@ -562,7 +574,7 @@ export class CollabHost {
 			model = this.#ctx.session.getAvailableModels().find(m => m.provider === provider && m.id === id);
 		}
 		if (!model) {
-			this.#socket?.send({ t: "error", message: `Model not found: ${provider}/${id}` }, fromPeer);
+			this.#socket?.send({ t: "error", message: t("Model not found: {provider}/{id}", { provider, id }) }, fromPeer);
 			return;
 		}
 		try {
@@ -576,14 +588,17 @@ export class CollabHost {
 	/** Apply only a selector advertised for the active model, preserving `auto`. */
 	#handleThinkingChange(level: string, fromPeer: number): void {
 		if (!this.#peers.get(fromPeer)?.canWrite) {
-			this.#rejectReadOnly("changing thinking", fromPeer);
+			this.#rejectReadOnly(t("changing thinking"), fromPeer);
 			return;
 		}
 		const parsed = parseConfiguredThinkingLevel(level);
 		const available = this.#availableThinkingLevels();
 		if (!parsed || !available.includes(parsed)) {
 			this.#socket?.send(
-				{ t: "error", message: `Thinking level not supported by the current model: ${level}` },
+				{
+					t: "error",
+					message: t("Thinking level not supported by the current model: {level}", { level }),
+				},
 				fromPeer,
 			);
 			return;
@@ -600,7 +615,7 @@ export class CollabHost {
 	#handlePeerLeft(peer: number): void {
 		const name = this.#peers.get(peer)?.name;
 		this.#peers.delete(peer);
-		if (name) this.#ctx.session.emitNotice("info", `${name} left the collab session`, "collab");
+		if (name) this.#ctx.session.emitNotice("info", t("{name} left the collab session", { name }), "collab");
 		this.#updateStatusSegment();
 		this.#scheduleStateBroadcast();
 	}
@@ -678,13 +693,19 @@ export class CollabHost {
 
 	#handleAgentCmd(cmd: "chat" | "kill" | "revive", agentId: string, text: string | undefined, fromPeer: number): void {
 		if (!this.#peers.get(fromPeer)?.canWrite) {
-			this.#rejectReadOnly("agent control", fromPeer);
+			this.#rejectReadOnly(t("agent control"), fromPeer);
 			return;
 		}
 		// Advisor refs are excluded from snapshots, but reject control by id defensively:
 		// a stale/malicious client must never chat/kill/revive a read-only advisor transcript.
 		if (AgentRegistry.global().get(agentId)?.kind === "advisor") {
-			this.#socket?.send({ t: "error", message: `agent ${agentId}: advisor transcripts are read-only` }, fromPeer);
+			this.#socket?.send(
+				{
+					t: "error",
+					message: t("agent {agentId}: advisor transcripts are read-only", { agentId }),
+				},
+				fromPeer,
+			);
 			return;
 		}
 		// Multi-session scope gate: agents registered under another session's scope
@@ -693,7 +714,7 @@ export class CollabHost {
 		// reports the canonical error for them.
 		const ref = AgentRegistry.global().get(agentId);
 		if (ref && ref.scopeId !== this.#ctx.session.getAgentScopeId()) {
-			this.#socket?.send({ t: "error", message: "agent not in this session" }, fromPeer);
+			this.#socket?.send({ t: "error", message: t("agent not in this session") }, fromPeer);
 			return;
 		}
 		const fail = (err: unknown) => {
@@ -704,7 +725,10 @@ export class CollabHost {
 			case "chat": {
 				const trimmed = text?.trim();
 				if (!trimmed) {
-					this.#socket?.send({ t: "error", message: `agent ${agentId}: empty chat message` }, fromPeer);
+					this.#socket?.send(
+						{ t: "error", message: t("agent {agentId}: empty chat message", { agentId }) },
+						fromPeer,
+					);
 					return;
 				}
 				// Mirrors the hub's #submitChatMessage: revive if parked, steer if mid-turn.

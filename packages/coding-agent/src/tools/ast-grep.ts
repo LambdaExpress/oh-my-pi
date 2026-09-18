@@ -18,6 +18,7 @@ import { resolveFileDisplayMode } from "../utils/file-display-mode";
 import type { ToolSession } from ".";
 import { materializeReadUrlToFile, parseReadUrlTarget } from "./fetch";
 import { createFileRecorder, formatResultPath } from "./file-recorder";
+import { t } from "../i18n";
 import { classifyGroupedLines, formatGroupedFiles, groupLineIndicesByBlank } from "./grouped-file-output";
 import { formatMatchLine } from "./match-line-format";
 import type { OutputMeta } from "./output-meta";
@@ -28,7 +29,7 @@ import {
 	capParseErrors,
 	createCachedComponent,
 	formatCodeFrameLine,
-	formatCount,
+	formatCountLabel,
 	formatEmptyMessage,
 	formatErrorMessage,
 	formatParseErrors,
@@ -433,11 +434,11 @@ export const astGrepToolRenderer = {
 	renderCall(args: AstGrepRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
 		const scopePaths = toPathList(args.path ?? args.paths);
-		if (scopePaths.length) meta.push(`in ${scopePaths.join(", ")}`);
+		if (scopePaths.length) meta.push(t("in {path}", { path: scopePaths.join(", ") }));
 		if (args.skip !== undefined && args.skip > 0) meta.push(`skip:${args.skip}`);
 
 		const description = args.pat ?? "?";
-		const text = renderStatusLine({ icon: "pending", title: "AST Grep", description, meta }, uiTheme);
+		const text = renderStatusLine({ icon: "pending", title: t("AST Grep"), description, meta }, uiTheme);
 		return new Text(text, 0, 0);
 	},
 
@@ -450,7 +451,7 @@ export const astGrepToolRenderer = {
 		const details = result.details;
 
 		if (result.isError) {
-			const errorText = result.content?.find(c => c.type === "text")?.text || "Unknown error";
+			const errorText = result.content?.find(c => c.type === "text")?.text || t("Unknown error");
 			return new Text(formatErrorMessage(errorText, uiTheme), 0, 0);
 		}
 
@@ -461,30 +462,30 @@ export const astGrepToolRenderer = {
 
 		if (matchCount === 0) {
 			const description = args?.pat;
-			const meta = ["0 matches"];
-			if (details?.scopePath) meta.push(`in ${details.scopePath}`);
-			if (filesSearched > 0) meta.push(`searched ${filesSearched}`);
-			const header = renderStatusLine({ icon: "warning", title: "AST Grep", description, meta }, uiTheme);
-			const lines = [header, formatEmptyMessage("No matches found", uiTheme)];
+			const meta = [formatCountLabel("match", 0)];
+			if (details?.scopePath) meta.push(t("in {path}", { path: details.scopePath }));
+			if (filesSearched > 0) meta.push(t("searched {count}", { count: filesSearched }));
+			const header = renderStatusLine({ icon: "warning", title: t("AST Grep"), description, meta }, uiTheme);
+			const lines = [header, formatEmptyMessage(t("No matches found"), uiTheme)];
 			if (details?.parseErrors?.length) {
-				lines.push(uiTheme.fg("warning", "Query may be mis-scoped; narrow `path` before concluding absence"));
+				lines.push(uiTheme.fg("warning", t("Query may be mis-scoped; narrow `path` before concluding absence")));
 				appendParseErrorsBulletList(lines, details.parseErrors, uiTheme, details.parseErrorsTotal);
 			}
 			return new Text(lines.join("\n"), 0, 0);
 		}
 
-		const summaryParts = [formatCount("match", matchCount), formatCount("file", fileCount)];
+		const summaryParts = [formatCountLabel("match", matchCount), formatCountLabel("file", fileCount)];
 		const meta = [...summaryParts];
-		if (details?.scopePath) meta.push(`in ${details.scopePath}`);
-		meta.push(`searched ${filesSearched}`);
-		if (limitReached) meta.push(uiTheme.fg("warning", "limit reached"));
+		if (details?.scopePath) meta.push(t("in {path}", { path: details.scopePath }));
+		meta.push(t("searched {count}", { count: filesSearched }));
+		if (limitReached) meta.push(uiTheme.fg("warning", t("limit reached")));
 		const description = args?.pat;
 		const header = renderStatusLine(
 			{
 				...(limitReached
 					? { icon: "warning" as const }
 					: { iconOverride: uiTheme.fg("accent", uiTheme.symbol("icon.search")) }),
-				title: "AST Grep",
+				title: t("AST Grep"),
 				description,
 				meta,
 			},

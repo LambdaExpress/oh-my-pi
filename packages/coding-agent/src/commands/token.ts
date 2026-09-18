@@ -97,7 +97,12 @@ export default class Token extends Command {
 			const scopedProfile = mcpOAuthCredentialProfile(provider);
 			if (scopedProfile !== undefined && scopedProfile !== (getActiveProfile() ?? "default")) {
 				process.stderr.write(
-					`${chalk.red(`Managed MCP credential "${providerName}" belongs to profile "${scopedProfile}", not the active profile.`)}\n`,
+					`${chalk.red(
+						t('Managed MCP credential "{provider}" belongs to profile "{profile}", not the active profile.', {
+							provider: providerName,
+							profile: scopedProfile,
+						}),
+					)}\n`,
 				);
 				process.exitCode = 1;
 				return;

@@ -15,6 +15,7 @@ import {
 	TERMINAL,
 	TERMINAL_ID,
 } from "@oh-my-pi/pi-tui";
+import { t } from "../i18n";
 
 /** Live values the debug view reads off the running TUI, not the static capability table. */
 export interface TerminalRuntimeState {
@@ -95,33 +96,40 @@ export function collectTerminalState(runtime: TerminalRuntimeState): TerminalSta
 	};
 }
 
-const yesNo = (value: boolean): string => (value ? "yes" : "no");
+const yesNo = (value: boolean): string => (value ? t("yes") : t("no"));
 
 /** Format terminal state for display in the debug menu. */
 export function formatTerminalState(info: TerminalStateInfo): string {
 	const lines = [
-		"Terminal State",
+		t("Terminal State"),
 		"━━━━━━━━━━━━━━",
-		`Detected:     ${info.detectedId}`,
-		`Geometry:     ${info.columns}x${info.rows} cells · cell ${info.cellWidthPx}x${info.cellHeightPx}px`,
-		info.multiplexer ? `Multiplexer:  ${info.multiplexer}` : "Multiplexer:  none",
+		t("Detected:     {value}", { value: info.detectedId }),
+		t("Geometry:     {columns}x{rows} cells · cell {width}x{height}px", {
+			columns: info.columns,
+			rows: info.rows,
+			width: info.cellWidthPx,
+			height: info.cellHeightPx,
+		}),
+		info.multiplexer ? t("Multiplexer:  {value}", { value: info.multiplexer }) : t("Multiplexer:  none"),
 		"",
-		"Subprotocols",
-		`  Graphics:     ${info.imageProtocol}`,
-		`  Notify:       ${info.notifyProtocol}${info.osc99Confirmed ? " · confirmed via DA" : ""}`,
-		`  Hyperlinks:   ${yesNo(info.hyperlinks)} (OSC 8)`,
-		`  True color:   ${yesNo(info.trueColor)} (24-bit SGR)`,
-		`  DECCARA:      ${yesNo(info.deccara)} (rectangular-SGR background fills)`,
-		`  Sync output:  ${yesNo(info.synchronizedOutput)} (DEC 2026)`,
+		t("Subprotocols"),
+		t("  Graphics:     {value}", { value: info.imageProtocol }),
+		`${t("  Notify:       {value}", { value: info.notifyProtocol })}${info.osc99Confirmed ? t(" · confirmed via DA") : ""}`,
+		t("  Hyperlinks:   {value} (OSC 8)", { value: yesNo(info.hyperlinks) }),
+		t("  True color:   {value} (24-bit SGR)", { value: yesNo(info.trueColor) }),
+		t("  DECCARA:      {value} (rectangular-SGR background fills)", { value: yesNo(info.deccara) }),
+		t("  Sync output:  {value} (DEC 2026)", { value: yesNo(info.synchronizedOutput) }),
 		"",
-		"Scrollback",
-		`  Screen->history clear: ${info.screenToScrollback ? "CSI 22 J" : "CSI 2 J (redraw)"}`,
+		t("Scrollback"),
+		t("  Screen->history clear: {value}", {
+			value: info.screenToScrollback ? "CSI 22 J" : "CSI 2 J (redraw)",
+		}),
 		"",
-		"Detection signals",
-		`  TERM:                 ${info.env.TERM ?? "(unset)"}`,
-		`  TERM_PROGRAM:         ${info.env.TERM_PROGRAM ?? "(unset)"}`,
-		`  TERM_PROGRAM_VERSION: ${info.env.TERM_PROGRAM_VERSION ?? "(unset)"}`,
-		`  COLORTERM:            ${info.env.COLORTERM ?? "(unset)"}`,
+		t("Detection signals"),
+		t("  TERM:                 {value}", { value: info.env.TERM ?? t("(unset)") }),
+		t("  TERM_PROGRAM:         {value}", { value: info.env.TERM_PROGRAM ?? t("(unset)") }),
+		t("  TERM_PROGRAM_VERSION: {value}", { value: info.env.TERM_PROGRAM_VERSION ?? t("(unset)") }),
+		t("  COLORTERM:            {value}", { value: info.env.COLORTERM ?? t("(unset)") }),
 	];
 	return lines.join("\n");
 }

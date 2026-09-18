@@ -1,6 +1,7 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { isRecord } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import type { Theme } from "../modes/theme/theme";
 import { renderStatusLine, WidthAwareText } from "../tui";
 import {
@@ -55,7 +56,7 @@ export function formatDefaultToolExecution(
 			{
 				icon,
 				spinnerFrame: options.spinnerFrame,
-				title: input.label,
+				title: t(input.label),
 				...(result?.skipped ? { titleColor: "muted" as const } : {}),
 			},
 			uiTheme,
@@ -73,7 +74,7 @@ export function formatDefaultToolExecution(
 
 	if (options.expanded && input.args !== undefined) {
 		lines.push("");
-		lines.push(uiTheme.fg("dim", "Args"));
+		lines.push(uiTheme.fg("dim", t("Args")));
 		const tree = renderJsonTreeLines(
 			input.args,
 			uiTheme,
@@ -94,7 +95,7 @@ export function formatDefaultToolExecution(
 
 	const textContent = result.output.trimEnd();
 	if (!textContent) {
-		lines.push(uiTheme.fg("dim", "(no output)"));
+		lines.push(uiTheme.fg("dim", t("(no output)")));
 		return lines.join("\n");
 	}
 
@@ -131,7 +132,7 @@ export function formatDefaultToolExecution(
 	if (outputLines.length > maxOutputLines) {
 		const remaining = outputLines.length - maxOutputLines;
 		lines.push(
-			`${uiTheme.fg("dim", `… ${remaining} more lines`)} ${formatExpandHint(uiTheme, options.expanded, true)}`,
+			`${uiTheme.fg("dim", t("… {count} more lines", { count: remaining }))} ${formatExpandHint(uiTheme, options.expanded, true)}`,
 		);
 	} else if (!options.expanded) {
 		lines.push(formatExpandHint(uiTheme, options.expanded, true));

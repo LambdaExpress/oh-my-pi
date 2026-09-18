@@ -35,6 +35,7 @@ import {
 	truncateToWidth,
 } from "@oh-my-pi/pi-tui";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
+import { t } from "../../i18n";
 import type { SessionMessageEntry } from "../../session/session-entries";
 import { theme } from "../theme/theme";
 import {
@@ -452,7 +453,7 @@ export class RewindSelectorComponent implements Component {
 		const output: string[] = [];
 		output.push(...this.#border.render(width));
 		output.push(
-			` ${theme.icon.rewind} ${theme.bold("Rewind")}${theme.sep.dot}${theme.fg("dim", "pick the point to continue from")}`,
+			` ${theme.icon.rewind} ${theme.bold(t("Rewind"))}${theme.sep.dot}${theme.fg("dim", t("pick the point to continue from"))}`,
 		);
 		output.push(...this.#border.render(width));
 		this.#viewportTop = output.length;
@@ -460,10 +461,16 @@ export class RewindSelectorComponent implements Component {
 		output.push(...this.#scrollView.render(width));
 		this.#renderedScrollOffset = this.#scrollView.getScrollOffset();
 		const position = this.#targets.length > 0 ? `${this.#selected + 1}/${this.#targets.length}  ` : "";
-		const lateral = columns.length > 0 ? "←/→ branches" : "←/→ user turns";
+		const lateral = columns.length > 0 ? t("←/→ branches") : t("←/→ user turns");
 		output.push(
 			truncateToWidth(
-				` ${theme.fg("dim", `${position}↑/↓ step  ${lateral}  hover outline  click/enter rewind  ctrl+o expand  esc cancel`)}`,
+				` ${theme.fg(
+					"dim",
+					t("{position}↑/↓ step  {lateral}  hover outline  click/enter rewind  ctrl+o expand  esc cancel", {
+						position,
+						lateral,
+					}),
+				)}`,
 				width,
 			),
 		);

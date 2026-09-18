@@ -231,7 +231,9 @@ export class FooterComponent implements Component {
 					billingParts.push(`$${formatted}`);
 				}
 			} else if (usingSubscription) {
-				billingParts.push(theme.getSymbolPreset() === "nerd" && subscriptionIcon ? subscriptionIcon : "(sub)");
+				const subscriptionLabel =
+					theme.getSymbolPreset() === "nerd" && subscriptionIcon ? subscriptionIcon : t("(sub)");
+				billingParts.push(subscriptionLabel);
 			}
 			if (normalizedPremiumRequests) billingParts.push(`★ ${formatNumber(normalizedPremiumRequests)}`);
 

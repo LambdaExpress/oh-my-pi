@@ -5,6 +5,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { formatBytes, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import type { Theme } from "../modes/theme/theme";
 import sshTransferDescriptionBase from "../prompts/tools/ssh-transfer.md" with { type: "text" };
 import { ensureHostInfo, type SSHConnectionTarget } from "../ssh/connection-manager";
@@ -508,7 +509,7 @@ export const sshTransferToolRenderer = {
 		const operation = args.op === "download" ? "Download" : args.op === "upload" ? "Upload" : "Transfer";
 		const host = sanitizeTransferField(args.host ?? "…");
 		const text = renderStatusLine(
-			{ icon: "pending", title: "SSH Transfer", description: `${operation} [${host}]` },
+			{ icon: "pending", title: t("SSH Transfer"), description: `${t(operation)} [${host}]` },
 			uiTheme,
 		);
 		return new Text(text, 0, 0);
@@ -539,13 +540,13 @@ export const sshTransferToolRenderer = {
 				const host = sanitizeTransferField(details?.host ?? args?.host ?? "…");
 				const header = renderStatusLine(
 					partial
-						? { icon: "pending", title: "SSH Transfer", description: `${operation} [${host}]` }
+						? { icon: "pending", title: t("SSH Transfer"), description: `${t(operation)} [${host}]` }
 						: failed
-							? { icon: "error", title: "SSH Transfer", description: `${operation} [${host}]` }
+							? { icon: "error", title: t("SSH Transfer"), description: `${t(operation)} [${host}]` }
 							: {
 									iconOverride: uiTheme.styledSymbol("tool.ssh", "accent"),
-									title: "SSH Transfer",
-									description: `${operation} [${host}]`,
+									title: t("SSH Transfer"),
+									description: `${t(operation)} [${host}]`,
 								},
 					uiTheme,
 				);

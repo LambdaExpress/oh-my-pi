@@ -1,5 +1,6 @@
 import { type Component, padding, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import type { Theme, ThemeColor } from "../modes/theme/theme";
 import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../tui";
 import type {
@@ -50,7 +51,8 @@ const OP_TITLES: Record<string, string> = {
 };
 
 function formatOpTitle(op: string | undefined): string {
-	if (op && OP_TITLES[op]) return OP_TITLES[op];
+	const title = op ? OP_TITLES[op] : undefined;
+	if (title) return t(title);
 	return "GitHub";
 }
 
@@ -70,7 +72,7 @@ function formatPrIdentifier(pr: string | string[] | undefined): string | undefin
 		const parts = pr.map(p => extractIssueId(p)).filter((p): p is string => p !== undefined);
 		if (parts.length === 0) return undefined;
 		if (parts.length > 3) {
-			return `${parts.slice(0, 3).join(", ")}, +${parts.length - 3} more`;
+			return `${parts.slice(0, 3).join(", ")}, ${t("+{count} more", { count: parts.length - 3 })}`;
 		}
 		return parts.join(", ");
 	}
@@ -119,18 +121,18 @@ function buildOpMeta(args: GithubToolRenderArgs): string[] {
 function getWatchHeader(watch: GhRunWatchViewDetails): string {
 	if (watch.mode === "run" && watch.run) {
 		if (watch.state === "watching") {
-			return `watching run #${watch.run.id} on ${watch.repo}`;
+			return t("watching run #{id} on {repo}", { id: watch.run.id, repo: watch.repo });
 		}
 
-		return `run #${watch.run.id} on ${watch.repo}`;
+		return t("run #{id} on {repo}", { id: watch.run.id, repo: watch.repo });
 	}
 
-	const shortSha = formatShortSha(watch.headSha) ?? "this commit";
+	const shortSha = formatShortSha(watch.headSha) ?? t("this commit");
 	if (watch.state === "watching") {
-		return `watching ${shortSha} on ${watch.repo}`;
+		return t("watching {sha} on {repo}", { sha: shortSha, repo: watch.repo });
 	}
 
-	return `workflow runs for ${shortSha} on ${watch.repo}`;
+	return t("workflow runs for {sha} on {repo}", { sha: shortSha, repo: watch.repo });
 }
 
 function getRunLabel(run: GhRunWatchRunDetails): string {
@@ -221,9 +223,11 @@ function renderJobLine(
 	const prefix = theme.fg(visual.iconColor, `${visual.iconRaw} `);
 	const completedSteps = job.steps.filter(step => step.status === "completed").length;
 	const metaParts: string[] = [];
-	if (job.steps.length > 0) metaParts.push(`${completedSteps}/${job.steps.length} steps`);
+	if (job.steps.length > 0) {
+		metaParts.push(t("{done}/{total} steps", { done: completedSteps, total: job.steps.length }));
+	}
 	const durationSeconds = liveDurationSeconds(job.durationSeconds, job.status, observedAtMs, renderedAtMs);
-	if (durationSeconds !== undefined) metaParts.push(`${durationSeconds}s`);
+	if (durationSeconds !== undefined) metaParts.push(t("{seconds}s", { seconds: durationSeconds }));
 	const styledMeta = metaParts.length > 0 ? theme.fg(visual.textColor, metaParts.join(theme.sep.dot)) : undefined;
 	const reservedWidth = visibleWidth(prefix) + (styledMeta ? 1 + visibleWidth(styledMeta) : 0);
 	const nameWidth = Math.max(8, width - reservedWidth);
@@ -252,8 +256,12 @@ function renderCurrentStepLine(
 		observedAtMs,
 		renderedAtMs,
 	);
-	const duration = durationSeconds !== undefined ? ` ${theme.sep.dot} ${durationSeconds}s` : "";
-	const prefix = `  ${theme.status.enabled} step ${currentStepIndex + 1}/${job.steps.length} `;
+	const duration =
+		durationSeconds !== undefined ? ` ${theme.sep.dot} ${t("{seconds}s", { seconds: durationSeconds })}` : "";
+	const prefix = `  ${theme.status.enabled} ${t("step {index}/{total}", {
+		index: currentStepIndex + 1,
+		total: job.steps.length,
+	})} `;
 	const availableWidth = Math.max(8, width - visibleWidth(prefix) - visibleWidth(duration));
 	return theme.fg(
 		"warning",
@@ -269,9 +277,9 @@ function renderRunProgressLine(run: GhRunWatchRunDetails, theme: Theme): string 
 		if (job.status === "in_progress") running += 1;
 	}
 	const queued = Math.max(0, run.jobs.length - completed - running);
-	const parts = [`${completed}/${run.jobs.length} jobs complete`];
-	if (running > 0) parts.push(`${running} running`);
-	if (queued > 0) parts.push(`${queued} queued`);
+	const parts = [t("{done}/{total} jobs complete", { done: completed, total: run.jobs.length })];
+	if (running > 0) parts.push(t("{count} running", { count: running }));
+	if (queued > 0) parts.push(t("{count} queued", { count: queued }));
 	return theme.fg("dim", parts.join(theme.sep.dot));
 }
 
@@ -284,7 +292,7 @@ function renderRunBlock(
 ): string[] {
 	const lines = [formatRunLine(run, theme)];
 	if (run.jobs.length === 0) {
-		lines.push(theme.fg("dim", "waiting for workflow jobs..."));
+		lines.push(theme.fg("dim", t("waiting for workflow jobs...")));
 		return lines;
 	}
 
@@ -313,7 +321,7 @@ function renderJobLogPreview(
 		),
 	];
 	if (!job.logTail) {
-		lines.push(theme.fg("dim", "  live log unavailable; GitHub publishes it after the job completes"));
+		lines.push(theme.fg("dim", `  ${t("live log unavailable; GitHub publishes it after the job completes")}`));
 		return lines;
 	}
 
@@ -326,7 +334,8 @@ function renderJobLogPreview(
 	}
 	if (!expanded && logLines.length > previewLimit) {
 		const remaining = logLines.length - previewLimit;
-		lines.push(theme.fg("dim", `  … ${remaining} more log lines ${formatExpandHint(theme, false, true)}`));
+		const more = t("… {count} more log lines", { count: remaining });
+		lines.push(theme.fg("dim", `  ${more} ${formatExpandHint(theme, false, true)}`));
 	}
 	return lines;
 }
@@ -375,13 +384,15 @@ function renderFailedLogs(
 
 	const lines: string[] = [];
 	for (const entry of failedLogs) {
-		const context = entry.workflowName ? `${entry.workflowName}  #${entry.runId}` : `run #${entry.runId}`;
+		const context = entry.workflowName
+			? `${entry.workflowName}  #${entry.runId}`
+			: t("run #{id}", { id: entry.runId });
 		lines.push(
 			theme.fg("error", `${theme.status.error} ${replaceTabs(entry.jobName)}  ${theme.fg("muted", context)}`),
 		);
 
 		if (!entry.available || !entry.tail) {
-			lines.push(theme.fg("dim", "  log tail unavailable"));
+			lines.push(theme.fg("dim", `  ${t("log tail unavailable")}`));
 			continue;
 		}
 
@@ -395,7 +406,8 @@ function renderFailedLogs(
 
 		if (!expanded && tailLines.length > previewLimit) {
 			const remaining = tailLines.length - previewLimit;
-			lines.push(theme.fg("dim", `  … ${remaining} more log lines ${formatExpandHint(theme, false, true)}`));
+			const more = t("… {count} more log lines", { count: remaining });
+			lines.push(theme.fg("dim", `  ${more} ${formatExpandHint(theme, false, true)}`));
 		}
 	}
 
@@ -420,7 +432,7 @@ function buildWatchSections(
 	} else if (watch.mode === "commit") {
 		const runs = watch.runs ?? [];
 		if (runs.length === 0) {
-			main.push(theme.fg("dim", "waiting for workflow runs..."));
+			main.push(theme.fg("dim", t("waiting for workflow runs...")));
 		} else {
 			runs.forEach((run, index) => {
 				if (index > 0) {
@@ -439,12 +451,12 @@ function buildWatchSections(
 	const runs = watch.mode === "run" && watch.run ? [watch.run] : (watch.runs ?? []);
 	const recentLogs = renderRecentLogs(runs, width, theme, options.expanded);
 	if (recentLogs.length > 0) {
-		sections.push({ label: "recent logs", lines: recentLogs });
+		sections.push({ label: t("recent logs"), lines: recentLogs });
 	}
 
 	const failed = renderFailedLogs(watch.failedLogs ?? [], width, theme, options.expanded);
 	if (failed.length > 0) {
-		sections.push({ label: "failed logs", lines: failed });
+		sections.push({ label: t("failed logs"), lines: failed });
 	}
 
 	return sections;
@@ -487,7 +499,7 @@ function renderFallbackComponent(
 	);
 
 	if (!text) {
-		const empty = isError ? "request failed" : "no output";
+		const empty = isError ? t("request failed") : t("no output");
 		return new Text(`${header}\n${theme.fg("dim", empty)}`, 0, 0);
 	}
 
@@ -541,18 +553,18 @@ function renderWatchCall(args: GithubToolRenderArgs, options: RenderResultOption
 	const runId = typeof args.run === "string" && args.run.trim().length > 0 ? args.run.trim() : undefined;
 	const branch = typeof args.branch === "string" && args.branch.trim().length > 0 ? args.branch.trim() : undefined;
 
-	const titleText = theme.fg("accent", "GitHub Run Watch");
+	const titleText = theme.fg("accent", t("GitHub Run Watch"));
 	let metaText: string;
 	if (runId) {
 		metaText = theme.fg("muted", `#${runId}`);
 	} else if (branch) {
 		metaText = theme.fg("text", branch);
 	} else {
-		metaText = theme.fg("muted", "current HEAD");
+		metaText = theme.fg("muted", t("current HEAD"));
 	}
 
 	const header = `${icon} ${titleText}  ${metaText}`;
-	const wait = theme.fg("dim", "waiting for workflow data...");
+	const wait = theme.fg("dim", t("waiting for workflow data..."));
 	return new Text(`${header}\n${wait}`, 0, 0);
 }
 
@@ -593,13 +605,13 @@ export const githubToolRenderer = {
 				isError
 					? {
 							icon: "error",
-							title: "GitHub Run Watch",
+							title: t("GitHub Run Watch"),
 							titleColor: "error",
 							meta: [getWatchHeader(watch)],
 						}
 					: {
 							iconOverride: uiTheme.styledSymbol("tool.gh", "accent"),
-							title: "GitHub Run Watch",
+							title: t("GitHub Run Watch"),
 							titleColor: "accent",
 							meta: [getWatchHeader(watch)],
 						},

@@ -10,6 +10,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
+import { t } from "../../i18n";
 import { type DaemonBrokerClient, DaemonBrokerRejectedError, daemonClientForProject } from "../../launch/client";
 import type { DaemonOperation, DaemonRpcResult, DaemonSnapshot, DaemonSpec, DaemonState } from "../../launch/protocol";
 import { renderTerminalOutputIsolated } from "../../launch/terminal-output-worker-client";
@@ -25,7 +26,6 @@ import {
 	formatExpandHint,
 	formatMoreItems,
 	PREVIEW_LIMITS,
-	pluralize,
 	previewLine,
 	replaceTabs,
 	shortenPath,
@@ -469,18 +469,23 @@ function stateColor(state: DaemonState): ThemeColor {
 
 /** Compact `state · pid · uptime` fragments for the status-line meta slot. */
 function daemonMeta(daemon: DaemonSnapshot, theme: Theme): string[] {
-	const meta = [theme.fg(stateColor(daemon.state), daemon.state)];
-	if (daemon.readyPending?.length) meta.push(theme.fg("warning", `waiting on ${daemon.readyPending.join("+")}`));
+	const meta = [theme.fg(stateColor(daemon.state), t(daemon.state))];
+	if (daemon.readyPending?.length)
+		meta.push(theme.fg("warning", t("waiting on {items}", { items: daemon.readyPending.join("+") })));
 	if (daemon.exitCode !== undefined) {
-		meta.push(theme.fg(daemon.exitCode === 0 ? "muted" : "error", `exit ${daemon.exitCode}`));
+		meta.push(theme.fg(daemon.exitCode === 0 ? "muted" : "error", t("exit {code}", { code: daemon.exitCode })));
 	} else if (daemon.pid !== undefined) {
 		meta.push(`pid ${daemon.pid}`);
 	}
 	const lifespan = formatDuration((daemon.exitedAt ?? Date.now()) - daemon.startedAt);
-	meta.push(daemon.exitedAt === undefined ? `up ${lifespan}` : `ran ${lifespan}`);
-	if (daemon.restartCount > 0) meta.push(`restarts ${daemon.restartCount}`);
-	if (daemon.detached) meta.push("detached");
-	else if (daemon.persist) meta.push("persistent");
+	meta.push(
+		daemon.exitedAt === undefined
+			? t("up {duration}", { duration: lifespan })
+			: t("ran {duration}", { duration: lifespan }),
+	);
+	if (daemon.restartCount > 0) meta.push(t("restarts {count}", { count: daemon.restartCount }));
+	if (daemon.detached) meta.push(t("detached"));
+	else if (daemon.persist) meta.push(t("persistent"));
 	return meta;
 }
 
@@ -492,11 +497,15 @@ function callMeta(args: LaunchRenderArgs): string[] {
 			if (args.application) meta.push([args.application, ...(args.args ?? [])].join(" "));
 			break;
 		case "logs":
-			if (args.follow) meta.push("follow");
+			if (args.follow) meta.push(t("follow"));
 			if (args.grep) meta.push(`grep /${args.grep}/`);
 			break;
 		case "wait":
-			meta.push(args.pattern ? `for /${args.pattern}/` : `for ${args.for ?? "exit"}`);
+			meta.push(
+				args.pattern
+					? t("for /{pattern}/", { pattern: args.pattern })
+					: t("for {condition}", { condition: args.for ?? "exit" }),
+			);
 			break;
 		case "send":
 			if (args.signal) meta.push(args.signal);
@@ -514,7 +523,7 @@ export function launchRenderCall(args: LaunchRenderArgs, options: RenderResultOp
 		{
 			icon: options.spinnerFrame !== undefined ? "running" : "pending",
 			spinnerFrame: options.spinnerFrame,
-			title: `Launch ${args.op ?? "…"}`,
+			title: t("Launch {op}", { op: args.op ?? "…" }),
 			description: target ? replaceTabs(target) : undefined,
 			meta: callMeta(args),
 		},
@@ -553,7 +562,8 @@ export function launchRenderResult(
 			case "start": {
 				meta.push(...callMeta(params));
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
-				if (daemon?.readyMatch) body.push(theme.fg("dim", `log matched: ${replaceTabs(daemon.readyMatch)}`));
+				if (daemon?.readyMatch)
+					body.push(theme.fg("dim", t("log matched: {text}", { text: replaceTabs(daemon.readyMatch) })));
 				if (daemon?.state === "failed" && daemon.exitReason)
 					body.push(theme.fg("error", replaceTabs(daemon.exitReason)));
 				if (details?.timedOut) {
@@ -562,12 +572,12 @@ export function launchRenderResult(
 						theme.fg(
 							"warning",
 							pending.length > 0
-								? `Not ready — ${pending.join("; ")}. Still running.`
-								: "Readiness timed out; the process is still running.",
+								? t("Not ready — {items}. Still running.", { items: pending.join("; ") })
+								: t("Readiness timed out; the process is still running."),
 						),
 					);
 				} else if (params.ready && daemon && daemon.readyAt === undefined && TERMINAL_STATES[daemon.state]) {
-					body.push(theme.fg("warning", "Process exited before readiness was observed."));
+					body.push(theme.fg("warning", t("Process exited before readiness was observed.")));
 				}
 				break;
 			}
@@ -582,15 +592,16 @@ export function launchRenderResult(
 			case "wait": {
 				meta.push(...callMeta(params));
 				if (daemon) meta.push(...daemonMeta(daemon, theme));
-				if (details?.matched) body.push(theme.fg("dim", `matched: ${replaceTabs(details.matched)}`));
+				if (details?.matched)
+					body.push(theme.fg("dim", t("matched: {text}", { text: replaceTabs(details.matched) })));
 				if (details?.timedOut) {
 					const pending = daemon ? readyPendingSummary(daemon) : [];
 					body.push(
 						theme.fg(
 							"warning",
 							pending.length > 0
-								? `Wait timed out — still waiting on ${pending.join("; ")}.`
-								: "Wait timed out.",
+								? t("Wait timed out — still waiting on {items}.", { items: pending.join("; ") })
+								: t("Wait timed out."),
 						),
 					);
 				}
@@ -598,7 +609,10 @@ export function launchRenderResult(
 			}
 			case "list": {
 				const daemons = details?.daemons ?? [];
-				description = `${daemons.length || "no"} ${pluralize("process", daemons.length)}`;
+				description =
+					daemons.length === 0
+						? t("no processes")
+						: t("{count} process{es}", { count: daemons.length, es: daemons.length === 1 ? "" : "es" });
 				for (const item of daemons) {
 					body.push(
 						`${theme.fg("accent", replaceTabs(item.name))} ${theme.fg("dim", daemonMeta(item, theme).join(theme.sep.dot))}`,
@@ -607,9 +621,9 @@ export function launchRenderResult(
 				break;
 			}
 			case "logs": {
-				if (details?.state) meta.push(theme.fg(stateColor(details.state), details.state));
+				if (details?.state) meta.push(theme.fg(stateColor(details.state), t(details.state)));
 				if (details?.cursor !== undefined) meta.push(`cursor ${details.cursor}`);
-				if (details?.timedOut) meta.push(theme.fg("warning", "follow timed out"));
+				if (details?.timedOut) meta.push(theme.fg("warning", t("follow timed out")));
 				// Strip the trailing `[name: state; cursor=N]` status suffix `toolContent` appends.
 				const logText = text.replace(/\n?\[[^\n]*\]$/, "").trimEnd();
 				const terminalRows = details?.terminalRows;
@@ -627,8 +641,8 @@ export function launchRenderResult(
 					body.push(theme.fg("toolOutput", replaceTabs([spec.application, ...spec.args].join(" "))));
 					body.push(theme.fg("dim", `cwd ${shortenPath(spec.cwd)}`));
 					const flags = [`pty ${spec.pty}`, `restart ${spec.restart}`];
-					if (spec.detached) flags.push("detached");
-					else if (spec.persist) flags.push("persistent");
+					if (spec.detached) flags.push(t("detached"));
+					else if (spec.persist) flags.push(t("persistent"));
 					body.push(theme.fg("dim", flags.join(theme.sep.dot)));
 				}
 				break;
@@ -647,7 +661,7 @@ export function launchRenderResult(
 				: options.isPartial
 					? { icon: "pending" as const }
 					: { iconOverride: theme.styledSymbol("tool.launch", "accent") }),
-			title: `Launch ${op ?? ""}`.trimEnd(),
+			title: t("Launch {op}", { op: op ?? "" }).trimEnd(),
 			description: description ? replaceTabs(description) : undefined,
 			meta,
 		},
@@ -663,7 +677,7 @@ export function launchRenderResult(
 				state: options.isPartial ? "pending" : failed ? "error" : "success",
 				sections: [
 					{
-						label: theme.fg("toolTitle", "Output"),
+						label: theme.fg("toolTitle", t("Output")),
 						lines: capPreviewLines(rows, theme, {
 							expanded: options.expanded,
 							max: DEFAULT_TERMINAL_PREVIEW_LINES,

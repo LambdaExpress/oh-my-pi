@@ -4,6 +4,7 @@ import { Lexer } from "@oh-my-pi/pi-utils/marked";
 import type { BunFile } from "bun";
 import bundledChangelogPath from "../../CHANGELOG.md" with { type: "file" };
 import type { SettingValue } from "../config/settings";
+import { t } from "../i18n";
 
 export interface ChangelogEntry {
 	major: number;
@@ -104,17 +105,25 @@ function categoryLabel(category: string, count: number): string {
 export function formatStartupChangelogSummary(selection: StartupChangelogSelection): string {
 	const latestVersion = selection.latestVersion;
 	if (!latestVersion || selection.selectedEntries === 0) {
-		return "Updated omp. Use /changelog for recent changes.";
+		return t("Updated omp. Use /changelog for recent changes.");
 	}
 
 	const releaseCount = selection.selectedEntries;
 	const changeCount = selection.changeCount;
-	const releaseWord = releaseCount === 1 ? "release" : "releases";
-	const changeWord = changeCount === 1 ? "change" : "changes";
+	const changeSuffix = changeCount === 1 ? "" : "s";
 	const firstLine =
 		releaseCount === 1
-			? `Updated to v${latestVersion} · ${changeCount} ${changeWord} in 1 release`
-			: `Updated to v${latestVersion} · ${changeCount} ${changeWord} across ${releaseCount} ${releaseWord}`;
+			? t("Updated to v{version} · {count} change{s} in 1 release", {
+					version: latestVersion,
+					count: changeCount,
+					s: changeSuffix,
+				})
+			: t("Updated to v{version} · {count} change{s} across {releases} releases", {
+					version: latestVersion,
+					count: changeCount,
+					s: changeSuffix,
+					releases: releaseCount,
+				});
 
 	const orderedCategories = [
 		...CHANGELOG_CATEGORY_ORDER.filter(category => selection.categoryCounts[category]),
@@ -123,16 +132,21 @@ export function formatStartupChangelogSummary(selection: StartupChangelogSelecti
 			.sort(),
 	];
 	const breakdown = orderedCategories
-		.map(
-			category =>
-				`${selection.categoryCounts[category]} ${categoryLabel(category, selection.categoryCounts[category])}`,
+		.map(category =>
+			t("{count} {category}", {
+				count: selection.categoryCounts[category],
+				category: categoryLabel(category, selection.categoryCounts[category]),
+			}),
 		)
 		.join(" · ");
 	const omittedReleases = selection.totalUnseenEntries - selection.selectedEntries;
 	const detailHint =
 		omittedReleases > 0
-			? `+${omittedReleases} earlier ${omittedReleases === 1 ? "release" : "releases"} · Use /changelog full for history.`
-			: "Use /changelog for details.";
+			? t("+{count} earlier release{s} · Use /changelog full for history.", {
+					count: omittedReleases,
+					s: omittedReleases === 1 ? "" : "s",
+				})
+			: t("Use /changelog for details.");
 
 	return breakdown ? `${firstLine}\n${breakdown} · ${detailHint}` : `${firstLine}\n${detailHint}`;
 }

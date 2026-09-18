@@ -14,6 +14,7 @@ import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { formatAge, formatDuration } from "@oh-my-pi/pi-utils";
 import type { Settings } from "../../config/settings";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
+import { t } from "../../i18n";
 import { IrcAwaitTargetStopped, IrcBus, type IrcDeliveryReceipt, type IrcMessage } from "../../irc/bus";
 import type { Theme } from "../../modes/theme/theme";
 import { type AgentRegistry, MAIN_AGENT_ID } from "../../registry/agent-registry";
@@ -479,13 +480,13 @@ function outcomeColor(outcome: IrcDeliveryReceipt["outcome"]): ToolUIColor {
 function peerStatusBadge(status: string, theme: Theme): string {
 	switch (status) {
 		case "running":
-			return theme.fg("accent", `${theme.status.running} running`);
+			return theme.fg("accent", `${theme.status.running} ${t("running")}`);
 		case "idle":
-			return theme.fg("success", `${theme.status.enabled} idle`);
+			return theme.fg("success", `${theme.status.enabled} ${t("idle")}`);
 		case "parked":
-			return theme.fg("muted", `${theme.status.shadowed} parked`);
+			return theme.fg("muted", `${theme.status.shadowed} ${t("parked")}`);
 		default:
-			return theme.fg("error", `${theme.status.aborted} ${status}`);
+			return theme.fg("error", `${theme.status.aborted} ${t(status)}`);
 	}
 }
 
@@ -518,7 +519,8 @@ function bodyLines(
 	);
 	const hidden = total - Math.min(total, max);
 	if (hidden > 0) {
-		lines.push(`${indent}${quote} ${theme.fg("dim", `… +${hidden} more ${hidden === 1 ? "line" : "lines"}`)}`);
+		const moreLabel = t("… +{count} more line{s}", { count: hidden, s: hidden === 1 ? "" : "s" });
+		lines.push(`${indent}${quote} ${theme.fg("dim", moreLabel)}`);
 	}
 	return lines;
 }
@@ -529,25 +531,26 @@ function callTitle(args: HubRenderArgs | undefined, theme: Theme): string {
 		case "send":
 			return `IRC ${theme.nav.selected} ${args.to?.trim() || "…"}`;
 		case "wait":
-			return `IRC ${theme.nav.back} ${args.from?.trim() || "anyone"}`;
+			return `IRC ${theme.nav.back} ${args.from?.trim() || t("anyone")}`;
 		case "inbox":
-			return "IRC inbox";
+			return t("IRC inbox");
 		case "list":
-			return "IRC peers";
+			return t("IRC peers");
 		default:
-			return "Hub";
+			return t("Hub");
 	}
 }
 
 function callMeta(args: HubRenderArgs | undefined): string[] {
 	const meta: string[] = [];
 	if (args?.op === "send") {
-		if (args.to === "all") meta.push("broadcast");
-		if (args.await) meta.push("await reply");
-		if (args.replyTo) meta.push("reply");
+		if (args.to === "all") meta.push(t("broadcast"));
+		if (args.await) meta.push(t("await reply"));
+		if (args.replyTo) meta.push(t("reply"));
 	}
-	if (args?.op === "wait" && args.timeoutMs) meta.push(`timeout ${formatDuration(args.timeoutMs)}`);
-	if (args?.op === "inbox" && args.peek) meta.push("peek");
+	if (args?.op === "wait" && args.timeoutMs)
+		meta.push(t("timeout {duration}", { duration: formatDuration(args.timeoutMs) }));
+	if (args?.op === "inbox" && args.peek) meta.push(t("peek"));
 	return meta;
 }
 
@@ -556,7 +559,7 @@ function renderErrorResult(
 	args: HubRenderArgs | undefined,
 	theme: Theme,
 ): string[] {
-	const text = textContent(result) || "IRC call failed.";
+	const text = textContent(result) || t("IRC call failed.");
 	return [
 		renderStatusLine({ icon: "error", title: callTitle(args, theme), meta: callMeta(args) }, theme),
 		formatErrorDetail(text, theme),
@@ -591,13 +594,13 @@ export function createIrcMessageCard(
 			: card.kind === "autoreply"
 				? `IRC ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
 				: card.kind === "workpool"
-					? `Pool ${card.pool?.trim() || "?"} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
+					? `${t("Pool")} ${card.pool?.trim() || "?"} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`
 					: `IRC ${from} ${uiTheme.nav.selected} ${card.to?.trim() || "?"}`;
 	const body = card.body ?? "";
 	const meta: string[] = [];
-	if (card.kind === "autoreply") meta.push("auto");
+	if (card.kind === "autoreply") meta.push(t("auto"));
 	if (card.kind === "workpool" && card.mode) meta.push(card.mode);
-	if (card.replyTo) meta.push("reply");
+	if (card.replyTo) meta.push(t("reply"));
 	const age = messageAge(card.timestamp);
 	if (age) meta.push(age);
 	return createCachedComponent(
@@ -626,7 +629,7 @@ function renderSendResult(
 
 	// Pre-delivery failures (validation) and empty broadcasts carry no receipts.
 	if (receipts.length === 0) {
-		const text = textContent(result) || (result.isError ? "Send failed." : "Nothing to deliver.");
+		const text = textContent(result) || (result.isError ? t("Send failed.") : t("Nothing to deliver."));
 		return [
 			renderStatusLine({ icon: result.isError ? "error" : "warning", title }, theme),
 			result.isError ? formatErrorDetail(text, theme) : `  ${theme.fg("muted", replaceTabs(text))}`,
@@ -639,15 +642,15 @@ function renderSendResult(
 	const timedOut = waited === null;
 
 	const meta: string[] = [];
-	if (to === "all") meta.push("broadcast");
+	if (to === "all") meta.push(t("broadcast"));
 	if (receipts.length === 1) {
 		const receipt = receipts[0]!;
-		meta.push(theme.fg(outcomeColor(receipt.outcome), receipt.outcome));
+		meta.push(theme.fg(outcomeColor(receipt.outcome), t(receipt.outcome)));
 	} else {
-		if (delivered.length > 0) meta.push(theme.fg("success", `${delivered.length} delivered`));
-		if (failedCount > 0) meta.push(theme.fg("error", `${failedCount} failed`));
+		if (delivered.length > 0) meta.push(theme.fg("success", t("{count} delivered", { count: delivered.length })));
+		if (failedCount > 0) meta.push(theme.fg("error", t("{count} failed", { count: failedCount })));
 	}
-	if (timedOut) meta.push(theme.fg("warning", "no reply"));
+	if (timedOut) meta.push(theme.fg("warning", t("no reply")));
 
 	const icon = result.isError
 		? { icon: "error" as const }
@@ -668,7 +671,7 @@ function renderSendResult(
 					maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
 					itemType: "recipient",
 					renderItem: receipt => {
-						const badge = formatBadge(receipt.outcome, outcomeColor(receipt.outcome), theme);
+						const badge = formatBadge(t(receipt.outcome), outcomeColor(receipt.outcome), theme);
 						const error =
 							receipt.outcome === "failed" && receipt.error
 								? ` ${theme.fg("error", `${theme.format.dash} ${receipt.error}`)}`
@@ -688,7 +691,7 @@ function renderSendResult(
 		);
 		lines.push(...bodyLines(waited.body, expanded, theme, { indent: "  " }));
 	} else if (timedOut) {
-		lines.push(`  ${theme.fg("warning", "No reply yet — they may answer later; check inbox or wait again.")}`);
+		lines.push(`  ${theme.fg("warning", t("No reply yet — they may answer later; check inbox or wait again."))}`);
 	}
 	return lines;
 }
@@ -702,17 +705,21 @@ function renderWaitResult(
 ): string[] {
 	const waited = details.waited;
 	if (!waited) {
-		const text = textContent(result) || "No message arrived.";
+		const text = textContent(result) || t("No message arrived.");
 		return [
 			renderStatusLine(
-				{ icon: "warning", title: `IRC ${theme.nav.back} ${args?.from?.trim() || "anyone"}`, meta: ["timed out"] },
+				{
+					icon: "warning",
+					title: `IRC ${theme.nav.back} ${args?.from?.trim() || t("anyone")}`,
+					meta: [t("timed out")],
+				},
 				theme,
 			),
 			`  ${theme.fg("muted", replaceTabs(text))}`,
 		];
 	}
 	const meta = [messageAge(waited.ts)];
-	if (waited.replyTo) meta.push("reply");
+	if (waited.replyTo) meta.push(t("reply"));
 	return [
 		renderStatusLine({ iconOverride: ircGlyph(theme), title: `IRC ${theme.nav.back} ${waited.from}`, meta }, theme),
 		...bodyLines(waited.body, expanded, theme, { indent: "  " }),
@@ -727,11 +734,11 @@ function renderInboxResult(
 ): string[] {
 	const messages = details.inbox ?? [];
 	if (messages.length === 0) {
-		return [renderStatusLine({ iconOverride: ircGlyph(theme), title: "IRC inbox", meta: ["empty"] }, theme)];
+		return [renderStatusLine({ iconOverride: ircGlyph(theme), title: t("IRC inbox"), meta: [t("empty")] }, theme)];
 	}
-	const meta = [`${messages.length} ${messages.length === 1 ? "message" : "messages"}`];
-	if (args?.peek) meta.push("peek");
-	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: "IRC inbox", meta }, theme);
+	const meta = [t("{count} message{s}", { count: messages.length, s: messages.length === 1 ? "" : "s" })];
+	if (args?.peek) meta.push(t("peek"));
+	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: t("IRC inbox"), meta }, theme);
 	const items = renderTreeList<IrcMessage>(
 		{
 			items: messages,
@@ -740,7 +747,7 @@ function renderInboxResult(
 			itemType: "message",
 			renderItem: msg => {
 				const age = messageAge(msg.ts);
-				const replyBadge = msg.replyTo ? ` ${formatBadge("reply", "muted", theme)}` : "";
+				const replyBadge = msg.replyTo ? ` ${formatBadge(t("reply"), "muted", theme)}` : "";
 				const head = `${theme.fg("accent", msg.from)}${age ? ` ${theme.fg("dim", age)}` : ""}${replyBadge}`;
 				return [head, ...bodyLines(msg.body, expanded, theme, { collapsedLines: 1 })];
 			},
@@ -748,6 +755,16 @@ function renderInboxResult(
 		theme,
 	);
 	return [header, ...items];
+}
+
+/** Roster tallies as status-line meta, shared by the empty and populated list states. */
+function rosterMeta(counts: HubRosterCounts): string[] {
+	return [
+		t("{count} {status}", { count: counts.running, status: t("running") }),
+		t("{count} {status}", { count: counts.idle, status: t("idle") }),
+		t("{count} {status}", { count: counts.parked, status: t("parked") }),
+		...(counts.truncated > 0 ? [t("{count} truncated", { count: counts.truncated })] : []),
+	];
 }
 
 function renderListResult(details: Partial<CoordinationDetails>, expanded: boolean, theme: Theme): string[] {
@@ -759,28 +776,18 @@ function renderListResult(details: Partial<CoordinationDetails>, expanded: boole
 	if (peers.length === 0) {
 		const meta =
 			rosterCounts && rosterCounts.running + rosterCounts.idle + rosterCounts.parked > 0
-				? [
-						`${rosterCounts.running} running`,
-						`${rosterCounts.idle} idle`,
-						`${rosterCounts.parked} parked`,
-						...(rosterCounts.truncated > 0 ? [`${rosterCounts.truncated} truncated`] : []),
-					]
-				: ["no other agents"];
-		return [renderStatusLine({ icon: "info", title: "IRC peers", meta }, theme)];
+				? rosterMeta(rosterCounts)
+				: [t("no other agents")];
+		return [renderStatusLine({ icon: "info", title: t("IRC peers"), meta }, theme)];
 	}
 	const counts = new Map<string, number>();
 	for (const peer of peers) counts.set(peer.status, (counts.get(peer.status) ?? 0) + 1);
 	const meta = rosterCounts
-		? [
-				`${rosterCounts.running} running`,
-				`${rosterCounts.idle} idle`,
-				`${rosterCounts.parked} parked`,
-				...(rosterCounts.truncated > 0 ? [`${rosterCounts.truncated} truncated`] : []),
-			]
-		: [...counts].map(([status, count]) => `${count} ${status}`);
+		? rosterMeta(rosterCounts)
+		: [...counts].map(([status, count]) => t("{count} {status}", { count, status: t(status) }));
 	const unreadTotal = peers.reduce((sum, peer) => sum + peer.unread, 0);
-	if (unreadTotal > 0) meta.push(theme.fg("warning", `${unreadTotal} unread`));
-	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: "IRC peers", meta }, theme);
+	if (unreadTotal > 0) meta.push(theme.fg("warning", t("{count} unread", { count: unreadTotal })));
+	const header = renderStatusLine({ iconOverride: ircGlyph(theme), title: t("IRC peers"), meta }, theme);
 	const items = renderTreeList(
 		{
 			items: peers,
@@ -788,8 +795,11 @@ function renderListResult(details: Partial<CoordinationDetails>, expanded: boole
 			maxCollapsed: PREVIEW_LIMITS.COLLAPSED_ITEMS,
 			itemType: "peer",
 			renderItem: peer => {
-				const kindText = peer.parentId ? `${peer.kind}${theme.sep.dot}of ${peer.parentId}` : peer.kind;
-				const unread = peer.unread > 0 ? ` ${formatBadge(`${peer.unread} unread`, "warning", theme)}` : "";
+				const kindText = peer.parentId
+					? `${peer.kind}${theme.sep.dot}${t("of {parent}", { parent: peer.parentId })}`
+					: peer.kind;
+				const unread =
+					peer.unread > 0 ? ` ${formatBadge(t("{count} unread", { count: peer.unread }), "warning", theme)}` : "";
 				const age = messageAge(peer.lastActivity);
 				const activity = peer.activity ? ` ${theme.fg("dim", replaceTabs(peer.activity))}` : "";
 				const name = theme.fg("dim", replaceTabs(peer.displayName));
@@ -819,7 +829,7 @@ function buildResultLines(
 		case "list":
 			return result.isError ? renderErrorResult(result, args, theme) : renderListResult(details, expanded, theme);
 		default: {
-			const text = textContent(result) || (result.isError ? "Hub call failed." : "Done.");
+			const text = textContent(result) || (result.isError ? t("Hub call failed.") : t("Done."));
 			return [
 				renderStatusLine({ icon: result.isError ? "error" : "success", title: callTitle(args, theme) }, theme),
 				result.isError ? formatErrorDetail(text, theme) : `  ${theme.fg("muted", replaceTabs(text))}`,

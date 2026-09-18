@@ -131,6 +131,7 @@ import {
 } from "./extensibility/skills";
 import { type FileSlashCommand, loadSlashCommands as loadSlashCommandsInternal } from "./extensibility/slash-commands";
 import type { HindsightSessionState } from "./hindsight/state";
+import { t } from "./i18n";
 import { LocalProtocolHandler, type LocalProtocolOptions, stripXdUrlPrefix } from "./internal-urls";
 import { collectIrcPeerIdsFromSessionEntries } from "./irc/peers";
 import { setSharedLspEnabled } from "./lsp/client";
@@ -1680,7 +1681,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				failedSessionModel ??= sessionModelStr;
 			}
 			if (failedSessionModel) {
-				modelFallbackMessage = `Could not restore model ${failedSessionModel}`;
+				modelFallbackMessage = t("Could not restore model {model}", { model: failedSessionModel });
 			}
 		});
 	}
@@ -2787,8 +2788,10 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 				const requested =
 					deferredModelPatterns.length === 1
 						? `"${deferredModelPatterns[0]}"`
-						: `one of ${deferredModelPatterns.map(pattern => `"${pattern}"`).join(", ")}`;
-				modelFallbackMessage = `Model ${requested} not found`;
+						: t("one of {patterns}", {
+								patterns: deferredModelPatterns.map(pattern => `"${pattern}"`).join(", "),
+							});
+				modelFallbackMessage = t("Model {model} not found", { model: requested });
 			}
 		}
 
@@ -2882,14 +2885,19 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			}
 			if (model) {
 				if (modelFallbackMessage) {
-					modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
+					modelFallbackMessage += t(". Using {model}", { model: `${model.provider}/${model.id}` });
 				}
 			} else {
 				const patterns = settings.get("enabledModels");
 				modelFallbackMessage =
 					patterns && patterns.length > 0
-						? `No model available matching enabledModels (${patterns.join(", ")}) with usable credentials. Configure auth for an allowed provider or adjust enabledModels.`
-						: "No models available. Use /login or set an API key environment variable. Then use /model to select a model.";
+						? t(
+								"No model available matching enabledModels ({patterns}) with usable credentials. Configure auth for an allowed provider or adjust enabledModels.",
+								{ patterns: patterns.join(", ") },
+							)
+						: t(
+								"No models available. Use /login or set an API key environment variable. Then use /model to select a model.",
+							);
 			}
 		}
 

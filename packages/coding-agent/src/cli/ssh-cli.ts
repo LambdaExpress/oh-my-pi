@@ -7,6 +7,7 @@
 import { getSSHConfigPath } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { SSHHostConfig } from "../capability/ssh";
+import { t } from "../i18n";
 import { addSSHHost, readSSHConfigFile, removeSSHHost, type SSHConfigFile } from "../ssh/config-writer";
 import { assertProxyJumpPasswordCompatible, normalizeProxyJump } from "../ssh/utils";
 
@@ -49,8 +50,8 @@ export async function runSSHCommand(cmd: SSHCommandArgs): Promise<void> {
 			await handleList(cmd);
 			break;
 		default:
-			process.stdout.write(chalk.red(`Unknown action: ${cmd.action}\n`));
-			process.stdout.write(`Valid actions: add, remove, list\n`);
+			process.stdout.write(chalk.red(`${t("Unknown action: {action}", { action: cmd.action })}\n`));
+			process.stdout.write(`${t("Valid actions: add, remove, list")}\n`);
 			process.exitCode = 1;
 	}
 }
@@ -62,10 +63,10 @@ export async function runSSHCommand(cmd: SSHCommandArgs): Promise<void> {
 async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 	const name = cmd.args[0];
 	if (!name) {
-		process.stdout.write(chalk.red("Error: Host name required\n"));
+		process.stdout.write(chalk.red(`${t("Error: Host name required")}\n`));
 		process.stdout.write(
 			chalk.dim(
-				"Usage: omp ssh add <name> --host <address> [--user <user>] [--port <port>] [--key <path>] [--password <password>] [--proxy-jump <jump>]\n",
+				`${t("Usage: omp ssh add <name> --host <address> [--user <user>] [--port <port>] [--key <path>] [--password <password>] [--proxy-jump <jump>]")}\n`,
 			),
 		);
 		process.exitCode = 1;
@@ -74,7 +75,7 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 
 	const password = cmd.flags.password;
 	if (password === "") {
-		process.stdout.write(chalk.red("Error: --password requires a non-empty value\n"));
+		process.stdout.write(chalk.red(`${t("Error: --password requires a non-empty value")}\n`));
 		process.exitCode = 1;
 		return;
 	}
@@ -91,10 +92,10 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 
 	const host = cmd.flags.host;
 	if (!host) {
-		process.stdout.write(chalk.red("Error: --host is required\n"));
+		process.stdout.write(chalk.red(`${t("Error: --host is required")}\n`));
 		process.stdout.write(
 			chalk.dim(
-				"Usage: omp ssh add <name> --host <address> [--user <user>] [--port <port>] [--key <path>] [--password <password>] [--proxy-jump <jump>]\n",
+				`${t("Usage: omp ssh add <name> --host <address> [--user <user>] [--port <port>] [--key <path>] [--password <password>] [--proxy-jump <jump>]")}\n`,
 			),
 		);
 		process.exitCode = 1;
@@ -105,7 +106,7 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 	if (cmd.flags.port !== undefined) {
 		const port = Number.parseInt(cmd.flags.port, 10);
 		if (Number.isNaN(port) || port < 1 || port > 65535) {
-			process.stdout.write(chalk.red("Error: Port must be an integer between 1 and 65535\n"));
+			process.stdout.write(chalk.red(`${t("Error: Port must be an integer between 1 and 65535")}\n`));
 			process.exitCode = 1;
 			return;
 		}
@@ -125,7 +126,7 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 
 	try {
 		await addSSHHost(filePath, name, hostConfig);
-		process.stdout.write(chalk.green(`Added SSH host "${name}" to ${scope} config\n`));
+		process.stdout.write(chalk.green(`${t('Added SSH host "{name}" to {scope} config', { name, scope })}\n`));
 	} catch (err) {
 		process.stdout.write(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}\n`));
 		process.exitCode = 1;
@@ -135,8 +136,8 @@ async function handleAdd(cmd: SSHCommandArgs): Promise<void> {
 async function handleRemove(cmd: SSHCommandArgs): Promise<void> {
 	const name = cmd.args[0];
 	if (!name) {
-		process.stdout.write(chalk.red("Error: Host name required\n"));
-		process.stdout.write(chalk.dim("Usage: omp ssh remove <name> [--scope project|user]\n"));
+		process.stdout.write(chalk.red(`${t("Error: Host name required")}\n`));
+		process.stdout.write(chalk.dim(`${t("Usage: omp ssh remove <name> [--scope project|user]")}\n`));
 		process.exitCode = 1;
 		return;
 	}
@@ -146,7 +147,7 @@ async function handleRemove(cmd: SSHCommandArgs): Promise<void> {
 
 	try {
 		await removeSSHHost(filePath, name);
-		process.stdout.write(chalk.green(`Removed SSH host "${name}" from ${scope} config\n`));
+		process.stdout.write(chalk.green(`${t('Removed SSH host "{name}" from {scope} config', { name, scope })}\n`));
 	} catch (err) {
 		process.stdout.write(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}\n`));
 		process.exitCode = 1;
@@ -178,13 +179,13 @@ async function handleList(cmd: SSHCommandArgs): Promise<void> {
 	const hasUser = Object.keys(userHosts).length > 0;
 
 	if (!hasProject && !hasUser) {
-		process.stdout.write(chalk.dim("No SSH hosts configured\n"));
-		process.stdout.write(chalk.dim("Add one with: omp ssh add <name> --host <address>\n"));
+		process.stdout.write(chalk.dim(`${t("No SSH hosts configured")}\n`));
+		process.stdout.write(chalk.dim(`${t("Add one with: omp ssh add <name> --host <address>")}\n`));
 		return;
 	}
 
 	if (hasProject) {
-		process.stdout.write(chalk.bold("Project SSH Hosts (.omp/ssh.json):\n"));
+		process.stdout.write(chalk.bold(`${t("Project SSH Hosts (.omp/ssh.json):")}\n`));
 		printHosts(projectHosts);
 	}
 
@@ -193,7 +194,7 @@ async function handleList(cmd: SSHCommandArgs): Promise<void> {
 	}
 
 	if (hasUser) {
-		process.stdout.write(chalk.bold("User SSH Hosts (~/.omp/agent/ssh.json):\n"));
+		process.stdout.write(chalk.bold(`${t("User SSH Hosts (~/.omp/agent/ssh.json):")}\n`));
 		printHosts(userHosts);
 	}
 }

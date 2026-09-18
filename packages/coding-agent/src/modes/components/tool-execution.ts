@@ -20,6 +20,7 @@ import { taskCardAgentIds } from "../../task/render";
 import { BASH_DEFAULT_PREVIEW_LINES } from "../../tools/bash";
 import { formatDefaultToolExecution } from "../../tools/default-renderer";
 import { EVAL_DEFAULT_PREVIEW_LINES } from "../../tools/eval";
+import { t } from "../../i18n";
 import { isWaitingPollDetails } from "../../tools/hub";
 import {
 	formatStatusIcon,
@@ -1189,7 +1190,10 @@ export class ToolExecutionComponent extends Container {
 						{
 							iconOverride: spinner,
 							title: "Edit",
-							description: theme.fg("dim", `${remaining} more file${remaining > 1 ? "s" : ""} pending…`),
+							description: theme.fg(
+								"dim",
+								t("{count} more file{s} pending…", { count: remaining, s: remaining > 1 ? "s" : "" }),
+							),
 						},
 						theme,
 					);

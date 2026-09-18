@@ -48,20 +48,20 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 		acpDescription: "Manage plugins from marketplaces",
 		acpInputHint: "<subcommand>",
 		subcommands: [
-			{ name: "add", description: t("Add a marketplace source"), usage: "<source>" },
-			{ name: "remove", description: t("Remove a marketplace source"), usage: "<name>" },
-			{ name: "update", description: t("Update marketplace catalog(s)"), usage: "[name]" },
-			{ name: "list", description: t("List configured marketplaces") },
-			{ name: "discover", description: t("Browse available plugins"), usage: "[marketplace]" },
+			{ name: "add", description: "Add a marketplace source", usage: "<source>" },
+			{ name: "remove", description: "Remove a marketplace source", usage: "<name>" },
+			{ name: "update", description: "Update marketplace catalog(s)", usage: "[name]" },
+			{ name: "list", description: "List configured marketplaces" },
+			{ name: "discover", description: "Browse available plugins", usage: "[marketplace]" },
 			{
 				name: "install",
-				description: t("Install a plugin (interactive browser if no args)"),
+				description: "Install a plugin (interactive browser if no args)",
 				usage: "[--force] [name@marketplace]",
 			},
-			{ name: "uninstall", description: t("Uninstall a plugin (selector if no args)"), usage: "[name@marketplace]" },
-			{ name: "installed", description: t("List installed marketplace plugins") },
-			{ name: "upgrade", description: t("Upgrade outdated plugins"), usage: "[name@marketplace]" },
-			{ name: "help", description: t("Show usage guide") },
+			{ name: "uninstall", description: "Uninstall a plugin (selector if no args)", usage: "[name@marketplace]" },
+			{ name: "installed", description: "List installed marketplace plugins" },
+			{ name: "upgrade", description: "Upgrade outdated plugins", usage: "[name@marketplace]" },
+			{ name: "help", description: "Show usage guide" },
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
@@ -204,7 +204,8 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 							await runtime.output(t("No marketplace plugins installed"));
 						} else {
 							const lines = installed.map(
-								p => `  ${p.id} [${p.scope}]${p.shadowedBy ? " [shadowed]" : ""} (${p.entries.length} entry)`,
+								p =>
+									`  ${p.id} [${p.scope}]${p.shadowedBy ? ` ${t("[shadowed]")}` : ""} ${t("({count} entry)", { count: p.entries.length })}`,
 							);
 							await runtime.output(t("Installed plugins:\n{list}", { list: lines.join("\n") }));
 						}
@@ -364,7 +365,8 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 							runtime.ctx.showStatus(t("No marketplace plugins installed"));
 						} else {
 							const lines = installed.map(
-								p => `  ${p.id} [${p.scope}]${p.shadowedBy ? " [shadowed]" : ""} (${p.entries.length} entry)`,
+								p =>
+									`  ${p.id} [${p.scope}]${p.shadowedBy ? ` ${t("[shadowed]")}` : ""} ${t("({count} entry)", { count: p.entries.length })}`,
 							);
 							runtime.ctx.showStatus(t("Installed plugins:\n{list}", { list: lines.join("\n") }));
 						}
@@ -457,9 +459,9 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 		acpDescription: "Manage plugins",
 		acpInputHint: "[list|enable|disable]",
 		subcommands: [
-			{ name: "list", description: t("List all installed plugins (npm + marketplace)") },
-			{ name: "enable", description: t("Enable a marketplace plugin"), usage: "<name@marketplace>" },
-			{ name: "disable", description: t("Disable a marketplace plugin"), usage: "<name@marketplace>" },
+			{ name: "list", description: "List all installed plugins (npm + marketplace)" },
+			{ name: "enable", description: "Enable a marketplace plugin", usage: "<name@marketplace>" },
+			{ name: "disable", description: "Disable a marketplace plugin", usage: "<name@marketplace>" },
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
@@ -490,7 +492,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 				if (npmPlugins.length > 0) {
 					lines.push(t("npm plugins:"));
 					for (const plugin of npmPlugins) {
-						const status = plugin.enabled === false ? " (disabled)" : "";
+						const status = plugin.enabled === false ? ` ${t("(disabled)")}` : "";
 						lines.push(`  ${plugin.name}@${plugin.version}${status}`);
 					}
 				}
@@ -502,8 +504,8 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 					lines.push(t("marketplace plugins:"));
 					for (const plugin of marketplacePlugins) {
 						const entry = plugin.entries[0];
-						const status = entry?.enabled === false ? " (disabled)" : "";
-						const shadowed = plugin.shadowedBy ? " [shadowed]" : "";
+						const status = entry?.enabled === false ? ` ${t("(disabled)")}` : "";
+						const shadowed = plugin.shadowedBy ? ` ${t("[shadowed]")}` : "";
 						lines.push(`  ${plugin.id} v${entry?.version ?? "?"}${status} [${plugin.scope}]${shadowed}`);
 					}
 				}
@@ -561,7 +563,7 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 						if (npmPlugins.length > 0) {
 							lines.push(t("npm plugins:"));
 							for (const p of npmPlugins) {
-								const status = p.enabled === false ? " (disabled)" : "";
+								const status = p.enabled === false ? ` ${t("(disabled)")}` : "";
 								lines.push(`  ${p.name}@${p.version}${status}`);
 							}
 						}
@@ -572,8 +574,8 @@ export const BUILTIN_MARKETPLACE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec>
 							lines.push(t("marketplace plugins:"));
 							for (const p of mktPlugins) {
 								const entry = p.entries[0];
-								const status = entry?.enabled === false ? " (disabled)" : "";
-								const shadowed = p.shadowedBy ? " [shadowed]" : "";
+								const status = entry?.enabled === false ? ` ${t("(disabled)")}` : "";
+								const shadowed = p.shadowedBy ? ` ${t("[shadowed]")}` : "";
 								lines.push(`  ${p.id} v${entry?.version ?? "?"}${status} [${p.scope}]${shadowed}`);
 							}
 						}

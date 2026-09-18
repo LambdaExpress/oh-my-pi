@@ -26,6 +26,7 @@ import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { Settings } from "../../src/config/settings";
+import { setLocale } from "../../src/i18n";
 import * as sdk from "../../src/sdk";
 import { EventBus } from "../../src/utils/event-bus";
 
@@ -294,6 +295,9 @@ function spyOnCreateAgentSession(): { created: Array<{ id: string; session: Agen
 
 describe("control room + session registry (multi-session core)", () => {
 	beforeAll(async () => {
+		// Wire error frames carry translated UI text; pin English so assertions
+		// on those strings do not depend on the host's system language.
+		setLocale("en");
 		const distDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-core-ctrl-web-"));
 		await fs.writeFile(path.join(distDir, "index.html"), "<html>core control test</html>");
 		server = startLocalServer({ webDistDir: distDir });
@@ -311,6 +315,7 @@ describe("control room + session registry (multi-session core)", () => {
 	});
 
 	afterAll(() => {
+		setLocale(null);
 		server.stop();
 	});
 

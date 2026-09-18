@@ -5,6 +5,7 @@ import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { getCommitCacheDbPath } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../../config/model-registry";
 import { Settings } from "../../config/settings";
+import { t } from "../../i18n";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../../sdk";
 import { resolvePrimaryModel, resolveSmolModel } from "../model-selection";
 import type { ConventionalCommit } from "../types";
@@ -67,14 +68,14 @@ export async function generateGitCommit(options: GenerateGitCommitOptions): Prom
 	let stagedFiles = await repo.changedFiles({ cached: true }, options.signal);
 	let stagedAll = false;
 	if (stagedFiles.length === 0 && options.stageIfEmpty !== false) {
-		options.onProgress?.("Staging all changes…");
+		options.onProgress?.(t("Staging all changes…"));
 		await repo.stageFiles([], options.signal);
 		stagedAll = true;
 		stagedFiles = await repo.changedFiles({ cached: true }, options.signal);
 	}
 	if (stagedFiles.length === 0) throw new Error("No staged changes to analyze");
 
-	options.onProgress?.("Reading staged changes…");
+	options.onProgress?.(t("Reading staged changes…"));
 	const initialDiff = await repo.diffText({ cached: true }, options.signal);
 	const diff =
 		Buffer.byteLength(initialDiff) <= config.maxDiffLength

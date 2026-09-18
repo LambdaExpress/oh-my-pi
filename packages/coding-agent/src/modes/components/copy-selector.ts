@@ -25,6 +25,7 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import type { MessageRenderer } from "../../extensibility/extensions/types";
+import { t } from "../../i18n";
 import type { SessionMessageEntry } from "../../session/session-entries";
 import { isUserTurnInitiator } from "../../session/messages";
 import { replaceTabs } from "../../tools/render-utils";
@@ -401,15 +402,24 @@ export class CopySelectorComponent implements Component {
 		const output: string[] = [];
 		output.push(...this.#border.render(width));
 		output.push(
-			` ${theme.cmd.copy} ${theme.bold("Copy")}${theme.sep.dot}${theme.fg("dim", "pick what to put on the clipboard")}`,
+			` ${theme.cmd.copy} ${theme.bold(t("Copy"))}${theme.sep.dot}${theme.fg("dim", t("pick what to put on the clipboard"))}`,
 		);
 		output.push(...this.#border.render(width));
 		output.push(...this.#scrollView.render(width));
 		const selectedBlock = this.#blocks?.[this.#blockSelected];
-		const openHint = selectedBlock?.href && this.deps.onOpen ? "  o open" : "";
+		const openHint = selectedBlock?.href && this.deps.onOpen ? `  ${t("o open")}` : "";
 		const hint = this.#blocks
-			? `${this.#blockSelected + 1}/${this.#blocks.length}  ↑/↓ block  ←/esc back  enter copy${openHint}  click ${theme.cmd.copy}/${theme.cmd.share}`
-			: `${this.#targets.length > 0 ? `${this.#selected + 1}/${this.#targets.length}  ` : ""}↑/↓ step  ${blocks.length > 0 ? "→ blocks  " : ""}enter copy  ${this.#truncated ? "a earlier turns  " : ""}ctrl+o expand  esc close`;
+			? t("{position}↑/↓ block  ←/esc back  enter copy{open}  click {copy}/{share}", {
+					position: `${this.#blockSelected + 1}/${this.#blocks.length}  `,
+					open: openHint,
+					copy: theme.cmd.copy,
+					share: theme.cmd.share,
+				})
+			: t("{position}↑/↓ step  {blocks}enter copy  {earlier}ctrl+o expand  esc close", {
+					position: this.#targets.length > 0 ? `${this.#selected + 1}/${this.#targets.length}  ` : "",
+					blocks: blocks.length > 0 ? `${t("→ blocks")}  ` : "",
+					earlier: this.#truncated ? `${t("a earlier turns")}  ` : "",
+				});
 		// The hint grows with the load-all affordance; an over-width row would
 		// wrap and shift the mouse rows CONTENT_TOP/CHROME_ROWS assume.
 		output.push(` ${theme.fg("dim", truncateToWidth(hint, Math.max(0, width - 1)))}`);
@@ -435,14 +445,14 @@ export class CopySelectorComponent implements Component {
 			const styled = block.language ? highlightCode(shown.join("\n"), block.language) : shown;
 			const rows = styled.map(row => truncateToWidth(replaceTabs(row), inner));
 			if (raw.length > shown.length) {
-				rows.push(theme.fg("dim", `… +${raw.length - shown.length} more lines`));
+				rows.push(theme.fg("dim", t("… +{count} more lines", { count: raw.length - shown.length })));
 			}
 			const selected = index === this.#blockSelected;
 			const captionColor: ThemeColor = selected ? OUTLINE_COLOR : "dim";
 			const controls: Array<{ action: ControlRegion["action"]; text: string }> = [
-				{ action: "copy", text: `${theme.cmd.copy} copy` },
+				{ action: "copy", text: `${theme.cmd.copy} ${t("copy")}` },
 			];
-			if (block.href && this.deps.onOpen) controls.push({ action: "open", text: `${theme.cmd.share} open` });
+			if (block.href && this.deps.onOpen) controls.push({ action: "open", text: `${theme.cmd.share} ${t("open")}` });
 			const controlsWidth = controls.reduce((sum, control) => sum + visibleWidth(control.text) + 2, 0);
 			const summary = truncateToWidth(
 				`${index + 1}/${blocks.length}${theme.sep.dot}${block.label}${theme.sep.dot}${raw.length} line${raw.length === 1 ? "" : "s"}`,
@@ -572,7 +582,7 @@ function collectBlocks(entries: readonly SessionMessageEntry[]): CopyBlock[] {
 					const command = commandFromToolCall(content);
 					if (command) {
 						blocks.push({
-							label: command.kind === "bash" ? "bash command" : "eval code",
+							label: command.kind === "bash" ? t("bash command") : t("eval code"),
 							content: command.code,
 							language: command.language,
 						});
@@ -587,11 +597,11 @@ function collectBlocks(entries: readonly SessionMessageEntry[]): CopyBlock[] {
 			}
 			case "bashExecution":
 				blocks.push({ label: "command", content: message.command, language: "bash" });
-				if (message.output.trim()) blocks.push({ label: "output", content: message.output });
+				if (message.output.trim()) blocks.push({ label: t("output"), content: message.output });
 				break;
 			case "pythonExecution":
-				blocks.push({ label: "eval code", content: message.code, language: "python" });
-				if (message.output.trim()) blocks.push({ label: "output", content: message.output });
+				blocks.push({ label: t("eval code"), content: message.code, language: "python" });
+				if (message.output.trim()) blocks.push({ label: t("output"), content: message.output });
 				break;
 			default:
 				break;
@@ -605,10 +615,10 @@ function targetCopy(target: OutlineTarget, blocks: readonly CopyBlock[]): { cont
 	const message = target.entries[0]!.message;
 	switch (message.role) {
 		case "user":
-			return { content: rawUserText(message), label: "user message" };
+			return { content: rawUserText(message), label: t("user message") };
 		case "assistant": {
 			const text = assistantVisibleText(message);
-			if (text) return { content: text, label: "assistant message" };
+			if (text) return { content: text, label: t("assistant message") };
 			break;
 		}
 		case "toolResult": {
@@ -619,12 +629,12 @@ function targetCopy(target: OutlineTarget, blocks: readonly CopyBlock[]): { cont
 		case "bashExecution":
 			return {
 				content: [message.command, message.output].filter(part => part.trim()).join("\n"),
-				label: "bash execution",
+				label: t("bash execution"),
 			};
 		case "pythonExecution":
 			return {
 				content: [message.code, message.output].filter(part => part.trim()).join("\n"),
-				label: "eval execution",
+				label: t("eval execution"),
 			};
 		case "compactionSummary":
 		case "branchSummary":
@@ -638,12 +648,12 @@ function targetCopy(target: OutlineTarget, blocks: readonly CopyBlock[]): { cont
 							.filter((block): block is { type: "text"; text: string } => block.type === "text")
 							.map(block => block.text)
 							.join("\n");
-			if (content.trim()) return { content, label: "message" };
+			if (content.trim()) return { content, label: t("message") };
 			break;
 		}
 		default:
 			break;
 	}
 	// No direct prose (e.g. a pure tool turn): fall back to its blocks joined.
-	return { content: blocks.map(block => block.content).join("\n\n"), label: "turn content" };
+	return { content: blocks.map(block => block.content).join("\n\n"), label: t("turn content") };
 }

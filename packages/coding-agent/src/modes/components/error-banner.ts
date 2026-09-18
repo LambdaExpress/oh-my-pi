@@ -1,4 +1,5 @@
 import { Container, Spacer, Text } from "@oh-my-pi/pi-tui";
+import { t } from "../../i18n";
 import { WidthAwareText } from "../../tui";
 import { theme } from "../theme/theme";
 import { DynamicBorder } from "./dynamic-border";
@@ -33,7 +34,7 @@ export class ErrorBannerComponent extends Container {
 				0,
 			),
 		);
-		this.addChild(new Text(theme.fg("dim", "Dismissed when you send your next message."), 1, 0));
+		this.addChild(new Text(theme.fg("dim", t("Dismissed when you send your next message.")), 1, 0));
 		this.addChild(new DynamicBorder(str => theme.fg("error", str)));
 	}
 }

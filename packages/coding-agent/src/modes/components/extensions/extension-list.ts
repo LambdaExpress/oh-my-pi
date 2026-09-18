@@ -208,8 +208,8 @@ export class ExtensionList implements Component {
 		const checkbox = item.enabled
 			? theme.fg("success", theme.checkbox.checked)
 			: theme.fg("dim", theme.checkbox.unchecked);
-		const label = `Load ~/ ${item.providerName} config`;
-		const badge = theme.fg("muted", "(opt-in; project config always loads)");
+		const label = t("Load ~/ {provider} config", { provider: item.providerName });
+		const badge = theme.fg("muted", t("(opt-in; project config always loads)"));
 
 		let line = `${checkbox} ${theme.icon.folder} ${label}  ${badge}`;
 

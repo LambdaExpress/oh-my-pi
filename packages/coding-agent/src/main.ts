@@ -220,7 +220,7 @@ export async function readPipedInput(): Promise<string | undefined> {
 		? undefined
 		: setTimeout(() => {
 				process.stderr.write(
-					`${chalk.dim("Reading prompt from piped stdin (waiting for EOF; ctrl+c to abort)…")}\n`,
+					`${chalk.dim(t("Reading prompt from piped stdin (waiting for EOF; ctrl+c to abort)…"))}\n`,
 				);
 			}, 1000);
 	notice?.unref?.();
@@ -1503,16 +1503,16 @@ export async function runRootCommand(
 				const { exportFromFile } = await import("./export/html");
 				result = await exportFromFile(parsedArgs.export, outputPath);
 			} catch (error: unknown) {
-				const message = error instanceof Error ? error.message : "Failed to export session";
+				const message = error instanceof Error ? error.message : t("Failed to export session");
 				process.stderr.write(`${chalk.red(`Error: ${message}`)}\n`);
 				process.exit(1);
 			}
-			writeStartupNotice(parsedArgs, `Exported to: ${result}\n`);
+			writeStartupNotice(parsedArgs, `${t("Exported to: {path}", { path: result })}\n`);
 			process.exit(0);
 		}
 
 		if ((parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui") && parsedArgs.fileArgs.length > 0) {
-			process.stderr.write(`${chalk.red("Error: @file arguments are not supported in RPC mode")}\n`);
+			process.stderr.write(`${chalk.red(t("Error: @file arguments are not supported in RPC mode"))}\n`);
 			process.exit(1);
 		}
 		const mode = parsedArgs.mode || "text";
@@ -1918,7 +1918,7 @@ export async function runRootCommand(
 		if (parsedArgs.apiKey) {
 			if (!sessionOptions.model && !sessionOptions.modelPattern) {
 				process.stderr.write(
-					`${chalk.red("--api-key requires a model to be specified via --model, --provider/--model, or --models")}\n`,
+					`${chalk.red(t("--api-key requires a model to be specified via --model, --provider/--model, or --models"))}\n`,
 				);
 				process.exit(1);
 			}
@@ -2109,11 +2109,11 @@ export async function runRootCommand(
 				if (modelFallbackMessage) {
 					process.stderr.write(`${chalk.red(modelFallbackMessage)}\n`);
 				} else {
-					process.stderr.write(`${chalk.red("No models available.")}\n`);
+					process.stderr.write(`${chalk.red(t("No models available."))}\n`);
 				}
-				process.stderr.write(`${chalk.yellow("\nSet an API key environment variable:")}\n`);
+				process.stderr.write(`${chalk.yellow(`\n${t("Set an API key environment variable:")}`)}\n`);
 				process.stderr.write("  ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, etc.\n");
-				process.stderr.write(`${chalk.yellow(`\nOr create ${ModelsConfigFile.path()}`)}\n`);
+				process.stderr.write(`${chalk.yellow(`\n${t("Or create {path}", { path: ModelsConfigFile.path() })}`)}\n`);
 				process.exit(1);
 			}
 

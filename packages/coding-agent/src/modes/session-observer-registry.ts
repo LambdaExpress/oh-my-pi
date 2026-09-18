@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import type { AgentProgress, SubagentLifecyclePayload, SubagentProgressPayload } from "../task";
 import { TASK_SUBAGENT_LIFECYCLE_CHANNEL, TASK_SUBAGENT_PROGRESS_CHANNEL } from "../task";
 import type { EventBus } from "../utils/event-bus";
@@ -84,7 +85,7 @@ export class SessionObserverRegistry {
 		this.#sessions.set("main", {
 			id: "main",
 			kind: "main",
-			label: "Main Session",
+			label: t("Main Session"),
 			status: "active",
 			sessionFile: sessionFile ?? existing?.sessionFile,
 			lastUpdate: Date.now(),
@@ -191,7 +192,7 @@ export class SessionObserverRegistry {
 							this.#sessions.set(payload.id, {
 								id: payload.id,
 								kind: "subagent",
-								label: payload.description ?? `Subagent #${payload.index}`,
+								label: payload.description ?? t("Subagent #{index}", { index: payload.index }),
 								agent: payload.agent,
 								description: payload.description,
 								status,
@@ -231,7 +232,7 @@ export class SessionObserverRegistry {
 							this.#sessions.set(id, {
 								id,
 								kind: "subagent",
-								label: progress.description ?? `Subagent #${payload.index}`,
+								label: progress.description ?? t("Subagent #{index}", { index: payload.index }),
 								agent: payload.agent,
 								description: progress.description,
 								status: "active",

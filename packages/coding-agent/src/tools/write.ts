@@ -24,6 +24,7 @@ import {
 import { getEditStore } from "../edit/store";
 import { normalizeToLF } from "../edit/normalize";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import { InternalUrlRouter } from "../internal-urls";
 import { parseInternalUrl } from "../internal-urls/parse";
 import { couldBecomeXdUrl, parseXdUrl } from "../internal-urls/xd-protocol";
@@ -71,6 +72,7 @@ import {
 	createRenderedStringCache,
 	Ellipsis,
 	extractPartialJsonString,
+	formatCountLabel,
 	formatDiagnostics,
 	formatErrorDetail,
 	formatExpandHint,
@@ -1486,7 +1488,7 @@ function writeContentOf(args: unknown): string {
 
 function formatLineCountSuffix(lineCount: number, uiTheme: Theme): string {
 	if (lineCount <= 0) return "";
-	return uiTheme.fg("dim", ` · ${lineCount} line${lineCount === 1 ? "" : "s"}`);
+	return uiTheme.fg("dim", ` · ${formatCountLabel("line", lineCount)}`);
 }
 
 function normalizeDisplayText(text: unknown): string {
@@ -1735,7 +1737,7 @@ function formatStreamingContent(
 	// the native-scrollback commit boundary at the top of the block, so a long
 	// expanded preview could never scroll-append mid-stream.
 	const spinner = spinnerFrame !== undefined ? `${formatStatusIcon("running", uiTheme, spinnerFrame)} ` : "";
-	return { bodySection, footerLine: `${spinner}${uiTheme.fg("dim", `… (streaming)`)}` };
+	return { bodySection, footerLine: `${spinner}${uiTheme.fg("dim", t("… (streaming)"))}` };
 }
 
 function renderContentPreview(
@@ -1793,7 +1795,7 @@ export const writeToolRenderer = {
 				: typeof writeArgs.path === "string"
 					? writeArgs.path
 					: "";
-		if (rawPath.length === 0) return { label: "Write" };
+		if (rawPath.length === 0) return { label: t("Write") };
 		const device = parseXdUrl(rawPath);
 		if (device?.name) {
 			const resolveMounted = (context.renderContext as WriteRenderContext | undefined)?.resolveXdevMounted;
@@ -1805,7 +1807,7 @@ export const writeToolRenderer = {
 		const detail = `${context.theme.fg("accent", shortenPath(rawPath))}${
 			lines > 0 ? ` ${context.theme.fg("toolDiffAdded", `+${lines}`)}` : ""
 		}`;
-		return { label: "Write", detail };
+		return { label: t("Write"), detail };
 	},
 	renderCall(
 		args: WriteRenderArgs,
@@ -1843,7 +1845,7 @@ export const writeToolRenderer = {
 		// noise. The liveness cue rides the trailing "(streaming)" line instead.
 		const header = renderStatusLine(
 			{
-				title: "Write",
+				title: t("Write"),
 				description: `${langIcon} ${pathDisplay}`,
 			},
 			uiTheme,
@@ -1916,7 +1918,7 @@ export const writeToolRenderer = {
 		if (result.isError) {
 			const errorText = result.content?.find(c => c.type === "text")?.text ?? "";
 			const header = renderStatusLine(
-				{ icon: "error", title: "Write", description: `${langIcon} ${pathDisplay}` },
+				{ icon: "error", title: t("Write"), description: `${langIcon} ${pathDisplay}` },
 				uiTheme,
 			);
 			return framedBlock(uiTheme, width => ({
@@ -1934,14 +1936,14 @@ export const writeToolRenderer = {
 		const lineSuffix = formatLineCountSuffix(lineCount, uiTheme);
 		const execSuffix =
 			!isPartial && result.details?.madeExecutable
-				? `${uiTheme.fg("dim", " · ")}${uiTheme.fg("success", "made executable!")}`
+				? `${uiTheme.fg("dim", " · ")}${uiTheme.fg("success", t("made executable!"))}`
 				: "";
 		const header = renderStatusLine(
 			{
 				icon: isPartial ? "running" : undefined,
 				iconOverride: isPartial ? undefined : uiTheme.styledSymbol("tool.write", "accent"),
 				spinnerFrame: options.spinnerFrame,
-				title: "Write",
+				title: t("Write"),
 				description: `${langIcon} ${pathDisplay}${lineSuffix}${execSuffix}`,
 			},
 			uiTheme,

@@ -40,11 +40,13 @@ async function handleUsageResetCommand(
 	if (!targetArg) {
 		const lines = [t("Saved Codex rate-limit resets:")];
 		for (const account of accounts) {
-			const detail = account.error ? `unavailable (${account.error})` : `${account.availableCount} available`;
+			const detail = account.error
+				? t("unavailable ({error})", { error: account.error })
+				: t("{count} available", { count: account.availableCount });
 			lines.push(
 				t("- {label}: {detail}", {
 					label: account.label,
-					detail: `${detail}${account.active ? " (active)" : ""}`,
+					detail: `${detail}${account.active ? ` ${t("(active)")}` : ""}`,
 				}),
 			);
 		}
@@ -121,7 +123,7 @@ async function handleSessionPinCommand(
 			lines.push(
 				t("{position}. {label}", {
 					position: account.position + 1,
-					label: `${account.label}${account.active ? " (active)" : ""}`,
+					label: `${account.label}${account.active ? ` ${t("(active)")}` : ""}`,
 				}),
 			);
 		}
@@ -161,21 +163,21 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Manage todos",
 		acpInputHint: "<subcommand>",
 		subcommands: [
-			{ name: "edit", description: t("Open todos in $EDITOR (Markdown round-trip)") },
-			{ name: "copy", description: t("Copy todos as Markdown to clipboard") },
-			{ name: "expand", description: t("Show every phase and task in the HUD") },
-			{ name: "collapse", description: t("Restore the bounded HUD preview") },
-			{ name: "export", description: t("Write todos as Markdown to a file (default: TODO.md)"), usage: "[<path>]" },
-			{ name: "import", description: t("Replace todos from a Markdown file (default: TODO.md)"), usage: "[<path>]" },
+			{ name: "edit", description: "Open todos in $EDITOR (Markdown round-trip)" },
+			{ name: "copy", description: "Copy todos as Markdown to clipboard" },
+			{ name: "expand", description: "Show every phase and task in the HUD" },
+			{ name: "collapse", description: "Restore the bounded HUD preview" },
+			{ name: "export", description: "Write todos as Markdown to a file (default: TODO.md)", usage: "[<path>]" },
+			{ name: "import", description: "Replace todos from a Markdown file (default: TODO.md)", usage: "[<path>]" },
 			{
 				name: "append",
-				description: t("Append a task; phase fuzzy-matched or auto-created"),
+				description: "Append a task; phase fuzzy-matched or auto-created",
 				usage: "[<phase>] <task...>",
 			},
-			{ name: "start", description: t("Mark task in_progress (fuzzy-matched)"), usage: "<task>" },
-			{ name: "done", description: t("Mark task/phase/all completed (fuzzy-matched)"), usage: "[<task|phase>]" },
-			{ name: "drop", description: t("Mark task/phase/all abandoned (fuzzy-matched)"), usage: "[<task|phase>]" },
-			{ name: "rm", description: t("Remove task/phase/all (fuzzy-matched)"), usage: "[<task|phase>]" },
+			{ name: "start", description: "Mark task in_progress (fuzzy-matched)", usage: "<task>" },
+			{ name: "done", description: "Mark task/phase/all completed (fuzzy-matched)", usage: "[<task|phase>]" },
+			{ name: "drop", description: "Mark task/phase/all abandoned (fuzzy-matched)", usage: "[<task|phase>]" },
+			{ name: "rm", description: "Remove task/phase/all (fuzzy-matched)", usage: "[<task|phase>]" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
@@ -203,11 +205,11 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Show or configure the current session",
 		acpInputHint: "[info|delete|pin [account]]",
 		subcommands: [
-			{ name: "info", description: t("Show session info and stats") },
-			{ name: "delete", description: t("Delete current session and return to selector") },
+			{ name: "info", description: "Show session info and stats" },
+			{ name: "delete", description: "Delete current session and return to selector" },
 			{
 				name: "pin",
-				description: t("Pin the current provider to a stored OAuth account"),
+				description: "Pin the current provider to a stored OAuth account",
 				usage: "[account]",
 			},
 		],
@@ -330,8 +332,8 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Show token usage",
 		acpInputHint: "[show|reset [account|active]]",
 		subcommands: [
-			{ name: "show", description: t("Show provider usage and limits") },
-			{ name: "reset", description: t("Spend a saved Codex rate-limit reset"), usage: "[account|active]" },
+			{ name: "show", description: "Show provider usage and limits" },
+			{ name: "reset", description: "Spend a saved Codex rate-limit reset", usage: "[account|active]" },
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
@@ -398,7 +400,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		description: "Show changelog entries",
 		acpDescription: "Show changelog",
 		acpInputHint: "[full]",
-		subcommands: [{ name: "full", description: t("Show complete changelog") }],
+		subcommands: [{ name: "full", description: "Show complete changelog" }],
 		allowArgs: true,
 		handle: async (command, runtime) => {
 			const changelogPath = getChangelogPath();
@@ -637,29 +639,29 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		subcommands: [
 			{
 				name: "add",
-				description: t("Add a new MCP server"),
+				description: "Add a new MCP server",
 				usage: "<name> [--scope project|user] [--url <url>] [-- <command...>]",
 			},
-			{ name: "list", description: t("List all configured MCP servers") },
-			{ name: "remove", description: t("Remove an MCP server"), usage: "<name> [--scope project|user]" },
-			{ name: "test", description: t("Test connection to a server"), usage: "<name>" },
-			{ name: "reauth", description: t("Reauthorize OAuth for a server"), usage: "<name>" },
-			{ name: "unauth", description: t("Remove OAuth auth from a server"), usage: "<name>" },
-			{ name: "enable", description: t("Enable an MCP server"), usage: "<name>" },
-			{ name: "disable", description: t("Disable an MCP server"), usage: "<name>" },
+			{ name: "list", description: "List all configured MCP servers" },
+			{ name: "remove", description: "Remove an MCP server", usage: "<name> [--scope project|user]" },
+			{ name: "test", description: "Test connection to a server", usage: "<name>" },
+			{ name: "reauth", description: "Reauthorize OAuth for a server", usage: "<name>" },
+			{ name: "unauth", description: "Remove OAuth auth from a server", usage: "<name>" },
+			{ name: "enable", description: "Enable an MCP server", usage: "<name>" },
+			{ name: "disable", description: "Disable an MCP server", usage: "<name>" },
 			{
 				name: "smithery-search",
-				description: t("Search Smithery registry and deploy an MCP server"),
+				description: "Search Smithery registry and deploy an MCP server",
 				usage: "<keyword> [--scope project|user] [--limit <1-100>] [--semantic]",
 			},
-			{ name: "smithery-login", description: t("Login to Smithery and cache API key") },
-			{ name: "smithery-logout", description: t("Remove cached Smithery API key") },
-			{ name: "reconnect", description: t("Reconnect to a specific MCP server"), usage: "<name>" },
-			{ name: "reload", description: t("Force reload MCP runtime tools") },
-			{ name: "resources", description: t("List available resources from connected servers") },
-			{ name: "prompts", description: t("List available prompts from connected servers") },
-			{ name: "notifications", description: t("Show notification capabilities and subscriptions") },
-			{ name: "help", description: t("Show help message") },
+			{ name: "smithery-login", description: "Login to Smithery and cache API key" },
+			{ name: "smithery-logout", description: "Remove cached Smithery API key" },
+			{ name: "reconnect", description: "Reconnect to a specific MCP server", usage: "<name>" },
+			{ name: "reload", description: "Force reload MCP runtime tools" },
+			{ name: "resources", description: "List available resources from connected servers" },
+			{ name: "prompts", description: "List available prompts from connected servers" },
+			{ name: "notifications", description: "Show notification capabilities and subscriptions" },
+			{ name: "help", description: "Show help message" },
 		],
 		allowArgs: true,
 		handle: handleMcpAcp,

@@ -1014,16 +1014,30 @@ function formatTokenCount(value: number): string {
  */
 export function formatClientUsage(clients: ClientUsageClientSummary[], sinceMs: number, nowMs: number): string {
 	const lines: string[] = [];
-	lines.push(chalk.bold(`Per-client token burn since ${new Date(sinceMs).toISOString().slice(0, 10)}`));
-	const headers = ["app", "provider", "requests", "input", "output", "cache r", "cache w", "total", "est cost"];
+	lines.push(
+		chalk.bold(t("Per-client token burn since {date}", { date: new Date(sinceMs).toISOString().slice(0, 10) })),
+	);
+	const headers = [
+		t("app"),
+		t("provider"),
+		t("requests"),
+		t("input"),
+		t("output"),
+		t("cache r"),
+		t("cache w"),
+		t("total"),
+		t("est cost"),
+	];
 	for (const client of clients) {
 		const label = client.hostname ?? client.installId;
 		const idNote = client.hostname ? ` · ${client.installId.slice(0, 8)}` : "";
-		const lastSeen = `last seen ${formatDuration(Math.max(0, nowMs - client.lastSeen))} ago`;
+		const lastSeen = t("last seen {duration} ago", {
+			duration: formatDuration(Math.max(0, nowMs - client.lastSeen)),
+		});
 		lines.push("");
 		lines.push(`${chalk.cyan(label)}${chalk.dim(idNote)} ${chalk.dim(`· ${lastSeen}`)}`);
 		if (client.providers.length === 0) {
-			lines.push(chalk.dim("  no usage in this window"));
+			lines.push(chalk.dim(t("  no usage in this window")));
 			continue;
 		}
 		const rows: string[][] = client.providers.map(usage => [
@@ -1048,7 +1062,7 @@ export function formatClientUsage(clients: ClientUsageClientSummary[], sinceMs: 
 		);
 		rows.push([
 			"",
-			"total",
+			t("total"),
 			formatNumber(total.requests),
 			"",
 			"",
@@ -1103,7 +1117,7 @@ export async function runUsageCommand(cmd: UsageCommandArgs): Promise<void> {
 			if (clients.length === 0) {
 				process.stderr.write(
 					chalk.yellow(
-						"No per-client usage recorded yet. Broker-connected clients and the auth-gateway report token burn automatically; set OMP_AUTH_BROKER_URL (or run this on the broker host).\n",
+						`${t("No per-client usage recorded yet. Broker-connected clients and the auth-gateway report token burn automatically; set OMP_AUTH_BROKER_URL (or run this on the broker host).")}\n`,
 					),
 				);
 				process.exitCode = 1;

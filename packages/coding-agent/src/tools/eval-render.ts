@@ -14,6 +14,7 @@ import { Markdown, Text, visibleWidth } from "@oh-my-pi/pi-tui";
 import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { EvalCellResult, EvalLanguage, EvalStatusEvent, EvalToolDetails } from "../eval/types";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import { formatContextUsage } from "../modes/components/status-line/context-thresholds";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
@@ -35,6 +36,7 @@ import {
 	extractPartialJsonString,
 	FEED_MODEL_BADGE_WIDTH,
 	formatBadge,
+	formatCountLabel,
 	formatDuration,
 	formatFeedModelBadge,
 	formatStatusIcon,
@@ -210,7 +212,7 @@ function renderAgentProgressEvents(
 
 		const lead = `${prefix} ${icon} `;
 		const statusSuffix =
-			status === "failed" || status === "aborted" ? ` ${formatBadge(status, iconColor, theme)}` : "";
+			status === "failed" || status === "aborted" ? ` ${formatBadge(t(status), iconColor, theme)}` : "";
 		const id = truncateToWidth(
 			sanitizeText(eventString(event.id) ?? "agent").replace(/\s+/g, " "),
 			Math.max(0, width - visibleWidth(lead) - visibleWidth(statusSuffix)),
@@ -310,55 +312,66 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 
 	switch (op) {
 		case "read":
-			parts.push(`${data.chars ?? data.bytes ?? 0} chars`);
-			if (data.path) parts.push(`from ${shortenPath(String(data.path))}`);
+			parts.push(t("{count} chars", { count: data.chars ?? data.bytes ?? 0 }));
+			if (data.path) parts.push(t("from {path}", { path: shortenPath(String(data.path)) }));
 			break;
 		case "write":
-			parts.push(`${data.chars ?? data.bytes ?? 0} chars`);
-			if (data.path) parts.push(`to ${shortenPath(String(data.path))}`);
+			parts.push(t("{count} chars", { count: data.chars ?? data.bytes ?? 0 }));
+			if (data.path) parts.push(t("to {path}", { path: shortenPath(String(data.path)) }));
 			break;
 		case "cat":
-			parts.push(`${data.files} file${(data.files as number) !== 1 ? "s" : ""}`);
-			parts.push(`${data.chars} chars`);
+			parts.push(formatCountLabel("file", data.files as number));
+			parts.push(t("{count} chars", { count: data.chars ?? 0 }));
 			break;
 		case "ls":
-			parts.push(`${data.count} entr${(data.count as number) !== 1 ? "ies" : "y"}`);
+			parts.push(formatCountLabel("entry", data.count as number));
 			break;
 		case "env":
 			if (data.action === "set") {
-				parts.push(`set ${data.key}=${truncateToWidth(String(data.value ?? ""), 30)}`);
+				parts.push(
+					t("set {key}={value}", {
+						key: data.key,
+						value: truncateToWidth(String(data.value ?? ""), 30),
+					}),
+				);
 			} else if (data.action === "get") {
 				parts.push(`${data.key}=${truncateToWidth(String(data.value ?? ""), 30)}`);
 			} else {
-				parts.push(`${data.count} variable${(data.count as number) !== 1 ? "s" : ""}`);
+				parts.push(formatCountLabel("variable", data.count as number));
 			}
 			break;
 		case "git_status":
 			if (data.clean) {
+				// Unwrapped: the bare "clean" key is taken by an unrelated catalog entry.
 				parts.push("clean");
 			} else {
 				const statusParts: string[] = [];
-				if (data.staged) statusParts.push(`${data.staged} staged`);
-				if (data.modified) statusParts.push(`${data.modified} modified`);
-				if (data.untracked) statusParts.push(`${data.untracked} untracked`);
-				parts.push(statusParts.join(", ") || "unknown");
+				if (data.staged) statusParts.push(t("{count} staged", { count: data.staged }));
+				if (data.modified) statusParts.push(t("{count} modified", { count: data.modified }));
+				if (data.untracked) statusParts.push(t("{count} untracked", { count: data.untracked }));
+				parts.push(statusParts.join(", ") || t("unknown"));
 			}
-			if (data.branch) parts.push(`on ${data.branch}`);
+			if (data.branch) parts.push(t("on {branch}", { branch: data.branch }));
 			break;
 		case "git_log":
-			parts.push(`${data.commits} commit${(data.commits as number) !== 1 ? "s" : ""}`);
+			parts.push(formatCountLabel("commit", data.commits as number));
 			break;
 		case "git_diff":
-			parts.push(`${data.lines} line${(data.lines as number) !== 1 ? "s" : ""}`);
-			if (data.staged) parts.push("(staged)");
+			parts.push(formatCountLabel("line", data.lines as number));
+			if (data.staged) parts.push(t("(staged)"));
 			break;
 		case "batch":
-			parts.push(`${data.files} file${(data.files as number) !== 1 ? "s" : ""} processed`);
+			parts.push(
+				t("{count} file{s} processed", {
+					count: data.files ?? 0,
+					s: (data.files as number) === 1 ? "" : "s",
+				}),
+			);
 			break;
 		case "completion":
 			if (data.model) parts.push(String(data.model));
 			if (data.tier && data.tier !== data.model) parts.push(`(${data.tier})`);
-			parts.push(`${data.chars ?? 0} chars`);
+			parts.push(t("{count} chars", { count: data.chars ?? 0 }));
 			break;
 		case "tool_define":
 			parts.push(`${data.name}(${(Array.isArray(data.params) ? data.params : []).join(", ")})`);
@@ -366,7 +379,11 @@ function formatStatusEvent(event: EvalStatusEvent, theme: Theme): string {
 		case "workpool":
 			parts.push(`${data.action} ${data.pool}`);
 			if (data.count !== undefined) {
-				parts.push(data.action === "create" ? `${data.count} agent(s)` : `${data.count} item(s)`);
+				parts.push(
+					data.action === "create"
+						? t("{count} agent(s)", { count: data.count })
+						: t("{count} item(s)", { count: data.count }),
+				);
 			}
 			break;
 		case "wc":
@@ -410,7 +427,7 @@ function formatStatusEventExpanded(event: EvalStatusEvent, theme: Theme): string
 			lines.push(`   ${theme.fg("dim", formatter(arr[i]))}`);
 		}
 		if (arr.length > max) {
-			lines.push(`   ${theme.fg("dim", `… ${arr.length - max} more`)}`);
+			lines.push(`   ${theme.fg("dim", t("… {count} more", { count: arr.length - max }))}`);
 		}
 	};
 
@@ -421,7 +438,7 @@ function formatStatusEventExpanded(event: EvalStatusEvent, theme: Theme): string
 		}
 		const totalLines = String(preview).split("\n").length;
 		if (totalLines > maxLines) {
-			lines.push(`   ${theme.fg("dim", `… ${totalLines - maxLines} more lines`)}`);
+			lines.push(`   ${theme.fg("dim", t("… {count} more lines", { count: totalLines - maxLines }))}`);
 		}
 	};
 
@@ -474,7 +491,8 @@ function renderStatusEvents(events: EvalStatusEvent[], theme: Theme, expanded: b
 
 	const lines: string[] = [];
 	if (hidden > 0) {
-		lines.push(`${theme.fg("dim", theme.tree.branch)} ${theme.fg("dim", `… ${hidden} earlier`)}`);
+		const earlier = t("… {count} earlier", { count: hidden });
+		lines.push(`${theme.fg("dim", theme.tree.branch)} ${theme.fg("dim", earlier)}`);
 	}
 	for (let i = 0; i < visible.length; i++) {
 		const isLast = i === visible.length - 1;
@@ -549,10 +567,10 @@ export const evalToolRenderer = {
 		for (const cell of cells) {
 			if (!cell.title) continue;
 			const title = sanitizeDisplayWarning(cell.title);
-			if (title.length > 0) return { label: "Eval", detail: context.theme.fg("muted", title) };
+			if (title.length > 0) return { label: t("Eval"), detail: context.theme.fg("muted", title) };
 		}
 		const language = cells[0]?.language === "js" ? "javascript" : "python";
-		return { label: "Eval", detail: context.theme.fg("muted", `running ${language}`) };
+		return { label: t("Eval"), detail: context.theme.fg("muted", t("running {language}", { language })) };
 	},
 	renderCall(args: EvalRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		const cells = getRenderCells(args);
@@ -638,7 +656,7 @@ export const evalToolRenderer = {
 		const timeoutSeconds = options.renderContext?.timeout;
 		const timeoutLine =
 			typeof timeoutSeconds === "number"
-				? uiTheme.fg("dim", wrapBrackets(`Timeout: ${timeoutSeconds}s`, uiTheme))
+				? uiTheme.fg("dim", wrapBrackets(t("Timeout: {seconds}s", { seconds: timeoutSeconds }), uiTheme))
 				: undefined;
 		let warningLine: string | undefined;
 		if (details?.meta?.truncation) {
@@ -647,7 +665,7 @@ export const evalToolRenderer = {
 		const noticeLine = details?.notice ? uiTheme.fg("dim", wrapBrackets(details.notice, uiTheme)) : undefined;
 		const asyncLine =
 			details?.async?.state === "running"
-				? uiTheme.fg("dim", wrapBrackets(`Backgrounded: ${details.async.jobId}`, uiTheme))
+				? uiTheme.fg("dim", wrapBrackets(t("Backgrounded: {jobId}", { jobId: details.async.jobId }), uiTheme))
 				: undefined;
 
 		const cellResults = details?.cells;
@@ -681,12 +699,15 @@ export const evalToolRenderer = {
 						const outputLines = [...outputContent.lines];
 						if (!expanded && outputContent.hiddenCount > 0) {
 							outputLines.push(
-								uiTheme.fg("dim", `… ${outputContent.hiddenCount} more lines (ctrl+o to expand)`),
+								uiTheme.fg(
+									"dim",
+									t("… {count} more lines (ctrl+o to expand)", { count: outputContent.hiddenCount }),
+								),
 							);
 						}
 						if (statusLines.length > 0) {
 							if (outputLines.length > 0) {
-								outputLines.push(uiTheme.fg("dim", "Status"));
+								outputLines.push(uiTheme.fg("dim", t("Status")));
 							}
 							outputLines.push(...statusLines);
 						}
@@ -765,7 +786,7 @@ export const evalToolRenderer = {
 
 		if (!combinedOutput && statusLines.length > 0) {
 			const lines = [
-				uiTheme.fg("dim", "Status"),
+				uiTheme.fg("dim", t("Status")),
 				...statusLines,
 				timeoutLine,
 				noticeLine,
@@ -782,7 +803,7 @@ export const evalToolRenderer = {
 				.join("\n");
 			const lines = [
 				styledOutput,
-				...(statusLines.length > 0 ? [uiTheme.fg("dim", "Status"), ...statusLines] : []),
+				...(statusLines.length > 0 ? [uiTheme.fg("dim", t("Status")), ...statusLines] : []),
 				timeoutLine,
 				noticeLine,
 				asyncLine,
@@ -820,13 +841,17 @@ export const evalToolRenderer = {
 					outputLines.push("");
 					const skippedLine = uiTheme.fg(
 						"dim",
-						`… (${cachedSkipped} earlier lines, showing ${cachedLines.length} of ${cachedSkipped + cachedLines.length}) (ctrl+o to expand)`,
+						t("… ({count} earlier lines, showing {shown} of {total}) (ctrl+o to expand)", {
+							count: cachedSkipped,
+							shown: cachedLines.length,
+							total: cachedSkipped + cachedLines.length,
+						}),
 					);
 					outputLines.push(truncateToWidth(skippedLine, width));
 				}
 				outputLines.push(...cachedLines);
 				if (statusLines.length > 0) {
-					outputLines.push(truncateToWidth(uiTheme.fg("dim", "Status"), width));
+					outputLines.push(truncateToWidth(uiTheme.fg("dim", t("Status")), width));
 					for (const statusLine of statusLines) {
 						outputLines.push(truncateToWidth(statusLine, width));
 					}

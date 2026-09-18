@@ -1260,9 +1260,11 @@ function formatNamedRelease(expectedVersion: string, expectedReleaseCode?: numbe
 
 function printVerifiedVersion(expectedVersion: string, expectedReleaseCode?: number, binaryPath?: string): void {
 	const icon = theme?.status?.success ?? "✔";
-	const location = binaryPath ? ` at ${binaryPath}` : "";
+	const location = binaryPath ? t(" at {path}", { path: binaryPath }) : "";
 	console.log(
-		chalk.green(`\n${icon} Updated to ${formatNamedRelease(expectedVersion, expectedReleaseCode)}${location}`),
+		chalk.green(
+			`\n${icon} ${t("Updated to {version}", { version: formatNamedRelease(expectedVersion, expectedReleaseCode) })}${location}`,
+		),
 	);
 }
 
@@ -1296,8 +1298,12 @@ function printVerificationResult(
 		printVerifiedVersion(expectedVersion, expectedReleaseCode, result.path);
 		return;
 	}
-	console.log(chalk.yellow(`\nWarning: ${formatVerificationFailure(result, expectedVersion, expectedReleaseCode)}`));
-	console.log(chalk.yellow(`You may need to reinstall: ${installerHint()}`));
+	console.log(
+		chalk.yellow(
+			`\n${t("Warning: {message}", { message: formatVerificationFailure(result, expectedVersion, expectedReleaseCode) })}`,
+		),
+	);
+	console.log(chalk.yellow(t("You may need to reinstall: {command}", { command: installerHint() })));
 }
 
 /** Verify the PATH-resolved launcher and print the outcome. */
@@ -1597,17 +1603,28 @@ function packageManagerMigrationSteps(manager: "bun" | "npm", release: ReleaseIn
  *    and verify again; only a repeated failure aborts, with a recovery hint.
  */
 export async function migrateRenamedInstall(release: ReleaseInfo, steps: RenameMigrationSteps): Promise<void> {
-	console.log(chalk.dim(`npm package renamed to ${release.packages.pkg}; migrating this install.`));
+	console.log(
+		chalk.dim(t("npm package renamed to {package}; migrating this install.", { package: release.packages.pkg })),
+	);
 	const installExit = await steps.install();
 	if (installExit !== 0) {
 		throw new Error(
-			`install of ${release.packages.pkg} failed with exit code ${installExit}; the existing install was left untouched`,
+			t("install of {package} failed with exit code {code}; the existing install was left untouched", {
+				package: release.packages.pkg,
+				code: installExit,
+			}),
 		);
 	}
 
 	const removeExit = await steps.removeOld();
 	if (removeExit !== 0) {
-		console.log(chalk.yellow(`Warning: could not remove the old ${PACKAGE} package; remove it manually later.`));
+		console.log(
+			chalk.yellow(
+				t("Warning: could not remove the old {package} package; remove it manually later.", {
+					package: PACKAGE,
+				}),
+			),
+		);
 	}
 
 	let verification = await steps.verify();
@@ -1634,7 +1651,7 @@ export async function migrateRenamedInstall(release: ReleaseInfo, steps: RenameM
  * verified and reported its own result.
  */
 async function updateViaBun(release: ReleaseInfo): Promise<InstalledVersionVerification | undefined> {
-	console.log(chalk.dim("Updating via bun..."));
+	console.log(chalk.dim(t("Updating via bun...")));
 	let verification: InstalledVersionVerification | undefined;
 	if (release.packages.pkg !== PACKAGE) {
 		await migrateRenamedInstall(release, packageManagerMigrationSteps("bun", release));
@@ -1658,7 +1675,7 @@ async function updateViaBun(release: ReleaseInfo): Promise<InstalledVersionVerif
 }
 
 async function updateViaNpm(release: ReleaseInfo): Promise<InstalledVersionVerification | undefined> {
-	console.log(chalk.dim("Updating via npm..."));
+	console.log(chalk.dim(t("Updating via npm...")));
 	if (release.packages.pkg !== PACKAGE) {
 		await migrateRenamedInstall(release, packageManagerMigrationSteps("npm", release));
 		return undefined;
@@ -1763,19 +1780,36 @@ export async function updateViaManager(
 	}
 	console.log(
 		chalk.yellow(
-			`\n${steps.manager} did not install a working ${formatNamedRelease(release.version, release.code)} launcher (${formatVerificationFailure(result, release.version, release.code)}); installing the standalone binary at ${launcherPath}.`,
+			`\n${t(
+				"{manager} did not install a working {version} launcher ({reason}); installing the standalone binary at {path}.",
+				{
+					manager: steps.manager,
+					version: formatNamedRelease(release.version, release.code),
+					reason: formatVerificationFailure(result, release.version, release.code),
+					path: launcherPath,
+				},
+			)}`,
 		),
 	);
 	try {
 		await steps.repair(launcherPath);
 	} catch (err) {
-		throw new Error(`${steps.manager} update did not produce a working launcher and binary repair failed: ${err}`, {
-			cause: installError ?? err,
-		});
+		throw new Error(
+			t("{manager} update did not produce a working launcher and binary repair failed: {error}", {
+				manager: steps.manager,
+				error: err,
+			}),
+			{
+				cause: installError ?? err,
+			},
+		);
 	}
 	console.log(
 		chalk.yellow(
-			`This install is no longer managed by ${steps.manager}. Removing the old global package may delete this launcher; if it does, reinstall with: ${installerHint()}`,
+			t(
+				"This install is no longer managed by {manager}. Removing the old global package may delete this launcher; if it does, reinstall with: {hint}",
+				{ manager: steps.manager, hint: installerHint() },
+			),
 		),
 	);
 }
@@ -1959,7 +1993,7 @@ export async function updateViaShimTakeover(
 		options.githubToken,
 		options.allowPrerelease,
 	);
-	console.log(chalk.dim(`Downloading ${binaryName}…`));
+	console.log(chalk.dim(t("Downloading {binary}…", { binary: binaryName })));
 	await downloadVerifiedBinary({
 		url: asset.url,
 		targetPath: tempPath,
@@ -1967,14 +2001,14 @@ export async function updateViaShimTakeover(
 		expectedDigest: asset.digest,
 		fetchImpl: options.fetchImpl,
 	});
-	console.log(chalk.dim(`Verified ${asset.digest}`));
+	console.log(chalk.dim(t("Verified {digest}", { digest: asset.digest })));
 	const forwarded: Array<{ launcher: string; original: string }> = [];
 	const stuck: string[] = [];
 	// Serialize the launcher swap and artifact sweep so two overlapping updates
 	// never retire the same shims or reclaim a live run's backup before its
 	// verification can roll it back.
 	await withFileLock(exePath, async () => {
-		console.log(chalk.dim(`Installing ${APP_NAME}.exe beside the script launcher...`));
+		console.log(chalk.dim(t("Installing {app}.exe beside the script launcher...", { app: APP_NAME })));
 		await fs.promises.rename(tempPath, exePath);
 		// Retire the shims so PATH resolution lands on the new exe. Renamed, not
 		// deleted: restorable on verification failure, and Windows permits
@@ -2032,17 +2066,20 @@ export async function updateViaShimTakeover(
 		}
 	});
 	for (const { launcher } of forwarded) {
-		console.log(chalk.dim(`Converted ${launcher} to a forwarder (it could not be removed).`));
+		console.log(chalk.dim(t("Converted {path} to a forwarder (it could not be removed).", { path: launcher })));
 	}
 	for (const launcher of stuck) {
 		console.log(
 			chalk.yellow(
-				`Could not retire ${launcher}; shells that prefer it may keep launching the old version until it is deleted manually.`,
+				t(
+					"Could not retire {path}; shells that prefer it may keep launching the old version until it is deleted manually.",
+					{ path: launcher },
+				),
 			),
 		);
 	}
 	printVerifiedVersion(expectedVersion, options.expectedReleaseCode);
-	console.log(chalk.dim(`Restart ${APP_NAME} to use the new version`));
+	console.log(chalk.dim(t("Restart {app} to use the new version", { app: APP_NAME })));
 }
 
 /**
@@ -2084,10 +2121,16 @@ export async function runUpdateCommand(opts: {
 	check: boolean;
 	channel?: UpdateChannel;
 }): Promise<void> {
-	console.log(chalk.dim(`Current version: ${APP_NAME} v${formatVersionWithBuild(VERSION, BUILD_IDENTIFIER)}`));
+	console.log(
+		chalk.dim(
+			t("Current version: {version}", {
+				version: `${APP_NAME} v${formatVersionWithBuild(VERSION, BUILD_IDENTIFIER)}`,
+			}),
+		),
+	);
 	const persistedChannel = readPersistedChannel() ?? "stable";
 	const channel = opts.channel ?? persistedChannel;
-	if (channel === "canary") console.log(chalk.dim("Current channel: canary"));
+	if (channel === "canary") console.log(chalk.dim(t("Current channel: {channel}", { channel })));
 
 	// Check for updates
 	let release: ReleaseInfo;
@@ -2102,12 +2145,16 @@ export async function runUpdateCommand(opts: {
 
 	if (comparison <= 0 && !opts.force) {
 		const icon = theme?.status?.success ?? "✔";
-		console.log(chalk.green(`${icon} Already up to date`));
+		console.log(chalk.green(`${icon} ${t("Already up to date")}`));
 		return;
 	}
 
 	if (comparison > 0) {
-		console.log(chalk.cyan(`New version available: ${formatNamedRelease(release.version, release.code)}`));
+		console.log(
+			chalk.cyan(
+				t("New version available: {version}", { version: formatNamedRelease(release.version, release.code) }),
+			),
+		);
 	} else {
 		console.log(
 			chalk.yellow(
@@ -2116,7 +2163,13 @@ export async function runUpdateCommand(opts: {
 		);
 	}
 	if (release.packages.pkg !== PACKAGE) {
-		console.log(chalk.cyan(`The npm package moved to ${release.packages.pkg}; updating migrates this install.`));
+		console.log(
+			chalk.cyan(
+				t("The npm package moved to {package}; updating migrates this install.", {
+					package: release.packages.pkg,
+				}),
+			),
+		);
 	}
 
 	if (opts.check) {
@@ -2133,12 +2186,12 @@ export async function runUpdateCommand(opts: {
 		const allowPrerelease = channel === "canary";
 		const target = await resolveUpdateTarget({ allowPackageManagers: !forceBinary });
 		if (channel === "canary" && (target.method === "nix" || target.method === "brew" || target.method === "mise")) {
-			console.log(chalk.yellow("Canary updates are only supported for bun, npm, or binary installs."));
+			console.log(chalk.yellow(t("Canary updates are only supported for bun, npm, or binary installs.")));
 			return;
 		}
 		if (target.method === "nix") {
-			console.log(chalk.yellow("This installation is managed by Nix and cannot update itself."));
-			console.log(chalk.dim("Update the flake input or profile that provides omp, then rebuild."));
+			console.log(chalk.yellow(t("This installation is managed by Nix and cannot update itself.")));
+			console.log(chalk.dim(t("Update the flake input or profile that provides omp, then rebuild.")));
 			return;
 		} else if (target.method === "brew") {
 			await updateViaHomebrew(release.version, opts.force, release.code);
@@ -2149,8 +2202,10 @@ export async function runUpdateCommand(opts: {
 				// Reachable in forced mode only through a Windows script
 				// launcher resolved from PATH (the bun/npm bin-dir probes are
 				// skipped), so the launcher path is always known.
-				if (!target.path) throw new Error(`Could not resolve ${APP_NAME} launcher path in PATH`);
-				console.log(chalk.dim("This release ships as a standalone binary; replacing the script launcher."));
+				if (!target.path) {
+					throw new Error(t("Could not resolve {app} launcher path in PATH", { app: APP_NAME }));
+				}
+				console.log(chalk.dim(t("This release ships as a standalone binary; replacing the script launcher.")));
 				await updateViaShimTakeover(target.path, release.version, {
 					releaseTag: release.tag,
 					expectedReleaseCode: release.code,
@@ -2158,7 +2213,10 @@ export async function runUpdateCommand(opts: {
 				});
 				console.log(
 					chalk.yellow(
-						`This install is no longer managed by ${target.method}. Removing the old global package may delete this launcher; if it does, reinstall with: ${installerHint()}`,
+						t(
+							"This install is no longer managed by {manager}. Removing the old global package may delete this launcher; if it does, reinstall with: {hint}",
+							{ manager: target.method, hint: installerHint() },
+						),
 					),
 				);
 			} else {
@@ -2170,7 +2228,7 @@ export async function runUpdateCommand(opts: {
 			}
 		} else {
 			if (forceBinary && target.replacesSymlink) {
-				console.log(chalk.dim("Replacing the package-manager launcher with the standalone binary."));
+				console.log(chalk.dim(t("Replacing the package-manager launcher with the standalone binary.")));
 			}
 			await updateViaBinaryAt(target.path, release.version, {
 				releaseTag: release.tag,
@@ -2181,7 +2239,10 @@ export async function runUpdateCommand(opts: {
 			if (forceBinary && target.replacesSymlink) {
 				console.log(
 					chalk.yellow(
-						`This install is no longer managed by bun/npm. Removing the old global package may delete this launcher; if it does, reinstall with: ${installerHint()}`,
+						t(
+							"This install is no longer managed by {manager}. Removing the old global package may delete this launcher; if it does, reinstall with: {hint}",
+							{ manager: "bun/npm", hint: installerHint() },
+						),
 					),
 				);
 			}

@@ -8,6 +8,7 @@
 import { Input, ProcessTerminal, type SelectItem, SelectList, TUI } from "@oh-my-pi/pi-tui";
 import type { CleanseCheckerDescriptor } from "../cleanse/checkers";
 import type { CleanseTargetChoice } from "../cleanse/types";
+import { t } from "../i18n";
 import { getSelectListTheme } from "../modes/theme/theme";
 
 /** Pick between running every discovered checker, one specific checker, or a free-form request. */
@@ -15,7 +16,10 @@ export async function pickCleanseTarget(checkers: readonly CleanseCheckerDescrip
 	const items: SelectItem[] = [
 		{
 			value: "all",
-			label: `Run all ${checkers.length} discovered checker${checkers.length === 1 ? "" : "s"}`,
+			label:
+				checkers.length === 1
+					? t("Run all 1 discovered checker")
+					: t("Run all {count} discovered checkers", { count: checkers.length }),
 		},
 		...checkers.map(checker => ({
 			value: `checker:${checker.id}`,
@@ -24,11 +28,11 @@ export async function pickCleanseTarget(checkers: readonly CleanseCheckerDescrip
 		})),
 		{
 			value: "request",
-			label: "Describe what to fix…",
-			description: "A discovery agent figures out the command to run",
+			label: t("Describe what to fix…"),
+			description: t("A discovery agent figures out the command to run"),
 		},
 	];
-	const selection = await selectOne("Select what to cleanse:", items);
+	const selection = await selectOne(t("Select what to cleanse:"), items);
 	if (selection === null) return { kind: "cancel" };
 	if (selection === "all") return { kind: "all" };
 	if (selection === "request") {
@@ -52,7 +56,7 @@ export async function promptCleanseRequest(): Promise<string | null> {
 	const input = new Input();
 	input.onSubmit = value => finish(value.trim() || null);
 	input.onEscape = () => finish(null);
-	process.stdout.write('Describe what to detect and fix (e.g. "ts errors"):\n');
+	process.stdout.write(`${t('Describe what to detect and fix (e.g. "ts errors"):')}\n`);
 	ui.addChild(input);
 	ui.setFocus(input);
 	ui.start();

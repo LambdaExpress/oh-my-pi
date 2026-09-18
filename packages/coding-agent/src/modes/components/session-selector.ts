@@ -859,7 +859,7 @@ class SessionList implements Component {
 			const modified = formatDate(session.modified);
 			let metadata = `  ${dim(modified)} ${dot} ${dim(formatBytes(session.size))}`;
 			if (currentPath !== undefined && session.path === currentPath) {
-				metadata += ` ${dot} ${theme.fg("accent", "current")}`;
+				metadata += ` ${dot} ${theme.fg("accent", t("current"))}`;
 			}
 			const status = formatSessionStatus(session.status);
 			if (status) {
@@ -1059,7 +1059,7 @@ export class SessionSelectorComponent extends OverlayPanel {
 		onExit: () => void,
 		options: SessionSelectorOptions = {},
 	) {
-		super(options.title ?? "Resume Session");
+		super(options.title ?? t("Resume Session"));
 
 		this.#messageContainer = new Container();
 		this.#onDelete = options.onDelete;

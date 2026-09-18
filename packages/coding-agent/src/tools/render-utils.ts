@@ -15,6 +15,7 @@ import { pluralize, sanitizeText } from "@oh-my-pi/pi-utils";
 import { formatKeyHints, type KeyId } from "../config/keybindings";
 import { isSettingsInitialized, settings } from "../config/settings";
 import { getDefault } from "../config/settings-schema";
+import { t } from "../i18n";
 import type { Theme } from "../modes/theme/theme";
 import { AUTO_THINKING, type ConfiguredThinkingLevel } from "../thinking";
 import type { OutputBlockVisualWindow } from "../tui/output-block";
@@ -306,7 +307,7 @@ export function formatStatusIcon(status: ToolUIStatus, theme: Theme, spinnerFram
 export function formatExpandHint(theme: Theme, expanded?: boolean, hasMore?: boolean): string {
 	if (expanded) return "";
 	if (hasMore === false) return "";
-	return theme.fg("dim", wrapBrackets(`${expandKeyHint()}: Expand`, theme));
+	return theme.fg("dim", wrapBrackets(t("{key}: Expand", { key: expandKeyHint() }), theme));
 }
 
 /**
@@ -324,7 +325,20 @@ export function formatBadge(label: string, color: ToolUIColor, theme: Theme): st
  */
 export function formatMoreItems(remaining: number, itemType: string): string {
 	const safeRemaining = Number.isFinite(remaining) ? remaining : 0;
-	return `… ${safeRemaining} more ${pluralize(itemType, safeRemaining)}`;
+	return t("… {count} more {items}", {
+		count: safeRemaining,
+		items: t(pluralize(itemType, safeRemaining)),
+	});
+}
+
+/**
+ * Localized `<count> <noun>` label for status-line meta and summaries, e.g.
+ * `3 files`. The pluralized noun is part of the lookup key, so each noun needs
+ * its own catalog entry (`{count} files`); unknown nouns fall back to English.
+ */
+export function formatCountLabel(noun: string, count: number): string {
+	const safeCount = Number.isFinite(count) ? count : 0;
+	return t(`{count} ${pluralize(noun, safeCount)}`, { count: safeCount });
 }
 
 /**
@@ -428,7 +442,7 @@ export function formatMeta(meta: string[], theme: Theme): string {
 
 function sanitizeErrorText(message: string | undefined): string {
 	const clean = (message ?? "").replace(/^Error:\s*/, "").trim();
-	return clean ? replaceTabs(truncateToWidth(clean, TRUNCATE_LENGTHS.LINE)) : "Unknown error";
+	return clean ? replaceTabs(truncateToWidth(clean, TRUNCATE_LENGTHS.LINE)) : t("Unknown error");
 }
 
 /**
@@ -447,7 +461,7 @@ export function sanitizeDisplayLines(text: string): string[] {
 }
 
 export function formatErrorMessage(message: string | undefined, theme: Theme): string {
-	return `${theme.styledSymbol("status.error", "error")} ${theme.fg("error", `Error: ${sanitizeErrorText(message)}`)}`;
+	return `${theme.styledSymbol("status.error", "error")} ${theme.fg("error", t("Error: {message}", { message: sanitizeErrorText(message) }))}`;
 }
 
 /**
@@ -666,7 +680,7 @@ export function formatDiagnostics(
 		const remaining = totalDiags - diagsShown;
 		output += `\n ${theme.fg("dim", theme.tree.last)} ${theme.fg(
 			"muted",
-			`… ${remaining} more`,
+			t("… {count} more", { count: remaining }),
 		)} ${formatExpandHint(theme)}`;
 	}
 
@@ -714,7 +728,7 @@ export function formatDiffStats(added: number, removed: number, hunks: number, t
 	const parts: string[] = [];
 	if (added > 0) parts.push(theme.fg("toolDiffAdded", `+${added}`));
 	if (removed > 0) parts.push(theme.fg("toolDiffRemoved", `-${removed}`));
-	if (hunks > 0) parts.push(theme.fg("dim", `${hunks} hunk${hunks !== 1 ? "s" : ""}`));
+	if (hunks > 0) parts.push(theme.fg("dim", t("{count} hunk{s}", { count: hunks, s: hunks !== 1 ? "s" : "" })));
 	return parts.join(theme.fg("dim", " / "));
 }
 
@@ -1157,7 +1171,7 @@ export function appendParseErrorsBulletList(
 		lines.push(theme.fg("warning", `  - ${err}`));
 	}
 	if (fullCount > capped.length) {
-		lines.push(theme.fg("dim", `  … ${fullCount - capped.length} more`));
+		lines.push(theme.fg("dim", t("  … {count} more", { count: fullCount - capped.length })));
 	}
 }
 
@@ -1168,8 +1182,8 @@ export function appendParseErrorsBulletList(
 export function formatParseErrorsCountLabel(parseErrors: readonly string[], total?: number): string {
 	const fullCount = total ?? parseErrors.length;
 	return fullCount > PARSE_ERRORS_LIMIT
-		? `${PARSE_ERRORS_LIMIT} / ${fullCount} parse issues`
-		: `${fullCount} parse issue${fullCount !== 1 ? "s" : ""}`;
+		? t("{limit} / {total} parse issues", { limit: PARSE_ERRORS_LIMIT, total: fullCount })
+		: t("{count} parse issue{s}", { count: fullCount, s: fullCount !== 1 ? "s" : "" });
 }
 
 // =============================================================================

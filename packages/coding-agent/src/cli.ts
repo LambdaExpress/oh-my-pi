@@ -548,7 +548,14 @@ export async function runCli(argv: string[]): Promise<void> {
 			process.exitCode = 1;
 			return;
 		}
-		await run({ bin: APP_NAME, version: CLI_VERSION, argv: resolved.argv, commands, metadataHelp: showHelp });
+		await run({
+			bin: APP_NAME,
+			version: CLI_VERSION,
+			argv: resolved.argv,
+			commands,
+			metadataHelp: showHelp,
+			translate: t,
+		});
 	} finally {
 		stopStartupComposer?.();
 	}

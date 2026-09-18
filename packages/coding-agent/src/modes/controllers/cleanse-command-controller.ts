@@ -6,6 +6,7 @@
 import { runCleanse } from "../../cleanse";
 import type { CleanseCheckerDescriptor } from "../../cleanse/checkers";
 import type { CleanseTargetChoice } from "../../cleanse/types";
+import { t } from "../../i18n";
 import { CleansePanelComponent } from "../components/cleanse-panel";
 import type { InteractiveModeContext } from "../types";
 
@@ -57,12 +58,12 @@ export class CleanseCommandController {
 
 	async start(args: string): Promise<void> {
 		if (this.#active) {
-			this.ctx.showStatus("A /cleanse run is already active — Esc cancels it.");
+			this.ctx.showStatus(t("A /cleanse run is already active — Esc cancels it."));
 			return;
 		}
 		const parsed = parseCleanseArgs(args);
 		if (parsed.error) {
-			this.ctx.showStatus(parsed.error);
+			this.ctx.showStatus(t(parsed.error));
 			return;
 		}
 		const run: CleanseRun = {
@@ -109,16 +110,16 @@ export class CleanseCommandController {
 	}
 
 	async #pickTarget(checkers: readonly CleanseCheckerDescriptor[]): Promise<CleanseTargetChoice> {
-		const allOption = `Run all ${checkers.length} discovered checker${checkers.length === 1 ? "" : "s"}`;
+		const allOption = t("Run all {count} discovered checker{s}", {
+			count: checkers.length,
+			s: checkers.length === 1 ? "" : "s",
+		});
+		const customOption = t(CUSTOM_REQUEST_OPTION);
 		const labels = checkers.map(checker => `${checker.label} — ${checker.command}`);
-		const choice = await this.ctx.showHookSelector("Select what to cleanse", [
-			allOption,
-			...labels,
-			CUSTOM_REQUEST_OPTION,
-		]);
+		const choice = await this.ctx.showHookSelector(t("Select what to cleanse"), [allOption, ...labels, customOption]);
 		if (choice === undefined) return { kind: "cancel" };
 		if (choice === allOption) return { kind: "all" };
-		if (choice === CUSTOM_REQUEST_OPTION) {
+		if (choice === customOption) {
 			const request = await this.#promptRequest();
 			return request === null ? { kind: "cancel" } : { kind: "request", request };
 		}
@@ -127,7 +128,7 @@ export class CleanseCommandController {
 	}
 
 	async #promptRequest(): Promise<string | null> {
-		const answer = await this.ctx.showHookInput("Describe what to detect and fix", 'e.g. "ts errors"');
+		const answer = await this.ctx.showHookInput(t("Describe what to detect and fix"), t('e.g. "ts errors"'));
 		const trimmed = answer?.trim();
 		return trimmed ? trimmed : null;
 	}

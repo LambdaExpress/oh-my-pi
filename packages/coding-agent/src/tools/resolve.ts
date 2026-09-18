@@ -19,6 +19,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import { parseXdUrl, XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import type { Theme } from "../modes/theme/theme";
 import resolveReminderPrompt from "../prompts/system/resolve-device-reminder.md" with { type: "text" };
@@ -344,7 +345,8 @@ export async function dispatchResolutionDevice(
 /** Streaming-safe call preview for a resolution-device write: `Resolve/Reject/Propose: <text>`. */
 export function renderResolutionDeviceCall(device: ResolutionDeviceName, content: unknown, uiTheme: Theme): Component {
 	const body = typeof content === "string" ? replaceTabs(content.trim().split("\n")[0] ?? "") : "";
-	const title = device === PROPOSE_DEVICE_NAME ? "Propose" : device === REJECT_DEVICE_NAME ? "Reject" : "Resolve";
+	const title =
+		device === PROPOSE_DEVICE_NAME ? t("Propose") : device === REJECT_DEVICE_NAME ? t("Reject") : t("Resolve");
 	const text = renderStatusLine(
 		{
 			icon: "pending",
@@ -363,10 +365,10 @@ export const resolveRenderer = {
 		const text = renderStatusLine(
 			{
 				icon: "pending",
-				title: "Resolve",
+				title: t("Resolve"),
 				description: args.action,
 				badge: {
-					label: args.action === "apply" ? "proposed -> resolved" : "proposed -> rejected",
+					label: args.action === "apply" ? t("proposed -> resolved") : t("proposed -> rejected"),
 					color: args.action === "apply" ? "success" : "warning",
 				},
 				meta: reason ? [uiTheme.fg("muted", reason)] : undefined,
@@ -383,8 +385,8 @@ export const resolveRenderer = {
 		args?: Partial<ResolveInvocation>,
 	): Component {
 		const details = result.details;
-		const label = replaceTabs(details?.label ?? "pending action");
-		const reason = replaceTabs(details?.reason?.trim() || args?.reason?.trim() || "No reason provided");
+		const label = replaceTabs(details?.label ?? t("pending action"));
+		const reason = replaceTabs(details?.reason?.trim() || args?.reason?.trim() || t("No reason provided"));
 		const action = details?.action ?? args?.action ?? "apply";
 		const isApply = action === "apply" && !result.isError;
 		const isFailedApply = action === "apply" && result.isError;
@@ -393,7 +395,7 @@ export const resolveRenderer = {
 		// reset (styledSymbol/status glyphs carry their own \x1b[39m) would drop the
 		// inverse block back to the default background mid-line.
 		const icon = uiTheme.symbol(isApply ? "tool.resolve" : "status.error");
-		const verb = isApply ? "Accept" : isFailedApply ? "Failed" : "Discard";
+		const verb = isApply ? t("Accept") : isFailedApply ? t("Failed") : t("Discard");
 		const separator = ": ";
 		const separatorIndex = label.indexOf(separator);
 		const sourceLabel = separatorIndex > 0 ? label.slice(0, separatorIndex).trim() : undefined;
@@ -403,7 +405,7 @@ export const resolveRenderer = {
 			: undefined;
 		const headerLine = `${icon} ${uiTheme.bold(`${verb}:`)} ${summaryLabel}${sourceBadge ? ` ${sourceBadge}` : ""}`;
 		const errorText = result.isError
-			? replaceTabs(result.content.find(content => content.type === "text")?.text?.trim() || "Action failed")
+			? replaceTabs(result.content.find(content => content.type === "text")?.text?.trim() || t("Action failed"))
 			: undefined;
 		const lines = ["", headerLine, "", uiTheme.italic(reason)];
 		if (errorText) lines.push("", uiTheme.fg("error", errorText));

@@ -16,6 +16,7 @@ import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { setLocale } from "../../src/i18n";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
 // In-memory transport: FakeWebSocket + InMemoryRelay (see ./helpers/in-memory-relay)
@@ -155,6 +156,9 @@ let harness: HostHarness;
 let host: CollabHost;
 
 beforeAll(async () => {
+	// Read-only rejections carry translated UI text; pin English so assertions
+	// on those strings do not depend on the host's system language.
+	setLocale("en");
 	installInMemoryRelay();
 	harness = makeHostContext();
 	host = new CollabHost(harness.ctx);
@@ -173,6 +177,7 @@ afterAll(async () => {
 	// the host's socket holds its own FakeWebSocket/relay refs, so teardown still works.
 	uninstallInMemoryRelay();
 	await host.stop("test done");
+	setLocale(null);
 });
 
 describe("collab read-only links", () => {

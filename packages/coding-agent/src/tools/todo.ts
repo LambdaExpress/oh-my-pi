@@ -6,6 +6,7 @@ import { Text } from "@oh-my-pi/pi-tui";
 import { isRecord, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import type { Theme } from "../modes/theme/theme";
 import todoDescription from "../prompts/tools/todo.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
@@ -13,6 +14,7 @@ import type { SessionEntry } from "../session/session-entries";
 import { framedBlock, renderStatusLine, renderTreeList } from "../tui";
 import { normalizePathLikeInput, resolveToCwd } from "./path-utils";
 import {
+	formatCountLabel,
 	formatErrorDetail,
 	formatMoreItems,
 	PREVIEW_LIMITS,
@@ -306,7 +308,10 @@ function selectWithinCap<T extends { status: TodoStatus }>(
 		const hiddenActive = active.length - cap;
 		return {
 			items: active.slice(0, cap),
-			summary: `… ${hiddenActive} more active ${pluralize("todo", hiddenActive)}`,
+			summary: t("… {count} more active {items}", {
+				count: hiddenActive,
+				items: t(pluralize("todo", hiddenActive)),
+			}),
 		};
 	}
 
@@ -1048,7 +1053,7 @@ function formatTodoLine(
 		case "abandoned":
 			return uiTheme.fg("error", `${prefix}${checkbox.unchecked} ${strikethroughText(label)}`);
 		case "blocked": {
-			const note = item.blocker ? `blocked: ${forDisplay(item.blocker)}` : "blocked";
+			const note = item.blocker ? t("blocked: {blocker}", { blocker: forDisplay(item.blocker) }) : t("blocked");
 			return uiTheme.fg("warning", `${prefix}${checkbox.unchecked} ${label} (${note})`);
 		}
 		default:
@@ -1130,13 +1135,13 @@ export function setActiveTodoDescriptionsProvider(provider: () => readonly strin
 
 function todoCallMeta(args: TodoRenderArgs): string[] {
 	const opsList = normalizeTodoArg(args);
-	if (opsList.length === 0) return ["update"];
+	if (opsList.length === 0) return [t("update")];
 	return opsList.map(entry => {
-		const parts = [forDisplay(entry.op ?? "update")];
+		const parts = [forDisplay(entry.op ?? t("update"))];
 		if (entry.task) parts.push(forDisplay(entry.task));
 		if (entry.phase) parts.push(forDisplay(entry.phase));
 		if (Array.isArray(entry.items) && entry.items.length) {
-			parts.push(`${entry.items.length} item${entry.items.length === 1 ? "" : "s"}`);
+			parts.push(formatCountLabel("item", entry.items.length));
 		}
 		return parts.join(" ");
 	});
@@ -1155,10 +1160,10 @@ export const todoToolRenderer = {
 		const parts = todoCallMeta((args ?? {}) as TodoRenderArgs);
 		if (tasks.length > 0) {
 			const completed = tasks.filter(task => task.status === "completed").length;
-			parts.push(`${completed}/${tasks.length} done`);
+			parts.push(t("{completed}/{total} done", { completed, total: tasks.length }));
 		}
 		const detail = parts.join(context.theme.sep.dot);
-		return { label: "Todo", detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
+		return { label: t("Todo"), detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
 	},
 
 	renderCall(args: TodoRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
@@ -1174,7 +1179,7 @@ export const todoToolRenderer = {
 		// No body worth boxing while the call streams — a lone status line reads
 		// cleaner than an empty frame. The container renders it without chrome.
 		const header = renderStatusLine(
-			{ icon: "pending", spinnerFrame: options?.spinnerFrame, title: "Todo", meta: ops },
+			{ icon: "pending", spinnerFrame: options?.spinnerFrame, title: t("Todo"), meta: ops },
 			uiTheme,
 		);
 		return new Text(header, 0, 0);
@@ -1187,8 +1192,8 @@ export const todoToolRenderer = {
 		args?: TodoRenderArgs,
 	): Component {
 		if (result.isError) {
-			const errorText = result.content?.find(content => content.type === "text")?.text ?? "Todo operation failed";
-			const header = renderStatusLine({ icon: "error", title: "Todo", meta: todoCallMeta(args ?? {}) }, uiTheme);
+			const errorText = result.content?.find(content => content.type === "text")?.text ?? t("Todo operation failed");
+			const header = renderStatusLine({ icon: "error", title: t("Todo"), meta: todoCallMeta(args ?? {}) }, uiTheme);
 			return framedBlock(uiTheme, width => ({
 				header,
 				sections: [{ lines: formatErrorDetail(errorText, uiTheme).split("\n") }],
@@ -1213,8 +1218,8 @@ export const todoToolRenderer = {
 		const header = renderStatusLine(
 			{
 				iconOverride: uiTheme.styledSymbol("tool.todo", "accent"),
-				title: "Todo",
-				meta: [`${allTasks.length} tasks`],
+				title: t("Todo"),
+				meta: [formatCountLabel("task", allTasks.length)],
 			},
 			uiTheme,
 		);
@@ -1222,7 +1227,7 @@ export const todoToolRenderer = {
 			// Provider text on the Cursor path (the todo summary or a refusal note),
 			// so sanitize like every other label. The error branch above already
 			// goes through `formatErrorDetail`.
-			const fallback = forDisplay(result.content?.find(content => content.type === "text")?.text ?? "No todos");
+			const fallback = forDisplay(result.content?.find(content => content.type === "text")?.text ?? t("No todos"));
 			return new Text(`${header}\n  ${uiTheme.fg("dim", fallback)}`, 0, 0);
 		}
 

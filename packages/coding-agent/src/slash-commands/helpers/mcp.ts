@@ -1,5 +1,6 @@
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { getMCPConfigPath, logger } from "@oh-my-pi/pi-utils";
+import { t } from "../../i18n";
 import { connectToServer, disconnectServer, listPrompts, listResources, listTools } from "../../mcp/client";
 import {
 	addMCPServer,
@@ -39,14 +40,12 @@ interface ParsedMcpSearchArgs {
 
 type McpAddOptionParser = (parsed: ParsedMcpAddArgs, value: string | undefined) => string | undefined;
 
-const MCP_ADD_USAGE =
-	"Usage: /mcp add <name> [--scope project|user] [--url <url> --transport http|sse] [--token <token>] [-- <command...>]";
-
 const MCP_ADD_OPTION_PARSERS = new Map<string, McpAddOptionParser>([
 	[
 		"--scope",
 		(parsed, value) => {
-			if (!value || (value !== "project" && value !== "user")) return "Invalid --scope value. Use project or user.";
+			if (!value || (value !== "project" && value !== "user"))
+				return t("Invalid --scope value. Use project or user.");
 			parsed.scope = value;
 			return undefined;
 		},
@@ -54,7 +53,7 @@ const MCP_ADD_OPTION_PARSERS = new Map<string, McpAddOptionParser>([
 	[
 		"--url",
 		(parsed, value) => {
-			if (!value) return "Missing value for --url.";
+			if (!value) return t("Missing value for --url.");
 			parsed.url = value;
 			return undefined;
 		},
@@ -62,7 +61,7 @@ const MCP_ADD_OPTION_PARSERS = new Map<string, McpAddOptionParser>([
 	[
 		"--transport",
 		(parsed, value) => {
-			if (!value || (value !== "http" && value !== "sse")) return "Invalid --transport value. Use http or sse.";
+			if (!value || (value !== "http" && value !== "sse")) return t("Invalid --transport value. Use http or sse.");
 			parsed.transport = value;
 			return undefined;
 		},
@@ -70,7 +69,7 @@ const MCP_ADD_OPTION_PARSERS = new Map<string, McpAddOptionParser>([
 	[
 		"--token",
 		(parsed, value) => {
-			if (!value) return "Missing value for --token.";
+			if (!value) return t("Missing value for --token.");
 			parsed.authToken = value;
 			return undefined;
 		},
@@ -103,12 +102,14 @@ function validateParsedMcpAddArgs(parsed: ParsedMcpAddArgs): ParsedMcpAddArgs {
 	if (!hasCommand && !hasUrl) {
 		return {
 			...parsed,
-			error: "Provide --url or -- <command...> for non-interactive add. Usage: /mcp add <name> [--scope project|user] [--url <url> --transport http|sse] [--token <token>] [-- <command...>]",
+			error: t(
+				"Provide --url or -- <command...> for non-interactive add. Usage: /mcp add <name> [--scope project|user] [--url <url> --transport http|sse] [--token <token>] [-- <command...>]",
+			),
 		};
 	}
-	if (!parsed.name) return { ...parsed, error: "Server name required. Usage: /mcp add <name> ..." };
-	if (hasCommand && hasUrl) return { ...parsed, error: "Use either --url or -- <command...>, not both." };
-	if (parsed.authToken && !hasUrl) return { ...parsed, error: "--token requires --url (HTTP/SSE transport)." };
+	if (!parsed.name) return { ...parsed, error: t("Server name required. Usage: /mcp add <name> ...") };
+	if (hasCommand && hasUrl) return { ...parsed, error: t("Use either --url or -- <command...>, not both.") };
+	if (parsed.authToken && !hasUrl) return { ...parsed, error: t("--token requires --url (HTTP/SSE transport).") };
 	return parsed;
 }
 
@@ -130,7 +131,7 @@ function parseMcpAddArgs(rest: string): ParsedMcpAddArgs {
 			break;
 		}
 		const parser = MCP_ADD_OPTION_PARSERS.get(arg);
-		if (!parser) return { ...parsed, error: `Unknown option: ${arg}` };
+		if (!parser) return { ...parsed, error: t("Unknown option: {option}", { option: arg }) };
 		const error = parser(parsed, tokens[index + 1]);
 		if (error) return { ...parsed, error };
 		index += 2;
@@ -146,7 +147,9 @@ function parseMcpSearchArgs(rest: string): ParsedMcpSearchArgs {
 		scope: "project",
 		limit: 20,
 		semantic: false,
-		error: "Keyword required. Usage: /mcp smithery-search <keyword> [--scope project|user] [--limit <1-100>] [--semantic]",
+		error: t(
+			"Keyword required. Usage: /mcp smithery-search <keyword> [--scope project|user] [--limit <1-100>] [--semantic]",
+		),
 	};
 	if (tokens.length === 0) return missingKeyword;
 
@@ -160,7 +163,13 @@ function parseMcpSearchArgs(rest: string): ParsedMcpSearchArgs {
 		if (token === "--scope") {
 			const value = tokens[index + 1];
 			if (!value || (value !== "project" && value !== "user")) {
-				return { keyword: "", scope, limit, semantic, error: "Invalid --scope value. Use project or user." };
+				return {
+					keyword: "",
+					scope,
+					limit,
+					semantic,
+					error: t("Invalid --scope value. Use project or user."),
+				};
 			}
 			scope = value;
 			index++;
@@ -168,7 +177,7 @@ function parseMcpSearchArgs(rest: string): ParsedMcpSearchArgs {
 		}
 		if (token === "--limit") {
 			const value = tokens[index + 1];
-			if (!value) return { keyword: "", scope, limit, semantic, error: "Missing value for --limit." };
+			if (!value) return { keyword: "", scope, limit, semantic, error: t("Missing value for --limit.") };
 			const parsed = Number(value);
 			if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
 				return {
@@ -176,7 +185,7 @@ function parseMcpSearchArgs(rest: string): ParsedMcpSearchArgs {
 					scope,
 					limit,
 					semantic,
-					error: "Invalid --limit value. Use an integer between 1 and 100.",
+					error: t("Invalid --limit value. Use an integer between 1 and 100."),
 				};
 			}
 			limit = parsed;
@@ -187,7 +196,8 @@ function parseMcpSearchArgs(rest: string): ParsedMcpSearchArgs {
 			semantic = true;
 			continue;
 		}
-		if (token.startsWith("--")) return { keyword: "", scope, limit, semantic, error: `Unknown option: ${token}` };
+		if (token.startsWith("--"))
+			return { keyword: "", scope, limit, semantic, error: t("Unknown option: {option}", { option: token }) };
 		keywordParts.push(token);
 	}
 
@@ -255,10 +265,10 @@ async function handleResourcesCommand(runtime: SlashCommandRuntime): Promise<Sla
 		return resources.map(resource => `${name}/${resource.uri}`);
 	});
 	if (!lines) {
-		await runtime.output("No MCP servers configured.");
+		await runtime.output(t("No MCP servers configured."));
 		return commandConsumed();
 	}
-	await runtime.output(lines.length > 0 ? lines.join("\n") : "No resources available on connected servers.");
+	await runtime.output(lines.length > 0 ? lines.join("\n") : t("No resources available on connected servers."));
 	return commandConsumed();
 }
 
@@ -268,30 +278,31 @@ async function handlePromptsCommand(runtime: SlashCommandRuntime): Promise<Slash
 		return prompts.map(prompt => `${name}/${prompt.name}${prompt.description ? ` — ${prompt.description}` : ""}`);
 	});
 	if (!lines) {
-		await runtime.output("No MCP servers configured.");
+		await runtime.output(t("No MCP servers configured."));
 		return commandConsumed();
 	}
-	await runtime.output(lines.length > 0 ? lines.join("\n") : "No prompts available on connected servers.");
+	await runtime.output(lines.length > 0 ? lines.join("\n") : t("No prompts available on connected servers."));
 	return commandConsumed();
 }
 
 async function handleTestCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	const name = rest.split(/\s+/)[0]?.trim() ?? "";
-	if (!name) return usage("Usage: /mcp test <name>", runtime);
+	if (!name) return usage(t("Usage: /mcp test <name>"), runtime);
 	const servers = await getMcpConfiguredServers(runtime.cwd);
 	const server = servers.find(item => item.name === name);
-	if (!server) return usage(`Server "${name}" not found. Run /mcp list to see configured servers.`, runtime);
+	if (!server)
+		return usage(t('Server "{name}" not found. Run /mcp list to see configured servers.', { name }), runtime);
 
 	try {
 		return await withPreparedMcpConnection(runtime, name, server.config, async connection => {
 			const tools = await listTools(connection);
-			const lines = [`Server "${name}" connected (${tools.length} tools).`];
+			const lines = [t('Server "{name}" connected ({count} tools).', { name, count: tools.length })];
 			for (const tool of tools) lines.push(`  - ${tool.name}`);
 			await runtime.output(lines.join("\n"));
 			return commandConsumed();
 		});
 	} catch (err) {
-		return usage(`Connection to "${name}" failed: ${errorMessage(err)}`, runtime);
+		return usage(t('Connection to "{name}" failed: {error}', { name, error: errorMessage(err) }), runtime);
 	}
 }
 
@@ -310,19 +321,22 @@ function buildMcpServerConfig(parsed: ParsedMcpAddArgs): MCPServerConfig | undef
 }
 
 async function handleAddCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
-	if (!rest) return usage(MCP_ADD_USAGE, runtime);
+	const addUsage = t(
+		"Usage: /mcp add <name> [--scope project|user] [--url <url> --transport http|sse] [--token <token>] [-- <command...>]",
+	);
+	if (!rest) return usage(addUsage, runtime);
 	const parsed = parseMcpAddArgs(rest);
 	if (parsed.error) return usage(parsed.error, runtime);
-	if (!parsed.name) return usage(MCP_ADD_USAGE, runtime);
+	if (!parsed.name) return usage(addUsage, runtime);
 	const config = buildMcpServerConfig(parsed);
-	if (!config) return usage(MCP_ADD_USAGE, runtime);
+	if (!config) return usage(addUsage, runtime);
 	try {
 		const filePath = getMCPConfigPath(parsed.scope, runtime.cwd);
 		await addMCPServer(filePath, parsed.name, config);
-		await runtime.output(`Added MCP server "${parsed.name}" (${parsed.scope}).`);
+		await runtime.output(t('Added MCP server "{name}" ({scope}).', { name: parsed.name, scope: parsed.scope }));
 		return commandConsumed();
 	} catch (err) {
-		return usage(`Failed to add server: ${errorMessage(err)}`, runtime);
+		return usage(t("Failed to add server: {error}", { error: errorMessage(err) }), runtime);
 	}
 }
 
@@ -337,7 +351,7 @@ async function handleSmitherySearchCommand(rest: string, runtime: SlashCommandRu
 			includeSemantic: parsed.semantic,
 		});
 		if (results.length === 0) {
-			await runtime.output(`No Smithery results found for "${parsed.keyword}".`);
+			await runtime.output(t('No Smithery results found for "{keyword}".', { keyword: parsed.keyword }));
 			return commandConsumed();
 		}
 		await runtime.output(
@@ -353,11 +367,13 @@ async function handleSmitherySearchCommand(rest: string, runtime: SlashCommandRu
 		const message = errorMessage(err);
 		if (AIError.is(AIError.classify(err), AIError.Flag.AuthFailed)) {
 			return usage(
-				"Smithery authentication required. Run /mcp smithery-login in the TUI client or add an API key to ~/.omp/agent/smithery.json.",
+				t(
+					"Smithery authentication required. Run /mcp smithery-login in the TUI client or add an API key to ~/.omp/agent/smithery.json.",
+				),
 				runtime,
 			);
 		}
-		return usage(`Smithery search failed: ${message}`, runtime);
+		return usage(t("Smithery search failed: {error}", { error: message }), runtime);
 	}
 }
 
@@ -378,7 +394,7 @@ async function handleListCommand(runtime: SlashCommandRuntime): Promise<SlashCom
 			if (!entries.some(entry => entry.name === name)) entries.push({ name, config, scope: "project" });
 		}
 		if (entries.length === 0) {
-			await runtime.output("No MCP servers configured.");
+			await runtime.output(t("No MCP servers configured."));
 			return commandConsumed();
 		}
 		await runtime.output(
@@ -400,19 +416,19 @@ async function handleListCommand(runtime: SlashCommandRuntime): Promise<SlashCom
 								const pathOnly = parsed.pathname && parsed.pathname !== "/" ? parsed.pathname : "";
 								location = `${parsed.origin}${pathOnly}`;
 							} catch {
-								location = "(hidden)";
+								location = t("(hidden)");
 							}
 						}
 					} else {
 						location = (config as { command: string }).command;
 					}
-					return `${name} | ${type} | ${enabled} | ${location ?? "(unknown)"} [${scope}]`;
+					return `${name} | ${type} | ${enabled} | ${location ?? t("(unknown)")} [${scope}]`;
 				})
 				.join("\n"),
 		);
 		return commandConsumed();
 	} catch (err) {
-		return usage(`Failed to list MCP servers: ${errorMessage(err)}`, runtime);
+		return usage(t("Failed to list MCP servers: {error}", { error: errorMessage(err) }), runtime);
 	}
 }
 
@@ -422,7 +438,7 @@ async function handleEnableDisableCommand(
 	runtime: SlashCommandRuntime,
 ): Promise<SlashCommandResult> {
 	const name = rest.split(/\s+/)[0] ?? "";
-	if (!name) return usage(`Usage: /mcp ${verb} <name>`, runtime);
+	if (!name) return usage(t("Usage: /mcp {verb} <name>", { verb }), runtime);
 	const enabled = verb === "enable";
 	try {
 		const userPath = getMCPConfigPath("user", runtime.cwd);
@@ -433,41 +449,47 @@ async function handleEnableDisableCommand(
 		]);
 		if (projectConfig.mcpServers?.[name] !== undefined) {
 			await updateMCPServer(projectPath, name, { ...projectConfig.mcpServers[name], enabled } as MCPServerConfig);
-			await runtime.output(`Server "${name}" ${enabled ? "enabled" : "disabled"} (project config).`);
+			await runtime.output(
+				t('Server "{name}" {status} (project config).', { name, status: enabled ? "enabled" : "disabled" }),
+			);
 			return commandConsumed();
 		}
 		if (userConfig.mcpServers?.[name] !== undefined) {
 			await updateMCPServer(userPath, name, { ...userConfig.mcpServers[name], enabled } as MCPServerConfig);
-			await runtime.output(`Server "${name}" ${enabled ? "enabled" : "disabled"} (user config).`);
+			await runtime.output(
+				t('Server "{name}" {status} (user config).', { name, status: enabled ? "enabled" : "disabled" }),
+			);
 			return commandConsumed();
 		}
 		const disabledList = await readDisabledServers(userPath);
 		if (!enabled || disabledList.includes(name)) {
 			await setServerDisabled(userPath, name, !enabled);
-			await runtime.output(`Server "${name}" ${enabled ? "enabled" : "disabled"}.`);
+			await runtime.output(t('Server "{name}" {status}.', { name, status: enabled ? "enabled" : "disabled" }));
 			return commandConsumed();
 		}
-		return usage(`Server "${name}" not found in user or project config.`, runtime);
+		return usage(t('Server "{name}" not found in user or project config.', { name }), runtime);
 	} catch (err) {
-		return usage(`Failed to ${verb} MCP server: ${errorMessage(err)}`, runtime);
+		return usage(t("Failed to {verb} MCP server: {error}", { verb, error: errorMessage(err) }), runtime);
 	}
 }
 
 async function handleRemoveCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
-	const parsed = parseNamedScopeArgs(rest, "Invalid --scope value. Use project or user.");
+	const parsed = parseNamedScopeArgs(rest, t("Invalid --scope value. Use project or user."));
 	if (parsed.error) return usage(parsed.error, runtime);
-	if (!parsed.name) return usage("Usage: /mcp remove <name> [--scope project|user]", runtime);
+	if (!parsed.name) return usage(t("Usage: /mcp remove <name> [--scope project|user]"), runtime);
 	try {
 		const filePath = getMCPConfigPath(parsed.scope, runtime.cwd);
 		await removeMCPServer(filePath, parsed.name);
-		await runtime.output(`Removed server "${parsed.name}" from ${parsed.scope} config.`);
+		await runtime.output(
+			t('Removed server "{name}" from {scope} config.', { name: parsed.name, scope: parsed.scope }),
+		);
 		return commandConsumed();
 	} catch (err) {
-		return usage(`Failed to remove MCP server: ${errorMessage(err)}`, runtime);
+		return usage(t("Failed to remove MCP server: {error}", { error: errorMessage(err) }), runtime);
 	}
 }
 
-const MCP_HELP_TEXT = [
+const MCP_HELP_LINES = [
 	"MCP server management (ACP mode)",
 	"  /mcp list                                               List configured servers",
 	"  /mcp enable <name>                                      Enable a server",
@@ -481,7 +503,7 @@ const MCP_HELP_TEXT = [
 	"  /mcp add <name> [-- <command...>]                       Add a stdio server",
 	"  /mcp smithery-search <kw> [--scope project|user]        Search Smithery registry",
 	"  /mcp help                                               Show this help",
-].join("\n");
+];
 
 const TUI_ONLY_MCP_VERBS = new Set(["reauth", "unauth", "smithery-login", "smithery-logout", "reconnect"]);
 
@@ -492,17 +514,20 @@ export async function handleMcpAcp(
 ): Promise<SlashCommandResult> {
 	const { verb, rest } = parseSubcommand(command.args);
 	if (!verb || verb === "help") {
-		await runtime.output(MCP_HELP_TEXT);
+		await runtime.output(MCP_HELP_LINES.map(line => t(line)).join("\n"));
 		return commandConsumed();
 	}
 	if (verb === "notifications") {
 		return usage(
-			"MCP notifications require the TUI client (live MCPManager). Use /mcp list to see server status.",
+			t("MCP notifications require the TUI client (live MCPManager). Use /mcp list to see server status."),
 			runtime,
 		);
 	}
 	if (TUI_ONLY_MCP_VERBS.has(verb)) {
-		return usage(`/mcp ${verb} requires OAuth or browser flows only available in the TUI client.`, runtime);
+		return usage(
+			t("/mcp {verb} requires OAuth or browser flows only available in the TUI client.", { verb }),
+			runtime,
+		);
 	}
 	switch (verb) {
 		case "resources":
@@ -517,7 +542,7 @@ export async function handleMcpAcp(
 			return await handleSmitherySearchCommand(rest, runtime);
 		case "reload":
 			await runtime.refreshCommands();
-			await runtime.output("MCP runtime reload requested.");
+			await runtime.output(t("MCP runtime reload requested."));
 			return commandConsumed();
 		case "list":
 			return await handleListCommand(runtime);
@@ -528,6 +553,9 @@ export async function handleMcpAcp(
 		case "rm":
 			return await handleRemoveCommand(rest, runtime);
 		default:
-			return usage(`Unknown /mcp subcommand: ${verb}. Use /mcp help for available subcommands.`, runtime);
+			return usage(
+				t("Unknown /mcp subcommand: {verb}. Use /mcp help for available subcommands.", { verb }),
+				runtime,
+			);
 	}
 }

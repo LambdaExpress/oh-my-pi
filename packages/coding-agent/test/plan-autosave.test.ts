@@ -17,10 +17,13 @@ import type { PlanYolo } from "@oh-my-pi/pi-coding-agent/session/agent-session-t
 import { PrewalkCoordinator, type PrewalkCoordinatorHost } from "@oh-my-pi/pi-coding-agent/session/prewalk";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 let tempDir: TempDir | undefined;
 
 beforeEach(async () => {
+	// Autosave notices are localized; pin English so the assertions stay deterministic.
+	setLocale("en");
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 });
@@ -29,6 +32,7 @@ afterEach(() => {
 	tempDir?.removeSync();
 	tempDir = undefined;
 	resetSettingsForTest();
+	setLocale(null);
 });
 
 function makeCwd(): string {

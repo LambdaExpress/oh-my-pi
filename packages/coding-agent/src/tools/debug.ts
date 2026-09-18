@@ -41,6 +41,7 @@ import {
 	selectAttachAdapter,
 	selectLaunchAdapter,
 } from "../dap";
+import { t } from "../i18n";
 import type { Theme, ThemeColor } from "../modes/theme/theme";
 import debugDescription from "../prompts/tools/debug.md" with { type: "text" };
 import { renderStatusLine } from "../tui";
@@ -1074,7 +1075,10 @@ export const debugToolRenderer = {
 		return { label: "Debug", detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
 	},
 	renderCall(args: DebugRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
-		const text = renderStatusLine({ icon: "pending", title: "Debug", description: summarizeDebugCall(args) }, theme);
+		const text = renderStatusLine(
+			{ icon: "pending", title: t("Debug"), description: summarizeDebugCall(args) },
+			theme,
+		);
 		return new Text(text, 0, 0);
 	},
 
@@ -1092,14 +1096,14 @@ export const debugToolRenderer = {
 				const statusIcon = success
 					? theme.styledSymbol("tool.debug", "accent")
 					: formatStatusIcon(options.isPartial ? "running" : "error", theme, options.spinnerFrame);
-				const header = `${statusIcon} Debug ${action}`;
+				const header = `${statusIcon} ${t("Debug")} ${action}`;
 				const summaryLines = result.details?.snapshot
 					? styleDebugLines(
 							formatSessionSnapshot(result.details.snapshot).map(line => replaceTabs(line)),
 							theme,
 						)
 					: [];
-				const text = result.content.find(block => block.type === "text")?.text ?? "No output";
+				const text = result.content.find(block => block.type === "text")?.text ?? t("No output");
 				const rawLines = replaceTabs(text).split("\n");
 				const previewLimit = options.expanded ? rawLines.length : PREVIEW_LIMITS.COLLAPSED_LINES;
 				const displayedLines = styleDebugLines(
@@ -1110,7 +1114,10 @@ export const debugToolRenderer = {
 				const remaining = rawLines.length - displayedLines.length;
 				if (remaining > 0) {
 					displayedLines.push(
-						theme.fg("muted", `… ${remaining} more lines ${formatExpandHint(theme, options.expanded, true)}`),
+						theme.fg(
+							"muted",
+							`${t("… {count} more lines", { count: remaining })} ${formatExpandHint(theme, options.expanded, true)}`,
+						),
 					);
 				}
 				return outputBlock.render(
@@ -1119,9 +1126,9 @@ export const debugToolRenderer = {
 						state: result.isError ? "error" : "success",
 						sections: [
 							...(summaryLines.length > 0
-								? [{ label: theme.fg("toolTitle", "Session"), lines: summaryLines }]
+								? [{ label: theme.fg("toolTitle", t("Session")), lines: summaryLines }]
 								: []),
-							{ label: theme.fg("toolTitle", "Output"), lines: displayedLines },
+							{ label: theme.fg("toolTitle", t("Output")), lines: displayedLines },
 						],
 						width,
 						applyBg: false,

@@ -2,6 +2,7 @@
  * Render a code or markdown cell with optional output section.
  */
 import { Markdown } from "@oh-my-pi/pi-tui";
+import { t } from "../i18n";
 import { getMarkdownTheme, highlightCode, type Theme } from "../modes/theme/theme";
 import {
 	createEarlierLinesTailWindow,
@@ -94,7 +95,7 @@ function formatHeader(options: CodeCellOptions, theme: Theme): { title: string; 
 	if (title) {
 		parts.push(theme.fg("toolTitle", title));
 	}
-	const headerTitle = parts.length > 0 ? parts.join(" ") : theme.fg("toolTitle", "Code");
+	const headerTitle = parts.length > 0 ? parts.join(" ") : theme.fg("toolTitle", t("Code"));
 
 	const metaParts: string[] = [];
 	if (duration !== undefined) {
@@ -254,7 +255,7 @@ export function renderCodeCell(options: CodeCellOptions, theme: Theme): string[]
 	}
 	const sections: OutputBlockSection[] = [codeSection];
 	if (outputLines.length > 0) {
-		sections.push({ label: theme.fg("toolTitle", "Output"), lines: outputLines });
+		sections.push({ label: theme.fg("toolTitle", t("Output")), lines: outputLines });
 	}
 
 	return renderOutputBlock({ header: title, headerMeta: meta, state, sections, width }, theme);
@@ -321,7 +322,7 @@ export function renderMarkdownCell(options: MarkdownCellOptions, theme: Theme): 
 
 	const sections: Array<{ label?: string; lines: string[] }> = [{ lines: contentLines }];
 	if (outputLines.length > 0) {
-		sections.push({ label: theme.fg("toolTitle", "Output"), lines: outputLines });
+		sections.push({ label: theme.fg("toolTitle", t("Output")), lines: outputLines });
 	}
 
 	return renderOutputBlock({ header: title, headerMeta: meta, state, sections, width }, theme);

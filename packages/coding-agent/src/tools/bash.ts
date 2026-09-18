@@ -21,6 +21,7 @@ import {
 import type { Settings } from "../config/settings";
 import { applyDirenvPreflight, type BashResult, executeBash } from "../exec/bash-executor";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import { InternalUrlRouter } from "../internal-urls";
 import { truncateToVisualLines } from "../modes/components/visual-truncate";
 import { highlightCode, type SymbolKey, type Theme } from "../modes/theme/theme";
@@ -1789,26 +1790,29 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const wallTimeMs = details?.wallTimeMs;
 					const statsParts: string[] = [];
 					if (details?.async?.state === "running") {
-						statsParts.push(`Backgrounded: ${details.async.jobId}`);
+						statsParts.push(t("Backgrounded: {jobId}", { jobId: details.async.jobId }));
 					}
 					if (wallTimeMs !== undefined) {
-						statsParts.push(`Wall: ${formatWallTimeSeconds(wallTimeMs)}s`);
+						statsParts.push(t("Wall: {seconds}s", { seconds: formatWallTimeSeconds(wallTimeMs) }));
 					}
 					if (timeoutDisabled) {
-						statsParts.push("Timeout: disabled");
+						statsParts.push(t("Timeout: disabled"));
 					}
 					if (typeof timeoutSeconds === "number") {
 						statsParts.push(
 							requestedTimeoutSeconds !== undefined && requestedTimeoutSeconds !== timeoutSeconds
-								? `Timeout: ${timeoutSeconds}s (requested ${requestedTimeoutSeconds}s clamped)`
-								: `Timeout: ${timeoutSeconds}s`,
+								? t("Timeout: {timeout}s (requested {requested}s clamped)", {
+										timeout: timeoutSeconds,
+										requested: requestedTimeoutSeconds,
+									})
+								: t("Timeout: {timeout}s", { timeout: timeoutSeconds }),
 						);
 					}
 					if (rawOutputArtifact.artifactId) {
-						statsParts.push(`Artifact: ${rawOutputArtifact.artifactId}`);
+						statsParts.push(t("Artifact: {artifactId}", { artifactId: rawOutputArtifact.artifactId }));
 					}
 					if (isError && typeof details?.exitCode === "number") {
-						statsParts.push(`Exit: ${details.exitCode}`);
+						statsParts.push(t("Exit: {code}", { code: details.exitCode }));
 					}
 					const timeoutLine =
 						statsParts.length > 0
@@ -1854,7 +1858,11 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								outputLines.push(
 									uiTheme.fg(
 										"dim",
-										`… (${result.skippedCount} earlier lines, showing ${result.visualLines.length} of ${result.skippedCount + result.visualLines.length}) (ctrl+o to expand)`,
+										t("… ({count} earlier lines, showing {shown} of {total}) (ctrl+o to expand)", {
+											count: result.skippedCount,
+											shown: result.visualLines.length,
+											total: result.skippedCount + result.visualLines.length,
+										}),
 									),
 								);
 							}
@@ -1875,7 +1883,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 									lines: cmdLines ?? [],
 									visualWindow: expanded ? undefined : createEarlierLinesTailWindow(uiTheme),
 								},
-								{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines },
+								{ label: uiTheme.fg("toolTitle", t("Output")), lines: outputLines },
 							],
 							width,
 						},

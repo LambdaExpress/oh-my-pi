@@ -335,6 +335,12 @@ class CompletedRunSummaryGate extends Container {
 }
 const STILL_CLOSING_DELAY_MS = 3_000;
 const DEFAULT_WORKING_MESSAGE = "Working…";
+/** Source label appended to custom-command descriptions in pickers; keys are catalog entries. */
+const CUSTOM_COMMAND_SOURCE_KEY: Record<string, string> = {
+	bundled: "(bundled)",
+	user: "(user)",
+	project: "(project)",
+};
 
 interface WorkingMessageAccent {
 	main: string;
@@ -543,14 +549,22 @@ class DeferredCommandPreview implements Component {
 	render(width: number): readonly string[] {
 		const rows: string[] = [];
 		for (const item of this.items) rows.push(...item.render(width));
-		const queued = this.commandCount === 1 ? "1 command output" : `${this.commandCount} command outputs`;
+		const queued = t("{count} command output{s}", {
+			count: this.commandCount,
+			s: this.commandCount === 1 ? "" : "s",
+		});
 		if (rows.length <= this.maxRows) {
-			rows.push(theme.fg("dim", `${queued} — repeated in the transcript when the agent pauses`));
+			const note = t("{queue} — repeated in the transcript when the agent pauses", { queue: queued });
+			rows.push(theme.fg("dim", note));
 			return rows;
 		}
 		const shown = rows.slice(0, Math.max(1, this.maxRows - 1));
 		const hidden = rows.length - shown.length;
-		shown.push(theme.fg("dim", `… ${hidden} more rows — ${queued} shown in full when the agent pauses`));
+		const truncatedNote = t("… {count} more rows — {queue} shown in full when the agent pauses", {
+			count: hidden,
+			queue: queued,
+		});
+		shown.push(theme.fg("dim", truncatedNote));
 		return shown;
 	}
 }
@@ -1387,7 +1401,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			this.session.extensionRunner?.getRegisteredCommands(BUILTIN_SLASH_COMMAND_RESERVED_NAMES) ?? []
 		).map(cmd => ({
 			name: cmd.name,
-			description: cmd.description ?? "(hook command)",
+			description: cmd.description ?? t("(hook command)"),
 			icon: getSlashCommandTypeIcon("extension"),
 			getArgumentCompletions: cmd.getArgumentCompletions,
 		}));
@@ -1395,7 +1409,12 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Convert custom commands (TypeScript) to SlashCommand format
 		const customCommands: SlashCommand[] = this.session.customCommands.map(loaded => ({
 			name: loaded.command.name,
-			description: `${loaded.command.description} (${loaded.source})`,
+			// Bundled commands ship with omp, so their description is a catalog key;
+			// user/project commands keep the author's text. The source label is chrome.
+			description: `${getFileSlashCommandDisplayDescription({
+				description: loaded.command.description,
+				source: loaded.source,
+			})} ${t(CUSTOM_COMMAND_SOURCE_KEY[loaded.source] ?? `(${loaded.source})`)}`,
 			icon: getSlashCommandTypeIcon(loaded.path.startsWith("mcp:") ? "mcp" : "prompt"),
 		}));
 
@@ -1561,7 +1580,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (!startupQuiet && this.#startupChangelog && settings.get("startup.changelogMode") !== "hidden") {
 			headerAfter.push(
 				new DynamicBorder(),
-				new Text(theme.bold(theme.fg("accent", "What's New")), 1, 0),
+				new Text(theme.bold(theme.fg("accent", t("What's New"))), 1, 0),
 				new Spacer(1),
 			);
 			if (settings.get("startup.changelogMode") === "summary") {
@@ -2144,7 +2163,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#cancelGoalContinuation();
 	}
 
-	disableGoalMode(message = "Goal mode disabled."): void {
+	disableGoalMode(message = t("Goal mode disabled.")): void {
 		const was = this.goalModeEnabled;
 		this.goalModeEnabled = false;
 		this.goalModePaused = false;
@@ -3270,7 +3289,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		const header = `${theme.bold(theme.fg("accent", "TODO"))} ${theme.fg("dim", `${closedTasks}/${totalTasks}`)}`;
 		const taskStr = activeTask
 			? this.#formatTodoLine(activeTask, "", isMatched(activeTask))
-			: theme.fg("success", `${theme.checkbox.checked} done`);
+			: theme.fg("success", `${theme.checkbox.checked} ${t("done")}`);
 		const rightLine = `${header} ${theme.fg("dim", "·")} ${taskStr}`;
 
 		const rightPad = " ";
@@ -4270,14 +4289,21 @@ export class InteractiveMode implements InteractiveModeContext {
 		try {
 			destination = resolveToCwd(selectedPath, this.sessionManager.getCwd());
 		} catch (error) {
-			this.showError(`Invalid plan save path: ${error instanceof Error ? error.message : String(error)}`);
+			this.showError(
+				t("Invalid plan save path: {error}", {
+					error: error instanceof Error ? error.message : String(error),
+				}),
+			);
 			return;
 		}
 		try {
 			await Bun.write(destination, planContent);
 		} catch (error) {
 			this.showError(
-				`Failed to save plan to ${shortenPath(destination)}: ${error instanceof Error ? error.message : String(error)}`,
+				t("Failed to save plan to {destination}: {error}", {
+					destination: shortenPath(destination),
+					error: error instanceof Error ? error.message : String(error),
+				}),
 			);
 			return;
 		}
@@ -4285,9 +4311,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			await this.#exitPlanMode({ silent: true });
 		} catch (error) {
 			this.showError(
-				`Saved plan to ${shortenPath(destination)}, but could not exit plan mode: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+				t("Saved plan to {destination}, but could not exit plan mode: {error}", {
+					destination: shortenPath(destination),
+					error: error instanceof Error ? error.message : String(error),
+				}),
 			);
 			return;
 		}
@@ -4295,12 +4322,13 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#planReviewAnnotationState.delete(annotationStateKey);
 		try {
 			await this.handleClearCommand();
-			this.showStatus(`Saved plan to ${shortenPath(destination)}.`);
+			this.showStatus(t("Saved plan to {destination}.", { destination: shortenPath(destination) }));
 		} catch (error) {
 			this.showError(
-				`Saved plan to ${shortenPath(destination)}, but could not start a new session: ${
-					error instanceof Error ? error.message : String(error)
-				}`,
+				t("Saved plan to {destination}, but could not start a new session: {error}", {
+					destination: shortenPath(destination),
+					error: error instanceof Error ? error.message : String(error),
+				}),
 			);
 		}
 	}
@@ -4533,7 +4561,7 @@ export class InteractiveMode implements InteractiveModeContext {
 			});
 			if (autosaved) {
 				const displayPath = truncateToWidth(replaceTabs(shortenPath(autosaved)), TRUNCATE_LENGTHS.CONTENT);
-				this.showStatus(`Saved plan to ${displayPath}.`);
+				this.showStatus(t("Saved plan to {destination}.", { destination: displayPath }));
 			}
 		} catch (error) {
 			const detail = truncateToWidth(
@@ -4544,7 +4572,7 @@ export class InteractiveMode implements InteractiveModeContext {
 				),
 				TRUNCATE_LENGTHS.CONTENT,
 			);
-			this.showWarning(`Failed to autosave plan: ${detail}`);
+			this.showWarning(t("Failed to autosave plan: {detail}", { detail }));
 		}
 
 		// Resolve the deferred plan-approval model transition. On the compact path
@@ -5423,12 +5451,16 @@ export class InteractiveMode implements InteractiveModeContext {
 			try {
 				const latestPlanContent = editedContent ?? (await this.#readPlanFile(planFilePath));
 				if (latestPlanContent === null) {
-					this.showError(`Plan file not found at ${planFilePath}`);
+					this.showError(t("Plan file not found at {planFilePath}", { planFilePath }));
 					return;
 				}
 				await this.#savePlanAndQuit(latestPlanContent, details.title, annotationStateKey);
 			} catch (error) {
-				this.showError(`Failed to save plan: ${error instanceof Error ? error.message : String(error)}`);
+				this.showError(
+					t("Failed to save plan: {error}", {
+						error: error instanceof Error ? error.message : String(error),
+					}),
+				);
 			}
 			return;
 		}
@@ -5647,7 +5679,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			await this.#teardown();
 		} catch (error) {
 			this.#isShuttingDown = false;
-			this.showError(`Could not close session: ${error instanceof Error ? error.message : String(error)}`);
+			this.showError(
+				t("Could not close session: {error}", {
+					error: error instanceof Error ? error.message : String(error),
+				}),
+			);
 			return;
 		}
 
@@ -5656,7 +5692,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// #resumableSessionId).
 		const sessionId = this.#resumableSessionId();
 		if (sessionId) {
-			process.stderr.write(`\n${chalk.dim(`Resume this session with ${resumeCommand(sessionId)}`)}\n`);
+			process.stderr.write(
+				`\n${chalk.dim(t("Resume this session with {command}", { command: resumeCommand(sessionId) }))}\n`,
+			);
 		}
 
 		await postmortem.quit(0);
@@ -5680,7 +5718,11 @@ export class InteractiveMode implements InteractiveModeContext {
 			await this.#teardown();
 		} catch (error) {
 			this.#isShuttingDown = false;
-			this.showError(`Could not restart session: ${error instanceof Error ? error.message : String(error)}`);
+			this.showError(
+				t("Could not restart session: {error}", {
+					error: error instanceof Error ? error.message : String(error),
+				}),
+			);
 			return;
 		}
 
@@ -5691,7 +5733,13 @@ export class InteractiveMode implements InteractiveModeContext {
 			try {
 				execReplace(cmd); // never returns on success
 			} catch (err) {
-				process.stderr.write(`${chalk.red(`Restart exec failed: ${err instanceof Error ? err.message : err}`)}\n`);
+				process.stderr.write(
+					`${chalk.red(
+						t("Restart exec failed: {error}", {
+							error: err instanceof Error ? err.message : err,
+						}),
+					)}\n`,
+				);
 			}
 		}
 		const child = Bun.spawn(cmd, { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
@@ -6056,7 +6104,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	#buildConfigWarningComponents(): Component[] {
 		const components: Component[] = [];
 		for (const warning of this.session.configWarnings) {
-			components.push(new Text(theme.fg("warning", `Warning: ${warning}`), 1, 0), new Spacer(1));
+			components.push(
+				new Text(theme.fg("warning", t("Warning: {message}", { message: warning })), 1, 0),
+				new Spacer(1),
+			);
 		}
 		return components;
 	}
@@ -6153,7 +6204,7 @@ export class InteractiveMode implements InteractiveModeContext {
 					return accent ? `${accent.dim}${spinner}\x1b[39m` : theme.fg("muted", spinner);
 				},
 				messageColorFn,
-				() => this.#workingMessageWithElapsed(DEFAULT_WORKING_MESSAGE),
+				() => this.#workingMessageWithElapsed(t(DEFAULT_WORKING_MESSAGE)),
 				// The brand spinner lives in the status line while working; this row
 				// leads with the interrupt affordance instead of a second spinner.
 				// The leading space nudges the row one column right of the flush-left
@@ -6187,7 +6238,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 
 		if (this.loadingAnimation) {
-			const text = message ?? DEFAULT_WORKING_MESSAGE;
+			const text = message ?? t(DEFAULT_WORKING_MESSAGE);
 			this.loadingAnimation.setMessage(() => this.#workingMessageWithElapsed(text));
 			return;
 		}

@@ -32,6 +32,7 @@ import {
 import { MissingApiKeyError } from "@oh-my-pi/pi-ai/error";
 import { getAgentDir } from "@oh-my-pi/pi-utils";
 import { resolveConfigValue } from "../config/resolve-config-value";
+import { t } from "../i18n";
 import type { AuthStorage } from "./auth-storage";
 
 export { type AuthBrokerClientConfig, getAuthBrokerTokenFilePath };
@@ -119,12 +120,17 @@ export async function describeAuthBrokerStartupError(error: unknown): Promise<st
 		// Config resolution itself failed (e.g. token vanished); fall back to a
 		// URL-less message rather than masking the original broker failure.
 	}
-	const target = url ? ` at ${url}` : "";
 	return (
-		`Auth broker${target} is unreachable (${error.message}). ` +
-		"omp is configured to use this broker for credentials and will not fall back to local credentials automatically.\n" +
-		"Start the broker with `omp auth-broker serve`, or disable it with " +
-		"`omp config reset auth.broker.url` and `omp config reset auth.broker.token` " +
-		"(or unset OMP_AUTH_BROKER_URL / OMP_AUTH_BROKER_TOKEN)."
+		`${
+			url
+				? t("Auth broker at {url} is unreachable ({message}).", { url, message: error.message })
+				: t("Auth broker is unreachable ({message}).", { message: error.message })
+		} ` +
+		t(
+			"omp is configured to use this broker for credentials and will not fall back to local credentials automatically.\n" +
+				"Start the broker with `omp auth-broker serve`, or disable it with " +
+				"`omp config reset auth.broker.url` and `omp config reset auth.broker.token` " +
+				"(or unset OMP_AUTH_BROKER_URL / OMP_AUTH_BROKER_TOKEN).",
+		)
 	);
 }

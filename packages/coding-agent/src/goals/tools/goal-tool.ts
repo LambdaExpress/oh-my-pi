@@ -4,6 +4,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { formatNumber, prompt } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
+import { t } from "../../i18n";
 import type { Theme, ThemeColor } from "../../modes/theme/theme";
 import goalDescription from "../../prompts/tools/goal.md" with { type: "text" };
 import { formatDuration } from "../../slash-commands/helpers/format";
@@ -127,15 +128,15 @@ export class GoalTool implements AgentTool<typeof goalSchema, GoalToolDetails> {
 function describeOp(op: string | undefined): string {
 	switch (op) {
 		case "create":
-			return "set";
+			return t("set");
 		case "complete":
-			return "complete";
+			return t("complete");
 		case "get":
-			return "check";
+			return t("check");
 		case "resume":
-			return "resume";
+			return t("resume");
 		case "drop":
-			return "drop";
+			return t("drop");
 		default:
 			return op ?? "?";
 	}
@@ -171,7 +172,7 @@ export const goalToolRenderer = {
 			meta.push(uiTheme.italic(uiTheme.fg("muted", `"${objective}"`)));
 		}
 		if (args.op === "create" && args.token_budget !== undefined) {
-			meta.push(`budget ${formatNumber(args.token_budget)}`);
+			meta.push(t("budget {amount}", { amount: formatNumber(args.token_budget) }));
 		}
 		return new Text(renderStatusLine({ icon: "pending", title: "Goal", description, meta }, uiTheme), 0, 0);
 	},
@@ -195,12 +196,12 @@ export const goalToolRenderer = {
 				meta.push(uiTheme.italic(uiTheme.fg("muted", `"${objective}"`)));
 			}
 			if (op === "create" && args?.token_budget !== undefined) {
-				meta.push(`budget ${formatNumber(args.token_budget)}`);
+				meta.push(t("budget {amount}", { amount: formatNumber(args.token_budget) }));
 			}
 			const header = renderStatusLine({ icon: "error", title: "Goal", description, meta }, uiTheme);
 			return framedBlock(uiTheme, width => ({
 				header,
-				sections: [{ lines: formatErrorDetail(fallbackText || "Goal tool failed", uiTheme).split("\n") }],
+				sections: [{ lines: formatErrorDetail(fallbackText || t("Goal tool failed"), uiTheme).split("\n") }],
 				state: "error",
 				borderColor: "error",
 				width,
@@ -210,7 +211,7 @@ export const goalToolRenderer = {
 		const goal = details?.goal ?? null;
 		if (!goal) {
 			return new Text(
-				renderStatusLine({ icon: "warning", title: "Goal", description, meta: ["no active goal"] }, uiTheme),
+				renderStatusLine({ icon: "warning", title: "Goal", description, meta: [t("no active goal")] }, uiTheme),
 				0,
 				0,
 			);
@@ -233,18 +234,22 @@ export const goalToolRenderer = {
 		const used = formatNumber(goal.tokensUsed);
 		const tokensLine =
 			goal.tokenBudget !== undefined
-				? `${used} / ${formatNumber(goal.tokenBudget)} tokens (${formatNumber(Math.max(0, goal.tokenBudget - goal.tokensUsed))} left)`
-				: `${used} tokens`;
+				? t("{used} / {budget} tokens ({left} left)", {
+						used,
+						budget: formatNumber(goal.tokenBudget),
+						left: formatNumber(Math.max(0, goal.tokenBudget - goal.tokensUsed)),
+					})
+				: t("{used} tokens", { used });
 		const metaParts = [tokensLine];
 		if (goal.timeUsedSeconds > 0) {
-			metaParts.push(`${formatDuration(goal.timeUsedSeconds * 1000)} elapsed`);
+			metaParts.push(t("{duration} elapsed", { duration: formatDuration(goal.timeUsedSeconds * 1000) }));
 		}
 		lines.push(uiTheme.fg("dim", metaParts.join(" · ")));
 
 		const report = details?.completionBudgetReport;
 		const sections: Array<{ label?: string; lines: string[] }> = [{ lines }];
 		if (report) {
-			sections.push({ label: "Report", lines: report.split("\n").map(line => uiTheme.fg("muted", line)) });
+			sections.push({ label: t("Report"), lines: report.split("\n").map(line => uiTheme.fg("muted", line)) });
 		}
 
 		return framedBlock(uiTheme, width => ({

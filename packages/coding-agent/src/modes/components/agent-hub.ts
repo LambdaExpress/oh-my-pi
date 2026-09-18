@@ -687,7 +687,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 			this.#section === section
 				? theme.bg("selectedBg", theme.bold(theme.fg("accent", ` ${label} `)))
 				: theme.fg("muted", ` ${label} `);
-		return `${tab("agents", "1 Agents")}${theme.fg("dim", theme.sep.dot)}${tab("activity", "2 Activity")}`;
+		return `${tab("agents", t("1 Agents"))}${theme.fg("dim", theme.sep.dot)}${tab("activity", t("2 Activity"))}`;
 	}
 
 	#renderActivityTable(width: number, termHeight: number): string[] {
@@ -698,26 +698,26 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		const selectedAgent = this.#rows[this.#selectedRow]?.id;
 		const scope =
 			this.#activityScope === "all"
-				? "all agents"
+				? t("all agents")
 				: this.#activityScope === "agent"
-					? (selectedAgent ?? "selected agent")
-					: `${selectedAgent ?? "selected"} subtree`;
+					? (selectedAgent ?? t("selected agent"))
+					: t("{scope} subtree", { scope: selectedAgent ?? t("selected") });
 		const search = this.#activitySearchEditing
-			? theme.fg("accent", `search: ${this.#activitySearch}▌`)
+			? theme.fg("accent", `${t("search: {query}", { query: this.#activitySearch })}▌`)
 			: this.#activitySearch
-				? `search: ${this.#activitySearch}`
-				: "search: —";
-		body.push(
-			theme.fg(
-				"dim",
-				`${scope}${theme.sep.dot}${this.#activityFilter}${theme.sep.dot}${this.#activityFollow ? "following" : "paused"}${theme.sep.dot}${search}`,
-			),
-		);
+				? t("search: {query}", { query: this.#activitySearch })
+				: t("search: —");
+		const stateLine = `${scope}${theme.sep.dot}${t(this.#activityFilter)}${theme.sep.dot}${
+			this.#activityFollow ? t("following") : t("paused")
+		}${theme.sep.dot}${search}`;
+		body.push(theme.fg("dim", stateLine));
 		if (contentRows >= 8) body.push("");
 
 		const budget = Math.max(0, contentRows - body.length);
 		if (this.#activityRows.length === 0 && budget > 0) {
-			body.push(theme.fg("muted", this.#activitySearch ? "No matching activity" : "No agent activity recorded yet"));
+			body.push(
+				theme.fg("muted", this.#activitySearch ? t("No matching activity") : t("No agent activity recorded yet")),
+			);
 		} else if (budget > 0) {
 			const selected = Math.min(this.#selectedActivityRow, this.#activityRows.length - 1);
 			const start = this.#activityFollow
@@ -725,7 +725,7 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 				: Math.max(0, Math.min(selected - Math.floor(budget / 2), this.#activityRows.length - budget));
 			const end = Math.min(this.#activityRows.length, start + budget);
 			if (start > 0) {
-				body.push(theme.fg("dim", `… ${start} earlier`));
+				body.push(theme.fg("dim", t("… {count} earlier", { count: start })));
 			}
 			for (let index = start + Number(start > 0); index < end; index++) {
 				this.#hitRows[1 + body.length] = index;
@@ -734,14 +734,14 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 		}
 		while (body.length < contentRows) body.push("");
 
-		const lines = [topBorder(width, "Agent Hub")];
+		const lines = [topBorder(width, t("Agent Hub"))];
 		for (const line of body.slice(0, contentRows)) lines.push(row(line, width));
 		lines.push(divider(width));
 		lines.push(
 			row(
 				theme.fg(
 					"dim",
-					"1:agents  j/k:select  Enter:transcript  Space:follow  f:filter  s:scope  /:search  Esc:close",
+					t("1:agents  j/k:select  Enter:transcript  Space:follow  f:filter  s:scope  /:search  Esc:close"),
 				),
 				width,
 			),
@@ -820,22 +820,21 @@ export class AgentHubOverlayComponent extends Container implements SelectListMou
 	}
 
 	#footer(showingNarrowDetails: boolean, availableWidth: number): string {
-		const nextView = this.#viewMode === "roster" ? "by parent" : "flat";
+		const nextView = this.#viewMode === "roster" ? t("by parent") : t("flat");
 		const filter =
 			this.#agentFilter.length > 0 ? `/${this.#agentFilter}${this.#agentFilterEditing ? "▌" : ""}  ·  ` : "";
 		if (showingNarrowDetails) {
-			return theme.fg(
-				"dim",
-				`${filter}1:agents  2:activity  Tab:roster  PgUp/PgDn:scroll  Enter:open  t:${nextView}  Esc:roster`,
-			);
+			const hint = t("Tab:roster  PgUp/PgDn:scroll  Enter:open  t:{view}  Esc:roster", { view: nextView });
+			return theme.fg("dim", `${filter}1:agents  2:activity  ${hint}`);
 		}
 		if (availableWidth < 96) {
-			return theme.fg("dim", `${filter}j/k:select  Enter:open  t:${nextView}  Tab:details  r/x:manage  Esc:close`);
+			const hint = t("j/k:select  Enter:open  t:{view}  Tab:details  r/x:manage  Esc:close", { view: nextView });
+			return theme.fg("dim", `${filter}${hint}`);
 		}
-		return theme.fg(
-			"dim",
-			`${filter}1:agents  2:activity  j/k/wheel:select  PgUp/PgDn:details  Enter/click:open  t:${nextView}  r:revive  x:kill  Esc:close`,
-		);
+		const hint = t("j/k/wheel:select  PgUp/PgDn:details  Enter/click:open  t:{view}  r:revive  x:kill  Esc:close", {
+			view: nextView,
+		});
+		return theme.fg("dim", `${filter}${hint}`);
 	}
 
 	#renderRosterPanel(width: number, rows: number, observedById: ReadonlyMap<string, ObservableSession>): RosterRender {

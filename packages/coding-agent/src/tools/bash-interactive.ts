@@ -14,6 +14,7 @@ import {
 import type * as XtermModule from "@oh-my-pi/pi-utils/vterm";
 import type { Terminal as XtermTerminalType } from "@oh-my-pi/pi-utils/vterm";
 import { Settings } from "../config/settings";
+import { t } from "../i18n";
 import type { Theme } from "../modes/theme/theme";
 import { OutputSink, type OutputSummary } from "../session/streaming-output";
 import { TerminalGraphicsDecoder } from "../utils/terminal-graphics";
@@ -245,12 +246,12 @@ class BashInteractiveOverlayComponent implements Component {
 		this.#onInput(normalizedInput);
 	}
 	#stateText(): string {
-		if (this.#state === "running") return this.uiTheme.fg("warning", "running");
-		if (this.#state === "timed_out") return this.uiTheme.fg("warning", "timed out");
-		if (this.#state === "killed") return this.uiTheme.fg("warning", "killed");
-		if (this.#exitCode === 0) return this.uiTheme.fg("success", "exit 0");
-		if (this.#exitCode === undefined) return this.uiTheme.fg("warning", "exited");
-		return this.uiTheme.fg("error", `exit ${this.#exitCode}`);
+		if (this.#state === "running") return this.uiTheme.fg("warning", t("running"));
+		if (this.#state === "timed_out") return this.uiTheme.fg("warning", t("timed out"));
+		if (this.#state === "killed") return this.uiTheme.fg("warning", t("killed"));
+		if (this.#exitCode === 0) return this.uiTheme.fg("success", t("exit 0"));
+		if (this.#exitCode === undefined) return this.uiTheme.fg("warning", t("exited"));
+		return this.uiTheme.fg("error", t("exit {code}", { code: this.#exitCode }));
 	}
 
 	#readViewport(innerWidth: number, maxContentRows: number): string[] {
@@ -284,7 +285,7 @@ class BashInteractiveOverlayComponent implements Component {
 				: this.#state === "complete" && this.#exitCode === 0
 					? this.uiTheme.styledSymbol("tool.bash", "accent")
 					: formatStatusIcon("warning", this.uiTheme);
-		const title = this.uiTheme.fg("accent", "Console");
+		const title = this.uiTheme.fg("accent", t("Console"));
 		const statusBadge = `${this.uiTheme.fg("dim", this.uiTheme.format.bracketLeft)}${this.#stateText()}${this.uiTheme.fg("dim", this.uiTheme.format.bracketRight)}`;
 		const prefix = `${statusIcon} ${title} `;
 		const suffix = ` ${statusBadge}`;
@@ -294,10 +295,10 @@ class BashInteractiveOverlayComponent implements Component {
 		const footer =
 			this.#state === "running"
 				? truncateToWidth(
-						`${this.uiTheme.fg("warning", "esc")} ${this.uiTheme.fg("dim", "force-kill")} ${this.uiTheme.fg("dim", "· input forwarded to PTY")}`,
+						`${this.uiTheme.fg("warning", "esc")} ${this.uiTheme.fg("dim", t("force-kill"))} ${this.uiTheme.fg("dim", t("· input forwarded to PTY"))}`,
 						innerWidth,
 					)
-				: truncateToWidth(this.uiTheme.fg("dim", "session finished"), innerWidth);
+				: truncateToWidth(this.uiTheme.fg("dim", t("session finished")), innerWidth);
 		const visibleLines = this.#readViewport(innerWidth, maxContentRows);
 		const content = visibleLines.length > 0 ? visibleLines : [padding(innerWidth)];
 		const borderHorizontal = this.uiTheme.fg("border", this.uiTheme.boxRound.horizontal.repeat(innerWidth));

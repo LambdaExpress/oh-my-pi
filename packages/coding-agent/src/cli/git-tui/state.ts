@@ -17,6 +17,7 @@ import {
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { BINARY_SNIFF_BYTES, isEnoent, isProbablyBinaryHeader } from "@oh-my-pi/pi-utils";
 import type { NumstatEntry } from "../../commit/types";
+import { t } from "../../i18n";
 
 /** SHA of git's canonical empty tree: diff base for a root commit. */
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -333,7 +334,7 @@ export class GitModel {
 			this.#repo.currentBranch(),
 			this.#repo.headSha(),
 		]);
-		if (statusText === null) throw new Error("Not a git repository");
+		if (statusText === null) throw new Error(t("Not a git repository"));
 		const fingerprint = `${headSha ?? ""}\u0000${statusText}`;
 		if (fingerprint === this.#fingerprint) {
 			this.branch = branchName ?? null;

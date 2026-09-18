@@ -5,6 +5,7 @@ import type { Tool as AiTool, Model } from "@oh-my-pi/pi-ai";
 import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { formatNumber } from "@oh-my-pi/pi-utils";
 import type { Skill } from "../../extensibility/skills";
+import { t } from "../../i18n";
 import type { AgentSession } from "../../session/agent-session";
 import { resolveSpeculationMethod } from "../../session/compaction-methods";
 import { estimateInlineSavings, type SnapcompactSavingsEstimate } from "../../session/snapcompact-inline";
@@ -298,19 +299,25 @@ export function computeContextBreakdown(
 	}
 
 	const categories: CategoryInfo[] = [
-		{ id: "systemPrompt", label: "System prompt", tokens: systemPromptTokens, color: "accent", glyph: CELL_FILLED },
-		{ id: "systemTools", label: "System tools", tokens: toolsTokens, color: "warning", glyph: CELL_FILLED },
+		{
+			id: "systemPrompt",
+			label: t("System prompt"),
+			tokens: systemPromptTokens,
+			color: "accent",
+			glyph: CELL_FILLED,
+		},
+		{ id: "systemTools", label: t("System tools"), tokens: toolsTokens, color: "warning", glyph: CELL_FILLED },
 		{
 			id: "systemContext",
-			label: "System context",
+			label: t("System context"),
 			tokens: systemContextTokens,
 			color: "customMessageLabel",
 			glyph: CELL_FILLED,
 		},
-		{ id: "skills", label: "Skills", tokens: skillsTokens, color: "success", glyph: CELL_FILLED },
+		{ id: "skills", label: t("Skills"), tokens: skillsTokens, color: "success", glyph: CELL_FILLED },
 		{
 			id: "messages",
-			label: "Messages",
+			label: t("Messages"),
 			tokens: messagesTokens,
 			color: "userMessageText",
 			glyph: CELL_FILLED_MESSAGES,
@@ -456,7 +463,7 @@ function buildLegendLines(breakdown: ContextBreakdown, theme: typeof Theme): str
 			theme.fg("muted", ` (${percentString(usedTokens, contextWindow)})`),
 	);
 	lines.push("");
-	lines.push(theme.fg("muted", "Estimated usage by category"));
+	lines.push(theme.fg("muted", t("Estimated usage by category")));
 
 	for (const category of categories) {
 		const dot = theme.fg(category.color, category.glyph);
@@ -468,13 +475,13 @@ function buildLegendLines(breakdown: ContextBreakdown, theme: typeof Theme): str
 
 	const freeDot = theme.fg("dim", CELL_FREE);
 	lines.push(
-		`${freeDot} Free space: ${theme.bold(formatNumber(freeTokens))} ${theme.fg("dim", `(${percentString(freeTokens, contextWindow)})`)}`,
+		`${freeDot} ${t("Free space:")} ${theme.bold(formatNumber(freeTokens))} ${theme.fg("dim", `(${percentString(freeTokens, contextWindow)})`)}`,
 	);
 
 	if (autoCompactBufferTokens > 0) {
 		const bufferDot = theme.fg("warning", CELL_BUFFER);
 		lines.push(
-			`${bufferDot} Autocompact buffer: ${theme.bold(formatNumber(autoCompactBufferTokens))} ${theme.fg(
+			`${bufferDot} ${t("Autocompact buffer:")} ${theme.bold(formatNumber(autoCompactBufferTokens))} ${theme.fg(
 				"dim",
 				`tokens (${percentString(autoCompactBufferTokens, contextWindow)})`,
 			)}`,
@@ -485,28 +492,39 @@ function buildLegendLines(breakdown: ContextBreakdown, theme: typeof Theme): str
 	if (snap) {
 		lines.push("");
 		if (!snap.visionCapable) {
-			lines.push(theme.fg("muted", "Snapcompact: inactive (model has no image input)"));
+			lines.push(theme.fg("muted", t("Snapcompact: inactive (model has no image input)")));
 		} else {
-			lines.push(theme.fg("muted", "Snapcompact (estimated wire savings)"));
+			lines.push(theme.fg("muted", t("Snapcompact (estimated wire savings)")));
 			if (snap.systemPrompt) {
 				const sp = snap.systemPrompt;
+				const spScope = sp.scope === "agents-md" ? "AGENTS.md" : t("all");
 				if (sp.applied) {
+					const spDetail = t("({text} text → {frames} ≈ {image})", {
+						text: formatNumber(sp.textTokens),
+						frames: t("{count} frame{s}", {
+							count: formatNumber(sp.frames),
+							s: sp.frames === 1 ? "" : "s",
+						}),
+						image: formatNumber(sp.imageTokens),
+					});
 					lines.push(
-						`  System prompt (${sp.scope === "agents-md" ? "AGENTS.md" : "all"}): saves ${theme.bold(`~${formatNumber(sp.savedTokens)}`)} ` +
-							theme.fg(
-								"dim",
-								`(${formatNumber(sp.textTokens)} text → ${sp.frames} frame${sp.frames === 1 ? "" : "s"} ≈ ${formatNumber(sp.imageTokens)})`,
-							),
+						`  ${t("System prompt ({scope}): saves {saved}", {
+							scope: spScope,
+							saved: theme.bold(`~${formatNumber(sp.savedTokens)}`),
+						})} ` + theme.fg("dim", spDetail),
 					);
 				} else {
 					const reason =
 						sp.reason === "budget"
-							? "image budget exhausted"
+							? t("image budget exhausted")
 							: sp.reason === "empty"
-								? "nothing to image"
-								: "frames would not save tokens";
+								? t("nothing to image")
+								: t("frames would not save tokens");
 					lines.push(
-						`  System prompt (${sp.scope === "agents-md" ? "AGENTS.md" : "all"}): ${theme.fg("dim", `stays text (${reason})`)}`,
+						`  ${t("System prompt ({scope}): {state}", {
+							scope: spScope,
+							state: theme.fg("dim", t("stays text ({reason})", { reason })),
+						})}`,
 					);
 				}
 			}
@@ -514,19 +532,36 @@ function buildLegendLines(breakdown: ContextBreakdown, theme: typeof Theme): str
 				const tr = snap.toolResults;
 				if (tr.swapped > 0) {
 					lines.push(
-						`  Tool results: saves ${theme.bold(`~${formatNumber(tr.savedTokens)}`)} ` +
+						`  ${t("Tool results: saves {saved}", {
+							saved: theme.bold(`~${formatNumber(tr.savedTokens)}`),
+						})} ` +
 							theme.fg(
 								"dim",
-								`(${tr.swapped}/${tr.total} imaged, ${formatNumber(tr.textTokens)} text → ${tr.frames} frames ≈ ${formatNumber(tr.imageTokens)})`,
+								t("({swapped}/{total} imaged, {text} text → {frames} ≈ {image})", {
+									swapped: tr.swapped,
+									total: tr.total,
+									text: formatNumber(tr.textTokens),
+									frames: t("{count} frame{s}", {
+										count: formatNumber(tr.frames),
+										s: tr.frames === 1 ? "" : "s",
+									}),
+									image: formatNumber(tr.imageTokens),
+								}),
 							),
 					);
 				} else {
-					lines.push(`  Tool results: ${theme.fg("dim", `none imaged (${tr.total} in history)`)}`);
+					lines.push(
+						`  ${t("Tool results: {state}", {
+							state: theme.fg("dim", t("none imaged ({count} in history)", { count: tr.total })),
+						})}`,
+					);
 				}
 			}
 			if (snap.savedTokens > 0) {
 				lines.push(
-					`  Next request: ${theme.bold(`~${formatNumber(Math.max(0, usedTokens - snap.savedTokens))}`)} ${theme.fg("dim", "tokens on the wire")}`,
+					`  ${t("Next request: {tokens}", {
+						tokens: theme.bold(`~${formatNumber(Math.max(0, usedTokens - snap.savedTokens))}`),
+					})} ${theme.fg("dim", t("tokens on the wire"))}`,
 				);
 			}
 		}

@@ -8,6 +8,7 @@ import {
 	visibleWidth,
 } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { t } from "../i18n";
 import { type ThemeColor, theme } from "../modes/theme/theme";
 
 /** Distinct states of a realtime call connection. */
@@ -182,9 +183,9 @@ export class LiveVisualizer implements Component {
 			muted: "dim",
 			error: "error",
 		};
-		const status = `${icon} ${this.#phase}`;
-		const fullLabel = ` ${status} · space mute · esc end `;
-		const shortLabel = ` ${status} `;
+		const status = `${icon} ${t(this.#phase)}`;
+		const fullLabel = t(" {status} · space mute · esc end ", { status });
+		const shortLabel = t(" {status} ", { status });
 		const label =
 			innerWidth >= visibleWidth(fullLabel) + 1
 				? fullLabel

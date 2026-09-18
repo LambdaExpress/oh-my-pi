@@ -1,5 +1,6 @@
 import type { UsageLimit, UsageReport } from "@oh-my-pi/pi-ai";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
+import { t } from "../../i18n";
 import type { OAuthAccountIdentity } from "../../session/auth-storage";
 import type { SlashCommandRuntime } from "../types";
 import { reportMatchesActiveAccount } from "./active-oauth-account";
@@ -20,8 +21,9 @@ function formatUsageAmount(limit: UsageLimit): string {
 		amount.remainingFraction ??
 		(amount.usedFraction !== undefined ? Math.max(0, 1 - amount.usedFraction) : undefined);
 	const unit = amount.unit === "percent" ? "%" : ` ${amount.unit}`;
-	const usedText = used === undefined ? "unknown used" : `${used.toFixed(2)}${unit} used`;
-	const remainingText = remainingFraction === undefined ? "" : ` (${(remainingFraction * 100).toFixed(1)}% left)`;
+	const usedText = used === undefined ? t("unknown used") : t("{value} used", { value: `${used.toFixed(2)}${unit}` });
+	const remainingText =
+		remainingFraction === undefined ? "" : t(" ({pct}% left)", { pct: `${(remainingFraction * 100).toFixed(1)}` });
 	return `${usedText}${remainingText}`;
 }
 
@@ -49,7 +51,7 @@ function formatUsageReportAccount(report: UsageReport, limit: UsageLimit, index:
 	const metaProjectId = report.metadata?.projectId;
 	const projectId = typeof metaProjectId === "string" && metaProjectId ? metaProjectId : limit.scope.projectId;
 	if (typeof projectId === "string" && projectId) return projectId;
-	return `account ${index + 1}`;
+	return t("account {n}", { n: index + 1 });
 }
 
 function renderUsageReports(
@@ -59,7 +61,9 @@ function renderUsageReports(
 	usageModelSelectors: readonly string[] = [],
 ): string {
 	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
-	const lines = [`Usage${latestFetchedAt ? ` (${formatDuration(nowMs - latestFetchedAt)} ago)` : ""}`];
+	const lines = [
+		latestFetchedAt ? t("Usage ({duration} ago)", { duration: formatDuration(nowMs - latestFetchedAt) }) : t("Usage"),
+	];
 	const grouped = new Map<string, UsageReport[]>();
 	for (const report of reports) {
 		const providerReports = grouped.get(report.provider) ?? [];
@@ -73,7 +77,7 @@ function renderUsageReports(
 		lines.push("", formatProviderName(provider));
 		const reportingModels = usageModelSelectors.filter(selector => selector.startsWith(`${provider}/`));
 		if (reportingModels.length > 0) {
-			lines.push("  Models with usage data");
+			lines.push(t("  Models with usage data"));
 			for (const selector of reportingModels) lines.push(`    ${sanitizeText(selector)}`);
 		}
 		const activeAccount = resolveActiveAccount?.(provider);
@@ -92,7 +96,10 @@ function renderUsageReports(
 							? report.metadata.accountId
 							: "account";
 				lines.push(
-					`- ${resetLabel}: ${savedResets} saved rate-limit reset${savedResets === 1 ? "" : "s"} available — /usage reset to spend`,
+					t("- {label}: {count} saved rate-limit reset(s) available — /usage reset to spend", {
+						label: resetLabel,
+						count: savedResets,
+					}),
 				);
 				const credits = report.resetCredits?.credits;
 				if (credits) {
@@ -102,9 +109,14 @@ function renderUsageReports(
 							if (!Number.isNaN(expiryMs)) {
 								const remaining = expiryMs - nowMs;
 								if (remaining > 0) {
-									lines.push(`  expires in ${formatDuration(remaining)} (${credit.expiresAt.slice(0, 10)})`);
+									lines.push(
+										t("  expires in {duration} ({date})", {
+											duration: formatDuration(remaining),
+											date: credit.expiresAt.slice(0, 10),
+										}),
+									);
 								} else {
-									lines.push(`  expired (${credit.expiresAt.slice(0, 10)})`);
+									lines.push(t("  expired ({date})", { date: credit.expiresAt.slice(0, 10) }));
 								}
 							}
 						}
@@ -113,7 +125,7 @@ function renderUsageReports(
 			}
 			if (report.limits.length === 0) {
 				const email = typeof report.metadata?.email === "string" ? report.metadata.email : "account";
-				lines.push(`- ${email}: no limits reported`);
+				lines.push(t("- {label}: no limits reported", { label: email }));
 				continue;
 			}
 			for (let index = 0; index < report.limits.length; index++) {
@@ -127,12 +139,15 @@ function renderUsageReports(
 						: "";
 				lines.push(`- ${limit.label}${tier}${formatWindowSuffix(limit.label, window)}`);
 				lines.push(
-					`  ${formatUsageReportAccount(report, limit, index)}: ${formatUsageAmount(limit)}${inUse ? "  ← in use by this session" : ""}`,
+					`  ${formatUsageReportAccount(report, limit, index)}: ${formatUsageAmount(limit)}${inUse ? t("  ← in use by this session") : ""}`,
 				);
 				lines.push(`  ${renderAsciiBar(limit.amount.usedFraction)}`);
 				if (limit.window?.resetsAt && limit.window.resetsAt > nowMs) {
 					lines.push(
-						`  ${limit.window.resetLabel ?? "resets"} in ${formatDuration(limit.window.resetsAt - nowMs)}`,
+						t("  {label} in {duration}", {
+							label: limit.window.resetLabel ?? t("resets"),
+							duration: formatDuration(limit.window.resetsAt - nowMs),
+						}),
 					);
 				}
 				if (limit.notes && limit.notes.length > 0)
@@ -178,14 +193,14 @@ export async function buildUsageReportText(runtime: SlashCommandRuntime): Promis
 	const stats = runtime.session.sessionManager.getUsageStatistics();
 	const orchestrationTokens = stats.orchestrationInput + stats.orchestrationOutput + stats.orchestrationCacheRead;
 	return [
-		"Usage",
-		`Input tokens: ${stats.input}`,
-		`Output tokens: ${stats.output}`,
-		`Cache read tokens: ${stats.cacheRead}`,
-		`Cache write tokens: ${stats.cacheWrite}`,
-		`Total tokens: ${stats.totalTokens}`,
-		...(orchestrationTokens > 0 ? [`Orchestration tokens: ${orchestrationTokens}`] : []),
-		`Premium requests: ${stats.premiumRequests}`,
-		`Cost: $${stats.cost.toFixed(6)}`,
+		t("Usage"),
+		t("Input tokens: {count}", { count: stats.input }),
+		t("Output tokens: {count}", { count: stats.output }),
+		t("Cache read tokens: {count}", { count: stats.cacheRead }),
+		t("Cache write tokens: {count}", { count: stats.cacheWrite }),
+		t("Total tokens: {count}", { count: stats.totalTokens }),
+		...(orchestrationTokens > 0 ? [t("Orchestration tokens: {count}", { count: orchestrationTokens })] : []),
+		t("Premium requests: {count}", { count: stats.premiumRequests }),
+		t("Cost: {cost}", { cost: `$${stats.cost.toFixed(6)}` }),
 	].join("\n");
 }

@@ -5,13 +5,14 @@ import { Text } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { SSHHostConfig } from "../capability/ssh";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import type { Theme } from "../modes/theme/theme";
 import sshSessionDescription from "../prompts/tools/ssh-session.md" with { type: "text" };
 import { validateHostName } from "../ssh/config-writer";
 import { assertProxyJumpPasswordCompatible, normalizeProxyJump } from "../ssh/utils";
 import { Ellipsis, renderStatusLine, truncateToWidth } from "../tui";
 import type { ToolSession } from ".";
-import { replaceTabs } from "./render-utils";
+import { formatCountLabel, replaceTabs } from "./render-utils";
 import { ToolError } from "./tool-errors";
 
 const sshSessionSchema = type({
@@ -269,7 +270,7 @@ export const sshSessionToolRenderer = {
 		const text = renderStatusLine(
 			{
 				icon: "pending",
-				title: "SSH Session",
+				title: t("SSH Session"),
 				description: name ? `${op} ${name}` : op,
 				meta: fields.length > 0 ? fields : undefined,
 			},
@@ -292,7 +293,7 @@ export const sshSessionToolRenderer = {
 				? `${op} ${name}`
 				: op
 			: details?.hosts
-				? `${details.hosts.length} host${details.hosts.length === 1 ? "" : "s"}`
+				? formatCountLabel("host", details.hosts.length)
 				: details?.host
 					? formatHost(details.host)
 					: op;
@@ -306,7 +307,7 @@ export const sshSessionToolRenderer = {
 		const text = renderStatusLine(
 			{
 				icon: result.isError ? "error" : "success",
-				title: "SSH Session",
+				title: t("SSH Session"),
 				description: truncateToWidth(replaceTabs(description), 80, Ellipsis.Omit),
 				meta: meta && meta.length > 0 ? meta : undefined,
 			},

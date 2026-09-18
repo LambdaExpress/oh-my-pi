@@ -18,6 +18,7 @@ import {
 	Text,
 } from "@oh-my-pi/pi-tui";
 import { getSessionsDir } from "@oh-my-pi/pi-utils";
+import { t } from "../i18n";
 import { DynamicBorder } from "../modes/components/dynamic-border";
 import { OverlayPanel } from "../modes/components/overlay-box";
 import { TranscriptBlock } from "../modes/components/transcript-container";
@@ -35,34 +36,48 @@ import { clearArtifactCache, createDebugLogSource, createReportBundle, getArtifa
 import { collectSystemInfo, formatSystemInfo } from "./system-info";
 import { collectTerminalState, formatTerminalState } from "./terminal-info";
 
-/** Debug menu options */
-const DEBUG_MENU_ITEMS: SelectItem[] = [
-	{ value: "open-artifacts", label: "Open: artifact folder", description: "Open session artifacts in file manager" },
-	{ value: "performance", label: "Report: performance issue", description: "Profile CPU, reproduce, then bundle" },
-	{ value: "work", label: "Profile: work scheduling", description: "Open flamegraph of last 30s" },
-	{ value: "dump", label: "Report: dump session", description: "Create report bundle immediately" },
-	{ value: "memory", label: "Report: memory issue", description: "Heap snapshot + bundle" },
-	{ value: "logs", label: "View: recent logs", description: "Show last 50 log entries" },
-	{ value: "system", label: "View: system info", description: "Show environment details" },
-	{ value: "terminal", label: "View: terminal state", description: "Subprotocols, geometry, scrollback strategy" },
-	{
-		value: "protocols",
-		label: "Test: terminal protocols",
-		description: "Styling, links, text sizing, graphics, notify",
-	},
-	{ value: "raw-sse", label: "View: raw SSE stream", description: "Show live provider SSE frames" },
-	{
-		value: "remote-debugger",
-		label: "Start: JS remote debugger",
-		description: "Expose JavaScriptCore inspector socket (experimental)",
-	},
-	{
-		value: "transcript",
-		label: "Export: TUI transcript",
-		description: "Write visible TUI conversation to a temp txt",
-	},
-	{ value: "clear-cache", label: "Clear: artifact cache", description: "Remove old session artifacts" },
-];
+/** Debug menu options. Built per render so a language change is picked up. */
+function buildDebugMenuItems(): SelectItem[] {
+	return [
+		{
+			value: "open-artifacts",
+			label: t("Open: artifact folder"),
+			description: t("Open session artifacts in file manager"),
+		},
+		{
+			value: "performance",
+			label: t("Report: performance issue"),
+			description: t("Profile CPU, reproduce, then bundle"),
+		},
+		{ value: "work", label: t("Profile: work scheduling"), description: t("Open flamegraph of last 30s") },
+		{ value: "dump", label: t("Report: dump session"), description: t("Create report bundle immediately") },
+		{ value: "memory", label: t("Report: memory issue"), description: t("Heap snapshot + bundle") },
+		{ value: "logs", label: t("View: recent logs"), description: t("Show last 50 log entries") },
+		{ value: "system", label: t("View: system info"), description: t("Show environment details") },
+		{
+			value: "terminal",
+			label: t("View: terminal state"),
+			description: t("Subprotocols, geometry, scrollback strategy"),
+		},
+		{
+			value: "protocols",
+			label: t("Test: terminal protocols"),
+			description: t("Styling, links, text sizing, graphics, notify"),
+		},
+		{ value: "raw-sse", label: t("View: raw SSE stream"), description: t("Show live provider SSE frames") },
+		{
+			value: "remote-debugger",
+			label: t("Start: JS remote debugger"),
+			description: t("Expose JavaScriptCore inspector socket (experimental)"),
+		},
+		{
+			value: "transcript",
+			label: t("Export: TUI transcript"),
+			description: t("Write visible TUI conversation to a temp txt"),
+		},
+		{ value: "clear-cache", label: t("Clear: artifact cache"), description: t("Remove old session artifacts") },
+	];
+}
 
 const formatFileHyperlink = (path: string): string => {
 	const fileUrl = url.pathToFileURL(path).href;
@@ -79,12 +94,12 @@ export class DebugSelectorComponent extends OverlayPanel {
 		private ctx: InteractiveModeContext,
 		onDone: () => void,
 	) {
-		super("Debug Tools");
+		super(t("Debug Tools"));
 
 		this.addChild(new Spacer(1));
 
 		// Select list
-		this.#selectList = new SelectList(DEBUG_MENU_ITEMS, 7, getSelectListTheme());
+		this.#selectList = new SelectList(buildDebugMenuItems(), 7, getSelectListTheme());
 
 		this.#selectList.onSelect = item => {
 			onDone();
@@ -152,16 +167,18 @@ export class DebugSelectorComponent extends OverlayPanel {
 		try {
 			session = await startCpuProfile();
 		} catch (err) {
-			this.ctx.showError(`Failed to start profiler: ${err instanceof Error ? err.message : String(err)}`);
+			this.ctx.showError(
+				t("Failed to start profiler: {message}", { message: err instanceof Error ? err.message : String(err) }),
+			);
 			return;
 		}
 
 		// Show message and wait for keypress
 		const block = new TranscriptBlock();
-		block.addChild(new Text(theme.fg("accent", `${theme.status.info} CPU profiling started`), 1, 0));
+		block.addChild(new Text(theme.fg("accent", `${theme.status.info} ${t("CPU profiling started")}`), 1, 0));
 		block.addChild(new Spacer(1));
 		block.addChild(
-			new Text(theme.fg("muted", "Reproduce the performance issue, then press Enter to stop profiling."), 1, 0),
+			new Text(theme.fg("muted", t("Reproduce the performance issue, then press Enter to stop profiling.")), 1, 0),
 		);
 		this.ctx.present(block);
 
@@ -189,7 +206,7 @@ export class DebugSelectorComponent extends OverlayPanel {
 			this.ctx.ui,
 			spinner => theme.fg("accent", spinner),
 			text => theme.fg("muted", text),
-			"Generating report...",
+			t("Generating report..."),
 			getSymbolTheme().spinnerFrames,
 		);
 		this.ctx.statusContainer.addChild(loader);
@@ -210,14 +227,16 @@ export class DebugSelectorComponent extends OverlayPanel {
 			this.ctx.statusContainer.clear();
 
 			const block = new TranscriptBlock();
-			block.addChild(new Text(theme.fg("success", `+ Performance report saved`), 1, 0));
+			block.addChild(new Text(theme.fg("success", t("+ Performance report saved")), 1, 0));
 			block.addChild(new Text(theme.fg("dim", formatFileHyperlink(result.path)), 1, 0));
-			block.addChild(new Text(theme.fg("dim", `Files: ${result.files.length}`), 1, 0));
+			block.addChild(new Text(theme.fg("dim", t("Files: {count}", { count: result.files.length })), 1, 0));
 			this.ctx.present(block);
 		} catch (err) {
 			loader.stop();
 			this.ctx.statusContainer.clear();
-			this.ctx.showError(`Failed to create report: ${err instanceof Error ? err.message : String(err)}`);
+			this.ctx.showError(
+				t("Failed to create report: {message}", { message: err instanceof Error ? err.message : String(err) }),
+			);
 		}
 	}
 
@@ -226,7 +245,7 @@ export class DebugSelectorComponent extends OverlayPanel {
 			const workProfile = getWorkProfile(30);
 
 			if (!workProfile.svg) {
-				this.ctx.showWarning(`No work profile data (${workProfile.sampleCount} samples)`);
+				this.ctx.showWarning(t("No work profile data ({count} samples)", { count: workProfile.sampleCount }));
 				return;
 			}
 
@@ -238,10 +257,16 @@ export class DebugSelectorComponent extends OverlayPanel {
 
 			this.ctx.present([
 				new Spacer(1),
-				new Text(theme.fg("dim", `Opened flamegraph (${workProfile.sampleCount} samples)`), 1, 0),
+				new Text(
+					theme.fg("dim", t("Opened flamegraph ({count} samples)", { count: workProfile.sampleCount })),
+					1,
+					0,
+				),
 			]);
 		} catch (err) {
-			this.ctx.showError(`Failed to open profile: ${err instanceof Error ? err.message : String(err)}`);
+			this.ctx.showError(
+				t("Failed to open profile: {message}", { message: err instanceof Error ? err.message : String(err) }),
+			);
 		}
 	}
 
@@ -250,7 +275,7 @@ export class DebugSelectorComponent extends OverlayPanel {
 			this.ctx.ui,
 			spinner => theme.fg("accent", spinner),
 			text => theme.fg("muted", text),
-			"Creating report bundle...",
+			t("Creating report bundle..."),
 			getSymbolTheme().spinnerFrames,
 		);
 		this.ctx.statusContainer.addChild(loader);
@@ -267,14 +292,16 @@ export class DebugSelectorComponent extends OverlayPanel {
 			this.ctx.statusContainer.clear();
 
 			const block = new TranscriptBlock();
-			block.addChild(new Text(theme.fg("success", `+ Report bundle saved`), 1, 0));
+			block.addChild(new Text(theme.fg("success", t("+ Report bundle saved")), 1, 0));
 			block.addChild(new Text(theme.fg("dim", formatFileHyperlink(result.path)), 1, 0));
-			block.addChild(new Text(theme.fg("dim", `Files: ${result.files.length}`), 1, 0));
+			block.addChild(new Text(theme.fg("dim", t("Files: {count}", { count: result.files.length })), 1, 0));
 			this.ctx.present(block);
 		} catch (err) {
 			loader.stop();
 			this.ctx.statusContainer.clear();
-			this.ctx.showError(`Failed to create report: ${err instanceof Error ? err.message : String(err)}`);
+			this.ctx.showError(
+				t("Failed to create report: {message}", { message: err instanceof Error ? err.message : String(err) }),
+			);
 		}
 	}
 
@@ -283,7 +310,7 @@ export class DebugSelectorComponent extends OverlayPanel {
 			this.ctx.ui,
 			spinner => theme.fg("accent", spinner),
 			text => theme.fg("muted", text),
-			"Generating heap snapshot...",
+			t("Generating heap snapshot..."),
 			getSymbolTheme().spinnerFrames,
 		);
 		this.ctx.statusContainer.addChild(loader);
@@ -291,7 +318,7 @@ export class DebugSelectorComponent extends OverlayPanel {
 
 		try {
 			const heapSnapshot = generateHeapSnapshotData();
-			loader.setText("Creating report bundle...");
+			loader.setText(t("Creating report bundle..."));
 
 			const result = await createReportBundle({
 				sessionFile: this.ctx.sessionManager.getSessionFile(),
@@ -304,14 +331,16 @@ export class DebugSelectorComponent extends OverlayPanel {
 			this.ctx.statusContainer.clear();
 
 			const block = new TranscriptBlock();
-			block.addChild(new Text(theme.fg("success", `+ Memory report saved`), 1, 0));
+			block.addChild(new Text(theme.fg("success", t("+ Memory report saved")), 1, 0));
 			block.addChild(new Text(theme.fg("dim", formatFileHyperlink(result.path)), 1, 0));
-			block.addChild(new Text(theme.fg("dim", `Files: ${result.files.length}`), 1, 0));
+			block.addChild(new Text(theme.fg("dim", t("Files: {count}", { count: result.files.length })), 1, 0));
 			this.ctx.present(block);
 		} catch (err) {
 			loader.stop();
 			this.ctx.statusContainer.clear();
-			this.ctx.showError(`Failed to create report: ${err instanceof Error ? err.message : String(err)}`);
+			this.ctx.showError(
+				t("Failed to create report: {message}", { message: err instanceof Error ? err.message : String(err) }),
+			);
 		}
 	}
 
@@ -320,7 +349,7 @@ export class DebugSelectorComponent extends OverlayPanel {
 			const logSource = await createDebugLogSource();
 			const logs = await logSource.getInitialText();
 			if (!logs && !logSource.hasOlderLogs()) {
-				this.ctx.showWarning("No log entries found for today.");
+				this.ctx.showWarning(t("No log entries found for today."));
 				return;
 			}
 
@@ -349,7 +378,9 @@ export class DebugSelectorComponent extends OverlayPanel {
 			});
 			this.ctx.ui.setFocus(viewer);
 		} catch (err) {
-			this.ctx.showError(`Failed to read logs: ${err instanceof Error ? err.message : String(err)}`);
+			this.ctx.showError(
+				t("Failed to read logs: {message}", { message: err instanceof Error ? err.message : String(err) }),
+			);
 		}
 
 		this.ctx.ui.requestRender();
@@ -388,7 +419,11 @@ export class DebugSelectorComponent extends OverlayPanel {
 		try {
 			info = existing ?? (await startRemoteDebuggerServer());
 		} catch (err) {
-			this.ctx.showError(`Failed to start remote debugger: ${err instanceof Error ? err.message : String(err)}`);
+			this.ctx.showError(
+				t("Failed to start remote debugger: {message}", {
+					message: err instanceof Error ? err.message : String(err),
+				}),
+			);
 			return;
 		}
 
@@ -397,18 +432,26 @@ export class DebugSelectorComponent extends OverlayPanel {
 			new Text(
 				theme.fg(
 					"success",
-					`${theme.status.success} JavaScriptCore remote inspector ${existing ? "already running" : "started"}`,
+					`${theme.status.success} ${t(
+						existing
+							? "JavaScriptCore remote inspector already running"
+							: "JavaScriptCore remote inspector started",
+					)}`,
 				),
 				1,
 				0,
 			),
 		);
-		block.addChild(new Text(theme.fg("dim", `Listening on ${info.host}:${info.port}`), 1, 0));
+		block.addChild(
+			new Text(theme.fg("dim", t("Listening on {host}:{port}", { host: info.host, port: info.port })), 1, 0),
+		);
 		block.addChild(
 			new Text(
 				theme.fg(
 					"muted",
-					"Experimental WebKit RemoteInspectorServer socket (Bun marks it untested on macOS). One-way for this process — there is no stop. Attach a compatible WebKit/Safari Web Inspector client.",
+					t(
+						"Experimental WebKit RemoteInspectorServer socket (Bun marks it untested on macOS). One-way for this process — there is no stop. Attach a compatible WebKit/Safari Web Inspector client.",
+					),
 				),
 				1,
 				0,
@@ -428,7 +471,11 @@ export class DebugSelectorComponent extends OverlayPanel {
 			block.addChild(new DynamicBorder());
 			this.ctx.present(block);
 		} catch (err) {
-			this.ctx.showError(`Failed to collect system info: ${err instanceof Error ? err.message : String(err)}`);
+			this.ctx.showError(
+				t("Failed to collect system info: {message}", {
+					message: err instanceof Error ? err.message : String(err),
+				}),
+			);
 		}
 	}
 
@@ -456,7 +503,7 @@ export class DebugSelectorComponent extends OverlayPanel {
 			const sessionName = this.ctx.sessionManager.getSessionName();
 			const notification: TerminalNotification = {
 				title: sessionName || "Oh My Pi",
-				body: "Terminal protocol test",
+				body: t("Terminal protocol test"),
 				type: "test",
 				actions: "focus",
 			};
@@ -479,7 +526,7 @@ export class DebugSelectorComponent extends OverlayPanel {
 	async #handleOpenArtifacts(): Promise<void> {
 		const sessionFile = this.ctx.sessionManager.getSessionFile();
 		if (!sessionFile) {
-			this.ctx.showWarning("No active session file.");
+			this.ctx.showWarning(t("No active session file."));
 			return;
 		}
 
@@ -488,16 +535,16 @@ export class DebugSelectorComponent extends OverlayPanel {
 		try {
 			const stat = await fs.stat(artifactsDir);
 			if (!stat.isDirectory()) {
-				this.ctx.showWarning("Artifact folder does not exist yet.");
+				this.ctx.showWarning(t("Artifact folder does not exist yet."));
 				return;
 			}
 		} catch {
-			this.ctx.showWarning("Artifact folder does not exist yet.");
+			this.ctx.showWarning(t("Artifact folder does not exist yet."));
 			return;
 		}
 
 		openPath(artifactsDir);
-		this.ctx.showStatus(`Opened: ${artifactsDir}`);
+		this.ctx.showStatus(t("Opened: {path}", { path: artifactsDir }));
 	}
 
 	async #handleClearCache(): Promise<void> {
@@ -507,21 +554,25 @@ export class DebugSelectorComponent extends OverlayPanel {
 		const stats = await getArtifactCacheStats(sessionsDir);
 
 		if (stats.count === 0) {
-			this.ctx.showStatus("Artifact cache is empty.");
+			this.ctx.showStatus(t("Artifact cache is empty."));
 			return;
 		}
 
 		const sizeStr = formatBytes(stats.totalSize);
-		const oldestStr = stats.oldestDate ? stats.oldestDate.toLocaleDateString() : "unknown";
+		const oldestStr = stats.oldestDate ? stats.oldestDate.toLocaleDateString() : t("unknown");
 
 		// Show confirmation
 		const confirmed = await this.ctx.showHookConfirm(
-			"Clear Artifact Cache",
-			`Found ${stats.count} artifact files (${sizeStr})\nOldest: ${oldestStr}\n\nRemove artifacts older than 30 days?`,
+			t("Clear Artifact Cache"),
+			t("Found {count} artifact files ({size})\nOldest: {oldest}\n\nRemove artifacts older than 30 days?", {
+				count: stats.count,
+				size: sizeStr,
+				oldest: oldestStr,
+			}),
 		);
 
 		if (!confirmed) {
-			this.ctx.showStatus("Cache clear cancelled.");
+			this.ctx.showStatus(t("Cache clear cancelled."));
 			return;
 		}
 
@@ -530,7 +581,7 @@ export class DebugSelectorComponent extends OverlayPanel {
 			this.ctx.ui,
 			spinner => theme.fg("accent", spinner),
 			text => theme.fg("muted", text),
-			"Clearing artifact cache...",
+			t("Clearing artifact cache..."),
 			getSymbolTheme().spinnerFrames,
 		);
 		this.ctx.statusContainer.addChild(loader);
@@ -544,12 +595,14 @@ export class DebugSelectorComponent extends OverlayPanel {
 
 			this.ctx.present([
 				new Spacer(1),
-				new Text(theme.fg("success", `- Cleared ${result.removed} artifact directories`), 1, 0),
+				new Text(theme.fg("success", t("- Cleared {count} artifact directories", { count: result.removed })), 1, 0),
 			]);
 		} catch (err) {
 			loader.stop();
 			this.ctx.statusContainer.clear();
-			this.ctx.showError(`Failed to clear cache: ${err instanceof Error ? err.message : String(err)}`);
+			this.ctx.showError(
+				t("Failed to clear cache: {message}", { message: err instanceof Error ? err.message : String(err) }),
+			);
 		}
 	}
 

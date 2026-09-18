@@ -7,6 +7,7 @@ import { Args, Command, Flags } from "@oh-my-pi/pi-utils/cli";
 import { worktreeHelp as commandHelp } from "../cli/command-help";
 import { addWorktree, clearWorktrees, listWorktrees } from "../cli/worktree-cli";
 import { Settings } from "../config/settings";
+import { t } from "../i18n";
 
 export default class Worktree extends Command {
 	static description = commandHelp.description;
@@ -85,7 +86,7 @@ export default class Worktree extends Command {
 		// its worktrees under the configured base.
 		if (args.action === "add") {
 			if (!args.path) {
-				console.error("Error: Missing required argument: path");
+				console.error(t("Error: Missing required argument: {name}", { name: "path" }));
 				process.exitCode = 1;
 				return;
 			}

@@ -101,7 +101,7 @@ async function buildPluginConfigItems(
 			items.push({
 				id: `config:${key}`,
 				label: `  ${key}`,
-				description: schema.description || `Configure ${key}`,
+				description: schema.description || t("Configure {key}", { key }),
 				currentValue: currentValue ? "true" : "false",
 				values: ["true", "false"],
 			});
@@ -109,12 +109,12 @@ async function buildPluginConfigItems(
 			items.push({
 				id: `config:${key}`,
 				label: `  ${key}`,
-				description: schema.description || `Configure ${key}`,
+				description: schema.description || t("Configure {key}", { key }),
 				currentValue: String(currentValue ?? schema.default ?? ""),
 				submenu: (cv, done) =>
 					new ConfigEnumSubmenu(
 						key,
-						schema.description || `Select value for ${key}`,
+						schema.description || t("Select value for {key}", { key }),
 						schema.values,
 						cv,
 						value => {
@@ -128,7 +128,7 @@ async function buildPluginConfigItems(
 			items.push({
 				id: `config:${key}`,
 				label: `  ${key}`,
-				description: schema.description || `Configure ${key}`,
+				description: schema.description || t("Configure {key}", { key }),
 				currentValue: displayValue,
 				submenu: (cv, done) =>
 					new ConfigInputSubmenu(
@@ -446,8 +446,8 @@ export class MarketplacePluginDetailComponent extends OverlayPanel {
 		const items: SettingItem[] = [
 			{
 				id: "__enabled__",
-				label: "Enabled",
-				description: "Enable or disable this marketplace plugin",
+				label: t("Enabled"),
+				description: t("Enable or disable this marketplace plugin"),
 				currentValue: marketplaceEnabled(plugin) ? "true" : "false",
 				values: ["true", "false"],
 			},

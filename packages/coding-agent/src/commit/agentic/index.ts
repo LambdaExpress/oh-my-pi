@@ -12,6 +12,7 @@ import { ModelRegistry } from "../../config/model-registry";
 import { Settings } from "../../config/settings";
 import { discoverAuthStorage, discoverContextFiles, loadCliExtensionProviders } from "../../sdk";
 import type { AuthStorage } from "../../session/auth-storage";
+import { t } from "../../i18n";
 import { abortOnGitFailure, pushOrAbort } from "../execute";
 import { type ExistingChangelogEntries, runCommitAgentSession } from "./agent";
 import { generateFallbackProposal } from "./fallback";
@@ -44,14 +45,14 @@ async function runAgenticCommitPipeline(
 	authStorage: AuthStorage,
 ): Promise<{ usedFallback: boolean }> {
 	const repo = vcs.requireGit(cwd);
-	process.stdout.write("● Resolving model...\n");
+	process.stdout.write(`● ${t("Resolving model...")}\n`);
 	const modelRegistry = new ModelRegistry(authStorage);
 	await modelRegistry.refresh();
 	await loadCliExtensionProviders(modelRegistry, settings, cwd);
 	const stagedFilesPromise = (async () => {
 		let stagedFiles = await repo.changedFiles({ cached: true });
 		if (stagedFiles.length === 0) {
-			process.stdout.write("No staged changes detected, staging all changes...\n");
+			process.stdout.write(`${t("No staged changes detected, staging all changes...")}\n`);
 			await repo.stageFiles([]);
 			stagedFiles = await repo.changedFiles({ cached: true });
 		}
@@ -65,16 +66,16 @@ async function runAgenticCommitPipeline(
 
 	if (stagedFiles.length === 0) {
 		if (args.push) {
-			process.stdout.write("No changes to commit; pushing existing commits...\n");
+			process.stdout.write(`${t("No changes to commit; pushing existing commits...")}\n`);
 			await pushOrAbort(cwd);
 			return { usedFallback: false };
 		}
-		process.stderr.write("No changes to commit.\n");
+		process.stderr.write(`${t("No changes to commit.")}\n`);
 		return { usedFallback: false };
 	}
 
 	if (!args.noChangelog) {
-		process.stdout.write("● Detecting changelog targets...\n");
+		process.stdout.write(`● ${t("Detecting changelog targets...")}\n`);
 	}
 	const [changelogBoundaries, contextFiles, numstat, diff] = await Promise.all([
 		args.noChangelog ? [] : detectChangelogBoundaries(cwd, stagedFiles),
@@ -93,11 +94,11 @@ async function runAgenticCommitPipeline(
 				process.stdout.write(`  └─ ${path}\n`);
 			}
 		} else {
-			process.stdout.write("  └─ (none found)\n");
+			process.stdout.write(`  └─ ${t("(none found)")}\n`);
 		}
 	}
 
-	process.stdout.write("● Discovering context files...\n");
+	process.stdout.write(`● ${t("Discovering context files...")}\n`);
 
 	const contextMdFiles = contextFiles.filter(
 		file => file.path.endsWith("AGENTS.md") || file.path.endsWith("CLAUDE.md"),
@@ -107,11 +108,11 @@ async function runAgenticCommitPipeline(
 			process.stdout.write(`  └─ ${file.path}\n`);
 		}
 	} else {
-		process.stdout.write("  └─ (none found)\n");
+		process.stdout.write(`  └─ ${t("(none found)")}\n`);
 	}
 	const forceFallback = $env.PI_COMMIT_TEST_FALLBACK?.toLowerCase() === "true";
 	if (forceFallback) {
-		process.stdout.write("● Forcing fallback commit generation...\n");
+		process.stdout.write(`● ${t("Forcing fallback commit generation...")}\n`);
 		const fallbackProposal = generateFallbackProposal(numstat);
 		await runSingleCommit(fallbackProposal, { cwd, dryRun: args.dryRun, push: args.push });
 		return { usedFallback: true };
@@ -255,18 +256,18 @@ async function runSingleCommit(proposal: CommitProposal, ctx: CommitExecutionCon
 	}
 	const commitMessage = formatCommitMessage(proposal.analysis, proposal.summary);
 	if (ctx.dryRun) {
-		process.stdout.write("\nGenerated commit message:\n");
+		process.stdout.write(`\n${t("Generated commit message:")}\n`);
 		process.stdout.write(`${commitMessage}\n`);
 		return;
 	}
-	process.stdout.write("● Creating commit...\n");
+	process.stdout.write(`● ${t("Creating commit...")}\n`);
 	try {
 		await repo.commitCreate(commitMessage, {});
 	} catch (error) {
-		if (vcs.isVcsError(error)) abortOnGitFailure("Commit failed", error);
+		if (vcs.isVcsError(error)) abortOnGitFailure(t("Commit failed"), error);
 		throw error;
 	}
-	process.stdout.write("Commit created.\n");
+	process.stdout.write(`${t("Commit created.")}\n`);
 	if (ctx.push) await pushOrAbort(ctx.cwd);
 }
 
@@ -290,7 +291,7 @@ async function runSplitCommit(
 	}
 
 	if (ctx.dryRun) {
-		process.stdout.write("\nSplit commit plan (dry run):\n");
+		process.stdout.write(`\n${t("Split commit plan (dry run):")}\n`);
 		for (const [index, commit] of plan.commits.entries()) {
 			const analysis: ConventionalAnalysis = {
 				type: commit.type,
@@ -299,15 +300,15 @@ async function runSplitCommit(
 				issueRefs: commit.issueRefs,
 			};
 			const message = formatCommitMessage(analysis, commit.summary);
-			process.stdout.write(`Commit ${index + 1}:\n${message}\n`);
+			process.stdout.write(`${t("Commit {index}:", { index: index + 1 })}\n${message}\n`);
 			const changeSummary = commit.changes.map(change => formatFileChangeSummary(change.path, change)).join(", ");
-			process.stdout.write(`Changes: ${changeSummary}\n`);
+			process.stdout.write(`${t("Changes: {summary}", { summary: changeSummary })}\n`);
 		}
 		return;
 	}
 
 	if (!(await confirmSplitCommitPlan(plan))) {
-		process.stdout.write("Split commit aborted by user.\n");
+		process.stdout.write(`${t("Split commit aborted by user.")}\n`);
 		return;
 	}
 
@@ -316,7 +317,7 @@ async function runSplitCommit(
 		throw new Error(order.error);
 	}
 
-	process.stdout.write("● Creating split commits...\n");
+	process.stdout.write(`● ${t("Creating split commits...")}\n`);
 	const stagedDiff = await repo.diffText({ cached: true, binary: true });
 	await repo.unstage([]);
 	for (const [position, commitIndex] of order.entries()) {
@@ -335,16 +336,20 @@ async function runSplitCommit(
 			if (vcs.isVcsError(error)) {
 				const stagedNow = await repo.changedFiles({ cached: true });
 				abortOnGitFailure(
-					`Commit ${position + 1} of ${order.length} failed`,
+					t("Commit {position} of {total} failed", { position: position + 1, total: order.length }),
 					error,
-					`${position} of ${order.length} commits created; ${stagedNow.length} file(s) remain staged. No changes were lost.`,
+					t("{done} of {total} commits created; {staged} file(s) remain staged. No changes were lost.", {
+						done: position,
+						total: order.length,
+						staged: stagedNow.length,
+					}),
 				);
 			}
 			throw error;
 		}
 		await repo.unstage([]);
 	}
-	process.stdout.write("Split commits created.\n");
+	process.stdout.write(`${t("Split commits created.")}\n`);
 	if (ctx.push) await pushOrAbort(ctx.cwd);
 }
 
@@ -374,7 +379,7 @@ async function confirmSplitCommitPlan(plan: SplitCommitPlan): Promise<boolean> {
 }
 
 function formatWarnings(warnings: string[]): string {
-	return `Warnings:\n${warnings.map(warning => `- ${warning}`).join("\n")}\n`;
+	return `${t("Warnings:")}\n${warnings.map(warning => `- ${warning}`).join("\n")}\n`;
 }
 
 function formatFileChangeSummary(path: string, change: FileChange): string {

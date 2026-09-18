@@ -59,11 +59,11 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		acpDescription: "Toggle advisor",
 		acpInputHint: "[on|off|status|dump [raw]|configure]",
 		subcommands: [
-			{ name: "on", description: t("Enable the advisor") },
-			{ name: "off", description: t("Disable the advisor") },
-			{ name: "status", description: t("Show advisor status") },
-			{ name: "dump", description: t("Copy the advisor's transcript to clipboard"), usage: "[raw]" },
-			{ name: "configure", description: t("Open the advisor configuration editor (TUI)") },
+			{ name: "on", description: "Enable the advisor" },
+			{ name: "off", description: "Disable the advisor" },
+			{ name: "status", description: "Show advisor status" },
+			{ name: "dump", description: "Copy the advisor's transcript to clipboard", usage: "[raw]" },
+			{ name: "configure", description: "Open the advisor configuration editor (TUI)" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
@@ -117,7 +117,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 			}
 			if (verb === "configure") {
 				await runtime.output(
-					"/advisor configure opens an interactive editor and is only available in the interactive TUI.",
+					t("/advisor configure opens an interactive editor and is only available in the interactive TUI."),
 				);
 				return commandConsumed();
 			}
@@ -208,7 +208,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		handle: async (_command, runtime) => {
 			const sessionFile = runtime.session.sessionFile;
 			if (!sessionFile) {
-				await runtime.output("No session file yet — send a message first.");
+				await runtime.output(t("No session file yet — send a message first."));
 				return commandConsumed();
 			}
 			try {
@@ -220,7 +220,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				await runtime.output(url);
 				return commandConsumed();
 			} catch (err) {
-				return usage(`Failed to open trace: ${errorMessage(err)}`, runtime);
+				return usage(t("Failed to open trace: {error}", { error: errorMessage(err) }), runtime);
 			}
 		},
 		handleTui: async (_command, runtime) => {
@@ -293,9 +293,9 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		description: "Share this session live via a relay",
 		inlineHint: "[start|view|stop|status] [relayUrl]",
 		subcommands: [
-			{ name: "view", description: t("Share a read-only link (guests can watch, not prompt)") },
-			{ name: "status", description: t("Show link + participants") },
-			{ name: "stop", description: t("Stop sharing") },
+			{ name: "view", description: "Share a read-only link (guests can watch, not prompt)" },
+			{ name: "status", description: "Show link + participants" },
+			{ name: "stop", description: "Stop sharing" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
@@ -440,8 +440,8 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		description: "Toggle browser eval-prelude headless vs visible mode",
 		acpInputHint: "[headless|visible]",
 		subcommands: [
-			{ name: "headless", description: t("Switch to headless mode") },
-			{ name: "visible", description: t("Switch to visible mode") },
+			{ name: "headless", description: "Switch to headless mode" },
+			{ name: "visible", description: "Switch to visible mode" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
@@ -453,7 +453,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		handle: async (command, runtime) => {
 			const arg = command.args.toLowerCase();
 			const enabled = runtime.settings.get("browser.enabled" as SettingPath) as boolean;
-			if (!enabled) return usage("Browser capability is disabled (enable in settings).", runtime);
+			if (!enabled) return usage(t("Browser capability is disabled (enable in settings)."), runtime);
 			const current = runtime.settings.get("browser.headless" as SettingPath) as boolean;
 			let next = current;
 			if (!arg) next = !current;
@@ -467,7 +467,10 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 				// Setting was already mutated; surface the restart failure so the
 				// user knows the browser is in an inconsistent state.
 				await runtime.output(
-					`Browser mode set to ${next ? "headless" : "visible"}, but restart failed: ${errorMessage(err)}`,
+					t("Browser mode set to {mode}, but restart failed: {error}", {
+						mode: next ? "headless" : "visible",
+						error: errorMessage(err),
+					}),
 				);
 				return commandConsumed();
 			}
@@ -479,7 +482,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 			const current = settings.get("browser.headless" as SettingPath) as boolean;
 			let next = current;
 			if (!(settings.get("browser.enabled" as SettingPath) as boolean)) {
-				runtime.ctx.showWarning("Browser capability is disabled (enable in settings)");
+				runtime.ctx.showWarning(t("Browser capability is disabled (enable in settings)"));
 				runtime.ctx.editor.setText("");
 				return;
 			}
@@ -498,7 +501,7 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 			try {
 				await restartBrowserForModeChange();
 			} catch (error) {
-				runtime.ctx.showWarning(`Failed to restart browser: ${errorMessage(error)}`);
+				runtime.ctx.showWarning(t("Failed to restart browser: {error}", { error: errorMessage(error) }));
 				runtime.ctx.editor.setText("");
 				return;
 			}
@@ -549,16 +552,16 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 			if (arg === "link" || arg === "url") {
 				const link = extractLastLink(runtime.ctx.session.messages);
 				if (!link) {
-					runtime.ctx.showStatus("No link to copy.");
+					runtime.ctx.showStatus(t("No link to copy."));
 					runtime.ctx.editor.setText("");
 					return;
 				}
 				await copyToClipboard(link.href);
-				runtime.ctx.showStatus("Copied link to clipboard");
+				runtime.ctx.showStatus(t("Copied link to clipboard"));
 				runtime.ctx.editor.setText("");
 				return;
 			}
-			runtime.ctx.showStatus("Usage: /copy [code|cmd|link]");
+			runtime.ctx.showStatus(t("Usage: /copy [code|cmd|link]"));
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -570,18 +573,18 @@ export const BUILTIN_COLLABORATION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpe
 		handleTui: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg && arg !== "link" && arg !== "url") {
-				runtime.ctx.showStatus("Usage: /open [link]  (pick a specific link: /copy, → blocks, o)");
+				runtime.ctx.showStatus(t("Usage: /open [link]  (pick a specific link: /copy, → blocks, o)"));
 				runtime.ctx.editor.setText("");
 				return;
 			}
 			const link = extractLastLink(runtime.ctx.session.messages);
 			if (!link) {
-				runtime.ctx.showStatus("No link to open.");
+				runtime.ctx.showStatus(t("No link to open."));
 				runtime.ctx.editor.setText("");
 				return;
 			}
 			openPath(link.href);
-			runtime.ctx.showStatus(`Opening ${link.href}`);
+			runtime.ctx.showStatus(t("Opening {url}", { url: link.href }));
 			runtime.ctx.editor.setText("");
 		},
 	},

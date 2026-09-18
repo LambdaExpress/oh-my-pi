@@ -10,6 +10,7 @@ import { formatGroupedPaths, hasFsCode, isEnoent, prompt, untilAborted } from "@
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { InternalUrlRouter } from "../internal-urls";
 import { splitMemoryGlobPattern } from "../internal-urls/memory-protocol";
+import { t } from "../i18n";
 import type { Theme } from "../modes/theme/theme";
 import globDescription from "../prompts/tools/glob.md" with { type: "text" };
 import { type TruncationResult, truncateHead } from "../session/streaming-output";
@@ -33,7 +34,7 @@ import {
 } from "./path-utils";
 import {
 	createCachedComponent,
-	formatCount,
+	formatCountLabel,
 	formatEmptyMessage,
 	formatErrorMessage,
 	PREVIEW_LIMITS,
@@ -622,7 +623,7 @@ export const globToolRenderer = {
 		const text = renderStatusLine(
 			{
 				icon: "pending",
-				title: "Glob",
+				title: t("Glob"),
 				titleColor: "toolTitle",
 				description: formatGlobRenderPaths(args) || "*",
 				meta,
@@ -641,7 +642,7 @@ export const globToolRenderer = {
 		const details = result.details;
 
 		if (result.isError || details?.error) {
-			const errorText = details?.error || result.content?.find(c => c.type === "text")?.text || "Unknown error";
+			const errorText = details?.error || result.content?.find(c => c.type === "text")?.text || t("Unknown error");
 			return new Text(formatErrorMessage(errorText, uiTheme), 1, 0);
 		}
 
@@ -655,17 +656,17 @@ export const globToolRenderer = {
 				textContent.includes("No files found") ||
 				textContent.trim() === ""
 			) {
-				return new Text(formatEmptyMessage("No files found", uiTheme), 1, 0);
+				return new Text(formatEmptyMessage(t("No files found"), uiTheme), 1, 0);
 			}
 
 			const lines = textContent.split("\n").filter(l => l.trim());
 			const header = renderStatusLine(
 				{
 					iconOverride: globStatusIcon(uiTheme),
-					title: "Glob",
+					title: t("Glob"),
 					titleColor: "toolTitle",
 					description: formatGlobRenderPaths(args),
-					meta: [formatCount("file", lines.length)],
+					meta: [formatCountLabel("file", lines.length)],
 				},
 				uiTheme,
 			);
@@ -696,19 +697,23 @@ export const globToolRenderer = {
 
 		const missingPaths = details?.missingPaths ?? [];
 		const missingNote =
-			missingPaths.length > 0 ? uiTheme.fg("warning", `skipped missing: ${missingPaths.join(", ")}`) : undefined;
+			missingPaths.length > 0
+				? uiTheme.fg("warning", t("skipped missing: {paths}", { paths: missingPaths.join(", ") }))
+				: undefined;
 
 		if (fileCount === 0) {
 			// `truncated` on an empty result means the scan timed out mid-walk —
 			// render "incomplete", not a definitive "No files found".
-			const emptyLabel = truncated ? "No matches before timeout (scan incomplete)" : "No files found";
+			const emptyLabel = truncated ? t("No matches before timeout (scan incomplete)") : t("No files found");
 			const header = renderStatusLine(
 				{
 					icon: "warning",
-					title: "Glob",
+					title: t("Glob"),
 					titleColor: "toolTitle",
 					description: formatGlobRenderPaths(args),
-					meta: truncated ? ["0 files", uiTheme.fg("warning", "timed out")] : ["0 files"],
+					meta: truncated
+						? [formatCountLabel("file", 0), uiTheme.fg("warning", t("timed out"))]
+						: [formatCountLabel("file", 0)],
 				},
 				uiTheme,
 			);
@@ -716,13 +721,13 @@ export const globToolRenderer = {
 			if (missingNote) lines.push(missingNote);
 			return new Text(lines.join("\n"), 1, 0);
 		}
-		const meta: string[] = [formatCount("file", fileCount)];
-		if (details?.scopePath) meta.push(`in ${details.scopePath}`);
-		if (truncated) meta.push(uiTheme.fg("warning", "truncated"));
+		const meta: string[] = [formatCountLabel("file", fileCount)];
+		if (details?.scopePath) meta.push(t("in {path}", { path: details.scopePath }));
+		if (truncated) meta.push(uiTheme.fg("warning", t("truncated")));
 		const header = renderStatusLine(
 			{
 				...(truncated ? { icon: "warning" as const } : { iconOverride: globStatusIcon(uiTheme) }),
-				title: "Glob",
+				title: t("Glob"),
 				titleColor: "toolTitle",
 				description: formatGlobRenderPaths(args),
 				meta,
@@ -731,15 +736,17 @@ export const globToolRenderer = {
 		);
 
 		const truncationReasons: string[] = [];
-		if (details?.resultLimitReached) truncationReasons.push(`limit ${details.resultLimitReached} results`);
-		if (limits?.resultLimit) truncationReasons.push(`limit ${limits.resultLimit.reached} results`);
-		if (truncation) truncationReasons.push(truncation.truncatedBy === "lines" ? "line limit" : "size limit");
+		if (details?.resultLimitReached)
+			truncationReasons.push(t("limit {count} results", { count: details.resultLimitReached }));
+		if (limits?.resultLimit)
+			truncationReasons.push(t("limit {count} results", { count: limits.resultLimit.reached }));
+		if (truncation) truncationReasons.push(truncation.truncatedBy === "lines" ? t("line limit") : t("size limit"));
 		const artifactId = truncation && "artifactId" in truncation ? truncation.artifactId : undefined;
 		if (artifactId) truncationReasons.push(formatFullOutputReference(artifactId));
 
 		const extraLines: string[] = [];
 		if (truncationReasons.length > 0) {
-			extraLines.push(uiTheme.fg("warning", `truncated: ${truncationReasons.join(", ")}`));
+			extraLines.push(uiTheme.fg("warning", t("truncated: {reasons}", { reasons: truncationReasons.join(", ") })));
 		}
 		if (missingNote) extraLines.push(missingNote);
 

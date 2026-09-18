@@ -40,8 +40,10 @@ export function formatShakeSummary(result: ShakeResult): string {
 	if (result.mode === "thinking") {
 		const n = result.thinkingBlocksDropped ?? 0;
 		return n === 0
-			? "No thinking blocks found in this session."
-			: `Dropped ${n} thinking block${n === 1 ? "" : "s"} from this session.`;
+			? t("No thinking blocks found in this session.")
+			: n === 1
+				? t("Dropped {count} thinking block from this session.", { count: n })
+				: t("Dropped {count} thinking blocks from this session.", { count: n });
 	}
 	const parts: string[] = [];
 	if (result.toolResultsDropped > 0) {

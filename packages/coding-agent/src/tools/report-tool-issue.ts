@@ -18,6 +18,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import { $env, $flag, getAutoQaDbPath, getInstallId, logger, VERSION } from "@oh-my-pi/pi-utils";
 import type { Settings } from "..";
+import { t } from "../i18n";
 import type { Theme } from "../modes/theme/theme";
 import { renderStatusLine, truncateToWidth } from "../tui";
 import type { ToolSession } from "./index";
@@ -73,7 +74,7 @@ export function renderReportIssueDeviceCall(content: unknown, uiTheme: Theme): C
 	const text = renderStatusLine(
 		{
 			icon: "pending",
-			title: "Report Tool Issue",
+			title: t("Report Tool Issue"),
 			description: body ? truncateToWidth(body, 72) : undefined,
 		},
 		uiTheme,

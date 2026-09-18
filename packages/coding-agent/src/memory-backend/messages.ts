@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import type { MemoryBackendId } from "./types";
 
 /**
@@ -14,6 +15,6 @@ import type { MemoryBackendId } from "./types";
  * ACP/RPC slash-command handler so the two surfaces stay consistent.
  */
 export function memoryStatsUnavailableMessage(backendId: MemoryBackendId, action: "stats" | "diagnose"): string {
-	if (backendId === "off") return "Memory backend is off — there is nothing to show.";
-	return `Memory ${action} is not available for the ${backendId} backend.`;
+	if (backendId === "off") return t("Memory backend is off — there is nothing to show.");
+	return t("Memory {action} is not available for the {backend} backend.", { action, backend: backendId });
 }

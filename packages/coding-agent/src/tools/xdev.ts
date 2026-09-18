@@ -35,6 +35,7 @@ import { type Component, Container, Text } from "@oh-my-pi/pi-tui";
 import { parseStreamingJson } from "@oh-my-pi/pi-utils";
 import { schemaDeclaresIntentField } from "../utils/tool-schema";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import { stripXdUrlPrefix, XD_URL_PREFIX } from "../internal-urls/xd-protocol";
 import { parseMCPToolName } from "../mcp/tool-bridge";
 import type { Theme } from "../modes/theme/theme";
@@ -623,7 +624,7 @@ export function xdevActivitySummary(
 			subject = firstDeviceScalar(args, verb?.key);
 		} else if (typeof content === "string") {
 			// Empty, `?`, and `help` request the device's docs instead of executing.
-			subject = HELP_CONTENT_RE.test(trimmed) ? "docs" : sanitizeDisplayWarning(trimmed.split("\n", 1)[0] ?? "");
+			subject = HELP_CONTENT_RE.test(trimmed) ? t("docs") : sanitizeDisplayWarning(trimmed.split("\n", 1)[0] ?? "");
 		}
 	}
 	const label = displayDeviceLabel(name, resolveMounted?.(name));
@@ -651,7 +652,7 @@ function renderQueuedXdevCall(
 ): Component {
 	return renderDefaultToolExecution(
 		{
-			label: `queued ${label}`,
+			label: t("queued {label}", { label }),
 			args: displayDeviceArgs(args),
 			options: { ...options, isPartial: true, spinnerFrame: undefined },
 		},

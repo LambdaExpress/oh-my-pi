@@ -2914,14 +2914,21 @@ export class EventController {
 			this.ctx.clearPinnedError();
 		}
 		const retryStartMs = Date.now();
-		const retryLabel = `Retrying (${event.attempt}/${event.maxAttempts})`;
+		const retryLabel = t("Retrying ({attempt}/{max})", {
+			attempt: event.attempt,
+			max: event.maxAttempts,
+		});
 		this.ctx.retryLoader = new Loader(
 			this.ctx.ui,
 			spinner => theme.fg("warning", spinner),
 			text => theme.fg("muted", text),
 			() => {
 				const remaining = Math.max(0, event.delayMs - (Date.now() - retryStartMs));
-				return `${retryLabel} in ${formatDuration(remaining)}…${this.#maintenanceEscHint()}`;
+				return t("{label} in {duration}…{hint}", {
+					label: retryLabel,
+					duration: formatDuration(remaining),
+					hint: this.#maintenanceEscHint(),
+				});
 			},
 			getSymbolTheme().spinnerFrames,
 		);

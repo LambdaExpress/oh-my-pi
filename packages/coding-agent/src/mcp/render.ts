@@ -7,6 +7,7 @@
 import { type Component, Markdown } from "@oh-my-pi/pi-tui";
 import { settings } from "../config/settings";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 import {
 	formatArgsInline,
@@ -65,7 +66,7 @@ function renderMarkdownMCPResult(
 		render(contentWidth: number): readonly string[] {
 			const lines: string[] = [];
 			const isError = result.isError ?? result.details?.isError ?? false;
-			const title = result.details ? `${result.details.serverName}/${result.details.mcpToolName}` : "MCP";
+			const title = result.details ? `${result.details.serverName}/${result.details.mcpToolName}` : t("MCP");
 			lines.push(
 				renderStatusLine(
 					isError ? { icon: "error", title } : { iconOverride: theme.styledSymbol("tool.mcp", "accent"), title },
@@ -74,7 +75,7 @@ function renderMarkdownMCPResult(
 			);
 
 			if (options.expanded && args && Object.keys(args).length > 0) {
-				lines.push(theme.fg("dim", "Args"));
+				lines.push(theme.fg("dim", t("Args")));
 				const tree = renderJsonTreeLines(
 					args,
 					theme,
@@ -95,7 +96,7 @@ function renderMarkdownMCPResult(
 			lines.push(...rendered.slice(0, maxOutputLines));
 			if (rendered.length > maxOutputLines) {
 				lines.push(
-					`${theme.fg("dim", `… ${rendered.length - maxOutputLines} more lines`)} ${formatExpandHint(theme, options.expanded, true)}`,
+					`${theme.fg("dim", t("… {count} more lines", { count: rendered.length - maxOutputLines }))} ${formatExpandHint(theme, options.expanded, true)}`,
 				);
 			} else if (!options.expanded) {
 				lines.push(formatExpandHint(theme, options.expanded, true));
@@ -143,7 +144,7 @@ export function renderMCPResult(
 		contentWidth => {
 			const lines: string[] = [];
 			const isError = result.isError ?? result.details?.isError ?? false;
-			const title = result.details ? `${result.details.serverName}/${result.details.mcpToolName}` : "MCP";
+			const title = result.details ? `${result.details.serverName}/${result.details.mcpToolName}` : t("MCP");
 			const success = !isError;
 			lines.push(
 				renderStatusLine(
@@ -154,7 +155,7 @@ export function renderMCPResult(
 
 			// Args section (when expanded)
 			if (expanded && args && typeof args === "object" && Object.keys(args).length > 0) {
-				lines.push(`${theme.fg("dim", "Args")}`);
+				lines.push(`${theme.fg("dim", t("Args"))}`);
 				const maxDepth = JSON_TREE_MAX_DEPTH_EXPANDED;
 				const maxLines = JSON_TREE_MAX_LINES_EXPANDED;
 				const tree = renderJsonTreeLines(args, theme, maxDepth, maxLines, JSON_TREE_SCALAR_LEN_EXPANDED);
@@ -174,7 +175,7 @@ export function renderMCPResult(
 			// component selection so the opt-in Markdown path can use its own renderer.
 
 			if (!trimmedOutput) {
-				lines.push(theme.fg("dim", "(no output)"));
+				lines.push(theme.fg("dim", t("(no output)")));
 				return lines.join("\n");
 			}
 
@@ -209,7 +210,9 @@ export function renderMCPResult(
 
 			if (outputLines.length > maxOutputLines) {
 				const remaining = outputLines.length - maxOutputLines;
-				lines.push(`${theme.fg("dim", `… ${remaining} more lines`)} ${formatExpandHint(theme, expanded, true)}`);
+				lines.push(
+					`${theme.fg("dim", t("… {count} more lines", { count: remaining }))} ${formatExpandHint(theme, expanded, true)}`,
+				);
 			} else if (!expanded) {
 				// Show expand hint when collapsed even if all lines shown (lines may be truncated)
 				lines.push(formatExpandHint(theme, expanded, true));

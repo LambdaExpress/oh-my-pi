@@ -1,4 +1,5 @@
 import { type Component, CURSOR_MARKER, type Focusable, Input, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
+import { t } from "../../i18n";
 import { theme } from "../theme/theme";
 import { bottomBorder, row, topBorder } from "./overlay-box";
 
@@ -17,7 +18,7 @@ export class PlanSaveOverlay implements Component, Focusable {
 	constructor(suggestedPath: string, done: (result: PlanSaveOverlayResult | undefined) => void) {
 		this.#suggestedPath = suggestedPath;
 		this.#done = done;
-		this.#input.prompt = theme.fg("dim", "Path: ");
+		this.#input.prompt = theme.fg("dim", t("Path: "));
 		this.#input.onSubmit = value => this.#done({ path: value.trim() || this.#suggestedPath });
 		this.#input.onEscape = () => this.#done(undefined);
 	}
@@ -52,9 +53,9 @@ export class PlanSaveOverlay implements Component, Focusable {
 		const innerWidth = Math.max(0, width - 4);
 		this.#input.focused = this.#focused;
 		return [
-			topBorder(width, "Save and quit"),
+			topBorder(width, t("Save and quit")),
 			row(this.#renderInput(innerWidth), width),
-			row(theme.fg("dim", "Enter save and quit · Esc cancel"), width),
+			row(theme.fg("dim", t("Enter save and quit · Esc cancel")), width),
 			bottomBorder(width),
 		];
 	}

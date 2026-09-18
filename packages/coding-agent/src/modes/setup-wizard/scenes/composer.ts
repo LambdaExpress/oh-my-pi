@@ -1,13 +1,14 @@
 import { routeSelectListMouse, type SelectItem, SelectList, type SgrMouseEvent } from "@oh-my-pi/pi-tui";
 import type { ComposerShape } from "../../../config/settings-schema";
+import { t } from "../../../i18n";
 import { renderComposerShapePreview } from "../../components/composer-shape-preview";
 import { getComposerShapeOptions } from "../../components/composer-shape-registry";
 import { getSelectListTheme, theme } from "../../theme/theme";
 import type { SetupScene, SetupSceneController, SetupSceneHost } from "./types";
 
 class ComposerSceneController implements SetupSceneController {
-	title = "Choose composer shape";
-	subtitle = "Pick the prompt and status line layout for your workflow.";
+	title = t("Choose composer shape");
+	subtitle = t("Pick the prompt and status line layout for your workflow.");
 	#selectList: SelectList;
 	#shapes: readonly ComposerShape[];
 	#items: readonly SelectItem[];
@@ -65,11 +66,11 @@ class ComposerSceneController implements SetupSceneController {
 
 	render(width: number, maxLines?: number): readonly string[] {
 		const budget = maxLines ?? Number.POSITIVE_INFINITY;
-		const lines = [theme.fg("muted", "Select a layout; live preview updates below. Press Enter to confirm."), ""];
+		const lines = [theme.fg("muted", t("Select a layout; live preview updates below. Press Enter to confirm.")), ""];
 
 		const previewLines = renderComposerShapePreview(this.#currentShape, width, this.host.ctx.statusLine);
 		if (budget - lines.length - previewLines.length - 2 >= this.#items.length) {
-			lines.push(theme.fg("muted", "Preview:"), ...previewLines, "");
+			lines.push(theme.fg("muted", t("Preview:")), ...previewLines, "");
 		}
 
 		this.#listRowStart = lines.length;

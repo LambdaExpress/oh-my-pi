@@ -18,6 +18,7 @@ import {
 } from "@oh-my-pi/pi-tui";
 import { colorLuma, formatDuration, hexToRgb, logger, rgbToHex, sanitizeText } from "@oh-my-pi/pi-utils";
 import { formatProviderName } from "../../slash-commands/helpers/format";
+import { t } from "../../i18n";
 import { colorToAnsi } from "../theme/color";
 import { theme } from "../theme/theme";
 import { formatAbsoluteOnlyAmount } from "../usage-amounts";
@@ -394,7 +395,7 @@ export class UsageDashboardComponent implements Component {
 	#renderCardLines(card: ProviderCard, width: number): string[] {
 		const lines: string[] = [];
 		const cardStatus = card.unlimited ? "ok" : aggregateRowStatus(card.windows);
-		const accountsText = card.accounts > 1 ? theme.fg("dim", `${card.accounts} accts`) : "";
+		const accountsText = card.accounts > 1 ? theme.fg("dim", t("{count} accts", { count: card.accounts })) : "";
 		const titleBudget = width - 2 - visibleWidth(accountsText) - (accountsText ? 1 : 0);
 		const title = theme.bold(truncateToWidth(card.name, Math.max(4, titleBudget)));
 		const titlePad = Math.max(0, width - 2 - visibleWidth(title) - visibleWidth(accountsText));
@@ -403,13 +404,19 @@ export class UsageDashboardComponent implements Component {
 		if (card.savedResets !== undefined) {
 			lines.push(
 				truncateToWidth(
-					`  ${theme.fg("accent", `${card.savedResets} saved reset${card.savedResets === 1 ? "" : "s"}`)}`,
+					`  ${theme.fg(
+						"accent",
+						t("{count} saved reset{s}", {
+							count: card.savedResets,
+							s: card.savedResets === 1 ? "" : "s",
+						}),
+					)}`,
 					width,
 				),
 			);
 		}
 		if (card.unlimited) {
-			lines.push(`  ${theme.fg("dim", "no limits")}`);
+			lines.push(`  ${theme.fg("dim", t("no limits"))}`);
 			return lines;
 		}
 
@@ -434,7 +441,7 @@ export class UsageDashboardComponent implements Component {
 				? `${theme.fg("muted", basePlain)} ${theme.fg("dim", tagPlain)}`
 				: theme.fg("muted", basePlain);
 			if (window.fraction === undefined) {
-				const text = theme.fg("dim", window.usedText ?? "no data");
+				const text = theme.fg("dim", window.usedText ?? t("no data"));
 				lines.push(truncateToWidth(`  ${label} ${text}`, width));
 				continue;
 			}
@@ -444,12 +451,12 @@ export class UsageDashboardComponent implements Component {
 			const resetText = resetWidth > 0 ? ` ${theme.fg("dim", resetPlain.padStart(resetWidth))}` : "";
 			lines.push(`  ${label} ${this.#miniBar(window.fraction, window.status, barWidth)}${pctText}${resetText}`);
 		}
-		if (hidden > 0) lines.push(`  ${theme.fg("dim", `+${hidden} more`)}`);
+		if (hidden > 0) lines.push(`  ${theme.fg("dim", t("+{count} more", { count: hidden }))}`);
 		return lines;
 	}
 
 	#renderCardsGrid(innerWidth: number): string[] {
-		if (this.#cards.length === 0) return [theme.fg("dim", "No usage data available.")];
+		if (this.#cards.length === 0) return [theme.fg("dim", t("No usage data available."))];
 		const active = this.#cards.filter(card => !card.idle);
 		const idle = this.#cards.filter(card => card.idle);
 		const columns = Math.max(1, Math.floor((innerWidth + CARD_GUTTER) / (CARD_MIN_WIDTH + CARD_GUTTER)));
@@ -509,12 +516,17 @@ export class UsageDashboardComponent implements Component {
 		if (!points) {
 			if (this.#activityError) {
 				const detail = formatActivityErrorDetail(this.#activityError);
-				return [theme.fg("dim", detail ? `Usage history unavailable (${detail}).` : "Usage history unavailable.")];
+				return [
+					theme.fg(
+						"dim",
+						detail ? t("Usage history unavailable ({detail}).", { detail }) : t("Usage history unavailable."),
+					),
+				];
 			}
-			return [theme.fg("dim", "Loading usage history…")];
+			return [theme.fg("dim", t("Loading usage history…"))];
 		}
 		if (this.#activityError) {
-			summary.push(theme.fg("dim", "Usage history refresh failed; showing cached activity."));
+			summary.push(theme.fg("dim", t("Usage history refresh failed; showing cached activity.")));
 			summary.push("");
 		}
 
@@ -531,9 +543,13 @@ export class UsageDashboardComponent implements Component {
 		const requests = new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(
 			layout.totalRequests,
 		);
-		summary.push(
-			`${theme.bold(theme.fg("accent", "Activity"))} ${theme.fg("dim", `${cost} · ${requests} requests · last ${weeks} weeks`)}${this.#syncing ? theme.fg("dim", " · syncing…") : ""}`,
+		const activityTitle = theme.bold(theme.fg("accent", t("Activity")));
+		const activityBody = theme.fg(
+			"dim",
+			t("{cost} · {requests} requests · last {weeks} weeks", { cost, requests, weeks }),
 		);
+		const syncingText = this.#syncing ? theme.fg("dim", ` · ${t("syncing…")}`) : "";
+		summary.push(`${activityTitle} ${activityBody}${syncingText}`);
 		summary.push("");
 
 		let monthLine = " ".repeat(labelWidth);
@@ -590,8 +606,10 @@ export class UsageDashboardComponent implements Component {
 		if (this.#scroll > maxScroll) this.#scroll = maxScroll;
 
 		const latestFetchedAt = Math.max(0, ...this.#options.reports.map(report => report.fetchedAt ?? 0));
-		const checkedText = latestFetchedAt ? `checked ${formatDuration(this.#nowMs - latestFetchedAt)} ago` : "";
-		const title = this.#view === "detail" ? "Usage · Details" : "Usage";
+		const checkedText = latestFetchedAt
+			? t("checked {duration} ago", { duration: formatDuration(this.#nowMs - latestFetchedAt) })
+			: "";
+		const title = this.#view === "detail" ? t("Usage · Details") : t("Usage");
 
 		const out: string[] = [];
 		out.push(topBorder(width, title));

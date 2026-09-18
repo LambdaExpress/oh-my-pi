@@ -25,6 +25,7 @@ import {
 	isUserSourceEnabled,
 	loadCapability,
 } from "../../../discovery";
+import { t } from "../../../i18n";
 import { readDisabledServers, readEnabledServers } from "../../../mcp/config-writer";
 import { commandPreview } from "./inspector-model";
 import { inferMcpTransport } from "./mcp-runtime";
@@ -278,7 +279,7 @@ export async function loadAllExtensions(cwd?: string, disabledIds?: string[]): P
 				kind: "context-file",
 				name,
 				displayName: name,
-				description: file.level === "user" ? "User-level context" : "Project-level context",
+				description: file.level === "user" ? t("User-level context") : t("Project-level context"),
 				path: file.path,
 				source: sourceFromMeta(file._source),
 				state,
@@ -413,25 +414,25 @@ export function applyFilter(extensions: Extension[], query: string): Extension[]
 function getKindDisplayName(kind: ExtensionKind): string {
 	switch (kind) {
 		case "extension-module":
-			return "Extension Modules";
+			return t("Extension Modules");
 		case "skill":
-			return "Skills";
+			return t("Skills");
 		case "rule":
-			return "Rules";
+			return t("Rules");
 		case "tool":
-			return "Tools";
+			return t("Tools");
 		case "mcp":
-			return "MCP Servers";
+			return t("MCP Servers");
 		case "prompt":
-			return "Prompts";
+			return t("Prompts");
 		case "instruction":
-			return "Instructions";
+			return t("Instructions");
 		case "context-file":
-			return "Context Files";
+			return t("Context Files");
 		case "hook":
-			return "Hooks";
+			return t("Hooks");
 		case "slash-command":
-			return "Slash Commands";
+			return t("Slash Commands");
 		default:
 			return kind;
 	}

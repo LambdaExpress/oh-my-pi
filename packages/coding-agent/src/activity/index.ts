@@ -1,5 +1,6 @@
 import type { Stats } from "node:fs";
 import * as fs from "node:fs/promises";
+import { t } from "../i18n";
 import type { AgentProgress } from "../task/types";
 
 export type AgentActivityKind = "response" | "tool" | "irc" | "lifecycle";
@@ -110,21 +111,21 @@ function argumentsSummary(toolName: string, value: unknown): string {
 	if (intent) return intent;
 	switch (toolName) {
 		case "read":
-			return firstString(args, "path") ?? "Read resource";
+			return firstString(args, "path") ?? t("Read resource");
 		case "grep": {
 			const pattern = firstString(args, "pattern");
 			const path = firstString(args, "path");
-			return [pattern, path].filter(Boolean).join(" · ") || "Search text";
+			return [pattern, path].filter(Boolean).join(" · ") || t("Search text");
 		}
 		case "glob":
-			return firstString(args, "path") ?? "Map files";
+			return firstString(args, "path") ?? t("Map files");
 		case "bash":
-			return firstString(args, "command") ?? "Run command";
+			return firstString(args, "command") ?? t("Run command");
 		case "write":
 		case "edit":
-			return firstString(args, "path") ?? `${toolName === "write" ? "Write" : "Edit"} files`;
+			return firstString(args, "path") ?? (toolName === "write" ? t("Write files") : t("Edit files"));
 		case "hub": {
-			const op = firstString(args, "op") ?? "operate";
+			const op = firstString(args, "op") ?? t("operate");
 			const target = firstString(args, "to", "name", "from");
 			return target ? `${op} · ${target}` : op;
 		}
@@ -209,7 +210,7 @@ export function activityRowsFromProgress(progress: AgentProgress, lastUpdate = D
 		timestamp: lastUpdate,
 		kind: "lifecycle",
 		title: progress.status ?? "running",
-		summary: progress.task ?? progress.description ?? "Agent activity",
+		summary: progress.task ?? progress.description ?? t("Agent activity"),
 		status:
 			progress.status === "completed"
 				? "success"
@@ -227,7 +228,7 @@ export function activityRowsFromProgress(progress: AgentProgress, lastUpdate = D
 			agentId: progress.id,
 			timestamp: lastUpdate,
 			kind: "response",
-			title: "Response",
+			title: t("Response"),
 			summary: response,
 			status: progress.status === "failed" ? "error" : progress.status === "aborted" ? "aborted" : "pending",
 			source: "live",
@@ -428,7 +429,7 @@ export class AgentActivityIndex {
 							agentId,
 							timestamp,
 							kind: "response",
-							title: "Response",
+							title: t("Response"),
 							summary: response,
 							status: message.isError ? "error" : "success",
 							entryId: entry.id,

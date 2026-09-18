@@ -16,6 +16,7 @@ import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { CustomCommand, CustomCommandAPI } from "../../../../extensibility/custom-commands/types";
 import type { HookCommandContext } from "../../../../extensibility/hooks/types";
+import { t } from "../../../../i18n";
 import reviewCustomRequestTemplate from "../../../../prompts/review-custom-request.md" with { type: "text" };
 import reviewHeadlessRequestTemplate from "../../../../prompts/review-headless-request.md" with { type: "text" };
 import reviewRequestTemplate from "../../../../prompts/review-request.md" with { type: "text" };
@@ -381,8 +382,9 @@ function buildReviewPromptFromDiff(
 
 	const stats = parseDiff(diffText);
 	if (stats.files.length === 0) {
-		if (ctx.hasUI)
-			ctx.ui.notify(options.filteredMessage ?? "No reviewable files (all changes filtered out)", "warning");
+		if (ctx.hasUI) {
+			ctx.ui.notify(options.filteredMessage ?? t("No reviewable files (all changes filtered out)"), "warning");
+		}
 		return undefined;
 	}
 
@@ -491,32 +493,32 @@ export class ReviewCommand implements CustomCommand {
 
 		const choices: Array<{ label: string; value: ReviewMenuChoice }> = [
 			...findRecentPrRefs(ctx, REVIEW_CONTEXT_PR_LIMIT).map(ref => ({
-				label: `Review PR ${ref.repo}#${ref.number} from conversation`,
+				label: t("Review PR {repo}#{number} from conversation", { repo: ref.repo, number: ref.number }),
 				value: { kind: "detected-pr" as const, ref },
 			})),
 			{
-				label: "1. Review against a base branch (PR Style)",
+				label: t("1. Review against a base branch (PR Style)"),
 				value: { kind: "base-branch" },
 			},
 			{
-				label: "2. Review uncommitted changes",
+				label: t("2. Review uncommitted changes"),
 				value: { kind: "uncommitted" },
 			},
 			{
-				label: "3. Review a specific commit",
+				label: t("3. Review a specific commit"),
 				value: { kind: "commit" },
 			},
 		];
 
 		if (!extraInstructions) {
 			choices.push({
-				label: "4. Custom review instructions",
+				label: t("4. Custom review instructions"),
 				value: { kind: "custom" },
 			});
 		}
 
 		const selected = await ctx.ui.select(
-			"Review Mode",
+			t("Review Mode"),
 			choices.map(choice => choice.label),
 		);
 		if (!selected) return undefined;
@@ -531,11 +533,11 @@ export class ReviewCommand implements CustomCommand {
 			case "base-branch": {
 				const branches = await getGitBranches(this.api);
 				if (branches.length === 0) {
-					ctx.ui.notify("No git branches found", "error");
+					ctx.ui.notify(t("No git branches found"), "error");
 					return undefined;
 				}
 
-				const baseBranch = await ctx.ui.select("Select base branch to compare against", branches);
+				const baseBranch = await ctx.ui.select(t("Select base branch to compare against"), branches);
 				if (!baseBranch) return undefined;
 
 				const currentBranch = await getCurrentBranch(this.api);
@@ -548,12 +550,23 @@ export class ReviewCommand implements CustomCommand {
 					if (!mergeBase) {
 						// No common ancestor: `git diff base...head` aborts here
 						// rather than comparing unrelated trees tip-to-tip.
-						ctx.ui.notify(`No common history between ${baseBranch} and ${currentBranch}`, "error");
+						ctx.ui.notify(
+							t("No common history between {base} and {head}", {
+								base: baseBranch,
+								head: currentBranch,
+							}),
+							"error",
+						);
 						return undefined;
 					}
 					diffText = await repository.diffText({ base: mergeBase, head: currentBranch });
 				} catch (err) {
-					ctx.ui.notify(`Failed to get diff: ${err instanceof Error ? err.message : String(err)}`, "error");
+					ctx.ui.notify(
+						t("Failed to get diff: {error}", {
+							error: err instanceof Error ? err.message : String(err),
+						}),
+						"error",
+					);
 					return undefined;
 				}
 
@@ -568,7 +581,12 @@ export class ReviewCommand implements CustomCommand {
 
 			case "uncommitted": {
 				const reviewDiff = await getUncommittedReviewDiff(this.api).catch(err => {
-					ctx.ui.notify(`Failed to get diff: ${err instanceof Error ? err.message : String(err)}`, "error");
+					ctx.ui.notify(
+						t("Failed to get diff: {error}", {
+							error: err instanceof Error ? err.message : String(err),
+						}),
+						"error",
+					);
 					return undefined;
 				});
 				if (!reviewDiff) return undefined;
@@ -578,7 +596,7 @@ export class ReviewCommand implements CustomCommand {
 					reviewDiff.mode,
 					reviewDiff.diffText,
 					extraInstructions,
-					reviewDiff.emptyMessage ?? "No diff content found",
+					reviewDiff.emptyMessage ?? t("No diff content found"),
 					{ diffInstruction: reviewDiff.diffInstruction },
 				);
 			}
@@ -586,11 +604,11 @@ export class ReviewCommand implements CustomCommand {
 			case "commit": {
 				const commits = await getRecentCommits(this.api, 20);
 				if (commits.length === 0) {
-					ctx.ui.notify("No commits found", "error");
+					ctx.ui.notify(t("No commits found"), "error");
 					return undefined;
 				}
 
-				const selectedCommit = await ctx.ui.select("Select commit to review", commits);
+				const selectedCommit = await ctx.ui.select(t("Select commit to review"), commits);
 				if (!selectedCommit) return undefined;
 
 				const hash = selectedCommit.split(" ")[0];
@@ -600,7 +618,12 @@ export class ReviewCommand implements CustomCommand {
 					const result = await vcs.requireGit(this.api.cwd).showCommit(hash);
 					diffText = result.data.toString("utf8");
 				} catch (err) {
-					ctx.ui.notify(`Failed to get commit: ${err instanceof Error ? err.message : String(err)}`, "error");
+					ctx.ui.notify(
+						t("Failed to get commit: {error}", {
+							error: err instanceof Error ? err.message : String(err),
+						}),
+						"error",
+					);
 					return undefined;
 				}
 
@@ -609,14 +632,14 @@ export class ReviewCommand implements CustomCommand {
 					`Reviewing commit \`${hash}\``,
 					diffText,
 					extraInstructions,
-					"Commit has no diff content",
-					{ filteredMessage: "No reviewable files in commit (all changes filtered out)" },
+					t("Commit has no diff content"),
+					{ filteredMessage: t("No reviewable files in commit (all changes filtered out)") },
 				);
 			}
 
 			case "custom": {
 				const instructions = await ctx.ui.editor(
-					"Enter custom review instructions",
+					t("Enter custom review instructions"),
 					"Review the following:\n\n",
 					undefined,
 					{ promptStyle: true },
@@ -667,7 +690,7 @@ async function getUncommittedReviewDiff(api: CustomCommandAPI): Promise<CurrentR
 	return {
 		diffText,
 		diffInstruction: isJj ? JJ_UNCOMMITTED_DIFF_INSTRUCTION : GIT_UNCOMMITTED_DIFF_INSTRUCTION,
-		emptyMessage: isJj || !diffText.trim() ? "No uncommitted changes found" : "No diff content found",
+		emptyMessage: isJj || !diffText.trim() ? t("No uncommitted changes found") : t("No diff content found"),
 		mode: isJj ? "Reviewing JJ working-copy changes" : "Reviewing uncommitted changes (staged + unstaged)",
 	};
 }

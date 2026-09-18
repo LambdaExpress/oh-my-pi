@@ -9,6 +9,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { Container, Markdown, Text, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { formatNumber, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import { formatContextUsage } from "../modes/components/status-line/context-thresholds";
 import { getMarkdownTheme, type Theme } from "../modes/theme/theme";
 import { stripGeneratedOutputNotice, stripRawOutputArtifactNotice } from "../tools/output-meta";
@@ -66,7 +67,7 @@ type TaskRenderOptions = RenderResultOptions & { renderContext?: TaskRenderConte
 const MAX_NESTED_TASK_RENDER_DEPTH = 8;
 
 function renderNestedCycleLine(theme: Theme): string {
-	return theme.fg("dim", "… nested task progress already shown");
+	return theme.fg("dim", t("… nested task progress already shown"));
 }
 
 /**
@@ -108,7 +109,7 @@ function appendAgentStats(
 		line += `${theme.sep.dot}${theme.fg("dim", `${formatNumber(opts.toolCount)} ${theme.icon.extensionTool}`)}`;
 	}
 	if (opts.requests) {
-		line += `${theme.sep.dot}${theme.fg("dim", `${formatNumber(opts.requests)} req`)}`;
+		line += `${theme.sep.dot}${theme.fg("dim", t("{count} req", { count: formatNumber(opts.requests) }))}`;
 	}
 	// Current per-turn context — match the status line's `<pct>%/<window>` gauge (e.g. `5.1%/1M`).
 	if (opts.contextTokens && opts.contextTokens > 0) {
@@ -125,7 +126,7 @@ function appendAgentStats(
 }
 
 function formatFindingSummary(findings: FindingDetails[], theme: Theme): string {
-	if (findings.length === 0) return theme.fg("dim", "Findings: none");
+	if (findings.length === 0) return theme.fg("dim", t("Findings: none"));
 
 	const counts: { [P in FindingPriority]?: number } = {};
 	for (const finding of findings) {
@@ -140,7 +141,7 @@ function formatFindingSummary(findings: FindingDetails[], theme: Theme): string 
 		parts.push(theme.styledSymbol(symbol, color) ? `${theme.styledSymbol(symbol, color)} ${text}` : text);
 	}
 
-	return `${theme.fg("dim", "Findings:")} ${parts.join(theme.sep.dot)}`;
+	return `${theme.fg("dim", t("Findings:"))} ${parts.join(theme.sep.dot)}`;
 }
 
 function normalizeFindings(value: unknown): FindingDetails[] {
@@ -253,8 +254,8 @@ function getRenderYieldLabels(type: RenderYieldItem["type"]): string[] {
 }
 
 function formatYieldPreview(item: RenderYieldItem): string {
-	if (item.useLastTurn === true && item.data === undefined) return "last assistant turn";
-	if (item.data === undefined) return "last assistant turn";
+	if (item.useLastTurn === true && item.data === undefined) return t("last assistant turn");
+	if (item.data === undefined) return t("last assistant turn");
 	if (typeof item.data === "string") return previewLine(replaceTabs(sanitizeText(item.data)), 70);
 	try {
 		return previewLine(replaceTabs(sanitizeText(JSON.stringify(item.data) ?? "null")), 70);
@@ -354,13 +355,13 @@ function renderJsonTreeLines(
 		const scalar = formatJsonScalar(val, theme);
 
 		if (scalar) {
-			const label = key ? theme.fg("muted", sanitizeText(key)) : theme.fg("muted", "value");
+			const label = key ? theme.fg("muted", sanitizeText(key)) : theme.fg("muted", t("value"));
 			pushLine(`${prefix}${iconScalar} ${label}: ${theme.fg("dim", scalar)}`);
 			return;
 		}
 
 		if (Array.isArray(val)) {
-			const header = key ? theme.fg("muted", sanitizeText(key)) : theme.fg("muted", "array");
+			const header = key ? theme.fg("muted", sanitizeText(key)) : theme.fg("muted", t("array"));
 			pushLine(`${prefix}${iconArray} ${header}`);
 			if (val.length === 0) {
 				pushLine(
@@ -392,7 +393,7 @@ function renderJsonTreeLines(
 		}
 
 		if (val && typeof val === "object") {
-			const header = key ? theme.fg("muted", sanitizeText(key)) : theme.fg("muted", "object");
+			const header = key ? theme.fg("muted", sanitizeText(key)) : theme.fg("muted", t("object"));
 			pushLine(`${prefix}${iconObject} ${header}`);
 			const entries = Object.entries(val as Record<string, unknown>);
 			if (entries.length === 0) {
@@ -425,7 +426,7 @@ function renderJsonTreeLines(
 			return;
 		}
 
-		const label = key ? theme.fg("muted", sanitizeText(key)) : theme.fg("muted", "value");
+		const label = key ? theme.fg("muted", sanitizeText(key)) : theme.fg("muted", t("value"));
 		pushLine(`${prefix}${iconScalar} ${label}: ${theme.fg("dim", sanitizeText(String(val)))}`);
 	};
 
@@ -510,7 +511,7 @@ function renderOutputSection(
 	if (!trimmedOutput && !warning) return lines;
 
 	if (warning) {
-		lines.push(`${continuePrefix}${theme.fg("dim", "Output")}`);
+		lines.push(`${continuePrefix}${theme.fg("dim", t("Output"))}`);
 		lines.push(
 			`${continuePrefix}  ${theme.fg("warning", theme.status.warning)} ${theme.fg(
 				"dim",
@@ -572,7 +573,7 @@ function renderOutputSection(
 			}
 
 			// Expanded: tree format
-			lines.push(`${continuePrefix}${theme.fg("dim", "Output")}`);
+			lines.push(`${continuePrefix}${theme.fg("dim", t("Output"))}`);
 			const tree = renderJsonTreeLines(parsed, theme, expanded ? 6 : 2, expanded ? 24 : 6);
 			if (tree.lines.length > 0) {
 				for (const line of tree.lines) {
@@ -588,7 +589,7 @@ function renderOutputSection(
 		}
 	}
 
-	lines.push(`${continuePrefix}${theme.fg("dim", "Output")}`);
+	lines.push(`${continuePrefix}${theme.fg("dim", t("Output"))}`);
 
 	const outputLines = trimmedOutput.split("\n");
 	const previewCount = expanded ? maxExpanded : maxCollapsed;
@@ -614,7 +615,7 @@ function renderTaskSection(
 	const trimmed = sanitizeText(task).trim();
 	if (!expanded || !trimmed) return lines;
 
-	lines.push(`${continuePrefix}${theme.fg("dim", "Task")}`);
+	lines.push(`${continuePrefix}${theme.fg("dim", t("Task"))}`);
 	const taskLines = trimmed.split("\n");
 	for (const line of taskLines.slice(0, maxExpanded)) {
 		lines.push(`${continuePrefix}  ${theme.fg("dim", truncateToWidth(replaceTabs(line), 70))}`);
@@ -634,40 +635,49 @@ function formatScalarInline(value: unknown, maxLen: number, _theme: Theme): stri
 	if (typeof value === "string") {
 		const sanitizedValue = sanitizeText(value);
 		const firstLine = sanitizedValue.split("\n")[0].trim();
-		if (firstLine.length === 0) return `"" (${sanitizedValue.split("\n").length} lines)`;
+		if (firstLine.length === 0) {
+			return `"" ${t("({count} lines)", { count: sanitizedValue.split("\n").length })}`;
+		}
 		const preview = truncateToWidth(firstLine, maxLen);
-		if (sanitizedValue.includes("\n")) return `"${preview}…" (${sanitizedValue.split("\n").length} lines)`;
+		if (sanitizedValue.includes("\n")) {
+			return `"${preview}…" ${t("({count} lines)", { count: sanitizedValue.split("\n").length })}`;
+		}
 		return `"${preview}"`;
 	}
-	if (Array.isArray(value)) return `[${value.length} items]`;
+	if (Array.isArray(value)) return t("[{count} items]", { count: value.length });
 	if (typeof value === "object") {
 		const keys = Object.keys(value);
-		return `{${keys.length} keys}`;
+		return t("{count} keys}", { count: keys.length });
 	}
 	return sanitizeText(String(value));
 }
 
 function formatOutputInline(data: unknown, theme: Theme, maxWidth = 80): string {
-	if (data === null || data === undefined) return "Output: none";
+	if (data === null || data === undefined) return t("Output: none");
 
 	// For scalars, show directly
 	if (typeof data !== "object") {
-		return `Output: ${formatScalarInline(data, 60, theme)}`;
+		return t("Output: {value}", { value: formatScalarInline(data, 60, theme) });
 	}
 
 	// For arrays, show count and first element preview
 	if (Array.isArray(data)) {
-		if (data.length === 0) return "Output: []";
+		if (data.length === 0) return t("Output: []");
 		const preview = formatScalarInline(data[0], 40, theme);
-		return `Output: [${data.length} items] ${preview}${data.length > 1 ? "…" : ""}`;
+		return t("Output: [{count} items] {preview}{ellipsis}", {
+			count: data.length,
+			preview,
+			ellipsis: data.length > 1 ? "…" : "",
+		});
 	}
 
 	// For objects, show key=value pairs inline
 	const entries = Object.entries(data as Record<string, unknown>);
-	if (entries.length === 0) return "Output: {}";
+	if (entries.length === 0) return t("Output: {}");
 
 	const pairs: string[] = [];
-	let totalLen = "Output: ".length;
+	const outputPrefix = t("Output: {value}", { value: "" });
+	let totalLen = outputPrefix.length;
 
 	for (const [key, value] of entries) {
 		const valueStr = formatScalarInline(value, 24, theme);
@@ -683,7 +693,7 @@ function formatOutputInline(data: unknown, theme: Theme, maxWidth = 80): string 
 		totalLen += addLen;
 	}
 
-	return `Output: ${pairs.join(", ")}`;
+	return `${outputPrefix}${pairs.join(", ")}`;
 }
 
 /**
@@ -728,7 +738,7 @@ function renderTaskCallLines(args: Partial<TaskParams> | undefined, theme: Theme
 	const idLabel = rawName ? formatTaskId(rawName) : "";
 	const brief = taskFirstLine(args.task);
 	if (idLabel || brief) {
-		let line = `${bullet} ${theme.fg("accent", theme.bold(idLabel || "agent"))}`;
+		let line = `${bullet} ${theme.fg("accent", theme.bold(idLabel || t("agent")))}`;
 		if (brief) {
 			line += `: ${theme.fg("muted", previewLine(brief, 64))}`;
 		}
@@ -768,7 +778,7 @@ function renderTaskItemLines(tasks: TaskItem[] | undefined, theme: Theme): strin
 		}
 		line += agentTypeBadge(item?.agent, theme);
 		if (item?.isolated === true) {
-			line += theme.fg("dim", " [isolated]");
+			line += theme.fg("dim", ` [${t("isolated")}]`);
 		}
 		lines.push(line);
 	}
@@ -872,7 +882,7 @@ export function renderCall(args: TaskParams, options: TaskRenderOptions, theme: 
 
 		return {
 			header,
-			headerMeta: showIsolated ? "isolated" : undefined,
+			headerMeta: showIsolated ? t("isolated") : undefined,
 			sections,
 			state: "pending",
 			borderColor: "borderMuted",
@@ -924,9 +934,9 @@ function renderAgentProgress(
 	let statusBadge = "";
 	// Provider retry state takes precedence over the generic failure marker.
 	if (progress.retryState && progress.status === "running") {
-		statusBadge = ` ${formatBadge("retrying", "warning", theme)}`;
+		statusBadge = ` ${formatBadge(t("retrying"), "warning", theme)}`;
 	} else if (progress.retryFailure && (progress.status === "failed" || progress.status === "aborted")) {
-		statusBadge = ` ${formatBadge("rate-limited", "error", theme)}`;
+		statusBadge = ` ${formatBadge(t("rate-limited"), "error", theme)}`;
 	} else if (progress.status === "failed" || progress.status === "aborted") {
 		statusBadge = ` ${formatBadge(progress.status, iconColor, theme)}`;
 	}
@@ -1033,15 +1043,19 @@ function renderAgentProgress(
 	// keep spinning while a child sleeps on a 3-hour provider rate-limit.
 	if (progress.retryState && progress.status === "running") {
 		const remainingMs = Math.max(0, progress.retryState.startedAtMs + progress.retryState.delayMs - nowMs);
-		const waitLabel = remainingMs > 0 ? `in ${formatDuration(remainingMs)}` : "now";
+		const waitLabel = remainingMs > 0 ? t("in {duration}", { duration: formatDuration(remainingMs) }) : t("now");
 		const summary =
-			`retrying ${progress.retryState.attempt}/${progress.retryState.maxAttempts} ${waitLabel}: ` +
-			previewLine(sanitizeText(progress.retryState.errorMessage), 60);
+			`${t("retrying {attempt}/{max} {wait}", {
+				attempt: progress.retryState.attempt,
+				max: progress.retryState.maxAttempts,
+				wait: waitLabel,
+			})}: ` + previewLine(sanitizeText(progress.retryState.errorMessage), 60);
 		lines.push(`${continuePrefix}${theme.tree.hook} ${theme.fg("warning", summary)}`);
 	} else if (progress.retryFailure && progress.status !== "running") {
-		const summary = `auto-retry gave up after ${progress.retryFailure.attempt} attempt${
-			progress.retryFailure.attempt === 1 ? "" : "s"
-		}: ${previewLine(sanitizeText(progress.retryFailure.errorMessage), 80)}`;
+		const summary = `${t("auto-retry gave up after {count} attempt{s}", {
+			count: progress.retryFailure.attempt,
+			s: progress.retryFailure.attempt === 1 ? "" : "s",
+		})}: ${previewLine(sanitizeText(progress.retryFailure.errorMessage), 80)}`;
 		lines.push(`${continuePrefix}${theme.tree.hook} ${theme.fg("error", summary)}`);
 	}
 
@@ -1169,16 +1183,18 @@ function renderReviewResult(
 		? theme.styledSymbol("status.done", "accent")
 		: theme.fg(verdictColor, theme.status.error);
 	lines.push(
-		`${continuePrefix} Patch is ${theme.fg(verdictColor, summary.overall_correctness)} ${verdictIcon} ${theme.fg(
+		`${continuePrefix} ${t("Patch is {verdict}", {
+			verdict: theme.fg(verdictColor, summary.overall_correctness),
+		})} ${verdictIcon} ${theme.fg(
 			"dim",
-			`(${(summary.confidence * 100).toFixed(0)}% confidence)`,
+			t("({percent}% confidence)", { percent: (summary.confidence * 100).toFixed(0) }),
 		)}`,
 	);
 
 	// Explanation preview (first ~80 chars when collapsed, full when expanded)
 	if (summary.explanation) {
 		if (expanded) {
-			lines.push(`${continuePrefix}${theme.fg("dim", "Summary")}`);
+			lines.push(`${continuePrefix}${theme.fg("dim", t("Summary"))}`);
 			const explanationLines = sanitizeText(summary.explanation).split("\n");
 			for (const line of explanationLines) {
 				lines.push(`${continuePrefix}  ${theme.fg("dim", replaceTabs(line))}`);
@@ -1221,7 +1237,7 @@ function renderFindings(findings: FindingDetails[], continuePrefix: string, expa
 		const findingContinue = isLastFinding ? "   " : `${theme.tree.vertical}  `;
 
 		const { color } = getPriorityInfo(finding.priority);
-		const rawTitle = sanitizeText(finding.title?.replace(/^\[P\d\]\s*/, "") ?? "Untitled");
+		const rawTitle = sanitizeText(finding.title?.replace(/^\[P\d\]\s*/, "") ?? t("Untitled"));
 		const titleText = replaceTabs(rawTitle).replace(/[\r\n]+/g, " ");
 		const loc = `${path.basename(sanitizeText(finding.file_path || "<unknown>"))}:${finding.line_start}`;
 
@@ -1275,14 +1291,14 @@ function renderAgentResult(
 				: theme.status.error;
 	const iconColor = needsWarning ? "warning" : success ? "success" : mergeFailed ? "warning" : "error";
 	const statusText = aborted
-		? "aborted"
+		? t("aborted")
 		: needsWarning
-			? "warning"
+			? t("warning")
 			: success
-				? "done"
+				? t("done")
 				: mergeFailed
-					? "merge failed"
-					: "failed";
+					? t("merge failed")
+					: t("failed");
 
 	// Reserve the name and required badges before optional model metadata and details.
 	const fullDescription = result.description ? replaceTabs(sanitizeText(result.description)).trim() : undefined;
@@ -1527,11 +1543,11 @@ function formatHiddenProgressLine(hidden: readonly AgentProgress[], theme: Theme
 	};
 	for (const p of hidden) counts[p.status]++;
 	const parts: string[] = [];
-	if (counts.completed > 0) parts.push(theme.fg("dim", `${counts.completed} done`));
-	if (counts.running > 0) parts.push(theme.fg("dim", `${counts.running} running`));
-	if (counts.pending > 0) parts.push(theme.fg("dim", `${counts.pending} pending`));
-	if (counts.failed > 0) parts.push(theme.fg("error", `${counts.failed} failed`));
-	if (counts.aborted > 0) parts.push(theme.fg("error", `${counts.aborted} aborted`));
+	if (counts.completed > 0) parts.push(theme.fg("dim", t("{count} done", { count: counts.completed })));
+	if (counts.running > 0) parts.push(theme.fg("dim", t("{count} running", { count: counts.running })));
+	if (counts.pending > 0) parts.push(theme.fg("dim", t("{count} pending", { count: counts.pending })));
+	if (counts.failed > 0) parts.push(theme.fg("error", t("{count} failed", { count: counts.failed })));
+	if (counts.aborted > 0) parts.push(theme.fg("error", t("{count} aborted", { count: counts.aborted })));
 	const breakdown =
 		parts.length > 0
 			? `${theme.fg("dim", " (")}${parts.join(theme.fg("dim", theme.sep.dot))}${theme.fg("dim", ")")}`
@@ -1629,7 +1645,8 @@ export function renderResult(
 	// Header meta is the spawn count only; each row carries its own ⟨agent⟩
 	// badge, so a joined type list here would repeat them. Before anything
 	// spawns, fall back to the flat form's agent type from the call args.
-	const countLabel = agentCount > 0 ? `${agentCount} ${agentCount === 1 ? "agent" : "agents"}` : undefined;
+	const countLabel =
+		agentCount > 0 ? t("{count} agent{s}", { count: agentCount, s: agentCount === 1 ? "" : "s" }) : undefined;
 	const metaLabel = countLabel ?? agentLabel;
 	const header = renderStatusLine(
 		{
@@ -1728,12 +1745,20 @@ export function renderResult(
 			}
 
 			const summaryParts: string[] = [];
-			if (abortedCount > 0) summaryParts.push(theme.fg("error", `${abortedCount} aborted`));
-			if (successCount > 0) summaryParts.push(theme.fg("success", `${successCount} succeeded`));
-			if (mergeFailedCount > 0) summaryParts.push(theme.fg("warning", `${mergeFailedCount} merge failed`));
-			if (failCount > 0) summaryParts.push(theme.fg("error", `${failCount} failed`));
+			if (abortedCount > 0) {
+				summaryParts.push(theme.fg("error", t("{count} aborted", { count: abortedCount })));
+			}
+			if (successCount > 0) {
+				summaryParts.push(theme.fg("success", t("{count} succeeded", { count: successCount })));
+			}
+			if (mergeFailedCount > 0) {
+				summaryParts.push(theme.fg("warning", t("{count} merge failed", { count: mergeFailedCount })));
+			}
+			if (failCount > 0) summaryParts.push(theme.fg("error", t("{count} failed", { count: failCount })));
 			const totalRequests = requestTotal;
-			if (totalRequests > 0) summaryParts.push(theme.fg("dim", `${formatNumber(totalRequests)} req`));
+			if (totalRequests > 0) {
+				summaryParts.push(theme.fg("dim", t("{count} req", { count: formatNumber(totalRequests) })));
+			}
 			summaryParts.push(theme.fg("dim", formatDuration(details.totalDurationMs)));
 			// Wrap the run summary in the theme's bracket glyphs (dim chrome, colored
 			// counts) to match the bash tool's `[Wall: … | Exit: …]` footer.
@@ -1748,7 +1773,7 @@ export function renderResult(
 		const borderColor = isError ? "error" : "borderMuted";
 
 		if (lines.length === 0) {
-			const text = fallbackText.trim() ? fallbackText : "No results";
+			const text = fallbackText.trim() ? fallbackText : t("No results");
 			return {
 				header,
 				sections: [
@@ -1874,7 +1899,7 @@ function renderNestedTaskResults(
 			continue;
 		}
 		if (depth >= MAX_NESTED_TASK_RENDER_DEPTH) {
-			lines.push(theme.fg("dim", "… nested task depth limit reached"));
+			lines.push(theme.fg("dim", t("… nested task depth limit reached")));
 			continue;
 		}
 		seen.add(details);
@@ -1921,7 +1946,7 @@ function renderNestedTaskTree(
 			continue;
 		}
 		if (depth >= MAX_NESTED_TASK_RENDER_DEPTH) {
-			lines.push(theme.fg("dim", "… nested task depth limit reached"));
+			lines.push(theme.fg("dim", t("… nested task depth limit reached")));
 			continue;
 		}
 		seen.add(details);

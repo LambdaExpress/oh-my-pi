@@ -12,6 +12,7 @@
 import type { Component } from "@oh-my-pi/pi-tui";
 import { Text } from "@oh-my-pi/pi-tui";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import type { Theme } from "../modes/theme/theme";
 import { Ellipsis, renderStatusLine, truncateToWidth } from "../tui";
 import {
@@ -86,7 +87,9 @@ function retainComponent(
 		}
 		const remaining = contents.length - shown.length;
 		if (remaining > 0) {
-			lines.push(`  ${theme.fg("dim", `… ${remaining} more`)} ${formatExpandHint(theme, expanded, true)}`);
+			lines.push(
+				`  ${theme.fg("dim", t("… {count} more", { count: remaining }))} ${formatExpandHint(theme, expanded, true)}`,
+			);
 		}
 		if (trailingLine) lines.push(trailingLine);
 		return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
@@ -100,13 +103,13 @@ export const retainToolRenderer = {
 	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
 		const contents = retainContents((args ?? {}) as RetainRenderArgs);
 		const first = contents[0];
-		if (!first) return { label: "Retain" };
-		const detail = contents.length > 1 ? `${first} (+${contents.length - 1} more)` : first;
-		return { label: "Retain", detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
+		if (!first) return { label: t("Retain") };
+		const detail = contents.length > 1 ? `${first} (${t("+{count} more", { count: contents.length - 1 })})` : first;
+		return { label: t("Retain"), detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
 	},
 	renderCall(args: RetainRenderArgs, options: RenderResultOptions, theme: Theme): Component {
 		const contents = retainContents(args);
-		const header = renderStatusLine({ icon: "pending", title: "Retain" }, theme);
+		const header = renderStatusLine({ icon: "pending", title: t("Retain") }, theme);
 		return retainComponent(contents, header, () => options.expanded, theme);
 	},
 	renderResult(
@@ -116,8 +119,8 @@ export const retainToolRenderer = {
 		args?: RetainRenderArgs,
 	): Component {
 		if (result.isError) {
-			const header = renderStatusLine({ icon: "error", title: "Retain" }, theme);
-			const error = formatErrorMessage(resultText(result) || "Retain failed", theme);
+			const header = renderStatusLine({ icon: "error", title: t("Retain") }, theme);
+			const error = formatErrorMessage(resultText(result) || t("Retain failed"), theme);
 			return retainComponent(retainContents(args), header, () => options.expanded, theme, error);
 		}
 		const contents = retainContents(args);
@@ -127,7 +130,7 @@ export const retainToolRenderer = {
 		const header = renderStatusLine(
 			{
 				iconOverride: theme.styledSymbol("tool.memory", "accent"),
-				title: "Retain",
+				title: t("Retain"),
 				meta: summary ? [summary] : undefined,
 			},
 			theme,
@@ -140,7 +143,7 @@ export const recallToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
 	renderCall(args: QueryRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
-		return new Text(queryHeader("Recall", args.query, "pending", theme), 0, 0);
+		return new Text(queryHeader(t("Recall"), args.query, "pending", theme), 0, 0);
 	},
 	renderResult(
 		result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
@@ -149,18 +152,18 @@ export const recallToolRenderer = {
 		args?: QueryRenderArgs,
 	): Component {
 		if (result.isError) {
-			const header = queryHeader("Recall", args?.query, "error", theme);
-			const error = formatErrorMessage(resultText(result) || "Recall failed", theme);
+			const header = queryHeader(t("Recall"), args?.query, "error", theme);
+			const error = formatErrorMessage(resultText(result) || t("Recall failed"), theme);
 			return new Text(`${header}\n${error}`, 0, 0);
 		}
 		const text = resultText(result);
 		const match = text.match(/^Found (\d+) relevant/);
 		const found = match ? Number(match[1]) : 0;
-		const meta = [found > 0 ? `${found} found` : "no matches"];
+		const meta = [found > 0 ? t("{count} found", { count: found }) : t("no matches")];
 		const header =
 			found > 0
-				? queryHeader("Recall", args?.query, "success", theme, meta, theme.styledSymbol("tool.memory", "accent"))
-				: queryHeader("Recall", args?.query, "warning", theme, meta);
+				? queryHeader(t("Recall"), args?.query, "success", theme, meta, theme.styledSymbol("tool.memory", "accent"))
+				: queryHeader(t("Recall"), args?.query, "warning", theme, meta);
 		if (found === 0) {
 			return new Text(header, 0, 0);
 		}
@@ -189,7 +192,7 @@ export const reflectToolRenderer = {
 	inline: true,
 	mergeCallAndResult: true,
 	renderCall(args: QueryRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
-		return new Text(queryHeader("Reflect", args.query, "pending", theme), 0, 0);
+		return new Text(queryHeader(t("Reflect"), args.query, "pending", theme), 0, 0);
 	},
 	renderResult(
 		result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
@@ -198,12 +201,12 @@ export const reflectToolRenderer = {
 		args?: QueryRenderArgs,
 	): Component {
 		if (result.isError) {
-			const header = queryHeader("Reflect", args?.query, "error", theme);
-			const error = formatErrorMessage(resultText(result) || "Reflect failed", theme);
+			const header = queryHeader(t("Reflect"), args?.query, "error", theme);
+			const error = formatErrorMessage(resultText(result) || t("Reflect failed"), theme);
 			return new Text(`${header}\n${error}`, 0, 0);
 		}
 		const header = queryHeader(
-			"Reflect",
+			t("Reflect"),
 			args?.query,
 			"success",
 			theme,
@@ -224,7 +227,7 @@ export const reflectToolRenderer = {
 				const remaining = answerLines.length - shown.length;
 				if (remaining > 0) {
 					lines.push(
-						`  ${theme.fg("dim", `… ${remaining} more lines`)} ${formatExpandHint(theme, expanded, true)}`,
+						`  ${theme.fg("dim", t("… {count} more lines", { count: remaining }))} ${formatExpandHint(theme, expanded, true)}`,
 					);
 				}
 				return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
@@ -251,7 +254,7 @@ function lessonRows(args: LearnRenderArgs | undefined, theme: Theme): string[] {
 	const lesson = replaceTabs((args?.memory ?? "").trim());
 	const rows = lesson.length > 0 ? lesson.split("\n").map(line => line.trimEnd()) : [];
 	const source = replaceTabs((args?.context ?? "").trim());
-	if (source.length > 0) rows.push(`${theme.fg("dim", "context: ")}${theme.fg("muted", source)}`);
+	if (source.length > 0) rows.push(`${theme.fg("dim", t("context: "))}${theme.fg("muted", source)}`);
 	return rows;
 }
 
@@ -272,7 +275,9 @@ function learnComponent(
 		}
 		const remaining = rows.length - shown.length;
 		if (remaining > 0) {
-			lines.push(`  ${theme.fg("dim", `… ${remaining} more lines`)} ${formatExpandHint(theme, expanded, true)}`);
+			lines.push(
+				`  ${theme.fg("dim", t("… {count} more lines", { count: remaining }))} ${formatExpandHint(theme, expanded, true)}`,
+			);
 		}
 		if (trailingLine) lines.push(trailingLine);
 		return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
@@ -291,11 +296,11 @@ export const learnToolRenderer = {
 	/** Folded row: `Learn: <lesson headline>`, so one-line mode still says what was remembered. */
 	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
 		const headline = lessonHeadline((args ?? {}) as LearnRenderArgs);
-		if (headline === undefined) return { label: "Learn" };
-		return { label: "Learn", detail: context.theme.fg("muted", sanitizeDisplayWarning(headline)) };
+		if (headline === undefined) return { label: t("Learn") };
+		return { label: t("Learn"), detail: context.theme.fg("muted", sanitizeDisplayWarning(headline)) };
 	},
 	renderCall(args: LearnRenderArgs, options: RenderResultOptions, theme: Theme): Component {
-		const header = renderStatusLine({ icon: "pending", title: "Learn" }, theme);
+		const header = renderStatusLine({ icon: "pending", title: t("Learn") }, theme);
 		return learnComponent(lessonRows(args, theme), header, () => options.expanded, theme);
 	},
 	renderResult(
@@ -305,8 +310,8 @@ export const learnToolRenderer = {
 		args?: LearnRenderArgs,
 	): Component {
 		if (result.isError) {
-			const header = renderStatusLine({ icon: "error", title: "Learn" }, theme);
-			const error = formatErrorMessage(resultText(result) || "Learn failed", theme);
+			const header = renderStatusLine({ icon: "error", title: t("Learn") }, theme);
+			const error = formatErrorMessage(resultText(result) || t("Learn failed"), theme);
 			return learnComponent(lessonRows(args, theme), header, () => options.expanded, theme, error);
 		}
 		// The tool's own outcome ("Lesson stored", "Created project managed skill …")
@@ -315,7 +320,7 @@ export const learnToolRenderer = {
 		const header = renderStatusLine(
 			{
 				iconOverride: theme.styledSymbol("tool.memory", "accent"),
-				title: "Learn",
+				title: t("Learn"),
 				meta: summary ? [summary] : undefined,
 			},
 			theme,

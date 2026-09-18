@@ -6,6 +6,7 @@ import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import { type AuthBrokerServerHandle, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
 import { runAuthBrokerCommand } from "@oh-my-pi/pi-coding-agent/cli/auth-broker-cli";
 import { getAgentDbPath, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const ORIGINAL_STDOUT_WRITE = process.stdout.write.bind(process.stdout);
 
@@ -25,6 +26,7 @@ describe("auth-broker import (CLIProxyAPI)", () => {
 	const savedEnv: Record<string, string | undefined> = {};
 
 	beforeEach(async () => {
+		setLocale("en"); // Assertions below match English CLI output.
 		originalAgentDir = process.env.OMP_AGENT_DIR;
 		savedEnv.OMP_AUTH_BROKER_URL = process.env.OMP_AUTH_BROKER_URL;
 		savedEnv.OMP_AUTH_BROKER_TOKEN = process.env.OMP_AUTH_BROKER_TOKEN;
@@ -36,6 +38,7 @@ describe("auth-broker import (CLIProxyAPI)", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		process.stdout.write = ORIGINAL_STDOUT_WRITE;
 		if (originalAgentDir === undefined) delete process.env.OMP_AGENT_DIR;
 		else process.env.OMP_AGENT_DIR = originalAgentDir;
@@ -207,6 +210,7 @@ describe("auth-broker import (broker-routed)", () => {
 	const savedEnv: Record<string, string | undefined> = {};
 
 	beforeEach(async () => {
+		setLocale("en"); // Assertions below match English CLI output.
 		savedEnv.OMP_AUTH_BROKER_URL = process.env.OMP_AUTH_BROKER_URL;
 		savedEnv.OMP_AUTH_BROKER_TOKEN = process.env.OMP_AUTH_BROKER_TOKEN;
 		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-import-client-"));
@@ -228,6 +232,7 @@ describe("auth-broker import (broker-routed)", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		await handle?.close();
 		brokerStorage?.close();
 		brokerStore?.close();

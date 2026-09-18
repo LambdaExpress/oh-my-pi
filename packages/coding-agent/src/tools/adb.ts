@@ -31,6 +31,7 @@ import {
 import { AdbUiAutomation } from "../adb/ui-automation";
 import type { AdbUiClickResult, AdbUiObservation, AdbUiWaitUntil } from "../adb/ui-types";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import { decodeStreamedToolArgs } from "../modes/controllers/tool-args-reveal";
 import type { Theme } from "../modes/theme/theme";
 import adbDescription from "../prompts/tools/adb.md" with { type: "text" };
@@ -1115,7 +1116,7 @@ function renderAdbCall(args: AdbRenderArgs, options: RenderResultOptions, uiThem
 				{
 					icon: running ? "running" : "pending",
 					spinnerFrame: options.spinnerFrame,
-					title: "ADB",
+					title: t("ADB"),
 					description: renderDescription(args) || undefined,
 				},
 				uiTheme,
@@ -1166,7 +1167,7 @@ export const adbToolRenderer = {
 					{
 						icon: running ? "running" : isPartial ? "pending" : isError ? "error" : "success",
 						spinnerFrame: options.spinnerFrame,
-						title: "ADB",
+						title: t("ADB"),
 						description: renderDescription(decodedArgs, details) || undefined,
 					},
 					uiTheme,
@@ -1187,7 +1188,11 @@ export const adbToolRenderer = {
 							outputLines.push(
 								uiTheme.fg(
 									"dim",
-									`… (${skippedCount} earlier lines, showing ${visualLines.length} of ${totalVisualLines}) (ctrl+o to expand)`,
+									t("… ({count} earlier lines, showing {shown} of {total}) (ctrl+o to expand)", {
+										count: skippedCount,
+										shown: visualLines.length,
+										total: totalVisualLines,
+									}),
 								),
 							);
 						}
@@ -1196,12 +1201,17 @@ export const adbToolRenderer = {
 						const rawLines = output.split("\n");
 						outputLines.push(...rawLines.slice(0, 8).map(line => uiTheme.fg("toolOutput", line)));
 						if (rawLines.length > 8) {
-							outputLines.push(uiTheme.fg("dim", `… (${rawLines.length - 8} more lines) (ctrl+o to expand)`));
+							outputLines.push(
+								uiTheme.fg(
+									"dim",
+									t("… ({count} more lines) (ctrl+o to expand)", { count: rawLines.length - 8 }),
+								),
+							);
 						}
 					}
 				}
 				if (details?.path && !output.includes(details.path)) {
-					outputLines.push(uiTheme.fg("toolOutput", `Screenshot: ${replaceTabs(details.path)}`));
+					outputLines.push(uiTheme.fg("toolOutput", t("Screenshot: {path}", { path: replaceTabs(details.path) })));
 				}
 				const warning = formatStyledTruncationWarning(details?.meta, uiTheme);
 				if (warning) outputLines.push(warning);
@@ -1217,7 +1227,7 @@ export const adbToolRenderer = {
 									{ expanded: options.expanded },
 								),
 							},
-							{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines },
+							{ label: uiTheme.fg("toolTitle", t("Output")), lines: outputLines },
 						],
 						width,
 					},

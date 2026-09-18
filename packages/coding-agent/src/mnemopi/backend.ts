@@ -9,6 +9,7 @@ import type { DiagnosticSummary } from "@oh-my-pi/pi-mnemopi/diagnose";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
 import { resolveRoleSelection } from "../config/model-resolver";
+import { t } from "../i18n";
 import type {
 	MemoryBackend,
 	MemoryBackendSaveInput,
@@ -379,9 +380,9 @@ function dedupeStatsTargets(targets: readonly MnemopiStatsTarget[]): MnemopiStat
 
 function renderMnemopiStats(targets: readonly MnemopiStatsTarget[]): string {
 	const lines = [
-		"# Mnemopi Memory Stats",
+		t("# Mnemopi Memory Stats"),
 		"",
-		"| Bank | Working | Episodic | Triples | Last memory | Database |",
+		t("| Bank | Working | Episodic | Triples | Last memory | Database |"),
 		"|---|---:|---:|---:|---|---|",
 	];
 	for (const target of targets) {
@@ -389,7 +390,7 @@ function renderMnemopiStats(targets: readonly MnemopiStatsTarget[]): string {
 		lines.push(
 			`| ${escapeMarkdownTableCell(target.bank)} | ${statCount(stats.beam.working_memory)} | ${statCount(
 				stats.beam.episodic_memory,
-			)} | ${stats.beam.triples.total} | ${escapeMarkdownTableCell(stats.last_memory ?? "never")} | ${escapeMarkdownTableCell(shortenPath(stats.database))} |`,
+			)} | ${stats.beam.triples.total} | ${escapeMarkdownTableCell(stats.last_memory ?? t("never"))} | ${escapeMarkdownTableCell(shortenPath(stats.database))} |`,
 		);
 	}
 	return lines.join("\n");
@@ -443,9 +444,9 @@ function normalizeImportance(value: number | undefined): number {
 
 function renderMnemopiDiagnostics(entries: readonly { bank: string; summary: DiagnosticSummary }[]): string {
 	const lines = [
-		"# Mnemopi Memory Diagnostics",
+		t("# Mnemopi Memory Diagnostics"),
 		"",
-		"| Bank | Passed | Failed | Integrity | Database |",
+		t("| Bank | Passed | Failed | Integrity | Database |"),
 		"|---|---:|---:|---|---|",
 	];
 	for (const { bank, summary } of entries) {
@@ -457,8 +458,8 @@ function renderMnemopiDiagnostics(entries: readonly { bank: string; summary: Dia
 	const findings = entries.flatMap(({ bank, summary }) =>
 		summary.key_findings.map(finding => `- ${bank}: ${finding}`),
 	);
-	lines.push("", "## Key Findings");
-	lines.push(...(findings.length > 0 ? findings : ["- none"]));
+	lines.push("", t("## Key Findings"));
+	lines.push(...(findings.length > 0 ? findings : [t("- none")]));
 	return lines.join("\n");
 }
 

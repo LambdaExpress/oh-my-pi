@@ -24,6 +24,11 @@ import type { SetupScene, SetupSceneController, SetupSceneHost } from "./types";
 
 type ThemeMode = "curated" | "all";
 
+/**
+ * Curated theme choices. Only the values and the row count are read from here
+ * (layout budget, preview lookup); the rendered rows come from
+ * {@link curatedItems}, which localizes labels and descriptions per render.
+ */
 const CURATED_ITEMS: readonly SelectItem[] = [
 	{ value: "auto", label: "Match terminal", description: "Titanium in dark terminals, Light in light terminals" },
 	{ value: "theme:titanium", label: "Titanium", description: "Default dark theme" },

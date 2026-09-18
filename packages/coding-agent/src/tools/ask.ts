@@ -33,6 +33,7 @@ import {
 import { prompt, untilAborted } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import type { ExtensionUISelectItem } from "../extensibility/extensions";
+import { t } from "../i18n";
 import { getMarkdownTheme, type Theme, theme } from "../modes/theme/theme";
 import askDescription from "../prompts/tools/ask.md" with { type: "text" };
 import { vocalizer } from "../tts/vocalizer";
@@ -40,8 +41,10 @@ import { framedBlock, outputBlockContentWidth, renderStatusLine } from "../tui";
 import type { ToolSession } from ".";
 import {
 	disambiguateDisplayLabels,
+	formatCountLabel,
 	formatErrorMessage,
 	formatMeta,
+	formatMoreItems,
 	formatTitle,
 	sanitizeCarriageReturns,
 	sanitizeDisplayWarning,
@@ -165,7 +168,7 @@ const RECOMMENDED_SUFFIX = " (Recommended)";
 const TIMEOUT_DETECTION_TOLERANCE_MS = 1_000;
 
 function getDoneOptionLabel(): string {
-	return `${theme.status.success} Done selecting`;
+	return `${theme.status.success} ${t("Done selecting")}`;
 }
 
 /** Add "(Recommended)" suffix to the option at the given index if not already present */
@@ -328,12 +331,9 @@ function buildCustomInputRows(
 	rows.push({ text: "", priority: -1 });
 
 	const emitGap = (gap: CustomInputOptionGap) => {
-		const checkedSuffix = gap.checked > 0 ? `, ${gap.checked} checked` : "";
+		const checkedSuffix = gap.checked > 0 ? `, ${t("{count} checked", { count: gap.checked })}` : "";
 		rows.push({
-			text: clampLineToWidth(
-				`    … ${gap.total} more option${gap.total === 1 ? "" : "s"}${checkedSuffix} …`,
-				contentWidth,
-			),
+			text: clampLineToWidth(`    ${formatMoreItems(gap.total, "option")}${checkedSuffix} …`, contentWidth),
 			priority: 2,
 		});
 	};
@@ -371,7 +371,7 @@ function buildCustomInputRows(
 	const trailingGap = window.gapBefore.get(options.length);
 	if (trailingGap !== undefined) emitGap(trailingGap);
 	rows.push({ text: "", priority: -1 });
-	rows.push({ text: "Enter your response:", priority: -1 });
+	rows.push({ text: t("Enter your response:"), priority: -1 });
 	return rows;
 }
 
@@ -484,8 +484,8 @@ async function askSingleQuestion(
 		};
 		let navigationAction: "back" | "forward" | undefined;
 		const helpText = navigation
-			? "up/down navigate  enter select  ←/→ question  esc cancel"
-			: "up/down navigate  enter select  esc cancel";
+			? t("up/down navigate  enter select  ←/→ question  esc cancel")
+			: t("up/down navigate  enter select  esc cancel");
 		const timeoutMs = typeof timeout === "number" && timeout > 0 ? timeout : undefined;
 		const timeoutController = timeoutMs === undefined ? undefined : new AbortController();
 		const dialogSignal =
@@ -861,7 +861,7 @@ export class AskTool implements AgentTool<typeof askSchema, AskToolDetails> {
 		if (method === "off") return;
 		TERMINAL.sendNotification({
 			title: "Oh My Pi",
-			body: "Waiting for input",
+			body: t("Waiting for input"),
 			type: "ask",
 			urgency: "normal",
 			actions: "focus",
@@ -1368,7 +1368,7 @@ function renderNoteLines(uiTheme: Theme, note: string, width: number): string[] 
 	return replaceTabs(note)
 		.split("\n")
 		.map((line, index) => {
-			const linePrefix = index === 0 ? `${uiTheme.fg("dim", " Note:")} ` : continuationPrefix;
+			const linePrefix = index === 0 ? `${uiTheme.fg("dim", t(" Note:"))} ` : continuationPrefix;
 			const maxWidth = index === 0 ? firstLineWidth : continuationWidth;
 			return `${linePrefix}${uiTheme.fg("toolOutput", truncateToWidth(line, maxWidth))}`;
 		});
@@ -1449,7 +1449,7 @@ function renderAnswerOptionLines(
 
 	// Nothing was chosen (and no custom answer) → a lone cancelled marker.
 	if (selected.size === 0 && customInput === undefined && note === undefined) {
-		return [` ${uiTheme.styledSymbol("status.warning", "warning")} ${uiTheme.fg("warning", "Cancelled")}`];
+		return [` ${uiTheme.styledSymbol("status.warning", "warning")} ${uiTheme.fg("warning", t("Cancelled"))}`];
 	}
 
 	const out: string[] = [];
@@ -1475,10 +1475,10 @@ function renderAnswerOptionLines(
  */
 function askFoldedAnswer(details: AskToolDetails | undefined): string | undefined {
 	if (!details) return undefined;
-	if (details.chatRedirect) return "chat redirect";
+	if (details.chatRedirect) return t("chat redirect");
 	// Timeout auto-selection picked a default the user never chose; say that
 	// instead of presenting it as their answer.
-	if (details.timedOut) return "auto-selected after timeout";
+	if (details.timedOut) return t("auto-selected after timeout");
 	const rawResults = details.results;
 	const entries = Array.isArray(rawResults) && rawResults.length > 0 ? rawResults : [details];
 	const answers: string[] = [];
@@ -1529,15 +1529,15 @@ export const askToolRenderer = {
 				"muted",
 				truncateToWidth(sanitizeDisplayWarning(answer), TRUNCATE_LENGTHS.TITLE, Ellipsis.Unicode),
 			);
-			return { label: "Ask", detail: `${questionPart}${answerPart}` };
+			return { label: t("Ask"), detail: `${questionPart}${answerPart}` };
 		}
 		if (question === undefined) {
-			return { label: "Ask", detail: context.theme.fg("muted", "waiting for the question") };
+			return { label: t("Ask"), detail: context.theme.fg("muted", t("waiting for the question")) };
 		}
-		return { label: "Ask", detail: context.theme.fg("muted", sanitizeDisplayWarning(question)) };
+		return { label: t("Ask"), detail: context.theme.fg("muted", sanitizeDisplayWarning(question)) };
 	},
 	renderCall(args: AskRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
-		const label = formatTitle("Ask", uiTheme);
+		const label = formatTitle(t("Ask"), uiTheme);
 		const mdTheme = getMarkdownTheme();
 		const accentStyle = { color: (t: string) => uiTheme.fg("accent", t) };
 		const md = (text: string, width: number) =>
@@ -1548,11 +1548,11 @@ export const askToolRenderer = {
 		// throw here takes down the whole TUI render loop — normalize first.
 		const questions = normalizeRenderQuestions(args.questions);
 		if (questions && questions.length > 0) {
-			const header = `${label} ${uiTheme.fg("muted", `${questions.length} questions`)}`;
+			const header = `${label} ${uiTheme.fg("muted", formatCountLabel("question", questions.length))}`;
 			return framedBlock(uiTheme, width => {
 				const sections = questions.map(q => {
 					const meta: string[] = [];
-					if (q.multi) meta.push("multi");
+					if (q.multi) meta.push(t("multi"));
 					if (q.options?.length) meta.push(`options:${q.options.length}`);
 					const metaStr = meta.length > 0 ? uiTheme.fg("dim", ` · ${meta.join(" · ")}`) : "";
 					// md() returns a shared cached array (module-level Markdown LRU) — copy before appending.
@@ -1568,7 +1568,7 @@ export const askToolRenderer = {
 
 		// Single question
 		if (typeof args.question !== "string" || !args.question) {
-			const errorLine = formatErrorMessage("No question provided", uiTheme);
+			const errorLine = formatErrorMessage(t("No question provided"), uiTheme);
 			return framedBlock(uiTheme, width => ({
 				header: errorLine,
 				sections: [],
@@ -1580,7 +1580,7 @@ export const askToolRenderer = {
 
 		const question = sanitizeCarriageReturns(args.question);
 		const meta: string[] = [];
-		if (args.multi) meta.push("multi");
+		if (args.multi) meta.push(t("multi"));
 		const questionOptions = normalizeRenderOptions(args.options);
 		if (questionOptions?.length) meta.push(`options:${questionOptions.length}`);
 		const header = `${label}${formatMeta(meta, uiTheme)}`;
@@ -1620,7 +1620,7 @@ export const askToolRenderer = {
 				const questions = normalizeRenderQuestions(args.questions);
 				if (questions && questions.length > 0) {
 					const header = renderStatusLine(
-						{ icon: "error", title: "Ask", meta: [`${questions.length} questions`] },
+						{ icon: "error", title: t("Ask"), meta: [formatCountLabel("question", questions.length)] },
 						uiTheme,
 					);
 					return framedBlock(uiTheme, width => ({
@@ -1635,7 +1635,7 @@ export const askToolRenderer = {
 										]
 									: md(question.question, width),
 							})),
-							...(fallback ? [{ label: "Output", lines: [uiTheme.fg("error", fallback)] }] : []),
+							...(fallback ? [{ label: t("Output"), lines: [uiTheme.fg("error", fallback)] }] : []),
 						],
 						state: "error",
 						borderColor: "error",
@@ -1645,10 +1645,10 @@ export const askToolRenderer = {
 				const question = args.question;
 				if (typeof question === "string" && question) {
 					const meta: string[] = [];
-					if (args.multi) meta.push("multi");
+					if (args.multi) meta.push(t("multi"));
 					const questionOptions = normalizeRenderOptions(args.options);
 					if (questionOptions?.length) meta.push(`options:${questionOptions.length}`);
-					const header = renderStatusLine({ icon: "error", title: "Ask", meta }, uiTheme);
+					const header = renderStatusLine({ icon: "error", title: t("Ask"), meta }, uiTheme);
 					return framedBlock(uiTheme, width => ({
 						header,
 						sections: [
@@ -1660,7 +1660,7 @@ export const askToolRenderer = {
 										]
 									: md(question, width),
 							},
-							...(fallback ? [{ label: "Output", lines: [uiTheme.fg("error", fallback)] }] : []),
+							...(fallback ? [{ label: t("Output"), lines: [uiTheme.fg("error", fallback)] }] : []),
 						],
 						state: "error",
 						borderColor: "error",
@@ -1668,7 +1668,7 @@ export const askToolRenderer = {
 					}));
 				}
 			}
-			const header = renderStatusLine({ icon: "warning", title: "Ask" }, uiTheme);
+			const header = renderStatusLine({ icon: "warning", title: t("Ask") }, uiTheme);
 			const body = fallback ? `\n${uiTheme.fg("dim", fallback)}` : "";
 			return new Text(`${header}${body}`, 0, 0);
 		}
@@ -1676,7 +1676,7 @@ export const askToolRenderer = {
 
 		// Chat redirect: user chose "Chat about this" instead of answering.
 		if (details.chatRedirect) {
-			const header = renderStatusLine({ icon: "info", title: "Ask", meta: ["chat redirect"] }, uiTheme);
+			const header = renderStatusLine({ icon: "info", title: t("Ask"), meta: [t("chat redirect")] }, uiTheme);
 			const questions = details.questions ?? [];
 			return framedBlock(uiTheme, width => ({
 				header,
@@ -1699,8 +1699,8 @@ export const askToolRenderer = {
 			const header = renderStatusLine(
 				{
 					icon: hasAnySelection ? "success" : "warning",
-					title: "Ask",
-					meta: [`${results.length} questions`],
+					title: t("Ask"),
+					meta: [formatCountLabel("question", results.length)],
 				},
 				uiTheme,
 			);
@@ -1750,8 +1750,8 @@ export const askToolRenderer = {
 			(details.selectedOptions && details.selectedOptions.length > 0);
 		const header = renderStatusLine(
 			hasSelection
-				? { iconOverride: uiTheme.styledSymbol("tool.ask", "accent"), title: "Ask" }
-				: { icon: "warning", title: "Ask" },
+				? { iconOverride: uiTheme.styledSymbol("tool.ask", "accent"), title: t("Ask") }
+				: { icon: "warning", title: t("Ask") },
 			uiTheme,
 		);
 		const dOptions = details.options;
@@ -1778,7 +1778,7 @@ export const askToolRenderer = {
 			];
 			if (dTimedOut) {
 				// Distinguish auto-selection from a real user choice in the transcript.
-				bodyLines.push(uiTheme.fg("dim", "auto-selected after timeout — not a user choice"));
+				bodyLines.push(uiTheme.fg("dim", t("auto-selected after timeout — not a user choice")));
 			}
 			return {
 				header,

@@ -432,15 +432,20 @@ export const createAutoresearchExtension: ExtensionFactory = api => {
 				const repository = vcs.requireGit(ctx.cwd);
 				await repository.reset("hard", session.baselineCommit);
 				await repository.clean({});
-				ctx.ui.notify(`Reset worktree to baseline ${session.baselineCommit.slice(0, 12)}.`, "info");
+				ctx.ui.notify(
+					t("Reset worktree to baseline {commit}.", { commit: session.baselineCommit.slice(0, 12) }),
+					"info",
+				);
 			} catch (err) {
 				ctx.ui.notify(
-					`Failed to reset worktree to baseline: ${err instanceof Error ? err.message : String(err)}`,
+					t("Failed to reset worktree to baseline: {error}", {
+						error: err instanceof Error ? err.message : String(err),
+					}),
 					"error",
 				);
 			}
 		} else if (shouldResetTree) {
-			ctx.ui.notify("No baseline commit recorded — skipped worktree reset.", "warning");
+			ctx.ui.notify(t("No baseline commit recorded — skipped worktree reset."), "warning");
 		}
 
 		removeLegacyArtifacts(ctx.cwd);
@@ -459,7 +464,7 @@ export const createAutoresearchExtension: ExtensionFactory = api => {
 		dashboard.updateWidget(ctx, runtime);
 		const experimentTools = new Set(EXPERIMENT_TOOL_NAMES);
 		await api.setActiveTools(api.getActiveTools().filter(name => !experimentTools.has(name)));
-		ctx.ui.notify("Autoresearch session cleared.", "info");
+		ctx.ui.notify(t("Autoresearch session cleared."), "info");
 	}
 };
 

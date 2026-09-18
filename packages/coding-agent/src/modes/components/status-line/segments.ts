@@ -95,7 +95,7 @@ function formatAdvisorSpend(amount: number, usingSubscription: boolean, uiTheme:
 	if (icon && icon !== "(adv)") {
 		return `${icon} ${spend}`;
 	}
-	return `${spend} (adv)`;
+	return `${spend} ${t("(adv)")}`;
 }
 
 function formatSpendPlaceholder(usingSubscription: boolean, uiTheme: Theme): string {
@@ -110,7 +110,7 @@ function formatAdvisorSpendPlaceholder(usingSubscription: boolean, uiTheme: Them
 	const spend = formatSpendPlaceholder(usingSubscription, uiTheme);
 	const icon = uiTheme.icon.advisor;
 	if (icon && icon !== "(adv)") return `${icon} ${spend}`;
-	return `${spend} (adv)`;
+	return `${spend} ${t("(adv)")}`;
 }
 
 const SCRATCH_ROOTS: readonly string[] = (() => {

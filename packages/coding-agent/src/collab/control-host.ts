@@ -9,6 +9,7 @@
 
 import { timingSafeEqual } from "node:crypto";
 import { logger } from "@oh-my-pi/pi-utils";
+import { t } from "../i18n";
 import { generateRoomKey, generateWriteToken, importRoomKey } from "./crypto";
 import {
 	COLLAB_PROTO,
@@ -164,7 +165,13 @@ export class ControlHost {
 	#handleHello(name: string, proto: number, writeToken: string | undefined, fromPeer: number): void {
 		if (proto !== COLLAB_PROTO) {
 			this.#socket?.send(
-				{ t: "ctrl-error", message: `protocol mismatch: host speaks v${COLLAB_PROTO}, guest sent v${proto}` },
+				{
+					t: "ctrl-error",
+					message: t("protocol mismatch: host speaks v{host}, guest sent v{guest}", {
+						host: COLLAB_PROTO,
+						guest: proto,
+					}),
+				},
 				fromPeer,
 			);
 			this.#closing = true;
@@ -193,7 +200,7 @@ export class ControlHost {
 	async #handleMutation(frame: MutationFrame, fromPeer: number): Promise<void> {
 		const peer = this.#peers.get(fromPeer);
 		if (!peer?.canWrite) {
-			this.#socket?.send({ t: "ctrl-error", message: "read-only" }, fromPeer);
+			this.#socket?.send({ t: "ctrl-error", message: t("read-only") }, fromPeer);
 			return;
 		}
 		try {

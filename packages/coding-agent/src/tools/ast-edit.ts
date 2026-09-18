@@ -10,6 +10,7 @@ import { getEditStore } from "../edit/store";
 import { normalizeToLF } from "../edit/normalize";
 import { formatHashlineHeader } from "./hashline-format";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import type { Theme } from "../modes/theme/theme";
 import astEditDescription from "../prompts/tools/ast-edit.md" with { type: "text" };
 import {
@@ -32,7 +33,7 @@ import {
 	appendParseErrorsBulletList,
 	capParseErrors,
 	formatCodeFrameLine,
-	formatCount,
+	formatCountLabel,
 	formatErrorDetail,
 	formatMoreItems,
 	formatParseErrors,
@@ -404,7 +405,7 @@ export class AstEditTool implements AgentTool<typeof astEditSchema, AstEditToolD
 					const hashContext = hashContexts.get(relativePath);
 					const hashSuffix = hashContext ? `#${hashContext.tag}` : "";
 					return {
-						headerSuffix: `${hashSuffix} (${formatCount("replacement", count)})`,
+						headerSuffix: `${hashSuffix} (${formatCountLabel("replacement", count)})`,
 						modelLines: rendered.model,
 						displayLines: rendered.display,
 						skip: rendered.model.length === 0,
@@ -595,13 +596,17 @@ export const astEditToolRenderer = {
 	inline: true,
 	renderCall(args: AstEditRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const meta: string[] = [];
-		if (args.paths?.length) meta.push(`in ${args.paths.join(", ")}`);
+		if (args.paths?.length) meta.push(t("in {path}", { path: args.paths.join(", ") }));
 		const rewriteCount = args.ops?.length ?? 0;
-		if (rewriteCount > 1) meta.push(`${rewriteCount} rewrites`);
+		if (rewriteCount > 1) meta.push(formatCountLabel("rewrite", rewriteCount));
 
 		const description =
-			rewriteCount === 1 ? patternPreview(args.ops?.[0]?.pat) : rewriteCount ? `${rewriteCount} rewrites` : "?";
-		const header = renderStatusLine({ icon: "pending", title: "AST Edit", description, meta }, uiTheme);
+			rewriteCount === 1
+				? patternPreview(args.ops?.[0]?.pat)
+				: rewriteCount
+					? formatCountLabel("rewrite", rewriteCount)
+					: "?";
+		const header = renderStatusLine({ icon: "pending", title: t("AST Edit"), description, meta }, uiTheme);
 		// Pending call has no body yet — a lone status line is sleeker than an empty frame.
 		return new Text(header, 0, 0);
 	},
@@ -621,10 +626,10 @@ export const astEditToolRenderer = {
 				rewriteCount === 1
 					? patternPreview(args?.ops?.[0]?.pat)
 					: rewriteCount
-						? `${rewriteCount} rewrites`
+						? formatCountLabel("rewrite", rewriteCount)
 						: undefined;
-			const meta = args?.paths?.length ? [`in ${args.paths.join(", ")}`] : undefined;
-			const header = renderStatusLine({ icon: "error", title: "AST Edit", description, meta }, uiTheme);
+			const meta = args?.paths?.length ? [t("in {path}", { path: args.paths.join(", ") })] : undefined;
+			const header = renderStatusLine({ icon: "error", title: t("AST Edit"), description, meta }, uiTheme);
 			return framedBlock(uiTheme, width => ({
 				header,
 				sections: [{ lines: formatErrorDetail(errorText, uiTheme).split("\n") }],
@@ -642,10 +647,10 @@ export const astEditToolRenderer = {
 		if (totalReplacements === 0) {
 			const rewriteCount = args?.ops?.length ?? 0;
 			const description = rewriteCount === 1 ? patternPreview(args?.ops?.[0]?.pat) : undefined;
-			const meta = ["0 replacements"];
-			if (details?.scopePath) meta.push(`in ${details.scopePath}`);
-			if (filesSearched > 0) meta.push(`searched ${filesSearched}`);
-			const header = renderStatusLine({ icon: "warning", title: "AST Edit", description, meta }, uiTheme);
+			const meta = [formatCountLabel("replacement", 0)];
+			if (details?.scopePath) meta.push(t("in {path}", { path: details.scopePath }));
+			if (filesSearched > 0) meta.push(t("searched {count}", { count: filesSearched }));
+			const header = renderStatusLine({ icon: "warning", title: t("AST Edit"), description, meta }, uiTheme);
 			// The "0 replacements" count already rides on the status line; only parse
 			// errors are worth a body, so frame solely when there are some.
 			const bodyLines: string[] = [];
@@ -660,11 +665,11 @@ export const astEditToolRenderer = {
 			}));
 		}
 
-		const summaryParts = [formatCount("replacement", totalReplacements), formatCount("file", filesTouched)];
+		const summaryParts = [formatCountLabel("replacement", totalReplacements), formatCountLabel("file", filesTouched)];
 		const meta = [...summaryParts];
-		if (details?.scopePath) meta.push(`in ${details.scopePath}`);
-		meta.push(`searched ${filesSearched}`);
-		if (limitReached) meta.push(uiTheme.fg("warning", "limit reached"));
+		if (details?.scopePath) meta.push(t("in {path}", { path: details.scopePath }));
+		meta.push(t("searched {count}", { count: filesSearched }));
+		if (limitReached) meta.push(uiTheme.fg("warning", t("limit reached")));
 		const rewriteCount = args?.ops?.length ?? 0;
 		const description = rewriteCount === 1 ? patternPreview(args?.ops?.[0]?.pat) : undefined;
 
@@ -697,15 +702,15 @@ export const astEditToolRenderer = {
 			})
 			.map(indices => indices.map(index => styledLines[index]!));
 
-		const badge = { label: "proposed", color: "warning" as const };
+		const badge = { label: t("proposed"), color: "warning" as const };
 		const header = renderStatusLine(
-			{ icon: limitReached ? "warning" : "success", title: "AST Edit", description, badge, meta },
+			{ icon: limitReached ? "warning" : "success", title: t("AST Edit"), description, badge, meta },
 			uiTheme,
 		);
 
 		const extraLines: string[] = [];
 		if (limitReached) {
-			extraLines.push(uiTheme.fg("warning", "limit reached; narrow path"));
+			extraLines.push(uiTheme.fg("warning", t("limit reached; narrow path")));
 		}
 		if (details?.parseErrors?.length) {
 			extraLines.push(

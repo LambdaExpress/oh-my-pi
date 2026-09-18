@@ -13,6 +13,7 @@ import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream"
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
+import { setLocale } from "../src/i18n";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type {
 	ClientBridge,
@@ -157,6 +158,8 @@ async function createSessionWithMockModel(
 }
 
 beforeAll(() => {
+	// Permission titles are localized; pin English so the title assertions stay deterministic.
+	setLocale("en");
 	tempDir = TempDir.createSync("@pi-acp-permission-test-");
 });
 
@@ -167,6 +170,7 @@ afterEach(async () => {
 
 afterAll(async () => {
 	await tempDir.remove();
+	setLocale(null);
 });
 
 // ---------------------------------------------------------------------------

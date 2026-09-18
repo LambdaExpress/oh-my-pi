@@ -14,6 +14,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getProjectDir, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import { createProgressReporter } from "../cli/progress-reporter";
+import { t } from "../i18n";
 import type { AgentSession } from "../session/agent-session";
 import { mapWithConcurrencyLimitAllSettled } from "../task/parallel";
 import { shortenPath } from "../tools/render-utils";
@@ -94,11 +95,14 @@ export async function runCompressCommand(options: CompressCommandOptions): Promi
 	const abort = (): void => abortController.abort(new Error("Compress interrupted"));
 	process.once("SIGINT", abort);
 	process.once("SIGTERM", abort);
-	const progress = createProgressReporter("Compressing");
+	const progress = createProgressReporter(t("Compressing"));
 	const emitToStdout = targets.length === 1 && !options.inPlace && options.output === undefined;
 
 	try {
-		console.error(`Compressing ${targets.length} file(s)${options.model ? ` with ${options.model}` : ""}`);
+		console.error(
+			t("Compressing {count} file(s)", { count: targets.length }) +
+				(options.model ? t(" with {model}", { model: options.model }) : ""),
+		);
 		progress.start(targets.length);
 		const settled = await mapWithConcurrencyLimitAllSettled(
 			targets,
@@ -273,15 +277,27 @@ function renderReview(input: {
 function reportFile(file: CompressFileResult, emitToStdout: boolean): void {
 	const label = shortenPath(file.path);
 	if (file.error) {
-		console.error(`  ${label}: ${file.status} — ${sanitizeText(file.error)}`);
+		console.error(
+			t("  {label}: {status} — {error}", {
+				label,
+				status: file.status,
+				error: sanitizeText(file.error),
+			}),
+		);
 		return;
 	}
 	const metrics = file.metrics;
 	const size = metrics
 		? `${metrics.sourceTokens} → ${metrics.draftTokens} tok (${(metrics.ratio * 100).toFixed(1)}%)`
-		: "no draft";
+		: t("no draft");
 	console.error(
-		`  ${label}: ${file.status}, ${size}, ${file.rounds} draft(s), ${file.draft?.losses.length ?? 0} loss(es)`,
+		t("  {label}: {status}, {size}, {rounds} draft(s), {losses} loss(es)", {
+			label,
+			status: file.status,
+			size,
+			rounds: file.rounds,
+			losses: file.draft?.losses.length ?? 0,
+		}),
 	);
 	for (const loss of file.draft?.losses ?? []) {
 		const content = loss.content.length > LOSS_PREVIEW ? `${loss.content.slice(0, LOSS_PREVIEW)}…` : loss.content;
@@ -289,10 +305,10 @@ function reportFile(file: CompressFileResult, emitToStdout: boolean): void {
 		console.error(`      ${sanitizeText(loss.reason)}`);
 	}
 	if (file.status !== "approved") {
-		console.error("      nothing written");
+		console.error(t("      nothing written"));
 		return;
 	}
-	if (file.outputPath) console.error(`      wrote ${shortenPath(file.outputPath)}`);
+	if (file.outputPath) console.error(t("      wrote {path}", { path: shortenPath(file.outputPath) }));
 	if (emitToStdout && file.draft) console.log(file.draft.text);
 }
 
@@ -310,9 +326,15 @@ function summarize(files: CompressFileResult[], emitToStdout: boolean): Compress
 	if (files.length > 1) {
 		const percent = sourceTokens === 0 ? "0.0" : (((sourceTokens - draftTokens) / sourceTokens) * 100).toFixed(1);
 		console.error(
-			`Approved ${approved}/${files.length}: ${sourceTokens} → ${draftTokens} tokens (${percent}% smaller)`,
+			t("Approved {approved}/{total}: {source} → {draft} tokens ({percent}% smaller)", {
+				approved,
+				total: files.length,
+				source: sourceTokens,
+				draft: draftTokens,
+				percent,
+			}),
 		);
 	}
-	if (!emitToStdout && approved === 0) console.error("Nothing written");
+	if (!emitToStdout && approved === 0) console.error(t("Nothing written"));
 	return { exitCode: approved === files.length ? 0 : 1, files, sourceTokens, draftTokens };
 }

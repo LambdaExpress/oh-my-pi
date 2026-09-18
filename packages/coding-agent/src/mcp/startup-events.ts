@@ -34,7 +34,7 @@ function sanitizeMcpStatusText(value: string, maxWidth: number): string {
 			.replace(/[\r\n]+/g, " ")
 			.trim(),
 	);
-	return truncateToWidth(text.length > 0 ? text : "(unnamed)", maxWidth);
+	return truncateToWidth(text.length > 0 ? text : t("(unnamed)"), maxWidth);
 }
 
 function sanitizeMcpServerName(serverName: string): string {

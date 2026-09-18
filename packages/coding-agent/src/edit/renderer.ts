@@ -7,6 +7,7 @@ import type { Component } from "@oh-my-pi/pi-tui";
 import { sliceWithWidth, visibleWidth, wrapTextWithAnsi } from "@oh-my-pi/pi-tui";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import type { FileDiagnosticsResult } from "../lsp";
 import { renderDiff as renderDiffColored } from "../modes/components/diff";
 import { getLanguageFromPath, type Theme } from "../modes/theme/theme";
@@ -503,7 +504,7 @@ function formatStreamingDiff(
 		if (tail.hidden) {
 			// Exact hidden line/hunk counts require scanning the discarded prefix,
 			// which would make every streaming update scale with the complete diff.
-			rendered += `${uiTheme.fg("dim", "… (content above)")}\n`;
+			rendered += `${uiTheme.fg("dim", t("… (content above)"))}\n`;
 		}
 		rendered += renderDiffColored(tail.content, { filePath: rawPath, theme: uiTheme });
 		return rendered;
@@ -1149,7 +1150,10 @@ function renderSingleFileResult(
 			// body so an empty card isn't mistaken for a stalled edit.
 			if (op !== "delete" && op !== "create" && !rename) {
 				const noChangePath = linkPath ? shortenPath(linkPath) : rawPath ? shortenPath(rawPath) : "";
-				body = uiTheme.fg("dim", `No changes were made${noChangePath ? ` to ${noChangePath}` : ""}.`);
+				body = uiTheme.fg(
+					"dim",
+					noChangePath ? t("No changes were made to {path}.", { path: noChangePath }) : t("No changes were made."),
+				);
 			}
 		} else if (editDiffPreview) {
 			if ("error" in editDiffPreview) body = uiTheme.fg("error", replaceTabs(editDiffPreview.error));
@@ -1226,7 +1230,12 @@ function renderMultiFileResult(
 						{
 							iconOverride: spinner,
 							title: "Edit",
-							description: uiTheme.fg("dim", `${remaining} more file${remaining > 1 ? "s" : ""} pending…`),
+							description: uiTheme.fg(
+								"dim",
+								remaining > 1
+									? t("{count} more files pending…", { count: remaining })
+									: t("{count} more file pending…", { count: remaining }),
+							),
 						},
 						uiTheme,
 					),

@@ -9,6 +9,7 @@
 import { type Component, matchesKey, ProcessTerminal, TUI, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { t } from "../i18n";
 import { closeDaemonClients, type DaemonBrokerClient } from "../launch/client";
 import type { DaemonSnapshot, DaemonSpec } from "../launch/protocol";
 import {
@@ -158,13 +159,23 @@ class PsTopComponent implements Component {
 			if (result.op !== "restart" && result.op !== "stop") throw new Error(`Unexpected response ${result.op}`);
 			this.#setStatus(
 				chalk.green(
-					`${verb === "restart" ? "Restarted" : verb === "kill" ? "Killed" : "Stopped"} ${daemonLabel(result.daemon)}`,
+					verb === "restart"
+						? t("Restarted {daemon}", { daemon: daemonLabel(result.daemon) })
+						: verb === "kill"
+							? t("Killed {daemon}", { daemon: daemonLabel(result.daemon) })
+							: t("Stopped {daemon}", { daemon: daemonLabel(result.daemon) }),
 				),
 			);
 			void this.#refresh();
 		} catch (error) {
 			this.#setStatus(
-				chalk.red(`${verb} ${name} failed: ${error instanceof Error ? error.message : String(error)}`),
+				chalk.red(
+					t("{verb} {name} failed: {error}", {
+						verb,
+						name,
+						error: error instanceof Error ? error.message : String(error),
+					}),
+				),
 			);
 		}
 	}
@@ -250,7 +261,7 @@ class PsTopComponent implements Component {
 		else if (matchesKey(data, "down") || data === "j") this.#moveSelection(1);
 		else if (data === "a") {
 			this.#all = !this.#all;
-			this.#setStatus(chalk.dim(this.#all ? "Showing all scopes" : "Showing current scope"));
+			this.#setStatus(chalk.dim(this.#all ? t("Showing all scopes") : t("Showing current scope")));
 			void this.#refresh();
 		} else if (matchesKey(data, "enter") || data === "i") void this.#openInfo();
 		else if (data === "l") this.#openLogs();
@@ -281,7 +292,9 @@ class PsTopComponent implements Component {
 	}
 
 	#header(width: number, title: string): string {
-		const age = this.#lastRefresh ? `updated ${formatDuration(Date.now() - this.#lastRefresh)} ago` : "updating…";
+		const age = this.#lastRefresh
+			? t("updated {duration} ago", { duration: formatDuration(Date.now() - this.#lastRefresh) })
+			: t("updating…");
 		const left = ` ${chalk.bold("omp ps")} ${chalk.dim("·")} ${title}`;
 		const right = chalk.dim(age);
 		const pad = Math.max(1, width - Bun.stringWidth(left) - Bun.stringWidth(right) - 1);
@@ -294,17 +307,30 @@ class PsTopComponent implements Component {
 	}
 
 	#renderTable(width: number, height: number): string[] {
-		const scopesLabel = `${this.#flat.length} process${this.#flat.length === 1 ? "" : "es"} in ${this.#reports.length} scope${this.#reports.length === 1 ? "" : "s"} ${chalk.dim(this.#all ? "(all)" : "(current)")}`;
+		const processes = t("{count} process{s}", {
+			count: this.#flat.length,
+			s: this.#flat.length === 1 ? "" : "es",
+		});
+		const scopes = t("{count} scope{s}", {
+			count: this.#reports.length,
+			s: this.#reports.length === 1 ? "" : "s",
+		});
+		const scopesLabel = t("{processes} in {scopes} {mode}", {
+			processes,
+			scopes,
+			mode: this.#all ? t("(all)") : t("(current)"),
+		});
 		const header = this.#header(width, scopesLabel);
 		const footer = this.#footer(
 			width,
-			"↑/↓ select · enter info · l logs · s stop · x kill · r restart · a all scopes · q quit",
+			t("↑/↓ select · enter info · l logs · s stop · x kill · r restart · a all scopes · q quit"),
 		);
 		const bodyHeight = height - 1 - footer.length;
 
 		const cells = this.#flat.map(entry => tableCells(entry.row));
-		const widths = TABLE_HEADER.map((title, column) =>
-			Math.max(title.length, ...cells.map(row => Bun.stringWidth(row[column]))),
+		const titles = TABLE_HEADER.map(title => t(title));
+		const widths = titles.map((title, column) =>
+			Math.max(Bun.stringWidth(title), ...cells.map(row => Bun.stringWidth(row[column]))),
 		);
 		const renderRow = (row: string[]): string =>
 			`   ${row.map((cell, column) => cell + " ".repeat(Math.max(0, widths[column] - Bun.stringWidth(cell)))).join("  ")}`.trimEnd();
@@ -315,9 +341,9 @@ class PsTopComponent implements Component {
 		for (const report of this.#reports) {
 			body.push({ text: ` ${scopeHeader(report.scope)}` });
 			if (report.daemons.length === 0) {
-				body.push({ text: chalk.dim("   no processes") });
+				body.push({ text: chalk.dim(`   ${t("no processes")}`) });
 			} else {
-				body.push({ text: chalk.dim(renderRow([...TABLE_HEADER])) });
+				body.push({ text: chalk.dim(renderRow([...titles])) });
 				for (const row of report.daemons) {
 					const line = renderRow(tableCells(row));
 					body.push({
@@ -329,7 +355,7 @@ class PsTopComponent implements Component {
 			}
 			body.push({ text: "" });
 		}
-		if (body.length === 0) body.push({ text: chalk.dim(" No daemon broker scopes found.") });
+		if (body.length === 0) body.push({ text: chalk.dim(` ${t("No daemon broker scopes found.")}`) });
 
 		// Keep the selected line inside the viewport.
 		const selectedLine = body.findIndex(line => line.flat === this.#selected);
@@ -355,23 +381,35 @@ class PsTopComponent implements Component {
 
 	#renderInfo(width: number, height: number): string[] {
 		const info = this.#info;
-		const header = this.#header(width, "process info");
-		const footer = this.#footer(width, "esc back · q back");
+		const header = this.#header(width, t("process info"));
+		const footer = this.#footer(width, t("esc back · q back"));
 		const lines = [header, ""];
 		if (info) {
 			const daemon = info.daemon;
 			lines.push(` ${chalk.bold(daemonLabel(daemon))}`);
 			lines.push("");
-			lines.push(`   command:  ${collapseCommand(formatCommand(info.spec))}`);
-			lines.push(`   cwd:      ${info.spec.cwd}`);
-			if (!TERMINAL_STATES[daemon.state])
-				lines.push(`   uptime:   ${formatDuration(Date.now() - daemon.startedAt)}`);
-			if (daemon.exitReason) lines.push(`   exit:     ${daemon.exitReason}`);
-			lines.push(`   restarts: ${daemon.restartCount} (policy: ${info.spec.restart})`);
-			lines.push(`   pty: ${info.spec.pty}  persist: ${info.spec.persist}  detached: ${info.spec.detached}`);
-			lines.push(`   owner:    ${daemon.owner ?? "-"}`);
+			lines.push(`   ${t("command:  {command}", { command: collapseCommand(formatCommand(info.spec)) })}`);
+			lines.push(`   ${t("cwd:      {cwd}", { cwd: info.spec.cwd })}`);
+			if (!TERMINAL_STATES[daemon.state]) {
+				lines.push(`   ${t("uptime:   {uptime}", { uptime: formatDuration(Date.now() - daemon.startedAt) })}`);
+			}
+			if (daemon.exitReason) lines.push(`   ${t("exit:     {exit}", { exit: daemon.exitReason })}`);
+			lines.push(
+				`   ${t("restarts: {count} (policy: {policy})", {
+					count: daemon.restartCount,
+					policy: info.spec.restart,
+				})}`,
+			);
+			lines.push(
+				`   ${t("pty: {pty}  persist: {persist}  detached: {detached}", {
+					pty: info.spec.pty,
+					persist: info.spec.persist,
+					detached: info.spec.detached,
+				})}`,
+			);
+			lines.push(`   ${t("owner:    {owner}", { owner: daemon.owner ?? "-" })}`);
 		} else {
-			lines.push(chalk.dim(" loading…"));
+			lines.push(chalk.dim(` ${t("loading…")}`));
 		}
 		const truncated = lines.map(line => truncateToWidth(line, width));
 		while (truncated.length < height - footer.length) truncated.push("");
@@ -384,9 +422,9 @@ class PsTopComponent implements Component {
 		const name = entry?.row.snapshot.name ?? "?";
 		const header = this.#header(
 			width,
-			`logs ${chalk.bold(name)}${this.#logsState ? chalk.dim(` · ${this.#logsState}`) : ""}`,
+			`${t("logs {name}", { name: chalk.bold(name) })}${this.#logsState ? chalk.dim(` · ${this.#logsState}`) : ""}`,
 		);
-		const footer = this.#footer(width, "esc back · q back · view refreshes live");
+		const footer = this.#footer(width, t("esc back · q back · view refreshes live"));
 		const bodyHeight = height - 1 - footer.length;
 		const tail = this.#logsLines.slice(-bodyHeight);
 		const lines = [header, ...tail.map(line => truncateToWidth(` ${line}`, width))];

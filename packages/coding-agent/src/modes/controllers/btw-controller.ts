@@ -189,7 +189,7 @@ export class BtwController {
 			);
 			return true;
 		} catch (error) {
-			this.ctx.showError(sanitizeErrorLine(`Cannot branch /btw: ${toError(error).message}`));
+			this.ctx.showError(sanitizeErrorLine(t("Cannot branch /btw: {error}", { error: toError(error).message })));
 			return false;
 		} finally {
 			this.#branchInFlight = false;
@@ -523,7 +523,9 @@ export class BtwController {
 			void this.#runRequest(request);
 			return true;
 		} catch (error) {
-			this.ctx.showError(sanitizeErrorLine(`Cannot open /btw history: ${toError(error).message}`));
+			this.ctx.showError(
+				sanitizeErrorLine(t("Cannot open /btw history: {error}", { error: toError(error).message })),
+			);
 			return false;
 		} finally {
 			this.#starting = false;
@@ -618,7 +620,9 @@ export class BtwController {
 				if (request.persisted) this.#failedWrites.set(request, toError(error));
 				logger.error("BTW history save failed", { error });
 				if (request.sessionId === this.ctx.sessionManager.getSessionId()) {
-					this.ctx.showError(sanitizeErrorLine(`Could not save /btw history: ${toError(error).message}`));
+					this.ctx.showError(
+						sanitizeErrorLine(t("Could not save /btw history: {error}", { error: toError(error).message })),
+					);
 				}
 				return false;
 			},

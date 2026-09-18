@@ -631,11 +631,17 @@ class TreeList implements Component {
 				const filterLabel = this.#getFilterLabel().trim() || "[default]";
 				lines.push(
 					truncateToWidth(
-						theme.fg("muted", `${this.#flatNodes.length} entries hidden by the current filter ${filterLabel}`),
+						theme.fg(
+							"muted",
+							t("{count} entries hidden by the current filter {filter}", {
+								count: this.#flatNodes.length,
+								filter: filterLabel,
+							}),
+						),
 						width,
 					),
 				);
-				lines.push(truncateToWidth(theme.fg("muted", "Press Alt+A to show all, Alt+D for default"), width));
+				lines.push(truncateToWidth(theme.fg("muted", t("Press Alt+A to show all, Alt+D for default")), width));
 				lines.push(
 					truncateToWidth(theme.fg("muted", `(0/${this.#flatNodes.length})${this.#getFilterLabel()}`), width),
 				);
@@ -771,24 +777,25 @@ class TreeList implements Component {
 				if (role === "user") {
 					const msgWithContent = msg as { content?: unknown };
 					const content = normalize(this.#extractContent(msgWithContent.content));
-					result = theme.fg("accent", "user: ") + content;
+					result = theme.fg("accent", t("user: ")) + content;
 				} else if (role === "developer") {
 					const msgWithContent = msg as { content?: unknown };
 					const content = normalize(this.#extractContent(msgWithContent.content));
-					result = theme.fg("dim", "developer: ") + theme.fg("muted", content);
+					result = theme.fg("dim", t("developer: ")) + theme.fg("muted", content);
 				} else if (role === "assistant") {
 					const presentation = resolveAssistantErrorPresentation(msg);
 					const msgWithContent = msg as { content?: unknown; stopReason?: string; errorMessage?: string };
 					const textContent = normalize(this.#extractContent(msgWithContent.content));
 					if (textContent) {
-						result = theme.fg("success", "assistant: ") + textContent;
+						result = theme.fg("success", t("assistant: ")) + textContent;
 					} else if (presentation.kind === "full") {
 						result =
-							theme.fg("success", "assistant: ") + theme.fg("error", normalize(presentation.text).slice(0, 80));
+							theme.fg("success", t("assistant: ")) +
+							theme.fg("error", normalize(presentation.text).slice(0, 80));
 					} else if (msgWithContent.stopReason === "aborted") {
-						result = theme.fg("success", "assistant: ") + theme.fg("muted", t("(aborted)"));
+						result = theme.fg("success", t("assistant: ")) + theme.fg("muted", t("(aborted)"));
 					} else {
-						result = theme.fg("success", "assistant: ") + theme.fg("muted", t("(no content)"));
+						result = theme.fg("success", t("assistant: ")) + theme.fg("muted", t("(no content)"));
 					}
 				} else if (role === "toolResult") {
 					const toolMsg = msg as { toolCallId?: string; toolName?: string };

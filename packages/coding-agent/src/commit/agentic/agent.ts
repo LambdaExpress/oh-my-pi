@@ -7,6 +7,7 @@ import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import typesDescriptionPrompt from "../../commit/prompts/types-description.md" with { type: "text" };
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
+import { t } from "../../i18n";
 import { getMarkdownTheme } from "../../modes/theme/theme";
 import { createAgentSession } from "../../sdk";
 import type { AgentSessionEvent } from "../../session/agent-session";
@@ -121,7 +122,7 @@ export async function runCommitAgentSession(input: CommitAgentInput): Promise<Co
 					clearThinkingLine();
 					const assistantMessage = event.message as { stopReason?: string; errorMessage?: string };
 					if (assistantMessage.stopReason === "error" && assistantMessage.errorMessage) {
-						process.stdout.write(`● Error: ${assistantMessage.errorMessage}\n`);
+						process.stdout.write(`● ${t("Error:")} ${assistantMessage.errorMessage}\n`);
 					}
 					const messageText = extractMessageText(event.message?.content ?? []);
 					if (messageText) {
@@ -147,7 +148,14 @@ export async function runCommitAgentSession(input: CommitAgentInput): Promise<Co
 				if (isThinking) {
 					isThinking = false;
 				}
-				process.stdout.write(`● agent finished (${messageCount} messages, ${toolCalls} tools)\n`);
+				process.stdout.write(
+					`● ${t("agent finished ({messages} message{ms}, {tools} tool{ts})", {
+						messages: messageCount,
+						ms: messageCount === 1 ? "" : "s",
+						tools: toolCalls,
+						ts: toolCalls === 1 ? "" : "s",
+					})}\n`,
+				);
 				break;
 			default:
 				break;

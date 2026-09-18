@@ -1,6 +1,7 @@
 import type { VcsGitRepo } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import type { ExtensionAPI } from "../extensibility/extensions";
+import { t } from "../i18n";
 import { normalizePathSpec } from "./helpers";
 
 const AUTORESEARCH_BRANCH_PREFIX = "autoresearch/";
@@ -45,7 +46,9 @@ export async function ensureAutoresearchBranch(
 	if (vcs.isPureJj(workDir)) {
 		return {
 			ok: false,
-			error: "Autoresearch needs a Git checkout for branch isolation and baseline commits, but this workspace is pure Jujutsu (`.jj/` without a colocated `.git/`). Run `jj git init --colocate` to add a Git checkout before starting autoresearch.",
+			error: t(
+				"Autoresearch needs a Git checkout for branch isolation and baseline commits, but this workspace is pure Jujutsu (`.jj/` without a colocated `.git/`). Run `jj git init --colocate` to add a Git checkout before starting autoresearch.",
+			),
 		};
 	}
 
@@ -55,8 +58,9 @@ export async function ensureAutoresearchBranch(
 			ok: true,
 			branchName: null,
 			created: false,
-			warning:
+			warning: t(
 				"Not in a git repository — autoresearch will run without branch isolation, baseline reset, or auto-commits.",
+			),
 		};
 	}
 
@@ -66,7 +70,9 @@ export async function ensureAutoresearchBranch(
 	} catch (err) {
 		return {
 			ok: false,
-			error: `Unable to inspect git status before starting autoresearch: ${err instanceof Error ? err.message : String(err)}`,
+			error: t("Unable to inspect git status before starting autoresearch: {error}", {
+				error: err instanceof Error ? err.message : String(err),
+			}),
 		};
 	}
 
@@ -81,7 +87,10 @@ export async function ensureAutoresearchBranch(
 		const preview = formatDirtyPaths(dirtyPaths);
 		return {
 			ok: false,
-			error: `Worktree is dirty (${preview}). Commit or stash these changes before starting autoresearch — a fresh autoresearch/* branch needs a clean baseline.`,
+			error: t(
+				"Worktree is dirty ({paths}). Commit or stash these changes before starting autoresearch — a fresh autoresearch/* branch needs a clean baseline.",
+				{ paths: preview },
+			),
 		};
 	}
 
@@ -91,7 +100,10 @@ export async function ensureAutoresearchBranch(
 	} catch (err) {
 		return {
 			ok: false,
-			error: `Failed to create autoresearch branch ${branchName}: ${err instanceof Error ? err.message : String(err)}`,
+			error: t("Failed to create autoresearch branch {branch}: {error}", {
+				branch: branchName,
+				error: err instanceof Error ? err.message : String(err),
+			}),
 		};
 	}
 	return { ok: true, branchName, created: true };

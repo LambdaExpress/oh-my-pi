@@ -12,6 +12,7 @@ import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, formatNumber } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { createLiveBoard, type LiveBoardOutput } from "../cli/live-board";
+import { t } from "../i18n";
 import type { IfBenchFailure } from "./protocol";
 import type { IfBenchModelReport, IfBenchObserver, IfBenchSummary, IfBenchTurnRecord } from "./runner";
 
@@ -126,18 +127,18 @@ function renderLive(
 	const deepest = Math.max(0, ...[...rows.values()].map(row => row.actions));
 	const header =
 		`${chalk.cyan(spinner)} ${chalk.bold("if-bench")} ${chalk.dim("·")} ` +
-		`${rows.size} live ${chalk.dim("·")} ${deepest} actions ${chalk.dim("·")} ` +
+		`${t("{count} live", { count: rows.size })} ${chalk.dim("·")} ${t("{count} actions", { count: deepest })} ${chalk.dim("·")} ` +
 		`${chalk.dim(`L=${meta.arrayLength} nya{1,${meta.nyaMax}}`)} ${chalk.dim("·")} ` +
 		`${formatDuration(Date.now() - startedAt)}`;
 	const lines = [header];
 	for (const [label, row] of rows) {
 		const meterCells = ladder(row, meta.maxTurns, spinner);
 		const parts = [
-			`turn ${Math.max(row.turn, 1)}/${meta.maxTurns}`,
-			`${row.actions} acts`,
+			t("turn {turn}/{max}", { turn: Math.max(row.turn, 1), max: meta.maxTurns }),
+			t("{count} acts", { count: row.actions }),
 			formatDuration(Date.now() - row.startedAt),
 		];
-		if (row.placement) parts.push(chalk.dim(`cat@${row.placement}`));
+		if (row.placement) parts.push(chalk.dim(t("cat@{placement}", { placement: row.placement })));
 		lines.push(`  ${chalk.yellow(spinner)} ${pad(label, LABEL_WIDTH)} ${meterCells} ${parts.join(chalk.dim(" · "))}`);
 	}
 	return lines;
@@ -168,22 +169,32 @@ function pad(text: string, width: number): string {
 }
 
 function formatTurnLine(label: string, record: IfBenchTurnRecord): string {
-	const head = `[turn ${record.turn}] ${label} ${record.cumulativeActions} acts cat@${record.placement}`;
+	const head = t("[turn {turn}] {label} {count} acts cat@{placement}", {
+		turn: record.turn,
+		label,
+		count: record.cumulativeActions,
+		placement: record.placement,
+	});
 	if (record.passed) return `${head} PASS ${formatDuration(Math.round(record.durationMs))}`;
 	return `${head} FAIL ${record.failure ?? "format"}`;
 }
 
 function formatVerdict(report: IfBenchModelReport, meta: IfBenchBoardMeta): string {
 	const stats = [
-		`${report.turnsPassed}/${meta.maxTurns} turns`,
-		`${report.actionsPassed} actions`,
-		`${formatDuration(Math.round(meanTurnMs(report)))}/turn`,
+		t("{passed}/{max} turns", { passed: report.turnsPassed, max: meta.maxTurns }),
+		t("{count} actions", { count: report.actionsPassed }),
+		t("{duration}/turn", { duration: formatDuration(Math.round(meanTurnMs(report))) }),
 	];
 	if (report.outputTokens > 0) stats.push(`${formatNumber(report.outputTokens)} tok`);
 	if (report.cost > 0) stats.push(formatCost(report.cost));
 	const body = `${chalk.bold(report.label)} ${stats.join(chalk.dim(" · "))}`;
 	if (!report.failure) return `${chalk.green("✓")} ${body}`;
-	return `${chalk.red("✗")} ${body} ${chalk.dim("·")} ${chalk.red(`broke on turn ${report.failure.turn}: ${FAILURE_TEXT[report.failure.kind]}`)}`;
+	return `${chalk.red("✗")} ${body} ${chalk.dim("·")} ${chalk.red(
+		t("broke on turn {turn}: {reason}", {
+			turn: report.failure.turn,
+			reason: t(FAILURE_TEXT[report.failure.kind]),
+		}),
+	)}`;
 }
 
 /** Expected/actual pair for the turn that ended a run, clipped for the terminal. */
@@ -192,10 +203,12 @@ function failureDetail(report: IfBenchModelReport): string[] {
 	if (!failed) return [];
 	const oneLine = (text: string): string =>
 		truncateToWidth(replaceTabs(text).replace(/\s+/g, " ").trim(), DETAIL_WIDTH);
-	if (failed.failure === "provider") return [`    ${chalk.dim("provider")} ${chalk.red(oneLine(failed.response))}`];
+	if (failed.failure === "provider") {
+		return [`    ${chalk.dim(t("provider"))} ${chalk.red(oneLine(failed.response))}`];
+	}
 	return [
-		`    ${chalk.dim("expected")} <${failed.expected}>`,
-		`    ${chalk.dim("actual  ")} ${oneLine(failed.response)}`,
+		`    ${chalk.dim(t("expected"))} <${failed.expected}>`,
+		`    ${chalk.dim(t("actual  "))} ${oneLine(failed.response)}`,
 	];
 }
 
@@ -223,21 +236,30 @@ export function formatIfBenchScoreboard(summary: IfBenchSummary): string {
 		(a, b) => b.turnsPassed - a.turnsPassed || b.actionsPassed - a.actionsPassed || meanTurnMs(a) - meanTurnMs(b),
 	);
 	const columns: ScoreboardColumn[] = [
-		{ header: "model", value: report => report.label },
-		{ header: "turns", value: report => `${report.turnsPassed}/${summary.maxTurns}`, align: "right" },
-		{ header: "actions", value: report => String(report.actionsPassed), align: "right" },
+		{ header: t("model"), value: report => report.label },
 		{
-			header: "broke on",
-			value: report =>
-				report.failure ? `turn ${report.failure.turn} · ${FAILURE_TEXT[report.failure.kind]}` : "survived",
+			header: t("turns"),
+			value: report => `${report.turnsPassed}/${summary.maxTurns}`,
+			align: "right",
 		},
-		{ header: "per turn", value: report => formatDuration(Math.round(meanTurnMs(report))), align: "right" },
+		{ header: t("actions"), value: report => String(report.actionsPassed), align: "right" },
 		{
-			header: "tokens",
+			header: t("broke on"),
+			value: report =>
+				report.failure
+					? t("turn {turn} · {reason}", {
+							turn: report.failure.turn,
+							reason: t(FAILURE_TEXT[report.failure.kind]),
+						})
+					: t("survived"),
+		},
+		{ header: t("per turn"), value: report => formatDuration(Math.round(meanTurnMs(report))), align: "right" },
+		{
+			header: t("tokens"),
 			value: report => (report.outputTokens > 0 ? formatNumber(report.outputTokens) : "-"),
 			align: "right",
 		},
-		{ header: "cost", value: report => (report.cost > 0 ? formatCost(report.cost) : "-"), align: "right" },
+		{ header: t("cost"), value: report => (report.cost > 0 ? formatCost(report.cost) : "-"), align: "right" },
 	];
 	const cells = ranked.map(report => columns.map(column => column.value(report)));
 	const widths = columns.map((column, index) =>

@@ -867,9 +867,11 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 		command.flags.cacheConcurrency !== undefined;
 	if (!cacheMode && cacheFlagsUsed) throw new Error(t("Cache flags require --cache"));
 	if (cacheMode && command.flags.runs !== undefined)
-		throw new Error("Use --cache-pairs instead of --runs with --cache");
-	if (cacheMode && command.flags.prompt !== undefined) throw new Error("--cache builds its own stable-prefix prompts");
-	if (cacheMode && command.flags.profile !== undefined) throw new Error("--profile cannot be combined with --cache");
+		throw new Error(t("Use --cache-pairs instead of --runs with --cache"));
+	if (cacheMode && command.flags.prompt !== undefined)
+		throw new Error(t("--cache builds its own stable-prefix prompts"));
+	if (cacheMode && command.flags.profile !== undefined)
+		throw new Error(t("--profile cannot be combined with --cache"));
 	if (cacheMode && (command.flags.par ?? 1) > 1) {
 		throw new Error(t("--par cannot parallelize cold/warm pairs; use --cache-concurrency instead"));
 	}
@@ -881,14 +883,16 @@ export async function runBenchCommand(command: BenchCommandArgs, deps: BenchDepe
 		profileFlag !== "prefill" &&
 		profileFlag !== "generation"
 	) {
-		throw new Error(`Unknown --profile "${profileFlag}" (expected mix, chat, prefill, or generation)`);
+		throw new Error(
+			t('Unknown --profile "{profile}" (expected mix, chat, prefill, or generation)', { profile: profileFlag }),
+		);
 	}
 	const profile: BenchProfile = profileFlag ?? "mix";
 	if (!cacheMode && command.flags.prompt !== undefined && profile !== "chat" && profile !== "generation") {
-		throw new Error("--prompt requires --profile chat or generation");
+		throw new Error(t("--prompt requires --profile chat or generation"));
 	}
 	if (command.flags.prefillBytes !== undefined && (cacheMode || (profile !== "mix" && profile !== "prefill"))) {
-		throw new Error("--prefill-bytes requires prefill challenges (--profile mix or prefill)");
+		throw new Error(t("--prefill-bytes requires prefill challenges (--profile mix or prefill)"));
 	}
 
 	const cachePairs = cacheMode

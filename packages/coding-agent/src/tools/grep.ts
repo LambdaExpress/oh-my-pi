@@ -22,6 +22,7 @@ import {
 } from "@oh-my-pi/pi-utils/ar";
 import { getEditStore } from "../edit/store";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import { formatHashlineHeader } from "./hashline-format";
 import type { LocalProtocolOptions } from "../internal-urls/local-protocol";
 import { InternalUrlRouter } from "../internal-urls/router";
@@ -70,7 +71,7 @@ import { isRawSelector } from "./read-selector";
 import {
 	createCachedComponent,
 	formatCodeFrameLine,
-	formatCount,
+	formatCountLabel,
 	formatEmptyMessage,
 	formatErrorMessage,
 	formatMoreItems,
@@ -1899,7 +1900,7 @@ const SEARCH_CODE_FRAME_LINE_RE = /^\s*\*?(\d+)│/;
 function searchScopeMeta(details: GrepToolDetails | undefined): string | undefined {
 	if (!details?.scopePath) return undefined;
 	const label = details.searchPath ? fileHyperlink(details.searchPath, details.scopePath) : details.scopePath;
-	return `in ${label}`;
+	return t("in {path}", { path: label });
 }
 
 function linkUrlLikeSearchHeader(raw: string, styled: string): { line: string; absPath?: string } {
@@ -2053,13 +2054,13 @@ export const grepToolRenderer = {
 	renderCall(args: GrepRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const paths = toPathList(args.path ?? args.paths);
 		const meta: string[] = [];
-		if (paths.length) meta.push(`in ${paths.join(", ")}`);
-		if (args.case === false) meta.push("case:insensitive");
+		if (paths.length) meta.push(t("in {path}", { path: paths.join(", ") }));
+		if (args.case === false) meta.push(t("case:insensitive"));
 		if (args.gitignore === false) meta.push("gitignore:false");
 		if (args.skip !== undefined && args.skip > 0) meta.push(`skip:${args.skip}`);
 
 		const text = renderStatusLine(
-			{ icon: "pending", title: "Grep", titleColor: "toolTitle", description: args.pattern || "?", meta },
+			{ icon: "pending", title: t("Grep"), titleColor: "toolTitle", description: args.pattern || "?", meta },
 			uiTheme,
 		);
 		return new Text(text, 1, 0);
@@ -2074,7 +2075,7 @@ export const grepToolRenderer = {
 		const details = result.details;
 
 		if (result.isError || details?.error) {
-			const errorText = details?.error || result.content?.find(c => c.type === "text")?.text || "Unknown error";
+			const errorText = details?.error || result.content?.find(c => c.type === "text")?.text || t("Unknown error");
 			return new Text(formatErrorMessage(errorText, uiTheme), 1, 0);
 		}
 
@@ -2083,17 +2084,17 @@ export const grepToolRenderer = {
 		if (!hasDetailedData) {
 			const textContent = result.details?.displayContent ?? result.content?.find(c => c.type === "text")?.text;
 			if (!textContent || textContent === "No matches found") {
-				return new Text(formatEmptyMessage("No matches found", uiTheme), 1, 0);
+				return new Text(formatEmptyMessage(t("No matches found"), uiTheme), 1, 0);
 			}
 			const lines = textContent.split("\n").filter(line => line.trim() !== "");
 			const description = args?.pattern ?? undefined;
 			const header = renderStatusLine(
 				{
 					iconOverride: grepStatusIcon(uiTheme),
-					title: "Grep",
+					title: t("Grep"),
 					titleColor: "toolTitle",
 					description,
-					meta: [formatCount("item", lines.length)],
+					meta: [formatCountLabel("item", lines.length)],
 				},
 				uiTheme,
 			);
@@ -2126,32 +2127,32 @@ export const grepToolRenderer = {
 		const missingPathsList = details?.missingPaths ?? [];
 		const missingNote =
 			missingPathsList.length > 0
-				? uiTheme.fg("warning", `skipped missing: ${missingPathsList.join(", ")}`)
+				? uiTheme.fg("warning", t("skipped missing: {paths}", { paths: missingPathsList.join(", ") }))
 				: undefined;
 
 		if (matchCount === 0) {
-			const meta = ["0 matches"];
+			const meta = [formatCountLabel("match", 0)];
 			const scopeMeta = searchScopeMeta(details);
 			if (scopeMeta) meta.push(scopeMeta);
 			const header = renderStatusLine(
-				{ icon: "warning", title: "Grep", titleColor: "toolTitle", description: args?.pattern, meta },
+				{ icon: "warning", title: t("Grep"), titleColor: "toolTitle", description: args?.pattern, meta },
 				uiTheme,
 			);
-			const lines = [header, formatEmptyMessage("No matches found", uiTheme)];
+			const lines = [header, formatEmptyMessage(t("No matches found"), uiTheme)];
 			if (missingNote) lines.push(missingNote);
 			return new Text(lines.join("\n"), 1, 0);
 		}
 
-		const summaryParts = [formatCount("match", matchCount), formatCount("file", fileCount)];
+		const summaryParts = [formatCountLabel("match", matchCount), formatCountLabel("file", fileCount)];
 		const meta = [...summaryParts];
 		const scopeMeta = searchScopeMeta(details);
 		if (scopeMeta) meta.push(scopeMeta);
-		if (truncated) meta.push(uiTheme.fg("warning", "truncated"));
+		if (truncated) meta.push(uiTheme.fg("warning", t("truncated")));
 		const description = args?.pattern ?? undefined;
 		const header = renderStatusLine(
 			{
 				...(truncated ? { icon: "warning" as const } : { iconOverride: grepStatusIcon(uiTheme) }),
-				title: "Grep",
+				title: t("Grep"),
 				titleColor: "toolTitle",
 				description,
 				meta,

@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { $which, isRecord, ptree, sanitizeText } from "@oh-my-pi/pi-utils";
+import { t } from "../i18n";
 import { CLEANSE_PARSER_KINDS, type CleanseParserKind, parseCleanseDiagnostics } from "./parsers";
 import type { CleanseCheckResult, CleanseDiagnostic, CleanseDiagnosticReport, SkippedCleanseCheck } from "./types";
 
@@ -229,15 +230,19 @@ export async function buildCustomCleanseSuite(
 	const skipped: SkippedCleanseCheck[] = [];
 	for (const [index, spec] of specs.entries()) {
 		const [binary, ...args] = spec.command;
-		const label = spec.label.trim() || `custom checker ${index + 1}`;
+		const label = spec.label.trim() || t("custom checker {index}", { index: index + 1 });
 		const language = spec.language?.trim() || "Custom";
 		if (!binary) {
-			skipped.push({ label, language, reason: "empty command" });
+			skipped.push({ label, language, reason: t("empty command") });
 			continue;
 		}
 		const root = normalizeCustomRoot(resolvedCwd, spec.cwd);
 		if (root === undefined) {
-			skipped.push({ label, language, reason: `working directory escapes the project: ${spec.cwd}` });
+			skipped.push({
+				label,
+				language,
+				reason: t("working directory escapes the project: {cwd}", { cwd: spec.cwd }),
+			});
 			continue;
 		}
 		let executable: string | undefined;
@@ -248,7 +253,7 @@ export async function buildCustomCleanseSuite(
 			executable = resolveBinary(resolvedCwd, root, [binary]);
 		}
 		if (!executable) {
-			skipped.push({ label, language, reason: `executable not found: ${binary}` });
+			skipped.push({ label, language, reason: t("executable not found: {binary}", { binary }) });
 			continue;
 		}
 		plans.push({
@@ -379,7 +384,7 @@ function addPlan(state: DiscoveryState, request: PlanRequest): void {
 		state.skipped.push({
 			label: `${request.label} (${rootLabel})`,
 			language: request.language,
-			reason: `executable not found: ${request.binaries.join(" or ")}`,
+			reason: t("executable not found: {binary}", { binary: request.binaries.join(" or ") }),
 		});
 		return;
 	}
@@ -423,7 +428,9 @@ async function discoverRust(state: DiscoveryState): Promise<void> {
 			state.skipped.push({
 				label: `cargo clippy (${root})`,
 				language: "Rust",
-				reason: `cargo metadata failed: ${error instanceof Error ? error.message : String(error)}`,
+				reason: t("cargo metadata failed: {error}", {
+					error: error instanceof Error ? error.message : String(error),
+				}),
 			});
 			continue;
 		}
@@ -431,7 +438,7 @@ async function discoverRust(state: DiscoveryState): Promise<void> {
 			state.skipped.push({
 				label: `cargo clippy (${root})`,
 				language: "Rust",
-				reason: "no first-party workspace packages found",
+				reason: t("no first-party workspace packages found"),
 			});
 			continue;
 		}

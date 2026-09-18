@@ -512,7 +512,7 @@ export function createAcpExtensionUiContext(
 				connection,
 				getSessionId(),
 				"askDialog",
-				questions.length === 1 ? questions[0].question : `Answer ${questions.length} questions`,
+				questions.length === 1 ? questions[0].question : t("Answer {count} questions", { count: questions.length }),
 				properties,
 				undefined,
 				{
@@ -2063,7 +2063,11 @@ export class AcpAgent implements Agent {
 		// inline and a multi-thousand-line plan blows out the dialog.
 		const previewLines = planContent.split("\n").slice(0, 12).join("\n");
 		const ellipsis = planContent.split("\n").length > 12 ? "\n…" : "";
-		const message = `Approve plan "${title}" and start implementation?\n\n${previewLines}${ellipsis}`;
+		const message = t('Approve plan "{title}" and start implementation?\n\n{preview}{ellipsis}', {
+			title,
+			preview: previewLines,
+			ellipsis,
+		});
 		const value = await elicitFromAcpClient(
 			this.#connection,
 			sessionId,
@@ -2591,7 +2595,7 @@ export class AcpAgent implements Agent {
 				const reserve =
 					confirmation.remainingPercent === undefined
 						? t("inside the configured reserve margin")
-						: `${confirmation.remainingPercent.toFixed(1)}% remaining`;
+						: t("{pct}% remaining", { pct: confirmation.remainingPercent.toFixed(1) });
 				return uiContext.confirm(
 					t("Coding-plan reserve reached"),
 					t("{from} has {reserve}. Switch to {to}? Choose No to keep using the current plan.", {
@@ -2739,7 +2743,7 @@ export class AcpAgent implements Agent {
 			configs[server.name] = this.#toMcpConfig(server);
 			sources[server.name] = {
 				provider: "acp",
-				providerName: "ACP Client",
+				providerName: t("ACP Client"),
 				path: `acp://${server.name}`,
 				level: "project",
 			};

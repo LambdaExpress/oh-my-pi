@@ -27,6 +27,7 @@ import type { ToolExample } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
+import { t } from "../../i18n";
 import { IrcBus } from "../../irc/bus";
 import type { Theme } from "../../modes/theme/theme";
 import hubDescription from "../../prompts/tools/hub.md" with { type: "text" };
@@ -584,15 +585,15 @@ export const hubToolRenderer = {
 	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
 		const hubArgs = (args ?? {}) as HubRenderArgs;
 		const op = hubArgs.op;
-		if (!op) return { label: "Hub" };
+		if (!op) return { label: t("Hub") };
 		const target = hubArgs.to ?? hubArgs.from ?? hubArgs.name;
 		let detail = op;
 		if (target !== undefined && target.length > 0) {
 			detail = op === "send" ? `send → ${target}` : `${op} ${target}`;
 		} else if (hubArgs.ids !== undefined && hubArgs.ids.length > 0) {
-			detail = `${op} ${hubArgs.ids.length} job${hubArgs.ids.length === 1 ? "" : "s"}`;
+			detail = `${op} ${t("{count} job{s}", { count: hubArgs.ids.length, s: hubArgs.ids.length === 1 ? "" : "s" })}`;
 		}
-		return { label: "Hub", detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
+		return { label: t("Hub"), detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
 	},
 
 	renderCall(args: HubRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {

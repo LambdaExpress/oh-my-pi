@@ -4,6 +4,7 @@ import type { ToolExample } from "@oh-my-pi/pi-ai";
 import type { Component } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
+import { t } from "../i18n";
 import { highlightCode, type Theme } from "../modes/theme/theme";
 import sshDescriptionBase from "../prompts/tools/ssh.md" with { type: "text" };
 import { DEFAULT_MAX_BYTES, streamTailUpdates, TailBuffer } from "../session/streaming-output";
@@ -310,7 +311,7 @@ function renderSshCall(
 				{
 					icon: options.spinnerFrame !== undefined ? "running" : "pending",
 					spinnerFrame: options.spinnerFrame,
-					title: "SSH",
+					title: t("SSH"),
 					description: `[${host}]`,
 				},
 				uiTheme,
@@ -348,10 +349,14 @@ export const sshToolRenderer = {
 		const isPartial = options.isPartial === true;
 		const header = renderStatusLine(
 			isPartial
-				? { icon: "pending", title: "SSH", description: `[${host}]` }
+				? { icon: "pending", title: t("SSH"), description: `[${host}]` }
 				: isError
-					? { icon: "error", title: "SSH", description: `[${host}]` }
-					: { iconOverride: uiTheme.styledSymbol("tool.ssh", "accent"), title: "SSH", description: `[${host}]` },
+					? { icon: "error", title: t("SSH"), description: `[${host}]` }
+					: {
+							iconOverride: uiTheme.styledSymbol("tool.ssh", "accent"),
+							title: t("SSH"),
+							description: `[${host}]`,
+						},
 			uiTheme,
 		);
 		const textContent = result.content.find(content => content.type === "text")?.text ?? "";
@@ -370,7 +375,11 @@ export const sshToolRenderer = {
 							outputLines.push(
 								uiTheme.fg(
 									"dim",
-									`… (${skippedCount} earlier lines, showing ${visualLines.length} of ${totalVisualLines}) (ctrl+o to expand)`,
+									t("… ({count} earlier lines, showing {shown} of {total}) (ctrl+o to expand)", {
+										count: skippedCount,
+										shown: visualLines.length,
+										total: totalVisualLines,
+									}),
 								),
 							);
 						}
@@ -381,7 +390,12 @@ export const sshToolRenderer = {
 						const rawLines = output.split("\n");
 						outputLines.push(...rawLines.slice(0, 5).map(line => uiTheme.fg("toolOutput", line)));
 						if (rawLines.length > 5) {
-							outputLines.push(uiTheme.fg("dim", `… (${rawLines.length - 5} more lines) (ctrl+o to expand)`));
+							outputLines.push(
+								uiTheme.fg(
+									"dim",
+									t("… ({count} more lines) (ctrl+o to expand)", { count: rawLines.length - 5 }),
+								),
+							);
 						}
 					}
 				}
@@ -395,7 +409,7 @@ export const sshToolRenderer = {
 						state: isPartial ? "pending" : isError ? "error" : "success",
 						sections: [
 							{ lines: capPreviewLines(commandLines, uiTheme, { expanded }) },
-							{ label: uiTheme.fg("toolTitle", "Output"), lines: outputLines },
+							{ label: uiTheme.fg("toolTitle", t("Output")), lines: outputLines },
 						],
 						width,
 					},

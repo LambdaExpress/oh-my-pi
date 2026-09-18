@@ -275,7 +275,7 @@ export class AdvisorConfigOverlayComponent implements Component {
 		// until a successful save rewrites the file without them.
 		const warnings = this.#doc.warnings?.length
 			? [
-					theme.fg("warning", "⚠ Config problems — dropped while loading:"),
+					theme.fg("warning", t("⚠ Config problems — dropped while loading:")),
 					...sanitizeDisplayWarnings(this.#doc.warnings).flatMap(warning =>
 						wrap(warning, bodyWidth).map(line => theme.fg("warning", line)),
 					),

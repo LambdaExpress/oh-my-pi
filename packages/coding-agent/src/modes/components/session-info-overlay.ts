@@ -1,4 +1,5 @@
 import { type Component, Ellipsis, matchesKey, ScrollView, Text, truncateToWidth } from "@oh-my-pi/pi-tui";
+import { t } from "../../i18n";
 import { theme } from "../theme/theme";
 import { matchesSelectCancel } from "../utils/keybinding-matchers";
 import { OverlayPanel, PanelDivider } from "./overlay-box";
@@ -38,9 +39,9 @@ export class SessionInfoOverlay implements Component {
 				thumb: text => theme.fg("accent", text),
 			},
 		});
-		this.#footer = new Text(FOOTER_HINT, 0, 0);
+		this.#footer = new Text(t(FOOTER_HINT), 0, 0);
 		this.#footer.setStyleFn(text => theme.fg("dim", text));
-		this.#panel = new OverlayPanel("Session Info");
+		this.#panel = new OverlayPanel(t("Session Info"));
 		this.#panel.addChild(this.#scrollView);
 		this.#panel.addChild(new PanelDivider());
 		this.#panel.addChild(this.#footer);

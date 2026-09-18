@@ -1,3 +1,5 @@
+import { t } from "../i18n";
+
 const USAGE = "Usage: /marketplace install [--force] [--scope user|project] <name@marketplace>";
 
 export interface MarketplaceInstallArgs {
@@ -32,23 +34,25 @@ export function parseMarketplaceInstallArgs(rest: string): MarketplaceInstallArg
 			if (s === "user" || s === "project") {
 				scope = s;
 			} else {
-				return { error: `Invalid --scope value: "${s}". Must be "user" or "project".` };
+				return { error: t('Invalid --scope value: "{value}". Must be "user" or "project".', { value: s }) };
 			}
 		} else if (tokens[i] === "--scope") {
 			// --scope with no value, or next token is another flag
-			return { error: '--scope requires a value: "user" or "project".' };
+			return { error: t('--scope requires a value: "user" or "project".') };
 		} else if (tokens[i].startsWith("-")) {
-			return { error: `Unknown flag: "${tokens[i]}". ${USAGE}` };
+			return { error: t('Unknown flag: "{flag}". {usage}', { flag: tokens[i]!, usage: t(USAGE) }) };
 		} else {
 			if (installSpec) {
-				return { error: `Unexpected argument: "${tokens[i]}". ${USAGE}` };
+				return {
+					error: t('Unexpected argument: "{argument}". {usage}', { argument: tokens[i]!, usage: t(USAGE) }),
+				};
 			}
 			installSpec = tokens[i];
 		}
 	}
 
 	if (!installSpec.includes("@")) {
-		return { error: USAGE };
+		return { error: t(USAGE) };
 	}
 
 	return { force, scope, installSpec };
@@ -78,14 +82,14 @@ export function parsePluginScopeArgs(rest: string, usageHint: string): PluginSco
 			if (s === "user" || s === "project") {
 				scope = s;
 			} else {
-				return { error: `Invalid --scope value: "${s}". Must be "user" or "project".` };
+				return { error: t('Invalid --scope value: "{value}". Must be "user" or "project".', { value: s }) };
 			}
 		} else if (tokens[i] === "--scope") {
-			return { error: '--scope requires a value: "user" or "project".' };
+			return { error: t('--scope requires a value: "user" or "project".') };
 		} else if (tokens[i].startsWith("-")) {
-			return { error: `Unknown flag: "${tokens[i]}". ${usageHint}` };
+			return { error: t('Unknown flag: "{flag}". {usage}', { flag: tokens[i]!, usage: usageHint }) };
 		} else if (pluginId) {
-			return { error: `Unexpected argument: "${tokens[i]}". ${usageHint}` };
+			return { error: t('Unexpected argument: "{argument}". {usage}', { argument: tokens[i]!, usage: usageHint }) };
 		} else {
 			pluginId = tokens[i];
 		}

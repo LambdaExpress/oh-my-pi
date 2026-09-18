@@ -55,8 +55,11 @@ function parseCommandTemplate(
 	if (!description) {
 		const firstLine = body.split("\n").find(line => line.trim());
 		if (firstLine) {
-			description = firstLine.slice(0, 60);
-			if (firstLine.length > 60) description += "...";
+			// The first line is usually a markdown heading; show its text, not the
+			// `#` marker that belongs to the file's syntax.
+			const heading = firstLine.trim().replace(/^#{1,6}\s+/, "");
+			description = heading.slice(0, 60);
+			if (heading.length > 60) description += "...";
 		}
 	}
 

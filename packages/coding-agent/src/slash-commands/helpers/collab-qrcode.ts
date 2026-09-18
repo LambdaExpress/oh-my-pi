@@ -1,6 +1,7 @@
 import { type Component, Ellipsis, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { AnimationFrame, TranscriptPresentationTarget } from "../../modes/components/transcript-container";
 import { fgOrPlain } from "../../modes/theme/theme";
+import { t } from "../../i18n";
 import { urlHyperlinkAlways } from "../../tui";
 import { QrCode, renderQrHalfBlocks } from "../../utils/qrcode";
 
@@ -45,10 +46,20 @@ export class CollabQrCodeComponent implements Component, TranscriptPresentationT
 
 	render(width: number): readonly string[] {
 		if (width < this.#minWidth) {
-			return [this.#hiddenHint(`terminal width ${width}; need ${this.#minWidth}`, width)];
+			return [
+				this.#hiddenHint(t("terminal width {width}; need {needed}", { width, needed: this.#minWidth }), width),
+			];
 		}
 		if (this.#allocatedRows < this.#lines.length) {
-			return [this.#hiddenHint(`viewport height ${this.#allocatedRows}; need ${this.#lines.length}`, width)];
+			return [
+				this.#hiddenHint(
+					t("viewport height {height}; need {needed}", {
+						height: this.#allocatedRows,
+						needed: this.#lines.length,
+					}),
+					width,
+				),
+			];
 		}
 		return this.#lines;
 	}
@@ -57,15 +68,18 @@ export class CollabQrCodeComponent implements Component, TranscriptPresentationT
 	renderTranscriptBlockEmergencyRow(width: number): string {
 		return this.#hiddenHint(
 			Number.isFinite(this.#allocatedRows)
-				? `viewport height ${this.#allocatedRows}; need ${this.#lines.length}`
-				: "transcript pressure",
+				? t("viewport height {height}; need {needed}", {
+						height: this.#allocatedRows,
+						needed: this.#lines.length,
+					})
+				: t("transcript pressure"),
 			width,
 		);
 	}
 
 	#hiddenHint(reason: string, width: number): string {
 		return truncateToWidth(
-			`${collabBrowserLink(this.url, "Join")} ${fgOrPlain("warning", `QR code hidden: ${reason}.`)}`,
+			`${collabBrowserLink(this.url, t("Join"))} ${fgOrPlain("warning", t("QR code hidden: {reason}.", { reason }))}`,
 			width,
 			Ellipsis.Omit,
 		);

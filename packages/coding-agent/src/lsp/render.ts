@@ -9,6 +9,7 @@
  */
 import type { RenderResultOptions } from "@oh-my-pi/pi-agent-core";
 import { type Component, Text } from "@oh-my-pi/pi-tui";
+import { t } from "../i18n";
 import { getLanguageFromPath, highlightCode as highlightThemeCode, type Theme } from "../modes/theme/theme";
 import {
 	formatExpandHint,
@@ -107,7 +108,7 @@ export function renderResult(
 	if (content?.type !== "text" || !("text" in content) || !content.text) {
 		const icon = formatStatusIcon("warning", theme, options.spinnerFrame);
 		const header = `${icon} LSP`;
-		return new Text([header, theme.fg("dim", "No result")].join("\n"), 0, 0);
+		return new Text([header, theme.fg("dim", t("No result"))].join("\n"), 0, 0);
 	}
 
 	const text = content.text;
@@ -128,14 +129,16 @@ export function renderResult(
 		requestLines.push(theme.fg("toolOutput", request.file));
 	}
 	if (request?.line !== undefined) {
-		requestLines.push(theme.fg("dim", `line ${request.line}`));
+		requestLines.push(theme.fg("dim", t("line {line}", { line: request.line })));
 	}
 	if (request?.symbol) {
-		requestLines.push(theme.fg("dim", `symbol: ${sanitizeInlineText(request.symbol)}`));
+		requestLines.push(theme.fg("dim", t("symbol: {symbol}", { symbol: sanitizeInlineText(request.symbol) })));
 	}
-	if (request?.query) requestLines.push(theme.fg("dim", `query: ${request.query}`));
-	if (request?.new_name) requestLines.push(theme.fg("dim", `new name: ${request.new_name}`));
-	if (request?.apply !== undefined) requestLines.push(theme.fg("dim", `apply: ${request.apply ? "true" : "false"}`));
+	if (request?.query) requestLines.push(theme.fg("dim", t("query: {query}", { query: request.query })));
+	if (request?.new_name) requestLines.push(theme.fg("dim", t("new name: {name}", { name: request.new_name })));
+	if (request?.apply !== undefined) {
+		requestLines.push(theme.fg("dim", t("apply: {value}", { value: request.apply ? "true" : "false" })));
+	}
 
 	const outputBlock = new CachedOutputBlock();
 
@@ -145,31 +148,31 @@ export function renderResult(
 			const { expanded, isPartial, spinnerFrame } = options;
 
 			// Determine label, state, bodyLines based on type + current expanded
-			let label = "Result";
+			let label = t("Result");
 			let state: "success" | "warning" | "error" = "success";
 			let bodyLines: string[] = [];
 
 			if (codeBlockMatch) {
-				label = "Hover";
+				label = t("Hover");
 				bodyLines = renderHover(codeBlockMatch, text, lines, expanded, theme);
 			} else if (errorMatch || warningMatch || hasStatusError) {
-				label = "Diagnostics";
+				label = t("Diagnostics");
 				const errorCount = errorMatch ? Number.parseInt(errorMatch[1], 10) : 0;
 				const warnCount = warningMatch ? Number.parseInt(warningMatch[1], 10) : 0;
 				state = errorCount > 0 ? "error" : warnCount > 0 ? "warning" : "success";
 				bodyLines = renderDiagnostics(errorMatch, warningMatch, lines, expanded, theme);
 			} else if (refMatch) {
-				label = "References";
+				label = t("References");
 				bodyLines = renderReferences(refMatch, lines, expanded, theme);
 			} else if (symbolsMatch) {
-				label = "Symbols";
+				label = t("Symbols");
 				bodyLines = renderSymbols(symbolsMatch, lines, expanded, theme);
 			} else if (result.details?.action === "diagnostics" && text === "OK") {
-				label = "Diagnostics";
+				label = t("Diagnostics");
 				state = "success";
 				bodyLines = [`${theme.styledSymbol("tool.lsp", "accent")} ${theme.fg("dim", "OK")}`];
 			} else {
-				label = "Response";
+				label = t("Response");
 				bodyLines = renderGeneric(text, lines, expanded, theme);
 			}
 
@@ -186,7 +189,7 @@ export function renderResult(
 					state,
 					sections: [
 						...(requestLines.length > 0 ? [{ lines: requestLines }] : []),
-						{ label: theme.fg("toolTitle", "Response"), lines: bodyLines },
+						{ label: theme.fg("toolTitle", t("Response")), lines: bodyLines },
 					],
 					width,
 					applyBg: false,
@@ -306,9 +309,11 @@ function renderDiagnostics(
 				: theme.styledSymbol("tool.lsp", "accent");
 
 	const meta: string[] = [];
-	if (errorCount > 0) meta.push(`${errorCount} error${errorCount !== 1 ? "s" : ""}`);
-	if (warnCount > 0) meta.push(`${warnCount} warning${warnCount !== 1 ? "s" : ""}`);
-	if (meta.length === 0) meta.push("No issues");
+	if (errorCount > 0) meta.push(t("{count} error{s}", { count: errorCount, s: errorCount !== 1 ? "s" : "" }));
+	if (warnCount > 0) {
+		meta.push(t("{count} warning{s}", { count: warnCount, s: warnCount !== 1 ? "s" : "" }));
+	}
+	if (meta.length === 0) meta.push(t("No issues"));
 
 	const diagLines = lines.filter(l => l.includes(theme.status.error) || /:\d+:\d+/.test(l));
 	const parsedDiagnostics = diagLines
@@ -369,7 +374,7 @@ function renderDiagnostics(
 		output += `\n ${theme.fg("dim", branch)} ${theme.fg(severityColor, location)}${message}`;
 	}
 	if (remaining > 0) {
-		output += `\n ${theme.fg("dim", theme.tree.last)} ${theme.fg("muted", `… ${remaining} more`)}`;
+		output += `\n ${theme.fg("dim", theme.tree.last)} ${theme.fg("muted", t("… {count} more", { count: remaining }))}`;
 	}
 
 	return output.split("\n");
@@ -404,7 +409,7 @@ function renderReferences(refMatch: RegExpMatchArray, lines: string[], expanded:
 
 	const renderGrouped = (maxFiles: number, maxLocsPerFile: number, showHint: boolean): string => {
 		const expandHint = formatExpandHint(theme, undefined, showHint);
-		let output = `${icon} ${theme.fg("dim", `${refCount} found`)}${expandHint}`;
+		let output = `${icon} ${theme.fg("dim", t("{count} found", { count: refCount }))}${expandHint}`;
 
 		const filesToShow = files.slice(0, maxFiles);
 		for (let fi = 0; fi < filesToShow.length; fi++) {
@@ -426,7 +431,7 @@ function renderReferences(refMatch: RegExpMatchArray, lines: string[], expanded:
 					const locCont = isLastLoc ? "   " : `${theme.tree.vertical}  `;
 					output += `\n ${theme.fg("dim", fileCont)}${theme.fg("dim", locBranch)} ${theme.fg(
 						"muted",
-						`line ${line}, col ${col}`,
+						t("line {line}, col {col}", { line, col }),
 					)}`;
 					if (expanded) {
 						const context = `at ${file}:${line}:${col}`;
@@ -439,7 +444,7 @@ function renderReferences(refMatch: RegExpMatchArray, lines: string[], expanded:
 				if (locs.length > maxLocsPerFile) {
 					output += `\n ${theme.fg("dim", fileCont)}${theme.fg("dim", theme.tree.last)} ${theme.fg(
 						"muted",
-						`… ${locs.length - maxLocsPerFile} more`,
+						t("… {count} more", { count: locs.length - maxLocsPerFile }),
 					)}`;
 				}
 			}
@@ -526,7 +531,7 @@ function renderSymbols(symbolsMatch: RegExpMatchArray, lines: string[], expanded
 	const topLevelCount = symbols.filter(s => s.indent === 0).length;
 
 	if (expanded) {
-		let output = `${icon} ${theme.fg("dim", `in ${fileName}`)}`;
+		let output = `${icon} ${theme.fg("dim", t("in {file}", { file: fileName }))}`;
 
 		for (let i = 0; i < symbols.length; i++) {
 			const sym = symbols[i];
@@ -544,18 +549,18 @@ function renderSymbols(symbolsMatch: RegExpMatchArray, lines: string[], expanded
 	const topLevel = symbols.filter(s => s.indent === 0).slice(0, 3);
 	const hasMoreSymbols = symbols.length > topLevel.length;
 	const expandHint = formatExpandHint(theme, expanded, hasMoreSymbols);
-	let output = `${icon} ${theme.fg("dim", `in ${fileName}`)}${expandHint}`;
+	let output = `${icon} ${theme.fg("dim", t("in {file}", { file: fileName }))}${expandHint}`;
 	for (let i = 0; i < topLevel.length; i++) {
 		const sym = topLevel[i];
 		const isLast = i === topLevel.length - 1 && topLevelCount <= 3;
 		const branch = isLast ? theme.tree.last : theme.tree.branch;
 		output += `\n ${theme.fg("dim", branch)} ${theme.fg("accent", sym.icon)} ${theme.fg("accent", sym.name)} ${theme.fg(
 			"muted",
-			`line ${sym.line}`,
+			t("line {line}", { line: sym.line }),
 		)}`;
 	}
 	if (topLevelCount > 3) {
-		output += `\n ${theme.fg("dim", theme.tree.last)} ${theme.fg("muted", `… ${topLevelCount - 3} more`)}`;
+		output += `\n ${theme.fg("dim", theme.tree.last)} ${theme.fg("muted", t("… {count} more", { count: topLevelCount - 3 }))}`;
 	}
 
 	return output.split("\n");
@@ -580,7 +585,7 @@ function renderGeneric(text: string, lines: string[], expanded: boolean, theme: 
 				: theme.styledSymbol("status.info", "accent");
 
 	if (expanded) {
-		let output = `${icon} ${theme.fg("dim", "Output")}`;
+		let output = `${icon} ${theme.fg("dim", t("Output"))}`;
 		for (let i = 0; i < lines.length; i++) {
 			const isLast = i === lines.length - 1;
 			const branch = isLast ? theme.tree.last : theme.tree.branch;
@@ -589,7 +594,7 @@ function renderGeneric(text: string, lines: string[], expanded: boolean, theme: 
 		return output.split("\n");
 	}
 
-	const firstLine = lines[0] || "No output";
+	const firstLine = lines[0] || t("No output");
 	const expandHint = formatExpandHint(theme, expanded, lines.length > 1);
 	let output = `${icon} ${theme.fg("dim", truncateToWidth(firstLine, TRUNCATE_LENGTHS.TITLE))}${expandHint}`;
 

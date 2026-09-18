@@ -3,6 +3,7 @@
  * live per-account reset-credit status into selector rows, and map a redeem
  * outcome code to a human message.
  */
+import { t } from "../../i18n";
 import type { ResetCreditAccountStatus, ResetCreditRedeemOutcome, ResetCreditTarget } from "../../session/auth-storage";
 
 export const CODEX_PROVIDER_ID = "openai-codex";
@@ -49,20 +50,24 @@ export function toResetUsageAccounts(statuses: ResetCreditAccountStatus[]): Rese
 export function describeRedeemOutcome(outcome: ResetCreditRedeemOutcome, label: string): string {
 	switch (outcome.code) {
 		case "reset":
-			return `Reset applied for ${label} — your rate-limit window has been refreshed.`;
+			return t("Reset applied for {label} — your rate-limit window has been refreshed.", { label });
 		case "already_redeemed":
-			return `${label}: that reset was already redeemed.`;
+			return t("{label}: that reset was already redeemed.", { label });
 		case "no_credit":
-			return `${label}: no saved resets available to spend.`;
+			return t("{label}: no saved resets available to spend.", { label });
 		case "credit_list_failed":
-			return `${label}: couldn't load this account's saved resets (network/auth) — nothing was spent, try again.`;
+			return t("{label}: couldn't load this account's saved resets (network/auth) — nothing was spent, try again.", {
+				label,
+			});
 		case "nothing_to_reset":
-			return `${label}: nothing to reset right now — your limits aren't constrained, so no credit was spent.`;
+			return t("{label}: nothing to reset right now — your limits aren't constrained, so no credit was spent.", {
+				label,
+			});
 		case "no_account":
-			return `Could not find a stored Codex account matching "${label}".`;
+			return t('Could not find a stored Codex account matching "{label}".', { label });
 		case "account_unavailable":
-			return `${label}: could not authenticate this account — try /login.`;
+			return t("{label}: could not authenticate this account — try /login.", { label });
 		default:
-			return `${label}: reset did not apply (${outcome.code}).`;
+			return t("{label}: reset did not apply ({code}).", { label, code: outcome.code });
 	}
 }

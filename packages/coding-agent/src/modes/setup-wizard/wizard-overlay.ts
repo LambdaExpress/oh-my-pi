@@ -199,7 +199,9 @@ export class SetupWizardComponent implements Component, OverlayFocusOwner {
 
 	#renderScene(width: number, height: number): string[] {
 		const scene = this.scenes[this.#sceneIndex];
-		const title = this.#activeScene?.title ?? scene?.title ?? t("Setup");
+		// Mounted controllers localize their own title; the descriptor title is
+		// the pre-mount fallback, so it stays an English natural key here.
+		const title = this.#activeScene?.title ?? t(scene?.title ?? "Setup");
 		const subtitle = this.#activeScene?.subtitle;
 		const contentWidth = Math.max(MIN_CONTENT_WIDTH, width - SCENE_MARGIN_X * 2);
 		const logo = gradientLogo(PI_LOGO, 0);
