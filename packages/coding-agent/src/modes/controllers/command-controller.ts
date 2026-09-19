@@ -1476,6 +1476,9 @@ export class CommandController {
 	): Promise<boolean> {
 		const component = new BashExecutionComponent(command, this.ctx.ui, excludeFromContext);
 		this.ctx.bashComponent = component;
+		// The user is acting, so a notice for the context this command changes
+		// publishes when the session's re-discovery records it.
+		this.ctx.markUserSubmission();
 
 		if (isDeferred) {
 			this.ctx.pendingMessagesContainer.addChild(component);
@@ -1550,6 +1553,9 @@ export class CommandController {
 		const isDeferred = this.ctx.session.isStreaming;
 		const component = new EvalExecutionComponent(code, this.ctx.ui, excludeFromContext);
 		this.ctx.pythonComponent = component;
+		// Same as the bash path: the user is acting, so context changes this code
+		// causes surface at once.
+		this.ctx.markUserSubmission();
 
 		if (isDeferred) {
 			this.ctx.pendingMessagesContainer.addChild(component);

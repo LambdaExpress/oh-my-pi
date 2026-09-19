@@ -1340,6 +1340,9 @@ export class EventController {
 				// repaints it from the transcript whenever that rebuilds.
 				if (this.#activeCompletedRun?.initialUserMessage) await this.#closeCompletedRunAtRequest();
 				this.#attachCompletedRunGate(request);
+				// The user invoked this prompt, so it is the submission a held
+				// startup notice was waiting for.
+				this.ctx.flushDeferredInjectNotice();
 				return;
 			}
 			const signature = `${event.message.role}:${event.message.customType}:${event.message.timestamp}`;
@@ -1371,7 +1374,12 @@ export class EventController {
 			} else {
 				this.ctx.addMessageToChat(event.message);
 			}
-			if (request) this.#attachCompletedRunGate(request);
+			if (request) {
+				this.#attachCompletedRunGate(request);
+				// Same as the user-message path below: a user-invoked custom prompt
+				// publishes the startup notice behind the span it opened.
+				this.ctx.flushDeferredInjectNotice();
+			}
 			// Queued custom-message chips are derived from the agent queue; refresh the
 			// pending bar when the queued custom is consumed so the chip disappears
 			// immediately.

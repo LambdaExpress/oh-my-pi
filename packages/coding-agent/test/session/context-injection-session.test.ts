@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import * as path from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
@@ -58,8 +59,8 @@ describe("context injection recording", () => {
 		return records;
 	}
 
-	async function createSession(contextFiles: ReadonlyArray<{ path: string; content: string }>): Promise<void> {
-		tempDir = TempDir.createSync("@pi-context-injection-");
+	async function createSession(contextFiles?: ReadonlyArray<{ path: string; content: string }>): Promise<void> {
+		tempDir ??= TempDir.createSync("@pi-context-injection-");
 		session = (
 			await createAgentSession({
 				cwd: tempDir.path(),
@@ -77,7 +78,11 @@ describe("context injection recording", () => {
 				model,
 				disableExtensionDiscovery: true,
 				skills: [],
-				contextFiles: contextFiles.map(file => ({ ...file, level: "project" as const })),
+				// Omitted entirely so the session discovers context files from disk and
+				// re-reads them on every rebuild.
+				...(contextFiles
+					? { contextFiles: contextFiles.map(file => ({ ...file, level: "project" as const })) }
+					: {}),
 				workspaceTree: {
 					rootPath: tempDir.path(),
 					rendered: "",
@@ -127,5 +132,32 @@ describe("context injection recording", () => {
 		// until the event lands instead of sleeping on the wall clock.
 		for (let attempt = 0; attempt < 100 && events.length === 0; attempt++) await Promise.resolve();
 		expect(events.filter(event => event.type === "context_injected")).toHaveLength(1);
+	});
+
+	it("re-reads the injected instruction files after a command the user ran", async () => {
+		tempDir = TempDir.createSync("@pi-context-injection-");
+		await Bun.write(path.join(tempDir.path(), "AGENTS.md"), "# v1\n");
+		await createSession();
+		const before = recordedInjections();
+		expect(before).toHaveLength(1);
+		expect(before[0]!.some(item => item.preview === "# v1")).toBe(true);
+
+		// The command is the user's own: whatever it rewrote on disk — here the
+		// instruction file, in practice also rules or an MCP config — has to reach
+		// the transcript as a fresh notice.
+		await Bun.write(path.join(tempDir.path(), "AGENTS.md"), "# v2\n\nRun bun check before pushing.\n");
+		const reDerived = Promise.withResolvers<void>();
+		// The rebuild runs off-band: wait on the session's own event rather than on
+		// a guess about how long discovery takes.
+		const unsubscribe = session!.subscribe(event => {
+			if (event.type === "context_injected") reDerived.resolve();
+		});
+		await session!.executeBash("echo ok");
+		await reDerived.promise;
+		unsubscribe();
+
+		const after = recordedInjections();
+		expect(after).toHaveLength(2);
+		expect(after[1]!.some(item => item.preview === "# v2\n\nRun bun check before pushing.")).toBe(true);
 	});
 });

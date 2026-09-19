@@ -9,6 +9,8 @@
 
 ### Fixed
 
+- Resuming a session no longer shows an `Inject` notice for the context the resumed process assembles on launch: startup context is journaled and waits for the user's own first submission (a typed message or a `/skill:` prompt) before it appears, the way a fresh launch already behaved.
+- `Inject` notices now follow the context as it changes mid-session instead of only reporting the session's opening set. Every connected MCP server is listed with its tool count, so `/mcp enable|disable` shows up in the transcript the moment it lands, and a command you run yourself (`!` or `$`) re-reads the injected instruction files and memory notes from disk, recording a notice only when the set actually changed.
 - `/tan` and tangential background dispatches no longer abort before running when the parent session enables a tool a headless clone cannot host (`ask` is built only for sessions that can prompt the user): the clone now requests the tools it can actually build and logs the ones it leaves behind, instead of failing every dispatch with `Tan capability reconstruction failed: missing enabled tools: ask`.
 - `write` reports the real UTF-8 byte count in its progress and success messages instead of the JavaScript character count, so non-ASCII content no longer understates the written size.
 - Fixed mixed line endings being rewritten across a whole file: a patch or edit now keeps every untouched line's original terminator, only new lines adopt the surrounding style.

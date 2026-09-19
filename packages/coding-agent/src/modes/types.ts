@@ -320,19 +320,27 @@ export interface InteractiveModeContext {
 	present(content: Component | readonly Component[]): void;
 	/**
 	 * Surface one context-injection notice at the transcript tail. A notice that
-	 * arrives before the transcript's first user message belongs to session
-	 * startup — the initial context assembly of a fresh launch, `/new`, or a
-	 * resume — and is held back until the user submits their first prompt, so an
-	 * empty transcript does not open with an `Inject` block.
+	 * arrives before the user submits anything belongs to session startup — the
+	 * initial context assembly of a fresh launch, `/new`, or a resume — and is
+	 * held back until the user submits their first prompt. An empty transcript
+	 * does not open with an `Inject` block, and a resumed one does not show the
+	 * context the resumed process assembled before the user has spoken.
 	 */
 	presentInjectNotice(items: readonly ContextInjectionItem[]): void;
 	/**
-	 * Publish the injection notice held for the transcript's first user message.
-	 * Called once the run gate is in place behind that message, so the notice
-	 * lands inside the run's span and a completed-run collapse hides it with the
-	 * rest of the span.
+	 * Publish the injection notice held for the user's submission, and record
+	 * this transcript as one the user has submitted to. Called once the run gate
+	 * is in place behind that message, so the notice lands inside the run's span
+	 * and a completed-run collapse hides it with the rest of the span.
 	 */
 	flushDeferredInjectNotice(): void;
+	/**
+	 * Record that the user acted in this transcript without publishing anything:
+	 * used when they run a command themselves, so the injection notices that
+	 * command's context re-derivation produces appear at once instead of waiting
+	 * for the next prompt.
+	 */
+	markUserSubmission(): void;
 	/**
 	 * Mount command output immediately while idle, or defer it until the active
 	 * agent turn ends so a growing live block cannot push duplicate rows into

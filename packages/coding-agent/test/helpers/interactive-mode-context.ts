@@ -263,6 +263,7 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		present: vi.fn(mount),
 		presentInjectNotice: vi.fn(),
 		flushDeferredInjectNotice: vi.fn(),
+		markUserSubmission: vi.fn(),
 		presentCommandOutput: vi.fn(mount),
 		flushPendingCommandOutput: vi.fn(),
 		showStatus: vi.fn(),

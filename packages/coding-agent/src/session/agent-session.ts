@@ -9535,12 +9535,16 @@ export class AgentSession {
 	 * @param options.excludeFromContext If true, command output won't be sent to LLM (!! prefix)
 	 * @param options.useUserShell If true, allow caller to request configured user-shell routing
 	 */
-	executeBash(
+	async executeBash(
 		command: string,
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean; useUserShell?: boolean; pty?: BashPtyOptions },
 	): Promise<BashResult> {
-		return this.#bash.executeBash(command, onChunk, options);
+		try {
+			return await this.#bash.executeBash(command, onChunk, options);
+		} finally {
+			this.#rediscoverInjectedContext();
+		}
 	}
 
 	/** Record a bash result supplied outside executeBash in the current ownership scope. */
@@ -9574,12 +9578,36 @@ export class AgentSession {
 	 * @param onChunk Optional streaming callback for output
 	 * @param options.excludeFromContext If true, execution won't be sent to LLM ($$ prefix)
 	 */
-	executePython(
+	async executePython(
 		code: string,
 		onChunk?: (chunk: string) => void,
 		options?: { excludeFromContext?: boolean },
 	): Promise<PythonResult> {
-		return this.#eval.executePython(code, onChunk, options);
+		try {
+			return await this.#eval.executePython(code, onChunk, options);
+		} finally {
+			this.#rediscoverInjectedContext();
+		}
+	}
+
+	/**
+	 * A command the user ran themselves can rewrite what the harness injects:
+	 * instruction files (`AGENTS.md` and friends), the notes and backend
+	 * instructions rendered into the prompt, and the instructions a connected MCP
+	 * server contributes. Drop the process-lifetime capability byte cache so the
+	 * rebuild re-reads them from disk — the same reason the session-switch path
+	 * clears it (issue #9273) — then rebuild off-band.
+	 * `recordContextInjection` dedupes on the source set, so a command that
+	 * changed nothing stays silent and a changed set reaches the transcript as an
+	 * injection notice at the moment it changed.
+	 */
+	#rediscoverInjectedContext(): void {
+		resetCapabilities();
+		void this.refreshBaseSystemPrompt().catch(error => {
+			logger.warn("Context rediscovery after a user command failed", {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		});
 	}
 
 	assertEvalExecutionAllowed(): void {

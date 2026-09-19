@@ -121,8 +121,34 @@ export function contextInjectionSignature(items: readonly ContextInjectionItem[]
 /** One-line list of injected sources, e.g. `AGENTS.md · skills · memory`. */
 export function summarizeContextInjections(items: readonly ContextInjectionItem[], maxLabels = 4): string {
 	const labels = items.slice(0, maxLabels).map(item => item.label);
-	const rest = items.length - labels.length;
+	const rest = items.length - maxLabels;
 	return rest > 0 ? `${labels.join(" · ")} · ${rest} more` : labels.join(" · ");
+}
+
+/**
+ * The MCP block of the injection inventory: one item per connected server, so
+ * the notice reports which servers are live — and a mid-session `/mcp enable`
+ * or `disable` changes the set — instead of only the servers that happen to
+ * ship instructions. An item's detail and preview describe the tool list the
+ * server contributes; its own instructions win the preview when it has them.
+ */
+export function mcpInjectionItems(
+	serverTools: ReadonlyMap<string, readonly string[]> = new Map(),
+	serverInstructions?: ReadonlyMap<string, string>,
+): ContextInjectionItem[] {
+	const items: ContextInjectionItem[] = [];
+	for (const [serverName, toolNames] of serverTools) {
+		const instructions = serverInstructions?.get(serverName);
+		const tools = toolNames.length === 1 ? "1 tool" : `${toolNames.length} tools`;
+		const preview = instructions ?? toolNames.join("\n");
+		items.push({
+			kind: "guidance",
+			label: `MCP ${serverName}`,
+			detail: instructions ? `${tools} · ${formatInjectionSize(instructions)} · server instructions` : tools,
+			...(preview ? { preview } : {}),
+		});
+	}
+	return items;
 }
 
 /**

@@ -1544,6 +1544,25 @@ export class MCPManager {
 	}
 
 	/**
+	 * Connected servers with the tools loaded from each, in connection order.
+	 * The system-prompt inventory lists every connected server — instructions or
+	 * not — so a mid-session connect, disconnect, or `/mcp disable` reaches the
+	 * transcript as the context change it is, instead of hiding behind servers
+	 * that happen to ship no instructions.
+	 */
+	getConnectedServerTools(): Map<string, string[]> {
+		const tools = new Map<string, string[]>();
+		for (const name of this.#connections.keys()) tools.set(name, []);
+		for (const tool of this.#tools) {
+			const serverName = tool.mcpServerName;
+			if (!serverName) continue;
+			const loaded = tools.get(serverName);
+			if (loaded) loaded.push(tool.mcpToolName ?? tool.name);
+		}
+		return tools;
+	}
+
+	/**
 	 * Get notification state for display.
 	 */
 	getNotificationState(): { enabled: boolean; subscriptions: Map<string, ReadonlySet<string>> } {

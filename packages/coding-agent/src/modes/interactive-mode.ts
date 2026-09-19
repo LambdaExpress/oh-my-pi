@@ -5897,6 +5897,11 @@ export class InteractiveMode implements InteractiveModeContext {
 		this.#uiHelpers.flushDeferredInjectNotice();
 	}
 
+	/** See {@link InteractiveModeContext.markUserSubmission}. */
+	markUserSubmission(): void {
+		this.#uiHelpers.markUserSubmission();
+	}
+
 	/**
 	 * Defer transcript command panels while the agent is streaming, then mount
 	 * them at the next settle, terminal or not. A non-terminal settle is only a

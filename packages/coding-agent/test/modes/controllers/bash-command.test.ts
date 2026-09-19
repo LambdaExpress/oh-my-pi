@@ -73,6 +73,7 @@ function createCwdContext(sourceDir: string, isStreaming = false, showImages = t
 		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 		present,
 		completePendingLocalExecution: vi.fn(),
+		markUserSubmission: vi.fn(),
 		showError: vi.fn(),
 		showWarning: vi.fn(),
 		applyCwdChange: vi.fn(async (cwd: string) => {
@@ -131,6 +132,7 @@ describe("bash shortcut command", () => {
 			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 			present: vi.fn(),
 			completePendingLocalExecution: vi.fn(),
+			markUserSubmission: vi.fn(),
 			showError: vi.fn(),
 			applyCwdChange: vi.fn(async () => {}),
 			updateEditorBorderColor: vi.fn(),

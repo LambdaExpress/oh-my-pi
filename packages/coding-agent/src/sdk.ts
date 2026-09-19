@@ -175,7 +175,7 @@ import { AgentSession, type InitialRetryFallbackState, type PlanYolo, type Prewa
 import { discoverAuthStorage as discoverAuthStorageFromConfig } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
 import { DateCwdReminderInjector } from "./session/date-cwd-reminder";
-import { type ContextInjectionItem, formatInjectionSize } from "./session/context-injection";
+import { type ContextInjectionItem, formatInjectionSize, mcpInjectionItems } from "./session/context-injection";
 import { createInterruptedTurnAbortMessage } from "./session/exit-diagnostics";
 import { recoverInlineSloppyEdit } from "./session/inline-edit-recovery";
 import {
@@ -3440,14 +3440,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 					preview: memoryInstructions,
 				});
 			}
-			for (const [serverName, serverText] of serverInstructions ?? []) {
-				injectionExtras.push({
-					kind: "guidance",
-					label: `MCP ${serverName}`,
-					detail: `${formatInjectionSize(serverText)} · server instructions`,
-					preview: serverText,
-				});
-			}
+			injectionExtras.push(...mcpInjectionItems(mcpManager?.getConnectedServerTools(), serverInstructions));
 
 			if (options.systemPrompt === undefined) {
 				const injections: ContextInjectionItem[] = [...(defaultPrompt.injections ?? []), ...injectionExtras];

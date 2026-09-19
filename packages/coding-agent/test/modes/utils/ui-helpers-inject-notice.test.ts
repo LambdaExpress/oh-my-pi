@@ -93,13 +93,25 @@ describe("injection notices around the first user message", () => {
 		expect(blockKinds(ctx)).toEqual(["user", "inject"]);
 	});
 
-	it("renders a notice in place once the user has spoken", () => {
+	it("renders a notice in place once the user has submitted something", () => {
 		const { ctx, helpers } = makeHarness();
 
 		helpers.addMessageToChat(userMessage("hello"));
+		helpers.flushDeferredInjectNotice();
 		helpers.addMessageToChat(createContextInjectionMessage([AGENTS_MD], Date.now()));
 
 		expect(blockKinds(ctx)).toEqual(["user", "inject"]);
+	});
+
+	it("publishes a notice for a command the user ran, without waiting for a prompt", () => {
+		const { ctx, helpers } = makeHarness();
+
+		// The command is the user's own action, and the session re-derives the
+		// injected context because of it: the notice belongs on screen now.
+		helpers.markUserSubmission();
+		helpers.presentInjectNotice([AGENTS_MD]);
+
+		expect(blockKinds(ctx)).toEqual(["inject"]);
 	});
 
 	it("folds several startup sets into the one notice that follows the first message", () => {
@@ -120,6 +132,7 @@ describe("injection notices around the first user message", () => {
 		const { ctx, helpers } = makeHarness();
 
 		helpers.addMessageToChat(userMessage("hello"));
+		helpers.flushDeferredInjectNotice();
 		helpers.presentInjectNotice([AGENTS_MD]);
 		helpers.presentInjectNotice([SKILLS]);
 
@@ -184,5 +197,28 @@ describe("injection notices around the first user message", () => {
 		});
 
 		expect(blockKinds(ctx)).toEqual(["user", "Container"]);
+	});
+
+	it("holds a resumed session's own context until the user submits there", () => {
+		const { ctx, helpers } = makeHarness();
+		const replayed = createContextInjectionMessage([AGENTS_MD], Date.now());
+		const request = userMessage("hello");
+		// The resumed session replays its journal: the previous session's context
+		// notice and the request it belonged to are history on screen.
+		helpers.renderSessionContext({ messages: [replayed, request] } as SessionContext);
+		const startup = createContextInjectionMessage([SKILLS], Date.now());
+
+		// The resumed process assembles its own context on launch. Its notice is
+		// not a reaction to anything the user did here, so it must wait even
+		// though the replayed transcript already shows a user request.
+		helpers.addMessageToChat(startup);
+		helpers.presentInjectNotice([SKILLS]);
+		expect(notices(ctx)).toHaveLength(1);
+
+		helpers.addMessageToChat(userMessage("second"));
+		helpers.flushDeferredInjectNotice();
+
+		expect(notices(ctx)).toHaveLength(2);
+		expect(blockKinds(ctx)).toEqual(["user", "inject", "user", "inject"]);
 	});
 });

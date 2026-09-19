@@ -144,15 +144,22 @@ export class UiHelpers {
 	constructor(private ctx: InteractiveModeContext) {}
 
 	/**
-	 * Injection notice that arrived before the transcript's first user message.
-	 * Session startup (a fresh launch, `/new`, or `--resume`) assembles the
-	 * initial context before the user has submitted anything, so its notice is
-	 * held here and attached below the first user message instead of opening an
-	 * empty transcript with an `Inject` block.
+	 * Injection notice that arrived before the user submitted anything to this
+	 * transcript. Session startup (a fresh launch, `/new`, or `--resume`)
+	 * assembles the initial context before then, so its notice is held here and
+	 * attached below the request that finally gives it a home instead of opening
+	 * an empty transcript with an `Inject` block.
 	 */
 	#deferredInjectNotice: InjectNoticeComponent | undefined;
 	/** Live-tail notice: a later injection set merges into it while it is still last. */
 	#lastInjectNotice: InjectNoticeComponent | undefined;
+	/**
+	 * Whether the user submitted a prompt to THIS transcript. A resume replays
+	 * the journal into a fresh container, so the user rows on screen are history:
+	 * they cannot license a notice for context the resumed process assembled on
+	 * its own, and neither can the rows an earlier transcript left behind.
+	 */
+	#userSubmittedHere = false;
 
 	/** Extract text content from a user message */
 	getUserMessageText(message: Message): string {
@@ -166,8 +173,8 @@ export class UiHelpers {
 
 	/**
 	 * Surface one context-injection notice. Notices recorded before the user has
-	 * sent anything are startup context, not a reaction to something the user
-	 * did — hold them until the first user message lands (see
+	 * submitted anything are startup context, not a reaction to something the
+	 * user did — hold them until a submission lands (see
 	 * {@link #deferredInjectNotice}). Notices that arrive during an active
 	 * conversation merge into the previous block only while that block is still
 	 * the live tail; committed rows are immutable visual history and a grown
@@ -175,13 +182,7 @@ export class UiHelpers {
 	 */
 	presentInjectNotice(items: readonly ContextInjectionItem[]): void {
 		if (items.length === 0) return;
-		// A completed-run collapse may fold rows, but the user's own message
-		// component stays mounted, so the container is the authoritative record
-		// of "the user has spoken here".
-		const transcriptShowsUserMessage = this.ctx.chatContainer.children.some(
-			child => child instanceof UserMessageComponent,
-		);
-		if (!transcriptShowsUserMessage) {
+		if (!this.#userSubmittedHere) {
 			this.#deferInjectNotice(items);
 			return;
 		}
@@ -223,11 +224,30 @@ export class UiHelpers {
 	}
 
 	/**
-	 * Attach the held startup notice below the user message that just landed.
-	 * Callers run after the run's gate/collapse projection was inserted behind
-	 * that message, so the notice reads as part of the run it opened.
+	 * Publish the notice held for the submission that just landed, and record
+	 * that this transcript now has one: from here on, notices land where they
+	 * arrive instead of waiting for a prompt. Callers run after the run's
+	 * gate/collapse projection was inserted behind that message, so the notice
+	 * reads as part of the run it opened.
 	 */
 	flushDeferredInjectNotice(): void {
+		this.markUserSubmission();
+		this.#publishHeldInjectNotice();
+	}
+
+	/**
+	 * Record that the user acted in this transcript: a prompt, a user-invoked
+	 * custom prompt, or a command they ran themselves. Notices land where they
+	 * arrive from here on — the context changes such an action causes are
+	 * reactions to something the user did, so they must not wait for a later
+	 * prompt to be shown.
+	 */
+	markUserSubmission(): void {
+		this.#userSubmittedHere = true;
+	}
+
+	/** Attach the held notice below the row that just landed. */
+	#publishHeldInjectNotice(): void {
 		const pending = this.#deferredInjectNotice;
 		if (!pending) return;
 		this.#deferredInjectNotice = undefined;
@@ -240,6 +260,7 @@ export class UiHelpers {
 	resetInjectNotices(): void {
 		this.#deferredInjectNotice = undefined;
 		this.#lastInjectNotice = undefined;
+		this.#userSubmittedHere = false;
 	}
 
 	/**
@@ -892,8 +913,11 @@ export class UiHelpers {
 				// projection insert above is either the run's live gate (notice goes
 				// behind it, so the collapse will take it) or the collapsed run's
 				// summary (the notice belongs to the hidden span and stays out).
+				// Replayed user rows publish the held notice without marking the
+				// transcript as one the user has submitted to: they are history, and a
+				// resume must not let them speak for the user.
 				if (inserted && collapsedRunProjections.has(inserted)) this.resetInjectNotices();
-				else this.flushDeferredInjectNotice();
+				else this.#publishHeldInjectNotice();
 			}
 		}
 		flushPendingUsage();

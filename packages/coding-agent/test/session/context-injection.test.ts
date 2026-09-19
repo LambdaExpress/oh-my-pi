@@ -3,6 +3,7 @@ import {
 	CONTEXT_INJECTION_MESSAGE_TYPE,
 	type ContextInjectionItem,
 	contextInjectionSignature,
+	mcpInjectionItems,
 	normalizeContextInjectionItems,
 	type ContextInjectionDetails,
 } from "../../src/session/context-injection";
@@ -93,5 +94,34 @@ describe("context injection records", () => {
 		expect(contextInjectionSignature(base)).not.toBe(
 			contextInjectionSignature([{ kind: "skill", label: "Skills", count: 5 }]),
 		);
+	});
+
+	it("lists every connected MCP server, instructions or not", () => {
+		const items = mcpInjectionItems(
+			new Map([
+				["atlassian", ["search", "get_page"]],
+				["echo", ["ping"]],
+			]),
+			new Map([["atlassian", "Prefer JQL over free text."]]),
+		);
+
+		expect(items.map(item => item.label)).toEqual(["MCP atlassian", "MCP echo"]);
+		// The instructions ride along with the tool count; a server without them
+		// still reports the tools it put in context, which is what keeps a
+		// mid-session `/mcp disable` visible in the notice.
+		expect(items[0]!.detail).toContain("2 tools");
+		expect(items[0]!.detail).toContain("server instructions");
+		expect(items[0]!.preview).toBe("Prefer JQL over free text.");
+		expect(items[1]!.detail).toBe("1 tool");
+		expect(items[1]!.preview).toBe("ping");
+	});
+
+	it("drops a connected server from the set when it disconnects", () => {
+		const connected = mcpInjectionItems(new Map([["atlassian", ["search"]]]));
+		const disconnected = mcpInjectionItems(new Map());
+
+		expect(connected.map(item => item.label)).toEqual(["MCP atlassian"]);
+		expect(disconnected).toHaveLength(0);
+		expect(contextInjectionSignature(disconnected)).not.toBe(contextInjectionSignature(connected));
 	});
 });
