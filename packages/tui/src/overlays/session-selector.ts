@@ -478,8 +478,14 @@ class SessionList<T extends SessionSelectorEntry> implements Component {
 		this.#grouped = grouped;
 		if (pinnedIds !== undefined) this.#pinnedIds = pinnedIds;
 		this.#groups = grouped ? this.#buildGroups(sessions) : [];
-		this.#menu.setSelectedIndex(0);
 		this.#filterSessions(this.#searchInput.getValue());
+		// A scope switch starts the cursor on the first row — the first group
+		// header in grouped scope. The menu retains the selected item by key
+		// across recomposition, so reset *after* filtering: resetting before
+		// lets the previous scope's first session key re-resolve inside the new
+		// list and park the cursor on a member row, where Enter resumes the
+		// session instead of toggling its group header.
+		this.#menu.setSelectedIndex(0);
 		this.#selectCurrentSession();
 	}
 
@@ -717,14 +723,18 @@ class SessionList<T extends SessionSelectorEntry> implements Component {
 	removeSession(sessionPath: string): void {
 		const index = this.#allSessions.findIndex(s => s.path === sessionPath);
 		if (index === -1) return;
+		// Row the cursor sat on before the delete: the deleted row's neighbor
+		// inherits it. The menu retains the selected item by key across
+		// recomposition, so a vanished key would otherwise snap the cursor back
+		// to the first row instead of leaving the user where they were.
+		const selectedIndex = this.#menu.selectedIndex;
 		this.#allSessions.splice(index, 1);
 		if (this.#grouped) this.#groups = this.#buildGroups(this.#allSessions);
 		// Re-filter to update the composed result set
 		this.#filterSessions(this.#searchInput.getValue());
-		// Adjust selection if we deleted the last item or beyond
-		if (this.#menu.selectedIndex >= this.#menu.visibleItems.length) {
-			this.#menu.setSelectedIndex(Math.max(0, this.#menu.visibleItems.length - 1));
-		}
+		// Restore that row position, clamped to the shortened list (the last row
+		// when the deleted one was at or past the end).
+		this.#menu.setSelectedIndex(Math.min(selectedIndex, this.#menu.visibleItems.length - 1));
 		this.setHoverIndex(null);
 	}
 

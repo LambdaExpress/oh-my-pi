@@ -577,10 +577,10 @@ export const evalToolRenderer = {
 		for (const cell of cells) {
 			if (!cell.title) continue;
 			const title = sanitizeDisplayWarning(cell.title);
-			if (title.length > 0) return { label: t("Eval"), detail: context.theme.fg("muted", title) };
+			if (title.length > 0) return { label: "Eval", detail: context.theme.fg("muted", title) };
 		}
 		const language = cells[0]?.language === "js" ? "javascript" : "python";
-		return { label: t("Eval"), detail: context.theme.fg("muted", t("running {language}", { language })) };
+		return { label: "Eval", detail: context.theme.fg("muted", t("running {language}", { language })) };
 	},
 	renderCall(args: EvalRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 		const cells = getRenderCells(args);

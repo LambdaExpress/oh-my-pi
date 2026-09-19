@@ -1313,6 +1313,15 @@ export class CustomEditor extends Editor {
 				return;
 			}
 
+			// Intercept configured thinking block visibility toggle. The chord's
+			// controller-level listener keeps owning the transcript gesture; this
+			// branch only fires for hosts that wire the editor callback (e.g. when
+			// an overlay routes the key straight to the focused editor).
+			if (this.#matchesAction(canonical, "app.thinking.toggle") && this.onToggleThinking) {
+				this.onToggleThinking();
+				return;
+			}
+
 			// Intercept configured interrupt shortcut.
 			// When the autocomplete popup is visible, ESC's first job is to dismiss
 			// the popup — let super.handleInput() route it to #cancelAutocomplete().

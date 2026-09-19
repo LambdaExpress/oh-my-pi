@@ -28,7 +28,23 @@ const ED3 = "\x1b[3J";
 const DSR = "\x1b[6n";
 const COMMITTED = ["committed-0", "committed-1", "committed-2"];
 
-const TERMINAL_ENV = ["TERM", "TERM_PROGRAM", "PI_TUI_RESIZE_IN_PLACE", "TMUX", "STY", "ZELLIJ", "HERDR_ENV"] as const;
+// Herdr's pane identity vars are listed alongside HERDR_ENV because
+// `isInsideHerdr()` treats the pane id, tab id, and workspace id as
+// authoritative when an env-sanitizing launcher drops HERDR_ENV — and it is
+// checked before the ConPTY/multiplexer branches, so a pane running this suite
+// would otherwise take the in-place path these cases exist to rule out.
+const TERMINAL_ENV = [
+	"TERM",
+	"TERM_PROGRAM",
+	"PI_TUI_RESIZE_IN_PLACE",
+	"TMUX",
+	"STY",
+	"ZELLIJ",
+	"HERDR_ENV",
+	"HERDR_PANE_ID",
+	"HERDR_TAB_ID",
+	"HERDR_WORKSPACE_ID",
+] as const;
 
 /**
  * Windows ConPTY host: answers DSR from its own re-homed cursor (column 1

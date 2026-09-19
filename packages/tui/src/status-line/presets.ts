@@ -107,7 +107,7 @@ export const STATUS_LINE_PRESETS: Record<StatusLinePreset, PresetDef> = {
 
 	custom: {
 		// User-defined - these are just defaults that get overridden
-		leftSegments: ["provider", ...CUSTOM_STATUS_LINE_DEFAULTS.left],
+		leftSegments: [...CUSTOM_STATUS_LINE_DEFAULTS.left],
 		rightSegments: [...CUSTOM_STATUS_LINE_DEFAULTS.right],
 		separator: "powerline-thin",
 		segmentOptions: {},

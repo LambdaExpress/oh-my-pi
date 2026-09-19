@@ -617,44 +617,94 @@ function pickUsageRemainingColor(percent: number): ThemeColor {
  * window span. A 5h window with 3h 11m left reads `3h`, a 7d window with
  * 5d 2h left reads `5d`; the monthly window (calendar/subscription month,
  * no fixed span) falls back to `mo` only when no reset time was reported.
+ *
+ * `nowMs` is the same instant the caller passes as {@link SegmentContext.now},
+ * so the repaint salt below sees exactly the labels that will be rendered.
  */
 function formatCompactUsageWindowLabel(
 	fallback: string,
 	value: number | undefined,
 	unit: "m" | "h",
 	fetchedAt: number,
+	nowMs: number,
 ): string {
 	if (value === undefined) return fallback;
 	const unitMs = unit === "m" ? 60_000 : 3_600_000;
-	const elapsed = fetchedAt > 0 ? Math.max(0, Date.now() - fetchedAt) / unitMs : 0;
+	const elapsed = fetchedAt > 0 ? Math.max(0, nowMs - fetchedAt) / unitMs : 0;
 	const minutes = Math.max(0, Math.round((value - elapsed) * (unit === "m" ? 1 : 60)));
 	if (minutes < 60) return `${minutes}m`;
 	const hours = Math.round(minutes / 60);
 	return unit === "m" || hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`;
 }
 
+/** A quota window the compact countdown counts down, in either reset unit. */
+interface CompactUsageWindow {
+	percent: number;
+	resetMinutes?: number;
+	resetHours?: number;
+}
+
+/**
+ * Quota windows the compact `cost` countdown shows, in display order: the
+ * usage-report key, the label used when no reset time was reported, and the
+ * unit its countdown counts down in. The rendered labels and the status line's
+ * repaint salt both walk this table, so a window listed here cannot lose its
+ * countdown refresh.
+ */
+const COMPACT_USAGE_WINDOWS: ReadonlyArray<{
+	key: "fiveHour" | "sevenDay" | "monthly";
+	fallback: string;
+	unit: "m" | "h";
+	resetField: "resetMinutes" | "resetHours";
+}> = [
+	{ key: "fiveHour", fallback: "5h", unit: "m", resetField: "resetMinutes" },
+	{ key: "sevenDay", fallback: "7d", unit: "h", resetField: "resetHours" },
+	{ key: "monthly", fallback: "mo", unit: "h", resetField: "resetHours" },
+];
+
+/**
+ * The labels the compact countdown shows at `nowMs`, joined into a cache salt.
+ * A cached bar counts every quota window down from the report's fetch time, so
+ * no wall-clock cadence can name the moment a label crosses its display
+ * granularity (a minute, an hour, a day); comparing this salt against the one
+ * that built the cached bar repaints on that frame and no other.
+ */
+export function compactUsageCountdownSalt(
+	usage: NonNullable<SegmentContext["usage"]>,
+	fetchedAt: number,
+	nowMs: number,
+): string {
+	const labels: string[] = [];
+	for (const window of COMPACT_USAGE_WINDOWS) {
+		const quota: CompactUsageWindow | undefined = usage[window.key];
+		if (!quota) continue;
+		labels.push(
+			formatCompactUsageWindowLabel(window.fallback, quota[window.resetField], window.unit, fetchedAt, nowMs),
+		);
+	}
+	return labels.join("|");
+}
+
 function renderCompactUsageLimitSegment(ctx: SegmentContext): RenderedSegment {
 	const u = ctx.usage;
-	if (!u || (!u.fiveHour && !u.sevenDay && !u.monthly)) {
-		return { content: "", visible: false };
-	}
+	if (!u) return { content: "", visible: false };
+	const nowMs = ctx.now?.getTime() ?? Date.now();
 
 	const parts: string[] = [];
-	if (u.fiveHour) {
-		const label = formatCompactUsageWindowLabel("5h", u.fiveHour.resetMinutes, "m", ctx.usageFetchedAt);
-		const remaining = Math.max(0, Math.min(100, 100 - u.fiveHour.percent));
+	for (const window of COMPACT_USAGE_WINDOWS) {
+		const quota: CompactUsageWindow | undefined = u[window.key];
+		if (!quota) continue;
+		const label = formatCompactUsageWindowLabel(
+			window.fallback,
+			quota[window.resetField],
+			window.unit,
+			ctx.usageFetchedAt,
+			nowMs,
+		);
+		const remaining = Math.max(0, Math.min(100, 100 - quota.percent));
 		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
 	}
-	if (u.sevenDay) {
-		const label = formatCompactUsageWindowLabel("7d", u.sevenDay.resetHours, "h", ctx.usageFetchedAt);
-		const remaining = Math.max(0, Math.min(100, 100 - u.sevenDay.percent));
-		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
-	}
-	if (u.monthly) {
-		const label = formatCompactUsageWindowLabel("mo", u.monthly.resetHours, "h", ctx.usageFetchedAt);
-		const remaining = Math.max(0, Math.min(100, 100 - u.monthly.percent));
-		parts.push(`${label} ${theme.fg(pickUsageRemainingColor(remaining), `${Math.round(remaining)}%`)}`);
-	}
+	if (parts.length === 0) return { content: "", visible: false };
 
 	return { content: withIcon(theme.icon.time, parts.join(theme.sep.dot)), visible: true };
 }

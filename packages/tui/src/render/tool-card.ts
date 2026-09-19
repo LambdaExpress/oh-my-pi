@@ -7,6 +7,7 @@ import {
 	markFramedBlockComponent,
 	outputBlockContentWidth,
 	type OutputBlockOptions,
+	type OutputBlockVisualWindow,
 } from "./output-block";
 import { renderStatusLine, type StatusLineOptions } from "./status-line";
 import type { State } from "./types";
@@ -26,6 +27,11 @@ export interface ToolCardSection {
 	label?: string;
 	content: ToolCardContent;
 	separator?: boolean;
+	/**
+	 * Cap this section to a window of rendered rows instead of logical lines.
+	 * Forwarded to the output frame, which measures the window after wrapping.
+	 */
+	visualWindow?: OutputBlockVisualWindow;
 }
 
 /** Snapshot returned by a ToolCard builder on each render. */
@@ -132,7 +138,12 @@ export class ToolCard implements Component {
 			nextChildSet.add(component);
 			nextChildren.push(component);
 		};
-		const sections: Array<{ label?: string; lines: readonly string[]; separator?: boolean }> = [];
+		const sections: Array<{
+			label?: string;
+			lines: readonly string[];
+			separator?: boolean;
+			visualWindow?: OutputBlockVisualWindow;
+		}> = [];
 		if (snapshot.body) {
 			const body = resolveContent(snapshot.body, contentWidth);
 			sections.push({ lines: body.lines });
@@ -140,7 +151,12 @@ export class ToolCard implements Component {
 		}
 		for (const section of snapshot.sections ?? []) {
 			const resolved = resolveContent(section.content, contentWidth);
-			sections.push({ label: section.label, lines: resolved.lines, separator: section.separator });
+			sections.push({
+				label: section.label,
+				lines: resolved.lines,
+				separator: section.separator,
+				visualWindow: section.visualWindow,
+			});
 			retainChild(resolved.component);
 		}
 		if (snapshot.footer) {
@@ -165,7 +181,10 @@ export class ToolCard implements Component {
 					return (
 						previous?.label === section.label &&
 						previous.lines === section.lines &&
-						previous.separator === section.separator
+						previous.separator === section.separator &&
+						// Windows are rebuilt on every snapshot; their marker key encodes
+						// every input the rendered window depends on.
+						previous.visualWindow?.markerKey === section.visualWindow?.markerKey
 					);
 				});
 			const reusableOptions =

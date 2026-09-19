@@ -729,13 +729,14 @@ describe("InteractiveMode completed-run collapse", () => {
 			streamingBehavior: "steer",
 			expandPromptTemplates: false,
 		});
-		await e2eSession.abort({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
-
-		// Wait for the continuation to settle and park A and B's collapse
-		// records. Integration test against the real agent loop: deterministic
-		// fake timers cannot drive the abort/drain/continue chain, so a bounded
-		// real-time guard stands in for the parked-chain signal if the fix
-		// regresses.
+		// Both runs' ends are counted from before the abort: `AgentSession`
+		// releases a buffered `agent_end` as soon as the in-flight prompt count
+		// drops, which happens inside `abort()` while it is still unwinding, so
+		// the interrupted run's end can land before the abort's own resolution.
+		// A listener registered after the await would miss it and then wait for a
+		// second end that never arrives. The pre-merge code always delivered that
+		// frame last only because of the serialized subscriber gate upstream
+		// removed in b9d7ee8833 (session events are now dispatched synchronously).
 		const settled = Promise.withResolvers<void>();
 		const agentEnds: number[] = [];
 		e2eSession.subscribe(event => {
@@ -744,6 +745,13 @@ describe("InteractiveMode completed-run collapse", () => {
 				if (agentEnds.length === 2) settled.resolve();
 			}
 		});
+		await e2eSession.abort({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
+
+		// Wait for the continuation to settle and park A and B's collapse
+		// records. Integration test against the real agent loop: deterministic
+		// fake timers cannot drive the abort/drain/continue chain, so a bounded
+		// real-time guard stands in for the parked-chain signal if the fix
+		// regresses.
 		await Promise.race([settled.promise, Bun.sleep(10_000)]);
 		await firstPrompt.catch(() => {});
 

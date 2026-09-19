@@ -7,9 +7,9 @@ import { type Theme, theme } from "../theme/theme";
 import type { OutputMeta } from "./output-meta";
 import { truncate } from "@oh-my-pi/pi-utils";
 import { renderStatusLine, urlHyperlink } from "../render";
+import type { OutputBlockVisualWindow } from "../render/output-block";
 import { framedToolCard } from "../render/tool-card";
-import { formatExpandHint, getDomain, sanitizeDisplayLines } from "../render/render-utils";
-import { applyListLimit } from "./list-limit";
+import { createMoreLinesHeadWindow, getDomain, sanitizeDisplayLines } from "../render/render-utils";
 import { formatStyledArtifactReference } from "./output-meta";
 
 /** Display metadata for fetch tool results. */
@@ -184,26 +184,29 @@ export function renderReadUrlResult(
 
 	let lastExpanded: boolean | undefined;
 	let contentPreviewLines: string[] | undefined;
+	let contentPreviewWindow: OutputBlockVisualWindow | undefined;
 	return framedToolCard(
 		uiTheme,
 		() => {
 			const { expanded } = options;
 
 			if (contentPreviewLines === undefined || lastExpanded !== expanded) {
-				const previewLimit = expanded ? 12 : 3;
-				const previewList = applyListLimit(contentLines, { headLimit: previewLimit });
-				const previewLines = previewList.items
-					.flatMap(line => sanitizeDisplayLines(line))
-					.map(line => line.trimEnd());
-				const remaining = Math.max(0, contentLines.length - previewList.items.length);
+				// The preview budget counts *rendered* rows, not logical lines: one
+				// long URL must still fold to the configured height instead of
+				// wrapping into dozens of rows. The output frame re-wraps at the live
+				// width, so the window is reevaluated after every resize.
+				contentPreviewWindow = createMoreLinesHeadWindow(uiTheme, {
+					maxContentRows: expanded ? 12 : 3,
+					expandHint: !expanded,
+					markerKey: "read-url-content-preview",
+				});
 				contentPreviewLines =
-					previewLines.length > 0
-						? previewLines.map(line => uiTheme.fg("dim", line))
+					contentLines.length > 0
+						? contentLines
+								.flatMap(line => sanitizeDisplayLines(line))
+								.map(line => line.trimEnd())
+								.map(line => uiTheme.fg("dim", line))
 						: [uiTheme.fg("dim", t("(no content)"))];
-				if (remaining > 0) {
-					const hint = formatExpandHint(uiTheme, expanded, true);
-					contentPreviewLines.push(uiTheme.fg("muted", `… ${remaining} more lines${hint ? ` ${hint}` : ""}`));
-				}
 				lastExpanded = expanded;
 			}
 
@@ -212,7 +215,11 @@ export function renderReadUrlResult(
 				phase: truncated ? "warning" : "success",
 				sections: [
 					{ label: uiTheme.fg("toolTitle", t("Metadata")), content: metadataLines },
-					{ label: uiTheme.fg("toolTitle", t("Content Preview")), content: contentPreviewLines },
+					{
+						label: uiTheme.fg("toolTitle", t("Content Preview")),
+						content: contentPreviewLines,
+						visualWindow: contentPreviewWindow,
+					},
 				],
 				applyBg: false,
 			};
@@ -221,6 +228,7 @@ export function renderReadUrlResult(
 			onInvalidate: () => {
 				lastExpanded = undefined;
 				contentPreviewLines = undefined;
+				contentPreviewWindow = undefined;
 			},
 		},
 	);

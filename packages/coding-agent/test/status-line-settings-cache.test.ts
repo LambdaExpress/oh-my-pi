@@ -11,7 +11,7 @@ import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { removeSyncWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
-import { setLocale } from "../src/i18n";
+import { setLocale, t } from "../src/i18n";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 import { StatusLineTestComponents } from "./helpers/status-line";
 
@@ -245,8 +245,8 @@ describe("StatusLineComponent effective settings cache", () => {
 		component.setRunningSubagents(["sub-1", "sub-2"]);
 
 		const content = stripVTControlCharacters(component.getTopBorder(120).content);
-		expect(content).toContain(`${theme.icon.agents} 2`);
-		expect(content).not.toContain("agents");
+		// Local contract: the badge carries the localized noun after the count.
+		expect(content).toContain(`${theme.icon.agents} 2 ${t("agents")}`);
 	});
 
 	it("keeps plan and hook state dynamic without settings invalidation", () => {

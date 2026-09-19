@@ -46,7 +46,7 @@ import {
 } from "../overlays/codex-reset-fireworks";
 import { canReuseCachedPr, createPrCacheContext, isSamePrCacheContext, type PrCacheContext } from "./git-utils";
 import { getPreset } from "./presets";
-import { renderSegment, type SegmentContext } from "./segments";
+import { compactUsageCountdownSalt, renderSegment, type SegmentContext } from "./segments";
 import { getSeparator } from "./separators";
 import type {
 	CollabStatus,
@@ -509,6 +509,7 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	};
 	#statusLineInputRevision = 0;
 	#statusLineClockTick = 0;
+	#statusLineCountdownSalt = "";
 	#settings: StatusLineSettings = {};
 	#effectiveSettings: EffectiveStatusLineSettings | undefined;
 	#cachedBranch: string | null | undefined = undefined;
@@ -2480,8 +2481,10 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 	/**
 	 * Smallest wall-clock unit that can change a visible configured segment.
 	 * A zero tick keeps truly static bars cached indefinitely; active animation,
-	 * clocks, countdowns, and VCS fallback polling advance only at their own
-	 * display/probe cadence.
+	 * clocks, and VCS fallback polling advance only at their own
+	 * display/probe cadence. Quota countdowns are anchored to the usage report's
+	 * fetch time rather than the wall clock, so they repaint through the
+	 * `#countdownSalt` salt instead.
 	 */
 	#statusLineClock(nowMs: number, effectiveSettings: EffectiveStatusLineSettings, placeholders: boolean): number {
 		if (placeholders) return 0;
@@ -2513,6 +2516,22 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		return 0;
 	}
 
+	/**
+	 * Repaint salt for a visible quota countdown: the labels the `cost` segment
+	 * would render from the cached usage report right now. Comparing the labels
+	 * themselves repaints on exactly the frame one of them crosses its display
+	 * granularity (a minute, an hour, a day), keeping the memoized bar cached in
+	 * between.
+	 */
+	#countdownSalt(nowMs: number, effectiveSettings: EffectiveStatusLineSettings): string {
+		const usage = this.#cachedUsage;
+		if (!usage) return "";
+		if (!effectiveSettings.leftSegments.includes("cost") && !effectiveSettings.rightSegments.includes("cost")) {
+			return "";
+		}
+		return compactUsageCountdownSalt(usage, this.#usageFetchedAt, nowMs);
+	}
+
 	#buildStatusLine(
 		width: number,
 		layout: StatusLineLayout = "box",
@@ -2524,8 +2543,10 @@ export class StatusLineComponent<TSession extends StatusLineSession = StatusLine
 		const externalInputs = this.#readStatusLineExternalInputs();
 		const nowMs = Date.now();
 		const clockTick = this.#statusLineClock(nowMs, effectiveSettings, placeholders);
-		if (clockTick !== this.#statusLineClockTick) {
+		const countdownSalt = placeholders ? "" : this.#countdownSalt(nowMs, effectiveSettings);
+		if (clockTick !== this.#statusLineClockTick || countdownSalt !== this.#statusLineCountdownSalt) {
 			this.#statusLineClockTick = clockTick;
+			this.#statusLineCountdownSalt = countdownSalt;
 			this.#invalidateStatusLineRenderCache();
 		}
 

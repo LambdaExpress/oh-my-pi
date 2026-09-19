@@ -95,6 +95,10 @@ function makeHostContext(): { ctx: InteractiveModeContext; state: HostContextSta
 			sessionName: "registry-test",
 			model: undefined,
 			thinkingLevel: undefined,
+			configuredThinkingLevel: () => undefined,
+			getAvailableThinkingLevels: () => [],
+			// host.ts scopes agent snapshots to `getAgentScopeId()`.
+			getAgentScopeId: () => state.sessionId,
 			subscribe: (cb: HostContextState["subscribed"]) => {
 				state.subscribed = cb;
 				return () => {};

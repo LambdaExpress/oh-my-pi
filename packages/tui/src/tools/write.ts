@@ -361,7 +361,14 @@ export interface WriteRenderContext {
 
 /** Render file writes and delegated tool-device calls. */
 export const writeToolRenderer = {
-	/** Compact one-line activity: device writes read as the mounted tool (`LSP · references foo`), file writes as `Write · <path>`. */
+	/**
+	 * Folded row: `Write: <path>` for a file, the target in the same accent color
+	 * the card header gives it. A `xd://<device>` dispatch instead reads as the
+	 * device's own operation (`ADB: shell logcat -d`), because restating the
+	 * device URL would say nothing about what ran.
+	 * The written line count rides the row in the diff-added color, matching how
+	 * a folded edit shows `+N`.
+	 */
 	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
 		const writeArgs = (args ?? {}) as WriteRenderArgs;
 		const rawPath =
@@ -370,13 +377,20 @@ export const writeToolRenderer = {
 				: typeof writeArgs.path === "string"
 					? writeArgs.path
 					: "";
-		if (!rawPath) return { label: t("Write") };
-		const xdev = parseXdUrl(rawPath);
-		if (xdev?.name) {
+		if (rawPath.length === 0) return { label: "Write" };
+		const device = parseXdUrl(rawPath);
+		if (device?.name) {
 			const resolveMounted = (context.renderContext as WriteRenderContext | undefined)?.resolveXdevMounted;
-			return xdevActivitySummary(xdev.name, writeArgs.content, context.theme, resolveMounted);
+			return xdevActivitySummary(device.name, writeArgs.content, context.theme, resolveMounted);
 		}
-		return { label: t("Write"), detail: shortenPath(rawPath) };
+		// Same count the card header reports, so a folded write still says how
+		// much it wrote.
+		const lines = countLines(normalizeDisplayText(writeArgs.content));
+		const { theme: uiTheme } = context;
+		const detail = `${uiTheme.fg("accent", shortenPath(rawPath))}${
+			lines > 0 ? ` ${uiTheme.fg("toolDiffAdded", `+${lines}`)}` : ""
+		}`;
+		return { label: "Write", detail };
 	},
 
 	renderCall(
@@ -423,12 +437,12 @@ export const writeToolRenderer = {
 		// noise. The liveness cue rides the trailing "(streaming)" line instead.
 		const header = renderStatusLine(
 			{
-				title: t("Write"),
+				title: "Write",
 				description: `${langIcon} ${pathDisplay}`,
 			},
 			uiTheme,
 		);
-		// Raw content, not normalizeDisplayText(args.content): the collapsed
+		// Raw content, not normalizeDisplayText(rawContent): the collapsed
 		// streaming path normalizes only its tail window, so a full-payload
 		// normalize on every reveal tick would re-introduce the O(n²) streaming
 		// cost formatStreamingContent avoids. Non-string content still falls
@@ -496,7 +510,7 @@ export const writeToolRenderer = {
 		if (result.isError) {
 			const errorText = result.content?.find(c => c.type === "text")?.text ?? "";
 			const header = renderStatusLine(
-				{ icon: "error", title: t("Write"), description: `${langIcon} ${pathDisplay}` },
+				{ icon: "error", title: "Write", description: `${langIcon} ${pathDisplay}` },
 				uiTheme,
 			);
 			return framedToolCard(uiTheme, () => ({
@@ -520,7 +534,7 @@ export const writeToolRenderer = {
 				icon: isPartial ? "running" : undefined,
 				iconOverride: isPartial ? undefined : uiTheme.styledSymbol("tool.write", "accent"),
 				spinnerFrame: options.spinnerFrame,
-				title: t("Write"),
+				title: "Write",
 				description: `${langIcon} ${pathDisplay}${lineSuffix}${execSuffix}`,
 			},
 			uiTheme,

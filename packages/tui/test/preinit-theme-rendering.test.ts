@@ -30,6 +30,11 @@ async function expectFreshModuleRender(script: string): Promise<void> {
 	expect(stdout).toBe("ok");
 }
 
+// Child processes receive the module as an import specifier, so hand over a real
+// file URL (`file:///D:/…`) instead of a pathname: on Windows `URL.pathname` yields
+// `/D:/…`, which no module loader can resolve. `.href` stays correct on POSIX too.
+const moduleUrl = (relativePath: string): string => new URL(relativePath, import.meta.url).href;
+
 // `bun test` shares one module registry across files, so sibling theme initialization
 // hides pre-init failures. Each case uses a fresh process to reproduce the module graph
 // created by plugin/extension loading before `initTheme`/`initThemeSync`.
@@ -48,7 +53,7 @@ describe("rendering before theme initialization (#10864)", () => {
 	});
 
 	it("constructs and renders a tool component", async () => {
-		const entry = new URL("../src/chat/tool-execution.ts", import.meta.url).pathname;
+		const entry = moduleUrl("../src/chat/tool-execution.ts");
 		await expectFreshModuleRender(`
 			import { ToolExecutionComponent } from ${JSON.stringify(entry)};
 			const ui = { requestRender() {}, requestComponentRender() {}, resetDisplay() {} };
@@ -60,7 +65,7 @@ describe("rendering before theme initialization (#10864)", () => {
 	});
 
 	it("constructs and renders assistant Markdown", async () => {
-		const entry = new URL("../src/chat/assistant-message.ts", import.meta.url).pathname;
+		const entry = moduleUrl("../src/chat/assistant-message.ts");
 		await expectFreshModuleRender(`
 			import { AssistantMessageComponent } from ${JSON.stringify(entry)};
 			const message = {
@@ -80,7 +85,7 @@ describe("rendering before theme initialization (#10864)", () => {
 	});
 
 	it("constructs and renders a user message", async () => {
-		const entry = new URL("../src/chat/user-message.ts", import.meta.url).pathname;
+		const entry = moduleUrl("../src/chat/user-message.ts");
 		await expectFreshModuleRender(`
 			import { UserMessageComponent } from ${JSON.stringify(entry)};
 			const out = Bun.stripANSI(new UserMessageComponent("hello").render(80).join("\\n"));
@@ -90,7 +95,7 @@ describe("rendering before theme initialization (#10864)", () => {
 	});
 
 	it("constructs and renders the usage dashboard", async () => {
-		const entry = new URL("../src/overlays/usage-dashboard.ts", import.meta.url).pathname;
+		const entry = moduleUrl("../src/overlays/usage-dashboard.ts");
 		await expectFreshModuleRender(`
 			import { UsageDashboardComponent } from ${JSON.stringify(entry)};
 			const component = new UsageDashboardComponent({

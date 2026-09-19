@@ -115,6 +115,10 @@ function makeControllerContext(over: Partial<Pick<ControllerContextState, "autoS
 			sessionName: "controller-test",
 			model: { provider: "test-provider", id: "test-model" },
 			thinkingLevel: undefined,
+			configuredThinkingLevel: () => undefined,
+			getAvailableThinkingLevels: () => [],
+			// host.ts scopes agent snapshots/control to `getAgentScopeId()`.
+			getAgentScopeId: () => state.sessionId,
 			subscribe: () => () => {},
 			emitNotice: () => {},
 			promptCustomMessage: (message: { content: unknown }) => {

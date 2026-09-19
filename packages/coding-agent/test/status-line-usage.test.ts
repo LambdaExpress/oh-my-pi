@@ -53,6 +53,7 @@ function makeComponent(
 				},
 				fetchUsageReports: async () => reports,
 				modelRegistry: {
+					isUsingOAuth: () => true,
 					authStorage: {
 						getOAuthAccountIdentity: (provider: string) =>
 							provider === options.provider ? options.activeIdentity : undefined,
