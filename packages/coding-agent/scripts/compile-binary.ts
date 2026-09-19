@@ -37,6 +37,60 @@ const ICO_HEADER_SIZE = 6;
 const ICO_DIRECTORY_ENTRY_SIZE = 16;
 
 /**
+ * Bun reports a failed bytecode pass only as an error log while still
+ * resolving the build successfully, and the executable it writes then dies at
+ * module load with `SyntaxError: import.meta is only valid inside modules.`
+ * (issue #12127). The build verifies the artifact and drops bytecode when this
+ * appears, so a failure can never ship.
+ */
+const BYTECODE_FAILURE_MESSAGE = /failed to generate bytecode/i;
+
+/** The one dependency module in the graph that uses a non-inlinable `import.meta` member. */
+const YARGS_APPLY_EXTENDS_MODULE = /yargs[\\/]build[\\/]lib[\\/]utils[\\/]apply-extends\.js$/;
+const IMPORT_META_RESOLVE_CALL = "import.meta.resolve(";
+const SHIM_REQUIRE_RESOLVE_CALL = "_shim.require.resolve(";
+/** Any `import.meta` member Bun's bytecode pass cannot inline. */
+const NON_INLINABLE_IMPORT_META = /\bimport\.meta\.(?!url\b|dir\b|main\b|path\b|dirname\b)[A-Za-z_$]/;
+
+/**
+ * Build plugin that removes the single non-inlinable `import.meta` usage in
+ * the bundle graph so `bytecode: true` keeps working (issue #12127).
+ *
+ * `@puppeteer/browsers/lib/main.js` re-exports `CLI`, which pulls `yargs` in
+ * through `lib/CLI.js`, and yargs' ESM build resolves extended configs with
+ * `import.meta.resolve()`. Bun's bytecode pass inlines only
+ * `import.meta.url`/`.dir`/`.main`/`.path`/`.dirname`; anything else survives
+ * as a real `import.meta` and the module is evaluated as a script, so the
+ * binary dies at boot. `applyExtends` loads the config through the yargs
+ * platform shim's `require` right after resolving it, and that shim's `require`
+ * is a `createRequire(import.meta.url)`, so resolving through it keeps the
+ * original meaning. Drop this plugin once Bun inlines `import.meta.resolve`
+ * (or yargs stops using it).
+ */
+export function createImportMetaCompatPlugin(): Bun.BunPlugin {
+	return {
+		name: "omp-import-meta-compat",
+		setup(build) {
+			build.onLoad({ filter: YARGS_APPLY_EXTENDS_MODULE }, async args => {
+				const source = await Bun.file(args.path).text();
+				if (!source.includes(IMPORT_META_RESOLVE_CALL)) {
+					return { contents: source, loader: "js" };
+				}
+				const patched = source.replaceAll(IMPORT_META_RESOLVE_CALL, SHIM_REQUIRE_RESOLVE_CALL);
+				const leftover = NON_INLINABLE_IMPORT_META.exec(patched);
+				if (leftover) {
+					throw new Error(
+						`${args.path} still uses ${leftover[0]} after the bytecode compatibility rewrite; ` +
+							"extend createImportMetaCompatPlugin() in scripts/compile-binary.ts, otherwise the compiled binary cannot boot.",
+					);
+				}
+				return { contents: patched, loader: "js" };
+			});
+		},
+	};
+}
+
+/**
  * Put the largest ICO frame first without moving its payload.
  *
  * Bun 1.3.14 keeps its original `IDI_MYICON` group after applying a custom
@@ -90,8 +144,11 @@ async function createWindowsCompileIcon(repoRoot: string): Promise<string> {
 /**
  * Compile the coding-agent executable with its legacy Pi compatibility module
  * graph supplied by an in-memory build plugin rather than generated files.
+ *
+ * @returns Path of the executable Bun actually wrote, including the platform
+ * suffix, so callers can execute it as a build gate.
  */
-export async function compileCodingAgent(options: CodingAgentCompileOptions): Promise<void> {
+export async function compileCodingAgent(options: CodingAgentCompileOptions): Promise<string> {
 	const previousCodesignSetting = Bun.env.BUN_NO_CODESIGN_MACHO_BINARY;
 	const isWindowsTarget = options.target?.startsWith("bun-windows-") ?? process.platform === "win32";
 	const windowsIconPath = isWindowsTarget ? await createWindowsCompileIcon(options.repoRoot) : undefined;
@@ -100,7 +157,7 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 	}
 	try {
 		await generateCollabWebEmbed(options.repoRoot);
-		const output = await Bun.build({
+		const compileOptions = {
 			entrypoints: [options.entrypoint],
 			root: options.repoRoot,
 			external: [...COMPILED_EXTERNAL_DEPENDENCIES],
@@ -110,15 +167,10 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),
 				"process.env.OMP_RELEASE_CODE": JSON.stringify(options.releaseCode ?? "0"),
 			},
-			// Precompiled bytecode skips parsing the ~20 MB bundle at boot:
-			// `omp --version` 256 ms -> 30 ms on M4 Max (+52 MB binary).
-			// Bytecode rejects top-level await in the bundle graph.
-			bytecode: true,
 			minify: {
 				identifiers: options.minifyIdentifiers ?? false,
 				keepNames: true,
 			},
-			plugins: [await createLegacyPiVirtualModulePlugin()],
 			compile: {
 				// Bun's process-wide fetch User-Agent default. Any explicit
 				// provider fingerprint (Anthropic/Codex OAuth) still wins.
@@ -136,10 +188,35 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				autoloadPackageJson: false,
 			},
 			throw: false,
-		});
+		} satisfies Omit<Bun.BuildConfig, "bytecode" | "plugins">;
+		const buildBundle = async (bytecode: boolean): Promise<Bun.BuildOutput> =>
+			Bun.build({
+				...compileOptions,
+				// Precompiled bytecode skips parsing the ~20 MB bundle at boot:
+				// `omp --version` 256 ms -> 30 ms on M4 Max (+52 MB binary).
+				// Bytecode rejects top-level await in the bundle graph, and its
+				// failure mode is a binary that cannot boot, so it is verified
+				// below and dropped for the affected graph.
+				bytecode,
+				plugins: [await createLegacyPiVirtualModulePlugin(), createImportMetaCompatPlugin()],
+			});
+		const wantsBytecode = Bun.env.OMP_BUILD_BYTECODE !== "0";
+		let output = await buildBundle(wantsBytecode);
+		const bytecodeFailures = output.logs
+			.filter(log => BYTECODE_FAILURE_MESSAGE.test(log.message))
+			.map(log => log.message);
+		if (wantsBytecode && bytecodeFailures.length > 0) {
+			console.warn(
+				`warning: precompiled bytecode failed for this bundle graph, rebuilding without it (slower startup):\n${bytecodeFailures.join("\n")}`,
+			);
+			output = await buildBundle(false);
+		}
 		if (!output.success) {
 			throw new Error(`Coding-agent binary bundle failed:\n${output.logs.map(log => log.message).join("\n")}`);
 		}
+		// Bun appends the platform executable suffix (`.exe`) on Windows, so the
+		// caller verifies the artifact Bun actually wrote rather than the request.
+		return output.outputs[0]?.path ?? options.outfile;
 	} finally {
 		try {
 			await resetCollabWebEmbed(options.repoRoot);

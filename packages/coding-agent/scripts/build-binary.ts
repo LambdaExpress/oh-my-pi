@@ -74,6 +74,29 @@ async function runCommand(
 	}
 }
 
+/**
+ * Execute what we just built. A broken module graph (for example a live
+ * `import.meta` under precompiled bytecode, see issue #12127) dies before
+ * printing anything, and only running the artifact catches it — every other
+ * gate exercises the TypeScript entrypoint through `bun`, which cannot
+ * reproduce the failure.
+ */
+async function verifyBinaryBoots(outfile: string): Promise<void> {
+	const proc = Bun.spawn([outfile, "--version"], { stdout: "pipe", stderr: "pipe" });
+	const [exitCode, stdout, stderr] = await Promise.all([
+		proc.exited,
+		new Response(proc.stdout).text(),
+		new Response(proc.stderr).text(),
+	]);
+	if (exitCode !== 0 || stdout.trim().length === 0) {
+		throw new Error(
+			`Compiled binary ${outfile} does not boot (exit code ${exitCode}).\n` +
+				`stdout: ${stdout.trim()}\nstderr: ${stderr.trim()}`,
+		);
+	}
+	console.log(`verified: ${outfile} boots (${stdout.trim()})`);
+}
+
 async function main(): Promise<void> {
 	const configuredReleaseCode = Bun.env.OMP_RELEASE_CODE;
 	if (
@@ -105,7 +128,7 @@ async function main(): Promise<void> {
 			crossBuild ? { ...Bun.env, TARGET_PLATFORM: crossBuild.platform, TARGET_ARCH: crossBuild.arch } : Bun.env,
 		);
 		try {
-			await compileCodingAgent({
+			const compiledPath = await compileCodingAgent({
 				repoRoot,
 				entrypoint: path.join(packageDir, "src", "cli.ts"),
 				outfile: outputPath,
@@ -118,6 +141,9 @@ async function main(): Promise<void> {
 
 			if (shouldAdhocSign) {
 				await runCommand(["codesign", "--force", "--sign", "-", outputPath]);
+			}
+			if (!crossBuild) {
+				await verifyBinaryBoots(compiledPath);
 			}
 		} finally {
 			await runCommand(["bun", "--cwd=../natives", "run", "gen:native:reset"]);
