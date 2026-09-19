@@ -129,13 +129,18 @@ describe("SessionManager + SqlSessionStorage (SQLite)", () => {
 	it("rejects a stale rewrite after another SQL storage appends", async () => {
 		const client = new SQL("sqlite::memory:");
 		const firstStorage = await SqlSessionStorage.create({ client });
-		const first = SessionManager.create("/cwd", "/sessions/shared", firstStorage);
+		// Resolve the session dir: `create` mints through `path.join` while `open`
+		// canonicalizes through `path.resolve`, so a bare POSIX dir would give the
+		// two managers different backend row keys on win32 (process drive
+		// prepended) and the peer append would land outside the rewritten row.
+		const sessionDir = path.resolve("/sessions", "shared");
+		const first = SessionManager.create("/cwd", sessionDir, firstStorage);
 		await first.ensureOnDisk();
 		const sessionFile = first.getSessionFile();
 		if (!sessionFile) throw new Error("Expected session file");
 
 		const secondStorage = await SqlSessionStorage.create({ client });
-		const second = await SessionManager.open(sessionFile, "/sessions/shared", secondStorage);
+		const second = await SessionManager.open(sessionFile, sessionDir, secondStorage);
 		second.appendMessage({ role: "user", content: "durable SQL peer turn", timestamp: Date.now() });
 		await second.close();
 

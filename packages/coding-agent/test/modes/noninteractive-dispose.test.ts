@@ -75,7 +75,10 @@ describe("print mode disposes the session before terminating", () => {
 		expect(stderrLines.join("")).toContain("boom");
 	});
 
-	it("disposes an active print session before SIGTERM exits", async () => {
+	// Bun on Windows terminates a SIGTERM'd process through TerminateProcess and
+	// never runs JS signal listeners, so the postmortem teardown this asserts is
+	// unreachable there (the child always dies with code 1 and no marker).
+	it.skipIf(process.platform === "win32")("disposes an active print session before SIGTERM exits", async () => {
 		using tempDir = TempDir.createSync("@omp-print-signal-");
 		const marker = tempDir.join("disposed");
 		const fixture = path.join(import.meta.dir, "..", "fixtures", "print-mode-signal.js");

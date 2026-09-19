@@ -193,7 +193,12 @@ describe("provider prompt-cache key session affinity", () => {
 				authStorage?.close();
 			}
 		}
-	});
+		// Four full session boots (each with its own AgentSession, AuthStorage and
+		// model registry discovery over a fresh agent dir — ~1.2s per case) exceed
+		// bun's 5s default deadline, which encodes machine speed rather than the
+		// affinity contract asserted above. Match the project's own coding-agent
+		// invocation (`bun test ... --timeout=30000`) with an explicit deadline.
+	}, 30_000);
 
 	it("does not pre-pin parent prompt-cache affinity when a scoped model selects the startup route", async () => {
 		using tempDir = TempDir.createSync("@omp-prompt-cache-scoped-model-");

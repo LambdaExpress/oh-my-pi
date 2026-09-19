@@ -62,6 +62,11 @@ export function makeHostContext(snapshot: Snapshot, seen: HostObservations): Int
 			sessionName: "queue",
 			model: undefined,
 			thinkingLevel: undefined,
+			// host.ts reads these when it shapes guest snapshots and control frames.
+			configuredThinkingLevel: () => undefined,
+			getAvailableThinkingLevels: () => [],
+			// host.ts scopes agent snapshots to `getAgentScopeId()`.
+			getAgentScopeId: () => snapshot.header.id,
 			subscribe: (listener: (event: unknown) => void) => {
 				listeners.push(listener);
 				return () => {

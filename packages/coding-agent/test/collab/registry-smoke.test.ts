@@ -190,9 +190,17 @@ describe("collab host registry (two-process smoke)", () => {
 		expect(missing.stdout).toBe("");
 		expect(missing.stderr).toMatch(/^error: [^\n]*missing-host\n$/);
 
-		// SIGTERM allows clean withdrawal, unlike the crash path above.
+		// SIGTERM allows clean withdrawal, unlike the crash path above. Windows
+		// cannot deliver a catchable signal: `kill("SIGTERM")` terminates the
+		// helper outright, so the clean exit status is asserted where it can hold
+		// and the withdrawal itself is observed through the listing below.
 		child.kill("SIGTERM");
-		expect(await child.exited).toBe(0);
+		const exitCode = await child.exited;
+		if (process.platform === "win32") {
+			expect(exitCode).not.toBe(0);
+		} else {
+			expect(exitCode).toBe(0);
+		}
 		const afterStop = await waitUntil(async () => {
 			const result = await runCli(["list", "--json"]);
 			const json: CollabListJsonOutput = JSON.parse(result.stdout);

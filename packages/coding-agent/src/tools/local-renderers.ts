@@ -5,8 +5,10 @@
  * rendered) entirely inside coding-agent, so pi-tui cannot import them itself:
  * it only owns `toolRenderers`, the lookup `ToolExecutionComponent` and the
  * `xd://` dispatch resolve tool names against. Importing this module for its
- * side effect — `./index.ts` does, and every session that can render a tool
- * goes through it — installs those five entries before the first render.
+ * side effect installs those five entries before the first render: `./index.ts`
+ * does for every session, and the modules that build tool cards directly
+ * (`modes/controllers/event-controller.ts`, `modes/utils/ui-helpers.ts`) do for
+ * consumers that never load the tools layer.
  */
 import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
 import { adbToolRenderer } from "./adb";

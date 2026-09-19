@@ -37,6 +37,7 @@ import type { MCPServerConnection } from "@oh-my-pi/pi-coding-agent/mcp/types";
 import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { OAuthManualInputManager } from "@oh-my-pi/pi-coding-agent/modes/oauth-manual-input";
+import { SshTransferHud } from "@oh-my-pi/pi-coding-agent/modes/components/ssh-transfer-hud";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -215,6 +216,8 @@ export function createInteractiveModeContext(overrides: ContextOverrides = {}): 
 		editorContainer: new Container(),
 		pendingMessagesContainer: new Container(),
 		todoContainer: new Container(),
+		sshTransferHud: new SshTransferHud(),
+		sshTransferContainer: new Container(),
 		editor: { getText: () => "", setText: vi.fn(), onEscape: undefined },
 		statusLine: {
 			invalidate: vi.fn(),

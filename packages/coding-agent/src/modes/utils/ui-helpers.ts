@@ -65,6 +65,10 @@ import {
 	type SkillPromptDetails,
 } from "../../session/messages";
 import type { SessionContext, StrippedToolCallsMarker } from "../../session/session-context";
+// Tool cards for the coding-agent-only tools (`adb`, `pwsh`, `ssh`,
+// `ssh_session`, `ssh_transfer`) render through the renderers registered here;
+// pi-tui owns the registry, not the renderers.
+import "../../tools/local-renderers";
 import { replaceTabs } from "@oh-my-pi/pi-tui/render/render-utils";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import {

@@ -1,4 +1,8 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
+// The coding-agent-only renderers (ssh_transfer among them) register themselves
+// into pi-tui's shared registry; a test that drives `ToolExecutionComponent`
+// directly must load them explicitly.
+import "@oh-my-pi/pi-coding-agent/tools/local-renderers";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { SshTransferToolDetails } from "@oh-my-pi/pi-tui/tools/ssh-transfer-summary";

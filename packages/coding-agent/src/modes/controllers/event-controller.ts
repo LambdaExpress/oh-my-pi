@@ -37,6 +37,10 @@ import {
 	readQueueChipText,
 	resolveAbortLabel,
 } from "../../session/messages";
+// Tool cards for the coding-agent-only tools (`adb`, `pwsh`, `ssh`,
+// `ssh_session`, `ssh_transfer`) render through the renderers registered here;
+// pi-tui owns the registry, not the renderers.
+import "../../tools/local-renderers";
 import { type ApprovalMode, resolveApproval } from "../../tools/approval";
 import { previewLine, TRUNCATE_LENGTHS } from "@oh-my-pi/pi-tui/render/render-utils";
 import { PROPOSE_DEVICE_NAME } from "@oh-my-pi/pi-tui/tools/resolve";

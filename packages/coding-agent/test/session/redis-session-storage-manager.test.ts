@@ -257,13 +257,18 @@ describe("SessionManager + RedisSessionStorage", () => {
 	it("rejects a stale rewrite after another Redis storage appends", async () => {
 		const redis = createFakeRedis();
 		const firstStorage = await RedisSessionStorage.create({ client: redis });
-		const first = SessionManager.create("/cwd", "/sessions/shared", firstStorage);
+		// Resolve the session dir: `create` mints through `path.join` while `open`
+		// canonicalizes through `path.resolve`, so a bare POSIX dir would give the
+		// two managers different Redis keys on win32 (process drive prepended) and
+		// the peer append would land outside the rewritten key.
+		const sessionDir = path.resolve("/sessions", "shared");
+		const first = SessionManager.create("/cwd", sessionDir, firstStorage);
 		await first.ensureOnDisk();
 		const sessionFile = first.getSessionFile();
 		if (!sessionFile) throw new Error("Expected session file");
 
 		const secondStorage = await RedisSessionStorage.create({ client: redis });
-		const second = await SessionManager.open(sessionFile, "/sessions/shared", secondStorage);
+		const second = await SessionManager.open(sessionFile, sessionDir, secondStorage);
 		second.appendMessage({ role: "user", content: "durable Redis peer turn", timestamp: Date.now() });
 		await second.close();
 

@@ -35,6 +35,14 @@ export interface AppendOnlyTranscriptBlock {
 	 * presentation never changes may omit it.
 	 */
 	resetTranscriptStableRows?(): void;
+	/**
+	 * Whether the container may retire this block's live rows before
+	 * finalization — the overflow safety valve, which writes rows terminal
+	 * history cannot later retract. Blocks whose bytes may still be revised
+	 * (a `stream-revision: possible` wire) answer false; finalization still
+	 * retires the whole block. Absent: allowed.
+	 */
+	allowsMidStreamRetirement?(): boolean;
 }
 
 interface FinalizableBlock {
@@ -136,6 +144,11 @@ function blockMode(component: Component): TranscriptBlockMode {
 
 function allowsSuccessorRetirement(component: Component): boolean {
 	return (component as Component & FinalizableBlock).allowsTranscriptSuccessorRetirement?.() === true;
+}
+
+/** A block's live rows retire mid-stream unless it declares its bytes revisable. */
+function allowsMidStreamRetirement(component: Component): boolean {
+	return (component as Component & AppendOnlyTranscriptBlock).allowsMidStreamRetirement?.() !== false;
 }
 
 function isPlainBlank(line: string): boolean {
@@ -692,6 +705,7 @@ export class TranscriptContainer extends Container {
 			head?.mode === "appendOnly" &&
 			!head.stableFrozen &&
 			head.state !== "committed" &&
+			allowsMidStreamRetirement(head.component) &&
 			head.emitted < head.stableRows.length
 		) {
 			// Emit as many finished rows as the overflow needs, in one batch. A
@@ -838,6 +852,7 @@ export class TranscriptContainer extends Container {
 					activeCount !== 1 ||
 					entry.state !== "active" ||
 					entry.stableFrozen ||
+					!allowsMidStreamRetirement(entry.component) ||
 					(!isToolActivityComponent(entry.component) && visibleCount !== 1)
 				)
 					return false;

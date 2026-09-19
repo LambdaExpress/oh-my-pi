@@ -18,7 +18,7 @@ import { createAgentSession } from "../sdk";
 import type { AgentSession } from "../session/agent-session";
 import type { AuthStorage } from "../session/auth-storage";
 import { SessionManager } from "../session/session-manager";
-import { createSecurityAuthResolver, selectSecurityAuth } from "./auth";
+import { createSecurityAuthResolver, selectSecurityAuthRoute } from "./auth";
 import type {
 	SecurityCoverage,
 	SecurityModelRef,
@@ -447,7 +447,10 @@ export class SecurityCoordinator {
 		}
 		const model = input.model ?? this.#host.activeModel;
 		if (!model) throw new Error(t("Security scan preflight requires an active model"));
-		const account = selectSecurityAuth(this.#host.authStorage, model, input.credentialId, this.#host.sessionId);
+		// Key mode (no stored OAuth row, no provider-owned route) plans without a
+		// pinned account: the scan session resolves its own API key, so preflight
+		// must not demand a credential the user never stored.
+		const account = selectSecurityAuthRoute(this.#host.authStorage, model, input.credentialId, this.#host.sessionId);
 		const store = await this.#openStore(this.#host.cwd);
 		const workRoot = path.join(store.projectDirectory, "work");
 		await fs.mkdir(workRoot, { recursive: true, mode: 0o700 });

@@ -106,16 +106,33 @@ export function selectSecurityOAuthAccount(
 	return account;
 }
 
-/** Selects either one exact OAuth row or an explicitly supported provider-owned auth route. */
+/**
+ * Selects the immutable authentication route a scan pins, when one exists.
+ *
+ * A stored OAuth row wins. Providers that own their credentials (Bedrock) pin
+ * their provider/API route instead. `undefined` means key mode: the plan pins no
+ * authentication, and the scan session resolves its own API key.
+ */
+export function selectSecurityAuthRoute(
+	authStorage: AuthStorage,
+	model: SecurityAuthModel,
+	requestedCredentialId?: number,
+	sessionId?: string,
+): SecurityAuthRef | undefined {
+	const account = selectOAuthAccount(authStorage, model.provider, requestedCredentialId, sessionId);
+	if (account) return account;
+	return supportsProviderAuth(model) ? { provider: model.provider, api: model.api } : undefined;
+}
+
+/** Selects one exact OAuth row or provider-owned auth route, rejecting a scan that would run in key mode. */
 export function selectSecurityAuth(
 	authStorage: AuthStorage,
 	model: SecurityAuthModel,
 	requestedCredentialId?: number,
 	sessionId?: string,
 ): SecurityAuthRef {
-	const account = selectOAuthAccount(authStorage, model.provider, requestedCredentialId, sessionId);
-	if (account) return account;
-	if (supportsProviderAuth(model)) return { provider: model.provider, api: model.api };
+	const auth = selectSecurityAuthRoute(authStorage, model, requestedCredentialId, sessionId);
+	if (auth) return auth;
 	const nativeApis = getProviderDefinition(model.provider)?.nativeAuthApis;
 	if (nativeApis) {
 		throw new Error(`Security scans do not support provider authentication for ${model.provider}/${model.api}`);

@@ -164,7 +164,9 @@ describe("write tool read projection guard", () => {
 				path: `${archivePath}:${member}:1-20`,
 			}),
 		);
-		expect(projection).toContain("[37 more lines in archive entry. Use :24 to continue]");
+		// Explicit numeric selectors stay exact (no context padding): the notice
+		// resumes at the first line after the requested range.
+		expect(projection).toContain("[40 more lines in archive entry. Use :21 to continue]");
 
 		await expect(
 			new WriteTool(session).execute("write-archive", { path: `${archivePath}:${member}`, content: projection }),
@@ -196,7 +198,9 @@ describe("write tool read projection guard", () => {
 		const projection = resultText(
 			await wrapToolWithMetaNotice(new ReadTool(session)).execute("read-url", { path: `${url}:1-20` }),
 		);
-		expect(projection).toContain("[37 more lines in resource. Use :24 to continue]");
+		// Explicit numeric selectors stay exact (no context padding): the notice
+		// resumes at the first line after the requested range.
+		expect(projection).toContain("[40 more lines in resource. Use :21 to continue]");
 
 		await expect(new WriteTool(session).execute("write-url", { path: url, content: projection })).rejects.toThrow(
 			"incomplete read projection",

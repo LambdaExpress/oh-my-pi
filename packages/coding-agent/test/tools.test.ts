@@ -911,8 +911,10 @@ describe("Coding Agent Tools", () => {
 			const output = getTextOutput(result);
 
 			expect(output).toContain("not scanned to EOF");
-			expect(output).toContain("Use :7 to continue");
-			expect(output).not.toMatch(/\[Showing lines 1-6 of \d+/);
+			// Explicit numeric selectors stay exact here (no context padding), so the
+			// continuation hint resumes at the first line after the requested range.
+			expect(output).toContain("Use :4 to continue");
+			expect(output).not.toMatch(/\[Showing lines 1-3 of \d+/);
 			expect(result.details?.meta?.truncation).toBeUndefined();
 			expect(result.details?.truncation).toBeUndefined();
 		});
