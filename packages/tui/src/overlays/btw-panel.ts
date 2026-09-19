@@ -29,7 +29,9 @@ export class BtwPanelComponent extends OverlayPanel {
 	readonly #content: StreamingPanelContent;
 
 	constructor(options: BtwPanelComponentOptions) {
-		const baseTitle = `/btw ${replaceTabs(options.question)}`;
+		// The panel is the side-question surface itself, so the title carries the
+		// question alone: echoing the `/btw` the user typed is noise.
+		const baseTitle = replaceTabs(options.question);
 		super(baseTitle);
 		this.#baseTitle = baseTitle;
 		this.#tui = options.tui;

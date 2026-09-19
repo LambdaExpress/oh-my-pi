@@ -11,6 +11,7 @@
 
 - `Loader.setMessage()` now accepts a live message callback, so updated status labels can continue refreshing timers and countdowns.
 - Changed the default editor undo shortcut to include `Ctrl+Z` while preserving the existing `Ctrl+-` and `Ctrl+_` bindings.
+- The `/btw` side-question panel now titles itself with the question alone instead of echoing the `/btw` command the user typed.
 
 ### Fixed
 
