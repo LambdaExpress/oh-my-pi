@@ -20,10 +20,10 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import type { RegisteredTool } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { wrapRegisteredTool } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/wrapper";
-import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
-import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
-import { initTheme, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { customToolToDefinition } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";

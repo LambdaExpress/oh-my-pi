@@ -6,6 +6,19 @@
 
 - Fixed facts returned by recall being impossible to delete by their visible fact id; `forgetFact()` now deletes visible `facts` rows and invalidates recall caches.
 - Added a non-destructive fact-id visibility check so hosts can distinguish non-editable fact operations from genuinely missing memory ids.
+## [18.2.5] - 2026-09-17
+
+### Fixed
+
+- Improved SQLite vector search and import performance by reducing repeated database metadata checks.
+
+## [18.2.1] - 2026-09-15
+
+### Fixed
+
+- Fixed an explicitly invalidated memory still being returned by an identical repeat query until the recall cache expired.
+- Fixed recall continuing to serve a stale, pre-embedding ranking for up to an hour after background embeddings finished, when the enhanced recall cache is enabled.
+
 ## [18.0.11] - 2026-08-29
 
 ### Fixed

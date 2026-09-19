@@ -13,7 +13,7 @@ import {
 	CONTEXT_INJECTION_ENTRY_TYPE,
 	type ContextInjectionItem,
 	contextInjectionItemsFromData,
-} from "@oh-my-pi/pi-coding-agent/session/context-injection";
+} from "@oh-my-pi/pi-tui/chat/context-injection";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { createInMemoryAuthStorage } from "../helpers/agent-session-setup";

@@ -11,10 +11,10 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
+import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
 import { t } from "../i18n";
-import { ToolExecutionComponent } from "../modes/components/tool-execution";
-import { initTheme, theme } from "../modes/theme/theme";
-import { toolRenderers } from "../tools/renderers";
 import {
 	type GalleryFixture,
 	type GalleryPreviewEntry,
@@ -26,6 +26,8 @@ import {
 	getSegmentGalleryInventory,
 } from "./gallery-fixtures";
 import { captureGalleryScreenshots } from "./gallery-screenshot";
+// Registers the built-in tool renderers the fixtures below rely on.
+import "../tools/local-renderers";
 
 /** Lifecycle states the gallery renders, in display order. */
 export const GALLERY_STATES = ["streaming", "progress", "success", "error"] as const;

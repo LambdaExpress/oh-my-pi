@@ -2,11 +2,11 @@ import * as path from "node:path";
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolContext, AgentToolResult, AgentToolUpdateCallback } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { Text } from "@oh-my-pi/pi-tui";
-import { formatBytes, prompt, sanitizeText } from "@oh-my-pi/pi-utils";
+import { Ellipsis, Text, truncateToWidth } from "@oh-my-pi/pi-tui";
+import { prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { t } from "../i18n";
-import type { Theme } from "../modes/theme/theme";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import sshTransferDescriptionBase from "../prompts/tools/ssh-transfer.md" with { type: "text" };
 import { ensureHostInfo, type SSHConnectionTarget } from "../ssh/connection-manager";
 import {
@@ -15,17 +15,22 @@ import {
 	SshFileTransferCancelledError,
 	type SshFileTransferPlan,
 	type SshFileTransferProgress,
-	type SshTransferOperation,
 } from "../ssh/file-transfer";
-import { Ellipsis, renderStatusLine, truncateToWidth } from "../tui";
-import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
+import { CachedOutputBlock, markFramedBlockComponent } from "@oh-my-pi/pi-tui/render/output-block";
+import { renderStatusLine } from "@oh-my-pi/pi-tui/render/status-line";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { isInternalUrlPath, resolveToCwd } from "./path-utils";
 import { enforcePlanModeWrite } from "./plan-mode-guard";
-import { formatDuration, replaceTabs, shortenPath } from "./render-utils";
+import { replaceTabs } from "@oh-my-pi/pi-tui/render/render-utils";
+import {
+	formatSshTransferSummary,
+	type SshTransferOperation,
+	type SshTransferStatus,
+	type SshTransferToolDetails,
+} from "@oh-my-pi/pi-tui/tools/ssh-transfer-summary";
 import { formatSshHostsDescription, getOpenSshConfigFingerprint, loadSshHosts } from "./ssh-hosts";
-import { ToolError } from "./tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 const sshTransferSchema = type({
 	op: type("'upload' | 'download'").describe("transfer operation"),
@@ -37,79 +42,6 @@ const sshTransferSchema = type({
 });
 
 type SshTransferParams = typeof sshTransferSchema.infer;
-
-export type SshTransferStatus = "running" | "completed" | "failed" | "cancelled";
-
-export interface SshTransferToolDetails {
-	operation: SshTransferOperation;
-	host: string;
-	localPath: string;
-	remotePath: string;
-	status: SshTransferStatus;
-	totalBytes: number;
-	transferredBytes: number;
-	percent: number;
-	bytesPerSecond: number;
-	averageBytesPerSecond: number;
-	elapsedMs: number;
-	error?: string;
-	async?: {
-		state: "running" | "completed" | "failed";
-		jobId: string;
-		type: "ssh_transfer";
-	};
-}
-
-export function isSshTransferToolDetails(value: unknown): value is SshTransferToolDetails {
-	if (typeof value !== "object" || value === null) return false;
-	if (!("operation" in value) || (value.operation !== "upload" && value.operation !== "download")) return false;
-	if (
-		!("status" in value) ||
-		(value.status !== "running" &&
-			value.status !== "completed" &&
-			value.status !== "failed" &&
-			value.status !== "cancelled")
-	) {
-		return false;
-	}
-	if (!("host" in value) || typeof value.host !== "string") return false;
-	if (!("localPath" in value) || typeof value.localPath !== "string") return false;
-	if (!("remotePath" in value) || typeof value.remotePath !== "string") return false;
-	if (!("totalBytes" in value) || typeof value.totalBytes !== "number" || !Number.isFinite(value.totalBytes)) {
-		return false;
-	}
-	if (
-		!("transferredBytes" in value) ||
-		typeof value.transferredBytes !== "number" ||
-		!Number.isFinite(value.transferredBytes)
-	) {
-		return false;
-	}
-	if (!("percent" in value) || typeof value.percent !== "number" || !Number.isFinite(value.percent)) return false;
-	if (
-		!("bytesPerSecond" in value) ||
-		typeof value.bytesPerSecond !== "number" ||
-		!Number.isFinite(value.bytesPerSecond)
-	) {
-		return false;
-	}
-	if (
-		!("averageBytesPerSecond" in value) ||
-		typeof value.averageBytesPerSecond !== "number" ||
-		!Number.isFinite(value.averageBytesPerSecond)
-	) {
-		return false;
-	}
-	if (!("elapsedMs" in value) || typeof value.elapsedMs !== "number" || !Number.isFinite(value.elapsedMs)) {
-		return false;
-	}
-	return !("error" in value) || value.error === undefined || typeof value.error === "string";
-}
-
-export interface SshTransferSummaryOptions {
-	barWidth?: number;
-	width?: number;
-}
 
 function sanitizeTransferField(value: string): string {
 	return replaceTabs(sanitizeText(value)).replaceAll("\r", "\\r").replaceAll("\n", "\\n");
@@ -144,36 +76,6 @@ function detailsFromProgress(
 		elapsedMs: progress.elapsedMs,
 		...(error === undefined ? {} : { error }),
 	};
-}
-
-export function formatSshTransferSummary(
-	details: SshTransferToolDetails,
-	options: SshTransferSummaryOptions = {},
-): string {
-	const host = sanitizeTransferField(details.host);
-	const localPath = sanitizeTransferField(shortenPath(details.localPath));
-	const remotePath = sanitizeTransferField(details.remotePath);
-	const source = details.operation === "upload" ? localPath : remotePath;
-	const destination = details.operation === "upload" ? remotePath : localPath;
-	const verb = details.operation === "upload" ? "Upload" : "Download";
-	const barWidth = Math.max(1, Math.floor(options.barWidth ?? (options.width && options.width < 60 ? 6 : 10)));
-	const filled = details.percent >= 100 ? barWidth : Math.floor((details.percent / 100) * barWidth);
-	const bar = `${"█".repeat(filled)}${"░".repeat(barWidth - filled)}`;
-	const rate = details.status === "running" ? details.bytesPerSecond : details.averageBytesPerSecond;
-	const lines = [
-		`${verb} [${host}]  ${source} → ${destination}`,
-		`${bar}  ${details.percent.toFixed(1)}% · ${formatBytes(details.transferredBytes)} / ${formatBytes(
-			details.totalBytes,
-		)} · ${formatBytes(rate)}/s · ${formatDuration(details.elapsedMs)}`,
-	];
-	if (details.status === "cancelled" && details.async && details.async.state === "running") {
-		lines.push("Cancelling · cleanup in progress");
-	}
-	if (details.async?.state === "running") lines.push(`Job: ${sanitizeTransferField(details.async.jobId)}`);
-	if (details.error !== undefined) lines.push(`Error: ${sanitizeTransferField(details.error)}`);
-	if (options.width === undefined) return lines.join("\n");
-	const width = Math.max(1, Math.floor(options.width));
-	return lines.map(line => truncateToWidth(line, width, Ellipsis.Unicode)).join("\n");
 }
 
 function toolResultFromDetails(details: SshTransferToolDetails): AgentToolResult<SshTransferToolDetails> {

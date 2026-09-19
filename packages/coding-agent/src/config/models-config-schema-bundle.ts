@@ -41,6 +41,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		"supportsForcedToolChoice?": "boolean",
 		"disableReasoningOnForcedToolChoice?": "boolean",
 		"disableReasoningOnToolChoice?": "boolean",
+		"disableReasoningWithTools?": "boolean",
 		"thinkingFormat?": '"openai" | "openrouter" | "zai" | "qwen" | "qwen-chat-template"',
 		"qwenTemplateReasoningEffort?": "boolean",
 		"openRouterRouting?": OpenRouterRoutingSchema,
@@ -61,6 +62,7 @@ export const getModelsConfigSchemaBundle = once(() => {
 		// support vision]" placeholder instead of image parts. The catalog sets it
 		// per class (DeepSeek-family ids by default); user config may override it
 		// per provider or model for proxies that reject `image_url`.
+		"supportsConfigurationUpdate?": "boolean",
 		"stripImageInput?": "boolean",
 		// anthropic-messages compat flags (same `compat` slot, per-api interpretation)
 		"supportsContextManagement?": "boolean",

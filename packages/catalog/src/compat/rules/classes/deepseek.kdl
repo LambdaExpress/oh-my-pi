@@ -73,18 +73,26 @@ class "deepseek" {
 	models token="vision" {
 		strip-image-input #false
 	}
-	// Reviewed exception: DeepSeek-V4.1-Flash ships under the canonical id
-	// `deepseek-flash` and accepts `image_url` parts (Vision ✓ in Models &
-	// Pricing, verified against api.deepseek.com). The class default predates
-	// that release; the retired v4-flash ids remain text-only.
-	// priority=-1 only because host carve-outs for the same lane
-	// (providers/opencode-go.kdl, providers/openrouter.kdl) are supersets that
-	// also declare the image modality, so the deployment contract has to win;
-	// this rule stays the baseline on every host without one.
-	models "deepseek-flash" priority=-1 {
+	// DeepSeek V4.1 Flash is natively multimodal (image-text-to-text), but its
+	// id carries no `vision` token, so the class-wide strip above dropped
+	// attachments the model reads on every deployment without its own carve-out.
+	// The glob also spans `-vision`/`-ocr` ids, which already set the same value
+	// below, so the explicit priority resolves that equal-rank tie instead of
+	// throwing AmbiguousOverlapError. Only the strip is disabled; the declared
+	// modality stays host-derived, so endpoints whose OpenAI-compatible surface
+	// rejects `image_url` keep their text-only contract.
+	models "*v4.1-flash*" priority=10 {
 		strip-image-input #false
 	}
-	on "ollama-cloud" "nvidia" "deepseek" "fireworks" "nanogpt" "opencode-go" "openrouter" {
+	// V4.1 Flash is natively multimodal (vision encoder + projector, image-text
+	// pre-training) but its release id carries no `vision` token to key on.
+	// Same priority as the V4.1 Flash carve-out: the OpenCode Go provider rule
+	// declares the same value for its `deepseek-flash` lane and would otherwise
+	// tie at equal rank.
+	models "deepseek-flash" priority=10 {
+		strip-image-input #false
+	}
+	on "ollama-cloud" "nvidia" "deepseek" "fireworks" "nanogpt" "opencode-go" "openrouter" "litellm" "nous" {
 		stream-markup-healing-pattern "dsml"
 	}
 	thinking-loop-guard "deepseek"

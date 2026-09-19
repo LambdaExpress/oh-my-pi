@@ -1,7 +1,7 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
 import type { RestoredQueuedMessage } from "./agent-session-types";
-import { type CustomMessage, readQueueChipText } from "./messages";
+import { readQueueChipText } from "./messages";
 
 function queuedTextContent(message: AgentMessage): string | undefined {
 	if (!("content" in message)) return undefined;
@@ -27,11 +27,6 @@ function queuedImageContent(message: AgentMessage): ImageContent[] | undefined {
 /** Whether a queued message should render in the queue UI. */
 export function isDisplayableQueuedMessage(message: AgentMessage): boolean {
 	return !(message.role === "custom" && message.display === false);
-}
-
-/** Whether a queued message is an advisor card. */
-export function isAdvisorCard(message: AgentMessage): message is CustomMessage {
-	return message.role === "custom" && message.customType === "advisor";
 }
 
 /** Whether a message is a terminal assistant answer containing text and no tools. */

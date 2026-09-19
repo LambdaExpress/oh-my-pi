@@ -1,13 +1,13 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { TUI } from "@oh-my-pi/pi-tui";
-import { ChatTranscriptBuilder } from "@oh-my-pi/pi-coding-agent/modes/components/chat-transcript-builder";
-import { InjectNoticeComponent } from "@oh-my-pi/pi-coding-agent/modes/components/inject-notice";
-import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/user-message";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { ChatTranscriptBuilder } from "@oh-my-pi/pi-tui/chat/chat-transcript-builder";
+import { InjectNoticeComponent } from "@oh-my-pi/pi-tui/chat/inject-notice";
+import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { ContextInjectionItem } from "@oh-my-pi/pi-coding-agent/session/context-injection";
-import { createContextInjectionMessage } from "@oh-my-pi/pi-coding-agent/session/context-injection";
+import type { ContextInjectionItem } from "@oh-my-pi/pi-tui/chat/context-injection";
+import { createContextInjectionMessage } from "@oh-my-pi/pi-tui/chat/context-injection";
 import type { SessionMessageEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 
 const AGENTS_MD: ContextInjectionItem = {

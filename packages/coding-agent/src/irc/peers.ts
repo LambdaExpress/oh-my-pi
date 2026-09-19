@@ -1,8 +1,8 @@
 import * as path from "node:path";
 
+import type { AgentProgress, SingleResult, TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
 import type { AgentRef } from "../registry/agent-registry";
 import type { SessionEntry } from "../session/session-entries";
-import type { AgentProgress, SingleResult, TaskToolDetails } from "../task/types";
 
 export interface IrcPeerScope {
 	/** Authoritative set of peers visible from the current conversation branch. */

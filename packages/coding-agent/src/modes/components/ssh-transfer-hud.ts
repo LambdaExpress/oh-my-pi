@@ -1,15 +1,15 @@
 import type { Component } from "@oh-my-pi/pi-tui";
+import { Ellipsis, formatStatusIcon, replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import { renderStatusLine } from "@oh-my-pi/pi-tui/render/status-line";
+import { theme } from "@oh-my-pi/pi-tui/theme";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { t } from "../../i18n";
 import type { AsyncJobSnapshot, AsyncJobSnapshotItem } from "../../session/agent-session";
-import { formatStatusIcon, replaceTabs } from "../../tools/render-utils";
 import {
 	formatSshTransferSummary,
 	isSshTransferToolDetails,
 	type SshTransferToolDetails,
-} from "../../tools/ssh-transfer";
-import { Ellipsis, renderStatusLine, truncateToWidth } from "../../tui";
-import { theme } from "../theme/theme";
+} from "@oh-my-pi/pi-tui/tools/ssh-transfer-summary";
 
 export function isActiveSshTransferJob(job: AsyncJobSnapshotItem): boolean {
 	return job.status === "running" || (job.status === "cancelled" && job.settledAt === undefined);

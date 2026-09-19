@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { matchUiElements, parseUiHierarchy, sameUiElement } from "@oh-my-pi/pi-coding-agent/adb/ui-hierarchy";
 import type { AdbUiElement, AdbUiSelector } from "@oh-my-pi/pi-coding-agent/adb/ui-types";
-import { ToolError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 function hierarchy(nodes: string, rotation = "0"): string {
 	return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><hierarchy rotation="${rotation}">${nodes}</hierarchy>`;

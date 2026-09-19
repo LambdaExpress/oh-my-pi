@@ -1,14 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "bun:test";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
-import { getThemeByName, highlightCode } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { streamTailUpdates, TailBuffer } from "@oh-my-pi/pi-coding-agent/session/streaming-output";
+import { getThemeByName, highlightCode } from "@oh-my-pi/pi-tui/theme";
+import { streamTailUpdates, TailBuffer } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import * as connectionManager from "@oh-my-pi/pi-coding-agent/ssh/connection-manager";
 import * as sshExecutor from "@oh-my-pi/pi-coding-agent/ssh/ssh-executor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { type SSHToolDetails, SshTool, sshToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/ssh";
 import { formatSshHostEntry } from "@oh-my-pi/pi-coding-agent/tools/ssh-hosts";
-import { writeToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/write";
+import { writeToolRenderer } from "@oh-my-pi/pi-tui/tools/write";
 
 const host: SSHHost = {
 	name: "remote",

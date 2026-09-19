@@ -4,10 +4,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
-import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import * as themeModule from "@oh-my-pi/pi-tui/theme";
 import { SessionTools, type SessionToolsHost } from "@oh-my-pi/pi-coding-agent/session/session-tools";
-import { toolRenderers } from "@oh-my-pi/pi-coding-agent/tools/renderers";
+import { toolRenderers } from "@oh-my-pi/pi-tui/tools";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
@@ -132,6 +132,7 @@ describe("apply_patch rendering", () => {
 		].join("\n");
 
 		const component = toolRenderers.apply_patch.renderCall({ input }, { expanded: false, isPartial: true }, uiTheme);
+		if (!component) throw new Error("expected a call component");
 		const rendered = Bun.stripANSI(component.render(160).join("\n"));
 
 		expect(rendered).toContain("src/first.ts");
@@ -144,6 +145,7 @@ describe("apply_patch rendering", () => {
 		const input = ["*** Begin Patch", "*** Update File: src/streaming.ts", "@@", "-before", "+after"].join("\n");
 
 		const component = toolRenderers.apply_patch.renderCall({ input }, { expanded: false, isPartial: true }, uiTheme);
+		if (!component) throw new Error("expected a call component");
 		const rendered = Bun.stripANSI(component.render(160).join("\n"));
 
 		expect(rendered).toContain("src/streaming.ts");

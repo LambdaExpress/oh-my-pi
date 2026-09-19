@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
-import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { SshTransferToolDetails } from "@oh-my-pi/pi-coding-agent/tools/ssh-transfer";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import type { SshTransferToolDetails } from "@oh-my-pi/pi-tui/tools/ssh-transfer-summary";
 import type { TUI } from "@oh-my-pi/pi-tui";
 
 function result(percent: number, status: SshTransferToolDetails["status"]) {

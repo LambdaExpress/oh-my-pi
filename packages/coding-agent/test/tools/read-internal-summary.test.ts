@@ -9,7 +9,8 @@ import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls/route
 import type { InternalResource, ProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as fileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
-import { ReadTool, type ReadToolDetails } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import type { ReadToolDetails } from "@oh-my-pi/pi-tui/tools/read";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 function makeSettings(): Settings {

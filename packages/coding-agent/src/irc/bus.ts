@@ -1,3 +1,4 @@
+import { type IrcDeliveryReceipt, type IrcMessage as HubIrcMessage } from "@oh-my-pi/pi-tui/tools/hub";
 /**
  * IrcBus - Process-global mailbox bus for agent-to-agent messaging.
  *
@@ -22,31 +23,13 @@ import type { AgentSession } from "../session/agent-session";
 import type { AgentSessionEvent } from "../session/agent-session-events";
 import type { CustomMessage } from "../session/messages";
 
-export interface IrcMessage {
-	id: string;
-	/** Sender agent id. */
-	from: string;
-	/** Recipient agent id (resolved; "all" is expanded by the tool, not stored). */
-	to: string;
-	body: string;
-	ts: number;
-	/** Message id being answered. */
-	replyTo?: string;
-	/** Immutable top-level session scope that produced this message. */
+/**
+ * Peer message plus the local immutable top-level session scope that produced
+ * it. Retiring a scope drops its pending mail and waits, and later sends that
+ * carry the retired scope are rejected.
+ */
+export interface IrcMessage extends HubIrcMessage {
 	scopeId?: string;
-	/**
-	 * Automated wake-turn relay of a woken subagent's stop output (task executor
-	 * `relayWakeTurnOutput`). Relays are answers, never wake sources: the
-	 * recipient's own wake-turn relay must skip them or two idle peers
-	 * ping-pong forever.
-	 */
-	wakeRelay?: boolean;
-}
-
-export interface IrcDeliveryReceipt {
-	to: string;
-	outcome: "injected" | "woken" | "revived" | "failed";
-	error?: string;
 }
 
 interface IrcWaiter {

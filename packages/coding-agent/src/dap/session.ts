@@ -1632,7 +1632,8 @@ export class DapSessionManager {
 			return {};
 		});
 		client.onEvent("output", body => {
-			truncateOutput(session, (body as DapOutputEventBody | undefined)?.output ?? "");
+			const event = body as DapOutputEventBody | undefined;
+			truncateOutput(session, event?.output ?? "", event?.category);
 		});
 		client.onEvent("initialized", () => {
 			session.initializedSeen = true;

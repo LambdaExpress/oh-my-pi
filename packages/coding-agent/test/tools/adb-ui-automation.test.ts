@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import type { AdbBinaryResult, AdbCommandResult } from "@oh-my-pi/pi-coding-agent/adb/adb-executor";
 import { AdbUiAutomation } from "@oh-my-pi/pi-coding-agent/adb/ui-automation";
-import { ToolAbortError, ToolError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { ToolAbortError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 const SERIAL = "emulator-5554";
 const OTHER_SERIAL = "device-two";

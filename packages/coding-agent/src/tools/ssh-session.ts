@@ -1,19 +1,19 @@
 import { type } from "@oh-my-pi/omptype";
 import type { AgentTool, AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { Component } from "@oh-my-pi/pi-tui";
-import { Text } from "@oh-my-pi/pi-tui";
+import { Ellipsis, Text, truncateToWidth } from "@oh-my-pi/pi-tui";
 import { prompt } from "@oh-my-pi/pi-utils";
 import type { SSHHostConfig } from "../capability/ssh";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { t } from "../i18n";
-import type { Theme } from "../modes/theme/theme";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import sshSessionDescription from "../prompts/tools/ssh-session.md" with { type: "text" };
 import { validateHostName } from "../ssh/config-writer";
 import { assertProxyJumpPasswordCompatible, normalizeProxyJump } from "../ssh/utils";
-import { Ellipsis, renderStatusLine, truncateToWidth } from "../tui";
+import { renderStatusLine } from "@oh-my-pi/pi-tui/render/status-line";
 import type { ToolSession } from ".";
-import { formatCountLabel, replaceTabs } from "./render-utils";
-import { ToolError } from "./tool-errors";
+import { formatCountLabel, replaceTabs } from "@oh-my-pi/pi-tui/render/render-utils";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 const sshSessionSchema = type({
 	op: "'create' | 'update' | 'delete' | 'list'",

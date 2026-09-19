@@ -18,8 +18,8 @@ import type {
 	RpcSessionEventFrame,
 	RpcSubagentFrame,
 } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-types";
+import type { AgentProgress } from "@oh-my-pi/pi-tui/tools/task";
 import {
-	type AgentProgress,
 	type SubagentEventPayload,
 	type SubagentLifecyclePayload,
 	type SubagentProgressPayload,

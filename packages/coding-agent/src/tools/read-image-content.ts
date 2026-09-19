@@ -1,22 +1,23 @@
 import type { completeSimple, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import type { ImageMetadata } from "@oh-my-pi/pi-utils";
-import type { ToolSession } from "../sdk";
 import {
 	convertImageToPng,
 	ImageInputTooLargeError,
 	InvalidImageDataError,
-	type LoadedImageInput,
 	MAX_IMAGE_INPUT_BYTES,
 	webpExclusionForModel,
-} from "../utils/image-loading";
+} from "@oh-my-pi/pi-tui/chat/image-loading";
+import type { ToolSession } from "../sdk";
+import type { LoadedImageInput } from "../utils/image-loading";
 import {
 	askImageQuestion,
 	ImageQuestionUnavailableError,
 	type ResolvedImageQuestionModel,
 	resolveImageQuestionModel,
 } from "../utils/image-question";
-import { formatBytes } from "./render-utils";
-import { ToolError, throwIfAborted } from "./tool-errors";
+import { formatBytes } from "@oh-my-pi/pi-tui/render/render-utils";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
+import { throwIfAborted } from "./tool-errors";
 
 export interface ReadImageContentOptions {
 	/** Session that supplies the active model and delegated image-question model. */

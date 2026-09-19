@@ -1,9 +1,8 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { EvalToolDetails } from "@oh-my-pi/pi-coding-agent/eval/types";
-import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { evalToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/eval-render";
-import { renderCodeCell } from "@oh-my-pi/pi-coding-agent/tui";
+import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-tui/theme";
+import { type EvalToolDetails, evalToolRenderer } from "@oh-my-pi/pi-tui/tools/eval";
+import { renderCodeCell } from "@oh-my-pi/pi-tui/render";
 
 function renderCellOutputRows(output: string, uiTheme: Theme): string[] {
 	const details: EvalToolDetails = {

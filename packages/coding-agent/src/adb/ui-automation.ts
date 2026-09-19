@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { untilAborted } from "@oh-my-pi/pi-utils";
-import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
+import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { AdbBinaryResult, AdbCommandResult } from "./adb-executor";
 import { matchUiElements, parseUiHierarchy, sameUiElement } from "./ui-hierarchy";
 import type {

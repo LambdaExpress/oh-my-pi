@@ -30,6 +30,7 @@ import {
 } from "@oh-my-pi/pi-ai/providers/openai-shared";
 import { transformMessages } from "@oh-my-pi/pi-ai/providers/transform-messages";
 import type {
+	Api,
 	AssistantMessage,
 	CodexCompactionContext,
 	FetchImpl,
@@ -282,8 +283,19 @@ export interface RemoteCompactionResponse {
 // OpenAI provider gating + endpoint resolution
 // ============================================================================
 
+export function isOpenAiRemoteCompactionApi(api: Api | undefined): boolean {
+	return api === "openai-responses" || api === "azure-openai-responses" || api === "openai-codex-responses";
+}
+
 export function shouldUseOpenAiRemoteCompaction(model: Model): boolean {
 	if (model.remoteCompaction?.enabled === false) return false;
+	// ChatGPT's Codex backend exposes V2 compaction on /codex/responses, but
+	// does not expose the OpenAI V1 /responses/compact endpoint. Only use the
+	// V1 path for Codex when an explicit compatible endpoint was configured.
+	if (model.provider === "openai-codex" && (model.remoteCompaction?.endpoint?.trim().length ?? 0) === 0) {
+		return false;
+	}
+	// Local gate: the model route and any compact endpoint override must both be first-party.
 	return isOfficialOpenAiCompactionEndpoint(model, model.remoteCompaction?.endpoint);
 }
 

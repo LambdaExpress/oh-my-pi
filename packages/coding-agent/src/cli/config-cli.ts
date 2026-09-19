@@ -20,8 +20,8 @@ import {
 	validateProviderMaxInFlightRequests,
 } from "../config/settings";
 import { SETTINGS_SCHEMA } from "../config/settings-schema";
+import { theme } from "@oh-my-pi/pi-tui/theme";
 import { t } from "../i18n";
-import { theme } from "../modes/theme/theme";
 import { initXdg } from "./commands/init-xdg";
 
 // =============================================================================

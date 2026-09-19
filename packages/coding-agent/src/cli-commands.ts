@@ -18,7 +18,12 @@ import {
 	STRING_VALUE_FLAGS,
 	VALUELESS_FLAGS,
 } from "./cli/flag-tables";
-import { launchHelp } from "./commands/launch-help";
+import type * as LaunchHelp from "./commands/launch-help";
+
+function loadLaunchHelp(): typeof LaunchHelp.launchHelp {
+	const module: typeof LaunchHelp = require("./commands/launch-help");
+	return module.launchHelp;
+}
 
 export { isSubcommand, LAUNCH_FLAG_COMMANDS } from "./cli/command-routing";
 
@@ -27,7 +32,13 @@ type Translate = (key: string) => string;
 const identityTranslate: Translate = key => key;
 
 export const commands: CommandEntry[] = [
-	{ ...commandIdentity("launch"), load: () => import("./commands/launch").then(m => m.default), help: launchHelp },
+	{
+		...commandIdentity("launch"),
+		load: () => import("./commands/launch").then(m => m.default),
+		get help() {
+			return loadLaunchHelp();
+		},
+	},
 	{
 		...commandIdentity("acp"),
 		load: () => import("./commands/acp").then(m => m.default),
@@ -62,6 +73,13 @@ export const commands: CommandEntry[] = [
 		...commandIdentity("cleanse"),
 		load: () => import("./commands/cleanse").then(m => m.default),
 		help: commandHelp.cleanseHelp,
+	},
+	{
+		name: "collab",
+		// Keep implementation imports behind the command boundary: this table is
+		// also imported before profile bootstrap and by native-free worker entries.
+		load: () => import("./commands/collab").then(m => m.default),
+		help: commandHelp.collabHelp,
 	},
 	{
 		...commandIdentity("commit"),
@@ -146,6 +164,7 @@ export const commands: CommandEntry[] = [
 	{
 		...commandIdentity("plugin"),
 		load: () => import("./commands/plugin").then(m => m.default),
+		aliases: ["plugins"],
 		help: commandHelp.pluginHelp,
 	},
 	{
@@ -192,6 +211,11 @@ export const commands: CommandEntry[] = [
 		...commandIdentity("stats"),
 		load: () => import("./commands/stats").then(m => m.default),
 		help: commandHelp.statsHelp,
+	},
+	{
+		name: "stream",
+		load: () => import("./commands/stream").then(m => m.default),
+		help: commandHelp.streamHelp,
 	},
 	{
 		...commandIdentity("update"),

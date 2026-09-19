@@ -9,7 +9,6 @@ import {
 	pickRecentFocusableAgentId,
 	SessionFocusController,
 } from "@oh-my-pi/pi-coding-agent/modes/controllers/session-focus-controller";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
 import type { InteractiveModeContext, RenderInitialMessagesOptions } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { Container } from "@oh-my-pi/pi-tui";
@@ -18,6 +17,7 @@ import { AgentRegistry, MAIN_AGENT_ID, type AgentRef } from "@oh-my-pi/pi-coding
 import { AgentSession, type AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
 interface SessionStub {
 	session: AgentSession;

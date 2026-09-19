@@ -23,8 +23,8 @@ import {
 } from "../config/model-resolver";
 import { getKnownRoleIds } from "../config/model-roles";
 import type { Settings } from "../config/settings";
+import { containsUltrathink } from "@oh-my-pi/pi-tui/prompt/ultrathink";
 import { t } from "../i18n";
-import { containsUltrathink } from "../modes/ultrathink";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -34,8 +34,8 @@ import {
 	resolveThinkingLevelForModel,
 	shouldDisableReasoning,
 	toReasoningEffort,
-} from "../thinking";
-import type { EditMode } from "../utils/edit-mode";
+} from "@oh-my-pi/pi-tui/thinking";
+import type { EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ModelCycleResult, ResolvedRoleModel, RoleModelCycle, RoleModelCycleResult } from "./agent-session-types";
 import { formatRoleModelValue, resolveRoleModelFull } from "./role-models";

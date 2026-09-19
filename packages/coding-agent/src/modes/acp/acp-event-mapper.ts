@@ -8,12 +8,12 @@ import type {
 	ToolKind,
 } from "@oh-my-pi/pi-utils/acp";
 import { t } from "../../i18n";
-import { parseXdUrl } from "../../internal-urls/xd-protocol";
+import { parseXdUrl } from "@oh-my-pi/pi-tui/tools/xd-url";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import { resolveToCwd, splitPathAndSelPreferringLiteralSync } from "../../tools/path-utils";
-import { formatSshTransferSummary, isSshTransferToolDetails } from "../../tools/ssh-transfer";
-import type { TodoStatus } from "../../tools/todo";
-import { canonicalizeMessage } from "../../utils/thinking-display";
+import { formatSshTransferSummary, isSshTransferToolDetails } from "@oh-my-pi/pi-tui/tools/ssh-transfer-summary";
+import type { TodoStatus } from "@oh-my-pi/pi-tui/tools/todo";
+import { canonicalizeMessage } from "@oh-my-pi/pi-tui/chat/thinking-display";
 
 interface MessageProgress {
 	textEmitted: boolean;

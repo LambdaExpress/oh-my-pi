@@ -6,9 +6,10 @@ import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ExtensionContext, ExtensionFactory } from "../extensibility/extensions";
 import { t } from "../i18n";
 import commandResumeTemplate from "./command-resume.md" with { type: "text" };
-import { createDashboardController } from "./dashboard";
+import { createDashboardController } from "@oh-my-pi/pi-tui/apps/autoresearch-dashboard";
+import { currentResults, findBaselineMetric, findBaselineRunNumber } from "@oh-my-pi/pi-tui/apps/autoresearch-data";
 import { ensureAutoresearchBranch } from "./git";
-import { formatNum } from "./helpers";
+import { formatNum } from "@oh-my-pi/pi-tui/tools/autoresearch";
 import promptTemplate from "./prompt.md" with { type: "text" };
 import setupPromptTemplate from "./prompt-setup.md" with { type: "text" };
 import resumeMessageTemplate from "./resume-message.md" with { type: "text" };
@@ -16,9 +17,6 @@ import {
 	buildExperimentState,
 	createExperimentState,
 	createRuntimeStore,
-	currentResults,
-	findBaselineMetric,
-	findBaselineRunNumber,
 	findBestKeptMetric,
 	reconstructControlState,
 } from "./state";
@@ -27,7 +25,8 @@ import { createInitExperimentTool } from "./tools/init-experiment";
 import { createLogExperimentTool } from "./tools/log-experiment";
 import { createRunExperimentTool } from "./tools/run-experiment";
 import { createUpdateNotesTool } from "./tools/update-notes";
-import type { AutoresearchRuntime, ExperimentResult, PendingRunSummary } from "./types";
+import type { AutoresearchRuntime, PendingRunSummary } from "./types";
+import type { ExperimentResult } from "@oh-my-pi/pi-tui/tools/autoresearch";
 
 const EXPERIMENT_TOOL_NAMES = ["init_experiment", "run_experiment", "log_experiment", "update_notes"];
 

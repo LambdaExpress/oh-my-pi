@@ -1,14 +1,14 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
+import type { SessionSelectorComponent } from "@oh-my-pi/pi-tui/overlays/session-selector";
 import { SelectorController } from "@oh-my-pi/pi-coding-agent/modes/controllers/selector-controller";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { SessionEntry, SessionTreeNode } from "@oh-my-pi/pi-coding-agent/session/session-entries";
 import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import type { Component, OverlayOptions } from "@oh-my-pi/pi-tui";
+import { type Component, type OverlayOptions, Text } from "@oh-my-pi/pi-tui";
 
 beforeAll(async () => {
 	resetSettingsForTest();
@@ -42,12 +42,13 @@ function createEditorSlot(...initial: unknown[]): EditorSlot {
 	};
 }
 
-function createCtx(slot: EditorSlot, editor: unknown) {
+function createCtx(slot: EditorSlot, editor: unknown, focused: unknown = editor) {
 	const setFocus = vi.fn();
 	const ctx = {
 		editor,
 		editorContainer: slot,
 		ui: {
+			getFocused: vi.fn(() => focused),
 			setFocus,
 			requestRender: vi.fn(),
 		},
@@ -227,6 +228,29 @@ describe("SelectorController.showCopySelector", () => {
 		});
 		expect(setFocus).toHaveBeenCalledWith(selector);
 		expect(requestRender).toHaveBeenCalled();
+	});
+});
+
+describe("SelectorController.showSelector", () => {
+	it("restores an ask dialog and its draft editor after history search closes", () => {
+		const editor = new Text("editor", 0, 0);
+		const askDialog = new Text("ask", 0, 0);
+		const historySearch = new Text("history", 0, 0);
+		const slot = createEditorSlot(askDialog, editor);
+		const { ctx, setFocus } = createCtx(slot, editor, askDialog);
+		let finish: (() => void) | undefined;
+
+		new SelectorController(ctx).showSelector(done => {
+			finish = done;
+			return { component: historySearch, focus: historySearch };
+		});
+
+		expect(slot.children).toEqual([historySearch]);
+		expect(setFocus).toHaveBeenLastCalledWith(historySearch);
+		if (!finish) throw new Error("selector did not provide its completion callback");
+		finish();
+		expect(slot.children).toEqual([askDialog, editor]);
+		expect(setFocus).toHaveBeenLastCalledWith(askDialog);
 	});
 });
 

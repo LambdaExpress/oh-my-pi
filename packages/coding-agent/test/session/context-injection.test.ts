@@ -6,7 +6,7 @@ import {
 	mcpInjectionItems,
 	normalizeContextInjectionItems,
 	type ContextInjectionDetails,
-} from "../../src/session/context-injection";
+} from "@oh-my-pi/pi-tui/chat/context-injection";
 import type { CustomMessage } from "../../src/session/messages";
 import { buildSessionContext } from "../../src/session/session-context";
 import type { SessionEntry } from "../../src/session/session-entries";

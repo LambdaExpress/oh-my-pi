@@ -11,6 +11,16 @@
 - Added session-room thinking controls: state frames advertise the configured selector and current model's supported choices, and writable guests can select one with `thinking-change`.
 - Added session-room model frames: guest `model-list`/`model-change` variants and the host `model-list` reply carrying `WireModel[]`.
 - Added control-room wire contracts (`ControlGuestFrame`/`ControlHostFrame`/`SessionSummary`/`SessionStatus`) for multi-session core mode: guests can list, create, resume, and drop sessions through a `ctrl-` room, with read-only peers stripped of session links.
+## [18.2.5] - 2026-09-17
+
+### Added
+
+- Added the `omp stream` wire contract (`@oh-my-pi/pi-wire/stream`) for pane screen updates, viewer snapshots and chat, channel metadata, and `live.omp.sh` stream routes.
+- Added authentication support for stencil.so streams, including user identity in welcome messages, channel ownership metadata, and explicit unauthorized and forbidden close codes.
+
+### Changed
+
+- Restricted channel names to the Stencil-compatible alphanumeric-and-underscore format and derived host channels from authentication tokens rather than URL path segments.
 
 ## [16.3.0] - 2026-07-02
 

@@ -27,7 +27,7 @@ import {
 	writeRemoteFile,
 } from "../ssh/file-transfer";
 import { loadEffectiveSshHosts, type SSHHost } from "../ssh/host-registry";
-import { isMarkdownPath } from "../utils/lang-from-path";
+import { isMarkdownPath } from "@oh-my-pi/pi-tui/lang-from-path";
 import type {
 	InternalResource,
 	InternalUrl,

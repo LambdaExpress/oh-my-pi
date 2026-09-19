@@ -1,11 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import { createGallerySegmentContext } from "../../../../src/cli/gallery-fixtures/segments";
 import { Settings } from "../../../../src/config/settings";
-import { StatusLineComponent } from "../../../../src/modes/components/status-line/component";
-import { renderSegment } from "../../../../src/modes/components/status-line/segments";
-import { loadTheme } from "../../../../src/modes/theme/loader";
-import { getThemeByName, setThemeInstance, theme } from "../../../../src/modes/theme/theme";
+import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line/component";
+import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
+import { renderSegment } from "@oh-my-pi/pi-tui/status-line/segments";
+import { loadTheme } from "@oh-my-pi/pi-tui/theme/loader";
+import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "../../../../src/session/agent-session";
+import { setLocale } from "../../../../src/i18n";
 import { StatusLineTestComponents } from "../../../helpers/status-line";
 
 // The cost assertions below care about how the two costs are rendered, not about
@@ -86,7 +88,7 @@ function makeProviderStatusLine(provider: string, modelName: string) {
 	const model = { provider, name: modelName, contextWindow: 128000 };
 	session.model = model;
 	session.state.model = model;
-	const statusLine = new StatusLineComponent(session as unknown as AgentSession);
+	const statusLine = new StatusLineComponent(session as unknown as AgentSession, statusLineHost);
 	statusLine.updateSettings({
 		preset: "custom",
 		leftSegments: ["provider", "model"],
@@ -216,6 +218,7 @@ function makeUsageOnlyStatusLine(
 ) {
 	const statusLine = new StatusLineComponent(
 		makeSessionWithUsageFetcher(fetchUsageReports, provider) as unknown as AgentSession,
+		statusLineHost,
 		{ onUsageRefresh },
 	);
 	statusLine.updateSettings({
@@ -246,9 +249,13 @@ beforeAll(async () => {
 	const loaded = await getThemeByName("dark");
 	if (!loaded) throw new Error("theme unavailable");
 	setThemeInstance(loaded);
+	// Copy assertions below are the English source strings; the localized
+	// advisor marker (`(adv)`) would otherwise depend on the host language.
+	setLocale("en");
 });
 
 afterAll(() => {
+	setLocale(null);
 	statusLines.dispose();
 });
 
@@ -287,6 +294,7 @@ describe("StatusLineComponent", () => {
 						},
 					],
 				}) as unknown as AgentSession,
+				statusLineHost,
 			),
 		);
 
@@ -438,7 +446,7 @@ describe("StatusLineComponent", () => {
 
 	it("renders Prewalk annotation when prewalk is armed", () => {
 		const statusLine = statusLines.track(
-			new StatusLineComponent(makeSessionWithLastMessage(null, true) as unknown as AgentSession),
+			new StatusLineComponent(makeSessionWithLastMessage(null, true) as unknown as AgentSession, statusLineHost),
 		);
 
 		// By default preset, 'mode' segment is included in left/right segments.
@@ -457,6 +465,7 @@ describe("StatusLineComponent", () => {
 					modelName: "Stale Model",
 					sessionName: "stale-session",
 				}) as unknown as AgentSession,
+				statusLineHost,
 			),
 		);
 
@@ -508,6 +517,7 @@ describe("StatusLineComponent", () => {
 					advisorCost: 0.41,
 					usingSubscription: true,
 				}) as unknown as AgentSession,
+				statusLineHost,
 			),
 		);
 
@@ -524,6 +534,7 @@ describe("StatusLineComponent", () => {
 					usingSubscription: true,
 					advisorUsingSubscription: true,
 				}) as unknown as AgentSession,
+				statusLineHost,
 			),
 		);
 
@@ -545,6 +556,7 @@ describe("StatusLineComponent", () => {
 						usingSubscription: true,
 						advisorUsingSubscription: true,
 					}) as unknown as AgentSession,
+					statusLineHost,
 				),
 			);
 			const stripped = statusLine.getTopBorder(WIDE_ENOUGH_FOR_COST_SEGMENT).content.replace(/\x1b\[[0-9;]*m/g, "");
@@ -561,6 +573,7 @@ describe("StatusLineComponent", () => {
 					cost: 2.67,
 					usingSubscription: true,
 				}) as unknown as AgentSession,
+				statusLineHost,
 			),
 		);
 
@@ -583,6 +596,7 @@ describe("StatusLineComponent", () => {
 						usingSubscription: true,
 						advisorUsingSubscription: true,
 					}) as unknown as AgentSession,
+					statusLineHost,
 				),
 			);
 			const stripped = statusLine.getTopBorder(WIDE_ENOUGH_FOR_COST_SEGMENT).content.replace(/\x1b\[[0-9;]*m/g, "");

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { SessionSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/session-selector";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { SessionSelectorComponent } from "@oh-my-pi/pi-tui/overlays/session-selector";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
 import { setLocale } from "../../../src/i18n";
 
@@ -46,11 +46,11 @@ function alphaGroup(): SessionInfo[] {
 }
 
 /** Plain (ANSI-stripped) picker text so assertions target glyphs, not colors. */
-function renderText(selector: SessionSelectorComponent): string {
+function renderText(selector: SessionSelectorComponent<SessionInfo>): string {
 	return Bun.stripANSI(selector.render(120).join("\n"));
 }
 
-function renderLines(selector: SessionSelectorComponent): string[] {
+function renderLines(selector: SessionSelectorComponent<SessionInfo>): string[] {
 	return renderText(selector).split("\n");
 }
 
@@ -60,7 +60,7 @@ async function flushAsync(): Promise<void> {
 }
 
 /** Tab twice: folder → flat → grouped (by parent). */
-async function tabToGrouped(selector: SessionSelectorComponent): Promise<void> {
+async function tabToGrouped(selector: SessionSelectorComponent<SessionInfo>): Promise<void> {
 	selector.handleInput(TAB);
 	await flushAsync();
 	selector.handleInput(TAB);
@@ -71,7 +71,7 @@ function makeSelector(
 	folder: SessionInfo[],
 	global: SessionInfo[],
 	options: { onDelete?: (session: SessionInfo) => Promise<boolean>; rows?: number } = {},
-): { selector: SessionSelectorComponent; loads: () => number } {
+): { selector: SessionSelectorComponent<SessionInfo>; loads: () => number } {
 	let loads = 0;
 	const selector = new SessionSelectorComponent(
 		folder,

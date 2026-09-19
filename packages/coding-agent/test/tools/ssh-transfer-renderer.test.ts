@@ -1,10 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import {
-	formatSshTransferSummary,
-	type SshTransferToolDetails,
-	sshTransferToolRenderer,
-} from "@oh-my-pi/pi-coding-agent/tools/ssh-transfer";
+import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-tui/theme";
+import { sshTransferToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/ssh-transfer";
+import { formatSshTransferSummary, type SshTransferToolDetails } from "@oh-my-pi/pi-tui/tools/ssh-transfer-summary";
 
 function transferDetails(overrides: Partial<SshTransferToolDetails> = {}): SshTransferToolDetails {
 	return {

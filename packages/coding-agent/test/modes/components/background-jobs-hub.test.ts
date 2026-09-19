@@ -1,10 +1,10 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { BackgroundJobsHubComponent } from "@oh-my-pi/pi-coding-agent/modes/components/background-jobs-hub";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AsyncJobSnapshot, AsyncJobSnapshotItem } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
-import type { SshTransferToolDetails } from "@oh-my-pi/pi-coding-agent/tools/ssh-transfer";
+import type { SshTransferToolDetails } from "@oh-my-pi/pi-tui/tools/ssh-transfer-summary";
 import type { TUI } from "@oh-my-pi/pi-tui";
 import { setLocale } from "../../../src/i18n";
 

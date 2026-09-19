@@ -8,7 +8,7 @@ import { setupHelp as commandHelp } from "../cli/command-help";
 import { runSetupCommand, type SetupCommandArgs, type SetupComponent } from "../cli/setup-cli";
 import { t } from "../i18n";
 import { runRootCommand } from "../main";
-import { initTheme } from "../modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
 const COMPONENTS: SetupComponent[] = ["python", "speech"];
 

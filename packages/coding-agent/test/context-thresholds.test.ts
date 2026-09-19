@@ -14,10 +14,7 @@
  * percentage trips earlier — whichever fires first wins.
  */
 import { describe, expect, it } from "bun:test";
-import {
-	getContextUsageLevel,
-	getContextUsageThemeColor,
-} from "@oh-my-pi/pi-coding-agent/modes/components/status-line/context-thresholds";
+import { getContextUsageLevel, getContextUsageThemeColor } from "@oh-my-pi/pi-tui/chrome/context-thresholds";
 
 describe("getContextUsageLevel", () => {
 	it("uses token thresholds for 1M windows", () => {

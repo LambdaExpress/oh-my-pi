@@ -24,37 +24,28 @@ import type {
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
-import type { Component } from "@oh-my-pi/pi-tui";
+
 import { prompt } from "@oh-my-pi/pi-utils";
-import type { RenderResultOptions } from "../../extensibility/custom-tools/types";
-import { t } from "../../i18n";
+import { POLL_WAIT_LADDER_MS } from "../../async/job-manager";
+
 import { IrcBus } from "../../irc/bus";
-import type { Theme } from "../../modes/theme/theme";
+
 import hubDescription from "../../prompts/tools/hub.md" with { type: "text" };
 import type { AgentRegistry } from "../../registry/agent-registry";
 import type { ToolSession } from "..";
-import { sanitizeDisplayWarning } from "../render-utils";
-import type { ToolActivityContext, ToolActivitySummary } from "../renderers";
+
 import {
 	buildJobResult,
 	executeCancel,
 	executeJobsSnapshot,
-	jobsRenderCall,
-	jobsRenderResult,
 	noMatchingJobsResult,
 	nothingToWaitForResult,
-	resolvePollWindow,
 	snapshotJobs,
 	visibleJobs,
 } from "./jobs";
-import {
-	executeLaunch,
-	type LaunchParams,
-	type LaunchRenderArgs,
-	type LaunchToolDetails,
-	launchRenderCall,
-	launchRenderResult,
-} from "./launch";
+
+import { executeLaunch } from "./launch";
+import { type LaunchParams } from "@oh-my-pi/pi-tui/tools/hub";
 import {
 	drainPendingInbox,
 	executeInbox,
@@ -62,21 +53,14 @@ import {
 	executeMessageWait,
 	executeSend,
 	messageResult,
-	messagingRenderCall,
-	messagingRenderResult,
 	normalizeIrcTimeoutMs,
 } from "./messaging";
-import {
-	DEFAULT_HUB_LIST_LIMIT,
-	type HubDetails,
-	type HubRenderArgs,
-	hubErrorResult,
-	MAX_HUB_LIST_LIMIT,
-} from "./types";
 
-export { isWaitingPollDetails } from "./jobs";
-export type { LaunchParams, LaunchToolDetails } from "./launch";
-export { createIrcMessageCard, isIrcEnabled } from "./messaging";
+import { DEFAULT_HUB_LIST_LIMIT, type HubDetails, MAX_HUB_LIST_LIMIT } from "@oh-my-pi/pi-tui/tools/hub";
+import { hubErrorResult } from "./types";
+
+export type { LaunchParams, LaunchToolDetails } from "@oh-my-pi/pi-tui/tools/hub";
+export { isIrcEnabled } from "./messaging";
 export * from "./types";
 
 const hubSchema = type({
@@ -212,7 +196,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 		},
 		{
 			caption: "Block until a specific peer answers",
-			call: { op: "wait", from: "AuthLoader", timeoutMs: 60000 },
+			call: { op: "wait", from: "AuthLoader" },
 		},
 		{
 			caption: "Kill a hung background job",
@@ -400,6 +384,16 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 			return buildJobResult(this.session, manager, "wait", jobsToWatch, []);
 		}
 
+		// Wait window: an explicit `timeoutMs` (milliseconds, 0 = no window) wins;
+		// otherwise the adaptive ladder starts at the floor and climbs as the
+		// agent waits in a tight loop, then resets once it steps away (see
+		// AsyncJobManager.nextPollWaitMs). Job and message waits share one
+		// per-owner ladder; only paths that actually block advance and record it,
+		// and an explicit timeout bypasses both.
+		const explicitWindowMs = params.timeoutMs !== undefined ? normalizeIrcTimeoutMs(params.timeoutMs) : undefined;
+		const usedSmartWindow = explicitWindowMs === undefined;
+		const nextWindowMs = (): number => explicitWindowMs ?? manager?.nextPollWaitMs(ownerId) ?? POLL_WAIT_LADDER_MS[0];
+
 		if (!manager || runningJobs.length === 0) {
 			// No job legs: pure message wait — or nothing to block on at all.
 			if (!messaging) return nothingToWaitForResult(this.session);
@@ -420,16 +414,12 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 					.some(ref => messaging.registry.isRunning(ref));
 				if (!hasRunningPeer) return nothingToWaitForResult(this.session);
 			}
-			return executeMessageWait(messaging, { from, timeoutMs: params.timeoutMs }, signal);
+			try {
+				return await executeMessageWait(messaging, { from, timeoutMs: nextWindowMs() }, signal);
+			} finally {
+				if (usedSmartWindow) manager?.recordPollWaitEnd(ownerId);
+			}
 		}
-
-		// Wait window: explicit timeout wins (0 = no window); otherwise the
-		// `async.pollWaitDuration` fixed value or smart ladder. The ladder
-		// starts at the floor and climbs as the agent waits in a tight loop,
-		// then resets once it steps away (see AsyncJobManager.nextPollWaitMs).
-		const window = resolvePollWindow(this.session, manager, ownerId);
-		const windowMs = params.timeoutMs !== undefined ? normalizeIrcTimeoutMs(params.timeoutMs) : window.waitMs;
-		const usedSmartWindow = window.smart && params.timeoutMs === undefined;
 
 		const racePromises: Promise<unknown>[] = runningJobs.map(j => j.promise);
 
@@ -465,6 +455,7 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 		}
 
 		const { promise: timeoutPromise, resolve: timeoutResolve } = Promise.withResolvers<void>();
+		const windowMs = nextWindowMs();
 		const timeoutHandle = windowMs > 0 ? setTimeout(() => timeoutResolve(), windowMs) : undefined;
 		if (timeoutHandle) racePromises.push(timeoutPromise);
 
@@ -497,8 +488,8 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 			}
 		} finally {
 			manager.unwatchJobs(watchedJobIds);
-			if (timeoutHandle) clearTimeout(timeoutHandle);
-			if (progressTimer) clearInterval(progressTimer);
+			clearTimeout(timeoutHandle);
+			clearInterval(progressTimer);
 			busAbort?.abort(busCancelled);
 			removeBusAbortListener?.();
 			if (usedSmartWindow) {
@@ -519,116 +510,3 @@ export class HubTool implements AgentTool<typeof hubSchema, HubDetails> {
 		return buildJobResult(this.session, manager, "wait", jobsToWatch, []);
 	}
 }
-
-// =============================================================================
-// TUI Renderer — dispatches to the preserved messaging/job/launch renderings.
-// =============================================================================
-
-const LAUNCH_OPS: Record<string, true> = {
-	start: true,
-	ps: true,
-	logs: true,
-	stop: true,
-	restart: true,
-	describe: true,
-};
-
-/** Launch-style call: an explicit process op, or `send`/`wait` targeting a process `name`. */
-function isLaunchStyleArgs(args: HubRenderArgs | undefined): boolean {
-	if (!args?.op) return false;
-	if (LAUNCH_OPS[args.op]) return true;
-	return (args.op === "send" || args.op === "wait") && !!args.name && !args.to && !args.from;
-}
-
-/** Job-style call: job ops, or a `wait` that does not target a peer or process. */
-function isJobStyleArgs(args: HubRenderArgs | undefined): boolean {
-	switch (args?.op) {
-		case "jobs":
-		case "cancel":
-			return true;
-		case "wait":
-			return !!args.ids?.length || (!args.from && !args.name);
-		default:
-			return false;
-	}
-}
-
-/** Launch details carry process/broker state; coordination details never define these keys. */
-function isLaunchDetails(details: HubDetails): details is LaunchToolDetails {
-	// `state`/`cursor` cover logs results, which may carry neither a daemon
-	// snapshot nor terminal rows; coordination details never define these keys.
-	return (
-		"daemon" in details ||
-		"daemons" in details ||
-		"terminalRows" in details ||
-		"spec" in details ||
-		"state" in details ||
-		"cursor" in details
-	);
-}
-
-/** Hub args → launch renderer args: `ps` is the broker's `list`; everything else is verbatim. */
-function toLaunchArgs(args: HubRenderArgs | undefined): LaunchRenderArgs {
-	if (!args) return {};
-	const { op, ...rest } = args;
-	return { ...rest, op: op === "ps" ? "list" : op };
-}
-
-export const hubToolRenderer = {
-	inline: true,
-	mergeCallAndResult: true,
-	// Only launch pending frames consume the spinner (broker RPC in flight);
-	// messaging/job pending frames are static, exactly as before the merge.
-	animatedPendingPreview: (args: unknown): boolean => isLaunchStyleArgs(args as HubRenderArgs | undefined),
-
-	/** Folded row: the op plus the peer, process, or job set it addresses. */
-	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
-		const hubArgs = (args ?? {}) as HubRenderArgs;
-		const op = hubArgs.op;
-		if (!op) return { label: t("Hub") };
-		const target = hubArgs.to ?? hubArgs.from ?? hubArgs.name;
-		let detail = op;
-		if (target !== undefined && target.length > 0) {
-			detail = op === "send" ? `send → ${target}` : `${op} ${target}`;
-		} else if (hubArgs.ids !== undefined && hubArgs.ids.length > 0) {
-			detail = `${op} ${t("{count} job{s}", { count: hubArgs.ids.length, s: hubArgs.ids.length === 1 ? "" : "s" })}`;
-		}
-		return { label: t("Hub"), detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
-	},
-
-	renderCall(args: HubRenderArgs, options: RenderResultOptions, uiTheme: Theme): Component {
-		if (isLaunchStyleArgs(args)) return launchRenderCall(toLaunchArgs(args), options, uiTheme);
-		return isJobStyleArgs(args)
-			? jobsRenderCall(args, options, uiTheme)
-			: messagingRenderCall(args, options, uiTheme);
-	},
-
-	renderResult(
-		result: { content: Array<{ type: string; text?: string }>; details?: HubDetails; isError?: boolean },
-		options: RenderResultOptions,
-		uiTheme: Theme,
-		args?: HubRenderArgs,
-	): Component {
-		// Results dispatch on what actually happened, falling back to the call
-		// shape when details are absent (framework-generated errors).
-		const details = result.details;
-		if (details && isLaunchDetails(details)) {
-			return launchRenderResult({ ...result, details }, options, uiTheme, toLaunchArgs(args));
-		}
-		const coordination = details;
-		if (coordination && (Array.isArray(coordination.jobs) || Array.isArray(coordination.agents))) {
-			return jobsRenderResult({ ...result, details: coordination }, options, uiTheme, args);
-		}
-		if (
-			coordination &&
-			("receipts" in coordination || "waited" in coordination || "inbox" in coordination || "peers" in coordination)
-		) {
-			return messagingRenderResult({ ...result, details: coordination }, options, uiTheme, args);
-		}
-		// Detail-less or op-only results (validation errors, disabled gates).
-		if (isLaunchStyleArgs(args))
-			return launchRenderResult({ ...result, details: undefined }, options, uiTheme, toLaunchArgs(args));
-		if (isJobStyleArgs(args)) return jobsRenderResult({ ...result, details: coordination }, options, uiTheme, args);
-		return messagingRenderResult({ ...result, details: coordination }, options, uiTheme, args);
-	},
-};

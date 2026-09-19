@@ -9,7 +9,7 @@ import { gitHelp as commandHelp } from "../cli/command-help";
 import { runGitTui } from "../cli/git-tui";
 import { Settings, settings } from "../config/settings";
 import { t } from "../i18n";
-import { initTheme } from "../modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
 export default class Git extends Command {
 	static description = commandHelp.description;

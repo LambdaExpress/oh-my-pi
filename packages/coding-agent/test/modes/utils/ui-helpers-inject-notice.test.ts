@@ -2,15 +2,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test
 import { stripVTControlCharacters } from "node:util";
 import type { UserMessage } from "@oh-my-pi/pi-ai";
 import { Container } from "@oh-my-pi/pi-tui";
-import { InjectNoticeComponent } from "@oh-my-pi/pi-coding-agent/modes/components/inject-notice";
-import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/user-message";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { InjectNoticeComponent } from "@oh-my-pi/pi-tui/chat/inject-notice";
+import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
-import { collapsedRunProjections } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
-import {
-	type ContextInjectionItem,
-	createContextInjectionMessage,
-} from "@oh-my-pi/pi-coding-agent/session/context-injection";
+import { collapsedRunProjections } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
+import { type ContextInjectionItem, createContextInjectionMessage } from "@oh-my-pi/pi-tui/chat/context-injection";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
@@ -62,14 +59,7 @@ function userMessage(text: string): UserMessage {
 }
 
 function makeHarness(): { ctx: InteractiveModeContext; helpers: UiHelpers } {
-	const ctx = createInteractiveModeContext({
-		getUserMessageText: message =>
-			typeof message.content === "string"
-				? message.content
-				: message.content
-						.map(block => (block.type === "text" && typeof block.text === "string" ? block.text : ""))
-						.join(""),
-	});
+	const ctx = createInteractiveModeContext();
 	const helpers = new UiHelpers(ctx);
 	// The fixture stubs `ctx.addMessageToChat`; production forwards it to these
 	// helpers, so wire it back for the tests that drive `renderSessionContext`.

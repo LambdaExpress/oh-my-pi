@@ -14,11 +14,12 @@ import type {
 	DapThread,
 	DapVariable,
 } from "@oh-my-pi/pi-coding-agent/dap/types";
-import { getThemeByName, initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
-import { DebugTool, type DebugToolDetails, debugToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/debug";
+import { DebugTool, type DebugExecutionDetails } from "@oh-my-pi/pi-coding-agent/tools/debug";
 import { HubTool } from "@oh-my-pi/pi-coding-agent/tools/hub";
+import { debugToolRenderer } from "@oh-my-pi/pi-tui/tools/debug";
 
 const TEST_ADAPTER: DapResolvedAdapter = {
 	name: "js-debug-adapter",
@@ -201,7 +202,7 @@ function resultText(result: { content: Array<{ type: string; text?: string }> })
 	return result.content.find(block => block.type === "text")?.text ?? "";
 }
 
-function debugDetails(result: { details?: DebugToolDetails }): DebugToolDetails {
+function debugDetails(result: { details?: DebugExecutionDetails }): DebugExecutionDetails {
 	if (!result.details) throw new Error("Missing debug result details");
 	return result.details;
 }
@@ -238,7 +239,16 @@ async function createHarness(options: { withManager?: boolean } = {}): Promise<H
 						deliveries.push({ jobId, text });
 					},
 				});
-	if (manager) managers.add(manager);
+	if (manager) {
+		managers.add(manager);
+		// Owned jobs route ONLY to their owner's live sink (a real session
+		// registers one at construction), so the harness registers the sink its
+		// tool session would have: restored trigger deliveries land in
+		// `deliveries` exactly as auto-delivery hands them to the owning agent.
+		manager.registerDeliverySink(OWNER_ID, async (jobId, text) => {
+			deliveries.push({ jobId, text });
+		});
+	}
 	const session = createToolSession(manager);
 	await dapSessionManager.launch(
 		{ adapter: TEST_ADAPTER, program: import.meta.path, cwd: process.cwd() },

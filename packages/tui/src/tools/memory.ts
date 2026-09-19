@@ -1,0 +1,339 @@
+import type { ToolRenderer } from "./renderer";
+/**
+ * Inline TUI renderers for the long-term memory tools (`retain`, `recall`,
+ * `reflect`, `learn`).
+ *
+ * These keep the transcript terse — one status line plus, for `retain`, one
+ * `Remember: …` line per stored item — instead of the generic JSON arg tree,
+ * which exploded multi-line memory blobs into an unreadable wall. The tool
+ * container is a transparent passthrough, so these renderers stay frameless:
+ * a status line with a couple of dim bullets reads far cleaner than boxing a
+ * one-line memory note.
+ */
+import type { Component } from "../index";
+import { Text } from "../index";
+import type { RenderResultOptions } from "./renderer";
+import { t } from "../i18n";
+import type { Theme } from "../theme/theme";
+import { Ellipsis, renderStatusLine, truncateToWidth } from "../render";
+import {
+	createCachedComponent,
+	formatErrorMessage,
+	formatExpandHint,
+	PREVIEW_LIMITS,
+	replaceTabs,
+	sanitizeDisplayWarning,
+	type ToolUIStatus,
+} from "../render/render-utils";
+import type { ToolActivityContext, ToolActivitySummary } from "./renderer";
+
+// Each stored memory renders as `<bullet> <content>`; the bullet glyph comes
+// from the active theme (`•` by default, a nerd-font dot under nerd themes).
+
+interface RetainRenderArgs {
+	items?: unknown;
+}
+
+interface QueryRenderArgs {
+	query?: string;
+}
+
+function retainContents(args: RetainRenderArgs | undefined): string[] {
+	const items = args?.items;
+	if (!Array.isArray(items)) return [];
+
+	const contents: string[] = [];
+	for (const item of items) {
+		if (!item || typeof item !== "object" || !("content" in item) || typeof item.content !== "string") continue;
+		const content = replaceTabs(item.content.trim());
+		if (content.length > 0) contents.push(content);
+	}
+	return contents;
+}
+
+export function resultText(result: { content?: Array<{ type: string; text?: string }> }): string {
+	return (result.content?.find(c => c.type === "text")?.text ?? "").trim();
+}
+
+/** Single-line query header used by `recall`/`reflect` calls and results. */
+function queryHeader(
+	title: string,
+	query: string | undefined,
+	icon: ToolUIStatus,
+	theme: Theme,
+	meta?: string[],
+	iconOverride?: string,
+): string {
+	const trimmed = replaceTabs((query ?? "").trim());
+	const description = trimmed ? truncateToWidth(trimmed, 80, Ellipsis.Unicode) : undefined;
+	return renderStatusLine({ icon, iconOverride, title, description, meta }, theme);
+}
+
+function retainComponent(
+	contents: string[],
+	header: string,
+	getExpanded: () => boolean,
+	theme: Theme,
+	trailingLine?: string,
+): Component {
+	return createCachedComponent(getExpanded, (width, expanded) => {
+		const lines = [header];
+		const limit = expanded ? contents.length : PREVIEW_LIMITS.COLLAPSED_ITEMS;
+		const shown = contents.slice(0, limit);
+		const bullet = theme.format.bullet;
+		const contentWidth = Math.max(8, width - 2 - Bun.stringWidth(bullet) - 1);
+		for (const content of shown) {
+			const value = truncateToWidth(content, contentWidth, Ellipsis.Unicode);
+			lines.push(`  ${theme.fg("muted", bullet)} ${theme.fg("toolOutput", value)}`);
+		}
+		const remaining = contents.length - shown.length;
+		if (remaining > 0) {
+			lines.push(
+				`  ${theme.fg("dim", t("… {count} more", { count: remaining }))} ${formatExpandHint(theme, expanded, true)}`,
+			);
+		}
+		if (trailingLine) lines.push(trailingLine);
+		return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
+	});
+}
+
+/** Render retained memory items and their storage summary. */
+export const retainToolRenderer = {
+	inline: true,
+	mergeCallAndResult: true,
+	/** Folded row: the memory being stored, plus how many more ride along. */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const contents = retainContents((args ?? {}) as RetainRenderArgs);
+		const first = contents[0];
+		if (!first) return { label: t("Retain") };
+		const detail = contents.length > 1 ? `${first} (${t("+{count} more", { count: contents.length - 1 })})` : first;
+		return { label: t("Retain"), detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
+	},
+	renderCall(args: RetainRenderArgs, options: RenderResultOptions, theme: Theme): Component {
+		const contents = retainContents(args);
+		const header = renderStatusLine({ icon: "pending", title: t("Retain") }, theme);
+		return retainComponent(contents, header, () => options.expanded, theme);
+	},
+	renderResult(
+		result: { content: Array<{ type: string; text?: string }>; details?: { count?: number }; isError?: boolean },
+		options: RenderResultOptions,
+		theme: Theme,
+		args?: RetainRenderArgs,
+	): Component {
+		if (result.isError) {
+			const header = renderStatusLine({ icon: "error", title: t("Retain") }, theme);
+			const error = formatErrorMessage(resultText(result) || t("Retain failed"), theme);
+			return retainComponent(retainContents(args), header, () => options.expanded, theme, error);
+		}
+		const contents = retainContents(args);
+		// `summary` is the tool's own "N memories stored/queued." line; drop the
+		// trailing period so it reads cleanly as a status meta segment.
+		const summary = resultText(result).replace(/\.$/, "");
+		const header = renderStatusLine(
+			{
+				iconOverride: theme.styledSymbol("tool.memory", "accent"),
+				title: t("Retain"),
+				meta: summary ? [summary] : undefined,
+			},
+			theme,
+		);
+		return retainComponent(contents, header, () => options.expanded, theme);
+	},
+} satisfies ToolRenderer<RetainRenderArgs, MemoryRetainDetails>;
+
+/** Render recalled memories with an expandable body. */
+export const recallToolRenderer = {
+	inline: true,
+	mergeCallAndResult: true,
+	renderCall(args: QueryRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
+		return new Text(queryHeader(t("Recall"), args.query, "pending", theme), 0, 0);
+	},
+	renderResult(
+		result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
+		options: RenderResultOptions,
+		theme: Theme,
+		args?: QueryRenderArgs,
+	): Component {
+		if (result.isError) {
+			const header = queryHeader(t("Recall"), args?.query, "error", theme);
+			const error = formatErrorMessage(resultText(result) || t("Recall failed"), theme);
+			return new Text(`${header}\n${error}`, 0, 0);
+		}
+		const text = resultText(result);
+		const match = text.match(/^Found (\d+) relevant/);
+		const found = match ? Number(match[1]) : 0;
+		const meta = [found > 0 ? t("{count} found", { count: found }) : t("no matches")];
+		const header =
+			found > 0
+				? queryHeader(t("Recall"), args?.query, "success", theme, meta, theme.styledSymbol("tool.memory", "accent"))
+				: queryHeader(t("Recall"), args?.query, "warning", theme, meta);
+		if (found === 0) {
+			return new Text(header, 0, 0);
+		}
+		// Collapsed view is the header alone; expand to inspect the recalled
+		// memories without dumping the whole block into the transcript.
+		const body = text.replace(/^[^\n]*\n+/, "");
+		return createCachedComponent(
+			() => options.expanded,
+			(width, expanded) => {
+				const lines = [header];
+				if (expanded) {
+					const bodyLines = body.split("\n").slice(0, PREVIEW_LIMITS.OUTPUT_EXPANDED);
+					for (const line of bodyLines) {
+						lines.push(`  ${theme.fg("muted", replaceTabs(line))}`);
+					}
+				} else {
+					lines.push(`  ${formatExpandHint(theme, false, true)}`);
+				}
+				return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
+			},
+		);
+	},
+} satisfies ToolRenderer<QueryRenderArgs, unknown>;
+
+/** Render synthesized memory reflections. */
+export const reflectToolRenderer = {
+	inline: true,
+	mergeCallAndResult: true,
+	renderCall(args: QueryRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
+		return new Text(queryHeader(t("Reflect"), args.query, "pending", theme), 0, 0);
+	},
+	renderResult(
+		result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
+		options: RenderResultOptions,
+		theme: Theme,
+		args?: QueryRenderArgs,
+	): Component {
+		if (result.isError) {
+			const header = queryHeader(t("Reflect"), args?.query, "error", theme);
+			const error = formatErrorMessage(resultText(result) || t("Reflect failed"), theme);
+			return new Text(`${header}\n${error}`, 0, 0);
+		}
+		const header = queryHeader(
+			t("Reflect"),
+			args?.query,
+			"success",
+			theme,
+			undefined,
+			theme.styledSymbol("tool.memory", "accent"),
+		);
+		const answer = resultText(result);
+		const answerLines = answer.split("\n").filter(line => line.trim().length > 0);
+		return createCachedComponent(
+			() => options.expanded,
+			(width, expanded) => {
+				const limit = expanded ? PREVIEW_LIMITS.OUTPUT_EXPANDED : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
+				const shown = answerLines.slice(0, limit);
+				const lines = [header];
+				for (const line of shown) {
+					lines.push(`  ${theme.fg("toolOutput", replaceTabs(line))}`);
+				}
+				const remaining = answerLines.length - shown.length;
+				if (remaining > 0) {
+					lines.push(
+						`  ${theme.fg("dim", t("… {count} more lines", { count: remaining }))} ${formatExpandHint(theme, expanded, true)}`,
+					);
+				}
+				return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
+			},
+		);
+	},
+} satisfies ToolRenderer<QueryRenderArgs, unknown>;
+
+/** Number of memories accepted by retain. */
+export interface MemoryRetainDetails {
+	count: number;
+}
+
+interface LearnRenderArgs {
+	memory?: string;
+	context?: string;
+	skill?: { action?: string; name?: string; scope?: string };
+}
+
+/** First line of the lesson; the folded row shows it instead of the bare tool name. */
+function lessonHeadline(args: LearnRenderArgs | undefined): string | undefined {
+	const [headline] = replaceTabs((args?.memory ?? "").trim()).split("\n");
+	const line = (headline ?? "").trim();
+	return line.length > 0 ? line : undefined;
+}
+
+/** Body rows: the lesson itself, then its optional source context as a dim tail. */
+function lessonRows(args: LearnRenderArgs | undefined, theme: Theme): string[] {
+	const lesson = replaceTabs((args?.memory ?? "").trim());
+	const rows = lesson.length > 0 ? lesson.split("\n").map(line => line.trimEnd()) : [];
+	const source = replaceTabs((args?.context ?? "").trim());
+	if (source.length > 0) rows.push(`${theme.fg("dim", t("context: "))}${theme.fg("muted", source)}`);
+	return rows;
+}
+
+function learnComponent(
+	rows: readonly string[],
+	header: string,
+	getExpanded: () => boolean,
+	theme: Theme,
+	trailingLine?: string,
+): Component {
+	return createCachedComponent(getExpanded, (width, expanded) => {
+		const lines = [header];
+		const limit = expanded ? PREVIEW_LIMITS.OUTPUT_EXPANDED : PREVIEW_LIMITS.OUTPUT_COLLAPSED;
+		const shown = rows.slice(0, limit);
+		const contentWidth = Math.max(8, width - 2);
+		for (const row of shown) {
+			lines.push(`  ${theme.fg("toolOutput", truncateToWidth(row, contentWidth, Ellipsis.Unicode))}`);
+		}
+		const remaining = rows.length - shown.length;
+		if (remaining > 0) {
+			lines.push(
+				`  ${theme.fg("dim", t("… {count} more lines", { count: remaining }))} ${formatExpandHint(theme, expanded, true)}`,
+			);
+		}
+		if (trailingLine) lines.push(trailingLine);
+		return lines.map(line => truncateToWidth(line, width, Ellipsis.Omit));
+	});
+}
+
+/**
+ * Renderer for the orchestrating `learn` tool. The generic card buried the
+ * lesson — the one thing the call is about — inside escaped JSON strings, so
+ * this reuses the memory-tool shape: a status line carrying the backend's own
+ * outcome (stored / queued / managed-skill write) plus the lesson body.
+ */
+export const learnToolRenderer = {
+	inline: true,
+	mergeCallAndResult: true,
+	/** Folded row: `Learn: <lesson headline>`, so one-line mode still says what was remembered. */
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
+		const headline = lessonHeadline((args ?? {}) as LearnRenderArgs);
+		if (headline === undefined) return { label: t("Learn") };
+		return { label: t("Learn"), detail: context.theme.fg("muted", sanitizeDisplayWarning(headline)) };
+	},
+	renderCall(args: LearnRenderArgs, options: RenderResultOptions, theme: Theme): Component {
+		const header = renderStatusLine({ icon: "pending", title: t("Learn") }, theme);
+		return learnComponent(lessonRows(args, theme), header, () => options.expanded, theme);
+	},
+	renderResult(
+		result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
+		options: RenderResultOptions,
+		theme: Theme,
+		args?: LearnRenderArgs,
+	): Component {
+		if (result.isError) {
+			const header = renderStatusLine({ icon: "error", title: t("Learn") }, theme);
+			const error = formatErrorMessage(resultText(result) || t("Learn failed"), theme);
+			return learnComponent(lessonRows(args, theme), header, () => options.expanded, theme, error);
+		}
+		// The tool's own outcome ("Lesson stored", "Created project managed skill …")
+		// reads as the header's meta segment; the trailing period is dropped.
+		const summary = resultText(result).replace(/\.$/, "");
+		const header = renderStatusLine(
+			{
+				iconOverride: theme.styledSymbol("tool.memory", "accent"),
+				title: t("Learn"),
+				meta: summary ? [summary] : undefined,
+			},
+			theme,
+		);
+		return learnComponent(lessonRows(args, theme), header, () => options.expanded, theme);
+	},
+};

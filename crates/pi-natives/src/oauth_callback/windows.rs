@@ -170,16 +170,45 @@ pub(super) fn activate(context: &Context, snapshot: &Snapshot) -> Result<()> {
 pub(super) fn restore(context: &Context, snapshot: &Snapshot) -> Result<()> {
 	context.check()?;
 	let layout = validate_snapshot(context, snapshot)?;
-	let command = relay_command(&context.helper_path, &context.callback_path)?;
+	// Pre-#11907 binaries registered the verbatim paths from `fs::canonicalize`
+	// as-is; the shell fix normalizes them before quoting. A stale journal left
+	// by an older binary still has the verbatim command in HKCU, so recovery
+	// must recognize both encodings as owned — otherwise the project's own value
+	// looks externally changed, the journal is retained, and every later start
+	// retries the same failed recovery.
+	let (command, legacy_command) =
+		if let Ok(normalized) = relay_command(&context.helper_path, &context.callback_path) {
+			// The legacy encoding is 8 units longer on verbatim disk paths; if the
+			// normalized command fits but the legacy one exceeds the command limit,
+			// no older binary could have installed it, so treat it as no match
+			// rather than failing recovery.
+			let legacy = legacy_relay_command(&context.helper_path, &context.callback_path)
+				.ok()
+				.filter(|legacy| *legacy != normalized);
+			(normalized, legacy)
+		} else {
+			// The only way the normalized form fails while the legacy form succeeds
+			// is the shell refusal of volume/device paths; fall back so those dead
+			// registrations still clean up instead of wedging recovery.
+			let legacy = legacy_relay_command(&context.helper_path, &context.callback_path)?;
+			(legacy.clone(), Some(legacy))
+		};
 	let owned = owned_values(context, &command);
+	let legacy_owned = legacy_command
+		.as_ref()
+		.map(|legacy| owned_values(context, legacy));
 	let marker_before = &snapshot.values[3].value;
 	let marker_owned = &owned[3];
 	let marker_current = read_value(&layout.root, MARKER_NAME)?;
 
 	if marker_current.as_ref() == marker_before.as_ref() {
-		for (entry, owned_value) in snapshot.values.iter().zip(owned.iter()).take(3) {
+		for (index, (entry, owned_value)) in snapshot.values.iter().zip(&owned).take(3).enumerate() {
 			let current = read_value(&entry.path, &entry.name)?;
-			if current.as_ref() == Some(owned_value) && current.as_ref() != entry.value.as_ref() {
+			let ours = current.as_ref() == Some(owned_value)
+				|| legacy_owned
+					.as_ref()
+					.is_some_and(|legacy| current.as_ref() == Some(&legacy[index]));
+			if ours && current.as_ref() != entry.value.as_ref() {
 				bail!(
 					"Windows OAuth callback ownership marker is absent while HKCU\\{} still has this \
 					 transaction's value {:?}",
@@ -200,10 +229,14 @@ pub(super) fn restore(context: &Context, snapshot: &Snapshot) -> Result<()> {
 	}
 
 	let mut conflicts = Vec::new();
-	for (entry, owned_value) in snapshot.values.iter().zip(owned.iter()).take(3) {
+	for (index, (entry, owned_value)) in snapshot.values.iter().zip(&owned).take(3).enumerate() {
 		context.check()?;
 		let current = read_value(&entry.path, &entry.name)?;
-		if current.as_ref() == Some(owned_value) {
+		if current.as_ref() == Some(owned_value)
+			|| legacy_owned
+				.as_ref()
+				.is_some_and(|legacy| current.as_ref() == Some(&legacy[index]))
+		{
 			restore_value(entry)?;
 		} else if current.as_ref() != entry.value.as_ref() {
 			conflicts.push(format!("HKCU\\{} value {:?}", entry.path, entry.name));
@@ -485,6 +518,17 @@ fn shell_path(path: &Path) -> Result<PathBuf> {
 fn relay_command(helper: &Path, callback: &Path) -> Result<OsString> {
 	let helper = shell_path(helper)?;
 	let callback = shell_path(callback)?;
+	assemble_command(&helper, &callback)
+}
+
+/// Pre-#11907 command encoding: verbatim paths quoted as-is, without the shell
+/// normalization. Kept so recovery recognizes registrations written by older
+/// binaries as owned (see `restore`).
+fn legacy_relay_command(helper: &Path, callback: &Path) -> Result<OsString> {
+	assemble_command(helper, callback)
+}
+
+fn assemble_command(helper: &Path, callback: &Path) -> Result<OsString> {
 	if helper.as_os_str().encode_wide().any(|unit| unit == 0)
 		|| callback.as_os_str().encode_wide().any(|unit| unit == 0)
 	{
@@ -803,6 +847,74 @@ mod tests {
 		assert!(error.contains("externally changed"));
 		assert_eq!(read_value(&layout.keys[3], DEFAULT_VALUE).unwrap(), Some(external));
 		assert_eq!(read_value(&layout.root, MARKER_NAME).unwrap(), Some(marker_value(&context.id)));
+	}
+
+	#[test]
+	fn recovery_accepts_legacy_verbatim_commands_written_before_the_shell_fix() {
+		let (_guard, context) = DisposableScheme::new();
+		// Pre-#11907 binaries saw canonicalized (`\\?\`) paths and registered
+		// them as-is; rebuild the same transaction in verbatim form so the
+		// legacy encoding diverges from the normalized one.
+		let verbatim = Context::new(
+			context.home,
+			PathBuf::from(format!(r"\\?\{}", context.directory.display())),
+			context.scheme,
+			context.id,
+			BTreeMap::new(),
+			CancelToken::default(),
+		);
+		let snapshot = prepare(&verbatim).unwrap();
+		let legacy = legacy_relay_command(&verbatim.helper_path, &verbatim.callback_path).unwrap();
+		let normalized = relay_command(&verbatim.helper_path, &verbatim.callback_path).unwrap();
+		assert_ne!(legacy, normalized, "test requires paths that normalize");
+		// Simulate the older binary's activation: the registry holds the legacy
+		// command plus this transaction's marker.
+		for (entry, desired) in snapshot
+			.values
+			.iter()
+			.zip(owned_values(&verbatim, &legacy).iter())
+		{
+			write_value(&entry.path, &entry.name, desired).unwrap();
+		}
+		// The new binary must recognize the legacy command as owned and roll the
+		// transaction back instead of retaining the journal as conflicted.
+		restore(&verbatim, &snapshot).unwrap();
+		for entry in &snapshot.values {
+			assert_eq!(read_value(&entry.path, &entry.name).unwrap(), entry.value);
+		}
+	}
+
+	#[test]
+	fn recovery_falls_back_to_legacy_commands_for_volume_paths_the_shell_refuses() {
+		let (_guard, context) = DisposableScheme::new();
+		// Volume/device paths predate the shell fix too, but the normalized form
+		// refuses them while the legacy encoding still succeeds. Recovery must
+		// fall back to the legacy command instead of retaining the journal.
+		let verbatim = Context::new(
+			context.home,
+			PathBuf::from(r"\\?\Volume{d0e5f6a7-0000-0000-0000-000000000000}\omp-oauth-test"),
+			context.scheme,
+			context.id,
+			BTreeMap::new(),
+			CancelToken::default(),
+		);
+		assert!(
+			relay_command(&verbatim.helper_path, &verbatim.callback_path).is_err(),
+			"test requires a path the shell refuses"
+		);
+		let legacy = legacy_relay_command(&verbatim.helper_path, &verbatim.callback_path).unwrap();
+		let snapshot = prepare(&verbatim).unwrap();
+		for (entry, desired) in snapshot
+			.values
+			.iter()
+			.zip(owned_values(&verbatim, &legacy).iter())
+		{
+			write_value(&entry.path, &entry.name, desired).unwrap();
+		}
+		restore(&verbatim, &snapshot).unwrap();
+		for entry in &snapshot.values {
+			assert_eq!(read_value(&entry.path, &entry.name).unwrap(), entry.value);
+		}
 	}
 
 	#[test]

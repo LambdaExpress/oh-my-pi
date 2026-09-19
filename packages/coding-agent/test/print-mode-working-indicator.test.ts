@@ -69,6 +69,7 @@ function createDelayedSession(
 			getHeader: () => undefined,
 			buildSessionContext: () => ({ messages: [] }),
 			getEntries: () => [],
+			onPersistenceError: () => () => {},
 			appendModeChange: (mode: string, data?: Record<string, unknown>) => {
 				modeChanges.push({ mode, data });
 				return "mode-change";
@@ -281,6 +282,7 @@ describe("print mode working indicator", () => {
 				getHeader: () => undefined,
 				buildSessionContext: () => ({ messages: [] }),
 				getEntries: () => [],
+				onPersistenceError: () => () => {},
 			},
 			settings: { get: () => false },
 			extensionRunner: undefined,
@@ -342,6 +344,7 @@ describe("print mode working indicator", () => {
 				getHeader: () => undefined,
 				buildSessionContext: () => ({ messages: [] }),
 				getEntries: () => [],
+				onPersistenceError: () => () => {},
 			},
 			settings: { get: () => false },
 			extensionRunner: undefined,
@@ -386,6 +389,7 @@ describe("print mode working indicator", () => {
 				getHeader: () => undefined,
 				buildSessionContext: () => ({ messages: [] }),
 				getEntries: () => [],
+				onPersistenceError: () => () => {},
 			},
 			settings: { get: () => false },
 			extensionRunner: undefined,

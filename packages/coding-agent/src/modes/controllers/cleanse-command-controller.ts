@@ -4,10 +4,11 @@
  * cancel-then-dismiss (mirroring the `/omfg` panel).
  */
 import { runCleanse } from "../../cleanse";
+import { CleanseBoardModel } from "@oh-my-pi/pi-tui/apps/cleanse-board";
 import type { CleanseCheckerDescriptor } from "../../cleanse/checkers";
-import type { CleanseTargetChoice } from "../../cleanse/types";
+import type { CleanseTargetChoice } from "@oh-my-pi/pi-tui/apps/cleanse-picker";
 import { t } from "../../i18n";
-import { CleansePanelComponent } from "../components/cleanse-panel";
+import { CleansePanelComponent } from "@oh-my-pi/pi-tui/overlays/cleanse-panel";
 import type { InteractiveModeContext } from "../types";
 
 interface CleanseRun {
@@ -67,7 +68,11 @@ export class CleanseCommandController {
 			return;
 		}
 		const run: CleanseRun = {
-			panel: new CleansePanelComponent({ request: parsed.request, tui: this.ctx.ui }),
+			panel: new CleansePanelComponent({
+				request: parsed.request,
+				tui: this.ctx.ui,
+				model: new CleanseBoardModel(),
+			}),
 			abortController: new AbortController(),
 			settled: false,
 		};

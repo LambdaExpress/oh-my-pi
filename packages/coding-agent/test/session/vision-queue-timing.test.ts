@@ -6,7 +6,7 @@ import type { Api } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";

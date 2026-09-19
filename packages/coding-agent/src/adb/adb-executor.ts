@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { Process } from "@oh-my-pi/pi-natives";
 import { buildNonInteractiveEnv } from "../exec/non-interactive-env";
-import { OutputSink, type OutputSummary, truncateTailBytes } from "../session/streaming-output";
+import { OutputSink, type OutputSummary, truncateTailBytes } from "@oh-my-pi/pi-tui/tools/streaming-output";
 
 const STREAM_DRAIN_MS = 250;
 const TERMINATE_WAIT_MS = 500;

@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
-import { getThemeByName, type Theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import { evalToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/eval";
+import { getThemeByName, type Theme } from "@oh-my-pi/pi-tui/theme";
+import { evalToolRenderer } from "@oh-my-pi/pi-tui/tools/eval";
 import { pwshToolRenderer } from "@oh-my-pi/pi-coding-agent/tools/pwsh";
 
 describe("code preview renderers prefer streamed raw partial JSON", () => {

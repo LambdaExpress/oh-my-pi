@@ -30,18 +30,20 @@ import {
 } from "../../hindsight";
 import { t } from "../../i18n";
 import { memoryStatsUnavailableMessage, resolveMemoryBackend } from "../../memory-backend";
-import { BashExecutionComponent, bashPtyViewport } from "../../modes/components/bash-execution";
-import { BorderedLoader } from "../../modes/components/bordered-loader";
-import { DynamicBorder } from "../../modes/components/dynamic-border";
-import { EvalExecutionComponent } from "../../modes/components/eval-execution";
-import { MoveOverlay, type MoveOverlayResult } from "../../modes/components/move-overlay";
-import { TranscriptBlock } from "../../modes/components/transcript-container";
-import { getMarkdownTheme, getSymbolTheme, theme } from "../../modes/theme/theme";
+import { BashExecutionComponent, bashPtyViewport } from "@oh-my-pi/pi-tui/chat/bash-execution";
+import { BorderedLoader } from "@oh-my-pi/pi-tui/overlays/bordered-loader";
+import { DynamicBorder } from "@oh-my-pi/pi-tui/chrome/dynamic-border";
+import { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
+import { MoveOverlay, type MoveOverlayResult } from "@oh-my-pi/pi-tui/overlays/move-overlay";
+import { moveDirectorySource } from "../move-directory-source";
+import { TranscriptBlock } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { getMarkdownTheme, getSymbolTheme, theme, type Theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../../modes/types";
-import { computeContextBreakdown, renderContextUsage } from "../../modes/utils/context-usage";
-import { buildHotkeysMarkdown } from "../../modes/utils/hotkeys-markdown";
-import { buildToolsMarkdown } from "../../modes/utils/tools-markdown";
-import { shouldCollapseCompactedHistoryForDisplay } from "../../modes/utils/transcript-render-helpers";
+import { renderContextUsage } from "@oh-my-pi/pi-tui/status-line/context-usage";
+import { computeSessionContextBreakdown } from "../../session/context-usage-runtime";
+import { buildHotkeysMarkdown } from "@oh-my-pi/pi-tui/hotkeys-markdown";
+import { buildToolsMarkdown } from "@oh-my-pi/pi-tui/prompt/tools-markdown";
+import { shouldCollapseCompactedHistoryForDisplay } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
 import type { AuthStorage, OAuthAccountIdentity } from "../../session/auth-storage";
 import type { CompactMode } from "../../session/compact-modes";
 import type { NewSessionOptions } from "../../session/session-entries";
@@ -54,10 +56,11 @@ import {
 } from "../../session/session-worktree";
 import { formatShakeSummary, type ShakeMode, type ShakeResult } from "../../session/shake-types";
 import { formatActiveAccountLabel, limitMatchesActiveAccount } from "../../slash-commands/helpers/active-oauth-account";
-import { formatProviderName } from "../../slash-commands/helpers/format";
+import { formatProviderName } from "@oh-my-pi/pi-tui/chrome/format";
+import { formatCompactQuota } from "@oh-my-pi/pi-tui/overlays/advisor-config";
 import { outputMeta } from "../../tools/output-meta";
 import { resolveToCwd, stripOuterDoubleQuotes } from "../../tools/path-utils";
-import { replaceTabs, truncateToWidth } from "../../tools/render-utils";
+import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
 import {
 	getChangelogPath,
 	parseChangelog,
@@ -67,7 +70,8 @@ import {
 import { copyToClipboard } from "../../utils/clipboard";
 import { openPath } from "../../utils/open";
 import { setSessionTerminalTitle } from "../../utils/title-generator";
-import { formatRemainingOnlyTotal, isUsedOnlyAbsoluteAmount } from "../usage-amounts";
+import { collapseSharedUsageReports, formatLimitTitle } from "@oh-my-pi/pi-tui/overlays/usage-display";
+import { formatRemainingOnlyTotal, isUsedOnlyAbsoluteAmount } from "@oh-my-pi/pi-tui/prompt/usage-amounts";
 
 function formatCreditValue(value: number): string {
 	return value.toLocaleString(undefined, { maximumFractionDigits: 4 });
@@ -540,11 +544,12 @@ export class CommandController {
 					info += `${theme.fg("dim", t("Model:"))} ${a.model.provider}/${a.model.id}\n`;
 				}
 				if (a.model && usageReports) {
+					const identity = resolveActiveAdvisorAccount(a.model.provider, a.sessionId);
 					const quota = formatCompactQuota(
 						a.model.provider,
-						usageReports,
+						collapseSharedUsageReports(usageReports),
 						nowMs,
-						resolveActiveAdvisorAccount(a.model.provider, a.sessionId),
+						(report, limit) => !identity || limitMatchesActiveAccount(report, limit, identity),
 					);
 					if (quota) info += `${theme.fg("dim", quota)}\n`;
 				}
@@ -582,11 +587,12 @@ export class CommandController {
 			info += `${theme.fg("dim", t("Model:"))} ${model.provider}/${model.id}\n`;
 		}
 		if (model && usageReports) {
+			const identity = resolveActiveAdvisorAccount(model.provider, stats.advisors[0]?.sessionId);
 			const quota = formatCompactQuota(
 				model.provider,
-				usageReports,
+				collapseSharedUsageReports(usageReports),
 				nowMs,
-				resolveActiveAdvisorAccount(model.provider, stats.advisors[0]?.sessionId),
+				(report, limit) => !identity || limitMatchesActiveAccount(report, limit, identity),
 			);
 			if (quota) {
 				info += `\n${theme.bold(t("Quota"))}\n`;
@@ -680,7 +686,7 @@ export class CommandController {
 	}
 
 	handleContextCommand(): void {
-		const breakdown = computeContextBreakdown(this.ctx.session, { snapcompactSavings: true });
+		const breakdown = computeSessionContextBreakdown(this.ctx.session, { snapcompactSavings: true });
 		if (breakdown.contextWindow <= 0) {
 			this.ctx.showWarning(t("Context usage is unavailable: no model is selected for this session."));
 			return;
@@ -1181,12 +1187,12 @@ export class CommandController {
 		this.ctx.ui.requestRender(true, { clearScrollback: true });
 	}
 
-	async handleDropCommand(): Promise<void> {
+	async handleDeleteCommand(): Promise<void> {
 		if (!this.ctx.sessionManager.getSessionFile()) {
-			this.ctx.showError(t("Nothing to drop (in-memory session)"));
+			this.ctx.showError(t("Nothing to delete (in-memory session)"));
 			return;
 		}
-		await this.#runNewSessionFlow({ drop: true }, t("Session dropped"));
+		await this.#runNewSessionFlow({ drop: true }, t("Session deleted"));
 	}
 
 	async handleForkCommand(): Promise<void> {
@@ -1241,7 +1247,8 @@ export class CommandController {
 		// No argument in TUI mode: open the path autocomplete overlay.
 		if (!input) {
 			const result = await this.ctx.showHookCustom<MoveOverlayResult | undefined>(
-				(_tui, _theme, _keybindings, done) => new MoveOverlay(this.ctx.sessionManager.getCwd(), done),
+				(_tui, _theme, _keybindings, done) =>
+					new MoveOverlay(this.ctx.sessionManager.getCwd(), done, moveDirectorySource),
 				{ overlay: true },
 			);
 			if (!result) return; // cancelled
@@ -1503,6 +1510,7 @@ export class CommandController {
 			component.setComplete(result.exitCode, result.cancelled, {
 				output: result.output,
 				truncation: meta?.truncation,
+				artifactError: meta?.artifactError,
 				images: result.images,
 				showImages: this.ctx.settings.get("terminal.showImages"),
 			});
@@ -1574,6 +1582,7 @@ export class CommandController {
 			component.setComplete(result.exitCode, result.cancelled, {
 				output: result.output,
 				truncation: meta?.truncation,
+				artifactError: meta?.artifactError,
 			});
 			this.ctx.completePendingLocalExecution(component);
 		} catch (error) {
@@ -1609,9 +1618,16 @@ export class CommandController {
 		// `customInstructions` channel of the `session_before_compact` extension
 		// hook — extensions treat that field as user focus and would otherwise
 		// bias the summary toward the plan boilerplate (issue #4359). Ride it
-		// through as a CompactOptions field instead.
+		// through as a CompactOptions field instead. That caller also dispatches
+		// the execution turn itself, so the compaction must not resume the
+		// plan-approval turn it aborted.
 		if (internalGuidance) {
-			return this.executeCompaction({ internalGuidance, ...(mode ? { mode } : {}) }, false, beforeFlush, mode);
+			return this.executeCompaction(
+				{ internalGuidance, suppressContinuation: true, ...(mode ? { mode } : {}) },
+				false,
+				beforeFlush,
+				mode,
+			);
 		}
 		return this.executeCompaction(customInstructions, false, beforeFlush, mode);
 	}
@@ -1871,7 +1887,7 @@ function resolveProviderAuthMode(authStorage: AuthStorage, provider: string): st
 	return "unknown";
 }
 
-export function renderProviderSection(details: ProviderDetails, uiTheme: Pick<typeof theme, "fg">): string {
+export function renderProviderSection(details: ProviderDetails, uiTheme: Pick<Theme, "fg">): string {
 	const lines: string[] = [];
 	lines.push(`${uiTheme.fg("dim", t("Name:"))} ${details.provider}`);
 	for (const field of details.fields) {
@@ -1887,15 +1903,7 @@ function resolveProviderUsageTotal(reports: UsageReport[]): number {
 		.reduce((sum, value) => sum + value, 0);
 }
 
-function formatLimitTitle(limit: UsageLimit): string {
-	const tier = limit.scope.tier;
-	if (tier && !limit.label.toLowerCase().includes(tier.toLowerCase())) {
-		return `${limit.label} (${tier})`;
-	}
-	return limit.label;
-}
-
-function formatWindowSuffix(label: string, windowLabel: string, uiTheme: typeof theme): string {
+function formatWindowSuffix(label: string, windowLabel: string, uiTheme: Theme): string {
 	const normalizedLabel = label.toLowerCase();
 	const normalizedWindow = windowLabel.toLowerCase();
 	if (normalizedWindow === "quota window") return "";
@@ -1951,7 +1959,7 @@ function formatAccountHeaderRow(
 	reports: UsageReport[],
 	nowMs: number,
 	columnWidth: number,
-	uiTheme: typeof theme,
+	uiTheme: Theme,
 	activeAccount?: OAuthAccountIdentity,
 ): string[] {
 	const parts = limits.map((limit, index) => {
@@ -2074,59 +2082,8 @@ function resolveResetRange(limits: UsageLimit[], nowMs: number): string | null {
 	}
 	return t("{verb} in {duration}", { verb, duration: formatDuration(minReset) });
 }
-/**
- * Compact one-line quota summary for a single advisor's provider.
- * Returns `null` when the provider has no usage data.
- * When `activeAccount` is provided, only limits matching that credential
- * are shown (mirrors `renderUsageReports`'s account-stickiness filtering).
- * Example output: `Quota: 7d window · 67% used · resets in 3.2d`
- */
-export function formatCompactQuota(
-	provider: string,
-	reports: UsageReport[],
-	nowMs: number,
-	activeAccount?: OAuthAccountIdentity,
-): string | null {
-	const providerReports = reports.filter(r => r.provider === provider);
-	if (providerReports.length === 0) return null;
-	// Group limits by window id so we show BOTH the 5-hour and 7-day windows
-	// (or any other distinct windows the provider exposes). Within each window,
-	// pick the highest used fraction across accounts — that's the most pressing.
-	const byWindow = new Map<string, { limit: UsageLimit; fraction: number }>();
-	for (const report of providerReports) {
-		for (const limit of report.limits) {
-			// Skip limits that belong to a different credential than the one
-			// the advisor is actually using, so we don't alarm the user with
-			// an exhausted account that isn't theirs.
-			if (activeAccount && !limitMatchesActiveAccount(report, limit, activeAccount)) continue;
-			const fraction = resolveUsedFraction(limit);
-			if (fraction === undefined) continue;
-			const key = limit.window?.id ?? limit.scope.windowId ?? "—";
-			const existing = byWindow.get(key);
-			if (!existing || fraction > existing.fraction) byWindow.set(key, { limit, fraction });
-		}
-	}
-	if (byWindow.size === 0) return null;
-	// Sort windows by urgency (highest fraction first) so the most pressing
-	// quota is always the first thing the user sees.
-	const entries = [...byWindow.values()].sort((a, b) => b.fraction - a.fraction);
-	const lines: string[] = [];
-	for (const { limit, fraction } of entries) {
-		const pct = Math.round(fraction * 100);
-		const windowLabel = limit.window?.label ?? limit.scope.windowId ?? "—";
-		// Include the limit label (account/tier) when it carries identity beyond
-		// the window name, so the user can tell which credential's quota is shown.
-		const identity = limit.label.trim();
-		const header = identity && identity !== windowLabel ? `${windowLabel} (${identity})` : windowLabel;
-		const parts = [t("{header}: {pct}% used", { header, pct })];
-		const reset = resolveResetRange([limit], nowMs);
-		if (reset) parts.push(reset);
-		lines.push(parts.join(" · "));
-	}
-	return t("Quota: {summary}", { summary: lines.join(" │ ") });
-}
 
-function resolveStatusIcon(status: AggregateDisplayStatus, uiTheme: typeof theme): string {
+function resolveStatusIcon(status: AggregateDisplayStatus, uiTheme: Theme): string {
 	if (status === "neutral") return uiTheme.fg("dim", uiTheme.status.info);
 	if (status === "exhausted") return uiTheme.fg("error", uiTheme.status.error);
 	if (status === "warning") return uiTheme.fg("warning", uiTheme.status.warning);
@@ -2141,7 +2098,7 @@ function resolveStatusColor(status: UsageLimit["status"]): "success" | "warning"
 	return "dim";
 }
 
-function renderUsageBar(limit: UsageLimit, uiTheme: typeof theme, barWidth: number): string {
+function renderUsageBar(limit: UsageLimit, uiTheme: Theme, barWidth: number): string {
 	const usedAmount = limit.amount.used;
 	if (usedAmount !== undefined && isUsedOnlyAbsoluteAmount(limit)) {
 		const used =
@@ -2183,12 +2140,13 @@ function resolveColumnWidth(count: number, available: number, trailing: number):
 
 export function renderUsageReports(
 	reports: UsageReport[],
-	uiTheme: typeof theme,
+	uiTheme: Theme,
 	nowMs: number,
 	availableWidth: number,
 	resolveActiveAccount?: (provider: string) => OAuthAccountIdentity | undefined,
 	usageModelSelectors: readonly string[] = [],
 ): string {
+	const displayReports = collapseSharedUsageReports(reports);
 	const lines: string[] = [];
 	const latestFetchedAt = Math.max(...reports.map(report => report.fetchedAt ?? 0));
 	const headerSuffix = latestFetchedAt
@@ -2196,7 +2154,7 @@ export function renderUsageReports(
 		: "";
 	lines.push(uiTheme.bold(uiTheme.fg("accent", `${t("Usage")}${headerSuffix}`)));
 	const grouped = new Map<string, UsageReport[]>();
-	for (const report of reports) {
+	for (const report of displayReports) {
 		const list = grouped.get(report.provider) ?? [];
 		list.push(report);
 		grouped.set(report.provider, list);

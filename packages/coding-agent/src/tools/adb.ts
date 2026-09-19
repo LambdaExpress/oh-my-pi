@@ -33,24 +33,24 @@ import type { AdbUiClickResult, AdbUiObservation, AdbUiWaitUntil } from "../adb/
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { t } from "../i18n";
 import { decodeStreamedToolArgs } from "../modes/controllers/tool-args-reveal";
-import type { Theme } from "../modes/theme/theme";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import adbDescription from "../prompts/tools/adb.md" with { type: "text" };
-import { DEFAULT_MAX_BYTES, OutputSink, streamTailUpdates, TailBuffer } from "../session/streaming-output";
-import { renderStatusLine } from "../tui";
-import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
+import { CachedOutputBlock, markFramedBlockComponent } from "@oh-my-pi/pi-tui/render/output-block";
+import { renderStatusLine } from "@oh-my-pi/pi-tui/render/status-line";
+import { DEFAULT_MAX_BYTES, OutputSink, streamTailUpdates, TailBuffer } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import {
-	formatStyledTruncationWarning,
-	type OutputMeta,
 	resolveOutputMaxColumns,
 	resolveOutputSinkHeadBytes,
 	resolveOutputSinkSpillThreshold,
 	resolveOutputSinkTailBytes,
-	stripOutputNotice,
 } from "./output-meta";
-import { capPreviewLines, replaceTabs } from "./render-utils";
-import { ToolAbortError, ToolError } from "./tool-errors";
+import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
+import { formatStyledTruncationWarning, stripOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
+import { capPreviewLines, replaceTabs } from "@oh-my-pi/pi-tui/render/render-utils";
+import { ToolAbortError } from "./tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
 

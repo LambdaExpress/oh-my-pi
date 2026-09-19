@@ -1,3 +1,4 @@
+import { type DebugToolDetails, formatLocation, formatSessionSnapshot } from "@oh-my-pi/pi-tui/tools/debug";
 import * as fs from "node:fs/promises";
 import { type } from "@oh-my-pi/omptype";
 import type {
@@ -5,11 +6,9 @@ import type {
 	AgentToolContext,
 	AgentToolResult,
 	AgentToolUpdateCallback,
-	RenderResultOptions,
 	ToolApprovalDecision,
 } from "@oh-my-pi/pi-agent-core";
 import type { ToolExample } from "@oh-my-pi/pi-ai";
-import { type Component, Text } from "@oh-my-pi/pi-tui";
 import { isEnoent, prompt } from "@oh-my-pi/pi-utils";
 import type { AsyncJob, AsyncJobManager } from "../async";
 import {
@@ -41,29 +40,22 @@ import {
 	selectAttachAdapter,
 	selectLaunchAdapter,
 } from "../dap";
-import { t } from "../i18n";
-import type { Theme, ThemeColor } from "../modes/theme/theme";
 import debugDescription from "../prompts/tools/debug.md" with { type: "text" };
-import { renderStatusLine } from "../tui";
-import { CachedOutputBlock, markFramedBlockComponent } from "../tui/output-block";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
 import { snapshotJobs } from "./hub/jobs";
-import type { JobSnapshot } from "./hub/types";
-import type { OutputMeta } from "./output-meta";
+import type { JobSnapshot } from "@oh-my-pi/pi-tui/tools/hub";
+import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { formatPathRelativeToCwd, resolveToCwd } from "./path-utils";
 import {
-	formatExpandHint,
-	formatStatusIcon,
 	PREVIEW_LIMITS,
 	replaceTabs,
-	sanitizeDisplayWarning,
 	shortenPath,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
-} from "./render-utils";
-import type { ToolActivityContext, ToolActivitySummary } from "./renderers";
-import { ToolError, throwIfAborted } from "./tool-errors";
+} from "@oh-my-pi/pi-tui/render/render-utils";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
+import { throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
 
@@ -167,7 +159,7 @@ const debugSchema = type({
 export type DebugParams = typeof debugSchema.infer;
 export type DebugAction = DebugParams["action"];
 
-export interface DebugToolDetails {
+export interface DebugExecutionDetails extends DebugToolDetails {
 	action: DebugAction;
 	success: boolean;
 	snapshot?: DapSessionSummary;
@@ -221,7 +213,7 @@ export interface DebugNextAction {
 	when: string;
 }
 
-type DebugWaitReason = NonNullable<DebugToolDetails["waitReason"]>;
+type DebugWaitReason = NonNullable<DebugExecutionDetails["waitReason"]>;
 
 interface TriggerJobContext {
 	manager: AsyncJobManager;
@@ -320,7 +312,7 @@ function formatNextActions(actions: readonly DebugNextAction[]): string[] {
 	return ["Next:", ...actions.map(action => `${action.when}: ${JSON.stringify(action.input)}`)];
 }
 
-function applyExecutionOutcomeDetails(details: DebugToolDetails, outcome: DapWaitForExecutionOutcome): void {
+function applyExecutionOutcomeDetails(details: DebugExecutionDetails, outcome: DapWaitForExecutionOutcome): void {
 	details.snapshot = outcome.snapshot;
 	details.state = outcome.state;
 	details.timedOut = outcome.timedOut;
@@ -329,36 +321,6 @@ function applyExecutionOutcomeDetails(details: DebugToolDetails, outcome: DapWai
 	details.waitReason = waitReasonForOutcome(outcome);
 	details.nextActions = nextActionsForOutcome(outcome, details.waitReason);
 }
-
-function formatLocation(snapshot: DapSessionSummary | undefined): string | null {
-	if (!snapshot?.source?.path || snapshot.line === undefined) {
-		return null;
-	}
-	return `${snapshot.source.path}:${snapshot.line}${snapshot.column !== undefined ? `:${snapshot.column}` : ""}`;
-}
-
-function formatSessionSnapshot(snapshot: DapSessionSummary): string[] {
-	const lines = [
-		`Session ${snapshot.id}`,
-		`Adapter: ${snapshot.adapter}`,
-		`Status: ${snapshot.status}`,
-		`CWD: ${snapshot.cwd}`,
-	];
-	if (snapshot.program) lines.push(`Program: ${snapshot.program}`);
-	if (snapshot.stopReason) lines.push(`Stop reason: ${snapshot.stopReason}`);
-	if (snapshot.frameName) lines.push(`Frame: ${snapshot.frameName}`);
-	if (snapshot.instructionPointerReference) {
-		lines.push(`Instruction pointer: ${snapshot.instructionPointerReference}`);
-	}
-	const location = formatLocation(snapshot);
-	if (location) lines.push(`Location: ${location}`);
-	if (snapshot.needsConfigurationDone) {
-		lines.push("Configuration: pending configurationDone; set breakpoints, then continue.");
-	}
-	if (snapshot.exitCode !== undefined) lines.push(`Exit code: ${snapshot.exitCode}`);
-	return lines;
-}
-
 function formatBreakpoints(filePath: string, breakpoints: DapBreakpointRecord[]): string {
 	const lines = [`Breakpoints for ${filePath}:`];
 	if (breakpoints.length === 0) {
@@ -842,8 +804,6 @@ function validateLaunchProgram(
 	);
 }
 
-interface DebugRenderArgs extends Partial<DebugParams> {}
-
 function getActiveSessionSnapshot(): DapSessionSummary {
 	const snapshot = dapSessionManager.getActiveSession();
 	if (!snapshot) {
@@ -873,279 +833,7 @@ function resolveDisassemblyReference(memoryReference: string | undefined): strin
 	);
 }
 
-function summarizeDebugCall(args: DebugRenderArgs): string {
-	const action = args.action ? args.action.replaceAll("_", " ") : "request";
-	if (args.program) {
-		return `${action} ${truncateToWidth(args.program, TRUNCATE_LENGTHS.TITLE)}`;
-	}
-	if (args.file && args.line !== undefined) {
-		return `${action} ${truncateToWidth(`${args.file}:${args.line}`, TRUNCATE_LENGTHS.TITLE)}`;
-	}
-	if (args.function) {
-		return `${action} ${truncateToWidth(args.function, TRUNCATE_LENGTHS.TITLE)}`;
-	}
-	if (args.expression) {
-		return `${action} ${truncateToWidth(args.expression, TRUNCATE_LENGTHS.TITLE)}`;
-	}
-	if (args.command) {
-		return `${action} ${truncateToWidth(args.command, TRUNCATE_LENGTHS.TITLE)}`;
-	}
-	if (args.memory_reference) {
-		return `${action} ${truncateToWidth(args.memory_reference, TRUNCATE_LENGTHS.TITLE)}`;
-	}
-	if (args.instruction_reference) {
-		return `${action} ${truncateToWidth(args.instruction_reference, TRUNCATE_LENGTHS.TITLE)}`;
-	}
-	if (args.data_id) {
-		return `${action} ${truncateToWidth(args.data_id, TRUNCATE_LENGTHS.TITLE)}`;
-	}
-	if (args.name) {
-		return `${action} ${truncateToWidth(args.name, TRUNCATE_LENGTHS.TITLE)}`;
-	}
-	return action;
-}
-
-const DEBUG_ACCENT_FIELDS: Record<string, true> = {
-	CWD: true,
-	"Data ID": true,
-	Execution: true,
-	Frame: true,
-	Function: true,
-	"Instruction pointer": true,
-	Location: true,
-	Program: true,
-	"Session ID": true,
-	Variable: true,
-	"Variables ref": true,
-};
-
-const DEBUG_MUTED_FIELDS: Record<string, true> = {
-	"Access types": true,
-	"Bytes written": true,
-	Configuration: true,
-	"Exit code": true,
-	Offset: true,
-	Persistent: true,
-	"Stop reason": true,
-	"Stop snapshot": true,
-	"Trigger deadline": true,
-	Type: true,
-	"Unreadable bytes": true,
-};
-
-function debugStatusColor(status: string): ThemeColor {
-	switch (status.trim().toLowerCase()) {
-		case "running":
-			return "accent";
-		case "stopped":
-			return "warning";
-		case "terminated":
-			return "success";
-		case "error":
-		case "failed":
-		case "missing":
-			return "error";
-		default:
-			return "toolOutput";
-	}
-}
-
-function styleDebugLines(lines: readonly string[], theme: Theme, isError = false): string[] {
-	const styled: string[] = [];
-	let outputContinuationColor: ThemeColor | undefined;
-	let inNextActions = false;
-
-	for (const line of lines) {
-		if (line.length === 0) {
-			styled.push(line);
-			outputContinuationColor = undefined;
-			continue;
-		}
-		if (isError) {
-			styled.push(theme.fg("error", line));
-			continue;
-		}
-
-		const categoryLine = /^\[([^\]]+)\](?: (.*))?$/.exec(line);
-		if (categoryLine) {
-			const category = categoryLine[1].toLowerCase();
-			let labelColor: ThemeColor = "dim";
-			outputContinuationColor = "toolOutput";
-			if (category === "stderr") {
-				labelColor = "error";
-				outputContinuationColor = "error";
-			} else if (category === "telemetry") {
-				labelColor = "muted";
-				outputContinuationColor = "muted";
-			} else if (category === "important") {
-				labelColor = "warning";
-				outputContinuationColor = "warning";
-			}
-			const label = `[${categoryLine[1]}]`;
-			styled.push(
-				categoryLine[2] === undefined
-					? theme.fg(labelColor, label)
-					: `${theme.fg(labelColor, label)} ${theme.fg(outputContinuationColor, categoryLine[2])}`,
-			);
-			inNextActions = false;
-			continue;
-		}
-		if (outputContinuationColor && line.startsWith("  ")) {
-			const indentColor = outputContinuationColor === "toolOutput" ? "dim" : outputContinuationColor;
-			styled.push(`${theme.fg(indentColor, line.slice(0, 2))}${theme.fg(outputContinuationColor, line.slice(2))}`);
-			continue;
-		}
-		outputContinuationColor = undefined;
-
-		if (line === "Next:") {
-			styled.push(theme.fg("dim", line));
-			inNextActions = true;
-			continue;
-		}
-		if (inNextActions) {
-			const nextAction = /^(.+?: )(\{.*)$/.exec(line);
-			if (nextAction) {
-				styled.push(`${theme.fg("dim", nextAction[1])}${theme.fg("toolOutput", nextAction[2])}`);
-				continue;
-			}
-			inNextActions = false;
-		}
-
-		const session = /^(Session )(.+)$/.exec(line);
-		if (session) {
-			styled.push(`${theme.fg("dim", session[1])}${theme.fg("accent", session[2])}`);
-			continue;
-		}
-
-		const field = /^([A-Za-z][A-Za-z ]*): (.*)$/.exec(line);
-		if (field) {
-			const label = field[1];
-			const value = field[2];
-			const prefix = theme.fg("dim", `${label}: `);
-			if (label === "Trigger") {
-				const trigger = /^(.*?)( \()([^()]*)\)$/.exec(value);
-				styled.push(
-					value === "none"
-						? `${prefix}${theme.fg("muted", value)}`
-						: trigger
-							? `${prefix}${theme.fg("accent", trigger[1])}${theme.fg("dim", trigger[2])}${theme.fg(
-									debugStatusColor(trigger[3]),
-									trigger[3],
-								)}${theme.fg("dim", ")")}`
-							: `${prefix}${theme.fg("accent", value)}`,
-				);
-				continue;
-			}
-
-			let valueColor: ThemeColor = "toolOutput";
-			if (DEBUG_ACCENT_FIELDS[label] === true) {
-				valueColor = "accent";
-			} else if (label === "Status" || label === "Winner") {
-				valueColor = debugStatusColor(value);
-			} else if (/error/i.test(label)) {
-				valueColor = "error";
-			} else if (DEBUG_MUTED_FIELDS[label] === true) {
-				valueColor = "muted";
-			}
-			styled.push(`${prefix}${theme.fg(valueColor, value)}`);
-			continue;
-		}
-
-		if (/^[^\s].*:$/.test(line)) {
-			styled.push(theme.fg("dim", line));
-			continue;
-		}
-		const treeLine = /^(\s*(?:[-*] |[│├└─]+\s*))(.*)$/u.exec(line);
-		if (treeLine) {
-			styled.push(`${theme.fg("dim", treeLine[1])}${theme.fg("toolOutput", treeLine[2])}`);
-			continue;
-		}
-
-		styled.push(theme.fg("toolOutput", line));
-	}
-
-	return styled;
-}
-
-export const debugToolRenderer = {
-	animatedPartialResult: true,
-	/** Folded row: the debugger action plus its target, same text as the call header. */
-	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
-		const detail = summarizeDebugCall((args ?? {}) as DebugRenderArgs);
-		return { label: "Debug", detail: context.theme.fg("muted", sanitizeDisplayWarning(detail)) };
-	},
-	renderCall(args: DebugRenderArgs, _options: RenderResultOptions, theme: Theme): Component {
-		const text = renderStatusLine(
-			{ icon: "pending", title: t("Debug"), description: summarizeDebugCall(args) },
-			theme,
-		);
-		return new Text(text, 0, 0);
-	},
-
-	renderResult(
-		result: { content: Array<{ type: string; text?: string }>; details?: DebugToolDetails; isError?: boolean },
-		options: RenderResultOptions,
-		theme: Theme,
-		args?: DebugRenderArgs,
-	): Component {
-		const outputBlock = new CachedOutputBlock();
-		return markFramedBlockComponent({
-			render(width: number): readonly string[] {
-				const action = (args?.action ?? result.details?.action ?? "debug").replaceAll("_", " ");
-				const success = !options.isPartial && !result.isError;
-				const statusIcon = success
-					? theme.styledSymbol("tool.debug", "accent")
-					: formatStatusIcon(options.isPartial ? "running" : "error", theme, options.spinnerFrame);
-				const header = `${statusIcon} ${t("Debug")} ${action}`;
-				const summaryLines = result.details?.snapshot
-					? styleDebugLines(
-							formatSessionSnapshot(result.details.snapshot).map(line => replaceTabs(line)),
-							theme,
-						)
-					: [];
-				const text = result.content.find(block => block.type === "text")?.text ?? t("No output");
-				const rawLines = replaceTabs(text).split("\n");
-				const previewLimit = options.expanded ? rawLines.length : PREVIEW_LIMITS.COLLAPSED_LINES;
-				const displayedLines = styleDebugLines(
-					rawLines.slice(0, previewLimit).map(line => truncateToWidth(line, TRUNCATE_LENGTHS.LINE)),
-					theme,
-					result.isError,
-				);
-				const remaining = rawLines.length - displayedLines.length;
-				if (remaining > 0) {
-					displayedLines.push(
-						theme.fg(
-							"muted",
-							`${t("… {count} more lines", { count: remaining })} ${formatExpandHint(theme, options.expanded, true)}`,
-						),
-					);
-				}
-				return outputBlock.render(
-					{
-						header,
-						state: result.isError ? "error" : "success",
-						sections: [
-							...(summaryLines.length > 0
-								? [{ label: theme.fg("toolTitle", t("Session")), lines: summaryLines }]
-								: []),
-							{ label: theme.fg("toolTitle", t("Output")), lines: displayedLines },
-						],
-						width,
-						applyBg: false,
-					},
-					theme,
-				);
-			},
-			invalidate() {
-				outputBlock.invalidate();
-			},
-		});
-	},
-	mergeCallAndResult: true,
-	inline: true,
-};
-
-export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails> {
+export class DebugTool implements AgentTool<typeof debugSchema, DebugExecutionDetails> {
 	readonly name = "debug";
 	readonly approval = (args: unknown): ToolApprovalDecision => {
 		const rawAction = (args as Partial<DebugParams>).action;
@@ -1216,15 +904,27 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 		return { manager, job };
 	}
 
+	/**
+	 * Observe an exposed execution against an optional trigger job.
+	 *
+	 * `callerSignal` carries CALLER cancellation only: `execute` merges the
+	 * caller signal with the tool's own deadline, and a deadline firing inside
+	 * this observation is a timeout RESULT (both legs stay alive, the same id
+	 * can be awaited again), not an abort. The deadline is enforced here by
+	 * {@link timeoutId} — created with the same duration — plus the explicit
+	 * timeouts passed to the nested waits.
+	 */
 	async #waitForStop(
 		executionId: string,
 		triggerJobId: string | undefined,
-		signal: AbortSignal | undefined,
+		callerSignal: AbortSignal | undefined,
 		timeoutMs: number,
 	): Promise<CoordinatedWaitResult> {
 		const trigger = this.#resolveTriggerJob(triggerJobId);
 		const observationAbort = new AbortController();
-		const observationSignal = signal ? AbortSignal.any([signal, observationAbort.signal]) : observationAbort.signal;
+		const observationSignal = callerSignal
+			? AbortSignal.any([callerSignal, observationAbort.signal])
+			: observationAbort.signal;
 		const waitStartedAt = Date.now();
 		const deadline = waitStartedAt + timeoutMs;
 		const timeout = Promise.withResolvers<WaitObservation>();
@@ -1236,7 +936,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 			trigger.manager.acknowledgeDeliveries([trigger.job.id]);
 		}
 		try {
-			throwIfAborted(signal);
+			throwIfAborted(callerSignal);
 			const dapObservation = dapSessionManager
 				.waitForExecution(executionId, observationSignal, Number.POSITIVE_INFINITY)
 				.then(
@@ -1246,21 +946,21 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 			const racers: Promise<WaitObservation>[] = [dapObservation, timeout.promise];
 			if (trigger) racers.push(trigger.job.promise.then(() => ({ kind: "trigger" as const })));
 			const observed = await Promise.race(racers);
-			throwIfAborted(signal);
+			throwIfAborted(callerSignal);
 			if (observed.kind === "dap_error") throw observed.error;
 
 			let outcome = observed.kind === "dap" ? observed.outcome : undefined;
 			let rawOutcome = dapSessionManager.getExecutionOutcome(executionId);
 			if (!outcome && rawOutcome) {
 				const materialized = await dapObservation;
-				throwIfAborted(signal);
+				throwIfAborted(callerSignal);
 				if (materialized.kind === "dap_error") throw materialized.error;
 				outcome = materialized.outcome;
 			}
-			outcome ??= await dapSessionManager.waitForExecution(executionId, signal, 0);
+			outcome ??= await dapSessionManager.waitForExecution(executionId, callerSignal, 0);
 			rawOutcome = dapSessionManager.getExecutionOutcome(executionId);
 			if (rawOutcome && outcome.settledAt !== rawOutcome.settledAt) {
-				outcome = await dapSessionManager.waitForExecution(executionId, signal, timeoutMs);
+				outcome = await dapSessionManager.waitForExecution(executionId, callerSignal, timeoutMs);
 			}
 
 			const triggerJob = trigger ? snapshotTriggerJob(this.session, trigger.job) : undefined;
@@ -1305,13 +1005,13 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 		_toolCallId: string,
 		params: DebugParams,
 		inputSignal?: AbortSignal,
-		_onUpdate?: AgentToolUpdateCallback<DebugToolDetails>,
+		_onUpdate?: AgentToolUpdateCallback<DebugExecutionDetails>,
 		_context?: AgentToolContext,
-	): Promise<AgentToolResult<DebugToolDetails>> {
+	): Promise<AgentToolResult<DebugExecutionDetails>> {
 		const timeoutSec = clampTimeout("debug", params.timeout, this.session.settings.get("tools.maxTimeout"));
 		const timeoutSignal = AbortSignal.timeout(timeoutSec * 1000);
 		const signal = inputSignal ? AbortSignal.any([inputSignal, timeoutSignal]) : timeoutSignal;
-		const details: DebugToolDetails = { action: params.action, success: true };
+		const details: DebugExecutionDetails = { action: params.action, success: true };
 		const result = toolResult(details);
 		if (params.wait_for_stop !== undefined && params.action !== "continue") {
 			throw new ToolError("wait_for_stop is only valid for continue");
@@ -1588,7 +1288,12 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugToolDetails
 				if (!dapSessionManager.hasExecution(executionId)) {
 					throw new ToolError(`Unknown debug execution "${executionId}".`);
 				}
-				const coordinated = await this.#waitForStop(executionId, params.trigger_job_id, signal, timeoutSec * 1000);
+				const coordinated = await this.#waitForStop(
+					executionId,
+					params.trigger_job_id,
+					inputSignal,
+					timeoutSec * 1000,
+				);
 				applyExecutionOutcomeDetails(details, coordinated.outcome);
 				details.waitReason = coordinated.waitReason;
 				details.triggerJob = coordinated.triggerJob;

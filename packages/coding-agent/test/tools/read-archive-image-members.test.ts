@@ -11,7 +11,7 @@ import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
-import { MAX_IMAGE_INPUT_BYTES } from "@oh-my-pi/pi-coding-agent/utils/image-loading";
+import { MAX_IMAGE_INPUT_BYTES } from "@oh-my-pi/pi-tui/chat/image-loading";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { writeArchive } from "@oh-my-pi/pi-utils/ar";
 

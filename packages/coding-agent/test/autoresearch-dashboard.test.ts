@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { renderDashboardLines } from "../src/autoresearch/dashboard";
 import { createSessionRuntime } from "../src/autoresearch/state";
 import { setLocale } from "../src/i18n";
-import type { Theme } from "../src/modes/theme/theme";
+import { renderDashboardLines } from "@oh-my-pi/pi-tui/apps/autoresearch-dashboard";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
 
 const plainTheme = {
 	fg: (_color: string, text: string): string => text,

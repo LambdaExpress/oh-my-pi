@@ -6,7 +6,8 @@ import { type Type, type } from "@oh-my-pi/omptype";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EditTool, hashlineEditParamsSchema } from "@oh-my-pi/pi-coding-agent/edit";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
-import { type EditMode, type EditModeSessionLike, resolveEditMode } from "@oh-my-pi/pi-coding-agent/utils/edit-mode";
+import { type EditModeSessionLike, resolveEditMode } from "@oh-my-pi/pi-coding-agent/utils/edit-mode";
+import { type EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const originalEditVariant = Bun.env.PI_EDIT_VARIANT;
@@ -75,6 +76,23 @@ describe("resolveEditMode", () => {
 		delete Bun.env.PI_EDIT_VARIANT;
 
 		expect(resolveEditMode(createSession({ activeModel: "kilo/stepfun/step-3.7-flash:free" }))).toBe("replace");
+	});
+
+	test("uses replace for Codex Spark without excluding other Codex models", () => {
+		expect(resolveEditMode(createSession({ activeModel: "openai-codex/gpt-5.3-codex-spark" }))).toBe("replace");
+		expect(resolveEditMode(createSession({ activeModel: "openai-codex/gpt-5.3-codex" }))).toBe("hashline");
+	});
+
+	test("uses replace across MiniMax model families", () => {
+		expect(resolveEditMode(createSession({ activeModel: "openrouter/minimax/minimax-m1" }))).toBe("replace");
+		expect(resolveEditMode(createSession({ activeModel: "minimax/MiniMax-M2.5" }))).toBe("replace");
+		expect(resolveEditMode(createSession({ activeModel: "minimax/MiniMax-M3" }))).toBe("replace");
+	});
+
+	test("excludes GLM 5.3 Flash without excluding other GLM revisions or families", () => {
+		expect(resolveEditMode(createSession({ activeModel: "zai/glm-5.3-flash" }))).toBe("replace");
+		expect(resolveEditMode(createSession({ activeModel: "zai/glm-5.3" }))).toBe("hashline");
+		expect(resolveEditMode(createSession({ activeModel: "zai/glm-4.7-flash" }))).toBe("hashline");
 	});
 
 	test("does not exclude non-Kimi Moonshot models", () => {
