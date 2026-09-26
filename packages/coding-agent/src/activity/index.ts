@@ -97,11 +97,8 @@ function argumentsSummary(toolName: string, value: unknown): string {
 		case "write":
 		case "edit":
 			return firstString(args, "path") ?? (toolName === "write" ? t("Write files") : t("Edit files"));
-		case "hub": {
-			const op = firstString(args, "op") ?? t("operate");
-			const target = firstString(args, "to", "name", "from");
-			return target ? `${op} · ${target}` : op;
-		}
+		case "wait":
+			return t("Waiting for background work or a peer");
 		default: {
 			const common = firstString(args, "path", "query", "name", "task", "title");
 			if (common) return common;

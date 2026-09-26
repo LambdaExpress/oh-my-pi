@@ -684,7 +684,7 @@ describe("InteractiveMode completed-run collapse", () => {
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 test model");
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const e2eSession = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",
@@ -788,7 +788,7 @@ describe("InteractiveMode completed-run collapse", () => {
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 test model");
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const e2eSession = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",

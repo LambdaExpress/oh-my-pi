@@ -3,11 +3,12 @@ import * as path from "node:path";
 import { resolveContainedPath, type ContainedPathResolution } from "../discovery/contained-path";
 import type { Rule } from "../capability/rule";
 import type { Skill } from "../extensibility/skills";
-import { type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
-import { validateRelativePath } from "../internal-urls/skill-protocol";
-import type { InternalResource, ResolveContext } from "../internal-urls/types";
+import { InternalUrlRouter, type LocalProtocolOptions, resolveLocalUrlToPath } from "../internal-urls";
+// `validateRelativePath` moved here from `internal-urls/skill-protocol` in upstream's
+// virtual-filesystem refactor; it now takes the scheme so messages stay scheme-specific.
+import { validateRelativePath } from "../internal-urls/filesystem-resource";
+import type { ResolveContext } from "../internal-urls/types";
 import type { ImageAttachmentEntry } from ".";
-import { normalizeLocalScheme } from "./path-utils";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 /**
@@ -43,7 +44,12 @@ type SupportedInternalScheme = (typeof SUPPORTED_INTERNAL_SCHEMES)[number];
 
 interface InternalUrlResolver {
 	canHandle(input: string): boolean;
-	resolve(input: string, context?: ResolveContext): Promise<InternalResource>;
+	/**
+	 * Local backing path of a URL, or `null` when the scheme has none. Upstream
+	 * replaced `ResolveContext.pathOnly` with this path-only lookup, so a large
+	 * `artifact://` still expands to its file without materializing content.
+	 */
+	locate(input: string, context?: ResolveContext): Promise<string | null>;
 }
 
 export interface InternalUrlExpansionOptions {
@@ -116,7 +122,7 @@ function parseSkillUrlTarget(
 		throw new ToolError(`Invalid skill:// URL path encoding: ${url}`);
 	}
 	try {
-		validateRelativePath(relativePath);
+		validateRelativePath(relativePath, "skill");
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		throw new ToolError(message);
@@ -301,7 +307,7 @@ async function resolveInternalUrlToPath(
 	rules?: readonly Rule[],
 	skillUrlForDirectory?: boolean,
 ): Promise<string> {
-	const url = normalizeLocalScheme(rawUrl);
+	const url = InternalUrlRouter.instance().normalize(rawUrl);
 	const scheme = extractScheme(url);
 	if (!scheme) {
 		throw new ToolError(`Unsupported internal URL in bash command: ${url}`);
@@ -339,26 +345,19 @@ async function resolveInternalUrlToPath(
 		);
 	}
 
-	let resource: InternalResource;
+	let located: string | null;
 	try {
-		resource = await internalRouter.resolve(url, {
-			cwd,
-			pathOnly: true,
-			sessionFile,
-			sessionId,
-			agentRegistry,
-			rules,
-		});
+		located = await internalRouter.locate(url, { cwd, sessionFile, sessionId, agentRegistry, rules });
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		throw new ToolError(`Failed to resolve ${scheme}:// URL in bash command: ${url}\n${message}`);
 	}
 
-	if (!resource.sourcePath) {
+	if (located === null) {
 		throw new ToolError(`${scheme}:// URL resolved without a filesystem path and cannot be used in bash: ${url}`);
 	}
 
-	return path.resolve(resource.sourcePath);
+	return path.resolve(located);
 }
 
 /**
@@ -382,7 +381,7 @@ export async function expandInternalUrls(command: string, options: InternalUrlEx
 		if (isEmbeddedInQuotedText(command, token, index)) continue;
 
 		const rawUrl = unquoteToken(token);
-		const url = normalizeLocalScheme(rawUrl);
+		const url = InternalUrlRouter.instance().normalize(rawUrl);
 		let resolvedPath: string;
 		try {
 			resolvedPath = await resolveInternalUrlToPath(

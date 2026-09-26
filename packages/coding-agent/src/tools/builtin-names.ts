@@ -8,12 +8,14 @@ export const BUILTIN_TOOL_NAMES = [
 	"ast_edit",
 	"ask",
 	"debug",
+	"ida",
 	"eval",
 	"ssh_transfer",
 	"ssh_session",
 	"github",
 	"glob",
 	"grep",
+	"find",
 	"lsp",
 	"checkpoint",
 	"rewind",
@@ -21,7 +23,7 @@ export const BUILTIN_TOOL_NAMES = [
 	"new_context",
 	"security_scan",
 	"task",
-	"hub",
+	"wait",
 	"todo",
 	"web_search",
 	"write",
@@ -42,7 +44,6 @@ export type HiddenToolName = (typeof HIDDEN_TOOL_NAMES)[number];
 const LEGACY_BUILTIN_TOOL_NAME_ALIASES: ReadonlyMap<string, BuiltinToolName> = new Map([
 	["search", "grep"],
 	["powershell", "pwsh"],
-	["find", "glob"],
 ]);
 
 const CANONICAL_TOOL_NAMES: Record<string, true> = Object.fromEntries(

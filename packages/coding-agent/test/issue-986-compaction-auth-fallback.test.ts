@@ -14,6 +14,8 @@ import { setLocale } from "../src/i18n";
 import { mockSchedulerWaitWithClock } from "./helpers/mock-scheduler-clock";
 import { assistantMsg, userMsg } from "./utilities";
 
+import { cfgRetryBaseDelayMs, cfgRetryEnabled, cfgRetryMaxRetries } from "@oh-my-pi/pi-coding-agent/session/settings";
+
 describe("issue #986 compaction auth fallback", () => {
 	let tempDir: TempDir;
 	let authStorage: AuthStorage;
@@ -66,9 +68,9 @@ describe("issue #986 compaction auth fallback", () => {
 		});
 
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey(currentModel.provider, "codex-token");
+		authStorage.keys.setRuntime(currentModel.provider, "codex-token");
 		if (options?.configureFallbackAuth !== false) {
-			authStorage.setRuntimeApiKey(fallbackModel.provider, "anthropic-token");
+			authStorage.keys.setRuntime(fallbackModel.provider, "anthropic-token");
 		}
 		modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 
@@ -122,8 +124,8 @@ describe("issue #986 compaction auth fallback", () => {
 		});
 
 		authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
-		authStorage.setRuntimeApiKey(currentModel.provider, "openai-token");
-		authStorage.setRuntimeApiKey(crossProviderModel.provider, "anthropic-token");
+		authStorage.keys.setRuntime(currentModel.provider, "openai-token");
+		authStorage.keys.setRuntime(crossProviderModel.provider, "anthropic-token");
 		modelRegistry = new ModelRegistry(authStorage, path.join(tempDir.path(), "models.yml"));
 		session = new AgentSession({
 			agent,
@@ -290,9 +292,9 @@ describe("issue #986 compaction auth fallback", () => {
 
 	it("retries a transient native compaction failure on the same candidate", async () => {
 		const { currentModel, triggerAutoCompaction } = await createAutoNativeFallbackSession();
-		session.settings.set("retry.enabled", true);
-		session.settings.set("retry.baseDelayMs", 1);
-		session.settings.set("retry.maxRetries", 1);
+		cfgRetryEnabled.set(session.settings, true);
+		cfgRetryBaseDelayMs.set(session.settings, 1);
+		cfgRetryMaxRetries.set(session.settings, 1);
 		const waitSpy = mockSchedulerWaitWithClock();
 		const attemptedModels: string[] = [];
 		vi.spyOn(compactionModule, "compact").mockImplementation(async (preparation, model) => {

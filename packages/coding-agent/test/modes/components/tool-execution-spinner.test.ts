@@ -361,7 +361,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 
 			await Settings.init({ inMemory: true });
 			const ctx = {
-				settings: { get: () => "" },
+				settings: Settings.isolated(),
 				sessionManager: { getSessionFile: () => null, getSessionName: () => "local", getCwd: () => "/local" },
 				session: {
 					messages: [],
@@ -517,7 +517,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 
 			await Settings.init({ inMemory: true });
 			const ctx = {
-				settings: { get: () => "" },
+				settings: Settings.isolated(),
 				sessionManager: { getSessionFile: () => null, getSessionName: () => "local", getCwd: () => "/local" },
 				session: {
 					messages: [],
@@ -654,7 +654,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 	});
 
 	// Regression (PR #9377 follow-up, codex review): `#handleToolExecutionEnd`
-	// settles a displaceable `hub`/`todo` result out of `pendingTools` into
+	// settles a displaceable `wait`/`todo` result out of `pendingTools` into
 	// EventController's own trackers (`#displaceablePollComponent` /
 	// `#displaceableTodoComponent`) instead of leaving it there, so enumerating
 	// only `pendingTools` before a resync misses that still-animated "waiting"
@@ -666,7 +666,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 	// `takeDisplaceableComponents()` to hand back a manually built block only
 	// proves `#finalizeSnapshot` calls whatever function sits at that name --
 	// not that the real tracker holds and clears the right component -- so
-	// this drives an actual `hub` wait (still running, so it stays
+	// this drives an actual `wait` (still running, so it stays
 	// displaceable) through a real `EventController`, the same tracker
 	// `job-poll-displacement.test.ts` exercises in isolation.
 	it("folds a displaceable poll/todo block into orphan cleanup when guest resync staging fails", async () => {
@@ -687,14 +687,14 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			const takeDisplaceableComponents = vi.spyOn(controller, "takeDisplaceableComponents");
 			await controller.handleEvent({
 				type: "tool_execution_start",
-				toolCallId: "hub-wait-1",
-				toolName: "hub",
-				args: { op: "wait", ids: ["j0"] },
+				toolCallId: "wait-1",
+				toolName: "wait",
+				args: {},
 			} as Extract<AgentSessionEvent, { type: "tool_execution_start" }>);
 			await controller.handleEvent({
 				type: "tool_execution_end",
-				toolCallId: "hub-wait-1",
-				toolName: "hub",
+				toolCallId: "wait-1",
+				toolName: "wait",
 				isError: false,
 				result: {
 					content: [{ type: "text", text: "" }],
@@ -711,11 +711,11 @@ describe("ToolExecutionComponent live preview spinners", () => {
 			const displaceableBlock = chatContainer.children.find(
 				(child): child is ToolExecutionComponent => child instanceof ToolExecutionComponent,
 			);
-			if (!displaceableBlock) throw new Error("expected the hub wait to render a live block");
+			if (!displaceableBlock) throw new Error("expected the wait to render a live block");
 			expect(vi.getTimerCount()).toBeGreaterThan(0);
 
 			const ctx = {
-				settings: { get: () => "" },
+				settings: Settings.isolated(),
 				sessionManager: { getSessionFile: () => null, getSessionName: () => "local", getCwd: () => "/local" },
 				session: {
 					messages: [],
@@ -900,7 +900,7 @@ describe("ToolExecutionComponent live preview spinners", () => {
 
 			await Settings.init({ inMemory: true });
 			const ctx = {
-				settings: { get: () => "" },
+				settings: Settings.isolated(),
 				sessionManager: { getSessionFile: () => null, getSessionName: () => "local", getCwd: () => "/local" },
 				session: {
 					messages: [],

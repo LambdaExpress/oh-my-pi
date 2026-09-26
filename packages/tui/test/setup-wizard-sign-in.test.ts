@@ -31,17 +31,18 @@ describe("SignInTab", () => {
 		const openedUrls: string[] = [];
 
 		const authStorage = {
-			has: (_providerId: string) => false,
-			hasAuth: (_providerId: string) => false,
-			getCredentialOrigin: (_providerId: string) => undefined,
-			async login(_provider: OAuthProviderId, ctrl: OAuthLoginCallbacks): Promise<void> {
-				ctrl.onAuth({ url });
-				secretReceived.resolve(
-					await ctrl.onPrompt({ message: "Consumer key", placeholder: "secret value", secret: true }),
-				);
-				const prompt = ctrl.onManualCodeInput?.();
-				await loginGate.promise;
-				await prompt;
+			credentials: { has: (_providerId: string) => false },
+			keys: { source: (_providerId: string) => undefined },
+			oauth: {
+				async login(_provider: OAuthProviderId, ctrl: OAuthLoginCallbacks): Promise<void> {
+					ctrl.onAuth({ url });
+					secretReceived.resolve(
+						await ctrl.onPrompt({ message: "Consumer key", placeholder: "secret value", secret: true }),
+					);
+					const prompt = ctrl.onManualCodeInput?.();
+					await loginGate.promise;
+					await prompt;
+				},
 			},
 		} as unknown as AuthStorage;
 
@@ -109,16 +110,17 @@ describe("SignInTab", () => {
 		const loginCompleted = Promise.withResolvers<void>();
 		const copySpy = vi.fn(async (_text: string): Promise<void> => {});
 		const authStorage = {
-			has: (_providerId: string) => false,
-			hasAuth: (_providerId: string) => false,
-			getCredentialOrigin: (_providerId: string) => undefined,
-			async login(_provider: OAuthProviderId, ctrl: OAuthLoginCallbacks): Promise<void> {
-				ctrl.onAuth({ url });
-				const settled = new AbortController();
-				const prompt = ctrl.onManualCodeInput?.(settled.signal);
-				settled.abort(new Error("native callback received"));
-				await prompt?.catch(() => {});
-				loginCompleted.resolve();
+			credentials: { has: (_providerId: string) => false },
+			keys: { source: (_providerId: string) => undefined },
+			oauth: {
+				async login(_provider: OAuthProviderId, ctrl: OAuthLoginCallbacks): Promise<void> {
+					ctrl.onAuth({ url });
+					const settled = new AbortController();
+					const prompt = ctrl.onManualCodeInput?.(settled.signal);
+					settled.abort(new Error("native callback received"));
+					await prompt?.catch(() => {});
+					loginCompleted.resolve();
+				},
 			},
 		} as unknown as AuthStorage;
 		const host = {
@@ -154,12 +156,13 @@ describe("SignInTab", () => {
 		const copySpy = vi.fn(async (_text: string): Promise<void> => {});
 
 		const authStorage = {
-			has: (_providerId: string) => false,
-			hasAuth: (_providerId: string) => false,
-			getCredentialOrigin: (_providerId: string) => undefined,
-			async login(_provider: OAuthProviderId, ctrl: OAuthLoginCallbacks): Promise<void> {
-				ctrl.onAuth({ url });
-				await loginGate.promise;
+			credentials: { has: (_providerId: string) => false },
+			keys: { source: (_providerId: string) => undefined },
+			oauth: {
+				async login(_provider: OAuthProviderId, ctrl: OAuthLoginCallbacks): Promise<void> {
+					ctrl.onAuth({ url });
+					await loginGate.promise;
+				},
 			},
 		} as unknown as AuthStorage;
 

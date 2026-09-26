@@ -108,7 +108,7 @@ describe("vision-backed queued message timing", () => {
 				return { content: ["image description"] };
 			},
 		});
-		authStorage.setRuntimeApiKey(PROVIDER, "test-key");
+		authStorage.keys.setRuntime(PROVIDER, "test-key");
 		registry.registerProvider(
 			PROVIDER,
 			{

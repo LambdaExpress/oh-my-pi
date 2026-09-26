@@ -22,11 +22,44 @@ import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-list
 import * as sessionListingModule from "@oh-my-pi/pi-coding-agent/session/session-listing";
 import { loadEntriesFromFile } from "@oh-my-pi/pi-coding-agent/session/session-loader";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import { getProjectDir, normalizePathForComparison, setProjectDir } from "@oh-my-pi/pi-utils";
+import {
+	__resetDirsFromEnvForTests,
+	getProjectDir,
+	normalizePathForComparison,
+	setAgentDir,
+	setProjectDir,
+} from "@oh-my-pi/pi-utils";
 import { setLocale } from "../src/i18n";
 
-beforeEach(() => setLocale("en"));
-afterEach(() => setLocale(null));
+const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+const originalPiProfile = process.env.PI_PROFILE;
+const originalOmpProfile = process.env.OMP_PROFILE;
+let agentDirRoot: string | undefined;
+
+function restoreEnv(key: string, value: string | undefined): void {
+	if (value === undefined) {
+		delete process.env[key];
+	} else {
+		process.env[key] = value;
+	}
+}
+
+beforeEach(async () => {
+	setLocale("en");
+	agentDirRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-xproj-agent-dir-"));
+	setAgentDir(path.join(agentDirRoot, "agent"));
+});
+
+afterEach(async () => {
+	setLocale(null);
+	restoreEnv("PI_CODING_AGENT_DIR", originalAgentDir);
+	restoreEnv("PI_PROFILE", originalPiProfile);
+	restoreEnv("OMP_PROFILE", originalOmpProfile);
+	__resetDirsFromEnvForTests();
+	if (agentDirRoot) {
+		await fsp.rm(agentDirRoot, { recursive: true, force: true });
+	}
+});
 
 function buildArgs(resume: string, sessionDir?: string): Args {
 	return {

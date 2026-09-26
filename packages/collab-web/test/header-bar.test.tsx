@@ -24,6 +24,7 @@ function snapshot(): GuestSnapshot {
 		lifecycle: new Map(),
 		stream: null,
 		streamDone: false,
+		loading: null,
 		activeTools: new Map(),
 		working: false,
 		readOnly: false,

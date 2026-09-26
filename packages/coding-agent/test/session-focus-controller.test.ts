@@ -949,7 +949,7 @@ describe("AgentSession tool display snapshots", () => {
 			streamFn: createMockModel({ responses: [{ content: ["Done"] }] }).stream,
 		});
 		const authStorage = new AuthStorage(new SqliteAuthCredentialStore(new Database(":memory:")));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const modelRegistry = new ModelRegistry(authStorage);
 		const session = new AgentSession({
 			agent,

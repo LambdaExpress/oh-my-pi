@@ -8,8 +8,8 @@ import { type AgentMessage, isContinuableStreamInterruption } from "@oh-my-pi/pi
 import { type Component } from "../tui";
 import { TruncatedText } from "../components/truncated-text";
 import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
-import type { JobSnapshot } from "../tools/hub";
-import type { DaemonSnapshot } from "../tools/hub";
+import type { JobSnapshot } from "../tools/wait";
+import type { DaemonSnapshot } from "../tools/daemon";
 import {
 	type CustomMessage,
 	type FileMentionMessage,
@@ -18,7 +18,7 @@ import {
 	shouldRenderAbortReason,
 } from "./messages";
 import { isAdvisorCard } from "./advisor-cards";
-import { createIrcMessageCard } from "../tools/hub";
+import { createIrcMessageCard } from "../tools/wait";
 import { formatArtifactErrorNotice, type OutputMeta } from "../tools/output-meta";
 import { canonicalizeMessage } from "./thinking-display";
 import { ToolActivityContainer } from "../chrome/tool-activity";

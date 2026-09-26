@@ -70,11 +70,7 @@ pub(crate) fn update_reference(
 				.duration_since(std::time::UNIX_EPOCH)
 				.map_or(0, |elapsed| elapsed.as_secs())
 		);
-		gix::actor::SignatureRef {
-			name:  "oh-my-pi".into(),
-			email: "omp@localhost".into(),
-			time:  &now,
-		}
+		gix::actor::SignatureRef { name: "omp".into(), email: "omp@localhost".into(), time: &now }
 	};
 	repo
 		.edit_references_as(Some(edit), Some(committer))
@@ -1596,17 +1592,22 @@ fn collect_clone_reconciliation_paths(
 	Ok((dirty_tracked, untracked))
 }
 
+fn git_metadata_path(path: &Path) -> Cow<'_, str> {
+	let display = path.to_string_lossy();
+	if cfg!(windows) {
+		Cow::Owned(display.replace('\\', "/"))
+	} else {
+		display
+	}
+}
+
 fn register_worktree(path: &Path, common: &Path, head: &str) -> Result<PathBuf> {
 	fs::create_dir_all(path)?;
 	let name = worktree_admin_name(common, path);
 	let admin = common.join("worktrees").join(name);
 	fs::create_dir_all(&admin)?;
-	// Git's worktree pointer files use slash-separated paths even on Windows.
-	// `Path::display()` emits backslashes there; Git then treats the backlink
-	// as the worktree directory itself and cannot validate `worktree remove`.
-	let gitdir = |value: &Path| value.to_string_lossy().replace('\\', "/");
-	fs::write(path.join(".git"), format!("gitdir: {}\n", gitdir(&admin)))?;
-	fs::write(admin.join("gitdir"), format!("{}\n", gitdir(&path.join(".git"))))?;
+	fs::write(path.join(".git"), format!("gitdir: {}\n", git_metadata_path(&admin)))?;
+	fs::write(admin.join("gitdir"), format!("{}\n", git_metadata_path(&path.join(".git"))))?;
 	fs::write(admin.join("commondir"), "../..\n")?;
 	fs::write(admin.join("HEAD"), format!("{head}\n"))?;
 	Ok(admin)
@@ -2437,6 +2438,35 @@ mod tests {
 		assert_eq!(fs::read(linked.join(".git")).unwrap(), pointer_before);
 		assert_eq!(git(temp.path(), &["rev-parse", "HEAD"]), git(&linked, &["rev-parse", "HEAD"]));
 		let _ = fs::remove_dir_all(linked);
+	}
+
+	#[test]
+	fn worktree_registration_paths_are_accepted_by_git() {
+		let (temp, repo) = fixture();
+		let linked_dir = tempfile::tempdir().unwrap();
+		let linked = linked_dir.path().to_path_buf();
+		repo
+			.worktree_add(&linked, "main", WorktreeAddOptions {
+				detach:       true,
+				clone:        WorktreeClone::Off,
+				keep_changes: false,
+			})
+			.unwrap();
+
+		let admin = registered_admin(&linked.join(".git")).unwrap().unwrap();
+		assert_eq!(
+			fs::read_to_string(linked.join(".git")).unwrap(),
+			format!("gitdir: {}\n", git_metadata_path(&admin))
+		);
+		assert_eq!(
+			fs::read_to_string(admin.join("gitdir")).unwrap(),
+			format!("{}\n", git_metadata_path(&linked.join(".git")))
+		);
+
+		let listed = git(temp.path(), &["worktree", "list", "--porcelain"]);
+		let expected = format!("worktree {}", git_metadata_path(&linked));
+		assert!(listed.lines().any(|line| line == expected), "{listed}");
+		git(temp.path(), &["worktree", "repair", linked.to_str().unwrap()]);
 	}
 
 	#[test]

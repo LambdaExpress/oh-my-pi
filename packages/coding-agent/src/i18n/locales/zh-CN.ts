@@ -564,6 +564,8 @@ export const zhCN: Record<string, string> = {
 	"--par cannot parallelize cold/warm pairs; use --cache-concurrency instead":
 		"--par 无法并行处理冷/热配对；请改用 --cache-concurrency",
 	"--plan-yolo-into requires --plan-yolo": "--plan-yolo-into 需要 --plan-yolo",
+	"--prefill-bytes requires prefill challenges (--detailed, or --profile mix or prefill)":
+		"--prefill-bytes 需要 prefill 类挑战（--detailed，或 --profile mix 或 prefill）",
 	"--prefill-bytes requires prefill challenges (--profile mix or prefill)":
 		"--prefill-bytes 需要 prefill 类挑战（--profile mix 或 prefill）",
 	"--profile cannot be combined with --cache": "--profile 不能与 --cache 组合使用",
@@ -798,6 +800,8 @@ export const zhCN: Record<string, string> = {
 	"A bash command is already running. Press Esc to cancel it first.": "已有 bash 命令正在运行。请先按 Esc 取消。",
 	"A discovery agent figures out the command to run": "由发现代理自行确定要运行的命令",
 	"A saved Codex reset for {label} was already redeemed elsewhere.": "为 {label} 保存的 Codex 重置已在他处兑换。",
+	"A saved {provider} reset for {label} was already redeemed elsewhere.":
+		"为 {label} 保存的 {provider} 重置已在他处兑换。",
 	"ACP Client": "ACP 客户端",
 	"AGENTS.md": "AGENTS.md",
 	AI: "AI",
@@ -1081,6 +1085,8 @@ export const zhCN: Record<string, string> = {
 	"Claude command exited before /v1/messages completed{suffix}": "Claude 命令在 /v1/messages 完成前退出{suffix}",
 	"Claude command failed before /v1/messages completed: {error}{suffix}":
 		"Claude 命令在 /v1/messages 完成前失败：{error}{suffix}",
+	"Claude's 5h session limit has been refreshed; weekly limits are unchanged":
+		"Claude 的 5 小时会话限制已刷新；每周限制保持不变",
 	"Claude's native web_search tool (uses Anthropic OAuth or ANTHROPIC_API_KEY)":
 		"Claude 原生的 web_search 工具（使用 Anthropic OAuth 或 ANTHROPIC_API_KEY）",
 	"Clean Source Checkout on /wt": "使用 /wt 时清理源检出",
@@ -1179,6 +1185,7 @@ export const zhCN: Record<string, string> = {
 	"Copy path": "复制路径",
 	"Could not close session: {error}": "无法关闭会话：{error}",
 	'Could not find a stored Codex account matching "{label}".': '找不到与 "{label}" 匹配的已存储 Codex 账户。',
+	"Could not find the stored account {label}{provider}.": "找不到已存储的账户 {label}{provider}。",
 	"Could not generate a session title. Use /rename <title> to set one.":
 		"无法生成会话标题。请使用 /rename <title> 设置标题。",
 	"Could not resolve {app} launcher path in PATH": "无法在 PATH 中解析 {app} 启动器路径",
@@ -1269,7 +1276,11 @@ export const zhCN: Record<string, string> = {
 	"Drive your own Chrome tabs through the omp browser relay. Install the extension once (`omp browser-relay install`); the relay server auto-starts when the browser prelude needs it. Takes precedence over Browser CDP URL; set PI_BROWSER_RELAY=0 or PI_BROWSER_RELAY=1 to override.":
 		"通过 omp 浏览器中继驱动你自己的 Chrome 标签页。安装一次扩展（`omp browser-relay install`）；中继服务器会在浏览器预置流程需要时自动启动。优先于 Browser CDP URL；设置 PI_BROWSER_RELAY=0 或 PI_BROWSER_RELAY=1 可覆盖。",
 	"Drop recoverable heavy content in place without an LLM call": "就地丢弃可恢复的沉重内容，不发起 LLM 调用",
+	"Dropped {count} thinking block from this session (~{tokens} tokens freed).":
+		"已从本会话丢弃 {count} 个思考块（释放约 {tokens} tokens）。",
 	"Dropped {count} thinking block from this session.": "已从本会话丢弃 {count} 个思考块。",
+	"Dropped {count} thinking blocks from this session (~{tokens} tokens freed).":
+		"已从本会话丢弃 {count} 个思考块（释放约 {tokens} tokens）。",
 	"Dropped {count} thinking blocks from this session.": "已从本会话丢弃 {count} 个思考块。",
 	"Dry run — would import {count} credential(s):": "试运行 — 将导入 {count} 个凭据：",
 	"Dry run — would upload {count} credential(s):": "试运行 — 将上传 {count} 个凭据：",
@@ -1787,6 +1798,8 @@ export const zhCN: Record<string, string> = {
 		"自动将仓库的 direnv/devenv `.envrc` 加载到 bash 会话中，无需手动执行 `direnv exec` 即可使用 devenv 工具和环境变量。遵循 direnv 的允许列表：未经 `direnv allow` 的 `.envrc` 绝不会被执行",
 	"Auto-redeemed a saved Codex rate-limit reset for {label}{left}; {detail}.":
 		"已为 {label} 自动兑换保存的 Codex 速率限制重置{left}；{detail}。",
+	"Auto-redeemed a saved {provider} rate-limit reset for {label}{left}; {detail}.":
+		"已为 {label} 自动兑换保存的 {provider} 速率限制重置{left}；{detail}。",
 	"Auto-run capture at stop": "停止时自动运行捕获",
 	"Auto-select the recommended ask option after this many seconds (0 disables)":
 		"经过指定秒数后自动选择推荐的 ask 选项（0 表示禁用）",
@@ -2296,6 +2309,7 @@ export const zhCN: Record<string, string> = {
 	"Display the actual model ID used by each subagent in the task widget status line":
 		"在任务组件状态行中显示每个子代理实际使用的模型 ID",
 	"Do not auto-redeem saved Codex resets.": "不要自动兑换已保存的 Codex 重置次数。",
+	"Do not auto-redeem saved {provider} resets.": "不要自动兑换已保存的 {provider} 重置次数。",
 	"Do not prevent any sleep": "不阻止任何休眠",
 	"Do not run the saved-reset auto-redeem check.": "不运行已保存重置的自动兑换检查。",
 	"Do not show release notes on startup": "启动时不显示发布说明",
@@ -2973,6 +2987,7 @@ export const zhCN: Record<string, string> = {
 	Jina: "Jina",
 	"Jobs: none": "作业：无",
 	"Jobs: {running} running, {recent} recent": "作业：{running} 个运行中，{recent} 个最近",
+	"Judging {done}/{total} changes…": "正在评判 {done}/{total} 处变更…",
 	"Join a shared collab session": "加入共享协作会话",
 	"Join a shared collab session (same as /join)": "加入共享协作会话（与 /join 相同）",
 	"Join from another terminal:": "从另一个终端加入：",
@@ -3034,7 +3049,9 @@ export const zhCN: Record<string, string> = {
 		"更大的 LFM2.5 选项，缓存约 292 MB；生成的标题偏简短。",
 	"Larger Llama 3.2 option for local memory/classifier tasks; higher quality potential at higher disk/RAM/latency cost.":
 		"更大的 Llama 3.2 选项，用于本地记忆/分类器任务；质量上限更高，代价是更大的磁盘、内存占用与延迟。",
+	"Last Release": "最新版本",
 	"Last turn": "最后一轮",
+	"Last {count} Releases": "最近 {count} 个版本",
 	"Late diagnostics": "延迟诊断",
 	Launch: "启动",
 	"Launch browser in headless mode (disable to show browser UI)": "以无头模式启动浏览器（禁用以显示浏览器界面）",
@@ -3638,6 +3655,7 @@ export const zhCN: Record<string, string> = {
 	"No command to copy.": "没有可复制的命令。",
 	"No commits found": "未找到提交",
 	"No commits yet": "尚无提交",
+	"No common history between {baseBranch} and {currentBranch}": "{baseBranch} 与 {currentBranch} 之间没有共同历史",
 	"No common history between {base} and {head}": "{base} 与 {head} 之间没有共同历史",
 	'No credentials for provider "{provider}". Run `omp` and use /login, or set the provider API key.':
 		"没有提供商“{provider}”的凭据。运行 `omp` 并使用 /login，或设置提供商 API 密钥。",
@@ -3738,6 +3756,7 @@ export const zhCN: Record<string, string> = {
 	"No plugins found in {marketplace}": "{marketplace} 中没有找到插件",
 	"No plugins installed": "未安装插件",
 	"No prompts available on connected servers.": "连接的服务器上没有可用提示词。",
+	"No provider accounts found. Use /login to add one.": "未找到提供商账户。使用 /login 添加一个。",
 	"No published code release is available yet": "尚无已发布的 code 版本",
 	"No question provided": "未提供问题",
 	"No queued messages to restore": "没有可恢复的排队消息",
@@ -4467,6 +4486,8 @@ export const zhCN: Record<string, string> = {
 		"对账户邮箱/ID 进行脱敏（最短唯一前缀）以便分享截图",
 	"Redeem now and remember yes for future eligible Codex resets.":
 		"立即兑换，并记住未来符合条件的 Codex 重置一律选择“是”。",
+	"Redeem now and remember yes for future eligible {provider} resets.":
+		"立即兑换，并记住未来符合条件的 {provider} 重置一律选择“是”。",
 	References: "引用",
 	"Refine plan": "优化计划",
 	"Refine plan: enter a follow-up prompt.": "优化计划：输入后续提示。",
@@ -4607,6 +4628,7 @@ export const zhCN: Record<string, string> = {
 	"Reserve Policy": "预留策略",
 	Reset: "重置",
 	"Reset a setting to its default value": "将设置重置为默认值",
+	"Reset applied for {label}": "已为 {label} 应用重置",
 	"Reset applied for {label} — your rate-limit window has been refreshed.":
 		"已为 {label} 应用重置 — 其速率限制窗口已刷新。",
 	"Reset failed for {label}: {error}": "重置 {label} 失败：{error}",
@@ -4815,6 +4837,8 @@ export const zhCN: Record<string, string> = {
 	"Saved rate-limit resets": "已保存的速率限制重置",
 	"Saved {count} pasted lines to local://{name}": "已将 {count} 行粘贴内容保存到 local://{name}",
 	"Saved {path}": "已保存 {path}",
+	"Saved {provider} resets are eligible to spend, but auto-redeem is unset and no prompt UI is available. Run `/usage reset` or set {settingsKey}.":
+		"已保存的 {provider} 重置额度可用于消费，但未设置自动兑换，且没有可用的提示界面。请运行 `/usage reset` 或设置 {settingsKey}。",
 	"Saved {scope} WATCHDOG.yml — {count} advisor{s} active.":
 		"已保存 {scope} WATCHDOG.yml — {count} 个 advisor 处于活动状态。",
 	"Saved {scope} WATCHDOG.yml. Run /advisor on to activate the configured advisors.":
@@ -5302,12 +5326,14 @@ export const zhCN: Record<string, string> = {
 		"当已保存的 Codex 重置将在设定的小时数内过期，且任一聊天窗口（5 小时或每周）存在可恢复的有效用量时，自动消耗该重置（设为 0 禁用过期回收）。",
 	"Spend a saved rate-limit reset": "消耗一次已保存的速率限制重置",
 	"Spend a saved rate-limit reset:": "消耗已保存的速率限制重置：",
+	"Spend a saved {provider} rate-limit reset?": "消耗一个已保存的 {provider} 速率限制重置？",
 	"Spend eligible saved resets without prompting.": "无提示消耗符合条件的已保存重置。",
 	"Spend one with `/usage reset <account email>` or `/usage reset active`.":
 		"使用 `/usage reset <account email>` 或 `/usage reset active` 消耗一个。",
 	"Spend saved Codex rate-limit resets automatically: restore an account blocked by an exhausted 5h or weekly window when a turn is stuck and no other account can take over, and salvage credits that are about to expire. unset asks before the first spend, yes spends without prompting, and no disables both checks.":
 		"自动消耗已保存的 Codex 速率限制重置：当某一轮被卡住且没有其他账户可以接管时，恢复因 5 小时或每周用量窗口耗尽而被阻止的账户，并回收即将过期的额度。unset 在首次消耗前询问，yes 无提示消耗，no 禁用这两项检查。",
 	"Spend {count} saved Codex rate-limit resets?": "消耗 {count} 个已保存的 Codex 速率限制重置？",
+	"Spend {count} saved {provider} rate-limit resets?": "消耗 {count} 个已保存的 {provider} 速率限制重置？",
 	"Spend:": "消耗：",
 	"Spend: {parts}, {cost}": "消耗：{parts}，{cost}",
 	"Spending 1 saved reset for {label}…": "正在为 {label} 消耗 1 个已保存的重置次数…",
@@ -6103,6 +6129,7 @@ export const zhCN: Record<string, string> = {
 	"Verification: {count} diagnostic{s} remaining.": "验证：剩余 {count} 条诊断。",
 	"Verified {digest}": "已验证 {digest}",
 	"Verify a Python 3 interpreter is reachable for code execution": "验证用于代码执行的 Python 3 解释器是否可用",
+	"Verifying…": "正在验证…",
 	"Vertical pipes": "垂直管道",
 	"Very aggressive": "非常激进",
 	"Very brief reasoning (~1k tokens)": "极简推理（~1k tokens）",
@@ -7257,6 +7284,7 @@ export const zhCN: Record<string, string> = {
 	"terminal width {width}; need {needed}": "终端宽度 {width}；需要 {needed}",
 	"the answer is not ready": "答案尚未就绪",
 	"the answer is unavailable": "答案不可用",
+	"the covered rate-limit window{s} {have} been refreshed": "所覆盖的速率限制窗口已刷新",
 	"the current model": "当前模型",
 	"the session changed since /btw started": "/btw 启动后会话已更改",
 	"the session has no branch point": "会话没有分支点",
@@ -7589,6 +7617,11 @@ export const zhCN: Record<string, string> = {
 	"{label}: reset did not apply ({code}).": "{label}：重置未生效（{code}）。",
 	"{label}: that reset was already redeemed.": "{label}：该重置已被使用过。",
 	"{label}: {task}": "{label}：{task}",
+	"{label}{provider}: a reset is already in progress.": "{label}{provider}：重置已在进行中。",
+	"{label}{provider}: couldn't confirm whether the reset applied — check /usage before trying again{reason}.":
+		"{label}{provider}：无法确认重置是否已应用 — 再次尝试前请先检查 /usage{reason}。",
+	"{label}{provider}: the reset offer changed — nothing was spent; reopen /usage reset.":
+		"{label}{provider}：重置方案已变化 — 未消耗任何额度；请重新打开 /usage reset。",
 	"{limit} / {total} parse issues": "{limit} / {total} 个解析问题",
 	"{live} live · {orphaned} orphaned · {total} total": "{live} 活跃 · {orphaned} 孤立 · 共 {total} 个",
 	"{manager} did not install a working {version} launcher ({reason}); installing the standalone binary at {path}.":
@@ -7622,8 +7655,12 @@ export const zhCN: Record<string, string> = {
 	"{position}↑/↓ step  {lateral}  hover outline  click/enter rewind  ctrl+o expand  esc cancel":
 		"{position}↑/↓ 步进  {lateral}  悬停高亮  点击/Enter 回退  ctrl+o 展开  esc 取消",
 	"{processes} in {scopes} {mode}": "{processes}，分布于 {scopes} {mode}",
+	"{provider} auto-redeem for {label} failed ({code}); will retry later.":
+		"{provider} 对 {label} 的自动兑换失败（{code}）；稍后将重试。",
 	"{provider} has no credentials configured": "{provider} 未配置凭据",
 	"{provider} is still authenticated via {source}": "{provider} 仍通过 {source} 认证",
+	"{provider} reset for {label} reported nothing to reset; will retry later.":
+		"{provider} 重置 {label} 时提示无需重置；稍后将重试。",
 	"{provider}: {identity}{stale}{disabled} from {file}": "{provider}：{identity}{stale}{disabled}，来自 {file}",
 	"{queue} — repeated in the transcript when the agent pauses": "{queue} — 代理暂停时会在记录中完整显示",
 	"{reason}; restored previous {app} binary": "{reason}；已恢复之前的 {app} 二进制文件",

@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { isBuiltin } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as vm from "node:vm";
@@ -32,6 +33,7 @@ export class LocalModuleLoader {
 	#externalModules = new Map<string, Promise<vm.Module>>();
 	#requireCache = new Map<string, NodeJS.Require>();
 	#modulePaths = new WeakMap<vm.Module, string>();
+	#packageRoot: string | undefined;
 	#linkChain: Promise<void> = Promise.resolve();
 
 	constructor(sessionId: string, options: { patchGlobalResolver?: boolean } = {}) {
@@ -40,9 +42,17 @@ export class LocalModuleLoader {
 		this.#resolution = new KernelModuleResolution({ patchGlobalResolver: options.patchGlobalResolver ?? false });
 	}
 
-	async resolveForRun(cwd: string, source: string): Promise<LocalImportResolution> {
+	setPackageRoot(packageRoot: string | undefined): void {
+		const normalized = packageRoot ? path.resolve(packageRoot) : undefined;
+		if (normalized === this.#packageRoot) return;
+		this.#packageRoot = normalized;
+		if (normalized) this.#resolution.registerFor(normalized);
+		this.#requireCache.clear();
+	}
+
+	async resolveForRun(baseDir: string, source: string): Promise<LocalImportResolution> {
 		this.#refreshTrackedLocalModules();
-		return await this.#resolveFromBase(cwd, source);
+		return await this.#resolveFromBase(baseDir, source);
 	}
 
 	async resolveForModule(moduleUrl: string, source: string, cwd: string): Promise<LocalImportResolution> {
@@ -61,9 +71,60 @@ export class LocalModuleLoader {
 		const key = String(basePathOrUrl);
 		const cached = this.#requireCache.get(key);
 		if (cached) return cached;
-		const created = this.#resolution.createRequire(basePathOrUrl);
+		const created = this.#buildRequire(basePathOrUrl, this.#packageRoot);
 		this.#requireCache.set(key, created);
 		return created;
+	}
+
+	/**
+	 * `require` bound to `basePathOrUrl`.
+	 *
+	 * Both requires come from {@link KernelModuleResolution}, which is the only
+	 * resolver that sees on-disk packages inside a compiled binary; bare specifiers
+	 * the importing project cannot resolve fall back to the selected package
+	 * environment ({@link setPackageRoot}), whose own `node_modules` is where a
+	 * `%bun add`-installed dependency lives.
+	 */
+	#buildRequire(basePathOrUrl: string | URL, packageRoot: string | undefined): NodeJS.Require {
+		const primary = this.#resolution.createRequire(basePathOrUrl);
+		if (!packageRoot) return primary;
+		const fallback = this.#resolution.createRequire(path.join(packageRoot, "package.json"));
+		const requireWithFallback = ((id: string) => {
+			if (!isBareSpecifier(id)) return primary(id);
+			let primaryResolutionError: unknown;
+			try {
+				primary.resolve(id);
+			} catch (error) {
+				primaryResolutionError = error;
+			}
+			if (!primaryResolutionError) return primary(id);
+			try {
+				fallback.resolve(id);
+			} catch (fallbackError) {
+				throw packageFallbackError(primaryResolutionError, fallbackError, packageRoot);
+			}
+			return fallback(id);
+		}) as NodeJS.Require;
+		const resolve = ((id: string, options?: { paths?: string[] }) => {
+			try {
+				return primary.resolve(id, options);
+			} catch (primaryError) {
+				if (!isBareSpecifier(id)) throw primaryError;
+				try {
+					return fallback.resolve(id, options);
+				} catch (fallbackError) {
+					throw packageFallbackError(primaryError, fallbackError, packageRoot);
+				}
+			}
+		}) as NodeJS.Require["resolve"] & { paths(request: string): string[] | null };
+		resolve.paths = request => primary.resolve.paths(request);
+		Object.defineProperties(requireWithFallback, {
+			resolve: { value: resolve },
+			cache: { value: primary.cache },
+			extensions: { value: primary.extensions },
+			main: { value: primary.main },
+		});
+		return requireWithFallback;
 	}
 
 	/** Drop the resolver roots this kernel registered (worker teardown). */
@@ -107,23 +168,46 @@ export class LocalModuleLoader {
 	 * Resolve an import specifier against `baseDir`.
 	 *
 	 * `Bun.resolveSync` covers the source-checkout case; inside a compiled binary
-	 * it cannot resolve on-disk packages at all (oven-sh/bun#25500), so bare
-	 * specifiers fall back to the kernel's own `node_modules` walk and file
-	 * specifiers to the same probing `require` uses. Specifiers that resolve
-	 * nowhere are returned verbatim so the eventual `import` reports the loader's
-	 * own error instead of a synthesized path.
+	 * it cannot resolve on-disk packages at all (oven-sh/bun#25500), so the
+	 * kernel's own `node_modules` walk gets a second look: for bare specifiers
+	 * after the stock resolver refused (it cannot prove the package belongs to
+	 * the importing project) and for file specifiers after it failed.
+	 *
+	 * A bare specifier the importing project does not have is retried against the
+	 * selected package environment ({@link setPackageRoot}); when neither has it,
+	 * both failures are reported together so the missing dependency is actionable.
 	 */
 	#resolveImportSpecifier(baseDir: string, source: string): string {
-		if (/^[a-z][a-z0-9+.-]*:/i.test(source)) return source;
+		if (/^[a-z][a-z0-9+.-]*:/i.test(source) || isBuiltin(source)) return source;
 		this.#resolution.registerFor(baseDir);
-		try {
-			return Bun.resolveSync(source, baseDir);
-		} catch {
-			const fallback = isLocalPathSpecifier(source)
-				? this.#resolution.resolveFile(baseDir, source)
-				: this.#resolution.resolveBare(baseDir, source);
-			return fallback ?? source;
+		if (isLocalPathSpecifier(source)) {
+			try {
+				return Bun.resolveSync(source, baseDir);
+			} catch {
+				// Returned verbatim when nothing matches, so the eventual `import`
+				// reports the loader's own error instead of a synthesized path.
+				return this.#resolution.resolveFile(baseDir, source) ?? source;
+			}
 		}
+		const packageRoot = this.#packageRoot;
+		let projectError: unknown;
+		try {
+			return resolveBareSpecifierWithinProject(source, baseDir);
+		} catch (error) {
+			const onDisk = this.#resolution.resolveBare(baseDir, source);
+			if (onDisk) return onDisk;
+			projectError = error;
+		}
+		if (packageRoot !== undefined) {
+			try {
+				return resolveBareSpecifierWithinProject(source, packageRoot);
+			} catch (error) {
+				const onDisk = this.#resolution.resolveBare(packageRoot, source);
+				if (onDisk) return onDisk;
+				throw packageFallbackError(projectError, error, packageRoot);
+			}
+		}
+		throw projectError;
 	}
 
 	async #ensureLocalModule(modulePath: string): Promise<LocalModuleEntry> {
@@ -366,6 +450,49 @@ function buildModuleSource(source: string, modulePath: string): string {
 	].join("\n");
 }
 
+function resolveBareSpecifierWithinProject(source: string, baseDir: string): string {
+	const resolved = Bun.resolveSync(source, baseDir);
+	if (!path.isAbsolute(resolved)) {
+		throw new Error(
+			`Refusing non-file resolution ${JSON.stringify(resolved)} for bare package ${JSON.stringify(source)} from ${baseDir}`,
+		);
+	}
+	const segments = source.split("/");
+	const packageName = source.startsWith("@") ? segments.slice(0, 2) : segments.slice(0, 1);
+	const target = path.resolve(resolved);
+	let ancestor = path.resolve(baseDir);
+	for (;;) {
+		if (fs.existsSync(path.join(ancestor, "node_modules", ...packageName))) return resolved;
+		const parent = path.dirname(ancestor);
+		if (parent !== ancestor && fs.existsSync(path.join(ancestor, "package.json")) && pathIsWithin(ancestor, target)) {
+			return resolved;
+		}
+		if (parent === ancestor) break;
+		ancestor = parent;
+	}
+	throw new Error(
+		`Refusing package ${JSON.stringify(source)} resolved outside the importing project's ancestry: ${resolved}`,
+	);
+}
+
+function pathIsWithin(root: string, candidate: string): boolean {
+	const relative = path.relative(root, candidate);
+	return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function packageFallbackError(projectError: unknown, fallbackError: unknown, packageRoot: string): Error {
+	const projectMessage = projectError instanceof Error ? projectError.message : String(projectError);
+	const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+	return new Error(
+		`${projectMessage}\nJS package environment fallback ${packageRoot} also failed: ${fallbackMessage}\n` +
+			"Install the missing dependency with %bun add (select %environment project only to modify the project).",
+		{ cause: projectError },
+	);
+}
+
+function isBareSpecifier(source: string): boolean {
+	return !isLocalPathSpecifier(source) && !/^[a-z][a-z0-9+.-]*:/i.test(source) && !isBuiltin(source);
+}
 function isLocalPathSpecifier(source: string): boolean {
 	return (
 		source.startsWith("./") ||

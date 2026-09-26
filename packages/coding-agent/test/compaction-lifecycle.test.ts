@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import { CompactionCancelledError, type CompactionResult } from "@oh-my-pi/pi-agent-core/compaction";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import { getThemeByName, setThemeInstance, type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
@@ -54,13 +55,10 @@ function buildCtx(
 		flushCompactionQueue: vi.fn(async () => undefined),
 		// executeCompaction consults display.collapseCompacted on the ok path to
 		// decide whether the rebuild replaces the terminal transcript.
-		settings: {
-			get: vi.fn((path: string) => {
-				if (path === "display.collapseCompacted") return display.collapseCompacted ?? true;
-				if (path === "display.collapseCompletedRuns") return display.collapseCompletedRuns ?? false;
-				return undefined;
-			}),
-		},
+		settings: Settings.isolated({
+			"display.collapseCompacted": display.collapseCompacted ?? true,
+			"display.collapseCompletedRuns": display.collapseCompletedRuns ?? false,
+		}),
 	} as unknown as InteractiveModeContext;
 
 	return {

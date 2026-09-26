@@ -18,7 +18,7 @@ import { getThemeByName, initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 import { DebugTool, type DebugExecutionDetails } from "@oh-my-pi/pi-coding-agent/tools/debug";
-import { HubTool } from "@oh-my-pi/pi-coding-agent/tools/hub";
+import { WaitTool } from "@oh-my-pi/pi-coding-agent/tools/wait";
 import { debugToolRenderer } from "@oh-my-pi/pi-tui/tools/debug";
 
 const TEST_ADAPTER: DapResolvedAdapter = {
@@ -207,7 +207,7 @@ function debugDetails(result: { details?: DebugExecutionDetails }): DebugExecuti
 	return result.details;
 }
 
-function createToolSession(manager?: AsyncJobManager): ToolSession {
+function createToolSession(manager?: AsyncJobManager, overrides: Readonly<Record<string, unknown>> = {}): ToolSession {
 	return {
 		cwd: process.cwd(),
 		hasUI: false,
@@ -221,6 +221,7 @@ function createToolSession(manager?: AsyncJobManager): ToolSession {
 			"bash.autoBackground.enabled": false,
 			"bashInterceptor.enabled": false,
 			"debug.enabled": true,
+			...overrides,
 		}),
 		...(manager ? { asyncJobManager: manager } : {}),
 	};
@@ -382,7 +383,7 @@ describe("DebugTool autonomous wait workflow", () => {
 		await manager.drainDeliveries({ timeoutMs: 1_000 });
 		expect(harness.deliveries).toEqual([{ jobId: job.id, text: "request response" }]);
 		expect(resultText(result)).toContain('{"action":"continue","wait_for_stop":false}');
-		expect(resultText(result)).toContain(`{"op":"wait","ids":["${job.id}"]}`);
+		expect(resultText(result)).toContain("After resume, collect trigger: {}");
 	});
 
 	it("returns and consumes a completed trigger before a late stop", async () => {
@@ -812,10 +813,12 @@ describe("DebugTool autonomous wait workflow", () => {
 			},
 		});
 		managers.add(manager);
-		const session = createToolSession(manager);
+		// `wait` lists launch services while `launch.enabled` is on; this workflow
+		// only drives background jobs, so keep the session daemon-free.
+		const session = createToolSession(manager, { "launch.enabled": false });
 		const debug = new DebugTool(session);
 		const bash = new BashTool(session);
-		const hub = new HubTool(session);
+		const wait = new WaitTool(session);
 		const exchanges = Array.from({ length: 2 }, () => ({
 			arrived: Promise.withResolvers<void>(),
 			resumed: Promise.withResolvers<void>(),
@@ -891,11 +894,12 @@ describe("DebugTool autonomous wait workflow", () => {
 				});
 				executionId = debugDetails(resumed).executionId;
 				if (!executionId) throw new Error("Missing resumed execution id");
-				const hubWait = hub.execute(`hub-${index + 1}`, { op: "wait", ids: [jobId], timeoutMs: 5_000 });
+				// The merged wait surface takes no job ids — it returns on the first
+				// background result the caller owns, so the row is collected by
+				// waiting, then releasing the response the trigger job is blocked on.
+				const pendingWait = wait.execute(`collect-${index + 1}`, { timeoutMs: 5_000 });
 				exchanges[index]?.respond.resolve();
-				const hubResult = await hubWait;
-				const hubDetails = hubResult.details;
-				const jobs = hubDetails && "jobs" in hubDetails ? (hubDetails.jobs ?? []) : [];
+				const jobs = (await pendingWait).details?.jobs ?? [];
 				expect(jobs).toHaveLength(1);
 				expect(jobs[0]).toMatchObject({ id: jobId, type: "bash", status: "completed" });
 				expect(jobs[0]?.resultText).toContain(`response-${index + 1}`);

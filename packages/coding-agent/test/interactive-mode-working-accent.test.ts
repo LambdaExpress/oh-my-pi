@@ -11,6 +11,8 @@ import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { adjustHsv, TempDir } from "@oh-my-pi/pi-utils";
 import { setLocale } from "../src/i18n";
 
+import { cfgStatusLineSessionAccent } from "@oh-my-pi/pi-coding-agent/modes/settings";
+
 type Harness = {
 	mode: InteractiveMode;
 	sessionManager: SessionManager;
@@ -185,12 +187,12 @@ describe("InteractiveMode working-message session accent cache", () => {
 		expect(renderLoader(mode)).toContain(accentAnsi);
 		expect(getHex).toHaveBeenCalledTimes(1);
 
-		settings.set("statusLine.sessionAccent", false);
+		cfgStatusLineSessionAccent.set(settings, false);
 		mode.loadingAnimation?.setMessage("Accent disabled");
 		expect(renderLoader(mode)).not.toContain(accentAnsi);
 		expect(getHex).toHaveBeenCalledTimes(1);
 
-		settings.set("statusLine.sessionAccent", true);
+		cfgStatusLineSessionAccent.set(settings, true);
 		mode.loadingAnimation?.setMessage("Accent enabled");
 		expect(renderLoader(mode)).toContain(accentAnsi);
 		expect(getHex).toHaveBeenCalledTimes(2);

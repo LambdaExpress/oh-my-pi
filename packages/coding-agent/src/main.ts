@@ -34,6 +34,7 @@ import { ModelRegistry } from "./config/model-registry";
 import { formatModelSelectorValue, parseModelString } from "@oh-my-pi/pi-tui/overlays/model-selector";
 import {
 	DEFAULT_PREWALK_TARGET,
+	disabledProviderIds,
 	expandRoleAlias,
 	getModelMatchPreferences,
 	resolveCliModel,
@@ -45,7 +46,8 @@ import {
 } from "./config/model-resolver";
 import { ModelsConfigFile } from "./config/models-config";
 import { serviceTierSettingToTier } from "./config/service-tier";
-import { getDefault, type SettingPath, Settings, type SettingValue, settings } from "./config/settings";
+import { all, combine, type ProtocolHost, type SettingValueOf } from "./config/registry";
+import { Settings, settings } from "./config/settings";
 import { initializeWithSettings } from "./discovery";
 import {
 	clearPluginRootsAndCaches,
@@ -65,6 +67,7 @@ import { discoverStartupLspServers } from "./lsp/servers";
 import type { MCPManager } from "./mcp";
 import type { InteractiveMode } from "./modes/interactive-mode";
 import type { PrintModeOptions } from "./modes/print-mode";
+import type { RpcModeOptions } from "./modes/rpc/rpc-mode";
 import { claimRpcInput } from "./modes/rpc/rpc-input";
 import { CURRENT_SETUP_VERSION } from "@oh-my-pi/pi-tui/setup/setup-version";
 import type * as SetupWizardModule from "./modes/setup";
@@ -90,7 +93,7 @@ import {
 	loadSessionExtensions,
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
-import { describeAuthBrokerStartupError } from "./session/auth-broker-config";
+import { createAuthStorageSettingsSync, describeAuthBrokerStartupError } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
 import { describePendingToolCalls } from "./session/exit-diagnostics";
 import {
@@ -103,9 +106,15 @@ import type { ForeignSessionInfo, ForeignSessionSource, ForeignSessionStore } fr
 import { resolveResumableSession, type SessionInfo } from "./session/session-listing";
 import { ForkSourceNotFoundError, SessionManager } from "./session/session-manager";
 import { shouldShowStartupSplash } from "./startup-splash";
-import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prompt";
+import {
+	discoverSystemPromptOverride,
+	discoverTitleSystemPromptFile,
+	loadSystemPromptTemplateFile,
+	resolvePromptInput,
+} from "./system-prompt";
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
+import { registerLocalInferenceApi } from "./tiny/local-inference-api";
 import { concreteThinkingLevel, parseConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { LspStartupServerInfo } from "./tools";
 import { sanitizeDisplayWarnings } from "@oh-my-pi/pi-tui/render/render-utils";
@@ -113,14 +122,48 @@ import { startAutoSessionTitleGeneration } from "./utils/auto-session-title";
 import { getChangelogPath, resolveStartupChangelogForDisplay, type StartupChangelogSelection } from "./utils/changelog";
 import { EventBus } from "./utils/event-bus";
 
+import { cfgAdvisorEnabled } from "./advisor/settings";
+import { cfgToolsApprovalMode } from "./tools/settings";
+import {
+	cfgAutocompleteMaxVisible,
+	cfgAutoResume,
+	cfgColorBlindMode,
+	cfgComposerShape,
+	cfgImagesAutoResize,
+	cfgMarketplaceAutoUpdate,
+	cfgSetupVersion,
+	cfgShowHardwareCursor,
+	cfgSpellingAutocomplete,
+	cfgSpellingAutocorrect,
+	cfgSpellingTypoDetection,
+	cfgStartupChangelogMode,
+	cfgStartupCheckUpdate,
+	cfgStartupQuiet,
+	cfgStartupSetupWizard,
+	cfgStartupShowSplash,
+	cfgSymbolPreset,
+	cfgThemeDark,
+	cfgThemeLight,
+	cfgTuiImeSafeCursor,
+	cfgTuiMaxInlineImages,
+	cfgTuiResizeScrollback,
+	cfgUpdateChannel,
+} from "./modes/settings";
+import {
+	cfgDefaultThinkingLevel,
+	cfgExternalThinking,
+	cfgHideThinkingBlock,
+	cfgOmitThinking,
+	cfgPrewalkEnabled,
+} from "./session/settings";
+import { cfgDisabledProviders, cfgEnabledModels } from "./config/model-settings";
+import { cfgTaskAgentIdleTtlMs } from "./task/settings";
+import { cfgSkillsIncludeSkills } from "./extensibility/settings";
+import { cfgWorkspaceAdditionalDirectories } from "./session/context-settings";
+
 type RunAcpMode = (createSession: AcpSessionFactory) => Promise<never>;
 type RunPrintMode = (session: AgentSession, options: PrintModeOptions) => Promise<number>;
-type RunRpcMode = (
-	session: AgentSession,
-	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
-	subagentEventBus?: EventBus,
-	input?: ReadableStream<Uint8Array>,
-) => Promise<never>;
+type RunRpcMode = (session: AgentSession, options?: RpcModeOptions) => Promise<never>;
 type RunCoreMode = (
 	session: AgentSession,
 	eventBus?: EventBus,
@@ -157,7 +200,7 @@ async function loadSessionPicker(): Promise<SessionPicker> {
 				await storage.deleteSessionWithArtifacts(session.path);
 				return true;
 			},
-			loadAllSessions: () => SessionManager.listAll(storage),
+			loadAllSessions: () => SessionManager.listAllForPicker(storage),
 		});
 	};
 }
@@ -177,11 +220,11 @@ export function writeStartupNotice(parsedArgs: Pick<Args, "mode">, text: string)
 }
 
 async function checkForNewVersion(): Promise<string | undefined> {
-	if (!settings.get("startup.checkUpdate")) {
+	if (!cfgStartupCheckUpdate.get(settings)) {
 		return;
 	}
 	try {
-		const channel = settings.get("update.channel");
+		const channel = cfgUpdateChannel.get(settings);
 		const release = await getLatestRelease({ timeoutMs: 5_000, channel });
 		return isBuildUpdateAvailable(BUILD_IDENTIFIER, release.code)
 			? formatVersionWithBuild(VERSION, release.code)
@@ -191,69 +234,15 @@ async function checkForNewVersion(): Promise<string | undefined> {
 	}
 }
 
-// Todo settings are caller-controlled in protocol modes. Do not host-default them:
-// embedders need project-level opt-outs for reminder/prelude prompt injection.
-const HOST_DEFAULTED_SETTING_PATHS: SettingPath[] = [
-	"task.isolation.enabled",
-	"isolation.backend",
-	"worktree.clone",
-	"worktree.cleanSource",
-	"task.isolation.apply",
-	"task.isolation.merge",
-	"task.isolation.commits",
-	"task.eager",
-	"task.batch",
-	"task.maxConcurrency",
-	"task.maxRecursionDepth",
-	"task.disabledAgents",
-	"task.agentModelOverrides",
-	"task.agentServiceTierOverrides",
-	"task.agentPrewalk",
-	"task.agentAdvisor",
-	// Memory subsystems are off-by-default for RPC/ACP hosts; embedders that want
-	// memory should opt in explicitly through their own settings layer.
-	"memory.backend",
-	"memories.enabled",
-	// Advisor is interactive-session assistance. Protocol hosts opt in explicitly
-	// instead of inheriting a user's globally-enabled local preference, and when
-	// they do opt in they get the default tuning rather than the user's local tuning.
-	"advisor.enabled",
-	"advisor.syncBacklog",
-	"advisor.immuneTurns",
-	"advisor.maxNotesPerUpdate",
-	"tier.advisor",
-];
-
-const RPC_BACKGROUND_DEFAULTED_SETTING_PATHS: SettingPath[] = [
-	"async.enabled",
-	"async.maxJobs",
-	"bash.autoBackground.enabled",
-	"bash.autoBackground.thresholdMs",
-	"eval.autoBackground.enabled",
-	"eval.autoBackground.thresholdMs",
-];
-
-// Protocol-mode hosts opt into a small set of paths whose host-default we
-// re-apply at startup so embedders inherit OMP's neutral defaults instead of
-// the local user's globally-persisted preferences for interactive use. The
-// guard preserves any explicit configuration — caller `Settings.isolated`
-// overrides, project `.claude/settings.yml`, `--config` overlays, or global
-// `config.yml` — so the host default only kicks in when nothing is set. Without
-// it the override clobbers every caller/host choice (#2598, #3207).
-function applyDefaultSettingOverrides(settingPaths: SettingPath[], targetSettings: Settings): void {
-	for (const settingPath of settingPaths) {
-		if (targetSettings.isConfigured(settingPath)) continue;
-		targetSettings.override(settingPath, getDefault(settingPath));
+// Protocol hosts inherit OMP's neutral defaults for settings declaring `protocolDefault`
+// instead of the local user's interactive preferences. The pin holds only while nothing
+// configures the setting — caller `Settings.isolated` overrides, project `.claude/settings.yml`,
+// `--config` overlays, or global `config.yml` always win (#2598, #3207), including a config
+// edit the RPC file watcher picks up later and an ACP session's own project config.
+function applyProtocolDefaults(host: ProtocolHost, targetSettings: Settings = settings): void {
+	for (const setting of all()) {
+		if (setting.definition.protocolDefault?.includes(host)) setting.pinDefault(targetSettings);
 	}
-}
-
-function applyRpcDefaultSettingOverrides(targetSettings: Settings = settings): void {
-	applyDefaultSettingOverrides(HOST_DEFAULTED_SETTING_PATHS, targetSettings);
-	applyDefaultSettingOverrides(RPC_BACKGROUND_DEFAULTED_SETTING_PATHS, targetSettings);
-}
-
-function applyAcpDefaultSettingOverrides(targetSettings: Settings = settings): void {
-	applyDefaultSettingOverrides(HOST_DEFAULTED_SETTING_PATHS, targetSettings);
 }
 
 /** Reads a non-TTY stdin stream as prompt text. */
@@ -536,6 +525,9 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 				`Trusted extension failed to load: ${trustedExtensions.errors.map(item => item.error).join("; ")}`,
 			);
 		}
+		// Like every top-level session, it holds process-wide effects (`worktree.base`, request
+		// limits, …) on its own project's settings until disposed; its requests redact credentials
+		// per that project's `secrets.enabled` regardless of which session holds the effects.
 		const { session: nextSession, setToolUIContext } = await args.createSession({
 			...args.baseOptions,
 			cwd,
@@ -554,7 +546,7 @@ export function createAcpSessionFactory(args: AcpSessionFactoryOptions): AcpSess
 			preloadedExtensions: trustedExtensions,
 		});
 		if (args.parsedArgs.apiKey && !args.baseOptions.model && nextSession.model) {
-			args.authStorage.setRuntimeApiKey(nextSession.model.provider, args.parsedArgs.apiKey);
+			args.authStorage.keys.setRuntime(nextSession.model.provider, args.parsedArgs.apiKey);
 		}
 		const runner = nextSession.extensionRunner;
 		const reparsedArgs = applyExtensionFlags(
@@ -632,7 +624,7 @@ async function runInteractiveMode(
 		// to know whether the stored setup version is current. Lazy-load the wizard
 		// barrel only when setup is stale, forced, or the explicit startup splash
 		// setting needs the shared setup splash renderer.
-		const storedSetupVersion = settings.get("setupVersion");
+		const storedSetupVersion = cfgSetupVersion.get(settings);
 		setupWizard =
 			forceSetupWizard || storedSetupVersion < CURRENT_SETUP_VERSION || showStartupSplash
 				? await import("./modes/setup")
@@ -641,7 +633,7 @@ async function runInteractiveMode(
 			? await setupWizard.selectSetupScenes(storedSetupVersion, setupWizard.ALL_SCENES, mode, {
 					resuming,
 					isTTY: process.stdin.isTTY && process.stdout.isTTY,
-					setupWizardEnabled: settings.get("startup.setupWizard"),
+					setupWizardEnabled: cfgStartupSetupWizard.get(settings),
 					force: forceSetupWizard,
 				})
 			: [];
@@ -677,7 +669,7 @@ async function runInteractiveMode(
 		);
 		// A resolved version check must not insert its banner into a partial transcript.
 		checkedVersionPromise.then(newVersion => {
-			if (!settings.get("startup.checkUpdate")) {
+			if (!cfgStartupCheckUpdate.get(settings)) {
 				return;
 			}
 			if (newVersion) {
@@ -980,7 +972,7 @@ export async function resolveScopedModels(
 	modelRegistry: Pick<ModelRegistry, "getAvailable" | "getDiscoverableProviders" | "refresh">,
 	activeSettings: Settings,
 ): Promise<ScopedModel[]> {
-	const modelPatterns = parsed.models ?? activeSettings.get("enabledModels");
+	const modelPatterns = parsed.models ?? cfgEnabledModels.get(activeSettings);
 	if (!modelPatterns || modelPatterns.length === 0) {
 		return [];
 	}
@@ -1004,7 +996,7 @@ export function toSessionScopedModels(
 ): Array<{ model: Model; thinkingLevel?: ThinkingLevel }> {
 	if (scopedModels.length === 0) return [];
 	const defaultThinkingLevel = concreteThinkingLevel(
-		parseConfiguredThinkingLevel(activeSettings.get("defaultThinkingLevel")),
+		parseConfiguredThinkingLevel(cfgDefaultThinkingLevel.get(activeSettings)),
 	);
 	return scopedModels.map(scopedModel => ({
 		model: scopedModel.model,
@@ -1048,7 +1040,7 @@ export async function rebuildScopedModelsAfterDiscovery(
 	modelRegistry: Pick<ModelRegistry, "getAvailable" | "awaitBackgroundRefresh">,
 	activeSettings: Settings,
 ): Promise<void> {
-	const patterns = parsed.models ?? activeSettings.get("enabledModels");
+	const patterns = parsed.models ?? cfgEnabledModels.get(activeSettings);
 	if (!patterns || patterns.length === 0) return;
 	await modelRegistry.awaitBackgroundRefresh();
 	if (session.isDisposed) return;
@@ -1063,9 +1055,47 @@ export async function rebuildScopedModelsAfterDiscovery(
 	session.setScopedModels(mapped);
 }
 
+/** Settings the scoped model list follows (see {@link watchScopedModelSettings}). */
+const cfgScopedModelInputs = combine({ enabledModels: cfgEnabledModels, disabledProviders: cfgDisabledProviders });
+
+/**
+ * Keep the Ctrl+P / scoped `/models` list in step with live settings: an
+ * `enabledModels` edit re-resolves a settings-derived scope (an explicit
+ * `--models` scope stays pinned), and a `disabledProviders` edit re-resolves
+ * after the catalog rebuild so re-enabled providers rejoin (disabled ones are
+ * already filtered from `session.scopedModels` at read time).
+ */
+export function watchScopedModelSettings(
+	session: ScopedModelSink & Pick<AgentSession, "addDisposer">,
+	parsed: Args,
+	modelRegistry: Pick<ModelRegistry, "getAvailable" | "reapplyModelPolicies">,
+	activeSettings: Settings,
+): void {
+	const stop = cfgScopedModelInputs.listen(activeSettings, async (next, previous) => {
+		const providersChanged = !Bun.deepEquals(next.disabledProviders, previous.disabledProviders);
+		if (parsed.models && !providersChanged) return;
+		if (providersChanged) await modelRegistry.reapplyModelPolicies();
+		if (session.isDisposed) return;
+		const patterns = parsed.models ?? cfgEnabledModels.get(activeSettings);
+		const rebuilt =
+			patterns.length === 0
+				? []
+				: await resolveModelScope(
+						patterns,
+						modelRegistry,
+						getModelMatchPreferences(activeSettings),
+						activeSettings,
+					);
+		const mapped = toSessionScopedModels(rebuilt, activeSettings);
+		if (sameScopedModelSet(session.scopedModels, mapped)) return;
+		session.setScopedModels(mapped);
+	});
+	session.addDisposer(stop);
+}
+
 async function getChangelogForDisplay(
 	parsed: Args,
-	mode: SettingValue<"startup.changelogMode">,
+	mode: SettingValueOf<typeof cfgStartupChangelogMode>,
 ): Promise<StartupChangelogSelection | undefined> {
 	if (parsed.continue || parsed.resume || isForeignSessionImport(parsed)) {
 		return undefined;
@@ -1223,7 +1253,7 @@ export async function createSessionManager(
 	// session exists. When a prior session is resumed, mark parsed.continue so
 	// buildSessionOptions restores the session's model/thinking instead of
 	// overriding them with CLI defaults.
-	if (activeSettings.get("autoResume")) {
+	if (cfgAutoResume.get(activeSettings)) {
 		const manager = await SessionManager.continueRecent(cwd, parsed.sessionDir);
 		if (manager.getEntries().length > 0) {
 			parsed.continue = true;
@@ -1231,21 +1261,6 @@ export async function createSessionManager(
 		return manager;
 	}
 	// Default case (new session) returns undefined, SDK will create one
-	return undefined;
-}
-
-/** Discover SYSTEM.md file if no CLI system prompt was provided */
-function discoverSystemPromptFile(): string | undefined {
-	// Check project-local first (.omp/SYSTEM.md, .pi/SYSTEM.md legacy)
-	const projectPath = findConfigFile("SYSTEM.md", { user: false });
-	if (projectPath) {
-		return projectPath;
-	}
-	// If not found, check SYSTEM.md file in the global directory.
-	const globalPath = findConfigFile("SYSTEM.md", { user: true });
-	if (globalPath) {
-		return globalPath;
-	}
 	return undefined;
 }
 
@@ -1268,7 +1283,7 @@ export function applyResolvedSystemPromptInputs(
 	resolvedSystemPrompt: string | undefined,
 	resolvedAppendPrompt: string | undefined,
 ): void {
-	if (resolvedSystemPrompt) {
+	if (resolvedSystemPrompt !== undefined) {
 		options.customSystemPrompt = resolvedSystemPrompt;
 	}
 	if (resolvedAppendPrompt) {
@@ -1293,7 +1308,7 @@ export async function buildSessionOptions(
 		options.openAIServiceTier = serviceTierSettingToTier(parsed.serviceTier) ?? null;
 	}
 	const cliDirs = parsed.addDir ?? [];
-	const settingsDirs = activeSettings.get("workspace.additionalDirectories");
+	const settingsDirs = cfgWorkspaceAdditionalDirectories.get(activeSettings);
 	if (cliDirs.length > 0 || settingsDirs.length > 0) {
 		options.additionalDirectories = [...new Set([...cliDirs, ...settingsDirs])];
 	}
@@ -1301,15 +1316,36 @@ export async function buildSessionOptions(
 		options.deadline = Date.now() + parsed.maxTime * 1000;
 	}
 
-	// Auto-discover SYSTEM.md if no CLI system prompt provided
-	const systemPromptSource = parsed.systemPrompt ?? discoverSystemPromptFile();
+	// Explicit prompt inputs win over discovered SYSTEM_TEMPLATE.md/SYSTEM.md.
+	if (parsed.systemPrompt !== undefined && parsed.systemPromptTemplate !== undefined) {
+		throw new Error("--system-prompt and --system-prompt-template cannot be combined");
+	}
+	const cwd = options.cwd;
+	const discoveredOverride =
+		parsed.systemPrompt === undefined && parsed.systemPromptTemplate === undefined
+			? await discoverSystemPromptOverride(cwd)
+			: undefined;
+	const systemPromptSource =
+		parsed.systemPrompt ?? (discoveredOverride?.kind === "text" ? discoveredOverride.path : undefined);
+	const templatePath =
+		parsed.systemPromptTemplate ?? (discoveredOverride?.kind === "template" ? discoveredOverride.path : undefined);
 	const appendPromptSource = parsed.appendSystemPrompt ?? discoverAppendSystemPromptFile();
-	const titleSystemPromptSource = discoverTitleSystemPromptFile();
-	const [resolvedSystemPrompt, resolvedAppendPrompt, titleSystemPrompt] = await Promise.all([
-		resolvePromptInput(systemPromptSource, "system prompt"),
-		resolvePromptInput(appendPromptSource, "append system prompt"),
-		resolvePromptInput(titleSystemPromptSource, "title system prompt"),
-	]);
+	const titleSystemPromptSource = discoverTitleSystemPromptFile(cwd);
+	const [resolvedSystemPrompt, resolvedAppendPrompt, titleSystemPrompt, resolvedSystemPromptTemplate] =
+		await Promise.all([
+			discoveredOverride?.kind === "text"
+				? Promise.resolve(discoveredOverride.content)
+				: resolvePromptInput(systemPromptSource, "system prompt"),
+			resolvePromptInput(appendPromptSource, "append system prompt"),
+			resolvePromptInput(titleSystemPromptSource, "title system prompt"),
+			// Discovered templates arrive pre-loaded from the capability; only
+			// explicit CLI paths hit the strict file loader here.
+			discoveredOverride?.kind === "template" && parsed.systemPromptTemplate === undefined
+				? Promise.resolve(discoveredOverride.content)
+				: templatePath === undefined
+					? Promise.resolve(undefined)
+					: loadSystemPromptTemplateFile(templatePath),
+		]);
 
 	if (sessionManager) {
 		options.sessionManager = sessionManager;
@@ -1328,6 +1364,7 @@ export async function buildSessionOptions(
 			parsed.model !== undefined ||
 			parsed.thinking !== undefined ||
 			parsed.systemPrompt !== undefined ||
+			parsed.systemPromptTemplate !== undefined ||
 			parsed.appendSystemPrompt !== undefined ||
 			parsed.tools !== undefined ||
 			parsed.noTools === true;
@@ -1341,6 +1378,7 @@ export async function buildSessionOptions(
 	// - supports --provider <name> --model <pattern>
 	// - supports --model <provider>/<pattern>
 	const modelMatchPreferences = getModelMatchPreferences(activeSettings);
+	const disabledProviders = disabledProviderIds(activeSettings);
 	// `--model` rewrites the session's `default` role below. Preserve the
 	// configured assignment so explicit prewalk role targets still resolve
 	// against the value that existed when the CLI was invoked.
@@ -1360,6 +1398,14 @@ export async function buildSessionOptions(
 		});
 		if (resolved.warning) {
 			process.stderr.write(`${chalk.yellow(t("Warning: {warning}", { warning: resolved.warning }))}\n`);
+		}
+		if (resolved.disabledProvider !== undefined) {
+			// Deferring a disabled pin to post-extension resolution would let it
+			// through, so refuse here (issue #13079).
+			process.stderr.write(
+				`${chalk.red(resolved.error ?? `Provider "${resolved.disabledProvider}" is disabled.`)}\n`,
+			);
+			process.exit(1);
 		}
 		const matchedAfterMissingRolePattern = (resolved.configuredPatternIndex ?? 0) > 0;
 		if (matchedAfterMissingRolePattern) {
@@ -1455,7 +1501,7 @@ export async function buildSessionOptions(
 		? false
 		: explicitPrewalk
 			? true
-			: !restoringSession && activeSettings.get("prewalk.enabled");
+			: !restoringSession && cfgPrewalkEnabled.get(activeSettings);
 	if (prewalkEnabled) {
 		const target = parsed.prewalkInto ?? DEFAULT_PREWALK_TARGET;
 		let targetPatterns: string[];
@@ -1498,6 +1544,8 @@ export async function buildSessionOptions(
 			let candidate = resolveCandidate(pattern);
 			lastResolution = candidate;
 
+			// A disabled provider is unreachable; try the next fallback pattern.
+			if (candidate.model && disabledProviders.has(candidate.model.provider)) continue;
 			if (candidate.model && modelRegistry.hasConfiguredAuth(candidate.model)) {
 				authenticatedResolution = candidate;
 				break;
@@ -1517,6 +1565,7 @@ export async function buildSessionOptions(
 
 			candidate = resolveCandidate(pattern);
 			lastResolution = candidate;
+			if (candidate.model && disabledProviders.has(candidate.model.provider)) continue;
 			if (candidate.model && modelRegistry.hasConfiguredAuth(candidate.model)) {
 				authenticatedResolution = candidate;
 				break;
@@ -1547,6 +1596,10 @@ export async function buildSessionOptions(
 					}),
 				)}\n`,
 			);
+		} else if (disabledProviders.has(resolved.model.provider)) {
+			process.stderr.write(
+				`${chalk.yellow(`Warning: prewalk disabled — provider "${resolved.model.provider}" is disabled`)}\n`,
+			);
 		} else if (!modelRegistry.hasConfiguredAuth(resolved.model)) {
 			process.stderr.write(
 				`${chalk.yellow(
@@ -1571,6 +1624,11 @@ export async function buildSessionOptions(
 		}
 		if (resolved.error || !resolved.model) {
 			throw new Error(resolved.error ?? t('Model "{target}" not found', { target: parsed.planYoloInto ?? "@smol" }));
+		}
+		if (disabledProviders.has(resolved.model.provider)) {
+			throw new Error(
+				`Provider "${resolved.model.provider}" is disabled. Remove it from disabledProviders to hand off to "${rolePattern}".`,
+			);
 		}
 		if (!modelRegistry.hasConfiguredAuth(resolved.model)) {
 			throw new Error(t("No API key for {model}", { model: `${resolved.model.provider}/${resolved.model.id}` }));
@@ -1603,6 +1661,9 @@ export async function buildSessionOptions(
 
 	// System prompt
 	applyResolvedSystemPromptInputs(options, resolvedSystemPrompt, resolvedAppendPrompt);
+	if (resolvedSystemPromptTemplate !== undefined) {
+		options.systemPromptTemplate = resolvedSystemPromptTemplate;
+	}
 	// Replan-driven title refresh resolves the override from this same field on
 	// `AgentSession`, so threading it through `CreateAgentSessionOptions` keeps
 	// both first-input titling (`input-controller.ts`) and replan refresh
@@ -1627,7 +1688,7 @@ export async function buildSessionOptions(
 		options.skills = [];
 	} else if (parsed.skills && parsed.skills.length > 0) {
 		// Override includeSkills for this session
-		activeSettings.override("skills.includeSkills", parsed.skills as string[]);
+		cfgSkillsIncludeSkills.override(activeSettings, parsed.skills as string[]);
 	}
 
 	// Rules
@@ -1736,6 +1797,10 @@ export async function runRootCommand(
 			process.stderr.write(`${chalk.red(t("Error: @file arguments are not supported in RPC mode"))}\n`);
 			process.exit(1);
 		}
+		if (parsedArgs.noUi && parsedArgs.mode !== "rpc") {
+			process.stderr.write(`${chalk.red("Error: --no-ui requires --mode rpc")}\n`);
+			process.exit(1);
+		}
 		const mode = parsedArgs.mode || "text";
 		// RPC owns stdin. Claim its singleton stream before plugin/extension discovery can load an in-process consumer.
 		const rpcInput = mode === "rpc" || mode === "rpc-ui" ? claimRpcInput() : undefined;
@@ -1782,15 +1847,17 @@ export async function runRootCommand(
 		if (!isInteractive) {
 			stopPendingStartupComposer();
 		}
-		// Auth and settings are independent; start both before awaiting either.
-		// A configured-but-unreachable auth broker still receives the actionable
-		// startup error below, while its cache/config I/O overlaps settings I/O.
-		const authStoragePromise = logger.time("discoverAuthStorage", deps.discoverAuthStorage ?? discoverAuthStorage);
-		authStoragePromise.catch(() => {});
+		// Account routing must use the effective settings, including `--config` and
+		// `PI_CONFIG_FILES` overlays, rather than independently re-reading only the
+		// main config file during auth discovery.
 		const settingsPromise = deps.settings
 			? Promise.resolve(deps.settings)
 			: logger.time("settings:init", Settings.init, { cwd, configFiles: parsedArgs.config });
 		settingsPromise.catch(() => {});
+		const authStoragePromise = logger.time("discoverAuthStorage", async () =>
+			(deps.discoverAuthStorage ?? discoverAuthStorage)(undefined, { settings: await settingsPromise }),
+		);
+		authStoragePromise.catch(() => {});
 		let authStorage: AuthStorage;
 		try {
 			authStorage = await authStoragePromise;
@@ -1802,19 +1869,21 @@ export async function runRootCommand(
 		}
 
 		const settingsInstance = await settingsPromise;
+		// Process-lifetime: broker/account-policy edits reconfigure the shared credential store.
+		createAuthStorageSettingsSync(settingsInstance, authStorage);
 		if (parsedArgs.approvalMode) {
-			// Runtime override (not persisted): every settings.get("tools.approvalMode") downstream
+			// Runtime override (not persisted): every `tools.approvalMode` read downstream
 			// sees this value. The wrapper still honours --auto-approve / --yolo on top of it.
-			settingsInstance.override("tools.approvalMode", parsedArgs.approvalMode);
+			cfgToolsApprovalMode.override(settingsInstance, parsedArgs.approvalMode);
 		} else if (parsedArgs.autoApprove) {
 			// --auto-approve / --yolo without an explicit --approval-mode: reflect in settings so
 			// setup-time checks (e.g. #wrapToolForAcpPermission) also see the yolo intent.
-			settingsInstance.override("tools.approvalMode", "yolo");
+			cfgToolsApprovalMode.override(settingsInstance, "yolo");
 		}
 		if (parsedArgs.mode === "rpc" || parsedArgs.mode === "rpc-ui") {
-			applyRpcDefaultSettingOverrides(settingsInstance);
+			applyProtocolDefaults("rpc", settingsInstance);
 		} else if (parsedArgs.mode === "acp") {
-			applyAcpDefaultSettingOverrides(settingsInstance);
+			applyProtocolDefaults("acp", settingsInstance);
 		}
 
 		// The registry composes policy-dependent metadata synchronously, including
@@ -1855,47 +1924,47 @@ export async function runRootCommand(
 		// setting makes the provider omit summaries and the flag prints nothing. An
 		// explicit --hide-thinking block display option still wins for output display.
 		if (parsedArgs.printThoughts && !isProtocolMode && !isInteractive) {
-			settingsInstance.override("omitThinking", false);
+			cfgOmitThinking.override(settingsInstance, false);
 		}
 		// Apply --hide-thinking CLI flag (ephemeral, not persisted)
 		if (parsedArgs.hideThinking) {
-			settingsInstance.override("hideThinkingBlock", true);
+			cfgHideThinkingBlock.override(settingsInstance, true);
 		}
 		// Apply --advisor CLI flag (ephemeral, not persisted)
 		if (parsedArgs.advisor) {
-			settingsInstance.override("advisor.enabled", true);
+			cfgAdvisorEnabled.override(settingsInstance, true);
 		}
 		// Apply --external-thinking CLI flag (ephemeral, not persisted)
 		if (parsedArgs.externalThinking) {
-			settingsInstance.override("externalThinking", true);
+			cfgExternalThinking.override(settingsInstance, true);
 		}
 
 		await logger.time(
 			"initTheme:final",
 			initTheme,
 			isInteractive,
-			settingsInstance.get("symbolPreset"),
-			settingsInstance.get("colorBlindMode"),
-			settingsInstance.get("theme.dark"),
-			settingsInstance.get("theme.light"),
+			cfgSymbolPreset.get(settingsInstance),
+			cfgColorBlindMode.get(settingsInstance),
+			cfgThemeDark.get(settingsInstance),
+			cfgThemeLight.get(settingsInstance),
 		);
 
 		applyStartupComposerPreferences({
-			quiet: settingsInstance.get("startup.quiet"),
-			composerShape: settingsInstance.get("composer.shape") ?? "band",
-			showHardwareCursor: settingsInstance.get("showHardwareCursor"),
-			maxInlineImages: settingsInstance.get("tui.maxInlineImages"),
-			resizeScrollback: settingsInstance.get("tui.resizeScrollback"),
-			imeSafeCursor: settingsInstance.get("tui.imeSafeCursor"),
-			autocompleteMaxVisible: settingsInstance.get("autocompleteMaxVisible"),
-			spellingTypoDetection: settingsInstance.get("spelling.typoDetection"),
-			spellingAutocomplete: settingsInstance.get("spelling.autocomplete"),
-			spellingAutocorrect: settingsInstance.get("spelling.autocorrect"),
+			quiet: cfgStartupQuiet.get(settingsInstance),
+			composerShape: cfgComposerShape.get(settingsInstance),
+			showHardwareCursor: cfgShowHardwareCursor.get(settingsInstance),
+			maxInlineImages: cfgTuiMaxInlineImages.get(settingsInstance),
+			resizeScrollback: cfgTuiResizeScrollback.get(settingsInstance),
+			imeSafeCursor: cfgTuiImeSafeCursor.get(settingsInstance),
+			autocompleteMaxVisible: cfgAutocompleteMaxVisible.get(settingsInstance),
+			spellingTypoDetection: cfgSpellingTypoDetection.get(settingsInstance),
+			spellingAutocomplete: cfgSpellingAutocomplete.get(settingsInstance),
+			spellingAutocorrect: cfgSpellingAutocorrect.get(settingsInstance),
 			theme: {
-				symbolPreset: settingsInstance.get("symbolPreset"),
-				colorBlindMode: settingsInstance.get("colorBlindMode"),
-				darkTheme: settingsInstance.get("theme.dark"),
-				lightTheme: settingsInstance.get("theme.light"),
+				symbolPreset: cfgSymbolPreset.get(settingsInstance),
+				colorBlindMode: cfgColorBlindMode.get(settingsInstance),
+				darkTheme: cfgThemeDark.get(settingsInstance),
+				lightTheme: cfgThemeLight.get(settingsInstance),
 			},
 		});
 		setStartupComposerLspServers(discoverStartupLspServers(cwd, "connecting"));
@@ -2030,8 +2099,8 @@ export async function runRootCommand(
 		// resolved) rejects a native --resume, so the picker must not run first.
 		if (parsedArgs.resume === true && !parsedArgs.fork && !parsedArgs.noSession) {
 			const folderSessions = await logger.time(
-				"SessionManager.list",
-				SessionManager.list,
+				"SessionManager.listForPicker",
+				SessionManager.listForPicker,
 				cwd,
 				parsedArgs.sessionDir,
 			);
@@ -2042,7 +2111,10 @@ export async function runRootCommand(
 				// silently surfaced other projects' history when the cwd was empty
 				// (issue #3099). The preloaded list also makes the user's Tab switch
 				// instant on the way in.
-				preloadedAllSessions = await logger.time("SessionManager.listAll", SessionManager.listAll);
+				preloadedAllSessions = await logger.time(
+					"SessionManager.listAllForPicker",
+					SessionManager.listAllForPicker,
+				);
 				if (preloadedAllSessions.length === 0) {
 					writeStartupNotice(parsedArgs, `${chalk.dim("No sessions found")}\n`);
 					stopStartupWatchdog();
@@ -2104,7 +2176,7 @@ export async function runRootCommand(
 		}
 
 		scheduleMarketplaceAutoUpdate({
-			autoUpdate: settingsInstance.get("marketplace.autoUpdate"),
+			autoUpdate: cfgMarketplaceAutoUpdate.get(settingsInstance),
 			resolveActiveProjectRegistryPath,
 			clearPluginRootsCache: clearPluginRootsAndCaches,
 		});
@@ -2122,6 +2194,7 @@ export async function runRootCommand(
 		sessionOptions.modelRegistry = modelRegistry;
 		sessionOptions.hasUI = isInteractive || mode === "rpc-ui";
 		sessionOptions.deferMCPDiscoveryStart = isInteractive;
+		sessionOptions.settingsApproval = isInteractive;
 		sessionOptions.settings = settingsInstance;
 
 		// OTEL: register global OTLP exporters when an endpoint is configured via
@@ -2142,7 +2215,7 @@ export async function runRootCommand(
 				process.exit(1);
 			}
 			if (sessionOptions.model) {
-				authStorage.setRuntimeApiKey(sessionOptions.model.provider, parsedArgs.apiKey);
+				authStorage.keys.setRuntime(sessionOptions.model.provider, parsedArgs.apiKey);
 			}
 		}
 
@@ -2229,7 +2302,7 @@ export async function runRootCommand(
 				initialArgs.fileArgs.length > 0
 					? await logger.time("processFileArguments", () =>
 							processFileArguments(initialArgs.fileArgs, {
-								autoResizeImages: settingsInstance.get("images.autoResize"),
+								autoResizeImages: cfgImagesAutoResize.get(settingsInstance),
 							}),
 						)
 					: undefined;
@@ -2241,10 +2314,10 @@ export async function runRootCommand(
 			});
 
 			const showStartupSplash = shouldShowStartupSplash({
-				configured: settingsInstance.get("startup.showSplash"),
+				configured: cfgStartupShowSplash.get(settingsInstance),
 				isInteractive,
 				resuming: Boolean(parsedArgs.continue || parsedArgs.resume || parsedArgs.fork || foreignSource),
-				quiet: settingsInstance.get("startup.quiet"),
+				quiet: cfgStartupQuiet.get(settingsInstance),
 				timing: Boolean($env.PI_TIMING),
 				stdinIsTTY: process.stdin.isTTY,
 				stdoutIsTTY: process.stdout.isTTY,
@@ -2258,7 +2331,7 @@ export async function runRootCommand(
 						"main:getChangelogForDisplay",
 						getChangelogForDisplay,
 						parsedArgs,
-						settingsInstance.get("startup.changelogMode"),
+						cfgStartupChangelogMode.get(settingsInstance),
 					)
 				: undefined;
 
@@ -2301,10 +2374,10 @@ export async function runRootCommand(
 					eventBus,
 					subagentEventBus,
 				}),
-				Math.trunc(Number(settingsInstance.get("task.agentIdleTtlMs") ?? 420_000) || 0),
+				() => Math.trunc(Number(cfgTaskAgentIdleTtlMs.get(settingsInstance)) || 0),
 			);
 			if (parsedArgs.apiKey && !sessionOptions.model && session.model) {
-				authStorage.setRuntimeApiKey(session.model.provider, parsedArgs.apiKey);
+				authStorage.keys.setRuntime(session.model.provider, parsedArgs.apiKey);
 			}
 
 			// Runtime provider discovery (opencode-go, models.yml `discovery:`, proxies)
@@ -2313,12 +2386,13 @@ export async function runRootCommand(
 			// /models list and Ctrl+P cycle, including scopes that initially resolved
 			// empty (issue #9220). Fire-and-forget: the prompt must never block on the
 			// background pass.
-			const configuredScope = parsedArgs.models ?? settingsInstance.get("enabledModels");
+			const configuredScope = parsedArgs.models ?? cfgEnabledModels.get(settingsInstance);
 			if (isInteractive && configuredScope.length > 0) {
 				void rebuildScopedModelsAfterDiscovery(session, parsedArgs, modelRegistry, settingsInstance).catch(error =>
 					logger.warn("Scoped model rebuild after discovery failed", { error: String(error) }),
 				);
 			}
+			watchScopedModelSettings(session, parsedArgs, modelRegistry, settingsInstance);
 
 			if (modelFallbackMessage) {
 				notifs.push({ kind: "warn", message: modelFallbackMessage });
@@ -2344,11 +2418,24 @@ export async function runRootCommand(
 				process.exit(1);
 			}
 
+			if (mode === "rpc" || mode === "rpc-ui" || isInteractive) {
+				// Long-lived hosts apply on-disk config edits (config.yml, project
+				// settings, `--config` overlays) live. No-op unless this is the
+				// persisting process-global instance.
+				settingsInstance.startWatching();
+				postmortem.register("settings-file-watcher", () => settingsInstance.stopWatching(), { exitOnly: true });
+			}
+
 			if (mode === "rpc" || mode === "rpc-ui") {
 				// Branch-only protocol runner: keep RPC host code out of normal interactive startup.
 				const runRpcMode: RunRpcMode = (await import("./modes/rpc/rpc-mode")).runRpcMode;
 				stopStartupWatchdog();
-				await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, subagentEventBus, rpcInput);
+				await runRpcMode(session, {
+					setToolUIContext: mode === "rpc-ui" ? setToolUIContext : undefined,
+					headless: parsedArgs.noUi === true,
+					subagentEventBus,
+					input: rpcInput,
+				});
 			} else if (mode === "core") {
 				// Headless engine: browser/TUI peers connect through the local server.
 				const runCoreMode: RunCoreMode = (await import("./modes/core-mode")).runCoreMode;
@@ -2360,7 +2447,7 @@ export async function runRootCommand(
 
 				const modelScopeNotification = buildModelScopeNotification(
 					scopedModels,
-					settingsInstance.get("startup.quiet"),
+					cfgStartupQuiet.get(settingsInstance),
 				);
 				if (modelScopeNotification) {
 					// Routed through the TUI (not stdout): the startup capture owns the
@@ -2415,6 +2502,7 @@ export async function runRootCommand(
 					initialImages,
 					printThoughts: initialArgs.printThoughts,
 					planYolo: parsedArgs.planYolo,
+					mcpManager,
 				});
 				if ($env.PI_TIMING) {
 					logger.printTimings();
@@ -2432,6 +2520,7 @@ export async function runRootCommand(
 }
 
 export async function main(args: string[]): Promise<void> {
+	registerLocalInferenceApi();
 	const { runCli } = await import("./cli");
 	await runCli(args.length === 0 ? ["launch"] : args);
 }

@@ -11,6 +11,12 @@
 - Added session-room thinking controls: state frames advertise the configured selector and current model's supported choices, and writable guests can select one with `thinking-change`.
 - Added session-room model frames: guest `model-list`/`model-change` variants and the host `model-list` reply carrying `WireModel[]`.
 - Added control-room wire contracts (`ControlGuestFrame`/`ControlHostFrame`/`SessionSummary`/`SessionStatus`) for multi-session core mode: guests can list, create, resume, and drop sessions through a `ctrl-` room, with read-only peers stripped of session links.
+## [18.2.11] - 2026-09-23
+
+### Added
+
+- Added public API contract and authentication schemas for the Skillshare registry.
+
 ## [18.2.5] - 2026-09-17
 
 ### Added

@@ -13,6 +13,7 @@ import {
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "@oh-my-pi/pi-coding-agent/modes/rpc/rpc-subagents";
 import type {
 	RpcCommand,
+	RpcPromptResultFrame,
 	RpcReadyFrame,
 	RpcResponse,
 	RpcSessionEventFrame,
@@ -378,7 +379,7 @@ function createSubagentRpcProcess(scopeId: string): RpcAgentProcess {
 			stdoutController = controller;
 		},
 	});
-	const output = (frame: RpcReadyFrame | RpcResponse | RpcSessionEventFrame): void => {
+	const output = (frame: RpcReadyFrame | RpcPromptResultFrame | RpcResponse | RpcSessionEventFrame): void => {
 		if (!closed) stdoutController.enqueue(encoder.encode(`${JSON.stringify(frame)}\n`));
 	};
 
@@ -484,6 +485,13 @@ function createSubagentRpcProcess(scopeId: string): RpcAgentProcess {
 							payload: { id: "SubagentA", event: { type: "agent_start" } },
 						});
 						output({ type: "agent_end", messages: [] });
+						output({
+							type: "prompt_result",
+							id: command.id,
+							agentInvoked: true,
+							status: "completed",
+							sessionSettled: true,
+						});
 						break;
 					}
 					default:

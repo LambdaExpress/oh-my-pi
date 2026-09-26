@@ -2420,6 +2420,67 @@ describe("lsp regressions", () => {
 		);
 	}
 
+	it("refreshes an open document after a watched module is created", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-created-module-");
+		try {
+			const sourcePath = path.join(tempDir.path(), "UsesMissing.ts");
+			const modulePath = path.join(tempDir.path(), "MissingClass.ts");
+			const sourceUri = fileToUri(sourcePath);
+			await Bun.write(
+				sourcePath,
+				'import { MissingClass } from "./MissingClass";\nexport const value = new MissingClass();\n',
+			);
+
+			const missingModuleDiagnostic: Diagnostic = {
+				message: "Cannot find module './MissingClass' or its corresponding type declarations.",
+				severity: 1,
+				code: 2307,
+				range: {
+					start: { line: 0, character: 29 },
+					end: { line: 0, character: 45 },
+				},
+			};
+			installFakeLsp((message, server) => {
+				if (message.method === "initialize") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+				} else if (message.method === "textDocument/didOpen") {
+					server.send({
+						jsonrpc: "2.0",
+						method: "textDocument/publishDiagnostics",
+						params: { uri: sourceUri, diagnostics: [missingModuleDiagnostic] },
+					});
+				} else if (message.method === "textDocument/didChange") {
+					server.send({
+						jsonrpc: "2.0",
+						method: "textDocument/publishDiagnostics",
+						params: { uri: sourceUri, diagnostics: [] },
+					});
+				} else if (message.method === "shutdown") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					server.exit(0);
+				}
+			});
+
+			const config: ServerConfig = { command: "fake-lsp", fileTypes: ["ts"], rootMarkers: [] };
+			const client = await lspClient.getOrCreateClient(config, tempDir.path());
+			await lspClient.ensureFileOpen(client, sourcePath);
+			expect(await waitForDiagnostics(client, sourceUri, { timeoutMs: 1_000, settleMs: 0 })).toEqual([
+				missingModuleDiagnostic,
+			]);
+
+			await Bun.write(modulePath, "export class MissingClass {}\n");
+			await lspClient.notifyWorkspaceWatchedFiles(tempDir.path(), [
+				{ filePath: modulePath, type: lspClient.FileChangeType.Created },
+			]);
+
+			expect(await waitForDiagnostics(client, sourceUri, { timeoutMs: 1_000, settleMs: 0 })).toEqual([]);
+		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
 	it("does not reuse stale file diagnostics after another URI publishes", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-stale-diags-");
 		try {
@@ -5360,6 +5421,56 @@ describe("lsp regressions", () => {
 		}
 	});
 
+	it("workspace reload rediscovers LSP servers after an empty config was cached", async () => {
+		const tempDir = TempDir.createSync("@omp-lsp-reload-redetect-");
+		try {
+			const server: ServerConfig = {
+				command: "test-lsp",
+				fileTypes: [".ts"],
+				rootMarkers: ["package.json"],
+			};
+			const configs: LspConfig[] = [
+				{ servers: {}, idleTimeoutMs: undefined },
+				{ servers: { "test-lsp": server }, idleTimeoutMs: undefined },
+				{ servers: { "test-lsp": server }, idleTimeoutMs: undefined },
+			];
+			const loadConfigSpy = vi
+				.spyOn(lspConfig, "loadConfig")
+				.mockImplementation(() => configs.shift() ?? configs[0]);
+			const client = { proc: { kill: vi.fn() }, config: server, openFiles: new Map() } as unknown as LspClient;
+			vi.spyOn(lspClient, "getOrCreateClient").mockResolvedValue(client);
+			vi.spyOn(lspClient, "sendNotification").mockResolvedValue(undefined);
+
+			const tool = new LspTool(makeLspSession(tempDir.path()));
+			const initial = await tool.execute("reload-redetect-status", { action: "status" });
+			const initialOutput = initial.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+			expect(initialOutput).toContain("No language servers configured for this project");
+
+			const starResult = await tool.execute("reload-redetect-star", { action: "reload", file: "*" });
+			const starOutput = starResult.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+
+			const omittedResult = await tool.execute("reload-redetect-omitted", { action: "reload" });
+			const omittedOutput = omittedResult.content
+				.filter(block => block.type === "text")
+				.map(block => block.text)
+				.join("\n");
+
+			expect(loadConfigSpy).toHaveBeenCalledTimes(3);
+			expect(starOutput).toContain("Reloaded test-lsp");
+			expect(omittedOutput).toContain("Reloaded test-lsp");
+			expect(lspClient.getOrCreateClient).toHaveBeenCalledWith(server, tempDir.path(), undefined, expect.anything());
+		} finally {
+			vi.restoreAllMocks();
+			tempDir.removeSync();
+		}
+	});
+
 	it("status distinguishes configured servers from started clients", async () => {
 		// `loadConfig` claims rust-analyzer + tsls are configured, but only
 		// tsls has actually been spawned. Status must reflect that — claiming
@@ -5499,6 +5610,67 @@ describe("lsp regressions", () => {
 			jsonrpc: "2.0",
 			id,
 			error: { code: -32_601, message: "method not found" },
+		});
+
+		it("refreshes open document diagnostics after a generic reload", async () => {
+			const tempDir = TempDir.createSync("@omp-lsp-reload-diagnostics-");
+			try {
+				const sourcePath = path.join(tempDir.path(), "UsesMissing.ts");
+				const sourceUri = fileToUri(sourcePath);
+				await Bun.write(sourcePath, 'import { MissingClass } from "./MissingClass";\n');
+				const missingModuleDiagnostic: Diagnostic = {
+					message: "Cannot find module './MissingClass' or its corresponding type declarations.",
+					severity: 1,
+					code: 2307,
+					range: {
+						start: { line: 0, character: 29 },
+						end: { line: 0, character: 45 },
+					},
+				};
+				installFakeLsp((message, server) => {
+					if (message.method === "initialize") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: { capabilities: {} } });
+					} else if (message.method === "textDocument/didOpen") {
+						server.send({
+							jsonrpc: "2.0",
+							method: "textDocument/publishDiagnostics",
+							params: { uri: sourceUri, diagnostics: [missingModuleDiagnostic] },
+						});
+					} else if (message.method === "textDocument/didChange") {
+						server.send({
+							jsonrpc: "2.0",
+							method: "textDocument/publishDiagnostics",
+							params: { uri: sourceUri, diagnostics: [] },
+						});
+					} else if (message.method === "shutdown") {
+						server.send({ jsonrpc: "2.0", id: message.id, result: null });
+					} else if (message.method === "exit") {
+						server.exit(0);
+					}
+				});
+				const config: ServerConfig = { command: "fake-lsp", fileTypes: [".ts"], rootMarkers: [] };
+				vi.spyOn(lspConfig, "loadConfig").mockReturnValue({
+					servers: { "fake-lsp": config },
+					idleTimeoutMs: undefined,
+				});
+				const client = await lspClient.getOrCreateClient(config, tempDir.path());
+				await lspClient.ensureFileOpen(client, sourcePath);
+				expect(await waitForDiagnostics(client, sourceUri, { timeoutMs: 1_000, settleMs: 0 })).toEqual([
+					missingModuleDiagnostic,
+				]);
+
+				const result = await new LspTool(makeLspSession(tempDir.path())).execute("reload-diagnostics", {
+					action: "reload",
+					file: "*",
+				});
+
+				expect(textResult(result)).toContain("Reloaded fake-lsp");
+				expect(await waitForDiagnostics(client, sourceUri, { timeoutMs: 1_000, settleMs: 0 })).toEqual([]);
+			} finally {
+				vi.restoreAllMocks();
+				await lspClient.shutdownAll();
+				tempDir.removeSync();
+			}
 		});
 
 		it("propagates cancellation of the reload request instead of reporting Restarted", async () => {
@@ -6096,12 +6268,13 @@ describe("lsp regressions", () => {
 			const controller = new AbortController();
 			const second = lspClient.sendNotification(client, "textDocument/didOpen", {}, controller.signal);
 			controller.abort();
-			await Bun.sleep(0);
 
+			// The caller must be released even while the earlier queue slot remains
+			// wedged; aborting a not-yet-started write must not kill the client.
+			await expect(second).rejects.toBeInstanceOf(Error);
 			expect(kill).not.toHaveBeenCalled();
 			firstFlush.resolve(0);
 			await first;
-			await expect(second).rejects.toBeInstanceOf(Error);
 			expect(kill).not.toHaveBeenCalled();
 			expect(writes).toHaveLength(1);
 		});

@@ -62,6 +62,8 @@ export interface NewSessionOptions {
 	drop?: boolean;
 	/** Additional workspace directories to seed on the new session. */
 	additionalDirectories?: string[];
+	/** Directory for the new session file (and later `/new` sessions); defaults to the current session directory. */
+	sessionDir?: string;
 }
 
 export interface SessionEntryBase {
@@ -276,6 +278,8 @@ export interface SessionInitEntry extends SessionEntryBase {
 	readSummarize?: boolean;
 	/** Effective advisor for this subagent: `"on"` = advisor-role model, else an explicit model pattern; absent = unadvised. */
 	advisor?: string;
+	/** Effective thresholds for a child with an explicit compaction override. */
+	compactionThreshold?: { thresholdPercent: number; thresholdTokens: number };
 	/** True when the subagent ran inside an isolation worktree: never revivable, transcript-only after park. Absent on older files. */
 	isolated?: boolean;
 }
@@ -356,4 +360,21 @@ export interface UsageStatistics {
 	orchestrationCacheRead: number;
 	premiumRequests: number;
 	cost: number;
+}
+/**
+ * True when a raw JSONL line is a complete `message` record carrying an
+ * assistant role. Parses the line, so valid JSON whitespace (`"role" :
+ * "assistant"`, tabs, newlines-in-string excluded by line framing) classifies
+ * correctly — unlike substring checks for exact serializations. Malformed or
+ * partial lines (mid-write truncation) return false.
+ */
+export function isAssistantMessageLine(line: string): boolean {
+	if (line.length === 0 || line.charCodeAt(0) !== 123) return false;
+	let record: { type?: unknown; message?: { role?: unknown } };
+	try {
+		record = JSON.parse(line) as { type?: unknown; message?: { role?: unknown } };
+	} catch {
+		return false;
+	}
+	return record.type === "message" && record.message?.role === "assistant";
 }

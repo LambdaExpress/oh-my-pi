@@ -28,14 +28,11 @@ const imageAttachment = {
 
 function createInternalRouter(resources: Record<string, { sourcePath?: string; error?: string }>): {
 	canHandle: (input: string) => boolean;
-	resolve: (
-		input: string,
-		context?: ResolveContext,
-	) => Promise<{ url: string; content: string; contentType: "text/plain"; sourcePath?: string; immutable: boolean }>;
+	locate: (input: string, context?: ResolveContext) => Promise<string | null>;
 } {
 	return {
 		canHandle: input => /^(agent|artifact|plan|memory|rule):\/\//.test(input),
-		resolve: async input => {
+		locate: async input => {
 			const entry = resources[input];
 			if (!entry) {
 				throw new Error(`No mapping for ${input}`);
@@ -43,13 +40,7 @@ function createInternalRouter(resources: Record<string, { sourcePath?: string; e
 			if (entry.error) {
 				throw new Error(entry.error);
 			}
-			return {
-				url: input,
-				content: "",
-				contentType: "text/plain",
-				sourcePath: entry.sourcePath,
-				immutable: true,
-			};
+			return entry.sourcePath ?? null;
 		},
 	};
 }
@@ -76,19 +67,11 @@ describe("expandInternalUrls", () => {
 		const cwd = "/tmp/session-b";
 		const sourcePath = "/tmp/session-b-memory/memory_summary.md";
 		let observedCwd: string | undefined;
-		let observedPathOnly: boolean | undefined;
 		const router = {
 			canHandle: (input: string) => input === "memory://root/memory_summary.md",
-			resolve: async (input: string, context?: ResolveContext) => {
+			locate: async (_input: string, context?: ResolveContext) => {
 				observedCwd = context?.cwd;
-				observedPathOnly = context?.pathOnly;
-				return {
-					url: input,
-					content: "",
-					contentType: "text/plain" as const,
-					sourcePath,
-					immutable: true,
-				};
+				return sourcePath;
 			},
 		};
 
@@ -96,7 +79,6 @@ describe("expandInternalUrls", () => {
 			expandInternalUrls("cat memory://root/memory_summary.md", { skills: [], internalRouter: router, cwd }),
 		).resolves.toBe(`cat ${shellEscape(path.resolve(sourcePath))}`);
 		expect(observedCwd).toBe(cwd);
-		expect(observedPathOnly).toBe(true);
 	});
 
 	it("forwards the session's scoped rules to the router when expanding rule:// URLs", async () => {
@@ -112,15 +94,9 @@ describe("expandInternalUrls", () => {
 		let observedRules: unknown;
 		const router = {
 			canHandle: (input: string) => input === "rule://scout-only",
-			resolve: async (input: string, context?: ResolveContext) => {
+			locate: async (_input: string, context?: ResolveContext) => {
 				observedRules = context?.rules;
-				return {
-					url: input,
-					content: "",
-					contentType: "text/plain" as const,
-					sourcePath,
-					immutable: true,
-				};
+				return sourcePath;
 			},
 		};
 

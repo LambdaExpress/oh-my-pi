@@ -4,12 +4,24 @@ import * as path from "node:path";
 import { FileLock as NativeFileLock } from "@oh-my-pi/pi-natives";
 import { withFileLockSync } from "@oh-my-pi/pi-utils/file-lock";
 import { hasFsCode, isEnoent } from "@oh-my-pi/pi-utils/fs-error";
+import { openCloexecSync } from "@oh-my-pi/pi-utils/fs-open";
 import * as logger from "@oh-my-pi/pi-utils/logger";
 import { peekFileEnds } from "@oh-my-pi/pi-utils/peek-file";
 import { Snowflake } from "@oh-my-pi/pi-utils/snowflake";
 import { toError } from "@oh-my-pi/pi-utils/type-guards";
+import { isAssistantMessageLine } from "./session-entries";
 import { overlayTitleSlotContent, type SessionTitleUpdate, serializeTitleSlot } from "./session-title-slot";
 
+/**
+ * Shared base flags for the held transcript descriptor; callers may add `O_TRUNC`.
+ *
+ * Read/write rather than append-only on purpose: Windows opens `O_APPEND`
+ * handles with append-only access, where the `ftruncateSync` rollback in
+ * `#writeNow` fails with EPERM. `#writeNow` positions every append at the EOF it
+ * captured, so a plain read/write handle still lets rollback restore that exact
+ * boundary.
+ */
+const SESSION_WRITE_FLAGS = fs.constants.O_CREAT | fs.constants.O_RDWR;
 const utf8Decoder = new TextDecoder("utf-8");
 
 export interface SessionStorageStat {
@@ -140,6 +152,14 @@ export interface SessionStorage {
 	readText(path: string): Promise<string>;
 	/** Read the requested UTF-8 byte windows from the head and tail of the file. */
 	readTextSlices(path: string, prefixBytes: number, suffixBytes: number): Promise<[string, string]>;
+	/**
+	 * True when any complete `message` record in the file carries an assistant
+	 * role. Scans line boundaries across the whole file (middle included) so a
+	 * >prefix assistant record before a fixed-size tail window still counts.
+	 * Optional: backends without cheap full scans omit it and callers fall back
+	 * to prefix/suffix marker evidence.
+	 */
+	hasAssistantTurn?(path: string): Promise<boolean>;
 	writeText(path: string, content: string): Promise<void>;
 	writeTextAtomic(path: string, content: string, options?: WriteTextAtomicOptions): Promise<void>;
 	rename(path: string, nextPath: string): Promise<void>;
@@ -204,11 +224,7 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 			fs.mkdirSync(dir, { recursive: true });
 		}
 		// Open file once, keep fd for lifetime
-		// Windows opens O_APPEND handles with append-only access, which cannot be
-		// truncated after a partial write (ftruncateSync fails with EPERM). Keep a
-		// normal read/write handle and position each append explicitly at the EOF
-		// captured by #writeNow so rollback can restore that exact boundary.
-		this.#fd = fs.openSync(fpath, flags === "w" ? "w" : fs.constants.O_CREAT | fs.constants.O_RDWR);
+		this.#fd = openCloexecSync(fpath, SESSION_WRITE_FLAGS | (flags === "w" ? fs.constants.O_TRUNC : 0));
 		// Register for cleanup if abandoned without close()
 		writerRegistry.register(this, this.#fd, this);
 	}
@@ -228,7 +244,7 @@ class FileSessionStorageWriter implements SessionStorageWriter {
 			throw err;
 		}
 		if (live.ino === fs.fstatSync(this.#fd).ino) return;
-		const nextFd = fs.openSync(this.#fpath, "a");
+		const nextFd = openCloexecSync(this.#fpath, SESSION_WRITE_FLAGS);
 		writerRegistry.unregister(this);
 		try {
 			fs.closeSync(this.#fd);
@@ -677,6 +693,18 @@ export class FileSessionStorage implements SessionStorage {
 		]);
 	}
 
+	async hasAssistantTurn(path: string): Promise<boolean> {
+		const fileHandle = await fsp.open(path, "r");
+		try {
+			for await (const line of fileHandle.readLines()) {
+				if (isAssistantMessageLine(line)) return true;
+			}
+			return false;
+		} finally {
+			await fileHandle.close();
+		}
+	}
+
 	async writeText(path: string, content: string): Promise<void> {
 		await Bun.write(path, content, { createPath: true });
 	}
@@ -887,6 +915,23 @@ export class FileSessionStorage implements SessionStorage {
 					cause: error,
 				},
 			);
+		}
+
+		// Remove EPERM-rewrite leftovers (`<name>.jsonl.<snowflake>.bak`): the
+		// picker scan would otherwise resurrect the deleted session from the
+		// newest stale backup (#11499). Best-effort — a locked file warns
+		// instead of failing the delete the user asked for.
+		const base = path.basename(sessionPath);
+		for (const bak of this.listFilesSync(path.dirname(sessionPath), "*.bak")) {
+			if (!path.basename(bak).startsWith(`${base}.`)) continue;
+			try {
+				await fsp.unlink(bak);
+			} catch (err) {
+				logger.warn("Failed to remove stale session backup during delete", {
+					path: bak,
+					error: toError(err).message,
+				});
+			}
 		}
 	}
 }
@@ -1176,6 +1221,15 @@ export class MemorySessionStorage implements SessionStorage {
 		const entry = this.#files.get(path);
 		if (!entry) return Promise.reject(new Error(`File not found: ${path}`));
 		return Promise.resolve([sliceChunksHead(entry, prefixBytes), sliceChunksTail(entry, suffixBytes)]);
+	}
+
+	async hasAssistantTurn(path: string): Promise<boolean> {
+		const entry = this.#files.get(path);
+		if (!entry) throw new Error(`File not found: ${path}`);
+		for (const line of materializeMemoryEntry(entry).split("\n")) {
+			if (isAssistantMessageLine(line)) return true;
+		}
+		return false;
 	}
 
 	writeText(path: string, content: string): Promise<void> {

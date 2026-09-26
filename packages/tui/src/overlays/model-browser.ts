@@ -11,6 +11,7 @@ import { ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { buildModel } from "@oh-my-pi/pi-catalog/build";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
+import type { ModelKind } from "@oh-my-pi/pi-catalog/types";
 import type { Component } from "../tui";
 import { fuzzyRank } from "../fuzzy";
 import { Input } from "../components/input";
@@ -34,7 +35,22 @@ import { MenuSelection } from "../components/menu-selection";
 import { clampScrollOffset, scrollOffsetForRow } from "../components/scroll-viewport";
 
 /** Canonical display ordering of built-in model roles. */
-export type ModelRole = "default" | "smol" | "slow" | "vision" | "plan" | "commit" | "tiny" | "task" | "advisor";
+export type ModelRole =
+	| "default"
+	| "smol"
+	| "slow"
+	| "vision"
+	| "plan"
+	| "commit"
+	| "tiny"
+	| "memory"
+	| "task"
+	| "advisor"
+	| "image"
+	| "web"
+	| "speech"
+	| "dictation"
+	| "judge";
 export const MODEL_ROLE_IDS: ModelRole[] = [
 	"default",
 	"smol",
@@ -43,9 +59,28 @@ export const MODEL_ROLE_IDS: ModelRole[] = [
 	"plan",
 	"commit",
 	"tiny",
+	"memory",
+	"task",
+	"advisor",
+	"image",
+	"web",
+	"speech",
+	"dictation",
+	"judge",
+];
+export const CHAT_MODEL_ROLE_IDS: ModelRole[] = [
+	"default",
+	"smol",
+	"slow",
+	"vision",
+	"plan",
+	"commit",
+	"tiny",
+	"memory",
 	"task",
 	"advisor",
 ];
+export const KIND_ROLE_IDS: ModelRole[] = ["image", "web", "speech", "dictation", "judge"];
 
 /** Measured model performance shown in browser rows. */
 export interface ModelBrowserPerf {
@@ -60,6 +95,8 @@ export interface ModelBrowserRoleInfo {
 	name: string;
 	color?: ThemeColor;
 	hidden?: boolean;
+	section: "chat" | "kind";
+	accepts(model: Model): boolean;
 }
 
 /** Role lookup used for scoped model resolution. */
@@ -83,14 +120,15 @@ export interface ModelBrowserSource extends ModelRoleLookup {
 	readonly mruOrder: readonly string[];
 	readonly modelPerf: ReadonlyMap<string, ModelBrowserPerf>;
 	getRoleInfo(role: string): ModelBrowserRoleInfo;
+	defaultRoleChain(role: string): string[];
 	resolveRoleValue(value: string | undefined, models: Model[], roleLookup?: ModelRoleLookup): ResolvedModelRoleValue;
 }
 
 /** Read-only catalog surface consumed by model browsers. */
 export interface ModelBrowserRegistry {
 	getError(): unknown;
-	getAvailable(): Model[];
-	getAll(): Model[];
+	getAvailable(kind?: ModelKind | "all"): Model[];
+	getAll(kind?: ModelKind | "all"): Model[];
 }
 
 /** One selectable row. `selector` is a canonical model key or host-specific virtual key. */
@@ -147,7 +185,7 @@ export function resolveRoleAssignments(
 		const roleValue = settings.getModelRole(role);
 		if (!roleValue) continue;
 		configuredRoles.add(role);
-		const resolved = settings.resolveRoleValue(roleValue, catalog);
+		const resolved = settings.resolveRoleValue(roleValue, catalog.filter(settings.getRoleInfo(role).accepts));
 		if (resolved.model) {
 			roles[role] = {
 				model: resolved.model,
@@ -161,7 +199,10 @@ export function resolveRoleAssignments(
 		const candidates = [...autoCandidates];
 		for (const role of knownRoles) {
 			if (configuredRoles.has(role)) continue;
-			const resolved = settings.resolveRoleValue(`pi/${role}`, candidates);
+			const resolved = settings.resolveRoleValue(
+				`pi/${role}`,
+				candidates.filter(settings.getRoleInfo(role).accepts),
+			);
 			if (!resolved.model) continue;
 			roles[role] = {
 				model: resolved.model,
@@ -312,7 +353,7 @@ export function buildSessionModelScope(
 			models = [];
 		}
 	}
-	const allModels = scopedModels.length > 0 ? models : registry.getAll();
+	const allModels = scopedModels.length > 0 ? models : registry.getAll("all");
 	const roles = resolveRoleAssignments(settings, allModels, models);
 	const mruOrder = settings.mruOrder;
 	const items = buildBrowserItems(models);

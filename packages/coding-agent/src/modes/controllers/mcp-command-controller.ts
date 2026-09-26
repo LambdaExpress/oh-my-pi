@@ -72,6 +72,8 @@ import { theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../types";
 import { groupBySource, parseRemoveArgs, readScopeFlag, showCommandMessage } from "./command-controller-shared";
 
+import { cfgMcpEnableProjectConfig } from "../../mcp/settings";
+
 const MCP_MANUAL_INPUT_PROVIDER_ID = "mcp";
 const MCP_TEST_ESCAPE_GRACE_MS = 5_000;
 
@@ -1068,7 +1070,7 @@ export class MCPCommandController {
 				authorizationUrl: flow.authorizationUrl,
 			};
 
-			await authStorage.set(credentialId, oauthCredential);
+			await authStorage.credentials.set(credentialId, oauthCredential);
 
 			return {
 				credentialId,
@@ -2373,7 +2375,7 @@ export class MCPCommandController {
 
 		// Rediscover and connect, mirroring startup's discovery filters.
 		const result = await this.ctx.mcpManager.discoverAndConnect({
-			enableProjectConfig: this.ctx.settings.get("mcp.enableProjectConfig") ?? true,
+			enableProjectConfig: cfgMcpEnableProjectConfig.get(this.ctx.settings),
 			filterExa: true,
 			filterBrowser: this.ctx.session.getEvalPreludes().some(definition => definition.name === "browser"),
 			extensionRoots: this.ctx.session.effectiveExtensionRoots,

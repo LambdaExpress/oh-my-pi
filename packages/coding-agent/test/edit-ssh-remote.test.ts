@@ -13,6 +13,7 @@ import {
 	type InternalUrl,
 	type ProtocolHandler,
 	type ResolveContext,
+	type SchemeSpec,
 	type WriteContext,
 } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
@@ -24,7 +25,15 @@ type Mutation = { op: "write"; key: string; content: string } | { op: "delete"; 
 
 class FakeSshProtocolHandler implements ProtocolHandler {
 	readonly scheme = "ssh";
-	readonly immutable = false;
+	/** Mirrors the real `ssh://` handler spec: remote, mutable, exec-tiered, handler-owned writes. */
+	readonly spec: SchemeSpec = {
+		backing: "remote",
+		selectors: "lines",
+		portAuthority: true,
+		immutable: false,
+		readTier: "exec",
+		write: { via: "handler", payload: "text", scope: "workspace", tier: () => "exec" },
+	};
 	readonly files: Map<string, string>;
 	readonly mutations: Mutation[] = [];
 	readonly moves: Array<{ from: string; to: string; content: string | undefined }> = [];

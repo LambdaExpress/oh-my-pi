@@ -43,6 +43,10 @@ import {
 import { createSecurityPublicationTool } from "./publication";
 import { SecurityStore, writeSecurityBundleToDirectory } from "./store";
 
+import { cfgRetryFallbackChains, cfgRetryModelFallback, cfgRetryUsageAwareFallback } from "../session/settings";
+import { cfgSecurityEnabled } from "../tools/settings";
+import { cfgTaskAgentModelOverrides, cfgTaskAgentPrewalk } from "../task/settings";
+
 const SECURITY_SESSION_TOOLS = ["read", "grep", "glob", "lsp", "ast_grep", "task", "security_publish"];
 /** Total scan-prompt attempts (initial run + retries) before degrading to partial. */
 const SECURITY_SCAN_PROMPT_MAX_ATTEMPTS = 3;
@@ -163,7 +167,7 @@ function toIsoTimestamp(now: () => Date): string {
 }
 
 function securityConfigSnapshot(settings: Settings): Record<string, boolean> {
-	return { securityEnabled: settings.get("security.enabled") };
+	return { securityEnabled: cfgSecurityEnabled.get(settings) };
 }
 
 function createOperationId(): string {
@@ -238,15 +242,15 @@ function initialBundle(
 async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInput): Promise<AgentSession> {
 	const scanSettings = await input.host.settings.cloneForCwd(input.executionRoot);
 	const modelSelector = `${input.model.provider}/${input.model.id}`;
-	scanSettings.override("retry.modelFallback", false);
-	scanSettings.override("retry.usageAwareFallback", false);
-	scanSettings.override("retry.fallbackChains", {});
-	scanSettings.override("task.agentModelOverrides", {
-		...scanSettings.get("task.agentModelOverrides"),
+	cfgRetryModelFallback.override(scanSettings, false);
+	cfgRetryUsageAwareFallback.override(scanSettings, false);
+	cfgRetryFallbackChains.override(scanSettings, {});
+	cfgTaskAgentModelOverrides.override(scanSettings, {
+		...cfgTaskAgentModelOverrides.get(scanSettings),
 		"security-reviewer": modelSelector,
 	});
-	scanSettings.override("task.agentPrewalk", {
-		...scanSettings.get("task.agentPrewalk"),
+	cfgTaskAgentPrewalk.override(scanSettings, {
+		...cfgTaskAgentPrewalk.get(scanSettings),
 		"security-reviewer": "off",
 	});
 	const providerSessionId = `security:${input.scanId}`;
@@ -281,6 +285,8 @@ async function createDefaultSecuritySession(input: SecurityScanSessionFactoryInp
 		skipPythonPreflight: true,
 		agentId: `Security-${input.scanId.slice(-12)}`,
 		agentDisplayName: "security",
+		// A helper for the host session: the host keeps the process-wide effects and provider toggles.
+		bindProcessState: false,
 	});
 	// The scan session is headless (`hasUI: false`): streamed text is never
 	// rendered to a user, so a failed turn's text is replay-safe. Without this
@@ -442,7 +448,7 @@ export class SecurityCoordinator {
 	}
 
 	async preflight(input: SecurityPreflightInput = {}): Promise<SecurityScanPlan> {
-		if (!this.#host.settings.get("security.enabled")) {
+		if (!cfgSecurityEnabled.get(this.#host.settings)) {
 			throw new Error(t("Security is disabled; enable security.enabled before planning a scan"));
 		}
 		const model = input.model ?? this.#host.activeModel;
@@ -477,7 +483,7 @@ export class SecurityCoordinator {
 	}
 
 	async start(input: SecurityStartInput): Promise<SecurityOperationSnapshot> {
-		if (!this.#host.settings.get("security.enabled")) {
+		if (!cfgSecurityEnabled.get(this.#host.settings)) {
 			throw new Error(t("Security is disabled; enable security.enabled before starting a scan"));
 		}
 		await this.#ensureRecovered();

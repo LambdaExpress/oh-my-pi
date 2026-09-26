@@ -30,7 +30,8 @@ interface CommitExecutionContext {
 
 export async function runAgenticCommit(args: CommitCommandArgs): Promise<{ usedFallback: boolean }> {
 	const cwd = getProjectDir();
-	const [settings, authStorage] = await Promise.all([Settings.init({ cwd }), discoverAuthStorage()]);
+	const settings = await Settings.init({ cwd });
+	const authStorage = await discoverAuthStorage(undefined, { settings });
 	try {
 		return await runAgenticCommitPipeline(args, cwd, settings, authStorage);
 	} finally {

@@ -5,12 +5,14 @@ import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import {
 	getChangelogPath,
 	parseChangelog,
-	RECENT_CHANGELOG_ENTRY_LIMIT,
+	parseChangelogView,
 	renderChangelogEntries,
+	selectChangelogEntries,
 } from "../utils/changelog";
 import { formatTokenCount, refreshStatusLine } from "./builtin-modes";
 import { buildContextReportText } from "./helpers/context-report";
 import { formatCoarseDuration } from "@oh-my-pi/pi-tui/chrome/format";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { handleMcpAcp } from "./helpers/mcp";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
 import { describeRedeemOutcome, toResetUsageAccounts } from "./helpers/reset-usage";
@@ -21,60 +23,116 @@ import { handleTodoAcp } from "./helpers/todo";
 import { buildUsageReportText } from "./helpers/usage-report";
 import type { SlashCommandRuntime, SlashCommandSpec } from "./types";
 
+function normalizeResetProvider(value: string): string | undefined {
+	switch (value.trim().toLowerCase()) {
+		case "anthropic":
+		case "claude":
+			return "anthropic";
+		case "openai-codex":
+		case "codex":
+			return "openai-codex";
+		default:
+			return undefined;
+	}
+}
+
 async function handleUsageResetCommand(
 	arg: string,
 	session: AgentSession,
 	output: SlashCommandRuntime["output"],
 ): Promise<boolean> {
+	const safe = (value: string): string => sanitizeText(value.replace(/[\r\n\t]+/g, " "));
 	let accounts: ResetUsageAccount[];
 	try {
 		accounts = toResetUsageAccounts(await session.listResetCredits());
 	} catch (error) {
-		await output(t("Could not load saved resets: {error}", { error: errorMessage(error) }));
+		await output(t("Could not load saved resets: {error}", { error: safe(errorMessage(error)) }));
 		return false;
 	}
 	if (accounts.length === 0) {
-		await output(t("No Codex accounts found. Use /login to add one."));
+		await output(t("No provider accounts found. Use /login to add one."));
 		return false;
 	}
 	const targetArg = arg.trim();
 	if (!targetArg) {
-		const lines = [t("Saved Codex rate-limit resets:")];
+		const lines = [t("Saved rate-limit resets:")];
 		for (const account of accounts) {
-			const detail = account.error
-				? t("unavailable ({error})", { error: account.error })
-				: t("{count} available", { count: account.availableCount });
+			let detail: string;
+			if (account.error) {
+				detail = t("unavailable ({error})", { error: safe(account.error) });
+			} else {
+				detail = t("{available} saved, {redeemable} usable now", {
+					available: account.availableCount,
+					redeemable: account.redeemableCount,
+				});
+				if (account.expiresAt) {
+					detail = t("{detail}, expires {date}", { detail, date: safe(account.expiresAt) });
+				}
+				if (account.redeemableCount === 0 && account.unavailableReason) {
+					detail = t("{detail} ({reason})", { detail, reason: safe(account.unavailableReason) });
+				}
+			}
 			lines.push(
-				t("- {label}: {detail}", {
-					label: account.label,
+				t("- {label} [{providerLabel} · {provider}/{credentialId}]: {detail}", {
+					label: safe(account.label),
+					providerLabel: safe(account.providerLabel),
+					provider: account.provider,
+					credentialId: account.target.credentialId,
 					detail: `${detail}${account.active ? ` ${t("(active)")}` : ""}`,
 				}),
 			);
 		}
-		lines.push("", t("Spend one with `/usage reset <account email>` or `/usage reset active`."));
+		lines.push(
+			"",
+			t("Spend one with `/usage reset <provider>/<credential id>` or `/usage reset <provider>/active`."),
+		);
 		await output(lines.join("\n"));
 		return false;
 	}
-	const wanted = targetArg.toLowerCase();
-	const target =
-		wanted === "active"
-			? accounts.find(account => account.active)
-			: accounts.find(
-					account =>
-						account.label.toLowerCase() === wanted ||
-						account.target.email?.toLowerCase() === wanted ||
-						account.target.accountId?.toLowerCase() === wanted,
-				);
-	if (!target) {
-		await output(t('No Codex account matches "{name}".', { name: targetArg }));
+
+	const slash = targetArg.indexOf("/");
+	if (slash <= 0) {
+		await output(t("Choose an account with `/usage reset <provider>/<credential id>`."));
 		return false;
 	}
-	if (target.availableCount <= 0) {
-		await output(t("{label}: no saved resets to spend.", { label: target.label }));
+	const requestedProvider = normalizeResetProvider(targetArg.slice(0, slash));
+	const requestedAccount = targetArg
+		.slice(slash + 1)
+		.trim()
+		.toLowerCase();
+	if (!requestedProvider) {
+		await output(
+			t('Unknown reset provider "{name}". Use anthropic or openai-codex.', {
+				name: safe(targetArg.slice(0, slash)),
+			}),
+		);
+		return false;
+	}
+	const requestedCredentialId = /^\d+$/.test(requestedAccount) ? Number(requestedAccount) : undefined;
+	const target = accounts.find(account => {
+		if (account.provider !== requestedProvider) return false;
+		if (requestedAccount === "active") return account.active;
+		return requestedCredentialId !== undefined && account.target.credentialId === requestedCredentialId;
+	});
+	if (!target) {
+		await output(
+			t('No stored account matches "{name}". List choices with `/usage reset`.', { name: safe(targetArg) }),
+		);
+		return false;
+	}
+	if (target.redeemableCount <= 0) {
+		const reason = target.unavailableReason ? ` (${safe(target.unavailableReason)})` : "";
+		await output(
+			t("{label} [{providerLabel}]: no saved resets usable right now{reason}.", {
+				label: safe(target.label),
+				providerLabel: safe(target.providerLabel),
+				reason,
+			}),
+		);
 		return false;
 	}
 	const outcome = await session.redeemResetCredit(target.target);
-	await output(describeRedeemOutcome(outcome, target.label));
+	await output(safe(describeRedeemOutcome(outcome, target.label)));
 	return outcome.ok;
 }
 
@@ -102,10 +160,7 @@ async function handleSessionPinCommand(
 	const providerName = provider?.name ?? accountList.provider;
 	const accounts = toSessionPinAccounts(accountList.accounts);
 	if (accounts.length === 0) {
-		const source = session.modelRegistry.authStorage.describeCredentialSource(
-			accountList.provider,
-			session.sessionId,
-		);
+		const source = session.modelRegistry.authStorage.keys.describe(accountList.provider, session.sessionId);
 		await output(
 			source
 				? t("No stored OAuth accounts for {provider}. Current auth comes from {source}.", {
@@ -314,7 +369,9 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			if (snapshot.recent.length > 0) {
 				lines.push("", t("Recent Jobs"));
 				for (const job of snapshot.recent) {
-					lines.push(`  [${job.id}] ${job.type} (${job.status}) — ${formatCoarseDuration(now - job.startTime)}`);
+					lines.push(
+						`  [${job.id}] ${job.type} (${job.status}) — ${formatCoarseDuration((job.endTime ?? now) - job.startTime)}`,
+					);
 					lines.push(`    ${job.label}`);
 				}
 			}
@@ -331,10 +388,14 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "gauge",
 		description: "Show provider usage and limits",
 		acpDescription: "Show token usage",
-		acpInputHint: "[show|reset [account|active]]",
+		acpInputHint: "[show|reset [provider/credential-id|provider/active]]",
 		subcommands: [
 			{ name: "show", description: "Show provider usage and limits" },
-			{ name: "reset", description: "Spend a saved Codex rate-limit reset", usage: "[account|active]" },
+			{
+				name: "reset",
+				description: "Spend a saved provider rate-limit reset",
+				usage: "[provider/credential-id|provider/active]",
+			},
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
@@ -347,7 +408,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				await handleUsageResetCommand(rest, runtime.session, runtime.output);
 				return commandConsumed();
 			}
-			return usage(t("Usage: /usage [show|reset [account|active]]"), runtime);
+			return usage(t("Usage: /usage [show|reset [provider/credential-id|provider/active]]"), runtime);
 		},
 		handleTui: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
@@ -371,7 +432,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				runtime.ctx.editor.setText("");
 				return;
 			}
-			runtime.ctx.showStatus(t("Usage: /usage [show|reset [account|active]]"));
+			runtime.ctx.showStatus(t("Usage: /usage [show|reset [provider/credential-id|provider/active]]"));
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -400,14 +461,18 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "news",
 		description: "Show changelog entries",
 		acpDescription: "Show changelog",
-		acpInputHint: "[full]",
-		subcommands: [{ name: "full", description: "Show complete changelog" }],
+		acpInputHint: "[full|last [N]]",
+		subcommands: [
+			{ name: "full", description: "Show complete changelog" },
+			{ name: "last", description: "Show the last N releases (default 1)", usage: "[N]" },
+		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
+			const view = parseChangelogView(command.args);
+			if ("error" in view) return usage(view.error, runtime);
 			const changelogPath = getChangelogPath();
 			const allEntries = await parseChangelog(changelogPath);
-			const showFull = command.args.trim().toLowerCase() === "full";
-			const entriesToShow = showFull ? allEntries : allEntries.slice(0, RECENT_CHANGELOG_ENTRY_LIMIT);
+			const entriesToShow = selectChangelogEntries(allEntries, view);
 			if (entriesToShow.length === 0) {
 				await runtime.output(t("No changelog entries found."));
 				return commandConsumed();
@@ -416,8 +481,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
-			const showFull = command.args.split(/\s+/).filter(Boolean).includes("full");
-			await runtime.ctx.handleChangelogCommand(showFull);
+			await runtime.ctx.handleChangelogCommand(command.args);
 			runtime.ctx.editor.setText("");
 		},
 	},

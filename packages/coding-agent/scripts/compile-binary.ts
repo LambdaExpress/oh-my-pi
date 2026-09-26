@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { USER_AGENT } from "@oh-my-pi/pi-utils/dirs";
 import { generateCollabWebEmbed, resetCollabWebEmbed } from "./embed-collab-web";
 import { buildDocsIndexPayload } from "./generate-docs-index";
+import { createJsonParsePlugin } from "./json-parse-plugin";
 import { createLegacyPiVirtualModulePlugin } from "./legacy-pi-virtual-module";
 
 /** Native runtime dependencies always resolved from the on-demand install instead of embedded into compiled binaries. */
@@ -167,6 +168,8 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				"process.env.PI_DOCS_EMBED": JSON.stringify((await buildDocsIndexPayload()).payload),
 				"process.env.OMP_RELEASE_CODE": JSON.stringify(options.releaseCode ?? "0"),
 			},
+			// Keep import.meta.resolve in bundled dependencies valid under bytecode.
+			format: "esm",
 			minify: {
 				identifiers: options.minifyIdentifiers ?? false,
 				keepNames: true,
@@ -198,7 +201,11 @@ export async function compileCodingAgent(options: CodingAgentCompileOptions): Pr
 				// failure mode is a binary that cannot boot, so it is verified
 				// below and dropped for the affected graph.
 				bytecode,
-				plugins: [await createLegacyPiVirtualModulePlugin(), createImportMetaCompatPlugin()],
+				plugins: [
+					createJsonParsePlugin(),
+					await createLegacyPiVirtualModulePlugin(),
+					createImportMetaCompatPlugin(),
+				],
 			});
 		const wantsBytecode = Bun.env.OMP_BUILD_BYTECODE !== "0";
 		let output = await buildBundle(wantsBytecode);

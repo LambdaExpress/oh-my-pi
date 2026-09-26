@@ -525,7 +525,13 @@ function Session({ client, onLeave, onRejoin, onBack }: SessionProps): ReactNode
 				)}
 			</main>
 			{snap.phase === "ended" ? (
-				<Banners phase={snap.phase} endedReason={snap.endedReason} onRejoin={onRejoin} onNewLink={onLeave} />
+				<Banners
+					phase={snap.phase}
+					endedReason={snap.endedReason}
+					loading={snap.loading}
+					onRejoin={onRejoin}
+					onNewLink={onLeave}
+				/>
 			) : (
 				<Composer client={client} snapshot={snap} />
 			)}
@@ -543,7 +549,13 @@ function Session({ client, onLeave, onRejoin, onBack }: SessionProps): ReactNode
 				</>
 			)}
 			{snap.phase !== "ended" && (
-				<Banners phase={snap.phase} endedReason={snap.endedReason} onRejoin={onRejoin} onNewLink={onLeave} />
+				<Banners
+					phase={snap.phase}
+					endedReason={snap.endedReason}
+					loading={snap.loading}
+					onRejoin={onRejoin}
+					onNewLink={onLeave}
+				/>
 			)}
 		</div>
 	);

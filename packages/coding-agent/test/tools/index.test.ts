@@ -3,9 +3,9 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SSHHost } from "@oh-my-pi/pi-coding-agent/capability/ssh";
-import { type SettingPath, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { createLocalWslTargets } from "@oh-my-pi/pi-coding-agent/ssh/wsl";
-import { AdbTool, BUILTIN_TOOLS, createTools, HIDDEN_TOOLS, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { AdbTool, BUILTIN_TOOLS, createTools, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BUILTIN_TOOL_NAMES } from "@oh-my-pi/pi-coding-agent/tools/builtin-names";
 
 Bun.env.PI_PYTHON_SKIP_CHECK = "1";
@@ -27,7 +27,7 @@ function createTestSession(overrides: Partial<ToolSession> = {}): ToolSession {
 	};
 }
 
-function createSettingsWithOverrides(overrides: Partial<Record<SettingPath, unknown>> = {}): Settings {
+function createSettingsWithOverrides(overrides: Record<string, unknown> = {}): Settings {
 	return Settings.isolated({
 		"lsp.formatOnWrite": true,
 		"bashInterceptor.enabled": true,
@@ -112,13 +112,12 @@ describe("createTools", () => {
 		const session = createTestSession({
 			settings: createSettingsWithOverrides({ "astGrep.enabled": false }),
 		});
-		const tools = await createTools(session, ["search", "find", "grep"]);
+		const tools = await createTools(session, ["search", "glob", "grep"]);
 		const names = tools.map(t => t.name);
 
 		expect(names.filter(name => name === "grep")).toHaveLength(1);
 		expect(names).toContain("glob");
 		expect(names).not.toContain("search");
-		expect(names).not.toContain("find");
 	});
 
 	it("includes bash and eval when both eval backends are allowed", async () => {
@@ -510,6 +509,14 @@ describe("createTools", () => {
 		expect(names).toContain("rewind");
 	});
 
+	it("withholds wait from subagents even when explicitly requested", async () => {
+		const settings = createSettingsWithOverrides({ "async.enabled": true });
+		const main = (await createTools(createTestSession({ settings }), ["read", "wait"])).map(t => t.name);
+		const sub = (await createTools(createTestSession({ taskDepth: 1, settings }), ["read", "wait"])).map(t => t.name);
+		expect(main).toContain("wait");
+		expect(sub).not.toContain("wait");
+	});
+
 	it("excludes checkpoint/rewind from subagent when not explicitly requested", async () => {
 		const names = (
 			await createTools(
@@ -605,9 +612,5 @@ describe("createTools", () => {
 		).map(t => t.name);
 		expect(names).toContain("checkpoint");
 		expect(names).toContain("rewind");
-	});
-
-	it("HIDDEN_TOOLS contains yield, goal, and think", () => {
-		expect(Object.keys(HIDDEN_TOOLS).sort()).toEqual(["goal", "think", "yield"]);
 	});
 });

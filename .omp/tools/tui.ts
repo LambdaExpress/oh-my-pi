@@ -997,6 +997,22 @@ function unescapeBytes(text: string): Buffer {
 	return Buffer.from(out);
 }
 
+/**
+ * Wraps `command` so the PTY child blocks until `gate` exists, then execs the
+ * real command in place (same pid, still the session leader).
+ *
+ * Bun (1.4.2, macOS) arms its exit watch inside `Bun.spawn`; a child already
+ * exiting by then makes it fall back to a blocking `wait4` on the JS thread. A
+ * PTY session leader cannot finish exiting until its unread output drains, and
+ * the only reader is that same blocked thread — so a fast command (`git grep`)
+ * deadlocked the whole agent. Creating `gate` only after `Bun.spawn` returns
+ * guarantees the watch is armed before the child can exit.
+ */
+function gated(gate: string, command: string[]): string[] {
+	const script = 'gate=$1; shift; while [ ! -e "$gate" ]; do sleep 0.01; done; exec "$@"';
+	return ["/bin/sh", "-c", script, "sh", gate, ...command];
+}
+
 // ─── Tool ────────────────────────────────────────────────────────────────────
 
 function bunExecutable(): string {
@@ -1066,6 +1082,7 @@ const factory = (omp: ToolHost) => {
 		const cols = params.cols ?? 100;
 		const dir = mkdtempSync(join(tmpdir(), `omp-tui-${name}-`));
 		const sockPath = process.platform === "win32" ? `\\\\.\\pipe\\${basename(dir)}` : join(dir, "debug.sock");
+		const gatePath = join(dir, "spawn.gate");
 		const screen = await Screen.create(cols, rows);
 		if (shuttingDown) {
 			screen.dispose();
@@ -1078,7 +1095,7 @@ const factory = (omp: ToolHost) => {
 		let session: Session;
 		let proc: Child;
 		try {
-			const spawned = Bun.spawn(command, {
+			const spawned = Bun.spawn(gated(gatePath, command), {
 				cwd: omp.cwd,
 				env: {
 					...process.env,
@@ -1096,6 +1113,7 @@ const factory = (omp: ToolHost) => {
 			});
 			const terminal = spawned.terminal;
 			if (!terminal) throw new Error("Bun.spawn did not create a PTY");
+			writeFileSync(gatePath, "");
 			proc = {
 				pid: spawned.pid,
 				exited: spawned.exited,

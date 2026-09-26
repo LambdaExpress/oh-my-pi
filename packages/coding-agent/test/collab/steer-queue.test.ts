@@ -15,6 +15,7 @@ import {
 	unpackEnvelope,
 } from "@oh-my-pi/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { setLocale } from "../../src/i18n";
 
@@ -100,7 +101,7 @@ function makeStreamingHostContext(): StreamingHostHarness {
 		onEntryAppended: undefined,
 	};
 	const ctx = {
-		settings: { get: () => "" },
+		settings: Settings.isolated(),
 		sessionManager,
 		session: {
 			isStreaming: true,

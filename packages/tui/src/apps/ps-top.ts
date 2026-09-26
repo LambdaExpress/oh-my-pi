@@ -16,7 +16,7 @@ import { truncateToWidth } from "../utils";
 import { formatDuration } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { t } from "../i18n";
-import type { DaemonSnapshot, DaemonSpec } from "../tools/hub";
+import type { DaemonSnapshot, DaemonSpec } from "../tools/daemon";
 import {
 	collapseCommand,
 	daemonLabel,

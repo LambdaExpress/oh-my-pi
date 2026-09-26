@@ -12,7 +12,7 @@ Directories need a directory-capable adapter (e.g. `dlv`).
   3. Start the request with `bash(async:true, pty:false, timeout:0)`. The client NEVER impose a shorter response deadline than breakpoint inspection.
   4. Call `wait_for_stop` with both returned ids.
   5. Inspect the bounded stop snapshot and fix the defect.
-  6. Resume with `continue(wait_for_stop:false)`, then collect the request with `hub wait`.
+  6. Resume with `continue(wait_for_stop:false)`, then collect the request with `wait`.
 - The trigger Bash MUST run in the background. Foreground requests deadlock while the debuggee is paused.
 - Trigger wins? Inspect its result. The debug execution remains active; NEVER replay until it stops or terminates.
 - Stop wins? Resume the debuggee before waiting for the trigger job.

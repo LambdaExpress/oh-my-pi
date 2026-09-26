@@ -24,9 +24,14 @@ import {
 	truncateToWidth,
 	wrapTextWithAnsi,
 } from "../render/render-utils";
+import type { CoordinationDetails } from "./wait";
+import { renderAgentWrite, renderProcWrite, type ProcWriteAction, type ProcWriteDetails } from "./proc-render";
+import { renderCfgWrite, type CfgWriteDetails } from "./cfg-render";
 import type { FileDiagnosticsResult } from "./lsp";
 import type { OutputMeta } from "./output-meta";
+import type { CardToolResult } from "./result-card";
 import type { RenderResultOptions, ToolActivityContext, ToolActivitySummary, ToolRenderer } from "./renderer";
+import { splitUrlScheme } from "./url-scheme-host";
 import { couldBecomeXdUrl, parseXdUrl } from "./xd-url";
 import {
 	renderXdevCall,
@@ -37,6 +42,7 @@ import {
 } from "./xdev";
 import { isResolutionDeviceName, renderResolutionDeviceCall } from "./resolve";
 import { REPORT_ISSUE_DEVICE_NAME, renderReportIssueDeviceCall } from "./report-tool-issue";
+import { pendingFileLinkPath } from "./read";
 
 /** Details returned by the write tool for transcript rendering. */
 export interface WriteToolDetails {
@@ -49,6 +55,9 @@ export interface WriteToolDetails {
 	resolvedPath?: string;
 	/** Set when the write dispatched an `xd://` tool device; drives renderer delegation. */
 	xdev?: XdevRenderDispatch;
+	message?: CoordinationDetails;
+	proc?: ProcWriteDetails;
+	cfg?: CfgWriteDetails;
 }
 
 interface WriteRenderArgs {
@@ -359,6 +368,99 @@ export interface WriteRenderContext {
 	resolveXdevMounted?: (name: string) => XdevMountedRenderer | undefined;
 }
 
+/** Process id and operation named by the text after `proc://`. */
+function procWriteTarget(target: string): { id: string; action: ProcWriteAction } {
+	if (target.endsWith("/kill")) return { id: target.slice(0, -5), action: "kill" };
+	if (target.endsWith("/mode")) return { id: target.slice(0, -5), action: "mode" };
+	return { id: target, action: "stdin" };
+}
+
+/** Transcript card for writes to a scheme with its own UI (peer message, process control, setting change). */
+interface WriteUrlCard {
+	/** Result details field whose presence identifies this card. */
+	readonly detailsKey: "message" | "proc" | "cfg";
+	/** Compact activity line for the text after `scheme://`. */
+	activity(target: string): ToolActivitySummary;
+	/** Pending call card when `result` is undefined, else the finished result card. */
+	render(
+		url: string,
+		target: string,
+		content: unknown,
+		result: CardToolResult | undefined,
+		details: WriteToolDetails | undefined,
+		options: RenderResultOptions,
+		uiTheme: Theme,
+	): Component;
+}
+
+/** Write cards keyed by URL scheme. */
+const WRITE_URL_CARDS: Record<string, WriteUrlCard> = {
+	agent: {
+		detailsKey: "message",
+		activity: target => ({ label: "Message", detail: target === "all" ? "broadcast" : target }),
+		render: (_url, target, content, result, details, options, uiTheme) =>
+			renderAgentWrite(
+				target,
+				typeof content === "string" ? content : "",
+				result,
+				details?.message,
+				options,
+				uiTheme,
+			),
+	},
+	proc: {
+		detailsKey: "proc",
+		activity: target => {
+			const { id, action } = procWriteTarget(target);
+			return { label: "Process", detail: `${action} ${shortenPath(id)}` };
+		},
+		render: (_url, target, content, result, details, options, uiTheme) => {
+			const { id, action } = procWriteTarget(target);
+			return renderProcWrite(
+				id,
+				action,
+				typeof content === "string" ? content : undefined,
+				result,
+				details?.proc,
+				options,
+				uiTheme,
+			);
+		},
+	},
+	cfg: {
+		detailsKey: "cfg",
+		activity: target => ({ label: "Config", detail: target }),
+		render: (url, _target, content, result, details, options, uiTheme) =>
+			renderCfgWrite(url, typeof content === "string" ? content : undefined, result, details?.cfg, options, uiTheme),
+	},
+};
+
+/**
+ * Card that renders a write to `rawPath` with the text after `scheme://` as its target.
+ * Result details identify the card before the URL scheme does.
+ */
+function writeUrlCard(rawPath: string, details?: WriteToolDetails): { card: WriteUrlCard; target: string } | undefined {
+	const url = splitUrlScheme(rawPath);
+	const target = url?.rest ?? "";
+	if (details) {
+		for (const scheme in WRITE_URL_CARDS) {
+			const card = WRITE_URL_CARDS[scheme];
+			if (details[card.detailsKey] !== undefined) return { card, target };
+		}
+	}
+	if (!url || !Object.hasOwn(WRITE_URL_CARDS, url.scheme)) return undefined;
+	return { card: WRITE_URL_CARDS[url.scheme], target };
+}
+
+/** Whether a streaming lowercased path is, or could still become, a URL with its own write card. */
+function couldBecomeWriteCardUrl(lowerPath: string): boolean {
+	for (const scheme in WRITE_URL_CARDS) {
+		const prefix = `${scheme}://`;
+		if (prefix.startsWith(lowerPath) || lowerPath.startsWith(prefix)) return true;
+	}
+	return false;
+}
+
 /** Render file writes and delegated tool-device calls. */
 export const writeToolRenderer = {
 	/**
@@ -378,6 +480,8 @@ export const writeToolRenderer = {
 					? writeArgs.path
 					: "";
 		if (rawPath.length === 0) return { label: "Write" };
+		const routed = writeUrlCard(rawPath);
+		if (routed) return routed.card.activity(routed.target);
 		const device = parseXdUrl(rawPath);
 		if (device?.name) {
 			const resolveMounted = (context.renderContext as WriteRenderContext | undefined)?.resolveXdevMounted;
@@ -418,6 +522,16 @@ export const writeToolRenderer = {
 		const hasPath = partialPath !== undefined || args.path !== undefined || args.file_path !== undefined;
 		const hasContent = partialContent !== undefined || args.content !== undefined;
 		if (!hasPath && !hasContent) return undefined;
+		// A streamed path that could still become a card URL (agent://, proc://,
+		// cfg://) stays unrendered until the payload settles, so a file frame is
+		// never flashed and then replaced by the card.
+		const urlPathSettled =
+			partialContent !== undefined || args.content !== undefined || options.argsComplete === true;
+		const hasStringPath =
+			partialPath !== undefined || typeof args.file_path === "string" || typeof args.path === "string";
+		if (hasStringPath && !urlPathSettled && couldBecomeWriteCardUrl(rawPath.toLowerCase())) return undefined;
+		const routed = writeUrlCard(rawPath);
+		if (routed) return routed.card.render(rawPath, routed.target, rawContent, undefined, undefined, options, uiTheme);
 		if (rawPath && couldBecomeXdUrl(rawPath)) {
 			const xdev = parseXdUrl(rawPath);
 			// The path string is settled once the content field started streaming.
@@ -430,7 +544,11 @@ export const writeToolRenderer = {
 		const filePath = shortenPath(rawPath);
 		const lang = rawPath ? (getLanguageFromPath(rawPath) ?? "text") : "text";
 		const langIcon = uiTheme.fg("muted", uiTheme.getLangIcon(lang));
-		const pathDisplay = filePath ? uiTheme.fg("accent", filePath) : uiTheme.fg("toolOutput", "…");
+		const styledPath = filePath ? uiTheme.fg("accent", filePath) : uiTheme.fg("toolOutput", "…");
+		// The result has not resolved its target yet. Link the containing file
+		// rather than an archive member or database row selector.
+		const pathDisplay =
+			filePath && args.content !== undefined ? fileHyperlink(pendingFileLinkPath(rawPath), styledPath) : styledPath;
 		// No status icon on the head row: it's the head of the framed block, and
 		// native-scrollback commits are prefix-only — an animated glyph would pin
 		// the commit boundary at the top, and the pending hourglass just adds
@@ -486,6 +604,11 @@ export const writeToolRenderer = {
 		uiTheme: Theme,
 		args?: WriteRenderArgs,
 	): Component {
+		const cardPath =
+			typeof args?.path === "string" ? args.path : typeof args?.file_path === "string" ? args.file_path : "";
+		const routed = writeUrlCard(cardPath, result.details);
+		if (routed)
+			return routed.card.render(cardPath, routed.target, args?.content, result, result.details, options, uiTheme);
 		// xd:// dispatch results render as the mounted tool's own result.
 		const xdev = result.details?.xdev;
 		if (xdev) {

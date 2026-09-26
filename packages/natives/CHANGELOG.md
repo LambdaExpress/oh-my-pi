@@ -24,6 +24,54 @@
 - Fixed Windows Bazel native builds exceeding rustc environment and `CreateProcessW` limits on large dependency graphs by consolidating dependency search paths, parameterizing `process_wrapper`, and using a repository-local MSVC CMake override.
 - Fixed compiled-binary native embedding accepting stale `pi_natives.*.node` artifacts whose version sentinel does not match the current `@oh-my-pi/pi-natives` package version. `gen:native` now validates the sentinel before archiving and can read native artifacts from an explicit `PI_NATIVE_SOURCE_DIR`, preventing local Windows builds from producing an `omp` binary that only starts while another install keeps a correct cached addon locked.
 - Fixed Windows AVX2 detection preferring Windows PowerShell 5.1, whose .NET runtime lacks `System.Runtime.Intrinsics.X86.Avx2`; the loader now tries `pwsh` first so AVX2-capable Windows hosts select the `modern` native addon by default.
+## [18.3.1] - 2026-09-25
+
+### Added
+
+- Added support for asynchronous file I/O and custom filesystem providers in native shell execution, including resolving arbitrary `scheme://` paths through native operation options.
+
+### Fixed
+
+- Fixed shell access to standard and special file descriptors, including `/dev/stdin`, `/dev/stdout`, `/dev/stderr`, `/dev/fd/N`, and `/dev/tty`, preventing heredoc commands from hanging the TUI.
+- Fixed native operations such as grep, glob, AST, shell, and VCS calls to promptly honor an `AbortSignal` that was already aborted when the operation starts.
+- Fixed Windows path formatting in the shell’s `fd` and `find` builtins so POSIX path patterns match correctly.
+
+## [18.3.0] - 2026-09-24
+
+### Added
+
+- Added native bindings for Apple Foundation Models availability checks, text generation, and cancellation.
+- Added offline token counting support for TypeSafe Jev 1.13 `state` inputs via `Encoding.Jev` (excluding the request frame).
+
+## [18.2.11] - 2026-09-23
+
+### Changed
+
+- Improved `warmHighlighter()` so it prepares TypeScript, TSX, JavaScript, Bash, Python, Rust, and Markdown highlighting in the background, reducing delays on the first highlight for these languages.
+
+## [18.2.9] - 2026-09-22
+
+### Fixed
+
+- Fixed stale workspace addons failing when first used; the error now identifies the addon and provides the command to rebuild native addons.
+- Fixed background bash jobs hanging indefinitely when output forwarding stalls.
+
+## [18.2.7] - 2026-09-21
+
+### Added
+
+- Added `renderMermaidAscii`, a native Mermaid-to-ASCII/Unicode renderer supporting flowcharts, state, sequence, class, ER, and xychart diagrams with color modes, themes, and direction overrides.
+- Added a `default` package export condition so CommonJS consumers, including bytecode bundles, can load the native bindings.
+
+### Changed
+
+- Improved Mermaid flowchart rendering to respect dependency order, reduce crossings, align branches, and wrap long labels without truncation.
+
+### Fixed
+
+- Fixed Mermaid rendering issues involving arrowhead alignment and duplicate edge junctions around mixed-width node shapes.
+- Fixed sloppy edit grammar compatibility with Codex constrained decoding.
+
 ## [18.2.1] - 2026-09-15
 
 ### Added

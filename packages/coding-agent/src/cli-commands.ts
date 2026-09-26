@@ -112,6 +112,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.dryBalanceHelp,
 	},
 	{
+		...commandIdentity("find"),
+		load: () => import("./commands/find").then(m => m.default),
+		help: commandHelp.findHelp,
+	},
+	{
 		...commandIdentity("gc"),
 		load: () => import("./commands/gc").then(m => m.default),
 		help: commandHelp.gcHelp,
@@ -157,6 +162,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.joinHelp,
 	},
 	{
+		...commandIdentity("login"),
+		load: () => import("./commands/login").then(m => m.default),
+		help: commandHelp.loginHelp,
+	},
+	{
 		...commandIdentity("models"),
 		load: () => import("./commands/models").then(m => m.default),
 		help: commandHelp.modelsHelp,
@@ -176,6 +186,16 @@ export const commands: CommandEntry[] = [
 		...commandIdentity("say"),
 		load: () => import("./commands/say").then(m => m.default),
 		help: commandHelp.sayHelp,
+	},
+	{
+		...commandIdentity("clip"),
+		load: () => import("./commands/clip").then(m => m.default),
+		help: commandHelp.clipHelp,
+	},
+	{
+		...commandIdentity("play"),
+		load: () => import("./commands/play").then(m => m.default),
+		help: commandHelp.playHelp,
 	},
 	{
 		...commandIdentity("share"),
@@ -201,6 +221,11 @@ export const commands: CommandEntry[] = [
 		...commandIdentity("render"),
 		load: () => import("./commands/render").then(m => m.default),
 		help: commandHelp.renderHelp,
+	},
+	{
+		...commandIdentity("skill"),
+		load: () => import("./commands/skill").then(m => m.default),
+		help: commandHelp.skillHelp,
 	},
 	{
 		...commandIdentity("ssh"),
@@ -238,6 +263,11 @@ export const commands: CommandEntry[] = [
 		help: commandHelp.tokenHelp,
 	},
 	{
+		...commandIdentity("toks"),
+		load: () => import("./commands/toks").then(m => m.default),
+		help: commandHelp.toksHelp,
+	},
+	{
 		...commandIdentity("ttsr"),
 		load: () => import("./commands/ttsr").then(m => m.default),
 		help: commandHelp.ttsrHelp,
@@ -250,6 +280,7 @@ export const commands: CommandEntry[] = [
 	{
 		...commandIdentity("search"),
 		load: () => import("./commands/web-search").then(m => m.default),
+		aliases: ["q", "web-search"],
 		help: commandHelp.searchHelp,
 	},
 ];

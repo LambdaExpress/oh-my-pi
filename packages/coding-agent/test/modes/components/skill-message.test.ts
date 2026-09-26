@@ -9,6 +9,8 @@ import { skillChipLabel } from "@oh-my-pi/pi-tui/prompt/composer-attachments";
 import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-tui/theme";
 import type { CustomMessage, SkillPromptDetails } from "../../../src/session/messages";
 
+import { cfgTuiHyperlinks } from "@oh-my-pi/pi-coding-agent/modes/settings";
+
 // Drop SGR colors and OSC 8 hyperlink wrappers so assertions see the visible text only.
 const strip = (lines: readonly string[]): string =>
 	lines
@@ -30,7 +32,7 @@ describe("SkillMessageComponent", () => {
 		setLocale("en");
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
-		Settings.instance.set("tui.hyperlinks", "always");
+		cfgTuiHyperlinks.set(Settings.instance, "always");
 		const loaded = await getThemeByName("dark");
 		if (!loaded) throw new Error("theme unavailable");
 		uiTheme = loaded;

@@ -1,3 +1,4 @@
+import type { CredentialsApi, KeysApi } from "@oh-my-pi/pi-ai";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
 import type { OAuthProviderInfo } from "@oh-my-pi/pi-ai/oauth/types";
 import type { CredentialOriginKind } from "@oh-my-pi/pi-ai";
@@ -21,14 +22,8 @@ const OAUTH_SELECTOR_MAX_VISIBLE = 10;
 
 /** Credential presence and provenance needed by the provider picker. */
 export interface OAuthSelectorAuthSource {
-	has(providerId: string): boolean;
-	hasAuth(providerId: string): boolean;
-	getCredentialOrigin(providerId: string):
-		| {
-				kind: "runtime" | "config" | "oauth" | "api_key" | "env" | "fallback";
-				envVar?: string;
-		  }
-		| undefined;
+	readonly credentials: Pick<CredentialsApi, "has">;
+	readonly keys: Pick<KeysApi, "source">;
 }
 
 /**
@@ -50,8 +45,6 @@ function originLabel(kind: CredentialOriginKind): string {
 			return t("api key");
 		case "env":
 			return t("env");
-		case "fallback":
-			return t("custom provider");
 	}
 }
 /**
@@ -132,7 +125,9 @@ export class OAuthSelectorComponent extends OverlayPanel {
 		this.#updateList();
 	}
 	#hasSelectableAuth(providerId: string): boolean {
-		return this.#mode === "logout" ? this.#authStorage.has(providerId) : this.#authStorage.hasAuth(providerId);
+		return this.#mode === "logout"
+			? this.#authStorage.credentials.has(providerId)
+			: this.#authStorage.keys.source(providerId) !== undefined;
 	}
 
 	#loadProviders(disabledProviders: readonly string[] = []): void {
@@ -222,7 +217,7 @@ export class OAuthSelectorComponent extends OverlayPanel {
 	 * the list distinguishes a real login from an env var aliasing the provider.
 	 */
 	#getSourceLabel(providerId: string): string {
-		const origin = this.#authStorage.getCredentialOrigin(providerId);
+		const origin = this.#authStorage.keys.source(providerId);
 		if (!origin) return "";
 		const detail =
 			origin.kind === "env" && origin.envVar
@@ -266,7 +261,7 @@ export class OAuthSelectorComponent extends OverlayPanel {
 
 	#getProviderSearchText(provider: OAuthProviderInfo): string {
 		let text = `${provider.name} ${provider.id}`;
-		const origin = this.#authStorage.getCredentialOrigin(provider.id);
+		const origin = this.#authStorage.keys.source(provider.id);
 		if (origin) {
 			text += ` logged in authenticated ${originLabel(origin.kind)}`;
 			if (origin.envVar) text += ` ${origin.envVar}`;

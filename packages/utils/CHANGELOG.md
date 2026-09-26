@@ -5,6 +5,23 @@
 ### Added
 
 - Added `resolveFileRequest()`: resolves a relative or absolute file request against the on-disk package graph (`exports`, `main`, extension and `index` probing), the primitive callers need when the host runtime cannot resolve packages itself — for example inside a compiled binary.
+## [18.3.1] - 2026-09-25
+
+### Fixed
+
+- Fixed log rotation near local-day boundaries so dated log files are consistently assigned to the correct local date.
+
+## [18.2.7] - 2026-09-21
+
+### Changed
+
+- Mermaid diagrams are now rendered with the native renderer, with output remaining unchanged.
+- PI_TIMING span lines now include their start offset to make unspanned gaps easier to identify.
+
+### Fixed
+
+- Fixed a startup crash when PI_TIMING profiled modules loaded via require() or TypeScript declaration assets.
+
 ## [18.2.5] - 2026-09-17
 
 ### Added
@@ -597,7 +614,7 @@
 
 ### Changed
 
-- Mermaid diagrams are now rendered to ASCII by a first-party vendored renderer (`src/vendor/mermaid-ascii`, derived from the MIT-licensed `beautiful-mermaid`, ASCII pipeline only) with terminal display width measured via `Bun.stringWidth` (grapheme-aware, correct for wide/East-Asian glyphs and emoji). Inline label formatting (HTML formatting tags and markdown emphasis) is now reduced to plain text instead of printed raw.
+- Mermaid diagrams are now rendered to ASCII by a first-party renderer (initially derived from the MIT-licensed `beautiful-mermaid`, ASCII pipeline only) with terminal display width measured via `Bun.stringWidth` (grapheme-aware, correct for wide/East-Asian glyphs and emoji). Inline label formatting (HTML formatting tags and markdown emphasis) is now reduced to plain text instead of printed raw.
 
 ### Removed
 

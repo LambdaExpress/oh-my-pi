@@ -15,6 +15,13 @@ import { setLocale, t } from "../src/i18n";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 import { StatusLineTestComponents } from "./helpers/status-line";
 
+import {
+	cfgGitEnabled,
+	cfgStatusLineLeftSegments,
+	cfgStatusLinePreset,
+	cfgStatusLineRightSegments,
+} from "@oh-my-pi/pi-coding-agent/modes/settings";
+
 let settingsState: SettingsTestState | undefined;
 let projectDir = "";
 const statusLines = new StatusLineTestComponents();
@@ -222,11 +229,11 @@ describe("StatusLineComponent effective settings cache", () => {
 	});
 
 	it("renders custom preset defaults when segment arrays are unconfigured", () => {
-		Settings.instance.override("statusLine.preset", "custom");
+		cfgStatusLinePreset.override(Settings.instance, "custom");
 		const component = makeComponent({
-			preset: Settings.instance.get("statusLine.preset"),
-			leftSegments: Settings.instance.get("statusLine.leftSegments"),
-			rightSegments: Settings.instance.get("statusLine.rightSegments"),
+			preset: cfgStatusLinePreset.get(Settings.instance),
+			leftSegments: cfgStatusLineLeftSegments.get(Settings.instance),
+			rightSegments: cfgStatusLineRightSegments.get(Settings.instance),
 			sessionAccent: false,
 		});
 
@@ -325,7 +332,7 @@ describe("StatusLineComponent effective settings cache", () => {
 		const statusSpy = spyOn(vcs, "watch");
 		const repoSpy = spyOn(vcs, "repo");
 		try {
-			Settings.instance.override("git.enabled", false);
+			cfgGitEnabled.override(Settings.instance, false);
 			const component = makeComponent({
 				preset: "custom",
 				leftSegments: ["git", "pr"],

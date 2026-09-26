@@ -18,6 +18,8 @@ import { parseCommandArgs } from "../../utils/command-args";
 import type { ParsedSlashCommand, SlashCommandResult, SlashCommandRuntime } from "../types";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./parse";
 
+import { cfgSecurityEnabled } from "../../tools/settings";
+
 interface SecurityPlanCliOptions {
 	target: SecurityTargetRequest;
 	knowledgeBasePaths: string[];
@@ -375,7 +377,7 @@ export async function handleSecurityCommand(
 	command: ParsedSlashCommand,
 	runtime: SlashCommandRuntime,
 ): Promise<SlashCommandResult> {
-	if (!runtime.settings.get("security.enabled")) {
+	if (!cfgSecurityEnabled.get(runtime.settings)) {
 		return usage(t("Security is disabled. Enable security.enabled before using /security."), runtime);
 	}
 	const { verb, rest } = parseSubcommand(command.args);

@@ -5,6 +5,12 @@
 ### Fixed
 
 - Fixed the stats client build failing on Windows when the checkout path contains spaces (Bun Shell could not spawn with a space-containing working directory; the build now spawns through `Bun.spawnSync`).
+## [18.2.9] - 2026-09-22
+
+### Fixed
+
+- Fixed background statistics spans to use unique identifiers and close jobs correctly.
+
 ## [18.2.5] - 2026-09-17
 
 ### Fixed

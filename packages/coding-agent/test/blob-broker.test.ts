@@ -479,7 +479,7 @@ describe("wrapStreamFnWithBlobUrlFallback", () => {
 				{ type: "done", reason: "stop", message: done },
 			]);
 		};
-		const wrapped = wrapStreamFnWithBlobUrlFallback(base as never, service);
+		const wrapped = wrapStreamFnWithBlobUrlFallback(base as never, () => service);
 
 		const decorated = await service.decorateContext(makeContext(), anthropicModel);
 		const stream = await wrapped(anthropicModel, decorated, undefined);
@@ -506,7 +506,7 @@ describe("wrapStreamFnWithBlobUrlFallback", () => {
 				{ type: "error", reason: "error", error: errorMessage("mid-stream failure") },
 			]);
 		};
-		const wrapped = wrapStreamFnWithBlobUrlFallback(base as never, service);
+		const wrapped = wrapStreamFnWithBlobUrlFallback(base as never, () => service);
 
 		const decorated = await service.decorateContext(makeContext(), anthropicModel);
 		const stream = await wrapped(anthropicModel, decorated, undefined);

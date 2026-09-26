@@ -1,8 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { setLocale } from "../../../src/i18n";
+import { cfgDisplayHideToolActivity } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
 beforeAll(() => {
 	setLocale("en");
@@ -124,7 +126,7 @@ describe("InputController tool activity visibility", () => {
 		const clear = vi.fn();
 		const addChild = vi.fn();
 		const rebuildChatFromMessages = vi.fn();
-		const set = vi.fn();
+		const settings = Settings.isolated();
 		const clearInlineImages = vi.fn();
 		const resetDisplay = vi.fn();
 		const showStatus = vi.fn();
@@ -132,7 +134,7 @@ describe("InputController tool activity visibility", () => {
 		const ctx = {
 			hideToolActivity: false,
 			toolOutputExpanded: true,
-			settings: { set },
+			settings,
 			chatContainer: { children, clear, addChild, setToolActivityVisible },
 			rebuildChatFromMessages,
 			showStatus,
@@ -145,7 +147,7 @@ describe("InputController tool activity visibility", () => {
 		controller.toggleToolActivityVisibility();
 
 		expect(ctx.hideToolActivity).toBe(true);
-		expect(set).toHaveBeenLastCalledWith("display.hideToolActivity", true);
+		expect(cfgDisplayHideToolActivity.get(settings)).toBe(true);
 		expect(ctx.chatContainer.children).toEqual(children);
 		expect(clear).not.toHaveBeenCalled();
 		expect(addChild).not.toHaveBeenCalled();
@@ -161,7 +163,7 @@ describe("InputController tool activity visibility", () => {
 
 		expect(ctx.hideToolActivity).toBe(false);
 		expect(ctx.toolOutputExpanded).toBe(false);
-		expect(set).toHaveBeenLastCalledWith("display.hideToolActivity", false);
+		expect(cfgDisplayHideToolActivity.get(settings)).toBe(false);
 		expect(ctx.chatContainer.children).toEqual(children);
 		expect(clear).not.toHaveBeenCalled();
 		expect(addChild).not.toHaveBeenCalled();

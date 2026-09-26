@@ -218,7 +218,7 @@ export class ProtocolProbeComponent extends Container {
 			new Text(
 				[
 					`${theme.fg("muted", t("Hyperlinks (OSC 8)"))} — ${yesNo(hyperlinksOn)}`,
-					`  \x1b]8;;https://github.com/can1357/oh-my-pi\x07oh-my-pi repo\x1b]8;;\x07`,
+					`  \x1b]8;;https://github.com/can1357/oh-my-pi\x07omp repo\x1b]8;;\x07`,
 				].join("\n"),
 				1,
 				0,

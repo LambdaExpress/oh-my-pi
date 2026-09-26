@@ -3,6 +3,8 @@ import { logger } from "@oh-my-pi/pi-utils";
 const DEFAULT_MCP_TIMEOUT_MS = 30_000;
 const DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS = 300_000;
 const MCP_TIMEOUT_ENV = "OMP_MCP_TIMEOUT_MS";
+const DEFAULT_MCP_STARTUP_TIMEOUT_MS = 250;
+const MCP_STARTUP_TIMEOUT_ENV = "OMP_MCP_STARTUP_TIMEOUT_MS";
 
 let neverAbortController: AbortController | undefined;
 
@@ -23,6 +25,19 @@ export function resolveMCPRequestTimeoutMs(method: string, configTimeout?: numbe
 	const raw = Bun.env[MCP_TIMEOUT_ENV]?.trim();
 	if (raw || configTimeout !== undefined || method !== "tools/call") return resolveMCPTimeoutMs(configTimeout);
 	return DEFAULT_MCP_TOOL_CALL_TIMEOUT_MS;
+}
+
+/** Resolve the non-blocking discovery window; zero waits for initial connections to settle. */
+export function resolveMCPStartupTimeoutMs(configTimeout?: number): number {
+	const raw = Bun.env[MCP_STARTUP_TIMEOUT_ENV]?.trim();
+	if (raw) {
+		const value = Number(raw);
+		if (Number.isFinite(value) && value >= 0) return value;
+		logger.warn("Ignoring invalid OMP_MCP_STARTUP_TIMEOUT_MS env value; expected a non-negative number", {
+			value: raw,
+		});
+	}
+	return configTimeout ?? DEFAULT_MCP_STARTUP_TIMEOUT_MS;
 }
 
 export function isMCPTimeoutEnabled(timeoutMs: number): boolean {

@@ -12,7 +12,7 @@ import { loadEntriesFromFile } from "@oh-my-pi/pi-coding-agent/session/session-l
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { FileSessionStorage, type WriteTextAtomicOptions } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import type { SessionTitleUpdate } from "@oh-my-pi/pi-coding-agent/session/session-title-slot";
-import { resetSessionTitleIndexForTests } from "@oh-my-pi/pi-coding-agent/session/title-index";
+import { resetSessionIndexForTests } from "@oh-my-pi/pi-coding-agent/session/session-index";
 import { getConfigRootDir, removeSyncWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
 
 import { makeAssistantMessage } from "./helpers";
@@ -70,11 +70,11 @@ describe("session title source persistence", () => {
 		cwd = path.join(testAgentDir, "cwd");
 		fs.mkdirSync(cwd, { recursive: true });
 		setAgentDir(testAgentDir);
-		resetSessionTitleIndexForTests();
+		resetSessionIndexForTests();
 	});
 
 	afterEach(() => {
-		resetSessionTitleIndexForTests();
+		resetSessionIndexForTests();
 		if (originalAgentDir) {
 			setAgentDir(originalAgentDir);
 		} else {

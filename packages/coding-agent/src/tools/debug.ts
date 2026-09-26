@@ -43,8 +43,8 @@ import {
 import debugDescription from "../prompts/tools/debug.md" with { type: "text" };
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
-import { snapshotJobs } from "./hub/jobs";
-import type { JobSnapshot } from "@oh-my-pi/pi-tui/tools/hub";
+import { snapshotJobs } from "../async/job-control";
+import type { JobSnapshot } from "@oh-my-pi/pi-tui/tools/wait";
 import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { formatPathRelativeToCwd, resolveToCwd } from "./path-utils";
 import {
@@ -58,6 +58,8 @@ import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { throwIfAborted } from "./tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
+
+import { cfgDebugEnabled, cfgToolsMaxTimeout } from "./settings";
 
 /**
  * DAP debug actions that only read program state (no mutation, no execution).
@@ -208,7 +210,7 @@ export interface DebugAdapterStatus {
 }
 
 export interface DebugNextAction {
-	tool: "debug" | "hub";
+	tool: "debug" | "wait";
 	input: Record<string, unknown>;
 	when: string;
 }
@@ -291,8 +293,11 @@ function nextActionsForOutcome(
 		];
 		if (triggerJob?.status === "running") {
 			actions.push({
-				tool: "hub",
-				input: { op: "wait", ids: [triggerJob.id] },
+				// The `wait` tool takes no job ids: it returns on the first
+				// background result the caller owns, and the trigger's completion
+				// also auto-delivers. A bare wait is the whole instruction.
+				tool: "wait",
+				input: {},
 				when: "After resume, collect trigger",
 			});
 		}
@@ -883,7 +888,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugExecutionDe
 	}
 
 	static createIf(session: ToolSession): DebugTool | null {
-		return session.settings.get("debug.enabled") ? new DebugTool(session) : null;
+		return cfgDebugEnabled.get(session.settings) ? new DebugTool(session) : null;
 	}
 
 	#resolveTriggerJob(triggerJobId: string | undefined): TriggerJobContext | undefined {
@@ -1008,7 +1013,7 @@ export class DebugTool implements AgentTool<typeof debugSchema, DebugExecutionDe
 		_onUpdate?: AgentToolUpdateCallback<DebugExecutionDetails>,
 		_context?: AgentToolContext,
 	): Promise<AgentToolResult<DebugExecutionDetails>> {
-		const timeoutSec = clampTimeout("debug", params.timeout, this.session.settings.get("tools.maxTimeout"));
+		const timeoutSec = clampTimeout("debug", params.timeout, cfgToolsMaxTimeout.get(this.session.settings));
 		const timeoutSignal = AbortSignal.timeout(timeoutSec * 1000);
 		const signal = inputSignal ? AbortSignal.any([inputSignal, timeoutSignal]) : timeoutSignal;
 		const details: DebugExecutionDetails = { action: params.action, success: true };

@@ -47,7 +47,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 
 		brokerStore = await SqliteAuthCredentialStore.open(path.join(brokerAgentDir, "agent.db"));
 		brokerStorage = new AuthStorage(brokerStore);
-		await brokerStorage.reload();
+		await brokerStorage.credentials.reload();
 		handle = startAuthBroker({
 			storage: brokerStorage,
 			bind: "127.0.0.1:0",
@@ -76,7 +76,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 		// is the only identity the broker snapshot can echo back.
 		const localStore = await SqliteAuthCredentialStore.open(getAgentDbPath());
 		try {
-			localStore.upsertAuthCredentialForProvider("anthropic", {
+			await localStore.upsertAuthCredential("anthropic", {
 				type: "oauth",
 				access: "access-local",
 				refresh: "refresh-local-stale",
@@ -96,7 +96,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 
 		// The broker rotates the token after migration — its copy is now newer
 		// than the local one.
-		brokerStore!.upsertAuthCredentialForProvider("anthropic", {
+		await brokerStore!.upsertAuthCredential("anthropic", {
 			type: "oauth",
 			access: "access-rotated",
 			refresh: "refresh-rotated",
@@ -104,7 +104,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 			orgId: TEAM_ORG,
 			orgName: "Team",
 		});
-		await brokerStorage!.reload();
+		await brokerStorage!.credentials.reload();
 
 		// Rerun: the org-only row must be recognized as already migrated, not
 		// re-uploaded (which would clobber the broker's newer refresh token).

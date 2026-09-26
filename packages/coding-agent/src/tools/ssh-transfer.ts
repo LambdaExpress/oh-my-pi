@@ -239,7 +239,7 @@ export class SshTransferTool implements AgentTool<typeof sshTransferSchema, SshT
 			throw new ToolError("SSH transfer accepts filesystem paths, not internal URLs.");
 		}
 		const localPath = resolveToCwd(localInput, this.session.cwd);
-		enforcePlanModeWrite(this.session, params.op === "upload" ? remotePath : localPath, { op: "create" });
+		await enforcePlanModeWrite(this.session, params.op === "upload" ? remotePath : localPath, { op: "create" });
 
 		const hostInfo = await ensureHostInfo(hostConfig);
 		if (hostInfo.os === "windows" && hostInfo.powerShellCommand) {

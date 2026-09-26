@@ -39,11 +39,22 @@ export function formatShakeSummary(result: ShakeResult): string {
 	}
 	if (result.mode === "thinking") {
 		const n = result.thinkingBlocksDropped ?? 0;
-		return n === 0
-			? t("No thinking blocks found in this session.")
-			: n === 1
-				? t("Dropped {count} thinking block from this session.", { count: n })
-				: t("Dropped {count} thinking blocks from this session.", { count: n });
+		if (n === 0) return t("No thinking blocks found in this session.");
+		const freed = result.tokensFreed;
+		if (n === 1) {
+			return freed > 0
+				? t("Dropped {count} thinking block from this session (~{tokens} tokens freed).", {
+						count: n,
+						tokens: freed,
+					})
+				: t("Dropped {count} thinking block from this session.", { count: n });
+		}
+		return freed > 0
+			? t("Dropped {count} thinking blocks from this session (~{tokens} tokens freed).", {
+					count: n,
+					tokens: freed,
+				})
+			: t("Dropped {count} thinking blocks from this session.", { count: n });
 	}
 	const parts: string[] = [];
 	if (result.toolResultsDropped > 0) {

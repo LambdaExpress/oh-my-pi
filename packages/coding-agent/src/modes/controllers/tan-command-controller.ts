@@ -14,6 +14,8 @@ import { createMCPProxyTools, createSubagentSettings } from "../../task/executor
 import { USER_TODO_EDIT_CUSTOM_TYPE } from "../../tools/todo";
 import type { InteractiveModeContext } from "../types";
 
+import { cfgTaskEnableLsp } from "../../task/settings";
+
 const TAN_LABEL_PREVIEW_LENGTH = 80;
 
 function previewWork(work: string): string {
@@ -140,7 +142,7 @@ export class TanCommandController {
 		const customTools = mcpManager
 			? createMCPProxyTools(mcpManager).filter(tool => inheritedToolNames.has(tool.name))
 			: undefined;
-		const enableLsp = this.ctx.settings.get("task.enableLsp") !== false;
+		const enableLsp = cfgTaskEnableLsp.get(this.ctx.settings) !== false;
 		const agentRegistry = AgentRegistry.global();
 		const cloneId = `Tan-${Snowflake.next()}`;
 		const cloneFile = path.join(sessionDir, `${cloneId}.jsonl`);

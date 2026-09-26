@@ -6,6 +6,8 @@ import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { setLocale } from "../../../src/i18n";
 
+import { cfgTuiHyperlinks } from "@oh-my-pi/pi-coding-agent/modes/settings";
+
 const OSC = "\x1b]";
 const BEL = "\x07";
 
@@ -60,7 +62,7 @@ describe("MCPAuthorizationLinkPrompt", () => {
 
 	afterEach(() => {
 		setLocale(null);
-		settings.clearOverride("tui.hyperlinks");
+		cfgTuiHyperlinks.clearOverride(settings);
 		resetSettingsForTest();
 	});
 

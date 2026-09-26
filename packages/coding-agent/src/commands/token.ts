@@ -20,8 +20,8 @@ async function resolveManagedMcpOAuthToken(
 	provider: string,
 	options: { credentialId?: number; forceRefresh?: boolean } = {},
 ): Promise<string | undefined> {
-	const row = authStorage
-		.listStoredCredentials(provider)
+	const row = authStorage.credentials
+		.list(provider)
 		.find(
 			entry =>
 				entry.credential.type === "oauth" &&
@@ -112,7 +112,7 @@ export default class Token extends Command {
 		const authStorage = await discoverAuthStorage();
 		try {
 			if (flags.list || flags.account !== undefined) {
-				const accounts = authStorage.listOAuthAccounts(provider);
+				const accounts = authStorage.oauth.accounts(provider);
 				if (accounts.length === 0) {
 					process.stderr.write(
 						`${chalk.red(t('No OAuth accounts found for provider "{provider}".', { provider: providerName }))}\n`,
@@ -157,7 +157,7 @@ export default class Token extends Command {
 							credentialId: accounts[n - 1]?.credentialId,
 							forceRefresh: flags["force-refresh"],
 						})
-					: await authStorage.getOAuthAccessAt(provider, n - 1, {
+					: await authStorage.oauth.accessById(provider, accounts[n - 1]!.credentialId, {
 							forceRefresh: flags["force-refresh"],
 						});
 				if (typeof resolution === "string") {
@@ -211,13 +211,13 @@ export default class Token extends Command {
 				// Find all active/configured providers
 				const activeProviders = new Set<string>();
 				for (const p of PROVIDER_REGISTRY) {
-					if (authStorage.hasAuth(p.id)) {
+					if (authStorage.keys.source(p.id) !== undefined) {
 						activeProviders.add(p.id);
 					}
 				}
-				const all = authStorage.getAll();
+				const all = authStorage.credentials.all();
 				for (const p in all) {
-					if (authStorage.hasAuth(p)) {
+					if (authStorage.keys.source(p) !== undefined) {
 						activeProviders.add(p);
 					}
 				}

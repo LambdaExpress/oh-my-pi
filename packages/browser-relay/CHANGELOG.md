@@ -5,6 +5,12 @@
 ### Fixed
 
 - Fixed the extension build script failing on Windows when the checkout path contains spaces (Bun Shell could not spawn with a space-containing working directory; zipping now runs through `Bun.spawnSync`).
+## [18.3.1] - 2026-09-25
+
+### Fixed
+
+- Fixed browser relay support when multiple browser instances, such as Chrome and Edge, are connected simultaneously, ensuring tabs and relay requests remain associated with the correct browser while preserving single-browser compatibility for extensions without an instance identifier.
+
 ## [18.0.7] - 2026-08-26
 
 ### Changed

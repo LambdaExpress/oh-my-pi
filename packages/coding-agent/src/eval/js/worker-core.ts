@@ -304,12 +304,14 @@ export class WorkerCore {
 		this.#syncProcessCwd(snapshot.cwd, currentRunId);
 		if (this.#runtime) {
 			this.#runtime.setCwd(snapshot.cwd);
+			this.#runtime.setPackageRoot(snapshot.packageRoot);
 			return this.#runtime;
 		}
 		this.#runtime = new JsRuntime({
 			initialCwd: snapshot.cwd,
 			sessionId: snapshot.sessionId,
 			localRoots: snapshot.localRoots,
+			packageRoot: snapshot.packageRoot,
 			// Only the dedicated subprocess owns its module resolver; a Worker thread
 			// shares the host process, where the patch would change extension loading.
 			patchGlobalResolver: this.#options.mode === "isolated" && this.#options.chdir !== undefined,
