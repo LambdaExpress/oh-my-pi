@@ -1,5 +1,6 @@
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "bun:test";
 import { TERMINAL, setTerminalHyperlinks } from "@oh-my-pi/pi-tui";
 import { applyHyperlinkSetting } from "@oh-my-pi/pi-tui/render/hyperlink";
@@ -49,7 +50,9 @@ describe("pending read path rendering", () => {
 				.join("\n")
 				.match(/\x1b\]8;[^;]*;([^\x1b]+)\x1b\\/)?.[1];
 			expect(target).toBeDefined();
-			expect(decodeURIComponent(new URL(target!).pathname)).toBe(containingFile);
+			// `file:` URLs carry the drive letter with a leading slash on Windows;
+			// the filesystem path the link resolves to is what this test pins.
+			expect(fileURLToPath(target!)).toBe(containingFile);
 		}
 	});
 

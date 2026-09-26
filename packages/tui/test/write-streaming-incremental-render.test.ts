@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as themeModule from "@oh-my-pi/pi-tui/theme";
 import { writeToolRenderer } from "@oh-my-pi/pi-tui/tools/write";
 import type { HighlightStream } from "@oh-my-pi/pi-natives";
+import { setLocale } from "../src/i18n";
 
 const stripAnsi = (s: string): string => s.replace(/\[[0-9;]*m/g, "");
 const hasLine = (lines: readonly string[], n: number): boolean =>
@@ -21,6 +22,17 @@ function referenceWindow(content: string): { total: number; start: number; visib
 
 describe("write streaming preview incremental line tracking", () => {
 	let initialized = false;
+
+	beforeAll(() => {
+		// The coordination card renders its meta through `t(...)`; the host locale
+		// is whatever the ambient environment resolves to, so pin English like the
+		// other renderer tests that assert on the untranslated card text.
+		setLocale("en");
+	});
+
+	afterAll(() => {
+		setLocale(null);
+	});
 
 	afterEach(() => {
 		vi.restoreAllMocks();

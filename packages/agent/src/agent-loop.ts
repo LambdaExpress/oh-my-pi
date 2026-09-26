@@ -3913,7 +3913,15 @@ function createSkippedToolResult(
 		reason = "a queued background completion (job or supervised process)";
 		blocker = "completion notice";
 	}
-	const text = executionStarted
+	// A background completion keeps the plain "Skipped due to …" text even when
+	// its abort landed on a running wait: the notice is an aside injected at the
+	// batch boundary, not a direction change mid-work, so the call it superseded
+	// is still reported the way the wake path documents it. Steering and peer IRC
+	// interrupts that reached a tool which had already started execution must not
+	// claim the call was skipped and safe to retry — partial side effects may
+	// exist (fork fix, see packages/agent/CHANGELOG.md).
+	const interruptedInFlight = executionStarted && source !== "background";
+	const text = interruptedInFlight
 		? `Interrupted due to ${reason} after execution had already started. Side effects may have occurred. Do not count this result as completed work; inspect the target state before retrying.`
 		: `Skipped due to ${reason}. Do not count this skipped result as completed work or verification. After the ${blocker} is handled on the next step, retry the skipped tool if it is still needed.`;
 	return {

@@ -11,6 +11,7 @@ import {
 import { ProcessTerminal } from "@oh-my-pi/pi-tui/terminal";
 import { setTerminalGlyphProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { setTerminalHeadless } from "@oh-my-pi/pi-utils";
+import { withoutTerminalMultiplexer } from "./helpers/terminal-multiplexer";
 
 const SUPPORT_QUERY = "\x1b_25a1;s\x1b\\";
 const DA1_REPLY = "\x1b[?1;2c";
@@ -140,6 +141,18 @@ function setupProcessTerminal() {
 	return { terminal, writes, received, reports };
 }
 
+// The direct-terminal branches below assert that the probe runs; a multiplexer
+// in the ambient environment (tmux, screen, Zellij, Herdr, CMUX, WMUX) makes
+// `isInsideTerminalMultiplexer()` true and skips it. The multiplexer case has
+// its own test, which sets `TMUX` itself.
+//
+// Handshake payloads are compared as the byte stream the terminal receives
+// (`writes.slice(before).join("")`): `#safeWrite` splits anything above the
+// per-`WriteFile` cap whenever `isConPTYHosted()` holds — every win32 host and
+// WSL — so the registration bundle legitimately arrives as several
+// `process.stdout.write` calls.
+withoutTerminalMultiplexer();
+
 describe("glyph protocol probe", () => {
 	let previousHeadless = false;
 
@@ -170,7 +183,7 @@ describe("glyph protocol probe", () => {
 			const before = writes.length;
 
 			process.stdin.emit("data", SUPPORT_REPLY);
-			expect(writes.slice(before)).toEqual([REGISTRATION_WRITE]);
+			expect(writes.slice(before).join("")).toBe(REGISTRATION_WRITE);
 			// Not confirmed yet: the bundle is in flight until the `q` answer lands.
 			expect(TERMINAL.glyphProtocol).toBe(false);
 			expect(reports).toEqual([]);
@@ -232,7 +245,7 @@ describe("glyph protocol probe", () => {
 			const before = writes.length;
 			process.stdin.emit("data", "\x1b_25a1;s;fmt=gl");
 			process.stdin.emit("data", "yf\x1b\\");
-			expect(writes.slice(before)).toEqual([REGISTRATION_WRITE]);
+			expect(writes.slice(before).join("")).toBe(REGISTRATION_WRITE);
 			expect(received).toEqual([]);
 		} finally {
 			terminal.stop();

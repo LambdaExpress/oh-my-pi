@@ -4,11 +4,12 @@
  * inner <output>/<preview> body, while non-envelope result text (bash jobs)
  * passes through unchanged.
  */
-import { beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { prompt } from "@oh-my-pi/pi-utils";
 import taskSummaryTemplate from "../../coding-agent/src/prompts/tools/task-summary.md" with { type: "text" };
 import { waitToolRenderer } from "@oh-my-pi/pi-tui/tools/wait";
+import { setLocale } from "../src/i18n";
 
 function renderLines(resultText: string): string {
 	const result = {
@@ -37,7 +38,15 @@ function renderLines(resultText: string): string {
 
 describe("job renderer task-result preview", () => {
 	beforeAll(async () => {
+		// Job rows render through `t(...)`; the host locale is whatever the
+		// ambient environment resolves to, so pin English like the other
+		// renderer tests that assert on the untranslated row text.
+		setLocale("en");
 		await initTheme();
+	});
+
+	afterAll(() => {
+		setLocale(null);
 	});
 
 	it("renders the consumed peer message as a sender card", () => {
@@ -143,8 +152,8 @@ describe("job renderer task-result preview", () => {
 				],
 			},
 		};
-		const options: Parameters<typeof hubToolRenderer.renderResult>[1] = { expanded: true, isPartial: true };
-		const component = hubToolRenderer.renderResult(result, options, theme, { op: "jobs" });
+		const options: Parameters<typeof waitToolRenderer.renderResult>[1] = { expanded: true, isPartial: true };
+		const component = waitToolRenderer.renderResult(result, options, theme);
 		const output = Bun.stripANSI(component.render(120).join("\n"));
 		expect(output).toContain("█████░░░░░  50.0%");
 		expect(output).toContain("256.0KB/s");
@@ -167,8 +176,8 @@ describe("job renderer task-result preview", () => {
 				],
 			},
 		};
-		const options: Parameters<typeof hubToolRenderer.renderResult>[1] = { expanded: true, isPartial: true };
-		const component = hubToolRenderer.renderResult(result, options, theme, { op: "cancel", ids: ["job-ssh"] });
+		const options: Parameters<typeof waitToolRenderer.renderResult>[1] = { expanded: true, isPartial: true };
+		const component = waitToolRenderer.renderResult(result, options, theme);
 		const output = Bun.stripANSI(component.render(120).join("\n"));
 		expect(output).toContain("cleanup in progress");
 		expect(output).toContain("25.0%");
