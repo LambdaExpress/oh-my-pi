@@ -19,6 +19,8 @@ export interface InternalUrlSchemeSpec {
 export interface InternalUrlSchemeHost {
 	/** Declared spec of a registered scheme (case-insensitive); undefined when unregistered. */
 	spec(scheme: string): InternalUrlSchemeSpec | undefined;
+	/** Every registered scheme name, lowercased. */
+	schemes(): readonly string[];
 }
 
 let schemeHost: InternalUrlSchemeHost | undefined;
@@ -31,6 +33,21 @@ export function setInternalUrlSchemeHost(host: InternalUrlSchemeHost): void {
 /** Declared spec of `scheme`; undefined when it is unregistered or no host is installed. */
 export function internalUrlSchemeSpec(scheme: string): InternalUrlSchemeSpec | undefined {
 	return schemeHost?.spec(scheme);
+}
+
+/**
+ * Whether `target` is still on its way to a registered `scheme://` URL: a
+ * streamed `path` arrives as `"s"`, `"skill"`, `"skill:"`, `"skill:/"` before
+ * the `//` lands. Transcript routing must not decide on one of those.
+ */
+export function targetMayStillBecomeInternalUrl(target: string): boolean {
+	const candidate = target.trim().toLowerCase();
+	// `://` ends the ambiguity: the scheme is settled, whatever follows it.
+	if (candidate.length === 0 || candidate.includes("://")) return false;
+	for (const scheme of schemeHost?.schemes() ?? []) {
+		if (scheme.startsWith(candidate) || candidate.startsWith(`${scheme}:`)) return true;
+	}
+	return false;
 }
 
 const URL_SCHEME_RE = /^([a-z][a-z0-9+.-]*):\/\//i;

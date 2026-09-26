@@ -10,7 +10,7 @@ import { type ReadRenderArgs, type ReadToolDetails, readSourceFsPath, splitPathA
 import { PREVIEW_LIMITS, shortenPath, truncateToWidth } from "../render/render-utils";
 import { fileHyperlink, renderCodeCell, WidthAwareText } from "../render";
 import { canonicalizeMessage } from "./thinking-display";
-import { internalUrlSchemeSpec, splitUrlScheme } from "../tools/url-scheme-host";
+import { internalUrlSchemeSpec, splitUrlScheme, targetMayStillBecomeInternalUrl } from "../tools/url-scheme-host";
 import type { ToolExecutionHandle } from "./tool-execution";
 import { formatUsageRow } from "../overlays/usage-row";
 
@@ -28,10 +28,6 @@ function readArgsTarget(args: unknown): string | undefined {
 			: undefined;
 }
 
-export function readArgsHaveTarget(args: unknown): boolean {
-	return readArgsTarget(args) !== undefined;
-}
-
 /**
  * Whether a read collapses into the compact {@link ReadToolGroupComponent}
  * rather than a full tool execution. Filesystem/external targets always
@@ -45,6 +41,24 @@ export function readArgsCollapseIntoGroup(args: unknown): boolean {
 	const url = splitUrlScheme(target);
 	const spec = url && internalUrlSchemeSpec(url.scheme);
 	return spec === undefined || spec.compactTranscript === true;
+}
+
+/**
+ * Transcript shape for a read call: `true` collapses into the compact group,
+ * `false` renders the full card, `undefined` defers because the call's `path`
+ * can still change.
+ *
+ * Routing reads the target's scheme, so a streamed prefix that has not reached
+ * `://` yet (`"s"`, `"skill"`, `"skill:"`) names no scheme and would collapse a
+ * `skill://` read into the group, where it stays after the args close — the
+ * created component is never re-routed. `argsOpen` is the caller's "the raw
+ * args JSON is still streaming" flag.
+ */
+export function readTranscriptShape(args: unknown, argsOpen: boolean): boolean | undefined {
+	const target = readArgsTarget(args);
+	if (target === undefined) return undefined;
+	if (argsOpen && targetMayStillBecomeInternalUrl(target)) return undefined;
+	return readArgsCollapseIntoGroup(args);
 }
 
 /**
@@ -78,6 +92,11 @@ type ReadToolGroupOptions = {
 	showContentPreview?: boolean;
 };
 
+type ReadToolSuffixResolution = {
+	from: string;
+	to: string;
+};
+
 /** One display path recovered from a delimited read, paired with the resolved fs link target for its row. */
 type ReadDisplayPathSpec = { path: string; linkPath?: string };
 type ReadEntry = {
@@ -85,7 +104,8 @@ type ReadEntry = {
 	path: string;
 	displayPaths?: ReadDisplayPathSpec[];
 	linkPath?: string;
-	status: "pending" | "success" | "error";
+	status: "pending" | "success" | "warning" | "error";
+	correctedFrom?: string;
 	contentText?: string;
 	conflictCount?: number;
 	codeStartLine?: number;
@@ -121,7 +141,8 @@ type ReadSummaryRow = {
 const READ_STATUS_RANK: Record<ReadEntry["status"], number> = {
 	success: 0,
 	pending: 1,
-	error: 2,
+	warning: 2,
+	error: 3,
 };
 
 function getDisplayReadTargets(details: ReadToolDetails | undefined): ReadDisplayPathSpec[] | undefined {
@@ -412,12 +433,31 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		if (isPartial) return;
 		this.#blockVersion++;
 		const details = result.details as ReadToolDetails | undefined;
+		const rawSuffix = details?.suffixResolution;
+		// A suffix-corrected read redirected the caller's path (`imported.ts` →
+		// `imports.ts`). Show the path that was actually read, keep the caller's
+		// line selector, and flag the row so the correction stays visible.
+		const suffixResolution: ReadToolSuffixResolution | undefined =
+			typeof rawSuffix?.from === "string" && typeof rawSuffix.to === "string"
+				? { from: rawSuffix.from, to: rawSuffix.to }
+				: undefined;
 		entry.linkPath = readResultLinkPath(details);
-		entry.displayPaths = getDisplayReadTargets(details);
+		if (suffixResolution) {
+			const currentSelector = splitPathAndSel(entry.path).sel;
+			entry.path =
+				currentSelector && !splitPathAndSel(suffixResolution.to).sel
+					? `${suffixResolution.to}:${currentSelector}`
+					: suffixResolution.to;
+			entry.correctedFrom = suffixResolution.from;
+			entry.displayPaths = undefined;
+		} else {
+			entry.correctedFrom = undefined;
+			entry.displayPaths = getDisplayReadTargets(details);
+		}
 		const conflictCount =
 			typeof details?.conflictCount === "number" && details.conflictCount > 0 ? details.conflictCount : undefined;
 		entry.conflictCount = conflictCount;
-		entry.status = result.isError ? "error" : "success";
+		entry.status = result.isError ? "error" : suffixResolution ? "warning" : "success";
 		// Store clean display content for preview/expanded display when the read
 		// tool provides it; fall back to model-facing text for legacy results.
 		const displayContent = details?.displayContent;
@@ -696,6 +736,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 
 	#formatRowPath(row: ReadSummaryRow): string {
 		return this.#formatPathValue(row.targetPath, {
+			correctedFrom: this.#correctedFromForTargets(row.targets),
 			conflictCount: this.#conflictCountForTargets(row.targets),
 			line: firstSelectorLineForTargets(row.targets),
 			linkPath: linkPathForTargets(row.targets),
@@ -730,6 +771,13 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		return status;
 	}
 
+	#correctedFromForTargets(targets: ReadDisplayTarget[]): string | undefined {
+		for (const target of targets) {
+			if (target.entry.correctedFrom) return target.entry.correctedFrom;
+		}
+		return undefined;
+	}
+
 	#conflictCountForTargets(targets: ReadDisplayTarget[]): number | undefined {
 		let conflictCount = 0;
 		for (const target of targets) {
@@ -755,7 +803,10 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		return this.#previewEntriesForRow(row).length > 0;
 	}
 
-	#formatPathValue(value: string, options: { conflictCount?: number; line?: number; linkPath?: string } = {}): string {
+	#formatPathValue(
+		value: string,
+		options: { correctedFrom?: string; conflictCount?: number; line?: number; linkPath?: string } = {},
+	): string {
 		const split = splitPathAndSel(value);
 		const selectorSuffix = split.sel ? `:${split.sel}` : "";
 		const baseValue = split.sel ? split.path : value;
@@ -767,6 +818,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		}
 		if (selectorSuffix) {
 			pathDisplay += theme.fg("accent", selectorSuffix);
+		}
+		if (options.correctedFrom) {
+			pathDisplay += ` ${theme.fg("dim", t("(corrected from {path})", { path: shortenPath(options.correctedFrom) }))}`;
 		}
 		pathDisplay += this.#formatConflictBadge(options.conflictCount);
 		return pathDisplay;
@@ -789,6 +843,7 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 		const pathValue = shortenPath(entry.path);
 		const pathDisplay = pathValue
 			? this.#formatPathValue(entry.path, {
+					correctedFrom: entry.correctedFrom,
 					conflictCount: entry.conflictCount,
 					line: firstSelectorLine(split.sel),
 					linkPath: readTargetLinkPath(split.path, entry.linkPath),
@@ -854,6 +909,9 @@ export class ReadToolGroupComponent extends Container implements ToolExecutionHa
 	#formatStatus(status: ReadEntry["status"]): string {
 		if (status === "success") {
 			return theme.fg("text", theme.status.enabled);
+		}
+		if (status === "warning") {
+			return theme.fg("warning", theme.status.warning);
 		}
 		if (status === "error") {
 			return theme.fg("error", theme.status.error);

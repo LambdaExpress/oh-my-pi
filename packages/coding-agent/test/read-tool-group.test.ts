@@ -5,10 +5,15 @@ import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-ag
 // Installs the pi-tui scheme host that decides which reads collapse into the group.
 import "@oh-my-pi/pi-coding-agent/internal-urls/router";
 
-import { ReadToolGroupComponent, readArgsCollapseIntoGroup } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import {
+	ReadToolGroupComponent,
+	readArgsCollapseIntoGroup,
+	readTranscriptShape,
+} from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import * as themeModule from "@oh-my-pi/pi-tui/theme";
 import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
 import { cfgTuiHyperlinks } from "@oh-my-pi/pi-coding-agent/modes/settings";
+import { setLocale } from "../src/i18n";
 
 function extractLinkUris(text: string): string[] {
 	return [...text.matchAll(/\x1b\]8;[^;]*;([^\x1b]+)\x1b\\/g)].map(match => match[1]!);
@@ -32,6 +37,8 @@ describe("ReadToolGroupComponent", () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
 		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		// Rows render localized copy; pin English so assertions stay deterministic.
+		setLocale("en");
 	});
 
 	afterEach(() => {
@@ -40,6 +47,7 @@ describe("ReadToolGroupComponent", () => {
 	});
 
 	afterAll(() => {
+		setLocale(null);
 		resetSettingsForTest();
 	});
 
@@ -460,5 +468,24 @@ describe("readArgsCollapseIntoGroup", () => {
 		expect(readArgsCollapseIntoGroup(["xd://x"])).toBe(false);
 		expect(readArgsCollapseIntoGroup({})).toBe(false);
 		expect(readArgsCollapseIntoGroup({ path: 42 })).toBe(false);
+	});
+
+	it.each([["s"], ["ski"], ["skill"], ["skill:"], ["skill:/"], ["SKILL:"]])(
+		"defers routing while %s can still stream into a skill:// target",
+		raw => {
+			// A prefix names no scheme, so deciding now would collapse the read into
+			// the group and leave it there after the args close.
+			expect(readTranscriptShape({ path: raw }, true)).toBeUndefined();
+			expect(readTranscriptShape({ path: raw }, false)).toBe(true);
+		},
+	);
+
+	it("decides a settled target regardless of the streaming flag", () => {
+		expect(readTranscriptShape({ path: "skill://21cp-bitbucket-pr-api" }, true)).toBe(false);
+		expect(readTranscriptShape({ path: "skill://21cp-bitbucket-pr-api" }, false)).toBe(false);
+		expect(readTranscriptShape({ path: "src/index.ts" }, true)).toBe(true);
+		expect(readTranscriptShape({ path: "src/index.ts" }, false)).toBe(true);
+		expect(readTranscriptShape({}, false)).toBeUndefined();
+		expect(readTranscriptShape(undefined, true)).toBeUndefined();
 	});
 });

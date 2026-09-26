@@ -29,7 +29,7 @@ import {
 import {
 	groupedReadUsageCallIds,
 	ReadToolGroupComponent,
-	readArgsCollapseIntoGroup,
+	readTranscriptShape,
 } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
 import { InjectNoticeComponent } from "@oh-my-pi/pi-tui/chat/inject-notice";
@@ -691,7 +691,16 @@ export class UiHelpers {
 					const renderToolName = toolRenderName(content.name, tool);
 					resolveWaitingPoll(renderToolName);
 
-					if (renderToolName === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+					// Same routing rule as the live path: an unsettled `path` cannot pick a shape.
+					const readShape =
+						renderToolName === "read"
+							? readTranscriptShape(content.arguments, getStreamingPartialJson(content) !== undefined)
+							: false;
+					if (readShape === undefined) {
+						appendAssistantSegment(afterToolSegment);
+						continue;
+					}
+					if (readShape) {
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
 								readGroup = new ReadToolGroupComponent({

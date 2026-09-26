@@ -61,7 +61,10 @@ setInternalUrlCompletionHost({
 		}),
 });
 
-setInternalUrlSchemeHost({ spec: scheme => InternalUrlRouter.instance().spec(scheme) });
+setInternalUrlSchemeHost({
+	spec: scheme => InternalUrlRouter.instance().spec(scheme),
+	schemes: () => [...InternalUrlRouter.instance().specs().keys()],
+});
 
 /**
  * Routed read/search target.

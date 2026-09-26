@@ -13,8 +13,7 @@ import { detectCacheInvalidation } from "@oh-my-pi/pi-tui/chat/cache-invalidatio
 import {
 	groupedReadUsageCallIds,
 	ReadToolGroupComponent,
-	readArgsCollapseIntoGroup,
-	readArgsHaveTarget,
+	readTranscriptShape,
 } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { TodoReminderComponent } from "@oh-my-pi/pi-tui/chat/todo-reminder";
 import { textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
@@ -1796,13 +1795,13 @@ export class EventController {
 				const tool = this.ctx.viewSession.getToolByName(content.name);
 				const renderToolName = toolRenderName(content.name, tool);
 				if (renderToolName === "read") {
-					if (!readArgsHaveTarget(content.arguments)) {
-						// Args still streaming — defer until path is parseable so we can route to the
-						// read group (files + xd:// devices) vs ToolExecutionComponent (other internal URLs).
-						// Creating either component now would lock the read into the wrong shape.
-						continue;
-					}
-					if (readArgsCollapseIntoGroup(content.arguments)) {
+					// Defer until the path can no longer change, so the routing below reads a
+					// settled target: a streamed prefix (`"s"`, `"skill:"`) has no scheme yet and
+					// would lock a `skill://` read into the group. Creating either component early
+					// freezes the shape — nothing re-routes a card that already exists.
+					const shape = readTranscriptShape(content.arguments, getStreamingPartialJson(content) !== undefined);
+					if (shape === undefined) continue;
+					if (shape) {
 						const existing = this.ctx.pendingTools.get(content.id);
 						if (existing) {
 							this.#trackReadToolCall(content.id, content.arguments);
@@ -2145,7 +2144,8 @@ export class EventController {
 					this.ctx.chatContainer.removeChild(stale);
 				}
 			}
-			if (renderToolName === "read" && readArgsCollapseIntoGroup(event.args)) {
+			// Args are final here, so the shape is decidable.
+			if (readTranscriptShape(event.args, false) === true) {
 				this.#trackReadToolCall(event.toolCallId, event.args);
 				if (!this.#toolTimelineComponents.has(event.toolCallId)) {
 					const group = this.#getReadGroup();
