@@ -316,13 +316,23 @@ function formatReadPathLink(
 
 /** Render file, image, and URL reads in the transcript. */
 export const readToolRenderer = {
-	activitySummary(args: unknown, _context: ToolActivityContext): ToolActivitySummary {
+	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
 		const input = args as ReadRenderArgs | undefined;
 		const rawPath =
 			typeof input?.file_path === "string" ? input.file_path : typeof input?.path === "string" ? input.path : "";
+		if (rawPath.length === 0) return { label: "Read" };
 		const routed = readUrlCard(rawPath);
-		if (routed) return { label: routed.card.label, detail: routed.target || routed.card.rootDetail };
-		return { label: "Read", detail: shortenPath(rawPath) };
+		if (routed) {
+			// The target is a path like any other folded row's; the root description
+			// is prose, so it keeps the muted body color instead.
+			return {
+				label: routed.card.label,
+				detail: routed.target
+					? context.theme.fg("accent", routed.target)
+					: context.theme.fg("muted", routed.card.rootDetail),
+			};
+		}
+		return { label: "Read", detail: context.theme.fg("accent", shortenPath(rawPath)) };
 	},
 	renderCall(args: ReadRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const rawPath =
