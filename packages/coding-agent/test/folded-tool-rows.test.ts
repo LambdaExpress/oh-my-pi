@@ -105,11 +105,27 @@ describe("folded tool rows", () => {
 		expect(grep.render(200)[0] ?? "").toContain(theme.fg("muted", "useState"));
 	});
 
+	it("paints a read target the same way whether the card or the read group hosts it", () => {
+		// A `skill://` read can land in either component depending on when the
+		// streamed args first parsed, so both rows must agree on the target color.
+		const uri = "skill://21cp-bitbucket-pr-api";
+		const card = settle(toolCard("read", { path: uri }, "Read"));
+		card.setToolRowsFolded(true);
+		const group = new ReadToolGroupComponent({ showContentPreview: false });
+		group.updateArgs({ path: uri }, "call_skill");
+		group.setToolRowsFolded(true);
+
+		expect(card.render(120)[0] ?? "").toContain(theme.fg("accent", uri));
+		expect(group.render(120)[0] ?? "").toContain(theme.fg("accent", uri));
+	});
+
 	it("folds a device write to the operation it ran, not the device URL", () => {
 		const mounted = new Map<string, AgentTool>([["adb", { label: "ADB" } as unknown as AgentTool]]);
+		// The host exposes one canonical resolver (`XdevMountedState.resolve`);
+		// the card consults it for both the label and the delegated renderer.
 		const writeTool = {
 			label: "Write",
-			session: { xdev: { mountedNames: new Set(["adb"]), tools: mounted } },
+			session: { xdev: { resolve: (name: string) => mounted.get(name) } },
 		} as unknown as AgentTool;
 		const deviceCard = (content: string) =>
 			new ToolExecutionComponent("write", { path: "xd://adb", content }, {}, writeTool, uiStub);
@@ -134,13 +150,10 @@ describe("folded tool rows", () => {
 			label: "Write",
 			session: {
 				xdev: {
-					mountedNames: new Set(["mcp__atlassian__downloadjiraattachment"]),
-					tools: new Map([
-						[
-							"mcp__atlassian__downloadjiraattachment",
-							{ label: "atlassian/downloadJiraAttachment" } as unknown as AgentTool,
-						],
-					]),
+					resolve: (name: string) =>
+						name === "mcp__atlassian__downloadjiraattachment"
+							? ({ label: "atlassian/downloadJiraAttachment" } as unknown as AgentTool)
+							: undefined,
 				},
 			},
 		} as unknown as AgentTool;
