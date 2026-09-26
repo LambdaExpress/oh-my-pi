@@ -16,6 +16,7 @@ import {
 	type FetchImpl,
 	type Model,
 	resolveAnthropicMetadataUserId,
+	resolveDirectAnthropicBaseUrl,
 	stripClaudeToolPrefix,
 	withAuth,
 } from "@oh-my-pi/pi-ai";
@@ -318,6 +319,13 @@ function parseResponse(response: AnthropicApiResponse): SearchResponse {
 export async function searchAnthropic(params: SearchParams): Promise<SearchResponse> {
 	const registryResolver = params.modelRegistry.resolver(params.model, params.sessionId);
 	const searchApiKey = params.model.provider === "anthropic" ? $env.ANTHROPIC_SEARCH_API_KEY : undefined;
+	// Search-only endpoint override: `ANTHROPIC_SEARCH_BASE_URL` points the
+	// web-search request (URL + auth shaping) at a custom gateway without
+	// affecting chat completions. Unset/blank falls back to the endpoint the
+	// Messages path resolves for the same model: `FOUNDRY_BASE_URL` when Foundry
+	// is enabled, a configured non-official base URL, then `ANTHROPIC_BASE_URL`,
+	// then the catalog model's `baseUrl` (api.anthropic.com).
+	const searchBaseUrl = $env.ANTHROPIC_SEARCH_BASE_URL?.trim() || resolveDirectAnthropicBaseUrl(params.model);
 	const keyOrResolver: ApiKey = searchApiKey
 		? async context => {
 				if (context.error === undefined && !context.lastChance) return searchApiKey;
@@ -330,7 +338,7 @@ export async function searchAnthropic(params: SearchParams): Promise<SearchRespo
 	const response = await withAuth(
 		keyOrResolver,
 		async key => {
-			const auth = buildAnthropicAuthConfig(key, params.model.baseUrl);
+			const auth = buildAnthropicAuthConfig(key, searchBaseUrl);
 			const configuredHeaders = await params.modelRegistry.resolveModelHeaders(params.model, params.signal);
 			// Mirror the main Messages path: OAuth requests need a Claude-Code-shaped
 			// metadata.user_id (`{session_id, account_uuid?, device_id}`) so the

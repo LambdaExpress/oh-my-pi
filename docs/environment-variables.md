@@ -384,11 +384,18 @@ For an Anthropic catalog model, `searchAnthropic()` uses credentials in this ord
 1. `ANTHROPIC_SEARCH_API_KEY`
 2. The model registry's credential resolver for the selected model/provider, including configured runtime credentials, stored OAuth or API-key login, and that provider's normal environment fallback
 
-`ANTHROPIC_SEARCH_API_KEY` is a search-only auth source: it does not change chat credentials. The selected catalog model supplies the model ID and endpoint, so there are no separate Anthropic search model or base-URL environment overrides.
+`ANTHROPIC_SEARCH_API_KEY` is a search-only auth source: it does not change chat credentials. The selected catalog model supplies the model ID; the endpoint resolves in this order:
 
-| Variable                   | Default / behavior                                                                                                                                                                                 |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ANTHROPIC_SEARCH_API_KEY` | API key used exclusively for an Anthropic web-search request. It is tried before the selected model's normal credential resolver and does not affect chat completions.                             |
+1. `ANTHROPIC_SEARCH_BASE_URL`
+2. `FOUNDRY_BASE_URL` when `CLAUDE_CODE_USE_FOUNDRY` is enabled
+3. A configured, non-official base URL on the selected model
+4. `ANTHROPIC_BASE_URL`
+5. The catalog model's `baseUrl` (`https://api.anthropic.com`)
+
+| Variable                    | Default / behavior                                                                                                                                                                                                                                        |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ANTHROPIC_SEARCH_API_KEY`  | API key used exclusively for an Anthropic web-search request. It is tried before the selected model's normal credential resolver and does not affect chat completions.                                                                                    |
+| `ANTHROPIC_SEARCH_BASE_URL` | Base URL used exclusively for an Anthropic web-search request. Overrides the chat endpoint for search calls only; leave chat on a gateway (`ANTHROPIC_BASE_URL`, provider base URL) while pointing search at a direct Anthropic endpoint, or the reverse. |
 
 ### Perplexity OAuth flow behavior flag
 
