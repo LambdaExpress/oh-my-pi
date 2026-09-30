@@ -1722,7 +1722,13 @@ export const taskToolRenderer = {
 		const rawName = tasks?.length ? first?.name : args?.name;
 		const name =
 			typeof rawName === "string" ? previewLine(sanitizeDisplayWarning(rawName), TRUNCATE_LENGTHS.CONTENT) : "";
-		const detail = brief ?? name;
+		const agentCount = tasks?.length ?? (typeof args?.task === "string" && args.task.trim() ? 1 : 0);
+		const countLabel =
+			agentCount > 0 ? t("{count} agent{s}", { count: agentCount, s: agentCount === 1 ? "" : "s" }) : undefined;
+		const description = brief ?? name;
+		const detail = countLabel
+			? `${countLabel}${description ? context.theme.sep.dot + description : ""}`
+			: description;
 		return detail ? { label: "Task", detail: context.theme.fg("muted", detail) } : { label: "Task" };
 	},
 	renderCall,

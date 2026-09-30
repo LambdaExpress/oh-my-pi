@@ -4,7 +4,7 @@ import { type Component, Container, Text } from "../index";
 import { t } from "../i18n";
 import type { Theme } from "../theme/theme";
 import { replaceTabs, sanitizeDisplayWarning } from "../render/render-utils";
-import type { RenderResultOptions, ToolActivitySummary, ToolRenderer } from "./renderer";
+import type { RenderResultOptions, ToolActivityContext, ToolActivitySummary, ToolRenderer } from "./renderer";
 import { renderDefaultToolExecution } from "./default-renderer";
 import { parseMCPToolName } from "./mcp";
 
@@ -13,6 +13,7 @@ export interface XdevMountedRenderer {
 	label?: string;
 	renderCall?(...args: Parameters<ToolRenderer["renderCall"]>): unknown;
 	renderResult?(...args: Parameters<ToolRenderer["renderResult"]>): unknown;
+	activitySummary?: ToolRenderer["activitySummary"];
 	mergeCallAndResult?: boolean;
 	/** Opt-in: this renderer's `renderCall` represents the pre-execution state accurately, so a pending device write may delegate to it instead of the queued placeholder. */
 	renderCallBeforeExecution?: boolean;
@@ -137,11 +138,23 @@ function firstDeviceScalar(args: Record<string, unknown>, skipKey?: string): str
 export function xdevActivitySummary(
 	name: string,
 	content: unknown,
-	theme: Theme,
+	context: ToolActivityContext,
 	resolveMounted?: (name: string) => XdevMountedRenderer | undefined,
 ): ToolActivitySummary {
+	const { theme } = context;
 	const mounted = resolveMounted?.(name);
-	const args = decodeInnerArgs(content);
+	const dispatch = (context.result?.details as { xdev?: XdevRenderDispatch } | undefined)?.xdev;
+	const args = dispatch?.args ?? decodeInnerArgs(content);
+	const trimmed = typeof content === "string" ? content.trim() : "";
+	if (dispatch?.mode !== "help" && !HELP_CONTENT_RE.test(trimmed)) {
+		const renderer = mounted?.activitySummary ? mounted : rendererLookup?.(name);
+		if (renderer?.activitySummary) {
+			return renderer.activitySummary(args, {
+				...context,
+				result: context.result ? { ...context.result, details: dispatch?.inner } : undefined,
+			});
+		}
+	}
 	const pick = (keys: readonly string[]): { key: string; value: string } | undefined => {
 		for (const key of keys) {
 			const value = args[key];
@@ -153,7 +166,6 @@ export function xdevActivitySummary(
 	};
 	const verb = pick(DEVICE_ACTIVITY_VERB_KEYS);
 	const object = pick(DEVICE_ACTIVITY_OBJECT_KEYS);
-	const trimmed = typeof content === "string" ? content.trim() : "";
 	let subject = object?.value;
 	if (subject === undefined) {
 		if (trimmed.startsWith("{")) {

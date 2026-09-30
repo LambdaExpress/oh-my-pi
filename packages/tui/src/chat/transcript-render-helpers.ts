@@ -562,23 +562,38 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 		const jobId = job.jobId ?? "unknown";
 		const progressDetails = job.progress?.details;
 		if (job.type === "ssh_transfer" && isSshTransferToolDetails(progressDetails)) {
-			const statusLine =
+			const statusColor =
 				progressDetails.status === "completed"
-					? theme.fg("success", `${theme.status.success} ${t("Background SSH transfer completed")}`)
+					? "success"
 					: progressDetails.status === "cancelled"
-						? theme.fg("muted", `${theme.status.aborted} ${t("Background SSH transfer cancelled")}`)
-						: theme.fg("error", `${theme.status.error} ${t("Background SSH transfer failed")}`);
+						? "muted"
+						: "error";
+			const statusIcon =
+				progressDetails.status === "completed"
+					? theme.status.success
+					: progressDetails.status === "cancelled"
+						? theme.status.aborted
+						: theme.status.error;
+			const statusText =
+				progressDetails.status === "completed"
+					? t("Background SSH transfer completed")
+					: progressDetails.status === "cancelled"
+						? t("Background SSH transfer cancelled")
+						: t("Background SSH transfer failed");
+			const statusLine = theme.fg(statusColor, `${statusIcon} ${statusText}`);
 			const header = `${statusLine} ${theme.fg("dim", "[ssh_transfer]")} ${theme.fg("accent", jobId)}`;
 			const summary = formatSshTransferSummary(progressDetails);
 			rows.push({ parts: [`${header}\n${summary}`] });
-			const summaryLines = summary.split("\n");
-			const error = summaryLines.find(line => line.startsWith("Error: "));
-			const cleanup = summaryLines.find(line => line.startsWith("Cancelling · "));
 			const safeJobId = replaceTabs(sanitizeText(jobId)).replaceAll("\r", "\\r").replaceAll("\n", "\\n");
-			const foldedHeader = `${statusLine} ${theme.fg("dim", "[ssh_transfer]")} ${theme.fg("accent", safeJobId)}`;
-			const compact = [foldedHeader, error && theme.fg("error", error), cleanup, theme.fg("dim", summaryLines[0]!)];
+			const foldedHeader = theme.fg(statusColor, `${statusIcon} ${t("SSH Transfer")}:`);
+			const compact = theme.fg(
+				progressDetails.error === undefined ? "dim" : "error",
+				formatSshTransferSummary(progressDetails, { compact: true }),
+			);
 			compactRows ??= [];
-			compactRows[rows.length - 1] = new TruncatedText(` ${compact.filter(Boolean).join(" ")}`);
+			compactRows[rows.length - 1] = new TruncatedText(
+				` ${foldedHeader} ${compact} · ${theme.fg("dim", t(progressDetails.status))} ${theme.fg("accent", safeJobId)}`,
+			);
 			if (job.meta?.artifactError) {
 				const warning = { parts: [theme.fg("warning", formatArtifactErrorNotice(job.meta.artifactError))] };
 				rows.push(warning);

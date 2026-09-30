@@ -66,4 +66,24 @@ describe("SSH transfer rendering", () => {
 		expect(lines.every(line => Bun.stringWidth(line) <= width)).toBe(true);
 		expect(lines.join("\n")).toContain("50.0%");
 	});
+
+	it("keeps hostile compact hosts, filenames, and errors on one width-bounded row", () => {
+		const summary = formatSshTransferSummary(
+			transferDetails({
+				host: "bad\n\thost\u001b[31m",
+				localPath: "/tmp/source\nname.tar\u001b[31m",
+				status: "failed",
+				error: "permission\n\tdenied\u001b[0m",
+			}),
+			{ compact: true, width: 100 },
+		);
+		expect(summary.split("\n")).toHaveLength(1);
+		expect(summary).toContain("bad\\n   host");
+		expect(summary).toContain("source\\nname.tar");
+		expect(summary).toContain("permission\\n   denied");
+		expect(summary).toContain("50.0%");
+		expect(summary).not.toContain("\u001b");
+		expect(summary).not.toContain("\t");
+		expect(Bun.stringWidth(summary)).toBeLessThanOrEqual(100);
+	});
 });
