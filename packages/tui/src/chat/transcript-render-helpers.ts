@@ -7,7 +7,8 @@
 import { type AgentMessage, isContinuableStreamInterruption } from "@oh-my-pi/pi-agent-core";
 import { type Component } from "../tui";
 import { TruncatedText } from "../components/truncated-text";
-import { formatBytes, formatDuration } from "@oh-my-pi/pi-utils";
+import { formatBytes, formatDuration, sanitizeText } from "@oh-my-pi/pi-utils";
+import { replaceTabs } from "../render/render-utils";
 import type { JobSnapshot } from "../tools/wait";
 import type { DaemonSnapshot } from "../tools/daemon";
 import {
@@ -496,6 +497,31 @@ export function createCompletedRunSummary(summary: CompletedRunSummary, toggleKe
 	return new TruncatedText(theme.fg("dim", theme.italic(text)), 1, 0);
 }
 
+class AsyncResultStatusBlock extends TranscriptStatusBlock {
+	#folded = false;
+	readonly #compactRows: readonly (Component | undefined)[];
+
+	constructor(rows: readonly TranscriptStatusRow[], compactRows: readonly (Component | undefined)[]) {
+		super(rows);
+		this.#compactRows = compactRows;
+	}
+
+	setToolRowsFolded(folded: boolean): void {
+		if (this.#folded === folded) return;
+		this.#folded = folded;
+		this.invalidate();
+	}
+
+	override render(width: number): readonly string[] {
+		if (!this.#folded) return super.render(width);
+		const lines: string[] = [];
+		for (let index = 0; index < this.children.length; index++) {
+			lines.push(...(this.#compactRows[index] ?? this.children[index]!).render(width));
+		}
+		return lines;
+	}
+}
+
 /**
  * Render an `async-result` custom message (a completed background bash/task job,
  * or a batch of them) as a transcript block of one "Background job completed"
@@ -531,6 +557,7 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 					},
 				];
 	const rows: TranscriptStatusRow[] = [];
+	let compactRows: (Component | undefined)[] | undefined;
 	for (const job of jobs) {
 		const jobId = job.jobId ?? "unknown";
 		const progressDetails = job.progress?.details;
@@ -542,27 +569,45 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 						? theme.fg("muted", `${theme.status.aborted} ${t("Background SSH transfer cancelled")}`)
 						: theme.fg("error", `${theme.status.error} ${t("Background SSH transfer failed")}`);
 			const header = `${statusLine} ${theme.fg("dim", "[ssh_transfer]")} ${theme.fg("accent", jobId)}`;
-			rows.push({ parts: [`${header}\n${formatSshTransferSummary(progressDetails)}`] });
+			const summary = formatSshTransferSummary(progressDetails);
+			rows.push({ parts: [`${header}\n${summary}`] });
+			const summaryLines = summary.split("\n");
+			const error = summaryLines.find(line => line.startsWith("Error: "));
+			const cleanup = summaryLines.find(line => line.startsWith("Cancelling · "));
+			const safeJobId = replaceTabs(sanitizeText(jobId)).replaceAll("\r", "\\r").replaceAll("\n", "\\n");
+			const foldedHeader = `${statusLine} ${theme.fg("dim", "[ssh_transfer]")} ${theme.fg("accent", safeJobId)}`;
+			const compact = [foldedHeader, error && theme.fg("error", error), cleanup, theme.fg("dim", summaryLines[0]!)];
+			compactRows ??= [];
+			compactRows[rows.length - 1] = new TruncatedText(` ${compact.filter(Boolean).join(" ")}`);
+			if (job.meta?.artifactError) {
+				const warning = { parts: [theme.fg("warning", formatArtifactErrorNotice(job.meta.artifactError))] };
+				rows.push(warning);
+			}
 			continue;
 		}
 		const typeLabel = job.type ? `[${job.type}]` : "[job]";
 		const duration = typeof job.durationMs === "number" ? formatDuration(job.durationMs) : undefined;
-		rows.push({
+		const row = {
 			parts: [
 				theme.fg("success", `${theme.status.done} ${t("Background job completed")}`),
 				theme.fg("dim", typeLabel),
 				theme.fg("accent", jobId),
 				duration ? theme.fg("dim", `(${duration})`) : undefined,
 			],
-		});
+		};
+		rows.push(row);
 		if (job.meta?.artifactError) {
-			rows.push({ parts: [theme.fg("warning", formatArtifactErrorNotice(job.meta.artifactError))] });
+			const warning = { parts: [theme.fg("warning", formatArtifactErrorNotice(job.meta.artifactError))] };
+			rows.push(warning);
 		}
 	}
 	if (details?.meta?.artifactError) {
-		rows.push({ parts: [theme.fg("warning", formatArtifactErrorNotice(details.meta.artifactError))] });
+		const warning = { parts: [theme.fg("warning", formatArtifactErrorNotice(details.meta.artifactError))] };
+		rows.push(warning);
 	}
-	return new ToolActivityContainer(new TranscriptStatusBlock(rows));
+	return new ToolActivityContainer(
+		compactRows ? new AsyncResultStatusBlock(rows, compactRows) : new TranscriptStatusBlock(rows),
+	);
 }
 
 /**

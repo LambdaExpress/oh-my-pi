@@ -16,6 +16,15 @@ export function isToolRowsFoldComponent(component: Component): component is Comp
 	return typeof (component as Partial<ToolRowsFoldComponent>).setToolRowsFolded === "function";
 }
 
+/** Preformatted activity that joins folded rows without changing its own presentation. */
+export interface CompactToolActivityRow {
+	readonly joinsFoldedToolRows: true;
+}
+
+export function isCompactToolActivityRow(component: Component): component is Component & CompactToolActivityRow {
+	return (component as Partial<CompactToolActivityRow>).joinsFoldedToolRows === true;
+}
+
 export class ToolActivityContainer extends Container implements ToolActivityComponent {
 	#visible = true;
 	#folded = false;

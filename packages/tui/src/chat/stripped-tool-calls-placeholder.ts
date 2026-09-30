@@ -8,6 +8,7 @@ import { theme } from "../theme";
  * so it hides and reappears with the `display.hideToolActivity` toggle.
  */
 export class StrippedToolCallsPlaceholder extends Text {
+	readonly joinsFoldedToolRows = true;
 	#toolActivityVisible: boolean;
 
 	constructor(strippedToolCalls: number, toolActivityVisible: boolean) {

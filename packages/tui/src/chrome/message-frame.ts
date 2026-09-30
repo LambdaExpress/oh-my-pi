@@ -13,6 +13,8 @@ import { Box } from "../components/box";
 import { Markdown } from "../components/markdown";
 import { Spacer } from "../components/spacer";
 import { Text } from "../components/text";
+import { Ellipsis, truncateToWidth } from "../render";
+import { sanitizeDisplayWarning, TRUNCATE_LENGTHS } from "../render/render-utils";
 import { type Component, Container } from "../tui";
 import { getMarkdownTheme, type Theme, type ThemeColor, theme } from "../theme/index";
 /** Message shape consumed by the shared frame. */
@@ -56,6 +58,9 @@ export class FramedMessageComponent<M extends FramedMessage> extends Container {
 	readonly #box: Box;
 	#customComponent: Component | undefined;
 	#expanded = false;
+	#toolRowsFolded = false;
+	#foldedPreview: string | undefined;
+	#foldedLine: { width: number; text: string } | undefined;
 	#disposed = false;
 
 	constructor(options: FramedMessageOptions<M>) {
@@ -70,6 +75,47 @@ export class FramedMessageComponent<M extends FramedMessage> extends Container {
 		if (this.#expanded === expanded) return;
 		this.#expanded = expanded;
 		this.#rebuild();
+	}
+
+	setToolRowsFolded(folded: boolean): void {
+		if (this.#toolRowsFolded === folded) return;
+		this.#toolRowsFolded = folded;
+		this.#foldedLine = undefined;
+	}
+
+	override render(width: number): readonly string[] {
+		if (this.#disposed) return [];
+		if (!this.#toolRowsFolded) return super.render(width);
+		if (this.#foldedLine?.width === width) return [this.#foldedLine.text];
+		const icon = typeof this.#options.icon === "function" ? this.#options.icon() : this.#options.icon;
+		const type = sanitizeDisplayWarning(this.#options.message.customType);
+		const title = theme.fg("customMessageLabel", theme.bold(icon ? `${icon} ${type}` : type));
+		const preview = this.#foldedMessagePreview();
+		const detail = preview ? `: ${theme.fg("muted", preview)}` : "";
+		// An extension renderer may show additional details absent from the persisted
+		// message body. Make that disclosure visible instead of implying the preview is complete.
+		const more = this.#customComponent ? ` ${theme.fg("dim", "…")}` : "";
+		const text = truncateToWidth(` ${title}${detail}${more}`, width, Ellipsis.Unicode);
+		this.#foldedLine = { width, text };
+		return [text];
+	}
+
+	#foldedMessagePreview(): string {
+		if (this.#foldedPreview !== undefined) return this.#foldedPreview;
+		const content = this.#options.message.content;
+		const text =
+			typeof content === "string"
+				? content
+				: content
+						.filter((item): item is TextContent => item.type === "text")
+						.map(item => item.text)
+						.join(" ");
+		this.#foldedPreview = truncateToWidth(
+			sanitizeDisplayWarning(text).replace(/\s+/g, " "),
+			TRUNCATE_LENGTHS.LONG,
+			Ellipsis.Unicode,
+		);
+		return this.#foldedPreview;
 	}
 
 	override invalidate(): void {
@@ -88,6 +134,8 @@ export class FramedMessageComponent<M extends FramedMessage> extends Container {
 
 	#rebuild(): void {
 		if (this.#disposed) return;
+		this.#foldedLine = undefined;
+		this.#foldedPreview = undefined;
 		let nextCustomComponent: Component | undefined;
 		const customRenderer = this.#options.customRenderer;
 		if (customRenderer) {

@@ -3,14 +3,49 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai";
 import { setLocale } from "../src/i18n";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import type { CustomMessage } from "@oh-my-pi/pi-tui/chat/messages";
+import type { SshTransferToolDetails } from "@oh-my-pi/pi-tui/tools/ssh-transfer-summary";
 import {
 	assistantUsageIsBilled,
+	buildAsyncResultBlock,
 	collapseCompletedRuns,
 	createCompletedRunSummary,
 	deriveCompletedRunAnchor,
 	deriveCompletedRunCollapses,
 } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
+
+function sshTransfer(overrides: Partial<SshTransferToolDetails> = {}): SshTransferToolDetails {
+	return {
+		operation: "upload",
+		host: "backup.example",
+		localPath: "/tmp/report.tar",
+		remotePath: "/archive/report.tar",
+		status: "completed",
+		totalBytes: 1024,
+		transferredBytes: 1024,
+		percent: 100,
+		bytesPerSecond: 0,
+		averageBytesPerSecond: 512,
+		elapsedMs: 2000,
+		...overrides,
+	};
+}
+
+function asyncResult(jobs: unknown[], meta?: unknown): CustomMessage {
+	return {
+		role: "custom",
+		customType: "async-result",
+		content: "",
+		display: true,
+		timestamp: 1,
+		details: { jobs, meta },
+	};
+}
+
+function resultRows(transcript: TranscriptContainer, width = 180): string[] {
+	return transcript.renderViewport(width, 30).map(line => Bun.stripANSI(line).trim());
+}
 
 function usage(overrides: Partial<Usage> = {}): Usage {
 	return {
@@ -44,6 +79,100 @@ function assistant(
 beforeAll(async () => {
 	await initTheme();
 	setLocale("en");
+});
+
+describe("async-result transcript folding", () => {
+	it("keeps an SSH job on one width-bounded row and restores its detailed progress", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(
+			buildAsyncResultBlock(
+				asyncResult([{ type: "ssh_transfer", jobId: "ssh-42", progress: { details: sshTransfer() } }]),
+			),
+		);
+		const detailed = resultRows(transcript);
+		expect(detailed).toHaveLength(3);
+		expect(detailed[0]).toContain("ssh-42");
+		expect(detailed[1]).toContain("/tmp/report.tar → /archive/report.tar");
+		expect(detailed[2]).toContain("100.0%");
+		transcript.setToolRowsFolded(true);
+		const compact = resultRows(transcript);
+		expect(compact).toHaveLength(1);
+		expect(compact[0]).toContain("completed");
+		expect(compact[0]).toContain("ssh-42");
+		expect(compact[0]).toContain("/tmp/report.tar → /archive/report.tar");
+		expect(compact[0]).not.toContain("100.0%");
+		for (const width of [40, 12]) {
+			const narrow = resultRows(transcript, width);
+			expect(narrow).toHaveLength(1);
+			expect(Bun.stringWidth(narrow[0]!)).toBeLessThanOrEqual(width);
+		}
+		transcript.setToolRowsFolded(false);
+		expect(resultRows(transcript)).toEqual(detailed);
+	});
+
+	it("retains failed and cancelled SSH status, error text, and artifact warnings when folded", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(
+			buildAsyncResultBlock(
+				asyncResult(
+					[
+						{
+							type: "ssh_transfer",
+							jobId: "ssh-failed",
+							progress: { details: sshTransfer({ status: "failed", error: "permission denied" }) },
+							meta: { artifactError: "write" },
+						},
+						{
+							type: "ssh_transfer",
+							jobId: "ssh-cancelled",
+							progress: { details: sshTransfer({ status: "cancelled", operation: "download" }) },
+						},
+					],
+					{ artifactError: "flush" },
+				),
+			),
+		);
+		transcript.setToolRowsFolded(true);
+		const folded = resultRows(transcript);
+		expect(folded).toHaveLength(4);
+		expect(folded[0]).toContain("failed");
+		expect(folded[0]).toContain("ssh-failed");
+		expect(folded[0]).toContain("permission denied");
+		expect(folded[0]).toContain("/tmp/report.tar → /archive/report.tar");
+		expect(folded[1]).toContain("artifact write failed");
+		expect(folded[2]).toContain("cancelled");
+		expect(folded[2]).toContain("ssh-cancelled");
+		expect(folded[2]).toContain("/archive/report.tar → /tmp/report.tar");
+		expect(folded[3]).toContain("artifact flush failed");
+		transcript.setToolRowsFolded(false);
+		const detailed = resultRows(transcript);
+		expect(detailed[0]).toContain("failed");
+		expect(detailed.some(line => line.includes("Error: permission denied"))).toBe(true);
+		expect(detailed.some(line => line.includes("100.0%"))).toBe(true);
+		expect(detailed.some(line => line.includes("artifact write failed"))).toBe(true);
+		expect(detailed.some(line => line.includes("artifact flush failed"))).toBe(true);
+	});
+
+	it("keeps batch jobs as separate rows alongside a folded SSH job", () => {
+		const transcript = new TranscriptContainer();
+		transcript.setToolRowsFolded(true);
+		transcript.addChild(
+			buildAsyncResultBlock(
+				asyncResult([
+					{ type: "task", jobId: "task-1", durationMs: 1000 },
+					{ type: "ssh_transfer", jobId: "ssh-2", progress: { details: sshTransfer() } },
+					{ type: "bash", jobId: "bash-3", durationMs: 2000 },
+				]),
+			),
+		);
+		const folded = resultRows(transcript);
+		expect(folded).toHaveLength(3);
+		expect(folded[0]).toContain("task-1");
+		expect(folded[1]).toContain("ssh-2");
+		expect(folded[2]).toContain("bash-3");
+		transcript.setToolRowsFolded(false);
+		expect(resultRows(transcript)).toHaveLength(5);
+	});
 });
 
 describe("assistantUsageIsBilled", () => {

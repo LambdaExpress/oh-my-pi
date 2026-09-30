@@ -461,6 +461,53 @@ describe("InputController escape behavior", () => {
 		expect(spies.updatePendingMessagesDisplay).not.toHaveBeenCalled();
 		expect(spies.requestRender).not.toHaveBeenCalled();
 	});
+
+	it("aborts on empty submit while a queued steer waits between retry attempts", async () => {
+		// The session stops streaming during an automatic retry backoff, so an
+		// `isStreaming`-only gate silently ignored the interrupt and the queue
+		// only moved once the next attempt started. The retry wait is the state
+		// the operator is looking at, so it must be cut like a live turn.
+		const { ctx, editor, spies } = createContext();
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			isRetrying: boolean;
+			queuedMessageCount: number;
+			hasRunnableQueuedMessages: boolean;
+		};
+		session.isStreaming = false;
+		session.isRetrying = true;
+		session.queuedMessageCount = 1;
+		session.hasRunnableQueuedMessages = true;
+		const controller = new InputController(ctx);
+
+		controller.setupEditorSubmitHandler();
+		await editor.onSubmit?.("");
+
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
+		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
+		expect(spies.requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not abort on empty submit when only an idle queue remains", async () => {
+		// Nothing owns the queue: an idle session's drain delivers it, so the
+		// empty submit stays a no-op instead of reporting a spurious interrupt.
+		const { ctx, editor, spies } = createContext();
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			isRetrying: boolean;
+			hasRunnableQueuedMessages: boolean;
+		};
+		session.isStreaming = false;
+		session.isRetrying = false;
+		session.hasRunnableQueuedMessages = true;
+		const controller = new InputController(ctx);
+
+		controller.setupEditorSubmitHandler();
+		await editor.onSubmit?.("");
+
+		expect(spies.abort).not.toHaveBeenCalled();
+	});
+
 	it("runs /btw as a builtin side request instead of steering the active stream", async () => {
 		const { ctx, editor, spies } = createContext();
 		(ctx.session as { isStreaming: boolean }).isStreaming = true;

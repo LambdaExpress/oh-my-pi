@@ -52,6 +52,45 @@ describe("folded tool rows", () => {
 		expect(visibleRows(card).join("\n")).toContain("print(1)");
 	});
 
+	it("summarizes a flat Task assignment and restores its full brief", () => {
+		const card = toolCard(
+			"task",
+			{ agent: "reviewer", name: "AuthProbe", task: "# Target\nReview session-cookie validation before release." },
+			"Task",
+		);
+		card.setToolRowsFolded(true);
+
+		expect(visibleRows(card).map(row => row.trim())).toEqual([
+			"Task: Review session-cookie validation before release.",
+		]);
+		card.updateResult({ content: [{ type: "text", text: "review complete" }] });
+		expect(visibleRows(card)[0]).toContain("Review session-cookie validation before release.");
+
+		card.setToolRowsFolded(false);
+		expect(visibleRows(card).join("\n")).toContain("Review session-cookie validation before release.");
+	});
+
+	it("updates a batch Task row as its context and child assignments stream in", () => {
+		const card = toolCard("task", { context: "# Goal" }, "Task");
+		card.setToolRowsFolded(true);
+		card.updateArgs({
+			context: "# Goal\nFix Advisor and SSH transcript folding",
+			tasks: [
+				{ name: "FoldAdvisorCard", task: "# Target\nShow note counts and blockers" },
+				{ name: "FoldSshResult", task: "# Target\nKeep SSH errors on one line" },
+			],
+		});
+
+		const lines = visibleRows(card, 110);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("Task: Fix Advisor and SSH transcript folding");
+		expect(lines[0]).not.toContain("# Goal");
+		card.updateArgs({
+			tasks: [{ name: "FoldAdvisorCard", task: "# Target\nShow note counts and blockers" }],
+		});
+		expect(visibleRows(card)[0]).toContain("Show note counts and blockers");
+	});
+
 	it("keeps a live call's spinner on the folded row", () => {
 		const card = toolCard("eval", { language: "py", title: "still running", code: "sleep(1)" }, "Eval");
 		card.setExecutionStarted();

@@ -668,13 +668,59 @@ describe("InputController keybinding setup", () => {
 		expect(spies.prompt).not.toHaveBeenCalled();
 	});
 
+	it("releases queued messages when Enter submits more text on top of them", async () => {
+		const { InputController, ctx, editor, spies } = await createContext();
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			hasRunnableQueuedMessages: boolean;
+		};
+		session.isStreaming = true;
+		session.hasRunnableQueuedMessages = true;
+		// The steered dispatch reports back "forwarded"; the release only runs then.
+		const prompt = spies.prompt as unknown as Mock<(text: string, options?: unknown) => Promise<boolean>>;
+		prompt.mockResolvedValue(true);
+		const controller = new InputController(ctx);
+		editor.setText("second request");
+
+		controller.setupEditorSubmitHandler();
+		await editor.onSubmit?.("second request");
+
+		// The new text still goes in as a steer so the model receives it, but the
+		// pending queue is released now instead of waiting for the current
+		// model/tool boundary.
+		expect(spies.prompt).toHaveBeenCalledWith("second request", {
+			streamingBehavior: "steer",
+			images: undefined,
+		});
+		expect(spies.abort).toHaveBeenCalledWith({ reason: "Interrupted by user", forceFlush: true });
+	});
+
+	it("queues the first message of a run without cutting the turn", async () => {
+		const { InputController, ctx, editor, spies } = await createContext();
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			hasRunnableQueuedMessages: boolean;
+		};
+		session.isStreaming = true;
+		session.hasRunnableQueuedMessages = false;
+		const prompt = spies.prompt as unknown as Mock<(text: string, options?: unknown) => Promise<boolean>>;
+		prompt.mockResolvedValue(true);
+		const controller = new InputController(ctx);
+		editor.setText("steer this run");
+
+		controller.setupEditorSubmitHandler();
+		await editor.onSubmit?.("steer this run");
+
+		expect(spies.prompt).toHaveBeenCalledWith("steer this run", { streamingBehavior: "steer", images: undefined });
+		expect(spies.abort).not.toHaveBeenCalled();
+	});
+
 	it("marks streaming follow-up submissions as local", async () => {
 		const { InputController, ctx, editor, spies } = await createContext();
 		const session = ctx.session as unknown as { isStreaming: boolean };
 		session.isStreaming = true;
 		editor.setText("follow up after current response");
 		const controller = new InputController(ctx);
-
 		await controller.handleFollowUp();
 
 		expect(ctx.locallySubmittedUserSignatures.has("follow up after current response\u00000")).toBe(true);

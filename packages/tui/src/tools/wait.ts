@@ -593,17 +593,36 @@ export function createIrcMessageCard(
 	if (card.replyTo) meta.push(t("reply"));
 	const age = messageAge(card.timestamp);
 	if (age) meta.push(age);
-	return createCachedComponent(
+	let folded = false;
+	let foldedPreview: string | undefined;
+	const component = createCachedComponent(
 		getExpanded,
 		(width, expanded) => {
-			const lines = [renderStatusLine({ iconOverride: ircGlyph(uiTheme), title, meta }, uiTheme)];
-			if (body.trim()) {
+			const lines = [
+				renderStatusLine(
+					{
+						iconOverride: ircGlyph(uiTheme),
+						title,
+						description: folded ? (foldedPreview ??= body.replace(/\s+/g, " ").trim()) : undefined,
+						meta,
+					},
+					uiTheme,
+				),
+			];
+			if (!folded && body.trim()) {
 				lines.push(...bodyLines(body, expanded, uiTheme, { indent: "  ", collapsedLines: 3 }));
 			}
 			return lines.map(line => truncateToWidth(line, width, Ellipsis.Unicode));
 		},
 		{ paddingX: 1 },
 	);
+	return Object.assign(component, {
+		setToolRowsFolded(value: boolean): void {
+			if (folded === value) return;
+			folded = value;
+			component.invalidate?.();
+		},
+	});
 }
 
 /** Render either a received message or a background-job snapshot. */

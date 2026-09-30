@@ -15,7 +15,7 @@ import { Markdown } from "../components/markdown";
 import { Text } from "../components/text";
 import { visibleWidth, wrapTextWithAnsi } from "../utils";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
-import type { RenderResultOptions } from "./renderer";
+import type { RenderResultOptions, ToolActivityContext, ToolActivitySummary } from "./renderer";
 import { formatAgentStatRun, renderAgentTreeRow } from "./agent-tree";
 import { getMarkdownTheme, type Theme } from "../theme/theme";
 import { stripGeneratedOutputNotice, stripRawOutputArtifactNotice, stripTrailingNotice } from "./output-meta";
@@ -33,12 +33,13 @@ import {
 	previewLine,
 	previewWindowRows,
 	replaceTabs,
+	sanitizeDisplayWarning,
 	shortenPath,
 	type ToolUIStatus,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
 } from "../render/render-utils";
-import { renderStatusLine } from "../render/index";
+import { Ellipsis, renderStatusLine } from "../render/index";
 import { framedToolCard } from "../render/tool-card";
 import { formatOutputInline, renderJsonTreeLines } from "./json-tree";
 import { repairDoubleEncodedJsonString } from "./task-repair-args";
@@ -441,6 +442,24 @@ function taskFirstLine(task: unknown): string {
 	const trimmed = sanitizeText(task).trim();
 	const newline = trimmed.indexOf("\n");
 	return newline === -1 ? trimmed : trimmed.slice(0, newline);
+}
+
+/** First substantive assignment line, skipping Markdown headings in structured task briefs. */
+function taskActivityBrief(value: unknown): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const text = repairDoubleEncodedJsonString(value);
+	let start = 0;
+	while (start < text.length) {
+		const end = text.indexOf("\n", start);
+		const line = (end === -1 ? text.slice(start) : text.slice(start, end)).trim();
+		if (line && !/^#{1,6}\s/.test(line)) {
+			const brief = sanitizeDisplayWarning(line.replace(/^[-*]\s+/, ""));
+			if (brief) return previewLine(brief, TRUNCATE_LENGTHS.CONTENT, Ellipsis.Unicode);
+		}
+		if (end === -1) break;
+		start = end + 1;
+	}
+	return undefined;
 }
 
 /**
@@ -1693,10 +1712,23 @@ function renderNestedTaskTree(
 }
 
 /** Renders task calls and their live or settled agent results. */
-export const taskToolRenderer = { renderCall, renderResult, mergeCallAndResult: true } satisfies ToolRenderer<
-	TaskParams,
-	TaskToolDetails
->;
+export const taskToolRenderer = {
+	activitySummary(args: TaskParams, context: ToolActivityContext): ToolActivitySummary {
+		const tasks = Array.isArray(args?.tasks) ? args.tasks : undefined;
+		const first = tasks?.[0];
+		const brief = tasks?.length
+			? (taskActivityBrief(args.context) ?? taskActivityBrief(first?.task))
+			: (taskActivityBrief(args?.task) ?? taskActivityBrief(args?.context));
+		const rawName = tasks?.length ? first?.name : args?.name;
+		const name =
+			typeof rawName === "string" ? previewLine(sanitizeDisplayWarning(rawName), TRUNCATE_LENGTHS.CONTENT) : "";
+		const detail = brief ?? name;
+		return detail ? { label: "Task", detail: context.theme.fg("muted", detail) } : { label: "Task" };
+	},
+	renderCall,
+	renderResult,
+	mergeCallAndResult: true,
+} satisfies ToolRenderer<TaskParams, TaskToolDetails>;
 
 /** Source of an agent definition */
 export type AgentSource = "bundled" | "user" | "project";

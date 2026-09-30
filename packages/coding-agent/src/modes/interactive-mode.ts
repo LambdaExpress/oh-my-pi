@@ -304,7 +304,7 @@ import type {
 	RenderSessionContextOptions,
 	SubmittedUserInput,
 } from "./types";
-import { customSubmissionSignature, userSubmissionSignature } from "./types";
+import { customSubmissionSignature, userMessageSubmissionSignature, userSubmissionSignature } from "./types";
 import {
 	collapsedRunProjections,
 	type CompletedRunCollapse,
@@ -3490,7 +3490,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		if (options.requestRender !== false) this.ui.requestRender();
 	}
 
-	rebuildChatFromMessages(options: { reuseSettledComponents?: boolean } = {}): void {
+	rebuildChatFromMessages(
+		options: { reuseSettledComponents?: boolean; detectMessage?: AgentMessage } = {},
+	): boolean | void {
 		// Mid-stream rebuilds (e.g. `/shake`, theme/setting changes that touch the
 		// transcript) replay only committed `state.messages`. The agent's in-flight
 		// `streamMessage` and its still-pending tool calls live OUTSIDE
@@ -3543,7 +3545,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		// Drop the already-resolved ones and let the replay own them; only
 		// genuinely in-flight (dangling, replay-stripped) calls still need
 		// preserving.
+		let detectedMessage = false;
 		for (const message of context.messages) {
+			if (options.detectMessage && isSameTranscriptMessage(message, options.detectMessage)) detectedMessage = true;
 			if (message.role !== "toolResult") continue;
 			const resolved = livePendingTools.get(message.toolCallId);
 			if (!resolved) continue;
@@ -3617,12 +3621,21 @@ export class InteractiveMode implements InteractiveModeContext {
 		// otherwise erase the user's just-submitted message until the first
 		// assistant token arrived (#2372). Once `message_start` fires the
 		// signature is cleared by `EventController`, so this replay is a no-op
-		// post-streaming and cannot duplicate.
-		this.#replayOptimisticUserMessage();
+		// post-streaming and cannot duplicate. Message persistence can outpace
+		// that event handler while it awaits a prior completed-run collapse, so
+		// skip the optimistic row when this rebuild already replayed its canonical
+		// request from the journal.
+		const optimisticRequestReplayed =
+			detectedMessage &&
+			options.detectMessage?.role === "user" &&
+			this.optimisticUserMessageSignature !== undefined &&
+			this.optimisticUserMessageSignature === userMessageSubmissionSignature(options.detectMessage);
+		if (!optimisticRequestReplayed) this.#replayOptimisticUserMessage();
 		this.eventController.restoreAsyncJobHud();
 		if (preserveRetirement && !this.chatContainer.finishRetirementPreservingRebuild()) {
 			this.ui.resetDisplay();
 		}
+		return options.detectMessage ? detectedMessage : undefined;
 	}
 
 	#replayOptimisticUserMessage(): void {
@@ -7062,6 +7075,10 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	#workingMessageWithElapsed(message: string): string {
+		// Reasoning items can carry only encrypted content, without a displayable summary.
+		if (this.streamingMessage?.content.at(-1)?.type === "thinking") {
+			message = t("Thinking…");
+		}
 		const totalSeconds = Math.floor(this.statusLine.getCurrentActivityMs() / 1_000);
 		const hours = Math.floor(totalSeconds / 3_600);
 		const minutes = Math.floor((totalSeconds % 3_600) / 60);

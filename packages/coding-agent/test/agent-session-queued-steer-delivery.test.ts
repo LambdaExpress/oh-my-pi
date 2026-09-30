@@ -380,4 +380,74 @@ describe("AgentSession queued steer delivery", () => {
 
 		expect(session.agent.peekSteeringQueue()).toEqual([]);
 	});
+
+	it("sends a queued steer immediately when the interrupt lands in the retry wait", async () => {
+		// Contract: an interrupt between automatic retry attempts releases the
+		// queued steer right away. The session stops streaming while the backoff
+		// runs, so the queue would otherwise sit out the delay and only move when
+		// the next attempt starts — the wait the operator is looking at when they
+		// press Enter on an empty composer.
+		// The backoff is minute-scale so the wait is still pending when the
+		// interrupt lands; the abort cancels it, so nothing ever sleeps it out.
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({
+			responses: [
+				// Retryable transport failure, held open long enough to queue a steer.
+				{ stopReason: "error", errorMessage: "The socket connection was closed unexpectedly.", delayMs: 50 },
+				{ content: ["answer to the queued steer"] },
+			],
+		});
+		const firstCallStarted = Promise.withResolvers<void>();
+		const secondCallStarted = Promise.withResolvers<void>();
+		const streamFn: typeof mock.stream = (providerModel, context, options) => {
+			if (mock.calls.length === 0) firstCallStarted.resolve();
+			else secondCallStarted.resolve();
+			return mock.stream(providerModel, context, options);
+		};
+		session = new AgentSession({
+			agent: new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model, systemPrompt: ["Test"], tools: [] },
+				streamFn,
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({
+				"compaction.enabled": false,
+				"retry.enabled": true,
+				"retry.baseDelayMs": 60_000,
+				"retry.maxDelayMs": 60_000,
+				"retry.maxRetries": 2,
+				"retry.modelFallback": false,
+			}),
+			modelRegistry,
+		});
+		const retryStarted = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_retry_start") retryStarted.resolve();
+		});
+
+		const firstRun = session.prompt("first attempt").catch(() => {});
+		await firstCallStarted.promise;
+		await session.prompt("queued steer", { streamingBehavior: "steer" });
+		expect(session.hasRunnableQueuedMessages).toBe(true);
+
+		await retryStarted.promise;
+		// The retry wait: the failed attempt is gone and the backoff — not a model
+		// call — is what holds the queue, so nothing new may have been sent yet.
+		expect(session.isRetrying).toBe(true);
+		expect(session.hasRunnableQueuedMessages).toBe(true);
+		expect(mock.calls.length).toBe(1);
+
+		const delivered = nextUserMessage(session, "queued steer");
+		await session.abort({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
+		await Promise.all([delivered, secondCallStarted.promise]);
+
+		expect(mock.calls.length).toBe(2);
+		expect(JSON.stringify(mock.calls[1]?.context.messages ?? [])).toContain("queued steer");
+		expect(session.isRetrying).toBe(false);
+		expect(session.hasRunnableQueuedMessages).toBe(false);
+		await firstRun;
+		// Real async delivery across the retry backoff: fake timers cannot drive the
+		// provider mock's stream or the drain's continuation.
+	}, 20_000);
 });

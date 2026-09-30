@@ -1,7 +1,10 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { createBackgroundTanDispatchBlock } from "@oh-my-pi/pi-tui/chat/background-tan-message";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { StrippedToolCallsPlaceholder } from "@oh-my-pi/pi-tui/chat/stripped-tool-calls-placeholder";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE, type CustomMessage } from "@oh-my-pi/pi-tui/chat/messages";
+import { createIrcMessageCard } from "@oh-my-pi/pi-tui/tools/wait";
 
 function dispatchMessage(details: { jobId: string; work: string; sessionFile: string }): CustomMessage<unknown> {
 	return {
@@ -44,5 +47,30 @@ describe("createBackgroundTanDispatchBlock", () => {
 
 		expect(line).toContain("…");
 		expect(line).not.toContain("x".repeat(80));
+	});
+
+	it("keeps single-line activity adjacent to folded messages and restores normal spacing", () => {
+		const transcript = new TranscriptContainer();
+		transcript.addChild(
+			createIrcMessageCard({ kind: "incoming", from: "Peer", body: "ready to start" }, () => false, theme),
+		);
+		transcript.addChild(
+			createBackgroundTanDispatchBlock(
+				dispatchMessage({ jobId: "job-42", work: "check GPS", sessionFile: "/x/Tan-1.jsonl" }),
+			),
+		);
+		transcript.addChild(new StrippedToolCallsPlaceholder(2, true));
+
+		transcript.setToolRowsFolded(true);
+		const folded = transcript.renderViewport(120, 12).map(line => Bun.stripANSI(line).trim());
+		expect(folded).toHaveLength(3);
+		expect(folded[0]).toContain("Peer: ready to start");
+		expect(folded[1]).toContain("job-42");
+		expect(folded[2]).toContain("2");
+
+		transcript.setToolRowsFolded(false);
+		const expanded = transcript.renderViewport(120, 12).map(line => Bun.stripANSI(line).trim());
+		expect(expanded.filter(line => line === "")).toHaveLength(2);
+		expect(expanded.some(line => line.includes("ready to start") && !line.includes("IRC"))).toBe(true);
 	});
 });

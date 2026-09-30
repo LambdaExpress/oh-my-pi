@@ -957,6 +957,30 @@ export class InputController {
 		return compacted.text.trim();
 	}
 
+	/**
+	 * Release queued user messages now instead of leaving them to the current
+	 * model/tool boundary: the operator pressed Enter on top of a pending queue.
+	 * Aborting is what every Enter-driven release does here — a steer posted into
+	 * the live turn would still wait for the boundary, which is the wait the
+	 * operator is interrupting. No-op when nothing runnable is queued yet (a
+	 * message still in preparation is released by its own drain), or when no run
+	 * owns the queue.
+	 */
+	async #releaseQueuedMessagesNow(): Promise<void> {
+		const session = this.ctx.session;
+		if (!session.hasRunnableQueuedMessages || (!session.isStreaming && !session.isRetrying)) return;
+		await session.abort({
+			reason: USER_INTERRUPT_LABEL,
+			// Carry the force-flush semantics explicitly: the queued messages were
+			// flushed into the next run, so the interrupted run's collapse span must
+			// survive until that continuation settles (the queue may already be
+			// drained when its stale agent_end is processed).
+			forceFlush: true,
+		});
+		this.ctx.updatePendingMessagesDisplay();
+		this.ctx.ui.requestRender();
+	}
+
 	setupEditorSubmitHandler(): void {
 		this.ctx.editor.onSubmit = async (text: string) => {
 			const submittedDraftText = this.ctx.editor.getText();
@@ -972,27 +996,19 @@ export class InputController {
 				return;
 			}
 
-			// Empty submit while streaming with queued messages: abort the active
-			// turn and let the post-unwind drain deliver the agent-core queue.
-			if (!text && !hasPendingImages && this.ctx.session.isStreaming) {
-				if (this.ctx.session.hasRunnableQueuedMessages) {
-					const aborting = this.ctx.session.abort({
-						reason: USER_INTERRUPT_LABEL,
-						// Carry the force-flush semantics explicitly: the queued
-						// messages were flushed into the next run, so the interrupted
-						// run's collapse span must survive until that continuation
-						// settles (the queue may already be drained when its stale
-						// agent_end is processed).
-						forceFlush: true,
-					});
-					await aborting;
-					this.ctx.updatePendingMessagesDisplay();
-					this.ctx.ui.requestRender();
-				}
+			// A message already pending turns the next Enter into "send now": with a
+			// queue in sight the operator wants it released and this submission sent,
+			// not another steer parked until the current model/tool boundary. Captured
+			// before dispatch so the message queued by this very submit does not make
+			// the first Enter of a run cut the turn it is steering into.
+			const releaseQueuedOnSubmit = this.ctx.session.hasRunnableQueuedMessages;
+
+			// Empty submit while messages are queued: the same release, with nothing
+			// else to send.
+			if (!text && !hasPendingImages) {
+				await this.#releaseQueuedMessagesNow();
 				return;
 			}
-
-			if (!text && !hasPendingImages) return;
 
 			// Continue shortcuts: "." or "c" resume the agent with a hidden agent-authored
 			// developer directive (no visible user message) instead of an empty turn, so the
@@ -1138,6 +1154,7 @@ export class InputController {
 					return;
 				}
 				if (await this.#invokeSkillCommand(text, "steer", inputImages, inputImageLinks)) {
+					if (releaseQueuedOnSubmit) await this.#releaseQueuedMessagesNow();
 					// The dispatch above ran the turn inline without resolving the input
 					// callback, so nothing re-enters `getUserInput` to arm the next
 					// iteration. Arm it here, now that the turn has settled.
@@ -1244,6 +1261,7 @@ export class InputController {
 					// prompt after every yield. A rejection leaves prior loop
 					// state untouched, so the previous body (if any) survives.
 					if (submittedMode === "loop" && forwarded) this.ctx.setLoopPrompt(text);
+					if (forwarded && releaseQueuedOnSubmit) await this.#releaseQueuedMessagesNow();
 				} catch (error) {
 					// Don't lose the queued steer draft: restore images then the collapsed
 					// text so chip tokens (and band cards) survive the retry.

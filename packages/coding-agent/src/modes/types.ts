@@ -46,6 +46,7 @@ import type { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-mark
 import type { SshTransferHud } from "./components/ssh-transfer-hud";
 import type { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import type { ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import type { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import type { RecentSession } from "@oh-my-pi/pi-tui/prompt/welcome";
 import type { EventController } from "./controllers/event-controller";
@@ -62,6 +63,19 @@ export type PendingCustomSubmissionMessage<T = unknown> = Pick<
 
 export function userSubmissionSignature(text: string, imageCount: number): string {
 	return `${text}\u0000${imageCount}`;
+}
+
+/** Match a delivered user message with the optimistic row or queued submission it confirms. */
+export function userMessageSubmissionSignature(message: Extract<AgentMessage, { role: "user" }>): string {
+	let imageCount = 0;
+	if (typeof message.content !== "string") {
+		for (const block of message.content) {
+			if (block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string") {
+				imageCount++;
+			}
+		}
+	}
+	return userSubmissionSignature(textContent(message.content), imageCount);
 }
 
 export function customSubmissionSignature(message: Pick<CustomMessage, "customType" | "timestamp">): string {
@@ -459,7 +473,11 @@ export interface InteractiveModeContext {
 	/** Refresh the running-subagents status badge from the active local or collab registry. */
 	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;
-	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
+	/** Detect whether a request was replayed during this rebuild, so live delivery does not append it twice. */
+	rebuildChatFromMessages(options?: {
+		reuseSettledComponents?: boolean;
+		detectMessage?: AgentMessage;
+	}): boolean | void;
 	/** Record a display-only projection for one completed request span. */
 	recordCompletedRunCollapse(collapse: CompletedRunCollapse): boolean;
 	/** Recover completed request spans from the persisted transcript. */

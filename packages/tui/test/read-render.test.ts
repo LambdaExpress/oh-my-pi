@@ -285,3 +285,21 @@ describe("readToolRenderer success-path sanitization", () => {
 		expect(Bun.stripANSI(raw)).toContain("a");
 	});
 });
+
+describe("readToolRenderer folded rows", () => {
+	it("paints internal-url and filesystem targets with the accent color", async () => {
+		const theme = await getThemeByName("dark-github");
+		expect(theme).toBeDefined();
+		// Internal URLs (`artifact://`, `local://`) read through the standalone
+		// folded row, not the read group, so the summary itself must paint them —
+		// a plain `shortenPath` left them in the terminal's default color while
+		// grouped filesystem reads came out accent.
+		const targets = ["artifact://3", "artifact://3:raw:1-5", "local://shot.png", "~/.omp/agent/sessions/s/shot.png"];
+		for (const target of targets) {
+			const summary = readToolRenderer.activitySummary({ path: target }, { theme: theme! } as never);
+			expect(summary.label).toBe("Read");
+			expect(Bun.stripANSI(summary.detail ?? "")).toBe(target);
+			expect(summary.detail).toBe(theme!.fg("accent", target));
+		}
+	});
+});

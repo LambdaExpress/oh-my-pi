@@ -1,8 +1,15 @@
 import { type Component } from "../tui";
+import type { ToolRowsFoldComponent } from "../chrome/tool-activity";
 import { Disclosure } from "../components/disclosure";
 import { visibleWidth } from "../utils";
 import type { AdvisorMessageDetails, AdvisorNote, AdvisorSeverity } from "./messages";
-import { formatBadge, replaceTabs, type ToolUIColor, wrapTextWithAnsi } from "../render/render-utils";
+import {
+	formatBadge,
+	replaceTabs,
+	sanitizeDisplayWarning,
+	type ToolUIColor,
+	wrapTextWithAnsi,
+} from "../render/render-utils";
 import { Ellipsis, truncateToWidth } from "../render";
 import type { Theme } from "../theme";
 import { t } from "../i18n";
@@ -52,14 +59,16 @@ class AdvisorHeader implements Component {
 		this.#cache = undefined;
 	}
 
+	label(): string {
+		const uiTheme = this.#uiTheme;
+		const tag = uiTheme.fg("customMessageLabel", uiTheme.bold(`${uiTheme.status.info} ${t("Advisor")}`));
+		return `${tag} ${uiTheme.fg("dim", this.#meta.join(uiTheme.sep.dot))}`;
+	}
+
 	render(width: number): readonly string[] {
 		width = Math.max(1, width);
 		if (this.#cache?.width === width) return this.#cache.lines;
-		const uiTheme = this.#uiTheme;
-		const tag = uiTheme.fg("customMessageLabel", uiTheme.bold(`${uiTheme.status.info} ${t("Advisor")}`));
-		const lines = [
-			truncateToWidth(`${tag} ${uiTheme.fg("dim", this.#meta.join(uiTheme.sep.dot))}`, width, Ellipsis.Unicode),
-		];
+		const lines = [truncateToWidth(this.label(), width, Ellipsis.Unicode)];
 		this.#cache = { width, lines };
 		return lines;
 	}
@@ -142,26 +151,42 @@ export function createAdvisorMessageCard(
 	details: AdvisorMessageDetails | undefined,
 	getExpanded: () => boolean,
 	uiTheme: Theme,
-): Component {
+): Component & ToolRowsFoldComponent {
 	const notes = details?.notes ?? [];
 	const blockers = notes.filter(note => note.severity === "blocker").length;
 	const meta: string[] = [`${notes.length} ${notes.length === 1 ? t("note") : t("notes")}`];
 	if (blockers > 0) meta.push(uiTheme.fg("error", `${blockers} ${blockers === 1 ? t("blocker") : t("blockers")}`));
 
 	const shown = notes.slice(0, COLLAPSED_NOTES);
+	const header = new AdvisorHeader(meta, uiTheme);
+	// Prefer the first blocking finding over less urgent notes in the summary.
+	const key =
+		notes.find(note => note.severity === "blocker") ?? notes.find(note => note.severity === "concern") ?? notes[0];
+	const preview = key?.note ? sanitizeDisplayWarning(key.note).replace(/\s+/g, " ") : "";
+	const who = key?.advisor && key.advisor !== "default" ? `[${sanitizeDisplayWarning(key.advisor)}] ` : "";
 	const disclosure = new Disclosure({
-		summary: new AdvisorHeader(meta, uiTheme),
+		summary: header,
 		collapsedBody: () => new AdvisorNotes(shown, notes.length - shown.length, uiTheme),
 		body: () => new AdvisorNotes(notes, 0, uiTheme),
 		expanded: getExpanded(),
 		paddingX: 1,
 	});
+	let toolRowsFolded = false;
 	// The tool-output toggle owns expansion state; synchronize the controlled
 	// disclosure from the callback on every render.
 	return {
 		render(width: number): readonly string[] {
+			if (toolRowsFolded) {
+				const detail = preview
+					? `${uiTheme.fg("dim", uiTheme.sep.dot)}${uiTheme.fg("dim", who)}${uiTheme.fg(severityColor(key?.severity), preview)}`
+					: "";
+				return [truncateToWidth(` ${header.label()}${detail}`, width, Ellipsis.Unicode)];
+			}
 			disclosure.setExpanded(getExpanded());
 			return disclosure.render(width);
+		},
+		setToolRowsFolded(folded: boolean): void {
+			toolRowsFolded = folded;
 		},
 		invalidate(): void {
 			disclosure.invalidate();

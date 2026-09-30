@@ -10,6 +10,7 @@ import * as sessionColor from "@oh-my-pi/pi-tui/theme/session-color";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { adjustHsv, TempDir } from "@oh-my-pi/pi-utils";
 import { setLocale } from "../src/i18n";
+import { createAssistantMessage } from "./helpers/agent-session-setup";
 
 import { cfgStatusLineSessionAccent } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
@@ -200,6 +201,60 @@ describe("InteractiveMode working-message session accent cache", () => {
 });
 
 describe("InteractiveMode working activity", () => {
+	it("keeps summaryless reasoning visible in the activity row until text or tool output starts", async () => {
+		const { mode } = await createHarness("Summaryless reasoning");
+		const wasHidden = mode.hideThinkingBlock;
+		vi.useFakeTimers();
+		const clock = vi.spyOn(Date, "now").mockReturnValue(10_000);
+		const message = createAssistantMessage("");
+		message.content = [{ type: "thinking", thinking: "" }];
+		mode.hideThinkingBlock = true;
+		mode.statusLine.resetActiveTime();
+		mode.statusLine.markActivityStart();
+		mode.setWorkingMessage("Reading src/index.ts");
+		mode.ensureLoadingAnimation();
+
+		try {
+			mode.streamingMessage = message;
+			clock.mockReturnValue(11_000);
+			vi.advanceTimersByTime(200);
+			const thinkingRow = stripVTControlCharacters(renderLoader(mode));
+			expect(thinkingRow).toMatch(/thinking/i);
+			expect(thinkingRow).toContain("(1s)");
+			expect(thinkingRow).not.toContain("Reading src/index.ts");
+
+			mode.hideThinkingBlock = false;
+			clock.mockReturnValue(12_000);
+			vi.advanceTimersByTime(200);
+			expect(stripVTControlCharacters(renderLoader(mode))).toMatch(/thinking/i);
+			expect(stripVTControlCharacters(renderLoader(mode))).toContain("(2s)");
+
+			message.content.push({ type: "text", text: "The model has started answering." });
+			vi.advanceTimersByTime(200);
+			expect(stripVTControlCharacters(renderLoader(mode))).not.toMatch(/thinking/i);
+
+			message.content.push({
+				type: "toolCall",
+				id: "activity-probe",
+				name: "read",
+				arguments: { path: "src/index.ts" },
+			});
+			mode.setWorkingMessage("Reading the next file");
+			expect(stripVTControlCharacters(renderLoader(mode))).toContain("Reading the next file");
+			expect(stripVTControlCharacters(renderLoader(mode))).not.toMatch(/thinking/i);
+
+			mode.streamingMessage = undefined;
+			mode.setWorkingMessage();
+			vi.advanceTimersByTime(200);
+			expect(stripVTControlCharacters(renderLoader(mode))).not.toMatch(/thinking/i);
+		} finally {
+			mode.streamingMessage = undefined;
+			mode.hideThinkingBlock = wasHidden;
+			mode.loadingAnimation?.stop();
+			mode.statusLine.markActivityEnd();
+		}
+	});
+
 	it("keeps elapsed time advancing across intent changes and resets it for the next run", async () => {
 		const { mode } = await createHarness("Timed session");
 		vi.useFakeTimers();

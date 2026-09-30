@@ -5,10 +5,11 @@
  * passes through unchanged.
  */
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { prompt } from "@oh-my-pi/pi-utils";
 import taskSummaryTemplate from "../../coding-agent/src/prompts/tools/task-summary.md" with { type: "text" };
-import { waitToolRenderer } from "@oh-my-pi/pi-tui/tools/wait";
+import { createIrcMessageCard, waitToolRenderer } from "@oh-my-pi/pi-tui/tools/wait";
 import { setLocale } from "../src/i18n";
 
 function renderLines(resultText: string): string {
@@ -64,6 +65,39 @@ describe("job renderer task-result preview", () => {
 		const output = Bun.stripANSI(component.render(120).join("\n"));
 		expect(output).toContain("Worker");
 		expect(output).toContain("file unlocked");
+	});
+
+	it("folds IRC cards into adjacent one-line activity rows and restores their bodies", () => {
+		const transcript = new TranscriptContainer();
+		transcript.setToolRowsFolded(true);
+		transcript.addChild(
+			createIrcMessageCard(
+				{ kind: "incoming", from: "Peer", body: "check\tlocation\nthen inspect GPS", timestamp: Date.now() },
+				() => false,
+				theme,
+			),
+		);
+		transcript.addChild(
+			createIrcMessageCard(
+				{ kind: "relay", from: "Peer", to: "Other", body: "confirmed", timestamp: Date.now() },
+				() => false,
+				theme,
+			),
+		);
+
+		const folded = transcript.renderViewport(120, 12).map(Bun.stripANSI);
+		expect(folded).toHaveLength(2);
+		expect(folded[0]).toContain("IRC");
+		expect(folded[0]).toContain("Peer");
+		expect(folded[0]).toContain("check location then inspect GPS");
+		expect(folded[1]).toContain("Peer");
+		expect(folded[1]).toContain("Other");
+		expect(folded[1]).toContain("confirmed");
+
+		transcript.setToolRowsFolded(false);
+		const unfolded = transcript.renderViewport(120, 12).map(Bun.stripANSI);
+		expect(unfolded.some(line => line.includes("check") && !line.includes("IRC"))).toBe(true);
+		expect(unfolded.some(line => line.includes("then inspect GPS"))).toBe(true);
 	});
 
 	it("previews the envelope body, not the wrapper markup", () => {

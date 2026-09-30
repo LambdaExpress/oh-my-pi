@@ -16,7 +16,6 @@ import {
 	readTranscriptShape,
 } from "@oh-my-pi/pi-tui/chat/read-tool-group";
 import { TodoReminderComponent } from "@oh-my-pi/pi-tui/chat/todo-reminder";
-import { textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
 import { ToolExecutionComponent, type ToolExecutionHandle, toolRenderName } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { TtsrNotificationComponent } from "@oh-my-pi/pi-tui/chat/ttsr-notification";
 import { createUsageRowBlock, turnElapsedMs } from "@oh-my-pi/pi-tui/overlays/usage-row";
@@ -24,7 +23,7 @@ import { getSymbolTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../../modes/types";
 import type { TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
 import { isActiveSshTransferJob, sshTransferJobDetails } from "../../modes/components/ssh-transfer-hud";
-import { customSubmissionSignature, userSubmissionSignature } from "../../modes/types";
+import { customSubmissionSignature, userMessageSubmissionSignature } from "../../modes/types";
 import { shouldCollapseCompactedHistoryForDisplay } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
 import idleRecapPrompt from "../../prompts/system/recap-user.md" with { type: "text" };
 import type { AgentSessionEvent } from "../../session/agent-session";
@@ -1376,7 +1375,7 @@ export class EventController {
 				// The optimistic row already is this request's transcript row (custom
 				// prompts persist before their `message_start`), so the boundary close
 				// repaints it from the transcript whenever that rebuilds.
-				if (this.#activeCompletedRun?.initialUserMessage) await this.#closeCompletedRunAtRequest();
+				if (this.#activeCompletedRun?.initialUserMessage) await this.#closeCompletedRunAtRequest(request);
 				this.#attachCompletedRunGate(request);
 				// The user invoked this prompt, so it is the submission a held
 				// startup notice was waiting for.
@@ -1396,14 +1395,25 @@ export class EventController {
 			// Seed the prompt→yield delta from the run's initiating prompt, the same as
 			// a user message, and treat it as the completed-run boundary: a queued
 			// `/skill:` prompt drains inside the current lifecycle, so no second
-			// agent_start marks where the preceding span ended.
+			// `agent_start` marks where the preceding span ended.
+			let replayedRequest = false;
 			if (request) {
 				this.#turnStartedAt = event.message.timestamp;
 				// Only an open anchored span needs the boundary commit; the common case
 				// stays synchronous so later fire-and-forget events cannot reorder rows.
-				if (this.#activeCompletedRun?.initialUserMessage) await this.#closeCompletedRunAtRequest();
+				if (this.#activeCompletedRun?.initialUserMessage) {
+					replayedRequest = await this.#closeCompletedRunAtRequest(request);
+				}
 			}
-			if (
+			if (replayedRequest) {
+				if (
+					event.message.role === "custom" &&
+					this.ctx.optimisticSkillMessagePending &&
+					isUserInvokedSkillPrompt(event.message)
+				) {
+					this.ctx.clearOptimisticSkillMessage();
+				}
+			} else if (
 				event.message.role === "custom" &&
 				this.ctx.optimisticSkillMessagePending &&
 				isUserInvokedSkillPrompt(event.message)
@@ -1432,24 +1442,14 @@ export class EventController {
 			// answer and this user message. Treat the user message itself as the run
 			// boundary: commit the completed span now, then open a fresh live gate for
 			// the follow-up below.
+			let replayedRequest = false;
 			if (!event.message.synthetic && this.#activeCompletedRun?.initialUserMessage) {
-				await this.#closeCompletedRunAtRequest();
+				replayedRequest = await this.#closeCompletedRunAtRequest(event.message);
 			}
 			// Only genuinely user-attributed prompts anchor the delta; a mid-run
 			// agent-attributed `user` message (advisor tool-loop redirect) must not.
 			if (event.message.attribution !== "agent") this.#turnStartedAt = event.message.timestamp;
-			const userText = textContent(event.message.content);
-			const imageBlocks =
-				typeof event.message.content === "string"
-					? []
-					: event.message.content.filter(
-							(content): content is ImageContent =>
-								content.type === "image" &&
-								typeof content.data === "string" &&
-								typeof content.mimeType === "string",
-						);
-			const imageCount = imageBlocks.length;
-			const signature = userSubmissionSignature(userText, imageCount);
+			const signature = userMessageSubmissionSignature(event.message);
 
 			this.#resetReadGroup();
 			this.#resolveDisplaceablePoll();
@@ -1462,7 +1462,7 @@ export class EventController {
 				this.ctx.clearOptimisticUserMessage();
 			} else if (replacesOptimistic) {
 				this.ctx.replaceOptimisticUserMessage(event.message);
-			} else {
+			} else if (!replayedRequest) {
 				// Append synchronously: #emit dispatches to this listener fire-and-forget
 				// (see AgentSession.#emit), so any await between the user message_start and
 				// addMessageToChat lets later events (assistant message_start, tool execution
@@ -2736,8 +2736,8 @@ export class EventController {
 	 * span; a terminal error after visible activity may collapse while preserving
 	 * the error message.
 	 */
-	async #closeCompletedRunAtRequest(): Promise<void> {
-		if (!this.#activeCompletedRun?.initialUserMessage) return;
+	async #closeCompletedRunAtRequest(request: AgentMessage): Promise<boolean> {
+		if (!this.#activeCompletedRun?.initialUserMessage) return false;
 		const finalAssistant = this.#activeCompletedRun.messages.findLast(
 			(message): message is Extract<AgentMessage, { role: "assistant" }> => message.role === "assistant",
 		);
@@ -2749,20 +2749,21 @@ export class EventController {
 			) ||
 			this.#activeCompletedRun.lastAssistantLifecycleVersion !== this.#activeCompletedRun.lifecycleVersion
 		) {
-			return;
+			return false;
 		}
 		await this.ctx.viewSession.waitForMessagePersistence(finalAssistant);
 		const previousLifecycleVersion = this.#activeCompletedRun.lifecycleVersion;
 		const collapse = this.#takeCompletedRunCollapse(finalAssistant);
-		if (!collapse) return;
+		if (!collapse) return false;
 		this.ctx.recordCompletedRunCollapse(collapse);
-		this.ctx.rebuildChatFromMessages();
+		const replayedRequest = this.ctx.rebuildChatFromMessages({ detectMessage: request }) === true;
 		this.ctx.ui.resetDisplay();
 		this.#activeCompletedRun = {
 			lifecycleVersion: previousLifecycleVersion + 1,
 			messages: [],
 			startedAtMs: Date.now(),
 		};
+		return replayedRequest;
 	}
 
 	/**

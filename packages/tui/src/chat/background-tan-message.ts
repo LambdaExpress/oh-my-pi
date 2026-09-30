@@ -23,14 +23,17 @@ export function createBackgroundTanDispatchBlock(message: CustomMessage<unknown>
 	const details = (message as CustomMessage<Partial<BackgroundTanDispatchDetails>>).details;
 	const jobId = details?.jobId ?? "unknown";
 	const work = details?.work ? previewWork(details.work) : undefined;
-	return new TranscriptStatusBlock([
-		{
-			parts: [
-				theme.fg("muted", `${theme.icon.output} ${t("Tangent dispatched")}`),
-				theme.fg("dim", "[task]"),
-				theme.fg("accent", jobId),
-				work ? theme.fg("dim", `${theme.format.dash} ${work}`) : undefined,
-			],
-		},
-	]);
+	return Object.assign(
+		new TranscriptStatusBlock([
+			{
+				parts: [
+					theme.fg("muted", `${theme.icon.output} ${t("Tangent dispatched")}`),
+					theme.fg("dim", "[task]"),
+					theme.fg("accent", jobId),
+					work ? theme.fg("dim", `${theme.format.dash} ${work}`) : undefined,
+				],
+			},
+		]),
+		{ joinsFoldedToolRows: true as const },
+	);
 }

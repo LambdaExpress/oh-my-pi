@@ -1,6 +1,6 @@
 import { type Component, Container, type HistoryBatch } from "../tui";
 import * as logger from "@oh-my-pi/pi-utils/logger";
-import { isToolActivityComponent, isToolRowsFoldComponent } from "./tool-activity";
+import { isCompactToolActivityRow, isToolActivityComponent, isToolRowsFoldComponent } from "./tool-activity";
 
 /** Shared animation time supplied by the constrained transcript root. */
 export interface AnimationFrame {
@@ -1244,9 +1244,9 @@ export class TranscriptContainer extends Container {
 		(component as Component & TranscriptPresentationTarget).setTranscriptAllocation?.(rows, frame);
 	}
 
-	/** A tool block currently presented as its folded one-line row. */
+	/** A folded tool block or preformatted compact activity in the folded transcript. */
 	#isFoldedToolRow(component: Component): boolean {
-		return this.#toolRowsFolded && isToolRowsFoldComponent(component);
+		return this.#toolRowsFolded && (isToolRowsFoldComponent(component) || isCompactToolActivityRow(component));
 	}
 
 	/**
