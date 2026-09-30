@@ -13,6 +13,7 @@ import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import { COLLAB_PROTO, type CollabFrame, parseCollabLink } from "@oh-my-pi/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { setLocale } from "../../src/i18n";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
 interface ModelHarness {
@@ -143,6 +144,9 @@ let harness: ModelHarness;
 const guestCleanups: (() => void)[] = [];
 
 beforeAll(async () => {
+	// Error frames carry translated UI text; pin English so assertions on
+	// those strings do not depend on the host's system language.
+	setLocale("en");
 	installInMemoryRelay();
 });
 
@@ -150,6 +154,7 @@ afterAll(async () => {
 	for (const cleanup of guestCleanups.splice(0)) cleanup();
 	await host.stop("test over");
 	uninstallInMemoryRelay();
+	setLocale(null);
 });
 
 beforeEach(async () => {

@@ -50,6 +50,10 @@ app.history.search: []
 | `app.live.toggle`            | `Ctrl+L`                                                              | Start or stop live voice mode (same as `/live`)                                                                                                                                      |
 | `app.agents.hub`             | `Alt+A`                                                               | [Open the Agent Hub](./agent-hub.md)                                                                                                                                                 |
 
+## Sending while the agent works
+
+`Enter` during a run queues the message as a steer, which the model picks up at its next step boundary. Pressing `Enter` again while messages are still queued releases them immediately: the in-flight turn is interrupted and the queue — plus the text just submitted — starts the next turn instead of waiting for that boundary. `Ctrl+Enter` (`app.message.followUp`) always queues for after the run finishes, and `Alt+Up` pulls a queued message back into the editor.
+
 ## Recover a cleared prompt
 
 Press `Ctrl+C` to clear an unsent composer draft, then `Up` to recall it. Older drafts and submitted prompts share the existing Up/Down navigation. Recalled drafts remain editable and are never sent until you submit them.

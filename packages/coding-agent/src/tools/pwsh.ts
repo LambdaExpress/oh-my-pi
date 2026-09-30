@@ -11,7 +11,8 @@ import { getProjectDir, isEnoent } from "@oh-my-pi/pi-utils";
 import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import { buildNonInteractiveEnv } from "../exec/non-interactive-env";
 import { InternalUrlRouter } from "../internal-urls";
-import { highlightCode, type Theme } from "../modes/theme/theme";
+import { highlightCode } from "@oh-my-pi/pi-tui/theme/tui-adapters";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
 import pwshDescription from "../prompts/tools/pwsh.md" with { type: "text" };
 import {
 	DEFAULT_MAX_BYTES,
@@ -20,21 +21,26 @@ import {
 	type OutputSummary,
 	streamTailUpdates,
 	TailBuffer,
-} from "../session/streaming-output";
+} from "@oh-my-pi/pi-tui/tools/streaming-output";
 import type { ToolSession } from ".";
 import { truncateForPrompt } from "./approval";
-import { createShellRenderer } from "./bash";
+import { createShellRenderer } from "@oh-my-pi/pi-tui/tools/bash";
 import { expandInternalUrls, type InternalUrlExpansionOptions } from "./bash-skill-urls";
 import {
-	type OutputMeta,
 	resolveOutputMaxColumns,
 	resolveOutputSinkHeadBytes,
 	resolveOutputSinkSpillThreshold,
 	resolveOutputSinkTailBytes,
 } from "./output-meta";
+import type { OutputMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { resolveToCwd } from "./path-utils";
-import { extractPartialJsonString, formatToolWorkingDirectory, replaceTabs } from "./render-utils";
-import { ToolAbortError, ToolError } from "./tool-errors";
+import {
+	extractPartialJsonString,
+	formatToolWorkingDirectory,
+	replaceTabs,
+} from "@oh-my-pi/pi-tui/render/render-utils";
+import { ToolAbortError } from "./tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { toolResult } from "./tool-result";
 import { clampTimeout } from "./tool-timeouts";
 

@@ -5,6 +5,7 @@ import type { VcsNumstatEntry } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { logger } from "@oh-my-pi/pi-utils";
 import { CHANGELOG_CATEGORIES } from "../../commit/types";
+import { t } from "../../i18n";
 import { detectChangelogBoundaries } from "./detect";
 import { generateChangelogEntries } from "./generate";
 import { parseUnreleasedSection } from "./parse";
@@ -66,14 +67,14 @@ export async function runChangelogFlow({
 }: ChangelogFlowInput): Promise<string[]> {
 	if (stagedFiles.length === 0) return [];
 	const repo = vcs.requireGit(cwd);
-	onProgress?.("Detecting changelog boundaries...");
+	onProgress?.(t("Detecting changelog boundaries..."));
 	const boundaries = await detectChangelogBoundaries(cwd, stagedFiles);
 	if (boundaries.length === 0) return [];
 
 	const sessionId = Bun.randomUUIDv7();
 	const updated: string[] = [];
 	for (const boundary of boundaries) {
-		onProgress?.(`Generating entries for ${boundary.changelogPath}…`);
+		onProgress?.(t("Generating entries for {path}…", { path: boundary.changelogPath }));
 		const diff = await repo.diffText({ cached: true, files: boundary.files });
 		if (!diff.trim()) continue;
 		const stat = renderStat(await repo.numstat({ cached: true, files: boundary.files }));
@@ -129,7 +130,7 @@ export async function applyChangelogProposals({
 			(!proposal.deletions || Object.keys(proposal.deletions).length === 0)
 		)
 			continue;
-		onProgress?.(`Applying entries for ${proposal.path}…`);
+		onProgress?.(t("Applying entries for {path}…", { path: proposal.path }));
 		const exists = await Bun.file(proposal.path).exists();
 		if (!exists) {
 			logger.warn("commit changelog path missing", { path: proposal.path });

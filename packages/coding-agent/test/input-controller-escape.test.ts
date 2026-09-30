@@ -2,10 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "bun:
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
+import { SpaceHoldGesture } from "@oh-my-pi/pi-tui/space-hold";
 import type { InteractiveModeContext, SubmittedUserInput } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { vocalizer } from "@oh-my-pi/pi-coding-agent/tts/vocalizer";
 import * as logger from "@oh-my-pi/pi-utils/logger";
+
+import { cfgDoubleEscapeAction } from "@oh-my-pi/pi-coding-agent/modes/settings";
 
 type Spy = Mock<(...args: unknown[]) => unknown>;
 type StartPendingSubmissionSpy = Mock<InteractiveModeContext["startPendingSubmission"]>;
@@ -21,12 +24,8 @@ type FakeEditor = {
 	onSelectModelTemporary?: () => void;
 	onSelectModel?: () => void;
 	onLeftAtStart?: () => void;
-	onHistorySearch?: () => void;
 	onPasteImage?: () => void;
 	onCopyPrompt?: () => void;
-	onExpandTools?: () => void;
-	onToggleThinking?: () => void;
-	onExternalEditor?: () => void;
 	onDequeue?: () => void;
 	onChange?: (text: string) => void;
 	setText(text: string): void;
@@ -35,6 +34,7 @@ type FakeEditor = {
 	setActionKeys(action: string, keys: string[]): void;
 	setCustomKeyHandler(key: string, handler: () => void): void;
 	clearCustomKeyHandlers(): void;
+	spaceHold: SpaceHoldGesture;
 	pendingImages: ImageContent[];
 	pendingImageLinks: (string | undefined)[];
 };
@@ -133,6 +133,7 @@ function createContext(): {
 		setActionKeys: vi.fn(),
 		setCustomKeyHandler: vi.fn(),
 		clearCustomKeyHandlers: vi.fn(),
+		spaceHold: new SpaceHoldGesture(() => {}),
 		pendingImages: [],
 		pendingImageLinks: [],
 	};
@@ -225,6 +226,7 @@ function createContext(): {
 		unfocusSession: vi.fn(async () => {}),
 		focusParentSession: vi.fn(async () => {}),
 		handleSTTToggle: vi.fn(),
+		dictationSpaceHold: vi.fn(),
 		handleBtwEscape,
 		handleBtwCommand,
 		hasActiveBtw,
@@ -459,6 +461,53 @@ describe("InputController escape behavior", () => {
 		expect(spies.updatePendingMessagesDisplay).not.toHaveBeenCalled();
 		expect(spies.requestRender).not.toHaveBeenCalled();
 	});
+
+	it("aborts on empty submit while a queued steer waits between retry attempts", async () => {
+		// The session stops streaming during an automatic retry backoff, so an
+		// `isStreaming`-only gate silently ignored the interrupt and the queue
+		// only moved once the next attempt started. The retry wait is the state
+		// the operator is looking at, so it must be cut like a live turn.
+		const { ctx, editor, spies } = createContext();
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			isRetrying: boolean;
+			queuedMessageCount: number;
+			hasRunnableQueuedMessages: boolean;
+		};
+		session.isStreaming = false;
+		session.isRetrying = true;
+		session.queuedMessageCount = 1;
+		session.hasRunnableQueuedMessages = true;
+		const controller = new InputController(ctx);
+
+		controller.setupEditorSubmitHandler();
+		await editor.onSubmit?.("");
+
+		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
+		expect(spies.updatePendingMessagesDisplay).toHaveBeenCalledTimes(1);
+		expect(spies.requestRender).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not abort on empty submit when only an idle queue remains", async () => {
+		// Nothing owns the queue: an idle session's drain delivers it, so the
+		// empty submit stays a no-op instead of reporting a spurious interrupt.
+		const { ctx, editor, spies } = createContext();
+		const session = ctx.session as unknown as {
+			isStreaming: boolean;
+			isRetrying: boolean;
+			hasRunnableQueuedMessages: boolean;
+		};
+		session.isStreaming = false;
+		session.isRetrying = false;
+		session.hasRunnableQueuedMessages = true;
+		const controller = new InputController(ctx);
+
+		controller.setupEditorSubmitHandler();
+		await editor.onSubmit?.("");
+
+		expect(spies.abort).not.toHaveBeenCalled();
+	});
+
 	it("runs /btw as a builtin side request instead of steering the active stream", async () => {
 		const { ctx, editor, spies } = createContext();
 		(ctx.session as { isStreaming: boolean }).isStreaming = true;
@@ -490,7 +539,7 @@ describe("InputController escape behavior", () => {
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
 	});
 
-	it("aborts a streaming loop iteration without pausing the loop", () => {
+	it("suspends a streaming loop iteration and pauses the loop", () => {
 		const { ctx, editor, spies } = createContext();
 		const pauseLoop = vi.fn();
 		ctx.loopModeEnabled = true;
@@ -501,9 +550,9 @@ describe("InputController escape behavior", () => {
 		controller.setupKeyHandlers();
 		editor.onEscape?.();
 
-		expect(pauseLoop).not.toHaveBeenCalled();
-		expect(spies.cancelPendingSubmission).not.toHaveBeenCalled();
 		expect(spies.abort).toHaveBeenCalledWith({ reason: USER_INTERRUPT_LABEL });
+		expect(pauseLoop).toHaveBeenCalledTimes(1);
+		expect(spies.cancelPendingSubmission).toHaveBeenCalledTimes(1);
 	});
 
 	it("pauses an idle loop and cancels its pending submission", () => {
@@ -832,7 +881,7 @@ describe("InputController escape behavior", () => {
 	});
 
 	it("ignores double-Esc when the action is disabled", () => {
-		Settings.instance.override("doubleEscapeAction", "none");
+		cfgDoubleEscapeAction.override(Settings.instance, "none");
 		const { ctx, editor, spies } = createContext();
 		const controller = new InputController(ctx);
 
@@ -846,7 +895,7 @@ describe("InputController escape behavior", () => {
 	});
 
 	it("opens the session tree on double-Esc when the action is tree", () => {
-		Settings.instance.override("doubleEscapeAction", "tree");
+		cfgDoubleEscapeAction.override(Settings.instance, "tree");
 		const { ctx, editor, spies } = createContext();
 		const controller = new InputController(ctx);
 

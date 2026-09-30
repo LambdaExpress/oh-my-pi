@@ -56,7 +56,7 @@ async function createAnchorSession(options: {
 		id: options.modelId ?? "deepseek-v4-pro",
 		handler: () => ({ content: ["ok"] }),
 	});
-	authStorage.setRuntimeApiKey("deepseek", "test-key");
+	authStorage.keys.setRuntime("deepseek", "test-key");
 	const sessionManager = SessionManager.inMemory(tempDir);
 	if (options.resume) {
 		// Pre-seed assistant history so the session looks resumed.

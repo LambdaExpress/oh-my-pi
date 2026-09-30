@@ -7,10 +7,12 @@ import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import typesDescriptionPrompt from "../../commit/prompts/types-description.md" with { type: "text" };
 import type { ModelRegistry } from "../../config/model-registry";
 import type { Settings } from "../../config/settings";
-import { getMarkdownTheme } from "../../modes/theme/theme";
+import { t } from "../../i18n";
+import { getMarkdownTheme } from "@oh-my-pi/pi-tui/theme";
 import { createAgentSession } from "../../sdk";
 import type { AgentSessionEvent } from "../../session/agent-session";
 import type { AuthStorage } from "../../session/auth-storage";
+import type { SessionManager } from "../../session/session-manager";
 import agentUserPrompt from "./prompts/session-user.md" with { type: "text" };
 import agentSystemPrompt from "./prompts/system.md" with { type: "text" };
 import type { CommitAgentState } from "./state";
@@ -23,6 +25,7 @@ export interface CommitAgentInput {
 	settings: Settings;
 	modelRegistry: ModelRegistry;
 	authStorage: AuthStorage;
+	sessionManager?: SessionManager;
 	userContext?: string;
 	contextFiles?: Array<{ path: string; content: string }>;
 	changelogTargets: string[];
@@ -57,6 +60,7 @@ export async function runCommitAgentSession(input: CommitAgentInput): Promise<Co
 
 	const { session } = await createAgentSession({
 		cwd: input.cwd,
+		sessionManager: input.sessionManager,
 		authStorage: input.authStorage,
 		modelRegistry: input.modelRegistry,
 		settings: input.settings,
@@ -121,7 +125,7 @@ export async function runCommitAgentSession(input: CommitAgentInput): Promise<Co
 					clearThinkingLine();
 					const assistantMessage = event.message as { stopReason?: string; errorMessage?: string };
 					if (assistantMessage.stopReason === "error" && assistantMessage.errorMessage) {
-						process.stdout.write(`● Error: ${assistantMessage.errorMessage}\n`);
+						process.stdout.write(`● ${t("Error:")} ${assistantMessage.errorMessage}\n`);
 					}
 					const messageText = extractMessageText(event.message?.content ?? []);
 					if (messageText) {
@@ -147,7 +151,14 @@ export async function runCommitAgentSession(input: CommitAgentInput): Promise<Co
 				if (isThinking) {
 					isThinking = false;
 				}
-				process.stdout.write(`● agent finished (${messageCount} messages, ${toolCalls} tools)\n`);
+				process.stdout.write(
+					`● ${t("agent finished ({messages} message{ms}, {tools} tool{ts})", {
+						messages: messageCount,
+						ms: messageCount === 1 ? "" : "s",
+						tools: toolCalls,
+						ts: toolCalls === 1 ? "" : "s",
+					})}\n`,
+				);
 				break;
 			default:
 				break;

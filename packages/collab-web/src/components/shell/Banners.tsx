@@ -1,20 +1,22 @@
 import { Link2, RefreshCw, RotateCcw } from "lucide-react";
 import type { ReactNode } from "react";
-import type { ConnectionPhase } from "../../lib/client";
+import type { ConnectionPhase, GuestSnapshot } from "../../lib/client";
 
 export interface BannersProps {
 	phase: ConnectionPhase;
 	endedReason: string | null;
+	loading: GuestSnapshot["loading"];
 	onRejoin(): void;
 	onNewLink(): void;
 }
 
-export function Banners({ phase, endedReason, onRejoin, onNewLink }: BannersProps): ReactNode {
+export function Banners({ phase, endedReason, loading, onRejoin, onNewLink }: BannersProps): ReactNode {
+	const progress = loading && loading.total > 0 ? ` ${Math.floor((loading.received / loading.total) * 100)}%` : "";
 	if (phase === "connecting" || phase === "waiting") {
 		return (
 			<div className="sh-banner" role="status" aria-live="polite" aria-label="Connection status">
 				<RefreshCw className="sh-banner-spinner" size={14} aria-hidden="true" />
-				<span>{phase === "connecting" ? "Connecting to relay…" : "Joining session…"}</span>
+				<span>{phase === "connecting" ? "Connecting to relay…" : `Joining session…${progress}`}</span>
 			</div>
 		);
 	}
@@ -22,7 +24,7 @@ export function Banners({ phase, endedReason, onRejoin, onNewLink }: BannersProp
 		return (
 			<div className="sh-banner" role="status" aria-live="polite" aria-label="Connection status">
 				<RefreshCw className="sh-banner-spinner" size={14} aria-hidden="true" />
-				<span>Reconnecting…</span>
+				<span>{`Reconnecting…${progress}`}</span>
 			</div>
 		);
 	}

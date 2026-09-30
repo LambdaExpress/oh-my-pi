@@ -3,10 +3,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
-import { ReadToolGroupComponent } from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
-import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
-import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
-import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { ReadToolGroupComponent } from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-tui/theme";
 import { Text, type TUI } from "@oh-my-pi/pi-tui";
 
 const uiStub = {
@@ -50,6 +50,45 @@ describe("folded tool rows", () => {
 
 		card.setToolRowsFolded(false);
 		expect(visibleRows(card).join("\n")).toContain("print(1)");
+	});
+
+	it("summarizes a flat Task assignment and restores its full brief", () => {
+		const card = toolCard(
+			"task",
+			{ agent: "reviewer", name: "AuthProbe", task: "# Target\nReview session-cookie validation before release." },
+			"Task",
+		);
+		card.setToolRowsFolded(true);
+
+		expect(visibleRows(card).map(row => row.trim())).toEqual([
+			"Task: Review session-cookie validation before release.",
+		]);
+		card.updateResult({ content: [{ type: "text", text: "review complete" }] });
+		expect(visibleRows(card)[0]).toContain("Review session-cookie validation before release.");
+
+		card.setToolRowsFolded(false);
+		expect(visibleRows(card).join("\n")).toContain("Review session-cookie validation before release.");
+	});
+
+	it("updates a batch Task row as its context and child assignments stream in", () => {
+		const card = toolCard("task", { context: "# Goal" }, "Task");
+		card.setToolRowsFolded(true);
+		card.updateArgs({
+			context: "# Goal\nFix Advisor and SSH transcript folding",
+			tasks: [
+				{ name: "FoldAdvisorCard", task: "# Target\nShow note counts and blockers" },
+				{ name: "FoldSshResult", task: "# Target\nKeep SSH errors on one line" },
+			],
+		});
+
+		const lines = visibleRows(card, 110);
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain("Task: Fix Advisor and SSH transcript folding");
+		expect(lines[0]).not.toContain("# Goal");
+		card.updateArgs({
+			tasks: [{ name: "FoldAdvisorCard", task: "# Target\nShow note counts and blockers" }],
+		});
+		expect(visibleRows(card)[0]).toContain("Show note counts and blockers");
 	});
 
 	it("keeps a live call's spinner on the folded row", () => {
@@ -105,11 +144,27 @@ describe("folded tool rows", () => {
 		expect(grep.render(200)[0] ?? "").toContain(theme.fg("muted", "useState"));
 	});
 
+	it("paints a read target the same way whether the card or the read group hosts it", () => {
+		// A `skill://` read can land in either component depending on when the
+		// streamed args first parsed, so both rows must agree on the target color.
+		const uri = "skill://21cp-bitbucket-pr-api";
+		const card = settle(toolCard("read", { path: uri }, "Read"));
+		card.setToolRowsFolded(true);
+		const group = new ReadToolGroupComponent({ showContentPreview: false });
+		group.updateArgs({ path: uri }, "call_skill");
+		group.setToolRowsFolded(true);
+
+		expect(card.render(120)[0] ?? "").toContain(theme.fg("accent", uri));
+		expect(group.render(120)[0] ?? "").toContain(theme.fg("accent", uri));
+	});
+
 	it("folds a device write to the operation it ran, not the device URL", () => {
 		const mounted = new Map<string, AgentTool>([["adb", { label: "ADB" } as unknown as AgentTool]]);
+		// The host exposes one canonical resolver (`XdevMountedState.resolve`);
+		// the card consults it for both the label and the delegated renderer.
 		const writeTool = {
 			label: "Write",
-			session: { xdev: { mountedNames: new Set(["adb"]), tools: mounted } },
+			session: { xdev: { resolve: (name: string) => mounted.get(name) } },
 		} as unknown as AgentTool;
 		const deviceCard = (content: string) =>
 			new ToolExecutionComponent("write", { path: "xd://adb", content }, {}, writeTool, uiStub);
@@ -134,13 +189,10 @@ describe("folded tool rows", () => {
 			label: "Write",
 			session: {
 				xdev: {
-					mountedNames: new Set(["mcp__atlassian__downloadjiraattachment"]),
-					tools: new Map([
-						[
-							"mcp__atlassian__downloadjiraattachment",
-							{ label: "atlassian/downloadJiraAttachment" } as unknown as AgentTool,
-						],
-					]),
+					resolve: (name: string) =>
+						name === "mcp__atlassian__downloadjiraattachment"
+							? ({ label: "atlassian/downloadJiraAttachment" } as unknown as AgentTool)
+							: undefined,
 				},
 			},
 		} as unknown as AgentTool;

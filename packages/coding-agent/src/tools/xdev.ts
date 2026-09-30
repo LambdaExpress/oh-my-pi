@@ -31,20 +31,13 @@
  */
 import type { AgentToolContext, AgentToolResult, AgentToolUpdateCallback, ToolLoadMode } from "@oh-my-pi/pi-agent-core";
 import { type Tool as AiTool, jsonSchemaToTypeScript, toolWireSchema, validateToolArguments } from "@oh-my-pi/pi-ai";
-import { type Component, Container, Text } from "@oh-my-pi/pi-tui";
-import { parseStreamingJson } from "@oh-my-pi/pi-utils";
 import { schemaDeclaresIntentField } from "../utils/tool-schema";
-import type { RenderResultOptions } from "../extensibility/custom-tools/types";
-import { stripXdUrlPrefix, XD_URL_PREFIX } from "../internal-urls/xd-protocol";
-import { parseMCPToolName } from "../mcp/tool-bridge";
-import type { Theme } from "../modes/theme/theme";
-import { truncateHeadBytes } from "../session/streaming-output";
+import { stripXdUrlPrefix, XD_URL_PREFIX } from "@oh-my-pi/pi-tui/tools/xd-url";
+import { truncateHeadBytes } from "@oh-my-pi/pi-tui/tools/streaming-output";
 import { resolveToolTier, type ToolTier } from "./approval";
-import { renderDefaultToolExecution } from "./default-renderer";
 import type { Tool } from "./index";
-import { replaceTabs, sanitizeDisplayWarning } from "./render-utils";
-import type { ToolActivitySummary, ToolRenderer } from "./renderers";
-import { renderError, ToolAbortError, ToolError } from "./tool-errors";
+import { renderError, ToolAbortError } from "./tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 /**
  * Discoverable built-ins that must stay top-level even when xdev mounting is
@@ -52,11 +45,13 @@ import { renderError, ToolAbortError, ToolError } from "./tool-errors";
  * model's user-interaction affordance, `grep` is the redirect target of the
  * bash interceptor rules, and `web_search` is invoked directly by most models
  * (which have no notion of the `xd://` protocol) so hiding it behind dispatch
- * makes it unreachable in practice (issue #5973) — each loses its harness
+ * makes it unreachable in practice (issue #5973). `yield` terminates structured
+ * subagent runs and must stay directly callable — each loses its harness
  * integration or usability if hidden behind dispatch.
  */
 export const XDEV_KEEP_TOP_LEVEL: Record<string, true> = {
 	todo: true,
+	yield: true,
 	ask: true,
 	grep: true,
 	web_search: true,
@@ -105,18 +100,6 @@ export interface XdevDispatch {
 	inner?: unknown;
 }
 
-/**
- * Renderer lookup injected by `renderers.ts` at module init. Kept as a setter
- * to avoid the xdev → renderers → tool modules → sdk → tools/index → xdev
- * import cycle.
- */
-let rendererLookup: ((name: string) => ToolRenderer | undefined) | undefined;
-
-/** Wire the wrapped-renderer lookup. Called once by `renderers.ts`. */
-export function setXdevRendererLookup(lookup: (name: string) => ToolRenderer | undefined): void {
-	rendererLookup = lookup;
-}
-
 function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string {
 	const schema = jsonSchemaToTypeScript(toolWireSchema(inst as AiTool));
 	let description = inst.description ?? "";
@@ -141,10 +124,17 @@ function renderDocs(inst: Tool, heading = "#", descriptionCap?: number): string 
  * Parse and validate a device write's JSON `content` against the wrapped
  * tool's wire schema. Strips a habitual top-level `i` (intent) unless the
  * schema declares one. Throws ToolError; schema-mismatch errors carry `docs()`
- * for repair.
+ * for repair. A device with `lenientArgValidation` receives the raw args on a
+ * schema mismatch instead — the same contract the agent loop and the eval
+ * tool bridge honor (`AgentTool.lenientArgValidation`) — so a tool that owns
+ * its own refusal/repair (e.g. `todo` inferring an omitted `op`) is never
+ * pre-empted by the host's generic wording plus the full docs. Lenience covers
+ * schema mismatch only: malformed JSON and non-object content still throw. The
+ * `__parseError`/`__rawJson` strip mirrors the agent loop so a payload cannot
+ * forge the loop's parse-failure sentinels.
  */
 function parseDeviceArgs(
-	device: AiTool,
+	device: Tool,
 	content: string,
 	toolCallId: string,
 	docs: () => string,
@@ -185,6 +175,12 @@ function parseDeviceArgs(
 			arguments: args,
 		});
 	} catch (error) {
+		if (device.lenientArgValidation) {
+			const fallback = { ...args };
+			delete fallback.__parseError;
+			delete fallback.__rawJson;
+			return fallback;
+		}
 		const message = error instanceof Error ? error.message : String(error);
 		throw new ToolError(`Invalid args for ${XD_URL_PREFIX}${device.name}: ${message}\n\n${docs()}`);
 	}
@@ -260,15 +256,6 @@ function compileInlineGlobs(patterns: readonly string[]): Bun.Glob[] {
 	return globs;
 }
 
-/** Decode the (possibly partially streamed) inner args JSON string into display args. */
-function decodeInnerArgs(raw: unknown): Record<string, unknown> {
-	if (typeof raw !== "string" || raw.length === 0) return {};
-	const parsed = parseStreamingJson<Record<string, unknown>>(raw);
-	const args: Record<string, unknown> = parsed && typeof parsed === "object" ? { ...parsed } : {};
-	args.__partialJson = raw;
-	return args;
-}
-
 /** Device-write content that requests docs instead of executing: empty, `?`, or `help`. */
 const HELP_CONTENT_RE = /^\s*(\?|help)?\s*$/i;
 
@@ -282,6 +269,8 @@ export interface XdevState {
 	readonly builtInNames: Set<string>;
 	/** Whether a name is active at the top level. */
 	readonly isActive: (name: string) => boolean;
+	/** Canonical renderer for a dispatched device name; mirrors {@link resolveXdevTool}. */
+	readonly resolve?: (name: string) => Tool | undefined;
 	/** Optional execution-only decorator, such as the ACP permission gate. */
 	decorateExecution?(tool: Tool): Tool;
 }
@@ -362,44 +351,68 @@ export function xdevDocs(state: XdevState, name: string): string {
 	return renderDocs(resolveRequiredXdevTool(state, name));
 }
 
+/** Mounted-device placement in the system prompt: inlined docs sections, then one-line catalog entries. */
+export interface XdevPromptDocs {
+	readonly sections: readonly string[];
+	/** Catalog summary for each device listed as a one-line entry, in presentation order. */
+	readonly catalog: ReadonlyMap<string, string>;
+}
+
+/**
+ * Place mounted devices under the configured prompt-doc policy and budgets.
+ * A device the policy does not inline, or whose docs exceed a cap, becomes a
+ * catalog entry.
+ */
+export function planXdevPromptDocs(
+	state: XdevState,
+	mode: XdevDocsMode = "inline",
+	inlinePatterns: readonly string[] = [],
+): XdevPromptDocs {
+	const sections: string[] = [];
+	const catalog = new Map<string, string>();
+	const inlineGlobs = compileInlineGlobs(inlinePatterns);
+	let used = 0;
+	for (const tool of listXdevTools(state)) {
+		const descriptionCap = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
+		if (shouldInlineXdevTool(state, tool, mode, inlineGlobs)) {
+			const docs = renderDocs(tool, "##", descriptionCap);
+			if (docs.length <= XDEV_DOCS_PER_DEVICE_CAP && used + docs.length <= XDEV_DOCS_TOTAL_BUDGET) {
+				used += docs.length;
+				sections.push(docs);
+				continue;
+			}
+		}
+		catalog.set(tool.name, promptCatalogSummary(tool, descriptionCap));
+	}
+	return { sections, catalog };
+}
+
+/**
+ * Render planned `xd://` prompt docs. Devices in `listedElsewhere` get no
+ * catalog line: the caller lists them itself, with their catalog summary.
+ */
+export function renderXdevPromptDocs(docs: XdevPromptDocs, listedElsewhere?: ReadonlySet<string>): string {
+	const lines: string[] = [];
+	for (const [name, summary] of docs.catalog) {
+		if (!listedElsewhere?.has(name)) lines.push(`- ${XD_URL_PREFIX}${name} — ${summary}`);
+	}
+	if (lines.length === 0) return docs.sections.join("\n\n");
+	const catalogSection = [
+		"## Additional devices (docs on demand)",
+		...lines,
+		"",
+		`Read ${XD_URL_PREFIX}<tool> for full docs + JSON schema before first use.`,
+	].join("\n");
+	return [...docs.sections, catalogSection].join("\n\n");
+}
+
 /** Docs + schema for mounted devices under the configured prompt-doc policy. */
 export function xdevDocsAll(
 	state: XdevState,
 	mode: XdevDocsMode = "inline",
 	inlinePatterns: readonly string[] = [],
 ): string {
-	const sections: string[] = [];
-	const overflow: Tool[] = [];
-	const inlineGlobs = compileInlineGlobs(inlinePatterns);
-	let used = 0;
-	for (const tool of listXdevTools(state)) {
-		if (!shouldInlineXdevTool(state, tool, mode, inlineGlobs)) {
-			overflow.push(tool);
-			continue;
-		}
-		const descriptionCap = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
-		const docs = renderDocs(tool, "##", descriptionCap);
-		if (docs.length > XDEV_DOCS_PER_DEVICE_CAP || used + docs.length > XDEV_DOCS_TOTAL_BUDGET) {
-			overflow.push(tool);
-			continue;
-		}
-		used += docs.length;
-		sections.push(docs);
-	}
-	if (overflow.length > 0) {
-		sections.push(
-			[
-				"## Additional devices (docs on demand)",
-				...overflow.map(tool => {
-					const maxBytes = state.builtInNames.has(tool.name) ? undefined : XDEV_EXTERNAL_DESCRIPTION_CAP;
-					return `- ${XD_URL_PREFIX}${tool.name} — ${promptCatalogSummary(tool, maxBytes)}`;
-				}),
-				"",
-				`Read ${XD_URL_PREFIX}<tool> for full docs + JSON schema before first use.`,
-			].join("\n"),
-		);
-	}
-	return sections.join("\n\n");
+	return renderXdevPromptDocs(planXdevPromptDocs(state, mode, inlinePatterns));
 }
 
 /** Docs for selected mounted devices under the configured prompt-doc policy. */
@@ -467,7 +480,7 @@ export async function dispatchXdevTool(
 			};
 		}
 
-		const validated = parseDeviceArgs(canonical as AiTool, content, toolCallId, () => renderDocs(canonical));
+		const validated = parseDeviceArgs(canonical, content, toolCallId, () => renderDocs(canonical));
 		// Record the wrapped tool's approval tier so the prewalk coordinator can
 		// tell a read-only device call (e.g. `lsp` navigation) from a real
 		// workspace mutation without re-decoding the payload. Best-effort: a
@@ -515,226 +528,4 @@ export async function dispatchXdevTool(
 			xdev,
 		};
 	}
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-// Render delegation (consumed by the write renderer)
-// ═══════════════════════════════════════════════════════════════════════════
-
-/** Renderer for a mounted device: the live mounted tool's own render callbacks
- *  (custom/MCP/image tools carry them) first, then the static built-in renderer
- *  map keyed by name. */
-function resolveDeviceRenderer(
-	name: string,
-	mounted: Tool | undefined,
-): Pick<ToolRenderer, "renderCall" | "renderResult" | "mergeCallAndResult" | "renderCallBeforeExecution"> | undefined {
-	if (mounted && (mounted.renderCall || mounted.renderResult)) {
-		// A mounted AgentTool exposes the same renderCall/renderResult/mergeCallAndResult
-		// surface as a static ToolRenderer; only the parameter generics differ, so unify
-		// through a single cast rather than fabricating a per-field shape.
-		return mounted as unknown as Pick<
-			ToolRenderer,
-			"renderCall" | "renderResult" | "mergeCallAndResult" | "renderCallBeforeExecution"
-		>;
-	}
-	return rendererLookup?.(name);
-}
-
-/** Human label for a device write: mounted tool label, else `server/tool` for MCP names. */
-function displayDeviceLabel(name: string, mounted?: { label?: string }): string {
-	if (mounted?.label) return mounted.label;
-	const parsed = parseMCPToolName(name);
-	if (parsed) return `${parsed.serverName}/${parsed.toolName}`;
-	return name;
-}
-
-/** The device operation's verb, then the subject it acts on. */
-const DEVICE_ACTIVITY_VERB_KEYS = ["op", "action", "method"] as const;
-const DEVICE_ACTIVITY_OBJECT_KEYS = [
-	"command",
-	"package",
-	"activity",
-	"filter",
-	"selector",
-	"query",
-	"symbol",
-	"path",
-	"file",
-	"pattern",
-	"url",
-	"name",
-	"text",
-	"input",
-] as const;
-/** Object keys naming a file or URL, which the folded row paints in accent. */
-const DEVICE_ACTIVITY_TARGET_KEYS: Record<string, true> = { path: true, file: true, url: true };
-
-/**
- * Last-resort subject for a payload none of the known keys name — the first
- * string argument, else the first coordinate pair. Keeps an unknown device call
- * from folding to a bare label while the verb stays off the row.
- */
-function firstDeviceScalar(args: Record<string, unknown>, skipKey?: string): string | undefined {
-	const numbers: string[] = [];
-	for (const [key, value] of Object.entries(args)) {
-		// The verb is already on the row; repeating it would read as a stutter.
-		if (key === "__partialJson" || key === skipKey) continue;
-		if (typeof value === "string") {
-			const line = sanitizeDisplayWarning(value.split("\n", 1)[0] ?? "");
-			if (line.length > 0) return line;
-		} else if (typeof value === "number" && Number.isFinite(value)) {
-			numbers.push(String(value));
-			if (numbers.length === 2) return numbers.join(" ");
-		}
-	}
-	return numbers[0];
-}
-
-/**
- * Compact activity text for a `write xd://<device>` dispatch, so its folded row
- * reads `ADB: shell logcat -d` instead of restating the device URL. The verb and
- * subject come from the inner args (possibly still streaming); prose payloads —
- * resolution devices, report-issue — surface their first line.
- */
-export function xdevActivitySummary(
-	name: string,
-	content: unknown,
-	theme: Theme,
-	resolveMounted?: (name: string) => Tool | undefined,
-): ToolActivitySummary {
-	const args = decodeInnerArgs(content);
-	const pick = (keys: readonly string[]): { key: string; value: string } | undefined => {
-		for (const key of keys) {
-			const value = args[key];
-			if (typeof value !== "string" || value.length === 0) continue;
-			const line = sanitizeDisplayWarning(value.split("\n", 1)[0] ?? "");
-			if (line.length > 0) return { key, value: line };
-		}
-		return undefined;
-	};
-	const verb = pick(DEVICE_ACTIVITY_VERB_KEYS);
-	const object = pick(DEVICE_ACTIVITY_OBJECT_KEYS);
-	const trimmed = typeof content === "string" ? content.trim() : "";
-	let subject = object?.value;
-	if (subject === undefined) {
-		if (trimmed.startsWith("{")) {
-			// No known subject key: name whatever the payload leads with, so a tap
-			// still shows its coordinates and an MCP call its id.
-			subject = firstDeviceScalar(args, verb?.key);
-		} else if (typeof content === "string") {
-			// Empty, `?`, and `help` request the device's docs instead of executing.
-			subject = HELP_CONTENT_RE.test(trimmed) ? "docs" : sanitizeDisplayWarning(trimmed.split("\n", 1)[0] ?? "");
-		}
-	}
-	const label = displayDeviceLabel(name, resolveMounted?.(name));
-	// Style the parts after they are joined so the verb stays muted while a path
-	// or URL subject keeps the accent color every card header gives one.
-	const verbText = verb ? theme.fg("muted", verb.value) : "";
-	const isTarget = object !== undefined && DEVICE_ACTIVITY_TARGET_KEYS[object.key] === true;
-	const subjectText = subject ? theme.fg(isTarget ? "accent" : "muted", subject) : "";
-	const detail = [verbText, subjectText].filter(part => part.length > 0).join(" ");
-	return detail.length > 0 ? { label, detail } : { label };
-}
-
-/** Drop the streaming-decode bookkeeping key before showing inner args. */
-function displayDeviceArgs(args: Record<string, unknown>): Record<string, unknown> {
-	const { __partialJson: _partial, ...rest } = args;
-	return rest;
-}
-
-/** Pre-execution card so a streamed `xd://` write does not look like a hung MCP call. */
-function renderQueuedXdevCall(
-	label: string,
-	args: Record<string, unknown>,
-	options: RenderResultOptions,
-	theme: Theme,
-): Component {
-	return renderDefaultToolExecution(
-		{
-			label: `queued ${label}`,
-			args: displayDeviceArgs(args),
-			options: { ...options, isPartial: true, spinnerFrame: undefined },
-		},
-		theme,
-	);
-}
-
-/**
- * Streaming-safe call preview for an `xd://` write. Until the write actually
- * executes (`executionStarted` / `tool_execution_start`), show a queued/planning
- * card unless the inner renderer explicitly supports the pre-execution state.
- * `argsComplete` alone is not enough: exclusive writes can sit complete at
- * `message_end` while an earlier call still runs. Renderer delegation resolves
- * the session instance first, then the static map. Returns `undefined` (render
- * nothing) when no renderer produces output.
- */
-export function renderXdevCall(
-	name: string,
-	content: unknown,
-	options: RenderResultOptions,
-	theme: Theme,
-	resolveMounted?: (name: string) => Tool | undefined,
-): Component | undefined {
-	const mounted = resolveMounted?.(name);
-	const args = decodeInnerArgs(content);
-	const renderer = resolveDeviceRenderer(name, mounted);
-	if (!options.executionStarted && !renderer?.renderCallBeforeExecution) {
-		return renderQueuedXdevCall(displayDeviceLabel(name, mounted), args, options, theme);
-	}
-	if (renderer?.renderCall) {
-		return renderer.renderCall(args, options, theme);
-	}
-	return renderDefaultToolExecution({ label: mounted?.label ?? name, args, options }, theme);
-}
-
-/** Forward an `xd://` dispatch result to the mounted tool's renderer. */
-export function renderXdevResult(
-	dispatch: XdevDispatch,
-	result: { content: Array<{ type: string; text?: string }>; isError?: boolean },
-	options: RenderResultOptions,
-	theme: Theme,
-	resolveMounted?: (name: string) => Tool | undefined,
-): Component | undefined {
-	const text = result.content
-		.map(block => (block.type === "text" ? block.text : ""))
-		.filter(Boolean)
-		.join("\n");
-	if (dispatch.mode === "help") {
-		return text ? new Text(theme.fg("toolOutput", replaceTabs(text)), 0, 0) : undefined;
-	}
-	const mounted = resolveMounted?.(dispatch.tool);
-	const renderer = resolveDeviceRenderer(dispatch.tool, mounted);
-	const innerResult = { content: result.content, details: dispatch.inner, isError: result.isError };
-	if (renderer?.renderResult) {
-		const parts: Component[] = [];
-		const rendered = renderer.renderResult(innerResult, options, theme, dispatch.args ?? {});
-		// Emulate the unmerged call+result topology inside the write block for
-		// renderers that expect a separate call header. A merged renderer can also
-		// degrade an abort to plain result text; restore its mounted call in that
-		// narrow case so transport cancellation cannot erase the tool identity and
-		// arguments that were visible while the call was running.
-		if (
-			renderer.renderCall &&
-			(!renderer.mergeCallAndResult || (dispatch.aborted === true && rendered instanceof Text))
-		) {
-			const call = renderer.renderCall(dispatch.args ?? {}, { ...options, isPartial: false }, theme);
-			if (call) parts.push(call);
-		}
-		if (rendered) parts.push(rendered);
-		if (parts.length === 1) return parts[0];
-		if (parts.length > 1) {
-			const box = new Container();
-			for (const part of parts) box.addChild(part);
-			return box;
-		}
-	}
-	return renderDefaultToolExecution(
-		{
-			label: mounted?.label ?? dispatch.tool,
-			args: dispatch.args ?? {},
-			result: { output: text, isError: result.isError },
-			options,
-		},
-		theme,
-	);
 }

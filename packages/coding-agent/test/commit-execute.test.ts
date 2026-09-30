@@ -63,6 +63,8 @@ describe("abortOnGitFailure (issue #7834)", () => {
 		await initRepoWithCommit(dir);
 		const runner = path.join(dir, "hook-runner.ts");
 		await fs.writeFile(runner, 'process.stderr.write("policy: this change is not allowed\\n"); process.exit(1);\n');
+		// Native discovery reads user config too; explicitly enable this fixture's hooks.
+		await runGit(dir, ["config", "core.hooksPath", ".git/hooks"]);
 		const hook = path.join(dir, ".git", "hooks", "pre-commit");
 		// Git hooks are extensionless but may declare their interpreter with a
 		// shebang. The native VCS adapter must preserve that Git behavior on Windows.

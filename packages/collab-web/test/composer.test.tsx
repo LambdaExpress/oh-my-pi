@@ -28,6 +28,7 @@ function snapshot(uiRequest: GuestSnapshot["uiRequest"]): GuestSnapshot {
 		uiRequest,
 		models: null,
 		notices: [],
+		loading: null,
 	};
 }
 

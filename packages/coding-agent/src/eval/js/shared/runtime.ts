@@ -57,6 +57,7 @@ export interface RunContext {
 	runId: string;
 	hooks: RuntimeHooks;
 	cwd: string;
+	filename?: string;
 	callOccurrences: Map<string, number>;
 	finalExpressionSet: boolean;
 	finalExpressionValue: unknown;
@@ -83,6 +84,8 @@ export interface RuntimeOptions {
 	 * process that shares the worker's thread.
 	 */
 	patchGlobalResolver?: boolean;
+	/** Selected package directory consulted after the importing file's project. */
+	packageRoot?: string;
 }
 
 // Strict base64: characters from the standard alphabet plus optional `=` padding, and a
@@ -104,6 +107,10 @@ const PRELUDE_GLOBAL_KEYS = [
 	"wait",
 	"AgentHandle",
 	"CompletionHandle",
+	"judge",
+	"judgeBatch",
+	"JudgmentBatch",
+	"JudgmentItem",
 	"workpool",
 	"WorkPool",
 	"log",
@@ -303,6 +310,18 @@ export class JsRuntime {
 		activateGlobalOwner(this.#globalOwner, this.#ownedGlobalKeys, action);
 	}
 
+	/**
+	 * Capture the current values of every owned global back into this owner's
+	 * global stack. A cell may rebind a reserved injected global (e.g.
+	 * `var fs = await import("node:fs/promises")`); without this, the next
+	 * `activateGlobalOwner` would restore the install-time value and silently
+	 * clobber the reassignment. Called after each run so bindings persist across
+	 * cells like the eval persistence contract promises.
+	 */
+	#recordGlobals(): void {
+		for (const key of this.#ownedGlobalKeys) recordGlobalValue(key, this.#globalOwner);
+	}
+
 	readonly helpers: HelperBundle;
 	#cwd: string;
 	#session: { cwd: string; sessionId: string };
@@ -365,6 +384,7 @@ export class JsRuntime {
 		this.#moduleLoader = new LocalModuleLoader(this.sessionId, {
 			patchGlobalResolver: opts.patchGlobalResolver ?? false,
 		});
+		this.#moduleLoader.setPackageRoot(opts.packageRoot);
 		this.#localRoots = opts.localRoots ?? {};
 		this.helpers = createHelpers({
 			cwd: () => this.#activeCwd(),
@@ -384,8 +404,8 @@ export class JsRuntime {
 		if (this.#disposed) throw new Error("Cannot set cwd on a disposed JS runtime");
 		// Always stamp the runtime and session state: WorkerCore/browser/cmux call
 		// setCwd from init and pre-run paths that may race another same-realm
-		// runtime, and a throw here used to escape the inline-worker microtask
-		// path as a fatal unhandledRejection that killed the whole session.
+		// runtime, and a throw here used to escape the harness microtask path as
+		// a fatal unhandledRejection that killed the whole session.
 		// #session is the same object saved in this owner's global stack entry,
 		// so the new cwd survives deferred activation and is visible to this
 		// runtime's next run; run()/setRunScope still assert exclusive ownership.
@@ -394,6 +414,11 @@ export class JsRuntime {
 		if (activeGlobalRunOwner === null || activeGlobalRunOwner === this.#globalOwner) {
 			this.#activateGlobals("set cwd");
 		}
+	}
+
+	setPackageRoot(packageRoot: string | undefined): void {
+		if (this.#disposed) throw new Error("Cannot set package root on a disposed JS runtime");
+		this.#moduleLoader.setPackageRoot(packageRoot);
 	}
 
 	/**
@@ -486,6 +511,7 @@ export class JsRuntime {
 		try {
 			return await this.#als.run(context, callback);
 		} finally {
+			this.#recordGlobals();
 			leaveRun();
 		}
 	}
@@ -503,6 +529,7 @@ export class JsRuntime {
 			runId: options.runId ?? crypto.randomUUID(),
 			hooks,
 			cwd: options.cwd ?? this.#cwd,
+			filename,
 			finalExpressionSet: false,
 			finalExpressionValue: undefined,
 			callOccurrences: new Map(),
@@ -524,6 +551,7 @@ export class JsRuntime {
 				return await awaitMaybePromise(value);
 			});
 		} finally {
+			this.#recordGlobals();
 			leaveRun();
 		}
 	}
@@ -568,6 +596,11 @@ export class JsRuntime {
 		return this.#als.getStore()?.cwd ?? this.#cwd;
 	}
 
+	#activeFilename(): string | undefined {
+		const filename = this.#als.getStore()?.filename;
+		return filename && path.isAbsolute(filename) ? filename : undefined;
+	}
+
 	#activeHooks(action: string): RuntimeHooks | undefined {
 		const hooks = this.#als.getStore()?.hooks;
 		if (!hooks) {
@@ -577,15 +610,18 @@ export class JsRuntime {
 	}
 
 	#activeRequire(moduleUrlOrPath?: string): NodeJS.Require {
-		return this.#moduleLoader.requireForFile(moduleUrlOrPath, this.#activeCwd());
+		return this.#moduleLoader.requireForFile(moduleUrlOrPath ?? this.#activeFilename(), this.#activeCwd());
 	}
 
 	#moduleFilename(moduleUrlOrPath?: string): string {
-		return this.#moduleLoader.filenameForUrl(moduleUrlOrPath) ?? path.join(this.#activeCwd(), "[eval]");
+		return (
+			this.#moduleLoader.filenameForUrl(moduleUrlOrPath ?? this.#activeFilename()) ??
+			path.join(this.#activeCwd(), "[eval]")
+		);
 	}
 
 	#moduleDirname(moduleUrlOrPath?: string): string {
-		return this.#moduleLoader.dirnameForUrl(moduleUrlOrPath, this.#activeCwd());
+		return this.#moduleLoader.dirnameForUrl(moduleUrlOrPath ?? this.#activeFilename(), this.#activeCwd());
 	}
 
 	#buildDynamicRequire(): NodeJS.Require {
@@ -632,7 +668,9 @@ export class JsRuntime {
 				return surfaceBridgedToolImages(await hooks.callTool("__prelude__", payload), hooks);
 			},
 			__omp_import__: async (source: string, options?: ImportCallOptions) => {
-				const resolved = await this.#moduleLoader.resolveForRun(this.#activeCwd(), source);
+				const filename = this.#activeFilename();
+				const baseDir = filename ? path.dirname(filename) : this.#activeCwd();
+				const resolved = await this.#moduleLoader.resolveForRun(baseDir, source);
 				if (resolved.mode === "local") return resolved.value;
 				const target = resolved.target;
 				return options !== undefined ? await import(target, options) : await import(target);
@@ -746,7 +784,7 @@ interface GlobalStack {
 	entries: GlobalOwnerEntry[];
 }
 
-// Inline fallback and cmux tabs can create multiple JsRuntime instances in one Bun realm.
+// Same-realm harnesses and cmux tabs can create multiple JsRuntime instances in one Bun realm.
 // Track reserved helper globals by owner so disposing one runtime restores the next active
 // owner (or the original process global after the last owner), not a stale snapshot.
 const GLOBAL_STACKS = new Map<string, GlobalStack>();

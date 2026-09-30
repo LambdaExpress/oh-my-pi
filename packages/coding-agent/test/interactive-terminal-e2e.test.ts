@@ -4,12 +4,12 @@ import { Agent } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@oh-my-pi/pi-ai";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { AssistantMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/assistant-message";
-import { BashExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/bash-execution";
-import { ToolExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/tool-execution";
-import { Composer } from "@oh-my-pi/pi-coding-agent/modes/composer";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { Composer } from "@oh-my-pi/pi-tui/prompt/composer";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import type { CompactionSummaryMessage, CustomMessage } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -397,6 +397,63 @@ describe("libkitty end-to-end", () => {
 			).toHaveLength(1);
 		}
 		expect(rows.filter(row => row.includes("locally-compacted"))).toHaveLength(1);
+	});
+
+	it("keeps a delivered follow-up unique while a task is live and after resizing", async () => {
+		term = new VirtualTerminal(80, 12);
+		session.settings.set("display.collapseCompletedRuns", true);
+		const composer = new Composer({ terminal: term });
+		mode = new InteractiveMode(session, "test", undefined, () => {}, undefined, undefined, undefined, composer);
+		await mode.init({ suppressWelcomeIntro: true });
+		void mode.getUserInput();
+		await term.waitForRender();
+
+		const initial = { role: "user", content: "first request", timestamp: 1 } as const;
+		const final: AssistantMessage = {
+			role: "assistant",
+			content: [{ type: "text", text: "finished first answer" }],
+			api: "anthropic-messages",
+			provider: "anthropic",
+			model: "claude-sonnet",
+			usage: {
+				input: 1,
+				output: 1,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 2,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp: 2,
+		};
+		const followUp = { role: "user", content: "FOLLOWUP_LIVE_MARKER", timestamp: 3 } as const;
+		session.sessionManager.appendMessage(initial);
+		session.sessionManager.appendMessage(final);
+		await mode.eventController.handleEvent({ type: "agent_start" });
+		await mode.eventController.handleEvent({ type: "message_start", message: initial });
+		await mode.eventController.handleEvent({ type: "message_end", message: initial });
+		await mode.eventController.handleEvent({ type: "message_end", message: final });
+
+		const task = new ToolExecutionComponent("task", { tasks: [{ task: "inspect the bug" }] }, {}, undefined, mode.ui);
+		mode.chatContainer.addChild(task);
+		mode.pendingTools.set("task-call", task);
+		session.sessionManager.appendMessage(followUp);
+		session.agent.state.isStreaming = true;
+		try {
+			await mode.eventController.handleEvent({ type: "message_start", message: followUp });
+			mode.ui.requestRender(true);
+			await term.waitForRender(() =>
+				plainRows(term.getScrollBuffer()).some(row => row.includes("FOLLOWUP_LIVE_MARKER")),
+			);
+			expect(plainRows(term.getScrollBuffer()).filter(row => row.includes("FOLLOWUP_LIVE_MARKER"))).toHaveLength(1);
+
+			term.resize(96, 16);
+			await term.waitForRender();
+			expect(plainRows(term.getScrollBuffer()).filter(row => row.includes("FOLLOWUP_LIVE_MARKER"))).toHaveLength(1);
+			expect(plainRows(term.getScrollBuffer()).some(row => row.includes("Task"))).toBe(true);
+		} finally {
+			session.agent.state.isStreaming = false;
+		}
 	});
 
 	it("keeps a completed tool fully expanded across the next-user boundary", async () => {
@@ -1003,8 +1060,8 @@ describe("libkitty end-to-end", () => {
 		void mode.getUserInput();
 		await term.waitForRender();
 
+		// Tool visibility is a global input-controller action; it reads the live keybindings.
 		mode.keybindings.setUserBindings({ "app.tools.toggleVisibility": "alt+o" });
-		mode.editor.setActionKeys("app.tools.toggleVisibility", mode.keybindings.getKeys("app.tools.toggleVisibility"));
 		mode.renderSessionContext({
 			messages: [
 				toolCall,

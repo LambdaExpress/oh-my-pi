@@ -22,7 +22,7 @@ import type {
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
-import { getThemeByName } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName } from "@oh-my-pi/pi-tui/theme";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import {
 	AdbTool,
@@ -33,8 +33,8 @@ import {
 	adbToolRenderer,
 } from "@oh-my-pi/pi-coding-agent/tools/adb";
 import { resolveApproval } from "@oh-my-pi/pi-coding-agent/tools/approval";
-import { formatStatusIcon } from "@oh-my-pi/pi-coding-agent/tools/render-utils";
-import { ToolError } from "@oh-my-pi/pi-coding-agent/tools/tool-errors";
+import { formatStatusIcon } from "@oh-my-pi/pi-tui/render/render-utils";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 
 const SERIAL = "emulator serial 5554";
 const OTHER_SERIAL = "physical serial 2";

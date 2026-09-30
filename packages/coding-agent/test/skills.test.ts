@@ -635,13 +635,22 @@ describe("collision handling", () => {
 describe("parseSkillInvocation", () => {
 	describe("leading `/skill:<name>` form", () => {
 		it("parses a bare leading command", () => {
-			expect(parseSkillInvocation("/skill:foo")).toEqual({ name: "foo", args: "" });
+			expect(parseSkillInvocation("/skill:foo")).toEqual({ name: "foo", args: "", prompt: "/skill:foo" });
 		});
 
 		it("captures everything after the first space as args", () => {
 			expect(parseSkillInvocation("/skill:foo focus on auth")).toEqual({
 				name: "foo",
 				args: "focus on auth",
+				prompt: "/skill:foo focus on auth",
+			});
+		});
+
+		it("terminates the name at a newline so a multi-line draft still invokes the skill", () => {
+			expect(parseSkillInvocation("/skill:foo\nfocus on auth")).toEqual({
+				name: "foo",
+				args: "focus on auth",
+				prompt: "/skill:foo\nfocus on auth",
 			});
 		});
 
@@ -649,6 +658,7 @@ describe("parseSkillInvocation", () => {
 			expect(parseSkillInvocation("  /skill:foo focus on auth")).toEqual({
 				name: "foo",
 				args: "focus on auth",
+				prompt: "/skill:foo focus on auth",
 			});
 		});
 
@@ -662,6 +672,7 @@ describe("parseSkillInvocation", () => {
 			expect(parseSkillInvocation("fix the auth bug /skill:security-scan ")).toEqual({
 				name: "security-scan",
 				args: "fix the auth bug",
+				prompt: "fix the auth bug /skill:security-scan",
 			});
 		});
 
@@ -669,6 +680,7 @@ describe("parseSkillInvocation", () => {
 			expect(parseSkillInvocation("leading /skill:foo trailing")).toEqual({
 				name: "foo",
 				args: "leading trailing",
+				prompt: "leading /skill:foo trailing",
 			});
 		});
 
@@ -676,6 +688,7 @@ describe("parseSkillInvocation", () => {
 			expect(parseSkillInvocation("explain this\nthen use /skill:security-scan ")).toEqual({
 				name: "security-scan",
 				args: "explain this\nthen use",
+				prompt: "explain this\nthen use /skill:security-scan",
 			});
 		});
 
@@ -702,12 +715,15 @@ describe("parseSkillInvocation", () => {
 			expect(parseSkillInvocation("$echo /skill:reviewer")).toEqual({
 				name: "reviewer",
 				args: "$echo",
+				prompt: "$echo /skill:reviewer",
 			});
 			// oxlint-disable-next-line no-template-curly-in-string -- testing literal string containing shell variable
 			expect(parseSkillInvocation("${HOME}/bin /skill:foo")).toEqual({
 				name: "foo",
 				// oxlint-disable-next-line no-template-curly-in-string -- testing literal string containing shell variable
 				args: "${HOME}/bin",
+				// oxlint-disable-next-line no-template-curly-in-string -- testing literal string containing shell variable
+				prompt: "${HOME}/bin /skill:foo",
 			});
 		});
 

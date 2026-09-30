@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
 import { BUILTIN_DEFAULTS_PROVIDER_ID, type Rule } from "@oh-my-pi/pi-coding-agent/capability/rule";
-import { TtsrNotificationComponent } from "@oh-my-pi/pi-coding-agent/modes/components/ttsr-notification";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { TtsrNotificationComponent } from "@oh-my-pi/pi-tui/chat/ttsr-notification";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import { setLocale } from "../../../src/i18n";
 
 const darkTheme = await getThemeByName("dark");

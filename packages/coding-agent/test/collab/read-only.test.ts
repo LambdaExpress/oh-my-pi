@@ -13,9 +13,12 @@ import { importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import { COLLAB_PROTO, type CollabFrame, parseCollabLink } from "@oh-my-pi/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
+import { setLocale } from "../../src/i18n";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
 // In-memory transport: FakeWebSocket + InMemoryRelay (see ./helpers/in-memory-relay)
@@ -47,7 +50,7 @@ function makeHostContext(): HostHarness {
 		onEntryAppended: undefined,
 	};
 	const ctx = {
-		settings: { get: () => "" },
+		settings: Settings.isolated(),
 		sessionManager,
 		session: {
 			isStreaming: false,
@@ -155,6 +158,9 @@ let harness: HostHarness;
 let host: CollabHost;
 
 beforeAll(async () => {
+	// Read-only rejections carry translated UI text; pin English so assertions
+	// on those strings do not depend on the host's system language.
+	setLocale("en");
 	installInMemoryRelay();
 	harness = makeHostContext();
 	host = new CollabHost(harness.ctx);
@@ -173,6 +179,7 @@ afterAll(async () => {
 	// the host's socket holds its own FakeWebSocket/relay refs, so teardown still works.
 	uninstallInMemoryRelay();
 	await host.stop("test done");
+	setLocale(null);
 });
 
 describe("collab read-only links", () => {
@@ -296,6 +303,34 @@ describe("collab read-only links", () => {
 			if (replacement) await replacement;
 		}
 	});
+	for (const kind of ["advisor", "main", "sub"] as const) {
+		it(`${kind === "advisor" ? "denies" : "serves"} ${kind} transcripts requested by a view-link guest`, async () => {
+			await using dir = await TempDir.create("@pi-collab-transcript-");
+			const id = `transcript-${kind}-${crypto.randomUUID()}`;
+			const text = `${JSON.stringify({ type: "message", content: id })}\n`;
+			const file = dir.join("session.jsonl");
+			await Bun.write(file, text);
+			const registry = AgentRegistry.global();
+			const ref = registry.register({ id, displayName: id, kind, session: null, sessionFile: file });
+			try {
+				const guest = await joinAsGuest(host.viewLink, `reader-${kind}`);
+				guestCleanups.push(() => guest.socket.close());
+				const welcome = await guest.nextFrame();
+				if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
+				guest.socket.send({ t: "fetch-transcript", reqId: 1, agentId: id, fromByte: 0 });
+				const reply = await guest.nextFrame();
+				if (reply.t !== "transcript") throw new Error(`expected transcript, got ${reply.t}`);
+				if (kind === "advisor") {
+					expect(reply.text).not.toContain(id);
+					expect(reply).toMatchObject({ reqId: 1, text: "", newSize: 0, error: "no transcript available" });
+				} else {
+					expect(reply).toEqual({ t: "transcript", reqId: 1, text, newSize: Buffer.byteLength(text) });
+				}
+			} finally {
+				registry.unregister(id, ref);
+			}
+		});
+	}
 
 	it("welcomes view-link guests read-only and refuses their mutating frames", async () => {
 		const { prompts, aborts } = harness;

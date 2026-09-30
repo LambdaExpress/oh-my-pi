@@ -1,5 +1,6 @@
 import { formatBytes } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { t } from "../i18n";
 import {
 	DEFAULT_TINY_TITLE_LOCAL_MODEL_KEY,
 	getTinyLocalModelSpec,
@@ -60,7 +61,7 @@ export function resolveModels(model: string | undefined, mlx = tinyWorkerUsesMlx
 		).map(spec => spec.key);
 	if (!isTinyLocalModelKey(model)) {
 		const values = TINY_LOCAL_MODELS.map(spec => spec.key).join(", ");
-		throw new Error(`Unknown tiny local model: ${model}. Expected one of: ${values}, all`);
+		throw new Error(t("Unknown tiny local model: {model}. Expected one of: {values}, all", { model, values }));
 	}
 	return [model];
 }
@@ -70,9 +71,9 @@ function listModels(json: boolean | undefined): void {
 		writeLine(JSON.stringify({ models: TINY_LOCAL_MODELS }));
 		return;
 	}
-	writeLine(chalk.bold("Tiny local models"));
+	writeLine(chalk.bold(t("Tiny local models")));
 	for (const spec of TINY_LOCAL_MODELS) {
-		const defaultMark = spec.key === DEFAULT_TINY_TITLE_LOCAL_MODEL_KEY ? chalk.cyan(" default") : "";
+		const defaultMark = spec.key === DEFAULT_TINY_TITLE_LOCAL_MODEL_KEY ? chalk.cyan(t(" default")) : "";
 		writeLine(`${chalk.cyan(spec.key)}${defaultMark}`);
 		writeLine(`  ${spec.label} — ${spec.description}`);
 	}
@@ -96,7 +97,7 @@ function makeProgressReporter(modelKey: TinyLocalModelKey, json: boolean | undef
 		const pct = progress >= 0 ? `${Math.floor(progress).toString().padStart(3, " ")}%` : " --%";
 		const bytes = event.loaded && event.total ? ` ${formatBytes(event.loaded)}/${formatBytes(event.total)}` : "";
 		const file = event.file ? ` ${event.file.split("/").at(-1) ?? event.file}` : "";
-		const statusLabel = event.status === "ready" ? "Ready" : "Downloading";
+		const statusLabel = event.status === "ready" ? t("Ready") : t("Downloading");
 		const line = `${chalk.cyan(statusLabel)} ${label} [${bar}] ${pct}${bytes}${file}`;
 		process.stdout.write(`\r${line.padEnd(lastWidth)}`);
 		lastWidth = line.length;
@@ -107,7 +108,7 @@ function makeProgressReporter(modelKey: TinyLocalModelKey, json: boolean | undef
 			render(event);
 		},
 		finish(ok) {
-			const suffix = ok ? chalk.green("done") : chalk.red("failed");
+			const suffix = ok ? chalk.green(t("done")) : chalk.red(t("failed"));
 			process.stdout.write(`\r${`${label}: ${suffix}`.padEnd(lastWidth)}\n`);
 		},
 	};
@@ -115,7 +116,9 @@ function makeProgressReporter(modelKey: TinyLocalModelKey, json: boolean | undef
 
 async function downloadOne(modelKey: TinyLocalModelKey, json: boolean | undefined): Promise<DownloadResult> {
 	const label = getTinyLocalModelSpec(modelKey)?.label ?? modelKey;
-	if (!json && !process.stdout.isTTY) writeLine(`Downloading ${label} (${modelKey})...`);
+	if (!json && !process.stdout.isTTY) {
+		writeLine(t("Downloading {label} ({key})...", { label, key: modelKey }));
+	}
 	const progress = makeProgressReporter(modelKey, json);
 	const result = await tinyTitleClient.downloadModel(modelKey, { onProgress: progress.onProgress });
 	progress.finish(result.ok);

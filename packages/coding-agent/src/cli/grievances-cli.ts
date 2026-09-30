@@ -12,6 +12,17 @@ interface GrievanceRow {
 	version: string;
 	tool: string;
 	report: string;
+	/** 0 = queued, 1 = shipped, -1 = refused by the collector. */
+	pushed: number;
+	/** Collector error for refused rows; `null` otherwise. */
+	push_error: string | null;
+}
+
+/** Human-readable push state for a listed row. */
+function describeState(row: GrievanceRow): string {
+	if (row.pushed === 1) return chalk.green("pushed");
+	if (row.pushed === 0) return chalk.yellow("pending");
+	return chalk.red(`rejected${row.push_error ? `: ${row.push_error}` : ""}`);
 }
 
 export interface ListGrievancesOptions {
@@ -49,14 +60,15 @@ export async function listGrievances(options: ListGrievancesOptions): Promise<vo
 	}
 
 	try {
+		const columns = "id, model, version, tool, report, pushed, push_error";
 		let rows: GrievanceRow[];
 		if (options.tool) {
 			rows = db
-				.prepare("SELECT id, model, version, tool, report FROM grievances WHERE tool = ? ORDER BY id DESC LIMIT ?")
+				.prepare(`SELECT ${columns} FROM grievances WHERE tool = ? ORDER BY id DESC LIMIT ?`)
 				.all(options.tool, options.limit) as GrievanceRow[];
 		} else {
 			rows = db
-				.prepare("SELECT id, model, version, tool, report FROM grievances ORDER BY id DESC LIMIT ?")
+				.prepare(`SELECT ${columns} FROM grievances ORDER BY id DESC LIMIT ?`)
 				.all(options.limit) as GrievanceRow[];
 		}
 
@@ -72,7 +84,7 @@ export async function listGrievances(options: ListGrievancesOptions): Promise<vo
 
 		for (const row of rows) {
 			console.log(
-				`${chalk.dim(`#${row.id}`)} ${chalk.cyan(row.tool)} ${chalk.dim(`(${row.model} v${row.version})`)}`,
+				`${chalk.dim(`#${row.id}`)} ${chalk.cyan(row.tool)} ${chalk.dim(`(${row.model} v${row.version})`)} ${describeState(row)}`,
 			);
 			console.log(`  ${row.report}`);
 			console.log();
@@ -246,12 +258,20 @@ export async function pushGrievances(options: PushGrievancesOptions): Promise<vo
 			console.log(chalk.dim(t("Nothing to push — all grievances are already shipped.")));
 			return;
 		}
+		const rejected = result.rejected ?? 0;
+		if (rejected > 0) {
+			console.log(
+				chalk.yellow(
+					`${rejected} grievance${rejected === 1 ? " was" : "s were"} refused by the server and marked rejected (see \`omp grievances list\`).`,
+				),
+			);
+		}
 		if (result.ok) {
 			const word = result.pushed === 1 ? t("grievance") : t("grievances");
 			console.log(chalk.green(t("Pushed {pushed}/{total} {word}.", { pushed: result.pushed, total, word })));
 			return;
 		}
-		const remaining = total - result.pushed;
+		const remaining = total - result.pushed - rejected;
 		console.log(
 			chalk.red(
 				t("Push failed after {pushed}/{total}; {count} {word} remain unpushed.", {
@@ -262,6 +282,7 @@ export async function pushGrievances(options: PushGrievancesOptions): Promise<vo
 				}),
 			),
 		);
+		if (result.error) console.log(chalk.red(`Server said: ${result.error}`));
 		process.exitCode = 1;
 	} finally {
 		db.close();

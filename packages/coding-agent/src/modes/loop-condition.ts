@@ -16,18 +16,12 @@
  */
 
 import { logger } from "@oh-my-pi/pi-utils";
+import type { LoopConditionConfig } from "@oh-my-pi/pi-tui/status-line/loop";
 import type { BashResult } from "../exec/bash-executor";
 import { executeBash } from "../exec/bash-executor";
-import { TRUNCATE_LENGTHS, truncateToWidth } from "../tools/render-utils";
-import { sanitizeStatusText } from "./shared";
-
-/** A `/loop --while` / `/loop --until` continue-condition. */
-export interface LoopConditionConfig {
-	/** Shell command line, run through the user's configured shell. */
-	command: string;
-	/** `--until`: continue while the command *fails*. `--while`: while it succeeds. */
-	until: boolean;
-}
+import { t } from "../i18n";
+import { TRUNCATE_LENGTHS, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import { sanitizeStatusText } from "@oh-my-pi/pi-tui/chrome/shared";
 
 export type LoopConditionVerdict =
 	/** The condition says run another iteration. */
@@ -90,12 +84,6 @@ export function describeLoopCondition(condition: LoopConditionConfig): string {
 	return `${condition.until ? "until" : "while"} ${quoteCommand(condition.command)} succeeds`;
 }
 
-/** Compact status-line form: `until: bun test`. */
-export function summarizeLoopCondition(condition: LoopConditionConfig, maxWidth: number): string {
-	const label = condition.until ? "until" : "while";
-	return `${label}: ${truncateToWidth(sanitizeStatusText(condition.command), Math.max(1, maxWidth - label.length - 2))}`;
-}
-
 /**
  * Run one condition evaluation and map its exit status onto a loop verdict.
  *
@@ -118,7 +106,10 @@ export async function evaluateLoopCondition(
 		logger.error("loop condition failed to start", { command: condition.command, error: String(error) });
 		return {
 			kind: "error",
-			message: `Loop condition ${quoteCommand(condition.command)} could not run: ${truncateToWidth(sanitizeStatusText(String(error)), OUTPUT_PREVIEW_WIDTH)}. Loop mode disabled.`,
+			message: t("Loop condition {command} could not run: {error}. Loop mode disabled.", {
+				command: quoteCommand(condition.command),
+				error: truncateToWidth(sanitizeStatusText(String(error)), OUTPUT_PREVIEW_WIDTH),
+			}),
 		};
 	}
 
@@ -127,7 +118,10 @@ export async function evaluateLoopCondition(
 	if (result.timedOut) {
 		return {
 			kind: "error",
-			message: `Loop condition ${quoteCommand(condition.command)} timed out after ${formatTimeout(options.timeoutMs)}. Loop mode disabled.`,
+			message: t("Loop condition {command} timed out after {timeout}. Loop mode disabled.", {
+				command: quoteCommand(condition.command),
+				timeout: formatTimeout(options.timeoutMs),
+			}),
 		};
 	}
 	if (result.cancelled) return { kind: "aborted" };
@@ -137,14 +131,18 @@ export async function evaluateLoopCondition(
 		if (!condition.until) return { kind: "continue" };
 		return {
 			kind: "halt",
-			message: `Loop condition ${quoteCommand(condition.command)} is now satisfied. Loop mode disabled.`,
+			message: t("Loop condition {command} is now satisfied. Loop mode disabled.", {
+				command: quoteCommand(condition.command),
+			}),
 		};
 	}
 	if (exitCode === 1) {
 		if (condition.until) return { kind: "continue" };
 		return {
 			kind: "halt",
-			message: `Loop condition ${quoteCommand(condition.command)} no longer holds. Loop mode disabled.`,
+			message: t("Loop condition {command} no longer holds. Loop mode disabled.", {
+				command: quoteCommand(condition.command),
+			}),
 		};
 	}
 
@@ -155,6 +153,10 @@ export async function evaluateLoopCondition(
 	logger.warn("loop condition command failed", { command: condition.command, exitCode });
 	return {
 		kind: "error",
-		message: `Loop condition ${quoteCommand(condition.command)} failed (${status})${detail}. Loop mode disabled.`,
+		message: t("Loop condition {command} failed ({status}){detail}. Loop mode disabled.", {
+			command: quoteCommand(condition.command),
+			status,
+			detail,
+		}),
 	};
 }

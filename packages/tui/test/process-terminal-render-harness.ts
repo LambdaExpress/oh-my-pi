@@ -20,6 +20,33 @@ const PRISTINE: Array<[NodeJS.Process["stdin"] | NodeJS.Process["stdout"], strin
 const SETTLE_MS = 67;
 
 /**
+ * Ambient markers that route resize handling away from the direct-terminal path
+ * these tests assert on. `isInsideHerdr()` precedes every other resize-routing
+ * branch (so the suite would take the in-place path — whose settled repaint
+ * legitimately waits out the drag settle window plus the anchor probe — when
+ * the tests run inside a Herdr pane, as they do during development), and the
+ * rest select the multiplexer path or pin the resize mode. Mirrors the
+ * multiplexer keys the suite's `withoutTerminalMultiplexer` helper neutralizes.
+ */
+const ROUTING_ENV_KEYS = [
+	"TMUX",
+	"STY",
+	"ZELLIJ",
+	"HERDR_ENV",
+	"HERDR_PANE_ID",
+	"HERDR_TAB_ID",
+	"HERDR_WORKSPACE_ID",
+	"CMUX_WORKSPACE_ID",
+	"CMUX_SURFACE_ID",
+	"CMUX_REMOTE_TRANSPORT",
+	"WMUX",
+	"WMUX_SURFACE_ID",
+	"PI_TUI_RESIZE_IN_PLACE",
+	"TERM",
+	"TERM_PROGRAM",
+] as const;
+
+/**
  * A root component that records the width it is asked to render at. The renderer
  * calls `render(terminal.columns)` every frame, so `last` is exactly the
  * geometry the transcript reflowed to — observable without parsing the
@@ -81,6 +108,13 @@ export function createProcessTerminalRenderHarness(
 	// out of the test-default headless suppression and restores the prior value
 	// on dispose.
 	const previousHeadless = setTerminalHeadless(false);
+	// The harness models a plain direct terminal, so the ambient host identity
+	// must not route resize elsewhere. Restored on dispose.
+	const previousRoutingEnv = new Map<string, string | undefined>();
+	for (const key of ROUTING_ENV_KEYS) {
+		previousRoutingEnv.set(key, Bun.env[key]);
+		delete Bun.env[key];
+	}
 	Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
 	Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
 	Object.defineProperty(process.stdin, "setRawMode", { value: vi.fn(), configurable: true });
@@ -152,6 +186,10 @@ export function createProcessTerminalRenderHarness(
 		dispose() {
 			tui.stop();
 			setTerminalHeadless(previousHeadless);
+			for (const [key, value] of previousRoutingEnv) {
+				if (value === undefined) delete Bun.env[key];
+				else Bun.env[key] = value;
+			}
 			for (const spy of spies) spy.mockRestore();
 			for (const [target, key, descriptor] of PRISTINE) {
 				// A piped test run has no own `isTTY`/`columns`/`rows` descriptor, so

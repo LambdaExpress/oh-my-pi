@@ -8,15 +8,7 @@ import {
 	visibleWidth,
 	wrapTextWithAnsi,
 } from "@oh-my-pi/pi-tui";
-import { formatDuration, sanitizeText } from "@oh-my-pi/pi-utils";
-import { t } from "../../i18n";
-import type { AsyncJobSnapshot, AsyncJobSnapshotItem } from "../../session/agent-session-types";
-import { replaceTabs, truncateToWidth } from "../../tools/render-utils";
-import { formatSshTransferSummary, isSshTransferToolDetails } from "../../tools/ssh-transfer";
-import { formatLocalDateTimeWithOffset } from "../../utils/local-date";
-import { theme } from "../theme/theme";
-import { matchesSelectDown, matchesSelectUp } from "../utils/keybinding-matchers";
-import { clampHubLine, sanitizeDisplayText } from "./agent-hub-renderer";
+import { formatLocalDateTimeWithOffset } from "@oh-my-pi/pi-tui/chrome/local-date";
 import {
 	bottomBorder,
 	divider,
@@ -26,7 +18,16 @@ import {
 	splitRow,
 	topBorder,
 	topBorderSplit,
-} from "./overlay-box";
+} from "@oh-my-pi/pi-tui/chrome/overlay-box";
+import { matchesSelectDown, matchesSelectUp } from "@oh-my-pi/pi-tui/keybinding-matchers";
+import { clampHubLine } from "@oh-my-pi/pi-tui/overlays/agent-hub-renderer";
+import { sanitizeDisplayText } from "@oh-my-pi/pi-tui/overlays/extensions/display-text";
+import { replaceTabs, truncateToWidth } from "@oh-my-pi/pi-tui/render/render-utils";
+import { theme } from "@oh-my-pi/pi-tui/theme";
+import { formatDuration, sanitizeText } from "@oh-my-pi/pi-utils";
+import { t } from "../../i18n";
+import type { AsyncJobSnapshot, AsyncJobSnapshotItem } from "../../session/agent-session-types";
+import { formatSshTransferSummary, isSshTransferToolDetails } from "@oh-my-pi/pi-tui/tools/ssh-transfer-summary";
 
 const REFRESH_INTERVAL_MS = 500;
 const SPLIT_MIN_WIDTH = 96;

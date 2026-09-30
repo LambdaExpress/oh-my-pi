@@ -4,6 +4,7 @@
 
 import * as os from "node:os";
 import { formatBytes, getProjectDir, VERSION } from "@oh-my-pi/pi-utils";
+import { t } from "../i18n";
 
 export interface SystemInfo {
 	os: string;
@@ -40,7 +41,7 @@ function macosMarketingName(release: string): string | undefined {
 
 /** Collect system information */
 export async function collectSystemInfo(): Promise<SystemInfo> {
-	let cpuModel = "Unknown CPU";
+	let cpuModel = t("Unknown CPU");
 	try {
 		cpuModel = os.cpus()[0]?.model ?? cpuModel;
 	} catch {
@@ -48,7 +49,7 @@ export async function collectSystemInfo(): Promise<SystemInfo> {
 	}
 
 	// Try to get shell from environment
-	const shell = Bun.env.SHELL ?? Bun.env.ComSpec ?? "unknown";
+	const shell = Bun.env.SHELL ?? Bun.env.ComSpec ?? t("unknown");
 	const terminal = Bun.env.TERM_PROGRAM ?? Bun.env.TERM ?? undefined;
 
 	let osStr = `${os.type()} ${os.release()} (${os.platform()})`;
@@ -79,20 +80,23 @@ export async function collectSystemInfo(): Promise<SystemInfo> {
 /** Format system info for display */
 export function formatSystemInfo(info: SystemInfo): string {
 	const lines = [
-		"System Information",
+		t("System Information"),
 		"━━━━━━━━━━━━━━━━━━",
-		`OS:      ${info.os}`,
-		`Arch:    ${info.arch}`,
-		`CPU:     ${info.cpu}`,
-		`Memory:  ${formatBytes(info.memory.total)} (${formatBytes(info.memory.free)} free)`,
-		`Bun:     ${info.versions.bun}`,
-		`App:     omp ${info.versions.app}`,
-		`Node:    ${info.versions.node} (compat)`,
-		`CWD:     ${info.cwd}`,
-		`Shell:   ${info.shell}`,
+		t("OS:      {value}", { value: info.os }),
+		t("Arch:    {value}", { value: info.arch }),
+		t("CPU:     {value}", { value: info.cpu }),
+		t("Memory:  {total} ({free} free)", {
+			total: formatBytes(info.memory.total),
+			free: formatBytes(info.memory.free),
+		}),
+		t("Bun:     {value}", { value: info.versions.bun }),
+		t("App:     omp {value}", { value: info.versions.app }),
+		t("Node:    {value} (compat)", { value: info.versions.node }),
+		t("CWD:     {value}", { value: info.cwd }),
+		t("Shell:   {value}", { value: info.shell }),
 	];
 	if (info.terminal) {
-		lines.push(`Terminal: ${info.terminal}`);
+		lines.push(t("Terminal: {value}", { value: info.terminal }));
 	}
 	return lines.join("\n");
 }

@@ -11,6 +11,7 @@ import * as path from "node:path";
 import type { Usage } from "@oh-my-pi/pi-ai";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { SqlSessionStorage } from "@oh-my-pi/pi-coding-agent/session/sql-session-storage";
+import { SessionWriteConflictError } from "@oh-my-pi/pi-coding-agent/session/session-storage";
 import { SQL } from "bun";
 
 function fakeUsage(input: number, output: number): Usage {
@@ -122,6 +123,29 @@ describe("SessionManager + SqlSessionStorage (SQLite)", () => {
 		const sessionFiles = sessions.map(s => s.path).sort();
 		expect(sessionFiles).toContain(aFile as string);
 		expect(sessionFiles).toContain(bFile as string);
+		await client.end();
+	});
+
+	it("rejects a stale rewrite after another SQL storage appends", async () => {
+		const client = new SQL("sqlite::memory:");
+		const firstStorage = await SqlSessionStorage.create({ client });
+		// Resolve the session dir: `create` mints through `path.join` while `open`
+		// canonicalizes through `path.resolve`, so a bare POSIX dir would give the
+		// two managers different backend row keys on win32 (process drive
+		// prepended) and the peer append would land outside the rewritten row.
+		const sessionDir = path.resolve("/sessions", "shared");
+		const first = SessionManager.create("/cwd", sessionDir, firstStorage);
+		await first.ensureOnDisk();
+		const sessionFile = first.getSessionFile();
+		if (!sessionFile) throw new Error("Expected session file");
+
+		const secondStorage = await SqlSessionStorage.create({ client });
+		const second = await SessionManager.open(sessionFile, sessionDir, secondStorage);
+		second.appendMessage({ role: "user", content: "durable SQL peer turn", timestamp: Date.now() });
+		await second.close();
+
+		await expect(first.rewriteEntries()).rejects.toBeInstanceOf(SessionWriteConflictError);
+		expect(await secondStorage.readText(sessionFile)).toContain("durable SQL peer turn");
 		await client.end();
 	});
 });

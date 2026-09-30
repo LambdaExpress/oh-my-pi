@@ -364,38 +364,3 @@ export interface GhRunJobStepSnapshot {
 	startedAt?: string;
 	completedAt?: string;
 }
-
-export interface GhRunJobSnapshot {
-	id: number;
-	name: string;
-	status?: string;
-	conclusion?: string;
-	startedAt?: string;
-	completedAt?: string;
-	url?: string;
-	steps: GhRunJobStepSnapshot[];
-	logTail?: string;
-	logAvailable?: boolean;
-}
-
-export interface GhRunSnapshot {
-	id: number;
-	workflowName?: string;
-	displayTitle?: string;
-	status?: string;
-	conclusion?: string;
-	branch?: string;
-	headSha?: string;
-	createdAt?: string;
-	updatedAt?: string;
-	url?: string;
-	jobs: GhRunJobSnapshot[];
-}
-
-export interface GhFailedJobLog {
-	run: GhRunSnapshot;
-	job: GhRunJobSnapshot;
-	full?: string;
-	tail?: string;
-	available: boolean;
-}

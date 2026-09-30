@@ -45,7 +45,7 @@ describe("AgentSession queued steer delivery", () => {
 		fixtureDir = path.join(os.tmpdir(), `pi-steer-strand-fixture-${Snowflake.next()}`);
 		fs.mkdirSync(fixtureDir, { recursive: true });
 		authStorage = await AuthStorage.create(path.join(fixtureDir, "auth.db"));
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		modelRegistry = new ModelRegistry(authStorage, path.join(fixtureDir, "models.yml"));
 	});
 
@@ -145,6 +145,81 @@ describe("AgentSession queued steer delivery", () => {
 		expect(await entryAppended).toBe("guest steer at yield");
 		expect(mock.calls.length).toBe(2);
 		expect(session.agent.hasQueuedMessages()).toBe(false);
+	});
+
+	it("persists an agent-authored steer with its steering marker", async () => {
+		const { session, sessionManager } = await createSession([
+			{ content: ["host answer"] },
+			{ content: ["ack parent"] },
+		]);
+		let injected = false;
+		session.agent.setOnBeforeYield(async () => {
+			if (injected) return;
+			injected = true;
+			await session.sendUserMessage("parent budget notice", {
+				deliverAs: "steer",
+				attribution: "agent",
+			});
+		});
+
+		await session.prompt("hello");
+
+		const entry = sessionManager.getEntries().find(candidate => {
+			if (candidate.type !== "message" || candidate.message.role !== "user") return false;
+			const content = candidate.message.content;
+			return (
+				Array.isArray(content) && content.some(part => part.type === "text" && part.text === "parent budget notice")
+			);
+		});
+		if (entry?.type !== "message" || entry.message.role !== "user") {
+			throw new Error("Expected persisted parent steer");
+		}
+		expect(entry.message.attribution).toBe("agent");
+		expect(entry.message.steering).toBe(true);
+	});
+
+	it("defaults direct user steers and idle prompts to user attribution", async () => {
+		const { session } = await createSession([{ content: ["ack user"] }]);
+
+		await session.sendUserMessage("typed normally");
+		const promptMessage = session.state.messages.find(candidate => {
+			if (candidate.role !== "user") return false;
+			const content = candidate.content;
+			return (
+				content === "typed normally" ||
+				(Array.isArray(content) && content.some(part => part.type === "text" && part.text === "typed normally"))
+			);
+		});
+		if (promptMessage?.role !== "user") {
+			throw new Error("Expected user prompt in session state");
+		}
+		expect(promptMessage.attribution).toBe("user");
+
+		await session.steer("user steer");
+		const steer = session.agent.popLastSteer();
+		if (steer?.role !== "user") throw new Error("Expected queued user steer");
+		expect(steer.attribution).toBe("user");
+		expect(steer.steering).toBe(true);
+	});
+
+	it("preserves explicit agent attribution across queued text-message APIs", async () => {
+		const { session } = await createSession([]);
+
+		await session.steer("parent steer", undefined, { attribution: "agent" });
+		const steer = session.agent.popLastSteer();
+		if (steer?.role !== "user") throw new Error("Expected queued agent-attributed steer");
+		expect(steer.attribution).toBe("agent");
+		expect(steer.steering).toBe(true);
+
+		await session.followUp("parent follow-up", undefined, { attribution: "agent" });
+		const followUp = session.agent.popLastFollowUp();
+		if (followUp?.role !== "user") throw new Error("Expected queued agent-attributed follow-up");
+		expect(followUp.attribution).toBe("agent");
+
+		await session.sendUserMessage("host steer", { deliverAs: "steer", attribution: "agent" });
+		const hostSteer = session.agent.popLastSteer();
+		if (hostSteer?.role !== "user") throw new Error("Expected queued host steer");
+		expect(hostSteer.attribution).toBe("agent");
 	});
 
 	it("drains a steer stranded in the agent queue when the session settles", async () => {
@@ -305,4 +380,74 @@ describe("AgentSession queued steer delivery", () => {
 
 		expect(session.agent.peekSteeringQueue()).toEqual([]);
 	});
+
+	it("sends a queued steer immediately when the interrupt lands in the retry wait", async () => {
+		// Contract: an interrupt between automatic retry attempts releases the
+		// queued steer right away. The session stops streaming while the backoff
+		// runs, so the queue would otherwise sit out the delay and only move when
+		// the next attempt starts — the wait the operator is looking at when they
+		// press Enter on an empty composer.
+		// The backoff is minute-scale so the wait is still pending when the
+		// interrupt lands; the abort cancels it, so nothing ever sleeps it out.
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5")!;
+		const mock = createMockModel({
+			responses: [
+				// Retryable transport failure, held open long enough to queue a steer.
+				{ stopReason: "error", errorMessage: "The socket connection was closed unexpectedly.", delayMs: 50 },
+				{ content: ["answer to the queued steer"] },
+			],
+		});
+		const firstCallStarted = Promise.withResolvers<void>();
+		const secondCallStarted = Promise.withResolvers<void>();
+		const streamFn: typeof mock.stream = (providerModel, context, options) => {
+			if (mock.calls.length === 0) firstCallStarted.resolve();
+			else secondCallStarted.resolve();
+			return mock.stream(providerModel, context, options);
+		};
+		session = new AgentSession({
+			agent: new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model, systemPrompt: ["Test"], tools: [] },
+				streamFn,
+			}),
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({
+				"compaction.enabled": false,
+				"retry.enabled": true,
+				"retry.baseDelayMs": 60_000,
+				"retry.maxDelayMs": 60_000,
+				"retry.maxRetries": 2,
+				"retry.modelFallback": false,
+			}),
+			modelRegistry,
+		});
+		const retryStarted = Promise.withResolvers<void>();
+		session.subscribe(event => {
+			if (event.type === "auto_retry_start") retryStarted.resolve();
+		});
+
+		const firstRun = session.prompt("first attempt").catch(() => {});
+		await firstCallStarted.promise;
+		await session.prompt("queued steer", { streamingBehavior: "steer" });
+		expect(session.hasRunnableQueuedMessages).toBe(true);
+
+		await retryStarted.promise;
+		// The retry wait: the failed attempt is gone and the backoff — not a model
+		// call — is what holds the queue, so nothing new may have been sent yet.
+		expect(session.isRetrying).toBe(true);
+		expect(session.hasRunnableQueuedMessages).toBe(true);
+		expect(mock.calls.length).toBe(1);
+
+		const delivered = nextUserMessage(session, "queued steer");
+		await session.abort({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
+		await Promise.all([delivered, secondCallStarted.promise]);
+
+		expect(mock.calls.length).toBe(2);
+		expect(JSON.stringify(mock.calls[1]?.context.messages ?? [])).toContain("queued steer");
+		expect(session.isRetrying).toBe(false);
+		expect(session.hasRunnableQueuedMessages).toBe(false);
+		await firstRun;
+		// Real async delivery across the retry backoff: fake timers cannot drive the
+		// provider mock's stream or the drain's continuation.
+	}, 20_000);
 });

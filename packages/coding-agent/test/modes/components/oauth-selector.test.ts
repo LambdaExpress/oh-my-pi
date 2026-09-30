@@ -1,10 +1,12 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { getOAuthProviders } from "@oh-my-pi/pi-ai/oauth";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { OAuthSelectorComponent } from "@oh-my-pi/pi-coding-agent/modes/components/oauth-selector";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { OAuthSelectorComponent } from "@oh-my-pi/pi-tui/overlays/oauth-selector";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { setLocale } from "../../../src/i18n";
+
+import { cfgDisabledProviders } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 
 beforeAll(async () => {
 	setLocale("en");
@@ -16,9 +18,8 @@ afterAll(() => {
 });
 
 const authStorage = {
-	has: (_providerId: string) => false,
-	hasAuth: (_providerId: string) => false,
-	getCredentialOrigin: (_providerId: string) => undefined,
+	credentials: { has: (_providerId: string) => false },
+	keys: { source: (_providerId: string) => undefined },
 } as unknown as AuthStorage;
 
 describe("OAuthSelectorComponent", () => {
@@ -60,9 +61,13 @@ describe("OAuthSelectorComponent", () => {
 		const component = new OAuthSelectorComponent(
 			"logout",
 			{
-				has: (_providerId: string) => false,
-				hasAuth: (providerId: string) => providerId === "opencode-go" || providerId === "opencode-zen",
-				getCredentialOrigin: (_providerId: string) => undefined,
+				credentials: { has: (_providerId: string) => false },
+				keys: {
+					source: (providerId: string) =>
+						providerId === "opencode-go" || providerId === "opencode-zen"
+							? { kind: "api_key", concrete: true }
+							: undefined,
+				},
 			} as unknown as AuthStorage,
 			providerId => selected.push(providerId),
 			() => {},
@@ -87,9 +92,11 @@ describe("OAuthSelectorComponent", () => {
 		const component = new OAuthSelectorComponent(
 			"logout",
 			{
-				has: (providerId: string) => providerId === "opencode-go",
-				hasAuth: (providerId: string) => providerId === "opencode-go",
-				getCredentialOrigin: (_providerId: string) => undefined,
+				credentials: { has: (providerId: string) => providerId === "opencode-go" },
+				keys: {
+					source: (providerId: string) =>
+						providerId === "opencode-go" ? { kind: "api_key", concrete: true } : undefined,
+				},
 			} as unknown as AuthStorage,
 			providerId => selected.push(providerId),
 			() => {},
@@ -132,6 +139,7 @@ describe("OAuthSelectorComponent", () => {
 				authStorage,
 				() => {},
 				() => {},
+				{ disabledProviders: cfgDisabledProviders.get(settings) },
 			);
 			for (const char of victim.id) {
 				component.handleInput(char);
@@ -157,6 +165,7 @@ describe("OAuthSelectorComponent", () => {
 				authStorage,
 				() => {},
 				() => {},
+				{ disabledProviders: cfgDisabledProviders.get(settings) },
 			);
 			for (const char of alias.id) {
 				component.handleInput(char);
@@ -176,12 +185,15 @@ describe("OAuthSelectorComponent", () => {
 			const component = new OAuthSelectorComponent(
 				"logout",
 				{
-					has: (providerId: string) => providerId === "opencode-go",
-					hasAuth: (providerId: string) => providerId === "opencode-go",
-					getCredentialOrigin: (_providerId: string) => undefined,
+					credentials: { has: (providerId: string) => providerId === "opencode-go" },
+					keys: {
+						source: (providerId: string) =>
+							providerId === "opencode-go" ? { kind: "api_key", concrete: true } : undefined,
+					},
 				} as unknown as AuthStorage,
 				providerId => selected.push(providerId),
 				() => {},
+				{ disabledProviders: cfgDisabledProviders.get(settings) },
 			);
 			for (const char of "opencode-go") {
 				component.handleInput(char);

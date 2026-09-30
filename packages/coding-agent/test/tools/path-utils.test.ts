@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { splitInternalUrlSel } from "@oh-my-pi/pi-coding-agent/tools/path-utils";
+import { splitInternalUrlSel } from "@oh-my-pi/pi-tui/tools/read";
 
 describe("splitInternalUrlSel ssh selector boundaries", () => {
 	it("keeps an encoded Windows drive colon inside the ssh path", () => {

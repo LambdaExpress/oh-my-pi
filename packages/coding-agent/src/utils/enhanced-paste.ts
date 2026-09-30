@@ -1,4 +1,5 @@
 import type { ImageContent } from "@oh-my-pi/pi-ai";
+import { t } from "../i18n";
 
 const OSC5522_PREFIX = "\x1b]5522;";
 const OSC_TERMINATOR_ST = "\x1b\\";
@@ -123,7 +124,7 @@ export class EnhancedPasteController {
 		}
 		if (status) {
 			this.#state = undefined;
-			this.#handlers.showStatus(`Enhanced paste failed: ${status}`);
+			this.#handlers.showStatus(t("Enhanced paste failed: {status}", { status }));
 		}
 	}
 
@@ -185,7 +186,7 @@ export class EnhancedPasteController {
 		this.#state = undefined;
 		const bytes = Buffer.concat(state.chunks.map(chunk => Buffer.from(chunk, "base64")));
 		if (bytes.byteLength === 0) {
-			this.#handlers.showStatus("Clipboard paste was empty");
+			this.#handlers.showStatus(t("Clipboard paste was empty"));
 			return;
 		}
 		if (state.kind === "text") {
@@ -203,7 +204,7 @@ export class EnhancedPasteController {
 		const selected = choosePasteMime(state.mimes);
 		if (!selected) {
 			this.#state = undefined;
-			this.#handlers.showStatus("Clipboard paste has no supported text or image data");
+			this.#handlers.showStatus(t("Clipboard paste has no supported text or image data"));
 			return;
 		}
 

@@ -5,73 +5,134 @@ import type { SessionOAuthAccountList } from "../session/agent-session-types";
 import {
 	getChangelogPath,
 	parseChangelog,
-	RECENT_CHANGELOG_ENTRY_LIMIT,
+	parseChangelogView,
 	renderChangelogEntries,
+	selectChangelogEntries,
 } from "../utils/changelog";
 import { formatTokenCount, refreshStatusLine } from "./builtin-modes";
 import { buildContextReportText } from "./helpers/context-report";
-import { formatDuration } from "./helpers/format";
+import { formatCoarseDuration } from "@oh-my-pi/pi-tui/chrome/format";
+import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { handleMcpAcp } from "./helpers/mcp";
 import { commandConsumed, errorMessage, parseSubcommand, usage } from "./helpers/parse";
-import { describeRedeemOutcome, type ResetUsageAccount, toResetUsageAccounts } from "./helpers/reset-usage";
+import { describeRedeemOutcome, toResetUsageAccounts } from "./helpers/reset-usage";
+import type { ResetUsageAccount } from "@oh-my-pi/pi-tui/overlays/reset-usage-selector";
 import { matchSessionPinAccounts, toSessionPinAccounts } from "./helpers/session-pin";
 import { launchStatsDashboard, parseStatsDashboardArgs } from "./helpers/stats-dashboard";
 import { handleTodoAcp } from "./helpers/todo";
 import { buildUsageReportText } from "./helpers/usage-report";
 import type { SlashCommandRuntime, SlashCommandSpec } from "./types";
 
+function normalizeResetProvider(value: string): string | undefined {
+	switch (value.trim().toLowerCase()) {
+		case "anthropic":
+		case "claude":
+			return "anthropic";
+		case "openai-codex":
+		case "codex":
+			return "openai-codex";
+		default:
+			return undefined;
+	}
+}
+
 async function handleUsageResetCommand(
 	arg: string,
 	session: AgentSession,
 	output: SlashCommandRuntime["output"],
 ): Promise<boolean> {
+	const safe = (value: string): string => sanitizeText(value.replace(/[\r\n\t]+/g, " "));
 	let accounts: ResetUsageAccount[];
 	try {
 		accounts = toResetUsageAccounts(await session.listResetCredits());
 	} catch (error) {
-		await output(t("Could not load saved resets: {error}", { error: errorMessage(error) }));
+		await output(t("Could not load saved resets: {error}", { error: safe(errorMessage(error)) }));
 		return false;
 	}
 	if (accounts.length === 0) {
-		await output(t("No Codex accounts found. Use /login to add one."));
+		await output(t("No provider accounts found. Use /login to add one."));
 		return false;
 	}
 	const targetArg = arg.trim();
 	if (!targetArg) {
-		const lines = [t("Saved Codex rate-limit resets:")];
+		const lines = [t("Saved rate-limit resets:")];
 		for (const account of accounts) {
-			const detail = account.error ? `unavailable (${account.error})` : `${account.availableCount} available`;
+			let detail: string;
+			if (account.error) {
+				detail = t("unavailable ({error})", { error: safe(account.error) });
+			} else {
+				detail = t("{available} saved, {redeemable} usable now", {
+					available: account.availableCount,
+					redeemable: account.redeemableCount,
+				});
+				if (account.expiresAt) {
+					detail = t("{detail}, expires {date}", { detail, date: safe(account.expiresAt) });
+				}
+				if (account.redeemableCount === 0 && account.unavailableReason) {
+					detail = t("{detail} ({reason})", { detail, reason: safe(account.unavailableReason) });
+				}
+			}
 			lines.push(
-				t("- {label}: {detail}", {
-					label: account.label,
-					detail: `${detail}${account.active ? " (active)" : ""}`,
+				t("- {label} [{providerLabel} · {provider}/{credentialId}]: {detail}", {
+					label: safe(account.label),
+					providerLabel: safe(account.providerLabel),
+					provider: account.provider,
+					credentialId: account.target.credentialId,
+					detail: `${detail}${account.active ? ` ${t("(active)")}` : ""}`,
 				}),
 			);
 		}
-		lines.push("", t("Spend one with `/usage reset <account email>` or `/usage reset active`."));
+		lines.push(
+			"",
+			t("Spend one with `/usage reset <provider>/<credential id>` or `/usage reset <provider>/active`."),
+		);
 		await output(lines.join("\n"));
 		return false;
 	}
-	const wanted = targetArg.toLowerCase();
-	const target =
-		wanted === "active"
-			? accounts.find(account => account.active)
-			: accounts.find(
-					account =>
-						account.label.toLowerCase() === wanted ||
-						account.target.email?.toLowerCase() === wanted ||
-						account.target.accountId?.toLowerCase() === wanted,
-				);
-	if (!target) {
-		await output(t('No Codex account matches "{name}".', { name: targetArg }));
+
+	const slash = targetArg.indexOf("/");
+	if (slash <= 0) {
+		await output(t("Choose an account with `/usage reset <provider>/<credential id>`."));
 		return false;
 	}
-	if (target.availableCount <= 0) {
-		await output(t("{label}: no saved resets to spend.", { label: target.label }));
+	const requestedProvider = normalizeResetProvider(targetArg.slice(0, slash));
+	const requestedAccount = targetArg
+		.slice(slash + 1)
+		.trim()
+		.toLowerCase();
+	if (!requestedProvider) {
+		await output(
+			t('Unknown reset provider "{name}". Use anthropic or openai-codex.', {
+				name: safe(targetArg.slice(0, slash)),
+			}),
+		);
+		return false;
+	}
+	const requestedCredentialId = /^\d+$/.test(requestedAccount) ? Number(requestedAccount) : undefined;
+	const target = accounts.find(account => {
+		if (account.provider !== requestedProvider) return false;
+		if (requestedAccount === "active") return account.active;
+		return requestedCredentialId !== undefined && account.target.credentialId === requestedCredentialId;
+	});
+	if (!target) {
+		await output(
+			t('No stored account matches "{name}". List choices with `/usage reset`.', { name: safe(targetArg) }),
+		);
+		return false;
+	}
+	if (target.redeemableCount <= 0) {
+		const reason = target.unavailableReason ? ` (${safe(target.unavailableReason)})` : "";
+		await output(
+			t("{label} [{providerLabel}]: no saved resets usable right now{reason}.", {
+				label: safe(target.label),
+				providerLabel: safe(target.providerLabel),
+				reason,
+			}),
+		);
 		return false;
 	}
 	const outcome = await session.redeemResetCredit(target.target);
-	await output(describeRedeemOutcome(outcome, target.label));
+	await output(safe(describeRedeemOutcome(outcome, target.label)));
 	return outcome.ok;
 }
 
@@ -99,10 +160,7 @@ async function handleSessionPinCommand(
 	const providerName = provider?.name ?? accountList.provider;
 	const accounts = toSessionPinAccounts(accountList.accounts);
 	if (accounts.length === 0) {
-		const source = session.modelRegistry.authStorage.describeCredentialSource(
-			accountList.provider,
-			session.sessionId,
-		);
+		const source = session.modelRegistry.authStorage.keys.describe(accountList.provider, session.sessionId);
 		await output(
 			source
 				? t("No stored OAuth accounts for {provider}. Current auth comes from {source}.", {
@@ -121,7 +179,7 @@ async function handleSessionPinCommand(
 			lines.push(
 				t("{position}. {label}", {
 					position: account.position + 1,
-					label: `${account.label}${account.active ? " (active)" : ""}`,
+					label: `${account.label}${account.active ? ` ${t("(active)")}` : ""}`,
 				}),
 			);
 		}
@@ -161,21 +219,21 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Manage todos",
 		acpInputHint: "<subcommand>",
 		subcommands: [
-			{ name: "edit", description: t("Open todos in $EDITOR (Markdown round-trip)") },
-			{ name: "copy", description: t("Copy todos as Markdown to clipboard") },
-			{ name: "expand", description: t("Show every phase and task in the HUD") },
-			{ name: "collapse", description: t("Restore the bounded HUD preview") },
-			{ name: "export", description: t("Write todos as Markdown to a file (default: TODO.md)"), usage: "[<path>]" },
-			{ name: "import", description: t("Replace todos from a Markdown file (default: TODO.md)"), usage: "[<path>]" },
+			{ name: "edit", description: "Open todos in $EDITOR (Markdown round-trip)" },
+			{ name: "copy", description: "Copy todos as Markdown to clipboard" },
+			{ name: "expand", description: "Show every phase and task in the HUD" },
+			{ name: "collapse", description: "Restore the bounded HUD preview" },
+			{ name: "export", description: "Write todos as Markdown to a file (default: TODO.md)", usage: "[<path>]" },
+			{ name: "import", description: "Replace todos from a Markdown file (default: TODO.md)", usage: "[<path>]" },
 			{
 				name: "append",
-				description: t("Append a task; phase fuzzy-matched or auto-created"),
+				description: "Append a task; phase fuzzy-matched or auto-created",
 				usage: "[<phase>] <task...>",
 			},
-			{ name: "start", description: t("Mark task in_progress (fuzzy-matched)"), usage: "<task>" },
-			{ name: "done", description: t("Mark task/phase/all completed (fuzzy-matched)"), usage: "[<task|phase>]" },
-			{ name: "drop", description: t("Mark task/phase/all abandoned (fuzzy-matched)"), usage: "[<task|phase>]" },
-			{ name: "rm", description: t("Remove task/phase/all (fuzzy-matched)"), usage: "[<task|phase>]" },
+			{ name: "start", description: "Mark task in_progress (fuzzy-matched)", usage: "<task>" },
+			{ name: "done", description: "Mark task/phase/all completed (fuzzy-matched)", usage: "[<task|phase>]" },
+			{ name: "drop", description: "Mark task/phase/all abandoned (fuzzy-matched)", usage: "[<task|phase>]" },
+			{ name: "rm", description: "Remove task/phase/all (fuzzy-matched)", usage: "[<task|phase>]" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
@@ -203,11 +261,11 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Show or configure the current session",
 		acpInputHint: "[info|delete|pin [account]]",
 		subcommands: [
-			{ name: "info", description: t("Show session info and stats") },
-			{ name: "delete", description: t("Delete current session and return to selector") },
+			{ name: "info", description: "Show session info and stats" },
+			{ name: "delete", description: "Delete current session and return to selector" },
 			{
 				name: "pin",
-				description: t("Pin the current provider to a stored OAuth account"),
+				description: "Pin the current provider to a stored OAuth account",
 				usage: "[account]",
 			},
 		],
@@ -294,7 +352,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			if (!snapshot || (snapshot.running.length === 0 && snapshot.recent.length === 0)) {
 				await runtime.output(
 					t(
-						"No background jobs running. (Background jobs run async tools — e.g. long-running bash, debug, or task subagents that would otherwise tie up a turn. They appear here while alive and for ~5 minutes after.)",
+						"No background jobs running. (Background jobs run async tools — e.g. long-running bash, debug, or task subagents that would otherwise tie up a turn. They appear here while alive and briefly after (until their result is delivered; at most ~5 minutes).)",
 					),
 				);
 				return commandConsumed();
@@ -304,14 +362,16 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			if (snapshot.running.length > 0) {
 				lines.push("", t("Running Jobs"));
 				for (const job of snapshot.running) {
-					lines.push(`  [${job.id}] ${job.type} (${job.status}) — ${formatDuration(now - job.startTime)}`);
+					lines.push(`  [${job.id}] ${job.type} (${job.status}) — ${formatCoarseDuration(now - job.startTime)}`);
 					lines.push(`    ${job.label}`);
 				}
 			}
 			if (snapshot.recent.length > 0) {
 				lines.push("", t("Recent Jobs"));
 				for (const job of snapshot.recent) {
-					lines.push(`  [${job.id}] ${job.type} (${job.status}) — ${formatDuration(now - job.startTime)}`);
+					lines.push(
+						`  [${job.id}] ${job.type} (${job.status}) — ${formatCoarseDuration((job.endTime ?? now) - job.startTime)}`,
+					);
 					lines.push(`    ${job.label}`);
 				}
 			}
@@ -328,10 +388,14 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "gauge",
 		description: "Show provider usage and limits",
 		acpDescription: "Show token usage",
-		acpInputHint: "[show|reset [account|active]]",
+		acpInputHint: "[show|reset [provider/credential-id|provider/active]]",
 		subcommands: [
-			{ name: "show", description: t("Show provider usage and limits") },
-			{ name: "reset", description: t("Spend a saved Codex rate-limit reset"), usage: "[account|active]" },
+			{ name: "show", description: "Show provider usage and limits" },
+			{
+				name: "reset",
+				description: "Spend a saved provider rate-limit reset",
+				usage: "[provider/credential-id|provider/active]",
+			},
 		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
@@ -344,7 +408,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				await handleUsageResetCommand(rest, runtime.session, runtime.output);
 				return commandConsumed();
 			}
-			return usage(t("Usage: /usage [show|reset [account|active]]"), runtime);
+			return usage(t("Usage: /usage [show|reset [provider/credential-id|provider/active]]"), runtime);
 		},
 		handleTui: async (command, runtime) => {
 			const { verb, rest } = parseSubcommand(command.args);
@@ -368,7 +432,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				runtime.ctx.editor.setText("");
 				return;
 			}
-			runtime.ctx.showStatus(t("Usage: /usage [show|reset [account|active]]"));
+			runtime.ctx.showStatus(t("Usage: /usage [show|reset [provider/credential-id|provider/active]]"));
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -397,14 +461,18 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "news",
 		description: "Show changelog entries",
 		acpDescription: "Show changelog",
-		acpInputHint: "[full]",
-		subcommands: [{ name: "full", description: t("Show complete changelog") }],
+		acpInputHint: "[full|last [N]]",
+		subcommands: [
+			{ name: "full", description: "Show complete changelog" },
+			{ name: "last", description: "Show the last N releases (default 1)", usage: "[N]" },
+		],
 		allowArgs: true,
 		handle: async (command, runtime) => {
+			const view = parseChangelogView(command.args);
+			if ("error" in view) return usage(view.error, runtime);
 			const changelogPath = getChangelogPath();
 			const allEntries = await parseChangelog(changelogPath);
-			const showFull = command.args.trim().toLowerCase() === "full";
-			const entriesToShow = showFull ? allEntries : allEntries.slice(0, RECENT_CHANGELOG_ENTRY_LIMIT);
+			const entriesToShow = selectChangelogEntries(allEntries, view);
 			if (entriesToShow.length === 0) {
 				await runtime.output(t("No changelog entries found."));
 				return commandConsumed();
@@ -413,8 +481,7 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			return commandConsumed();
 		},
 		handleTui: async (command, runtime) => {
-			const showFull = command.args.split(/\s+/).filter(Boolean).includes("full");
-			await runtime.ctx.handleChangelogCommand(showFull);
+			await runtime.ctx.handleChangelogCommand(command.args);
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -637,29 +704,29 @@ export const BUILTIN_SESSION_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		subcommands: [
 			{
 				name: "add",
-				description: t("Add a new MCP server"),
+				description: "Add a new MCP server",
 				usage: "<name> [--scope project|user] [--url <url>] [-- <command...>]",
 			},
-			{ name: "list", description: t("List all configured MCP servers") },
-			{ name: "remove", description: t("Remove an MCP server"), usage: "<name> [--scope project|user]" },
-			{ name: "test", description: t("Test connection to a server"), usage: "<name>" },
-			{ name: "reauth", description: t("Reauthorize OAuth for a server"), usage: "<name>" },
-			{ name: "unauth", description: t("Remove OAuth auth from a server"), usage: "<name>" },
-			{ name: "enable", description: t("Enable an MCP server"), usage: "<name>" },
-			{ name: "disable", description: t("Disable an MCP server"), usage: "<name>" },
+			{ name: "list", description: "List all configured MCP servers" },
+			{ name: "remove", description: "Remove an MCP server", usage: "<name> [--scope project|user]" },
+			{ name: "test", description: "Test connection to a server", usage: "<name>" },
+			{ name: "reauth", description: "Reauthorize OAuth for a server", usage: "<name>" },
+			{ name: "unauth", description: "Remove OAuth auth from a server", usage: "<name>" },
+			{ name: "enable", description: "Enable an MCP server", usage: "<name>" },
+			{ name: "disable", description: "Disable an MCP server", usage: "<name>" },
 			{
 				name: "smithery-search",
-				description: t("Search Smithery registry and deploy an MCP server"),
+				description: "Search Smithery registry and deploy an MCP server",
 				usage: "<keyword> [--scope project|user] [--limit <1-100>] [--semantic]",
 			},
-			{ name: "smithery-login", description: t("Login to Smithery and cache API key") },
-			{ name: "smithery-logout", description: t("Remove cached Smithery API key") },
-			{ name: "reconnect", description: t("Reconnect to a specific MCP server"), usage: "<name>" },
-			{ name: "reload", description: t("Force reload MCP runtime tools") },
-			{ name: "resources", description: t("List available resources from connected servers") },
-			{ name: "prompts", description: t("List available prompts from connected servers") },
-			{ name: "notifications", description: t("Show notification capabilities and subscriptions") },
-			{ name: "help", description: t("Show help message") },
+			{ name: "smithery-login", description: "Login to Smithery and cache API key" },
+			{ name: "smithery-logout", description: "Remove cached Smithery API key" },
+			{ name: "reconnect", description: "Reconnect to a specific MCP server", usage: "<name>" },
+			{ name: "reload", description: "Force reload MCP runtime tools" },
+			{ name: "resources", description: "List available resources from connected servers" },
+			{ name: "prompts", description: "List available prompts from connected servers" },
+			{ name: "notifications", description: "Show notification capabilities and subscriptions" },
+			{ name: "help", description: "Show help message" },
 		],
 		allowArgs: true,
 		handle: handleMcpAcp,

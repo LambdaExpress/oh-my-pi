@@ -1,7 +1,8 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage, ImageContent } from "@oh-my-pi/pi-ai";
+import { MAGIC_KEYWORDS } from "../modes/magic-keywords";
 import type { RestoredQueuedMessage } from "./agent-session-types";
-import { type CustomMessage, readQueueChipText } from "./messages";
+import { readQueueChipText } from "./messages";
 
 function queuedTextContent(message: AgentMessage): string | undefined {
 	if (!("content" in message)) return undefined;
@@ -27,11 +28,6 @@ function queuedImageContent(message: AgentMessage): ImageContent[] | undefined {
 /** Whether a queued message should render in the queue UI. */
 export function isDisplayableQueuedMessage(message: AgentMessage): boolean {
 	return !(message.role === "custom" && message.display === false);
-}
-
-/** Whether a queued message is an advisor card. */
-export function isAdvisorCard(message: AgentMessage): message is CustomMessage {
-	return message.role === "custom" && message.customType === "advisor";
 }
 
 /** Whether a message is a terminal assistant answer containing text and no tools. */
@@ -62,12 +58,8 @@ export function isUserQueuedMessage(message: AgentMessage): boolean {
 	return message.role === "custom" && message.attribution === "user" && message.display !== false;
 }
 
-/** Hidden magic-keyword notices queued alongside a user prompt. */
-export const MAGIC_KEYWORD_NOTICE_TYPES: Record<string, true> = {
-	"ultrathink-notice": true,
-	"orchestrate-notice": true,
-	"workflow-notice": true,
-};
+/** Hidden magic-keyword notice types (`<id>-notice`) queued alongside a user prompt. */
+const MAGIC_KEYWORD_NOTICE_TYPES: ReadonlySet<string> = new Set(MAGIC_KEYWORDS.map(keyword => `${keyword.id}-notice`));
 
 /** Hidden companion carrying vision descriptions for a text-only model. */
 export const IMAGE_ATTACHMENT_DESCRIPTION_TYPE = "image-attachment-description";
@@ -78,8 +70,7 @@ export function isHiddenUserCompanion(message: AgentMessage): boolean {
 		message.role === "custom" &&
 		message.attribution === "user" &&
 		message.display === false &&
-		(MAGIC_KEYWORD_NOTICE_TYPES[message.customType] === true ||
-			message.customType === IMAGE_ATTACHMENT_DESCRIPTION_TYPE)
+		(MAGIC_KEYWORD_NOTICE_TYPES.has(message.customType) || message.customType === IMAGE_ATTACHMENT_DESCRIPTION_TYPE)
 	);
 }
 

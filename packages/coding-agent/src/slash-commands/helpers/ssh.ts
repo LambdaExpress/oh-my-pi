@@ -1,5 +1,6 @@
 import { getSSHConfigPath } from "@oh-my-pi/pi-utils";
 import type { SSHHostConfig } from "../../capability/ssh";
+import { t } from "../../i18n";
 import { addSSHHost, readSSHConfigFile, removeSSHHost } from "../../ssh/config-writer";
 import { assertProxyJumpPasswordCompatible, normalizeProxyJump } from "../../ssh/utils";
 import { parseCommandArgs } from "../../utils/command-args";
@@ -21,14 +22,11 @@ interface ParsedSshAddArgs {
 
 type SshAddOptionParser = (parsed: ParsedSshAddArgs, value: string | undefined) => string | undefined;
 
-const SSH_ADD_USAGE =
-	"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--proxy-jump <spec>] [--password <password>] [--scope project|user]";
-
 const SSH_ADD_OPTION_PARSERS = new Map<string, SshAddOptionParser>([
 	[
 		"--host",
 		(parsed, value) => {
-			if (!value) return "Missing value for --host.";
+			if (!value) return t("Missing value for --host.");
 			parsed.host = value;
 			return undefined;
 		},
@@ -36,7 +34,7 @@ const SSH_ADD_OPTION_PARSERS = new Map<string, SshAddOptionParser>([
 	[
 		"--user",
 		(parsed, value) => {
-			if (!value) return "Missing value for --user.";
+			if (!value) return t("Missing value for --user.");
 			parsed.username = value;
 			return undefined;
 		},
@@ -44,16 +42,16 @@ const SSH_ADD_OPTION_PARSERS = new Map<string, SshAddOptionParser>([
 	[
 		"--port",
 		(parsed, value) => {
-			if (!value) return "Missing value for --port.";
+			if (!value) return t("Missing value for --port.");
 			// Reject any non-integer token. `Number.parseInt` accepts trailing
 			// garbage (parseInt("22oops") === 22) which silently coerces typos
 			// to valid-looking ports.
 			if (!/^\d+$/.test(value)) {
-				return "Invalid --port value. Must be an integer between 1 and 65535.";
+				return t("Invalid --port value. Must be an integer between 1 and 65535.");
 			}
 			const port = Number.parseInt(value, 10);
 			if (port < 1 || port > 65535) {
-				return "Invalid --port value. Must be an integer between 1 and 65535.";
+				return t("Invalid --port value. Must be an integer between 1 and 65535.");
 			}
 			parsed.port = port;
 			return undefined;
@@ -62,7 +60,7 @@ const SSH_ADD_OPTION_PARSERS = new Map<string, SshAddOptionParser>([
 	[
 		"--key",
 		(parsed, value) => {
-			if (!value) return "Missing value for --key.";
+			if (!value) return t("Missing value for --key.");
 			parsed.keyPath = value;
 			return undefined;
 		},
@@ -71,7 +69,7 @@ const SSH_ADD_OPTION_PARSERS = new Map<string, SshAddOptionParser>([
 		"--proxy-jump",
 		(parsed, value) => {
 			const proxyJump = value?.trim();
-			if (!proxyJump) return "Missing value for --proxy-jump.";
+			if (!proxyJump) return t("Missing value for --proxy-jump.");
 			parsed.proxyJump = proxyJump;
 			return undefined;
 		},
@@ -79,7 +77,7 @@ const SSH_ADD_OPTION_PARSERS = new Map<string, SshAddOptionParser>([
 	[
 		"--password",
 		(parsed, value) => {
-			if (!value) return "Missing value for --password.";
+			if (!value) return t("Missing value for --password.");
 			parsed.password = value;
 			return undefined;
 		},
@@ -87,7 +85,8 @@ const SSH_ADD_OPTION_PARSERS = new Map<string, SshAddOptionParser>([
 	[
 		"--scope",
 		(parsed, value) => {
-			if (!value || (value !== "project" && value !== "user")) return "Invalid --scope value. Use project or user.";
+			if (!value || (value !== "project" && value !== "user"))
+				return t("Invalid --scope value. Use project or user.");
 			parsed.scope = value;
 			parsed.scopeWasExplicit = true;
 			return undefined;
@@ -106,7 +105,7 @@ function parseSshAddArgs(rest: string): ParsedSshAddArgs {
 	while (index < tokens.length) {
 		const arg = tokens[index]!;
 		const parser = SSH_ADD_OPTION_PARSERS.get(arg);
-		if (!parser) return { ...parsed, error: `Unknown option: ${arg}` };
+		if (!parser) return { ...parsed, error: t("Unknown option: {option}", { option: arg }) };
 		const error = parser(parsed, tokens[index + 1]);
 		if (error) return { ...parsed, error };
 		index += 2;
@@ -114,13 +113,13 @@ function parseSshAddArgs(rest: string): ParsedSshAddArgs {
 	return parsed;
 }
 
-const SSH_HELP_TEXT = [
+const SSH_HELP_LINES = [
 	"SSH host management (ACP mode)",
 	"  /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--proxy-jump <spec>] [--password <password>] [--scope project|user]",
 	"  /ssh list                                       List configured SSH hosts",
 	"  /ssh remove <name> [--scope project|user]       Remove an SSH host",
 	"  /ssh help                                        Show this help",
-].join("\n");
+];
 
 async function handleListCommand(runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
 	try {
@@ -165,7 +164,7 @@ async function handleListCommand(runtime: SlashCommandRuntime): Promise<SlashCom
 			}
 		}
 		if (entries.length === 0) {
-			await runtime.output("No SSH hosts configured.");
+			await runtime.output(t("No SSH hosts configured."));
 			return commandConsumed();
 		}
 		await runtime.output(
@@ -178,31 +177,39 @@ async function handleListCommand(runtime: SlashCommandRuntime): Promise<SlashCom
 		);
 		return commandConsumed();
 	} catch (err) {
-		return usage(`Failed to list SSH hosts: ${errorMessage(err)}`, runtime);
+		return usage(t("Failed to list SSH hosts: {error}", { error: errorMessage(err) }), runtime);
 	}
 }
 
 async function handleRemoveCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
-	const parsed = parseNamedScopeArgs(rest, "Invalid --scope value. Use project or user.");
+	const parsed = parseNamedScopeArgs(rest, t("Invalid --scope value. Use project or user."));
 	if (parsed.error) return usage(parsed.error, runtime);
-	if (!parsed.name) return usage("Usage: /ssh remove <name> [--scope project|user]", runtime);
+	if (!parsed.name) return usage(t("Usage: /ssh remove <name> [--scope project|user]"), runtime);
 	try {
 		const filePath = getSSHConfigPath(parsed.scope, runtime.cwd);
 		await removeSSHHost(filePath, parsed.name);
 		await runtime.session.refreshSshTools();
-		await runtime.output(`Removed SSH host "${parsed.name}" from ${parsed.scope} config.`);
+		await runtime.output(
+			t('Removed SSH host "{name}" from {scope} config.', { name: parsed.name, scope: parsed.scope }),
+		);
 		return commandConsumed();
 	} catch (err) {
-		return usage(`Failed to remove SSH host: ${errorMessage(err)}`, runtime);
+		return usage(t("Failed to remove SSH host: {error}", { error: errorMessage(err) }), runtime);
 	}
 }
 
 async function handleAddCommand(rest: string, runtime: SlashCommandRuntime): Promise<SlashCommandResult> {
-	if (!rest) return usage(SSH_ADD_USAGE, runtime);
+	if (!rest)
+		return usage(
+			t(
+				"Usage: /ssh add <name> --host <host> [--user <user>] [--port <port>] [--key <keyPath>] [--proxy-jump <spec>] [--password <password>] [--scope project|user]",
+			),
+			runtime,
+		);
 	const parsed = parseSshAddArgs(rest);
 	if (parsed.error) return usage(parsed.error, runtime);
-	if (!parsed.name) return usage("Host name required. Usage: /ssh add <name> --host <host> ...", runtime);
-	if (!parsed.host) return usage("--host is required. Usage: /ssh add <name> --host <host> ...", runtime);
+	if (!parsed.name) return usage(t("Host name required. Usage: /ssh add <name> --host <host> ..."), runtime);
+	if (!parsed.host) return usage(t("--host is required. Usage: /ssh add <name> --host <host> ..."), runtime);
 	let proxyJump: string | undefined;
 	try {
 		proxyJump = parsed.proxyJump === undefined ? undefined : normalizeProxyJump(parsed.proxyJump);
@@ -221,10 +228,10 @@ async function handleAddCommand(rest: string, runtime: SlashCommandRuntime): Pro
 		const filePath = getSSHConfigPath(scope, runtime.cwd);
 		await addSSHHost(filePath, parsed.name, hostConfig);
 		await runtime.session.refreshSshTools({ activateIfAvailable: true });
-		await runtime.output(`Added SSH host "${parsed.name}" (${scope}).`);
+		await runtime.output(t('Added SSH host "{name}" ({scope}).', { name: parsed.name, scope }));
 		return commandConsumed();
 	} catch (err) {
-		return usage(`Failed to add SSH host: ${errorMessage(err)}`, runtime);
+		return usage(t("Failed to add SSH host: {error}", { error: errorMessage(err) }), runtime);
 	}
 }
 
@@ -235,7 +242,7 @@ export async function handleSshAcp(
 ): Promise<SlashCommandResult> {
 	const { verb, rest } = parseSubcommand(command.args);
 	if (!verb || verb === "help") {
-		await runtime.output(SSH_HELP_TEXT);
+		await runtime.output(SSH_HELP_LINES.map(line => t(line)).join("\n"));
 		return commandConsumed();
 	}
 	switch (verb) {
@@ -247,6 +254,9 @@ export async function handleSshAcp(
 		case "add":
 			return await handleAddCommand(rest, runtime);
 		default:
-			return usage(`Unknown /ssh subcommand: ${verb}. Use /ssh help for available subcommands.`, runtime);
+			return usage(
+				t("Unknown /ssh subcommand: {verb}. Use /ssh help for available subcommands.", { verb }),
+				runtime,
+			);
 	}
 }

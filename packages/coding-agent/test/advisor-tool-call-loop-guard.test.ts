@@ -43,7 +43,7 @@ describe("advisor tool-call loop guard", () => {
 	beforeAll(() => {
 		tempDir = TempDir.createSync("@pi-advisor-tool-call-loop-guard-");
 		authStorage = createInMemoryAuthStorage();
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 	});
 
 	beforeEach(() => {

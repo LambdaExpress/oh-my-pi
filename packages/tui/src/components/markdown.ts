@@ -988,14 +988,6 @@ const FAST_LINE_START_HAZARD_RE =
 	// chars are in ASCENDING code-point order (no reversed ranges that
 	// rely on engine leniency): * + = – — ─ ━ ═ then the literal `-`.
 	/^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|\d{1,9}[.)](?:[ \t]|$)|[*+=–—─━═-](?:[ \t]|$)|(?:[*+=–—─━═-][ \t]*){2,}[ \t]*$)/;
-/** @internal exported for tests — counts fast-tail splice frames. A future
- *  regression that silently disarms the fast path (e.g. an over-broad gate)
- *  leaves byte-identity intact but drops the counter to zero. */
-export let fastTailSplices = 0;
-/** @internal exported for tests — resets the splice counter. */
-export function resetFastTailSplices(): void {
-	fastTailSplices = 0;
-}
 
 /** @internal exported for tests — the grown-line-start block-kind gate. */
 export function fastLineStartHazard(grownLine: string): boolean {
@@ -2351,8 +2343,17 @@ export class Markdown implements Component {
 			return EMPTY_RENDER_LINES;
 		}
 
-		// Replace tabs with spaces, then repair orphan fences in final mode.
-		const tabbed = replaceTabs(this.#text);
+		// Fast-path inputs only: signature first, so the append-only branch below
+		// can return without scanning the whole document for tabs.
+		const signature = this.#renderSignature(width, paddingX);
+		this.#lastRenderSignature = signature;
+		// Normalize BEFORE the append-only branch below: the fast path reads the
+		// normalized text (append-safe paragraph capture + plain-prefix
+		// candidate), so the whole-document tab scan/copy must already be done
+		// when it splices. In the fast path's transient mode this is the same
+		// buffer the cold path lexes; the delta-only replaceTabs inside the
+		// branch stays as a cheap extra for the seam probes.
+		const tabbed = this.#text.includes("\t") ? replaceTabs(this.#text) : this.#text;
 		const normalizedText = this.transientRenderCache ? tabbed : repairOrphanClosingFence(tabbed);
 		if (!this.transientRenderCache && normalizedText.length < tabbed.length) {
 			// repairOrphanClosingFence deleted bytes this frame (orphan fence
@@ -2362,8 +2363,6 @@ export class Markdown implements Component {
 			// next #lexTokens re-derives on the repaired buffer.
 			this.#lastScanValid = false;
 		}
-		const signature = this.#renderSignature(width, paddingX);
-		this.#lastRenderSignature = signature;
 		// B+ fast path: an append-only, same-line delta re-renders ONLY the
 		// last content row (the paragraph's trailing wrapped row) with the
 		// grown source, so the new text shows every frame while staying
@@ -2494,14 +2493,12 @@ export class Markdown implements Component {
 						rowEnd: recipe.rowStart + wrapped.length,
 						signature: recipe.signature,
 					};
-					fastTailSplices++;
 					return fastResult;
 				}
 			}
 			// Hazard → disarm until the next real render re-captures.
 			this.#fastTail = undefined;
 		}
-
 		// L2: module-level LRU — survives component disposal/recreation across
 		// session-tree navigations. Key encodes every dimension that affects the
 		// render output so different configurations never collide.
@@ -3221,6 +3218,14 @@ export class Markdown implements Component {
 		};
 	}
 
+	#quoteStyle(text: string): string {
+		return this.#theme.quote(this.#theme.italic(text));
+	}
+
+	#getQuoteStylePrefix(): string {
+		return this.#getStylePrefix(text => this.#quoteStyle(text));
+	}
+
 	#renderToken(
 		token: Token,
 		width: number,
@@ -3294,7 +3299,7 @@ export class Markdown implements Component {
 				// resolver. The art is preformatted, so clip each row to the content
 				// width: the later wrap pass would otherwise fragment the box-drawing
 				// canvas. truncateToWidth is ANSI- and wide-char-aware, and the
-				// resolver already re-fits over-wide horizontal graphs top-down.
+				// resolver picks the shortest orientation that fits this width.
 				if (token.lang === "mermaid" && this.#theme.resolveMermaidAscii) {
 					const ascii = this.#theme.resolveMermaidAscii(token.text, width);
 					if (ascii) {
@@ -3343,7 +3348,7 @@ export class Markdown implements Component {
 			case "blockquote": {
 				const quoteInlineStyleContext: InlineStyleContext = {
 					applyText: (text: string) => text,
-					stylePrefix: "",
+					stylePrefix: this.#getQuoteStylePrefix(),
 				};
 				const quoteContentWidth = Math.max(1, width - 2);
 				const quoteTokens = token.tokens || [];
@@ -3413,14 +3418,13 @@ export class Markdown implements Component {
 	 * `width` is the full content width; the border reserves two cells.
 	 */
 	#applyQuoteBorder(renderedLines: RenderedLine[], width: number): RenderedLine[] {
-		const quoteStyle = (text: string) => this.#theme.quote(this.#theme.italic(text));
-		const quoteStylePrefix = this.#getStylePrefix(quoteStyle);
+		const quoteStylePrefix = this.#getQuoteStylePrefix();
 		const applyQuoteStyle = (line: string): string => {
 			if (!quoteStylePrefix) {
-				return quoteStyle(line);
+				return this.#quoteStyle(line);
 			}
 			const lineWithReappliedStyle = line.replace(/\x1b\[0m/g, `\x1b[0m${quoteStylePrefix}`);
-			return quoteStyle(lineWithReappliedStyle);
+			return this.#quoteStyle(lineWithReappliedStyle);
 		};
 		const quoteContentWidth = Math.max(1, width - 2);
 		const lines: RenderedLine[] = [];
@@ -3479,7 +3483,12 @@ export class Markdown implements Component {
 
 	/** Render the inner content of an HTML `<blockquote>` with quote styling. */
 	#renderHtmlBlockquote(inner: string, width: number): RenderedLine[] {
-		const cleaned = normalizeHtmlForTerminal(inner, createHtmlNormalizationState(), text => this.#theme.code(text));
+		const quoteStylePrefix = this.#getQuoteStylePrefix();
+		const cleaned = normalizeHtmlForTerminal(
+			inner,
+			createHtmlNormalizationState(),
+			text => this.#theme.code(text) + quoteStylePrefix,
+		);
 		const innerLines = splitTerminalLines(cleaned).map(line => renderedLine(line.trimEnd()));
 		while (innerLines.length > 0 && innerLines[innerLines.length - 1].text === "") innerLines.pop();
 		return this.#applyQuoteBorder(innerLines, width);

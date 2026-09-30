@@ -1,6 +1,7 @@
 import { logger } from "@oh-my-pi/pi-utils";
 import { Settings } from "../config/settings";
-import { OutputSink } from "../session/streaming-output";
+import { type OutputArtifactError, OutputSink } from "@oh-my-pi/pi-tui/tools/streaming-output";
+import { statusEventKey } from "@oh-my-pi/pi-tui/tools/eval";
 import type { ToolSession } from "../tools";
 import {
 	resolveOutputMaxColumns,
@@ -31,6 +32,31 @@ export class EvalKernelNotRunningError extends Error {
 	}
 }
 
+/**
+ * A cell's display outputs in emission order. Progress snapshots (see
+ * `statusEventKey`) replace their earlier snapshot in place, so a long `wait()`
+ * over agents keeps one event per handle instead of one per poll tick. Shared
+ * by the kernel (Python) and VM (JS) executors.
+ */
+export class DisplayOutputCollector<T extends KernelDisplayOutput> {
+	readonly outputs: T[] = [];
+	readonly #snapshotIndex = new Map<string, number>();
+
+	push(output: T): void {
+		const display: KernelDisplayOutput = output;
+		const key = display.type === "status" ? statusEventKey(display.event) : undefined;
+		if (key !== undefined) {
+			const index = this.#snapshotIndex.get(key);
+			if (index !== undefined) {
+				this.outputs[index] = output;
+				return;
+			}
+			this.#snapshotIndex.set(key, this.outputs.length);
+		}
+		this.outputs.push(output);
+	}
+}
+
 /** Managed-env values a kernel patch may carry (`null` clears, `undefined` skips). */
 export type KernelEnvPatch = Record<string, string | null | undefined>;
 
@@ -40,6 +66,7 @@ export type KernelEnvPatch = Record<string, string | null | undefined>;
  */
 export interface KernelExecutorBaseOptions {
 	cwd?: string;
+	filename?: string;
 	timeoutMs?: number;
 	deadlineMs?: number;
 	idleTimeoutMs?: number;
@@ -60,6 +87,7 @@ export interface KernelExecutionResult {
 	cancelled: boolean;
 	truncated: boolean;
 	artifactId: string | undefined;
+	artifactError?: OutputArtifactError;
 	totalLines: number;
 	totalBytes: number;
 	outputLines: number;
@@ -74,6 +102,7 @@ export interface GenericKernel<TEnv> {
 		code: string,
 		options: {
 			cwd?: string;
+			filename?: string;
 			env?: TEnv;
 			id: string;
 			signal?: AbortSignal;
@@ -457,7 +486,8 @@ export async function executeWithKernelBase<
 		maxColumns: resolveOutputMaxColumns(settings),
 	});
 
-	const displayOutputs: KernelDisplayOutput[] = [];
+	const display = new DisplayOutputCollector<KernelDisplayOutput>();
+	const displayOutputs = display.outputs;
 	const deadlineMs = getExecutionDeadlineMs(options);
 	const remainingMs = getRemainingTimeoutMs(deadlineMs);
 	const executionTimeoutMs = remainingMs !== undefined && remainingMs > 0 ? remainingMs : undefined;
@@ -484,7 +514,7 @@ export async function executeWithKernelBase<
 			options?.onStatus?.(output.event);
 			if (isEvalTimeoutControlEvent(output.event)) return;
 		}
-		displayOutputs.push(output);
+		display.push(output);
 	};
 
 	const emitStatus: (event: JsStatusEvent) => void =
@@ -520,6 +550,7 @@ export async function executeWithKernelBase<
 
 		const result = await kernel.execute(code, {
 			cwd: options?.cwd,
+			filename: options?.filename,
 			env: buildKernelEnvPatch(options ?? ({} as TOptions)),
 			id: runId,
 			signal: abortShield.signal,
@@ -541,6 +572,7 @@ export async function executeWithKernelBase<
 				truncated: dumped.truncated,
 				output: dumped.output,
 				artifactId: dumped.artifactId ?? undefined,
+				artifactError: dumped.artifactError,
 				totalLines: dumped.totalLines,
 				totalBytes: dumped.totalBytes,
 				outputLines: dumped.outputLines,
@@ -558,6 +590,7 @@ export async function executeWithKernelBase<
 				truncated: dumped.truncated,
 				output: dumped.output,
 				artifactId: dumped.artifactId ?? undefined,
+				artifactError: dumped.artifactError,
 				totalLines: dumped.totalLines,
 				totalBytes: dumped.totalBytes,
 				outputLines: dumped.outputLines,
@@ -575,6 +608,7 @@ export async function executeWithKernelBase<
 			truncated: dumped.truncated,
 			output: dumped.output,
 			artifactId: dumped.artifactId ?? undefined,
+			artifactError: dumped.artifactError,
 			totalLines: dumped.totalLines,
 			totalBytes: dumped.totalBytes,
 			outputLines: dumped.outputLines,
@@ -594,6 +628,7 @@ export async function executeWithKernelBase<
 				truncated: dumped.truncated,
 				output: dumped.output,
 				artifactId: dumped.artifactId ?? undefined,
+				artifactError: dumped.artifactError,
 				totalLines: dumped.totalLines,
 				totalBytes: dumped.totalBytes,
 				outputLines: dumped.outputLines,

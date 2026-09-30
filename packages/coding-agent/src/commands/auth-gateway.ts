@@ -11,7 +11,7 @@ import {
 } from "../cli/auth-gateway-cli";
 import { authGatewayHelp as commandHelp } from "../cli/command-help";
 import { t } from "../i18n";
-import { initTheme } from "../modes/theme/theme";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 
 export default class AuthGateway extends Command {
 	static description = commandHelp.description;

@@ -8,6 +8,7 @@ import {
 	parseFrontmatter,
 	prompt,
 } from "@oh-my-pi/pi-utils";
+import { t } from "../i18n";
 import { jtdToTypeScript } from "../tools/jtd-to-typescript";
 import { parseCommandArgs, substituteArgs } from "../utils/command-args";
 
@@ -110,9 +111,9 @@ async function loadTemplatesFromDir(
 
 					let sourceStr: string;
 					if (source === "user") {
-						sourceStr = fullSubdir ? `(user:${fullSubdir})` : "(user)";
+						sourceStr = fullSubdir ? t("(user:{subdir})", { subdir: fullSubdir }) : t("(user)");
 					} else {
-						sourceStr = fullSubdir ? `(project:${fullSubdir})` : "(project)";
+						sourceStr = fullSubdir ? t("(project:{subdir})", { subdir: fullSubdir }) : t("(project)");
 					}
 
 					// Get description from frontmatter or first non-empty line
@@ -120,9 +121,11 @@ async function loadTemplatesFromDir(
 					if (!description) {
 						const firstLine = body.split("\n").find(line => line.trim());
 						if (firstLine) {
-							// Truncate if too long
-							description = firstLine.slice(0, 60);
-							if (firstLine.length > 60) description += "...";
+							// The first line is usually a markdown heading; show its text,
+							// not the `#` marker that belongs to the file's syntax.
+							const heading = firstLine.trim().replace(/^#{1,6}\s+/, "");
+							description = heading.slice(0, 60);
+							if (heading.length > 60) description += "...";
 						}
 					}
 
@@ -191,7 +194,7 @@ export function expandPromptTemplate(text: string, templates: PromptTemplate[]):
 	const templateName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
 	const argsString = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1);
 
-	const template = templates.find(t => t.name === templateName);
+	const template = templates.find(candidate => candidate.name === templateName);
 	if (template) {
 		const args = parseCommandArgs(argsString);
 		const argsText = args.join(" ");

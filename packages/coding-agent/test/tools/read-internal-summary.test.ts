@@ -9,7 +9,8 @@ import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls/route
 import type { InternalResource, ProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import * as fileTransfer from "@oh-my-pi/pi-coding-agent/ssh/file-transfer";
-import { ReadTool, type ReadToolDetails } from "@oh-my-pi/pi-coding-agent/tools/read";
+import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
+import type { ReadToolDetails } from "@oh-my-pi/pi-tui/tools/read";
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 function makeSettings(): Settings {
@@ -124,7 +125,7 @@ describe("read internal URL structural summaries", () => {
 		const memContent = codeFixture("memtest");
 		const handler: ProtocolHandler = {
 			scheme: "memory",
-			immutable: true,
+			spec: { backing: "virtual", selectors: "lines", immutable: true },
 			async resolve(url): Promise<InternalResource> {
 				return {
 					url: url.href,
@@ -151,7 +152,7 @@ describe("read internal URL structural summaries", () => {
 		const dirListing = "child.ts\nREADME.md";
 		const handler: ProtocolHandler = {
 			scheme: "rule",
-			immutable: true,
+			spec: { backing: "virtual", selectors: "lines", immutable: true },
 			async resolve(url): Promise<InternalResource> {
 				return {
 					url: url.href,
@@ -189,7 +190,7 @@ describe("read internal URL structural summaries", () => {
 		const result = await tool.execute("read-local-summary", { path: "local://example.ts" });
 
 		expect(result.details?.summary?.elidedSpans).toBeGreaterThan(0);
-		expect(result.details?.meta?.source?.type).toBe("path");
+		expect(result.details?.meta?.source?.type).toBe("internal");
 		expect(textOf(result)).not.toContain("local-sentinel-7");
 	});
 });

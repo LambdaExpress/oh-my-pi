@@ -6,19 +6,19 @@ import * as path from "node:path";
 import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { getProjectDir, isEnoent, readImageMetadata } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { t } from "../i18n";
 import { resolveReadPath } from "../tools/path-utils";
-import { formatBytes } from "../tools/render-utils";
+import { formatBytes } from "@oh-my-pi/pi-tui/render/render-utils";
 import { formatDimensionNote, resizeImage } from "../utils/image-resize";
 import { CONVERTIBLE_EXTENSIONS, convertFileWithMarkit } from "../utils/markit";
 import {
 	VideoError,
 	buildVideoContactSheetPng,
-	createVideoPreviewImage,
 	formatVideoDetails,
-	isVideoPath,
 	probeVideo,
 	videoMimeForPath,
 } from "../utils/video";
+import { createVideoPreviewImage, isVideoPath } from "@oh-my-pi/pi-tui/prompt/video";
 
 // Keep CLI startup responsive and avoid OOM when users pass huge files.
 // If a file exceeds these limits, we include it as a path-only <file/> block.
@@ -47,7 +47,7 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 
 		const stat = fs.statSync(absolutePath, { throwIfNoEntry: false });
 		if (!stat) {
-			console.error(chalk.red(`Error: File not found: ${absolutePath}`));
+			console.error(chalk.red(t("Error: File not found: {path}", { path: absolutePath })));
 			process.exit(1);
 		}
 
@@ -79,7 +79,12 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 		const maxBytes = mimeType ? MAX_CLI_IMAGE_BYTES : MAX_CLI_TEXT_BYTES;
 		if (stat.size > maxBytes) {
 			console.error(
-				chalk.yellow(`Warning: Skipping file contents (too large: ${formatBytes(stat.size)}): ${absolutePath}`),
+				chalk.yellow(
+					t("Warning: Skipping file contents (too large: {size}): {path}", {
+						size: formatBytes(stat.size),
+						path: absolutePath,
+					}),
+				),
 			);
 			text += `<file name="${absolutePath}">(skipped: too large, ${formatBytes(stat.size)})</file>\n`;
 			continue;
@@ -91,7 +96,7 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 			buffer = await Bun.file(absolutePath).bytes();
 		} catch (err) {
 			if (isEnoent(err)) {
-				console.error(chalk.red(`Error: File not found: ${absolutePath}`));
+				console.error(chalk.red(t("Error: File not found: {path}", { path: absolutePath })));
 				process.exit(1);
 			}
 			throw err;
@@ -153,7 +158,9 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 				text += `<file name="${absolutePath}">\n${content}\n</file>\n`;
 			} catch (error: unknown) {
 				const message = error instanceof Error ? error.message : String(error);
-				console.error(chalk.red(`Error: Could not read file ${absolutePath}: ${message}`));
+				console.error(
+					chalk.red(t("Error: Could not read file {path}: {message}", { path: absolutePath, message })),
+				);
 				process.exit(1);
 			}
 		}

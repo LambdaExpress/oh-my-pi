@@ -26,6 +26,7 @@ import {
 	removeMCPServer,
 	setServerDisabled,
 	updateMCPServer,
+	validateServerName,
 } from "../../mcp/config-writer";
 import {
 	lookupMcpOAuthCredentialForServer,
@@ -57,19 +58,21 @@ import type {
 	MCPServerConfig,
 	MCPServerConnection,
 } from "../../mcp/types";
-import { shortenPath } from "../../tools/render-utils";
-import { urlHyperlinkAlways } from "../../tui";
+import { shortenPath } from "@oh-my-pi/pi-tui/render/render-utils";
+import { urlHyperlinkAlways } from "@oh-my-pi/pi-tui/render";
 import { copyToClipboard } from "../../utils/clipboard";
 import { isTimeoutError } from "../../utils/fetch-timeout";
 import { openPath } from "../../utils/open";
-import { ChatBlock } from "../components/chat-block";
-import { DynamicBorder } from "../components/dynamic-border";
-import { MCPAddWizard } from "../components/mcp-add-wizard";
-import { TranscriptBlock } from "../components/transcript-container";
-import { parseCommandArgs } from "../shared";
-import { theme } from "../theme/theme";
+import { ChatBlock } from "@oh-my-pi/pi-tui/chrome/chat-block";
+import { DynamicBorder } from "@oh-my-pi/pi-tui/chrome/dynamic-border";
+import { MCPAddWizard } from "@oh-my-pi/pi-tui/overlays/mcp-add-wizard";
+import { TranscriptBlock } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { parseCommandArgs } from "../../utils/command-args";
+import { theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "../types";
 import { groupBySource, parseRemoveArgs, readScopeFlag, showCommandMessage } from "./command-controller-shared";
+
+import { cfgMcpEnableProjectConfig } from "../../mcp/settings";
 
 const MCP_MANUAL_INPUT_PROVIDER_ID = "mcp";
 const MCP_TEST_ESCAPE_GRACE_MS = 5_000;
@@ -404,8 +407,9 @@ export class MCPCommandController {
 	 * Handle /mcp command and route to subcommands
 	 */
 	async handle(text: string): Promise<void> {
-		const parts = text.trim().split(/\s+/);
+		const parts = parseCommandArgs(text.trim());
 		const subcommand = parts[1]?.toLowerCase();
+		const serverName = parts.slice(2).join(" ") || undefined;
 
 		if (!subcommand || subcommand === "help") {
 			this.#showHelp();
@@ -424,19 +428,19 @@ export class MCPCommandController {
 				await this.#handleRemove(text);
 				break;
 			case "test":
-				await this.#handleTest(parts[2]);
+				await this.#handleTest(serverName);
 				break;
 			case "reauth":
-				await this.#handleReauth(parts[2]);
+				await this.#handleReauth(serverName);
 				break;
 			case "unauth":
-				await this.#handleUnauth(parts[2]);
+				await this.#handleUnauth(serverName);
 				break;
 			case "enable":
-				await this.#handleSetEnabled(parts[2], true);
+				await this.#handleSetEnabled(serverName, true);
 				break;
 			case "disable":
-				await this.#handleSetEnabled(parts[2], false);
+				await this.#handleSetEnabled(serverName, false);
 				break;
 			case "resources":
 				await this.#handleResources();
@@ -457,7 +461,7 @@ export class MCPCommandController {
 				await this.#handleSmitheryLogout();
 				break;
 			case "reconnect":
-				await this.#handleReconnect(parts[2]);
+				await this.#handleReconnect(serverName);
 				break;
 			case "reload":
 				await this.#handleReload();
@@ -818,6 +822,7 @@ export class MCPCommandController {
 
 		// Create wizard with OAuth handler and connection test
 		const wizard = new MCPAddWizard(
+			{ validateServerName, analyzeAuthError, discoverOAuthEndpoints, fetchResourceMetadataScopes },
 			async (name: string, config: MCPServerConfig, scope: "user" | "project") => {
 				done();
 				await this.#handleWizardComplete(name, config, scope);
@@ -1065,7 +1070,7 @@ export class MCPCommandController {
 				authorizationUrl: flow.authorizationUrl,
 			};
 
-			await authStorage.set(credentialId, oauthCredential);
+			await authStorage.credentials.set(credentialId, oauthCredential);
 
 			return {
 				credentialId,
@@ -1694,7 +1699,7 @@ export class MCPCommandController {
 		let settled = false;
 		const handleEscape = (): void => {
 			if (settled) {
-				this.ctx.showStatus(`MCP test for "${name}" already finished`);
+				this.ctx.showStatus(t('MCP test for "{name}" already finished', { name }));
 				return;
 			}
 			abortController.abort();
@@ -1714,7 +1719,7 @@ export class MCPCommandController {
 		let hintBlock: MutableHintBlock | undefined;
 		// Outcome-branched settled text: a cancelled or failed test must not
 		// read as if it completed.
-		let settleNote = `Tested connection to "${name}".`;
+		let settleNote = t('Tested connection to "{name}".', { name });
 		// Cancellation can land while later awaits (auth prepareConfig, connect)
 		// are still unwinding. Drop the esc affordance the moment it happens —
 		// the dispatcher already consumed the ownership — but claim no outcome:
@@ -1723,7 +1728,7 @@ export class MCPCommandController {
 		// #syncManagerConnection does not stop it).
 		abortController.signal.addEventListener("abort", () => {
 			if (settled || !hintShown) return;
-			hintText?.setText(theme.fg("muted", `Testing connection to "${name}"...`));
+			hintText?.setText(theme.fg("muted", t('Testing connection to "{name}"...', { name })));
 			this.ctx.ui.requestRender();
 		});
 		try {
@@ -1750,7 +1755,7 @@ export class MCPCommandController {
 			const { config } = found;
 			if (config.enabled === false) {
 				this.ctx.mcpTestEscapeHandlers.delete(handleEscape);
-				this.ctx.showError(`Server "${name}" is disabled. Run /mcp enable ${name} first.`);
+				this.ctx.showError(t('Server "{name}" is disabled. Run /mcp enable {name} first.', { name }));
 				return;
 			}
 
@@ -1759,13 +1764,17 @@ export class MCPCommandController {
 			// is already gone.
 			if (abortController.signal.aborted) {
 				this.ctx.mcpTestEscapeHandlers.delete(handleEscape);
-				this.ctx.showStatus(`Cancelled MCP test for "${name}"`);
+				this.ctx.showStatus(t('Cancelled MCP test for "{name}"', { name }));
 				return;
 			}
 
 			hintBlock = new MutableHintBlock();
 			hintBlock.addChild(new DynamicBorder());
-			const text = new Text(theme.fg("muted", `Testing connection to "${name}"... (esc to cancel)`), 1, 1);
+			const text = new Text(
+				theme.fg("muted", t('Testing connection to "{name}"... (esc to cancel)', { name })),
+				1,
+				1,
+			);
 			hintBlock.addChild(text);
 			hintBlock.addChild(new DynamicBorder());
 			this.ctx.presentCommandOutput(hintBlock);
@@ -1813,8 +1822,8 @@ export class MCPCommandController {
 			this.#showMessage(lines.join("\n"));
 		} catch (error) {
 			if (abortController.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
-				settleNote = `Cancelled connection test for "${name}".`;
-				this.ctx.showStatus(`Cancelled MCP test for "${name}"`);
+				settleNote = t('Cancelled connection test for "{name}".', { name });
+				this.ctx.showStatus(t('Cancelled MCP test for "{name}"', { name }));
 				return;
 			}
 
@@ -1834,8 +1843,10 @@ export class MCPCommandController {
 				helpText = `\n\n${t("Tip: Check your authentication credentials.")}`;
 			}
 
-			settleNote = `Connection test for "${name}" failed.`;
-			this.ctx.showError(`Failed to connect to "${name}": ${errorMsg}${helpText}`);
+			settleNote = t('Connection test for "{name}" failed.', { name });
+			this.ctx.showError(
+				t('Failed to connect to "{name}": {error}{help}', { name, error: errorMsg, help: helpText }),
+			);
 		} finally {
 			settled = true;
 			if (hintShown) {
@@ -2364,7 +2375,7 @@ export class MCPCommandController {
 
 		// Rediscover and connect, mirroring startup's discovery filters.
 		const result = await this.ctx.mcpManager.discoverAndConnect({
-			enableProjectConfig: this.ctx.settings.get("mcp.enableProjectConfig") ?? true,
+			enableProjectConfig: cfgMcpEnableProjectConfig.get(this.ctx.settings),
 			filterExa: true,
 			filterBrowser: this.ctx.session.getEvalPreludes().some(definition => definition.name === "browser"),
 			extensionRoots: this.ctx.session.effectiveExtensionRoots,

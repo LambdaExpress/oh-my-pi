@@ -9,13 +9,13 @@
 
 import type { Api, CodexCompactionContext, FetchImpl, Model, ProviderSessionState } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
+import { createOpenAICodexCompactionRequestContext } from "@oh-my-pi/pi-ai/providers/openai-codex-compaction";
 import { applyCodexResponsesLiteShape } from "@oh-my-pi/pi-ai/providers/openai-codex/request-transformer";
 import {
-	createOpenAICodexCompactionRequestContext,
 	createOpenAICodexCompatibilityMetadata,
+	openCodexCompactionEventStream,
 	type OpenAICodexCompactionBody,
 	type OpenAICodexCompatibilityMetadata,
-	openCodexCompactionEventStream,
 } from "@oh-my-pi/pi-ai/providers/openai-codex-responses";
 import {
 	getOpenAIPromptCacheKey,
@@ -33,7 +33,7 @@ import {
 	OPENAI_HEADER_VALUES,
 	OPENAI_HEADERS,
 } from "@oh-my-pi/pi-catalog/wire/codex";
-import { $env, logger, stringifyJson } from "@oh-my-pi/pi-utils";
+import { $env, isUnexpectedSocketCloseMessage, logger, stringifyJson } from "@oh-my-pi/pi-utils";
 
 // ============================================================================
 // Types & Configuration
@@ -664,6 +664,7 @@ function isRetryableCompactionError(error: Error): boolean {
 	}
 	const message = error.message.toLowerCase();
 	return (
+		isUnexpectedSocketCloseMessage(message) ||
 		message.includes("stream closed before response.completed") ||
 		message.includes("stream parse failed") ||
 		message.includes("server_error") ||

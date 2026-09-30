@@ -1,5 +1,6 @@
 import { Process } from "@oh-my-pi/pi-natives";
-import { ToolAbortError, ToolError, throwIfAborted } from "../tools/tool-errors";
+import { ToolAbortError, throwIfAborted } from "../tools/tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import {
 	type AdbCommandOptions,
 	type AdbCommandResult,

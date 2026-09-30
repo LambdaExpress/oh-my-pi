@@ -2,6 +2,8 @@ import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { ModelRegistry } from "../config/model-registry";
 import { Settings } from "../config/settings";
+import { t } from "../i18n";
+import { cfgCommitChangelogMaxDiffChars } from "./settings";
 import { discoverAuthStorage, loadCliExtensionProviders } from "../sdk";
 import { runAgenticCommit } from "./agentic";
 import { runChangelogFlow } from "./changelog";
@@ -29,14 +31,14 @@ async function runLegacyCommitCommand(args: CommitCommandArgs): Promise<void> {
 			onProgress: message => process.stdout.write(`${message}\n`),
 		});
 	} catch (error) {
-		if (vcs.isVcsError(error)) abortOnGitFailure("Commit generation failed", error);
+		if (vcs.isVcsError(error)) abortOnGitFailure(t("Commit generation failed"), error);
 		if (error instanceof Error && error.message === "No staged changes to analyze") {
 			if (args.push) {
-				process.stdout.write("No changes to commit; pushing existing commits...\n");
+				process.stdout.write(`${t("No changes to commit; pushing existing commits...")}\n`);
 				await pushOrAbort(cwd);
 				return;
 			}
-			process.stderr.write("No changes to commit.\n");
+			process.stderr.write(`${t("No changes to commit.")}\n`);
 			return;
 		}
 		throw error;
@@ -44,10 +46,12 @@ async function runLegacyCommitCommand(args: CommitCommandArgs): Promise<void> {
 
 	const commitMessage = formatConventionalCommit(generated.commit);
 	if (args.dryRun) {
-		process.stdout.write("\nGenerated commit message:\n");
+		process.stdout.write(`\n${t("Generated commit message:")}\n`);
 		process.stdout.write(`${commitMessage}\n`);
 		if (generated.validationError) {
-			process.stderr.write(`Warning: generated message requires manual correction: ${generated.validationError}\n`);
+			process.stderr.write(
+				`${t("Warning: generated message requires manual correction: {error}", { error: generated.validationError })}\n`,
+			);
 		}
 		return;
 	}
@@ -59,22 +63,21 @@ async function runLegacyCommitCommand(args: CommitCommandArgs): Promise<void> {
 	try {
 		await vcs.requireGit(cwd).commitCreate(commitMessage, {});
 	} catch (error) {
-		if (vcs.isVcsError(error)) abortOnGitFailure("Commit failed", error);
+		if (vcs.isVcsError(error)) abortOnGitFailure(t("Commit failed"), error);
 		throw error;
 	}
-	process.stdout.write("Commit created.\n");
+	process.stdout.write(`${t("Commit created.")}\n`);
 	if (args.push) await pushOrAbort(cwd);
 }
 
 async function updateChangelog(cwd: string, args: CommitCommandArgs): Promise<void> {
 	const settings = await Settings.init({ cwd });
-	const authStorage = await discoverAuthStorage();
+	const authStorage = await discoverAuthStorage(undefined, { settings });
 	try {
 		const registry = new ModelRegistry(authStorage);
 		await registry.refresh();
 		await loadCliExtensionProviders(registry, settings, cwd);
 		const primary = await resolvePrimaryModel(args.model, settings, registry);
-		const commitSettings = settings.getGroup("commit");
 		await runChangelogFlow({
 			cwd,
 			model: primary.model,
@@ -82,7 +85,7 @@ async function updateChangelog(cwd: string, args: CommitCommandArgs): Promise<vo
 			thinkingLevel: primary.thinkingLevel,
 			stagedFiles: await vcs.requireGit(cwd).changedFiles({ cached: true }),
 			dryRun: false,
-			maxDiffChars: commitSettings.changelogMaxDiffChars,
+			maxDiffChars: cfgCommitChangelogMaxDiffChars.get(settings),
 			onProgress: message => process.stdout.write(`${message}\n`),
 		});
 	} finally {

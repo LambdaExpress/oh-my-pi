@@ -1,7 +1,7 @@
 import { sanitizeText } from "@oh-my-pi/pi-utils";
 import { t } from "../i18n";
 import type { InternalResource } from "../internal-urls";
-import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "../session/streaming-output";
+import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, truncateHead } from "@oh-my-pi/pi-tui/tools/streaming-output";
 
 export interface SecurityResourceOptions {
 	url: string;

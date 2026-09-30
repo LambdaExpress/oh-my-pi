@@ -4,6 +4,7 @@ import * as path from "node:path";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { getMCPConfigPath, getProjectDir, logger } from "@oh-my-pi/pi-utils";
 import { formatModelRoleAlias, getKnownRoleIds } from "../config/model-roles";
+import { t } from "../i18n";
 import { readMCPConfigFile } from "../mcp/config-writer";
 import { collectMcpServerNames } from "../modes/controllers/mcp-command-controller";
 import { expandTilde } from "../tools/path-utils";
@@ -141,7 +142,7 @@ async function buildMcpRemoveCompletions(
 		.map(name =>
 			projectNameSet.has(name)
 				? { value: `${rawSubcommand} ${name} `, label: name }
-				: { value: `${rawSubcommand} ${name} --scope user `, label: `${name} (user)` },
+				: { value: `${rawSubcommand} ${name} --scope user `, label: `${name} ${t("(user)")}` },
 		)
 		.sort((a, b) => a.label.localeCompare(b.label, undefined, { sensitivity: "base" }));
 	return matches.length > 0 ? matches : null;

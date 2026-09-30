@@ -3,7 +3,7 @@
  * daemon broker from outside the harness.
  *
  * A bare `omp ps` on a TTY opens the interactive alt-screen monitor
- * (`ps-tui.ts`); `--plain`, `--json`, and non-TTY outputs use the static
+ * (`pi-tui/apps/ps-top`); `--plain`, `--json`, and non-TTY outputs use the static
  * listing. Actions (`stop`, `kill`, `restart`, `logs`, `info`) connect through
  * the regular client, which revives a dead broker so it can re-adopt detached
  * daemons before acting on them.
@@ -12,25 +12,26 @@
 import { truncateToWidth } from "@oh-my-pi/pi-tui";
 import { formatDuration, getProjectDir } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
+import { t } from "../i18n";
 import {
 	closeDaemonClients,
 	type DaemonBrokerClient,
 	daemonClientForGlobal,
 	daemonClientForProject,
 } from "../launch/client";
-import type { DaemonSnapshot } from "../launch/protocol";
+import type { DaemonSnapshot } from "@oh-my-pi/pi-tui/tools/daemon";
 import {
-	collectReports,
 	daemonLabel,
 	formatCommand,
-	KILL_GRACE_MS,
 	type PsDaemonRow,
+	type PsScope,
 	scopeHeader,
 	TABLE_HEADER,
 	TERMINAL_STATES,
 	tableCells,
-} from "./ps-data";
-import { runPsTop } from "./ps-tui";
+} from "@oh-my-pi/pi-tui/apps/ps-data";
+import { runPsTop, type PsTopHost } from "@oh-my-pi/pi-tui/apps/ps-top";
+import { collectReports, KILL_GRACE_MS, scopeClient } from "./ps-data";
 
 export type PsAction = "list" | "info" | "logs" | "stop" | "kill" | "restart";
 
@@ -61,17 +62,75 @@ export interface PsCommandArgs {
 	};
 }
 
+function createPsTopHost(): PsTopHost {
+	const clients = new Map<string, DaemonBrokerClient>();
+	let closed = false;
+	const clientFor = async (scope: PsScope): Promise<DaemonBrokerClient> => {
+		const cached = clients.get(scope.runtimeDir);
+		if (cached) return cached;
+		const client = await scopeClient(scope);
+		if (!client) throw new Error("Scope is not addressable from this machine");
+		if (closed) {
+			client.close();
+			throw new Error("Process monitor closed");
+		}
+		clients.set(scope.runtimeDir, client);
+		return client;
+	};
+	return {
+		collectReports,
+		async act(scope, name, verb) {
+			const client = await clientFor(scope);
+			const result = await client.request(
+				verb === "restart"
+					? { op: "restart", name }
+					: { op: "stop", name, timeoutMs: verb === "kill" ? KILL_GRACE_MS : 5_000 },
+			);
+			if (result.op !== "restart" && result.op !== "stop") throw new Error(`Unexpected response ${result.op}`);
+			return result.daemon;
+		},
+		async describe(scope, name) {
+			const client = await clientFor(scope);
+			const result = await client.request({ op: "describe", name });
+			if (result.op !== "describe") throw new Error(`Unexpected response ${result.op}`);
+			return { daemon: result.daemon, spec: result.spec };
+		},
+		async logs(scope, name, lines) {
+			const client = await clientFor(scope);
+			const result = await client.request({
+				op: "logs",
+				name,
+				lines,
+				head: false,
+				follow: false,
+				renderTerminalRows: true,
+				timeoutMs: 10_000,
+			});
+			if (result.op !== "logs") throw new Error(`Unexpected response ${result.op}`);
+			return result;
+		},
+		close() {
+			closed = true;
+			for (const client of clients.values()) client.close();
+			clients.clear();
+		},
+	};
+}
+
+/** Run process listing or a named broker action. */
 export async function runPsCommand(cmd: PsCommandArgs): Promise<void> {
 	try {
 		if (cmd.action === "list") {
 			const interactive =
 				!cmd.flags.json && !cmd.flags.plain && process.stdout.isTTY === true && process.stdin.isTTY === true;
-			if (interactive) await runPsTop(cmd.flags);
+			if (interactive) await runPsTop(cmd.flags, createPsTopHost());
 			else await runList(cmd);
 			return;
 		}
 		if (!cmd.name) {
-			console.error(chalk.red(`${cmd.action} requires a process name. Run \`omp ps\` to list processes.`));
+			console.error(
+				chalk.red(t("{action} requires a process name. Run `omp ps` to list processes.", { action: cmd.action })),
+			);
 			process.exitCode = 1;
 			return;
 		}
@@ -110,7 +169,7 @@ async function runList(cmd: PsCommandArgs): Promise<void> {
 		return;
 	}
 	if (reports.length === 0) {
-		console.log(chalk.dim("No daemon broker scopes found."));
+		console.log(chalk.dim(t("No daemon broker scopes found.")));
 		return;
 	}
 	let first = true;
@@ -119,13 +178,13 @@ async function runList(cmd: PsCommandArgs): Promise<void> {
 		first = false;
 		console.log(scopeHeader(report.scope));
 		if (report.daemons.length === 0) {
-			console.log(chalk.dim("  no processes"));
+			console.log(chalk.dim(`  ${t("no processes")}`));
 			continue;
 		}
 		printTable(report.daemons);
 	}
 	if (!cmd.flags.all) {
-		console.log(chalk.dim("\nUse --all to include other projects and global services."));
+		console.log(chalk.dim(`\n${t("Use --all to include other projects and global services.")}`));
 	}
 }
 
@@ -133,15 +192,16 @@ function printTable(rows: PsDaemonRow[]): void {
 	// Truncate to the terminal on a TTY; keep full lines when piped.
 	const maxWidth = process.stdout.isTTY ? (process.stdout.columns ?? 120) : Number.POSITIVE_INFINITY;
 	const cells = rows.map(tableCells);
-	const widths = TABLE_HEADER.map((title, column) =>
-		Math.max(title.length, ...cells.map(row => Bun.stringWidth(row[column]))),
+	const titles = TABLE_HEADER.map(title => t(title));
+	const widths = titles.map((title, column) =>
+		Math.max(Bun.stringWidth(title), ...cells.map(row => Bun.stringWidth(row[column]))),
 	);
 	const render = (row: string[]): string => {
 		const line =
 			`  ${row.map((cell, column) => cell + " ".repeat(Math.max(0, widths[column] - Bun.stringWidth(cell)))).join("  ")}`.trimEnd();
 		return Number.isFinite(maxWidth) ? truncateToWidth(line, maxWidth) : line;
 	};
-	console.log(chalk.dim(render([...TABLE_HEADER])));
+	console.log(chalk.dim(render([...titles])));
 	for (const [index, row] of cells.entries()) {
 		const line = render(row);
 		console.log(TERMINAL_STATES[rows[index].snapshot.state] ? chalk.dim(line) : line);
@@ -170,14 +230,24 @@ async function runAction(cmd: PsCommandArgs, name: string): Promise<void> {
 				}
 				const daemon = result.daemon;
 				console.log(daemonLabel(daemon));
-				console.log(`  command:  ${formatCommand(result.spec)}`);
-				console.log(`  cwd:      ${result.spec.cwd}`);
+				console.log(`  ${t("command:  {command}", { command: formatCommand(result.spec) })}`);
+				console.log(`  ${t("cwd:      {cwd}", { cwd: result.spec.cwd })}`);
 				if (!TERMINAL_STATES[daemon.state])
-					console.log(`  uptime:   ${formatDuration(Date.now() - daemon.startedAt)}`);
-				if (daemon.exitReason) console.log(`  exit:     ${daemon.exitReason}`);
-				console.log(`  restarts: ${daemon.restartCount} (policy: ${result.spec.restart})`);
+					console.log(`  ${t("uptime:   {uptime}", { uptime: formatDuration(Date.now() - daemon.startedAt) })}`);
+				if (daemon.exitReason) console.log(`  ${t("exit:     {exit}", { exit: daemon.exitReason })}`);
 				console.log(
-					`  pty: ${result.spec.pty}  persist: ${result.spec.persist}  detached: ${result.spec.detached}  owner: ${daemon.owner ?? "-"}`,
+					`  ${t("restarts: {count} (policy: {policy})", {
+						count: daemon.restartCount,
+						policy: result.spec.restart,
+					})}`,
+				);
+				console.log(
+					`  ${t("pty: {pty}  persist: {persist}  detached: {detached}  owner: {owner}", {
+						pty: result.spec.pty,
+						persist: result.spec.persist,
+						detached: result.spec.detached,
+						owner: daemon.owner ?? "-",
+					})}`,
 				);
 				return;
 			}
@@ -189,13 +259,13 @@ async function runAction(cmd: PsCommandArgs, name: string): Promise<void> {
 				const timeoutMs = cmd.action === "kill" ? KILL_GRACE_MS : Math.round((cmd.flags.timeout ?? 5) * 1000);
 				const result = await client.request({ op: "stop", name, timeoutMs });
 				if (result.op !== "stop") throw new Error(`Unexpected broker response ${result.op}`);
-				printDaemonResult(cmd, cmd.action === "kill" ? "Killed" : "Stopped", result.daemon);
+				printDaemonResult(cmd, cmd.action === "kill" ? t("Killed") : t("Stopped"), result.daemon);
 				return;
 			}
 			case "restart": {
 				const result = await client.request({ op: "restart", name });
 				if (result.op !== "restart") throw new Error(`Unexpected broker response ${result.op}`);
-				printDaemonResult(cmd, "Restarted", result.daemon);
+				printDaemonResult(cmd, t("Restarted"), result.daemon);
 				return;
 			}
 			default:
@@ -209,7 +279,7 @@ async function runAction(cmd: PsCommandArgs, name: string): Promise<void> {
 
 function printDaemonResult(cmd: PsCommandArgs, verb: string, daemon: DaemonSnapshot): void {
 	if (cmd.flags.json) console.log(JSON.stringify(daemon, null, 2));
-	else console.log(`${verb} ${daemonLabel(daemon)}`);
+	else console.log(t("{verb} {daemon}", { verb, daemon: daemonLabel(daemon) }));
 }
 
 async function runLogs(cmd: PsCommandArgs, client: DaemonBrokerClient, name: string): Promise<void> {

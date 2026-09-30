@@ -119,11 +119,12 @@ describeIfPwsh("PwshTool", () => {
 		expect(result.details?.meta?.truncation).toBeUndefined();
 		expect(result.details?.meta?.limits?.columnTruncated).toEqual({
 			maxColumn: 32,
+			unit: "bytes",
 			artifactId: "41",
 		});
 
 		const text = textOutput(result);
-		expect(text).toContain("Some lines truncated to 32 chars. Read artifact://41 for full output");
+		expect(text).toContain("Some lines truncated to 32 bytes. Read artifact://41 for full output");
 		expect(text).not.toContain("Showing lines");
 		expect(text).not.toContain("limit");
 		expect(text).not.toContain(wideLine);

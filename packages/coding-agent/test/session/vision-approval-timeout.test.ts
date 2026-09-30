@@ -79,7 +79,7 @@ describe("vision approval timeout", () => {
 		tempDir = path.join(os.tmpdir(), `pi-vision-approval-${Snowflake.next()}`);
 		await fs.mkdir(tempDir, { recursive: true });
 		authStorage = await AuthStorage.create(path.join(tempDir, "auth.db"));
-		authStorage.setRuntimeApiKey("openai", "test-key");
+		authStorage.keys.setRuntime("openai", "test-key");
 	});
 
 	afterEach(async () => {

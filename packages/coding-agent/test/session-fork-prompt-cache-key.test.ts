@@ -52,7 +52,7 @@ async function createMinimalSession(
 	options: CreateAgentSessionOptions,
 ): Promise<{ session: AgentSession; authStorage: AuthStorage }> {
 	const authStorage = await AuthStorage.create(tempDir.join("sdk-auth.db"));
-	authStorage.setRuntimeApiKey("openai", "test-key");
+	authStorage.keys.setRuntime("openai", "test-key");
 	const shouldSupplyModel = options.sessionManager?.getHeader()?.parentSession === undefined;
 	const result = await createAgentSession({
 		...options,
@@ -193,14 +193,19 @@ describe("provider prompt-cache key session affinity", () => {
 				authStorage?.close();
 			}
 		}
-	});
+		// Four full session boots (each with its own AgentSession, AuthStorage and
+		// model registry discovery over a fresh agent dir — ~1.2s per case) exceed
+		// bun's 5s default deadline, which encodes machine speed rather than the
+		// affinity contract asserted above. Match the project's own coding-agent
+		// invocation (`bun test ... --timeout=30000`) with an explicit deadline.
+	}, 30_000);
 
 	it("does not pre-pin parent prompt-cache affinity when a scoped model selects the startup route", async () => {
 		using tempDir = TempDir.createSync("@omp-prompt-cache-scoped-model-");
 		const source = await createSourceSessionFixture(tempDir, "parent-cache-session-scoped");
 		const forkedManager = await SessionManager.forkFrom(source.sourceFile, source.cwd, source.forkSessionDir);
 		const authStorage = await AuthStorage.create(tempDir.join("scoped-auth.db"));
-		authStorage.setRuntimeApiKey(OPENAI_TEST_MODEL.provider, "test-key");
+		authStorage.keys.setRuntime(OPENAI_TEST_MODEL.provider, "test-key");
 		try {
 			const modelRegistry = new ModelRegistry(authStorage, tempDir.join("models.yml"));
 			const parsed = parseArgs([

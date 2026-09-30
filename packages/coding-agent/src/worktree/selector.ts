@@ -1,3 +1,4 @@
+import { t } from "../i18n";
 import type { ManagedWorktreeListItem, ManagedWorktreeRecord, ManagedWorktreeState } from "./types";
 
 export type ManagedWorktreeAction = "switch" | "merge" | "branch" | "remove" | "restore" | "path";
@@ -18,7 +19,7 @@ const STATE_LABELS: Record<ManagedWorktreeState, string> = {
 };
 
 export function managedWorktreeStateLabel(state: ManagedWorktreeState): string {
-	return STATE_LABELS[state];
+	return t(STATE_LABELS[state]);
 }
 
 export function sortManagedWorktreeItems(items: readonly ManagedWorktreeListItem[]): ManagedWorktreeListItem[] {
@@ -32,29 +33,29 @@ export function actionsForManagedWorktree(
 	record: ManagedWorktreeRecord,
 	exists: boolean,
 ): ManagedWorktreeSelectableAction[] {
-	const missingReason = exists ? null : "Managed worktree directory is missing";
+	const missingReason = exists ? null : t("Managed worktree directory is missing");
 	const snapshotted = record.state === "snapshotted";
 	return [
-		{ action: "switch", label: "Switch", enabled: exists && !snapshotted, reason: missingReason },
-		{ action: "merge", label: "Apply locally", enabled: exists && !snapshotted, reason: missingReason },
+		{ action: "switch", label: t("Switch"), enabled: exists && !snapshotted, reason: missingReason },
+		{ action: "merge", label: t("Apply locally"), enabled: exists && !snapshotted, reason: missingReason },
 		{
 			action: "branch",
-			label: "Create branch",
+			label: t("Create branch"),
 			enabled: exists && record.detached,
-			reason: record.detached ? missingReason : "Managed worktree is already on a branch",
+			reason: record.detached ? missingReason : t("Managed worktree is already on a branch"),
 		},
 		{
 			action: "remove",
-			label: "Remove",
+			label: t("Remove"),
 			enabled: !snapshotted,
-			reason: snapshotted ? "Snapshot records must be cleaned with prune" : null,
+			reason: snapshotted ? t("Snapshot records must be cleaned with prune") : null,
 		},
 		{
 			action: "restore",
-			label: "Restore snapshot",
+			label: t("Restore snapshot"),
 			enabled: snapshotted && record.snapshotPath !== null,
-			reason: snapshotted ? null : "No restorable snapshot",
+			reason: snapshotted ? null : t("No restorable snapshot"),
 		},
-		{ action: "path", label: "Copy path", enabled: true, reason: null },
+		{ action: "path", label: t("Copy path"), enabled: true, reason: null },
 	];
 }

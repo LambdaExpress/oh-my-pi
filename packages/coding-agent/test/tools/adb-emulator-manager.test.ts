@@ -8,7 +8,8 @@ import type {
 	AndroidExecutableName,
 } from "../../src/adb/adb-executor";
 import { EmulatorManager, type EmulatorManagerDependencies } from "../../src/adb/emulator-manager";
-import { ToolAbortError, ToolError } from "../../src/tools/tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
+import { ToolAbortError } from "../../src/tools/tool-errors";
 
 const DEFAULT_AVD = "Medium Phone";
 const DEFAULT_SERIAL = "emulator-5588";

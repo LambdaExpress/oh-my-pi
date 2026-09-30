@@ -1,13 +1,10 @@
 import { type Agent, ThinkingLevel } from "@oh-my-pi/pi-agent-core";
 import type { Model, ProviderSessionState, ServiceTier, ServiceTierByFamily, ServiceTierFamily } from "@oh-my-pi/pi-ai";
+import { Effort, realizesPriorityServiceTier, resolveModelServiceTier, serviceTierFamily } from "@oh-my-pi/pi-ai";
 import {
 	clearAnthropicFastModeFallback,
-	Effort,
 	isAnthropicFastModeFallbackDisabled,
-	realizesPriorityServiceTier,
-	resolveModelServiceTier,
-	serviceTierFamily,
-} from "@oh-my-pi/pi-ai";
+} from "@oh-my-pi/pi-ai/providers/anthropic-state";
 import { isFireworksFastModelId } from "@oh-my-pi/pi-catalog/fireworks-model-id";
 import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
@@ -23,8 +20,9 @@ import {
 } from "../config/model-resolver";
 import { getKnownRoleIds } from "../config/model-roles";
 import type { Settings } from "../config/settings";
+import { containsMagicKeyword } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
 import { t } from "../i18n";
-import { containsUltrathink } from "../modes/ultrathink";
+import type { MagicKeywordId } from "../modes/magic-keywords";
 import {
 	AUTO_THINKING,
 	type ConfiguredThinkingLevel,
@@ -34,13 +32,16 @@ import {
 	resolveThinkingLevelForModel,
 	shouldDisableReasoning,
 	toReasoningEffort,
-} from "../thinking";
-import type { EditMode } from "../utils/edit-mode";
+} from "@oh-my-pi/pi-tui/thinking";
+import type { EditMode } from "@oh-my-pi/pi-tui/tools/edit";
 import type { AgentSessionEvent } from "./agent-session-events";
 import type { ModelCycleResult, ResolvedRoleModel, RoleModelCycle, RoleModelCycleResult } from "./agent-session-types";
 import { formatRoleModelValue, resolveRoleModelFull } from "./role-models";
 import { EPHEMERAL_MODEL_CHANGE_ROLE } from "./session-entries";
 import type { SessionManager } from "./session-manager";
+
+import { cfgDefaultThinkingLevel, cfgProvidersFireworksTier } from "./settings";
+import { cfgDisabledProviders, cfgEnabledModels } from "../config/model-settings";
 
 /** Capabilities borrowed from the owning AgentSession. */
 export interface ModelControlsHost {
@@ -57,7 +58,7 @@ export interface ModelControlsHost {
 	setModelWithProviderSessionReset(model: Model): Promise<void>;
 	clearActiveRetryFallback(): void;
 	clearInheritedProviderPromptCacheKey(): void;
-	magicKeywordEnabled(keyword: "orchestrate" | "ultrathink" | "workflow"): boolean;
+	magicKeywordEnabled(keyword: MagicKeywordId): boolean;
 	emit(event: AgentSessionEvent): void;
 	emitSessionEvent(event: AgentSessionEvent): Promise<void>;
 	emitNotice(level: "info" | "warning" | "error", message: string, source?: string): void;
@@ -134,9 +135,11 @@ export class ModelControls {
 		return this.#autoResolvedLevel;
 	}
 
-	/** Models explicitly scoped to the session's cycle command. */
+	/** Models explicitly scoped to the session's cycle command, minus currently disabled providers. */
 	get scopedModels(): ReadonlyArray<{ model: Model; thinkingLevel?: ThinkingLevel }> {
-		return this.#scopedModels;
+		const disabledProviders = cfgDisabledProviders.get(this.#host.settings);
+		if (disabledProviders.length === 0) return this.#scopedModels;
+		return this.#scopedModels.filter(scoped => !disabledProviders.includes(scoped.model.provider));
 	}
 
 	/**
@@ -300,7 +303,7 @@ export class ModelControls {
 	 * @returns The new model info, or undefined if only one model available
 	 */
 	async cycleModel(direction: "forward" | "backward" = "forward"): Promise<ModelCycleResult | undefined> {
-		if (this.#scopedModels.length > 0) {
+		if (this.scopedModels.length > 0) {
 			return this.#cycleScopedModel(direction);
 		}
 		return this.#cycleAvailableModel(direction);
@@ -402,7 +405,7 @@ export class ModelControls {
 		const apiKeysByProvider = new Map<string, string | undefined>();
 		const result: Array<{ model: Model; thinkingLevel?: ThinkingLevel }> = [];
 
-		for (const scoped of this.#scopedModels) {
+		for (const scoped of this.scopedModels) {
 			const provider = scoped.model.provider;
 			let apiKey: string | undefined;
 			if (apiKeysByProvider.has(provider)) {
@@ -483,7 +486,7 @@ export class ModelControls {
 	 */
 	getAvailableModels(): Model[] {
 		const all = this.#host.modelRegistry.getAvailable();
-		const patterns = this.#host.settings.get("enabledModels");
+		const patterns = cfgEnabledModels.get(this.#host.settings);
 		if (!patterns || patterns.length === 0) return all;
 		return filterAvailableModelsByEnabledPatterns(all, patterns, this.#host.settings);
 	}
@@ -520,7 +523,7 @@ export class ModelControls {
 			}
 			this.#applyThinkingLevelToAgent(provisional);
 			if (persist) {
-				this.#host.settings.set("defaultThinkingLevel", AUTO_THINKING);
+				cfgDefaultThinkingLevel.set(this.#host.settings, AUTO_THINKING);
 			}
 			const isChanging = !wasAuto || previousLevel !== provisional;
 			if (isChanging) {
@@ -549,7 +552,7 @@ export class ModelControls {
 			this.#host.clearInheritedProviderPromptCacheKey();
 			this.#host.sessionManager.appendThinkingLevelChange(effectiveLevel, effectiveLevel);
 			if (persist && effectiveLevel !== undefined && effectiveLevel !== ThinkingLevel.Off) {
-				this.#host.settings.set("defaultThinkingLevel", effectiveLevel);
+				cfgDefaultThinkingLevel.set(this.#host.settings, effectiveLevel);
 			}
 			this.#host.emit({ type: "thinking_level_changed", thinkingLevel: effectiveLevel });
 		}
@@ -605,7 +608,7 @@ export class ModelControls {
 		if (getSupportedEfforts(model).length === 0) return;
 
 		let resolved: Effort | undefined;
-		if (this.#host.magicKeywordEnabled("ultrathink") && containsUltrathink(promptText)) {
+		if (this.#host.magicKeywordEnabled("ultrathink") && containsMagicKeyword(promptText, "ultrathink")) {
 			// The user explicitly asked for maximum thinking; bypass the classifier
 			// (and the `providers.autoThinkingMaxEffort` ceiling) and jump straight
 			// to the highest supported level for this model.
@@ -704,7 +707,7 @@ export class ModelControls {
 	 */
 	effectiveServiceTier(model: Model | undefined = this.#model): ServiceTier | undefined {
 		if (model?.provider === "fireworks") {
-			return this.#host.settings.get("providers.fireworksTier") === "priority" && !isFireworksFastModelId(model.id)
+			return cfgProvidersFireworksTier.get(this.#host.settings) === "priority" && !isFireworksFastModelId(model.id)
 				? "priority"
 				: undefined;
 		}

@@ -1,5 +1,6 @@
 import * as path from "node:path";
 import type { CommitType, ConventionalAnalysis, NumstatEntry } from "../../commit/types";
+import { t } from "../../i18n";
 import type { CommitProposal } from "./state";
 
 const TEST_PATTERNS = ["/test/", "/tests/", "/__tests__/", "_test.", ".test.", ".spec.", "_spec."];
@@ -91,6 +92,6 @@ export function generateFallbackProposal(numstat: NumstatEntry[]): CommitProposa
 	return {
 		analysis,
 		summary,
-		warnings: ["Commit generated using fallback due to agent failure"],
+		warnings: [t("Commit generated using fallback due to agent failure")],
 	};
 }

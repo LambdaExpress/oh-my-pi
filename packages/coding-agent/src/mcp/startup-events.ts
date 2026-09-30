@@ -6,7 +6,7 @@ import {
 	shortenPath,
 	TRUNCATE_LENGTHS,
 	truncateToWidth,
-} from "../tools/render-utils";
+} from "@oh-my-pi/pi-tui/render/render-utils";
 
 export const MCP_CONNECTION_STATUS_EVENT_CHANNEL = "mcp:connection-status";
 
@@ -34,7 +34,7 @@ function sanitizeMcpStatusText(value: string, maxWidth: number): string {
 			.replace(/[\r\n]+/g, " ")
 			.trim(),
 	);
-	return truncateToWidth(text.length > 0 ? text : "(unnamed)", maxWidth);
+	return truncateToWidth(text.length > 0 ? text : t("(unnamed)"), maxWidth);
 }
 
 function sanitizeMcpServerName(serverName: string): string {

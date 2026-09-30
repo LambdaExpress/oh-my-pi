@@ -6,8 +6,8 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 import { GlobTool } from "../../src/tools/glob";
-import { applyListLimit } from "../../src/tools/list-limit";
-import { formatOutputNotice } from "../../src/tools/output-meta";
+import { applyListLimit } from "@oh-my-pi/pi-tui/tools/list-limit";
+import { formatOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 
 const manyItems = Array.from({ length: 6000 }, (_, i) => `item-${i}`);
 

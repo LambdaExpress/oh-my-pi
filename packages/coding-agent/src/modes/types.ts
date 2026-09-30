@@ -1,10 +1,11 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { CompactionOutcome } from "@oh-my-pi/pi-agent-core/compaction";
-import type { AssistantMessage, ImageContent, Message, Model, Usage, UsageReport } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, Model, Usage, UsageReport } from "@oh-my-pi/pi-ai";
 import type { Component, Container, EditorTheme, Loader, Spacer, Text, TUI } from "@oh-my-pi/pi-tui";
+import type { CollabController } from "../collab/controller";
 import type { CollabGuestLink } from "../collab/guest";
 import type { CollabHost } from "../collab/host";
-import type { KeybindingsManager } from "../config/keybindings";
+import type { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import type { Settings } from "../config/settings";
 import type {
 	AutocompleteProviderFactory,
@@ -21,34 +22,39 @@ import type { MCPManager } from "../mcp";
 import type { PlanApprovalDetails } from "../plan-mode/approved-plan";
 import type { AgentSession } from "../session/agent-session";
 import type { CompactMode } from "../session/compact-modes";
-import type { ContextInjectionItem } from "../session/context-injection";
+import type { ContextInjectionItem } from "@oh-my-pi/pi-tui/chat/context-injection";
 import type { ForeignSessionSource } from "../session/foreign-session-store";
 import type { HistoryStorage } from "../session/history-storage";
 import type { CustomMessage } from "../session/messages";
 import type { SessionContext } from "../session/session-context";
 import type { SessionManager } from "../session/session-manager";
 import type { ShakeMode } from "../session/shake-types";
-import type { ConfiguredThinkingLevel } from "../thinking";
+import type { DictationTarget } from "../stt";
+import type { SpaceHoldHandler } from "@oh-my-pi/pi-tui/space-hold";
+import type { ConfiguredThinkingLevel } from "@oh-my-pi/pi-tui/thinking";
 import type { LspStartupServerInfo } from "../tools";
 import type { EventBus } from "../utils/event-bus";
-import type { AssistantMessageComponent } from "./components/assistant-message";
-import type { BashExecutionComponent } from "./components/bash-execution";
-import type { CustomEditor } from "./components/custom-editor";
-import type { EvalExecutionComponent } from "./components/eval-execution";
-import type { HookEditorComponent } from "./components/hook-editor";
-import type { HookInputComponent } from "./components/hook-input";
-import type { HookSelectorComponent, HookSelectorOptions } from "./components/hook-selector";
+import type { TokenRateMeter } from "../utils/token-rate";
+import type { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import type { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
+import type { CustomEditor } from "@oh-my-pi/pi-tui/prompt/custom-editor";
+import type { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
+import type { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
+import type { HookInputComponent } from "@oh-my-pi/pi-tui/overlays/hook-input";
+import type { HookSelectorComponent, HookSelectorOptions } from "@oh-my-pi/pi-tui/overlays/hook-selector";
+import type { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
 import type { SshTransferHud } from "./components/ssh-transfer-hud";
-import type { StatusLineComponent } from "./components/status-line";
-import type { ToolExecutionHandle } from "./components/tool-execution";
-import type { TranscriptContainer } from "./components/transcript-container";
-import type { RecentSession } from "./components/welcome";
+import type { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
+import type { ToolExecutionHandle } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
+import type { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import type { RecentSession } from "@oh-my-pi/pi-tui/prompt/welcome";
 import type { EventController } from "./controllers/event-controller";
-import type { LoopConditionConfig } from "./loop-condition";
-import type { LoopLimitRuntime } from "./loop-limit";
+import type { LoopConditionConfig, LoopLimitRuntime } from "@oh-my-pi/pi-tui/status-line/loop";
 import type { OAuthManualInputManager } from "./oauth-manual-input";
-import type { Theme } from "./theme/theme";
-import type { CompletedRunCollapse } from "./utils/transcript-render-helpers";
+import type { Theme } from "@oh-my-pi/pi-tui/theme";
+import type { TodoItem, TodoPhase } from "@oh-my-pi/pi-tui/tools/todo";
+import type { CompletedRunCollapse } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
 
 export type PendingCustomSubmissionMessage<T = unknown> = Pick<
 	CustomMessage<T>,
@@ -57,6 +63,19 @@ export type PendingCustomSubmissionMessage<T = unknown> = Pick<
 
 export function userSubmissionSignature(text: string, imageCount: number): string {
 	return `${text}\u0000${imageCount}`;
+}
+
+/** Match a delivered user message with the optimistic row or queued submission it confirms. */
+export function userMessageSubmissionSignature(message: Extract<AgentMessage, { role: "user" }>): string {
+	let imageCount = 0;
+	if (typeof message.content !== "string") {
+		for (const block of message.content) {
+			if (block.type === "image" && typeof block.data === "string" && typeof block.mimeType === "string") {
+				imageCount++;
+			}
+		}
+	}
+	return userSubmissionSignature(textContent(message.content), imageCount);
 }
 
 export function customSubmissionSignature(message: Pick<CustomMessage, "customType" | "timestamp">): string {
@@ -94,23 +113,11 @@ export type SubmittedUserInput = {
 	started: boolean;
 };
 
-export type TodoStatus = "pending" | "in_progress" | "completed" | "abandoned" | "blocked";
-
-export type TodoItem = {
-	content: string;
-	status: TodoStatus;
-	details?: string;
-	notes?: string[];
-};
-
-export type TodoPhase = {
-	name: string;
-	tasks: TodoItem[];
-};
-
 export interface InteractiveModeInitOptions {
 	suppressWelcomeIntro?: boolean;
 	clearInitialTerminalHistory?: boolean;
+	/** Opt into hosting when the caller owns outer startup readiness and shutdown. */
+	autoStartCollab?: boolean;
 	/** Recent-session rows loaded by the prepaint composer while runtime modules initialized. */
 	recentSessions?: Promise<RecentSession[] | undefined>;
 }
@@ -164,7 +171,6 @@ export interface InteractiveModeContext {
 	statusLine: StatusLineComponent;
 	sshTransferHud: SshTransferHud;
 	syncComposerShape(): void;
-	syncEditorSpelling(): void;
 
 	// Session access
 	session: AgentSession;
@@ -188,8 +194,6 @@ export interface InteractiveModeContext {
 	resolveViewportClickCandidates(index: number): string[];
 	/** Flip the pinned jump list between its collapsed few and the full list. */
 	togglePinnedHudExpanded(): void;
-	/** Rebuild the pinned jump list for a `display.pinnedAgents` change. */
-	applyPinnedAgentsSetting(): void;
 	/** Point the inline hover band at a click-candidate id (or clear it). */
 	setClickHoverId(id: string | undefined): void;
 	/** Clear loader, transient HUD/pending containers, streaming state, and pending tools. */
@@ -200,6 +204,9 @@ export interface InteractiveModeContext {
 	historyStorage?: HistoryStorage;
 	mcpManager?: MCPManager;
 	lspServers?: LspStartupServerInfo[];
+	/** Owns hosting: manual `/collab`, `collab.autoStart`, and room rotation on session switch. */
+	collabController: CollabController;
+	/** Owned room; use {@link collabController}.host for current-session reuse and links. */
 	collabHost?: CollabHost;
 	collabGuest?: CollabGuestLink;
 	eventController: EventController;
@@ -243,6 +250,8 @@ export interface InteractiveModeContext {
 	 * thinking content.
 	 */
 	readonly effectiveHideThinkingBlock: boolean;
+	readonly assistantImagesVisible: boolean;
+	resolveAssistantMessageLinks(texts: readonly string[]): Promise<ReadonlyMap<string, string>>;
 	/** Whether this visible session has produced thinking content the user can reveal. */
 	readonly hasDisplayableThinkingContent: boolean;
 	/** Record a message whose thinking content makes Ctrl+T meaningful even at thinking level "off"; returns true on first observation. */
@@ -265,6 +274,14 @@ export interface InteractiveModeContext {
 	 * Reseeded by `renderSessionContext` on every rebuild/session switch.
 	 */
 	lastAssistantUsage: Usage | undefined;
+	/**
+	 * Remembers which (requested → served) model substitutions this transcript
+	 * has already flagged, so the served-model divider appears once per pair.
+	 * Replaced by `renderSessionContext` on every rebuild/session switch.
+	 */
+	servedModelTracker: ServedModelTracker;
+	/** Live gen tok/s for the working row; fed by streamed deltas, reset per run. */
+	tokenRate: TokenRateMeter;
 	loadingAnimation: Loader | undefined;
 	autoCompactionLoader: Loader | undefined;
 	retryLoader: Loader | undefined;
@@ -282,6 +299,10 @@ export interface InteractiveModeContext {
 	/** True once `shutdown()` has started. Read-only from the context;
 	 *  controllers use this to skip work that races with teardown. */
 	readonly isShuttingDown: boolean;
+	/** True once a graceful `shutdown()` teardown failed at the dispose stage,
+	 *  so the next single Ctrl+C must escape (force-quit) rather than re-run the
+	 *  doomed teardown or merely clear the editor (#12238). */
+	readonly teardownFailed: boolean;
 	hookSelector: HookSelectorComponent | undefined;
 	hookInput: HookInputComponent | undefined;
 	hookEditor: HookEditorComponent | undefined;
@@ -298,6 +319,8 @@ export interface InteractiveModeContext {
 	shutdown(): Promise<void>;
 	/** Tear down like {@link shutdown}, then relaunch the CLI with the original launch flags, resuming this session. */
 	restart(): Promise<void>;
+	/** Request graceful shutdown at the next fully settled boundary, including background turns. */
+	requestShutdown(): void;
 	checkShutdownRequested(): Promise<void>;
 
 	// Extension UI integration
@@ -320,19 +343,27 @@ export interface InteractiveModeContext {
 	present(content: Component | readonly Component[]): void;
 	/**
 	 * Surface one context-injection notice at the transcript tail. A notice that
-	 * arrives before the transcript's first user message belongs to session
-	 * startup — the initial context assembly of a fresh launch, `/new`, or a
-	 * resume — and is held back until the user submits their first prompt, so an
-	 * empty transcript does not open with an `Inject` block.
+	 * arrives before the user submits anything belongs to session startup — the
+	 * initial context assembly of a fresh launch, `/new`, or a resume — and is
+	 * held back until the user submits their first prompt. An empty transcript
+	 * does not open with an `Inject` block, and a resumed one does not show the
+	 * context the resumed process assembled before the user has spoken.
 	 */
 	presentInjectNotice(items: readonly ContextInjectionItem[]): void;
 	/**
-	 * Publish the injection notice held for the transcript's first user message.
-	 * Called once the run gate is in place behind that message, so the notice
-	 * lands inside the run's span and a completed-run collapse hides it with the
-	 * rest of the span.
+	 * Publish the injection notice held for the user's submission, and record
+	 * this transcript as one the user has submitted to. Called once the run gate
+	 * is in place behind that message, so the notice lands inside the run's span
+	 * and a completed-run collapse hides it with the rest of the span.
 	 */
 	flushDeferredInjectNotice(): void;
+	/**
+	 * Record that the user acted in this transcript without publishing anything:
+	 * used when they run a command themselves, so the injection notices that
+	 * command's context re-derivation produces appear at once instead of waiting
+	 * for the next prompt.
+	 */
+	markUserSubmission(): void;
 	/**
 	 * Mount command output immediately while idle, or defer it until the active
 	 * agent turn ends so a growing live block cannot push duplicate rows into
@@ -437,18 +468,16 @@ export interface InteractiveModeContext {
 	 * `renderInitialMessages({ clearTerminalHistory: true })` replay.
 	 */
 	truncateTranscriptFromMessage(message: AgentMessage): boolean;
-	getUserMessageText(message: Message): string;
 	findLastAssistantMessage(): AssistantMessage | undefined;
 	extractAssistantText(message: AssistantMessage): string;
 	/** Refresh the running-subagents status badge from the active local or collab registry. */
 	syncRunningSubagentBadge(): void;
 	updateEditorBorderColor(): void;
-	/**
-	 * Re-apply `tui.vimMode` to the live editor and refresh the mode chrome (border, status-line
-	 * segment, cursor shape). Lets the setting take effect without restarting the session.
-	 */
-	applyVimModeSetting(): void;
-	rebuildChatFromMessages(options?: { reuseSettledComponents?: boolean }): void;
+	/** Detect whether a request was replayed during this rebuild, so live delivery does not append it twice. */
+	rebuildChatFromMessages(options?: {
+		reuseSettledComponents?: boolean;
+		detectMessage?: AgentMessage;
+	}): boolean | void;
 	/** Record a display-only projection for one completed request span. */
 	recordCompletedRunCollapse(collapse: CompletedRunCollapse): boolean;
 	/** Recover completed request spans from the persisted transcript. */
@@ -456,7 +485,7 @@ export interface InteractiveModeContext {
 	setTodos(todos: TodoItem[] | TodoPhase[]): void;
 	reloadTodos(source?: AgentSession): Promise<void>;
 	toggleTodoExpansion(): void;
-
+	setTodoExpanded(expanded: boolean): void;
 	// Command handling
 	handleExportCommand(text: string): Promise<void>;
 	handleTraceCommand(): Promise<void>;
@@ -466,7 +495,7 @@ export interface InteractiveModeContext {
 	handleAdvisorStatusCommand(): Promise<void>;
 	handleJobsCommand(): Promise<void>;
 	handleUsageCommand(reports?: UsageReport[] | null): Promise<void>;
-	handleChangelogCommand(showFull?: boolean): Promise<void>;
+	handleChangelogCommand(args?: string): Promise<void>;
 	handleHotkeysCommand(): void;
 	handleToolsCommand(): void;
 	handleContextCommand(): void;
@@ -476,7 +505,7 @@ export interface InteractiveModeContext {
 	handleClearCommand(): Promise<void>;
 	handleFreshCommand(): Promise<void>;
 	handleResetContextCommand(): Promise<void>;
-	handleDropCommand(): Promise<void>;
+	handleDeleteCommand(): Promise<void>;
 	handleForkCommand(): Promise<void>;
 	handleBashCommand(command: string, excludeFromContext?: boolean): Promise<void>;
 	handlePythonCommand(code: string, excludeFromContext?: boolean): Promise<void>;
@@ -496,8 +525,13 @@ export interface InteractiveModeContext {
 	handleRenameCommand(title: string): Promise<void>;
 	handleMemoryCommand(text: string): Promise<void>;
 	handleSTTToggle(): Promise<void>;
+	/** Space-bar push-to-talk into `target`: a recognized hold starts dictation and its release stops
+	 *  it. Gated on `stt.enabled`, so a disabled STT leaves the space bar typing normally. */
+	dictationSpaceHold(target: DictationTarget): SpaceHoldHandler;
 	/** Start or stop the Codex-backed realtime voice session. */
 	handleLiveCommand(): Promise<void>;
+	/** Start a `/record` screen capture, or stop the running one. */
+	toggleRecording(): Promise<void>;
 	executeCompaction(
 		customInstructionsOrOptions?: string | CompactOptions,
 		isAuto?: boolean,
@@ -592,6 +626,7 @@ export interface InteractiveModeContext {
 	handleGuidedGoalCommand(rest?: string, input?: Pick<SubmittedUserInput, "images" | "imageLinks">): Promise<boolean>;
 	handleLoopCommand(args?: string): Promise<string | undefined>;
 	setLoopPrompt(prompt: string): void;
+	armLoopAutoSubmit(): void;
 	disableLoopMode(message?: string): void;
 	cancelGoalContinuation(): void;
 	disableGoalMode(message?: string): void;

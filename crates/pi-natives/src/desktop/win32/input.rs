@@ -611,16 +611,16 @@ mod foreground {
 	impl Drop for ForegroundGuard {
 		fn drop(&mut self) {
 			if !self.previous.is_null() && self.previous != self.target {
-				// SAFETY: restoring the previously observed HWND is best-effort; Win32
-				// validates it.
+				// SAFETY: restoring the previously observed HWND is best-effort;
+				// Win32 validates it.
 				unsafe { SetForegroundWindow(self.previous) };
 			}
 		}
 	}
 
 	fn send(event: INPUT) -> CoreResult<()> {
-		// SAFETY: event points to one fully initialized INPUT copied synchronously by
-		// Win32.
+		// SAFETY: event points to one fully initialized INPUT copied
+		// synchronously by Win32.
 		let sent = unsafe { SendInput(1, &event, size_of::<INPUT>() as i32) };
 		if sent == 1 {
 			Ok(())

@@ -6,6 +6,7 @@ import { AuthStorage, SqliteAuthCredentialStore } from "@oh-my-pi/pi-ai";
 import { type AuthBrokerServerHandle, startAuthBroker } from "@oh-my-pi/pi-ai/auth-broker";
 import { runAuthBrokerCommand } from "@oh-my-pi/pi-coding-agent/cli/auth-broker-cli";
 import { getAgentDbPath, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../src/i18n";
 
 const TEAM_ORG = "org-team-1111";
 
@@ -37,6 +38,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 	const savedEnv: Record<string, string | undefined> = {};
 
 	beforeEach(async () => {
+		setLocale("en"); // Assertions below match English CLI output.
 		savedEnv.OMP_AUTH_BROKER_URL = process.env.OMP_AUTH_BROKER_URL;
 		savedEnv.OMP_AUTH_BROKER_TOKEN = process.env.OMP_AUTH_BROKER_TOKEN;
 		agentDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-migrate-client-"));
@@ -45,7 +47,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 
 		brokerStore = await SqliteAuthCredentialStore.open(path.join(brokerAgentDir, "agent.db"));
 		brokerStorage = new AuthStorage(brokerStore);
-		await brokerStorage.reload();
+		await brokerStorage.credentials.reload();
 		handle = startAuthBroker({
 			storage: brokerStorage,
 			bind: "127.0.0.1:0",
@@ -57,6 +59,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 	});
 
 	afterEach(async () => {
+		setLocale(null);
 		await handle?.close();
 		brokerStorage?.close();
 		brokerStore?.close();
@@ -73,7 +76,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 		// is the only identity the broker snapshot can echo back.
 		const localStore = await SqliteAuthCredentialStore.open(getAgentDbPath());
 		try {
-			localStore.upsertAuthCredentialForProvider("anthropic", {
+			await localStore.upsertAuthCredential("anthropic", {
 				type: "oauth",
 				access: "access-local",
 				refresh: "refresh-local-stale",
@@ -93,7 +96,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 
 		// The broker rotates the token after migration — its copy is now newer
 		// than the local one.
-		brokerStore!.upsertAuthCredentialForProvider("anthropic", {
+		await brokerStore!.upsertAuthCredential("anthropic", {
 			type: "oauth",
 			access: "access-rotated",
 			refresh: "refresh-rotated",
@@ -101,7 +104,7 @@ describe("auth-broker migrate (org-only dedupe)", () => {
 			orgId: TEAM_ORG,
 			orgName: "Team",
 		});
-		await brokerStorage!.reload();
+		await brokerStorage!.credentials.reload();
 
 		// Rerun: the org-only row must be recognized as already migrated, not
 		// re-uploaded (which would clobber the broker's newer refresh token).

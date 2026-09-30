@@ -6,8 +6,8 @@
  * no-ops and direct session access.
  */
 
+import type { CollabStatus } from "@oh-my-pi/pi-tui/status-line/types";
 import type { Settings } from "../config/settings";
-import type { CollabStatus } from "../modes/components/status-line/types";
 import type { AgentSession } from "../session/agent-session";
 import type { SessionManager } from "../session/session-manager";
 import type { EventBus } from "../utils/event-bus";

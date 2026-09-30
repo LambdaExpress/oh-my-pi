@@ -1,12 +1,17 @@
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { Message } from "@oh-my-pi/pi-ai";
-import { getSessionsDir, logger, parseJsonlLenient, toError } from "@oh-my-pi/pi-utils";
+import { textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
+import { getSessionsDir } from "@oh-my-pi/pi-utils/dirs";
+import * as logger from "@oh-my-pi/pi-utils/logger";
 import { LRUCache } from "@oh-my-pi/pi-utils/lru";
+import { parseJsonlLenient } from "@oh-my-pi/pi-utils/stream";
+import { toError } from "@oh-my-pi/pi-utils/type-guards";
 import { t } from "../i18n";
 import { computeDefaultSessionDir } from "./session-paths";
 import { FileSessionStorage, type SessionStorage, type SessionStorageStat } from "./session-storage";
-import { lookupSessionTitle, recordSessionTitle } from "./title-index";
+import { lookupSessionTitle, recordSessionTitle } from "./session-index";
 
 /**
  * Coarse lifecycle status of a session, derived from its last persisted message.
@@ -35,6 +40,8 @@ export interface SessionInfo {
 	created: Date;
 	modified: Date;
 	messageCount: number;
+	/** Persisted assistant turns; zero means the agent never replied (0-turn session). */
+	assistantTurns?: number;
 	/** File size in bytes on disk; used for compact list rendering. */
 	size: number;
 	firstMessage: string;
@@ -122,10 +129,10 @@ function formatTimeAgo(date: Date): string {
 	const diffHours = Math.floor(diffMs / 3600000);
 	const diffDays = Math.floor(diffMs / 86400000);
 
-	if (diffMins < 1) return "just now";
-	if (diffMins < 60) return `${diffMins}m ago`;
-	if (diffHours < 24) return `${diffHours}h ago`;
-	if (diffDays < 7) return `${diffDays}d ago`;
+	if (diffMins < 1) return t("just now");
+	if (diffMins < 60) return t("{count}m ago", { count: diffMins });
+	if (diffHours < 24) return t("{count}h ago", { count: diffHours });
+	if (diffDays < 7) return t("{count}d ago", { count: diffDays });
 	return date.toLocaleDateString();
 }
 
@@ -145,15 +152,6 @@ function sessionDisplayName(info: SessionInfo): string {
 	const date = new Date(ts);
 	const time = date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 	return `${t("Untitled")} · ${time}`;
-}
-
-function extractTextFromContent(content: Message["content"]): string {
-	if (typeof content === "string") return content;
-	const text: string[] = [];
-	for (const block of content) {
-		if (block.type === "text") text.push(block.text);
-	}
-	return text.join(" ");
 }
 
 /**
@@ -272,19 +270,29 @@ function extractStringProperty(source: string, name: string, startIndex = 0): st
 	return decodeJsonStringFragment(source.slice(valueStart));
 }
 
-function countMessageMarkers(content: string): number {
+function countRoleMarkers(content: string, role: "assistant" | "user" | "message"): number {
+	const key = role === "message" ? '"type"' : '"role"';
+	const want = role === "message" ? "message" : role;
 	let count = 0;
 	let index = 0;
 	while (index < content.length) {
-		const typeIndex = content.indexOf('"type"', index);
-		if (typeIndex === -1) break;
-		const colonIndex = content.indexOf(":", typeIndex + 6);
+		const keyIndex = content.indexOf(key, index);
+		if (keyIndex === -1) break;
+		const colonIndex = content.indexOf(":", keyIndex + key.length);
 		if (colonIndex === -1) break;
-		const type = extractStringProperty(content, "type", typeIndex);
-		if (type === "message") count++;
+		const value = extractStringProperty(content, role === "message" ? "type" : "role", keyIndex);
+		if (value === want) count++;
 		index = colonIndex + 1;
 	}
 	return count;
+}
+
+function countMessageMarkers(content: string): number {
+	return countRoleMarkers(content, "message");
+}
+
+function countAssistantMarkers(content: string): number {
+	return countRoleMarkers(content, "assistant");
 }
 
 function extractFirstDisplayMessageFromPrefix(content: string): string | undefined {
@@ -415,10 +423,11 @@ async function scanSessionFile(
 	file: string,
 	storage: SessionStorage,
 	withStatus: boolean,
+	knownStat?: SessionStorageStat,
 ): Promise<SessionInfo | undefined> {
 	let stat: SessionStorageStat;
 	try {
-		stat = storage.statSync(file);
+		stat = knownStat ?? storage.statSync(file);
 	} catch {
 		// Missing/unstatable file: no stat identity to cache under.
 		return undefined;
@@ -444,6 +453,7 @@ async function scanSessionFile(
 		}
 
 		let parsedMessageCount = 0;
+		let assistantTurns = 0;
 		let firstMessage = "";
 		const allMessages: string[] = [];
 		let shortSummary: string | undefined;
@@ -457,15 +467,16 @@ async function scanSessionFile(
 
 			if (entry.type === "message" && entry.message) {
 				parsedMessageCount++;
+				if (entry.message.role === "assistant") assistantTurns++;
 
 				if (entry.message.role === "user" || entry.message.role === "assistant") {
-					const textContent = extractTextFromContent(entry.message.content);
+					const messageText = textContent(entry.message.content, " ");
 
-					if (textContent) {
-						allMessages.push(textContent);
+					if (messageText) {
+						allMessages.push(messageText);
 
 						if (!firstMessage && entry.message.role === "user") {
-							firstMessage = textContent;
+							firstMessage = messageText;
 						}
 					}
 				}
@@ -474,6 +485,18 @@ async function scanSessionFile(
 
 		firstMessage ||= extractFirstDisplayMessageFromPrefix(content) ?? "";
 		const messageCount = Math.max(parsedMessageCount, countMessageMarkers(content));
+		// Either bounded window may hold the only copy of an assistant record,
+		// and neither may: a >prefix record before a >suffix tail leaves the
+		// middle unexamined. When both windows miss, ask the backend for a full
+		// line-boundary scan rather than trusting the gap.
+		assistantTurns = Math.max(assistantTurns, countAssistantMarkers(content), countAssistantMarkers(suffix));
+		if (assistantTurns === 0 && storage.hasAssistantTurn) {
+			try {
+				if (await storage.hasAssistantTurn(file)) assistantTurns = 1;
+			} catch {
+				// Backend unreadable: keep the bounded-window evidence.
+			}
+		}
 		const info: SessionInfo = {
 			path: file,
 			id: header.id,
@@ -483,6 +506,7 @@ async function scanSessionFile(
 			created: new Date(header.timestamp ?? ""),
 			modified: mtime,
 			messageCount,
+			assistantTurns,
 			size,
 			firstMessage: firstMessage || "(no messages)",
 			allMessagesText: allMessages.length > 0 ? allMessages.join(" ") : firstMessage,
@@ -657,6 +681,42 @@ export async function listAllSessions(
 		return [];
 	}
 }
+/**
+ * True when a scanned session is a 0-turn stub with no display name: the tail
+ * lifecycle shows no assistant activity (pending user-only or unscannable)
+ * and neither a title nor a first prompt worth showing. Covers header-only
+ * records (`newSession()` boundaries, `ensureOnDisk()` stubs, drafts) and
+ * user-only sessions whose prompt text never made the prefix scan. A title or
+ * first prompt is user intent worth resuming, so named 0-turn sessions stay
+ * discoverable. The tail — not the 4 KB prefix — decides answered-ness, so a
+ * transcript whose first assistant record starts past the prefix is never
+ * elided. The picker and `--continue` skip these; every other consumer (GC,
+ * ACP, `resolveResumableSession`) keeps the unfiltered scan.
+ */
+export function isEmptySession(session: SessionInfo): boolean {
+	if (session.status !== undefined && session.status !== "pending" && session.status !== "unknown") return false;
+	if ((session.assistantTurns ?? 1) > 0) return false;
+	if (sanitizeSessionName(session.title)) return false;
+	if (sanitizeSessionName(session.firstMessage === "(no messages)" ? undefined : session.firstMessage)) return false;
+	return true;
+}
+
+/** Picker-facing view of a session list: empties dropped, pinned sessions kept. */
+export function filterSessionsForPicker(sessions: SessionInfo[], pinnedIds: ReadonlySet<string>): SessionInfo[] {
+	return sessions.filter(session => pinnedIds.has(session.id) || !isEmptySession(session));
+}
+
+/** Most recent session with resumable content, skipping 0-turn empties. Exported for testing. */
+export async function findMostRecentNonEmptySession(
+	sessionDir: string,
+	storage: SessionStorage = new FileSessionStorage(),
+): Promise<string | null> {
+	// Status on: answered-ness comes from the tail lifecycle, not the 4 KB
+	// prefix, so a transcript whose first assistant record starts past the
+	// prefix is never skipped.
+	const sessions = await scanSessionDir(sessionDir, storage, true);
+	return sessions.find(session => !isEmptySession(session))?.path ?? null;
+}
 
 /** Exported for testing */
 export async function findMostRecentSession(
@@ -693,16 +753,35 @@ export async function getRecentSessions(
 ): Promise<RecentSessionInfo[]> {
 	let files: string[];
 	try {
-		files = storage.listFilesSync(sessionDir, "*.jsonl");
+		files =
+			storage instanceof FileSessionStorage
+				? await Array.fromAsync(new Bun.Glob("*.jsonl").scan(sessionDir), name => path.join(sessionDir, name))
+				: storage.listFilesSync(sessionDir, "*.jsonl");
 	} catch {
 		return [];
 	}
 	const byMtime: Array<{ file: string; stat: SessionStorageStat }> = [];
-	for (const file of files) {
-		try {
-			byMtime.push({ file, stat: storage.statSync(file) });
-		} catch {
-			// Vanished between glob and stat; skip.
+	if (storage instanceof FileSessionStorage) {
+		const stats = await Promise.all(
+			files.map(async file => {
+				try {
+					return { file, stat: await fs.promises.stat(file) };
+				} catch {
+					// Vanished between discovery and stat; skip.
+					return undefined;
+				}
+			}),
+		);
+		for (const entry of stats) {
+			if (entry) byMtime.push(entry);
+		}
+	} else {
+		for (const file of files) {
+			try {
+				byMtime.push({ file, stat: storage.statSync(file) });
+			} catch {
+				// Vanished between discovery and stat; skip.
+			}
 		}
 	}
 	byMtime.sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
@@ -719,8 +798,8 @@ export async function getRecentSessions(
 			recent.push({ path: file, name: indexed, timeAgo: formatTimeAgo(stat.mtime) });
 			continue;
 		}
-		const info = await scanSessionFile(file, storage, false);
-		if (!info) continue;
+		const info = await scanSessionFile(file, storage, true, stat);
+		if (!info || isEmptySession(info)) continue;
 		const title = sanitizeSessionName(info.title);
 		if (useIndex && title && info.id) recordSessionTitle(info.id, title);
 		recent.push({ path: file, name: sessionDisplayName(info), timeAgo: formatTimeAgo(info.modified) });

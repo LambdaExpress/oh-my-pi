@@ -1,5 +1,5 @@
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, ImageContent, Message, Usage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { getStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { type Component, Spacer, Text, TruncatedText } from "@oh-my-pi/pi-tui";
 import { APP_NAME, logger } from "@oh-my-pi/pi-utils";
@@ -7,45 +7,43 @@ import type { AdvisorMessageDetails } from "../../advisor";
 import { COLLAB_PROMPT_MESSAGE_TYPE, type CollabPromptDetails } from "../../collab/protocol";
 import { settings } from "../../config/settings";
 import { t } from "../../i18n";
-import { createAdvisorMessageCard } from "../../modes/components/advisor-message";
-import { AssistantMessageComponent } from "../../modes/components/assistant-message";
-import { createBackgroundTanDispatchBlock } from "../../modes/components/background-tan-message";
-import { BashExecutionComponent } from "../../modes/components/bash-execution";
-import { detectCacheInvalidation } from "../../modes/components/cache-invalidation-marker";
-import { CollabPromptMessageComponent } from "../../modes/components/collab-prompt-message";
+import { createAdvisorMessageCard } from "@oh-my-pi/pi-tui/chat/advisor-message";
+import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
+import { createBackgroundTanDispatchBlock } from "@oh-my-pi/pi-tui/chat/background-tan-message";
+import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
+import { detectCacheInvalidation } from "@oh-my-pi/pi-tui/chat/cache-invalidation-marker";
+import { ServedModelTracker } from "@oh-my-pi/pi-tui/chat/served-model-marker";
+import { CollabPromptMessageComponent } from "@oh-my-pi/pi-tui/chat/collab-prompt-message";
 import {
 	BranchSummaryMessageComponent,
 	CompactionSummaryMessageComponent,
 	createHandoffSummaryMessageComponent,
-} from "../../modes/components/compaction-summary-message";
-import { CustomMessageComponent } from "../../modes/components/custom-message";
-import { DynamicBorder } from "../../modes/components/dynamic-border";
-import { EvalExecutionComponent } from "../../modes/components/eval-execution";
+} from "@oh-my-pi/pi-tui/chat/compaction-summary-message";
+import { CustomMessageComponent } from "@oh-my-pi/pi-tui/chat/custom-message";
+import { DynamicBorder } from "@oh-my-pi/pi-tui/chrome/dynamic-border";
+import { EvalExecutionComponent } from "@oh-my-pi/pi-tui/chat/eval-execution";
 import {
 	type LateDiagnosticsFile,
 	LateDiagnosticsMessageComponent,
-} from "../../modes/components/late-diagnostics-message";
+} from "@oh-my-pi/pi-tui/chat/late-diagnostics-message";
 import {
 	groupedReadUsageCallIds,
 	ReadToolGroupComponent,
-	readArgsCollapseIntoGroup,
-} from "../../modes/components/read-tool-group";
-import { SkillMessageComponent } from "../../modes/components/skill-message";
-import { InjectNoticeComponent } from "../../modes/components/inject-notice";
-import { StrippedToolCallsPlaceholder } from "../../modes/components/stripped-tool-calls-placeholder";
-import { ToolActivityContainer } from "../../modes/components/tool-activity";
-import {
-	ToolExecutionComponent,
-	type ToolExecutionHandle,
-	toolRenderName,
-} from "../../modes/components/tool-execution";
-import { TranscriptBlock, TranscriptContainer } from "../../modes/components/transcript-container";
-import { createUsageRowBlock, turnElapsedMs } from "../../modes/components/usage-row";
-import { UserMessageComponent } from "../../modes/components/user-message";
+	readTranscriptShape,
+} from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import { SkillMessageComponent } from "@oh-my-pi/pi-tui/chat/skill-message";
+import { InjectNoticeComponent } from "@oh-my-pi/pi-tui/chat/inject-notice";
+import { StrippedToolCallsPlaceholder } from "@oh-my-pi/pi-tui/chat/stripped-tool-calls-placeholder";
+import { textContent } from "@oh-my-pi/pi-tui/chat/transcript-entry";
+import { ToolActivityContainer } from "@oh-my-pi/pi-tui/chrome/tool-activity";
+import { ToolExecutionComponent, type ToolExecutionHandle, toolRenderName } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { TranscriptBlock, TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
+import { createUsageRowBlock, turnElapsedMs } from "@oh-my-pi/pi-tui/overlays/usage-row";
+import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
 import { decodeStreamedToolArgs, streamingStringKeysForTool } from "../../modes/controllers/tool-args-reveal";
-import { materializeImageReferenceLinksSync } from "../../modes/image-references";
-import { videoPreviewSource } from "../../utils/video";
-import { theme } from "../../modes/theme/theme";
+import { materializeImageReferenceLinksSync } from "@oh-my-pi/pi-tui/prompt/image-references";
+import { imageAttachmentSource } from "@oh-my-pi/pi-tui/prompt/image-source";
+import { theme } from "@oh-my-pi/pi-tui/theme";
 import type {
 	CompactionQueuedMessage,
 	InteractiveModeContext,
@@ -56,7 +54,7 @@ import {
 	type ContextInjectionItem,
 	CONTEXT_INJECTION_MESSAGE_TYPE,
 	contextInjectionItemsFromMessage,
-} from "../../session/context-injection";
+} from "@oh-my-pi/pi-tui/chat/context-injection";
 import { LAUNCH_COMPLETION_MESSAGE_TYPE } from "../../session/launch-completion";
 import {
 	BACKGROUND_TAN_DISPATCH_MESSAGE_TYPE,
@@ -67,13 +65,17 @@ import {
 	type SkillPromptDetails,
 } from "../../session/messages";
 import type { SessionContext, StrippedToolCallsMarker } from "../../session/session-context";
-import { replaceTabs } from "../../tools/render-utils";
+// Tool cards for the coding-agent-only tools (`adb`, `pwsh`, `ssh`,
+// `ssh_session`, `ssh_transfer`) render through the renderers registered here;
+// pi-tui owns the registry, not the renderers.
+import "../../tools/local-renderers";
+import { replaceTabs } from "@oh-my-pi/pi-tui/render/render-utils";
 import { buildSkillCommandPrompt, invokeSkillCommandFromText, isKnownSkillCommand } from "../skill-command";
 import {
 	createAssistantMessageComponent,
 	getAssistantMessageLinkTargets,
 	refreshAssistantMessageLinkTargets,
-} from "./interactive-context-helpers";
+} from "@oh-my-pi/pi-tui/prompt/interactive-context-helpers";
 import {
 	assistantHasVisibleContent,
 	assistantUsageIsBilled,
@@ -86,9 +88,18 @@ import {
 	resolveAssistantErrorPresentation,
 	shouldCollapseCompactedHistoryForDisplay,
 	splitAssistantMessageToolTimeline,
-} from "./transcript-render-helpers";
+} from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
 
-type TextBlock = { type: "text"; text: string };
+import {
+	cfgComposerRecallClearedDrafts,
+	cfgDisplayCacheMissMarker,
+	cfgDisplayCollapseCompacted,
+	cfgDisplayShowTokenUsage,
+	cfgDisplayShowTurnTime,
+	cfgTerminalShowImages,
+} from "../settings";
+import { cfgReadToolResultPreview } from "../../tools/settings";
+
 const TRANSCRIPT_RENDER_CHUNK_MESSAGES = 32;
 const TRANSCRIPT_RENDER_CHUNK_MS = 8;
 /**
@@ -137,37 +148,34 @@ function imageLinksForMessage(
 			content.type === "image" && typeof content.data === "string" && typeof content.mimeType === "string",
 	);
 	const materialized = materializeImageReferenceLinksSync(images, putBlobSync);
-	return images.map((image, index) => videoPreviewSource(image) ?? materialized?.[index]);
+	return images.map((image, index) => imageAttachmentSource(image)?.path ?? materialized?.[index]);
 }
 
 export class UiHelpers {
 	constructor(private ctx: InteractiveModeContext) {}
 
 	/**
-	 * Injection notice that arrived before the transcript's first user message.
-	 * Session startup (a fresh launch, `/new`, or `--resume`) assembles the
-	 * initial context before the user has submitted anything, so its notice is
-	 * held here and attached below the first user message instead of opening an
-	 * empty transcript with an `Inject` block.
+	 * Injection notice that arrived before the user submitted anything to this
+	 * transcript. Session startup (a fresh launch, `/new`, or `--resume`)
+	 * assembles the initial context before then, so its notice is held here and
+	 * attached below the request that finally gives it a home instead of opening
+	 * an empty transcript with an `Inject` block.
 	 */
 	#deferredInjectNotice: InjectNoticeComponent | undefined;
 	/** Live-tail notice: a later injection set merges into it while it is still last. */
 	#lastInjectNotice: InjectNoticeComponent | undefined;
-
-	/** Extract text content from a user message */
-	getUserMessageText(message: Message): string {
-		if (message.role !== "user") return "";
-		const textBlocks =
-			typeof message.content === "string"
-				? [{ type: "text", text: message.content }]
-				: message.content.filter((content): content is TextBlock => content.type === "text");
-		return textBlocks.map(block => block.text).join("");
-	}
+	/**
+	 * Whether the user submitted a prompt to THIS transcript. A resume replays
+	 * the journal into a fresh container, so the user rows on screen are history:
+	 * they cannot license a notice for context the resumed process assembled on
+	 * its own, and neither can the rows an earlier transcript left behind.
+	 */
+	#userSubmittedHere = false;
 
 	/**
 	 * Surface one context-injection notice. Notices recorded before the user has
-	 * sent anything are startup context, not a reaction to something the user
-	 * did — hold them until the first user message lands (see
+	 * submitted anything are startup context, not a reaction to something the
+	 * user did — hold them until a submission lands (see
 	 * {@link #deferredInjectNotice}). Notices that arrive during an active
 	 * conversation merge into the previous block only while that block is still
 	 * the live tail; committed rows are immutable visual history and a grown
@@ -175,13 +183,7 @@ export class UiHelpers {
 	 */
 	presentInjectNotice(items: readonly ContextInjectionItem[]): void {
 		if (items.length === 0) return;
-		// A completed-run collapse may fold rows, but the user's own message
-		// component stays mounted, so the container is the authoritative record
-		// of "the user has spoken here".
-		const transcriptShowsUserMessage = this.ctx.chatContainer.children.some(
-			child => child instanceof UserMessageComponent,
-		);
-		if (!transcriptShowsUserMessage) {
+		if (!this.#userSubmittedHere) {
 			this.#deferInjectNotice(items);
 			return;
 		}
@@ -223,11 +225,30 @@ export class UiHelpers {
 	}
 
 	/**
-	 * Attach the held startup notice below the user message that just landed.
-	 * Callers run after the run's gate/collapse projection was inserted behind
-	 * that message, so the notice reads as part of the run it opened.
+	 * Publish the notice held for the submission that just landed, and record
+	 * that this transcript now has one: from here on, notices land where they
+	 * arrive instead of waiting for a prompt. Callers run after the run's
+	 * gate/collapse projection was inserted behind that message, so the notice
+	 * reads as part of the run it opened.
 	 */
 	flushDeferredInjectNotice(): void {
+		this.markUserSubmission();
+		this.#publishHeldInjectNotice();
+	}
+
+	/**
+	 * Record that the user acted in this transcript: a prompt, a user-invoked
+	 * custom prompt, or a command they ran themselves. Notices land where they
+	 * arrive from here on — the context changes such an action causes are
+	 * reactions to something the user did, so they must not wait for a later
+	 * prompt to be shown.
+	 */
+	markUserSubmission(): void {
+		this.#userSubmittedHere = true;
+	}
+
+	/** Attach the held notice below the row that just landed. */
+	#publishHeldInjectNotice(): void {
 		const pending = this.#deferredInjectNotice;
 		if (!pending) return;
 		this.#deferredInjectNotice = undefined;
@@ -240,6 +261,7 @@ export class UiHelpers {
 	resetInjectNotices(): void {
 		this.#deferredInjectNotice = undefined;
 		this.#lastInjectNotice = undefined;
+		this.#userSubmittedHere = false;
 	}
 
 	/**
@@ -280,8 +302,9 @@ export class UiHelpers {
 				}
 				component.setComplete(message.exitCode, message.cancelled, {
 					truncation: message.meta?.truncation,
+					artifactError: message.meta?.artifactError,
 					images: message.images,
-					showImages: settings.get("terminal.showImages"),
+					showImages: cfgTerminalShowImages.get(settings),
 				});
 				this.ctx.chatContainer.addChild(component);
 				break;
@@ -293,6 +316,7 @@ export class UiHelpers {
 				}
 				component.setComplete(message.exitCode, message.cancelled, {
 					truncation: message.meta?.truncation,
+					artifactError: message.meta?.artifactError,
 				});
 				this.ctx.chatContainer.addChild(component);
 				break;
@@ -394,8 +418,8 @@ export class UiHelpers {
 			}
 			case "user":
 			case "developer": {
-				const textContent = this.ctx.getUserMessageText(message);
-				if (textContent) {
+				const userText = message.role === "user" ? textContent(message.content) : "";
+				if (userText) {
 					const isSynthetic = message.role === "developer" ? true : (message.synthetic ?? false);
 					const cached = options?.reuseSettledComponent
 						? this.ctx.transcriptMessageComponents.get(message)
@@ -410,7 +434,11 @@ export class UiHelpers {
 								message,
 								this.ctx.viewSession.sessionManager.putBlobSync.bind(this.ctx.viewSession.sessionManager),
 							);
-						userComponent = new UserMessageComponent(textContent, isSynthetic, imageLinks);
+						userComponent = new UserMessageComponent(userText, {
+							synthetic: isSynthetic,
+							imageLinks,
+							liveSteered: message.role === "user" && message.liveSteered === true,
+						});
 						this.ctx.transcriptMessageComponents.set(message, userComponent);
 					}
 					this.ctx.chatContainer.addChild(userComponent);
@@ -497,6 +525,9 @@ export class UiHelpers {
 		// Reseed the cache-invalidation baseline: this rebuild re-derives every
 		// turn's marker from usage, and the last turn becomes the live baseline.
 		this.ctx.lastAssistantUsage = undefined;
+		// Same for the served-model tracker: replaying history re-flags the first
+		// occurrence of each substitution and carries the memory forward live.
+		this.ctx.servedModelTracker = new ServedModelTracker();
 
 		if (options.updateFooter) {
 			this.ctx.statusLine.invalidate();
@@ -550,8 +581,8 @@ export class UiHelpers {
 			pendingUsageTurnElapsed = undefined;
 		};
 		// Rebuild-time mirror of the event controller's displaceable-poll
-		// bookkeeping: a `hub` wait that found every watched job still running is
-		// superseded by the next `hub` call, so a rebuilt transcript collapses a
+		// bookkeeping: a `wait` that found every watched job still running is
+		// superseded by the next `wait` call, so a rebuilt transcript collapses a
 		// repeated-poll run to its final snapshot instead of replaying the spam.
 		let waitingPoll: ToolExecutionComponent | null = null;
 		const resolveWaitingPoll = (nextToolName?: string) => {
@@ -559,7 +590,7 @@ export class UiHelpers {
 			if (!previous) return;
 			waitingPoll = null;
 			if (
-				nextToolName === "hub" &&
+				nextToolName === "wait" &&
 				previous.isDisplaceableBlock() &&
 				this.ctx.chatContainer.canRemoveBlock(previous)
 			) {
@@ -617,13 +648,14 @@ export class UiHelpers {
 				if (assistantComponent) {
 					const usage = message.usage;
 					const explained = sessionContext.cacheMissExplainedAt?.[i] ?? false;
-					if (this.ctx.settings.get("display.cacheMissMarker") && !explained) {
+					if (cfgDisplayCacheMissMarker.get(this.ctx.settings) && !explained) {
 						const invalidation = detectCacheInvalidation(this.ctx.lastAssistantUsage, usage);
 						if (invalidation) assistantComponent.setCacheInvalidation(invalidation);
 					}
 					if (usage.cacheRead + usage.cacheWrite + usage.input > 0) {
 						this.ctx.lastAssistantUsage = usage;
 					}
+					assistantComponent.setServedModelMismatch(this.ctx.servedModelTracker.check(message));
 				}
 				const hasVisibleAssistantContent = assistantHasVisibleContent(message);
 				if (hasVisibleAssistantContent) {
@@ -659,11 +691,20 @@ export class UiHelpers {
 					const renderToolName = toolRenderName(content.name, tool);
 					resolveWaitingPoll(renderToolName);
 
-					if (renderToolName === "read" && readArgsCollapseIntoGroup(content.arguments)) {
+					// Same routing rule as the live path: an unsettled `path` cannot pick a shape.
+					const readShape =
+						renderToolName === "read"
+							? readTranscriptShape(content.arguments, getStreamingPartialJson(content) !== undefined)
+							: false;
+					if (readShape === undefined) {
+						appendAssistantSegment(afterToolSegment);
+						continue;
+					}
+					if (readShape) {
 						if (hasErrorStop && errorMessage) {
 							if (!readGroup) {
 								readGroup = new ReadToolGroupComponent({
-									showContentPreview: this.ctx.settings.get("read.toolResultPreview"),
+									showContentPreview: cfgReadToolResultPreview.get(this.ctx.settings),
 								});
 								readGroup.setExpanded(this.ctx.toolOutputExpanded);
 								this.ctx.chatContainer.addChild(readGroup);
@@ -677,7 +718,7 @@ export class UiHelpers {
 						} else if (afterToolSegment) {
 							if (!readGroup) {
 								readGroup = new ReadToolGroupComponent({
-									showContentPreview: this.ctx.settings.get("read.toolResultPreview"),
+									showContentPreview: cfgReadToolResultPreview.get(this.ctx.settings),
 								});
 								readGroup.setExpanded(this.ctx.toolOutputExpanded);
 								this.ctx.chatContainer.addChild(readGroup);
@@ -722,7 +763,7 @@ export class UiHelpers {
 						renderArgs,
 						{
 							useBuiltInRenderer: this.ctx.viewSession.hasBuiltInTool(renderToolName),
-							showImages: settings.get("terminal.showImages"),
+							showImages: cfgTerminalShowImages.get(settings),
 						},
 						tool,
 						this.ctx.ui,
@@ -755,14 +796,14 @@ export class UiHelpers {
 					);
 				}
 				pendingUsage =
-					this.ctx.settings.get("display.showTokenUsage") && assistantUsageIsBilled(message.usage)
+					cfgDisplayShowTokenUsage.get(this.ctx.settings) && assistantUsageIsBilled(message.usage)
 						? message.usage
 						: undefined;
 				pendingUsageDuration = message.duration;
 				pendingUsageTtft = message.ttft;
 				pendingUsageTimestamp = message.timestamp;
 				pendingReadUsageCallIds = pendingUsage ? groupedReadUsageCallIds(message) : undefined;
-				pendingUsageTurnElapsed = this.ctx.settings.get("display.showTurnTime")
+				pendingUsageTurnElapsed = cfgDisplayShowTurnTime.get(this.ctx.settings)
 					? turnElapsedMs(turnStartedAt, message)
 					: undefined;
 			} else if (message.role === "toolResult") {
@@ -782,7 +823,7 @@ export class UiHelpers {
 					if (images.length > 0 && assistantComponent) {
 						assistantComponent.setToolResultImages(message.toolCallId, images);
 						const hasText = message.content.some(c => c.type === "text");
-						if (!hasText && settings.get("terminal.showImages")) {
+						if (!hasText && cfgTerminalShowImages.get(settings)) {
 							if (pendingReadComponent) {
 								pendingReadComponent.updateResult(message, false, message.toolCallId);
 								this.ctx.pendingTools.delete(message.toolCallId);
@@ -796,7 +837,7 @@ export class UiHelpers {
 					if (!component) {
 						if (!readGroup) {
 							readGroup = new ReadToolGroupComponent({
-								showContentPreview: this.ctx.settings.get("read.toolResultPreview"),
+								showContentPreview: cfgReadToolResultPreview.get(this.ctx.settings),
 							});
 							readGroup.setExpanded(this.ctx.toolOutputExpanded);
 							this.ctx.chatContainer.addChild(readGroup);
@@ -841,7 +882,7 @@ export class UiHelpers {
 					} else {
 						this.ctx.pendingTools.delete(message.toolCallId);
 						if (
-							message.toolName === "hub" &&
+							message.toolName === "wait" &&
 							component instanceof ToolExecutionComponent &&
 							component.isDisplaceableBlock()
 						) {
@@ -892,8 +933,11 @@ export class UiHelpers {
 				// projection insert above is either the run's live gate (notice goes
 				// behind it, so the collapse will take it) or the collapsed run's
 				// summary (the notice belongs to the hidden span and stays out).
+				// Replayed user rows publish the held notice without marking the
+				// transcript as one the user has submitted to: they are history, and a
+				// resume must not let them speak for the user.
 				if (inserted && collapsedRunProjections.has(inserted)) this.resetInjectNotices();
-				else this.flushDeferredInjectNotice();
+				else this.#publishHeldInjectNotice();
 			}
 		}
 		flushPendingUsage();
@@ -1004,7 +1048,7 @@ export class UiHelpers {
 		// means the session was not actually rewound past it — bail before
 		// mutating anything.
 		const context = this.ctx.viewSession.buildTranscriptSessionContext({
-			collapseCompactedHistory: settings.get("display.collapseCompacted"),
+			collapseCompactedHistory: cfgDisplayCollapseCompacted.get(settings),
 		});
 		for (const remaining of context.messages) {
 			if (remaining === message) return false;
@@ -1053,7 +1097,7 @@ export class UiHelpers {
 		// Collapsed replay keeps in-flight calls so pending tools remain routable during mid-turn rebuilds.
 		let context = this.ctx.viewSession.buildTranscriptSessionContext({
 			collapseCompactedHistory: shouldCollapseCompactedHistoryForDisplay(
-				this.ctx.settings.get("display.collapseCompacted"),
+				cfgDisplayCollapseCompacted.get(this.ctx.settings),
 				this.ctx.settings.get("display.collapseCompletedRuns"),
 			),
 			keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
@@ -1080,6 +1124,7 @@ export class UiHelpers {
 		const previousPendingBashComponents = this.ctx.pendingBashComponents;
 		const previousPendingPythonComponents = this.ctx.pendingPythonComponents;
 		const previousLastAssistantUsage = this.ctx.lastAssistantUsage;
+		const previousServedModelTracker = this.ctx.servedModelTracker;
 		const chatWasAlreadyRendered = this.ctx.initialChatRendered;
 		const renderOptions = {
 			updateFooter: true,
@@ -1129,7 +1174,7 @@ export class UiHelpers {
 				// more instead of letting a reentrant synchronous rebuild interleave.
 				context = this.ctx.viewSession.buildTranscriptSessionContext({
 					collapseCompactedHistory: shouldCollapseCompactedHistoryForDisplay(
-						this.ctx.settings.get("display.collapseCompacted"),
+						cfgDisplayCollapseCompacted.get(this.ctx.settings),
 						this.ctx.settings.get("display.collapseCompletedRuns"),
 					),
 					keepDanglingToolCalls: this.ctx.viewSession.isStreaming,
@@ -1197,6 +1242,7 @@ export class UiHelpers {
 				this.ctx.pendingBashComponents = previousPendingBashComponents;
 				this.ctx.pendingPythonComponents = previousPendingPythonComponents;
 				this.ctx.lastAssistantUsage = previousLastAssistantUsage;
+				this.ctx.servedModelTracker = previousServedModelTracker;
 				stagedChatContainer.disposeChildren();
 			}
 			this.ctx.initialChatRendered = committed ? true : chatWasAlreadyRendered;
@@ -1204,7 +1250,7 @@ export class UiHelpers {
 	}
 
 	clearEditor(): void {
-		if (this.ctx.settings.get("composer.recallClearedDrafts")) this.ctx.editor.clearDraftForRecall();
+		if (cfgComposerRecallClearedDrafts.get(this.ctx.settings)) this.ctx.editor.clearDraftForRecall();
 		else this.ctx.editor.clearDraft();
 		this.ctx.ui.requestRender();
 	}
@@ -1431,6 +1477,9 @@ export class UiHelpers {
 				await this.#deliverQueuedMessage(message);
 			}
 			this.ctx.updatePendingMessagesDisplay();
+			// The dispatch above bypasses `getUserInput`, so nothing would schedule
+			// the next loop iteration for a prompt queued during compaction.
+			if (this.ctx.loopModeEnabled) this.ctx.armLoopAutoSubmit();
 			void promptPromise;
 		} catch (error) {
 			restoreQueue(error);

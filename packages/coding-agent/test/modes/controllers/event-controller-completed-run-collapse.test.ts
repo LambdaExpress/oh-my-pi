@@ -3,12 +3,9 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { TranscriptContainer } from "@oh-my-pi/pi-coding-agent/modes/components/transcript-container";
+import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
-import {
-	type CompletedRunCollapse,
-	collapseCompletedRuns,
-} from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
+import { type CompletedRunCollapse, collapseCompletedRuns } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
 import { Text } from "@oh-my-pi/pi-tui";
 
 const usage = {

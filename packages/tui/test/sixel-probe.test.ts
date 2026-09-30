@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { ImageProtocol, setTerminalImageProtocol, TERMINAL, TUI } from "@oh-my-pi/pi-tui";
 import { createProcessTerminalRenderHarness } from "./process-terminal-render-harness";
 import { VirtualTerminal } from "./virtual-terminal";
@@ -60,6 +60,14 @@ function startProbe(terminal: VirtualTerminal, deferInput = false): TUI {
 }
 
 describe("TUI SIXEL capability probe", () => {
+	beforeEach(() => {
+		// Any pin — a user's or a host's — deliberately suppresses the probe these
+		// cases exercise, and a Herdr pane exports PI_FORCE_IMAGE_PROTOCOL=kitty
+		// from its graphics bootstrap. Clear the ambient value so the file is
+		// hermetic on hosts that set one; afterEach restores it.
+		delete Bun.env.PI_FORCE_IMAGE_PROTOCOL;
+	});
+
 	afterEach(() => {
 		setTerminalImageProtocol(originalProtocol);
 		terminalInfo.imageProtocol = originalProtocol;

@@ -246,7 +246,7 @@ export async function resolveEditTarget(
 	const op = options.op ?? "update";
 	const internalTarget = tryParseInternalEditTarget(path, op, Boolean(options.move));
 	if (options.enforcePlanMode !== false) {
-		enforcePlanModeWrite(session, path, { op, move: options.move });
+		await enforcePlanModeWrite(session, path, { op, move: options.move, signal: options.signal });
 	}
 
 	if (internalTarget) {
@@ -259,7 +259,7 @@ export async function resolveEditTarget(
 		return { ...internalTarget, observedKind };
 	}
 
-	const absolutePath = resolvePlanPath(session, path);
+	const absolutePath = await resolvePlanPath(session, path, options.signal);
 	if (options.assertLocalEditable) {
 		await assertEditableFile(absolutePath, path);
 	}

@@ -1,5 +1,5 @@
 import { XMLParser } from "@oh-my-pi/pi-utils/xml";
-import { ToolError } from "../tools/tool-errors";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import type { AdbUiBounds, AdbUiElement, AdbUiHierarchy, AdbUiSelector } from "./ui-types";
 
 const MAX_XML_BYTES = 4 * 1024 * 1024;

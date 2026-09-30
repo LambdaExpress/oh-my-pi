@@ -15,7 +15,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { $which } from "@oh-my-pi/pi-utils";
-import { theme } from "../modes/theme/theme";
+import { theme } from "@oh-my-pi/pi-tui/theme";
+import { t } from "../i18n";
 import type { GallerySection } from "./gallery-cli";
 
 /** Nerd Font family so the gallery's icon glyphs (PUA) render instead of tofu. */
@@ -62,8 +63,9 @@ export async function captureGalleryScreenshots(
 	const vhs = $which("vhs");
 	if (!vhs) {
 		throw new Error(
-			"`omp gallery --screenshot` requires VHS, which is not installed. " +
-				"Install it (e.g. `brew install vhs`, or see https://github.com/charmbracelet/vhs) and retry.",
+			t(
+				"`omp gallery --screenshot` requires VHS, which is not installed. Install it (e.g. `brew install vhs`, or see https://github.com/charmbracelet/vhs) and retry.",
+			),
 		);
 	}
 
@@ -83,7 +85,9 @@ export async function captureGalleryScreenshots(
 	const outPaths: string[] = [];
 	for (let i = 0; i < chunks.length; i++) {
 		if (chunks.length > 1) {
-			process.stderr.write(`Rendering gallery screenshot ${i + 1}/${chunks.length}…\n`);
+			process.stderr.write(
+				`${t("Rendering gallery screenshot {current}/{total}…", { current: i + 1, total: chunks.length })}\n`,
+			);
 		}
 		const outPng = resolveScreenshotOutputPath(options.out, baseDir, i, chunks.length);
 		const lines = chunks[i].flatMap(section => section.lines);
@@ -137,7 +141,9 @@ async function renderChunk(args: RenderChunkArgs): Promise<void> {
 		const result = await Bun.$`${args.vhs} ${tapePath}`.quiet().nothrow();
 		if (result.exitCode !== 0 || !(await Bun.file(args.outPng).exists())) {
 			const detail = result.stderr.toString().trim() || result.stdout.toString().trim();
-			throw new Error(`VHS failed to render the gallery screenshot${detail ? `: ${detail.slice(-600)}` : ""}`);
+			throw new Error(
+				`${t("VHS failed to render the gallery screenshot")}${detail ? `: ${detail.slice(-600)}` : ""}`,
+			);
 		}
 	} finally {
 		await Promise.all([

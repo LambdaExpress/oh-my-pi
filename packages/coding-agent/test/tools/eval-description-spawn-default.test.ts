@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { getEvalToolDescription } from "../../src/tools/eval";
+import { getEvalDocTopics, getEvalToolDescription } from "../../src/tools/eval";
 
 describe("eval tool description", () => {
 	it("routes routine tool calls away from eval orchestration", () => {
@@ -12,27 +12,25 @@ describe("eval tool description", () => {
 	});
 
 	it("advertises the first allowed spawn as the agent() default", () => {
-		const description = getEvalToolDescription({ py: true, js: false, spawns: "fact-finder,oracle" });
+		const agents = getEvalDocTopics({ py: true, js: false, spawns: "fact-finder,oracle" }).agents;
 
-		expect(description).toContain('agent(prompt, agent?="fact-finder"');
-		expect(description).toContain("Allowed agents: `fact-finder`, `oracle`.");
+		expect(agents).toContain('agent(prompt, agent?="fact-finder"');
+		expect(agents).toContain("Allowed agents: `fact-finder`, `oracle`.");
 	});
 
 	it("renders distinct Python and JavaScript schema-mode signatures by default", () => {
-		const description = getEvalToolDescription();
+		const agents = getEvalDocTopics().agents;
 
-		expect(description).toContain(
-			'agent(prompt, agent?="task", label?=None, schema?=None, schema_mode?="permissive"',
-		);
-		expect(description).not.toContain('schemaMode?="permissive"');
-		expect(description).toContain(
+		expect(agents).toContain('agent(prompt, agent?="task", label?=None, schema?=None, schemaMode?="permissive"');
+		expect(agents).not.toContain('schema_mode?="permissive"');
+		expect(agents).toContain(
 			"JS: ONE trailing object — agent(prompt, { agent, label, schema, schemaMode, isolated, apply, merge, tools })",
 		);
 	});
 
-	it("keeps schema-mode casing correct in single-language descriptions", () => {
-		const python = getEvalToolDescription({ py: true, js: false });
-		const javascript = getEvalToolDescription({ py: false, js: true });
+	it("keeps schema-mode casing correct in single-language topic docs", () => {
+		const python = getEvalDocTopics({ py: true, js: false }).agents;
+		const javascript = getEvalDocTopics({ py: false, js: true }).agents;
 
 		expect(python).toContain('schema_mode?="permissive"');
 		expect(python).not.toContain('schemaMode?="permissive"');
@@ -45,10 +43,12 @@ describe("eval tool description", () => {
 		);
 	});
 
-	it("omits agent() when spawning is disabled", () => {
+	it("omits the agents topic when spawning is disabled", () => {
+		const topics = getEvalDocTopics({ py: true, js: false, spawns: "" });
 		const description = getEvalToolDescription({ py: true, js: false, spawns: "" });
 
-		expect(description).not.toContain("agent(prompt");
+		expect(topics.agents).toBeUndefined();
+		expect(description).not.toContain("xd://eval/agents");
 		expect(description).not.toContain("<dag>");
 	});
 });

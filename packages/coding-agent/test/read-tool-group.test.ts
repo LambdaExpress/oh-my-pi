@@ -2,12 +2,18 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:te
 import * as path from "node:path";
 import * as url from "node:url";
 import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { getDefault } from "@oh-my-pi/pi-coding-agent/config/settings-schema";
+// Installs the pi-tui scheme host that decides which reads collapse into the group.
+import "@oh-my-pi/pi-coding-agent/internal-urls/router";
+
 import {
 	ReadToolGroupComponent,
 	readArgsCollapseIntoGroup,
-} from "@oh-my-pi/pi-coding-agent/modes/components/read-tool-group";
-import * as themeModule from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+	readTranscriptShape,
+} from "@oh-my-pi/pi-tui/chat/read-tool-group";
+import * as themeModule from "@oh-my-pi/pi-tui/theme";
+import { cfgReadToolResultPreview } from "@oh-my-pi/pi-coding-agent/tools/settings";
+import { cfgTuiHyperlinks } from "@oh-my-pi/pi-coding-agent/modes/settings";
+import { setLocale } from "../src/i18n";
 
 function extractLinkUris(text: string): string[] {
 	return [...text.matchAll(/\x1b\]8;[^;]*;([^\x1b]+)\x1b\\/g)].map(match => match[1]!);
@@ -31,19 +37,22 @@ describe("ReadToolGroupComponent", () => {
 		resetSettingsForTest();
 		await Settings.init({ inMemory: true });
 		await themeModule.initTheme(false, undefined, undefined, "dark", "light");
+		// Rows render localized copy; pin English so assertions stay deterministic.
+		setLocale("en");
 	});
 
 	afterEach(() => {
-		settings.clearOverride("tui.hyperlinks");
+		cfgTuiHyperlinks.clearOverride(settings);
 		vi.restoreAllMocks();
 	});
 
 	afterAll(() => {
+		setLocale(null);
 		resetSettingsForTest();
 	});
 
 	it("keeps inline read previews disabled by default", () => {
-		expect(getDefault("read.toolResultPreview")).toBe(false);
+		expect(cfgReadToolResultPreview.default).toBe(false);
 
 		const component = new ReadToolGroupComponent();
 		const examplePath = path.resolve("/tmp/example.ts");
@@ -222,6 +231,54 @@ describe("ReadToolGroupComponent", () => {
 		expect(plain).toContain(`${themeModule.theme.tree.last} ${twoPath}`);
 	});
 
+	it("links every grouped delimited row from result-provided link paths", () => {
+		cfgTuiHyperlinks.override(settings, "always");
+		const component = new ReadToolGroupComponent();
+		const oneLink = path.resolve("/workspace/src/one.ts");
+		const twoLink = path.resolve("/workspace/src/two.ts");
+		component.updateArgs({ path: "src/one.ts:1-5, src/two.ts:9-12" }, "read-grouped-link");
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "combined" }],
+				details: {
+					displayReadTargets: ["src/one.ts:1-5", "src/two.ts:9-12"],
+					displayReadTargetLinks: [oneLink, twoLink],
+				},
+			},
+			false,
+			"read-grouped-link",
+		);
+
+		const rendered = component.render(120).join("\n");
+
+		// Plain file: URIs — the line location must stay out of the query (#12123).
+		const oneUri = url.pathToFileURL(oneLink).href;
+		const twoUri = url.pathToFileURL(twoLink).href;
+		expect(Bun.stripANSI(rendered)).toContain("Read (2)");
+		expect(extractLinkUris(rendered)).toEqual(expect.arrayContaining([oneUri, twoUri]));
+		expect(extractLinkTexts(rendered)).toEqual(expect.arrayContaining(["src/one.ts", "src/two.ts"]));
+	});
+
+	it("renders warning previews with warning styling instead of success styling", () => {
+		const component = new ReadToolGroupComponent({ showContentPreview: true });
+		const examplePath = path.resolve("/tmp/example.ts");
+		component.updateArgs({ path: examplePath }, "read-1");
+		component.updateResult(
+			{
+				content: [{ type: "text", text: "const a = 1;\nconst b = 2;\nconst c = 3;" }],
+				details: { suffixResolution: { from: path.resolve("/tmp/exampl.ts"), to: examplePath } },
+			},
+			false,
+			"read-1",
+		);
+
+		const rendered = Bun.stripANSI(component.render(120).join("\n"));
+
+		expect(rendered).toContain(themeModule.theme.status.warning);
+		expect(rendered).not.toContain(themeModule.theme.status.success);
+		expect(rendered).toContain("corrected from");
+	});
+
 	it("highlights only the collapsed preview lines", () => {
 		const highlightSpy = vi.spyOn(themeModule, "highlightCode");
 		const component = new ReadToolGroupComponent({ showContentPreview: true });
@@ -329,7 +386,7 @@ describe("ReadToolGroupComponent", () => {
 	});
 
 	it("links grouped summary paths to resolved filesystem paths and selector lines", () => {
-		settings.override("tui.hyperlinks", "always");
+		cfgTuiHyperlinks.override(settings, "always");
 		const component = new ReadToolGroupComponent();
 		const examplePath = path.resolve("/workspace/src/example.ts");
 		component.updateArgs({ path: "src/example.ts:7-9" }, "read-link");
@@ -344,16 +401,15 @@ describe("ReadToolGroupComponent", () => {
 
 		const rendered = component.render(120).join("\n");
 
-		const exampleUri = new URL(url.pathToFileURL(path.resolve(examplePath)).href);
-		exampleUri.searchParams.set("line", "7");
+		const exampleUri = url.pathToFileURL(path.resolve(examplePath)).href;
 		expect(Bun.stripANSI(rendered)).toContain("Read src/example.ts:7-9");
-		expect(extractLinkUris(rendered)).toContain(exampleUri.href);
+		expect(extractLinkUris(rendered)).toContain(exampleUri);
 		expect(extractLinkTexts(rendered)).toContain("src/example.ts");
 		expect(extractLinkTexts(rendered)).not.toContain("src/example.ts:7-9");
 	});
 
 	it("links inline preview titles when the summary row is suppressed", () => {
-		settings.override("tui.hyperlinks", "always");
+		cfgTuiHyperlinks.override(settings, "always");
 		const component = new ReadToolGroupComponent({ showContentPreview: true });
 		const previewPath = path.resolve("/workspace/src/preview.ts");
 		component.updateArgs({ path: "src/preview.ts:20-22" }, "read-preview-link");
@@ -368,10 +424,9 @@ describe("ReadToolGroupComponent", () => {
 
 		const rendered = component.render(120).join("\n");
 
-		const previewUri = new URL(url.pathToFileURL(path.resolve(previewPath)).href);
-		previewUri.searchParams.set("line", "20");
+		const previewUri = url.pathToFileURL(path.resolve(previewPath)).href;
 		expect(Bun.stripANSI(rendered)).toContain("Read src/preview.ts:20-22");
-		expect(extractLinkUris(rendered)).toContain(previewUri.href);
+		expect(extractLinkUris(rendered)).toContain(previewUri);
 		expect(extractLinkTexts(rendered)).toContain("src/preview.ts");
 		expect(extractLinkTexts(rendered)).not.toContain("src/preview.ts:20-22");
 	});
@@ -413,5 +468,24 @@ describe("readArgsCollapseIntoGroup", () => {
 		expect(readArgsCollapseIntoGroup(["xd://x"])).toBe(false);
 		expect(readArgsCollapseIntoGroup({})).toBe(false);
 		expect(readArgsCollapseIntoGroup({ path: 42 })).toBe(false);
+	});
+
+	it.each([["s"], ["ski"], ["skill"], ["skill:"], ["skill:/"], ["SKILL:"]])(
+		"defers routing while %s can still stream into a skill:// target",
+		raw => {
+			// A prefix names no scheme, so deciding now would collapse the read into
+			// the group and leave it there after the args close.
+			expect(readTranscriptShape({ path: raw }, true)).toBeUndefined();
+			expect(readTranscriptShape({ path: raw }, false)).toBe(true);
+		},
+	);
+
+	it("decides a settled target regardless of the streaming flag", () => {
+		expect(readTranscriptShape({ path: "skill://21cp-bitbucket-pr-api" }, true)).toBe(false);
+		expect(readTranscriptShape({ path: "skill://21cp-bitbucket-pr-api" }, false)).toBe(false);
+		expect(readTranscriptShape({ path: "src/index.ts" }, true)).toBe(true);
+		expect(readTranscriptShape({ path: "src/index.ts" }, false)).toBe(true);
+		expect(readTranscriptShape({}, false)).toBeUndefined();
+		expect(readTranscriptShape(undefined, true)).toBeUndefined();
 	});
 });

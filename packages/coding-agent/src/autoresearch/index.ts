@@ -6,9 +6,10 @@ import { logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ExtensionContext, ExtensionFactory } from "../extensibility/extensions";
 import { t } from "../i18n";
 import commandResumeTemplate from "./command-resume.md" with { type: "text" };
-import { createDashboardController } from "./dashboard";
+import { createDashboardController } from "@oh-my-pi/pi-tui/apps/autoresearch-dashboard";
+import { currentResults, findBaselineMetric, findBaselineRunNumber } from "@oh-my-pi/pi-tui/apps/autoresearch-data";
 import { ensureAutoresearchBranch } from "./git";
-import { formatNum } from "./helpers";
+import { formatNum } from "@oh-my-pi/pi-tui/tools/autoresearch";
 import promptTemplate from "./prompt.md" with { type: "text" };
 import setupPromptTemplate from "./prompt-setup.md" with { type: "text" };
 import resumeMessageTemplate from "./resume-message.md" with { type: "text" };
@@ -16,9 +17,6 @@ import {
 	buildExperimentState,
 	createExperimentState,
 	createRuntimeStore,
-	currentResults,
-	findBaselineMetric,
-	findBaselineRunNumber,
 	findBestKeptMetric,
 	reconstructControlState,
 } from "./state";
@@ -27,7 +25,8 @@ import { createInitExperimentTool } from "./tools/init-experiment";
 import { createLogExperimentTool } from "./tools/log-experiment";
 import { createRunExperimentTool } from "./tools/run-experiment";
 import { createUpdateNotesTool } from "./tools/update-notes";
-import type { AutoresearchRuntime, ExperimentResult, PendingRunSummary } from "./types";
+import type { AutoresearchRuntime, PendingRunSummary } from "./types";
+import type { ExperimentResult } from "@oh-my-pi/pi-tui/tools/autoresearch";
 
 const EXPERIMENT_TOOL_NAMES = ["init_experiment", "run_experiment", "log_experiment", "update_notes"];
 
@@ -432,15 +431,20 @@ export const createAutoresearchExtension: ExtensionFactory = api => {
 				const repository = vcs.requireGit(ctx.cwd);
 				await repository.reset("hard", session.baselineCommit);
 				await repository.clean({});
-				ctx.ui.notify(`Reset worktree to baseline ${session.baselineCommit.slice(0, 12)}.`, "info");
+				ctx.ui.notify(
+					t("Reset worktree to baseline {commit}.", { commit: session.baselineCommit.slice(0, 12) }),
+					"info",
+				);
 			} catch (err) {
 				ctx.ui.notify(
-					`Failed to reset worktree to baseline: ${err instanceof Error ? err.message : String(err)}`,
+					t("Failed to reset worktree to baseline: {error}", {
+						error: err instanceof Error ? err.message : String(err),
+					}),
 					"error",
 				);
 			}
 		} else if (shouldResetTree) {
-			ctx.ui.notify("No baseline commit recorded — skipped worktree reset.", "warning");
+			ctx.ui.notify(t("No baseline commit recorded — skipped worktree reset."), "warning");
 		}
 
 		removeLegacyArtifacts(ctx.cwd);
@@ -459,7 +463,7 @@ export const createAutoresearchExtension: ExtensionFactory = api => {
 		dashboard.updateWidget(ctx, runtime);
 		const experimentTools = new Set(EXPERIMENT_TOOL_NAMES);
 		await api.setActiveTools(api.getActiveTools().filter(name => !experimentTools.has(name)));
-		ctx.ui.notify("Autoresearch session cleared.", "info");
+		ctx.ui.notify(t("Autoresearch session cleared."), "info");
 	}
 };
 

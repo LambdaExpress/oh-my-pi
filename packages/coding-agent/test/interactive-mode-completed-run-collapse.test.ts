@@ -1,13 +1,14 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
 import { Agent, type AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
+import type { AssistantMessage, ImageContent, ToolResultMessage } from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InteractiveMode } from "@oh-my-pi/pi-coding-agent/modes/interactive-mode";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
-import type { CompletedRunCollapse } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
+import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import type { CompletedRunCollapse } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { type CustomMessage, USER_INTERRUPT_LABEL } from "@oh-my-pi/pi-coding-agent/session/messages";
@@ -580,6 +581,63 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(mode.chatContainer.blockStates()).toContain("active");
 	});
 
+	it.each([
+		{ persisted: true, optimistic: false, reason: "already persisted" },
+		{ persisted: false, optimistic: false, reason: "still awaiting persistence" },
+		{ persisted: true, optimistic: true, reason: "already persisted with an optimistic row" },
+	])(
+		"renders a queued follow-up once when it is $reason during the completed-run rebuild",
+		async ({ persisted, optimistic }) => {
+			const initial = { role: "user", content: "first request", timestamp: 1 } as const;
+			const final = assistant([{ type: "text", text: "first answer" }], "stop", 2);
+			const image: ImageContent | undefined = optimistic
+				? {
+						type: "image",
+						data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNgAAAAAgABSK+kcQAAAABJRU5ErkJggg==",
+						mimeType: "image/png",
+					}
+				: undefined;
+			const followUp: AgentMessage = {
+				role: "user",
+				content: image ? [{ type: "text", text: "FOLLOWUP_MARKER" }, image] : "FOLLOWUP_MARKER",
+				timestamp: 3,
+			};
+			session.sessionManager.appendMessage(initial);
+			session.sessionManager.appendMessage(final);
+			mode.isInitialized = true;
+
+			const controller = mode.eventController;
+			await controller.handleEvent({ type: "agent_start" });
+			await controller.handleEvent({ type: "message_start", message: initial });
+			await controller.handleEvent({ type: "message_end", message: initial });
+			await controller.handleEvent({ type: "message_end", message: final });
+
+			// Persistence may overtake the display listener while it awaits the
+			// preceding answer. The pending task stays live during the rebuild.
+			if (image) mode.startPendingSubmission({ text: "FOLLOWUP_MARKER", images: [image] });
+			const task = new ToolExecutionComponent(
+				"task",
+				{ tasks: [{ task: "inspect the bug" }] },
+				{},
+				undefined,
+				mode.ui,
+			);
+			mode.chatContainer.addChild(task);
+			mode.pendingTools.set("task-call", task);
+			if (persisted) session.sessionManager.appendMessage(followUp);
+			session.agent.state.isStreaming = true;
+			try {
+				await controller.handleEvent({ type: "message_start", message: followUp });
+
+				const lines = mode.chatContainer.render(120).map(line => Bun.stripANSI(line));
+				expect(lines.filter(line => line.includes("FOLLOWUP_MARKER"))).toHaveLength(1);
+				expect(lines.join("\n")).toContain("Task");
+			} finally {
+				session.agent.state.isStreaming = false;
+			}
+		},
+	);
+
 	it("toggles a force-flushed interrupted run and its continuation together", () => {
 		const initialA = { role: "user", content: "build it", timestamp: 1 } as const;
 		const loopA = assistant(
@@ -684,7 +742,7 @@ describe("InteractiveMode completed-run collapse", () => {
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 test model");
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const e2eSession = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",
@@ -729,13 +787,14 @@ describe("InteractiveMode completed-run collapse", () => {
 			streamingBehavior: "steer",
 			expandPromptTemplates: false,
 		});
-		await e2eSession.abort({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
-
-		// Wait for the continuation to settle and park A and B's collapse
-		// records. Integration test against the real agent loop: deterministic
-		// fake timers cannot drive the abort/drain/continue chain, so a bounded
-		// real-time guard stands in for the parked-chain signal if the fix
-		// regresses.
+		// Both runs' ends are counted from before the abort: `AgentSession`
+		// releases a buffered `agent_end` as soon as the in-flight prompt count
+		// drops, which happens inside `abort()` while it is still unwinding, so
+		// the interrupted run's end can land before the abort's own resolution.
+		// A listener registered after the await would miss it and then wait for a
+		// second end that never arrives. The pre-merge code always delivered that
+		// frame last only because of the serialized subscriber gate upstream
+		// removed in b9d7ee8833 (session events are now dispatched synchronously).
 		const settled = Promise.withResolvers<void>();
 		const agentEnds: number[] = [];
 		e2eSession.subscribe(event => {
@@ -744,6 +803,13 @@ describe("InteractiveMode completed-run collapse", () => {
 				if (agentEnds.length === 2) settled.resolve();
 			}
 		});
+		await e2eSession.abort({ reason: USER_INTERRUPT_LABEL, forceFlush: true });
+
+		// Wait for the continuation to settle and park A and B's collapse
+		// records. Integration test against the real agent loop: deterministic
+		// fake timers cannot drive the abort/drain/continue chain, so a bounded
+		// real-time guard stands in for the parked-chain signal if the fix
+		// regresses.
 		await Promise.race([settled.promise, Bun.sleep(10_000)]);
 		await firstPrompt.catch(() => {});
 
@@ -780,7 +846,7 @@ describe("InteractiveMode completed-run collapse", () => {
 		const modelRegistry = new ModelRegistry(authStorage);
 		const model = modelRegistry.find("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 test model");
-		authStorage.setRuntimeApiKey("anthropic", "test-key");
+		authStorage.keys.setRuntime("anthropic", "test-key");
 		const e2eSession = new AgentSession({
 			agent: new Agent({
 				getApiKey: () => "test-key",

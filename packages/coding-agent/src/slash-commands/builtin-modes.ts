@@ -5,7 +5,7 @@ import {
 	resolveCliModel,
 	type ResolveCliModelResult,
 } from "../config/model-resolver";
-import type { SettingPath, Settings } from "../config/settings";
+import type { Settings } from "../config/settings";
 import { t } from "../i18n";
 import { describeLoopCondition } from "../modes/loop-condition";
 import { describeLoopLimitRuntime } from "../modes/loop-limit";
@@ -14,6 +14,13 @@ import type { AgentSession } from "../session/agent-session";
 import { commandConsumed, errorMessage, usage } from "./helpers/parse";
 import { handleSecurityCommand } from "./helpers/security";
 import type { ParsedSlashCommand, SlashCommandSpec, TuiSlashCommandRuntime } from "./types";
+
+import { cfgComputerDisplay, cfgComputerEnabled, cfgComputerMaxHeight, cfgComputerMaxWidth } from "../tools/settings";
+import { cfgSkillful } from "../session/settings";
+import { formatSlowModeResetClock } from "../session/anthropic-slow-mode";
+import { cfgExtendedContext } from "../session/context-settings";
+import { cfgGoalEnabled } from "../goals/settings";
+import { cfgPlanEnabled } from "../plan-mode/settings";
 
 export function refreshStatusLine(ctx: InteractiveModeContext): void {
 	ctx.statusLine.invalidate();
@@ -80,26 +87,58 @@ function formatFastModeStatus(session: AgentSession): string {
 	return session.isFastModeEnabled() ? "on" : "off";
 }
 
+const SLOW_UNSUPPORTED =
+	"The current model has no slow mode: /slow uses the flex tier on OpenAI/Google models and low priority on Anthropic subscriptions.";
+
+/**
+ * `/slow [on|off|status]` for the active model: the `flex` service tier on
+ * OpenAI/Google, subscription low priority (`providers.anthropic.slowMode`
+ * `auto`/`off`) on Anthropic. Bare invocation toggles. Returns the user-facing
+ * reply, or `undefined` for an unknown argument.
+ */
+function runSlowCommand(arg: string, session: AgentSession): string | undefined {
+	if (arg !== "" && arg !== "toggle" && arg !== "on" && arg !== "off" && arg !== "status") return undefined;
+	const anthropic = session.model?.provider === "anthropic";
+	if (arg === "status") {
+		const label = anthropic ? session.getAnthropicSlowModeLabel() : undefined;
+		if (!session.isSlowModeEnabled()) return label ? `Slow mode is off (${label}).` : "Slow mode is off.";
+		if (!anthropic) return "Slow mode is on (flex tier).";
+		return label ? `Slow mode is on (${label}).` : "Slow mode is on (low priority at the Claude session limit).";
+	}
+	const enabled = arg === "on" || (arg !== "off" && !session.isSlowModeEnabled());
+	if (!session.setSlowMode(enabled)) return SLOW_UNSUPPORTED;
+	if (!session.isSlowModeEnabled()) {
+		return anthropic
+			? "Slow mode off: at your Claude usage limit, requests may get a short wrap-up allowance, then wait for the limit to reset."
+			: "Slow mode off.";
+	}
+	if (!anthropic) return "Slow mode on: requests use the flex tier (lower cost, higher latency).";
+	const resetsAtSec = session.getAnthropicSlowModeLane()?.activeResetsAtSec();
+	return resetsAtSec !== undefined
+		? `Slow mode on: continuing at low priority until your limit resets at ${formatSlowModeResetClock(resetsAtSec)}. Your weekly limit still applies, and responses may pause while waiting for spare capacity.`
+		: "Slow mode on: when your Claude subscription hits its session limit and Anthropic offers low priority, requests switch to it after any wrap-up allowance.";
+}
+
 /** `/extended-context status` label for the extended-context setting. */
 function formatExtendedContextStatus(settings: Settings): string {
-	return settings.get("extendedContext") ? "on" : "off";
+	return cfgExtendedContext.get(settings) ? "on" : "off";
 }
 
 /** Applies an `/extended-context` argument and returns its operator feedback. */
 function applyExtendedContextCommand(settings: Settings, args: string): string | undefined {
 	const arg = args.trim().toLowerCase();
-	const current = settings.get("extendedContext");
+	const current = cfgExtendedContext.get(settings);
 	if (!arg || arg === "toggle") {
 		const enabled = !current;
-		settings.set("extendedContext", enabled);
+		cfgExtendedContext.set(settings, enabled);
 		return t("Extended context {status}.", { status: enabled ? "enabled" : "disabled" });
 	}
 	if (arg === "on") {
-		settings.set("extendedContext", true);
+		cfgExtendedContext.set(settings, true);
 		return t("Extended context enabled.");
 	}
 	if (arg === "off") {
-		settings.set("extendedContext", false);
+		cfgExtendedContext.set(settings, false);
 		return t("Extended context disabled.");
 	}
 	if (arg === "status") return t("Extended context is {status}.", { status: formatExtendedContextStatus(settings) });
@@ -108,17 +147,21 @@ function applyExtendedContextCommand(settings: Settings, args: string): string |
 
 /** Detailed, session-effective `/computer status` diagnostics. */
 function formatComputerUseStatus(session: AgentSession): string {
-	const enabled = session.settings.get("computer.enabled");
+	const enabled = cfgComputerEnabled.get(session.settings);
 	const active = session.getEvalPreludes().some(definition => definition.name === "computer");
 	const configured = {
-		display: session.settings.get("computer.display"),
-		maxWidth: session.settings.get("computer.maxWidth"),
-		maxHeight: session.settings.get("computer.maxHeight"),
+		display: cfgComputerDisplay.get(session.settings),
+		maxWidth: cfgComputerMaxWidth.get(session.settings),
+		maxHeight: cfgComputerMaxHeight.get(session.settings),
 	};
 	return [
-		`Computer use: ${enabled ? "enabled" : "disabled"}`,
-		`prelude: ${active ? "active" : "inactive"}`,
-		`configured: display=${configured.display}, maxWidth=${configured.maxWidth}, maxHeight=${configured.maxHeight}`,
+		t("Computer use: {status}", { status: enabled ? "enabled" : "disabled" }),
+		t("prelude: {status}", { status: active ? "active" : "inactive" }),
+		t("configured: display={display}, maxWidth={maxWidth}, maxHeight={maxHeight}", {
+			display: configured.display,
+			maxWidth: configured.maxWidth,
+			maxHeight: configured.maxHeight,
+		}),
 	].join(" · ");
 }
 
@@ -127,21 +170,21 @@ function formatComputerUseStatus(session: AgentSession): string {
  * The override is never persisted to settings.json.
  */
 async function applyComputerUseToggle(session: AgentSession, enable: boolean): Promise<string> {
-	const previous = session.settings.get("computer.enabled");
-	session.settings.override("computer.enabled", enable);
+	const previous = cfgComputerEnabled.get(session.settings);
+	cfgComputerEnabled.override(session.settings, enable);
 	if (enable && !session.getEvalPreludes().some(definition => definition.name === "computer")) {
-		session.settings.override("computer.enabled", previous);
-		return "Computer use is unavailable in this session.";
+		cfgComputerEnabled.override(session.settings, previous);
+		return t("Computer use is unavailable in this session.");
 	}
 	try {
 		await session.refreshBaseSystemPrompt();
 	} catch (error) {
-		session.settings.override("computer.enabled", previous);
+		cfgComputerEnabled.override(session.settings, previous);
 		throw error;
 	}
 	return enable
-		? `Computer use enabled for this session. ${formatComputerUseStatus(session)}`
-		: "Computer use disabled for this session.";
+		? t("Computer use enabled for this session. {status}", { status: formatComputerUseStatus(session) })
+		: t("Computer use disabled for this session.");
 }
 
 const AUTOCOMPLETE_DETAIL_LIMIT = 48;
@@ -163,17 +206,17 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		acpInputHint: "<plan|scan|status|cancel|scans|show|import|export|validate|compare|disposition>",
 		subcommands: [
-			{ name: "plan", description: t("Create an immutable security scan plan") },
-			{ name: "scan", description: t("Start a planned or newly planned native scan") },
-			{ name: "status", description: t("Show native scan operation status") },
-			{ name: "cancel", description: t("Cancel a running native scan") },
-			{ name: "scans", description: t("List stored project security scans") },
-			{ name: "show", description: t("Render a scan or security:// resource") },
-			{ name: "import", description: t("Import SARIF or a Codex Security bundle") },
-			{ name: "export", description: t("Export a canonical bundle, SARIF, or report") },
-			{ name: "validate", description: t("Validate one finding with OMP-native tools") },
-			{ name: "compare", description: t("Compare finding lineage across two scans") },
-			{ name: "disposition", description: t("Set a finding disposition with rationale") },
+			{ name: "plan", description: "Create an immutable security scan plan" },
+			{ name: "scan", description: "Start a planned or newly planned native scan" },
+			{ name: "status", description: "Show native scan operation status" },
+			{ name: "cancel", description: "Cancel a running native scan" },
+			{ name: "scans", description: "List stored project security scans" },
+			{ name: "show", description: "Render a scan or security:// resource" },
+			{ name: "import", description: "Import SARIF or a Codex Security bundle" },
+			{ name: "export", description: "Export a canonical bundle, SARIF, or report" },
+			{ name: "validate", description: "Validate one finding with OMP-native tools" },
+			{ name: "compare", description: "Compare finding lineage across two scans" },
+			{ name: "disposition", description: "Set a finding disposition with rationale" },
 		],
 		handle: handleSecurityCommand,
 	},
@@ -192,7 +235,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "gear",
 		description: "Open provider setup",
 		allowArgs: true,
-		subcommands: [{ name: "providers", description: t("Configure sign-in and web search providers") }],
+		subcommands: [{ name: "providers", description: "Configure sign-in and web search providers" }],
 		handleTui: async (command, runtime) => {
 			const args = command.args.trim().toLowerCase();
 			const opensProviders = args === "" || args === "providers";
@@ -211,7 +254,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		inlineHint: "[prompt]",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
-			if (!runtime.ctx.settings.get("plan.enabled" as SettingPath)) return t("Plan: disabled in settings");
+			if (!cfgPlanEnabled.get(runtime.ctx.settings)) return t("Plan: disabled in settings");
 			if (runtime.ctx.planModeEnabled) {
 				const planFile = runtime.ctx.planModePlanFilePath;
 				return t("Plan: on{details}", { details: planFile ? ` (${path.basename(planFile)})` : "" });
@@ -259,17 +302,17 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		icon: "goal",
 		description: "Toggle goal mode (persistent autonomous objective for this session)",
 		subcommands: [
-			{ name: "set", description: t("Set or replace the goal"), usage: "<objective>" },
-			{ name: "show", description: t("Show current goal details") },
-			{ name: "pause", description: t("Pause the current goal") },
-			{ name: "resume", description: t("Resume a paused goal") },
-			{ name: "drop", description: t("Drop the current goal") },
-			{ name: "budget", description: t("Adjust the token budget"), usage: "<N|off>" },
+			{ name: "set", description: "Set or replace the goal", usage: "<objective>" },
+			{ name: "show", description: "Show current goal details" },
+			{ name: "pause", description: "Pause the current goal" },
+			{ name: "resume", description: "Resume a paused goal" },
+			{ name: "drop", description: "Drop the current goal" },
+			{ name: "budget", description: "Adjust the token budget", usage: "<N|off>" },
 		],
 		inlineHint: "[objective]",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
-			if (!runtime.ctx.settings.get("goal.enabled" as SettingPath)) return t("Goal: disabled in settings");
+			if (!cfgGoalEnabled.get(runtime.ctx.settings)) return t("Goal: disabled in settings");
 			if (runtime.ctx.planModeEnabled) return t("Goal: blocked by plan mode");
 			const state = runtime.ctx.session.getGoalModeState();
 			return state
@@ -301,7 +344,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		name: "loop",
 		icon: "loop",
 		description:
-			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Bound it with a count/duration, or gate it with `--until '<cmd>'` / `--while '<cmd>'` — the command's exit status decides whether the next iteration runs. Esc cancels the current iteration; /loop again to disable.",
+			"Toggle loop mode. While enabled, the next prompt you send re-submits after every yield. Bound it with a count/duration, or gate it with `--until '<cmd>'` / `--while '<cmd>'` — the command's exit status decides whether the next iteration runs. Esc suspends the ongoing loop; /loop again to disable.",
 		inlineHint: "[count|duration] [--while|--until '<cmd>'] [prompt]",
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime => {
@@ -350,14 +393,17 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				const match = resolved.model;
 				if (!match) {
 					return usage(
-						`Unknown model: ${selector}. Use ACP \`session/setModel\` for picker-driven selection or list available models with /model.`,
+						t(
+							"Unknown model: {model}. Use ACP `session/setModel` for picker-driven selection or list available models with /model.",
+							{ model: selector },
+						),
 						runtime,
 					);
 				}
 				try {
 					await runtime.session.setModel(match);
 					if (resolved.thinkingLevel !== undefined) runtime.session.setThinkingLevel(resolved.thinkingLevel);
-					await runtime.output(`Model set to ${match.provider}/${match.id}.`);
+					await runtime.output(t("Model set to {model}.", { model: `${match.provider}/${match.id}` }));
 					await runtime.notifyTitleChanged?.();
 					await runtime.notifyConfigChanged?.();
 					return commandConsumed();
@@ -396,20 +442,22 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			if (!selector) {
 				const model = runtime.session.model;
 				await runtime.output(
-					model ? `Current model: ${model.provider}/${model.id}` : "No model is currently selected.",
+					model
+						? t("Current model: {model}", { model: `${model.provider}/${model.id}` })
+						: t("No model is currently selected."),
 				);
 				return commandConsumed();
 			}
 			const resolved = resolveSessionModelSelector(selector, runtime.session, runtime.settings);
-			if (!resolved.model) return usage(`Unknown model: ${selector}`, runtime);
+			if (!resolved.model) return usage(t("Unknown model: {model}", { model: selector }), runtime);
 			try {
 				await runtime.session.setModelTemporary(resolved.model, resolved.thinkingLevel);
-				await runtime.output(`Session-only model: ${formatModelString(resolved.model)}.`);
+				await runtime.output(t("Session-only model: {model}.", { model: formatModelString(resolved.model) }));
 				await runtime.notifyTitleChanged?.();
 				await runtime.notifyConfigChanged?.();
 				return commandConsumed();
 			} catch (err) {
-				return usage(`Failed to switch model: ${errorMessage(err)}`, runtime);
+				return usage(t("Failed to switch model: {error}", { error: errorMessage(err) }), runtime);
 			}
 		},
 		handleTui: async (command, runtime) => {
@@ -421,7 +469,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			}
 			const resolved = resolveSessionModelSelector(selector, runtime.ctx.session, runtime.ctx.settings);
 			if (!resolved.model) {
-				runtime.ctx.showError(`Unknown model: ${selector}`);
+				runtime.ctx.showError(t("Unknown model: {model}", { model: selector }));
 				return;
 			}
 			if (resolved.warning) runtime.ctx.showStatus(resolved.warning);
@@ -435,9 +483,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Toggle fast mode",
 		acpInputHint: "[on|off|status]",
 		subcommands: [
-			{ name: "on", description: t("Enable fast mode") },
-			{ name: "off", description: t("Disable fast mode") },
-			{ name: "status", description: t("Show fast mode status") },
+			{ name: "on", description: "Enable fast mode" },
+			{ name: "off", description: "Disable fast mode" },
+			{ name: "status", description: "Show fast mode status" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
@@ -502,6 +550,34 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		},
 	},
 	{
+		name: "slow",
+		icon: "fast",
+		description:
+			"Toggle slow mode: flex tier on OpenAI/Google; on Anthropic, continue at low priority after the Claude session limit",
+		acpDescription: "Toggle slow mode",
+		acpInputHint: "[on|off|status]",
+		subcommands: [
+			{ name: "on", description: "Flex tier, or Anthropic low priority at the session limit (auto)" },
+			{ name: "off", description: "Standard service; stop Anthropic low priority" },
+			{ name: "status", description: "Show slow mode status" },
+		],
+		allowArgs: true,
+		getTuiAutocompleteDescription: runtime =>
+			runtime.ctx.session.isSlowModeEnabled() ? "Slow mode: on" : "Slow mode: off",
+		handle: async (command, runtime) => {
+			const message = runSlowCommand(command.args.trim().toLowerCase(), runtime.session);
+			if (message === undefined) return usage("Usage: /slow [on|off|status]", runtime);
+			await runtime.output(message);
+			return commandConsumed();
+		},
+		handleTui: (command, runtime) => {
+			const message = runSlowCommand(command.args.trim().toLowerCase(), runtime.ctx.session);
+			refreshStatusLine(runtime.ctx);
+			runtime.ctx.showStatus(message ?? "Usage: /slow [on|off|status]");
+			runtime.ctx.editor.setText("");
+		},
+	},
+	{
 		name: "skillful",
 		icon: "compass",
 		description: "Toggle listing available skills in the system prompt (session only)",
@@ -514,12 +590,14 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
-			`Skill listing: ${runtime.ctx.session.settings.get("skillful") ? "on" : "off"}`,
+			t("Skill listing: {status}", { status: cfgSkillful.get(runtime.ctx.session.settings) ? "on" : "off" }),
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
 				await runtime.output(
-					`Skill listing: ${runtime.session.settings.get("skillful") ? "on" : "off"} (session override; default from the skillful setting).`,
+					t("Skill listing: {status} (session override; default from the skillful setting).", {
+						status: cfgSkillful.get(runtime.session.settings) ? "on" : "off",
+					}),
 				);
 				return commandConsumed();
 			}
@@ -530,15 +608,21 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 						: arg === "off"
 							? await runtime.session.setSkillful(false)
 							: await runtime.session.toggleSkillful();
-				await runtime.output(`Skill listing ${enabled ? "enabled" : "disabled"} for this session.`);
+				await runtime.output(
+					t("Skill listing {status} for this session.", { status: enabled ? "enabled" : "disabled" }),
+				);
 				return commandConsumed();
 			}
-			return usage("Usage: /skillful [on|off|status]", runtime);
+			return usage(t("Usage: /skillful [on|off|status]"), runtime);
 		},
 		handleTui: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
-				runtime.ctx.showStatus(`Skill listing: ${runtime.ctx.session.settings.get("skillful") ? "on" : "off"}.`);
+				runtime.ctx.showStatus(
+					t("Skill listing: {status}.", {
+						status: cfgSkillful.get(runtime.ctx.session.settings) ? "on" : "off",
+					}),
+				);
 				runtime.ctx.editor.setText("");
 				return;
 			}
@@ -549,11 +633,13 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 						: arg === "off"
 							? await runtime.ctx.session.setSkillful(false)
 							: await runtime.ctx.session.toggleSkillful();
-				runtime.ctx.showStatus(`Skill listing ${enabled ? "enabled" : "disabled"} for this session.`);
+				runtime.ctx.showStatus(
+					t("Skill listing {status} for this session.", { status: enabled ? "enabled" : "disabled" }),
+				);
 				runtime.ctx.editor.setText("");
 				return;
 			}
-			runtime.ctx.showStatus("Usage: /skillful [on|off|status]");
+			runtime.ctx.showStatus(t("Usage: /skillful [on|off|status]"));
 			runtime.ctx.editor.setText("");
 		},
 	},
@@ -564,9 +650,9 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Toggle extended context",
 		acpInputHint: "[on|off|status]",
 		subcommands: [
-			{ name: "on", description: t("Enable larger context windows") },
-			{ name: "off", description: t("Use default or standard-pricing context windows") },
-			{ name: "status", description: t("Show extended context status") },
+			{ name: "on", description: "Enable larger context windows" },
+			{ name: "off", description: "Use default or standard-pricing context windows" },
+			{ name: "status", description: "Show extended context status" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
@@ -591,13 +677,13 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		acpDescription: "Toggle computer use",
 		acpInputHint: "[on|off|status]",
 		subcommands: [
-			{ name: "on", description: t("Enable computer use for this session") },
-			{ name: "off", description: t("Disable computer use for this session") },
-			{ name: "status", description: t("Show computer use status") },
+			{ name: "on", description: "Enable computer use for this session" },
+			{ name: "off", description: "Disable computer use for this session" },
+			{ name: "status", description: "Show computer use status" },
 		],
 		allowArgs: true,
 		getTuiAutocompleteDescription: runtime =>
-			t("Computer: {status}", { status: runtime.ctx.session.settings.get("computer.enabled") ? "on" : "off" }),
+			t("Computer: {status}", { status: cfgComputerEnabled.get(runtime.ctx.session.settings) ? "on" : "off" }),
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg === "status") {
@@ -605,7 +691,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 				return commandConsumed();
 			}
 			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
-				const enable = arg === "off" ? false : arg === "on" || !runtime.session.settings.get("computer.enabled");
+				const enable = arg === "off" ? false : arg === "on" || !cfgComputerEnabled.get(runtime.session.settings);
 				await runtime.output(await applyComputerUseToggle(runtime.session, enable));
 				return commandConsumed();
 			}
@@ -620,7 +706,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 			}
 			if (!arg || arg === "toggle" || arg === "on" || arg === "off") {
 				const enable =
-					arg === "off" ? false : arg === "on" || !runtime.ctx.session.settings.get("computer.enabled");
+					arg === "off" ? false : arg === "on" || !cfgComputerEnabled.get(runtime.ctx.session.settings);
 				runtime.ctx.showStatus(await applyComputerUseToggle(runtime.ctx.session, enable));
 				runtime.ctx.editor.setText("");
 				return;
@@ -636,7 +722,7 @@ export const BUILTIN_MODE_SLASH_COMMANDS: ReadonlyArray<SlashCommandSpec> = [
 		allowArgs: true,
 		acpDescription: "Arm or restart prewalk",
 		acpInputHint: "[restart]",
-		subcommands: [{ name: "restart", description: t("Return to @default and re-arm the handoff to @smol") }],
+		subcommands: [{ name: "restart", description: "Return to @default and re-arm the handoff to @smol" }],
 		handle: async (command, runtime) => {
 			const arg = command.args.trim().toLowerCase();
 			if (arg && arg !== "restart") return usage(t("Usage: /prewalk [restart]"), runtime);

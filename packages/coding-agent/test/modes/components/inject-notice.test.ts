@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
-import { InjectNoticeComponent } from "@oh-my-pi/pi-coding-agent/modes/components/inject-notice";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { InjectNoticeComponent } from "@oh-my-pi/pi-tui/chat/inject-notice";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import { setLocale } from "../../../src/i18n";
-import type { ContextInjectionItem } from "../../../src/session/context-injection";
+import type { ContextInjectionItem } from "@oh-my-pi/pi-tui/chat/context-injection";
 
 const darkTheme = await getThemeByName("dark");
 

@@ -2,10 +2,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { BashResult } from "@oh-my-pi/pi-coding-agent/exec/bash-executor";
-import { BashExecutionComponent } from "@oh-my-pi/pi-coding-agent/modes/components/bash-execution";
+import { BashExecutionComponent } from "@oh-my-pi/pi-tui/chat/bash-execution";
 import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { setLocale } from "../../../src/i18n";
 
@@ -69,10 +70,11 @@ function createCwdContext(sourceDir: string, isStreaming = false, showImages = t
 		chatContainer: createContainer(),
 		pendingMessagesContainer,
 		pendingBashComponents: [],
-		settings: { get: () => showImages, flush: vi.fn(async () => {}) },
+		settings: Settings.isolated({ "terminal.showImages": showImages }),
 		ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 		present,
 		completePendingLocalExecution: vi.fn(),
+		markUserSubmission: vi.fn(),
 		showError: vi.fn(),
 		showWarning: vi.fn(),
 		applyCwdChange: vi.fn(async (cwd: string) => {
@@ -127,10 +129,11 @@ describe("bash shortcut command", () => {
 			chatContainer: createContainer(),
 			pendingMessagesContainer: createContainer(),
 			pendingBashComponents: [],
-			settings: { get: () => true },
+			settings: Settings.isolated(),
 			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 			present: vi.fn(),
 			completePendingLocalExecution: vi.fn(),
+			markUserSubmission: vi.fn(),
 			showError: vi.fn(),
 			applyCwdChange: vi.fn(async () => {}),
 			updateEditorBorderColor: vi.fn(),
@@ -410,9 +413,7 @@ describe("bash shortcut command", () => {
 
 	it("does not execute cd when saving source settings fails", async () => {
 		const { ctx, executeBash, present, state } = createCwdContext("/tmp");
-		ctx.settings.flush = vi.fn(async () => {
-			throw new Error("settings write denied");
-		});
+		vi.spyOn(ctx.settings, "flush").mockRejectedValue(new Error("settings write denied"));
 
 		await new CommandController(ctx).handleBashCommand("cd /");
 

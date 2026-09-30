@@ -11,6 +11,7 @@ import * as tls from "node:tls";
 import * as zlib from "node:zlib";
 import { PtySession } from "@oh-my-pi/pi-natives";
 import xterm from "@oh-my-pi/pi-utils/vterm";
+import { t } from "../i18n";
 
 const DEFAULT_PROXY_HOST = "127.0.0.1";
 const DEFAULT_PROXY_PORT = 8080;
@@ -789,10 +790,13 @@ export async function runClaudeMessagesCapture(args: ClaudeTraceCommandArgs = {}
 		}
 		if (first.kind === "pty-error") {
 			throw new Error(
-				`Claude command failed before /v1/messages completed: ${errorMessage(first.error)}${outputSuffix()}`,
+				t("Claude command failed before /v1/messages completed: {error}{suffix}", {
+					error: errorMessage(first.error),
+					suffix: outputSuffix(),
+				}),
 			);
 		}
-		throw new Error(`Claude command exited before /v1/messages completed${outputSuffix()}`);
+		throw new Error(t("Claude command exited before /v1/messages completed{suffix}", { suffix: outputSuffix() }));
 	} finally {
 		terminal.dispose();
 		await proxy.stop();
@@ -801,7 +805,10 @@ export async function runClaudeMessagesCapture(args: ClaudeTraceCommandArgs = {}
 
 export async function runClaudeTraceCommand(args: ClaudeTraceCommandArgs = {}): Promise<void> {
 	process.stderr.write(
-		`Starting Claude trace proxy on ${args.host ?? DEFAULT_PROXY_HOST}:${args.port ?? DEFAULT_PROXY_PORT}\n`,
+		`${t("Starting Claude trace proxy on {host}:{port}", {
+			host: args.host ?? DEFAULT_PROXY_HOST,
+			port: args.port ?? DEFAULT_PROXY_PORT,
+		})}\n`,
 	);
 	const exchange = await runClaudeMessagesCapture(args);
 	const output = args.json ? `${JSON.stringify(exchange, null, 2)}\n` : formatCapturedMessagesExchange(exchange);

@@ -2,15 +2,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test
 import { stripVTControlCharacters } from "node:util";
 import type { UserMessage } from "@oh-my-pi/pi-ai";
 import { Container } from "@oh-my-pi/pi-tui";
-import { InjectNoticeComponent } from "@oh-my-pi/pi-coding-agent/modes/components/inject-notice";
-import { UserMessageComponent } from "@oh-my-pi/pi-coding-agent/modes/components/user-message";
-import { initTheme } from "@oh-my-pi/pi-coding-agent/modes/theme/theme";
+import { InjectNoticeComponent } from "@oh-my-pi/pi-tui/chat/inject-notice";
+import { UserMessageComponent } from "@oh-my-pi/pi-tui/chat/user-message";
+import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
-import { collapsedRunProjections } from "@oh-my-pi/pi-coding-agent/modes/utils/transcript-render-helpers";
-import {
-	type ContextInjectionItem,
-	createContextInjectionMessage,
-} from "@oh-my-pi/pi-coding-agent/session/context-injection";
+import { collapsedRunProjections } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
+import { type ContextInjectionItem, createContextInjectionMessage } from "@oh-my-pi/pi-tui/chat/context-injection";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import { createInteractiveModeContext } from "../../helpers/interactive-mode-context";
@@ -62,14 +59,7 @@ function userMessage(text: string): UserMessage {
 }
 
 function makeHarness(): { ctx: InteractiveModeContext; helpers: UiHelpers } {
-	const ctx = createInteractiveModeContext({
-		getUserMessageText: message =>
-			typeof message.content === "string"
-				? message.content
-				: message.content
-						.map(block => (block.type === "text" && typeof block.text === "string" ? block.text : ""))
-						.join(""),
-	});
+	const ctx = createInteractiveModeContext();
 	const helpers = new UiHelpers(ctx);
 	// The fixture stubs `ctx.addMessageToChat`; production forwards it to these
 	// helpers, so wire it back for the tests that drive `renderSessionContext`.
@@ -93,13 +83,25 @@ describe("injection notices around the first user message", () => {
 		expect(blockKinds(ctx)).toEqual(["user", "inject"]);
 	});
 
-	it("renders a notice in place once the user has spoken", () => {
+	it("renders a notice in place once the user has submitted something", () => {
 		const { ctx, helpers } = makeHarness();
 
 		helpers.addMessageToChat(userMessage("hello"));
+		helpers.flushDeferredInjectNotice();
 		helpers.addMessageToChat(createContextInjectionMessage([AGENTS_MD], Date.now()));
 
 		expect(blockKinds(ctx)).toEqual(["user", "inject"]);
+	});
+
+	it("publishes a notice for a command the user ran, without waiting for a prompt", () => {
+		const { ctx, helpers } = makeHarness();
+
+		// The command is the user's own action, and the session re-derives the
+		// injected context because of it: the notice belongs on screen now.
+		helpers.markUserSubmission();
+		helpers.presentInjectNotice([AGENTS_MD]);
+
+		expect(blockKinds(ctx)).toEqual(["inject"]);
 	});
 
 	it("folds several startup sets into the one notice that follows the first message", () => {
@@ -120,6 +122,7 @@ describe("injection notices around the first user message", () => {
 		const { ctx, helpers } = makeHarness();
 
 		helpers.addMessageToChat(userMessage("hello"));
+		helpers.flushDeferredInjectNotice();
 		helpers.presentInjectNotice([AGENTS_MD]);
 		helpers.presentInjectNotice([SKILLS]);
 
@@ -184,5 +187,28 @@ describe("injection notices around the first user message", () => {
 		});
 
 		expect(blockKinds(ctx)).toEqual(["user", "Container"]);
+	});
+
+	it("holds a resumed session's own context until the user submits there", () => {
+		const { ctx, helpers } = makeHarness();
+		const replayed = createContextInjectionMessage([AGENTS_MD], Date.now());
+		const request = userMessage("hello");
+		// The resumed session replays its journal: the previous session's context
+		// notice and the request it belonged to are history on screen.
+		helpers.renderSessionContext({ messages: [replayed, request] } as SessionContext);
+		const startup = createContextInjectionMessage([SKILLS], Date.now());
+
+		// The resumed process assembles its own context on launch. Its notice is
+		// not a reaction to anything the user did here, so it must wait even
+		// though the replayed transcript already shows a user request.
+		helpers.addMessageToChat(startup);
+		helpers.presentInjectNotice([SKILLS]);
+		expect(notices(ctx)).toHaveLength(1);
+
+		helpers.addMessageToChat(userMessage("second"));
+		helpers.flushDeferredInjectNotice();
+
+		expect(notices(ctx)).toHaveLength(2);
+		expect(blockKinds(ctx)).toEqual(["user", "inject", "user", "inject"]);
 	});
 });
