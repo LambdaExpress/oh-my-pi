@@ -7,6 +7,7 @@ import { prompt, sanitizeText } from "@oh-my-pi/pi-utils";
 import type { RenderResultOptions } from "../extensibility/custom-tools/types";
 import { t } from "../i18n";
 import type { Theme } from "@oh-my-pi/pi-tui/theme";
+import type { ToolActivityContext, ToolActivitySummary } from "@oh-my-pi/pi-tui/tools/renderer";
 import sshTransferDescriptionBase from "../prompts/tools/ssh-transfer.md" with { type: "text" };
 import { ensureHostInfo, type SSHConnectionTarget } from "../ssh/connection-manager";
 import {
@@ -25,6 +26,7 @@ import { enforcePlanModeWrite } from "./plan-mode-guard";
 import { replaceTabs } from "@oh-my-pi/pi-tui/render/render-utils";
 import {
 	formatSshTransferSummary,
+	isSshTransferToolDetails,
 	type SshTransferOperation,
 	type SshTransferStatus,
 	type SshTransferToolDetails,
@@ -406,6 +408,24 @@ interface SshTransferRenderArgs {
 
 export const sshTransferToolRenderer = {
 	inline: false,
+
+	activitySummary(args: SshTransferRenderArgs, context: ToolActivityContext): ToolActivitySummary {
+		const details = context.result?.details;
+		if (isSshTransferToolDetails(details)) {
+			return {
+				label: t("SSH Transfer"),
+				detail: context.theme.fg("muted", formatSshTransferSummary(details, { compact: true })),
+			};
+		}
+		const operation = args?.op === "download" ? "Download" : args?.op === "upload" ? "Upload" : "Transfer";
+		const host = typeof args?.host === "string" ? sanitizeTransferField(args.host) : "";
+		const source = args?.op === "download" ? args.remote_path : args?.local_path;
+		const filename = typeof source === "string" ? sanitizeTransferField(path.win32.basename(source)) : "";
+		return {
+			label: t("SSH Transfer"),
+			detail: context.theme.fg("muted", `${host ? `${host} ` : ""}${t(operation)}${filename ? ` ${filename}` : ""}`),
+		};
+	},
 
 	renderCall(args: SshTransferRenderArgs, _options: RenderResultOptions, uiTheme: Theme): Component {
 		const operation = args.op === "download" ? "Download" : args.op === "upload" ? "Upload" : "Transfer";

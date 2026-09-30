@@ -52,7 +52,7 @@ describe("folded tool rows", () => {
 		expect(visibleRows(card).join("\n")).toContain("print(1)");
 	});
 
-	it("summarizes a flat Task assignment and restores its full brief", () => {
+	it("counts a flat Task as one agent and restores its full brief", () => {
 		const card = toolCard(
 			"task",
 			{ agent: "reviewer", name: "AuthProbe", task: "# Target\nReview session-cookie validation before release." },
@@ -60,19 +60,28 @@ describe("folded tool rows", () => {
 		);
 		card.setToolRowsFolded(true);
 
-		expect(visibleRows(card).map(row => row.trim())).toEqual([
-			"Task: Review session-cookie validation before release.",
-		]);
+		const folded = visibleRows(card);
+		expect(folded).toHaveLength(1);
+		expect(folded[0]).toMatch(/:\s*1\b/);
+		expect(folded[0]).toContain("Review session-cookie validation before release.");
+		expect(folded[0]).not.toContain("# Target");
 		card.updateResult({ content: [{ type: "text", text: "review complete" }] });
+		expect(visibleRows(card)[0]).toMatch(/:\s*1\b/);
 		expect(visibleRows(card)[0]).toContain("Review session-cookie validation before release.");
 
 		card.setToolRowsFolded(false);
 		expect(visibleRows(card).join("\n")).toContain("Review session-cookie validation before release.");
 	});
 
-	it("updates a batch Task row as its context and child assignments stream in", () => {
+	it("updates the batch Task count as assignments stream in and retains it after settlement", () => {
 		const card = toolCard("task", { context: "# Goal" }, "Task");
 		card.setToolRowsFolded(true);
+		expect(visibleRows(card)[0]).not.toMatch(/\d/);
+		card.updateArgs({
+			tasks: [{ name: "FoldAdvisorCard", task: "# Target\nShow note counts and blockers" }],
+		});
+		expect(visibleRows(card)[0]).toMatch(/:\s*1\b/);
+		expect(visibleRows(card)[0]).toContain("Show note counts and blockers");
 		card.updateArgs({
 			context: "# Goal\nFix Advisor and SSH transcript folding",
 			tasks: [
@@ -83,12 +92,22 @@ describe("folded tool rows", () => {
 
 		const lines = visibleRows(card, 110);
 		expect(lines).toHaveLength(1);
-		expect(lines[0]).toContain("Task: Fix Advisor and SSH transcript folding");
+		expect(lines[0]).toMatch(/:\s*2\b/);
+		expect(lines[0]).toContain("Fix Advisor and SSH transcript folding");
 		expect(lines[0]).not.toContain("# Goal");
-		card.updateArgs({
-			tasks: [{ name: "FoldAdvisorCard", task: "# Target\nShow note counts and blockers" }],
-		});
-		expect(visibleRows(card)[0]).toContain("Show note counts and blockers");
+		const narrow = visibleRows(card, 32);
+		expect(narrow).toHaveLength(1);
+		expect(narrow[0]).toMatch(/:\s*2\b/);
+		expect(Bun.stringWidth(narrow[0]!)).toBeLessThanOrEqual(32);
+
+		card.updateResult({ content: [{ type: "text", text: "background tasks running" }] }, true);
+		expect(visibleRows(card)[0]).toMatch(/:\s*2\b/);
+		card.updateResult({ content: [{ type: "text", text: "all checks completed" }] });
+		expect(visibleRows(card)[0]).toMatch(/:\s*2\b/);
+		expect(visibleRows(card)[0]).toContain("Fix Advisor and SSH transcript folding");
+
+		card.setToolRowsFolded(false);
+		expect(visibleRows(card).join("\n")).toContain("Fix Advisor and SSH transcript folding");
 	});
 
 	it("keeps a live call's spinner on the folded row", () => {

@@ -97,10 +97,16 @@ describe("async-result transcript folding", () => {
 		transcript.setToolRowsFolded(true);
 		const compact = resultRows(transcript);
 		expect(compact).toHaveLength(1);
+		expect(compact[0]).toMatch(/:\s*backup\.example\s+Upload\b/);
 		expect(compact[0]).toContain("completed");
 		expect(compact[0]).toContain("ssh-42");
-		expect(compact[0]).toContain("/tmp/report.tar → /archive/report.tar");
-		expect(compact[0]).not.toContain("100.0%");
+		expect(compact[0]).toContain("report.tar");
+		expect(compact[0]).toContain("100.0%");
+		expect(compact[0]).toContain("██████████");
+		const readable = resultRows(transcript, 80);
+		expect(readable[0]).toContain("backup.example");
+		expect(readable[0]).toContain("report.tar");
+		expect(readable[0]).toContain("100.0%");
 		for (const width of [40, 12]) {
 			const narrow = resultRows(transcript, width);
 			expect(narrow).toHaveLength(1);
@@ -138,11 +144,13 @@ describe("async-result transcript folding", () => {
 		expect(folded[0]).toContain("failed");
 		expect(folded[0]).toContain("ssh-failed");
 		expect(folded[0]).toContain("permission denied");
-		expect(folded[0]).toContain("/tmp/report.tar → /archive/report.tar");
+		expect(folded[0]).toContain("Upload");
+		expect(folded[0]).toContain("report.tar");
 		expect(folded[1]).toContain("artifact write failed");
 		expect(folded[2]).toContain("cancelled");
 		expect(folded[2]).toContain("ssh-cancelled");
-		expect(folded[2]).toContain("/archive/report.tar → /tmp/report.tar");
+		expect(folded[2]).toContain("Download");
+		expect(folded[2]).toContain("report.tar");
 		expect(folded[3]).toContain("artifact flush failed");
 		transcript.setToolRowsFolded(false);
 		const detailed = resultRows(transcript);

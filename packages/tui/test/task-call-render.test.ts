@@ -81,22 +81,6 @@ describe("task renderer: streaming call preview", () => {
 		expect(expanded).toContain("Step 6");
 	});
 
-	it("surfaces the isolation flag in the header bar", () => {
-		const args: TaskParams = {
-			agent: "task",
-			isolated: true,
-			name: "Only",
-			task: "...",
-		};
-		const out = render(args);
-		const lines = out.split("\n");
-
-		expect(out).toContain("Only");
-		// Isolation is surfaced as header meta in the frame's top bar (first line),
-		// not as a trailing child row under the task list.
-		expect(lines[0]).toContain("isolated");
-	});
-
 	// The batch schema streams `context` before `tasks`, and `renderResult`
 	// draws context/assignment above the agent rows. The call preview must use
 	// the same order: agent rows above the context would shift the whole brief

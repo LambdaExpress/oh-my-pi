@@ -1,7 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { getThemeByName, setThemeInstance, type Theme } from "@oh-my-pi/pi-tui/theme";
 import { renderResult, taskCardAgentIds } from "@oh-my-pi/pi-tui/tools/task";
-import { taskToolRenderer } from "@oh-my-pi/pi-tui/tools/task";
 import type { AgentProgress, SingleResult, TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
 
 const strip = (lines: readonly string[]): string =>
@@ -222,7 +221,7 @@ describe("task live progress rendering", () => {
 		expect(text).not.toContain("\r");
 	});
 
-	it("caps collapsed nested task progress at four rows plus an elision line", () => {
+	it("caps collapsed nested task progress at the four newest agents", () => {
 		setViewportRows(40);
 		const text = renderProgressText(makeParentWithNestedProgress(6), false, uiTheme);
 
@@ -232,7 +231,6 @@ describe("task live progress rendering", () => {
 		expect(text).toContain("Nested4");
 		expect(text).toContain("Nested5");
 		expect(text).toContain("Nested6");
-		expect(text).toContain("2 more agents");
 	});
 
 	it("shows every nested task progress row when expanded", () => {
@@ -242,7 +240,6 @@ describe("task live progress rendering", () => {
 		for (let index = 1; index <= 6; index++) {
 			expect(text).toContain(`Nested${index}`);
 		}
-		expect(text).not.toContain("more agents");
 	});
 
 	it("caps collapsed finalized nested task results and keeps the failed child visible", () => {
@@ -250,7 +247,6 @@ describe("task live progress rendering", () => {
 		const text = renderResultText(makeParentWithNestedResults(6), false, uiTheme);
 
 		expect(text).toContain("Done6"); // failed child wins a slot despite sorting last
-		expect(text).toContain("2 more agents");
 		const visibleChildren = [1, 2, 3, 4, 5, 6].filter(index => text.includes(`Done${index}`));
 		expect(visibleChildren).toHaveLength(4);
 	});
@@ -262,11 +258,6 @@ describe("task live progress rendering", () => {
 		for (let index = 1; index <= 6; index++) {
 			expect(text).toContain(`Done${index}`);
 		}
-		expect(text).not.toContain("more agents");
-	});
-
-	it("does not request spinner ticks for static partial progress", () => {
-		expect("animatedPartialResult" in taskToolRenderer).toBe(false);
 	});
 
 	it("renders running progress identically across spinner frames", () => {

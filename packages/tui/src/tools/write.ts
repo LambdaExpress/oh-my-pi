@@ -485,7 +485,7 @@ export const writeToolRenderer = {
 		const device = parseXdUrl(rawPath);
 		if (device?.name) {
 			const resolveMounted = (context.renderContext as WriteRenderContext | undefined)?.resolveXdevMounted;
-			return xdevActivitySummary(device.name, writeArgs.content, context.theme, resolveMounted);
+			return xdevActivitySummary(device.name, writeArgs.content, context, resolveMounted);
 		}
 		// Same count the card header reports, so a folded write still says how
 		// much it wrote.
