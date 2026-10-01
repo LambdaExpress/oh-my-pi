@@ -222,6 +222,8 @@ Remote rows can supply current limits, pricing, modalities, and capability flags
 
 Fresh cached snapshots avoid a network request. If refresh fails, OMP keeps the last usable cached snapshot and marks it stale; without a cache, it falls back to the bundled catalog. Provider discovery state records `source` (`bundled`, `models.dev`, `provider`, or `cache`) and `fetchedAt` so callers can distinguish current remote data from an offline fallback.
 
+Codex also filters model visibility by the client version advertised by OMP. If a new Codex model remains absent after `omp models refresh openai-codex`, update the OMP binary before retrying; refreshing an older binary cannot expose a version-gated model. Codex discovery caches are separated by client version, so an upgrade does not reuse the older version's restricted model list.
+
 ## Provider and model identity
 
 The registry retains concrete `provider` + `id` identities. Use an exact
