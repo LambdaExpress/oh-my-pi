@@ -54,6 +54,7 @@
 
 ### Changed
 
+- Kept `Read` and `SSH Transfer` tool names in English when using the Chinese interface.
 - Clarified task effort guidance to use `lo`/`med`/`hi` and avoid invalid model reasoning-effort values such as `high`.
 - `scripts/extract-i18n-keys.ts` now extracts command example blocks (resolving `${APP_NAME}` like the help renderer does) and slash-command metadata (`description` / `acpDescription` in `slash-commands/**` and bundled custom commands, which the registry translates at materialization), and reports keys reached only through indirect call sites (`t(CONST[id])`, `.map(t)`) as their own bucket instead of as orphans, so the audit no longer buries real stale entries in false positives.
 - Documented browser execution realms: direct helpers evaluate in the page's main world, while `tab.run`'s raw Puppeteer `page` defaults to the isolated world — use the `world=main` directive to reach page globals; `addScriptTag` scripts run in the main world, and page console/pageerror events are not delivered.
