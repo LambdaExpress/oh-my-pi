@@ -61,6 +61,8 @@ const host: SessionToolsHost = {
 	recordContextInjection: () => {},
 	notifyCommandMetadataChanged: () => {},
 	localProtocolOptions: () => ({}),
+	evalPreludes: () => [],
+	sessionAgents: () => [],
 };
 const sessionTools = new SessionTools(host, {
 	baseSystemPrompt: [],

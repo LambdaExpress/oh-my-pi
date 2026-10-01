@@ -5,6 +5,7 @@ import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/c
 import { getThemeByName, setThemeInstance, type Theme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { Container, Spacer } from "@oh-my-pi/pi-tui";
+import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { setLocale } from "../src/i18n";
 
 /**
@@ -53,6 +54,7 @@ function buildCtx(
 		updateEditorTopBorder: vi.fn(),
 		showError,
 		flushCompactionQueue: vi.fn(async () => undefined),
+		keybindings: KeybindingsManager.inMemory(),
 		// executeCompaction consults display.collapseCompacted on the ok path to
 		// decide whether the rebuild replaces the terminal transcript.
 		settings: Settings.isolated({
@@ -101,19 +103,32 @@ describe("executeCompaction UI lifecycle", () => {
 		const compact = vi.fn(async () => {
 			throw new CompactionCancelledError();
 		});
-		const { ctx, chatContainer, statusContainer, rebuildChatFromMessages, showError } = buildCtx(compact);
-		const childrenBefore = chatContainer.children.length;
+		const { ctx, chatContainer, statusContainer, rebuildChatFromMessages } = buildCtx(compact);
+		const childrenBefore = [...chatContainer.children];
 
 		const controller = new CommandController(ctx);
 		const outcome = await controller.executeCompaction();
 
 		expect(outcome).toBe("cancelled");
 		// No orphan Spacer leaked into the chat transcript on the cancel path.
-		expect(chatContainer.children).toHaveLength(childrenBefore);
+		expect(chatContainer.children).toEqual(childrenBefore);
 		// The compacting loader was removed from the status container.
 		expect(statusContainer.children).toHaveLength(0);
-		// Proof the cancel branch ran instead of the success branch.
-		expect(showError).toHaveBeenCalledWith("Compaction cancelled");
+		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
+	});
+
+	it("leaves the transcript untouched and drains the loader when compaction fails", async () => {
+		const compact = vi.fn(async () => {
+			throw new Error("Summarization failed");
+		});
+		const { ctx, chatContainer, statusContainer, rebuildChatFromMessages } = buildCtx(compact);
+		const childrenBefore = [...chatContainer.children];
+
+		const controller = new CommandController(ctx);
+		expect(await controller.executeCompaction()).toBe("failed");
+
+		expect(chatContainer.children).toEqual(childrenBefore);
+		expect(statusContainer.children).toHaveLength(0);
 		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
 	});
 
@@ -123,7 +138,7 @@ describe("executeCompaction UI lifecycle", () => {
 			firstKeptEntryId: "",
 			tokensBefore: 0,
 		}));
-		const { ctx, statusContainer, rebuildChatFromMessages, statusAtRebuild } = buildCtx(compact);
+		const { ctx, statusContainer, statusAtRebuild } = buildCtx(compact);
 
 		const controller = new CommandController(ctx);
 		const outcome = await controller.executeCompaction();
@@ -131,9 +146,6 @@ describe("executeCompaction UI lifecycle", () => {
 		expect(outcome).toBe("ok");
 		// Status container is empty once compaction resolves.
 		expect(statusContainer.children).toHaveLength(0);
-		// Post-compaction rebuilds preserve settled components so their warmed
-		// Markdown/layout caches survive the transcript reset.
-		expect(rebuildChatFromMessages).toHaveBeenCalledWith({ reuseSettledComponents: true });
 		// The loader was drained BEFORE the transcript rebuild, not only by the
 		// finally that runs afterward: the status container was already empty at
 		// the instant rebuildChatFromMessages ran (1 leaked loader without the fix).

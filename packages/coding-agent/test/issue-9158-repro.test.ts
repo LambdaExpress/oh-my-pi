@@ -15,7 +15,8 @@
  * installs the postmortem handler on import) whose worker emits a bad frame and
  * then STAYS ALIVE — proving the malformed frame itself faults the worker's error
  * channel rather than a coincidental clean exit — and pins that the parent
- * survives.
+ * survives. Windows has no portable raw IPC fd 3, so there the fixture injects
+ * Bun's exact stackless decode error while a real IPC worker stays alive.
  */
 import { describe, expect, it } from "bun:test";
 import * as path from "node:path";
@@ -23,11 +24,13 @@ import * as path from "node:path";
 describe("issue #9158 — malformed worker IPC frame must not terminate the parent", () => {
 	it("contains an advanced-serialization decode failure to the worker instead of exiting the session", async () => {
 		const repoRoot = path.resolve(import.meta.dir, "..");
-		// Bun advanced-IPC frame with an invalid structured-clone body, written
-		// raw to the IPC fd (3), then the child blocks forever. Staying alive is
-		// the point: the malformed frame — not an exit — must fault the worker.
+		// On POSIX, emit an invalid structured-clone body to Bun's raw IPC fd.
+		// On Windows, establish a real IPC channel and keep its child alive while
+		// the parent injects the same process-level error at the runtime boundary.
 		const childScript =
-			'require("node:fs").writeSync(3, Buffer.from([2, 4, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef])); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);';
+			process.platform === "win32"
+				? 'process.send("READY"); setInterval(() => {}, 1000);'
+				: 'require("node:fs").writeSync(3, Buffer.from([2, 4, 0, 0, 0, 0xde, 0xad, 0xbe, 0xef])); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);';
 		// Runs in a spawned `bun -e` parent: importing worker-client pulls in the
 		// postmortem module, which installs the global uncaughtException handler
 		// under test.
@@ -41,10 +44,27 @@ describe("issue #9158 — malformed worker IPC frame must not terminate the pare
 			});
 			const { promise: errored, resolve } = Promise.withResolvers();
 			worker.errors.add(resolve);
+			const deadline = setTimeout(() => {
+				worker.intentionalExit.value = true;
+				worker.proc.kill("SIGKILL");
+				process.exitCode = 2;
+			}, 10000);
+			if (process.platform === "win32") {
+				const { promise: ready, resolve: markReady } = Promise.withResolvers();
+				worker.inbound.add(message => { if (message === "READY") markReady(); });
+				await ready;
+				const decodeError = new TypeError("Unable to deserialize data.");
+				delete decodeError.stack;
+				queueMicrotask(() => { throw decodeError; });
+			}
 			// The bad frame is contained and faults the worker's error channel even
 			// though the child never exits on its own.
 			const err = await errored;
-			process.stdout.write("FAULTED:" + err.message);
+			if (!(err.cause instanceof TypeError)) throw err;
+			await worker.proc.exited;
+			await worker.stderrDrained;
+			clearTimeout(deadline);
+			process.stdout.write("FAULTED_AND_REAPED");
 		`;
 		const proc = Bun.spawn([process.execPath, "-e", wrapperScript], {
 			cwd: repoRoot,
@@ -52,12 +72,20 @@ describe("issue #9158 — malformed worker IPC frame must not terminate the pare
 			stderr: "pipe",
 			env: { ...process.env, PI_TEST_RUNTIME: "0" },
 		});
-		const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-		// Before the fix the postmortem handler exited the parent with code 1 and
-		// no marker ever printed.
-		expect(exitCode).toBe(0);
-		expect(stdout).toContain("FAULTED:");
-		expect(stdout).toContain("worker sent a malformed IPC frame");
+		try {
+			const [stdout, , exitCode] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+				proc.exited,
+			]);
+			// This marker is written only after the error channel faults and the
+			// still-live worker is killed/reaped without terminating its parent.
+			expect(exitCode).toBe(0);
+			expect(stdout).toBe("FAULTED_AND_REAPED");
+		} finally {
+			proc.kill();
+			await proc.exited;
+		}
 	}, 20_000);
 
 	it("still faults on an unrelated TypeError with the same message but a real stack", async () => {
@@ -76,8 +104,17 @@ describe("issue #9158 — malformed worker IPC frame must not terminate the pare
 			stderr: "pipe",
 			env: { ...process.env, PI_TEST_RUNTIME: "0" },
 		});
-		const [stdout, exitCode] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-		expect(exitCode).toBe(1);
-		expect(stdout).toBe("BEFORE_THROW");
+		try {
+			const [stdout, , exitCode] = await Promise.all([
+				new Response(proc.stdout).text(),
+				new Response(proc.stderr).text(),
+				proc.exited,
+			]);
+			expect(exitCode).toBe(1);
+			expect(stdout).toBe("BEFORE_THROW");
+		} finally {
+			proc.kill();
+			await proc.exited;
+		}
 	}, 20_000);
 });

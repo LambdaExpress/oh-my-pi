@@ -765,7 +765,10 @@ interface CodexRequestContext {
 
 interface CodexRequestSetup {
 	requestSignal: AbortSignal;
-	wrapCodexSseStream: (source: AsyncGenerator<Record<string, unknown>>) => AsyncGenerator<Record<string, unknown>>;
+	wrapCodexSseStream: (
+		source: AsyncGenerator<Record<string, unknown>>,
+		streamAbortController: AbortController,
+	) => AsyncGenerator<Record<string, unknown>>;
 	requestAbortController: AbortController;
 	firstEventTimeoutMs: number | undefined;
 	websocketIdleTimeoutMs: number | undefined;
@@ -1325,28 +1328,26 @@ function getCodexServiceTierCostMultiplier(
 	model: Pick<Model<"openai-codex-responses">, "serviceTierCost">,
 	serviceTier: ServiceTier | "default" | undefined,
 ): number {
+	// `ultrafast` has no published price (API preview, Codex credits), so it is
+	// shown at 1x rather than an invented multiplier.
 	if (serviceTier !== "flex" && serviceTier !== "priority") return 1;
 	return model.serviceTierCost?.[serviceTier] ?? 1;
 }
 
-function resolveCodexCostServiceTier(res: unknown, req?: unknown): ServiceTier | "default" | undefined {
-	switch (res) {
-		case "flex":
-			return "flex";
-		case "priority":
-			return "priority";
-		default:
-			if (req === "flex" || req === "priority") {
-				return req;
-			}
-			return "default";
-	}
+/**
+ * The tier a Codex response was billed at. The response echo is authoritative
+ * whenever it reports a tier (the backend may serve a requested priority/flex
+ * turn as `default`); the requested tier is used only when the echo is absent.
+ */
+function resolveCodexCostServiceTier(res: ServiceTier | undefined, req?: unknown): ServiceTier | "default" | undefined {
+	const served = res ?? req;
+	return served === "flex" || served === "priority" ? served : "default";
 }
 
 function applyCodexServiceTierPricing(
 	model: Pick<Model<"openai-codex-responses">, "serviceTierCost">,
 	usage: AssistantMessage["usage"],
-	resTier: unknown,
+	resTier: ServiceTier | undefined,
 	reqTier: unknown,
 ): void {
 	const resolvedTier = resolveCodexCostServiceTier(resTier, reqTier);
@@ -1384,15 +1385,16 @@ function createRequestSetup(options: OpenAICodexResponsesOptions | undefined): C
 	const websocketFirstEventTimeoutMs = options?.streamFirstEventTimeoutMs ?? CODEX_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS;
 	const wrapCodexSseStream = (
 		source: AsyncGenerator<Record<string, unknown>>,
+		streamAbortController: AbortController,
 	): AsyncGenerator<Record<string, unknown>> =>
 		iterateWithIdleTimeout(source, {
 			idleTimeoutMs,
 			firstItemTimeoutMs: firstEventTimeoutMs,
 			firstItemErrorMessage: "OpenAI Codex SSE stream timed out while waiting for the first event",
 			errorMessage: "OpenAI Codex SSE stream stalled while waiting for the next event",
-			onIdle: () => requestAbortController.abort(),
-			onFirstItemTimeout: () => requestAbortController.abort(),
-			abortSignal: options?.signal,
+			onIdle: () => streamAbortController.abort(),
+			onFirstItemTimeout: () => streamAbortController.abort(),
+			abortSignal: requestSignal,
 			isProgressItem: isCodexStreamProgressEvent,
 		});
 	return {
@@ -1978,6 +1980,10 @@ async function openCodexSseTransport(
 	const open = async (wireBody: RequestBody) => {
 		// Keep the 400 dump honest: record the body actually sent on the wire.
 		requestContext.rawRequestDump.body = wireBody;
+		// A stalled attempt must release its connection without cancelling the
+		// request-level signal that later retries and their backoff still need.
+		const streamAbortController = new AbortController();
+		const streamSignal = AbortSignal.any([requestSetup.requestSignal, streamAbortController.signal]);
 		return requestSetup.wrapCodexSseStream(
 			await openCodexSseEventStream(
 				requestContext.url,
@@ -1991,12 +1997,13 @@ async function openCodexSseTransport(
 				requestContext.responsesLite,
 				requestContext.codexClientVersion,
 				requestContext.requestMetadata,
-				requestSetup.requestSignal,
+				streamSignal,
 				requestSetup.firstEventTimeoutMs,
 				options?.codexSseMaxAttempts,
 				event => options?.onSseEvent?.(event, model),
 				options?.fetch,
 			),
+			streamAbortController,
 		);
 	};
 	const canAppendBeforeRequest = state?.canAppend === true;
@@ -3530,6 +3537,7 @@ function parseCodexServiceTier(value: unknown): ServiceTier | undefined {
 		case "flex":
 		case "scale":
 		case "priority":
+		case "ultrafast":
 			return value;
 		default:
 			return undefined;
@@ -3749,12 +3757,18 @@ const CODEX_CHAIN_TOP_LEVEL_EXCLUDE_MAP = {
  * request schema has no `previous_response_id` (codex-rs carries it only on
  * websocket `response.create` frames) and strict gateway validators 400 it
  * with `{"detail":"Unsupported parameter: previous_response_id"}`.
+ *
+ * Entering or leaving `ultrafast` still breaks the chain: that tier is a
+ * separate serving path, and codex-rs sends a full `response.create` across
+ * such a switch rather than a `previous_response_id` delta.
  */
 function buildCodexChainedRequestBody(
 	requestBody: RequestBody,
 	state: CodexWebSocketSessionState | undefined,
 ): RequestBody {
-	const chainable = state?.canAppend === true;
+	const chainable =
+		state?.canAppend === true &&
+		(state.lastRequest?.service_tier === "ultrafast") === (requestBody.service_tier === "ultrafast");
 	const appendInput = chainable
 		? buildResponsesDeltaInput(
 				state.lastRequest,
@@ -4738,8 +4752,14 @@ async function openCodexSseEventStream(
 	if (!response.body) {
 		throw new CodexProviderStreamError("No response body", false);
 	}
-	return readSseJson<Record<string, unknown>>(response.body, signal, event =>
-		onSseEvent?.({ event: event.event, data: event.data, raw: [...event.raw] }, undefined),
+	// Attach the observer only when a diagnostic listener exists: any observer
+	// turns on per-line raw capture in `readSseJson`.
+	return readSseJson<Record<string, unknown>>(
+		response.body,
+		signal,
+		onSseEvent
+			? event => onSseEvent({ event: event.event, data: event.data, raw: [...event.raw] }, undefined)
+			: undefined,
 	);
 }
 

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
 import * as path from "node:path";
 import type { Model } from "@oh-my-pi/pi-ai";
 import { getBundledModel } from "@oh-my-pi/pi-catalog/models";
@@ -40,12 +40,14 @@ describe("context injection recording", () => {
 		authStorage.close();
 	});
 
+	beforeEach(() => {
+		tempDir = TempDir.createSync("@pi-context-injection-");
+	});
+
 	afterEach(async () => {
 		await session?.dispose();
 		session = undefined;
-		try {
-			await tempDir.remove();
-		} catch {}
+		await tempDir.remove();
 	});
 
 	/** Journaled injection records on the current branch, in append order. */
@@ -60,7 +62,6 @@ describe("context injection recording", () => {
 	}
 
 	async function createSession(contextFiles?: ReadonlyArray<{ path: string; content: string }>): Promise<void> {
-		tempDir ??= TempDir.createSync("@pi-context-injection-");
 		session = (
 			await createAgentSession({
 				cwd: tempDir.path(),
@@ -73,7 +74,7 @@ describe("context injection recording", () => {
 					"async.enabled": false,
 					"advisor.enabled": false,
 					"compaction.enabled": false,
-					"memory.backend": "none",
+					"memory.backend": "off",
 				}),
 				model,
 				disableExtensionDiscovery: true,
@@ -135,7 +136,6 @@ describe("context injection recording", () => {
 	});
 
 	it("re-reads the injected instruction files after a command the user ran", async () => {
-		tempDir = TempDir.createSync("@pi-context-injection-");
 		await Bun.write(path.join(tempDir.path(), "AGENTS.md"), "# v1\n");
 		await createSession();
 		const before = recordedInjections();

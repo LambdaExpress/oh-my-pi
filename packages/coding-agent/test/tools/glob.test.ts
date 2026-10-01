@@ -2,13 +2,16 @@ import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import { FileType } from "@oh-my-pi/pi-natives";
+import type { GlobToolDetails } from "@oh-my-pi/pi-tui/tools/glob";
 import { Settings } from "../../src/config/settings";
 import type { ToolSession } from "../../src/tools";
 import { GlobTool } from "../../src/tools/glob";
 import { findUniqueWorkspaceSuffixWithGlobForTest } from "../../src/tools/path-utils";
 import { ToolAbortError } from "../../src/tools/tool-errors";
 import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
+import { formatOutputNotice } from "@oh-my-pi/pi-tui/tools/output-meta";
 
 function createSession(cwd = process.cwd()): ToolSession {
 	return {
@@ -227,5 +230,78 @@ describe("GlobTool.execute", () => {
 		controller.abort();
 		releaseResult.resolve();
 		await expect(execution).rejects.toBeInstanceOf(ToolAbortError);
+	});
+});
+
+describe("GlobTool hard-cap limit notice", () => {
+	const files5001 = Array.from({ length: 5001 }, (_, i) => `f${String(i).padStart(4, "0")}`);
+
+	function globToolWith(files: string[]): GlobTool {
+		return new GlobTool(createSession(), {
+			nativeGlob: async () => ({
+				matches: files.map(file => ({ path: file, mtime: 0, fileType: FileType.File })),
+				totalMatches: files.length,
+			}),
+		});
+	}
+
+	function textOf(result: AgentToolResult<GlobToolDetails>): string {
+		const first = result.content[0];
+		return first?.type === "text" && first.text !== undefined ? first.text : "";
+	}
+
+	function limitNotice(result: AgentToolResult<GlobToolDetails>): string {
+		return formatOutputNotice(result.details?.meta);
+	}
+
+	test("discloses a clamped request and never advises a value that clamps back", async () => {
+		const result = await globToolWith(files5001).execute("glob-clamp-notice", {
+			path: ".",
+			limit: 6000,
+			gitignore: false,
+		});
+
+		expect(result.details?.fileCount).toBe(5000);
+		expect(result.details?.files).toEqual(files5001.slice(0, 5000));
+		expect(textOf(result)).toContain("Requested limit 6000 clamped to the max of 5000");
+		expect(limitNotice(result)).toContain("5000 results limit reached");
+		expect(limitNotice(result)).not.toContain("Use limit=");
+	});
+
+	test("an explicit hard-cap request keeps the reached notice without doomed advice", async () => {
+		const result = await globToolWith(files5001).execute("glob-cap-explicit", {
+			path: ".",
+			limit: 5000,
+			gitignore: false,
+		});
+
+		expect(result.details?.fileCount).toBe(5000);
+		expect(textOf(result)).not.toContain("clamped");
+		expect(limitNotice(result)).toContain("5000 results limit reached");
+		expect(limitNotice(result)).not.toContain("Use limit=");
+	});
+
+	test("below the cap the doubled suggestion is capped at the hard limit and stays usable", async () => {
+		const tool = globToolWith(files5001);
+		const result = await tool.execute("glob-below-cap", { path: ".", limit: 3000, gitignore: false });
+
+		expect(result.details?.fileCount).toBe(3000);
+		expect(limitNotice(result)).toContain("[3000 results limit reached. Use limit=5000 for more]");
+		const expanded = await tool.execute("glob-bounded-suggestion", { path: ".", limit: 5000, gitignore: false });
+		expect(expanded.details?.files).toEqual(files5001.slice(0, 5000));
+		expect(textOf(expanded)).not.toContain("clamped");
+	});
+
+	test("the default 200 limit suggests a usable increase below the hard cap", async () => {
+		const files430 = files5001.slice(0, 430);
+		const tool = globToolWith(files430);
+		const result = await tool.execute("glob-default", { path: ".", gitignore: false });
+
+		expect(result.details?.files).toEqual(files430.slice(0, 200));
+		expect(textOf(result)).not.toContain("clamped");
+		expect(limitNotice(result)).toContain("[200 results limit reached. Use limit=400 for more]");
+		const expanded = await tool.execute("glob-default-suggestion", { path: ".", limit: 400, gitignore: false });
+		expect(expanded.details?.files).toEqual(files430.slice(0, 400));
+		expect(textOf(expanded)).not.toContain("clamped");
 	});
 });

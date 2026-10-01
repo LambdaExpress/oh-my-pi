@@ -5,13 +5,17 @@ import { Text } from "../index";
 
 import { t } from "../i18n";
 
-import type { RenderResultOptions } from "./renderer";
+import type { NativeToolView, RenderResultOptions } from "./renderer";
+
+import type { TspSpan } from "@oh-my-pi/pi-wire";
+import { span, text } from "../native/describe";
+import { OwnerMemo } from "../native/memo";
+import { plainText } from "../native/spans";
+import { errorText, noteText, toolHead } from "./native-view";
 
 import type { Theme } from "../theme/theme";
 
 import { Ellipsis, padToWidth, renderStatusLine, truncateToWidth } from "../render";
-
-import { replaceTabs } from "../render/render-utils";
 
 /** Device name for applying a staged action. */
 export const RESOLVE_DEVICE_NAME = "resolve";
@@ -50,6 +54,21 @@ export function renderResolutionDeviceCall(device: ResolutionDeviceName, content
 	return renderDeviceCallPreview(title, content, uiTheme, Ellipsis.Omit);
 }
 
+/** Native form of {@link renderResolutionDeviceCall}: `Resolve/Reject/Propose` head with the first content line. */
+export function describeResolutionDeviceCall(device: ResolutionDeviceName, content: unknown): NativeToolView {
+	const title =
+		device === PROPOSE_DEVICE_NAME ? t("Propose") : device === REJECT_DEVICE_NAME ? t("Reject") : t("Resolve");
+	return describeDeviceCallPreview(title, content);
+}
+
+/** Native form of {@link renderDeviceCallPreview}: title head plus the first content line of a pending device write. */
+export function describeDeviceCallPreview(title: string, content: unknown): NativeToolView {
+	const body = typeof content === "string" ? (plainText(content).trim().split("\n")[0] ?? "") : "";
+	return { head: toolHead(title, body || undefined) };
+}
+
+const resolveResultMemo = new OwnerMemo<NativeToolView | undefined>();
+
 /** Render the first content line of a pending device write. */
 export function renderDeviceCallPreview(
 	title: string,
@@ -57,7 +76,7 @@ export function renderDeviceCallPreview(
 	uiTheme: Theme,
 	ellipsis?: Ellipsis,
 ): Component {
-	const body = typeof content === "string" ? replaceTabs(content.trim().split("\n")[0] ?? "") : "";
+	const body = typeof content === "string" ? (plainText(content).trim().split("\n")[0] ?? "") : "";
 	const text = renderStatusLine(
 		{
 			icon: "pending",
@@ -72,13 +91,13 @@ export function renderDeviceCallPreview(
 /** Render staged-action acceptance or rejection. */
 export const resolveRenderer = {
 	renderCall(args: Partial<ResolveInvocation>, _options: RenderResultOptions, uiTheme: Theme): Component {
-		const reasonTrimmed = args.reason?.trim();
+		const reasonTrimmed = typeof args.reason === "string" ? plainText(args.reason).trim() : "";
 		const reason = reasonTrimmed ? truncateToWidth(reasonTrimmed, 72, Ellipsis.Omit) : undefined;
 		const text = renderStatusLine(
 			{
 				icon: "pending",
 				title: t("Resolve"),
-				description: args.action,
+				description: args.action ? plainText(args.action) : undefined,
 				badge: {
 					label: args.action === "apply" ? t("proposed -> resolved") : t("proposed -> rejected"),
 					color: args.action === "apply" ? "success" : "warning",
@@ -97,8 +116,8 @@ export const resolveRenderer = {
 		args?: Partial<ResolveInvocation>,
 	): Component {
 		const details = result.details;
-		const label = replaceTabs(details?.label ?? t("pending action"));
-		const reason = replaceTabs(details?.reason?.trim() || args?.reason?.trim() || t("No reason provided"));
+		const label = plainText(details?.label ?? t("pending action"));
+		const reason = plainText(details?.reason?.trim() || args?.reason?.trim() || t("No reason provided"));
 		const action = details?.action ?? args?.action ?? "apply";
 		const isApply = action === "apply" && !result.isError;
 		const isFailedApply = action === "apply" && result.isError;
@@ -117,7 +136,7 @@ export const resolveRenderer = {
 			: undefined;
 		const headerLine = `${icon} ${uiTheme.bold(`${verb}:`)} ${summaryLabel}${sourceBadge ? ` ${sourceBadge}` : ""}`;
 		const errorText = result.isError
-			? replaceTabs(result.content.find(content => content.type === "text")?.text?.trim() || t("Action failed"))
+			? plainText(result.content.find(content => content.type === "text")?.text?.trim() || t("Action failed"))
 			: undefined;
 		const lines = ["", headerLine, "", uiTheme.italic(reason)];
 		if (errorText) lines.push("", uiTheme.fg("error", errorText));
@@ -136,6 +155,57 @@ export const resolveRenderer = {
 			},
 			invalidate() {},
 		};
+	},
+
+	describeCall(args: Partial<ResolveInvocation>): NativeToolView {
+		const head: TspSpan[] = toolHead(t("Resolve"), args.action);
+		if (args.action) {
+			head.push(
+				span(" "),
+				span(
+					args.action === "apply" ? t("proposed -> resolved") : t("proposed -> rejected"),
+					args.action === "apply" ? "success" : "warning",
+				),
+			);
+		}
+		const reason = typeof args.reason === "string" ? plainText(args.reason).trim() : "";
+		return { head, inline: true, body: reason ? [noteText(reason, "muted", 1)] : undefined };
+	},
+
+	describeResult(
+		result: { content: Array<{ type: string; text?: string }>; details?: ResolveDetails; isError?: boolean },
+		_options: RenderResultOptions,
+		args?: Partial<ResolveInvocation>,
+	): NativeToolView | undefined {
+		return resolveResultMemo.get(result, [args?.action, args?.reason], () => {
+			const details = result.details;
+			const label = plainText(details?.label ?? t("pending action"));
+			const reason = plainText(details?.reason?.trim() || args?.reason?.trim() || t("No reason provided"));
+			const action = details?.action ?? args?.action ?? "apply";
+			const isApply = action === "apply" && !result.isError;
+			const verb = isApply ? t("Accept") : action === "apply" ? t("Failed") : t("Discard");
+			const tone = result.isError ? "error" : isApply ? "success" : "warning";
+			const separatorIndex = label.indexOf(": ");
+			const sourceLabel = separatorIndex > 0 ? label.slice(0, separatorIndex).trim() : undefined;
+			const summaryLabel = separatorIndex > 0 ? label.slice(separatorIndex + 2).trim() : label;
+			const head: TspSpan[] = [span(`${verb}:`, `strong ${tone}`), span(" "), span(summaryLabel)];
+			if (sourceLabel) head.push(span(" "), span(`[${sourceLabel}]`, "strong muted"));
+			return {
+				head,
+				tone,
+				inline: true,
+				body: [
+					text([span(reason, "muted")], { wrap: "word" }),
+					...(result.isError
+						? [
+								errorText(
+									result.content.find(content => content.type === "text")?.text?.trim() || t("Action failed"),
+								),
+							]
+						: []),
+				],
+			};
+		});
 	},
 
 	inline: true,

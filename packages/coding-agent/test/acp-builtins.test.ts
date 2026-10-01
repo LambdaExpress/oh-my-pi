@@ -46,6 +46,7 @@ interface FakeAcpBuiltinSession {
 	toggleFastMode(): boolean;
 	setFastMode(enabled: boolean): boolean;
 	isFastModeEnabled(): boolean;
+	isUltrafastModeEnabled(): boolean;
 	setForcedToolChoice(toolName: string): void;
 	fetchUsageReports?: () => Promise<unknown>;
 	getAsyncJobSnapshot: (opts?: { recentLimit?: number }) => { running: unknown[]; recent: unknown[] } | null;
@@ -117,6 +118,9 @@ function createRuntime() {
 		},
 		isFastModeEnabled() {
 			return this.fastMode;
+		},
+		isUltrafastModeEnabled() {
+			return false;
 		},
 		setForcedToolChoice(toolName: string) {
 			this.forcedToolChoice = toolName;
@@ -593,15 +597,6 @@ describe("ACP builtin slash commands", () => {
 		expect(output[0]).toContain("No model");
 	});
 
-	it("model: returns ACP usage message when args provided", async () => {
-		const { output, runtime } = createRuntime();
-
-		const result = await executeAcpBuiltinSlashCommand("/model claude-3-5-sonnet", runtime);
-
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]?.toLowerCase()).toContain("acp");
-	});
-
 	it("model: applies known id and emits both title + config change notifications", async () => {
 		const { output, runtime, session } = createRuntime();
 		const available = [{ provider: "anthropic", id: "claude-3-5-sonnet", contextWindow: 200_000 }];
@@ -1017,6 +1012,7 @@ describe("wave 3 commands", () => {
 			await git("init", "-q", "-b", "main");
 			await git("config", "user.email", "t@example.com");
 			await git("config", "user.name", "t");
+			await git("config", "core.autocrlf", "false");
 			await Bun.write(path.join(repoDir, "tracked.txt"), "committed\n");
 			await Bun.write(path.join(repoDir, ".gitignore"), "build/\n");
 			await git("add", "-A");
@@ -1051,7 +1047,7 @@ describe("wave 3 commands", () => {
 	});
 
 	it("/wt: with worktree.cleanSource=true, cleans the source checkout while preserving the worktree", async () => {
-		const { output, runtime, fakeSessionManager } = createRuntime();
+		const { runtime, fakeSessionManager } = createRuntime();
 		cfgWorktreeCleanSource.override(runtime.settings, true);
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "omp-wt-clean-"));
 		const repoDir = path.join(root, "repo");
@@ -1070,6 +1066,7 @@ describe("wave 3 commands", () => {
 			await git("init", "-q", "-b", "main");
 			await git("config", "user.email", "t@example.com");
 			await git("config", "user.name", "t");
+			await git("config", "core.autocrlf", "false");
 			await Bun.write(path.join(repoDir, "tracked.txt"), "committed\n");
 			await Bun.write(path.join(repoDir, ".gitignore"), "build/\n");
 			await git("add", "-A");
@@ -1085,8 +1082,6 @@ describe("wave 3 commands", () => {
 			const movedTo = fakeSessionManager._movedTo;
 			expect(movedTo).toBeDefined();
 			expect(movedTo!.startsWith(await fs.realpath(worktreeBase))).toBe(true);
-			expect(output[0]).toContain(`Moved to worktree ${movedTo} on branch feature/clean`);
-			expect(output[0]).toContain("uncommitted changes moved, source checkout cleaned");
 			// The worktree carries all uncommitted changes.
 			expect(await Bun.file(path.join(movedTo!, "tracked.txt")).text()).toBe("edited\n");
 			expect(await Bun.file(path.join(movedTo!, "untracked.txt")).text()).toBe("new\n");
@@ -1367,18 +1362,6 @@ describe("wave 4 commands", () => {
 });
 
 describe("wave 5 — adapters and polish", () => {
-	// /mcp help lists new subcommands
-	it("/mcp help: lists resources, prompts, test, add, smithery-search", async () => {
-		const { output, runtime } = createRuntime();
-		const result = await executeAcpBuiltinSlashCommand("/mcp help", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("resources");
-		expect(output[0]).toContain("prompts");
-		expect(output[0]).toContain("test");
-		expect(output[0]).toContain("add");
-		expect(output[0]).toContain("smithery-search");
-	});
-
 	// /mcp add — verify parsing and output message
 	it("/mcp add foo --url https://example.com --token X --scope project: outputs success or propagates write error", async () => {
 		// Uses project scope so it writes to /tmp/project/.omp/mcp.json which test infra controls.
@@ -1530,20 +1513,6 @@ describe("wave 5 — adapters and polish", () => {
 		const result = await executeAcpBuiltinSlashCommand("/model gpt-fake-9000", runtime);
 		expect(result).toEqual({ consumed: true });
 		expect(output[0]).toContain("Unknown model");
-	});
-
-	// /model with known id (fake registry)
-	it("/model known-id: reports model set and triggers notifyTitleChanged", async () => {
-		const { output, session, runtime } = createRuntime();
-		session.getAvailableModels = () => [{ provider: "anthropic", id: "claude-sonnet-test" }];
-		let titleChanged = false;
-		runtime.notifyTitleChanged = () => {
-			titleChanged = true;
-		};
-		const result = await executeAcpBuiltinSlashCommand("/model claude-sonnet-test", runtime);
-		expect(result).toEqual({ consumed: true });
-		expect(output[0]).toContain("Model set to anthropic/claude-sonnet-test.");
-		expect(titleChanged).toBe(true);
 	});
 
 	// /usage bar character

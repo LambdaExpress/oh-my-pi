@@ -29,6 +29,7 @@ function buildResumeArgs(resume: string, sessionDir?: string): Args {
 		fileArgs: [],
 		unknownFlags: new Map(),
 		unrecognizedFlags: [],
+		invalidFlagValues: [],
 	};
 }
 
@@ -40,6 +41,7 @@ function buildContinueArgs(message: string, sessionDir?: string): Args {
 		fileArgs: [],
 		unknownFlags: new Map(),
 		unrecognizedFlags: [],
+		invalidFlagValues: [],
 	};
 }
 function buildForkArgs(fork: string, noSession = false, sessionDir?: string): Args {
@@ -51,6 +53,7 @@ function buildForkArgs(fork: string, noSession = false, sessionDir?: string): Ar
 		fileArgs: [],
 		unknownFlags: new Map(),
 		unrecognizedFlags: [],
+		invalidFlagValues: [],
 	};
 }
 
@@ -133,8 +136,9 @@ describe("createSessionManager — missing session (#2084)", () => {
 		const cwd = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-resume-unknown-id-"));
 		const sessionDir = path.join(cwd, "sessions");
 		const missingId = "019ea530-ffff-7000-8000-000000000000";
+		let latest: SessionManager | undefined;
 		try {
-			const latest = SessionManager.create(cwd, sessionDir);
+			latest = SessionManager.create(cwd, sessionDir);
 			latest.appendMessage({ role: "user", content: "newer persisted session", timestamp: Date.now() });
 			await latest.rewriteEntries();
 			const latestSessionId = latest.getSessionId();
@@ -148,6 +152,7 @@ describe("createSessionManager — missing session (#2084)", () => {
 				hint: expect.stringContaining("omp --resume"),
 			});
 		} finally {
+			await latest?.close();
 			await fsp.rm(cwd, { recursive: true, force: true });
 		}
 	});
@@ -156,8 +161,9 @@ describe("createSessionManager — missing session (#2084)", () => {
 		const cwd = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-continue-unknown-id-"));
 		const sessionDir = path.join(cwd, "sessions");
 		const missingId = "019ea530-ffff-7000-8000-000000000000";
+		let latest: SessionManager | undefined;
 		try {
-			const latest = SessionManager.create(cwd, sessionDir);
+			latest = SessionManager.create(cwd, sessionDir);
 			latest.appendMessage({ role: "user", content: "latest should not be resumed", timestamp: Date.now() });
 			await latest.rewriteEntries();
 			expect(latest.getSessionId()).not.toBe(missingId);
@@ -170,6 +176,7 @@ describe("createSessionManager — missing session (#2084)", () => {
 				hint: expect.stringContaining("omp --resume"),
 			});
 		} finally {
+			await latest?.close();
 			await fsp.rm(cwd, { recursive: true, force: true });
 		}
 	});
@@ -315,16 +322,17 @@ describe("createSessionManager — missing session (#2084)", () => {
 	});
 
 	it("propagates ENOTDIR on ordinary session loads when throwIfMissing is false (#11491)", async () => {
-		const cwd = await fsp.mkdtemp(path.join(os.tmpdir(), "omp-enotdir-ordinary-"));
-		const regularFile = path.join(cwd, "file.txt");
-		await Bun.write(regularFile, "not a directory");
-		const enotdirChild = path.join(regularFile, "child.jsonl");
+		// Windows reports ENOENT for a file-as-parent path. Inject the storage
+		// error so this covers the loader's ENOTDIR propagation on every host.
+		const storage = new FileSessionStorage();
+		const failure = Object.assign(new Error("not a directory"), { code: "ENOTDIR" });
+		const stat = vi.spyOn(storage, "statSync").mockImplementation(() => {
+			throw failure;
+		});
 		try {
-			await expect(loadSessionFile(enotdirChild)).rejects.toMatchObject({
-				code: "ENOTDIR",
-			});
+			await expect(loadSessionFile("unreadable-session.jsonl", storage)).rejects.toBe(failure);
 		} finally {
-			await fsp.rm(cwd, { recursive: true, force: true });
+			stat.mockRestore();
 		}
 	});
 
@@ -347,7 +355,11 @@ describe("createSessionManager — missing session (#2084)", () => {
 			{ nativeFlagOwnership: "preliminary" },
 		);
 
-		expect(manager?.getEntries()).toEqual([]);
+		try {
+			expect(manager?.getEntries()).toEqual([]);
+		} finally {
+			await manager?.close();
+		}
 	});
 
 	it("rejects the --resume picker (no value) combined with --no-session (#12008)", async () => {

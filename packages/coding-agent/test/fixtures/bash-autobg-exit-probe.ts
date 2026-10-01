@@ -18,7 +18,7 @@ const THRESHOLD_MS = 30_000;
 const manager = new AsyncJobManager({ retentionMs: 0 });
 
 const session = {
-	cwd: "/tmp",
+	cwd: process.cwd(),
 	hasUI: false,
 	skills: [],
 	getSessionFile: () => null,

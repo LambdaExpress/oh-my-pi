@@ -2,6 +2,7 @@ import { afterEach, beforeAll, describe, expect, it } from "bun:test";
 import { loadCapability, reset as resetCapabilities } from "@oh-my-pi/pi-coding-agent/capability";
 import { type SSHHost, sshCapability } from "@oh-my-pi/pi-coding-agent/capability/ssh";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import "@oh-my-pi/pi-coding-agent/tools/local-renderers";
 import { ToolExecutionComponent } from "@oh-my-pi/pi-tui/chat/tool-execution";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { SessionSshConfig, SessionSshConfigMutation } from "@oh-my-pi/pi-coding-agent/session/session-ssh-config";
@@ -377,14 +378,14 @@ describe("ssh_session tool", () => {
 		const tempDir = TempDir.createSync("@pi-ssh-session-render-");
 		try {
 			const harness = createHarness(tempDir.path());
-			const args: SshSessionParams = {
+			const args = {
 				op: "create",
 				name: "temporary",
 				host: "connect.example.com",
 				username: "root",
 				port: 24314,
 				password: SENTINEL,
-			};
+			} satisfies SshSessionParams;
 			const component = new ToolExecutionComponent(
 				"ssh_session",
 				args,
@@ -393,11 +394,17 @@ describe("ssh_session tool", () => {
 				new TUI(new VirtualTerminal(300, 10)),
 			);
 
+			const pendingRows = component.render(300).filter(row => Bun.stripANSI(row).trim().length > 0);
+			expect(pendingRows).toHaveLength(1);
 			component.updateResult(await execute(harness, args), false);
-			const rendered = Bun.stripANSI(component.render(300).join("\n"));
+			const completedRows = component.render(300).filter(row => Bun.stripANSI(row).trim().length > 0);
+			const rendered = Bun.stripANSI(completedRows.join("\n"));
 
-			expect(rendered.match(/SSH Session/g)).toHaveLength(1);
-			expect(rendered).toContain("temporary: root@connect.example.com:24314 (password configured)");
+			expect(completedRows).toHaveLength(1);
+			expect(completedRows).not.toEqual(pendingRows);
+			expect(rendered).toContain(args.name);
+			expect(rendered).toContain(`${args.username}@${args.host}:${args.port}`);
+			expect(rendered).not.toContain(SENTINEL);
 		} finally {
 			tempDir.removeSync();
 		}

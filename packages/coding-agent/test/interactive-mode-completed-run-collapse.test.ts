@@ -500,17 +500,8 @@ describe("InteractiveMode completed-run collapse", () => {
 		expect(rendered).not.toContain("※ collapsed:");
 	});
 
-	it("rebuilds from full persisted history after compaction while completed-run collapse is enabled", () => {
-		Settings.instance.set("display.collapseCompacted", true);
-		const buildTranscriptSessionContext = vi.spyOn(session, "buildTranscriptSessionContext");
-
-		mode.rebuildChatFromMessages();
-
-		expect(buildTranscriptSessionContext.mock.calls[0]?.[0]).toEqual({ collapseCompactedHistory: false });
-	});
-
 	it("keeps a pre-compaction completed run visible and expandable", async () => {
-		Settings.instance.set("display.collapseCompacted", true);
+		session.settings.set("display.collapseCompacted", true);
 		const initial = { role: "user", content: "old request before compaction", timestamp: 1 } as const;
 		const loop = assistant([{ type: "text", text: "old intermediate work" }], "toolUse", 2);
 		const final = assistant([{ type: "text", text: "old final answer" }], "stop", 3);
@@ -538,7 +529,7 @@ describe("InteractiveMode completed-run collapse", () => {
 	});
 
 	it("shows a completed-run summary when compaction rebuilds during a queued follow-up", () => {
-		Settings.instance.set("display.collapseCompacted", true);
+		session.settings.set("display.collapseCompacted", true);
 		const initial = { role: "user", content: "original request", timestamp: 1 } as const;
 		const loop = assistant(
 			[

@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 declare const devicePixelRatio: number;
 
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { findFreeCdpPort } from "@oh-my-pi/pi-coding-agent/tools/browser/attach";
 import {
 	acquireBrowser,
 	type BrowserHandle,
@@ -174,7 +175,8 @@ describe("browser init deadline carry-over", () => {
 			// The hang server makes the ready phase burn its (floor-clamped) budget
 			// without resolving, so the first init attempt fails on its own.
 			const server = Bun.serve({
-				port: 0,
+				hostname: "127.0.0.1",
+				port: await findFreeCdpPort(),
 				fetch: () => Promise.withResolvers<Response>().promise,
 			});
 			let failure: unknown;

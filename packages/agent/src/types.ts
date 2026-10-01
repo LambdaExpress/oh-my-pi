@@ -160,7 +160,11 @@ export interface SteeringQueueState {
 	queued: boolean;
 	/** Best-effort origin used only to word synthetic skipped-tool results. */
 	source?: SteeringInterruptSource;
-	/** Per-steer override: interrupt even when the agent-wide mode is "wait". */
+	/**
+	 * Per-steer override: interrupt even when the agent-wide mode is "wait".
+	 * Hosts retain it for live-dequeued input until that input is recorded,
+	 * even when no messages remain in the pending queue.
+	 */
 	interruptImmediately?: boolean;
 }
 
@@ -269,10 +273,12 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	/**
 	 * Returns steering messages to inject into the conversation mid-run.
 	 *
-	 * Called at injection boundaries only (loop start and after a tool batch
-	 * fully settles), so dequeued messages are immediately injected. The
-	 * mid-batch interrupt poll uses {@link hasSteeringMessages} instead and
-	 * never consumes the queue.
+	 * Called at injection boundaries (loop start and after a tool batch
+	 * fully settles), or by a provider taking input for its in-flight response
+	 * through live steering. Boundary dequeues are immediately injected; live
+	 * dequeues are acknowledged through {@link onLiveSteeringTaken} and recorded
+	 * after the response (or its tool batch). The mid-batch interrupt poll uses
+	 * {@link hasSteeringMessages} instead and never consumes the queue.
 	 */
 	getSteeringMessages?: (signal?: AbortSignal) => Promise<AgentMessage[]>;
 
@@ -299,7 +305,8 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	hasSteeringMessages?: () => boolean | SteeringQueueState | Promise<boolean | SteeringQueueState>;
 
 	/**
-	 * Wakes the in-flight tool interrupt watcher when a steering message is queued.
+	 * Wakes a live-steering provider or the in-flight tool interrupt watcher
+	 * when a steering message is queued.
 	 * The callback must not consume the queue; the loop still calls
 	 * {@link hasSteeringMessages} before aborting and injects through
 	 * {@link getSteeringMessages}.
@@ -309,10 +316,18 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	/**
 	 * Wakes the in-flight tool watcher only for steering carrying the per-message
 	 * immediate override. Hosts that support such messages must provide this so
-	 * they can interrupt a long-running interruptible tool while the global mode
+	 * they can signal long-running cooperative tools while the global mode
 	 * is "wait", without waking continuously for ordinary queued steering.
 	 */
 	waitForImmediateSteeringMessages?: (signal?: AbortSignal) => Promise<void>;
+
+	/**
+	 * Called when live steering dequeues messages via {@link getSteeringMessages}
+	 * for the response being streamed. The loop records them in the transcript
+	 * after that response (or its tool batch); an abort before then leaves them
+	 * unrecorded for the host to requeue.
+	 */
+	onLiveSteeringTaken?: (messages: AgentMessage[]) => void;
 
 	/**
 	 * Peeks whether IRC messages should interrupt an interruptible waiting tool.
@@ -604,6 +619,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	transformAssistantMessage?: (message: AssistantMessage, signal?: AbortSignal) => Promise<void> | void;
 
 	/**
+	 * Declares that {@link transformAssistantMessage} never rewrites or removes a
+	 * tool call the model streamed (it may edit text or append new calls). Stream
+	 * speculation sessions and direct speculative candidates plan from streamed
+	 * calls, so they stay disabled under a transform unless this is set.
+	 */
+	transformAssistantMessagePreservesToolCalls?: boolean;
+
+	/**
 	 * Called after a tool finishes executing, before `tool_execution_end` and the
 	 * tool-result message are emitted.
 	 *
@@ -748,7 +771,22 @@ export interface SpeculativeExecutionHost {
 		commitDefault: () => Promise<AgentToolResult<unknown>>,
 	): Promise<SpeculativeCommitDecision>;
 	discard?(context: SpeculativeDiscardContext): void | Promise<void>;
+	/**
+	 * Authorize a stream session to start effectful work (e.g. subagents) from
+	 * partially streamed arguments. The session owns that work and must abort it
+	 * when the finalized call is invalid, blocked, or changed. Hosts without this
+	 * hook deny every launch.
+	 */
+	authorizeLaunch?(context: SpeculativeLaunchContext): SpeculativeAuthorization | Promise<SpeculativeAuthorization>;
 	close?(reason: string): void | Promise<void>;
+}
+
+/** Effectful work a tool-owned stream session asks to start before its outer call dispatches. */
+export interface SpeculativeLaunchContext {
+	tool: SpeculativeToolReference;
+	toolCall: AgentToolCall;
+	/** Arguments the launch was planned from: the streamed prefix of the outer call. */
+	args: Readonly<Record<string, unknown>>;
 }
 
 export interface ToolSpeculationStreamContext {
@@ -797,6 +835,8 @@ export interface ToolSpeculationStreamSession {
 export interface SpeculativeOperationSink {
 	readonly maxInFlight: number;
 	admit(definition: SpeculativeChildDefinition): Promise<SpeculativeChildHandle | undefined>;
+	/** Host-gated permission for effectful stream work; see {@link SpeculativeExecutionHost.authorizeLaunch}. */
+	authorizeLaunch?(context: SpeculativeLaunchContext): Promise<SpeculativeAuthorization>;
 	discardChildren?(parentToolCallId: string, reason: string): void | Promise<void>;
 	close(reason: string): void | Promise<void>;
 }
@@ -858,7 +898,8 @@ export interface SpeculativeToolExecutionConfig {
  * ignored when `block` is true.
  *
  * Set `additionalContext` to attach passive model-visible context to this call.
- * Non-empty values from a tool batch are injected in assistant tool-call order
+ * Non-empty values from a tool batch are injected in assistant tool-call order,
+ * a value identical to an earlier one in the batch only once,
  * after every result settles and before the next provider request. It is
  * dropped when the call is blocked or skipped, or when its final result is an
  * error (including an approval denial raised by the tool's own gate). Within a
@@ -888,6 +929,13 @@ export interface AfterToolCallResult {
 	isError?: boolean;
 	/** If provided, replaces the contextually-useless flag carried with the tool result. */
 	useless?: boolean;
+	/**
+	 * Trusted post-tool instructions for the next provider request. Delivered
+	 * outside the tool result, after all calls in the batch settle. Unlike
+	 * `BeforeToolCallResult.additionalContext`, this is retained for error
+	 * results because the callback receives the finalized outcome.
+	 */
+	additionalContext?: string;
 }
 
 /** Context passed to `beforeToolCall`. */

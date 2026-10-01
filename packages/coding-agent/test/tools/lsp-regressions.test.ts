@@ -7,7 +7,7 @@ import type { AgentToolResult, RenderResultOptions } from "@oh-my-pi/pi-agent-co
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { preloadPluginRoots } from "@oh-my-pi/pi-coding-agent/discovery/helpers";
 import { restoreEnvValue } from "../helpers/settings-test-state";
-import { LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
+import { createLspWritethrough, LspTool } from "@oh-my-pi/pi-coding-agent/lsp";
 import * as lspClient from "@oh-my-pi/pi-coding-agent/lsp/client";
 import * as lspConfig from "@oh-my-pi/pi-coding-agent/lsp/config";
 import {
@@ -61,8 +61,8 @@ import { clampTimeout } from "@oh-my-pi/pi-coding-agent/tools/tool-timeouts";
 import * as piUtils from "@oh-my-pi/pi-utils";
 import { sanitizeText, TempDir } from "@oh-my-pi/pi-utils";
 import type { Subprocess } from "bun";
+import { setLocale } from "../../src/i18n";
 import DEFAULTS from "../../src/lsp/defaults.json" with { type: "json" };
-import { renderResult as renderLocalResult } from "@oh-my-pi/pi-tui/tools/lsp";
 import { getLanguageFromPath } from "@oh-my-pi/pi-tui/lang-from-path";
 
 const lspTestSettings = Settings.isolated();
@@ -284,6 +284,14 @@ function installHandshakeLsp(): FakeLspServer {
 	});
 }
 
+/** Read `textDocument.uri` out of a document notification the fake server received. */
+function documentUri(params: unknown): string | undefined {
+	if (!params || typeof params !== "object" || !("textDocument" in params)) return undefined;
+	const doc = params.textDocument;
+	if (!doc || typeof doc !== "object" || !("uri" in doc) || typeof doc.uri !== "string") return undefined;
+	return doc.uri;
+}
+
 type BunSpawnOptions = Bun.SpawnOptions.SpawnOptions<
 	Bun.SpawnOptions.Writable,
 	Bun.SpawnOptions.Readable,
@@ -347,6 +355,7 @@ let lspHomeOverride: string | undefined;
 let lspOriginalHome: string | undefined;
 
 beforeEach(() => {
+	setLocale("en");
 	lspOriginalHome = process.env.HOME;
 	lspHomeOverride = fs.mkdtempSync(path.join(os.tmpdir(), "omp-lsp-test-home-"));
 	process.env.HOME = lspHomeOverride;
@@ -356,8 +365,9 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	if (lspOriginalHome === undefined) delete process.env.HOME;
-	else process.env.HOME = lspOriginalHome;
+	vi.restoreAllMocks();
+	setLocale(null);
+	restoreEnvValue("HOME", lspOriginalHome);
 	if (lspHomeOverride) fs.rmSync(lspHomeOverride, { recursive: true, force: true });
 	lspHomeOverride = undefined;
 });
@@ -399,6 +409,7 @@ describe("lsp regressions", () => {
 
 	it("clamps LSP timeouts to the supported bounds", () => {
 		expect(clampTimeout("lsp", 1)).toBe(5);
+		expect(clampTimeout("lsp", 120)).toBe(120);
 		expect(clampTimeout("lsp", 1000)).toBe(300);
 	});
 
@@ -2203,7 +2214,7 @@ describe("lsp regressions", () => {
 
 	it("sanitizes expanded generic error output (#7041)", async () => {
 		const theme = await getThemeByName("dark");
-		const result = renderLocalResult(
+		const result = renderResult(
 			{
 				content: [{ type: "text", text: `Error:\nserver\tstderr ${"x".repeat(200)}` }],
 			},
@@ -2476,6 +2487,119 @@ describe("lsp regressions", () => {
 
 			expect(await waitForDiagnostics(client, sourceUri, { timeoutMs: 1_000, settleMs: 0 })).toEqual([]);
 		} finally {
+			await lspClient.shutdownAll();
+			tempDir.removeSync();
+		}
+	});
+
+	it("reloads TypeScript projects after create before opening the new module", async () => {
+		// #12924/#12925: tsserver pins a failed import resolution when the new
+		// module is opened before its filesystem watcher observes the create.
+		// The write path must await reloadProjects, not rely on watcher latency.
+		const tempDir = TempDir.createSync("@omp-lsp-write-create-order-");
+		const config: ServerConfig = { command: "fake-lsp", fileTypes: ["ts"], rootMarkers: [] };
+		try {
+			const sourcePath = path.join(tempDir.path(), "UsesMissing.ts");
+			const modulePath = path.join(tempDir.path(), "MissingClass.ts");
+			const sourceUri = fileToUri(sourcePath);
+			const moduleUri = fileToUri(modulePath);
+			await Bun.write(
+				sourcePath,
+				'import { MissingClass } from "./MissingClass";\nexport const value = new MissingClass();\n',
+			);
+
+			const missingModuleDiagnostic: Diagnostic = {
+				message: "Cannot find module './MissingClass' or its corresponding type declarations.",
+				severity: 1,
+				code: 2307,
+				range: {
+					start: { line: 0, character: 29 },
+					end: { line: 0, character: 45 },
+				},
+			};
+			let projectsReloaded = false;
+			let modulePinnedMissing = false;
+			const fakeServer = installFakeLsp((message, server) => {
+				const publish = (uri: string, diagnostics: Diagnostic[]) =>
+					server.send({
+						jsonrpc: "2.0",
+						method: "textDocument/publishDiagnostics",
+						params: { uri, diagnostics },
+					});
+				const publishSource = () =>
+					publish(
+						sourceUri,
+						projectsReloaded && !modulePinnedMissing && fs.existsSync(modulePath)
+							? []
+							: [missingModuleDiagnostic],
+					);
+				if (message.method === "initialize") {
+					server.send({
+						jsonrpc: "2.0",
+						id: message.id,
+						result: {
+							capabilities: {
+								executeCommandProvider: { commands: ["typescript.tsserverRequest"] },
+							},
+						},
+					});
+				} else if (message.method === "textDocument/didOpen") {
+					const uri = documentUri(message.params);
+					if (uri === moduleUri) {
+						modulePinnedMissing ||= !fs.existsSync(modulePath) || !projectsReloaded;
+						publish(moduleUri, []);
+					} else {
+						publishSource();
+					}
+				} else if (
+					message.method === "textDocument/didChange" ||
+					message.method === "textDocument/didSave" ||
+					message.method === "workspace/didChangeWatchedFiles"
+				) {
+					publishSource();
+					publish(moduleUri, []);
+				} else if (message.method === "workspace/executeCommand") {
+					projectsReloaded = fs.existsSync(modulePath);
+					server.send({ jsonrpc: "2.0", id: message.id, result: { success: projectsReloaded } });
+				} else if (message.method === "shutdown") {
+					server.send({ jsonrpc: "2.0", id: message.id, result: null });
+				} else if (message.method === "exit") {
+					server.exit(0);
+				}
+			});
+
+			configCache.set(tempDir.path(), { servers: { "fake-lsp": config }, idleTimeoutMs: undefined });
+			const client = await lspClient.getOrCreateClient(config, tempDir.path());
+			await lspClient.ensureFileOpen(client, sourcePath);
+			expect(await waitForDiagnostics(client, sourceUri, { timeoutMs: 1_000, settleMs: 0 })).toEqual([
+				missingModuleDiagnostic,
+			]);
+
+			const writethrough = createLspWritethrough(tempDir.path(), {
+				enableFormat: true,
+				enableDiagnostics: false,
+			});
+			await writethrough(modulePath, "export class MissingClass {}\n");
+
+			expect(projectsReloaded).toBe(true);
+			expect(fakeServer.received).toContainEqual(
+				expect.objectContaining({
+					method: "workspace/executeCommand",
+					params: {
+						command: "typescript.tsserverRequest",
+						arguments: [
+							"reloadProjects",
+							{},
+							{ executionTarget: 0, expectsResult: true, isAsync: false, lowPriority: false },
+						],
+					},
+				}),
+			);
+
+			expect(modulePinnedMissing).toBe(false);
+			expect(await waitForDiagnostics(client, sourceUri, { timeoutMs: 1_000, settleMs: 0 })).toEqual([]);
+		} finally {
+			configCache.delete(tempDir.path());
 			await lspClient.shutdownAll();
 			tempDir.removeSync();
 		}
@@ -6659,7 +6783,6 @@ describe("ty python lsp", () => {
 			tempDir.removeSync();
 		}
 	});
-
 	it("coexists with ruff: ty is primary, ruff is linter, both auto-detected", async () => {
 		const tempDir = TempDir.createSync("@omp-lsp-ty-ruff-");
 		const resolvedTy = path.join(tempDir.path(), "bin", "ty");

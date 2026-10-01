@@ -16,7 +16,11 @@ import { Text } from "../components/text";
 import { Ellipsis, truncateToWidth } from "../render";
 import { sanitizeDisplayWarning, TRUNCATE_LENGTHS } from "../render/render-utils";
 import { type Component, Container } from "../tui";
-import { getMarkdownTheme, type Theme, type ThemeColor, theme } from "../theme/index";
+import { getMarkdownTheme, getThemeEpoch, type Theme, type ThemeColor, theme } from "../theme/index";
+import { card, col, md, span, text } from "../native/describe";
+import { type NativeNode, type NativeUiEvent, rootToggleExpanded } from "../native/node";
+import { Memo } from "../native/memo";
+import { colorTone } from "../native/tone";
 /** Message shape consumed by the shared frame. */
 export interface FramedMessage {
 	customType: string;
@@ -46,6 +50,8 @@ export interface FramedMessageOptions<M extends FramedMessage> {
 	/** Collapse the markdown body to this many lines when `expanded` is false. Omit to never collapse. */
 	readonly collapseAfterLines?: number;
 	readonly customRenderer?: FramedRenderer<M>;
+	/** Semantic role of the native card. */
+	readonly role: string;
 }
 
 /**
@@ -62,6 +68,8 @@ export class FramedMessageComponent<M extends FramedMessage> extends Container {
 	#foldedPreview: string | undefined;
 	#foldedLine: { width: number; text: string } | undefined;
 	#disposed = false;
+	#version = 0;
+	readonly #native = new Memo();
 
 	constructor(options: FramedMessageOptions<M>) {
 		super();
@@ -132,10 +140,65 @@ export class FramedMessageComponent<M extends FramedMessage> extends Container {
 		this.#customComponent = undefined;
 	}
 
+	/**
+	 * The extension renderer's component when it supplied one; otherwise a
+	 * card with the type tag as its head and the markdown body, clamped by the
+	 * terminal while collapsed.
+	 */
+	override describe(): NativeNode {
+		const key = [this.#version, this.#expanded, this.#toolRowsFolded, getThemeEpoch()];
+		return this.#native.get(key, () => {
+			if (this.#toolRowsFolded) {
+				const tag = sanitizeDisplayWarning(this.#options.message.customType);
+				const preview = this.#foldedMessagePreview();
+				return text(
+					[
+						span(tag, "customMessageLabel strong"),
+						...(preview ? [span(`: ${preview}`, "muted")] : []),
+						...(this.#customComponent ? [span(" …", "dim")] : []),
+					],
+					{ role: this.#options.role, wrap: "none", truncate: "end", lines: 1 },
+				);
+			}
+			if (this.#customComponent) return col([this.#customComponent], { role: this.#options.role });
+			const hideHeader =
+				typeof this.#options.hideHeader === "function" ? this.#options.hideHeader() : this.#options.hideHeader;
+			// The role icon (Tern's named icon) replaces the nerd glyph.
+			const tag = this.#options.message.customType;
+			const collapseAfterLines = this.#options.collapseAfterLines;
+			return card(
+				{
+					role: this.#options.role,
+					tone: colorTone(this.#options.borderColor),
+					head: hideHeader ? undefined : [span(tag, "customMessageLabel strong")],
+					collapsible: collapseAfterLines !== undefined,
+					collapsed: collapseAfterLines !== undefined ? !this.#expanded : undefined,
+					preview: collapseAfterLines !== undefined ? { lines: collapseAfterLines } : undefined,
+				},
+				[md(this.#messageText())],
+			);
+		});
+	}
+
+	handleNativeEvent(event: NativeUiEvent): void {
+		const expanded = rootToggleExpanded(event);
+		if (expanded !== undefined) this.setExpanded(expanded);
+	}
+
+	#messageText(): string {
+		const content = this.#options.message.content;
+		if (typeof content === "string") return content;
+		return content
+			.filter((part): part is TextContent => part.type === "text")
+			.map(part => part.text)
+			.join("\n");
+	}
+
 	#rebuild(): void {
 		if (this.#disposed) return;
 		this.#foldedLine = undefined;
 		this.#foldedPreview = undefined;
+		this.#version++;
 		let nextCustomComponent: Component | undefined;
 		const customRenderer = this.#options.customRenderer;
 		if (customRenderer) {
@@ -186,15 +249,7 @@ export class FramedMessageComponent<M extends FramedMessage> extends Container {
 			this.#box.addChild(new Spacer(1));
 		}
 
-		let text: string;
-		if (typeof this.#options.message.content === "string") {
-			text = this.#options.message.content;
-		} else {
-			text = this.#options.message.content
-				.filter((content): content is TextContent => content.type === "text")
-				.map(content => content.text)
-				.join("\n");
-		}
+		let text = this.#messageText();
 
 		const collapseAfterLines = this.#options.collapseAfterLines;
 		if (!this.#expanded && collapseAfterLines !== undefined) {

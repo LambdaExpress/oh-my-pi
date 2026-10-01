@@ -11,10 +11,9 @@
  * focus blackout is authoritative in the rebuilt transcript; a later event is
  * delivered through the newly installed subscription.
  */
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import type { AssistantMessage, ToolResultMessage } from "@oh-my-pi/pi-ai";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { SessionFocusController } from "@oh-my-pi/pi-coding-agent/modes/controllers/session-focus-controller";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -22,9 +21,10 @@ import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import type { SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
+import type { AsyncJobSnapshot } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import type { AgentProgress, TaskToolDetails } from "@oh-my-pi/pi-tui/tools/task";
-import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
+import { createInteractiveModeContext, createSessionStub } from "./helpers/interactive-mode-context";
 
 const usage = {
 	input: 1,
@@ -35,7 +35,7 @@ const usage = {
 	cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 };
 
-const danglingWait = {
+const danglingWait: AssistantMessage = {
 	role: "assistant",
 	content: [{ type: "toolCall", id: "wait-1", name: "wait", arguments: {} }],
 	api: "anthropic-messages",
@@ -44,7 +44,7 @@ const danglingWait = {
 	stopReason: "toolUse",
 	usage,
 	timestamp: Date.now(),
-} as unknown as AgentMessage;
+};
 
 const completedWait = {
 	role: "toolResult",
@@ -67,7 +67,7 @@ const completedWait = {
 	timestamp: Date.now(),
 } as ToolResultMessage;
 
-const danglingTask = {
+const danglingTask: AssistantMessage = {
 	role: "assistant",
 	content: [
 		{
@@ -85,7 +85,7 @@ const danglingTask = {
 	stopReason: "toolUse",
 	usage,
 	timestamp: Date.now(),
-} as unknown as AgentMessage;
+};
 
 function runningProgress(id: string, description: string, overrides: Partial<AgentProgress> = {}): AgentProgress {
 	return {
@@ -136,7 +136,7 @@ const taskProgressUpdate = {
 	},
 } satisfies Extract<AgentSessionEvent, { type: "tool_execution_update" }>;
 
-const backgroundTaskCall = {
+const backgroundTaskCall: AssistantMessage = {
 	role: "assistant",
 	content: [
 		{
@@ -152,11 +152,11 @@ const backgroundTaskCall = {
 	stopReason: "toolUse",
 	usage,
 	timestamp: Date.now(),
-} as unknown as AgentMessage;
+};
 
 // The initial `async.state === "running"` snapshot the detached call persists:
 // a bare parent row, no current-tool line to distinguish it from a later frame.
-const backgroundTaskRunningResult = {
+const backgroundTaskRunningResult: ToolResultMessage = {
 	role: "toolResult",
 	toolCallId: "task-bg",
 	toolName: "task",
@@ -170,7 +170,7 @@ const backgroundTaskRunningResult = {
 	},
 	isError: false,
 	timestamp: Date.now(),
-} as unknown as ToolResultMessage;
+};
 
 function backgroundProgressUpdate(
 	marker: string,
@@ -204,11 +204,12 @@ interface SessionStub {
 }
 
 function makeSession(
-	initialMessages: AgentMessage[],
+	initialMessages: Array<AssistantMessage | ToolResultMessage>,
 	initialStreaming: boolean,
 	runningJobIds: string[] = [],
 ): SessionStub {
-	let messages = initialMessages;
+	const sessionManager = SessionManager.inMemory(process.cwd());
+	for (const message of initialMessages) sessionManager.appendMessage(message);
 	let streaming = initialStreaming;
 	let listener: ((event: AgentSessionEvent) => Promise<void> | void) | undefined;
 	let persistence = Promise.resolve();
@@ -216,7 +217,7 @@ function makeSession(
 	let liveMessage: AssistantMessage | null = null;
 	let bufferedResults: ToolResultMessage[] = [];
 
-	const stub = {
+	const session = createSessionStub(sessionManager, settings, {
 		get isStreaming() {
 			return streaming;
 		},
@@ -236,21 +237,27 @@ function makeSession(
 		async settleInFlightMessagePersistence() {
 			await persistence;
 		},
-		buildTranscriptSessionContext() {
-			return { messages } as SessionContext;
+		buildTranscriptSessionContext(options) {
+			return sessionManager.buildSessionContext({ transcript: true, ...options, keepDanglingToolCalls: true });
 		},
 		getToolByName: () => undefined,
 		activeToolExecutionUpdates: () => [...activeToolUpdates.values()],
-		getAsyncJobSnapshot: () => ({ running: runningJobIds.map(id => ({ id })) }),
+		getAsyncJobSnapshot: (): AsyncJobSnapshot => ({
+			running: runningJobIds.map(id => ({
+				id,
+				type: "task",
+				status: "running",
+				label: id,
+				startTime: 1,
+			})),
+			recent: [],
+			delivery: { queued: 0, delivering: false, pendingJobIds: [] },
+		}),
 		hasBuiltInTool: () => true,
-		sessionManager: {
-			getCwd: () => process.cwd(),
-			getEntries: () => messages,
-		},
-	};
+	});
 
 	return {
-		session: stub as unknown as AgentSession,
+		session,
 		hasListener: () => listener !== undefined,
 		emitToolUpdate: async event => {
 			activeToolUpdates.set(event.toolCallId, event);
@@ -269,12 +276,14 @@ function makeSession(
 			const pending = Promise.withResolvers<void>();
 			persistence = pending.promise;
 			return () => {
-				messages = [danglingWait, completedWait];
+				sessionManager.appendMessage(completedWait);
 				pending.resolve();
 			};
 		},
 	};
 }
+
+const fixtureCleanups: Array<() => void> = [];
 
 function createFixture(main = makeSession([danglingWait], true)) {
 	const worker = makeSession([], false);
@@ -312,16 +321,24 @@ function createFixture(main = makeSession([danglingWait], true)) {
 		get: () => focus.target ?? main.session,
 	});
 	ctx.unsubscribe = main.session.subscribe(event => eventController.handleEvent(event));
+	fixtureCleanups.push(() => {
+		ctx.unsubscribe?.();
+		focus.dispose();
+		eventController.dispose();
+		ctx.chatContainer.disposeChildren();
+		ctx.statusContainer.disposeChildren();
+	});
 	return { ctx, focus, main };
 }
 
-beforeAll(async () => {
+beforeEach(async () => {
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	await initTheme();
 });
 
-afterAll(() => {
+afterEach(() => {
+	for (const cleanup of fixtureCleanups.splice(0)) cleanup();
 	resetSettingsForTest();
 });
 
@@ -330,7 +347,7 @@ describe("#9816 focus blackout across an in-flight wait", () => {
 		const { ctx, focus, main } = createFixture();
 		await ctx.renderInitialMessages();
 		const pending = Bun.stripANSI(ctx.chatContainer.render(120).join("\n"));
-		expect(pending).toContain("Wait");
+		expect(ctx.pendingTools.has("wait-1")).toBe(true);
 		expect(pending).not.toContain("Sleeper1");
 
 		await focus.focusAgent("Worker");
@@ -345,7 +362,6 @@ describe("#9816 focus blackout across an in-flight wait", () => {
 		await returning;
 
 		const rendered = Bun.stripANSI(ctx.chatContainer.render(120).join("\n"));
-		expect(rendered).toContain("1 job settled");
 		expect(rendered).toContain("Sleeper1");
 		expect(ctx.pendingTools.has("wait-1")).toBe(false);
 	});

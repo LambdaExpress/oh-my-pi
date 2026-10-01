@@ -59,7 +59,7 @@ function closeHandle(): void {
 		handle.upsertTitle.finalize();
 		handle.selectTitle.finalize();
 		handle.insertRecap.finalize();
-		handle.db.close();
+		handle.db.close(true);
 	} catch {}
 	handle = undefined;
 }
@@ -138,8 +138,9 @@ export function recordSessionRecap(sessionId: string, cwd: string, recap: string
 	}
 }
 
-/** @internal Close the cached connection so the next call re-resolves the db path — test-only. */
-export function resetSessionIndexForTests(): void {
+/** @internal Release the cached connection, optionally only for an owned path. */
+export function resetSessionIndexForTests(expectedDbPath?: string): void {
+	if (expectedDbPath !== undefined && (handle?.dbPath ?? failedPath) !== expectedDbPath) return;
 	closeHandle();
 	failedPath = undefined;
 }

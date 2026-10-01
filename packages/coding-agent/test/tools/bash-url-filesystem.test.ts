@@ -6,6 +6,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { resolveLocalRoot } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
+import { stripWindowsExtendedLengthPathPrefix } from "@oh-my-pi/pi-utils";
 
 let tempDir: string;
 let localRoot: string;
@@ -58,7 +59,10 @@ describe("bash internal URLs through the shell filesystem", () => {
 
 		const physical = await fs.realpath(path.join(localRoot, "source.txt"));
 		expect(isError).toBeUndefined();
-		expect(text).toContain(`body\n${physical}\n${physical}`);
+		const [body, linkTarget, canonicalTarget] = text.split("\n");
+		expect(body).toBe("body");
+		expect(stripWindowsExtendedLengthPathPrefix(linkTarget!)).toBe(physical);
+		expect(stripWindowsExtendedLengthPathPrefix(canonicalTarget!)).toBe(physical);
 		expect(await fs.readlink(path.join(localRoot, "link"))).toBe("local://source.txt");
 	});
 

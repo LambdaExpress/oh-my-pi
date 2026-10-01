@@ -7,7 +7,11 @@ import type { ComposerShape } from "../../overlays/composer-shape-registry";
 import { renderComposerShapePreview } from "../../overlays/composer-shape-preview";
 import { getComposerShapeOptions } from "../../overlays/composer-shape-registry";
 import { t } from "../../i18n";
+import { editorKey } from "../../chrome/keybinding-hints";
 import { getSelectListTheme, theme } from "../../theme/theme";
+import { ansi, col, span, text } from "../../native/describe";
+import type { DescribeContext, NativeNode } from "../../native/node";
+import { Memo } from "../../native/memo";
 import type { SetupScene, SetupSceneController, SetupSceneHost } from "./types";
 
 class ComposerSceneController implements SetupSceneController {
@@ -19,6 +23,7 @@ class ComposerSceneController implements SetupSceneController {
 	#currentShape: ComposerShape = "band";
 	#committing = false;
 	#step: WizardStep | undefined;
+	#native = new Memo();
 
 	readonly #host: SetupSceneHost;
 
@@ -52,6 +57,7 @@ class ComposerSceneController implements SetupSceneController {
 	}
 
 	invalidate(): void {
+		this.#native.clear();
 		if (this.#step) this.#step.invalidate();
 		else this.#selectList.invalidate();
 	}
@@ -74,7 +80,12 @@ class ComposerSceneController implements SetupSceneController {
 
 	render(width: number, maxLines?: number): readonly string[] {
 		const intro = new Text(
-			theme.fg("muted", t("Select a layout; live preview updates below. Press Enter to confirm.")),
+			theme.fg(
+				"muted",
+				t("Select a layout; live preview updates below. Press {key} to confirm.", {
+					key: editorKey("tui.select.confirm"),
+				}),
+			),
 			0,
 			0,
 		);
@@ -101,6 +112,35 @@ class ComposerSceneController implements SetupSceneController {
 		}
 		this.#step.setMaxHeight(maxLines);
 		return this.#step.render(width);
+	}
+
+	/**
+	 * Intro, the shape list, and the live preview. The preview is omp's own
+	 * composer chrome for the highlighted shape — exactly what the classic
+	 * renderer paints — so it travels as `ansi` rendered at the surface width.
+	 */
+	describe(cx: DescribeContext): NativeNode {
+		const confirm = editorKey("tui.select.confirm");
+		return this.#native.get([this.#currentShape, cx.cols, confirm], () =>
+			col(
+				[
+					text([
+						span(
+							t("Select a layout; live preview updates below. Press {key} to confirm.", { key: confirm }),
+							"muted",
+						),
+					]),
+					this.#selectList,
+					col([
+						text([span(t("Preview:"), "muted")]),
+						ansi(renderComposerShapePreview(this.#currentShape, cx.cols, this.#host.ctx.statusLine).join("\n"), {
+							cols: cx.cols,
+						}),
+					]),
+				],
+				{ gap: "sm", role: "omp.setup.composer" },
+			),
+		);
 	}
 
 	async #commit(shape: ComposerShape): Promise<void> {

@@ -6,7 +6,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
 import { PwshTool, resolvePwshExecutable, shouldHidePwshWindow } from "@oh-my-pi/pi-coding-agent/tools/pwsh";
-import { Process } from "@oh-my-pi/pi-natives";
+import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
 
 const pwshPath = resolvePwshExecutable();
 const describeIfPwsh = pwshPath ? describe : describe.skip;
@@ -155,15 +155,15 @@ describeIfPwsh("PwshTool", () => {
 		const tool = new PwshTool(makeSession(process.cwd()), pwshPath ?? "pwsh");
 		const pidPath = path.join(tempDir, "inherited-pipe.pid");
 		const escapedPidPath = pidPath.replace(/'/g, "''");
-		const startedAt = performance.now();
 		try {
 			const result = await tool.execute("call-pwsh-inherited-pipe", {
-				script: `$child = Start-Process -FilePath $env:ComSpec -ArgumentList '/d', '/c', 'ping -n 6 127.0.0.1' -NoNewWindow -PassThru\n$child.Id | Set-Content -LiteralPath '${escapedPidPath}'`,
-				timeout: 1,
+				script: `$child = Start-Process -FilePath $env:ComSpec -ArgumentList '/d', '/c', 'ping -n 6 127.0.0.1' -NoNewWindow -PassThru\n$child.Id | Set-Content -LiteralPath '${escapedPidPath}'\nWrite-Output 'root-exited'`,
 			});
 
 			expect(result.isError).toBeUndefined();
-			expect(performance.now() - startedAt).toBeLessThan(3000);
+			expect(textOutput(result)).toContain("root-exited");
+			const childPid = Number.parseInt(await fs.readFile(pidPath, "utf8"), 10);
+			expect(Process.fromPid(childPid)?.status()).toBe(ProcessStatus.Running);
 		} finally {
 			await terminateRecordedProcess(pidPath);
 		}

@@ -4,15 +4,17 @@ import { getProjectDir } from "@oh-my-pi/pi-utils";
 import { highlightCode, type SymbolKey, type Theme } from "../theme/theme";
 import { renderStatusLine } from "../render/status-line";
 import { framedToolCard, type ToolCardSnapshot } from "../render/tool-card";
-import { formatOutputPaneLines } from "../render/output-pane";
+import { formatOutputPaneLines, splitTerminalOutputLines } from "../render/output-pane";
 import {
 	capPreviewLines,
 	DEFAULT_TERMINAL_PREVIEW_LINES,
 	extractPartialJsonString,
 	formatToolWorkingDirectory,
 	previewWindowRows,
-	replaceTabs,
+	sanitizeDisplayLines,
+	sanitizeDisplayWarning,
 } from "../render/render-utils";
+import { sanitizeWithOptionalSixelPassthrough } from "../render/sixel";
 import {
 	formatStyledTruncationWarning,
 	type OutputMeta,
@@ -20,7 +22,17 @@ import {
 	stripRawOutputArtifactNotice,
 	stripTrailingNotice,
 } from "./output-meta";
-import type { RenderResultOptions, ToolRenderer } from "./renderer";
+import type {
+	NativeToolHead,
+	NativeToolView,
+	RenderResultContextOptions,
+	RenderResultOptions,
+	ToolRenderer,
+} from "./renderer";
+import { ansi, compact, keyed } from "../native/describe";
+import type { NativeChild } from "../native/node";
+import { plainText } from "../native/spans";
+import { footnoteText, resultText } from "./native-view";
 
 /** Default collapsed shell output preview height. */
 export const BASH_DEFAULT_PREVIEW_LINES = DEFAULT_TERMINAL_PREVIEW_LINES;
@@ -132,19 +144,51 @@ function unescapePartialJsonString(value: string): string {
 	return output;
 }
 
-function extractPartialBashEnv(partialJson: string | undefined): Record<string, string> | undefined {
+// One-slot memo: every render path over one streamed args object (call
+// preview, result header, repaint) asks for the same buffer.
+let lastPartialEnvJson: string | undefined;
+let lastPartialEnv: Readonly<Record<string, string>> | undefined;
+
+function extractPartialBashEnv(partialJson: string | undefined): Readonly<Record<string, string>> | undefined {
 	if (!partialJson) return undefined;
+	if (partialJson === lastPartialEnvJson) return lastPartialEnv;
+	let env: Record<string, string> | undefined;
 	const envStart = partialJson.search(/"env"\s*:\s*\{/u);
-	if (envStart === -1) return undefined;
-	const objectStart = partialJson.indexOf("{", envStart);
-	if (objectStart === -1) return undefined;
-	const envBody = partialJson.slice(objectStart + 1);
-	const env: Record<string, string> = {};
-	const matcher = /"([A-Za-z_][A-Za-z0-9_]*)"\s*:\s*"((?:\\.|[^"\\])*)(?:"|$)/gu;
-	for (const match of envBody.matchAll(matcher)) {
-		env[match[1]!] = unescapePartialJsonString(match[2]!);
+	const objectStart = envStart === -1 ? -1 : partialJson.indexOf("{", envStart);
+	if (objectStart !== -1) {
+		// Scan only the env object: stop at its closing brace (outside strings)
+		// so the keys that follow it are not read as env assignments.
+		let objectEnd = partialJson.length;
+		let depth = 0;
+		for (let i = objectStart + 1; i < partialJson.length; i++) {
+			const ch = partialJson.charCodeAt(i);
+			if (ch === 0x22) {
+				// Skip the string body, honoring escapes; an unterminated string runs to the end.
+				for (i++; i < partialJson.length; i++) {
+					const inner = partialJson.charCodeAt(i);
+					if (inner === 0x5c) i++;
+					else if (inner === 0x22) break;
+				}
+			} else if (ch === 0x7b || ch === 0x5b) {
+				depth++;
+			} else if (ch === 0x7d || ch === 0x5d) {
+				if (depth === 0) {
+					objectEnd = i;
+					break;
+				}
+				depth--;
+			}
+		}
+		const envBody = partialJson.slice(objectStart + 1, objectEnd);
+		const matcher = /"([A-Za-z_][A-Za-z0-9_]*)"\s*:\s*"((?:\\.|[^"\\])*)(?:"|$)/gu;
+		for (const match of envBody.matchAll(matcher)) {
+			env ??= {};
+			env[match[1]!] = unescapePartialJsonString(match[2]!);
+		}
 	}
-	return Object.keys(env).length > 0 ? env : undefined;
+	lastPartialEnvJson = partialJson;
+	lastPartialEnv = env ? Object.freeze(env) : undefined;
+	return lastPartialEnv;
 }
 
 function formatWallTimeSeconds(wallTimeMs: number): string {
@@ -227,17 +271,141 @@ export function getBashEnvForDisplay(args: BashRenderArgs): Record<string, unkno
 export function formatBashCommandLines(args: BashRenderArgs, uiTheme: Theme): string[] {
 	// The parsed args lag the raw stream prefix by up to one throttled parse
 	// window, so the partial JSON buffer wins whenever it carries the command.
-	const command = replaceTabs(extractPartialJsonString(args.__partialJson, "command") ?? args.command ?? "…");
+	const command = plainText(extractPartialJsonString(args.__partialJson, "command") ?? args.command ?? "…");
 	const cwd = getProjectDir();
 	const displayWorkdir = formatToolWorkingDirectory(args.cwd, cwd);
 	const envAssignments = formatBashEnvAssignments(getBashEnvForDisplay(args));
 	const prefixParts = ["$"];
-	if (displayWorkdir) prefixParts.push(`cd ${displayWorkdir} &&`);
-	if (envAssignments) prefixParts.push(envAssignments);
+	if (displayWorkdir) prefixParts.push(`cd ${sanitizeDisplayWarning(displayWorkdir)} &&`);
+	if (envAssignments) prefixParts.push(plainText(envAssignments));
 	const prefix = uiTheme.fg("dim", `${prefixParts.join(" ")} `);
 	const highlightedLines = highlightCode(command, "bash");
 	if (highlightedLines.length === 0) return [prefix.trimEnd()];
 	return highlightedLines.map((line, i) => (i === 0 ? `${prefix}${line}` : line));
+}
+
+/**
+ * Plain (unstyled) command line for native views: `cd <dir> && NAME="…" <command>`,
+ * built from the same decoded display args (incl. streamed `__partialJson` env) as the ANSI path.
+ */
+export function formatBashCommandText(args: BashRenderArgs): string {
+	const displayWorkdir = formatToolWorkingDirectory(args.cwd, getProjectDir());
+	const envAssignments = formatBashEnvAssignments(getBashEnvForDisplay(args));
+	const parts: string[] = [];
+	if (displayWorkdir) parts.push(`cd ${sanitizeDisplayWarning(displayWorkdir)} &&`);
+	if (envAssignments) parts.push(plainText(envAssignments));
+	parts.push(plainText(extractPartialJsonString(args.__partialJson, "command") ?? args.command ?? "…"));
+	return parts.join(" ");
+}
+
+/** Bash output with the LLM-facing notices (background, exit, wall time, artifact, truncation) removed. */
+function stripBashNotices(
+	rawOutput: string,
+	details: BashToolDetails | undefined,
+): { text: string; artifactId?: string } {
+	const withoutBackground =
+		details?.async?.state === "running"
+			? stripTrailingNotice(rawOutput, formatBackgroundNotice(details.async.jobId))
+			: rawOutput;
+	const strippedOutput = stripOutputNotice(withoutBackground, details?.meta);
+	const withoutExit =
+		details?.exitCode === undefined
+			? strippedOutput
+			: stripTrailingNotice(strippedOutput, formatExitCodeNotice(details.exitCode));
+	const withoutWall =
+		details?.wallTimeMs === undefined
+			? withoutExit
+			: stripTrailingNotice(withoutExit, formatWallTimeNotice(details.wallTimeMs));
+	return stripRawOutputArtifactNotice(withoutWall);
+}
+/** `Wall: 1.20s`, `Timeout: 30s`, … metadata parts shown under bash output. */
+function bashStatsParts(
+	details: BashToolDetails | undefined,
+	contextTimeout: number | undefined,
+	artifactId: string | undefined,
+	isError: boolean,
+): string[] {
+	const timeoutDisabled = details?.timeoutDisabled === true || contextTimeout === 0;
+	const timeoutSeconds = timeoutDisabled ? undefined : (details?.timeoutSeconds ?? contextTimeout);
+	const requestedTimeoutSeconds = details?.requestedTimeoutSeconds;
+	const wallTimeMs = details?.wallTimeMs;
+	const statsParts: string[] = [];
+	if (details?.async?.state === "running") {
+		statsParts.push(t("Backgrounded: {jobId}", { jobId: details.async.jobId }));
+	}
+	if (details?.service) {
+		const service = details.service;
+		statsParts.push(`Service: ${service.name}`, `State: ${service.state}`);
+		statsParts.push(`Ready: ${service.ready ? "yes" : service.timedOut ? "timed out" : "no"}`);
+		if (service.pid !== undefined) statsParts.push(`PID: ${service.pid}`);
+	}
+	if (wallTimeMs !== undefined) {
+		statsParts.push(t("Wall: {seconds}s", { seconds: formatWallTimeSeconds(wallTimeMs) }));
+	}
+	if (timeoutDisabled) {
+		statsParts.push(t("Timeout: disabled"));
+	}
+	if (typeof timeoutSeconds === "number") {
+		statsParts.push(
+			requestedTimeoutSeconds !== undefined && requestedTimeoutSeconds !== timeoutSeconds
+				? t("Timeout: {timeout}s (requested {requested}s clamped)", {
+						timeout: timeoutSeconds,
+						requested: requestedTimeoutSeconds,
+					})
+				: t("Timeout: {timeout}s", { timeout: timeoutSeconds }),
+		);
+	}
+	if (artifactId) {
+		statsParts.push(t("Artifact: {artifactId}", { artifactId }));
+	}
+	if (isError && typeof details?.exitCode === "number") {
+		statsParts.push(t("Exit: {code}", { code: details.exitCode }));
+	}
+	return statsParts.map(sanitizeDisplayWarning);
+}
+
+/**
+ * Native head facts of a shell call: title, the command once (`cd`/env
+ * prefix included), a `background` badge for a backgrounded job, the
+ * `exit N` chip and a `timed out` note only when the deadline hit.
+ */
+function shellToolHead(
+	title: string,
+	command: string,
+	details: BashToolDetails | undefined,
+	settled: boolean,
+): NativeToolHead {
+	const exit = settled && details?.exitCode !== undefined && details.exitCode !== 0 ? details.exitCode : undefined;
+	return {
+		title: sanitizeDisplayWarning(title),
+		target: plainText(command),
+		targetKind: "command",
+		lang: "bash",
+		badges:
+			details?.async?.state === "running"
+				? [
+						{
+							text: t("background"),
+							title: sanitizeDisplayWarning(t("Backgrounded: {jobId}", { jobId: details.async.jobId })),
+						},
+					]
+				: undefined,
+		exit,
+		note: settled && details?.timedOut === true ? t("timed out") : undefined,
+	};
+}
+
+/** The quiet final line's facts under shell output: service state and the full-output artifact. */
+function shellFootParts(details: BashToolDetails | undefined, artifactId: string | undefined): string[] {
+	const parts: string[] = [];
+	const service = details?.service;
+	if (service) {
+		parts.push(`Service ${service.name}`, service.state);
+		parts.push(service.ready ? "ready" : service.timedOut ? "ready timed out" : "not ready");
+		if (service.pid !== undefined) parts.push(`PID ${service.pid}`);
+	}
+	if (artifactId) parts.push(`Artifact ${artifactId}`);
+	return parts;
 }
 
 function toBashRenderArgs<TArgs>(args: TArgs | undefined, config: ShellRendererConfig<TArgs>): BashRenderArgs {
@@ -254,8 +422,12 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 	return {
 		renderCall(args: TArgs, options: RenderResultOptions, uiTheme: Theme): Component {
 			const renderArgs = toBashRenderArgs(args, config);
-			const cmdLines = config.formatCommandLines?.(args, uiTheme) ?? formatBashCommandLines(renderArgs, uiTheme);
+			// Highlighting the whole (possibly still-streaming) command is the
+			// expensive part: defer it to the first paint, once per component,
+			// so a rebuild that is replaced before painting never pays for it.
+			let cmdLines: string[] | undefined;
 			return framedToolCard(uiTheme, () => {
+				cmdLines ??= config.formatCommandLines?.(args, uiTheme) ?? formatBashCommandLines(renderArgs, uiTheme);
 				const header =
 					config.showHeader === false
 						? undefined
@@ -263,7 +435,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 								{
 									icon: options.spinnerFrame !== undefined ? "running" : "pending",
 									spinnerFrame: options.spinnerFrame,
-									title: config.resolveTitle(args, options),
+									title: sanitizeDisplayWarning(config.resolveTitle(args, options)),
 								},
 								uiTheme,
 							);
@@ -286,9 +458,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 			args?: TArgs,
 		): Component {
 			const renderArgs = toBashRenderArgs(args, config);
-			const cmdLines = args
-				? (config.formatCommandLines?.(args, uiTheme) ?? formatBashCommandLines(renderArgs, uiTheme))
-				: undefined;
+			let cmdLines: string[] | undefined;
 			const isError = result.isError === true;
 			const isPartial = options.isPartial === true;
 			const success = !isPartial && !isError;
@@ -301,11 +471,11 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							success
 								? {
 										iconOverride: uiTheme.styledSymbol(config.successIcon ?? "tool.bash", "accent"),
-										title: config.resolveTitle(args, options),
+										title: sanitizeDisplayWarning(config.resolveTitle(args, options)),
 									}
 								: {
 										icon: isPartial ? "pending" : isTimeout ? "warning" : "error",
-										title: config.resolveTitle(args, options),
+										title: sanitizeDisplayWarning(config.resolveTitle(args, options)),
 									},
 							uiTheme,
 						);
@@ -355,61 +525,17 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					) {
 						return cachedSnapshot;
 					}
-					const withoutBackground =
-						details?.async?.state === "running"
-							? stripTrailingNotice(rawOutput, formatBackgroundNotice(details.async.jobId))
-							: rawOutput;
-					const strippedOutput = stripOutputNotice(withoutBackground, details?.meta);
-					const withoutExit =
-						details?.exitCode === undefined
-							? strippedOutput
-							: stripTrailingNotice(strippedOutput, formatExitCodeNotice(details.exitCode));
-					const withoutWall =
-						details?.wallTimeMs === undefined
-							? withoutExit
-							: stripTrailingNotice(withoutExit, formatWallTimeNotice(details.wallTimeMs));
-					const rawOutputArtifact = stripRawOutputArtifactNotice(withoutWall);
+					const rawOutputArtifact = stripBashNotices(rawOutput, details);
 					const output = rawOutputArtifact.text;
 					const displayOutput = output.trimEnd();
 					const showingFullOutput = expanded && renderContext?.isFullOutput === true;
 
-					// Build truncation warning
-					const timeoutDisabled = details?.timeoutDisabled === true || renderContext?.timeout === 0;
-					const timeoutSeconds = timeoutDisabled ? undefined : (details?.timeoutSeconds ?? renderContext?.timeout);
-					const requestedTimeoutSeconds = details?.requestedTimeoutSeconds;
-					const wallTimeMs = details?.wallTimeMs;
-					const statsParts: string[] = [];
-					if (details?.async?.state === "running") {
-						statsParts.push(t("Backgrounded: {jobId}", { jobId: details.async.jobId }));
-					}
-					if (details?.service) {
-						const service = details.service;
-						statsParts.push(`Service: ${service.name}`, `State: ${service.state}`);
-						statsParts.push(`Ready: ${service.ready ? "yes" : service.timedOut ? "timed out" : "no"}`);
-						if (service.pid !== undefined) statsParts.push(`PID: ${service.pid}`);
-					}
-					if (wallTimeMs !== undefined) {
-						statsParts.push(t("Wall: {seconds}s", { seconds: formatWallTimeSeconds(wallTimeMs) }));
-					}
-					if (timeoutDisabled) {
-						statsParts.push(t("Timeout: disabled"));
-					}
-					if (typeof timeoutSeconds === "number") {
-						statsParts.push(
-							requestedTimeoutSeconds !== undefined && requestedTimeoutSeconds !== timeoutSeconds
-								? t("Timeout: {timeout}s (requested {requested}s clamped)", {
-										timeout: timeoutSeconds,
-										requested: requestedTimeoutSeconds,
-									})
-								: t("Timeout: {timeout}s", { timeout: timeoutSeconds }),
-						);
-					}
-					if (rawOutputArtifact.artifactId) {
-						statsParts.push(t("Artifact: {artifactId}", { artifactId: rawOutputArtifact.artifactId }));
-					}
-					if (isError && typeof details?.exitCode === "number") {
-						statsParts.push(t("Exit: {code}", { code: details.exitCode }));
-					}
+					const statsParts = bashStatsParts(
+						details,
+						renderContext?.timeout,
+						rawOutputArtifact.artifactId,
+						isError,
+					);
 					const timeoutLine =
 						statsParts.length > 0
 							? uiTheme.fg(
@@ -419,7 +545,8 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							: undefined;
 					let warningLine: string | undefined;
 					if (details?.meta?.artifactError || (details?.meta?.truncation && !showingFullOutput)) {
-						warningLine = formatStyledTruncationWarning(details.meta, uiTheme) ?? undefined;
+						const warning = formatStyledTruncationWarning(details.meta, uiTheme);
+						warningLine = warning ? uiTheme.fg("warning", sanitizeDisplayWarning(warning)) : undefined;
 					}
 
 					// Cap the collapsed/streaming output to a viewport-sized tail and
@@ -432,13 +559,13 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 					const hasOutput = displayOutput.trim().length > 0;
 					const formatted = formatOutputPaneLines(
 						{
-							lines: hasOutput ? displayOutput.split("\n") : [],
+							lines: hasOutput ? splitTerminalOutputLines(displayOutput) : [],
 							expanded,
 							collapsedMaxLines: Math.min(previewLines, previewWindow),
 							edge: "tail",
 							visual: true,
 							width: contentWidth,
-							styleLine: line => uiTheme.fg("toolOutput", replaceTabs(line)),
+							styleLine: line => uiTheme.fg("toolOutput", sanitizeDisplayLines(line)[0] ?? ""),
 							uncapSixel: true,
 						},
 						uiTheme,
@@ -454,7 +581,15 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 							{
 								// Viewport-sized tail window in every state — streaming and final
 								// render identically; only ctrl+o uncaps.
-								content: capPreviewLines(cmdLines ?? [], uiTheme, { expanded }),
+								content: capPreviewLines(
+									args
+										? (cmdLines ??=
+												config.formatCommandLines?.(args, uiTheme) ??
+												formatBashCommandLines(renderArgs, uiTheme))
+										: [],
+									uiTheme,
+									{ expanded },
+								),
 							},
 							{ label: uiTheme.fg("toolTitle", t("Output")), content: outputLines },
 						],
@@ -482,6 +617,65 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 				},
 			);
 		},
+		describeCall(args: TArgs, options: RenderResultOptions): NativeToolView {
+			const command = formatBashCommandText(toBashRenderArgs(args, config));
+			// The command shows once, in the head; the body is only the output.
+			return {
+				tool: shellToolHead(config.resolveTitle(args, options), command, undefined, false),
+				preview: { tail: BASH_DEFAULT_PREVIEW_LINES },
+			};
+		},
+
+		describeResult(
+			result: {
+				content: Array<{ type: string; text?: string }>;
+				details?: BashToolDetails;
+				isError?: boolean;
+			},
+			options: RenderResultContextOptions & { renderContext?: BashRenderContext },
+			args?: TArgs,
+		): NativeToolView {
+			const details = result.details;
+			const renderContext = options.renderContext;
+			const isError = result.isError === true;
+			const isPartial = options.isPartial === true;
+			const rawOutput = renderContext?.output ?? resultText(result);
+			const stripped = stripBashNotices(rawOutput, details);
+			const output = sanitizeWithOptionalSixelPassthrough(stripped.text, text =>
+				sanitizeDisplayLines(text).join("\n"),
+			).trimEnd();
+			const expanded = renderContext?.expanded ?? options.expanded;
+			const showingFullOutput = expanded && renderContext?.isFullOutput === true;
+			const command = formatBashCommandText(toBashRenderArgs(args, config));
+			const previewLines = renderContext?.previewLines ?? BASH_DEFAULT_PREVIEW_LINES;
+			// Wall time is the head timer, the timeout a note only when hit, the exit a head chip:
+			// what is left (service state, artifact, truncation) is one quiet final line.
+			const meta = details?.meta;
+			const body: NativeChild[] = compact([
+				output.trim().length > 0 &&
+					keyed(ansi(output, { follow: isPartial, role: "omp.tool.bash.output" }), "output"),
+				footnoteText(shellFootParts(details, stripped.artifactId), {
+					...meta,
+					source: meta?.source ? { ...meta.source, value: plainText(meta.source.value) } : undefined,
+					truncation:
+						showingFullOutput || !meta?.truncation
+							? undefined
+							: {
+									...meta.truncation,
+									artifactId:
+										meta.truncation.artifactId === undefined
+											? undefined
+											: plainText(meta.truncation.artifactId),
+								},
+				}),
+			]);
+			return {
+				tool: shellToolHead(config.resolveTitle(args, options), command, details, !isPartial),
+				body,
+				tone: !isPartial && isError && details?.timedOut === true ? "warning" : undefined,
+				preview: { tail: previewLines },
+			};
+		},
 		mergeCallAndResult: true,
 		inline: true,
 	} satisfies ToolRenderer<TArgs, BashToolDetails>;
@@ -489,7 +683,7 @@ export function createShellRenderer<TArgs>(config: ShellRendererConfig<TArgs>) {
 
 /** Renders bash command previews and output. */
 export const bashToolRenderer = createShellRenderer<BashRenderArgs>({
-	resolveTitle: args => (args?.name ? `Bash · ${String(args.name)}` : "Bash"),
+	resolveTitle: args => (args?.name ? `${t("Bash")} · ${sanitizeDisplayWarning(String(args.name))}` : t("Bash")),
 	resolveCommand: args => args?.command,
 	resolveCwd: args => args?.cwd,
 	resolveEnv: args => args?.env,

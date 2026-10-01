@@ -1,22 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import { __resetDirsFromEnvForTests, setAgentDir, TempDir } from "@oh-my-pi/pi-utils";
+import { closeModelCacheSharedDb } from "@oh-my-pi/pi-catalog/model-cache";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { getModelDbPath, setAgentDir, setProjectDir, TempDir } from "@oh-my-pi/pi-utils";
 import { runSearchCommand } from "../../../src/cli/web-search-cli";
-
 import { cfgRetryFallbackChains } from "@oh-my-pi/pi-coding-agent/session/settings";
-
-const originalAgentDir = process.env.PI_CODING_AGENT_DIR;
-const originalOmpProfile = process.env.OMP_PROFILE;
-const originalPiProfile = process.env.PI_PROFILE;
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "../../helpers/settings-test-state";
 
 let tempAgentDir: TempDir | undefined;
+let modelDbPath: string | undefined;
 let originalExitCode: typeof process.exitCode;
-
-function restoreEnv(key: string, value: string | undefined): void {
-	if (value === undefined) delete process.env[key];
-	else process.env[key] = value;
-}
+let settingsState: SettingsTestState | undefined;
 
 function makeFetchMock(): typeof fetch {
 	return Object.assign(
@@ -47,24 +41,26 @@ function makeFetchMock(): typeof fetch {
 }
 
 beforeEach(async () => {
+	settingsState = beginSettingsTest();
 	originalExitCode = process.exitCode;
 	process.exitCode = undefined;
-	resetSettingsForTest();
 	tempAgentDir = TempDir.createSync("@omp-search-cli-");
 	setAgentDir(tempAgentDir.path());
+	setProjectDir(tempAgentDir.path());
+	modelDbPath = getModelDbPath();
 	const settings = await Settings.init({ inMemory: true, cwd: tempAgentDir.path() });
 	settings.setModelRole("web", "web/startpage");
 	cfgRetryFallbackChains.set(settings, { web: [] });
 });
 
 afterEach(async () => {
-	vi.restoreAllMocks();
-	resetSettingsForTest();
+	if (modelDbPath) {
+		closeModelCacheSharedDb(modelDbPath);
+		modelDbPath = undefined;
+	}
+	restoreSettingsTestState(settingsState);
+	settingsState = undefined;
 	process.exitCode = originalExitCode;
-	restoreEnv("PI_CODING_AGENT_DIR", originalAgentDir);
-	restoreEnv("OMP_PROFILE", originalOmpProfile);
-	restoreEnv("PI_PROFILE", originalPiProfile);
-	__resetDirsFromEnvForTests();
 	if (tempAgentDir) {
 		await tempAgentDir.remove();
 		tempAgentDir = undefined;
@@ -105,5 +101,6 @@ describe("runSearchCommand model role settings", () => {
 		const plain = stripVTControlCharacters(stdout);
 		expect(plain).toContain("duckduckgo.example");
 		expect(plain).not.toContain("startpage.example");
+		expect(Settings.instance.getModelRole("web")).toBe("web/startpage");
 	});
 });

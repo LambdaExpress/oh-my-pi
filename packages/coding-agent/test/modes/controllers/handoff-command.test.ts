@@ -4,6 +4,8 @@ import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { setLocale } from "../../../src/i18n";
 
+const keybindings = { getKeys: () => ["escape"] };
+
 function createContainer() {
 	return {
 		children: [] as unknown[],
@@ -66,6 +68,7 @@ describe("/handoff command", () => {
 			},
 			loadingAnimation: undefined,
 			statusContainer,
+			keybindings,
 			chatContainer,
 			ui: { requestRender, requestComponentRender: vi.fn() },
 			editor: { onEscape: originalOnEscape },
@@ -115,6 +118,7 @@ describe("/handoff command", () => {
 				loadingAnimation = value;
 			},
 			statusContainer,
+			keybindings,
 			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 			clearTransientSessionUi: vi.fn(() => {
 				loadingAnimation?.stop();
@@ -167,6 +171,7 @@ describe("/handoff command", () => {
 				loadingAnimation = value;
 			},
 			statusContainer,
+			keybindings,
 			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 			clearTransientSessionUi: vi.fn(() => {
 				loadingAnimation?.stop();
@@ -231,6 +236,7 @@ describe("/handoff command", () => {
 				activeRetryLoader = value;
 			},
 			statusContainer,
+			keybindings,
 			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 			clearTransientSessionUi: vi.fn(() => {
 				statusContainer.disposeChildren();
@@ -279,6 +285,7 @@ describe("/handoff command", () => {
 			},
 			loadingAnimation: undefined,
 			statusContainer,
+			keybindings,
 			chatContainer: createContainer(),
 			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 			editor: { onEscape: vi.fn() },
@@ -308,6 +315,7 @@ describe("/handoff command", () => {
 			session: { isStreaming: true, handoff },
 			loadingAnimation: undefined,
 			statusContainer,
+			keybindings,
 			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 			showWarning,
 			showError: vi.fn(),
@@ -339,6 +347,7 @@ describe("/handoff command", () => {
 			autoCompactionLoader,
 			retryLoader: undefined,
 			statusContainer,
+			keybindings,
 			ui: { requestRender: vi.fn(), requestComponentRender: vi.fn() },
 			showWarning,
 			showError: vi.fn(),

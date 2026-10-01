@@ -14,12 +14,12 @@ This is an in-file leaf move, not a new session export.
 
 Primary implementation:
 
-- `src/slash-commands/builtin-registry.ts` (`/tree`, `/branch` command routing)
-- `src/modes/controllers/input-controller.ts` (keybinding wiring, double-escape behavior)
-- `src/modes/controllers/selector-controller.ts` (tree UI launch + summary prompt flow)
+- `packages/coding-agent/src/slash-commands/builtin-session.ts` (`/tree`, `/branch` command routing)
+- `packages/coding-agent/src/modes/controllers/input-controller.ts` (keybinding wiring, double-escape behavior)
+- `packages/coding-agent/src/modes/controllers/selector-controller.ts` (tree UI launch + summary prompt flow)
 - `packages/tui/src/overlays/tree-selector.ts` (navigation, filters, search, labels, rendering)
-- `src/session/agent-session.ts` (`navigateTree` leaf switching + optional summary)
-- `src/session/session-manager.ts` (`getTree`, `branch`, `branchWithSummary`, `resetLeaf`, label persistence)
+- `packages/coding-agent/src/session/agent-session.ts` (`navigateTree` leaf switching + optional summary)
+- `packages/coding-agent/src/session/session-manager.ts` (`getTree`, `branch`, `branchWithSummary`, `resetLeaf`, label persistence)
 
 ## How to open it
 
@@ -28,11 +28,14 @@ Any of the following opens the same selector:
 - `/tree`
 - configured keybinding for the `app.session.tree` action
 
-By default, double-escape on an empty editor opens the fullscreen transcript rewind selector (also available through `/rewind` or `/branch`). Set `doubleEscapeAction` to `tree` to open the session tree instead.
+Double-escape on an empty editor follows `doubleEscapeAction`: `rewind` (default) opens the fullscreen transcript rewind selector (also available through `/rewind` or `/branch`), `tree` opens this tree selector, and `none` disables the shortcut.
 
 In the rewind selector, move the mouse over a message region to preview the rewind point with the existing dotted outline, then left-click to navigate there. This also works in visible alternate-branch columns. Hovering does not navigate or recenter the viewport; the mouse wheel scrolls the transcript. Headers, gaps between regions, and the scrollbar do not select a rewind point. Keyboard navigation remains available.
 
-Rewind uses `navigateTree()` within the current session and keeps the old path as a branch. Selecting a user message returns its text and image attachments to the editor and moves to the point before that message.
+Transcript rewind calls `navigateTree(..., { summarize: false })` for every target, stays in the current session file, and keeps the old path as a branch. Selecting a user request moves to the point before that request and restores its text and image attachments as an editable draft. Unlike `/tree`'s empty-editor prefill, user-request drafts from transcript rewind replace the editor text.
+
+Rewind opens on the latest ~600 entries, keeping whole user turns (which may exceed the limit). Press `a` for all earlier history without changing the selected point or branch.
+Press `f` to filter the replayed transcript (loading the whole branch); Left/Right navigate the rewind selector's sibling-branch strip when available. These controls belong to transcript rewind, not the tree selector below.
 
 ## Tree UI model
 
@@ -58,7 +61,7 @@ Example tree view (active path marked with •):
 
 The selector recenters around current selection and shows up to:
 
-- `max(5, floor(terminalHeight / 2))` rows
+- `max(1, min(max(5, floor(terminalHeight / 2)), terminalHeight - 8))` rows, reserving panel chrome on short terminals
 
 ## Keybindings inside tree selector
 
@@ -95,8 +98,16 @@ Shows conversational nodes plus any entry types not explicitly suppressed. It hi
 - `custom`
 - `model_change`
 - `thinking_level_change`
+- `model_usage`
+- `service_tier_change`
+- `title_change`
+- `credential_pin`
+- `session_init`
+- `ttsr_injection`
+- `mode_change`
+- `reset_boundary`
 
-Other entry types without specialized rendering (for example service-tier, title, credential-pin, reset, and mode entries) may appear as blank rows in current code.
+The `all` filter renders these as metadata rows; entries without specialized rendering use their type name rather than a blank row.
 
 ### `no-tools`
 
@@ -104,7 +115,7 @@ Same as `default`, plus hides `toolResult` messages.
 
 ### `user-only`
 
-Only `message` entries where role is `user`.
+User requests: ordinary user messages and user-invoked skill/collaboration custom prompts.
 
 ### `labeled-only`
 
@@ -127,6 +138,7 @@ Assistant messages that contain only tool calls (no canonical text) are hidden i
 - Matching is fuzzy (subsequence) and case-insensitive (`fuzzyMatch`)
 - All tokens must match (AND semantics)
 - Searchable text includes label, role, and type-specific content (message text, branch summary text, custom type, tool command snippets, etc.)
+- Message/custom-message text is bounded to a 200-character search preview; search does not index every byte of a long message.
 
 ## Selection outcomes (important)
 
@@ -142,7 +154,8 @@ Assistant messages that contain only tool calls (no canonical text) are hidden i
 ### Selecting `custom_message`
 
 - Ordinary custom messages use the same parent-leaf rule and text prefill as user messages
-- `skill-prompt` custom messages are not editable; selecting one lands on that node like other non-user entries
+- User-invoked skill/collaboration custom prompts restore the original user draft and image attachments, using the parent-leaf rule
+- Agent/autoload `skill-prompt` injections are not editable; selecting one lands on that node like other non-user entries
 
 ### Selecting a past `ask` tool result
 
@@ -159,6 +172,7 @@ Assistant messages that contain only tool calls (no canonical text) are hidden i
 ### Selecting current leaf
 
 - Normally closes with `Already at this point`
+- The `/tree` UI treats a current-leaf user prompt as a no-op; transcript `/branch` rewind and direct `navigateTree()` calls can still rewind past that prompt
 - A current-leaf `ask` result still permits the re-answer flow
 
 ```text
@@ -179,7 +193,7 @@ selected node
 
 ## Summary-on-switch flow
 
-Summary prompting is controlled by `branchSummary.enabled` (default `false`). `Shift+Enter` requests summarization directly regardless of the prompt setting; a model and provider credential must be available.
+Summary prompting is controlled by `branchSummary.enabled` (default `false`). `Shift+Enter` requests summarization directly regardless of the prompt setting. A model must be available; provider credentials are checked only when the built-in summarizer runs (not for hook-supplied summaries or an empty abandoned path).
 
 When prompting is enabled, ordinary Enter offers:
 
@@ -220,11 +234,11 @@ Label edits in tree UI call `appendLabelChange(targetId, label)`.
 | Operation | Scope                                            | Result                                                                                                                                                   |
 | --------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/tree`   | Current session file                             | Moves leaf to selected point (same file)                                                                                                                 |
-| `/branch` | Usually current session file -> new session file | Opens the transcript rewind selector; a **user** message target branches into a new session file, any other target repositions the leaf in place |
+| `/branch` (alias `/rewind`) | Current session file | Opens transcript rewind; moves the leaf in place and restores user-request drafts |
 | `/fork`   | Whole current session                            | Duplicates session into a new persisted session file                                                                                                     |
 | `/resume` | Session list                                     | Switches to another session file                                                                                                                         |
 
-Key distinction: `/tree` is a navigation/repositioning tool inside one session file. `/branch`, `/fork`, and `/resume` all change session-file context.
+Key distinction: `/tree` and `/branch` navigate inside one session file. `/fork` duplicates the file; `/resume` switches files. The programmatic `AgentSession.branch()` API still creates a separate branched session.
 
 ## Operator workflows
 

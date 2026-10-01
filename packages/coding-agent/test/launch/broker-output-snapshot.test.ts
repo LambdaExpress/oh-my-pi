@@ -196,8 +196,11 @@ process.stdout.write("READY\\x1b[6n");
 				timeoutMs: 1_000,
 			});
 			if (logs.op !== "logs") throw new Error("unexpected logs result");
-			expect(logs.text).toContain("CPR:1:1");
-			expect(logs.text).not.toContain("\x1b[1;1R");
+			// ConPTY can answer with its actual cursor position, while the
+			// headless responder uses home. Either must reach the child without
+			// leaking a terminal reply into the captured output.
+			expect(logs.text).toMatch(/CPR:[1-9]\d*:[1-9]\d*/);
+			expect(logs.text).not.toMatch(/\x1b\[\d+;\d+R/);
 		} finally {
 			await client.request({ op: "stop", name: "terminal-query", timeoutMs: 2_000 }).catch(() => undefined);
 			await client.request({ op: "shutdown" }).catch(() => undefined);

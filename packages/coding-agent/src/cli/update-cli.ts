@@ -946,7 +946,9 @@ async function addBunCacheActualDir(
 	packageNames: Set<string> | undefined,
 ): Promise<void> {
 	try {
-		const manifest = (await Bun.file(path.join(dirPath, "package.json")).json()) as Partial<
+		// `fs.promises` rather than `Bun.file().json()`: on Windows, Bun's rejected read of a
+		// missing file holds no loop handle, so the loop can drain mid-await (#13470).
+		const manifest = JSON.parse(await fs.promises.readFile(path.join(dirPath, "package.json"), "utf8")) as Partial<
 			Record<"name" | "version", unknown>
 		>;
 		if (typeof manifest.name !== "string" || typeof manifest.version !== "string") return;
@@ -1204,7 +1206,8 @@ function resolveOmpPath(): string | undefined {
 
 /**
  * Parse the version a launcher reports from `omp --version` output
- * (`omp/X.Y.Z`, or a prerelease such as `omp/X.Y.Z-canary.1`).
+ * (`omp/X.Y.Z`, a prerelease such as `omp/X.Y.Z-canary.1`, or a fork
+ * build such as `omp/X.Y.Z+code.N`).
  *
  * The prerelease suffix is preserved so a correctly installed canary build
  * verifies as up to date instead of appearing to report a stale `X.Y.Z` and
@@ -1212,7 +1215,7 @@ function resolveOmpPath(): string | undefined {
  */
 export function parseReportedVersion(output: string): string | undefined {
 	if (!output.startsWith(`${APP_NAME}/`)) return undefined;
-	return output.slice(APP_NAME.length + 1).match(/^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/)?.[1];
+	return output.slice(APP_NAME.length + 1).match(/^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\+code\.(?:\d+|dev))?$/)?.[1];
 }
 
 async function reportedVersionAtPath(binaryPath: string): Promise<string | undefined> {

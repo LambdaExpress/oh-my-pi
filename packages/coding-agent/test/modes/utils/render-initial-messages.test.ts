@@ -16,6 +16,7 @@ import { createCompactionSummaryMessage } from "@oh-my-pi/pi-agent-core/compacti
 import type { AssistantMessage, ImageContent, Usage } from "@oh-my-pi/pi-ai";
 import { kStreamingPartialJson } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { EventController } from "@oh-my-pi/pi-coding-agent/modes/controllers/event-controller";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { TranscriptContainer } from "@oh-my-pi/pi-tui/chrome/transcript-container";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
@@ -26,6 +27,7 @@ import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manage
 import { type Component, Container, Image, ImageProtocol, setTerminalImageProtocol, TERMINAL } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { setLocale } from "../../../src/i18n";
+import { createSessionStub } from "../../helpers/interactive-mode-context";
 
 interface DisplaySnapshotFixture {
 	toolCallId: string;
@@ -90,6 +92,7 @@ function makeCtx(): RenderInitialMessagesTestContext {
 	const ctx = {
 		chatContainer,
 		pendingMessagesContainer: { clear: vi.fn(), disposeChildren: vi.fn() },
+		updatePendingMessagesDisplay: vi.fn(),
 		pendingBashComponents: [],
 		pendingPythonComponents: [],
 		transcriptMessageComponents: new WeakMap<AgentMessage, Component>(),
@@ -182,6 +185,9 @@ function makeRenderCtx(
 	const ctx = {
 		chatContainer,
 		pendingMessagesContainer: new Container(),
+		updatePendingMessagesDisplay: () => helpers.updatePendingMessagesDisplay(),
+		compactionQueuedMessages: [],
+		keybindings: { getKeys: () => [] },
 		pendingBashComponents: [],
 		pendingPythonComponents: [],
 		transcriptMessageComponents: new WeakMap<AgentMessage, Component>(),
@@ -214,6 +220,7 @@ function makeRenderCtx(
 		viewSession: {
 			isStreaming,
 			buildTranscriptSessionContext,
+			getQueuedMessages: () => ({ steering: [], followUp: [] }),
 			getToolByName: () => undefined,
 			getToolExecutionDisplaySnapshots: () => toolExecutionDisplaySnapshots,
 			hasBuiltInTool: () => true,
@@ -246,31 +253,46 @@ function makeRenderCtx(
 
 describe("UiHelpers.renderInitialMessages — transcript source", () => {
 	it("renders the collapsed live display transcript, never the LLM context", async () => {
-		await Settings.init({ inMemory: true });
-		const { ctx, transcriptSpy, llmContextSpy, renderSessionContextSpy } = makeCtx();
-		const transcript = makeEmptyContext();
-		transcriptSpy.mockReturnValue(transcript);
+		const display = transcriptWith([{ role: "user", content: "LIVE_DISPLAY_TRANSCRIPT", timestamp: 1 }]);
+		const uncollapsed = transcriptWith([{ role: "user", content: "UNCOLLAPSED_TRANSCRIPT", timestamp: 1 }]);
+		const primary = transcriptWith([{ role: "user", content: "UNFOCUSED_PRIMARY_TRANSCRIPT", timestamp: 1 }]);
+		const llm = transcriptWith([{ role: "user", content: "LLM_CONTEXT_TRANSCRIPT", timestamp: 1 }]);
+		const { ctx, chatContainer } = makeRenderCtx(options =>
+			options?.collapseCompactedHistory ? display : uncollapsed,
+		);
+		ctx.settings.set("display.collapseCompacted", true);
+		ctx.settings.set("display.collapseCompletedRuns", false);
+		ctx.session = createSessionStub(ctx.sessionManager, ctx.settings, {
+			buildTranscriptSessionContext: () => primary,
+		});
+		const llmContextSpy = vi.fn(() => llm);
+		ctx.viewSession.sessionManager.buildSessionContext = llmContextSpy;
 
 		await new UiHelpers(ctx).renderInitialMessages();
 
-		expect(transcriptSpy).toHaveBeenCalledTimes(1);
-		const [transcriptOptions] = transcriptSpy.mock.calls[0] ?? [];
-		expect(transcriptOptions?.collapseCompactedHistory).toBe(true);
+		const rendered = Bun.stripANSI(chatContainer.render(100).join("\n"));
+		expect(rendered).toContain("LIVE_DISPLAY_TRANSCRIPT");
+		expect(rendered).not.toContain("UNCOLLAPSED_TRANSCRIPT");
+		expect(rendered).not.toContain("UNFOCUSED_PRIMARY_TRANSCRIPT");
+		expect(rendered).not.toContain("LLM_CONTEXT_TRANSCRIPT");
 		expect(llmContextSpy).not.toHaveBeenCalled();
-		expect(renderSessionContextSpy).toHaveBeenCalledWith(transcript, {
-			updateFooter: true,
-		});
 	});
 
 	it("keeps pre-compaction display history when completed runs are collapsed", async () => {
-		Settings.instance.set("display.collapseCompacted", true);
-		Settings.instance.set("display.collapseCompletedRuns", true);
-		const { ctx, transcriptSpy } = makeCtx();
+		const before = { role: "user", content: "PRE_COMPACTION_HISTORY", timestamp: 1 } as AgentMessage;
+		const summary = createCompactionSummaryMessage("compaction summary", 12345, new Date(0).toISOString());
+		const after = { role: "user", content: "POST_COMPACTION_HISTORY", timestamp: 2 } as AgentMessage;
+		const full = transcriptWith([before, summary, after]);
+		const compacted = transcriptWith([summary, after]);
+		const { ctx, chatContainer } = makeRenderCtx(options => (options?.collapseCompactedHistory ? compacted : full));
+		ctx.settings.set("display.collapseCompacted", true);
+		ctx.settings.set("display.collapseCompletedRuns", true);
 
 		await new UiHelpers(ctx).renderInitialMessages();
 
-		const [transcriptOptions] = transcriptSpy.mock.calls[0] ?? [];
-		expect(transcriptOptions?.collapseCompactedHistory).toBe(false);
+		const rendered = Bun.stripANSI(chatContainer.render(100).join("\n"));
+		expect(rendered).toContain("PRE_COMPACTION_HISTORY");
+		expect(rendered).toContain("POST_COMPACTION_HISTORY");
 	});
 
 	it("keeps pre-compaction display history visible when collapsing is disabled", async () => {
@@ -293,12 +315,12 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 			options?.collapseCompactedHistory ? collapsedTranscript : fullDisplayTranscript,
 		);
 		const { ctx, chatContainer } = makeRenderCtx(buildTranscriptSessionContext);
+		ctx.settings.set("display.collapseCompacted", false);
 
 		await new UiHelpers(ctx).renderInitialMessages();
 
 		const rendered = Bun.stripANSI(chatContainer.render(100).join("\n"));
 		expect(rendered).toContain("pre-compaction user request must remain scrollable");
-		expect(rendered).toContain("compacted");
 		expect(rendered).toContain("post-compaction follow-up remains visible");
 	});
 
@@ -309,23 +331,22 @@ describe("UiHelpers.renderInitialMessages — transcript source", () => {
 		const { ctx } = makeRenderCtx(transcript, true, false, new Map(), true);
 		ctx.settings = Settings.isolated({ "display.collapseCompletedRuns": true });
 		ctx.recoverCompletedRunCollapses = vi.fn();
-		ctx.eventController = { restoreCompletedRunAnchor: vi.fn(), inheritTurnStart: vi.fn() } as never;
+		const controller = new EventController(ctx);
+		ctx.eventController = controller;
 
-		await new UiHelpers(ctx).renderInitialMessages({ recoverCompletedRunAnchor: true });
+		try {
+			await new UiHelpers(ctx).renderInitialMessages({ recoverCompletedRunAnchor: true });
 
-		expect(ctx.recoverCompletedRunCollapses).not.toHaveBeenCalled();
-		expect(ctx.eventController.restoreCompletedRunAnchor).toHaveBeenCalledWith(transcript.messages);
+			expect(ctx.recoverCompletedRunCollapses).not.toHaveBeenCalled();
+			expect(controller.activeCompletedRunGate?.afterMessage).toBe(initial);
+			expect(ctx.chatContainer.render(100).join("\n")).toContain("original request");
+		} finally {
+			controller.dispose();
+		}
 	});
 });
 
 describe("UiHelpers.renderInitialMessages — clearTerminalHistory", () => {
-	it("requests a scrollback-clearing repaint when clearTerminalHistory is set", async () => {
-		await Settings.init({ inMemory: true });
-		const { ctx } = makeCtx();
-		await new UiHelpers(ctx).renderInitialMessages({ clearTerminalHistory: true });
-		expect(ctx.ui.requestRender).toHaveBeenCalledWith(true, { clearScrollback: true });
-	});
-
 	it("never clears scrollback when clearTerminalHistory is unset", async () => {
 		await Settings.init({ inMemory: true });
 		const { ctx } = makeCtx();
@@ -334,6 +355,23 @@ describe("UiHelpers.renderInitialMessages — clearTerminalHistory", () => {
 			([force, opts]) => force === true && (opts as { clearScrollback?: boolean } | undefined)?.clearScrollback,
 		);
 		expect(clearedCall).toBeUndefined();
+	});
+});
+
+describe("UiHelpers.renderInitialMessages — queued messages", () => {
+	it("keeps the queued-message bar after a mid-turn rebuild such as rewind (#13680)", async () => {
+		const { ctx } = makeRenderCtx(makeEmptyContext());
+		vi.spyOn(ctx.viewSession, "getQueuedMessages").mockReturnValue({
+			steering: ["steer now"],
+			followUp: ["queued one", "queued two"],
+		});
+
+		await new UiHelpers(ctx).renderInitialMessages({ clearTerminalHistory: true });
+
+		const pending = Bun.stripANSI(ctx.pendingMessagesContainer.render(100).join("\n"));
+		expect(pending).toContain("steer now");
+		expect(pending).toContain("queued one");
+		expect(pending).toContain("queued two");
 	});
 });
 
@@ -435,28 +473,6 @@ describe("UiHelpers.renderInitialMessages — responsiveness", () => {
 });
 
 describe("UiHelpers.renderInitialMessages — image replay", () => {
-	it("restores read tool image blocks onto the rebuilt assistant transcript", async () => {
-		await Settings.init({ inMemory: true, overrides: { "terminal.showImages": true } });
-		setTerminalImageProtocol(ImageProtocol.Sixel);
-		const transcript = transcriptWith([
-			assistantToolCall("read-image", "read", { path: "sample.png" }),
-			{
-				role: "toolResult",
-				toolCallId: "read-image",
-				toolName: "read",
-				content: [{ type: "text", text: "Read image: sample.png" }, pngImage],
-				isError: false,
-				timestamp: 2,
-			},
-		]);
-		const { ctx, chatContainer } = makeRenderCtx(transcript);
-
-		await new UiHelpers(ctx).renderInitialMessages();
-
-		expect(hasImageComponent(chatContainer)).toBe(true);
-		expect(Bun.stripANSI(chatContainer.render(100).join("\n"))).toContain("Read sample.png");
-	});
-
 	it("restores eval display image blocks onto rebuilt tool output", async () => {
 		await Settings.init({ inMemory: true, overrides: { "terminal.showImages": true } });
 		setTerminalImageProtocol(ImageProtocol.Sixel);

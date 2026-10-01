@@ -2,14 +2,14 @@ import { afterEach, describe, expect, it, vi } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { AuthStorage, type CredentialDisabledEvent, getOAuthProviders } from "@oh-my-pi/pi-ai";
+import { AuthStorage, type CredentialDisabledEvent } from "@oh-my-pi/pi-ai";
 import * as oauthUtils from "@oh-my-pi/pi-ai/oauth";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { Extension, ExtensionError, ExtensionFactory } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
-import { createAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
+import { createAgentSession as createSdkAgentSession } from "@oh-my-pi/pi-coding-agent/sdk";
 import type { AgentSession, AgentSessionEvent } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { CREDENTIAL_DISABLED_NOTICE_SOURCE } from "@oh-my-pi/pi-coding-agent/session/credential-disabled-notice";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
@@ -81,11 +81,18 @@ const initializeRunnerForTest = (runner: ExtensionRunner | undefined): void => {
 describe("createAgentSession credential_disabled subscription", () => {
 	const tempDirs: string[] = [];
 	const authStorages: AuthStorage[] = [];
+	const sessions: AgentSession[] = [];
 
 	const createAuthStorage = async (...args: Parameters<typeof AuthStorage.create>): Promise<AuthStorage> => {
 		const storage = await AuthStorage.create(...args);
 		authStorages.push(storage);
 		return storage;
+	};
+
+	const createAgentSession = async (...args: Parameters<typeof createSdkAgentSession>) => {
+		const result = await createSdkAgentSession(...args);
+		sessions.push(result.session);
+		return result;
 	};
 
 	const makeDirs = (label: string): SessionDirs => {
@@ -158,8 +165,11 @@ describe("createAgentSession credential_disabled subscription", () => {
 		for (let i = 0; i < 5; i++) await Promise.resolve();
 	};
 
-	afterEach(() => {
+	afterEach(async () => {
 		vi.restoreAllMocks();
+		for (const session of sessions.splice(0)) {
+			if (!session.isDisposed) await session.dispose();
+		}
 		for (const authStorage of authStorages.splice(0)) authStorage.close();
 		for (const dir of tempDirs.splice(0)) {
 			removeSyncWithRetries(dir);
@@ -613,7 +623,7 @@ describe("createAgentSession credential_disabled subscription", () => {
 
 	it("warns the live session, without the provider's text, when a signed-in account is disabled", async () => {
 		const dirs = makeDirs("notice");
-		const authStorage = await AuthStorage.create(path.join(dirs.agentDir, "agent.db"));
+		const authStorage = await createAuthStorage(path.join(dirs.agentDir, "agent.db"));
 		const { session } = await createAgentSession(baseOptions(dirs, authStorage));
 		const notices = recordNotices(session);
 		try {
@@ -622,16 +632,18 @@ describe("createAgentSession credential_disabled subscription", () => {
 
 			await authStorage.keys.get("anthropic", "session-notice");
 
-			const name = getOAuthProviders().find(provider => provider.id === "anthropic")?.name;
-			expect(name).toBeDefined();
 			expect(notices).toEqual([
 				{
 					type: "notice",
 					level: "warning",
 					source: CREDENTIAL_DISABLED_NOTICE_SOURCE,
-					message: `${name} account alice@example.com was signed out automatically. Run /login to sign in again.`,
+					message: expect.stringContaining("alice@example.com"),
 				},
 			]);
+			expect(notices[0]!.message).toContain("/login");
+			expect(notices[0]!.message).not.toContain("invalid_grant");
+			expect(notices[0]!.message).not.toContain("stale-refresh");
+			expect(notices[0]!.message).not.toContain("expired-access");
 		} finally {
 			await session.dispose();
 		}
@@ -640,7 +652,7 @@ describe("createAgentSession credential_disabled subscription", () => {
 	it("does not prescribe /login for a disabled credential that has no login entry", async () => {
 		const dirs = makeDirs("notice-no-login");
 		const embedderEvents: CredentialDisabledEvent[] = [];
-		const authStorage = await AuthStorage.create(path.join(dirs.agentDir, "agent.db"), {
+		const authStorage = await createAuthStorage(path.join(dirs.agentDir, "agent.db"), {
 			onCredentialDisabled: event => {
 				embedderEvents.push(event);
 			},

@@ -1,8 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { BackgroundJobsHubComponent } from "@oh-my-pi/pi-coding-agent/modes/components/background-jobs-hub";
-import { CommandController } from "@oh-my-pi/pi-coding-agent/modes/controllers/command-controller";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
-import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import type { AsyncJobSnapshot, AsyncJobSnapshotItem } from "@oh-my-pi/pi-coding-agent/session/agent-session-types";
 import type { SshTransferToolDetails } from "@oh-my-pi/pi-tui/tools/ssh-transfer-summary";
 import type { TUI } from "@oh-my-pi/pi-tui";
@@ -58,12 +56,7 @@ afterEach(() => {
 });
 
 describe("BackgroundJobsHubComponent", () => {
-	it("opens from /jobs and stops repaint polling when disposed", async () => {
-		const showBackgroundJobsHub = vi.fn();
-		const controller = new CommandController({ showBackgroundJobsHub } as unknown as InteractiveModeContext);
-		await controller.handleJobsCommand();
-		expect(showBackgroundJobsHub).toHaveBeenCalledTimes(1);
-
+	it("stops repaint polling when disposed", () => {
 		vi.useFakeTimers();
 		const requestRender = vi.fn();
 		const hub = new BackgroundJobsHubComponent({
@@ -73,6 +66,9 @@ describe("BackgroundJobsHubComponent", () => {
 			requestRender,
 		});
 		hubs.push(hub);
+		vi.advanceTimersByTime(500);
+		expect(requestRender).toHaveBeenCalledTimes(1);
+		requestRender.mockClear();
 		hub.dispose();
 		vi.advanceTimersByTime(1_000);
 		expect(requestRender).not.toHaveBeenCalled();

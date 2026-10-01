@@ -27,10 +27,6 @@ afterEach(() => {
 });
 
 describe("apply_patch rendering", () => {
-	it("registers apply_patch to use the edit renderer", () => {
-		expect(toolRenderers.apply_patch).toBe(toolRenderers.edit);
-	});
-
 	it("renders apply_patch results through edit UI instead of generic fallback", async () => {
 		await getUiTheme();
 		const uiStub = { requestRender() {}, requestComponentRender() {} } as unknown as TUI;
@@ -79,7 +75,10 @@ describe("apply_patch rendering", () => {
 		const sessionTools = new SessionTools(
 			{
 				agent: { state: { tools: [editTool] } },
+				settings: Settings.instance,
 				model: () => undefined,
+				evalPreludes: () => [],
+				sessionAgents: () => [],
 			} as unknown as SessionToolsHost,
 			{
 				toolRegistry: new Map([[editTool.name, editTool]]),

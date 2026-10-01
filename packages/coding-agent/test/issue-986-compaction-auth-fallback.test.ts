@@ -28,22 +28,27 @@ describe("issue #986 compaction auth fallback", () => {
 	});
 
 	afterEach(async () => {
-		vi.restoreAllMocks();
-		if (session) {
-			await session.dispose();
+		try {
+			if (session) {
+				await session.dispose();
+			}
+		} finally {
+			authStorage?.close();
+			vi.restoreAllMocks();
+			setLocale(null);
+			tempDir.removeSync();
 		}
-		authStorage?.close();
-		tempDir.removeSync();
 	});
 
 	async function createSession(options?: { fallbackModelRole?: string; configureFallbackAuth?: boolean }) {
 		const bundledCurrentModel = getBundledModel("openai-codex", "gpt-5.5");
 		const currentModel = bundledCurrentModel && {
 			...bundledCurrentModel,
+			baseUrl: "https://chatgpt.com/backend-api",
 			remoteCompaction: {
 				...bundledCurrentModel.remoteCompaction,
 				enabled: true,
-				endpoint: "https://compact.example/v1/responses/compact",
+				endpoint: "https://chatgpt.com/backend-api/codex/responses/compact",
 			},
 		};
 		const fallbackModel = getBundledModel("anthropic", "claude-sonnet-4-5");
@@ -53,6 +58,7 @@ describe("issue #986 compaction auth fallback", () => {
 		const settings = Settings.isolated({
 			"compaction.keepRecentTokens": 1,
 			"compaction.methodOrder": ["remote", "soft"],
+			"memory.backend": "off",
 		});
 		if (options?.fallbackModelRole) {
 			settings.setModelRole(options.fallbackModelRole, `${fallbackModel.provider}/${fallbackModel.id}`);
@@ -116,6 +122,7 @@ describe("issue #986 compaction auth fallback", () => {
 			"compaction.keepRecentTokens": 1,
 			"compaction.methodOrder": options?.includeSoftFallback ? ["remote", "soft"] : ["remote"],
 			"contextPromotion.enabled": false,
+			"memory.backend": "off",
 		});
 		settings.setModelRole("smol", `${sameProviderModel.provider}/${sameProviderModel.id}`);
 		settings.setModelRole("slow", `${crossProviderModel.provider}/${crossProviderModel.id}`);
@@ -186,21 +193,27 @@ describe("issue #986 compaction auth fallback", () => {
 		session.subscribe(event => {
 			if (event.type === "auto_compaction_end" && event.result) resultSummary = event.result.summary;
 		});
-		vi.spyOn(compactionModule, "compact").mockImplementation(async (preparation, model) => {
-			attemptedModels.push(`${model.provider}/${model.id}`);
-			if (model.provider === currentModel.provider || model.provider === sameProviderModel.provider) {
-				throw new compactionModule.NativeCompactionError(new Error("native compaction transport failed"));
-			}
-			if (model.provider !== crossProviderModel.provider || model.id !== crossProviderModel.id) {
-				throw new Error(`Unexpected compaction model ${model.provider}/${model.id}`);
-			}
-			return {
-				summary: "cross-provider summary",
-				shortSummary: "cross-provider",
-				firstKeptEntryId: preparation.firstKeptEntryId,
-				tokensBefore: 42,
-			};
-		});
+		vi.spyOn(compactionModule, "compact").mockImplementation(
+			async (preparation, model, _key, _instructions, _signal, options) => {
+				attemptedModels.push(`${model.provider}/${model.id}`);
+				if (model.provider === currentModel.provider || model.provider === sameProviderModel.provider) {
+					if (options?.forceLocal) {
+						throw new AIError.ProviderHttpError("local compaction authentication failed", 401);
+					}
+					throw new compactionModule.NativeCompactionError(new Error("native compaction transport failed"));
+				}
+				if (!options?.forceLocal) throw new Error("Cross-provider recovery must only summarize locally");
+				if (model.provider !== crossProviderModel.provider || model.id !== crossProviderModel.id) {
+					throw new Error(`Unexpected compaction model ${model.provider}/${model.id}`);
+				}
+				return {
+					summary: "cross-provider summary",
+					shortSummary: "cross-provider",
+					firstKeptEntryId: preparation.firstKeptEntryId,
+					tokensBefore: 42,
+				};
+			},
+		);
 
 		await triggerAutoCompaction();
 
@@ -215,6 +228,9 @@ describe("issue #986 compaction auth fallback", () => {
 			`${crossProviderModel.provider}/${crossProviderModel.id}`,
 		]);
 		expect(resultSummary).toBe("cross-provider summary");
+		const entry = session.sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.method : undefined).toBe("soft");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("cross-provider summary");
 	});
 
 	it("preserves a native transport failure when a later same-provider candidate fails authentication", async () => {
@@ -328,21 +344,27 @@ describe("issue #986 compaction auth fallback", () => {
 		const { crossProviderModel, currentModel, sameProviderModel, triggerAutoCompaction } =
 			await createAutoNativeFallbackSession();
 		const attemptedModels: string[] = [];
-		vi.spyOn(compactionModule, "compact").mockImplementation(async (preparation, model) => {
-			attemptedModels.push(`${model.provider}/${model.id}`);
-			if (model.provider === currentModel.provider || model.provider === sameProviderModel.provider) {
-				throw new compactionModule.NativeCompactionError(new Error("provider stream stall timeout"));
-			}
-			if (model.provider !== crossProviderModel.provider || model.id !== crossProviderModel.id) {
-				throw new Error(`Unexpected compaction model ${model.provider}/${model.id}`);
-			}
-			return {
-				summary: "cross-provider summary",
-				shortSummary: "cross-provider",
-				firstKeptEntryId: preparation.firstKeptEntryId,
-				tokensBefore: 42,
-			};
-		});
+		vi.spyOn(compactionModule, "compact").mockImplementation(
+			async (preparation, model, _key, _instructions, _signal, options) => {
+				attemptedModels.push(`${model.provider}/${model.id}`);
+				if (model.provider === currentModel.provider || model.provider === sameProviderModel.provider) {
+					if (options?.forceLocal) {
+						throw new AIError.ProviderHttpError("local compaction authentication failed", 401);
+					}
+					throw new compactionModule.NativeCompactionError(new Error("provider stream stall timeout"));
+				}
+				if (!options?.forceLocal) throw new Error("Cross-provider recovery must only summarize locally");
+				if (model.provider !== crossProviderModel.provider || model.id !== crossProviderModel.id) {
+					throw new Error(`Unexpected compaction model ${model.provider}/${model.id}`);
+				}
+				return {
+					summary: "cross-provider summary",
+					shortSummary: "cross-provider",
+					firstKeptEntryId: preparation.firstKeptEntryId,
+					tokensBefore: 42,
+				};
+			},
+		);
 
 		await triggerAutoCompaction();
 
@@ -355,25 +377,34 @@ describe("issue #986 compaction auth fallback", () => {
 			`${sameProviderModel.provider}/${sameProviderModel.id}`,
 			`${crossProviderModel.provider}/${crossProviderModel.id}`,
 		]);
+		const entry = session.sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.method : undefined).toBe("soft");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("cross-provider summary");
 	});
 
-	it("stops auto-compaction before a same-provider candidate with native compaction disabled", async () => {
+	it("skips remote-disabled candidates during native compaction but recovers with a local summary", async () => {
 		const { currentModel, sameProviderModel, triggerAutoCompaction } = await createAutoNativeFallbackSession({
 			sameProviderNativeEnabled: false,
 		});
 		const attemptedModels: string[] = [];
-		vi.spyOn(compactionModule, "compact").mockImplementation(async (preparation, model) => {
-			attemptedModels.push(`${model.provider}/${model.id}`);
-			if (model.provider === currentModel.provider && model.id === currentModel.id) {
-				throw new compactionModule.NativeCompactionError(new Error("native compaction transport failed"));
-			}
-			return {
-				summary: "generic same-provider summary",
-				shortSummary: "generic same-provider",
-				firstKeptEntryId: preparation.firstKeptEntryId,
-				tokensBefore: 42,
-			};
-		});
+		vi.spyOn(compactionModule, "compact").mockImplementation(
+			async (preparation, model, _key, _instructions, _signal, options) => {
+				attemptedModels.push(`${model.provider}/${model.id}`);
+				if (model.provider === currentModel.provider && model.id === currentModel.id) {
+					if (options?.forceLocal) {
+						throw new Error("local summary failed for the current model");
+					}
+					throw new compactionModule.NativeCompactionError(new Error("native compaction transport failed"));
+				}
+				if (!options?.forceLocal) throw new Error("Remote-disabled model must only summarize locally");
+				return {
+					summary: "generic same-provider summary",
+					shortSummary: "generic same-provider",
+					firstKeptEntryId: preparation.firstKeptEntryId,
+					tokensBefore: 42,
+				};
+			},
+		);
 
 		await triggerAutoCompaction();
 
@@ -387,7 +418,9 @@ describe("issue #986 compaction auth fallback", () => {
 			`${currentModel.provider}/${currentModel.id}`,
 			`${sameProviderModel.provider}/${sameProviderModel.id}`,
 		]);
-		expect(sameProviderModel.remoteCompaction?.enabled).toBe(false);
+		const entry = session.sessionManager.getEntries().findLast(item => item.type === "compaction");
+		expect(entry?.type === "compaction" ? entry.method : undefined).toBe("soft");
+		expect(entry?.type === "compaction" ? entry.summary : undefined).toBe("generic same-provider summary");
 	});
 
 	it("falls through to cross-provider soft compaction after native authentication failures", async () => {

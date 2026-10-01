@@ -5,13 +5,15 @@ import type { UsageReport } from "@oh-my-pi/pi-ai";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import {
 	buildRedactionMap,
-	collectUnreportedAccounts,
 	computeProviderWindowStats,
 	formatUsageBreakdown,
 	formatUsageHistory,
-	type UsageAccountIdentity,
 	type UsagePolicyDiagnosticsOptions,
 } from "@oh-my-pi/pi-coding-agent/cli/usage-cli";
+import {
+	collectUnreportedAccounts,
+	type UsageAccountIdentity,
+} from "@oh-my-pi/pi-coding-agent/slash-commands/helpers/usage-accounts";
 import { setLocale } from "../src/i18n";
 
 beforeEach(() => setLocale("en"));
@@ -1031,11 +1033,14 @@ describe("usage command configuration", () => {
 		]);
 		const cliEntry = path.join(import.meta.dir, "..", "src", "cli.ts");
 		const proc = Bun.spawn([process.execPath, cliEntry, "usage", "invalidate"], {
+			cwd: tempDir.path(),
 			stdout: "pipe",
 			stderr: "pipe",
 			env: {
 				...process.env,
 				NO_COLOR: "1",
+				LANG: "en_US.UTF-8",
+				LC_ALL: "en_US.UTF-8",
 				PI_CODING_AGENT_DIR: tempDir.path(),
 				PI_CONFIG_FILES: overlayPath,
 			},

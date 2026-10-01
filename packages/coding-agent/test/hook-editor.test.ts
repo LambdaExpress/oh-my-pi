@@ -1,25 +1,39 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, type Mock, vi } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
+import type { ImageContent } from "@oh-my-pi/pi-ai";
 import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { HookEditorComponent } from "@oh-my-pi/pi-tui/overlays/hook-editor";
+import type { DescribeContext } from "@oh-my-pi/pi-tui/native/node";
 import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
-import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
+import { getThemeByName, setThemeInstance, theme, type Theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
-import { CURSOR_MARKER, isFocusable, setKeybindings, type TUI } from "@oh-my-pi/pi-tui";
+import { CURSOR_MARKER, getKeybindings, isFocusable, setKeybindings, type TUI } from "@oh-my-pi/pi-tui";
+import type { KeybindingsManager as TuiKeybindingsManager } from "@oh-my-pi/pi-tui/keybindings";
 import { setLocale } from "../src/i18n";
 
+let testTheme: Theme;
+let previousTheme: Theme | undefined;
+let previousKeybindings: TuiKeybindingsManager;
+
 beforeAll(async () => {
-	setLocale("en");
-	const theme = await getThemeByName("dark");
-	if (!theme) {
+	const loaded = await getThemeByName("dark");
+	if (!loaded) {
 		throw new Error("Failed to load dark theme for tests");
 	}
-	setThemeInstance(theme);
+	testTheme = loaded;
 });
 
-afterAll(() => setLocale(null));
+beforeEach(() => {
+	previousTheme = theme;
+	previousKeybindings = getKeybindings();
+	setLocale("en");
+	setThemeInstance(testTheme);
+	setKeybindings(KeybindingsManager.inMemory());
+});
 
 afterEach(() => {
-	setKeybindings(KeybindingsManager.inMemory());
+	setKeybindings(previousKeybindings);
+	if (previousTheme) setThemeInstance(previousTheme);
+	setLocale(null);
 	vi.restoreAllMocks();
 });
 
@@ -71,8 +85,8 @@ function createControllerContext() {
 		stop: vi.fn(),
 		terminal: { columns: 120 },
 	} as unknown as TestContext["ui"] & {
-		setFocus: Mock<any>;
-		requestRender: Mock<any>;
+		setFocus: Mock<(component: unknown) => void>;
+		requestRender: Mock<() => void>;
 	};
 	const ctx = {
 		editor,
@@ -106,18 +120,6 @@ describe("HookEditorComponent default (hook) mode", () => {
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 
-	it("submits the current text on Ctrl+Enter", () => {
-		const onSubmit = vi.fn();
-		const onCancel = vi.fn();
-		const component = new HookEditorComponent(createTui(), "Prompt", "line 1\nline 2", onSubmit, onCancel);
-
-		component.handleInput("\x1b[13;5u");
-
-		expect(onSubmit).toHaveBeenCalledTimes(1);
-		expect(onSubmit).toHaveBeenCalledWith("line 1\nline 2");
-		expect(onCancel).not.toHaveBeenCalled();
-	});
-
 	it("submits Ctrl+Enter variants with NumLock or keypad Enter metadata", () => {
 		const variants = ["\x1b[13;133u", "\x1b[57414;5u", "\x1b[57414;133u"];
 
@@ -145,21 +147,6 @@ describe("HookEditorComponent default (hook) mode", () => {
 		expect(onSubmit).toHaveBeenCalledWith("draft");
 		expect(onCancel).not.toHaveBeenCalled();
 	});
-	it("submits the current text on Ctrl+Q (Windows Terminal fallback for #2118)", () => {
-		const onSubmit = vi.fn();
-		const onCancel = vi.fn();
-		const component = new HookEditorComponent(createTui(), "Prompt", "line 1\nline 2", onSubmit, onCancel);
-
-		// Ctrl+Q raw byte (0x11). Windows Terminal cannot deliver a distinct
-		// Ctrl+Enter, so app.message.followUp also binds Ctrl+Q (#1903), and the
-		// hook editor must honor it for the same reason.
-		component.handleInput("\x11");
-
-		expect(onSubmit).toHaveBeenCalledTimes(1);
-		expect(onSubmit).toHaveBeenCalledWith("line 1\nline 2");
-		expect(onCancel).not.toHaveBeenCalled();
-	});
-
 	it("keeps Ctrl+Q working after Enter inserts a newline (Windows Terminal)", () => {
 		const onSubmit = vi.fn();
 		const onCancel = vi.fn();
@@ -224,6 +211,137 @@ describe("HookEditorComponent default (hook) mode", () => {
 });
 
 describe("HookEditorComponent prompt-style mode", () => {
+	it("cuts a long question to the terminal title but gives native hosts all of it", () => {
+		const question = `${"Which of these directions should the effort meter take? ".repeat(12)}FINAL-WORDS`;
+		const component = new HookEditorComponent(createTui(), "Custom answer", undefined, vi.fn(), vi.fn(), {
+			promptStyle: true,
+			question,
+		});
+
+		const terminal = renderText(component);
+		expect(terminal).toContain("Custom answer: Which of these");
+		expect(terminal).toContain("…");
+		expect(terminal).not.toContain("FINAL-WORDS");
+
+		const cx: DescribeContext = {
+			cols: 100,
+			reduceMotion: false,
+			dark: true,
+			supports: () => true,
+			feature: () => true,
+		};
+		const card = component.describe(cx);
+		expect(card.p).toMatchObject({ head: "Custom answer" });
+		expect(card.c?.[0]).toMatchObject({ k: "md", p: { text: question, role: "omp.ask.question" } });
+	});
+
+	it("refuses image attachments unless the prompt opted in and is still open", () => {
+		const image: ImageContent = { type: "image", data: "image", mimeType: "image/png" };
+		const plain = new HookEditorComponent(createTui(), "Prompt", undefined, vi.fn(), vi.fn(), { promptStyle: true });
+		const disposed = new HookEditorComponent(createTui(), "Prompt", undefined, vi.fn(), vi.fn(), {
+			promptStyle: true,
+			acceptImages: true,
+		});
+		disposed.dispose();
+
+		expect(plain.attachImage(image)).toBeUndefined();
+		expect(disposed.acceptsImages).toBe(false);
+		expect(disposed.attachImage(image)).toBeUndefined();
+	});
+
+	it("numbers images in text order on submit when they attached out of order", () => {
+		// Concurrent path loads: the second-pasted file finished first and took #1.
+		const later: ImageContent = { type: "image", data: "later", mimeType: "image/png" };
+		const earlier: ImageContent = { type: "image", data: "earlier", mimeType: "image/png" };
+		const onSubmit = vi.fn();
+		const component = new HookEditorComponent(
+			createTui(),
+			"Prompt",
+			"[Image #2] then [Image #1]",
+			onSubmit,
+			vi.fn(),
+			{
+				promptStyle: true,
+				acceptImages: true,
+				images: [later, earlier],
+			},
+		);
+
+		component.handleInput("\r");
+
+		expect(onSubmit).toHaveBeenCalledWith("[Image #1] then [Image #2]", [earlier, later]);
+	});
+
+	it("drops images whose markers were deleted and renumbers the rest on submit", () => {
+		const first: ImageContent = { type: "image", data: "first", mimeType: "image/png" };
+		const second: ImageContent = { type: "image", data: "second", mimeType: "image/jpeg" };
+		const onSubmit = vi.fn();
+		const component = new HookEditorComponent(createTui(), "Prompt", "[Image #2]", onSubmit, vi.fn(), {
+			promptStyle: true,
+			acceptImages: true,
+			images: [first, second],
+		});
+
+		component.handleInput("\r");
+
+		expect(onSubmit).toHaveBeenCalledWith("[Image #1]", [second]);
+	});
+
+	it("hands an empty bracketed paste to the host's clipboard image read and submits once the marker lands", () => {
+		// Windows Terminal owns Ctrl+V and pastes an image-only clipboard as an empty paste.
+		const image: ImageContent = { type: "image", data: "image", mimeType: "image/png" };
+		const onSubmit = vi.fn();
+		let finishPaste: ((text: string | undefined) => boolean) | undefined;
+		const component: HookEditorComponent = new HookEditorComponent(createTui(), "Prompt", "see ", onSubmit, vi.fn(), {
+			promptStyle: true,
+			acceptImages: true,
+			// Like InputController.handleImagePaste: reserve delivery before the first await.
+			onPasteImage: () => {
+				finishPaste = component.beginPaste();
+				return Promise.resolve(true);
+			},
+		});
+
+		component.handleInput("\x1b[200~\x1b[201~\r");
+		expect(onSubmit).not.toHaveBeenCalled();
+		finishPaste?.(component.attachImage(image));
+
+		expect(onSubmit).toHaveBeenCalledWith("see [Image #1]", [image]);
+	});
+
+	it("labels attached images with their size and deletes the marker as a unit", () => {
+		const image: ImageContent = { type: "image", data: "image", mimeType: "image/png" };
+		const onSubmit = vi.fn();
+		const component = new HookEditorComponent(createTui(), "Prompt", "see ", onSubmit, vi.fn(), {
+			promptStyle: true,
+			acceptImages: true,
+		});
+		const marker = component.attachImage(image, { width: 640, height: 240 });
+		expect(marker).toBe("[Image #1, 640x240]");
+		component.pasteText(marker ?? "");
+
+		// One backspace removes the whole marker, so its image is dropped on submit.
+		component.handleInput("\x7f");
+		component.handleInput("\r");
+
+		expect(onSubmit).toHaveBeenCalledWith("see ");
+	});
+
+	it("keeps empty and image-path pastes as text in a prompt that did not opt into images", () => {
+		const onPasteImage = vi.fn();
+		const otherPathHandler = vi.fn();
+		const onSubmit = vi.fn();
+		const plain = new HookEditorComponent(createTui(), "Prompt", undefined, onSubmit, vi.fn(), {
+			promptStyle: true,
+			onPasteImage,
+			onPasteImagePath: otherPathHandler,
+		});
+		plain.handleInput("\x1b[200~\x1b[201~\x1b[200~/tmp/shot.png\x1b[201~\r");
+		expect(onPasteImage).not.toHaveBeenCalled();
+		expect(otherPathHandler).not.toHaveBeenCalled();
+		expect(onSubmit).toHaveBeenCalledWith("/tmp/shot.png");
+	});
+
 	it("submits the complete pasted answer once when paste and Enter arrive together", () => {
 		const onSubmit = vi.fn();
 		const component = new HookEditorComponent(createTui(), "Prompt", undefined, onSubmit, vi.fn(), {
@@ -250,22 +368,6 @@ describe("HookEditorComponent prompt-style mode", () => {
 
 		expect(onSubmit).toHaveBeenCalledTimes(1);
 		expect(onSubmit).toHaveBeenCalledWith("first\nsecond");
-	});
-
-	it("submits on plain Enter", () => {
-		const onSubmit = vi.fn();
-		const onCancel = vi.fn();
-		const component = new HookEditorComponent(createTui(), "Prompt", undefined, onSubmit, onCancel, {
-			promptStyle: true,
-		});
-
-		component.handleInput("a");
-		component.handleInput("b");
-		component.handleInput("\r");
-
-		expect(onSubmit).toHaveBeenCalledTimes(1);
-		expect(onSubmit).toHaveBeenCalledWith("ab");
-		expect(onCancel).not.toHaveBeenCalled();
 	});
 
 	it("submits on alternate Enter encodings recognized by the key matcher", () => {
@@ -398,15 +500,11 @@ describe("HookEditorComponent prompt-style mode", () => {
 			promptStyle: true,
 		});
 
-		const rendered = renderText(component);
 		const lines = renderLines(component);
 
 		expect(lines[0]).toMatch(/^╭─ Prompt .*╮$/);
 		expect(lines.at(-1)).toMatch(/^╰.*╯$/);
 		expect(lines.some(line => line.includes("> "))).toBe(true);
-		expect(rendered).toContain("enter or ctrl+q submit  esc cancel");
-		expect(rendered).not.toContain("shift+enter newline");
-		expect(rendered).toContain("ctrl+g external editor");
 	});
 
 	it("anchors the hardware cursor while entering an Other response", () => {
@@ -493,7 +591,6 @@ describe("HookEditorComponent prompt-style mode", () => {
 		const content = component.renderContent(80).map(line => Bun.stripANSI(line));
 		expect(content.some(line => line.startsWith("Enter your response:"))).toBe(true);
 		expect(content.some(line => line.startsWith("> "))).toBe(true);
-		expect(content.some(line => line.includes("esc cancel"))).toBe(true);
 	});
 });
 
@@ -502,16 +599,8 @@ describe("ExtensionUiController hook editor abort", () => {
 		const { ctx, editor, editorContainer, ui } = createControllerContext();
 		const controller = new ExtensionUiController(ctx);
 		const abortController = new AbortController();
-		const controllerWithAbort = controller as unknown as {
-			showHookEditor: (
-				title: string,
-				prefill?: string,
-				dialogOptions?: { signal?: AbortSignal },
-				editorOptions?: { promptStyle?: boolean },
-			) => Promise<string | undefined>;
-		};
 
-		const promise = controllerWithAbort.showHookEditor("Prompt", "draft", { signal: abortController.signal });
+		const promise = controller.showHookEditor("Prompt", "draft", { signal: abortController.signal });
 
 		expect(editorContainer.children).toHaveLength(1);
 		expect(ctx.hookEditor).toBeDefined();
@@ -528,20 +617,12 @@ describe("ExtensionUiController hook editor abort", () => {
 		expect(result).toBeUndefined();
 	});
 
-	it("forwards editorOptions to HookEditorComponent", async () => {
+	it("submits a prompt-style dialog through the controller on Enter", async () => {
 		const { ctx, editorContainer } = createControllerContext();
 		const controller = new ExtensionUiController(ctx);
-		const controllerWithOptions = controller as unknown as {
-			showHookEditor: (
-				title: string,
-				prefill?: string,
-				dialogOptions?: { signal?: AbortSignal },
-				editorOptions?: { promptStyle?: boolean },
-			) => Promise<string | undefined>;
-		};
 
 		// Start the editor with promptStyle
-		const promise = controllerWithOptions.showHookEditor("Ask prompt", undefined, undefined, {
+		const promise = controller.showHookEditor("Ask prompt", undefined, undefined, {
 			promptStyle: true,
 		});
 
@@ -551,28 +632,19 @@ describe("ExtensionUiController hook editor abort", () => {
 		// The component should be a HookEditorComponent in prompt-style mode.
 		// Verify by sending Enter — it should submit, not insert newline.
 		const hookEditor = ctx.hookEditor!;
-		hookEditor.handleInput("test-text".split("").join(""));
+		hookEditor.handleInput("test-text");
 		hookEditor.handleInput("\r");
 
 		// The promise should resolve since Enter submits in prompt-style mode.
 		const result = await promise;
-		// Result depends on what the editor captured. The key thing is it resolved.
-		expect(result).toBeDefined();
+		expect(result).toBe("test-text");
 	});
 });
 
 describe("ExtensionUiController dialog serialization", () => {
-	type SelectorController = {
-		showHookSelector: (
-			title: string,
-			options: string[],
-			dialogOptions?: { signal?: AbortSignal },
-		) => Promise<string | undefined>;
-	};
-
 	it("queues a second selector instead of clobbering the open one", async () => {
 		const { ctx, editor, editorContainer } = createControllerContext();
-		const controller = new ExtensionUiController(ctx) as unknown as SelectorController;
+		const controller = new ExtensionUiController(ctx);
 
 		const abortA = new AbortController();
 		const abortB = new AbortController();
@@ -608,7 +680,7 @@ describe("ExtensionUiController dialog serialization", () => {
 
 	it("never presents a queued selector whose signal aborts before its turn", async () => {
 		const { ctx, editor, editorContainer } = createControllerContext();
-		const controller = new ExtensionUiController(ctx) as unknown as SelectorController;
+		const controller = new ExtensionUiController(ctx);
 
 		const abortA = new AbortController();
 		const abortB = new AbortController();

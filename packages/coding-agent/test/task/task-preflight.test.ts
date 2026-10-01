@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
@@ -9,6 +12,7 @@ import * as executorModule from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import type { SingleResult, TaskParams } from "@oh-my-pi/pi-tui/tools/task";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { TempDir } from "@oh-my-pi/pi-utils";
 
 const taskAgent: AgentDefinition = {
 	name: "task",
@@ -21,9 +25,10 @@ function createSession(options: {
 	manager: AsyncJobManager;
 	settings?: Record<string, unknown>;
 	spawns?: string | boolean;
+	cwd: string;
 }): ToolSession {
 	return {
-		cwd: "/tmp",
+		cwd: options.cwd,
 		hasUI: false,
 		settings: Settings.isolated({ "async.enabled": true, ...options.settings }),
 		getSessionFile: () => null,
@@ -61,10 +66,12 @@ function mockDiscovery(agents: AgentDefinition[] = [taskAgent]): void {
 
 describe("task async preflight", () => {
 	const managers: AsyncJobManager[] = [];
+	let tempDir: TempDir;
 
 	beforeEach(() => {
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
+		tempDir = TempDir.createSync("@pi-task-preflight-");
 	});
 
 	afterEach(async () => {
@@ -72,6 +79,7 @@ describe("task async preflight", () => {
 		for (const manager of managers.splice(0)) await manager.dispose({ timeoutMs: 1_000 });
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
+		tempDir[Symbol.dispose]();
 	});
 
 	function manager(): AsyncJobManager {
@@ -103,7 +111,7 @@ describe("task async preflight", () => {
 		async ({ name, params, settings, spawns, expectation }) => {
 			mockDiscovery();
 			const jobs = manager();
-			const tool = await TaskTool.create(createSession({ manager: jobs, settings, spawns }));
+			const tool = await TaskTool.create(createSession({ manager: jobs, settings, spawns, cwd: tempDir.path() }));
 
 			const result = await tool.execute("preflight", params as TaskParams);
 
@@ -117,7 +125,9 @@ describe("task async preflight", () => {
 		const runSubprocess = vi.spyOn(executorModule, "runSubprocess").mockResolvedValue(resultFor("unexpected"));
 		const jobs = manager();
 		const register = vi.spyOn(jobs, "register");
-		const tool = await TaskTool.create(createSession({ manager: jobs, settings: { "task.batch": true } }));
+		const tool = await TaskTool.create(
+			createSession({ manager: jobs, settings: { "task.batch": true }, cwd: tempDir.path() }),
+		);
 
 		const result = await tool.execute("mixed-preflight", {
 			context: "Shared context.",
@@ -144,7 +154,11 @@ describe("task async preflight", () => {
 		const jobs = manager();
 		const register = vi.spyOn(jobs, "register");
 		const tool = await TaskTool.create(
-			createSession({ manager: jobs, settings: { "async.enabled": false, "task.batch": true } }),
+			createSession({
+				manager: jobs,
+				settings: { "async.enabled": false, "task.batch": true },
+				cwd: tempDir.path(),
+			}),
 		);
 
 		const result = await tool.execute("sync-preflight", {
@@ -160,5 +174,29 @@ describe("task async preflight", () => {
 		expect(runSubprocess).not.toHaveBeenCalled();
 		expect(jobs.getJob("Invalid")).toBeUndefined();
 		expect(jobs.getJob("Valid")).toBeUndefined();
+	});
+
+	it("names the searched agent directories, home-shortened, when the agent is unknown", async () => {
+		const home = await fs.mkdtemp(path.join(os.tmpdir(), "omp-unknown-agent-"));
+		try {
+			const projectDir = path.join(home, "project");
+			await fs.mkdir(path.join(projectDir, ".omp", "agents"), { recursive: true });
+			vi.spyOn(os, "homedir").mockReturnValue(home);
+			const tool = await TaskTool.create(createSession({ manager: manager(), cwd: projectDir }));
+
+			const result = await tool.execute("unknown", {
+				agent: "missing",
+				name: "Unknown",
+				task: "Work.",
+			} as TaskParams);
+
+			const text = textOf(result);
+			const searchedDirectories = text.match(/~[\\/][^,\n]+/g)?.map(directory => directory.replaceAll("\\", "/"));
+			expect(searchedDirectories).toEqual(["~/project/.omp/agents", "~/.omp/agent/agents"]);
+			expect(text).not.toContain(home);
+		} finally {
+			vi.restoreAllMocks();
+			await fs.rm(home, { recursive: true, force: true });
+		}
 	});
 });

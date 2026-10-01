@@ -31,6 +31,8 @@ import {
 	matchesSelectPageUp,
 } from "../../keybinding-matchers";
 import { expandKeyHint } from "../../render/render-utils";
+import { formatKeyHint, formatKeyHints } from "../../app-keybindings";
+import { editorKeys, interruptKey } from "../../chrome/keybinding-hints";
 import { bottomBorder, divider, PanelRows, row, topBorder } from "../../chrome/overlay-box";
 import { ExtensionList } from "./extension-list";
 import { InspectorPanel, type ToolRuntimeSource } from "./inspector-panel";
@@ -74,9 +76,20 @@ export interface ExtensionDashboardOptions {
 }
 
 function extFooter(): string {
-	return t(" ↑/↓: navigate · Space: toggle · ←/→: provider · PgUp/PgDn: inspector · {key}: expand · Esc: close", {
-		key: expandKeyHint(),
-	});
+	const upDown = editorKeys("tui.select.up", "tui.select.down");
+	const pages = editorKeys("tui.select.pageUp", "tui.select.pageDown");
+	const close = interruptKey();
+	return t(
+		" {upDown}: navigate · {toggle}: toggle · {provider}: provider · {pages}: inspector · {expand}: expand · {close}: close",
+		{
+			upDown,
+			toggle: formatKeyHint("space"),
+			provider: formatKeyHints(["left", "right"]),
+			pages,
+			expand: expandKeyHint(),
+			close,
+		},
+	);
 }
 
 /**

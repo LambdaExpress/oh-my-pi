@@ -1,5 +1,11 @@
-import type { ToolRenderer } from "./renderer";
 import { t } from "../i18n";
+import type { NativeToolHead, NativeToolView, ToolRenderer, ToolRenderResult } from "./renderer";
+import type { TspSpan } from "@oh-my-pi/pi-wire";
+import { compact, md, node, row, span, text } from "../native/describe";
+import type { NativeChild, NativeNode } from "../native/node";
+import { OwnerMemo } from "../native/memo";
+import { plainText } from "../native/spans";
+import { noteText, resultText } from "./native-view";
 
 import {
 	type Component,
@@ -94,7 +100,7 @@ function normalizeRenderOptions(raw: unknown): AskRenderOption[] | undefined {
 	const out: AskRenderOption[] = [];
 	for (const entry of raw) {
 		if (typeof entry === "string") {
-			out.push({ label: sanitizeCarriageReturns(entry) });
+			out.push({ label: plainText(sanitizeCarriageReturns(entry)) });
 			continue;
 		}
 		if (!entry || typeof entry !== "object") continue;
@@ -102,8 +108,11 @@ function normalizeRenderOptions(raw: unknown): AskRenderOption[] | undefined {
 		if (typeof label !== "string") continue;
 		out.push(
 			typeof description === "string"
-				? { label: sanitizeCarriageReturns(label), description: sanitizeCarriageReturns(description) }
-				: { label: sanitizeCarriageReturns(label) },
+				? {
+						label: plainText(sanitizeCarriageReturns(label)),
+						description: plainText(sanitizeCarriageReturns(description)),
+					}
+				: { label: plainText(sanitizeCarriageReturns(label)) },
 		);
 	}
 	return out;
@@ -115,28 +124,25 @@ function normalizeRenderOptions(raw: unknown): AskRenderOption[] | undefined {
  * Display-only — the persisted payload is untouched.
  */
 function sanitizeAskResultDetails(details: AskToolDetails): AskToolDetails {
+	const sanitize = (value: string) => plainText(sanitizeCarriageReturns(value));
 	return {
 		...details,
-		...(details.question !== undefined ? { question: sanitizeCarriageReturns(details.question) } : {}),
-		...(details.options !== undefined ? { options: details.options.map(sanitizeCarriageReturns) } : {}),
-		...(details.selectedOptions !== undefined
-			? { selectedOptions: details.selectedOptions.map(sanitizeCarriageReturns) }
-			: {}),
-		...(details.customInput !== undefined ? { customInput: sanitizeCarriageReturns(details.customInput) } : {}),
-		...(details.note !== undefined ? { note: sanitizeCarriageReturns(details.note) } : {}),
-		...(details.questions !== undefined ? { questions: details.questions.map(sanitizeCarriageReturns) } : {}),
+		...(details.question !== undefined ? { question: sanitize(details.question) } : {}),
+		...(details.options !== undefined ? { options: details.options.map(sanitize) } : {}),
+		...(details.selectedOptions !== undefined ? { selectedOptions: details.selectedOptions.map(sanitize) } : {}),
+		...(details.customInput !== undefined ? { customInput: sanitize(details.customInput) } : {}),
+		...(details.note !== undefined ? { note: sanitize(details.note) } : {}),
+		...(details.questions !== undefined ? { questions: details.questions.map(sanitize) } : {}),
 		...(details.results !== undefined
 			? {
 					results: details.results.map(entry => ({
 						...entry,
-						id: sanitizeCarriageReturns(entry.id),
-						question: sanitizeCarriageReturns(entry.question),
-						options: entry.options.map(sanitizeCarriageReturns),
-						selectedOptions: entry.selectedOptions.map(sanitizeCarriageReturns),
-						...(entry.customInput !== undefined
-							? { customInput: sanitizeCarriageReturns(entry.customInput) }
-							: {}),
-						...(entry.note !== undefined ? { note: sanitizeCarriageReturns(entry.note) } : {}),
+						id: sanitize(entry.id),
+						question: sanitize(entry.question),
+						options: entry.options.map(sanitize),
+						selectedOptions: entry.selectedOptions.map(sanitize),
+						...(entry.customInput !== undefined ? { customInput: sanitize(entry.customInput) } : {}),
+						...(entry.note !== undefined ? { note: sanitize(entry.note) } : {}),
 					})),
 				}
 			: {}),
@@ -163,8 +169,8 @@ function normalizeRenderQuestions(raw: unknown): NonNullable<AskRenderArgs["ques
 		if (!entry || typeof entry !== "object") continue;
 		const q = entry as Partial<NonNullable<AskRenderArgs["questions"]>[number]>;
 		out.push({
-			id: typeof q.id === "string" ? sanitizeCarriageReturns(q.id) : "?",
-			question: typeof q.question === "string" ? sanitizeCarriageReturns(q.question) : "",
+			id: typeof q.id === "string" ? plainText(sanitizeCarriageReturns(q.id)) : "?",
+			question: typeof q.question === "string" ? plainText(sanitizeCarriageReturns(q.question)) : "",
 			options: normalizeRenderOptions(q.options) ?? [],
 			multi: q.multi === true,
 		});
@@ -322,8 +328,161 @@ function askFoldedAnswer(details: AskToolDetails | undefined): string | undefine
 	return rest.length > 0 ? `${first} (+${rest.length} more)` : first;
 }
 
+function askHead(question: string | undefined, meta?: string): NativeToolHead {
+	const first = question ? plainText(sanitizeCarriageReturns(question)).trim().split("\n")[0] : "";
+	return { title: t("Ask"), target: first || undefined, targetKind: "text", meta: meta ? [meta] : undefined };
+}
+
+/** One question of a multi-question result: the question as markdown over its answers. */
+function describeQuestionSection(id: string, question: string, rest: readonly NativeChild[]): NativeNode {
+	return node("section", {}, [md(plainText(question)), ...rest], id);
+}
+
+/** An answer row: a success check before the chosen label, or a quiet unchosen label. */
+function answerRow(key: string, label: TspSpan[], chosen: boolean): NativeNode {
+	return row(
+		compact([chosen ? node("icon", { name: "check", tone: "success" }) : undefined, text(label, { wrap: "word" })]),
+		{ gap: "sm", align: "baseline", role: chosen ? "omp.tool.answer" : "omp.tool.answer.off", key },
+	);
+}
+
+/**
+ * Answered option list: every offered option marked chosen or not, plus any
+ * quoted custom answer and a muted note. A lone "Cancelled" line when nothing was chosen.
+ */
+function describeAnswers(
+	options: string[] | undefined,
+	selectedOptions: string[] | undefined,
+	customInput: string | undefined,
+	note: string | undefined,
+	selectedIndices: ReadonlySet<number> | undefined,
+): NativeChild[] {
+	const selected = new Set(selectedOptions ?? []);
+	if (selected.size === 0 && customInput === undefined && note === undefined) {
+		return [text([span(t("Cancelled"), "warning")], { tone: "warning" })];
+	}
+	const labels = options && options.length > 0 ? options : (selectedOptions ?? []);
+	const rows = labels.map((label, index) => {
+		const isSelected = selectedIndices !== undefined ? selectedIndices.has(index) : selected.has(label);
+		return answerRow(`${index}`, [span(plainText(label), isSelected ? "toolOutput" : "muted")], isSelected);
+	});
+	if (customInput !== undefined) {
+		rows.push(answerRow("custom", [span(`\u201c${plainText(customInput)}\u201d`, "toolOutput")], true));
+	}
+	return compact([
+		...rows,
+		note !== undefined
+			? text([span(plainText(note), "muted")], { wrap: "word", role: "omp.tool.context" })
+			: undefined,
+	]);
+}
+
+/** Pending ask: an inline head naming the question; the ask dialog owns the form. */
+function describeAskCall(args: AskRenderArgs): NativeToolView {
+	const questions = normalizeRenderQuestions(args.questions);
+	const first = questions?.[0]?.question ?? (typeof args.question === "string" ? args.question : undefined);
+	const more = questions && questions.length > 1 ? formatCountLabel("question", questions.length) : undefined;
+	return {
+		tool: askHead(first, more),
+		inline: true,
+		body: [text([span(t("Waiting for your answer…"), "muted")])],
+	};
+}
+
+function describeAskResult(result: ToolRenderResult<AskToolDetails>, args: AskRenderArgs | undefined): NativeToolView {
+	const rawDetails = result.details;
+	const fallback = plainText(sanitizeCarriageReturns(resultText(result)));
+	const argQuestion =
+		normalizeRenderQuestions(args?.questions)?.[0]?.question ??
+		(typeof args?.question === "string" ? args.question : undefined);
+	if (!rawDetails) {
+		return { tool: askHead(argQuestion), tone: "warning", body: fallback ? [noteText(fallback)] : undefined };
+	}
+	const details = sanitizeAskResultDetails(rawDetails);
+
+	if (details.chatRedirect) {
+		return {
+			tool: askHead(details.questions?.[0] ?? argQuestion, t("chat redirect")),
+			tone: "info",
+			body: (details.questions ?? []).map(q => md(plainText(q))),
+		};
+	}
+
+	if (details.results && details.results.length > 0) {
+		const results = details.results;
+		const rawResults = rawDetails.results ?? [];
+		const answered = results.some(
+			r =>
+				r.customInput !== undefined || r.note !== undefined || (r.selectedOptions && r.selectedOptions.length > 0),
+		);
+		return {
+			tool: askHead(
+				results[0]?.question,
+				results.length > 1 ? formatCountLabel("question", results.length) : undefined,
+			),
+			tone: answered ? undefined : "warning",
+			// Sanitizing preserves order and length, so raw indices align with `r`.
+			body: results.map((r, index) =>
+				describeQuestionSection(
+					r.id,
+					r.question,
+					describeAnswers(
+						r.options,
+						r.selectedOptions,
+						r.customInput,
+						r.note,
+						selectedIndicesFor(rawResults[index]?.options, rawResults[index]?.selectedOptions),
+					),
+				),
+			),
+		};
+	}
+
+	if (!details.question) {
+		return { tool: askHead(argQuestion), body: fallback ? [text(fallback, { wrap: "word" })] : undefined };
+	}
+
+	const answered =
+		details.customInput !== undefined ||
+		details.note !== undefined ||
+		(details.selectedOptions && details.selectedOptions.length > 0);
+	return {
+		tool: askHead(details.question),
+		tone: answered ? undefined : "warning",
+		body: compact([
+			md(plainText(details.question)),
+			...describeAnswers(
+				details.options,
+				details.selectedOptions,
+				details.customInput,
+				details.note,
+				selectedIndicesFor(rawDetails.options, rawDetails.selectedOptions),
+			),
+			details.timedOut
+				? text([span(t("auto-selected after timeout — not a user choice"), "muted")], {
+						wrap: "word",
+						role: "omp.tool.notice",
+					})
+				: undefined,
+		]),
+	};
+}
+
+const askCallMemo = new OwnerMemo<NativeToolView | undefined>();
+const askResultMemo = new OwnerMemo<NativeToolView | undefined>();
+
 /** Render question forms and their recorded answers. */
 export const askToolRenderer = {
+	describeCall(args: AskRenderArgs): NativeToolView | undefined {
+		return askCallMemo.get(args, [JSON.stringify(args)], () => describeAskCall(args));
+	},
+	describeResult(
+		result: ToolRenderResult<AskToolDetails>,
+		_options?: RenderResultOptions,
+		args?: AskRenderArgs,
+	): NativeToolView | undefined {
+		return askResultMemo.get(result, [], () => describeAskResult(result, args));
+	},
 	mergeCallAndResult: true,
 	/**
 	 * Folded row: `Ask: <question>` while the dialog is open, `Ask: <question> →
@@ -335,7 +494,8 @@ export const askToolRenderer = {
 	activitySummary(args: unknown, context: ToolActivityContext): ToolActivitySummary {
 		const questions = normalizeRenderQuestions((args as AskRenderArgs | undefined)?.questions);
 		const first = questions?.[0]?.question;
-		let question: string | undefined;
+		const singleQuestion = (args as AskRenderArgs | undefined)?.question;
+		let question = typeof singleQuestion === "string" ? singleQuestion : undefined;
 		if (first !== undefined && questions !== undefined) {
 			question = questions.length > 1 ? `${first} (+${questions.length - 1} more)` : first;
 		}
@@ -400,7 +560,7 @@ export const askToolRenderer = {
 			}));
 		}
 
-		const question = sanitizeCarriageReturns(args.question);
+		const question = plainText(sanitizeCarriageReturns(args.question));
 		const meta: string[] = [];
 		if (args.multi) meta.push(t("multi"));
 		const questionOptions = normalizeRenderOptions(args.options);
@@ -435,7 +595,7 @@ export const askToolRenderer = {
 
 		if (!rawDetails) {
 			const txt = result.content[0];
-			const fallback = txt?.type === "text" && txt.text ? sanitizeCarriageReturns(txt.text) : "";
+			const fallback = txt?.type === "text" && txt.text ? plainText(sanitizeCarriageReturns(txt.text)) : "";
 			const header = renderStatusLine({ icon: "warning", title: t("Ask") }, uiTheme);
 			const body = fallback ? `\n${uiTheme.fg("dim", fallback)}` : "";
 			return new Text(`${header}${body}`, 0, 0);
@@ -505,7 +665,7 @@ export const askToolRenderer = {
 		// Single question result
 		if (!details.question) {
 			const txt = result.content[0];
-			const fallback = txt?.type === "text" && txt.text ? sanitizeCarriageReturns(txt.text) : "";
+			const fallback = txt?.type === "text" && txt.text ? plainText(sanitizeCarriageReturns(txt.text)) : "";
 			return new Text(fallback, 0, 0);
 		}
 

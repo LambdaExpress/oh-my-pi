@@ -5,8 +5,12 @@ import { Text } from "../../components/text";
 import { WizardStep } from "../../components/wizard-step";
 import { buildBrowserItems, ModelBrowser, resolveRoleAssignments, sortModelItems } from "../../overlays/model-browser";
 import { BROWSER_FRAME_ROWS } from "../../overlays/model-picker";
+import { formatKeyHint } from "../../app-keybindings";
 import { theme } from "../../theme/theme";
-import type { SetupScene, SetupSceneController, SetupSceneHost } from "./types";
+import { col, node, span, text } from "../../native/describe";
+import type { NativeNode } from "../../native/node";
+import { Memo } from "../../native/memo";
+import type { SetupScene, SetupSceneController, SetupSceneHost, StyledLine } from "./types";
 
 const MAX_VISIBLE_MODELS = 10;
 
@@ -14,10 +18,12 @@ class ModelSceneController implements SetupSceneController {
 	title = t("Choose your default model");
 	subtitle = t("Search configured models and save the model used for new sessions.");
 	#browser: ModelBrowser;
-	#status: string | undefined;
+	/** Intro override; `busy` while discovering or saving (a spinner on the native path). */
+	#status: (StyledLine & { readonly busy: boolean }) | undefined;
 	#selecting = false;
 	#disposed = false;
 	#step: WizardStep | undefined;
+	#native = new Memo();
 
 	readonly #host: SetupSceneHost;
 
@@ -32,7 +38,7 @@ class ModelSceneController implements SetupSceneController {
 	}
 
 	async onMount(): Promise<void> {
-		this.#status = theme.fg("muted", `${t("Discovering available models")}…`);
+		this.#status = { text: `${t("Discovering available models")}…`, color: "muted", busy: true };
 		this.#host.requestRender();
 		await this.#refreshModels();
 	}
@@ -42,6 +48,7 @@ class ModelSceneController implements SetupSceneController {
 	}
 
 	invalidate(): void {
+		this.#native.clear();
 		if (this.#step) this.#step.invalidate();
 		else this.#browser.invalidate();
 	}
@@ -58,8 +65,16 @@ class ModelSceneController implements SetupSceneController {
 	}
 
 	render(width: number, maxLines?: number): readonly string[] {
+		const status = this.#status;
 		const intro = new Text(
-			this.#status ?? theme.fg("muted", t("Type to search. Enter saves the highlighted model as your default.")),
+			status
+				? theme.fg(status.color, status.text)
+				: theme.fg(
+						"muted",
+						t("Type to search. {key} saves the highlighted model as your default.", {
+							key: formatKeyHint("enter"),
+						}),
+					),
 			0,
 			0,
 		);
@@ -79,6 +94,25 @@ class ModelSceneController implements SetupSceneController {
 		}
 		this.#step.setMaxHeight(maxLines);
 		return this.#step.render(width);
+	}
+
+	/** Intro (a spinner while models load or the choice saves) over the model browser, which describes itself. */
+	describe(): NativeNode {
+		const status = this.#status;
+		const enter = formatKeyHint("enter");
+		return this.#native.get([status, enter], () => {
+			let intro: NativeNode;
+			if (status?.busy) {
+				intro = node("spinner", { label: [span(status.text, status.color)] });
+			} else if (status) {
+				intro = text([span(status.text, status.color)]);
+			} else {
+				intro = text([
+					span(t("Type to search. {key} saves the highlighted model as your default.", { key: enter }), "muted"),
+				]);
+			}
+			return col([{ ...intro, key: "intro" }, this.#browser], { gap: "sm", role: "omp.setup.model" });
+		});
 	}
 
 	#syncModels(): void {
@@ -108,7 +142,7 @@ class ModelSceneController implements SetupSceneController {
 			this.#host.requestRender();
 		} catch (error) {
 			if (this.#disposed) return;
-			this.#status = theme.fg("error", error instanceof Error ? error.message : String(error));
+			this.#status = { text: error instanceof Error ? error.message : String(error), color: "error", busy: false };
 			this.#host.requestRender();
 		}
 	}
@@ -116,7 +150,11 @@ class ModelSceneController implements SetupSceneController {
 	async #select(model: Model, selector: string): Promise<void> {
 		if (this.#selecting) return;
 		this.#selecting = true;
-		this.#status = theme.fg("muted", `${t("Saving {selector} as the default model", { selector })}…`);
+		this.#status = {
+			text: `${t("Saving {selector} as the default model", { selector })}…`,
+			color: "muted",
+			busy: true,
+		};
 		this.#host.requestRender();
 		try {
 			await this.#host.ctx.selectModel(model, selector);
@@ -124,7 +162,7 @@ class ModelSceneController implements SetupSceneController {
 		} catch (error) {
 			if (this.#disposed) return;
 			this.#selecting = false;
-			this.#status = theme.fg("error", error instanceof Error ? error.message : String(error));
+			this.#status = { text: error instanceof Error ? error.message : String(error), color: "error", busy: false };
 			this.#host.requestRender();
 		}
 	}

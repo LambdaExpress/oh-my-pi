@@ -60,6 +60,7 @@ function createContext() {
 		locallySubmittedUserSignatures: new Set<string>(),
 		onInputCallback,
 		startPendingSubmission,
+		flushPendingBashComponents: vi.fn(),
 		updatePendingMessagesDisplay: vi.fn(),
 		updateEditorBorderColor: vi.fn(),
 		showError: vi.fn(),
@@ -93,13 +94,16 @@ describe("InputController Python prompt prefix", () => {
 		await editor.onSubmit?.("$HOME is home");
 
 		expect(handlePythonCommand).not.toHaveBeenCalled();
-		expect(startPendingSubmission).toHaveBeenCalledWith({
-			text: "$HOME is home",
-			displayText: "$HOME is home",
-			images: undefined,
-			imageLinks: undefined,
-			streamingBehavior: "steer",
-		});
+		expect(startPendingSubmission).toHaveBeenCalledWith(
+			{
+				text: "$HOME is home",
+				displayText: "$HOME is home",
+				images: undefined,
+				imageLinks: undefined,
+				streamingBehavior: "steer",
+			},
+			{ clearEditor: false },
+		);
 		expect(onInputCallback).toHaveBeenCalledTimes(1);
 		expect(submitted).toEqual([
 			{
@@ -125,13 +129,16 @@ describe("InputController Python prompt prefix", () => {
 		await editor.onSubmit?.(transcript);
 
 		expect(handlePythonCommand).not.toHaveBeenCalled();
-		expect(startPendingSubmission).toHaveBeenCalledWith({
-			text: transcript,
-			displayText: transcript,
-			images: undefined,
-			imageLinks: undefined,
-			streamingBehavior: "steer",
-		});
+		expect(startPendingSubmission).toHaveBeenCalledWith(
+			{
+				text: transcript,
+				displayText: transcript,
+				images: undefined,
+				imageLinks: undefined,
+				streamingBehavior: "steer",
+			},
+			{ clearEditor: false },
+		);
 		expect(onInputCallback).toHaveBeenCalledTimes(1);
 		expect(submitted).toEqual([
 			{

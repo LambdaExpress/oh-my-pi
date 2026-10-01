@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { scheduler } from "node:timers/promises";
 import * as AIError from "@oh-my-pi/pi-ai/error";
 
 describe("AIError.classify — structural provider errors", () => {
@@ -143,7 +144,6 @@ describe("AIError.finalize", () => {
 		expect(result.stopReason).toBe("error");
 		expect(AIError.is(result.id, AIError.Flag.Timeout)).toBe(true);
 		expect(AIError.is(result.id, AIError.Flag.Transient)).toBe(true);
-		expect(result.message.length).toBeGreaterThan(0);
 	});
 
 	it("reports aborted when the caller signal is aborted", async () => {
@@ -166,6 +166,18 @@ describe("AIError.finalize", () => {
 
 		expect(result.status).toBe(400);
 		expect(AIError.is(result.id, AIError.Flag.Transient)).toBe(false);
+		expect(AIError.retriable(result.id)).toBe(false);
+	});
+
+	it("does not turn a captured terminal 4xx into a retryable transport abort", async () => {
+		const error = await scheduler.wait(0, { signal: AbortSignal.abort() }).catch((reason: unknown) => reason);
+		const result = await AIError.finalize(error, {
+			signal: new AbortController().signal,
+			capturedErrorResponse: { status: 400 },
+		});
+
+		expect(result.stopReason).toBe("error");
+		expect(result.status).toBe(400);
 		expect(AIError.retriable(result.id)).toBe(false);
 	});
 

@@ -11,6 +11,7 @@ it("imports the CLI entry graph without loading dotenv before profile bootstrap"
 	);
 	delete env.OMP_PROCESS_ENTRY_ENV_PROBE;
 	env.HOME = tempDir.path();
+	env.USERPROFILE = tempDir.path();
 	const fixture = path.resolve(import.meta.dir, "../fixtures/js-process-entry-import.ts");
 	const proc = Bun.spawn([process.execPath, fixture], {
 		env,
@@ -22,10 +23,83 @@ it("imports the CLI entry graph without loading dotenv before profile bootstrap"
 		new Response(proc.stdout).text(),
 		new Response(proc.stderr).text(),
 	]);
-	expect(exitCode).toBe(0);
+	expect(exitCode, stderr).toBe(0);
 	expect(stdout).toBe("");
 	expect(stderr).toBe("");
 });
+
+it("applies read preview preferences after cold tool and mode settings imports", async () => {
+	using tempDir = TempDir.createSync("@omp-settings-import-");
+	const probe = tempDir.join("probe.ts");
+	const settingsUrl = new URL("../../src/config/settings.ts", import.meta.url).href;
+	const registryUrl = new URL("../../src/config/registry.ts", import.meta.url).href;
+	const modeSettingsUrl = new URL("../../src/modes/settings.ts", import.meta.url).href;
+	const displayPreferencesUrl = new URL("../../../tui/src/chat/display-preferences.ts", import.meta.url).href;
+	for (const entry of [new URL("../../src/tools/settings.ts", import.meta.url).href, modeSettingsUrl]) {
+		await Bun.write(
+			probe,
+			`
+import ${JSON.stringify(entry)};
+import { Settings } from ${JSON.stringify(settingsUrl)};
+import { bindEffects } from ${JSON.stringify(registryUrl)};
+import {
+	cfgReadToolResultPreview,
+	cfgDisplayFoldToolRows,
+	cfgDisplayShowTokenUsage,
+} from ${JSON.stringify(modeSettingsUrl)};
+import { chatTranscriptDisplayPreferences } from ${JSON.stringify(displayPreferencesUrl)};
+
+const scoped = Settings.isolated({
+	"read.toolResultPreview": true,
+	"display.hideToolActivity": false,
+	"display.foldToolRows": true,
+	"terminal.showImages": false,
+	"display.cacheMissMarker": true,
+	"display.showTokenUsage": false,
+	"display.showTurnTime": true,
+});
+const release = bindEffects(scoped);
+try {
+	const snapshots = [{ ...chatTranscriptDisplayPreferences }];
+	cfgReadToolResultPreview.override(scoped, false);
+	snapshots.push({ ...chatTranscriptDisplayPreferences });
+	cfgReadToolResultPreview.override(scoped, true);
+	cfgDisplayFoldToolRows.override(scoped, false);
+	cfgDisplayShowTokenUsage.override(scoped, true);
+	snapshots.push({ ...chatTranscriptDisplayPreferences });
+	process.stdout.write(JSON.stringify(snapshots));
+} finally {
+	release();
+}
+`,
+		);
+		const proc = Bun.spawn([process.execPath, probe], {
+			cwd: path.resolve(import.meta.dir, "../.."),
+			stdout: "pipe",
+			stderr: "pipe",
+		});
+		const [exitCode, stdout, stderr] = await Promise.all([
+			proc.exited,
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+		]);
+		expect(exitCode, `${entry}: ${stderr}`).toBe(0);
+		const initial = {
+			hideToolActivity: false,
+			readToolResultPreview: true,
+			showImages: false,
+			cacheMissMarker: true,
+			foldToolRows: true,
+			showTokenUsage: false,
+			showTurnTime: true,
+		};
+		expect(JSON.parse(stdout)).toEqual([
+			initial,
+			{ ...initial, readToolResultPreview: false },
+			{ ...initial, foldToolRows: false, showTokenUsage: true },
+		]);
+	}
+}, 30_000);
 
 async function pingComputerWorker(
 	entry: string,
@@ -49,26 +123,54 @@ async function pingComputerWorker(
 	}
 }
 
-it("starts ordinary CLI paths without loading the native computer addon", async () => {
+it("starts ordinary CLI paths without loading computer worker or desktop modules", async () => {
+	using tempDir = TempDir.createSync("@omp-cli-computer-imports-");
+	const preload = tempDir.join("observe-imports.js");
+	// The shared native addon also normalizes Windows paths. Observe the
+	// computer-specific graph rather than disabling unrelated native features.
+	await Bun.write(
+		preload,
+		`
+import { writeSync } from "node:fs";
+
+process.on("exit", () => {
+	const registry = typeof Loader !== "undefined" && Loader.registry
+		? [...Loader.registry.keys()]
+		: Object.keys(require.cache);
+	const modules = registry.map(module => String(module).replaceAll("\\\\", "/"));
+	const computerModules = modules.filter(module =>
+		module.endsWith("/tools/computer/worker.ts") ||
+		module.endsWith("/tools/computer/worker-entry.ts") ||
+		module.endsWith("/native/desktop.js")
+	);
+	const cliLoaded = modules.some(module => module.endsWith("/src/cli.ts"));
+	writeSync(1, "\\nOMP_COMPUTER_IMPORTS:" + JSON.stringify({ cliLoaded, computerModules }) + "\\n");
+});
+`,
+	);
 	const cliPath = path.resolve(import.meta.dir, "../../src/cli.ts");
-	for (const args of [
-		["--no-addons", cliPath, "--version"],
-		[cliPath, "--help"],
-	]) {
-		const proc = Bun.spawn([process.execPath, ...args], {
+	for (const flag of ["--version", "--help"]) {
+		const proc = Bun.spawn([process.execPath, "--preload", preload, cliPath, flag], {
 			stdout: "pipe",
 			stderr: "pipe",
 		});
-		const [exitCode, stderr] = await Promise.all([proc.exited, new Response(proc.stderr).text()]);
-		expect(exitCode, `${args.at(-1)}: ${stderr}`).toBe(0);
+		const [exitCode, stdout, stderr] = await Promise.all([
+			proc.exited,
+			new Response(proc.stdout).text(),
+			new Response(proc.stderr).text(),
+		]);
+		expect(exitCode, `${flag}: ${stderr}`).toBe(0);
+		const observedGraph = stdout.match(/\nOMP_COMPUTER_IMPORTS:(.+)\n$/)?.[1];
+		expect(observedGraph).toBeDefined();
+		expect(JSON.parse(observedGraph!)).toEqual({ cliLoaded: true, computerModules: [] });
 	}
-	// Two cold CLI spawns (`--version`, `--help`) per run; the assertion is the exit
-	// code, not the wall time.
+	// Two cold CLI spawns (`--version`, `--help`) per run; assertions cover their
+	// exit codes and imported graphs, not the wall time.
 }, 30_000);
 
 it("dispatches the computer worker through the CLI host selector in a child process", async () => {
 	const fixture = path.resolve(import.meta.dir, "../fixtures/computer-worker-cli-selector.ts");
-	const proc = Bun.spawn([process.execPath, "--no-addons", fixture], {
+	const proc = Bun.spawn([process.execPath, fixture], {
 		stdout: "pipe",
 		stderr: "pipe",
 	});

@@ -1,6 +1,6 @@
 import * as os from "node:os";
 import { beforeAll, describe, expect, it } from "bun:test";
-import type { DailyActivityPoint } from "@oh-my-pi/pi-tui/overlays/usage-dashboard";
+import type { DailyActivityPoint, UnavailableUsageAccount } from "@oh-my-pi/pi-tui/overlays/usage-dashboard";
 import type { UsageReport } from "@oh-my-pi/pi-ai";
 import {
 	buildHeatmapLayout,
@@ -8,7 +8,7 @@ import {
 	formatActivityErrorDetail,
 	UsageDashboardComponent,
 } from "@oh-my-pi/pi-tui/overlays/usage-dashboard";
-import { initTheme } from "@oh-my-pi/pi-tui/theme";
+import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { visibleWidth } from "@oh-my-pi/pi-tui/utils";
 
 beforeAll(async () => {
@@ -245,9 +245,13 @@ describe("UsageDashboardComponent", () => {
 	beforeAll(async () => {
 		await initTheme(false);
 	});
-	function dashboard(reports: UsageReport[]): UsageDashboardComponent {
+	function dashboard(
+		reports: UsageReport[],
+		unavailableAccounts: UnavailableUsageAccount[] = [],
+	): UsageDashboardComponent {
 		return new UsageDashboardComponent({
 			reports,
+			unavailableAccounts,
 			renderDetail: () => "",
 			loadActivity: async push => {
 				push([]);
@@ -406,6 +410,20 @@ describe("UsageDashboardComponent", () => {
 			component.dispose();
 		}
 	});
+
+	it("keeps the error icon on an exhausted card when another account's lookup fails", () => {
+		const component = dashboard(
+			[report("anthropic", "a@test", [limit("anthropic", "a", "7d", "Claude 7 Day", 1, "exhausted")])],
+			[{ provider: "anthropic", label: "b@test" }],
+		);
+		try {
+			const output = Bun.stripANSI(component.render(100).join("\n"));
+			const title = output.split("\n").find(line => line.includes("2 accts"));
+			expect(title?.replace(/^[│\s]+/, "")).toStartWith(`${theme.status.error} Anthropic`);
+		} finally {
+			component.dispose();
+		}
+	});
 	it("renders specific error reason when activity loading fails instead of generic DB read error", async () => {
 		const { promise: rendered, resolve: markRendered } = Promise.withResolvers<void>();
 		const component = new UsageDashboardComponent({
@@ -462,6 +480,13 @@ describe("formatActivityErrorDetail", () => {
 });
 
 describe("usage dashboard saved resets", () => {
+	function renderedInventoryCounts(output: string): number[] {
+		return output.split("\n").flatMap(line => {
+			const count = line.match(/^\s*│\s*[^\p{L}\p{N}]*([0-9]+)\s/u)?.[1];
+			return count === undefined ? [] : [Number(count)];
+		});
+	}
+
 	function renderOverview(reports: UsageReport[]): string {
 		const dashboard = new UsageDashboardComponent({
 			reports,
@@ -480,34 +505,38 @@ describe("usage dashboard saved resets", () => {
 	it("shows the total saved resets across accounts alongside quota usage", () => {
 		const reports = [
 			{
-				...report("openai-codex", "a@x.test", [limit("openai-codex", "a", "5h", "5 hours", 0.4, "ok")]),
+				...report("openai-codex", "a@x.test", [limit("openai-codex", "a", "5h", "Short window", 0.4, "ok")]),
 				resetCredits: { availableCount: 2 },
 			},
 			{
-				...report("openai-codex", "b@x.test", [limit("openai-codex", "b", "5h", "5 hours", 0.6, "ok")]),
+				...report("openai-codex", "b@x.test", [limit("openai-codex", "b", "5h", "Short window", 0.6, "ok")]),
 				resetCredits: { availableCount: 3 },
 			},
 		];
 		const output = renderOverview(reports);
-		expect(output).toMatch(/5 saved resets/);
+		expect(buildProviderCards(reports, Date.now())[0].resetCredits?.bankedCount).toBe(5);
+		expect(renderedInventoryCounts(output)).toEqual([5]);
 		expect(output).toContain("50%");
 	});
 
 	it("keeps saved resets visible when quota windows are untouched", () => {
 		const output = renderOverview([
 			{
-				...report("openai-codex", "a@x.test", [limit("openai-codex", "a", "5h", "5 hours", 0, "ok")]),
+				...report("openai-codex", "a@x.test", [limit("openai-codex", "a", "5h", "Short window", 0, "ok")]),
 				resetCredits: { availableCount: 1 },
 			},
 		]);
-		expect(output).toMatch(/1 saved reset\b/);
+		expect(renderedInventoryCounts(output)).toEqual([1]);
 		expect(output).toContain("100%");
 	});
 
 	it("distinguishes a reported zero from an unreported reset allowance", () => {
 		const emptyReport = report("openai-codex", "a@x.test", []);
-		expect(renderOverview([{ ...emptyReport, resetCredits: { availableCount: 0 } }])).toMatch(/0 saved resets/);
-		expect(renderOverview([emptyReport])).not.toMatch(/saved resets?/);
+		const reportedZero = [{ ...emptyReport, resetCredits: { availableCount: 0 } }];
+		expect(buildProviderCards(reportedZero, Date.now())[0].resetCredits?.bankedCount).toBe(0);
+		expect(buildProviderCards([emptyReport], Date.now())[0].resetCredits).toBeUndefined();
+		expect(renderedInventoryCounts(renderOverview(reportedZero))).toEqual([0]);
+		expect(renderedInventoryCounts(renderOverview([emptyReport]))).toEqual([]);
 	});
 });
 

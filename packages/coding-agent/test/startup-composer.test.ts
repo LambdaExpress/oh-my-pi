@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import * as path from "node:path";
+import { closeModelCacheSharedDb } from "@oh-my-pi/pi-catalog/model-cache";
 import { parseArgs } from "@oh-my-pi/pi-coding-agent/cli/args";
 import { importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { COLLAB_PROTO, type CollabFrame, parseCollabLink } from "@oh-my-pi/pi-coding-agent/collab/protocol";
@@ -23,10 +24,20 @@ import {
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
-import { getProjectDir, setProjectDir } from "@oh-my-pi/pi-utils";
+import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storage";
+import { resetSessionIndexForTests } from "@oh-my-pi/pi-coding-agent/session/session-index";
+import {
+	getHistoryDbPath,
+	getModelDbPath,
+	getProjectDir,
+	setAgentDir,
+	setProjectDir,
+	TempDir,
+} from "@oh-my-pi/pi-utils";
 import { VirtualTerminal } from "../../tui/test/virtual-terminal";
 import { setLocale } from "../src/i18n";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./collab/helpers/in-memory-relay";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 import { createTestSession } from "./utilities";
 
 import {
@@ -46,6 +57,39 @@ import {
 	cfgTuiMaxInlineImages,
 	cfgTuiResizeScrollback,
 } from "@oh-my-pi/pi-coding-agent/modes/settings";
+
+const noRecentSessions = async () => [];
+
+let settingsState: SettingsTestState | undefined;
+let fixtureRoot: TempDir | undefined;
+let historyDbPath: string | undefined;
+let modelDbPath: string | undefined;
+
+beforeEach(() => {
+	settingsState = beginSettingsTest();
+	fixtureRoot = TempDir.createSync("@omp-startup-composer-");
+	setAgentDir(fixtureRoot.path());
+	setProjectDir(fixtureRoot.path());
+	historyDbPath = getHistoryDbPath();
+	modelDbPath = getModelDbPath();
+});
+
+afterEach(async () => {
+	stopPendingStartupComposer();
+	if (historyDbPath) {
+		HistoryStorage.close(historyDbPath);
+		resetSessionIndexForTests(historyDbPath);
+		historyDbPath = undefined;
+	}
+	if (modelDbPath) {
+		closeModelCacheSharedDb(modelDbPath);
+		modelDbPath = undefined;
+	}
+	restoreSettingsTestState(settingsState);
+	settingsState = undefined;
+	await fixtureRoot?.remove();
+	fixtureRoot = undefined;
+});
 
 class CountingTerminal extends VirtualTerminal {
 	starts = 0;
@@ -150,7 +194,12 @@ describe("outer startup collaboration gate", () => {
 		});
 		Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
 		const authStorage = await AuthStorage.create(path.join(testSession.tempDir, "startup-auth.db"));
-		beginStartupComposer({ terminal: new VirtualTerminal(), version: "test", cache: false });
+		beginStartupComposer({
+			terminal: new VirtualTerminal(),
+			version: "test",
+			cache: false,
+			recentSessions: noRecentSessions,
+		});
 		const rawArgs = ["--no-session", "--no-extensions", "--no-skills", "--no-rules", "--no-tools", "--no-lsp"];
 		const running = runRootCommand(parseArgs(rawArgs), rawArgs, {
 			settings: activeSettings,
@@ -255,14 +304,15 @@ describe("outer startup collaboration gate", () => {
 			writer?.close();
 			await mode?.collabController.shutdown("test cleanup");
 			mode?.stop();
+			mode?.ui.disposeChildren();
 			stopPendingStartupComposer();
 			vi.restoreAllMocks();
 			uninstallInMemoryRelay();
 			authStorage.close();
-			await testSession.cleanup();
 			resetSettingsForTest();
 			setProjectDir(originalProject);
 			Object.defineProperty(process.stdin, "isTTY", { value: originalIsTTY, configurable: true });
+			await testSession.cleanup();
 		}
 	});
 });
@@ -387,6 +437,7 @@ describe("Composer prepaint", () => {
 			expect(terminal.starts).toBe(1);
 		} finally {
 			mode?.stop();
+			mode?.ui.disposeChildren();
 			await testSession.cleanup();
 			vi.restoreAllMocks();
 			await initTheme();
@@ -443,6 +494,7 @@ describe("Composer prepaint", () => {
 		} finally {
 			releaseInit.resolve();
 			mode.stop();
+			mode.ui.disposeChildren();
 			lease.dispose();
 			await testSession.cleanup();
 			vi.restoreAllMocks();
@@ -490,6 +542,7 @@ describe("Composer prepaint", () => {
 			await initialTurn;
 		} finally {
 			mode.stop();
+			mode.ui.disposeChildren();
 			lease.dispose();
 			await testSession.cleanup();
 			vi.restoreAllMocks();
@@ -559,6 +612,7 @@ describe("Composer prepaint", () => {
 			expect(terminal.getViewport().join("\n")).not.toContain("Starting OMP");
 		} finally {
 			mode.stop();
+			mode.ui.disposeChildren();
 			lease.dispose();
 			await testSession.cleanup();
 			vi.restoreAllMocks();
@@ -734,6 +788,7 @@ describe("Composer prepaint", () => {
 			expect(adoptedEditorRow).toBe(prepaintEditorRow);
 		} finally {
 			mode?.stop();
+			mode?.ui.disposeChildren();
 			lease.dispose();
 			await testSession.cleanup();
 			vi.restoreAllMocks();
@@ -747,6 +802,7 @@ describe("Composer prepaint", () => {
 			terminal,
 			version: "9.9.9",
 			cache: false,
+			recentSessions: noRecentSessions,
 		});
 		await terminal.waitForRender(() =>
 			terminal.getViewport().some(row => Bun.stripANSI(row).includes("Welcome back!")),
@@ -796,6 +852,7 @@ describe("Composer prepaint", () => {
 			terminal,
 			version: "9.9.9",
 			cache: false,
+			recentSessions: noRecentSessions,
 		});
 		await terminal.waitForRender(() =>
 			terminal.getViewport().some(row => Bun.stripANSI(row).includes("Welcome back!")),
@@ -843,7 +900,13 @@ describe("Composer prepaint", () => {
 		// startup module-load stall; losing the enable leaves the keyboard dead
 		// for the whole session.
 		const terminal = new InputTrackingTerminal(80, 32);
-		beginStartupComposer({ preferences: config, terminal, version: "9.9.9", cache: false });
+		beginStartupComposer({
+			preferences: config,
+			terminal,
+			version: "9.9.9",
+			cache: false,
+			recentSessions: noRecentSessions,
+		});
 		// The prepaint must be physically written before any async runtime import
 		// can monopolize the event loop; a merely queued render is still a blind gap.
 		expect(terminal.getViewport().some(row => Bun.stripANSI(row).includes("9.9.9"))).toBeTrue();
@@ -862,7 +925,13 @@ describe("Composer prepaint", () => {
 
 	it("adoption enables raw input when settings never resolved", () => {
 		const terminal = new InputTrackingTerminal(80, 32);
-		beginStartupComposer({ preferences: config, terminal, version: "9.9.9", cache: false });
+		beginStartupComposer({
+			preferences: config,
+			terminal,
+			version: "9.9.9",
+			cache: false,
+			recentSessions: noRecentSessions,
+		});
 		const lease = takeStartupComposerLease();
 		lease?.adopt();
 		expect(terminal.inputEnables).toBe(1);

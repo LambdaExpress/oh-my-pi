@@ -1,18 +1,10 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it } from "bun:test";
 import { SessionSelectorComponent } from "@oh-my-pi/pi-tui/overlays/session-selector";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { SessionInfo } from "@oh-my-pi/pi-coding-agent/session/session-listing";
-import { setLocale } from "../../../src/i18n";
 
 beforeAll(async () => {
 	await initTheme();
-	// Assertions target the English footer hint; pin the locale so zh-CN
-	// machines don't render translated hint text.
-	setLocale("en");
-});
-
-afterAll(() => {
-	setLocale(null);
 });
 
 function makeSession(id: string, title: string | undefined): SessionInfo {
@@ -110,8 +102,9 @@ describe("SessionSelectorComponent mouse", () => {
 		selector.handleInput("\n");
 		expect(picked?.id).toBe("aaaa");
 
-		const footerRow = afterHover.findIndex(line => Bun.stripANSI(line).includes("Esc cancel"));
-		expect(footerRow).toBeGreaterThanOrEqual(0);
+		// The fill-height footer hint stays three rows from the bottom,
+		// independent of the interrupt key binding and translated label.
+		const footerRow = afterHover.length - 3;
 		selector.handleInput(hover(footerRow + 1));
 
 		const afterFooterHover = selector.render(80);
@@ -175,8 +168,7 @@ describe("SessionSelectorComponent mouse", () => {
 		);
 
 		const lines = selector.render(80);
-		const footerRow = lines.findIndex(line => line.includes("Esc cancel"));
-		expect(footerRow).toBeGreaterThanOrEqual(0);
+		const footerRow = lines.length - 3;
 
 		// Click directly on the footer hint row: must not resume anything.
 		selector.handleInput(leftClick(footerRow + 1));
@@ -196,18 +188,16 @@ describe("SessionSelectorComponent fill-height footer", () => {
 		const selector = makeSelector(mixedSessions(20), () => {}, rows);
 
 		const top = selector.render(80);
-		const topHint = top.findIndex(line => line.includes("Esc cancel"));
 		expect(top.length).toBe(rows);
-		expect(topHint).toBe(rows - 3);
 		expect(top[rows - 1]!.trim().length).toBeGreaterThan(0); // bottom border on the last row
+		const topFooter = top.slice(rows - 4).map(line => Bun.stripANSI(line));
 
 		// Scroll to the bottom of the list (now an untitled window of a different
 		// height); the footer must not move.
 		for (let i = 0; i < 25; i++) selector.handleInput(wheel("down"));
 		const bottom = selector.render(80);
-		const bottomHint = bottom.findIndex(line => line.includes("Esc cancel"));
 		expect(bottom.length).toBe(rows);
-		expect(bottomHint).toBe(topHint);
+		expect(bottom.slice(rows - 4).map(line => Bun.stripANSI(line))).toEqual(topFooter);
 		expect(bottom[rows - 1]!.trim().length).toBeGreaterThan(0);
 	});
 });

@@ -591,6 +591,8 @@ mod tests {
 
 	/// bash maps exit statuses above 128 back to the terminating signal:
 	/// `kill -l 137` prints `KILL`, while 128 and 265 stay invalid.
+	/// Windows has named termination operations, not Unix signal numbers.
+	#[cfg(unix)]
 	#[test]
 	fn list_maps_exit_statuses_above_128() {
 		assert!(matches!(printed_signal("137"), Ok(PrintedSignal::Name("KILL"))));
@@ -598,6 +600,16 @@ mod tests {
 		assert!(matches!(printed_signal("129"), Ok(PrintedSignal::Name("HUP"))));
 		assert!(printed_signal("128").is_err());
 		assert!(printed_signal("265").is_err());
+	}
+
+	#[cfg(windows)]
+	#[test]
+	fn list_rejects_unix_signal_numbers() {
+		// The Windows backend cannot translate numeric signals or Unix
+		// signal-death statuses into named termination operations.
+		for operand in ["9", "137", "129", "128", "265"] {
+			assert!(printed_signal(operand).is_err(), "operand {operand:?} must be rejected");
+		}
 	}
 }
 

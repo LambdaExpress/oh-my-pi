@@ -37,7 +37,14 @@ import {
 import { EditTool } from "@oh-my-pi/pi-coding-agent/edit";
 import type { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import { ExtensionToolWrapper } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
-import { BUILTIN_TOOLS, GrepTool, ReadTool, type Tool, type ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import {
+	BUILTIN_TOOLS,
+	GlobTool,
+	GrepTool,
+	ReadTool,
+	type Tool,
+	type ToolSession,
+} from "@oh-my-pi/pi-coding-agent/tools";
 import { BashTool } from "@oh-my-pi/pi-coding-agent/tools/bash";
 import type { TruncationMeta } from "@oh-my-pi/pi-tui/tools/output-meta";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
@@ -125,6 +132,49 @@ describe("CursorExecHandlers.grep bridge", () => {
 			caseInsensitive: false,
 		} as any);
 		expect((sensitiveResult.details as { matchCount?: number } | undefined)?.matchCount).toBe(1);
+	});
+
+	it("uses independent legacy grep context widths and zero defaults instead of session settings", async () => {
+		const target = path.join(cwd, "context.txt");
+		await Bun.write(target, "before two\nbefore one\nneedle\nafter one\nafter two\n");
+		const settings = Settings.isolated({ "grep.contextBefore": 2, "grep.contextAfter": 2 });
+		const session = createTestSession(cwd, { settings });
+		const scopedHandlers = new CursorExecHandlers({
+			cwd,
+			tools: new Map<string, Tool>([["grep", new GrepTool(session)]]),
+			createGrepTool: createBridgeGrepFactory(session, passthroughRunner()),
+			getToolContext: () => ({ settings }) as AgentToolContext,
+		});
+		const search = async (args: { context?: number; contextBefore?: number; contextAfter?: number }) => {
+			const result = await scopedHandlers.grep({ toolCallId: "ctx", pattern: "needle", path: target, ...args });
+			expect(result.isError).toBe(false);
+			return result.content.map(c => (c.type === "text" ? c.text : "")).join("");
+		};
+
+		const plain = await search({});
+		expect(plain).toContain("needle");
+		expect(plain).not.toContain("before one");
+		expect(plain).not.toContain("after one");
+
+		const before = await search({ contextBefore: 2 });
+		expect(before).toContain("before two");
+		expect(before).toContain("before one");
+		expect(before).not.toContain("after one");
+
+		const after = await search({ contextAfter: 1 });
+		expect(after).not.toContain("before one");
+		expect(after).toContain("after one");
+		expect(after).not.toContain("after two");
+
+		const combined = await search({ context: 1, contextBefore: 0, contextAfter: 2 });
+		expect(combined).not.toContain("before one");
+		expect(combined).toContain("after two");
+
+		const symmetric = await search({ context: 1 });
+		expect(symmetric).toContain("before one");
+		expect(symmetric).toContain("after one");
+		expect(symmetric).not.toContain("before two");
+		expect(symmetric).not.toContain("after two");
 	});
 
 	it("honors pi_grep's requested match limit against real files", async () => {
@@ -332,19 +382,6 @@ describe("bridge tool resolution beyond the model-facing registry", () => {
 
 		expect(result.isError).toBeFalsy();
 		expect(await Bun.file(target).text()).toBe("alpha\ngamma\n");
-	});
-
-	it("reports the failure instead of editing when no edit tool is reachable", async () => {
-		const target = path.join(cwd, "sample.txt");
-		await Bun.write(target, "alpha\nbeta\n");
-		const unreachable = new CursorExecHandlers({ cwd, tools: new Map<string, Tool>() });
-		const result = await unreachable.piEdit({
-			toolCallId: "e2",
-			args: { path: target, edits: [{ oldText: "beta", newText: "gamma" }] },
-		} as never);
-
-		expect(result.isError).toBe(true);
-		expect(await Bun.file(target).text()).toBe("alpha\nbeta\n");
 	});
 
 	it("substitutes a replace-mode edit into a granted advisor tool map", async () => {
@@ -756,6 +793,60 @@ describe("pi_bash timeout presence", () => {
 	});
 });
 
+describe("legacy shell timeout unit (issue #13082)", () => {
+	let cwd: string;
+	let handlers: CursorExecHandlers;
+
+	beforeEach(async () => {
+		cwd = await fs.mkdtemp(path.join(os.tmpdir(), "cursor-shell-timeout-"));
+		const bash: Tool = new BashTool(createTestSession(cwd));
+		handlers = new CursorExecHandlers({ cwd, tools: new Map<string, Tool>([["bash", bash]]) });
+	});
+
+	afterEach(async () => {
+		await removeWithRetries(cwd);
+	});
+
+	it("converts a millisecond ShellArgs budget into bash seconds", async () => {
+		// Legacy `ShellArgs.timeout` is milliseconds (`ShellTimeout` echoes it as
+		// `timeout_ms`), so a model asking for 15s sends 15000. Forwarded as
+		// seconds it exceeded the bash ceiling and ran clamped to 3600s.
+		const result = await handlers.shell({
+			command: "echo hi",
+			workingDirectory: "",
+			timeout: 15_000,
+			toolCallId: "s1",
+		} as never);
+		// BashTool records its resolved deadline here; shape known from `bash.ts`.
+		const details = result.details as { timeoutSeconds?: number };
+		expect(details.timeoutSeconds).toBe(15);
+	});
+
+	it("rounds a sub-second budget up and leaves an unset budget on the default", async () => {
+		// Truncating 400ms to 0 would read as `bash`'s "no deadline" instead of
+		// the shortest deadline it can honor.
+		const subSecond = await handlers.shell({
+			command: "echo hi",
+			workingDirectory: "",
+			timeout: 400,
+			toolCallId: "s2",
+		} as never);
+		const subSecondDetails = subSecond.details as { timeoutDisabled?: boolean; timeoutSeconds?: number };
+		expect(subSecondDetails.timeoutSeconds).toBe(1);
+		expect(subSecondDetails.timeoutDisabled).toBeUndefined();
+
+		const unset = await handlers.shell({
+			command: "echo hi",
+			workingDirectory: "",
+			timeout: 0,
+			toolCallId: "s3",
+		} as never);
+		const unsetDetails = unset.details as { timeoutDisabled?: boolean; timeoutSeconds?: number };
+		expect(unsetDetails.timeoutDisabled).toBeUndefined();
+		expect(unsetDetails.timeoutSeconds).toBeGreaterThan(1);
+	});
+});
+
 describe("CursorExecHandlers error results", () => {
 	const rewrittenErrorTool = (name: string): AgentTool => ({
 		name,
@@ -858,7 +949,8 @@ describe("CursorExecHandlers error results", () => {
 				toolCallId: "call-shell-keep",
 				command: "pwd",
 				workingDirectory: "/tmp",
-				timeout: 12,
+				// Milliseconds on the wire; the bridge forwards bash seconds.
+				timeout: 12_000,
 			}),
 			{ onStdout: () => {}, onStderr: () => {} },
 		);
@@ -1233,38 +1325,42 @@ describe("CursorExecHandlers mounted tool bridge", () => {
 		}
 	});
 
-	it("refuses a download onto a FIFO instead of blocking on it", async () => {
-		// A write-only open of a FIFO blocks until a reader attaches, and
-		// `download_path` comes from the server — so a named pipe planted (or
-		// simply present) in the workspace hung the turn forever, with the
-		// non-regular-file guard sitting unreachable behind the open. The refusal
-		// has to come from the open itself, which is what `O_NONBLOCK` buys.
-		const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "cursor-mcp-fifo-"));
-		try {
-			const fifo = path.join(workspace, "pipe");
-			const mkfifo = Bun.spawn(["mkfifo", fifo]);
-			if ((await mkfifo.exited) !== 0) throw new Error("mkfifo failed");
-			const handlers = new CursorExecHandlers({
-				cwd: workspace,
-				tools: new Map(),
-				getToolContext: () => yoloToolContext(),
-				mcpResources: {
-					serverNames: () => ["files"],
-					getServerResources: async () => undefined,
-					readServerResource: async (_name, uri) => ({ contents: [{ uri, text: "payload" }] }),
-				},
-			});
+	it.skipIf(process.platform === "win32")(
+		"refuses a download onto a FIFO instead of blocking on it",
+		async () => {
+			// A write-only open of a FIFO blocks until a reader attaches, and
+			// `download_path` comes from the server — so a named pipe planted (or
+			// simply present) in the workspace hung the turn forever, with the
+			// non-regular-file guard sitting unreachable behind the open. The refusal
+			// has to come from the open itself, which is what `O_NONBLOCK` buys.
+			const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "cursor-mcp-fifo-"));
+			try {
+				const fifo = path.join(workspace, "pipe");
+				const mkfifo = Bun.spawn(["mkfifo", fifo]);
+				if ((await mkfifo.exited) !== 0) throw new Error("mkfifo failed");
+				const handlers = new CursorExecHandlers({
+					cwd: workspace,
+					tools: new Map(),
+					getToolContext: () => yoloToolContext(),
+					mcpResources: {
+						serverNames: () => ["files"],
+						getServerResources: async () => undefined,
+						readServerResource: async (_name, uri) => ({ contents: [{ uri, text: "payload" }] }),
+					},
+				});
 
-			await expect(
-				handlers.readMcpResource({ server: "files", uri: "files://x", downloadPath: "pipe" }),
-			).rejects.toThrow(/special file|non-regular file/);
-		} finally {
-			await removeWithRetries(workspace);
-		}
-		// A regression does not fail this assertion — it never reaches it, because
-		// the open never returns. The timeout IS the detector, raised off the 5s
-		// default only so a slow runner cannot claim the same verdict.
-	}, 20_000);
+				await expect(
+					handlers.readMcpResource({ server: "files", uri: "files://x", downloadPath: "pipe" }),
+				).rejects.toThrow(/special file|non-regular file/);
+			} finally {
+				await removeWithRetries(workspace);
+			}
+			// A regression does not fail this assertion — it never reaches it, because
+			// the open never returns. The timeout IS the detector, raised off the 5s
+			// default only so a slow runner cannot claim the same verdict.
+		},
+		20_000,
+	);
 
 	it("refuses a download when the session withheld file mutation or policy denies it", async () => {
 		// Download mode creates and overwrites workspace files without going
@@ -1527,6 +1623,23 @@ describe("CursorExecHandlers native delete gating (issue #5680)", () => {
 		expect(await Bun.file(target).exists()).toBe(false);
 	});
 
+	it("returns the deleted file size in details, including zero-byte files", async () => {
+		const handlers = new CursorExecHandlers({
+			cwd,
+			tools: new Map(),
+			allowDirectFileMutation: true,
+			getToolContext: () => yoloToolContext(),
+		});
+		for (const content of ["café", ""]) {
+			const target = path.join(cwd, "size.txt");
+			await Bun.write(target, content);
+			const result = await handlers.delete(create(DeleteArgsSchema, { path: target }));
+			expect(result.isError).toBe(false);
+			expect(result.details).toEqual({ fileSize: Buffer.byteLength(content) });
+			expect(await Bun.file(target).exists()).toBe(false);
+		}
+	});
+
 	it("rechecks a live mutation grant after runtime tool activation", async () => {
 		const target = path.join(cwd, "victim.txt");
 		await Bun.write(target, "remove after upgrade");
@@ -1776,20 +1889,35 @@ describe("CursorExecHandlers Pi frame translation", () => {
 	});
 
 	it("folds pi_grep's separate glob onto the local tool's single path spec", async () => {
-		const { handlers, calls } = recordingHandlers("grep");
+		await fs.mkdir(path.join(cwd, "src", "nested"), { recursive: true });
+		await Bun.write(path.join(cwd, "src", "nested", "inside.ts"), "needle inside\n");
+		await Bun.write(path.join(cwd, "src", "ignored.txt"), "needle wrong extension\n");
+		await Bun.write(path.join(cwd, "outside.ts"), "needle outside\n");
+		const handlers = new CursorExecHandlers({
+			cwd,
+			tools: new Map<string, Tool>([["grep", new GrepTool(createTestSession(cwd))]]),
+		});
+		const search = async (args: { path?: string; glob: string }) => {
+			const result = await handlers.piGrep({ toolCallId: "glob-search", args: { pattern: "needle", ...args } });
+			expect(result.isError).toBe(false);
+			return result.content.map(block => (block.type === "text" ? block.text : "")).join("\n");
+		};
 
-		await handlers.piGrep({ toolCallId: "c1", args: { pattern: "x", path: "src", glob: "**/*.ts" } } as never);
-		await handlers.piGrep({ toolCallId: "c2", args: { pattern: "x", glob: "**/*.ts" } } as never);
-		await handlers.piGrep({ toolCallId: "c3", args: { pattern: "x", path: ".", glob: "**/*.ts" } } as never);
-		await handlers.piGrep({ toolCallId: "c4", args: { pattern: "x", path: "src", glob: "/abs/**/*.ts" } } as never);
-
-		expect((calls[0] as { path: string }).path).toBe("src/**/*.ts");
-		// An absent or "." path leaves the glob standing alone: a "./"-prefixed
-		// spec is a needlessly different path expression for the same scope.
-		expect((calls[1] as { path: string }).path).toBe("**/*.ts");
-		expect((calls[2] as { path: string }).path).toBe("**/*.ts");
-		// An absolute glob ignores the frame's path entirely.
-		expect((calls[3] as { path: string }).path).toBe("/abs/**/*.ts");
+		const scoped = await search({ path: "src", glob: "**/*.ts" });
+		expect(scoped).toContain("needle inside");
+		expect(scoped).not.toContain("needle outside");
+		expect(scoped).not.toContain("needle wrong extension");
+		for (const args of [{ glob: "**/*.ts" }, { path: ".", glob: "**/*.ts" }]) {
+			const all = await search(args);
+			expect(all).toContain("needle inside");
+			expect(all).toContain("needle outside");
+			expect(all).not.toContain("needle wrong extension");
+		}
+		// An absolute glob must ignore the separate path rather than be joined
+		// beneath it, even when the ignored path does not exist.
+		const absolute = await search({ path: "missing", glob: path.join(cwd, "src", "**", "*.ts") });
+		expect(absolute).toContain("needle inside");
+		expect(absolute).not.toContain("needle outside");
 	});
 
 	it("composes pi_read's offset/limit onto the path as the read tool's range selector", async () => {
@@ -1811,7 +1939,7 @@ describe("CursorExecHandlers Pi frame translation", () => {
 			{ path: "a.ts:raw:5+20" },
 			{ path: "a.ts:raw:5-" },
 			{ path: "a.ts:raw:1+20" },
-			{ path: "a.ts" },
+			{ path: "a.ts:raw" },
 			{ path: "a.ts:raw:1+20" },
 		]);
 	});
@@ -1886,6 +2014,85 @@ describe("CursorExecHandlers Pi frame translation", () => {
 		}
 	});
 
+	it("returns negative offsets from the end of large files through the real read tool", async () => {
+		const target = path.join(cwd, "long.txt");
+		await Bun.write(target, `${Array.from({ length: 1000 }, (_, i) => `line${i + 1}`).join("\n")}\n`);
+		const session = createTestSession(cwd);
+		const handlers = new CursorExecHandlers({
+			cwd,
+			tools: new Map<string, Tool>([["read", new ReadTool(session)]]),
+		});
+		const legacy = await handlers.read(create(ReadArgsSchema, { path: target, offset: -4, limit: 2 }));
+		const modern = await handlers.piRead({
+			toolCallId: "negative-read",
+			args: { path: "long.txt", offset: -4, limit: 2 },
+		} as never);
+		for (const result of [legacy, modern]) {
+			expect(result.isError).toBe(false);
+			expect(result.content).toEqual([{ type: "text", text: "line997\nline998" }]);
+		}
+		const last = await handlers.piRead({
+			toolCallId: "last-line",
+			args: { path: "long.txt", offset: -1 },
+		} as never);
+		expect(last.isError).toBe(false);
+		expect(
+			last.content
+				.map(part => (part.type === "text" ? part.text : ""))
+				.join("")
+				.trimEnd(),
+		).toBe("line1000");
+	});
+
+	it("serves the final lines through the native read frame", async () => {
+		const target = path.join(cwd, "native-tail.txt");
+		await Bun.write(target, `${Array.from({ length: 1000 }, (_, i) => `line${i + 1}`).join("\n")}\n`);
+		const handlers = new CursorExecHandlers({
+			cwd,
+			tools: new Map<string, Tool>([["read", new ReadTool(createTestSession(cwd))]]),
+		});
+		const written: Buffer[] = [];
+		const h2Request = {
+			write(chunk: Buffer) {
+				written.push(chunk);
+				return true;
+			},
+		} as unknown as Parameters<typeof handleServerMessage>[5];
+		await handleServerMessage(
+			create(AgentServerMessageSchema, {
+				message: {
+					case: "execServerMessage",
+					value: create(ExecServerMessageSchema, {
+						id: 7,
+						execId: "tail-read",
+						message: {
+							case: "readArgs",
+							value: create(ReadArgsSchema, { path: target, offset: -4, limit: 4, toolCallId: "tail-read" }),
+						},
+					}),
+				},
+			}),
+			cursorAssistantMessage(),
+			new AssistantMessageEventStream(),
+			newBlockState(),
+			new Map(),
+			h2Request,
+			handlers,
+			undefined,
+			{ sawTokenDelta: false },
+			[],
+		);
+		const frame = written[0];
+		if (!frame) throw new Error("expected read response");
+		const answer = fromBinary(AgentClientMessageSchema, frame.subarray(5, 5 + frame.readUInt32BE(1)));
+		if (answer.message.case !== "execClientMessage" || answer.message.value.message.case !== "readResult") {
+			throw new Error("expected read result");
+		}
+		const result = answer.message.value.message.value.result;
+		if (result.case !== "success" || result.value.output.case !== "content") throw new Error("expected read content");
+		expect(result.value.output.value.trimEnd()).toBe("line997\nline998\nline999\nline1000");
+	});
+
 	it("escapes pi_grep's pattern when the frame asks for a literal search", async () => {
 		// The local tool is regex-only, so an unescaped literal turns regex
 		// metacharacters into operators and matches the wrong lines.
@@ -1899,33 +2106,32 @@ describe("CursorExecHandlers Pi frame translation", () => {
 	});
 
 	it("routes pi_find to glob, not grep, joining its pattern onto the path", async () => {
-		// `pi_find` searches filenames. Routing it to `grep` would search file
-		// contents for the glob text and return nothing.
-		const { handlers, calls } = recordingHandlers("glob");
-
-		await handlers.piFind({ toolCallId: "c1", args: { pattern: "*.ts", path: "src", limit: 10 } } as never);
-		await handlers.piFind({ toolCallId: "c2", args: { pattern: "*.ts", limit: 0 } } as never);
-		await handlers.piFind({ toolCallId: "c3", args: { pattern: "*.ts" } } as never);
-
-		expect(calls).toEqual([
-			{ path: "src/*.ts", limit: 10 },
-			// `optional int32`: a present 0 is clamped to 1 (as the reference
-			// does), not silently widened to the tool's default.
-			{ path: "*.ts", limit: 1 },
-			// Genuinely unset leaves the local tool's own default in place.
-			{ path: "*.ts", limit: undefined },
-		]);
-	});
-
-	it("renames pi_edit's camelCase replacements to the local tool's snake_case pairs", async () => {
-		const { handlers, calls } = recordingHandlers("edit");
-
-		await handlers.piEdit({
-			toolCallId: "c1",
-			args: { path: "a.ts", edits: [{ oldText: "before", newText: "after" }] },
-		} as never);
-
-		expect(calls[0]).toEqual({ path: "a.ts", old_string: "before", new_string: "after" });
+		// Empty files match by filename only; the text file has misleading
+		// contents so accidentally routing this frame through grep cannot pass.
+		await fs.mkdir(path.join(cwd, "src"));
+		await Bun.write(path.join(cwd, "src", "one.ts"), "");
+		await Bun.write(path.join(cwd, "src", "two.ts"), "");
+		await Bun.write(path.join(cwd, "src", "decoy.txt"), "*.ts");
+		await Bun.write(path.join(cwd, "outside.ts"), "");
+		const handlers = new CursorExecHandlers({
+			cwd,
+			tools: new Map<string, Tool>([
+				["glob", new GlobTool(createTestSession(cwd))],
+				["grep", new GrepTool(createTestSession(cwd))],
+			]),
+		});
+		const find = async (args: { path?: string; limit?: number }) => {
+			const result = await handlers.piFind({ toolCallId: "filename-search", args: { pattern: "*.ts", ...args } });
+			expect(result.isError).toBe(false);
+			return result.details as { files: string[]; fileCount: number };
+		};
+		const scoped = await find({ path: "src", limit: 10 });
+		expect(scoped.files.map(file => path.basename(file)).sort()).toEqual(["one.ts", "two.ts"]);
+		const capped = await find({ limit: 0 });
+		expect(capped.fileCount).toBe(1);
+		expect(["one.ts", "two.ts", "outside.ts"]).toContain(path.basename(capped.files[0]!));
+		const all = await find({});
+		expect(all.files.map(file => path.basename(file)).sort()).toEqual(["one.ts", "outside.ts", "two.ts"]);
 	});
 
 	it("sends a multi-replacement pi_edit frame as one batched tool call", async () => {

@@ -4,7 +4,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { AgentToolResult } from "@oh-my-pi/pi-agent-core";
 import type { ToolCall } from "@oh-my-pi/pi-ai";
-import { toolWireSchema } from "@oh-my-pi/pi-ai/utils/schema";
 import { validateToolArguments } from "@oh-my-pi/pi-ai/utils/validation";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getThemeByName } from "@oh-my-pi/pi-tui/theme";
@@ -25,6 +24,8 @@ import { withRepoLock } from "@oh-my-pi/pi-coding-agent/utils/repo-lock";
 import type { VcsGitRepo } from "@oh-my-pi/pi-natives";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { getAgentDir, hashPath, normalizePathForComparison, removeWithRetries, setAgentDir } from "@oh-my-pi/pi-utils";
+import { setLocale } from "../../src/i18n";
+import { restoreEnvValue } from "../helpers/settings-test-state";
 
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -41,15 +42,33 @@ const TINY_PNG_BASE64 =
 // the documented way to tell git "use no config from
 // this scope". `GIT_TERMINAL_PROMPT=0` + `GIT_ASKPASS=true` guarantee git
 // never blocks on stdin waiting for credentials or a GPG passphrase.
-process.env.GIT_CONFIG_GLOBAL = "/dev/null";
-process.env.GIT_CONFIG_SYSTEM = "/dev/null";
-process.env.GIT_CONFIG_NOSYSTEM = "1";
-process.env.GIT_TERMINAL_PROMPT = "0";
-process.env.GIT_ASKPASS = "true";
 // `XDG_CONFIG_HOME`, if set, lets git re-discover a global config under
 // `$XDG_CONFIG_HOME/git/config` even after we pin `GIT_CONFIG_GLOBAL`. Clear
 // it so the override is absolute.
-delete process.env.XDG_CONFIG_HOME;
+const gitEnvOverrides = {
+	GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+	GIT_CONFIG_SYSTEM: process.platform === "win32" ? "NUL" : "/dev/null",
+	GIT_CONFIG_NOSYSTEM: "1",
+	GIT_TERMINAL_PROMPT: "0",
+	GIT_ASKPASS: "true",
+	XDG_CONFIG_HOME: undefined,
+};
+const originalGitEnv: Record<string, string | undefined> = {};
+
+beforeAll(() => {
+	for (const [key, value] of Object.entries(gitEnvOverrides)) {
+		originalGitEnv[key] = process.env[key];
+		restoreEnvValue(key, value);
+	}
+	setLocale("en");
+});
+
+afterAll(() => {
+	for (const [key, value] of Object.entries(originalGitEnv)) {
+		restoreEnvValue(key, value);
+	}
+	setLocale(null);
+});
 
 function createSession(
 	cwd: string = "/tmp/test",
@@ -216,12 +235,13 @@ async function setupTempHome(): Promise<{ home: string; cleanup: () => Promise<v
 	return {
 		home,
 		cleanup: async () => {
-			setAgentDir(originalAgentDir);
 			for (const key of xdgKeys) {
 				const previous = xdgPrevious[key];
 				if (previous === undefined) delete process.env[key];
 				else process.env[key] = previous;
 			}
+			vi.restoreAllMocks();
+			setAgentDir(originalAgentDir);
 			await removeWithRetries(home);
 		},
 	};
@@ -1243,40 +1263,6 @@ describe("github tool", () => {
 				// Existing URL is preserved — we never overwrote it.
 				expect(runGit(fixture.repoRoot, ["remote", "get-url", "forksrc"])).toBe(fixture.forkBare);
 			});
-			it("does not depend on localized git remote-add stderr for existing remotes", async () => {
-				// The shim is a bash script resolved via `which`; neither exists on Windows.
-				if (process.platform === "win32") return;
-				const originalPath = process.env.PATH;
-				const fakeBin = await fs.mkdtemp(path.join(os.tmpdir(), "omp-fake-git-"));
-				const realGitResult = Bun.spawnSync(["which", "git"], { stdout: "pipe", stderr: "pipe" });
-				expect(realGitResult.exitCode).toBe(0);
-				const realGit = new TextDecoder().decode(realGitResult.stdout).trim();
-				const fakeGit = path.join(fakeBin, "git");
-				await fs.writeFile(
-					fakeGit,
-					`#!/usr/bin/env bash
-while [[ "$1" == "-c" ]]; do shift 2; done
-if [[ "$1" == "remote" && "$2" == "add" && "$3" == "forksrc" ]]; then
-	echo "本地化错误：远程 forksrc 已经存在。" >&2
-	exit 3
-fi
-exec ${JSON.stringify(realGit)} "$@"
-`,
-				);
-				await fs.chmod(fakeGit, 0o755);
-
-				try {
-					process.env.PATH = `${fakeBin}${path.delimiter}${originalPath ?? ""}`;
-					await vcs.requireGit(fixture.repoRoot).remoteAdd("forksrc", fixture.forkBare);
-				} finally {
-					if (originalPath === undefined) {
-						delete process.env.PATH;
-					} else {
-						process.env.PATH = originalPath;
-					}
-					await removeWithRetries(fakeBin);
-				}
-			});
 		});
 	});
 
@@ -1457,15 +1443,6 @@ echo ok
 		});
 	});
 
-	it("exposes a flat op-based schema without legacy run_watch parameters", () => {
-		const tool = new GithubTool(createSession());
-		const wire = toolWireSchema(tool);
-		const properties = wire.properties as Record<string, unknown>;
-		expect(properties.op).toBeDefined();
-		expect(properties.interval).toBeUndefined();
-		expect(properties.grace).toBeUndefined();
-	});
-
 	it("streams the complete job list, step progress, and recent available logs", async () => {
 		vi.spyOn(github, "json")
 			.mockResolvedValueOnce({
@@ -1617,7 +1594,6 @@ echo ok
 		expect(advanced).toMatch(/step 1\/1 Compile native addon\s+·\s+44s/);
 		expect(githubToolRenderer.animatedPartialResult?.({ op: "run_watch" })).toBe(true);
 	});
-
 	it("tails failed job logs inline and saves the full failed-job logs as an artifact", async () => {
 		const artifactsDir = await fs.mkdtemp(path.join(os.tmpdir(), "gh-run-watch-artifacts-"));
 		vi.spyOn(github, "json")

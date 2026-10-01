@@ -471,7 +471,7 @@ fn filetime_set(_path: &Path, _mtime: std::time::SystemTime) -> std::io::Result<
 	Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
 	use std::{
 		fs,

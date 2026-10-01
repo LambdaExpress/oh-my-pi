@@ -99,6 +99,8 @@ async function createDirtyFixture(name: string): Promise<DirtyFixture> {
 	const targetRoot = path.join(tempRoot, `${name}-target`);
 	await fs.mkdir(repoRoot, { recursive: true });
 	await runGit(repoRoot, ["init", "-q", "-b", "main"]);
+	await runGit(repoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(repoRoot, ["config", "core.eol", "lf"]);
 	await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(repoRoot, ["config", "user.name", "Test User"]);
 	await Promise.all([
@@ -132,18 +134,25 @@ async function createRecursiveSubmoduleFixture(name: string): Promise<RecursiveD
 	const leafRepoRoot = path.join(tempRoot, `${name}-leaf-submodule-repo`);
 	await fs.mkdir(leafRepoRoot, { recursive: true });
 	await runGit(leafRepoRoot, ["init", "-q", "-b", "main"]);
+	await runGit(leafRepoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(leafRepoRoot, ["config", "core.eol", "lf"]);
 	await runGit(leafRepoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(leafRepoRoot, ["config", "user.name", "Test User"]);
 	await Bun.write(path.join(leafRepoRoot, "leaf.txt"), "leaf base\n");
+	// Attributes survive recursive submodule clones, unlike local config.
+	await Bun.write(path.join(leafRepoRoot, ".gitattributes"), "* -text\n");
 	await runGit(leafRepoRoot, ["add", "."]);
 	await runGit(leafRepoRoot, ["commit", "-q", "-m", "leaf base"]);
 
 	const childRepoRoot = path.join(tempRoot, `${name}-child-submodule-repo`);
 	await fs.mkdir(childRepoRoot, { recursive: true });
 	await runGit(childRepoRoot, ["init", "-q", "-b", "main"]);
+	await runGit(childRepoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(childRepoRoot, ["config", "core.eol", "lf"]);
 	await runGit(childRepoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(childRepoRoot, ["config", "user.name", "Test User"]);
 	await Bun.write(path.join(childRepoRoot, "child.txt"), "child base\n");
+	await Bun.write(path.join(childRepoRoot, ".gitattributes"), "* -text\n");
 	await runGit(childRepoRoot, ["add", "."]);
 	await runGit(childRepoRoot, ["commit", "-q", "-m", "child base"]);
 	await runGit(childRepoRoot, ["submodule", "add", leafRepoRoot, "nested/leaf"]);
@@ -153,6 +162,8 @@ async function createRecursiveSubmoduleFixture(name: string): Promise<RecursiveD
 	const targetRoot = path.join(tempRoot, `${name}-target`);
 	await fs.mkdir(repoRoot, { recursive: true });
 	await runGit(repoRoot, ["init", "-q", "-b", "main"]);
+	await runGit(repoRoot, ["config", "core.autocrlf", "false"]);
+	await runGit(repoRoot, ["config", "core.eol", "lf"]);
 	await runGit(repoRoot, ["config", "user.email", "test@example.com"]);
 	await runGit(repoRoot, ["config", "user.name", "Test User"]);
 	await Bun.write(path.join(repoRoot, "root.txt"), "root base\n");

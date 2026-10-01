@@ -1,3 +1,4 @@
+import { clearSubmittedText } from "./helpers/draft";
 import type { AutocompleteItem } from "@oh-my-pi/pi-tui";
 import { COLLAB_GUEST_ALLOWED_COMMANDS } from "../collab/guest";
 import { t } from "../i18n";
@@ -63,7 +64,10 @@ export const BUILTIN_SLASH_COMMAND_DEFS: ReadonlyArray<BuiltinSlashCommand> = BU
 		name: command.name,
 		aliases: command.aliases,
 		allowArgs: command.allowArgs === true,
-		description: command.description,
+		// Getter: some descriptions name keys, formatted at read time (theme/preset may change).
+		get description() {
+			return command.description;
+		},
 		icon: command.icon,
 		subcommands: command.subcommands,
 		inlineHint: command.inlineHint,
@@ -81,7 +85,9 @@ function materializeTuiBuiltinSlashCommand(
 	}));
 	const materialized: TuiBuiltinSlashCommand = {
 		...cmd,
-		description: t(cmd.description),
+		get description() {
+			return t(cmd.description);
+		},
 		subcommands,
 	};
 	if (subcommands) {
@@ -134,7 +140,7 @@ export async function executeBuiltinSlashCommand(
 
 	if (runtime.ctx.collabGuest && !COLLAB_GUEST_ALLOWED_COMMANDS[command.name]) {
 		runtime.ctx.showStatus(t("/{name} is host-only during a collab session", { name: command.name }));
-		runtime.ctx.editor.setText("");
+		clearSubmittedText(runtime);
 		return true;
 	}
 	if (command.handleTui) {
@@ -156,7 +162,7 @@ export async function executeBuiltinSlashCommand(
 			reloadPlugins: () => reloadTuiPluginState(ctx),
 		};
 		const result = await command.handle(parsed, adapted);
-		ctx.editor.setText("");
+		clearSubmittedText(runtime);
 		if (result && typeof result === "object" && "prompt" in result) return result.prompt;
 		return true;
 	}

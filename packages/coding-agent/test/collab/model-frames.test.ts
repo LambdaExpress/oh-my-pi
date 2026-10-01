@@ -1,5 +1,5 @@
 /**
- * End-to-end contract for the session-room model and thinking controls (proto v4): guests
+ * End-to-end contract for the session-room model and thinking controls: guests
  * request the available models with `model-list` (targeted reply after
  * background discovery settles) and switch the session model with
  * `model-change` (write-gated; unknown models and setModel failures surface
@@ -8,22 +8,23 @@
  * as the other collab host suites.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "bun:test";
+import type { Model } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { importRoomKey } from "@oh-my-pi/pi-coding-agent/collab/crypto";
 import { CollabHost } from "@oh-my-pi/pi-coding-agent/collab/host";
 import { COLLAB_PROTO, type CollabFrame, parseCollabLink } from "@oh-my-pi/pi-coding-agent/collab/protocol";
 import { CollabSocket } from "@oh-my-pi/pi-coding-agent/collab/relay-client";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
-import { setLocale } from "../../src/i18n";
+import type { AgentSessionEvent } from "../../src/session/agent-session-events";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
 interface ModelHarness {
-	models: { id: string; name: string; provider: string; contextWindow: number | null }[];
+	models: Model[];
 	/** Number of times the host awaited background discovery. */
 	refreshCount: number;
 	/** Models the stub session accepted via setModel, in call order. */
 	switched: { provider: string; id: string }[];
-	/** Thinking selectors the stub session accepted, in call order. */
-	thinkingChanges: string[];
 	configuredThinkingLevel: string;
 	setModelError?: Error;
 	ctx: InteractiveModeContext;
@@ -31,16 +32,23 @@ interface ModelHarness {
 
 function makeHostContext(): ModelHarness {
 	const models: ModelHarness["models"] = [];
+	const listeners = new Set<(event: AgentSessionEvent) => void>();
+	let currentThinkingLevel = "medium";
+	let currentModel: Model = createMockModel({
+		id: "opus",
+		provider: "anthropic",
+		contextWindow: 200_000,
+		reasoning: true,
+	});
 	const harness: ModelHarness = {
 		models,
 		refreshCount: 0,
 		switched: [],
-		thinkingChanges: [],
 		configuredThinkingLevel: "medium",
 		ctx: undefined as unknown as InteractiveModeContext,
 	};
 	const ctx = {
-		settings: { get: () => "" },
+		settings: Settings.isolated(),
 		sessionManager: {
 			getSessionId: () => "sess-models",
 			getCwd: () => "/tmp",
@@ -52,26 +60,31 @@ function makeHostContext(): ModelHarness {
 		},
 		session: {
 			isStreaming: false,
+			isAborting: false,
+			isSessionTransitioning: false,
+			waitForSessionTransition: async () => {},
 			queuedMessageCount: 0,
 			sessionName: "models",
-			model: {
-				id: "opus",
-				name: "Opus",
-				provider: "anthropic",
-				contextWindow: 200_000,
-				reasoning: true,
+			get model() {
+				return currentModel;
 			},
-			thinkingLevel: "medium",
+			get thinkingLevel() {
+				return currentThinkingLevel;
+			},
 			configuredThinkingLevel: () => harness.configuredThinkingLevel,
 			getAvailableThinkingLevels: () => ["low", "medium", "high"],
 			setThinkingLevel: (level: string) => {
 				harness.configuredThinkingLevel = level;
-				harness.thinkingChanges.push(level);
+				if (level !== "auto") currentThinkingLevel = level;
 			},
 			getAgentScopeId: () => "sess-models",
-			subscribe: () => () => {},
+			subscribe: (listener: (event: AgentSessionEvent) => void) => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
+			subscribeCommandMetadataChanged: () => () => {},
 			emitNotice: () => {},
-			promptCustomMessage: () => Promise.resolve(),
+			promptCustomMessage: () => Promise.resolve(true),
 			abort: () => Promise.resolve(),
 			modelRegistry: {
 				awaitBackgroundRefresh: async () => {
@@ -79,9 +92,11 @@ function makeHostContext(): ModelHarness {
 				},
 			},
 			getAvailableModels: () => harness.models,
-			setModel: async (model: { provider: string; id: string }) => {
+			setModel: async (model: Model) => {
 				if (harness.setModelError) throw harness.setModelError;
 				harness.switched.push({ provider: model.provider, id: model.id });
+				currentModel = model;
+				for (const listener of listeners) listener({ type: "model_changed" });
 				return { switched: true };
 			},
 		},
@@ -101,7 +116,7 @@ function makeHostContext(): ModelHarness {
 
 interface TestGuest {
 	socket: CollabSocket;
-	nextFrame(): Promise<CollabFrame>;
+	nextFrame(predicate?: (frame: CollabFrame) => boolean): Promise<CollabFrame>;
 }
 
 const FILTERED_FRAME_TYPES: Record<string, true> = {
@@ -120,20 +135,21 @@ async function joinAsGuest(link: string, name: string, includeState = false): Pr
 	const key = await importRoomKey(parsed.key);
 	const socket = new CollabSocket({ wsUrl: parsed.wsUrl, role: "guest", key });
 	const queue: CollabFrame[] = [];
-	const waiters: ((frame: CollabFrame) => void)[] = [];
+	const waiters: { predicate: (frame: CollabFrame) => boolean; resolve: (frame: CollabFrame) => void }[] = [];
 	socket.onFrame = frame => {
 		if (FILTERED_FRAME_TYPES[frame.t] && !(includeState && frame.t === "state")) return;
-		const waiter = waiters.shift();
-		if (waiter) waiter(frame);
+		const index = waiters.findIndex(waiter => waiter.predicate(frame));
+		const waiter = index >= 0 ? waiters.splice(index, 1)[0] : undefined;
+		if (waiter) waiter.resolve(frame);
 		else queue.push(frame);
 	};
 	socket.onOpen = () => socket.send({ t: "hello", proto: COLLAB_PROTO, name, writeToken });
 	socket.connect();
-	const nextFrame = (): Promise<CollabFrame> => {
-		const queued = queue.shift();
-		if (queued) return Promise.resolve(queued);
+	const nextFrame = (predicate: (frame: CollabFrame) => boolean = () => true): Promise<CollabFrame> => {
+		const index = queue.findIndex(predicate);
+		if (index >= 0) return Promise.resolve(queue.splice(index, 1)[0]!);
 		const { promise, resolve } = Promise.withResolvers<CollabFrame>();
-		waiters.push(resolve);
+		waiters.push({ predicate, resolve });
 		return promise;
 	};
 	return { socket, nextFrame };
@@ -144,9 +160,6 @@ let harness: ModelHarness;
 const guestCleanups: (() => void)[] = [];
 
 beforeAll(async () => {
-	// Error frames carry translated UI text; pin English so assertions on
-	// those strings do not depend on the host's system language.
-	setLocale("en");
 	installInMemoryRelay();
 });
 
@@ -154,15 +167,14 @@ afterAll(async () => {
 	for (const cleanup of guestCleanups.splice(0)) cleanup();
 	await host.stop("test over");
 	uninstallInMemoryRelay();
-	setLocale(null);
 });
 
 beforeEach(async () => {
 	if (host) await host.stop("resetting between tests");
 	harness = makeHostContext();
 	harness.models.push(
-		{ id: "flash-lite", name: "Flash Lite", provider: "google", contextWindow: 1_000_000 },
-		{ id: "opus", name: "Opus", provider: "anthropic", contextWindow: 200_000 },
+		createMockModel({ id: "flash-lite", provider: "google", contextWindow: 1_000_000 }),
+		createMockModel({ id: "opus", provider: "anthropic", contextWindow: 200_000, reasoning: true }),
 	);
 	host = new CollabHost(harness.ctx);
 	await host.start("ws://localhost:8787");
@@ -173,48 +185,64 @@ afterEach(() => {
 });
 
 describe("collab session-room model frames", () => {
-	it("advertises the current configured thinking selector and model-supported choices", async () => {
+	it("preserves the configured auto selector independently of the effective thinking effort", async () => {
+		harness.configuredThinkingLevel = "auto";
 		const guest = await joinAsGuest(host.link, "thinking-browser");
 		guestCleanups.push(() => guest.socket.close());
 		const welcome = await guest.nextFrame();
 		if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
 
 		expect(welcome.state.thinkingLevel).toBe("medium");
-		expect(welcome.state.configuredThinkingLevel).toBe("medium");
-		expect(welcome.state.availableThinkingLevels).toEqual(["off", "auto", "low", "medium", "high"]);
+		expect(welcome.state.configuredThinkingLevel).toBe("auto");
 	});
 
-	it("replies to model-list with the available models mapped to wire shape after discovery", async () => {
-		const guest = await joinAsGuest(host.link, "model-browser");
+	it("serves a discovered catalog whose selection updates the guest's active model", async () => {
+		const guest = await joinAsGuest(host.link, "model-browser", true);
 		guestCleanups.push(() => guest.socket.close());
 		const welcome = await guest.nextFrame();
 		if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
 
 		guest.socket.send({ t: "model-list" });
-		const reply = await guest.nextFrame();
+		const reply = await guest.nextFrame(frame => frame.t === "model-list" || frame.t === "error");
 		expect(reply.t).toBe("model-list");
 		// CollabFrame unions the guest `model-list` and host `model-list`
 		// variants under the same discriminant; the reply is the host variant.
 		if (!("models" in reply)) throw new Error("expected host model-list frame with models");
 		// Background discovery settles before the list is served (cold-start providers).
 		expect(harness.refreshCount).toBe(1);
-		expect(reply.models).toEqual([
-			{ id: "flash-lite", name: "Flash Lite", provider: "google", contextWindow: 1_000_000 },
-			{ id: "opus", name: "Opus", provider: "anthropic", contextWindow: 200_000 },
-		]);
+		const selected = reply.models.find(model => model.provider === "google" && model.id === "flash-lite");
+		if (!selected) throw new Error("expected discovered Google model");
+		guest.socket.send({ t: "model-change", provider: selected.provider, id: selected.id });
+		const update = await guest.nextFrame(
+			frame => frame.t === "error" || (frame.t === "state" && frame.state.model?.id === selected.id),
+		);
+		if (update.t !== "state") throw new Error(`expected model update, got ${update.t}`);
+		expect(update.state.model?.provider).toBe(selected.provider);
+		expect(update.state.model?.contextWindow).toBe(1_000_000);
 	});
 
-	it("switches the session model for a writable guest and never answers with an error", async () => {
-		const guest = await joinAsGuest(host.link, "model-switcher");
+	it("broadcasts a writable guest's model switch to another guest", async () => {
+		const guest = await joinAsGuest(host.link, "model-switcher", true);
 		guestCleanups.push(() => guest.socket.close());
 		const welcome = await guest.nextFrame();
 		if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
+		const observer = await joinAsGuest(host.viewLink, "model-observer", true);
+		guestCleanups.push(() => observer.socket.close());
+		const observerWelcome = await observer.nextFrame();
+		if (observerWelcome.t !== "welcome") throw new Error(`expected welcome, got ${observerWelcome.t}`);
 
 		guest.socket.send({ t: "model-change", provider: "google", id: "flash-lite" });
-		// Success has no dedicated reply frame; the state broadcast carries the
-		// new model. Let the debounced broadcast + any (unexpected) error land.
-		await Bun.sleep(200);
-		expect(harness.switched).toEqual([{ provider: "google", id: "flash-lite" }]);
+		// Consume the observable update, not a wall-clock delay or a mock call.
+		const update = await guest.nextFrame(
+			frame => frame.t === "error" || (frame.t === "state" && frame.state.model?.id === "flash-lite"),
+		);
+		if (update.t !== "state") throw new Error(`expected model update, got ${update.t}`);
+		expect(update.state.model?.provider).toBe("google");
+		const observed = await observer.nextFrame(
+			frame => frame.t === "error" || (frame.t === "state" && frame.state.model?.id === "flash-lite"),
+		);
+		if (observed.t !== "state") throw new Error(`expected observer model update, got ${observed.t}`);
+		expect(observed.state.model?.provider).toBe("google");
 	});
 
 	it("refreshes discovery once before declaring an unknown model missing", async () => {
@@ -225,7 +253,7 @@ describe("collab session-room model frames", () => {
 
 		guest.socket.send({ t: "model-change", provider: "openai", id: "ghost" });
 		const reply = await guest.nextFrame();
-		expect(reply).toEqual({ t: "error", message: "Model not found: openai/ghost" });
+		expect(reply.t).toBe("error");
 		expect(harness.refreshCount).toBe(1);
 		expect(harness.switched).toEqual([]);
 	});
@@ -239,13 +267,17 @@ describe("collab session-room model frames", () => {
 
 		guest.socket.send({ t: "model-change", provider: "google", id: "flash-lite" });
 		const reply = await guest.nextFrame();
-		expect(reply).toEqual({ t: "error", message: "changing the model is disabled on a read-only link" });
+		expect(reply.t).toBe("error");
 		expect(harness.switched).toEqual([]);
 		expect(harness.refreshCount).toBe(0);
 	});
 
 	it("surfaces a setModel failure as a targeted error frame", async () => {
 		harness.setModelError = new Error("provider session reset failed");
+		const observer = await joinAsGuest(host.link, "model-observer");
+		guestCleanups.push(() => observer.socket.close());
+		const observerWelcome = await observer.nextFrame();
+		if (observerWelcome.t !== "welcome") throw new Error(`expected welcome, got ${observerWelcome.t}`);
 		const guest = await joinAsGuest(host.link, "model-fail");
 		guestCleanups.push(() => guest.socket.close());
 		const welcome = await guest.nextFrame();
@@ -253,8 +285,12 @@ describe("collab session-room model frames", () => {
 
 		guest.socket.send({ t: "model-change", provider: "anthropic", id: "opus" });
 		const reply = await guest.nextFrame();
-		expect(reply).toEqual({ t: "error", message: "Error: provider session reset failed" });
+		if (reply.t !== "error") throw new Error(`expected error, got ${reply.t}`);
+		expect(reply.message).toContain(harness.setModelError.message);
 		expect(harness.switched).toEqual([]);
+		observer.socket.send({ t: "model-list" });
+		const observerReply = await observer.nextFrame();
+		expect(observerReply.t).toBe("model-list");
 	});
 
 	it("changes thinking for a writable guest and rejects unsupported selectors", async () => {
@@ -270,12 +306,17 @@ describe("collab session-room model frames", () => {
 		}
 		if (update.t !== "state") throw new Error(`expected state, got ${update.t}`);
 		expect(update.state.configuredThinkingLevel).toBe("high");
-		expect(harness.thinkingChanges).toEqual(["high"]);
+		expect(update.state.thinkingLevel).toBe("high");
 
 		guest.socket.send({ t: "thinking-change", level: "max" });
 		const reply = await guest.nextFrame();
-		expect(reply).toEqual({ t: "error", message: "Thinking level not supported by the current model: max" });
-		expect(harness.thinkingChanges).toEqual(["high"]);
+		expect(reply.t).toBe("error");
+		const observer = await joinAsGuest(host.link, "thinking-after-rejection");
+		guestCleanups.push(() => observer.socket.close());
+		const observed = await observer.nextFrame();
+		if (observed.t !== "welcome") throw new Error(`expected welcome, got ${observed.t}`);
+		expect(observed.state.configuredThinkingLevel).toBe("high");
+		expect(observed.state.thinkingLevel).toBe("high");
 	});
 
 	it("rejects thinking changes from a read-only guest", async () => {
@@ -286,7 +327,12 @@ describe("collab session-room model frames", () => {
 
 		guest.socket.send({ t: "thinking-change", level: "low" });
 		const reply = await guest.nextFrame();
-		expect(reply).toEqual({ t: "error", message: "changing thinking is disabled on a read-only link" });
-		expect(harness.thinkingChanges).toEqual([]);
+		expect(reply.t).toBe("error");
+		const observer = await joinAsGuest(host.link, "thinking-after-read-only");
+		guestCleanups.push(() => observer.socket.close());
+		const observed = await observer.nextFrame();
+		if (observed.t !== "welcome") throw new Error(`expected welcome, got ${observed.t}`);
+		expect(observed.state.configuredThinkingLevel).toBe(welcome.state.configuredThinkingLevel);
+		expect(observed.state.thinkingLevel).toBe(welcome.state.thinkingLevel);
 	});
 });

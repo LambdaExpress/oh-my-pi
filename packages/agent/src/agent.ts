@@ -34,6 +34,7 @@ import {
 	normalizeMessagesForProvider,
 	normalizeTools,
 	resolveOwnedDialectFromEnv,
+	steeringQueueState,
 	unpairedToolCallTail,
 } from "./agent-loop";
 import type { AppendOnlyContextManager } from "./append-only-context";
@@ -354,6 +355,8 @@ export interface AgentOptions {
 	 * tool-call arguments). See {@link AgentLoopConfig.transformAssistantMessage}.
 	 */
 	transformAssistantMessage?: AgentLoopConfig["transformAssistantMessage"];
+	/** See {@link AgentLoopConfig.transformAssistantMessagePreservesToolCalls}. */
+	transformAssistantMessagePreservesToolCalls?: boolean;
 
 	/**
 	 * Opt-in OpenTelemetry instrumentation. Passing `{}` enables the loop's
@@ -430,6 +433,7 @@ export class Agent {
 	};
 	#tokenizer = new Tokenizer(this.#state.model);
 	#listeners = new Set<(e: AgentEvent) => void>();
+	#queueListeners = new Set<() => void>();
 	#abortController?: AbortController;
 	#convertToLlm: (messages: AgentMessage[]) => Message[] | Promise<Message[]>;
 	#transformContext?: (messages: AgentMessage[], signal?: AbortSignal) => Promise<AgentMessage[]>;
@@ -443,6 +447,14 @@ export class Agent {
 	/** Per-message overrides for queued steering; delivery order remains FIFO. */
 	#immediateSteeringMessages = new Set<AgentMessage>();
 	#queuedMessageClaims: Partial<Record<QueuedMessageQueue, QueuedMessageClaim>> = {};
+	/**
+	 * Steering live steering took for the in-flight response (`onLiveSteeringTaken`) that the
+	 * transcript has not recorded yet, whether or not the provider accepted it. Kept apart from
+	 * {@link #queuedMessageDeliveries}: the loop drops it on abort instead of recording it, so queue
+	 * replacement must not drop it too; the run's end requeues whatever it did not record, and
+	 * {@link withdrawLiveSteering} takes it back ahead of an abort.
+	 */
+	#liveSteered: { message: AgentMessage; controller: AbortController | undefined }[] = [];
 	/** Dequeued originals remain recoverable until their transcript events arrive. */
 	#queuedMessageDeliveries = new Set<{
 		queue: QueuedMessageQueue;
@@ -451,6 +463,7 @@ export class Agent {
 		next: number;
 	}>();
 	#steeringWaiters = new Set<() => void>();
+	#queuedMessageGrouping?: (previous: AgentMessage, next: AgentMessage) => boolean;
 
 	#steeringMode: "all" | "one-at-a-time";
 	#followUpMode: "all" | "one-at-a-time";
@@ -534,6 +547,8 @@ export class Agent {
 	 * UI emission, and tool dispatch. Reassign at any time to swap the implementation.
 	 */
 	transformAssistantMessage?: AgentLoopConfig["transformAssistantMessage"];
+	/** Declares {@link transformAssistantMessage} never rewrites streamed tool calls; reassign alongside it. */
+	transformAssistantMessagePreservesToolCalls?: boolean;
 	/**
 	 * Hook that peeks whether interrupting IRC asides are queued for the next boundary.
 	 */
@@ -599,6 +614,7 @@ export class Agent {
 		this.beforeToolCall = opts.beforeToolCall;
 		this.afterToolCall = opts.afterToolCall;
 		this.transformAssistantMessage = opts.transformAssistantMessage;
+		this.transformAssistantMessagePreservesToolCalls = opts.transformAssistantMessagePreservesToolCalls;
 		this.#telemetry = opts.telemetry;
 		this.#appendOnlyContext = opts.appendOnlyContext;
 		this.#transformProviderContext = opts.transformProviderContext;
@@ -934,6 +950,16 @@ export class Agent {
 		return () => this.#listeners.delete(fn);
 	}
 
+	/** Register a listener notified after any steering/follow-up queue mutator
+	 *  (enqueue, dequeue-on-delivery, clear, restore) runs. Internal-only signal —
+	 *  the queue itself has no concept of display filtering — so listeners
+	 *  recompute their own snapshot from `peekSteeringQueue()`/`peekFollowUpQueue()`
+	 *  (or a higher-level view) on notification. */
+	onQueueChange(listener: () => void): () => void {
+		this.#queueListeners.add(listener);
+		return () => this.#queueListeners.delete(listener);
+	}
+
 	/** Register an independently removable hook that runs before queued messages are consumed. */
 	addBeforeQueuedMessageDequeueHook(hook: (signal?: AbortSignal) => Promise<void> | void): () => void {
 		const registration = (signal?: AbortSignal) => hook(signal);
@@ -976,13 +1002,16 @@ export class Agent {
 		const runController = this.#abortController;
 		if (!prepare) {
 			this.#queuedMessageDeliveries.add({ queue, controller: runController, messages, next: 0 });
+			this.#emitQueueChanged();
 			return messages;
 		}
 
 		const claim: QueuedMessageClaim = { messages, controller: new AbortController() };
 		this.#queuedMessageClaims[queue] = claim;
+		this.#emitQueueChanged();
 		const preparationSignal = AbortSignal.any([signal, claim.controller.signal]);
 		try {
+			preparationSignal.throwIfAborted();
 			const preparation = await prepare(messages, preparationSignal);
 			signal.throwIfAborted();
 			if (preparationSignal.aborted || this.#queuedMessageClaims[queue] !== claim) return [];
@@ -995,6 +1024,7 @@ export class Agent {
 			}
 			delete this.#queuedMessageClaims[queue];
 			this.#queuedMessageDeliveries.add({ queue, controller: runController, messages, next: 0 });
+			this.#emitQueueChanged();
 			return additional?.length ? [...messages, ...additional] : messages;
 		} catch (error) {
 			if (signal.aborted) throw error;
@@ -1021,13 +1051,20 @@ export class Agent {
 			} else {
 				this.#followUpQueue = [...claim.messages, ...this.#followUpQueue];
 			}
+			this.#emitQueueChanged();
 		}
 		claim.controller.abort();
 	}
 
 	#restoreUndeliveredQueuedMessages(controller: AbortController): void {
-		if (this.#queuedMessageDeliveries.size === 0) return;
+		if (this.#queuedMessageDeliveries.size === 0 && this.#liveSteered.length === 0) return;
 		const restored: Record<QueuedMessageQueue, AgentMessage[]> = { steering: [], followUp: [] };
+		// Live steering was taken before anything the run still holds undelivered.
+		this.#liveSteered = this.#liveSteered.filter(entry => {
+			if (entry.controller !== controller) return true;
+			restored.steering.push(entry.message);
+			return false;
+		});
 		for (const delivery of this.#queuedMessageDeliveries) {
 			if (delivery.controller !== controller) continue;
 			this.#queuedMessageDeliveries.delete(delivery);
@@ -1040,6 +1077,48 @@ export class Agent {
 			this.#notifySteeringWaiters();
 		}
 		if (restored.followUp.length > 0) this.#followUpQueue = [...restored.followUp, ...this.#followUpQueue];
+		if (restored.steering.length > 0 || restored.followUp.length > 0) this.#emitQueueChanged();
+	}
+
+	/** Move steering live steering took out of the queue-delivery records into {@link #liveSteered}. */
+	#adoptLiveSteering(taken: readonly AgentMessage[]): void {
+		for (const delivery of this.#queuedMessageDeliveries) {
+			const pending = delivery.messages.slice(delivery.next);
+			const kept = pending.filter(message => !taken.includes(message));
+			if (kept.length === pending.length) continue;
+			for (const message of pending) {
+				if (taken.includes(message)) this.#liveSteered.push({ message, controller: delivery.controller });
+			}
+			if (kept.length === 0) {
+				this.#queuedMessageDeliveries.delete(delivery);
+			} else {
+				delivery.messages = kept;
+				delivery.next = 0;
+			}
+		}
+	}
+
+	/**
+	 * Take back live-steered messages ahead of an abort (Esc restores them to the editor):
+	 * the aborted run then neither records nor requeues them. Omit `messages` to
+	 * withdraw everything; a selected group leaves other live input recoverable.
+	 */
+	withdrawLiveSteering(messages?: readonly AgentMessage[]): AgentMessage[] {
+		const withdrawn: AgentMessage[] = [];
+		this.#liveSteered = this.#liveSteered.filter(entry => {
+			if (messages && !messages.includes(entry.message)) return true;
+			withdrawn.push(entry.message);
+			this.#immediateSteeringMessages.delete(entry.message);
+			return false;
+		});
+		if (withdrawn.length > 0) this.#emitQueueChanged();
+		return withdrawn;
+	}
+
+	/** Steering live steering took for the streaming response; the transcript records it once
+	 *  that response (or its tool batch) ends, which is when the model switches to it. */
+	peekLiveSteeredMessages(): AgentMessage[] {
+		return this.#liveSteered.map(entry => entry.message);
 	}
 
 	setProviderResponseInterceptor(fn: SimpleStreamOptions["onResponse"] | undefined): void {
@@ -1155,6 +1234,7 @@ export class Agent {
 
 	setInterruptMode(mode: "immediate" | "wait") {
 		this.#interruptMode = mode;
+		this.#notifySteeringWaiters();
 	}
 
 	getInterruptMode(): "immediate" | "wait" {
@@ -1171,19 +1251,90 @@ export class Agent {
 		this.#state.messages = ms.slice();
 	}
 
+	/** Signal that the steering/follow-up queue contents may have changed. Every
+	 *  queue mutator below calls this once after mutating, so external layers
+	 *  (AgentSession's `queue_update` coalescing) have a single seam to observe
+	 *  enqueue, dequeue-on-delivery, clear, and restore without emits scattered
+	 *  across every call site that queues or dequeues a message. */
+	#emitQueueChanged(): void {
+		// Immediate overrides belong to the message until it is delivered or
+		// withdrawn, including exclusive preparation and live provider claims.
+		for (const message of this.#immediateSteeringMessages) {
+			if (this.#steeringQueue.includes(message)) continue;
+			if (this.#queuedMessageClaims.steering?.messages.includes(message)) continue;
+			if (this.#liveSteered.some(entry => entry.message === message)) continue;
+			let pendingDelivery = false;
+			for (const delivery of this.#queuedMessageDeliveries) {
+				if (delivery.queue === "steering" && delivery.messages.includes(message, delivery.next)) {
+					pendingDelivery = true;
+					break;
+				}
+			}
+			if (!pendingDelivery) this.#immediateSteeringMessages.delete(message);
+		}
+		for (const listener of this.#queueListeners) {
+			try {
+				listener();
+			} catch (err) {
+				logger.warn("Agent queue listener threw", {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+	}
+
 	replaceQueues(steering: AgentMessage[], followUp: AgentMessage[]) {
-		this.#immediateSteeringMessages = new Set(
-			steering.filter(message => this.#immediateSteeringMessages.has(message)),
-		);
 		this.#steeringQueue = steering.slice();
 		this.#followUpQueue = followUp.slice();
 		this.#cancelQueuedMessagePreparation("steering");
 		this.#cancelQueuedMessagePreparation("followUp");
 		this.#notifySteeringWaiters();
+		this.#emitQueueChanged();
+	}
+
+	/**
+	 * Replace one pending queue without changing the other queue.
+	 *
+	 * The caller's snapshot comes from {@link peekSteeringQueue} /
+	 * {@link peekFollowUpQueue}, which prepend the live claimed batch. Installing
+	 * it while that claim is still live would commit a removed message anyway and
+	 * deliver the surviving claimed prefix twice, so the claim and its pending
+	 * delivery are dropped here exactly as {@link replaceQueues} does.
+	 */
+	replaceQueue(queue: "steering" | "followUp", messages: readonly AgentMessage[]): void {
+		if (queue === "steering") {
+			this.#steeringQueue = messages.slice();
+			this.#cancelQueuedMessagePreparation("steering");
+			this.#notifySteeringWaiters();
+		} else {
+			this.#followUpQueue = messages.slice();
+			this.#cancelQueuedMessagePreparation("followUp");
+		}
+		this.#emitQueueChanged();
+	}
+
+	/**
+	 * Install `followUp` as the pending follow-up queue (same claim handling as
+	 * {@link replaceQueue}) and append `promoted` to the steering queue, then notify
+	 * queue listeners once. A live steering claim is left alone. Listeners never
+	 * observe the moved messages in both queues or in neither.
+	 */
+	moveFollowUpsToSteering(followUp: readonly AgentMessage[], promoted: readonly AgentMessage[]): void {
+		this.#followUpQueue = followUp.slice();
+		this.#cancelQueuedMessagePreparation("followUp");
+		this.#steeringQueue.push(...promoted);
+		this.#notifySteeringWaiters();
+		this.#emitQueueChanged();
 	}
 
 	appendMessage(m: AgentMessage) {
 		this.#state.messages.push(m);
+		this.#immediateSteeringMessages.delete(m);
+		const live = this.#liveSteered.findIndex(entry => entry.message === m);
+		if (live >= 0) {
+			this.#liveSteered.splice(live, 1);
+			return;
+		}
 		for (const delivery of this.#queuedMessageDeliveries) {
 			if (delivery.messages[delivery.next] !== m) continue;
 			if (++delivery.next === delivery.messages.length) this.#queuedMessageDeliveries.delete(delivery);
@@ -1200,14 +1351,16 @@ export class Agent {
 	}
 
 	/**
-	 * Queue a steering message to interrupt the agent mid-run.
-	 * Delivered after current tool execution, skips remaining tools.
+	 * Queue FIFO steering for the next boundary or a live-steering provider.
+	 * Interruptible waits are cut short; already-emitted foreground calls still
+	 * run, receiving a cooperative signal when this steer is immediate.
 	 */
 	steer(m: AgentMessage, options?: SteerOptions) {
 		this.#queuedMessageBatch.delete(m);
 		this.#steeringQueue.push(m);
 		if (options?.interruptImmediately) this.#immediateSteeringMessages.add(m);
 		this.#notifySteeringWaiters();
+		this.#emitQueueChanged();
 	}
 
 	/** Queue messages as one interruption unit. */
@@ -1224,6 +1377,7 @@ export class Agent {
 			for (const message of messages) this.#immediateSteeringMessages.add(message);
 		}
 		this.#notifySteeringWaiters();
+		this.#emitQueueChanged();
 	}
 
 	/**
@@ -1233,6 +1387,7 @@ export class Agent {
 	followUp(m: AgentMessage) {
 		this.#queuedMessageBatch.delete(m);
 		this.#followUpQueue.push(m);
+		this.#emitQueueChanged();
 	}
 
 	/** Queue hidden companions and their user follow-up as one delivery unit. */
@@ -1245,18 +1400,20 @@ export class Agent {
 		const batch = messages[0]!;
 		for (const message of messages) this.#queuedMessageBatch.set(message, batch);
 		this.#followUpQueue.push(...messages);
+		this.#emitQueueChanged();
 	}
 
 	clearSteeringQueue() {
 		this.#steeringQueue = [];
-		this.#immediateSteeringMessages.clear();
 		this.#cancelQueuedMessagePreparation("steering");
 		this.#notifySteeringWaiters();
+		this.#emitQueueChanged();
 	}
 
 	clearFollowUpQueue() {
 		this.#followUpQueue = [];
 		this.#cancelQueuedMessagePreparation("followUp");
+		this.#emitQueueChanged();
 	}
 
 	/**
@@ -1272,10 +1429,12 @@ export class Agent {
 		this.#steeringQueue = [];
 		this.#immediateSteeringMessages.clear();
 		this.#followUpQueue = [];
+		this.#liveSteered = [];
 		this.#cancelQueuedMessagePreparation("steering");
 		this.#cancelQueuedMessagePreparation("followUp");
 		this.#notifySteeringWaiters();
 		this.clearDeferredToolDirectives();
+		this.#emitQueueChanged();
 	}
 
 	hasQueuedMessages(): boolean {
@@ -1297,6 +1456,18 @@ export class Agent {
 		return claim ? [...claim.messages, ...this.#steeringQueue] : this.#steeringQueue;
 	}
 
+	/** Dequeued messages not yet in the transcript, e.g. steering a provider
+	 *  took into its in-flight response via live steering. Aborting the run
+	 *  requeues them, so the session's empty-submit interrupt counts them as
+	 *  pending input even though {@link peekSteeringQueue} no longer does. */
+	peekUndeliveredQueuedMessages(): AgentMessage[] {
+		const messages = this.peekLiveSteeredMessages();
+		for (const delivery of this.#queuedMessageDeliveries) {
+			for (let i = delivery.next; i < delivery.messages.length; i++) messages.push(delivery.messages[i]);
+		}
+		return messages;
+	}
+
 	/** Non-consuming view of the pending follow-up queue. See
 	 *  {@link peekSteeringQueue}. */
 	peekFollowUpQueue(): readonly AgentMessage[] {
@@ -1315,48 +1486,42 @@ export class Agent {
 		return this.#abortController?.signal.aborted === true && this.#state.isStreaming;
 	}
 
-	#nextSteeringMessageCount(): number {
-		if (this.#steeringQueue.length === 0) return 0;
-		if (this.#steeringMode === "all") return this.#steeringQueue.length;
-		const batch = this.#queuedMessageBatch.get(this.#steeringQueue[0]!);
-		let count = 1;
-		while (batch && this.#queuedMessageBatch.get(this.#steeringQueue[count]!) === batch) count++;
+	/**
+	 * Join adjacent queued records into one delivery unit in one-at-a-time mode.
+	 * The predicate must be synchronous and side-effect-free. Explicit batches
+	 * remain indivisible; otherwise each record is independent by default.
+	 * All mode, queue inspection, and removal stay unchanged.
+	 */
+	setQueuedMessageGrouping(predicate: ((previous: AgentMessage, next: AgentMessage) => boolean) | undefined): void {
+		this.#queuedMessageGrouping = predicate;
+	}
+
+	#nextQueuedMessageCount(queue: readonly AgentMessage[], mode: "all" | "one-at-a-time"): number {
+		if (mode === "all") return queue.length;
+		let count = Math.min(1, queue.length);
+		while (count < queue.length) {
+			const previous = queue[count - 1];
+			const next = queue[count];
+			const batch = this.#queuedMessageBatch.get(previous);
+			if ((!batch || this.#queuedMessageBatch.get(next) !== batch) && !this.#queuedMessageGrouping?.(previous, next))
+				break;
+			count++;
+		}
 		return count;
 	}
 
 	#dequeueSteeringMessages(): AgentMessage[] {
-		if (this.#steeringMode === "one-at-a-time") {
-			if (this.#steeringQueue.length > 0) {
-				const count = this.#nextSteeringMessageCount();
-				const messages = this.#steeringQueue.slice(0, count);
-				this.#steeringQueue = this.#steeringQueue.slice(count);
-				for (const message of messages) this.#immediateSteeringMessages.delete(message);
-				return messages;
-			}
-			return [];
-		}
-		const steering = this.#steeringQueue.slice();
-		this.#steeringQueue = [];
-		this.#immediateSteeringMessages.clear();
-		return steering;
+		const count = this.#nextQueuedMessageCount(this.#steeringQueue, this.#steeringMode);
+		const messages = this.#steeringQueue.slice(0, count);
+		this.#steeringQueue = this.#steeringQueue.slice(messages.length);
+		return messages;
 	}
 
 	#dequeueFollowUpMessages(): AgentMessage[] {
-		if (this.#followUpMode === "one-at-a-time") {
-			if (this.#followUpQueue.length > 0) {
-				const first = this.#followUpQueue[0];
-				const batch = this.#queuedMessageBatch.get(first!);
-				let count = 1;
-				while (batch && this.#queuedMessageBatch.get(this.#followUpQueue[count]!) === batch) count++;
-				const messages = this.#followUpQueue.slice(0, count);
-				this.#followUpQueue = this.#followUpQueue.slice(count);
-				return messages;
-			}
-			return [];
-		}
-		const followUp = this.#followUpQueue.slice();
-		this.#followUpQueue = [];
-		return followUp;
+		const count = this.#nextQueuedMessageCount(this.#followUpQueue, this.#followUpMode);
+		const messages = this.#followUpQueue.slice(0, count);
+		this.#followUpQueue = this.#followUpQueue.slice(messages.length);
+		return messages;
 	}
 
 	/**
@@ -1365,9 +1530,9 @@ export class Agent {
 	 */
 	popLastSteer(): AgentMessage | undefined {
 		if (this.#steeringQueue.length === 0) this.#cancelQueuedMessagePreparation("steering", true);
-		const message = this.#steeringQueue.pop();
-		if (message) this.#immediateSteeringMessages.delete(message);
-		return message;
+		const popped = this.#steeringQueue.pop();
+		if (popped !== undefined) this.#emitQueueChanged();
+		return popped;
 	}
 
 	/**
@@ -1376,7 +1541,9 @@ export class Agent {
 	 */
 	popLastFollowUp(): AgentMessage | undefined {
 		if (this.#followUpQueue.length === 0) this.#cancelQueuedMessagePreparation("followUp", true);
-		return this.#followUpQueue.pop();
+		const popped = this.#followUpQueue.pop();
+		if (popped !== undefined) this.#emitQueueChanged();
+		return popped;
 	}
 
 	clearMessages() {
@@ -1402,8 +1569,7 @@ export class Agent {
 		return this.#runningPrompt ?? Promise.resolve();
 	}
 
-	#hasImmediateSteeringReady(): boolean {
-		const count = this.#nextSteeringMessageCount();
+	#hasImmediateSteeringReady(count = this.#nextQueuedMessageCount(this.#steeringQueue, this.#steeringMode)): boolean {
 		for (let i = 0; i < count; i++) {
 			if (this.#immediateSteeringMessages.has(this.#steeringQueue[i]!)) return true;
 		}
@@ -1791,6 +1957,7 @@ export class Agent {
 			transformAssistantMessage: this.transformAssistantMessage
 				? (message, signal) => this.transformAssistantMessage?.(message, signal)
 				: undefined,
+			transformAssistantMessagePreservesToolCalls: this.transformAssistantMessagePreservesToolCalls,
 			onAssistantMessageEvent: this.#onAssistantMessageEvent,
 			onHarmonyLeak: this.#onHarmonyLeak,
 			onTurnEnd: (messages, signal, context) => this.#onTurnEnd?.(messages, signal, context),
@@ -1812,37 +1979,16 @@ export class Agent {
 				return this.#dequeueSteeringMessagesAfterHooks(signal ?? loopSignal);
 			},
 			hasSteeringMessages: () => {
-				if (this.#steeringQueue.length === 0) {
-					return { queued: false };
-				}
-				const messageCount = this.#nextSteeringMessageCount();
-				let interruptImmediately = false;
-				let hasUserSteering = false;
-				let hasAgentSteering = false;
-				for (let i = 0; i < messageCount; i++) {
-					const message = this.#steeringQueue[i];
-					if (this.#immediateSteeringMessages.has(message!)) interruptImmediately = true;
-					const role = "role" in message ? message.role : undefined;
-					const attribution = "attribution" in message ? message.attribution : undefined;
-					if (attribution === "user") {
-						hasUserSteering = true;
-						continue;
-					}
-					if (role !== "user") continue;
-					if (attribution !== "agent") {
-						hasUserSteering = true;
-						continue;
-					}
-					hasAgentSteering = true;
-				}
-				return {
-					queued: true,
-					source: hasUserSteering ? "user" : hasAgentSteering ? "agent" : "system",
-					interruptImmediately,
-				};
+				const count = this.#nextQueuedMessageCount(this.#steeringQueue, this.#steeringMode);
+				const state = steeringQueueState(this.#steeringQueue, count);
+				state.interruptImmediately =
+					this.#hasImmediateSteeringReady(count) ||
+					this.#liveSteered.some(entry => this.#immediateSteeringMessages.has(entry.message));
+				return state;
 			},
 			waitForSteeringMessages: signal => this.#waitForSteeringMessages(signal),
 			waitForImmediateSteeringMessages: signal => this.#waitForSteeringMessages(signal, true),
+			onLiveSteeringTaken: messages => this.#adoptLiveSteering(messages),
 			hasIrcInterrupts: this.hasIrcInterrupts,
 			hasBackgroundCompletions: this.hasBackgroundCompletions,
 			getFollowUpMessages: signal => this.#dequeueFollowUpMessagesAfterHooks(signal ?? loopSignal),

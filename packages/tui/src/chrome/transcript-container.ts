@@ -1,5 +1,9 @@
 import { type Component, Container, type HistoryBatch } from "../tui";
 import * as logger from "@oh-my-pi/pi-utils/logger";
+import { popLoopPhase, pushLoopPhase } from "@oh-my-pi/pi-utils";
+import { col } from "../native/describe";
+import type { NativeNode } from "../native/node";
+import { isNativeSettled, settleNative } from "../native/settle";
 import { isCompactToolActivityRow, isToolActivityComponent, isToolRowsFoldComponent } from "./tool-activity";
 
 /** Shared animation time supplied by the constrained transcript root. */
@@ -21,10 +25,15 @@ export interface TranscriptStableRow {
 	readonly key: string;
 }
 
-/** Explicit semantic-row contract for a block whose stable head may enter native history. */
+/**
+ * A stable head may enter native history before finalization. Publications
+ * extend the prior keys exactly, and each row renderer is deterministic for
+ * its width. Drift freezes further emission without retracting written rows.
+ */
 export interface AppendOnlyTranscriptBlock {
 	readonly transcriptBlockMode: "appendOnly";
 	getTranscriptStableRows(): readonly TranscriptStableRow[];
+	/** Render the first `count` semantic rows as a prefix of the full render at this width. */
 	renderTranscriptStableRows(count: number, width: number): readonly string[];
 	/**
 	 * Discard every published stable row so the block re-renders its head from
@@ -125,9 +134,24 @@ type Offered =
 	  }
 	| { batch: HistoryBatch; kind: "replay" };
 
+/** Rows a progressive-append retirement offers, and the stable count they bring the head to. */
+interface AppendBatch {
+	rows: readonly string[];
+	emittedEnd: number;
+}
+
 const MAX_LIVE_BLOCKS = 256;
 /** Grace before a pressure-blocked frontier is reported; a streaming block may legitimately hold it briefly. */
 const PINNED_FRONTIER_WARN_MS = 30_000;
+/**
+ * Wall-clock budget for composing one retirement batch. A resumed session
+ * hands the container its whole ledger at once, and rendering all of it in the
+ * frame that first paints it blocks the loop for as long as that render takes
+ * (#12933). Retirement stops after the first block that crosses the budget;
+ * the remainder follows on the next frames, which the TUI schedules through
+ * timers, so terminal input runs between batches.
+ */
+const RETIREMENT_BUDGET_MS = 8;
 const EMPTY_ROWS: readonly string[] = [];
 const EMPTY_STABLE_ROWS: readonly TranscriptStableRow[] = [];
 
@@ -220,11 +244,33 @@ export class TranscriptContainer extends Container {
 	// Start rows from the last full render(), keyed by child component (transcript deep-links).
 	#childStartRows = new Map<Component, number>();
 	// Watchdog for the wedge where an unfinalized frontier block pins pressure
-	// retirement: everything behind it stays live and degrades to one-line
-	// allocations. Logs once per pinned episode after a grace period.
+	// retirement: everything behind it stays live and its oldest rows clip
+	// from the viewport. Logs once per pinned episode after a grace period.
 	#pinnedFrontier: { index: number; since: number; logged: boolean } | undefined;
 	/** Block spans of the last `renderViewport` output, for click hit-testing. */
 	#lastViewportSpans: TranscriptViewportSpan[] = [];
+	/**
+	 * The composed frame {@link beginFrame} opened; `undefined` outside one.
+	 * {@link renderViewport} closes it, so it never outlives the synchronous
+	 * composition that opened it.
+	 */
+	#openFrame: AnimationFrame | undefined;
+	/**
+	 * Full-allocation blank-trimmed renders of the blocks measured during the
+	 * open frame, keyed by entry at {@link #frameRowsWidth}. A retirement peek
+	 * and the viewport measure the same live blocks back to back inside one
+	 * composition, with no block mutation possible in between; replaying the
+	 * first measurement spares every block its second render per frame.
+	 */
+	#frameRows = new Map<TranscriptEntry, readonly string[]>();
+	#frameRowsWidth = 0;
+	/** The `children` array `#entries` last mirrored; see {@link #syncEntries}. */
+	#syncedChildren: Component[] | undefined;
+	/** Forces the next {@link #syncEntries} to compare every entry, not just the live tail. */
+	#entriesUnverified = false;
+	/** Block list handed to the native frame provider, reused while the children are unchanged. */
+	#nativeBlocks: readonly Component[] = [];
+	#nativeNode: NativeNode | undefined;
 	override addChild(component: Component): void {
 		if (isToolActivityComponent(component)) component.setToolActivityVisible(this.#toolActivityVisible);
 		if (isToolRowsFoldComponent(component)) component.setToolRowsFolded(this.#toolRowsFolded);
@@ -241,6 +287,9 @@ export class TranscriptContainer extends Container {
 			snapshot: undefined,
 			partial: undefined,
 		});
+		// Callers may splice a just-added block into place (insert after an
+		// anchor); re-check the whole list once instead of trusting positions.
+		this.#entriesUnverified = true;
 	}
 
 	override removeChild(component: Component): void {
@@ -253,6 +302,7 @@ export class TranscriptContainer extends Container {
 
 	override clear(): void {
 		super.clear();
+		this.#closeFrame();
 		this.#entries = [];
 		this.#frontier = 0;
 		this.#offered = undefined;
@@ -274,6 +324,7 @@ export class TranscriptContainer extends Container {
 		this.#syncEntries();
 		const entries = this.#entries.slice();
 		super.clear();
+		this.#closeFrame();
 		this.#entries = [];
 		this.#frontier = 0;
 		this.#offered = undefined;
@@ -382,6 +433,7 @@ export class TranscriptContainer extends Container {
 	 */
 	resetStableEmission(): void {
 		this.#syncEntries();
+		this.#closeFrame();
 		if (this.#offered?.kind === "append") this.#offered = undefined;
 		for (const entry of this.#entries) {
 			entry.emitted = 0;
@@ -465,6 +517,7 @@ export class TranscriptContainer extends Container {
 
 	/** Legacy destructive reset retained for embedders that rebuild directly. */
 	resetRetirement(): void {
+		this.#closeFrame();
 		this.#frontier = 0;
 		this.#offered = undefined;
 		this.#replayPending = false;
@@ -486,18 +539,75 @@ export class TranscriptContainer extends Container {
 		this.#replayRequested = false;
 	}
 
-	/** Total rows the live, un-emitted tail occupies at `width`. */
-	liveRowCount(width: number): number {
+	/**
+	 * Open one composed frame: every live-block measurement until this frame's
+	 * {@link renderViewport} returns renders against `frame` and is taken once,
+	 * so the retirement peek and the viewport share each block's render.
+	 *
+	 * Callers MUST call {@link renderViewport} with the same `frame` in the same
+	 * synchronous composition, without mutating any transcript block in
+	 * between: the shared rows are only as fresh as that first measurement.
+	 */
+	beginFrame(frame: AnimationFrame): void {
+		this.#lastFrame = frame;
+		this.#frameRows.clear();
+		this.#openFrame = frame;
+	}
+
+	/**
+	 * Total rows the live, un-emitted tail occupies at `width`.
+	 *
+	 * `limit` stops the walk once the total passes it: measuring a resumed
+	 * session's whole ledger costs one full render per block, and callers only
+	 * compare the height against a viewport budget. Past `limit` the result is
+	 * a lower bound, guaranteed only to be greater than `limit`.
+	 */
+	liveRowCount(width: number, limit = Number.POSITIVE_INFINITY): number {
 		this.#syncEntries();
 		this.#settleFinalized();
 		let total = 0;
+		let previous: Component | undefined;
 		for (const { entry, index } of this.#liveEntries()) {
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
-			const rendered = this.#renderEntry(entry, width);
-			const block = rendered.slice(this.#projectedPrefixLength(entry, index, width, rendered));
-			if (block.length > 0) total += block.length + (total > 0 ? 1 : 0);
+			const block = this.#liveBlockRows(entry, index, width);
+			if (block.length > 0) {
+				if (previous !== undefined && this.#keepsBlankBetween(previous, entry.component)) total++;
+				total += block.length;
+				previous = entry.component;
+			}
+			if (total > limit) break;
 		}
 		return total;
+	}
+
+	/** One live block's un-emitted rows at `width`, rendered against its full-height allocation. */
+	#liveBlockRows(entry: TranscriptEntry, index: number, width: number): readonly string[] {
+		const rows = this.#measuredRows(entry, width);
+		const emitted = this.#projectedPrefixLength(entry, index, width, rows);
+		return emitted === 0 ? rows : rows.slice(emitted);
+	}
+
+	/**
+	 * One block's blank-trimmed render at its full-height allocation. Inside an
+	 * open frame the first measurement of each block is replayed to later ones.
+	 */
+	#measuredRows(entry: TranscriptEntry, width: number): readonly string[] {
+		this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
+		if (this.#openFrame === undefined) return this.#renderEntry(entry, width);
+		if (this.#frameRowsWidth !== width) {
+			this.#frameRows.clear();
+			this.#frameRowsWidth = width;
+		}
+		let rows = this.#frameRows.get(entry);
+		if (rows === undefined) {
+			rows = this.#renderEntry(entry, width);
+			this.#frameRows.set(entry, rows);
+		}
+		return rows;
+	}
+
+	#closeFrame(): void {
+		this.#openFrame = undefined;
+		this.#frameRows.clear();
 	}
 
 	/** Block spans of the last `renderViewport` output, in output coordinates. Empty when the tail is empty. */
@@ -523,16 +633,46 @@ export class TranscriptContainer extends Container {
 		this.#lastViewportSpans = spans;
 	}
 
-	/** Render the live tail, constrained to the supplied transcript height. */
+	/**
+	 * Render the live tail, constrained to the supplied transcript height.
+	 * Closes the frame {@link beginFrame} opened; a different `frame` discards
+	 * its measurements first.
+	 */
 	renderViewport(width: number, rows: number, frame: AnimationFrame = this.#lastFrame): readonly string[] {
+		if (frame !== this.#openFrame) this.#closeFrame();
 		this.#lastFrame = frame;
+		try {
+			return this.#composeViewport(width, rows);
+		} finally {
+			this.#closeFrame();
+		}
+	}
+
+	#composeViewport(width: number, rows: number): readonly string[] {
 		this.#syncEntries();
 		this.#settleFinalized();
 		const live = this.#liveEntries();
 		const capacity = Math.max(0, Math.trunc(rows));
-		if (live.length === 0) {
+		if (live.length === 0 || capacity === 0) {
 			this.#lastViewportSpans = [];
 			return EMPTY_ROWS;
+		}
+
+		// Measure only the full-fidelity tail that can survive cropping. A
+		// resumed ledger's offscreen blocks must not render in every frame.
+		const shown: Array<{ component: Component; rows: readonly string[] }> = [];
+		let height = 0;
+		let next: Component | undefined;
+		for (let cursor = live.length - 1; cursor >= 0; cursor--) {
+			const candidate = live[cursor]!;
+			const block = this.#liveBlockRows(candidate.entry, candidate.index, width);
+			if (block.length === 0) continue;
+			const component = candidate.entry.component;
+			if (next !== undefined && this.#keepsBlankBetween(component, next)) height++;
+			shown.push({ component, rows: block });
+			height += block.length;
+			next = component;
+			if (height >= capacity) break;
 		}
 
 		const output: string[] = [];
@@ -541,28 +681,35 @@ export class TranscriptContainer extends Container {
 		// boundary is not a folded run (the tape never writes a trailing blank
 		// after a folded row, so the decision lands here).
 		let previous: Component | undefined = this.#tapeTail.separated ? undefined : this.#tapeTail.component;
-		for (const candidate of live) {
-			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, frame);
-			const rendered = this.#renderEntry(candidate.entry, width);
-			const block = rendered.slice(this.#projectedPrefixLength(candidate.entry, candidate.index, width, rendered));
-			if (block.length === 0) continue;
+		const first = shown.at(-1)?.component;
+		const leadingGap =
+			previous !== undefined && first !== undefined && previous !== first && this.#keepsBlankBetween(previous, first)
+				? 1
+				: 0;
+		let drop = Math.max(0, height + leadingGap - capacity);
+		for (let index = shown.length - 1; index >= 0; index--) {
+			const block = shown[index]!;
 			if (
 				previous !== undefined &&
-				previous !== candidate.entry.component &&
-				this.#keepsBlankBetween(previous, candidate.entry.component)
+				previous !== block.component &&
+				this.#keepsBlankBetween(previous, block.component)
 			) {
-				output.push("");
-				owners.push(undefined);
+				if (drop > 0) drop--;
+				else {
+					output.push("");
+					owners.push(undefined);
+				}
 			}
-			for (const line of block) {
-				output.push(line);
-				owners.push(candidate.entry.component);
+			const start = Math.min(drop, block.rows.length);
+			drop -= start;
+			for (let row = start; row < block.rows.length; row++) {
+				output.push(block.rows[row]!);
+				owners.push(block.component);
 			}
-			previous = candidate.entry.component;
+			previous = block.component;
 		}
-		const drop = Math.max(0, output.length - capacity);
-		this.#commitViewportSpans(owners.slice(drop), output.length - drop);
-		return drop > 0 ? output.slice(drop) : output;
+		this.#commitViewportSpans(owners);
+		return output;
 	}
 
 	/** Offers stable-head emission or the shortest finalized prefix needed under pressure. */
@@ -582,7 +729,15 @@ export class TranscriptContainer extends Container {
 			return this.#offered.kind === "replay" ? this.#offered.batch : undefined;
 		}
 		if (!this.#replayPending) return undefined;
-		const rows = this.#renderReplay(width);
+		// The one path that must compose the whole ledger in a single frame; the
+		// phase label attributes any watchdog block here instead of "unknown".
+		pushLoopPhase("ui.transcript-replay");
+		let rows: readonly string[];
+		try {
+			rows = this.#renderReplay(width);
+		} finally {
+			popLoopPhase();
+		}
 		this.#replayPending = false;
 		if (rows.length === 0) return undefined;
 		const batch: HistoryBatch = { id: this.#nextBatchId++, rows, kind: "replay" };
@@ -631,8 +786,8 @@ export class TranscriptContainer extends Container {
 			this.#recordTapeTail(entry.component, rerendered);
 			rows = rerendered;
 		} else if (offered.kind === "commit") {
-			const lastCommitted = offered.entries.at(-1);
-			const rerendered = Array.from(this.#renderSelection(offered.entries, width, offered.partial === undefined));
+			const retirement = this.#renderSelection(offered.entries, width, offered.partial === undefined);
+			const rerendered = Array.from(retirement.rows);
 			if (offered.partial !== undefined) {
 				const entry = this.#entries[offered.partial.entry];
 				if (entry !== undefined) {
@@ -641,8 +796,9 @@ export class TranscriptContainer extends Container {
 					const end = this.#resolvePartial(offered.partial.watermark, entry, width, rendered);
 					const prefix = rendered.slice(this.#retiredPrefixLength(entry, width, rendered), end);
 					if (prefix.length > 0) {
-						const last = lastCommitted === undefined ? undefined : this.#entries[lastCommitted]?.component;
-						if (rerendered.length > 0 && this.#keepsBlankBetween(last, entry.component)) rerendered.push("");
+						if (rerendered.length > 0 && this.#keepsBlankBetween(retirement.tail, entry.component)) {
+							rerendered.push("");
+						}
 						rerendered.push(...prefix);
 					}
 					this.#recordTapeTail(entry.component, rerendered);
@@ -650,10 +806,7 @@ export class TranscriptContainer extends Container {
 					this.#recordTapeTail(undefined, rerendered);
 				}
 			} else {
-				this.#recordTapeTail(
-					lastCommitted === undefined ? undefined : this.#entries[lastCommitted]?.component,
-					rerendered,
-				);
+				this.#recordTapeTail(retirement.tail, rerendered);
 			}
 			rows = rerendered;
 		} else {
@@ -674,80 +827,106 @@ export class TranscriptContainer extends Container {
 		const room = Math.max(0, Math.trunc(capacity));
 		const live = this.#liveEntries();
 		if (live.length === 0) return undefined;
-		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
-		const rendered: (readonly string[])[] = new Array(live.length);
-		// oxlint-disable-next-line unicorn/no-new-array -- length preallocation
-		const heights: number[] = new Array(live.length);
-		let total = 0;
-		let visible = 0;
-		for (let index = 0; index < live.length; index++) {
-			const candidate = live[index]!;
-			this.#setAllocation(candidate.entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
-			const renderedEntry = this.#renderEntry(candidate.entry, width);
-			const rows = renderedEntry.slice(this.#retiredPrefixLength(candidate.entry, width, renderedEntry));
-			rendered[index] = rows;
-			heights[index] = rows.length;
-			if (rows.length > 0) total += rows.length + (visible++ > 0 ? 1 : 0);
-		}
-		const completingRetirement = live.some(
-			({ entry }) => entry.state === "settled" && (entry.partial !== undefined || entry.snapshot !== undefined),
-		);
-		const overflowing = completingRetirement || total > room || this.#liveCount() >= MAX_LIVE_BLOCKS;
-		if (policy === "pressure" && !overflowing) {
-			this.#pinnedFrontier = undefined;
-			return undefined;
-		}
 
+		// Peeks outside beginFrame still reuse their measurements within this
+		// transaction, but never retain them across a later component mutation.
+		const measured = new Map<TranscriptEntry, readonly string[]>();
+		const measure = (entry: TranscriptEntry): readonly string[] => {
+			let rows = measured.get(entry);
+			if (rows === undefined) {
+				rows = this.#measuredRows(entry, width);
+				measured.set(entry, rows);
+			}
+			return rows;
+		};
+
+		// Only a render publishes a block's stable rows, so the head renders
+		// before its progressive-append eligibility is read.
 		const head = this.#entries[this.#frontier];
-		if (
+		if (head?.mode === "appendOnly") measure(head);
+		const appendHead =
 			policy === "pressure" &&
-			total > room &&
 			head?.mode === "appendOnly" &&
 			!head.stableFrozen &&
 			head.state !== "committed" &&
 			allowsMidStreamRetirement(head.component) &&
 			head.emitted < head.stableRows.length
-		) {
+				? head
+				: undefined;
+
+		// Measure the live tail newest-first and stop at the first block that
+		// does not fit: `keep` counts the leading blocks bound for scrollback,
+		// and everything behind them stays unmeasured. Measuring the whole live
+		// region costs one full render per block, which on a resumed session's
+		// first paint is every message it ever had (#12933). The progressive
+		// append path below needs the exact live height to size its emission,
+		// and only runs while a streaming head pins retirement.
+		let tailRows = 0;
+		let liveRows = 0;
+		let keep = 0;
+		let fits = true;
+		let successor: Component | undefined;
+		for (let cursor = live.length - 1; cursor >= 0; cursor--) {
+			const candidate = live[cursor]!;
+			const full = measure(candidate.entry);
+			const height = full.length - this.#retiredPrefixLength(candidate.entry, width, full);
+			const gap =
+				height > 0 && successor !== undefined && this.#keepsBlankBetween(candidate.entry.component, successor)
+					? 1
+					: 0;
+			if (height > 0) liveRows += height + gap;
+			if (fits) {
+				const next = height > 0 ? tailRows + height + gap : tailRows;
+				if (next > room) {
+					fits = false;
+					keep = cursor + 1;
+				} else {
+					tailRows = next;
+				}
+			}
+			if (height > 0) successor = candidate.entry.component;
+			if (!fits && appendHead === undefined) break;
+		}
+		const completingRetirement = live.some(
+			({ entry }) => entry.state === "settled" && (entry.partial !== undefined || entry.snapshot !== undefined),
+		);
+		const liveCount = live.length;
+		const overflowing = completingRetirement || keep > 0 || liveCount >= MAX_LIVE_BLOCKS;
+		if (policy === "pressure" && !overflowing) {
+			this.#pinnedFrontier = undefined;
+			return undefined;
+		}
+
+		if (appendHead !== undefined && keep > 0) {
 			// Emit as many finished rows as the overflow needs, in one batch. A
 			// fast stream adds finished rows quicker than one per pressure cycle,
 			// and the live region has to fall back under `room` to stay readable:
 			// rows left behind here are rows dropped from the top of the viewport.
-			const overflow = total - room;
-			const before = this.#renderStablePrefix(head, head.emitted, width);
-			let emittedEnd = head.emitted;
-			let rows: readonly string[] = EMPTY_ROWS;
-			while (emittedEnd < head.stableRows.length && rows.length < overflow) {
-				const after = this.#renderStablePrefix(head, emittedEnd + 1, width);
-				if (!isRowPrefix(before, after) || after.length === before.length) {
-					if (emittedEnd === head.emitted) {
-						this.#freezeStableRows(head, EMPTY_ROWS, "semantic row render added no suffix");
-					}
-					break;
-				}
-				rows = after.slice(before.length);
-				emittedEnd += 1;
-			}
-			if (emittedEnd > head.emitted) {
+			// `liveRows` is exact here: the append path measured every live block.
+			const overflow = liveRows - room;
+			const { rows, emittedEnd } =
+				this.#measuredAppendBatch(appendHead, width, overflow) ??
+				this.#renderedAppendBatch(appendHead, width, overflow);
+			if (emittedEnd > appendHead.emitted) {
 				const batch: HistoryBatch = {
 					id: this.#nextBatchId++,
 					rows,
 					kind: "append",
 				};
 				this.#offered = { batch, kind: "append", entry: this.#frontier, emittedEnd };
-				this.#recordTapeTail(head.component, batch.rows);
+				this.#recordTapeTail(appendHead.component, batch.rows);
 				this.#pinnedFrontier = undefined;
 				return batch;
 			}
 		}
 
 		const commitEntries: number[] = [];
-		let freed = 0;
 		let liveIndex = 0;
 		for (const candidate of live) {
 			const entry = candidate.entry;
 			if (
 				entry.state === "active" &&
-				rendered[liveIndex]!.length === 0 &&
+				measure(entry).length === this.#retiredPrefixLength(entry, width, measure(entry)) &&
 				(allowsSuccessorRetirement(entry.component) || entry.snapshot?.separator === true)
 			) {
 				liveIndex++;
@@ -758,55 +937,80 @@ export class TranscriptContainer extends Container {
 				policy === "pressure" &&
 				entry.partial === undefined &&
 				entry.snapshot === undefined &&
-				total - freed <= room &&
-				this.#liveCount() - commitEntries.length < MAX_LIVE_BLOCKS
+				liveIndex >= keep &&
+				liveCount - commitEntries.length < MAX_LIVE_BLOCKS
 			)
 				break;
-			freed += heights[liveIndex]! > 0 ? heights[liveIndex]! + 1 : 0;
 			commitEntries.push(candidate.index);
 			liveIndex++;
 		}
 		if (commitEntries.length > 0) {
 			const next = live.find(({ index }) => !commitEntries.includes(index));
-			if (next !== undefined) {
-				const nextRendered = rendered[live.indexOf(next)];
-				if (nextRendered !== undefined) {
-					const partial = this.#legacyPrefix(next.entry, width, nextRendered);
-					if (partial !== undefined) {
-						const rows = Array.from(this.#renderSelection(commitEntries, width, false));
-						const prefix = this.#renderEntry(next.entry, width).slice(
-							this.#retiredPrefixLength(next.entry, width, nextRendered),
-							partial.rowCount,
-						);
-						if (prefix.length > 0) {
-							const lastCommitted = this.#entries[commitEntries[commitEntries.length - 1]!]?.component;
-							if (rows.length > 0 && this.#keepsBlankBetween(lastCommitted, next.entry.component)) {
-								rows.push("");
-							}
-							rows.push(...prefix);
-						}
-						const batch: HistoryBatch = { id: this.#nextBatchId++, rows, kind: "append" };
-						this.#offered = {
-							batch,
-							entries: commitEntries,
-							kind: "commit",
-							partial: { entry: next.index, watermark: partial },
-						};
-						this.#recordTapeTail(next.entry.component, rows);
-						this.#pinnedFrontier = undefined;
-						return batch;
-					}
+			const partial =
+				next === undefined ||
+				(next.entry.component as Component & FinalizableBlock).getTranscriptBlockSettledPrefix === undefined
+					? undefined
+					: this.#legacyPrefix(next.entry, width, measure(next.entry));
+			pushLoopPhase("ui.transcript-retire");
+			let retirement: { rows: readonly string[]; count: number; tail: Component | undefined };
+			try {
+				retirement = this.#renderSelection(
+					commitEntries,
+					width,
+					partial === undefined,
+					policy === "flush" ? undefined : RETIREMENT_BUDGET_MS,
+					measured,
+				);
+			} finally {
+				popLoopPhase();
+			}
+			const committed =
+				retirement.count === commitEntries.length ? commitEntries : commitEntries.slice(0, retirement.count);
+			if (partial !== undefined && next !== undefined && retirement.count === commitEntries.length) {
+				const rows = Array.from(retirement.rows);
+				const full = measure(next.entry);
+				const prefix = full.slice(this.#retiredPrefixLength(next.entry, width, full), partial.rowCount);
+				if (prefix.length > 0) {
+					if (rows.length > 0 && this.#keepsBlankBetween(retirement.tail, next.entry.component)) rows.push("");
+					rows.push(...prefix);
 				}
+				const batch: HistoryBatch = { id: this.#nextBatchId++, rows, kind: "append" };
+				this.#offered = {
+					batch,
+					entries: committed,
+					kind: "commit",
+					partial: { entry: next.index, watermark: partial },
+				};
+				this.#recordTapeTail(next.entry.component, rows);
+				this.#pinnedFrontier = undefined;
+				return batch;
 			}
 			const batch: HistoryBatch = {
 				id: this.#nextBatchId++,
-				rows: this.#renderSelection(commitEntries, width, true),
+				rows: retirement.rows,
 				kind: "append",
 			};
-			this.#offered = { batch, entries: commitEntries, kind: "commit" };
-			this.#recordTapeTail(this.#entries[commitEntries.at(-1)!]?.component, batch.rows);
+			this.#offered = { batch, entries: committed, kind: "commit" };
+			this.#recordTapeTail(retirement.tail, batch.rows);
 			this.#pinnedFrontier = undefined;
 			return batch;
+		}
+
+		// A pinned active frontier needs the exact overflow for its declared
+		// settled prefix or visual snapshot. The normal finalized-ledger path
+		// above never measures the offscreen backlog.
+		const fullRendered = live.map(({ entry }) => measure(entry));
+		const rendered = fullRendered.map((rows, index) =>
+			rows.slice(this.#retiredPrefixLength(live[index]!.entry, width, rows)),
+		);
+		let total = 0;
+		let previous: Component | undefined;
+		for (let index = 0; index < live.length; index++) {
+			if (rendered[index]!.length === 0) continue;
+			const component = live[index]!.entry.component;
+			if (previous !== undefined && this.#keepsBlankBetween(previous, component)) total++;
+			total += rendered[index]!.length;
+			previous = component;
 		}
 
 		if (policy === "pressure" && total > room) {
@@ -816,7 +1020,7 @@ export class TranscriptContainer extends Container {
 			if (candidate !== undefined) {
 				const candidateIndex = live.indexOf(candidate);
 				const watermark = this.#legacyPrefix(candidate.entry, width, rendered[candidateIndex]!)!;
-				const rows = this.#renderEntry(candidate.entry, width).slice(
+				const rows = fullRendered[candidateIndex]!.slice(
 					this.#retiredPrefixLength(candidate.entry, width, rendered[candidateIndex]!),
 					watermark.rowCount,
 				);
@@ -859,7 +1063,7 @@ export class TranscriptContainer extends Container {
 				return rendered[index]!.length > 0;
 			});
 			if (candidate !== undefined) {
-				const full = this.#renderEntry(candidate.entry, width);
+				const full = measure(candidate.entry);
 				const start = this.#retiredPrefixLength(candidate.entry, width, full);
 				const rowCount = Math.min(full.length, start + Math.max(1, total - room));
 				if (rowCount > start) {
@@ -908,10 +1112,7 @@ export class TranscriptContainer extends Container {
 			for (const index of offered.entries) {
 				const entry = this.#entries[index];
 				if (entry === undefined) continue;
-				entry.state = "committed";
-				entry.emitted = 0;
-				entry.snapshot = undefined;
-				entry.partial = undefined;
+				this.#retireEntry(entry);
 			}
 			if (offered.partial !== undefined) {
 				const entry = this.#entries[offered.partial.entry];
@@ -954,6 +1155,37 @@ export class TranscriptContainer extends Container {
 		return rows.length > cap ? rows.slice(rows.length - cap) : rows;
 	}
 
+	/**
+	 * The transcript's blocks for a native (TSP) surface, one component per
+	 * `main` child in transcript order; ids follow component identity, so
+	 * inserts, removals (rewind, displacement) and reorders become targeted ops.
+	 * Finalized blocks are settled as a hint; they stay editable, so a later
+	 * expansion, late result or reaction still reaches them wherever they sit.
+	 * No retirement happens on this path: the whole transcript is one document.
+	 * Returns the same array while the block list is unchanged.
+	 */
+	nativeBlocks(): readonly Component[] {
+		this.#syncEntries();
+		const children = this.children;
+		for (const child of children) {
+			if (!isNativeSettled(child) && isFinalized(child)) settleNative(child);
+		}
+		const previous = this.#nativeBlocks;
+		if (previous.length === children.length && previous.every((child, index) => child === children[index])) {
+			return previous;
+		}
+		this.#nativeBlocks = children.slice();
+		this.#nativeNode = undefined;
+		return this.#nativeBlocks;
+	}
+
+	/** Embedded as a child (transcript viewers): a stack of the {@link nativeBlocks}. */
+	override describe(): NativeNode {
+		const blocks = this.nativeBlocks();
+		this.#nativeNode ??= col(blocks, { role: "omp.transcript" });
+		return this.#nativeNode;
+	}
+
 	/** Full semantic render used by exports and non-terminal commands. */
 	override render(width: number): readonly string[] {
 		this.#syncEntries();
@@ -979,7 +1211,7 @@ export class TranscriptContainer extends Container {
 
 	#renderEntry(entry: TranscriptEntry, width: number): readonly string[] {
 		const rendered = trimBlankEdges(entry.component.render(width));
-		if (entry.mode === "mutable" || entry.stableFrozen) return rendered;
+		if (entry.state === "committed" || entry.mode === "mutable" || entry.stableFrozen) return rendered;
 		const appendOnly = entry.component as Component & AppendOnlyTranscriptBlock;
 		const stable = appendOnly.getTranscriptStableRows();
 		if (!isStablePrefix(entry.stableRows, stable)) {
@@ -1001,15 +1233,10 @@ export class TranscriptContainer extends Container {
 			return this.#freezeStableRows(entry, rendered, "stable rows changed within a width epoch");
 		}
 		entry.stableRows = published;
-		// Slice only when the rendered rows actually changed: same length
-		// plus prefix-equality in both directions means byte-identical, so
-		// the stored array can be reused (callers only slice/read it).
-		const priorRows = entry.renderedStableByWidth.get(width);
-		if (
-			priorRows === undefined ||
-			priorRows.length !== stableRendered.length ||
-			!isRowPrefix(priorRows, stableRendered)
-		) {
+		// The prefix check above proves equal-length rows are byte-identical.
+		// Reuse our snapshot then; copy new rows so mutable renderer buffers
+		// cannot change the bytes checked on the next frame.
+		if (priorRender === undefined || priorRender.length !== stableRendered.length) {
 			entry.renderedStableByWidth.set(width, stableRendered.slice());
 		}
 		let perCount = entry.stableRowCountByWidth.get(width);
@@ -1055,12 +1282,70 @@ export class TranscriptContainer extends Container {
 		if (memo !== undefined) return memo;
 		return this.#renderStablePrefix(entry, count, width).length;
 	}
+
+	/**
+	 * Size a progressive-append batch from the stable renders `#renderEntry`
+	 * recorded at this width, without rendering any prefix. Each recorded count
+	 * was checked to render as a byte prefix of every later one, and
+	 * `renderedStableByWidth` holds the newest, so each count's rows are a
+	 * prefix of it and the batch is one slice. Undefined when a count the walk
+	 * needs was never recorded here (published between renders, or before a
+	 * resize); the rendered walk then decides.
+	 */
+	#measuredAppendBatch(entry: TranscriptEntry, width: number, overflow: number): AppendBatch | undefined {
+		const counts = entry.stableRowCountByWidth.get(width);
+		const newest = entry.renderedStableByWidth.get(width);
+		const target = entry.stableRows.length;
+		if (counts === undefined || newest === undefined || counts.get(target) !== newest.length) return undefined;
+		const start = entry.emitted === 0 ? 0 : counts.get(entry.emitted);
+		if (start === undefined) return undefined;
+		let emittedEnd = entry.emitted;
+		let end = start;
+		while (emittedEnd < target && end - start < overflow) {
+			const next = counts.get(emittedEnd + 1);
+			if (next === undefined) return undefined;
+			if (next <= start) {
+				if (emittedEnd === entry.emitted) {
+					this.#freezeStableRows(entry, EMPTY_ROWS, "semantic row render added no suffix");
+				}
+				break;
+			}
+			end = next;
+			emittedEnd += 1;
+		}
+		return { rows: emittedEnd > entry.emitted ? newest.slice(start, end) : EMPTY_ROWS, emittedEnd };
+	}
+
+	/**
+	 * Size a progressive-append batch by rendering each further stable prefix:
+	 * extend the emitted prefix until its new rows cover `overflow`, stopping
+	 * at the first prefix that adds no row or stops extending the emitted one
+	 * (freezing the block when that is the very next prefix).
+	 */
+	#renderedAppendBatch(entry: TranscriptEntry, width: number, overflow: number): AppendBatch {
+		const before = this.#renderStablePrefix(entry, entry.emitted, width);
+		let emittedEnd = entry.emitted;
+		let after = before;
+		while (emittedEnd < entry.stableRows.length && after.length - before.length < overflow) {
+			const next = this.#renderStablePrefix(entry, emittedEnd + 1, width);
+			if (!isRowPrefix(before, next) || next.length === before.length) {
+				if (emittedEnd === entry.emitted) {
+					this.#freezeStableRows(entry, EMPTY_ROWS, "semantic row render added no suffix");
+				}
+				break;
+			}
+			after = next;
+			emittedEnd += 1;
+		}
+		return { rows: emittedEnd > entry.emitted ? after.slice(before.length) : EMPTY_ROWS, emittedEnd };
+	}
+
 	/**
 	 * Record that pressure retirement is blocked behind a not-yet-settled
 	 * frontier block, and log its identity once the episode outlives the grace
 	 * period. A block that never finalizes (a dropped terminal event) pins the
-	 * whole live region here with no visible symptom other than degraded
-	 * one-line layout, so the log line is the only forensic trail.
+	 * whole live region here while older semantic rows clip from the viewport,
+	 * so the log line identifies the block preventing their retirement.
 	 */
 	#notePinnedFrontier(): void {
 		const entry = this.#entries[this.#frontier];
@@ -1140,9 +1425,23 @@ export class TranscriptContainer extends Container {
 		}
 	}
 
-	#renderSelection(indices: readonly number[], width: number, trailingBlank: boolean): readonly string[] {
+	/**
+	 * Render one ordered retirement selection. Live pressure stops after the
+	 * first block crossing the budget; replay, re-offers and shutdown render it
+	 * completely. `count` is the acknowledged selection, not a physical height.
+	 */
+	#renderSelection(
+		indices: readonly number[],
+		width: number,
+		trailingBlank: boolean,
+		budgetMs?: number,
+		measured?: ReadonlyMap<TranscriptEntry, readonly string[]>,
+	): { rows: readonly string[]; count: number; tail: Component | undefined } {
 		const rows: string[] = [];
+		const startedAt = budgetMs === undefined ? 0 : performance.now();
+		let count = 0;
 		let terminalAlreadySeparated = false;
+		let hasRetiredContent = false;
 		// The batch continues the terminal tape, so its first block separates from
 		// whatever the tape wrote last — unless that was this same block's own
 		// emitted prefix, which continues without a gap.
@@ -1150,23 +1449,26 @@ export class TranscriptContainer extends Container {
 		for (const index of indices) {
 			const entry = this.#entries[index];
 			if (entry === undefined) continue;
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
-			const rendered = this.#renderEntry(entry, width);
-			const block = rendered.slice(this.#retiredPrefixLength(entry, width, rendered));
+			const rendered = measured?.get(entry) ?? this.#measuredRows(entry, width);
+			const retired = this.#retiredPrefixLength(entry, width, rendered);
+			const block = rendered.slice(retired);
+			hasRetiredContent ||= retired > 0;
+			count++;
 			if (block.length === 0) {
 				terminalAlreadySeparated = entry.snapshot?.separator === true;
-				continue;
+			} else {
+				if (
+					previous !== undefined &&
+					previous !== entry.component &&
+					this.#keepsBlankBetween(previous, entry.component)
+				) {
+					rows.push("");
+				}
+				rows.push(...block);
+				previous = entry.component;
+				terminalAlreadySeparated = false;
 			}
-			if (
-				previous !== undefined &&
-				previous !== entry.component &&
-				this.#keepsBlankBetween(previous, entry.component)
-			) {
-				rows.push("");
-			}
-			rows.push(...block);
-			previous = entry.component;
-			terminalAlreadySeparated = false;
+			if (budgetMs !== undefined && performance.now() - startedAt >= budgetMs) break;
 		}
 		// A trailing blank is written only when the block that follows can no
 		// longer join the run: a folded tool row defers the whole decision to
@@ -1174,12 +1476,12 @@ export class TranscriptContainer extends Container {
 		if (
 			trailingBlank &&
 			!terminalAlreadySeparated &&
-			(rows.length > 0 || indices.length > 0) &&
+			(rows.length > 0 || hasRetiredContent) &&
 			!this.#batchesEndWithFoldedRow(previous)
 		) {
 			rows.push("");
 		}
-		return rows;
+		return { rows, count, tail: previous };
 	}
 
 	#renderReplay(width: number): readonly string[] {
@@ -1191,8 +1493,9 @@ export class TranscriptContainer extends Container {
 		// The replay replaces the whole tape: whatever the terminal held before is
 		// gone, so the tail starts over with the rows this replay writes.
 		this.#tapeTail = { component: undefined, separated: false };
-		const rows = Array.from(this.#renderSelection(committed, width, true));
-		let tail = committed.length > 0 ? this.#entries[committed.at(-1)!]?.component : undefined;
+		const retirement = this.#renderSelection(committed, width, true);
+		const rows = Array.from(retirement.rows);
+		let tail = retirement.tail;
 		if (head?.mode === "appendOnly" && head.emitted > 0) {
 			this.#setAllocation(head.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
 			this.#renderEntry(head, width);
@@ -1207,14 +1510,22 @@ export class TranscriptContainer extends Container {
 		while (this.#frontier < this.#entries.length) {
 			const entry = this.#entries[this.#frontier]!;
 			if (entry.mode !== "appendOnly" || entry.state !== "settled") return;
-			this.#setAllocation(entry.component, Number.MAX_SAFE_INTEGER, this.#lastFrame);
-			const rendered = this.#renderEntry(entry, width);
+			const rendered = this.#measuredRows(entry, width);
 			if (entry.emitted !== entry.stableRows.length) return;
 			if (this.#renderStablePrefix(entry, entry.emitted, width).length !== rendered.length) return;
-			entry.state = "committed";
-			entry.emitted = 0;
+			this.#retireEntry(entry);
 			this.#frontier++;
 		}
+	}
+
+	#retireEntry(entry: TranscriptEntry): void {
+		entry.state = "committed";
+		entry.emitted = 0;
+		entry.snapshot = undefined;
+		entry.partial = undefined;
+		entry.stableRows = EMPTY_STABLE_ROWS;
+		entry.renderedStableByWidth = new Map();
+		entry.stableRowCountByWidth = new Map();
 	}
 
 	#startReplay(): void {
@@ -1268,6 +1579,7 @@ export class TranscriptContainer extends Container {
 	 * whether a blank row already follows it.
 	 */
 	#recordTapeTail(component: Component | undefined, rows: readonly string[]): void {
+		if (rows.length === 0) return;
 		this.#tapeTail = {
 			component: component ?? this.#tapeTail.component,
 			separated: rows.at(-1) === "",
@@ -1302,12 +1614,27 @@ export class TranscriptContainer extends Container {
 		return count;
 	}
 
+	/**
+	 * Mirror `children` into `#entries`. The container's own add/remove/clear
+	 * keep the two aligned, so the per-frame check stays off the committed
+	 * ledger: external edits to the public `children` array are caught by array
+	 * identity (replacement), length (push, removing splices), and an identity
+	 * scan of the live tail (in-place reorders and index writes). Committed
+	 * blocks are immutable history nothing reorders, and the scan skipping
+	 * them keeps this proportional to the live tail rather than the session.
+	 */
 	#syncEntries(): void {
+		const children = this.children;
 		if (
-			this.#entries.length === this.children.length &&
-			this.#entries.every((entry, index) => entry.component === this.children[index])
-		)
+			!this.#entriesUnverified &&
+			children === this.#syncedChildren &&
+			this.#entriesMatch(children, this.#frontier)
+		) {
 			return;
+		}
+		this.#entriesUnverified = false;
+		this.#syncedChildren = children;
+		if (this.#entriesMatch(children, 0)) return;
 		const existing = new Map(this.#entries.map(entry => [entry.component, entry]));
 		this.#entries = this.children.map(
 			component =>
@@ -1326,6 +1653,16 @@ export class TranscriptContainer extends Container {
 		);
 		this.#frontier = this.#entries.findIndex(entry => entry.state !== "committed");
 		if (this.#frontier < 0) this.#frontier = this.#entries.length;
+	}
+
+	/** Whether `#entries` has `children`'s length and components from `start` on. */
+	#entriesMatch(children: readonly Component[], start: number): boolean {
+		const entries = this.#entries;
+		if (entries.length !== children.length) return false;
+		for (let index = start; index < entries.length; index++) {
+			if (entries[index]!.component !== children[index]) return false;
+		}
+		return true;
 	}
 }
 

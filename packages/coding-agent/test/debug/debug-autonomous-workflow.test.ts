@@ -856,14 +856,11 @@ describe("DebugTool autonomous wait workflow", () => {
 				await debug.execute("continue-1", { action: "continue", wait_for_stop: false }),
 			).executionId;
 			if (!executionId) throw new Error("Missing first execution id");
+			const requestUrl = `http://127.0.0.1:${server.port}/debug/replay?case=same`;
+			const requestScript = `const response = await fetch(${JSON.stringify(requestUrl)}, { method: "POST", body: "same-body" }); console.log(await response.text());`;
 			const requestParams = {
-				command:
-					"bun -e 'const response = await fetch(Bun.env.REQUEST_URL, { method: \"POST\", body: Bun.env.REQUEST_BODY }); console.log(await response.text());'",
+				command: `'${process.execPath.replaceAll("\\", "/").replaceAll("'", "'\\''")}' -e '${requestScript.replaceAll("'", "'\\''")}'`,
 				cwd: process.cwd(),
-				env: {
-					REQUEST_URL: `http://127.0.0.1:${server.port}/debug/replay?case=same`,
-					REQUEST_BODY: "same-body",
-				},
 				timeout: 30,
 				pty: false,
 				async: true,

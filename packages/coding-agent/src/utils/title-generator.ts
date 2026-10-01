@@ -14,6 +14,7 @@ import {
 } from "@oh-my-pi/pi-ai";
 import { StreamMarkupHealing } from "@oh-my-pi/pi-ai/utils/stream-markup-healing";
 import { writeThroughActiveTerminal } from "@oh-my-pi/pi-tui";
+import { isNativeRendering, onNativeRenderingChange } from "@oh-my-pi/pi-tui/native/state";
 import { SPINNER_FRAMES } from "@oh-my-pi/pi-tui/theme/symbols";
 import { $env, isTerminalHeadless, isWsl, logger, prompt } from "@oh-my-pi/pi-utils";
 import type { ModelRegistry } from "../config/model-registry";
@@ -36,6 +37,8 @@ const TITLE_MARKER_INSTRUCTION = prompt.render(titleMarkerInstruction);
 // Plain π, not the nerd-font `icon.omp` glyph: window/tab titles render in the
 // OS UI font, which has no nerd-font PUA coverage.
 const DEFAULT_TERMINAL_TITLE = "π";
+/** The native tab title without a session name. */
+const NATIVE_TERMINAL_TITLE = "omp";
 const TERMINAL_TITLE_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
 /**
  * Emit a raw title escape sequence. While the TUI owns stdout its frames are
@@ -384,7 +387,8 @@ async function generateTitleOnlineWithModels(
 				continue;
 			}
 
-			const title = normalizeGeneratedTitle(extractGeneratedTitle(response.content), firstMessage);
+			const generatedTitle = extractGeneratedTitle(response.content);
+			const title = generatedTitle === null ? null : normalizeGeneratedTitle(generatedTitle, firstMessage);
 
 			if (!title) {
 				logger.debug("title-generator: no title returned", {
@@ -393,6 +397,7 @@ async function generateTitleOnlineWithModels(
 					usage: response.usage,
 					stopReason: response.stopReason,
 				});
+				if (generatedTitle === null) return null;
 				continue;
 			}
 
@@ -450,7 +455,7 @@ function titlePrefill(model: Model<Api>): AssistantMessage {
 	};
 }
 
-function extractGeneratedTitle(contentBlocks: AssistantMessage["content"]): string {
+function extractGeneratedTitle(contentBlocks: AssistantMessage["content"]): string | null {
 	let textTitle = "";
 	for (const content of contentBlocks) {
 		if (content.type === "text") {
@@ -463,6 +468,7 @@ function extractGeneratedTitle(contentBlocks: AssistantMessage["content"]): stri
 	// prose thinking preamble only on the markerless path: a later marked title
 	// remains authoritative.
 	const markedTitle = extractVisibleMarkedTitle(textTitle);
+	if (markedTitle === null) return null;
 	if (markedTitle !== undefined) return unwrapJsonTitle(markedTitle);
 	const cleanedTextTitle = stripLeadingLeakedThinkingMarkup(textTitle)
 		.replace(/<\/?title>/gi, "")
@@ -471,12 +477,15 @@ function extractGeneratedTitle(contentBlocks: AssistantMessage["content"]): stri
 	return unwrapJsonTitle(cleanedTextTitle);
 }
 
-function extractVisibleMarkedTitle(text: string): string | undefined {
+function extractVisibleMarkedTitle(text: string): string | null | undefined {
 	TITLE_MARKER_GLOBAL_RE.lastIndex = 0;
 	let marker: RegExpExecArray | null = TITLE_MARKER_GLOBAL_RE.exec(text);
 	while (marker !== null) {
 		const content = marker[1];
-		if (isVisibleTitleMarker(text, marker.index)) return content?.trim() ?? "";
+		if (isVisibleTitleMarker(text, marker.index)) {
+			if (content !== undefined) return content.trim() || null;
+			return marker[0].includes("/") ? null : "";
+		}
 		marker = TITLE_MARKER_GLOBAL_RE.exec(text);
 	}
 	return undefined;
@@ -651,7 +660,52 @@ export function setSessionTerminalTitle(sessionName: string | undefined, cwd?: s
 	// write into the parent shell's tab. Only `initTerminalTitleState()`, the
 	// explicit terminal-ownership path, releases the latch.
 	terminalTitleRuntime.extensionOverride = undefined;
-	terminalTitleRuntime.label = sanitizeTerminalTitlePart(sessionName) ?? getFallbackTerminalTitle(cwd);
+	terminalTitleRuntime.sessionName = sanitizeTerminalTitlePart(sessionName);
+	terminalTitleRuntime.label = terminalTitleRuntime.sessionName ?? getFallbackTerminalTitle(cwd);
+	emitTerminalTitle();
+	reportTernSessionFile();
+}
+
+/** The OSC 1337 user variable Tern reads the session file from. */
+const TERN_SESSION_FILE_VAR = "omp_session_file";
+/** Where the current session file is read from (the interactive session manager). */
+let sessionFileSource: (() => string | undefined) | undefined;
+/** The session file Tern was last told about. */
+let reportedSessionFile: string | undefined;
+
+/**
+ * Name the live session's file source. Every session title update (start, new
+ * session, resume, cwd switch) and {@link reportTernSessionFile} re-read it and,
+ * in Tern, report a changed file, so Tern's daemon can relaunch
+ * `omp --resume <file>` after it restarts.
+ */
+export function setTerminalSessionFileSource(source: (() => string | undefined) | undefined): void {
+	sessionFileSource = source;
+	reportTernSessionFile();
+}
+
+/**
+ * Tell Tern (`TERM_PROGRAM=tern`, nowhere else) the session file, if it changed,
+ * as an OSC 1337 user variable holding its absolute path in base64; no file
+ * removes the variable.
+ */
+export function reportTernSessionFile(): void {
+	if (terminalTitleRuntime.disposed || $env.TERM_PROGRAM?.toLowerCase() !== "tern") return;
+	if (!process.stdout.isTTY || isTerminalHeadless()) return;
+	const file = sessionFileSource?.();
+	const resolved = file ? path.resolve(file) : undefined;
+	if (resolved === reportedSessionFile) return;
+	reportedSessionFile = resolved;
+	const value = resolved ? `=${Buffer.from(resolved).toString("base64")}` : "";
+	writeTitleSequence(`\x1b]1337;SetUserVar=${TERN_SESSION_FILE_VAR}${value}\x07`);
+}
+
+/**
+ * The branch's pull request number for the native tab title, which carries it
+ * after the session name (a TSP terminal has no status strip to show it in).
+ */
+export function setTerminalTitlePullRequest(pr: number | undefined): void {
+	terminalTitleRuntime.pullRequest = pr;
 	emitTerminalTitle();
 }
 
@@ -705,6 +759,12 @@ const TITLE_ATTENTION_SEPARATOR = "!";
 
 const terminalTitleRuntime: {
 	label: string | undefined;
+	/** The session's own name, without the cwd fallback `label` uses. */
+	sessionName: string | undefined;
+	/** The branch's pull request, shown in the native title only. */
+	pullRequest: number | undefined;
+	/** Unsubscribes the native-rendering watch taken by `initTerminalTitleState()`. */
+	unwatchNative: (() => void) | undefined;
 	state: TerminalTitleState;
 	frame: number;
 	enabled: boolean;
@@ -729,6 +789,9 @@ const terminalTitleRuntime: {
 	nativeTitleFailed: boolean;
 } = {
 	label: undefined,
+	sessionName: undefined,
+	pullRequest: undefined,
+	unwatchNative: undefined,
 	state: "idle",
 	frame: 0,
 	enabled: true,
@@ -774,27 +837,41 @@ export function buildTerminalTitleWithState(
 	return label ? `${DEFAULT_TERMINAL_TITLE} ${separator} ${label}` : `${DEFAULT_TERMINAL_TITLE} ${separator}`;
 }
 
+/**
+ * The tab title while a TSP terminal renders: the session name (`omp` before
+ * there is one) and the branch's pull request. The terminal shows run state
+ * itself, so there is no brand or state separator.
+ */
+export function buildNativeTerminalTitle(sessionName: string | undefined, pullRequest: number | undefined): string {
+	const name = sessionName ?? NATIVE_TERMINAL_TITLE;
+	return pullRequest === undefined ? name : `${name} · #${pullRequest}`;
+}
+
 function emitTerminalTitle(): void {
 	// The teardown latch lives at the sink (`writeTerminalTitle`), so every path
 	// here is covered without a second check.
 	// An extension override owns the terminal verbatim; the terminal sink
 	// deduplicates repeated state updates.
+	const native = isNativeRendering();
 	const next =
 		terminalTitleRuntime.extensionOverride ??
-		buildTerminalTitleWithState(
-			terminalTitleRuntime.label,
-			terminalTitleRuntime.state,
-			terminalTitleRuntime.frame,
-			terminalTitleRuntime.enabled,
-			process.platform,
-			terminalTitleRuntime.style,
-			$env as NodeJS.ProcessEnv,
-			terminalTitleRuntime.nativeTitleFailed,
-		);
+		(native
+			? buildNativeTerminalTitle(terminalTitleRuntime.sessionName, terminalTitleRuntime.pullRequest)
+			: buildTerminalTitleWithState(
+					terminalTitleRuntime.label,
+					terminalTitleRuntime.state,
+					terminalTitleRuntime.frame,
+					terminalTitleRuntime.enabled,
+					process.platform,
+					terminalTitleRuntime.style,
+					$env as NodeJS.ProcessEnv,
+					terminalTitleRuntime.nativeTitleFailed,
+				));
 	// The composed working title is the only write that can fail into an
 	// animated OSC frame: on native failure it re-pins static (`:`), while a
 	// direct `setTerminalTitle` preserves its caller's title verbatim.
 	const recomposeStaticOnFailure =
+		!native &&
 		terminalTitleRuntime.extensionOverride === undefined &&
 		terminalTitleRuntime.state === "working" &&
 		terminalTitleRuntime.enabled &&
@@ -809,6 +886,7 @@ function stopTerminalTitleSpinner(): void {
 
 function startTerminalTitleSpinner(): void {
 	if (
+		isNativeRendering() ||
 		isStaticTitleHost() ||
 		terminalTitleRuntime.disposed ||
 		terminalTitleRuntime.timer ||
@@ -820,7 +898,8 @@ function startTerminalTitleSpinner(): void {
 	terminalTitleRuntime.timer = setInterval(() => {
 		terminalTitleRuntime.frame =
 			(terminalTitleRuntime.frame + 1) % TERMINAL_TITLE_SPINNER_STYLES[terminalTitleRuntime.style].length;
-		emitTerminalTitle();
+		// An extension override is frame-independent; the sink would dedupe it anyway.
+		if (terminalTitleRuntime.extensionOverride === undefined) emitTerminalTitle();
 	}, TITLE_SPINNER_INTERVAL_MS);
 	// Never keep the event loop alive for a cosmetic animation.
 	terminalTitleRuntime.timer.unref?.();
@@ -888,6 +967,13 @@ export function initTerminalTitleState(): void {
 	// Releasing the latch alone would leave a stopped timer behind a `working`
 	// state — a frozen spinner frame. Mirror the enable path and re-arm.
 	if (terminalTitleRuntime.state === "working" && terminalTitleRuntime.enabled) startTerminalTitleSpinner();
+	// A TSP terminal takes the plain native title while it renders; the
+	// classic `π > label` (and its spinner) comes back when it stops.
+	terminalTitleRuntime.unwatchNative ??= onNativeRenderingChange(native => {
+		if (native) stopTerminalTitleSpinner();
+		else if (terminalTitleRuntime.state === "working" && terminalTitleRuntime.enabled) startTerminalTitleSpinner();
+		emitTerminalTitle();
+	});
 }
 
 /**
@@ -898,7 +984,12 @@ export function initTerminalTitleState(): void {
  * shell's tab. Released only by {@link initTerminalTitleState}.
  */
 export function disposeTerminalTitleState(): void {
+	// The session ends with the UI: Tern must not resume it in this pane.
+	sessionFileSource = undefined;
+	reportTernSessionFile();
 	terminalTitleRuntime.disposed = true;
+	terminalTitleRuntime.unwatchNative?.();
+	terminalTitleRuntime.unwatchNative = undefined;
 	// `popTerminalTitle()` hands the terminal back to the shell, so the runtime no
 	// longer knows what is on screen: the stale dedupe cache (`lastTerminalTitle`,
 	// cleared below) must not swallow the first write after the latch releases.

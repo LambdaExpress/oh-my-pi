@@ -54,6 +54,9 @@ async function createAnchorSession(options: {
 	const mock = createMockModel({
 		provider: "deepseek",
 		id: options.modelId ?? "deepseek-v4-pro",
+		// Leave room for both the anchor's output budget and its input so the
+		// request's context-window safety cap does not truncate the anchor budget.
+		contextWindow: 1_000_000,
 		handler: () => ({ content: ["ok"] }),
 	});
 	authStorage.keys.setRuntime("deepseek", "test-key");

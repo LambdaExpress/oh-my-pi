@@ -8,11 +8,11 @@ import { HistoryStorage } from "@oh-my-pi/pi-coding-agent/session/history-storag
 import { TempDir } from "@oh-my-pi/pi-utils";
 
 async function corruptDatabase(dbPath: string): Promise<Uint8Array<ArrayBuffer>> {
-	const db = new Database(dbPath);
+	using db = new Database(dbPath);
 	db.run("CREATE TABLE IF NOT EXISTS preserved (value TEXT)");
 	db.prepare("INSERT INTO preserved (value) VALUES (?)").run("salvage this data");
 	db.run("PRAGMA wal_checkpoint(TRUNCATE)");
-	db.close();
+	db.close(true);
 
 	const damaged = await Bun.file(dbPath).bytes();
 	// Keep the SQLite header valid while corrupting the first b-tree page type.
@@ -28,7 +28,7 @@ async function expectQuarantinedDamage(dbPath: string, damaged: Uint8Array<Array
 		name => name.startsWith(prefix) && !name.endsWith("-wal") && !name.endsWith("-shm") && !name.endsWith("-journal"),
 	);
 	expect(backupNames).toHaveLength(1);
-	expect(await Bun.file(path.join(path.dirname(dbPath), backupNames[0]!)).bytes()).toEqual(damaged);
+	expect(await Bun.file(path.join(path.dirname(dbPath), backupNames[0]!, "database")).bytes()).toEqual(damaged);
 }
 
 test("agent startup quarantines corruption and persists new usage", async () => {
@@ -37,8 +37,11 @@ test("agent startup quarantines corruption and persists new usage", async () => 
 
 	AgentStorage.close();
 	const original = await AgentStorage.open(dbPath);
-	original.recordModelUsage("openai/damaged");
-	AgentStorage.close();
+	try {
+		original.recordModelUsage("openai/damaged");
+	} finally {
+		AgentStorage.close();
+	}
 	const damaged = await corruptDatabase(dbPath);
 
 	try {
@@ -64,8 +67,11 @@ test("history startup quarantines corruption and persists searchable prompts", a
 
 	HistoryStorage.close();
 	const original = HistoryStorage.open(dbPath);
-	await original.add("damaged history prompt", "/damaged", "damaged-session");
-	HistoryStorage.close();
+	try {
+		await original.add("damaged history prompt", "/damaged", "damaged-session");
+	} finally {
+		HistoryStorage.close();
+	}
 	const damaged = await corruptDatabase(dbPath);
 
 	try {
@@ -96,8 +102,11 @@ test("auth startup quarantines corruption and persists new credentials", async (
 	const dbPath = tempDir.join("auth.db");
 
 	const original = await SqliteAuthCredentialStore.open(dbPath);
-	await original.saveApiKey("damaged-provider", "damaged-secret");
-	original.close();
+	try {
+		await original.saveApiKey("damaged-provider", "damaged-secret");
+	} finally {
+		original.close();
+	}
 	const damaged = await corruptDatabase(dbPath);
 
 	const storage = await SqliteAuthCredentialStore.open(dbPath);
@@ -126,11 +135,15 @@ test("concurrent agent and auth startup share one private recovered database", a
 	AgentStorage.close();
 	let auth: SqliteAuthCredentialStore | undefined;
 	try {
-		const [agent, openedAuth] = await Promise.all([
+		const [openedAgent, openedAuth] = await Promise.allSettled([
 			AgentStorage.open(dbPath),
 			SqliteAuthCredentialStore.open(dbPath),
 		]);
-		auth = openedAuth;
+		if (openedAuth.status === "fulfilled") auth = openedAuth.value;
+		if (openedAgent.status === "rejected") throw openedAgent.reason;
+		if (openedAuth.status === "rejected") throw openedAuth.reason;
+		const agent = openedAgent.value;
+		auth = openedAuth.value;
 		agent.recordModelUsage("openai/concurrent-recovery");
 		await auth.saveApiKey("concurrent-provider", "concurrent-secret");
 		expect(agent.getModelUsageOrder()).toEqual(["openai/concurrent-recovery"]);
@@ -142,6 +155,18 @@ test("concurrent agent and auth startup share one private recovered database", a
 		}
 	} finally {
 		auth?.close();
+		AgentStorage.close();
+	}
+	const reopened = await SqliteAuthCredentialStore.open(dbPath);
+	try {
+		expect(reopened.getApiKey("concurrent-provider")).toBe("concurrent-secret");
+	} finally {
+		reopened.close();
+	}
+	try {
+		const reopenedAgent = await AgentStorage.open(dbPath);
+		expect(reopenedAgent.getModelUsageOrder()).toEqual(["openai/concurrent-recovery"]);
+	} finally {
 		AgentStorage.close();
 	}
 	await expectQuarantinedDamage(dbPath, damaged);

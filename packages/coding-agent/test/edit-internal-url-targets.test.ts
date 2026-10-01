@@ -2,16 +2,19 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { type EditMode, EditTool } from "@oh-my-pi/pi-coding-agent/edit";
 import { resolveLocalUrlToPath } from "@oh-my-pi/pi-coding-agent/internal-urls";
 import { InternalUrlRouter } from "@oh-my-pi/pi-coding-agent/internal-urls/router";
 import type { ProtocolHandler } from "@oh-my-pi/pi-coding-agent/internal-urls/types";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
+import { ToolError } from "@oh-my-pi/pi-tui/tools/tool-errors";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 let tmpDir: string;
 let artifactsDir: string;
+let settingsState: SettingsTestState;
 
 function createSession(): ToolSession {
 	const getArtifactsDir = () => artifactsDir;
@@ -34,14 +37,14 @@ function localFile(url: string): string {
 }
 
 beforeEach(async () => {
-	resetSettingsForTest();
+	settingsState = beginSettingsTest();
 	tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-edit-urls-"));
 	artifactsDir = path.join(tmpDir, "artifacts");
 	await Settings.init({ inMemory: true, cwd: tmpDir });
 });
 
 afterEach(async () => {
-	resetSettingsForTest();
+	restoreSettingsTestState(settingsState);
 	await removeWithRetries(tmpDir);
 });
 
@@ -78,13 +81,14 @@ describe("EditTool internal URL targets", () => {
 		const target = localFile("local://notes.md");
 		await Bun.write(target, "one\ntwo\n");
 
-		const result = await new EditTool(createSession(), "replace").execute("selector", {
-			path: "local://notes.md:2",
-			old_string: "two",
-			new_string: "TWO",
-		});
+		await expect(
+			new EditTool(createSession(), "replace").execute("selector", {
+				path: "local://notes.md:2",
+				old_string: "two",
+				new_string: "TWO",
+			}),
+		).rejects.toBeInstanceOf(ToolError);
 
-		expect(result.isError).toBe(true);
 		expect(await Bun.file(target).text()).toBe("one\ntwo\n");
 	});
 

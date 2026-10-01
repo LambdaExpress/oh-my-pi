@@ -128,22 +128,22 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 
 	it("refreshes Recent sessions when the active session receives a generated title", async () => {
 		await session.sessionManager.ensureOnDisk();
+		await session.sessionManager.setSessionName("Original Recent Session Title", "auto");
 		await mode.init({ suppressWelcomeIntro: true });
 
 		const renderUi = () => Bun.stripANSI(mode.ui.render(120).join("\n"));
 		const initial = renderUi();
-		expect(initial).toContain("Recent sessions");
-		expect(initial).toContain("Untitled");
+		expect(initial).toContain("Original Recent Session Title");
 		expect(initial).not.toContain("Generated Recent Session Title");
 
-		let resolveRefresh!: () => void;
-		const refreshed = new Promise<void>(resolve => {
-			resolveRefresh = resolve;
-		});
+		const { promise: refreshed, resolve: resolveRefresh } = Promise.withResolvers<void>();
 		const originalRequestRender = mode.ui.requestRender.bind(mode.ui);
 		vi.spyOn(mode.ui, "requestRender").mockImplementation((force?: boolean) => {
 			const result = originalRequestRender(force);
-			if (renderUi().includes("Generated Recent Session Title")) {
+			// The status trailer retitles synchronously; the welcome list reloads
+			// asynchronously. Wait for the list, not that earlier status repaint.
+			const welcome = mode.composer.welcome;
+			if (welcome && Bun.stripANSI(welcome.render(120).join("\n")).includes("Generated Recent Session Title")) {
 				resolveRefresh();
 			}
 			return result;
@@ -154,7 +154,7 @@ describe("InteractiveMode LSP startup welcome banner", () => {
 		const refreshedOutput = renderUi();
 
 		expect(refreshedOutput).toContain("Generated Recent Session Title");
-		expect(refreshedOutput).not.toContain("Untitled");
+		expect(refreshedOutput).not.toContain("Original Recent Session Title");
 	});
 
 	it("does not render LSP startup warnings when startup.quiet is enabled", () => {

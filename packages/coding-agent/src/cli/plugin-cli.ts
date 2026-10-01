@@ -188,7 +188,7 @@ export async function runPluginCommand(cmd: PluginCommandArgs): Promise<void> {
 			await handleDiscover(cmd.args, cmd.flags);
 			break;
 		case "upgrade":
-			await handleUpgrade(cmd.args, cmd.flags);
+			await handleUpgrade(manager, cmd.args, cmd.flags);
 			break;
 	}
 }
@@ -329,20 +329,41 @@ async function handleDiscover(args: string[], _flags: PluginCommandArgs["flags"]
 	}
 }
 
-async function handleUpgrade(args: string[], flags: PluginCommandArgs["flags"]): Promise<void> {
-	const pluginId = args[0];
-	// `upgrade` targets marketplace plugins, whose IDs are `name@marketplace`.
-	// An npm-installed plugin (e.g. a scoped `@scope/pkg`) never parses as one,
-	// so steer the user to the force-reinstall that actually upgrades it instead
-	// of the bare "Expected name@marketplace" parse error (#11090).
-	if (pluginId && !parsePluginId(pluginId)) {
-		console.error(chalk.red(`Invalid plugin ID: "${pluginId}". Marketplace plugins upgrade as "name@marketplace".`));
-		console.error(
-			chalk.yellow(`For an npm-installed plugin, upgrade with: ${APP_NAME} plugin install ${pluginId} --force`),
-		);
-		process.exit(1);
-	}
+async function handleUpgrade(
+	pluginManager: PluginManager,
+	args: string[],
+	flags: PluginCommandArgs["flags"],
+): Promise<void> {
+	let pluginId = args[0];
 	const manager = await makeMarketplaceManager();
+	// Marketplace IDs are `name@marketplace`; anything else is either a bare
+	// marketplace plugin name or an npm/git-installed plugin (e.g. `ida-mcp`
+	// from `github:HexRaysSA/ida-mcp#latest`, or a scoped `@scope/pkg`).
+	if (pluginId && !parsePluginId(pluginId)) {
+		const bareName = pluginId;
+		const candidates = (await manager.listInstalledPlugins())
+			.map(p => p.id)
+			.filter(id => id.slice(0, id.lastIndexOf("@")) === bareName);
+		const uniqueCandidates = [...new Set(candidates)];
+		if (uniqueCandidates.length > 1) {
+			console.error(
+				chalk.red(
+					t("{name} is installed from {count} marketplaces. Qualify it: {candidates}", {
+						name: bareName,
+						count: uniqueCandidates.length,
+						candidates: uniqueCandidates.join(", "),
+					}),
+				),
+			);
+			process.exit(1);
+		}
+		if (uniqueCandidates.length === 1) {
+			pluginId = uniqueCandidates[0] as string;
+		} else {
+			await upgradePackagePlugin(pluginManager, bareName, flags);
+			return;
+		}
+	}
 	try {
 		if (pluginId) {
 			if (flags.scope) {
@@ -396,6 +417,64 @@ async function handleUpgrade(args: string[], flags: PluginCommandArgs["flags"]):
 	}
 }
 
+/** Upgrade an npm/git-installed plugin in place from its recorded source. */
+async function upgradePackagePlugin(
+	manager: PluginManager,
+	name: string,
+	flags: PluginCommandArgs["flags"],
+): Promise<void> {
+	if (flags.scope === "project") {
+		console.error(
+			chalk.yellow(
+				t("Warning: --scope is only supported for marketplace plugins (name@marketplace). Ignoring for {name}.", {
+					name,
+				}),
+			),
+		);
+	}
+	try {
+		const { from, plugin, changed } = await manager.upgrade(name);
+		if (flags.json) {
+			console.log(
+				JSON.stringify({ upgraded: plugin.name, from: from ?? null, to: plugin.version, changed }, null, 2),
+			);
+		} else if (!changed) {
+			console.log(
+				chalk.green(t("{name} is up to date ({version})", { name: plugin.name, version: plugin.version })),
+			);
+		} else if (from === plugin.version) {
+			console.log(
+				chalk.green(
+					t("Upgraded {name} to a new revision ({version})", { name: plugin.name, version: plugin.version }),
+				),
+			);
+		} else {
+			console.log(
+				chalk.green(
+					t(from ? "Upgraded {name} from {from} to {version}" : "Upgraded {name} to {version}", {
+						name: plugin.name,
+						from: from ?? "",
+						version: plugin.version,
+					}),
+				),
+			);
+		}
+	} catch (err) {
+		console.error(
+			chalk.red(t("Failed to upgrade {name}: {error}", { name, error: err instanceof Error ? err.message : err })),
+		);
+		process.exit(1);
+	}
+}
+
+function printLinkPreview(pluginPath: string, json?: boolean): void {
+	if (json) {
+		console.log(JSON.stringify({ dryRun: true, action: "link", path: pluginPath }, null, 2));
+	} else {
+		console.log(chalk.dim(t("[dry-run] Would link {spec}", { spec: pluginPath })));
+	}
+}
+
 async function handleInstall(
 	manager: PluginManager,
 	packages: string[],
@@ -429,13 +508,15 @@ async function handleInstall(
 						if (flags.json) {
 							console.log(JSON.stringify(preview, null, 2));
 						} else {
-							console.log(chalk.dim(`[dry-run] Would install ${spec}`));
+							console.log(chalk.dim(t("[dry-run] Would install {spec}", { spec })));
 						}
 					},
 				);
 				if (handled) continue;
 			} catch (err) {
-				console.error(chalk.red(`${theme.status.error} Failed to install ${spec}: ${err}`));
+				console.error(
+					chalk.red(`${theme.status.error} ${t("Failed to install {spec}: {error}", { spec, error: err })}`),
+				);
 				process.exit(1);
 			}
 			try {
@@ -486,11 +567,7 @@ async function handleInstall(
 				);
 			}
 			if (flags.dryRun) {
-				if (flags.json) {
-					console.log(JSON.stringify({ dryRun: true, action: "link", path: target.path }, null, 2));
-				} else {
-					console.log(chalk.dim(t("[dry-run] Would link {spec}", { spec })));
-				}
+				printLinkPreview(spec, flags.json);
 				continue;
 			}
 			try {
@@ -729,10 +806,19 @@ async function handleList(manager: PluginManager, flags: { json?: boolean }): Pr
 	}
 }
 
-async function handleLink(manager: PluginManager, paths: string[], flags: { json?: boolean }): Promise<void> {
+async function handleLink(
+	manager: PluginManager,
+	paths: string[],
+	flags: { json?: boolean; dryRun?: boolean },
+): Promise<void> {
 	if (paths.length === 0) {
 		console.error(chalk.red(t("Usage: {app} plugin link <path>", { app: APP_NAME })));
 		process.exit(1);
+	}
+
+	if (flags.dryRun) {
+		printLinkPreview(paths[0], flags.json);
+		return;
 	}
 
 	try {
@@ -1168,6 +1254,7 @@ ${t("  enable <pkg>                   Enable a disabled plugin")}
 ${t("  disable <pkg>                  Disable plugin without uninstalling")}
 ${t("  marketplace <cmd>            Manage marketplace sources (add, remove, update, list)")}
 ${t("  discover [marketplace]        Browse available marketplace plugins")}
+${t("  upgrade [plugin]              Upgrade marketplace or npm/git-installed plugins")}
 
 ${chalk.bold(t("Feature Syntax:"))}
 ${t("  pkg                Install with default features")}
@@ -1194,7 +1281,7 @@ ${t("  --json           Output as JSON")}
 ${t("  --fix            Attempt automatic fixes (doctor)")}
 ${t("  --force          Overwrite without prompting (install)")}
 ${t("  --scope <scope>  Install scope: user (default) or project (install name@marketplace)")}
-${t("  --dry-run        Preview changes without applying (install)")}
+${t("  --dry-run        Preview changes without applying (install, link, uninstall)")}
 ${t("  -l, --local      Use project-local overrides")}
 
 ${chalk.bold(t("Examples:"))}

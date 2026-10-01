@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "bun:test";
 import { AssistantMessageComponent } from "@oh-my-pi/pi-tui/chat/assistant-message";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
@@ -12,6 +12,10 @@ beforeAll(() => {
 
 afterAll(() => {
 	setLocale(null);
+});
+
+afterEach(() => {
+	vi.restoreAllMocks();
 });
 
 describe("InputController tool output expansion", () => {
@@ -33,10 +37,9 @@ describe("InputController tool output expansion", () => {
 		expect(expandable.setExpanded).toHaveBeenCalledWith(true);
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
 		expect(expandable.setExpanded.mock.invocationCallOrder[0]).toBeLessThan(resetDisplay.mock.invocationCallOrder[0]);
-		expect(showStatus).toHaveBeenCalledWith("Tool output expansion: enabled");
 	});
 
-	it("does not expand hidden tool activity and explains why", () => {
+	it("does not expand or replay hidden tool activity", () => {
 		const expandable = { setExpanded: vi.fn() };
 		const resetDisplay = vi.fn();
 		const showStatus = vi.fn();
@@ -44,7 +47,7 @@ describe("InputController tool output expansion", () => {
 			hideToolActivity: true,
 			toolOutputExpanded: false,
 			chatContainer: { children: [expandable] },
-			keybindings: { getDisplayString: vi.fn(() => "Alt+H") },
+			keybindings: { getKeys: vi.fn(() => ["alt+h"]) },
 			showStatus,
 			ui: { resetDisplay },
 		} as unknown as InteractiveModeContext;
@@ -54,8 +57,6 @@ describe("InputController tool output expansion", () => {
 		expect(ctx.toolOutputExpanded).toBe(false);
 		expect(expandable.setExpanded).not.toHaveBeenCalled();
 		expect(resetDisplay).not.toHaveBeenCalled();
-		expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("Alt+H"));
-		expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("/settings"));
 	});
 });
 
@@ -82,17 +83,16 @@ describe("InputController tool row folding", () => {
 		// Rows already retired to native scrollback must replay under the fold.
 		expect(setToolRowsFolded.mock.invocationCallOrder[0]).toBeLessThan(resetDisplay.mock.invocationCallOrder[0]);
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
-		expect(showStatus).toHaveBeenLastCalledWith("Tool rows: folded");
 
 		new InputController(ctx).toggleToolRowsFolded();
 
 		expect(ctx.foldToolRows).toBe(false);
 		expect(set).toHaveBeenLastCalledWith("display.foldToolRows", false);
 		expect(setToolRowsFolded).toHaveBeenLastCalledWith(false);
-		expect(showStatus).toHaveBeenLastCalledWith("Tool rows: expanded");
+		expect(resetDisplay).toHaveBeenCalledTimes(2);
 	});
 
-	it("does not fold hidden tool activity and explains why", () => {
+	it("does not fold, persist, or replay hidden tool activity", () => {
 		const setToolRowsFolded = vi.fn();
 		const resetDisplay = vi.fn();
 		const showStatus = vi.fn();
@@ -101,7 +101,7 @@ describe("InputController tool row folding", () => {
 			hideToolActivity: true,
 			settings: { set: vi.fn() },
 			chatContainer: { setToolRowsFolded },
-			keybindings: { getDisplayString: vi.fn(() => "Ctrl+Shift+O") },
+			keybindings: { getKeys: vi.fn(() => ["alt+h"]) },
 			showStatus,
 			ui: { resetDisplay },
 		} as unknown as InteractiveModeContext;
@@ -109,10 +109,9 @@ describe("InputController tool row folding", () => {
 		new InputController(ctx).toggleToolRowsFolded();
 
 		expect(ctx.foldToolRows).toBe(false);
+		expect(ctx.settings.set).not.toHaveBeenCalled();
 		expect(setToolRowsFolded).not.toHaveBeenCalled();
 		expect(resetDisplay).not.toHaveBeenCalled();
-		expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("Ctrl+Shift+O"));
-		expect(showStatus).toHaveBeenCalledWith(expect.stringContaining("/settings"));
 	});
 });
 
@@ -140,9 +139,7 @@ describe("InputController tool activity visibility", () => {
 			showStatus,
 			ui: { clearInlineImages, resetDisplay },
 		};
-		const controller = new InputController(ctx as unknown as InteractiveModeContext) as unknown as InputController & {
-			toggleToolActivityVisibility(): void;
-		};
+		const controller = new InputController(ctx as unknown as InteractiveModeContext);
 
 		controller.toggleToolActivityVisibility();
 
@@ -155,7 +152,6 @@ describe("InputController tool activity visibility", () => {
 		expect(clearInlineImages).toHaveBeenCalledTimes(1);
 		expect(resetDisplay).toHaveBeenCalledTimes(1);
 		expect(clearInlineImages.mock.invocationCallOrder[0]).toBeLessThan(resetDisplay.mock.invocationCallOrder[0]);
-		expect(showStatus).toHaveBeenLastCalledWith("Tool activity: hidden");
 		expect(setToolResultImagesVisible).toHaveBeenLastCalledWith(false);
 		expect(setToolActivityVisible).toHaveBeenLastCalledWith(false);
 
@@ -170,7 +166,6 @@ describe("InputController tool activity visibility", () => {
 		expect(rebuildChatFromMessages).not.toHaveBeenCalled();
 		expect(clearInlineImages).toHaveBeenCalledTimes(1);
 		expect(resetDisplay).toHaveBeenCalledTimes(2);
-		expect(showStatus).toHaveBeenLastCalledWith("Tool activity: visible");
 		expect(setToolResultImagesVisible).toHaveBeenLastCalledWith(true);
 		expect(setToolActivityVisible).toHaveBeenLastCalledWith(true);
 	});

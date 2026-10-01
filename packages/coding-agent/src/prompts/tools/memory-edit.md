@@ -1,11 +1,11 @@
-Edit Mnemopi long-term memories by id. Only ids returned by `recall`.
+Edit Mnemopi long-term memories by id. Only ids returned by `{{toolRefs.recall}}`.
 
 Operations:
 - `update`: working memory; replace content and/or importance.
 - `forget`: permanently delete a working memory or recalled fact.
 - `invalidate`: softly supersede working or episodic memory; optional `replacement_id`.
 
-Fact ids — `recall` results marked `[facts]`: cannot be updated or invalidated. Inspect with `read memory://<id>`; `update`/`invalidate` → `not_editable`. To correct a fact, forget it and retain the corrected fact.
+Fact ids — `{{toolRefs.recall}}` results marked `[facts]`: cannot be updated or invalidated. Inspect with `read memory://<id>`; `update`/`invalidate` → `not_editable`. To correct a fact, forget it and use `{{toolRefs.retain}}` to retain the corrected fact.
 
 Prefer `invalidate` for stale memory whose history may still be useful. Use `forget` only for content requiring hard deletion.
 

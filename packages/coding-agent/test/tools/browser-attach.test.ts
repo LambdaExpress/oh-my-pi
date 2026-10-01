@@ -434,7 +434,7 @@ describe("pickElectronTarget", () => {
 			let navigationRequests = 0;
 			const redirect = Bun.serve({
 				hostname: "127.0.0.1",
-				port: 0,
+				port: await findFreeCdpPort(),
 				fetch() {
 					navigationRequests++;
 					return Response.redirect(`http://127.0.0.1:${deadPort}/refused`, 302);
@@ -488,8 +488,11 @@ describe("resolveSpawnArgs", () => {
 		expect(owned).toContain("--password-store=gnome");
 		expect(owned).not.toContain("--password-store=basic");
 
-		const borrowed = resolveSpawnArgs("/usr/bin/google-chrome-stable", ["--user-data-dir=/home/me/.config/chrome"]);
-		expect(borrowed).toEqual(["--user-data-dir=/home/me/.config/chrome"]);
+		const borrowed = resolveSpawnArgs("/usr/bin/google-chrome-stable", [
+			`--user-data-dir=${path.join(os.tmpdir(), "borrowed-chrome-profile")}`,
+		]);
+		expect(borrowed).not.toContain("--use-mock-keychain");
+		expect(borrowed.some(arg => arg.startsWith("--password-store"))).toBe(false);
 	});
 });
 

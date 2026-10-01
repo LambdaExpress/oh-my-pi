@@ -18,9 +18,10 @@ Shared edits need one integration owner{{#if ircEnabled}}; siblings coordinate v
 
 # Inputs
 `name`: CamelCase ≤32, auto-generated if omitted; address agent by name. `outputSchema` overrides agent/session schemas; omit unless this call needs a custom contract — omission inherits the selected agent or parent-session schema. NEVER `false`, which rejects every output.
+`solutionSpace`: describe how open-ended the child's problem is: whether the fix or design is given, or which causes or designs remain open. Volume of work does not widen it; NEVER mention sibling agents or coordination. (`one fix: rename, names given`; `one fix: slice end in paginate`; `single-flight cache load; races easy to miss`; `several retry API shapes; error classes to choose`; `deadlock cause open, no repro`)
 {{#if evalToolsEnabled}}`tools`: eval-defined, run in your kernel.
-{{/if}}{{#if effortEnabled}}`effort`: optional per-task tier by complexity — low → `"lo"`, moderate → `"med"`, high → `"hi"`; omit to keep the agent's default.
-{{/if}}`schemaMode`: default permissive warns after retries; strict fails.
+{{/if}}{{#if effortEnabled}}`effort`: optional per-task tier by problem complexity and open-endedness — low → `"lo"`, moderate → `"med"`, high → `"hi"`; omit to keep the agent's default.
+{{/if}}`schemaMode`: default permissive warns after retries; strict fails. Direct tool calls use `schemaMode`; Python Eval's `agent(...)` helper uses `schema_mode`.
 {{#if isolationEnabled}}{{#if applyIsolatedChanges}}`isolated`: worktree; successful changes apply to parent.
 {{else}}`isolated`: worktree; changes retained, not applied.
 {{/if}}{{/if}}Children start blank;{{#if ircEnabled}} parent IRC steers immediately;{{/if}} large payloads via `local://<path>`, NEVER inline.

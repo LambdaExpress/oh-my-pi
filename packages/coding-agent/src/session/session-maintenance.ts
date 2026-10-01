@@ -44,6 +44,7 @@ import {
 } from "@oh-my-pi/pi-agent-core/compaction";
 import {
 	DEFAULT_PRUNE_CONFIG,
+	type PruneResult,
 	pruneSupersededToolResults,
 	pruneToolOutputs,
 	readToolSupersedeKey,
@@ -60,7 +61,7 @@ import type {
 import * as AIError from "@oh-my-pi/pi-ai/error";
 import { preferredDialect } from "@oh-my-pi/pi-catalog/identity";
 import { modelsAreEqual } from "@oh-my-pi/pi-catalog/models";
-import { isRecord, logger, Snowflake, stringifyJson } from "@oh-my-pi/pi-utils";
+import { isRecord, logger, prompt, Snowflake, stringifyJson } from "@oh-my-pi/pi-utils";
 import * as snapcompact from "@oh-my-pi/snapcompact";
 import { writeArtifact } from "./artifacts";
 import type { ModelRegistry } from "../config/model-registry";
@@ -106,6 +107,7 @@ import type { ShakeMode, ShakeResult } from "./shake-types";
 import { resolveSpeculationLeadTokens, SPECULATION_LEAD_MIN_TOKENS } from "./speculation-lead";
 import experimentalContextNotesReminderPrompt from "../prompts/system/experimental-context-notes-reminder.md" with { type: "text" };
 import experimentalContextRolloverPrompt from "../prompts/system/experimental-context-rollover.md" with { type: "text" };
+import lengthStopRetryTemplate from "../prompts/system/length-stop-retry.md" with { type: "text" };
 
 import {
 	type CompactionSettings,
@@ -495,6 +497,11 @@ export interface SessionMaintenanceHost {
 	): Promise<HandoffResult | undefined>;
 	removeAssistantMessageFromActiveContext(message: AssistantMessage): void;
 	dropPersistedAssistantTurn(message: AssistantMessage): Promise<string | undefined>;
+	/**
+	 * Keep a terminal failure whose turn was dropped from history visible to
+	 * post-settle readers (`AgentSession.getLastAssistantMessage`) until the next run.
+	 */
+	retainTerminalFailure(message: AssistantMessage): void;
 	runRecoveryCompactionWithRollback(
 		reason: "overflow" | "incomplete",
 		message: AssistantMessage,
@@ -664,6 +671,20 @@ export class SessionMaintenance {
 		return { ...config, protectedTools: [...config.protectedTools, planMatcher] };
 	}
 
+	/**
+	 * Durably commit a prune pass, restoring the blanked results when the rewrite
+	 * fails so live context never diverges from the history its derived state
+	 * (advisor prefix, todo phases, provider sessions) was built from.
+	 */
+	async #persistPrune(result: PruneResult): Promise<void> {
+		try {
+			await this.#host.sessionManager.rewriteEntries();
+		} catch (error) {
+			result.undo();
+			throw error;
+		}
+	}
+
 	async #pruneToolOutputs(): Promise<{ prunedCount: number; tokensSaved: number } | undefined> {
 		const branchEntries = this.#host.sessionManager.getBranch();
 		const keepBoundaryId = getLatestCompactionEntry(branchEntries)?.firstKeptEntryId;
@@ -685,7 +706,7 @@ export class SessionMaintenance {
 			return undefined;
 		}
 
-		await this.#host.sessionManager.rewriteEntries();
+		await this.#persistPrune(result);
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAdvisorPrefix("prune-tool-outputs");
@@ -731,7 +752,7 @@ export class SessionMaintenance {
 			return undefined;
 		}
 
-		await this.#host.sessionManager.rewriteEntries();
+		await this.#persistPrune(result);
 		const sessionContext = this.#host.buildDisplaySessionContext();
 		this.#host.agent.replaceMessages(sessionContext.messages);
 		this.#host.rebaseAdvisorPrefix("prune-stale-tool-results");
@@ -1192,12 +1213,12 @@ export class SessionMaintenance {
 			const effectiveSettings = resolveMethodSettings(compactionSettings, selectedMethod);
 			const availableModels = this.#host.modelRegistry.getAvailable();
 			const requireProviderRemote = selectedMethod === "remote" && !effectiveSettings.remoteEndpoint;
-			const compactionCandidates = this.#getCompactionModelCandidates(
-				availableModels,
-				requireProviderRemote
-					? candidate => canUseLiveProviderNativeCompaction(candidate, activeModel, effectiveSettings)
-					: undefined,
-			);
+			const localCompactionCandidates = this.#getCompactionModelCandidates(availableModels);
+			const compactionCandidates = requireProviderRemote
+				? localCompactionCandidates.filter(candidate =>
+						canUseLiveProviderNativeCompaction(candidate, activeModel, effectiveSettings),
+					)
+				: localCompactionCandidates;
 			if (requireProviderRemote && compactionCandidates.length === 0) {
 				this.#host.emitNotice(
 					"warning",
@@ -1440,6 +1461,7 @@ export class SessionMaintenance {
 							codexCompaction,
 						},
 						compactionCandidates,
+						localCompactionCandidates,
 					);
 					summary = result.summary;
 					shortSummary = result.shortSummary;
@@ -2080,9 +2102,10 @@ export class SessionMaintenance {
 		}
 		const model = this.#model;
 		if (!model) return;
-		const method = resolveSpeculationMethod(model, settings);
+		const method = resolveSpeculationMethod(model, settings, {
+			skipRemote: this.#nativeSpeculationFailed(model),
+		});
 		if (!method) return;
-		if (method === "remote" && this.#failedNativeSpeculation === this.#nativeSpeculationKey(model)) return;
 		this.#startSpeculationRun(contextTokens, method);
 	}
 
@@ -2122,6 +2145,11 @@ export class SessionMaintenance {
 		return `${this.#host.sessionManager.getSessionId()}/${model.provider}/${model.id}`;
 	}
 
+	/** Whether `model`'s native speculation already failed for good this cycle. */
+	#nativeSpeculationFailed(model: Model): boolean {
+		return this.#failedNativeSpeculation === this.#nativeSpeculationKey(model);
+	}
+
 	/**
 	 * Grace band above the compaction threshold: when a single turn jumps past
 	 * the threshold before the background speculation armed (or even started),
@@ -2149,9 +2177,10 @@ export class SessionMaintenance {
 		if (this.#host.extensionRunner?.hasHandlers("session_before_compact")) return false;
 		const model = this.#model;
 		if (!model) return false;
-		const method = resolveSpeculationMethod(model, settings);
+		const method = resolveSpeculationMethod(model, settings, {
+			skipRemote: this.#nativeSpeculationFailed(model),
+		});
 		if (!method) return false;
-		if (method === "remote" && this.#failedNativeSpeculation === this.#nativeSpeculationKey(model)) return false;
 		const thresholdTokens = resolveThresholdTokens(contextWindow, settings);
 		const graceCapTokens = Math.min(
 			thresholdTokens + resolveSpeculationLeadTokens(thresholdTokens),
@@ -2218,12 +2247,13 @@ export class SessionMaintenance {
 			// No hookCompaction is passed above, so "fromHook" is unreachable;
 			// the guard just narrows the union.
 			if (compactionPrep.kind === "fromHook") return clear();
-			const candidates = this.#getCompactionModelCandidates(
-				this.#host.modelRegistry.getAvailable(),
+			const localCandidates = this.#getCompactionModelCandidates(this.#host.modelRegistry.getAvailable());
+			const candidates =
 				method === "remote" && !effectiveSettings.remoteEndpoint
-					? candidate => canUseLiveProviderNativeCompaction(candidate, model, effectiveSettings)
-					: undefined,
-			);
+					? localCandidates.filter(candidate =>
+							canUseLiveProviderNativeCompaction(candidate, model, effectiveSettings),
+						)
+					: localCandidates;
 			if (candidates.length === 0) return clear();
 			const codexCompaction = createCodexCompactionContext({
 				trigger: "auto",
@@ -2246,6 +2276,7 @@ export class SessionMaintenance {
 					preferWebsockets: false,
 				},
 				candidates,
+				localCandidates,
 			);
 			const effectiveMethod = result.effectiveMethod ?? method;
 			armed = {
@@ -3115,6 +3146,9 @@ export class SessionMaintenance {
 						attempts,
 					});
 					this.#host.emitNotice("error", finalError, "compaction");
+					// Without this the dropped turn leaves no error behind, so the task
+					// executor reads the run as idle and re-prompts it into the same loop.
+					this.#host.retainTerminalFailure({ ...assistantMessage, stopReason: "error", errorMessage: finalError });
 					return COMPACTION_CHECK_BLOCK_AUTOMATIC_CONTINUATION;
 				}
 				this.#incompleteRecoveryAttempts++;
@@ -3122,6 +3156,26 @@ export class SessionMaintenance {
 					// Nothing delivered and the window still has room: compaction would
 					// only rewrite history the next attempt does not need shrunk.
 					await this.#host.dropPersistedAssistantTurn(assistantMessage);
+					// The dropped turn spent the output cap on reasoning. Re-sending the
+					// same context re-runs the same plan into the same cap, so tell the
+					// model what happened and to act in smaller steps.
+					if (assistantMessage.usage.output > 0) {
+						this.#host.agent.appendMessage({
+							role: "developer",
+							content: [
+								{
+									type: "text",
+									text: prompt.render(lengthStopRetryTemplate, {
+										outputTokens: assistantMessage.usage.output,
+										retryCount: this.#incompleteRecoveryAttempts,
+										maxRetries: INCOMPLETE_RECOVERY_MAX_RETRIES,
+									}),
+								},
+							],
+							attribution: "agent",
+							timestamp: Date.now(),
+						});
+					}
 					logger.debug("Retrying response.incomplete without compaction (below threshold)", {
 						model: `${assistantMessage.provider}/${assistantMessage.model}`,
 						contextTokens: incompleteContextTokens,
@@ -3315,15 +3369,11 @@ export class SessionMaintenance {
 		return candidate;
 	}
 
-	#getCompactionModelCandidates(availableModels: Model[], filter?: (model: Model) => boolean): Model[] {
-		return this.resolveCompactionModelCandidates(this.#model, availableModels, filter);
+	#getCompactionModelCandidates(availableModels: Model[]): Model[] {
+		return this.resolveCompactionModelCandidates(this.#model, availableModels);
 	}
 
-	resolveCompactionModelCandidates(
-		preferredModel: Model | null | undefined,
-		availableModels: Model[],
-		filter?: (model: Model) => boolean,
-	): Model[] {
+	resolveCompactionModelCandidates(preferredModel: Model | null | undefined, availableModels: Model[]): Model[] {
 		const candidates: Model[] = [];
 		const seen = new Set<string>();
 
@@ -3332,10 +3382,6 @@ export class SessionMaintenance {
 			const key = `${model.provider}/${model.id}`;
 			if (seen.has(key)) return;
 			seen.add(key);
-			// `seen` still tracks rejected models so the largest-context fallback
-			// scan below doesn't reintroduce them; the filter just suppresses
-			// inclusion in this caller's candidate chain.
-			if (filter && !filter(model)) return;
 			candidates.push(model);
 		};
 
@@ -3384,12 +3430,29 @@ export class SessionMaintenance {
 		preparation: CompactionPreparation,
 		customInstructions: string | undefined,
 		signal: AbortSignal,
-		options?: SummaryOptions,
-		precomputedCandidates?: Model[],
+		options: SummaryOptions,
+		candidates: Model[],
+		localFallbackCandidates: Model[],
 	): Promise<MaintenanceCompactionResult> {
-		const candidates =
-			precomputedCandidates ?? this.#getCompactionModelCandidates(this.#host.modelRegistry.getAvailable());
-		const telemetry = resolveTelemetry(this.#host.agent.telemetry, this.#host.sessionId());
+		const compactionOptions: SummaryOptions = {
+			...options,
+			convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
+			telemetry: resolveTelemetry(this.#host.agent.telemetry, this.#host.sessionId()),
+			// Native and local fallback requests share the user's thinking selection
+			// and transport. compact() clamps effort for each candidate model.
+			thinkingLevel: this.#host.thinkingLevel(),
+			tools: this.#host.agent.state.tools,
+			sessionId: options.sessionId ?? this.#host.sessionId(),
+			promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
+			providerSessionState: this.#host.providerSessionState,
+			preferWebsockets: options.preferWebsockets ?? this.#host.preferWebsockets(),
+			// Bracket every summary request with the session's provider concurrency
+			// cap, including local recovery after a failed native request.
+			completeImpl: async (requestModel, requestContext, requestOptions) => {
+				const stream = await this.#host.sideStreamFn(requestModel, requestContext, requestOptions);
+				return stream.result();
+			},
+		};
 		let nativeCompactionFailure: { error: NativeCompactionError; provider: string } | undefined;
 
 		for (const candidate of candidates) {
@@ -3414,32 +3477,8 @@ export class SessionMaintenance {
 					this.#host.obfuscateTextForProvider(customInstructions),
 					signal,
 					{
-						...options,
+						...compactionOptions,
 						metadata: this.#host.agent.metadataForProvider(candidate.provider),
-						convertToLlm: messages => this.#host.convertToLlmForSideRequest(messages),
-						telemetry,
-						// Honor the user's /model thinking selection (incl. `off`) on
-						// the manual `/compact` path. Clamped per-model inside compact()
-						// via resolveCompactionEffort so unsupported-effort models
-						// (xai-oauth/grok-build) don't trip requireSupportedEffort.
-						thinkingLevel: this.#host.thinkingLevel(),
-						tools: this.#host.agent.state.tools,
-						sessionId: this.#host.sessionId(),
-						promptCacheKey: this.#host.agent.promptCacheKey ?? this.#host.agent.sessionId,
-						providerSessionState: this.#host.providerSessionState,
-						preferWebsockets: this.#host.preferWebsockets(),
-						// Route every summarization HTTP request through the
-						// session's side-stream transport so the provider
-						// concurrency cap (e.g. providers.ollama-cloud.maxConcurrency)
-						// brackets compaction the same way it brackets the live
-						// agent turn — without this, multiple ollama-cloud
-						// subagents auto/manually compacting issued uncapped
-						// summary requests in parallel (chatgpt-codex review on
-						// #3751).
-						completeImpl: async (requestModel, requestContext, requestOptions) => {
-							const stream = await this.#host.sideStreamFn(requestModel, requestContext, requestOptions);
-							return stream.result();
-						},
 					},
 				);
 			} catch (error) {
@@ -3460,8 +3499,8 @@ export class SessionMaintenance {
 				preparation,
 				customInstructions,
 				signal,
-				options,
-				candidates,
+				compactionOptions,
+				localFallbackCandidates,
 			);
 			if (fallback) return fallback;
 			throw nativeCompactionFailure.error;
@@ -4309,7 +4348,7 @@ export class SessionMaintenance {
 			if (
 				candidate === "remote" &&
 				liveModel &&
-				this.#failedNativeSpeculation === this.#nativeSpeculationKey(liveModel) &&
+				this.#nativeSpeculationFailed(liveModel) &&
 				methods
 					.slice(index + 1)
 					.some(next =>
@@ -4885,12 +4924,13 @@ export class SessionMaintenance {
 				preserveData = { ...compactionPrep.preserveData, ...snapcompactResult.preserveData };
 			} else {
 				const liveModel = this.#model;
-				const candidates = this.#getCompactionModelCandidates(
-					availableModels,
+				const localCandidates = this.#getCompactionModelCandidates(availableModels);
+				const candidates =
 					method === "remote" && !effectiveSettings.remoteEndpoint && liveModel
-						? candidate => canUseLiveProviderNativeCompaction(candidate, liveModel, effectiveSettings)
-						: undefined,
-				);
+						? localCandidates.filter(candidate =>
+								canUseLiveProviderNativeCompaction(candidate, liveModel, effectiveSettings),
+							)
+						: localCandidates;
 				const retrySettings = cfgRetry.get(this.#host.settings);
 				const telemetry = resolveTelemetry(this.#host.agent.telemetry, this.#host.sessionId());
 				let compactResult: MaintenanceCompactionResult | undefined;
@@ -5086,7 +5126,7 @@ export class SessionMaintenance {
 						undefined,
 						autoCompactionSignal,
 						compactionOptions,
-						candidates,
+						localCandidates,
 					);
 				}
 

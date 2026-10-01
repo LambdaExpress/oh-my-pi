@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use pi_edit::modes::hashline::{
 	format::{
 		format_cut_header, format_hashline_header, format_numbered_line, format_numbered_lines,
@@ -555,6 +553,25 @@ fn input_recovers_apply_patch_header_noise_and_spaces() {
 }
 
 #[test]
+fn input_accepts_hash_in_tagged_paths_only() {
+	// yadm alt files (`conf.yaml##hostname.home`) are real; the trailing tag
+	// separates path from tag, on both the strict and the recovery path.
+	for (header, path) in [
+		("[conf.yaml##hostname.home#1a2b]", "conf.yaml##hostname.home"),
+		("[*** Update File: conf.yaml##os.Linux#1A2B]", "conf.yaml##os.Linux"),
+	] {
+		let patch = Patch::parse(&format!("{header}\nPUT 1:\n+x"), &options()).unwrap();
+		assert_eq!(patch.sections[0].path, path, "{header}");
+		assert_eq!(patch.sections[0].file_hash.as_deref(), Some("1A2B"), "{header}");
+	}
+	// Untagged, a `#` is a malformed tag, not a file name.
+	let error = Patch::parse("[conf.yaml##hostname.home]\nPUT 1:\n+x", &options())
+		.unwrap_err()
+		.to_string();
+	assert!(error.contains("Input header must be"), "{error}");
+}
+
+#[test]
 fn input_recovers_headers_nested_in_apply_patch_envelope_markers() {
 	// Observed in an edit-benchmark trace: the model wrapped the section
 	// header in apply_patch framing. The bracketed sentinel must be consumed
@@ -622,10 +639,18 @@ fn input_supports_fallback_path_and_absolute_paths_in_cwd() {
 	let fallback = SplitOptions { cwd: None, path: Some("a.ts") };
 	let patch = Patch::parse("PUT <1:\n+x", &fallback).unwrap();
 	assert_eq!(patch.sections[0].path, "a.ts");
-	let cwd = Path::new("/tmp/work");
-	let options = SplitOptions { cwd: Some(cwd), path: None };
-	let patch = Patch::parse("[/tmp/work/src/a.ts]\nPUT <1:\n+x", &options).unwrap();
-	assert_eq!(patch.sections[0].path, "src/a.ts");
+	let tmp = tempfile::tempdir().unwrap();
+	let cwd = tmp.path().join("work");
+	let options = SplitOptions { cwd: Some(&cwd), path: None };
+	for path in [cwd.join("src/a.ts"), cwd.join("src/../src/a.ts")] {
+		let patch = Patch::parse(&format!("[{}]\nPUT <1:\n+x", path.display()), &options).unwrap();
+		assert_eq!(patch.sections[0].path, "src/a.ts");
+	}
+	for path in [tmp.path().join("work-other/src/a.ts"), cwd.join("../outside.ts")] {
+		let authored = path.to_str().unwrap();
+		let patch = Patch::parse(&format!("[{authored}]\nPUT <1:\n+x"), &options).unwrap();
+		assert_eq!(patch.sections[0].path, authored);
+	}
 	assert!(Patch::parse("plain text", &fallback).is_err());
 }
 
@@ -700,6 +725,7 @@ fn mismatch_messages_distinguish_stale_and_unrecognized_hashes() {
 		file_lines:         vec!["one".into(), "two".into(), "three".into()],
 		anchor_lines:       vec![2],
 		hash_recognized:    true,
+		tag_origin_paths:   Vec::new(),
 	};
 	let message = format_mismatch_message(&stale);
 	assert!(message.contains("Edit rejected for a.ts: file changed between read and edit."));
@@ -707,6 +733,24 @@ fn mismatch_messages_distinguish_stale_and_unrecognized_hashes() {
 	let unknown = MismatchDetails { hash_recognized: false, ..stale };
 	let message = format_mismatch_message(&unknown);
 	assert!(message.contains("hash #1A2B is not from this session"));
+	assert!(message.contains("never invent the tag"));
+	// When the unrecognized tag was actually issued earlier in this session
+	// for a different path, the rejection names that path so a relative
+	// worktree lane doesn't follow a wrong-tree suggestion.
+	let known_elsewhere = MismatchDetails {
+		path:               Some("a.ts".into()),
+		expected_file_hash: "1A2B".into(),
+		actual_file_hash:   "3C4D".into(),
+		file_lines:         vec!["one".into(), "two".into(), "three".into()],
+		anchor_lines:       vec![2],
+		hash_recognized:    false,
+		tag_origin_paths:   vec!["/build/x/wt/crates/a/mcp.rs".into()],
+	};
+	let message = format_mismatch_message(&known_elsewhere);
+	assert!(message.contains("hash #1A2B is not from this session"));
+	assert!(
+		message.contains("Hash #1A2B was issued in this session for /build/x/wt/crates/a/mcp.rs.")
+	);
 	assert!(message.contains("never invent the tag"));
 }
 

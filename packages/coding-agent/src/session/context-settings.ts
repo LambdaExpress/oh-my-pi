@@ -1,6 +1,6 @@
 import { combine, register, type SettingValueOf } from "../config/registry";
 import { normalizeExtendedContextWindow } from "../config/extended-context";
-import { t } from "../i18n";
+import { t } from "@oh-my-pi/pi-tui/i18n";
 import { COMPACTION_METHOD_CHOICES, DEFAULT_COMPACTION_METHOD_ORDER } from "./compaction-methods";
 import { SHAPE_VARIANT_NAMES } from "@oh-my-pi/snapcompact";
 
@@ -112,7 +112,8 @@ export const cfgCompactionMidTurnEnabled = register({
 		tab: "context",
 		group: "Compaction",
 		label: "Mid-Turn Compaction",
-		description: "Check thresholds at safe mid-turn tool-loop boundaries before the next provider request",
+		description:
+			"Check thresholds at safe mid-turn tool-loop boundaries before the next provider request; subagents always check, since their whole assignment is one turn",
 	},
 });
 

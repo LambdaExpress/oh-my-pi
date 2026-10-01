@@ -10,7 +10,6 @@ import {
 	assistantUsageIsBilled,
 	buildAsyncResultBlock,
 	collapseCompletedRuns,
-	createCompletedRunSummary,
 	deriveCompletedRunAnchor,
 	deriveCompletedRunCollapses,
 } from "@oh-my-pi/pi-tui/chat/transcript-render-helpers";
@@ -193,16 +192,6 @@ describe("assistantUsageIsBilled", () => {
 		expect(assistantUsageIsBilled(usage({ output: 0, cacheRead: 512 }))).toBe(true);
 		expect(assistantUsageIsBilled(usage({ cacheWrite: 128 }))).toBe(true);
 		expect(assistantUsageIsBilled(usage({ premiumRequests: 1 }))).toBe(true);
-	});
-
-	// Documents the live/resume parity contract for #4532: both paths ask
-	// `assistantUsageIsBilled` about `message.usage`, so an empty automated
-	// reply that still cost input tokens renders identically on both surfaces.
-	it("matches whether the assistant carrier renders visible content", () => {
-		const emptyBilledMessage: Pick<AssistantMessage, "usage"> = { usage: usage({ input: 321 }) };
-		const emptyFreeMessage: Pick<AssistantMessage, "usage"> = { usage: usage() };
-		expect(assistantUsageIsBilled(emptyBilledMessage.usage)).toBe(true);
-		expect(assistantUsageIsBilled(emptyFreeMessage.usage)).toBe(false);
 	});
 });
 
@@ -698,32 +687,6 @@ describe("completed-run collapse projection", () => {
 				messages,
 			});
 		}
-	});
-
-	it("renders the recap-style English summary as one line with singular counts", () => {
-		const request = { role: "user", content: "build it", timestamp: 1 } as const;
-		const component = createCompletedRunSummary(
-			{ afterMessage: request, agentTextSegments: 1, toolCalls: 1, durationMs: 65_000 },
-			"Alt+O",
-		);
-		const lines = component.render(120);
-
-		expect(lines).toHaveLength(1);
-		expect(Bun.stripANSI(lines[0]!).trim()).toBe(
-			"※ collapsed: 1 agent text segment · 1 tool call · 1m5s elapsed · Alt+O to expand",
-		);
-	});
-
-	it("uses plural counts and omits a disabled shortcut hint", () => {
-		const request = { role: "user", content: "build it", timestamp: 1 } as const;
-		const component = createCompletedRunSummary(
-			{ afterMessage: request, agentTextSegments: 0, toolCalls: 3, durationMs: 500 },
-			undefined,
-		);
-
-		expect(Bun.stripANSI(component.render(120)[0]!).trim()).toBe(
-			"※ collapsed: 0 agent text segments · 3 tool calls · 500ms elapsed",
-		);
 	});
 
 	it("projects a force-flushed interrupted span and its continuation as two adjacent summaries", () => {

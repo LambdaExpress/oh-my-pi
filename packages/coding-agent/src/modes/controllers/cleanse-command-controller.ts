@@ -4,6 +4,7 @@
  * cancel-then-dismiss (mirroring the `/omfg` panel).
  */
 import { runCleanse } from "../../cleanse";
+import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { CleanseBoardModel } from "@oh-my-pi/pi-tui/apps/cleanse-board";
 import type { CleanseCheckerDescriptor } from "../../cleanse/checkers";
 import type { CleanseTargetChoice } from "@oh-my-pi/pi-tui/apps/cleanse-picker";
@@ -59,7 +60,11 @@ export class CleanseCommandController {
 
 	async start(args: string): Promise<void> {
 		if (this.#active) {
-			this.ctx.showStatus(t("A /cleanse run is already active — Esc cancels it."));
+			this.ctx.showStatus(
+				t("A /cleanse run is already active — {key} cancels it.", {
+					key: appKey(this.ctx.keybindings, "app.interrupt"),
+				}),
+			);
 			return;
 		}
 		const parsed = parseCleanseArgs(args);

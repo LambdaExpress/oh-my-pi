@@ -1,4 +1,6 @@
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
+import { formatDoubleTap } from "@oh-my-pi/pi-tui/key-hint-format";
+import { appKey } from "@oh-my-pi/pi-tui/chrome/keybinding-hints";
 import { t } from "../../i18n";
 import { AgentLifecycleManager } from "../../registry/agent-lifecycle";
 import { AgentRegistry, MAIN_AGENT_ID, type AgentRef, type RegistryEvent } from "../../registry/agent-registry";
@@ -104,7 +106,13 @@ export class SessionFocusController {
 		}
 		if (request !== this.#focusRequestSeq) return;
 		if (attached && this.#focusedAgentId === id && this.#attachedSession === session) {
-			this.ctx.showStatus(t("Viewing agent {id} — Esc returns to main, ←← hops to parent", { id }));
+			this.ctx.showStatus(
+				t("Viewing agent {id} — {interruptKey} returns to main, {parentKey} hops to parent", {
+					id,
+					interruptKey: appKey(this.ctx.keybindings, "app.interrupt"),
+					parentKey: formatDoubleTap("left"),
+				}),
+			);
 		}
 	}
 

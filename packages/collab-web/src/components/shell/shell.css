@@ -379,7 +379,24 @@
 	min-width: 0;
 }
 
+/* Connection status: preserve the compact toolbar while labelling every phase. */
+.sh-status {
+	display: inline-flex;
+	align-items: center;
+	gap: 7px;
+	min-height: 26px;
+	padding: 0 8px;
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--fg-muted);
+	background: var(--bg-inset);
+	border-radius: var(--radius-sm);
+	white-space: nowrap;
+}
+
 .sh-dot {
+	position: relative;
+	flex: none;
 	width: 8px;
 	height: 8px;
 	border-radius: 50%;
@@ -390,7 +407,18 @@
 	background: var(--ok);
 }
 
-.sh-dot-reconnecting {
+.sh-dot-live::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	border-radius: 50%;
+	background: inherit;
+	animation: ping 1.6s var(--ease) infinite;
+}
+
+.sh-dot-reconnecting,
+.sh-dot-connecting,
+.sh-dot-waiting {
 	background: var(--warn);
 	animation: pulse 1.2s ease-in-out infinite;
 }
@@ -399,11 +427,42 @@
 	background: var(--err);
 }
 
+/* Upstream join-link privacy notice, using the fork's connection-card tokens. */
+.sh-connect-foot {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	padding-top: 14px;
+	border-top: 1px solid var(--border);
+	font-size: 12px;
+	line-height: 1.5;
+	color: var(--fg-faint);
+}
+
+.sh-connect-foot svg {
+	flex: none;
+	margin-top: 2px;
+}
+
 @media (max-width: 640px) {
+	.sh-status {
+		width: 26px;
+		padding: 0;
+		justify-content: center;
+		font-size: 0;
+	}
 	.sh-cwd {
 		display: none;
 	}
 	.sh-chip-meta {
 		display: none;
+	}
+}
+
+@media (any-pointer: coarse) {
+	.sh-composer-input,
+	.sh-input,
+	.sh-input-mono {
+		font-size: 16px;
 	}
 }

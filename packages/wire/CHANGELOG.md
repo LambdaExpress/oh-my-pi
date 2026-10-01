@@ -11,6 +11,18 @@
 - Added session-room thinking controls: state frames advertise the configured selector and current model's supported choices, and writable guests can select one with `thinking-change`.
 - Added session-room model frames: guest `model-list`/`model-change` variants and the host `model-list` reply carrying `WireModel[]`.
 - Added control-room wire contracts (`ControlGuestFrame`/`ControlHostFrame`/`SessionSummary`/`SessionStatus`) for multi-session core mode: guests can list, create, resume, and drop sessions through a `ctrl-` room, with read-only peers stripped of session links.
+## [18.4.6] - 2026-10-01
+
+### Added
+
+- Added the `TspMeterMark` component for marking a position on a meter track with a custom icon and a total value that defines the full span of the track.
+
+## [18.4.4] - 2026-09-29
+
+### Added
+
+- Added the Tern Surface Protocol wire contract (`@oh-my-pi/pi-wire`): message framing constants, the component vocabulary, document ops, frames, the handshake and terminal events that let omp render natively in terminals that speak it
+
 ## [18.2.11] - 2026-09-23
 
 ### Added

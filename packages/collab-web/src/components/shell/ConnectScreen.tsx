@@ -1,4 +1,4 @@
-import { ArrowRight, RotateCcw } from "lucide-react";
+import { ArrowRight, Lock, RotateCcw } from "lucide-react";
 import type { FormEvent, ReactNode } from "react";
 import { useState } from "react";
 import { ThemeToggle } from "./ThemeToggle";
@@ -20,7 +20,7 @@ export function ConnectScreen({ defaultName, error, onConnect, savedControlLink 
 		e.preventDefault();
 		const trimmed = link.trim();
 		if (!trimmed) {
-			setLocalError("paste a join link first");
+			setLocalError("Paste a join link first.");
 			return;
 		}
 		setLocalError(null);
@@ -71,7 +71,7 @@ export function ConnectScreen({ defaultName, error, onConnect, savedControlLink 
 							aria-errormessage={shown ? "sh-connect-error" : undefined}
 						/>
 						<span className="sh-field-hint" id="sh-connect-link-hint">
-							Paste the /collab link from your host.
+							Run <code>/collab</code> in any omp session to get one.
 						</span>
 					</label>
 					<label className="sh-field">
@@ -106,6 +106,10 @@ export function ConnectScreen({ defaultName, error, onConnect, savedControlLink 
 					<button className="sh-btn sh-btn-primary sh-connect-submit" type="submit">
 						Connect <ArrowRight size={14} aria-hidden="true" />
 					</button>
+					<div className="sh-connect-foot">
+						<Lock size={12} aria-hidden="true" />
+						End-to-end encrypted. The room key stays in the link and never reaches the relay.
+					</div>
 				</form>
 			</main>
 		</div>

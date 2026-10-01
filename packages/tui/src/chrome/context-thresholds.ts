@@ -1,4 +1,5 @@
 import { formatNumber } from "@oh-my-pi/pi-utils";
+import type { TspTone } from "@oh-my-pi/pi-wire";
 
 export type ContextUsageLevel = "normal" | "warning" | "high" | "error";
 
@@ -70,6 +71,26 @@ export function getContextUsageLevel(contextPercent: number, contextWindow: numb
 	return "normal";
 }
 
+/** Used share (0–1) where a level starts: the percent or token threshold, whichever comes first. */
+function thresholdShare(contextWindow: number, percentThreshold: number, tokenThreshold: number): number {
+	const percent =
+		Number.isFinite(contextWindow) && contextWindow > 0
+			? Math.min(percentThreshold, (tokenThreshold / contextWindow) * 100)
+			: percentThreshold;
+	return percent / 100;
+}
+
+/**
+ * `meter` tone switches matching {@link getContextUsageLevel}: warning from the
+ * warning level, error from the error level, as shares of `contextWindow`.
+ */
+export function getContextMeterThresholds(contextWindow: number): { warn: number; bad: number } {
+	return {
+		warn: thresholdShare(contextWindow, CONTEXT_WARNING_PERCENT_THRESHOLD, CONTEXT_WARNING_TOKEN_THRESHOLD),
+		bad: thresholdShare(contextWindow, CONTEXT_ERROR_PERCENT_THRESHOLD, CONTEXT_ERROR_TOKEN_THRESHOLD),
+	};
+}
+
 /**
  * Format context usage as `<percent>%/<window>` when the model window is known.
  * Unknown windows render as `<tokens>/?`, because `0.0%/0` suggests a real
@@ -85,6 +106,35 @@ export function formatContextUsage(
 	}
 	const pct = contextPercent === null || contextPercent === undefined ? "?" : `${contextPercent.toFixed(1)}%`;
 	return `${pct}/${formatNumber(contextWindow)}`;
+}
+
+/** Chrome tone for a context-usage level; undefined while usage is normal. */
+export function getContextUsageTone(level: ContextUsageLevel): TspTone | undefined {
+	switch (level) {
+		case "error":
+			return "error";
+		case "high":
+		case "warning":
+			return "warning";
+		case "normal":
+			return undefined;
+	}
+}
+
+/** Fixed context palette token for a native span; independent of the theme's semantic tones. */
+export function getContextUsageToken(
+	level: ContextUsageLevel,
+): "contextNormal" | "contextWarning" | "contextHigh" | "contextError" {
+	switch (level) {
+		case "error":
+			return "contextError";
+		case "high":
+			return "contextHigh";
+		case "warning":
+			return "contextWarning";
+		case "normal":
+			return "contextNormal";
+	}
 }
 
 /**

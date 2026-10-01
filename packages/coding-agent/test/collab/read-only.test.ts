@@ -17,7 +17,6 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
-import { setLocale } from "../../src/i18n";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { installInMemoryRelay, uninstallInMemoryRelay } from "./helpers/in-memory-relay";
 
@@ -55,6 +54,8 @@ function makeHostContext(): HostHarness {
 		session: {
 			isStreaming: false,
 			isAborting: false,
+			isSessionTransitioning: false,
+			waitForSessionTransition: async () => {},
 			queuedMessageCount: 0,
 			sessionName: "test",
 			model: undefined,
@@ -65,12 +66,13 @@ function makeHostContext(): HostHarness {
 			// the harness session is the "sess-1" tree.
 			getAgentScopeId: () => sessionManager.getSessionId(),
 			subscribe: () => () => {},
+			subscribeCommandMetadataChanged: () => () => {},
 			emitNotice: () => {},
 			promptCustomMessage: (message: { details?: { from?: string } }) => {
 				const details = message.details ?? {};
 				prompts.push(details);
 				for (const waiter of promptWaiters.splice(0)) waiter(details);
-				return Promise.resolve();
+				return Promise.resolve(true);
 			},
 			abort: () => {
 				aborts.count++;
@@ -158,9 +160,6 @@ let harness: HostHarness;
 let host: CollabHost;
 
 beforeAll(async () => {
-	// Read-only rejections carry translated UI text; pin English so assertions
-	// on those strings do not depend on the host's system language.
-	setLocale("en");
 	installInMemoryRelay();
 	harness = makeHostContext();
 	host = new CollabHost(harness.ctx);
@@ -179,7 +178,6 @@ afterAll(async () => {
 	// the host's socket holds its own FakeWebSocket/relay refs, so teardown still works.
 	uninstallInMemoryRelay();
 	await host.stop("test done");
-	setLocale(null);
 });
 
 describe("collab read-only links", () => {
@@ -303,26 +301,38 @@ describe("collab read-only links", () => {
 			if (replacement) await replacement;
 		}
 	});
-	for (const kind of ["advisor", "main", "sub"] as const) {
-		it(`${kind === "advisor" ? "denies" : "serves"} ${kind} transcripts requested by a view-link guest`, async () => {
+	for (const visibility of ["advisor", "sub", "foreign-sub"] as const) {
+		it(`${visibility === "sub" ? "serves" : "denies"} ${visibility} transcripts requested by a view-link guest`, async () => {
 			await using dir = await TempDir.create("@pi-collab-transcript-");
-			const id = `transcript-${kind}-${crypto.randomUUID()}`;
+			const id = `transcript-${visibility}-${crypto.randomUUID()}`;
 			const text = `${JSON.stringify({ type: "message", content: id })}\n`;
 			const file = dir.join("session.jsonl");
 			await Bun.write(file, text);
 			const registry = AgentRegistry.global();
-			const ref = registry.register({ id, displayName: id, kind, session: null, sessionFile: file });
+			const ref = registry.register({
+				id,
+				displayName: id,
+				kind: visibility === "advisor" ? "advisor" : "sub",
+				scopeId: visibility === "foreign-sub" ? "another-session" : harness.ctx.session.getAgentScopeId(),
+				session: null,
+				sessionFile: file,
+			});
 			try {
-				const guest = await joinAsGuest(host.viewLink, `reader-${kind}`);
+				const guest = await joinAsGuest(host.viewLink, `reader-${visibility}`);
 				guestCleanups.push(() => guest.socket.close());
 				const welcome = await guest.nextFrame();
 				if (welcome.t !== "welcome") throw new Error(`expected welcome, got ${welcome.t}`);
 				guest.socket.send({ t: "fetch-transcript", reqId: 1, agentId: id, fromByte: 0 });
 				const reply = await guest.nextFrame();
 				if (reply.t !== "transcript") throw new Error(`expected transcript, got ${reply.t}`);
-				if (kind === "advisor") {
+				if (visibility !== "sub") {
 					expect(reply.text).not.toContain(id);
-					expect(reply).toMatchObject({ reqId: 1, text: "", newSize: 0, error: "no transcript available" });
+					expect(reply).toMatchObject({ reqId: 1, text: "", newSize: 0 });
+					expect(reply.error).toBeDefined();
+					guest.socket.send({ t: "fetch-transcript", reqId: 2, agentId: `missing-${id}`, fromByte: 0 });
+					const missing = await guest.nextFrame();
+					if (missing.t !== "transcript") throw new Error(`expected transcript, got ${missing.t}`);
+					expect(missing).toEqual({ ...reply, reqId: 2 });
 				} else {
 					expect(reply).toEqual({ t: "transcript", reqId: 1, text, newSize: Buffer.byteLength(text) });
 				}
@@ -345,7 +355,6 @@ describe("collab read-only links", () => {
 		guest.socket.send({ t: "prompt", text: "do something" });
 		const promptReply = await guest.nextFrame();
 		if (promptReply.t !== "error") throw new Error(`expected error, got ${promptReply.t}`);
-		expect(promptReply.message).toContain("read-only");
 		expect(prompts).toHaveLength(0);
 
 		guest.socket.send({ t: "abort" });

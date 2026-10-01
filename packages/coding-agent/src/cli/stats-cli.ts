@@ -4,11 +4,13 @@
  * Handles `omp stats` subcommand for viewing AI usage statistics.
  */
 
+import { formatKeyHint } from "@oh-my-pi/pi-tui/key-hint-format";
+import { formatCost } from "@oh-my-pi/pi-tui/overlays/agent-hub-renderer";
 import { truncateToWidth } from "@oh-my-pi/pi-tui/utils";
-import { formatDuration, formatNumber, formatPercent } from "@oh-my-pi/pi-utils";
+import { formatDuration, formatNumber, formatPercent, normalizePremiumRequests } from "@oh-my-pi/pi-utils";
 import chalk from "@oh-my-pi/pi-utils/chalk";
 import { t } from "../i18n";
-import { formatCost } from "@oh-my-pi/pi-tui/overlays/agent-hub-renderer";
+import { openStandaloneJudge } from "../judgment/standalone";
 import { openPath } from "../utils/open";
 
 /**
@@ -64,49 +66,55 @@ export interface StatsCommandArgs {
 	summary: boolean;
 }
 
-function normalizePremiumRequests(n: number): number {
-	return Math.round((n + Number.EPSILON) * 100) / 100;
-}
-
 // =============================================================================
 // Command Handler
 // =============================================================================
 
 export async function runStatsCommand(cmd: StatsCommandArgs): Promise<void> {
 	// Lazy import to avoid loading stats module when not needed
-	const { closeDb, formatStatsDashboardUrl, getDashboardStats, getTotalMessageCount, startServer, syncAllSessions } =
-		await import("@oh-my-pi/omp-stats");
+	const {
+		closeDb,
+		formatStatsDashboardUrl,
+		getDashboardStats,
+		getTotalMessageCount,
+		refreshRollups,
+		startServer,
+		syncAllSessions,
+	} = await import("@oh-my-pi/omp-stats");
 
-	// Sync session files first
-	const progress = createSyncProgressReporter();
-	process.stderr.write(`${t("Syncing session files...")}\n`);
-	const { processed, files } = await syncAllSessions({ onProgress: progress.onProgress });
-	progress.finish();
-	const total = await getTotalMessageCount();
-	console.log(
-		`${t("Synced {processed} new entries from {files} files ({total} total)", { processed, files, total })}\n`,
-	);
-
-	if (cmd.json) {
-		const stats = await getDashboardStats();
-		console.log(JSON.stringify(stats, null, 2));
+	// One-shot reports need fully ingested, fully rolled-up data before printing.
+	if (cmd.json || cmd.summary) {
+		const progress = createSyncProgressReporter();
+		process.stderr.write(`${t("Syncing session files...")}\n`);
+		const { processed, files } = await syncAllSessions({ onProgress: progress.onProgress });
+		progress.finish();
+		await refreshRollups();
+		const total = await getTotalMessageCount();
+		process.stderr.write(
+			`${t("Synced {processed} new entries from {files} files ({total} total)", { processed, files, total })}\n\n`,
+		);
+		if (cmd.json) {
+			console.log(JSON.stringify(await getDashboardStats(), null, 2));
+		} else {
+			await printStatsSummary();
+		}
 		return;
 	}
 
-	if (cmd.summary) {
-		await printStatsSummary();
-		return;
-	}
-
-	// Start the dashboard server
-	const { hostname, port } = await startServer(cmd.port, cmd.host);
+	// The dashboard starts immediately and ingests sessions in the background,
+	// streaming progress to the page. The judge (settings, auth, registry)
+	// resolves on the first Frustration estimate/run and lives until exit.
+	const cwd = process.cwd();
+	const { hostname, port } = await startServer(cmd.port, cmd.host, {
+		judge: async () => (await openStandaloneJudge(cwd, "stats_frustration")).judge,
+	});
 	const url = formatStatsDashboardUrl(hostname, port);
 	console.log(chalk.green(t("Dashboard available at: {url}", { url })));
 
 	// Open browser
 	openPath(url);
 
-	console.log(`${t("Press Ctrl+C to stop")}\n`);
+	console.log(`${t("Press {key} to stop", { key: formatKeyHint("ctrl+c") })}\n`);
 
 	// Keep process running
 	process.on("SIGINT", () => {
@@ -141,7 +149,11 @@ async function printStatsSummary(): Promise<void> {
 	console.log(`  ${t("Output Tokens: {count}", { count: formatNumber(overall.totalOutputTokens) })}`);
 	console.log(`  ${t("Cache Rate: {rate}", { rate: formatPercent(overall.cacheRate) })}`);
 	console.log(`  ${t("Cache Savings: {rate}", { rate: formatPercent(overall.cacheSavings) })}`);
-	console.log(`  ${t("Total Cost: {cost}", { cost: formatCost(overall.totalCost) })}`);
+	console.log(
+		`  ${t("API-equivalent estimate: {cost}", {
+			cost: overall.totalCost === 0 && overall.unpricedRequests > 0 ? t("N/A") : formatCost(overall.totalCost),
+		})}`,
+	);
 	console.log(
 		`  ${t("Premium Requests: {count}", {
 			count: formatNumber(normalizePremiumRequests(overall.totalPremiumRequests ?? 0)),
@@ -160,13 +172,13 @@ async function printStatsSummary(): Promise<void> {
 	}
 
 	if (byModel.length > 0) {
-		console.log(chalk.bold(`\n${t("By Model:")}`));
+		console.log(chalk.bold(`\n${t("By Model (API-equivalent estimates):")}`));
 		for (const m of byModel.slice(0, 10)) {
 			console.log(
 				`  ${t("{model}: {requests} reqs, {cost}, {cacheRate} cache rate, {cacheSavings} cache savings", {
 					model: m.model,
 					requests: formatNumber(m.totalRequests),
-					cost: formatCost(m.totalCost),
+					cost: m.totalCost === 0 && m.unpricedRequests > 0 ? t("N/A") : formatCost(m.totalCost),
 					cacheRate: formatPercent(m.cacheRate),
 					cacheSavings: formatPercent(m.cacheSavings),
 				})}`,
@@ -175,13 +187,13 @@ async function printStatsSummary(): Promise<void> {
 	}
 
 	if (byFolder.length > 0) {
-		console.log(chalk.bold(`\n${t("By Folder:")}`));
+		console.log(chalk.bold(`\n${t("By Folder (API-equivalent estimates):")}`));
 		for (const f of byFolder.slice(0, 10)) {
 			console.log(
 				`  ${t("{folder}: {requests} reqs, {cost}", {
 					folder: f.folder,
 					requests: formatNumber(f.totalRequests),
-					cost: formatCost(f.totalCost),
+					cost: f.totalCost === 0 && f.unpricedRequests > 0 ? t("N/A") : formatCost(f.totalCost),
 				})}`,
 			);
 		}

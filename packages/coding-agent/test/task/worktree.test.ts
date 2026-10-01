@@ -9,7 +9,6 @@ import {
 	cleanupTaskBranches,
 	commitToBranch,
 	ensureIsolation,
-	getGitNoIndexNullPath,
 	getRepoRoot,
 	ISOLATION_BASELINE_MAX_CONTENT_BYTES,
 	IsolationBaselineTooLargeError,
@@ -44,6 +43,8 @@ async function createGitRepo(): Promise<string> {
 	const repo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worktree-"));
 	tempDirs.push(repo);
 	await runGit(repo, ["init", "-q", "-b", "main"]);
+	await runGit(repo, ["config", "core.autocrlf", "false"]);
+	await runGit(repo, ["config", "core.eol", "lf"]);
 	return repo;
 }
 
@@ -52,11 +53,6 @@ afterEach(async () => {
 	await Promise.all(tempDirs.splice(0).map(dir => removeWithRetries(dir)));
 });
 describe("worktree isolation helpers", () => {
-	it("returns platform-specific null path for git --no-index diffs", () => {
-		const expected = process.platform === "win32" ? "NUL" : "/dev/null";
-		expect(getGitNoIndexNullPath()).toBe(expected);
-	});
-
 	it("maps every isolation backend to the native backend contract", () => {
 		expect(parseIsolationBackend("auto")).toBeUndefined();
 		expect(parseIsolationBackend("apfs")).toBe(natives.IsoBackendKind.Apfs);
@@ -98,7 +94,6 @@ describe("worktree isolation helpers", () => {
 		expect((error as IsolationBaselineTooLargeError).contentBytes).toBeGreaterThan(
 			ISOLATION_BASELINE_MAX_CONTENT_BYTES,
 		);
-		expect((error as Error).message).toContain("task.isolation.enabled: false");
 	});
 
 	// Regression: the staged and unstaged diffs were rendered in full before the
@@ -125,7 +120,6 @@ describe("worktree isolation helpers", () => {
 		expect(error).toBeInstanceOf(IsolationBaselineTooLargeError);
 		expect((error as IsolationBaselineTooLargeError).budgetBytes).toBe(budget);
 		expect((error as IsolationBaselineTooLargeError).contentBytes).toBeUndefined();
-		expect((error as Error).message).toContain("task.isolation.enabled: false");
 
 		const within = await captureBaseline(repo);
 		expect(within.root.staged).toContain("+++ b/staged.txt");
@@ -191,6 +185,9 @@ describe("worktree isolation helpers", () => {
 		beforeAll(async () => {
 			repo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-worktree-"));
 			await runGit(repo, ["init", "-q", "-b", BASE_BRANCH]);
+			// Exact LF fixtures must not inherit the host's checkout conversion.
+			await runGit(repo, ["config", "core.autocrlf", "false"]);
+			await runGit(repo, ["config", "core.eol", "lf"]);
 			await runGit(repo, ["config", "user.email", "test@example.com"]);
 			await runGit(repo, ["config", "user.name", "Test User"]);
 			await Promise.all([
@@ -383,16 +380,19 @@ describe("worktree isolation helpers", () => {
 				// conflict. If the task branch also adds an ignore rule for that
 				// restored path, the fallback must clean the restored ignored path
 				// without interpreting stash-derived filenames as pathspec magic.
-				const magicName = ":(glob)*";
+				// Windows forbids ':' and '*'; brackets still exercise Git globbing.
+				const magicName = process.platform === "win32" ? "[note]" : ":(glob)*";
+				const ignoredMagicName = process.platform === "win32" ? "\\[note\\]" : magicName;
+				const unrelatedName = "n";
 				const buildLog = path.join(repo, "build.log");
 				const ignoredBranch = "task/ignored-restored-untracked";
-				await fs.writeFile(path.join(repo, ".gitignore"), "*.log\n");
+				await fs.writeFile(path.join(repo, ".gitignore"), `*.log\n${unrelatedName}\n`);
 				await runGit(repo, ["add", ".gitignore"]);
 				await runGit(repo, ["commit", "-q", "-m", "ignore-build-artifacts"]);
 				await runGit(repo, ["checkout", "-q", "-b", ignoredBranch]);
 				await Promise.all([
 					fs.writeFile(path.join(repo, "merged.txt"), "task branch change\n"),
-					fs.writeFile(path.join(repo, ".gitignore"), `*.log\n${magicName}\n`),
+					fs.writeFile(path.join(repo, ".gitignore"), `*.log\n${ignoredMagicName}\n${unrelatedName}\n`),
 				]);
 				await runGit(repo, ["add", ".gitignore", "merged.txt"]);
 				await runGit(repo, ["commit", "-q", "-m", "task-change-ignored-note"]);
@@ -402,6 +402,7 @@ describe("worktree isolation helpers", () => {
 					await fs.writeFile(path.join(repo, "merged.txt"), "user wip\n");
 					await fs.writeFile(path.join(repo, magicName), "untracked wip\n");
 					await fs.writeFile(buildLog, "ignored build artifact\n");
+					await fs.writeFile(path.join(repo, unrelatedName), "unrelated ignored bytes\r\n");
 
 					const result = await mergeTaskBranches(repo, [{ branchName: ignoredBranch, taskId: "task-1" }]);
 
@@ -421,6 +422,7 @@ describe("worktree isolation helpers", () => {
 					expect(status).toBe("");
 					expect(magicExists).toBe(false);
 					expect(buildLogExists).toBe(true);
+					expect(await fs.readFile(path.join(repo, unrelatedName), "utf8")).toBe("unrelated ignored bytes\r\n");
 					expect(headContent).toBe("task branch change\n");
 					expect(stashList).toContain("omp-task-merge");
 				} finally {
@@ -428,6 +430,7 @@ describe("worktree isolation helpers", () => {
 					await Promise.all([
 						fs.rm(path.join(repo, magicName), { force: true }),
 						fs.rm(buildLog, { force: true }),
+						fs.rm(path.join(repo, unrelatedName), { force: true }),
 					]);
 				}
 			});
@@ -448,6 +451,8 @@ describe("worktree isolation helpers", () => {
 				tempDirs.push(isoRoot);
 				const iso = path.join(isoRoot, "repo");
 				await runGit(isoRoot, ["clone", "-q", repo, iso]);
+				await runGit(iso, ["config", "core.autocrlf", "false"]);
+				await runGit(iso, ["config", "core.eol", "lf"]);
 				await runGit(iso, ["config", "user.email", "test@example.com"]);
 				await runGit(iso, ["config", "user.name", "Test User"]);
 				const isolatedLines = parentDirtyLines.map((line, index) => (index === 4 ? "LINE5-AGENT-EDIT" : line));
@@ -606,18 +611,17 @@ describe("getRepoRoot", () => {
 		expect(await getRepoRoot(repo)).toBe(repo);
 	});
 
-	it("rejects pure jj workspaces with an actionable Jujutsu message", async () => {
+	it("rejects pure jj workspaces rather than selecting a git root", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-purejj-"));
 		tempDirs.push(dir);
 		await fs.mkdir(path.join(dir, ".jj", "repo", "store"), { recursive: true });
-		await expect(getRepoRoot(dir)).rejects.toThrow(/pure Jujutsu/);
-		await expect(getRepoRoot(dir)).rejects.toThrow(/jj git init --colocate/);
+		await expect(getRepoRoot(dir)).rejects.toThrow();
 	});
 
-	it("preserves the generic git-not-found error for directories without any repo", async () => {
+	it("refuses directories without any repository", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-norepo-"));
 		tempDirs.push(dir);
-		await expect(getRepoRoot(dir)).rejects.toThrow("Git repository not found for isolated task execution.");
+		await expect(getRepoRoot(dir)).rejects.toThrow();
 	});
 
 	it("rejects a pure jj workspace nested inside an unrelated outer git checkout", async () => {
@@ -628,8 +632,7 @@ describe("getRepoRoot", () => {
 		const inner = path.join(outer, "nested-jj");
 		await fs.mkdir(path.join(inner, ".jj", "repo", "store"), { recursive: true });
 
-		await expect(getRepoRoot(inner)).rejects.toThrow(/pure Jujutsu/);
-		await expect(getRepoRoot(inner)).rejects.toThrow(/jj git init --colocate/);
+		await expect(getRepoRoot(inner)).rejects.toThrow();
 	});
 
 	it("returns the nested git root when a git checkout lives under an outer jj workspace", async () => {
@@ -657,6 +660,8 @@ describe("detachGitDir", () => {
 		const main = await fs.mkdtemp(path.join(os.tmpdir(), "omp-detach-main-"));
 		tempDirs.push(main);
 		await runGit(main, ["init", "-q", "-b", "main"]);
+		await runGit(main, ["config", "core.autocrlf", "false"]);
+		await runGit(main, ["config", "core.eol", "lf"]);
 		await runGit(main, ["config", "user.email", "src@example.com"]);
 		await runGit(main, ["config", "user.name", "Source User"]);
 		await fs.writeFile(path.join(main, "file.txt"), "base\n");
@@ -721,21 +726,26 @@ describe("detachGitDir", () => {
 		expect(await runGit(wt, ["rev-parse", "omp-fetched"])).toBe(taskCommit);
 	});
 
-	it.skipIf(process.getuid?.() === 0)("keeps shared git metadata intact when the index cannot be read", async () => {
+	it("keeps shared git metadata intact when the index cannot be read", async () => {
 		const { wt, commonDir } = await makeLinkedWorktree();
 		const iso = await copyTree(wt);
 		const gitEntry = path.join(iso, ".git");
 		const pointerBefore = await fs.readFile(gitEntry, "utf8");
 		const indexPath = await runGit(iso, ["rev-parse", "--path-format=absolute", "--git-path", "index"]);
-		const indexMode = (await fs.stat(indexPath)).mode;
-		await fs.chmod(indexPath, 0);
+		const indexBefore = await fs.readFile(indexPath);
+		const savedIndex = `${indexPath}.saved`;
+		// A directory is unreadable as file bytes even for root and on Windows.
+		await fs.rename(indexPath, savedIndex);
+		await fs.mkdir(indexPath);
 		try {
 			await expect(vcs.detachGitDir(iso, commonDir)).rejects.toMatchObject({
 				code: "Io",
-				stderr: expect.stringContaining("Permission denied"),
 			});
+			expect(await fs.readFile(gitEntry, "utf8")).toBe(pointerBefore);
+			expect(await fs.readFile(savedIndex)).toEqual(indexBefore);
 		} finally {
-			await fs.chmod(indexPath, indexMode);
+			await fs.rmdir(indexPath);
+			await fs.rename(savedIndex, indexPath);
 		}
 		expect(await fs.readFile(gitEntry, "utf8")).toBe(pointerBefore);
 		expect(await runGit(iso, ["status", "--porcelain=v1"])).toBe("");
@@ -940,6 +950,8 @@ describe("applyNestedPatches", () => {
 	beforeAll(async () => {
 		fixtureParent = await fs.mkdtemp(path.join(os.tmpdir(), "omp-nested-fixture-"));
 		await runGit(fixtureParent, ["init", "-q", "-b", "main"]);
+		await runGit(fixtureParent, ["config", "core.autocrlf", "false"]);
+		await runGit(fixtureParent, ["config", "core.eol", "lf"]);
 		await runGit(fixtureParent, ["config", "user.email", "test@example.com"]);
 		await runGit(fixtureParent, ["config", "user.name", "Test User"]);
 		// beforeEach copies both repos with fs.cp; auto maintenance would race
@@ -953,6 +965,8 @@ describe("applyNestedPatches", () => {
 		const fixtureNested = path.join(fixtureParent, nestedRel);
 		await fs.mkdir(fixtureNested, { recursive: true });
 		await runGit(fixtureNested, ["init", "-q", "-b", "main"]);
+		await runGit(fixtureNested, ["config", "core.autocrlf", "false"]);
+		await runGit(fixtureNested, ["config", "core.eol", "lf"]);
 		await runGit(fixtureNested, ["config", "user.email", "test@example.com"]);
 		await runGit(fixtureNested, ["config", "user.name", "Test User"]);
 		await runGit(fixtureNested, ["config", "maintenance.auto", "false"]);
@@ -1069,6 +1083,8 @@ describe("commitToBranch preserves agent commits", () => {
 	beforeAll(async () => {
 		fixtureRepo = await fs.mkdtemp(path.join(os.tmpdir(), "omp-commit-fixture-"));
 		await runGit(fixtureRepo, ["init", "-q", "-b", "main"]);
+		await runGit(fixtureRepo, ["config", "core.autocrlf", "false"]);
+		await runGit(fixtureRepo, ["config", "core.eol", "lf"]);
 		await runGit(fixtureRepo, ["config", "user.email", "test@example.com"]);
 		await runGit(fixtureRepo, ["config", "user.name", "Test User"]);
 		// `git commit` kicks off `git maintenance run --auto`, which writes

@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
+import { scheduler } from "node:timers/promises";
 import { Agent } from "@oh-my-pi/pi-agent-core";
 import * as ai from "@oh-my-pi/pi-ai";
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
@@ -210,16 +211,85 @@ describe("AgentSession title generation disposal", () => {
 		expect(session.sessionName).toBe("replacement session");
 	});
 
-	it("retitles from the assistant reply when the title model declines an ambiguous first message", async () => {
+	it.each(["before", "after"] as const)(
+		"retitles from the assistant reply when the title model declines %s the reply",
+		async declineOrder => {
+			authStorage = await AuthStorage.create(":memory:");
+			authStorage.keys.setRuntime("anthropic", "test-key");
+			const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+			if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+
+			const settings = Settings.isolated({
+				"compaction.enabled": false,
+				modelRoles: { tiny: `${model.provider}/${model.id}` },
+			});
+			const agent = new Agent({
+				getApiKey: () => "test-key",
+				initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+				streamFn: createMockModel({
+					responses: [{ content: ["The screenshot shows a TypeError thrown by the tokenizer."] }],
+				}).stream,
+			});
+			session = new AgentSession({
+				agent,
+				sessionManager: SessionManager.inMemory(),
+				settings,
+				modelRegistry: new ModelRegistry(authStorage),
+			});
+			const titleInputs: string[] = [];
+			const firstRequested = Promise.withResolvers<void>();
+			const retitleRequested = Promise.withResolvers<void>();
+			const firstResponse = Promise.withResolvers<ai.AssistantMessage>();
+			vi.spyOn(ai, "completeSimple").mockImplementation(async (_model, context) => {
+				const content = context.messages[0]?.content;
+				const input = typeof content === "string" ? content : "";
+				titleInputs.push(input);
+				if (titleInputs.length === 1) {
+					firstRequested.resolve();
+					return firstResponse.promise;
+				}
+				retitleRequested.resolve();
+				return createAssistantMessage(
+					input.includes("TypeError thrown by the tokenizer") ? "<title>Tokenizer TypeError</title>" : "<title/>",
+				);
+			});
+			const generateTitle = vi.spyOn(session, "generateTitle");
+			const named = Promise.withResolvers<void>();
+			session.sessionManager.onSessionNameChanged(() => named.resolve());
+
+			session.maybeStartTitleGeneration("help");
+			await firstRequested.promise;
+			if (declineOrder === "before") {
+				firstResponse.resolve(createAssistantMessage("<title/>"));
+				expect(await generateTitle.mock.results[0]?.value).toBeNull();
+				await scheduler.yield();
+				expect(titleInputs).toHaveLength(1);
+				expect(session.sessionName).toBeUndefined();
+			}
+			await session.prompt("help");
+			if (declineOrder === "after") {
+				expect(titleInputs).toHaveLength(1);
+				expect(session.sessionName).toBeUndefined();
+				// A late title completion must use the committed branch, even if
+				// foreground context maintenance has already removed the reply.
+				agent.replaceMessages(agent.state.messages.filter(message => message.role !== "assistant"));
+				firstResponse.resolve(createAssistantMessage("<title/>"));
+			}
+			await retitleRequested.promise;
+
+			expect(titleInputs).toHaveLength(2);
+			expect(titleInputs[1]).toContain("TypeError thrown by the tokenizer");
+			await named.promise;
+			expect(session.sessionName).toBe("Tokenizer TypeError");
+		},
+	);
+
+	it("keeps a replacement session's deferred title when the previous request settles", async () => {
 		authStorage = await AuthStorage.create(":memory:");
 		authStorage.keys.setRuntime("anthropic", "test-key");
 		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
 		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
 
-		const settings = Settings.isolated({
-			"compaction.enabled": false,
-			modelRoles: { tiny: `${model.provider}/${model.id}` },
-		});
 		const agent = new Agent({
 			getApiKey: () => "test-key",
 			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
@@ -230,24 +300,113 @@ describe("AgentSession title generation disposal", () => {
 		session = new AgentSession({
 			agent,
 			sessionManager: SessionManager.inMemory(),
-			settings,
+			settings: Settings.isolated({
+				"compaction.enabled": false,
+				modelRoles: { tiny: `${model.provider}/${model.id}` },
+			}),
 			modelRegistry: new ModelRegistry(authStorage),
 		});
+		const firstRequested = Promise.withResolvers<void>();
+		const replacementRequested = Promise.withResolvers<void>();
+		const firstResponse = Promise.withResolvers<ai.AssistantMessage>();
+		const replacementResponse = Promise.withResolvers<ai.AssistantMessage>();
 		const titleInputs: string[] = [];
-		vi.spyOn(ai, "completeSimple").mockImplementation(async (_model, context) => {
+		vi.spyOn(ai, "completeSimple").mockImplementation((_model, context) => {
 			const content = context.messages[0]?.content;
-			titleInputs.push(typeof content === "string" ? content : "");
-			return createAssistantMessage(titleInputs.length === 1 ? "<title/>" : "<title>Tokenizer TypeError</title>");
+			const input = typeof content === "string" ? content : "";
+			titleInputs.push(input);
+			if (titleInputs.length === 1) {
+				firstRequested.resolve();
+				return firstResponse.promise;
+			}
+			if (titleInputs.length === 2) {
+				replacementRequested.resolve();
+				return replacementResponse.promise;
+			}
+			return Promise.resolve(
+				createAssistantMessage(
+					input.includes("TypeError thrown by the tokenizer") ? "<title>Tokenizer TypeError</title>" : "<title/>",
+				),
+			);
 		});
-		const named = Promise.withResolvers<void>();
-		session.sessionManager.onSessionNameChanged(() => named.resolve());
+		const generateTitle = vi.spyOn(session, "generateTitle");
+
+		session.maybeStartTitleGeneration("Inspect the previous screenshot");
+		await firstRequested.promise;
+		expect(await session.newSession()).toBe(true);
+		session.maybeStartTitleGeneration("help");
+		await replacementRequested.promise;
+		firstResponse.resolve(createAssistantMessage("<title>Previous screenshot</title>"));
+		expect(await generateTitle.mock.results[0]?.value).toBeNull();
+		await scheduler.yield();
+
+		await session.prompt("help");
+		replacementResponse.resolve(createAssistantMessage("<title/>"));
+		expect(await generateTitle.mock.results[1]?.value).toBeNull();
+		await scheduler.yield();
+
+		expect(titleInputs).toHaveLength(3);
+		expect(titleInputs[2]).toContain("TypeError thrown by the tokenizer");
+		expect(session.sessionName).toBe("Tokenizer TypeError");
+	});
+
+	it.each(["dispose", "rename"] as const)("does not apply an in-flight deferred title after %s", async completion => {
+		authStorage = await AuthStorage.create(":memory:");
+		authStorage.keys.setRuntime("anthropic", "test-key");
+		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
+		if (!model) throw new Error("Expected claude-sonnet-4-5 model to exist");
+
+		const agent = new Agent({
+			getApiKey: () => "test-key",
+			initialState: { model, systemPrompt: ["Test"], tools: [], messages: [] },
+			streamFn: createMockModel({
+				responses: [{ content: ["The screenshot shows a TypeError thrown by the tokenizer."] }],
+			}).stream,
+		});
+		session = new AgentSession({
+			agent,
+			sessionManager: SessionManager.inMemory(),
+			settings: Settings.isolated({
+				"compaction.enabled": false,
+				modelRoles: { tiny: `${model.provider}/${model.id}` },
+			}),
+			modelRegistry: new ModelRegistry(authStorage),
+		});
+		const retitleRequested = Promise.withResolvers<void>();
+		const retitleResponse = Promise.withResolvers<ai.AssistantMessage>();
+		let requestSignal: AbortSignal | undefined;
+		let titleCalls = 0;
+		vi.spyOn(ai, "completeSimple").mockImplementation((_model, _context, options) => {
+			titleCalls++;
+			if (titleCalls === 1) return Promise.resolve(createAssistantMessage("<title/>"));
+			requestSignal = options?.signal;
+			retitleRequested.resolve();
+			return retitleResponse.promise;
+		});
+		const generateTitle = vi.spyOn(session, "generateTitle");
 
 		session.maybeStartTitleGeneration("help");
+		expect(await generateTitle.mock.results[0]?.value).toBeNull();
+		await scheduler.yield();
 		await session.prompt("help");
-		await named.promise;
+		await retitleRequested.promise;
 
-		expect(session.sessionName).toBe("Tokenizer TypeError");
-		expect(titleInputs).toHaveLength(2);
-		expect(titleInputs[1]).toContain("TypeError thrown by the tokenizer");
+		if (completion === "dispose") {
+			session.beginDispose();
+			expect(requestSignal?.aborted).toBe(true);
+		} else {
+			await session.sessionManager.setSessionName("Manual tokenizer investigation", "user");
+		}
+		retitleResponse.resolve(createAssistantMessage("<title>Tokenizer TypeError</title>"));
+		await generateTitle.mock.results[1]?.value;
+		await scheduler.yield();
+
+		expect(titleCalls).toBe(2);
+		if (completion === "dispose") {
+			expect(session.sessionName).toBeUndefined();
+		} else {
+			expect(session.sessionName).toBe("Manual tokenizer investigation");
+			expect(session.sessionManager.titleSource).toBe("user");
+		}
 	});
 });

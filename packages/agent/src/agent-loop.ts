@@ -51,8 +51,7 @@ import {
 	recoverHarmonyToolCall,
 	signalListLabel,
 } from "@oh-my-pi/pi-ai/utils/harmony-leak";
-
-import { logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
+import { cloneJsonTree, logger, sanitizeText, structuredCloneJSON } from "@oh-my-pi/pi-utils";
 import { INTENT_FIELD } from "@oh-my-pi/pi-wire";
 import { LiveSteeringChannel } from "./live-steering";
 import { agentPauseGate } from "./pause";
@@ -66,7 +65,7 @@ import {
 	finishExecuteToolSpan,
 	finishInvokeAgentSpan,
 	fireOnRunEnd,
-	PiGenAIAttr,
+	OmpGenAIAttr,
 	recordSkippedTool,
 	resolveTelemetry,
 	runInActiveSpan,
@@ -385,13 +384,17 @@ function snapshotAssistantContentBlock(block: AssistantContentBlock): AssistantC
 		case "redactedThinking":
 			return { ...block };
 		case "anthropicServerTool":
-			return { ...block, block: structuredCloneJSON(block.block) };
+			return { ...block, block: cloneJsonTree(block.block) };
 		case "fallback":
 			return { ...block, from: { ...block.from }, to: { ...block.to } };
 		case "toolCall": {
 			const snap = {
 				...block,
-				arguments: structuredCloneJSON(block.arguments),
+				// Providers mutate streaming arguments in place (owned-stream, GLM)
+				// as well as replacing them, so containers are always copied; the
+				// strings inside are immutable and shared, keeping the per-delta
+				// cost independent of the argument payload size.
+				arguments: cloneJsonTree(block.arguments),
 				providerMetadata: snapshotToolCallProviderMetadata(block.providerMetadata),
 			};
 			// Object spread copies enumerable symbols in Bun, but the Cursor
@@ -1255,6 +1258,7 @@ async function runLoopBody(
 				config,
 				telemetry,
 				invokeAgentSpan,
+				[],
 			);
 			for (const result of executionResult.toolResults) {
 				currentContext.messages.push(result);
@@ -1628,6 +1632,7 @@ async function runLoopBody(
 						config,
 						telemetry,
 						invokeAgentSpan,
+						[...liveAccepted, ...liveDeferred],
 					);
 
 					completedToolExecution = executionResult.completedToolExecution;
@@ -1829,6 +1834,27 @@ interface PreparedProviderCall {
 }
 
 /**
+ * Classify the first `count` steering messages for a tool-batch interrupt:
+ * any user-authored message wins, then agent-attributed user messages, else
+ * system steering (advisor cards, hidden directives). Shared by the agent's
+ * queue peek and the loop's live-taken steering.
+ */
+export function steeringQueueState(messages: readonly AgentMessage[], count = messages.length): SteeringQueueState {
+	if (count === 0) return { queued: false };
+	let hasAgentSteering = false;
+	for (let i = 0; i < count; i++) {
+		const message = messages[i];
+		const role = "role" in message ? message.role : undefined;
+		const attribution = "attribution" in message ? message.attribution : undefined;
+		if (attribution === "user") return { queued: true, source: "user" };
+		if (role !== "user") continue;
+		if (attribution !== "agent") return { queued: true, source: "user" };
+		hasAgentSteering = true;
+	}
+	return { queued: true, source: hasAgentSteering ? "agent" : "system" };
+}
+
+/**
  * Offer queued steering to a provider that can deliver it into the response it
  * is streaming. Latency decides whether steering lands before the model commits
  * to its next output, so claims convert only the steering batch — message-level
@@ -1846,7 +1872,11 @@ function openLiveSteering(
 	const bound = (signal: AbortSignal): AbortSignal => (loopSignal ? AbortSignal.any([signal, loopSignal]) : signal);
 	return new LiveSteeringChannel({
 		wait: signal => waitForSteeringMessages(bound(signal)),
-		take: signal => getSteeringMessages(bound(signal)),
+		take: async signal => {
+			const messages = await getSteeringMessages(bound(signal));
+			if (messages.length > 0) config.onLiveSteeringTaken?.(messages);
+			return messages;
+		},
 		toProvider: async (messages, signal) => {
 			const transformed = config.transformContext
 				? await config.transformContext(messages, bound(signal))
@@ -2095,6 +2125,8 @@ async function streamAssistantResponse(
 						signal: requestSignal,
 					})
 				: undefined;
+			const speculationPlansFromStream =
+				!config.transformAssistantMessage || config.transformAssistantMessagePreservesToolCalls === true;
 
 			let providerStreamSettled = false;
 			let speculationSettled = false;
@@ -2324,15 +2356,11 @@ async function streamAssistantResponse(
 						case "toolcall_delta":
 						case "toolcall_end":
 							if (partialMessage) {
-								if (
-									event.type === "toolcall_start" &&
-									speculationCoordinator &&
-									!config.transformAssistantMessage
-								) {
+								if (event.type === "toolcall_start" && speculationCoordinator && speculationPlansFromStream) {
 									// Stream sessions plan from pre-transform arguments, exactly like
 									// direct candidates (see admitFinalized below): with a transformer
-									// installed the authoritative call may differ, so any speculative
-									// work started from the original would be phantom I/O.
+									// that may rewrite calls, the authoritative call may differ, so any
+									// speculative work started from the original would be phantom I/O.
 									speculationCoordinator.register(event.contentIndex);
 									const toolCall = event.partial.content[event.contentIndex];
 									if (toolCall?.type === "toolCall") {
@@ -2429,7 +2457,7 @@ async function streamAssistantResponse(
 								event.type === "toolcall_end" &&
 								speculationCoordinator &&
 								speculationConfig &&
-								!config.transformAssistantMessage
+								speculationPlansFromStream
 							) {
 								speculationCoordinator.admitFinalized(context, event.toolCall, config, requestSignal);
 							}
@@ -2852,6 +2880,13 @@ async function prepareToolCallDispatch(
 		if (toolCall.type !== "toolCall") continue;
 		if ((toolCall as CursorExecResolvedCarrier)[kCursorExecResolved] === true) continue;
 		const tool = resolveToolForCall(context.tools, toolCall, resolveFallbackTool);
+		// A host fallback accepts aliases (`xd://recall`, a mis-separated MCP
+		// name) that providers reject when replayed as a function-call name.
+		// Record the call under the resolved tool's canonical name so history,
+		// persistence, and replay agree; custom-wire calls keep their wire name.
+		if (tool && toolCall.name !== tool.name && toolCall.name !== tool.customWireName) {
+			toolCall.name = tool.name;
+		}
 		const entry: PreparedToolCall = { tool, args: toolCall.arguments as Record<string, unknown> };
 		prepared.set(toolCall.id, entry);
 		let argsForExecution = toolCall.arguments as Record<string, unknown>;
@@ -3015,6 +3050,11 @@ async function speculativeFinalCalls(
  * only after every result has settled, preserving assistant call order, plus
  * whether any call's execution actually completed (so an external abort of a
  * settled batch is distinguishable from one that abandoned a running tool).
+ *
+ * `tool_execution_end` fires as each call settles so live UI updates promptly;
+ * result `message_start`/`message_end` events (which append to agent state and
+ * the persisted session) are held until every earlier call has a result, so
+ * history always pairs results in call order regardless of completion order.
  */
 async function executeToolCalls(
 	currentContext: AgentContext,
@@ -3024,6 +3064,9 @@ async function executeToolCalls(
 	config: AgentLoopConfig,
 	telemetry: AgentTelemetry | undefined,
 	invokeAgentSpan: Span | undefined,
+	// Steering the provider took off the queue during the response that emitted
+	// this batch; it injects at this batch's boundary like queued steering.
+	liveSteering: readonly AgentMessage[],
 ): Promise<{ toolResults: ToolResultMessage[]; completedToolExecution: boolean; additionalContext?: string }> {
 	const tools = currentContext.tools;
 	const {
@@ -3092,7 +3135,11 @@ async function executeToolCalls(
 	const interruptibleSignal: AbortSignal = signal
 		? AbortSignal.any([signal, steeringAbortController.signal, ircAbortController.signal])
 		: AbortSignal.any([steeringAbortController.signal, ircAbortController.signal]);
-	const interruptState: { triggered: boolean; source?: AsideInterruptSource } = { triggered: false };
+	const interruptState: { triggered: boolean; skipPendingOperations: boolean; source?: AsideInterruptSource } = {
+		triggered: false,
+		skipPendingOperations: false,
+	};
+	let batchStarted = false;
 
 	// Streamed messages were prepared (validation + `beforeToolCall`) before
 	// `message_end`, so hook revisions are already part of the message; anything
@@ -3191,16 +3238,29 @@ async function executeToolCalls(
 		let steeringQueued = false;
 		let steeringSource: SteeringInterruptSource | undefined;
 		let interruptImmediately = shouldInterruptImmediately();
+		if (liveSteering.length > 0) {
+			steeringQueued = true;
+			steeringSource = steeringQueueState(liveSteering).source;
+		}
 		if (hasSteeringMessages) {
 			const queuedState = await hasSteeringMessages();
 			if (typeof queuedState === "boolean") {
-				steeringQueued = queuedState;
-				steeringSource = queuedState ? "user" : undefined;
+				if (!steeringQueued) {
+					steeringQueued = queuedState;
+					steeringSource = queuedState ? "user" : undefined;
+				}
 			} else {
 				const state: SteeringQueueState = queuedState;
-				steeringQueued = state.queued;
-				steeringSource = state.source ?? (state.queued ? "unknown" : undefined);
+				if (!steeringQueued) {
+					steeringQueued = state.queued;
+					steeringSource = state.source ?? (state.queued ? "unknown" : undefined);
+				}
 				interruptImmediately ||= state.interruptImmediately === true;
+				// An explicit override stops the remainder of an active batch,
+				// not the first operation of a later FIFO delivery boundary or
+				// work emitted by a response that already took steering live.
+				interruptState.skipPendingOperations ||=
+					batchStarted && state.queued && state.interruptImmediately === true;
 			}
 		}
 		if (steeringQueued) {
@@ -3209,19 +3269,31 @@ async function executeToolCalls(
 			// `interruptImmediately` override), raises the cooperative soft signal
 			// for everything else: the boundary dequeue
 			// below injects the message as soon as running tools finish (or
-			// background themselves), and not-yet-started interruptible waits
-			// are skipped. Idempotent — a second steer poll after the abort is
-			// a no-op.
+			// background themselves). Ordinary steering skips only pending
+			// interruptible waits; explicit overrides also stop remaining work.
 			if (!steeringAbortController.signal.aborted) {
 				interruptState.triggered = true;
 				interruptState.source = steeringSource ?? "unknown";
 				steeringAbortController.abort(TOOL_INTERRUPT_ABORT_REASON);
-				// "wait" mode spares side-effecting work for ordinary steering.
-				if (interruptImmediately) steeringSoftController.abort();
 			}
+			// An ordinary steer may already have cut waits short before a later
+			// immediate override (or a live mode change) escalates foreground work.
+			if (interruptImmediately) steeringSoftController.abort();
 			return;
 		}
 		await checkAsideInterrupts();
+	};
+
+	// Index of the first record whose result message has not been emitted yet.
+	let nextResultIndex = 0;
+	const flushResultMessages = (): void => {
+		for (; nextResultIndex < records.length; nextResultIndex++) {
+			const message = records[nextResultIndex].toolResultMessage;
+			if (!message) return;
+			emittedToolResults.push(message);
+			stream.push({ type: "message_start", message });
+			stream.push({ type: "message_end", message });
+		}
 	};
 
 	const emitToolResult = (record: (typeof records)[number], result: AgentToolResult<any>, isError: boolean): void => {
@@ -3259,16 +3331,13 @@ async function executeToolCalls(
 		record.isError = isError;
 		record.toolResultMessage = toolResultMessage;
 		record.resultEmitted = true;
-		emittedToolResults.push(toolResultMessage);
-
-		stream.push({ type: "message_start", message: toolResultMessage });
-		stream.push({ type: "message_end", message: toolResultMessage });
+		flushResultMessages();
 	};
 
 	const runTool = async (record: (typeof records)[number], index: number): Promise<void> => {
 		// A pending interrupt preempts not-yet-started *interruptible* waits so
 		// the message injects promptly instead of sitting out a `wait`.
-		// Non-interruptible work is never skipped, whatever the source: the
+		// Ordinary steering and asides never skip non-interruptible work: the
 		// expensive part — generating the call — is already paid, the tool
 		// itself is cheap, and a skip only makes the model re-emit the same
 		// call after the steer lands (#10439). The same guarantee is what keeps
@@ -3276,8 +3345,10 @@ async function executeToolCalls(
 		// and lets a subagent's already-emitted terminal `yield` commit when
 		// the parent steers mid-stream (#10645). The steer still injects at the
 		// batch boundary; the cooperative soft signal lets long-running tools
-		// step aside on their own.
-		if (interruptState.triggered && record.interruptible) {
+		// step aside on their own. An explicit immediate override instead skips
+		// every remaining operation; already-started work keeps its own signal
+		// and real result.
+		if (interruptState.triggered && (record.interruptible || interruptState.skipPendingOperations)) {
 			// Skip both span emission and the collector orphan record here. The
 			// tail sweep below (after `Promise.allSettled`) is the single path
 			// that handles "no result message was produced" — it calls
@@ -3318,6 +3389,7 @@ async function executeToolCalls(
 			return;
 		}
 		record.started = true;
+		batchStarted = true;
 		stream.push({
 			type: "tool_execution_start",
 			toolCallId: toolCall.id,
@@ -3334,7 +3406,7 @@ async function executeToolCalls(
 			parent: invokeAgentSpan,
 		});
 		if (toolSpan && toolCall.intent) {
-			toolSpan.setAttribute(PiGenAIAttr.ToolCallIntent, toolCall.intent);
+			toolSpan.setAttribute(OmpGenAIAttr.ToolCallIntent, toolCall.intent);
 		}
 
 		let result: AgentToolResult<any> = { content: [], details: {} };
@@ -3522,6 +3594,9 @@ async function executeToolCalls(
 						});
 						result = coerced.result;
 						isError = coerced.malformed || (after.isError ?? isError);
+						if (isNonBlankContext(after.additionalContext)) {
+							record.reportedContext.push(after.additionalContext);
+						}
 					}
 				} catch (e) {
 					caughtError = e;
@@ -3597,20 +3672,24 @@ async function executeToolCalls(
 	// checkSteering is idempotent (no-op once triggered).
 	const hasInterruptibleRecords = records.some(record => record.interruptible);
 	// Interruptible waits are cut short by any queued steer in either mode, so
-	// they keep the any-steer wake; a side-effecting batch in "wait" mode wakes
-	// only for the per-steer immediate override.
-	const waitForSteeringEvent =
-		shouldInterruptImmediately() || hasInterruptibleRecords
+	// they keep the any-steer wake until interrupted. After that, "wait" mode
+	// listens only for immediate overrides so an ordinary queued steer cannot
+	// busy-loop or prevent a later override from signaling foreground work.
+	const getSteeringWait = () =>
+		shouldInterruptImmediately() || (hasInterruptibleRecords && !steeringAbortController.signal.aborted)
 			? config.waitForSteeringMessages
 			: config.waitForImmediateSteeringMessages;
 	const hasAsidePeek = hasIrcInterrupts !== undefined || hasBackgroundCompletions !== undefined;
 	const watchSteeringWhileRunning =
 		(shouldInterruptImmediately() ||
 			hasInterruptibleRecords ||
-			(waitForSteeringEvent !== undefined && hasSteeringMessages !== undefined)) &&
+			(getSteeringWait() !== undefined && hasSteeringMessages !== undefined)) &&
 		(hasSteeringMessages !== undefined || hasAsidePeek);
+	// Live-taken steering is already pending: interrupt before any call starts
+	// so not-yet-started interruptible waits are skipped outright.
+	if (liveSteering.length > 0) await checkSteering();
 	const eventDrivenSteeringWatch =
-		watchSteeringWhileRunning && waitForSteeringEvent !== undefined && hasSteeringMessages !== undefined;
+		watchSteeringWhileRunning && getSteeringWait() !== undefined && hasSteeringMessages !== undefined;
 	const steeringWatchAbortController = new AbortController();
 	const steeringWatchSignal = signal
 		? AbortSignal.any([signal, steeringWatchAbortController.signal])
@@ -3633,7 +3712,7 @@ async function executeToolCalls(
 					// race where a steer arrives after a check but before listener
 					// registration: the subsequent check observes queued state,
 					// while later arrivals resolve this already-installed wait.
-					const steeringQueued = waitForSteeringEvent?.(steeringWatchSignal).then(
+					const steeringQueued = getSteeringWait()?.(steeringWatchSignal).then(
 						() => true,
 						() => false,
 					);
@@ -3650,7 +3729,9 @@ async function executeToolCalls(
 					if (
 						steeringWatchSignal.aborted ||
 						steeringSoftController.signal.aborted ||
-						(!shouldInterruptImmediately() && interruptState.triggered)
+						(!shouldInterruptImmediately() &&
+							interruptState.triggered &&
+							config.waitForImmediateSteeringMessages === undefined)
 					)
 						return;
 					if (!(await Promise.race([steeringQueued, watchAbortedFalse]))) return;

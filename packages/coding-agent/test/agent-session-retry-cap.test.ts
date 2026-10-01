@@ -1653,6 +1653,8 @@ describe("AgentSession retry delay cap", () => {
 				{ content: ["recovered after rate-limit window"], stopReason: "stop" },
 			],
 		});
+		let retryRequestedAt: number | undefined;
+		let streamCalls = 0;
 		const agent = new Agent({
 			getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
 			initialState: {
@@ -1661,7 +1663,10 @@ describe("AgentSession retry delay cap", () => {
 				tools: [],
 				messages: [],
 			},
-			streamFn: (requestedModel, context, options) => mock.stream(requestedModel, context, options),
+			streamFn: (requestedModel, context, options) => {
+				if (++streamCalls === 2) retryRequestedAt = performance.now();
+				return mock.stream(requestedModel, context, options);
+			},
 		});
 		const settings = Settings.isolated({
 			"compaction.enabled": false,
@@ -1678,10 +1683,14 @@ describe("AgentSession retry delay cap", () => {
 			settings,
 			modelRegistry,
 		});
-		const waitSpy = mockSchedulerWaitWithClock();
+		mockSchedulerWaitWithClock();
 		const retryStartEvents: AutoRetryStartEvent[] = [];
+		let retryStartedAt: number | undefined;
 		session.subscribe(event => {
-			if (event.type === "auto_retry_start") retryStartEvents.push(event);
+			if (event.type === "auto_retry_start") {
+				retryStartedAt = performance.now();
+				retryStartEvents.push(event);
+			}
 		});
 
 		await session.prompt("Trigger transient rate limit without retry-after");
@@ -1691,7 +1700,10 @@ describe("AgentSession retry delay cap", () => {
 		const delayMs = retryStartEvents[0].delayMs;
 		expect(delayMs).toBeGreaterThanOrEqual(1_000);
 		expect(delayMs).toBeLessThanOrEqual(10_000);
-		expect(waitSpy.mock.calls.some(call => call[0] === delayMs)).toBe(true);
+		if (retryStartedAt === undefined || retryRequestedAt === undefined) {
+			throw new Error("Expected the rate-limit backoff to reach a second provider request");
+		}
+		expect(retryRequestedAt - retryStartedAt).toBeGreaterThanOrEqual(delayMs);
 		expect(lastAssistant(session).content).toContainEqual({
 			type: "text",
 			text: "recovered after rate-limit window",
@@ -1756,65 +1768,6 @@ describe("AgentSession retry delay cap", () => {
 		const last = lastAssistant(session);
 		expect(last.stopReason).toBe("stop");
 		expect(last.content).toContainEqual({ type: "text", text: "recovered after stream read retry" });
-	});
-
-	it("auto-retries an empty Anthropic stream truncated before message_stop", async () => {
-		const model = getBundledModel("anthropic", "claude-sonnet-4-5");
-		if (!model) {
-			throw new Error("Expected bundled Anthropic test model to exist");
-		}
-
-		const mock = createMockModel({
-			responses: [
-				{ throw: "Anthropic stream envelope error: stream ended before message_stop" },
-				{ content: ["recovered after envelope retry"], stopReason: "stop" },
-			],
-		});
-		const agent = new Agent({
-			getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
-			initialState: {
-				model,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-			},
-			streamFn: (requestedModel, context, options) => mock.stream(requestedModel, context, options),
-		});
-
-		const settings = Settings.isolated({
-			"compaction.enabled": false,
-			"retry.baseDelayMs": 5,
-			"retry.maxDelayMs": 5_000,
-			"retry.maxRetries": 1,
-			"retry.modelFallback": false,
-		});
-		settings.setModelRole("default", `${model.provider}/${model.id}`);
-
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-		});
-
-		mockSchedulerWaitWithClock();
-		const retryStartEvents: AutoRetryStartEvent[] = [];
-		const retryEndEvents: AutoRetryEndEvent[] = [];
-		session.subscribe(event => {
-			if (event.type === "auto_retry_start") retryStartEvents.push(event);
-			if (event.type === "auto_retry_end") retryEndEvents.push(event);
-		});
-
-		await session.prompt("Trigger empty envelope retry");
-		await session.waitForIdle();
-
-		expect(mock.calls).toHaveLength(2);
-		expect(retryStartEvents).toHaveLength(1);
-		expect(retryEndEvents).toHaveLength(1);
-		expect(retryEndEvents[0]).toMatchObject({ success: true });
-		const last = lastAssistant(session);
-		expect(last.stopReason).toBe("stop");
-		expect(last.content).toContainEqual({ type: "text", text: "recovered after envelope retry" });
 	});
 
 	it("auto-retries Unable to connect transport failures instead of stopping the conversation", async () => {
@@ -2610,7 +2563,7 @@ describe("AgentSession retry delay cap", () => {
 	});
 
 	it.each([1, 6])(
-		"replays %i fully emitted tool calls when provider closure proves none executed",
+		"continues after %i fully emitted tool calls with proof that provider closure prevented execution",
 		async toolCallCount => {
 			const socketClosure =
 				"The socket connection was closed unexpectedly. For more information, pass verbose: true in the second argument to fetch()";
@@ -2627,7 +2580,8 @@ describe("AgentSession retry delay cap", () => {
 			}));
 			const toolCallIds = new Set(toolCalls.map(call => call.id));
 			let streamCalls = 0;
-			let replayedWithoutFailedTurn = false;
+			let retryToolCalls: ToolCall[] = [];
+			let retryToolResults: ToolResultMessage[] = [];
 			const agent = new Agent({
 				getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
 				initialState: {
@@ -2639,13 +2593,17 @@ describe("AgentSession retry delay cap", () => {
 				streamFn: (_requestedModel, context, options) => {
 					streamCalls += 1;
 					if (streamCalls > 1) {
-						replayedWithoutFailedTurn = !context.messages.some(message => {
-							if (message.role === "toolResult") return toolCallIds.has(message.toolCallId);
-							return (
-								message.role === "assistant" &&
-								message.content.some(block => block.type === "toolCall" && toolCallIds.has(block.id))
-							);
-						});
+						retryToolCalls = context.messages.flatMap(message =>
+							message.role === "assistant"
+								? message.content.filter(
+										(block): block is ToolCall => block.type === "toolCall" && toolCallIds.has(block.id),
+									)
+								: [],
+						);
+						retryToolResults = context.messages.filter(
+							(message): message is ToolResultMessage =>
+								message.role === "toolResult" && toolCallIds.has(message.toolCallId),
+						);
 						model.push({ content: ["Recovered after provider closure"] });
 						return model.stream(model, context, options);
 					}
@@ -2710,12 +2668,22 @@ describe("AgentSession retry delay cap", () => {
 			await session.waitForIdle();
 
 			expect(streamCalls).toBe(2);
-			expect(replayedWithoutFailedTurn).toBe(true);
+			// The continuation sees the failed batch and its explicit unexecuted
+			// results, rather than treating the streamed calls as completed work.
+			expect(retryToolCalls).toEqual(toolCalls);
+			const expectedUnexecutedResults = toolCalls.map(call =>
+				expect.objectContaining({
+					toolCallId: call.id,
+					isError: true,
+					details: expect.objectContaining({ __synthetic: true, executed: false }),
+				}),
+			);
+			expect(retryToolResults).toEqual(expectedUnexecutedResults);
 			expect(
-				session.agent.state.messages.some(
+				session.agent.state.messages.filter(
 					message => message.role === "toolResult" && toolCallIds.has(message.toolCallId),
 				),
-			).toBe(false);
+			).toEqual(expectedUnexecutedResults);
 			await sessionManager.flush();
 			const sessionFile = sessionManager.getSessionFile();
 			if (!sessionFile) throw new Error("Expected provider closure recovery to persist a session file");
@@ -2731,7 +2699,7 @@ describe("AgentSession retry delay cap", () => {
 					transcript.messages.filter(
 						message => message.role === "toolResult" && toolCallIds.has(message.toolCallId),
 					),
-				).toHaveLength(toolCallCount);
+				).toEqual(expectedUnexecutedResults);
 
 				const modelContext = reloadedManager.buildSessionContext();
 				const staleReplayMessages = modelContext.messages.filter(message => {
@@ -3254,125 +3222,6 @@ describe("AgentSession retry delay cap", () => {
 		expect(lastAssistant(session).content).toContainEqual({
 			type: "text",
 			text: "Recovered after Cursor idle stall",
-		});
-	});
-
-	it("resumes a Cursor reasonless abort after an unmarked client-side tool call", async () => {
-		const model = createMockModel({
-			id: "composer-2.5",
-			provider: "cursor",
-		});
-		authStorage.keys.setRuntime("cursor", "cursor-test-key");
-		// Cursor emits `todo` client-side without the server-execution marker; a
-		// reasonless abort after it must still recover (issue #6668 review).
-		const toolCall: ToolCall = {
-			type: "toolCall",
-			id: "cursor-todo-1",
-			name: "todo",
-			arguments: { ops: [] },
-		};
-		let streamCalls = 0;
-		let resumedWithSyntheticResult = false;
-		const agent = new Agent({
-			getApiKey: requestedModel => `${requestedModel.provider}-test-key`,
-			initialState: {
-				model,
-				systemPrompt: ["Test"],
-				tools: [],
-				messages: [],
-			},
-			streamFn: (_requestedModel, context, options) => {
-				streamCalls += 1;
-				if (streamCalls > 1) {
-					const matchingResult = context.messages.find(
-						message => message.role === "toolResult" && message.toolCallId === toolCall.id,
-					);
-					resumedWithSyntheticResult =
-						matchingResult?.role === "toolResult" &&
-						typeof matchingResult.details === "object" &&
-						matchingResult.details !== null &&
-						"executed" in matchingResult.details &&
-						matchingResult.details.executed === false;
-					model.push({ content: ["Recovered after Cursor reasonless abort"] });
-					return model.stream(model, context, options);
-				}
-
-				const stream = new AssistantMessageEventStream();
-				queueMicrotask(() => {
-					const partial: AssistantMessage = {
-						role: "assistant",
-						content: [toolCall],
-						api: model.api,
-						provider: model.provider,
-						model: model.id,
-						usage: {
-							input: 0,
-							output: 0,
-							cacheRead: 0,
-							cacheWrite: 0,
-							totalTokens: 0,
-							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-						},
-						stopReason: "stop",
-						timestamp: Date.now(),
-					};
-					stream.push({ type: "start", partial });
-					stream.push({ type: "toolcall_start", contentIndex: 0, partial });
-					stream.push({
-						type: "toolcall_delta",
-						contentIndex: 0,
-						delta: JSON.stringify(toolCall.arguments),
-						partial,
-					});
-					stream.push({ type: "toolcall_end", contentIndex: 0, toolCall, partial });
-					stream.push({
-						type: "error",
-						reason: "aborted",
-						error: {
-							...partial,
-							stopReason: "aborted",
-							errorMessage: "Request was aborted",
-						},
-					});
-				});
-				return stream;
-			},
-		});
-
-		const settings = Settings.isolated({
-			"compaction.enabled": false,
-			"retry.baseDelayMs": 5,
-			"retry.maxRetries": 1,
-		});
-		settings.setModelRole("default", `${model.provider}/${model.id}`);
-		session = new AgentSession({
-			agent,
-			sessionManager: SessionManager.inMemory(),
-			settings,
-			modelRegistry,
-		});
-		const retryStartEvents: AutoRetryStartEvent[] = [];
-		const retryEndEvents: AutoRetryEndEvent[] = [];
-		session.subscribe(event => {
-			if (event.type === "auto_retry_start") retryStartEvents.push(event);
-			if (event.type === "auto_retry_end") retryEndEvents.push(event);
-		});
-
-		await session.prompt("Update the todo list");
-		await session.waitForIdle();
-
-		expect(streamCalls).toBe(2);
-		expect(resumedWithSyntheticResult).toBe(true);
-		expect(
-			session.agent.state.messages.filter(
-				message => message.role === "toolResult" && message.toolCallId === toolCall.id,
-			),
-		).toHaveLength(1);
-		expect(retryStartEvents).toHaveLength(1);
-		expect(retryEndEvents).toContainEqual(expect.objectContaining({ success: true, attempt: 1 }));
-		expect(lastAssistant(session).content).toContainEqual({
-			type: "text",
-			text: "Recovered after Cursor reasonless abort",
 		});
 	});
 

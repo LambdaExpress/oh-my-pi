@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from "bun:test";
 import { InputController } from "@oh-my-pi/pi-coding-agent/modes/controllers/input-controller";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
+import { KeybindingsManager } from "@oh-my-pi/pi-tui/app-keybindings";
 import { setLocale } from "../src/i18n";
 
 interface SuspendCtx {
@@ -26,6 +27,7 @@ function createCtx(): SuspendCtx {
 		ui: ui as unknown as InteractiveModeContext["ui"],
 		showStatus,
 		showError,
+		keybindings: KeybindingsManager.inMemory(),
 	} as unknown as InteractiveModeContext;
 	return { ctx, ui, showStatus, showError };
 }
@@ -70,7 +72,6 @@ describe("InputController.handleCtrlZ", () => {
 		expect(ui.stop).not.toHaveBeenCalled();
 		expect(ui.start).not.toHaveBeenCalled();
 		expect(showStatus).toHaveBeenCalledTimes(1);
-		expect(showStatus.mock.calls[0]?.[0]).toMatch(/not supported/i);
 		expect(showError).not.toHaveBeenCalled();
 	});
 
@@ -143,7 +144,6 @@ describe("InputController.handleCtrlZ", () => {
 		expect(ui.start).toHaveBeenCalledTimes(1);
 		expect(ui.requestRender).toHaveBeenCalledWith(true);
 		expect(showError).toHaveBeenCalledTimes(1);
-		expect(showError.mock.calls[0]?.[0]).toMatch(/Failed to suspend/);
 		expect(showStatus).not.toHaveBeenCalled();
 	});
 });

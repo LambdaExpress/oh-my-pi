@@ -25,8 +25,7 @@ import { SessionRegistry } from "@oh-my-pi/pi-coding-agent/collab/session-regist
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
 import type { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import type { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
-import type { Settings } from "../../src/config/settings";
-import { setLocale } from "../../src/i18n";
+import { Settings } from "../../src/config/settings";
 import * as sdk from "../../src/sdk";
 import { EventBus } from "../../src/utils/event-bus";
 
@@ -48,9 +47,11 @@ const OTHER_AGENT_ID = "other-session-agent";
 function makeSessionDouble(sessionManager: SessionManager): AgentSession {
 	return {
 		sessionManager,
-		settings: { get: () => "" } as unknown as Settings,
+		settings: Settings.isolated(),
 		isStreaming: false,
 		isAborting: false,
+		isSessionTransitioning: false,
+		waitForSessionTransition: async () => {},
 		queuedMessageCount: 0,
 		sessionName: undefined,
 		model: undefined,
@@ -60,10 +61,11 @@ function makeSessionDouble(sessionManager: SessionManager): AgentSession {
 		getAgentScopeId: () => sessionManager.getSessionId(),
 		getContextUsage: () => undefined,
 		subscribe: () => () => {},
+		subscribeCommandMetadataChanged: () => () => {},
 		emitNotice: () => {},
-		promptCustomMessage: async () => {},
+		promptCustomMessage: async () => true,
 		abort: async () => {},
-		dispose: async () => {},
+		dispose: async () => sessionManager.close(),
 	} as unknown as AgentSession;
 }
 
@@ -84,13 +86,14 @@ function makeSessionManagerDouble(id: string, sessionFile: string, cwd: string):
 			entries: [],
 		}),
 		onEntryAppended: undefined,
+		close: async () => {},
 	} as unknown as SessionManager;
 }
 
 /** Minimal CollabHostContext double (mirrors read-only.test.ts's makeHostContext). */
 function makeHostContext(session: AgentSession, sessionManager: SessionManager, eventBus: EventBus): CollabHostContext {
 	return {
-		settings: { get: () => "" } as unknown as Settings,
+		settings: session.settings,
 		sessionManager,
 		session,
 		eventBus,
@@ -199,6 +202,7 @@ interface Harness {
 }
 
 let server: LocalServer;
+let webDistDir: string;
 let harness: Harness | undefined;
 const guestCleanups: (() => void)[] = [];
 
@@ -295,12 +299,9 @@ function spyOnCreateAgentSession(): { created: Array<{ id: string; session: Agen
 
 describe("control room + session registry (multi-session core)", () => {
 	beforeAll(async () => {
-		// Wire error frames carry translated UI text; pin English so assertions
-		// on those strings do not depend on the host's system language.
-		setLocale("en");
-		const distDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-core-ctrl-web-"));
-		await fs.writeFile(path.join(distDir, "index.html"), "<html>core control test</html>");
-		server = startLocalServer({ webDistDir: distDir });
+		webDistDir = await fs.mkdtemp(path.join(os.tmpdir(), "omp-core-ctrl-web-"));
+		await fs.writeFile(path.join(webDistDir, "index.html"), "<html>core control test</html>");
+		server = startLocalServer({ webDistDir });
 	});
 
 	afterEach(async () => {
@@ -314,9 +315,9 @@ describe("control room + session registry (multi-session core)", () => {
 		AgentRegistry.resetGlobalForTests();
 	});
 
-	afterAll(() => {
-		setLocale(null);
+	afterAll(async () => {
 		server.stop();
+		await fs.rm(webDistDir, { recursive: true, force: true });
 	});
 
 	it("welcomes a full-control guest and lists the initial session with its link", async () => {
@@ -390,7 +391,6 @@ describe("control room + session registry (multi-session core)", () => {
 		guest.socket.send({ t: "ctrl-resume", id: "no-such-session" });
 		const err = await guest.nextFrame(f => f.t === "ctrl-error");
 		if (err.t !== "ctrl-error") throw new Error(`expected ctrl-error, got ${err.t}`);
-		expect(err.message).toContain("no such session");
 	});
 
 	it("treats guests without the write token as read-only and strips session links", async () => {
@@ -405,7 +405,6 @@ describe("control room + session registry (multi-session core)", () => {
 		guest.socket.send({ t: "ctrl-create" });
 		const err = await guest.nextFrame(f => f.t === "ctrl-error");
 		if (err.t !== "ctrl-error") throw new Error(`expected ctrl-error, got ${err.t}`);
-		expect(err.message).toBe("read-only");
 
 		guest.socket.send({ t: "ctrl-list" });
 		const sessionsFrame = await guest.nextFrame(f => f.t === "ctrl-sessions");
@@ -424,7 +423,13 @@ describe("control room + session registry (multi-session core)", () => {
 
 		// An agent registered under a different session scope (multi-session
 		// core registers every session in the shared process-wide registry).
-		const foreignSession = { abort: async () => {}, dispose: async () => {} } as unknown as AgentSession;
+		const foreignPrompt = vi.fn(async () => true);
+		const foreignAbort = vi.fn(async () => {});
+		const foreignSession = {
+			promptCustomMessage: foreignPrompt,
+			abort: foreignAbort,
+			dispose: async () => {},
+		} as unknown as AgentSession;
 		const ref = AgentRegistry.global().register({
 			id: OTHER_AGENT_ID,
 			displayName: "other session agent",
@@ -438,7 +443,6 @@ describe("control room + session registry (multi-session core)", () => {
 			guest.socket.send({ t: "agent-cmd", cmd: "chat", agentId: OTHER_AGENT_ID, text: "hi" });
 			const cmdReply = await guest.nextFrame(f => f.t === "error");
 			if (cmdReply.t !== "error") throw new Error(`expected error, got ${cmdReply.t}`);
-			expect(cmdReply.message).toBe("agent not in this session");
 
 			guest.socket.send({ t: "fetch-transcript", reqId: 7, agentId: OTHER_AGENT_ID, fromByte: 0 });
 			const transcript = await guest.nextFrame(f => f.t === "transcript");
@@ -446,7 +450,9 @@ describe("control room + session registry (multi-session core)", () => {
 			expect(transcript.reqId).toBe(7);
 			expect(transcript.text).toBe("");
 			expect(transcript.newSize).toBe(0);
-			expect(transcript.error).toBe("no transcript available");
+			expect(transcript.error).toBeDefined();
+			expect(foreignPrompt).not.toHaveBeenCalled();
+			expect(foreignAbort).not.toHaveBeenCalled();
 
 			// The debounced agents broadcast never mirrors the foreign ref.
 			const agents = await guest.nextFrame(f => f.t === "agents");

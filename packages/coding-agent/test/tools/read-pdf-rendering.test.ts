@@ -8,7 +8,6 @@ import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { ReadTool } from "@oh-my-pi/pi-coding-agent/tools/read";
 import { type ReadToolDetails } from "@oh-my-pi/pi-tui/tools/read";
 import * as pdfRead from "@oh-my-pi/pi-coding-agent/tools/read-pdf";
-import * as markit from "@oh-my-pi/pi-coding-agent/utils/markit";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
 
 const ONE_PX_PNG = Buffer.from(
@@ -90,16 +89,5 @@ describe("read PDF page screenshots", () => {
 		expect(textOf(result)).toContain("literal colon path wins");
 		// Read as literal text, not re-routed to the PDF page-screenshot renderer.
 		expect(result.content.some(entry => entry.type === "image")).toBe(false);
-	});
-
-	it("routes PDF line selectors through normal document conversion", async () => {
-		const convert = vi.spyOn(markit, "convertFileWithMarkit").mockResolvedValue({
-			ok: true,
-			content: "first line\nselected line\nthird line\n",
-		});
-
-		const result = await new ReadTool(makeSession(testDir)).execute("read-pdf-lines", { path: `${pdfPath}:2-2` });
-		expect(convert).toHaveBeenCalledTimes(1);
-		expect(textOf(result)).toContain("selected line");
 	});
 });

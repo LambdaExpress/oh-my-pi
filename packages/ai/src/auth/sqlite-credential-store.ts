@@ -2038,6 +2038,6 @@ export class SqliteAuthCredentialStore implements AuthCredentialStore {
 		this.#getCredentialRefreshLeaseStmt.finalize();
 		this.#renewCredentialRefreshLeaseStmt.finalize();
 		this.#releaseCredentialRefreshLeaseStmt.finalize();
-		this.#db.close();
+		this.#db.close(true);
 	}
 }

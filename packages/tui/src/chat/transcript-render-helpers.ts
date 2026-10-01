@@ -25,6 +25,8 @@ import { canonicalizeMessage } from "./thinking-display";
 import { ToolActivityContainer } from "../chrome/tool-activity";
 import { type TranscriptBlock } from "../chrome/transcript-container";
 import { TranscriptStatusBlock, type TranscriptStatusRow } from "../chrome/transcript-status";
+import { col } from "../native/describe";
+import type { NativeNode } from "../native/node";
 import { theme } from "../theme";
 import { t } from "../i18n";
 import { formatSshTransferSummary, isSshTransferToolDetails } from "../tools/ssh-transfer-summary";
@@ -500,6 +502,7 @@ export function createCompletedRunSummary(summary: CompletedRunSummary, toggleKe
 class AsyncResultStatusBlock extends TranscriptStatusBlock {
 	#folded = false;
 	readonly #compactRows: readonly (Component | undefined)[];
+	#foldedNative: NativeNode | undefined;
 
 	constructor(rows: readonly TranscriptStatusRow[], compactRows: readonly (Component | undefined)[]) {
 		super(rows);
@@ -519,6 +522,15 @@ class AsyncResultStatusBlock extends TranscriptStatusBlock {
 			lines.push(...(this.#compactRows[index] ?? this.children[index]!).render(width));
 		}
 		return lines;
+	}
+
+	override describe(): NativeNode {
+		if (!this.#folded) return super.describe();
+		this.#foldedNative ??= col(
+			this.children.map((child, index) => this.#compactRows[index] ?? child),
+			{ role: "omp.status-block" },
+		);
+		return this.#foldedNative;
 	}
 }
 
@@ -580,11 +592,16 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 					: progressDetails.status === "cancelled"
 						? t("Background SSH transfer cancelled")
 						: t("Background SSH transfer failed");
-			const statusLine = theme.fg(statusColor, `${statusIcon} ${statusText}`);
-			const header = `${statusLine} ${theme.fg("dim", "[ssh_transfer]")} ${theme.fg("accent", jobId)}`;
-			const summary = formatSshTransferSummary(progressDetails);
-			rows.push({ parts: [`${header}\n${summary}`] });
 			const safeJobId = replaceTabs(sanitizeText(jobId)).replaceAll("\r", "\\r").replaceAll("\n", "\\n");
+			const summary = formatSshTransferSummary(progressDetails);
+			rows.push({
+				parts: [
+					{ text: `${statusIcon} ${statusText}`, color: statusColor },
+					{ text: "[ssh_transfer]", color: "dim" },
+					{ text: safeJobId, color: "accent" },
+					{ text: `\n${summary}`, color: "text" },
+				],
+			});
 			const foldedHeader = theme.fg(statusColor, `${statusIcon} ${t("SSH Transfer")}:`);
 			const compact = theme.fg(
 				progressDetails.error === undefined ? "dim" : "error",
@@ -595,30 +612,26 @@ export function buildAsyncResultBlock(message: CustomOrHookMessage): ToolActivit
 				` ${foldedHeader} ${compact} · ${theme.fg("dim", t(progressDetails.status))} ${theme.fg("accent", safeJobId)}`,
 			);
 			if (job.meta?.artifactError) {
-				const warning = { parts: [theme.fg("warning", formatArtifactErrorNotice(job.meta.artifactError))] };
-				rows.push(warning);
+				rows.push({ parts: [{ text: formatArtifactErrorNotice(job.meta.artifactError), color: "warning" }] });
 			}
 			continue;
 		}
 		const typeLabel = job.type ? `[${job.type}]` : "[job]";
 		const duration = typeof job.durationMs === "number" ? formatDuration(job.durationMs) : undefined;
-		const row = {
+		rows.push({
 			parts: [
-				theme.fg("success", `${theme.status.done} ${t("Background job completed")}`),
-				theme.fg("dim", typeLabel),
-				theme.fg("accent", jobId),
-				duration ? theme.fg("dim", `(${duration})`) : undefined,
+				{ text: `${theme.status.done} ${t("Background job completed")}`, color: "success" },
+				{ text: typeLabel, color: "dim" },
+				{ text: jobId, color: "accent" },
+				duration ? { text: `(${duration})`, color: "dim" } : undefined,
 			],
-		};
-		rows.push(row);
+		});
 		if (job.meta?.artifactError) {
-			const warning = { parts: [theme.fg("warning", formatArtifactErrorNotice(job.meta.artifactError))] };
-			rows.push(warning);
+			rows.push({ parts: [{ text: formatArtifactErrorNotice(job.meta.artifactError), color: "warning" }] });
 		}
 	}
 	if (details?.meta?.artifactError) {
-		const warning = { parts: [theme.fg("warning", formatArtifactErrorNotice(details.meta.artifactError))] };
-		rows.push(warning);
+		rows.push({ parts: [{ text: formatArtifactErrorNotice(details.meta.artifactError), color: "warning" }] });
 	}
 	return new ToolActivityContainer(
 		compactRows ? new AsyncResultStatusBlock(rows, compactRows) : new TranscriptStatusBlock(rows),
@@ -635,7 +648,7 @@ export function buildLaunchCompletionBlock(message: CustomOrHookMessage): ToolAc
 	const rows: TranscriptStatusRow[] = [];
 	const daemons = details?.daemons ?? [];
 	if (daemons.length === 0 && typeof message.content === "string") {
-		rows.push({ parts: [theme.fg("dim", `${theme.status.done} ${message.content}`)] });
+		rows.push({ parts: [{ text: `${theme.status.done} ${message.content}`, color: "dim" }] });
 	}
 	for (const daemon of daemons) {
 		const failed = daemon.state === "failed" || (daemon.exitCode !== undefined && daemon.exitCode !== 0);
@@ -646,11 +659,13 @@ export function buildLaunchCompletionBlock(message: CustomOrHookMessage): ToolAc
 		rows.push({
 			parts: [
 				failed
-					? theme.fg("error", `${theme.status.error} ${t("Supervised process failed")}`)
-					: theme.fg("success", `${theme.status.done} ${t("Supervised process completed")}`),
-				theme.fg("accent", daemon.name),
-				daemon.exitCode !== undefined ? theme.fg("dim", t("(exit {code})", { code: daemon.exitCode })) : undefined,
-				duration ? theme.fg("dim", `(${duration})`) : undefined,
+					? { text: `${theme.status.error} ${t("Supervised process failed")}`, color: "error" }
+					: { text: `${theme.status.done} ${t("Supervised process completed")}`, color: "success" },
+				{ text: daemon.name, color: "accent" },
+				daemon.exitCode !== undefined
+					? { text: t("(exit {code})", { code: daemon.exitCode }), color: "dim" }
+					: undefined,
+				duration ? { text: `(${duration})`, color: "dim" } : undefined,
 			],
 		});
 	}
@@ -723,9 +738,10 @@ export function buildFileMentionBlock(files: FileMentionMessage["files"], indent
 		}
 		rows.push({
 			parts: [
-				`${theme.fg("dim", `${theme.tree.last} `)}${theme.fg("muted", "Read")}`,
-				theme.fg("accent", file.path),
-				theme.fg("dim", suffix),
+				{ text: theme.tree.last, color: "dim", rowsOnly: true },
+				{ text: "Read", color: "muted" },
+				{ text: file.path, color: "accent" },
+				{ text: suffix, color: "dim" },
 			],
 			indent,
 		});

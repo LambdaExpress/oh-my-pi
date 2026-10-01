@@ -17,6 +17,18 @@
 - Completed turns now collapse intermediate thinking, tool calls, and progress text behind one expandable process summary while keeping the user prompt and final answer visible; abnormal runs stay expanded. Added motion-token-based transitions for transcript rows, process disclosure, session views, sidebars, Composer cards, model/thinking menus, and agent rails with reduced-motion support.
 - Added working keyboard shortcuts for new session, open project, project-sidebar toggle, Composer focus, and settings, with a reference panel in Settings. Settings now close when the desktop backdrop is clicked while preserving clicks inside the dialog.
 - Added Tauri-only custom window chrome with a unified draggable title bar and minimize, maximize/restore, and close-to-tray controls; ordinary browser sessions remain frameless.
+## [18.4.1] - 2026-09-28
+
+### Fixed
+
+- Prevented iOS Safari from zooming collab text fields on focus in wide touch viewports, including landscape orientation ([#13371](https://github.com/can1357/oh-my-pi/pull/13371) by [@andersennl](https://github.com/andersennl)).
+
+## [18.4.0] - 2026-09-28
+
+### Changed
+
+- Redesigned the web client: black chassis with one inset session panel, glass top bar with the omp mark and a live status pill, a docked composer card, prompts shown as cards in the transcript, a sectioned agents rail, and a floating agent drawer; the connect screen was rebuilt too
+
 ## [18.3.1] - 2026-09-25
 
 ### Fixed

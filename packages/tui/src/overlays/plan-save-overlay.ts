@@ -2,6 +2,11 @@ import { type Component, CURSOR_MARKER, type Focusable, Input, truncateToWidth, 
 import { t } from "../i18n";
 import { theme } from "../theme/theme";
 import { OverlayPanel, PanelRows } from "../chrome/overlay-box";
+import { editorKey } from "../chrome/keybinding-hints";
+import { col, keyed, span, text } from "../native/describe";
+import type { NativeChild, NativeNode, NativeUiEvent } from "../native/node";
+import { actionBar, actionButton } from "../native/overlay";
+import { getKeybindings } from "../keybindings";
 
 /** A confirmed destination chosen from {@link PlanSaveOverlay}. */
 export interface PlanSaveOverlayResult {
@@ -16,6 +21,8 @@ export class PlanSaveOverlay implements Component, Focusable {
 	#focused = false;
 	readonly #panel: OverlayPanel;
 	readonly #body: PanelRows;
+	#nativeSig = "";
+	#nativeRoot: NativeNode | undefined;
 
 	constructor(suggestedPath: string, done: (result: PlanSaveOverlayResult | undefined) => void) {
 		this.#suggestedPath = suggestedPath;
@@ -59,8 +66,48 @@ export class PlanSaveOverlay implements Component, Focusable {
 	render(width: number): readonly string[] {
 		const innerWidth = Math.max(0, width - 4);
 		this.#input.focused = this.#focused;
-		this.#body.setLines([this.#renderInput(innerWidth), theme.fg("dim", t("Enter save and quit · Esc cancel"))]);
+		const hint = `${editorKey("tui.input.submit")} ${t("save and quit")} · ${editorKey("tui.select.cancel")} ${t("cancel")}`;
+		this.#body.setLines([this.#renderInput(innerWidth), theme.fg("dim", hint)]);
 		return this.#panel.render(width);
+	}
+
+	/** A small glass sheet titled "Save and quit". */
+	readonly nativeOverlay = { role: "omp.overlay.planSave", size: "sm", head: t("Save and quit") } as const;
+
+	describe(): NativeNode {
+		this.#input.focused = this.#focused;
+		const showDefault = this.#input.getValue().length === 0;
+		const bindings = getKeybindings();
+		const submitKey = bindings.getKeys("tui.input.submit")[0];
+		const cancelKey = bindings.getKeys("tui.select.cancel")[0];
+		const sig = `${showDefault}|${this.#suggestedPath}|${submitKey}|${cancelKey}`;
+		if (this.#nativeRoot && sig === this.#nativeSig) return this.#nativeRoot;
+		const children: NativeChild[] = [this.#input];
+		if (showDefault) {
+			children.push(
+				keyed(
+					text([span(t("Empty saves to "), "dim"), span(this.#suggestedPath, "path")], { truncate: "middle" }),
+					"default",
+				),
+			);
+		}
+		children.push(
+			actionBar([
+				null,
+				actionButton(t("Cancel"), "cancel", cancelKey ? { keys: cancelKey } : {}),
+				actionButton(t("Save and quit"), "save", { tone: "accent", ...(submitKey ? { keys: submitKey } : {}) }),
+			]),
+		);
+		this.#nativeSig = sig;
+		this.#nativeRoot = col(children, { gap: "md" });
+		return this.#nativeRoot;
+	}
+
+	/** Save and Cancel run what the submit and cancel keys run. */
+	handleNativeEvent(event: NativeUiEvent): void {
+		if (event.type !== "action") return;
+		if (event.act === "save") this.#input.onSubmit?.(this.#input.getValue());
+		else if (event.act === "cancel") this.#input.onEscape?.();
 	}
 
 	#renderInput(width: number): string {

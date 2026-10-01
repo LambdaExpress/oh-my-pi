@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { disposeAllVmContexts } from "@oh-my-pi/pi-coding-agent/eval/js/context-manager";
 import { createBrowserPrelude } from "@oh-my-pi/pi-coding-agent/tools/browser";
+import { findFreeCdpPort } from "@oh-my-pi/pi-coding-agent/tools/browser/attach";
 import { applyIgnoreHttpsErrors, resolveInitScriptSources } from "@oh-my-pi/pi-coding-agent/tools/browser/open-options";
 import { buildHeadlessLaunchArgs } from "@oh-my-pi/pi-coding-agent/tools/browser/launch";
 import { releaseAllTabs } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
@@ -25,6 +26,7 @@ function browserHost(cwd: string = process.cwd()) {
 			"browser.enabled": true,
 			"browser.headless": true,
 			"browser.cmux": false,
+			"browser.tern": false,
 			"tools.maxTimeout": 0,
 		}),
 	};
@@ -162,7 +164,8 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser open options", () => {
 	it("overrides navigator and request user agents", async () => {
 		const seen = Promise.withResolvers<string>();
 		const server = Bun.serve({
-			port: 0,
+			hostname: "127.0.0.1",
+			port: await findFreeCdpPort(),
 			fetch(request) {
 				seen.resolve(request.headers.get("user-agent") ?? "");
 				return new Response("<title>ua</title>", { headers: { "content-type": "text/html" } });
@@ -190,7 +193,8 @@ describe.skipIf(!CHROMIUM_AVAILABLE)("browser open options", () => {
 	it("waits for a completed download and records its bytes", async () => {
 		const payload = new TextEncoder().encode("download payload\n");
 		const server = Bun.serve({
-			port: 0,
+			hostname: "127.0.0.1",
+			port: await findFreeCdpPort(),
 			fetch(request) {
 				if (new URL(request.url).pathname === "/file") {
 					return new Response(payload, {

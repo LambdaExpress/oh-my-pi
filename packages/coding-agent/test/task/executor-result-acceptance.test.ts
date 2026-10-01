@@ -7,6 +7,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import { AsyncJobManager } from "@oh-my-pi/pi-coding-agent/async/job-manager";
+import type { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { LoadExtensionsResult } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/types";
 import { AgentLifecycleManager } from "@oh-my-pi/pi-coding-agent/registry/agent-lifecycle";
 import { AgentRegistry } from "@oh-my-pi/pi-coding-agent/registry/agent-registry";
@@ -21,6 +23,8 @@ import {
 } from "@oh-my-pi/pi-coding-agent/task/executor";
 import type { AgentDefinition } from "@oh-my-pi/pi-coding-agent/task/types";
 import { EventBus } from "@oh-my-pi/pi-coding-agent/utils/event-bus";
+import { TempDir } from "@oh-my-pi/pi-utils";
+import { createSessionDefaults } from "../helpers/session-defaults";
 
 const AGENT_ID = "accepted-result";
 
@@ -93,6 +97,7 @@ function createHarness(options?: { hangPrompt?: boolean; asyncJobManager?: Async
 		} as AgentSessionEvent);
 	};
 	const session = {
+		...createSessionDefaults(),
 		state: { messages },
 		agent: { state: { systemPrompt: ["test"] } },
 		model: undefined,
@@ -100,6 +105,7 @@ function createHarness(options?: { hangPrompt?: boolean; asyncJobManager?: Async
 		sessionManager: { appendSessionInit: () => {} },
 		getActiveToolNames: () => ["read", "yield"],
 		getEnabledToolNames: () => ["read", "yield"],
+		getMountedXdevToolNames: () => [],
 		getToolByName: () => undefined,
 		setActiveToolsByName: async () => {},
 		setWorkPoolYieldItems: () => {},
@@ -114,12 +120,13 @@ function createHarness(options?: { hangPrompt?: boolean; asyncJobManager?: Async
 			promptEntered.resolve();
 			if (options?.hangPrompt) {
 				await hangingPrompt.promise;
-				return;
+				return true;
 			}
 			const message = assistantStopMessage("submitting");
 			messages.push(message);
 			emit({ type: "message_end", message } as AgentSessionEvent);
 			emitTerminalYield({ report: text });
+			return true;
 		},
 		waitForIdle: async () => {},
 		isAdvisorActive: () => false,
@@ -163,16 +170,21 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe("runSubprocess result acceptance", () => {
+	let tempDir: TempDir;
+
 	beforeEach(() => {
 		AgentRegistry.resetGlobalForTests();
 		AgentLifecycleManager.resetGlobalForTests();
+		tempDir = TempDir.createSync("@pi-result-acceptance-");
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
+		for (const ref of AgentRegistry.global().list()) await ref.session?.dispose();
 		vi.restoreAllMocks();
 		AsyncJobManager.resetForTests();
 		AgentLifecycleManager.resetGlobalForTests();
 		AgentRegistry.resetGlobalForTests();
+		tempDir[Symbol.dispose]();
 	});
 
 	it("terminalizes the ref and stamps the run lifecycle when the yield is accepted", async () => {
@@ -186,11 +198,15 @@ describe("runSubprocess result acceptance", () => {
 		} as CreateAgentSessionResult);
 
 		const result = await runSubprocess({
-			cwd: "/tmp",
+			cwd: tempDir.path(),
 			agent: baseAgent,
 			task: "do the work",
 			index: 0,
 			id: AGENT_ID,
+			settings: Settings.isolated(),
+			modelRegistry: { authStorage: {}, refresh: async () => {} } as unknown as ModelRegistry,
+			enableLsp: false,
+			enableIrc: false,
 		});
 
 		expect(result.exitCode).toBe(0);
@@ -219,12 +235,16 @@ describe("runSubprocess result acceptance", () => {
 		});
 		const jobId = manager.register("task", AGENT_ID, async ({ signal }) => {
 			const result = await runSubprocess({
-				cwd: "/tmp",
+				cwd: tempDir.path(),
 				agent: baseAgent,
 				task: "do the work",
 				index: 0,
 				id: AGENT_ID,
 				signal,
+				settings: Settings.isolated(),
+				modelRegistry: { authStorage: {}, refresh: async () => {} } as unknown as ModelRegistry,
+				enableLsp: false,
+				enableIrc: false,
 			});
 			if (result.exitCode !== 0) throw new Error(result.abortReason ?? result.error ?? "Task failed");
 			return result.output;

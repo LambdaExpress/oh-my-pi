@@ -27,7 +27,8 @@
 	letter-spacing: 0.02em;
 }
 
-.ag-panel-count {
+.ag-panel-count,
+.ag-heading-count {
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
@@ -39,6 +40,16 @@
 	background: var(--bg-subtle);
 	color: var(--fg-muted);
 	font: 500 10px / 1 var(--font-mono);
+}
+
+.ag-heading {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 8px 4px 2px;
+	color: var(--fg-faint);
+	font-size: 12px;
+	font-weight: 500;
 }
 
 .ag-row {
@@ -552,7 +563,7 @@
 	}
 }
 
-@media (max-width: 640px) {
+@media (max-width: 640px), (any-pointer: coarse) {
 	.ag-btn,
 	.ag-iconbtn,
 	.ag-chat-input {

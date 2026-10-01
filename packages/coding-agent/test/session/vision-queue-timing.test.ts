@@ -7,13 +7,13 @@ import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { getThemeByName, setThemeInstance } from "@oh-my-pi/pi-tui/theme";
-import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
 import { AgentSession } from "@oh-my-pi/pi-coding-agent/session/agent-session";
 import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
 import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
 import { Container } from "@oh-my-pi/pi-tui";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { createInteractiveModeContext } from "../helpers/interactive-mode-context";
 
 const TINY_PNG_BASE64 =
 	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
@@ -30,14 +30,15 @@ function messageLabel(message: AgentMessage): string {
 
 function renderPendingMessages(session: AgentSession): string {
 	const pendingMessagesContainer = new Container();
-	const ctx = {
+	const ctx = createInteractiveModeContext({
 		session,
 		viewSession: session,
+		sessionManager: session.sessionManager,
+		settings: session.settings,
 		pendingMessagesContainer,
 		compactionQueuedMessages: [],
-		keybindings: { getDisplayString: () => "Alt+Up" },
 		ui: { requestComponentRender: () => {} },
-	} as unknown as InteractiveModeContext;
+	});
 	new UiHelpers(ctx).updatePendingMessagesDisplay();
 	return Bun.stripANSI(pendingMessagesContainer.render(120).join("\n"));
 }

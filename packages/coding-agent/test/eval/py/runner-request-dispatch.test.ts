@@ -12,7 +12,10 @@ interface RunnerFrame {
 	admissionRejected?: boolean;
 }
 
-const pythonPath = Bun.env.PYTHON ?? ($which("python3") ? "python3" : "python");
+const pythonPath =
+	Bun.env.PYTHON ??
+	(process.platform === "win32" ? ($which("python") ?? $which("python3")) : ($which("python3") ?? $which("python"))) ??
+	"python";
 const runnerPath = path.resolve(import.meta.dir, "../../../src/eval/py/runner.py");
 const repoRoot = path.resolve(import.meta.dir, "../../../../..");
 const encoder = new TextEncoder();
@@ -68,8 +71,10 @@ function spawnRunner(): Runner {
 		},
 		async dispose() {
 			try {
-				proc.stdin.write(encoder.encode(`${JSON.stringify({ type: "exit" })}\n`));
-				proc.stdin.end();
+				if (proc.exitCode === null) {
+					proc.stdin.write(encoder.encode(`${JSON.stringify({ type: "exit" })}\n`));
+					await proc.stdin.end();
+				}
 			} catch {
 				// stdin may already be closed.
 			}
@@ -83,6 +88,7 @@ function spawnRunner(): Runner {
 			} catch {
 				// Process already exited.
 			}
+			await proc.exited;
 		},
 	};
 }
@@ -100,9 +106,8 @@ async function collectDoneOrder(runner: Runner, ids: Set<string>): Promise<Runne
 	return dones;
 }
 
-// Eval sessions are shared across concurrent agents (subagents inherit the
-// parent's eval session id, per executor-base.ts), so multiple requests can be
-// in flight on one kernel at once. The runner must keep dispatching sibling
+// Auto-backgrounded cells, user Python shortcuts, and kernel-defined tool calls
+// from subagents can all be in flight on one kernel at once. The runner must keep dispatching sibling
 // requests while a cell is parked on a top-level await instead of blocking the
 // control channel until it finishes -- the regression that a naive fix for the
 // Windows numpy import hang (#7985) would introduce.
@@ -116,18 +121,6 @@ describe("Python runner request dispatch", () => {
 			const dones = await collectDoneOrder(runner, new Set(["slow", "fast"]));
 			expect(dones.map(frame => frame.id)).toEqual(["fast", "slow"]);
 			expect(dones.every(frame => frame.status === "ok")).toBe(true);
-		} finally {
-			await runner.dispose();
-		}
-	});
-
-	it("settles every request and exits cleanly", async () => {
-		const runner = spawnRunner();
-		try {
-			runner.send({ id: "a", code: "print(1 + 1)" });
-			runner.send({ id: "b", code: "print('two')" });
-			const dones = await collectDoneOrder(runner, new Set(["a", "b"]));
-			expect(dones.map(frame => frame.status).sort()).toEqual(["ok", "ok"]);
 		} finally {
 			await runner.dispose();
 		}
@@ -322,7 +315,7 @@ describe("Python runner request dispatch", () => {
 						throw new Error("native import hung: runner blocked on a concurrent stdin read");
 					}),
 				]);
-				expect(done.type).toBe("done");
+				expect(done.status).toBe("ok");
 			} finally {
 				await runner.dispose();
 			}

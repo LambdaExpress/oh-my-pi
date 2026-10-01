@@ -6,6 +6,10 @@ import { resolveCliEntryCmd, resolveExecutablePath, resolveWorkerSpawnCmd } from
 describe("executable fallback on unlinked binary", () => {
 	const originalExecPathDesc = Object.getOwnPropertyDescriptor(process, "execPath");
 	const originalArgv0Desc = Object.getOwnPropertyDescriptor(process, "argv0");
+	const fixtureRoot = path.join(import.meta.dir, "fixtures", "executable-fallback");
+	const missingPath = path.join(fixtureRoot, "unlinked", "omp");
+	const originalLauncher = path.join(fixtureRoot, "launcher", "omp");
+	const otherOmpInPath = path.join(fixtureRoot, "path", "omp");
 
 	afterEach(() => {
 		vi.restoreAllMocks();
@@ -40,9 +44,6 @@ describe("executable fallback on unlinked binary", () => {
 
 	it("prefers original absolute launcher path over generic PATH match when executable", () => {
 		vi.spyOn(utils, "isCompiledBinary").mockReturnValue(true);
-		const missingPath = "/opt/homebrew/Cellar/omp/18.1.8/bin/omp";
-		const originalLauncher = "/opt/homebrew/bin/omp";
-		const otherOmpInPath = "/usr/local/bin/omp";
 
 		setProcessProp("execPath", missingPath);
 		setProcessProp("argv0", originalLauncher);
@@ -63,9 +64,6 @@ describe("executable fallback on unlinked binary", () => {
 
 	it("falls back to PATH when original absolute launcher exists but is not executable", () => {
 		vi.spyOn(utils, "isCompiledBinary").mockReturnValue(true);
-		const missingPath = "/opt/homebrew/Cellar/omp/18.1.8/bin/omp";
-		const originalLauncher = "/opt/homebrew/bin/omp";
-		const otherOmpInPath = "/usr/local/bin/omp";
 
 		setProcessProp("execPath", missingPath);
 		setProcessProp("argv0", originalLauncher);
@@ -87,7 +85,6 @@ describe("executable fallback on unlinked binary", () => {
 
 	it("does not resolve relative argv0 against the working tree", () => {
 		vi.spyOn(utils, "isCompiledBinary").mockReturnValue(true);
-		const missingPath = "/opt/homebrew/Cellar/omp/18.1.8/bin/omp";
 		setProcessProp("execPath", missingPath);
 		setProcessProp("argv0", "./omp");
 
@@ -122,11 +119,10 @@ describe("executable fallback on unlinked binary", () => {
 
 	it("falls back to $which('omp') when original execPath was unlinked and argv0 has no path", () => {
 		vi.spyOn(utils, "isCompiledBinary").mockReturnValue(true);
-		const missingPath = "/opt/homebrew/Cellar/omp/18.1.8/bin/omp";
 		setProcessProp("execPath", missingPath);
 		setProcessProp("argv0", "omp");
 
-		const mockUpgradedPath = "/opt/homebrew/bin/omp";
+		const mockUpgradedPath = originalLauncher;
 		vi.spyOn(utils, "$which").mockImplementation((cmd: string) => {
 			if (cmd === "omp") return mockUpgradedPath;
 			return null;
@@ -143,11 +139,10 @@ describe("executable fallback on unlinked binary", () => {
 
 	it("falls back to process.argv0 when $which('omp') is unavailable", () => {
 		vi.spyOn(utils, "isCompiledBinary").mockReturnValue(true);
-		const missingPath = "/custom/install/bin/omp";
 		setProcessProp("execPath", missingPath);
 		setProcessProp("argv0", "my-omp");
 
-		const mockCustomPath = "/usr/local/bin/my-omp";
+		const mockCustomPath = path.join(fixtureRoot, "path", "my-omp");
 		vi.spyOn(utils, "$which").mockImplementation((cmd: string) => {
 			if (cmd === "my-omp") return mockCustomPath;
 			return null;
@@ -161,7 +156,6 @@ describe("executable fallback on unlinked binary", () => {
 
 	it("does not perform fallback lookup when isCompiledBinary is false", () => {
 		vi.spyOn(utils, "isCompiledBinary").mockReturnValue(false);
-		const missingPath = "/opt/homebrew/Cellar/omp/18.1.8/bin/omp";
 		setProcessProp("execPath", missingPath);
 
 		const whichSpy = vi.spyOn(utils, "$which");
@@ -174,7 +168,6 @@ describe("executable fallback on unlinked binary", () => {
 
 	it("returns original execPath gracefully if no fallback candidate exists", () => {
 		vi.spyOn(utils, "isCompiledBinary").mockReturnValue(true);
-		const missingPath = "/nonexistent/omp";
 		setProcessProp("execPath", missingPath);
 		vi.spyOn(utils, "$which").mockReturnValue(null);
 		vi.spyOn(utils, "isExecutable").mockReturnValue(false);

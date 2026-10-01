@@ -1,13 +1,16 @@
 import type { Component } from "../index";
-import { isRecord } from "@oh-my-pi/pi-utils";
+import { isRecord, sanitizeText } from "@oh-my-pi/pi-utils";
 import { t } from "../i18n";
-import type { RenderResultOptions } from "./renderer";
+import type { NativeToolHead, NativeToolView, RenderResultOptions } from "./renderer";
+import { ansi } from "../native/describe";
+import { noteText } from "./native-view";
 import type { Theme } from "../theme/theme";
 import { formatOutputPaneLines, styleToolOutputLine } from "../render/output-pane";
 import { renderStatusLine, type StatusLineOptions } from "../render/status-line";
 import { plainToolCard, type ToolCardPhase } from "../render/tool-card";
-import { truncateToWidth } from "../render/render-utils";
+import { sanitizeDisplayLines, sanitizeDisplayWarning, truncateToWidth } from "../render/render-utils";
 import {
+	describeJsonTree,
 	formatArgsInline,
 	JSON_TREE_MAX_DEPTH_COLLAPSED,
 	JSON_TREE_MAX_DEPTH_EXPANDED,
@@ -62,7 +65,7 @@ function buildDefaultToolSnapshot(
 					? "error"
 					: "done",
 		spinnerFrame: options.spinnerFrame,
-		title: t(input.label),
+		title: sanitizeDisplayWarning(t(input.label)),
 	};
 	if (result?.skipped) status.titleColor = "muted";
 	const phase: ToolCardPhase = options.isPartial
@@ -79,7 +82,7 @@ function buildDefaultToolSnapshot(
 	const args = isRecord(input.args) ? input.args : undefined;
 	if (!options.expanded && args && Object.keys(args).length > 0) {
 		const inlineBudget = Math.max(20, contentWidth - Bun.stringWidth(uiTheme.tree.last) - 2);
-		const preview = formatArgsInline(args, inlineBudget);
+		const preview = formatArgsInline(args, inlineBudget, { sanitizeText: sanitizeDisplayWarning });
 		if (preview) {
 			body.push(` ${uiTheme.fg("dim", uiTheme.tree.last)} ${uiTheme.fg("dim", preview)}`);
 		}
@@ -88,13 +91,12 @@ function buildDefaultToolSnapshot(
 	if (options.expanded && input.args !== undefined) {
 		body.push("");
 		body.push(uiTheme.fg("dim", t("Args")));
-		const tree = renderJsonTreeLines(
-			input.args,
-			uiTheme,
-			JSON_TREE_MAX_DEPTH_EXPANDED,
-			JSON_TREE_MAX_LINES_EXPANDED,
-			JSON_TREE_SCALAR_LEN_EXPANDED,
-		);
+		const tree = renderJsonTreeLines(input.args, uiTheme, {
+			maxDepth: JSON_TREE_MAX_DEPTH_EXPANDED,
+			maxLines: JSON_TREE_MAX_LINES_EXPANDED,
+			maxScalarLen: JSON_TREE_SCALAR_LEN_EXPANDED,
+			sanitizeText,
+		});
 		body.push(...tree.lines);
 		if (tree.truncated) {
 			body.push(uiTheme.fg("dim", "…"));
@@ -103,7 +105,7 @@ function buildDefaultToolSnapshot(
 	}
 
 	if (result) {
-		const textContent = result.output.trimEnd();
+		const textContent = sanitizeDisplayLines(result.output).join("\n").trimEnd();
 		if (!textContent) {
 			body.push(uiTheme.fg("dim", t("(no output)")));
 		} else {
@@ -114,7 +116,7 @@ function buildDefaultToolSnapshot(
 					const maxDepth = options.expanded ? JSON_TREE_MAX_DEPTH_EXPANDED : JSON_TREE_MAX_DEPTH_COLLAPSED;
 					const maxLines = options.expanded ? JSON_TREE_MAX_LINES_EXPANDED : JSON_TREE_MAX_LINES_COLLAPSED;
 					const maxScalarLen = options.expanded ? JSON_TREE_SCALAR_LEN_EXPANDED : JSON_TREE_SCALAR_LEN_COLLAPSED;
-					const tree = renderJsonTreeLines(parsed, uiTheme, maxDepth, maxLines, maxScalarLen);
+					const tree = renderJsonTreeLines(parsed, uiTheme, { maxDepth, maxLines, maxScalarLen, sanitizeText });
 
 					if (tree.lines.length > 0) {
 						body.push(...tree.lines);
@@ -158,6 +160,44 @@ export function formatDefaultToolExecution(
 ): string {
 	const snapshot = buildDefaultToolSnapshot(input, uiTheme, contentWidth);
 	return [renderStatusLine(snapshot.status, uiTheme), ...snapshot.body].join("\n");
+}
+
+/** Inline args summary budget in characters (a data cap, not a width). */
+const NATIVE_ARGS_SUMMARY_CHARS = 160;
+/** Result text kept for the native card body. */
+const NATIVE_RESULT_MAX_CHARS = 64 * 1024;
+
+/**
+ * TSP view of the generic fallback card: the tool label with a one-line args
+ * summary as the head target; the result as a JSON tree or raw `ansi` output.
+ */
+export function describeDefaultToolExecution(input: DefaultToolRenderInput): NativeToolView {
+	const { result } = input;
+	const args = isRecord(input.args) ? input.args : undefined;
+	const summary =
+		args && Object.keys(args).length > 0
+			? formatArgsInline(args, NATIVE_ARGS_SUMMARY_CHARS, {
+					characterBudget: true,
+					sanitizeText: sanitizeDisplayWarning,
+				})
+			: undefined;
+	const tool: NativeToolHead = {
+		title: sanitizeDisplayWarning(t(input.label)),
+		target: summary ? sanitizeDisplayWarning(summary) : undefined,
+		targetKind: "text",
+	};
+	if (!result) return { tool };
+	const output = sanitizeDisplayLines(result.output.slice(0, NATIVE_RESULT_MAX_CHARS)).join("\n").trimEnd();
+	const tone = result.skipped ? "info" : result.isError ? "error" : undefined;
+	if (!output) return { tool, tone, body: [noteText(t("(no output)"))] };
+	if (output.startsWith("{") || output.startsWith("[")) {
+		try {
+			return { tool, tone, body: [describeJsonTree(JSON.parse(output))] };
+		} catch {
+			// Not JSON: shown as raw output below.
+		}
+	}
+	return { tool, tone, body: [ansi(output)] };
 }
 
 /** Render the generic fallback as the state-tinted card used by direct custom tools. */

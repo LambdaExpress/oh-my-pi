@@ -1,14 +1,17 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from "bun:test";
-import { createGallerySegmentContext } from "../../../../src/cli/gallery-fixtures/segments";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { Settings } from "../../../../src/config/settings";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line/component";
 import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
-import { renderSegment } from "@oh-my-pi/pi-tui/status-line/segments";
 import { loadTheme } from "@oh-my-pi/pi-tui/theme/loader";
-import { getThemeByName, setThemeInstance, theme } from "@oh-my-pi/pi-tui/theme";
+import { getThemeByName, setThemeInstance, theme, type Theme } from "@oh-my-pi/pi-tui/theme";
 import type { AgentSession } from "../../../../src/session/agent-session";
 import { setLocale } from "../../../../src/i18n";
 import { StatusLineTestComponents } from "../../../helpers/status-line";
+import {
+	beginSettingsTest,
+	restoreSettingsTestState,
+	type SettingsTestState,
+} from "../../../helpers/settings-test-state";
 
 // The cost assertions below care about how the two costs are rendered, not about
 // terminal width. The status line also shows the cwd and git branch, so a long
@@ -18,6 +21,8 @@ import { StatusLineTestComponents } from "../../../helpers/status-line";
 // truncation tests that target it directly.
 const WIDE_ENOUGH_FOR_COST_SEGMENT = 400;
 const statusLines = new StatusLineTestComponents();
+let settingsState: SettingsTestState | undefined;
+let previousTheme: Theme | undefined;
 
 function makeSessionWithLastMessage(
 	lastMessage: unknown,
@@ -204,7 +209,7 @@ function makeSessionWithUsageFetcher(
 		},
 		modelRegistry: {
 			isUsingOAuth: () => false,
-			authStorage: { getOAuthAccountIdentity: () => undefined },
+			authStorage: { oauth: { identity: () => undefined } },
 		},
 		fetchUsageReports,
 	};
@@ -244,7 +249,9 @@ async function startScheduledUsageFetch() {
 	await Promise.resolve();
 }
 
-beforeAll(async () => {
+beforeEach(async () => {
+	previousTheme = theme;
+	settingsState = beginSettingsTest();
 	await Settings.init({ inMemory: true });
 	const loaded = await getThemeByName("dark");
 	if (!loaded) throw new Error("theme unavailable");
@@ -254,9 +261,14 @@ beforeAll(async () => {
 	setLocale("en");
 });
 
-afterAll(() => {
-	setLocale(null);
+afterEach(() => {
 	statusLines.dispose();
+	vi.useRealTimers();
+	setLocale(null);
+	if (previousTheme) setThemeInstance(previousTheme);
+	previousTheme = undefined;
+	restoreSettingsTestState(settingsState);
+	settingsState = undefined;
 });
 
 describe("StatusLineComponent", () => {
@@ -334,7 +346,7 @@ describe("StatusLineComponent", () => {
 		}
 	});
 
-	it("renders rounded OpenCode Go reset countdowns without the provider name", async () => {
+	it("renders rounded OpenCode Go reset countdowns instead of API-key request cost", async () => {
 		vi.useFakeTimers();
 		const waiters: Array<() => void> = [];
 		const report = makeOpenCodeGoUsageReport();
@@ -355,45 +367,16 @@ describe("StatusLineComponent", () => {
 			await refreshed;
 
 			const rendered = Bun.stripANSI(statusLine.getTopBorder(160).content);
-			expect(rendered).not.toContain("OpenCode Go");
 			// The compact segment reports what is left in each window, so the
 			// fixture's 25% used reads as 75% remaining.
 			expect(rendered).toContain("5h 75%");
 			expect(rendered).toContain("6d 50%");
 			expect(rendered).toContain("31d 25%");
+			expect(rendered).not.toContain("$0.01");
 
 			vi.advanceTimersByTime(4 * 60 * 60_000 + 13 * 60_000);
 			const later = Bun.stripANSI(statusLine.getTopBorder(160).content);
 			expect(later).toContain("30m 75%");
-		} finally {
-			statusLine.dispose();
-			vi.useRealTimers();
-		}
-	});
-
-	it("shows OpenCode Go quota instead of API-key request cost in the default cost segment", async () => {
-		vi.useFakeTimers();
-		const waiters: Array<() => void> = [];
-		const report = makeOpenCodeGoUsageReport();
-		const statusLine = makeUsageOnlyStatusLine(
-			async () => report,
-			() => waiters.shift()?.(),
-			"opencode-go",
-			"cost",
-		);
-
-		try {
-			const refreshed = nextRefresh(waiters);
-			statusLine.getTopBorder(160);
-			await startScheduledUsageFetch();
-			await refreshed;
-
-			const rendered = Bun.stripANSI(statusLine.getTopBorder(160).content);
-			expect(rendered).not.toContain("OpenCode Go");
-			expect(rendered).toContain("5h 75%");
-			expect(rendered).toContain("6d 50%");
-			expect(rendered).toContain("31d 25%");
-			expect(rendered).not.toContain("$0.01");
 		} finally {
 			statusLine.dispose();
 			vi.useRealTimers();
@@ -444,69 +427,23 @@ describe("StatusLineComponent", () => {
 		}
 	});
 
-	it("renders Prewalk annotation when prewalk is armed", () => {
-		const statusLine = statusLines.track(
-			new StatusLineComponent(makeSessionWithLastMessage(null, true) as unknown as AgentSession, statusLineHost),
-		);
-
-		// By default preset, 'mode' segment is included in left/right segments.
-		// Let's get the border and see if Prewalk is rendered.
-		const border = statusLine.getTopBorder(100);
-		// SGR codes might be included, so we check if the stripped content contains "Prewalk"
-		const stripped = border.content.replace(/\x1b\[[0-9;]*m/g, "");
-		expect(stripped).toContain("Prewalk");
-	});
-
-	it("renders startup placeholders without values from the prior session", () => {
-		const statusLine = statusLines.track(
+	it("shows the context window without a percent while usage is unknown", () => {
+		const session = makeSessionWithLastMessage(null);
+		const known = statusLines.track(new StatusLineComponent(session as unknown as AgentSession, statusLineHost));
+		const unknown = statusLines.track(
 			new StatusLineComponent(
-				makeSessionWithLastMessage(null, false, {
-					cost: 2.67,
-					modelName: "Stale Model",
-					sessionName: "stale-session",
-				}) as unknown as AgentSession,
+				{
+					...session,
+					getContextUsage: () => ({ tokens: 0, contextWindow: 128000, percent: null }),
+				} as unknown as AgentSession,
 				statusLineHost,
 			),
 		);
 
-		const live = Bun.stripANSI(statusLine.getTopBorder(WIDE_ENOUGH_FOR_COST_SEGMENT).content);
-		expect(live).toContain("Stale Model");
-		expect(live).toContain("stale-session");
-		expect(live).toContain("2.67");
-
-		const placeholder = Bun.stripANSI(statusLine.renderStartupPlaceholder(WIDE_ENOUGH_FOR_COST_SEGMENT, "box"));
-		expect(placeholder.match(/…/g)?.length).toBeGreaterThanOrEqual(3);
-		expect(placeholder).toContain(`${theme.icon.model} …`);
-		expect([theme.icon.folder, theme.icon.worktree].some(icon => placeholder.includes(`${icon} …`))).toBe(true);
-		expect(placeholder).toContain("$…");
-		expect(placeholder).not.toContain("Stale Model");
-		expect(placeholder).not.toContain("stale-session");
-		expect(placeholder).not.toContain("2.67");
-	});
-
-	it("preserves segment icons and colors while masking their values", () => {
-		const ctx = {
-			...createGallerySegmentContext(),
-			sessionAccent: false,
-			startupPlaceholder: true,
-		};
-		const model = renderSegment("model", ctx);
-		const path = renderSegment("path", ctx);
-		const git = renderSegment("git", ctx);
-		const text = Bun.stripANSI([model.content, path.content, git.content].join(" "));
-
-		expect(text).toContain(`${theme.icon.model} …`);
-		expect(text).toContain(`${theme.icon.folder} …`);
-		expect(text).toContain(`${theme.icon.branch} …`);
-		expect(text).toContain("*…");
-		expect(text).toContain("+…");
-		expect(text).toContain("?…");
-		expect(text).not.toContain("Sonnet 4.5");
-		expect(text).not.toContain("/workspace/oh-my-pi");
-		expect(text).not.toContain("gallery/reference");
-		expect(model.content).toContain(theme.getFgAnsi("statusLineModel"));
-		expect(path.content).toContain(theme.getFgAnsi("statusLinePath"));
-		expect(git.content).toContain(theme.getFgAnsi("statusLineGitDirty"));
+		expect(Bun.stripANSI(known.getTopBorder(120).content)).toMatch(/\d%/);
+		const border = Bun.stripANSI(unknown.getTopBorder(120).content);
+		expect(border).toContain("128K");
+		expect(border).not.toContain("%");
 	});
 
 	it("renders primary and advisor costs separately with subscription indicator in Unicode preset", () => {
@@ -539,7 +476,7 @@ describe("StatusLineComponent", () => {
 		);
 
 		const stripped = statusLine.getTopBorder(WIDE_ENOUGH_FOR_COST_SEGMENT).content.replace(/\x1b\[[0-9;]*m/g, "");
-		expect(stripped).toContain("S2.67 + 👁 S0.41");
+		expect(stripped).toContain("S2.67 + 👁 0.41");
 	});
 
 	it("renders ASCII preset fallback with (adv) for advisor costs", async () => {
@@ -560,7 +497,7 @@ describe("StatusLineComponent", () => {
 				),
 			);
 			const stripped = statusLine.getTopBorder(WIDE_ENOUGH_FOR_COST_SEGMENT).content.replace(/\x1b\[[0-9;]*m/g, "");
-			expect(stripped).toContain("S2.67 + S0.41 (adv)");
+			expect(stripped).toContain("S2.67 + 0.41 (adv)");
 		} finally {
 			setThemeInstance(baseTheme);
 		}
@@ -600,7 +537,7 @@ describe("StatusLineComponent", () => {
 				),
 			);
 			const stripped = statusLine.getTopBorder(WIDE_ENOUGH_FOR_COST_SEGMENT).content.replace(/\x1b\[[0-9;]*m/g, "");
-			expect(stripped).toContain("\u{f067a} 2.67 + \uea70 \u{f067a} 0.41");
+			expect(stripped).toContain("\u{f067a} 2.67 + \uea70 0.41");
 		} finally {
 			setThemeInstance(baseTheme);
 		}

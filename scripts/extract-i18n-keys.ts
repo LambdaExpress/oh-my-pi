@@ -118,13 +118,13 @@ async function collectSlashCommandKeys(): Promise<Set<string>> {
 			const lines = (await Bun.file(`${SRC_DIR}${root}${rel}`).text()).split("\n");
 			for (let i = 0; i < lines.length; i++) {
 				const match = lines[i].match(
-					/\b(?:acpDescription|description)\s*[:=]\s*(\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')/,
+					/\b(?:acpDescription|description)\s*[:=]\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/,
 				);
 				if (!match) continue;
 				// A command entry pairs `name:` with `description:`; ignore object
 				// literals that never carry a name (options, payload shapes, …).
 				const context = lines.slice(Math.max(0, i - 6), i + 1).join("\n");
-				if (!/\bname\s*[:=]\s*[\"'`]/.test(context)) continue;
+				if (!/\bname\s*[:=]\s*["'`]/.test(context)) continue;
 				keys.add(parseStringLiteral(match[1]));
 			}
 		}
@@ -166,8 +166,8 @@ async function collectExampleKeys(): Promise<Set<string>> {
 				const open = block.index! + block[0].length - 1;
 				for (const entry of sliceArrayLiteral(text, open).matchAll(EXAMPLE_LITERAL_RE)) {
 					const literal = entry[0];
-					if (literal.includes("${") && !literal.includes("${APP_NAME}")) continue;
-					keys.add(parseStringLiteral(literal.replaceAll("${APP_NAME}", EXAMPLE_APP_NAME)));
+					if (literal.includes("${") && !/\$\{APP_NAME\}/.test(literal)) continue;
+					keys.add(parseStringLiteral(literal.replaceAll(/\$\{APP_NAME\}/g, EXAMPLE_APP_NAME)));
 				}
 			}
 		}

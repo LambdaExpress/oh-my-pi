@@ -1,4 +1,6 @@
 import { describe, expect, it } from "bun:test";
+import { scheduler } from "node:timers/promises";
+import * as AIError from "@oh-my-pi/pi-ai/error";
 import { retryTransientCompletion } from "@oh-my-pi/pi-ai/oneshot-retry";
 import type { AssistantMessage, Usage } from "@oh-my-pi/pi-ai/types";
 
@@ -102,6 +104,21 @@ describe("retryTransientCompletion", () => {
 		expect(calls).toBe(3);
 		expect(final.stopReason).toBe("error");
 		expect(final.errorMessage).toContain("overloaded_error");
+	});
+
+	it("recovers a finalized transport abort when the caller did not cancel", async () => {
+		let calls = 0;
+		const final = await retryTransientCompletion(async () => {
+			calls += 1;
+			if (calls > 1) return message({ content: [{ type: "text", text: "Recovered completion" }] });
+			const error = await scheduler.wait(0, { signal: AbortSignal.abort() }).catch((reason: unknown) => reason);
+			const failure = await AIError.finalize(error, { signal: new AbortController().signal });
+			return message({ stopReason: failure.stopReason, errorId: failure.id, errorMessage: failure.message });
+		}, fast);
+
+		expect(calls).toBe(2);
+		expect(final.stopReason).toBe("stop");
+		expect(final.content).toEqual([{ type: "text", text: "Recovered completion" }]);
 	});
 
 	it("does not retry a non-transient provider error", async () => {

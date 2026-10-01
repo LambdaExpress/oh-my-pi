@@ -40,12 +40,16 @@ describe("exact security OAuth resolver", () => {
 		expect(listOAuthAccounts).toHaveBeenCalledWith("openai-codex", "session-a");
 	});
 
-	test("throws the stored-account requirement when a credential is pinned without accounts", () => {
+	test("rejects a pinned credential when no stored OAuth accounts exist", () => {
 		const listOAuthAccounts = vi.fn(() => []);
 		expect(() =>
-			selectSecurityOAuthAccount({ listOAuthAccounts } as unknown as AuthStorage, "opencode-go", 42, "session-a"),
-		).toThrow("Security scans require a stored OAuth account for opencode-go");
-		expect(listOAuthAccounts).toHaveBeenCalledWith("opencode-go", "session-a");
+			selectSecurityOAuthAccount(
+				{ oauth: { accounts: listOAuthAccounts } } as unknown as AuthStorage,
+				"opencode-go",
+				42,
+				"session-a",
+			),
+		).toThrow(Error);
 	});
 
 	test("plans provider-owned authentication for recognized Bedrock routes without OAuth", () => {

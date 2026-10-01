@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,14 +7,26 @@ import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config
 import { searchSearXNG } from "@oh-my-pi/pi-coding-agent/web/search/providers/searxng";
 import { SearchProviderError } from "@oh-my-pi/pi-coding-agent/web/search/types";
 import { removeWithRetries } from "@oh-my-pi/pi-utils";
+import {
+	beginSettingsTest,
+	restoreEnvValue,
+	restoreSettingsTestState,
+	type SettingsTestState,
+} from "../helpers/settings-test-state";
 
 describe("SearXNG web search provider", () => {
+	let settingsState: SettingsTestState | undefined;
+
+	beforeEach(() => {
+		settingsState = beginSettingsTest();
+		restoreEnvValue("SEARXNG_ENDPOINT", undefined);
+		restoreEnvValue("SEARXNG_TOKEN", undefined);
+		restoreEnvValue("SEARXNG_BASIC_USERNAME", undefined);
+		restoreEnvValue("SEARXNG_BASIC_PASSWORD", undefined);
+	});
+
 	afterEach(() => {
-		resetSettingsForTest();
-		delete process.env.SEARXNG_ENDPOINT;
-		delete process.env.SEARXNG_TOKEN;
-		delete process.env.SEARXNG_BASIC_USERNAME;
-		delete process.env.SEARXNG_BASIC_PASSWORD;
+		restoreSettingsTestState(settingsState);
 	});
 
 	/**
@@ -375,7 +387,7 @@ describe("SearXNG web search provider", () => {
 			expect(captured.url?.origin).toBe("https://searx-env.example.org");
 			expect(captured.headers?.get("Authorization")).toBe("Bearer env-token");
 		} finally {
-			await removeWithRetries(agentDir);
+			await disposeAgentDir(agentDir);
 		}
 	});
 

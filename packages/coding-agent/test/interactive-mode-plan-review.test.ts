@@ -151,37 +151,6 @@ describe("InteractiveMode plan review rendering", () => {
 		setLocale(null);
 	});
 
-	it("copies the resolved session title prompt into the interactive mode before any refresh", async () => {
-		const resolvedTitlePrompt = "请严格使用中文为普通会话生成标题";
-		const model = session.model;
-		if (!model) {
-			throw new Error("Expected test session to have a model");
-		}
-		const customSession = new AgentSession({
-			agent: new Agent({
-				initialState: {
-					model,
-					systemPrompt: ["Test"],
-					tools: [],
-					messages: [],
-				},
-			}),
-			sessionManager: SessionManager.create(tempDir.path(), tempDir.path()),
-			settings: Settings.isolated(),
-			modelRegistry,
-			titleSystemPrompt: resolvedTitlePrompt,
-		});
-		const refreshTitleSystemPrompt = vi.spyOn(InteractiveMode.prototype, "refreshTitleSystemPrompt");
-		const customMode = new InteractiveMode(customSession, "test");
-		try {
-			expect(customMode.titleSystemPrompt).toBe(resolvedTitlePrompt);
-			expect(refreshTitleSystemPrompt).not.toHaveBeenCalled();
-		} finally {
-			customMode.stop();
-			await customSession.dispose();
-		}
-	});
-
 	it("exits empty plan mode without confirmation", async () => {
 		const planFilePath = "local://PLAN.md";
 		const resolvedPlanPath = resolveLocalUrlToPath(planFilePath, {

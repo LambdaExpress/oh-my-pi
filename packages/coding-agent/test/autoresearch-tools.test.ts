@@ -13,14 +13,26 @@ import { createInitExperimentTool } from "@oh-my-pi/pi-coding-agent/autoresearch
 import { createLogExperimentTool } from "@oh-my-pi/pi-coding-agent/autoresearch/tools/log-experiment";
 import { createRunExperimentTool } from "@oh-my-pi/pi-coding-agent/autoresearch/tools/run-experiment";
 import { createUpdateNotesTool } from "@oh-my-pi/pi-coding-agent/autoresearch/tools/update-notes";
+import * as bashExecutor from "@oh-my-pi/pi-coding-agent/exec/bash-executor";
 import type { ASIData, LogDetails, NumericMetricMap, RunDetails } from "@oh-my-pi/pi-tui/tools/autoresearch";
 import type { ExtensionAPI, ExtensionContext } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { TempDir } from "@oh-my-pi/pi-utils";
 import { $ } from "bun";
+import { restoreEnvValue } from "./helpers/settings-test-state";
+
+let originalDbDir: string | undefined;
+const testRepos: TempDir[] = [];
+
+beforeEach(() => {
+	originalDbDir = process.env.OMP_AUTORESEARCH_DB_DIR;
+});
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	restoreEnvValue("OMP_AUTORESEARCH_DB_DIR", originalDbDir);
+	closeAllAutoresearchStorages();
+	for (const repo of testRepos.splice(0)) repo.removeSync();
 });
 
 function firstTextBlockText(content: Array<TextContent | ImageContent>): string {
@@ -109,7 +121,9 @@ afterAll(async () => {
 // Independent working copy of the template repo: baseline commit on `main`,
 // committer identity configured, ready for per-test branch/commit scenarios.
 function freshRepo(): { dir: string; baselineCommit: string } {
-	const dir = makeTempDir().path();
+	const temp = makeTempDir();
+	testRepos.push(temp);
+	const dir = temp.path();
 	fs.cpSync(templateRepo.path(), dir, { recursive: true });
 	return { dir, baselineCommit: templateBaselineCommit };
 }
@@ -117,7 +131,9 @@ function freshRepo(): { dir: string; baselineCommit: string } {
 // Like freshRepo, but already on an `autoresearch/*` branch with the harness
 // committed — the baseline for log_experiment's on-branch keep/discard paths.
 function freshBranchRepo(): { dir: string } {
-	const dir = makeTempDir().path();
+	const temp = makeTempDir();
+	testRepos.push(temp);
+	const dir = temp.path();
 	fs.cpSync(templateBranchRepo.path(), dir, { recursive: true });
 	return { dir };
 }
@@ -174,7 +190,7 @@ describe("init_experiment", () => {
 	});
 
 	afterEach(async () => {
-		delete process.env.OMP_AUTORESEARCH_DB_DIR;
+		restoreEnvValue("OMP_AUTORESEARCH_DB_DIR", originalDbDir);
 		closeAllAutoresearchStorages();
 		await Bun.sleep(0);
 		await dbOverride.remove();
@@ -353,7 +369,7 @@ describe("run_experiment", () => {
 	});
 
 	afterEach(async () => {
-		delete process.env.OMP_AUTORESEARCH_DB_DIR;
+		restoreEnvValue("OMP_AUTORESEARCH_DB_DIR", originalDbDir);
 		closeAllAutoresearchStorages();
 		await Bun.sleep(0);
 		await dbOverride.remove();
@@ -371,9 +387,27 @@ describe("run_experiment", () => {
 		expect(firstTextBlockText(result.content)).toContain("no active autoresearch session");
 	});
 
-	it("accepts arbitrary commands, parses METRIC/ASI, and stores a run", async () => {
+	it("parses streamed METRIC/ASI output and stores a completed run", async () => {
 		const dir = freshRepo().dir;
 		await writeHarnessStub(dir, "echo METRIC runtime_ms=42; echo METRIC memory_mb=12; echo ASI hypothesis=baseline");
+		// The process boundary is incidental to parsing and persistence. In
+		// particular, `bash` on Windows may be an unconfigured WSL launcher.
+		const output = "METRIC runtime_ms=42\nMETRIC memory_mb=12\nASI hypothesis=baseline\n";
+		vi.spyOn(bashExecutor, "executeBash").mockImplementation(async (_command, options) => {
+			options?.onChunk?.("METRIC runtime_");
+			options?.onChunk?.("ms=42\nMETRIC memory_mb=12\nASI hypothesis=");
+			options?.onChunk?.("baseline\n");
+			return {
+				output,
+				exitCode: 0,
+				cancelled: false,
+				truncated: false,
+				totalLines: 3,
+				totalBytes: Buffer.byteLength(output),
+				outputLines: 3,
+				outputBytes: Buffer.byteLength(output),
+			};
+		});
 		const runtime = createSessionRuntime();
 		const init = createInitExperimentTool({
 			dashboard: dashboardStub(),
@@ -398,8 +432,9 @@ describe("run_experiment", () => {
 		expect(details.parsedMetrics).toMatchObject({ runtime_ms: 42, memory_mb: 12 });
 		expect(details.parsedAsi).toMatchObject({ hypothesis: "baseline" });
 		expect(details.passed).toBe(true);
-		expect(details.command).toBe("bash autoresearch.sh");
-		expect(fs.existsSync(details.benchmarkLogPath)).toBe(true);
+		expect(await Bun.file(details.benchmarkLogPath).text()).toBe(output);
+		expect(runtime.lastRunSummary?.parsedPrimary).toBe(42);
+		expect(runtime.runningExperiment).toBeNull();
 
 		const storage = await openAutoresearchStorage(dir);
 		const session = storage.getActiveSession();
@@ -444,7 +479,7 @@ describe("log_experiment", () => {
 	});
 
 	afterEach(async () => {
-		delete process.env.OMP_AUTORESEARCH_DB_DIR;
+		restoreEnvValue("OMP_AUTORESEARCH_DB_DIR", originalDbDir);
 		closeAllAutoresearchStorages();
 		await Bun.sleep(0);
 		await dbOverride.remove();
@@ -526,7 +561,7 @@ describe("log_experiment", () => {
 		expect(runtime.state.bestMetric).toBe(10);
 	});
 
-	it("flags scope deviations and warns when justification is missing", async () => {
+	it("records off-limits scope deviations without inventing a justification", async () => {
 		const dir = freshRepo().dir;
 		const { log } = await setupRun(dir);
 		fs.mkdirSync(path.join(dir, "forbidden"), { recursive: true });
@@ -539,9 +574,13 @@ describe("log_experiment", () => {
 			createCtx(dir),
 		);
 		const details = result.details as LogDetails;
-		expect(details.scopeDeviations.length).toBeGreaterThan(0);
+		expect(details.scopeDeviations).toContain("forbidden/x.ts");
 		expect(details.justification).toBeNull();
-		expect(firstTextBlockText(result.content)).toContain("unjustified");
+		const storage = await openAutoresearchStorage(dir);
+		const session = storage.getActiveSession();
+		const logged = storage.listLoggedRuns(session!.id);
+		expect(logged[0].scopeDeviations).toContain("forbidden/x.ts");
+		expect(logged[0].justification).toBeNull();
 	});
 
 	it("records the justification when provided", async () => {
@@ -845,10 +884,10 @@ describe("update_notes", () => {
 	});
 
 	afterEach(async () => {
-		delete process.env.OMP_AUTORESEARCH_DB_DIR;
+		restoreEnvValue("OMP_AUTORESEARCH_DB_DIR", originalDbDir);
 		closeAllAutoresearchStorages();
 		await Bun.sleep(0);
-		await dbOverride.remove().catch(() => {});
+		await dbOverride.remove();
 	});
 
 	it("replaces session notes and refreshes runtime state", async () => {

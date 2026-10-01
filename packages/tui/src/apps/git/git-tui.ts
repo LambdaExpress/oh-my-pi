@@ -24,19 +24,26 @@
  * every file underneath it.
  */
 
+import type { TspSpan } from "@oh-my-pi/pi-wire";
+import { formatKeyHint, formatKeyHints } from "../../app-keybindings";
 import { SplitPane } from "../../components/layout/split-pane";
 import { Stack } from "../../components/layout/stack";
 import { t } from "../../i18n";
 import { matchesKey } from "../../keys";
 import { ProcessTerminal } from "../../terminal";
 import { routeSgrMouseInput } from "../../mouse";
-import { type Component, TUI } from "../../tui";
+import { col, compact, keyed, node, row, span, text } from "../../native/describe";
+import { Memo } from "../../native/memo";
+import type { DescribeContext, NativeNode, NativeUiEvent } from "../../native/node";
+import { actionButton } from "../../native/overlay";
+import { type Component, type OverlayHandle, TUI } from "../../tui";
 import { truncateToWidth, visibleWidth } from "../../utils";
 import { theme, warmHighlighter } from "../../theme/theme";
 import type { AvatarSource } from "./avatar";
 import { pill, softPill, tintChip } from "./colors";
 import {
 	buildDiffDocument,
+	type DiffDocument,
 	buildLineSelectionPatch,
 	DiffPane,
 	type HunkAction,
@@ -44,8 +51,9 @@ import {
 	type ViewMode,
 	type WhitespaceMode,
 } from "./diff-pane";
+import { GitHelpSheet } from "./help";
 import { Sidebar, type SidebarAction, type GitCommitMessage } from "./sidebar";
-import type { ChangedFile, FileContents, GitTuiModel } from "./state";
+import type { AssetFileContents, ChangedFile, FileContents, GitTuiModel } from "./state";
 
 /** AI staging counts displayed after filtering the working tree. */
 export interface AiStageOutcome {
@@ -79,6 +87,20 @@ const REFRESH_MS = 2_000;
 const STATUS_TTL_MS = 6_000;
 
 type Focus = "diff" | "sidebar";
+
+/** Tone of a status message: its colour in the header and its span token natively. */
+type StatusTone = "success" | "warning" | "error" | "accent" | "dim";
+
+/** Columns below which the native layout stacks the changes under the diff. */
+const NARROW_COLS = 100;
+
+/** The views of the native segmented control, in omp's `1`–`4` order. */
+const VIEW_TABS: readonly { id: ViewMode; label: string }[] = [
+	{ id: "file", label: "File" },
+	{ id: "split", label: "Split" },
+	{ id: "inline", label: "Inline" },
+	{ id: "hunk", label: "Hunks" },
+];
 
 interface UiHit {
 	from: number;
@@ -152,6 +174,7 @@ class GitTuiComponent implements Component {
 	#refreshTimer: NodeJS.Timeout | undefined;
 	#busy = false;
 	#status = "";
+	#statusTone: StatusTone = "dim";
 	#statusAt = 0;
 	#statusSticky = false;
 	#centerWidth = 0;
@@ -162,6 +185,10 @@ class GitTuiComponent implements Component {
 	/** After hopping files backwards, land on the last hunk once the diff loads. */
 	#pendingHunkEdge: "last" | null = null;
 	#disposed = false;
+	#help: OverlayHandle | null = null;
+	readonly #nativeBar = new Memo();
+	readonly #nativeBody = new Memo();
+	readonly #nativeRoot = new Memo();
 
 	constructor(ui: TUI, host: GitTuiHost) {
 		this.#ui = ui;
@@ -207,6 +234,7 @@ class GitTuiComponent implements Component {
 		this.#generationAbort?.abort();
 		this.#aiStageAbort?.abort();
 		clearInterval(this.#refreshTimer);
+		this.#help?.hide();
 		this.#sidebar.dispose();
 		this.#stack.dispose();
 	}
@@ -341,7 +369,8 @@ class GitTuiComponent implements Component {
 			if (this.#pendingDiscard !== key) {
 				this.#pendingDiscard = key;
 				this.#setStatus(
-					theme.fg("warning", `Discard changes to ${action.selection.label}? Press delete again to confirm`),
+					"warning",
+					`Discard changes to ${action.selection.label}? Press ${formatKeyHint("delete")} again to confirm`,
 				);
 				return;
 			}
@@ -353,34 +382,28 @@ class GitTuiComponent implements Component {
 			switch (action.type) {
 				case "discard":
 					await this.#model.discard(action.selection.files);
-					this.#setStatus(theme.fg("success", `Discarded ${action.selection.label}`));
+					this.#setStatus("success", `Discarded ${action.selection.label}`);
 					break;
 				case "stage":
 					await this.#model.stage(action.selection?.files);
 					this.#setStatus(
-						theme.fg(
-							"success",
-							action.selection
-								? t("Staged {label}", { label: action.selection.label })
-								: t("Staged all changes"),
-						),
+						"success",
+						action.selection ? t("Staged {label}", { label: action.selection.label }) : t("Staged all changes"),
 					);
 					break;
 				case "unstage":
 					await this.#model.unstage(action.selection?.files);
 					this.#setStatus(
-						theme.fg(
-							"success",
-							action.selection
-								? t("Unstaged {label}", { label: action.selection.label })
-								: t("Unstaged all changes"),
-						),
+						"success",
+						action.selection
+							? t("Unstaged {label}", { label: action.selection.label })
+							: t("Unstaged all changes"),
 					);
 					break;
 				case "stage-ai": {
 					const abort = new AbortController();
 					this.#aiStageAbort = abort;
-					this.#setStatus(theme.fg("accent", t("Filtering changes: {prompt}", { prompt: action.prompt })));
+					this.#setStatus("accent", t("Filtering changes: {prompt}", { prompt: action.prompt }));
 					try {
 						const outcome = await this.#host.aiStage({
 							cwd: this.#model.cwd,
@@ -388,13 +411,11 @@ class GitTuiComponent implements Component {
 							files: this.#model.unstaged,
 							signal: abort.signal,
 							onProgress: message => {
-								if (!this.#disposed) this.#setStatus(theme.fg("dim", message));
+								if (!this.#disposed) this.#setStatus("dim", message);
 							},
 						});
 						if (outcome.stagedHunks === 0 && outcome.wholeFiles === 0) {
-							this.#setStatus(
-								theme.fg("warning", t('No changes matched "{prompt}"', { prompt: action.prompt })),
-							);
+							this.#setStatus("warning", t('No changes matched "{prompt}"', { prompt: action.prompt }));
 						} else {
 							const parts: string[] = [];
 							if (outcome.stagedHunks > 0) {
@@ -411,14 +432,12 @@ class GitTuiComponent implements Component {
 								);
 							}
 							this.#setStatus(
-								theme.fg(
-									"success",
-									t("Staged {parts} ({matched}/{total} files matched)", {
-										parts: parts.join(" + "),
-										matched: outcome.matchedFiles,
-										total: outcome.totalFiles,
-									}),
-								),
+								"success",
+								t("Staged {parts} ({matched}/{total} files matched)", {
+									parts: parts.join(" + "),
+									matched: outcome.matchedFiles,
+									total: outcome.totalFiles,
+								}),
 							);
 						}
 					} finally {
@@ -430,30 +449,30 @@ class GitTuiComponent implements Component {
 					const abort = new AbortController();
 					this.#generationAbort = abort;
 					this.#sidebar.setGenerating(true);
-					this.#setStatus(theme.fg("accent", t("Generating commit message…")));
+					this.#setStatus("accent", t("Generating commit message…"));
 					try {
 						const generated = await this.#host.generateCommitMessage({
 							cwd: this.#model.cwd,
 							stageIfEmpty: true,
 							signal: abort.signal,
 							onProgress: message => {
-								if (!this.#disposed) this.#setStatus(theme.fg("dim", message));
+								if (!this.#disposed) this.#setStatus("dim", message);
 							},
 						});
 						this.#sidebar.setGeneratedCommit(generated.commit);
-						this.#setStatus(
-							generated.validationError
-								? theme.fg(
-										"warning",
-										t("Generated message needs review: {error}", { error: generated.validationError }),
-									)
-								: theme.fg(
-										"success",
-										generated.stagedAll
-											? t("Staged all changes and generated commit message")
-											: t("Generated commit message"),
-									),
-						);
+						if (generated.validationError) {
+							this.#setStatus(
+								"warning",
+								t("Generated message needs review: {error}", { error: generated.validationError }),
+							);
+						} else {
+							this.#setStatus(
+								"success",
+								generated.stagedAll
+									? t("Staged all changes and generated commit message")
+									: t("Generated commit message"),
+							);
+						}
 					} finally {
 						if (this.#generationAbort === abort) this.#generationAbort = null;
 						this.#sidebar.setGenerating(false);
@@ -464,7 +483,7 @@ class GitTuiComponent implements Component {
 					if (action.stageAll) await this.#model.stage();
 					await this.#model.commit(action.message, { amend: action.amend });
 					this.#sidebar.clearForm();
-					this.#setStatus(theme.fg("success", action.amend ? t("Amended commit") : t("Created commit")));
+					this.#setStatus("success", action.amend ? t("Amended commit") : t("Created commit"));
 					break;
 				}
 			}
@@ -480,7 +499,10 @@ class GitTuiComponent implements Component {
 		if (!hunk.patch) return;
 		if (action === "discard" && this.#pendingDiscard !== hunk.patch) {
 			this.#pendingDiscard = hunk.patch;
-			this.#setStatus(theme.fg("warning", t("Discard hunk? Press x (or click) again to confirm")));
+			this.#setStatus(
+				"warning",
+				t("Discard hunk? Press {key} (or click) again to confirm", { key: formatKeyHint("x") }),
+			);
 			return;
 		}
 		this.#pendingDiscard = null;
@@ -491,10 +513,8 @@ class GitTuiComponent implements Component {
 			else if (action === "unstage") await this.#model.applyPatch(hunk.patch, { cached: true, reverse: true });
 			else await this.#model.applyPatch(hunk.patch, { reverse: true });
 			this.#setStatus(
-				theme.fg(
-					"success",
-					action === "stage" ? t("Staged hunk") : action === "unstage" ? t("Unstaged hunk") : t("Discarded hunk"),
-				),
+				"success",
+				action === "stage" ? t("Staged hunk") : action === "unstage" ? t("Unstaged hunk") : t("Discarded hunk"),
 			);
 			await this.#refresh(true);
 		} catch (error) {
@@ -511,12 +531,15 @@ class GitTuiComponent implements Component {
 		const intent = action === "stage" ? "apply" : "revert";
 		const patch = buildLineSelectionPatch(doc, span.from, span.to, intent);
 		if (!patch) {
-			this.#setStatus(theme.fg("warning", t("Selection contains no changes")));
+			this.#setStatus("warning", t("Selection contains no changes"));
 			return;
 		}
 		if (action === "discard" && this.#pendingDiscard !== patch) {
 			this.#pendingDiscard = patch;
-			this.#setStatus(theme.fg("warning", t("Discard selected lines? Press x again to confirm")));
+			this.#setStatus(
+				"warning",
+				t("Discard selected lines? Press {key} again to confirm", { key: formatKeyHint("x") }),
+			);
 			return;
 		}
 		this.#pendingDiscard = null;
@@ -528,14 +551,12 @@ class GitTuiComponent implements Component {
 			await this.#model.applyPatch(patch, { cached: action !== "discard" });
 			this.#pane.clearSelection();
 			this.#setStatus(
-				theme.fg(
-					"success",
-					action === "stage"
-						? t("Staged selection")
-						: action === "unstage"
-							? t("Unstaged selection")
-							: t("Discarded selection"),
-				),
+				"success",
+				action === "stage"
+					? t("Staged selection")
+					: action === "unstage"
+						? t("Unstaged selection")
+						: t("Discarded selection"),
 			);
 			await this.#refresh(true);
 		} catch (error) {
@@ -545,8 +566,9 @@ class GitTuiComponent implements Component {
 		}
 	}
 
-	#setStatus(text: string): void {
+	#setStatus(tone: StatusTone, text: string): void {
 		this.#status = text;
+		this.#statusTone = tone;
 		this.#statusAt = Date.now();
 		this.#statusSticky = false;
 		this.#ui.requestRender();
@@ -554,7 +576,7 @@ class GitTuiComponent implements Component {
 	/** Persistent single-line error status; provider/git messages may span lines. */
 	#setError(error: unknown): void {
 		const message = error instanceof Error ? error.message : String(error);
-		this.#setStatus(theme.fg("error", message.replace(/\s+/g, " ").trim()));
+		this.#setStatus("error", message.replace(/\s+/g, " ").trim());
 		this.#statusSticky = true;
 	}
 
@@ -592,14 +614,12 @@ class GitTuiComponent implements Component {
 		this.#whitespace =
 			this.#whitespace === "off" ? "whitespace" : this.#whitespace === "whitespace" ? "formatting" : "off";
 		this.#setStatus(
-			theme.fg(
-				"dim",
-				this.#whitespace === "off"
-					? t("Showing all changes")
-					: this.#whitespace === "whitespace"
-						? t("Ignoring whitespace-only line changes")
-						: t("Ignoring formatting and import-only changes"),
-			),
+			"dim",
+			this.#whitespace === "off"
+				? t("Showing all changes")
+				: this.#whitespace === "whitespace"
+					? t("Ignoring whitespace-only line changes")
+					: t("Ignoring formatting and import-only changes"),
 		);
 		this.#rebuildDocument();
 	}
@@ -665,6 +685,7 @@ class GitTuiComponent implements Component {
 			}
 			if (data === "b") return this.#cycleWhitespace();
 			if (data === "r") return void this.#refresh(true);
+			if (data === "?") return this.#toggleHelp();
 			if (data === "c") {
 				if (this.#sidebar.focusCommitForm()) this.#setFocus("sidebar");
 				return;
@@ -795,17 +816,40 @@ class GitTuiComponent implements Component {
 		right.add(" ").button(softPill(` ${glyphs.close} `), () => this.#done.resolve());
 
 		// The empty middle carries the key hints (or a fresh status message).
-		const status = this.#statusSticky || Date.now() - this.#statusAt < STATUS_TTL_MS ? this.#status : "";
+		const status = this.#visibleStatus() ? theme.fg(this.#statusTone, this.#status) : "";
 		const middle =
 			status ||
 			theme.fg(
 				"dim",
 				this.#focus === "diff"
 					? t(
-							"alt+↓/↑ hunk · ]/[ file · shift+↑/↓ select · s/u stage · x/del discard · v view · c commit · q quit",
+							"{hunkKey} hunk · {fileKey} file · {selectKey} select · {stageKey} stage · {discardKey} discard · {viewKey} view · {commitKey} commit · {helpKey} keys · {quitKey} quit",
+							{
+								hunkKey: formatKeyHints(["alt+down", "alt+up"]),
+								fileKey: formatKeyHints(["]", "["]),
+								selectKey: formatKeyHints(["shift+up", "shift+down"]),
+								stageKey: formatKeyHints(["s", "u"]),
+								discardKey: formatKeyHints(["x", "delete"]),
+								viewKey: formatKeyHint("v"),
+								commitKey: formatKeyHint("c"),
+								helpKey: formatKeyHint("?"),
+								quitKey: formatKeyHint("q"),
+							},
 						)
 					: t(
-							"↑/↓ move · ←/→ fold · space stage · del discard · enter open · alt+↓/↑ hunk · c commit · t tree · q quit",
+							"{moveKey} move · {foldKey} fold · {stageKey} stage · {discardKey} discard · {openKey} open · {hunkKey} hunk · {commitKey} commit · {treeKey} tree · {helpKey} keys · {quitKey} quit",
+							{
+								moveKey: formatKeyHints(["up", "down"]),
+								foldKey: formatKeyHints(["left", "right"]),
+								stageKey: formatKeyHint("space"),
+								discardKey: formatKeyHint("delete"),
+								openKey: formatKeyHint("enter"),
+								hunkKey: formatKeyHints(["alt+down", "alt+up"]),
+								commitKey: formatKeyHint("c"),
+								treeKey: formatKeyHint("t"),
+								helpKey: formatKeyHint("?"),
+								quitKey: formatKeyHint("q"),
+							},
 						),
 			);
 		const free = width - row.width - right.width - 1;
@@ -886,6 +930,356 @@ class GitTuiComponent implements Component {
 
 	quit(): void {
 		this.#done.resolve();
+	}
+
+	/** A fresh or sticky status message shows; older ones fade out. */
+	#visibleStatus(): boolean {
+		return this.#status !== "" && (this.#statusSticky || Date.now() - this.#statusAt < STATUS_TTL_MS);
+	}
+
+	/** `?`: the keyboard shortcuts sheet over the app. */
+	#toggleHelp(): void {
+		if (this.#help) {
+			this.#help.hide();
+			this.#help = null;
+			return;
+		}
+		const sheet = new GitHelpSheet(() => this.#toggleHelp());
+		this.#help = this.#ui.showOverlay(sheet, { anchor: "center", width: "80%", maxHeight: "90%" });
+		this.#ui.setFocus(sheet);
+		this.#ui.requestRender();
+	}
+
+	// ── native ─────────────────────────────────────────────────────────────
+
+	/**
+	 * The native git app (NATIVE_REDESIGN §10, Kraken's vocabulary): the diff
+	 * pane under a toolbar (file, `+a −d`, scope, change navigation, the view
+	 * segmented control, whitespace/wrap toggles, Stage file, close), and the
+	 * changes sheet on the right. Narrow panes stack the sheet under the diff.
+	 */
+	describe(cx: DescribeContext): NativeNode {
+		const narrow = cx.cols < NARROW_COLS;
+		const status = this.#visibleStatus();
+		const bar = this.#nativeBar.get(
+			[
+				this.#currentFile,
+				this.#pane.doc,
+				this.#pane.mode,
+				this.#pane.wrap,
+				this.#whitespace,
+				this.#contents,
+				narrow,
+			],
+			() => this.#describeBar(narrow),
+		);
+		const body = this.#nativeBody.get(
+			[
+				this.#pane.state,
+				this.#pane.doc,
+				this.#pane.mode,
+				this.#contents,
+				this.#currentFile,
+				this.#pane.emptyMessage,
+			],
+			() => this.#describeBody(),
+		);
+		const side = this.#sidebar.describe(cx);
+		return this.#nativeRoot.get([bar, body, side, narrow, status, this.#status, this.#statusTone], () => {
+			const main = col(
+				compact([
+					bar,
+					status &&
+						keyed(
+							text([span(this.#status, this.#statusTone === "dim" ? "muted" : this.#statusTone)], {
+								truncate: "end",
+								role: "omp.app.status",
+							}),
+							"status",
+						),
+					body,
+				]),
+				{ role: "omp.app.git.main" },
+			);
+			return node(narrow ? "col" : "row", { role: narrow ? "omp.app.git-narrow" : "omp.app.git" }, [
+				keyed(main, "main"),
+				keyed(side, "side"),
+			]);
+		});
+	}
+
+	/** Pointer actions: the toolbar's buttons and segmented control, else the changes sheet's. */
+	handleNativeEvent(event: NativeUiEvent): void {
+		if ((event.type === "select" || event.type === "activate") && event.key.endsWith("views")) {
+			const view = VIEW_TABS.find(tab => tab.id === event.item);
+			if (view) this.#setMode(view.id);
+			return;
+		}
+		if (event.type === "action") {
+			switch (event.act) {
+				case "prev-hunk":
+					return this.#jumpHunkOrFile(-1);
+				case "next-hunk":
+					return this.#jumpHunkOrFile(1);
+				case "whitespace":
+					return this.#cycleWhitespace();
+				case "wrap":
+					this.#pane.toggleWrap();
+					this.#ui.requestRender();
+					return;
+				case "stage-file":
+					return this.#stageCurrentFile();
+				case "help":
+					return this.#toggleHelp();
+				case "close":
+					this.#done.resolve();
+					return;
+			}
+		}
+		if (this.#sidebar.handleNativeEvent(event)) {
+			if (this.#focus !== "sidebar") this.#setFocus("sidebar");
+			else this.#ui.requestRender();
+		}
+	}
+
+	#describeBar(narrow: boolean): NativeNode {
+		const file = this.#currentFile;
+		const doc = this.#pane.doc;
+		const left: NativeNode[] = [];
+		if (file) {
+			const slash = file.path.lastIndexOf("/");
+			left.push(
+				text([span(file.path.slice(0, slash + 1), "dim"), span(file.path.slice(slash + 1), "strong")], {
+					truncate: "start",
+					role: "omp.app.git.path",
+					title: file.origPath ? `${file.origPath} → ${file.path}` : file.path,
+				}),
+			);
+			if (doc) {
+				left.push(
+					text([span(`+${doc.additions}`, "ins num"), span(" "), span(`−${doc.deletions}`, "del num")], {
+						role: "omp.app.git.stat",
+					}),
+				);
+			}
+			const scope =
+				file.area === "staged"
+					? { text: t(" Staged ").trim(), tone: "success" as const }
+					: file.area === "unstaged"
+						? {
+								text: (file.kind === "untracked" ? t(" Untracked ") : t(" Unstaged ")).trim(),
+								tone: "warning" as const,
+							}
+						: { text: this.#model.headCommit?.shortSha ?? t("commit"), tone: "accent" as const };
+			left.push(node("badge", { text: scope.text, tone: scope.tone }));
+		} else {
+			left.push(text([span(this.#model.branch ?? t("detached"), "muted")], { role: "omp.app.git.path" }));
+		}
+		const iconButton = (name: string, act: string, title: string, on?: boolean): NativeNode =>
+			node(
+				"icon",
+				{ name, title, aria: title, role: on ? "omp.app.ibtn.set" : "omp.app.ibtn", actions: { click: act } },
+				undefined,
+				act,
+			);
+		const right: NativeNode[] = [
+			row(
+				[
+					iconButton("chev-up", "prev-hunk", t("Previous change ({key})", { key: formatKeyHint("alt+up") })),
+					iconButton("chev", "next-hunk", t("Next change ({key})", { key: formatKeyHint("alt+down") })),
+				],
+				{ gap: "none", align: "center" },
+			),
+			node(
+				"tabs",
+				{
+					items: VIEW_TABS.map(tab => ({ id: tab.id, label: t(tab.label) })),
+					active: this.#pane.mode,
+					role: "omp.app.seg",
+				},
+				undefined,
+				"views",
+			),
+		];
+		if (!narrow) {
+			right.push(
+				iconButton(
+					"type",
+					"whitespace",
+					this.#whitespace === "off"
+						? t("Ignore whitespace ({key})", { key: formatKeyHint("b") })
+						: this.#whitespace === "whitespace"
+							? t("Ignoring whitespace; also ignore formatting ({key})", { key: formatKeyHint("b") })
+							: t("Ignoring formatting and imports; show all ({key})", { key: formatKeyHint("b") }),
+					this.#whitespace !== "off",
+				),
+				iconButton(
+					"corner-down-right",
+					"wrap",
+					t("Wrap lines ({key})", { key: formatKeyHint("w") }),
+					this.#pane.wrap,
+				),
+			);
+		}
+		if (file?.area === "unstaged" || file?.area === "staged") {
+			right.push(
+				actionButton((file.area === "unstaged" ? t(" Stage File ") : t(" Unstage File ")).trim(), "stage-file", {
+					keys: "s",
+					title:
+						file.area === "unstaged"
+							? t("Stage {path}", { path: file.path })
+							: t("Unstage {path}", { path: file.path }),
+				}),
+			);
+		}
+		right.push(
+			iconButton("keyboard", "help", t("Keyboard shortcuts ({key})", { key: formatKeyHint("?") })),
+			iconButton("x", "close", t("Close ({key})", { key: formatKeyHint("q") })),
+		);
+		return keyed(
+			row(
+				[
+					row(left, { gap: "sm", align: "center", role: "omp.app.git.where" }),
+					row(right, { gap: "sm", align: "center", role: "omp.app.git.tools" }),
+				],
+				{ justify: "between", align: "center", role: "omp.app.git.bar" },
+			),
+			"bar",
+		);
+	}
+
+	/** The diff for the view mode, or the loading, empty and media states. */
+	#describeBody(): NativeNode {
+		const doc = this.#pane.doc;
+		const file = this.#currentFile;
+		if (doc && this.#pane.state === "ready") {
+			return node(
+				"diff",
+				{
+					text: unifiedDiff(doc, this.#pane.mode === "file"),
+					path: doc.filePath,
+					mode: this.#pane.mode === "split" ? "split" : "unified",
+					role: "omp.app.git.diff",
+				},
+				undefined,
+				"diff",
+			);
+		}
+		const contents = this.#contents;
+		if (this.#pane.state === "asset" && file && contents?.kind === "asset") {
+			return keyed(
+				col(
+					[
+						text([span(t("Binary or media file"), "strong")]),
+						node("kv", {
+							items: [
+								{ k: t("before"), v: assetText(contents.old) },
+								{ k: t("after"), v: assetText(contents.new) },
+							],
+							layout: "grid",
+						}),
+					],
+					{ gap: "sm", role: "omp.app.git.state" },
+				),
+				"asset",
+			);
+		}
+		if (this.#pane.state === "streaming" || this.#pane.state === "loading") {
+			return keyed(
+				row(
+					[
+						node("spinner", { style: "dots" }),
+						text([span(t("Loading {path}…", { path: file?.path ?? t("diff") }), "muted")]),
+					],
+					{
+						gap: "sm",
+						align: "center",
+						role: "omp.app.git.state",
+					},
+				),
+				"loading",
+			);
+		}
+		return keyed(
+			col(
+				[
+					text([span(this.#pane.emptyMessage, "strong")]),
+					text([
+						span(
+							this.#model.clean
+								? t("The working tree is clean.")
+								: t("Pick a file on the right to see its changes."),
+							"muted",
+						),
+					]),
+				],
+				{ gap: "xs", role: "omp.app.git.empty" },
+			),
+			"empty",
+		);
+	}
+}
+
+/**
+ * A unified diff of `doc` for the `diff` kind: the tight hunks (Tern folds
+ * the unchanged lines between them), or with `whole` one hunk spanning the
+ * file. Paired changes go out as their `-` block then their `+` block, so the
+ * terminal pairs them for word emphasis.
+ */
+function unifiedDiff(doc: DiffDocument, whole: boolean): string {
+	const out: string[] = [];
+	const emit = (rows: DiffDocument["rows"]): void => {
+		let dels: string[] = [];
+		let adds: string[] = [];
+		const flush = (): void => {
+			out.push(...dels, ...adds);
+			dels = [];
+			adds = [];
+		};
+		for (const diffRow of rows) {
+			if (diffRow.kind === "context") {
+				flush();
+				out.push(` ${diffRow.newText}`);
+				continue;
+			}
+			if (diffRow.oldNum !== undefined) dels.push(`-${diffRow.oldText}`);
+			if (diffRow.newNum !== undefined) adds.push(`+${diffRow.newText}`);
+		}
+		flush();
+	};
+	if (whole) {
+		const oldCount = doc.rows.filter(diffRow => diffRow.oldNum !== undefined).length;
+		const newCount = doc.rows.filter(diffRow => diffRow.newNum !== undefined).length;
+		out.push(`@@ -1,${oldCount} +1,${newCount} @@`);
+		emit(doc.rows);
+	} else {
+		for (const hunk of doc.hunks) {
+			out.push(hunk.header);
+			emit(hunk.rows);
+		}
+	}
+	return out.join("\n");
+}
+
+/** One side of a media/binary change as a short fact line. */
+function assetText(asset: AssetFileContents["old"]): TspSpan[] {
+	const size = (bytes: number | undefined): string =>
+		bytes === undefined ? "" : bytes < 1024 ? ` · ${bytes} B` : ` · ${(bytes / 1024).toFixed(1)} KB`;
+	switch (asset.kind) {
+		case "empty":
+			return [span(t("none"), "dim")];
+		case "text":
+			return [span(`${t("text")}${size(asset.byteLength)}`)];
+		case "image":
+			return [span(`${t("image")} ${asset.image.widthPx}×${asset.image.heightPx}${size(asset.image.byteLength)}`)];
+		case "binary":
+			return [span(`${t("binary")}${size(asset.byteLength)}`)];
+		case "tooLarge":
+			return [span(`${t("too large to diff")}${size(asset.byteLength)}`)];
+		case "lfsMissing":
+			return [
+				span(`${t("LFS object {oid} not fetched", { oid: asset.oid.slice(0, 12) })}${size(asset.byteLength)}`),
+			];
 	}
 }
 

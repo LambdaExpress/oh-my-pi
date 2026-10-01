@@ -6,6 +6,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { discoverAuthStorage } from "@oh-my-pi/pi-coding-agent/sdk";
 import { createAuthStorageSettingsSync } from "@oh-my-pi/pi-coding-agent/session/auth-broker-config";
 import { TempDir } from "@oh-my-pi/pi-utils";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 import { cfgAuthBrokerUrl } from "@oh-my-pi/pi-coding-agent/config/model-settings";
 
@@ -29,13 +30,12 @@ describe("auth broker settings take effect live", () => {
 	let tempDir: TempDir;
 	const brokers: Broker[] = [];
 	const cleanups: Array<() => void> = [];
-	const savedEnv: Partial<Record<(typeof BROKER_ENV)[number], string>> = {};
+	let settingsState: SettingsTestState | undefined;
 
 	beforeEach(() => {
+		settingsState = beginSettingsTest();
 		tempDir = TempDir.createSync("@pi-auth-broker-live-");
 		for (const key of BROKER_ENV) {
-			const value = process.env[key];
-			if (value !== undefined) savedEnv[key] = value;
 			delete process.env[key];
 		}
 		// No snapshot cache: every connection must hit its broker.
@@ -43,17 +43,14 @@ describe("auth broker settings take effect live", () => {
 	});
 
 	afterEach(async () => {
-		for (const cleanup of cleanups.splice(0)) cleanup();
+		for (const cleanup of cleanups.splice(0).reverse()) cleanup();
 		for (const broker of brokers.splice(0)) {
 			await broker.handle.close();
 			broker.storage.close();
 		}
-		for (const key of BROKER_ENV) {
-			delete process.env[key];
-			const value = savedEnv[key];
-			if (value !== undefined) process.env[key] = value;
-		}
-		tempDir.removeSync();
+		restoreSettingsTestState(settingsState);
+		settingsState = undefined;
+		await tempDir.remove();
 	});
 
 	it("resolves credentials from the new broker after auth.broker.url changes", async () => {

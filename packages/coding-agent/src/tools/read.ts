@@ -45,7 +45,7 @@ import {
 	sessionResolveContext,
 } from "../internal-urls";
 import { parseInternalUrl } from "../internal-urls/parse";
-import type { InternalUrl } from "../internal-urls/types";
+import type { InternalUrl, ResolveContext } from "../internal-urls/types";
 import { isMarkdownPath } from "@oh-my-pi/pi-tui/lang-from-path";
 import readDescription from "../prompts/tools/read.md" with { type: "text" };
 import type { ToolSession } from "../sdk";
@@ -1894,10 +1894,17 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 					`Invalid selector ':${peeled.sel}' on '${peeled.path}'. Use :N, :N-M, :N+K, :N- (open-ended), :-N (last N lines), a comma-separated list of ranges, :raw, :img for SVG rendering, or a range combined with raw (e.g. :raw:50-100).`,
 				);
 			}
-			const target = await internalRouter.target(normalizedPath, sessionResolveContext(this.session, { signal }));
+			const sshHosts =
+				extractUriScheme(peeled.path) === "ssh" ? await this.session.getSessionSshHosts?.() : undefined;
+			const target = await internalRouter.target(
+				normalizedPath,
+				sessionResolveContext(this.session, { signal, sshHosts }),
+			);
 			if (target) {
 				const url = target.url.rawHref ?? target.url.href;
-				if (target.kind === "resource") return this.#handleInternalUrl(url, target.spec, parsed, question, signal);
+				if (target.kind === "resource") {
+					return this.#handleInternalUrl(url, target.spec, parsed, question, signal, sshHosts);
+				}
 				located = { url, path: target.path, sel: target.sel, spec: target.spec };
 			}
 		}
@@ -2905,6 +2912,7 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 		parsedSel: ParsedSelector,
 		question: string | undefined,
 		signal?: AbortSignal,
+		sshHosts?: ResolveContext["sshHosts"],
 	): Promise<AgentToolResult<ReadToolDetails>> {
 		if (parsedSel.kind === "image") throw new ToolError("The ':img' selector requires a file-backed path.");
 		const internalRouter = InternalUrlRouter.instance();
@@ -2917,7 +2925,10 @@ export class ReadTool implements AgentTool<typeof readSchema, ReadToolDetails> {
 			throw new ToolError(e instanceof Error ? e.message : String(e));
 		}
 		const scheme = urlMeta.protocol.replace(/:$/, "").toLowerCase();
-		const resource = await internalRouter.resolve(url, sessionResolveContext(this.session, { signal }));
+		if (scheme === "ssh" && sshHosts === undefined) {
+			sshHosts = await this.session.getSessionSshHosts?.();
+		}
+		const resource = await internalRouter.resolve(url, sessionResolveContext(this.session, { signal, sshHosts }));
 		if (question !== undefined) throw new ToolError(IMAGE_QUESTION_SELECTOR_ERROR);
 		const resourceDetails: NonNullable<InternalResource["details"]> = resource.details ?? {};
 		const { display, ...render } = resourceDetails;

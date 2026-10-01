@@ -1,9 +1,10 @@
-import { describe, expect, it, vi } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { type } from "@oh-my-pi/omptype";
 import {
 	Agent,
 	AgentBusyError,
 	type AgentEvent,
+	type AgentMessage,
 	type AgentTool,
 	ThinkingLevel,
 	TOOL_RESULT_ADDITIONAL_CONTEXT,
@@ -13,36 +14,71 @@ import type { Context, SimpleStreamOptions, ToolResultMessage } from "@oh-my-pi/
 import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { kCursorExecResolved } from "@oh-my-pi/pi-ai/utils/block-symbols";
 import { AssistantMessageEventStream } from "@oh-my-pi/pi-ai/utils/event-stream";
-import * as logger from "@oh-my-pi/pi-utils/logger";
 import { createAssistantMessage, createUserMessage } from "./helpers";
 
 describe("Agent", () => {
-	it("should support steering message queueing", async () => {
-		const agent = new Agent();
-
-		const message = { role: "user" as const, content: "Queued message", timestamp: Date.now() };
-		agent.steer(message);
-
-		// The message is queued but not yet in state.messages
-		expect(agent.state.messages).not.toContainEqual(message);
-	});
-
-	it("preserves FIFO order when later steering carries an immediate override", () => {
-		const agent = new Agent();
+	it("preserves FIFO delivery and applies an immediate override only to its one-at-a-time turn", async () => {
 		const ordinary = { role: "user" as const, content: "first", timestamp: Date.now() };
 		const immediate = { role: "user" as const, content: "second", timestamp: Date.now() + 1 };
+		const schema = type({ value: "string" });
+		const observed: Array<{ value: string; hardAborted: boolean; softAborted: boolean }> = [];
+		let steeringSignal: AbortSignal | undefined;
+		const tool: AgentTool<typeof schema, { value: string }> = {
+			name: "work",
+			label: "Work",
+			description: "Record cooperative interruption without abandoning work",
+			parameters: schema,
+			async execute(_id, params, signal) {
+				if (params.value === "first batch") {
+					agent.steer(ordinary);
+					agent.steer(immediate, { interruptImmediately: true });
+					agent.replaceQueues([...agent.peekSteeringQueue()], []);
+				}
+				observed.push({
+					value: params.value,
+					hardAborted: signal?.aborted === true,
+					softAborted: steeringSignal?.aborted === true,
+				});
+				return { content: [{ type: "text", text: params.value }], details: params };
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "first", name: "work", arguments: { value: "first batch" } }] },
+				{ content: [{ type: "toolCall", id: "second", name: "work", arguments: { value: "second batch" } }] },
+				{ content: ["done"] },
+			],
+		});
+		const agent = new Agent({
+			initialState: { model: mock.model, tools: [tool] },
+			streamFn: mock.stream,
+			interruptMode: "wait",
+			getToolContext: toolCall => {
+				steeringSignal = toolCall?.steeringSignal;
+				return {};
+			},
+		});
 
-		agent.steer(ordinary);
-		agent.steer(immediate, { interruptImmediately: true });
-		expect(agent.peekSteeringQueue()).toEqual([ordinary, immediate]);
+		await agent.prompt("start");
 
-		agent.replaceQueues([ordinary, immediate], []);
-		expect(agent.peekSteeringQueue()).toEqual([ordinary, immediate]);
+		expect(observed).toEqual([
+			{ value: "first batch", hardAborted: false, softAborted: false },
+			{ value: "second batch", hardAborted: false, softAborted: true },
+		]);
+		expect(mock.calls[1]?.context.messages).toContainEqual(ordinary);
+		expect(mock.calls[1]?.context.messages).not.toContainEqual(immediate);
+		expect(mock.calls[2]?.context.messages).toContainEqual(immediate);
+		expect(agent.state.messages.filter(message => message === ordinary || message === immediate)).toEqual([
+			ordinary,
+			immediate,
+		]);
 	});
 
 	it("applies interrupt mode changes during an active tool batch", async () => {
 		const toolSchema = type({ value: type("string") });
 		const executed: string[] = [];
+		const softInterrupts: boolean[] = [];
+		let steeringSignal: AbortSignal | undefined;
 		const queuedMessage = { role: "user" as const, content: "wait for current work", timestamp: Date.now() };
 		const agentRef = {} as { current: Agent };
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
@@ -57,6 +93,7 @@ describe("Agent", () => {
 					agentRef.current.setInterruptMode("wait");
 					agentRef.current.steer(queuedMessage);
 				}
+				softInterrupts.push(steeringSignal?.aborted === true);
 				return {
 					content: [{ type: "text", text: `ok:${params.value}` }],
 					details: { value: params.value },
@@ -78,6 +115,10 @@ describe("Agent", () => {
 			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
 			streamFn: mock.stream,
 			interruptMode: "immediate",
+			getToolContext: toolCall => {
+				steeringSignal = toolCall?.steeringSignal;
+				return {};
+			},
 		});
 		agentRef.current = agent;
 		const events: AgentEvent[] = [];
@@ -87,6 +128,7 @@ describe("Agent", () => {
 		unsubscribe();
 
 		expect(executed).toEqual(["first", "second"]);
+		expect(softInterrupts).toEqual([false, false]);
 		const secondResult = events.find(
 			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
 				event.type === "tool_execution_end" && event.toolCallId === "tool-2",
@@ -96,24 +138,25 @@ describe("Agent", () => {
 		expect(mock.calls[1]?.context.messages).toContainEqual(queuedMessage);
 	});
 
-	it("wakes an interruptible tool when an all-mode batch contains later force-immediate steering", async () => {
+	it("soft-interrupts foreground work when an all-mode batch gains later force-immediate steering", async () => {
 		const toolStarted = Promise.withResolvers<void>();
-		let observedAbort = false;
+		let steeringSignal: AbortSignal | undefined;
+		let observedHardAbort = false;
+		let observedSoftAbort = false;
 		const toolSchema = type({});
 		const tool: AgentTool<typeof toolSchema, Record<string, never>> = {
-			name: "wait",
-			label: "Wait",
-			description: "Wait until force-immediate steering arrives",
+			name: "work",
+			label: "Work",
+			description: "Yield cooperatively when force-immediate steering arrives",
 			parameters: toolSchema,
-			interruptible: true,
 			async execute(_toolCallId, _params, signal) {
-				if (!signal) throw new Error("missing interruptible tool signal");
+				if (!signal || !steeringSignal) throw new Error("missing tool interruption signals");
 				toolStarted.resolve();
 				const interrupted = Promise.withResolvers<void>();
-				if (signal.aborted) {
+				if (steeringSignal.aborted) {
 					interrupted.resolve();
 				} else {
-					signal.addEventListener("abort", () => interrupted.resolve(), { once: true });
+					steeringSignal.addEventListener("abort", () => interrupted.resolve(), { once: true });
 				}
 				await Promise.race([
 					interrupted.promise,
@@ -121,13 +164,14 @@ describe("Agent", () => {
 						throw new Error("force-immediate steering did not wake the tool");
 					}),
 				]);
-				observedAbort = signal.aborted;
+				observedHardAbort = signal.aborted;
+				observedSoftAbort = steeringSignal.aborted;
 				return { content: [{ type: "text", text: "interrupted" }], details: {} };
 			},
 		};
 		const mock = createMockModel({
 			responses: [
-				{ content: [{ type: "toolCall", id: "tool-1", name: "wait", arguments: {} }] },
+				{ content: [{ type: "toolCall", id: "tool-1", name: "work", arguments: {} }] },
 				{ content: ["done"] },
 			],
 		});
@@ -136,6 +180,10 @@ describe("Agent", () => {
 			streamFn: mock.stream,
 			interruptMode: "wait",
 			steeringMode: "all",
+			getToolContext: toolCall => {
+				steeringSignal = toolCall?.steeringSignal;
+				return {};
+			},
 		});
 		const run = agent.prompt("start");
 		await toolStarted.promise;
@@ -145,6 +193,8 @@ describe("Agent", () => {
 			attribution: "user",
 			timestamp: Date.now(),
 		});
+		await Bun.sleep(0);
+		expect(steeringSignal?.aborted).toBe(false);
 		agent.steer(
 			{
 				role: "custom",
@@ -158,7 +208,8 @@ describe("Agent", () => {
 		);
 		await run;
 
-		expect(observedAbort).toBe(true);
+		expect(observedSoftAbort).toBe(true);
+		expect(observedHardAbort).toBe(false);
 		expect(
 			agent.state.messages.some(
 				message =>
@@ -169,161 +220,63 @@ describe("Agent", () => {
 		).toBe(true);
 	});
 
-	it("logs every abort request with its reason and call stack", () => {
-		const debugSpy = vi.spyOn(logger, "debug").mockImplementation(() => {});
-		const agent = new Agent();
-
-		agent.abort("diagnostic interrupt");
-
-		expect(debugSpy).toHaveBeenCalledWith(
-			"agent.abort.requested-without-active-run",
-			expect.objectContaining({
-				reason: "diagnostic interrupt",
-				reasonType: "string",
-				activeRun: false,
-				alreadyAborted: false,
-				callStack: expect.stringContaining("Agent.abort call stack"),
-			}),
-		);
-		debugSpy.mockRestore();
-	});
-
-	it("classifies agent-authored steering as a parent steering message", async () => {
-		const toolSchema = type({ value: type("string") });
-		const executed: string[] = [];
-		const agentRef = {} as { current: Agent };
-		const tool: AgentTool<typeof toolSchema, { value: string }> = {
-			name: "echo",
-			label: "Echo",
-			description: "Echo tool",
-			parameters: toolSchema,
-			concurrency: "exclusive",
-			interruptible: true,
-			async execute(_toolCallId, params) {
-				executed.push(params.value);
-				if (params.value === "first") {
-					agentRef.current.steer({
-						role: "user",
-						content: "parent steering",
-						attribution: "agent",
-						timestamp: Date.now(),
-					});
-				}
-				return {
-					content: [{ type: "text", text: `ok:${params.value}` }],
-					details: { value: params.value },
-				};
+	it("retains a rejected live steer's immediate override across pending queue replacement", async () => {
+		const schema = type({});
+		const steer = createUserMessage("change course now");
+		let steeringSignal: AbortSignal | undefined;
+		let observedSoftAbort = false;
+		let observedHardAbort = false;
+		const tool: AgentTool<typeof schema, Record<string, never>> = {
+			name: "work",
+			label: "Work",
+			description: "Work that observes cooperative steering",
+			parameters: schema,
+			async execute(_id, _params, signal) {
+				observedSoftAbort = steeringSignal?.aborted === true;
+				observedHardAbort = signal?.aborted === true;
+				return { content: [{ type: "text", text: "finished" }], details: {} };
 			},
 		};
 		const mock = createMockModel({
 			responses: [
-				{
-					content: [
-						{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
-						{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
-					],
-				},
-				{ content: ["done"] },
+				{ content: [{ type: "toolCall", id: "work", name: "work", arguments: {} }] },
+				{ content: ["steering handled"] },
 			],
 		});
+		let requests = 0;
 		const agent = new Agent({
-			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
-			streamFn: mock.stream,
-			interruptMode: "immediate",
-		});
-		agentRef.current = agent;
-		const events: AgentEvent[] = [];
-		const unsubscribe = agent.subscribe(event => events.push(event));
-
-		await agent.prompt("start");
-		unsubscribe();
-
-		expect(executed).toEqual(["first"]);
-		const skipped = events.find(
-			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
-				event.type === "tool_execution_end" && event.toolCallId === "tool-2",
-		);
-		expect(skipped).toBeDefined();
-		const skippedContent = skipped?.result.content[0];
-		expect(skippedContent?.type).toBe("text");
-		if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
-		expect(skippedContent.text).toContain("Skipped due to pending parent steering message");
-		expect(skippedContent.text).toContain("After the steering message is handled on the next step");
-		expect(skippedContent.text).not.toContain("pending system advisory");
-		expect(skippedContent.text).not.toContain("queued user message");
-	});
-
-	it("classifies user-attributed custom steering as a queued user message", async () => {
-		const toolSchema = type({ value: type("string") });
-		const executed: string[] = [];
-		const agentRef = {} as { current: Agent };
-		const tool: AgentTool<typeof toolSchema, { value: string }> = {
-			name: "echo",
-			label: "Echo",
-			description: "Echo tool",
-			parameters: toolSchema,
-			concurrency: "exclusive",
-			interruptible: true,
-			async execute(_toolCallId, params) {
-				executed.push(params.value);
-				if (params.value === "first") {
-					agentRef.current.steer({
-						role: "custom",
-						customType: "visible-user-steer",
-						content: "visible custom steering",
-						display: true,
-						attribution: "user",
-						timestamp: Date.now(),
-					});
-					agentRef.current.steer({
-						role: "user",
-						content: "normal user steering",
-						timestamp: Date.now(),
-					});
-				}
-				return {
-					content: [{ type: "text", text: `ok:${params.value}` }],
-					details: { value: params.value },
-				};
+			initialState: { model: mock.model, tools: [tool] },
+			interruptMode: "wait",
+			getToolContext: toolCall => {
+				steeringSignal = toolCall?.steeringSignal;
+				return {};
 			},
-		};
-		const mock = createMockModel({
-			responses: [
-				{
-					content: [
-						{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
-						{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
-					],
-				},
-				{ content: ["done"] },
-				{ content: ["done"] },
-			],
+			streamFn: async (model, context, options) => {
+				if (requests++ === 0) {
+					const live = options?.liveSteering;
+					const signal = options?.signal;
+					if (!live || !signal) throw new Error("missing provider live steering");
+					agent.steer(steer, { interruptImmediately: true });
+					const claim = await live.claim(signal);
+					if (!claim) throw new Error("live steer was not claimed");
+					claim.reject();
+					agent.replaceQueue("steering", []);
+					expect(agent.peekLiveSteeredMessages()).toEqual([steer]);
+				}
+				return mock.stream(model, context, options);
+			},
 		});
-		const agent = new Agent({
-			initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
-			streamFn: mock.stream,
-			steeringMode: "one-at-a-time",
-			interruptMode: "immediate",
-		});
-		agentRef.current = agent;
-		const events: AgentEvent[] = [];
-		const unsubscribe = agent.subscribe(event => events.push(event));
 
 		await agent.prompt("start");
-		unsubscribe();
 
-		expect(executed).toEqual(["first"]);
-		const skipped = events.find(
-			(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
-				event.type === "tool_execution_end" && event.toolCallId === "tool-2",
-		);
-		expect(skipped).toBeDefined();
-		const skippedContent = skipped?.result.content[0];
-		expect(skippedContent?.type).toBe("text");
-		if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
-		expect(skippedContent.text).toContain("Skipped due to queued user message");
-		expect(skippedContent.text).not.toContain("pending system advisory");
+		expect(observedSoftAbort).toBe(true);
+		expect(observedHardAbort).toBe(false);
+		expect(mock.calls[1]?.context.messages).toContainEqual(steer);
+		expect(agent.state.messages.filter(message => message === steer)).toEqual([steer]);
+		expect(agent.peekLiveSteeredMessages()).toEqual([]);
+		expect(agent.peekUndeliveredQueuedMessages()).toEqual([]);
 	});
+
 	it("continue() re-executes a trailing assistant's unpaired tool calls before the next model call", async () => {
 		const toolSchema = type({ value: type("string") });
 		const executed: string[] = [];
@@ -459,96 +412,55 @@ describe("Agent", () => {
 		).toBe(true);
 	});
 
-	it("classifies one-at-a-time steering from the next queued mixed source", async () => {
-		const cases = [
-			{
-				order: ["system", "agent"] as const,
-				expected: "pending system advisory",
-				unexpected: "pending parent steering message",
+	it("promotes follow-ups atomically and preserves host-grouped input through queue removal", async () => {
+		const mock = createMockModel({
+			responses: [{ content: ["promoted input handled"] }, { content: ["remaining follow-up handled"] }],
+		});
+		const agent = new Agent({
+			initialState: {
+				model: mock.model,
+				messages: [createAssistantMessage([{ type: "text", text: "ready" }])],
 			},
-			{
-				order: ["agent", "system"] as const,
-				expected: "pending parent steering message",
-				unexpected: "pending system advisory",
-			},
-		];
-
-		for (const scenario of cases) {
-			const toolSchema = type({ value: type("string") });
-			const executed: string[] = [];
-			const agentRef = {} as { current: Agent };
-			const tool: AgentTool<typeof toolSchema, { value: string }> = {
-				name: "echo",
-				label: "Echo",
-				description: "Echo tool",
-				parameters: toolSchema,
-				concurrency: "exclusive",
-				interruptible: true,
-				async execute(_toolCallId, params) {
-					executed.push(params.value);
-					if (params.value === "first") {
-						for (const source of scenario.order) {
-							if (source === "agent") {
-								agentRef.current.steer({
-									role: "user",
-									content: "parent steering",
-									attribution: "agent",
-									timestamp: Date.now(),
-								});
-							} else {
-								agentRef.current.steer({
-									role: "custom",
-									customType: "advisor",
-									content: "advisor steering",
-									display: true,
-									attribution: "agent",
-									timestamp: Date.now(),
-								});
-							}
-						}
-					}
-					return {
-						content: [{ type: "text", text: `ok:${params.value}` }],
-						details: { value: params.value },
-					};
-				},
-			};
-			const mock = createMockModel({
-				responses: [
-					{
-						content: [
-							{ type: "toolCall", id: "tool-1", name: "echo", arguments: { value: "first" } },
-							{ type: "toolCall", id: "tool-2", name: "echo", arguments: { value: "second" } },
-						],
-					},
-					{ content: ["done"] },
-					{ content: ["done"] },
-				],
+			streamFn: mock.stream,
+		});
+		const companion: AgentMessage = {
+			role: "developer",
+			content: [{ type: "text", text: "guidance for the promoted input" }],
+			timestamp: Date.now(),
+		};
+		const promoted = createUserMessage("promoted");
+		const remaining = createUserMessage("remaining");
+		const removed = createUserMessage("remove before delivery");
+		agent.setQueuedMessageGrouping((previous, next) => previous === companion && next === promoted);
+		agent.followUp(companion);
+		agent.followUp(promoted);
+		agent.followUp(remaining);
+		agent.steer(removed);
+		const observed: Array<{ steering: AgentMessage[]; followUp: AgentMessage[] }> = [];
+		const unsubscribe = agent.onQueueChange(() => {
+			observed.push({
+				steering: [...agent.peekSteeringQueue()],
+				followUp: [...agent.peekFollowUpQueue()],
 			});
-			const agent = new Agent({
-				initialState: { model: mock.model, systemPrompt: ["Test"], tools: [tool], messages: [] },
-				streamFn: mock.stream,
-				interruptMode: "immediate",
-			});
-			agentRef.current = agent;
-			const events: AgentEvent[] = [];
-			const unsubscribe = agent.subscribe(event => events.push(event));
+		});
 
-			await agent.prompt("start");
-			unsubscribe();
+		agent.moveFollowUpsToSteering([remaining], [companion, promoted]);
+		agent.replaceQueue(
+			"steering",
+			agent.peekSteeringQueue().filter(message => message !== removed),
+		);
+		await agent.continue();
+		unsubscribe();
 
-			expect(executed).toEqual(["first"]);
-			const skipped = events.find(
-				(event): event is Extract<AgentEvent, { type: "tool_execution_end" }> =>
-					event.type === "tool_execution_end" && event.toolCallId === "tool-2",
-			);
-			expect(skipped).toBeDefined();
-			const skippedContent = skipped?.result.content[0];
-			expect(skippedContent?.type).toBe("text");
-			if (skippedContent?.type !== "text") throw new Error("skipped tool result must be text");
-			expect(skippedContent.text).toContain(`Skipped due to ${scenario.expected}`);
-			expect(skippedContent.text).not.toContain(scenario.unexpected);
-		}
+		expect(observed[0]).toEqual({ steering: [removed, companion, promoted], followUp: [remaining] });
+		expect(observed[1]).toEqual({ steering: [companion, promoted], followUp: [remaining] });
+		expect(mock.calls[0]?.context.messages.slice(-2)).toEqual([companion, promoted]);
+		expect(mock.calls[0]?.context.messages).not.toContainEqual(remaining);
+		expect(mock.calls[1]?.context.messages.at(-1)).toEqual(remaining);
+		const delivered = agent.state.messages.filter(
+			message => message === companion || message === promoted || message === remaining || message === removed,
+		);
+		expect(delivered).toEqual([companion, promoted, remaining]);
 	});
 
 	it("removes duplicate queued-message hooks independently", async () => {
@@ -1296,6 +1208,47 @@ describe("Agent", () => {
 		]);
 	});
 
+	it("delivers post-tool instructions from a finalized error while dropping success-only prepared context", async () => {
+		const schema = type({});
+		const tool: AgentTool<typeof schema, Record<string, never>> = {
+			name: "probe",
+			label: "Probe",
+			description: "Report a failed operation",
+			parameters: schema,
+			async execute() {
+				throw new Error("operation failed");
+			},
+		};
+		const mock = createMockModel({
+			responses: [
+				{ content: [{ type: "toolCall", id: "failed-probe", name: "probe", arguments: {} }] },
+				{ content: ["handled the failure"] },
+			],
+		});
+		const agent = new Agent({
+			initialState: { model: mock.model, tools: [tool] },
+			streamFn: mock.stream,
+			beforeToolCall: () => ({ additionalContext: "success-only instructions" }),
+			afterToolCall: ({ isError }) =>
+				isError ? { additionalContext: "inspect the failure before retrying" } : undefined,
+		});
+
+		await agent.prompt("run the probe");
+
+		const nextMessages = mock.calls[1]?.context.messages;
+		expect(nextMessages?.map(message => message.role)).toEqual(["user", "assistant", "toolResult", "developer"]);
+		expect(nextMessages?.at(-2)).toMatchObject({
+			role: "toolResult",
+			toolCallId: "failed-probe",
+			isError: true,
+			content: [{ type: "text", text: "operation failed" }],
+		});
+		expect(nextMessages?.at(-1)).toMatchObject({
+			role: "developer",
+			content: [{ type: "text", text: "inspect the failure before retrying" }],
+		});
+	});
+
 	it("keeps the reserved result when the transformer rejects", async () => {
 		// `cursorOnToolResult` is a supported option returning a Promise, and the
 		// provider dispatches decoded messages with `void handleServerMessage(...)`.
@@ -1719,22 +1672,6 @@ describe("Agent", () => {
 
 		const reasoningPerCall: Array<SimpleStreamOptions["reasoning"]> = mock.calls.map(call => call.options?.reasoning);
 		expect(reasoningPerCall).toEqual([ThinkingLevel.Low, ThinkingLevel.High]);
-	});
-
-	it("forwards explicit reasoning disablement to the stream", async () => {
-		const mock = createMockModel({ responses: [{ content: ["ok"] }] });
-		const agent = new Agent({
-			initialState: {
-				model: mock.model,
-				messages: [],
-				disableReasoning: true,
-			},
-			streamFn: mock.stream,
-		});
-
-		await agent.prompt("run");
-
-		expect(mock.calls[0]?.options?.disableReasoning).toBe(true);
 	});
 
 	it("re-reads disableReasoning for each model call within a run", async () => {

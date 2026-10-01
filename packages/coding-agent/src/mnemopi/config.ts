@@ -269,7 +269,7 @@ function bankOnlyHasCwd(dbPath: string, cwd: string): boolean {
 		return false;
 	} finally {
 		try {
-			db?.close();
+			db?.close(true);
 		} catch {
 			// nothing to do — read-only handle.
 		}

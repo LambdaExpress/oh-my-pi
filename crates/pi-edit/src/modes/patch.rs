@@ -1527,9 +1527,17 @@ fn entry_input<'a>(path: &'a str, entry: &'a EditEntry) -> Result<PatchInput<'a>
 }
 
 fn extract_added_lines(text: &str, whole_on_empty: bool) -> String {
+	let mut in_hunk = false;
 	let added = text
 		.split('\n')
-		.filter_map(|line| line.strip_prefix('+').filter(|_| !line.starts_with("+++ ")))
+		.filter_map(|line| {
+			if !whole_on_empty && line.starts_with("@@") {
+				in_hunk = true;
+			}
+			line
+				.strip_prefix('+')
+				.filter(|_| in_hunk || !line.starts_with("+++ "))
+		})
 		.collect::<Vec<_>>();
 	if added.is_empty() && whole_on_empty {
 		text.to_owned()
@@ -1746,6 +1754,15 @@ mod tests {
 	fn strips_create_prefixes() {
 		assert_eq!(extract_added_lines("+one\n+two", true), "one\ntwo");
 		assert_eq!(extract_added_lines("one\ntwo", true), "one\ntwo");
+		assert_eq!(extract_added_lines("@@\n+++ literal", true), "@@\n+++ literal");
+	}
+
+	#[test]
+	fn extracts_metadata_shaped_additions_inside_hunks() {
+		assert_eq!(
+			extract_added_lines("--- a/a.txt\n+++ b/a.txt\n@@\n--- old\n+++ new", false),
+			"++ new"
+		);
 	}
 
 	#[test]

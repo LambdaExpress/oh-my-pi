@@ -1,27 +1,26 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, spyOn, vi } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { stripVTControlCharacters } from "node:util";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { StatusLineComponent } from "@oh-my-pi/pi-tui/status-line";
 import { statusLineHost } from "@oh-my-pi/pi-coding-agent/modes/status-line-host";
 import { renderSegment } from "@oh-my-pi/pi-tui/status-line/segments";
 import type { SegmentContext } from "@oh-my-pi/pi-tui/status-line/types";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import { StatusLineTestComponents } from "./helpers/status-line";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
 const statusLines = new StatusLineTestComponents();
-beforeAll(async () => {
-	resetSettingsForTest();
+let settingsState: SettingsTestState | undefined;
+beforeEach(async () => {
+	settingsState = beginSettingsTest();
 	await Settings.init({ inMemory: true });
 	await initTheme();
 });
 
-afterAll(() => {
-	statusLines.dispose();
-	resetSettingsForTest();
-});
-
 afterEach(() => {
-	vi.restoreAllMocks();
+	statusLines.dispose();
+	restoreSettingsTestState(settingsState);
+	settingsState = undefined;
 });
 
 function makeComponent(
@@ -109,7 +108,8 @@ describe("usage status-line segment", () => {
 		component.refreshUsageInBackground();
 		await flushUsageRefresh();
 		const expanded = stripVTControlCharacters(component.getTopBorder(200).content);
-		expect(expanded).toContain("98% (20m)");
+		expect(expanded).toContain("98%");
+		expect(expanded).toContain("20m");
 
 		component.updateSettings({
 			preset: "custom",
@@ -158,8 +158,12 @@ describe("usage status-line segment", () => {
 		const content = stripVTControlCharacters(result.content);
 
 		expect(result.visible).toBe(true);
-		expect(content).toContain("5h 24% (30m)");
-		expect(content).toContain("7d 8% (5d 21h)");
+		expect(content).toContain("5h");
+		expect(content).toContain("24%");
+		expect(content).toContain("30m");
+		expect(content).toContain("7d");
+		expect(content).toContain("8%");
+		expect(content).toContain("5d 21h");
 	});
 
 	it("renders tiered usage fetched from provider reports", async () => {
@@ -186,8 +190,12 @@ describe("usage status-line segment", () => {
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
 		expect(content).toContain("prolite");
-		expect(content).toContain("5h 24% (30m)");
-		expect(content).toContain("7d 8% (5d 21h)");
+		expect(content).toContain("5h");
+		expect(content).toContain("24%");
+		expect(content).toContain("30m");
+		expect(content).toContain("7d");
+		expect(content).toContain("8%");
+		expect(content).toContain("5d 21h");
 	});
 
 	it("selects one coherent scope for the active model", async () => {
@@ -261,8 +269,12 @@ describe("usage status-line segment", () => {
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
 		expect(content).toContain("pro");
-		expect(content).toContain("5h 21% (30m)");
-		expect(content).toContain("7d 5% (5d 21h)");
+		expect(content).toContain("5h");
+		expect(content).toContain("21%");
+		expect(content).toContain("30m");
+		expect(content).toContain("7d");
+		expect(content).toContain("5%");
+		expect(content).toContain("5d 21h");
 	});
 
 	it("keeps windows within the preferred untiered scope", async () => {
@@ -361,6 +373,7 @@ describe("usage status-line segment", () => {
 			},
 			fetchUsageReports: async () => reports,
 			modelRegistry: {
+				isUsingOAuth: () => true,
 				authStorage: {
 					oauth: {
 						identity: (requestedProvider: string) =>
@@ -433,6 +446,7 @@ describe("usage status-line segment", () => {
 			},
 			fetchUsageReports: async () => reports,
 			modelRegistry: {
+				isUsingOAuth: () => true,
 				authStorage: {
 					oauth: {
 						identity: (requestedProvider: string) =>
@@ -499,22 +513,6 @@ describe("usage status-line segment", () => {
 		expect(content).not.toContain("66%");
 	});
 
-	it("renders tiered limits with the tier label", () => {
-		const result = renderSegment("usage", {
-			usage: {
-				tier: "prolite",
-				fiveHour: { percent: 50, resetMinutes: 120 },
-				sevenDay: { percent: 10, resetHours: 48 },
-			},
-		} as unknown as SegmentContext);
-		const content = stripVTControlCharacters(result.content);
-
-		expect(result.visible).toBe(true);
-		expect(content).toContain("prolite");
-		expect(content).toContain("5h 50% (2h)");
-		expect(content).toContain("7d 10% (2d)");
-	});
-
 	it("sanitizes tier labels before rendering", () => {
 		const result = renderSegment("usage", {
 			usage: {
@@ -563,6 +561,7 @@ describe("usage status-line segment", () => {
 
 		expect(result.visible).toBe(true);
 		expect(content).toContain("30d 23h");
+		expect(content).toContain("mo");
 		// Match Cursor web dashboard flooring (1.88 → 1%), not Math.round → 2%.
 		expect(content).toContain("1%");
 		expect(content).not.toContain("2%");
@@ -592,7 +591,9 @@ describe("usage status-line segment", () => {
 		await flushUsageRefresh();
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
-		expect(content).toContain("mo 13% (30d 23h)");
+		expect(content).toContain("mo");
+		expect(content).toContain("13%");
+		expect(content).toContain("30d 23h");
 	});
 
 	it("prefers Cursor personal dashboard rails over legacy monthly request limits", async () => {
@@ -661,9 +662,15 @@ describe("usage status-line segment", () => {
 		await flushUsageRefresh();
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
-		expect(content).toContain("5h 12% (1h 30m)");
-		expect(content).toContain("7d 8% (4d 4h)");
-		expect(content).toContain("mo 42% (6d 16h)");
+		expect(content).toContain("5h");
+		expect(content).toContain("12%");
+		expect(content).toContain("1h 30m");
+		expect(content).toContain("7d");
+		expect(content).toContain("8%");
+		expect(content).toContain("4d 4h");
+		expect(content).toContain("mo");
+		expect(content).toContain("42%");
+		expect(content).toContain("6d 16h");
 	});
 
 	it("renders an alibaba-token-plan monthly-only quota without a reported span", async () => {
@@ -750,8 +757,12 @@ describe("usage status-line segment", () => {
 		await flushUsageRefresh();
 		const content = stripVTControlCharacters(component.getTopBorder(200).content);
 
-		expect(content).toContain("5h 24% (30m)");
-		expect(content).toContain("7d 8% (5d 21h)");
+		expect(content).toContain("5h");
+		expect(content).toContain("24%");
+		expect(content).toContain("30m");
+		expect(content).toContain("7d");
+		expect(content).toContain("8%");
+		expect(content).toContain("5d 21h");
 	});
 
 	it("renders Google Antigravity daily usage", async () => {

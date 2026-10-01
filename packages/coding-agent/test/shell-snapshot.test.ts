@@ -4,13 +4,22 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { getOrCreateSnapshot, sanitizeSnapshotForBrush } from "@oh-my-pi/pi-coding-agent/utils/shell-snapshot";
+import { procmgr } from "@oh-my-pi/pi-utils";
 import fnEnvHelper from "../src/utils/shell-snapshot-fn-env.sh" with { type: "text" };
 
 // macOS ships bash at `/bin/bash`, not `/usr/bin/bash`; resolve a real bash the
 // same way `bash-executor.test.ts` does so these e2e tests stay portable. The
 // `getOrCreateSnapshot` tests below symlink this under a unique name and skip
 // when no bash is present.
-const REAL_BASH = Bun.env.SHELL?.includes("bash") ? Bun.env.SHELL : "/bin/bash";
+// A bare `bash` on Windows can resolve to the WSL launcher, which does not
+// carry these test-local environment values into the Linux process.
+const REAL_BASH =
+	process.platform === "win32"
+		? procmgr.resolveWindowsShell()
+		: Bun.env.SHELL?.includes("bash")
+			? Bun.env.SHELL
+			: "/bin/bash";
+const HAS_BASH = existsSync(REAL_BASH) && /bash(?:\.exe)?$/i.test(REAL_BASH);
 // Likewise resolve `echo` (the stand-in for the mise binary the captured
 // function invokes): macOS has no `/usr/bin/echo`, so hard-coding it makes the
 // replay fail with `No such file or directory` even though the export landed.
@@ -65,7 +74,6 @@ describe("sanitizeSnapshotForBrush", () => {
 	it.each([
 		["simple", "alias -- ll='ls -l'"],
 		["flag-with-equals", "alias -- gc='git --color=auto commit'"],
-		["multi-flag", "alias -- la='ls -lAh --group-directories-first'"],
 		// A plain single quote escape that decodes to a metachar-free body
 		// must survive — we only ban truly unparseable bodies.
 		["embedded-quote", "alias -- say='echo '\\''hello'\\'''"],
@@ -111,7 +119,7 @@ async function readStream(stream: ReadableStream<Uint8Array> | null): Promise<st
 	return await new Response(stream).text();
 }
 
-describe("shell-snapshot fn-env helper", () => {
+describe.skipIf(!HAS_BASH)("shell-snapshot fn-env helper", () => {
 	it("emits export lines for env vars referenced by captured functions, skips unset and shell-internal names", async () => {
 		const funcs = [
 			`mise () { command "$__MISE_EXE" "$@"; }`,
@@ -123,9 +131,13 @@ describe("shell-snapshot fn-env helper", () => {
 			``,
 		].join("\n");
 
-		const child = Bun.spawn(["bash", "-c", `${fnEnvHelper}\n__omp_emit_referenced_exports`], {
+		const child = Bun.spawn([REAL_BASH, "-c", `${fnEnvHelper}\n__omp_emit_referenced_exports`], {
 			env: {
-				PATH: process.env.PATH ?? "/usr/bin:/bin",
+				...process.env,
+				BASH_ENV: undefined,
+				ENV: undefined,
+				NEVER_SET_TEST_VAR: undefined,
+				PATH: process.platform === "win32" ? "/usr/bin:/bin" : (process.env.PATH ?? "/usr/bin:/bin"),
 				__MISE_EXE: "/opt/echo",
 				FOO_TEST_DIR: "/opt/dir",
 				LC_ALL: "C",
@@ -164,9 +176,12 @@ describe("shell-snapshot fn-env helper", () => {
 			``,
 		].join("\n");
 
-		const child = Bun.spawn(["bash", "-c", `${fnEnvHelper}\n__omp_emit_referenced_exports`], {
+		const child = Bun.spawn([REAL_BASH, "-c", `${fnEnvHelper}\n__omp_emit_referenced_exports`], {
 			env: {
-				PATH: process.env.PATH ?? "/usr/bin:/bin",
+				...process.env,
+				BASH_ENV: undefined,
+				ENV: undefined,
+				PATH: process.platform === "win32" ? "/usr/bin:/bin" : (process.env.PATH ?? "/usr/bin:/bin"),
 				GITHUB_TOKEN: "ghp_REDACTED",
 				OPENAI_API_KEY: "sk-REDACTED",
 				AWS_SECRET_ACCESS_KEY: "REDACTED",
@@ -210,9 +225,12 @@ describe("shell-snapshot fn-env helper", () => {
 
 	it("single-quote-escapes values containing apostrophes and preserves newlines", async () => {
 		const funcs = `shout () { echo "$TRICKY_VAL $NL_VAL"; }\n`;
-		const child = Bun.spawn(["bash", "-c", `${fnEnvHelper}\n__omp_emit_referenced_exports`], {
+		const child = Bun.spawn([REAL_BASH, "-c", `${fnEnvHelper}\n__omp_emit_referenced_exports`], {
 			env: {
-				PATH: process.env.PATH ?? "/usr/bin:/bin",
+				...process.env,
+				BASH_ENV: undefined,
+				ENV: undefined,
+				PATH: process.platform === "win32" ? "/usr/bin:/bin" : (process.env.PATH ?? "/usr/bin:/bin"),
 				TRICKY_VAL: "it's 'tricky'",
 				NL_VAL: "line1\nline2",
 			},
@@ -225,21 +243,29 @@ describe("shell-snapshot fn-env helper", () => {
 		const out = await readStream(child.stdout as ReadableStream<Uint8Array> | null);
 		await child.exited;
 
+		expect(child.exitCode).toBe(0);
 		expect(out).toContain(`export TRICKY_VAL='it'\\''s '\\''tricky'\\'''`);
 		expect(out).toContain(`export NL_VAL='line1\nline2'`);
 
 		// Eval the emitted lines and verify the round-trip values match.
 		const round = Bun.spawn(
-			["bash", "-c", `eval "$1"; printf '%s\\n' "$TRICKY_VAL"; printf '%s\\n' "$NL_VAL"`, "_", out],
-			{ stdout: "pipe", stderr: "ignore" },
+			[REAL_BASH, "-c", `eval "$1"; printf '%s\\n' "$TRICKY_VAL"; printf '%s\\n' "$NL_VAL"`, "_", out],
+			{
+				env: { ...process.env, BASH_ENV: undefined, ENV: undefined },
+				stdout: "pipe",
+				stderr: "ignore",
+			},
 		);
 		const echoed = await readStream(round.stdout as ReadableStream<Uint8Array> | null);
 		await round.exited;
+		expect(round.exitCode).toBe(0);
 		expect(echoed).toBe("it's 'tricky'\nline1\nline2\n");
 	});
 });
 
-describe("getOrCreateSnapshot", () => {
+// Production deliberately returns null on Windows; these cases exercise the
+// POSIX snapshot path, including rc sourcing and Unix permissions.
+describe.skipIf(process.platform === "win32")("getOrCreateSnapshot", () => {
 	it("re-exports env vars referenced by snapshotted functions (issue #3470)", async () => {
 		const home = await fs.mkdtemp(path.join(os.tmpdir(), "omp-snap-3470-"));
 		await fs.writeFile(

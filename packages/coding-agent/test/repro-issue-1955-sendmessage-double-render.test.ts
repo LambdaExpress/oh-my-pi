@@ -1,20 +1,20 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "bun:test";
 import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
-import type { ImageContent, TextContent } from "@oh-my-pi/pi-ai";
-import { resetSettingsForTest, Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
-import type {
-	ExtensionActions,
-	ExtensionCommandContextActions,
-	ExtensionContextActions,
-	ExtensionUIContext,
-} from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { ModelRegistry } from "@oh-my-pi/pi-coding-agent/config/model-registry";
+import { resetSettingsForTest, Settings, settings } from "@oh-my-pi/pi-coding-agent/config/settings";
+import type { ExtensionActions } from "@oh-my-pi/pi-coding-agent/extensibility/extensions";
+import { ExtensionRuntime } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/loader";
+import { ExtensionRunner } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/runner";
 import { ExtensionUiController } from "@oh-my-pi/pi-coding-agent/modes/controllers/extension-ui-controller";
 import { initTheme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext, RenderSessionContextOptions } from "@oh-my-pi/pi-coding-agent/modes/types";
 import { UiHelpers } from "@oh-my-pi/pi-coding-agent/modes/utils/ui-helpers";
+import { AuthStorage } from "@oh-my-pi/pi-coding-agent/session/auth-storage";
+import { type CustomMessagePayload, normalizeCustomMessagePayload } from "@oh-my-pi/pi-coding-agent/session/messages";
 import { buildSessionContext, type SessionContext } from "@oh-my-pi/pi-coding-agent/session/session-context";
 import type { CustomMessageEntry, SessionEntry } from "@oh-my-pi/pi-coding-agent/session/session-entries";
-import { Container } from "@oh-my-pi/pi-tui";
+import { SessionManager } from "@oh-my-pi/pi-coding-agent/session/session-manager";
+import { createInteractiveModeContext } from "./helpers/interactive-mode-context";
 
 /**
  * Issue #1955: `sendMessage` with `display: true` renders twice during
@@ -31,19 +31,26 @@ import { Container } from "@oh-my-pi/pi-tui";
  *   (adding the same custom message again), and re-appends the snapshot —
  *   leaving two identical custom-message components in the chat.
  */
+let authStorage: AuthStorage;
+let modelRegistry: ModelRegistry;
+const contexts: InteractiveModeContext[] = [];
+
 beforeAll(async () => {
 	// renderInitialMessages reads the global Settings (display.collapseCompacted).
 	resetSettingsForTest();
 	await Settings.init({ inMemory: true });
 	await initTheme();
-	await Settings.init({ inMemory: true });
+	authStorage = await AuthStorage.create(":memory:");
+	modelRegistry = new ModelRegistry(authStorage);
 });
 
 afterAll(() => {
+	authStorage?.close();
 	resetSettingsForTest();
 });
 
 afterEach(() => {
+	for (const ctx of contexts.splice(0)) ctx.chatContainer.disposeChildren();
 	vi.restoreAllMocks();
 });
 
@@ -71,25 +78,28 @@ interface Harness {
 function createHarness(): Harness {
 	const entries: SessionEntry[] = [];
 	let capturedActions: ExtensionActions | undefined;
-	const fakeRunner = {
-		initialize: (
-			a: ExtensionActions,
-			_ca: ExtensionContextActions,
-			_cca: ExtensionCommandContextActions,
-			_ui: ExtensionUIContext,
-		) => {
-			capturedActions = a;
-		},
-		onError: () => {},
-		emit: async () => undefined,
-		getMessageRenderer: () => undefined,
-		getAssistantThinkingRenderers: () => undefined,
-		getComposerShapes: () => [],
-	};
+	const sessionManager = SessionManager.inMemory(process.cwd());
+	vi.spyOn(sessionManager, "buildSessionContext").mockImplementation(() => buildSessionContext(entries));
+	vi.spyOn(sessionManager, "getEntries").mockImplementation(() => entries);
+	const runner = new ExtensionRunner(
+		[],
+		new ExtensionRuntime(),
+		process.cwd(),
+		sessionManager,
+		modelRegistry,
+		undefined,
+		settings,
+	);
+	const initialize = runner.initialize.bind(runner);
+	vi.spyOn(runner, "initialize").mockImplementation((actions, contextActions, commandActions, ui, mode) => {
+		capturedActions = actions;
+		initialize(actions, contextActions, commandActions, ui, mode);
+	});
 
 	const sessionMock = {
 		isStreaming: false,
-		extensionRunner: fakeRunner,
+		getAsyncJobSnapshot: () => null,
+		extensionRunner: runner,
 		/**
 		 * Mirror `AgentSession.sendCustomMessage` non-streaming
 		 * `deliverAs: "nextTurn"` / no-trigger path: persist the message as a
@@ -97,54 +107,37 @@ function createHarness(): Harness {
 		 * `agent.appendMessage`, but that path is silent — no event, no render —
 		 * so the bug surface is unaffected by omitting it here.)
 		 */
-		sendCustomMessage: async (msg: {
-			customType: string;
-			content: string | (TextContent | ImageContent)[];
-			display?: boolean;
-			details?: unknown;
-			attribution?: string;
-		}) => {
+		sendCustomMessage: async <T = unknown>(msg: CustomMessagePayload<T>) => {
 			const parent = entries.length === 0 ? null : entries[entries.length - 1].id;
-			entries.push(makeCustomEntry(entries.length + 1, extractText(msg.content), parent));
+			entries.push({
+				type: "custom_message",
+				...normalizeCustomMessagePayload(msg),
+				id: `entry-${entries.length + 1}`,
+				parentId: parent,
+				timestamp: new Date(2026, 5, 5, 0, 0, entries.length + 1).toISOString(),
+			});
+			return false;
 		},
 	};
 
-	const ctx = {
-		chatContainer: new Container(),
-		pendingMessagesContainer: new Container(),
-		pendingBashComponents: [],
-		pendingPythonComponents: [],
-		transcriptMessageComponents: new WeakMap(),
-		pendingTools: new Map(),
-		ui: { requestRender: vi.fn() },
+	const ctx: InteractiveModeContext = createInteractiveModeContext({
 		resetTranscript: () => ctx.chatContainer.clear(),
-		isBackgrounded: false,
 		initialChatRendered: false,
-		statusLine: { invalidate: vi.fn() },
-		updateEditorBorderColor: vi.fn(),
-		settings: { get: () => false },
 		session: sessionMock,
 		viewSession: {
+			getAsyncJobSnapshot: () => null,
+			extensionRunner: runner,
 			buildTranscriptSessionContext: () => buildSessionContext(entries),
-			sessionManager: { getEntries: () => entries },
+			sessionManager,
 		},
-		focusedAgentId: undefined,
-		sessionManager: {
-			buildSessionContext: () => buildSessionContext(entries),
-			getEntries: () => entries,
-		},
+		sessionManager,
 		setToolUIContext: vi.fn(),
 		setEditorComponent: vi.fn(),
-		setWorkingMessage: vi.fn(),
 		setToolsExpanded: vi.fn(),
 		toolOutputExpanded: false,
 		syncComposerShape: vi.fn(),
-		hideThinkingBlock: false,
-		showError: vi.fn(),
 		editor: {
-			setText: vi.fn(),
 			handleInput: vi.fn(),
-			getText: () => "",
 		},
 		renderSessionContext: (context: SessionContext, options?: RenderSessionContextOptions) =>
 			helpers.renderSessionContext(context, options),
@@ -158,7 +151,8 @@ function createHarness(): Harness {
 			ctx.chatContainer.clear();
 			helpers.renderSessionContext(buildSessionContext(entries));
 		},
-	} as unknown as InteractiveModeContext;
+	});
+	contexts.push(ctx);
 	const helpers = new UiHelpers(ctx);
 
 	const controller = new ExtensionUiController(ctx);
@@ -170,14 +164,6 @@ function createHarness(): Harness {
 		controller,
 		getActions: () => capturedActions,
 	};
-}
-
-function extractText(content: string | (TextContent | ImageContent)[]): string {
-	if (typeof content === "string") return content;
-	for (const part of content) {
-		if (part.type === "text") return part.text;
-	}
-	return "";
 }
 
 function countOccurrences(haystack: string, needle: string): number {

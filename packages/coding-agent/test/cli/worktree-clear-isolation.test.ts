@@ -6,6 +6,7 @@ import * as natives from "@oh-my-pi/pi-natives";
 import { clearWorktrees } from "@oh-my-pi/pi-coding-agent/cli/worktree-cli";
 import {
 	ISOLATION_OWNER_FILE,
+	type IsolationOwner,
 	RETAINED_BACKEND_FILE,
 	writeIsolationOwner,
 	writeRetainedBackend,
@@ -54,6 +55,7 @@ describe("worktree clear task-isolation ownership", () => {
 	it("keeps live-owned sandboxes and reclaims dead/markerless/corrupt ones", async () => {
 		const live = await makeSandbox("tlive0001");
 		await writeIsolationOwner(live, "live0001"); // marker names this test process
+		const liveOwner: IsolationOwner = await Bun.file(path.join(live, ISOLATION_OWNER_FILE)).json();
 
 		const dead = await makeSandbox("tdead0002");
 		await Bun.write(path.join(dead, ISOLATION_OWNER_FILE), JSON.stringify({ pid: await deadPid(), id: "dead0002" }));
@@ -89,9 +91,9 @@ describe("worktree clear task-isolation ownership", () => {
 		expect(await exists(orphan)).toBe(false);
 		expect(await exists(corrupt)).toBe(false);
 		expect(await exists(pending)).toBe(true);
-		// Windows reports neither /proc start times nor `ps`, so pid-only liveness
-		// cannot spot the recycled pid and the sandbox is conservatively kept.
-		expect(await exists(recycled)).toBe(process.platform === "win32");
+		// Reclaim recycled pids wherever the OS supplies a start token (including
+		// Windows via PowerShell); otherwise retain the pid-only owner.
+		expect(await exists(recycled)).toBe(liveOwner.startToken === undefined);
 	});
 
 	it("unmounts retained mounting-backend workspaces before removal", async () => {

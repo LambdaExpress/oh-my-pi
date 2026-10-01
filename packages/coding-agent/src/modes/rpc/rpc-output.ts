@@ -1,9 +1,38 @@
 import * as fs from "node:fs";
-import type { Writable } from "node:stream";
+import { Writable } from "node:stream";
 import { logger, openCloexecSync, TempDir } from "@oh-my-pi/pi-utils";
 import type { BunFile } from "bun";
 
 const READ_BYTES = 64 * 1024;
+
+/** Async descriptor writes keep Windows pipe waits off the JS thread; fd 1 remains borrowed. */
+export function createRpcStdoutSink(): Writable {
+	return new Writable({
+		// Keep only one write in flight; RpcOutputWriter owns the disk-backed queue.
+		highWaterMark: 1,
+		write(bytes: Buffer, _encoding, callback) {
+			let offset = 0;
+			const onWrite = (error: NodeJS.ErrnoException | null, written: number): void => {
+				if (error) {
+					callback(error);
+					return;
+				}
+				offset += written;
+				if (offset === bytes.length) callback();
+				else if (written === 0) callback(new Error("RPC stdout write made no progress"));
+				else writeRemaining();
+			};
+			const writeRemaining = (): void => {
+				try {
+					fs.write(1, bytes, offset, bytes.length - offset, null, onWrite);
+				} catch (error) {
+					callback(error instanceof Error ? error : new Error(String(error)));
+				}
+			};
+			writeRemaining();
+		},
+	});
+}
 
 interface Spool {
 	dir: TempDir;

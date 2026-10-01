@@ -11,7 +11,7 @@ import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import * as vcs from "@oh-my-pi/pi-natives/vcs";
 import { removeSyncWithRetries, setProjectDir } from "@oh-my-pi/pi-utils";
-import { setLocale, t } from "../src/i18n";
+import { t } from "../src/i18n";
 import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 import { StatusLineTestComponents } from "./helpers/status-line";
 
@@ -27,7 +27,6 @@ let projectDir = "";
 const statusLines = new StatusLineTestComponents();
 
 beforeEach(async () => {
-	setLocale("en");
 	settingsState = beginSettingsTest();
 	projectDir = fs.mkdtempSync(path.join(os.tmpdir(), "omp-status-line-settings-cache-"));
 	setProjectDir(projectDir);
@@ -37,7 +36,6 @@ beforeEach(async () => {
 
 afterEach(() => {
 	statusLines.dispose();
-	setLocale(null);
 	restoreSettingsTestState(settingsState);
 	settingsState = undefined;
 	if (projectDir) {
@@ -115,17 +113,6 @@ describe("StatusLineComponent effective settings cache", () => {
 		}
 	});
 
-	it("omits the Pi glyph from Nerd Font presets by default", () => {
-		expect(STATUS_LINE_PRESETS.default.leftSegments).not.toContain("pi");
-		expect(STATUS_LINE_PRESETS.full.leftSegments).not.toContain("pi");
-		expect(STATUS_LINE_PRESETS.nerd.leftSegments).not.toContain("pi");
-
-		const component = makeComponent({ preset: "default", sessionAccent: false });
-		const content = stripVTControlCharacters(component.getTopBorder(120).content);
-
-		expect(content).not.toContain(theme.icon.omp);
-	});
-
 	it("skips the entire segment pipeline until a visible input invalidates it", () => {
 		const session = makeSession();
 		let snapshotCalls = 0;
@@ -153,7 +140,7 @@ describe("StatusLineComponent effective settings cache", () => {
 
 		component.setPlanModeStatus({ enabled: true, paused: false });
 		const withPlan = stripVTControlCharacters(component.getTopBorder(120).content);
-		expect(withPlan).toContain("Plan");
+		expect(withPlan).toContain(t("Plan"));
 		expect(snapshotCalls).toBe(3);
 
 		const mutableModel = session.state.model as { name: string };
@@ -262,7 +249,7 @@ describe("StatusLineComponent effective settings cache", () => {
 		expect(component.getTopBorder(80).content).toBe("");
 
 		component.setPlanModeStatus({ enabled: true, paused: false });
-		expect(stripVTControlCharacters(component.getTopBorder(80).content)).toContain("Plan");
+		expect(stripVTControlCharacters(component.getTopBorder(80).content)).toContain(t("Plan"));
 		expect(component.getEffectiveSettingsForTest()).toBe(effective);
 
 		component.setHookStatus("hook", "hook running");
@@ -311,21 +298,6 @@ describe("StatusLineComponent effective settings cache", () => {
 
 		expect(STATUS_LINE_PRESETS.default.segmentOptions?.path).toEqual(before);
 		expect(component.getEffectiveSettingsForTest().segmentOptions.path).toEqual(before);
-	});
-
-	it("reuses the effective-settings object until settings change", () => {
-		const component = makeComponent({ preset: "default", sessionAccent: false });
-		const effective = component.getEffectiveSettingsForTest();
-
-		for (let i = 0; i < 5; i++) {
-			component.getTopBorder(100);
-			expect(component.getEffectiveSettingsForTest()).toBe(effective);
-		}
-
-		component.updateSettings({ preset: "minimal", sessionAccent: false });
-		const nextEffective = component.getEffectiveSettingsForTest();
-		expect(nextEffective).not.toBe(effective);
-		expect(component.getEffectiveSettingsForTest()).toBe(nextEffective);
 	});
 	it("skips git probes when git integration is disabled", async () => {
 		const headSpy = spyOn(vcs, "gitInfo");

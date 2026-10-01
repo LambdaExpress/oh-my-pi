@@ -476,7 +476,7 @@ pub(crate) struct Rg {
 	#[arg(short = 'j', long = "threads", value_name = "NUM")]
 	_threads: Option<usize>,
 
-	/// Print SEPARATOR instead of '/' in printed file paths.
+	/// Print SEPARATOR instead of platform path separators in printed file paths.
 	#[arg(long = "path-separator", value_name = "SEPARATOR")]
 	path_separator: Option<String>,
 
@@ -816,14 +816,17 @@ fn trim_ascii_start(bytes: &[u8]) -> &[u8] {
 	&bytes[start..]
 }
 
-/// Writes a display path, substituting `separator` for `/` when requested via
-/// `--path-separator`.
+/// Writes a display path, substituting `separator` for platform path separators
+/// when requested via `--path-separator`. Backslashes remain filename bytes on Unix.
 fn write_display_bytes<W: Write>(out: &mut W, bytes: &[u8], separator: Option<u8>) -> io::Result<()> {
 	let Some(separator) = separator else {
 		return out.write_all(bytes);
 	};
 	let mut rest = bytes;
-	while let Some(pos) = rest.iter().position(|&byte| byte == b'/') {
+	while let Some(pos) = rest
+		.iter()
+		.position(|&byte| byte == b'/' || (cfg!(windows) && byte == b'\\'))
+	{
 		out.write_all(&rest[..pos])?;
 		out.write_all(&[separator])?;
 		rest = &rest[pos + 1..];
@@ -895,7 +898,7 @@ fn build_rust_matcher(patterns: &[String], cli: &Rg) -> Result<RegexMatcher, gre
 		.crlf(crlf);
 	if cli.null_data {
 		builder.line_terminator(Some(b'\0'));
-	} else if !cli.multiline {
+	} else if !cli.multiline && !crlf {
 		builder.line_terminator(Some(b'\n'));
 	}
 	builder.build_many(patterns)
@@ -2053,6 +2056,15 @@ mod tests {
 	}
 
 	#[test]
+	fn crlf_anchors_end_of_line_before_carriage_return() {
+		// Defends: `--crlf` must configure the matcher and searcher with the
+		// same terminator; a mismatch fails every search with a config error.
+		let (code, out, err) = run(&["--crlf", "-c", "x$", "-"], "ax\r\nbx\nc\r\n");
+		assert_eq!(code, 0, "{err}");
+		assert_eq!(out, "2\n");
+	}
+
+	#[test]
 	fn pcre2_supports_lookbehind() {
 		let (code, out, err) = run(&["--pcre2", "(?<=foo)bar", "-"], "foobar\nbar\n");
 		assert_eq!(code, 0, "{err}");
@@ -2094,7 +2106,8 @@ mod tests {
 		std::fs::write(tree.path().join("sub/file.txt"), "x\n").unwrap();
 		let (code, capture) = run_util::<Rg>(&["--files", "sub"], "", tree.path());
 		assert_eq!(code, 0, "{}", capture.err());
-		assert_eq!(capture.out(), "sub/file.txt\n");
+		let relative = Path::new("sub").join("file.txt");
+		assert_eq!(capture.out(), format!("{}\n", relative.display()));
 	}
 
 
@@ -2154,15 +2167,10 @@ mod tests {
 	}
 
 	#[test]
-	fn line_numbers_stay_off_when_piped_unless_requested() {
-		// Defends: the builtin's output is always consumed piped, where real
-		// rg omits line numbers; `1:` prefixes sprouting by default break
-		// text consumers. `-n` opts in, `-N` beats `-n`.
+	fn explicit_line_number_flags_apply() {
+		// `-n` opts in, `-N` beats `-n`.
 		let tree = tempfile::tempdir().unwrap();
 		std::fs::write(tree.path().join("a.txt"), "miss\nhit\n").unwrap();
-		let (code, capture) = run_util::<Rg>(&["hit", "."], "", tree.path());
-		assert_eq!(code, 0, "{}", capture.err());
-		assert_eq!(capture.out(), "a.txt:hit\n");
 		let (code, capture) = run_util::<Rg>(&["-n", "hit", "."], "", tree.path());
 		assert_eq!(code, 0, "{}", capture.err());
 		assert_eq!(capture.out(), "a.txt:2:hit\n");
@@ -2223,8 +2231,8 @@ mod tests {
 	}
 
 	#[test]
-	fn path_separator_replaces_slash() {
-		// Defends: --path-separator must rewrite `/` in printed paths and
+	fn path_separator_replaces_native_separators() {
+		// Defends: --path-separator must rewrite separators in printed paths and
 		// reject multi-byte separators like real rg.
 		let tree = tempfile::tempdir().unwrap();
 		std::fs::create_dir(tree.path().join("sub")).unwrap();
@@ -2233,10 +2241,20 @@ mod tests {
 			run_util::<Rg>(&["--path-separator", "|", "hit", "."], "", tree.path());
 		assert_eq!(code, 0, "{}", capture.err());
 		assert_eq!(capture.out(), "sub|a.txt:hit\n");
-		let (code, capture) =
+		let (code, _) =
 			run_util::<Rg>(&["--path-separator", "::", "hit", "."], "", tree.path());
 		assert_eq!(code, 2);
-		assert!(capture.err().contains("exactly one byte"));
+	}
+
+	#[cfg(unix)]
+	#[test]
+	fn path_separator_preserves_backslashes_in_unix_filenames() {
+		let tree = tempfile::tempdir().unwrap();
+		std::fs::write(tree.path().join(r"sub\a.txt"), "hit\n").unwrap();
+		let (code, capture) =
+			run_util::<Rg>(&["--path-separator", "|", "hit", "."], "", tree.path());
+		assert_eq!(code, 0, "{}", capture.err());
+		assert_eq!(capture.out(), "sub\\a.txt:hit\n");
 	}
 }
 

@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { disposeAllVmContexts } from "@oh-my-pi/pi-coding-agent/eval/js/context-manager";
 import { createBrowserPrelude } from "@oh-my-pi/pi-coding-agent/tools/browser";
+import { findFreeCdpPort } from "@oh-my-pi/pi-coding-agent/tools/browser/attach";
 import { freezeTabsForOwner, releaseAllTabs } from "@oh-my-pi/pi-coding-agent/tools/browser/tab-supervisor";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools/index";
 import { chromiumAvailable } from "./chromium-probe";
@@ -18,6 +19,7 @@ const session: ToolSession = {
 		"browser.enabled": true,
 		"browser.headless": true,
 		"browser.cmux": false,
+		"browser.tern": false,
 		"tools.maxTimeout": 0,
 	}),
 };
@@ -44,10 +46,10 @@ async function run(code: string): Promise<unknown> {
 	return valueFrom(result as { details?: Record<string, unknown> });
 }
 
-beforeAll(() => {
+beforeAll(async () => {
 	server = Bun.serve({
 		hostname: "127.0.0.1",
-		port: 0,
+		port: await findFreeCdpPort(),
 		fetch(request) {
 			const url = new URL(request.url);
 			if (url.pathname === "/headers") {

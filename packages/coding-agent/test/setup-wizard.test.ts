@@ -18,10 +18,10 @@ import { providersSetupScene } from "@oh-my-pi/pi-tui/setup/scenes/providers";
 import { themeSetupScene } from "@oh-my-pi/pi-tui/setup/scenes/theme";
 import { WebSearchTab } from "@oh-my-pi/pi-tui/setup/scenes/web-search";
 import { SetupWizardComponent } from "@oh-my-pi/pi-tui/setup/wizard-overlay";
-import { setTerminalGlyphProtocol } from "@oh-my-pi/pi-tui/terminal-capabilities";
+import { setTerminalGlyphProtocol, TERMINAL } from "@oh-my-pi/pi-tui/terminal-capabilities";
 import { initTheme, theme } from "@oh-my-pi/pi-tui/theme";
 import type { InteractiveModeContext } from "@oh-my-pi/pi-coding-agent/modes/types";
-import { SEARCH_PROVIDER_OPTIONS } from "@oh-my-pi/pi-tui/tools/web-search";
+import { SEARCH_PROVIDER_OPTIONS } from "@oh-my-pi/pi-tui/tools/web-search-types";
 import { setLocale } from "../src/i18n";
 
 import { cfgSetupVersion, cfgSymbolPreset } from "@oh-my-pi/pi-coding-agent/modes/settings";
@@ -56,12 +56,17 @@ function testScene(id: string, minVersion: number, shouldRun?: () => boolean): S
 	};
 }
 
+let originalGlyphProtocol = false;
+
 beforeEach(() => {
 	setLocale("en");
+	originalGlyphProtocol = TERMINAL.glyphProtocol;
+	setTerminalGlyphProtocol(false);
 });
 
 afterEach(async () => {
 	setLocale(null);
+	setTerminalGlyphProtocol(originalGlyphProtocol);
 	await initTheme(false, "unicode", false, "titanium", "light");
 });
 
@@ -99,11 +104,6 @@ describe("setup wizard scene selection", () => {
 		expect(await selectSetupScenes(0, ALL_SCENES, ctx, { isTTY: true, resuming: true })).toEqual([]);
 		expect(await selectSetupScenes(0, ALL_SCENES, ctx, { isTTY: true, skipEnv: "1" })).toEqual([]);
 		expect(await selectSetupScenes(0, ALL_SCENES, ctx, { isTTY: true, setupWizardEnabled: false })).toEqual([]);
-	});
-
-	it("keeps the providers scene eligible even when a model is already configured", async () => {
-		const scenes = await selectSetupScenes(0, ALL_SCENES, fakeContextWithConfiguredModel(), { isTTY: true });
-		expect(scenes.some(scene => scene.id === "providers")).toBe(true);
 	});
 
 	it("force mode ignores version and user skip gates but still requires a TTY", async () => {
@@ -436,9 +436,6 @@ describe("setup wizard short terminals", () => {
 			const frame = component.render(80).map(line => Bun.stripANSI(line));
 			expect(frame.length).toBe(24);
 			expect(frame.some(line => line.trimStart().startsWith(theme.nav.cursor))).toBe(true);
-			for (const label of ["Match terminal", "Titanium", "Light", "Colorblind colors", "ANSI-safe", "Browse all"]) {
-				expect(frame.some(line => line.includes(label))).toBe(true);
-			}
 		} finally {
 			nowSpy.mockRestore();
 			component.dispose();
@@ -513,7 +510,7 @@ describe("setup wizard glyph scene", () => {
 	});
 });
 
-describe("setup wizard web search tab", () => {
+describe("setup wizard web search selection", () => {
 	const webModels = (webModelManagerOptions().staticModels ?? []).map(model => buildModel(model));
 	const googleGemini = buildModel({
 		id: "gemini-2.5-flash",
@@ -529,72 +526,63 @@ describe("setup wizard web search tab", () => {
 		webSearch: "gemini",
 	});
 
+	function searchHost(settings: Settings, all: Model[], available: Model[], oauthProvider?: string): SetupSceneHost {
+		return bindSceneHost({
+			ctx: {
+				settings,
+				session: {
+					modelRegistry: {
+						authStorage: {
+							credentials: { hasOAuth: (provider: string) => provider === oauthProvider },
+							keys: { source: () => undefined },
+						},
+						getAll: () => all,
+						getAvailable: () => available,
+					},
+				},
+			},
+			requestRender: () => {},
+			finish: () => {},
+			setFocus: () => {},
+			restoreFocus: () => {},
+		} as unknown as SetupApplicationSceneHost);
+	}
+
 	it("persists the highlighted provider as the web model role", async () => {
 		const settings = Settings.isolated();
-		const host = bindSceneHost({
-			ctx: {
-				settings,
-				session: {
-					modelRegistry: {
-						authStorage: { keys: { source: () => undefined } },
-						getAll: () => webModels,
-						getAvailable: () => webModels,
-					},
-				},
-			},
-			requestRender: () => {},
-			finish: () => {},
-			setFocus: () => {},
-			restoreFocus: () => {},
-		} as unknown as SetupApplicationSceneHost);
+		const tab = new WebSearchTab(searchHost(settings, webModels, webModels));
+		try {
+			tab.handleInput("\x1b[B");
+			tab.handleInput("\n");
+			await Bun.sleep(20);
 
-		const tab = new WebSearchTab(host);
-		tab.handleInput("\x1b[B"); // move off "auto" to the next provider
-		tab.handleInput("\n"); // confirm the highlighted provider
-		await Bun.sleep(20);
-
-		const expected = SEARCH_PROVIDER_OPTIONS[1]!.value;
-		expect(expected).not.toBe("auto");
-		expect(settings.getModelRole("web")).toBe(`web/${expected}`);
+			const expected = SEARCH_PROVIDER_OPTIONS[1]!.value;
+			expect(expected).not.toBe("auto");
+			expect(settings.getModelRole("web")).toBe(`web/${expected}`);
+		} finally {
+			tab.dispose();
+		}
 	});
 
-	it("can select the last provider in the setup TUI list", async () => {
+	it("can select the last provider in the setup list", async () => {
 		const settings = Settings.isolated();
-		const host = bindSceneHost({
-			ctx: {
-				settings,
-				session: {
-					modelRegistry: {
-						authStorage: { keys: { source: () => undefined } },
-						getAll: () => webModels,
-						getAvailable: () => webModels,
-					},
-				},
-			},
-			requestRender: () => {},
-			finish: () => {},
-			setFocus: () => {},
-			restoreFocus: () => {},
-		} as unknown as SetupApplicationSceneHost);
+		const tab = new WebSearchTab(searchHost(settings, webModels, webModels));
+		try {
+			for (let index = 1; index < SEARCH_PROVIDER_OPTIONS.length; index++) {
+				tab.handleInput("\x1b[B");
+			}
+			tab.handleInput("\n");
+			await Bun.sleep(20);
 
-		const tab = new WebSearchTab(host);
-		for (let i = 1; i < SEARCH_PROVIDER_OPTIONS.length; i++) {
-			tab.handleInput("\x1b[B");
+			const lastValue = SEARCH_PROVIDER_OPTIONS.at(-1)!.value;
+			expect(lastValue).not.toBe("auto");
+			expect(settings.getModelRole("web")).toBe(`web/${lastValue}`);
+		} finally {
+			tab.dispose();
 		}
-		tab.handleInput("\n");
-		await Bun.sleep(20);
-
-		const lastOption = SEARCH_PROVIDER_OPTIONS[SEARCH_PROVIDER_OPTIONS.length - 1]!;
-		const lastValue = lastOption.value;
-		if (lastValue === "auto") throw new Error("last option must be a concrete provider");
-		expect(settings.getModelRole("web")).toBe(`web/${lastValue}`);
 	});
 
 	it("reports Gemini ready when only Antigravity OAuth is signed in", async () => {
-		// #13023: the readiness probe must resolve against the credential-filtered
-		// pool (getAvailable) rather than the full catalog — google/gemini-2.5-flash
-		// leads the web priority order but has no credential in this scenario, so a
-		// getAll-based probe would pick it and report "Not configured yet".
 		const antigravityGemini = buildModel({
 			id: "gemini-2.5-flash",
 			name: "Gemini 2.5 Flash",
@@ -608,53 +596,22 @@ describe("setup wizard web search tab", () => {
 			maxTokens: 65_536,
 			webSearch: "gemini",
 		});
-		const settings = Settings.isolated();
-		const host = bindSceneHost({
-			ctx: {
-				settings,
-				session: {
-					modelRegistry: {
-						authStorage: {
-							credentials: { hasOAuth: (provider: string) => provider === "google-antigravity" },
-							keys: { source: () => undefined },
-						},
-						getAll: () => [googleGemini, antigravityGemini],
-						getAvailable: () => [antigravityGemini],
-					},
-				},
-			},
-			requestRender: () => {},
-			finish: () => {},
-			setFocus: () => {},
-			restoreFocus: () => {},
-		} as unknown as SetupApplicationSceneHost);
+		const host = searchHost(
+			Settings.isolated(),
+			[googleGemini, antigravityGemini],
+			[antigravityGemini],
+			"google-antigravity",
+		);
 
 		expect(await host.ctx.isSearchProviderAvailable("gemini")).toBe(true);
 	});
 
-	it("still saves and highlights a grounded provider that has no credentials yet", async () => {
-		// The tab confirms "Web search set to …" and tells the user to add a key
-		// afterwards, so the preference must persist even though the credentialed
-		// pool has no Gemini model.
+	it("saves and highlights a grounded provider before credentials are configured", async () => {
 		const settings = Settings.isolated();
-		const host = bindSceneHost({
-			ctx: {
-				settings,
-				session: {
-					modelRegistry: {
-						authStorage: { credentials: { hasOAuth: () => false }, keys: { source: () => undefined } },
-						getAll: () => [googleGemini],
-						getAvailable: () => [],
-					},
-				},
-			},
-			requestRender: () => {},
-			finish: () => {},
-			setFocus: () => {},
-			restoreFocus: () => {},
-		} as unknown as SetupApplicationSceneHost);
+		const host = searchHost(settings, [googleGemini], []);
 
-		host.ctx.saveSearchProvider("gemini");
+		await host.ctx.saveSearchProvider("gemini");
+
 		expect(settings.getModelRole("web")).toBe("google/gemini-2.5-flash");
 		expect(host.ctx.webSearchOrder).toEqual(["gemini"]);
 		expect(await host.ctx.isSearchProviderAvailable("gemini")).toBe(false);

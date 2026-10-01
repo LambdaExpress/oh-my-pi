@@ -1,26 +1,35 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { TempDir } from "@oh-my-pi/pi-utils";
 import { Settings } from "../src/config/settings";
 import { detectSystemLocale, setLocale, t } from "../src/i18n";
 import { zhCN } from "../src/i18n/locales/zh-CN";
+import { cfgDisplayLanguage } from "../src/modes/settings";
+import { beginSettingsTest, restoreSettingsTestState, type SettingsTestState } from "./helpers/settings-test-state";
 
-// Tests mutate the shared zh-CN catalog for the "translation hit" case;
-// restore the original keys afterwards so the suite stays order-independent.
-const originalKeys = Object.keys(zhCN);
-const originalEnv = { LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, LC_MESSAGES: process.env.LC_MESSAGES };
+let settingsState: SettingsTestState | undefined;
+let originalCatalog: Record<string, string>;
+let tempDir: TempDir;
 
-afterEach(() => {
-	for (const key of Object.keys(zhCN)) {
-		if (!originalKeys.includes(key)) delete zhCN[key];
-	}
+beforeEach(async () => {
+	originalCatalog = { ...zhCN };
+	settingsState = beginSettingsTest();
+	tempDir = TempDir.createSync("@pi-i18n-");
+	delete process.env.PI_CONFIG_FILES;
+	for (const key of ["LANG", "LC_ALL", "LC_MESSAGES"] as const) delete process.env[key];
+	await Settings.init({ inMemory: true, cwd: tempDir.path(), agentDir: tempDir.join("agent") });
+	cfgDisplayLanguage.set(Settings.instance, "en");
 	setLocale(null);
-	for (const key of ["LANG", "LC_ALL", "LC_MESSAGES"] as const) {
-		const original = originalEnv[key];
-		if (original === undefined) {
-			delete process.env[key];
-		} else if (process.env[key] !== original) {
-			process.env[key] = original;
-		}
+});
+
+afterEach(async () => {
+	for (const key of Object.keys(zhCN)) {
+		if (!(key in originalCatalog)) delete zhCN[key];
 	}
+	Object.assign(zhCN, originalCatalog);
+	restoreSettingsTestState(settingsState);
+	settingsState = undefined;
+	setLocale(null);
+	await tempDir.remove();
 });
 
 describe("i18n t()", () => {
@@ -46,17 +55,19 @@ describe("i18n t()", () => {
 		expect(t("Hi {name}")).toBe("你好，{name}");
 	});
 
-	it("treats an invalid locale as en", () => {
-		setLocale("fr");
+	it("restores settings-driven translation after an invalid locale pin", () => {
+		zhCN.Hello = "你好";
+		cfgDisplayLanguage.set(Settings.instance, "zh-CN");
+		setLocale("en");
 		expect(t("Hello")).toBe("Hello");
+		setLocale("fr");
+		expect(t("Hello")).toBe("你好");
 	});
 
 	it("resolves locale from settings when not pinned", () => {
 		zhCN.Hello = "你好";
-		const s = Settings.isolated({ "display.language": "zh-CN" });
-		// Pin through the same code path the settings panel uses: the value
-		// coming out of Settings is what drives t().
-		setLocale(s.get("display.language"));
+		cfgDisplayLanguage.set(Settings.instance, "zh-CN");
+		setLocale(null);
 		expect(t("Hello")).toBe("你好");
 	});
 });
@@ -68,6 +79,19 @@ describe("auto system-language detection", () => {
 		expect(detectSystemLocale()).toBe("zh-CN");
 	});
 
+	it("gives LC_ALL precedence over LC_MESSAGES and LANG", () => {
+		process.env.LANG = "en_US.UTF-8";
+		process.env.LC_MESSAGES = "en_US.UTF-8";
+		process.env.LC_ALL = "zh_CN.UTF-8";
+		expect(detectSystemLocale()).toBe("zh-CN");
+	});
+
+	it("gives LC_MESSAGES precedence over LANG when LC_ALL is absent", () => {
+		process.env.LANG = "zh_CN.UTF-8";
+		process.env.LC_MESSAGES = "en_US.UTF-8";
+		expect(detectSystemLocale()).toBe("en");
+	});
+
 	it("treats explicit non-Chinese locale env vars as English", () => {
 		process.env.LC_ALL = "en_US.UTF-8";
 		delete process.env.LANG;
@@ -77,25 +101,16 @@ describe("auto system-language detection", () => {
 	it("falls back to the ICU default locale for C/POSIX env", () => {
 		process.env.LANG = "C.UTF-8";
 		delete process.env.LC_ALL;
-		// Deterministic: zh env implies zh-CN; otherwise the runtime default
-		// locale decides (en on non-Chinese systems, zh-CN on Chinese ones).
 		const expected = /^zh/i.test(Intl.DateTimeFormat().resolvedOptions().locale) ? "zh-CN" : "en";
 		expect(detectSystemLocale()).toBe(expected);
 	});
 
 	it("drives t() through the auto setting", () => {
 		zhCN.Hello = "你好";
+		process.env.LANG = "en_US.UTF-8";
 		process.env.LC_ALL = "zh_CN.UTF-8";
-		const s = Settings.isolated({ "display.language": "auto" });
-		setLocale(s.get("display.language"));
+		cfgDisplayLanguage.set(Settings.instance, "auto");
+		setLocale(null);
 		expect(t("Hello")).toBe("你好");
-	});
-});
-
-describe("display.language setting contract", () => {
-	it("defaults to auto and accepts explicit values via the schema", () => {
-		expect(Settings.isolated({}).get("display.language")).toBe("auto");
-		expect(Settings.isolated({ "display.language": "en" }).get("display.language")).toBe("en");
-		expect(Settings.isolated({ "display.language": "zh-CN" }).get("display.language")).toBe("zh-CN");
 	});
 });
