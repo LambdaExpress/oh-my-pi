@@ -9,6 +9,9 @@
 
 ### Fixed
 
+- Fixed JavaScript Eval importing linked workspace packages and their nested source modules in compiled builds.
+- Fixed Windows drive-root globs and directory-only patterns ending in `/` returning no matches.
+- Fixed IDA Pro executable reads and database operations crashing on Windows.
 - Fixed sessions stopping on unexpected transport aborts without retrying; recovery preserves partial text and interrupted tool results, while explicit cancellation still stops the turn.
 - Restored Alt+J opening the fullscreen background-job inspector, while `/jobs` keeps the compact live monitor.
 - Fixed automatic session titles ignoring assistant context after an initial title decline or starting duplicate requests for CLI prompts.

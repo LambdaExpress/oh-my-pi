@@ -47,6 +47,30 @@ describe("GlobTool.execute", () => {
 		await expectRootSearchRejected(searchPath);
 	});
 
+	test("matches only direct-child directories before limiting a trailing-slash glob", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "glob-directory-suffix-"));
+		try {
+			const directory = path.join(root, "match directory");
+			const file = path.join(root, "match.txt");
+			await fs.mkdir(path.join(directory, "match nested"), { recursive: true });
+			await Bun.write(file, "newer matching file\n");
+			await fs.utimes(directory, 1_000_000_000, 1_000_000_000);
+			await fs.utimes(file, 1_100_000_000, 1_100_000_000);
+
+			const tool = new GlobTool(createSession(root));
+			const result = await tool.execute("glob-directory-suffix", {
+				path: `${root}/match*/`,
+				hidden: true,
+				gitignore: false,
+				limit: 1,
+			});
+
+			expect(result.details?.files).toEqual(["match directory/"]);
+		} finally {
+			await fs.rm(root, { recursive: true, force: true });
+		}
+	});
+
 	test("matches a linked-worktree .git file while pruning repository .git directories", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "glob-git-file-"));
 		try {

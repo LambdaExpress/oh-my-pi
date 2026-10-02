@@ -171,6 +171,12 @@ describe("delimited path expansion", () => {
 		});
 	});
 
+	it("keeps drive-root globs absolute when resolving their search directory", () => {
+		const parsed = parseFindPattern("D:/entry*");
+		expect(parsed.globPattern).toBe("entry*");
+		expect(path.win32.resolve("D:/workspace/project", parsed.basePath)).toBe("D:\\");
+	});
+
 	it("normalizes Windows separators for search scope globs", async () => {
 		const scope = await resolveToolSearchScope({
 			rawPaths: ["apps\\**\\*.txt"],

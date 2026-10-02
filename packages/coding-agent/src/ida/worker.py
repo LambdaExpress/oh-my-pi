@@ -658,14 +658,21 @@ def _error(e):
 
 def _send(frame):
     data = json.dumps(frame, ensure_ascii=False, default=str) + "\n"
-    # Defer SIGINT while writing so a late interrupt cannot truncate a frame; it is
-    # delivered after unblocking and swallowed by the idle loop.
-    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+    # Protect complete protocol frames from late interrupts. POSIX defers SIGINT until
+    # the idle loop; Windows has no signal mask, so ignore it only during the write.
+    sigmask = getattr(signal, "pthread_sigmask", None)
+    if sigmask is not None:
+        previous_mask = sigmask(signal.SIG_BLOCK, {signal.SIGINT})
+    else:
+        previous_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         _proto.write(data)
         _proto.flush()
     finally:
-        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
+        if sigmask is not None:
+            sigmask(signal.SIG_SETMASK, previous_mask)
+        else:
+            signal.signal(signal.SIGINT, previous_handler)
 
 
 def _close_and_exit(save):

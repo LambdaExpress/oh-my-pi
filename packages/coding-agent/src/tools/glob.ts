@@ -435,11 +435,13 @@ export class GlobTool implements AgentTool<typeof findSchema, GlobToolDetails> {
 			const runTarget = async (prepared: NativePreparedTarget): Promise<Array<{ path: string; mtime: number }>> => {
 				if (prepared.result) return prepared.result;
 				const { target } = prepared;
+				const directoriesOnly = target.globPattern.endsWith("/");
 				try {
 					const result = await this.#nativeGlob(
 						{
-							pattern: target.globPattern,
+							pattern: directoriesOnly ? target.globPattern.replace(/\/+$/, "") : target.globPattern,
 							path: target.searchPath,
+							fileType: directoriesOnly ? natives.FileType.Dir : undefined,
 							hidden: includeHidden,
 							maxResults: effectiveLimit,
 							sortByMtime: true,

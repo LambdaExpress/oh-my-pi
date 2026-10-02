@@ -971,8 +971,10 @@ export function parseFindPattern(pattern: string): ParsedFindPattern {
 		};
 	}
 
+	const basePath = segments.slice(0, firstGlobIndex).join("/");
 	return {
-		basePath: segments.slice(0, firstGlobIndex).join("/"),
+		// A bare drive such as "D:" resolves against that drive's current directory.
+		basePath: /^[a-z]:$/i.test(basePath) ? `${basePath}/` : basePath,
 		globPattern: segments.slice(firstGlobIndex).join("/"),
 		hasGlob: true,
 	};

@@ -6,6 +6,7 @@ import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import { cfgIdaAvailable, cfgIdaInstall } from "@oh-my-pi/pi-coding-agent/ida/install";
 import { isExecutableHeader, parseFatSlices, selectSlice, splitSliceRef } from "@oh-my-pi/pi-coding-agent/ida/store";
 import { type BinaryView, parseBinaryView } from "@oh-my-pi/pi-coding-agent/tools/read-binary";
+import { $which } from "@oh-my-pi/pi-utils";
 
 describe("isExecutableHeader", () => {
 	const cases: Array<[string, number[], boolean]> = [
@@ -142,4 +143,78 @@ describe("IDA availability", () => {
 			false,
 		);
 	});
+});
+
+const pythonPath =
+	Bun.env.PYTHON ??
+	(process.platform === "win32" ? ($which("python") ?? $which("python3")) : ($which("python3") ?? $which("python")));
+
+describe.skipIf(!pythonPath)("IDA worker response protocol", () => {
+	async function runWorker(mode: string, requests: object[] = []): Promise<unknown[]> {
+		if (!pythonPath) throw new Error("Python is unavailable");
+		const child = Bun.spawn(
+			[
+				pythonPath,
+				"-u",
+				path.resolve(import.meta.dir, "../fixtures/ida-worker-protocol.py"),
+				path.resolve(import.meta.dir, "../../src/ida/worker.py"),
+				mode,
+			],
+			{
+				stdin: "pipe",
+				stdout: "pipe",
+				stderr: "pipe",
+				env: { ...process.env, PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" },
+				timeout: 10_000,
+			},
+		);
+		child.stdin.write(requests.map(request => `${JSON.stringify(request)}\n`).join(""));
+		await child.stdin.end();
+		const [stdout, stderr, exitCode] = await Promise.all([
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+			child.exited,
+		]);
+		expect(exitCode, stderr).toBe(0);
+		expect(stdout.endsWith("\n")).toBe(true);
+		return Bun.JSONL.parse(stdout);
+	}
+
+	it("returns complete consecutive success and error frames without pthread_sigmask despite late SIGINT", async () => {
+		const frames = await runWorker("requests", [
+			{ id: 1, method: "exec", params: { code: "print('你好\\nsecond line'); total = 6 * 7; total" } },
+			{ id: 2, method: "view", params: { kind: "overview" } },
+			{ id: 3, method: "exec", params: { code: "total + 1" } },
+			{ id: 4, method: "close", params: { save: false } },
+		]);
+		expect(frames).toEqual([
+			{ id: 1, ok: true, result: { output: "你好\nsecond line\n", value: "42", error: null }, dirty: false },
+			{ id: 2, ok: false, error: { type: "RuntimeError", message: "no IDA database open" } },
+			{ id: 3, ok: true, result: { output: "", value: "43", error: null }, dirty: false },
+			{ id: 4, ok: true, result: { closed: true, saved: false } },
+		]);
+	});
+
+	it("restores the previous SIGINT handler after successful output and a broken protocol pipe", async () => {
+		expect(await runWorker("restore")).toEqual([
+			{ after_success: 1, after_failure: 2, failure: "protocol pipe closed" },
+		]);
+	});
+
+	it.skipIf(process.platform === "win32")(
+		"defers POSIX SIGINT until a complete flushed frame and preserves prior masks",
+		async () => {
+			expect(await runWorker("posix")).toEqual([
+				{
+					delivered: [
+						{ frame: { id: 1 }, flushed: true },
+						{ frame: { id: 2 }, flushed: true },
+					],
+					preserved_unrelated: true,
+					preserved_blocked: true,
+					deferred_preblocked: true,
+				},
+			]);
+		},
+	);
 });

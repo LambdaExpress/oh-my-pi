@@ -2,7 +2,12 @@ import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { installRuntimeModuleResolver, resolveFileRequest, resolveRuntimeModule } from "@oh-my-pi/pi-utils";
+import {
+	installRuntimeModuleResolver,
+	resolveFileRequest,
+	resolveRuntimeModule,
+	splitBareSpecifier,
+} from "@oh-my-pi/pi-utils";
 
 /** `<scheme>:` specifiers — `node:`, `bun:`, `file:`, `data:` — never hit the filesystem walk. */
 const PROTOCOL_SPECIFIER_RE = /^[a-z][a-z0-9+.-]*:/i;
@@ -86,11 +91,16 @@ export class KernelModuleResolution {
 	}
 
 	/** Resolve a bare specifier against the `node_modules` chain above `baseDir`. */
-	resolveBare(baseDir: string, specifier: string): string | null {
+	resolveBare(baseDir: string, specifier: string, mode: "require" | "import" = "require"): string | null {
 		if (!specifier || PROTOCOL_SPECIFIER_RE.test(specifier) || isFileRequest(specifier)) return null;
+		const { packageName } = splitBareSpecifier(specifier);
 		for (const root of this.#rootsFor(baseDir)) {
-			const resolved = resolveRuntimeModule(root, specifier);
-			if (resolved) return resolved;
+			const resolved = resolveRuntimeModule(root, specifier, mode);
+			if (resolved) return mode === "import" ? fs.realpathSync(resolved) : resolved;
+			const packageDir = path.join(root, packageName);
+			if (fs.existsSync(packageDir)) {
+				throw new Error(`Cannot resolve package entry ${JSON.stringify(specifier)} from ${packageDir}`);
+			}
 		}
 		return null;
 	}

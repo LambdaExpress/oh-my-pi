@@ -31,6 +31,34 @@ writeFixture(
 );
 writeFixture("node_modules/@scope/fixture-pkg/index.js", "module.exports = 'scoped';\n");
 writeFixture("project/package.json", JSON.stringify({ name: "fixture-project", version: "1.0.0" }));
+writeFixture(
+	"workspace/package.json",
+	JSON.stringify({
+		name: "@fixture/workspace",
+		type: "module",
+		main: "./private.cjs",
+		exports: {
+			".": { types: "./missing.d.ts", import: "./src/index.ts", require: "./index.cjs" },
+			"./tools/*": { import: "./src/tools/*.ts", require: "./tools/*.cjs" },
+			"./tools/internal/*": null,
+			"./tools/exact": { import: "./src/exact.ts" },
+		},
+	}),
+);
+writeFixture("workspace/src/index.ts", "export const marker = 'import';\n");
+writeFixture("workspace/index.cjs", "module.exports = 'require';\n");
+writeFixture("workspace/private.cjs", "module.exports = 'private';\n");
+writeFixture("workspace/src/tools/value.ts", "export const marker = 'wildcard';\n");
+writeFixture("workspace/src/tools/exact.ts", "export const marker = 'wrong';\n");
+writeFixture("workspace/src/exact.ts", "export const marker = 'exact';\n");
+writeFixture("workspace/src/tools/internal/value.ts", "export const marker = 'hidden';\n");
+writeFixture("workspace/tools/value.cjs", "module.exports = 'require-subpath';\n");
+fs.mkdirSync(path.join(root, "node_modules/@fixture"), { recursive: true });
+fs.symlinkSync(
+	path.join(root, "workspace"),
+	path.join(root, "node_modules/@fixture/workspace"),
+	process.platform === "win32" ? "junction" : "dir",
+);
 
 afterAll(() => {
 	fs.rmSync(root, { recursive: true, force: true });
@@ -61,6 +89,42 @@ describe("kernel module resolution", () => {
 			path.join(root, "node_modules/fixture-pkg/lib/dep.js"),
 		);
 		expect(resolution.resolveFile(root, "./missing-dep")).toBeNull();
+	});
+
+	test("resolves workspace import exports through their real paths without changing require conditions", () => {
+		expect(resolution.resolveBare(root, "@fixture/workspace", "import")).toBe(
+			fs.realpathSync(path.join(root, "workspace/src/index.ts")),
+		);
+		expect(resolution.resolveBare(root, "@fixture/workspace/tools/value", "import")).toBe(
+			fs.realpathSync(path.join(root, "workspace/src/tools/value.ts")),
+		);
+		expect(resolution.resolveBare(root, "@fixture/workspace/tools/exact", "import")).toBe(
+			fs.realpathSync(path.join(root, "workspace/src/exact.ts")),
+		);
+		const require = resolution.createRequire(path.join(root, "project/package.json"));
+		expect(require(resolution.resolveBare(root, "@fixture/workspace")!)).toBe("require");
+		expect(require(resolution.resolveBare(root, "@fixture/workspace/tools/value")!)).toBe("require-subpath");
+	});
+
+	test("does not resolve private or excluded workspace files around the export map", () => {
+		for (const specifier of [
+			"@fixture/workspace/private.cjs",
+			"@fixture/workspace/tools/internal/value",
+			"@fixture/workspace/tools/../index",
+		]) {
+			expect(() => resolution.resolveBare(root, specifier, "import")).toThrow("Cannot resolve package entry");
+		}
+	});
+
+	test("does not fall through an installed package to an ancestor's exported subpath", () => {
+		writeFixture(
+			"isolated-project/node_modules/@fixture/workspace/package.json",
+			JSON.stringify({ name: "@fixture/workspace", exports: { ".": "./index.js" } }),
+		);
+		writeFixture("isolated-project/node_modules/@fixture/workspace/index.js", "exports.marker = 'nearest';\n");
+		expect(() =>
+			resolution.resolveBare(path.join(root, "isolated-project"), "@fixture/workspace/tools/value", "import"),
+		).toThrow("Cannot resolve package entry");
 	});
 
 	test("createRequire loads an installed package together with its own dependencies", () => {

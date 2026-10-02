@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Fixed import-only and wildcard package exports resolving incorrectly while preserving private export boundaries.
 - Fixed concurrent SQLite corruption recovery on Windows while preserving committed writes and incomplete backup evidence.
 
 ## [18.4.4] - 2026-09-29
