@@ -8,7 +8,6 @@ import type {
 } from "@oh-my-pi/pi-agent-core";
 import { Process } from "@oh-my-pi/pi-natives";
 import { getProjectDir, isEnoent } from "@oh-my-pi/pi-utils";
-import { hostHasInheritableConsole } from "../eval/py/spawn-options";
 import { buildNonInteractiveEnv } from "../exec/non-interactive-env";
 import { InternalUrlRouter } from "../internal-urls";
 import { highlightCode } from "@oh-my-pi/pi-tui/theme/tui-adapters";
@@ -84,11 +83,6 @@ interface PwshRunResult extends OutputSummary {
 
 export function resolvePwshExecutable(): string | null {
 	return Bun.which("pwsh") ?? (process.platform === "win32" ? Bun.which("pwsh.exe") : null);
-}
-
-export function shouldHidePwshWindow(opts: { platform: NodeJS.Platform; hostHasInheritableConsole: boolean }): boolean {
-	if (opts.platform !== "win32") return false;
-	return !opts.hostHasInheritableConsole;
 }
 
 function quotePwshString(value: string): string {
@@ -342,10 +336,9 @@ export class PwshTool implements AgentTool<typeof pwshSchema, PwshToolDetails> {
 			stdin: "ignore",
 			stdout: "pipe",
 			stderr: "pipe",
-			windowsHide: shouldHidePwshWindow({
-				platform: process.platform,
-				hostHasInheritableConsole: hostHasInheritableConsole(),
-			}),
+			// Pipe redirection alone cannot stop descendants from writing to CONOUT$.
+			// Give PowerShell a hidden console that is separate from the host TUI.
+			windowsHide: true,
 		});
 		const processRef = Process.fromPid(proc.pid);
 		const rootExited = processRef ? processRef.waitForExit().then(() => proc.exitCode ?? 0) : proc.exited;

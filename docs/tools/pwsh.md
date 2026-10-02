@@ -41,3 +41,4 @@
 ## Notes
 - Never wrap PowerShell in `bash` or nested `pwsh -Command`; use this tool directly.
 - Use `script`, not `command`.
+- On Windows, PowerShell runs in a separate hidden console. Programs it starts cannot write directly onto omp's terminal through that inherited console; standard output and error are still captured in the tool result.

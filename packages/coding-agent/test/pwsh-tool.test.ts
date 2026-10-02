@@ -5,8 +5,8 @@ import * as path from "node:path";
 import { Settings } from "@oh-my-pi/pi-coding-agent/config/settings";
 import type { ToolSession } from "@oh-my-pi/pi-coding-agent/tools";
 import { wrapToolWithMetaNotice } from "@oh-my-pi/pi-coding-agent/tools/output-meta";
-import { PwshTool, resolvePwshExecutable, shouldHidePwshWindow } from "@oh-my-pi/pi-coding-agent/tools/pwsh";
-import { Process, ProcessStatus } from "@oh-my-pi/pi-natives";
+import { PwshTool, resolvePwshExecutable } from "@oh-my-pi/pi-coding-agent/tools/pwsh";
+import { Process, ProcessStatus, PtySession } from "@oh-my-pi/pi-natives";
 
 const pwshPath = resolvePwshExecutable();
 const describeIfPwsh = pwshPath ? describe : describe.skip;
@@ -47,20 +47,6 @@ async function terminateRecordedProcess(pidPath: string): Promise<void> {
 	await fs.rm(pidPath, { force: true });
 }
 
-describe("shouldHidePwshWindow", () => {
-	it("hides PowerShell on Windows when the host has no inheritable console", () => {
-		expect(shouldHidePwshWindow({ platform: "win32", hostHasInheritableConsole: false })).toBe(true);
-	});
-
-	it("inherits an attached Windows console so native grandchildren do not allocate their own", () => {
-		expect(shouldHidePwshWindow({ platform: "win32", hostHasInheritableConsole: true })).toBe(false);
-	});
-
-	it("never sets the Win32-only hide flag off Windows", () => {
-		expect(shouldHidePwshWindow({ platform: "linux", hostHasInheritableConsole: false })).toBe(false);
-		expect(shouldHidePwshWindow({ platform: "darwin", hostHasInheritableConsole: false })).toBe(false);
-	});
-});
 describeIfPwsh("PwshTool", () => {
 	let tempDir: string;
 
@@ -150,6 +136,54 @@ describeIfPwsh("PwshTool", () => {
 		expect(text).toContain("last=0");
 		expect(text).toContain("ps-after");
 	});
+
+	itIfWindowsPwsh(
+		"isolates descendant console writes while capturing standard output",
+		async () => {
+			const reportPath = path.join(tempDir, "console-isolation.json");
+			const terminal = new PtySession();
+			let output = "";
+			let callbackError: Error | null = null;
+			let exited = false;
+			try {
+				const result = await terminal.startArgv(
+					{
+						application: process.execPath,
+						args: [path.join(import.meta.dir, "fixtures/pwsh-console-isolation.ts"), reportPath],
+						cwd: tempDir,
+						timeoutMs: 20_000,
+						cols: 120,
+						rows: 24,
+					},
+					(error, chunk) => {
+						if (error) callbackError = error;
+						if (chunk) output += chunk;
+					},
+				);
+				exited = true;
+
+				expect(callbackError).toBeNull();
+				expect(result.timedOut).toBeFalse();
+				expect(result.exitCode).toBe(0);
+				expect(output).toContain("PWSH-CONSOLE-FIXTURE-COMPLETE");
+				const captured: { isError?: boolean; content: Array<{ type: string; text?: string }> } =
+					await Bun.file(reportPath).json();
+				expect(captured.isError).toBeUndefined();
+				const text = textOutput(captured);
+				expect(text).toContain("captured-before");
+				expect(text).toContain("native-stdout");
+				expect(text).toContain("native-stderr");
+				expect(text).toContain("direct-written=27");
+				expect(text).toContain("console-visible=false");
+				expect(text).toContain("captured-after");
+				expect(text).not.toContain("BACKGROUND-CONSOLE-LEAK");
+				expect(output).not.toContain("BACKGROUND-CONSOLE-LEAK");
+			} finally {
+				if (!exited) terminal.kill();
+			}
+		},
+		25_000,
+	);
 
 	itIfWindowsPwsh("does not wait for descendants that inherit output pipes after PowerShell exits", async () => {
 		const tool = new PwshTool(makeSession(process.cwd()), pwshPath ?? "pwsh");

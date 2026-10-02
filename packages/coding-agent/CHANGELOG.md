@@ -9,6 +9,7 @@
 
 ### Fixed
 
+- Fixed Windows programs launched through `pwsh` writing console logs over omp's interface in Herdr and other terminals; PowerShell now uses a separate hidden console while preserving captured output.
 - Fixed JavaScript Eval importing linked workspace packages and their nested source modules in compiled builds.
 - Fixed Windows drive-root globs and directory-only patterns ending in `/` returning no matches.
 - Fixed IDA Pro executable reads and database operations crashing on Windows.
